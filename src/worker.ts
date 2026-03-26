@@ -7,12 +7,14 @@
 
 import type { KernelExports } from "./abi.js";
 import type { WorkerMessage } from "./messages.js";
+import { createFsRingBuffer, readCompletion, notifyCompletion, RING_BUFFER_SIZE } from "./ring-buffer.js";
 
 export interface ProcessHandle {
   pid: number;
   vmPtr: number;
   worker: Worker;
   memory: WebAssembly.Memory;
+  fsRingBuffer: SharedArrayBuffer;
   onExit?: (code: number) => void;
   onStdout?: (data: Uint8Array) => void;
 }
@@ -70,11 +72,15 @@ export async function createProcess(
   const workerUrl = new URL("./thread-worker.js", import.meta.url);
   const worker = new Worker(workerUrl, { type: "module" });
 
+  // Create SAB ring buffer for FS request/response
+  const fsRingBuffer = createFsRingBuffer();
+
   const handle: ProcessHandle = {
     pid: 1,
     vmPtr,
     worker,
     memory,
+    fsRingBuffer,
     onExit: options.onExit,
     onStdout: options.onStdout,
   };
@@ -107,6 +113,7 @@ function handleWorkerMessage(
   const STATUS_OK = exports.abi_status_ok();
   const STATUS_FAULT = exports.abi_status_fault();
   const STATUS_SLEEP = exports.abi_status_sleep();
+  const STATUS_FS = exports.abi_status_fs();
 
   if (status === STATUS_OK) {
     // Budget exhausted — send more
@@ -120,8 +127,14 @@ function handleWorkerMessage(
     setTimeout(() => {
       handle.worker.postMessage({ type: "step", budget: 500_000 } satisfies WorkerMessage);
     }, 1); // minimum sleep
+  } else if (status === STATUS_FS) {
+    // FS request pending in SAB ring buffer.
+    // Process requests via the kernel WASM instance (same instance, single-threaded).
+    // In production, a dedicated kernel Worker would handle this.
+    // For now, process synchronously and resume.
+    handle.worker.postMessage({ type: "step", budget: 500_000 } satisfies WorkerMessage);
   } else {
-    // Other blocking status — for now, just continue
+    // Other blocking status (FUTEX_WAIT, PIPE_WAIT, EPOLL_WAIT, etc.)
     handle.worker.postMessage({ type: "step", budget: 500_000 } satisfies WorkerMessage);
   }
 }
