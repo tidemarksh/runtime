@@ -5,7 +5,7 @@
 export interface KernelExports {
   memory: WebAssembly.Memory;
 
-  // Constants (read once at init)
+  // Status codes
   abi_status_ok(): number;
   abi_status_fault(): number;
   abi_status_fs(): number;
@@ -17,8 +17,43 @@ export interface KernelExports {
   abi_status_clone_spawn(): number;
   abi_status_sleep(): number;
   abi_status_jit_ready(): number;
+
+  // Limits
   abi_page_size(): number;
   abi_max_fds(): number;
+  abi_max_threads(): number;
+  abi_max_pipes(): number;
+
+  // FD types
+  abi_fd_type_none(): number;
+  abi_fd_type_file(): number;
+  abi_fd_type_pipe(): number;
+  abi_fd_type_epoll(): number;
+  abi_fd_type_socket(): number;
+
+  // Signal numbers
+  abi_sigkill(): number;
+  abi_sigterm(): number;
+  abi_sigchld(): number;
+  abi_sigpipe(): number;
+
+  // Open flags
+  abi_o_rdonly(): number;
+  abi_o_wronly(): number;
+  abi_o_rdwr(): number;
+  abi_o_creat(): number;
+  abi_o_trunc(): number;
+  abi_o_append(): number;
+  abi_o_cloexec(): number;
+
+  // Error codes
+  abi_enoent(): number;
+  abi_ebadf(): number;
+  abi_einval(): number;
+  abi_enomem(): number;
+  abi_enosys(): number;
+  abi_eagain(): number;
+  abi_epipe(): number;
 
   // Lifecycle
   kernel_init(heap_base: number): void;
