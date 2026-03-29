@@ -17,6 +17,9 @@ export interface KernelExports {
   abi_status_clone_spawn(): number;
   abi_status_sleep(): number;
   abi_status_jit_ready(): number;
+  abi_spawn_kind_none(): number;
+  abi_spawn_kind_execve(): number;
+  abi_spawn_kind_fork(): number;
 
   // Limits
   abi_page_size(): number;
@@ -57,6 +60,43 @@ export interface KernelExports {
 
   // Lifecycle
   kernel_init(heap_base: number): void;
+  kernel_heap_base(): number;
+  kernel_heap_ptr(): number;
+  kernel_ofd_table_ptr(): number;
+  kernel_memfs_ptr(): number;
+  kernel_mem_state_ptr(): number;
+  kernel_epoll_table_ptr(): number;
+  kernel_socket_table_ptr(): number;
+  kernel_socket_used(): number;
+  kernel_pipe_base(): number;
+  kernel_pipe_used(): bigint;
+  kernel_net_buf_base(): number;
+  kernel_net_buf_used(): bigint;
+  kernel_sig_slots_ptr(): number;
+  kernel_process_pending_ptr(): number;
+  kernel_process_runtime_state_ptr(): number;
+  kernel_time_state_ptr(): number;
+  kernel_attach_runtime_state(
+    heapBase: number,
+    heapPtr: number,
+    ofdTablePtr: number,
+    memfsPtr: number,
+    memStatePtr: number,
+    epollTablePtr: number,
+    socketTablePtr: number,
+    socketUsed: number,
+    pipeBase: number,
+    pipeUsed: bigint,
+    netBufBase: number,
+    netBufUsed: bigint,
+    sigSlotsPtr: number,
+    processPendingPtr: number,
+    processRuntimeStatePtr: number,
+    timeStatePtr: number,
+  ): void;
+  process_push_arg(addr: number): void;  // u32 guest memory pointer
+  process_push_env(addr: number): void;  // u32 guest memory pointer
+  process_clear_args(): void;
   process_create(elf_ptr: number, elf_len: number, ram_size: number, stack_size: number): number;
 
   // Thread execution
@@ -65,6 +105,17 @@ export interface KernelExports {
   thread_exit_code(vm_ptr: number): number;
   thread_pc(vm_ptr: number): bigint;
   thread_a0(vm_ptr: number): bigint;
+  thread_process_fs(vm_ptr: number): void;
+  thread_resume_fs(vm_ptr: number): number;
+  thread_spawn_kind(vm_ptr: number): number;
+  thread_spawn_child_pid(vm_ptr: number): number;
+  thread_spawn_path(vm_ptr: number): bigint;
+  thread_spawn_argv(vm_ptr: number): bigint;
+  thread_spawn_envp(vm_ptr: number): bigint;
+  thread_clear_spawn_handoff(vm_ptr: number): void;
+  thread_resume_vfork_parent(vm_ptr: number, child_pid: number): void;
+  thread_spawn_from_clone(parent_vm_ptr: number): number;
+  thread_process_thread_count(vm_ptr: number): number;
 }
 
 /** Cached STATUS constants read from WASM exports. */
@@ -82,6 +133,33 @@ export interface StatusCodes {
   JIT_READY: number;
 }
 
+export interface KernelRuntimeState {
+  heapBase: number;
+  heapPtr: number;
+  ofdTablePtr: number;
+  memfsPtr: number;
+  memStatePtr: number;
+  epollTablePtr: number;
+  socketTablePtr: number;
+  socketUsed: number;
+  pipeBase: number;
+  pipeUsed: bigint;
+  netBufBase: number;
+  netBufUsed: bigint;
+  sigSlotsPtr: number;
+  processPendingPtr: number;
+  processRuntimeStatePtr: number;
+  timeStatePtr: number;
+}
+
+export interface ProcessSpawnHandoff {
+  kind: number;
+  childPid: number;
+  path: bigint;
+  argv: bigint;
+  envp: bigint;
+}
+
 export function readStatusCodes(exports: KernelExports): StatusCodes {
   return {
     OK: exports.abi_status_ok(),
@@ -95,5 +173,63 @@ export function readStatusCodes(exports: KernelExports): StatusCodes {
     CLONE_SPAWN: exports.abi_status_clone_spawn(),
     SLEEP: exports.abi_status_sleep(),
     JIT_READY: exports.abi_status_jit_ready(),
+  };
+}
+
+export function readKernelRuntimeState(exports: KernelExports): KernelRuntimeState {
+  return {
+    heapBase: exports.kernel_heap_base(),
+    heapPtr: exports.kernel_heap_ptr(),
+    ofdTablePtr: exports.kernel_ofd_table_ptr(),
+    memfsPtr: exports.kernel_memfs_ptr(),
+    memStatePtr: exports.kernel_mem_state_ptr(),
+    epollTablePtr: exports.kernel_epoll_table_ptr(),
+    socketTablePtr: exports.kernel_socket_table_ptr(),
+    socketUsed: exports.kernel_socket_used(),
+    pipeBase: exports.kernel_pipe_base(),
+    pipeUsed: exports.kernel_pipe_used(),
+    netBufBase: exports.kernel_net_buf_base(),
+    netBufUsed: exports.kernel_net_buf_used(),
+    sigSlotsPtr: exports.kernel_sig_slots_ptr(),
+    processPendingPtr: exports.kernel_process_pending_ptr(),
+    processRuntimeStatePtr: exports.kernel_process_runtime_state_ptr(),
+    timeStatePtr: exports.kernel_time_state_ptr(),
+  };
+}
+
+export function attachKernelRuntimeState(
+  exports: KernelExports,
+  state: KernelRuntimeState,
+): void {
+  exports.kernel_attach_runtime_state(
+    state.heapBase,
+    state.heapPtr,
+    state.ofdTablePtr,
+    state.memfsPtr,
+    state.memStatePtr,
+    state.epollTablePtr,
+    state.socketTablePtr,
+    state.socketUsed,
+    state.pipeBase,
+    state.pipeUsed,
+    state.netBufBase,
+    state.netBufUsed,
+    state.sigSlotsPtr,
+    state.processPendingPtr,
+    state.processRuntimeStatePtr,
+    state.timeStatePtr,
+  );
+}
+
+export function readProcessSpawnHandoff(
+  exports: KernelExports,
+  vmPtr: number,
+): ProcessSpawnHandoff {
+  return {
+    kind: exports.thread_spawn_kind(vmPtr),
+    childPid: exports.thread_spawn_child_pid(vmPtr),
+    path: exports.thread_spawn_path(vmPtr),
+    argv: exports.thread_spawn_argv(vmPtr),
+    envp: exports.thread_spawn_envp(vmPtr),
   };
 }

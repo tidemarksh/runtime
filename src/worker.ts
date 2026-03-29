@@ -11,9 +11,13 @@
  *   Idle workers are terminated after IDLE_TIMEOUT_MS via periodic eviction.
  */
 
-import type { KernelExports } from "./abi.js";
+import {
+  attachKernelRuntimeState,
+  readKernelRuntimeState,
+  type KernelExports,
+  type KernelRuntimeState,
+} from "./abi.js";
 import type { WorkerMessage } from "./messages.js";
-import { createFsRingBuffer } from "./ring-buffer.js";
 
 // ---------------------------------------------------------------------------
 // WASM Module cache
@@ -169,10 +173,22 @@ export interface ProcessHandle {
   vmPtr: number;
   worker: Worker;
   memory: WebAssembly.Memory;
-  fsRingBuffer: SharedArrayBuffer;
+  wasmModule: WebAssembly.Module;
+  kernel: KernelExports;
+  kernelState: KernelRuntimeState;
+  workers: Set<Worker>;
+  readyWorkers: Worker[];
+  runningWorker: Worker | null;
   onExit?: (code: number) => void;
   onStdout?: (data: Uint8Array) => void;
 }
+
+interface ThreadWorkerState {
+  vmPtr: number;
+  initialized: boolean;
+}
+
+const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
 
 // ---------------------------------------------------------------------------
 // createProcess
@@ -234,32 +250,22 @@ export async function createProcess(
   ensureEvictionTimer();
   const worker = acquireWorker();
 
-  // Create SAB ring buffer for FS request/response
-  const fsRingBuffer = createFsRingBuffer();
-
   const handle: ProcessHandle = {
     pid: 1,
     vmPtr,
     worker,
     memory,
-    fsRingBuffer,
+    wasmModule,
+    kernel: exports,
+    kernelState: readKernelRuntimeState(exports),
+    workers: new Set(),
+    readyWorkers: [],
+    runningWorker: null,
     onExit: options.onExit,
     onStdout: options.onStdout,
   };
 
-  // Set up message handler
-  worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
-    handleWorkerMessage(handle, exports, event.data);
-  };
-
-  // Initialize the worker with the WASM module and shared memory
-  const initMsg: WorkerMessage = {
-    type: "init",
-    wasmModule,
-    memory,
-    vmPtr,
-  };
-  worker.postMessage(initMsg);
+  attachThreadWorker(handle, worker, vmPtr);
 
   return handle;
 }
@@ -268,47 +274,108 @@ export async function createProcess(
 // Message handler
 // ---------------------------------------------------------------------------
 
+function attachThreadWorker(
+  handle: ProcessHandle,
+  worker: Worker,
+  vmPtr: number,
+): void {
+  handle.workers.add(worker);
+  threadWorkerStates.set(worker, {
+    vmPtr,
+    initialized: false,
+  });
+  worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
+    handleWorkerMessage(handle, worker, event.data);
+  };
+
+  const initMsg: WorkerMessage = {
+    type: "init",
+    wasmModule: handle.wasmModule,
+    memory: handle.memory,
+    vmPtr,
+    kernelState: handle.kernelState,
+  };
+  worker.postMessage(initMsg);
+}
+
+function enqueueWorker(handle: ProcessHandle, worker: Worker): void {
+  if (!handle.readyWorkers.includes(worker)) {
+    handle.readyWorkers.push(worker);
+  }
+  pumpProcess(handle);
+}
+
+function pumpProcess(handle: ProcessHandle): void {
+  if (handle.runningWorker !== null) return;
+  const next = handle.readyWorkers.shift();
+  if (!next) return;
+  handle.runningWorker = next;
+  next.postMessage({
+    type: "step",
+    budget: 500_000,
+    kernelState: handle.kernelState,
+  } satisfies WorkerMessage);
+}
+
 function handleWorkerMessage(
   handle: ProcessHandle,
-  exports: KernelExports,
+  worker: Worker,
   msg: WorkerMessage,
 ): void {
   if (msg.type !== "status") return;
 
+  const thread = threadWorkerStates.get(worker);
+  if (!thread) return;
+
+  handle.kernelState = msg.kernelState;
+  attachKernelRuntimeState(handle.kernel, handle.kernelState);
+  if (handle.runningWorker === worker) {
+    handle.runningWorker = null;
+  }
+
   const status = msg.status;
-  const STATUS_OK = exports.abi_status_ok();
-  const STATUS_FAULT = exports.abi_status_fault();
-  const STATUS_SLEEP = exports.abi_status_sleep();
-  const STATUS_FS = exports.abi_status_fs();
-  const STATUS_CLONE_SPAWN = exports.abi_status_clone_spawn();
-  const STATUS_EXECVE_SPAWN = exports.abi_status_execve_spawn();
+  const STATUS_OK = handle.kernel.abi_status_ok();
+  const STATUS_FAULT = handle.kernel.abi_status_fault();
+  const STATUS_SLEEP = handle.kernel.abi_status_sleep();
+  const STATUS_FS = handle.kernel.abi_status_fs();
+  const STATUS_CLONE_SPAWN = handle.kernel.abi_status_clone_spawn();
+  const STATUS_EXECVE_SPAWN = handle.kernel.abi_status_execve_spawn();
 
   if (status === STATUS_OK) {
-    // Budget exhausted — send more
-    handle.worker.postMessage({ type: "step", budget: 500_000 } satisfies WorkerMessage);
+    thread.initialized = true;
+    enqueueWorker(handle, worker);
   } else if (status === STATUS_FAULT) {
-    // Process exited — release worker back to pool
-    handle.onExit?.(msg.exitCode);
-    releaseWorker(handle.worker);
+    const remainingThreads = handle.kernel.thread_process_thread_count(thread.vmPtr);
+    handle.workers.delete(worker);
+    threadWorkerStates.delete(worker);
+    releaseWorker(worker);
+    if (remainingThreads === 0) {
+      handle.onExit?.(msg.exitCode);
+    } else {
+      pumpProcess(handle);
+    }
   } else if (status === STATUS_SLEEP) {
     // nanosleep — setTimeout then resume
     setTimeout(() => {
-      handle.worker.postMessage({ type: "step", budget: 500_000 } satisfies WorkerMessage);
+      enqueueWorker(handle, worker);
     }, 1); // minimum sleep
   } else if (status === STATUS_FS) {
-    // FS request pending in SAB ring buffer.
-    // Process requests via the kernel WASM instance (same instance, single-threaded).
-    // In production, a dedicated kernel Worker would handle this.
-    // For now, process synchronously and resume.
-    handle.worker.postMessage({ type: "step", budget: 500_000 } satisfies WorkerMessage);
+    handle.kernel.thread_process_fs(thread.vmPtr);
+    handle.kernel.thread_resume_fs(thread.vmPtr);
+    handle.kernelState = readKernelRuntimeState(handle.kernel);
+    enqueueWorker(handle, worker);
   } else if (status === STATUS_CLONE_SPAWN) {
     // clone(CLONE_THREAD) — create a new thread-worker sharing the same Memory.
-    // Stub: single-threaded mode (GOMAXPROCS=1). Log and resume.
-    console.warn(
-      `[worker] STATUS_CLONE_SPAWN for pid=${handle.pid}: ` +
-      "thread spawning not yet implemented, resuming in single-threaded mode",
-    );
-    handle.worker.postMessage({ type: "step", budget: 500_000 } satisfies WorkerMessage);
+    const childVmPtr = handle.kernel.thread_spawn_from_clone(thread.vmPtr);
+    if (childVmPtr === 0) {
+      throw new Error(
+        `[worker] STATUS_CLONE_SPAWN for pid=${handle.pid}: thread_spawn_from_clone failed`,
+      );
+    }
+    handle.kernelState = readKernelRuntimeState(handle.kernel);
+    const childWorker = acquireWorker();
+    attachThreadWorker(handle, childWorker, childVmPtr);
+    enqueueWorker(handle, worker);
   } else if (status === STATUS_EXECVE_SPAWN) {
     // execve() — create a new process-worker with new Memory.
     // Stub: not yet implemented. Log and resume.
@@ -316,10 +383,10 @@ function handleWorkerMessage(
       `[worker] STATUS_EXECVE_SPAWN for pid=${handle.pid}: ` +
       "process spawning not yet implemented, resuming",
     );
-    handle.worker.postMessage({ type: "step", budget: 500_000 } satisfies WorkerMessage);
+    enqueueWorker(handle, worker);
   } else {
     // Other blocking status (FUTEX_WAIT, PIPE_WAIT, EPOLL_WAIT, etc.)
-    handle.worker.postMessage({ type: "step", budget: 500_000 } satisfies WorkerMessage);
+    enqueueWorker(handle, worker);
   }
 }
 

@@ -7,7 +7,11 @@
  */
 
 import type { KernelExports, StatusCodes } from "./abi.js";
-import { readStatusCodes } from "./abi.js";
+import {
+  attachKernelRuntimeState,
+  readKernelRuntimeState,
+  readStatusCodes,
+} from "./abi.js";
 import type { WorkerMessage } from "./messages.js";
 
 let exports: KernelExports;
@@ -22,11 +26,13 @@ async function init(
   wasmModule: WebAssembly.Module,
   memory: WebAssembly.Memory,
   threadVmPtr: number,
+  kernelState: import("./abi.js").KernelRuntimeState,
 ): Promise<void> {
   const instance = await WebAssembly.instantiate(wasmModule, {
     env: { memory },
   });
   exports = instance.exports as unknown as KernelExports;
+  attachKernelRuntimeState(exports, kernelState);
   status = readStatusCodes(exports);
   vmPtr = threadVmPtr;
 }
@@ -45,6 +51,7 @@ function step(budget: number): void {
     status: s,
     exitCode: exports.thread_exit_code(vmPtr) ?? 0,
     pc: exports.thread_pc(vmPtr),
+    kernelState: readKernelRuntimeState(exports),
   };
 
   if (s === status.OK) {
@@ -71,10 +78,17 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
   const msg = event.data;
   switch (msg.type) {
     case "init":
-      await init(msg.wasmModule, msg.memory, msg.vmPtr);
-      postMessage({ type: "status", status: 0, exitCode: 0, pc: 0n } satisfies WorkerMessage);
+      await init(msg.wasmModule, msg.memory, msg.vmPtr, msg.kernelState);
+      postMessage({
+        type: "status",
+        status: 0,
+        exitCode: 0,
+        pc: 0n,
+        kernelState: readKernelRuntimeState(exports),
+      } satisfies WorkerMessage);
       break;
     case "step":
+      attachKernelRuntimeState(exports, msg.kernelState);
       step(msg.budget);
       break;
   }

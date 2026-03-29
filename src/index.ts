@@ -49,9 +49,6 @@ export class Runtime {
 
     const proc = new Process(pid, handle);
 
-    // Start execution
-    handle.worker.postMessage({ type: "step", budget: 500_000 });
-
     return proc;
   }
 
