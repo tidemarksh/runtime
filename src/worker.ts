@@ -93,15 +93,24 @@ function acquireWorker(): Worker {
     return worker;
   }
 
-  // 3. Pool is full, all busy — LRU eviction of the least-recently-used entry
-  let lruIndex = 0;
-  let lruTime = workerPool[0].lastUsed;
-  for (let i = 1; i < workerPool.length; i++) {
-    if (workerPool[i].lastUsed < lruTime) {
+  // 3. Pool is full — try to evict an IDLE worker (never evict busy workers).
+  // §6.10: LRU eviction must not kill busy workers.
+  let lruIndex = -1;
+  let lruTime = Infinity;
+  for (let i = 0; i < workerPool.length; i++) {
+    if (!workerPool[i].busy && workerPool[i].lastUsed < lruTime) {
       lruTime = workerPool[i].lastUsed;
       lruIndex = i;
     }
   }
+
+  if (lruIndex === -1) {
+    // All workers are busy — create beyond pool limit (will not be pooled).
+    const workerUrl = new URL("./thread-worker.js", import.meta.url);
+    const worker = new Worker(workerUrl, { type: "module" });
+    return worker;
+  }
+
   const evicted = workerPool[lruIndex];
   evicted.worker.terminate();
   workerEntryMap.delete(evicted.worker);
