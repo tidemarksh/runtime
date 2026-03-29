@@ -260,11 +260,14 @@ export async function createProcess(
   const exports = mainInstance.exports as unknown as KernelExports;
 
   if (options.kernelState) {
-    // §6.1: Attach kernel state from kernel Worker instead of initializing locally.
-    // This shares MemFS, process table, and signal state from the kernel Worker.
+    // §6.1: Per-process kernel instance initialized with __heap_base.
+    // NOTE: attachKernelRuntimeState copies pointer VALUES but these point into
+    // the kernel Worker's PRIVATE memory, not this instance's memory. True state
+    // sharing requires §6.3 SAB page cache (kernel publishes MemFS data to SAB,
+    // per-process instances read from SAB). Until then, each per-process instance
+    // has its own independent kernel state.
     const wasmHeapBase = (exports as any).__heap_base?.value ?? (ramSize - 4 * 1024 * 1024);
     exports.kernel_init(wasmHeapBase);
-    attachKernelRuntimeState(exports, options.kernelState);
   } else {
     // Standalone mode (tests, no kernel Worker).
     const heapBase = ramSize - 4 * 1024 * 1024;
