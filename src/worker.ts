@@ -14,6 +14,7 @@
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
+  readProcessSpawnHandoff,
   type KernelExports,
   type KernelRuntimeState,
 } from "./abi.js";
@@ -191,7 +192,12 @@ export interface ProcessHandle {
 interface ThreadWorkerState {
   vmPtr: number;
   initialized: boolean;
+  /** Non-null when this thread is the vfork parent waiting for child. */
+  vforkParentWorker?: Worker;
 }
+
+/** Global process registry for child exit notification. */
+const processHandles = new Map<number, ProcessHandle>();
 
 const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
 
@@ -297,6 +303,7 @@ export async function createProcess(
   };
 
   attachThreadWorker(handle, worker, vmPtr);
+  processHandles.set(handle.pid, handle);
 
   return handle;
 }
@@ -412,15 +419,19 @@ function handleWorkerMessage(
     attachThreadWorker(handle, childWorker, childVmPtr);
     enqueueWorker(handle, worker);
   } else if (status === STATUS_EXECVE_SPAWN) {
-    // execve() — create a new process-worker with new Memory.
-    // Stub: not yet implemented. Log and resume.
-    console.warn(
-      `[worker] STATUS_EXECVE_SPAWN for pid=${handle.pid}: ` +
-      "process spawning not yet implemented, resuming",
-    );
+    handleExecveSpawn(handle, worker, thread);
+  } else if (status === handle.kernel.abi_status_vfork_wait()) {
+    // §6.6: vfork parent suspended. Child continues in same thread-worker.
+    // The kernel already set child's a0=0 and continues execution.
+    // Mark this thread as vfork-active and keep stepping.
     enqueueWorker(handle, worker);
+  } else if (status === handle.kernel.abi_status_wait4()) {
+    handleWait4(handle, worker, thread);
   } else {
     // Other blocking status (FUTEX_WAIT, PIPE_WAIT, EPOLL_WAIT, etc.)
+    // thread-worker handles these locally via Atomics.wait.
+    // If we get here, it means the thread-worker posted a status
+    // that it couldn't handle locally — just re-enqueue.
     enqueueWorker(handle, worker);
   }
 }
@@ -431,4 +442,225 @@ function handleWorkerMessage(
 export function startProcess(handle: ProcessHandle): void {
   // Wait for init to complete, then the worker will report status=OK
   // which triggers the first step
+}
+
+// ---------------------------------------------------------------------------
+// EXECVE_SPAWN handler (§6.4, §6.6)
+// ---------------------------------------------------------------------------
+
+function handleExecveSpawn(
+  handle: ProcessHandle,
+  worker: Worker,
+  thread: ThreadWorkerState,
+): void {
+  const handoff = readProcessSpawnHandoff(handle.kernel, thread.vmPtr);
+  const SPAWN_KIND_EXECVE = handle.kernel.abi_spawn_kind_execve();
+  const SPAWN_KIND_FORK = handle.kernel.abi_spawn_kind_fork();
+
+  if (handoff.kind === SPAWN_KIND_EXECVE) {
+    // vfork+execve: child needs new Memory + new process.
+    // §6.6: The vfork parent is already suspended (STATUS_VFORK_WAIT
+    // was handled earlier by just continuing to step the child).
+    // Now the child called execve — create the child process.
+    handleVforkExecve(handle, worker, thread, handoff.childPid);
+  } else if (handoff.kind === SPAWN_KIND_FORK) {
+    // plain fork: copy Memory, create child process.
+    handlePlainFork(handle, worker, thread, handoff.childPid);
+  } else {
+    // Unknown spawn kind — resume parent.
+    handle.kernel.thread_clear_spawn_handoff(thread.vmPtr);
+    enqueueWorker(handle, worker);
+  }
+}
+
+/**
+ * §6.6 vfork+execve: Create child process with new Memory.
+ * The kernel has already prepared the spawn handoff with path/argv/envp
+ * and the parent's ThreadState snapshot is saved in vfork state.
+ */
+async function handleVforkExecve(
+  handle: ProcessHandle,
+  parentWorker: Worker,
+  parentThread: ThreadWorkerState,
+  childPid: number,
+): Promise<void> {
+  // Read the execve path from guest memory to get the ELF
+  const pathAddr = Number(handle.kernel.thread_spawn_path(parentThread.vmPtr));
+  const mem = new Uint8Array(handle.memory.buffer);
+
+  // Read null-terminated path from guest memory
+  let pathEnd = pathAddr;
+  while (mem[pathEnd] !== 0 && pathEnd < mem.length) pathEnd++;
+  const pathBytes = mem.slice(pathAddr, pathEnd);
+
+  // Read argv strings from guest memory
+  const argvAddr = Number(handle.kernel.thread_spawn_argv(parentThread.vmPtr));
+  const argv = readGuestStringArray(mem, argvAddr);
+
+  // Read envp strings from guest memory
+  const envpAddr = Number(handle.kernel.thread_spawn_envp(parentThread.vmPtr));
+  const envp = readGuestStringArray(mem, envpAddr);
+
+  // Resolve ELF path in kernel's MemFS
+  // For now, read the ELF from the parent's guest memory MemFS
+  // TODO: use kernel Worker's memfs_resolve_path once fully wired
+  const elfIno = handle.kernel.memfs_resolve_path(pathAddr, pathBytes.length);
+  let elfData: Uint8Array;
+  if (elfIno !== 0) {
+    const elfSize = Number(handle.kernel.memfs_file_size(elfIno));
+    const scratchOffset = 0x100000; // 1MB scratch in kernel WASM memory
+    const bytesRead = Number(handle.kernel.memfs_read_file_to(elfIno, 0n, scratchOffset, elfSize));
+    elfData = new Uint8Array(
+      (handle.kernel.memory as WebAssembly.Memory).buffer.slice(scratchOffset, scratchOffset + bytesRead),
+    );
+  } else {
+    // ELF not found in MemFS — resume parent with error
+    handle.kernel.thread_clear_spawn_handoff(parentThread.vmPtr);
+    handle.kernel.thread_resume_vfork_parent(parentThread.vmPtr, -1);
+    handle.kernelState = readKernelRuntimeState(handle.kernel);
+    enqueueWorker(handle, parentWorker);
+    return;
+  }
+
+  // Clear spawn handoff before creating child
+  handle.kernel.thread_clear_spawn_handoff(parentThread.vmPtr);
+
+  // Create child process with new Memory
+  const childRamSize = handle.memory.buffer.byteLength;
+  const childHandle = await createProcess(
+    new Uint8Array(0), // wasmBytes not needed — cached module reused
+    elfData,
+    {
+      ramSize: childRamSize,
+      argv,
+      env: envp,
+      onExit: (code) => {
+        // Child exit — notify parent's kernel for wait4
+        processHandles.delete(childPid);
+      },
+    },
+  );
+  childHandle.pid = childPid;
+  processHandles.set(childPid, childHandle);
+
+  // Resume vfork parent with child PID
+  handle.kernel.thread_resume_vfork_parent(parentThread.vmPtr, childPid);
+  handle.kernelState = readKernelRuntimeState(handle.kernel);
+  enqueueWorker(handle, parentWorker);
+}
+
+/**
+ * Plain fork: copy entire guest Memory and create child process.
+ */
+async function handlePlainFork(
+  handle: ProcessHandle,
+  parentWorker: Worker,
+  parentThread: ThreadWorkerState,
+  childPid: number,
+): Promise<void> {
+  // Copy parent's guest memory
+  const parentMem = new Uint8Array(handle.memory.buffer);
+  const childRamSize = handle.memory.buffer.byteLength;
+  const childRamPages = Math.ceil(childRamSize / 65536);
+
+  const childMemory = new WebAssembly.Memory({
+    initial: childRamPages,
+    maximum: 32768,
+    shared: true,
+  });
+  new Uint8Array(childMemory.buffer).set(parentMem);
+
+  // Instantiate child kernel with copied memory
+  const childInstance = await WebAssembly.instantiate(handle.wasmModule, {
+    env: { memory: childMemory },
+  });
+  const childKernel = childInstance.exports as unknown as KernelExports;
+
+  // Attach parent's kernel state to child
+  attachKernelRuntimeState(childKernel, handle.kernelState);
+
+  // Clear spawn handoff on parent
+  handle.kernel.thread_clear_spawn_handoff(parentThread.vmPtr);
+
+  // Set parent's return value to child PID
+  // The kernel already set a0 = child_pid for the parent
+
+  // Start child thread-worker
+  ensureEvictionTimer();
+  const childWorker = acquireWorker();
+  const childFsRingBuffer = new SharedArrayBuffer(RING_BUFFER_SIZE);
+
+  const childHandle: ProcessHandle = {
+    pid: childPid,
+    vmPtr: handle.vmPtr, // child starts with same vmPtr layout in its own memory
+    worker: childWorker,
+    memory: childMemory,
+    wasmModule: handle.wasmModule,
+    kernel: childKernel,
+    kernelState: readKernelRuntimeState(childKernel),
+    fsRingBuffer: childFsRingBuffer,
+    workers: new Set(),
+    readyWorkers: [],
+    runningWorker: null,
+  };
+  processHandles.set(childPid, childHandle);
+  attachThreadWorker(childHandle, childWorker, childHandle.vmPtr);
+
+  // Resume parent
+  handle.kernelState = readKernelRuntimeState(handle.kernel);
+  enqueueWorker(handle, parentWorker);
+}
+
+// ---------------------------------------------------------------------------
+// WAIT4 handler
+// ---------------------------------------------------------------------------
+
+function handleWait4(
+  handle: ProcessHandle,
+  worker: Worker,
+  thread: ThreadWorkerState,
+): void {
+  // Try immediate resume — kernel checks if any child has exited
+  handle.kernel.thread_resume_wait4(thread.vmPtr);
+  handle.kernelState = readKernelRuntimeState(handle.kernel);
+  const newStatus = handle.kernel.thread_status(thread.vmPtr);
+
+  if (newStatus !== handle.kernel.abi_status_wait4()) {
+    // Child was already exited — wait4 completed
+    enqueueWorker(handle, worker);
+  } else {
+    // No child exited yet — poll periodically
+    const pollWait4 = () => {
+      handle.kernel.thread_resume_wait4(thread.vmPtr);
+      handle.kernelState = readKernelRuntimeState(handle.kernel);
+      const s = handle.kernel.thread_status(thread.vmPtr);
+      if (s !== handle.kernel.abi_status_wait4()) {
+        enqueueWorker(handle, worker);
+      } else {
+        setTimeout(pollWait4, 10);
+      }
+    };
+    setTimeout(pollWait4, 10);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Guest memory helpers
+// ---------------------------------------------------------------------------
+
+/** Read a null-terminated u64 pointer array of C strings from guest memory. */
+function readGuestStringArray(mem: Uint8Array, ptrArrayAddr: number): string[] {
+  if (ptrArrayAddr === 0) return [];
+  const result: string[] = [];
+  const dv = new DataView(mem.buffer);
+  let offset = ptrArrayAddr;
+  for (;;) {
+    const strAddr = Number(dv.getBigUint64(offset, true));
+    if (strAddr === 0) break;
+    let end = strAddr;
+    while (mem[end] !== 0 && end < mem.length) end++;
+    result.push(new TextDecoder().decode(mem.slice(strAddr, end)));
+    offset += 8;
+  }
+  return result;
 }

@@ -271,26 +271,24 @@ test("createProcess processes STATUS_FS and resumes worker with refreshed kernel
   expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x10);
 });
 
-test("createProcess resumes current worker on STATUS_EXECVE_SPAWN", async () => {
-  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+test("STATUS_EXECVE_SPAWN with unknown spawn kind clears handoff and resumes", async () => {
   await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
   const worker = createdWorkers[0];
 
   expect(worker).toBeDefined();
 
   worker.clearPostedMessages();
+  // Mock returns spawn_kind=0 (NONE) by default, so handleExecveSpawn
+  // hits the unknown-kind path: clear handoff + enqueue parent
   worker.emit({
     type: "status",
-    status: 9,
+    status: 9, // EXECVE_SPAWN
     exitCode: 0,
     pc: 0n,
     vmPtr: 0x1234,
     kernelState: makeKernelState(),
   });
 
-  expect(warn).toHaveBeenCalledWith(
-    expect.stringContaining("STATUS_EXECVE_SPAWN"),
-  );
   expect(worker.postedMessages).toEqual([
     { type: "step", budget: 500_000, kernelState: makeKernelState() },
   ]);
