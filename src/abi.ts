@@ -17,6 +17,12 @@ export interface KernelExports {
   abi_status_clone_spawn(): number;
   abi_status_sleep(): number;
   abi_status_jit_ready(): number;
+  abi_status_wait4(): number;
+  abi_status_connect(): number;
+  abi_status_socket_send(): number;
+  abi_status_socket_recv(): number;
+
+  // Spawn kinds
   abi_spawn_kind_none(): number;
   abi_spawn_kind_execve(): number;
   abi_spawn_kind_fork(): number;
@@ -58,7 +64,8 @@ export interface KernelExports {
   abi_eagain(): number;
   abi_epipe(): number;
 
-  // Lifecycle
+  // Kernel lifecycle
+  set_base_time(sec: bigint, nsec: bigint): void;
   kernel_init(heap_base: number): void;
   kernel_heap_base(): number;
   kernel_heap_ptr(): number;
@@ -94,8 +101,10 @@ export interface KernelExports {
     processRuntimeStatePtr: number,
     timeStatePtr: number,
   ): void;
-  process_push_arg(addr: number): void;  // u32 guest memory pointer
-  process_push_env(addr: number): void;  // u32 guest memory pointer
+
+  // Process creation
+  process_push_arg(addr: number): void;
+  process_push_env(addr: number): void;
   process_clear_args(): void;
   process_create(elf_ptr: number, elf_len: number, ram_size: number, stack_size: number): number;
 
@@ -105,8 +114,23 @@ export interface KernelExports {
   thread_exit_code(vm_ptr: number): number;
   thread_pc(vm_ptr: number): bigint;
   thread_a0(vm_ptr: number): bigint;
+
+  // FS handling
   thread_process_fs(vm_ptr: number): void;
   thread_resume_fs(vm_ptr: number): number;
+
+  // Blocking state accessors
+  thread_futex_wait_addr(vm_ptr: number): bigint;
+  thread_futex_wait_timeout(vm_ptr: number): bigint;
+  thread_resume_futex_wait(vm_ptr: number): void;
+  thread_resume_futex_wait_result(vm_ptr: number, result: bigint): void;
+  thread_sleep_seconds(vm_ptr: number): bigint;
+  thread_sleep_nanoseconds(vm_ptr: number): bigint;
+  thread_record_blocked_addr(vm_ptr: number): number;
+  thread_resume_wait4(vm_ptr: number): bigint;
+  thread_vfork_child_pid(): number;
+
+  // Spawn handoff
   thread_spawn_kind(vm_ptr: number): number;
   thread_spawn_child_pid(vm_ptr: number): number;
   thread_spawn_path(vm_ptr: number): bigint;
@@ -116,6 +140,21 @@ export interface KernelExports {
   thread_resume_vfork_parent(vm_ptr: number, child_pid: number): void;
   thread_spawn_from_clone(parent_vm_ptr: number): number;
   thread_process_thread_count(vm_ptr: number): number;
+
+  // MemFS operations (kernel Worker only)
+  memfs_resolve_path(path_ptr: number, path_len: number): number;
+  memfs_create_file(parent_ino: number, name_ptr: number, name_len: number): number;
+  memfs_write_file_at(ino: number, offset: bigint, data_ptr: number, data_len: number): bigint;
+  memfs_read_file_to(ino: number, offset: bigint, buf_ptr: number, buf_len: number): bigint;
+  memfs_file_size(ino: number): bigint;
+  memfs_ensure_dir(parent_ino: number, name_ptr: number, name_len: number, mode: number): number;
+  memfs_create_file_with_data(
+    parent_ino: number,
+    name_ptr: number,
+    name_len: number,
+    data_ptr: number,
+    data_len: number,
+  ): number;
 }
 
 /** Cached STATUS constants read from WASM exports. */
@@ -131,6 +170,17 @@ export interface StatusCodes {
   CLONE_SPAWN: number;
   SLEEP: number;
   JIT_READY: number;
+  WAIT4: number;
+  CONNECT: number;
+  SOCKET_SEND: number;
+  SOCKET_RECV: number;
+}
+
+/** Cached spawn kind constants. */
+export interface SpawnKindCodes {
+  NONE: number;
+  EXECVE: number;
+  FORK: number;
 }
 
 export interface KernelRuntimeState {
@@ -173,6 +223,18 @@ export function readStatusCodes(exports: KernelExports): StatusCodes {
     CLONE_SPAWN: exports.abi_status_clone_spawn(),
     SLEEP: exports.abi_status_sleep(),
     JIT_READY: exports.abi_status_jit_ready(),
+    WAIT4: exports.abi_status_wait4(),
+    CONNECT: exports.abi_status_connect(),
+    SOCKET_SEND: exports.abi_status_socket_send(),
+    SOCKET_RECV: exports.abi_status_socket_recv(),
+  };
+}
+
+export function readSpawnKindCodes(exports: KernelExports): SpawnKindCodes {
+  return {
+    NONE: exports.abi_spawn_kind_none(),
+    EXECVE: exports.abi_spawn_kind_execve(),
+    FORK: exports.abi_spawn_kind_fork(),
   };
 }
 
