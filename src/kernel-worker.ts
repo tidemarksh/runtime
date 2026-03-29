@@ -17,6 +17,7 @@
 import type { KernelExports, KernelRuntimeState } from "./abi.js";
 import { readKernelRuntimeState } from "./abi.js";
 import type { KernelWorkerInbound, KernelWorkerOutbound } from "./messages.js";
+import { publishInode, bumpDirEpoch } from "./sab-page-cache.js";
 
 let exports: KernelExports;
 /** §6.3: SAB page cache — kernel publishes file data and inode metadata here. */
@@ -60,8 +61,6 @@ async function initKernel(wasmModule: WebAssembly.Module, pageCache: SharedArray
 function writeFile(path: string, data: Uint8Array): void {
   const encoder = new TextEncoder();
   const mem = new Uint8Array(exports.memory.buffer);
-  // TODO §6.3: After writing to MemFS, publish file data to sabPageCache
-  void sabPageCache;
 
   // Scratch area in kernel Worker's private WASM memory
   const scratchBase = exports.kernel_heap_ptr() + 0x10000;
@@ -71,16 +70,26 @@ function writeFile(path: string, data: Uint8Array): void {
   const filename = parts.pop();
   if (!filename) throw new Error(`Invalid path: ${path}`);
 
-  // Ensure parent directories exist
+  // Ensure parent directories exist, publishing each to SAB
   let parentIno = 1; // root inode
   for (const dir of parts) {
     const dirBytes = encoder.encode(dir);
     mem.set(dirBytes, scratchBase);
+    const prevParent = parentIno;
     parentIno = exports.memfs_ensure_dir(parentIno, scratchBase, dirBytes.length, 0o755);
     if (parentIno === 0) throw new Error(`Failed to create directory: ${dir}`);
+    // §6.3: Publish directory inode to SAB page cache
+    publishInode(sabPageCache, parentIno, {
+      mode: 0o40755, // S_IFDIR | 0755
+      size: 0,
+      parentIno: prevParent,
+      name: dirBytes,
+      nextSibling: 0,
+    }, null);
   }
+  bumpDirEpoch(sabPageCache);
 
-  // Create file with data
+  // Create file with data in MemFS
   const nameBytes = encoder.encode(filename);
   mem.set(nameBytes, scratchBase);
   const dataOffset = scratchBase + nameBytes.length + 16;
@@ -94,6 +103,15 @@ function writeFile(path: string, data: Uint8Array): void {
     data.length,
   );
   if (ino === 0) throw new Error(`Failed to write file: ${path}`);
+
+  // §6.3: Publish file inode + data to SAB page cache (seqlock protocol)
+  publishInode(sabPageCache, ino, {
+    mode: 0o100644, // S_IFREG | 0644
+    size: data.length,
+    parentIno,
+    name: nameBytes,
+    nextSibling: 0,
+  }, data);
 }
 
 /**
