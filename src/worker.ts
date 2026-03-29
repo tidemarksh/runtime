@@ -209,6 +209,8 @@ export async function createProcess(
   options: {
     ramSize?: number;
     stackSize?: number;
+    argv?: string[];
+    env?: string[];
     onExit?: (code: number) => void;
     onStdout?: (data: Uint8Array) => void;
   } = {},
@@ -240,10 +242,31 @@ export async function createProcess(
   const heapBase = 0x200000; // 2 MB — after ELF load area
   exports.kernel_init(heapBase);
 
+  // Set wall clock base time
+  const now = Date.now();
+  exports.set_base_time(BigInt(Math.floor(now / 1000)), BigInt((now % 1000) * 1_000_000));
+
   // Copy ELF to WASM memory
   const elfOffset = ramSize - 256 * 1024; // load ELF at top - 256KB
   const memView = new Uint8Array(memory.buffer);
   memView.set(elfData, elfOffset);
+
+  // Push argv and env to kernel before process_create
+  const encoder = new TextEncoder();
+  exports.process_clear_args();
+  let strOffset = elfOffset - 4096;
+  for (const arg of options.argv ?? []) {
+    const bytes = encoder.encode(arg + "\0");
+    memView.set(bytes, strOffset);
+    exports.process_push_arg(strOffset);
+    strOffset += bytes.length;
+  }
+  for (const e of options.env ?? []) {
+    const bytes = encoder.encode(e + "\0");
+    memView.set(bytes, strOffset);
+    exports.process_push_env(strOffset);
+    strOffset += bytes.length;
+  }
 
   // Create process
   const vmPtr = exports.process_create(elfOffset, elfData.length, ramSize, stackSize);

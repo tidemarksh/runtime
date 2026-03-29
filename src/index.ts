@@ -1,13 +1,17 @@
 /**
  * Runtime: VM lifecycle management and public API.
  *
+ * §6.1: Launches a kernel Worker (dedicated) and manages process lifecycle.
+ * §4.2: FS API is Promise-based.
+ *
  * Usage:
  *   const runtime = await Runtime.create({ wasmBytes });
- *   const proc = await runtime.spawn(elfData, ["hello"], []);
- *   proc.onExit = (code) => console.log("exit", code);
+ *   await runtime.writeFile("/hello.c", source);
+ *   const proc = await runtime.spawn(elfData, ["hello"], ["PATH=/"]);
+ *   const code = await proc.waitForExit();
  */
 
-import { createProcess, type ProcessHandle } from "./worker.js";
+import { createProcess, destroyWorkerPool, type ProcessHandle } from "./worker.js";
 
 export interface RuntimeOptions {
   wasmBytes: BufferSource;
@@ -37,6 +41,8 @@ export class Runtime {
     const pid = this.nextPid++;
     const handle = await createProcess(this.wasmBytes, elfData, {
       ramSize: this.ramSize,
+      argv,
+      env,
       onExit: (code) => {
         this.processes.delete(pid);
         proc.exitCode = code;
@@ -48,27 +54,38 @@ export class Runtime {
     this.processes.set(pid, handle);
 
     const proc = new Process(pid, handle);
-
     return proc;
   }
 
   /** Write a file to the MemFS before spawning processes. */
-  async writeFile(path: string, data: Uint8Array): Promise<void> {
-    // TODO: implement via kernel WASM exports (memfs::create_file_with_data)
+  async writeFile(_path: string, _data: Uint8Array): Promise<void> {
+    // TODO: delegate to kernel Worker via KernelWorkerInbound "write-file"
+    // For now, this is a no-op placeholder. Full implementation requires
+    // the kernel Worker to be running and a message channel established.
   }
 
   /** Read a file from the MemFS. */
-  async readFile(path: string): Promise<Uint8Array> {
-    // TODO: implement via kernel WASM exports
+  async readFile(_path: string): Promise<Uint8Array> {
+    // TODO: delegate to kernel Worker via KernelWorkerInbound "read-file"
     return new Uint8Array();
   }
 
-  kill(pid: number, signal: number): void {
+  kill(pid: number): void {
     const handle = this.processes.get(pid);
     if (handle) {
+      for (const w of handle.workers) {
+        w.terminate();
+      }
       handle.worker.terminate();
       this.processes.delete(pid);
     }
+  }
+
+  destroy(): void {
+    for (const [pid] of this.processes) {
+      this.kill(pid);
+    }
+    destroyWorkerPool();
   }
 }
 
@@ -94,8 +111,8 @@ export class Process {
     this.handle.onStdout = cb;
   }
 
-  writeStdin(data: Uint8Array): void {
-    // TODO: implement via pipe
+  writeStdin(_data: Uint8Array): void {
+    // TODO: implement via pipe SAB
   }
 
   waitForExit(): Promise<number> {
@@ -106,5 +123,5 @@ export class Process {
   }
 }
 
-export type { KernelExports, StatusCodes } from "./abi.js";
-export { readStatusCodes } from "./abi.js";
+export type { KernelExports, StatusCodes, SpawnKindCodes } from "./abi.js";
+export { readStatusCodes, readSpawnKindCodes } from "./abi.js";
