@@ -201,8 +201,6 @@ export interface ProcessHandle {
 interface ThreadWorkerState {
   vmPtr: number;
   initialized: boolean;
-  /** Non-null when this thread is the vfork parent waiting for child. */
-  vforkParentWorker?: Worker;
 }
 
 /** Global process registry for child exit notification. */
