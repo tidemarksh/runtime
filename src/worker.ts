@@ -232,6 +232,7 @@ export async function createProcess(
     env?: string[];
     kernelState?: KernelRuntimeState;
     sabPageCache?: SharedArrayBuffer;
+    preloadFiles?: Array<{ path: string; data: Uint8Array }>;
     onExit?: (code: number) => void;
     onStdout?: (data: Uint8Array) => void;
   } = {},
@@ -277,6 +278,32 @@ export async function createProcess(
   // Set wall clock base time
   const now = Date.now();
   exports.set_base_time(BigInt(Math.floor(now / 1000)), BigInt((now % 1000) * 1_000_000));
+
+  // Preload files from kernel Worker's MemFS into per-process MemFS.
+  // This replicates files written via Runtime.writeFile so the guest can access them.
+  if (options.preloadFiles) {
+    const encoder = new TextEncoder();
+    const kernelMem = new Uint8Array(exports.memory.buffer);
+    const hb = (exports as any).__heap_base?.value as number | undefined;
+    const scratch = (hb ?? 0x3100000) + 4096;
+    for (const file of options.preloadFiles) {
+      const parts = file.path.split("/").filter(Boolean);
+      const filename = parts.pop()!;
+      let parentIno = 1;
+      for (const dir of parts) {
+        const dirBytes = encoder.encode(dir);
+        kernelMem.set(dirBytes, scratch);
+        parentIno = exports.memfs_ensure_dir(parentIno, scratch, dirBytes.length, 0o755);
+        if (parentIno === 0) break;
+      }
+      if (parentIno === 0) continue;
+      const nameBytes = encoder.encode(filename);
+      kernelMem.set(nameBytes, scratch);
+      const dataOff = scratch + nameBytes.length + 64;
+      kernelMem.set(file.data, dataOff);
+      exports.memfs_create_file_with_data(parentIno, scratch, nameBytes.length, dataOff, file.data.length);
+    }
+  }
 
   // Copy ELF to WASM memory
   const elfOffset = ramSize - 256 * 1024; // load ELF at top - 256KB

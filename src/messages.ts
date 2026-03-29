@@ -63,6 +63,7 @@ export type KernelWorkerInbound =
     }
   | { type: "write-file"; path: string; data: Uint8Array }
   | { type: "read-file"; path: string }
+  | { type: "list-files" }
   | { type: "child-exit"; pid: number; waitStatus: number };
 
 export type KernelWorkerOutbound =
@@ -75,5 +76,6 @@ export type KernelWorkerOutbound =
     }
   | { type: "file-written" }
   | { type: "file-read"; data: Uint8Array }
+  | { type: "file-list"; files: Array<{ path: string; data: Uint8Array }> }
   | { type: "error"; message: string };
 

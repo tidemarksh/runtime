@@ -22,6 +22,8 @@ import { publishInode, bumpDirEpoch } from "./sab-page-cache.js";
 let exports: KernelExports;
 /** §6.3: SAB page cache — kernel publishes file data and inode metadata here. */
 let sabPageCache: SharedArrayBuffer;
+/** Track files written via writeFile for replication to per-process instances. */
+const writtenFiles: Array<{ path: string; data: Uint8Array }> = [];
 
 /**
  * Initialize the kernel WASM instance with PRIVATE memory.
@@ -112,6 +114,9 @@ function writeFile(path: string, data: Uint8Array): void {
     name: nameBytes,
     nextSibling: 0,
   }, data);
+
+  // Track for replication to per-process instances
+  writtenFiles.push({ path, data: new Uint8Array(data) });
 }
 
 /**
@@ -216,6 +221,11 @@ self.onmessage = async (event: MessageEvent<KernelWorkerInbound>) => {
     case "read-file": {
       const data = readFile(msg.path);
       postResponse({ type: "file-read", data });
+      break;
+    }
+
+    case "list-files": {
+      postResponse({ type: "file-list", files: writtenFiles });
       break;
     }
 

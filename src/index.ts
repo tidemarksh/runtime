@@ -78,6 +78,11 @@ export class Runtime {
     argv: string[] = [],
     env: string[] = [],
   ): Promise<Process> {
+    // Get files written to kernel Worker's MemFS for replication
+    const fileList = await this.sendKernelMessage<
+      Extract<KernelWorkerOutbound, { type: "file-list" }>
+    >({ type: "list-files" });
+
     const pid = this.nextPid++;
     const handle = await createProcess(this.wasmBytes, elfData, {
       ramSize: this.ramSize,
@@ -85,6 +90,7 @@ export class Runtime {
       env,
       kernelState: this.kernelState!,
       sabPageCache: this.sabPageCache!,
+      preloadFiles: fileList.files,
       onExit: (code) => {
         this.processes.delete(pid);
         proc.exitCode = code;
