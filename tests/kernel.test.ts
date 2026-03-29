@@ -16,14 +16,14 @@ const KERNEL_WASM_PATH = resolve(
   "../../kernel/target/wasm32-unknown-unknown/release/tidemark_kernel.wasm",
 );
 
-async function loadKernel() {
+async function loadKernel(opts?: { memory?: WebAssembly.Memory }) {
   const wasmBytes = readFileSync(KERNEL_WASM_PATH);
   const module = await WebAssembly.compile(wasmBytes);
-  const instance = await WebAssembly.instantiate(module, {});
+  const imports = opts?.memory ? { env: { memory: opts.memory } } : {};
+  const instance = await WebAssembly.instantiate(module, imports);
   const exports = instance.exports as unknown as KernelExports;
-  // Use the WASM module's own exported memory
-  const memory = exports.memory;
-  return { exports, memory };
+  const memory = opts?.memory ?? exports.memory;
+  return { exports, memory, module };
 }
 
 function findAddElf(): Uint8Array | null {
@@ -109,14 +109,13 @@ test("go version (GOMAXPROCS=1)", async () => {
 
   const elfData = new Uint8Array(readFileSync(goPath));
 
-  const { exports, memory } = await loadKernel();
-
-  // Go binary's LOAD segments extend to ~44MB. Need at least 768 pages (48 MB).
-  const targetPages = 768;
-  const currentPages = memory.buffer.byteLength / 65536;
-  if (currentPages < targetPages) {
-    memory.grow(targetPages - currentPages);
-  }
+  // Go binary's LOAD segments extend to ~44MB. Need shared memory with 768 pages (48 MB).
+  const memory = new WebAssembly.Memory({
+    initial: 768,
+    maximum: 32768,
+    shared: true,
+  });
+  const { exports } = await loadKernel({ memory });
 
   exports.kernel_init(0x200000);
 
