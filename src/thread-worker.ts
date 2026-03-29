@@ -90,10 +90,14 @@ function step(budget: number): void {
     // Continue stepping — FS completed synchronously
     step(500_000);
   } else if (s === statusCodes.PIPE_WAIT) {
-    // TODO: Atomics.wait on pipe SAB notify word
+    // §6.3: Atomics.wait on pipe SAB notify word.
+    // Not yet wired — pipe SAB addresses not exported from kernel.
+    // Post to parent for cooperative retry.
     postStatus(s);
   } else if (s === statusCodes.EPOLL_WAIT) {
-    // TODO: Atomics.wait on epoll SAB wake counter
+    // §6.3: Atomics.wait on epoll SAB wake counter.
+    // Not yet wired — epoll wake counter address not exported.
+    // Post to parent for cooperative retry.
     postStatus(s);
   } else {
     // SLEEP, CLONE_SPAWN, EXECVE_SPAWN, VFORK_WAIT, WAIT4:
