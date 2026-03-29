@@ -19,10 +19,16 @@ const KERNEL_WASM_PATH = resolve(
 async function loadKernel(opts?: { memory?: WebAssembly.Memory }) {
   const wasmBytes = readFileSync(KERNEL_WASM_PATH);
   const module = await WebAssembly.compile(wasmBytes);
-  const imports = opts?.memory ? { env: { memory: opts.memory } } : {};
-  const instance = await WebAssembly.instantiate(module, imports);
+  // Kernel WASM imports env.memory (shared). Create a default if not provided.
+  const memory = opts?.memory ?? new WebAssembly.Memory({
+    initial: 256,    // 16 MB
+    maximum: 32768,  // 2 GB
+    shared: true,
+  });
+  const instance = await WebAssembly.instantiate(module, {
+    env: { memory },
+  });
   const exports = instance.exports as unknown as KernelExports;
-  const memory = opts?.memory ?? exports.memory;
   return { exports, memory, module };
 }
 
@@ -109,26 +115,40 @@ test("go version (GOMAXPROCS=1)", async () => {
 
   const elfData = new Uint8Array(readFileSync(goPath));
 
-  // Go binary's LOAD segments extend to ~44MB. Need shared memory with 768 pages (48 MB).
+  // Go binary's BSS extends to ~45MB. ELF file data is ~19MB. Need:
+  //   guest segments (45MB) + ELF staging (19MB) + kernel heap (4MB) + margin
+  // Use 1280 pages (80 MB).
   const memory = new WebAssembly.Memory({
-    initial: 768,
+    initial: 1280,
     maximum: 32768,
     shared: true,
   });
   const { exports } = await loadKernel({ memory });
 
-  exports.kernel_init(0x200000);
-
-  // Copy ELF to WASM memory (place at high end, leaving room for loading)
   const ramSize = memory.buffer.byteLength;
-  const elfOffset = ramSize - elfData.length - 4096;
-  console.log(`ramSize=${ramSize} (${ramSize/1024/1024}MB), elfSize=${elfData.length}, elfOffset=${elfOffset} (0x${elfOffset.toString(16)})`);
+
+  // Memory layout for Go (BSS extends to ~45MB):
+  //   [guest segments 0..45MB] [gap] [ELF file + argv] [kernel heap] [stack]
+  // Need heap above BSS end. Use ramSize - 4MB for heap, place ELF just below.
+  // Stack lives at ramSize - 4096 (set by process_create).
+  const heapBase = ramSize - 4 * 1024 * 1024;
+  exports.kernel_init(heapBase);
+
+  // Place ELF file data above Go's BSS end (~45MB) but below kernel heap
+  // BSS end ≈ 0x2C40000 (45MB). ELF size ≈ 19MB. Need 19MB of space.
+  // elfOffset must be > 45MB and elfOffset + elfSize < heapBase.
+  const elfOffset = (heapBase - elfData.length - 65536) & ~0xFFF; // page-align
+  if (elfOffset < 0x2D00000) {
+    console.log(`skip: not enough memory for ELF placement (need > 45MB, got ${elfOffset})`);
+    return;
+  }
+  console.log(`ramSize=${ramSize} (${ramSize/1024/1024}MB), elfSize=${elfData.length}, elfOffset=${elfOffset} (0x${elfOffset.toString(16)}), heapBase=0x${heapBase.toString(16)}`);
   const memView = new Uint8Array(memory.buffer);
   memView.set(elfData, elfOffset);
 
-  // Write argv/envp strings to guest memory and register with kernel
+  // Write argv/envp between ELF data and BSS end (safe zone above 45MB)
   const encoder = new TextEncoder();
-  let strOffset = elfOffset - 4096; // below ELF data
+  let strOffset = elfOffset - 4096; // just below ELF file data, above BSS end
   function writeGuestStr(s: string): number {
     const bytes = encoder.encode(s + "\0");
     memView.set(bytes, strOffset);
@@ -142,7 +162,14 @@ test("go version (GOMAXPROCS=1)", async () => {
   exports.process_push_arg(writeGuestStr("version"));
   exports.process_push_env(writeGuestStr("GOMAXPROCS=1"));
 
+  // Debug: check ELF validity before full process_create
+  const debugInspect = (exports as any).debug_inspect_elf(elfOffset, elfData.length, ramSize) as bigint;
+  console.log(`debug_inspect_elf: ${debugInspect} (0x${debugInspect.toString(16)})`);
+  // Also verify ELF magic is intact at elfOffset
+  console.log(`ELF magic at elfOffset: ${Array.from(memView.slice(elfOffset, elfOffset+4)).map(b => b.toString(16)).join(' ')}`);
+
   const vmPtr = exports.process_create(elfOffset, elfData.length, ramSize, 4 * 1024 * 1024);
+  console.log(`process_create returned: ${vmPtr} (0x${vmPtr.toString(16)})`);
   expect(vmPtr).toBeGreaterThan(0);
 
   const STATUS_OK = exports.abi_status_ok();

@@ -244,8 +244,11 @@ export async function createProcess(
   });
   const exports = mainInstance.exports as unknown as KernelExports;
 
-  // Initialize kernel
-  const heapBase = 0x200000; // 2 MB — after ELF load area
+  // Initialize kernel — place heap above the ELF load area.
+  // Guest LOAD segments may extend far into memory (Go: ~44MB for 19MB binary).
+  // Kernel heap must not overlap with guest segments or stack.
+  // Place it at ramSize - 4MB, leaving room for stack at the top.
+  const heapBase = ramSize - 4 * 1024 * 1024;
   exports.kernel_init(heapBase);
 
   // Set wall clock base time
