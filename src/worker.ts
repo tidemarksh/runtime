@@ -17,7 +17,11 @@ import {
   type KernelExports,
   type KernelRuntimeState,
 } from "./abi.js";
-import type { WorkerMessage } from "./messages.js";
+import { RING_BUFFER_SIZE } from "./ring-buffer.js";
+import type {
+  ThreadWorkerInbound,
+  ThreadWorkerOutbound,
+} from "./messages.js";
 
 // ---------------------------------------------------------------------------
 // WASM Module cache
@@ -176,6 +180,7 @@ export interface ProcessHandle {
   wasmModule: WebAssembly.Module;
   kernel: KernelExports;
   kernelState: KernelRuntimeState;
+  fsRingBuffer: SharedArrayBuffer;
   workers: Set<Worker>;
   readyWorkers: Worker[];
   runningWorker: Worker | null;
@@ -250,6 +255,8 @@ export async function createProcess(
   ensureEvictionTimer();
   const worker = acquireWorker();
 
+  const fsRingBuffer = new SharedArrayBuffer(RING_BUFFER_SIZE);
+
   const handle: ProcessHandle = {
     pid: 1,
     vmPtr,
@@ -258,6 +265,7 @@ export async function createProcess(
     wasmModule,
     kernel: exports,
     kernelState: readKernelRuntimeState(exports),
+    fsRingBuffer,
     workers: new Set(),
     readyWorkers: [],
     runningWorker: null,
@@ -284,16 +292,17 @@ function attachThreadWorker(
     vmPtr,
     initialized: false,
   });
-  worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
+  worker.onmessage = (event: MessageEvent<ThreadWorkerOutbound>) => {
     handleWorkerMessage(handle, worker, event.data);
   };
 
-  const initMsg: WorkerMessage = {
+  const initMsg: ThreadWorkerInbound = {
     type: "init",
     wasmModule: handle.wasmModule,
     memory: handle.memory,
     vmPtr,
     kernelState: handle.kernelState,
+    fsRingBuffer: handle.fsRingBuffer,
   };
   worker.postMessage(initMsg);
 }
@@ -314,13 +323,13 @@ function pumpProcess(handle: ProcessHandle): void {
     type: "step",
     budget: 500_000,
     kernelState: handle.kernelState,
-  } satisfies WorkerMessage);
+  } satisfies ThreadWorkerInbound);
 }
 
 function handleWorkerMessage(
   handle: ProcessHandle,
   worker: Worker,
-  msg: WorkerMessage,
+  msg: ThreadWorkerOutbound,
 ): void {
   if (msg.type !== "status") return;
 
@@ -355,10 +364,13 @@ function handleWorkerMessage(
       pumpProcess(handle);
     }
   } else if (status === STATUS_SLEEP) {
-    // nanosleep — setTimeout then resume
+    // nanosleep — read actual duration from kernel, then setTimeout
+    const sec = Number(handle.kernel.thread_sleep_seconds(thread.vmPtr));
+    const nsec = Number(handle.kernel.thread_sleep_nanoseconds(thread.vmPtr));
+    const ms = Math.max(1, sec * 1000 + Math.floor(nsec / 1_000_000));
     setTimeout(() => {
-      enqueueWorker(handle, worker);
-    }, 1); // minimum sleep
+      worker.postMessage({ type: "wake-sleep" } satisfies ThreadWorkerInbound);
+    }, ms);
   } else if (status === STATUS_FS) {
     handle.kernel.thread_process_fs(thread.vmPtr);
     handle.kernel.thread_resume_fs(thread.vmPtr);

@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../src/abi.js";
-import type { WorkerMessage } from "../src/messages.js";
+import type {
+  ThreadWorkerInbound,
+  ThreadWorkerOutbound,
+} from "../src/messages.js";
 import {
   clearModuleCache,
   createProcess,
@@ -8,8 +11,10 @@ import {
 } from "../src/worker.js";
 
 class FakeWorker {
-  onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null = null;
-  readonly postedMessages: WorkerMessage[] = [];
+  onmessage:
+    | ((event: MessageEvent<ThreadWorkerOutbound>) => void)
+    | null = null;
+  readonly postedMessages: ThreadWorkerInbound[] = [];
   terminated = false;
 
   constructor(
@@ -17,7 +22,7 @@ class FakeWorker {
     readonly _options: WorkerOptions,
   ) {}
 
-  postMessage(message: WorkerMessage): void {
+  postMessage(message: ThreadWorkerInbound): void {
     this.postedMessages.push(message);
   }
 
@@ -25,8 +30,8 @@ class FakeWorker {
     this.terminated = true;
   }
 
-  emit(message: WorkerMessage): void {
-    this.onmessage?.({ data: message } as MessageEvent<WorkerMessage>);
+  emit(message: ThreadWorkerOutbound): void {
+    this.onmessage?.({ data: message } as MessageEvent<ThreadWorkerOutbound>);
   }
 
   clearPostedMessages(): void {
@@ -74,6 +79,13 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     abi_status_clone_spawn: () => 10,
     abi_status_sleep: () => 11,
     abi_status_jit_ready: () => 12,
+    abi_status_wait4: () => 31,
+    abi_status_connect: () => 28,
+    abi_status_socket_send: () => 29,
+    abi_status_socket_recv: () => 30,
+    abi_spawn_kind_none: () => 0,
+    abi_spawn_kind_execve: () => 1,
+    abi_spawn_kind_fork: () => 2,
     abi_page_size: () => 4096,
     abi_max_fds: () => 256,
     abi_max_threads: () => 64,
@@ -101,6 +113,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     abi_enosys: () => 38,
     abi_eagain: () => 11,
     abi_epipe: () => 32,
+    set_base_time: () => {},
     kernel_init: () => {},
     kernel_heap_base: () => runtimeState.heapBase,
     kernel_heap_ptr: () => runtimeState.heapPtr,
@@ -119,40 +132,16 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     kernel_process_runtime_state_ptr: () => runtimeState.processRuntimeStatePtr,
     kernel_time_state_ptr: () => runtimeState.timeStatePtr,
     kernel_attach_runtime_state: (
-      heapBase,
-      heapPtr,
-      ofdTablePtr,
-      memfsPtr,
-      memStatePtr,
-      epollTablePtr,
-      socketTablePtr,
-      socketUsed,
-      pipeBase,
-      pipeUsed,
-      netBufBase,
-      netBufUsed,
-      sigSlotsPtr,
-      processPendingPtr,
-      processRuntimeStatePtr,
-      timeStatePtr,
+      heapBase, heapPtr, ofdTablePtr, memfsPtr, memStatePtr,
+      epollTablePtr, socketTablePtr, socketUsed, pipeBase, pipeUsed,
+      netBufBase, netBufUsed, sigSlotsPtr, processPendingPtr,
+      processRuntimeStatePtr, timeStatePtr,
     ) => {
       runtimeState = {
-        heapBase,
-        heapPtr,
-        ofdTablePtr,
-        memfsPtr,
-        memStatePtr,
-        epollTablePtr,
-        socketTablePtr,
-        socketUsed,
-        pipeBase,
-        pipeUsed,
-        netBufBase,
-        netBufUsed,
-        sigSlotsPtr,
-        processPendingPtr,
-        processRuntimeStatePtr,
-        timeStatePtr,
+        heapBase, heapPtr, ofdTablePtr, memfsPtr, memStatePtr,
+        epollTablePtr, socketTablePtr, socketUsed, pipeBase, pipeUsed,
+        netBufBase, netBufUsed, sigSlotsPtr, processPendingPtr,
+        processRuntimeStatePtr, timeStatePtr,
       };
     },
     process_push_arg: () => {},
@@ -165,14 +154,34 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_pc: () => 0n,
     thread_a0: () => 0n,
     thread_process_fs: () => {
-      runtimeState = {
-        ...runtimeState,
-        heapPtr: runtimeState.heapPtr + 0x10,
-      };
+      runtimeState = { ...runtimeState, heapPtr: runtimeState.heapPtr + 0x10 };
     },
     thread_resume_fs: () => 0,
+    thread_futex_wait_addr: () => 0n,
+    thread_futex_wait_timeout: () => 0n,
+    thread_resume_futex_wait: () => {},
+    thread_resume_futex_wait_result: () => {},
+    thread_sleep_seconds: () => 0n,
+    thread_sleep_nanoseconds: () => 0n,
+    thread_record_blocked_addr: () => 0,
+    thread_resume_wait4: () => 0n,
+    thread_vfork_child_pid: () => 0,
+    thread_spawn_kind: () => 0,
+    thread_spawn_child_pid: () => 0,
+    thread_spawn_path: () => 0n,
+    thread_spawn_argv: () => 0n,
+    thread_spawn_envp: () => 0n,
+    thread_clear_spawn_handoff: () => {},
+    thread_resume_vfork_parent: () => {},
     thread_spawn_from_clone: () => nextVmPtr++,
     thread_process_thread_count: () => 1,
+    memfs_resolve_path: () => 0,
+    memfs_create_file: () => 0,
+    memfs_write_file_at: () => 0n,
+    memfs_read_file_to: () => 0n,
+    memfs_file_size: () => 0n,
+    memfs_ensure_dir: () => 0,
+    memfs_create_file_with_data: () => 0,
   };
 }
 
@@ -215,6 +224,7 @@ test("createProcess spawns a child worker on STATUS_CLONE_SPAWN", async () => {
     status: 10,
     exitCode: 0,
     pc: 0n,
+    vmPtr: 0x1234,
     kernelState: makeKernelState(),
   });
 
@@ -226,6 +236,7 @@ test("createProcess spawns a child worker on STATUS_CLONE_SPAWN", async () => {
       memory: handle.memory,
       vmPtr: 0x2000,
       kernelState: makeKernelState(),
+      fsRingBuffer: expect.any(SharedArrayBuffer),
     },
   ]);
   expect(worker.postedMessages).toEqual([
@@ -243,6 +254,7 @@ test("createProcess processes STATUS_FS and resumes worker with refreshed kernel
     status: 4,
     exitCode: 0,
     pc: 0n,
+    vmPtr: 0x1234,
     kernelState: makeKernelState(),
   });
 
@@ -272,6 +284,7 @@ test("createProcess resumes current worker on STATUS_EXECVE_SPAWN", async () => 
     status: 9,
     exitCode: 0,
     pc: 0n,
+    vmPtr: 0x1234,
     kernelState: makeKernelState(),
   });
 
