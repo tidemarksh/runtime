@@ -259,12 +259,17 @@ export async function createProcess(
   });
   const exports = mainInstance.exports as unknown as KernelExports;
 
-  // Initialize kernel — place heap above the ELF load area.
-  // Guest LOAD segments may extend far into memory (Go: ~44MB for 19MB binary).
-  // Kernel heap must not overlap with guest segments or stack.
-  // Place it at ramSize - 4MB, leaving room for stack at the top.
-  const heapBase = ramSize - 4 * 1024 * 1024;
-  exports.kernel_init(heapBase);
+  if (options.kernelState) {
+    // §6.1: Attach kernel state from kernel Worker instead of initializing locally.
+    // This shares MemFS, process table, and signal state from the kernel Worker.
+    const wasmHeapBase = (exports as any).__heap_base?.value ?? (ramSize - 4 * 1024 * 1024);
+    exports.kernel_init(wasmHeapBase);
+    attachKernelRuntimeState(exports, options.kernelState);
+  } else {
+    // Standalone mode (tests, no kernel Worker).
+    const heapBase = ramSize - 4 * 1024 * 1024;
+    exports.kernel_init(heapBase);
+  }
 
   // Set wall clock base time
   const now = Date.now();
