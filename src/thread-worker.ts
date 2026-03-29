@@ -81,11 +81,14 @@ function step(budget: number): void {
   } else if (s === statusCodes.FUTEX_WAIT) {
     handleFutexWait();
   } else if (s === statusCodes.FS) {
-    // TODO: ring buffer submit → Atomics.wait → resume
-    // For now, post to parent for synchronous processing
-    // fsRingBuffer will be used here once kernel-worker.ts is ready
+    // §6.5: FS requests are processed by the thread-worker's own kernel
+    // instance for now. Full ring buffer delegation to kernel-worker
+    // will be implemented when the dedicated kernel Worker is wired up.
     void fsRingBuffer;
-    postStatus(s);
+    exports.thread_process_fs(vmPtr);
+    exports.thread_resume_fs(vmPtr);
+    // Continue stepping — FS completed synchronously
+    step(500_000);
   } else if (s === statusCodes.PIPE_WAIT) {
     // TODO: Atomics.wait on pipe SAB notify word
     postStatus(s);
