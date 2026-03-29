@@ -19,11 +19,12 @@ const KERNEL_WASM_PATH = resolve(
 async function loadKernel(opts?: { memory?: WebAssembly.Memory }) {
   const wasmBytes = readFileSync(KERNEL_WASM_PATH);
   const module = await WebAssembly.compile(wasmBytes);
-  // Kernel WASM imports env.memory (shared). Create a default if not provided.
+  // Kernel WASM imports env.memory. Kernel data at 48MB (--global-base),
+  // so memory must be at least 48MB + kernel data (~4KB) = ~49MB.
+  // Use 64MB (1024 pages) as a safe default.
   const memory = opts?.memory ?? new WebAssembly.Memory({
-    initial: 256,    // 16 MB
+    initial: 1024,   // 64 MB
     maximum: 32768,  // 2 GB
-    shared: true,
   });
   const instance = await WebAssembly.instantiate(module, {
     env: { memory },
@@ -56,8 +57,9 @@ test("kernel WASM loads and exports constants", async () => {
   expect(status.FAULT).toBe(3);
   expect(exports.abi_page_size()).toBe(4096);
 
-  // kernel_init should not crash
-  exports.kernel_init(0x200000);
+  // kernel_init should not crash. heapBase must be >= __heap_base (kernel data end).
+  const heapBase0 = (exports as any).__heap_base?.value ?? 0x200000;
+  exports.kernel_init(heapBase0);
 });
 
 test("kernel_init + process_create + thread_step runs to exit", async () => {
@@ -69,14 +71,9 @@ test("kernel_init + process_create + thread_step runs to exit", async () => {
     return;
   }
 
-  // Grow memory to 16 MB before init
-  const targetPages = 256; // 16 MB
-  const currentPages = memory.buffer.byteLength / 65536;
-  if (currentPages < targetPages) {
-    memory.grow(targetPages - currentPages);
-  }
-
-  exports.kernel_init(0x200000);
+  // heapBase must be >= __heap_base (kernel data segments end at ~48MB)
+  const heapBase1 = (exports as any).__heap_base?.value ?? 0x200000;
+  exports.kernel_init(heapBase1);
 
   // Copy ELF to WASM memory (re-read buffer after potential grow)
   const ramSize = memory.buffer.byteLength;
@@ -117,21 +114,20 @@ test("go version (GOMAXPROCS=1)", async () => {
 
   // Go binary's BSS extends to ~45MB. ELF file data is ~19MB. Need:
   //   guest segments (45MB) + ELF staging (19MB) + kernel heap (4MB) + margin
-  // Use 1280 pages (80 MB).
+  // Use 1280 pages (80 MB). Non-shared for stable Rust build.
   const memory = new WebAssembly.Memory({
     initial: 1280,
     maximum: 32768,
-    shared: true,
   });
   const { exports } = await loadKernel({ memory });
 
   const ramSize = memory.buffer.byteLength;
 
-  // Memory layout for Go (BSS extends to ~45MB):
-  //   [guest segments 0..45MB] [gap] [ELF file + argv] [kernel heap] [stack]
-  // Need heap above BSS end. Use ramSize - 4MB for heap, place ELF just below.
-  // Stack lives at ramSize - 4096 (set by process_create).
-  const heapBase = ramSize - 4 * 1024 * 1024;
+  // heapBase must be >= __heap_base (kernel data at ~48MB).
+  // Kernel allocator starts from heapBase and grows upward.
+  const wasmHeapBase = (exports as any).__heap_base?.value ?? 0x3100000;
+  const heapBase = wasmHeapBase + 4096;
+  console.log(`__heap_base=${wasmHeapBase} (0x${wasmHeapBase.toString(16)}), heapBase=${heapBase} (0x${heapBase.toString(16)})`);
   exports.kernel_init(heapBase);
 
   // Place ELF file data above Go's BSS end (~45MB) but below kernel heap
@@ -162,11 +158,12 @@ test("go version (GOMAXPROCS=1)", async () => {
   exports.process_push_arg(writeGuestStr("version"));
   exports.process_push_env(writeGuestStr("GOMAXPROCS=1"));
 
-  // Debug: check ELF validity before full process_create
+  // Debug: check each phase of process_create independently
   const debugInspect = (exports as any).debug_inspect_elf(elfOffset, elfData.length, ramSize) as bigint;
-  console.log(`debug_inspect_elf: ${debugInspect} (0x${debugInspect.toString(16)})`);
-  // Also verify ELF magic is intact at elfOffset
-  console.log(`ELF magic at elfOffset: ${Array.from(memView.slice(elfOffset, elfOffset+4)).map(b => b.toString(16)).join(' ')}`);
+  console.log(`inspect_elf: brk=${debugInspect} (0x${debugInspect.toString(16)})`);
+
+  const debugLoad = (exports as any).debug_load_elf(elfOffset, elfData.length, ramSize) as bigint;
+  console.log(`load_elf: brk=${debugLoad} (0x${debugLoad.toString(16)})`);
 
   const vmPtr = exports.process_create(elfOffset, elfData.length, ramSize, 4 * 1024 * 1024);
   console.log(`process_create returned: ${vmPtr} (0x${vmPtr.toString(16)})`);
