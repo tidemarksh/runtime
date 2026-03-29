@@ -126,12 +126,16 @@ function acquireWorker(): Worker {
 
 /**
  * Return a worker to the pool and mark it idle.
+ * Workers created beyond the pool limit (overflow) are terminated immediately.
  */
 function releaseWorker(worker: Worker): void {
   const entry = workerEntryMap.get(worker);
   if (entry) {
     entry.busy = false;
     entry.lastUsed = Date.now();
+  } else {
+    // Overflow worker (not in pool) — terminate to prevent leak.
+    worker.terminate();
   }
 }
 
