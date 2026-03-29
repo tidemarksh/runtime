@@ -546,7 +546,7 @@ async function handleVforkExecve(
   // Clear spawn handoff before creating child
   handle.kernel.thread_clear_spawn_handoff(parentThread.vmPtr);
 
-  // Create child process with new Memory
+  // Create child process with new Memory, sharing parent's SAB page cache
   const childRamSize = handle.memory.buffer.byteLength;
   const childHandle = await createProcess(
     new Uint8Array(0), // wasmBytes not needed — cached module reused
@@ -555,6 +555,7 @@ async function handleVforkExecve(
       ramSize: childRamSize,
       argv,
       env: envp,
+      sabPageCache: handle.sabPageCache,
       onExit: (code) => {
         // Child exit — notify parent's kernel for wait4
         processHandles.delete(childPid);
