@@ -21,14 +21,25 @@ import type { KernelWorkerInbound, KernelWorkerOutbound } from "./messages.js";
 let exports: KernelExports;
 
 /**
- * Initialize the kernel WASM instance with private memory.
+ * Initialize the kernel WASM instance with PRIVATE memory.
+ * §6.1: kernel Worker owns private WebAssembly.Memory — NOT shared with guest.
+ * This isolates kernel state (OFD, VMA, signal, pipe, memfs) from guest address space.
  */
 async function initKernel(wasmModule: WebAssembly.Module): Promise<KernelRuntimeState> {
-  const instance = await WebAssembly.instantiate(wasmModule, {});
+  // Private memory for kernel state — not shared with any guest process.
+  // 16MB initial is sufficient for MemFS + kernel objects.
+  const privateMemory = new WebAssembly.Memory({
+    initial: 256,    // 16 MB
+    maximum: 32768,  // 2 GB
+  });
+  const instance = await WebAssembly.instantiate(wasmModule, {
+    env: { memory: privateMemory },
+  });
   exports = instance.exports as unknown as KernelExports;
 
-  const heapBase = 0x200000; // 2 MB
-  exports.kernel_init(heapBase);
+  // Read __heap_base from kernel WASM globals (set by --global-base linker flag).
+  const wasmHeapBase = (exports as any).__heap_base?.value ?? 0x200000;
+  exports.kernel_init(wasmHeapBase);
 
   // Set wall clock base time to current time
   const now = Date.now();

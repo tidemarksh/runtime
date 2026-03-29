@@ -1,7 +1,9 @@
 /**
  * Runtime: VM lifecycle management and public API.
  *
- * §6.1: Launches a kernel Worker (dedicated) and manages process lifecycle.
+ * §6.1: Launches a dedicated kernel Worker with PRIVATE memory.
+ *        All kernel state operations (MemFS, process creation) go through the kernel Worker.
+ *        Guest processes get their own shared WebAssembly.Memory.
  * §4.2: FS API is Promise-based.
  *
  * Usage:
@@ -11,8 +13,9 @@
  *   const code = await proc.waitForExit();
  */
 
-import type { KernelExports } from "./abi.js";
 import { createProcess, destroyWorkerPool, precompileModule, type ProcessHandle } from "./worker.js";
+import type { KernelWorkerInbound, KernelWorkerOutbound } from "./messages.js";
+import type { KernelRuntimeState } from "./abi.js";
 
 export interface RuntimeOptions {
   wasmBytes: BufferSource;
@@ -25,9 +28,10 @@ export class Runtime {
   private processes: Map<number, ProcessHandle> = new Map();
   private nextPid = 1;
 
-  /** Host kernel instance for pre-spawn MemFS operations. */
-  private hostKernel: KernelExports | null = null;
-  private hostMemory: WebAssembly.Memory | null = null;
+  /** Dedicated kernel Worker (§6.1: owns private Memory for kernel state). */
+  private kernelWorker: Worker | null = null;
+  private kernelState: KernelRuntimeState | null = null;
+  private wasmModule: WebAssembly.Module | null = null;
 
   private constructor(options: RuntimeOptions) {
     this.wasmBytes = options.wasmBytes;
@@ -36,35 +40,29 @@ export class Runtime {
 
   static async create(options: RuntimeOptions): Promise<Runtime> {
     const runtime = new Runtime(options);
-    await runtime.initHostKernel();
+    await runtime.initKernelWorker();
     return runtime;
   }
 
   /**
-   * Initialize a host kernel WASM instance for pre-spawn MemFS operations.
-   * This runs in the main thread and is used for writeFile/readFile before
-   * any process is spawned. Once the kernel Worker is fully operational,
-   * these operations will be delegated there.
+   * §6.1: Launch a dedicated kernel Worker with private Memory.
+   * The kernel Worker hosts the only kernel WASM instance and owns all
+   * kernel state (MemFS, OFD, VMA, signal, pipe, epoll, socket).
    */
-  private async initHostKernel(): Promise<void> {
-    const module = await precompileModule(this.wasmBytes);
-    this.hostMemory = new WebAssembly.Memory({
-      initial: 256, // 16 MB
-      maximum: 32768,
-      shared: true,
-    });
-    const instance = await WebAssembly.instantiate(module, {
-      env: { memory: this.hostMemory },
-    });
-    this.hostKernel = instance.exports as unknown as KernelExports;
-    this.hostKernel.kernel_init(0x200000);
+  private async initKernelWorker(): Promise<void> {
+    this.wasmModule = await precompileModule(this.wasmBytes);
 
-    // Set wall clock base time
-    const now = Date.now();
-    this.hostKernel.set_base_time(
-      BigInt(Math.floor(now / 1000)),
-      BigInt((now % 1000) * 1_000_000),
-    );
+    const workerUrl = new URL("./kernel-worker.js", import.meta.url);
+    this.kernelWorker = new Worker(workerUrl, { type: "module" });
+
+    // Send init message and wait for ready
+    const kernelState = await this.sendKernelMessage<
+      Extract<KernelWorkerOutbound, { type: "ready" }>
+    >({
+      type: "init-kernel",
+      wasmModule: this.wasmModule,
+    });
+    this.kernelState = kernelState.kernelState;
   }
 
   async spawn(
@@ -77,6 +75,7 @@ export class Runtime {
       ramSize: this.ramSize,
       argv,
       env,
+      kernelState: this.kernelState!,
       onExit: (code) => {
         this.processes.delete(pid);
         proc.exitCode = code;
@@ -92,66 +91,30 @@ export class Runtime {
   }
 
   /**
-   * Write a file to the MemFS. Can be called before spawning processes
-   * to stage files (ELF binaries, source code, config).
+   * §6.1: Write a file to MemFS via the kernel Worker (private memory).
+   * The kernel Worker owns MemFS — main thread delegates via message.
    */
   async writeFile(path: string, data: Uint8Array): Promise<void> {
-    const k = this.hostKernel!;
-    const mem = new Uint8Array(k.memory.buffer);
-    const encoder = new TextEncoder();
-    const scratch = 0x300000; // scratch area above heap base
-
-    // Parse path into parent directories + filename
-    const parts = path.split("/").filter(Boolean);
-    const filename = parts.pop();
-    if (!filename) throw new Error(`Invalid path: ${path}`);
-
-    // Ensure parent directories
-    let parentIno = 1; // root
-    for (const dir of parts) {
-      const dirBytes = encoder.encode(dir);
-      mem.set(dirBytes, scratch);
-      parentIno = k.memfs_ensure_dir(parentIno, scratch, dirBytes.length, 0o755);
-      if (parentIno === 0) throw new Error(`Failed to mkdir: ${dir}`);
-    }
-
-    // Write file with data
-    const nameBytes = encoder.encode(filename);
-    mem.set(nameBytes, scratch);
-    const dataOffset = scratch + nameBytes.length + 64;
-    mem.set(data, dataOffset);
-
-    const ino = k.memfs_create_file_with_data(
-      parentIno,
-      scratch,
-      nameBytes.length,
-      dataOffset,
-      data.length,
-    );
-    if (ino === 0) throw new Error(`Failed to write file: ${path}`);
+    await this.sendKernelMessage<
+      Extract<KernelWorkerOutbound, { type: "file-written" }>
+    >({
+      type: "write-file",
+      path,
+      data,
+    });
   }
 
   /**
-   * Read a file from the MemFS.
+   * §6.1: Read a file from MemFS via the kernel Worker.
    */
   async readFile(path: string): Promise<Uint8Array> {
-    const k = this.hostKernel!;
-    const mem = new Uint8Array(k.memory.buffer);
-    const encoder = new TextEncoder();
-    const scratch = 0x300000;
-
-    const pathBytes = encoder.encode(path);
-    mem.set(pathBytes, scratch);
-
-    const ino = k.memfs_resolve_path(scratch, pathBytes.length);
-    if (ino === 0) throw new Error(`File not found: ${path}`);
-
-    const size = Number(k.memfs_file_size(ino));
-    const bufOffset = scratch + 1024;
-    const bytesRead = Number(k.memfs_read_file_to(ino, 0n, bufOffset, size));
-    if (bytesRead < 0) throw new Error(`Failed to read: ${path}`);
-
-    return new Uint8Array(mem.buffer.slice(bufOffset, bufOffset + bytesRead));
+    const response = await this.sendKernelMessage<
+      Extract<KernelWorkerOutbound, { type: "file-read" }>
+    >({
+      type: "read-file",
+      path,
+    });
+    return response.data;
   }
 
   kill(pid: number): void {
@@ -170,6 +133,33 @@ export class Runtime {
       this.kill(pid);
     }
     destroyWorkerPool();
+    this.kernelWorker?.terminate();
+    this.kernelWorker = null;
+  }
+
+  /**
+   * Send a message to the kernel Worker and wait for the response.
+   */
+  private sendKernelMessage<T extends KernelWorkerOutbound>(
+    msg: KernelWorkerInbound,
+  ): Promise<T> {
+    return new Promise((resolve, reject) => {
+      if (!this.kernelWorker) {
+        reject(new Error("kernel Worker not initialized"));
+        return;
+      }
+      const handler = (event: MessageEvent<KernelWorkerOutbound>) => {
+        this.kernelWorker!.removeEventListener("message", handler);
+        const response = event.data;
+        if (response.type === "error") {
+          reject(new Error((response as Extract<KernelWorkerOutbound, { type: "error" }>).message));
+        } else {
+          resolve(response as T);
+        }
+      };
+      this.kernelWorker.addEventListener("message", handler);
+      this.kernelWorker.postMessage(msg);
+    });
   }
 }
 

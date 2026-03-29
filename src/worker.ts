@@ -217,6 +217,7 @@ export async function createProcess(
     stackSize?: number;
     argv?: string[];
     env?: string[];
+    kernelState?: KernelRuntimeState;
     onExit?: (code: number) => void;
     onStdout?: (data: Uint8Array) => void;
   } = {},
