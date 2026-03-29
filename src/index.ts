@@ -32,6 +32,8 @@ export class Runtime {
   private kernelWorker: Worker | null = null;
   private kernelState: KernelRuntimeState | null = null;
   private wasmModule: WebAssembly.Module | null = null;
+  /** §6.3: SAB page cache shared between all Workers (file data, pipe buffers, FS ring). */
+  private sabPageCache: SharedArrayBuffer | null = null;
 
   private constructor(options: RuntimeOptions) {
     this.wasmBytes = options.wasmBytes;
@@ -52,6 +54,11 @@ export class Runtime {
   private async initKernelWorker(): Promise<void> {
     this.wasmModule = await precompileModule(this.wasmBytes);
 
+    // §6.3: Create SAB page cache (shared between all Workers).
+    // Initial size: 16MB for file data blocks + pipe buffers + FS ring buffers.
+    // Kernel Worker publishes inode/data here; thread-workers read directly.
+    this.sabPageCache = new SharedArrayBuffer(16 * 1024 * 1024);
+
     const workerUrl = new URL("./kernel-worker.js", import.meta.url);
     this.kernelWorker = new Worker(workerUrl, { type: "module" });
 
@@ -61,6 +68,7 @@ export class Runtime {
     >({
       type: "init-kernel",
       wasmModule: this.wasmModule,
+      sabPageCache: this.sabPageCache,
     });
     this.kernelState = kernelState.kernelState;
   }
@@ -76,6 +84,7 @@ export class Runtime {
       argv,
       env,
       kernelState: this.kernelState!,
+      sabPageCache: this.sabPageCache!,
       onExit: (code) => {
         this.processes.delete(pid);
         proc.exitCode = code;

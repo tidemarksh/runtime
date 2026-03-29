@@ -191,6 +191,8 @@ export interface ProcessHandle {
   kernel: KernelExports;
   kernelState: KernelRuntimeState;
   fsRingBuffer: SharedArrayBuffer;
+  /** §6.3: SAB page cache for direct reads (shared between all Workers). */
+  sabPageCache: SharedArrayBuffer;
   workers: Set<Worker>;
   readyWorkers: Worker[];
   runningWorker: Worker | null;
@@ -225,6 +227,7 @@ export async function createProcess(
     argv?: string[];
     env?: string[];
     kernelState?: KernelRuntimeState;
+    sabPageCache?: SharedArrayBuffer;
     onExit?: (code: number) => void;
     onStdout?: (data: Uint8Array) => void;
   } = {},
@@ -296,6 +299,7 @@ export async function createProcess(
   const worker = acquireWorker();
 
   const fsRingBuffer = new SharedArrayBuffer(RING_BUFFER_SIZE);
+  const sabPageCache = options.sabPageCache ?? new SharedArrayBuffer(16 * 1024 * 1024);
 
   const handle: ProcessHandle = {
     pid: 1,
@@ -306,6 +310,7 @@ export async function createProcess(
     kernel: exports,
     kernelState: readKernelRuntimeState(exports),
     fsRingBuffer,
+    sabPageCache,
     workers: new Set(),
     readyWorkers: [],
     runningWorker: null,
@@ -344,6 +349,7 @@ function attachThreadWorker(
     vmPtr,
     kernelState: handle.kernelState,
     fsRingBuffer: handle.fsRingBuffer,
+    sabPageCache: handle.sabPageCache,
   };
   worker.postMessage(initMsg);
 }
@@ -610,6 +616,7 @@ async function handlePlainFork(
     kernel: childKernel,
     kernelState: readKernelRuntimeState(childKernel),
     fsRingBuffer: childFsRingBuffer,
+    sabPageCache: handle.sabPageCache,
     workers: new Set(),
     readyWorkers: [],
     runningWorker: null,

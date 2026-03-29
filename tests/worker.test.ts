@@ -237,6 +237,7 @@ test("createProcess spawns a child worker on STATUS_CLONE_SPAWN", async () => {
       vmPtr: 0x2000,
       kernelState: makeKernelState(),
       fsRingBuffer: expect.any(SharedArrayBuffer),
+      sabPageCache: expect.any(SharedArrayBuffer),
     },
   ]);
   expect(worker.postedMessages).toEqual([

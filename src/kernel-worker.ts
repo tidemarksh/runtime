@@ -19,13 +19,16 @@ import { readKernelRuntimeState } from "./abi.js";
 import type { KernelWorkerInbound, KernelWorkerOutbound } from "./messages.js";
 
 let exports: KernelExports;
+/** §6.3: SAB page cache — kernel publishes file data and inode metadata here. */
+let sabPageCache: SharedArrayBuffer;
 
 /**
  * Initialize the kernel WASM instance with PRIVATE memory.
  * §6.1: kernel Worker owns private WebAssembly.Memory — NOT shared with guest.
  * This isolates kernel state (OFD, VMA, signal, pipe, memfs) from guest address space.
  */
-async function initKernel(wasmModule: WebAssembly.Module): Promise<KernelRuntimeState> {
+async function initKernel(wasmModule: WebAssembly.Module, pageCache: SharedArrayBuffer): Promise<KernelRuntimeState> {
+  sabPageCache = pageCache;
   // Private memory for kernel state — not shared with any guest process.
   // 16MB initial is sufficient for MemFS + kernel objects.
   const privateMemory = new WebAssembly.Memory({
@@ -57,6 +60,8 @@ async function initKernel(wasmModule: WebAssembly.Module): Promise<KernelRuntime
 function writeFile(path: string, data: Uint8Array): void {
   const encoder = new TextEncoder();
   const mem = new Uint8Array(exports.memory.buffer);
+  // TODO §6.3: After writing to MemFS, publish file data to sabPageCache
+  void sabPageCache;
 
   // Scratch area in kernel Worker's private WASM memory
   const scratchBase = exports.kernel_heap_ptr() + 0x10000;
@@ -167,7 +172,7 @@ self.onmessage = async (event: MessageEvent<KernelWorkerInbound>) => {
 
   switch (msg.type) {
     case "init-kernel": {
-      const kernelState = await initKernel(msg.wasmModule);
+      const kernelState = await initKernel(msg.wasmModule, msg.sabPageCache);
       postResponse({ type: "ready", kernelState });
       break;
     }

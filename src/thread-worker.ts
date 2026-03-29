@@ -22,6 +22,8 @@ let exports: KernelExports;
 let statusCodes: StatusCodes;
 let vmPtr: number;
 let fsRingBuffer: SharedArrayBuffer;
+/** §6.3: SAB page cache for direct file data reads (kernel bypass). */
+let sabPageCache: SharedArrayBuffer;
 
 /**
  * Initialize the thread worker with a pre-compiled WASM module
@@ -33,6 +35,7 @@ async function init(
   threadVmPtr: number,
   kernelState: KernelRuntimeState,
   ringBuffer: SharedArrayBuffer,
+  pageCache: SharedArrayBuffer,
 ): Promise<void> {
   const instance = await WebAssembly.instantiate(wasmModule, {
     env: { memory },
@@ -42,6 +45,7 @@ async function init(
   statusCodes = readStatusCodes(exports);
   vmPtr = threadVmPtr;
   fsRingBuffer = ringBuffer;
+  sabPageCache = pageCache;
 }
 
 /**
@@ -84,7 +88,7 @@ function step(budget: number): void {
     // §6.5: FS requests are processed by the thread-worker's own kernel
     // instance for now. Full ring buffer delegation to kernel-worker
     // will be implemented when the dedicated kernel Worker is wired up.
-    void fsRingBuffer;
+    void fsRingBuffer; void sabPageCache;
     exports.thread_process_fs(vmPtr);
     exports.thread_resume_fs(vmPtr);
     // Continue stepping — FS completed synchronously
@@ -157,6 +161,7 @@ self.onmessage = async (event: MessageEvent<ThreadWorkerInbound>) => {
         msg.vmPtr,
         msg.kernelState,
         msg.fsRingBuffer,
+        msg.sabPageCache,
       );
       postStatus(0); // STATUS_OK — ready
       break;

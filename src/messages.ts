@@ -22,6 +22,8 @@ export type ThreadWorkerInbound =
       vmPtr: number;
       kernelState: KernelRuntimeState;
       fsRingBuffer: SharedArrayBuffer;
+      /** §6.3: SAB page cache for direct file data reads (kernel bypass). */
+      sabPageCache: SharedArrayBuffer;
     }
   | { type: "step"; budget: number; kernelState: KernelRuntimeState }
   | { type: "wake-sleep" };
@@ -49,6 +51,8 @@ export type KernelWorkerInbound =
   | {
       type: "init-kernel";
       wasmModule: WebAssembly.Module;
+      /** §6.3: SAB page cache shared between all Workers. */
+      sabPageCache: SharedArrayBuffer;
     }
   | {
       type: "create-process";
