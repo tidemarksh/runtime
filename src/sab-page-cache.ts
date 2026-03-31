@@ -26,7 +26,7 @@
  *     Append-only file data blocks + name strings.
  */
 
-export const MAX_INODES = 4096;
+export const MAX_INODES = 16384;
 export const HEADER_SIZE = 64;
 export const INODE_ENTRY_SIZE = 32;
 export const INODE_TABLE_SIZE = MAX_INODES * INODE_ENTRY_SIZE;
@@ -184,6 +184,10 @@ export function readFileData(
 export function bumpDirEpoch(sab: SharedArrayBuffer): void {
   const u32 = new Uint32Array(sab);
   Atomics.add(u32, OFF_DIR_EPOCH >>> 2, 1);
+}
+
+export function resetPageCache(sab: SharedArrayBuffer): void {
+  new Uint8Array(sab).fill(0);
 }
 
 /**

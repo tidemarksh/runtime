@@ -1,13 +1,5 @@
 /**
- * Thread worker: runs a single RISC-V thread.
- *
- * Instantiates the kernel WASM module with the shared Memory,
- * then runs the exec loop. Returns STATUS codes to the parent
- * via postMessage for blocking syscalls.
- *
- * §6.4: Blocking statuses (FUTEX_WAIT, PIPE_WAIT, etc.) are handled
- * locally via Atomics.wait. Only lifecycle events (CLONE_SPAWN,
- * EXECVE_SPAWN) and SLEEP are posted to the parent.
+ * Thread-worker: executes a single guest thread on a shared process memory.
  */
 
 import type { KernelExports, KernelRuntimeState, StatusCodes } from "./abi.js";
@@ -17,161 +9,253 @@ import {
   readStatusCodes,
 } from "./abi.js";
 import type { ThreadWorkerInbound, ThreadWorkerOutbound } from "./messages.js";
+import {
+  readPublishedKernelRuntimeState,
+  type RuntimeStateBridge,
+  waitForRuntimeBridgeWake,
+} from "./runtime-state-bridge.js";
+import { detectWasmFeatures, type WasmFeatureSupport } from "./wasm-features.js";
+import { createKernelEnv } from "./wasm-env.js";
+import { bindWorkerMessageHandler, workerPostMessage } from "./worker-scope.js";
 
 let exports: KernelExports;
 let statusCodes: StatusCodes;
-let vmPtr: number;
-let fsRingBuffer: SharedArrayBuffer;
-/** §6.3: SAB page cache for direct file data reads (kernel bypass). */
-let sabPageCache: SharedArrayBuffer;
+let vmPtr = 0;
+let guestBase = 0;
+let wasmFeatures: WasmFeatureSupport;
+let runtimeBridge: RuntimeStateBridge | null = null;
+const THREAD_STEP_BUDGET = 20_000;
 
-/**
- * Initialize the thread worker with a pre-compiled WASM module
- * and shared memory.
- */
 async function init(
   wasmModule: WebAssembly.Module,
   memory: WebAssembly.Memory,
   threadVmPtr: number,
+  threadGuestBase: number,
   kernelState: KernelRuntimeState,
-  ringBuffer: SharedArrayBuffer,
-  pageCache: SharedArrayBuffer,
+  _notifySab: SharedArrayBuffer,
+  _stateSab: SharedArrayBuffer,
 ): Promise<void> {
   const instance = await WebAssembly.instantiate(wasmModule, {
-    env: { memory },
+    env: createKernelEnv(memory),
   });
   exports = instance.exports as unknown as KernelExports;
   attachKernelRuntimeState(exports, kernelState);
   statusCodes = readStatusCodes(exports);
   vmPtr = threadVmPtr;
-  fsRingBuffer = ringBuffer;
-  sabPageCache = pageCache;
+  guestBase = threadGuestBase;
+  wasmFeatures = detectWasmFeatures();
+  runtimeBridge = {
+    notifySab: _notifySab,
+    stateSab: _stateSab,
+  };
 }
 
-/**
- * Post a status message to the parent (process owner).
- */
-function postStatus(s: number): void {
+function reattachPublishedKernelRuntimeState(): void {
+  if (runtimeBridge === null) {
+    return;
+  }
+  attachKernelRuntimeState(exports, readPublishedKernelRuntimeState(runtimeBridge));
+}
+
+function postReady(): void {
+  const msg: ThreadWorkerOutbound = {
+    type: "ready",
+    vmPtr,
+    kernelState: readKernelRuntimeState(exports),
+    wasmFeatures,
+  };
+  workerPostMessage(msg);
+}
+
+function collectDebugParts(): string[] {
+  if (typeof exports === "undefined") {
+    return [];
+  }
+
+  const debugParts: string[] = [];
+  const syscallNr = exports.debug_syscall_trace_nr?.();
+  if (syscallNr !== undefined && syscallNr !== 0n) {
+    debugParts.push(`syscall=${syscallNr.toString()}`);
+    debugParts.push(`status=${exports.debug_syscall_trace_status?.() ?? "n/a"}`);
+    debugParts.push(`result=${exports.debug_syscall_trace_result?.().toString() ?? "n/a"}`);
+  }
+  const memoryNr = exports.debug_memory_trace_nr?.();
+  if (memoryNr !== undefined && memoryNr !== 0n) {
+    debugParts.push(`mem_nr=${memoryNr.toString()}`);
+    debugParts.push(`mem_a0=${exports.debug_memory_trace_arg0?.().toString() ?? "n/a"}`);
+    debugParts.push(`mem_a1=${exports.debug_memory_trace_arg1?.().toString() ?? "n/a"}`);
+    debugParts.push(`mem_a2=${exports.debug_memory_trace_arg2?.().toString() ?? "n/a"}`);
+    debugParts.push(`mem_a3=${exports.debug_memory_trace_arg3?.().toString() ?? "n/a"}`);
+    debugParts.push(`mem_result=${exports.debug_memory_trace_result?.().toString() ?? "n/a"}`);
+  }
+  const execveStage = exports.debug_execve_stage?.();
+  if (execveStage !== undefined && execveStage !== 0) {
+    debugParts.push(`execve_stage=${execveStage}`);
+    debugParts.push(`execve_v0=${exports.debug_execve_value0?.().toString() ?? "n/a"}`);
+    debugParts.push(`execve_v1=${exports.debug_execve_value1?.().toString() ?? "n/a"}`);
+  }
+
+  return debugParts;
+}
+
+function postStatus(status: number, waitInWorker = false): void {
   const msg: ThreadWorkerOutbound = {
     type: "status",
-    status: s,
-    exitCode: exports.thread_exit_code(vmPtr) ?? 0,
+    status,
+    exitCode: exports.thread_exit_code(vmPtr),
+    termSignal: exports.thread_term_signal(vmPtr),
     pc: exports.thread_pc(vmPtr),
     vmPtr,
     kernelState: readKernelRuntimeState(exports),
+    debug: (() => {
+      const parts = collectDebugParts();
+      return parts.length === 0 ? undefined : parts.join(" ");
+    })(),
   };
-  postMessage(msg);
+  if (waitInWorker) {
+    msg.waitInWorker = true;
+  }
+  workerPostMessage(msg);
 }
 
-/**
- * Run the exec loop for `budget` instructions.
- *
- * §6.4: STATUS codes determine control flow:
- * - OK: budget exhausted, request more from parent
- * - FAULT: thread exited
- * - FUTEX_WAIT/PIPE_WAIT/EPOLL_WAIT: Atomics.wait locally
- * - FS: ring buffer submit → Atomics.wait → resume
- * - SLEEP/CLONE_SPAWN/EXECVE_SPAWN/VFORK_WAIT/WAIT4: post to parent
- */
-function step(budget: number): void {
-  exports.thread_step(vmPtr, budget);
-  const s = exports.thread_status(vmPtr);
+function formatWorkerError(error: unknown): string {
+  const base = error instanceof Error ? (error.stack ?? error.message) : String(error);
+  const debugParts = collectDebugParts();
+  return debugParts.length === 0 ? base : `${base}\n${debugParts.join(" ")}`;
+}
 
-  if (s === statusCodes.OK) {
-    // Budget exhausted — post to parent for cooperative scheduling
-    postStatus(s);
-  } else if (s === statusCodes.FAULT) {
-    postStatus(s);
-  } else if (s === statusCodes.FUTEX_WAIT) {
-    handleFutexWait();
-  } else if (s === statusCodes.FS) {
-    // §6.5: FS requests are processed by the thread-worker's own kernel
-    // instance for now. Full ring buffer delegation to kernel-worker
-    // will be implemented when the dedicated kernel Worker is wired up.
-    void fsRingBuffer; void sabPageCache;
-    exports.thread_process_fs(vmPtr);
-    exports.thread_resume_fs(vmPtr);
-    // Continue stepping — FS completed synchronously
-    step(500_000);
-  } else if (s === statusCodes.PIPE_WAIT) {
-    // §6.3: Atomics.wait on pipe SAB notify word.
-    // Not yet wired — pipe SAB addresses not exported from kernel.
-    // Post to parent for cooperative retry.
-    postStatus(s);
-  } else if (s === statusCodes.EPOLL_WAIT) {
-    // §6.3: Atomics.wait on epoll SAB wake counter.
-    // Not yet wired — epoll wake counter address not exported.
-    // Post to parent for cooperative retry.
-    postStatus(s);
-  } else {
-    // SLEEP, CLONE_SPAWN, EXECVE_SPAWN, VFORK_WAIT, WAIT4:
-    // Require parent orchestration — post to parent
-    postStatus(s);
+function postError(error: unknown): void {
+  const msg: ThreadWorkerOutbound = {
+    type: "error",
+    vmPtr,
+    message: formatWorkerError(error),
+  };
+  workerPostMessage(msg);
+}
+
+function step(budget: number): void {
+  for (;;) {
+    exports.thread_step(vmPtr, budget);
+    const status = exports.thread_status(vmPtr);
+
+    if (status === statusCodes.FUTEX_WAIT) {
+      if (handleFutexWait(status)) {
+        budget = THREAD_STEP_BUDGET;
+        continue;
+      }
+      return;
+    }
+
+    if (isRuntimeBridgeBlockedStatus(status)) {
+      handleRuntimeBridgeBlockedStatus(status);
+      return;
+    }
+
+    postStatus(status);
+    return;
   }
 }
 
-/**
- * §6.4: FUTEX_WAIT — Atomics.wait32 on guest Memory futex word.
- * Another thread's FUTEX_WAKE writes to the address and calls
- * memory.atomic.notify, which wakes this Atomics.wait.
- */
-function handleFutexWait(): void {
-  const addr = exports.thread_futex_wait_addr(vmPtr);
-  const guestAddr = Number(addr);
+function isRuntimeBridgeBlockedStatus(status: number): boolean {
+  // Owner-side blocked retry keeps process/thread liveness centralized. Resuming
+  // pipe/socket/flock waits inside the thread-worker can target stale vm_ptrs
+  // after execve discards sibling threads.
+  return false;
+}
 
-  // Futex word is in shared guest Memory — Atomics.wait32 directly
-  const i32 = new Int32Array(exports.memory.buffer);
-  const wordIndex = guestAddr >>> 2;
-  const currentValue = Atomics.load(i32, wordIndex);
-
-  // Check if already woken (blocked_addr cleared by another thread's FUTEX_WAKE)
-  const blockedAddr = exports.thread_record_blocked_addr(vmPtr);
-  if (blockedAddr === 0) {
-    // Already woken before we got here
-    exports.thread_resume_futex_wait(vmPtr);
-    step(500_000);
+function handleRuntimeBridgeBlockedStatus(status: number): void {
+  if (runtimeBridge === null) {
+    postStatus(status);
     return;
   }
 
-  // Wait on the futex word — will be woken by another thread's
-  // memory.atomic.notify on the same address
-  const timeout = exports.thread_futex_wait_timeout(vmPtr);
-  const timeoutMs = timeout !== 0n ? 5000 : undefined; // TODO: read actual timespec
+  postStatus(status, true);
 
-  const result = Atomics.wait(i32, wordIndex, currentValue, timeoutMs);
+  const waitResult = status === statusCodes.EPOLL_WAIT
+    ? waitForRuntimeBridgeWake(
+        runtimeBridge,
+        Math.max(1, Number(exports.thread_epoll_wait_timeout(vmPtr))),
+      )
+    : waitForRuntimeBridgeWake(runtimeBridge);
 
+  reattachPublishedKernelRuntimeState();
+  if (status === statusCodes.EPOLL_WAIT && waitResult === "timed-out") {
+    exports.thread_resume_epoll_wait_timeout(vmPtr);
+  } else {
+    exports.thread_resume_blocked_syscall(vmPtr);
+  }
+
+  postStatus(exports.thread_status(vmPtr));
+}
+
+function handleFutexWait(status: number): boolean {
+  const addr = guestBase + Number(exports.thread_futex_wait_addr(vmPtr));
+  const i32 = new Int32Array(exports.memory.buffer);
+  const wordIndex = addr >>> 2;
+  const expected = Atomics.load(i32, wordIndex);
+
+  if (exports.thread_record_blocked_addr(vmPtr) === 0) {
+    exports.thread_resume_futex_wait(vmPtr);
+    return true;
+  }
+
+  postStatus(status, true);
+
+  const timeoutPtr = Number(exports.thread_futex_wait_timeout(vmPtr));
+  const timeoutMs = readTimespecMillis(timeoutPtr);
+  const result = timeoutMs === undefined
+    ? Atomics.wait(i32, wordIndex, expected)
+    : Atomics.wait(i32, wordIndex, expected, timeoutMs);
+
+  reattachPublishedKernelRuntimeState();
   if (result === "timed-out") {
-    exports.thread_resume_futex_wait_result(vmPtr, BigInt(-110)); // ETIMEDOUT
+    exports.thread_resume_futex_wait_result(vmPtr, BigInt(-110));
   } else {
     exports.thread_resume_futex_wait(vmPtr);
   }
 
-  // Continue execution
-  step(500_000);
+  postStatus(exports.thread_status(vmPtr));
+  return false;
 }
 
-// Message handler
-self.onmessage = async (event: MessageEvent<ThreadWorkerInbound>) => {
+function readTimespecMillis(timespecPtr: number): number | undefined {
+  if (timespecPtr === 0) {
+    return undefined;
+  }
+  const view = new DataView(exports.memory.buffer);
+  const absolute = guestBase + timespecPtr;
+  const sec = Number(view.getBigUint64(absolute, true));
+  const nsec = Number(view.getBigUint64(absolute + 8, true));
+  return Math.max(0, sec * 1000 + Math.floor(nsec / 1_000_000));
+}
+
+await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
   const msg = event.data;
+
   switch (msg.type) {
     case "init":
-      await init(
-        msg.wasmModule,
-        msg.memory,
-        msg.vmPtr,
-        msg.kernelState,
-        msg.fsRingBuffer,
-        msg.sabPageCache,
-      );
-      postStatus(0); // STATUS_OK — ready
+      try {
+        await init(
+          msg.wasmModule,
+          msg.memory,
+          msg.vmPtr,
+          msg.guestBase,
+          msg.kernelState,
+          msg.runtimeNotify,
+          msg.runtimeState,
+        );
+        postReady();
+      } catch (error) {
+        postError(error);
+      }
       break;
     case "step":
-      attachKernelRuntimeState(exports, msg.kernelState);
-      step(msg.budget);
-      break;
-    case "wake-sleep":
-      // Woken from nanosleep by parent's setTimeout
-      step(500_000);
+      try {
+        attachKernelRuntimeState(exports, msg.kernelState);
+        step(msg.budget);
+      } catch (error) {
+        postError(error);
+      }
       break;
   }
-};
+});

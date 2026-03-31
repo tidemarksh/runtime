@@ -21,6 +21,7 @@ export interface KernelExports {
   abi_status_connect(): number;
   abi_status_socket_send(): number;
   abi_status_socket_recv(): number;
+  abi_status_flock_wait(): number;
 
   // Spawn kinds
   abi_spawn_kind_none(): number;
@@ -45,6 +46,7 @@ export interface KernelExports {
   abi_sigterm(): number;
   abi_sigchld(): number;
   abi_sigpipe(): number;
+  abi_clone_parent(): bigint | number;
 
   // Open flags
   abi_o_rdonly(): number;
@@ -63,6 +65,7 @@ export interface KernelExports {
   abi_enosys(): number;
   abi_eagain(): number;
   abi_epipe(): number;
+  abi_econnrefused(): number;
 
   // Kernel lifecycle
   set_base_time(sec: bigint, nsec: bigint): void;
@@ -70,19 +73,40 @@ export interface KernelExports {
   kernel_heap_base(): number;
   kernel_heap_ptr(): number;
   kernel_ofd_table_ptr(): number;
+  kernel_ofd_table_bytes(): number;
   kernel_memfs_ptr(): number;
+  kernel_memfs_header_bytes(): number;
+  kernel_memfs_inodes_ptr(): number;
+  kernel_memfs_inodes_bytes(): number;
+  kernel_memfs_first_child_ptr(): number;
+  kernel_memfs_first_child_bytes(): number;
+  kernel_memfs_dir_entries_ptr(): number;
+  kernel_memfs_dir_entries_bytes(): number;
+  kernel_memfs_data_ptr(): number;
+  kernel_memfs_data_bytes(): number;
   kernel_mem_state_ptr(): number;
   kernel_epoll_table_ptr(): number;
+  kernel_epoll_table_bytes(): number;
+  kernel_epoll_instance_bytes(): number;
   kernel_socket_table_ptr(): number;
+  kernel_socket_table_bytes(): number;
   kernel_socket_used(): number;
   kernel_pipe_base(): number;
+  kernel_pipe_region_bytes(): number;
   kernel_pipe_used(): bigint;
   kernel_net_buf_base(): number;
+  kernel_net_buf_pool_bytes(): number;
   kernel_net_buf_used(): bigint;
   kernel_sig_slots_ptr(): number;
+  kernel_sig_slots_bytes(): number;
+  kernel_signal_action_table_bytes(): number;
   kernel_process_pending_ptr(): number;
+  kernel_process_pending_bytes(): number;
   kernel_process_runtime_state_ptr(): number;
+  kernel_process_runtime_state_bytes(): number;
   kernel_time_state_ptr(): number;
+  kernel_time_state_bytes(): number;
+  kernel_reset_memfs(): void;
   kernel_attach_runtime_state(
     heapBase: number,
     heapPtr: number,
@@ -106,14 +130,20 @@ export interface KernelExports {
   process_push_arg(addr: number): void;
   process_push_env(addr: number): void;
   process_clear_args(): void;
+  process_guest_base(ram_size: number): number;
+  process_inspect_elf_brk(elf_ptr: number, elf_len: number, ram_size: number): bigint;
   process_create(elf_ptr: number, elf_len: number, ram_size: number, stack_size: number): number;
 
   // Thread execution
   thread_step(vm_ptr: number, budget: number): number;
   thread_status(vm_ptr: number): number;
   thread_exit_code(vm_ptr: number): number;
+  thread_term_signal(vm_ptr: number): number;
   thread_pc(vm_ptr: number): bigint;
   thread_a0(vm_ptr: number): bigint;
+  thread_a1(vm_ptr: number): bigint;
+  thread_blocked_fd(vm_ptr: number): number;
+  thread_blocked_ofd_id(vm_ptr: number): number;
 
   // FS handling
   thread_process_fs(vm_ptr: number): void;
@@ -128,7 +158,12 @@ export interface KernelExports {
   thread_sleep_nanoseconds(vm_ptr: number): bigint;
   thread_record_blocked_addr(vm_ptr: number): number;
   thread_resume_wait4(vm_ptr: number): bigint;
+  thread_epoll_wait_timeout(vm_ptr: number): bigint;
+  thread_resume_epoll_wait_timeout(vm_ptr: number): void;
+  thread_resume_blocked_syscall(vm_ptr: number): bigint;
+  thread_resume_connect_result(vm_ptr: number, result: bigint): void;
   thread_vfork_child_pid(): number;
+  thread_clone_flags(vm_ptr: number): bigint;
 
   // Spawn handoff
   thread_spawn_kind(vm_ptr: number): number;
@@ -138,8 +173,71 @@ export interface KernelExports {
   thread_spawn_envp(vm_ptr: number): bigint;
   thread_clear_spawn_handoff(vm_ptr: number): void;
   thread_resume_vfork_parent(vm_ptr: number, child_pid: number): void;
+  thread_complete_execve_handoff(vm_ptr: number): bigint;
   thread_spawn_from_clone(parent_vm_ptr: number): number;
   thread_process_thread_count(vm_ptr: number): number;
+  thread_process_ptr(vm_ptr: number): number;
+  process_thread_tid(vm_ptr: number, slot: number): number;
+  process_thread_state(vm_ptr: number, slot: number): number;
+  process_thread_vm_ptr(vm_ptr: number, slot: number): number;
+  process_record_child_exit(pid: number, wait_status: number): void;
+  process_current_pid(vm_ptr: number): number;
+  process_current_ppid(vm_ptr: number): number;
+  process_current_pgid(vm_ptr: number): number;
+  process_current_sid(vm_ptr: number): number;
+  process_current_did_exec(vm_ptr: number): number;
+  process_rewrite_child_pid(vm_ptr: number, oldPid: number, newPid: number, nextPid: number): void;
+  process_reset_lifecycle(
+    vm_ptr: number,
+    pid: number,
+    ppid: number,
+    nextPid: number,
+    pgid: number,
+    sid: number,
+    didExec: number,
+  ): void;
+  process_upsert_process_entry(pid: number, ppid: number, pgid: number, sid: number, didExec: number): void;
+  process_remove_process_entry(pid: number): void;
+  process_stdin_pipe(vm_ptr: number): number;
+  process_stdout_pipe(vm_ptr: number): number;
+  process_stderr_pipe(vm_ptr: number): number;
+  process_set_host_stdio(
+    vm_ptr: number,
+    stdinPipeSlot: number,
+    stdoutPipeSlot: number,
+    stderrPipeSlot: number,
+  ): void;
+  process_cwd_ino(vm_ptr: number): number;
+  process_set_cwd_ino(vm_ptr: number, ino: number): void;
+  process_fd_ofd_id(vm_ptr: number, fd: number): number;
+  process_fd_flags(vm_ptr: number, fd: number): number;
+  process_set_fd_entry(vm_ptr: number, fd: number, ofdId: number, fdFlags: number): void;
+  kernel_retain_ofd(ofdId: number): void;
+  kernel_release_ofd(ofdId: number): void;
+  kernel_ofd_fd_type(ofdId: number): number;
+  kernel_ofd_host_fd(ofdId: number): number;
+  kernel_ofd_status_flags(ofdId: number): number;
+  kernel_ofd_ino(ofdId: number): number;
+  kernel_ofd_refcount(ofdId: number): number;
+  kernel_ofd_offset(ofdId: number): bigint;
+  process_release_host_stdio(vm_ptr: number): void;
+  process_inject_http(vm_ptr: number, port: number, req_ptr: number, req_len: number): number;
+  process_read_http_response(vm_ptr: number, conn_id: number, dst_ptr: number, dst_len: number): number;
+  process_close_http_connection(vm_ptr: number, conn_id: number): void;
+  debug_clear_memory_trace?(): void;
+  debug_syscall_trace_vm_ptr?(): number;
+  debug_syscall_trace_nr?(): bigint;
+  debug_syscall_trace_result?(): bigint;
+  debug_syscall_trace_status?(): number;
+  debug_memory_trace_nr?(): bigint;
+  debug_memory_trace_arg0?(): bigint;
+  debug_memory_trace_arg1?(): bigint;
+  debug_memory_trace_arg2?(): bigint;
+  debug_memory_trace_arg3?(): bigint;
+  debug_memory_trace_result?(): bigint;
+  debug_execve_stage?(): number;
+  debug_execve_value0?(): bigint;
+  debug_execve_value1?(): bigint;
 
   // MemFS operations (kernel Worker only)
   memfs_resolve_path(path_ptr: number, path_len: number): number;
@@ -147,7 +245,13 @@ export interface KernelExports {
   memfs_write_file_at(ino: number, offset: bigint, data_ptr: number, data_len: number): bigint;
   memfs_read_file_to(ino: number, offset: bigint, buf_ptr: number, buf_len: number): bigint;
   memfs_file_size(ino: number): bigint;
+  memfs_truncate_file(ino: number, size: bigint): bigint;
+  memfs_inode_mode(ino: number): number;
+  memfs_inode_nlink(ino: number): number;
+  memfs_inode_uid(ino: number): number;
+  memfs_inode_gid(ino: number): number;
   memfs_ensure_dir(parent_ino: number, name_ptr: number, name_len: number, mode: number): number;
+  memfs_set_mode(ino: number, mode: number): bigint;
   memfs_create_file_with_data(
     parent_ino: number,
     name_ptr: number,
@@ -155,6 +259,7 @@ export interface KernelExports {
     data_ptr: number,
     data_len: number,
   ): number;
+  memfs_readdir_names(dir_ino: number, buf_ptr: number, buf_len: number): bigint;
 }
 
 /** Cached STATUS constants read from WASM exports. */
@@ -174,6 +279,7 @@ export interface StatusCodes {
   CONNECT: number;
   SOCKET_SEND: number;
   SOCKET_RECV: number;
+  FLOCK_WAIT: number;
 }
 
 /** Cached spawn kind constants. */
@@ -227,6 +333,7 @@ export function readStatusCodes(exports: KernelExports): StatusCodes {
     CONNECT: exports.abi_status_connect(),
     SOCKET_SEND: exports.abi_status_socket_send(),
     SOCKET_RECV: exports.abi_status_socket_recv(),
+    FLOCK_WAIT: exports.abi_status_flock_wait(),
   };
 }
 

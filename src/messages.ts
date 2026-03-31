@@ -1,18 +1,26 @@
 /**
- * Worker message types (discriminated union).
- * §6.4: All STATUS codes map to specific message flows.
- *
- * Flows:
- *   main → kernel-worker: KernelWorkerMessage
- *   main → thread-worker: ThreadWorkerInbound
- *   thread-worker → main: ThreadWorkerOutbound
+ * Worker message contracts.
+ * §6.4: blocking STATUS values stay explicit in the thread-worker channel.
+ * Kernel-worker RPCs carry request ids so Runtime can pipeline FS operations safely.
  */
 
 import type { KernelRuntimeState } from "./abi.js";
+import type { FsSnapshotEntry, RuntimeStat } from "./fs-types.js";
+import type { WasmFeatureSupport } from "./wasm-features.js";
 
-// =========================================================================
-// thread-worker inbound (main → thread-worker)
-// =========================================================================
+export interface KernelWorkerOfdSlotSnapshot {
+  ofdId: number;
+  slot: Uint8Array;
+}
+
+export interface KernelWorkerPidStateSnapshot {
+  pid: number;
+  kernelState: KernelRuntimeState;
+}
+
+// ============================================================================
+// thread-worker inbound (process owner -> thread-worker)
+// ============================================================================
 
 export type ThreadWorkerInbound =
   | {
@@ -20,62 +28,372 @@ export type ThreadWorkerInbound =
       wasmModule: WebAssembly.Module;
       memory: WebAssembly.Memory;
       vmPtr: number;
+      guestBase: number;
       kernelState: KernelRuntimeState;
-      fsRingBuffer: SharedArrayBuffer;
-      /** §6.3: SAB page cache for direct file data reads (kernel bypass). */
-      sabPageCache: SharedArrayBuffer;
+      runtimeNotify: SharedArrayBuffer;
+      runtimeState: SharedArrayBuffer;
     }
-  | { type: "step"; budget: number; kernelState: KernelRuntimeState }
-  | { type: "wake-sleep" };
+  | {
+      type: "step";
+      budget: number;
+      kernelState: KernelRuntimeState;
+    };
 
-// =========================================================================
-// thread-worker outbound (thread-worker → main)
-// =========================================================================
+// ============================================================================
+// thread-worker outbound (thread-worker -> process owner)
+// ============================================================================
+
+export interface ThreadWorkerReadyMessage {
+  type: "ready";
+  vmPtr: number;
+  kernelState: KernelRuntimeState;
+  wasmFeatures: WasmFeatureSupport;
+}
+
+export interface ThreadWorkerStatusMessage {
+  type: "status";
+  status: number;
+  exitCode: number;
+  termSignal: number;
+  pc: bigint;
+  vmPtr: number;
+  kernelState: KernelRuntimeState;
+  debug?: string;
+  waitInWorker?: boolean;
+}
+
+export interface ThreadWorkerErrorMessage {
+  type: "error";
+  vmPtr: number;
+  message: string;
+}
 
 export type ThreadWorkerOutbound =
-  | {
-      type: "status";
-      status: number;
-      exitCode: number;
-      pc: bigint;
-      vmPtr: number;
-      kernelState: KernelRuntimeState;
-    }
+  | ThreadWorkerReadyMessage
+  | ThreadWorkerStatusMessage
+  | ThreadWorkerErrorMessage
   | { type: "exit"; code: number; vmPtr: number };
 
-// =========================================================================
-// kernel-worker messages (main ↔ kernel-worker)
-// =========================================================================
+// ============================================================================
+// kernel-worker RPC (Runtime <-> kernel-worker)
+// ============================================================================
 
-export type KernelWorkerInbound =
+export interface KernelWorkerRequestBase {
+  requestId: number;
+}
+
+export type KernelWorkerRequest =
   | {
       type: "init-kernel";
       wasmModule: WebAssembly.Module;
-      /** §6.3: SAB page cache shared between all Workers. */
       sabPageCache: SharedArrayBuffer;
     }
   | {
-      type: "create-process";
-      elfData: Uint8Array;
-      argv: string[];
-      env: string[];
-      ramSize: number;
+      type: "write-file";
+      path: string;
+      data: Uint8Array;
+      mode?: number;
     }
-  | { type: "write-file"; path: string; data: Uint8Array }
-  | { type: "read-file"; path: string }
-  | { type: "list-files" }
-  | { type: "child-exit"; pid: number; waitStatus: number };
-
-export type KernelWorkerOutbound =
-  | { type: "ready"; kernelState: KernelRuntimeState }
   | {
-      type: "process-created";
+      type: "read-file";
+      path: string;
+    }
+  | {
+      type: "mkdir";
+      path: string;
+      mode?: number;
+    }
+  | {
+      type: "stat";
+      path: string;
+    }
+  | {
+      type: "readdir";
+      path: string;
+    }
+  | {
+      type: "snapshot-fs";
+    }
+  | {
+      type: "load-fs-snapshot";
+      entries: FsSnapshotEntry[];
+    }
+  | {
+      type: "register-process";
+      pid: number;
+      memory: WebAssembly.Memory;
+      kernelState: KernelRuntimeState;
+      seedMemfsFromCanonical?: boolean;
+    }
+  | {
+      type: "unregister-process";
+      pid: number;
+    }
+  | {
+      type: "process-fs";
+      pid: number;
       vmPtr: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "record-child-exit";
+      pid: number;
+      childPid: number;
+      waitStatus: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "resume-connect";
+      pid: number;
+      vmPtr: number;
+      result: bigint;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "resume-wait4";
+      pid: number;
+      vmPtr: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "resume-epoll-wait";
+      pid: number;
+      vmPtr: number;
+      timeoutExpired: boolean;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "resume-blocked-syscall";
+      pid: number;
+      vmPtr: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "resume-vfork-parent";
+      pid: number;
+      vmPtr: number;
+      waitStatus: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "canonicalize-child-pid";
+      pid: number;
+      vmPtr: number;
+      provisionalChildPid: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "initialize-process-lifecycle";
+      pid: number;
+      vmPtr: number;
+      ppid: number;
+      nextPid: number;
+      pgid: number;
+      sid: number;
+      didExec: boolean;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "resume-vfork-execve-parent";
+      pid: number;
+      vmPtr: number;
+      childPid: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "sync-process-lifecycle";
+      pid: number;
+      vmPtr: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "sync-pipe-state";
       pid: number;
       kernelState: KernelRuntimeState;
     }
-  | { type: "file-written" }
-  | { type: "file-read"; data: Uint8Array }
-  | { type: "file-list"; files: Array<{ path: string; data: Uint8Array }> }
-  | { type: "error"; message: string };
+  | {
+      type: "sync-epoll-state";
+      pid: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "sync-socket-state";
+      pid: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "sync-fork-shared-state";
+      pid: number;
+      targetPids: number[];
+      targetKernelStates: KernelWorkerPidStateSnapshot[];
+      ofdIds: number[];
+      ofdSlots: KernelWorkerOfdSlotSnapshot[];
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "rehydrate-fork-shared-state";
+      targetPids: number[];
+      targetKernelStates: KernelWorkerPidStateSnapshot[];
+      ofdIds: number[];
+    }
+  | {
+      type: "debug-processes";
+    }
+  | {
+      type: "release-host-stdio";
+      pid: number;
+      vmPtr: number;
+      kernelState: KernelRuntimeState;
+    };
 
+export type KernelWorkerInbound = KernelWorkerRequestBase & KernelWorkerRequest;
+
+export type KernelWorkerResponse =
+  | {
+      type: "ready";
+      requestId: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "file-written";
+      requestId: number;
+    }
+  | {
+      type: "file-read";
+      requestId: number;
+      data: Uint8Array;
+    }
+  | {
+      type: "dir-created";
+      requestId: number;
+    }
+  | {
+      type: "stat-result";
+      requestId: number;
+      stat: RuntimeStat;
+    }
+  | {
+      type: "readdir-result";
+      requestId: number;
+      entries: string[];
+    }
+  | {
+      type: "snapshot-fs-result";
+      requestId: number;
+      entries: FsSnapshotEntry[];
+    }
+  | {
+      type: "fs-loaded";
+      requestId: number;
+    }
+  | {
+      type: "process-registered";
+      requestId: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "process-unregistered";
+      requestId: number;
+    }
+  | {
+      type: "fs-processed";
+      requestId: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "child-exit-recorded";
+      requestId: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "connect-resumed";
+      requestId: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "wait4-resumed";
+      requestId: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "epoll-wait-resumed";
+      requestId: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "blocked-syscall-resumed";
+      requestId: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "vfork-parent-resumed";
+      requestId: number;
+      childPid: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "child-pid-canonicalized";
+      requestId: number;
+      childPid: number;
+      nextPid: number;
+      pgid: number;
+      sid: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "process-lifecycle-initialized";
+      requestId: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "vfork-execve-parent-resumed";
+      requestId: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "process-lifecycle-synced";
+      requestId: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "pipe-state-synced";
+      requestId: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "epoll-state-synced";
+      requestId: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "socket-state-synced";
+      requestId: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "fork-shared-state-synced";
+      requestId: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "fork-shared-state-rehydrated";
+      requestId: number;
+    }
+  | {
+      type: "processes-debugged";
+      requestId: number;
+      pids: number[];
+      canonicalPids: number[];
+    }
+  | {
+      type: "host-stdio-released";
+      requestId: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "error";
+      requestId: number;
+      message: string;
+    };
+
+export type KernelWorkerOutbound = KernelWorkerResponse;

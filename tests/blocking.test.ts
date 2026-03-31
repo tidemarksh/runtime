@@ -51,10 +51,34 @@ function makeKernelState(): KernelRuntimeState {
   };
 }
 
+function emitReady(worker: FakeWorker, vmPtr = 0x1234): void {
+  worker.emit({
+    type: "ready",
+    vmPtr,
+    kernelState: makeKernelState(),
+    wasmFeatures: {
+      memory64: true,
+      tailCalls: true,
+      exceptionHandling: true,
+    },
+  });
+}
+
 function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
   let runtimeState = makeKernelState();
   let sleepSec = 0n;
   let sleepNsec = 10_000_000n; // 10ms
+  let currentPid = 2;
+  let currentPpid = 1;
+  let currentPgid = 1;
+  let currentSid = 1;
+  let currentDidExec = 0;
+  function initPipeSlot(slot: number): void {
+    const base = runtimeState.pipeBase + slot * (32 + 4096);
+    const view = new DataView(memory.buffer);
+    view.setInt32(base + 8, 1, true);
+    view.setInt32(base + 12, 1, true);
+  }
 
   return {
     memory,
@@ -65,6 +89,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     abi_status_sleep: () => 11, abi_status_jit_ready: () => 12,
     abi_status_wait4: () => 31, abi_status_connect: () => 28,
     abi_status_socket_send: () => 29, abi_status_socket_recv: () => 30,
+    abi_status_flock_wait: () => 32,
     abi_spawn_kind_none: () => 0, abi_spawn_kind_execve: () => 1,
     abi_spawn_kind_fork: () => 2,
     abi_page_size: () => 4096, abi_max_fds: () => 256,
@@ -74,6 +99,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     abi_fd_type_socket: () => 4,
     abi_sigkill: () => 9, abi_sigterm: () => 15,
     abi_sigchld: () => 17, abi_sigpipe: () => 13,
+    abi_clone_parent: () => 0x00008000,
     abi_o_rdonly: () => 0, abi_o_wronly: () => 1, abi_o_rdwr: () => 2,
     abi_o_creat: () => 0x40, abi_o_trunc: () => 0x200,
     abi_o_append: () => 0x400, abi_o_cloexec: () => 0x80000,
@@ -113,9 +139,17 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     },
     process_push_arg: () => {}, process_push_env: () => {},
     process_clear_args: () => {},
-    process_create: () => 0x1234,
+    process_guest_base: () => 0x1000,
+    process_inspect_elf_brk: () => 0x40_0000n,
+    process_create: () => {
+      initPipeSlot(1);
+      initPipeSlot(2);
+      initPipeSlot(3);
+      return 0x1234;
+    },
     thread_step: () => 0, thread_status: () => 0,
-    thread_exit_code: () => 0, thread_pc: () => 0n, thread_a0: () => 0n,
+    thread_exit_code: () => 0, thread_term_signal: () => 0,
+    thread_pc: () => 0n, thread_a0: () => 0n,
     thread_process_fs: () => {
       runtimeState = { ...runtimeState, heapPtr: runtimeState.heapPtr + 0x10 };
     },
@@ -128,17 +162,64 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_sleep_nanoseconds: () => sleepNsec,
     thread_record_blocked_addr: () => 0,
     thread_resume_wait4: () => 0n,
+    thread_epoll_wait_timeout: () => 0n,
+    thread_resume_epoll_wait_timeout: () => {},
+    thread_resume_blocked_syscall: () => 0n,
     thread_vfork_child_pid: () => 0,
+    thread_clone_flags: () => 0n,
     thread_spawn_kind: () => 0, thread_spawn_child_pid: () => 0,
     thread_spawn_path: () => 0n, thread_spawn_argv: () => 0n,
     thread_spawn_envp: () => 0n, thread_clear_spawn_handoff: () => {},
     thread_resume_vfork_parent: () => {},
+    thread_complete_execve_handoff: () => 0n,
     thread_spawn_from_clone: () => 0x2000,
     thread_process_thread_count: () => 1,
+    thread_process_ptr: () => 0x5000,
+    process_thread_tid: (_vmPtr, slot) => slot === 0 ? 1 : 0,
+    process_thread_state: (_vmPtr, slot) => slot === 0 ? 2 : 0,
+    process_thread_vm_ptr: (_vmPtr, slot) => slot === 0 ? 0x1234 : 0,
+    process_record_child_exit: () => {},
+    process_current_pid: () => currentPid,
+    process_current_ppid: () => currentPpid,
+    process_current_pgid: () => currentPgid,
+    process_current_sid: () => currentSid,
+    process_current_did_exec: () => currentDidExec,
+    process_rewrite_child_pid: (_vmPtr, oldPid, newPid, _nextPid) => {
+      if (currentPid === oldPid) {
+        currentPid = newPid;
+      }
+    },
+    process_reset_lifecycle: (_vmPtr, pid, ppid, _nextPid, pgid, sid, didExec) => {
+      currentPid = pid;
+      currentPpid = ppid;
+      currentPgid = pgid;
+      currentSid = sid;
+      currentDidExec = didExec;
+    },
+    process_upsert_process_entry: () => {},
+    process_remove_process_entry: () => {},
+    process_stdin_pipe: () => 1,
+    process_stdout_pipe: () => 2,
+    process_stderr_pipe: () => 3,
+    process_set_host_stdio: () => {},
+    process_cwd_ino: () => 1,
+    process_set_cwd_ino: () => {},
+    process_fd_ofd_id: () => 0,
+    process_fd_flags: () => 0,
+    process_set_fd_entry: () => {},
+    kernel_retain_ofd: () => {},
+    kernel_release_ofd: () => {},
+    process_release_host_stdio: () => {},
+    process_inject_http: () => -1,
+    process_read_http_response: () => -1,
+    process_close_http_connection: () => {},
     memfs_resolve_path: () => 0, memfs_create_file: () => 0,
     memfs_write_file_at: () => 0n, memfs_read_file_to: () => 0n,
-    memfs_file_size: () => 0n, memfs_ensure_dir: () => 0,
-    memfs_create_file_with_data: () => 0,
+    memfs_file_size: () => 0n, memfs_truncate_file: () => 0n,
+    memfs_inode_mode: () => 0, memfs_inode_nlink: () => 0,
+    memfs_inode_uid: () => 0, memfs_inode_gid: () => 0,
+    memfs_ensure_dir: () => 0, memfs_create_file_with_data: () => 0,
+    memfs_readdir_names: () => 0n,
   };
 }
 
@@ -166,10 +247,11 @@ afterEach(() => {
   globalThis.Worker = originalWorker;
 });
 
-test("STATUS_SLEEP reads actual duration and sends wake-sleep after timeout", async () => {
+test("STATUS_SLEEP reads actual duration and re-enqueues through owner after timeout", async () => {
   vi.useFakeTimers();
   await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
   const worker = createdWorkers[0];
+  emitReady(worker);
   worker.clearPostedMessages();
 
   // Emit STATUS_SLEEP (status=11)
@@ -177,6 +259,7 @@ test("STATUS_SLEEP reads actual duration and sends wake-sleep after timeout", as
     type: "status",
     status: 11,
     exitCode: 0,
+    termSignal: 0,
     pc: 0n,
     vmPtr: 0x1234,
     kernelState: makeKernelState(),
@@ -188,9 +271,13 @@ test("STATUS_SLEEP reads actual duration and sends wake-sleep after timeout", as
   // Advance timer past the 10ms sleep duration
   vi.advanceTimersByTime(15);
 
-  // Should have received wake-sleep
+  // Should have been re-enqueued through the owner scheduler.
   expect(worker.postedMessages).toEqual([
-    { type: "wake-sleep" },
+    {
+      type: "step",
+      budget: 20_000,
+      kernelState: makeKernelState(),
+    },
   ]);
 
   vi.useRealTimers();
@@ -202,6 +289,7 @@ test("STATUS_FAULT with thread_count=0 fires onExit", async () => {
     onExit,
   });
   const worker = createdWorkers[0];
+  emitReady(worker);
 
   // Override thread_count to return 0 (last thread)
   // The mock already returns 1, but FAULT handler checks it
@@ -210,6 +298,7 @@ test("STATUS_FAULT with thread_count=0 fires onExit", async () => {
     type: "status",
     status: 3, // FAULT
     exitCode: 42,
+    termSignal: 0,
     pc: 0n,
     vmPtr: 0x1234,
     kernelState: makeKernelState(),
