@@ -10,24 +10,74 @@ import {
   type KernelRuntimeState,
 } from "./abi.js";
 import type { FsSnapshotEntry } from "./fs-types.js";
-import { readPipe, writePipe } from "./pipe-bridge.js";
 import type {
   KernelWorkerOfdSlotSnapshot,
-  KernelWorkerOutbound,
   KernelWorkerPidBytesSnapshot,
   KernelWorkerPidStateSnapshot,
-  KernelWorkerRequest,
   ThreadWorkerInbound,
   ThreadWorkerOutbound,
 } from "./messages.js";
 import {
   createRuntimeStateBridge,
   publishKernelRuntimeState,
-  type RuntimeStateBridge,
   wakeRuntimeBridge,
 } from "./runtime-state-bridge.js";
 import { createKernelEnv } from "./wasm-env.js";
 import { clearWorkerMessageHandler, setWorkerMessageHandler } from "./worker-compat.js";
+import {
+  acquireWorker,
+  ensureEvictionTimer,
+  maybeUnrefTimer,
+  removeWorkerFromPool,
+  releaseWorker,
+} from "./worker-pool.js";
+import {
+  applyFsEntryToHandle,
+  cloneSnapshotEntries,
+  normalizePath,
+  preloadSnapshotEntries,
+  resolveProcessCwdIno,
+  snapshotEntriesEqual,
+  snapshotProcessFs,
+} from "./worker-process-fs.js";
+import {
+  captureExecveGuestHandoff,
+  decodeExecveBytes,
+  stageExecveGuestHandoff,
+} from "./worker-execve-handoff.js";
+import {
+  alignUp,
+  copyKernelPrivateRegion,
+  detachedKernelScratchBase,
+  ensureMemoryCapacity,
+  writeDetachedKernelScratch,
+} from "./worker-kernel-scratch.js";
+import {
+  createInheritedErrorSink,
+  createInheritedStdoutSink,
+  drainProcessOutput,
+  flushStdin,
+  releaseSharedHostStdioLocal,
+  retainSharedHostStdio,
+  writeProcessStdin as bufferProcessStdin,
+} from "./worker-stdio.js";
+import type {
+  CanonicalizedChildLifecycle,
+  CreateProcessOptions,
+  KernelOwnershipHandle,
+  KernelShareGroup,
+  KernelSyncHandle,
+  KernelWorkerMemfsSeedMode,
+  KernelWorkerPipeSeedMode,
+  KernelWorkerRequestFn,
+  ProcessHandle,
+  RuntimeFsState,
+  ThreadWorkerState,
+  VforkSnapshot,
+} from "./worker-types.js";
+
+export type { CreateProcessOptions, ProcessHandle } from "./worker-types.js";
+export { destroyWorkerPool } from "./worker-pool.js";
 
 let cachedModule: WebAssembly.Module | null = null;
 
@@ -40,262 +90,14 @@ export function clearModuleCache(): void {
   cachedModule = null;
 }
 
-interface WorkerPoolEntry {
-  worker: Worker;
-  lastUsed: number;
-  busy: boolean;
-}
-
-interface SharedHostStdio {
-  stdinPipe: number;
-  stdoutPipe: number;
-  stderrPipe: number;
-  refCount: number;
-}
-
-interface KernelShareGroup {
-  members: Set<ProcessHandle>;
-  sharedOfdIds: Set<number>;
-}
-
 const FD_TYPE_EVENTFD = 9;
 const FD_TYPE_TIMERFD = 10;
-
-type KernelSyncHandle = Pick<
-  ProcessHandle,
-  "memory" | "kernel" | "kernelState" | "pid" | "kernelWorkerRequest"
->;
-type KernelOwnershipHandle = Pick<ProcessHandle, "pid" | "kernelWorkerRequest">;
-type KernelWorkerRequestFn = (msg: KernelWorkerRequest) => Promise<KernelWorkerOutbound>;
-
-const workerPool: WorkerPoolEntry[] = [];
-const workerEntryMap = new WeakMap<Worker, WorkerPoolEntry>();
-const MAX_WORKERS = 4;
-const IDLE_TIMEOUT_MS = 60_000;
-const EVICTION_INTERVAL_MS = 10_000;
-
-let evictionTimer: ReturnType<typeof setInterval> | null = null;
-
-function maybeUnrefWorker(worker: Worker): void {
-  const nodeWorker = worker as Worker & { unref?: () => void };
-  nodeWorker.unref?.();
-}
-
-function ensureEvictionTimer(): void {
-  if (evictionTimer !== null) {
-    return;
-  }
-  evictionTimer = setInterval(evictIdleWorkers, EVICTION_INTERVAL_MS);
-  if (typeof evictionTimer === "object" && "unref" in evictionTimer) {
-    evictionTimer.unref();
-  }
-}
-
-function evictIdleWorkers(): void {
-  const now = Date.now();
-  for (let i = workerPool.length - 1; i >= 0; i--) {
-    const entry = workerPool[i];
-    if (entry.busy || now - entry.lastUsed <= IDLE_TIMEOUT_MS) {
-      continue;
-    }
-    entry.worker.terminate();
-    workerEntryMap.delete(entry.worker);
-    workerPool.splice(i, 1);
-  }
-}
-
-function acquireWorker(): Worker {
-  for (const entry of workerPool) {
-    if (entry.busy) {
-      continue;
-    }
-    entry.busy = true;
-    entry.lastUsed = Date.now();
-    return entry.worker;
-  }
-
-  const workerUrl = new URL("./thread-worker.mjs", import.meta.url);
-  if (workerPool.length < MAX_WORKERS) {
-    const worker = new Worker(workerUrl, { type: "module" });
-    maybeUnrefWorker(worker);
-    const entry: WorkerPoolEntry = {
-      worker,
-      lastUsed: Date.now(),
-      busy: true,
-    };
-    workerPool.push(entry);
-    workerEntryMap.set(worker, entry);
-    return worker;
-  }
-
-  let lruIndex = -1;
-  let lruTime = Number.POSITIVE_INFINITY;
-  for (let i = 0; i < workerPool.length; i++) {
-    const entry = workerPool[i];
-    if (!entry.busy && entry.lastUsed < lruTime) {
-      lruIndex = i;
-      lruTime = entry.lastUsed;
-    }
-  }
-
-  if (lruIndex === -1) {
-    const worker = new Worker(workerUrl, { type: "module" });
-    maybeUnrefWorker(worker);
-    return worker;
-  }
-
-  const evicted = workerPool[lruIndex];
-  evicted.worker.terminate();
-  workerEntryMap.delete(evicted.worker);
-
-  const worker = new Worker(workerUrl, { type: "module" });
-  maybeUnrefWorker(worker);
-  const entry: WorkerPoolEntry = {
-    worker,
-    lastUsed: Date.now(),
-    busy: true,
-  };
-  workerPool[lruIndex] = entry;
-  workerEntryMap.set(worker, entry);
-  return worker;
-}
-
-function releaseWorker(worker: Worker): void {
-  const entry = workerEntryMap.get(worker);
-  if (!entry) {
-    worker.terminate();
-    return;
-  }
-  entry.busy = false;
-  entry.lastUsed = Date.now();
-}
-
-export function destroyWorkerPool(): void {
-  if (evictionTimer !== null) {
-    clearInterval(evictionTimer);
-    evictionTimer = null;
-  }
-  for (const entry of workerPool) {
-    entry.worker.terminate();
-    workerEntryMap.delete(entry.worker);
-  }
-  workerPool.length = 0;
-}
-
-function maybeUnrefTimer(timer: ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>): void {
-  if (typeof timer === "object" && timer !== null && "unref" in timer) {
-    timer.unref();
-  }
-}
-
-export interface ProcessHandle {
-  runtimeId: number;
-  pid: number;
-  parentPid: number | null;
-  vmPtr: number;
-  ramSize: number;
-  guestBase: number;
-  worker: Worker;
-  memory: WebAssembly.Memory;
-  wasmModule: WebAssembly.Module;
-  kernel: KernelExports;
-  kernelState: KernelRuntimeState;
-  stdinPipe: number;
-  stdoutPipe: number;
-  stderrPipe: number;
-  hostStdio: SharedHostStdio;
-  kernelShare: KernelShareGroup;
-  stdinQueue: Uint8Array[];
-  outputBacklog: Uint8Array[];
-  debugCommand: string;
-  lastDebugMessage?: string;
-  runtimeBridge: RuntimeStateBridge;
-  sabPageCache: SharedArrayBuffer | null;
-  kernelWorkerRequest?: KernelWorkerRequestFn;
-  workers: Set<Worker>;
-  readyWorkers: Worker[];
-  runningWorker: Worker | null;
-  blockedWorkers: Map<Worker, BlockedWorkerState>;
-  pipeSyncPromise: Promise<void> | null;
-  pipeSyncQueued: boolean;
-  pipeWaiterWakeQueued: boolean;
-  epollSyncPromise: Promise<void> | null;
-  epollSyncQueued: boolean;
-  epollWaiterWakeQueued: boolean;
-  ofdSyncPromise: Promise<void> | null;
-  ofdSyncQueuedIds: Set<number>;
-  socketSyncPromise: Promise<void> | null;
-  socketSyncQueued: boolean;
-  socketWaiterWakeQueued: boolean;
-  vforkSnapshot: VforkSnapshot | null;
-  vforkWorker: Worker | null;
-  onExit?: (code: number) => void;
-  onError?: (error: Error) => void;
-  onStdout?: (data: Uint8Array) => void;
-  workerDebugLog: string[];
-}
-
-interface VforkSnapshot {
-  vmPtr: number;
-  childPid: number | null;
-  nextPid: number | null;
-  pgid: number | null;
-  sid: number | null;
-  inheritedSharedOfdIds: number[];
-}
-
-interface ThreadWorkerState {
-  vmPtr: number;
-  initialized: boolean;
-  waitingInWorkerStatus: number | null;
-}
-
-interface BlockedWorkerState {
-  vmPtr: number;
-  status: number;
-  retryTimer: ReturnType<typeof setTimeout> | null;
-  timeoutExpired: boolean;
-  rpcPending: boolean;
-}
-
-interface RuntimeFsState {
-  version: number;
-  entries: FsSnapshotEntry[];
-}
-
-interface CanonicalizedChildLifecycle {
-  childPid: number;
-  nextPid: number;
-  pgid: number;
-  sid: number;
-}
 
 const processHandles = new Map<number, ProcessHandle>();
 const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
 const runtimeFsStates = new Map<number, RuntimeFsState>();
 const runtimeFsDirtyHandles = new Map<number, Set<ProcessHandle>>();
 const runtimeLifecycleEvents = new Map<number, string[]>();
-
-interface CreateProcessOptions {
-  runtimeId?: number;
-  pid?: number;
-  parentPid?: number | null;
-  ramSize?: number;
-  stackSize?: number;
-  argv?: string[];
-  env?: string[];
-  cwd?: string;
-  preloadEntries?: FsSnapshotEntry[];
-  sabPageCache?: SharedArrayBuffer | null;
-  hydrateFsFromKernelWorker?: boolean;
-  kernelWorkerRequest?: KernelWorkerRequestFn;
-  onExit?: (code: number) => void;
-  onError?: (error: Error) => void;
-  onStdout?: (data: Uint8Array) => void;
-}
-
-type KernelWorkerMemfsSeedMode = "full" | "metadata" | "none";
-type KernelWorkerPipeSeedMode = "canonical" | "process";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -319,33 +121,6 @@ const LEGACY_OK_SYNC_EFFECTS = SYNC_EFFECT_PIPE_STATE
   | SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE
   | SYNC_EFFECT_PROCESS_LIFECYCLE
   | SYNC_EFFECT_FORK_SHARED_OFD_STATE;
-
-function normalizePath(path: string): string {
-  const normalized = `/${path.split("/").filter(Boolean).join("/")}`;
-  return normalized === "//" ? "/" : normalized || "/";
-}
-
-function cloneSnapshotEntry(entry: FsSnapshotEntry): FsSnapshotEntry {
-  return entry.kind === "file"
-    ? {
-        kind: "file",
-        path: entry.path,
-        ino: entry.ino,
-        data: entry.data ? new Uint8Array(entry.data) : undefined,
-        size: entry.size ?? entry.data?.length ?? 0,
-        mode: entry.mode,
-      }
-    : {
-        kind: "dir",
-        path: entry.path,
-        ino: entry.ino,
-        mode: entry.mode,
-      };
-}
-
-function cloneSnapshotEntries(entries: FsSnapshotEntry[]): FsSnapshotEntry[] {
-  return entries.map(cloneSnapshotEntry);
-}
 
 function writeRuntimeFsState(runtimeId: number, entries: FsSnapshotEntry[], bumpVersion: boolean): number {
   if (runtimeId <= 0) {
@@ -431,19 +206,6 @@ export function clearRuntimeFsState(runtimeId: number): void {
 
 function bufferSourceByteLength(value: BufferSource): number {
   return ArrayBuffer.isView(value) ? value.byteLength : value.byteLength;
-}
-
-function alignUp(value: number, align: number): number {
-  return Math.ceil(value / align) * align;
-}
-
-function ensureMemoryCapacity(memory: WebAssembly.Memory, endOffset: number): void {
-  const currentBytes = memory.buffer.byteLength;
-  if (endOffset <= currentBytes) {
-    return;
-  }
-  const additionalPages = Math.ceil((endOffset - currentBytes) / WASM_PAGE_SIZE);
-  memory.grow(additionalPages);
 }
 
 function copyMemoryRange(
@@ -902,167 +664,6 @@ function reconcileInheritedSharedOfdsAfterVforkExecve(
   }
 }
 
-function kernelScratchBase(exports: KernelExports): number {
-  return exports.kernel_heap_ptr() + 0x10000;
-}
-
-function ensureKernelMemoryCapacity(exports: KernelExports, endOffset: number): void {
-  ensureMemoryCapacity(exports.memory, endOffset);
-}
-
-function writeKernelScratch(exports: KernelExports, bytes: Uint8Array, offset = 0): number {
-  const scratch = kernelScratchBase(exports) + offset;
-  ensureKernelMemoryCapacity(exports, scratch + bytes.length);
-  new Uint8Array(exports.memory.buffer).set(bytes, scratch);
-  return scratch;
-}
-
-function detachedKernelScratchBase(
-  memory: WebAssembly.Memory,
-  guestBase: number,
-  guestUsedBytes: number,
-): number {
-  return alignUp(Math.max(memory.buffer.byteLength, guestBase + guestUsedBytes) + 0x10000, 16);
-}
-
-function writeDetachedKernelScratch(
-  exports: KernelExports,
-  scratchBase: number,
-  bytes: Uint8Array,
-  offset = 0,
-): number {
-  const scratch = scratchBase + offset;
-  ensureKernelMemoryCapacity(exports, scratch + bytes.length);
-  new Uint8Array(exports.memory.buffer).set(bytes, scratch);
-  return scratch;
-}
-
-interface ExecveGuestHandoffPayload {
-  processState: Uint8Array;
-  path: Uint8Array;
-  argv: Uint8Array[];
-  envp: Uint8Array[];
-}
-
-function copyKernelPrivateRegion(source: WebAssembly.Memory, target: WebAssembly.Memory, endOffset: number): void {
-  ensureMemoryCapacity(target, endOffset);
-  new Uint8Array(target.buffer).set(new Uint8Array(source.buffer, 0, endOffset), 0);
-}
-
-function readGuestCString(memory: WebAssembly.Memory, guestBase: number, guestPtr: number): Uint8Array {
-  if (guestPtr === 0) {
-    return new Uint8Array();
-  }
-  const bytes = new Uint8Array(memory.buffer);
-  let end = guestBase + guestPtr;
-  while (end < bytes.length && bytes[end] !== 0) {
-    end += 1;
-  }
-  if (end >= bytes.length) {
-    throw new Error(`unterminated guest string at 0x${guestPtr.toString(16)}`);
-  }
-  return bytes.slice(guestBase + guestPtr, end + 1);
-}
-
-function readGuestStringVector(memory: WebAssembly.Memory, guestBase: number, vecPtr: number): Uint8Array[] {
-  if (vecPtr === 0) {
-    return [];
-  }
-  const view = new DataView(memory.buffer);
-  const out: Uint8Array[] = [];
-  for (let index = 0; index < 4096; index += 1) {
-    const entryOffset = guestBase + vecPtr + index * 8;
-    const ptr = Number(view.getBigUint64(entryOffset, true));
-    if (ptr === 0) {
-      return out;
-    }
-    out.push(readGuestCString(memory, guestBase, ptr));
-  }
-  throw new Error(`unterminated guest string vector at 0x${vecPtr.toString(16)}`);
-}
-
-function decodeExecveBytes(bytes: Uint8Array): string {
-  const trimmed = bytes.length > 0 && bytes[bytes.length - 1] === 0
-    ? bytes.subarray(0, bytes.length - 1)
-    : bytes;
-  return decoder.decode(trimmed);
-}
-
-function captureExecveGuestHandoff(
-  handle: ProcessHandle,
-  vmPtr: number,
-  pathPtr: number,
-  argvPtr: number,
-  envpPtr: number,
-): ExecveGuestHandoffPayload {
-  const processPtr = handle.kernel.thread_process_ptr(vmPtr);
-  const processStateBytes = handle.kernel.process_state_bytes();
-  const guestBytes = new Uint8Array(handle.memory.buffer);
-  return {
-    processState: guestBytes.slice(
-      handle.guestBase + processPtr,
-      handle.guestBase + processPtr + processStateBytes,
-    ),
-    path: readGuestCString(handle.memory, handle.guestBase, pathPtr),
-    argv: readGuestStringVector(handle.memory, handle.guestBase, argvPtr),
-    envp: readGuestStringVector(handle.memory, handle.guestBase, envpPtr),
-  };
-}
-
-function stageGuestBytes(
-  memory: WebAssembly.Memory,
-  guestBase: number,
-  guestPtr: number,
-  bytes: Uint8Array,
-): void {
-  ensureMemoryCapacity(memory, guestBase + guestPtr + bytes.length);
-  new Uint8Array(memory.buffer).set(bytes, guestBase + guestPtr);
-}
-
-function stageExecveGuestHandoff(
-  childKernel: KernelExports,
-  guestBase: number,
-  payload: ExecveGuestHandoffPayload,
-): { processPtr: number; pathPtr: bigint; argvPtr: bigint; envpPtr: bigint } {
-  let cursor = alignUp(0x1000, 16);
-  const processPtr = cursor;
-  stageGuestBytes(childKernel.memory, guestBase, processPtr, payload.processState);
-  cursor = alignUp(cursor + payload.processState.length, 16);
-
-  const pathPtr = cursor;
-  stageGuestBytes(childKernel.memory, guestBase, pathPtr, payload.path);
-  cursor = alignUp(cursor + payload.path.length, 16);
-
-  const stageStringVector = (values: Uint8Array[]): bigint => {
-    if (values.length === 0) {
-      return 0n;
-    }
-    const stringPtrs: bigint[] = [];
-    for (const value of values) {
-      const stringPtr = cursor;
-      stageGuestBytes(childKernel.memory, guestBase, stringPtr, value);
-      stringPtrs.push(BigInt(stringPtr));
-      cursor = alignUp(cursor + value.length, 16);
-    }
-    const vectorPtr = cursor;
-    const vectorBytes = new Uint8Array((values.length + 1) * 8);
-    const vectorView = new DataView(vectorBytes.buffer);
-    for (let index = 0; index < stringPtrs.length; index += 1) {
-      vectorView.setBigUint64(index * 8, stringPtrs[index], true);
-    }
-    stageGuestBytes(childKernel.memory, guestBase, vectorPtr, vectorBytes);
-    cursor = alignUp(cursor + vectorBytes.length, 16);
-    return BigInt(vectorPtr);
-  };
-
-  return {
-    processPtr,
-    pathPtr: BigInt(pathPtr),
-    argvPtr: stageStringVector(payload.argv),
-    envpPtr: stageStringVector(payload.envp),
-  };
-}
-
 export async function createProcess(
   wasmBytes: BufferSource,
   elfData: Uint8Array,
@@ -1247,10 +848,7 @@ export async function createProcess(
 }
 
 export function writeProcessStdin(handle: ProcessHandle, data: Uint8Array): void {
-  if (data.length === 0) {
-    return;
-  }
-  handle.stdinQueue.push(new Uint8Array(data));
+  bufferProcessStdin(handle, data);
   const changed = flushStdin(handle);
   if (!changed) {
     return;
@@ -1325,110 +923,6 @@ export async function injectHttpRequest(
   return decoder.decode(merged);
 }
 
-function preloadSnapshotEntries(exports: KernelExports, entries: FsSnapshotEntry[]): void {
-  if (entries.length === 0) {
-    return;
-  }
-
-  const ordered = [...entries].sort((left, right) => {
-    if (left.ino !== undefined && right.ino !== undefined && left.ino !== right.ino) {
-      return left.ino - right.ino;
-    }
-    if (left.kind !== right.kind) {
-      return left.kind === "dir" ? -1 : 1;
-    }
-    return left.path.localeCompare(right.path);
-  });
-
-  for (const entry of ordered) {
-    const parts = entry.path.split("/").filter(Boolean);
-    if (parts.length === 0) {
-      continue;
-    }
-
-    const name = parts.pop()!;
-    let parentIno = 1;
-    for (const dir of parts) {
-      const dirBytes = encoder.encode(dir);
-      const dirPtr = writeKernelScratch(exports, dirBytes);
-      parentIno = exports.memfs_ensure_dir(parentIno, dirPtr, dirBytes.length, 0o755);
-      if (parentIno === 0) {
-        break;
-      }
-    }
-    if (parentIno === 0) {
-      continue;
-    }
-
-    const existingIno = resolveMemfsPath(exports, entry.path);
-    const nameBytes = encoder.encode(name);
-    const namePtr = writeKernelScratch(exports, nameBytes);
-    if (entry.kind === "dir") {
-      if (existingIno === 0 && entry.ino !== undefined && entry.ino > 1) {
-        const reserveResult = Number(exports.memfs_reserve_inode_until(entry.ino));
-        if (reserveResult < 0) {
-          continue;
-        }
-      }
-      exports.memfs_ensure_dir(parentIno, namePtr, nameBytes.length, entry.mode ?? 0o755);
-      continue;
-    }
-
-    const data = entry.data;
-    const size = entry.size ?? data?.length ?? 0;
-    const mode = entry.mode ?? 0o644;
-    if (existingIno === 0 && entry.ino !== undefined && entry.ino > 1) {
-      const reserveResult = Number(exports.memfs_reserve_inode_until(entry.ino));
-      if (reserveResult < 0) {
-        continue;
-      }
-    }
-    const ino = existingIno !== 0
-      ? existingIno
-      : exports.memfs_create_file(parentIno, namePtr, nameBytes.length);
-    if (ino === 0) {
-      continue;
-    }
-
-    const sizeResult = data
-      ? Number(exports.memfs_truncate_file(ino, BigInt(data.length)))
-      : Number(exports.memfs_set_file_size_shallow(ino, BigInt(size)));
-    if (sizeResult < 0) {
-      continue;
-    }
-
-    if (data && data.length > 0) {
-      const dataPtr = writeKernelScratch(exports, data, nameBytes.length + 64);
-      const written = Number(exports.memfs_write_file_at(ino, 0n, dataPtr, data.length));
-      if (written < 0 || written !== data.length) {
-        continue;
-      }
-    }
-    exports.memfs_set_mode(ino, mode);
-  }
-}
-
-function resolveMemfsPath(exports: KernelExports, path: string): number {
-  const bytes = encoder.encode(normalizePath(path));
-  const scratch = writeKernelScratch(exports, bytes);
-  return exports.memfs_resolve_path(scratch, bytes.length);
-}
-
-function resolveProcessCwdIno(exports: KernelExports, cwd: string | undefined): number {
-  if (!cwd) {
-    return 1;
-  }
-  const ino = resolveMemfsPath(exports, cwd);
-  if (ino === 0) {
-    throw new Error(`cwd does not exist: ${cwd}`);
-  }
-  const mode = exports.memfs_inode_mode(ino);
-  if ((mode & 0o170000) !== 0o040000) {
-    throw new Error(`cwd is not a directory: ${cwd}`);
-  }
-  return ino;
-}
-
 async function resolveProcessCwdInoViaKernelWorker(
   kernelWorkerRequest: KernelWorkerRequestFn,
   cwd: string | undefined,
@@ -1447,90 +941,6 @@ async function resolveProcessCwdInoViaKernelWorker(
     throw new Error(`cwd is not a directory: ${cwd}`);
   }
   return response.stat.ino;
-}
-
-function readMemfsDirectoryNames(exports: KernelExports, dirIno: number): string[] {
-  const bufPtr = kernelScratchBase(exports) + 0x20000;
-  const bufLen = 64 * 1024;
-  ensureKernelMemoryCapacity(exports, bufPtr + bufLen);
-  const byteLen = Number(exports.memfs_readdir_names(dirIno, bufPtr, bufLen));
-  if (byteLen < 0) {
-    throw new Error(`memfs_readdir_names failed for ino=${dirIno}`);
-  }
-
-  const bytes = new Uint8Array(exports.memory.buffer, bufPtr, byteLen);
-  const names: string[] = [];
-  let start = 0;
-  for (let i = 0; i < bytes.length; i++) {
-    if (bytes[i] !== 0) {
-      continue;
-    }
-    if (i > start) {
-      names.push(decoder.decode(bytes.subarray(start, i)));
-    }
-    start = i + 1;
-  }
-  return names.sort();
-}
-
-function readMemfsFile(exports: KernelExports, ino: number): Uint8Array {
-  const size = Number(exports.memfs_file_size(ino));
-  if (size <= 0) {
-    return new Uint8Array();
-  }
-
-  const bufPtr = kernelScratchBase(exports) + 0x30000;
-  ensureKernelMemoryCapacity(exports, bufPtr + size);
-  const read = Number(exports.memfs_read_file_to(ino, 0n, bufPtr, size));
-  if (read < 0) {
-    throw new Error(`memfs_read_file_to failed for ino=${ino}`);
-  }
-  return new Uint8Array(exports.memory.buffer.slice(bufPtr, bufPtr + read));
-}
-
-function snapshotMemfsTree(
-  exports: KernelExports,
-  ino: number,
-  path: string,
-  out: FsSnapshotEntry[],
-): void {
-  const normalized = normalizePath(path);
-  const mode = exports.memfs_inode_mode(ino);
-  const perms = mode & 0o7777;
-  const fileType = mode & 0o170000;
-
-  if (fileType === 0o040000) {
-    out.push({ kind: "dir", path: normalized, ino, mode: perms });
-    for (const name of readMemfsDirectoryNames(exports, ino)) {
-      const childPath = normalized === "/" ? `/${name}` : `${normalized}/${name}`;
-      const childIno = resolveMemfsPath(exports, childPath);
-      if (childIno === 0) {
-        continue;
-      }
-      snapshotMemfsTree(exports, childIno, childPath, out);
-    }
-    return;
-  }
-
-  if (fileType !== 0o100000) {
-    return;
-  }
-
-  const data = readMemfsFile(exports, ino);
-  out.push({
-    kind: "file",
-    path: normalized,
-    ino,
-    data,
-    size: data.length,
-    mode: perms,
-  });
-}
-
-export function snapshotProcessFs(handle: ProcessHandle): FsSnapshotEntry[] {
-  const entries: FsSnapshotEntry[] = [];
-  snapshotMemfsTree(handle.kernel, 1, "/", entries);
-  return entries;
 }
 
 function formatThreadDebug(handle: ProcessHandle, vmPtr: number): string {
@@ -1766,107 +1176,6 @@ function assertProcessStandardFdIntegrity(handle: ProcessHandle, context: string
   }
 }
 
-function snapshotEntriesEqual(left: FsSnapshotEntry[], right: FsSnapshotEntry[]): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-
-  for (let i = 0; i < left.length; i++) {
-    const a = left[i];
-    const b = right[i];
-    if (
-      !a
-      || !b
-      || a.kind !== b.kind
-      || a.path !== b.path
-      || a.mode !== b.mode
-      || a.ino !== b.ino
-      || a.size !== b.size
-    ) {
-      return false;
-    }
-    if (a.kind === "file" && b.kind === "file") {
-      const aData = a.data ?? new Uint8Array();
-      const bData = b.data ?? new Uint8Array();
-      if (aData.length !== bData.length) {
-        return false;
-      }
-      for (let j = 0; j < aData.length; j++) {
-        if (aData[j] !== bData[j]) {
-          return false;
-        }
-      }
-    }
-  }
-
-  return true;
-}
-
-function applyFsEntryToHandle(handle: ProcessHandle, entry: FsSnapshotEntry): void {
-  const exports = handle.kernel;
-  const parts = normalizePath(entry.path).split("/").filter(Boolean);
-  if (parts.length === 0) {
-    return;
-  }
-
-  const name = parts.pop()!;
-  let parentIno = 1;
-  for (const dir of parts) {
-    const dirBytes = encoder.encode(dir);
-    const dirPtr = writeKernelScratch(exports, dirBytes);
-    parentIno = exports.memfs_ensure_dir(parentIno, dirPtr, dirBytes.length, 0o755);
-    if (parentIno === 0) {
-      return;
-    }
-  }
-
-  const nameBytes = encoder.encode(name);
-  const namePtr = writeKernelScratch(exports, nameBytes);
-  const existingIno = resolveMemfsPath(exports, entry.path);
-  if (entry.kind === "dir") {
-    if (existingIno === 0 && entry.ino !== undefined && entry.ino > 1) {
-      const reserveResult = Number(exports.memfs_reserve_inode_until(entry.ino));
-      if (reserveResult < 0) {
-        return;
-      }
-    }
-    exports.memfs_ensure_dir(parentIno, namePtr, nameBytes.length, entry.mode ?? 0o755);
-    return;
-  }
-
-  const data = entry.data;
-  const size = entry.size ?? data?.length ?? 0;
-  const mode = entry.mode ?? 0o644;
-  if (existingIno === 0 && entry.ino !== undefined && entry.ino > 1) {
-    const reserveResult = Number(exports.memfs_reserve_inode_until(entry.ino));
-    if (reserveResult < 0) {
-      return;
-    }
-  }
-  const ino = existingIno !== 0
-    ? existingIno
-    : exports.memfs_create_file(parentIno, namePtr, nameBytes.length);
-  if (ino === 0) {
-    return;
-  }
-
-  const sizeResult = data
-    ? Number(exports.memfs_truncate_file(ino, BigInt(data.length)))
-    : Number(exports.memfs_set_file_size_shallow(ino, BigInt(size)));
-  if (sizeResult < 0) {
-    return;
-  }
-
-  if (data && data.length > 0) {
-    const dataPtr = writeKernelScratch(exports, data, nameBytes.length + 64);
-    const written = Number(exports.memfs_write_file_at(ino, 0n, dataPtr, data.length));
-    if (written < 0 || written !== data.length) {
-      return;
-    }
-  }
-  exports.memfs_set_mode(ino, mode);
-}
-
 function forEachRuntimeKernelShare(
   runtimeId: number,
   fn: (representative: ProcessHandle) => void,
@@ -1914,33 +1223,6 @@ export function replaceRuntimeFsSnapshot(runtimeId: number, entries: FsSnapshotE
       attachKernelRuntimeState(member.kernel, member.kernelState);
     }
   });
-}
-
-function flushStdin(handle: ProcessHandle): boolean {
-  if (handle.stdinPipe === 0) {
-    return false;
-  }
-
-  let wrote = false;
-  while (handle.stdinQueue.length > 0) {
-    const chunk = handle.stdinQueue[0];
-    const result = writePipe(handle.memory, handle.kernelState.pipeBase, handle.stdinPipe, chunk);
-    if (result.broken) {
-      handle.stdinQueue.length = 0;
-      return wrote;
-    }
-    if (result.written === 0) {
-      return wrote;
-    }
-    wrote = true;
-    if (result.written >= chunk.length) {
-      handle.stdinQueue.shift();
-    } else {
-      handle.stdinQueue[0] = chunk.subarray(result.written);
-      return wrote;
-    }
-  }
-  return wrote;
 }
 
 function markRuntimeFsDirty(handle: ProcessHandle): void {
@@ -2570,19 +1852,6 @@ function activeKernelShareOfdIds(handle: ProcessHandle): number[] {
   return active.sort((left, right) => left - right);
 }
 
-function peerHeldKernelShareOfdIds(handle: ProcessHandle): number[] {
-  const heldByPeers = new Set<number>();
-  for (const member of handle.kernelShare.members) {
-    if (member === handle) {
-      continue;
-    }
-    for (const ofdId of collectProcessHeldOfds(member)) {
-      heldByPeers.add(ofdId);
-    }
-  }
-  return activeKernelShareOfdIds(handle).filter((ofdId) => heldByPeers.has(ofdId));
-}
-
 function staleKernelShareOfdIds(handle: ProcessHandle): number[] {
   const heldByAnyMember = new Set<number>();
   for (const member of handle.kernelShare.members) {
@@ -2890,70 +2159,6 @@ async function releaseHostStdioViaKernelWorker(handle: ProcessHandle): Promise<b
   return handle.kernelState.pipeUsed;
 }
 
-function drainPipeOutput(
-  handle: ProcessHandle,
-  pipeSlot: number,
-): boolean {
-  if (pipeSlot === 0) {
-    return false;
-  }
-
-  let drained = false;
-  for (;;) {
-    const { data } = readPipe(handle.memory, handle.kernelState.pipeBase, pipeSlot);
-    if (data.length === 0) {
-      return drained;
-    }
-    drained = true;
-    if (handle.onStdout) {
-      handle.onStdout(data);
-    } else {
-      handle.outputBacklog.push(new Uint8Array(data));
-    }
-  }
-}
-
-function currentStandardFdPipeSlot(handle: ProcessHandle, fd: number): number {
-  const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
-  if (ofdId === 0 || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()) {
-    return 0;
-  }
-  return handle.kernel.kernel_ofd_ino(ofdId);
-}
-
-function drainProcessOutput(handle: ProcessHandle): boolean {
-  const stdoutDrained = handle.stdoutPipe !== 0
-    && handle.stdoutPipe === handle.hostStdio.stdoutPipe
-    && currentStandardFdPipeSlot(handle, 1) === handle.stdoutPipe
-    ? drainPipeOutput(handle, handle.stdoutPipe)
-    : false;
-  const stderrDrained = handle.stderrPipe !== 0
-    && handle.stderrPipe === handle.hostStdio.stderrPipe
-    && currentStandardFdPipeSlot(handle, 2) === handle.stderrPipe
-    ? drainPipeOutput(handle, handle.stderrPipe)
-    : false;
-  return stdoutDrained || stderrDrained;
-}
-
-function createInheritedStdoutSink(parent: ProcessHandle): (data: Uint8Array) => void {
-  return (data: Uint8Array) => {
-    if (parent.onStdout) {
-      parent.onStdout(data);
-      return;
-    }
-    parent.outputBacklog.push(new Uint8Array(data));
-  };
-}
-
-function createInheritedErrorSink(parent: ProcessHandle, childPid: number): (error: Error) => void {
-  return (error: Error) => {
-    if (parent.pid <= 0 || processHandles.get(parent.pid) !== parent) {
-      return;
-    }
-    failProcess(parent, new Error(`child pid=${childPid}: ${error.message}`));
-  };
-}
-
 function captureVforkSnapshot(handle: ProcessHandle, vmPtr: number): VforkSnapshot {
   // vfork also duplicates the caller's FD table into a distinct child process.
   // The parent is suspended, but both processes still hold references to the
@@ -2972,25 +2177,6 @@ function captureVforkSnapshot(handle: ProcessHandle, vmPtr: number): VforkSnapsh
 function clearVforkSnapshot(handle: ProcessHandle): void {
   handle.vforkSnapshot = null;
   handle.vforkWorker = null;
-}
-
-function retainSharedHostStdio(shared: SharedHostStdio): SharedHostStdio {
-  shared.refCount += 1;
-  return shared;
-}
-
-function releaseSharedHostStdioLocal(handle: ProcessHandle): void {
-  const shared = handle.hostStdio;
-  if (shared.refCount > 0) {
-    shared.refCount -= 1;
-  }
-  if (shared.refCount !== 0) {
-    return;
-  }
-  handle.kernel.process_release_host_stdio(handle.vmPtr);
-  handle.stdinPipe = 0;
-  handle.stdoutPipe = 0;
-  handle.stderrPipe = 0;
 }
 
 async function releaseSharedHostStdio(handle: ProcessHandle): Promise<void> {
@@ -4289,7 +3475,12 @@ async function handleVforkExecve(
     vforkSnapshot: null,
     vforkWorker: null,
     onStdout: createInheritedStdoutSink(handle),
-    onError: createInheritedErrorSink(handle, childPid),
+    onError: createInheritedErrorSink(
+      handle,
+      childPid,
+      (pid) => processHandles.get(pid),
+      failProcess,
+    ),
     workerDebugLog: ["spawn:vfork-execve"],
   };
   assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-execve");
@@ -4496,7 +3687,12 @@ async function handlePlainFork(
     vforkSnapshot: null,
     vforkWorker: null,
     onStdout: createInheritedStdoutSink(handle),
-    onError: createInheritedErrorSink(handle, childPid),
+    onError: createInheritedErrorSink(
+      handle,
+      childPid,
+      (pid) => processHandles.get(pid),
+      failProcess,
+    ),
     workerDebugLog: ["spawn:plain-fork"],
   };
   adoptKernelShare(handle, childHandle);
@@ -4523,14 +3719,7 @@ async function handlePlainFork(
 }
 
 function terminateTrackedWorker(worker: Worker): void {
-  const entry = workerEntryMap.get(worker);
-  if (entry) {
-    const index = workerPool.indexOf(entry);
-    if (index >= 0) {
-      workerPool.splice(index, 1);
-    }
-    workerEntryMap.delete(worker);
-  }
+  removeWorkerFromPool(worker);
   threadWorkerStates.delete(worker);
   clearWorkerMessageHandler(worker);
   worker.terminate();

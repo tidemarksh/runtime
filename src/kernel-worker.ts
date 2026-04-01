@@ -843,22 +843,6 @@ function copyEpollState(
   }
 }
 
-function clearEpollState(
-  targetExports: KernelExports,
-  targetState: KernelRuntimeState,
-): void {
-  const tableBytes = targetExports.kernel_epoll_table_bytes();
-  const instanceBytes = targetExports.kernel_epoll_instance_bytes();
-  const tableEntries = tableBytes >>> 2;
-  const table = new Uint32Array(targetExports.memory.buffer, targetState.epollTablePtr, tableEntries);
-  const instancePtrs = [...table].filter((ptr) => ptr !== 0);
-
-  clearMemoryRange(targetExports.memory, targetState.epollTablePtr, tableBytes);
-  for (const ptr of instancePtrs) {
-    clearMemoryRange(targetExports.memory, ptr, instanceBytes);
-  }
-}
-
 function copySocketState(
   sourceExports: KernelExports,
   sourceState: KernelRuntimeState,

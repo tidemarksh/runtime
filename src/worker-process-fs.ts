@@ -1,0 +1,327 @@
+import type { KernelExports } from "./abi.js";
+import type { FsSnapshotEntry } from "./fs-types.js";
+import {
+  ensureKernelMemoryCapacity,
+  kernelScratchBase,
+  writeKernelScratch,
+} from "./worker-kernel-scratch.js";
+import type { ProcessHandle } from "./worker-types.js";
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+export function normalizePath(path: string): string {
+  const normalized = `/${path.split("/").filter(Boolean).join("/")}`;
+  return normalized === "//" ? "/" : normalized || "/";
+}
+
+export function cloneSnapshotEntry(entry: FsSnapshotEntry): FsSnapshotEntry {
+  return entry.kind === "file"
+    ? {
+        kind: "file",
+        path: entry.path,
+        ino: entry.ino,
+        data: entry.data ? new Uint8Array(entry.data) : undefined,
+        size: entry.size ?? entry.data?.length ?? 0,
+        mode: entry.mode,
+      }
+    : {
+        kind: "dir",
+        path: entry.path,
+        ino: entry.ino,
+        mode: entry.mode,
+      };
+}
+
+export function cloneSnapshotEntries(entries: FsSnapshotEntry[]): FsSnapshotEntry[] {
+  return entries.map(cloneSnapshotEntry);
+}
+
+export function preloadSnapshotEntries(exports: KernelExports, entries: FsSnapshotEntry[]): void {
+  if (entries.length === 0) {
+    return;
+  }
+
+  const ordered = [...entries].sort((left, right) => {
+    if (left.ino !== undefined && right.ino !== undefined && left.ino !== right.ino) {
+      return left.ino - right.ino;
+    }
+    if (left.kind !== right.kind) {
+      return left.kind === "dir" ? -1 : 1;
+    }
+    return left.path.localeCompare(right.path);
+  });
+
+  for (const entry of ordered) {
+    const parts = entry.path.split("/").filter(Boolean);
+    if (parts.length === 0) {
+      continue;
+    }
+
+    const name = parts.pop()!;
+    let parentIno = 1;
+    for (const dir of parts) {
+      const dirBytes = encoder.encode(dir);
+      const dirPtr = writeKernelScratch(exports, dirBytes);
+      parentIno = exports.memfs_ensure_dir(parentIno, dirPtr, dirBytes.length, 0o755);
+      if (parentIno === 0) {
+        break;
+      }
+    }
+    if (parentIno === 0) {
+      continue;
+    }
+
+    const existingIno = resolveMemfsPath(exports, entry.path);
+    const nameBytes = encoder.encode(name);
+    const namePtr = writeKernelScratch(exports, nameBytes);
+    if (entry.kind === "dir") {
+      if (existingIno === 0 && entry.ino !== undefined && entry.ino > 1) {
+        const reserveResult = Number(exports.memfs_reserve_inode_until(entry.ino));
+        if (reserveResult < 0) {
+          continue;
+        }
+      }
+      exports.memfs_ensure_dir(parentIno, namePtr, nameBytes.length, entry.mode ?? 0o755);
+      continue;
+    }
+
+    const data = entry.data;
+    const size = entry.size ?? data?.length ?? 0;
+    const mode = entry.mode ?? 0o644;
+    if (existingIno === 0 && entry.ino !== undefined && entry.ino > 1) {
+      const reserveResult = Number(exports.memfs_reserve_inode_until(entry.ino));
+      if (reserveResult < 0) {
+        continue;
+      }
+    }
+    const ino = existingIno !== 0
+      ? existingIno
+      : exports.memfs_create_file(parentIno, namePtr, nameBytes.length);
+    if (ino === 0) {
+      continue;
+    }
+
+    const sizeResult = data
+      ? Number(exports.memfs_truncate_file(ino, BigInt(data.length)))
+      : Number(exports.memfs_set_file_size_shallow(ino, BigInt(size)));
+    if (sizeResult < 0) {
+      continue;
+    }
+
+    if (data && data.length > 0) {
+      const dataPtr = writeKernelScratch(exports, data, nameBytes.length + 64);
+      const written = Number(exports.memfs_write_file_at(ino, 0n, dataPtr, data.length));
+      if (written < 0 || written !== data.length) {
+        continue;
+      }
+    }
+    exports.memfs_set_mode(ino, mode);
+  }
+}
+
+export function resolveMemfsPath(exports: KernelExports, path: string): number {
+  const bytes = encoder.encode(normalizePath(path));
+  const scratch = writeKernelScratch(exports, bytes);
+  return exports.memfs_resolve_path(scratch, bytes.length);
+}
+
+export function resolveProcessCwdIno(exports: KernelExports, cwd: string | undefined): number {
+  if (!cwd) {
+    return 1;
+  }
+  const ino = resolveMemfsPath(exports, cwd);
+  if (ino === 0) {
+    throw new Error(`cwd does not exist: ${cwd}`);
+  }
+  const mode = exports.memfs_inode_mode(ino);
+  if ((mode & 0o170000) !== 0o040000) {
+    throw new Error(`cwd is not a directory: ${cwd}`);
+  }
+  return ino;
+}
+
+export function readMemfsDirectoryNames(exports: KernelExports, dirIno: number): string[] {
+  const bufPtr = kernelScratchBase(exports) + 0x20000;
+  const bufLen = 64 * 1024;
+  ensureKernelMemoryCapacity(exports, bufPtr + bufLen);
+  const byteLen = Number(exports.memfs_readdir_names(dirIno, bufPtr, bufLen));
+  if (byteLen < 0) {
+    throw new Error(`memfs_readdir_names failed for ino=${dirIno}`);
+  }
+
+  const bytes = new Uint8Array(exports.memory.buffer, bufPtr, byteLen);
+  const names: string[] = [];
+  let start = 0;
+  for (let i = 0; i < bytes.length; i += 1) {
+    if (bytes[i] !== 0) {
+      continue;
+    }
+    if (i > start) {
+      names.push(decoder.decode(bytes.subarray(start, i)));
+    }
+    start = i + 1;
+  }
+  return names.sort();
+}
+
+export function readMemfsFile(exports: KernelExports, ino: number): Uint8Array {
+  const size = Number(exports.memfs_file_size(ino));
+  if (size <= 0) {
+    return new Uint8Array();
+  }
+
+  const bufPtr = kernelScratchBase(exports) + 0x30000;
+  ensureKernelMemoryCapacity(exports, bufPtr + size);
+  const read = Number(exports.memfs_read_file_to(ino, 0n, bufPtr, size));
+  if (read < 0) {
+    throw new Error(`memfs_read_file_to failed for ino=${ino}`);
+  }
+  return new Uint8Array(exports.memory.buffer.slice(bufPtr, bufPtr + read));
+}
+
+function snapshotMemfsTree(
+  exports: KernelExports,
+  ino: number,
+  path: string,
+  out: FsSnapshotEntry[],
+): void {
+  const normalized = normalizePath(path);
+  const mode = exports.memfs_inode_mode(ino);
+  const perms = mode & 0o7777;
+  const fileType = mode & 0o170000;
+
+  if (fileType === 0o040000) {
+    out.push({ kind: "dir", path: normalized, ino, mode: perms });
+    for (const name of readMemfsDirectoryNames(exports, ino)) {
+      const childPath = normalized === "/" ? `/${name}` : `${normalized}/${name}`;
+      const childIno = resolveMemfsPath(exports, childPath);
+      if (childIno === 0) {
+        continue;
+      }
+      snapshotMemfsTree(exports, childIno, childPath, out);
+    }
+    return;
+  }
+
+  if (fileType !== 0o100000) {
+    return;
+  }
+
+  const data = readMemfsFile(exports, ino);
+  out.push({
+    kind: "file",
+    path: normalized,
+    ino,
+    data,
+    size: data.length,
+    mode: perms,
+  });
+}
+
+export function snapshotProcessFs(handle: ProcessHandle): FsSnapshotEntry[] {
+  const entries: FsSnapshotEntry[] = [];
+  snapshotMemfsTree(handle.kernel, 1, "/", entries);
+  return entries;
+}
+
+export function snapshotEntriesEqual(left: FsSnapshotEntry[], right: FsSnapshotEntry[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  for (let i = 0; i < left.length; i += 1) {
+    const a = left[i];
+    const b = right[i];
+    if (
+      !a
+      || !b
+      || a.kind !== b.kind
+      || a.path !== b.path
+      || a.mode !== b.mode
+      || a.ino !== b.ino
+      || a.size !== b.size
+    ) {
+      return false;
+    }
+    if (a.kind === "file" && b.kind === "file") {
+      const aData = a.data ?? new Uint8Array();
+      const bData = b.data ?? new Uint8Array();
+      if (aData.length !== bData.length) {
+        return false;
+      }
+      for (let j = 0; j < aData.length; j += 1) {
+        if (aData[j] !== bData[j]) {
+          return false;
+        }
+      }
+    }
+  }
+
+  return true;
+}
+
+export function applyFsEntryToHandle(handle: ProcessHandle, entry: FsSnapshotEntry): void {
+  const exports = handle.kernel;
+  const parts = normalizePath(entry.path).split("/").filter(Boolean);
+  if (parts.length === 0) {
+    return;
+  }
+
+  const name = parts.pop()!;
+  let parentIno = 1;
+  for (const dir of parts) {
+    const dirBytes = encoder.encode(dir);
+    const dirPtr = writeKernelScratch(exports, dirBytes);
+    parentIno = exports.memfs_ensure_dir(parentIno, dirPtr, dirBytes.length, 0o755);
+    if (parentIno === 0) {
+      return;
+    }
+  }
+
+  const nameBytes = encoder.encode(name);
+  const namePtr = writeKernelScratch(exports, nameBytes);
+  const existingIno = resolveMemfsPath(exports, entry.path);
+  if (entry.kind === "dir") {
+    if (existingIno === 0 && entry.ino !== undefined && entry.ino > 1) {
+      const reserveResult = Number(exports.memfs_reserve_inode_until(entry.ino));
+      if (reserveResult < 0) {
+        return;
+      }
+    }
+    exports.memfs_ensure_dir(parentIno, namePtr, nameBytes.length, entry.mode ?? 0o755);
+    return;
+  }
+
+  const data = entry.data;
+  const size = entry.size ?? data?.length ?? 0;
+  const mode = entry.mode ?? 0o644;
+  if (existingIno === 0 && entry.ino !== undefined && entry.ino > 1) {
+    const reserveResult = Number(exports.memfs_reserve_inode_until(entry.ino));
+    if (reserveResult < 0) {
+      return;
+    }
+  }
+  const ino = existingIno !== 0
+    ? existingIno
+    : exports.memfs_create_file(parentIno, namePtr, nameBytes.length);
+  if (ino === 0) {
+    return;
+  }
+
+  const sizeResult = data
+    ? Number(exports.memfs_truncate_file(ino, BigInt(data.length)))
+    : Number(exports.memfs_set_file_size_shallow(ino, BigInt(size)));
+  if (sizeResult < 0) {
+    return;
+  }
+
+  if (data && data.length > 0) {
+    const dataPtr = writeKernelScratch(exports, data, nameBytes.length + 64);
+    const written = Number(exports.memfs_write_file_at(ino, 0n, dataPtr, data.length));
+    if (written < 0 || written !== data.length) {
+      return;
+    }
+  }
+  exports.memfs_set_mode(ino, mode);
+}
