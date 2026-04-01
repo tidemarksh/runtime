@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
-import { Runtime } from "../src/index.js";
-import type { FsSnapshotEntry } from "../src/fs/types.js";
-import type { RuntimeStat } from "../src/fs/types.js";
-import type { KernelWorkerInbound, KernelWorkerOutbound } from "../src/messages.js";
-import type { ProcessHandle } from "../src/worker.js";
-import * as workerModule from "../src/worker.js";
+import { Runtime } from "../../../src/index.js";
+import type { FsSnapshotEntry } from "../../../src/fs/types.js";
+import type { RuntimeStat } from "../../../src/fs/types.js";
+import type { KernelWorkerInbound, KernelWorkerOutbound } from "../../../src/messages.js";
+import type { ProcessHandle } from "../../../src/worker.js";
+import * as workerModule from "../../../src/worker.js";
 
 function normalizePath(path: string): string {
   const normalized = `/${path.split("/").filter(Boolean).join("/")}`;
@@ -364,4 +364,151 @@ test("Runtime.spawn delegates canonical FS hydration to createProcess", async ()
   expect(options && "preloadEntries" in options).toBe(false);
 
   runtime.destroy();
+});
+
+test("Runtime.fs writeFile overwrites canonical file bytes and updates stat on repeated writes", async () => {
+  const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
+
+  await runtime.fs.mkdir("/workspace");
+  await runtime.fs.writeFile("/workspace/data.txt", new TextEncoder().encode("abcdef"), 0o644);
+  await runtime.fs.writeFile("/workspace/data.txt", new TextEncoder().encode("xy"), 0o600);
+
+  const file = await runtime.fs.readFile("/workspace/data.txt");
+  const stat = await runtime.fs.stat("/workspace/data.txt");
+
+  expect(new TextDecoder().decode(file)).toBe("xy");
+  expect(stat.size).toBe(2);
+  expect(stat.mode).toBe(0o100600);
+
+  runtime.destroy();
+});
+
+test("Runtime.applyFsSnapshot replaces canonical snapshot contents instead of merging stale paths", async () => {
+  const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
+
+  try {
+    await runtime.applyFsSnapshot([
+      { kind: "dir", path: "/", mode: 0o755 },
+      { kind: "dir", path: "/workspace", mode: 0o755 },
+      {
+        kind: "file",
+        path: "/workspace/old.txt",
+        data: new TextEncoder().encode("old"),
+        mode: 0o644,
+      },
+    ]);
+    await runtime.applyFsSnapshot([
+      { kind: "dir", path: "/", mode: 0o755 },
+      { kind: "dir", path: "/workspace", mode: 0o755 },
+      {
+        kind: "file",
+        path: "/workspace/new.txt",
+        data: new TextEncoder().encode("new"),
+        mode: 0o600,
+      },
+    ]);
+
+    await expect(runtime.fs.readFile("/workspace/old.txt")).rejects.toThrow("ENOENT: /workspace/old.txt");
+    await expect(runtime.fs.readdir("/workspace")).resolves.toEqual(["new.txt"]);
+    await expect(runtime.fs.readFile("/workspace/new.txt")).resolves.toEqual(new TextEncoder().encode("new"));
+    await expect(runtime.fs.stat("/workspace/new.txt")).resolves.toMatchObject({
+      mode: 0o100600,
+      size: 3,
+    });
+  } finally {
+    runtime.destroy();
+  }
+});
+
+test("Runtime.applyFsSnapshot can replace a nested path without leaving stale directories behind", async () => {
+  const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
+
+  try {
+    await runtime.applyFsSnapshot([
+      { kind: "dir", path: "/", mode: 0o755 },
+      { kind: "dir", path: "/workspace", mode: 0o755 },
+      { kind: "dir", path: "/workspace/old", mode: 0o755 },
+      {
+        kind: "file",
+        path: "/workspace/old/data.txt",
+        data: new TextEncoder().encode("old"),
+        mode: 0o644,
+      },
+    ]);
+    await runtime.applyFsSnapshot([
+      { kind: "dir", path: "/", mode: 0o755 },
+      { kind: "dir", path: "/workspace", mode: 0o755 },
+      { kind: "dir", path: "/workspace/new", mode: 0o750 },
+      {
+        kind: "file",
+        path: "/workspace/new/data.txt",
+        data: new TextEncoder().encode("new"),
+        mode: 0o600,
+      },
+    ]);
+
+    await expect(runtime.fs.readFile("/workspace/old/data.txt")).rejects.toThrow("ENOENT: /workspace/old/data.txt");
+    await expect(runtime.fs.readdir("/workspace")).resolves.toEqual(["new"]);
+    await expect(runtime.fs.readdir("/workspace/new")).resolves.toEqual(["data.txt"]);
+    await expect(runtime.fs.stat("/workspace/new")).resolves.toMatchObject({
+      mode: 0o040750,
+    });
+    await expect(runtime.fs.stat("/workspace/new/data.txt")).resolves.toMatchObject({
+      mode: 0o100600,
+      size: 3,
+    });
+  } finally {
+    runtime.destroy();
+  }
+});
+
+test("Runtime.applyFsSnapshot can replace rename/unlink-like paths without disturbing unrelated entries", async () => {
+  const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
+
+  try {
+    await runtime.applyFsSnapshot([
+      { kind: "dir", path: "/", mode: 0o755 },
+      { kind: "dir", path: "/workspace", mode: 0o755 },
+      { kind: "dir", path: "/workspace/tmp", mode: 0o755 },
+      {
+        kind: "file",
+        path: "/workspace/tmp/old.txt",
+        data: new TextEncoder().encode("old"),
+        mode: 0o644,
+      },
+      {
+        kind: "file",
+        path: "/workspace/keep.txt",
+        data: new TextEncoder().encode("keep"),
+        mode: 0o600,
+      },
+    ]);
+    await runtime.applyFsSnapshot([
+      { kind: "dir", path: "/", mode: 0o755 },
+      { kind: "dir", path: "/workspace", mode: 0o755 },
+      { kind: "dir", path: "/workspace/final", mode: 0o750 },
+      {
+        kind: "file",
+        path: "/workspace/final/new.txt",
+        data: new TextEncoder().encode("new"),
+        mode: 0o640,
+      },
+      {
+        kind: "file",
+        path: "/workspace/keep.txt",
+        data: new TextEncoder().encode("keep"),
+        mode: 0o600,
+      },
+    ]);
+
+    await expect(runtime.fs.readFile("/workspace/tmp/old.txt")).rejects.toThrow("ENOENT: /workspace/tmp/old.txt");
+    await expect(runtime.fs.readFile("/workspace/keep.txt")).resolves.toEqual(new TextEncoder().encode("keep"));
+    await expect(runtime.fs.readdir("/workspace")).resolves.toEqual(["final", "keep.txt"]);
+    await expect(runtime.fs.stat("/workspace/final/new.txt")).resolves.toMatchObject({
+      mode: 0o100640,
+      size: 3,
+    });
+  } finally {
+    runtime.destroy();
+  }
 });

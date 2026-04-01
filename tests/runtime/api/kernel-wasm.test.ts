@@ -8,12 +8,12 @@
 import { expect, test } from "vite-plus/test";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { readStatusCodes } from "../src/abi.js";
-import { createKernelEnv } from "../src/wasm/env.js";
+import { readStatusCodes } from "../../../src/abi.js";
+import { createKernelEnv } from "../../../src/wasm/env.js";
 
 const KERNEL_WASM_PATH = resolve(
   __dirname,
-  "../../kernel/target/wasm32-unknown-unknown/release/tidemark_kernel.wasm",
+  "../../../../kernel/target/wasm32-unknown-unknown/release/tidemark_kernel.wasm",
 );
 
 async function loadKernel(opts?: { memory?: WebAssembly.Memory }) {
@@ -37,7 +37,7 @@ async function loadKernel(opts?: { memory?: WebAssembly.Memory }) {
 function findAddElf(): Uint8Array | null {
   const buildDir = resolve(
     __dirname,
-    "../../kernel/target/wasm32-wasip1/debug/build",
+    "../../../../kernel/target/wasm32-wasip1/debug/build",
   );
   if (!existsSync(buildDir)) return null;
 

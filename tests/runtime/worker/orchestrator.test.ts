@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
-import type { KernelExports, KernelRuntimeState } from "../src/abi.js";
+import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
 import type {
   KernelWorkerOutbound,
   KernelWorkerRequest,
   ThreadWorkerInbound,
   ThreadWorkerOutbound,
-} from "../src/messages.js";
+} from "../../../src/messages.js";
 
-type WorkerModule = typeof import("../src/worker.js");
+type WorkerModule = typeof import("../../../src/worker.js");
 
 let workerModule: WorkerModule | null = null;
 
@@ -453,7 +453,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
 
 beforeEach(async () => {
   vi.resetModules();
-  workerModule = await import("../src/worker.js");
+  workerModule = await import("../../../src/worker.js");
   createdWorkers.length = 0;
   createdKernelExports.length = 0;
   threadCountQueue.length = 0;
@@ -3017,6 +3017,505 @@ test("vfork execve preserves child-private OFDs across kernel-worker scrub", asy
       expect(childBytes[slotOffset + 12]).toBe(0x20 + index);
       expect(childBytes[slotOffset + 13]).toBe(0x40 + index);
     }
+  } finally {
+    restoreDefaultInstantiate();
+  }
+});
+
+test("vfork execve keeps CLOEXEC-style parent-only OFDs out of the child without mutating the parent", async () => {
+  const restoreDefaultInstantiate = (): void => {
+    vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {
+      const memory = (imports as { env: { memory: WebAssembly.Memory } }).env.memory;
+      return {
+        exports: makeKernelExports(memory),
+      } as WebAssembly.WebAssemblyInstantiatedSource;
+    });
+  };
+
+  let instantiateCount = 0;
+  vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {
+    instantiateCount += 1;
+    const memory = (imports as { env: { memory: WebAssembly.Memory } }).env.memory;
+    const exports = makeKernelExports(memory);
+    if (instantiateCount === 2) {
+      exports.process_fd_ofd_id = (_vmPtr, fd) => {
+        switch (fd) {
+          case 0:
+            return 1;
+          case 1:
+            return 2;
+          case 2:
+            return 3;
+          case 3:
+            return 4;
+          case 4:
+            return 0;
+          default:
+            return 0;
+        }
+      };
+      exports.thread_complete_execve_handoff = () => 0n;
+    }
+    return { exports } as WebAssembly.WebAssemblyInstantiatedSource;
+  });
+
+  try {
+    const requests: KernelWorkerRequest[] = [];
+    await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+      pid: 1,
+      kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+        requests.push(msg);
+        switch (msg.type) {
+          case "register-process":
+            return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+          case "initialize-process-lifecycle":
+            return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+          case "canonicalize-child-pid":
+            return {
+              type: "child-pid-canonicalized",
+              requestId: 0,
+              childPid: 156,
+              nextPid: 201,
+              pgid: 33,
+              sid: 44,
+              kernelState: msg.kernelState,
+            };
+          case "resume-vfork-execve-parent":
+            return { type: "vfork-execve-parent-resumed", requestId: 0, kernelState: msg.kernelState };
+          case "sync-fork-shared-state":
+            return { type: "fork-shared-state-synced", requestId: 0, kernelState: msg.kernelState };
+          case "rehydrate-fork-shared-state":
+            return { type: "fork-shared-state-rehydrated", requestId: 0 };
+          case "unregister-process":
+            return { type: "process-unregistered", requestId: 0 };
+          default:
+            throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+        }
+      },
+    });
+
+    const state = makeKernelState();
+    const parentWorker = createdWorkers[0];
+    const parentKernel = createdKernelExports[0];
+    const parentBytes = new Uint8Array(parentKernel.memory.buffer);
+    const cloexecOfdId = 12;
+    const cloexecSlotOffset = state.ofdTablePtr + cloexecOfdId * 32;
+    parentBytes[cloexecSlotOffset] = 0x01;
+    parentBytes[cloexecSlotOffset + 12] = 0xc1;
+    parentBytes[cloexecSlotOffset + 13] = 0xd1;
+    parentKernel.process_fd_ofd_id = (_vmPtr, fd) => {
+      switch (fd) {
+        case 0:
+          return 1;
+        case 1:
+          return 2;
+        case 2:
+          return 3;
+        case 3:
+          return 4;
+        case 4:
+          return cloexecOfdId;
+        default:
+          return 0;
+      }
+    };
+    parentKernel.process_fd_flags = (_vmPtr, fd) => fd === 4 ? parentKernel.abi_o_cloexec() : 0;
+    parentKernel.thread_vfork_child_pid = () => 55;
+    parentKernel.thread_spawn_kind = () => parentKernel.abi_spawn_kind_execve();
+    parentKernel.thread_spawn_child_pid = () => 156;
+
+    emitReady(parentWorker);
+    parentWorker.clearPostedMessages();
+    parentWorker.emit({
+      type: "status",
+      status: 8,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    });
+    await flushMicrotasks();
+
+    parentWorker.clearPostedMessages();
+    parentWorker.emit({
+      type: "status",
+      status: 9,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    });
+    await flushMicrotasks(20);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await flushMicrotasks(20);
+
+    const childKernel = createdKernelExports[1];
+    expect(parentKernel.process_fd_ofd_id(0x1234, 4)).toBe(cloexecOfdId);
+    expect(childKernel.process_fd_ofd_id(0x1234, 4)).toBe(0);
+    expect(parentBytes[cloexecSlotOffset + 12]).toBe(0xc1);
+    expect(parentBytes[cloexecSlotOffset + 13]).toBe(0xd1);
+  } finally {
+    restoreDefaultInstantiate();
+  }
+});
+
+test("vfork execve preserves dup-style child aliases across fork-shared scrub", async () => {
+  const restoreDefaultInstantiate = (): void => {
+    vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {
+      const memory = (imports as { env: { memory: WebAssembly.Memory } }).env.memory;
+      return {
+        exports: makeKernelExports(memory),
+      } as WebAssembly.WebAssemblyInstantiatedSource;
+    });
+  };
+
+  let instantiateCount = 0;
+  vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {
+    instantiateCount += 1;
+    const memory = (imports as { env: { memory: WebAssembly.Memory } }).env.memory;
+    const exports = makeKernelExports(memory);
+    if (instantiateCount === 2) {
+      const state = makeKernelState();
+      exports.process_fd_ofd_id = (_vmPtr, fd) => {
+        switch (fd) {
+          case 0:
+            return 1;
+          case 1:
+            return 2;
+          case 2:
+            return 3;
+          case 4:
+          case 5:
+            return 11;
+          default:
+            return 0;
+        }
+      };
+      exports.thread_complete_execve_handoff = () => {
+        const view = new DataView(memory.buffer);
+        const seedPipeOfd = (ofdId: number, pipeSlot: number, hostFd: number, marker: number) => {
+          const slotOffset = state.ofdTablePtr + ofdId * 32;
+          view.setInt32(slotOffset, 2, true);
+          view.setInt32(slotOffset + 4, hostFd, true);
+          view.setUint32(slotOffset + 24, pipeSlot, true);
+          view.setUint8(slotOffset + 12, marker);
+          view.setUint8(slotOffset + 13, marker + 1);
+          const pipeBase = state.pipeBase + pipeSlot * (32 + 4096);
+          view.setInt32(pipeBase + 8, 1, true);
+          view.setInt32(pipeBase + 12, 1, true);
+        };
+        seedPipeOfd(1, 1, 0, 0x11);
+        seedPipeOfd(2, 2, -1, 0x22);
+        seedPipeOfd(3, 3, -1, 0x33);
+        const aliasedSlotOffset = state.ofdTablePtr + 11 * 32;
+        view.setInt32(aliasedSlotOffset, 1, true);
+        view.setInt32(aliasedSlotOffset + 4, 17, true);
+        view.setUint32(aliasedSlotOffset + 24, 99, true);
+        view.setUint8(aliasedSlotOffset + 12, 0xa1);
+        view.setUint8(aliasedSlotOffset + 13, 0xb1);
+        return 0n;
+      };
+    }
+    return { exports } as WebAssembly.WebAssemblyInstantiatedSource;
+  });
+
+  try {
+    const requests: KernelWorkerRequest[] = [];
+    await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+      pid: 1,
+      kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+        requests.push(msg);
+        switch (msg.type) {
+          case "register-process":
+            return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+          case "initialize-process-lifecycle":
+            return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+          case "canonicalize-child-pid":
+            return {
+              type: "child-pid-canonicalized",
+              requestId: 0,
+              childPid: 156,
+              nextPid: 201,
+              pgid: 33,
+              sid: 44,
+              kernelState: msg.kernelState,
+            };
+          case "resume-vfork-execve-parent":
+            return { type: "vfork-execve-parent-resumed", requestId: 0, kernelState: msg.kernelState };
+          case "sync-fork-shared-state":
+            return { type: "fork-shared-state-synced", requestId: 0, kernelState: msg.kernelState };
+          case "rehydrate-fork-shared-state":
+            return { type: "fork-shared-state-rehydrated", requestId: 0 };
+          case "unregister-process":
+            return { type: "process-unregistered", requestId: 0 };
+          default:
+            throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+        }
+      },
+    });
+
+    const parentWorker = createdWorkers[0];
+    const parentKernel = createdKernelExports[0];
+    parentKernel.process_fd_ofd_id = (_vmPtr, fd) => {
+      switch (fd) {
+        case 0:
+          return 1;
+        case 1:
+          return 2;
+        case 2:
+          return 3;
+        case 3:
+          return 4;
+        default:
+          return 0;
+      }
+    };
+    parentKernel.thread_vfork_child_pid = () => 55;
+    parentKernel.thread_spawn_kind = () => parentKernel.abi_spawn_kind_execve();
+    parentKernel.thread_spawn_child_pid = () => 156;
+
+    emitReady(parentWorker);
+    parentWorker.clearPostedMessages();
+    parentWorker.emit({
+      type: "status",
+      status: 8,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    });
+    await flushMicrotasks();
+
+    parentWorker.clearPostedMessages();
+    parentWorker.emit({
+      type: "status",
+      status: 9,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    });
+    await flushMicrotasks(20);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const childKernel = createdKernelExports[1];
+    expect(childKernel.process_fd_ofd_id(0x1234, 4)).toBe(11);
+    expect(childKernel.process_fd_ofd_id(0x1234, 5)).toBe(11);
+    const childBytes = new Uint8Array(childKernel.memory.buffer);
+    const aliasedSlotOffset = makeKernelState().ofdTablePtr + 11 * 32;
+    expect(childBytes[aliasedSlotOffset]).toBe(0x01);
+    expect(childBytes[aliasedSlotOffset + 12]).toBe(0xa1);
+    expect(childBytes[aliasedSlotOffset + 13]).toBe(0xb1);
+
+    const rehydrate = [...requests].reverse().find((msg) => msg.type === "rehydrate-fork-shared-state");
+    expect(rehydrate?.type).toBe("rehydrate-fork-shared-state");
+    if (rehydrate?.type !== "rehydrate-fork-shared-state") {
+      throw new Error("expected rehydrate-fork-shared-state request");
+    }
+    expect(rehydrate.ofdIds).not.toContain(11);
+  } finally {
+    restoreDefaultInstantiate();
+  }
+});
+
+test("vfork execve handoff failure does not publish a partially spawned child", async () => {
+  const restoreDefaultInstantiate = (): void => {
+    vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {
+      const memory = (imports as { env: { memory: WebAssembly.Memory } }).env.memory;
+      return {
+        exports: makeKernelExports(memory),
+      } as WebAssembly.WebAssemblyInstantiatedSource;
+    });
+  };
+
+  let instantiateCount = 0;
+  vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {
+    instantiateCount += 1;
+    const memory = (imports as { env: { memory: WebAssembly.Memory } }).env.memory;
+    const exports = makeKernelExports(memory);
+    if (instantiateCount === 2) {
+      exports.thread_complete_execve_handoff = () => -BigInt(exports.abi_enoent());
+    }
+    return { exports } as WebAssembly.WebAssemblyInstantiatedSource;
+  });
+
+  try {
+    const requests: KernelWorkerRequest[] = [];
+    const onError = vi.fn();
+    await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+      pid: 1,
+      onError,
+      kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+        requests.push(msg);
+        switch (msg.type) {
+          case "register-process":
+            return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+          case "initialize-process-lifecycle":
+            return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+          case "canonicalize-child-pid":
+            return {
+              type: "child-pid-canonicalized",
+              requestId: 0,
+              childPid: 156,
+              nextPid: 201,
+              pgid: 33,
+              sid: 44,
+              kernelState: msg.kernelState,
+            };
+          case "resume-vfork-execve-parent":
+            return { type: "vfork-execve-parent-resumed", requestId: 0, kernelState: msg.kernelState };
+          case "sync-fork-shared-state":
+            return { type: "fork-shared-state-synced", requestId: 0, kernelState: msg.kernelState };
+          case "rehydrate-fork-shared-state":
+            return { type: "fork-shared-state-rehydrated", requestId: 0 };
+          case "unregister-process":
+            return { type: "process-unregistered", requestId: 0 };
+          default:
+            throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+        }
+      },
+    });
+
+    const parentWorker = createdWorkers[0];
+    const parentKernel = createdKernelExports[0];
+    parentKernel.thread_vfork_child_pid = () => 55;
+    parentKernel.thread_spawn_kind = () => parentKernel.abi_spawn_kind_execve();
+    parentKernel.thread_spawn_child_pid = () => 156;
+
+    emitReady(parentWorker);
+    parentWorker.clearPostedMessages();
+    parentWorker.emit({
+      type: "status",
+      status: 8,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    });
+    await flushMicrotasks();
+
+    parentWorker.clearPostedMessages();
+    parentWorker.emit({
+      type: "status",
+      status: 9,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    });
+    await flushMicrotasks(40);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(createdWorkers).toHaveLength(1);
+    expect(
+      requests.some((msg) => msg.type === "register-process" && msg.pid === 156),
+    ).toBe(false);
+    expect(
+      requests.some((msg) => msg.type === "initialize-process-lifecycle" && msg.pid === 156),
+    ).toBe(false);
+  } finally {
+    restoreDefaultInstantiate();
+  }
+});
+
+test("vfork execve handoff failure should roll back without surfacing a fatal parent error", async () => {
+  const restoreDefaultInstantiate = (): void => {
+    vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {
+      const memory = (imports as { env: { memory: WebAssembly.Memory } }).env.memory;
+      return {
+        exports: makeKernelExports(memory),
+      } as WebAssembly.WebAssemblyInstantiatedSource;
+    });
+  };
+
+  let instantiateCount = 0;
+  vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {
+    instantiateCount += 1;
+    const memory = (imports as { env: { memory: WebAssembly.Memory } }).env.memory;
+    const exports = makeKernelExports(memory);
+    if (instantiateCount === 2) {
+      exports.thread_complete_execve_handoff = () => -BigInt(exports.abi_enoent());
+    }
+    return { exports } as WebAssembly.WebAssemblyInstantiatedSource;
+  });
+
+  try {
+    const onError = vi.fn();
+    await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+      pid: 1,
+      onError,
+      kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+        switch (msg.type) {
+          case "register-process":
+            return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+          case "initialize-process-lifecycle":
+            return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+          case "canonicalize-child-pid":
+            return {
+              type: "child-pid-canonicalized",
+              requestId: 0,
+              childPid: 156,
+              nextPid: 201,
+              pgid: 33,
+              sid: 44,
+              kernelState: msg.kernelState,
+            };
+          case "resume-vfork-execve-parent":
+            return { type: "vfork-execve-parent-resumed", requestId: 0, kernelState: msg.kernelState };
+          case "sync-fork-shared-state":
+            return { type: "fork-shared-state-synced", requestId: 0, kernelState: msg.kernelState };
+          case "rehydrate-fork-shared-state":
+            return { type: "fork-shared-state-rehydrated", requestId: 0 };
+          case "unregister-process":
+            return { type: "process-unregistered", requestId: 0 };
+          default:
+            throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+        }
+      },
+    });
+
+    const parentWorker = createdWorkers[0];
+    const parentKernel = createdKernelExports[0];
+    parentKernel.thread_vfork_child_pid = () => 55;
+    parentKernel.thread_spawn_kind = () => parentKernel.abi_spawn_kind_execve();
+    parentKernel.thread_spawn_child_pid = () => 156;
+
+    emitReady(parentWorker);
+    parentWorker.clearPostedMessages();
+    parentWorker.emit({
+      type: "status",
+      status: 8,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    });
+    await flushMicrotasks();
+
+    parentWorker.clearPostedMessages();
+    parentWorker.emit({
+      type: "status",
+      status: 9,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    });
+    await flushMicrotasks(40);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(createdWorkers[0]?.terminated).toBe(false);
+    expect(createdWorkers).toHaveLength(1);
+    expect(onError).not.toHaveBeenCalled();
   } finally {
     restoreDefaultInstantiate();
   }

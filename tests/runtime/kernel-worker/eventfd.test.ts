@@ -1,7 +1,13 @@
 import { expect, test } from "vite-plus/test";
-import type { KernelExports, KernelRuntimeState } from "../src/abi.js";
-import { createKernelWorkerPrimitives } from "../src/kernel-worker/primitives.js";
-import { createKernelWorkerSharedStateSync } from "../src/kernel-worker/shared-state-sync.js";
+import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
+import { createKernelWorkerPrimitives } from "../../../src/kernel-worker/primitives.js";
+import { createKernelWorkerSharedStateSync } from "../../../src/kernel-worker/shared-state-sync.js";
+
+const FD_TYPE_EVENTFD = 9;
+
+type TestKernelExports = KernelExports & {
+  setFdMap(map: Map<number, number>): void;
+};
 
 function makeKernelState(): KernelRuntimeState {
   return {
@@ -24,13 +30,14 @@ function makeKernelState(): KernelRuntimeState {
   };
 }
 
-function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
+function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
   let runtimeState = makeKernelState();
+  let fdMap = new Map<number, number>();
+
   const exports = {
     memory,
     abi_max_fds: () => 256,
     abi_max_threads: () => 64,
-    abi_fd_type_epoll: () => 3,
     kernel_heap_base: () => runtimeState.heapBase,
     kernel_heap_ptr: () => runtimeState.heapPtr,
     kernel_ofd_table_ptr: () => runtimeState.ofdTablePtr,
@@ -41,10 +48,13 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     kernel_epoll_table_bytes: () => 64 * 4,
     kernel_epoll_instance_bytes: () => 64 * 16 + 4,
     kernel_socket_table_ptr: () => runtimeState.socketTablePtr,
+    kernel_socket_table_bytes: () => 64 * 128,
     kernel_socket_used: () => runtimeState.socketUsed,
     kernel_pipe_base: () => runtimeState.pipeBase,
+    kernel_pipe_region_bytes: () => 64 * (32 + 4096),
     kernel_pipe_used: () => runtimeState.pipeUsed,
     kernel_net_buf_base: () => runtimeState.netBufBase,
+    kernel_net_buf_pool_bytes: () => 128 * (16 + 8192),
     kernel_net_buf_used: () => runtimeState.netBufUsed,
     kernel_sig_slots_ptr: () => runtimeState.sigSlotsPtr,
     kernel_process_pending_ptr: () => runtimeState.processPendingPtr,
@@ -87,45 +97,42 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
         timeStatePtr,
       };
     },
-    process_fd_ofd_id: (_vmPtr: number, _fd: number) => 0,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fdMap.get(fd) ?? 0,
     process_thread_vm_ptr: (_vmPtr: number, slot: number) => (slot === 0 ? 0x1234 : 0),
     thread_blocked_ofd_id: (_vmPtr: number) => 0,
     kernel_ofd_fd_type: (ofdId: number) => new DataView(memory.buffer)
       .getInt32(runtimeState.ofdTablePtr + ofdId * 32, true),
-    kernel_ofd_ino: (ofdId: number) => new DataView(memory.buffer)
-      .getUint32(runtimeState.ofdTablePtr + ofdId * 32 + 24, true),
+    kernel_ofd_refcount: (ofdId: number) => new DataView(memory.buffer)
+      .getInt32(runtimeState.ofdTablePtr + ofdId * 32 + 16, true),
+    kernel_retain_ofd: () => {},
+    kernel_release_ofd: () => {},
+    setFdMap: (map: Map<number, number>) => {
+      fdMap = new Map(map);
+    },
   };
-  return exports as unknown as KernelExports;
+
+  return exports as unknown as TestKernelExports;
 }
 
-function seedEpollOfd(
-  exports: KernelExports,
-  memory: WebAssembly.Memory,
-  ofdId: number,
-  epollIdx: number,
-  marker: number,
-): void {
+function seedEventfdOfd(memory: WebAssembly.Memory, ofdId: number, marker: number): void {
   const state = makeKernelState();
   const view = new DataView(memory.buffer);
-  view.setInt32(state.ofdTablePtr + ofdId * 32, exports.abi_fd_type_epoll(), true);
-  view.setUint32(state.ofdTablePtr + ofdId * 32 + 24, epollIdx, true);
-  const epollTable = new Uint32Array(memory.buffer, state.epollTablePtr, exports.kernel_epoll_table_bytes() >>> 2);
-  const instancePtr = state.epollTablePtr + 0x1000 + epollIdx * 0x2000;
-  epollTable[epollIdx] = instancePtr;
-  new Uint8Array(memory.buffer, instancePtr, exports.kernel_epoll_instance_bytes()).fill(marker);
+  const base = state.ofdTablePtr + ofdId * 32;
+  view.setInt32(base, FD_TYPE_EVENTFD, true);
+  view.setInt32(base + 16, 1, true);
+  view.setUint32(base + 24, marker, true);
 }
 
-function epollMarker(memory: WebAssembly.Memory, epollIdx: number): number {
+function eventfdMarker(memory: WebAssembly.Memory, ofdId: number): number {
   const state = makeKernelState();
-  const epollTable = new Uint32Array(memory.buffer, state.epollTablePtr, 64);
-  const instancePtr = epollTable[epollIdx] ?? 0;
-  if (instancePtr === 0) {
-    return 0;
-  }
-  return new Uint8Array(memory.buffer, instancePtr, 1)[0] ?? 0;
+  return new DataView(memory.buffer).getUint32(state.ofdTablePtr + ofdId * 32 + 24, true);
 }
 
-function makeSharedStateSync(parentExports: KernelExports, childExports: KernelExports, canonicalExports: KernelExports) {
+function makeSharedStateSync(
+  parentExports: TestKernelExports,
+  childExports: TestKernelExports,
+  canonicalExports: TestKernelExports,
+) {
   const processKernels = new Map<number, KernelExports>([
     [1, parentExports],
     [2, childExports],
@@ -156,7 +163,7 @@ function makeSharedStateSync(parentExports: KernelExports, childExports: KernelE
   });
 }
 
-test("kernel-worker epoll sync keeps private epoll instances process-local", () => {
+test("kernel-worker eventfd sync keeps private eventfd OFDs process-local", () => {
   const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
   const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
   const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
@@ -165,23 +172,19 @@ test("kernel-worker epoll sync keeps private epoll instances process-local", () 
   const childExports = makeKernelExports(childMemory);
   const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
 
-  seedEpollOfd(parentExports, parentMemory, 7, 0, 0xaa);
-  seedEpollOfd(childExports, childMemory, 9, 1, 0xbb);
-  parentExports.process_fd_ofd_id = (_vmPtr, fd) => (fd === 4 ? 7 : 0);
-  childExports.process_fd_ofd_id = (_vmPtr, fd) => (fd === 4 ? 9 : 0);
+  seedEventfdOfd(parentMemory, 7, 0xaa);
+  seedEventfdOfd(childMemory, 9, 0xbb);
+  parentExports.setFdMap(new Map([[4, 7]]));
+  childExports.setFdMap(new Map([[4, 9]]));
 
-  sharedStateSync.syncEpollState(2, makeKernelState());
+  sharedStateSync.syncOfdState(2, [9], makeKernelState());
 
-  const parentTable = new Uint32Array(parentMemory.buffer, makeKernelState().epollTablePtr, 64);
-  const canonicalTable = new Uint32Array(canonicalMemory.buffer, makeKernelState().epollTablePtr, 64);
-  expect(parentTable[0]).not.toBe(0);
-  expect(parentTable[1]).toBe(0);
-  expect(epollMarker(parentMemory, 0)).toBe(0xaa);
-  expect(canonicalTable[1]).not.toBe(0);
-  expect(epollMarker(canonicalMemory, 1)).toBe(0xbb);
+  expect(eventfdMarker(parentMemory, 7)).toBe(0xaa);
+  expect(eventfdMarker(parentMemory, 9)).toBe(0);
+  expect(eventfdMarker(canonicalMemory, 9)).toBe(0xbb);
 });
 
-test("kernel-worker epoll sync propagates shared epoll instances by shared OFD id", () => {
+test("kernel-worker eventfd sync propagates shared eventfd OFDs by shared OFD id", () => {
   const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
   const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
   const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
@@ -190,13 +193,13 @@ test("kernel-worker epoll sync propagates shared epoll instances by shared OFD i
   const childExports = makeKernelExports(childMemory);
   const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
 
-  seedEpollOfd(parentExports, parentMemory, 7, 0, 0xaa);
-  seedEpollOfd(childExports, childMemory, 7, 0, 0xcc);
-  parentExports.process_fd_ofd_id = (_vmPtr, fd) => (fd === 4 ? 7 : 0);
-  childExports.process_fd_ofd_id = (_vmPtr, fd) => (fd === 4 ? 7 : 0);
+  seedEventfdOfd(parentMemory, 7, 0xaa);
+  seedEventfdOfd(childMemory, 7, 0xcc);
+  parentExports.setFdMap(new Map([[4, 7]]));
+  childExports.setFdMap(new Map([[4, 7]]));
 
-  sharedStateSync.syncEpollState(2, makeKernelState());
+  sharedStateSync.syncOfdState(2, [7], makeKernelState());
 
-  expect(epollMarker(parentMemory, 0)).toBe(0xcc);
-  expect(epollMarker(canonicalMemory, 0)).toBe(0xcc);
+  expect(eventfdMarker(parentMemory, 7)).toBe(0xcc);
+  expect(eventfdMarker(canonicalMemory, 7)).toBe(0xcc);
 });

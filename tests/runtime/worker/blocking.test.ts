@@ -3,13 +3,13 @@
  * §6.4: Each STATUS code maps to a specific Atomics.wait or parent action.
  */
 import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
-import type { KernelExports, KernelRuntimeState } from "../src/abi.js";
+import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
 import type {
   ThreadWorkerInbound,
   ThreadWorkerOutbound,
-} from "../src/messages.js";
+} from "../../../src/messages.js";
 
-type WorkerModule = typeof import("../src/worker.js");
+type WorkerModule = typeof import("../../../src/worker.js");
 
 let workerModule: WorkerModule | null = null;
 
@@ -239,7 +239,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
 
 beforeEach(async () => {
   vi.resetModules();
-  workerModule = await import("../src/worker.js");
+  workerModule = await import("../../../src/worker.js");
   createdWorkers.length = 0;
   globalThis.Worker = class extends FakeWorker {
     constructor(url: URL, options: WorkerOptions) {

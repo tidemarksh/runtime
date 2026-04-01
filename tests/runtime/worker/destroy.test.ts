@@ -1,0 +1,192 @@
+import { expect, test, vi } from "vite-plus/test";
+import { createWorkerDestroyHelpers } from "../../../src/worker/destroy.js";
+import type { ProcessHandle, ThreadWorkerState } from "../../../src/worker/types.js";
+
+class FakeWorker {
+  onmessage: ((event: MessageEvent<unknown>) => void) | null = vi.fn();
+  terminate = vi.fn();
+}
+
+function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
+  const primaryWorker = new FakeWorker() as unknown as Worker;
+  const extraWorker = new FakeWorker() as unknown as Worker;
+  return {
+    runtimeId: 1,
+    pid: 11,
+    parentPid: null,
+    vmPtr: 0x1234,
+    ramSize: 0,
+    guestBase: 0,
+    worker: primaryWorker,
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    wasmModule: {} as WebAssembly.Module,
+    kernel: {
+      process_release_host_stdio: vi.fn(),
+    } as unknown as ProcessHandle["kernel"],
+    kernelState: {
+      heapBase: 0x200000,
+      heapPtr: 0x210000,
+      ofdTablePtr: 0x220000,
+      memfsPtr: 0x230000,
+      memStatePtr: 0x240000,
+      epollTablePtr: 0x250000,
+      socketTablePtr: 0x260000,
+      socketUsed: 0,
+      pipeBase: 0x270000,
+      pipeUsed: 0n,
+      netBufBase: 0x280000,
+      netBufUsed: 0n,
+      sigSlotsPtr: 0xc00000,
+      processPendingPtr: 0xc10000,
+      processRuntimeStatePtr: 0xc20000,
+      timeStatePtr: 0xc30000,
+    },
+    stdinPipe: 1,
+    stdoutPipe: 2,
+    stderrPipe: 3,
+    hostStdio: {
+      stdinPipe: 1,
+      stdoutPipe: 2,
+      stderrPipe: 3,
+      refCount: 1,
+    },
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set([7]),
+    },
+    stdinQueue: [],
+    outputBacklog: [],
+    debugCommand: "destroy-test",
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(8),
+      stateSab: new SharedArrayBuffer(128),
+    },
+    sabPageCache: null,
+    workers: new Set([extraWorker]),
+    readyWorkers: [extraWorker],
+    runningWorker: extraWorker,
+    blockedWorkers: new Map([[extraWorker, {
+      vmPtr: 0x2222,
+      status: 6,
+      retryTimer: null,
+      timeoutExpired: false,
+      rpcPending: false,
+    }]]),
+    pipeSyncPromise: null,
+    pipeSyncQueued: false,
+    pipeWaiterWakeQueued: false,
+    epollSyncPromise: null,
+    epollSyncQueued: false,
+    epollWaiterWakeQueued: false,
+    ofdSyncPromise: null,
+    ofdSyncQueuedIds: new Set(),
+    socketSyncPromise: null,
+    socketSyncQueued: false,
+    socketWaiterWakeQueued: false,
+    vforkSnapshot: {
+      vmPtr: 0x1234,
+      childPid: 77,
+      nextPid: 88,
+      pgid: 99,
+      sid: 111,
+      inheritedSharedOfdIds: [7],
+    },
+    vforkWorker: primaryWorker,
+    onExit: vi.fn(),
+    workerDebugLog: [],
+    ...overrides,
+  } as unknown as ProcessHandle;
+}
+
+test("destroyProcessHandle tears down workers, clears process maps, and releases host stdio once", () => {
+  const handle = makeHandle();
+  const primaryWorker = handle.worker as unknown as FakeWorker;
+  const extraWorkers = [...handle.workers] as Array<Worker & FakeWorker>;
+  handle.kernelShare.members.add(handle);
+  const processHandles = new Map<number, ProcessHandle>([[handle.pid, handle]]);
+  const runtimeFsDirtyHandles = new Map<number, Set<ProcessHandle>>([[handle.runtimeId, new Set([handle])]]);
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(handle.worker, { vmPtr: handle.vmPtr, initialized: true, waitingInWorkerStatus: null });
+  for (const worker of handle.workers) {
+    threadWorkerStates.set(worker, { vmPtr: 0x2222, initialized: true, waitingInWorkerStatus: null });
+  }
+  const appendRuntimeLifecycleEvent = vi.fn();
+  const clearBlockedWorker = vi.fn((targetHandle: ProcessHandle, worker: Worker) => {
+    targetHandle.blockedWorkers.delete(worker);
+  });
+  const clearVforkSnapshot = vi.fn((targetHandle: ProcessHandle) => {
+    targetHandle.vforkSnapshot = null;
+    targetHandle.vforkWorker = null;
+  });
+  const unregisterProcessWithKernelWorker = vi.fn();
+
+  const destroyHelpers = createWorkerDestroyHelpers({
+    processHandles,
+    threadWorkerStates,
+    runtimeFsDirtyHandles,
+    appendRuntimeLifecycleEvent,
+    clearBlockedWorker,
+    clearVforkSnapshot,
+    unregisterProcessWithKernelWorker,
+  });
+
+  destroyHelpers.destroyProcessHandle(handle, 15, false);
+  destroyHelpers.destroyProcessHandle(handle, 15, false);
+
+  expect(clearBlockedWorker).toHaveBeenCalledTimes(1);
+  expect(clearVforkSnapshot).toHaveBeenCalledWith(handle);
+  expect(unregisterProcessWithKernelWorker).toHaveBeenCalledTimes(2);
+  expect(primaryWorker.terminate).toHaveBeenCalledTimes(2);
+  for (const worker of extraWorkers) {
+    expect(worker.terminate).toHaveBeenCalledTimes(1);
+  }
+  expect(processHandles.has(handle.pid)).toBe(false);
+  expect(runtimeFsDirtyHandles.has(handle.runtimeId)).toBe(false);
+  expect(handle.stdinPipe).toBe(0);
+  expect(handle.stdoutPipe).toBe(0);
+  expect(handle.stderrPipe).toBe(0);
+  expect(handle.hostStdio.refCount).toBe(0);
+  expect(handle.kernel.process_release_host_stdio).toHaveBeenCalledTimes(1);
+  expect(handle.kernelShare.members.has(handle)).toBe(false);
+});
+
+test("destroyRuntimeProcesses only notifies exits for handles in the selected runtime", () => {
+  const runtime1Root = makeHandle({
+    runtimeId: 1,
+    pid: 1,
+    onExit: vi.fn(),
+  });
+  const runtime1Child = makeHandle({
+    runtimeId: 1,
+    pid: 2,
+    parentPid: 1,
+    onExit: vi.fn(),
+  });
+  const runtime2Handle = makeHandle({
+    runtimeId: 2,
+    pid: 3,
+    onExit: vi.fn(),
+  });
+  const processHandles = new Map<number, ProcessHandle>([
+    [1, runtime1Root],
+    [2, runtime1Child],
+    [3, runtime2Handle],
+  ]);
+
+  const destroyHelpers = createWorkerDestroyHelpers({
+    processHandles,
+    threadWorkerStates: new WeakMap(),
+    runtimeFsDirtyHandles: new Map(),
+    appendRuntimeLifecycleEvent: vi.fn(),
+    clearBlockedWorker: vi.fn(),
+    clearVforkSnapshot: vi.fn(),
+    unregisterProcessWithKernelWorker: vi.fn(),
+  });
+
+  destroyHelpers.destroyRuntimeProcesses(1, 9);
+
+  expect(runtime1Root.onExit).toHaveBeenCalledWith(137);
+  expect(runtime1Child.onExit).toHaveBeenCalledWith(137);
+  expect(runtime2Handle.onExit).not.toHaveBeenCalled();
+  expect(processHandles.has(3)).toBe(true);
+});

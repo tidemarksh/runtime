@@ -1,5 +1,5 @@
 import { expect, test } from "vite-plus/test";
-import { assertSharedMemoryBridge, detectBridgeSupport } from "../src/bridge.js";
+import { assertSharedMemoryBridge, detectBridgeSupport } from "../../../src/bridge.js";
 
 const FakeWorker = (() => {}) as unknown as typeof Worker;
 
