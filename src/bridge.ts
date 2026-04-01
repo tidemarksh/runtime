@@ -1,4 +1,4 @@
-import { detectWasmFeatures, type WasmFeatureSupport } from "./wasm-features.js";
+import { detectWasmFeatures, type WasmFeatureSupport } from "./wasm/features.js";
 
 export interface RuntimeBridgeSupport {
   worker: boolean;

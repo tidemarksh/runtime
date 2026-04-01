@@ -9,13 +9,13 @@ import {
   precompileModule,
   writeProcessStdin,
 } from "./worker.js";
-import type { RuntimeStat } from "./fs-types.js";
+import type { RuntimeStat } from "./fs/types.js";
 import type {
   KernelWorkerInbound,
   KernelWorkerOutbound,
   KernelWorkerRequest,
 } from "./messages.js";
-import { addWorkerMessageListener, removeWorkerMessageListener } from "./worker-compat.js";
+import { addWorkerMessageListener, removeWorkerMessageListener } from "./bridge/compat.js";
 
 export interface RuntimeOptions {
   wasmBytes: BufferSource;
@@ -167,7 +167,7 @@ export class Runtime {
     return proc;
   }
 
-  async applyFsSnapshot(entries: import("./fs-types.js").FsSnapshotEntry[]): Promise<void> {
+  async applyFsSnapshot(entries: import("./fs/types.js").FsSnapshotEntry[]): Promise<void> {
     await this.sendKernelRequest<Extract<KernelWorkerOutbound, { type: "fs-loaded" }>>({
       type: "load-fs-snapshot",
       entries,
@@ -334,8 +334,8 @@ export class Process {
   }
 }
 
-export type { FsSnapshotEntry, RuntimeStat } from "./fs-types.js";
+export type { FsSnapshotEntry, RuntimeStat } from "./fs/types.js";
 export type { KernelExports, StatusCodes, SpawnKindCodes } from "./abi.js";
 export { readSpawnKindCodes, readStatusCodes } from "./abi.js";
 export { assertSharedMemoryBridge, detectBridgeSupport } from "./bridge.js";
-export { detectWasmFeatures } from "./wasm-features.js";
+export { detectWasmFeatures } from "./wasm/features.js";

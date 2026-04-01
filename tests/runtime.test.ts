@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
 import { Runtime } from "../src/index.js";
-import type { FsSnapshotEntry } from "../src/fs-types.js";
-import type { RuntimeStat } from "../src/fs-types.js";
+import type { FsSnapshotEntry } from "../src/fs/types.js";
+import type { RuntimeStat } from "../src/fs/types.js";
 import type { KernelWorkerInbound, KernelWorkerOutbound } from "../src/messages.js";
 import type { ProcessHandle } from "../src/worker.js";
 import * as workerModule from "../src/worker.js";

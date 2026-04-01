@@ -9,7 +9,7 @@ import { expect, test } from "vite-plus/test";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { readStatusCodes } from "../src/abi.js";
-import { createKernelEnv } from "../src/wasm-env.js";
+import { createKernelEnv } from "../src/wasm/env.js";
 
 const KERNEL_WASM_PATH = resolve(
   __dirname,

@@ -50,7 +50,7 @@ export function acquireWorker(): Worker {
     return entry.worker;
   }
 
-  const workerUrl = new URL("./thread-worker.mjs", import.meta.url);
+  const workerUrl = new URL("../thread-worker.mjs", import.meta.url);
   if (workerPool.length < MAX_WORKERS) {
     const worker = new Worker(workerUrl, { type: "module" });
     maybeUnrefWorker(worker);

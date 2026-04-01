@@ -1,5 +1,5 @@
-import { readPipe, writePipe } from "./pipe-bridge.js";
-import type { ProcessHandle, SharedHostStdio } from "./worker-types.js";
+import { readPipe, writePipe } from "../bridge/pipe.js";
+import type { ProcessHandle, SharedHostStdio } from "./types.js";
 
 export function writeProcessStdin(handle: ProcessHandle, data: Uint8Array): void {
   if (data.length === 0) {

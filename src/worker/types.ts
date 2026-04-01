@@ -1,13 +1,13 @@
 import type {
   KernelExports,
   KernelRuntimeState,
-} from "./abi.js";
-import type { FsSnapshotEntry } from "./fs-types.js";
+} from "../abi.js";
+import type { FsSnapshotEntry } from "../fs/types.js";
 import type {
   KernelWorkerOutbound,
   KernelWorkerRequest,
-} from "./messages.js";
-import type { RuntimeStateBridge } from "./runtime-state-bridge.js";
+} from "../messages.js";
+import type { RuntimeStateBridge } from "../bridge/runtime-state.js";
 
 export interface SharedHostStdio {
   stdinPipe: number;

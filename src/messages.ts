@@ -5,8 +5,8 @@
  */
 
 import type { KernelRuntimeState } from "./abi.js";
-import type { FsSnapshotEntry, RuntimeStat } from "./fs-types.js";
-import type { WasmFeatureSupport } from "./wasm-features.js";
+import type { FsSnapshotEntry, RuntimeStat } from "./fs/types.js";
+import type { WasmFeatureSupport } from "./wasm/features.js";
 
 export interface KernelWorkerOfdSlotSnapshot {
   ofdId: number;

@@ -1,4 +1,4 @@
-import type { KernelExports } from "./abi.js";
+import type { KernelExports } from "../abi.js";
 
 export function alignUp(value: number, align: number): number {
   return (value + align - 1) & ~(align - 1);

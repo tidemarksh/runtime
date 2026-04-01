@@ -1,4 +1,4 @@
-import { readInodeMeta } from "./sab-page-cache.js";
+import { readInodeMeta } from "../fs/sab-page-cache.js";
 
 export interface KernelEnvImports {
   [key: string]: WebAssembly.ImportValue;

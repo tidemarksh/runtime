@@ -1,4 +1,4 @@
-import type { KernelRuntimeState } from "./abi.js";
+import type { KernelRuntimeState } from "../abi.js";
 
 const NOTIFY_INDEX = 0;
 const VERSION_INDEX = 1;

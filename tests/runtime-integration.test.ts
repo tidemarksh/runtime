@@ -3,7 +3,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { Worker } from "node:worker_threads";
 import type { KernelExports } from "../src/abi.js";
-import type { FsSnapshotEntry } from "../src/fs-types.js";
+import type { FsSnapshotEntry } from "../src/fs/types.js";
 import type { Runtime as RuntimeClass } from "../src/index.js";
 
 type RuntimeInstance = RuntimeClass;

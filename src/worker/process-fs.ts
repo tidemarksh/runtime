@@ -1,11 +1,11 @@
-import type { KernelExports } from "./abi.js";
-import type { FsSnapshotEntry } from "./fs-types.js";
+import type { KernelExports } from "../abi.js";
+import type { FsSnapshotEntry } from "../fs/types.js";
 import {
   ensureKernelMemoryCapacity,
   kernelScratchBase,
   writeKernelScratch,
-} from "./worker-kernel-scratch.js";
-import type { ProcessHandle } from "./worker-types.js";
+} from "./kernel-scratch.js";
+import type { ProcessHandle } from "./types.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
