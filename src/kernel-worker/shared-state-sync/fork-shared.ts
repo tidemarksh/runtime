@@ -185,7 +185,7 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
         ),
         sharedPipeSlots,
       );
-      deps.copyEpollState(canonicalExports, canonicalState, targetExports, targetState);
+      deps.copySelectedEpollState(canonicalExports, canonicalState, targetExports, targetState, ofdIds);
       deps.copySocketState(canonicalExports, canonicalState, targetExports, targetState);
     }
   }

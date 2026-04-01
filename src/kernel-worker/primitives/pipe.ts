@@ -119,6 +119,24 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
         continue;
       }
 
+      const stdinPipeSlot = processExports.process_stdin_pipe(vmPtr);
+      if (stdinPipeSlot > 0 && stdinPipeSlot < maxPipes) {
+        managedPipeSlots.add(stdinPipeSlot);
+        writeOpen[stdinPipeSlot] += 1;
+      }
+
+      const stdoutPipeSlot = processExports.process_stdout_pipe(vmPtr);
+      if (stdoutPipeSlot > 0 && stdoutPipeSlot < maxPipes) {
+        managedPipeSlots.add(stdoutPipeSlot);
+        readOpen[stdoutPipeSlot] += 1;
+      }
+
+      const stderrPipeSlot = processExports.process_stderr_pipe(vmPtr);
+      if (stderrPipeSlot > 0 && stderrPipeSlot < maxPipes) {
+        managedPipeSlots.add(stderrPipeSlot);
+        readOpen[stderrPipeSlot] += 1;
+      }
+
       const heldRefcounts = collectProcessHeldOfdRefcounts(processExports, vmPtr);
       for (let ofdId = 1; ofdId < maxFds; ofdId += 1) {
         const refcount = heldRefcounts[ofdId] ?? 0;

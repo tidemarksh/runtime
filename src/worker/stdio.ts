@@ -61,23 +61,13 @@ export function drainPipeOutput(
   }
 }
 
-export function currentStandardFdPipeSlot(handle: ProcessHandle, fd: number): number {
-  const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
-  if (ofdId === 0 || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()) {
-    return 0;
-  }
-  return handle.kernel.kernel_ofd_ino(ofdId);
-}
-
 export function drainProcessOutput(handle: ProcessHandle): boolean {
   const stdoutDrained = handle.stdoutPipe !== 0
     && handle.stdoutPipe === handle.hostStdio.stdoutPipe
-    && currentStandardFdPipeSlot(handle, 1) === handle.stdoutPipe
     ? drainPipeOutput(handle, handle.stdoutPipe)
     : false;
   const stderrDrained = handle.stderrPipe !== 0
     && handle.stderrPipe === handle.hostStdio.stderrPipe
-    && currentStandardFdPipeSlot(handle, 2) === handle.stderrPipe
     ? drainPipeOutput(handle, handle.stderrPipe)
     : false;
   return stdoutDrained || stderrDrained;
@@ -113,15 +103,18 @@ export function retainSharedHostStdio(shared: SharedHostStdio): SharedHostStdio 
 }
 
 export function releaseSharedHostStdioLocal(handle: ProcessHandle): void {
+  if (handle.stdinPipe === 0 && handle.stdoutPipe === 0 && handle.stderrPipe === 0) {
+    return;
+  }
   const shared = handle.hostStdio;
   if (shared.refCount > 0) {
     shared.refCount -= 1;
   }
+  handle.stdinPipe = 0;
+  handle.stdoutPipe = 0;
+  handle.stderrPipe = 0;
   if (shared.refCount !== 0) {
     return;
   }
   handle.kernel.process_release_host_stdio(handle.vmPtr);
-  handle.stdinPipe = 0;
-  handle.stdoutPipe = 0;
-  handle.stderrPipe = 0;
 }

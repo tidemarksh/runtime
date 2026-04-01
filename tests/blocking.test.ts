@@ -8,11 +8,18 @@ import type {
   ThreadWorkerInbound,
   ThreadWorkerOutbound,
 } from "../src/messages.js";
-import {
-  clearModuleCache,
-  createProcess,
-  destroyWorkerPool,
-} from "../src/worker.js";
+
+type WorkerModule = typeof import("../src/worker.js");
+
+let workerModule: WorkerModule | null = null;
+
+function clearModuleCache(): void {
+  workerModule?.clearModuleCache();
+}
+
+function createProcess(...args: Parameters<WorkerModule["createProcess"]>) {
+  return workerModule!.createProcess(...args);
+}
 
 // --- Fake Worker ---
 
@@ -230,7 +237,9 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
   };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  vi.resetModules();
+  workerModule = await import("../src/worker.js");
   createdWorkers.length = 0;
   globalThis.Worker = class extends FakeWorker {
     constructor(url: URL, options: WorkerOptions) {
@@ -248,10 +257,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  destroyWorkerPool();
+  workerModule?.destroyWorkerPool();
   clearModuleCache();
+  workerModule = null;
   vi.restoreAllMocks();
   globalThis.Worker = originalWorker;
+  vi.resetModules();
 });
 
 test("STATUS_SLEEP schedules owner-side wakeup after the sleep timer fires", async () => {

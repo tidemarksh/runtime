@@ -76,8 +76,12 @@ export interface KernelExports {
   debug_fd_syscall_trace_len?(): number;
   debug_fd_syscall_trace_nr?(index: number): bigint | number;
   debug_fd_syscall_trace_arg0?(index: number): bigint | number;
+  debug_fd_syscall_trace_arg0_ofd_id?(index: number): number;
+  debug_fd_syscall_trace_arg0_ofd_type?(index: number): number;
   debug_fd_syscall_trace_arg1?(index: number): bigint | number;
   debug_fd_syscall_trace_arg2?(index: number): bigint | number;
+  debug_fd_syscall_trace_arg2_ofd_id?(index: number): number;
+  debug_fd_syscall_trace_arg2_ofd_type?(index: number): number;
   debug_fd_syscall_trace_arg3?(index: number): bigint | number;
   debug_fd_syscall_trace_result?(index: number): bigint | number;
   debug_fd_syscall_trace_status?(index: number): number;

@@ -24,6 +24,7 @@ export interface KernelWorkerSharedStateSyncDeps {
     snapshots: KernelWorkerOfdSlotSnapshot[],
   ): void;
   collectProcessHeldOfdRefcounts(processExports: KernelExports, vmPtr: number): Int32Array;
+  collectProcessHeldEpollOfdIds(processExports: KernelExports, vmPtr: number): number[];
   collectProcessHeldPipeSlots(processExports: KernelExports, vmPtr: number): Set<number>;
   collectProcessPipeSlotModes(processExports: KernelExports, vmPtr: number): Map<number, number>;
   collectProcessPrivatePipeSlots(processExports: KernelExports, vmPtr: number): Set<number>;
@@ -34,6 +35,13 @@ export interface KernelWorkerSharedStateSyncDeps {
     targetExports: KernelExports,
     targetState: KernelRuntimeState,
     ofdIds: Iterable<number>,
+  ): void;
+  copySelectedEpollState(
+    sourceExports: KernelExports,
+    sourceState: KernelRuntimeState,
+    targetExports: KernelExports,
+    targetState: KernelRuntimeState,
+    epollOfdIds: Iterable<number>,
   ): void;
   clearSelectedOfdState(
     targetExports: KernelExports,

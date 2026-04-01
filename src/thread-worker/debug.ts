@@ -177,13 +177,17 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number): string
         continue;
       }
       const arg0 = readOptionalTraceU64(exports.debug_fd_syscall_trace_arg0?.(index));
+      const arg0OfdId = exports.debug_fd_syscall_trace_arg0_ofd_id?.(index) ?? 0;
+      const arg0OfdType = exports.debug_fd_syscall_trace_arg0_ofd_type?.(index) ?? 0;
       const arg1 = readOptionalTraceU64(exports.debug_fd_syscall_trace_arg1?.(index));
       const arg2 = readOptionalTraceU64(exports.debug_fd_syscall_trace_arg2?.(index));
+      const arg2OfdId = exports.debug_fd_syscall_trace_arg2_ofd_id?.(index) ?? 0;
+      const arg2OfdType = exports.debug_fd_syscall_trace_arg2_ofd_type?.(index) ?? 0;
       const arg3 = readOptionalTraceU64(exports.debug_fd_syscall_trace_arg3?.(index));
       const result = readOptionalTraceU64(exports.debug_fd_syscall_trace_result?.(index));
       const status = exports.debug_fd_syscall_trace_status?.(index) ?? 0;
       traces.push(
-        `${nr.toString()}(${arg0.toString()},${arg1.toString()},${arg2.toString()},${arg3.toString()})=`
+        `${nr.toString()}(${arg0.toString()}[${arg0OfdId}/${arg0OfdType}],${arg1.toString()},${arg2.toString()}[${arg2OfdId}/${arg2OfdType}],${arg3.toString()})=`
         + `${BigInt.asIntN(64, result).toString()}/${status}`,
       );
     }

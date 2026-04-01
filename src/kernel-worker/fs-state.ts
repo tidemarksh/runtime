@@ -29,6 +29,8 @@ interface KernelWorkerFsStateDeps {
 }
 
 export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
+  const MEMFS_S_IFDIR = 0o040000;
+
   function ensureDirectory(path: string, mode = 0o755): number {
     const targetExports = deps.getCanonicalExports();
     const parts = pathParts(path);
@@ -118,6 +120,70 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     }
   }
 
+  function ensurePublishedInodeInTarget(
+    targetExports: KernelExports,
+    ino: number,
+    published: ReturnType<typeof readInodeRecord>,
+    seen: Set<number> = new Set(),
+  ): void {
+    if (ino <= 0 || seen.has(ino)) {
+      return;
+    }
+    seen.add(ino);
+    if (ino === 1) {
+      return;
+    }
+    if ((targetExports.memfs_inode_mode(ino) & MEMFS_S_IFMT) !== 0) {
+      return;
+    }
+    if (!published || published.name.length === 0) {
+      return;
+    }
+
+    const parentIno = published.parentIno > 0 ? published.parentIno : 1;
+    if (parentIno !== ino) {
+      ensurePublishedInodeInTarget(
+        targetExports,
+        parentIno,
+        readInodeRecord(deps.getSabPageCache(), parentIno),
+        seen,
+      );
+    }
+
+    const reserveResult = Number(targetExports.memfs_reserve_inode_until(ino));
+    if (reserveResult < 0) {
+      throw new Error(`failed to reserve inode: ${ino}`);
+    }
+    const namePtr = writeScratchFor(targetExports, published.name);
+    const perms = normalizePermMode(published.mode, 0o644);
+    const fileType = published.mode & MEMFS_S_IFMT;
+
+    if (fileType === MEMFS_S_IFDIR) {
+      const created = targetExports.memfs_ensure_dir(parentIno, namePtr, published.name.length, perms);
+      if (created === 0) {
+        throw new Error(`failed to ensure directory inode: ${ino}`);
+      }
+      return;
+    }
+
+    if (fileType !== MEMFS_S_IFREG) {
+      return;
+    }
+
+    const created = targetExports.memfs_create_file(parentIno, namePtr, published.name.length);
+    if (created === 0) {
+      throw new Error(`failed to create inode: ${ino}`);
+    }
+    const sizeResult = Number(targetExports.memfs_set_file_size_shallow(ino, BigInt(published.size)));
+    if (sizeResult < 0) {
+      throw new Error(`failed to seed inode metadata: ${ino}`);
+    }
+    const modeResult = Number(targetExports.memfs_set_mode(ino, perms));
+    if (modeResult < 0) {
+      throw new Error(`failed to set inode mode: ${ino}`);
+    }
+  }
+
   function readFileByInode(sourceExports: KernelExports, ino: number): Uint8Array {
     const size = Number(sourceExports.memfs_file_size(ino));
     if (size <= 0) {
@@ -157,9 +223,12 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     ino: number,
     mode: number,
     data: Uint8Array,
+    published: ReturnType<typeof readInodeRecord>,
   ): void {
+    ensurePublishedInodeInTarget(targetExports, ino, published);
     const shallowResult = Number(targetExports.memfs_set_file_size_shallow(ino, BigInt(data.length)));
     if (shallowResult < 0) {
+      ensurePublishedInodeInTarget(targetExports, ino, published);
       writeFileByInode(targetExports, ino, data);
     }
     const modeResult = Number(targetExports.memfs_set_mode(ino, mode));
@@ -185,6 +254,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     };
 
     const data = readFileByInode(sourceExports, ino);
+    ensurePublishedInodeInTarget(canonicalExports, ino, published);
     writeFileByInode(canonicalExports, ino, data);
     publishInode(deps.getSabPageCache(), ino, {
       mode,
@@ -194,12 +264,12 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       nextSibling: published.nextSibling,
     }, data);
 
-    syncFileDataIntoTarget(canonicalExports, ino, mode, data);
+    syncFileDataIntoTarget(canonicalExports, ino, mode, data, published);
     for (const memberExports of deps.processKernels.values()) {
       if (memberExports === sourceExports) {
         continue;
       }
-      syncFileDataIntoTarget(memberExports, ino, mode, data);
+      syncFileDataIntoTarget(memberExports, ino, mode, data, published);
     }
 
     return true;

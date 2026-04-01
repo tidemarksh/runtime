@@ -40,14 +40,14 @@ function encodeWaitStatus(exitCode: number, termSignal: number): number {
 
 export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
   async function completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number): Promise<void> {
+    if (kernelWorkerOwnsPipeState(handle)) {
+      await deps.requestPipeStateSync(handle, true);
+    }
     deps.drainProcessOutput(handle);
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
       `exit-begin:${handle.pid}:held=[${[...collectProcessHeldOfds(handle)].sort((left, right) => left - right).join(",")}]:shared=[${[...handle.kernelShare.sharedOfdIds].sort((left, right) => left - right).join(",")}]`,
     );
-    if (kernelWorkerOwnsPipeState(handle)) {
-      await deps.requestPipeStateSync(handle, true);
-    }
     if (handle.kernelWorkerRequest && handle.pid > 0) {
       await deps.syncForkSharedStateViaKernelWorker(handle, kernelShareOtherMembers(handle));
     }

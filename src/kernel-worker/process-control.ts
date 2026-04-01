@@ -1,6 +1,6 @@
 import { attachKernelRuntimeState, readKernelRuntimeState, type KernelExports, type KernelRuntimeState } from "../abi.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
-import { bumpDirEpoch, resetPageCache } from "../fs/sab-page-cache.js";
+import { resetPageCache } from "../fs/sab-page-cache.js";
 import { createKernelEnv } from "../wasm/env.js";
 
 interface CanonicalProcessEntry {
@@ -56,6 +56,7 @@ interface KernelWorkerProcessControlDeps {
     options?: { includeData?: boolean },
   ): void;
   composeProcessPipeUsed(processExports: KernelExports, vmPtr: number, sharedPipeUsed: bigint): bigint;
+  collectProcessHeldEpollOfdIds(processExports: KernelExports, vmPtr: number): number[];
   collectProcessHeldPipeSlots(processExports: KernelExports, vmPtr: number): Set<number>;
   mergePipeSlotsFromCanonical(
     sourceExports: KernelExports,
@@ -83,6 +84,13 @@ interface KernelWorkerProcessControlDeps {
     sourceState: KernelRuntimeState,
     targetExports: KernelExports,
     targetState: KernelRuntimeState,
+  ): void;
+  copySelectedEpollState(
+    sourceExports: KernelExports,
+    sourceState: KernelRuntimeState,
+    targetExports: KernelExports,
+    targetState: KernelRuntimeState,
+    epollOfdIds: Iterable<number>,
   ): void;
   copySocketState(
     sourceExports: KernelExports,
@@ -233,7 +241,13 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
         includeData: seedMemfsMode === "full",
       });
     }
-    deps.copyEpollState(canonicalExports, registeredCanonicalState, processExports, registeredProcessState);
+    deps.copySelectedEpollState(
+      canonicalExports,
+      registeredCanonicalState,
+      processExports,
+      registeredProcessState,
+      deps.collectProcessHeldEpollOfdIds(processExports, vmPtr),
+    );
     deps.copySocketState(canonicalExports, registeredCanonicalState, processExports, registeredProcessState);
     return readKernelRuntimeState(processExports);
   }
@@ -294,11 +308,9 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       deps.copyMemfsState(processExports, sourceState, canonicalExports, canonicalState, {
         includeData: !metadataOnlyTreeSync,
       });
-      if (metadataOnlyTreeSync) {
-        bumpDirEpoch(deps.getSabPageCache());
-      } else {
-        deps.rebuildPageCacheFromCanonical();
-      }
+      // Even metadata-only mutations must publish new inode records so later
+      // file-data sync can reconstruct missing targets by inode.
+      deps.rebuildPageCacheFromCanonical();
       deps.fanoutCanonicalMemfs();
     }
     return {

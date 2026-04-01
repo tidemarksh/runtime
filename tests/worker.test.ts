@@ -6,18 +6,46 @@ import type {
   ThreadWorkerInbound,
   ThreadWorkerOutbound,
 } from "../src/messages.js";
-import {
-  clearRuntimeFsState,
-  clearModuleCache,
-  createProcess,
-  destroyProcessTree,
-  destroyWorkerPool,
-  injectHttpRequest,
-  mirrorRuntimeFsEntry,
-  primeRuntimeFsState,
-  replaceRuntimeFsSnapshot,
-  writeProcessStdin,
-} from "../src/worker.js";
+
+type WorkerModule = typeof import("../src/worker.js");
+
+let workerModule: WorkerModule | null = null;
+
+function clearRuntimeFsState(runtimeId: number): void {
+  workerModule?.clearRuntimeFsState(runtimeId);
+}
+
+function clearModuleCache(): void {
+  workerModule?.clearModuleCache();
+}
+
+function createProcess(...args: Parameters<WorkerModule["createProcess"]>) {
+  return workerModule!.createProcess(...args);
+}
+
+function destroyProcessTree(...args: Parameters<WorkerModule["destroyProcessTree"]>): void {
+  workerModule?.destroyProcessTree(...args);
+}
+
+function injectHttpRequest(...args: Parameters<WorkerModule["injectHttpRequest"]>) {
+  return workerModule!.injectHttpRequest(...args);
+}
+
+function mirrorRuntimeFsEntry(...args: Parameters<WorkerModule["mirrorRuntimeFsEntry"]>): void {
+  workerModule?.mirrorRuntimeFsEntry(...args);
+}
+
+function primeRuntimeFsState(...args: Parameters<WorkerModule["primeRuntimeFsState"]>) {
+  return workerModule!.primeRuntimeFsState(...args);
+}
+
+function replaceRuntimeFsSnapshot(...args: Parameters<WorkerModule["replaceRuntimeFsSnapshot"]>): void {
+  workerModule?.replaceRuntimeFsSnapshot(...args);
+}
+
+function writeProcessStdin(...args: Parameters<WorkerModule["writeProcessStdin"]>): void {
+  workerModule?.writeProcessStdin(...args);
+}
 
 class FakeWorker {
   onmessage:
@@ -423,7 +451,9 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
   return exports;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  vi.resetModules();
+  workerModule = await import("../src/worker.js");
   createdWorkers.length = 0;
   createdKernelExports.length = 0;
   threadCountQueue.length = 0;
@@ -448,10 +478,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  destroyWorkerPool();
+  workerModule?.destroyWorkerPool();
   clearModuleCache();
+  workerModule = null;
   vi.restoreAllMocks();
   globalThis.Worker = originalWorker;
+  vi.resetModules();
 });
 
 test("createProcess spawns a child worker on STATUS_CLONE_SPAWN", async () => {
@@ -2018,6 +2050,19 @@ test("STATUS_OK syncs epoll state through kernel-worker when available", async (
       }
     },
   });
+  const kernel = handle.kernel;
+  const ofdId = 7;
+  new DataView(kernel.memory.buffer).setInt32(
+    handle.kernelState.ofdTablePtr + ofdId * 32,
+    kernel.abi_fd_type_epoll(),
+    true,
+  );
+  new DataView(kernel.memory.buffer).setUint32(
+    handle.kernelState.ofdTablePtr + ofdId * 32 + 24,
+    1,
+    true,
+  );
+  kernel.process_fd_ofd_id = (_vmPtr, fd) => (fd === 4 ? ofdId : 0);
   const worker = createdWorkers[0];
 
   emitReady(worker);

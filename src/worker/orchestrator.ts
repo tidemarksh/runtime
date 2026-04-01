@@ -72,7 +72,6 @@ export interface WorkerOrchestrator {
 }
 
 let ensureCompiledModuleImpl: WorkerOrchestratorDeps["ensureCompiledModule"] | null = null;
-
 const workerRuntimeContext = createWorkerRuntimeContext({
   formatPipeCounterDebug,
 });
@@ -487,17 +486,20 @@ async function syncSocketStateViaKernelWorker(handle: ProcessHandle): Promise<{
 }
 
 async function releaseSharedHostStdio(handle: ProcessHandle): Promise<void> {
+  if (handle.stdinPipe === 0 && handle.stdoutPipe === 0 && handle.stderrPipe === 0) {
+    return;
+  }
   const shared = handle.hostStdio;
   if (shared.refCount > 0) {
     shared.refCount -= 1;
   }
+  handle.stdinPipe = 0;
+  handle.stdoutPipe = 0;
+  handle.stderrPipe = 0;
   if (shared.refCount !== 0) {
     return;
   }
   const pipeUsed = await releaseHostStdioViaKernelWorker(handle);
-  handle.stdinPipe = 0;
-  handle.stdoutPipe = 0;
-  handle.stderrPipe = 0;
   if (kernelWorkerOwnsPipeState(handle)) {
     wakePipeAndEpollWaitersInKernelShare(handle, pipeUsed);
   }

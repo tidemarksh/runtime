@@ -107,13 +107,60 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
     }
     attachKernelRuntimeState(processExports, kernelState);
 
+    const sourceVmPtr = deps.getCanonicalProcessVmPtr(pid);
+    if (sourceVmPtr === 0) {
+      return readKernelRuntimeState(processExports);
+    }
+
+    const sourceHeldEpollOfdIds = deps.collectProcessHeldEpollOfdIds(processExports, sourceVmPtr);
+    if (sourceHeldEpollOfdIds.length === 0) {
+      return readKernelRuntimeState(processExports);
+    }
+
     const sourceState = readKernelRuntimeState(processExports);
     const canonicalState = readKernelRuntimeState(canonicalExports);
-    deps.copyEpollState(processExports, sourceState, canonicalExports, canonicalState);
+    deps.copySelectedOfdState(
+      processExports,
+      sourceState,
+      canonicalExports,
+      canonicalState,
+      sourceHeldEpollOfdIds,
+    );
+    deps.copySelectedEpollState(
+      processExports,
+      sourceState,
+      canonicalExports,
+      canonicalState,
+      sourceHeldEpollOfdIds,
+    );
 
-    for (const memberExports of deps.processKernels.values()) {
+    for (const [memberPid, memberExports] of deps.processKernels) {
+      const memberVmPtr = deps.getCanonicalProcessVmPtr(memberPid);
+      if (memberVmPtr === 0) {
+        continue;
+      }
       const memberState = readKernelRuntimeState(memberExports);
-      deps.copyEpollState(canonicalExports, canonicalState, memberExports, memberState);
+      const memberHeldEpollOfdIds = new Set(
+        deps.collectProcessHeldEpollOfdIds(memberExports, memberVmPtr),
+      );
+      const sharedEpollOfdIds = sourceHeldEpollOfdIds.filter((ofdId) => memberHeldEpollOfdIds.has(ofdId));
+      if (sharedEpollOfdIds.length === 0) {
+        continue;
+      }
+      deps.copySelectedOfdState(
+        canonicalExports,
+        canonicalState,
+        memberExports,
+        memberState,
+        sharedEpollOfdIds,
+      );
+      deps.copySelectedEpollState(
+        canonicalExports,
+        canonicalState,
+        memberExports,
+        memberState,
+        sharedEpollOfdIds,
+      );
     }
 
     return readKernelRuntimeState(processExports);
