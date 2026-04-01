@@ -18,6 +18,7 @@ const RUNTIME_DIST_PATH = resolve(__dirname, "../dist/index.mjs");
 const GO_PATH = resolve(__dirname, "../../core/images/go");
 const BUSYBOX_PATH = resolve(__dirname, "../../core/images/busybox");
 const GO_TOOLCHAIN_DIR = resolve(__dirname, "../../core/images/go-toolchain");
+const EXEC_CAPTURE_HELPER_PATH = resolve(__dirname, "./fixtures/exec-capture-helper.riscv64");
 const SAMPLE_MODULE_DIR = "/work/hello";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -157,7 +158,19 @@ function buildGoRuntimeSnapshot(options: {
     setSnapshotFile(entries, "/bin/sh", busybox, 0o755);
   }
 
+  ensureSnapshotDir(entries, "/root", 0o755);
+  ensureSnapshotDir(entries, "/root/.config", 0o755);
+  ensureSnapshotDir(entries, "/root/.config/go", 0o755);
+  ensureSnapshotDir(entries, "/root/.config/go/telemetry", 0o755);
+  setSnapshotFile(
+    entries,
+    "/root/.config/go/telemetry/mode",
+    encoder.encode("off 2000-01-01\n"),
+    0o644,
+  );
   ensureSnapshotDir(entries, "/tmp", 0o777);
+  ensureSnapshotDir(entries, "/tmp/gopath", 0o755);
+  ensureSnapshotDir(entries, "/tmp/gocache", 0o755);
   ensureSnapshotDir(entries, "/work");
   if (includeSampleModule) {
     ensureSnapshotDir(entries, SAMPLE_MODULE_DIR);
@@ -230,6 +243,24 @@ type RuntimeDebugView = RuntimeInstance & {
   debugSnapshot?: () => string;
 };
 
+function formatThreadDebug(handle: RuntimeDebugHandle, vmPtr: number): string {
+  const syscallNr = handle.kernel.debug_syscall_trace_nr?.();
+  const status = handle.kernel.debug_syscall_trace_status?.();
+  const result = handle.kernel.debug_syscall_trace_result?.();
+  return [
+    `tid=${handle.kernel.thread_tid(vmPtr)}`,
+    `pc=0x${handle.kernel.thread_pc(vmPtr).toString(16)}`,
+    `ra=0x${handle.kernel.thread_ra(vmPtr).toString(16)}`,
+    `sp=0x${handle.kernel.thread_sp(vmPtr).toString(16)}`,
+    `a0=${handle.kernel.thread_a0(vmPtr).toString()}`,
+    `a1=${handle.kernel.thread_a1(vmPtr).toString()}`,
+    `status=${handle.kernel.thread_status(vmPtr)}`,
+    syscallNr !== undefined ? `syscall=${syscallNr.toString()}` : "",
+    status !== undefined ? `sys_status=${status}` : "",
+    result !== undefined ? `sys_result=${result.toString()}` : "",
+  ].filter(Boolean).join(" ");
+}
+
 async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<string> {
   const runtimeView = runtime as RuntimeDebugView;
   const processes = runtimeView.processes;
@@ -237,6 +268,34 @@ async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<string> {
     ? ""
     : [...processes.entries()]
       .map(([pid, handle]) => {
+        const pipeSummary = (() => {
+          if (!handle?.memory?.buffer || !handle?.kernelState) {
+            return "";
+          }
+          const pipeSlots = new Set<number>();
+          for (let fd = 0; fd < 16; fd += 1) {
+            const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+            if (ofdId === 0 || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()) {
+              continue;
+            }
+            pipeSlots.add(handle.kernel.kernel_ofd_ino(ofdId));
+          }
+          const i32 = new Int32Array(handle.memory.buffer);
+          const u32 = new Uint32Array(handle.memory.buffer);
+          return [...pipeSlots]
+            .sort((left, right) => left - right)
+            .map((slot) => {
+              const base = handle.kernelState.pipeBase + slot * (32 + 4096);
+              return [
+                `${slot}`,
+                `ro=${Atomics.load(i32, (base + 8) >>> 2)}`,
+                `wo=${Atomics.load(i32, (base + 12) >>> 2)}`,
+                `head=${Atomics.load(u32, base >>> 2)}`,
+                `tail=${Atomics.load(u32, (base + 4) >>> 2)}`,
+              ].join(":");
+            })
+            .join(" ");
+        })();
         const blocked = handle?.blockedWorkers instanceof Map
           ? [...handle.blockedWorkers.values()].map((state) => {
               const vmPtr = state.vmPtr;
@@ -252,6 +311,15 @@ async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<string> {
         const stdoutPipe = handle?.stdoutPipe ?? 0;
         const stderrPipe = handle?.stderrPipe ?? 0;
         const vmPtr = handle?.vmPtr ?? 0;
+        const threadSummary = vmPtr !== 0
+          ? Array.from({ length: handle.kernel.abi_max_threads() }, (_value, slot) => {
+              const threadVmPtr = handle.kernel.process_thread_vm_ptr(vmPtr, slot);
+              if (threadVmPtr === 0) {
+                return null;
+              }
+              return `${slot}:${formatThreadDebug(handle, threadVmPtr)}`;
+            }).filter(Boolean).join(" | ")
+          : "";
         const fdSummary = vmPtr !== 0
           ? Array.from({ length: 16 }, (_, fd) => {
               const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
@@ -277,7 +345,7 @@ async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<string> {
           const refcount = handle.kernel.kernel_ofd_refcount(ofdId);
           return `${ofdId}:${type}/${ino}/${hostFd}/rc=${refcount}`;
         }).filter(Boolean).join(" ");
-        return `pid=${pid} stdin=${stdinPipe} stdout=${stdoutPipe} stderr=${stderrPipe} blocked=[${blocked}] fds=[${fdSummary}] ofds=[${ofdSummary}] debug=${debug}`;
+        return `pid=${pid} stdin=${stdinPipe} stdout=${stdoutPipe} stderr=${stderrPipe} blocked=[${blocked}] threads=[${threadSummary}] fds=[${fdSummary}] ofds=[${ofdSummary}] pipes=[${pipeSummary}] debug=${debug}`;
       })
       .join("\n");
 
@@ -331,7 +399,7 @@ async function prepareGoRuntime(options: {
 }
 
 function goEnv(gomaxprocs: number): string[] {
-  return [
+  const env = [
     "GOROOT=/usr/local/go",
     "GOPATH=/tmp/gopath",
     "GOCACHE=/tmp/gocache",
@@ -345,6 +413,10 @@ function goEnv(gomaxprocs: number): string[] {
     "GOGC=off",
     "GOEXPERIMENT=nodwarf5",
   ];
+  if (process.env.TIDEMARK_ACCEPTANCE_GO_BUILD_GODEBUG) {
+    env.push(`GODEBUG=${process.env.TIDEMARK_ACCEPTANCE_GO_BUILD_GODEBUG}`);
+  }
+  return env;
 }
 
 function goVersionEnv(gomaxprocs: number): string[] {
@@ -449,7 +521,10 @@ for (const gomaxprocs of [1, 2]) {
         ["go", "version"],
         goVersionEnv(gomaxprocs),
         120_000,
-      );
+      ).catch(async (error) => {
+        const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+        throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+      });
       expect(exitCode, `${output}\n${debugInfo ?? ""}`).toBe(0);
       expect(output).toContain("go version");
     } finally {
@@ -458,9 +533,759 @@ for (const gomaxprocs of [1, 2]) {
   }, 150_000);
 }
 
-test("Runtime go build makes bounded compile progress", async () => {
+test("Runtime executes go env GOROOT with minimal environment", async () => {
+  const prepared = await prepareGoRuntime({
+    includeToolchain: false,
+    includeSampleModule: false,
+  });
+  if (!prepared) {
+    return;
+  }
+
+  const { runtime, goBytes } = prepared;
+  try {
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      goBytes,
+      ["go", "env", "GOROOT"],
+      [
+        "GOROOT=/usr/local/go",
+        "GOTELEMETRY=off",
+        "PATH=/usr/local/go/bin:/bin",
+      ],
+      120_000,
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(exitCode, `${output}\n${debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`).toBe(0);
+    expect(output).toContain("/usr/local/go");
+  } finally {
+    runtime.destroy();
+  }
+}, 150_000);
+
+test("Runtime executes go tool compile -V=full", async () => {
+  const prepared = await prepareGoRuntime({
+    includeToolchain: true,
+    includeSampleModule: false,
+  });
+  if (!prepared) {
+    return;
+  }
+
+  const { runtime, goBytes } = prepared;
+  try {
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      goBytes,
+      ["go", "tool", "compile", "-V=full"],
+      [
+        "GOROOT=/usr/local/go",
+        "GOTELEMETRY=off",
+        "GOTELEMETRYDIR=/dev/null",
+      ],
+      120_000,
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(exitCode, `${output}\n${debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`).toBe(0);
+    expect(output).toContain("compile version");
+  } finally {
+    runtime.destroy();
+  }
+}, 150_000);
+
+test("Runtime executes compile binary -V=full with go build env", async () => {
+  const prepared = await prepareGoRuntime({
+    includeToolchain: true,
+    includeSampleModule: true,
+  });
+  if (!prepared) {
+    return;
+  }
+
+  const { runtime } = prepared;
+  try {
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      new Uint8Array(readFileSync(resolve(
+        GO_TOOLCHAIN_DIR,
+        "pkg/tool/linux_riscv64/compile",
+      ))),
+      ["/usr/local/go/pkg/tool/linux_riscv64/compile", "-V=full"],
+      goEnv(1),
+      120_000,
+      { cwd: SAMPLE_MODULE_DIR },
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(exitCode, `${output}\n${debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`).toBe(0);
+    expect(output).toContain("compile version");
+  } finally {
+    runtime.destroy();
+  }
+}, 150_000);
+
+test("Runtime executes compile binary on sample main.go", async () => {
+  const prepared = await prepareGoRuntime({
+    includeToolchain: true,
+    includeSampleModule: true,
+  });
+  if (!prepared) {
+    return;
+  }
+
+  const { runtime } = prepared;
+  try {
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      new Uint8Array(readFileSync(resolve(
+        GO_TOOLCHAIN_DIR,
+        "pkg/tool/linux_riscv64/compile",
+      ))),
+      [
+        "/usr/local/go/pkg/tool/linux_riscv64/compile",
+        "-p",
+        "main",
+        "-o",
+        "/tmp/hello.o",
+        `${SAMPLE_MODULE_DIR}/main.go`,
+      ],
+      goEnv(1),
+      120_000,
+      { cwd: SAMPLE_MODULE_DIR },
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(exitCode, `${output}\n${debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`).toBe(0);
+    const artifact = await runtime.fs.readFile("/tmp/hello.o");
+    expect(artifact.byteLength).toBeGreaterThan(0);
+  } finally {
+    runtime.destroy();
+  }
+}, 150_000);
+
+test("Runtime executes compile binary on internal/goarch", async () => {
+  const prepared = await prepareGoRuntime({
+    includeToolchain: true,
+    includeSampleModule: true,
+  });
+  if (!prepared) {
+    return;
+  }
+
+  const { runtime } = prepared;
+  try {
+    await runtime.fs.writeFile("/tmp/importcfg", encoder.encode("# import config\n"), 0o644);
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      new Uint8Array(readFileSync(resolve(
+        GO_TOOLCHAIN_DIR,
+        "pkg/tool/linux_riscv64/compile",
+      ))),
+      [
+        "/usr/local/go/pkg/tool/linux_riscv64/compile",
+        "-o",
+        "/tmp/goarch.a",
+        "-trimpath",
+        "/tmp=>",
+        "-p",
+        "internal/goarch",
+        "-lang=go1.26",
+        "-std",
+        "-complete",
+        "-buildid",
+        "test-buildid",
+        "-goversion",
+        "go1.26.1-X:nodwarf5",
+        "-nolocalimports",
+        "-importcfg",
+        "/tmp/importcfg",
+        "-pack",
+        "/usr/local/go/src/internal/goarch/goarch.go",
+        "/usr/local/go/src/internal/goarch/goarch_riscv64.go",
+        "/usr/local/go/src/internal/goarch/zgoarch_riscv64.go",
+      ],
+      goEnv(1),
+      120_000,
+      { cwd: SAMPLE_MODULE_DIR },
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(exitCode, `${output}\n${debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`).toBe(0);
+    const artifact = await runtime.fs.readFile("/tmp/goarch.a");
+    expect(artifact.byteLength).toBeGreaterThan(0);
+  } finally {
+    runtime.destroy();
+  }
+}, 150_000);
+
+test("Runtime executes go tool buildid -w on compiled internal/goarch archive", async () => {
+  const prepared = await prepareGoRuntime({
+    includeToolchain: true,
+    includeSampleModule: true,
+  });
+  if (!prepared) {
+    return;
+  }
+
+  const { runtime, goBytes } = prepared;
+  try {
+    await runtime.fs.writeFile("/tmp/importcfg", encoder.encode("# import config\n"), 0o644);
+    const compileResult = await spawnWithOutput(
+      runtime,
+      new Uint8Array(readFileSync(resolve(
+        GO_TOOLCHAIN_DIR,
+        "pkg/tool/linux_riscv64/compile",
+      ))),
+      [
+        "/usr/local/go/pkg/tool/linux_riscv64/compile",
+        "-o",
+        "/tmp/goarch.a",
+        "-trimpath",
+        "/tmp=>",
+        "-p",
+        "internal/goarch",
+        "-lang=go1.26",
+        "-std",
+        "-complete",
+        "-buildid",
+        "test-buildid",
+        "-goversion",
+        "go1.26.1-X:nodwarf5",
+        "-nolocalimports",
+        "-importcfg",
+        "/tmp/importcfg",
+        "-pack",
+        "/usr/local/go/src/internal/goarch/goarch.go",
+        "/usr/local/go/src/internal/goarch/goarch_riscv64.go",
+        "/usr/local/go/src/internal/goarch/zgoarch_riscv64.go",
+      ],
+      goEnv(1),
+      120_000,
+      { cwd: SAMPLE_MODULE_DIR },
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`compile step failed: ${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(compileResult.exitCode, `${compileResult.output}\n${compileResult.debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`).toBe(0);
+
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      goBytes,
+      ["go", "tool", "buildid", "-w", "/tmp/goarch.a"],
+      goEnv(1),
+      120_000,
+      { cwd: SAMPLE_MODULE_DIR },
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(exitCode, `${output}\n${debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`).toBe(0);
+  } finally {
+    runtime.destroy();
+  }
+}, 150_000);
+
+test("Runtime executes go tool compile -V=full with go build env", async () => {
+  const prepared = await prepareGoRuntime({
+    includeToolchain: true,
+    includeSampleModule: true,
+  });
+  if (!prepared) {
+    return;
+  }
+
+  const { runtime, goBytes } = prepared;
+  try {
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      goBytes,
+      ["go", "tool", "compile", "-V=full"],
+      goEnv(1),
+      120_000,
+      { cwd: SAMPLE_MODULE_DIR },
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(exitCode, `${output}\n${debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`).toBe(0);
+    expect(output).toContain("compile version");
+  } finally {
+    runtime.destroy();
+  }
+}, 150_000);
+
+test("Runtime guest helper captures compile version with CombinedOutput", async () => {
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return;
+  }
+  if (!existsSync(EXEC_CAPTURE_HELPER_PATH)) {
+    return logSkip(`missing exec capture helper: ${EXEC_CAPTURE_HELPER_PATH}`);
+  }
+
+  const runtime = await Runtime.create({
+    wasmBytes,
+    ramSize: 512 * 1024 * 1024,
+  });
+  await runtime.applyFsSnapshot(buildGoRuntimeSnapshot({
+    includeToolchain: true,
+    includeSampleModule: false,
+  }));
+
+  try {
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      new Uint8Array(readFileSync(EXEC_CAPTURE_HELPER_PATH)),
+      ["exec-capture-helper", "combined"],
+      [],
+      120_000,
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(exitCode, `${output}\n${debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`).toBe(0);
+    expect(output).toContain("combined_output_err=<nil>");
+    expect(output).toContain("compile version");
+  } finally {
+    runtime.destroy();
+  }
+}, 150_000);
+
+test("Runtime guest helper captures compile version with CombinedOutput and inherited stdin", async () => {
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return;
+  }
+  if (!existsSync(EXEC_CAPTURE_HELPER_PATH)) {
+    return logSkip(`missing exec capture helper: ${EXEC_CAPTURE_HELPER_PATH}`);
+  }
+
+  const runtime = await Runtime.create({
+    wasmBytes,
+    ramSize: 512 * 1024 * 1024,
+  });
+  await runtime.applyFsSnapshot(buildGoRuntimeSnapshot({
+    includeToolchain: true,
+    includeSampleModule: false,
+  }));
+
+  try {
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      new Uint8Array(readFileSync(EXEC_CAPTURE_HELPER_PATH)),
+      ["exec-capture-helper", "combined-stdin"],
+      [],
+      120_000,
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(exitCode, `${output}\n${debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`).toBe(0);
+    expect(output).toContain("mode=combined-stdin");
+    expect(output).toContain("combined_output_err=<nil>");
+    expect(output).toContain("compile version");
+  } finally {
+    runtime.destroy();
+  }
+}, 150_000);
+
+test("Runtime guest helper captures compile version with CombinedOutput, inherited stdin, and go build env", async () => {
+  const prepared = await prepareGoRuntime({
+    includeToolchain: true,
+    includeSampleModule: true,
+  });
+  if (!prepared) {
+    return;
+  }
+
+  const { runtime } = prepared;
+  try {
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      new Uint8Array(readFileSync(EXEC_CAPTURE_HELPER_PATH)),
+      ["exec-capture-helper", "combined-stdin"],
+      goEnv(1),
+      120_000,
+      { cwd: SAMPLE_MODULE_DIR },
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(exitCode, `${output}\n${debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`).toBe(0);
+    expect(output).toContain("mode=combined-stdin");
+    expect(output).toContain("combined_output_err=<nil>");
+    expect(output).toContain("compile version");
+  } finally {
+    runtime.destroy();
+  }
+}, 150_000);
+
+test("Runtime guest helper captures compile version with CombinedOutput and go build env", async () => {
+  const prepared = await prepareGoRuntime({
+    includeToolchain: true,
+    includeSampleModule: true,
+  });
+  if (!prepared) {
+    return;
+  }
+
+  const { runtime } = prepared;
+  try {
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      new Uint8Array(readFileSync(EXEC_CAPTURE_HELPER_PATH)),
+      ["exec-capture-helper", "combined"],
+      goEnv(1),
+      120_000,
+      { cwd: SAMPLE_MODULE_DIR },
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(exitCode, `${output}\n${debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`).toBe(0);
+    expect(output).toContain("combined_output_err=<nil>");
+    expect(output).toContain("compile version");
+  } finally {
+    runtime.destroy();
+  }
+}, 150_000);
+
+test("Runtime guest helper captures internal/goarch compile with CombinedOutput and go build env", async () => {
+  const prepared = await prepareGoRuntime({
+    includeToolchain: true,
+    includeSampleModule: true,
+  });
+  if (!prepared) {
+    return;
+  }
+
+  const { runtime } = prepared;
+  try {
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      new Uint8Array(readFileSync(EXEC_CAPTURE_HELPER_PATH)),
+      ["exec-capture-helper", "combined-goarch"],
+      goEnv(1),
+      120_000,
+      { cwd: SAMPLE_MODULE_DIR },
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(exitCode, `${output}\n${debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`).toBe(0);
+    expect(output).toContain("combined_output_err=<nil>");
+  } finally {
+    runtime.destroy();
+  }
+}, 150_000);
+
+test("Runtime guest helper runs internal/goarch compile then go tool buildid with go build env", async () => {
+  const prepared = await prepareGoRuntime({
+    includeToolchain: true,
+    includeSampleModule: true,
+  });
+  if (!prepared) {
+    return;
+  }
+
+  const { runtime } = prepared;
+  try {
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      new Uint8Array(readFileSync(EXEC_CAPTURE_HELPER_PATH)),
+      ["exec-capture-helper", "two-step-goarch"],
+      goEnv(1),
+      120_000,
+      { cwd: SAMPLE_MODULE_DIR },
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(exitCode, `${output}\n${debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`).toBe(0);
+    expect(output).toContain("mode=two-step-goarch");
+    expect(output).toContain("compile_err=<nil>");
+    expect(output).toContain("buildid_err=<nil>");
+  } finally {
+    runtime.destroy();
+  }
+}, 150_000);
+
+test("Runtime guest helper runs internal/goarch compile then go tool buildid with explicit env", async () => {
+  const prepared = await prepareGoRuntime({
+    includeToolchain: true,
+    includeSampleModule: true,
+  });
+  if (!prepared) {
+    return;
+  }
+
+  const { runtime } = prepared;
+  try {
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      new Uint8Array(readFileSync(EXEC_CAPTURE_HELPER_PATH)),
+      ["exec-capture-helper", "two-step-goarch-explicit-env"],
+      goEnv(1),
+      120_000,
+      { cwd: SAMPLE_MODULE_DIR },
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(exitCode, `${output}\n${debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`).toBe(0);
+    expect(output).toContain("mode=two-step-goarch-explicit-env");
+    expect(output).toContain("compile_err=<nil>");
+    expect(output).toContain("buildid_err=<nil>");
+  } finally {
+    runtime.destroy();
+  }
+}, 150_000);
+
+test("Runtime guest helper captures compile version with Output and go build env", async () => {
+  const prepared = await prepareGoRuntime({
+    includeToolchain: true,
+    includeSampleModule: true,
+  });
+  if (!prepared) {
+    return;
+  }
+
+  const { runtime } = prepared;
+  try {
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      new Uint8Array(readFileSync(EXEC_CAPTURE_HELPER_PATH)),
+      ["exec-capture-helper", "output"],
+      goEnv(1),
+      120_000,
+      { cwd: SAMPLE_MODULE_DIR },
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(exitCode, `${output}\n${debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`).toBe(0);
+    expect(output).toContain("output_err=<nil>");
+    expect(output).toContain("compile version");
+  } finally {
+    runtime.destroy();
+  }
+}, 150_000);
+
+test("Runtime guest helper captures compile version with separate stdout and stderr pipes", async () => {
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return;
+  }
+  if (!existsSync(EXEC_CAPTURE_HELPER_PATH)) {
+    return logSkip(`missing exec capture helper: ${EXEC_CAPTURE_HELPER_PATH}`);
+  }
+
+  const runtime = await Runtime.create({
+    wasmBytes,
+    ramSize: 512 * 1024 * 1024,
+  });
+  await runtime.applyFsSnapshot(buildGoRuntimeSnapshot({
+    includeToolchain: true,
+    includeSampleModule: false,
+  }));
+
+  try {
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      new Uint8Array(readFileSync(EXEC_CAPTURE_HELPER_PATH)),
+      ["exec-capture-helper", "separate"],
+      [],
+      120_000,
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(exitCode, `${output}\n${debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`).toBe(0);
+    const detail = `${output}\n${debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`;
+    expect(output, detail).toContain("mode=separate");
+    expect(output, detail).toContain("run_err=<nil>");
+    expect(output, detail).toContain("stdout=compile version");
+  } finally {
+    runtime.destroy();
+  }
+}, 150_000);
+
+test("Runtime executes go env GOROOT with telemetry dir env", async () => {
+  const prepared = await prepareGoRuntime({
+    includeToolchain: false,
+    includeSampleModule: false,
+  });
+  if (!prepared) {
+    return;
+  }
+
+  const { runtime, goBytes } = prepared;
+  try {
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      goBytes,
+      ["go", "env", "GOROOT"],
+      [
+        "GOROOT=/usr/local/go",
+        "GOTELEMETRY=off",
+        "GOTELEMETRYDIR=/dev/null",
+        "PATH=/usr/local/go/bin:/bin",
+      ],
+      120_000,
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(exitCode, `${output}\n${debugInfo ?? ""}`).toBe(0);
+    expect(output).toContain("/usr/local/go");
+  } finally {
+    runtime.destroy();
+  }
+}, 150_000);
+
+test("Runtime executes go env GOROOT with experiment env", async () => {
+  const prepared = await prepareGoRuntime({
+    includeToolchain: false,
+    includeSampleModule: false,
+  });
+  if (!prepared) {
+    return;
+  }
+
+  const { runtime, goBytes } = prepared;
+  try {
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      goBytes,
+      ["go", "env", "GOROOT"],
+      [
+        "GOROOT=/usr/local/go",
+        "GOTELEMETRY=off",
+        "GOEXPERIMENT=nodwarf5",
+        "PATH=/usr/local/go/bin:/bin",
+      ],
+      120_000,
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(exitCode, `${output}\n${debugInfo ?? ""}`).toBe(0);
+    expect(output).toContain("/usr/local/go");
+  } finally {
+    runtime.destroy();
+  }
+}, 150_000);
+
+test("Runtime executes go env GOROOT with cache env group", async () => {
+  const prepared = await prepareGoRuntime({
+    includeToolchain: false,
+    includeSampleModule: false,
+  });
+  if (!prepared) {
+    return;
+  }
+
+  const { runtime, goBytes } = prepared;
+  try {
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      goBytes,
+      ["go", "env", "GOROOT"],
+      [
+        "GOROOT=/usr/local/go",
+        "PATH=/usr/local/go/bin:/bin",
+        "GOPATH=/tmp/gopath",
+        "GOCACHE=/tmp/gocache",
+        "GONOSUMDB=*",
+        "HOME=/root",
+        "GOGC=off",
+      ],
+      120_000,
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(exitCode, `${output}\n${debugInfo ?? ""}`).toBe(0);
+    expect(output).toContain("/usr/local/go");
+  } finally {
+    runtime.destroy();
+  }
+}, 150_000);
+
+test("Runtime executes go env GOROOT with HOME env", async () => {
+  const prepared = await prepareGoRuntime({
+    includeToolchain: false,
+    includeSampleModule: false,
+  });
+  if (!prepared) {
+    return;
+  }
+
+  const { runtime, goBytes } = prepared;
+  try {
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      goBytes,
+      ["go", "env", "GOROOT"],
+      [
+        "GOROOT=/usr/local/go",
+        "GOTELEMETRY=off",
+        "PATH=/usr/local/go/bin:/bin",
+        "HOME=/root",
+      ],
+      120_000,
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(exitCode, `${output}\n${debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`).toBe(0);
+    expect(output).toContain("/usr/local/go");
+  } finally {
+    runtime.destroy();
+  }
+}, 150_000);
+
+test("Runtime propagates go build environment", async () => {
+  const prepared = await prepareGoRuntime({
+    includeToolchain: false,
+    includeSampleModule: false,
+  });
+  if (!prepared) {
+    return;
+  }
+
+  const { runtime, goBytes } = prepared;
+  try {
+    const env = goEnv(1).filter((entry) => !entry.startsWith("GOFLAGS="));
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      goBytes,
+      ["go", "env", "GOTELEMETRY", "GOROOT", "GOMAXPROCS"],
+      env,
+      120_000,
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(exitCode, `${output}\n${debugInfo ?? ""}`).toBe(0);
+    expect(output).toContain("off");
+    expect(output).toContain("/usr/local/go");
+    expect(output).toContain("1");
+  } finally {
+    runtime.destroy();
+  }
+}, 150_000);
+
+test("Runtime executes go build", async () => {
   const gomaxprocs = Number(process.env.TIDEMARK_ACCEPTANCE_GO_BUILD_GOMAXPROCS ?? "1");
-  const timeoutMs = Number(process.env.TIDEMARK_ACCEPTANCE_GO_BUILD_TIMEOUT_MS ?? "120000");
+  const timeoutMs = Number(process.env.TIDEMARK_ACCEPTANCE_GO_BUILD_TIMEOUT_MS ?? "300000");
   const prepared = await prepareGoRuntime({
     includeToolchain: true,
     includeSampleModule: true,
@@ -525,20 +1350,21 @@ test("Runtime go build makes bounded compile progress", async () => {
       clearTimeout(timeoutId);
     }
 
-    if (timedOut) {
-      expect(
-        compiledPackages > 0 || buildCommands > 0,
-        `go build timed out without compile progress\n${output}\n${proc.debugInfo?.() ?? ""}\n${await runtimeDebugSummary(runtime)}`,
-      ).toBe(true);
-      return;
-    }
+    expect(
+      timedOut,
+      `go build timed out after ${timeoutMs}ms\ncompiled_packages=${compiledPackages} build_commands=${buildCommands}\n${output}\n${proc.debugInfo?.() ?? ""}\n${await runtimeDebugSummary(runtime)}`,
+    ).toBe(false);
 
     expect(
       exitCode,
       `go build exited with ${exitCode}\n${output}\n${proc.debugInfo?.() ?? ""}\n${await runtimeDebugSummary(runtime)}`,
     ).toBe(0);
-    expect(compiledPackages > 0 || buildCommands > 0 || output.includes("runtime")).toBe(true);
+    const artifactPath = `${SAMPLE_MODULE_DIR}/hello`;
+    const artifact = await runtime.fs.readFile(artifactPath);
+    expect(artifact.byteLength).toBeGreaterThan(0);
+    const artifactStat = await runtime.fs.stat(artifactPath);
+    expect(artifactStat.size).toBeGreaterThan(0);
   } finally {
     runtime.destroy();
   }
-}, Number(process.env.TIDEMARK_ACCEPTANCE_GO_BUILD_TIMEOUT_MS ?? "120000") + 60_000);
+}, Number(process.env.TIDEMARK_ACCEPTANCE_GO_BUILD_TIMEOUT_MS ?? "300000") + 60_000);

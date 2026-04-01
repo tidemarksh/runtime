@@ -57,6 +57,7 @@ const createdKernelExports: Array<
     fsProcessCalls: number;
     memfsCreateCalls: Array<[number, number]>;
     memfsTruncateCalls: Array<[number, number]>;
+    memfsSetFileSizeShallowCalls: Array<[number, number]>;
     memfsWriteCalls: Array<[number, number]>;
     memfsCreateWithDataCalls: Array<[number, number]>;
   }
@@ -88,6 +89,13 @@ function makeKernelState(): KernelRuntimeState {
   };
 }
 
+const SYNC_EFFECT_PIPE_STATE = 1 << 0;
+const SYNC_EFFECT_SOCKET_STATE = 1 << 1;
+const SYNC_EFFECT_EPOLL_STATE = 1 << 2;
+const SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE = 1 << 3;
+const SYNC_EFFECT_PROCESS_LIFECYCLE = 1 << 4;
+const SYNC_EFFECT_FORK_SHARED_OFD_STATE = 1 << 6;
+
 function emitReady(worker: FakeWorker, vmPtr = 0x1234): void {
   worker.emit({
     type: "ready",
@@ -117,6 +125,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
   let fsProcessCalls = 0;
   const memfsCreateCalls: Array<[number, number]> = [];
   const memfsTruncateCalls: Array<[number, number]> = [];
+  const memfsSetFileSizeShallowCalls: Array<[number, number]> = [];
   const memfsWriteCalls: Array<[number, number]> = [];
   const memfsCreateWithDataCalls: Array<[number, number]> = [];
   let nextIno = 10;
@@ -136,6 +145,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     fsProcessCalls: number;
     memfsCreateCalls: Array<[number, number]>;
     memfsTruncateCalls: Array<[number, number]>;
+    memfsSetFileSizeShallowCalls: Array<[number, number]>;
     memfsWriteCalls: Array<[number, number]>;
     memfsCreateWithDataCalls: Array<[number, number]>;
   } = {
@@ -185,6 +195,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     abi_einval: () => 22,
     abi_enomem: () => 12,
     abi_enosys: () => 38,
+    abi_eintr: () => 4,
     abi_eagain: () => 11,
     abi_epipe: () => 32,
     abi_econnrefused: () => 111,
@@ -243,7 +254,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     process_push_arg: () => {},
     process_push_env: () => {},
     process_clear_args: () => {},
-    process_guest_base: () => 0x1000,
+    process_guest_base: () => 0x1000000,
     process_inspect_elf_brk: () => 0x40_0000n,
     process_create: () => {
       initPipeSlot(1);
@@ -257,6 +268,9 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_term_signal: () => 0,
     thread_pc: () => 0n,
     thread_a0: () => 0n,
+    thread_pending_fs_effects: () => 0,
+    thread_pending_fs_target_ino: () => 0,
+    thread_pending_fs_opcode: () => 0,
     thread_process_fs: () => {
       fsProcessCalls += 1;
       runtimeState = { ...runtimeState, heapPtr: runtimeState.heapPtr + 0x10 };
@@ -264,6 +278,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_resume_fs: () => 0,
     thread_futex_wait_addr: () => 0n,
     thread_futex_wait_timeout: () => 0n,
+    thread_futex_wait_expected: () => 0,
     thread_resume_futex_wait: () => {},
     thread_resume_futex_wait_result: () => {},
     thread_sleep_seconds: () => 0n,
@@ -283,12 +298,15 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_spawn_path: () => 0n,
     thread_spawn_argv: () => 0n,
     thread_spawn_envp: () => 0n,
+    thread_set_execve_handoff: () => {},
     thread_clear_spawn_handoff: () => {},
     thread_resume_vfork_parent: () => {},
+    thread_restore_vfork_parent_without_cleanup: () => {},
     thread_complete_execve_handoff: () => 0n,
     thread_spawn_from_clone: () => nextVmPtr++,
     thread_process_thread_count: () => threadCount,
     thread_process_ptr: () => 0x5000,
+    process_state_bytes: () => 0x1000,
     process_thread_tid: (_vmPtr, slot) => (liveThreadVmPtrs[slot] ?? 0) === 0 ? 0 : slot + 1,
     process_thread_state: (_vmPtr, slot) => liveThreadVmPtrs[slot] ? 2 : 0,
     process_thread_vm_ptr: (_vmPtr, slot) => liveThreadVmPtrs[slot] ?? 0,
@@ -360,6 +378,10 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
       memfsCreateCalls.push([parentIno, nameLen]);
       return nextIno++;
     },
+    memfs_reserve_inode_until: (targetIno) => {
+      nextIno = Math.max(nextIno, targetIno);
+      return 0n;
+    },
     memfs_write_file_at: (ino, offset, _dataPtr, dataLen) => {
       memfsWriteCalls.push([ino, dataLen]);
       return offset + BigInt(dataLen);
@@ -368,6 +390,10 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     memfs_file_size: () => 0n,
     memfs_truncate_file: (ino, size) => {
       memfsTruncateCalls.push([ino, Number(size)]);
+      return 0n;
+    },
+    memfs_set_file_size_shallow: (ino, size) => {
+      memfsSetFileSizeShallowCalls.push([ino, Number(size)]);
       return 0n;
     },
     memfs_inode_mode: () => 0,
@@ -389,6 +415,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     },
     memfsCreateCalls,
     memfsTruncateCalls,
+    memfsSetFileSizeShallowCalls,
     memfsWriteCalls,
     memfsCreateWithDataCalls,
   };
@@ -453,8 +480,9 @@ test("createProcess spawns a child worker on STATUS_CLONE_SPAWN", async () => {
       wasmModule: expect.any(Object),
       memory: handle.memory,
       vmPtr: 0x2000,
-      guestBase: 0x1000,
+      guestBase: 0x1000000,
       kernelState: makeKernelState(),
+      sabPageCache: null,
       runtimeNotify: expect.any(SharedArrayBuffer),
       runtimeState: expect.any(SharedArrayBuffer),
     },
@@ -558,8 +586,6 @@ test("createProcess delegates STATUS_FS to kernel-worker when available", async 
           return { type: "socket-state-synced", requestId: 0, kernelState: msg.kernelState };
         case "sync-pipe-state":
           return { type: "pipe-state-synced", requestId: 0, kernelState: msg.kernelState };
-        case "sync-fork-shared-state":
-          return { type: "fork-shared-state-synced", requestId: 0, kernelState: msg.kernelState };
         case "release-host-stdio":
           return { type: "host-stdio-released", requestId: 0, kernelState: msg.kernelState };
         case "process-fs":
@@ -570,6 +596,8 @@ test("createProcess delegates STATUS_FS to kernel-worker when available", async 
               ...msg.kernelState,
               heapPtr: msg.kernelState.heapPtr + 0x40,
             },
+            memfsMutated: false,
+            ofdStateChanged: false,
           };
         case "unregister-process":
           return { type: "process-unregistered", requestId: 0 };
@@ -606,6 +634,7 @@ test("createProcess delegates STATUS_FS to kernel-worker when available", async 
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   expect(requests.some((msg) => msg.type === "process-fs")).toBe(true);
+  expect(requests.some((msg) => msg.type === "sync-fork-shared-state")).toBe(false);
   expect(kernel.fsProcessCalls).toBe(0);
   expect(worker.postedMessages).toEqual([
     {
@@ -618,6 +647,77 @@ test("createProcess delegates STATUS_FS to kernel-worker when available", async 
     },
   ]);
   expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x40);
+});
+
+test("STATUS_FS only syncs fork-shared OFD state after kernel-worker fs processing", async () => {
+  const requests: KernelWorkerRequest[] = [];
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+      requests.push(msg);
+      switch (msg.type) {
+        case "register-process":
+          return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+        case "initialize-process-lifecycle":
+          return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+        case "sync-process-lifecycle":
+          return { type: "process-lifecycle-synced", requestId: 0, kernelState: msg.kernelState };
+        case "sync-epoll-state":
+          return { type: "epoll-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "sync-socket-state":
+          return { type: "socket-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "sync-pipe-state":
+          return { type: "pipe-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "process-fs":
+          return {
+            type: "fs-processed",
+            requestId: 0,
+            kernelState: {
+              ...msg.kernelState,
+              heapPtr: msg.kernelState.heapPtr + 0x20,
+            },
+            memfsMutated: false,
+            ofdStateChanged: true,
+          };
+        case "sync-fork-shared-state":
+          return { type: "fork-shared-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "unregister-process":
+          return { type: "process-unregistered", requestId: 0 };
+        default:
+          throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+      }
+    },
+  });
+  const worker = createdWorkers[0];
+
+  handle.kernelShare.sharedOfdIds.add(7);
+  handle.kernel.process_fd_ofd_id = (_vmPtr, fd) => (fd === 3 ? 7 : 0);
+  new DataView(handle.memory.buffer).setInt32(handle.kernelState.ofdTablePtr + 7 * 32, 1, true);
+
+  emitReady(worker);
+  worker.clearPostedMessages();
+  worker.emit({
+    type: "status",
+    status: 4,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+
+  for (let i = 0; i < 10; i++) {
+    await Promise.resolve();
+  }
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const syncRequest = requests.find((msg) => msg.type === "sync-fork-shared-state");
+  expect(syncRequest).toMatchObject({
+    type: "sync-fork-shared-state",
+    pid: 1,
+    targetPids: [],
+    includeMemfs: false,
+  });
 });
 
 test("createProcess resumes STATUS_CONNECT from the process owner", async () => {
@@ -644,7 +744,10 @@ test("createProcess resumes STATUS_CONNECT from the process owner", async () => 
     {
       type: "step",
       budget: 20_000,
-      kernelState: makeKernelState(),
+      kernelState: {
+        ...makeKernelState(),
+        heapPtr: makeKernelState().heapPtr + 0x14,
+      },
     },
   ]);
 });
@@ -832,8 +935,8 @@ test("child exit bookkeeping is delegated to kernel-worker when available", asyn
   expect(parentKernel.kernel_heap_ptr()).toBe(makeKernelState().heapPtr + 0x80);
 });
 
-test("createProcess preserves guest-visible ramSize when staging grows linear memory", async () => {
-  const requestedRam = 64 * 1024 * 1024;
+test("createProcess does not grow linear memory to requested ramSize during spawn staging", async () => {
+  const requestedRam = 512 * 1024 * 1024;
   const handle = await createProcess(
     new Uint8Array([0]),
     new Uint8Array(512 * 1024),
@@ -841,7 +944,7 @@ test("createProcess preserves guest-visible ramSize when staging grows linear me
   );
 
   expect(handle.ramSize).toBe(requestedRam);
-  expect(handle.memory.buffer.byteLength).toBeGreaterThan(requestedRam);
+  expect(handle.memory.buffer.byteLength).toBeLessThan(128 * 1024 * 1024);
 });
 
 test("createProcess preloads snapshot files by truncating before writing payload bytes", async () => {
@@ -890,6 +993,62 @@ test("createProcess seeds local memfs from runtime FS state when preloadEntries 
   expect(createdKernelExports[0].memfsTruncateCalls[0]?.[1]).toBe(4096);
   expect(createdKernelExports[0].memfsWriteCalls).toHaveLength(1);
   expect(createdKernelExports[0].memfsWriteCalls[0]?.[1]).toBe(4096);
+});
+
+test("createProcess delegates canonical memfs hydration to register-process metadata seed", async () => {
+  const runtimeId = 78;
+  primeRuntimeFsState(runtimeId, [
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "dir", path: "/workspace", mode: 0o755 },
+    {
+      kind: "file",
+      path: "/workspace/main.go",
+      data: new Uint8Array(4096),
+      mode: 0o644,
+    },
+  ]);
+
+  const kernelWorkerRequest = vi.fn(async (msg: KernelWorkerRequest): Promise<KernelWorkerOutbound> => {
+    switch (msg.type) {
+      case "register-process":
+        return {
+          type: "process-registered",
+          requestId: 0,
+          kernelState: msg.kernelState,
+        };
+      case "initialize-process-lifecycle":
+        return {
+          type: "process-lifecycle-initialized",
+          requestId: 0,
+          kernelState: msg.kernelState,
+        };
+      default:
+        throw new Error(`unexpected kernel worker request: ${msg.type}`);
+    }
+  });
+
+  try {
+    await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+      runtimeId,
+      pid: 1,
+      hydrateFsFromKernelWorker: true,
+      kernelWorkerRequest,
+    });
+  } finally {
+    clearRuntimeFsState(runtimeId);
+  }
+
+  expect(createdKernelExports[0].memfsCreateCalls).toEqual([]);
+  expect(createdKernelExports[0].memfsSetFileSizeShallowCalls).toEqual([]);
+  expect(createdKernelExports[0].memfsTruncateCalls).toEqual([]);
+  expect(createdKernelExports[0].memfsWriteCalls).toEqual([]);
+  expect(
+    kernelWorkerRequest.mock.calls.some(([msg]) => msg.type === "snapshot-fs"),
+  ).toBe(false);
+  expect(kernelWorkerRequest).toHaveBeenCalledWith(expect.objectContaining({
+    type: "register-process",
+    seedMemfsMode: "metadata",
+  }));
 });
 
 test("STATUS_EXECVE_SPAWN with unknown spawn kind clears handoff and resumes", async () => {
@@ -1597,9 +1756,7 @@ test("STATUS_WAIT4 delegates retries through kernel-worker when available", asyn
   vi.useRealTimers();
 });
 
-test("STATUS_EPOLL_WAIT delegates retries through kernel-worker when available", async () => {
-  vi.useFakeTimers();
-
+test("waitInWorker STATUS_EPOLL_WAIT syncs epoll state without owner-side retries", async () => {
   const requests: KernelWorkerRequest[] = [];
   const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
     pid: 1,
@@ -1611,10 +1768,8 @@ test("STATUS_EPOLL_WAIT delegates retries through kernel-worker when available",
         case "initialize-process-lifecycle":
           return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
         case "sync-epoll-state":
-          return { type: "epoll-state-synced", requestId: 0, kernelState: msg.kernelState };
-        case "resume-epoll-wait":
           return {
-            type: "epoll-wait-resumed",
+            type: "epoll-state-synced",
             requestId: 0,
             kernelState: {
               ...msg.kernelState,
@@ -1629,19 +1784,15 @@ test("STATUS_EPOLL_WAIT delegates retries through kernel-worker when available",
     },
   });
   const worker = createdWorkers[0];
-  const kernel = createdKernelExports[0];
-  const resumeTimeout = vi.fn();
-  const resumeBlocked = vi.fn(() => 0n);
-
-  kernel.thread_epoll_wait_timeout = () => 10n;
-  kernel.thread_resume_epoll_wait_timeout = resumeTimeout;
-  kernel.thread_resume_blocked_syscall = resumeBlocked;
 
   emitReady(worker);
   worker.clearPostedMessages();
+  const notify = new Int32Array(handle.runtimeBridge.notifySab);
+  const notifyBefore = Atomics.load(notify, 0);
   worker.emit({
     type: "status",
     status: 7,
+    waitInWorker: true,
     exitCode: 0,
     termSignal: 0,
     pc: 0n,
@@ -1650,25 +1801,12 @@ test("STATUS_EPOLL_WAIT delegates retries through kernel-worker when available",
   });
 
   await flushMicrotasks();
-  vi.advanceTimersByTime(15);
-  await flushMicrotasks();
 
-  expect(requests.some((msg) => msg.type === "resume-epoll-wait" && msg.timeoutExpired)).toBe(true);
-  expect(resumeTimeout).not.toHaveBeenCalled();
-  expect(resumeBlocked).not.toHaveBeenCalled();
+  expect(requests.some((msg) => msg.type === "sync-epoll-state")).toBe(true);
+  expect(requests.some((msg) => msg.type === "resume-epoll-wait")).toBe(false);
   expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x40);
-  expect(worker.postedMessages).toEqual([
-    {
-      type: "step",
-      budget: 20_000,
-      kernelState: {
-        ...makeKernelState(),
-        heapPtr: makeKernelState().heapPtr + 0x40,
-      },
-    },
-  ]);
-
-  vi.useRealTimers();
+  expect(Atomics.load(notify, 0)).toBe(notifyBefore);
+  expect(worker.postedMessages).toEqual([]);
 });
 
 test("STATUS_PIPE_WAIT syncs fork-shared state to kernel-worker even without peer members", async () => {
@@ -1776,7 +1914,7 @@ test("STATUS_PIPE_WAIT re-syncs fork-shared state after local blocked resume", a
   vi.useRealTimers();
 });
 
-test("pipe sync wakes blocked epoll waits through kernel-worker when available", async () => {
+test("pipe sync wakes waitInWorker epoll waits through runtime bridge", async () => {
   const requests: KernelWorkerRequest[] = [];
   const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
     pid: 1,
@@ -1791,15 +1929,6 @@ test("pipe sync wakes blocked epoll waits through kernel-worker when available",
           return { type: "epoll-state-synced", requestId: 0, kernelState: msg.kernelState };
         case "sync-pipe-state":
           return { type: "pipe-state-synced", requestId: 0, kernelState: msg.kernelState };
-        case "resume-epoll-wait":
-          return {
-            type: "epoll-wait-resumed",
-            requestId: 0,
-            kernelState: {
-              ...msg.kernelState,
-              heapPtr: msg.kernelState.heapPtr + 0x20,
-            },
-          };
         case "unregister-process":
           return { type: "process-unregistered", requestId: 0 };
         default:
@@ -1809,16 +1938,17 @@ test("pipe sync wakes blocked epoll waits through kernel-worker when available",
   });
   const worker = createdWorkers[0];
   const kernel = createdKernelExports[0];
-  const resumeBlocked = vi.fn(() => 0n);
 
   kernel.thread_epoll_wait_timeout = () => -1n;
-  kernel.thread_resume_blocked_syscall = resumeBlocked;
 
   emitReady(worker);
   worker.clearPostedMessages();
+  const notify = new Int32Array(handle.runtimeBridge.notifySab);
+  const notifyBefore = Atomics.load(notify, 0);
   worker.emit({
     type: "status",
     status: 7,
+    waitInWorker: true,
     exitCode: 0,
     termSignal: 0,
     pc: 0n,
@@ -1830,19 +1960,36 @@ test("pipe sync wakes blocked epoll waits through kernel-worker when available",
   writeProcessStdin(handle, new TextEncoder().encode("x"));
   await flushMicrotasks();
 
+  expect(requests.some((msg) => msg.type === "sync-epoll-state")).toBe(true);
   expect(requests.some((msg) => msg.type === "sync-pipe-state")).toBe(true);
-  expect(requests.some((msg) => msg.type === "resume-epoll-wait" && !msg.timeoutExpired)).toBe(true);
-  expect(resumeBlocked).not.toHaveBeenCalled();
-  expect(worker.postedMessages).toEqual([
-    {
-      type: "step",
-      budget: 20_000,
-      kernelState: {
-        ...makeKernelState(),
-        heapPtr: makeKernelState().heapPtr + 0x20,
-      },
-    },
-  ]);
+  expect(requests.some((msg) => msg.type === "resume-epoll-wait")).toBe(false);
+  expect(Atomics.load(notify, 0)).toBeGreaterThan(notifyBefore);
+  expect(worker.postedMessages).toEqual([]);
+});
+
+test("signal syscalls wake waitInWorker threads through the runtime bridge", async () => {
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
+  const worker = createdWorkers[0];
+
+  emitReady(worker);
+  worker.clearPostedMessages();
+  const notify = new Int32Array(handle.runtimeBridge.notifySab);
+  const notifyBefore = Atomics.load(notify, 0);
+
+  worker.emit({
+    type: "status",
+    status: 0,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+    syncEffects: 1 << 5,
+  });
+
+  await flushMicrotasks();
+
+  expect(Atomics.load(notify, 0)).toBeGreaterThan(notifyBefore);
 });
 
 test("STATUS_OK syncs epoll state through kernel-worker when available", async () => {
@@ -1857,14 +2004,7 @@ test("STATUS_OK syncs epoll state through kernel-worker when available", async (
         case "initialize-process-lifecycle":
           return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
         case "sync-socket-state":
-          return {
-            type: "socket-state-synced",
-            requestId: 0,
-            kernelState: {
-              ...msg.kernelState,
-              heapPtr: msg.kernelState.heapPtr + 0x14,
-            },
-          };
+          return { type: "socket-state-synced", requestId: 0, kernelState: msg.kernelState };
         case "sync-epoll-state":
           return { type: "epoll-state-synced", requestId: 0, kernelState: msg.kernelState };
         case "sync-pipe-state":
@@ -1885,6 +2025,7 @@ test("STATUS_OK syncs epoll state through kernel-worker when available", async (
   worker.emit({
     type: "status",
     status: 0,
+    syncEffects: SYNC_EFFECT_EPOLL_STATE,
     exitCode: 0,
     termSignal: 0,
     pc: 0n,
@@ -1896,17 +2037,138 @@ test("STATUS_OK syncs epoll state through kernel-worker when available", async (
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   expect(requests.some((msg) => msg.type === "sync-epoll-state")).toBe(true);
-  expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x14);
+  expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr);
   expect(worker.postedMessages).toEqual([
     {
       type: "step",
       budget: 20_000,
-      kernelState: {
-        ...makeKernelState(),
-        heapPtr: makeKernelState().heapPtr + 0x14,
-      },
+      kernelState: makeKernelState(),
     },
   ]);
+});
+
+test("STATUS_OK syncs eventfd-backed OFD state before epoll retries", async () => {
+  const requests: KernelWorkerRequest[] = [];
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+      requests.push(msg);
+      switch (msg.type) {
+        case "register-process":
+          return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+        case "initialize-process-lifecycle":
+          return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+        case "sync-ofd-state":
+          return {
+            type: "ofd-state-synced",
+            requestId: 0,
+            kernelState: {
+              ...msg.kernelState,
+              heapPtr: msg.kernelState.heapPtr + 0x10,
+            },
+          };
+        case "sync-socket-state":
+          return { type: "socket-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "sync-epoll-state":
+          return { type: "epoll-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "sync-pipe-state":
+          return { type: "pipe-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "sync-process-lifecycle":
+          return { type: "process-lifecycle-synced", requestId: 0, kernelState: msg.kernelState };
+        case "unregister-process":
+          return { type: "process-unregistered", requestId: 0 };
+        default:
+          throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+      }
+    },
+  });
+  const kernel = handle.kernel;
+  const ofdId = 7;
+  new DataView(kernel.memory.buffer).setInt32(handle.kernelState.ofdTablePtr + ofdId * 32, 9, true);
+  kernel.process_fd_ofd_id = (_vmPtr, fd) => (fd === 3 ? ofdId : 0);
+
+  const worker = createdWorkers[0];
+  emitReady(worker);
+  worker.clearPostedMessages();
+  worker.emit({
+    type: "status",
+    status: 0,
+    syncEffects: SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE | SYNC_EFFECT_EPOLL_STATE,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+
+  await flushMicrotasks();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(requests.some((msg) => msg.type === "sync-ofd-state" && msg.ofdIds.includes(ofdId))).toBe(true);
+  expect(requests.some((msg) => msg.type === "sync-epoll-state")).toBe(true);
+  expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x10);
+});
+
+test("STATUS_OK syncs fork-shared OFD state through kernel-worker", async () => {
+  const requests: KernelWorkerRequest[] = [];
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+      requests.push(msg);
+      switch (msg.type) {
+        case "register-process":
+          return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+        case "initialize-process-lifecycle":
+          return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+        case "sync-fork-shared-state":
+          return {
+            type: "fork-shared-state-synced",
+            requestId: 0,
+            kernelState: {
+              ...msg.kernelState,
+              heapPtr: msg.kernelState.heapPtr + 0x20,
+            },
+          };
+        case "sync-pipe-state":
+          return { type: "pipe-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "sync-socket-state":
+          return { type: "socket-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "sync-epoll-state":
+          return { type: "epoll-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "sync-process-lifecycle":
+          return { type: "process-lifecycle-synced", requestId: 0, kernelState: msg.kernelState };
+        case "unregister-process":
+          return { type: "process-unregistered", requestId: 0 };
+        default:
+          throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+      }
+    },
+  });
+  const kernel = handle.kernel;
+  const ofdId = 5;
+  new DataView(kernel.memory.buffer).setInt32(handle.kernelState.ofdTablePtr + ofdId * 32, 6, true);
+  kernel.process_fd_ofd_id = (_vmPtr, fd) => (fd === 3 ? ofdId : 0);
+  handle.kernelShare.sharedOfdIds.add(ofdId);
+
+  const worker = createdWorkers[0];
+  emitReady(worker);
+  worker.clearPostedMessages();
+  worker.emit({
+    type: "status",
+    status: 0,
+    syncEffects: SYNC_EFFECT_FORK_SHARED_OFD_STATE,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+
+  await flushMicrotasks();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(requests.some((msg) => msg.type === "sync-fork-shared-state" && msg.ofdIds.includes(ofdId))).toBe(true);
+  expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x20);
 });
 
 test("STATUS_OK syncs socket state through kernel-worker when available", async () => {
@@ -1949,6 +2211,7 @@ test("STATUS_OK syncs socket state through kernel-worker when available", async 
   worker.emit({
     type: "status",
     status: 0,
+    syncEffects: SYNC_EFFECT_SOCKET_STATE | SYNC_EFFECT_EPOLL_STATE,
     exitCode: 0,
     termSignal: 0,
     pc: 0n,
@@ -1970,6 +2233,52 @@ test("STATUS_OK syncs socket state through kernel-worker when available", async 
         heapPtr: makeKernelState().heapPtr + 0x18,
       },
     },
+  ]);
+});
+
+test("STATUS_OK skips owner-side sync for thread-local returns", async () => {
+  const requests: KernelWorkerRequest[] = [];
+  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+      requests.push(msg);
+      switch (msg.type) {
+        case "register-process":
+          return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+        case "initialize-process-lifecycle":
+          return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+        case "unregister-process":
+          return { type: "process-unregistered", requestId: 0 };
+        default:
+          throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+      }
+    },
+  });
+  const worker = createdWorkers[0];
+
+  emitReady(worker);
+  worker.clearPostedMessages();
+  worker.emit({
+    type: "status",
+    status: 0,
+    syncEffects: 0,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+
+  await flushMicrotasks();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(requests.some((msg) => msg.type === "sync-pipe-state")).toBe(false);
+  expect(requests.some((msg) => msg.type === "sync-process-lifecycle")).toBe(false);
+  expect(requests.some((msg) => msg.type === "sync-socket-state")).toBe(false);
+  expect(requests.some((msg) => msg.type === "sync-epoll-state")).toBe(false);
+  expect(requests.some((msg) => msg.type === "sync-ofd-state")).toBe(false);
+  expect(worker.postedMessages).toEqual([
+    { type: "step", budget: 20_000, kernelState: makeKernelState() },
   ]);
 });
 
@@ -2348,6 +2657,67 @@ test("vfork child fault delegates wait status bookkeeping and parent resume to k
   ]);
 });
 
+test("STATUS_VFORK_WAIT syncs pre-vfork fork-shared OFD state before child canonicalization", async () => {
+  const requests: KernelWorkerRequest[] = [];
+  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+      requests.push(msg);
+      switch (msg.type) {
+        case "register-process":
+          return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+        case "initialize-process-lifecycle":
+          return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+        case "sync-fork-shared-state":
+          return { type: "fork-shared-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "canonicalize-child-pid":
+          return {
+            type: "child-pid-canonicalized",
+            requestId: 0,
+            childPid: 56,
+            nextPid: 57,
+            pgid: 1,
+            sid: 1,
+            kernelState: msg.kernelState,
+          };
+        default:
+          throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+      }
+    },
+  });
+  const worker = createdWorkers[0];
+  const kernel = createdKernelExports[0];
+
+  kernel.thread_vfork_child_pid = () => 55;
+
+  emitReady(worker);
+  requests.length = 0;
+  worker.clearPostedMessages();
+  worker.emit({
+    type: "status",
+    status: 8,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+    syncEffects: SYNC_EFFECT_FORK_SHARED_OFD_STATE,
+  });
+  await flushMicrotasks();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const syncIndex = requests.findIndex((msg) => msg.type === "sync-fork-shared-state");
+  const canonicalizeIndex = requests.findIndex((msg) => msg.type === "canonicalize-child-pid");
+  expect(syncIndex).toBeGreaterThanOrEqual(0);
+  expect(canonicalizeIndex).toBeGreaterThan(syncIndex);
+  const syncRequest = requests.find((msg) => msg.type === "sync-fork-shared-state");
+  expect(syncRequest?.type).toBe("sync-fork-shared-state");
+  if (syncRequest?.type !== "sync-fork-shared-state") {
+    throw new Error("expected sync-fork-shared-state request");
+  }
+  expect(syncRequest.preserveSourceRefcounts).toBe(true);
+});
+
 test("vfork execve resumes the parent and initializes the child lifecycle through kernel-worker", async () => {
   const requests: KernelWorkerRequest[] = [];
   await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
@@ -2407,12 +2777,14 @@ test("vfork execve resumes the parent and initializes the child lifecycle throug
   const parentWorker = createdWorkers[0];
   const parentKernel = createdKernelExports[0];
   const resumeVforkParent = vi.fn();
+  const restoreVforkParentWithoutCleanup = vi.fn();
   const clearSpawnHandoff = vi.fn();
 
   parentKernel.thread_vfork_child_pid = () => 55;
   parentKernel.thread_spawn_kind = () => parentKernel.abi_spawn_kind_execve();
   parentKernel.thread_spawn_child_pid = () => 156;
   parentKernel.thread_resume_vfork_parent = resumeVforkParent;
+  parentKernel.thread_restore_vfork_parent_without_cleanup = restoreVforkParentWithoutCleanup;
   parentKernel.thread_clear_spawn_handoff = clearSpawnHandoff;
 
   emitReady(parentWorker);
@@ -2449,6 +2821,14 @@ test("vfork execve resumes the parent and initializes the child lifecycle throug
     requests.some((msg) => msg.type === "resume-vfork-execve-parent" && msg.childPid === 156),
   ).toBe(true);
   expect(
+    requests.some(
+      (msg) => msg.type === "rehydrate-fork-shared-state"
+        && msg.targetPids.length === 1
+        && msg.targetPids[0] === 1
+        && msg.includeMemfs === false,
+    ),
+  ).toBe(false);
+  expect(
     requests.some((msg) => msg.type === "register-process" && msg.pid === 156),
   ).toBe(true);
   expect(
@@ -2465,7 +2845,8 @@ test("vfork execve resumes the parent and initializes the child lifecycle throug
         && msg.didExec,
     ),
   ).toBe(true);
-  expect(resumeVforkParent).toHaveBeenCalledWith(0x1234, 156);
+  expect(restoreVforkParentWithoutCleanup).toHaveBeenCalledWith(0x1234, 156);
+  expect(resumeVforkParent).not.toHaveBeenCalled();
   expect(clearSpawnHandoff).toHaveBeenCalledWith(0x1234);
   expect(createdWorkers).toHaveLength(2);
   expect(parentWorker.postedMessages).toEqual([
@@ -2612,6 +2993,7 @@ test("vfork execve keeps post-vfork stdio rewires child-private across kernel-wo
     const memory = (imports as { env: { memory: WebAssembly.Memory } }).env.memory;
     const exports = makeKernelExports(memory);
     if (instantiateCount === 2) {
+      const state = makeKernelState();
       const childPrivateStdioOfds = [7, 8, 9];
       exports.process_fd_ofd_id = (_vmPtr, fd) => {
         if (fd >= 0 && fd <= 2) {
@@ -2619,7 +3001,22 @@ test("vfork execve keeps post-vfork stdio rewires child-private across kernel-wo
         }
         return fd === 3 ? 4 : 0;
       };
-      exports.thread_complete_execve_handoff = () => 0n;
+      exports.thread_complete_execve_handoff = () => {
+        const view = new DataView(memory.buffer);
+        childPrivateStdioOfds.forEach((ofdId, index) => {
+          const slotOffset = state.ofdTablePtr + ofdId * 32;
+          view.setInt32(slotOffset, 2, true);
+          view.setInt32(slotOffset + 4, index === 0 ? 1 : -1, true);
+          view.setInt32(slotOffset + 8, 0, true);
+          view.setUint32(slotOffset + 24, 4 + index, true);
+          view.setUint8(slotOffset + 12, 0x70 + index);
+          view.setUint8(slotOffset + 13, 0x80 + index);
+        });
+        const stdoutPipeBase = state.pipeBase + 4 * (32 + 4096);
+        view.setInt32(stdoutPipeBase + 8, 5, true);
+        view.setInt32(stdoutPipeBase + 12, 6, true);
+        return 0n;
+      };
     }
     return { exports } as WebAssembly.WebAssemblyInstantiatedSource;
   });
@@ -2715,23 +3112,213 @@ test("vfork execve keeps post-vfork stdio rewires child-private across kernel-wo
     });
     await flushMicrotasks();
 
-    const rehydrate = requests.find((msg) => msg.type === "rehydrate-fork-shared-state");
+    const rehydrate = [...requests].reverse().find((msg) => msg.type === "rehydrate-fork-shared-state");
     expect(rehydrate?.type).toBe("rehydrate-fork-shared-state");
     if (rehydrate?.type !== "rehydrate-fork-shared-state") {
       throw new Error("expected rehydrate-fork-shared-state request");
     }
-    expect(rehydrate.ofdIds).not.toContain(7);
-    expect(rehydrate.ofdIds).not.toContain(8);
-    expect(rehydrate.ofdIds).not.toContain(9);
+    expect(rehydrate.ofdIds).toEqual([]);
+    const childSync = [...requests].reverse().find((msg) => msg.type === "sync-fork-shared-state");
+    expect(childSync?.type).toBe("sync-fork-shared-state");
+    if (childSync?.type !== "sync-fork-shared-state") {
+      throw new Error("expected sync-fork-shared-state request");
+    }
+    expect(childSync.ofdIds).toEqual([4]);
 
     const childKernel = createdKernelExports[1];
     const childBytes = new Uint8Array(childKernel.memory.buffer);
     for (const [index, ofdId] of [7, 8, 9].entries()) {
       const slotOffset = state.ofdTablePtr + ofdId * 32;
-      expect(childBytes[slotOffset]).toBe(0x01);
+      expect(childBytes[slotOffset]).toBe(0x02);
       expect(childBytes[slotOffset + 12]).toBe(0x70 + index);
       expect(childBytes[slotOffset + 13]).toBe(0x80 + index);
     }
+    const childView = new DataView(childKernel.memory.buffer);
+    const stdoutPipeBase = state.pipeBase + 4 * (32 + 4096);
+    expect(childView.getInt32(stdoutPipeBase + 8, true)).toBe(5);
+    expect(childView.getInt32(stdoutPipeBase + 12, true)).toBe(6);
+
+    requests.length = 0;
+    const childWorker = createdWorkers[1];
+    emitReady(childWorker);
+    childWorker.clearPostedMessages();
+    childWorker.emit({
+      type: "status",
+      status: 0,
+      syncEffects: SYNC_EFFECT_FORK_SHARED_OFD_STATE,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    });
+    await flushMicrotasks();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const postReadySync = requests.find((msg) => msg.type === "sync-fork-shared-state" && msg.pid === 156);
+    expect(postReadySync?.type).toBe("sync-fork-shared-state");
+    if (postReadySync?.type !== "sync-fork-shared-state") {
+      throw new Error("expected post-ready sync-fork-shared-state request");
+    }
+    expect(postReadySync.ofdIds).toEqual([4]);
+  } finally {
+    restoreDefaultInstantiate();
+  }
+});
+
+test("vfork execve keeps distinct shared stdout and stderr pipe slots across kernel-worker scrub", async () => {
+  const restoreDefaultInstantiate = (): void => {
+    vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {
+      const memory = (imports as { env: { memory: WebAssembly.Memory } }).env.memory;
+      return {
+        exports: makeKernelExports(memory),
+      } as WebAssembly.WebAssemblyInstantiatedSource;
+    });
+  };
+
+  let instantiateCount = 0;
+  vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {
+    instantiateCount += 1;
+    const memory = (imports as { env: { memory: WebAssembly.Memory } }).env.memory;
+    const exports = makeKernelExports(memory);
+    if (instantiateCount === 2) {
+      const state = makeKernelState();
+      exports.process_fd_ofd_id = (_vmPtr, fd) => {
+        switch (fd) {
+          case 0:
+            return 1;
+          case 1:
+            return 8;
+          case 2:
+            return 10;
+          case 3:
+            return 4;
+          default:
+            return 0;
+        }
+      };
+      exports.thread_complete_execve_handoff = () => {
+        const view = new DataView(memory.buffer);
+        const writePipeOfdIds = [
+          [8, 4, 0x88],
+          [10, 5, 0xaa],
+        ] as const;
+        for (const [ofdId, pipeSlot, marker] of writePipeOfdIds) {
+          const slotOffset = state.ofdTablePtr + ofdId * 32;
+          view.setInt32(slotOffset, 2, true);
+          view.setInt32(slotOffset + 4, -1, true);
+          view.setInt32(slotOffset + 8, 0, true);
+          view.setUint32(slotOffset + 24, pipeSlot, true);
+          view.setUint8(slotOffset + 12, marker);
+          view.setUint8(slotOffset + 13, marker + 1);
+        }
+        const stdoutPipeBase = state.pipeBase + 4 * (32 + 4096);
+        view.setInt32(stdoutPipeBase + 8, 1, true);
+        view.setInt32(stdoutPipeBase + 12, 1, true);
+        const stderrPipeBase = state.pipeBase + 5 * (32 + 4096);
+        view.setInt32(stderrPipeBase + 8, 1, true);
+        view.setInt32(stderrPipeBase + 12, 1, true);
+        return 0n;
+      };
+    }
+    return { exports } as WebAssembly.WebAssemblyInstantiatedSource;
+  });
+
+  try {
+    const requests: KernelWorkerRequest[] = [];
+    await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+      pid: 1,
+      kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+        requests.push(msg);
+        switch (msg.type) {
+          case "register-process":
+            return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+          case "initialize-process-lifecycle":
+            return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+          case "canonicalize-child-pid":
+            return {
+              type: "child-pid-canonicalized",
+              requestId: 0,
+              childPid: 156,
+              nextPid: 201,
+              pgid: 33,
+              sid: 44,
+              kernelState: msg.kernelState,
+            };
+          case "resume-vfork-execve-parent":
+            return { type: "vfork-execve-parent-resumed", requestId: 0, kernelState: msg.kernelState };
+          case "sync-fork-shared-state":
+            return { type: "fork-shared-state-synced", requestId: 0, kernelState: msg.kernelState };
+          case "rehydrate-fork-shared-state":
+            return { type: "fork-shared-state-rehydrated", requestId: 0 };
+          case "unregister-process":
+            return { type: "process-unregistered", requestId: 0 };
+          default:
+            throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+        }
+      },
+    });
+
+    const parentWorker = createdWorkers[0];
+    const parentKernel = createdKernelExports[0];
+    parentKernel.process_fd_ofd_id = (_vmPtr, fd) => {
+      switch (fd) {
+        case 0:
+          return 1;
+        case 1:
+          return 2;
+        case 2:
+          return 3;
+        case 3:
+          return 4;
+        default:
+          return 0;
+      }
+    };
+    parentKernel.thread_vfork_child_pid = () => 55;
+    parentKernel.thread_spawn_kind = () => parentKernel.abi_spawn_kind_execve();
+    parentKernel.thread_spawn_child_pid = () => 156;
+
+    emitReady(parentWorker);
+    parentWorker.clearPostedMessages();
+    parentWorker.emit({
+      type: "status",
+      status: 8,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    });
+    await flushMicrotasks();
+
+    parentWorker.clearPostedMessages();
+    parentWorker.emit({
+      type: "status",
+      status: 9,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    });
+    await flushMicrotasks();
+
+    const childKernel = createdKernelExports[1];
+    expect(childKernel.process_fd_ofd_id(0x1234, 1)).toBe(8);
+    expect(childKernel.process_fd_ofd_id(0x1234, 2)).toBe(10);
+    expect(childKernel.kernel_ofd_ino(8)).toBe(4);
+    expect(childKernel.kernel_ofd_ino(10)).toBe(5);
+
+    const childView = new DataView(childKernel.memory.buffer);
+    const state = makeKernelState();
+    const stdoutPipeBase = state.pipeBase + 4 * (32 + 4096);
+    const stderrPipeBase = state.pipeBase + 5 * (32 + 4096);
+    expect(childView.getInt32(stdoutPipeBase + 8, true)).toBe(1);
+    expect(childView.getInt32(stdoutPipeBase + 12, true)).toBe(1);
+    expect(childView.getInt32(stderrPipeBase + 8, true)).toBe(1);
+    expect(childView.getInt32(stderrPipeBase + 12, true)).toBe(1);
+
   } finally {
     restoreDefaultInstantiate();
   }

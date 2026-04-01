@@ -47,6 +47,40 @@ export interface KernelExports {
   abi_sigchld(): number;
   abi_sigpipe(): number;
   abi_clone_parent(): bigint | number;
+  abi_sys_read?(): bigint | number;
+  abi_sys_write?(): bigint | number;
+  abi_sys_lseek?(): bigint | number;
+  abi_sys_execve?(): bigint | number;
+  abi_sys_close?(): bigint | number;
+  abi_sys_pipe2?(): bigint | number;
+  abi_sys_epoll_ctl?(): bigint | number;
+  abi_sys_dup?(): bigint | number;
+  abi_sys_dup3?(): bigint | number;
+  abi_sys_fcntl?(): bigint | number;
+  abi_sys_readv?(): bigint | number;
+  abi_sys_writev?(): bigint | number;
+  abi_sys_socket?(): bigint | number;
+  abi_sys_bind?(): bigint | number;
+  abi_sys_listen?(): bigint | number;
+  abi_sys_accept4?(): bigint | number;
+  abi_sys_eventfd2?(): bigint | number;
+  abi_sys_setpgid?(): bigint | number;
+  abi_sys_setsid?(): bigint | number;
+  abi_sys_kill?(): bigint | number;
+  abi_sys_tkill?(): bigint | number;
+  abi_sys_tgkill?(): bigint | number;
+  debug_panic_file_ptr?(): number;
+  debug_panic_file_len?(): number;
+  debug_panic_line?(): number;
+  debug_panic_column?(): number;
+  debug_fd_syscall_trace_len?(): number;
+  debug_fd_syscall_trace_nr?(index: number): bigint | number;
+  debug_fd_syscall_trace_arg0?(index: number): bigint | number;
+  debug_fd_syscall_trace_arg1?(index: number): bigint | number;
+  debug_fd_syscall_trace_arg2?(index: number): bigint | number;
+  debug_fd_syscall_trace_arg3?(index: number): bigint | number;
+  debug_fd_syscall_trace_result?(index: number): bigint | number;
+  debug_fd_syscall_trace_status?(index: number): number;
 
   // Open flags
   abi_o_rdonly(): number;
@@ -63,6 +97,7 @@ export interface KernelExports {
   abi_einval(): number;
   abi_enomem(): number;
   abi_enosys(): number;
+  abi_eintr(): number;
   abi_eagain(): number;
   abi_epipe(): number;
   abi_econnrefused(): number;
@@ -106,6 +141,7 @@ export interface KernelExports {
   kernel_process_runtime_state_bytes(): number;
   kernel_time_state_ptr(): number;
   kernel_time_state_bytes(): number;
+  kernel_scratch_base?(): number;
   kernel_reset_memfs(): void;
   kernel_attach_runtime_state(
     heapBase: number,
@@ -140,18 +176,35 @@ export interface KernelExports {
   thread_exit_code(vm_ptr: number): number;
   thread_term_signal(vm_ptr: number): number;
   thread_pc(vm_ptr: number): bigint;
+  thread_tid(vm_ptr: number): number;
+  thread_tp(vm_ptr: number): bigint;
+  thread_gp(vm_ptr: number): bigint;
+  thread_g(vm_ptr: number): bigint;
+  thread_tls_base(vm_ptr: number): bigint;
+  thread_sig_mask(vm_ptr: number): bigint;
+  thread_sig_pending(vm_ptr: number): bigint;
+  thread_sig_info_code(vm_ptr: number): number;
+  thread_fault_pc(vm_ptr: number): bigint;
+  thread_fault_addr(vm_ptr: number): bigint;
+  thread_ra(vm_ptr: number): bigint;
+  thread_sp(vm_ptr: number): bigint;
   thread_a0(vm_ptr: number): bigint;
   thread_a1(vm_ptr: number): bigint;
+  thread_stack_word(vm_ptr: number, word_index: number): bigint;
   thread_blocked_fd(vm_ptr: number): number;
   thread_blocked_ofd_id(vm_ptr: number): number;
 
   // FS handling
+  thread_pending_fs_effects(vm_ptr: number): number;
+  thread_pending_fs_target_ino(vm_ptr: number): number;
+  thread_pending_fs_opcode(vm_ptr: number): number;
   thread_process_fs(vm_ptr: number): void;
   thread_resume_fs(vm_ptr: number): number;
 
   // Blocking state accessors
   thread_futex_wait_addr(vm_ptr: number): bigint;
   thread_futex_wait_timeout(vm_ptr: number): bigint;
+  thread_futex_wait_expected(vm_ptr: number): number;
   thread_resume_futex_wait(vm_ptr: number): void;
   thread_resume_futex_wait_result(vm_ptr: number, result: bigint): void;
   thread_sleep_seconds(vm_ptr: number): bigint;
@@ -160,6 +213,7 @@ export interface KernelExports {
   thread_resume_wait4(vm_ptr: number): bigint;
   thread_epoll_wait_timeout(vm_ptr: number): bigint;
   thread_resume_epoll_wait_timeout(vm_ptr: number): void;
+  thread_interrupt_epoll_wait?(vm_ptr: number, errno: number): number;
   thread_resume_blocked_syscall(vm_ptr: number): bigint;
   thread_resume_connect_result(vm_ptr: number, result: bigint): void;
   thread_vfork_child_pid(): number;
@@ -171,12 +225,21 @@ export interface KernelExports {
   thread_spawn_path(vm_ptr: number): bigint;
   thread_spawn_argv(vm_ptr: number): bigint;
   thread_spawn_envp(vm_ptr: number): bigint;
+  thread_set_execve_handoff(
+    vm_ptr: number,
+    processPtr: number,
+    pathAddr: bigint,
+    argvAddr: bigint,
+    envpAddr: bigint,
+  ): void;
   thread_clear_spawn_handoff(vm_ptr: number): void;
   thread_resume_vfork_parent(vm_ptr: number, child_pid: number): void;
+  thread_restore_vfork_parent_without_cleanup?(vm_ptr: number, child_pid: number): void;
   thread_complete_execve_handoff(vm_ptr: number): bigint;
   thread_spawn_from_clone(parent_vm_ptr: number): number;
   thread_process_thread_count(vm_ptr: number): number;
   thread_process_ptr(vm_ptr: number): number;
+  process_state_bytes(): number;
   process_thread_tid(vm_ptr: number, slot: number): number;
   process_thread_state(vm_ptr: number, slot: number): number;
   process_thread_vm_ptr(vm_ptr: number, slot: number): number;
@@ -224,17 +287,85 @@ export interface KernelExports {
   process_inject_http(vm_ptr: number, port: number, req_ptr: number, req_len: number): number;
   process_read_http_response(vm_ptr: number, conn_id: number, dst_ptr: number, dst_len: number): number;
   process_close_http_connection(vm_ptr: number, conn_id: number): void;
+  debug_clear_syscall_trace?(): void;
   debug_clear_memory_trace?(): void;
+  debug_clear_write_trace?(): void;
+  debug_write_trace_write_calls?(): number;
+  debug_write_trace_writev_calls?(): number;
+  debug_write_trace_last_fd?(): bigint;
+  debug_write_trace_last_nr?(): bigint;
+  debug_write_trace_last_buf_addr?(): bigint;
+  debug_write_trace_last_count?(): bigint;
+  debug_write_trace_last_result?(): bigint;
+  debug_write_trace_last_ofd_id?(): number;
+  debug_write_trace_last_ofd_type?(): number;
+  debug_write_trace_last_ofd_ino?(): number;
+  debug_write_trace_last_status_flags?(): number;
+  debug_write_trace_last_pipe_read_open?(): number;
+  debug_write_trace_last_pipe_write_open?(): number;
+  debug_write_trace_ptr?(): number;
+  debug_write_trace_len?(): number;
+  debug_pipe_read_open?(slot: number): number;
+  debug_pipe_write_open?(slot: number): number;
+  debug_last_pipe_close_slot?(): number;
+  debug_last_pipe_close_is_read_end?(): number;
+  debug_last_pipe_close_ofd_id?(): number;
+  debug_last_pipe_close_read_open?(): number;
+  debug_last_pipe_close_write_open?(): number;
   debug_syscall_trace_vm_ptr?(): number;
   debug_syscall_trace_nr?(): bigint;
   debug_syscall_trace_result?(): bigint;
   debug_syscall_trace_status?(): number;
+  debug_completed_sync_effects?(): number;
   debug_memory_trace_nr?(): bigint;
   debug_memory_trace_arg0?(): bigint;
   debug_memory_trace_arg1?(): bigint;
   debug_memory_trace_arg2?(): bigint;
   debug_memory_trace_arg3?(): bigint;
   debug_memory_trace_result?(): bigint;
+  debug_guest_mem_last_addr?(): bigint;
+  debug_guest_mem_last_len?(): number;
+  debug_guest_mem_last_kind?(): number;
+  debug_signal_delivery_sig?(): number;
+  debug_signal_delivery_frame_base?(): bigint;
+  debug_signal_delivery_pc?(): bigint;
+  debug_signal_delivery_ra?(): bigint;
+  debug_signal_delivery_sp?(): bigint;
+  debug_signal_delivery_g?(): bigint;
+  debug_sigreturn_frame_base?(): bigint;
+  debug_sigreturn_pc?(): bigint;
+  debug_sigreturn_ra?(): bigint;
+  debug_sigreturn_sp?(): bigint;
+  debug_sigreturn_g?(): bigint;
+  debug_clone_spawn_tid?(): number;
+  debug_clone_spawn_pc?(): bigint;
+  debug_clone_spawn_ra?(): bigint;
+  debug_clone_spawn_sp?(): bigint;
+  debug_clone_spawn_g?(): bigint;
+  debug_signal_trampoline_hit_tid?(): number;
+  debug_signal_trampoline_hit_pc?(): bigint;
+  debug_sigreturn_count?(): number;
+  debug_zero_reg_pc?(): bigint;
+  debug_zero_reg_raw?(): number;
+  debug_zero_reg_index?(): number;
+  debug_zero_reg_prev_value?(): bigint;
+  debug_zero_reg_sp?(): bigint;
+  debug_zero_reg_g?(): bigint;
+  debug_g_write_pc?(): bigint;
+  debug_g_write_raw?(): number;
+  debug_g_write_source?(): number;
+  debug_g_write_prev_value?(): bigint;
+  debug_g_write_value?(): bigint;
+  debug_sp_write_pc?(): bigint;
+  debug_sp_write_raw?(): number;
+  debug_sp_write_source?(): number;
+  debug_sp_write_prev_value?(): bigint;
+  debug_sp_write_value?(): bigint;
+  debug_jalr_pc?(): bigint;
+  debug_jalr_rs1_value?(): bigint;
+  debug_jalr_target?(): bigint;
+  debug_jalr_rd?(): number;
+  debug_jalr_rs1?(): number;
   debug_execve_stage?(): number;
   debug_execve_value0?(): bigint;
   debug_execve_value1?(): bigint;
@@ -242,16 +373,26 @@ export interface KernelExports {
   // MemFS operations (kernel Worker only)
   memfs_resolve_path(path_ptr: number, path_len: number): number;
   memfs_create_file(parent_ino: number, name_ptr: number, name_len: number): number;
+  memfs_reserve_inode_until(target_ino: number): bigint;
   memfs_write_file_at(ino: number, offset: bigint, data_ptr: number, data_len: number): bigint;
   memfs_read_file_to(ino: number, offset: bigint, buf_ptr: number, buf_len: number): bigint;
   memfs_file_size(ino: number): bigint;
   memfs_truncate_file(ino: number, size: bigint): bigint;
+  memfs_set_file_size_shallow(ino: number, size: bigint): bigint;
   memfs_inode_mode(ino: number): number;
   memfs_inode_nlink(ino: number): number;
   memfs_inode_uid(ino: number): number;
   memfs_inode_gid(ino: number): number;
+  memfs_read_link(ino: number, buf_ptr: number, buf_len: number): bigint;
   memfs_ensure_dir(parent_ino: number, name_ptr: number, name_len: number, mode: number): number;
   memfs_set_mode(ino: number, mode: number): bigint;
+  memfs_create_symlink(
+    parent_ino: number,
+    name_ptr: number,
+    name_len: number,
+    target_ptr: number,
+    target_len: number,
+  ): number;
   memfs_create_file_with_data(
     parent_ino: number,
     name_ptr: number,

@@ -15,7 +15,13 @@ export interface KernelWorkerOfdSlotSnapshot {
 
 export interface KernelWorkerPidStateSnapshot {
   pid: number;
+  vmPtr: number;
   kernelState: KernelRuntimeState;
+}
+
+export interface KernelWorkerPidBytesSnapshot {
+  pid: number;
+  bytes: Uint8Array;
 }
 
 // ============================================================================
@@ -30,6 +36,7 @@ export type ThreadWorkerInbound =
       vmPtr: number;
       guestBase: number;
       kernelState: KernelRuntimeState;
+      sabPageCache: SharedArrayBuffer | null;
       runtimeNotify: SharedArrayBuffer;
       runtimeState: SharedArrayBuffer;
     }
@@ -59,6 +66,7 @@ export interface ThreadWorkerStatusMessage {
   vmPtr: number;
   kernelState: KernelRuntimeState;
   debug?: string;
+  syncEffects?: number;
   waitInWorker?: boolean;
 }
 
@@ -121,9 +129,11 @@ export type KernelWorkerRequest =
   | {
       type: "register-process";
       pid: number;
+      vmPtr: number;
       memory: WebAssembly.Memory;
       kernelState: KernelRuntimeState;
-      seedMemfsFromCanonical?: boolean;
+      seedMemfsMode?: "full" | "metadata" | "none";
+      pipeSeedMode?: "canonical" | "process";
     }
   | {
       type: "unregister-process";
@@ -153,13 +163,6 @@ export type KernelWorkerRequest =
       type: "resume-wait4";
       pid: number;
       vmPtr: number;
-      kernelState: KernelRuntimeState;
-    }
-  | {
-      type: "resume-epoll-wait";
-      pid: number;
-      vmPtr: number;
-      timeoutExpired: boolean;
       kernelState: KernelRuntimeState;
     }
   | {
@@ -217,6 +220,12 @@ export type KernelWorkerRequest =
       kernelState: KernelRuntimeState;
     }
   | {
+      type: "sync-ofd-state";
+      pid: number;
+      ofdIds: number[];
+      kernelState: KernelRuntimeState;
+    }
+  | {
       type: "sync-socket-state";
       pid: number;
       kernelState: KernelRuntimeState;
@@ -224,10 +233,13 @@ export type KernelWorkerRequest =
   | {
       type: "sync-fork-shared-state";
       pid: number;
+      vmPtr: number;
       targetPids: number[];
       targetKernelStates: KernelWorkerPidStateSnapshot[];
       ofdIds: number[];
       ofdSlots: KernelWorkerOfdSlotSnapshot[];
+      includeMemfs?: boolean;
+      preserveSourceRefcounts?: boolean;
       kernelState: KernelRuntimeState;
     }
   | {
@@ -235,6 +247,8 @@ export type KernelWorkerRequest =
       targetPids: number[];
       targetKernelStates: KernelWorkerPidStateSnapshot[];
       ofdIds: number[];
+      procSelfExeTargets?: KernelWorkerPidBytesSnapshot[];
+      includeMemfs?: boolean;
     }
   | {
       type: "debug-processes";
@@ -299,6 +313,8 @@ export type KernelWorkerResponse =
       type: "fs-processed";
       requestId: number;
       kernelState: KernelRuntimeState;
+      memfsMutated: boolean;
+      ofdStateChanged: boolean;
     }
   | {
       type: "child-exit-recorded";
@@ -312,11 +328,6 @@ export type KernelWorkerResponse =
     }
   | {
       type: "wait4-resumed";
-      requestId: number;
-      kernelState: KernelRuntimeState;
-    }
-  | {
-      type: "epoll-wait-resumed";
       requestId: number;
       kernelState: KernelRuntimeState;
     }
@@ -362,6 +373,11 @@ export type KernelWorkerResponse =
     }
   | {
       type: "epoll-state-synced";
+      requestId: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "ofd-state-synced";
       requestId: number;
       kernelState: KernelRuntimeState;
     }

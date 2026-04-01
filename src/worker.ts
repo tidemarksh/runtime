@@ -14,6 +14,7 @@ import { readPipe, writePipe } from "./pipe-bridge.js";
 import type {
   KernelWorkerOfdSlotSnapshot,
   KernelWorkerOutbound,
+  KernelWorkerPidBytesSnapshot,
   KernelWorkerPidStateSnapshot,
   KernelWorkerRequest,
   ThreadWorkerInbound,
@@ -26,7 +27,7 @@ import {
   wakeRuntimeBridge,
 } from "./runtime-state-bridge.js";
 import { createKernelEnv } from "./wasm-env.js";
-import { setWorkerMessageHandler } from "./worker-compat.js";
+import { clearWorkerMessageHandler, setWorkerMessageHandler } from "./worker-compat.js";
 
 let cachedModule: WebAssembly.Module | null = null;
 
@@ -56,6 +57,9 @@ interface KernelShareGroup {
   members: Set<ProcessHandle>;
   sharedOfdIds: Set<number>;
 }
+
+const FD_TYPE_EVENTFD = 9;
+const FD_TYPE_TIMERFD = 10;
 
 type KernelSyncHandle = Pick<
   ProcessHandle,
@@ -203,8 +207,10 @@ export interface ProcessHandle {
   kernelShare: KernelShareGroup;
   stdinQueue: Uint8Array[];
   outputBacklog: Uint8Array[];
+  debugCommand: string;
   lastDebugMessage?: string;
   runtimeBridge: RuntimeStateBridge;
+  sabPageCache: SharedArrayBuffer | null;
   kernelWorkerRequest?: KernelWorkerRequestFn;
   workers: Set<Worker>;
   readyWorkers: Worker[];
@@ -216,6 +222,8 @@ export interface ProcessHandle {
   epollSyncPromise: Promise<void> | null;
   epollSyncQueued: boolean;
   epollWaiterWakeQueued: boolean;
+  ofdSyncPromise: Promise<void> | null;
+  ofdSyncQueuedIds: Set<number>;
   socketSyncPromise: Promise<void> | null;
   socketSyncQueued: boolean;
   socketWaiterWakeQueued: boolean;
@@ -266,6 +274,7 @@ const processHandles = new Map<number, ProcessHandle>();
 const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
 const runtimeFsStates = new Map<number, RuntimeFsState>();
 const runtimeFsDirtyHandles = new Map<number, Set<ProcessHandle>>();
+const runtimeLifecycleEvents = new Map<number, string[]>();
 
 interface CreateProcessOptions {
   runtimeId?: number;
@@ -277,19 +286,39 @@ interface CreateProcessOptions {
   env?: string[];
   cwd?: string;
   preloadEntries?: FsSnapshotEntry[];
+  sabPageCache?: SharedArrayBuffer | null;
+  hydrateFsFromKernelWorker?: boolean;
   kernelWorkerRequest?: KernelWorkerRequestFn;
   onExit?: (code: number) => void;
   onError?: (error: Error) => void;
   onStdout?: (data: Uint8Array) => void;
 }
 
+type KernelWorkerMemfsSeedMode = "full" | "metadata" | "none";
+type KernelWorkerPipeSeedMode = "canonical" | "process";
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const WASM_PAGE_SIZE = 65536;
 const WASM_MAX_PAGES = 65536;
-const GUEST_PAGE_SIZE = 4096;
 const THREAD_STEP_BUDGET = 20_000;
 const BOOTSTRAP_MEMORY_BYTES = 64 * 1024 * 1024;
+const FS_EFFECT_MEMFS_MUTATION = 1 << 0;
+const FS_EFFECT_SHARED_OFD_STATE = 1 << 1;
+const FS_EFFECT_MEMFS_FILE_DATA = 1 << 2;
+const SYNC_EFFECT_PIPE_STATE = 1 << 0;
+const SYNC_EFFECT_SOCKET_STATE = 1 << 1;
+const SYNC_EFFECT_EPOLL_STATE = 1 << 2;
+const SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE = 1 << 3;
+const SYNC_EFFECT_PROCESS_LIFECYCLE = 1 << 4;
+const SYNC_EFFECT_SIGNAL_WAITERS = 1 << 5;
+const SYNC_EFFECT_FORK_SHARED_OFD_STATE = 1 << 6;
+const LEGACY_OK_SYNC_EFFECTS = SYNC_EFFECT_PIPE_STATE
+  | SYNC_EFFECT_SOCKET_STATE
+  | SYNC_EFFECT_EPOLL_STATE
+  | SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE
+  | SYNC_EFFECT_PROCESS_LIFECYCLE
+  | SYNC_EFFECT_FORK_SHARED_OFD_STATE;
 
 function normalizePath(path: string): string {
   const normalized = `/${path.split("/").filter(Boolean).join("/")}`;
@@ -301,12 +330,15 @@ function cloneSnapshotEntry(entry: FsSnapshotEntry): FsSnapshotEntry {
     ? {
         kind: "file",
         path: entry.path,
-        data: new Uint8Array(entry.data ?? new Uint8Array()),
+        ino: entry.ino,
+        data: entry.data ? new Uint8Array(entry.data) : undefined,
+        size: entry.size ?? entry.data?.length ?? 0,
         mode: entry.mode,
       }
     : {
         kind: "dir",
         path: entry.path,
+        ino: entry.ino,
         mode: entry.mode,
       };
 }
@@ -405,10 +437,6 @@ function alignUp(value: number, align: number): number {
   return Math.ceil(value / align) * align;
 }
 
-function alignDown(value: number, align: number): number {
-  return Math.floor(value / align) * align;
-}
-
 function ensureMemoryCapacity(memory: WebAssembly.Memory, endOffset: number): void {
   const currentBytes = memory.buffer.byteLength;
   if (endOffset <= currentBytes) {
@@ -464,7 +492,14 @@ function clearKernelRegion(
   targetOffset: number,
   byteLength: number,
 ): void {
-  new Uint8Array(target.memory.buffer, targetOffset, byteLength).fill(0);
+  if (byteLength <= 0 || targetOffset < 0) {
+    return;
+  }
+  const available = target.memory.buffer.byteLength - targetOffset;
+  if (available <= 0) {
+    return;
+  }
+  new Uint8Array(target.memory.buffer, targetOffset, Math.min(byteLength, available)).fill(0);
 }
 
 function clearMemfsState(target: KernelSyncHandle): void {
@@ -570,17 +605,23 @@ function clearEpollState(target: KernelSyncHandle): void {
 function syncEpollState(source: KernelSyncHandle, target: KernelSyncHandle): void {
   const tableBytes = source.kernel.kernel_epoll_table_bytes();
   const instanceBytes = source.kernel.kernel_epoll_instance_bytes();
-
-  copyKernelRegion(source, source.kernelState.epollTablePtr, target, target.kernelState.epollTablePtr, tableBytes);
-
   const tableEntries = tableBytes >>> 2;
   const sourceTable = new Uint32Array(source.memory.buffer, source.kernelState.epollTablePtr, tableEntries);
-  for (let i = 0; i < tableEntries; i++) {
-    const ptr = sourceTable[i];
-    if (ptr === 0) {
+  const targetTable = new Uint32Array(target.memory.buffer, target.kernelState.epollTablePtr, tableEntries);
+  const targetPtrs = [...targetTable];
+  for (let i = 0; i < tableEntries; i += 1) {
+    const sourcePtr = sourceTable[i] ?? 0;
+    const targetPtr = targetPtrs[i] ?? 0;
+    if (sourcePtr === 0) {
+      targetTable[i] = 0;
+      if (targetPtr !== 0) {
+        clearKernelRegion(target, targetPtr, instanceBytes);
+      }
       continue;
     }
-    copyKernelRegion(source, ptr, target, ptr, instanceBytes);
+    const instancePtr = targetPtr !== 0 ? targetPtr : sourcePtr;
+    targetTable[i] = instancePtr;
+    copyKernelRegion(source, sourcePtr, target, instancePtr, instanceBytes);
   }
 }
 
@@ -665,14 +706,90 @@ function restoreLocalOfdSlots(
   }
 }
 
+function snapshotLocalPipeSlots(
+  handle: ProcessHandle,
+  ofdIds: Iterable<number>,
+): Map<number, Uint8Array> {
+  const maxPipes = handle.kernel.abi_max_pipes();
+  const regionBytes = handle.kernel.kernel_pipe_region_bytes();
+  const slotBytes = regionBytes / maxPipes;
+  if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
+    throw new Error(`invalid pipe region layout: bytes=${regionBytes} maxPipes=${maxPipes}`);
+  }
+
+  const snapshots = new Map<number, Uint8Array>();
+  for (const ofdId of ofdIds) {
+    if (handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()) {
+      continue;
+    }
+    const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
+    if (pipeSlot < 0 || pipeSlot >= maxPipes || snapshots.has(pipeSlot)) {
+      continue;
+    }
+    const slotOffset = handle.kernelState.pipeBase + pipeSlot * slotBytes;
+    snapshots.set(pipeSlot, new Uint8Array(handle.memory.buffer, slotOffset, slotBytes).slice());
+  }
+  return snapshots;
+}
+
+function restoreLocalPipeSlots(
+  handle: KernelSyncHandle,
+  preservedPipeSlots: ReadonlyMap<number, Uint8Array> | null,
+): void {
+  if (!preservedPipeSlots || preservedPipeSlots.size === 0) {
+    return;
+  }
+  const maxPipes = handle.kernel.abi_max_pipes();
+  const regionBytes = handle.kernel.kernel_pipe_region_bytes();
+  const slotBytes = regionBytes / maxPipes;
+  if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
+    throw new Error(`invalid pipe region layout: bytes=${regionBytes} maxPipes=${maxPipes}`);
+  }
+  const bytes = new Uint8Array(handle.memory.buffer);
+  for (const [pipeSlot, slot] of preservedPipeSlots) {
+    bytes.set(slot, handle.kernelState.pipeBase + pipeSlot * slotBytes);
+  }
+}
+
+function formatPipeCounterDebug(handle: ProcessHandle, fd: number): string {
+  const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+  if (ofdId === 0 || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()) {
+    return `${fd}:ofd=0`;
+  }
+  const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
+  const base = handle.kernelState.pipeBase + pipeSlot * (32 + 4096);
+  const i32 = new Int32Array(handle.memory.buffer);
+  const u32 = new Uint32Array(handle.memory.buffer);
+  return [
+    `${fd}:ofd=${ofdId}`,
+    `slot=${pipeSlot}`,
+    `ro=${Atomics.load(i32, (base + 8) >>> 2)}`,
+    `wo=${Atomics.load(i32, (base + 12) >>> 2)}`,
+    `head=${Atomics.load(u32, base >>> 2)}`,
+    `tail=${Atomics.load(u32, (base + 4) >>> 2)}`,
+  ].join(":");
+}
+
+function formatOpenFdSummary(handle: ProcessHandle, limit = 16): string {
+  return Array.from({ length: limit }, (_value, fd) => {
+    const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+    if (ofdId === 0) {
+      return null;
+    }
+    return `${fd}->${ofdId}/${handle.kernel.process_fd_flags(handle.vmPtr, fd)}/${handle.kernel.kernel_ofd_fd_type(ofdId)}/${handle.kernel.kernel_ofd_ino(ofdId)}/${handle.kernel.kernel_ofd_host_fd(ofdId)}`;
+  }).filter(Boolean).join(" ");
+}
+
 function copyLegacySharedKernelObjectsLocal(
   source: KernelSyncHandle,
   target: KernelSyncHandle,
   sharedOfdIds: Iterable<number>,
+  options: { includeMemfs?: boolean } = {},
 ): void {
   if (source === target) {
     return;
   }
+  const includeMemfs = options.includeMemfs ?? true;
   const includePipe = !kernelWorkerOwnsPipeState(source) && !kernelWorkerOwnsPipeState(target);
   const includeEpoll = !kernelWorkerOwnsEpollState(source) && !kernelWorkerOwnsEpollState(target);
   const includeSocket = !kernelWorkerOwnsSocketState(source)
@@ -681,7 +798,9 @@ function copyLegacySharedKernelObjectsLocal(
   // Shared backend state that survives fork/vfork across processes.
   // Per-process signal disposition/pending state must not be synchronized here.
   copySelectedOfdState(source, target, sharedOfdIds);
-  syncMemfsState(source, target);
+  if (includeMemfs) {
+    syncMemfsState(source, target);
+  }
   if (includePipe) {
     copyKernelRegion(
       source,
@@ -721,10 +840,18 @@ function trackForkSharedOfds(
   vmPtr: number,
   retainRefcounts: boolean,
 ): number[] {
+  const stdioPipeSlots = new Set<number>([handle.stdinPipe, handle.stdoutPipe, handle.stderrPipe]
+    .filter((pipeSlot) => pipeSlot > 0));
   const retained = new Set<number>();
   for (let fd = 0; fd < handle.kernel.abi_max_fds(); fd++) {
     const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
     if (ofdId === 0 || retained.has(ofdId)) {
+      continue;
+    }
+    if (
+      handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
+      && stdioPipeSlots.has(handle.kernel.kernel_ofd_ino(ofdId))
+    ) {
       continue;
     }
     retained.add(ofdId);
@@ -740,6 +867,41 @@ function retainForkSharedOfds(handle: ProcessHandle): void {
   trackForkSharedOfds(handle, handle.vmPtr, true);
 }
 
+function collectTrackableForkSharedOfds(handle: ProcessHandle): Set<number> {
+  const stdioPipeSlots = new Set<number>([handle.stdinPipe, handle.stdoutPipe, handle.stderrPipe]
+    .filter((pipeSlot) => pipeSlot > 0));
+  const tracked = new Set<number>();
+  for (const ofdId of collectProcessHeldOfds(handle)) {
+    if (
+      handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
+      && stdioPipeSlots.has(handle.kernel.kernel_ofd_ino(ofdId))
+    ) {
+      continue;
+    }
+    tracked.add(ofdId);
+  }
+  return tracked;
+}
+
+function reconcileInheritedSharedOfdsAfterVforkExecve(
+  handle: ProcessHandle,
+  inheritedSharedOfdIds: Iterable<number>,
+): void {
+  const heldByExistingMembers = new Set<number>();
+  for (const member of handle.kernelShare.members) {
+    for (const ofdId of collectProcessHeldOfds(member)) {
+      heldByExistingMembers.add(ofdId);
+    }
+  }
+  for (const ofdId of inheritedSharedOfdIds) {
+    if (heldByExistingMembers.has(ofdId)) {
+      handle.kernelShare.sharedOfdIds.add(ofdId);
+    } else {
+      handle.kernelShare.sharedOfdIds.delete(ofdId);
+    }
+  }
+}
+
 function kernelScratchBase(exports: KernelExports): number {
   return exports.kernel_heap_ptr() + 0x10000;
 }
@@ -753,6 +915,152 @@ function writeKernelScratch(exports: KernelExports, bytes: Uint8Array, offset = 
   ensureKernelMemoryCapacity(exports, scratch + bytes.length);
   new Uint8Array(exports.memory.buffer).set(bytes, scratch);
   return scratch;
+}
+
+function detachedKernelScratchBase(
+  memory: WebAssembly.Memory,
+  guestBase: number,
+  guestUsedBytes: number,
+): number {
+  return alignUp(Math.max(memory.buffer.byteLength, guestBase + guestUsedBytes) + 0x10000, 16);
+}
+
+function writeDetachedKernelScratch(
+  exports: KernelExports,
+  scratchBase: number,
+  bytes: Uint8Array,
+  offset = 0,
+): number {
+  const scratch = scratchBase + offset;
+  ensureKernelMemoryCapacity(exports, scratch + bytes.length);
+  new Uint8Array(exports.memory.buffer).set(bytes, scratch);
+  return scratch;
+}
+
+interface ExecveGuestHandoffPayload {
+  processState: Uint8Array;
+  path: Uint8Array;
+  argv: Uint8Array[];
+  envp: Uint8Array[];
+}
+
+function copyKernelPrivateRegion(source: WebAssembly.Memory, target: WebAssembly.Memory, endOffset: number): void {
+  ensureMemoryCapacity(target, endOffset);
+  new Uint8Array(target.buffer).set(new Uint8Array(source.buffer, 0, endOffset), 0);
+}
+
+function readGuestCString(memory: WebAssembly.Memory, guestBase: number, guestPtr: number): Uint8Array {
+  if (guestPtr === 0) {
+    return new Uint8Array();
+  }
+  const bytes = new Uint8Array(memory.buffer);
+  let end = guestBase + guestPtr;
+  while (end < bytes.length && bytes[end] !== 0) {
+    end += 1;
+  }
+  if (end >= bytes.length) {
+    throw new Error(`unterminated guest string at 0x${guestPtr.toString(16)}`);
+  }
+  return bytes.slice(guestBase + guestPtr, end + 1);
+}
+
+function readGuestStringVector(memory: WebAssembly.Memory, guestBase: number, vecPtr: number): Uint8Array[] {
+  if (vecPtr === 0) {
+    return [];
+  }
+  const view = new DataView(memory.buffer);
+  const out: Uint8Array[] = [];
+  for (let index = 0; index < 4096; index += 1) {
+    const entryOffset = guestBase + vecPtr + index * 8;
+    const ptr = Number(view.getBigUint64(entryOffset, true));
+    if (ptr === 0) {
+      return out;
+    }
+    out.push(readGuestCString(memory, guestBase, ptr));
+  }
+  throw new Error(`unterminated guest string vector at 0x${vecPtr.toString(16)}`);
+}
+
+function decodeExecveBytes(bytes: Uint8Array): string {
+  const trimmed = bytes.length > 0 && bytes[bytes.length - 1] === 0
+    ? bytes.subarray(0, bytes.length - 1)
+    : bytes;
+  return decoder.decode(trimmed);
+}
+
+function captureExecveGuestHandoff(
+  handle: ProcessHandle,
+  vmPtr: number,
+  pathPtr: number,
+  argvPtr: number,
+  envpPtr: number,
+): ExecveGuestHandoffPayload {
+  const processPtr = handle.kernel.thread_process_ptr(vmPtr);
+  const processStateBytes = handle.kernel.process_state_bytes();
+  const guestBytes = new Uint8Array(handle.memory.buffer);
+  return {
+    processState: guestBytes.slice(
+      handle.guestBase + processPtr,
+      handle.guestBase + processPtr + processStateBytes,
+    ),
+    path: readGuestCString(handle.memory, handle.guestBase, pathPtr),
+    argv: readGuestStringVector(handle.memory, handle.guestBase, argvPtr),
+    envp: readGuestStringVector(handle.memory, handle.guestBase, envpPtr),
+  };
+}
+
+function stageGuestBytes(
+  memory: WebAssembly.Memory,
+  guestBase: number,
+  guestPtr: number,
+  bytes: Uint8Array,
+): void {
+  ensureMemoryCapacity(memory, guestBase + guestPtr + bytes.length);
+  new Uint8Array(memory.buffer).set(bytes, guestBase + guestPtr);
+}
+
+function stageExecveGuestHandoff(
+  childKernel: KernelExports,
+  guestBase: number,
+  payload: ExecveGuestHandoffPayload,
+): { processPtr: number; pathPtr: bigint; argvPtr: bigint; envpPtr: bigint } {
+  let cursor = alignUp(0x1000, 16);
+  const processPtr = cursor;
+  stageGuestBytes(childKernel.memory, guestBase, processPtr, payload.processState);
+  cursor = alignUp(cursor + payload.processState.length, 16);
+
+  const pathPtr = cursor;
+  stageGuestBytes(childKernel.memory, guestBase, pathPtr, payload.path);
+  cursor = alignUp(cursor + payload.path.length, 16);
+
+  const stageStringVector = (values: Uint8Array[]): bigint => {
+    if (values.length === 0) {
+      return 0n;
+    }
+    const stringPtrs: bigint[] = [];
+    for (const value of values) {
+      const stringPtr = cursor;
+      stageGuestBytes(childKernel.memory, guestBase, stringPtr, value);
+      stringPtrs.push(BigInt(stringPtr));
+      cursor = alignUp(cursor + value.length, 16);
+    }
+    const vectorPtr = cursor;
+    const vectorBytes = new Uint8Array((values.length + 1) * 8);
+    const vectorView = new DataView(vectorBytes.buffer);
+    for (let index = 0; index < stringPtrs.length; index += 1) {
+      vectorView.setBigUint64(index * 8, stringPtrs[index], true);
+    }
+    stageGuestBytes(childKernel.memory, guestBase, vectorPtr, vectorBytes);
+    cursor = alignUp(cursor + vectorBytes.length, 16);
+    return BigInt(vectorPtr);
+  };
+
+  return {
+    processPtr,
+    pathPtr: BigInt(pathPtr),
+    argvPtr: stageStringVector(payload.argv),
+    envpPtr: stageStringVector(payload.envp),
+  };
 }
 
 export async function createProcess(
@@ -778,7 +1086,7 @@ export async function createProcess(
   const wasmModule = cachedModule;
 
   const mainInstance = await WebAssembly.instantiate(wasmModule, {
-    env: createKernelEnv(memory),
+    env: createKernelEnv(memory, { sabPageCache: options.sabPageCache }),
   });
   const exports = mainInstance.exports as unknown as KernelExports;
 
@@ -793,73 +1101,58 @@ export async function createProcess(
   );
 
   const runtimeId = options.runtimeId ?? 0;
+  const delegateFsHydrationToKernelWorker = !!(
+    options.hydrateFsFromKernelWorker
+    && options.kernelWorkerRequest
+    && (options.pid ?? 0) > 0
+    && options.preloadEntries === undefined
+  );
   const bootstrapEntries = options.preloadEntries
-    ?? getRuntimeFsState(runtimeId)?.entries
-    ?? [];
-  // New processes seed local MemFS from the runtime mirror; kernel-worker stays
-  // authoritative once live process ownership takes over.
+    ?? (delegateFsHydrationToKernelWorker ? [] : (getRuntimeFsState(runtimeId)?.entries ?? []));
+  // Kernel-worker-owned runtimes hydrate new processes during register-process
+  // using canonical MemFS metadata. Local-only runtimes still use the runtime snapshot path.
   preloadSnapshotEntries(exports, bootstrapEntries);
-  const cwdIno = (() => {
-    if (!options.cwd) {
-      return 1;
-    }
-    const ino = resolveMemfsPath(exports, options.cwd);
-    if (ino === 0) {
-      throw new Error(`cwd does not exist: ${options.cwd}`);
-    }
-    const mode = exports.memfs_inode_mode(ino);
-    if ((mode & 0o170000) !== 0o040000) {
-      throw new Error(`cwd is not a directory: ${options.cwd}`);
-    }
-    return ino;
-  })();
+  const cwdIno = delegateFsHydrationToKernelWorker
+    ? await resolveProcessCwdInoViaKernelWorker(options.kernelWorkerRequest!, options.cwd)
+    : resolveProcessCwdIno(exports, options.cwd);
   const guestBase = exports.process_guest_base(ramSize);
   if (guestBase === 0) {
     throw new Error("process_guest_base failed");
   }
 
-  const guestLimit = guestBase + ramSize;
-  const elfSlack = 256 * 1024;
-  const elfOffset = alignUp(guestLimit + GUEST_PAGE_SIZE, GUEST_PAGE_SIZE);
-  ensureMemoryCapacity(memory, elfOffset + elfData.length + elfSlack);
-  new Uint8Array(memory.buffer).set(elfData, elfOffset);
-
-  const elfBrk = Number(exports.process_inspect_elf_brk(elfOffset, elfData.length, ramSize));
+  const inspectScratchBase = detachedKernelScratchBase(exports.memory, guestBase, 0);
+  const inspectElfOffset = writeDetachedKernelScratch(exports, inspectScratchBase, elfData);
+  const elfBrk = Number(exports.process_inspect_elf_brk(inspectElfOffset, elfData.length, ramSize));
   if (elfBrk === 0) {
     throw new Error("ELF inspection failed");
   }
 
+  const runtimeScratchBase = detachedKernelScratchBase(exports.memory, guestBase, elfBrk);
+  let scratchOffset = 0;
+  const elfOffset = writeDetachedKernelScratch(exports, runtimeScratchBase, elfData, scratchOffset);
+  scratchOffset = alignUp(scratchOffset + elfData.length, 16);
+
   exports.process_clear_args();
   const argBytes = (options.argv ?? []).map((arg) => encoder.encode(`${arg}\0`));
   const envBytes = (options.env ?? []).map((env) => encoder.encode(`${env}\0`));
-  const stagedStringBytes = [...argBytes, ...envBytes]
-    .reduce((total, bytes) => total + bytes.length, 0);
-  const stackReserve = alignUp(stackSize, GUEST_PAGE_SIZE) + GUEST_PAGE_SIZE;
-  const stringsReserve = alignUp(Math.max(stagedStringBytes, GUEST_PAGE_SIZE), GUEST_PAGE_SIZE);
-  const stringsStart = alignDown(ramSize - stackReserve - stringsReserve, 16);
-  if (stringsStart <= elfBrk) {
-    throw new Error("argv/env do not fit in process memory");
-  }
-  ensureMemoryCapacity(memory, guestBase + stringsStart + stagedStringBytes);
-
-  const memView = new Uint8Array(memory.buffer);
-  let strOffset = stringsStart;
   for (const bytes of argBytes) {
-    memView.set(bytes, guestBase + strOffset);
-    exports.process_push_arg(strOffset);
-    strOffset += bytes.length;
+    const ptr = writeDetachedKernelScratch(exports, runtimeScratchBase, bytes, scratchOffset);
+    exports.process_push_arg(ptr);
+    scratchOffset = alignUp(scratchOffset + bytes.length, 16);
   }
   for (const bytes of envBytes) {
-    memView.set(bytes, guestBase + strOffset);
-    exports.process_push_env(strOffset);
-    strOffset += bytes.length;
+    const ptr = writeDetachedKernelScratch(exports, runtimeScratchBase, bytes, scratchOffset);
+    exports.process_push_env(ptr);
+    scratchOffset = alignUp(scratchOffset + bytes.length, 16);
   }
 
   const vmPtr = exports.process_create(elfOffset, elfData.length, ramSize, stackSize);
   if (vmPtr === 0) {
     throw new Error("process_create failed");
   }
-  exports.process_set_cwd_ino(vmPtr, cwdIno);
+  if (!delegateFsHydrationToKernelWorker) {
+    exports.process_set_cwd_ino(vmPtr, cwdIno);
+  }
 
   const stdinPipe = exports.process_stdin_pipe(vmPtr);
   const stdoutPipe = exports.process_stdout_pipe(vmPtr);
@@ -892,8 +1185,10 @@ export async function createProcess(
     kernelShare: createKernelShareGroup(),
     stdinQueue: [],
     outputBacklog: [],
+    debugCommand: options.argv?.[0] ?? "<entry>",
     lastDebugMessage: undefined,
     runtimeBridge: createRuntimeStateBridge(),
+    sabPageCache: options.sabPageCache ?? null,
     kernelWorkerRequest: options.kernelWorkerRequest,
     workers: new Set(),
     readyWorkers: [],
@@ -905,6 +1200,8 @@ export async function createProcess(
     epollSyncPromise: null,
     epollSyncQueued: false,
     epollWaiterWakeQueued: false,
+    ofdSyncPromise: null,
+    ofdSyncQueuedIds: new Set(),
     socketSyncPromise: null,
     socketSyncQueued: false,
     socketWaiterWakeQueued: false,
@@ -916,7 +1213,13 @@ export async function createProcess(
     workerDebugLog: [],
   };
 
-  await registerProcessWithKernelWorker(handle);
+  const memfsSeedMode: KernelWorkerMemfsSeedMode = delegateFsHydrationToKernelWorker
+    ? "metadata"
+    : "full";
+  await registerProcessWithKernelWorker(handle, { seedMemfsMode: memfsSeedMode });
+  if (delegateFsHydrationToKernelWorker) {
+    handle.kernel.process_set_cwd_ino(vmPtr, cwdIno);
+  }
   if (handle.kernelWorkerRequest && handle.pid > 0) {
     const parent = handle.parentPid !== null ? processHandles.get(handle.parentPid) : undefined;
     const inheritedPgid = parent ? parent.kernel.process_current_pgid(parent.vmPtr) : handle.pid;
@@ -1028,6 +1331,9 @@ function preloadSnapshotEntries(exports: KernelExports, entries: FsSnapshotEntry
   }
 
   const ordered = [...entries].sort((left, right) => {
+    if (left.ino !== undefined && right.ino !== undefined && left.ino !== right.ino) {
+      return left.ino - right.ino;
+    }
     if (left.kind !== right.kind) {
       return left.kind === "dir" ? -1 : 1;
     }
@@ -1058,12 +1364,25 @@ function preloadSnapshotEntries(exports: KernelExports, entries: FsSnapshotEntry
     const nameBytes = encoder.encode(name);
     const namePtr = writeKernelScratch(exports, nameBytes);
     if (entry.kind === "dir") {
+      if (existingIno === 0 && entry.ino !== undefined && entry.ino > 1) {
+        const reserveResult = Number(exports.memfs_reserve_inode_until(entry.ino));
+        if (reserveResult < 0) {
+          continue;
+        }
+      }
       exports.memfs_ensure_dir(parentIno, namePtr, nameBytes.length, entry.mode ?? 0o755);
       continue;
     }
 
-    const data = entry.data ?? new Uint8Array();
+    const data = entry.data;
+    const size = entry.size ?? data?.length ?? 0;
     const mode = entry.mode ?? 0o644;
+    if (existingIno === 0 && entry.ino !== undefined && entry.ino > 1) {
+      const reserveResult = Number(exports.memfs_reserve_inode_until(entry.ino));
+      if (reserveResult < 0) {
+        continue;
+      }
+    }
     const ino = existingIno !== 0
       ? existingIno
       : exports.memfs_create_file(parentIno, namePtr, nameBytes.length);
@@ -1071,12 +1390,14 @@ function preloadSnapshotEntries(exports: KernelExports, entries: FsSnapshotEntry
       continue;
     }
 
-    const truncateResult = Number(exports.memfs_truncate_file(ino, BigInt(data.length)));
-    if (truncateResult < 0) {
+    const sizeResult = data
+      ? Number(exports.memfs_truncate_file(ino, BigInt(data.length)))
+      : Number(exports.memfs_set_file_size_shallow(ino, BigInt(size)));
+    if (sizeResult < 0) {
       continue;
     }
 
-    if (data.length > 0) {
+    if (data && data.length > 0) {
       const dataPtr = writeKernelScratch(exports, data, nameBytes.length + 64);
       const written = Number(exports.memfs_write_file_at(ino, 0n, dataPtr, data.length));
       if (written < 0 || written !== data.length) {
@@ -1091,6 +1412,41 @@ function resolveMemfsPath(exports: KernelExports, path: string): number {
   const bytes = encoder.encode(normalizePath(path));
   const scratch = writeKernelScratch(exports, bytes);
   return exports.memfs_resolve_path(scratch, bytes.length);
+}
+
+function resolveProcessCwdIno(exports: KernelExports, cwd: string | undefined): number {
+  if (!cwd) {
+    return 1;
+  }
+  const ino = resolveMemfsPath(exports, cwd);
+  if (ino === 0) {
+    throw new Error(`cwd does not exist: ${cwd}`);
+  }
+  const mode = exports.memfs_inode_mode(ino);
+  if ((mode & 0o170000) !== 0o040000) {
+    throw new Error(`cwd is not a directory: ${cwd}`);
+  }
+  return ino;
+}
+
+async function resolveProcessCwdInoViaKernelWorker(
+  kernelWorkerRequest: KernelWorkerRequestFn,
+  cwd: string | undefined,
+): Promise<number> {
+  if (!cwd) {
+    return 1;
+  }
+  const response = await kernelWorkerRequest({
+    type: "stat",
+    path: cwd,
+  });
+  if (response.type !== "stat-result") {
+    throw new Error(`unexpected kernel-worker response for stat: ${response.type}`);
+  }
+  if ((response.stat.mode & 0o170000) !== 0o040000) {
+    throw new Error(`cwd is not a directory: ${cwd}`);
+  }
+  return response.stat.ino;
 }
 
 function readMemfsDirectoryNames(exports: KernelExports, dirIno: number): string[] {
@@ -1144,7 +1500,7 @@ function snapshotMemfsTree(
   const fileType = mode & 0o170000;
 
   if (fileType === 0o040000) {
-    out.push({ kind: "dir", path: normalized, mode: perms });
+    out.push({ kind: "dir", path: normalized, ino, mode: perms });
     for (const name of readMemfsDirectoryNames(exports, ino)) {
       const childPath = normalized === "/" ? `/${name}` : `${normalized}/${name}`;
       const childIno = resolveMemfsPath(exports, childPath);
@@ -1160,10 +1516,13 @@ function snapshotMemfsTree(
     return;
   }
 
+  const data = readMemfsFile(exports, ino);
   out.push({
     kind: "file",
     path: normalized,
-    data: readMemfsFile(exports, ino),
+    ino,
+    data,
+    size: data.length,
     mode: perms,
   });
 }
@@ -1172,6 +1531,37 @@ export function snapshotProcessFs(handle: ProcessHandle): FsSnapshotEntry[] {
   const entries: FsSnapshotEntry[] = [];
   snapshotMemfsTree(handle.kernel, 1, "/", entries);
   return entries;
+}
+
+function formatThreadDebug(handle: ProcessHandle, vmPtr: number): string {
+  const tid = handle.kernel.thread_tid?.(vmPtr) ?? 0;
+  const pc = handle.kernel.thread_pc?.(vmPtr) ?? 0n;
+  const ra = handle.kernel.thread_ra?.(vmPtr) ?? 0n;
+  const sp = handle.kernel.thread_sp?.(vmPtr) ?? 0n;
+  const a0 = handle.kernel.thread_a0?.(vmPtr) ?? 0n;
+  const a1 = handle.kernel.thread_a1?.(vmPtr) ?? 0n;
+  const sigPending = handle.kernel.thread_sig_pending?.(vmPtr) ?? 0n;
+  const parts = [
+    `tid=${tid}`,
+    `pc=0x${pc.toString(16)}`,
+    `ra=0x${ra.toString(16)}`,
+    `sp=0x${sp.toString(16)}`,
+    `a0=${a0.toString()}`,
+    `a1=${a1.toString()}`,
+    `sig_pending=0x${sigPending.toString(16)}`,
+  ];
+  const syscallNr = handle.kernel.debug_syscall_trace_nr?.();
+  if (syscallNr !== undefined && syscallNr !== 0n) {
+    parts.push(`syscall=${syscallNr.toString()}`);
+    parts.push(`status=${handle.kernel.debug_syscall_trace_status?.() ?? "n/a"}`);
+    parts.push(`result=${handle.kernel.debug_syscall_trace_result?.().toString() ?? "n/a"}`);
+  }
+  const signalDeliverySig = handle.kernel.debug_signal_delivery_sig?.();
+  if (signalDeliverySig !== undefined && signalDeliverySig !== 0) {
+    parts.push(`sig_deliver=${signalDeliverySig}`);
+    parts.push(`sig_pc=0x${(handle.kernel.debug_signal_delivery_pc?.() ?? 0n).toString(16)}`);
+  }
+  return parts.join(" ");
 }
 
 export function debugRuntimeProcessHandles(runtimeId: number): string {
@@ -1188,17 +1578,46 @@ export function debugRuntimeProcessHandles(runtimeId: number): string {
         .filter((vmPtr) => vmPtr !== 0)
         .map((vmPtr) => `0x${vmPtr.toString(16)}`)
         .join(",");
+      const workerStates = [...handle.workers]
+        .map((worker) => {
+          const state = threadWorkerStates.get(worker);
+          if (!state) {
+            return null;
+          }
+          let ownerState = "idle";
+          if (handle.runningWorker === worker) {
+            ownerState = "running";
+          } else if (handle.readyWorkers.includes(worker)) {
+            ownerState = "ready";
+          } else if (handle.blockedWorkers.has(worker)) {
+            ownerState = "blocked";
+          } else if (state.waitingInWorkerStatus !== null) {
+            ownerState = `wait:${state.waitingInWorkerStatus}`;
+          } else if (!state.initialized) {
+            ownerState = "init";
+          }
+          return `0x${state.vmPtr.toString(16)}:${ownerState}`;
+        })
+        .filter(Boolean)
+        .join(",");
       const liveThreadVmPtrs = Array.from({ length: handle.kernel.abi_max_threads() }, (_value, slot) =>
         handle.kernel.process_thread_vm_ptr(handle.vmPtr, slot))
         .filter((vmPtr) => vmPtr !== 0)
         .map((vmPtr) => `0x${vmPtr.toString(16)}`)
         .join(",");
+      const threadStates = Array.from({ length: handle.kernel.abi_max_threads() }, (_value, slot) => {
+        const threadVmPtr = handle.kernel.process_thread_vm_ptr(handle.vmPtr, slot);
+        if (threadVmPtr === 0) {
+          return null;
+        }
+        return `${slot}:${handle.kernel.process_thread_tid(handle.vmPtr, slot)}/${handle.kernel.process_thread_state(handle.vmPtr, slot)}/0x${threadVmPtr.toString(16)}`;
+      }).filter(Boolean).join(",");
       const fdSummary = Array.from({ length: 16 }, (_, fd) => {
         const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
         if (ofdId === 0) {
           return null;
         }
-        return `${fd}->${ofdId}/${handle.kernel.kernel_ofd_fd_type(ofdId)}/${handle.kernel.kernel_ofd_ino(ofdId)}/${handle.kernel.kernel_ofd_host_fd(ofdId)}`;
+        return `${fd}->${ofdId}/${handle.kernel.process_fd_flags(handle.vmPtr, fd)}/${handle.kernel.kernel_ofd_fd_type(ofdId)}/${handle.kernel.kernel_ofd_ino(ofdId)}/${handle.kernel.kernel_ofd_host_fd(ofdId)}`;
       }).filter(Boolean).join(" ");
       const ofdSummary = Array.from({ length: 16 }, (_value, ofdId) => {
         if (ofdId === 0) {
@@ -1210,18 +1629,60 @@ export function debugRuntimeProcessHandles(runtimeId: number): string {
         }
         return `${ofdId}:${type}/${handle.kernel.kernel_ofd_ino(ofdId)}/${handle.kernel.kernel_ofd_host_fd(ofdId)}/rc=${handle.kernel.kernel_ofd_refcount(ofdId)}`;
       }).filter(Boolean).join(" ");
+      let procSelfExe = "unavailable";
+      try {
+        const pathBytes = encoder.encode("/proc/self/exe");
+        const scratchBase = handle.kernel.kernel_scratch_base?.();
+        if (scratchBase === undefined) {
+          throw new Error("kernel_scratch_base unavailable");
+        }
+        const pathPtr = scratchBase;
+        const bufPtr = scratchBase + 0x200;
+        new Uint8Array(handle.kernel.memory.buffer, pathPtr, pathBytes.length).set(pathBytes);
+        const ino = handle.kernel.memfs_resolve_path(pathPtr, pathBytes.length);
+        if (ino === 0 || (handle.kernel.memfs_inode_mode(ino) & 0o170000) !== 0o120000) {
+          procSelfExe = "missing";
+        } else {
+          const len = Number(handle.kernel.memfs_read_link(ino, bufPtr, 1024));
+          if (len <= 0) {
+            procSelfExe = "empty";
+          } else {
+            procSelfExe = JSON.stringify(
+              decoder.decode(new Uint8Array(handle.kernel.memory.buffer.slice(bufPtr, bufPtr + len))),
+            );
+          }
+        }
+      } catch {
+        procSelfExe = "unavailable";
+      }
+      const runningState = handle.runningWorker ? threadWorkerStates.get(handle.runningWorker) : undefined;
+      const runningVmPtr = runningState?.vmPtr ?? 0;
+      const runningDebug = runningVmPtr !== 0 ? formatThreadDebug(handle, runningVmPtr) : "n/a";
+      const allThreadDebug = Array.from({ length: handle.kernel.abi_max_threads() }, (_value, slot) => {
+        const threadVmPtr = handle.kernel.process_thread_vm_ptr(handle.vmPtr, slot);
+        if (threadVmPtr === 0) {
+          return null;
+        }
+        const tid = handle.kernel.process_thread_tid(handle.vmPtr, slot);
+        return `${tid}:${JSON.stringify(formatThreadDebug(handle, threadVmPtr))}`;
+      }).filter(Boolean).join(" ");
       return [
         `pid=${handle.pid}`,
+        `cmd=${JSON.stringify(handle.debugCommand)}`,
         `ppid=${handle.parentPid ?? 0}`,
         `vm=0x${handle.vmPtr.toString(16)}`,
         `process=0x${processPtr.toString(16)}`,
         `workers=${handle.workers.size}`,
         `worker_vms=[${attachedWorkerVmPtrs}]`,
+        `worker_states=[${workerStates}]`,
         `thread_vms=[${liveThreadVmPtrs}]`,
+        `thread_states=[${threadStates}]`,
         `ready=${handle.readyWorkers.length}`,
         `running=${handle.runningWorker ? "1" : "0"}`,
         `blocked=[${blocked}]`,
         `vfork=${handle.vforkSnapshot ? "1" : "0"}`,
+        `stdio_pipes=${handle.stdinPipe}/${handle.stdoutPipe}/${handle.stderrPipe}`,
+        `shared_ofds=[${[...handle.kernelShare.sharedOfdIds].sort((left, right) => left - right).join(",")}]`,
         `ofd_table=0x${handle.kernelState.ofdTablePtr.toString(16)}`,
         `memfs=0x${handle.kernelState.memfsPtr.toString(16)}`,
         `pipe=0x${handle.kernelState.pipeBase.toString(16)}`,
@@ -1229,10 +1690,45 @@ export function debugRuntimeProcessHandles(runtimeId: number): string {
         `worker_log=[${handle.workerDebugLog.join(", ")}]`,
         `fds=[${fdSummary}]`,
         `ofds=[${ofdSummary}]`,
+        `proc_self_exe=${procSelfExe}`,
+        `running_vm=${runningVmPtr === 0 ? "0x0" : `0x${runningVmPtr.toString(16)}`}`,
+        `running_debug=${JSON.stringify(runningDebug)}`,
+        `thread_debugs=[${allThreadDebug}]`,
         `debug=${handle.lastDebugMessage ?? "n/a"}`,
       ].join(" ");
     });
+  const lifecycle = runtimeLifecycleEvents.get(runtimeId);
+  if (lifecycle && lifecycle.length > 0) {
+    lines.push(`lifecycle=[${lifecycle.join(", ")}]`);
+  }
   return lines.join("\n");
+}
+
+function appendRuntimeLifecycleEvent(runtimeId: number, event: string): void {
+  const events = runtimeLifecycleEvents.get(runtimeId) ?? [];
+  events.push(event);
+  if (events.length > 64) {
+    events.splice(0, events.length - 64);
+  }
+  runtimeLifecycleEvents.set(runtimeId, events);
+}
+
+function formatAllLiveThreadDebug(handle: ProcessHandle): string {
+  const vmPtrs = new Set<number>();
+  if (handle.vmPtr !== 0) {
+    vmPtrs.add(handle.vmPtr);
+  }
+  vmPtrs.add(threadWorkerStates.get(handle.worker)?.vmPtr ?? 0);
+  for (const worker of handle.workers) {
+    vmPtrs.add(threadWorkerStates.get(worker)?.vmPtr ?? 0);
+  }
+  return [...vmPtrs]
+    .filter((vmPtr) => vmPtr !== 0)
+    .map((vmPtr) => {
+      const tid = handle.kernel.thread_tid?.(vmPtr) ?? 0;
+      return `${tid}:${JSON.stringify(formatThreadDebug(handle, vmPtr))}`;
+    })
+    .join(" ");
 }
 
 function assertProcessStandardFdIntegrity(handle: ProcessHandle, context: string): void {
@@ -1245,11 +1741,26 @@ function assertProcessStandardFdIntegrity(handle: ProcessHandle, context: string
       continue;
     }
     const type = handle.kernel.kernel_ofd_fd_type(ofdId);
-    if (type > 0 && type <= 64) {
+    if (type <= 0 || type > 64) {
+      throw new Error(
+        `${context}: pid=${handle.pid} fd=${fd} ofd=${ofdId} type=${type}\n`
+        + debugRuntimeProcessHandles(handle.runtimeId),
+      );
+    }
+    if (type !== handle.kernel.abi_fd_type_pipe()) {
+      continue;
+    }
+    const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
+    const base = handle.kernelState.pipeBase + pipeSlot * (32 + 4096);
+    const i32 = new Int32Array(handle.memory.buffer);
+    const readOpen = Atomics.load(i32, (base + 8) >>> 2);
+    const writeOpen = Atomics.load(i32, (base + 12) >>> 2);
+    if (readOpen >= 0 && writeOpen >= 0) {
       continue;
     }
     throw new Error(
-      `${context}: pid=${handle.pid} fd=${fd} ofd=${ofdId} type=${type}\n`
+      `${context}: pid=${handle.pid} fd=${fd} ofd=${ofdId} pipe=${pipeSlot} ro=${readOpen} wo=${writeOpen}\n`
+      + `${formatPipeCounterDebug(handle, fd)}\n`
       + debugRuntimeProcessHandles(handle.runtimeId),
     );
   }
@@ -1263,7 +1774,15 @@ function snapshotEntriesEqual(left: FsSnapshotEntry[], right: FsSnapshotEntry[])
   for (let i = 0; i < left.length; i++) {
     const a = left[i];
     const b = right[i];
-    if (!a || !b || a.kind !== b.kind || a.path !== b.path || a.mode !== b.mode) {
+    if (
+      !a
+      || !b
+      || a.kind !== b.kind
+      || a.path !== b.path
+      || a.mode !== b.mode
+      || a.ino !== b.ino
+      || a.size !== b.size
+    ) {
       return false;
     }
     if (a.kind === "file" && b.kind === "file") {
@@ -1303,14 +1822,27 @@ function applyFsEntryToHandle(handle: ProcessHandle, entry: FsSnapshotEntry): vo
 
   const nameBytes = encoder.encode(name);
   const namePtr = writeKernelScratch(exports, nameBytes);
+  const existingIno = resolveMemfsPath(exports, entry.path);
   if (entry.kind === "dir") {
+    if (existingIno === 0 && entry.ino !== undefined && entry.ino > 1) {
+      const reserveResult = Number(exports.memfs_reserve_inode_until(entry.ino));
+      if (reserveResult < 0) {
+        return;
+      }
+    }
     exports.memfs_ensure_dir(parentIno, namePtr, nameBytes.length, entry.mode ?? 0o755);
     return;
   }
 
-  const data = entry.data ?? new Uint8Array();
+  const data = entry.data;
+  const size = entry.size ?? data?.length ?? 0;
   const mode = entry.mode ?? 0o644;
-  const existingIno = resolveMemfsPath(exports, entry.path);
+  if (existingIno === 0 && entry.ino !== undefined && entry.ino > 1) {
+    const reserveResult = Number(exports.memfs_reserve_inode_until(entry.ino));
+    if (reserveResult < 0) {
+      return;
+    }
+  }
   const ino = existingIno !== 0
     ? existingIno
     : exports.memfs_create_file(parentIno, namePtr, nameBytes.length);
@@ -1318,12 +1850,14 @@ function applyFsEntryToHandle(handle: ProcessHandle, entry: FsSnapshotEntry): vo
     return;
   }
 
-  const truncateResult = Number(exports.memfs_truncate_file(ino, BigInt(data.length)));
-  if (truncateResult < 0) {
+  const sizeResult = data
+    ? Number(exports.memfs_truncate_file(ino, BigInt(data.length)))
+    : Number(exports.memfs_set_file_size_shallow(ino, BigInt(size)));
+  if (sizeResult < 0) {
     return;
   }
 
-  if (data.length > 0) {
+  if (data && data.length > 0) {
     const dataPtr = writeKernelScratch(exports, data, nameBytes.length + 64);
     const written = Number(exports.memfs_write_file_at(ino, 0n, dataPtr, data.length));
     if (written < 0 || written !== data.length) {
@@ -1423,7 +1957,7 @@ function markRuntimeFsDirty(handle: ProcessHandle): void {
 
 async function registerProcessWithKernelWorker(
   handle: ProcessHandle,
-  options: { seedMemfsFromCanonical?: boolean } = {},
+  options: { seedMemfsMode?: KernelWorkerMemfsSeedMode; pipeSeedMode?: KernelWorkerPipeSeedMode } = {},
 ): Promise<void> {
   if (!handle.kernelWorkerRequest || handle.pid <= 0) {
     return;
@@ -1431,9 +1965,11 @@ async function registerProcessWithKernelWorker(
   const response = await handle.kernelWorkerRequest({
     type: "register-process",
     pid: handle.pid,
+    vmPtr: handle.vmPtr,
     memory: handle.memory,
     kernelState: handle.kernelState,
-    seedMemfsFromCanonical: options.seedMemfsFromCanonical ?? true,
+    seedMemfsMode: options.seedMemfsMode ?? "full",
+    pipeSeedMode: options.pipeSeedMode ?? "canonical",
   });
   if (response.type !== "process-registered") {
     throw new Error(`unexpected kernel-worker response for register-process: ${response.type}`);
@@ -1533,18 +2069,36 @@ async function resumeFsViaKernelWorker(
   worker: Worker,
   vmPtr: number,
 ): Promise<void> {
+  const pendingOpcode = handle.kernel.thread_pending_fs_opcode(vmPtr);
+  const pendingEffects = handle.kernel.thread_pending_fs_effects(vmPtr);
+  const pendingTargetIno = handle.kernel.thread_pending_fs_target_ino(vmPtr);
+  const fsDebugSuffix = `:op=${pendingOpcode}:fx=${pendingEffects}:ino=${pendingTargetIno}`;
   if (!handle.kernelWorkerRequest || handle.pid <= 0) {
+    appendWorkerDebugLog(handle, `fs-start:0x${vmPtr.toString(16)}:local${fsDebugSuffix}`);
+    const effects = handle.kernel.thread_pending_fs_effects(vmPtr);
+    const memfsMutated = (effects & (FS_EFFECT_MEMFS_MUTATION | FS_EFFECT_MEMFS_FILE_DATA)) !== 0;
+    const ofdStateChanged = (effects & FS_EFFECT_SHARED_OFD_STATE) !== 0;
     handle.kernel.thread_process_fs(vmPtr);
     handle.kernel.thread_resume_fs(vmPtr);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
-    syncForkSharedStateLocally(handle, kernelShareOtherMembers(handle));
-    markRuntimeFsDirty(handle);
+    if (memfsMutated) {
+      syncForkSharedStateLocally(handle, kernelShareOtherMembers(handle));
+      markRuntimeFsDirty(handle);
+    } else if (ofdStateChanged) {
+      syncForkSharedStateLocally(
+        handle,
+        kernelShareOtherMembers(handle),
+        { includeMemfs: false },
+      );
+    }
     kickBlockedWorkers(handle);
+    appendWorkerDebugLog(handle, `fs-done:0x${vmPtr.toString(16)}:local`);
     enqueueWorker(handle, worker);
     return;
   }
 
   try {
+    appendWorkerDebugLog(handle, `fs-start:0x${vmPtr.toString(16)}${fsDebugSuffix}`);
     assertProcessStandardFdIntegrity(handle, "resume-fs-before");
     const response = await handle.kernelWorkerRequest({
       type: "process-fs",
@@ -1561,12 +2115,19 @@ async function resumeFsViaKernelWorker(
     handle.kernelState = adoptKernelState(handle.kernelState, response.kernelState);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
     assertProcessStandardFdIntegrity(handle, "resume-fs");
-    markRuntimeFsDirty(handle);
-    await syncForkSharedStateViaKernelWorker(handle, kernelShareOtherMembers(handle));
+    if (response.ofdStateChanged) {
+      await syncForkSharedStateViaKernelWorker(
+        handle,
+        kernelShareOtherMembers(handle),
+        { includeMemfs: false },
+      );
+    }
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
     kickBlockedWorkers(handle);
+    appendWorkerDebugLog(handle, `fs-done:0x${vmPtr.toString(16)}`);
     enqueueWorker(handle, worker);
   } catch (error) {
+    appendWorkerDebugLog(handle, `fs-err:0x${vmPtr.toString(16)}`);
     if (!handle.workers.has(worker) || !threadWorkerStates.has(worker)) {
       return;
     }
@@ -1691,55 +2252,6 @@ async function resumeWait4ViaKernelWorker(
     const blocked = handle.blockedWorkers.get(worker);
     if (blocked && blocked.vmPtr === vmPtr) {
       blocked.rpcPending = false;
-    }
-    if (handle.workers.has(worker) && threadWorkerStates.has(worker)) {
-      failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-    }
-  }
-}
-
-async function resumeEpollWaitViaKernelWorker(
-  handle: ProcessHandle,
-  worker: Worker,
-  vmPtr: number,
-  timeoutExpired: boolean,
-): Promise<void> {
-  if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-    return;
-  }
-
-  try {
-    const response = await handle.kernelWorkerRequest({
-      type: "resume-epoll-wait",
-      pid: handle.pid,
-      vmPtr,
-      timeoutExpired,
-      kernelState: handle.kernelState,
-    });
-    if (response.type !== "epoll-wait-resumed") {
-      throw new Error(`unexpected kernel-worker response for resume-epoll-wait: ${response.type}`);
-    }
-
-    const blocked = handle.blockedWorkers.get(worker);
-    if (!blocked || blocked.vmPtr !== vmPtr) {
-      return;
-    }
-    blocked.rpcPending = false;
-    blocked.timeoutExpired = false;
-
-    if (!handle.workers.has(worker) || !threadWorkerStates.has(worker)) {
-      return;
-    }
-
-    handle.kernelState = adoptKernelState(handle.kernelState, response.kernelState);
-    attachKernelRuntimeState(handle.kernel, handle.kernelState);
-
-    handleBlockedRetryResult(handle, worker, vmPtr, handle.kernel.thread_status(vmPtr));
-  } catch (error) {
-    const blocked = handle.blockedWorkers.get(worker);
-    if (blocked && blocked.vmPtr === vmPtr) {
-      blocked.rpcPending = false;
-      blocked.timeoutExpired = false;
     }
     if (handle.workers.has(worker) && threadWorkerStates.has(worker)) {
       failProcess(handle, error instanceof Error ? error : new Error(String(error)));
@@ -1904,7 +2416,11 @@ async function resumeVforkExecveParentViaKernelWorker(
   handle.kernelState = adoptKernelState(handle.kernelState, response.kernelState);
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
   handle.kernel.thread_clear_spawn_handoff(vmPtr);
-  handle.kernel.thread_resume_vfork_parent(vmPtr, childPid);
+  if (handle.kernel.thread_restore_vfork_parent_without_cleanup) {
+    handle.kernel.thread_restore_vfork_parent_without_cleanup(vmPtr, childPid);
+  } else {
+    handle.kernel.thread_resume_vfork_parent(vmPtr, childPid);
+  }
   handle.kernelState = readKernelRuntimeState(handle.kernel);
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
 }
@@ -1933,14 +2449,23 @@ async function syncProcessLifecycleViaKernelWorker(
 function syncForkSharedStateLocally(
   handle: ProcessHandle,
   targets: ProcessHandle[],
+  options: { includeMemfs?: boolean; trackHeldOfds?: boolean } = {},
 ): void {
-  const sharedOfdIds = activeKernelShareOfdIds(handle);
-  mergeKernelShareOfdStateInto(handle, sharedOfdIds);
-  reconcileForkSharedOfdRefcounts(handle, sharedOfdIds);
+  if (options.trackHeldOfds === true) {
+    for (const ofdId of collectTrackableForkSharedOfds(handle)) {
+      handle.kernelShare.sharedOfdIds.add(ofdId);
+    }
+  }
+  const activeOfdIds = activeKernelShareOfdIds(handle);
+  const staleOfdIds = staleKernelShareOfdIds(handle);
+  const syncOfdIds = [...new Set([...activeOfdIds, ...staleOfdIds])].sort((left, right) => left - right);
+  mergeKernelShareOfdStateInto(handle, activeOfdIds);
+  reconcileForkSharedOfdRefcounts(handle, syncOfdIds);
   for (const target of targets) {
-    copyLegacySharedKernelObjectsLocal(handle, target, sharedOfdIds);
+    copyLegacySharedKernelObjectsLocal(handle, target, syncOfdIds, options);
     attachKernelRuntimeState(target.kernel, target.kernelState);
   }
+  pruneStaleKernelShareOfdIds(handle, staleOfdIds);
 }
 
 function collectProcessHeldOfds(handle: ProcessHandle): Set<number> {
@@ -1966,6 +2491,29 @@ function collectProcessHeldOfds(handle: ProcessHandle): Set<number> {
   }
 
   return heldOfds;
+}
+
+function collectEpollDependentOfdIds(handle: ProcessHandle): number[] {
+  const held = collectProcessHeldOfds(handle);
+  const ofdIds: number[] = [];
+  for (const ofdId of held) {
+    const type = handle.kernel.kernel_ofd_fd_type(ofdId);
+    if (type === FD_TYPE_EVENTFD || type === FD_TYPE_TIMERFD) {
+      ofdIds.push(ofdId);
+    }
+  }
+  return ofdIds;
+}
+
+function collectHeldEpollOfdIds(handle: ProcessHandle): number[] {
+  const held = collectProcessHeldOfds(handle);
+  const epollOfdIds: number[] = [];
+  for (const ofdId of held) {
+    if (handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_epoll()) {
+      epollOfdIds.push(ofdId);
+    }
+  }
+  return epollOfdIds;
 }
 
 function hasPlausibleOfdState(handle: KernelSyncHandle, ofdId: number): boolean {
@@ -2017,11 +2565,45 @@ function activeKernelShareOfdIds(handle: ProcessHandle): number[] {
   for (const ofdId of handle.kernelShare.sharedOfdIds) {
     if (heldByAnyMember.has(ofdId)) {
       active.push(ofdId);
-      continue;
     }
-    handle.kernelShare.sharedOfdIds.delete(ofdId);
   }
   return active.sort((left, right) => left - right);
+}
+
+function peerHeldKernelShareOfdIds(handle: ProcessHandle): number[] {
+  const heldByPeers = new Set<number>();
+  for (const member of handle.kernelShare.members) {
+    if (member === handle) {
+      continue;
+    }
+    for (const ofdId of collectProcessHeldOfds(member)) {
+      heldByPeers.add(ofdId);
+    }
+  }
+  return activeKernelShareOfdIds(handle).filter((ofdId) => heldByPeers.has(ofdId));
+}
+
+function staleKernelShareOfdIds(handle: ProcessHandle): number[] {
+  const heldByAnyMember = new Set<number>();
+  for (const member of handle.kernelShare.members) {
+    for (const ofdId of collectProcessHeldOfds(member)) {
+      heldByAnyMember.add(ofdId);
+    }
+  }
+
+  const stale: number[] = [];
+  for (const ofdId of handle.kernelShare.sharedOfdIds) {
+    if (!heldByAnyMember.has(ofdId)) {
+      stale.push(ofdId);
+    }
+  }
+  return stale.sort((left, right) => left - right);
+}
+
+function pruneStaleKernelShareOfdIds(handle: ProcessHandle, staleOfdIds: Iterable<number>): void {
+  for (const ofdId of staleOfdIds) {
+    handle.kernelShare.sharedOfdIds.delete(ofdId);
+  }
 }
 
 function mergeKernelShareOfdStateInto(handle: ProcessHandle, sharedOfdIds: Iterable<number>): void {
@@ -2093,31 +2675,52 @@ function reconcileForkSharedOfdRefcounts(handle: ProcessHandle, sharedOfdIds: It
 async function syncForkSharedStateViaKernelWorker(
   handle: ProcessHandle,
   targets: ProcessHandle[],
+  options: {
+    includeMemfs?: boolean;
+    trackHeldOfds?: boolean;
+    preserveSourceRefcounts?: boolean;
+  } = {},
 ): Promise<void> {
   if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-    syncForkSharedStateLocally(handle, targets);
+    syncForkSharedStateLocally(handle, targets, options);
     return;
   }
 
-  const sharedOfdIds = activeKernelShareOfdIds(handle);
-  mergeKernelShareOfdStateInto(handle, sharedOfdIds);
-  reconcileForkSharedOfdRefcounts(handle, sharedOfdIds);
-  const ofdSlots: KernelWorkerOfdSlotSnapshot[] = [...snapshotKernelShareOfdSlots(handle, sharedOfdIds)]
+  if (options.trackHeldOfds === true) {
+    for (const ofdId of collectTrackableForkSharedOfds(handle)) {
+      handle.kernelShare.sharedOfdIds.add(ofdId);
+    }
+  }
+  const sourceHeldOfdIds = collectProcessHeldOfds(handle);
+  const activeOfdIds = activeKernelShareOfdIds(handle);
+  const sourceActiveOfdIds = activeOfdIds
+    .filter((ofdId) => sourceHeldOfdIds.has(ofdId));
+  const staleOfdIds = staleKernelShareOfdIds(handle);
+  const syncOfdIds = [...new Set([...sourceActiveOfdIds, ...staleOfdIds])]
+    .sort((left, right) => left - right);
+  mergeKernelShareOfdStateInto(handle, sourceActiveOfdIds);
+  handle.kernelState = readKernelRuntimeState(handle.kernel);
+  attachKernelRuntimeState(handle.kernel, handle.kernelState);
+  const ofdSlots: KernelWorkerOfdSlotSnapshot[] = [...snapshotKernelShareOfdSlots(handle, sourceActiveOfdIds)]
     .map(([ofdId, slot]) => ({ ofdId, slot }));
   const targetPids = targets.map((target) => target.pid).filter((pid) => pid > 0);
   const targetKernelStates: KernelWorkerPidStateSnapshot[] = targets
     .filter((target) => target.pid > 0)
     .map((target) => ({
       pid: target.pid,
+      vmPtr: target.vmPtr,
       kernelState: target.kernelState,
     }));
   const response = await handle.kernelWorkerRequest({
     type: "sync-fork-shared-state",
     pid: handle.pid,
+    vmPtr: handle.vmPtr,
     targetPids,
     targetKernelStates,
-    ofdIds: sharedOfdIds,
+    ofdIds: syncOfdIds,
     ofdSlots,
+    includeMemfs: options.includeMemfs ?? true,
+    preserveSourceRefcounts: options.preserveSourceRefcounts,
     kernelState: handle.kernelState,
   });
   if (response.type !== "fork-shared-state-synced") {
@@ -2125,11 +2728,13 @@ async function syncForkSharedStateViaKernelWorker(
   }
   handle.kernelState = adoptKernelState(handle.kernelState, response.kernelState);
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
+  pruneStaleKernelShareOfdIds(handle, staleOfdIds);
 }
 
 async function rehydrateForkSharedStateViaKernelWorker(
   targets: ProcessHandle[],
   ofdIds: number[],
+  options: { procSelfExeTargets?: KernelWorkerPidBytesSnapshot[]; includeMemfs?: boolean } = {},
 ): Promise<void> {
   if (targets.length === 0) {
     return;
@@ -2143,6 +2748,7 @@ async function rehydrateForkSharedStateViaKernelWorker(
     .filter((target) => target.pid > 0)
     .map((target) => ({
       pid: target.pid,
+      vmPtr: target.vmPtr,
       kernelState: target.kernelState,
     }));
   if (targetPids.length === 0) {
@@ -2153,6 +2759,8 @@ async function rehydrateForkSharedStateViaKernelWorker(
     targetPids,
     targetKernelStates,
     ofdIds,
+    procSelfExeTargets: options.procSelfExeTargets,
+    includeMemfs: options.includeMemfs,
   });
   if (response.type !== "fork-shared-state-rehydrated") {
     throw new Error(
@@ -2172,7 +2780,11 @@ async function syncBlockedForkSharedStateViaKernelWorker(handle: ProcessHandle):
   if (!handle.kernelWorkerRequest || handle.pid <= 0) {
     return;
   }
-  await syncForkSharedStateViaKernelWorker(handle, kernelShareOtherMembers(handle));
+  await syncForkSharedStateViaKernelWorker(
+    handle,
+    kernelShareOtherMembers(handle),
+    { includeMemfs: false },
+  );
 }
 
 async function syncPipeStateViaKernelWorker(handle: ProcessHandle): Promise<bigint> {
@@ -2197,6 +2809,9 @@ async function syncEpollStateViaKernelWorker(handle: ProcessHandle): Promise<voi
   if (!handle.kernelWorkerRequest || handle.pid <= 0) {
     return;
   }
+  if (collectHeldEpollOfdIds(handle).length === 0) {
+    return;
+  }
 
   const response = await handle.kernelWorkerRequest({
     type: "sync-epoll-state",
@@ -2205,6 +2820,24 @@ async function syncEpollStateViaKernelWorker(handle: ProcessHandle): Promise<voi
   });
   if (response.type !== "epoll-state-synced") {
     throw new Error(`unexpected kernel-worker response for sync-epoll-state: ${response.type}`);
+  }
+  handle.kernelState = adoptKernelState(handle.kernelState, response.kernelState);
+  attachKernelRuntimeState(handle.kernel, handle.kernelState);
+}
+
+async function syncOfdStateViaKernelWorker(handle: ProcessHandle, ofdIds: number[]): Promise<void> {
+  if (!handle.kernelWorkerRequest || handle.pid <= 0 || ofdIds.length === 0) {
+    return;
+  }
+
+  const response = await handle.kernelWorkerRequest({
+    type: "sync-ofd-state",
+    pid: handle.pid,
+    ofdIds,
+    kernelState: handle.kernelState,
+  });
+  if (response.type !== "ofd-state-synced") {
+    throw new Error(`unexpected kernel-worker response for sync-ofd-state: ${response.type}`);
   }
   handle.kernelState = adoptKernelState(handle.kernelState, response.kernelState);
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
@@ -2280,9 +2913,25 @@ function drainPipeOutput(
   }
 }
 
+function currentStandardFdPipeSlot(handle: ProcessHandle, fd: number): number {
+  const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+  if (ofdId === 0 || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()) {
+    return 0;
+  }
+  return handle.kernel.kernel_ofd_ino(ofdId);
+}
+
 function drainProcessOutput(handle: ProcessHandle): boolean {
-  const stdoutDrained = drainPipeOutput(handle, handle.stdoutPipe);
-  const stderrDrained = drainPipeOutput(handle, handle.stderrPipe);
+  const stdoutDrained = handle.stdoutPipe !== 0
+    && handle.stdoutPipe === handle.hostStdio.stdoutPipe
+    && currentStandardFdPipeSlot(handle, 1) === handle.stdoutPipe
+    ? drainPipeOutput(handle, handle.stdoutPipe)
+    : false;
+  const stderrDrained = handle.stderrPipe !== 0
+    && handle.stderrPipe === handle.hostStdio.stderrPipe
+    && currentStandardFdPipeSlot(handle, 2) === handle.stderrPipe
+    ? drainPipeOutput(handle, handle.stderrPipe)
+    : false;
   return stdoutDrained || stderrDrained;
 }
 
@@ -2306,7 +2955,10 @@ function createInheritedErrorSink(parent: ProcessHandle, childPid: number): (err
 }
 
 function captureVforkSnapshot(handle: ProcessHandle, vmPtr: number): VforkSnapshot {
-  const ofdIds = trackForkSharedOfds(handle, vmPtr, false);
+  // vfork also duplicates the caller's FD table into a distinct child process.
+  // The parent is suspended, but both processes still hold references to the
+  // shared OFDs until the child execs or exits.
+  const ofdIds = trackForkSharedOfds(handle, vmPtr, true);
   return {
     vmPtr,
     childPid: null,
@@ -2376,6 +3028,16 @@ function adoptKernelState(
     pipeUsed: incoming.pipeUsed,
     netBufUsed: incoming.netBufUsed,
   };
+}
+
+function composeHandlePipeUsed(handle: ProcessHandle, sharedPipeUsed: bigint): bigint {
+  let pipeUsed = sharedPipeUsed | 1n;
+  for (const pipeSlot of [handle.stdinPipe, handle.stdoutPipe, handle.stderrPipe]) {
+    if (pipeSlot > 0) {
+      pipeUsed |= 1n << BigInt(pipeSlot);
+    }
+  }
+  return pipeUsed;
 }
 
 function resumeVforkParentAfterChildExit(
@@ -2475,8 +3137,8 @@ function removeReadyWorker(handle: ProcessHandle, worker: Worker): void {
 
 function appendWorkerDebugLog(handle: ProcessHandle, event: string): void {
   handle.workerDebugLog.push(event);
-  if (handle.workerDebugLog.length > 16) {
-    handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 16);
+  if (handle.workerDebugLog.length > 48) {
+    handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 48);
   }
 }
 
@@ -2519,7 +3181,7 @@ function wakeBlockedStatusesInKernelShare(
     if (pipeUsed !== undefined) {
       member.kernelState = {
         ...member.kernelState,
-        pipeUsed,
+        pipeUsed: composeHandlePipeUsed(member, pipeUsed),
       };
     }
     const shouldWake = [...member.workers].some((candidate) => {
@@ -2546,6 +3208,14 @@ function wakePipeAndEpollWaitersInKernelShare(handle: ProcessHandle, pipeUsed: b
       handle.kernel.abi_status_pipe_wait(),
       handle.kernel.abi_status_epoll_wait(),
     ],
+    pipeUsed,
+  );
+}
+
+function wakePipeWaitersInKernelShare(handle: ProcessHandle, pipeUsed: bigint): void {
+  wakeBlockedStatusesInKernelShare(
+    handle,
+    [handle.kernel.abi_status_pipe_wait()],
     pipeUsed,
   );
 }
@@ -2591,6 +3261,12 @@ function requestEpollStateSync(handle: ProcessHandle, retryWaiters = false): Pro
     }
     return Promise.resolve();
   }
+  if (collectHeldEpollOfdIds(handle).length === 0) {
+    if (retryWaiters) {
+      retryEpollWaitersInKernelShare(handle);
+    }
+    return Promise.resolve();
+  }
 
   handle.epollSyncQueued = true;
   if (retryWaiters) {
@@ -2617,6 +3293,34 @@ function requestEpollStateSync(handle: ProcessHandle, retryWaiters = false): Pro
   return handle.epollSyncPromise;
 }
 
+function requestEpollDependentOfdStateSync(handle: ProcessHandle): Promise<void> {
+  if (!handle.kernelWorkerRequest || handle.pid <= 0) {
+    return Promise.resolve();
+  }
+
+  for (const ofdId of collectEpollDependentOfdIds(handle)) {
+    handle.ofdSyncQueuedIds.add(ofdId);
+  }
+  if (handle.ofdSyncQueuedIds.size === 0) {
+    return Promise.resolve();
+  }
+  if (handle.ofdSyncPromise !== null) {
+    return handle.ofdSyncPromise;
+  }
+
+  handle.ofdSyncPromise = (async () => {
+    while (handle.ofdSyncQueuedIds.size > 0) {
+      const ofdIds = [...handle.ofdSyncQueuedIds];
+      handle.ofdSyncQueuedIds.clear();
+      await syncOfdStateViaKernelWorker(handle, ofdIds);
+    }
+  })().finally(() => {
+    handle.ofdSyncPromise = null;
+  });
+
+  return handle.ofdSyncPromise;
+}
+
 function requestPipeStateSync(handle: ProcessHandle, wakeWaiters = false): Promise<void> {
   if (!kernelWorkerOwnsPipeState(handle)) {
     if (wakeWaiters) {
@@ -2641,7 +3345,16 @@ function requestPipeStateSync(handle: ProcessHandle, wakeWaiters = false): Promi
       handle.pipeWaiterWakeQueued = false;
       const pipeUsed = await syncPipeStateViaKernelWorker(handle);
       if (shouldWake) {
-        wakePipeAndEpollWaitersInKernelShare(handle, pipeUsed);
+        wakePipeWaitersInKernelShare(handle, pipeUsed);
+        if (kernelWorkerOwnsEpollState(handle)) {
+          await requestEpollStateSync(handle, true);
+        } else {
+          wakeBlockedStatusesInKernelShare(
+            handle,
+            [handle.kernel.abi_status_epoll_wait()],
+            pipeUsed,
+          );
+        }
       }
     }
   })().finally(() => {
@@ -2799,12 +3512,6 @@ function retryBlockedWorker(handle: ProcessHandle, worker: Worker): void {
     return;
   }
 
-  if (blocked.status === handle.kernel.abi_status_epoll_wait() && kernelWorkerOwnsEpollState(handle)) {
-    blocked.rpcPending = true;
-    void resumeEpollWaitViaKernelWorker(handle, worker, blocked.vmPtr, blocked.timeoutExpired);
-    return;
-  }
-
   if (
     handle.kernelWorkerRequest
     && handle.pid > 0
@@ -2854,6 +3561,7 @@ function attachThreadWorker(handle: ProcessHandle, worker: Worker, vmPtr: number
     vmPtr,
     guestBase: handle.guestBase,
     kernelState: handle.kernelState,
+    sabPageCache: handle.sabPageCache,
     runtimeNotify: handle.runtimeBridge.notifySab,
     runtimeState: handle.runtimeBridge.stateSab,
   } satisfies ThreadWorkerInbound);
@@ -2861,6 +3569,10 @@ function attachThreadWorker(handle: ProcessHandle, worker: Worker, vmPtr: number
 
 function enqueueWorker(handle: ProcessHandle, worker: Worker): void {
   if (!handle.readyWorkers.includes(worker)) {
+    const vmPtr = threadWorkerStates.get(worker)?.vmPtr;
+    if (vmPtr !== undefined) {
+      appendWorkerDebugLog(handle, `ready:0x${vmPtr.toString(16)}`);
+    }
     handle.readyWorkers.push(worker);
   }
   pumpProcess(handle);
@@ -2884,6 +3596,10 @@ function pumpProcess(handle: ProcessHandle): void {
     return;
   }
   handle.runningWorker = next;
+  const vmPtr = threadWorkerStates.get(next)?.vmPtr;
+  if (vmPtr !== undefined) {
+    appendWorkerDebugLog(handle, `step:0x${vmPtr.toString(16)}`);
+  }
   next.postMessage({
     type: "step",
     budget: THREAD_STEP_BUDGET,
@@ -2896,6 +3612,10 @@ function handleWorkerMessage(
   worker: Worker,
   msg: ThreadWorkerOutbound,
 ): void {
+  if (handle.pid > 0 && processHandles.get(handle.pid) !== handle) {
+    return;
+  }
+
   if (msg.type === "ready") {
     const thread = threadWorkerStates.get(worker);
     if (!thread) {
@@ -2960,11 +3680,10 @@ function handleWorkerMessage(
   handle.lastDebugMessage = msg.debug;
 
   const isRunningWorker = handle.runningWorker === worker;
-  if (isRunningWorker) {
-    handle.kernelState = adoptKernelState(handle.kernelState, msg.kernelState);
-    attachKernelRuntimeState(handle.kernel, handle.kernelState);
-  }
+  handle.kernelState = adoptKernelState(handle.kernelState, msg.kernelState);
+  attachKernelRuntimeState(handle.kernel, handle.kernelState);
   if (msg.waitInWorker) {
+    appendWorkerDebugLog(handle, `wait:0x${thread.vmPtr.toString(16)}@${msg.status}`);
     thread.waitingInWorkerStatus = msg.status;
     clearBlockedWorker(handle, worker);
     const drainedPipe = drainProcessOutput(handle);
@@ -2980,7 +3699,15 @@ function handleWorkerMessage(
       }
       pumpProcess(handle);
     };
-    if (isRunningWorker && kernelWorkerOwnsEpollState(handle)) {
+    const waitInWorkerNeedsEpollSync = msg.status === handle.kernel.abi_status_epoll_wait()
+      || (
+        kernelWorkerOwnsSocketState(handle)
+        && (
+          msg.status === handle.kernel.abi_status_socket_recv()
+          || msg.status === handle.kernel.abi_status_socket_send()
+        )
+      );
+    if (isRunningWorker && kernelWorkerOwnsEpollState(handle) && waitInWorkerNeedsEpollSync) {
       const shouldSyncSocket = kernelWorkerOwnsSocketState(handle)
         && (
           msg.status === handle.kernel.abi_status_socket_recv()
@@ -2990,7 +3717,7 @@ function handleWorkerMessage(
         ? requestSocketStateSync(handle, false)
         : Promise.resolve();
       void syncSocketState
-        .then(() => requestEpollStateSync(handle, !drainedPipe))
+        .then(() => requestEpollStateSync(handle, false))
         .then(() => {
           continueWaitInWorker();
         })
@@ -3028,19 +3755,42 @@ function handleWorkerMessage(
   }
 
   const status = msg.status;
+  const completedSyncEffects = msg.syncEffects ?? (
+    status === handle.kernel.abi_status_ok() ? LEGACY_OK_SYNC_EFFECTS : 0
+  );
   const continueAfterOwnedStateSync = (): void => {
     if (status === handle.kernel.abi_status_ok()) {
-      if (handle.kernelWorkerRequest && handle.pid > 0) {
-        void requestPipeStateSync(handle, true)
-          .then(() => syncProcessLifecycleViaKernelWorker(handle, thread.vmPtr))
+      const shouldSyncPipeState = wroteToPipe
+        || drainedPipe
+        || (completedSyncEffects & SYNC_EFFECT_PIPE_STATE) !== 0;
+      const shouldSyncLifecycle = (completedSyncEffects & SYNC_EFFECT_PROCESS_LIFECYCLE) !== 0;
+      const shouldWakeSignalWaiters = (completedSyncEffects & SYNC_EFFECT_SIGNAL_WAITERS) !== 0;
+      if (handle.kernelWorkerRequest && handle.pid > 0 && (shouldSyncPipeState || shouldSyncLifecycle)) {
+        appendWorkerDebugLog(handle, `ok-sync-start:0x${thread.vmPtr.toString(16)}`);
+        pumpProcess(handle);
+        const syncPipeState = shouldSyncPipeState
+          ? requestPipeStateSync(handle, true)
+          : Promise.resolve();
+        void syncPipeState
+          .then(() => (shouldSyncLifecycle
+            ? syncProcessLifecycleViaKernelWorker(handle, thread.vmPtr)
+            : Promise.resolve()))
           .then(() => {
+            appendWorkerDebugLog(handle, `ok-sync-done:0x${thread.vmPtr.toString(16)}`);
+            if (shouldWakeSignalWaiters) {
+              wakeRuntimeBridge(handle.runtimeBridge);
+            }
             kickBlockedWorkers(handle);
             enqueueWorker(handle, worker);
           })
           .catch((error) => {
+            appendWorkerDebugLog(handle, `ok-sync-err:0x${thread.vmPtr.toString(16)}`);
             failProcess(handle, error instanceof Error ? error : new Error(String(error)));
           });
         return;
+      }
+      if (shouldWakeSignalWaiters) {
+        wakeRuntimeBridge(handle.runtimeBridge);
       }
       kickBlockedWorkers(handle);
       enqueueWorker(handle, worker);
@@ -3087,7 +3837,13 @@ function handleWorkerMessage(
     if (status === handle.kernel.abi_status_sleep()) {
       const sec = Number(handle.kernel.thread_sleep_seconds(thread.vmPtr));
       const nsec = Number(handle.kernel.thread_sleep_nanoseconds(thread.vmPtr));
-      const ms = Math.max(1, sec * 1000 + Math.floor(nsec / 1_000_000));
+      const ms = sec * 1000 + Math.floor(nsec / 1_000_000);
+      if (ms <= 0) {
+        appendWorkerDebugLog(handle, `yield:0x${thread.vmPtr.toString(16)}`);
+        enqueueWorker(handle, worker);
+        return;
+      }
+      appendWorkerDebugLog(handle, `sleep:0x${thread.vmPtr.toString(16)}@${ms}`);
       const sleepTimer = setTimeout(() => {
         if (!handle.workers.has(worker) || !threadWorkerStates.has(worker)) {
           return;
@@ -3100,7 +3856,10 @@ function handleWorkerMessage(
     }
 
     if (status === handle.kernel.abi_status_fs()) {
+      appendWorkerDebugLog(handle, `fs:0x${thread.vmPtr.toString(16)}`);
       void resumeFsViaKernelWorker(handle, worker, thread.vmPtr);
+      kickBlockedWorkers(handle);
+      pumpProcess(handle);
       return;
     }
 
@@ -3111,6 +3870,8 @@ function handleWorkerMessage(
         thread.vmPtr,
         BigInt(-handle.kernel.abi_econnrefused()),
       );
+      kickBlockedWorkers(handle);
+      pumpProcess(handle);
       return;
     }
 
@@ -3146,6 +3907,43 @@ function handleWorkerMessage(
       if (handle.vforkSnapshot === null) {
         handle.vforkSnapshot = captureVforkSnapshot(handle, thread.vmPtr);
         handle.vforkWorker = worker;
+      }
+      if (
+        handle.kernelWorkerRequest
+        && handle.pid > 0
+        && handle.vforkSnapshot.childPid === null
+      ) {
+        pumpProcess(handle);
+        void syncForkSharedStateViaKernelWorker(
+          handle,
+          kernelShareOtherMembers(handle),
+          { includeMemfs: false, preserveSourceRefcounts: true },
+        )
+          .then(() => {
+            if (!handle.workers.has(worker) || !threadWorkerStates.has(worker)) {
+              return;
+            }
+            if (!handle.vforkSnapshot || handle.vforkSnapshot.vmPtr !== thread.vmPtr) {
+              return;
+            }
+            if (handle.vforkSnapshot.childPid === null) {
+              const provisionalChildPid = handle.kernel.thread_vfork_child_pid();
+              if (provisionalChildPid > 0) {
+                void canonicalizeActiveVforkChildViaKernelWorker(
+                  handle,
+                  worker,
+                  thread.vmPtr,
+                  provisionalChildPid,
+                );
+                return;
+              }
+            }
+            enqueueWorker(handle, worker);
+          })
+          .catch((error) => {
+            failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+          });
+        return;
       }
       if (
         handle.kernelWorkerRequest
@@ -3191,19 +3989,45 @@ function handleWorkerMessage(
     enqueueWorker(handle, worker);
   };
 
-  const shouldWakeSocketWaiters = status === handle.kernel.abi_status_ok();
+  const shouldWakeSocketWaiters = status === handle.kernel.abi_status_ok()
+    && (completedSyncEffects & SYNC_EFFECT_SOCKET_STATE) !== 0;
+  const shouldSyncForkSharedState = isRunningWorker
+    && handle.kernelWorkerRequest !== null
+    && handle.pid > 0
+    && handle.kernelShare.sharedOfdIds.size > 0
+    && (completedSyncEffects & SYNC_EFFECT_FORK_SHARED_OFD_STATE) !== 0
+    && !statusDefersOwnedStateSync(handle, status);
+  const shouldSyncEpollDependentOfds = isRunningWorker
+    && kernelWorkerOwnsEpollState(handle)
+    && (completedSyncEffects & SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE) !== 0
+    && !statusDefersOwnedStateSync(handle, status);
   const shouldSyncSocketState = isRunningWorker
     && kernelWorkerOwnsSocketState(handle)
-    && shouldWakeSocketWaiters
+    && (completedSyncEffects & SYNC_EFFECT_SOCKET_STATE) !== 0
     && !statusDefersOwnedStateSync(handle, status);
   const shouldSyncEpollState = isRunningWorker
     && kernelWorkerOwnsEpollState(handle)
+    && collectHeldEpollOfdIds(handle).length > 0
+    && (completedSyncEffects & SYNC_EFFECT_EPOLL_STATE) !== 0
     && !statusDefersOwnedStateSync(handle, status);
-  if (shouldSyncSocketState || shouldSyncEpollState) {
+  if (shouldSyncForkSharedState || shouldSyncEpollDependentOfds || shouldSyncSocketState || shouldSyncEpollState) {
+    const syncForkSharedState = shouldSyncForkSharedState
+      ? syncForkSharedStateViaKernelWorker(
+        handle,
+        kernelShareOtherMembers(handle),
+        { includeMemfs: false },
+      )
+      : Promise.resolve();
+    const syncOfdState = shouldSyncEpollDependentOfds
+      ? requestEpollDependentOfdStateSync(handle)
+      : Promise.resolve();
     const syncSocketState = shouldSyncSocketState
       ? requestSocketStateSync(handle, shouldWakeSocketWaiters)
       : Promise.resolve();
-    void syncSocketState
+    pumpProcess(handle);
+    void syncForkSharedState
+      .then(() => syncOfdState)
+      .then(() => syncSocketState)
       .then(() => (shouldSyncEpollState
         ? requestEpollStateSync(handle, !(wroteToPipe || drainedPipe))
         : Promise.resolve()))
@@ -3221,6 +4045,13 @@ function handleWorkerMessage(
 
 async function completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number): Promise<void> {
   drainProcessOutput(handle);
+  appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `exit-begin:${handle.pid}:held=[${[...collectProcessHeldOfds(handle)].sort((left, right) => left - right).join(",")}]:shared=[${[...handle.kernelShare.sharedOfdIds].sort((left, right) => left - right).join(",")}]`,
+  );
+  if (kernelWorkerOwnsPipeState(handle)) {
+    await requestPipeStateSync(handle, true);
+  }
   if (handle.kernelWorkerRequest && handle.pid > 0) {
     await syncForkSharedStateViaKernelWorker(handle, kernelShareOtherMembers(handle));
   }
@@ -3231,7 +4062,6 @@ async function completeProcessExit(handle: ProcessHandle, exitCode: number, term
     await requestEpollStateSync(handle, false);
   }
   if (kernelWorkerOwnsPipeState(handle)) {
-    await requestPipeStateSync(handle, true);
     await releaseSharedHostStdio(handle);
   } else {
     releaseSharedHostStdioLocal(handle);
@@ -3239,17 +4069,44 @@ async function completeProcessExit(handle: ProcessHandle, exitCode: number, term
   for (const worker of [...handle.blockedWorkers.keys()]) {
     clearBlockedWorker(handle, worker);
   }
+  const liveThreadDebug = formatAllLiveThreadDebug(handle);
   unregisterProcessWithKernelWorker(handle);
   detachKernelShare(handle);
+  handle.lastDebugMessage = [
+    `exit=${exitCode}`,
+    `signal=${termSignal}`,
+    `cmd=${JSON.stringify(handle.debugCommand)}`,
+    `worker_log=[${handle.workerDebugLog.join(", ")}]`,
+    `thread_debugs=[${liveThreadDebug}]`,
+    handle.lastDebugMessage ?? "debug=n/a",
+  ].join(" ");
   if (handle.pid > 0 && processHandles.get(handle.pid) === handle) {
     processHandles.delete(handle.pid);
   }
+  appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `exit:${handle.pid}:${JSON.stringify(handle.debugCommand)}:${exitCode}:${termSignal}`,
+  );
+  appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `exit-debug:${handle.pid}:${handle.lastDebugMessage ?? "debug=n/a"}`,
+  );
   recordExitOnParent(handle, exitCode, termSignal);
   handle.onExit?.(exitCode);
 }
 
 function failProcess(handle: ProcessHandle, error: Error): void {
   drainProcessOutput(handle);
+  appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `fail:${handle.pid}:${JSON.stringify(handle.debugCommand)}:${JSON.stringify(error.message)}`,
+  );
+  handle.lastDebugMessage = [
+    `cmd=${JSON.stringify(handle.debugCommand)}`,
+    `worker_log=[${handle.workerDebugLog.join(", ")}]`,
+    `thread_debugs=[${formatAllLiveThreadDebug(handle)}]`,
+    handle.lastDebugMessage ?? "debug=n/a",
+  ].join(" ");
   destroyProcessHandle(handle, 15, false);
   handle.onError?.(error);
 }
@@ -3264,6 +4121,24 @@ function recordExitOnParent(handle: ProcessHandle, exitCode: number, termSignal:
     return;
   }
 
+  appendWorkerDebugLog(
+    parent,
+    `child-exit:${handle.pid}:${JSON.stringify(handle.debugCommand)}:${exitCode}:${termSignal}`,
+  );
+  if (exitCode !== 0 || termSignal !== 0) {
+    appendWorkerDebugLog(
+      parent,
+      `child-debug:${handle.pid}:${handle.lastDebugMessage ?? "debug=n/a"}`,
+    );
+  }
+  parent.lastDebugMessage = [
+    `child-exit:${handle.pid}:${JSON.stringify(handle.debugCommand)}:${exitCode}:${termSignal}`,
+    ...(exitCode !== 0 || termSignal !== 0
+      ? [`child-debug:${handle.pid}:${handle.lastDebugMessage ?? "debug=n/a"}`]
+      : []),
+    parent.lastDebugMessage ?? "debug=n/a",
+  ].join(" ");
+
   const waitStatus = encodeWaitStatus(exitCode, termSignal);
   void recordChildExitViaKernelWorker(parent, handle.pid, waitStatus);
 }
@@ -3276,6 +4151,10 @@ async function handleExecveSpawn(
   const handoff = readProcessSpawnHandoff(handle.kernel, thread.vmPtr);
   const spawnKindExecve = handle.kernel.abi_spawn_kind_execve();
   const spawnKindFork = handle.kernel.abi_spawn_kind_fork();
+  appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `spawn-handoff:${handle.pid}:${handoff.kind}:${handoff.childPid}`,
+  );
 
   if (handoff.kind === spawnKindExecve) {
     await handleVforkExecve(handle, worker, thread, handoff.childPid);
@@ -3297,25 +4176,63 @@ async function handleVforkExecve(
   parentThread: ThreadWorkerState,
   childPid: number,
 ): Promise<void> {
+  appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:start:${childPid}`);
+  appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `vfork-parent-fds:${childPid}:${formatOpenFdSummary(handle)}`,
+  );
+  appendWorkerDebugLog(handle, `vfork-parent-fds:${childPid}:${formatOpenFdSummary(handle)}`);
+  handle.lastDebugMessage = `vfork-execve:start child=${childPid}`;
   const snapshot = handle.vforkSnapshot;
   const inheritedSharedOfdIds = new Set(snapshot?.inheritedSharedOfdIds ?? []);
+  const handoff = readProcessSpawnHandoff(handle.kernel, parentThread.vmPtr);
+  const execveGuestPayload = captureExecveGuestHandoff(
+    handle,
+    parentThread.vmPtr,
+    Number(handoff.path),
+    Number(handoff.argv),
+    Number(handoff.envp),
+  );
   handle.kernelState = readKernelRuntimeState(handle.kernel);
-  const parentMem = new Uint8Array(handle.memory.buffer);
   const childMemory = new WebAssembly.Memory({
-    initial: Math.ceil(handle.memory.buffer.byteLength / WASM_PAGE_SIZE),
+    initial: Math.ceil(Math.max(BOOTSTRAP_MEMORY_BYTES, handle.guestBase + 0x10000) / WASM_PAGE_SIZE),
     maximum: WASM_MAX_PAGES,
     shared: true,
   });
-  new Uint8Array(childMemory.buffer).set(parentMem);
 
   const childInstance = await WebAssembly.instantiate(handle.wasmModule, {
-    env: createKernelEnv(childMemory),
+    env: createKernelEnv(childMemory, { sabPageCache: handle.sabPageCache }),
   });
   const childKernel = childInstance.exports as unknown as KernelExports;
+  copyKernelPrivateRegion(handle.memory, childMemory, handle.guestBase);
   attachKernelRuntimeState(childKernel, handle.kernelState);
 
   const childVmPtr = parentThread.vmPtr;
-  const execRet = Number(childKernel.thread_complete_execve_handoff(childVmPtr));
+  const stagedExecveHandoff = stageExecveGuestHandoff(
+    childKernel,
+    handle.guestBase,
+    execveGuestPayload,
+  );
+  childKernel.thread_set_execve_handoff(
+    childVmPtr,
+    stagedExecveHandoff.processPtr,
+    stagedExecveHandoff.pathPtr,
+    stagedExecveHandoff.argvPtr,
+    stagedExecveHandoff.envpPtr,
+  );
+  let execRet: number;
+  try {
+    execRet = Number(childKernel.thread_complete_execve_handoff(childVmPtr));
+  } catch (error) {
+    const debugStage = childKernel.debug_execve_stage?.();
+    const debugValue0 = childKernel.debug_execve_value0?.();
+    const debugValue1 = childKernel.debug_execve_value1?.();
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    throw new Error(
+      `thread_complete_execve_handoff trapped for pid=${childPid}: ${detail}`
+        + ` (stage=${debugStage ?? "n/a"}, value0=${debugValue0 ?? "n/a"}, value1=${debugValue1 ?? "n/a"})`,
+    );
+  }
   if (execRet < 0) {
     const debugStage = childKernel.debug_execve_stage?.();
     const debugValue0 = childKernel.debug_execve_value0?.();
@@ -3347,8 +4264,12 @@ async function handleVforkExecve(
     kernelShare: handle.kernelShare,
     stdinQueue: [],
     outputBacklog: [],
+    debugCommand: execveGuestPayload.argv[0]
+      ? decodeExecveBytes(execveGuestPayload.argv[0])
+      : decodeExecveBytes(execveGuestPayload.path),
     lastDebugMessage: undefined,
     runtimeBridge: createRuntimeStateBridge(),
+    sabPageCache: handle.sabPageCache,
     kernelWorkerRequest: handle.kernelWorkerRequest,
     workers: new Set(),
     readyWorkers: [],
@@ -3360,6 +4281,8 @@ async function handleVforkExecve(
     epollSyncPromise: null,
     epollSyncQueued: false,
     epollWaiterWakeQueued: false,
+    ofdSyncPromise: null,
+    ofdSyncQueuedIds: new Set(),
     socketSyncPromise: null,
     socketSyncQueued: false,
     socketWaiterWakeQueued: false,
@@ -3370,8 +4293,21 @@ async function handleVforkExecve(
     workerDebugLog: ["spawn:vfork-execve"],
   };
   assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-execve");
+  appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-kernel-ready:${childPid}`);
+  handle.lastDebugMessage = `vfork-execve:child-kernel-ready child=${childPid}`;
   if (handle.kernelWorkerRequest && handle.pid > 0) {
     await resumeVforkExecveParentViaKernelWorker(handle, parentThread.vmPtr, childPid);
+    const parentRehydrateOfdIds = [...inheritedSharedOfdIds].sort((left, right) => left - right);
+    if (parentRehydrateOfdIds.length > 0) {
+      await rehydrateForkSharedStateViaKernelWorker([handle], parentRehydrateOfdIds, {
+        includeMemfs: false,
+      });
+    }
+    appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `vfork-parent-restored-fds:${childPid}:${formatOpenFdSummary(handle)}`,
+    );
+    appendWorkerDebugLog(handle, `vfork-parent-restored-fds:${childPid}:${formatOpenFdSummary(handle)}`);
     assertProcessStandardFdIntegrity(handle, "vfork-parent-restored");
   } else {
     handle.kernel.thread_clear_spawn_handoff(parentThread.vmPtr);
@@ -3380,31 +4316,62 @@ async function handleVforkExecve(
   }
   publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
 
+  reconcileInheritedSharedOfdsAfterVforkExecve(handle, inheritedSharedOfdIds);
   adoptKernelShare(handle, childHandle);
   if (handle.kernelWorkerRequest && handle.pid > 0) {
-    for (const ofdId of inheritedSharedOfdIds) {
-      handle.kernelShare.sharedOfdIds.add(ofdId);
-    }
     const sharedOfdIds = activeKernelShareOfdIds(handle);
     const childHeldOfdIds = collectProcessHeldOfds(childHandle);
-    const childHeldOfdSlots = snapshotKernelShareOfdSlots(childHandle, childHeldOfdIds);
-    const preservedOfdSlots = childHeldOfdSlots;
     const rehydratedSharedOfdIds = sharedOfdIds
       .filter((ofdId) => !childHeldOfdIds.has(ofdId));
-    await registerProcessWithKernelWorker(childHandle, { seedMemfsFromCanonical: false });
+    const procSelfExeTarget = execveGuestPayload.path.length > 0
+      && execveGuestPayload.path[execveGuestPayload.path.length - 1] === 0
+      ? execveGuestPayload.path.slice(0, -1)
+      : execveGuestPayload.path;
+    await registerProcessWithKernelWorker(childHandle, {
+      seedMemfsMode: "none",
+      pipeSeedMode: "process",
+    });
+    appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-registered:${childPid}`);
+    handle.lastDebugMessage = `vfork-execve:child-registered child=${childPid}`;
     assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-register");
-    reconcileForkSharedOfdRefcounts(childHandle, sharedOfdIds);
-    await syncForkSharedStateViaKernelWorker(childHandle, kernelShareOtherMembers(childHandle));
+    await syncForkSharedStateViaKernelWorker(childHandle, kernelShareOtherMembers(childHandle), {
+      includeMemfs: false,
+      trackHeldOfds: false,
+    });
+    appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-synced:${childPid}`);
+    handle.lastDebugMessage = `vfork-execve:child-synced child=${childPid}`;
     assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-sync-fork-shared-state");
+    const preservedOfdSlots = snapshotKernelShareOfdSlots(childHandle, childHeldOfdIds);
+    const preservedPipeSlots = snapshotLocalPipeSlots(childHandle, childHeldOfdIds);
     discardCopiedSharedKernelObjects(childHandle, preservedOfdSlots);
     assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-discard");
-    await rehydrateForkSharedStateViaKernelWorker([childHandle], rehydratedSharedOfdIds);
+    await rehydrateForkSharedStateViaKernelWorker([childHandle], rehydratedSharedOfdIds, {
+      procSelfExeTargets: procSelfExeTarget.length > 0
+        ? [{ pid: childHandle.pid, bytes: procSelfExeTarget }]
+        : undefined,
+    });
+    appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-rehydrated:${childPid}`);
+    appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `vfork-execve:child-fds:${childPid}:${formatPipeCounterDebug(childHandle, 1)}:${formatPipeCounterDebug(childHandle, 2)}`,
+    );
+    appendWorkerDebugLog(childHandle, `vfork-child-fds:${childPid}:${formatOpenFdSummary(childHandle)}`);
+    handle.lastDebugMessage = `vfork-execve:child-rehydrated child=${childPid}`;
     restoreLocalOfdSlots(childHandle, preservedOfdSlots);
+    restoreLocalPipeSlots(childHandle, preservedPipeSlots);
     assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-rehydrate");
   } else {
-    syncForkSharedStateLocally(childHandle, kernelShareOtherMembers(childHandle));
+    const childHeldOfdIds = collectProcessHeldOfds(childHandle);
+    const preservedOfdSlots = snapshotKernelShareOfdSlots(childHandle, childHeldOfdIds);
+    const preservedPipeSlots = snapshotLocalPipeSlots(childHandle, childHeldOfdIds);
+    syncForkSharedStateLocally(childHandle, kernelShareOtherMembers(childHandle), {
+      includeMemfs: false,
+      trackHeldOfds: false,
+    });
     discardCopiedSharedKernelObjects(childHandle);
     syncForkSharedStateLocally(handle, [childHandle]);
+    restoreLocalOfdSlots(childHandle, preservedOfdSlots);
+    restoreLocalPipeSlots(childHandle, preservedPipeSlots);
   }
   await initializeProcessLifecycleViaKernelWorker(
     childHandle,
@@ -3435,6 +4402,11 @@ async function handleVforkExecve(
   );
   publishKernelRuntimeState(childHandle.runtimeBridge, childHandle.kernelState, true);
   processHandles.set(childPid, childHandle);
+  handle.lastDebugMessage = `vfork-execve:child-visible child=${childPid}`;
+  appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `spawn:${childPid}:${JSON.stringify(childHandle.debugCommand)}`,
+  );
   attachThreadWorker(childHandle, childWorker, childVmPtr);
 
   clearVforkSnapshot(handle);
@@ -3448,6 +4420,7 @@ async function handlePlainFork(
   parentThread: ThreadWorkerState,
   childPid: number,
 ): Promise<void> {
+  appendRuntimeLifecycleEvent(handle.runtimeId, `plain-fork:start:${childPid}`);
   const cloneFlags = Number(handle.kernel.thread_clone_flags(parentThread.vmPtr));
   const childPpid = (cloneFlags & Number(handle.kernel.abi_clone_parent())) !== 0
     ? (handle.parentPid ?? handle.pid)
@@ -3474,7 +4447,7 @@ async function handlePlainFork(
   new Uint8Array(childMemory.buffer).set(parentMem);
 
   const childInstance = await WebAssembly.instantiate(handle.wasmModule, {
-    env: createKernelEnv(childMemory),
+    env: createKernelEnv(childMemory, { sabPageCache: handle.sabPageCache }),
   });
   const childKernel = childInstance.exports as unknown as KernelExports;
   attachKernelRuntimeState(childKernel, handle.kernelState);
@@ -3500,8 +4473,10 @@ async function handlePlainFork(
     kernelShare: handle.kernelShare,
     stdinQueue: [],
     outputBacklog: [],
+    debugCommand: handle.debugCommand,
     lastDebugMessage: undefined,
     runtimeBridge: createRuntimeStateBridge(),
+    sabPageCache: handle.sabPageCache,
     kernelWorkerRequest: handle.kernelWorkerRequest,
     workers: new Set(),
     readyWorkers: [],
@@ -3513,6 +4488,8 @@ async function handlePlainFork(
     epollSyncPromise: null,
     epollSyncQueued: false,
     epollWaiterWakeQueued: false,
+    ofdSyncPromise: null,
+    ofdSyncQueuedIds: new Set(),
     socketSyncPromise: null,
     socketSyncQueued: false,
     socketWaiterWakeQueued: false,
@@ -3555,6 +4532,7 @@ function terminateTrackedWorker(worker: Worker): void {
     workerEntryMap.delete(worker);
   }
   threadWorkerStates.delete(worker);
+  clearWorkerMessageHandler(worker);
   worker.terminate();
 }
 
@@ -3579,6 +4557,10 @@ function destroyProcessHandle(handle: ProcessHandle, signal: number, notifyExit:
   if (handle.pid > 0 && processHandles.get(handle.pid) === handle) {
     processHandles.delete(handle.pid);
   }
+  appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `destroy:${handle.pid}:${JSON.stringify(handle.debugCommand)}:${signal}:${notifyExit ? 1 : 0}`,
+  );
   const dirtyHandles = runtimeFsDirtyHandles.get(handle.runtimeId);
   dirtyHandles?.delete(handle);
   if (dirtyHandles && dirtyHandles.size === 0) {

@@ -158,6 +158,51 @@ export function readInodeMeta(
   return null;
 }
 
+export function readInodeRecord(
+  sab: SharedArrayBuffer,
+  ino: number,
+): {
+  dataOff: number;
+  size: number;
+  mode: number;
+  parentIno: number;
+  name: Uint8Array;
+  nextSibling: number;
+} | null {
+  const u32 = new Uint32Array(sab);
+  const u8 = new Uint8Array(sab);
+  const base = inodeOffset(ino);
+  const base32 = base >>> 2;
+
+  for (let retry = 0; retry < 4; retry++) {
+    const v1 = Atomics.load(u32, base32 + (INODE_OFF_VERSION >>> 2));
+    if (v1 === 0) return null;
+    if (v1 & 1) continue;
+
+    const dataOff = Atomics.load(u32, base32 + (INODE_OFF_DATA_OFF >>> 2));
+    const size = Atomics.load(u32, base32 + (INODE_OFF_DATA_SIZE >>> 2));
+    const mode = Atomics.load(u32, base32 + (INODE_OFF_MODE >>> 2));
+    const parentIno = Atomics.load(u32, base32 + (INODE_OFF_PARENT >>> 2));
+    const nameOff = Atomics.load(u32, base32 + (INODE_OFF_NAME_OFF >>> 2));
+    const nameLen = Atomics.load(u32, base32 + (INODE_OFF_NAME_LEN >>> 2));
+    const nextSibling = Atomics.load(u32, base32 + (INODE_OFF_NEXT_SIBLING >>> 2));
+    const name = nameLen > 0 ? u8.slice(nameOff, nameOff + nameLen) : new Uint8Array();
+
+    const v2 = Atomics.load(u32, base32 + (INODE_OFF_VERSION >>> 2));
+    if (v1 === v2) {
+      return {
+        dataOff,
+        size,
+        mode,
+        parentIno,
+        name,
+        nextSibling,
+      };
+    }
+  }
+  return null;
+}
+
 /**
  * Read file data from the SAB page cache.
  * Caller should first use readInodeMeta to get dataOff and size.

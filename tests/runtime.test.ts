@@ -5,7 +5,6 @@ import type { RuntimeStat } from "../src/fs-types.js";
 import type { KernelWorkerInbound, KernelWorkerOutbound } from "../src/messages.js";
 import type { ProcessHandle } from "../src/worker.js";
 import * as workerModule from "../src/worker.js";
-import { publishRuntimeFsState } from "../src/worker.js";
 
 function normalizePath(path: string): string {
   const normalized = `/${path.split("/").filter(Boolean).join("/")}`;
@@ -293,29 +292,17 @@ test("Runtime.fs routes kernel-worker RPCs with unique request ids", async () =>
   expect(createdWorkers[0].terminated).toBe(true);
 });
 
-test("Runtime.fs syncs newer process-owned FS state into kernel-worker before reads", async () => {
+test("Runtime.fs reads only kernel-worker canonical FS state", async () => {
   const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
-  const runtimeId = (runtime as unknown as { runtimeId: number }).runtimeId;
-  publishRuntimeFsState(runtimeId, [
-    { kind: "dir", path: "/", mode: 0o755 },
-    { kind: "dir", path: "/workspace", mode: 0o755 },
-    {
-      kind: "file",
-      path: "/workspace/generated.txt",
-      data: new TextEncoder().encode("from process\n"),
-      mode: 0o644,
-    },
-  ]);
-
-  const file = await runtime.fs.readFile("/workspace/generated.txt");
-
-  expect(new TextDecoder().decode(file)).toBe("from process\n");
+  await expect(runtime.fs.readFile("/workspace/generated.txt")).rejects.toThrow(
+    "ENOENT: /workspace/generated.txt",
+  );
 
   const worker = createdWorkers[0];
-  const loadIndex = worker.postedMessages.findIndex((msg) => msg.type === "load-fs-snapshot");
   const readIndex = worker.postedMessages.findIndex((msg) => msg.type === "read-file");
-  expect(loadIndex).toBeGreaterThan(-1);
-  expect(readIndex).toBeGreaterThan(loadIndex);
+  expect(readIndex).toBeGreaterThan(-1);
+  expect(worker.postedMessages.some((msg) => msg.type === "load-fs-snapshot")).toBe(false);
+  expect(worker.postedMessages.some((msg) => msg.type === "snapshot-fs")).toBe(false);
 
   runtime.destroy();
 });
@@ -342,36 +329,35 @@ test("Runtime.applyFsSnapshot seeds kernel-worker FS in a single RPC", async () 
   runtime.destroy();
 });
 
-test("Runtime.spawn uses runtime-owned FS state without requesting snapshot-fs", async () => {
+test("Runtime.spawn delegates canonical FS hydration to createProcess", async () => {
   const createProcessSpy = vi.spyOn(workerModule, "createProcess").mockResolvedValue({
     pid: 1,
     outputBacklog: [],
   } as unknown as ProcessHandle);
   const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
-  const runtimeId = (runtime as unknown as { runtimeId: number }).runtimeId;
   const kernelWorker = createdWorkers[0];
 
-  kernelWorker.postedMessages.length = 0;
-  publishRuntimeFsState(runtimeId, [
+  await runtime.applyFsSnapshot([
     { kind: "dir", path: "/", mode: 0o755 },
     { kind: "dir", path: "/workspace", mode: 0o755 },
     {
       kind: "file",
       path: "/workspace/generated.txt",
-      data: new TextEncoder().encode("from runtime state\n"),
+      data: new TextEncoder().encode("from kernel worker\n"),
       mode: 0o644,
     },
   ]);
+  kernelWorker.postedMessages.length = 0;
 
   await runtime.spawn(new Uint8Array([1, 2, 3]));
 
-  expect(kernelWorker.postedMessages.some((msg) => msg.type === "load-fs-snapshot")).toBe(true);
+  expect(kernelWorker.postedMessages.some((msg) => msg.type === "load-fs-snapshot")).toBe(false);
   expect(kernelWorker.postedMessages.some((msg) => msg.type === "snapshot-fs")).toBe(false);
 
   expect(createProcessSpy).toHaveBeenCalledTimes(1);
   const options = createProcessSpy.mock.calls[0]?.[2];
   expect(options).toMatchObject({
-    runtimeId,
+    runtimeId: expect.any(Number),
     pid: 1,
     kernelWorkerRequest: expect.any(Function),
   });

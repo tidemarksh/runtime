@@ -3,7 +3,9 @@ export type FsEntryKind = "file" | "dir";
 export interface FsSnapshotEntry {
   kind: FsEntryKind;
   path: string;
+  ino?: number;
   data?: Uint8Array;
+  size?: number;
   mode?: number;
 }
 

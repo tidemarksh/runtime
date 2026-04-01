@@ -104,7 +104,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     abi_o_creat: () => 0x40, abi_o_trunc: () => 0x200,
     abi_o_append: () => 0x400, abi_o_cloexec: () => 0x80000,
     abi_enoent: () => 2, abi_ebadf: () => 9, abi_einval: () => 22,
-    abi_enomem: () => 12, abi_enosys: () => 38, abi_eagain: () => 11,
+    abi_enomem: () => 12, abi_enosys: () => 38, abi_eintr: () => 4, abi_eagain: () => 11,
     abi_epipe: () => 32,
     set_base_time: () => {},
     kernel_init: () => {},
@@ -150,12 +150,16 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_step: () => 0, thread_status: () => 0,
     thread_exit_code: () => 0, thread_term_signal: () => 0,
     thread_pc: () => 0n, thread_a0: () => 0n,
+    thread_pending_fs_effects: () => 0,
+    thread_pending_fs_target_ino: () => 0,
+    thread_pending_fs_opcode: () => 0,
     thread_process_fs: () => {
       runtimeState = { ...runtimeState, heapPtr: runtimeState.heapPtr + 0x10 };
     },
     thread_resume_fs: () => 0,
     thread_futex_wait_addr: () => 0n,
     thread_futex_wait_timeout: () => 0n,
+    thread_futex_wait_expected: () => 0,
     thread_resume_futex_wait: () => {},
     thread_resume_futex_wait_result: () => {},
     thread_sleep_seconds: () => sleepSec,
@@ -171,6 +175,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_spawn_path: () => 0n, thread_spawn_argv: () => 0n,
     thread_spawn_envp: () => 0n, thread_clear_spawn_handoff: () => {},
     thread_resume_vfork_parent: () => {},
+    thread_restore_vfork_parent_without_cleanup: () => {},
     thread_complete_execve_handoff: () => 0n,
     thread_spawn_from_clone: () => 0x2000,
     thread_process_thread_count: () => 1,
@@ -214,8 +219,10 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     process_read_http_response: () => -1,
     process_close_http_connection: () => {},
     memfs_resolve_path: () => 0, memfs_create_file: () => 0,
+    memfs_reserve_inode_until: () => 0n,
     memfs_write_file_at: () => 0n, memfs_read_file_to: () => 0n,
     memfs_file_size: () => 0n, memfs_truncate_file: () => 0n,
+    memfs_set_file_size_shallow: () => 0n,
     memfs_inode_mode: () => 0, memfs_inode_nlink: () => 0,
     memfs_inode_uid: () => 0, memfs_inode_gid: () => 0,
     memfs_ensure_dir: () => 0, memfs_create_file_with_data: () => 0,
@@ -247,14 +254,13 @@ afterEach(() => {
   globalThis.Worker = originalWorker;
 });
 
-test("STATUS_SLEEP reads actual duration and re-enqueues through owner after timeout", async () => {
+test("STATUS_SLEEP schedules owner-side wakeup after the sleep timer fires", async () => {
   vi.useFakeTimers();
   await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
   const worker = createdWorkers[0];
   emitReady(worker);
   worker.clearPostedMessages();
 
-  // Emit STATUS_SLEEP (status=11)
   worker.emit({
     type: "status",
     status: 11,
@@ -265,22 +271,40 @@ test("STATUS_SLEEP reads actual duration and re-enqueues through owner after tim
     kernelState: makeKernelState(),
   });
 
-  // No immediate message — setTimeout pending
   expect(worker.postedMessages).toEqual([]);
-
-  // Advance timer past the 10ms sleep duration
   vi.advanceTimersByTime(15);
-
-  // Should have been re-enqueued through the owner scheduler.
-  expect(worker.postedMessages).toEqual([
-    {
-      type: "step",
-      budget: 20_000,
-      kernelState: makeKernelState(),
-    },
-  ]);
+  expect(worker.postedMessages).toEqual([{
+    type: "step",
+    budget: 20_000,
+    kernelState: makeKernelState(),
+  }]);
 
   vi.useRealTimers();
+});
+
+test("STATUS_SLEEP with zero duration requeues immediately on the owner", async () => {
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
+  handle.kernel.thread_sleep_seconds = () => 0n;
+  handle.kernel.thread_sleep_nanoseconds = () => 0n;
+  const worker = createdWorkers[0];
+  emitReady(worker);
+  worker.clearPostedMessages();
+
+  worker.emit({
+    type: "status",
+    status: 11,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+
+  expect(worker.postedMessages).toEqual([{
+    type: "step",
+    budget: 20_000,
+    kernelState: makeKernelState(),
+  }]);
 });
 
 test("STATUS_FAULT with thread_count=0 fires onExit", async () => {

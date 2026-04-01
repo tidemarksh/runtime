@@ -1,15 +1,10 @@
 import {
-  clearRuntimeFsState,
   createProcess,
   debugRuntimeProcessHandles,
   destroyProcessTree,
   destroyRuntimeProcesses,
   destroyWorkerPool,
-  flushRuntimeFsStateFromDirtyHandle,
-  getRuntimeFsState,
   injectHttpRequest,
-  primeRuntimeFsState,
-  publishRuntimeFsState,
   type ProcessHandle,
   precompileModule,
   writeProcessStdin,
@@ -64,7 +59,6 @@ export class Runtime {
   private kernelWorker: Worker | null = null;
   private wasmModule: WebAssembly.Module | null = null;
   private sabPageCache: SharedArrayBuffer | null = null;
-  private kernelFsVersion = 0;
 
   private constructor(options: RuntimeOptions) {
     this.wasmBytes = options.wasmBytes;
@@ -98,7 +92,6 @@ export class Runtime {
       sabPageCache: this.sabPageCache,
     });
     void response;
-    await this.refreshRuntimeFsStateFromKernelWorker(false);
   }
 
   private readonly handleKernelWorkerMessage = (
@@ -135,30 +128,6 @@ export class Runtime {
     });
   }
 
-  private async syncKernelWorkerFs(): Promise<void> {
-    flushRuntimeFsStateFromDirtyHandle(this.runtimeId);
-    const state = getRuntimeFsState(this.runtimeId);
-    if (!state || state.version <= this.kernelFsVersion) {
-      return;
-    }
-    await this.sendKernelRequest<Extract<KernelWorkerOutbound, { type: "fs-loaded" }>>({
-      type: "load-fs-snapshot",
-      entries: state.entries,
-    });
-    this.kernelFsVersion = state.version;
-  }
-
-  private async refreshRuntimeFsStateFromKernelWorker(bumpVersion: boolean): Promise<void> {
-    const snapshot = await this.sendKernelRequest<
-      Extract<KernelWorkerOutbound, { type: "snapshot-fs-result" }>
-    >({
-      type: "snapshot-fs",
-    });
-    this.kernelFsVersion = bumpVersion
-      ? publishRuntimeFsState(this.runtimeId, snapshot.entries)
-      : primeRuntimeFsState(this.runtimeId, snapshot.entries);
-  }
-
   async spawn(
     elfData: Uint8Array,
     argv: string[] = [],
@@ -166,7 +135,6 @@ export class Runtime {
     options: SpawnOptions = {},
   ): Promise<Process> {
     const pid = this.nextPid++;
-    await this.syncKernelWorkerFs();
 
     const handle = await createProcess(this.wasmBytes, elfData, {
       runtimeId: this.runtimeId,
@@ -175,6 +143,8 @@ export class Runtime {
       argv,
       env,
       cwd: options.cwd,
+      sabPageCache: this.sabPageCache,
+      hydrateFsFromKernelWorker: true,
       kernelWorkerRequest: (msg) => this.sendKernelRequest(msg),
     });
 
@@ -202,22 +172,18 @@ export class Runtime {
       type: "load-fs-snapshot",
       entries,
     });
-    this.kernelFsVersion = publishRuntimeFsState(this.runtimeId, entries);
   }
 
   async writeFile(path: string, data: Uint8Array, mode?: number): Promise<void> {
-    await this.syncKernelWorkerFs();
     await this.sendKernelRequest<Extract<KernelWorkerOutbound, { type: "file-written" }>>({
       type: "write-file",
       path,
       data,
       mode,
     });
-    await this.refreshRuntimeFsStateFromKernelWorker(true);
   }
 
   async readFile(path: string): Promise<Uint8Array> {
-    await this.syncKernelWorkerFs();
     const response = await this.sendKernelRequest<
       Extract<KernelWorkerOutbound, { type: "file-read" }>
     >({
@@ -228,17 +194,14 @@ export class Runtime {
   }
 
   async mkdir(path: string, mode?: number): Promise<void> {
-    await this.syncKernelWorkerFs();
     await this.sendKernelRequest<Extract<KernelWorkerOutbound, { type: "dir-created" }>>({
       type: "mkdir",
       path,
       mode,
     });
-    await this.refreshRuntimeFsStateFromKernelWorker(true);
   }
 
   async stat(path: string): Promise<RuntimeStat> {
-    await this.syncKernelWorkerFs();
     const response = await this.sendKernelRequest<
       Extract<KernelWorkerOutbound, { type: "stat-result" }>
     >({
@@ -249,7 +212,6 @@ export class Runtime {
   }
 
   async readdir(path: string): Promise<string[]> {
-    await this.syncKernelWorkerFs();
     const response = await this.sendKernelRequest<
       Extract<KernelWorkerOutbound, { type: "readdir-result" }>
     >({
@@ -315,7 +277,6 @@ export class Runtime {
       this.kernelWorker.terminate();
       this.kernelWorker = null;
     }
-    clearRuntimeFsState(this.runtimeId);
     destroyWorkerPool();
   }
 

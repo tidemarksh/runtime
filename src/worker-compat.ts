@@ -63,3 +63,17 @@ export function setWorkerMessageHandler<T>(
     nodeWorker.on("message", wrapped);
   }
 }
+
+export function clearWorkerMessageHandler(worker: Worker): void {
+  if ("onmessage" in worker) {
+    worker.onmessage = null;
+    return;
+  }
+
+  const nodeWorker = worker as WorkerLike<unknown>;
+  const wrapped = nodeListenerMap.get(worker);
+  if (wrapped && typeof nodeWorker.off === "function") {
+    nodeWorker.off("message", wrapped);
+  }
+  nodeListenerMap.delete(worker);
+}
