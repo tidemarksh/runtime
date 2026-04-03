@@ -56,6 +56,24 @@ interface WorkerCreateProcessDeps {
 }
 
 export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
+  function appendMemoryStateDebug(handle: ProcessHandle, stage: string): void {
+    const brkBase = handle.kernel.debug_memory_brk_base?.();
+    const brkCurrent = handle.kernel.debug_memory_brk_current?.();
+    const mmapNext = handle.kernel.debug_memory_mmap_next?.();
+    if (brkBase === undefined || brkCurrent === undefined || mmapNext === undefined) {
+      return;
+    }
+    const heapPtr = handle.kernel.kernel_heap_ptr?.() ?? handle.kernelState.heapPtr;
+    const entry = `${stage}:heap=0x${heapPtr.toString(16)}:mem=0x${handle.kernelState.memStatePtr.toString(16)}:${brkBase.toString()}:${brkCurrent.toString()}:${mmapNext.toString()}`;
+    handle.workerDebugLog.push(entry);
+    if (handle.workerDebugLog.length > 48) {
+      handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 48);
+    }
+    handle.lastDebugMessage = handle.lastDebugMessage
+      ? `${handle.lastDebugMessage} ${entry}`
+      : entry;
+  }
+
   async function instantiateProcessKernel(
     wasmBytes: BufferSource,
     ramSize: number,
@@ -246,11 +264,13 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       options,
       worker,
     );
+    appendMemoryStateDebug(handle, "create");
 
     const memfsSeedMode: KernelWorkerMemfsSeedMode = delegateFsHydrationToKernelWorker
       ? "metadata"
       : "full";
     await deps.registerProcessWithKernelWorker(handle, { seedMemfsMode: memfsSeedMode });
+    appendMemoryStateDebug(handle, "register");
     if (delegateFsHydrationToKernelWorker) {
       handle.kernel.process_set_cwd_ino(vmPtr, cwdIno);
     }
@@ -267,6 +287,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
         inheritedSid,
         false,
       );
+      appendMemoryStateDebug(handle, "lifecycle");
     }
     deps.assertProcessStandardFdIntegrity(handle, "create-process");
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);

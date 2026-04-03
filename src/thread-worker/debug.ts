@@ -131,6 +131,23 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number): string
     debugParts.push(`mem_a3=${exports.debug_memory_trace_arg3?.().toString() ?? "n/a"}`);
     debugParts.push(`mem_result=${exports.debug_memory_trace_result?.().toString() ?? "n/a"}`);
   }
+  const memBrkBase = exports.debug_memory_brk_base?.();
+  if (memBrkBase !== undefined) {
+    debugParts.push(`heap_base=0x${exports.kernel_heap_base?.().toString(16) ?? "0"}`);
+    debugParts.push(`heap_ptr=0x${exports.kernel_heap_ptr?.().toString(16) ?? "0"}`);
+    debugParts.push(`mem_state_ptr=0x${exports.kernel_mem_state_ptr?.().toString(16) ?? "0"}`);
+    debugParts.push(`mem_brk_base=0x${memBrkBase.toString(16)}`);
+    debugParts.push(`mem_brk_current=0x${exports.debug_memory_brk_current?.().toString(16) ?? "n/a"}`);
+    debugParts.push(`mem_mmap_next=0x${exports.debug_memory_mmap_next?.().toString(16) ?? "n/a"}`);
+    const vmaLen = exports.debug_memory_vma_len?.() ?? 0;
+    debugParts.push(`mem_vmas=${vmaLen}`);
+    for (let i = 0; i < Math.min(vmaLen, 4); i += 1) {
+      debugParts.push(
+        `mem_vma${i}=0x${exports.debug_memory_vma_start?.(i).toString(16) ?? "0"}-0x${exports.debug_memory_vma_end?.(i).toString(16) ?? "0"}` +
+        `:${exports.debug_memory_vma_prot?.(i) ?? "n/a"}/${exports.debug_memory_vma_flags?.(i) ?? "n/a"}`,
+      );
+    }
+  }
   const guestMemAddr = exports.debug_guest_mem_last_addr?.();
   if (guestMemAddr !== undefined && guestMemAddr !== 0n) {
     debugParts.push(`guest_mem_addr=0x${formatU64(guestMemAddr)}`);

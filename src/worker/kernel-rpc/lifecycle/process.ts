@@ -36,6 +36,8 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     }
     handle.kernelState = adoptKernelState(handle.kernelState, response.kernelState);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
+    handle.kernelState = readKernelRuntimeState(handle.kernel);
+    attachKernelRuntimeState(handle.kernel, handle.kernelState);
   }
 
   async function initializeProcessLifecycleViaKernelWorker(

@@ -17,25 +17,26 @@ export function createKernelWorkerMemfsPrimitives() {
   ): void {
     const includeData = options.includeData ?? true;
     const sourceLayout = readMemfsLayout(sourceExports.memory, sourceState.memfsPtr);
+    const targetLayout = readMemfsLayout(targetExports.memory, targetState.memfsPtr);
     copyMemoryRange(
       sourceExports.memory,
       sourceLayout.inodesPtr,
       targetExports.memory,
-      sourceLayout.inodesPtr,
+      targetLayout.inodesPtr,
       sourceExports.kernel_memfs_inodes_bytes(),
     );
     copyMemoryRange(
       sourceExports.memory,
       sourceLayout.firstChildPtr,
       targetExports.memory,
-      sourceLayout.firstChildPtr,
+      targetLayout.firstChildPtr,
       sourceExports.kernel_memfs_first_child_bytes(),
     );
     copyMemoryRange(
       sourceExports.memory,
       sourceLayout.dirEntriesPtr,
       targetExports.memory,
-      sourceLayout.dirEntriesPtr,
+      targetLayout.dirEntriesPtr,
       sourceExports.kernel_memfs_dir_entries_bytes(),
     );
     if (includeData) {
@@ -43,7 +44,7 @@ export function createKernelWorkerMemfsPrimitives() {
         sourceExports.memory,
         sourceLayout.dataPtr,
         targetExports.memory,
-        sourceLayout.dataPtr,
+        targetLayout.dataPtr,
         sourceLayout.dataCap,
       );
     } else {
@@ -61,8 +62,17 @@ export function createKernelWorkerMemfsPrimitives() {
       targetState.memfsPtr,
       sourceExports.kernel_memfs_header_bytes(),
     );
+    const targetHeader = new DataView(targetExports.memory.buffer, targetState.memfsPtr, 32);
+    targetHeader.setUint32(0, sourceLayout.inodeCount, true);
+    targetHeader.setUint32(4, sourceLayout.dirEntryCount, true);
+    targetHeader.setUint32(8, includeData ? Math.min(sourceLayout.dataUsed, targetLayout.dataCap) : 8, true);
+    targetHeader.setUint32(12, targetLayout.dataCap, true);
+    targetHeader.setUint32(16, targetLayout.inodesPtr, true);
+    targetHeader.setUint32(20, targetLayout.firstChildPtr, true);
+    targetHeader.setUint32(24, targetLayout.dirEntriesPtr, true);
+    targetHeader.setUint32(28, targetLayout.dataPtr, true);
     if (!includeData) {
-      normalizeMetadataOnlyMemfsState(targetExports, targetState, sourceLayout);
+      normalizeMetadataOnlyMemfsState(targetExports, targetState, sourceLayout, targetLayout);
     }
   }
 

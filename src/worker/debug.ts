@@ -38,6 +38,26 @@ function formatThreadDebug(handle: ProcessHandle, vmPtr: number): string {
   return parts.join(" ");
 }
 
+function readGuestCString(handle: ProcessHandle, addr: bigint | number): string | null {
+  const ptr = typeof addr === "bigint" ? Number(addr) : addr;
+  if (!Number.isFinite(ptr) || ptr <= 0) {
+    return null;
+  }
+  const bytes = new Uint8Array(handle.memory.buffer);
+  const out: number[] = [];
+  for (let i = 0; i < 256; i += 1) {
+    const value = bytes[handle.guestBase + ptr + i];
+    if (value === undefined) {
+      return null;
+    }
+    if (value === 0) {
+      return decoder.decode(new Uint8Array(out));
+    }
+    out.push(value);
+  }
+  return null;
+}
+
 export function debugRuntimeProcessHandles(
   runtimeId: number,
   processHandles: Map<number, ProcessHandle>,
@@ -137,6 +157,15 @@ export function debugRuntimeProcessHandles(
       const runningState = handle.runningWorker ? threadWorkerStates.get(handle.runningWorker) : undefined;
       const runningVmPtr = runningState?.vmPtr ?? 0;
       const runningDebug = runningVmPtr !== 0 ? formatThreadDebug(handle, runningVmPtr) : "n/a";
+      const stackWord0 = handle.kernel.thread_stack_word?.(handle.vmPtr, 0) ?? 0n;
+      const stackWord1 = handle.kernel.thread_stack_word?.(handle.vmPtr, 1) ?? 0n;
+      const stackWord2 = handle.kernel.thread_stack_word?.(handle.vmPtr, 2) ?? 0n;
+      const stackWord3 = handle.kernel.thread_stack_word?.(handle.vmPtr, 3) ?? 0n;
+      const stackWord4 = handle.kernel.thread_stack_word?.(handle.vmPtr, 4) ?? 0n;
+      const stackWord5 = handle.kernel.thread_stack_word?.(handle.vmPtr, 5) ?? 0n;
+      const argv0 = readGuestCString(handle, stackWord1);
+      const argv1 = readGuestCString(handle, stackWord2);
+      const env0 = readGuestCString(handle, stackWord4);
       const allThreadDebug = Array.from({ length: handle.kernel.abi_max_threads() }, (_value, slot) => {
         const threadVmPtr = handle.kernel.process_thread_vm_ptr(handle.vmPtr, slot);
         if (threadVmPtr === 0) {
@@ -164,8 +193,23 @@ export function debugRuntimeProcessHandles(
         `shared_ofds=[${[...handle.kernelShare.sharedOfdIds].sort((left, right) => left - right).join(",")}]`,
         `ofd_table=0x${handle.kernelState.ofdTablePtr.toString(16)}`,
         `memfs=0x${handle.kernelState.memfsPtr.toString(16)}`,
+        `memfs_data=0x${handle.kernel.kernel_memfs_data_ptr?.().toString(16) ?? "n/a"}`,
+        `memfs_data_bytes=${handle.kernel.kernel_memfs_data_bytes?.().toString() ?? "n/a"}`,
+        `mem_state=0x${handle.kernelState.memStatePtr.toString(16)}`,
         `pipe=0x${handle.kernelState.pipeBase.toString(16)}`,
         `process_runtime=0x${handle.kernelState.processRuntimeStatePtr.toString(16)}`,
+        `mem_brk_base=${handle.kernel.debug_memory_brk_base?.().toString() ?? "n/a"}`,
+        `mem_brk_current=${handle.kernel.debug_memory_brk_current?.().toString() ?? "n/a"}`,
+        `mem_mmap_next=${handle.kernel.debug_memory_mmap_next?.().toString() ?? "n/a"}`,
+        `stack0=${stackWord0.toString()}`,
+        `stack1=0x${stackWord1.toString(16)}`,
+        `stack2=0x${stackWord2.toString(16)}`,
+        `stack3=0x${stackWord3.toString(16)}`,
+        `stack4=0x${stackWord4.toString(16)}`,
+        `stack5=0x${stackWord5.toString(16)}`,
+        `argv0=${argv0 === null ? "n/a" : JSON.stringify(argv0)}`,
+        `argv1=${argv1 === null ? "n/a" : JSON.stringify(argv1)}`,
+        `env0=${env0 === null ? "n/a" : JSON.stringify(env0)}`,
         `worker_log=[${handle.workerDebugLog.join(", ")}]`,
         `fds=[${fdSummary}]`,
         `ofds=[${ofdSummary}]`,

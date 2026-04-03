@@ -139,22 +139,23 @@ export function normalizeMetadataOnlyMemfsState(
   targetExports: KernelExports,
   targetState: KernelRuntimeState,
   sourceLayout: MemfsLayout,
+  targetLayout: MemfsLayout,
 ): void {
   const header = new DataView(targetExports.memory.buffer, targetState.memfsPtr, 32);
   header.setUint32(MEMFS_HEADER_OFF_INODE_COUNT, sourceLayout.inodeCount, true);
   header.setUint32(MEMFS_HEADER_OFF_DIR_ENTRY_COUNT, sourceLayout.dirEntryCount, true);
   header.setUint32(MEMFS_HEADER_OFF_DATA_USED, 8, true);
-  header.setUint32(MEMFS_HEADER_OFF_DATA_CAP, targetExports.kernel_memfs_data_bytes(), true);
-  header.setUint32(MEMFS_HEADER_OFF_INODES_PTR, targetExports.kernel_memfs_inodes_ptr(), true);
-  header.setUint32(MEMFS_HEADER_OFF_FIRST_CHILD_PTR, targetExports.kernel_memfs_first_child_ptr(), true);
-  header.setUint32(MEMFS_HEADER_OFF_DIR_ENTRIES_PTR, targetExports.kernel_memfs_dir_entries_ptr(), true);
-  header.setUint32(MEMFS_HEADER_OFF_DATA_PTR, targetExports.kernel_memfs_data_ptr(), true);
+  header.setUint32(MEMFS_HEADER_OFF_DATA_CAP, targetLayout.dataCap, true);
+  header.setUint32(MEMFS_HEADER_OFF_INODES_PTR, targetLayout.inodesPtr, true);
+  header.setUint32(MEMFS_HEADER_OFF_FIRST_CHILD_PTR, targetLayout.firstChildPtr, true);
+  header.setUint32(MEMFS_HEADER_OFF_DIR_ENTRIES_PTR, targetLayout.dirEntriesPtr, true);
+  header.setUint32(MEMFS_HEADER_OFF_DATA_PTR, targetLayout.dataPtr, true);
 
   const maxInodes = targetExports.kernel_memfs_first_child_bytes() / 4;
   const inodeBytes = targetExports.kernel_memfs_inodes_bytes() / maxInodes;
   const inodeView = new DataView(targetExports.memory.buffer);
   for (let ino = 1; ino < sourceLayout.inodeCount; ino++) {
-    const inodeBase = targetExports.kernel_memfs_inodes_ptr() + ino * inodeBytes;
+    const inodeBase = targetLayout.inodesPtr + ino * inodeBytes;
     const mode = inodeView.getUint32(inodeBase + MEMFS_INODE_OFF_MODE, true);
     if ((mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG) {
       continue;
