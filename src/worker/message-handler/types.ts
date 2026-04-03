@@ -6,7 +6,7 @@ export type ThreadWorkerStatusMessage = Extract<ThreadWorkerOutbound, { type: "s
 export interface WorkerMessageHandlerDeps {
   processHandles: Map<number, ProcessHandle>;
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
-  legacyOkSyncEffects: number;
+  statusOkCompletedSyncEffects: number;
   syncEffectPipeState: number;
   syncEffectSocketState: number;
   syncEffectEpollState: number;

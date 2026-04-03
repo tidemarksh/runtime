@@ -14,6 +14,20 @@ function readOptionalTraceU64(value: bigint | number | undefined): bigint {
   return typeof value === "bigint" ? value : BigInt(value);
 }
 
+function readOptionalThreadU64(
+  reader: ((vmPtr: number) => bigint) | undefined,
+  vmPtr: number,
+): bigint {
+  return reader?.(vmPtr) ?? 0n;
+}
+
+function readOptionalThreadI32(
+  reader: ((vmPtr: number) => number) | undefined,
+  vmPtr: number,
+): number {
+  return reader?.(vmPtr) ?? 0;
+}
+
 function formatWriteTraceBytes(exports: KernelExports): string | null {
   const ptr = exports.debug_write_trace_ptr?.() ?? 0;
   const len = exports.debug_write_trace_len?.() ?? 0;
@@ -44,27 +58,27 @@ export function clearSyscallTrace(exports: KernelExports): void {
 
 export function collectDebugParts(exports: KernelExports, vmPtr: number): string[] {
   const debugParts: string[] = [];
-  debugParts.push(`tid=${exports.thread_tid(vmPtr)}`);
-  debugParts.push(`gp=0x${formatU64(exports.thread_gp(vmPtr))}`);
-  debugParts.push(`tp=0x${formatU64(exports.thread_tp(vmPtr))}`);
-  debugParts.push(`g=0x${formatU64(exports.thread_g(vmPtr))}`);
-  debugParts.push(`tls=0x${formatU64(exports.thread_tls_base(vmPtr))}`);
-  debugParts.push(`sig_mask=0x${formatU64(exports.thread_sig_mask(vmPtr))}`);
+  debugParts.push(`tid=${readOptionalThreadI32(exports.thread_tid, vmPtr)}`);
+  debugParts.push(`gp=0x${formatU64(readOptionalThreadU64(exports.thread_gp, vmPtr))}`);
+  debugParts.push(`tp=0x${formatU64(readOptionalThreadU64(exports.thread_tp, vmPtr))}`);
+  debugParts.push(`x27=0x${formatU64(readOptionalThreadU64(exports.thread_x27, vmPtr))}`);
+  debugParts.push(`tls=0x${formatU64(readOptionalThreadU64(exports.thread_tls_base, vmPtr))}`);
+  debugParts.push(`sig_mask=0x${formatU64(readOptionalThreadU64(exports.thread_sig_mask, vmPtr))}`);
   debugParts.push(`sig_pending=0x${formatU64(exports.thread_sig_pending(vmPtr))}`);
-  debugParts.push(`sig_code=${exports.thread_sig_info_code(vmPtr)}`);
-  debugParts.push(`fault_pc=0x${formatU64(exports.thread_fault_pc(vmPtr))}`);
-  debugParts.push(`fault_addr=0x${formatU64(exports.thread_fault_addr(vmPtr))}`);
+  debugParts.push(`sig_code=${readOptionalThreadI32(exports.thread_sig_info_code, vmPtr)}`);
+  debugParts.push(`fault_pc=0x${formatU64(readOptionalThreadU64(exports.thread_fault_pc, vmPtr))}`);
+  debugParts.push(`fault_addr=0x${formatU64(readOptionalThreadU64(exports.thread_fault_addr, vmPtr))}`);
   debugParts.push(`pc=0x${exports.thread_pc(vmPtr).toString(16)}`);
-  debugParts.push(`ra=0x${exports.thread_ra(vmPtr).toString(16)}`);
+  debugParts.push(`ra=0x${readOptionalThreadU64(exports.thread_ra, vmPtr).toString(16)}`);
   debugParts.push(`sp=0x${exports.thread_sp(vmPtr).toString(16)}`);
-  debugParts.push(`stk0=0x${exports.thread_stack_word(vmPtr, 0).toString(16)}`);
-  debugParts.push(`stk1=0x${exports.thread_stack_word(vmPtr, 1).toString(16)}`);
-  debugParts.push(`stk4=0x${exports.thread_stack_word(vmPtr, 4).toString(16)}`);
-  debugParts.push(`stk8=0x${exports.thread_stack_word(vmPtr, 8).toString(16)}`);
-  debugParts.push(`stk10=0x${exports.thread_stack_word(vmPtr, 10).toString(16)}`);
-  debugParts.push(`stk14=0x${exports.thread_stack_word(vmPtr, 14).toString(16)}`);
-  debugParts.push(`stk18=0x${exports.thread_stack_word(vmPtr, 18).toString(16)}`);
-  debugParts.push(`stk19=0x${exports.thread_stack_word(vmPtr, 19).toString(16)}`);
+  debugParts.push(`stk0=0x${readOptionalThreadU64((ptr) => exports.thread_stack_word?.(ptr, 0) ?? 0n, vmPtr).toString(16)}`);
+  debugParts.push(`stk1=0x${readOptionalThreadU64((ptr) => exports.thread_stack_word?.(ptr, 1) ?? 0n, vmPtr).toString(16)}`);
+  debugParts.push(`stk4=0x${readOptionalThreadU64((ptr) => exports.thread_stack_word?.(ptr, 4) ?? 0n, vmPtr).toString(16)}`);
+  debugParts.push(`stk8=0x${readOptionalThreadU64((ptr) => exports.thread_stack_word?.(ptr, 8) ?? 0n, vmPtr).toString(16)}`);
+  debugParts.push(`stk10=0x${readOptionalThreadU64((ptr) => exports.thread_stack_word?.(ptr, 10) ?? 0n, vmPtr).toString(16)}`);
+  debugParts.push(`stk14=0x${readOptionalThreadU64((ptr) => exports.thread_stack_word?.(ptr, 14) ?? 0n, vmPtr).toString(16)}`);
+  debugParts.push(`stk18=0x${readOptionalThreadU64((ptr) => exports.thread_stack_word?.(ptr, 18) ?? 0n, vmPtr).toString(16)}`);
+  debugParts.push(`stk19=0x${readOptionalThreadU64((ptr) => exports.thread_stack_word?.(ptr, 19) ?? 0n, vmPtr).toString(16)}`);
   debugParts.push(`a0=${exports.thread_a0(vmPtr).toString()}`);
   debugParts.push(`a1=${exports.thread_a1(vmPtr).toString()}`);
   const syscallNr = exports.debug_syscall_trace_nr?.();
@@ -130,7 +144,7 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number): string
     debugParts.push(`sig_pc=0x${formatU64(exports.debug_signal_delivery_pc?.() ?? 0n)}`);
     debugParts.push(`sig_ra=0x${formatU64(exports.debug_signal_delivery_ra?.() ?? 0n)}`);
     debugParts.push(`sig_sp=0x${formatU64(exports.debug_signal_delivery_sp?.() ?? 0n)}`);
-    debugParts.push(`sig_g=0x${formatU64(exports.debug_signal_delivery_g?.() ?? 0n)}`);
+    debugParts.push(`sig_x27=0x${formatU64(exports.debug_signal_delivery_x27?.() ?? 0n)}`);
   }
   const sigreturnPc = exports.debug_sigreturn_pc?.();
   if (sigreturnPc !== undefined && sigreturnPc !== 0n) {
@@ -138,7 +152,7 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number): string
     debugParts.push(`sigret_pc=0x${formatU64(sigreturnPc)}`);
     debugParts.push(`sigret_ra=0x${formatU64(exports.debug_sigreturn_ra?.() ?? 0n)}`);
     debugParts.push(`sigret_sp=0x${formatU64(exports.debug_sigreturn_sp?.() ?? 0n)}`);
-    debugParts.push(`sigret_g=0x${formatU64(exports.debug_sigreturn_g?.() ?? 0n)}`);
+    debugParts.push(`sigret_x27=0x${formatU64(exports.debug_sigreturn_x27?.() ?? 0n)}`);
   }
   const cloneSpawnTid = exports.debug_clone_spawn_tid?.();
   if (cloneSpawnTid !== undefined && cloneSpawnTid !== 0) {
@@ -146,7 +160,7 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number): string
     debugParts.push(`clone_pc=0x${formatU64(exports.debug_clone_spawn_pc?.() ?? 0n)}`);
     debugParts.push(`clone_ra=0x${formatU64(exports.debug_clone_spawn_ra?.() ?? 0n)}`);
     debugParts.push(`clone_sp=0x${formatU64(exports.debug_clone_spawn_sp?.() ?? 0n)}`);
-    debugParts.push(`clone_g=0x${formatU64(exports.debug_clone_spawn_g?.() ?? 0n)}`);
+    debugParts.push(`clone_x27=0x${formatU64(exports.debug_clone_spawn_x27?.() ?? 0n)}`);
   }
   const trampolineTid = exports.debug_signal_trampoline_hit_tid?.();
   if (trampolineTid !== undefined && trampolineTid !== 0) {
@@ -202,15 +216,17 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number): string
     debugParts.push(`zero_reg=${exports.debug_zero_reg_index?.() ?? "n/a"}`);
     debugParts.push(`zero_reg_prev=0x${formatU64(exports.debug_zero_reg_prev_value?.() ?? 0n)}`);
     debugParts.push(`zero_reg_sp=0x${formatU64(exports.debug_zero_reg_sp?.() ?? 0n)}`);
-    debugParts.push(`zero_reg_g=0x${formatU64(exports.debug_zero_reg_g?.() ?? 0n)}`);
+    debugParts.push(`zero_reg_x27=0x${formatU64(exports.debug_zero_reg_x27?.() ?? 0n)}`);
   }
-  const gWritePc = exports.debug_g_write_pc?.();
-  if (gWritePc !== undefined && gWritePc !== 0n) {
-    debugParts.push(`g_write_pc=0x${formatU64(gWritePc)}`);
-    debugParts.push(`g_write_raw=0x${(exports.debug_g_write_raw?.() ?? 0).toString(16)}`);
-    debugParts.push(`g_write_src=${exports.debug_g_write_source?.() ?? "n/a"}`);
-    debugParts.push(`g_write_prev=0x${formatU64(exports.debug_g_write_prev_value?.() ?? 0n)}`);
-    debugParts.push(`g_write=0x${formatU64(exports.debug_g_write_value?.() ?? 0n)}`);
+  const x27WritePc = exports.debug_x27_write_pc?.();
+  if (x27WritePc !== undefined && x27WritePc !== 0n) {
+    debugParts.push(`x27_write_pc=0x${formatU64(x27WritePc)}`);
+    debugParts.push(`x27_write_raw=0x${(exports.debug_x27_write_raw?.() ?? 0).toString(16)}`);
+    debugParts.push(`x27_write_src=${exports.debug_x27_write_source?.() ?? "n/a"}`);
+    debugParts.push(
+      `x27_write_prev=0x${formatU64(exports.debug_x27_write_prev_value?.() ?? 0n)}`,
+    );
+    debugParts.push(`x27_write=0x${formatU64(exports.debug_x27_write_value?.() ?? 0n)}`);
   }
   const spWritePc = exports.debug_sp_write_pc?.();
   if (spWritePc !== undefined && spWritePc !== 0n) {

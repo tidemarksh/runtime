@@ -259,7 +259,7 @@ const SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE = 1 << 3;
 const SYNC_EFFECT_PROCESS_LIFECYCLE = 1 << 4;
 const SYNC_EFFECT_SIGNAL_WAITERS = 1 << 5;
 const SYNC_EFFECT_FORK_SHARED_OFD_STATE = 1 << 6;
-const LEGACY_OK_SYNC_EFFECTS = SYNC_EFFECT_PIPE_STATE
+const STATUS_OK_COMPLETED_SYNC_EFFECTS = SYNC_EFFECT_PIPE_STATE
   | SYNC_EFFECT_SOCKET_STATE
   | SYNC_EFFECT_EPOLL_STATE
   | SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE
@@ -276,7 +276,7 @@ async function ensureCompiledModule(wasmBytes: BufferSource): Promise<WebAssembl
 handleWorkerMessageImpl = createWorkerMessageHandler({
   processHandles,
   threadWorkerStates,
-  legacyOkSyncEffects: LEGACY_OK_SYNC_EFFECTS,
+  statusOkCompletedSyncEffects: STATUS_OK_COMPLETED_SYNC_EFFECTS,
   syncEffectPipeState: SYNC_EFFECT_PIPE_STATE,
   syncEffectSocketState: SYNC_EFFECT_SOCKET_STATE,
   syncEffectEpollState: SYNC_EFFECT_EPOLL_STATE,

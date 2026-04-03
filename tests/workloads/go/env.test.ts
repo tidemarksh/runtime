@@ -3,6 +3,8 @@ import {
   goEnv,
   goVersionEnv,
   prepareGoRuntime,
+} from "./support.js";
+import {
   runtimeDebugSummary,
   spawnWithOutput,
 } from "../../support/runtime-workload.js";

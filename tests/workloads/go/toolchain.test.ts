@@ -1,11 +1,12 @@
 import { expect, test } from "vite-plus/test";
 import {
-  GO_TOOLCHAIN_DIR,
   SAMPLE_MODULE_DIR,
-  encoder,
   goEnv,
   prepareGoRuntime,
   readGoToolBinary,
+} from "./support.js";
+import {
+  encoder,
   runtimeDebugSummary,
   spawnWithOutput,
 } from "../../support/runtime-workload.js";

@@ -50,7 +50,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
 
     const status = msg.status;
     const completedSyncEffects = msg.syncEffects ?? (
-      status === handle.kernel.abi_status_ok() ? deps.legacyOkSyncEffects : 0
+      status === handle.kernel.abi_status_ok() ? deps.statusOkCompletedSyncEffects : 0
     );
     const continueAfterOwnedStateSync = (): void => {
       handleStatusTransition({

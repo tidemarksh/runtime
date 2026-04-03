@@ -4,6 +4,8 @@ import {
   goEnv,
   prepareGoRuntime,
   readGoExecCaptureHelperBinary,
+} from "./support.js";
+import {
   runtimeDebugSummary,
   spawnWithOutput,
 } from "../../support/runtime-workload.js";

@@ -1,10 +1,12 @@
 import { expect, test } from "vite-plus/test";
 import {
   SAMPLE_MODULE_DIR,
-  RuntimeProcess,
-  decoder,
   goEnv,
   prepareGoRuntime,
+} from "./support.js";
+import {
+  type RuntimeProcess,
+  decoder,
   runtimeDebugSummary,
 } from "../../support/runtime-workload.js";
 
