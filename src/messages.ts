@@ -30,6 +30,14 @@ export interface KernelWorkerPidBytesSnapshot {
 
 export type ThreadWorkerInbound =
   | {
+      type: "prepare";
+      wasmModule: WebAssembly.Module;
+      memory: WebAssembly.Memory;
+      sabPageCache: SharedArrayBuffer | null;
+      runtimeNotify: SharedArrayBuffer;
+      runtimeState: SharedArrayBuffer;
+    }
+  | {
       type: "init";
       wasmModule: WebAssembly.Module;
       memory: WebAssembly.Memory;
@@ -49,6 +57,11 @@ export type ThreadWorkerInbound =
 // ============================================================================
 // thread-worker outbound (thread-worker -> process owner)
 // ============================================================================
+
+export interface ThreadWorkerPreparedMessage {
+  type: "prepared";
+  wasmFeatures: WasmFeatureSupport;
+}
 
 export interface ThreadWorkerReadyMessage {
   type: "ready";
@@ -77,6 +90,7 @@ export interface ThreadWorkerErrorMessage {
 }
 
 export type ThreadWorkerOutbound =
+  | ThreadWorkerPreparedMessage
   | ThreadWorkerReadyMessage
   | ThreadWorkerStatusMessage
   | ThreadWorkerErrorMessage
@@ -121,6 +135,7 @@ export type KernelWorkerRequest =
     }
   | {
       type: "snapshot-fs";
+      includeData?: boolean;
     }
   | {
       type: "load-fs-snapshot";

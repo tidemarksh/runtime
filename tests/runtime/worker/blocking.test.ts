@@ -35,6 +35,12 @@ class FakeWorker {
     readonly _options: WorkerOptions,
   ) {}
   postMessage(message: ThreadWorkerInbound): void {
+    if (message.type === "prepare") {
+      queueMicrotask(() => {
+        this.onmessage?.({ data: { type: "prepared", wasmFeatures: {} } as ThreadWorkerOutbound } as MessageEvent<ThreadWorkerOutbound>);
+      });
+      return;
+    }
     this.postedMessages.push(message);
   }
   terminate(): void { this.terminated = true; }

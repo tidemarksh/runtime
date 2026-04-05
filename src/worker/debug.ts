@@ -7,6 +7,10 @@ import type {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+function debugScratchBase(handle: ProcessHandle): number {
+  return (handle.kernel.kernel_scratch_base?.() ?? (handle.kernel.kernel_heap_ptr() + 0x10000));
+}
+
 function formatThreadDebug(handle: ProcessHandle, vmPtr: number): string {
   const tid = handle.kernel.thread_tid?.(vmPtr) ?? 0;
   const pc = handle.kernel.thread_pc?.(vmPtr) ?? 0n;
@@ -14,6 +18,10 @@ function formatThreadDebug(handle: ProcessHandle, vmPtr: number): string {
   const sp = handle.kernel.thread_sp?.(vmPtr) ?? 0n;
   const a0 = handle.kernel.thread_a0?.(vmPtr) ?? 0n;
   const a1 = handle.kernel.thread_a1?.(vmPtr) ?? 0n;
+  const exitCode = handle.kernel.thread_exit_code?.(vmPtr) ?? 0;
+  const termSignal = handle.kernel.thread_term_signal?.(vmPtr) ?? 0;
+  const faultPc = handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n;
+  const faultAddr = handle.kernel.thread_fault_addr?.(vmPtr) ?? 0n;
   const sigPending = handle.kernel.thread_sig_pending?.(vmPtr) ?? 0n;
   const parts = [
     `tid=${tid}`,
@@ -22,6 +30,10 @@ function formatThreadDebug(handle: ProcessHandle, vmPtr: number): string {
     `sp=0x${sp.toString(16)}`,
     `a0=${a0.toString()}`,
     `a1=${a1.toString()}`,
+    `exit=${exitCode}`,
+    `sig=${termSignal}`,
+    `fault_pc=0x${faultPc.toString(16)}`,
+    `fault_addr=0x${faultAddr.toString(16)}`,
     `sig_pending=0x${sigPending.toString(16)}`,
   ];
   const syscallNr = handle.kernel.debug_syscall_trace_nr?.();
@@ -128,13 +140,27 @@ export function debugRuntimeProcessHandles(
         }
         return `${ofdId}:${type}/${handle.kernel.kernel_ofd_ino(ofdId)}/${handle.kernel.kernel_ofd_host_fd(ofdId)}/rc=${handle.kernel.kernel_ofd_refcount(ofdId)}`;
       }).filter(Boolean).join(" ");
+      const epollTable = new Uint32Array(
+        handle.memory.buffer,
+        handle.kernelState.epollTablePtr,
+        handle.kernel.kernel_epoll_table_bytes() >>> 2,
+      );
+      const epollSummary = Array.from({ length: 16 }, (_value, ofdId) => {
+        if (ofdId === 0) {
+          return null;
+        }
+        const type = handle.kernel.kernel_ofd_fd_type(ofdId);
+        if (type !== handle.kernel.abi_fd_type_epoll()) {
+          return null;
+        }
+        const ino = handle.kernel.kernel_ofd_ino(ofdId);
+        const ptr = ino >= 0 && ino < epollTable.length ? epollTable[ino] ?? 0 : 0;
+        return `${ofdId}:${ino}->0x${ptr.toString(16)}`;
+      }).filter(Boolean).join(" ");
       let procSelfExe = "unavailable";
       try {
         const pathBytes = encoder.encode("/proc/self/exe");
-        const scratchBase = handle.kernel.kernel_scratch_base?.();
-        if (scratchBase === undefined) {
-          throw new Error("kernel_scratch_base unavailable");
-        }
+        const scratchBase = debugScratchBase(handle);
         const pathPtr = scratchBase;
         const bufPtr = scratchBase + 0x200;
         new Uint8Array(handle.kernel.memory.buffer, pathPtr, pathBytes.length).set(pathBytes);
@@ -213,6 +239,7 @@ export function debugRuntimeProcessHandles(
         `worker_log=[${handle.workerDebugLog.join(", ")}]`,
         `fds=[${fdSummary}]`,
         `ofds=[${ofdSummary}]`,
+        `epolls=[${epollSummary}]`,
         `proc_self_exe=${procSelfExe}`,
         `running_vm=${runningVmPtr === 0 ? "0x0" : `0x${runningVmPtr.toString(16)}`}`,
         `running_debug=${JSON.stringify(runningDebug)}`,

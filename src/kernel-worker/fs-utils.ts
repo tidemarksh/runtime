@@ -70,6 +70,18 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
     targetExports.memfs_create_symlink(selfIno, exeNamePtr, exeName.length, targetPtr, target.length);
   }
 
+  function restoreProcfsSnapshot(targetExports: KernelExports, target: Uint8Array | null): void {
+    if (!target || target.length === 0) {
+      return;
+    }
+    if (targetExports.process_install_procfs_snapshot) {
+      const targetPtr = writeScratchFor(targetExports, target, 0x300);
+      targetExports.process_install_procfs_snapshot(targetPtr, target.length);
+      return;
+    }
+    restoreProcSelfExe(targetExports, target);
+  }
+
   function copyCanonicalMemfsToProcess(
     canonicalState: KernelRuntimeState,
     targetExports: KernelExports,
@@ -84,7 +96,7 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
       targetState,
       options,
     );
-    restoreProcSelfExe(targetExports, procSelfExe);
+    restoreProcfsSnapshot(targetExports, procSelfExe);
   }
 
   function formatProcessDebug(processExports: KernelExports, vmPtr: number): string {
@@ -249,6 +261,7 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
     formatProcessDebug,
     publishRootInode,
     resolvePathIn,
+    restoreProcfsSnapshot,
     restoreProcSelfExe,
     snapshotProcSelfExe,
     upsertDirSeed,

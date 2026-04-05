@@ -4,15 +4,17 @@ import { createKernelWorkerFsUtils } from "../../../src/kernel-worker/fs-utils.j
 
 type MemfsEntry = {
   ino: number;
-  kind: "dir" | "symlink";
+  kind: "dir" | "file" | "symlink";
   mode: number;
   target?: Uint8Array;
 };
 
 type FakeMemfsExports = KernelExports & {
   entries: Map<string, MemfsEntry>;
-  ensurePath(path: string, kind: "dir" | "symlink", mode?: number, target?: Uint8Array): void;
+  ensurePath(path: string, kind: "dir" | "file" | "symlink", mode?: number, target?: Uint8Array): void;
   linkTarget(path: string): string | null;
+  fileContents(path: string): string | null;
+  procfsInstallTargets: string[];
 };
 
 function normalizePath(path: string): string {
@@ -46,11 +48,12 @@ function makeMemfsExports(): FakeMemfsExports {
   let runtimeState = makeKernelState();
   const entries = new Map<string, MemfsEntry>();
   const byIno = new Map<number, string>();
+  const procfsInstallTargets: string[] = [];
   let nextIno = 2;
 
   const ensureEntry = (
     path: string,
-    kind: "dir" | "symlink",
+    kind: "dir" | "file" | "symlink",
     mode: number,
     target?: Uint8Array,
   ): number => {
@@ -92,6 +95,18 @@ function makeMemfsExports(): FakeMemfsExports {
     new Uint8Array(memory.buffer.slice(ptr, ptr + len));
   const decodeGuestPath = (ptr: number, len: number): string =>
     new TextDecoder().decode(readGuestBytes(ptr, len));
+  const ensurePath = (
+    path: string,
+    kind: "dir" | "file" | "symlink",
+    mode = kind === "dir" ? 0o040555 : kind === "file" ? 0o100444 : 0o120777,
+    target?: Uint8Array,
+  ): void => {
+    const normalized = normalizePath(path);
+    if (normalized !== "/") {
+      ensureDirPath(normalized.split("/").slice(0, -1).join("/") || "/", 0o555);
+    }
+    ensureEntry(normalized, kind, mode, target);
+  };
 
   ensureDirPath("/", 0o555);
 
@@ -199,22 +214,28 @@ function makeMemfsExports(): FakeMemfsExports {
       const target = readGuestBytes(targetPtr, targetLen);
       return ensureEntry(`${parentPath}/${name}`, "symlink", 0o120777, target);
     },
-    ensurePath: (
-      path: string,
-      kind: "dir" | "symlink",
-      mode = kind === "dir" ? 0o040555 : 0o120777,
-      target?: Uint8Array,
-    ) => {
-      const normalized = normalizePath(path);
-      if (normalized !== "/") {
-        ensureDirPath(normalized.split("/").slice(0, -1).join("/") || "/", 0o555);
-      }
-      ensureEntry(normalized, kind, mode, target);
+    process_install_procfs_snapshot: (targetPtr: number, targetLen: number) => {
+      const target = readGuestBytes(targetPtr, targetLen);
+      procfsInstallTargets.push(new TextDecoder().decode(target));
+      ensurePath("/proc", "dir", 0o040555);
+      ensurePath("/proc/self", "dir", 0o040555);
+      ensurePath("/proc/self/exe", "symlink", 0o120777, target);
+      ensurePath("/proc/stat", "file", 0o100444, new TextEncoder().encode("cpu  1 1 1 1 0 0 0 0 0 0\n"));
+      ensurePath("/proc/cpuinfo", "file", 0o100444, new TextEncoder().encode("processor\t: 0\n"));
     },
+    ensurePath,
     linkTarget: (path: string) => {
       const target = entries.get(normalizePath(path))?.target;
       return target ? new TextDecoder().decode(target) : null;
     },
+    fileContents: (path: string) => {
+      const entry = entries.get(normalizePath(path));
+      if (!entry || entry.kind !== "file" || !entry.target) {
+        return null;
+      }
+      return new TextDecoder().decode(entry.target);
+    },
+    procfsInstallTargets,
   };
 
   return exports as unknown as FakeMemfsExports;
@@ -254,6 +275,9 @@ test("copyCanonicalMemfsToProcess rehydrates /proc/self/exe after canonical memf
   fsUtils.copyCanonicalMemfsToProcess(makeKernelState(), childExports, makeKernelState());
 
   expect(childExports.linkTarget("/proc/self/exe")).toBe("/bin/child-a");
+  expect(childExports.fileContents("/proc/stat")).not.toBeNull();
+  expect(childExports.fileContents("/proc/cpuinfo")).not.toBeNull();
+  expect(childExports.procfsInstallTargets).toEqual(["/bin/child-a"]);
 });
 
 test("fanoutCanonicalMemfs preserves each process /proc/self/exe target while replacing canonical memfs", () => {

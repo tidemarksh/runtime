@@ -43,7 +43,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     deps.clearBlockedWorker(handle, worker);
     const wroteToPipe = flushStdin(handle);
     const drainedPipe = drainProcessOutput(handle);
-    publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
+    publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
     if (isRunningWorker) {
       handle.runningWorker = null;
     }

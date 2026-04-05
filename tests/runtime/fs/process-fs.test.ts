@@ -1,6 +1,7 @@
 import { expect, test } from "vite-plus/test";
 import {
   applyFsEntryToHandle,
+  preloadSnapshotEntries,
   resolveProcessCwdIno,
 } from "../../../src/worker/process-fs.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
@@ -19,6 +20,7 @@ type InodeRecord = {
 type FakeMemfsKernel = ProcessHandle["kernel"] & {
   createFileCalls: string[];
   recordsByPath: Map<string, InodeRecord>;
+  writePtrs: number[];
 };
 
 function normalizePath(path: string): string {
@@ -34,6 +36,7 @@ function makeMemfsKernel(): FakeMemfsKernel {
   const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
   const recordsByPath = new Map<string, InodeRecord>();
   const createFileCalls: string[] = [];
+  const writePtrs: number[] = [];
   const recordsByIno = new Map<number, InodeRecord>();
   let nextIno = 2;
 
@@ -75,6 +78,7 @@ function makeMemfsKernel(): FakeMemfsKernel {
       return recordsByPath.get(path)?.ino ?? 0;
     },
     memfs_inode_mode: (ino: number) => recordsByIno.get(ino)?.mode ?? 0,
+    memfs_file_size: (ino: number) => BigInt(recordsByIno.get(ino)?.data.length ?? 0),
     memfs_reserve_inode_until: (ino: number) => {
       if (ino >= nextIno) {
         nextIno = ino + 1;
@@ -124,7 +128,17 @@ function makeMemfsKernel(): FakeMemfsKernel {
       if (!record || record.kind !== "file") {
         return -1n;
       }
-      record.data = new Uint8Array(Number(size));
+      const nextSize = Number(size);
+      if (record.data.length === nextSize) {
+        return size;
+      }
+      if (record.data.length > nextSize) {
+        record.data = record.data.slice(0, nextSize);
+        return size;
+      }
+      const next = new Uint8Array(nextSize);
+      next.set(record.data);
+      record.data = next;
       return size;
     },
     memfs_write_file_at: (ino: number, offset: bigint, ptr: number, len: number) => {
@@ -132,6 +146,7 @@ function makeMemfsKernel(): FakeMemfsKernel {
       if (!record || record.kind !== "file") {
         return -1n;
       }
+      writePtrs.push(ptr);
       const required = Number(offset) + len;
       if (record.data.length < required) {
         const next = new Uint8Array(required);
@@ -151,6 +166,7 @@ function makeMemfsKernel(): FakeMemfsKernel {
     },
     createFileCalls,
     recordsByPath,
+    writePtrs,
   } as unknown as FakeMemfsKernel;
 }
 
@@ -235,7 +251,7 @@ test("resolveProcessCwdIno accepts directories and rejects missing or non-direct
   expect(fileIno).toBeGreaterThan(1);
 });
 
-test("applyFsEntryToHandle truncates existing files and updates mode and bytes", () => {
+test("applyFsEntryToHandle replaces existing file bytes and updates mode", () => {
   const kernel = makeMemfsKernel();
   const handle = makeHandle(kernel);
   const workIno = kernel.memfs_ensure_dir(1, (() => {
@@ -267,6 +283,23 @@ test("applyFsEntryToHandle truncates existing files and updates mode and bytes",
   expect(updated?.mode).toBe(0o100600);
 });
 
+test("preloadSnapshotEntries resizes files before writing full file data", () => {
+  const kernel = makeMemfsKernel();
+  let truncateCalls = 0;
+  kernel.memfs_truncate_file = () => {
+    truncateCalls += 1;
+    return 0n;
+  };
+
+  preloadSnapshotEntries(kernel, [
+    { kind: "dir", path: "/lib", mode: 0o755 },
+    { kind: "file", path: "/lib/libc.so.6", data: encoder.encode("abcdef"), mode: 0o755 },
+  ]);
+
+  expect(truncateCalls).toBe(1);
+  expect(kernel.recordsByPath.get("/lib/libc.so.6")?.data).toEqual(encoder.encode("abcdef"));
+});
+
 test("applyFsEntryToHandle creates missing parent directories for new files", () => {
   const kernel = makeMemfsKernel();
   const handle = makeHandle(kernel);
@@ -288,4 +321,17 @@ test("applyFsEntryToHandle creates missing parent directories for new files", ()
   expect(dirRecord?.path).toBe("/workspace/cache");
   expect(kernel.createFileCalls).toHaveLength(1);
   expect(kernel.createFileCalls[0]?.startsWith("/workspace/cache/")).toBe(true);
+});
+
+test("preloadSnapshotEntries reuses post-resize scratch for successive file payloads", () => {
+  const kernel = makeMemfsKernel();
+
+  preloadSnapshotEntries(kernel, [
+    { kind: "dir", path: "/bin", mode: 0o755 },
+    { kind: "file", path: "/bin/app", data: encoder.encode("alpha"), mode: 0o755 },
+    { kind: "file", path: "/bin/helper", data: encoder.encode("beta"), mode: 0o755 },
+  ]);
+
+  expect(kernel.writePtrs).toHaveLength(2);
+  expect(kernel.writePtrs[1]).toBe(kernel.writePtrs[0]);
 });

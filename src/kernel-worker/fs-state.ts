@@ -31,6 +31,22 @@ interface KernelWorkerFsStateDeps {
 export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   const MEMFS_S_IFDIR = 0o040000;
 
+  function replaceFileData(targetExports: KernelExports, ino: number, data: Uint8Array): void {
+    const truncateResult = Number(targetExports.memfs_truncate_file(ino, BigInt(data.length)));
+    if (truncateResult < 0) {
+      const mode = targetExports.memfs_inode_mode(ino);
+      throw new Error(`failed to resize inode: ino=${ino} mode=${mode.toString(8)} newSize=${data.length}`);
+    }
+    if (data.length > 0) {
+      const dataPtr = writeScratchFor(targetExports, data);
+      const written = Number(targetExports.memfs_write_file_at(ino, 0n, dataPtr, data.length));
+      if (written < 0 || written !== data.length) {
+        throw new Error(`failed to write inode: ${ino}`);
+      }
+    }
+    markMaterializedMemfsFile(targetExports, ino);
+  }
+
   function ensureDirectory(path: string, mode = 0o755): number {
     const targetExports = deps.getCanonicalExports();
     const parts = pathParts(path);
@@ -89,17 +105,10 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       throw new Error(`failed to create file: ${path}`);
     }
 
-    const truncateResult = Number(targetExports.memfs_truncate_file(ino, BigInt(data.length)));
-    if (truncateResult < 0) {
-      throw new Error(`failed to truncate file: ${path}`);
-    }
-
-    if (data.length > 0) {
-      const dataPtr = writeScratchFor(targetExports, data, fileBytes.length + 64);
-      const written = Number(targetExports.memfs_write_file_at(ino, 0n, dataPtr, data.length));
-      if (written < 0 || written !== data.length) {
-        throw new Error(`failed to write file: ${path}`);
-      }
+    try {
+      replaceFileData(targetExports, ino, data);
+    } catch (error) {
+      throw new Error(`failed to write file ${normalized}: ${error instanceof Error ? error.message : String(error)}`);
     }
     const chmodResult = Number(targetExports.memfs_set_mode(ino, fileMode));
     if (chmodResult < 0) {
@@ -201,21 +210,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   }
 
   function writeFileByInode(targetExports: KernelExports, ino: number, data: Uint8Array): void {
-    const truncateResult = Number(targetExports.memfs_truncate_file(ino, BigInt(data.length)));
-    if (truncateResult < 0) {
-      throw new Error(`failed to truncate inode: ${ino}`);
-    }
-
-    if (data.length === 0) {
-      return;
-    }
-
-    const dataPtr = writeScratchFor(targetExports, data);
-    const written = Number(targetExports.memfs_write_file_at(ino, 0n, dataPtr, data.length));
-    if (written < 0 || written !== data.length) {
-      throw new Error(`failed to write inode: ${ino}`);
-    }
-    markMaterializedMemfsFile(targetExports, ino);
+    replaceFileData(targetExports, ino, data);
   }
 
   function syncFileDataIntoTarget(
@@ -226,11 +221,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     published: ReturnType<typeof readInodeRecord>,
   ): void {
     ensurePublishedInodeInTarget(targetExports, ino, published);
-    const shallowResult = Number(targetExports.memfs_set_file_size_shallow(ino, BigInt(data.length)));
-    if (shallowResult < 0) {
-      ensurePublishedInodeInTarget(targetExports, ino, published);
-      writeFileByInode(targetExports, ino, data);
-    }
+    writeFileByInode(targetExports, ino, data);
     const modeResult = Number(targetExports.memfs_set_mode(ino, mode));
     if (modeResult < 0) {
       throw new Error(`failed to set inode mode: ${ino}`);

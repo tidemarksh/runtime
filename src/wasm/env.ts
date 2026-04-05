@@ -30,6 +30,9 @@ export function createKernelEnv(
       if (!meta) {
         return -2n;
       }
+      if (meta.dataOff === 0 && meta.size > 0) {
+        return -2n;
+      }
       const offsetNumber = Number(offset);
       if (!Number.isFinite(offsetNumber) || offsetNumber < 0 || offsetNumber >= meta.size) {
         return 0n;

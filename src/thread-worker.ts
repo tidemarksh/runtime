@@ -39,12 +39,9 @@ const FUTEX_WAIT_SLICE_MS = 10;
 
 let syscallNumbers: SyscallNumbers | null = null;
 
-async function init(
+async function prepare(
   wasmModule: WebAssembly.Module,
   memory: WebAssembly.Memory,
-  threadVmPtr: number,
-  threadGuestBase: number,
-  kernelState: KernelRuntimeState,
   sabPageCache: SharedArrayBuffer | null,
   _notifySab: SharedArrayBuffer,
   _stateSab: SharedArrayBuffer,
@@ -53,16 +50,31 @@ async function init(
     env: createKernelEnv(memory, { sabPageCache }),
   });
   exports = instance.exports as unknown as KernelExports;
-  attachKernelRuntimeState(exports, kernelState);
-  statusCodes = readStatusCodes(exports);
-  vmPtr = threadVmPtr;
-  guestBase = threadGuestBase;
   wasmFeatures = detectWasmFeatures();
-  syscallNumbers = loadSyscallNumbers(exports);
   runtimeBridge = {
     notifySab: _notifySab,
     stateSab: _stateSab,
   };
+}
+
+function attach(
+  threadVmPtr: number,
+  threadGuestBase: number,
+  kernelState: KernelRuntimeState,
+): void {
+  attachKernelRuntimeState(exports, kernelState);
+  statusCodes = readStatusCodes(exports);
+  vmPtr = threadVmPtr;
+  guestBase = threadGuestBase;
+  syscallNumbers = loadSyscallNumbers(exports);
+}
+
+function postPrepared(): void {
+  const msg: ThreadWorkerOutbound = {
+    type: "prepared",
+    wasmFeatures,
+  };
+  workerPostMessage(msg);
 }
 
 function reattachPublishedKernelRuntimeState(): void {
@@ -94,7 +106,7 @@ function postStatus(status: number, waitInWorker = false): void {
     kernelState: readKernelRuntimeState(exports),
     syncEffects: readCompletedSyncEffects(exports, statusCodes, status, syscallNumbers),
     debug: includeDebug ? (() => {
-      const parts = collectDebugParts(exports, vmPtr);
+      const parts = collectDebugParts(exports, vmPtr, guestBase);
       return parts.length === 0 ? undefined : parts.join(" ");
     })() : undefined,
   };
@@ -108,7 +120,7 @@ function postError(error: unknown): void {
   const msg: ThreadWorkerOutbound = {
     type: "error",
     vmPtr,
-    message: formatWorkerError(exports, vmPtr, error),
+    message: formatWorkerError(exports, vmPtr, guestBase, error),
   };
   workerPostMessage(msg);
 }
@@ -132,18 +144,32 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
   const msg = event.data;
 
   switch (msg.type) {
-    case "init":
+    case "prepare":
       try {
-        await init(
+        await prepare(
           msg.wasmModule,
           msg.memory,
-          msg.vmPtr,
-          msg.guestBase,
-          msg.kernelState,
           msg.sabPageCache,
           msg.runtimeNotify,
           msg.runtimeState,
         );
+        postPrepared();
+      } catch (error) {
+        postError(error);
+      }
+      break;
+    case "init":
+      try {
+        if (runtimeBridge === null) {
+          await prepare(
+            msg.wasmModule,
+            msg.memory,
+            msg.sabPageCache,
+            msg.runtimeNotify,
+            msg.runtimeState,
+          );
+        }
+        attach(msg.vmPtr, msg.guestBase, msg.kernelState);
         postReady();
       } catch (error) {
         postError(error);

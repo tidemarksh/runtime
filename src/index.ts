@@ -3,6 +3,8 @@ import {
   debugRuntimeProcessHandles,
   destroyProcessTree,
   destroyRuntimeProcesses,
+  publishRuntimeFsState,
+  replaceRuntimeFsSnapshot,
   destroyWorkerPool,
   injectHttpRequest,
   type ProcessHandle,
@@ -172,6 +174,8 @@ export class Runtime {
       type: "load-fs-snapshot",
       entries,
     });
+    publishRuntimeFsState(this.runtimeId, entries);
+    replaceRuntimeFsSnapshot(this.runtimeId, entries);
   }
 
   async writeFile(path: string, data: Uint8Array, mode?: number): Promise<void> {
@@ -181,6 +185,7 @@ export class Runtime {
       data,
       mode,
     });
+    await this.refreshRuntimeFsSnapshot();
   }
 
   async readFile(path: string): Promise<Uint8Array> {
@@ -199,6 +204,17 @@ export class Runtime {
       path,
       mode,
     });
+    await this.refreshRuntimeFsSnapshot();
+  }
+
+  private async refreshRuntimeFsSnapshot(): Promise<void> {
+    const response = await this.sendKernelRequest<
+      Extract<KernelWorkerOutbound, { type: "snapshot-fs-result" }>
+    >({
+      type: "snapshot-fs",
+    });
+    publishRuntimeFsState(this.runtimeId, response.entries);
+    replaceRuntimeFsSnapshot(this.runtimeId, response.entries);
   }
 
   async stat(path: string): Promise<RuntimeStat> {

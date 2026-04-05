@@ -1,8 +1,10 @@
 import type { KernelExports } from "../abi.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import {
+  alignUp,
   ensureKernelMemoryCapacity,
   kernelScratchBase,
+  writeDetachedKernelScratch,
   writeKernelScratch,
 } from "./kernel-scratch.js";
 import type { ProcessHandle } from "./types.js";
@@ -37,7 +39,41 @@ export function cloneSnapshotEntries(entries: FsSnapshotEntry[]): FsSnapshotEntr
   return entries.map(cloneSnapshotEntry);
 }
 
-export function preloadSnapshotEntries(exports: KernelExports, entries: FsSnapshotEntry[]): void {
+function writeSnapshotScratch(
+  exports: KernelExports,
+  scratchBase: number | undefined,
+  bytes: Uint8Array,
+  offset = 0,
+): number {
+  return scratchBase === undefined
+    ? writeKernelScratch(exports, bytes, offset)
+    : writeDetachedKernelScratch(exports, scratchBase, bytes, offset);
+}
+
+function replaceFileData(
+  exports: KernelExports,
+  ino: number,
+  data: Uint8Array,
+): boolean {
+  const truncateResult = Number(exports.memfs_truncate_file(ino, BigInt(data.length)));
+  if (truncateResult < 0) {
+    return false;
+  }
+  if (data.length > 0) {
+    const dataPtr = writeKernelScratch(exports, data);
+    const written = Number(exports.memfs_write_file_at(ino, 0n, dataPtr, data.length));
+    if (written < 0 || written !== data.length) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function preloadSnapshotEntries(
+  exports: KernelExports,
+  entries: FsSnapshotEntry[],
+  scratchBase?: number,
+): void {
   if (entries.length === 0) {
     return;
   }
@@ -52,7 +88,16 @@ export function preloadSnapshotEntries(exports: KernelExports, entries: FsSnapsh
     return left.path.localeCompare(right.path);
   });
 
+  let scratchOffset = 0;
+  const pathInos = new Map<string, number>([["/", 1]]);
+  const allocScratch = (bytes: Uint8Array): number => {
+    const ptr = writeSnapshotScratch(exports, scratchBase, bytes, scratchOffset);
+    scratchOffset = alignUp(scratchOffset + bytes.length, 16);
+    return ptr;
+  };
+
   for (const entry of ordered) {
+    const normalizedPath = normalizePath(entry.path);
     const parts = entry.path.split("/").filter(Boolean);
     if (parts.length === 0) {
       continue;
@@ -60,35 +105,49 @@ export function preloadSnapshotEntries(exports: KernelExports, entries: FsSnapsh
 
     const name = parts.pop()!;
     let parentIno = 1;
+    let parentPath = "/";
     for (const dir of parts) {
+      const nextPath = parentPath === "/" ? `/${dir}` : `${parentPath}/${dir}`;
+      const cachedDirIno = pathInos.get(nextPath);
+      if (cachedDirIno !== undefined) {
+        parentIno = cachedDirIno;
+        parentPath = nextPath;
+        continue;
+      }
       const dirBytes = encoder.encode(dir);
-      const dirPtr = writeKernelScratch(exports, dirBytes);
+      const dirPtr = allocScratch(dirBytes);
       parentIno = exports.memfs_ensure_dir(parentIno, dirPtr, dirBytes.length, 0o755);
       if (parentIno === 0) {
         break;
       }
+      pathInos.set(nextPath, parentIno);
+      parentPath = nextPath;
     }
     if (parentIno === 0) {
       continue;
     }
 
-    const existingIno = resolveMemfsPath(exports, entry.path);
     const nameBytes = encoder.encode(name);
-    const namePtr = writeKernelScratch(exports, nameBytes);
+    const namePtr = allocScratch(nameBytes);
     if (entry.kind === "dir") {
+      const existingIno = pathInos.get(normalizedPath) ?? 0;
       if (existingIno === 0 && entry.ino !== undefined && entry.ino > 1) {
         const reserveResult = Number(exports.memfs_reserve_inode_until(entry.ino));
         if (reserveResult < 0) {
           continue;
         }
       }
-      exports.memfs_ensure_dir(parentIno, namePtr, nameBytes.length, entry.mode ?? 0o755);
+      const ino = exports.memfs_ensure_dir(parentIno, namePtr, nameBytes.length, entry.mode ?? 0o755);
+      if (ino !== 0) {
+        pathInos.set(normalizedPath, ino);
+      }
       continue;
     }
 
     const data = entry.data;
     const size = entry.size ?? data?.length ?? 0;
     const mode = entry.mode ?? 0o644;
+    const existingIno = pathInos.get(normalizedPath) ?? 0;
     if (existingIno === 0 && entry.ino !== undefined && entry.ino > 1) {
       const reserveResult = Number(exports.memfs_reserve_inode_until(entry.ino));
       if (reserveResult < 0) {
@@ -101,18 +160,15 @@ export function preloadSnapshotEntries(exports: KernelExports, entries: FsSnapsh
     if (ino === 0) {
       continue;
     }
+    pathInos.set(normalizedPath, ino);
 
-    const sizeResult = data
-      ? Number(exports.memfs_truncate_file(ino, BigInt(data.length)))
-      : Number(exports.memfs_set_file_size_shallow(ino, BigInt(size)));
-    if (sizeResult < 0) {
-      continue;
-    }
-
-    if (data && data.length > 0) {
-      const dataPtr = writeKernelScratch(exports, data, nameBytes.length + 64);
-      const written = Number(exports.memfs_write_file_at(ino, 0n, dataPtr, data.length));
-      if (written < 0 || written !== data.length) {
+    if (data) {
+      if (!replaceFileData(exports, ino, data)) {
+        continue;
+      }
+    } else {
+      const sizeResult = Number(exports.memfs_set_file_size_shallow(ino, BigInt(size)));
+      if (sizeResult < 0) {
         continue;
       }
     }
@@ -120,9 +176,13 @@ export function preloadSnapshotEntries(exports: KernelExports, entries: FsSnapsh
   }
 }
 
-export function resolveMemfsPath(exports: KernelExports, path: string): number {
+export function resolveMemfsPath(
+  exports: KernelExports,
+  path: string,
+  scratchBase?: number,
+): number {
   const bytes = encoder.encode(normalizePath(path));
-  const scratch = writeKernelScratch(exports, bytes);
+  const scratch = writeSnapshotScratch(exports, scratchBase, bytes);
   return exports.memfs_resolve_path(scratch, bytes.length);
 }
 
@@ -309,17 +369,13 @@ export function applyFsEntryToHandle(handle: ProcessHandle, entry: FsSnapshotEnt
     return;
   }
 
-  const sizeResult = data
-    ? Number(exports.memfs_truncate_file(ino, BigInt(data.length)))
-    : Number(exports.memfs_set_file_size_shallow(ino, BigInt(size)));
-  if (sizeResult < 0) {
-    return;
-  }
-
-  if (data && data.length > 0) {
-    const dataPtr = writeKernelScratch(exports, data, nameBytes.length + 64);
-    const written = Number(exports.memfs_write_file_at(ino, 0n, dataPtr, data.length));
-    if (written < 0 || written !== data.length) {
+  if (data) {
+    if (!replaceFileData(exports, ino, data)) {
+      return;
+    }
+  } else {
+    const sizeResult = Number(exports.memfs_set_file_size_shallow(ino, BigInt(size)));
+    if (sizeResult < 0) {
       return;
     }
   }

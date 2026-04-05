@@ -2,6 +2,7 @@ import {
   readKernelRuntimeState,
   type KernelExports,
 } from "../abi.js";
+import { setWorkerMessageHandler } from "../bridge/compat.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import { createRuntimeStateBridge, publishKernelRuntimeState } from "../bridge/runtime-state.js";
 import { createKernelEnv } from "../wasm/env.js";
@@ -15,6 +16,7 @@ import {
   detachedKernelScratchBase,
   writeDetachedKernelScratch,
 } from "./kernel-scratch.js";
+import type { ThreadWorkerOutbound } from "../messages.js";
 import {
   acquireWorker,
   ensureEvictionTimer,
@@ -26,6 +28,7 @@ import type {
 } from "./types.js";
 
 const encoder = new TextEncoder();
+const WORKER_DEBUG_LOG_ENABLED = false;
 
 interface WorkerCreateProcessDeps {
   processHandles: Map<number, ProcessHandle>;
@@ -56,7 +59,38 @@ interface WorkerCreateProcessDeps {
 }
 
 export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
+  function entriesRequireMaterializedData(entries: FsSnapshotEntry[]): boolean {
+    return entries.some((entry) => entry.kind === "file" && entry.data === undefined && (entry.size ?? 0) > 0);
+  }
+
+  async function resolveBootstrapEntries(
+    runtimeId: number,
+    options: CreateProcessOptions,
+    delegateFsHydrationToKernelWorker: boolean,
+  ): Promise<FsSnapshotEntry[]> {
+    const bootstrapEntries = options.preloadEntries
+      ?? deps.getRuntimeFsEntries(runtimeId);
+    if (
+      !delegateFsHydrationToKernelWorker
+      || !options.kernelWorkerRequest
+      || !entriesRequireMaterializedData(bootstrapEntries)
+    ) {
+      return bootstrapEntries;
+    }
+    const response = await options.kernelWorkerRequest({
+      type: "snapshot-fs",
+      includeData: true,
+    });
+    if (response.type !== "snapshot-fs-result") {
+      throw new Error(`unexpected kernel-worker snapshot response: ${response.type}`);
+    }
+    return response.entries;
+  }
+
   function appendMemoryStateDebug(handle: ProcessHandle, stage: string): void {
+    if (!WORKER_DEBUG_LOG_ENABLED) {
+      return;
+    }
     const brkBase = handle.kernel.debug_memory_brk_base?.();
     const brkCurrent = handle.kernel.debug_memory_brk_current?.();
     const mmapNext = handle.kernel.debug_memory_mmap_next?.();
@@ -66,8 +100,8 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     const heapPtr = handle.kernel.kernel_heap_ptr?.() ?? handle.kernelState.heapPtr;
     const entry = `${stage}:heap=0x${heapPtr.toString(16)}:mem=0x${handle.kernelState.memStatePtr.toString(16)}:${brkBase.toString()}:${brkCurrent.toString()}:${mmapNext.toString()}`;
     handle.workerDebugLog.push(entry);
-    if (handle.workerDebugLog.length > 48) {
-      handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 48);
+    if (handle.workerDebugLog.length > 256) {
+      handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 256);
     }
     handle.lastDebugMessage = handle.lastDebugMessage
       ? `${handle.lastDebugMessage} ${entry}`
@@ -112,14 +146,12 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     elfData: Uint8Array,
     ramSize: number,
     options: CreateProcessOptions,
+    elfBrk = inspectProcessElfBrk(exports, guestBase, elfData, ramSize),
   ): number {
-    const inspectScratchBase = detachedKernelScratchBase(exports.memory, guestBase, 0);
-    const inspectElfOffset = writeDetachedKernelScratch(exports, inspectScratchBase, elfData);
-    const elfBrk = Number(exports.process_inspect_elf_brk(inspectElfOffset, elfData.length, ramSize));
     if (elfBrk === 0) {
       throw new Error("ELF inspection failed");
     }
-
+ 
     const runtimeScratchBase = detachedKernelScratchBase(exports.memory, guestBase, elfBrk);
     let scratchOffset = 0;
     const elfOffset = writeDetachedKernelScratch(exports, runtimeScratchBase, elfData, scratchOffset);
@@ -142,6 +174,18 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     return elfOffset;
   }
 
+  function inspectProcessElfBrk(
+    exports: KernelExports,
+    guestBase: number,
+    elfData: Uint8Array,
+    ramSize: number,
+  ): number {
+    const inspectScratchBase = detachedKernelScratchBase(exports.memory, guestBase, 0);
+    const inspectElfOffset = writeDetachedKernelScratch(exports, inspectScratchBase, elfData);
+    const elfBrk = Number(exports.process_inspect_elf_brk(inspectElfOffset, elfData.length, ramSize));
+    return elfBrk;
+  }
+
   function createProcessHandle(
     exports: KernelExports,
     wasmModule: WebAssembly.Module,
@@ -152,6 +196,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     guestBase: number,
     options: CreateProcessOptions,
     worker: Worker,
+    runtimeBridge: ReturnType<typeof createRuntimeStateBridge>,
   ): ProcessHandle {
     const stdinPipe = exports.process_stdin_pipe(vmPtr);
     const stdoutPipe = exports.process_stdout_pipe(vmPtr);
@@ -183,7 +228,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       outputBacklog: [],
       debugCommand: options.argv?.[0] ?? "<entry>",
       lastDebugMessage: undefined,
-      runtimeBridge: createRuntimeStateBridge(),
+      runtimeBridge,
       sabPageCache: options.sabPageCache ?? null,
       kernelWorkerRequest: options.kernelWorkerRequest,
       workers: new Set(),
@@ -230,19 +275,53 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       && (options.pid ?? 0) > 0
       && options.preloadEntries === undefined
     );
-    const bootstrapEntries = options.preloadEntries
-      ?? (delegateFsHydrationToKernelWorker ? [] : deps.getRuntimeFsEntries(runtimeId));
-    preloadSnapshotEntries(exports, bootstrapEntries);
-
-    const cwdIno = delegateFsHydrationToKernelWorker
-      ? await deps.resolveProcessCwdInoViaKernelWorker(options.kernelWorkerRequest!, options.cwd)
-      : resolveProcessCwdIno(exports, options.cwd);
+    const preloadScratchBase = detachedKernelScratchBase(exports.memory, 0, 0);
+    const bootstrapEntries = await resolveBootstrapEntries(
+      runtimeId,
+      options,
+      delegateFsHydrationToKernelWorker,
+    );
+    preloadSnapshotEntries(exports, bootstrapEntries, preloadScratchBase);
     const guestBase = exports.process_guest_base(ramSize);
     if (guestBase === 0) {
       throw new Error("process_guest_base failed");
     }
+    const elfBrk = inspectProcessElfBrk(exports, guestBase, elfData, ramSize);
+    if (elfBrk === 0) {
+      throw new Error("ELF inspection failed");
+    }
 
-    const elfOffset = stageProcessCreation(exports, guestBase, elfData, ramSize, options);
+    const cwdIno = delegateFsHydrationToKernelWorker
+      ? await deps.resolveProcessCwdInoViaKernelWorker(options.kernelWorkerRequest!, options.cwd)
+      : resolveProcessCwdIno(exports, options.cwd);
+
+    ensureEvictionTimer();
+    const worker = acquireWorker();
+    const runtimeBridge = createRuntimeStateBridge();
+    await new Promise<void>((resolve, reject) => {
+      setWorkerMessageHandler<ThreadWorkerOutbound>(worker, (event) => {
+        const msg = event.data;
+        if (msg.type === "prepared") {
+          resolve();
+          return;
+        }
+        if (msg.type === "error") {
+          reject(new Error(msg.message));
+          return;
+        }
+        reject(new Error(`unexpected thread-worker prepare message: ${msg.type}`));
+      });
+      worker.postMessage({
+        type: "prepare",
+        wasmModule,
+        memory,
+        sabPageCache: options.sabPageCache ?? null,
+        runtimeNotify: runtimeBridge.notifySab,
+        runtimeState: runtimeBridge.stateSab,
+      });
+    });
+
+    const elfOffset = stageProcessCreation(exports, guestBase, elfData, ramSize, options, elfBrk);
     const vmPtr = exports.process_create(elfOffset, elfData.length, ramSize, stackSize);
     if (vmPtr === 0) {
       throw new Error("process_create failed");
@@ -250,9 +329,6 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     if (!delegateFsHydrationToKernelWorker) {
       exports.process_set_cwd_ino(vmPtr, cwdIno);
     }
-
-    ensureEvictionTimer();
-    const worker = acquireWorker();
     const handle = createProcessHandle(
       exports,
       wasmModule,
@@ -263,6 +339,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       guestBase,
       options,
       worker,
+      runtimeBridge,
     );
     appendMemoryStateDebug(handle, "create");
 

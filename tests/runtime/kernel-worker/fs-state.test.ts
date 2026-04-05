@@ -1,0 +1,324 @@
+import { expect, test } from "vite-plus/test";
+import type { KernelExports } from "../../../src/abi.js";
+import { DATA_REGION_OFFSET, publishInode } from "../../../src/fs/sab-page-cache.js";
+import { createKernelWorkerFsState } from "../../../src/kernel-worker/fs-state.js";
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+type InodeRecord = {
+  ino: number;
+  path: string;
+  kind: "dir" | "file";
+  mode: number;
+  data: Uint8Array;
+  materialized: boolean;
+};
+
+type FakeKernelExports = KernelExports & {
+  opLog: string[];
+  fileData(path: string): Uint8Array;
+  fileIno(path: string): number;
+  overwriteFile(path: string, data: Uint8Array): void;
+};
+
+function normalizePath(path: string): string {
+  const normalized = `/${path.split("/").filter(Boolean).join("/")}`;
+  return normalized || "/";
+}
+
+function decodeGuestBytes(memory: WebAssembly.Memory, ptr: number, len: number): string {
+  return decoder.decode(new Uint8Array(memory.buffer, ptr, len));
+}
+
+function makeKernelExports(): FakeKernelExports {
+  const memory = new WebAssembly.Memory({ initial: 128, maximum: 128, shared: true });
+  const recordsByPath = new Map<string, InodeRecord>();
+  const recordsByIno = new Map<number, InodeRecord>();
+  const opLog: string[] = [];
+  let nextIno = 2;
+  let reservedIno: number | null = null;
+
+  function putRecord(record: InodeRecord): void {
+    recordsByPath.set(record.path, record);
+    recordsByIno.set(record.ino, record);
+  }
+
+  function resetRoot(): void {
+    recordsByPath.clear();
+    recordsByIno.clear();
+    nextIno = 2;
+    reservedIno = null;
+    putRecord({
+      ino: 1,
+      path: "/",
+      kind: "dir",
+      mode: 0o040755,
+      data: new Uint8Array(),
+      materialized: false,
+    });
+  }
+
+  function allocateIno(): number {
+    if (reservedIno !== null) {
+      const ino = reservedIno;
+      reservedIno = null;
+      if (ino >= nextIno) {
+        nextIno = ino + 1;
+      }
+      return ino;
+    }
+    return nextIno++;
+  }
+
+  resetRoot();
+
+  const exports = {
+    memory,
+    kernel_heap_ptr: () => 0x10000,
+    kernel_reset_memfs: () => {
+      resetRoot();
+    },
+    memfs_resolve_path: (ptr: number, len: number) => {
+      const path = normalizePath(decodeGuestBytes(memory, ptr, len));
+      return recordsByPath.get(path)?.ino ?? 0;
+    },
+    memfs_inode_mode: (ino: number) => recordsByIno.get(ino)?.mode ?? 0,
+    memfs_file_size: (ino: number) => BigInt(recordsByIno.get(ino)?.data.length ?? 0),
+    memfs_reserve_inode_until: (ino: number) => {
+      reservedIno = ino;
+      if (ino >= nextIno) {
+        nextIno = ino + 1;
+      }
+      return 0n;
+    },
+    memfs_ensure_dir: (parentIno: number, namePtr: number, nameLen: number, mode: number) => {
+      const parent = recordsByIno.get(parentIno);
+      if (!parent || parent.kind !== "dir") {
+        return 0;
+      }
+      const name = decodeGuestBytes(memory, namePtr, nameLen);
+      const path = parent.path === "/" ? `/${name}` : `${parent.path}/${name}`;
+      const existing = recordsByPath.get(path);
+      if (existing) {
+        return existing.ino;
+      }
+      const record: InodeRecord = {
+        ino: allocateIno(),
+        path,
+        kind: "dir",
+        mode: 0o040000 | mode,
+        data: new Uint8Array(),
+        materialized: false,
+      };
+      putRecord(record);
+      return record.ino;
+    },
+    memfs_create_file: (parentIno: number, namePtr: number, nameLen: number) => {
+      const parent = recordsByIno.get(parentIno);
+      if (!parent || parent.kind !== "dir") {
+        return 0;
+      }
+      const name = decodeGuestBytes(memory, namePtr, nameLen);
+      const path = parent.path === "/" ? `/${name}` : `${parent.path}/${name}`;
+      const existing = recordsByPath.get(path);
+      if (existing) {
+        return existing.ino;
+      }
+      const record: InodeRecord = {
+        ino: allocateIno(),
+        path,
+        kind: "file",
+        mode: 0o100644,
+        data: new Uint8Array(),
+        materialized: false,
+      };
+      putRecord(record);
+      return record.ino;
+    },
+    memfs_set_file_size_shallow: (ino: number, size: bigint) => {
+      const record = recordsByIno.get(ino);
+      opLog.push(`shallow:${record?.path ?? ino}:${size}`);
+      if (!record || record.kind !== "file" || record.materialized) {
+        return -1n;
+      }
+      const next = Number(size);
+      if (record.data.length === next) {
+        return size;
+      }
+      if (record.data.length > next) {
+        record.data = record.data.slice(0, next);
+        return size;
+      }
+      const grown = new Uint8Array(next);
+      grown.set(record.data);
+      record.data = grown;
+      return size;
+    },
+    memfs_truncate_file: (ino: number, size: bigint) => {
+      const record = recordsByIno.get(ino);
+      opLog.push(`truncate:${record?.path ?? ino}:${size}`);
+      if (!record || record.kind !== "file") {
+        return -1n;
+      }
+      const nextSize = Number(size);
+      const next = new Uint8Array(nextSize);
+      next.set(record.data.subarray(0, nextSize));
+      record.data = next;
+      record.materialized = true;
+      return 0n;
+    },
+    memfs_write_file_at: (ino: number, offset: bigint, ptr: number, len: number) => {
+      const record = recordsByIno.get(ino);
+      opLog.push(`write:${record?.path ?? ino}:${len}`);
+      if (!record || record.kind !== "file") {
+        return -1n;
+      }
+      const required = Number(offset) + len;
+      if (record.data.length < required) {
+        const next = new Uint8Array(required);
+        next.set(record.data);
+        record.data = next;
+      }
+      record.data.set(new Uint8Array(memory.buffer, ptr, len), Number(offset));
+      record.materialized = true;
+      return BigInt(len);
+    },
+    memfs_read_file_to: (ino: number, offset: bigint, ptr: number, len: number) => {
+      const record = recordsByIno.get(ino);
+      if (!record || record.kind !== "file") {
+        return -1n;
+      }
+      const start = Number(offset);
+      const available = Math.max(0, record.data.length - start);
+      const readLen = Math.min(len, available);
+      new Uint8Array(memory.buffer, ptr, readLen).set(record.data.subarray(start, start + readLen));
+      return BigInt(readLen);
+    },
+    memfs_readdir_names: (ino: number, ptr: number, len: number) => {
+      const record = recordsByIno.get(ino);
+      if (!record || record.kind !== "dir") {
+        return -1n;
+      }
+      const names = [...recordsByPath.values()]
+        .filter((child) => child.path !== record.path && parentPath(child.path) === record.path)
+        .map((child) => child.path.split("/").pop() ?? "")
+        .sort();
+      let offset = 0;
+      const bytes = new Uint8Array(memory.buffer, ptr, len);
+      for (const name of names) {
+        const nameBytes = encoder.encode(name);
+        if (offset + nameBytes.length + 1 > len) {
+          break;
+        }
+        bytes.set(nameBytes, offset);
+        offset += nameBytes.length;
+        bytes[offset] = 0;
+        offset += 1;
+      }
+      return BigInt(offset);
+    },
+    memfs_set_mode: (ino: number, mode: number) => {
+      const record = recordsByIno.get(ino);
+      if (!record) {
+        return -1n;
+      }
+      const kindMask = record.kind === "dir" ? 0o040000 : 0o100000;
+      record.mode = kindMask | mode;
+      return 0n;
+    },
+    opLog,
+    fileData: (path: string) => new Uint8Array(recordsByPath.get(normalizePath(path))?.data ?? new Uint8Array()),
+    fileIno: (path: string) => recordsByPath.get(normalizePath(path))?.ino ?? 0,
+    overwriteFile: (path: string, data: Uint8Array) => {
+      const record = recordsByPath.get(normalizePath(path));
+      if (!record || record.kind !== "file") {
+        throw new Error(`missing file: ${path}`);
+      }
+      record.data = new Uint8Array(data);
+      record.materialized = true;
+    },
+  };
+
+  return exports as unknown as FakeKernelExports;
+}
+
+function parentPath(path: string): string {
+  const normalized = normalizePath(path);
+  return normalized.split("/").slice(0, -1).join("/") || "/";
+}
+
+function makeFsState() {
+  const canonicalExports = makeKernelExports();
+  const memberExports = makeKernelExports();
+  const sabPageCache = new SharedArrayBuffer(DATA_REGION_OFFSET + 256 * 1024);
+  const processKernels = new Map<number, KernelExports>([[2, memberExports]]);
+  const seedEntries = new Map();
+  const fsState = createKernelWorkerFsState({
+    getCanonicalExports: () => canonicalExports,
+    getSabPageCache: () => sabPageCache,
+    processKernels,
+    seedEntries,
+    encoder,
+    decoder,
+    fanoutCanonicalMemfs: () => {},
+    publishRootInode: (mode = 0o755) => {
+      publishInode(sabPageCache, 1, {
+        mode: 0o040000 | mode,
+        size: 0,
+        parentIno: 1,
+        name: new Uint8Array(),
+        nextSibling: 0,
+      }, null);
+    },
+    resolvePathIn: (targetExports, path) => targetExports.memfs_resolve_path(
+      (() => {
+        const bytes = encoder.encode(normalizePath(path));
+        const ptr = targetExports.kernel_heap_ptr() + 0x10000;
+        new Uint8Array(targetExports.memory.buffer).set(bytes, ptr);
+        return ptr;
+      })(),
+      normalizePath(path).length,
+    ),
+    upsertDirSeed: () => {},
+    upsertFileSeed: () => {},
+  });
+  return { canonicalExports, memberExports, fsState };
+}
+
+test("kernel-worker loadFsSnapshot resizes files before writing fresh file data", () => {
+  const { canonicalExports, fsState } = makeFsState();
+  const data = new Uint8Array(128 * 1024).map((_, index) => index & 0xff);
+
+  fsState.loadFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "file", path: "/lib/runtime.bin", data, mode: 0o755 },
+  ]);
+
+  expect(canonicalExports.fileData("/lib/runtime.bin")).toEqual(data);
+  expect(canonicalExports.opLog).toContain(`truncate:/lib/runtime.bin:${data.length}`);
+  expect(canonicalExports.opLog).toContain(`write:/lib/runtime.bin:${data.length}`);
+  expect(canonicalExports.opLog.some((entry) => entry.startsWith("shallow:/lib/runtime.bin:"))).toBe(false);
+  expect(canonicalExports.opLog.indexOf(`truncate:/lib/runtime.bin:${data.length}`))
+    .toBeLessThan(canonicalExports.opLog.indexOf(`write:/lib/runtime.bin:${data.length}`));
+});
+
+test("kernel-worker syncFileDataMutation shrinks materialized member files to the new data", () => {
+  const { canonicalExports, memberExports, fsState } = makeFsState();
+  const initialData = encoder.encode("abcdefghijklmnop");
+  const nextData = encoder.encode("abc");
+
+  fsState.writeFile("/lib/runtime.bin", initialData, 0o755, false);
+  const ino = canonicalExports.fileIno("/lib/runtime.bin");
+  expect(ino).toBeGreaterThan(1);
+
+  fsState.syncFileDataMutation(canonicalExports, ino);
+  memberExports.opLog.length = 0;
+  canonicalExports.overwriteFile("/lib/runtime.bin", nextData);
+
+  const changed = fsState.syncFileDataMutation(canonicalExports, ino);
+
+  expect(changed).toBe(true);
+  expect(memberExports.fileData("/lib/runtime.bin")).toEqual(nextData);
+  expect(memberExports.opLog.some((entry) => entry.startsWith("truncate:/lib/runtime.bin:3"))).toBe(true);
+});

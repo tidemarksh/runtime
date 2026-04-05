@@ -74,6 +74,7 @@ export interface KernelExports {
   debug_panic_line?(): number;
   debug_panic_column?(): number;
   debug_fd_syscall_trace_len?(): number;
+  debug_fd_syscall_trace_vm_ptr?(index: number): number;
   debug_fd_syscall_trace_nr?(index: number): bigint | number;
   debug_fd_syscall_trace_arg0?(index: number): bigint | number;
   debug_fd_syscall_trace_arg0_ofd_id?(index: number): number;
@@ -85,6 +86,21 @@ export interface KernelExports {
   debug_fd_syscall_trace_arg3?(index: number): bigint | number;
   debug_fd_syscall_trace_result?(index: number): bigint | number;
   debug_fd_syscall_trace_status?(index: number): number;
+  debug_path_syscall_trace_len?(): number;
+  debug_path_syscall_trace_vm_ptr?(index: number): number;
+  debug_path_syscall_trace_nr?(index: number): bigint | number;
+  debug_path_syscall_trace_dirfd?(index: number): bigint | number;
+  debug_path_syscall_trace_result?(index: number): bigint | number;
+  debug_path_syscall_trace_status?(index: number): number;
+  debug_path_syscall_trace_path_ptr?(index: number): number;
+  debug_path_syscall_trace_path_len?(index: number): number;
+  debug_thread_count_trace_len?(): number;
+  debug_thread_count_trace_kind?(index: number): number;
+  debug_thread_count_trace_vm_ptr?(index: number): number;
+  debug_thread_count_trace_tid?(index: number): number;
+  debug_thread_count_trace_process_ptr?(index: number): number;
+  debug_thread_count_trace_before?(index: number): number;
+  debug_thread_count_trace_after?(index: number): number;
 
   // Open flags
   abi_o_rdonly(): number;
@@ -184,6 +200,7 @@ export interface KernelExports {
   thread_tp?(vm_ptr: number): bigint;
   thread_gp?(vm_ptr: number): bigint;
   thread_x27?(vm_ptr: number): bigint;
+  thread_reg?(vm_ptr: number, regIndex: number): bigint;
   thread_tls_base?(vm_ptr: number): bigint;
   thread_sig_mask?(vm_ptr: number): bigint;
   thread_sig_pending(vm_ptr: number): bigint;
@@ -222,6 +239,9 @@ export interface KernelExports {
   thread_resume_connect_result(vm_ptr: number, result: bigint): void;
   thread_vfork_child_pid(): number;
   thread_clone_flags(vm_ptr: number): bigint;
+  thread_clone_child_stack?(vm_ptr: number): bigint;
+  thread_clone_tls?(vm_ptr: number): bigint;
+  thread_clone_child_tidptr?(vm_ptr: number): bigint;
 
   // Spawn handoff
   thread_spawn_kind(vm_ptr: number): number;
@@ -276,6 +296,7 @@ export interface KernelExports {
   ): void;
   process_cwd_ino(vm_ptr: number): number;
   process_set_cwd_ino(vm_ptr: number, ino: number): void;
+  process_install_procfs_snapshot?(target_ptr: number, target_len: number): void;
   process_fd_ofd_id(vm_ptr: number, fd: number): number;
   process_fd_flags(vm_ptr: number, fd: number): number;
   process_set_fd_entry(vm_ptr: number, fd: number, ofdId: number, fdFlags: number): void;
@@ -327,6 +348,22 @@ export interface KernelExports {
   debug_memory_trace_arg2?(): bigint;
   debug_memory_trace_arg3?(): bigint;
   debug_memory_trace_result?(): bigint;
+  debug_memory_brk_base?(): bigint | number;
+  debug_memory_brk_current?(): bigint | number;
+  debug_memory_mmap_next?(): bigint | number;
+  debug_memory_vma_len?(): number;
+  debug_memory_vma_start?(index: number): bigint | number;
+  debug_memory_vma_end?(index: number): bigint | number;
+  debug_memory_vma_prot?(index: number): number;
+  debug_memory_vma_flags?(index: number): number;
+  debug_epoll_wait_epfd?(): bigint | number;
+  debug_epoll_wait_ofd_id?(): number;
+  debug_epoll_wait_ofd_type?(): number;
+  debug_epoll_wait_idx?(): number;
+  debug_epoll_wait_ptr?(): number;
+  debug_epoll_wait_count?(): number;
+  debug_epoll_wait_result?(): bigint | number;
+  debug_epoll_wait_reason?(): number;
   debug_guest_mem_last_addr?(): bigint;
   debug_guest_mem_last_len?(): number;
   debug_guest_mem_last_kind?(): number;
@@ -360,6 +397,14 @@ export interface KernelExports {
   debug_x27_write_source?(): number;
   debug_x27_write_prev_value?(): bigint;
   debug_x27_write_value?(): bigint;
+  debug_tp_write_tid?(): number;
+  debug_tp_write_pc?(): bigint;
+  debug_tp_write_raw?(): number;
+  debug_tp_write_source?(): number;
+  debug_tp_write_prev_value?(): bigint;
+  debug_tp_write_value?(): bigint;
+  debug_tp_write_rs1?(): number;
+  debug_tp_write_rs1_value?(): bigint;
   debug_sp_write_pc?(): bigint;
   debug_sp_write_raw?(): number;
   debug_sp_write_source?(): number;

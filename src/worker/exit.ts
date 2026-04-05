@@ -11,9 +11,25 @@ interface WorkerExitDeps {
 }
 
 export function createWorkerExitHelpers(deps: WorkerExitDeps) {
+  function safeDebugRuntimeProcessHandles(runtimeId: number): string {
+    try {
+      return deps.debugRuntimeProcessHandles(runtimeId);
+    } catch (error) {
+      return `unavailable:${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  function safeFormatAllLiveThreadDebug(handle: ProcessHandle): string {
+    try {
+      return deps.formatAllLiveThreadDebug(handle);
+    } catch (error) {
+      return `unavailable:${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
   function encodeWaitStatus(exitCode: number, termSignal: number): number {
     if (termSignal !== 0) {
-      return (termSignal & 0x7f) | 0x80;
+      return termSignal & 0x7f;
     }
     return (exitCode & 0xff) << 8;
   }
@@ -57,6 +73,10 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
   ): Promise<void> {
     handle.lastDebugMessage = [
       `exit:${handle.pid}:${JSON.stringify(handle.debugCommand)}:${exitCode}:${termSignal}`,
+      `live_processes=${safeDebugRuntimeProcessHandles(handle.runtimeId)}`,
+      `cmd=${JSON.stringify(handle.debugCommand)}`,
+      `worker_log=[${handle.workerDebugLog.join(", ")}]`,
+      `thread_debugs=[${safeFormatAllLiveThreadDebug(handle)}]`,
       handle.lastDebugMessage ?? "debug=n/a",
     ].join(" ");
     deps.appendRuntimeLifecycleEvent(
@@ -72,10 +92,10 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
   function failProcess(handle: ProcessHandle, error: Error): void {
     handle.lastDebugMessage = [
       error.message,
-      `live_processes=${deps.debugRuntimeProcessHandles(handle.runtimeId)}`,
+      `live_processes=${safeDebugRuntimeProcessHandles(handle.runtimeId)}`,
       `cmd=${JSON.stringify(handle.debugCommand)}`,
       `worker_log=[${handle.workerDebugLog.join(", ")}]`,
-      `thread_debugs=[${deps.formatAllLiveThreadDebug(handle)}]`,
+      `thread_debugs=[${safeFormatAllLiveThreadDebug(handle)}]`,
       handle.lastDebugMessage ?? "debug=n/a",
     ].join(" ");
     deps.destroyProcessHandle(handle, 15, false);

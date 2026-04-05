@@ -11,7 +11,6 @@ import type {
   ThreadWorkerState,
 } from "./types.js";
 import type { KernelWorkerPidBytesSnapshot } from "../messages.js";
-import { adoptKernelState } from "./sync.js";
 
 interface WorkerKernelRpcDeps {
   processHandles: Map<number, ProcessHandle>;
@@ -105,11 +104,11 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     const pendingEffects = handle.kernel.thread_pending_fs_effects(vmPtr);
     const pendingTargetIno = handle.kernel.thread_pending_fs_target_ino(vmPtr);
     const fsDebugSuffix = `:op=${pendingOpcode}:fx=${pendingEffects}:ino=${pendingTargetIno}`;
+    const memfsMutated =
+      (pendingEffects & (fsEffects.memfsMutation | fsEffects.memfsFileData)) !== 0;
+    const ofdStateChanged = (pendingEffects & fsEffects.sharedOfdState) !== 0;
     if (!handle.kernelWorkerRequest || handle.pid <= 0) {
       deps.appendWorkerDebugLog(handle, `fs-start:0x${vmPtr.toString(16)}:local${fsDebugSuffix}`);
-      const effects = handle.kernel.thread_pending_fs_effects(vmPtr);
-      const memfsMutated = (effects & (fsEffects.memfsMutation | fsEffects.memfsFileData)) !== 0;
-      const ofdStateChanged = (effects & fsEffects.sharedOfdState) !== 0;
       handle.kernel.thread_process_fs(vmPtr);
       handle.kernel.thread_resume_fs(vmPtr);
       handle.kernelState = readKernelRuntimeState(handle.kernel);
@@ -132,27 +131,25 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     try {
       deps.appendWorkerDebugLog(handle, `fs-start:0x${vmPtr.toString(16)}${fsDebugSuffix}`);
       deps.assertProcessStandardFdIntegrity(handle, "resume-fs-before");
-      const response = await handle.kernelWorkerRequest({
-        type: "process-fs",
-        pid: handle.pid,
-        vmPtr,
-        kernelState: handle.kernelState,
-      });
-      if (response.type !== "fs-processed") {
-        throw new Error(`unexpected kernel-worker response for process-fs: ${response.type}`);
-      }
+      handle.kernel.thread_process_fs(vmPtr);
+      handle.kernel.thread_resume_fs(vmPtr);
+      handle.kernelState = readKernelRuntimeState(handle.kernel);
       if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
         return;
       }
-      handle.kernelState = adoptKernelState(handle.kernelState, response.kernelState);
-      attachKernelRuntimeState(handle.kernel, handle.kernelState);
       deps.assertProcessStandardFdIntegrity(handle, "resume-fs");
-      if (response.ofdStateChanged) {
+      if (memfsMutated || ofdStateChanged) {
         await deps.syncForkSharedStateViaKernelWorker(
           handle,
           kernelShareOtherMembers(handle),
-          { includeMemfs: false },
+          {
+            includeMemfs: memfsMutated,
+            trackHeldOfds: ofdStateChanged,
+          },
         );
+      }
+      if (memfsMutated) {
+        deps.markRuntimeFsDirty(handle);
       }
       publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
       deps.kickBlockedWorkers(handle);

@@ -125,4 +125,79 @@ describe("createKernelWorkerMemfsPrimitives", () => {
     expect(new Uint8Array(targetMemory.buffer, 0x320, 16)).toEqual(new Uint8Array(16).fill(0xbb));
     expect(readMemfsLayout(targetMemory, targetState.memfsPtr).dataPtr).toBe(0x4c0);
   });
+
+  it("clamps full data copy to the target memfs capacity", () => {
+    const memoryPages = { initial: 1, maximum: 4, shared: true } as const;
+    const sourceMemory = new WebAssembly.Memory(memoryPages);
+    const targetMemory = new WebAssembly.Memory(memoryPages);
+    const primitives = createKernelWorkerMemfsPrimitives();
+
+    const sourceState: KernelRuntimeState = {
+      heapBase: 0,
+      heapPtr: 0,
+      ofdTablePtr: 0,
+      memfsPtr: 0x80,
+      memStatePtr: 0,
+      epollTablePtr: 0,
+      socketTablePtr: 0,
+      socketUsed: 0,
+      pipeBase: 0,
+      pipeUsed: 0n,
+      netBufBase: 0,
+      netBufUsed: 0n,
+      sigSlotsPtr: 0,
+      processPendingPtr: 0,
+      processRuntimeStatePtr: 0,
+      timeStatePtr: 0,
+    };
+    const targetState: KernelRuntimeState = {
+      ...sourceState,
+      memfsPtr: 0x180,
+    };
+
+    writeMemfsHeader(sourceMemory, sourceState.memfsPtr, {
+      dataUsed: 32,
+      dataCap: 64,
+      inodesPtr: 0x200,
+      firstChildPtr: 0x240,
+      dirEntriesPtr: 0x280,
+      dataPtr: 0x2c0,
+    });
+    writeMemfsHeader(targetMemory, targetState.memfsPtr, {
+      dataUsed: 0,
+      dataCap: 16,
+      inodesPtr: 0x400,
+      firstChildPtr: 0x440,
+      dirEntriesPtr: 0x480,
+      dataPtr: 0x4c0,
+    });
+
+    const sourceBytes = new Uint8Array(sourceMemory.buffer, 0x2c0, 64);
+    for (let index = 0; index < sourceBytes.length; index += 1) {
+      sourceBytes[index] = index + 1;
+    }
+
+    new Uint8Array(targetMemory.buffer, 0x4d0, 16).fill(0xcc);
+
+    const sourceExports = createFakeExports(sourceMemory, {
+      inodesBytes: 16,
+      firstChildBytes: 16,
+      dirEntriesBytes: 16,
+      dataBytes: 64,
+      dataPtr: 0x2c0,
+    });
+    const targetExports = createFakeExports(targetMemory, {
+      inodesBytes: 16,
+      firstChildBytes: 16,
+      dirEntriesBytes: 16,
+      dataBytes: 16,
+      dataPtr: 0x4c0,
+    });
+
+    primitives.copyMemfsState(sourceExports, sourceState, targetExports, targetState);
+
+    expect(new Uint8Array(targetMemory.buffer, 0x4c0, 16)).toEqual(sourceBytes.subarray(0, 16));
+    expect(new Uint8Array(targetMemory.buffer, 0x4d0, 16)).toEqual(new Uint8Array(16).fill(0xcc));
+    expect(readMemfsLayout(targetMemory, targetState.memfsPtr).dataUsed).toBe(16);
+  });
 });

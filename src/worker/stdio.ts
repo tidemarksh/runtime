@@ -116,5 +116,9 @@ export function releaseSharedHostStdioLocal(handle: ProcessHandle): void {
   if (shared.refCount !== 0) {
     return;
   }
-  handle.kernel.process_release_host_stdio(handle.vmPtr);
+  try {
+    handle.kernel.process_release_host_stdio(handle.vmPtr);
+  } catch {
+    // Worker-error teardown can race with corrupted or already-released process state.
+  }
 }

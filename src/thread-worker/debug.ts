@@ -14,6 +14,10 @@ function readOptionalTraceU64(value: bigint | number | undefined): bigint {
   return typeof value === "bigint" ? value : BigInt(value);
 }
 
+function debugScratchBase(exports: KernelExports): number {
+  return (exports.kernel_scratch_base?.() ?? (exports.kernel_heap_ptr() + 0x10000));
+}
+
 function readOptionalThreadU64(
   reader: ((vmPtr: number) => bigint) | undefined,
   vmPtr: number,
@@ -26,6 +30,14 @@ function readOptionalThreadI32(
   vmPtr: number,
 ): number {
   return reader?.(vmPtr) ?? 0;
+}
+
+function readOptionalThreadReg(
+  exports: KernelExports,
+  vmPtr: number,
+  regIndex: number,
+): bigint {
+  return exports.thread_reg?.(vmPtr, regIndex) ?? 0n;
 }
 
 function formatWriteTraceBytes(exports: KernelExports): string | null {
@@ -52,12 +64,87 @@ function formatWriteTraceBytes(exports: KernelExports): string | null {
   return out;
 }
 
+function formatTrackedEpollState(exports: KernelExports, vmPtr: number): string | null {
+  const tablePtr = exports.kernel_epoll_table_ptr?.() ?? 0;
+  const tableBytes = exports.kernel_epoll_table_bytes?.() ?? 0;
+  const instanceBytes = exports.kernel_epoll_instance_bytes?.() ?? 0;
+  if (tablePtr === 0 || tableBytes === 0 || instanceBytes < 4) {
+    return null;
+  }
+
+  const table = new Uint32Array(exports.memory.buffer, tablePtr, tableBytes >>> 2);
+  const view = new DataView(exports.memory.buffer);
+  const entries: string[] = [];
+  for (let fd = 0; fd < Math.min(exports.abi_max_fds(), 32); fd += 1) {
+    const ofdId = exports.process_fd_ofd_id(vmPtr, fd);
+    if (ofdId === 0 || exports.kernel_ofd_fd_type(ofdId) !== exports.abi_fd_type_epoll()) {
+      continue;
+    }
+    const ino = exports.kernel_ofd_ino(ofdId);
+    const ptr = ino >= 0 && ino < table.length ? table[ino] ?? 0 : 0;
+    const count = ptr !== 0 ? view.getUint32(ptr + instanceBytes - 4, true) : 0;
+    entries.push(`fd${fd}:${ofdId}/${ino}->0x${ptr.toString(16)}#${count}`);
+  }
+
+  return entries.length > 0 ? entries.join(",") : null;
+}
+
+function formatProcessThreads(exports: KernelExports, vmPtr: number): string | null {
+  const threadCount = exports.thread_process_thread_count(vmPtr);
+  if (threadCount <= 0) {
+    return null;
+  }
+  const entries: string[] = [];
+  const limit = Math.min(exports.abi_max_threads(), Math.max(threadCount, 8));
+  for (let slot = 0; slot < limit; slot += 1) {
+    const tid = exports.process_thread_tid(vmPtr, slot);
+    const state = exports.process_thread_state(vmPtr, slot);
+    const threadVmPtr = exports.process_thread_vm_ptr(vmPtr, slot);
+    if (tid === 0 && state === 0 && threadVmPtr === 0) {
+      continue;
+    }
+    entries.push(`${slot}:${tid}/${state}/0x${threadVmPtr.toString(16)}`);
+  }
+  return entries.length > 0 ? entries.join(",") : null;
+}
+
+function formatProcessFds(exports: KernelExports, vmPtr: number): string | null {
+  const entries: string[] = [];
+  const maxFds = Math.min(exports.abi_max_fds(), 32);
+  for (let fd = 0; fd < maxFds; fd += 1) {
+    const ofdId = exports.process_fd_ofd_id(vmPtr, fd);
+    const fdFlags = exports.process_fd_flags(vmPtr, fd);
+    if (ofdId === 0 && fdFlags === 0) {
+      continue;
+    }
+    const fdType = ofdId === 0 ? 0 : exports.kernel_ofd_fd_type(ofdId);
+    const ino = ofdId === 0 ? 0 : exports.kernel_ofd_ino(ofdId);
+    entries.push(`${fd}:${ofdId}/${fdType}/${ino}/${fdFlags}`);
+  }
+  return entries.length > 0 ? entries.join(",") : null;
+}
+
 export function clearSyscallTrace(exports: KernelExports): void {
   exports.debug_clear_syscall_trace?.();
 }
 
-export function collectDebugParts(exports: KernelExports, vmPtr: number): string[] {
+function readGuestInsn(exports: KernelExports, guestBase: number, pc: bigint): string | null {
+  const addr = Number(pc);
+  if (!Number.isFinite(addr) || addr < 0) {
+    return null;
+  }
+  const absolute = guestBase + addr;
+  if (absolute < 0 || absolute + 4 > exports.memory.buffer.byteLength) {
+    return null;
+  }
+  const view = new DataView(exports.memory.buffer);
+  return `0x${view.getUint32(absolute, true).toString(16)}`;
+}
+
+export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBase: number): string[] {
   const debugParts: string[] = [];
+  debugParts.push(`process=0x${exports.thread_process_ptr(vmPtr).toString(16)}`);
+  debugParts.push(`process_threads=${exports.thread_process_thread_count(vmPtr)}`);
   debugParts.push(`tid=${readOptionalThreadI32(exports.thread_tid, vmPtr)}`);
   debugParts.push(`gp=0x${formatU64(readOptionalThreadU64(exports.thread_gp, vmPtr))}`);
   debugParts.push(`tp=0x${formatU64(readOptionalThreadU64(exports.thread_tp, vmPtr))}`);
@@ -66,6 +153,9 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number): string
   debugParts.push(`sig_mask=0x${formatU64(readOptionalThreadU64(exports.thread_sig_mask, vmPtr))}`);
   debugParts.push(`sig_pending=0x${formatU64(exports.thread_sig_pending(vmPtr))}`);
   debugParts.push(`sig_code=${readOptionalThreadI32(exports.thread_sig_info_code, vmPtr)}`);
+  debugParts.push(`blocked_fd=${exports.thread_blocked_fd?.(vmPtr) ?? 0}`);
+  debugParts.push(`blocked_ofd_id=${exports.thread_blocked_ofd_id?.(vmPtr) ?? 0}`);
+  debugParts.push(`epoll_timeout_ms=${exports.thread_epoll_wait_timeout?.(vmPtr)?.toString() ?? "n/a"}`);
   debugParts.push(`fault_pc=0x${formatU64(readOptionalThreadU64(exports.thread_fault_pc, vmPtr))}`);
   debugParts.push(`fault_addr=0x${formatU64(readOptionalThreadU64(exports.thread_fault_addr, vmPtr))}`);
   debugParts.push(`pc=0x${exports.thread_pc(vmPtr).toString(16)}`);
@@ -81,6 +171,25 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number): string
   debugParts.push(`stk19=0x${readOptionalThreadU64((ptr) => exports.thread_stack_word?.(ptr, 19) ?? 0n, vmPtr).toString(16)}`);
   debugParts.push(`a0=${exports.thread_a0(vmPtr).toString()}`);
   debugParts.push(`a1=${exports.thread_a1(vmPtr).toString()}`);
+  debugParts.push(`a2=0x${formatU64(readOptionalThreadReg(exports, vmPtr, 12))}`);
+  debugParts.push(`a3=0x${formatU64(readOptionalThreadReg(exports, vmPtr, 13))}`);
+  debugParts.push(`a4=0x${formatU64(readOptionalThreadReg(exports, vmPtr, 14))}`);
+  debugParts.push(`a5=0x${formatU64(readOptionalThreadReg(exports, vmPtr, 15))}`);
+  debugParts.push(`a6=0x${formatU64(readOptionalThreadReg(exports, vmPtr, 16))}`);
+  debugParts.push(`a7=0x${formatU64(readOptionalThreadReg(exports, vmPtr, 17))}`);
+  debugParts.push(`t3=0x${formatU64(readOptionalThreadReg(exports, vmPtr, 28))}`);
+  debugParts.push(`t5=0x${formatU64(readOptionalThreadReg(exports, vmPtr, 30))}`);
+  const tpWriteTid = exports.debug_tp_write_tid?.() ?? 0;
+  if (tpWriteTid !== 0) {
+    debugParts.push(`tp_write_tid=${tpWriteTid}`);
+  }
+  const cloneFlags = exports.thread_clone_flags(vmPtr);
+  if (cloneFlags !== 0n) {
+    debugParts.push(`clone_flags=0x${formatU64(cloneFlags)}`);
+    debugParts.push(`clone_child_stack=0x${formatU64(readOptionalThreadU64(exports.thread_clone_child_stack, vmPtr))}`);
+    debugParts.push(`clone_tls=0x${formatU64(readOptionalThreadU64(exports.thread_clone_tls, vmPtr))}`);
+    debugParts.push(`clone_child_tidptr=0x${formatU64(readOptionalThreadU64(exports.thread_clone_child_tidptr, vmPtr))}`);
+  }
   const syscallNr = exports.debug_syscall_trace_nr?.();
   if (syscallNr !== undefined && syscallNr !== 0n) {
     debugParts.push(`syscall=${syscallNr.toString()}`);
@@ -154,6 +263,17 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number): string
     debugParts.push(`guest_mem_len=${exports.debug_guest_mem_last_len?.() ?? "n/a"}`);
     debugParts.push(`guest_mem_kind=${exports.debug_guest_mem_last_kind?.() ?? "n/a"}`);
   }
+  const epollWaitReason = exports.debug_epoll_wait_reason?.() ?? 0;
+  if (epollWaitReason !== 0) {
+    debugParts.push(`epoll_wait_fd=${exports.debug_epoll_wait_epfd?.().toString() ?? "n/a"}`);
+    debugParts.push(`epoll_wait_ofd=${exports.debug_epoll_wait_ofd_id?.() ?? "n/a"}`);
+    debugParts.push(`epoll_wait_type=${exports.debug_epoll_wait_ofd_type?.() ?? "n/a"}`);
+    debugParts.push(`epoll_wait_idx=${exports.debug_epoll_wait_idx?.() ?? "n/a"}`);
+    debugParts.push(`epoll_wait_ptr=0x${(exports.debug_epoll_wait_ptr?.() ?? 0).toString(16)}`);
+    debugParts.push(`epoll_wait_count=${exports.debug_epoll_wait_count?.() ?? "n/a"}`);
+    debugParts.push(`epoll_wait_result=${exports.debug_epoll_wait_result?.().toString() ?? "n/a"}`);
+    debugParts.push(`epoll_wait_reason=${epollWaitReason}`);
+  }
   const signalDeliverySig = exports.debug_signal_delivery_sig?.();
   if (signalDeliverySig !== undefined && signalDeliverySig !== 0) {
     debugParts.push(`sig_deliver=${signalDeliverySig}`);
@@ -217,14 +337,74 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number): string
       const arg3 = readOptionalTraceU64(exports.debug_fd_syscall_trace_arg3?.(index));
       const result = readOptionalTraceU64(exports.debug_fd_syscall_trace_result?.(index));
       const status = exports.debug_fd_syscall_trace_status?.(index) ?? 0;
+      const traceVmPtr = exports.debug_fd_syscall_trace_vm_ptr?.(index) ?? 0;
       traces.push(
-        `${nr.toString()}(${arg0.toString()}[${arg0OfdId}/${arg0OfdType}],${arg1.toString()},${arg2.toString()}[${arg2OfdId}/${arg2OfdType}],${arg3.toString()})=`
+        `0x${traceVmPtr.toString(16)}:${nr.toString()}(${arg0.toString()}[${arg0OfdId}/${arg0OfdType}],${arg1.toString()},${arg2.toString()}[${arg2OfdId}/${arg2OfdType}],${arg3.toString()})=`
         + `${BigInt.asIntN(64, result).toString()}/${status}`,
       );
     }
     if (traces.length > 0) {
       debugParts.push(`fd_syscalls=[${traces.join(",")}]`);
     }
+  }
+  const pathTraceLen = exports.debug_path_syscall_trace_len?.() ?? 0;
+  if (pathTraceLen > 0) {
+    const traces: string[] = [];
+    for (let index = 0; index < pathTraceLen; index += 1) {
+      const nr = readOptionalTraceU64(exports.debug_path_syscall_trace_nr?.(index));
+      if (nr === 0n) {
+        continue;
+      }
+      const pathPtr = exports.debug_path_syscall_trace_path_ptr?.(index) ?? 0;
+      const pathLen = exports.debug_path_syscall_trace_path_len?.(index) ?? 0;
+      const path = pathPtr !== 0 && pathLen > 0
+        ? decoder.decode(new Uint8Array(exports.memory.buffer, pathPtr, pathLen))
+        : "";
+      const traceVmPtr = exports.debug_path_syscall_trace_vm_ptr?.(index) ?? 0;
+      const dirfd = readOptionalTraceU64(exports.debug_path_syscall_trace_dirfd?.(index));
+      const result = readOptionalTraceU64(exports.debug_path_syscall_trace_result?.(index));
+      const status = exports.debug_path_syscall_trace_status?.(index) ?? 0;
+      traces.push(
+        `0x${traceVmPtr.toString(16)}:${nr.toString()}(${BigInt.asIntN(64, dirfd).toString()},${JSON.stringify(path)})=`
+        + `${BigInt.asIntN(64, result).toString()}/${status}`,
+      );
+    }
+    if (traces.length > 0) {
+      debugParts.push(`path_syscalls=[${traces.join(",")}]`);
+    }
+  }
+  const threadCountTraceLen = exports.debug_thread_count_trace_len?.() ?? 0;
+  if (threadCountTraceLen > 0) {
+    const traces: string[] = [];
+    for (let index = 0; index < threadCountTraceLen; index += 1) {
+      const kind = exports.debug_thread_count_trace_kind?.(index) ?? 0;
+      if (kind === 0) {
+        continue;
+      }
+      const traceVmPtr = exports.debug_thread_count_trace_vm_ptr?.(index) ?? 0;
+      const traceTid = exports.debug_thread_count_trace_tid?.(index) ?? 0;
+      const traceProcessPtr = exports.debug_thread_count_trace_process_ptr?.(index) ?? 0;
+      const before = exports.debug_thread_count_trace_before?.(index) ?? 0;
+      const after = exports.debug_thread_count_trace_after?.(index) ?? 0;
+      traces.push(
+        `${kind}:${traceTid}@0x${traceVmPtr.toString(16)}/0x${traceProcessPtr.toString(16)}:${before}->${after}`,
+      );
+    }
+    if (traces.length > 0) {
+      debugParts.push(`thread_counts=[${traces.join(",")}]`);
+    }
+  }
+  const trackedEpollState = formatTrackedEpollState(exports, vmPtr);
+  if (trackedEpollState !== null) {
+    debugParts.push(`epoll_state=[${trackedEpollState}]`);
+  }
+  const processThreads = formatProcessThreads(exports, vmPtr);
+  if (processThreads !== null) {
+    debugParts.push(`process_slots=[${processThreads}]`);
+  }
+  const processFds = formatProcessFds(exports, vmPtr);
+  if (processFds !== null) {
+    debugParts.push(`process_fds=[${processFds}]`);
   }
   const zeroRegPc = exports.debug_zero_reg_pc?.();
   if (zeroRegPc !== undefined && zeroRegPc !== 0n) {
@@ -245,10 +425,28 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number): string
     );
     debugParts.push(`x27_write=0x${formatU64(exports.debug_x27_write_value?.() ?? 0n)}`);
   }
+  const tpWritePc = exports.debug_tp_write_pc?.();
+  if (tpWritePc !== undefined && tpWritePc !== 0n) {
+    debugParts.push(`tp_write_pc=0x${formatU64(tpWritePc)}`);
+    debugParts.push(`tp_write_raw=0x${(exports.debug_tp_write_raw?.() ?? 0).toString(16)}`);
+    const tpWriteInsn = readGuestInsn(exports, guestBase, tpWritePc);
+    if (tpWriteInsn !== null) {
+      debugParts.push(`tp_write_insn=${tpWriteInsn}`);
+    }
+    debugParts.push(`tp_write_src=${exports.debug_tp_write_source?.() ?? "n/a"}`);
+    debugParts.push(`tp_write_prev=0x${formatU64(exports.debug_tp_write_prev_value?.() ?? 0n)}`);
+    debugParts.push(`tp_write=0x${formatU64(exports.debug_tp_write_value?.() ?? 0n)}`);
+    debugParts.push(`tp_write_rs1=${exports.debug_tp_write_rs1?.() ?? "n/a"}`);
+    debugParts.push(`tp_write_rs1v=0x${formatU64(exports.debug_tp_write_rs1_value?.() ?? 0n)}`);
+  }
   const spWritePc = exports.debug_sp_write_pc?.();
   if (spWritePc !== undefined && spWritePc !== 0n) {
     debugParts.push(`sp_write_pc=0x${formatU64(spWritePc)}`);
     debugParts.push(`sp_write_raw=0x${(exports.debug_sp_write_raw?.() ?? 0).toString(16)}`);
+    const spWriteInsn = readGuestInsn(exports, guestBase, spWritePc);
+    if (spWriteInsn !== null) {
+      debugParts.push(`sp_write_insn=${spWriteInsn}`);
+    }
     debugParts.push(`sp_write_src=${exports.debug_sp_write_source?.() ?? "n/a"}`);
     debugParts.push(`sp_write_prev=0x${formatU64(exports.debug_sp_write_prev_value?.() ?? 0n)}`);
     debugParts.push(`sp_write=0x${formatU64(exports.debug_sp_write_value?.() ?? 0n)}`);
@@ -269,10 +467,7 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number): string
   }
   try {
     const pathBytes = encoder.encode("/proc/self/exe");
-    const scratchBase = exports.kernel_scratch_base?.();
-    if (scratchBase === undefined) {
-      throw new Error("kernel_scratch_base unavailable");
-    }
+    const scratchBase = debugScratchBase(exports);
     const pathPtr = scratchBase;
     const bufPtr = scratchBase + 0x200;
     new Uint8Array(exports.memory.buffer, pathPtr, pathBytes.length).set(pathBytes);
@@ -295,8 +490,13 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number): string
   return debugParts;
 }
 
-export function formatWorkerError(exports: KernelExports, vmPtr: number, error: unknown): string {
+export function formatWorkerError(
+  exports: KernelExports,
+  vmPtr: number,
+  guestBase: number,
+  error: unknown,
+): string {
   const base = error instanceof Error ? (error.stack ?? error.message) : String(error);
-  const debugParts = collectDebugParts(exports, vmPtr);
+  const debugParts = collectDebugParts(exports, vmPtr, guestBase);
   return debugParts.length === 0 ? base : `${base}\n${debugParts.join(" ")}`;
 }

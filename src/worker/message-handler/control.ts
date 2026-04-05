@@ -1,3 +1,5 @@
+import { collectHeldEpollOfdIds } from "../fork-shared.js";
+import { kernelWorkerOwnsEpollState } from "../kernel-share.js";
 import {
   drainProcessOutput,
   flushStdin,
@@ -22,10 +24,25 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
       deps.clearBlockedWorker(handle, worker);
       const wroteToPipe = flushStdin(handle);
       const drainedPipe = drainProcessOutput(handle);
+      const readySyncs: Promise<void>[] = [];
       if (wroteToPipe || drainedPipe) {
-        void deps.requestPipeStateSync(handle, true).catch((error) => {
-          deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-        });
+        readySyncs.push(deps.requestPipeStateSync(handle, true));
+      }
+      if (
+        kernelWorkerOwnsEpollState(handle)
+        && collectHeldEpollOfdIds(handle).length > 0
+      ) {
+        readySyncs.push(deps.requestEpollStateSync(handle, false));
+      }
+      if (readySyncs.length > 0) {
+        void Promise.all(readySyncs)
+          .then(() => {
+            deps.enqueueWorker(handle, worker);
+          })
+          .catch((error) => {
+            deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+          });
+        return true;
       }
       deps.enqueueWorker(handle, worker);
       return true;

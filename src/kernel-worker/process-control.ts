@@ -193,14 +193,14 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       const pipeState = deps.syncPipeState(pid, readKernelRuntimeState(processExports));
       const epollState = deps.syncEpollState(pid, pipeState);
       const socketState = deps.syncSocketState(pid, epollState);
-      if (seedMemfsMode === "metadata") {
+      if (seedMemfsMode !== "none") {
         const memberState = readKernelRuntimeState(processExports);
         const updatedCanonicalState = readKernelRuntimeState(canonicalExports);
         deps.copyCanonicalMemfsToProcess(updatedCanonicalState, processExports, memberState, {
-          includeData: false,
+          includeData: seedMemfsMode === "full",
         });
       }
-      return socketState;
+      return readKernelRuntimeState(processExports) ?? socketState;
     }
 
     const canonicalState = readKernelRuntimeState(canonicalExports);

@@ -81,12 +81,16 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
   }
 
   function debugRuntimeProcessHandles(runtimeId: number): string {
-    return debugRuntimeProcessHandlesImpl(
-      runtimeId,
-      processHandles,
-      threadWorkerStates,
-      runtimeLifecycleEvents,
-    );
+    try {
+      return debugRuntimeProcessHandlesImpl(
+        runtimeId,
+        processHandles,
+        threadWorkerStates,
+        runtimeLifecycleEvents,
+      );
+    } catch (error) {
+      return `unavailable:${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 
   function appendRuntimeLifecycleEvent(runtimeId: number, event: string): void {
@@ -94,7 +98,11 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
   }
 
   function formatAllLiveThreadDebug(handle: ProcessHandle): string {
-    return formatAllLiveThreadDebugImpl(handle, threadWorkerStates);
+    try {
+      return formatAllLiveThreadDebugImpl(handle, threadWorkerStates);
+    } catch (error) {
+      return `unavailable:${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 
   function assertProcessStandardFdIntegrity(handle: ProcessHandle, context: string): void {

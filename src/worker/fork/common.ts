@@ -79,6 +79,6 @@ export function createForkChildHandle({
       (pid) => deps.processHandles.get(pid),
       deps.failProcess,
     ),
-    workerDebugLog: [workerDebugLabel],
+    workerDebugLog: [],
   };
 }

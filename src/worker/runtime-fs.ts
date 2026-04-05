@@ -1,5 +1,6 @@
 import { attachKernelRuntimeState } from "../abi.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
+import { detachedKernelScratchBase } from "./kernel-scratch.js";
 import { normalizePath, preloadSnapshotEntries } from "./process-fs.js";
 import type {
   KernelShareGroup,
@@ -169,7 +170,8 @@ export function replaceRuntimeFsSnapshot(
     if (rootEntry) {
       representative.kernel.memfs_set_mode(1, rootEntry.mode ?? 0o755);
     }
-    preloadSnapshotEntries(representative.kernel, entries);
+    const preloadScratchBase = detachedKernelScratchBase(representative.memory, representative.guestBase, 0);
+    preloadSnapshotEntries(representative.kernel, entries, preloadScratchBase);
     for (const member of context.kernelShareOtherMembers(representative)) {
       context.syncMemfsState(representative, member);
       attachKernelRuntimeState(member.kernel, member.kernelState);

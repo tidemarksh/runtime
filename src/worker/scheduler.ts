@@ -20,6 +20,8 @@ import type {
   WorkerSchedulerDeps,
 } from "./scheduler/types.js";
 
+const WORKER_DEBUG_LOG_ENABLED = false;
+
 export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerScheduler {
   const { threadWorkerStates } = deps;
   const schedulerQueueHelpers = createWorkerSchedulerQueueHelpers({
@@ -92,9 +94,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   }
 
   function appendWorkerDebugLog(handle: ProcessHandle, event: string): void {
+    if (!WORKER_DEBUG_LOG_ENABLED) {
+      return;
+    }
     handle.workerDebugLog.push(event);
-    if (handle.workerDebugLog.length > 48) {
-      handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 48);
+    if (handle.workerDebugLog.length > 256) {
+      handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 256);
     }
   }
 

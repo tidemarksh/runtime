@@ -80,6 +80,9 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       if (deps.resumeVforkParentAfterChildExit(handle, worker, thread.vmPtr, msg.exitCode, msg.termSignal)) {
         return;
       }
+      if (msg.debug) {
+        deps.appendWorkerDebugLog(handle, `fault_debug:0x${thread.vmPtr.toString(16)}:${JSON.stringify(msg.debug)}`);
+      }
       const remainingThreads = handle.kernel.thread_process_thread_count(thread.vmPtr);
       deps.appendWorkerDebugLog(handle, `fault:0x${thread.vmPtr.toString(16)} remaining=${remainingThreads}`);
       handle.workers.delete(worker);
@@ -161,6 +164,12 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     }
 
     if (status === handle.kernel.abi_status_clone_spawn()) {
+      if (msg.debug) {
+        deps.appendWorkerDebugLog(
+          handle,
+          `clone_spawn_debug:0x${thread.vmPtr.toString(16)}:${JSON.stringify(msg.debug)}`,
+        );
+      }
       const childVmPtr = handle.kernel.thread_spawn_from_clone(thread.vmPtr);
       if (childVmPtr === 0) {
         throw new Error(`thread_spawn_from_clone failed for pid=${handle.pid}`);

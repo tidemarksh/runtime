@@ -81,23 +81,38 @@ export function publishInode(
   const u8 = new Uint8Array(sab);
   const base = inodeOffset(ino);
   const base32 = base >>> 2;
+  const dataRegionEnd = sab.byteLength;
+
+  function allocateDataRegion(byteLength: number): number {
+    if (byteLength <= 0) {
+      return 0;
+    }
+    const currentUsed = Atomics.load(u32, OFF_DATA_USED >>> 2);
+    const start = DATA_REGION_OFFSET + currentUsed;
+    const end = start + byteLength;
+    if (end > dataRegionEnd) {
+      return 0;
+    }
+    Atomics.store(u32, OFF_DATA_USED >>> 2, currentUsed + byteLength);
+    return start;
+  }
 
   // Allocate space in data region for file data
   let dataOff = 0;
   if (fileData && fileData.length > 0) {
-    const currentUsed = Atomics.load(u32, OFF_DATA_USED >>> 2);
-    dataOff = DATA_REGION_OFFSET + currentUsed;
-    u8.set(fileData, dataOff);
-    Atomics.store(u32, OFF_DATA_USED >>> 2, currentUsed + fileData.length);
+    dataOff = allocateDataRegion(fileData.length);
+    if (dataOff !== 0) {
+      u8.set(fileData, dataOff);
+    }
   }
 
   // Allocate space for name
   let nameOff = 0;
   if (meta.name.length > 0) {
-    const currentUsed = Atomics.load(u32, OFF_DATA_USED >>> 2);
-    nameOff = DATA_REGION_OFFSET + currentUsed;
-    u8.set(meta.name, nameOff);
-    Atomics.store(u32, OFF_DATA_USED >>> 2, currentUsed + meta.name.length);
+    nameOff = allocateDataRegion(meta.name.length);
+    if (nameOff !== 0) {
+      u8.set(meta.name, nameOff);
+    }
   }
 
   // Seqlock: version → odd (writing)
@@ -106,9 +121,7 @@ export function publishInode(
   Atomics.store(u32, base32 + (INODE_OFF_VERSION >>> 2), oddVersion);
 
   // Update metadata
-  if (fileData) {
-    Atomics.store(u32, base32 + (INODE_OFF_DATA_OFF >>> 2), dataOff);
-  }
+  Atomics.store(u32, base32 + (INODE_OFF_DATA_OFF >>> 2), dataOff);
   Atomics.store(u32, base32 + (INODE_OFF_DATA_SIZE >>> 2), meta.size);
   Atomics.store(u32, base32 + (INODE_OFF_MODE >>> 2), meta.mode);
   Atomics.store(u32, base32 + (INODE_OFF_PARENT >>> 2), meta.parentIno);

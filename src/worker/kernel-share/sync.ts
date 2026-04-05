@@ -85,7 +85,9 @@ export function copySocketState(source: KernelSyncHandle, target: KernelSyncHand
 export function discardCopiedSharedKernelObjects(
   handle: KernelSyncHandle,
   preservedOfdSlots: ReadonlyMap<number, Uint8Array> | null = null,
+  options: { clearMemfs?: boolean } = {},
 ): void {
+  const clearMemfsObjects = options.clearMemfs ?? true;
   const maxFds = handle.kernel.abi_max_fds();
   const tableBytes = handle.kernel.kernel_ofd_table_bytes();
   const slotBytes = tableBytes / maxFds;
@@ -96,7 +98,9 @@ export function discardCopiedSharedKernelObjects(
       bytes.set(slot, handle.kernelState.ofdTablePtr + ofdId * slotBytes);
     }
   }
-  clearMemfsState(handle);
+  if (clearMemfsObjects) {
+    clearMemfsState(handle);
+  }
   clearKernelRegion(
     handle,
     handle.kernelState.pipeBase,

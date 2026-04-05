@@ -164,7 +164,7 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
           deps.postResponse({
             type: "snapshot-fs-result",
             requestId: msg.requestId,
-            entries: deps.snapshotCanonicalFs(false).map(cloneSnapshotEntry),
+            entries: deps.snapshotCanonicalFs(msg.includeData ?? false).map(cloneSnapshotEntry),
           });
           break;
         case "load-fs-snapshot":

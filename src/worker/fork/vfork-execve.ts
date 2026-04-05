@@ -82,6 +82,30 @@ export async function handleVforkExecve(
   copyKernelPrivateRegion(handle.memory, childMemory, handle.guestBase);
   attachKernelRuntimeState(childKernel, handle.kernelState);
 
+  const rollbackParentAfterHandoffFailure = async (): Promise<void> => {
+    if (handle.kernelWorkerRequest && handle.pid > 0) {
+      await deps.resumeVforkExecveParentViaKernelWorker(handle, parentThread.vmPtr, childPid);
+      const parentRehydrateOfdIds = [...inheritedSharedOfdIds].sort((left, right) => left - right);
+      if (parentRehydrateOfdIds.length > 0) {
+        await deps.rehydrateForkSharedStateViaKernelWorker([handle], parentRehydrateOfdIds, {
+          includeMemfs: false,
+        });
+      }
+    } else {
+      handle.kernel.thread_clear_spawn_handoff(parentThread.vmPtr);
+      if (handle.kernel.thread_restore_vfork_parent_without_cleanup) {
+        handle.kernel.thread_restore_vfork_parent_without_cleanup(parentThread.vmPtr, childPid);
+      } else {
+        handle.kernel.thread_resume_vfork_parent(parentThread.vmPtr, childPid);
+      }
+      handle.kernelState = readKernelRuntimeState(handle.kernel);
+    }
+    publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
+    deps.clearVforkSnapshot(handle);
+    deps.kickBlockedWorkers(handle);
+    deps.enqueueWorker(handle, parentWorker);
+  };
+
   const childVmPtr = parentThread.vmPtr;
   const stagedExecveHandoff = stageExecveGuestHandoff(
     childKernel,
@@ -103,19 +127,21 @@ export async function handleVforkExecve(
     const debugValue0 = childKernel.debug_execve_value0?.();
     const debugValue1 = childKernel.debug_execve_value1?.();
     const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
-    throw new Error(
-      `thread_complete_execve_handoff trapped for pid=${childPid}: ${detail}`
-        + ` (stage=${debugStage ?? "n/a"}, value0=${debugValue0 ?? "n/a"}, value1=${debugValue1 ?? "n/a"})`,
-    );
+    await rollbackParentAfterHandoffFailure();
+    handle.lastDebugMessage = `vfork-execve:handoff-trap child=${childPid} detail=${detail}`
+      + ` stage=${debugStage ?? "n/a"} value0=${debugValue0 ?? "n/a"} value1=${debugValue1 ?? "n/a"}`;
+    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:handoff-trap:${childPid}`);
+    return;
   }
   if (execRet < 0) {
     const debugStage = childKernel.debug_execve_stage?.();
     const debugValue0 = childKernel.debug_execve_value0?.();
     const debugValue1 = childKernel.debug_execve_value1?.();
-    throw new Error(
-      `thread_complete_execve_handoff failed for pid=${childPid}: ${execRet}`
-        + ` (stage=${debugStage ?? "n/a"}, value0=${debugValue0 ?? "n/a"}, value1=${debugValue1 ?? "n/a"})`,
-    );
+    await rollbackParentAfterHandoffFailure();
+    handle.lastDebugMessage = `vfork-execve:handoff-failed child=${childPid} ret=${execRet}`
+      + ` stage=${debugStage ?? "n/a"} value0=${debugValue0 ?? "n/a"} value1=${debugValue1 ?? "n/a"}`;
+    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:handoff-failed:${childPid}:${execRet}`);
+    return;
   }
 
   ensureEvictionTimer();
@@ -210,8 +236,12 @@ export async function handleVforkExecve(
       includeMemfs: false,
       trackHeldOfds: false,
     });
-    discardCopiedSharedKernelObjects(childHandle);
-    deps.syncForkSharedStateLocally(handle, [childHandle]);
+    discardCopiedSharedKernelObjects(childHandle, null, {
+      clearMemfs: false,
+    });
+    deps.syncForkSharedStateLocally(handle, [childHandle], {
+      includeMemfs: false,
+    });
     restoreLocalOfdSlots(childHandle, preservedOfdSlots);
     restoreLocalPipeSlots(childHandle, preservedPipeSlots);
   }

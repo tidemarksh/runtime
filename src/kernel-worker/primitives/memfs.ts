@@ -40,12 +40,18 @@ export function createKernelWorkerMemfsPrimitives() {
       sourceExports.kernel_memfs_dir_entries_bytes(),
     );
     if (includeData) {
+      const dataBytes = Math.min(sourceLayout.dataUsed, targetLayout.dataCap);
       copyMemoryRange(
         sourceExports.memory,
         sourceLayout.dataPtr,
         targetExports.memory,
         targetLayout.dataPtr,
-        sourceLayout.dataCap,
+        dataBytes,
+      );
+      clearMemoryRange(
+        targetExports.memory,
+        targetLayout.dataPtr + dataBytes,
+        Math.max(0, targetLayout.dataCap - dataBytes),
       );
     } else {
       clearMaterializedMemfsFiles(targetExports);
