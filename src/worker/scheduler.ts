@@ -10,6 +10,7 @@ import {
   drainProcessOutput,
   flushStdin,
 } from "./stdio.js";
+import { collectLiveThreadVmPtrs, processHasLiveThreads } from "./live-threads.js";
 import { createWorkerSchedulerQueueHelpers } from "./scheduler/queue.js";
 import { createWorkerSchedulerStateSyncHelpers } from "./scheduler/state-sync.js";
 import type {
@@ -49,17 +50,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       clearTimeout(blocked.retryTimer);
     }
     handle.blockedWorkers.delete(worker);
-  }
-
-  function collectLiveThreadVmPtrs(handle: ProcessHandle, vmPtr: number): Set<number> {
-    const liveVmPtrs = new Set<number>();
-    for (let slot = 0; slot < handle.kernel.abi_max_threads(); slot++) {
-      const liveVmPtr = handle.kernel.process_thread_vm_ptr(vmPtr, slot);
-      if (liveVmPtr !== 0) {
-        liveVmPtrs.add(liveVmPtr);
-      }
-    }
-    return liveVmPtrs;
   }
 
   function selectProcessAnchorVmPtr(
@@ -193,11 +183,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         return;
       }
       const remainingThreads = handle.kernel.thread_process_thread_count(vmPtr);
+      const hasLiveThreads = remainingThreads !== 0 && processHasLiveThreads(handle.kernel, vmPtr);
       appendWorkerDebugLog(handle, `fault:0x${vmPtr.toString(16)} remaining=${remainingThreads}`);
       handle.workers.delete(worker);
       threadWorkerStates.delete(worker);
       releaseWorker(worker);
-      if (remainingThreads === 0) {
+      if (remainingThreads === 0 || !hasLiveThreads) {
         void deps.completeProcessExit(handle, exitCode, termSignal).catch((error) => {
           deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
         });
@@ -227,7 +218,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     const anchorVmPtr = selectProcessAnchorVmPtr(handle, worker);
     if (anchorVmPtr !== null) {
       try {
-        const liveVmPtrs = collectLiveThreadVmPtrs(handle, anchorVmPtr);
+        const liveVmPtrs = collectLiveThreadVmPtrs(handle.kernel, anchorVmPtr);
         pruneStaleProcessWorkers(handle, liveVmPtrs, null);
         if (!liveVmPtrs.has(blocked.vmPtr)) {
           clearBlockedWorker(handle, worker);

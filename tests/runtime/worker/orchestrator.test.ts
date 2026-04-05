@@ -640,6 +640,33 @@ test("running worker prunes stale blocked workers after the live thread table sh
   expect((handle as { workers: Set<Worker> }).workers.has(childWorker as unknown as Worker)).toBe(false);
 });
 
+test("fault exits the process when the live thread table is empty despite a stale positive thread count", async () => {
+  const onExit = vi.fn();
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { onExit });
+  const worker = createdWorkers[0];
+  const kernel = createdKernelExports[0];
+
+  kernel.thread_process_thread_count = () => 1;
+  kernel.liveThreadVmPtrs.splice(0, kernel.liveThreadVmPtrs.length);
+
+  emitReady(worker);
+  worker.clearPostedMessages();
+  worker.emit({
+    type: "status",
+    status: 3,
+    exitCode: 139,
+    termSignal: 11,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+  await flushMicrotasks();
+
+  expect(onExit).toHaveBeenCalledWith(139);
+  expect((handle as { workers: Set<Worker> }).workers.size).toBe(0);
+  expect(worker.terminated).toBe(true);
+});
+
 test("createProcess processes STATUS_FS and resumes worker with refreshed kernel state", async () => {
   const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
   const worker = createdWorkers[0];

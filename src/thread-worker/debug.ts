@@ -143,12 +143,14 @@ function readGuestInsn(exports: KernelExports, guestBase: number, pc: bigint): s
 
 export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBase: number): string[] {
   const debugParts: string[] = [];
+  const faultPc = readOptionalThreadU64(exports.thread_fault_pc, vmPtr);
+  const currentPc = exports.thread_pc(vmPtr);
   debugParts.push(`process=0x${exports.thread_process_ptr(vmPtr).toString(16)}`);
   debugParts.push(`process_threads=${exports.thread_process_thread_count(vmPtr)}`);
   debugParts.push(`tid=${readOptionalThreadI32(exports.thread_tid, vmPtr)}`);
   debugParts.push(`gp=0x${formatU64(readOptionalThreadU64(exports.thread_gp, vmPtr))}`);
   debugParts.push(`tp=0x${formatU64(readOptionalThreadU64(exports.thread_tp, vmPtr))}`);
-  debugParts.push(`x27=0x${formatU64(readOptionalThreadU64(exports.thread_x27, vmPtr))}`);
+  debugParts.push(`s11=0x${formatU64(readOptionalThreadU64(exports.thread_s11, vmPtr))}`);
   debugParts.push(`tls=0x${formatU64(readOptionalThreadU64(exports.thread_tls_base, vmPtr))}`);
   debugParts.push(`sig_mask=0x${formatU64(readOptionalThreadU64(exports.thread_sig_mask, vmPtr))}`);
   debugParts.push(`sig_pending=0x${formatU64(exports.thread_sig_pending(vmPtr))}`);
@@ -156,9 +158,17 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
   debugParts.push(`blocked_fd=${exports.thread_blocked_fd?.(vmPtr) ?? 0}`);
   debugParts.push(`blocked_ofd_id=${exports.thread_blocked_ofd_id?.(vmPtr) ?? 0}`);
   debugParts.push(`epoll_timeout_ms=${exports.thread_epoll_wait_timeout?.(vmPtr)?.toString() ?? "n/a"}`);
-  debugParts.push(`fault_pc=0x${formatU64(readOptionalThreadU64(exports.thread_fault_pc, vmPtr))}`);
+  debugParts.push(`fault_pc=0x${formatU64(faultPc)}`);
+  const faultInsn = faultPc !== 0n ? readGuestInsn(exports, guestBase, faultPc) : null;
+  if (faultInsn !== null) {
+    debugParts.push(`fault_insn=${faultInsn}`);
+  }
   debugParts.push(`fault_addr=0x${formatU64(readOptionalThreadU64(exports.thread_fault_addr, vmPtr))}`);
-  debugParts.push(`pc=0x${exports.thread_pc(vmPtr).toString(16)}`);
+  debugParts.push(`pc=0x${currentPc.toString(16)}`);
+  const currentInsn = readGuestInsn(exports, guestBase, currentPc);
+  if (currentInsn !== null) {
+    debugParts.push(`pc_insn=${currentInsn}`);
+  }
   debugParts.push(`ra=0x${readOptionalThreadU64(exports.thread_ra, vmPtr).toString(16)}`);
   debugParts.push(`sp=0x${exports.thread_sp(vmPtr).toString(16)}`);
   debugParts.push(`stk0=0x${readOptionalThreadU64((ptr) => exports.thread_stack_word?.(ptr, 0) ?? 0n, vmPtr).toString(16)}`);
@@ -195,6 +205,23 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     debugParts.push(`syscall=${syscallNr.toString()}`);
     debugParts.push(`status=${exports.debug_syscall_trace_status?.() ?? "n/a"}`);
     debugParts.push(`result=${exports.debug_syscall_trace_result?.().toString() ?? "n/a"}`);
+  }
+  const syscallTraceLen = exports.debug_syscall_trace_len?.() ?? 0;
+  if (syscallTraceLen > 0) {
+    const traces: string[] = [];
+    for (let index = 0; index < syscallTraceLen; index += 1) {
+      const nr = readOptionalTraceU64(exports.debug_syscall_trace_entry_nr?.(index));
+      if (nr === 0n) {
+        continue;
+      }
+      const result = readOptionalTraceU64(exports.debug_syscall_trace_entry_result?.(index));
+      const status = exports.debug_syscall_trace_entry_status?.(index) ?? 0;
+      const traceVmPtr = exports.debug_syscall_trace_entry_vm_ptr?.(index) ?? 0;
+      traces.push(`0x${traceVmPtr.toString(16)}:${nr.toString()}=${BigInt.asIntN(64, result).toString()}/${status}`);
+    }
+    if (traces.length > 0) {
+      debugParts.push(`syscalls=[${traces.join(",")}]`);
+    }
   }
   const writeNr = exports.debug_write_trace_last_nr?.();
   if (writeNr !== undefined && writeNr !== 0n) {
@@ -281,7 +308,7 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     debugParts.push(`sig_pc=0x${formatU64(exports.debug_signal_delivery_pc?.() ?? 0n)}`);
     debugParts.push(`sig_ra=0x${formatU64(exports.debug_signal_delivery_ra?.() ?? 0n)}`);
     debugParts.push(`sig_sp=0x${formatU64(exports.debug_signal_delivery_sp?.() ?? 0n)}`);
-    debugParts.push(`sig_x27=0x${formatU64(exports.debug_signal_delivery_x27?.() ?? 0n)}`);
+    debugParts.push(`sig_s11=0x${formatU64(exports.debug_signal_delivery_s11?.() ?? 0n)}`);
   }
   const sigreturnPc = exports.debug_sigreturn_pc?.();
   if (sigreturnPc !== undefined && sigreturnPc !== 0n) {
@@ -289,15 +316,16 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     debugParts.push(`sigret_pc=0x${formatU64(sigreturnPc)}`);
     debugParts.push(`sigret_ra=0x${formatU64(exports.debug_sigreturn_ra?.() ?? 0n)}`);
     debugParts.push(`sigret_sp=0x${formatU64(exports.debug_sigreturn_sp?.() ?? 0n)}`);
-    debugParts.push(`sigret_x27=0x${formatU64(exports.debug_sigreturn_x27?.() ?? 0n)}`);
+    debugParts.push(`sigret_s11=0x${formatU64(exports.debug_sigreturn_s11?.() ?? 0n)}`);
   }
   const cloneSpawnTid = exports.debug_clone_spawn_tid?.();
   if (cloneSpawnTid !== undefined && cloneSpawnTid !== 0) {
     debugParts.push(`clone_tid=${cloneSpawnTid}`);
     debugParts.push(`clone_pc=0x${formatU64(exports.debug_clone_spawn_pc?.() ?? 0n)}`);
     debugParts.push(`clone_ra=0x${formatU64(exports.debug_clone_spawn_ra?.() ?? 0n)}`);
+    debugParts.push(`clone_gp=0x${formatU64(exports.debug_clone_spawn_gp?.() ?? 0n)}`);
     debugParts.push(`clone_sp=0x${formatU64(exports.debug_clone_spawn_sp?.() ?? 0n)}`);
-    debugParts.push(`clone_x27=0x${formatU64(exports.debug_clone_spawn_x27?.() ?? 0n)}`);
+    debugParts.push(`clone_s11=0x${formatU64(exports.debug_clone_spawn_s11?.() ?? 0n)}`);
   }
   const trampolineTid = exports.debug_signal_trampoline_hit_tid?.();
   if (trampolineTid !== undefined && trampolineTid !== 0) {
@@ -408,22 +436,32 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
   }
   const zeroRegPc = exports.debug_zero_reg_pc?.();
   if (zeroRegPc !== undefined && zeroRegPc !== 0n) {
+    debugParts.push(`zero_reg_tid=${exports.debug_zero_reg_tid?.() ?? "n/a"}`);
     debugParts.push(`zero_reg_pc=0x${formatU64(zeroRegPc)}`);
     debugParts.push(`zero_reg_raw=0x${(exports.debug_zero_reg_raw?.() ?? 0).toString(16)}`);
+    const zeroRegInsn = readGuestInsn(exports, guestBase, zeroRegPc);
+    if (zeroRegInsn !== null) {
+      debugParts.push(`zero_reg_insn=${zeroRegInsn}`);
+    }
     debugParts.push(`zero_reg=${exports.debug_zero_reg_index?.() ?? "n/a"}`);
     debugParts.push(`zero_reg_prev=0x${formatU64(exports.debug_zero_reg_prev_value?.() ?? 0n)}`);
     debugParts.push(`zero_reg_sp=0x${formatU64(exports.debug_zero_reg_sp?.() ?? 0n)}`);
-    debugParts.push(`zero_reg_x27=0x${formatU64(exports.debug_zero_reg_x27?.() ?? 0n)}`);
+    debugParts.push(`zero_reg_s11=0x${formatU64(exports.debug_zero_reg_s11?.() ?? 0n)}`);
   }
-  const x27WritePc = exports.debug_x27_write_pc?.();
-  if (x27WritePc !== undefined && x27WritePc !== 0n) {
-    debugParts.push(`x27_write_pc=0x${formatU64(x27WritePc)}`);
-    debugParts.push(`x27_write_raw=0x${(exports.debug_x27_write_raw?.() ?? 0).toString(16)}`);
-    debugParts.push(`x27_write_src=${exports.debug_x27_write_source?.() ?? "n/a"}`);
+  const s11WritePc = exports.debug_s11_write_pc?.();
+  if (s11WritePc !== undefined && s11WritePc !== 0n) {
+    debugParts.push(`s11_write_tid=${exports.debug_s11_write_tid?.() ?? "n/a"}`);
+    debugParts.push(`s11_write_pc=0x${formatU64(s11WritePc)}`);
+    debugParts.push(`s11_write_raw=0x${(exports.debug_s11_write_raw?.() ?? 0).toString(16)}`);
+    const s11WriteInsn = readGuestInsn(exports, guestBase, s11WritePc);
+    if (s11WriteInsn !== null) {
+      debugParts.push(`s11_write_insn=${s11WriteInsn}`);
+    }
+    debugParts.push(`s11_write_src=${exports.debug_s11_write_source?.() ?? "n/a"}`);
     debugParts.push(
-      `x27_write_prev=0x${formatU64(exports.debug_x27_write_prev_value?.() ?? 0n)}`,
+      `s11_write_prev=0x${formatU64(exports.debug_s11_write_prev_value?.() ?? 0n)}`,
     );
-    debugParts.push(`x27_write=0x${formatU64(exports.debug_x27_write_value?.() ?? 0n)}`);
+    debugParts.push(`s11_write=0x${formatU64(exports.debug_s11_write_value?.() ?? 0n)}`);
   }
   const tpWritePc = exports.debug_tp_write_pc?.();
   if (tpWritePc !== undefined && tpWritePc !== 0n) {
@@ -441,6 +479,7 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
   }
   const spWritePc = exports.debug_sp_write_pc?.();
   if (spWritePc !== undefined && spWritePc !== 0n) {
+    debugParts.push(`sp_write_tid=${exports.debug_sp_write_tid?.() ?? "n/a"}`);
     debugParts.push(`sp_write_pc=0x${formatU64(spWritePc)}`);
     debugParts.push(`sp_write_raw=0x${(exports.debug_sp_write_raw?.() ?? 0).toString(16)}`);
     const spWriteInsn = readGuestInsn(exports, guestBase, spWritePc);

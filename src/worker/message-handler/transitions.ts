@@ -6,6 +6,7 @@ import {
   releaseWorker,
 } from "../pool.js";
 import { kernelShareOtherMembers } from "../kernel-share.js";
+import { processHasLiveThreads } from "../live-threads.js";
 import { blockedStatusUsesForkSharedStateSync } from "../sync.js";
 import type {
   ProcessHandle,
@@ -84,11 +85,12 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         deps.appendWorkerDebugLog(handle, `fault_debug:0x${thread.vmPtr.toString(16)}:${JSON.stringify(msg.debug)}`);
       }
       const remainingThreads = handle.kernel.thread_process_thread_count(thread.vmPtr);
+      const hasLiveThreads = remainingThreads !== 0 && processHasLiveThreads(handle.kernel, thread.vmPtr);
       deps.appendWorkerDebugLog(handle, `fault:0x${thread.vmPtr.toString(16)} remaining=${remainingThreads}`);
       handle.workers.delete(worker);
       deps.threadWorkerStates.delete(worker);
       releaseWorker(worker);
-      if (remainingThreads === 0) {
+      if (remainingThreads === 0 || !hasLiveThreads) {
         void deps.completeProcessExit(handle, msg.exitCode, msg.termSignal).catch((error) => {
           deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
         });
