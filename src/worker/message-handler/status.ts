@@ -33,9 +33,12 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     thread.waitingInWorkerStatus = null;
     handle.lastDebugMessage = msg.debug;
 
+    const status = msg.status;
     const isRunningWorker = handle.runningWorker === worker;
-    handle.kernelState = adoptKernelState(handle.kernelState, msg.kernelState);
-    attachKernelRuntimeState(handle.kernel, handle.kernelState);
+    if (status !== handle.kernel.abi_status_clone_spawn()) {
+      handle.kernelState = adoptKernelState(handle.kernelState, msg.kernelState);
+      attachKernelRuntimeState(handle.kernel, handle.kernelState);
+    }
     if (msg.waitInWorker) {
       handleWaitInWorkerStatus(handle, worker, thread, msg, isRunningWorker);
       return;
@@ -48,7 +51,6 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       handle.runningWorker = null;
     }
 
-    const status = msg.status;
     const completedSyncEffects = msg.syncEffects ?? (
       status === handle.kernel.abi_status_ok() ? deps.statusOkCompletedSyncEffects : 0
     );

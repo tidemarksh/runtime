@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
+import { readPublishedKernelRuntimeState } from "../../../src/bridge/runtime-state.js";
 import { createWorkerProcessFactory } from "../../../src/worker/create-process.js";
 import { destroyWorkerPool } from "../../../src/worker/pool.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
@@ -410,6 +411,106 @@ test("createProcess delegates cwd resolution and lifecycle seeding for runtime-o
     false,
   );
   expect(processHandles.get(9)).toBe(handle);
+});
+
+test("createProcess publishes kernel runtime state before attaching the first worker", async () => {
+  const processHandles = new Map<number, ProcessHandle>();
+  const kernelMemory = new WebAssembly.Memory({ initial: 1024, maximum: 2048, shared: true });
+  const fakeKernel = makeFakeProcessKernel(kernelMemory);
+  vi.spyOn(WebAssembly, "instantiate").mockResolvedValue({
+    exports: fakeKernel,
+  } as unknown as WebAssembly.Instance);
+  const bridgeStatesAtAttach: KernelRuntimeState[] = [];
+  const attachThreadWorker = vi.fn((handle: ProcessHandle) => {
+    bridgeStatesAtAttach.push(readPublishedKernelRuntimeState(handle.runtimeBridge));
+  });
+  const factory = createWorkerProcessFactory({
+    processHandles,
+    attachThreadWorker,
+    assertProcessStandardFdIntegrity: vi.fn(),
+    ensureCompiledModule: async () => ({}) as WebAssembly.Module,
+    getRuntimeFsEntries: () => [],
+    initializeProcessLifecycleViaKernelWorker: vi.fn(async () => {}),
+    registerProcessWithKernelWorker: vi.fn(async () => {}),
+    resolveProcessCwdInoViaKernelWorker: vi.fn(async () => 1),
+    bootstrapMemoryBytes: 64 * 1024 * 1024,
+    wasmPageSize: 65536,
+    wasmMaxPages: 65536,
+  });
+
+  const handle = await factory.createProcess(
+    new Uint8Array([0]),
+    new Uint8Array([0x7f, 0x45, 0x4c, 0x46]),
+    {
+      runtimeId: 7,
+      argv: ["/bin/test"],
+    },
+  );
+
+  expect(attachThreadWorker).toHaveBeenCalledWith(handle, handle.worker, 0x1234);
+  expect(bridgeStatesAtAttach).toEqual([handle.kernelState]);
+});
+
+test("createProcess publishes lifecycle-updated kernel state before attaching runtime-owned children", async () => {
+  const processHandles = new Map<number, ProcessHandle>([[1, makeParentHandle()]]);
+  const kernelMemory = new WebAssembly.Memory({ initial: 1024, maximum: 2048, shared: true });
+  const fakeKernel = makeFakeProcessKernel(kernelMemory);
+  vi.spyOn(WebAssembly, "instantiate").mockResolvedValue({
+    exports: fakeKernel,
+  } as unknown as WebAssembly.Instance);
+  const bridgeStatesAtAttach: KernelRuntimeState[] = [];
+  const attachThreadWorker = vi.fn((handle: ProcessHandle) => {
+    bridgeStatesAtAttach.push(readPublishedKernelRuntimeState(handle.runtimeBridge));
+  });
+  const registerProcessWithKernelWorker = vi.fn(async (handle: ProcessHandle) => {
+    handle.kernelState = {
+      ...handle.kernelState,
+      heapPtr: handle.kernelState.heapPtr + 0x20,
+      processRuntimeStatePtr: handle.kernelState.processRuntimeStatePtr + 0x80,
+    };
+  });
+  const initializeProcessLifecycleViaKernelWorker = vi.fn(async (handle: ProcessHandle) => {
+    handle.kernelState = {
+      ...handle.kernelState,
+      heapPtr: handle.kernelState.heapPtr + 0x40,
+      processPendingPtr: handle.kernelState.processPendingPtr + 0x20,
+    };
+  });
+  const factory = createWorkerProcessFactory({
+    processHandles,
+    attachThreadWorker,
+    assertProcessStandardFdIntegrity: vi.fn(),
+    ensureCompiledModule: async () => ({}) as WebAssembly.Module,
+    getRuntimeFsEntries: () => [],
+    initializeProcessLifecycleViaKernelWorker,
+    registerProcessWithKernelWorker,
+    resolveProcessCwdInoViaKernelWorker: vi.fn(async () => 33),
+    bootstrapMemoryBytes: 64 * 1024 * 1024,
+    wasmPageSize: 65536,
+    wasmMaxPages: 65536,
+  });
+
+  const handle = await factory.createProcess(
+    new Uint8Array([0]),
+    new Uint8Array([0x7f, 0x45, 0x4c, 0x46]),
+    {
+      runtimeId: 7,
+      pid: 9,
+      parentPid: 1,
+      argv: ["/bin/test"],
+      cwd: "/work/child",
+      hydrateFsFromKernelWorker: true,
+      kernelWorkerRequest: vi.fn(async () => {
+        throw new Error("unexpected kernel worker request");
+      }),
+    },
+  );
+
+  expect(attachThreadWorker).toHaveBeenCalledWith(handle, handle.worker, 0x1234);
+  expect(bridgeStatesAtAttach).toEqual([handle.kernelState]);
+  expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x60);
+  expect(handle.kernelState.processRuntimeStatePtr).toBe(makeKernelState().processRuntimeStatePtr + 0x80);
+  expect(handle.kernelState.processPendingPtr).toBe(makeKernelState().processPendingPtr + 0x20);
 });
 
 test("createProcess fetches a full kernel-worker snapshot when runtime fs entries are metadata-only", async () => {

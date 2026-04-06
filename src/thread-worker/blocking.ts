@@ -102,9 +102,8 @@ export function handleFutexWait(
   ctx: ThreadWorkerBlockingContext,
   status: number,
 ): boolean {
-  const addr = ctx.guestBase + Number(ctx.exports.thread_futex_wait_addr(ctx.vmPtr));
   const i32 = new Int32Array(ctx.exports.memory.buffer);
-  const wordIndex = addr >>> 2;
+  let guestAddr = Number(ctx.exports.thread_futex_wait_addr(ctx.vmPtr));
   const expected = ctx.exports.thread_futex_wait_expected(ctx.vmPtr);
 
   if (ctx.exports.thread_record_blocked_addr(ctx.vmPtr) === 0) {
@@ -119,6 +118,7 @@ export function handleFutexWait(
   const deadlineMs = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
 
   for (;;) {
+    const wordIndex = (ctx.guestBase + guestAddr) >>> 2;
     const waitMs = deadlineMs === undefined
       ? ctx.futexWaitSliceMs
       : Math.max(0, Math.min(ctx.futexWaitSliceMs, deadlineMs - Date.now()));
@@ -127,6 +127,10 @@ export function handleFutexWait(
     ctx.reattachPublishedKernelRuntimeState();
     const stillBlockedAddr = ctx.exports.thread_record_blocked_addr(ctx.vmPtr);
     const hasPendingSignal = ctx.exports.thread_sig_pending(ctx.vmPtr) !== 0n;
+    if (stillBlockedAddr !== 0 && stillBlockedAddr !== guestAddr) {
+      guestAddr = stillBlockedAddr;
+      continue;
+    }
     if (stillBlockedAddr !== 0 && hasPendingSignal) {
       clearSyscallTrace(ctx.exports);
       ctx.exports.thread_resume_futex_wait_result(

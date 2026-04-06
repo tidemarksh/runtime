@@ -23,10 +23,22 @@ export function adoptKernelState(
 ): KernelRuntimeState {
   return {
     ...current,
+    heapBase: incoming.heapBase,
     heapPtr: Math.max(current.heapPtr, incoming.heapPtr),
+    ofdTablePtr: incoming.ofdTablePtr,
+    memfsPtr: incoming.memfsPtr,
+    memStatePtr: incoming.memStatePtr,
+    epollTablePtr: incoming.epollTablePtr,
+    socketTablePtr: incoming.socketTablePtr,
     socketUsed: incoming.socketUsed,
+    pipeBase: incoming.pipeBase,
     pipeUsed: incoming.pipeUsed,
+    netBufBase: incoming.netBufBase,
     netBufUsed: incoming.netBufUsed,
+    sigSlotsPtr: incoming.sigSlotsPtr,
+    processPendingPtr: incoming.processPendingPtr,
+    processRuntimeStatePtr: incoming.processRuntimeStatePtr,
+    timeStatePtr: incoming.timeStatePtr,
   };
 }
 
