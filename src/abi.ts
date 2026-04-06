@@ -53,6 +53,7 @@ export interface KernelExports {
   abi_sys_execve?(): bigint | number;
   abi_sys_close?(): bigint | number;
   abi_sys_pipe2?(): bigint | number;
+  abi_sys_epoll_create1?(): bigint | number;
   abi_sys_epoll_ctl?(): bigint | number;
   abi_sys_dup?(): bigint | number;
   abi_sys_dup3?(): bigint | number;

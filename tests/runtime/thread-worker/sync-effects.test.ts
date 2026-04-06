@@ -19,6 +19,7 @@ function makeKernelExports(syscallNr: bigint | null) {
     abi_sys_dup: () => 23n,
     abi_sys_dup3: () => 24n,
     abi_sys_eventfd2: () => 19n,
+    abi_sys_epoll_create1: () => 20n,
     abi_sys_execve: () => 221n,
     abi_sys_kill: () => 129n,
     debug_syscall_trace_nr: () => syscallNr ?? 0n,
@@ -45,7 +46,7 @@ test("readCompletedSyncEffects marks close/dup/dup3 as fork-shared OFD mutations
   }
 });
 
-test("readCompletedSyncEffects marks pipe2 and eventfd2 as ownership-affecting sync points", () => {
+test("readCompletedSyncEffects marks pipe2, eventfd2, and epoll_create1 as ownership-affecting sync points", () => {
   const pipe2Exports = makeKernelExports(59n);
   const pipe2Syscalls = loadSyscallNumbers(pipe2Exports);
   expect(readCompletedSyncEffects(pipe2Exports, statusCodes, statusCodes.OK, pipe2Syscalls)).toBe(
@@ -58,6 +59,12 @@ test("readCompletedSyncEffects marks pipe2 and eventfd2 as ownership-affecting s
     SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE
       | SYNC_EFFECT_EPOLL_STATE
       | SYNC_EFFECT_FORK_SHARED_OFD_STATE,
+  );
+
+  const epollCreate1Exports = makeKernelExports(20n);
+  const epollCreate1Syscalls = loadSyscallNumbers(epollCreate1Exports);
+  expect(readCompletedSyncEffects(epollCreate1Exports, statusCodes, statusCodes.OK, epollCreate1Syscalls)).toBe(
+    SYNC_EFFECT_EPOLL_STATE | SYNC_EFFECT_FORK_SHARED_OFD_STATE,
   );
 });
 

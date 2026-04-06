@@ -26,6 +26,7 @@ export interface SyscallNumbers {
   listen: bigint | null;
   accept4: bigint | null;
   eventfd2: bigint | null;
+  epollCreate1: bigint | null;
   setpgid: bigint | null;
   setsid: bigint | null;
   kill: bigint | null;
@@ -63,6 +64,7 @@ export function loadSyscallNumbers(exports: KernelExports): SyscallNumbers {
     listen: readOptionalU64(exports.abi_sys_listen?.()),
     accept4: readOptionalU64(exports.abi_sys_accept4?.()),
     eventfd2: readOptionalU64(exports.abi_sys_eventfd2?.()),
+    epollCreate1: readOptionalU64(exports.abi_sys_epoll_create1?.()),
     setpgid: readOptionalU64(exports.abi_sys_setpgid?.()),
     setsid: readOptionalU64(exports.abi_sys_setsid?.()),
     kill: readOptionalU64(exports.abi_sys_kill?.()),
@@ -126,6 +128,10 @@ export function readCompletedSyncEffects(
     return SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE
       | SYNC_EFFECT_EPOLL_STATE
       | SYNC_EFFECT_FORK_SHARED_OFD_STATE;
+  }
+
+  if (matchesSyscall(syscallNr, syscallNumbers.epollCreate1)) {
+    return SYNC_EFFECT_EPOLL_STATE | SYNC_EFFECT_FORK_SHARED_OFD_STATE;
   }
 
   if (matchesSyscall(syscallNr, syscallNumbers.epollCtl)) {
