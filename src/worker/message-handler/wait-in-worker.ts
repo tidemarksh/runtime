@@ -59,7 +59,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       void syncSocketState
         .then(() => deps.requestEpollStateSync(handle, false))
         .then(() => {
-          publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
+          publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
           continueWaitInWorker();
         })
         .catch((error) => {
@@ -77,7 +77,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
     ) {
       void deps.requestSocketStateSync(handle, false)
         .then(() => {
-          publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
+          publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
           continueWaitInWorker();
         })
         .catch((error) => {

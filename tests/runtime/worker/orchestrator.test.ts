@@ -2025,7 +2025,7 @@ test("STATUS_WAIT4 delegates retries through kernel-worker when available", asyn
   expect(requests.some((msg) => msg.type === "resume-wait4")).toBe(true);
   expect(resumeWait4).not.toHaveBeenCalled();
   expect(resumeBlocked).not.toHaveBeenCalled();
-  expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x30);
+  expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x50);
   expect(worker.postedMessages).toEqual([
     {
       type: "step",
@@ -2093,7 +2093,7 @@ test("waitInWorker STATUS_EPOLL_WAIT skips epoll sync when the process holds no 
   expect(worker.postedMessages).toEqual([]);
 });
 
-test("waitInWorker STATUS_EPOLL_WAIT republishes synced kernel state for bridge resumes", async () => {
+test("waitInWorker STATUS_EPOLL_WAIT republishes synced kernel state and wakes bridge waiters", async () => {
   const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
     pid: 1,
     kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
@@ -2144,7 +2144,7 @@ test("waitInWorker STATUS_EPOLL_WAIT republishes synced kernel state for bridge 
 
   expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x40);
   expect(readPublishedKernelRuntimeState(handle.runtimeBridge).heapPtr).toBe(makeKernelState().heapPtr + 0x40);
-  expect(Atomics.load(notify, 0)).toBe(notifyBefore);
+  expect(Atomics.load(notify, 0)).toBeGreaterThan(notifyBefore);
   expect(worker.postedMessages).toEqual([]);
 });
 
@@ -2304,6 +2304,165 @@ test("pipe sync wakes waitInWorker epoll waits through runtime bridge", async ()
   expect(requests.some((msg) => msg.type === "resume-epoll-wait")).toBe(false);
   expect(Atomics.load(notify, 0)).toBeGreaterThan(notifyBefore);
   expect(worker.postedMessages).toEqual([]);
+});
+
+test("pipe sync with held epoll OFDs refreshes epoll state and wakes waitInWorker bridge waiters", async () => {
+  const requests: KernelWorkerRequest[] = [];
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+      requests.push(msg);
+      switch (msg.type) {
+        case "register-process":
+          return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+        case "initialize-process-lifecycle":
+          return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+        case "sync-epoll-state":
+          return {
+            type: "epoll-state-synced",
+            requestId: 0,
+            kernelState: {
+              ...msg.kernelState,
+              heapPtr: msg.kernelState.heapPtr + 0x24,
+            },
+          };
+        case "sync-pipe-state":
+          return { type: "pipe-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "unregister-process":
+          return { type: "process-unregistered", requestId: 0 };
+        default:
+          throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+      }
+    },
+  });
+  const worker = createdWorkers[0];
+  const kernel = createdKernelExports[0];
+
+  kernel.thread_epoll_wait_timeout = () => -1n;
+  kernel.process_fd_ofd_id = (_vmPtr, fd) => (fd === 4 ? 7 : 0);
+  kernel.kernel_ofd_fd_type = (ofdId) => (ofdId === 7 ? kernel.abi_fd_type_epoll() : 0);
+
+  emitReady(worker);
+  worker.clearPostedMessages();
+  const notify = new Int32Array(handle.runtimeBridge.notifySab);
+  const notifyBefore = Atomics.load(notify, 0);
+  worker.emit({
+    type: "status",
+    status: 7,
+    waitInWorker: true,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+
+  await flushMicrotasks();
+  writeProcessStdin(handle, new TextEncoder().encode("x"));
+  await flushMicrotasks();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await flushMicrotasks();
+
+  expect(requests.some((msg) => msg.type === "sync-pipe-state")).toBe(true);
+  expect(requests.filter((msg) => msg.type === "sync-epoll-state")).toHaveLength(2);
+  expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x48);
+  expect(readPublishedKernelRuntimeState(handle.runtimeBridge).heapPtr).toBe(makeKernelState().heapPtr + 0x48);
+  expect(Atomics.load(notify, 0)).toBeGreaterThan(notifyBefore);
+  expect(worker.postedMessages).toContainEqual(expect.objectContaining({ type: "step" }));
+});
+
+test("pipe sync refreshes epoll-dependent OFD state before retrying waitInWorker epoll waits", async () => {
+  const requests: KernelWorkerRequest[] = [];
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+      requests.push(msg);
+      switch (msg.type) {
+        case "register-process":
+          return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+        case "initialize-process-lifecycle":
+          return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+        case "sync-ofd-state":
+          return {
+            type: "ofd-state-synced",
+            requestId: 0,
+            kernelState: {
+              ...msg.kernelState,
+              heapPtr: msg.kernelState.heapPtr + 0x10,
+            },
+          };
+        case "sync-epoll-state":
+          return {
+            type: "epoll-state-synced",
+            requestId: 0,
+            kernelState: {
+              ...msg.kernelState,
+              heapPtr: msg.kernelState.heapPtr + 0x20,
+            },
+          };
+        case "sync-pipe-state":
+          return { type: "pipe-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "unregister-process":
+          return { type: "process-unregistered", requestId: 0 };
+        default:
+          throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+      }
+    },
+  });
+  const worker = createdWorkers[0];
+  const kernel = createdKernelExports[0];
+
+  kernel.thread_epoll_wait_timeout = () => -1n;
+  kernel.process_fd_ofd_id = (_vmPtr, fd) => {
+    if (fd === 3) {
+      return 9;
+    }
+    if (fd === 4) {
+      return 7;
+    }
+    return 0;
+  };
+  kernel.kernel_ofd_fd_type = (ofdId) => {
+    if (ofdId === 7) {
+      return kernel.abi_fd_type_epoll();
+    }
+    if (ofdId === 9) {
+      return 9;
+    }
+    return 0;
+  };
+
+  emitReady(worker);
+  worker.clearPostedMessages();
+  const notify = new Int32Array(handle.runtimeBridge.notifySab);
+  const notifyBefore = Atomics.load(notify, 0);
+  worker.emit({
+    type: "status",
+    status: 7,
+    waitInWorker: true,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+
+  await flushMicrotasks();
+  writeProcessStdin(handle, new TextEncoder().encode("x"));
+  await flushMicrotasks();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await flushMicrotasks();
+
+  const pipeSyncIndex = requests.findIndex((msg) => msg.type === "sync-pipe-state");
+  const ofdSyncIndex = requests.findIndex((msg) => msg.type === "sync-ofd-state");
+  const epollSyncIndex = requests.findLastIndex((msg) => msg.type === "sync-epoll-state");
+  expect(pipeSyncIndex).toBeGreaterThanOrEqual(0);
+  expect(ofdSyncIndex).toBeGreaterThan(pipeSyncIndex);
+  expect(ofdSyncIndex).toBeGreaterThanOrEqual(0);
+  expect(epollSyncIndex).toBeGreaterThan(ofdSyncIndex);
+  expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x50);
+  expect(Atomics.load(notify, 0)).toBeGreaterThan(notifyBefore);
+  expect(worker.postedMessages).toContainEqual(expect.objectContaining({ type: "step" }));
 });
 
 test("signal syscalls wake waitInWorker threads through the runtime bridge", async () => {

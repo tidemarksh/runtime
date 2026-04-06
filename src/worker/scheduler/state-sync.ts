@@ -191,6 +191,7 @@ export function createWorkerSchedulerStateSyncHelpers(
         if (shouldWake) {
           wakePipeWaitersInKernelShare(handle, pipeUsed);
           if (kernelWorkerOwnsEpollState(handle)) {
+            await requestEpollDependentOfdStateSync(handle);
             await requestEpollStateSync(handle, true);
           } else {
             wakeBlockedStatusesInKernelShare(
