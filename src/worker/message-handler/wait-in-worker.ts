@@ -21,11 +21,26 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
     msg: ThreadWorkerStatusMessage,
     isRunningWorker: boolean,
   ): void {
+    const epollWaitStatus = handle.kernel.abi_status_epoll_wait();
+    const epollTimeoutMs = msg.status === epollWaitStatus
+      ? Number(handle.kernel.thread_epoll_wait_timeout(thread.vmPtr))
+      : null;
     deps.appendWorkerDebugLog(handle, `wait:0x${thread.vmPtr.toString(16)}@${msg.status}`);
-    thread.waitingInWorkerStatus = msg.status;
     deps.clearBlockedWorker(handle, worker);
     const drainedPipe = drainProcessOutput(handle);
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
+
+    if (msg.status === epollWaitStatus && epollTimeoutMs === 0) {
+      thread.waitingInWorkerStatus = null;
+      if (isRunningWorker) {
+        handle.runningWorker = null;
+      }
+      deps.blockWorker(handle, worker, msg.status, thread.vmPtr);
+      deps.pumpProcess(handle);
+      return;
+    }
+
+    thread.waitingInWorkerStatus = msg.status;
 
     const continueWaitInWorker = (): void => {
       if (drainedPipe) {
@@ -39,7 +54,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       deps.pumpProcess(handle);
     };
 
-    const waitInWorkerNeedsEpollSync = msg.status === handle.kernel.abi_status_epoll_wait()
+    const waitInWorkerNeedsEpollSync = msg.status === epollWaitStatus
       || (
         kernelWorkerOwnsSocketState(handle)
         && (

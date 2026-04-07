@@ -2025,7 +2025,7 @@ test("STATUS_WAIT4 delegates retries through kernel-worker when available", asyn
   expect(requests.some((msg) => msg.type === "resume-wait4")).toBe(true);
   expect(resumeWait4).not.toHaveBeenCalled();
   expect(resumeBlocked).not.toHaveBeenCalled();
-  expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x50);
+  expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x30);
   expect(worker.postedMessages).toEqual([
     {
       type: "step",
@@ -2122,6 +2122,7 @@ test("waitInWorker STATUS_EPOLL_WAIT republishes synced kernel state and wakes b
   const kernel = createdKernelExports[0];
   const notify = new Int32Array(handle.runtimeBridge.notifySab);
 
+  kernel.thread_epoll_wait_timeout = () => -1n;
   emitReady(worker);
   worker.clearPostedMessages();
   kernel.process_fd_ofd_id = (_vmPtr, fd) => (fd === 4 ? 7 : 0);
@@ -2820,6 +2821,42 @@ test("waitInWorker status skips owner-side blocked retry scheduling", async () =
 
   expect(resumeBlocked).not.toHaveBeenCalled();
   expect(worker.postedMessages).toEqual([]);
+
+  vi.useRealTimers();
+});
+
+test("waitInWorker EPOLL_WAIT timeout=0 falls back to owner-side blocked retry scheduling", async () => {
+  vi.useFakeTimers();
+
+  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
+  const worker = createdWorkers[0];
+  const kernel = createdKernelExports[0];
+  const resumeTimeout = vi.fn(() => 0);
+
+  kernel.thread_epoll_wait_timeout = () => 0n;
+  kernel.thread_resume_epoll_wait_timeout = resumeTimeout;
+  kernel.thread_status = () => 0;
+
+  emitReady(worker);
+  worker.clearPostedMessages();
+  worker.emit({
+    type: "status",
+    status: kernel.abi_status_epoll_wait(),
+    waitInWorker: true,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+
+  vi.advanceTimersByTime(0);
+  await flushMicrotasks();
+
+  expect(resumeTimeout).toHaveBeenCalledWith(0x1234);
+  expect(worker.postedMessages).toEqual([
+    { type: "step", budget: 20_000, kernelState: makeKernelState() },
+  ]);
 
   vi.useRealTimers();
 });

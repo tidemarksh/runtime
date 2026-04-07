@@ -158,6 +158,24 @@ function formatThreadDebug(handle: RuntimeDebugHandle, vmPtr: number): string {
   ].filter(Boolean).join(" ");
 }
 
+function formatSyscallTrace(handle: RuntimeDebugHandle): string {
+  const len = handle.kernel.debug_syscall_trace_len?.() ?? 0;
+  if (len <= 0) {
+    return "";
+  }
+  const entries: string[] = [];
+  for (let index = 0; index < len; index += 1) {
+    const traceVmPtr = handle.kernel.debug_syscall_trace_entry_vm_ptr?.(index) ?? 0;
+    const nr = handle.kernel.debug_syscall_trace_entry_nr?.(index);
+    const status = handle.kernel.debug_syscall_trace_entry_status?.(index) ?? 0;
+    const result = handle.kernel.debug_syscall_trace_entry_result?.(index);
+    entries.push(
+      `${index}:vm=0x${traceVmPtr.toString(16)}:nr=${nr?.toString() ?? "n/a"}:status=${status}:result=${result?.toString() ?? "n/a"}`,
+    );
+  }
+  return entries.join(" ");
+}
+
 export async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<string> {
   const runtimeView = runtime as RuntimeDebugView;
   const processes = runtimeView.processes;
@@ -250,6 +268,7 @@ export async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<str
           `ofds=[${ofdSummary}]`,
           `pipes=[${pipeSummary}]`,
           `debug=${debug}`,
+          `syscalls=[${formatSyscallTrace(handle)}]`,
         ].join(" ");
       })
       .join("\n");

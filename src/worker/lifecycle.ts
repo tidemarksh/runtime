@@ -40,6 +40,10 @@ function encodeWaitStatus(exitCode: number, termSignal: number): number {
 
 export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
   async function completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number): Promise<void> {
+    if (handle.exitInProgress) {
+      return;
+    }
+    handle.exitInProgress = true;
     if (kernelWorkerOwnsPipeState(handle)) {
       await deps.requestPipeStateSync(handle, true);
     }
@@ -66,6 +70,10 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
   }
 
   function failProcess(handle: ProcessHandle, error: Error): void {
+    if (handle.exitInProgress) {
+      return;
+    }
+    handle.exitInProgress = true;
     deps.drainProcessOutput(handle);
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,

@@ -72,6 +72,7 @@ export function createForkChildHandle({
     socketWaiterWakeQueued: false,
     vforkSnapshot: null,
     vforkWorker: null,
+    exitInProgress: false,
     onStdout: createInheritedStdoutSink(parent),
     onError: createInheritedErrorSink(
       parent,

@@ -94,6 +94,7 @@ export interface ProcessHandle {
   socketWaiterWakeQueued: boolean;
   vforkSnapshot: VforkSnapshot | null;
   vforkWorker: Worker | null;
+  exitInProgress?: boolean;
   onExit?: (code: number) => void;
   onError?: (error: Error) => void;
   onStdout?: (data: Uint8Array) => void;

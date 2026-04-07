@@ -248,6 +248,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       socketWaiterWakeQueued: false,
       vforkSnapshot: null,
       vforkWorker: null,
+      exitInProgress: false,
       onExit: options.onExit,
       onError: options.onError,
       onStdout: options.onStdout,

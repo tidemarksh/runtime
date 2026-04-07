@@ -152,7 +152,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (status === handle.kernel.abi_status_epoll_wait()) {
       const timeoutMs = Number(handle.kernel.thread_epoll_wait_timeout(vmPtr));
       if (timeoutMs >= 0) {
-        scheduleBlockedRetry(handle, worker, Math.max(1, timeoutMs), true);
+        scheduleBlockedRetry(handle, worker, Math.max(0, timeoutMs), true);
       }
       return;
     }
@@ -202,7 +202,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (status === handle.kernel.abi_status_epoll_wait()) {
       const timeoutMs = Number(handle.kernel.thread_epoll_wait_timeout(vmPtr));
       if (timeoutMs >= 0) {
-        scheduleBlockedRetry(handle, worker, Math.max(1, timeoutMs), true);
+        scheduleBlockedRetry(handle, worker, Math.max(0, timeoutMs), true);
       }
       return;
     }

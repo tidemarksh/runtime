@@ -37,7 +37,7 @@ export function stepThread(ctx: ThreadWorkerExecContext, budget: number): void {
       return;
     }
 
-    if (isRuntimeBridgeBlockedStatus(status, ctx.statusCodes)) {
+    if (isRuntimeBridgeBlockedStatus(ctx.exports, ctx.vmPtr, status, ctx.statusCodes)) {
       handleRuntimeBridgeBlockedStatus({
         ...ctx,
         runtimeBridge: ctx.runtimeBridge,

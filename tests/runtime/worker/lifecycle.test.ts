@@ -230,3 +230,61 @@ test("completeProcessExit releases host stdio locally exactly once for signaled 
   expect(handle.hostStdio.refCount).toBe(0);
   expect(releaseHostStdio).toHaveBeenCalledTimes(1);
 });
+
+test("completeProcessExit runs only once while a kernel-worker-owned exit is already in progress", async () => {
+  const { handle } = makeHandle({
+    kernelWorkerRequest: vi.fn(async () => ({ type: "pipe-state-synced" } as never)),
+  });
+  const appendRuntimeLifecycleEvent = vi.fn();
+  const drainProcessOutput = vi.fn(() => false);
+  const requestPipeStateSync = vi.fn(async () => {});
+  const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
+  const requestSocketStateSync = vi.fn(async () => {});
+  const requestEpollStateSync = vi.fn(async () => {});
+  const workerExitCompleteProcessExit = vi.fn(async () => {});
+  let releaseResolved = false;
+  let resolveRelease: (() => void) | null = null;
+  const releasePromise = new Promise<void>((resolve) => {
+    resolveRelease = () => {
+      releaseResolved = true;
+      resolve();
+    };
+  });
+  const lifecycle = createWorkerLifecycleHelpers({
+    appendRuntimeLifecycleEvent,
+    drainProcessOutput,
+    enqueueWorker: () => {},
+    kickBlockedWorkers: () => {},
+    recordChildExitViaKernelWorker: async () => {},
+    releaseSharedHostStdio: vi.fn(async () => {
+      await releasePromise;
+    }),
+    requestEpollStateSync,
+    requestPipeStateSync,
+    requestSocketStateSync,
+    resumeVforkParentViaKernelWorker: async () => {},
+    syncForkSharedStateViaKernelWorker,
+    workerExitCompleteProcessExit,
+    workerExitFailProcess: () => {},
+  });
+
+  const firstExit = lifecycle.completeProcessExit(handle, 0, 6);
+  await Promise.resolve();
+  await Promise.resolve();
+  await lifecycle.completeProcessExit(handle, 0, 6);
+  expect(handle.exitInProgress).toBe(true);
+  expect(appendRuntimeLifecycleEvent).toHaveBeenCalledTimes(1);
+  expect(drainProcessOutput).toHaveBeenCalledTimes(1);
+  expect(requestPipeStateSync).toHaveBeenCalledTimes(1);
+  expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalledTimes(1);
+  expect(requestSocketStateSync).toHaveBeenCalledTimes(1);
+  expect(requestEpollStateSync).toHaveBeenCalledTimes(1);
+  expect(workerExitCompleteProcessExit).toHaveBeenCalledTimes(0);
+
+  resolveRelease?.();
+  await firstExit;
+
+  expect(releaseResolved).toBe(true);
+  expect(workerExitCompleteProcessExit).toHaveBeenCalledTimes(1);
+  expect(appendRuntimeLifecycleEvent).toHaveBeenCalledTimes(1);
+});

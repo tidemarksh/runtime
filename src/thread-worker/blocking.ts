@@ -20,11 +20,30 @@ interface ThreadWorkerBlockingContext {
   step(budget: number): void;
 }
 
-export function isRuntimeBridgeBlockedStatus(status: number, statusCodes: StatusCodes): boolean {
-  // §6.4: EPOLL_WAIT can stay in the thread-worker because another worker can
-  // wake it through the runtime bridge. STATUS_SLEEP must stay owner-side so
-  // its JS timer can fire while this worker is idle.
-  return status === statusCodes.EPOLL_WAIT;
+function epollWaitShouldStayInWorker(
+  exports: KernelExports,
+  vmPtr: number,
+  status: number,
+  statusCodes: StatusCodes,
+): boolean {
+  if (status !== statusCodes.EPOLL_WAIT) {
+    return false;
+  }
+  // §6.4: only indefinite epoll waits should stay in the thread-worker. Finite
+  // timeouts belong to the owner-side retry path so JS timers can drive the
+  // wakeup without leaving a worker parked in wait:22.
+  return Number(exports.thread_epoll_wait_timeout(vmPtr)) < 0;
+}
+
+export function isRuntimeBridgeBlockedStatus(
+  exports: KernelExports,
+  vmPtr: number,
+  status: number,
+  statusCodes: StatusCodes,
+): boolean {
+  // STATUS_SLEEP must stay owner-side so its JS timer can fire while this
+  // worker is idle. EPOLL_WAIT stays in-worker only for indefinite waits.
+  return epollWaitShouldStayInWorker(exports, vmPtr, status, statusCodes);
 }
 
 export function handleRuntimeBridgeBlockedStatus(
@@ -43,7 +62,7 @@ export function handleRuntimeBridgeBlockedStatus(
     const timeoutMs = Number(ctx.exports.thread_epoll_wait_timeout(ctx.vmPtr));
     const waitResult = timeoutMs < 0
       ? waitForRuntimeBridgeWake(ctx.runtimeBridge)
-      : waitForRuntimeBridgeWake(ctx.runtimeBridge, Math.max(1, timeoutMs));
+      : waitForRuntimeBridgeWake(ctx.runtimeBridge, Math.max(0, timeoutMs));
 
     ctx.reattachPublishedKernelRuntimeState();
     const boundary = checkPendingSignalsAtBoundary(ctx.exports, ctx.vmPtr, ctx.statusCodes);
@@ -52,7 +71,7 @@ export function handleRuntimeBridgeBlockedStatus(
         const interrupted = ctx.exports.thread_interrupt_epoll_wait?.(ctx.vmPtr, -ctx.eintrErrno) ?? 0;
         if (interrupted === 0) {
           blockedStatus = ctx.exports.thread_status(ctx.vmPtr);
-          if (!isRuntimeBridgeBlockedStatus(blockedStatus, ctx.statusCodes)) {
+          if (!isRuntimeBridgeBlockedStatus(ctx.exports, ctx.vmPtr, blockedStatus, ctx.statusCodes)) {
             ctx.postStatus(blockedStatus);
             return;
           }
@@ -62,6 +81,26 @@ export function handleRuntimeBridgeBlockedStatus(
       ctx.postStatus(ctx.statusCodes.OK);
       return;
     }
+    if (
+      blockedStatus === ctx.statusCodes.EPOLL_WAIT
+      && waitResult === "timed-out"
+      && boundary.status === ctx.statusCodes.EPOLL_WAIT
+    ) {
+      clearSyscallTrace(ctx.exports);
+      ctx.exports.thread_resume_epoll_wait_timeout(ctx.vmPtr);
+      blockedStatus = ctx.exports.thread_status(ctx.vmPtr);
+      if (blockedStatus === ctx.statusCodes.FUTEX_WAIT) {
+        if (handleFutexWait(ctx, blockedStatus)) {
+          ctx.step(ctx.threadStepBudget);
+        }
+        return;
+      }
+      if (!isRuntimeBridgeBlockedStatus(ctx.exports, ctx.vmPtr, blockedStatus, ctx.statusCodes)) {
+        ctx.postStatus(blockedStatus);
+        return;
+      }
+      continue;
+    }
     if (boundary.status !== ctx.statusCodes.OK) {
       blockedStatus = boundary.status;
       if (blockedStatus === ctx.statusCodes.FUTEX_WAIT) {
@@ -70,7 +109,7 @@ export function handleRuntimeBridgeBlockedStatus(
         }
         return;
       }
-      if (!isRuntimeBridgeBlockedStatus(blockedStatus, ctx.statusCodes)) {
+      if (!isRuntimeBridgeBlockedStatus(ctx.exports, ctx.vmPtr, blockedStatus, ctx.statusCodes)) {
         ctx.postStatus(blockedStatus);
         return;
       }
@@ -91,7 +130,7 @@ export function handleRuntimeBridgeBlockedStatus(
       }
       return;
     }
-    if (!isRuntimeBridgeBlockedStatus(blockedStatus, ctx.statusCodes)) {
+    if (!isRuntimeBridgeBlockedStatus(ctx.exports, ctx.vmPtr, blockedStatus, ctx.statusCodes)) {
       ctx.postStatus(blockedStatus);
       return;
     }

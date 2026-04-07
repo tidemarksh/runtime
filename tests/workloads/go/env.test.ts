@@ -231,7 +231,11 @@ test("Runtime propagates go build environment", async () => {
     expect(exitCode, `${output}\n${debugInfo ?? ""}`).toBe(0);
     expect(output).toContain("off");
     expect(output).toContain("/usr/local/go");
-    expect(output).toContain("1");
+    expect(output.trimEnd().split("\n")).toEqual([
+      "off",
+      "/usr/local/go",
+    ]);
+    expect(output).not.toContain("\n1\n");
   } finally {
     runtime.destroy();
   }

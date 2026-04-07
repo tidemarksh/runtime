@@ -324,6 +324,86 @@ test("STATUS_SLEEP with zero duration requeues immediately on the owner", async 
   }]);
 });
 
+test("STATUS_EPOLL_WAIT with zero timeout resumes on the owner without a 1ms floor", async () => {
+  vi.useFakeTimers();
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
+  const resumeTimeout = vi.fn(() => 0n);
+  handle.kernel.thread_epoll_wait_timeout = () => 0n;
+  handle.kernel.thread_resume_epoll_wait_timeout = resumeTimeout;
+  handle.kernel.thread_status = () => 0;
+  const worker = createdWorkers[0];
+
+  emitReady(worker);
+  worker.clearPostedMessages();
+  worker.emit({
+    type: "status",
+    status: 7,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+
+  expect(resumeTimeout).not.toHaveBeenCalled();
+  expect(worker.postedMessages).toEqual([]);
+
+  vi.advanceTimersByTime(0);
+
+  expect(resumeTimeout).toHaveBeenCalledWith(0x1234);
+  expect(worker.postedMessages).toEqual([{
+    type: "step",
+    budget: 20_000,
+    kernelState: makeKernelState(),
+  }]);
+
+  vi.useRealTimers();
+});
+
+test("STATUS_EPOLL_WAIT timeout retries that become FUTEX_WAIT stay in the owner-side blocking loop", async () => {
+  vi.useFakeTimers();
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
+  let status = 7;
+  const resumeTimeout = vi.fn(() => {
+    status = 5;
+  });
+  const resumeBlocked = vi.fn(() => {
+    status = 0;
+  });
+  handle.kernel.thread_epoll_wait_timeout = () => 0n;
+  handle.kernel.thread_resume_epoll_wait_timeout = resumeTimeout;
+  handle.kernel.thread_resume_blocked_syscall = resumeBlocked;
+  handle.kernel.thread_status = () => status;
+  const worker = createdWorkers[0];
+
+  emitReady(worker);
+  worker.clearPostedMessages();
+  worker.emit({
+    type: "status",
+    status: 7,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+
+  vi.advanceTimersByTime(0);
+  expect(resumeTimeout).toHaveBeenCalledWith(0x1234);
+  expect(resumeBlocked).not.toHaveBeenCalled();
+  expect(worker.postedMessages).toEqual([]);
+
+  vi.advanceTimersByTime(1);
+  expect(resumeBlocked).toHaveBeenCalledWith(0x1234);
+  expect(worker.postedMessages).toEqual([{
+    type: "step",
+    budget: 20_000,
+    kernelState: makeKernelState(),
+  }]);
+
+  vi.useRealTimers();
+});
+
 test("STATUS_FAULT with thread_count=0 fires onExit", async () => {
   const onExit = vi.fn();
   await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
