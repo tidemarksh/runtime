@@ -30,6 +30,50 @@ import type {
 const encoder = new TextEncoder();
 const WORKER_DEBUG_LOG_ENABLED = false;
 
+function readElfInterpPath(elfData: Uint8Array): string | null {
+  if (elfData.length < 64) {
+    return null;
+  }
+  if (elfData[0] !== 0x7f || elfData[1] !== 0x45 || elfData[2] !== 0x4c || elfData[3] !== 0x46) {
+    return null;
+  }
+  if (elfData[4] !== 2 || elfData[5] !== 1) {
+    return null;
+  }
+
+  const view = new DataView(elfData.buffer, elfData.byteOffset, elfData.byteLength);
+  const phOff = Number(view.getBigUint64(32, true));
+  const phEntSize = view.getUint16(54, true);
+  const phNum = view.getUint16(56, true);
+  const phEnd = phOff + phEntSize * phNum;
+  if (phEntSize < 56 || phEnd > elfData.length) {
+    return null;
+  }
+
+  for (let index = 0; index < phNum; index += 1) {
+    const start = phOff + index * phEntSize;
+    if (view.getUint32(start, true) !== 3) {
+      continue;
+    }
+    const offset = Number(view.getBigUint64(start + 8, true));
+    const fileSize = Number(view.getBigUint64(start + 32, true));
+    const end = offset + fileSize;
+    if (fileSize === 0 || end > elfData.length) {
+      return null;
+    }
+    const bytes = elfData.subarray(offset, end);
+    const nul = bytes.indexOf(0);
+    const interp = new TextDecoder().decode(nul >= 0 ? bytes.subarray(0, nul) : bytes);
+    return interp.length > 0 ? interp : null;
+  }
+
+  return null;
+}
+
+function snapshotHasPath(entries: readonly FsSnapshotEntry[], path: string): boolean {
+  return entries.some((entry) => entry.path === path);
+}
+
 interface WorkerCreateProcessDeps {
   processHandles: Map<number, ProcessHandle>;
   attachThreadWorker(handle: ProcessHandle, worker: Worker, vmPtr: number): void;
@@ -325,7 +369,22 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     const elfOffset = stageProcessCreation(exports, guestBase, elfData, ramSize, options, elfBrk);
     const vmPtr = exports.process_create(elfOffset, elfData.length, ramSize, stackSize);
     if (vmPtr === 0) {
-      throw new Error("process_create failed");
+      const interpPath = readElfInterpPath(elfData);
+      const interpInSnapshot = interpPath ? snapshotHasPath(bootstrapEntries, interpPath) : null;
+      const processCreateLastError = exports.process_create_last_error?.() ?? null;
+      throw new Error([
+        "process_create failed",
+        `processCreateLastError=${processCreateLastError === null ? "<unavailable>" : processCreateLastError}`,
+        `elfBrk=${elfBrk}`,
+        `ramSize=${ramSize}`,
+        `stackSize=${stackSize}`,
+        `guestBase=0x${guestBase.toString(16)}`,
+        `interp=${interpPath ?? "<none>"}`,
+        `interpInSnapshot=${interpInSnapshot === null ? "<n/a>" : String(interpInSnapshot)}`,
+        `bootstrapEntryCount=${bootstrapEntries.length}`,
+        `argvCount=${options.argv?.length ?? 0}`,
+        `envCount=${options.env?.length ?? 0}`,
+      ].join(" "));
     }
     if (!delegateFsHydrationToKernelWorker) {
       exports.process_set_cwd_ino(vmPtr, cwdIno);

@@ -190,6 +190,7 @@ export interface KernelExports {
   process_guest_base(ram_size: number): number;
   process_inspect_elf_brk(elf_ptr: number, elf_len: number, ram_size: number): bigint;
   process_create(elf_ptr: number, elf_len: number, ram_size: number, stack_size: number): number;
+  process_create_last_error?(): number;
 
   // Thread execution
   thread_step(vm_ptr: number, budget: number): number;

@@ -1,5 +1,4 @@
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { expect, test } from "vite-plus/test";
 import {
   Runtime,
@@ -8,10 +7,12 @@ import {
   spawnWithOutput,
 } from "../../support/runtime-workload.js";
 
-const BUSYBOX_BINARY_PATH = process.env.TIDEMARK_TEST_BUSYBOX_BINARY
-  ?? resolve(__dirname, "../../../../images/busybox");
+const BUSYBOX_BINARY_PATH = process.env.TIDEMARK_TEST_BUSYBOX_BINARY ?? "";
 
 function readBusyBoxBinary(): Uint8Array | null {
+  if (!BUSYBOX_BINARY_PATH) {
+    return logSkip("missing BusyBox binary: set TIDEMARK_TEST_BUSYBOX_BINARY");
+  }
   if (!existsSync(BUSYBOX_BINARY_PATH)) {
     return logSkip(`missing BusyBox binary: ${BUSYBOX_BINARY_PATH}`);
   }
