@@ -146,6 +146,7 @@ export async function runNodeFixture(
   nodeBytes: Uint8Array,
   fixtureName: string,
   timeoutMs: number,
+  argv: readonly string[] = [],
 ): Promise<{ exitCode: number; output: string; debugInfo?: string } | null> {
   const fixture = readNodeFixture(fixtureName);
   if (!fixture) {
@@ -156,7 +157,7 @@ export async function runNodeFixture(
     return await spawnWithOutput(
       runtime,
       nodeBytes,
-      ["/bin/node", "/test.js"],
+      ["/bin/node", "/test.js", ...argv],
       [],
       timeoutMs,
     );
