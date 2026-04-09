@@ -1,6 +1,4 @@
 import { expect, test } from "vite-plus/test";
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import type { KernelExports } from "../../../src/abi.js";
 import {
   preloadSnapshotEntries,
@@ -8,14 +6,13 @@ import {
   resolveMemfsPath,
 } from "../../../src/worker/process-fs.js";
 import { createKernelEnv } from "../../../src/wasm/env.js";
-
-const KERNEL_WASM_PATH = resolve(
-  __dirname,
-  "../../../../kernel/target/wasm32-unknown-unknown/release/tidemark_kernel.wasm",
-);
+import { readKernelWasm } from "../../support/runtime-workload.js";
 
 async function loadKernel(): Promise<KernelExports> {
-  const wasmBytes = readFileSync(KERNEL_WASM_PATH);
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    throw new Error("kernel wasm unavailable");
+  }
   const module = await WebAssembly.compile(wasmBytes);
   const memory = new WebAssembly.Memory({
     initial: 1024,
@@ -32,8 +29,7 @@ async function loadKernel(): Promise<KernelExports> {
 }
 
 test("preloadSnapshotEntries round-trips large file bytes with the real kernel memfs", async () => {
-  if (!existsSync(KERNEL_WASM_PATH)) {
-    console.log("skip: tidemark_kernel.wasm not found (build kernel release wasm first)");
+  if (!readKernelWasm()) {
     return;
   }
 

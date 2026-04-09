@@ -49,6 +49,13 @@ export function createKernelWorkerLifecycle(deps: KernelWorkerLifecycleDeps) {
     }
   }
 
+  function dropCanonicalProcess(pid: number): void {
+    deps.canonicalProcesses.delete(pid);
+    for (const processExports of deps.processKernels.values()) {
+      processExports.process_remove_process_entry(pid);
+    }
+  }
+
   function recordChildExit(
     pid: number,
     childPid: number,
@@ -193,6 +200,9 @@ export function createKernelWorkerLifecycle(deps: KernelWorkerLifecycleDeps) {
       processExports.thread_restore_vfork_parent_without_cleanup(vmPtr, childPid);
     } else {
       processExports.thread_resume_vfork_parent(vmPtr, childPid);
+    }
+    if (childPid > 0 && !deps.processKernels.has(childPid)) {
+      dropCanonicalProcess(childPid);
     }
     return readKernelRuntimeState(processExports);
   }

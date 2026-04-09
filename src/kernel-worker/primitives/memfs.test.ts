@@ -96,7 +96,7 @@ describe("createKernelWorkerMemfsPrimitives", () => {
       dataPtr: 0x4c0,
     });
 
-    new Uint8Array(sourceMemory.buffer).set(new TextEncoder().encode("/bin/busybox\0"), 0x2c0);
+    new Uint8Array(sourceMemory.buffer).set(new TextEncoder().encode("/bin/program\0"), 0x2c0);
 
     const targetBytes = new Uint8Array(targetMemory.buffer);
     targetBytes.fill(0xaa, 0x2c0, 0x2c0 + 16);
@@ -120,7 +120,7 @@ describe("createKernelWorkerMemfsPrimitives", () => {
     primitives.copyMemfsState(sourceExports, sourceState, targetExports, targetState);
 
     const copied = new TextDecoder().decode(new Uint8Array(targetMemory.buffer, 0x4c0, 13));
-    expect(copied).toBe("/bin/busybox\0");
+    expect(copied).toBe("/bin/program\0");
     expect(new Uint8Array(targetMemory.buffer, 0x2c0, 16)).toEqual(new Uint8Array(16).fill(0xaa));
     expect(new Uint8Array(targetMemory.buffer, 0x320, 16)).toEqual(new Uint8Array(16).fill(0xbb));
     expect(readMemfsLayout(targetMemory, targetState.memfsPtr).dataPtr).toBe(0x4c0);

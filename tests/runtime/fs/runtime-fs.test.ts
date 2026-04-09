@@ -312,17 +312,16 @@ test("Runtime.applyFsSnapshot seeds kernel-worker FS in a single RPC", async () 
 
   await runtime.applyFsSnapshot([
     { kind: "dir", path: "/", mode: 0o755 },
-    { kind: "dir", path: "/usr", mode: 0o755 },
-    { kind: "dir", path: "/usr/local", mode: 0o755 },
+    { kind: "dir", path: "/toolchain", mode: 0o755 },
     {
       kind: "file",
-      path: "/usr/local/go",
+      path: "/toolchain/marker.txt",
       data: new TextEncoder().encode("toolchain"),
       mode: 0o644,
     },
   ]);
 
-  const file = await runtime.fs.readFile("/usr/local/go");
+  const file = await runtime.fs.readFile("/toolchain/marker.txt");
   expect(new TextDecoder().decode(file)).toBe("toolchain");
   expect(createdWorkers[0].postedMessages.some((msg) => msg.type === "load-fs-snapshot")).toBe(true);
 

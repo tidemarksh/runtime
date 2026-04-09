@@ -1,21 +1,19 @@
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { expect, test } from "vite-plus/test";
-import type { KernelExports } from "../../../src/abi.js";
-import { createKernelEnv } from "../../../src/wasm/env.js";
-import { preloadSnapshotEntries } from "../../../src/worker/process-fs.js";
-import { buildDynamicStartupSnapshot } from "../../support/dynamic-startup-harness.js";
-import { luaDynamicStartupEntry } from "../../workloads/lua/dynamic-startup.js";
-import { perlDynamicStartupEntry } from "../../workloads/perl/dynamic-startup.js";
-import { phpDynamicStartupEntry } from "../../workloads/php/dynamic-startup.js";
-
-const KERNEL_WASM_PATH = resolve(
-  __dirname,
-  "../../../../kernel/target/wasm32-unknown-unknown/release/tidemark_kernel.wasm",
-);
+import type { KernelExports } from "../../src/abi.js";
+import { createKernelEnv } from "../../src/wasm/env.js";
+import { preloadSnapshotEntries } from "../../src/worker/process-fs.js";
+import { buildDynamicStartupSnapshot } from "../support/dynamic-startup-harness.js";
+import { readKernelWasm } from "../support/runtime-workload.js";
+import { luaDynamicStartupEntry } from "./lua/dynamic-startup.js";
+import { perlDynamicStartupEntry } from "./perl/dynamic-startup.js";
+import { phpDynamicStartupEntry } from "./php/dynamic-startup.js";
 
 async function loadKernel() {
-  const wasmBytes = readFileSync(KERNEL_WASM_PATH);
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return null;
+  }
   const module = await WebAssembly.compile(wasmBytes);
   const memory = new WebAssembly.Memory({
     initial: 1024,
@@ -57,7 +55,11 @@ async function runProcessCreate(entry: DynamicEntry, preloadMode: "minimal" | "f
   if (!existsSync(entry.hostExecutablePath)) {
     return null;
   }
-  const { exports, memory } = await loadKernel();
+  const loaded = await loadKernel();
+  if (!loaded) {
+    return null;
+  }
+  const { exports, memory } = loaded;
   const ramSize = entry.ramSize;
   const snapshot = preloadMode === "minimal"
     ? minimalInterpSnapshot(entry)

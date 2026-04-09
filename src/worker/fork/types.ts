@@ -20,6 +20,11 @@ export interface WorkerForkDeps {
     flushSharedMappings: boolean,
   ): Promise<void>;
   kickBlockedWorkers(handle: ProcessHandle): void;
+  recordChildExitViaKernelWorker(
+    parent: ProcessHandle,
+    childPid: number,
+    waitStatus: number,
+  ): Promise<void>;
   rehydrateForkSharedStateViaKernelWorker(
     targets: ProcessHandle[],
     ofdIds: number[],

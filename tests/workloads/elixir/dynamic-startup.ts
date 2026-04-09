@@ -25,7 +25,12 @@ export const elixirDynamicStartupEntry: DynamicStartupEntry = {
   timeoutMs: 5_000,
   ramSize: 512 * 1024 * 1024,
   snapshotSources: [
-    { kind: "busyboxApplets", hostPath: busyboxPath, applets: ELIXIR_SHELL_APPLETS },
+    {
+      kind: "fileCopies",
+      hostPath: busyboxPath,
+      guestPaths: ["/bin/busybox", ...ELIXIR_SHELL_APPLETS.map((applet) => `/bin/${applet}`)],
+      mode: 0o755,
+    },
     { kind: "tree", hostPath: resolve(runtimeDir, "usr/bin"), guestPath: "/usr/bin" },
     { kind: "tree", hostPath: resolve(runtimeDir, "usr/lib/erlang"), guestPath: "/usr/lib/erlang" },
     { kind: "tree", hostPath: resolve(runtimeDir, "usr/lib/elixir"), guestPath: "/usr/lib/elixir" },

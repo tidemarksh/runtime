@@ -143,6 +143,7 @@ function readGuestInsn(exports: KernelExports, guestBase: number, pc: bigint): s
 
 export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBase: number): string[] {
   const debugParts: string[] = [];
+  try {
   const faultPc = readOptionalThreadU64(exports.thread_fault_pc, vmPtr);
   const currentPc = exports.thread_pc(vmPtr);
   debugParts.push(`process=0x${exports.thread_process_ptr(vmPtr).toString(16)}`);
@@ -524,6 +525,10 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     }
   } catch {
     debugParts.push("proc_self_exe=unavailable");
+  }
+  } catch (error) {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    debugParts.push(`debug_collect_error=${JSON.stringify(detail)}`);
   }
 
   return debugParts;

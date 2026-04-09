@@ -4,16 +4,16 @@ import {
   prepareDynamicStartupRuntime,
   runDynamicStartupEntry,
   validateDynamicStartupOutput,
-} from "../../support/dynamic-startup-harness.js";
-import { nodeDynamicStartupEntry } from "../../workloads/node/dynamic-startup.js";
-import { pythonDynamicStartupEntry } from "../../workloads/python/dynamic-startup.js";
-import { javaDynamicStartupEntry } from "../../workloads/java/dynamic-startup.js";
-import { rubyDynamicStartupEntry } from "../../workloads/ruby/dynamic-startup.js";
-import { elixirDynamicStartupEntry } from "../../workloads/elixir/dynamic-startup.js";
-import { phpDynamicStartupEntry } from "../../workloads/php/dynamic-startup.js";
-import { luaDynamicStartupEntry } from "../../workloads/lua/dynamic-startup.js";
-import { perlDynamicStartupEntry } from "../../workloads/perl/dynamic-startup.js";
-import { rDynamicStartupEntry } from "../../workloads/r/dynamic-startup.js";
+} from "../support/dynamic-startup-harness.js";
+import { nodeDynamicStartupEntry } from "./node/dynamic-startup.js";
+import { pythonDynamicStartupEntry } from "./python/dynamic-startup.js";
+import { javaDynamicStartupEntry } from "./java/dynamic-startup.js";
+import { rubyDynamicStartupEntry } from "./ruby/dynamic-startup.js";
+import { elixirDynamicStartupEntry } from "./elixir/dynamic-startup.js";
+import { phpDynamicStartupEntry } from "./php/dynamic-startup.js";
+import { luaDynamicStartupEntry } from "./lua/dynamic-startup.js";
+import { perlDynamicStartupEntry } from "./perl/dynamic-startup.js";
+import { rDynamicStartupEntry } from "./r/dynamic-startup.js";
 
 const dynamicStartupEntries = [
   nodeDynamicStartupEntry,

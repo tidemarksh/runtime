@@ -194,6 +194,7 @@ const workerForkHandlers = createWorkerForkHandlers({
   failProcess,
   initializeProcessLifecycleViaKernelWorker,
   kickBlockedWorkers,
+  recordChildExitViaKernelWorker,
   rehydrateForkSharedStateViaKernelWorker,
   registerProcessWithKernelWorker,
   resumeVforkExecveParentViaKernelWorker,

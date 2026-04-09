@@ -1161,7 +1161,7 @@ test("child exit bookkeeping is delegated to kernel-worker when available", asyn
   expect(
     requests.some((msg) => msg.type === "sync-fork-shared-state" && msg.pid === 2),
   ).toBe(true);
-  expect(parentKernel.recordedChildExits).toEqual([]);
+  expect(parentKernel.recordedChildExits).toEqual([[2, 7 << 8]]);
   expect(parentKernel.kernel_heap_ptr()).toBe(makeKernelState().heapPtr + 0x80);
 });
 
@@ -3190,7 +3190,7 @@ test("vfork child fault delegates wait status bookkeeping and parent resume to k
   expect(
     requests.some((msg) => msg.type === "resume-vfork-parent" && msg.waitStatus === (252 << 8)),
   ).toBe(true);
-  expect(kernel.recordedChildExits).toEqual([]);
+  expect(kernel.recordedChildExits).toEqual([[56, 252 << 8]]);
   expect(readVforkChildPid).toHaveBeenCalledTimes(1);
   expect(resumeVforkParent).toHaveBeenCalledWith(0x1234, 56);
   expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x24);
@@ -3497,6 +3497,10 @@ test("vfork execve preserves child-private OFDs across kernel-worker scrub", asy
               sid: 44,
               kernelState: msg.kernelState,
             };
+          case "record-child-exit":
+            return { type: "child-exit-recorded", requestId: 0, kernelState: msg.kernelState };
+          case "record-child-exit":
+            return { type: "child-exit-recorded", requestId: 0, kernelState: msg.kernelState };
           case "resume-vfork-execve-parent":
             return { type: "vfork-execve-parent-resumed", requestId: 0, kernelState: msg.kernelState };
           case "sync-fork-shared-state":
@@ -3614,6 +3618,8 @@ test("vfork execve keeps CLOEXEC-style parent-only OFDs out of the child without
               sid: 44,
               kernelState: msg.kernelState,
             };
+          case "record-child-exit":
+            return { type: "child-exit-recorded", requestId: 0, kernelState: msg.kernelState };
           case "resume-vfork-execve-parent":
             return { type: "vfork-execve-parent-resumed", requestId: 0, kernelState: msg.kernelState };
           case "sync-fork-shared-state":
@@ -3776,6 +3782,8 @@ test("vfork execve preserves dup-style child aliases across fork-shared scrub", 
               sid: 44,
               kernelState: msg.kernelState,
             };
+          case "record-child-exit":
+            return { type: "child-exit-recorded", requestId: 0, kernelState: msg.kernelState };
           case "resume-vfork-execve-parent":
             return { type: "vfork-execve-parent-resumed", requestId: 0, kernelState: msg.kernelState };
           case "sync-fork-shared-state":
@@ -3900,6 +3908,8 @@ test("vfork execve handoff failure does not publish a partially spawned child", 
               sid: 44,
               kernelState: msg.kernelState,
             };
+          case "record-child-exit":
+            return { type: "child-exit-recorded", requestId: 0, kernelState: msg.kernelState };
           case "resume-vfork-execve-parent":
             return { type: "vfork-execve-parent-resumed", requestId: 0, kernelState: msg.kernelState };
           case "sync-fork-shared-state":
@@ -3944,10 +3954,14 @@ test("vfork execve handoff failure does not publish a partially spawned child", 
       kernelState: makeKernelState(),
     });
     await flushMicrotasks(40);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    vi.advanceTimersByTime(0);
+    await flushMicrotasks();
 
     expect(onError).not.toHaveBeenCalled();
     expect(createdWorkers).toHaveLength(1);
+    expect(
+      requests.some((msg) => msg.type === "record-child-exit" && msg.childPid === 156 && msg.waitStatus === (127 << 8)),
+    ).toBe(true);
     expect(
       requests.some((msg) => msg.type === "register-process" && msg.pid === 156),
     ).toBe(false);
@@ -3981,6 +3995,7 @@ test("vfork execve handoff failure restores the parent without surfacing a fatal
   });
 
   try {
+    const requests: KernelWorkerRequest[] = [];
     const onError = vi.fn();
     const resumedState = {
       ...makeKernelState(),
@@ -3991,6 +4006,7 @@ test("vfork execve handoff failure restores the parent without surfacing a fatal
       pid: 1,
       onError,
       kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+        requests.push(msg);
         switch (msg.type) {
           case "register-process":
             return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
@@ -4006,6 +4022,8 @@ test("vfork execve handoff failure restores the parent without surfacing a fatal
               sid: 44,
               kernelState: msg.kernelState,
             };
+          case "record-child-exit":
+            return { type: "child-exit-recorded", requestId: 0, kernelState: msg.kernelState };
           case "resume-vfork-execve-parent":
             return { type: "vfork-execve-parent-resumed", requestId: 0, kernelState: resumedState };
           case "sync-fork-shared-state":
@@ -4055,11 +4073,399 @@ test("vfork execve handoff failure restores the parent without surfacing a fatal
     expect(createdWorkers[0]?.terminated).toBe(false);
     expect(createdWorkers).toHaveLength(1);
     expect(onError).not.toHaveBeenCalled();
+    expect(
+      requests.some((msg) => msg.type === "record-child-exit" && msg.childPid === 156 && msg.waitStatus === (127 << 8)),
+    ).toBe(true);
     expect(handle.kernelState.heapPtr).toBe(resumedState.heapPtr);
     expect(handle.kernelState.processPendingPtr).toBe(resumedState.processPendingPtr);
     expect(readPublishedKernelRuntimeState(handle.runtimeBridge)).toEqual(handle.kernelState);
     expect(parentWorker.postedMessages).toEqual([
       { type: "step", budget: 20_000, kernelState: handle.kernelState },
+    ]);
+  } finally {
+    restoreDefaultInstantiate();
+  }
+});
+
+test("vfork execve status-style handoff failure restores the parent and surfaces the handoff marker", async () => {
+  const restoreDefaultInstantiate = (): void => {
+    vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {
+      const memory = (imports as { env: { memory: WebAssembly.Memory } }).env.memory;
+      return {
+        exports: makeKernelExports(memory),
+      } as WebAssembly.WebAssemblyInstantiatedSource;
+    });
+  };
+
+  let instantiateCount = 0;
+  vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {
+    instantiateCount += 1;
+    const memory = (imports as { env: { memory: WebAssembly.Memory } }).env.memory;
+    const exports = makeKernelExports(memory);
+    if (instantiateCount === 2) {
+      exports.thread_complete_execve_handoff = () => -BigInt(exports.abi_status_vfork_wait());
+    }
+    return { exports } as WebAssembly.WebAssemblyInstantiatedSource;
+  });
+
+  try {
+    const onError = vi.fn();
+    const resumedState = {
+      ...makeKernelState(),
+      heapPtr: makeKernelState().heapPtr + 0x20,
+      processPendingPtr: makeKernelState().processPendingPtr + 0x10,
+    };
+    const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+      pid: 1,
+      onError,
+      kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+        switch (msg.type) {
+          case "register-process":
+            return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+          case "initialize-process-lifecycle":
+            return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+          case "canonicalize-child-pid":
+            return {
+              type: "child-pid-canonicalized",
+              requestId: 0,
+              childPid: 156,
+              nextPid: 201,
+              pgid: 33,
+              sid: 44,
+              kernelState: msg.kernelState,
+            };
+          case "record-child-exit":
+            return { type: "child-exit-recorded", requestId: 0, kernelState: msg.kernelState };
+          case "resume-vfork-execve-parent":
+            return { type: "vfork-execve-parent-resumed", requestId: 0, kernelState: resumedState };
+          case "sync-fork-shared-state":
+            return { type: "fork-shared-state-synced", requestId: 0, kernelState: msg.kernelState };
+          case "rehydrate-fork-shared-state":
+            return { type: "fork-shared-state-rehydrated", requestId: 0 };
+          case "unregister-process":
+            return { type: "process-unregistered", requestId: 0 };
+          default:
+            throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+        }
+      },
+    });
+
+    const parentWorker = createdWorkers[0];
+    const parentKernel = createdKernelExports[0];
+    parentKernel.thread_vfork_child_pid = () => 55;
+    parentKernel.thread_spawn_kind = () => parentKernel.abi_spawn_kind_execve();
+    parentKernel.thread_spawn_child_pid = () => 156;
+
+    emitReady(parentWorker);
+    parentWorker.clearPostedMessages();
+    parentWorker.emit({
+      type: "status",
+      status: 8,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    });
+    await flushMicrotasks();
+
+    parentWorker.clearPostedMessages();
+    parentWorker.emit({
+      type: "status",
+      status: 9,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    });
+    await flushMicrotasks(40);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(createdWorkers[0]?.terminated).toBe(false);
+    expect(createdWorkers).toHaveLength(1);
+    expect(onError).not.toHaveBeenCalled();
+    expect(
+      parentKernel.recordedChildExits,
+    ).toEqual([[156, 127 << 8]]);
+    expect(handle.kernelState.heapPtr).toBe(resumedState.heapPtr);
+    expect(handle.kernelState.processPendingPtr).toBe(resumedState.processPendingPtr);
+    expect(handle.lastDebugMessage).toContain("vfork-execve:handoff-failed child=156 ret=-8");
+    expect(parentWorker.postedMessages).toEqual([
+      { type: "step", budget: 20_000, kernelState: handle.kernelState },
+    ]);
+  } finally {
+    restoreDefaultInstantiate();
+  }
+});
+
+test("vfork execve handoff failure makes synthetic child exit visible to a later STATUS_WAIT4 retry", async () => {
+  const restoreDefaultInstantiate = (): void => {
+    vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {
+      const memory = (imports as { env: { memory: WebAssembly.Memory } }).env.memory;
+      return {
+        exports: makeKernelExports(memory),
+      } as WebAssembly.WebAssemblyInstantiatedSource;
+    });
+  };
+
+  let instantiateCount = 0;
+  vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {
+    instantiateCount += 1;
+    const memory = (imports as { env: { memory: WebAssembly.Memory } }).env.memory;
+    const exports = makeKernelExports(memory);
+    if (instantiateCount === 2) {
+      exports.thread_complete_execve_handoff = () => -BigInt(exports.abi_status_vfork_wait());
+    }
+    return { exports } as WebAssembly.WebAssemblyInstantiatedSource;
+  });
+
+  try {
+    const requests: KernelWorkerRequest[] = [];
+    const resumedState = {
+      ...makeKernelState(),
+      heapPtr: makeKernelState().heapPtr + 0x20,
+      processPendingPtr: makeKernelState().processPendingPtr + 0x10,
+    };
+    const wait4ResumedState = {
+      ...resumedState,
+      heapPtr: resumedState.heapPtr + 0x40,
+    };
+    const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+      pid: 1,
+      kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+        requests.push(msg);
+        switch (msg.type) {
+          case "register-process":
+            return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+          case "initialize-process-lifecycle":
+            return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+          case "canonicalize-child-pid":
+            return {
+              type: "child-pid-canonicalized",
+              requestId: 0,
+              childPid: 156,
+              nextPid: 201,
+              pgid: 33,
+              sid: 44,
+              kernelState: msg.kernelState,
+            };
+          case "record-child-exit":
+            return { type: "child-exit-recorded", requestId: 0, kernelState: msg.kernelState };
+          case "resume-vfork-execve-parent":
+            return { type: "vfork-execve-parent-resumed", requestId: 0, kernelState: resumedState };
+          case "resume-wait4":
+            return { type: "wait4-resumed", requestId: 0, kernelState: wait4ResumedState };
+          case "sync-fork-shared-state":
+            return { type: "fork-shared-state-synced", requestId: 0, kernelState: msg.kernelState };
+          case "rehydrate-fork-shared-state":
+            return { type: "fork-shared-state-rehydrated", requestId: 0 };
+          case "unregister-process":
+            return { type: "process-unregistered", requestId: 0 };
+          default:
+            throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+        }
+      },
+    });
+
+    const parentWorker = createdWorkers[0];
+    const parentKernel = createdKernelExports[0];
+    const resumeWait4 = vi.fn(() => 0n);
+    parentKernel.thread_resume_wait4 = resumeWait4;
+    parentKernel.thread_vfork_child_pid = () => 55;
+    parentKernel.thread_spawn_kind = () => parentKernel.abi_spawn_kind_execve();
+    parentKernel.thread_spawn_child_pid = () => 156;
+
+    emitReady(parentWorker);
+    parentWorker.clearPostedMessages();
+    parentWorker.emit({
+      type: "status",
+      status: 8,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    });
+    await flushMicrotasks();
+
+    parentWorker.clearPostedMessages();
+    parentWorker.emit({
+      type: "status",
+      status: 9,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    });
+    await flushMicrotasks(40);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(
+      requests.some((msg) => msg.type === "record-child-exit" && msg.childPid === 156 && msg.waitStatus === (127 << 8)),
+    ).toBe(true);
+    expect(parentKernel.recordedChildExits).toEqual([[156, 127 << 8]]);
+    expect(parentWorker.postedMessages).toEqual([
+      { type: "step", budget: 20_000, kernelState: resumedState },
+    ]);
+
+    parentWorker.clearPostedMessages();
+    parentWorker.emit({
+      type: "status",
+      status: 31,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: resumedState,
+    });
+
+    await flushMicrotasks();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await flushMicrotasks();
+
+    expect(requests.some((msg) => msg.type === "resume-wait4")).toBe(true);
+    expect(resumeWait4).not.toHaveBeenCalled();
+    expect(handle.kernelState.heapPtr).toBe(wait4ResumedState.heapPtr);
+    expect(parentWorker.postedMessages).toEqual([
+      { type: "step", budget: 20_000, kernelState: wait4ResumedState },
+    ]);
+  } finally {
+    restoreDefaultInstantiate();
+  }
+});
+
+test("vfork execve handoff failure leaves a ready parent that is stepped once a running sibling enters waitInWorker FUTEX_WAIT", async () => {
+  const restoreDefaultInstantiate = (): void => {
+    vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {
+      const memory = (imports as { env: { memory: WebAssembly.Memory } }).env.memory;
+      return {
+        exports: makeKernelExports(memory),
+      } as WebAssembly.WebAssemblyInstantiatedSource;
+    });
+  };
+
+  let instantiateCount = 0;
+  vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {
+    instantiateCount += 1;
+    const memory = (imports as { env: { memory: WebAssembly.Memory } }).env.memory;
+    const exports = makeKernelExports(memory);
+    if (instantiateCount === 3) {
+      exports.thread_complete_execve_handoff = () => -BigInt(exports.abi_status_vfork_wait());
+    }
+    return { exports } as WebAssembly.WebAssemblyInstantiatedSource;
+  });
+
+  try {
+    const resumedState = {
+      ...makeKernelState(),
+      heapPtr: makeKernelState().heapPtr + 0x20,
+      processPendingPtr: makeKernelState().processPendingPtr + 0x10,
+    };
+    const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+      pid: 1,
+      kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+        switch (msg.type) {
+          case "register-process":
+            return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+          case "initialize-process-lifecycle":
+            return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+          case "canonicalize-child-pid":
+            return {
+              type: "child-pid-canonicalized",
+              requestId: 0,
+              childPid: 156,
+              nextPid: 201,
+              pgid: 33,
+              sid: 44,
+              kernelState: msg.kernelState,
+            };
+          case "record-child-exit":
+            return { type: "child-exit-recorded", requestId: 0, kernelState: msg.kernelState };
+          case "resume-vfork-execve-parent":
+            return { type: "vfork-execve-parent-resumed", requestId: 0, kernelState: resumedState };
+          case "sync-fork-shared-state":
+            return { type: "fork-shared-state-synced", requestId: 0, kernelState: msg.kernelState };
+          case "rehydrate-fork-shared-state":
+            return { type: "fork-shared-state-rehydrated", requestId: 0 };
+          case "unregister-process":
+            return { type: "process-unregistered", requestId: 0 };
+          default:
+            throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+        }
+      },
+    });
+
+    const parentWorker = createdWorkers[0];
+    const parentKernel = createdKernelExports[0];
+    emitReady(parentWorker);
+
+    parentWorker.clearPostedMessages();
+    parentWorker.emit({
+      type: "status",
+      status: 10,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    });
+
+    const siblingWorker = createdWorkers[1];
+    emitReady(siblingWorker, 0x2000);
+    siblingWorker.clearPostedMessages();
+    parentWorker.clearPostedMessages();
+
+    handle.runningWorker = siblingWorker as unknown as Worker;
+    handle.readyWorkers.length = 0;
+    parentKernel.thread_vfork_child_pid = () => 55;
+    parentKernel.thread_spawn_kind = () => parentKernel.abi_spawn_kind_execve();
+    parentKernel.thread_spawn_child_pid = () => 156;
+
+    parentWorker.emit({
+      type: "status",
+      status: 8,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    });
+    await flushMicrotasks();
+
+    parentWorker.emit({
+      type: "status",
+      status: 9,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    });
+    await flushMicrotasks(40);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(handle.readyWorkers).toEqual([parentWorker as unknown as Worker]);
+    expect(handle.runningWorker).toBe(siblingWorker as unknown as Worker);
+    expect(parentWorker.postedMessages).toEqual([]);
+
+    siblingWorker.emit({
+      type: "status",
+      status: parentKernel.abi_status_futex_wait(),
+      waitInWorker: true,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x2000,
+      kernelState: resumedState,
+    });
+    await flushMicrotasks();
+
+    expect(handle.runningWorker).toBe(parentWorker as unknown as Worker);
+    expect(handle.readyWorkers).toEqual([]);
+    expect(parentWorker.postedMessages).toEqual([
+      { type: "step", budget: 20_000, kernelState: resumedState },
     ]);
   } finally {
     restoreDefaultInstantiate();

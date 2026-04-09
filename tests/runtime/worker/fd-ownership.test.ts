@@ -205,6 +205,32 @@ test("collectProcessHeldOfds deduplicates dup aliases and includes blocked worke
   expect([...collectProcessHeldOfds(handle)].sort((left, right) => left - right)).toEqual([10, 11, 12, 13]);
 });
 
+test("collectProcessHeldOfds skips implausible or unreadable thread slots from corrupted process state", () => {
+  const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
+  const kernel = makeKernel(memory);
+  const handle = makeHandle(kernel, memory);
+  kernel.setFdMap(new Map([
+    [0, 10],
+    [3, 11],
+  ]));
+  kernel.thread_process_thread_count = () => 4;
+  kernel.process_thread_vm_ptr = (_vmPtr: number, slot: number) => {
+    if (slot === 0) {
+      return handle.vmPtr;
+    }
+    if (slot === 1) {
+      return -1;
+    }
+    if (slot === 2) {
+      return memory.buffer.byteLength + 0x1000;
+    }
+    throw new RangeError("corrupted thread slot");
+  };
+  kernel.thread_blocked_ofd_id = (vmPtr: number) => (vmPtr === handle.vmPtr ? 12 : 0);
+
+  expect([...collectProcessHeldOfds(handle)].sort((left, right) => left - right)).toEqual([10, 11, 12]);
+});
+
 test("trackForkSharedOfds skips hidden stdio pipes and retains non-stdio OFDs only once", () => {
   const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
   const kernel = makeKernel(memory);

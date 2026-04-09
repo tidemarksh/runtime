@@ -137,6 +137,7 @@ export function createWorkerKernelRpcResumeLifecycleHelpers(
 
       handle.kernelState = adoptKernelState(handle.kernelState, response.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
+      handle.kernel.process_record_child_exit(response.childPid, waitStatus);
       handle.kernel.thread_resume_vfork_parent(vmPtr, response.childPid);
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);

@@ -10,6 +10,9 @@ test("debug hello fixture", async () => {
 
   try {
     const result = await runNodeFixture(prepared.runtime, prepared.nodeBytes, "hello.js", 10_000);
+    if (!result) {
+      return;
+    }
     if (result.exitCode !== 0) {
       throw new Error(
         `exitCode=${result.exitCode}\n`

@@ -1,6 +1,27 @@
 import type { KernelSyncHandle, ProcessHandle, VforkSnapshot } from "./types.js";
 import { trackForkSharedOfds } from "./kernel-share.js";
 
+function boundedThreadSlotCount(handle: ProcessHandle): number {
+  const maxThreads = handle.kernel.abi_max_threads();
+  try {
+    const processThreadCount = handle.kernel.thread_process_thread_count?.(handle.vmPtr) ?? maxThreads;
+    if (!Number.isFinite(processThreadCount) || processThreadCount <= 0) {
+      return 0;
+    }
+    return Math.min(maxThreads, Math.trunc(processThreadCount));
+  } catch {
+    return maxThreads;
+  }
+}
+
+function plausibleThreadVmPtr(handle: ProcessHandle, vmPtr: number): boolean {
+  if (!Number.isInteger(vmPtr) || vmPtr <= 0) {
+    return false;
+  }
+  const byteLength = handle.memory.buffer.byteLength;
+  return vmPtr < byteLength;
+}
+
 export function collectProcessHeldOfds(handle: ProcessHandle): Set<number> {
   const maxFds = handle.kernel.abi_max_fds();
   const heldOfds = new Set<number>();
@@ -12,12 +33,25 @@ export function collectProcessHeldOfds(handle: ProcessHandle): Set<number> {
     }
   }
 
-  for (let slot = 0; slot < handle.kernel.abi_max_threads(); slot += 1) {
-    const threadVmPtr = handle.kernel.process_thread_vm_ptr(handle.vmPtr, slot);
+  for (let slot = 0; slot < boundedThreadSlotCount(handle); slot += 1) {
+    let threadVmPtr = 0;
+    try {
+      threadVmPtr = handle.kernel.process_thread_vm_ptr(handle.vmPtr, slot);
+    } catch {
+      continue;
+    }
     if (threadVmPtr === 0) {
       continue;
     }
-    const blockedOfdId = handle.kernel.thread_blocked_ofd_id?.(threadVmPtr) ?? 0;
+    if (!plausibleThreadVmPtr(handle, threadVmPtr)) {
+      continue;
+    }
+    let blockedOfdId = 0;
+    try {
+      blockedOfdId = handle.kernel.thread_blocked_ofd_id?.(threadVmPtr) ?? 0;
+    } catch {
+      continue;
+    }
     if (blockedOfdId !== 0 && blockedOfdId < maxFds) {
       heldOfds.add(blockedOfdId);
     }

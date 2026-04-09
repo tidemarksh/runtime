@@ -10,11 +10,9 @@ export type RuntimeInstance = RuntimeClass;
 export type RuntimeProcess = Awaited<ReturnType<RuntimeInstance["spawn"]>>;
 export type SpawnOptions = Parameters<RuntimeInstance["spawn"]>[3];
 
-export const KERNEL_WASM_PATH = resolve(
-  __dirname,
-  "../../../kernel/target/wasm32-unknown-unknown/release/tidemark_kernel.wasm",
-);
+export const KERNEL_WASM_PATH = process.env.TIDEMARK_TEST_KERNEL_WASM ?? "";
 export const RUNTIME_DIST_PATH = resolve(__dirname, "../../dist/index.mjs");
+export const RUNTIME_WORKER_DIST_DIR = resolve(__dirname, "../../dist");
 export const encoder = new TextEncoder();
 export const decoder = new TextDecoder();
 
@@ -37,7 +35,7 @@ function rewriteRuntimeWorkerUrl(value: string | URL): string | URL {
   if (workerName === null) {
     return value;
   }
-  const distPath = resolve(__dirname, "../../dist", workerName);
+  const distPath = resolve(RUNTIME_WORKER_DIST_DIR, workerName);
   return existsSync(distPath) ? pathToFileURL(distPath) : value;
 }
 
@@ -60,19 +58,22 @@ export function logSkip(reason: string): null {
 }
 
 export function readKernelWasm(): Uint8Array | null {
+  if (!KERNEL_WASM_PATH) {
+    return logSkip("missing kernel wasm path: set TIDEMARK_TEST_KERNEL_WASM");
+  }
   if (!existsSync(KERNEL_WASM_PATH)) {
-    return logSkip("kernel release wasm not found");
+    return logSkip(`kernel release wasm not found: ${KERNEL_WASM_PATH}`);
   }
   return new Uint8Array(readFileSync(KERNEL_WASM_PATH));
 }
 
 export function findRiscvElf(name: string): Uint8Array | null {
-  const buildDir = resolve(
-    __dirname,
-    "../../../kernel/target/wasm32-unknown-unknown/release/build",
-  );
+  const buildDir = process.env.TIDEMARK_TEST_RISCV_ELF_BUILD_DIR ?? "";
+  if (!buildDir) {
+    return logSkip("missing riscv elf build dir: set TIDEMARK_TEST_RISCV_ELF_BUILD_DIR");
+  }
   if (!existsSync(buildDir)) {
-    return logSkip("kernel release build outputs not found");
+    return logSkip(`kernel release build outputs not found: ${buildDir}`);
   }
 
   for (const entry of readdirSync(buildDir)) {
@@ -176,6 +177,15 @@ function formatSyscallTrace(handle: RuntimeDebugHandle): string {
   return entries.join(" ");
 }
 
+function safeDebugValue(read: () => string): string {
+  try {
+    return read();
+  } catch (error) {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    return `debug-error:${detail}`;
+  }
+}
+
 export async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<string> {
   const runtimeView = runtime as RuntimeDebugView;
   const processes = runtimeView.processes;
@@ -183,7 +193,7 @@ export async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<str
     ? ""
     : [...processes.entries()]
       .map(([pid, handle]) => {
-        const pipeSummary = (() => {
+        const pipeSummary = safeDebugValue(() => {
           if (!handle.memory?.buffer || !handle.kernelState) {
             return "";
           }
@@ -210,7 +220,7 @@ export async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<str
               ].join(":");
             })
             .join(" ");
-        })();
+        });
         const blocked = handle.blockedWorkers instanceof Map
           ? [...handle.blockedWorkers.values()].map((state) => {
               const vmPtr = state.vmPtr;
@@ -224,16 +234,16 @@ export async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<str
         const debug = handle.lastDebugMessage ?? "n/a";
         const vmPtr = handle.vmPtr ?? 0;
         const threadSummary = vmPtr !== 0
-          ? Array.from({ length: handle.kernel.abi_max_threads() }, (_value, slot) => {
+          ? safeDebugValue(() => Array.from({ length: handle.kernel.abi_max_threads() }, (_value, slot) => {
               const threadVmPtr = handle.kernel.process_thread_vm_ptr(vmPtr, slot);
               if (threadVmPtr === 0) {
                 return null;
               }
               return `${slot}:${formatThreadDebug(handle, threadVmPtr)}`;
-            }).filter(Boolean).join(" | ")
+            }).filter(Boolean).join(" | "))
           : "";
         const fdSummary = vmPtr !== 0
-          ? Array.from({ length: 16 }, (_value, fd) => {
+          ? safeDebugValue(() => Array.from({ length: 16 }, (_value, fd) => {
               const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
               if (ofdId === 0) {
                 return null;
@@ -242,9 +252,9 @@ export async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<str
               const ino = handle.kernel.kernel_ofd_ino(ofdId);
               const hostFd = handle.kernel.kernel_ofd_host_fd(ofdId);
               return `${fd}->${ofdId}/${type}/${ino}/${hostFd}`;
-            }).filter(Boolean).join(" ")
+            }).filter(Boolean).join(" "))
           : "";
-        const ofdSummary = Array.from({ length: 16 }, (_value, ofdId) => {
+        const ofdSummary = safeDebugValue(() => Array.from({ length: 16 }, (_value, ofdId) => {
           if (ofdId === 0) {
             return null;
           }
@@ -256,7 +266,7 @@ export async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<str
           const hostFd = handle.kernel.kernel_ofd_host_fd(ofdId);
           const refcount = handle.kernel.kernel_ofd_refcount(ofdId);
           return `${ofdId}:${type}/${ino}/${hostFd}/rc=${refcount}`;
-        }).filter(Boolean).join(" ");
+        }).filter(Boolean).join(" "));
         return [
           `pid=${pid}`,
           `stdin=${handle.stdinPipe ?? 0}`,

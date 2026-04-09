@@ -1,26 +1,15 @@
-import {
-  existsSync,
-  lstatSync,
-  readFileSync,
-  readlinkSync,
-  readdirSync,
-  realpathSync,
-  statSync,
-} from "node:fs";
-import type { FsSnapshotEntry } from "../../src/fs/types.js";
+import { existsSync, readFileSync } from "node:fs";
 import {
   Runtime,
   type RuntimeInstance,
-  decoder,
   logSkip,
   readKernelWasm,
   runtimeDebugSummary,
 } from "./runtime-workload.js";
-
-export type SnapshotSource =
-  | { kind: "file"; hostPath: string; guestPath: string; mode?: number }
-  | { kind: "tree"; hostPath: string; guestPath: string }
-  | { kind: "busyboxApplets"; hostPath: string; applets: readonly string[] };
+import {
+  type SnapshotSource,
+  buildSnapshotFromSources,
+} from "./snapshot-sources.js";
 
 export type DynamicRunnerKind = "direct-exec" | "shell-script";
 
@@ -51,139 +40,14 @@ export type DynamicStartupFailureBucket =
   | "consumer-runtime"
   | "unknown";
 
-type SnapshotMap = Map<string, FsSnapshotEntry>;
-
-function normalizeGuestPath(value: string): string {
-  const normalized = `/${value.split("/").filter(Boolean).join("/")}`;
-  return normalized || "/";
-}
-
-function ensureSnapshotDir(entries: SnapshotMap, path: string, mode = 0o755): void {
-  const normalized = normalizeGuestPath(path);
-  if (normalized !== "/") {
-    const parent = normalized.split("/").slice(0, -1).join("/") || "/";
-    ensureSnapshotDir(entries, parent, 0o755);
-  }
-  if (!entries.has(normalized)) {
-    entries.set(normalized, { kind: "dir", path: normalized, mode });
-  }
-}
-
-function setSnapshotFile(
-  entries: SnapshotMap,
-  path: string,
-  data: Uint8Array,
-  mode = 0o644,
-): void {
-  const normalized = normalizeGuestPath(path);
-  ensureSnapshotDir(entries, normalized.split("/").slice(0, -1).join("/") || "/", 0o755);
-  entries.set(normalized, {
-    kind: "file",
-    path: normalized,
-    data,
-    mode,
+export function buildDynamicStartupSnapshot(entry: DynamicStartupEntry) {
+  const result = buildSnapshotFromSources(entry.snapshotSources, {
+    missingLabel: "dynamic startup artifact",
   });
-}
-
-function appendFileSnapshot(
-  entries: SnapshotMap,
-  hostPath: string,
-  guestPath: string,
-  mode?: number,
-): void {
-  const fileMode = mode ?? ((statSync(hostPath).mode & 0o111) !== 0 ? 0o755 : 0o644);
-  setSnapshotFile(entries, guestPath, new Uint8Array(readFileSync(hostPath)), fileMode);
-}
-
-function appendHostTreeSnapshot(
-  entries: SnapshotMap,
-  hostPath: string,
-  guestPath: string,
-  seenRealDirs = new Set<string>(),
-): void {
-  const normalizedGuest = normalizeGuestPath(guestPath);
-  const stat = lstatSync(hostPath);
-  if (stat.isSymbolicLink()) {
-    let linkTarget: string;
-    try {
-      linkTarget = realpathSync(hostPath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return;
-      }
-      throw error;
-    }
-    if (!existsSync(linkTarget)) {
-      return;
-    }
-    const targetStat = statSync(linkTarget);
-    if (targetStat.isDirectory()) {
-      if (seenRealDirs.has(linkTarget)) {
-        return;
-      }
-      const nextSeen = new Set(seenRealDirs);
-      nextSeen.add(linkTarget);
-      ensureSnapshotDir(entries, normalizedGuest, 0o755);
-      for (const child of readdirSync(linkTarget)) {
-        appendHostTreeSnapshot(entries, `${linkTarget}/${child}`, `${normalizedGuest}/${child}`, nextSeen);
-      }
-      return;
-    }
-    appendFileSnapshot(entries, linkTarget, normalizedGuest, (targetStat.mode & 0o111) !== 0 ? 0o755 : 0o644);
-    return;
+  if (result.skipReason) {
+    return logSkip(result.skipReason);
   }
-  if (stat.isDirectory()) {
-    const realDir = realpathSync(hostPath);
-    if (seenRealDirs.has(realDir)) {
-      return;
-    }
-    const nextSeen = new Set(seenRealDirs);
-    nextSeen.add(realDir);
-    ensureSnapshotDir(entries, normalizedGuest, 0o755);
-    for (const child of readdirSync(hostPath)) {
-      appendHostTreeSnapshot(entries, `${hostPath}/${child}`, `${normalizedGuest}/${child}`, nextSeen);
-    }
-    return;
-  }
-  appendFileSnapshot(entries, hostPath, normalizedGuest, (stat.mode & 0o111) !== 0 ? 0o755 : 0o644);
-}
-
-function appendBusyboxApplets(
-  entries: SnapshotMap,
-  hostPath: string,
-  applets: readonly string[],
-): void {
-  appendFileSnapshot(entries, hostPath, "/bin/busybox", 0o755);
-  for (const applet of applets) {
-    appendFileSnapshot(entries, hostPath, `/bin/${applet}`, 0o755);
-  }
-}
-
-export function buildDynamicStartupSnapshot(entry: DynamicStartupEntry): FsSnapshotEntry[] | null {
-  const entries = new Map<string, FsSnapshotEntry>();
-  ensureSnapshotDir(entries, "/", 0o755);
-  ensureSnapshotDir(entries, "/tmp", 0o777);
-  ensureSnapshotDir(entries, "/work", 0o755);
-
-  for (const source of entry.snapshotSources) {
-    if (source.kind === "busyboxApplets") {
-      if (!existsSync(source.hostPath)) {
-        return logSkip(`missing BusyBox binary: ${source.hostPath}`);
-      }
-      appendBusyboxApplets(entries, source.hostPath, source.applets);
-      continue;
-    }
-    if (!existsSync(source.hostPath)) {
-      return logSkip(`missing dynamic startup artifact: ${source.hostPath}`);
-    }
-    if (source.kind === "file") {
-      appendFileSnapshot(entries, source.hostPath, source.guestPath, source.mode);
-      continue;
-    }
-    appendHostTreeSnapshot(entries, source.hostPath, source.guestPath);
-  }
-
-  return [...entries.values()];
+  return result.entries ?? null;
 }
 
 export async function prepareDynamicStartupRuntime(
@@ -291,7 +155,7 @@ export function bucketDynamicStartupFailure(input: {
     return "unknown";
   }
   if (
-    /process_create|plain-fork-child-ready|attach|publish|ready|step|ownership|kernel-worker|handoff|failed to write file|loadFsSnapshot|Memory\.grow\(\): Maximum memory size exceeded/i.test(text)
+    /process_create|plain-fork-child-ready|child-ready|attach|publish|ownership|kernel-worker|handoff|failed to write file|loadFsSnapshot|Memory\.grow\(\): Maximum memory size exceeded/i.test(text)
   ) {
     return "runtime-ownership";
   }

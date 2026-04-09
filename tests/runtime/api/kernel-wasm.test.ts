@@ -6,18 +6,15 @@
  */
 
 import { expect, test } from "vite-plus/test";
-import { readFileSync, readdirSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
 import { readStatusCodes } from "../../../src/abi.js";
 import { createKernelEnv } from "../../../src/wasm/env.js";
-
-const KERNEL_WASM_PATH = resolve(
-  __dirname,
-  "../../../../kernel/target/wasm32-unknown-unknown/release/tidemark_kernel.wasm",
-);
+import { findRiscvElf, logSkip, readKernelWasm } from "../../support/runtime-workload.js";
 
 async function loadKernel(opts?: { memory?: WebAssembly.Memory }) {
-  const wasmBytes = readFileSync(KERNEL_WASM_PATH);
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return null;
+  }
   const module = await WebAssembly.compile(wasmBytes);
   // Kernel WASM imports env.memory. Kernel data at 48MB (--global-base),
   // so memory must be at least 48MB + kernel data (~4KB) = ~49MB.
@@ -34,24 +31,12 @@ async function loadKernel(opts?: { memory?: WebAssembly.Memory }) {
   return { exports, memory, module };
 }
 
-function findAddElf(): Uint8Array | null {
-  const buildDir = resolve(
-    __dirname,
-    "../../../../kernel/target/wasm32-wasip1/debug/build",
-  );
-  if (!existsSync(buildDir)) return null;
-
-  for (const entry of readdirSync(buildDir)) {
-    const addElf = resolve(buildDir, entry, "out/rv64ui/add.elf");
-    if (existsSync(addElf)) {
-      return new Uint8Array(readFileSync(addElf));
-    }
-  }
-  return null;
-}
-
 test("kernel WASM loads and exports constants", async () => {
-  const { exports } = await loadKernel();
+  const loaded = await loadKernel();
+  if (!loaded) {
+    return;
+  }
+  const { exports } = loaded;
   const status = readStatusCodes(exports);
 
   expect(status.OK).toBe(0);
@@ -64,11 +49,15 @@ test("kernel WASM loads and exports constants", async () => {
 });
 
 test("kernel_init + process_create + thread_step runs to exit", async () => {
-  const { exports, memory } = await loadKernel();
+  const loaded = await loadKernel();
+  if (!loaded) {
+    return;
+  }
+  const { exports, memory } = loaded;
 
-  const elfData = findAddElf();
+  const elfData = findRiscvElf("add");
   if (!elfData) {
-    console.log("skip: add.elf not found (run kernel tests first)");
+    logSkip("add.elf not found");
     return;
   }
 

@@ -108,6 +108,9 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     }
     handle.kernelState = adoptKernelState(handle.kernelState, response.kernelState);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
+    handle.kernel.process_rewrite_child_pid(vmPtr, provisionalChildPid, response.childPid, response.nextPid);
+    handle.kernelState = readKernelRuntimeState(handle.kernel);
+    attachKernelRuntimeState(handle.kernel, handle.kernelState);
     return {
       childPid: response.childPid,
       nextPid: response.nextPid,
@@ -154,6 +157,9 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
         return;
       }
       parent.kernelState = adoptKernelState(parent.kernelState, response.kernelState);
+      attachKernelRuntimeState(parent.kernel, parent.kernelState);
+      parent.kernel.process_record_child_exit(childPid, waitStatus);
+      parent.kernelState = readKernelRuntimeState(parent.kernel);
       attachKernelRuntimeState(parent.kernel, parent.kernelState);
       publishKernelRuntimeState(parent.runtimeBridge, parent.kernelState, true);
       deps.kickBlockedWorkers(parent);

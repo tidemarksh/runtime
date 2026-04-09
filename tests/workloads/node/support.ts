@@ -133,8 +133,12 @@ export async function writeNodeFixture(
   await runtime.fs.writeFile(path, data, mode);
 }
 
-export function readNodeFixture(name: string): Uint8Array {
-  return new Uint8Array(readFileSync(resolve(FIXTURES_DIR, name)));
+export function readNodeFixture(name: string): Uint8Array | null {
+  const fixturePath = resolve(FIXTURES_DIR, name);
+  if (!existsSync(fixturePath)) {
+    return logSkip(`missing Node fixture: ${fixturePath}`);
+  }
+  return new Uint8Array(readFileSync(fixturePath));
 }
 
 export async function runNodeFixture(
@@ -142,8 +146,12 @@ export async function runNodeFixture(
   nodeBytes: Uint8Array,
   fixtureName: string,
   timeoutMs: number,
-): Promise<{ exitCode: number; output: string; debugInfo?: string }> {
-  await writeNodeFixture(runtime, "/test.js", readNodeFixture(fixtureName), 0o644);
+): Promise<{ exitCode: number; output: string; debugInfo?: string } | null> {
+  const fixture = readNodeFixture(fixtureName);
+  if (!fixture) {
+    return null;
+  }
+  await writeNodeFixture(runtime, "/test.js", fixture, 0o644);
   try {
     return await spawnWithOutput(
       runtime,

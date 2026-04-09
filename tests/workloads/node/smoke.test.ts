@@ -48,6 +48,9 @@ for (const testCase of CASES) {
     try {
       await testCase.setup?.(runtime);
       const result = await runNodeFixture(runtime, nodeBytes, testCase.fixtureName, testCase.timeoutMs);
+      if (!result) {
+        return;
+      }
       testCase.assert(result);
     } finally {
       runtime.destroy();

@@ -7,6 +7,26 @@ interface KernelWorkerPrimitivesDeps {
   processKernels: Map<number, KernelExports>;
 }
 
+function boundedThreadSlotCount(processExports: KernelExports, vmPtr: number): number {
+  const maxThreads = processExports.abi_max_threads();
+  try {
+    const processThreadCount = processExports.thread_process_thread_count?.(vmPtr) ?? maxThreads;
+    if (!Number.isFinite(processThreadCount) || processThreadCount <= 0) {
+      return 0;
+    }
+    return Math.min(maxThreads, Math.trunc(processThreadCount));
+  } catch {
+    return maxThreads;
+  }
+}
+
+function plausibleThreadVmPtr(processExports: KernelExports, vmPtr: number): boolean {
+  if (!Number.isInteger(vmPtr) || vmPtr <= 0) {
+    return false;
+  }
+  return vmPtr < processExports.memory.buffer.byteLength;
+}
+
 export function collectProcessHeldOfdRefcounts(processExports: KernelExports, vmPtr: number): Int32Array {
   const maxFds = processExports.abi_max_fds();
   const heldOfdRefcounts = new Int32Array(maxFds);
@@ -23,12 +43,25 @@ export function collectProcessHeldOfdRefcounts(processExports: KernelExports, vm
     heldOfdRefcounts[ofdId] += 1;
   }
 
-  for (let slot = 0; slot < processExports.abi_max_threads(); slot += 1) {
-    const threadVmPtr = processExports.process_thread_vm_ptr(vmPtr, slot);
+  for (let slot = 0; slot < boundedThreadSlotCount(processExports, vmPtr); slot += 1) {
+    let threadVmPtr = 0;
+    try {
+      threadVmPtr = processExports.process_thread_vm_ptr(vmPtr, slot);
+    } catch {
+      continue;
+    }
     if (threadVmPtr === 0) {
       continue;
     }
-    const blockedOfdId = processExports.thread_blocked_ofd_id(threadVmPtr);
+    if (!plausibleThreadVmPtr(processExports, threadVmPtr)) {
+      continue;
+    }
+    let blockedOfdId = 0;
+    try {
+      blockedOfdId = processExports.thread_blocked_ofd_id(threadVmPtr);
+    } catch {
+      continue;
+    }
     if (blockedOfdId !== 0 && blockedOfdId < maxFds) {
       heldOfdRefcounts[blockedOfdId] += 1;
     }
