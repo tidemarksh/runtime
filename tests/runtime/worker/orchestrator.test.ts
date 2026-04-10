@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
+import { writePipe } from "../../../src/bridge/pipe.js";
 import { readPublishedKernelRuntimeState } from "../../../src/bridge/runtime-state.js";
 import type {
   KernelWorkerOutbound,
@@ -717,6 +718,89 @@ test("clone child ready syncs owned epoll state before scheduling", async () => 
 
   expect(requests.some((msg) => msg.type === "sync-epoll-state")).toBe(true);
   expect(childWorker.postedMessages).toEqual([]);
+});
+
+test("clone child ready drains pending output and syncs pipe state before first step", async () => {
+  const requests: KernelWorkerRequest[] = [];
+  let resolvePipeSync: (() => void) | null = null;
+  const stdoutChunks: Uint8Array[] = [];
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    onStdout: (data) => {
+      stdoutChunks.push(new Uint8Array(data));
+    },
+    kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+      requests.push(msg);
+      switch (msg.type) {
+        case "register-process":
+          return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+        case "initialize-process-lifecycle":
+          return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+        case "sync-epoll-state":
+          return { type: "epoll-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "sync-pipe-state":
+          await new Promise<void>((resolve) => {
+            resolvePipeSync = resolve;
+          });
+          return { type: "pipe-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "unregister-process":
+          return { type: "process-unregistered", requestId: 0 };
+        default:
+          throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+      }
+    },
+  });
+  const parentWorker = createdWorkers[0];
+
+  emitReady(parentWorker);
+  parentWorker.clearPostedMessages();
+  parentWorker.emit({
+    type: "status",
+    status: 10,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+
+  expect(createdWorkers).toHaveLength(2);
+  const childWorker = createdWorkers[1];
+  childWorker.clearPostedMessages();
+  requests.length = 0;
+
+  const warningBytes = new TextEncoder().encode("[java] cloned child warning\n");
+  expect(writePipe(handle.memory, handle.kernelState.pipeBase, handle.stdoutPipe, warningBytes).written).toBe(
+    warningBytes.length,
+  );
+
+  emitReady(childWorker, 0x2000);
+  await flushMicrotasks();
+
+  expect(stdoutChunks.map((chunk) => new TextDecoder().decode(chunk))).toEqual(["[java] cloned child warning\n"]);
+  expect(requests.some((msg) => msg.type === "sync-pipe-state")).toBe(true);
+  expect(childWorker.postedMessages).toEqual([]);
+
+  resolvePipeSync?.();
+  await flushMicrotasks();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(childWorker.postedMessages).toEqual([]);
+
+  parentWorker.clearPostedMessages();
+  parentWorker.emit({
+    type: "status",
+    status: 0,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+
+  expect(childWorker.postedMessages).toEqual([
+    { type: "step", budget: 20_000, kernelState: makeKernelState() },
+  ]);
 });
 
 test("running worker prunes stale blocked workers after the live thread table shrinks", async () => {

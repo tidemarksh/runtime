@@ -8,6 +8,48 @@ import type { ProcessHandle } from "../types.js";
 import type { ThreadWorkerOutbound } from "../../messages.js";
 import type { WorkerMessageHandlerDeps } from "./types.js";
 
+function formatDebugError(error: unknown): string {
+  return error instanceof Error ? (error.stack ?? error.message) : String(error);
+}
+
+function safeThreadErrorDebug(
+  handle: ProcessHandle,
+  deps: WorkerMessageHandlerDeps,
+  vmPtr: number,
+): {
+  threadCount: string;
+  liveThreads: string[];
+  threadSlots: string[];
+} {
+  try {
+    const threadCount = handle.kernel.thread_process_thread_count(vmPtr);
+    const liveThreads: string[] = [];
+    for (let slot = 0; slot < threadCount; slot += 1) {
+      const threadVmPtr = handle.kernel.process_thread_vm_ptr(vmPtr, slot);
+      if (threadVmPtr === 0) {
+        continue;
+      }
+      liveThreads.push(`0x${threadVmPtr.toString(16)}`);
+    }
+    const threadSlots = Array.from({ length: Math.min(handle.kernel.abi_max_threads(), 8) }, (_value, slot) => {
+      const candidateVmPtr = handle.kernel.process_thread_vm_ptr(vmPtr, slot);
+      return candidateVmPtr === 0 ? `${slot}=0x0` : `${slot}=0x${candidateVmPtr.toString(16)}`;
+    });
+    return {
+      threadCount: String(threadCount),
+      liveThreads,
+      threadSlots,
+    };
+  } catch (error) {
+    const detail = formatDebugError(error);
+    return {
+      threadCount: `unavailable:${detail}`,
+      liveThreads: [],
+      threadSlots: [`debug-error=${JSON.stringify(detail)}`],
+    };
+  }
+}
+
 export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps) {
   return function handleWorkerControlMessage(
     handle: ProcessHandle,
@@ -58,23 +100,15 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
         handle.runningWorker = null;
       }
       deps.clearBlockedWorker(handle, worker);
-      const threadCount = handle.kernel.thread_process_thread_count(msg.vmPtr);
-      const liveThreads: string[] = [];
-      for (let slot = 0; slot < threadCount; slot += 1) {
-        const vmPtr = handle.kernel.process_thread_vm_ptr(msg.vmPtr, slot);
-        if (vmPtr === 0) {
-          continue;
-        }
-        liveThreads.push(`0x${vmPtr.toString(16)}`);
-      }
+      const {
+        threadCount,
+        liveThreads,
+        threadSlots,
+      } = safeThreadErrorDebug(handle, deps, msg.vmPtr);
       const attachedWorkers = [...handle.workers]
         .map((candidate) => deps.threadWorkerStates.get(candidate)?.vmPtr ?? 0)
         .filter((candidateVmPtr) => candidateVmPtr !== 0)
         .map((candidateVmPtr) => `0x${candidateVmPtr.toString(16)}`);
-      const threadSlots = Array.from({ length: Math.min(handle.kernel.abi_max_threads(), 8) }, (_value, slot) => {
-        const candidateVmPtr = handle.kernel.process_thread_vm_ptr(msg.vmPtr, slot);
-        return candidateVmPtr === 0 ? `${slot}=0x0` : `${slot}=0x${candidateVmPtr.toString(16)}`;
-      });
       deps.failProcess(
         handle,
         new Error(

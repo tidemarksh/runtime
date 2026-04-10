@@ -141,6 +141,54 @@ function readGuestInsn(exports: KernelExports, guestBase: number, pc: bigint): s
   return `0x${view.getUint32(absolute, true).toString(16)}`;
 }
 
+function formatMemoryVma(exports: KernelExports, index: number): string {
+  return `0x${exports.debug_memory_vma_start?.(index).toString(16) ?? "0"}-0x${exports.debug_memory_vma_end?.(index).toString(16) ?? "0"}`
+    + `:${exports.debug_memory_vma_prot?.(index) ?? "n/a"}/${exports.debug_memory_vma_flags?.(index) ?? "n/a"}`;
+}
+
+function findContainingMemoryVma(
+  exports: KernelExports,
+  vmaLen: number,
+  addr: bigint,
+): string | null {
+  if (addr === 0n) {
+    return null;
+  }
+  for (let i = 0; i < vmaLen; i += 1) {
+    const start = BigInt(exports.debug_memory_vma_start?.(i) ?? 0);
+    const end = BigInt(exports.debug_memory_vma_end?.(i) ?? 0);
+    if (start <= addr && addr < end) {
+      return formatMemoryVma(exports, i);
+    }
+  }
+  return null;
+}
+
+function findAdjacentMemoryVmas(
+  exports: KernelExports,
+  vmaLen: number,
+  addr: bigint,
+): { prev: string | null; next: string | null } {
+  let prev: string | null = null;
+  let next: string | null = null;
+  if (addr === 0n) {
+    return { prev, next };
+  }
+  for (let i = 0; i < vmaLen; i += 1) {
+    const start = BigInt(exports.debug_memory_vma_start?.(i) ?? 0);
+    const end = BigInt(exports.debug_memory_vma_end?.(i) ?? 0);
+    if (end <= addr) {
+      prev = formatMemoryVma(exports, i);
+      continue;
+    }
+    if (addr < start) {
+      next = formatMemoryVma(exports, i);
+      break;
+    }
+  }
+  return { prev, next };
+}
+
 export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBase: number): string[] {
   const debugParts: string[] = [];
   try {
@@ -279,10 +327,25 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     const vmaLen = exports.debug_memory_vma_len?.() ?? 0;
     debugParts.push(`mem_vmas=${vmaLen}`);
     for (let i = 0; i < Math.min(vmaLen, 4); i += 1) {
-      debugParts.push(
-        `mem_vma${i}=0x${exports.debug_memory_vma_start?.(i).toString(16) ?? "0"}-0x${exports.debug_memory_vma_end?.(i).toString(16) ?? "0"}` +
-        `:${exports.debug_memory_vma_prot?.(i) ?? "n/a"}/${exports.debug_memory_vma_flags?.(i) ?? "n/a"}`,
-      );
+      debugParts.push(`mem_vma${i}=${formatMemoryVma(exports, i)}`);
+    }
+    const currentVma = findContainingMemoryVma(exports, vmaLen, currentPc);
+    if (currentPc !== 0n) {
+      debugParts.push(`pc_vma=${currentVma ?? "none"}`);
+      if (currentVma === null) {
+        const adjacent = findAdjacentMemoryVmas(exports, vmaLen, currentPc);
+        debugParts.push(`pc_vma_prev=${adjacent.prev ?? "none"}`);
+        debugParts.push(`pc_vma_next=${adjacent.next ?? "none"}`);
+      }
+    }
+    const faultVma = findContainingMemoryVma(exports, vmaLen, faultPc);
+    if (faultPc !== 0n) {
+      debugParts.push(`fault_vma=${faultVma ?? "none"}`);
+      if (faultVma === null) {
+        const adjacent = findAdjacentMemoryVmas(exports, vmaLen, faultPc);
+        debugParts.push(`fault_vma_prev=${adjacent.prev ?? "none"}`);
+        debugParts.push(`fault_vma_next=${adjacent.next ?? "none"}`);
+      }
     }
   }
   const guestMemAddr = exports.debug_guest_mem_last_addr?.();

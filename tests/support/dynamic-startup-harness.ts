@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import {
   Runtime,
   type RuntimeInstance,
+  decoder,
   logSkip,
   readKernelWasm,
   runtimeDebugSummary,
@@ -151,7 +152,7 @@ export function bucketDynamicStartupFailure(input: {
   ) {
     return "consumer-runtime";
   }
-  if (/Illegal instruction|SIGILL|timeout after \d+ms/i.test(text)) {
+  if (/Illegal instruction|SIGILL|Segmentation fault|sig=4|sig=6|sig=11|sig_deliver=11|:\d+:11\b|debug_collect_error=|timeout after \d+ms/i.test(text)) {
     return "unknown";
   }
   if (
