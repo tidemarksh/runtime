@@ -2,7 +2,11 @@ import {
   readKernelRuntimeState,
   type KernelExports,
 } from "../abi.js";
-import { setWorkerMessageHandler } from "../bridge/compat.js";
+import {
+  setWorkerErrorHandler,
+  setWorkerMessageErrorHandler,
+  setWorkerMessageHandler,
+} from "../bridge/compat.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import { createRuntimeStateBridge, publishKernelRuntimeState } from "../bridge/runtime-state.js";
 import { createKernelEnv } from "../wasm/env.js";
@@ -21,6 +25,7 @@ import {
   acquireWorker,
   ensureEvictionTimer,
 } from "./pool.js";
+import { computeGuestRamLimitBytes } from "./fork/common.js";
 import type {
   CreateProcessOptions,
   KernelWorkerMemfsSeedMode,
@@ -29,6 +34,7 @@ import type {
 
 const encoder = new TextEncoder();
 const WORKER_DEBUG_LOG_ENABLED = false;
+const MIN_PROCESS_RAM_SIZE_BYTES = 16 * 1024 * 1024;
 
 function readElfInterpPath(elfData: Uint8Array): string | null {
   if (elfData.length < 64) {
@@ -156,6 +162,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     wasmBytes: BufferSource,
     ramSize: number,
     sabPageCache: SharedArrayBuffer | null,
+    maxMemoryPages: number,
   ): Promise<{
     wasmModule: WebAssembly.Module;
     memory: WebAssembly.Memory;
@@ -163,7 +170,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
   }> {
     const memory = new WebAssembly.Memory({
       initial: Math.ceil(deps.bootstrapMemoryBytes / deps.wasmPageSize),
-      maximum: deps.wasmMaxPages,
+      maximum: maxMemoryPages,
       shared: true,
     });
     const wasmModule = await deps.ensureCompiledModule(wasmBytes);
@@ -238,6 +245,8 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     vmPtr: number,
     ramSize: number,
     guestBase: number,
+    maxMemoryPages: number,
+    forkMaxMemoryPages: number,
     options: CreateProcessOptions,
     worker: Worker,
     runtimeBridge: ReturnType<typeof createRuntimeStateBridge>,
@@ -245,6 +254,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     const stdinPipe = exports.process_stdin_pipe(vmPtr);
     const stdoutPipe = exports.process_stdout_pipe(vmPtr);
     const stderrPipe = exports.process_stderr_pipe(vmPtr);
+    const ttyPtySlot = exports.process_tty_pty_slot?.(vmPtr) ?? 0;
 
     return {
       runtimeId,
@@ -252,6 +262,8 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       parentPid: options.parentPid ?? null,
       vmPtr,
       ramSize,
+      maxMemoryPages,
+      forkMaxMemoryPages,
       guestBase,
       worker,
       memory,
@@ -261,14 +273,18 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       stdinPipe,
       stdoutPipe,
       stderrPipe,
+      ttyPtySlot,
       hostStdio: {
         stdinPipe,
         stdoutPipe,
         stderrPipe,
+        ttyPtySlot,
         refCount: 1,
       },
+      stdioOwner: null,
       kernelShare: createKernelShareGroup(),
       stdinQueue: [],
+      stdinFlushPromise: null,
       outputBacklog: [],
       debugCommand: options.argv?.[0] ?? "<entry>",
       lastDebugMessage: undefined,
@@ -279,6 +295,8 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       readyWorkers: [],
       runningWorker: null,
       blockedWorkers: new Map(),
+      pendingChildExitRecords: 0,
+      pendingChildSpawnRecords: 0,
       pipeSyncPromise: null,
       pipeSyncQueued: false,
       pipeWaiterWakeQueued: false,
@@ -297,6 +315,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       onError: options.onError,
       onStdout: options.onStdout,
       workerDebugLog: [],
+      guestWriteWatchRegions: [],
     };
   }
 
@@ -305,12 +324,17 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     elfData: Uint8Array,
     options: CreateProcessOptions = {},
   ): Promise<ProcessHandle> {
-    const ramSize = Math.max(options.ramSize ?? 16 * 1024 * 1024, 64 * 1024 * 1024);
+    const ramSize = Math.max(options.ramSize ?? MIN_PROCESS_RAM_SIZE_BYTES, MIN_PROCESS_RAM_SIZE_BYTES);
+    const minMemoryPages = Math.ceil(deps.bootstrapMemoryBytes / deps.wasmPageSize);
+    const maxMemoryPages = Math.max(options.maxMemoryPages ?? deps.wasmMaxPages, 1);
+    const boundedMaxMemoryPages = Math.max(maxMemoryPages, minMemoryPages);
+    const forkMaxMemoryPages = Math.max(options.forkMaxMemoryPages ?? boundedMaxMemoryPages, boundedMaxMemoryPages);
     const stackSize = options.stackSize ?? 1024 * 1024;
     const { wasmModule, memory, exports } = await instantiateProcessKernel(
       wasmBytes,
       ramSize,
       options.sabPageCache ?? null,
+      boundedMaxMemoryPages,
     );
 
     const runtimeId = options.runtimeId ?? 0;
@@ -344,6 +368,22 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     const worker = acquireWorker();
     const runtimeBridge = createRuntimeStateBridge();
     await new Promise<void>((resolve, reject) => {
+      const rejectWithWorkerError = (detail: string): void => {
+        reject(new Error(`thread worker prepare failed: ${detail}`));
+      };
+      setWorkerErrorHandler(worker, (event) => {
+        const detail = [
+          event.message,
+          event.filename ? `at ${event.filename}:${event.lineno}:${event.colno}` : null,
+          event.error instanceof Error ? (event.error.stack ?? event.error.message) : null,
+        ].filter((part): part is string => !!part).join(" ");
+        rejectWithWorkerError(detail || "unknown worker error");
+        event.preventDefault?.();
+      });
+      setWorkerMessageErrorHandler(worker, (event) => {
+        rejectWithWorkerError("messageerror");
+        event.preventDefault?.();
+      });
       setWorkerMessageHandler<ThreadWorkerOutbound>(worker, (event) => {
         const msg = event.data;
         if (msg.type === "prepared") {
@@ -397,16 +437,26 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       vmPtr,
       ramSize,
       guestBase,
+      boundedMaxMemoryPages,
+      forkMaxMemoryPages,
       options,
       worker,
       runtimeBridge,
     );
+    handle.kernel.thread_set_guest_ram_limit(
+      vmPtr,
+      computeGuestRamLimitBytes(guestBase, ramSize, boundedMaxMemoryPages),
+    );
     appendMemoryStateDebug(handle, "create");
 
-    const memfsSeedMode: KernelWorkerMemfsSeedMode = delegateFsHydrationToKernelWorker
-      ? "metadata"
-      : "full";
+    const preRegisterGuestPrefix = new Uint8Array(
+      memory.buffer,
+      0,
+      handle.kernelState.heapBase,
+    ).slice();
+    const memfsSeedMode: KernelWorkerMemfsSeedMode = "full";
     await deps.registerProcessWithKernelWorker(handle, { seedMemfsMode: memfsSeedMode });
+    new Uint8Array(memory.buffer).set(preRegisterGuestPrefix, 0);
     appendMemoryStateDebug(handle, "register");
     if (delegateFsHydrationToKernelWorker) {
       handle.kernel.process_set_cwd_ino(vmPtr, cwdIno);

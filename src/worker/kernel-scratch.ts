@@ -56,3 +56,12 @@ export function copyKernelPrivateRegion(
   ensureMemoryCapacity(target, endOffset);
   new Uint8Array(target.buffer).set(new Uint8Array(source.buffer, 0, endOffset), 0);
 }
+
+export function copyLinearMemoryImage(
+  source: WebAssembly.Memory,
+  target: WebAssembly.Memory,
+  byteLength = source.buffer.byteLength,
+): void {
+  ensureMemoryCapacity(target, byteLength);
+  new Uint8Array(target.buffer).set(new Uint8Array(source.buffer, 0, byteLength), 0);
+}

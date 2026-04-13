@@ -4,6 +4,7 @@ import {
 } from "../../../abi.js";
 import { publishKernelRuntimeState } from "../../../bridge/runtime-state.js";
 import { adoptKernelState } from "../../sync.js";
+import { settleVisibleProcessOutput } from "../../stdio.js";
 import type {
   CanonicalizedChildLifecycle,
   ProcessHandle,
@@ -72,6 +73,10 @@ export function createWorkerKernelRpcResumeLifecycleHelpers(
     }
 
     try {
+      deps.appendWorkerDebugLog(
+        handle,
+        `wait4-rpc-start:0x${vmPtr.toString(16)}:local=${handle.kernel.thread_status(vmPtr)}`,
+      );
       const response = await handle.kernelWorkerRequest({
         type: "resume-wait4",
         pid: handle.pid,
@@ -94,6 +99,23 @@ export function createWorkerKernelRpcResumeLifecycleHelpers(
 
       handle.kernelState = adoptKernelState(handle.kernelState, response.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
+      deps.appendWorkerDebugLog(
+        handle,
+        `wait4-rpc-adopted:0x${vmPtr.toString(16)}:local=${handle.kernel.thread_status(vmPtr)}`,
+      );
+      handle.kernel.thread_resume_wait4(vmPtr);
+      deps.appendWorkerDebugLog(
+        handle,
+        `wait4-rpc-local-resume:0x${vmPtr.toString(16)}:local=${handle.kernel.thread_status(vmPtr)}`,
+      );
+      handle.kernelState = readKernelRuntimeState(handle.kernel);
+      attachKernelRuntimeState(handle.kernel, handle.kernelState);
+      await deps.requestPipeStateSync(handle, true);
+      await settleVisibleProcessOutput(handle, deps.requestPipeStateSync);
+      deps.appendWorkerDebugLog(
+        handle,
+        `wait4-rpc-post-sync:0x${vmPtr.toString(16)}:local=${handle.kernel.thread_status(vmPtr)}`,
+      );
 
       deps.handleBlockedRetryResult(handle, worker, vmPtr, handle.kernel.thread_status(vmPtr));
     } catch (error) {
@@ -137,7 +159,11 @@ export function createWorkerKernelRpcResumeLifecycleHelpers(
 
       handle.kernelState = adoptKernelState(handle.kernelState, response.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
-      handle.kernel.process_record_child_exit(response.childPid, waitStatus);
+      if (handle.kernel.process_record_child_exit_for_parent) {
+        handle.kernel.process_record_child_exit_for_parent(handle.pid, response.childPid, waitStatus);
+      } else {
+        handle.kernel.process_record_child_exit(response.childPid, waitStatus);
+      }
       handle.kernel.thread_resume_vfork_parent(vmPtr, response.childPid);
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);

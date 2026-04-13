@@ -1,6 +1,7 @@
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
 import {
   kernelWorkerOwnsEpollState,
+  kernelWorkerOwnsPipeState,
   kernelWorkerOwnsSocketState,
 } from "../kernel-share.js";
 import { drainProcessOutput } from "../stdio.js";
@@ -12,6 +13,7 @@ import type {
   ThreadWorkerStatusMessage,
   WorkerMessageHandlerDeps,
 } from "./types.js";
+import { formatCompactDebugSuffix } from "./debug-summary.js";
 
 export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandlerDeps) {
   return function handleWaitInWorkerStatus(
@@ -25,9 +27,12 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
     const epollTimeoutMs = msg.status === epollWaitStatus
       ? Number(handle.kernel.thread_epoll_wait_timeout(thread.vmPtr))
       : null;
-    deps.appendWorkerDebugLog(handle, `wait:0x${thread.vmPtr.toString(16)}@${msg.status}`);
+    deps.appendWorkerDebugLog(
+      handle,
+      `wait:0x${thread.vmPtr.toString(16)}@${msg.status}${formatCompactDebugSuffix(msg.debug)}`,
+    );
     deps.clearBlockedWorker(handle, worker);
-    const drainedPipe = drainProcessOutput(handle);
+    const drainedPipe = kernelWorkerOwnsPipeState(handle) ? false : drainProcessOutput(handle);
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
 
     if (msg.status === epollWaitStatus && epollTimeoutMs === 0) {

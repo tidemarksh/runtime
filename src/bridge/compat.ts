@@ -4,6 +4,8 @@ type WorkerLike<T> = Worker & {
 };
 
 const nodeListenerMap = new WeakMap<Worker, (data: unknown) => void>();
+const workerErrorListenerMap = new WeakMap<Worker, EventListener>();
+const workerMessageErrorListenerMap = new WeakMap<Worker, EventListener>();
 
 export function addWorkerMessageListener<T>(
   worker: Worker,
@@ -76,4 +78,48 @@ export function clearWorkerMessageHandler(worker: Worker): void {
     nodeWorker.off("message", wrapped);
   }
   nodeListenerMap.delete(worker);
+}
+
+export function setWorkerErrorHandler(
+  worker: Worker,
+  listener: ((event: ErrorEvent) => void) | null,
+): void {
+  if ("onerror" in worker) {
+    worker.onerror = listener as Worker["onerror"];
+    return;
+  }
+  const eventWorker = worker as Worker & EventTarget;
+  const existing = workerErrorListenerMap.get(worker);
+  if (existing && typeof eventWorker.removeEventListener === "function") {
+    eventWorker.removeEventListener("error", existing);
+  }
+  if (listener && typeof eventWorker.addEventListener === "function") {
+    const wrapped = listener as unknown as EventListener;
+    workerErrorListenerMap.set(worker, wrapped);
+    eventWorker.addEventListener("error", wrapped);
+    return;
+  }
+  workerErrorListenerMap.delete(worker);
+}
+
+export function setWorkerMessageErrorHandler(
+  worker: Worker,
+  listener: ((event: MessageEvent<unknown>) => void) | null,
+): void {
+  if ("onmessageerror" in worker) {
+    worker.onmessageerror = listener as Worker["onmessageerror"];
+    return;
+  }
+  const eventWorker = worker as Worker & EventTarget;
+  const existing = workerMessageErrorListenerMap.get(worker);
+  if (existing && typeof eventWorker.removeEventListener === "function") {
+    eventWorker.removeEventListener("messageerror", existing);
+  }
+  if (listener && typeof eventWorker.addEventListener === "function") {
+    const wrapped = listener as unknown as EventListener;
+    workerMessageErrorListenerMap.set(worker, wrapped);
+    eventWorker.addEventListener("messageerror", wrapped);
+    return;
+  }
+  workerMessageErrorListenerMap.delete(worker);
 }

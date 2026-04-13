@@ -5,6 +5,7 @@ import {
 import { publishKernelRuntimeState } from "../bridge/runtime-state.js";
 import { kernelShareOtherMembers } from "./kernel-share.js";
 import { createWorkerKernelRpcLifecycleHelpers } from "./kernel-rpc/lifecycle.js";
+import { drainProcessOutput } from "./stdio.js";
 import type {
   KernelWorkerRequestFn,
   ProcessHandle,
@@ -22,6 +23,7 @@ interface WorkerKernelRpcDeps {
   handleBlockedRetryResult(handle: ProcessHandle, worker: Worker, vmPtr: number, status: number): void;
   kickBlockedWorkers(handle: ProcessHandle): void;
   markRuntimeFsDirty(handle: ProcessHandle): void;
+  requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   syncBlockedForkSharedStateViaKernelWorker(handle: ProcessHandle): Promise<void>;
   syncForkSharedStateLocally(
     handle: ProcessHandle,
@@ -70,12 +72,15 @@ export async function resolveProcessCwdInoViaKernelWorker(
 
 export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
   const kernelRpcLifecycleHelpers = createWorkerKernelRpcLifecycleHelpers({
+    appendWorkerDebugLog: deps.appendWorkerDebugLog,
     processHandles: deps.processHandles,
     threadWorkerStates: deps.threadWorkerStates,
+    drainProcessOutput,
     enqueueWorker: deps.enqueueWorker,
     failProcess: deps.failProcess,
     handleBlockedRetryResult: deps.handleBlockedRetryResult,
     kickBlockedWorkers: deps.kickBlockedWorkers,
+    requestPipeStateSync: deps.requestPipeStateSync,
     clearVforkSnapshot,
   });
 

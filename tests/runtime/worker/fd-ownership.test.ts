@@ -14,6 +14,8 @@ import type { ProcessHandle } from "../../../src/worker/types.js";
 
 const FD_TYPE_FILE = 1;
 const FD_TYPE_PIPE = 6;
+const FD_TYPE_PTY_MASTER = 11;
+const FD_TYPE_PTY_SLAVE = 12;
 
 function makeKernelState() {
   return {
@@ -101,6 +103,10 @@ function makeKernel(memory: WebAssembly.Memory): FakeKernel {
     abi_max_threads: () => 4,
     abi_max_pipes: () => 64,
     abi_fd_type_pipe: () => FD_TYPE_PIPE,
+    abi_fd_type_pty_master: () => FD_TYPE_PTY_MASTER,
+    abi_fd_type_pty_slave: () => FD_TYPE_PTY_SLAVE,
+    abi_o_rdonly: () => 0,
+    abi_o_wronly: () => 1,
     kernel_memfs_header_bytes: () => 32,
     kernel_memfs_inodes_ptr: () => state.memfsPtr + 0x100,
     kernel_memfs_inodes_bytes: () => 16384 * 32,
@@ -117,8 +123,11 @@ function makeKernel(memory: WebAssembly.Memory): FakeKernel {
       .getInt32(state.ofdTablePtr + ofdId * 32, true),
     kernel_ofd_ino: (ofdId: number) => new DataView(memory.buffer)
       .getUint32(state.ofdTablePtr + ofdId * 32 + 24, true),
+    kernel_ofd_status_flags: () => 0,
     kernel_ofd_refcount: (ofdId: number) => new DataView(memory.buffer)
       .getInt32(state.ofdTablePtr + ofdId * 32 + 16, true),
+    kernel_pty_input_pipe: (ptyIdx: number) => ptyIdx * 2 + 1,
+    kernel_pty_output_pipe: (ptyIdx: number) => ptyIdx * 2 + 2,
     kernel_pipe_region_bytes: () => 64 * (32 + 4096),
     kernel_retain_ofd: retainOfd,
     kernel_release_ofd: releaseOfd,
@@ -321,4 +330,38 @@ test("local OFD and pipe snapshots preserve child-private dup-style pipe aliases
 
   expect(pipeMarker(memory, handle.kernelState.pipeBase, 14)).toBe(0xa4);
   expect(pipeMarker(memory, handle.kernelState.pipeBase, 15)).toBe(0);
+});
+
+test("local pipe snapshots preserve PTY-backed stdio pipe slots across scrubbed bytes", () => {
+  const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
+  const kernel = makeKernel(memory);
+  const handle = makeHandle(kernel, memory);
+  const kernelWithPty = kernel as FakeKernel & {
+    kernel_ofd_status_flags(ofdId: number): number;
+  };
+  seedOfd(memory, handle.kernelState.ofdTablePtr, 20, FD_TYPE_PTY_SLAVE, 10, 0xf1);
+  seedOfd(memory, handle.kernelState.ofdTablePtr, 21, FD_TYPE_PTY_SLAVE, 10, 0xf2);
+  seedPipeSlot(memory, handle.kernelState.pipeBase, 21, 0xa1);
+  seedPipeSlot(memory, handle.kernelState.pipeBase, 22, 0xb2);
+  kernelWithPty.kernel_ofd_status_flags = (ofdId: number) => {
+    if (ofdId === 20) {
+      return 0;
+    }
+    if (ofdId === 21) {
+      return 1;
+    }
+    return 0;
+  };
+
+  const preservedPipes = snapshotLocalPipeSlots(handle, [20, 21]);
+  new Uint8Array(memory.buffer).fill(
+    0,
+    handle.kernelState.pipeBase + 21 * (32 + 4096),
+    handle.kernelState.pipeBase + 23 * (32 + 4096),
+  );
+
+  restoreLocalPipeSlots(handle, preservedPipes);
+
+  expect(pipeMarker(memory, handle.kernelState.pipeBase, 21)).toBe(0xa1);
+  expect(pipeMarker(memory, handle.kernelState.pipeBase, 22)).toBe(0xb2);
 });

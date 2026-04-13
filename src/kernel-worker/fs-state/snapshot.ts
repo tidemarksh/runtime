@@ -1,7 +1,7 @@
 import type { KernelExports } from "../../abi.js";
 import type { FsSnapshotEntry } from "../../fs/types.js";
 import { publishInode, resetPageCache } from "../../fs/sab-page-cache.js";
-import { normalizePath, normalizePermMode } from "../common.js";
+import { normalizePath, normalizePermMode, readMemfsFileDataDirect } from "../common.js";
 
 interface KernelWorkerFsSnapshotDeps {
   getCanonicalExports(): KernelExports;
@@ -18,6 +18,21 @@ interface KernelWorkerFsSnapshotDeps {
 }
 
 export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshotDeps) {
+  function readLink(path: string): Uint8Array | null {
+    const targetExports = deps.getCanonicalExports();
+    const ino = deps.resolvePath(path);
+    if (ino === 0 || (targetExports.memfs_inode_mode(ino) & 0o170000) !== 0o120000) {
+      return null;
+    }
+    const bufPtr = targetExports.kernel_heap_ptr() + 0x18000;
+    const bufLen = 4096;
+    const len = Number(targetExports.memfs_read_link(ino, bufPtr, bufLen));
+    if (len <= 0) {
+      return null;
+    }
+    return new Uint8Array(targetExports.memory.buffer.slice(bufPtr, bufPtr + len));
+  }
+
   function snapshotFsTree(
     ino: number,
     path: string,
@@ -43,6 +58,19 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
       return;
     }
 
+    if (fileType === 0o120000) {
+      const target = readLink(normalized) ?? new Uint8Array();
+      out.push({
+        kind: "symlink",
+        path: normalized,
+        ino,
+        target,
+        size: target.length,
+        mode: perms,
+      });
+      return;
+    }
+
     if (fileType !== 0o100000) {
       return;
     }
@@ -51,7 +79,7 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
       kind: "file",
       path: normalized,
       ino,
-      data: includeData ? deps.readFile(normalized) : undefined,
+      data: includeData ? (readMemfsFileDataDirect(targetExports, ino) ?? deps.readFile(normalized)) : undefined,
       size: Number(targetExports.memfs_file_size(ino)),
       mode: perms,
     });
@@ -84,9 +112,17 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
       if (parentIno === 0) {
         continue;
       }
-      const perms = normalizePermMode(entry.mode, entry.kind === "dir" ? 0o755 : 0o644);
+      const perms = normalizePermMode(
+        entry.mode,
+        entry.kind === "dir" ? 0o755 : entry.kind === "symlink" ? 0o777 : 0o644,
+      );
+      const fileType = entry.kind === "dir"
+        ? 0o040000
+        : entry.kind === "symlink"
+          ? 0o120000
+          : 0o100000;
       publishInode(deps.getSabPageCache(), entry.ino, {
-        mode: (entry.kind === "dir" ? 0o040000 : 0o100000) | perms,
+        mode: fileType | perms,
         size: entry.size ?? entry.data?.length ?? 0,
         parentIno,
         name: deps.encoder.encode(name),
@@ -122,6 +158,27 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
     for (const entry of ordered) {
       if (entry.kind === "dir") {
         deps.mkdir(entry.path, entry.mode ?? 0o755, false);
+        continue;
+      }
+      if (entry.kind === "symlink") {
+        const normalized = normalizePath(entry.path);
+        const parts = normalized.split("/").filter(Boolean);
+        const name = parts.pop();
+        if (!name) {
+          continue;
+        }
+        const parentPath = parts.length === 0 ? "/" : `/${parts.join("/")}`;
+        const parentIno = deps.resolvePath(parentPath);
+        if (parentIno === 0) {
+          continue;
+        }
+        const nameBytes = deps.encoder.encode(name);
+        const namePtr = targetExports.kernel_heap_ptr() + 0x18000;
+        new Uint8Array(targetExports.memory.buffer).set(nameBytes, namePtr);
+        const target = entry.target ?? new Uint8Array();
+        const targetPtr = namePtr + 0x1000;
+        new Uint8Array(targetExports.memory.buffer).set(target, targetPtr);
+        targetExports.memfs_create_symlink(parentIno, namePtr, nameBytes.length, targetPtr, target.length);
         continue;
       }
       deps.writeFile(entry.path, entry.data ?? new Uint8Array(), entry.mode ?? 0o644, false);

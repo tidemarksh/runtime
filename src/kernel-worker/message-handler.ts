@@ -1,4 +1,5 @@
 import type { KernelRuntimeState } from "../abi.js";
+import type { FsSnapshotEntry } from "../fs/types.js";
 import type {
   KernelWorkerInbound,
   KernelWorkerOutbound,
@@ -14,8 +15,14 @@ interface ProcessFsResult {
 
 interface KernelWorkerMessageHandlerDeps {
   postResponse(msg: KernelWorkerOutbound): void;
-  initKernel(wasmModule: WebAssembly.Module, sabPageCache: SharedArrayBuffer): Promise<KernelRuntimeState>;
+  initKernel(
+    wasmModule: WebAssembly.Module,
+    sabPageCache: SharedArrayBuffer,
+    maxMemoryPages?: number,
+  ): Promise<KernelRuntimeState>;
   writeFile(path: string, data: Uint8Array, mode?: number, fanout?: boolean): void;
+  writeFiles(entries: Array<{ path: string; data: Uint8Array; mode?: number }>): void;
+  symlink(path: string, target: Uint8Array, mode?: number, fanout?: boolean): void;
   readFile(path: string): Uint8Array;
   mkdir(path: string, mode?: number, fanout?: boolean): void;
   statPath(path: string): {
@@ -27,22 +34,8 @@ interface KernelWorkerMessageHandlerDeps {
     size: number;
   };
   readdir(path: string): string[];
-  snapshotCanonicalFs(includeData: boolean): Array<{
-    kind: "dir" | "file";
-    path: string;
-    ino?: number;
-    data?: Uint8Array;
-    size?: number;
-    mode?: number;
-  }>;
-  loadFsSnapshot(entries: Array<{
-    kind: "dir" | "file";
-    path: string;
-    ino?: number;
-    data?: Uint8Array;
-    size?: number;
-    mode?: number;
-  }>): void;
+  snapshotCanonicalFs(includeData: boolean): FsSnapshotEntry[];
+  loadFsSnapshot(entries: FsSnapshotEntry[]): void;
   registerProcess(
     pid: number,
     vmPtr: number,
@@ -119,6 +112,19 @@ interface KernelWorkerMessageHandlerDeps {
     includeMemfs?: boolean,
   ): void;
   debugProcesses(): { pids: number[]; canonicalPids: number[] };
+  debugPageCachePath(path: string): {
+    path: string;
+    ino: number;
+    dataOff: number;
+    size: number;
+    mode: number;
+  } | null;
+  debugPageCacheStats(): {
+    byteLength: number;
+    dataUsed: number;
+    inodeCount: number;
+    dirEpoch: number;
+  };
   releaseHostStdio(pid: number, vmPtr: number, kernelState: KernelRuntimeState): KernelRuntimeState;
 }
 
@@ -127,13 +133,25 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
     try {
       switch (msg.type) {
         case "init-kernel": {
-          const kernelState = await deps.initKernel(msg.wasmModule, msg.sabPageCache);
+          const kernelState = await deps.initKernel(
+            msg.wasmModule,
+            msg.sabPageCache,
+            msg.maxMemoryPages,
+          );
           deps.postResponse({ type: "ready", requestId: msg.requestId, kernelState });
           break;
         }
         case "write-file":
           deps.writeFile(msg.path, msg.data, msg.mode);
           deps.postResponse({ type: "file-written", requestId: msg.requestId });
+          break;
+        case "write-files":
+          deps.writeFiles(msg.entries);
+          deps.postResponse({ type: "files-written", requestId: msg.requestId });
+          break;
+        case "symlink":
+          deps.symlink(msg.path, msg.target, msg.mode);
+          deps.postResponse({ type: "symlink-created", requestId: msg.requestId });
           break;
         case "read-file":
           deps.postResponse({
@@ -361,6 +379,20 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
           });
           break;
         }
+        case "debug-page-cache-path":
+          deps.postResponse({
+            type: "page-cache-path-debugged",
+            requestId: msg.requestId,
+            record: deps.debugPageCachePath(msg.path),
+          });
+          break;
+        case "debug-page-cache-stats":
+          deps.postResponse({
+            type: "page-cache-stats-debugged",
+            requestId: msg.requestId,
+            stats: deps.debugPageCacheStats(),
+          });
+          break;
         case "release-host-stdio":
           deps.postResponse({
             type: "host-stdio-released",

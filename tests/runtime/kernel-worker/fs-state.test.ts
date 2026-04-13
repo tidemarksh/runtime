@@ -1,6 +1,6 @@
 import { expect, test } from "vite-plus/test";
 import type { KernelExports } from "../../../src/abi.js";
-import { DATA_REGION_OFFSET, publishInode } from "../../../src/fs/sab-page-cache.js";
+import { DATA_REGION_OFFSET, publishInode, readInodeRecord } from "../../../src/fs/sab-page-cache.js";
 import { createKernelWorkerFsState } from "../../../src/kernel-worker/fs-state.js";
 
 const encoder = new TextEncoder();
@@ -9,7 +9,7 @@ const decoder = new TextDecoder();
 type InodeRecord = {
   ino: number;
   path: string;
-  kind: "dir" | "file";
+  kind: "dir" | "file" | "symlink";
   mode: number;
   data: Uint8Array;
   materialized: boolean;
@@ -20,6 +20,7 @@ type FakeKernelExports = KernelExports & {
   fileData(path: string): Uint8Array;
   fileIno(path: string): number;
   overwriteFile(path: string, data: Uint8Array): void;
+  createSymlink(path: string, target: Uint8Array): number;
 };
 
 function normalizePath(path: string): string {
@@ -31,8 +32,8 @@ function decodeGuestBytes(memory: WebAssembly.Memory, ptr: number, len: number):
   return decoder.decode(new Uint8Array(memory.buffer, ptr, len));
 }
 
-function makeKernelExports(): FakeKernelExports {
-  const memory = new WebAssembly.Memory({ initial: 128, maximum: 128, shared: true });
+function makeKernelExports(sabPageCache?: SharedArrayBuffer): FakeKernelExports {
+  const memory = new WebAssembly.Memory({ initial: 512, maximum: 512, shared: true });
   const recordsByPath = new Map<string, InodeRecord>();
   const recordsByIno = new Map<number, InodeRecord>();
   const opLog: string[] = [];
@@ -83,6 +84,15 @@ function makeKernelExports(): FakeKernelExports {
       const path = normalizePath(decodeGuestBytes(memory, ptr, len));
       return recordsByPath.get(path)?.ino ?? 0;
     },
+    memfs_lookup: (parentIno: number, namePtr: number, nameLen: number) => {
+      const parent = recordsByIno.get(parentIno);
+      if (!parent || parent.kind !== "dir") {
+        return 0;
+      }
+      const name = decodeGuestBytes(memory, namePtr, nameLen);
+      const path = parent.path === "/" ? `/${name}` : `${parent.path}/${name}`;
+      return recordsByPath.get(path)?.ino ?? 0;
+    },
     memfs_inode_mode: (ino: number) => recordsByIno.get(ino)?.mode ?? 0,
     memfs_file_size: (ino: number) => BigInt(recordsByIno.get(ino)?.data.length ?? 0),
     memfs_reserve_inode_until: (ino: number) => {
@@ -131,6 +141,28 @@ function makeKernelExports(): FakeKernelExports {
         kind: "file",
         mode: 0o100644,
         data: new Uint8Array(),
+        materialized: false,
+      };
+      putRecord(record);
+      return record.ino;
+    },
+    memfs_create_symlink: (parentIno: number, namePtr: number, nameLen: number, targetPtr: number, targetLen: number) => {
+      const parent = recordsByIno.get(parentIno);
+      if (!parent || parent.kind !== "dir") {
+        return 0;
+      }
+      const name = decodeGuestBytes(memory, namePtr, nameLen);
+      const path = parent.path === "/" ? `/${name}` : `${parent.path}/${name}`;
+      const existing = recordsByPath.get(path);
+      if (existing) {
+        return 0;
+      }
+      const record: InodeRecord = {
+        ino: allocateIno(),
+        path,
+        kind: "symlink",
+        mode: 0o120777,
+        data: new Uint8Array(memory.buffer.slice(targetPtr, targetPtr + targetLen)),
         materialized: false,
       };
       putRecord(record);
@@ -189,6 +221,17 @@ function makeKernelExports(): FakeKernelExports {
       if (!record || record.kind !== "file") {
         return -1n;
       }
+      if (!record.materialized && sabPageCache) {
+        const published = readInodeRecord(sabPageCache, ino);
+        if (published && published.dataOff !== 0 && published.size > 0) {
+          const start = Number(offset);
+          const available = Math.max(0, published.size - start);
+          const readLen = Math.min(len, available);
+          const bytes = new Uint8Array(sabPageCache, published.dataOff + start, readLen);
+          new Uint8Array(memory.buffer, ptr, readLen).set(bytes);
+          return BigInt(readLen);
+        }
+      }
       const start = Number(offset);
       const available = Math.max(0, record.data.length - start);
       const readLen = Math.min(len, available);
@@ -228,7 +271,22 @@ function makeKernelExports(): FakeKernelExports {
       return 0n;
     },
     opLog,
-    fileData: (path: string) => new Uint8Array(recordsByPath.get(normalizePath(path))?.data ?? new Uint8Array()),
+    fileData: (path: string) => {
+      const record = recordsByPath.get(normalizePath(path));
+      if (!record || record.kind !== "file") {
+        return new Uint8Array();
+      }
+      if (!record.materialized && sabPageCache) {
+        const published = readInodeRecord(sabPageCache, record.ino);
+        if (published && published.dataOff !== 0 && published.size > 0) {
+          return new Uint8Array(new Uint8Array(sabPageCache).slice(
+            published.dataOff,
+            published.dataOff + published.size,
+          ));
+        }
+      }
+      return new Uint8Array(record.data);
+    },
     fileIno: (path: string) => recordsByPath.get(normalizePath(path))?.ino ?? 0,
     overwriteFile: (path: string, data: Uint8Array) => {
       const record = recordsByPath.get(normalizePath(path));
@@ -237,6 +295,29 @@ function makeKernelExports(): FakeKernelExports {
       }
       record.data = new Uint8Array(data);
       record.materialized = true;
+    },
+    createSymlink: (path: string, target: Uint8Array) => {
+      const normalized = normalizePath(path);
+      const parts = normalized.split("/").filter(Boolean);
+      const name = parts.pop();
+      if (!name) {
+        throw new Error(`invalid symlink path: ${path}`);
+      }
+      const parent = parts.length === 0 ? "/" : `/${parts.join("/")}`;
+      const parentRecord = recordsByPath.get(parent);
+      if (!parentRecord || parentRecord.kind !== "dir") {
+        throw new Error(`missing parent directory: ${parent}`);
+      }
+      const record: InodeRecord = {
+        ino: allocateIno(),
+        path: parent === "/" ? `/${name}` : `${parent}/${name}`,
+        kind: "symlink",
+        mode: 0o120777,
+        data: new Uint8Array(target),
+        materialized: false,
+      };
+      putRecord(record);
+      return record.ino;
     },
   };
 
@@ -249,9 +330,9 @@ function parentPath(path: string): string {
 }
 
 function makeFsState() {
-  const canonicalExports = makeKernelExports();
-  const memberExports = makeKernelExports();
-  const sabPageCache = new SharedArrayBuffer(DATA_REGION_OFFSET + 256 * 1024);
+  const sabPageCache = new SharedArrayBuffer(DATA_REGION_OFFSET + (16 * 1024 * 1024));
+  const canonicalExports = makeKernelExports(sabPageCache);
+  const memberExports = makeKernelExports(sabPageCache);
   const processKernels = new Map<number, KernelExports>([[2, memberExports]]);
   const seedEntries = new Map();
   const fsState = createKernelWorkerFsState({
@@ -282,6 +363,7 @@ function makeFsState() {
     ),
     upsertDirSeed: () => {},
     upsertFileSeed: () => {},
+    upsertSymlinkSeed: () => {},
   });
   return { canonicalExports, memberExports, fsState };
 }
@@ -321,4 +403,43 @@ test("kernel-worker syncFileDataMutation shrinks materialized member files to th
   expect(changed).toBe(true);
   expect(memberExports.fileData("/lib/runtime.bin")).toEqual(nextData);
   expect(memberExports.opLog.some((entry) => entry.startsWith("truncate:/lib/runtime.bin:3"))).toBe(true);
+});
+
+test("kernel-worker writeFile keeps large files page-cache-backed instead of materializing canonical memfs data", () => {
+  const { canonicalExports, fsState } = makeFsState();
+  const data = new Uint8Array((8 * 1024 * 1024) + (1024 * 1024)).map((_, index) => (index * 13) & 0xff);
+
+  fsState.writeFile("/usr/lib/large.bin", data, 0o644, false);
+  const roundTrip = fsState.readFile("/usr/lib/large.bin");
+
+  expect(canonicalExports.opLog).toContain(`shallow:/usr/lib/large.bin:${data.length}`);
+  expect(canonicalExports.opLog.some((entry) => entry.startsWith("truncate:/usr/lib/large.bin:"))).toBe(false);
+  expect(canonicalExports.opLog.some((entry) => entry.startsWith("write:/usr/lib/large.bin:"))).toBe(false);
+  expect(roundTrip.length).toBe(data.length);
+  expect(roundTrip.subarray(0, 64)).toEqual(data.subarray(0, 64));
+  expect(roundTrip.subarray(data.length - 64)).toEqual(data.subarray(data.length - 64));
+});
+
+test("kernel-worker symlink uses basename scratch independently from resolvePath scratch", () => {
+  const { canonicalExports, fsState } = makeFsState();
+
+  fsState.mkdir("/usr/lib/riscv64-linux-gnu", 0o755, false);
+  const parentIno = canonicalExports.fileIno("/usr/lib/riscv64-linux-gnu");
+  const rawName = encoder.encode("/usr/lib/ri");
+  const rawTarget = encoder.encode("stale-target");
+  const rawNamePtr = canonicalExports.kernel_heap_ptr() + 0x10000;
+  const rawTargetPtr = rawNamePtr + 0x1000;
+  new Uint8Array(canonicalExports.memory.buffer).set(rawName, rawNamePtr);
+  new Uint8Array(canonicalExports.memory.buffer).set(rawTarget, rawTargetPtr);
+  expect(canonicalExports.memfs_create_symlink(parentIno, rawNamePtr, rawName.length, rawTargetPtr, rawTarget.length))
+    .toBeGreaterThan(1);
+
+  fsState.symlink(
+    "/usr/lib/riscv64-linux-gnu/libX11.so.6",
+    encoder.encode("libX11.so.6.4.0"),
+    0o777,
+    false,
+  );
+
+  expect(canonicalExports.fileIno("/usr/lib/riscv64-linux-gnu/libX11.so.6")).toBeGreaterThan(1);
 });

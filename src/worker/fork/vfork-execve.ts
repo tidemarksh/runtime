@@ -21,6 +21,7 @@ import {
 import { copyKernelPrivateRegion, ensureKernelMemoryCapacity, kernelScratchBase } from "../kernel-scratch.js";
 import { acquireWorker, ensureEvictionTimer } from "../pool.js";
 import { createForkChildHandle } from "./common.js";
+import { computeGuestRamLimitBytes } from "./common.js";
 import type { ProcessHandle, ThreadWorkerState, WorkerForkDeps } from "./types.js";
 
 const VFORK_EXECVE_HANDOFF_FAILURE_WAIT_STATUS = 127 << 8;
@@ -130,6 +131,8 @@ export async function handleVforkExecve(
   parentThread: ThreadWorkerState,
   childPid: number,
 ): Promise<void> {
+  handle.pendingChildSpawnRecords += 1;
+  try {
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:start:${childPid}`);
   deps.appendRuntimeLifecycleEvent(
     handle.runtimeId,
@@ -163,7 +166,7 @@ export async function handleVforkExecve(
     initial: Math.ceil(
       Math.max(deps.bootStrapMemoryBytes, handle.guestBase + 0x10000) / deps.wasmPageSize,
     ),
-    maximum: deps.wasmMaxPages,
+    maximum: Math.max(handle.maxMemoryPages, handle.forkMaxMemoryPages),
     shared: true,
   });
 
@@ -224,6 +227,11 @@ export async function handleVforkExecve(
     stagedExecveHandoff.pathPtr,
     stagedExecveHandoff.argvPtr,
     stagedExecveHandoff.envpPtr,
+    computeGuestRamLimitBytes(
+      handle.guestBase,
+      handle.ramSize,
+      handle.maxMemoryPages,
+    ),
   );
   let execRet: number;
   try {
@@ -273,6 +281,14 @@ export async function handleVforkExecve(
       : decodeExecveBytes(execveGuestPayload.path),
     workerDebugLabel: "spawn:vfork-execve",
   });
+  childHandle.kernel.thread_set_guest_ram_limit(
+    childHandle.vmPtr,
+    computeGuestRamLimitBytes(
+      childHandle.guestBase,
+      childHandle.ramSize,
+      childHandle.maxMemoryPages,
+    ),
+  );
   deps.assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-execve");
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-kernel-ready:${childPid}`);
   handle.lastDebugMessage = `vfork-execve:child-kernel-ready child=${childPid}`;
@@ -396,4 +412,10 @@ export async function handleVforkExecve(
   deps.clearVforkSnapshot(handle);
   deps.kickBlockedWorkers(handle);
   deps.enqueueWorker(handle, parentWorker);
+  } finally {
+    if (handle.pendingChildSpawnRecords > 0) {
+      handle.pendingChildSpawnRecords -= 1;
+    }
+    deps.kickBlockedWorkers(handle);
+  }
 }

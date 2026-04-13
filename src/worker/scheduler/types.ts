@@ -8,9 +8,11 @@ import type {
 } from "../../messages.js";
 
 export interface WorkerSchedulerDeps {
+  appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number): Promise<void>;
   failProcess(handle: ProcessHandle, error: Error): void;
+  hasActiveChildProcess(parentPid: number): boolean;
   resumeBlockedSyscallLocally(
     handle: ProcessHandle,
     worker: Worker,

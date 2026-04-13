@@ -2,7 +2,6 @@ import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
 } from "../../../abi.js";
-import { publishKernelRuntimeState } from "../../../bridge/runtime-state.js";
 import { adoptKernelState } from "../../sync.js";
 import type {
   CanonicalizedChildLifecycle,
@@ -135,14 +134,21 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     waitStatus: number,
   ): Promise<void> {
     if (!parent.kernelWorkerRequest || parent.pid <= 0) {
-      parent.kernel.process_record_child_exit(childPid, waitStatus);
+      deps.drainProcessOutput(parent);
+      if (parent.kernel.process_record_child_exit_for_parent) {
+        parent.kernel.process_record_child_exit_for_parent(parent.pid, childPid, waitStatus);
+      } else {
+        parent.kernel.process_record_child_exit(childPid, waitStatus);
+      }
       parent.kernelState = readKernelRuntimeState(parent.kernel);
-      publishKernelRuntimeState(parent.runtimeBridge, parent.kernelState, true);
-      deps.kickBlockedWorkers(parent);
       return;
     }
 
     try {
+      await deps.requestPipeStateSync(parent, false);
+      deps.drainProcessOutput(parent);
+      await deps.requestPipeStateSync(parent, false);
+
       const response = await parent.kernelWorkerRequest({
         type: "record-child-exit",
         pid: parent.pid,
@@ -158,11 +164,15 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
       }
       parent.kernelState = adoptKernelState(parent.kernelState, response.kernelState);
       attachKernelRuntimeState(parent.kernel, parent.kernelState);
-      parent.kernel.process_record_child_exit(childPid, waitStatus);
+      if (parent.kernel.process_record_child_exit_for_parent) {
+        parent.kernel.process_record_child_exit_for_parent(parent.pid, childPid, waitStatus);
+      } else {
+        parent.kernel.process_record_child_exit(childPid, waitStatus);
+      }
       parent.kernelState = readKernelRuntimeState(parent.kernel);
       attachKernelRuntimeState(parent.kernel, parent.kernelState);
-      publishKernelRuntimeState(parent.runtimeBridge, parent.kernelState, true);
-      deps.kickBlockedWorkers(parent);
+      await deps.requestPipeStateSync(parent, false);
+      deps.drainProcessOutput(parent);
     } catch (error) {
       if (parent.pid > 0 && deps.processHandles.get(parent.pid) === parent) {
         deps.failProcess(parent, error instanceof Error ? error : new Error(String(error)));

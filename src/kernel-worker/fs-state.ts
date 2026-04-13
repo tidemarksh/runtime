@@ -3,6 +3,7 @@ import type { FsSnapshotEntry, RuntimeStat } from "../fs/types.js";
 import { bumpDirEpoch, publishInode, readInodeRecord } from "../fs/sab-page-cache.js";
 import {
   ensureMemoryCapacityFor,
+  memfsFileHasInlineData,
   markMaterializedMemfsFile,
   MEMFS_S_IFMT,
   MEMFS_S_IFREG,
@@ -13,6 +14,8 @@ import {
   writeScratchFor,
 } from "./common.js";
 import { createKernelWorkerFsSnapshotHelpers } from "./fs-state/snapshot.js";
+
+const LARGE_FILE_SHALLOW_THRESHOLD_BYTES = 512 * 1024;
 
 interface KernelWorkerFsStateDeps {
   getCanonicalExports(): KernelExports;
@@ -26,6 +29,7 @@ interface KernelWorkerFsStateDeps {
   resolvePathIn(targetExports: KernelExports, path: string): number;
   upsertDirSeed(path: string, mode?: number): void;
   upsertFileSeed(path: string, data: Uint8Array, mode?: number): void;
+  upsertSymlinkSeed(path: string, target: Uint8Array, mode?: number): void;
 }
 
 export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
@@ -45,6 +49,25 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       }
     }
     markMaterializedMemfsFile(targetExports, ino);
+  }
+
+  function replaceFileDataShallow(
+    targetExports: KernelExports,
+    ino: number,
+    meta: {
+      mode: number;
+      size: number;
+      parentIno: number;
+      name: Uint8Array;
+      nextSibling: number;
+    },
+    data: Uint8Array,
+  ): void {
+    publishInode(deps.getSabPageCache(), ino, meta, data);
+    const sizeResult = Number(targetExports.memfs_set_file_size_shallow(ino, BigInt(data.length)));
+    if (sizeResult < 0) {
+      throw new Error(`failed to seed inode metadata: ${ino}`);
+    }
   }
 
   function ensureDirectory(path: string, mode = 0o755): number {
@@ -105,8 +128,24 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       throw new Error(`failed to create file: ${path}`);
     }
 
+    let usedShallowData = false;
     try {
-      replaceFileData(targetExports, ino, data);
+      if (
+        data.length >= LARGE_FILE_SHALLOW_THRESHOLD_BYTES
+        && !memfsFileHasInlineData(targetExports, ino)
+      ) {
+        const published = readInodeRecord(deps.getSabPageCache(), ino);
+        replaceFileDataShallow(targetExports, ino, {
+          mode: 0o100000 | fileMode,
+          size: data.length,
+          parentIno,
+          name: fileBytes,
+          nextSibling: published?.nextSibling ?? 0,
+        }, data);
+        usedShallowData = true;
+      } else {
+        replaceFileData(targetExports, ino, data);
+      }
     } catch (error) {
       throw new Error(`failed to write file ${normalized}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -115,15 +154,75 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       throw new Error(`failed to set mode on file: ${path}`);
     }
 
-    publishInode(deps.getSabPageCache(), ino, {
-      mode: 0o100000 | fileMode,
-      size: data.length,
-      parentIno,
-      name: fileBytes,
-      nextSibling: 0,
-    }, data);
+    if (!usedShallowData) {
+      publishInode(deps.getSabPageCache(), ino, {
+        mode: 0o100000 | fileMode,
+        size: data.length,
+        parentIno,
+        name: fileBytes,
+        nextSibling: readInodeRecord(deps.getSabPageCache(), ino)?.nextSibling ?? 0,
+      }, data);
+    }
     bumpDirEpoch(deps.getSabPageCache());
     deps.upsertFileSeed(normalized, data, fileMode);
+    if (fanout) {
+      deps.fanoutCanonicalMemfs();
+    }
+  }
+
+  function symlink(path: string, target: Uint8Array, mode = 0o777, fanout = true): void {
+    const targetExports = deps.getCanonicalExports();
+    const normalized = normalizePath(path);
+    const parts = pathParts(normalized);
+    const linkName = parts.pop();
+    if (!linkName) {
+      throw new Error(`invalid symlink path: ${path}`);
+    }
+    const parentPath = parts.length === 0 ? "/" : `/${parts.join("/")}`;
+    const parentIno = ensureDirectory(parentPath);
+    const parentPathIno = resolvePath(parentPath);
+    const parentMode = parentIno !== 0 ? targetExports.memfs_inode_mode(parentIno) : 0;
+    const existingIno = resolvePath(normalized);
+    if (existingIno !== 0) {
+      return;
+    }
+    const nameBytes = deps.encoder.encode(linkName);
+    const namePtr = writeScratchFor(targetExports, nameBytes);
+    const targetPtr = writeScratchFor(targetExports, target, 0x1000);
+    const lookupIno = targetExports.memfs_lookup(parentIno, namePtr, nameBytes.length);
+    const lookupMode = lookupIno !== 0 ? targetExports.memfs_inode_mode(lookupIno) : 0;
+    const ino = targetExports.memfs_create_symlink(parentIno, namePtr, nameBytes.length, targetPtr, target.length);
+    if (ino === 0) {
+      const postExistingIno = resolvePath(normalized);
+      throw new Error(
+        `failed to create symlink: ${path}`
+        + ` parentPath=${parentPath}`
+        + ` parentIno=${parentIno}`
+        + ` parentPathIno=${parentPathIno}`
+        + ` parentMode=${parentMode.toString(8)}`
+        + ` existingIno=${existingIno}`
+        + ` lookupIno=${lookupIno}`
+        + ` lookupMode=${lookupMode.toString(8)}`
+        + ` postExistingIno=${postExistingIno}`
+        + ` targetLen=${target.length}`
+        + ` inodeCount=${targetExports.memfs_inode_count()}`
+        + ` dirEntryCount=${targetExports.memfs_dir_entry_count()}`
+        + ` dataUsed=${targetExports.memfs_data_used()}`
+        + ` dataCap=${targetExports.memfs_data_cap()}`
+        + ` lastStage=${targetExports.memfs_last_create_symlink_stage()}`
+        + ` lastArg0=${targetExports.memfs_last_create_symlink_arg0().toString()}`
+        + ` lastArg1=${targetExports.memfs_last_create_symlink_arg1().toString()}`,
+      );
+    }
+    publishInode(deps.getSabPageCache(), ino, {
+      mode: 0o120000 | normalizePermMode(mode, 0o777),
+      size: target.length,
+      parentIno,
+      name: nameBytes,
+      nextSibling: 0,
+    }, null);
+    bumpDirEpoch(deps.getSabPageCache());
+    deps.upsertSymlinkSeed(normalized, target, mode);
     if (fanout) {
       deps.fanoutCanonicalMemfs();
     }
@@ -298,7 +397,8 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       throw new Error(`failed to read directory: ${path}`);
     }
 
-    const bytes = new Uint8Array(targetExports.memory.buffer, bufPtr, byteLen);
+    const bytes = new Uint8Array(byteLen);
+    bytes.set(new Uint8Array(targetExports.memory.buffer, bufPtr, byteLen));
     const names: string[] = [];
     let start = 0;
     for (let i = 0; i < bytes.length; i += 1) {
@@ -367,6 +467,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     snapshotCanonicalFs,
     statPath,
     syncFileDataMutation,
+    symlink,
     writeFile,
   };
 }

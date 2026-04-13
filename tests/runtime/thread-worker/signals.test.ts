@@ -3,6 +3,8 @@ import { checkPendingSignalsAtBoundary } from "../../../src/thread-worker/signal
 
 test("checkPendingSignalsAtBoundary reports delivered when step(0) advances the thread to OK", () => {
   const clearSyscallTrace = vi.fn();
+  const clearSignalTrace = vi.fn();
+  const clearCpuTrace = vi.fn();
   const threadStep = vi.fn(() => {
     pc = 0x4010n;
     sp = 0x7ff0n;
@@ -15,6 +17,8 @@ test("checkPendingSignalsAtBoundary reports delivered when step(0) advances the 
 
   const boundary = checkPendingSignalsAtBoundary({
     debug_clear_syscall_trace: clearSyscallTrace,
+    debug_clear_signal_trace: clearSignalTrace,
+    debug_clear_cpu_trace: clearCpuTrace,
     thread_pc: () => pc,
     thread_sp: () => sp,
     thread_step: threadStep,
@@ -22,6 +26,8 @@ test("checkPendingSignalsAtBoundary reports delivered when step(0) advances the 
   } as never, 0x1234, { OK: 0 } as never);
 
   expect(clearSyscallTrace).toHaveBeenCalledTimes(1);
+  expect(clearSignalTrace).toHaveBeenCalledTimes(1);
+  expect(clearCpuTrace).toHaveBeenCalledTimes(1);
   expect(threadStep).toHaveBeenCalledWith(0x1234, 0);
   expect(boundary).toEqual({ status: 0, delivered: true });
 });
@@ -39,6 +45,8 @@ test("checkPendingSignalsAtBoundary keeps delivered=false when status stays non-
 
   const boundary = checkPendingSignalsAtBoundary({
     debug_clear_syscall_trace: () => {},
+    debug_clear_signal_trace: () => {},
+    debug_clear_cpu_trace: () => {},
     thread_pc: () => pc,
     thread_sp: () => sp,
     thread_step: threadStep,
@@ -59,6 +67,8 @@ test("checkPendingSignalsAtBoundary keeps delivered=false when step(0) does not 
 
   const boundary = checkPendingSignalsAtBoundary({
     debug_clear_syscall_trace: () => {},
+    debug_clear_signal_trace: () => {},
+    debug_clear_cpu_trace: () => {},
     thread_pc: () => pc,
     thread_sp: () => sp,
     thread_step: threadStep,

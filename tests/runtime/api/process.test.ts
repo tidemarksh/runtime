@@ -1,6 +1,5 @@
-import { expect, test } from "vite-plus/test";
+import { expect, test, vi } from "vite-plus/test";
 import { Process } from "../../../src/index.js";
-import { createInheritedStdoutSink } from "../../../src/worker/stdio.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
 
 function makeHandle(): ProcessHandle {
@@ -44,6 +43,7 @@ function makeHandle(): ProcessHandle {
       stderrPipe: 0,
       refCount: 1,
     },
+    stdioOwner: null,
     kernelShare: {
       members: new Set(),
       sharedOfdIds: new Set(),
@@ -71,25 +71,25 @@ function makeHandle(): ProcessHandle {
     vforkSnapshot: null,
     vforkWorker: null,
     workerDebugLog: [],
+    guestWriteWatchRegions: [],
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
   return handle;
 }
 
-test("Process.onStdout flushes queued backlog before delivering live inherited output", () => {
+test("Process.onStdout flushes queued backlog before delivering later bytes", () => {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const handle = makeHandle();
   handle.outputBacklog.push(encoder.encode("stdout-1\n"));
   handle.outputBacklog.push(encoder.encode("stderr-1\n"));
   const proc = new Process(handle.pid, handle);
-  const sink = createInheritedStdoutSink(handle);
   const seen: string[] = [];
 
   proc.onStdout((data) => {
     seen.push(decoder.decode(data));
   });
-  sink(encoder.encode("stdout-2\n"));
+  handle.onStdout?.(encoder.encode("stdout-2\n"));
 
   expect(seen).toEqual([
     "stdout-1\n",
@@ -99,37 +99,39 @@ test("Process.onStdout flushes queued backlog before delivering live inherited o
   expect(handle.outputBacklog).toEqual([]);
 });
 
-test("Process.onStdout can resume after output temporarily falls back to backlog accumulation", () => {
-  const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
+test("Process guest write watch coerces numeric regions to kernel u64 arguments", () => {
   const handle = makeHandle();
+  const clearTrace = (handle.kernel.debug_clear_guest_write_watch_trace = vi.fn());
+  const configureTrace = (handle.kernel.debug_configure_guest_write_watch = vi.fn());
   const proc = new Process(handle.pid, handle);
-  const sink = createInheritedStdoutSink(handle);
-  const seen: string[] = [];
 
-  proc.onStdout((data) => {
-    seen.push(decoder.decode(data));
-  });
-  sink(encoder.encode("phase-1\n"));
-
-  handle.onStdout = undefined;
-  sink(encoder.encode("phase-2a\n"));
-  sink(encoder.encode("phase-2b\n"));
-  expect(handle.outputBacklog.map((chunk) => decoder.decode(chunk))).toEqual([
-    "phase-2a\n",
-    "phase-2b\n",
+  proc.configureGuestWriteWatch([
+    {
+      slot: 1,
+      start: 0x3008d0,
+      end: 0x300908,
+    },
   ]);
 
-  proc.onStdout((data) => {
-    seen.push(decoder.decode(data));
-  });
-  sink(encoder.encode("phase-3\n"));
-
-  expect(seen).toEqual([
-    "phase-1\n",
-    "phase-2a\n",
-    "phase-2b\n",
-    "phase-3\n",
+  expect(handle.guestWriteWatchRegions).toEqual([
+    {
+      slot: 1,
+      start: 0x3008d0,
+      end: 0x300908,
+    },
   ]);
-  expect(handle.outputBacklog).toEqual([]);
+  expect(clearTrace).toHaveBeenCalledTimes(1);
+  expect(configureTrace).toHaveBeenCalledWith(1, 0x3008d0n, 0x300908n);
+});
+
+test("Process clearGuestWriteWatch clears stored regions and kernel trace state", () => {
+  const handle = makeHandle();
+  const clearTrace = (handle.kernel.debug_clear_guest_write_watch_trace = vi.fn());
+  const proc = new Process(handle.pid, handle);
+  handle.guestWriteWatchRegions = [{ slot: 0, start: 0x1000, end: 0x1010 }];
+
+  proc.clearGuestWriteWatch();
+
+  expect(handle.guestWriteWatchRegions).toEqual([]);
+  expect(clearTrace).toHaveBeenCalledTimes(1);
 });

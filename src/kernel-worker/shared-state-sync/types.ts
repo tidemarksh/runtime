@@ -26,6 +26,7 @@ export interface KernelWorkerSharedStateSyncDeps {
   collectProcessHeldOfdRefcounts(processExports: KernelExports, vmPtr: number): Int32Array;
   collectProcessHeldEpollOfdIds(processExports: KernelExports, vmPtr: number): number[];
   collectProcessHeldPipeSlots(processExports: KernelExports, vmPtr: number): Set<number>;
+  collectProcessPrivatePipeSourceModes(processExports: KernelExports, vmPtr: number): Map<number, number>;
   collectProcessPipeSlotModes(processExports: KernelExports, vmPtr: number): Map<number, number>;
   collectProcessPrivatePipeSlots(processExports: KernelExports, vmPtr: number): Set<number>;
   collectCanonicalManagedPipeSlots(kernelState: KernelRuntimeState): number[];

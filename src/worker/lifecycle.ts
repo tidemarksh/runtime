@@ -7,13 +7,13 @@ import {
   kernelWorkerOwnsSocketState,
 } from "./kernel-share.js";
 import { collectProcessHeldOfds } from "./fork-shared.js";
-import { releaseSharedHostStdioLocal } from "./stdio.js";
 import type { ProcessHandle } from "./types.js";
 
 interface WorkerLifecycleDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   drainProcessOutput(handle: ProcessHandle): boolean;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
+  getProcessByPid(pid: number): ProcessHandle | undefined;
   kickBlockedWorkers(handle: ProcessHandle): void;
   recordChildExitViaKernelWorker(parent: ProcessHandle, childPid: number, waitStatus: number): Promise<void>;
   releaseSharedHostStdio(handle: ProcessHandle): Promise<void>;
@@ -26,7 +26,11 @@ interface WorkerLifecycleDeps {
     vmPtr: number,
     waitStatus: number,
   ): Promise<void>;
-  syncForkSharedStateViaKernelWorker(handle: ProcessHandle, targets: ProcessHandle[]): Promise<void>;
+  syncForkSharedStateViaKernelWorker(
+    handle: ProcessHandle,
+    targets: ProcessHandle[],
+    options?: { includeMemfs?: boolean; trackHeldOfds?: boolean; preserveSourceRefcounts?: boolean },
+  ): Promise<void>;
   workerExitCompleteProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number): Promise<void>;
   workerExitFailProcess(handle: ProcessHandle, error: Error): void;
 }
@@ -44,27 +48,26 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
       return;
     }
     handle.exitInProgress = true;
-    if (kernelWorkerOwnsPipeState(handle)) {
-      await deps.requestPipeStateSync(handle, true);
+    if (handle.stdioOwner === null) {
+      deps.drainProcessOutput(handle);
     }
-    deps.drainProcessOutput(handle);
+    if (kernelWorkerOwnsPipeState(handle)) {
+      await deps.requestPipeStateSync(handle, false);
+    }
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
       `exit-begin:${handle.pid}:held=[${[...collectProcessHeldOfds(handle)].sort((left, right) => left - right).join(",")}]:shared=[${[...handle.kernelShare.sharedOfdIds].sort((left, right) => left - right).join(",")}]`,
     );
     if (handle.kernelWorkerRequest && handle.pid > 0) {
-      await deps.syncForkSharedStateViaKernelWorker(handle, kernelShareOtherMembers(handle));
+      await deps.syncForkSharedStateViaKernelWorker(handle, kernelShareOtherMembers(handle), {
+        includeMemfs: false,
+      });
     }
     if (kernelWorkerOwnsSocketState(handle)) {
       await deps.requestSocketStateSync(handle, false);
     }
     if (kernelWorkerOwnsEpollState(handle)) {
       await deps.requestEpollStateSync(handle, false);
-    }
-    if (kernelWorkerOwnsPipeState(handle)) {
-      await deps.releaseSharedHostStdio(handle);
-    } else {
-      releaseSharedHostStdioLocal(handle);
     }
     await deps.workerExitCompleteProcessExit(handle, exitCode, termSignal);
   }
@@ -74,7 +77,9 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
       return;
     }
     handle.exitInProgress = true;
-    deps.drainProcessOutput(handle);
+    if (handle.stdioOwner === null) {
+      deps.drainProcessOutput(handle);
+    }
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
       `fail:${handle.pid}:${JSON.stringify(handle.debugCommand)}:${JSON.stringify(error.message)}`,

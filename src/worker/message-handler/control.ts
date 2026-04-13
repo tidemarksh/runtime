@@ -1,9 +1,12 @@
+import { attachKernelRuntimeState } from "../../abi.js";
+import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
 import { collectHeldEpollOfdIds } from "../fork-shared.js";
-import { kernelWorkerOwnsEpollState } from "../kernel-share.js";
+import { kernelWorkerOwnsEpollState, kernelWorkerOwnsPipeState } from "../kernel-share.js";
 import {
   drainProcessOutput,
   flushStdin,
 } from "../stdio.js";
+import { adoptKernelState } from "../sync.js";
 import type { ProcessHandle } from "../types.js";
 import type { ThreadWorkerOutbound } from "../../messages.js";
 import type { WorkerMessageHandlerDeps } from "./types.js";
@@ -61,11 +64,14 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
       if (!thread) {
         return true;
       }
+      handle.kernelState = adoptKernelState(handle.kernelState, msg.kernelState);
+      attachKernelRuntimeState(handle.kernel, handle.kernelState);
+      publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
       thread.initialized = true;
       thread.waitingInWorkerStatus = null;
       deps.clearBlockedWorker(handle, worker);
       const wroteToPipe = flushStdin(handle);
-      const drainedPipe = drainProcessOutput(handle);
+      const drainedPipe = kernelWorkerOwnsPipeState(handle) ? false : drainProcessOutput(handle);
       const readySyncs: Promise<void>[] = [];
       if (wroteToPipe || drainedPipe) {
         readySyncs.push(deps.requestPipeStateSync(handle, true));
@@ -115,7 +121,8 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
           `pid=${handle.pid} thread vm=0x${msg.vmPtr.toString(16)} thread_count=${threadCount}`
             + ` live_threads=[${liveThreads.join(", ")}]`
             + ` attached_workers=[${attachedWorkers.join(", ")}]`
-            + ` thread_slots=[${threadSlots.join(", ")}] ${msg.message}`,
+            + ` thread_slots=[${threadSlots.join(", ")}]`
+            + ` ${msg.message}`,
         ),
       );
     }

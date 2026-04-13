@@ -9,6 +9,7 @@ const workerEntryMap = new WeakMap<Worker, WorkerPoolEntry>();
 const MAX_WORKERS = 4;
 const IDLE_TIMEOUT_MS = 60_000;
 const EVICTION_INTERVAL_MS = 10_000;
+const REUSE_WORKERS = typeof window === "undefined";
 
 let evictionTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -41,6 +42,13 @@ function evictIdleWorkers(): void {
 }
 
 export function acquireWorker(): Worker {
+  if (!REUSE_WORKERS) {
+    const workerUrl = new URL("../thread-worker.mjs", import.meta.url);
+    const worker = new Worker(workerUrl, { type: "module" });
+    maybeUnrefWorker(worker);
+    return worker;
+  }
+
   for (const entry of workerPool) {
     if (entry.busy) {
       continue;

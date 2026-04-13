@@ -254,6 +254,18 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
     deps.seedEntries.set(normalized, { kind: "dir", path: normalized, mode: perms });
   }
 
+  function upsertSymlinkSeed(path: string, target: Uint8Array, mode = 0o777): void {
+    const normalized = normalizePath(path);
+    const parent = normalized.split("/").slice(0, -1).join("/") || "/";
+    ensureSeedDirEntries(parent);
+    deps.seedEntries.set(normalized, {
+      kind: "symlink",
+      path: normalized,
+      target: new Uint8Array(target),
+      mode: normalizePermMode(mode, 0o777),
+    });
+  }
+
   return {
     copyCanonicalMemfsToProcess,
     ensureSeedDirEntries,
@@ -266,5 +278,6 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
     snapshotProcSelfExe,
     upsertDirSeed,
     upsertFileSeed,
+    upsertSymlinkSeed,
   };
 }

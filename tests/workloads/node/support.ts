@@ -63,7 +63,7 @@ function readNodeRuntimeLibs(): FsSnapshotEntry[] | null {
   return entries;
 }
 
-function buildNodeRuntimeSnapshot(nodeBytes: Uint8Array): FsSnapshotEntry[] | null {
+export function buildNodeRuntimeSnapshot(nodeBytes: Uint8Array): FsSnapshotEntry[] | null {
   const libs = readNodeRuntimeLibs();
   if (!libs) {
     return null;

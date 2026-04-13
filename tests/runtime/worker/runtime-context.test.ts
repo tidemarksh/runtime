@@ -145,3 +145,31 @@ test("flushRuntimeFsStateFromDirtyHandle publishes one snapshot for identical li
   const secondFlush = context.flushRuntimeFsStateFromDirtyHandle(7);
   expect(secondFlush).toBeNull();
 });
+
+test("captureRuntimeFailureSnapshot stores and clears the last runtime failure", () => {
+  const context = createWorkerRuntimeContext({
+    formatPipeCounterDebug: () => "fd-debug",
+  });
+  const handle = makeHandle(9, 91);
+  handle.debugCommand = "go version";
+  handle.lastDebugMessage = "child-debug";
+  context.processHandles.set(handle.pid, handle);
+
+  context.captureRuntimeFailureSnapshot(handle, 2, 11);
+
+  expect(context.debugRuntimeLastFailureSnapshot(9)).toEqual({
+    pid: 91,
+    cmd: "go version",
+    exitCode: 2,
+    termSignal: 11,
+    debug: expect.any(String),
+    workerFocus: [{
+      pid: 91,
+      cmd: "go version",
+      workers: [],
+    }],
+  });
+
+  context.clearRuntimeFailureSnapshot(9);
+  expect(context.debugRuntimeLastFailureSnapshot(9)).toBeNull();
+});

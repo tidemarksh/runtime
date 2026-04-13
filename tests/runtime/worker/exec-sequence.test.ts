@@ -154,6 +154,7 @@ function makeLifecycleDeps(spies: ReturnType<typeof makeHandle>) {
     appendRuntimeLifecycleEvent: () => {},
     drainProcessOutput: () => false,
     enqueueWorker: spies.enqueueWorker,
+    getProcessByPid: () => undefined,
     kickBlockedWorkers: spies.kickBlockedWorkers,
     recordChildExitViaKernelWorker: spies.recordChildExitViaKernelWorker,
     releaseSharedHostStdio: async () => {},

@@ -16,8 +16,41 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
+  function scheduleQueuedStdinFlush(handle: ProcessHandle): void {
+    if (handle.stdinFlushPromise !== null) {
+      return;
+    }
+    handle.stdinFlushPromise = (async () => {
+      const pendingPipeSync = handle.pipeSyncPromise;
+      if (pendingPipeSync !== null) {
+        await pendingPipeSync;
+      }
+      if (!deps.isActiveHandle(handle)) {
+        return;
+      }
+      const changed = deps.flushStdin(handle);
+      if (!changed) {
+        return;
+      }
+      await deps.requestPipeStateSync(handle, true);
+    })().catch((error) => {
+      if (deps.isActiveHandle(handle)) {
+        deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+      }
+    }).finally(() => {
+      handle.stdinFlushPromise = null;
+      if (deps.isActiveHandle(handle) && handle.stdinQueue.length > 0) {
+        scheduleQueuedStdinFlush(handle);
+      }
+    });
+  }
+
   function writeProcessStdin(handle: ProcessHandle, data: Uint8Array): void {
     deps.writeProcessStdin(handle, data);
+    if (handle.pipeSyncPromise !== null) {
+      scheduleQueuedStdinFlush(handle);
+      return;
+    }
     const changed = deps.flushStdin(handle);
     if (!changed) {
       return;

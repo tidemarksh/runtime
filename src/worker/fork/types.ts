@@ -25,6 +25,7 @@ export interface WorkerForkDeps {
     childPid: number,
     waitStatus: number,
   ): Promise<void>;
+  requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   rehydrateForkSharedStateViaKernelWorker(
     targets: ProcessHandle[],
     ofdIds: number[],

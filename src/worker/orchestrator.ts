@@ -16,6 +16,7 @@ import {
   collectProcessHeldOfds,
 } from "./fork-shared.js";
 import {
+  drainHiddenProcessOutput,
   drainProcessOutput,
   flushStdin,
   writeProcessStdin as bufferProcessStdin,
@@ -53,12 +54,15 @@ interface WorkerOrchestratorDeps {
 
 export interface WorkerOrchestrator {
   clearRuntimeFsState(runtimeId: number): void;
+  clearRuntimeFailureSnapshot(runtimeId: number): void;
   createProcess(
     wasmBytes: BufferSource,
     elfData: Uint8Array,
     options?: CreateProcessOptions,
   ): Promise<ProcessHandle>;
+  debugRuntimeLastFailureSnapshot(runtimeId: number): ReturnType<typeof debugRuntimeLastFailureSnapshotCtx>;
   debugRuntimeProcessHandles(runtimeId: number): string;
+  debugRuntimeWorkerLogFocus(runtimeId: number): ReturnType<typeof debugRuntimeWorkerLogFocusCtx>;
   destroyProcessTree(rootPid: number, runtimeId: number, signal?: number): void;
   destroyRuntimeProcesses(runtimeId: number, signal?: number): void;
   flushRuntimeFsStateFromDirtyHandle(runtimeId: number): { version: number; entries: FsSnapshotEntry[] } | null;
@@ -78,8 +82,12 @@ const workerRuntimeContext = createWorkerRuntimeContext({
 const {
   appendRuntimeLifecycleEvent: appendRuntimeLifecycleEventCtx,
   assertProcessStandardFdIntegrity: assertProcessStandardFdIntegrityCtx,
+  captureRuntimeFailureSnapshot: captureRuntimeFailureSnapshotCtx,
   clearRuntimeFsState: clearRuntimeFsStateCtx,
+  clearRuntimeFailureSnapshot: clearRuntimeFailureSnapshotCtx,
+  debugRuntimeLastFailureSnapshot: debugRuntimeLastFailureSnapshotCtx,
   debugRuntimeProcessHandles: debugRuntimeProcessHandlesCtx,
+  debugRuntimeWorkerLogFocus: debugRuntimeWorkerLogFocusCtx,
   flushRuntimeFsStateFromDirtyHandle: flushRuntimeFsStateFromDirtyHandleCtx,
   formatAllLiveThreadDebug: formatAllLiveThreadDebugCtx,
   getRuntimeFsState: getRuntimeFsStateCtx,
@@ -124,9 +132,18 @@ function statusDefersOwnedStateSync(handle: ProcessHandle, status: number): bool
 }
 
 const workerScheduler = createWorkerScheduler({
+  appendRuntimeLifecycleEvent,
   threadWorkerStates,
   completeProcessExit,
   failProcess,
+  hasActiveChildProcess: (parentPid) => {
+    for (const candidate of processHandles.values()) {
+      if (candidate.parentPid === parentPid) {
+        return true;
+      }
+    }
+    return false;
+  },
   resumeBlockedSyscallLocally: (handle, worker, vmPtr, blockedStatus) => (
     workerKernelRpcHelpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, blockedStatus)
   ),
@@ -161,6 +178,7 @@ workerKernelRpcHelpers = createWorkerKernelRpcHelpers({
   handleBlockedRetryResult,
   kickBlockedWorkers,
   markRuntimeFsDirty,
+  requestPipeStateSync,
   syncBlockedForkSharedStateViaKernelWorker,
   syncForkSharedStateLocally,
   syncForkSharedStateViaKernelWorker,
@@ -195,6 +213,7 @@ const workerForkHandlers = createWorkerForkHandlers({
   initializeProcessLifecycleViaKernelWorker,
   kickBlockedWorkers,
   recordChildExitViaKernelWorker,
+  requestPipeStateSync,
   rehydrateForkSharedStateViaKernelWorker,
   registerProcessWithKernelWorker,
   resumeVforkExecveParentViaKernelWorker,
@@ -227,15 +246,22 @@ const workerExitHelpers = createWorkerExitHelpers({
   processHandles,
   appendRuntimeLifecycleEvent,
   appendWorkerDebugLog,
+  captureRuntimeFailureSnapshot: captureRuntimeFailureSnapshotCtx,
   debugRuntimeProcessHandles,
+  drainHiddenProcessOutput,
+  drainProcessOutput,
   destroyProcessHandle,
   formatAllLiveThreadDebug,
+  kickBlockedWorkers,
   recordChildExitViaKernelWorker,
+  releaseSharedHostStdio,
+  requestPipeStateSync,
 });
 workerLifecycleHelpers = createWorkerLifecycleHelpers({
   appendRuntimeLifecycleEvent,
   drainProcessOutput,
   enqueueWorker,
+  getProcessByPid: (pid) => processHandles.get(pid),
   kickBlockedWorkers,
   recordChildExitViaKernelWorker,
   releaseSharedHostStdio,
@@ -248,7 +274,7 @@ workerLifecycleHelpers = createWorkerLifecycleHelpers({
   workerExitFailProcess: workerExitHelpers.failProcess,
 });
 const WASM_PAGE_SIZE = 65536;
-const WASM_MAX_PAGES = 65536;
+const WASM_MAX_PAGES = 32768;
 const BOOTSTRAP_MEMORY_BYTES = 64 * 1024 * 1024;
 const FS_EFFECT_MEMFS_MUTATION = 1 << 0;
 const FS_EFFECT_SHARED_OFD_STATE = 1 << 1;
@@ -357,6 +383,10 @@ export function clearRuntimeFsState(runtimeId: number): void {
   clearRuntimeFsStateCtx(runtimeId);
 }
 
+export function clearRuntimeFailureSnapshot(runtimeId: number): void {
+  clearRuntimeFailureSnapshotCtx(runtimeId);
+}
+
 function collectTrackableForkSharedOfds(handle: ProcessHandle): Set<number> {
   const stdioPipeSlots = new Set<number>([handle.stdinPipe, handle.stdoutPipe, handle.stderrPipe]
     .filter((pipeSlot) => pipeSlot > 0));
@@ -395,6 +425,14 @@ export async function injectHttpRequest(
 
 export function debugRuntimeProcessHandles(runtimeId: number): string {
   return debugRuntimeProcessHandlesCtx(runtimeId);
+}
+
+export function debugRuntimeLastFailureSnapshot(runtimeId: number) {
+  return debugRuntimeLastFailureSnapshotCtx(runtimeId);
+}
+
+export function debugRuntimeWorkerLogFocus(runtimeId: number) {
+  return debugRuntimeWorkerLogFocusCtx(runtimeId);
 }
 
 function appendRuntimeLifecycleEvent(runtimeId: number, event: string): void {
@@ -516,8 +554,11 @@ function handleWorkerMessage(
 
 const workerOrchestrator: WorkerOrchestrator = {
   clearRuntimeFsState,
+  clearRuntimeFailureSnapshot,
   createProcess,
+  debugRuntimeLastFailureSnapshot,
   debugRuntimeProcessHandles,
+  debugRuntimeWorkerLogFocus,
   destroyProcessTree,
   destroyRuntimeProcesses,
   flushRuntimeFsStateFromDirtyHandle,

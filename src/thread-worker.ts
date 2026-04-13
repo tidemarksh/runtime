@@ -8,8 +8,9 @@ import {
   readKernelRuntimeState,
   readStatusCodes,
 } from "./abi.js";
-import type { ThreadWorkerInbound, ThreadWorkerOutbound } from "./messages.js";
+import type { GuestWriteWatchRegion, ThreadWorkerInbound, ThreadWorkerOutbound } from "./messages.js";
 import {
+  observeRuntimeBridgeEpoch,
   readPublishedKernelRuntimeState,
   type RuntimeStateBridge,
 } from "./bridge/runtime-state.js";
@@ -22,6 +23,10 @@ import {
 } from "./thread-worker/debug.js";
 import { stepThread } from "./thread-worker/exec.js";
 import {
+  shouldPrepareThreadWorker,
+  type ThreadWorkerPrepareInputs,
+} from "./thread-worker/session.js";
+import {
   loadSyscallNumbers,
   readCompletedSyncEffects,
   type SyscallNumbers,
@@ -33,24 +38,130 @@ let vmPtr = 0;
 let guestBase = 0;
 let wasmFeatures: WasmFeatureSupport;
 let runtimeBridge: RuntimeStateBridge | null = null;
+let preparedInputs: ThreadWorkerPrepareInputs | null = null;
+let preparedKernelHeapBase = 0;
 const THREAD_STEP_BUDGET = 20_000;
 const EINTR_ERRNO = 4;
 const FUTEX_WAIT_SLICE_MS = 10;
+const PREPARE_PRESERVE_PREFIX_FALLBACK_BYTES = 64 * 1024 * 1024;
+const MEMORY_SNAPSHOT_CHUNK_BYTES = 4 * 1024 * 1024;
 
 let syscallNumbers: SyscallNumbers | null = null;
 
-async function prepare(
-  wasmModule: WebAssembly.Module,
+function toKernelU64(value: number): bigint {
+  return BigInt(Math.trunc(value));
+}
+
+function applyGuestWriteWatchRegions(regions?: GuestWriteWatchRegion[]): void {
+  exports.debug_clear_guest_write_watch_trace?.();
+  if (!regions || regions.length === 0) {
+    return;
+  }
+  for (const region of regions) {
+    exports.debug_configure_guest_write_watch?.(
+      region.slot,
+      toKernelU64(region.start),
+      toKernelU64(region.end),
+    );
+  }
+}
+
+interface MemorySnapshotChunk {
+  start: number;
+  bytes: Uint8Array;
+}
+
+interface MemorySnapshotRange {
+  chunks: MemorySnapshotChunk[];
+}
+
+function snapshotMemoryRange(
   memory: WebAssembly.Memory,
-  sabPageCache: SharedArrayBuffer | null,
+  start: number,
+  length: number,
+): MemorySnapshotRange | null {
+  if (length <= 0 || start < 0 || start >= memory.buffer.byteLength) {
+    return null;
+  }
+  const end = Math.min(memory.buffer.byteLength, start + length);
+  if (end <= start) {
+    return null;
+  }
+  const chunks: MemorySnapshotChunk[] = [];
+  for (let offset = start; offset < end; offset += MEMORY_SNAPSHOT_CHUNK_BYTES) {
+    const chunkEnd = Math.min(end, offset + MEMORY_SNAPSHOT_CHUNK_BYTES);
+    chunks.push({
+      start: offset,
+      bytes: new Uint8Array(memory.buffer, offset, chunkEnd - offset).slice(),
+    });
+  }
+  return { chunks };
+}
+
+function restoreMemoryRange(
+  memory: WebAssembly.Memory,
+  range: MemorySnapshotRange | null,
+): void {
+  if (!range || range.chunks.length === 0) {
+    return;
+  }
+  const bytes = new Uint8Array(memory.buffer);
+  for (const chunk of range.chunks) {
+    if (chunk.bytes.byteLength === 0) {
+      continue;
+    }
+    bytes.set(chunk.bytes, chunk.start);
+  }
+}
+
+async function prepare(
+  inputs: ThreadWorkerPrepareInputs,
   _notifySab: SharedArrayBuffer,
   _stateSab: SharedArrayBuffer,
+  preserveGuestRange?: { guestBase: number; guestBytes: number },
 ): Promise<void> {
-  const instance = await WebAssembly.instantiate(wasmModule, {
-    env: createKernelEnv(memory, { sabPageCache }),
+  const preservePrefixBytes = Math.min(
+    inputs.memory.buffer.byteLength,
+    preparedKernelHeapBase > 0
+      ? preparedKernelHeapBase
+      : PREPARE_PRESERVE_PREFIX_FALLBACK_BYTES,
+  );
+  const preservedPrefix = snapshotMemoryRange(inputs.memory, 0, preservePrefixBytes);
+  // A freshly attached plain-fork child reaches thread-worker init with a live
+  // guest image already staged in shared memory. Browser imported-memory
+  // instantiation replays module data segments over that guest window, so keep
+  // the guest range intact across instantiate before the first step.
+  const preservedGuestRange = preserveGuestRange
+    ? snapshotMemoryRange(inputs.memory, preserveGuestRange.guestBase, preserveGuestRange.guestBytes)
+    : null;
+  const instance = await WebAssembly.instantiate(inputs.wasmModule, {
+    env: createKernelEnv(inputs.memory, { sabPageCache: inputs.sabPageCache }),
   });
   exports = instance.exports as unknown as KernelExports;
+  const nextKernelHeapBase = exports.kernel_heap_base();
+  if (preservedPrefix && preservedPrefix.chunks.length > 0) {
+    const restoreChunks: MemorySnapshotChunk[] = [];
+    for (const chunk of preservedPrefix.chunks) {
+      if (chunk.start >= nextKernelHeapBase) {
+        break;
+      }
+      const restoreEnd = Math.min(chunk.start + chunk.bytes.byteLength, nextKernelHeapBase);
+      if (restoreEnd <= chunk.start) {
+        continue;
+      }
+      restoreChunks.push({
+        start: chunk.start,
+        bytes: chunk.bytes.subarray(0, restoreEnd - chunk.start),
+      });
+    }
+    if (restoreChunks.length > 0) {
+      restoreMemoryRange(inputs.memory, { chunks: restoreChunks });
+    }
+  }
+  restoreMemoryRange(inputs.memory, preservedGuestRange);
+  preparedKernelHeapBase = nextKernelHeapBase;
   wasmFeatures = detectWasmFeatures();
+  preparedInputs = inputs;
   runtimeBridge = {
     notifySab: _notifySab,
     stateSab: _stateSab,
@@ -147,9 +258,11 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
     case "prepare":
       try {
         await prepare(
-          msg.wasmModule,
-          msg.memory,
-          msg.sabPageCache,
+          {
+            wasmModule: msg.wasmModule,
+            memory: msg.memory,
+            sabPageCache: msg.sabPageCache,
+          },
           msg.runtimeNotify,
           msg.runtimeState,
         );
@@ -160,16 +273,30 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
       break;
     case "init":
       try {
-        if (runtimeBridge === null) {
+        const nextInputs = {
+          wasmModule: msg.wasmModule,
+          memory: msg.memory,
+          sabPageCache: msg.sabPageCache,
+        };
+        const nextBridge = {
+          notifySab: msg.runtimeNotify,
+          stateSab: msg.runtimeState,
+        };
+        observeRuntimeBridgeEpoch(nextBridge, msg.runtimeEpoch ?? 0);
+        if (shouldPrepareThreadWorker(preparedInputs, nextInputs)) {
           await prepare(
-            msg.wasmModule,
-            msg.memory,
-            msg.sabPageCache,
+            nextInputs,
             msg.runtimeNotify,
             msg.runtimeState,
+            msg.guestBytes !== undefined
+              ? { guestBase: msg.guestBase, guestBytes: msg.guestBytes }
+              : undefined,
           );
+        } else {
+          runtimeBridge = nextBridge;
         }
         attach(msg.vmPtr, msg.guestBase, msg.kernelState);
+        applyGuestWriteWatchRegions(msg.guestWriteWatchRegions);
         postReady();
       } catch (error) {
         postError(error);

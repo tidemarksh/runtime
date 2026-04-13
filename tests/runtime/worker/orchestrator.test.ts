@@ -132,11 +132,15 @@ const SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE = 1 << 3;
 const SYNC_EFFECT_PROCESS_LIFECYCLE = 1 << 4;
 const SYNC_EFFECT_FORK_SHARED_OFD_STATE = 1 << 6;
 
-function emitReady(worker: FakeWorker, vmPtr = 0x1234): void {
+function emitReady(
+  worker: FakeWorker,
+  vmPtr = 0x1234,
+  kernelState = makeKernelState(),
+): void {
   worker.emit({
     type: "ready",
     vmPtr,
-    kernelState: makeKernelState(),
+    kernelState,
     wasmFeatures: {
       memory64: true,
       tailCalls: true,
@@ -303,6 +307,10 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_exit_code: () => 0,
     thread_term_signal: () => 0,
     thread_pc: () => 0n,
+    thread_ra: () => 0n,
+    thread_sp: () => 0n,
+    thread_s11: () => 0n,
+    thread_tls_base: () => 0n,
     thread_a0: () => 0n,
     thread_pending_fs_effects: () => 0,
     thread_pending_fs_target_ino: () => 0,
@@ -335,6 +343,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_spawn_argv: () => 0n,
     thread_spawn_envp: () => 0n,
     thread_set_execve_handoff: () => {},
+    thread_set_guest_ram_limit: () => {},
     thread_clear_spawn_handoff: () => {},
     thread_resume_vfork_parent: () => {},
     thread_restore_vfork_parent_without_cleanup: () => {},
@@ -521,6 +530,9 @@ test("createProcess spawns a child worker on STATUS_CLONE_SPAWN", async () => {
       memory: handle.memory,
       vmPtr: 0x2000,
       guestBase: 0x1000000,
+      guestBytes: Math.min(handle.ramSize, handle.memory.buffer.byteLength - 0x1000000),
+      runtimeEpoch: expect.any(Number),
+      guestWriteWatchRegions: [],
       kernelState: makeKernelState(),
       sabPageCache: null,
       runtimeNotify: expect.any(SharedArrayBuffer),
@@ -529,6 +541,25 @@ test("createProcess spawns a child worker on STATUS_CLONE_SPAWN", async () => {
   ]);
   expect(worker.postedMessages).toEqual([
     { type: "step", budget: 20_000, kernelState: makeKernelState() },
+  ]);
+});
+
+test("ready adopts worker kernel state before first step", async () => {
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
+  const worker = createdWorkers[0];
+  const readyState = {
+    ...makeKernelState(),
+    heapPtr: makeKernelState().heapPtr + 0x88,
+    pipeUsed: 0x40n,
+    processRuntimeStatePtr: makeKernelState().processRuntimeStatePtr + 0x20,
+  };
+
+  worker.clearPostedMessages();
+  emitReady(worker, 0x1234, readyState);
+
+  expect(handle.kernelState).toEqual(readyState);
+  expect(worker.postedMessages).toEqual([
+    { type: "step", budget: 20_000, kernelState: readyState },
   ]);
 });
 
@@ -582,6 +613,9 @@ test("clone spawn refreshes kernel state before child init and parent resume", a
       memory: handle.memory,
       vmPtr: 0x2000,
       guestBase: 0x1000000,
+      guestBytes: Math.min(handle.ramSize, handle.memory.buffer.byteLength - 0x1000000),
+      runtimeEpoch: expect.any(Number),
+      guestWriteWatchRegions: [],
       kernelState: refreshedState,
       sabPageCache: null,
       runtimeNotify: expect.any(SharedArrayBuffer),
@@ -591,6 +625,61 @@ test("clone spawn refreshes kernel state before child init and parent resume", a
   expect(worker.postedMessages).toEqual([
     { type: "step", budget: 20_000, kernelState: refreshedState },
   ]);
+});
+
+
+test("clone child init caps preserved guest bytes to ramSize", async () => {
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
+  const worker = createdWorkers[0];
+  handle.ramSize = 0x2000;
+
+  emitReady(worker);
+  worker.clearPostedMessages();
+  worker.emit({
+    type: "status",
+    status: 10,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+
+  expect(createdWorkers).toHaveLength(2);
+  expect(createdWorkers[1].postedMessages[0]).toMatchObject({
+    type: "init",
+    guestBase: 0x1000000,
+    guestBytes: 0x2000,
+  });
+});
+
+test("clone child init preserves only live guest bytes when kernel debug memory state is narrower", async () => {
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
+  const worker = createdWorkers[0];
+  handle.ramSize = 0x200000;
+  handle.kernel.debug_memory_brk_current = () => 0x4000n;
+  handle.kernel.debug_memory_mmap_next = () => 0x9000n;
+  handle.kernel.debug_memory_vma_len = () => 2;
+  handle.kernel.debug_memory_vma_end = (index: number) => (index === 0 ? 0x6000n : 0x8000n);
+
+  emitReady(worker);
+  worker.clearPostedMessages();
+  worker.emit({
+    type: "status",
+    status: 10,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+
+  expect(createdWorkers).toHaveLength(2);
+  expect(createdWorkers[1].postedMessages[0]).toMatchObject({
+    type: "init",
+    guestBase: 0x1000000,
+    guestBytes: 0x9000,
+  });
 });
 
 test("clone child first ready->step uses refreshed canonical kernel state", async () => {
@@ -2092,6 +2181,7 @@ test("STATUS_WAIT4 delegates retries through kernel-worker when available", asyn
 
   emitReady(worker);
   worker.clearPostedMessages();
+  requests.length = 0;
   worker.emit({
     type: "status",
     status: 31,
@@ -2106,8 +2196,11 @@ test("STATUS_WAIT4 delegates retries through kernel-worker when available", asyn
   vi.advanceTimersByTime(15);
   await flushMicrotasks();
 
-  expect(requests.some((msg) => msg.type === "resume-wait4")).toBe(true);
-  expect(resumeWait4).not.toHaveBeenCalled();
+  expect(requests.map((msg) => msg.type)).toEqual([
+    "resume-wait4",
+    "sync-pipe-state",
+  ]);
+  expect(resumeWait4).toHaveBeenCalledWith(0x1234);
   expect(resumeBlocked).not.toHaveBeenCalled();
   expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x30);
   expect(worker.postedMessages).toEqual([
@@ -2117,6 +2210,7 @@ test("STATUS_WAIT4 delegates retries through kernel-worker when available", asyn
       kernelState: {
         ...makeKernelState(),
         heapPtr: makeKernelState().heapPtr + 0x30,
+        pipeUsed: 15n,
       },
     },
   ]);
@@ -2332,6 +2426,84 @@ test("STATUS_PIPE_WAIT re-syncs fork-shared state after local blocked resume", a
   await flushMicrotasks();
 
   expect(resumeBlocked).toHaveBeenCalledWith(0x1234);
+  expect(requests.filter((msg) => msg.type === "sync-fork-shared-state")).toHaveLength(2);
+  expect(requests.some((msg) => msg.type === "sync-pipe-state")).toBe(true);
+
+  vi.useRealTimers();
+});
+
+test("STATUS_PIPE_WAIT local blocked resume preserves thread register context before re-step", async () => {
+  vi.useFakeTimers();
+
+  const requests: KernelWorkerRequest[] = [];
+  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+      requests.push(msg);
+      switch (msg.type) {
+        case "register-process":
+          return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+        case "initialize-process-lifecycle":
+          return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+        case "sync-epoll-state":
+          return { type: "epoll-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "sync-fork-shared-state":
+          return { type: "fork-shared-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "sync-pipe-state":
+          return { type: "pipe-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "unregister-process":
+          return { type: "process-unregistered", requestId: 0 };
+        default:
+          throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+      }
+    },
+  });
+  const worker = createdWorkers[0];
+  const kernel = createdKernelExports[0];
+  let currentStatus = 6;
+  let currentPc = 0x83336n;
+  let currentSp = 0x37d6c000n;
+  let currentS11 = 0xbfdc80n;
+  kernel.thread_status = () => currentStatus;
+  kernel.thread_pc = () => currentPc;
+  kernel.thread_sp = () => currentSp;
+  kernel.thread_s11 = () => currentS11;
+  kernel.thread_ra = () => 0x4d9b4n;
+
+  const resumeBlocked = vi.fn(() => {
+    currentStatus = 0;
+    return 0n;
+  });
+  kernel.thread_resume_blocked_syscall = resumeBlocked;
+
+  emitReady(worker);
+  worker.clearPostedMessages();
+  worker.emit({
+    type: "status",
+    status: 6,
+    exitCode: 0,
+    termSignal: 0,
+    pc: currentPc,
+    ra: 0x4d9b4n,
+    sp: currentSp,
+    s11: currentS11,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+
+  await flushMicrotasks();
+  vi.advanceTimersByTime(5);
+  await flushMicrotasks();
+
+  expect(resumeBlocked).toHaveBeenCalledWith(0x1234);
+  expect(kernel.thread_pc(0x1234)).toBe(0x83336n);
+  expect(kernel.thread_sp(0x1234)).toBe(0x37d6c000n);
+  expect(kernel.thread_s11(0x1234)).toBe(0xbfdc80n);
+  expect(worker.postedMessages).toContainEqual({
+    type: "step",
+    budget: 20_000,
+    kernelState: makeKernelState(),
+  });
   expect(requests.filter((msg) => msg.type === "sync-fork-shared-state")).toHaveLength(2);
   expect(requests.some((msg) => msg.type === "sync-pipe-state")).toBe(true);
 
@@ -3516,6 +3688,9 @@ test("vfork execve resumes the parent and initializes the child lifecycle throug
       memory: expect.any(WebAssembly.Memory),
       vmPtr: 0x1234,
       guestBase: 0x1000000,
+      guestBytes: expect.any(Number),
+      runtimeEpoch: expect.any(Number),
+      guestWriteWatchRegions: [],
       kernelState: childLifecycleState,
       sabPageCache: null,
       runtimeNotify: expect.any(SharedArrayBuffer),
@@ -4410,7 +4585,7 @@ test("vfork execve handoff failure makes synthetic child exit visible to a later
     await flushMicrotasks();
 
     expect(requests.some((msg) => msg.type === "resume-wait4")).toBe(true);
-    expect(resumeWait4).not.toHaveBeenCalled();
+    expect(resumeWait4).toHaveBeenCalledWith(0x1234);
     expect(handle.kernelState.heapPtr).toBe(wait4ResumedState.heapPtr);
     expect(parentWorker.postedMessages).toEqual([
       { type: "step", budget: 20_000, kernelState: wait4ResumedState },

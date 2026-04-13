@@ -15,6 +15,10 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
     const sourceVmPtr = deps.getCanonicalProcessVmPtr(pid);
     const canonicalManagedPipeSlots = new Set<number>(deps.collectCanonicalManagedPipeSlots(canonicalState));
     if (sourceVmPtr !== 0) {
+      const privatePipeSlotModes = deps.collectProcessPrivatePipeSourceModes(processExports, sourceVmPtr);
+      for (const pipeSlot of privatePipeSlotModes.keys()) {
+        canonicalManagedPipeSlots.add(pipeSlot);
+      }
       for (const pipeSlot of deps.collectProcessHeldPipeSlots(processExports, sourceVmPtr)) {
         canonicalManagedPipeSlots.add(pipeSlot);
       }
@@ -25,8 +29,21 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
     const previousSourcePipeSlotModes = deps.lastProcessPipeSlotModes.get(pid) ?? new Map<number, number>();
     const sourcePipeSlotModes = new Map(currentSourcePipeSlotModes);
     const sourceSyncPipeSlots = new Set<number>(sourcePipeSlotModes.keys());
+    const sourcePipeView = new DataView(processExports.memory.buffer);
+    const canonicalPipeView = new DataView(canonicalExports.memory.buffer);
+
+    function counterAhead(sourceValue: number, targetValue: number): boolean {
+      const delta = (sourceValue - targetValue) >>> 0;
+      return delta !== 0 && delta < 0x80000000;
+    }
+
     if (sourceVmPtr !== 0) {
-      const privatePipeSlots = deps.collectProcessPrivatePipeSlots(processExports, sourceVmPtr);
+      const privatePipeSlotModes = deps.collectProcessPrivatePipeSourceModes(processExports, sourceVmPtr);
+      const privatePipeSlots = new Set<number>(privatePipeSlotModes.keys());
+      for (const [pipeSlot, mode] of privatePipeSlotModes) {
+        sourcePipeSlotModes.set(pipeSlot, (sourcePipeSlotModes.get(pipeSlot) ?? 0) | mode);
+        sourceSyncPipeSlots.add(pipeSlot);
+      }
       for (const pipeSlot of deps.collectProcessHeldPipeSlots(processExports, sourceVmPtr)) {
         sourceSyncPipeSlots.add(pipeSlot);
       }
@@ -45,6 +62,28 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
           sourcePipeSlotModes.set(pipeSlot, previousMode);
           sourceSyncPipeSlots.add(pipeSlot);
         }
+      }
+    }
+    for (const pipeSlot of canonicalManagedPipeSlots) {
+      if (pipeSlot <= 0 || pipeSlot >= processExports.abi_max_pipes()) {
+        continue;
+      }
+      const sourceOffset = sourceState.pipeBase + pipeSlot * (32 + 4096);
+      const canonicalOffset = canonicalState.pipeBase + pipeSlot * (32 + 4096);
+      const sourceHead = sourcePipeView.getUint32(sourceOffset, true);
+      const sourceTail = sourcePipeView.getUint32(sourceOffset + 4, true);
+      const canonicalHead = canonicalPipeView.getUint32(canonicalOffset, true);
+      const canonicalTail = canonicalPipeView.getUint32(canonicalOffset + 4, true);
+      let mode = sourcePipeSlotModes.get(pipeSlot) ?? 0;
+      if (counterAhead(sourceHead, canonicalHead)) {
+        mode |= 1 << 0;
+      }
+      if (counterAhead(sourceTail, canonicalTail)) {
+        mode |= 1 << 1;
+      }
+      if (mode !== 0) {
+        sourcePipeSlotModes.set(pipeSlot, mode);
+        sourceSyncPipeSlots.add(pipeSlot);
       }
     }
     deps.mergePipeSlotsFromProcess(
@@ -216,7 +255,15 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
       return kernelState;
     }
     attachKernelRuntimeState(processExports, kernelState);
+    const releasedPrivatePipeSlots = deps.collectProcessPrivatePipeSlots(processExports, vmPtr);
     processExports.process_release_host_stdio(vmPtr);
+    if (releasedPrivatePipeSlots.size > 0) {
+      const processState = readKernelRuntimeState(processExports);
+      const canonicalExports = deps.getCanonicalExports();
+      const canonicalState = readKernelRuntimeState(canonicalExports);
+      deps.clearSelectedPipeSlots(processExports, processState, releasedPrivatePipeSlots);
+      deps.clearSelectedPipeSlots(canonicalExports, canonicalState, releasedPrivatePipeSlots);
+    }
     return syncPipeState(pid, readKernelRuntimeState(processExports));
   }
 

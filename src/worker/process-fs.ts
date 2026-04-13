@@ -12,27 +12,44 @@ import type { ProcessHandle } from "./types.js";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+function copyBytes(view: Uint8Array): Uint8Array {
+  const copy = new Uint8Array(view.byteLength);
+  copy.set(view);
+  return copy;
+}
+
 export function normalizePath(path: string): string {
   const normalized = `/${path.split("/").filter(Boolean).join("/")}`;
   return normalized === "//" ? "/" : normalized || "/";
 }
 
 export function cloneSnapshotEntry(entry: FsSnapshotEntry): FsSnapshotEntry {
-  return entry.kind === "file"
-    ? {
-        kind: "file",
-        path: entry.path,
-        ino: entry.ino,
-        data: entry.data ? new Uint8Array(entry.data) : undefined,
-        size: entry.size ?? entry.data?.length ?? 0,
-        mode: entry.mode,
-      }
-    : {
-        kind: "dir",
-        path: entry.path,
-        ino: entry.ino,
-        mode: entry.mode,
-      };
+  if (entry.kind === "file") {
+    return {
+      kind: "file",
+      path: entry.path,
+      ino: entry.ino,
+      data: entry.data ? new Uint8Array(entry.data) : undefined,
+      size: entry.size ?? entry.data?.length ?? 0,
+      mode: entry.mode,
+    };
+  }
+  if (entry.kind === "symlink") {
+    return {
+      kind: "symlink",
+      path: entry.path,
+      ino: entry.ino,
+      target: entry.target ? new Uint8Array(entry.target) : undefined,
+      size: entry.size ?? entry.target?.length ?? 0,
+      mode: entry.mode,
+    };
+  }
+  return {
+    kind: "dir",
+    path: entry.path,
+    ino: entry.ino,
+    mode: entry.mode,
+  };
 }
 
 export function cloneSnapshotEntries(entries: FsSnapshotEntry[]): FsSnapshotEntry[] {
@@ -144,6 +161,23 @@ export function preloadSnapshotEntries(
       continue;
     }
 
+    if (entry.kind === "symlink") {
+      const existingIno = pathInos.get(normalizedPath) ?? 0;
+      if (existingIno === 0 && entry.ino !== undefined && entry.ino > 1) {
+        const reserveResult = Number(exports.memfs_reserve_inode_until(entry.ino));
+        if (reserveResult < 0) {
+          continue;
+        }
+      }
+      const target = entry.target ?? new Uint8Array();
+      const targetPtr = allocScratch(target);
+      const ino = exports.memfs_create_symlink(parentIno, namePtr, nameBytes.length, targetPtr, target.length);
+      if (ino !== 0) {
+        pathInos.set(normalizedPath, ino);
+      }
+      continue;
+    }
+
     const data = entry.data;
     const size = entry.size ?? data?.length ?? 0;
     const mode = entry.mode ?? 0o644;
@@ -210,7 +244,7 @@ export function readMemfsDirectoryNames(exports: KernelExports, dirIno: number):
     throw new Error(`memfs_readdir_names failed for ino=${dirIno}`);
   }
 
-  const bytes = new Uint8Array(exports.memory.buffer, bufPtr, byteLen);
+  const bytes = copyBytes(new Uint8Array(exports.memory.buffer, bufPtr, byteLen));
   const names: string[] = [];
   let start = 0;
   for (let i = 0; i < bytes.length; i += 1) {
@@ -240,6 +274,17 @@ export function readMemfsFile(exports: KernelExports, ino: number): Uint8Array {
   return new Uint8Array(exports.memory.buffer.slice(bufPtr, bufPtr + read));
 }
 
+export function readMemfsSymlink(exports: KernelExports, ino: number): Uint8Array {
+  const bufPtr = kernelScratchBase(exports) + 0x34000;
+  const bufLen = 4096;
+  ensureKernelMemoryCapacity(exports, bufPtr + bufLen);
+  const read = Number(exports.memfs_read_link(ino, bufPtr, bufLen));
+  if (read < 0) {
+    throw new Error(`memfs_read_link failed for ino=${ino}`);
+  }
+  return new Uint8Array(exports.memory.buffer.slice(bufPtr, bufPtr + read));
+}
+
 function snapshotMemfsTree(
   exports: KernelExports,
   ino: number,
@@ -261,6 +306,19 @@ function snapshotMemfsTree(
       }
       snapshotMemfsTree(exports, childIno, childPath, out);
     }
+    return;
+  }
+
+  if (fileType === 0o120000) {
+    const target = readMemfsSymlink(exports, ino);
+    out.push({
+      kind: "symlink",
+      path: normalized,
+      ino,
+      target,
+      size: target.length,
+      mode: perms,
+    });
     return;
   }
 
@@ -303,6 +361,18 @@ export function snapshotEntriesEqual(left: FsSnapshotEntry[], right: FsSnapshotE
       || a.size !== b.size
     ) {
       return false;
+    }
+    if (a.kind === "symlink" && b.kind === "symlink") {
+      const aTarget = a.target ?? new Uint8Array();
+      const bTarget = b.target ?? new Uint8Array();
+      if (aTarget.length !== bTarget.length) {
+        return false;
+      }
+      for (let j = 0; j < aTarget.length; j += 1) {
+        if (aTarget[j] !== bTarget[j]) {
+          return false;
+        }
+      }
     }
     if (a.kind === "file" && b.kind === "file") {
       const aData = a.data ?? new Uint8Array();
@@ -350,6 +420,19 @@ export function applyFsEntryToHandle(handle: ProcessHandle, entry: FsSnapshotEnt
       }
     }
     exports.memfs_ensure_dir(parentIno, namePtr, nameBytes.length, entry.mode ?? 0o755);
+    return;
+  }
+
+  if (entry.kind === "symlink") {
+    if (existingIno === 0 && entry.ino !== undefined && entry.ino > 1) {
+      const reserveResult = Number(exports.memfs_reserve_inode_until(entry.ino));
+      if (reserveResult < 0) {
+        return;
+      }
+    }
+    const target = entry.target ?? new Uint8Array();
+    const targetPtr = writeKernelScratch(exports, target);
+    exports.memfs_create_symlink(parentIno, namePtr, nameBytes.length, targetPtr, target.length);
     return;
   }
 

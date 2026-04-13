@@ -16,6 +16,7 @@ export type MemfsLayout = {
 
 export const MEMFS_S_IFMT = 0o170000;
 export const MEMFS_S_IFREG = 0o100000;
+const MEMFS_INODE_OFF_SIZE = 16;
 const MEMFS_HEADER_OFF_INODE_COUNT = 0;
 const MEMFS_HEADER_OFF_DIR_ENTRY_COUNT = 4;
 const MEMFS_HEADER_OFF_DATA_USED = 8;
@@ -42,21 +43,32 @@ export function pathParts(path: string): string[] {
 }
 
 export function cloneSnapshotEntry(entry: FsSnapshotEntry): FsSnapshotEntry {
-  return entry.kind === "file"
-    ? {
-        kind: "file",
-        path: entry.path,
-        ino: entry.ino,
-        data: entry.data ? new Uint8Array(entry.data) : undefined,
-        size: entry.size ?? entry.data?.length ?? 0,
-        mode: entry.mode,
-      }
-    : {
-        kind: "dir",
-        path: entry.path,
-        ino: entry.ino,
-        mode: entry.mode,
-      };
+  if (entry.kind === "file") {
+    return {
+      kind: "file",
+      path: entry.path,
+      ino: entry.ino,
+      data: entry.data ? new Uint8Array(entry.data) : undefined,
+      size: entry.size ?? entry.data?.length ?? 0,
+      mode: entry.mode,
+    };
+  }
+  if (entry.kind === "symlink") {
+    return {
+      kind: "symlink",
+      path: entry.path,
+      ino: entry.ino,
+      target: entry.target ? new Uint8Array(entry.target) : undefined,
+      size: entry.size ?? entry.target?.length ?? 0,
+      mode: entry.mode,
+    };
+  }
+  return {
+    kind: "dir",
+    path: entry.path,
+    ino: entry.ino,
+    mode: entry.mode,
+  };
 }
 
 export function scratchBaseFor(targetExports: KernelExports): number {
@@ -133,6 +145,49 @@ export function readMemfsLayout(memory: WebAssembly.Memory, memfsPtr: number): M
     dirEntriesPtr: view.getUint32(24, true),
     dataPtr: view.getUint32(28, true),
   };
+}
+
+export function readMemfsFileDataDirect(targetExports: KernelExports, ino: number): Uint8Array | null {
+  const layout = readMemfsLayout(targetExports.memory, targetExports.kernel_memfs_ptr());
+  const maxInodes = targetExports.kernel_memfs_first_child_bytes() / 4;
+  const inodeBytes = targetExports.kernel_memfs_inodes_bytes() / maxInodes;
+  const inodeBase = layout.inodesPtr + ino * inodeBytes;
+  const inodeView = new DataView(targetExports.memory.buffer);
+  const mode = inodeView.getUint32(inodeBase + MEMFS_INODE_OFF_MODE, true);
+  if ((mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG) {
+    return null;
+  }
+  const size = Number(inodeView.getBigUint64(inodeBase + MEMFS_INODE_OFF_SIZE, true));
+  if (size <= 0) {
+    return new Uint8Array();
+  }
+  const dataOffset = inodeView.getUint32(inodeBase + MEMFS_INODE_OFF_DATA_OFFSET, true);
+  const dataCap = inodeView.getUint32(inodeBase + MEMFS_INODE_OFF_DATA_CAP, true);
+  if (dataCap === 0 || dataOffset + size > layout.dataCap) {
+    return null;
+  }
+  const dataStart = layout.dataPtr + dataOffset;
+  return new Uint8Array(targetExports.memory.buffer.slice(dataStart, dataStart + size));
+}
+
+export function memfsFileHasInlineData(targetExports: KernelExports, ino: number): boolean {
+  if (
+    typeof targetExports.kernel_memfs_ptr !== "function"
+    || typeof targetExports.kernel_memfs_first_child_bytes !== "function"
+    || typeof targetExports.kernel_memfs_inodes_bytes !== "function"
+  ) {
+    return false;
+  }
+  const layout = readMemfsLayout(targetExports.memory, targetExports.kernel_memfs_ptr());
+  const maxInodes = targetExports.kernel_memfs_first_child_bytes() / 4;
+  const inodeBytes = targetExports.kernel_memfs_inodes_bytes() / maxInodes;
+  const inodeBase = layout.inodesPtr + ino * inodeBytes;
+  const inodeView = new DataView(targetExports.memory.buffer);
+  const mode = inodeView.getUint32(inodeBase + MEMFS_INODE_OFF_MODE, true);
+  if ((mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG) {
+    return false;
+  }
+  return inodeView.getUint32(inodeBase + MEMFS_INODE_OFF_DATA_CAP, true) !== 0;
 }
 
 export function normalizeMetadataOnlyMemfsState(

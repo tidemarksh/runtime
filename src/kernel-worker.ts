@@ -10,6 +10,12 @@
 
 import type { KernelExports, KernelRuntimeState } from "./abi.js";
 import type { FsSnapshotEntry } from "./fs/types.js";
+import {
+  OFF_DATA_USED,
+  OFF_DIR_EPOCH,
+  OFF_INODE_COUNT,
+  readInodeRecord,
+} from "./fs/sab-page-cache.js";
 import type {
   KernelWorkerInbound,
   KernelWorkerOutbound,
@@ -68,6 +74,7 @@ const {
   collectPipeSlotsForOfdIds,
   collectProcessHeldOfdRefcounts,
   collectProcessHeldPipeSlots,
+  collectProcessPrivatePipeSourceModes,
   collectProcessPipeSlotModes,
   collectProcessPrivatePipeSlots,
   composeProcessPipeUsed,
@@ -99,6 +106,7 @@ const {
   fanoutCanonicalMemfs,
   formatProcessDebug,
   publishRootInode,
+  resolvePathIn,
   restoreProcSelfExe,
   snapshotProcSelfExe,
 } = kernelWorkerFsUtils;
@@ -115,6 +123,7 @@ const kernelWorkerFsState = createKernelWorkerFsState({
   resolvePathIn: kernelWorkerFsUtils.resolvePathIn,
   upsertDirSeed: kernelWorkerFsUtils.upsertDirSeed,
   upsertFileSeed: kernelWorkerFsUtils.upsertFileSeed,
+  upsertSymlinkSeed: kernelWorkerFsUtils.upsertSymlinkSeed,
 });
 
 const {
@@ -126,6 +135,7 @@ const {
   snapshotCanonicalFs,
   statPath,
   syncFileDataMutation,
+  symlink,
   writeFile,
 } = kernelWorkerFsState;
 
@@ -183,6 +193,7 @@ const kernelWorkerSharedStateSync = createKernelWorkerSharedStateSync({
   collectProcessHeldOfdRefcounts,
   collectProcessHeldEpollOfdIds,
   collectProcessHeldPipeSlots,
+  collectProcessPrivatePipeSourceModes,
   collectProcessPipeSlotModes,
   collectProcessPrivatePipeSlots,
   collectCanonicalManagedPipeSlots,
@@ -283,6 +294,13 @@ const handleKernelWorkerMessage = createKernelWorkerMessageHandler({
   postResponse,
   initKernel,
   writeFile,
+  writeFiles: (entries) => {
+    for (const entry of entries) {
+      writeFile(entry.path, entry.data, entry.mode, false);
+    }
+    fanoutCanonicalMemfs();
+  },
+  symlink,
   readFile,
   mkdir,
   statPath,
@@ -308,6 +326,38 @@ const handleKernelWorkerMessage = createKernelWorkerMessageHandler({
   syncForkSharedState,
   rehydrateForkSharedState,
   debugProcesses,
+  debugPageCachePath: (path) => {
+    const ino = resolvePathIn(exports, path);
+    if (ino === 0) {
+      return null;
+    }
+    const record = readInodeRecord(sabPageCache, ino);
+    if (!record) {
+      return {
+        path,
+        ino,
+        dataOff: 0,
+        size: Number(exports.memfs_file_size(ino)),
+        mode: exports.memfs_inode_mode(ino),
+      };
+    }
+    return {
+      path,
+      ino,
+      dataOff: record.dataOff,
+      size: record.size,
+      mode: record.mode,
+    };
+  },
+  debugPageCacheStats: () => {
+    const u32 = new Uint32Array(sabPageCache);
+    return {
+      byteLength: sabPageCache.byteLength,
+      dataUsed: Atomics.load(u32, OFF_DATA_USED >>> 2),
+      inodeCount: Atomics.load(u32, OFF_INODE_COUNT >>> 2),
+      dirEpoch: Atomics.load(u32, OFF_DIR_EPOCH >>> 2),
+    };
+  },
   releaseHostStdio,
 });
 

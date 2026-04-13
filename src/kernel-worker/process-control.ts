@@ -111,13 +111,15 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
   async function initKernel(
     module: WebAssembly.Module,
     pageCache: SharedArrayBuffer,
+    maxMemoryPages = 32768,
   ): Promise<KernelRuntimeState> {
     deps.setWasmModule(module);
     deps.setSabPageCache(pageCache);
 
+    const boundedMaxMemoryPages = Math.max(maxMemoryPages, 1024);
     const privateMemory = new WebAssembly.Memory({
       initial: 1024,
-      maximum: 32768,
+      maximum: boundedMaxMemoryPages,
       shared: true,
     });
     const instance = await WebAssembly.instantiate(module, {
@@ -185,8 +187,9 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     if (deps.processKernels.size === 1) {
       const sourceState = readKernelRuntimeState(processExports);
       const canonicalState = readKernelRuntimeState(canonicalExports);
+      const canonicalHasSeedSnapshot = deps.seedEntries.size > 1;
       deps.copyOfdState(processExports, sourceState, canonicalExports, canonicalState);
-      if (seedMemfsMode === "full") {
+      if (seedMemfsMode === "full" && !canonicalHasSeedSnapshot) {
         deps.copyMemfsState(processExports, sourceState, canonicalExports, canonicalState);
         deps.rebuildPageCacheFromCanonical();
       }

@@ -1,8 +1,11 @@
 import { createRuntimeStateBridge } from "../../bridge/runtime-state.js";
-import { createInheritedErrorSink, createInheritedStdoutSink, retainSharedHostStdio } from "../stdio.js";
+import { createInheritedErrorSink, retainSharedHostStdio } from "../stdio.js";
 import type { KernelExports } from "../../abi.js";
 import type { ProcessHandle } from "../types.js";
 import type { WorkerForkDeps } from "./types.js";
+
+const WASM_PAGE_SIZE_BYTES = 64 * 1024;
+const EXECVE_RAM_LIMIT_BYTES = 0x8000_0000;
 
 interface CreateForkChildHandleArgs {
   deps: WorkerForkDeps;
@@ -37,6 +40,8 @@ export function createForkChildHandle({
     parentPid: childPpid,
     vmPtr,
     ramSize: parent.ramSize,
+    maxMemoryPages: parent.maxMemoryPages,
+    forkMaxMemoryPages: parent.forkMaxMemoryPages,
     guestBase: parent.guestBase,
     worker,
     memory,
@@ -46,9 +51,12 @@ export function createForkChildHandle({
     stdinPipe: kernel.process_stdin_pipe(vmPtr),
     stdoutPipe: kernel.process_stdout_pipe(vmPtr),
     stderrPipe: kernel.process_stderr_pipe(vmPtr),
+    ttyPtySlot: kernel.process_tty_pty_slot?.(vmPtr) ?? parent.ttyPtySlot,
     hostStdio: retainSharedHostStdio(parent.hostStdio),
+    stdioOwner: parent,
     kernelShare: parent.kernelShare,
     stdinQueue: [],
+    stdinFlushPromise: null,
     outputBacklog: [],
     debugCommand,
     lastDebugMessage: undefined,
@@ -59,6 +67,8 @@ export function createForkChildHandle({
     readyWorkers: [],
     runningWorker: null,
     blockedWorkers: new Map(),
+    pendingChildExitRecords: 0,
+    pendingChildSpawnRecords: 0,
     pipeSyncPromise: null,
     pipeSyncQueued: false,
     pipeWaiterWakeQueued: false,
@@ -73,7 +83,6 @@ export function createForkChildHandle({
     vforkSnapshot: null,
     vforkWorker: null,
     exitInProgress: false,
-    onStdout: createInheritedStdoutSink(parent),
     onError: createInheritedErrorSink(
       parent,
       childPid,
@@ -81,5 +90,26 @@ export function createForkChildHandle({
       deps.failProcess,
     ),
     workerDebugLog: [],
+    guestWriteWatchRegions: parent.guestWriteWatchRegions.map((region) => ({ ...region })),
   };
+}
+
+export function computeGuestRamLimitBytes(
+  guestBase: number,
+  minRamSize: number,
+  maxMemoryPages: number,
+): number {
+  const totalLinearBytes = maxMemoryPages * WASM_PAGE_SIZE_BYTES;
+  const guestWindowBytes = Math.max(0, totalLinearBytes - guestBase);
+  return Math.max(
+    minRamSize,
+    Math.min(guestWindowBytes, EXECVE_RAM_LIMIT_BYTES),
+  );
+}
+
+export function detachInheritedHostStdioFromChild(child: ProcessHandle): void {
+  if (child.stdioOwner === null) {
+    return;
+  }
+  child.kernel.process_set_host_stdio(child.vmPtr, 0, 0, 0);
 }

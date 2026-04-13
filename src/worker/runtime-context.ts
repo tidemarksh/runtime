@@ -3,7 +3,10 @@ import {
   appendRuntimeLifecycleEvent as appendRuntimeLifecycleEventImpl,
   assertProcessStandardFdIntegrity as assertProcessStandardFdIntegrityImpl,
   debugRuntimeProcessHandles as debugRuntimeProcessHandlesImpl,
+  debugRuntimeWorkerLogFocus as debugRuntimeWorkerLogFocusImpl,
   formatAllLiveThreadDebug as formatAllLiveThreadDebugImpl,
+  summarizeProcessWorkerLogFocus as summarizeProcessWorkerLogFocusImpl,
+  type RuntimeProcessWorkerLogFocus,
 } from "./debug.js";
 import {
   applyFsEntryToHandle,
@@ -37,12 +40,22 @@ interface WorkerRuntimeContextDeps {
   formatPipeCounterDebug(handle: ProcessHandle, fd: number): string;
 }
 
+export interface RuntimeFailureSnapshot {
+  pid: number;
+  cmd: string;
+  exitCode: number;
+  termSignal: number;
+  debug: string;
+  workerFocus: RuntimeProcessWorkerLogFocus[];
+}
+
 export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
   const processHandles = new Map<number, ProcessHandle>();
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   const runtimeFsStates = new Map<number, RuntimeFsState>();
   const runtimeFsDirtyHandles = new Map<number, Set<ProcessHandle>>();
   const runtimeLifecycleEvents = new Map<number, string[]>();
+  const runtimeFailureSnapshots = new Map<number, RuntimeFailureSnapshot>();
   const runtimeFsContext: RuntimeFsContext = {
     processHandles,
     runtimeFsStates,
@@ -80,6 +93,33 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
     clearRuntimeFsStateImpl(runtimeId, runtimeFsContext);
   }
 
+  function captureRuntimeFailureSnapshot(
+    handle: ProcessHandle,
+    exitCode: number,
+    termSignal: number,
+  ): void {
+    runtimeFailureSnapshots.set(handle.runtimeId, {
+      pid: handle.pid,
+      cmd: handle.debugCommand,
+      exitCode,
+      termSignal,
+      debug: debugRuntimeProcessHandles(handle.runtimeId),
+      workerFocus: [{
+        pid: handle.pid,
+        cmd: handle.debugCommand,
+        workers: summarizeProcessWorkerLogFocusImpl(handle, threadWorkerStates),
+      }],
+    });
+  }
+
+  function debugRuntimeLastFailureSnapshot(runtimeId: number): RuntimeFailureSnapshot | null {
+    return runtimeFailureSnapshots.get(runtimeId) ?? null;
+  }
+
+  function clearRuntimeFailureSnapshot(runtimeId: number): void {
+    runtimeFailureSnapshots.delete(runtimeId);
+  }
+
   function debugRuntimeProcessHandles(runtimeId: number): string {
     try {
       return debugRuntimeProcessHandlesImpl(
@@ -87,6 +127,7 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
         processHandles,
         threadWorkerStates,
         runtimeLifecycleEvents,
+        deps.formatPipeCounterDebug,
       );
     } catch (error) {
       return `unavailable:${error instanceof Error ? error.message : String(error)}`;
@@ -95,6 +136,18 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
 
   function appendRuntimeLifecycleEvent(runtimeId: number, event: string): void {
     appendRuntimeLifecycleEventImpl(runtimeId, event, runtimeLifecycleEvents);
+  }
+
+  function debugRuntimeWorkerLogFocus(runtimeId: number) {
+    try {
+      return debugRuntimeWorkerLogFocusImpl(runtimeId, processHandles, threadWorkerStates);
+    } catch (error) {
+      return [{
+        pid: -1,
+        cmd: `unavailable:${error instanceof Error ? error.message : String(error)}`,
+        workers: [],
+      }];
+    }
   }
 
   function formatAllLiveThreadDebug(handle: ProcessHandle): string {
@@ -129,8 +182,12 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
   return {
     appendRuntimeLifecycleEvent,
     assertProcessStandardFdIntegrity,
+    captureRuntimeFailureSnapshot,
     clearRuntimeFsState,
+    clearRuntimeFailureSnapshot,
+    debugRuntimeLastFailureSnapshot,
     debugRuntimeProcessHandles,
+    debugRuntimeWorkerLogFocus,
     flushRuntimeFsStateFromDirtyHandle,
     formatAllLiveThreadDebug,
     getRuntimeFsState,
@@ -140,6 +197,7 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
     processHandles,
     publishRuntimeFsState,
     replaceRuntimeFsSnapshot,
+    runtimeFailureSnapshots,
     runtimeFsDirtyHandles,
     runtimeFsStates,
     threadWorkerStates,

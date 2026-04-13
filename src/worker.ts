@@ -89,6 +89,14 @@ export function debugRuntimeProcessHandles(runtimeId: number): string {
   return workerOrchestrator.debugRuntimeProcessHandles(runtimeId);
 }
 
+export function debugRuntimeLastFailureSnapshot(runtimeId: number) {
+  return workerOrchestrator.debugRuntimeLastFailureSnapshot(runtimeId);
+}
+
+export function debugRuntimeWorkerLogFocus(runtimeId: number) {
+  return workerOrchestrator.debugRuntimeWorkerLogFocus(runtimeId);
+}
+
 export function mirrorRuntimeFsEntry(runtimeId: number, entry: FsSnapshotEntry): void {
   workerOrchestrator.mirrorRuntimeFsEntry(runtimeId, entry);
 }
@@ -103,4 +111,8 @@ export function destroyProcessTree(rootPid: number, runtimeId: number, signal = 
 
 export function destroyRuntimeProcesses(runtimeId: number, signal = 15): void {
   workerOrchestrator.destroyRuntimeProcesses(runtimeId, signal);
+}
+
+export function clearRuntimeFailureSnapshot(runtimeId: number): void {
+  workerOrchestrator.clearRuntimeFailureSnapshot(runtimeId);
 }

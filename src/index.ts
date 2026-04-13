@@ -1,6 +1,9 @@
 import {
+  clearRuntimeFailureSnapshot,
   createProcess,
+  debugRuntimeLastFailureSnapshot,
   debugRuntimeProcessHandles,
+  debugRuntimeWorkerLogFocus,
   destroyProcessTree,
   destroyRuntimeProcesses,
   publishRuntimeFsState,
@@ -22,10 +25,17 @@ import { addWorkerMessageListener, removeWorkerMessageListener } from "./bridge/
 export interface RuntimeOptions {
   wasmBytes: BufferSource;
   ramSize?: number;
+  maxKernelMemoryPages?: number;
+  maxProcessMemoryPages?: number;
+  maxForkMemoryPages?: number;
 }
+
+const MIN_RAM_SIZE_BYTES = 16 * 1024 * 1024;
+const DEFAULT_MAX_MEMORY_PAGES = 32768;
 
 export interface RuntimeFs {
   writeFile(path: string, data: Uint8Array, mode?: number): Promise<void>;
+  symlink(path: string, target: Uint8Array, mode?: number): Promise<void>;
   readFile(path: string): Promise<Uint8Array>;
   mkdir(path: string, mode?: number): Promise<void>;
   stat(path: string): Promise<RuntimeStat>;
@@ -36,11 +46,22 @@ export interface SpawnOptions {
   cwd?: string;
 }
 
+export interface GuestWriteWatchRegion {
+  slot: number;
+  start: number;
+  end: number;
+}
+
+function toKernelU64(value: number): bigint {
+  return BigInt(Math.trunc(value));
+}
+
 export class Runtime {
   private static nextRuntimeId = 1;
 
   readonly fs: RuntimeFs = {
     writeFile: async (path, data, mode) => this.writeFile(path, data, mode),
+    symlink: async (path, target, mode) => this.symlink(path, target, mode),
     readFile: async (path) => this.readFile(path),
     mkdir: async (path, mode) => this.mkdir(path, mode),
     stat: async (path) => this.stat(path),
@@ -49,6 +70,9 @@ export class Runtime {
 
   private readonly wasmBytes: BufferSource;
   private readonly ramSize: number;
+  private readonly maxKernelMemoryPages: number;
+  private readonly maxProcessMemoryPages: number;
+  private readonly maxForkMemoryPages: number;
   private readonly runtimeId: number;
   private readonly processes = new Map<number, ProcessHandle>();
   private readonly kernelRequests = new Map<number, {
@@ -64,7 +88,19 @@ export class Runtime {
 
   private constructor(options: RuntimeOptions) {
     this.wasmBytes = options.wasmBytes;
-    this.ramSize = Math.max(options.ramSize ?? 16 * 1024 * 1024, 64 * 1024 * 1024);
+    this.ramSize = Math.max(options.ramSize ?? MIN_RAM_SIZE_BYTES, MIN_RAM_SIZE_BYTES);
+    this.maxKernelMemoryPages = Math.max(
+      options.maxKernelMemoryPages ?? DEFAULT_MAX_MEMORY_PAGES,
+      1,
+    );
+    this.maxProcessMemoryPages = Math.max(
+      options.maxProcessMemoryPages ?? DEFAULT_MAX_MEMORY_PAGES,
+      1,
+    );
+    this.maxForkMemoryPages = Math.max(
+      options.maxForkMemoryPages ?? this.maxProcessMemoryPages,
+      this.maxProcessMemoryPages,
+    );
     this.runtimeId = Runtime.nextRuntimeId++;
   }
 
@@ -81,7 +117,7 @@ export class Runtime {
 
   private async initKernelWorker(): Promise<void> {
     this.wasmModule = await precompileModule(this.wasmBytes);
-    this.sabPageCache = new SharedArrayBuffer(Math.max(64 * 1024 * 1024, this.ramSize));
+    this.sabPageCache = new SharedArrayBuffer(this.ramSize);
 
     const workerUrl = new URL("./kernel-worker.mjs", import.meta.url);
     this.kernelWorker = new Worker(workerUrl, { type: "module" });
@@ -92,6 +128,7 @@ export class Runtime {
       type: "init-kernel",
       wasmModule: this.wasmModule,
       sabPageCache: this.sabPageCache,
+      maxMemoryPages: this.maxKernelMemoryPages,
     });
     void response;
   }
@@ -146,6 +183,8 @@ export class Runtime {
       env,
       cwd: options.cwd,
       sabPageCache: this.sabPageCache,
+      maxMemoryPages: this.maxProcessMemoryPages,
+      forkMaxMemoryPages: this.maxForkMemoryPages,
       hydrateFsFromKernelWorker: true,
       kernelWorkerRequest: (msg) => this.sendKernelRequest(msg),
     });
@@ -183,6 +222,27 @@ export class Runtime {
       type: "write-file",
       path,
       data,
+      mode,
+    });
+    await this.refreshRuntimeFsSnapshot();
+  }
+
+  async writeFiles(entries: Array<{ path: string; data: Uint8Array; mode?: number }>): Promise<void> {
+    if (entries.length === 0) {
+      return;
+    }
+    await this.sendKernelRequest<Extract<KernelWorkerOutbound, { type: "files-written" }>>({
+      type: "write-files",
+      entries,
+    });
+    await this.refreshRuntimeFsSnapshot();
+  }
+
+  async symlink(path: string, target: Uint8Array, mode?: number): Promise<void> {
+    await this.sendKernelRequest<Extract<KernelWorkerOutbound, { type: "symlink-created" }>>({
+      type: "symlink",
+      path,
+      target,
       mode,
     });
     await this.refreshRuntimeFsSnapshot();
@@ -237,6 +297,36 @@ export class Runtime {
     return response.entries;
   }
 
+  async debugPageCachePath(path: string): Promise<{
+    path: string;
+    ino: number;
+    dataOff: number;
+    size: number;
+    mode: number;
+  } | null> {
+    const response = await this.sendKernelRequest<
+      Extract<KernelWorkerOutbound, { type: "page-cache-path-debugged" }>
+    >({
+      type: "debug-page-cache-path",
+      path,
+    });
+    return response.record;
+  }
+
+  async debugPageCacheStats(): Promise<{
+    byteLength: number;
+    dataUsed: number;
+    inodeCount: number;
+    dirEpoch: number;
+  }> {
+    const response = await this.sendKernelRequest<
+      Extract<KernelWorkerOutbound, { type: "page-cache-stats-debugged" }>
+    >({
+      type: "debug-page-cache-stats",
+    });
+    return response.stats;
+  }
+
   onStdout(pid: number, cb: (data: Uint8Array) => void): void {
     const handle = this.processes.get(pid);
     if (!handle) {
@@ -281,6 +371,7 @@ export class Runtime {
 
   destroy(): void {
     destroyRuntimeProcesses(this.runtimeId);
+    clearRuntimeFailureSnapshot(this.runtimeId);
     this.processes.clear();
 
     for (const pending of this.kernelRequests.values()) {
@@ -298,6 +389,14 @@ export class Runtime {
 
   debugSnapshot(): string {
     return debugRuntimeProcessHandles(this.runtimeId);
+  }
+
+  debugLastFailureSnapshot() {
+    return debugRuntimeLastFailureSnapshot(this.runtimeId);
+  }
+
+  debugWorkerLogFocus() {
+    return debugRuntimeWorkerLogFocus(this.runtimeId);
   }
 }
 
@@ -334,6 +433,23 @@ export class Process {
 
   debugInfo(): string | undefined {
     return this.handle.lastDebugMessage;
+  }
+
+  configureGuestWriteWatch(regions: GuestWriteWatchRegion[]): void {
+    this.handle.guestWriteWatchRegions = regions.map((region) => ({ ...region }));
+    this.handle.kernel.debug_clear_guest_write_watch_trace?.();
+    for (const region of this.handle.guestWriteWatchRegions) {
+      this.handle.kernel.debug_configure_guest_write_watch?.(
+        region.slot,
+        toKernelU64(region.start),
+        toKernelU64(region.end),
+      );
+    }
+  }
+
+  clearGuestWriteWatch(): void {
+    this.handle.guestWriteWatchRegions = [];
+    this.handle.kernel.debug_clear_guest_write_watch_trace?.();
   }
 
   waitForExit(): Promise<number> {

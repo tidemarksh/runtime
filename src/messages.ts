@@ -8,6 +8,12 @@ import type { KernelRuntimeState } from "./abi.js";
 import type { FsSnapshotEntry, RuntimeStat } from "./fs/types.js";
 import type { WasmFeatureSupport } from "./wasm/features.js";
 
+export interface GuestWriteWatchRegion {
+  slot: number;
+  start: number;
+  end: number;
+}
+
 export interface KernelWorkerOfdSlotSnapshot {
   ofdId: number;
   slot: Uint8Array;
@@ -43,6 +49,9 @@ export type ThreadWorkerInbound =
       memory: WebAssembly.Memory;
       vmPtr: number;
       guestBase: number;
+      guestBytes?: number;
+      runtimeEpoch?: number;
+      guestWriteWatchRegions?: GuestWriteWatchRegion[];
       kernelState: KernelRuntimeState;
       sabPageCache: SharedArrayBuffer | null;
       runtimeNotify: SharedArrayBuffer;
@@ -68,6 +77,7 @@ export interface ThreadWorkerReadyMessage {
   vmPtr: number;
   kernelState: KernelRuntimeState;
   wasmFeatures: WasmFeatureSupport;
+  debug?: string;
 }
 
 export interface ThreadWorkerStatusMessage {
@@ -76,6 +86,9 @@ export interface ThreadWorkerStatusMessage {
   exitCode: number;
   termSignal: number;
   pc: bigint;
+  ra?: bigint;
+  sp?: bigint;
+  s11?: bigint;
   vmPtr: number;
   kernelState: KernelRuntimeState;
   debug?: string;
@@ -109,11 +122,26 @@ export type KernelWorkerRequest =
       type: "init-kernel";
       wasmModule: WebAssembly.Module;
       sabPageCache: SharedArrayBuffer;
+      maxMemoryPages?: number;
     }
   | {
       type: "write-file";
       path: string;
       data: Uint8Array;
+      mode?: number;
+    }
+  | {
+      type: "write-files";
+      entries: Array<{
+        path: string;
+        data: Uint8Array;
+        mode?: number;
+      }>;
+    }
+  | {
+      type: "symlink";
+      path: string;
+      target: Uint8Array;
       mode?: number;
     }
   | {
@@ -269,6 +297,13 @@ export type KernelWorkerRequest =
       type: "debug-processes";
     }
   | {
+      type: "debug-page-cache-path";
+      path: string;
+    }
+  | {
+      type: "debug-page-cache-stats";
+    }
+  | {
       type: "release-host-stdio";
       pid: number;
       vmPtr: number;
@@ -285,6 +320,14 @@ export type KernelWorkerResponse =
     }
   | {
       type: "file-written";
+      requestId: number;
+    }
+  | {
+      type: "files-written";
+      requestId: number;
+    }
+  | {
+      type: "symlink-created";
       requestId: number;
     }
   | {
@@ -415,6 +458,27 @@ export type KernelWorkerResponse =
       requestId: number;
       pids: number[];
       canonicalPids: number[];
+    }
+  | {
+      type: "page-cache-path-debugged";
+      requestId: number;
+      record: {
+        path: string;
+        ino: number;
+        dataOff: number;
+        size: number;
+        mode: number;
+      } | null;
+    }
+  | {
+      type: "page-cache-stats-debugged";
+      requestId: number;
+      stats: {
+        byteLength: number;
+        dataUsed: number;
+        inodeCount: number;
+        dirEpoch: number;
+      };
     }
   | {
       type: "host-stdio-released";

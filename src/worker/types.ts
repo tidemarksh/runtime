@@ -5,6 +5,7 @@ import type {
 import type { FsSnapshotEntry } from "../fs/types.js";
 import type {
   KernelWorkerOutbound,
+  GuestWriteWatchRegion,
   KernelWorkerRequest,
 } from "../messages.js";
 import type { RuntimeStateBridge } from "../bridge/runtime-state.js";
@@ -13,6 +14,7 @@ export interface SharedHostStdio {
   stdinPipe: number;
   stdoutPipe: number;
   stderrPipe: number;
+  ttyPtySlot?: number;
   refCount: number;
 }
 
@@ -59,6 +61,8 @@ export interface ProcessHandle {
   parentPid: number | null;
   vmPtr: number;
   ramSize: number;
+  maxMemoryPages: number;
+  forkMaxMemoryPages: number;
   guestBase: number;
   worker: Worker;
   memory: WebAssembly.Memory;
@@ -68,9 +72,12 @@ export interface ProcessHandle {
   stdinPipe: number;
   stdoutPipe: number;
   stderrPipe: number;
+  ttyPtySlot: number;
   hostStdio: SharedHostStdio;
+  stdioOwner: ProcessHandle | null;
   kernelShare: KernelShareGroup;
   stdinQueue: Uint8Array[];
+  stdinFlushPromise: Promise<void> | null;
   outputBacklog: Uint8Array[];
   debugCommand: string;
   lastDebugMessage?: string;
@@ -81,6 +88,8 @@ export interface ProcessHandle {
   readyWorkers: Worker[];
   runningWorker: Worker | null;
   blockedWorkers: Map<Worker, BlockedWorkerState>;
+  pendingChildExitRecords: number;
+  pendingChildSpawnRecords: number;
   pipeSyncPromise: Promise<void> | null;
   pipeSyncQueued: boolean;
   pipeWaiterWakeQueued: boolean;
@@ -99,6 +108,7 @@ export interface ProcessHandle {
   onError?: (error: Error) => void;
   onStdout?: (data: Uint8Array) => void;
   workerDebugLog: string[];
+  guestWriteWatchRegions: GuestWriteWatchRegion[];
 }
 
 export interface KernelShareGroup {
@@ -118,6 +128,8 @@ export interface CreateProcessOptions {
   pid?: number;
   parentPid?: number | null;
   ramSize?: number;
+  maxMemoryPages?: number;
+  forkMaxMemoryPages?: number;
   stackSize?: number;
   argv?: string[];
   env?: string[];

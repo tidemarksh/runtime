@@ -21,13 +21,14 @@ import type {
   WorkerSchedulerDeps,
 } from "./scheduler/types.js";
 
-const WORKER_DEBUG_LOG_ENABLED = false;
+const WORKER_DEBUG_LOG_ENABLED = true;
 
 export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerScheduler {
   const { threadWorkerStates } = deps;
   const schedulerQueueHelpers = createWorkerSchedulerQueueHelpers({
     threadWorkerStates,
     appendWorkerDebugLog,
+    failProcess: deps.failProcess,
     handleWorkerMessage: deps.handleWorkerMessage,
   });
 
@@ -211,7 +212,33 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
 
   function retryBlockedWorker(handle: ProcessHandle, worker: Worker): void {
     const blocked = handle.blockedWorkers.get(worker);
-    if (!blocked || blocked.rpcPending || handle.runningWorker !== null || !canScheduleWorker(handle, worker)) {
+    if (!blocked) {
+      return;
+    }
+    if (blocked.rpcPending) {
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-skip:${handle.pid}:rpc-pending`);
+      return;
+    }
+    if (handle.runningWorker !== null) {
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-skip:${handle.pid}:running`);
+      return;
+    }
+    if (!canScheduleWorker(handle, worker)) {
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-skip:${handle.pid}:cannot-schedule`);
+      return;
+    }
+    if (
+      blocked.status === handle.kernel.abi_status_wait4()
+      && (
+        handle.pendingChildExitRecords > 0
+        || handle.pendingChildSpawnRecords > 0
+        || deps.hasActiveChildProcess(handle.pid)
+      )
+    ) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `wait4-retry-skip:${handle.pid}:gate:exit=${handle.pendingChildExitRecords}:spawn=${handle.pendingChildSpawnRecords}:active=${deps.hasActiveChildProcess(handle.pid) ? 1 : 0}`,
+      );
       return;
     }
 
@@ -233,6 +260,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     drainProcessOutput(handle);
 
     if (blocked.status === handle.kernel.abi_status_wait4() && handle.kernelWorkerRequest && handle.pid > 0) {
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-rpc:${handle.pid}:0x${blocked.vmPtr.toString(16)}`);
       blocked.rpcPending = true;
       void deps.resumeWait4ViaKernelWorker(handle, worker, blocked.vmPtr);
       return;
@@ -258,6 +286,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       handle.kernel.thread_resume_epoll_wait_timeout(blocked.vmPtr);
       blocked.timeoutExpired = false;
     } else if (blocked.status === handle.kernel.abi_status_wait4()) {
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-local:${handle.pid}:0x${blocked.vmPtr.toString(16)}`);
       handle.kernel.thread_resume_wait4(blocked.vmPtr);
     } else {
       handle.kernel.thread_resume_blocked_syscall(blocked.vmPtr);
@@ -267,6 +296,8 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   }
 
   const schedulerStateSyncHelpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
+    drainProcessOutput,
     threadWorkerStates,
     retryBlockedWorker,
   });

@@ -6,6 +6,8 @@ import {
 import { clearSyscallTrace } from "./debug.js";
 import { checkPendingSignalsAtBoundary } from "./signals.js";
 
+const BLOCKED_ADDR_NOT_FOUND = 0xffff_ffff;
+
 interface ThreadWorkerBlockingContext {
   exports: KernelExports;
   statusCodes: StatusCodes;
@@ -166,6 +168,11 @@ export function handleFutexWait(
     ctx.reattachPublishedKernelRuntimeState();
     const stillBlockedAddr = ctx.exports.thread_record_blocked_addr(ctx.vmPtr);
     const hasPendingSignal = ctx.exports.thread_sig_pending(ctx.vmPtr) !== 0n;
+    if (stillBlockedAddr === BLOCKED_ADDR_NOT_FOUND) {
+      clearSyscallTrace(ctx.exports);
+      ctx.exports.thread_resume_futex_wait_result(ctx.vmPtr, BigInt(-ctx.exports.abi_eagain()));
+      break;
+    }
     if (stillBlockedAddr !== 0 && stillBlockedAddr !== guestAddr) {
       guestAddr = stillBlockedAddr;
       continue;
@@ -195,7 +202,8 @@ export function handleFutexWait(
     }
   }
 
-  ctx.postStatus(ctx.exports.thread_status(ctx.vmPtr));
+  const resumedStatus = ctx.exports.thread_status(ctx.vmPtr);
+  ctx.postStatus(resumedStatus);
   return false;
 }
 
