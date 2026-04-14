@@ -47,7 +47,9 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
       sourceHeldOfdIds.filter((ofdId) => !snappedOfdIds.has(ofdId)),
     );
     if (includeMemfs) {
-      deps.copyMemfsState(processExports, sourceState, canonicalExports, canonicalState);
+      deps.copyMemfsState(processExports, sourceState, canonicalExports, canonicalState, {
+        includeData: false,
+      });
     }
 
     const memberVmPtrs = new Map<number, number>([[pid, vmPtr]]);
@@ -110,7 +112,9 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
         sharedPipeSlots,
       );
       if (includeMemfs) {
-        deps.copyCanonicalMemfsToProcess(reconciledCanonicalState, targetExports, targetState);
+        deps.copyCanonicalMemfsToProcess(reconciledCanonicalState, targetExports, targetState, {
+          includeData: false,
+        });
       }
     }
 
@@ -169,7 +173,9 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
       );
       deps.copySelectedOfdState(canonicalExports, canonicalState, targetExports, targetState, ofdIds);
       if (includeMemfs) {
-        deps.copyMemfsState(canonicalExports, canonicalState, targetExports, targetState);
+        deps.copyMemfsState(canonicalExports, canonicalState, targetExports, targetState, {
+          includeData: false,
+        });
         deps.restoreProcSelfExe(targetExports, procSelfExe);
       }
       deps.copySelectedPipeSlots(canonicalExports, canonicalState, targetExports, targetState, sharedPipeSlots);
