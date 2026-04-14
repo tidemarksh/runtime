@@ -223,7 +223,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
         const memberState = readKernelRuntimeState(processExports);
         const updatedCanonicalState = readKernelRuntimeState(canonicalExports);
         deps.copyCanonicalMemfsToProcess(updatedCanonicalState, processExports, memberState, {
-          includeData: seedMemfsMode === "full" && canonicalHasSeedSnapshot,
+          includeData: false,
         });
       }
       return readKernelRuntimeState(processExports) ?? socketState;
@@ -264,7 +264,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     const registeredProcessState = readKernelRuntimeState(processExports);
     if (seedMemfsMode !== "none") {
       deps.copyCanonicalMemfsToProcess(registeredCanonicalState, processExports, registeredProcessState, {
-        includeData: seedMemfsMode === "full",
+        includeData: false,
       });
     }
     deps.copySelectedEpollState(
