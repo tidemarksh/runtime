@@ -256,10 +256,55 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
         targetExports.memfs_create_symlink(parentIno, namePtr, nameBytes.length, targetPtr, target.length);
         continue;
       }
-      deps.writeFile(entry.path, entry.data ?? new Uint8Array(), entry.mode ?? 0o644, false);
+      if (entry.data !== undefined) {
+        deps.writeFile(entry.path, entry.data, entry.mode ?? 0o644, false);
+        continue;
+      }
+
+      const normalized = normalizePath(entry.path);
+      const parts = normalized.split("/").filter(Boolean);
+      const name = parts.pop();
+      if (!name) {
+        continue;
+      }
+      const parentPath = parts.length === 0 ? "/" : `/${parts.join("/")}`;
+      deps.mkdir(parentPath, 0o755, false);
+      const parentIno = deps.resolvePath(parentPath);
+      if (parentIno === 0) {
+        continue;
+      }
+      const nameBytes = deps.encoder.encode(name);
+      const namePtr = writeScratchFor(targetExports, nameBytes, 0x8000);
+      const ino = targetExports.memfs_create_file(parentIno, namePtr, nameBytes.length);
+      if (ino === 0) {
+        continue;
+      }
+      const size = entry.size ?? 0;
+      const externalized = Number(targetExports.memfs_set_file_external(ino, BigInt(size)));
+      if (externalized < 0) {
+        throw new Error(`failed to externalize snapshot file: ${entry.path}`);
+      }
+      const perms = normalizePermMode(entry.mode, 0o644);
+      const modeResult = Number(targetExports.memfs_set_mode(ino, perms));
+      if (modeResult < 0) {
+        throw new Error(`failed to set snapshot file mode: ${entry.path}`);
+      }
+      deps.seedEntries.set(normalized, {
+        kind: "file",
+        path: normalized,
+        size,
+        mode: perms,
+      });
+      publishInode(deps.getSabPageCache(), ino, {
+        mode: 0o100000 | perms,
+        size,
+        parentIno,
+        name: nameBytes,
+        nextSibling: 0,
+      }, null);
     }
 
-    deps.fanoutCanonicalMemfs();
+    deps.fanoutCanonicalMemfs(false);
   }
 
   return {

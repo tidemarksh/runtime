@@ -432,6 +432,23 @@ test("kernel-worker loadFsSnapshot resizes files before writing fresh file data"
     .toBeLessThan(canonicalExports.opLog.indexOf(`write:/lib/runtime.bin:${data.length}`));
 });
 
+test("kernel-worker loadFsSnapshot preserves metadata-only file sizes as external state", () => {
+  const { canonicalExports, fsState, sabPageCache } = makeFsState();
+
+  fsState.loadFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "file", path: "/lib/runtime.bin", size: 128 * 1024, mode: 0o755 },
+  ]);
+
+  const ino = canonicalExports.fileIno("/lib/runtime.bin");
+  expect(ino).toBeGreaterThan(1);
+  expect(canonicalExports.fileData("/lib/runtime.bin").length).toBe(128 * 1024);
+  expect(canonicalExports.opLog).toContain("external:/lib/runtime.bin:131072");
+  expect(canonicalExports.opLog.some((entry) => entry.startsWith("truncate:/lib/runtime.bin:"))).toBe(false);
+  expect(canonicalExports.opLog.some((entry) => entry.startsWith("write:/lib/runtime.bin:"))).toBe(false);
+  expect(readInodeRecord(sabPageCache, ino)?.size).toBe(128 * 1024);
+});
+
 test("kernel-worker syncFileDataMutation moves canonical/member files back to page-cache-backed external state", () => {
   const { canonicalExports, memberExports, fsState } = makeFsState();
   const initialData = encoder.encode("abcdefghijklmnop");

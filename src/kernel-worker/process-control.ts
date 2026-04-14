@@ -334,20 +334,14 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     } else if (fileDataMutated && pendingPath) {
       handledFileDataMutation = deps.syncFileDataMutationByPath(processExports, pendingPath);
     }
-    if (
-      treeMutated
-      && pendingPath
-      && (opcode === deps.fsOpMkdir || opcode === deps.fsOpOpenAt || opcode === deps.fsOpUnlink)
-    ) {
+    if (treeMutated && pendingPath) {
       handledMetadataMutation = deps.syncMetadataMutation(processExports, pendingPath);
     }
     const needsFullSync = (treeMutated && !handledMetadataMutation) || (fileDataMutated && !handledFileDataMutation);
     if (needsFullSync) {
       const sourceState = readKernelRuntimeState(processExports);
       const canonicalState = readKernelRuntimeState(canonicalExports);
-      const metadataOnlyTreeSync = treeMutated
-        && !fileDataMutated
-        && (opcode === deps.fsOpMkdir || opcode === deps.fsOpOpenAt || opcode === deps.fsOpUnlink);
+      const metadataOnlyTreeSync = treeMutated && !fileDataMutated;
       deps.copyMemfsState(processExports, sourceState, canonicalExports, canonicalState, {
         includeData: !metadataOnlyTreeSync,
       });
