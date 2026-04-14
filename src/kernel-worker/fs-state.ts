@@ -312,15 +312,18 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     replaceFileData(targetExports, ino, data);
   }
 
-  function syncFileDataIntoTarget(
+  function syncExternalFileDataIntoTarget(
     targetExports: KernelExports,
     ino: number,
     mode: number,
-    data: Uint8Array,
+    size: number,
     published: ReturnType<typeof readInodeRecord>,
   ): void {
     ensurePublishedInodeInTarget(targetExports, ino, published);
-    writeFileByInode(targetExports, ino, data);
+    const externalized = Number(targetExports.memfs_set_file_external(ino, BigInt(size)));
+    if (externalized < 0) {
+      throw new Error(`failed to externalize inode: ${ino}`);
+    }
     const modeResult = Number(targetExports.memfs_set_mode(ino, mode));
     if (modeResult < 0) {
       throw new Error(`failed to set inode mode: ${ino}`);
@@ -354,12 +357,9 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       nextSibling: published.nextSibling,
     }, data);
 
-    syncFileDataIntoTarget(canonicalExports, ino, mode, data, published);
+    syncExternalFileDataIntoTarget(canonicalExports, ino, mode, data.length, published);
     for (const memberExports of deps.processKernels.values()) {
-      if (memberExports === sourceExports) {
-        continue;
-      }
-      syncFileDataIntoTarget(memberExports, ino, mode, data, published);
+      syncExternalFileDataIntoTarget(memberExports, ino, mode, data.length, published);
     }
 
     return true;

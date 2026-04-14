@@ -687,6 +687,7 @@ export interface KernelExports {
   memfs_file_size(ino: number): bigint;
   memfs_truncate_file(ino: number, size: bigint): bigint;
   memfs_set_file_size_shallow(ino: number, size: bigint): bigint;
+  memfs_set_file_external(ino: number, size: bigint): bigint;
   memfs_inode_mode(ino: number): number;
   memfs_inode_nlink(ino: number): number;
   memfs_inode_uid(ino: number): number;

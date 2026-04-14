@@ -187,6 +187,16 @@ function makeKernelExports(sabPageCache?: SharedArrayBuffer): FakeKernelExports 
       record.data = grown;
       return size;
     },
+    memfs_set_file_external: (ino: number, size: bigint) => {
+      const record = recordsByIno.get(ino);
+      opLog.push(`external:${record?.path ?? ino}:${size}`);
+      if (!record || record.kind !== "file") {
+        return -1n;
+      }
+      record.data = new Uint8Array(Number(size));
+      record.materialized = false;
+      return 0n;
+    },
     memfs_truncate_file: (ino: number, size: bigint) => {
       const record = recordsByIno.get(ino);
       opLog.push(`truncate:${record?.path ?? ino}:${size}`);
@@ -385,7 +395,7 @@ test("kernel-worker loadFsSnapshot resizes files before writing fresh file data"
     .toBeLessThan(canonicalExports.opLog.indexOf(`write:/lib/runtime.bin:${data.length}`));
 });
 
-test("kernel-worker syncFileDataMutation shrinks materialized member files to the new data", () => {
+test("kernel-worker syncFileDataMutation moves canonical/member files back to page-cache-backed external state", () => {
   const { canonicalExports, memberExports, fsState } = makeFsState();
   const initialData = encoder.encode("abcdefghijklmnop");
   const nextData = encoder.encode("abc");
@@ -402,7 +412,10 @@ test("kernel-worker syncFileDataMutation shrinks materialized member files to th
 
   expect(changed).toBe(true);
   expect(memberExports.fileData("/lib/runtime.bin")).toEqual(nextData);
-  expect(memberExports.opLog.some((entry) => entry.startsWith("truncate:/lib/runtime.bin:3"))).toBe(true);
+  expect(memberExports.opLog).toContain("external:/lib/runtime.bin:3");
+  expect(memberExports.opLog.some((entry) => entry.startsWith("truncate:/lib/runtime.bin:3"))).toBe(false);
+  expect(memberExports.opLog.some((entry) => entry.startsWith("write:/lib/runtime.bin:3"))).toBe(false);
+  expect(canonicalExports.opLog).toContain("external:/lib/runtime.bin:3");
 });
 
 test("kernel-worker writeFile keeps large files page-cache-backed instead of materializing canonical memfs data", () => {
