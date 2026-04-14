@@ -227,6 +227,7 @@ export interface KernelExports {
   thread_pending_fs_path_ptr?(vm_ptr: number): number;
   thread_pending_fs_path_len?(vm_ptr: number): number;
   thread_pending_fs_absolute_path?(vm_ptr: number, buf_ptr: number, buf_len: number): bigint;
+  thread_pending_fs_secondary_absolute_path?(vm_ptr: number, buf_ptr: number, buf_len: number): bigint;
   thread_process_fs(vm_ptr: number): void;
   thread_resume_fs(vm_ptr: number): number;
 

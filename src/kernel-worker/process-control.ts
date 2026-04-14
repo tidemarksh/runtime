@@ -114,11 +114,18 @@ interface KernelWorkerProcessControlDeps {
 export function createKernelWorkerProcessControl(deps: KernelWorkerProcessControlDeps) {
   const decoder = new TextDecoder();
 
-  function readPendingFsPath(processExports: KernelExports, vmPtr: number): string | null {
+  function readPendingFsPath(processExports: KernelExports, vmPtr: number, secondary = false): string | null {
     const absPathPtr = processExports.kernel_heap_ptr() + 0x8000;
-    const absPathLen = Number(processExports.thread_pending_fs_absolute_path?.(vmPtr, absPathPtr, 4096) ?? 0n);
+    const absPathLen = Number(
+      (secondary
+        ? processExports.thread_pending_fs_secondary_absolute_path?.(vmPtr, absPathPtr, 4096)
+        : processExports.thread_pending_fs_absolute_path?.(vmPtr, absPathPtr, 4096)) ?? 0n,
+    );
     if (absPathLen > 0 && absPathPtr + absPathLen <= processExports.memory.buffer.byteLength) {
       return decoder.decode(new Uint8Array(processExports.memory.buffer, absPathPtr, absPathLen));
+    }
+    if (secondary) {
+      return null;
     }
     const pathPtr = processExports.thread_pending_fs_path_ptr?.(vmPtr) ?? 0;
     const pathLen = processExports.thread_pending_fs_path_len?.(vmPtr) ?? 0;
@@ -319,6 +326,9 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     const pendingPath = (effects & (deps.fsEffectMemfsMutation | deps.fsEffectMemfsFileData)) !== 0
       ? readPendingFsPath(processExports, vmPtr)
       : null;
+    const pendingSecondaryPath = (effects & deps.fsEffectMemfsMutation) !== 0
+      ? readPendingFsPath(processExports, vmPtr, true)
+      : null;
     const fileDataTargetIno = (effects & deps.fsEffectMemfsFileData) !== 0
       ? processExports.thread_pending_fs_target_ino(vmPtr)
       : 0;
@@ -336,6 +346,9 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     }
     if (treeMutated && pendingPath) {
       handledMetadataMutation = deps.syncMetadataMutation(processExports, pendingPath);
+      if (handledMetadataMutation && pendingSecondaryPath && pendingSecondaryPath !== pendingPath) {
+        handledMetadataMutation = deps.syncMetadataMutation(processExports, pendingSecondaryPath);
+      }
     }
     const needsFullSync = (treeMutated && !handledMetadataMutation) || (fileDataMutated && !handledFileDataMutation);
     if (needsFullSync) {
