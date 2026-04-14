@@ -699,3 +699,82 @@ test("processFs uses targeted file-data sync when target ino is unavailable but 
   expect(syncedPaths).toEqual(["/work/app.bin"]);
   expect(copyMemfsCalls).toEqual([]);
 });
+
+test("processFs uses targeted metadata and file-data sync for openat(O_CREAT|O_TRUNC)", () => {
+  const canonicalExports = makeKernelExports();
+  const processExports = makeKernelExports({
+    opcode: 3,
+    effects: (1 << 0) | (1 << 2),
+    resumeResult: 0,
+    path: "app.bin",
+    absolutePath: "/work/app.bin",
+  });
+  const processKernels = new Map<number, KernelExports>([[7, processExports]]);
+  const copyMemfsCalls: boolean[] = [];
+  const metadataPaths: string[] = [];
+  const filePaths: string[] = [];
+
+  const processControl = createKernelWorkerProcessControl({
+    getCanonicalExports: () => canonicalExports,
+    setCanonicalExports: () => {},
+    getWasmModule: () => null,
+    setWasmModule: () => {},
+    getSabPageCache: () => new SharedArrayBuffer(65536),
+    setSabPageCache: () => {},
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    canonicalProcesses: new Map(),
+    seedEntries: new Map(),
+    getCanonicalNextPid: () => 3,
+    setCanonicalNextPid: () => {},
+    publishRootInode: () => {},
+    copyOfdState: () => {},
+    copyMemfsState: (_sourceExports, _sourceState, _targetExports, _targetState, options) => {
+      copyMemfsCalls.push(Boolean(options?.includeData));
+    },
+    rebuildPageCacheFromExports: () => {},
+    rebuildPageCacheFromCanonical: () => {},
+    syncPipeState: (_pid, kernelState) => kernelState,
+    syncEpollState: (_pid, kernelState) => kernelState,
+    syncSocketState: (_pid, kernelState) => kernelState,
+    copyCanonicalMemfsToProcess: () => {},
+    composeProcessPipeUsed: () => 0n,
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    mergePipeSlotsFromCanonical: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+    }),
+    applyPipeControlState: () => {},
+    copyEpollState: () => {},
+    copySelectedEpollState: () => {},
+    copySocketState: () => {},
+    syncFileDataMutation: () => false,
+    syncFileDataMutationByPath: (_sourceExports, path) => {
+      filePaths.push(path);
+      return true;
+    },
+    syncMetadataMutation: (_sourceExports, path) => {
+      metadataPaths.push(path);
+      return true;
+    },
+    fanoutCanonicalMemfs: () => {
+      throw new Error("full fanout should be skipped");
+    },
+    fsEffectMemfsMutation: 1 << 0,
+    fsEffectSharedOfdState: 1 << 1,
+    fsEffectMemfsFileData: 1 << 2,
+    fsOpOpenAt: 3,
+    fsOpMkdir: 6,
+    fsOpUnlink: 7,
+  });
+
+  const result = processControl.processFs(7, 0x1234, makeKernelState());
+
+  expect(result.memfsMutated).toBe(true);
+  expect(metadataPaths).toEqual(["/work/app.bin"]);
+  expect(filePaths).toEqual(["/work/app.bin"]);
+  expect(copyMemfsCalls).toEqual([]);
+});

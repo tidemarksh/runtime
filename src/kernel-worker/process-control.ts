@@ -329,14 +329,13 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     const fileDataMutated = fsSucceeded && (effects & deps.fsEffectMemfsFileData) !== 0;
     let handledFileDataMutation = false;
     let handledMetadataMutation = false;
-    if (!treeMutated && fileDataMutated && fileDataTargetIno !== 0) {
+    if (fileDataMutated && fileDataTargetIno !== 0) {
       handledFileDataMutation = deps.syncFileDataMutation(processExports, fileDataTargetIno);
-    } else if (!treeMutated && fileDataMutated && pendingPath) {
+    } else if (fileDataMutated && pendingPath) {
       handledFileDataMutation = deps.syncFileDataMutationByPath(processExports, pendingPath);
     }
     if (
       treeMutated
-      && !fileDataMutated
       && pendingPath
       && (opcode === deps.fsOpMkdir || opcode === deps.fsOpOpenAt || opcode === deps.fsOpUnlink)
     ) {
