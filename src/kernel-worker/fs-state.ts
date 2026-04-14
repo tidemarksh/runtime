@@ -365,6 +365,15 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     return true;
   }
 
+  function syncFileDataMutationByPath(sourceExports: KernelExports, path: string): boolean {
+    const normalized = normalizePath(path);
+    const ino = deps.resolvePathIn(sourceExports, normalized);
+    if (ino === 0) {
+      return false;
+    }
+    return syncFileDataMutation(sourceExports, ino);
+  }
+
   function syncMetadataMutation(sourceExports: KernelExports, path: string): boolean {
     if (!path.startsWith("/")) {
       return false;
@@ -542,6 +551,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     snapshotCanonicalFs,
     statPath,
     syncFileDataMutation,
+    syncFileDataMutationByPath,
     syncMetadataMutation,
     symlink,
     writeFile,

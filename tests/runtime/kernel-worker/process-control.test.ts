@@ -31,6 +31,7 @@ function makeKernelExports(options: {
   opcode?: number;
   effects?: number;
   resumeResult?: number;
+  targetIno?: number;
   path?: string;
   absolutePath?: string;
 } = {}): FakeKernelExports {
@@ -101,7 +102,7 @@ function makeKernelExports(options: {
     },
     thread_pending_fs_opcode: () => options.opcode ?? 0,
     thread_pending_fs_effects: () => options.effects ?? 0,
-    thread_pending_fs_target_ino: () => 0,
+    thread_pending_fs_target_ino: () => options.targetIno ?? 0,
     thread_pending_fs_path_ptr: () => (pathBytes ? pathPtr : 0),
     thread_pending_fs_path_len: () => pathBytes?.length ?? 0,
     thread_pending_fs_absolute_path: (_vmPtr: number, bufPtr: number, bufLen: number) => {
@@ -176,6 +177,7 @@ test("registerProcess rehydrates first process memfs metadata-only after canonic
       copySelectedEpollState: () => {},
       copySocketState: () => {},
       syncFileDataMutation: () => false,
+      syncFileDataMutationByPath: () => false,
       syncMetadataMutation: () => false,
       fanoutCanonicalMemfs: () => {},
       fsEffectMemfsMutation: 1 << 0,
@@ -246,6 +248,7 @@ test("registerProcess rehydrates canonical snapshot metadata-only for the first 
       copySelectedEpollState: () => {},
       copySocketState: () => {},
       syncFileDataMutation: () => false,
+      syncFileDataMutationByPath: () => false,
       syncMetadataMutation: () => false,
       fanoutCanonicalMemfs: () => {},
       fsEffectMemfsMutation: 1 << 0,
@@ -315,6 +318,7 @@ test("registerProcess rehydrates later process memfs metadata-only", async () =>
       copySelectedEpollState: () => {},
       copySocketState: () => {},
       syncFileDataMutation: () => false,
+      syncFileDataMutationByPath: () => false,
       syncMetadataMutation: () => false,
       fanoutCanonicalMemfs: () => {},
       fsEffectMemfsMutation: 1 << 0,
@@ -382,6 +386,7 @@ test("processFs treats unlink as metadata-only canonical sync", () => {
     copySelectedEpollState: () => {},
     copySocketState: () => {},
     syncFileDataMutation: () => false,
+    syncFileDataMutationByPath: () => false,
     syncMetadataMutation: () => false,
     fanoutCanonicalMemfs: () => {
       fanoutCalls.push(true);
@@ -451,6 +456,7 @@ test("processFs uses targeted metadata sync for absolute mkdir paths", () => {
     copySelectedEpollState: () => {},
     copySocketState: () => {},
     syncFileDataMutation: () => false,
+    syncFileDataMutationByPath: () => false,
     syncMetadataMutation: (_sourceExports, path) => {
       syncedPaths.push(path);
       return true;
@@ -523,6 +529,7 @@ test("processFs uses targeted metadata sync for absolute unlink paths", () => {
     copySelectedEpollState: () => {},
     copySocketState: () => {},
     syncFileDataMutation: () => false,
+    syncFileDataMutationByPath: () => false,
     syncMetadataMutation: (_sourceExports, path) => {
       syncedPaths.push(path);
       return true;
@@ -596,6 +603,7 @@ test("processFs uses kernel-provided absolute path for relative mkdir requests",
     copySelectedEpollState: () => {},
     copySocketState: () => {},
     syncFileDataMutation: () => false,
+    syncFileDataMutationByPath: () => false,
     syncMetadataMutation: (_sourceExports, path) => {
       syncedPaths.push(path);
       return true;
@@ -615,5 +623,79 @@ test("processFs uses kernel-provided absolute path for relative mkdir requests",
 
   expect(result.memfsMutated).toBe(true);
   expect(syncedPaths).toEqual(["/work/cache"]);
+  expect(copyMemfsCalls).toEqual([]);
+});
+
+test("processFs uses targeted file-data sync when target ino is unavailable but absolute path is known", () => {
+  const canonicalExports = makeKernelExports();
+  const processExports = makeKernelExports({
+    opcode: 3,
+    effects: 1 << 2,
+    resumeResult: 0,
+    path: "app.bin",
+    absolutePath: "/work/app.bin",
+  });
+  const processKernels = new Map<number, KernelExports>([[7, processExports]]);
+  const copyMemfsCalls: boolean[] = [];
+  const syncedPaths: string[] = [];
+
+  const processControl = createKernelWorkerProcessControl({
+    getCanonicalExports: () => canonicalExports,
+    setCanonicalExports: () => {},
+    getWasmModule: () => null,
+    setWasmModule: () => {},
+    getSabPageCache: () => new SharedArrayBuffer(65536),
+    setSabPageCache: () => {},
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    canonicalProcesses: new Map(),
+    seedEntries: new Map(),
+    getCanonicalNextPid: () => 3,
+    setCanonicalNextPid: () => {},
+    publishRootInode: () => {},
+    copyOfdState: () => {},
+    copyMemfsState: (_sourceExports, _sourceState, _targetExports, _targetState, options) => {
+      copyMemfsCalls.push(Boolean(options?.includeData));
+    },
+    rebuildPageCacheFromExports: () => {},
+    rebuildPageCacheFromCanonical: () => {},
+    syncPipeState: (_pid, kernelState) => kernelState,
+    syncEpollState: (_pid, kernelState) => kernelState,
+    syncSocketState: (_pid, kernelState) => kernelState,
+    copyCanonicalMemfsToProcess: () => {},
+    composeProcessPipeUsed: () => 0n,
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    mergePipeSlotsFromCanonical: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+    }),
+    applyPipeControlState: () => {},
+    copyEpollState: () => {},
+    copySelectedEpollState: () => {},
+    copySocketState: () => {},
+    syncFileDataMutation: () => false,
+    syncFileDataMutationByPath: (_sourceExports, path) => {
+      syncedPaths.push(path);
+      return true;
+    },
+    syncMetadataMutation: () => false,
+    fanoutCanonicalMemfs: () => {
+      throw new Error("full fanout should be skipped");
+    },
+    fsEffectMemfsMutation: 1 << 0,
+    fsEffectSharedOfdState: 1 << 1,
+    fsEffectMemfsFileData: 1 << 2,
+    fsOpOpenAt: 3,
+    fsOpMkdir: 6,
+    fsOpUnlink: 7,
+  });
+
+  const result = processControl.processFs(7, 0x1234, makeKernelState());
+
+  expect(result.memfsMutated).toBe(true);
+  expect(syncedPaths).toEqual(["/work/app.bin"]);
   expect(copyMemfsCalls).toEqual([]);
 });

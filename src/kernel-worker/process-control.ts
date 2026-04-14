@@ -100,6 +100,7 @@ interface KernelWorkerProcessControlDeps {
     targetState: KernelRuntimeState,
   ): void;
   syncFileDataMutation(sourceExports: KernelExports, ino: number): boolean;
+  syncFileDataMutationByPath(sourceExports: KernelExports, path: string): boolean;
   syncMetadataMutation(sourceExports: KernelExports, path: string): boolean;
   fanoutCanonicalMemfs(includeData?: boolean): void;
   fsEffectMemfsMutation: number;
@@ -315,7 +316,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     attachKernelRuntimeState(processExports, kernelState);
     const opcode = processExports.thread_pending_fs_opcode(vmPtr);
     const effects = processExports.thread_pending_fs_effects(vmPtr);
-    const pendingPath = (effects & deps.fsEffectMemfsMutation) !== 0
+    const pendingPath = (effects & (deps.fsEffectMemfsMutation | deps.fsEffectMemfsFileData)) !== 0
       ? readPendingFsPath(processExports, vmPtr)
       : null;
     const fileDataTargetIno = (effects & deps.fsEffectMemfsFileData) !== 0
@@ -330,6 +331,8 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     let handledMetadataMutation = false;
     if (!treeMutated && fileDataMutated && fileDataTargetIno !== 0) {
       handledFileDataMutation = deps.syncFileDataMutation(processExports, fileDataTargetIno);
+    } else if (!treeMutated && fileDataMutated && pendingPath) {
+      handledFileDataMutation = deps.syncFileDataMutationByPath(processExports, pendingPath);
     }
     if (
       treeMutated
