@@ -223,7 +223,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
         const memberState = readKernelRuntimeState(processExports);
         const updatedCanonicalState = readKernelRuntimeState(canonicalExports);
         deps.copyCanonicalMemfsToProcess(updatedCanonicalState, processExports, memberState, {
-          includeData: seedMemfsMode === "full",
+          includeData: seedMemfsMode === "full" && canonicalHasSeedSnapshot,
         });
       }
       return readKernelRuntimeState(processExports) ?? socketState;

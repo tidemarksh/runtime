@@ -1,4 +1,4 @@
-import { expect, test } from "vite-plus/test";
+import { expect, test, vi } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
 import { createKernelWorkerProcessControl } from "../../../src/kernel-worker/process-control.js";
 
@@ -122,6 +122,137 @@ function makeKernelExports(options: {
     opLog,
   } as unknown as FakeKernelExports;
 }
+
+test("registerProcess rehydrates first process memfs metadata-only after canonical bootstrap", async () => {
+  const canonicalExports = makeKernelExports();
+  const processExports = makeKernelExports();
+  const processKernels = new Map<number, KernelExports>();
+  const copyCanonicalModes: boolean[] = [];
+  const instantiateSpy = vi.spyOn(WebAssembly, "instantiate")
+    .mockResolvedValue({ exports: processExports } as unknown as WebAssembly.WebAssemblyInstantiatedSource);
+
+  try {
+    const processControl = createKernelWorkerProcessControl({
+      getCanonicalExports: () => canonicalExports,
+      setCanonicalExports: () => {},
+      getWasmModule: () => ({} as WebAssembly.Module),
+      setWasmModule: () => {},
+      getSabPageCache: () => new SharedArrayBuffer(65536),
+      setSabPageCache: () => {},
+      processKernels,
+      lastProcessPipeSlotModes: new Map(),
+      canonicalProcesses: new Map(),
+      seedEntries: new Map([["/", { kind: "dir", path: "/", mode: 0o755 }]]),
+      getCanonicalNextPid: () => 3,
+      setCanonicalNextPid: () => {},
+      publishRootInode: () => {},
+      copyOfdState: () => {},
+      copyMemfsState: () => {},
+      rebuildPageCacheFromCanonical: () => {},
+      syncPipeState: (_pid, kernelState) => kernelState,
+      syncEpollState: (_pid, kernelState) => kernelState,
+      syncSocketState: (_pid, kernelState) => kernelState,
+      copyCanonicalMemfsToProcess: (_canonicalState, _targetExports, _targetState, options) => {
+        copyCanonicalModes.push(Boolean(options?.includeData));
+      },
+      composeProcessPipeUsed: () => 0n,
+      collectProcessHeldEpollOfdIds: () => [],
+      collectProcessHeldPipeSlots: () => new Set(),
+      mergePipeSlotsFromCanonical: () => {},
+      recomputeCanonicalPipeControlState: () => ({
+        kernelState: makeKernelState(),
+        readOpen: new Int32Array(0),
+        writeOpen: new Int32Array(0),
+      }),
+      applyPipeControlState: () => {},
+      copyEpollState: () => {},
+      copySelectedEpollState: () => {},
+      copySocketState: () => {},
+      syncFileDataMutation: () => false,
+      syncMetadataMutation: () => false,
+      fanoutCanonicalMemfs: () => {},
+      fsEffectMemfsMutation: 1 << 0,
+      fsEffectSharedOfdState: 1 << 1,
+      fsEffectMemfsFileData: 1 << 2,
+      fsOpOpenAt: 3,
+      fsOpMkdir: 6,
+      fsOpUnlink: 7,
+    });
+
+    await processControl.registerProcess(7, 0x1234, processExports.memory, makeKernelState(), "full");
+
+    expect(copyCanonicalModes).toEqual([false]);
+  } finally {
+    instantiateSpy.mockRestore();
+  }
+});
+
+test("registerProcess keeps full memfs seed when canonical snapshot already exists", async () => {
+  const canonicalExports = makeKernelExports();
+  const processExports = makeKernelExports();
+  const processKernels = new Map<number, KernelExports>();
+  const copyCanonicalModes: boolean[] = [];
+  const instantiateSpy = vi.spyOn(WebAssembly, "instantiate")
+    .mockResolvedValue({ exports: processExports } as unknown as WebAssembly.WebAssemblyInstantiatedSource);
+
+  try {
+    const processControl = createKernelWorkerProcessControl({
+      getCanonicalExports: () => canonicalExports,
+      setCanonicalExports: () => {},
+      getWasmModule: () => ({} as WebAssembly.Module),
+      setWasmModule: () => {},
+      getSabPageCache: () => new SharedArrayBuffer(65536),
+      setSabPageCache: () => {},
+      processKernels,
+      lastProcessPipeSlotModes: new Map(),
+      canonicalProcesses: new Map(),
+      seedEntries: new Map([
+        ["/", { kind: "dir", path: "/", mode: 0o755 }],
+        ["/work", { kind: "dir", path: "/work", mode: 0o755 }],
+      ]),
+      getCanonicalNextPid: () => 3,
+      setCanonicalNextPid: () => {},
+      publishRootInode: () => {},
+      copyOfdState: () => {},
+      copyMemfsState: () => {},
+      rebuildPageCacheFromCanonical: () => {},
+      syncPipeState: (_pid, kernelState) => kernelState,
+      syncEpollState: (_pid, kernelState) => kernelState,
+      syncSocketState: (_pid, kernelState) => kernelState,
+      copyCanonicalMemfsToProcess: (_canonicalState, _targetExports, _targetState, options) => {
+        copyCanonicalModes.push(Boolean(options?.includeData));
+      },
+      composeProcessPipeUsed: () => 0n,
+      collectProcessHeldEpollOfdIds: () => [],
+      collectProcessHeldPipeSlots: () => new Set(),
+      mergePipeSlotsFromCanonical: () => {},
+      recomputeCanonicalPipeControlState: () => ({
+        kernelState: makeKernelState(),
+        readOpen: new Int32Array(0),
+        writeOpen: new Int32Array(0),
+      }),
+      applyPipeControlState: () => {},
+      copyEpollState: () => {},
+      copySelectedEpollState: () => {},
+      copySocketState: () => {},
+      syncFileDataMutation: () => false,
+      syncMetadataMutation: () => false,
+      fanoutCanonicalMemfs: () => {},
+      fsEffectMemfsMutation: 1 << 0,
+      fsEffectSharedOfdState: 1 << 1,
+      fsEffectMemfsFileData: 1 << 2,
+      fsOpOpenAt: 3,
+      fsOpMkdir: 6,
+      fsOpUnlink: 7,
+    });
+
+    await processControl.registerProcess(7, 0x1234, processExports.memory, makeKernelState(), "full");
+
+    expect(copyCanonicalModes).toEqual([true]);
+  } finally {
+    instantiateSpy.mockRestore();
+  }
+});
 
 test("processFs treats unlink as metadata-only canonical sync", () => {
   const canonicalExports = makeKernelExports();
