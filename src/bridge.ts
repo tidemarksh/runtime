@@ -10,6 +10,15 @@ export interface RuntimeBridgeSupport {
   wasm: WasmFeatureSupport;
 }
 
+export interface RuntimeBridgeDiagnostics {
+  support: RuntimeBridgeSupport;
+  requiresCrossOriginIsolation: boolean;
+  sharedMemoryReady: boolean;
+  opfsPersistentStorageReady: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
 type BridgeEnv = Pick<
   typeof globalThis,
   "Atomics" | "SharedArrayBuffer" | "Worker" | "crossOriginIsolated" | "navigator"
@@ -40,18 +49,41 @@ export function detectBridgeSupport(env: Partial<BridgeEnv> = globalThis): Runti
   };
 }
 
-export function assertSharedMemoryBridge(env: Partial<BridgeEnv> = globalThis): void {
+export function diagnoseBridgeSupport(env: Partial<BridgeEnv> = globalThis): RuntimeBridgeDiagnostics {
   const support = detectBridgeSupport(env);
+  const needsCrossOriginIsolation = requiresCrossOriginIsolation(env);
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
   if (!support.worker) {
-    throw new Error("Worker is unavailable in this environment");
+    errors.push("Worker is unavailable in this environment");
   }
   if (!support.atomicsWait) {
-    throw new Error("Atomics.wait is unavailable in this environment");
+    errors.push("Atomics.wait is unavailable in this environment");
   }
   if (!support.sharedArrayBuffer) {
-    throw new Error("SharedArrayBuffer is unavailable in this environment");
+    errors.push("SharedArrayBuffer is unavailable in this environment");
   }
-  if (requiresCrossOriginIsolation(env) && !support.crossOriginIsolated) {
-    throw new Error("crossOriginIsolated is required for SharedArrayBuffer in browsers");
+  if (needsCrossOriginIsolation && !support.crossOriginIsolated) {
+    errors.push("crossOriginIsolated is required for SharedArrayBuffer in browsers");
+  }
+  if (!support.opfs) {
+    warnings.push("OPFS is unavailable; persistent storage is disabled");
+  }
+
+  return {
+    support,
+    requiresCrossOriginIsolation: needsCrossOriginIsolation,
+    sharedMemoryReady: errors.length === 0,
+    opfsPersistentStorageReady: support.opfs,
+    errors,
+    warnings,
+  };
+}
+
+export function assertSharedMemoryBridge(env: Partial<BridgeEnv> = globalThis): void {
+  const diagnostics = diagnoseBridgeSupport(env);
+  if (diagnostics.errors.length > 0) {
+    throw new Error(diagnostics.errors[0]);
   }
 }

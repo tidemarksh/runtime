@@ -521,5 +521,5 @@ export class Process {
 export type { FsSnapshotEntry, RuntimeStat } from "./fs/types.js";
 export type { KernelExports, StatusCodes, SpawnKindCodes } from "./abi.js";
 export { readSpawnKindCodes, readStatusCodes } from "./abi.js";
-export { assertSharedMemoryBridge, detectBridgeSupport } from "./bridge.js";
+export { assertSharedMemoryBridge, detectBridgeSupport, diagnoseBridgeSupport } from "./bridge.js";
 export { detectWasmFeatures } from "./wasm/features.js";
