@@ -207,20 +207,16 @@ export async function settleInheritedChildOutput(
   }
   const slots = [child.stdoutPipe, child.stderrPipe]
     .filter((slot, index, array) => slot > 0 && array.indexOf(slot) === index);
-  let drainedAny = false;
   let stablePasses = 0;
 
   for (let pass = 0; pass < maxPasses; pass += 1) {
     await requestPipeStateSync(child, false);
-    await requestPipeStateSync(parent, false);
-    const drained = drainProcessOutput(parent);
-    drainedAny ||= drained;
     const settled = slots.every((pipeSlot) => {
       const childCounters = readPipeCounters(child, pipeSlot);
       const parentCounters = readPipeCounters(parent, pipeSlot);
       return parentCounters.tail === childCounters.tail && parentCounters.head === parentCounters.tail;
     });
-    if (settled && !drained) {
+    if (settled) {
       stablePasses += 1;
       if (stablePasses >= 2) {
         break;
@@ -230,7 +226,7 @@ export async function settleInheritedChildOutput(
     stablePasses = 0;
   }
 
-  return drainedAny;
+  return true;
 }
 
 export function createInheritedErrorSink(
