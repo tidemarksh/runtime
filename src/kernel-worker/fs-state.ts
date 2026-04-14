@@ -365,6 +365,55 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     return true;
   }
 
+  function syncMetadataMutation(sourceExports: KernelExports, path: string): boolean {
+    if (!path.startsWith("/")) {
+      return false;
+    }
+
+    const normalized = normalizePath(path);
+    const ino = deps.resolvePathIn(sourceExports, normalized);
+    if (ino === 0) {
+      return false;
+    }
+
+    let published = readInodeRecord(deps.getSabPageCache(), ino);
+    if (!published) {
+      const mode = sourceExports.memfs_inode_mode(ino);
+      const fileType = mode & MEMFS_S_IFMT;
+      if (fileType !== MEMFS_S_IFDIR && fileType !== MEMFS_S_IFREG) {
+        return false;
+      }
+      const parts = pathParts(normalized);
+      const name = parts.pop();
+      if (!name) {
+        return false;
+      }
+      const parentPath = parts.length === 0 ? "/" : `/${parts.join("/")}`;
+      const parentIno = deps.resolvePathIn(sourceExports, parentPath);
+      if (parentIno === 0) {
+        return false;
+      }
+      publishInode(deps.getSabPageCache(), ino, {
+        mode,
+        size: Number(sourceExports.memfs_file_size(ino)),
+        parentIno,
+        name: deps.encoder.encode(name),
+        nextSibling: 0,
+      }, null);
+      published = readInodeRecord(deps.getSabPageCache(), ino);
+      if (!published) {
+        return false;
+      }
+    }
+
+    ensurePublishedInodeInTarget(deps.getCanonicalExports(), ino, published);
+    for (const memberExports of deps.processKernels.values()) {
+      ensurePublishedInodeInTarget(memberExports, ino, published);
+    }
+    bumpDirEpoch(deps.getSabPageCache());
+    return true;
+  }
+
   function readFile(path: string): Uint8Array {
     const targetExports = deps.getCanonicalExports();
     const ino = resolvePath(path);
@@ -467,6 +516,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     snapshotCanonicalFs,
     statPath,
     syncFileDataMutation,
+    syncMetadataMutation,
     symlink,
     writeFile,
   };

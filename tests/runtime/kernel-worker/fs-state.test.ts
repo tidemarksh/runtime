@@ -375,7 +375,7 @@ function makeFsState() {
     upsertFileSeed: () => {},
     upsertSymlinkSeed: () => {},
   });
-  return { canonicalExports, memberExports, fsState };
+  return { canonicalExports, memberExports, fsState, sabPageCache };
 }
 
 test("kernel-worker loadFsSnapshot resizes files before writing fresh file data", () => {
@@ -416,6 +416,24 @@ test("kernel-worker syncFileDataMutation moves canonical/member files back to pa
   expect(memberExports.opLog.some((entry) => entry.startsWith("truncate:/lib/runtime.bin:3"))).toBe(false);
   expect(memberExports.opLog.some((entry) => entry.startsWith("write:/lib/runtime.bin:3"))).toBe(false);
   expect(canonicalExports.opLog).toContain("external:/lib/runtime.bin:3");
+});
+
+test("kernel-worker syncMetadataMutation materializes absolute-path file creation without full fanout", () => {
+  const { canonicalExports, memberExports, fsState, sabPageCache } = makeFsState();
+
+  fsState.mkdir("/work", 0o755, false);
+  const name = encoder.encode("new.txt");
+  const ptr = canonicalExports.kernel_heap_ptr() + 0x12000;
+  new Uint8Array(canonicalExports.memory.buffer).set(name, ptr);
+  expect(canonicalExports.memfs_create_file(canonicalExports.fileIno("/work"), ptr, name.length)).toBeGreaterThan(1);
+
+  const changed = fsState.syncMetadataMutation(canonicalExports, "/work/new.txt");
+  const ino = canonicalExports.fileIno("/work/new.txt");
+
+  expect(changed).toBe(true);
+  expect(ino).toBeGreaterThan(1);
+  expect(memberExports.fileIno("/work/new.txt")).toBe(ino);
+  expect(readInodeRecord(sabPageCache, ino)).not.toBeNull();
 });
 
 test("kernel-worker writeFile keeps large files page-cache-backed instead of materializing canonical memfs data", () => {

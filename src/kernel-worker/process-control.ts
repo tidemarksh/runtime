@@ -99,6 +99,7 @@ interface KernelWorkerProcessControlDeps {
     targetState: KernelRuntimeState,
   ): void;
   syncFileDataMutation(sourceExports: KernelExports, ino: number): boolean;
+  syncMetadataMutation(sourceExports: KernelExports, path: string): boolean;
   fanoutCanonicalMemfs(includeData?: boolean): void;
   fsEffectMemfsMutation: number;
   fsEffectSharedOfdState: number;
@@ -109,6 +110,22 @@ interface KernelWorkerProcessControlDeps {
 }
 
 export function createKernelWorkerProcessControl(deps: KernelWorkerProcessControlDeps) {
+  const decoder = new TextDecoder();
+
+  function readPendingFsPath(processExports: KernelExports, vmPtr: number): string | null {
+    const pathPtr = processExports.thread_pending_fs_path_ptr?.(vmPtr) ?? 0;
+    const pathLen = processExports.thread_pending_fs_path_len?.(vmPtr) ?? 0;
+    const guestBase = processExports.thread_guest_base?.(vmPtr) ?? 0;
+    if (pathPtr === 0 || pathLen === 0 || guestBase === 0) {
+      return null;
+    }
+    const linearPtr = guestBase + pathPtr;
+    if (linearPtr + pathLen > processExports.memory.buffer.byteLength) {
+      return null;
+    }
+    return decoder.decode(new Uint8Array(processExports.memory.buffer, linearPtr, pathLen));
+  }
+
   async function initKernel(
     module: WebAssembly.Module,
     pageCache: SharedArrayBuffer,
@@ -290,6 +307,9 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     attachKernelRuntimeState(processExports, kernelState);
     const opcode = processExports.thread_pending_fs_opcode(vmPtr);
     const effects = processExports.thread_pending_fs_effects(vmPtr);
+    const pendingPath = (effects & deps.fsEffectMemfsMutation) !== 0
+      ? readPendingFsPath(processExports, vmPtr)
+      : null;
     const fileDataTargetIno = (effects & deps.fsEffectMemfsFileData) !== 0
       ? processExports.thread_pending_fs_target_ino(vmPtr)
       : 0;
@@ -299,10 +319,19 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     const treeMutated = fsSucceeded && (effects & deps.fsEffectMemfsMutation) !== 0;
     const fileDataMutated = fsSucceeded && (effects & deps.fsEffectMemfsFileData) !== 0;
     let handledFileDataMutation = false;
+    let handledMetadataMutation = false;
     if (!treeMutated && fileDataMutated && fileDataTargetIno !== 0) {
       handledFileDataMutation = deps.syncFileDataMutation(processExports, fileDataTargetIno);
     }
-    const needsFullSync = treeMutated || (fileDataMutated && !handledFileDataMutation);
+    if (
+      treeMutated
+      && !fileDataMutated
+      && pendingPath
+      && (opcode === deps.fsOpMkdir || opcode === deps.fsOpOpenAt)
+    ) {
+      handledMetadataMutation = deps.syncMetadataMutation(processExports, pendingPath);
+    }
+    const needsFullSync = (treeMutated && !handledMetadataMutation) || (fileDataMutated && !handledFileDataMutation);
     if (needsFullSync) {
       const sourceState = readKernelRuntimeState(processExports);
       const canonicalState = readKernelRuntimeState(canonicalExports);

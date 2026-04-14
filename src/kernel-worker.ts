@@ -136,6 +136,7 @@ const {
   snapshotCanonicalFs,
   statPath,
   syncFileDataMutation,
+  syncMetadataMutation,
   symlink,
   writeFile,
 } = kernelWorkerFsState;
@@ -272,6 +273,7 @@ const kernelWorkerProcessControl = createKernelWorkerProcessControl({
   copySelectedEpollState,
   copySocketState,
   syncFileDataMutation,
+  syncMetadataMutation,
   fanoutCanonicalMemfs,
   fsEffectMemfsMutation: FS_EFFECT_MEMFS_MUTATION,
   fsEffectSharedOfdState: FS_EFFECT_SHARED_OFD_STATE,

@@ -224,6 +224,8 @@ export interface KernelExports {
   thread_pending_fs_effects(vm_ptr: number): number;
   thread_pending_fs_target_ino(vm_ptr: number): number;
   thread_pending_fs_opcode(vm_ptr: number): number;
+  thread_pending_fs_path_ptr?(vm_ptr: number): number;
+  thread_pending_fs_path_len?(vm_ptr: number): number;
   thread_process_fs(vm_ptr: number): void;
   thread_resume_fs(vm_ptr: number): number;
 
