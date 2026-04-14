@@ -91,7 +91,9 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-record-start:${parent.pid}:${handle.pid}`);
       await deps.recordChildExitViaKernelWorker(parent, handle.pid, waitStatus);
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-record-done:${parent.pid}:${handle.pid}`);
-      await settleVisibleProcessOutput(parent, deps.requestPipeStateSync);
+      if (!usesInheritedParentOutput) {
+        await settleVisibleProcessOutput(parent, deps.requestPipeStateSync);
+      }
     } finally {
       if (parent.pendingChildExitRecords > 0) {
         parent.pendingChildExitRecords -= 1;
@@ -124,10 +126,13 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     await recordExitOnParent(handle, exitCode, termSignal);
     await deps.releaseSharedHostStdio(handle);
     const parent = handle.parentPid !== null ? deps.processHandles.get(handle.parentPid) : null;
+    const usesInheritedParentOutput = parent !== null && handle.stdioOwner === parent;
     deps.destroyProcessHandle(handle, termSignal || 15, false);
-    if (parent) {
+    if (parent && !usesInheritedParentOutput) {
       await deps.requestPipeStateSync(parent, false);
       deps.drainProcessOutput(parent);
+      deps.kickBlockedWorkers(parent);
+    } else if (parent) {
       deps.kickBlockedWorkers(parent);
     }
     handle.onExit?.(exitCode);

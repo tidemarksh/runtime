@@ -179,11 +179,11 @@ test("recordExitOnParent skips child-side drain when stdio is owned by the paren
 
   expect(order).not.toContain("hidden-drain:3");
   expect(order.filter((entry) => entry === "pipe-sync:3:sync")).toHaveLength(2);
-  expect(order.filter((entry) => entry === "pipe-sync:1:sync").length).toBeGreaterThanOrEqual(2);
+  expect(order.filter((entry) => entry === "pipe-sync:1:sync")).toHaveLength(0);
   expect(order).toContain("record:1");
   expect(order).toContain("release:3");
   expect(order).toContain("destroy:3");
-  expect(order.at(-2)).toBe("drain:1");
+  expect(order).not.toContain("drain:1");
   expect(order.at(-1)).toBe("kick:1");
 });
 
