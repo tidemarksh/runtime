@@ -321,7 +321,6 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     const canonicalExports = deps.getCanonicalExports();
     const processExports = requireProcessKernel(pid);
     attachKernelRuntimeState(processExports, kernelState);
-    const opcode = processExports.thread_pending_fs_opcode(vmPtr);
     const effects = processExports.thread_pending_fs_effects(vmPtr);
     const pendingPath = (effects & (deps.fsEffectMemfsMutation | deps.fsEffectMemfsFileData)) !== 0
       ? readPendingFsPath(processExports, vmPtr)

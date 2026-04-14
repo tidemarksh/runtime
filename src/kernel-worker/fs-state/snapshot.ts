@@ -15,13 +15,14 @@ interface KernelWorkerFsSnapshotDeps {
   getSabPageCache(): SharedArrayBuffer;
   seedEntries: Map<string, FsSnapshotEntry>;
   encoder: TextEncoder;
-  fanoutCanonicalMemfs(): void;
+  fanoutCanonicalMemfs(includeData?: boolean): void;
   publishRootInode(mode?: number): void;
   resolvePath(path: string): number;
   readdir(path: string): string[];
   readFile(path: string): Uint8Array;
   writeFile(path: string, data: Uint8Array, mode?: number, fanout?: boolean): void;
   mkdir(path: string, mode?: number, fanout?: boolean): void;
+  upsertSymlinkSeed(path: string, target: Uint8Array, mode?: number): void;
 }
 
 export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshotDeps) {
@@ -249,13 +250,14 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
         if (parentIno === 0) {
           continue;
         }
-        const nameBytes = deps.encoder.encode(name);
-        const namePtr = writeScratchFor(targetExports, nameBytes, 0x8000);
-        const target = entry.target ?? new Uint8Array();
-        const targetPtr = writeScratchFor(targetExports, target, 0x9000);
-        targetExports.memfs_create_symlink(parentIno, namePtr, nameBytes.length, targetPtr, target.length);
-        continue;
-      }
+      const nameBytes = deps.encoder.encode(name);
+      const namePtr = writeScratchFor(targetExports, nameBytes, 0x8000);
+      const target = entry.target ?? new Uint8Array();
+      const targetPtr = writeScratchFor(targetExports, target, 0x9000);
+      targetExports.memfs_create_symlink(parentIno, namePtr, nameBytes.length, targetPtr, target.length);
+      deps.upsertSymlinkSeed(normalized, target, entry.mode ?? 0o777);
+      continue;
+    }
       if (entry.data !== undefined) {
         deps.writeFile(entry.path, entry.data, entry.mode ?? 0o644, false);
         continue;

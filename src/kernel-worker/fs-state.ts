@@ -519,6 +519,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     readFile,
     writeFile,
     mkdir,
+    upsertSymlinkSeed: deps.upsertSymlinkSeed,
     fanoutCanonicalMemfs: deps.fanoutCanonicalMemfs,
   });
 

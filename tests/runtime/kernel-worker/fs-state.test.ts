@@ -19,6 +19,7 @@ type FakeKernelExports = KernelExports & {
   opLog: string[];
   fileData(path: string): Uint8Array;
   fileIno(path: string): number;
+  linkTarget(path: string): string | null;
   overwriteFile(path: string, data: Uint8Array): void;
   createSymlink(path: string, target: Uint8Array): number;
   setHeapPtr(ptr: number): void;
@@ -332,6 +333,13 @@ function makeKernelExports(sabPageCache?: SharedArrayBuffer): FakeKernelExports 
       return new Uint8Array(record.data);
     },
     fileIno: (path: string) => recordsByPath.get(normalizePath(path))?.ino ?? 0,
+    linkTarget: (path: string) => {
+      const record = recordsByPath.get(normalizePath(path));
+      if (!record || record.kind !== "symlink") {
+        return null;
+      }
+      return decoder.decode(record.data);
+    },
     overwriteFile: (path: string, data: Uint8Array) => {
       const record = recordsByPath.get(normalizePath(path));
       if (!record || record.kind !== "file") {
@@ -381,7 +389,7 @@ function makeFsState() {
   const canonicalExports = makeKernelExports(sabPageCache);
   const memberExports = makeKernelExports(sabPageCache);
   const processKernels = new Map<number, KernelExports>([[2, memberExports]]);
-  const seedEntries = new Map();
+  const seedEntries = new Map<string, import("../../../src/fs/types.js").FsSnapshotEntry>();
   const fsState = createKernelWorkerFsState({
     getCanonicalExports: () => canonicalExports,
     getSabPageCache: () => sabPageCache,
@@ -408,11 +416,23 @@ function makeFsState() {
       })(),
       normalizePath(path).length,
     ),
-    upsertDirSeed: () => {},
-    upsertFileSeed: () => {},
-    upsertSymlinkSeed: () => {},
+    upsertDirSeed: (path, mode = 0o755) => {
+      seedEntries.set(normalizePath(path), { kind: "dir", path: normalizePath(path), mode });
+    },
+    upsertFileSeed: (path, data, mode = 0o644) => {
+      seedEntries.set(normalizePath(path), { kind: "file", path: normalizePath(path), data, size: data.length, mode });
+    },
+    upsertSymlinkSeed: (path, target, mode = 0o777) => {
+      seedEntries.set(normalizePath(path), {
+        kind: "symlink",
+        path: normalizePath(path),
+        target,
+        size: target.length,
+        mode,
+      });
+    },
   });
-  return { canonicalExports, memberExports, fsState, sabPageCache };
+  return { canonicalExports, memberExports, fsState, sabPageCache, seedEntries };
 }
 
 test("kernel-worker loadFsSnapshot resizes files before writing fresh file data", () => {
@@ -447,6 +467,27 @@ test("kernel-worker loadFsSnapshot preserves metadata-only file sizes as externa
   expect(canonicalExports.opLog.some((entry) => entry.startsWith("truncate:/lib/runtime.bin:"))).toBe(false);
   expect(canonicalExports.opLog.some((entry) => entry.startsWith("write:/lib/runtime.bin:"))).toBe(false);
   expect(readInodeRecord(sabPageCache, ino)?.size).toBe(128 * 1024);
+});
+
+test("kernel-worker loadFsSnapshot restores symlinks into seed entries", () => {
+  const { canonicalExports, fsState, seedEntries } = makeFsState();
+  const target = encoder.encode("/toolchain/current/bin/node");
+
+  fsState.loadFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "dir", path: "/toolchain", mode: 0o755 },
+    { kind: "symlink", path: "/toolchain/node", target, mode: 0o777 },
+  ]);
+
+  expect(canonicalExports.fileIno("/toolchain/node")).toBeGreaterThan(1);
+  expect(canonicalExports.linkTarget("/toolchain/node")).toBe("/toolchain/current/bin/node");
+  expect(seedEntries.get("/toolchain/node")).toEqual({
+    kind: "symlink",
+    path: "/toolchain/node",
+    target,
+    size: target.length,
+    mode: 0o777,
+  });
 });
 
 test("kernel-worker syncFileDataMutation moves canonical/member files back to page-cache-backed external state", () => {
