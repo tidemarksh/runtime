@@ -1,7 +1,14 @@
 import type { KernelExports } from "../../abi.js";
 import type { FsSnapshotEntry } from "../../fs/types.js";
 import { publishInode, resetPageCache } from "../../fs/sab-page-cache.js";
-import { normalizePath, normalizePermMode, readMemfsFileDataDirect } from "../common.js";
+import {
+  ensureMemoryCapacityFor,
+  normalizePath,
+  normalizePermMode,
+  readMemfsFileDataDirect,
+  scratchBaseFor,
+  writeScratchFor,
+} from "../common.js";
 
 interface KernelWorkerFsSnapshotDeps {
   getCanonicalExports(): KernelExports;
@@ -23,8 +30,7 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
   function resolvePathIn(targetExports: KernelExports, path: string): number {
     const normalized = normalizePath(path);
     const pathBytes = deps.encoder.encode(normalized);
-    const pathPtr = targetExports.kernel_heap_ptr() + 0x18000;
-    new Uint8Array(targetExports.memory.buffer).set(pathBytes, pathPtr);
+    const pathPtr = writeScratchFor(targetExports, pathBytes, 0x8000);
     return targetExports.memfs_resolve_path(pathPtr, pathBytes.length);
   }
 
@@ -34,7 +40,8 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
       throw new Error(`file not found: ${path}`);
     }
     const size = Number(targetExports.memfs_file_size(ino));
-    const bufPtr = targetExports.kernel_heap_ptr() + 0x1c000;
+    const bufPtr = scratchBaseFor(targetExports) + 0xc000;
+    ensureMemoryCapacityFor(targetExports.memory, bufPtr + Math.max(size, 1));
     const read = Number(targetExports.memfs_read_file_to(ino, 0n, bufPtr, size));
     if (read < 0) {
       throw new Error(`failed to read file: ${path}`);
@@ -47,8 +54,9 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
     if (ino === 0) {
       throw new Error(`directory not found: ${path}`);
     }
-    const bufPtr = targetExports.kernel_heap_ptr() + 0x28000;
+    const bufPtr = scratchBaseFor(targetExports) + 0x18000;
     const bufLen = 64 * 1024;
+    ensureMemoryCapacityFor(targetExports.memory, bufPtr + bufLen);
     const byteLen = Number(targetExports.memfs_readdir_names(ino, bufPtr, bufLen));
     if (byteLen < 0) {
       throw new Error(`failed to read directory: ${path}`);
@@ -85,8 +93,9 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
     if (ino === 0 || (targetExports.memfs_inode_mode(ino) & 0o170000) !== 0o120000) {
       return null;
     }
-    const bufPtr = targetExports.kernel_heap_ptr() + 0x18000;
+    const bufPtr = scratchBaseFor(targetExports) + 0x8000;
     const bufLen = 4096;
+    ensureMemoryCapacityFor(targetExports.memory, bufPtr + bufLen);
     const len = Number(targetExports.memfs_read_link(ino, bufPtr, bufLen));
     if (len <= 0) {
       return null;
@@ -241,11 +250,9 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
           continue;
         }
         const nameBytes = deps.encoder.encode(name);
-        const namePtr = targetExports.kernel_heap_ptr() + 0x18000;
-        new Uint8Array(targetExports.memory.buffer).set(nameBytes, namePtr);
+        const namePtr = writeScratchFor(targetExports, nameBytes, 0x8000);
         const target = entry.target ?? new Uint8Array();
-        const targetPtr = namePtr + 0x1000;
-        new Uint8Array(targetExports.memory.buffer).set(target, targetPtr);
+        const targetPtr = writeScratchFor(targetExports, target, 0x9000);
         targetExports.memfs_create_symlink(parentIno, namePtr, nameBytes.length, targetPtr, target.length);
         continue;
       }

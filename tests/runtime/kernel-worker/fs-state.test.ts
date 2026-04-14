@@ -21,6 +21,7 @@ type FakeKernelExports = KernelExports & {
   fileIno(path: string): number;
   overwriteFile(path: string, data: Uint8Array): void;
   createSymlink(path: string, target: Uint8Array): number;
+  setHeapPtr(ptr: number): void;
 };
 
 function normalizePath(path: string): string {
@@ -33,12 +34,13 @@ function decodeGuestBytes(memory: WebAssembly.Memory, ptr: number, len: number):
 }
 
 function makeKernelExports(sabPageCache?: SharedArrayBuffer): FakeKernelExports {
-  const memory = new WebAssembly.Memory({ initial: 512, maximum: 512, shared: true });
+  const memory = new WebAssembly.Memory({ initial: 512, maximum: 1024, shared: true });
   const recordsByPath = new Map<string, InodeRecord>();
   const recordsByIno = new Map<number, InodeRecord>();
   const opLog: string[] = [];
   let nextIno = 2;
   let reservedIno: number | null = null;
+  let heapPtr = 0x10000;
 
   function putRecord(record: InodeRecord): void {
     recordsByPath.set(record.path, record);
@@ -76,7 +78,7 @@ function makeKernelExports(sabPageCache?: SharedArrayBuffer): FakeKernelExports 
 
   const exports = {
     memory,
-    kernel_heap_ptr: () => 0x10000,
+    kernel_heap_ptr: () => heapPtr,
     kernel_reset_memfs: () => {
       resetRoot();
     },
@@ -361,6 +363,9 @@ function makeKernelExports(sabPageCache?: SharedArrayBuffer): FakeKernelExports 
       putRecord(record);
       return record.ino;
     },
+    setHeapPtr: (ptr: number) => {
+      heapPtr = ptr;
+    },
   };
 
   return exports as unknown as FakeKernelExports;
@@ -528,4 +533,16 @@ test("kernel-worker symlink uses basename scratch independently from resolvePath
   );
 
   expect(canonicalExports.fileIno("/usr/lib/riscv64-linux-gnu/libX11.so.6")).toBeGreaterThan(1);
+});
+
+test("kernel-worker snapshotCanonicalFs grows scratch when heap pointer advances", () => {
+  const { canonicalExports, fsState } = makeFsState();
+
+  fsState.mkdir("/work", 0o755, false);
+  fsState.writeFile("/work/hello.txt", encoder.encode("hello"), 0o644, false);
+
+  canonicalExports.setHeapPtr((512 * 65536) - 0x19000);
+
+  expect(() => fsState.snapshotCanonicalFs(false)).not.toThrow();
+  expect(fsState.snapshotCanonicalFs(false).some((entry) => entry.path === "/work/hello.txt")).toBe(true);
 });
