@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { KernelExports, KernelRuntimeState } from "../../abi.js";
-import { readMemfsLayout } from "../common.js";
-import { createKernelWorkerMemfsPrimitives } from "./memfs.js";
+import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
+import { readMemfsLayout } from "../../../../src/kernel-worker/common.js";
+import { createKernelWorkerMemfsPrimitives } from "../../../../src/kernel-worker/primitives/memfs.js";
 
 function writeMemfsHeader(
   memory: WebAssembly.Memory,
