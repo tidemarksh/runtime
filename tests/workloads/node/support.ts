@@ -10,17 +10,26 @@ import {
   spawnWithOutput,
 } from "../../support/runtime-workload.js";
 
-export const NODE_BINARY_PATH = process.env.TIDEMARK_TEST_NODE_BINARY ?? "";
-export const NODE_SYSROOT_DIR = process.env.TIDEMARK_TEST_NODE_SYSROOT_DIR ?? "";
+export const NODE_BINARY_PATH = process.env.TIDEMARK_TEST_NODE_BINARY
+  ?? resolve(__dirname, "../../../../images/node");
+export const NODE_SYSROOT_DIR = process.env.TIDEMARK_TEST_NODE_SYSROOT_DIR
+  ?? resolve(__dirname, "../../../../artifacts/node/sysroot");
 const FIXTURES_DIR = resolve(__dirname, "./fixtures");
 const NODE_RUNTIME_RAM_SIZE = 256 * 1024 * 1024;
+
+export interface NodeRuntimeCreateOptions {
+  ramSize?: number;
+  maxKernelMemoryPages?: number;
+  maxProcessMemoryPages?: number;
+  maxForkMemoryPages?: number;
+}
 
 const NODE_RUNTIME_LIBS = [
   ["ld-linux-riscv64-lp64d.so.1", "ld-linux-riscv64-lp64d.so.1"],
   ["libc.so.6", "libc.so.6"],
   ["libgcc_s.so.1", "libgcc_s.so.1"],
   ["libm.so.6", "libm.so.6"],
-  ["libstdc++.so.6", "libstdc++.so.6.0.34"],
+  ["libstdc++.so.6", "libstdc++.so.6.0.35"],
 ] as const;
 
 export function readNodeBinary(): Uint8Array | null {
@@ -78,6 +87,15 @@ export async function prepareNodeRuntime(): Promise<{
   runtime: RuntimeInstance;
   nodeBytes: Uint8Array;
 } | null> {
+  return await prepareNodeRuntimeWithOptions();
+}
+
+export async function prepareNodeRuntimeWithOptions(
+  options: NodeRuntimeCreateOptions = {},
+): Promise<{
+  runtime: RuntimeInstance;
+  nodeBytes: Uint8Array;
+} | null> {
   const wasmBytes = readKernelWasm();
   const nodeBytes = readNodeBinary();
   const snapshot = nodeBytes ? buildNodeRuntimeSnapshot(nodeBytes) : null;
@@ -87,7 +105,10 @@ export async function prepareNodeRuntime(): Promise<{
 
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: NODE_RUNTIME_RAM_SIZE,
+    ramSize: options.ramSize ?? NODE_RUNTIME_RAM_SIZE,
+    maxKernelMemoryPages: options.maxKernelMemoryPages,
+    maxProcessMemoryPages: options.maxProcessMemoryPages,
+    maxForkMemoryPages: options.maxForkMemoryPages,
   });
   try {
     await runtime.applyFsSnapshot(snapshot);

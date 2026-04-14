@@ -18,6 +18,19 @@ interface KernelWorkerFsSnapshotDeps {
 }
 
 export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshotDeps) {
+  function readSnapshotFileData(path: string, ino: number): Uint8Array | undefined {
+    const targetExports = deps.getCanonicalExports();
+    const direct = readMemfsFileDataDirect(targetExports, ino);
+    if (direct) {
+      return direct;
+    }
+    try {
+      return deps.readFile(path);
+    } catch {
+      return undefined;
+    }
+  }
+
   function readLink(path: string): Uint8Array | null {
     const targetExports = deps.getCanonicalExports();
     const ino = deps.resolvePath(path);
@@ -79,7 +92,7 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
       kind: "file",
       path: normalized,
       ino,
-      data: includeData ? (readMemfsFileDataDirect(targetExports, ino) ?? deps.readFile(normalized)) : undefined,
+      data: includeData ? readSnapshotFileData(normalized, ino) : undefined,
       size: Number(targetExports.memfs_file_size(ino)),
       mode: perms,
     });

@@ -31,10 +31,12 @@ function epollWaitShouldStayInWorker(
   if (status !== statusCodes.EPOLL_WAIT) {
     return false;
   }
-  // §6.4: only indefinite epoll waits should stay in the thread-worker. Finite
-  // timeouts belong to the owner-side retry path so JS timers can drive the
-  // wakeup without leaving a worker parked in wait:22.
-  return Number(exports.thread_epoll_wait_timeout(vmPtr)) < 0;
+  // Keep the in-worker fast path only for single-threaded indefinite waits.
+  // Multi-threaded processes can deliver epoll wakeups from sibling threads,
+  // and owner-side blocked retry avoids the detached child-worker path that
+  // can surface in heavier browser pages.
+  return Number(exports.thread_epoll_wait_timeout(vmPtr)) < 0
+    && exports.thread_process_thread_count(vmPtr) <= 1;
 }
 
 export function isRuntimeBridgeBlockedStatus(
@@ -170,7 +172,7 @@ export function handleFutexWait(
     const hasPendingSignal = ctx.exports.thread_sig_pending(ctx.vmPtr) !== 0n;
     if (stillBlockedAddr === BLOCKED_ADDR_NOT_FOUND) {
       clearSyscallTrace(ctx.exports);
-      ctx.exports.thread_resume_futex_wait_result(ctx.vmPtr, BigInt(-ctx.exports.abi_eagain()));
+      ctx.exports.thread_resume_futex_wait_result(ctx.vmPtr, BigInt(ctx.exports.abi_eagain()));
       break;
     }
     if (stillBlockedAddr !== 0 && stillBlockedAddr !== guestAddr) {
@@ -181,7 +183,7 @@ export function handleFutexWait(
       clearSyscallTrace(ctx.exports);
       ctx.exports.thread_resume_futex_wait_result(
         ctx.vmPtr,
-        BigInt(-(ctx.exports.abi_eintr?.() ?? ctx.eintrErrno)),
+        BigInt(ctx.exports.abi_eintr?.() ?? -ctx.eintrErrno),
       );
       break;
     }
@@ -192,7 +194,7 @@ export function handleFutexWait(
     }
     if (result === "not-equal") {
       clearSyscallTrace(ctx.exports);
-      ctx.exports.thread_resume_futex_wait_result(ctx.vmPtr, BigInt(-ctx.exports.abi_eagain()));
+      ctx.exports.thread_resume_futex_wait_result(ctx.vmPtr, BigInt(ctx.exports.abi_eagain()));
       break;
     }
     if (deadlineMs !== undefined && Date.now() >= deadlineMs) {

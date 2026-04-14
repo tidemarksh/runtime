@@ -24,6 +24,7 @@ import type { WorkerSchedulerStateSyncHelpers } from "./types.js";
 interface WorkerSchedulerStateSyncDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   drainProcessOutput(handle: ProcessHandle): boolean;
+  drainHiddenProcessOutput(handle: ProcessHandle): boolean;
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   retryBlockedWorker(handle: ProcessHandle, worker: Worker): void;
 }
@@ -207,6 +208,9 @@ export function createWorkerSchedulerStateSyncHelpers(
             pipeUsed: visiblePipeUsed,
           };
         }
+        const drainedHiddenOutput = visibleHandle !== handle
+          ? deps.drainHiddenProcessOutput(handle)
+          : false;
         const drainedVisibleOutput = deps.drainProcessOutput(visibleHandle);
         if (
           drainedVisibleOutput
@@ -222,7 +226,7 @@ export function createWorkerSchedulerStateSyncHelpers(
         }
         deps.appendRuntimeLifecycleEvent(
           visibleHandle.runtimeId,
-          `pipe-sync-drain:${handle.pid}->${visibleHandle.pid}:${drainedVisibleOutput ? 1 : 0}`,
+          `pipe-sync-drain:${handle.pid}->${visibleHandle.pid}:${drainedHiddenOutput || drainedVisibleOutput ? 1 : 0}`,
         );
         if (shouldWake) {
           wakePipeWaitersInKernelShare(handle, pipeUsed);

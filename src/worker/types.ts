@@ -31,6 +31,7 @@ export interface ThreadWorkerState {
   vmPtr: number;
   initialized: boolean;
   waitingInWorkerStatus: number | null;
+  resumeWorkersOnReady: Worker[];
 }
 
 export interface BlockedWorkerState {

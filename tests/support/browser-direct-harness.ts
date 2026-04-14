@@ -20,6 +20,15 @@ export interface BrowserDirectRunSpec {
   cwd?: string;
 }
 
+export interface BrowserDirectPrepareShellSpec {
+  executablePath: string;
+  argv: string[];
+  env: string[];
+  cwd?: string;
+  readyOutputIncludes?: string;
+  timeoutMs?: number;
+}
+
 export interface BrowserDirectRuntimeOptions {
   ramSize?: number;
   maxKernelMemoryPages?: number;
@@ -30,7 +39,9 @@ export interface BrowserDirectRuntimeOptions {
 export interface BrowserDirectStartupEntry {
   id: string;
   snapshot: FsSnapshotEntry[];
+  prepareWritesAfterShellStart?: FsSnapshotEntry[];
   run: BrowserDirectRunSpec;
+  prepareShell?: BrowserDirectPrepareShellSpec;
   runtimeOptions?: BrowserDirectRuntimeOptions;
   expectedExitCode: number;
   outputPattern: RegExp;
@@ -72,6 +83,8 @@ type SnapshotPayloadEntry =
 interface FixtureConfigPayload {
   runtimeOptions: BrowserDirectRuntimeOptions;
   snapshot: SnapshotPayloadEntry[];
+  prepareWritesAfterShellStart?: SnapshotPayloadEntry[];
+  prepareShell?: BrowserDirectPrepareShellSpec;
   run: BrowserDirectRunSpec;
 }
 
@@ -202,6 +215,24 @@ function fixtureHtml(): string {
   ].join("\n");
 }
 
+function applyDecodedSnapshotEntries(): string[] {
+  return [
+    "async function applySnapshotEntries(runtime, entries) {",
+    "  for (const entry of decodeSnapshot(entries)) {",
+    "    if (entry.kind === 'dir') {",
+    "      await runtime.fs.mkdir(entry.path, entry.mode).catch(() => {});",
+    "      continue;",
+    "    }",
+    "    if (entry.kind === 'file') {",
+    "      await runtime.fs.writeFile(entry.path, entry.data, entry.mode);",
+    "      continue;",
+    "    }",
+    "    await runtime.fs.symlink(entry.path, entry.target, entry.mode);",
+    "  }",
+    "}",
+  ];
+}
+
 function fixtureModuleSource(): string {
   return [
     "import { Runtime } from '/runtime/index.mjs';",
@@ -219,6 +250,18 @@ function fixtureModuleSource(): string {
     "    return { kind: 'symlink', path: entry.path, mode: entry.mode, target: decodeBase64(entry.targetBase64) };",
     "  });",
     "}",
+    ...applyDecodedSnapshotEntries(),
+    "async function waitForOutput(proc, needle, timeoutMs) {",
+    "  if (!needle) return '';",
+    "  let output = '';",
+    "  proc.onStdout((data) => { output += decoder.decode(data); });",
+    "  const deadline = Date.now() + timeoutMs;",
+    "  while (Date.now() < deadline) {",
+    "    if (output.includes(needle)) return output;",
+    "    await new Promise((resolve) => setTimeout(resolve, 20));",
+    "  }",
+    "  throw new Error(`timeout waiting for shell output: ${needle}: ${JSON.stringify(output)}`);",
+    "}",
     "async function boot() {",
     "  const [configResponse, wasmResponse] = await Promise.all([fetch('/config.json'), fetch('/kernel.wasm')]);",
     "  if (!configResponse.ok) throw new Error(`config fetch failed: ${configResponse.status}`);",
@@ -227,8 +270,26 @@ function fixtureModuleSource(): string {
     "  const wasmBytes = await wasmResponse.arrayBuffer();",
     "  const runtime = await Runtime.create({ wasmBytes, ...config.runtimeOptions });",
     "  await runtime.applyFsSnapshot(decodeSnapshot(config.snapshot));",
+    "  let preparedShell = null;",
     "  window.__tidemarkBrowserDirect = {",
     "    async run() {",
+    "      if (config.prepareShell && !preparedShell) {",
+    "        const shellBytes = await runtime.readFile(config.prepareShell.executablePath);",
+    "        preparedShell = await runtime.spawn(",
+    "          shellBytes,",
+    "          config.prepareShell.argv,",
+    "          config.prepareShell.env,",
+    "          config.prepareShell.cwd ? { cwd: config.prepareShell.cwd } : {},",
+    "        );",
+    "        await waitForOutput(",
+    "          preparedShell,",
+    "          config.prepareShell.readyOutputIncludes ?? '',",
+    "          config.prepareShell.timeoutMs ?? 5000,",
+    "        );",
+    "        if (config.prepareWritesAfterShellStart?.length) {",
+    "          await applySnapshotEntries(runtime, config.prepareWritesAfterShellStart);",
+    "        }",
+    "      }",
     "      const elfBytes = await runtime.readFile(config.run.executablePath);",
     "      const proc = await runtime.spawn(elfBytes, config.run.argv, config.run.env, config.run.cwd ? { cwd: config.run.cwd } : {});",
     "      let output = '';",
@@ -436,6 +497,8 @@ export async function runBrowserDirectStartupEntry(
   const server = createFixtureServer({
     runtimeOptions: entry.runtimeOptions ?? {},
     snapshot: serializeSnapshot(entry.snapshot),
+    prepareWritesAfterShellStart: entry.prepareWritesAfterShellStart ? serializeSnapshot(entry.prepareWritesAfterShellStart) : undefined,
+    prepareShell: entry.prepareShell,
     run: entry.run,
   });
   await new Promise<void>((resolve, reject) => {

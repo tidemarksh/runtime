@@ -20,7 +20,12 @@ import type {
   KernelWorkerOutbound,
   KernelWorkerRequest,
 } from "./messages.js";
-import { addWorkerMessageListener, removeWorkerMessageListener } from "./bridge/compat.js";
+import {
+  addWorkerMessageListener,
+  removeWorkerMessageListener,
+  setWorkerErrorHandler,
+  setWorkerMessageErrorHandler,
+} from "./bridge/compat.js";
 
 export interface RuntimeOptions {
   wasmBytes: BufferSource;
@@ -123,14 +128,61 @@ export class Runtime {
     this.kernelWorker = new Worker(workerUrl, { type: "module" });
     this.maybeUnrefWorker(this.kernelWorker);
     addWorkerMessageListener(this.kernelWorker, this.handleKernelWorkerMessage);
+    const worker = this.kernelWorker;
+    const cleanup = (): void => {
+      if (!worker) {
+        return;
+      }
+      setWorkerErrorHandler(worker, null);
+      setWorkerMessageErrorHandler(worker, null);
+    };
 
-    const response = await this.sendKernelRequest<Extract<KernelWorkerOutbound, { type: "ready" }>>({
-      type: "init-kernel",
-      wasmModule: this.wasmModule,
-      sabPageCache: this.sabPageCache,
-      maxMemoryPages: this.maxKernelMemoryPages,
-    });
-    void response;
+    try {
+      const response = await new Promise<Extract<KernelWorkerOutbound, { type: "ready" }>>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          cleanup();
+          reject(new Error(`kernel worker init timed out: ${workerUrl.href}`));
+        }, 10_000);
+        const fail = (detail: string): void => {
+          clearTimeout(timeout);
+          cleanup();
+          reject(new Error(`kernel worker init failed: ${detail} (${workerUrl.href})`));
+        };
+        setWorkerErrorHandler(worker, (event) => {
+          const detail = [
+            event.message,
+            event.filename ? `at ${event.filename}:${event.lineno}:${event.colno}` : null,
+            event.error instanceof Error ? (event.error.stack ?? event.error.message) : null,
+          ].filter((part): part is string => !!part).join(" ");
+          fail(detail || "worker error");
+          event.preventDefault?.();
+        });
+        setWorkerMessageErrorHandler(worker, (event) => {
+          fail(`worker messageerror: ${event.type}`);
+          event.preventDefault?.();
+        });
+        this.sendKernelRequest<Extract<KernelWorkerOutbound, { type: "ready" }>>({
+          type: "init-kernel",
+          wasmModule: this.wasmModule!,
+          sabPageCache: this.sabPageCache!,
+          maxMemoryPages: this.maxKernelMemoryPages,
+        }).then((value) => {
+          clearTimeout(timeout);
+          cleanup();
+          resolve(value);
+        }, (error) => {
+          clearTimeout(timeout);
+          cleanup();
+          reject(error);
+        });
+      });
+      void response;
+    } catch (error) {
+      removeWorkerMessageListener(worker, this.handleKernelWorkerMessage);
+      worker.terminate();
+      this.kernelWorker = null;
+      throw error;
+    }
   }
 
   private readonly handleKernelWorkerMessage = (

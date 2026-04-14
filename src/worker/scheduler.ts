@@ -7,6 +7,7 @@ import {
   releaseWorker,
 } from "./pool.js";
 import {
+  drainHiddenProcessOutput,
   drainProcessOutput,
   flushStdin,
 } from "./stdio.js";
@@ -154,6 +155,8 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       const timeoutMs = Number(handle.kernel.thread_epoll_wait_timeout(vmPtr));
       if (timeoutMs >= 0) {
         scheduleBlockedRetry(handle, worker, Math.max(0, timeoutMs), true);
+      } else if (handle.kernel.thread_process_thread_count(vmPtr) > 1) {
+        scheduleBlockedRetry(handle, worker, 10);
       }
       return;
     }
@@ -204,6 +207,8 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       const timeoutMs = Number(handle.kernel.thread_epoll_wait_timeout(vmPtr));
       if (timeoutMs >= 0) {
         scheduleBlockedRetry(handle, worker, Math.max(0, timeoutMs), true);
+      } else if (handle.kernel.thread_process_thread_count(vmPtr) > 1) {
+        scheduleBlockedRetry(handle, worker, 10);
       }
       return;
     }
@@ -259,10 +264,48 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     flushStdin(handle);
     drainProcessOutput(handle);
 
-    if (blocked.status === handle.kernel.abi_status_wait4() && handle.kernelWorkerRequest && handle.pid > 0) {
-      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-rpc:${handle.pid}:0x${blocked.vmPtr.toString(16)}`);
+    if (
+      blocked.status === handle.kernel.abi_status_epoll_wait()
+      && handle.kernelWorkerRequest
+      && handle.pid > 0
+    ) {
       blocked.rpcPending = true;
-      void deps.resumeWait4ViaKernelWorker(handle, worker, blocked.vmPtr);
+      void requestEpollDependentOfdStateSync(handle)
+        .then(() => requestEpollStateSync(handle, false))
+        .then(() => {
+          const latestBlocked = handle.blockedWorkers.get(worker);
+          if (!latestBlocked || latestBlocked.vmPtr !== blocked.vmPtr) {
+            return;
+          }
+          latestBlocked.rpcPending = false;
+          if (handle.runningWorker !== null || !canScheduleWorker(handle, worker)) {
+            scheduleBlockedRetry(handle, worker, 1);
+            return;
+          }
+          attachKernelRuntimeState(handle.kernel, handle.kernelState);
+          if (latestBlocked.timeoutExpired) {
+            handle.kernel.thread_resume_epoll_wait_timeout(latestBlocked.vmPtr);
+            latestBlocked.timeoutExpired = false;
+          } else {
+            handle.kernel.thread_resume_blocked_syscall(latestBlocked.vmPtr);
+          }
+          handle.kernelState = readKernelRuntimeState(handle.kernel);
+          handleBlockedRetryResult(
+            handle,
+            worker,
+            latestBlocked.vmPtr,
+            handle.kernel.thread_status(latestBlocked.vmPtr),
+          );
+        })
+        .catch((error) => {
+          const latestBlocked = handle.blockedWorkers.get(worker);
+          if (latestBlocked && latestBlocked.vmPtr === blocked.vmPtr) {
+            latestBlocked.rpcPending = false;
+          }
+          if (handle.workers.has(worker) && threadWorkerStates.has(worker)) {
+            deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+          }
+        });
       return;
     }
 
@@ -297,6 +340,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
 
   const schedulerStateSyncHelpers = createWorkerSchedulerStateSyncHelpers({
     appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
+    drainHiddenProcessOutput,
     drainProcessOutput,
     threadWorkerStates,
     retryBlockedWorker,

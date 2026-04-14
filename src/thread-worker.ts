@@ -40,7 +40,7 @@ let wasmFeatures: WasmFeatureSupport;
 let runtimeBridge: RuntimeStateBridge | null = null;
 let preparedInputs: ThreadWorkerPrepareInputs | null = null;
 let preparedKernelHeapBase = 0;
-const THREAD_STEP_BUDGET = 20_000;
+const THREAD_STEP_BUDGET = typeof window === "undefined" ? 20_000 : 2_000;
 const EINTR_ERRNO = 4;
 const FUTEX_WAIT_SLICE_MS = 10;
 const PREPARE_PRESERVE_PREFIX_FALLBACK_BYTES = 64 * 1024 * 1024;

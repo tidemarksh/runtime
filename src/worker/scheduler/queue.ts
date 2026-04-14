@@ -11,6 +11,8 @@ import type {
   WorkerSchedulerQueueHelpers,
 } from "./types.js";
 
+const SCHEDULER_STEP_BUDGET = typeof window === "undefined" ? 20_000 : 2_000;
+
 interface WorkerSchedulerQueueDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
@@ -97,7 +99,12 @@ export function createWorkerSchedulerQueueHelpers(
   function attachThreadWorker(handle: ProcessHandle, worker: Worker, vmPtr: number): void {
     handle.workers.add(worker);
     deps.appendWorkerDebugLog(handle, `attach:0x${vmPtr.toString(16)}`);
-    deps.threadWorkerStates.set(worker, { vmPtr, initialized: false, waitingInWorkerStatus: null });
+    deps.threadWorkerStates.set(worker, {
+      vmPtr,
+      initialized: false,
+      waitingInWorkerStatus: null,
+      resumeWorkersOnReady: [],
+    });
     setWorkerMessageHandler(worker, (event: MessageEvent<ThreadWorkerOutbound>) => {
       deps.handleWorkerMessage(handle, worker, event.data);
     });
@@ -187,7 +194,7 @@ export function createWorkerSchedulerQueueHelpers(
     publishRuntimeBridgeEpoch(handle.runtimeBridge);
     next.postMessage({
       type: "step",
-      budget: 20_000,
+      budget: SCHEDULER_STEP_BUDGET,
       kernelState: handle.kernelState,
     } satisfies ThreadWorkerInbound);
   }

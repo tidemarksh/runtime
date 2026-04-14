@@ -64,6 +64,7 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
       if (!thread) {
         return true;
       }
+      const resumeWorkersOnReady = thread.resumeWorkersOnReady.splice(0);
       handle.kernelState = adoptKernelState(handle.kernelState, msg.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
@@ -86,6 +87,11 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
         void Promise.all(readySyncs)
           .then(() => {
             deps.enqueueWorker(handle, worker);
+            for (const resumeWorker of resumeWorkersOnReady) {
+              if (handle.workers.has(resumeWorker)) {
+                deps.enqueueWorker(handle, resumeWorker);
+              }
+            }
           })
           .catch((error) => {
             deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
@@ -93,6 +99,11 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
         return true;
       }
       deps.enqueueWorker(handle, worker);
+      for (const resumeWorker of resumeWorkersOnReady) {
+        if (handle.workers.has(resumeWorker)) {
+          deps.enqueueWorker(handle, resumeWorker);
+        }
+      }
       return true;
     }
 

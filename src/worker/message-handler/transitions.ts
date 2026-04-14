@@ -181,8 +181,12 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
       const childWorker = acquireWorker();
       deps.attachThreadWorker(handle, childWorker, childVmPtr);
+      const childThread = deps.threadWorkerStates.get(childWorker);
+      if (!childThread) {
+        throw new Error(`child thread state missing for pid=${handle.pid} vm=0x${childVmPtr.toString(16)}`);
+      }
+      childThread.resumeWorkersOnReady.push(worker);
       deps.kickBlockedWorkers(handle);
-      deps.enqueueWorker(handle, worker);
       return;
     }
 
@@ -266,6 +270,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
               return;
             }
             deps.blockWorker(handle, worker, status, thread.vmPtr);
+            deps.pumpProcess(handle);
           })
           .catch((error) => {
             deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
@@ -273,6 +278,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         return;
       }
       deps.blockWorker(handle, worker, status, thread.vmPtr);
+      deps.pumpProcess(handle);
       return;
     }
 

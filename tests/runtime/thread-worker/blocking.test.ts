@@ -9,6 +9,7 @@ import {
 test("isRuntimeBridgeBlockedStatus keeps only indefinite EPOLL_WAIT in the thread-worker", () => {
   const exports = {
     thread_epoll_wait_timeout: () => -1n,
+    thread_process_thread_count: () => 1,
   } as never;
   const statusCodes = { EPOLL_WAIT: 22 } as never;
 
@@ -18,6 +19,10 @@ test("isRuntimeBridgeBlockedStatus keeps only indefinite EPOLL_WAIT in the threa
   expect(isRuntimeBridgeBlockedStatus(exports, 0x1234, 22, statusCodes)).toBe(false);
 
   exports.thread_epoll_wait_timeout = () => 10n;
+  expect(isRuntimeBridgeBlockedStatus(exports, 0x1234, 22, statusCodes)).toBe(false);
+
+  exports.thread_epoll_wait_timeout = () => -1n;
+  exports.thread_process_thread_count = () => 2;
   expect(isRuntimeBridgeBlockedStatus(exports, 0x1234, 22, statusCodes)).toBe(false);
 });
 
@@ -128,7 +133,7 @@ test("handleFutexWait resumes with EINTR when a signal becomes pending", () => {
         resumeWaitResult(result);
       },
       thread_status: () => status,
-      abi_eintr: () => 4,
+      abi_eintr: () => -4,
     } as never,
     statusCodes: { FUTEX_WAIT: 20 } as never,
     vmPtr: 0x1234,
@@ -191,7 +196,7 @@ test("handleFutexWait resumes with EINTR when a signal wake notifies the futex",
         resumeWaitResult(result);
       },
       thread_status: () => status,
-      abi_eintr: () => 4,
+      abi_eintr: () => -4,
     } as never,
     statusCodes: { FUTEX_WAIT: 20 } as never,
     vmPtr: 0x1234,
@@ -253,7 +258,7 @@ test("handleFutexWait treats missing thread-record sentinel as EAGAIN instead of
         resumeWaitResult(result);
       },
       thread_status: () => status,
-      abi_eagain: () => 11,
+      abi_eagain: () => -11,
     } as never,
     statusCodes: { FUTEX_WAIT: 20 } as never,
     vmPtr: 0x1234,
