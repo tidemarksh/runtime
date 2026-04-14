@@ -27,6 +27,11 @@ export interface SnapshotBuildResult {
 
 type SnapshotMap = Map<string, FsSnapshotEntry>;
 
+function isSkippableHostFsError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "ENOENT" || code === "EACCES" || code === "EPERM";
+}
+
 function normalizeGuestPath(value: string): string {
   const normalized = `/${value.split("/").filter(Boolean).join("/")}`;
   return normalized || "/";
@@ -65,8 +70,26 @@ function appendFileSnapshot(
   guestPath: string,
   mode?: number,
 ): void {
-  const fileMode = mode ?? ((statSync(hostPath).mode & 0o111) !== 0 ? 0o755 : 0o644);
-  setSnapshotFile(entries, guestPath, new Uint8Array(readFileSync(hostPath)), fileMode);
+  let stat;
+  try {
+    stat = statSync(hostPath);
+  } catch (error) {
+    if (isSkippableHostFsError(error)) {
+      return;
+    }
+    throw error;
+  }
+  let data: Uint8Array;
+  try {
+    data = new Uint8Array(readFileSync(hostPath));
+  } catch (error) {
+    if (isSkippableHostFsError(error)) {
+      return;
+    }
+    throw error;
+  }
+  const fileMode = mode ?? ((stat.mode & 0o111) !== 0 ? 0o755 : 0o644);
+  setSnapshotFile(entries, guestPath, data, fileMode);
 }
 
 function appendHostTreeSnapshot(
@@ -76,13 +99,21 @@ function appendHostTreeSnapshot(
   seenRealDirs = new Set<string>(),
 ): void {
   const normalizedGuest = normalizeGuestPath(guestPath);
-  const stat = lstatSync(hostPath);
+  let stat;
+  try {
+    stat = lstatSync(hostPath);
+  } catch (error) {
+    if (isSkippableHostFsError(error)) {
+      return;
+    }
+    throw error;
+  }
   if (stat.isSymbolicLink()) {
     let linkTarget: string;
     try {
       linkTarget = realpathSync(hostPath);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      if (isSkippableHostFsError(error)) {
         return;
       }
       throw error;
@@ -90,7 +121,15 @@ function appendHostTreeSnapshot(
     if (!existsSync(linkTarget)) {
       return;
     }
-    const targetStat = statSync(linkTarget);
+    let targetStat;
+    try {
+      targetStat = statSync(linkTarget);
+    } catch (error) {
+      if (isSkippableHostFsError(error)) {
+        return;
+      }
+      throw error;
+    }
     if (targetStat.isDirectory()) {
       if (seenRealDirs.has(linkTarget)) {
         return;
@@ -98,7 +137,16 @@ function appendHostTreeSnapshot(
       const nextSeen = new Set(seenRealDirs);
       nextSeen.add(linkTarget);
       ensureSnapshotDir(entries, normalizedGuest, 0o755);
-      for (const child of readdirSync(linkTarget)) {
+      let children: string[];
+      try {
+        children = readdirSync(linkTarget);
+      } catch (error) {
+        if (isSkippableHostFsError(error)) {
+          return;
+        }
+        throw error;
+      }
+      for (const child of children) {
         appendHostTreeSnapshot(entries, `${linkTarget}/${child}`, `${normalizedGuest}/${child}`, nextSeen);
       }
       return;
@@ -114,7 +162,16 @@ function appendHostTreeSnapshot(
     const nextSeen = new Set(seenRealDirs);
     nextSeen.add(realDir);
     ensureSnapshotDir(entries, normalizedGuest, 0o755);
-    for (const child of readdirSync(hostPath)) {
+    let children: string[];
+    try {
+      children = readdirSync(hostPath);
+    } catch (error) {
+      if (isSkippableHostFsError(error)) {
+        return;
+      }
+      throw error;
+    }
+    for (const child of children) {
       appendHostTreeSnapshot(entries, `${hostPath}/${child}`, `${normalizedGuest}/${child}`, nextSeen);
     }
     return;
