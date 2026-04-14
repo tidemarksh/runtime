@@ -201,8 +201,8 @@ export function preloadSnapshotEntries(
         continue;
       }
     } else {
-      const sizeResult = Number(exports.memfs_set_file_size_shallow(ino, BigInt(size)));
-      if (sizeResult < 0) {
+      const externalResult = Number(exports.memfs_set_file_external(ino, BigInt(size)));
+      if (externalResult < 0) {
         continue;
       }
     }

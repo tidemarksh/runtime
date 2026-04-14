@@ -129,7 +129,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     }
     const response = await options.kernelWorkerRequest({
       type: "snapshot-fs",
-      includeData: true,
+      includeData: false,
     });
     if (response.type !== "snapshot-fs-result") {
       throw new Error(`unexpected kernel-worker snapshot response: ${response.type}`);

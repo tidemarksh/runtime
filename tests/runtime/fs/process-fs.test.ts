@@ -335,3 +335,26 @@ test("preloadSnapshotEntries reuses post-resize scratch for successive file payl
   expect(kernel.writePtrs).toHaveLength(2);
   expect(kernel.writePtrs[1]).toBe(kernel.writePtrs[0]);
 });
+
+test("preloadSnapshotEntries externalizes metadata-only files", () => {
+  const kernel = makeMemfsKernel();
+  const externalCalls: Array<[number, bigint]> = [];
+  kernel.memfs_set_file_external = (ino: number, size: bigint) => {
+    externalCalls.push([ino, size]);
+    const record = kernel.recordsByPath.get("/bin/app");
+    if (!record || record.kind !== "file") {
+      return -1n;
+    }
+    record.data = new Uint8Array();
+    return 0n;
+  };
+
+  preloadSnapshotEntries(kernel, [
+    { kind: "dir", path: "/bin", mode: 0o755 },
+    { kind: "file", path: "/bin/app", size: 18, mode: 0o755 },
+  ]);
+
+  expect(externalCalls).toHaveLength(1);
+  expect(externalCalls[0]?.[1]).toBe(18n);
+  expect(kernel.recordsByPath.get("/bin/app")?.mode).toBe(0o100755);
+});

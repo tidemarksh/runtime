@@ -63,6 +63,7 @@ type FakeProcessKernel = KernelExports & {
   processSetCwdIno: ReturnType<typeof vi.fn>;
   memfsPaths: Map<string, number>;
   callLog: string[];
+  externalizedInos: Set<number>;
 };
 
 function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
@@ -75,6 +76,8 @@ function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
   const inoToPath = new Map<number, string>([[1, "/"]]);
   const inoMode = new Map<number, number>([[1, 0o040755]]);
   const fileData = new Map<number, Uint8Array>();
+  const fileSizes = new Map<number, number>();
+  const externalizedInos = new Set<number>();
   let nextIno = 2;
   const readBytes = (ptr: number, len: number): Uint8Array =>
     new Uint8Array(memory.buffer.slice(ptr, ptr + len));
@@ -171,6 +174,7 @@ function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
       return 0x100000;
     }),
     process_create: vi.fn(() => 0x1234),
+    thread_set_guest_ram_limit: vi.fn(),
     process_stdin_pipe: () => 1,
     process_stdout_pipe: () => 2,
     process_stderr_pipe: () => 3,
@@ -192,12 +196,24 @@ function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
     memfs_reserve_inode_until: () => 0n,
     memfs_truncate_file: (ino: number, size: bigint) => {
       callLog.push("memfs_truncate_file");
-      fileData.set(ino, new Uint8Array(Number(size)));
+      const nextSize = Number(size);
+      fileData.set(ino, new Uint8Array(nextSize));
+      fileSizes.set(ino, nextSize);
+      externalizedInos.delete(ino);
       return 0n;
     },
     memfs_set_file_size_shallow: (ino: number, size: bigint) => {
       callLog.push("memfs_set_file_size_shallow");
-      fileData.set(ino, new Uint8Array(Number(size)));
+      const nextSize = Number(size);
+      fileData.set(ino, new Uint8Array(nextSize));
+      fileSizes.set(ino, nextSize);
+      return 0n;
+    },
+    memfs_set_file_external: (ino: number, size: bigint) => {
+      callLog.push("memfs_set_file_external");
+      fileSizes.set(ino, Number(size));
+      fileData.delete(ino);
+      externalizedInos.add(ino);
       return 0n;
     },
     memfs_write_file_at: (ino: number, offset: bigint, dataPtr: number, dataLen: number) => {
@@ -211,6 +227,8 @@ function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
       }
       next.set(readBytes(dataPtr, dataLen), start);
       fileData.set(ino, next);
+      fileSizes.set(ino, next.length);
+      externalizedInos.delete(ino);
       return BigInt(dataLen);
     },
     memfs_set_mode: (ino: number, mode: number) => {
@@ -220,8 +238,11 @@ function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
       return 0n;
     },
     memfs_inode_mode: (ino: number) => inoMode.get(ino) ?? 0,
-    memfs_file_size: (ino: number) => BigInt(fileData.get(ino)?.length ?? 0),
+    memfs_file_size: (ino: number) => BigInt(fileSizes.get(ino) ?? fileData.get(ino)?.length ?? 0),
     memfs_read_file_to: (ino: number, offset: bigint, bufPtr: number, bufLen: number) => {
+      if (externalizedInos.has(ino)) {
+        return 0n;
+      }
       const bytes = fileData.get(ino) ?? new Uint8Array();
       const start = Number(offset);
       if (start >= bytes.length) {
@@ -236,6 +257,7 @@ function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
     processSetCwdIno,
     memfsPaths: pathToIno,
     callLog,
+    externalizedInos,
   } as unknown as FakeProcessKernel;
 }
 
@@ -395,7 +417,7 @@ test("createProcess delegates cwd resolution and lifecycle seeding for runtime-o
   );
 
   expect(resolveProcessCwdInoViaKernelWorker).toHaveBeenCalledWith(kernelWorkerRequest, "/work/child");
-  expect(registerProcessWithKernelWorker).toHaveBeenCalledWith(handle, { seedMemfsMode: "metadata" });
+  expect(registerProcessWithKernelWorker).toHaveBeenCalledWith(handle, { seedMemfsMode: "full" });
   expect(fakeKernel.processSetCwdIno).toHaveBeenCalledWith(0x1234, 33);
   expect(assertProcessStandardFdIntegrity).toHaveBeenCalledWith(handle, "create-process");
   expect(handle.stdinPipe).toBe(1);
@@ -513,7 +535,7 @@ test("createProcess publishes lifecycle-updated kernel state before attaching ru
   expect(handle.kernelState.processPendingPtr).toBe(makeKernelState().processPendingPtr + 0x20);
 });
 
-test("createProcess fetches a full kernel-worker snapshot when runtime fs entries are metadata-only", async () => {
+test("createProcess fetches a metadata-only kernel-worker snapshot when runtime fs entries are metadata-only", async () => {
   const processHandles = new Map<number, ProcessHandle>([[1, makeParentHandle()]]);
   const kernelMemory = new WebAssembly.Memory({ initial: 1024, maximum: 2048, shared: true });
   const fakeKernel = makeFakeProcessKernel(kernelMemory);
@@ -529,7 +551,7 @@ test("createProcess fetches a full kernel-worker snapshot when runtime fs entrie
   const kernelWorkerRequest = vi.fn(async (msg: { type: string; includeData?: boolean }) => {
     expect(msg).toEqual({
       type: "snapshot-fs",
-      includeData: true,
+      includeData: false,
     });
     return {
       type: "snapshot-fs-result" as const,
@@ -537,7 +559,7 @@ test("createProcess fetches a full kernel-worker snapshot when runtime fs entrie
       entries: [{
         kind: "file" as const,
         path: "/bin/app",
-        data: encoder.encode("materialized-app"),
+        size: "materialized-app".length,
         mode: 0o755,
       }],
     };
@@ -573,10 +595,9 @@ test("createProcess fetches a full kernel-worker snapshot when runtime fs entrie
   expect(kernelWorkerRequest).toHaveBeenCalledTimes(1);
   expect(fakeKernel.memfsPaths.get("/bin/app")).toBeGreaterThan(0);
   const ino = fakeKernel.memfsPaths.get("/bin/app")!;
-  const fileBuf = new Uint8Array(Number(fakeKernel.memfs_file_size(ino)));
-  const read = Number(fakeKernel.memfs_read_file_to(ino, 0n, 0x4000, fileBuf.length));
-  expect(read).toBe("materialized-app".length);
-  expect(decoder.decode(new Uint8Array(kernelMemory.buffer, 0x4000, read))).toBe("materialized-app");
+  expect(Number(fakeKernel.memfs_file_size(ino))).toBe("materialized-app".length);
+  expect(fakeKernel.externalizedInos.has(ino)).toBe(true);
+  expect(fakeKernel.callLog).toContain("memfs_set_file_external");
 });
 
 test("createProcess computes guest base after preloading runtime fs entries", async () => {
