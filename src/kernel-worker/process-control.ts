@@ -113,6 +113,11 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
   const decoder = new TextDecoder();
 
   function readPendingFsPath(processExports: KernelExports, vmPtr: number): string | null {
+    const absPathPtr = processExports.kernel_heap_ptr() + 0x8000;
+    const absPathLen = Number(processExports.thread_pending_fs_absolute_path?.(vmPtr, absPathPtr, 4096) ?? 0n);
+    if (absPathLen > 0 && absPathPtr + absPathLen <= processExports.memory.buffer.byteLength) {
+      return decoder.decode(new Uint8Array(processExports.memory.buffer, absPathPtr, absPathLen));
+    }
     const pathPtr = processExports.thread_pending_fs_path_ptr?.(vmPtr) ?? 0;
     const pathLen = processExports.thread_pending_fs_path_len?.(vmPtr) ?? 0;
     const guestBase = processExports.thread_guest_base?.(vmPtr) ?? 0;
@@ -327,7 +332,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       treeMutated
       && !fileDataMutated
       && pendingPath
-      && (opcode === deps.fsOpMkdir || opcode === deps.fsOpOpenAt)
+      && (opcode === deps.fsOpMkdir || opcode === deps.fsOpOpenAt || opcode === deps.fsOpUnlink)
     ) {
       handledMetadataMutation = deps.syncMetadataMutation(processExports, pendingPath);
     }

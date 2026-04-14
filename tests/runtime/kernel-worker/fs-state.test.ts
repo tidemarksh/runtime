@@ -146,6 +146,38 @@ function makeKernelExports(sabPageCache?: SharedArrayBuffer): FakeKernelExports 
       putRecord(record);
       return record.ino;
     },
+    memfs_unlink: (parentIno: number, namePtr: number, nameLen: number) => {
+      const parent = recordsByIno.get(parentIno);
+      if (!parent || parent.kind !== "dir") {
+        return -2n;
+      }
+      const name = decodeGuestBytes(memory, namePtr, nameLen);
+      const path = parent.path === "/" ? `/${name}` : `${parent.path}/${name}`;
+      const existing = recordsByPath.get(path);
+      if (!existing || existing.kind === "dir") {
+        return -2n;
+      }
+      recordsByPath.delete(path);
+      recordsByIno.delete(existing.ino);
+      opLog.push(`unlink:${path}`);
+      return 0n;
+    },
+    memfs_rmdir: (parentIno: number, namePtr: number, nameLen: number) => {
+      const parent = recordsByIno.get(parentIno);
+      if (!parent || parent.kind !== "dir") {
+        return -2n;
+      }
+      const name = decodeGuestBytes(memory, namePtr, nameLen);
+      const path = parent.path === "/" ? `/${name}` : `${parent.path}/${name}`;
+      const existing = recordsByPath.get(path);
+      if (!existing || existing.kind !== "dir") {
+        return -2n;
+      }
+      recordsByPath.delete(path);
+      recordsByIno.delete(existing.ino);
+      opLog.push(`rmdir:${path}`);
+      return 0n;
+    },
     memfs_create_symlink: (parentIno: number, namePtr: number, nameLen: number, targetPtr: number, targetLen: number) => {
       const parent = recordsByIno.get(parentIno);
       if (!parent || parent.kind !== "dir") {
@@ -434,6 +466,29 @@ test("kernel-worker syncMetadataMutation materializes absolute-path file creatio
   expect(ino).toBeGreaterThan(1);
   expect(memberExports.fileIno("/work/new.txt")).toBe(ino);
   expect(readInodeRecord(sabPageCache, ino)).not.toBeNull();
+});
+
+test("kernel-worker syncMetadataMutation removes absolute-path entries without full fanout", () => {
+  const { canonicalExports, memberExports, fsState } = makeFsState();
+
+  fsState.writeFile("/work/remove.txt", encoder.encode("payload"), 0o644, false);
+  const ino = canonicalExports.fileIno("/work/remove.txt");
+  expect(ino).toBeGreaterThan(1);
+  expect(memberExports.fileIno("/work/remove.txt")).toBe(0);
+  fsState.syncMetadataMutation(canonicalExports, "/work/remove.txt");
+  expect(memberExports.fileIno("/work/remove.txt")).toBe(ino);
+
+  const parentIno = canonicalExports.fileIno("/work");
+  const name = encoder.encode("remove.txt");
+  const ptr = canonicalExports.kernel_heap_ptr() + 0x13000;
+  new Uint8Array(canonicalExports.memory.buffer).set(name, ptr);
+  expect(canonicalExports.memfs_unlink(parentIno, ptr, name.length)).toBe(0n);
+
+  const changed = fsState.syncMetadataMutation(canonicalExports, "/work/remove.txt");
+
+  expect(changed).toBe(true);
+  expect(canonicalExports.fileIno("/work/remove.txt")).toBe(0);
+  expect(memberExports.fileIno("/work/remove.txt")).toBe(0);
 });
 
 test("kernel-worker writeFile keeps large files page-cache-backed instead of materializing canonical memfs data", () => {

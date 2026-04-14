@@ -226,6 +226,7 @@ export interface KernelExports {
   thread_pending_fs_opcode(vm_ptr: number): number;
   thread_pending_fs_path_ptr?(vm_ptr: number): number;
   thread_pending_fs_path_len?(vm_ptr: number): number;
+  thread_pending_fs_absolute_path?(vm_ptr: number, buf_ptr: number, buf_len: number): bigint;
   thread_process_fs(vm_ptr: number): void;
   thread_resume_fs(vm_ptr: number): number;
 
@@ -683,6 +684,8 @@ export interface KernelExports {
   memfs_last_create_symlink_arg0(): bigint;
   memfs_last_create_symlink_arg1(): bigint;
   memfs_create_file(parent_ino: number, name_ptr: number, name_len: number): number;
+  memfs_unlink(parent_ino: number, name_ptr: number, name_len: number): bigint;
+  memfs_rmdir(parent_ino: number, name_ptr: number, name_len: number): bigint;
   memfs_reserve_inode_until(target_ino: number): bigint;
   memfs_write_file_at(ino: number, offset: bigint, data_ptr: number, data_len: number): bigint;
   memfs_read_file_to(ino: number, offset: bigint, buf_ptr: number, buf_len: number): bigint;

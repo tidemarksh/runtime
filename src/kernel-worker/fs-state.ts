@@ -372,8 +372,38 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
 
     const normalized = normalizePath(path);
     const ino = deps.resolvePathIn(sourceExports, normalized);
-    if (ino === 0) {
+    const parts = pathParts(normalized);
+    const name = parts.pop();
+    if (!name) {
       return false;
+    }
+    const parentPath = parts.length === 0 ? "/" : `/${parts.join("/")}`;
+    const nameBytes = deps.encoder.encode(name);
+
+    const removePathInTarget = (targetExports: KernelExports): boolean => {
+      const parentIno = deps.resolvePathIn(targetExports, parentPath);
+      if (parentIno === 0) {
+        return true;
+      }
+      const namePtr = writeScratchFor(targetExports, nameBytes);
+      const unlinkResult = Number(targetExports.memfs_unlink(parentIno, namePtr, nameBytes.length));
+      if (unlinkResult === 0 || unlinkResult === -2) {
+        return true;
+      }
+      const rmdirResult = Number(targetExports.memfs_rmdir(parentIno, namePtr, nameBytes.length));
+      return rmdirResult === 0 || rmdirResult === -2;
+    };
+
+    if (ino === 0) {
+      const removedCanonical = removePathInTarget(deps.getCanonicalExports());
+      let removedMembers = true;
+      for (const memberExports of deps.processKernels.values()) {
+        removedMembers = removePathInTarget(memberExports) && removedMembers;
+      }
+      if (removedCanonical || removedMembers) {
+        bumpDirEpoch(deps.getSabPageCache());
+      }
+      return removedCanonical && removedMembers;
     }
 
     let published = readInodeRecord(deps.getSabPageCache(), ino);
@@ -383,12 +413,6 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       if (fileType !== MEMFS_S_IFDIR && fileType !== MEMFS_S_IFREG) {
         return false;
       }
-      const parts = pathParts(normalized);
-      const name = parts.pop();
-      if (!name) {
-        return false;
-      }
-      const parentPath = parts.length === 0 ? "/" : `/${parts.join("/")}`;
       const parentIno = deps.resolvePathIn(sourceExports, parentPath);
       if (parentIno === 0) {
         return false;
@@ -397,7 +421,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         mode,
         size: Number(sourceExports.memfs_file_size(ino)),
         parentIno,
-        name: deps.encoder.encode(name),
+        name: nameBytes,
         nextSibling: 0,
       }, null);
       published = readInodeRecord(deps.getSabPageCache(), ino);

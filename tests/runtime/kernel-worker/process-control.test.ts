@@ -32,13 +32,15 @@ function makeKernelExports(options: {
   effects?: number;
   resumeResult?: number;
   path?: string;
+  absolutePath?: string;
 } = {}): FakeKernelExports {
   let runtimeState = makeKernelState();
   const opLog: string[] = [];
-  const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+  const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
   const guestBase = 0x1000;
   const pathPtr = 0x2000;
   const pathBytes = options.path ? new TextEncoder().encode(options.path) : null;
+  const absolutePathBytes = options.absolutePath ? new TextEncoder().encode(options.absolutePath) : null;
   if (pathBytes) {
     new Uint8Array(memory.buffer).set(pathBytes, guestBase + pathPtr);
   }
@@ -102,6 +104,13 @@ function makeKernelExports(options: {
     thread_pending_fs_target_ino: () => 0,
     thread_pending_fs_path_ptr: () => (pathBytes ? pathPtr : 0),
     thread_pending_fs_path_len: () => pathBytes?.length ?? 0,
+    thread_pending_fs_absolute_path: (_vmPtr: number, bufPtr: number, bufLen: number) => {
+      if (!absolutePathBytes || absolutePathBytes.length > bufLen) {
+        return 0n;
+      }
+      new Uint8Array(memory.buffer).set(absolutePathBytes, bufPtr);
+      return BigInt(absolutePathBytes.length);
+    },
     thread_guest_base: () => guestBase,
     thread_process_fs: () => {
       opLog.push("process-fs");
@@ -188,6 +197,149 @@ test("processFs uses targeted metadata sync for absolute mkdir paths", () => {
     effects: 1 << 0,
     resumeResult: 0,
     path: "/work/cache",
+  });
+  const processKernels = new Map<number, KernelExports>([[7, processExports]]);
+  const copyMemfsCalls: boolean[] = [];
+  const syncedPaths: string[] = [];
+
+  const processControl = createKernelWorkerProcessControl({
+    getCanonicalExports: () => canonicalExports,
+    setCanonicalExports: () => {},
+    getWasmModule: () => null,
+    setWasmModule: () => {},
+    getSabPageCache: () => new SharedArrayBuffer(65536),
+    setSabPageCache: () => {},
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    canonicalProcesses: new Map(),
+    seedEntries: new Map(),
+    getCanonicalNextPid: () => 3,
+    setCanonicalNextPid: () => {},
+    publishRootInode: () => {},
+    copyOfdState: () => {},
+    copyMemfsState: (_sourceExports, _sourceState, _targetExports, _targetState, options) => {
+      copyMemfsCalls.push(Boolean(options?.includeData));
+    },
+    rebuildPageCacheFromCanonical: () => {},
+    syncPipeState: (_pid, kernelState) => kernelState,
+    syncEpollState: (_pid, kernelState) => kernelState,
+    syncSocketState: (_pid, kernelState) => kernelState,
+    copyCanonicalMemfsToProcess: () => {},
+    composeProcessPipeUsed: () => 0n,
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    mergePipeSlotsFromCanonical: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+    }),
+    applyPipeControlState: () => {},
+    copyEpollState: () => {},
+    copySelectedEpollState: () => {},
+    copySocketState: () => {},
+    syncFileDataMutation: () => false,
+    syncMetadataMutation: (_sourceExports, path) => {
+      syncedPaths.push(path);
+      return true;
+    },
+    fanoutCanonicalMemfs: () => {
+      throw new Error("full fanout should be skipped");
+    },
+    fsEffectMemfsMutation: 1 << 0,
+    fsEffectSharedOfdState: 1 << 1,
+    fsEffectMemfsFileData: 1 << 2,
+    fsOpOpenAt: 3,
+    fsOpMkdir: 6,
+    fsOpUnlink: 7,
+  });
+
+  const result = processControl.processFs(7, 0x1234, makeKernelState());
+
+  expect(result.memfsMutated).toBe(true);
+  expect(syncedPaths).toEqual(["/work/cache"]);
+  expect(copyMemfsCalls).toEqual([]);
+});
+
+test("processFs uses targeted metadata sync for absolute unlink paths", () => {
+  const canonicalExports = makeKernelExports();
+  const processExports = makeKernelExports({
+    opcode: 7,
+    effects: 1 << 0,
+    resumeResult: 0,
+    path: "/work/remove.txt",
+  });
+  const processKernels = new Map<number, KernelExports>([[7, processExports]]);
+  const copyMemfsCalls: boolean[] = [];
+  const syncedPaths: string[] = [];
+
+  const processControl = createKernelWorkerProcessControl({
+    getCanonicalExports: () => canonicalExports,
+    setCanonicalExports: () => {},
+    getWasmModule: () => null,
+    setWasmModule: () => {},
+    getSabPageCache: () => new SharedArrayBuffer(65536),
+    setSabPageCache: () => {},
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    canonicalProcesses: new Map(),
+    seedEntries: new Map(),
+    getCanonicalNextPid: () => 3,
+    setCanonicalNextPid: () => {},
+    publishRootInode: () => {},
+    copyOfdState: () => {},
+    copyMemfsState: (_sourceExports, _sourceState, _targetExports, _targetState, options) => {
+      copyMemfsCalls.push(Boolean(options?.includeData));
+    },
+    rebuildPageCacheFromCanonical: () => {},
+    syncPipeState: (_pid, kernelState) => kernelState,
+    syncEpollState: (_pid, kernelState) => kernelState,
+    syncSocketState: (_pid, kernelState) => kernelState,
+    copyCanonicalMemfsToProcess: () => {},
+    composeProcessPipeUsed: () => 0n,
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    mergePipeSlotsFromCanonical: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+    }),
+    applyPipeControlState: () => {},
+    copyEpollState: () => {},
+    copySelectedEpollState: () => {},
+    copySocketState: () => {},
+    syncFileDataMutation: () => false,
+    syncMetadataMutation: (_sourceExports, path) => {
+      syncedPaths.push(path);
+      return true;
+    },
+    fanoutCanonicalMemfs: () => {
+      throw new Error("full fanout should be skipped");
+    },
+    fsEffectMemfsMutation: 1 << 0,
+    fsEffectSharedOfdState: 1 << 1,
+    fsEffectMemfsFileData: 1 << 2,
+    fsOpOpenAt: 3,
+    fsOpMkdir: 6,
+    fsOpUnlink: 7,
+  });
+
+  const result = processControl.processFs(7, 0x1234, makeKernelState());
+
+  expect(result.memfsMutated).toBe(true);
+  expect(syncedPaths).toEqual(["/work/remove.txt"]);
+  expect(copyMemfsCalls).toEqual([]);
+});
+
+test("processFs uses kernel-provided absolute path for relative mkdir requests", () => {
+  const canonicalExports = makeKernelExports();
+  const processExports = makeKernelExports({
+    opcode: 6,
+    effects: 1 << 0,
+    resumeResult: 0,
+    path: "cache",
+    absolutePath: "/work/cache",
   });
   const processKernels = new Map<number, KernelExports>([[7, processExports]]);
   const copyMemfsCalls: boolean[] = [];
