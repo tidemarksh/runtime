@@ -61,7 +61,7 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
         continue;
       }
       if (i > start) {
-        names.push(decoder.decode(bytes.subarray(start, i)));
+        names.push(decoder.decode(new Uint8Array(bytes.slice(start, i))));
       }
       start = i + 1;
     }

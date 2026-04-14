@@ -36,6 +36,27 @@ export function createWorkerSchedulerStateSyncHelpers(
     return handle.stdioOwner ?? handle;
   }
 
+  function shouldDrainHiddenInheritedOutput(
+    handle: ProcessHandle,
+    visibleHandle: ProcessHandle,
+  ): boolean {
+    if (visibleHandle === handle) {
+      return false;
+    }
+    const visibleSlots = new Set(
+      [
+        visibleHandle.hostStdio.stdoutPipe,
+        visibleHandle.hostStdio.stderrPipe,
+      ].filter((slot) => slot > 0),
+    );
+    const hiddenSlots = [handle.stdoutPipe, handle.stderrPipe]
+      .filter((slot, index, slots) => slot > 0 && slots.indexOf(slot) === index);
+    if (hiddenSlots.length === 0) {
+      return false;
+    }
+    return hiddenSlots.some((slot) => !visibleSlots.has(slot));
+  }
+
   function wakeBlockedStatusesInKernelShare(
     handle: ProcessHandle,
     statuses: number[],
@@ -208,7 +229,7 @@ export function createWorkerSchedulerStateSyncHelpers(
             pipeUsed: visiblePipeUsed,
           };
         }
-        const drainedHiddenOutput = visibleHandle !== handle
+        const drainedHiddenOutput = shouldDrainHiddenInheritedOutput(handle, visibleHandle)
           ? deps.drainHiddenProcessOutput(handle)
           : false;
         const drainedVisibleOutput = deps.drainProcessOutput(visibleHandle);

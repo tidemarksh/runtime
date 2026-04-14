@@ -57,17 +57,18 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
 
     parent.pendingChildExitRecords += 1;
     try {
-      if (handle.kernelWorkerRequest && handle.pid > 0) {
+      const usesInheritedParentOutput = handle.stdioOwner === parent;
+      if (!usesInheritedParentOutput && handle.kernelWorkerRequest && handle.pid > 0) {
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `child-pipe-sync-start:${handle.pid}`);
         await deps.requestPipeStateSync(handle, false);
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `child-pipe-sync-done:${handle.pid}`);
       }
       if (handle.stdioOwner === null) {
         deps.drainProcessOutput(handle);
-      } else {
+      } else if (!usesInheritedParentOutput) {
         deps.drainHiddenProcessOutput(handle);
       }
-      if (handle.stdioOwner === parent) {
+      if (usesInheritedParentOutput) {
         await settleInheritedChildOutput(handle, deps.requestPipeStateSync);
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `child-parent-pipe-refresh:${parent.pid}:${handle.pid}`);
       }

@@ -120,6 +120,7 @@ function makeHandle(overrides: Record<string, unknown> = {}) {
 
 test("requestPipeStateSync drains the visible stdio owner for hidden-child internal sync", async () => {
   const drainProcessOutput = vi.fn(() => true);
+  const drainHiddenProcessOutput = vi.fn(() => true);
   const retryBlockedWorker = vi.fn();
   const parent = makeHandle();
   const child = makeHandle({ pid: 2, stdioOwner: parent });
@@ -127,6 +128,7 @@ test("requestPipeStateSync drains the visible stdio owner for hidden-child inter
   const helpers = createWorkerSchedulerStateSyncHelpers({
     appendRuntimeLifecycleEvent: () => {},
     drainProcessOutput,
+    drainHiddenProcessOutput,
     threadWorkerStates: new WeakMap(),
     retryBlockedWorker,
   });
@@ -135,6 +137,7 @@ test("requestPipeStateSync drains the visible stdio owner for hidden-child inter
 
   expect(drainProcessOutput).toHaveBeenCalledTimes(1);
   expect(drainProcessOutput).toHaveBeenCalledWith(parent);
+  expect(drainHiddenProcessOutput).not.toHaveBeenCalled();
   expect(child.kernelWorkerRequest).toHaveBeenCalledTimes(1);
   expect(parent.kernelWorkerRequest).toHaveBeenCalledTimes(2);
   expect(retryBlockedWorker).not.toHaveBeenCalled();
@@ -142,6 +145,7 @@ test("requestPipeStateSync drains the visible stdio owner for hidden-child inter
 
 test("requestPipeStateSync refreshes the visible stdio owner before draining child output for waking sync", async () => {
   const drainProcessOutput = vi.fn(() => true);
+  const drainHiddenProcessOutput = vi.fn(() => true);
   const retryBlockedWorker = vi.fn();
   const parent = makeHandle({ pid: 1 });
   const child = makeHandle({ pid: 2, stdioOwner: parent });
@@ -149,6 +153,7 @@ test("requestPipeStateSync refreshes the visible stdio owner before draining chi
   const helpers = createWorkerSchedulerStateSyncHelpers({
     appendRuntimeLifecycleEvent: () => {},
     drainProcessOutput,
+    drainHiddenProcessOutput,
     threadWorkerStates: new WeakMap(),
     retryBlockedWorker,
   });
@@ -159,16 +164,19 @@ test("requestPipeStateSync refreshes the visible stdio owner before draining chi
   expect(parent.kernelWorkerRequest).toHaveBeenCalledTimes(2);
   expect(drainProcessOutput).toHaveBeenCalledTimes(1);
   expect(drainProcessOutput).toHaveBeenCalledWith(parent);
+  expect(drainHiddenProcessOutput).not.toHaveBeenCalled();
 });
 
 test("requestPipeStateSync re-syncs the visible owner after self-drain advances the read head", async () => {
   const drainProcessOutput = vi.fn(() => true);
+  const drainHiddenProcessOutput = vi.fn(() => true);
   const retryBlockedWorker = vi.fn();
   const handle = makeHandle({ pid: 1, stdioOwner: null });
 
   const helpers = createWorkerSchedulerStateSyncHelpers({
     appendRuntimeLifecycleEvent: () => {},
     drainProcessOutput,
+    drainHiddenProcessOutput,
     threadWorkerStates: new WeakMap(),
     retryBlockedWorker,
   });
@@ -178,4 +186,31 @@ test("requestPipeStateSync re-syncs the visible owner after self-drain advances 
   expect(handle.kernelWorkerRequest).toHaveBeenCalledTimes(2);
   expect(drainProcessOutput).toHaveBeenCalledTimes(1);
   expect(drainProcessOutput).toHaveBeenCalledWith(handle);
+  expect(drainHiddenProcessOutput).not.toHaveBeenCalled();
+});
+
+test("requestPipeStateSync still drains hidden child output when stdout was remapped away from the visible host pipe", async () => {
+  const drainProcessOutput = vi.fn(() => true);
+  const drainHiddenProcessOutput = vi.fn(() => true);
+  const retryBlockedWorker = vi.fn();
+  const parent = makeHandle();
+  const child = makeHandle({
+    pid: 2,
+    stdioOwner: parent,
+    stdoutPipe: 9,
+    stderrPipe: parent.stderrPipe,
+  });
+
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent: () => {},
+    drainProcessOutput,
+    drainHiddenProcessOutput,
+    threadWorkerStates: new WeakMap(),
+    retryBlockedWorker,
+  });
+
+  await helpers.requestPipeStateSync(child, false);
+
+  expect(drainHiddenProcessOutput).toHaveBeenCalledTimes(1);
+  expect(drainHiddenProcessOutput).toHaveBeenCalledWith(child);
 });
