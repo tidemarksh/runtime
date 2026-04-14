@@ -39,6 +39,7 @@ export interface BlockedWorkerState {
   status: number;
   retryTimer: ReturnType<typeof setTimeout> | null;
   timeoutExpired: boolean;
+  timeoutDeadlineMs: number | null;
   rpcPending: boolean;
 }
 

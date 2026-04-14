@@ -144,8 +144,14 @@ const workerScheduler = createWorkerScheduler({
     }
     return false;
   },
-  resumeBlockedSyscallLocally: (handle, worker, vmPtr, blockedStatus) => (
-    workerKernelRpcHelpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, blockedStatus)
+  resumeBlockedSyscallLocally: (handle, worker, vmPtr, blockedStatus, timeoutExpired) => (
+    workerKernelRpcHelpers.resumeBlockedSyscallLocally(
+      handle,
+      worker,
+      vmPtr,
+      blockedStatus,
+      timeoutExpired,
+    )
   ),
   resumeVforkParentAfterChildExit,
   resumeWait4ViaKernelWorker: (handle, worker, vmPtr) => (

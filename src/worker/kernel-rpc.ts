@@ -174,10 +174,22 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     worker: Worker,
     vmPtr: number,
     blockedStatus: number,
+    timeoutExpired = false,
   ): Promise<void> {
     try {
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
-      handle.kernel.thread_resume_blocked_syscall(vmPtr);
+      if (
+        timeoutExpired
+        && (
+          blockedStatus === handle.kernel.abi_status_socket_recv()
+          || blockedStatus === handle.kernel.abi_status_socket_send()
+        )
+        && handle.kernel.thread_resume_socket_wait_timeout
+      ) {
+        handle.kernel.thread_resume_socket_wait_timeout(vmPtr);
+      } else {
+        handle.kernel.thread_resume_blocked_syscall(vmPtr);
+      }
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       await deps.syncBlockedForkSharedStateViaKernelWorker(handle);
 

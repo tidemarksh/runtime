@@ -70,6 +70,7 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
       status: 6,
       retryTimer: null,
       timeoutExpired: false,
+      timeoutDeadlineMs: null,
       rpcPending: false,
     }]]),
     pipeSyncPromise: null,

@@ -18,6 +18,7 @@ export interface WorkerSchedulerDeps {
     worker: Worker,
     vmPtr: number,
     status: number,
+    timeoutExpired?: boolean,
   ): Promise<void>;
   resumeVforkParentAfterChildExit(
     handle: ProcessHandle,

@@ -142,15 +142,51 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     maybeUnrefTimer(blocked.retryTimer);
   }
 
+  function socketWaitTimeoutMs(handle: ProcessHandle, status: number, vmPtr: number): number {
+    if (
+      status !== handle.kernel.abi_status_socket_recv()
+      && status !== handle.kernel.abi_status_socket_send()
+    ) {
+      return -1;
+    }
+    const timeout = handle.kernel.thread_socket_wait_timeout?.(vmPtr);
+    return timeout === undefined ? -1 : Number(timeout);
+  }
+
+  function scheduleSocketBlockedRetry(
+    handle: ProcessHandle,
+    worker: Worker,
+    blocked: { timeoutDeadlineMs: number | null },
+    timeoutMs: number,
+  ): void {
+    if (timeoutMs < 0) {
+      blocked.timeoutDeadlineMs = null;
+      scheduleBlockedRetry(handle, worker, 1);
+      return;
+    }
+    const now = Date.now();
+    if (blocked.timeoutDeadlineMs === null) {
+      blocked.timeoutDeadlineMs = now + timeoutMs;
+    }
+    const remaining = blocked.timeoutDeadlineMs - now;
+    if (remaining <= 0) {
+      scheduleBlockedRetry(handle, worker, 0, true);
+      return;
+    }
+    scheduleBlockedRetry(handle, worker, Math.min(10, remaining));
+  }
+
   function blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void {
     clearBlockedWorker(handle, worker);
-    handle.blockedWorkers.set(worker, {
+    const blocked = {
       vmPtr,
       status,
       retryTimer: null,
       timeoutExpired: false,
+      timeoutDeadlineMs: null,
       rpcPending: false,
-    });
+    };
+    handle.blockedWorkers.set(worker, blocked);
     if (status === handle.kernel.abi_status_epoll_wait()) {
       const timeoutMs = Number(handle.kernel.thread_epoll_wait_timeout(vmPtr));
       if (timeoutMs >= 0) {
@@ -158,6 +194,11 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       } else if (handle.kernel.thread_process_thread_count(vmPtr) > 1) {
         scheduleBlockedRetry(handle, worker, 10);
       }
+      return;
+    }
+    const socketTimeoutMs = socketWaitTimeoutMs(handle, status, vmPtr);
+    if (socketTimeoutMs >= 0) {
+      scheduleSocketBlockedRetry(handle, worker, blocked, socketTimeoutMs);
       return;
     }
     scheduleBlockedRetry(handle, worker, status === handle.kernel.abi_status_wait4() ? 10 : 1);
@@ -210,6 +251,11 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       } else if (handle.kernel.thread_process_thread_count(vmPtr) > 1) {
         scheduleBlockedRetry(handle, worker, 10);
       }
+      return;
+    }
+    const socketTimeoutMs = socketWaitTimeoutMs(handle, status, vmPtr);
+    if (socketTimeoutMs >= 0 || blocked.timeoutDeadlineMs !== null) {
+      scheduleSocketBlockedRetry(handle, worker, blocked, socketTimeoutMs);
       return;
     }
     scheduleBlockedRetry(handle, worker, status === handle.kernel.abi_status_wait4() ? 10 : 1);
@@ -320,13 +366,29 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       )
     ) {
       blocked.rpcPending = true;
-      void deps.resumeBlockedSyscallLocally(handle, worker, blocked.vmPtr, blocked.status);
+      void deps.resumeBlockedSyscallLocally(
+        handle,
+        worker,
+        blocked.vmPtr,
+        blocked.status,
+        blocked.timeoutExpired,
+      );
       return;
     }
 
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
     if (blocked.status === handle.kernel.abi_status_epoll_wait() && blocked.timeoutExpired) {
       handle.kernel.thread_resume_epoll_wait_timeout(blocked.vmPtr);
+      blocked.timeoutExpired = false;
+    } else if (
+      blocked.timeoutExpired
+      && (
+        blocked.status === handle.kernel.abi_status_socket_recv()
+        || blocked.status === handle.kernel.abi_status_socket_send()
+      )
+      && handle.kernel.thread_resume_socket_wait_timeout
+    ) {
+      handle.kernel.thread_resume_socket_wait_timeout(blocked.vmPtr);
       blocked.timeoutExpired = false;
     } else if (blocked.status === handle.kernel.abi_status_wait4()) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-local:${handle.pid}:0x${blocked.vmPtr.toString(16)}`);

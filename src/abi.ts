@@ -242,7 +242,9 @@ export interface KernelExports {
   thread_record_blocked_addr(vm_ptr: number): number;
   thread_resume_wait4(vm_ptr: number): bigint;
   thread_epoll_wait_timeout(vm_ptr: number): bigint;
+  thread_socket_wait_timeout?(vm_ptr: number): bigint;
   thread_resume_epoll_wait_timeout(vm_ptr: number): void;
+  thread_resume_socket_wait_timeout?(vm_ptr: number): void;
   thread_interrupt_epoll_wait?(vm_ptr: number, errno: number): number;
   thread_resume_blocked_syscall(vm_ptr: number): bigint;
   thread_resume_connect_result(vm_ptr: number, result: bigint): void;

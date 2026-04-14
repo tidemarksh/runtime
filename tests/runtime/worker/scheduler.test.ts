@@ -22,10 +22,12 @@ function makeKernel() {
       thread_resume_wait4: threadResumeWait4,
       thread_resume_blocked_syscall: vi.fn(),
       thread_resume_epoll_wait_timeout: vi.fn(),
+      thread_resume_socket_wait_timeout: vi.fn(),
       thread_status: () => 0,
       thread_exit_code: () => 0,
       thread_term_signal: () => 0,
       thread_epoll_wait_timeout: () => 0n,
+      thread_socket_wait_timeout: () => -1n,
       thread_process_thread_count: () => 1,
       kernel_heap_base: () => 0,
       kernel_heap_ptr: () => 0,
@@ -225,4 +227,43 @@ test("attachThreadWorker fails the process when a browser worker emits an error 
   expect(failProcess).toHaveBeenCalledTimes(1);
   expect(failProcess.mock.calls[0]?.[1]).toBeInstanceOf(Error);
   expect(String(failProcess.mock.calls[0]?.[1]?.message)).toContain("thread worker error vm=0x1234");
+});
+
+test("socket wait timeout resumes with timeout handler after deadline", async () => {
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const threadWorkerStates = new WeakMap<Worker, { vmPtr: number; initialized: boolean; waitingInWorkerStatus: number | null }>();
+  threadWorkerStates.set(worker, {
+    vmPtr: 0x1234,
+    initialized: true,
+    waitingInWorkerStatus: null,
+  });
+  const { exports: kernel } = makeKernel();
+  let status = 30;
+  const resumeSocketTimeout = vi.fn(() => {
+    status = 0;
+  });
+  kernel.thread_socket_wait_timeout = () => 25n;
+  kernel.thread_resume_socket_wait_timeout = resumeSocketTimeout;
+  kernel.thread_resume_blocked_syscall = vi.fn();
+  kernel.thread_status = () => status;
+  const handle = makeHandle(kernel, worker);
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.blockWorker(handle, worker, handle.kernel.abi_status_socket_recv(), 0x1234);
+  await vi.advanceTimersByTimeAsync(30);
+
+  expect(resumeSocketTimeout).toHaveBeenCalledWith(0x1234);
 });
