@@ -105,6 +105,7 @@ interface KernelWorkerProcessControlDeps {
   fsEffectMemfsFileData: number;
   fsOpOpenAt: number;
   fsOpMkdir: number;
+  fsOpUnlink: number;
 }
 
 export function createKernelWorkerProcessControl(deps: KernelWorkerProcessControlDeps) {
@@ -307,7 +308,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       const canonicalState = readKernelRuntimeState(canonicalExports);
       const metadataOnlyTreeSync = treeMutated
         && !fileDataMutated
-        && (opcode === deps.fsOpMkdir || opcode === deps.fsOpOpenAt);
+        && (opcode === deps.fsOpMkdir || opcode === deps.fsOpOpenAt || opcode === deps.fsOpUnlink);
       deps.copyMemfsState(processExports, sourceState, canonicalExports, canonicalState, {
         includeData: !metadataOnlyTreeSync,
       });

@@ -52,6 +52,7 @@ const FS_EFFECT_SHARED_OFD_STATE = 1 << 1;
 const FS_EFFECT_MEMFS_FILE_DATA = 1 << 2;
 const FS_OP_OPENAT = 3;
 const FS_OP_MKDIR = 6;
+const FS_OP_UNLINK = 7;
 
 function postResponse(msg: KernelWorkerOutbound): void {
   workerPostMessage(msg);
@@ -277,6 +278,7 @@ const kernelWorkerProcessControl = createKernelWorkerProcessControl({
   fsEffectMemfsFileData: FS_EFFECT_MEMFS_FILE_DATA,
   fsOpOpenAt: FS_OP_OPENAT,
   fsOpMkdir: FS_OP_MKDIR,
+  fsOpUnlink: FS_OP_UNLINK,
 });
 
 const {
