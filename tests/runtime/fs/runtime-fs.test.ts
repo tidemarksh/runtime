@@ -15,7 +15,9 @@ class FakeKernelWorker {
   private listeners = new Set<(event: MessageEvent<KernelWorkerOutbound>) => void>();
   readonly postedMessages: KernelWorkerInbound[] = [];
   readonly files = new Map<string, Uint8Array>();
+  readonly fileSizes = new Map<string, number>();
   readonly fileModes = new Map<string, number>();
+  readonly externalFiles = new Set<string>();
   readonly dirModes = new Map<string, number>([["/", 0o755]]);
   readonly dirs = new Set<string>(["/"]);
   terminated = false;
@@ -74,14 +76,14 @@ class FakeKernelWorker {
   private stat(path: string): RuntimeStat {
     const normalized = normalizePath(path);
     if (this.files.has(normalized)) {
-      const data = this.files.get(normalized)!;
+      const size = this.fileSizes.get(normalized) ?? this.files.get(normalized)?.length ?? 0;
       return {
         ino: normalized.length,
         mode: 0o100000 | (this.fileModes.get(normalized) ?? 0o644),
         nlink: 1,
         uid: 0,
         gid: 0,
-        size: data.length,
+        size,
       };
     }
     if (this.dirs.has(normalized)) {
@@ -135,19 +137,29 @@ class FakeKernelWorker {
       }));
 
     for (const [path, data] of [...this.files.entries()].sort(([left], [right]) => left.localeCompare(right))) {
-      entries.push({
-        kind: "file",
-        path,
-        data: new Uint8Array(data),
-        mode: this.fileModes.get(path) ?? 0o644,
-      });
+      const external = this.externalFiles.has(path);
+      entries.push(external
+        ? {
+            kind: "file" as const,
+            path,
+            size: this.fileSizes.get(path) ?? data.length,
+            mode: this.fileModes.get(path) ?? 0o644,
+          }
+        : {
+            kind: "file" as const,
+            path,
+            data: new Uint8Array(data),
+            mode: this.fileModes.get(path) ?? 0o644,
+          });
     }
     return entries;
   }
 
   private loadSnapshot(entries: FsSnapshotEntry[]): void {
     this.files.clear();
+    this.fileSizes.clear();
     this.fileModes.clear();
+    this.externalFiles.clear();
     this.dirModes.clear();
     this.dirs.clear();
     this.dirs.add("/");
@@ -162,7 +174,13 @@ class FakeKernelWorker {
       }
       this.ensureDir(normalized.split("/").slice(0, -1).join("/"));
       this.files.set(normalized, new Uint8Array(entry.data ?? new Uint8Array()));
+      this.fileSizes.set(normalized, entry.data?.length ?? entry.size ?? 0);
       this.fileModes.set(normalized, entry.mode ?? 0o644);
+      if (entry.data === undefined) {
+        this.externalFiles.add(normalized);
+      } else {
+        this.externalFiles.delete(normalized);
+      }
     }
   }
 
@@ -195,11 +213,14 @@ class FakeKernelWorker {
       case "write-file":
         this.ensureDir(normalizePath(message.path).split("/").slice(0, -1).join("/"));
         this.files.set(normalizePath(message.path), new Uint8Array(message.data));
+        this.fileSizes.set(normalizePath(message.path), message.data.length);
         this.fileModes.set(normalizePath(message.path), message.mode ?? 0o644);
+        this.externalFiles.delete(normalizePath(message.path));
         this.emit({ type: "file-written", requestId: message.requestId });
         break;
       case "read-file": {
-        const data = this.files.get(normalizePath(message.path));
+        const normalized = normalizePath(message.path);
+        const data = this.files.get(normalized);
         if (!data) {
           this.emit({
             type: "error",
@@ -211,7 +232,9 @@ class FakeKernelWorker {
         this.emit({
           type: "file-read",
           requestId: message.requestId,
-          data: new Uint8Array(data),
+          data: this.externalFiles.has(normalized)
+            ? new Uint8Array(this.fileSizes.get(normalized) ?? 0)
+            : new Uint8Array(data),
         });
         break;
       }
@@ -323,6 +346,29 @@ test("Runtime.applyFsSnapshot seeds kernel-worker FS in a single RPC", async () 
 
   const file = await runtime.fs.readFile("/toolchain/marker.txt");
   expect(new TextDecoder().decode(file)).toBe("toolchain");
+  expect(createdWorkers[0].postedMessages.some((msg) => msg.type === "load-fs-snapshot")).toBe(true);
+
+  runtime.destroy();
+});
+
+test("Runtime.applyFsSnapshot preserves metadata-only file size in canonical snapshot state", async () => {
+  const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
+
+  await runtime.applyFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "dir", path: "/toolchain", mode: 0o755 },
+    {
+      kind: "file",
+      path: "/toolchain/archive.bin",
+      size: 128 * 1024,
+      mode: 0o644,
+    },
+  ]);
+
+  await expect(runtime.fs.stat("/toolchain/archive.bin")).resolves.toMatchObject({
+    mode: 0o100644,
+    size: 128 * 1024,
+  });
   expect(createdWorkers[0].postedMessages.some((msg) => msg.type === "load-fs-snapshot")).toBe(true);
 
   runtime.destroy();
