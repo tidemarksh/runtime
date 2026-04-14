@@ -16,6 +16,7 @@ function makeKernel() {
       abi_status_epoll_wait: () => 7,
       abi_status_fault: () => 3,
       abi_status_pipe_wait: () => 6,
+      abi_status_connect: () => 28,
       abi_status_socket_recv: () => 30,
       abi_status_socket_send: () => 29,
       abi_status_flock_wait: () => 32,
@@ -263,6 +264,45 @@ test("socket wait timeout resumes with timeout handler after deadline", async ()
   });
 
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_socket_recv(), 0x1234);
+  await vi.advanceTimersByTimeAsync(30);
+
+  expect(resumeSocketTimeout).toHaveBeenCalledWith(0x1234);
+});
+
+test("connect timeout resumes with socket timeout handler after deadline", async () => {
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const threadWorkerStates = new WeakMap<Worker, { vmPtr: number; initialized: boolean; waitingInWorkerStatus: number | null }>();
+  threadWorkerStates.set(worker, {
+    vmPtr: 0x1234,
+    initialized: true,
+    waitingInWorkerStatus: null,
+  });
+  const { exports: kernel } = makeKernel();
+  let status = 28;
+  const resumeSocketTimeout = vi.fn(() => {
+    status = 0;
+  });
+  kernel.thread_socket_wait_timeout = () => 25n;
+  kernel.thread_resume_socket_wait_timeout = resumeSocketTimeout;
+  kernel.thread_resume_blocked_syscall = vi.fn();
+  kernel.thread_status = () => status;
+  const handle = makeHandle(kernel, worker);
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.blockWorker(handle, worker, handle.kernel.abi_status_connect(), 0x1234);
   await vi.advanceTimersByTimeAsync(30);
 
   expect(resumeSocketTimeout).toHaveBeenCalledWith(0x1234);

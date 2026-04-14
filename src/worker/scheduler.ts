@@ -144,7 +144,8 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
 
   function socketWaitTimeoutMs(handle: ProcessHandle, status: number, vmPtr: number): number {
     if (
-      status !== handle.kernel.abi_status_socket_recv()
+      status !== handle.kernel.abi_status_connect()
+      && status !== handle.kernel.abi_status_socket_recv()
       && status !== handle.kernel.abi_status_socket_send()
     ) {
       return -1;
@@ -360,6 +361,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       && handle.pid > 0
       && (
         blocked.status === handle.kernel.abi_status_pipe_wait()
+        || blocked.status === handle.kernel.abi_status_connect()
         || blocked.status === handle.kernel.abi_status_socket_recv()
         || blocked.status === handle.kernel.abi_status_socket_send()
         || blocked.status === handle.kernel.abi_status_flock_wait()
@@ -383,7 +385,8 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     } else if (
       blocked.timeoutExpired
       && (
-        blocked.status === handle.kernel.abi_status_socket_recv()
+        blocked.status === handle.kernel.abi_status_connect()
+        || blocked.status === handle.kernel.abi_status_socket_recv()
         || blocked.status === handle.kernel.abi_status_socket_send()
       )
       && handle.kernel.thread_resume_socket_wait_timeout

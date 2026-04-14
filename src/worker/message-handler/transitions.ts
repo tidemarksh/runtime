@@ -148,6 +148,12 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     }
 
     if (status === handle.kernel.abi_status_connect()) {
+      const timeout = handle.kernel.thread_socket_wait_timeout?.(thread.vmPtr);
+      if (timeout !== undefined && Number(timeout) >= 0) {
+        deps.blockWorker(handle, worker, status, thread.vmPtr);
+        deps.pumpProcess(handle);
+        return;
+      }
       void deps.resumeConnectViaKernelWorker(
         handle,
         worker,

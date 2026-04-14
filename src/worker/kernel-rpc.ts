@@ -181,7 +181,8 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
       if (
         timeoutExpired
         && (
-          blockedStatus === handle.kernel.abi_status_socket_recv()
+          blockedStatus === handle.kernel.abi_status_connect()
+          || blockedStatus === handle.kernel.abi_status_socket_recv()
           || blockedStatus === handle.kernel.abi_status_socket_send()
         )
         && handle.kernel.thread_resume_socket_wait_timeout
@@ -196,7 +197,8 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
       if (blockedStatus === handle.kernel.abi_status_pipe_wait()) {
         await deps.syncPipeStateViaKernelWorker(handle);
       } else if (
-        blockedStatus === handle.kernel.abi_status_socket_recv()
+        blockedStatus === handle.kernel.abi_status_connect()
+        || blockedStatus === handle.kernel.abi_status_socket_recv()
         || blockedStatus === handle.kernel.abi_status_socket_send()
       ) {
         await deps.syncSocketStateViaKernelWorker(handle);

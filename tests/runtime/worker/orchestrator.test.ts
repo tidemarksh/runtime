@@ -1236,6 +1236,39 @@ test("createProcess delegates STATUS_CONNECT to kernel-worker when available", a
   ]);
 });
 
+test("createProcess blocks STATUS_CONNECT until socket timeout expires", async () => {
+  vi.useFakeTimers();
+  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
+  const worker = createdWorkers[0];
+  const kernel = createdKernelExports[0];
+  let status = 28;
+  const resumeConnect = vi.fn();
+  const resumeSocketTimeout = vi.fn(() => {
+    status = 0;
+  });
+  kernel.thread_resume_connect_result = resumeConnect;
+  kernel.thread_resume_socket_wait_timeout = resumeSocketTimeout;
+  kernel.thread_socket_wait_timeout = () => 25n;
+  kernel.thread_status = () => status;
+
+  emitReady(worker);
+  worker.clearPostedMessages();
+  worker.emit({
+    type: "status",
+    status: 28,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+
+  expect(resumeConnect).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(30);
+  expect(resumeSocketTimeout).toHaveBeenCalledWith(0x1234);
+  vi.useRealTimers();
+});
+
 test("child exit bookkeeping is delegated to kernel-worker when available", async () => {
   const requests: KernelWorkerRequest[] = [];
   threadCountQueue.push(1, 0);

@@ -122,6 +122,7 @@ export interface KernelExports {
   abi_enosys(): number;
   abi_eintr(): number;
   abi_eagain(): number;
+  abi_etimedout?(): number;
   abi_epipe(): number;
   abi_econnrefused(): number;
 
