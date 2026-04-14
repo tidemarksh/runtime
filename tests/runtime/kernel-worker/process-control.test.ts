@@ -128,6 +128,8 @@ test("registerProcess rehydrates first process memfs metadata-only after canonic
   const processExports = makeKernelExports();
   const processKernels = new Map<number, KernelExports>();
   const copyCanonicalModes: boolean[] = [];
+  const copyMemfsModes: boolean[] = [];
+  const rebuiltFrom: KernelExports[] = [];
   const instantiateSpy = vi.spyOn(WebAssembly, "instantiate")
     .mockResolvedValue({ exports: processExports } as unknown as WebAssembly.WebAssemblyInstantiatedSource);
 
@@ -147,7 +149,12 @@ test("registerProcess rehydrates first process memfs metadata-only after canonic
       setCanonicalNextPid: () => {},
       publishRootInode: () => {},
       copyOfdState: () => {},
-      copyMemfsState: () => {},
+      copyMemfsState: (_sourceExports, _sourceState, _targetExports, _targetState, options) => {
+        copyMemfsModes.push(Boolean(options?.includeData));
+      },
+      rebuildPageCacheFromExports: (sourceExports) => {
+        rebuiltFrom.push(sourceExports);
+      },
       rebuildPageCacheFromCanonical: () => {},
       syncPipeState: (_pid, kernelState) => kernelState,
       syncEpollState: (_pid, kernelState) => kernelState,
@@ -181,6 +188,8 @@ test("registerProcess rehydrates first process memfs metadata-only after canonic
 
     await processControl.registerProcess(7, 0x1234, processExports.memory, makeKernelState(), "full");
 
+    expect(copyMemfsModes).toEqual([false]);
+    expect(rebuiltFrom).toEqual([processExports]);
     expect(copyCanonicalModes).toEqual([false]);
   } finally {
     instantiateSpy.mockRestore();
@@ -215,6 +224,7 @@ test("registerProcess rehydrates canonical snapshot metadata-only for the first 
       publishRootInode: () => {},
       copyOfdState: () => {},
       copyMemfsState: () => {},
+      rebuildPageCacheFromExports: () => {},
       rebuildPageCacheFromCanonical: () => {},
       syncPipeState: (_pid, kernelState) => kernelState,
       syncEpollState: (_pid, kernelState) => kernelState,
@@ -283,6 +293,7 @@ test("registerProcess rehydrates later process memfs metadata-only", async () =>
       publishRootInode: () => {},
       copyOfdState: () => {},
       copyMemfsState: () => {},
+      rebuildPageCacheFromExports: () => {},
       rebuildPageCacheFromCanonical: () => {},
       syncPipeState: (_pid, kernelState) => kernelState,
       syncEpollState: (_pid, kernelState) => kernelState,
@@ -351,6 +362,7 @@ test("processFs treats unlink as metadata-only canonical sync", () => {
     copyMemfsState: (_sourceExports, _sourceState, _targetExports, _targetState, options) => {
       copyMemfsCalls.push(Boolean(options?.includeData));
     },
+    rebuildPageCacheFromExports: () => {},
     rebuildPageCacheFromCanonical: () => {},
     syncPipeState: (_pid, kernelState) => kernelState,
     syncEpollState: (_pid, kernelState) => kernelState,
@@ -419,6 +431,7 @@ test("processFs uses targeted metadata sync for absolute mkdir paths", () => {
     copyMemfsState: (_sourceExports, _sourceState, _targetExports, _targetState, options) => {
       copyMemfsCalls.push(Boolean(options?.includeData));
     },
+    rebuildPageCacheFromExports: () => {},
     rebuildPageCacheFromCanonical: () => {},
     syncPipeState: (_pid, kernelState) => kernelState,
     syncEpollState: (_pid, kernelState) => kernelState,
@@ -490,6 +503,7 @@ test("processFs uses targeted metadata sync for absolute unlink paths", () => {
     copyMemfsState: (_sourceExports, _sourceState, _targetExports, _targetState, options) => {
       copyMemfsCalls.push(Boolean(options?.includeData));
     },
+    rebuildPageCacheFromExports: () => {},
     rebuildPageCacheFromCanonical: () => {},
     syncPipeState: (_pid, kernelState) => kernelState,
     syncEpollState: (_pid, kernelState) => kernelState,
@@ -562,6 +576,7 @@ test("processFs uses kernel-provided absolute path for relative mkdir requests",
     copyMemfsState: (_sourceExports, _sourceState, _targetExports, _targetState, options) => {
       copyMemfsCalls.push(Boolean(options?.includeData));
     },
+    rebuildPageCacheFromExports: () => {},
     rebuildPageCacheFromCanonical: () => {},
     syncPipeState: (_pid, kernelState) => kernelState,
     syncEpollState: (_pid, kernelState) => kernelState,

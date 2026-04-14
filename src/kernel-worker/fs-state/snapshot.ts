@@ -18,22 +18,70 @@ interface KernelWorkerFsSnapshotDeps {
 }
 
 export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshotDeps) {
-  function readSnapshotFileData(path: string, ino: number): Uint8Array | undefined {
-    const targetExports = deps.getCanonicalExports();
+  const decoder = new TextDecoder();
+
+  function resolvePathIn(targetExports: KernelExports, path: string): number {
+    const normalized = normalizePath(path);
+    const pathBytes = deps.encoder.encode(normalized);
+    const pathPtr = targetExports.kernel_heap_ptr() + 0x18000;
+    new Uint8Array(targetExports.memory.buffer).set(pathBytes, pathPtr);
+    return targetExports.memfs_resolve_path(pathPtr, pathBytes.length);
+  }
+
+  function readFileIn(targetExports: KernelExports, path: string): Uint8Array {
+    const ino = resolvePathIn(targetExports, path);
+    if (ino === 0) {
+      throw new Error(`file not found: ${path}`);
+    }
+    const size = Number(targetExports.memfs_file_size(ino));
+    const bufPtr = targetExports.kernel_heap_ptr() + 0x1c000;
+    const read = Number(targetExports.memfs_read_file_to(ino, 0n, bufPtr, size));
+    if (read < 0) {
+      throw new Error(`failed to read file: ${path}`);
+    }
+    return new Uint8Array(targetExports.memory.buffer.slice(bufPtr, bufPtr + read));
+  }
+
+  function readdirIn(targetExports: KernelExports, path: string): string[] {
+    const ino = resolvePathIn(targetExports, path);
+    if (ino === 0) {
+      throw new Error(`directory not found: ${path}`);
+    }
+    const bufPtr = targetExports.kernel_heap_ptr() + 0x28000;
+    const bufLen = 64 * 1024;
+    const byteLen = Number(targetExports.memfs_readdir_names(ino, bufPtr, bufLen));
+    if (byteLen < 0) {
+      throw new Error(`failed to read directory: ${path}`);
+    }
+    const bytes = new Uint8Array(targetExports.memory.buffer, bufPtr, byteLen);
+    const names: string[] = [];
+    let start = 0;
+    for (let i = 0; i < bytes.length; i += 1) {
+      if (bytes[i] !== 0) {
+        continue;
+      }
+      if (i > start) {
+        names.push(decoder.decode(bytes.subarray(start, i)));
+      }
+      start = i + 1;
+    }
+    return names;
+  }
+
+  function readSnapshotFileData(targetExports: KernelExports, path: string, ino: number): Uint8Array | undefined {
     const direct = readMemfsFileDataDirect(targetExports, ino);
     if (direct) {
       return direct;
     }
     try {
-      return deps.readFile(path);
+      return readFileIn(targetExports, path);
     } catch {
       return undefined;
     }
   }
 
-  function readLink(path: string): Uint8Array | null {
-    const targetExports = deps.getCanonicalExports();
-    const ino = deps.resolvePath(path);
+  function readLink(targetExports: KernelExports, path: string): Uint8Array | null {
+    const ino = resolvePathIn(targetExports, path);
     if (ino === 0 || (targetExports.memfs_inode_mode(ino) & 0o170000) !== 0o120000) {
       return null;
     }
@@ -47,12 +95,12 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
   }
 
   function snapshotFsTree(
+    targetExports: KernelExports,
     ino: number,
     path: string,
     out: FsSnapshotEntry[],
     includeData: boolean,
   ): void {
-    const targetExports = deps.getCanonicalExports();
     const normalized = normalizePath(path);
     const mode = targetExports.memfs_inode_mode(ino);
     const perms = mode & 0o7777;
@@ -60,19 +108,19 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
 
     if (fileType === 0o040000) {
       out.push({ kind: "dir", path: normalized, ino, mode: perms });
-      for (const name of deps.readdir(normalized).sort()) {
+      for (const name of readdirIn(targetExports, normalized).sort()) {
         const childPath = normalized === "/" ? `/${name}` : `${normalized}/${name}`;
-        const childIno = deps.resolvePath(childPath);
+        const childIno = resolvePathIn(targetExports, childPath);
         if (childIno === 0) {
           continue;
         }
-        snapshotFsTree(childIno, childPath, out, includeData);
+        snapshotFsTree(targetExports, childIno, childPath, out, includeData);
       }
       return;
     }
 
     if (fileType === 0o120000) {
-      const target = readLink(normalized) ?? new Uint8Array();
+      const target = readLink(targetExports, normalized) ?? new Uint8Array();
       out.push({
         kind: "symlink",
         path: normalized,
@@ -92,21 +140,24 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
       kind: "file",
       path: normalized,
       ino,
-      data: includeData ? readSnapshotFileData(normalized, ino) : undefined,
+      data: includeData ? readSnapshotFileData(targetExports, normalized, ino) : undefined,
       size: Number(targetExports.memfs_file_size(ino)),
       mode: perms,
     });
   }
 
-  function snapshotCanonicalFs(includeData: boolean): FsSnapshotEntry[] {
+  function snapshotFsEntries(targetExports: KernelExports, includeData: boolean): FsSnapshotEntry[] {
     const entries: FsSnapshotEntry[] = [];
-    snapshotFsTree(1, "/", entries, includeData);
+    snapshotFsTree(targetExports, 1, "/", entries, includeData);
     return entries;
   }
 
-  function rebuildPageCacheFromCanonical(): void {
-    const entries = snapshotCanonicalFs(true);
-    const targetExports = deps.getCanonicalExports();
+  function snapshotCanonicalFs(includeData: boolean): FsSnapshotEntry[] {
+    return snapshotFsEntries(deps.getCanonicalExports(), includeData);
+  }
+
+  function rebuildPageCacheFromExports(targetExports: KernelExports): void {
+    const entries = snapshotFsEntries(targetExports, true);
     const rootMode = targetExports.memfs_inode_mode(1) & 0o7777;
     resetPageCache(deps.getSabPageCache());
     deps.publishRootInode(rootMode);
@@ -142,6 +193,10 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
         nextSibling: 0,
       }, entry.kind === "file" ? (entry.data ?? new Uint8Array()) : null);
     }
+  }
+
+  function rebuildPageCacheFromCanonical(): void {
+    rebuildPageCacheFromExports(deps.getCanonicalExports());
   }
 
   function loadFsSnapshot(entries: FsSnapshotEntry[]): void {
@@ -202,6 +257,7 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
 
   return {
     loadFsSnapshot,
+    rebuildPageCacheFromExports,
     rebuildPageCacheFromCanonical,
     snapshotCanonicalFs,
   };

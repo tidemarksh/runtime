@@ -45,6 +45,7 @@ interface KernelWorkerProcessControlDeps {
     targetState: KernelRuntimeState,
     options?: { includeData?: boolean },
   ): void;
+  rebuildPageCacheFromExports(sourceExports: KernelExports): void;
   rebuildPageCacheFromCanonical(): void;
   syncPipeState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
   syncEpollState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
@@ -213,8 +214,10 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       const canonicalHasSeedSnapshot = deps.seedEntries.size > 1;
       deps.copyOfdState(processExports, sourceState, canonicalExports, canonicalState);
       if (seedMemfsMode === "full" && !canonicalHasSeedSnapshot) {
-        deps.copyMemfsState(processExports, sourceState, canonicalExports, canonicalState);
-        deps.rebuildPageCacheFromCanonical();
+        deps.copyMemfsState(processExports, sourceState, canonicalExports, canonicalState, {
+          includeData: false,
+        });
+        deps.rebuildPageCacheFromExports(processExports);
       }
       const pipeState = deps.syncPipeState(pid, readKernelRuntimeState(processExports));
       const epollState = deps.syncEpollState(pid, pipeState);

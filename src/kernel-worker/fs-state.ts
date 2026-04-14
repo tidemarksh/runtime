@@ -496,6 +496,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   }
   const {
     loadFsSnapshot,
+    rebuildPageCacheFromExports,
     rebuildPageCacheFromCanonical,
     snapshotCanonicalFs,
   } = createKernelWorkerFsSnapshotHelpers({
@@ -535,6 +536,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     mkdir,
     readFile,
     readdir,
+    rebuildPageCacheFromExports,
     rebuildPageCacheFromCanonical,
     resolvePath,
     snapshotCanonicalFs,
