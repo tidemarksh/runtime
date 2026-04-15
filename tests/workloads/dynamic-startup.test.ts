@@ -1,6 +1,7 @@
 import { expect, test } from "vite-plus/test";
 import {
   bucketDynamicStartupFailure,
+  classifyDynamicStartupFailureStatus,
   prepareDynamicStartupRuntime,
   runDynamicStartupEntry,
   validateDynamicStartupOutput,
@@ -38,6 +39,7 @@ for (const entry of dynamicStartupEntries) {
         [
           `dynamic startup gate prepare failed: ${entry.id}`,
           `bucket=${bucket}`,
+          `status=${classifyDynamicStartupFailureStatus({ error })}`,
           error instanceof Error ? (error.stack ?? error.message) : String(error),
         ].join("\n"),
       );
@@ -57,6 +59,7 @@ for (const entry of dynamicStartupEntries) {
           [
             `dynamic startup gate failed: ${entry.id}`,
             `bucket=${bucket}`,
+            `status=${classifyDynamicStartupFailureStatus({ error })}`,
             error instanceof Error ? (error.stack ?? error.message) : String(error),
           ].join("\n"),
         );
@@ -68,6 +71,7 @@ for (const entry of dynamicStartupEntries) {
         [
           `dynamic startup gate exit mismatch: ${entry.id}`,
           `bucket=${bucketDynamicStartupFailure({ result })}`,
+          `status=${classifyDynamicStartupFailureStatus({ result })}`,
           `exit=${result.exitCode}`,
           `output=${JSON.stringify(result.output)}`,
           `debug=${result.debugInfo ?? ""}`,
@@ -78,6 +82,7 @@ for (const entry of dynamicStartupEntries) {
         [
           `dynamic startup gate output mismatch: ${entry.id}`,
           `bucket=${bucketDynamicStartupFailure({ result })}`,
+          `status=${classifyDynamicStartupFailureStatus({ result })}`,
           `output=${JSON.stringify(result.output)}`,
           `debug=${result.debugInfo ?? ""}`,
         ].join("\n"),

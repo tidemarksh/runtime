@@ -41,6 +41,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
         handle.runningWorker = null;
       }
       deps.blockWorker(handle, worker, msg.status, thread.vmPtr);
+      deps.kickBlockedWorkers(handle);
       deps.pumpProcess(handle);
       return;
     }
@@ -56,6 +57,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       if (isRunningWorker) {
         handle.runningWorker = null;
       }
+      deps.kickBlockedWorkers(handle);
       deps.pumpProcess(handle);
     };
 

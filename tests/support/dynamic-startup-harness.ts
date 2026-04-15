@@ -41,6 +41,12 @@ export type DynamicStartupFailureBucket =
   | "consumer-runtime"
   | "unknown";
 
+export type DynamicStartupFailureStatus =
+  | "foundation-suspected"
+  | "runtime-ownership-suspected"
+  | "consumer-runtime-suspected"
+  | "unclassified";
+
 export function buildDynamicStartupSnapshot(entry: DynamicStartupEntry) {
   const result = buildSnapshotFromSources(entry.snapshotSources, {
     missingLabel: "dynamic startup artifact",
@@ -164,4 +170,21 @@ export function bucketDynamicStartupFailure(input: {
     return "consumer-runtime";
   }
   return "unknown";
+}
+
+export function classifyDynamicStartupFailureStatus(input: {
+  result?: DynamicStartupResult;
+  error?: unknown;
+}): DynamicStartupFailureStatus {
+  const bucket = bucketDynamicStartupFailure(input);
+  if (bucket === "foundation") {
+    return "foundation-suspected";
+  }
+  if (bucket === "runtime-ownership") {
+    return "runtime-ownership-suspected";
+  }
+  if (bucket === "consumer-runtime") {
+    return "consumer-runtime-suspected";
+  }
+  return "unclassified";
 }

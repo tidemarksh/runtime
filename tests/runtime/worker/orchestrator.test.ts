@@ -3114,6 +3114,140 @@ test("waitInWorker status skips owner-side blocked retry scheduling", async () =
   vi.useRealTimers();
 });
 
+test("running sibling waitInWorker FUTEX_WAIT kicks blocked EPOLL_WAIT retries", async () => {
+  vi.useFakeTimers();
+
+  const requests: KernelWorkerRequest[] = [];
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+      requests.push(msg);
+      switch (msg.type) {
+        case "register-process":
+          return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+        case "initialize-process-lifecycle":
+          return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+        case "sync-ofd-state":
+          return {
+            type: "ofd-state-synced",
+            requestId: 0,
+            kernelState: {
+              ...msg.kernelState,
+              heapPtr: msg.kernelState.heapPtr + 0x10,
+            },
+          };
+        case "sync-epoll-state":
+          return {
+            type: "epoll-state-synced",
+            requestId: 0,
+            kernelState: {
+              ...msg.kernelState,
+              heapPtr: msg.kernelState.heapPtr + 0x20,
+            },
+          };
+        case "unregister-process":
+          return { type: "process-unregistered", requestId: 0 };
+        default:
+          throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+      }
+    },
+  });
+  const parentWorker = createdWorkers[0];
+  const kernel = createdKernelExports[0];
+  let parentStatus = kernel.abi_status_epoll_wait();
+  const resumeBlocked = vi.fn((vmPtr: number) => {
+    if (vmPtr === 0x1234) {
+      parentStatus = kernel.abi_status_ok();
+    }
+    return 0n;
+  });
+
+  kernel.thread_process_thread_count = () => 2;
+  kernel.thread_status = (vmPtr) => vmPtr === 0x1234 ? parentStatus : kernel.abi_status_ok();
+  kernel.thread_resume_blocked_syscall = resumeBlocked;
+  kernel.thread_epoll_wait_timeout = () => -1n;
+  kernel.liveThreadVmPtrs.splice(0, kernel.liveThreadVmPtrs.length, 0x1234, 0x2000);
+  kernel.process_fd_ofd_id = (_vmPtr, fd) => {
+    if (fd === 3) {
+      return 9;
+    }
+    if (fd === 4) {
+      return 7;
+    }
+    return 0;
+  };
+  kernel.kernel_ofd_fd_type = (ofdId) => {
+    if (ofdId === 7) {
+      return kernel.abi_fd_type_epoll();
+    }
+    if (ofdId === 9) {
+      return 9;
+    }
+    return 0;
+  };
+
+  emitReady(parentWorker);
+  parentWorker.clearPostedMessages();
+  parentWorker.emit({
+    type: "status",
+    status: kernel.abi_status_clone_spawn(),
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+
+  const siblingWorker = createdWorkers[1];
+  emitReady(siblingWorker, 0x2000);
+  siblingWorker.clearPostedMessages();
+  parentWorker.clearPostedMessages();
+  requests.length = 0;
+
+  parentWorker.emit({
+    type: "status",
+    status: kernel.abi_status_epoll_wait(),
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+  await flushMicrotasks();
+
+  handle.runningWorker = siblingWorker as unknown as Worker;
+  handle.readyWorkers.length = 0;
+
+  siblingWorker.emit({
+    type: "status",
+    status: kernel.abi_status_futex_wait(),
+    waitInWorker: true,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x2000,
+    kernelState: makeKernelState(),
+  });
+  await flushMicrotasks();
+
+  const requestTypes = requests.map((msg) => msg.type);
+  expect(requestTypes).toContain("sync-ofd-state");
+  expect(requestTypes.slice(-2)).toEqual([
+    "sync-ofd-state",
+    "sync-epoll-state",
+  ]);
+  expect(resumeBlocked).toHaveBeenCalledWith(0x1234);
+  expect(parentWorker.postedMessages.at(-1)).toEqual(expect.objectContaining({
+    type: "step",
+    budget: 20_000,
+    kernelState: expect.objectContaining({
+      heapPtr: makeKernelState().heapPtr + 0x70,
+    }),
+  }));
+
+  vi.useRealTimers();
+});
+
 test("waitInWorker EPOLL_WAIT timeout=0 falls back to owner-side blocked retry scheduling", async () => {
   vi.useFakeTimers();
 
