@@ -13,6 +13,8 @@ import type {
 } from "./types.js";
 import type { KernelWorkerPidBytesSnapshot } from "../messages.js";
 
+const FS_DEBUG_PATH_BUF_LEN = 4096;
+
 interface WorkerKernelRpcDeps {
   processHandles: Map<number, ProcessHandle>;
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
@@ -71,6 +73,7 @@ export async function resolveProcessCwdInoViaKernelWorker(
 }
 
 export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
+  const decoder = new TextDecoder();
   const kernelRpcLifecycleHelpers = createWorkerKernelRpcLifecycleHelpers({
     appendWorkerDebugLog: deps.appendWorkerDebugLog,
     processHandles: deps.processHandles,
@@ -99,6 +102,21 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     unregisterProcessWithKernelWorker,
   } = kernelRpcLifecycleHelpers;
 
+  function readPendingFsPath(handle: ProcessHandle, vmPtr: number, secondary = false): string | null {
+    const absolutePath = secondary
+      ? handle.kernel.thread_pending_fs_secondary_absolute_path
+      : handle.kernel.thread_pending_fs_absolute_path;
+    if (!absolutePath) {
+      return null;
+    }
+    const bufPtr = handle.kernel.kernel_heap_ptr() + 0x8000 + (secondary ? FS_DEBUG_PATH_BUF_LEN : 0);
+    const length = Number(absolutePath(vmPtr, bufPtr, FS_DEBUG_PATH_BUF_LEN) ?? 0n);
+    if (length <= 0 || bufPtr + length > handle.kernel.memory.buffer.byteLength) {
+      return null;
+    }
+    return decoder.decode(new Uint8Array(handle.kernel.memory.buffer, bufPtr, length));
+  }
+
   async function resumeFsViaKernelWorker(
     handle: ProcessHandle,
     worker: Worker,
@@ -108,7 +126,14 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     const pendingOpcode = handle.kernel.thread_pending_fs_opcode(vmPtr);
     const pendingEffects = handle.kernel.thread_pending_fs_effects(vmPtr);
     const pendingTargetIno = handle.kernel.thread_pending_fs_target_ino(vmPtr);
-    const fsDebugSuffix = `:op=${pendingOpcode}:fx=${pendingEffects}:ino=${pendingTargetIno}`;
+    const pendingPath = readPendingFsPath(handle, vmPtr);
+    const pendingSecondaryPath = readPendingFsPath(handle, vmPtr, true);
+    const pathSuffix = pendingPath ? `:path=${JSON.stringify(pendingPath)}` : "";
+    const secondaryPathSuffix = pendingSecondaryPath
+      ? `:path2=${JSON.stringify(pendingSecondaryPath)}`
+      : "";
+    const fsDebugSuffix =
+      `:op=${pendingOpcode}:fx=${pendingEffects}:ino=${pendingTargetIno}${pathSuffix}${secondaryPathSuffix}`;
     const memfsMutated =
       (pendingEffects & (fsEffects.memfsMutation | fsEffects.memfsFileData)) !== 0;
     const ofdStateChanged = (pendingEffects & fsEffects.sharedOfdState) !== 0;
@@ -117,6 +142,7 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
       handle.kernel.thread_process_fs(vmPtr);
       handle.kernel.thread_resume_fs(vmPtr);
       handle.kernelState = readKernelRuntimeState(handle.kernel);
+      const fsResult = handle.kernel.thread_a0?.(vmPtr) ?? 0n;
       if (memfsMutated) {
         deps.syncForkSharedStateLocally(handle, kernelShareOtherMembers(handle));
         deps.markRuntimeFsDirty(handle);
@@ -128,7 +154,7 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
         );
       }
       deps.kickBlockedWorkers(handle);
-      deps.appendWorkerDebugLog(handle, `fs-done:0x${vmPtr.toString(16)}:local`);
+      deps.appendWorkerDebugLog(handle, `fs-done:0x${vmPtr.toString(16)}:local:rv=${fsResult.toString()}`);
       deps.enqueueWorker(handle, worker);
       return;
     }
@@ -139,6 +165,7 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
       handle.kernel.thread_process_fs(vmPtr);
       handle.kernel.thread_resume_fs(vmPtr);
       handle.kernelState = readKernelRuntimeState(handle.kernel);
+      const fsResult = handle.kernel.thread_a0?.(vmPtr) ?? 0n;
       if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
         return;
       }
@@ -158,7 +185,7 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
       }
       publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
       deps.kickBlockedWorkers(handle);
-      deps.appendWorkerDebugLog(handle, `fs-done:0x${vmPtr.toString(16)}`);
+      deps.appendWorkerDebugLog(handle, `fs-done:0x${vmPtr.toString(16)}:rv=${fsResult.toString()}`);
       deps.enqueueWorker(handle, worker);
     } catch (error) {
       deps.appendWorkerDebugLog(handle, `fs-err:0x${vmPtr.toString(16)}`);

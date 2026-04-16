@@ -34,14 +34,13 @@ for (const entry of dynamicStartupEntries) {
     try {
       prepared = await prepareDynamicStartupRuntime(entry);
     } catch (error) {
-      const bucket = bucketDynamicStartupFailure({ error });
       throw new Error(
         [
           `dynamic startup gate prepare failed: ${entry.id}`,
-          `bucket=${bucket}`,
+          `bucket=${bucketDynamicStartupFailure({ error })}`,
           `status=${classifyDynamicStartupFailureStatus({ error })}`,
           error instanceof Error ? (error.stack ?? error.message) : String(error),
-        ].join("\n"),
+        ].filter(Boolean).join("\n"),
       );
     }
     if (!prepared) {
@@ -54,14 +53,13 @@ for (const entry of dynamicStartupEntries) {
       try {
         result = await runDynamicStartupEntry(runtime, entry, elfBytes);
       } catch (error) {
-        const bucket = bucketDynamicStartupFailure({ error });
         throw new Error(
           [
             `dynamic startup gate failed: ${entry.id}`,
-            `bucket=${bucket}`,
+            `bucket=${bucketDynamicStartupFailure({ error })}`,
             `status=${classifyDynamicStartupFailureStatus({ error })}`,
             error instanceof Error ? (error.stack ?? error.message) : String(error),
-          ].join("\n"),
+          ].filter(Boolean).join("\n"),
         );
       }
 
@@ -75,7 +73,7 @@ for (const entry of dynamicStartupEntries) {
           `exit=${result.exitCode}`,
           `output=${JSON.stringify(result.output)}`,
           `debug=${result.debugInfo ?? ""}`,
-        ].join("\n"),
+        ].filter(Boolean).join("\n"),
       ).toBe(0);
       expect(
         mismatches,
@@ -85,7 +83,7 @@ for (const entry of dynamicStartupEntries) {
           `status=${classifyDynamicStartupFailureStatus({ result })}`,
           `output=${JSON.stringify(result.output)}`,
           `debug=${result.debugInfo ?? ""}`,
-        ].join("\n"),
+        ].filter(Boolean).join("\n"),
       ).toEqual([]);
     } finally {
       runtime.destroy();

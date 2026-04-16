@@ -25,6 +25,15 @@ interface ThreadRegisterSnapshot {
   s11: bigint;
 }
 
+function hasSuspiciousLowStateDebug(debug: string | undefined): boolean {
+  if (!debug) {
+    return false;
+  }
+  return /(?:^|\s)pc=0x[0-9a-f]{1,3}(?:\s|$)/i.test(debug)
+    || /(?:^|\s)sp=0x0(?:\s|$)/.test(debug)
+    || /(?:^|\s)s11=0x0(?:\s|$)/.test(debug);
+}
+
 export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps) {
   const handleWaitInWorkerStatus = createWorkerWaitInWorkerStatusHandler(deps);
   const maybeHandleOwnedStateSync = createWorkerOwnedStateSyncHandler(deps);
@@ -41,8 +50,12 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     }
     const previousWaitingStatus = thread.waitingInWorkerStatus;
     thread.waitingInWorkerStatus = null;
-    handle.lastDebugMessage = msg.debug;
     const status = msg.status;
+    const faultStatus = handle.kernel.abi_status_fault?.();
+    const suspiciousLowStateDebug = hasSuspiciousLowStateDebug(msg.debug);
+    if (!(status === faultStatus && suspiciousLowStateDebug && handle.lastDebugMessage)) {
+      handle.lastDebugMessage = msg.debug;
+    }
     deps.appendWorkerDebugLog(
       handle,
       `status:0x${thread.vmPtr.toString(16)}@${msg.status}${formatCompactDebugSuffix(msg.debug)}`,
@@ -64,15 +77,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
           + `:s11=0x${(msg.s11 ?? 0n).toString(16)}`,
       );
     }
-    if (
-      status === handle.kernel.abi_status_ok()
-      && msg.debug
-      && (
-        /(?:^|\s)pc=0x[0-9a-f]{1,3}(?:\s|$)/.test(msg.debug)
-        || /(?:^|\s)sp=0x0(?:\s|$)/.test(msg.debug)
-        || /(?:^|\s)s11=0x0(?:\s|$)/.test(msg.debug)
-      )
-    ) {
+    if (msg.debug && suspiciousLowStateDebug) {
       deps.appendWorkerDebugLog(
         handle,
         `status_debug:0x${thread.vmPtr.toString(16)}:${msg.debug}`,

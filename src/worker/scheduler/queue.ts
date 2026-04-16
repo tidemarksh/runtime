@@ -41,6 +41,12 @@ function formatStepDebugSuffix(handle: ProcessHandle, vmPtr: number): string {
   if (sp !== undefined) {
     parts.push(`sp=0x${sp.toString(16)}`);
   }
+  for (let index = 0; index <= 32; index += 1) {
+    const stackWord = handle.kernel.thread_stack_word?.(vmPtr, index);
+    if (stackWord !== undefined) {
+      parts.push(`stk${index}=0x${stackWord.toString(16)}`);
+    }
+  }
   const a0 = handle.kernel.thread_a0?.(vmPtr);
   if (a0 !== undefined) {
     parts.push(`a0=${a0.toString()}`);
@@ -49,6 +55,14 @@ function formatStepDebugSuffix(handle: ProcessHandle, vmPtr: number): string {
   if (a1 !== undefined) {
     parts.push(`a1=${a1.toString()}`);
   }
+  const a2 = handle.kernel.thread_reg?.(vmPtr, 12);
+  if (a2 !== undefined) {
+    parts.push(`a2=${a2.toString()}`);
+  }
+  const a3 = handle.kernel.thread_reg?.(vmPtr, 13);
+  if (a3 !== undefined) {
+    parts.push(`a3=${a3.toString()}`);
+  }
   const gp = handle.kernel.thread_gp?.(vmPtr);
   if (gp !== undefined) {
     parts.push(`gp=0x${gp.toString(16)}`);
@@ -56,6 +70,12 @@ function formatStepDebugSuffix(handle: ProcessHandle, vmPtr: number): string {
   const tp = handle.kernel.thread_tp?.(vmPtr);
   if (tp !== undefined) {
     parts.push(`tp=0x${tp.toString(16)}`);
+  }
+  for (const [label, reg] of [["s0", 8], ["s1", 9], ["s2", 18], ["s3", 19], ["s4", 20], ["s5", 21], ["s6", 22]] as const) {
+    const value = handle.kernel.thread_reg?.(vmPtr, reg);
+    if (value !== undefined) {
+      parts.push(`${label}=0x${value.toString(16)}`);
+    }
   }
   const s11 = handle.kernel.thread_s11?.(vmPtr);
   if (s11 !== undefined) {
@@ -129,6 +149,13 @@ export function createWorkerSchedulerQueueHelpers(
     });
     const runtimeEpoch = publishRuntimeBridgeEpoch(handle.runtimeBridge);
     const guestBytes = liveGuestBytes(handle);
+    const heapBase = Math.max(0, Math.trunc(handle.kernelState.heapBase));
+    const heapPtr = Math.max(heapBase, Math.trunc(handle.kernelState.heapPtr));
+    const preserveKernelHeapBase = Math.min(heapBase, handle.memory.buffer.byteLength);
+    const preserveKernelHeapBytes = Math.max(
+      0,
+      Math.min(handle.memory.buffer.byteLength, heapPtr) - preserveKernelHeapBase,
+    );
 
     worker.postMessage({
       type: "init",
@@ -137,6 +164,8 @@ export function createWorkerSchedulerQueueHelpers(
       vmPtr,
       guestBase: handle.guestBase,
       guestBytes,
+      preserveKernelHeapBase,
+      preserveKernelHeapBytes,
       runtimeEpoch,
       guestWriteWatchRegions: handle.guestWriteWatchRegions,
       kernelState: handle.kernelState,
@@ -147,6 +176,9 @@ export function createWorkerSchedulerQueueHelpers(
   }
 
   function enqueueWorker(handle: ProcessHandle, worker: Worker): void {
+    if (handle.exitInProgress) {
+      return;
+    }
     if (!handle.readyWorkers.includes(worker)) {
       const vmPtr = deps.threadWorkerStates.get(worker)?.vmPtr;
       if (vmPtr !== undefined) {
@@ -164,6 +196,9 @@ export function createWorkerSchedulerQueueHelpers(
   }
 
   function pumpProcess(handle: ProcessHandle): void {
+    if (handle.exitInProgress) {
+      return;
+    }
     if (handle.runningWorker !== null) {
       return;
     }

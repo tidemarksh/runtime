@@ -13,6 +13,10 @@ function formatU64(value: bigint): string {
   return BigInt.asUintN(64, value).toString(16);
 }
 
+function formatTraceArg(value: bigint): string {
+  return `0x${formatU64(value)}`;
+}
+
 function readOptionalTraceU64(value: bigint | number | undefined): bigint {
   if (value === undefined) {
     return 0n;
@@ -708,6 +712,25 @@ function findAdjacentMemoryVmas(
   return { prev, next };
 }
 
+function pushAddressVmaDebug(
+  debugParts: string[],
+  exports: KernelExports,
+  vmaLen: number,
+  label: string,
+  addr: bigint,
+) {
+  if (addr === 0n) {
+    return;
+  }
+  const currentVma = findContainingMemoryVma(exports, vmaLen, addr);
+  debugParts.push(`${label}_vma=${currentVma ?? "none"}`);
+  if (currentVma === null) {
+    const adjacent = findAdjacentMemoryVmas(exports, vmaLen, addr);
+    debugParts.push(`${label}_vma_prev=${adjacent.prev ?? "none"}`);
+    debugParts.push(`${label}_vma_next=${adjacent.next ?? "none"}`);
+  }
+}
+
 export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBase: number): string[] {
   const debugParts: string[] = [];
   try {
@@ -772,8 +795,53 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
   debugParts.push(`a5=0x${formatU64(readOptionalThreadReg(exports, vmPtr, 15))}`);
   debugParts.push(`a6=0x${formatU64(readOptionalThreadReg(exports, vmPtr, 16))}`);
   debugParts.push(`a7=0x${formatU64(readOptionalThreadReg(exports, vmPtr, 17))}`);
+  const s1 = readOptionalThreadReg(exports, vmPtr, 9);
+  const s2 = readOptionalThreadReg(exports, vmPtr, 18);
+  const s3 = readOptionalThreadReg(exports, vmPtr, 19);
+  const s4 = readOptionalThreadReg(exports, vmPtr, 20);
+  const s5 = readOptionalThreadReg(exports, vmPtr, 21);
+  const s6 = readOptionalThreadReg(exports, vmPtr, 22);
+  debugParts.push(`s1=0x${formatU64(s1)}`);
+  debugParts.push(`s2=0x${formatU64(s2)}`);
+  debugParts.push(`s3=0x${formatU64(s3)}`);
+  debugParts.push(`s4=0x${formatU64(s4)}`);
+  debugParts.push(`s5=0x${formatU64(s5)}`);
+  debugParts.push(`s6=0x${formatU64(s6)}`);
   debugParts.push(`t3=0x${formatU64(readOptionalThreadReg(exports, vmPtr, 28))}`);
   debugParts.push(`t5=0x${formatU64(readOptionalThreadReg(exports, vmPtr, 30))}`);
+  if (s1 !== 0n) {
+    const s1Word0 = readGuestU64ForDebug(exports, guestBase, s1);
+    if (s1Word0 !== null) {
+      debugParts.push(`s1_mem0=0x${formatU64(s1Word0)}`);
+      const s1VtableSlot48 = readGuestU64ForDebug(exports, guestBase, s1Word0 + 48n);
+      if (s1VtableSlot48 !== null) {
+        debugParts.push(`s1_vtable_slot48=0x${formatU64(s1VtableSlot48)}`);
+      }
+    }
+    const s1Bytes = formatGuestBytesForDebug(exports, guestBase, s1, 32);
+    if (s1Bytes !== null) {
+      debugParts.push(`s1_bytes=${s1Bytes}`);
+    }
+  }
+  if (currentPc >= 0x28bc58n && currentPc < 0x28d80n) {
+    const mutexBase = exports.thread_a0(vmPtr);
+    const mutexWord0 = readGuestU64ForDebug(exports, guestBase, mutexBase);
+    const mutexWord1 = readGuestU64ForDebug(exports, guestBase, mutexBase + 8n);
+    const mutexWord2 = readGuestU64ForDebug(exports, guestBase, mutexBase + 16n);
+    const mutexWord3 = readGuestU64ForDebug(exports, guestBase, mutexBase + 24n);
+    if (mutexWord0 !== null) {
+      debugParts.push(`a0_mem0=0x${formatU64(mutexWord0)}`);
+    }
+    if (mutexWord1 !== null) {
+      debugParts.push(`a0_mem1=0x${formatU64(mutexWord1)}`);
+    }
+    if (mutexWord2 !== null) {
+      debugParts.push(`a0_mem2=0x${formatU64(mutexWord2)}`);
+    }
+    if (mutexWord3 !== null) {
+      debugParts.push(`a0_mem3=0x${formatU64(mutexWord3)}`);
+    }
+  }
   const tpWriteTid = exports.debug_tp_write_tid?.() ?? 0;
   if (tpWriteTid !== 0) {
     debugParts.push(`tp_write_tid=${tpWriteTid}`);
@@ -810,6 +878,12 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
       if (nr === 0n) {
         continue;
       }
+      const arg0 = readOptionalTraceU64(exports.debug_syscall_trace_entry_arg0?.(index));
+      const arg1 = readOptionalTraceU64(exports.debug_syscall_trace_entry_arg1?.(index));
+      const arg2 = readOptionalTraceU64(exports.debug_syscall_trace_entry_arg2?.(index));
+      const arg3 = readOptionalTraceU64(exports.debug_syscall_trace_entry_arg3?.(index));
+      const arg4 = readOptionalTraceU64(exports.debug_syscall_trace_entry_arg4?.(index));
+      const arg5 = readOptionalTraceU64(exports.debug_syscall_trace_entry_arg5?.(index));
       const result = readOptionalTraceU64(exports.debug_syscall_trace_entry_result?.(index));
       const status = exports.debug_syscall_trace_entry_status?.(index) ?? 0;
       const traceVmPtr = exports.debug_syscall_trace_entry_vm_ptr?.(index) ?? 0;
@@ -820,11 +894,38 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
       new DataView(pidSampleBytes.buffer).setBigUint64(8, pidSample1, true);
       traces.push(
         `0x${traceVmPtr.toString(16)}:${nr.toString()}=${BigInt.asIntN(64, result).toString()}/${status}`
+        + `(${formatTraceArg(arg0)},${formatTraceArg(arg1)},${formatTraceArg(arg2)},${formatTraceArg(arg3)},${formatTraceArg(arg4)},${formatTraceArg(arg5)})`
         + `:pid=${[...pidSampleBytes].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`,
       );
     }
     if (traces.length > 0) {
       debugParts.push(`syscalls=[${traces.join(",")}]`);
+    }
+  }
+  const riscvSyscallTraceLen = exports.debug_riscv_syscall_trace_len?.() ?? 0;
+  if (riscvSyscallTraceLen > 0) {
+    const traces: string[] = [];
+    for (let index = 0; index < riscvSyscallTraceLen; index += 1) {
+      const nr = readOptionalTraceU64(exports.debug_riscv_syscall_trace_entry_nr?.(index));
+      if (nr === 0n) {
+        continue;
+      }
+      const arg0 = readOptionalTraceU64(exports.debug_riscv_syscall_trace_entry_arg0?.(index));
+      const arg1 = readOptionalTraceU64(exports.debug_riscv_syscall_trace_entry_arg1?.(index));
+      const arg2 = readOptionalTraceU64(exports.debug_riscv_syscall_trace_entry_arg2?.(index));
+      const arg3 = readOptionalTraceU64(exports.debug_riscv_syscall_trace_entry_arg3?.(index));
+      const arg4 = readOptionalTraceU64(exports.debug_riscv_syscall_trace_entry_arg4?.(index));
+      const arg5 = readOptionalTraceU64(exports.debug_riscv_syscall_trace_entry_arg5?.(index));
+      const result = readOptionalTraceU64(exports.debug_riscv_syscall_trace_entry_result?.(index));
+      const status = exports.debug_riscv_syscall_trace_entry_status?.(index) ?? 0;
+      const traceVmPtr = exports.debug_riscv_syscall_trace_entry_vm_ptr?.(index) ?? 0;
+      traces.push(
+        `0x${traceVmPtr.toString(16)}:${nr.toString()}=${BigInt.asIntN(64, result).toString()}/${status}`
+        + `(${formatTraceArg(arg0)},${formatTraceArg(arg1)},${formatTraceArg(arg2)},${formatTraceArg(arg3)},${formatTraceArg(arg4)},${formatTraceArg(arg5)})`,
+      );
+    }
+    if (traces.length > 0) {
+      debugParts.push(`riscv_syscalls=[${traces.join(",")}]`);
     }
   }
   const writeNr = exports.debug_write_trace_last_nr?.();
@@ -863,6 +964,27 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     debugParts.push(`last_pipe_close_wo=${exports.debug_last_pipe_close_write_open?.() ?? "n/a"}`);
   }
   const memoryNr = exports.debug_memory_trace_nr?.();
+  const memoryTraceLen = exports.debug_memory_trace_len?.() ?? 0;
+  if (memoryTraceLen > 0) {
+    const traces: string[] = [];
+    for (let index = 0; index < memoryTraceLen; index += 1) {
+      const nr = readOptionalTraceU64(exports.debug_memory_trace_entry_nr?.(index));
+      if (nr === 0n) {
+        continue;
+      }
+      const arg0 = readOptionalTraceU64(exports.debug_memory_trace_entry_arg0?.(index));
+      const arg1 = readOptionalTraceU64(exports.debug_memory_trace_entry_arg1?.(index));
+      const arg2 = readOptionalTraceU64(exports.debug_memory_trace_entry_arg2?.(index));
+      const arg3 = readOptionalTraceU64(exports.debug_memory_trace_entry_arg3?.(index));
+      const result = readOptionalTraceU64(exports.debug_memory_trace_entry_result?.(index));
+      traces.push(
+        `${nr.toString()}(${formatTraceArg(arg0)},${formatTraceArg(arg1)},${formatTraceArg(arg2)},${formatTraceArg(arg3)})=${BigInt.asIntN(64, result).toString()}`,
+      );
+    }
+    if (traces.length > 0) {
+      debugParts.push(`mem_syscalls=[${traces.join(",")}]`);
+    }
+  }
   if (memoryNr !== undefined && memoryNr !== 0n) {
     debugParts.push(`mem_nr=${memoryNr.toString()}`);
     debugParts.push(`mem_a0=${exports.debug_memory_trace_arg0?.().toString() ?? "n/a"}`);
@@ -871,6 +993,7 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     debugParts.push(`mem_a3=${exports.debug_memory_trace_arg3?.().toString() ?? "n/a"}`);
     debugParts.push(`mem_result=${exports.debug_memory_trace_result?.().toString() ?? "n/a"}`);
   }
+  const vmaLen = exports.debug_memory_vma_len?.() ?? 0;
   const memBrkBase = exports.debug_memory_brk_base?.();
   if (memBrkBase !== undefined) {
     debugParts.push(`heap_base=0x${exports.kernel_heap_base?.().toString(16) ?? "0"}`);
@@ -879,7 +1002,6 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     debugParts.push(`mem_brk_base=0x${memBrkBase.toString(16)}`);
     debugParts.push(`mem_brk_current=0x${exports.debug_memory_brk_current?.().toString(16) ?? "n/a"}`);
     debugParts.push(`mem_mmap_next=0x${exports.debug_memory_mmap_next?.().toString(16) ?? "n/a"}`);
-    const vmaLen = exports.debug_memory_vma_len?.() ?? 0;
     debugParts.push(`mem_vmas=${vmaLen}`);
     for (let i = 0; i < Math.min(vmaLen, 4); i += 1) {
       debugParts.push(`mem_vma${i}=${formatMemoryVma(exports, i)}`);
@@ -1165,6 +1287,7 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
   if (zeroRegPc !== undefined && zeroRegPc !== 0n) {
     debugParts.push(`zero_reg_tid=${exports.debug_zero_reg_for_vm_tid?.(vmPtr) ?? exports.debug_zero_reg_tid?.() ?? "n/a"}`);
     debugParts.push(`zero_reg_pc=0x${formatU64(zeroRegPc)}`);
+    pushAddressVmaDebug(debugParts, exports, vmaLen, "zero_reg_pc", zeroRegPc);
     debugParts.push(`zero_reg_raw=0x${(exports.debug_zero_reg_for_vm_raw?.(vmPtr) ?? exports.debug_zero_reg_raw?.() ?? 0).toString(16)}`);
     const zeroRegInsn = readGuestInsn(exports, guestBase, zeroRegPc);
     if (zeroRegInsn !== null) {
@@ -1179,6 +1302,7 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
   if (s11WritePc !== undefined && s11WritePc !== 0n) {
     debugParts.push(`s11_write_tid=${exports.debug_s11_write_for_vm_tid?.(vmPtr) ?? exports.debug_s11_write_tid?.() ?? "n/a"}`);
     debugParts.push(`s11_write_pc=0x${formatU64(s11WritePc)}`);
+    pushAddressVmaDebug(debugParts, exports, vmaLen, "s11_write_pc", s11WritePc);
     debugParts.push(`s11_write_raw=0x${(exports.debug_s11_write_for_vm_raw?.(vmPtr) ?? exports.debug_s11_write_raw?.() ?? 0).toString(16)}`);
     const s11WriteInsn = readGuestInsn(exports, guestBase, s11WritePc);
     if (s11WriteInsn !== null) {
@@ -1208,6 +1332,7 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
   if (spWritePc !== undefined && spWritePc !== 0n) {
     debugParts.push(`sp_write_tid=${exports.debug_sp_write_for_vm_tid?.(vmPtr) ?? exports.debug_sp_write_tid?.() ?? "n/a"}`);
     debugParts.push(`sp_write_pc=0x${formatU64(spWritePc)}`);
+    pushAddressVmaDebug(debugParts, exports, vmaLen, "sp_write_pc", spWritePc);
     debugParts.push(`sp_write_raw=0x${(exports.debug_sp_write_for_vm_raw?.(vmPtr) ?? exports.debug_sp_write_raw?.() ?? 0).toString(16)}`);
     const spWriteInsn = readGuestInsn(exports, guestBase, spWritePc);
     if (spWriteInsn !== null) {
@@ -1220,6 +1345,35 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
   const threadStepTrace = readThreadStepTraceSnapshot(exports, vmPtr);
   const threadStepEntryTrace = readThreadStepEntryTraceSnapshot(exports, vmPtr);
   const threadStepPhaseTrace = readThreadStepPhaseSnapshot(exports, vmPtr);
+  if (threadStepTrace.pc < 0x1000n || threadStepTrace.sp === 0n || threadStepEntryTrace.sp === 0n) {
+    const spWriteTail: string[] = [];
+    for (let back = 0; back < 4; back += 1) {
+      const pc = exports.debug_sp_write_for_vm_back_pc?.(vmPtr, back);
+      if (pc === undefined || pc === 0n) {
+        break;
+      }
+      const raw = exports.debug_sp_write_for_vm_back_raw?.(vmPtr, back) ?? 0;
+      const insn = readGuestInsn(exports, guestBase, pc);
+      const prevValue = exports.debug_sp_write_for_vm_back_prev_value?.(vmPtr, back) ?? 0n;
+      const value = exports.debug_sp_write_for_vm_back_value?.(vmPtr, back) ?? 0n;
+      const source = exports.debug_sp_write_for_vm_back_source?.(vmPtr, back) ?? 0;
+      const tid = exports.debug_sp_write_for_vm_back_tid?.(vmPtr, back) ?? 0;
+      spWriteTail.push(
+        [
+          `${back}:tid=${tid}`,
+          `pc=0x${formatU64(pc)}`,
+          `raw=0x${raw.toString(16)}`,
+          insn !== null ? `insn=${insn}` : null,
+          `src=${source}`,
+          `prev=0x${formatU64(prevValue)}`,
+          `value=0x${formatU64(value)}`,
+        ].filter(Boolean).join(":"),
+      );
+    }
+    if (spWriteTail.length > 0) {
+      debugParts.push(`sp_write_tail=[${spWriteTail.join(" ")}]`);
+    }
+  }
   if (threadStepEntryTrace.tid !== 0 || threadStepEntryTrace.pc !== 0n || threadStepEntryTrace.sp !== 0n || threadStepEntryTrace.s11 !== 0n) {
     debugParts.push(`thread_step_entry_tid=${threadStepEntryTrace.tid}`);
     debugParts.push(`thread_step_entry_status=${threadStepEntryTrace.status}`);
@@ -1256,7 +1410,12 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     debugParts.push(`thread_step_phase_sp=0x${formatU64(threadStepPhaseTrace.sp)}`);
     debugParts.push(`thread_step_phase_s11=0x${formatU64(threadStepPhaseTrace.s11)}`);
   }
-  if (threadStepTrace.tid === 0 && threadStepTrace.pc === 0n && threadStepTrace.ra === 0n && threadStepTrace.sp === 0n && threadStepTrace.s11 === 0n) {
+  if (
+    (threadStepTrace.tid === 0 && threadStepTrace.pc === 0n && threadStepTrace.ra === 0n && threadStepTrace.sp === 0n && threadStepTrace.s11 === 0n)
+    || threadStepTrace.pc < 0x1000n
+    || threadStepTrace.sp === 0n
+    || threadStepTrace.s11 === 0n
+  ) {
     const threadStepTraceEntries = formatThreadStepTraceEntries(exports, vmPtr);
     if (threadStepTraceEntries !== null) {
       debugParts.push(`thread_step_traces=[${threadStepTraceEntries}]`);
@@ -1323,11 +1482,29 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
   }
   const jalrPc = exports.debug_jalr_for_vm_pc?.(vmPtr) ?? exports.debug_jalr_pc?.();
   if (jalrPc !== undefined && jalrPc !== 0n) {
+    const jalrRs1Value = exports.debug_jalr_for_vm_rs1_value?.(vmPtr) ?? exports.debug_jalr_rs1_value?.() ?? 0n;
+    const jalrTarget = exports.debug_jalr_for_vm_target?.(vmPtr) ?? exports.debug_jalr_target?.() ?? 0n;
     debugParts.push(`jalr_pc=0x${formatU64(jalrPc)}`);
     debugParts.push(`jalr_rs1=${exports.debug_jalr_for_vm_rs1?.(vmPtr) ?? exports.debug_jalr_rs1?.() ?? "n/a"}`);
     debugParts.push(`jalr_rd=${exports.debug_jalr_for_vm_rd?.(vmPtr) ?? exports.debug_jalr_rd?.() ?? "n/a"}`);
-    debugParts.push(`jalr_rs1v=0x${formatU64(exports.debug_jalr_for_vm_rs1_value?.(vmPtr) ?? exports.debug_jalr_rs1_value?.() ?? 0n)}`);
-    debugParts.push(`jalr_target=0x${formatU64(exports.debug_jalr_for_vm_target?.(vmPtr) ?? exports.debug_jalr_target?.() ?? 0n)}`);
+    debugParts.push(`jalr_rs1v=0x${formatU64(jalrRs1Value)}`);
+    debugParts.push(`jalr_target=0x${formatU64(jalrTarget)}`);
+    const jalrPcBytes = formatGuestBytesForDebug(exports, guestBase, jalrPc, 16);
+    if (jalrPcBytes !== null) {
+      debugParts.push(`jalr_pc_bytes=${jalrPcBytes}`);
+    }
+    if (jalrRs1Value !== 0n) {
+      const jalrRs1Bytes = formatGuestBytesForDebug(exports, guestBase, jalrRs1Value, 32);
+      if (jalrRs1Bytes !== null) {
+        debugParts.push(`jalr_rs1_bytes=${jalrRs1Bytes}`);
+      }
+    }
+    if (jalrTarget !== 0n) {
+      const jalrTargetBytes = formatGuestBytesForDebug(exports, guestBase, jalrTarget, 32);
+      if (jalrTargetBytes !== null) {
+        debugParts.push(`jalr_target_bytes=${jalrTargetBytes}`);
+      }
+    }
   }
   const execveStage = exports.debug_execve_stage?.();
   if (execveStage !== undefined && execveStage !== 0) {

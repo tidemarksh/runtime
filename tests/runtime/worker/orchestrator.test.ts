@@ -510,7 +510,7 @@ test("createProcess spawns a child worker on STATUS_CLONE_SPAWN", async () => {
   expect(handle.vmPtr).toBe(0x1234);
   expect(worker).toBeDefined();
 
-  emitReady(worker);
+  emitReady(worker, 0x1234, refreshedState);
   worker.clearPostedMessages();
   worker.emit({
     type: "status",
@@ -592,7 +592,7 @@ test("clone spawn refreshes kernel state before child init and parent resume", a
     refreshedState.timeStatePtr,
   );
 
-  emitReady(worker);
+  emitReady(worker, 0x1234, refreshedState);
   worker.clearPostedMessages();
   worker.emit({
     type: "status",
@@ -614,6 +614,8 @@ test("clone spawn refreshes kernel state before child init and parent resume", a
       vmPtr: 0x2000,
       guestBase: 0x1000000,
       guestBytes: Math.min(handle.ramSize, handle.memory.buffer.byteLength - 0x1000000),
+      preserveKernelHeapBase: refreshedState.heapBase,
+      preserveKernelHeapBytes: refreshedState.heapPtr - refreshedState.heapBase,
       runtimeEpoch: expect.any(Number),
       guestWriteWatchRegions: [],
       kernelState: refreshedState,
@@ -622,9 +624,7 @@ test("clone spawn refreshes kernel state before child init and parent resume", a
       runtimeState: expect.any(SharedArrayBuffer),
     },
   ]);
-  expect(worker.postedMessages).toEqual([
-    { type: "step", budget: 20_000, kernelState: refreshedState },
-  ]);
+  expect(worker.postedMessages).toEqual([]);
 });
 
 
@@ -712,7 +712,7 @@ test("clone child first ready->step uses refreshed canonical kernel state", asyn
     refreshedState.timeStatePtr,
   );
 
-  emitReady(parentWorker);
+  emitReady(parentWorker, 0x1234, refreshedState);
   parentWorker.clearPostedMessages();
   parentWorker.emit({
     type: "status",
@@ -784,7 +784,7 @@ test("clone child ready syncs owned epoll state before scheduling", async () => 
   );
   kernel.process_fd_ofd_id = (_vmPtr, fd) => (fd === 4 ? epollOfdId : 0);
 
-  emitReady(parentWorker);
+  emitReady(parentWorker, 0x1234, refreshedState);
   parentWorker.clearPostedMessages();
   requests.length = 0;
   parentWorker.emit({
@@ -890,6 +890,59 @@ test("clone child ready drains pending output and syncs pipe state before first 
   expect(childWorker.postedMessages).toEqual([
     { type: "step", budget: 20_000, kernelState: makeKernelState() },
   ]);
+});
+
+test("STATUS_OK local stdout drain does not re-sync stale pipe state from kernel-worker", async () => {
+  const requests: KernelWorkerRequest[] = [];
+  const stdoutChunks: Uint8Array[] = [];
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    onStdout: (data) => {
+      stdoutChunks.push(new Uint8Array(data));
+    },
+    kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+      requests.push(msg);
+      switch (msg.type) {
+        case "register-process":
+          return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+        case "initialize-process-lifecycle":
+          return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+        case "sync-pipe-state":
+          return { type: "pipe-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "unregister-process":
+          return { type: "process-unregistered", requestId: 0 };
+        default:
+          throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+      }
+    },
+  });
+  const worker = createdWorkers[0];
+
+  emitReady(worker);
+  worker.clearPostedMessages();
+  requests.length = 0;
+
+  const bannerBytes = new TextEncoder().encode("openjdk banner\n");
+  expect(writePipe(handle.memory, handle.kernelState.pipeBase, handle.stdoutPipe, bannerBytes).written).toBe(
+    bannerBytes.length,
+  );
+
+  worker.emit({
+    type: "status",
+    status: 0,
+    syncEffects: SYNC_EFFECT_PIPE_STATE,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+
+  await flushMicrotasks();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(stdoutChunks.map((chunk) => new TextDecoder().decode(chunk))).toEqual(["openjdk banner\n"]);
+  expect(requests.filter((msg) => msg.type === "sync-pipe-state")).toHaveLength(1);
 });
 
 test("running worker prunes stale blocked workers after the live thread table shrinks", async () => {
@@ -1483,7 +1536,7 @@ test("createProcess seeds local memfs before requesting canonical metadata hydra
   ).toBe(false);
   expect(kernelWorkerRequest).toHaveBeenCalledWith(expect.objectContaining({
     type: "register-process",
-    seedMemfsMode: "metadata",
+    seedMemfsMode: "none",
   }));
 });
 
@@ -3856,6 +3909,8 @@ test("vfork execve resumes the parent and initializes the child lifecycle throug
       vmPtr: 0x1234,
       guestBase: 0x1000000,
       guestBytes: expect.any(Number),
+      preserveKernelHeapBase: childLifecycleState.heapBase,
+      preserveKernelHeapBytes: childLifecycleState.heapPtr - childLifecycleState.heapBase,
       runtimeEpoch: expect.any(Number),
       guestWriteWatchRegions: [],
       kernelState: childLifecycleState,

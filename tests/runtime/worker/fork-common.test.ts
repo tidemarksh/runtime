@@ -38,7 +38,7 @@ test("detachInheritedHostStdioFromChild leaves standalone process host stdio unt
   expect(processSetHostStdio).not.toHaveBeenCalled();
 });
 
-test("computeGuestRamLimitBytes trims guest window below 2GiB when guestBase consumes linear-memory headroom", () => {
+test("computeGuestRamLimitBytes trims guest window when guestBase consumes linear-memory headroom", () => {
   expect(
     computeGuestRamLimitBytes(
       0x14b0_0000,
@@ -48,12 +48,12 @@ test("computeGuestRamLimitBytes trims guest window below 2GiB when guestBase con
   ).toBe(0x6b50_0000);
 });
 
-test("computeGuestRamLimitBytes preserves full 2GiB guest window when fork ceiling includes guestBase headroom", () => {
+test("computeGuestRamLimitBytes preserves the full wasm32 guest window when max pages allow it", () => {
   expect(
     computeGuestRamLimitBytes(
       0x14b0_0000,
       192 * 1024 * 1024,
-      40960,
+      65536,
     ),
-  ).toBe(0x8000_0000);
+  ).toBe(0xeb50_0000);
 });

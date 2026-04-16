@@ -326,7 +326,8 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
   ): Promise<ProcessHandle> {
     const ramSize = Math.max(options.ramSize ?? MIN_PROCESS_RAM_SIZE_BYTES, MIN_PROCESS_RAM_SIZE_BYTES);
     const minMemoryPages = Math.ceil(deps.bootstrapMemoryBytes / deps.wasmPageSize);
-    const maxMemoryPages = Math.max(options.maxMemoryPages ?? deps.wasmMaxPages, 1);
+    const requestedMaxMemoryPages = Math.max(options.maxMemoryPages ?? deps.wasmMaxPages, 1);
+    const maxMemoryPages = Math.min(requestedMaxMemoryPages, deps.wasmMaxPages);
     const boundedMaxMemoryPages = Math.max(maxMemoryPages, minMemoryPages);
     const forkMaxMemoryPages = Math.max(options.forkMaxMemoryPages ?? boundedMaxMemoryPages, boundedMaxMemoryPages);
     const stackSize = options.stackSize ?? 1024 * 1024;
@@ -350,6 +351,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       options,
       delegateFsHydrationToKernelWorker,
     );
+    const bootstrapEntriesRequireMaterializedData = entriesRequireMaterializedData(bootstrapEntries);
     preloadSnapshotEntries(exports, bootstrapEntries, preloadScratchBase);
     const guestBase = exports.process_guest_base(ramSize);
     if (guestBase === 0) {
@@ -454,7 +456,9 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       0,
       handle.kernelState.heapBase,
     ).slice();
-    const memfsSeedMode: KernelWorkerMemfsSeedMode = "full";
+    const memfsSeedMode: KernelWorkerMemfsSeedMode = delegateFsHydrationToKernelWorker
+      ? bootstrapEntriesRequireMaterializedData ? "metadata" : "none"
+      : "full";
     await deps.registerProcessWithKernelWorker(handle, { seedMemfsMode: memfsSeedMode });
     new Uint8Array(memory.buffer).set(preRegisterGuestPrefix, 0);
     appendMemoryStateDebug(handle, "register");

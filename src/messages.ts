@@ -50,6 +50,8 @@ export type ThreadWorkerInbound =
       vmPtr: number;
       guestBase: number;
       guestBytes?: number;
+      preserveKernelHeapBase?: number;
+      preserveKernelHeapBytes?: number;
       runtimeEpoch?: number;
       guestWriteWatchRegions?: GuestWriteWatchRegion[];
       kernelState: KernelRuntimeState;

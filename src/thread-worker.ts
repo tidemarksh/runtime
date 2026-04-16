@@ -119,6 +119,7 @@ async function prepare(
   _notifySab: SharedArrayBuffer,
   _stateSab: SharedArrayBuffer,
   preserveGuestRange?: { guestBase: number; guestBytes: number },
+  preserveKernelHeapRange?: { heapBase: number; heapBytes: number },
 ): Promise<void> {
   const preservePrefixBytes = Math.min(
     inputs.memory.buffer.byteLength,
@@ -133,6 +134,9 @@ async function prepare(
   // the guest range intact across instantiate before the first step.
   const preservedGuestRange = preserveGuestRange
     ? snapshotMemoryRange(inputs.memory, preserveGuestRange.guestBase, preserveGuestRange.guestBytes)
+    : null;
+  const preservedKernelHeapRange = preserveKernelHeapRange
+    ? snapshotMemoryRange(inputs.memory, preserveKernelHeapRange.heapBase, preserveKernelHeapRange.heapBytes)
     : null;
   const instance = await WebAssembly.instantiate(inputs.wasmModule, {
     env: createKernelEnv(inputs.memory, { sabPageCache: inputs.sabPageCache }),
@@ -158,6 +162,7 @@ async function prepare(
       restoreMemoryRange(inputs.memory, { chunks: restoreChunks });
     }
   }
+  restoreMemoryRange(inputs.memory, preservedKernelHeapRange);
   restoreMemoryRange(inputs.memory, preservedGuestRange);
   preparedKernelHeapBase = nextKernelHeapBase;
   wasmFeatures = detectWasmFeatures();
@@ -213,6 +218,9 @@ function postStatus(status: number, waitInWorker = false): void {
     exitCode: exports.thread_exit_code(vmPtr),
     termSignal: exports.thread_term_signal(vmPtr),
     pc: exports.thread_pc(vmPtr),
+    ra: exports.thread_ra?.(vmPtr),
+    sp: exports.thread_sp?.(vmPtr),
+    s11: exports.thread_s11?.(vmPtr),
     vmPtr,
     kernelState: readKernelRuntimeState(exports),
     syncEffects: readCompletedSyncEffects(exports, statusCodes, status, syscallNumbers),
@@ -290,6 +298,12 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
             msg.runtimeState,
             msg.guestBytes !== undefined
               ? { guestBase: msg.guestBase, guestBytes: msg.guestBytes }
+              : undefined,
+            msg.preserveKernelHeapBase !== undefined && msg.preserveKernelHeapBytes !== undefined
+              ? {
+                  heapBase: msg.preserveKernelHeapBase,
+                  heapBytes: msg.preserveKernelHeapBytes,
+                }
               : undefined,
           );
         } else {

@@ -6,9 +6,66 @@
  */
 
 import { expect, test } from "vite-plus/test";
-import { readStatusCodes } from "../../../src/abi.js";
+import {
+  attachKernelRuntimeState,
+  readKernelRuntimeState,
+  readStatusCodes,
+  type KernelExports,
+} from "../../../src/abi.js";
 import { createKernelEnv } from "../../../src/wasm/env.js";
 import { findRiscvElf, logSkip, readKernelWasm } from "../../support/runtime-workload.js";
+
+function encodeI(opcode: number, rd: number, funct3: number, rs1: number, imm: number): number {
+  return (((imm & 0xfff) << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode) >>> 0;
+}
+
+function encodeB(funct3: number, rs1: number, rs2: number, imm: number): number {
+  return (
+    (((imm >> 12) & 0x1) << 31)
+    | (((imm >> 5) & 0x3f) << 25)
+    | (rs2 << 20)
+    | (rs1 << 15)
+    | (funct3 << 12)
+    | (((imm >> 1) & 0xf) << 8)
+    | (((imm >> 11) & 0x1) << 7)
+    | 0x63
+  ) >>> 0;
+}
+
+function writeU16(memory: WebAssembly.Memory, addr: number, value: number): void {
+  new DataView(memory.buffer).setUint16(addr, value, true);
+}
+
+function writeU32(memory: WebAssembly.Memory, addr: number, value: number): void {
+  new DataView(memory.buffer).setUint32(addr, value >>> 0, true);
+}
+
+function writeU64(memory: WebAssembly.Memory, addr: number, value: bigint): void {
+  new DataView(memory.buffer).setBigUint64(addr, value, true);
+}
+
+function threadRegOffset(regIndex: number): number {
+  return regIndex * 8;
+}
+
+const THREAD_PC_OFFSET = 32 * 8;
+const SYS_CLONE = 220;
+const SYS_FUTEX = 98;
+const SYS_MMAP = 222;
+const SYS_MPROTECT = 226;
+const SYS_RISCV_FLUSH_ICACHE = 259;
+const SIGSEGV = 11;
+const CLONE_VM = 0x00000100;
+const CLONE_FS = 0x00000200;
+const CLONE_SIGHAND = 0x00000800;
+const CLONE_THREAD = 0x00010000;
+const PROT_NONE = 0;
+const PROT_READ = 1;
+const PROT_WRITE = 2;
+const PROT_EXEC = 4;
+const MAP_PRIVATE = 0x02;
+const MAP_FIXED = 0x10;
+const MAP_ANONYMOUS = 0x20;
 
 async function loadKernel(opts?: { memory?: WebAssembly.Memory }) {
   const wasmBytes = readKernelWasm();
@@ -91,4 +148,616 @@ test("kernel_init + process_create + thread_step runs to exit", async () => {
   }
 
   throw new Error(`Did not exit within ${totalSteps} instructions`);
+});
+
+test("shared-memory dual kernel instances preserve parent clone return after child futex wait", async () => {
+  const loaded = await loadKernel();
+  if (!loaded) {
+    return;
+  }
+  const { exports: owner, memory, module } = loaded;
+  const childInstance = await WebAssembly.instantiate(module, {
+    env: createKernelEnv(memory),
+  });
+  const child = childInstance.exports as unknown as KernelExports;
+
+  const elfData = findRiscvElf("add");
+  if (!elfData) {
+    logSkip("add.elf not found");
+    return;
+  }
+
+  const heapBase = (owner as any).__heap_base?.value ?? 0x200000;
+  owner.kernel_init(heapBase);
+  const ramSize = memory.buffer.byteLength;
+  const elfOffset = ramSize - 256 * 1024;
+  new Uint8Array(memory.buffer).set(elfData, elfOffset);
+  const vmPtr = owner.process_create(elfOffset, elfData.length, ramSize, 1024 * 1024);
+  expect(vmPtr).toBeGreaterThan(0);
+
+  attachKernelRuntimeState(child, readKernelRuntimeState(owner));
+
+  const guestBase = owner.thread_guest_base?.(vmPtr) ?? 0;
+  const entryPc = Number(owner.thread_pc(vmPtr));
+  const codeAddr = guestBase + entryPc;
+  const helperPc = entryPc + 4;
+  const returnPathPc = entryPc + 0x40;
+  const childFnPc = entryPc + 0x80;
+  const finalTargetPc = entryPc + 0xc0;
+  const futexAddr = entryPc + 0x180;
+  const parentSp = entryPc + 0x240;
+  const childStack = entryPc + 0x300;
+
+  writeU32(memory, codeAddr, 0x0000_0073);
+  writeU32(memory, guestBase + helperPc, encodeB(4, 10, 0, 10));
+  writeU16(memory, guestBase + helperPc + 4, 0xc511);
+  writeU16(memory, guestBase + helperPc + 6, 0x8082);
+  writeU16(memory, guestBase + helperPc + 10, 0x5529);
+  writeU16(memory, guestBase + helperPc + 16, 0x8536);
+  writeU16(memory, guestBase + helperPc + 18, 0x9602);
+  writeU16(memory, guestBase + returnPathPc, 0x57fd);
+  writeU32(memory, guestBase + returnPathPc + 2, encodeB(0, 10, 15, 12));
+  writeU16(memory, guestBase + returnPathPc + 6, 0x60a2);
+  writeU16(memory, guestBase + returnPathPc + 8, 0x6402);
+  writeU16(memory, guestBase + returnPathPc + 10, 0x0141);
+  writeU16(memory, guestBase + returnPathPc + 12, 0x8082);
+  writeU32(memory, guestBase + childFnPc, encodeI(0x13, 11, 0, 0, 0));
+  writeU32(memory, guestBase + childFnPc + 4, encodeI(0x13, 12, 0, 0, 0));
+  writeU32(memory, guestBase + childFnPc + 8, encodeI(0x13, 13, 0, 0, 0));
+  writeU32(memory, guestBase + childFnPc + 12, encodeI(0x13, 14, 0, 0, 0));
+  writeU32(memory, guestBase + childFnPc + 16, encodeI(0x13, 15, 0, 0, 0));
+  writeU32(memory, guestBase + childFnPc + 20, encodeI(0x13, 17, 0, 0, SYS_FUTEX));
+  writeU32(memory, guestBase + childFnPc + 24, 0x0000_0073);
+  writeU32(memory, guestBase + finalTargetPc, encodeI(0x13, 15, 0, 0, 9));
+  writeU32(memory, guestBase + futexAddr, 0);
+  writeU64(memory, guestBase + parentSp, 0x28n);
+  writeU64(memory, guestBase + parentSp + 8, BigInt(finalTargetPc));
+
+  writeU64(memory, vmPtr + threadRegOffset(1), BigInt(returnPathPc));
+  writeU64(memory, vmPtr + threadRegOffset(2), BigInt(parentSp));
+  writeU64(memory, vmPtr + threadRegOffset(10), BigInt(
+    CLONE_VM | CLONE_THREAD | CLONE_SIGHAND | CLONE_FS,
+  ));
+  writeU64(memory, vmPtr + threadRegOffset(11), BigInt(childStack));
+  writeU64(memory, vmPtr + threadRegOffset(12), 0n);
+  writeU64(memory, vmPtr + threadRegOffset(13), 0n);
+  writeU64(memory, vmPtr + threadRegOffset(14), 0n);
+  writeU64(memory, vmPtr + threadRegOffset(17), BigInt(SYS_CLONE));
+  writeU64(memory, vmPtr + THREAD_PC_OFFSET, BigInt(entryPc));
+
+  owner.thread_step(vmPtr, 1);
+  expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_clone_spawn());
+
+  writeU64(memory, vmPtr + threadRegOffset(1), BigInt(returnPathPc));
+  writeU64(memory, vmPtr + threadRegOffset(2), BigInt(parentSp));
+  writeU64(memory, vmPtr + threadRegOffset(12), BigInt(childFnPc));
+  writeU64(memory, vmPtr + threadRegOffset(13), BigInt(futexAddr));
+  writeU64(memory, vmPtr + THREAD_PC_OFFSET, BigInt(helperPc));
+
+  const childVmPtr = owner.thread_spawn_from_clone(vmPtr);
+  expect(childVmPtr).toBeGreaterThan(0);
+
+  attachKernelRuntimeState(child, readKernelRuntimeState(owner));
+  child.thread_step(childVmPtr, 16);
+  expect(child.thread_status(childVmPtr)).toBe(owner.abi_status_futex_wait());
+
+  attachKernelRuntimeState(owner, readKernelRuntimeState(child));
+  owner.thread_step(vmPtr, 9);
+
+  expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_ok());
+  expect(owner.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc));
+  expect(owner.thread_ra?.(vmPtr)).toBe(BigInt(finalTargetPc));
+  expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp + 16));
+});
+
+test("shared imported memory materializes a top-of-limit prot-none page without early ENOMEM", async () => {
+  const maximumPages = 64512;
+  const memory = new WebAssembly.Memory({
+    initial: 1024,
+    maximum: maximumPages,
+    shared: true,
+  });
+  const loaded = await loadKernel({ memory });
+  if (!loaded) {
+    return;
+  }
+  const { exports, memory: wasmMemory } = loaded;
+
+  const elfData = findRiscvElf("add");
+  if (!elfData) {
+    logSkip("add.elf not found");
+    return;
+  }
+
+  const heapBase = (exports as any).__heap_base?.value ?? 0x200000;
+  exports.kernel_init(heapBase);
+
+  const ramSize = wasmMemory.buffer.byteLength;
+  const elfOffset = ramSize - 256 * 1024;
+  new Uint8Array(wasmMemory.buffer).set(elfData, elfOffset);
+  const vmPtr = exports.process_create(elfOffset, elfData.length, ramSize, 1024 * 1024);
+  expect(vmPtr).toBeGreaterThan(0);
+
+  const guestBase = exports.thread_guest_base?.(vmPtr) ?? 0;
+  const maxBytes = maximumPages * 65536;
+  const guestRamLimit = (maxBytes - guestBase) >>> 0;
+  exports.thread_set_guest_ram_limit?.(vmPtr, guestRamLimit);
+  expect((exports.thread_guest_ram_limit?.(vmPtr) ?? 0) >>> 0).toBe(guestRamLimit);
+
+  const entryPc = Number(exports.thread_pc(vmPtr));
+  const codeAddr = guestBase + entryPc;
+  const finalTargetPc = entryPc + 0x40;
+  const parentSp = entryPc + 0x240;
+  const reserveLen = 0x20_000;
+  const reserveAddr = guestRamLimit - reserveLen;
+  const topPageAddr = guestRamLimit - 0x1000;
+
+  writeU32(wasmMemory, codeAddr, 0x0000_0073);
+  writeU32(wasmMemory, guestBase + entryPc + 4, 0x0000_8067);
+  writeU32(wasmMemory, guestBase + finalTargetPc, 0x0000_0073);
+  writeU32(wasmMemory, guestBase + finalTargetPc + 4, 0x0000_8067);
+  writeU16(wasmMemory, guestBase + finalTargetPc + 8, 0x0001);
+
+  writeU64(wasmMemory, vmPtr + threadRegOffset(1), BigInt(finalTargetPc));
+  writeU64(wasmMemory, vmPtr + threadRegOffset(2), BigInt(parentSp));
+  writeU64(wasmMemory, vmPtr + threadRegOffset(10), BigInt(reserveAddr));
+  writeU64(wasmMemory, vmPtr + threadRegOffset(11), BigInt(reserveLen));
+  writeU64(wasmMemory, vmPtr + threadRegOffset(12), BigInt(PROT_NONE));
+  writeU64(wasmMemory, vmPtr + threadRegOffset(13), BigInt(MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED));
+  writeU64(wasmMemory, vmPtr + threadRegOffset(14), BigInt(-1));
+  writeU64(wasmMemory, vmPtr + threadRegOffset(15), 0n);
+  writeU64(wasmMemory, vmPtr + threadRegOffset(17), BigInt(SYS_MMAP));
+  writeU64(wasmMemory, vmPtr + threadRegOffset(27), 0x34567890n);
+  writeU64(wasmMemory, vmPtr + THREAD_PC_OFFSET, BigInt(entryPc));
+
+  exports.thread_step(vmPtr, 2);
+  expect(exports.thread_status(vmPtr)).toBe(exports.abi_status_ok());
+  expect(exports.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc));
+  expect(exports.thread_sp(vmPtr)).toBe(BigInt(parentSp));
+  expect(exports.thread_reg?.(vmPtr, 10)).toBe(BigInt(reserveAddr));
+
+  writeU64(wasmMemory, vmPtr + threadRegOffset(1), BigInt(finalTargetPc + 8));
+  writeU64(wasmMemory, vmPtr + threadRegOffset(2), BigInt(parentSp));
+  writeU64(wasmMemory, vmPtr + threadRegOffset(10), BigInt(topPageAddr));
+  writeU64(wasmMemory, vmPtr + threadRegOffset(11), 0x1000n);
+  writeU64(wasmMemory, vmPtr + threadRegOffset(12), BigInt(PROT_READ | PROT_WRITE));
+  writeU64(wasmMemory, vmPtr + threadRegOffset(17), BigInt(SYS_MPROTECT));
+  writeU64(wasmMemory, vmPtr + threadRegOffset(27), 0x34567890n);
+  writeU64(wasmMemory, vmPtr + THREAD_PC_OFFSET, BigInt(finalTargetPc));
+
+  exports.thread_step(vmPtr, 2);
+
+  expect(exports.thread_status(vmPtr)).toBe(exports.abi_status_ok());
+  expect(exports.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc + 8));
+  expect(exports.thread_sp(vmPtr)).toBe(BigInt(parentSp));
+  expect(exports.thread_reg?.(vmPtr, 27)).toBe(0x34567890n);
+  expect(exports.thread_reg?.(vmPtr, 10)).toBe(0n);
+  expect(wasmMemory.buffer.byteLength).toBe(maxBytes);
+  const topPage = new Uint8Array(wasmMemory.buffer, guestBase + topPageAddr, 0x1000);
+  expect(Array.from(topPage).every((byte) => byte === 0)).toBe(true);
+});
+
+test("shared-memory dual kernel instances preserve parent context across clone and parent mprotect materialization", async () => {
+  const loaded = await loadKernel();
+  if (!loaded) {
+    return;
+  }
+  const { exports: owner, memory, module } = loaded;
+  const childInstance = await WebAssembly.instantiate(module, {
+    env: createKernelEnv(memory),
+  });
+  const child = childInstance.exports as unknown as KernelExports;
+
+  const elfData = findRiscvElf("add");
+  if (!elfData) {
+    logSkip("add.elf not found");
+    return;
+  }
+
+  const heapBase = (owner as any).__heap_base?.value ?? 0x200000;
+  owner.kernel_init(heapBase);
+  const ramSize = memory.buffer.byteLength;
+  const elfOffset = ramSize - 256 * 1024;
+  new Uint8Array(memory.buffer).set(elfData, elfOffset);
+  const vmPtr = owner.process_create(elfOffset, elfData.length, ramSize, 1024 * 1024);
+  expect(vmPtr).toBeGreaterThan(0);
+
+  attachKernelRuntimeState(child, readKernelRuntimeState(owner));
+
+  const guestBase = owner.thread_guest_base?.(vmPtr) ?? 0;
+  const entryPc = Number(owner.thread_pc(vmPtr));
+  const codeAddr = guestBase + entryPc;
+  const helperPc = entryPc + 4;
+  const returnPathPc = entryPc + 0x40;
+  const childFnPc = entryPc + 0x80;
+  const finalTargetPc = entryPc + 0xc0;
+  const futexAddr = entryPc + 0x180;
+  const parentSp = entryPc + 0x240;
+  const childStack = entryPc + 0x300;
+  const reserveAddr = entryPc + 0x4000;
+  const reserveLen = 0x3000;
+
+  writeU32(memory, codeAddr, 0x0000_0073);
+  writeU32(memory, guestBase + entryPc + 4, 0x0000_8067);
+
+  writeU64(memory, vmPtr + threadRegOffset(1), BigInt(finalTargetPc));
+  writeU64(memory, vmPtr + threadRegOffset(2), BigInt(parentSp));
+  writeU64(memory, vmPtr + threadRegOffset(10), BigInt(reserveAddr));
+  writeU64(memory, vmPtr + threadRegOffset(11), BigInt(reserveLen));
+  writeU64(memory, vmPtr + threadRegOffset(12), BigInt(PROT_NONE));
+  writeU64(memory, vmPtr + threadRegOffset(13), BigInt(MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED));
+  writeU64(memory, vmPtr + threadRegOffset(14), BigInt(-1));
+  writeU64(memory, vmPtr + threadRegOffset(15), 0n);
+  writeU64(memory, vmPtr + threadRegOffset(17), BigInt(SYS_MMAP));
+  writeU64(memory, vmPtr + threadRegOffset(27), 0x34567890n);
+  writeU64(memory, vmPtr + THREAD_PC_OFFSET, BigInt(entryPc));
+
+  owner.thread_step(vmPtr, 2);
+  expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_ok());
+  expect(owner.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc));
+  expect(owner.thread_exit_code(vmPtr)).toBe(0);
+  expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp));
+  expect(owner.thread_reg?.(vmPtr, 10)).toBe(BigInt(reserveAddr));
+
+  writeU32(memory, guestBase + helperPc, encodeB(4, 10, 0, 10));
+  writeU16(memory, guestBase + helperPc + 4, 0xc511);
+  writeU16(memory, guestBase + helperPc + 6, 0x8082);
+  writeU16(memory, guestBase + helperPc + 10, 0x5529);
+  writeU16(memory, guestBase + helperPc + 16, 0x8536);
+  writeU16(memory, guestBase + helperPc + 18, 0x9602);
+  writeU16(memory, guestBase + returnPathPc, 0x57fd);
+  writeU32(memory, guestBase + returnPathPc + 2, encodeB(0, 10, 15, 12));
+  writeU16(memory, guestBase + returnPathPc + 6, 0x60a2);
+  writeU16(memory, guestBase + returnPathPc + 8, 0x6402);
+  writeU16(memory, guestBase + returnPathPc + 10, 0x0141);
+  writeU16(memory, guestBase + returnPathPc + 12, 0x8082);
+  writeU32(memory, guestBase + childFnPc, encodeI(0x13, 11, 0, 0, 0));
+  writeU32(memory, guestBase + childFnPc + 4, encodeI(0x13, 12, 0, 0, 0));
+  writeU32(memory, guestBase + childFnPc + 8, encodeI(0x13, 13, 0, 0, 0));
+  writeU32(memory, guestBase + childFnPc + 12, encodeI(0x13, 14, 0, 0, 0));
+  writeU32(memory, guestBase + childFnPc + 16, encodeI(0x13, 15, 0, 0, 0));
+  writeU32(memory, guestBase + childFnPc + 20, encodeI(0x13, 17, 0, 0, SYS_FUTEX));
+  writeU32(memory, guestBase + childFnPc + 24, 0x0000_0073);
+  writeU32(memory, guestBase + futexAddr, 0);
+  writeU32(memory, guestBase + finalTargetPc, 0x0000_0073);
+  writeU32(memory, guestBase + finalTargetPc + 4, 0x0000_8067);
+  writeU16(memory, guestBase + finalTargetPc + 8, 0x0001);
+  writeU64(memory, guestBase + parentSp, 0x28n);
+  writeU64(memory, guestBase + parentSp + 8, BigInt(finalTargetPc));
+
+  writeU64(memory, vmPtr + threadRegOffset(1), BigInt(returnPathPc));
+  writeU64(memory, vmPtr + threadRegOffset(2), BigInt(parentSp));
+  writeU64(memory, vmPtr + threadRegOffset(10), BigInt(
+    CLONE_VM | CLONE_THREAD | CLONE_SIGHAND | CLONE_FS,
+  ));
+  writeU64(memory, vmPtr + threadRegOffset(11), BigInt(childStack));
+  writeU64(memory, vmPtr + threadRegOffset(12), 0n);
+  writeU64(memory, vmPtr + threadRegOffset(13), 0n);
+  writeU64(memory, vmPtr + threadRegOffset(14), 0n);
+  writeU64(memory, vmPtr + threadRegOffset(17), BigInt(SYS_CLONE));
+  writeU64(memory, vmPtr + THREAD_PC_OFFSET, BigInt(entryPc));
+
+  owner.thread_step(vmPtr, 1);
+  expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_clone_spawn());
+
+  writeU64(memory, vmPtr + threadRegOffset(1), BigInt(returnPathPc));
+  writeU64(memory, vmPtr + threadRegOffset(2), BigInt(parentSp));
+  writeU64(memory, vmPtr + threadRegOffset(12), BigInt(childFnPc));
+  writeU64(memory, vmPtr + threadRegOffset(13), BigInt(futexAddr));
+
+  const childVmPtr = owner.thread_spawn_from_clone(vmPtr);
+  expect(childVmPtr).toBeGreaterThan(0);
+
+  attachKernelRuntimeState(child, readKernelRuntimeState(owner));
+  child.thread_step(childVmPtr, 16);
+  expect(child.thread_status(childVmPtr)).toBe(owner.abi_status_futex_wait());
+
+  attachKernelRuntimeState(owner, readKernelRuntimeState(child));
+  owner.thread_step(vmPtr, 9);
+  expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_ok());
+  expect(owner.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc));
+  expect(owner.thread_ra?.(vmPtr)).toBe(BigInt(finalTargetPc));
+  expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp + 16));
+
+  writeU64(memory, vmPtr + threadRegOffset(1), BigInt(finalTargetPc + 8));
+  writeU64(memory, vmPtr + threadRegOffset(2), BigInt(parentSp + 16));
+  writeU64(memory, vmPtr + threadRegOffset(10), BigInt(reserveAddr));
+  writeU64(memory, vmPtr + threadRegOffset(11), BigInt(reserveLen));
+  writeU64(memory, vmPtr + threadRegOffset(12), BigInt(PROT_READ | PROT_WRITE));
+  writeU64(memory, vmPtr + threadRegOffset(17), BigInt(SYS_MPROTECT));
+  writeU64(memory, vmPtr + threadRegOffset(27), 0x34567890n);
+  writeU64(memory, vmPtr + THREAD_PC_OFFSET, BigInt(finalTargetPc));
+
+  attachKernelRuntimeState(owner, readKernelRuntimeState(child));
+  owner.thread_step(vmPtr, 2);
+
+  expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_ok());
+  expect(owner.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc + 8));
+  expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp + 16));
+  expect(owner.thread_reg?.(vmPtr, 27)).toBe(0x34567890n);
+  expect(owner.thread_reg?.(vmPtr, 10)).toBe(0n);
+});
+
+test("shared-memory dual kernel instances preserve parent context across clone, flush_icache, and re-exec", async () => {
+  const loaded = await loadKernel();
+  if (!loaded) {
+    return;
+  }
+  const { exports: owner, memory, module } = loaded;
+  const childInstance = await WebAssembly.instantiate(module, {
+    env: createKernelEnv(memory),
+  });
+  const child = childInstance.exports as unknown as KernelExports;
+
+  const elfData = findRiscvElf("add");
+  if (!elfData) {
+    logSkip("add.elf not found");
+    return;
+  }
+
+  const heapBase = (owner as any).__heap_base?.value ?? 0x200000;
+  owner.kernel_init(heapBase);
+  const ramSize = memory.buffer.byteLength;
+  const elfOffset = ramSize - 256 * 1024;
+  new Uint8Array(memory.buffer).set(elfData, elfOffset);
+  const vmPtr = owner.process_create(elfOffset, elfData.length, ramSize, 1024 * 1024);
+  expect(vmPtr).toBeGreaterThan(0);
+
+  attachKernelRuntimeState(child, readKernelRuntimeState(owner));
+
+  const guestBase = owner.thread_guest_base?.(vmPtr) ?? 0;
+  const entryPc = Number(owner.thread_pc(vmPtr));
+  const codeAddr = guestBase + entryPc;
+  const helperPc = entryPc + 4;
+  const returnPathPc = entryPc + 0x40;
+  const childFnPc = entryPc + 0x80;
+  const finalTargetPc = entryPc + 0xc0;
+  const futexAddr = entryPc + 0x180;
+  const parentSp = entryPc + 0x240;
+  const childStack = entryPc + 0x300;
+  const codePageAddr = entryPc + 0x4000;
+  const codePageLen = 0x1000;
+
+  writeU32(memory, codeAddr, 0x0000_0073);
+  writeU32(memory, guestBase + entryPc + 4, 0x0000_8067);
+
+  writeU64(memory, vmPtr + threadRegOffset(1), BigInt(finalTargetPc));
+  writeU64(memory, vmPtr + threadRegOffset(2), BigInt(parentSp));
+  writeU64(memory, vmPtr + threadRegOffset(10), BigInt(codePageAddr));
+  writeU64(memory, vmPtr + threadRegOffset(11), BigInt(codePageLen));
+  writeU64(memory, vmPtr + threadRegOffset(12), BigInt(PROT_NONE));
+  writeU64(memory, vmPtr + threadRegOffset(13), BigInt(MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED));
+  writeU64(memory, vmPtr + threadRegOffset(14), BigInt(-1));
+  writeU64(memory, vmPtr + threadRegOffset(15), 0n);
+  writeU64(memory, vmPtr + threadRegOffset(17), BigInt(SYS_MMAP));
+  writeU64(memory, vmPtr + threadRegOffset(27), 0x34567890n);
+  writeU64(memory, vmPtr + THREAD_PC_OFFSET, BigInt(entryPc));
+
+  owner.thread_step(vmPtr, 2);
+  expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_ok());
+  expect(owner.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc));
+  expect(owner.thread_exit_code(vmPtr)).toBe(0);
+  expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp));
+  expect(owner.thread_reg?.(vmPtr, 10)).toBe(BigInt(codePageAddr));
+
+  writeU32(memory, guestBase + helperPc, encodeB(4, 10, 0, 10));
+  writeU16(memory, guestBase + helperPc + 4, 0xc511);
+  writeU16(memory, guestBase + helperPc + 6, 0x8082);
+  writeU16(memory, guestBase + helperPc + 10, 0x5529);
+  writeU16(memory, guestBase + helperPc + 16, 0x8536);
+  writeU16(memory, guestBase + helperPc + 18, 0x9602);
+  writeU16(memory, guestBase + returnPathPc, 0x57fd);
+  writeU32(memory, guestBase + returnPathPc + 2, encodeB(0, 10, 15, 12));
+  writeU16(memory, guestBase + returnPathPc + 6, 0x60a2);
+  writeU16(memory, guestBase + returnPathPc + 8, 0x6402);
+  writeU16(memory, guestBase + returnPathPc + 10, 0x0141);
+  writeU16(memory, guestBase + returnPathPc + 12, 0x8082);
+  writeU32(memory, guestBase + childFnPc, encodeI(0x13, 11, 0, 0, 0));
+  writeU32(memory, guestBase + childFnPc + 4, encodeI(0x13, 12, 0, 0, 0));
+  writeU32(memory, guestBase + childFnPc + 8, encodeI(0x13, 13, 0, 0, 0));
+  writeU32(memory, guestBase + childFnPc + 12, encodeI(0x13, 14, 0, 0, 0));
+  writeU32(memory, guestBase + childFnPc + 16, encodeI(0x13, 15, 0, 0, 0));
+  writeU32(memory, guestBase + childFnPc + 20, encodeI(0x13, 17, 0, 0, SYS_FUTEX));
+  writeU32(memory, guestBase + childFnPc + 24, 0x0000_0073);
+  writeU32(memory, guestBase + futexAddr, 0);
+  writeU32(memory, guestBase + finalTargetPc, 0x0000_0073);
+  writeU32(memory, guestBase + finalTargetPc + 4, 0x0000_8067);
+  writeU16(memory, guestBase + finalTargetPc + 8, 0x0001);
+  writeU64(memory, guestBase + parentSp, 0x28n);
+  writeU64(memory, guestBase + parentSp + 8, BigInt(finalTargetPc));
+
+  writeU64(memory, vmPtr + threadRegOffset(1), BigInt(returnPathPc));
+  writeU64(memory, vmPtr + threadRegOffset(2), BigInt(parentSp));
+  writeU64(memory, vmPtr + threadRegOffset(10), BigInt(
+    CLONE_VM | CLONE_THREAD | CLONE_SIGHAND | CLONE_FS,
+  ));
+  writeU64(memory, vmPtr + threadRegOffset(11), BigInt(childStack));
+  writeU64(memory, vmPtr + threadRegOffset(12), 0n);
+  writeU64(memory, vmPtr + threadRegOffset(13), 0n);
+  writeU64(memory, vmPtr + threadRegOffset(14), 0n);
+  writeU64(memory, vmPtr + threadRegOffset(17), BigInt(SYS_CLONE));
+  writeU64(memory, vmPtr + THREAD_PC_OFFSET, BigInt(entryPc));
+
+  owner.thread_step(vmPtr, 1);
+  expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_clone_spawn());
+
+  writeU64(memory, vmPtr + threadRegOffset(1), BigInt(returnPathPc));
+  writeU64(memory, vmPtr + threadRegOffset(2), BigInt(parentSp));
+  writeU64(memory, vmPtr + threadRegOffset(12), BigInt(childFnPc));
+  writeU64(memory, vmPtr + threadRegOffset(13), BigInt(futexAddr));
+
+  const childVmPtr = owner.thread_spawn_from_clone(vmPtr);
+  expect(childVmPtr).toBeGreaterThan(0);
+
+  attachKernelRuntimeState(child, readKernelRuntimeState(owner));
+  child.thread_step(childVmPtr, 16);
+  expect(child.thread_status(childVmPtr)).toBe(owner.abi_status_futex_wait());
+
+  attachKernelRuntimeState(owner, readKernelRuntimeState(child));
+  owner.thread_step(vmPtr, 9);
+  expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_ok());
+  expect(owner.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc));
+  expect(owner.thread_ra?.(vmPtr)).toBe(BigInt(finalTargetPc));
+  expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp + 16));
+
+  const runParentSyscall = (sysno: number, a0: number, a1: number, a2: number, s11: bigint) => {
+    writeU64(memory, vmPtr + threadRegOffset(1), BigInt(finalTargetPc + 8));
+    writeU64(memory, vmPtr + threadRegOffset(2), BigInt(parentSp + 16));
+    writeU64(memory, vmPtr + threadRegOffset(10), BigInt(a0));
+    writeU64(memory, vmPtr + threadRegOffset(11), BigInt(a1));
+    writeU64(memory, vmPtr + threadRegOffset(12), BigInt(a2));
+    writeU64(memory, vmPtr + threadRegOffset(17), BigInt(sysno));
+    writeU64(memory, vmPtr + threadRegOffset(27), s11);
+    writeU64(memory, vmPtr + THREAD_PC_OFFSET, BigInt(finalTargetPc));
+
+    owner.thread_step(vmPtr, 2);
+
+    expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_ok());
+    expect(owner.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc + 8));
+    expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp + 16));
+    expect(owner.thread_reg?.(vmPtr, 27)).toBe(s11);
+    expect(owner.thread_reg?.(vmPtr, 10)).toBe(0n);
+  };
+
+  const runParentCode = (expectedA0: bigint, s11: bigint) => {
+    writeU64(memory, vmPtr + threadRegOffset(1), BigInt(codePageAddr + 8));
+    writeU64(memory, vmPtr + threadRegOffset(2), BigInt(parentSp + 16));
+    writeU64(memory, vmPtr + threadRegOffset(10), 0n);
+    writeU64(memory, vmPtr + threadRegOffset(27), s11);
+    writeU64(memory, vmPtr + THREAD_PC_OFFSET, BigInt(codePageAddr));
+
+    owner.thread_step(vmPtr, 2);
+
+    expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_ok());
+    expect(owner.thread_pc(vmPtr)).toBe(BigInt(codePageAddr + 8));
+    expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp + 16));
+    expect(owner.thread_reg?.(vmPtr, 10)).toBe(expectedA0);
+    expect(owner.thread_reg?.(vmPtr, 27)).toBe(s11);
+  };
+
+  runParentSyscall(SYS_MPROTECT, codePageAddr, codePageLen, PROT_READ | PROT_WRITE, 0x34567890n);
+  writeU32(memory, guestBase + codePageAddr, 0x0010_0513);
+  writeU32(memory, guestBase + codePageAddr + 4, 0x0000_8067);
+  writeU16(memory, guestBase + codePageAddr + 8, 0x0001);
+  runParentSyscall(SYS_RISCV_FLUSH_ICACHE, codePageAddr, codePageAddr + 8, 0, 0x34567891n);
+  runParentSyscall(SYS_MPROTECT, codePageAddr, codePageLen, PROT_READ | PROT_EXEC, 0x34567892n);
+  runParentCode(1n, 0x34567893n);
+
+  runParentSyscall(SYS_MPROTECT, codePageAddr, codePageLen, PROT_READ | PROT_WRITE, 0x34567894n);
+  writeU32(memory, guestBase + codePageAddr, 0x02a0_0513);
+  runParentSyscall(SYS_RISCV_FLUSH_ICACHE, codePageAddr, codePageAddr + 8, 0, 0x34567895n);
+  runParentSyscall(SYS_MPROTECT, codePageAddr, codePageLen, PROT_READ | PROT_EXEC, 0x34567896n);
+  runParentCode(42n, 0x34567897n);
+});
+
+test("shared-memory dual kernel instances preserve parent fault snapshot with blocked sibling", async () => {
+  const loaded = await loadKernel();
+  if (!loaded) {
+    return;
+  }
+  const { exports: owner, memory, module } = loaded;
+  const childInstance = await WebAssembly.instantiate(module, {
+    env: createKernelEnv(memory),
+  });
+  const child = childInstance.exports as unknown as KernelExports;
+
+  const elfData = findRiscvElf("add");
+  if (!elfData) {
+    logSkip("add.elf not found");
+    return;
+  }
+
+  const heapBase = (owner as any).__heap_base?.value ?? 0x200000;
+  owner.kernel_init(heapBase);
+  const ramSize = memory.buffer.byteLength;
+  const elfOffset = ramSize - 256 * 1024;
+  new Uint8Array(memory.buffer).set(elfData, elfOffset);
+  const vmPtr = owner.process_create(elfOffset, elfData.length, ramSize, 1024 * 1024);
+  expect(vmPtr).toBeGreaterThan(0);
+
+  attachKernelRuntimeState(child, readKernelRuntimeState(owner));
+
+  const guestBase = owner.thread_guest_base?.(vmPtr) ?? 0;
+  const entryPc = Number(owner.thread_pc(vmPtr));
+  const codeAddr = guestBase + entryPc;
+  const helperPc = entryPc + 4;
+  const returnPathPc = entryPc + 0x40;
+  const childFnPc = entryPc + 0x80;
+  const finalTargetPc = entryPc + 0xc0;
+  const futexAddr = entryPc + 0x180;
+  const parentSp = entryPc + 0x240;
+  const childStack = entryPc + 0x300;
+
+  writeU32(memory, codeAddr, 0x0000_0073);
+  writeU32(memory, guestBase + entryPc + 4, 0x0000_8067);
+  writeU32(memory, guestBase + helperPc, encodeB(4, 10, 0, 10));
+  writeU16(memory, guestBase + helperPc + 4, 0xc511);
+  writeU16(memory, guestBase + helperPc + 6, 0x8082);
+  writeU16(memory, guestBase + helperPc + 10, 0x5529);
+  writeU16(memory, guestBase + helperPc + 16, 0x8536);
+  writeU16(memory, guestBase + helperPc + 18, 0x9602);
+  writeU16(memory, guestBase + returnPathPc, 0x57fd);
+  writeU32(memory, guestBase + returnPathPc + 2, encodeB(0, 10, 15, 12));
+  writeU16(memory, guestBase + returnPathPc + 6, 0x60a2);
+  writeU16(memory, guestBase + returnPathPc + 8, 0x6402);
+  writeU16(memory, guestBase + returnPathPc + 10, 0x0141);
+  writeU16(memory, guestBase + returnPathPc + 12, 0x8082);
+  writeU32(memory, guestBase + childFnPc, encodeI(0x13, 11, 0, 0, 0));
+  writeU32(memory, guestBase + childFnPc + 4, encodeI(0x13, 12, 0, 0, 0));
+  writeU32(memory, guestBase + childFnPc + 8, encodeI(0x13, 13, 0, 0, 0));
+  writeU32(memory, guestBase + childFnPc + 12, encodeI(0x13, 14, 0, 0, 0));
+  writeU32(memory, guestBase + childFnPc + 16, encodeI(0x13, 15, 0, 0, 0));
+  writeU32(memory, guestBase + childFnPc + 20, encodeI(0x13, 17, 0, 0, SYS_FUTEX));
+  writeU32(memory, guestBase + childFnPc + 24, 0x0000_0073);
+  writeU32(memory, guestBase + futexAddr, 0);
+  writeU32(memory, guestBase + finalTargetPc, 0x0000_0073);
+  writeU32(memory, guestBase + finalTargetPc + 4, 0x0000_8067);
+  writeU16(memory, guestBase + finalTargetPc + 8, 0x0001);
+  writeU64(memory, guestBase + parentSp, 0x28n);
+  writeU64(memory, guestBase + parentSp + 8, BigInt(finalTargetPc));
+
+  writeU64(memory, vmPtr + threadRegOffset(1), BigInt(returnPathPc));
+  writeU64(memory, vmPtr + threadRegOffset(2), BigInt(parentSp));
+  writeU64(memory, vmPtr + threadRegOffset(10), BigInt(
+    CLONE_VM | CLONE_THREAD | CLONE_SIGHAND | CLONE_FS,
+  ));
+  writeU64(memory, vmPtr + threadRegOffset(11), BigInt(childStack));
+  writeU64(memory, vmPtr + threadRegOffset(12), 0n);
+  writeU64(memory, vmPtr + threadRegOffset(13), 0n);
+  writeU64(memory, vmPtr + threadRegOffset(14), 0n);
+  writeU64(memory, vmPtr + threadRegOffset(17), BigInt(SYS_CLONE));
+  writeU64(memory, vmPtr + THREAD_PC_OFFSET, BigInt(entryPc));
+
+  owner.thread_step(vmPtr, 1);
+  expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_clone_spawn());
+
+  writeU64(memory, vmPtr + threadRegOffset(1), BigInt(returnPathPc));
+  writeU64(memory, vmPtr + threadRegOffset(2), BigInt(parentSp));
+  writeU64(memory, vmPtr + threadRegOffset(12), BigInt(childFnPc));
+  writeU64(memory, vmPtr + threadRegOffset(13), BigInt(futexAddr));
+
+  const childVmPtr = owner.thread_spawn_from_clone(vmPtr);
+  expect(childVmPtr).toBeGreaterThan(0);
+
+  attachKernelRuntimeState(child, readKernelRuntimeState(owner));
+  child.thread_step(childVmPtr, 16);
+  expect(child.thread_status(childVmPtr)).toBe(owner.abi_status_futex_wait());
+
+  attachKernelRuntimeState(owner, readKernelRuntimeState(child));
+  owner.thread_step(vmPtr, 9);
+  expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_ok());
+  expect(owner.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc));
+  expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp + 16));
+
+  writeU64(memory, vmPtr + threadRegOffset(1), 0n);
+  writeU64(memory, vmPtr + threadRegOffset(2), BigInt(parentSp + 16));
+  writeU64(memory, vmPtr + threadRegOffset(27), 0x34567898n);
+  writeU64(memory, vmPtr + THREAD_PC_OFFSET, 4n);
+
+  owner.thread_step(vmPtr, 1);
+
+  expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_fault());
+  expect(owner.thread_fault_pc?.(vmPtr)).toBe(4n);
+  expect(owner.thread_fault_addr?.(vmPtr)).toBe(4n);
+  expect(owner.thread_term_signal(vmPtr)).toBe(SIGSEGV);
 });

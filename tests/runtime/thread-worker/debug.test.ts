@@ -133,11 +133,16 @@ test("collectDebugParts prefers per-vm cpu trace over global last trace", () => 
   expect(parts).toContain("zero_reg_tid=3");
   expect(parts).toContain("guest_ram_limit=33554432");
   expect(parts).toContain("zero_reg_pc=0x222");
+  expect(parts).toContain("zero_reg_pc_vma=0x200-0x300:3/6");
   expect(parts).toContain("zero_reg_raw=0x5678");
   expect(parts).toContain("s11_write_tid=3");
   expect(parts).toContain("s11_write_pc=0x444");
+  expect(parts).toContain("s11_write_pc_vma=0x400-0x500:1/2");
   expect(parts).toContain("sp_write_tid=3");
   expect(parts).toContain("sp_write_pc=0x666");
+  expect(parts).toContain("sp_write_pc_vma=none");
+  expect(parts).toContain("sp_write_pc_vma_prev=0x400-0x500:1/2");
+  expect(parts).toContain("sp_write_pc_vma_next=none");
   expect(parts).not.toContain("zero_reg_pc=0x111");
   expect(parts).not.toContain("s11_write_pc=0x333");
   expect(parts).not.toContain("sp_write_pc=0x555");
@@ -208,6 +213,32 @@ test("collectDebugParts prefers per-vm jalr trace over global jalr trace", () =>
   expect(parts).toContain("jalr_rs1v=0x555");
   expect(parts).toContain("jalr_target=0x0");
   expect(parts).not.toContain("jalr_pc=0x111");
+});
+
+test("collectDebugParts includes dedicated riscv syscall trace entries", () => {
+  const parts = collectDebugParts(
+    {
+      ...makeThreadWorkerDebugExports(),
+      debug_fd_syscall_trace_len: () => 0,
+      debug_riscv_syscall_trace_len: () => 2,
+      debug_riscv_syscall_trace_entry_vm_ptr: (index: number) => [0x1234, 0x1234][index] ?? 0,
+      debug_riscv_syscall_trace_entry_nr: (index: number) => [258n, 259n][index] ?? 0n,
+      debug_riscv_syscall_trace_entry_arg0: (index: number) => [0x10n, 0x20n][index] ?? 0n,
+      debug_riscv_syscall_trace_entry_arg1: (index: number) => [0x11n, 0x21n][index] ?? 0n,
+      debug_riscv_syscall_trace_entry_arg2: (index: number) => [0x12n, 0x22n][index] ?? 0n,
+      debug_riscv_syscall_trace_entry_arg3: (index: number) => [0x13n, 0x23n][index] ?? 0n,
+      debug_riscv_syscall_trace_entry_arg4: (index: number) => [0x14n, 0x24n][index] ?? 0n,
+      debug_riscv_syscall_trace_entry_arg5: (index: number) => [0x15n, 0x25n][index] ?? 0n,
+      debug_riscv_syscall_trace_entry_result: (index: number) => [0n, -1n][index] ?? 0n,
+      debug_riscv_syscall_trace_entry_status: (index: number) => [0, 3][index] ?? 0,
+    } as never,
+    0x1234,
+    0,
+  ).join(" ");
+
+  expect(parts).toContain("riscv_syscalls=[");
+  expect(parts).toContain("0x1234:258=0/0(0x10,0x11,0x12,0x13,0x14,0x15)");
+  expect(parts).toContain("0x1234:259=-1/3(0x20,0x21,0x22,0x23,0x24,0x25)");
 });
 
 test("collectDebugParts prefers per-vm signal delivery trace over global trace", () => {

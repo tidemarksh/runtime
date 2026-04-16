@@ -5,7 +5,7 @@ import type { ProcessHandle } from "../types.js";
 import type { WorkerForkDeps } from "./types.js";
 
 const WASM_PAGE_SIZE_BYTES = 64 * 1024;
-const EXECVE_RAM_LIMIT_BYTES = 0x8000_0000;
+const WASM32_LINEAR_MEMORY_LIMIT_BYTES = 0x1_0000_0000;
 
 interface CreateForkChildHandleArgs {
   deps: WorkerForkDeps;
@@ -99,11 +99,14 @@ export function computeGuestRamLimitBytes(
   minRamSize: number,
   maxMemoryPages: number,
 ): number {
-  const totalLinearBytes = maxMemoryPages * WASM_PAGE_SIZE_BYTES;
+  const totalLinearBytes = Math.min(
+    maxMemoryPages * WASM_PAGE_SIZE_BYTES,
+    WASM32_LINEAR_MEMORY_LIMIT_BYTES,
+  );
   const guestWindowBytes = Math.max(0, totalLinearBytes - guestBase);
   return Math.max(
     minRamSize,
-    Math.min(guestWindowBytes, EXECVE_RAM_LIMIT_BYTES),
+    guestWindowBytes,
   );
 }
 

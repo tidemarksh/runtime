@@ -228,7 +228,7 @@ const workerForkHandlers = createWorkerForkHandlers({
   canonicalizeChildLifecycleViaKernelWorker,
   bootStrapMemoryBytes: 64 * 1024 * 1024,
   wasmPageSize: 65536,
-  wasmMaxPages: 65536,
+  wasmMaxPages: 64512,
 });
 const {
   handleExecveSpawn,
@@ -280,7 +280,7 @@ workerLifecycleHelpers = createWorkerLifecycleHelpers({
   workerExitFailProcess: workerExitHelpers.failProcess,
 });
 const WASM_PAGE_SIZE = 65536;
-const WASM_MAX_PAGES = 32768;
+const WASM_MAX_PAGES = 64512;
 const BOOTSTRAP_MEMORY_BYTES = 64 * 1024 * 1024;
 const FS_EFFECT_MEMFS_MUTATION = 1 << 0;
 const FS_EFFECT_SHARED_OFD_STATE = 1 << 1;

@@ -174,6 +174,121 @@ test("status handler logs futex resume with compact debug fields", () => {
   expect(enqueueWorker).toHaveBeenCalledWith(expect.anything(), worker);
 });
 
+test("status handler keeps faulting worker tracked until completeProcessExit runs for last-thread fault", () => {
+  const appendWorkerDebugLog = vi.fn();
+  const completeProcessExit = vi.fn(async () => {});
+  const worker = {} as Worker;
+  const sibling = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, { vmPtr: number; initialized: boolean; waitingInWorkerStatus: number | null }>();
+  threadWorkerStates.set(worker, {
+    vmPtr: 0x1234,
+    initialized: true,
+    waitingInWorkerStatus: null,
+  });
+
+  const handle = {
+    pid: 7,
+    lastDebugMessage: "pc=0x67c5be sp=0x197d120 s11=0x1 process_thread_count=2",
+    stdoutPipe: 0,
+    stderrPipe: 0,
+    stdinPipe: 0,
+    stdinQueue: [],
+    hostStdio: {
+      stdinPipe: 0,
+      stdoutPipe: 0,
+      stderrPipe: 0,
+      refCount: 1,
+    },
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    outputBacklog: [],
+    workers: new Set([worker, sibling]),
+    readyWorkers: [],
+    blockedWorkers: new Map(),
+    kernelWorkerRequest: undefined,
+    kernelShare: { members: new Set(), sharedOfdIds: new Set() },
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(12),
+      stateSab: new SharedArrayBuffer(176),
+    },
+    kernel: {
+      abi_status_ok: () => 0,
+      abi_status_fault: () => 3,
+      abi_status_clone_spawn: () => 9,
+      abi_status_futex_wait: () => 20,
+      abi_status_epoll_wait: () => 22,
+      thread_pc: () => 0x2000n,
+      thread_sp: () => 0x3000n,
+      thread_s11: () => 0x4000n,
+      thread_process_thread_count: () => 0,
+      abi_max_threads: () => 4,
+      process_thread_vm_ptr: () => 0,
+      kernel_attach_runtime_state: () => {},
+    },
+    kernelState: makeKernelState(),
+    onStdout: null,
+    runningWorker: worker,
+  } as never;
+
+  const handler = createWorkerStatusMessageHandler({
+    threadWorkerStates,
+    appendWorkerDebugLog,
+    clearBlockedWorker: () => {},
+    enqueueWorker: () => {},
+    pumpProcess: () => {},
+    kickBlockedWorkers: () => {},
+    failProcess: () => {},
+    requestPipeStateSync: async () => {},
+    requestEpollStateSync: async () => {},
+    requestSocketStateSync: async () => {},
+    resumeFsViaKernelWorker: async () => {},
+    resumeConnectViaKernelWorker: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    captureVforkSnapshot: () => {
+      throw new Error("unexpected");
+    },
+    syncForkSharedStateViaKernelWorker: async () => {},
+    syncBlockedForkSharedStateViaKernelWorker: async () => {},
+    syncProcessLifecycleViaKernelWorker: async () => {},
+    canonicalizeActiveVforkChildViaKernelWorker: async () => {},
+    attachThreadWorker: () => {},
+    completeProcessExit,
+    handleExecveSpawn: async () => {},
+    blockWorker: () => {},
+    assertProcessStandardFdIntegrity: () => {},
+    requestEpollDependentOfdStateSync: async () => {},
+    statusOkCompletedSyncEffects: 0,
+    syncEffectPipeState: 1,
+    syncEffectSocketState: 2,
+    syncEffectEpollState: 4,
+    syncEffectEpollDependentOfdState: 8,
+    syncEffectProcessLifecycle: 16,
+    syncEffectSignalWaiters: 32,
+    syncEffectForkSharedOfdState: 64,
+    statusDefersOwnedStateSync: () => false,
+  } as never);
+
+  handler(
+    handle,
+    worker,
+    {
+      type: "status",
+      status: 3,
+      vmPtr: 0x1234,
+      exitCode: 139,
+      termSignal: 11,
+      pc: 0n,
+      kernelState: makeKernelState(),
+      debug: "pc=0x4 process_thread_count=0",
+    },
+  );
+
+  expect(completeProcessExit).toHaveBeenCalledWith(handle, 139, 11);
+  expect(handle.workers.has(worker)).toBe(true);
+  expect(threadWorkerStates.get(worker)?.vmPtr).toBe(0x1234);
+  expect(handle.lastDebugMessage).toBe("pc=0x67c5be sp=0x197d120 s11=0x1 process_thread_count=2");
+  expect(appendWorkerDebugLog).toHaveBeenCalledWith(handle, "status_debug:0x1234:pc=0x4 process_thread_count=0");
+});
+
 test("status handler logs quoted write debug fields before wait handling", () => {
   const appendWorkerDebugLog = vi.fn();
   const worker = {} as Worker;

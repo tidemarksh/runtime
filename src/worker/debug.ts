@@ -9,6 +9,7 @@ export interface WorkerLogFocus {
   ownerState: string;
   waitingInWorkerStatus: number | null;
   threadState: string | null;
+  lastCredibleState: string | null;
   lastStatus: string | null;
   lastStatusDebug: string | null;
   lastReady: string | null;
@@ -96,6 +97,7 @@ function collectWorkerEventTail(
   const prefixes = [
     "status",
     "ready",
+    "step",
     "wait",
     "resume",
     "write",
@@ -116,7 +118,7 @@ function collectWorkerEventTail(
       continue;
     }
     out.push(entry);
-    if (out.length >= 6) {
+    if (out.length >= 12) {
       break;
     }
   }
@@ -148,11 +150,41 @@ function collectWorkerStatusTail(
       continue;
     }
     out.push(entry);
-    if (out.length >= 10) {
+    if (out.length >= 20) {
       break;
     }
   }
   return out.reverse();
+}
+
+function isSuspiciousLowStateWorkerLogEntry(entry: string | null): boolean {
+  if (!entry) {
+    return false;
+  }
+  return /(?:^|:)pc=0x[0-9a-f]{1,3}(?::|$)/i.test(entry)
+    || /(?:^|:)sp=0x0(?::|$)/.test(entry)
+    || /(?:^|:)s11=0x0(?::|$)/.test(entry)
+    || /(?:^|[\s:])fault_pc=0x[0-9a-f]{1,3}(?::|[\s]|$)/i.test(entry);
+}
+
+function findLastCredibleWorkerState(
+  workerDebugLog: readonly string[],
+  vmPtr: number,
+): string | null {
+  const vmTag = `0x${vmPtr.toString(16)}`;
+  for (let index = workerDebugLog.length - 1; index >= 0; index -= 1) {
+    const entry = workerDebugLog[index];
+    if (!entry?.includes(vmTag)) {
+      continue;
+    }
+    if (!(entry.startsWith(`status:${vmTag}`) || entry.startsWith(`ready:${vmTag}`) || entry.startsWith(`step:${vmTag}`))) {
+      continue;
+    }
+    if (!isSuspiciousLowStateWorkerLogEntry(entry)) {
+      return entry;
+    }
+  }
+  return null;
 }
 
 function collectLoggedWorkerVmPtrs(
@@ -239,6 +271,8 @@ function formatWorkerThreadState(
   const sp = handle.kernel.thread_sp(vmPtr);
   const a0 = handle.kernel.thread_a0(vmPtr);
   const a1 = handle.kernel.thread_a1(vmPtr);
+  const a2 = handle.kernel.thread_reg?.(vmPtr, 12) ?? 0n;
+  const a3 = handle.kernel.thread_reg?.(vmPtr, 13) ?? 0n;
   const gp = handle.kernel.thread_gp?.(vmPtr) ?? 0n;
   const tp = handle.kernel.thread_tp?.(vmPtr) ?? 0n;
   const s11 = handle.kernel.thread_s11?.(vmPtr) ?? 0n;
@@ -252,6 +286,8 @@ function formatWorkerThreadState(
     `sp=0x${formatU64(sp)}`,
     `a0=${a0.toString()}`,
     `a1=${a1.toString()}`,
+    `a2=0x${formatU64(a2)}`,
+    `a3=0x${formatU64(a3)}`,
     `gp=0x${formatU64(gp)}`,
     `tp=0x${formatU64(tp)}`,
     `s11=0x${formatU64(s11)}`,
@@ -301,11 +337,14 @@ export function summarizeProcessWorkerLogFocus(
 
   return [...attachedStates, ...detachedStates]
     .map((state) => {
+      const eventTail = collectWorkerEventTail(handle.workerDebugLog, state.vmPtr);
+      const statusTail = collectWorkerStatusTail(handle.workerDebugLog, state.vmPtr);
       return {
         vmPtr: state.vmPtr,
         ownerState: state.ownerState,
         waitingInWorkerStatus: state.waitingInWorkerStatus,
         threadState: formatWorkerThreadState(handle, state.vmPtr),
+        lastCredibleState: findLastCredibleWorkerState(handle.workerDebugLog, state.vmPtr),
         lastStatus: findLastWorkerLogEntry(handle.workerDebugLog, "status", state.vmPtr),
         lastStatusDebug: findLastWorkerLogEntry(handle.workerDebugLog, "status_debug", state.vmPtr),
         lastReady: findLastWorkerLogEntry(handle.workerDebugLog, "ready", state.vmPtr),
@@ -318,8 +357,8 @@ export function summarizeProcessWorkerLogFocus(
         lastYield: findLastWorkerLogEntry(handle.workerDebugLog, "yield", state.vmPtr),
         lastFaultDebug: findLastWorkerLogEntry(handle.workerDebugLog, "fault_debug", state.vmPtr),
         execTrace: formatWorkerExecTrace(handle, state.vmPtr),
-        eventTail: collectWorkerEventTail(handle.workerDebugLog, state.vmPtr),
-        statusTail: collectWorkerStatusTail(handle.workerDebugLog, state.vmPtr),
+        eventTail,
+        statusTail,
       } satisfies WorkerLogFocus;
     })
     .filter((entry): entry is WorkerLogFocus => entry !== null)
@@ -513,6 +552,34 @@ function formatProcessSyscallTrace(handle: ProcessHandle): string {
   return entries.join(" ");
 }
 
+function formatProcessRiscvSyscallTrace(handle: ProcessHandle): string {
+  const len = handle.kernel.debug_riscv_syscall_trace_len?.() ?? 0;
+  if (len <= 0) {
+    return "";
+  }
+  const entries: string[] = [];
+  for (let index = 0; index < len; index += 1) {
+    const traceVmPtr = handle.kernel.debug_riscv_syscall_trace_entry_vm_ptr?.(index) ?? 0;
+    const nr = handle.kernel.debug_riscv_syscall_trace_entry_nr?.(index);
+    const arg0 = handle.kernel.debug_riscv_syscall_trace_entry_arg0?.(index);
+    const arg1 = handle.kernel.debug_riscv_syscall_trace_entry_arg1?.(index);
+    const arg2 = handle.kernel.debug_riscv_syscall_trace_entry_arg2?.(index);
+    const arg3 = handle.kernel.debug_riscv_syscall_trace_entry_arg3?.(index);
+    const arg4 = handle.kernel.debug_riscv_syscall_trace_entry_arg4?.(index);
+    const arg5 = handle.kernel.debug_riscv_syscall_trace_entry_arg5?.(index);
+    const result = handle.kernel.debug_riscv_syscall_trace_entry_result?.(index);
+    const status = handle.kernel.debug_riscv_syscall_trace_entry_status?.(index) ?? 0;
+    entries.push(
+      `${index}:vm=0x${traceVmPtr.toString(16)}:nr=${nr?.toString() ?? "n/a"}`
+      + `:a0=${arg0?.toString() ?? "n/a"}:a1=${arg1?.toString() ?? "n/a"}`
+      + `:a2=${arg2?.toString() ?? "n/a"}:a3=${arg3?.toString() ?? "n/a"}`
+      + `:a4=${arg4?.toString() ?? "n/a"}:a5=${arg5?.toString() ?? "n/a"}`
+      + `:status=${status}:result=${result?.toString() ?? "n/a"}`,
+    );
+  }
+  return entries.join(" ");
+}
+
 function formatProcessPathTrace(handle: ProcessHandle): string {
   const len = handle.kernel.debug_path_syscall_trace_len?.() ?? 0;
   if (len <= 0) {
@@ -623,6 +690,7 @@ export function debugRuntimeProcessHandles(
         .map((worker) => [
           `0x${worker.vmPtr.toString(16)}`,
           worker.ownerState,
+          worker.lastCredibleState ? `credible=${JSON.stringify(worker.lastCredibleState)}` : null,
           worker.lastWait20 ? `wait=${JSON.stringify(worker.lastWait20)}` : null,
           worker.lastResume20 ? `resume=${JSON.stringify(worker.lastResume20)}` : null,
           worker.lastWrite ? `write=${JSON.stringify(worker.lastWrite)}` : null,
@@ -788,6 +856,7 @@ export function debugRuntimeProcessHandles(
         `execve_approach_trace=[${formatProcessExecveApproachTrace(handle)}]`,
         `execve_dispatch_trace=[${formatProcessExecveDispatchTrace(handle)}]`,
         `syscalls=[${formatProcessSyscallTrace(handle)}]`,
+        `riscv_syscalls=[${formatProcessRiscvSyscallTrace(handle)}]`,
         `path_syscalls=[${formatProcessPathTrace(handle)}]`,
       ].join(" ");
       } catch (error) {
@@ -801,6 +870,7 @@ export function debugRuntimeProcessHandles(
           `execve_approach_trace=[${formatProcessExecveApproachTrace(handle)}]`,
           `execve_dispatch_trace=[${formatProcessExecveDispatchTrace(handle)}]`,
           `syscalls=[${formatProcessSyscallTrace(handle)}]`,
+          `riscv_syscalls=[${formatProcessRiscvSyscallTrace(handle)}]`,
           `path_syscalls=[${formatProcessPathTrace(handle)}]`,
           `worker_log=[${handle.workerDebugLog.join(", ")}]`,
         ].join(" ");

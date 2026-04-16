@@ -168,6 +168,11 @@ export function handleFutexWait(
     const result = Atomics.wait(i32, wordIndex, expected, waitMs);
 
     ctx.reattachPublishedKernelRuntimeState();
+    const currentStatus = ctx.exports.thread_status(ctx.vmPtr);
+    if (currentStatus !== ctx.statusCodes.FUTEX_WAIT) {
+      ctx.postStatus(currentStatus);
+      return false;
+    }
     const stillBlockedAddr = ctx.exports.thread_record_blocked_addr(ctx.vmPtr);
     const hasPendingSignal = ctx.exports.thread_sig_pending(ctx.vmPtr) !== 0n;
     if (stillBlockedAddr === BLOCKED_ADDR_NOT_FOUND) {

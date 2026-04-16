@@ -281,6 +281,61 @@ test("handleFutexWait treats missing thread-record sentinel as EAGAIN instead of
   waitSpy.mockRestore();
 });
 
+test("handleFutexWait exits when reattached kernel state changes the thread status", () => {
+  const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+  const i32 = new Int32Array(memory.buffer);
+  const waitSpy = vi.spyOn(Atomics, "wait");
+  const resumeWait = vi.fn();
+  const resumeWaitResult = vi.fn();
+  const postStatus = vi.fn();
+
+  const guestAddr = 0x100;
+  const expected = 31;
+  let status = 20;
+
+  i32[guestAddr >>> 2] = expected;
+
+  waitSpy.mockImplementation((view, index, value) => {
+    expect(view.buffer).toBe(memory.buffer);
+    expect(index).toBe(guestAddr >>> 2);
+    expect(value).toBe(expected);
+    status = 9;
+    return "timed-out";
+  });
+
+  const handled = handleFutexWait({
+    exports: {
+      memory,
+      thread_futex_wait_addr: () => BigInt(guestAddr),
+      thread_futex_wait_timeout: () => 0n,
+      thread_futex_wait_expected: () => expected,
+      thread_record_blocked_addr: () => guestAddr,
+      thread_sig_pending: () => 0n,
+      thread_resume_futex_wait: resumeWait,
+      thread_resume_futex_wait_result: resumeWaitResult,
+      thread_status: () => status,
+    } as never,
+    statusCodes: { FUTEX_WAIT: 20 } as never,
+    vmPtr: 0x1234,
+    guestBase: 0,
+    runtimeBridge: null,
+    threadStepBudget: 1000,
+    eintrErrno: 4,
+    futexWaitSliceMs: 0,
+    postStatus,
+    reattachPublishedKernelRuntimeState: () => {},
+    step: () => {},
+  }, 20);
+
+  expect(handled).toBe(false);
+  expect(resumeWait).not.toHaveBeenCalled();
+  expect(resumeWaitResult).not.toHaveBeenCalled();
+  expect(postStatus).toHaveBeenNthCalledWith(1, 20, true);
+  expect(postStatus).toHaveBeenNthCalledWith(2, 9);
+
+  waitSpy.mockRestore();
+});
+
 test("handleRuntimeBridgeBlockedStatus treats epoll timeout=0 as an immediate timeout retry", () => {
   const bridge = createRuntimeStateBridge();
   const waitSpy = vi.spyOn(Atomics, "wait");

@@ -16,6 +16,9 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
     if (handle.pid > 0 && deps.processHandles.get(handle.pid) !== handle) {
       return;
     }
+    if (handle.exitInProgress) {
+      return;
+    }
 
     if (handleWorkerControlMessage(handle, worker, msg)) {
       return;

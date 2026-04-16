@@ -86,15 +86,16 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       }
       const remainingThreads = handle.kernel.thread_process_thread_count(thread.vmPtr);
       const hasLiveThreads = remainingThreads !== 0 && processHasLiveThreads(handle.kernel, thread.vmPtr);
+      const shouldExitProcess = remainingThreads === 0 || !hasLiveThreads;
       deps.appendWorkerDebugLog(handle, `fault:0x${thread.vmPtr.toString(16)} remaining=${remainingThreads}`);
-      handle.workers.delete(worker);
-      deps.threadWorkerStates.delete(worker);
-      releaseWorker(worker);
-      if (remainingThreads === 0 || !hasLiveThreads) {
+      if (shouldExitProcess) {
         void deps.completeProcessExit(handle, msg.exitCode, msg.termSignal).catch((error) => {
           deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
         });
       } else {
+        handle.workers.delete(worker);
+        deps.threadWorkerStates.delete(worker);
+        releaseWorker(worker);
         if (wroteToPipe || drainedPipe) {
           void deps.requestPipeStateSync(handle, true)
             .then(() => {

@@ -14,6 +14,13 @@ import {
 
 export type DynamicRunnerKind = "direct-exec" | "shell-script";
 
+export interface DynamicStartupRuntimeOptions {
+  ramSize?: number;
+  maxKernelMemoryPages?: number;
+  maxProcessMemoryPages?: number;
+  maxForkMemoryPages?: number;
+}
+
 export interface DynamicStartupEntry {
   id: string;
   targetClass: string;
@@ -24,6 +31,7 @@ export interface DynamicStartupEntry {
   env: readonly string[];
   timeoutMs: number;
   ramSize: number;
+  runtimeOptions?: DynamicStartupRuntimeOptions;
   snapshotSources: readonly SnapshotSource[];
   expectedSubstrings: readonly string[];
   forbiddenSubstrings?: readonly string[];
@@ -75,6 +83,7 @@ export async function prepareDynamicStartupRuntime(
   const runtime = await Runtime.create({
     wasmBytes,
     ramSize: entry.ramSize,
+    ...entry.runtimeOptions,
   });
   try {
     await runtime.applyFsSnapshot(snapshot);
@@ -111,7 +120,12 @@ export async function runDynamicStartupEntry(
         }
       }),
     ]);
-    return { exitCode, output, debugInfo: proc.debugInfo?.() };
+    const debugParts: string[] = [];
+    const baseDebug = proc.debugInfo?.();
+    if (baseDebug) {
+      debugParts.push(baseDebug);
+    }
+    return { exitCode, output, debugInfo: debugParts.join(" ") || undefined };
   } catch (error) {
     const summary = await runtimeDebugSummary(runtime);
     const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);

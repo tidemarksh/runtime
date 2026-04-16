@@ -233,18 +233,6 @@ export function createWorkerSchedulerStateSyncHelpers(
           ? deps.drainHiddenProcessOutput(handle)
           : false;
         const drainedVisibleOutput = deps.drainProcessOutput(visibleHandle);
-        if (
-          drainedVisibleOutput
-          && kernelWorkerOwnsPipeState(visibleHandle)
-          && visibleHandle.kernelWorkerRequest
-          && visibleHandle.pid > 0
-        ) {
-          const visiblePipeUsed = await syncPipeStateViaKernelWorker(visibleHandle);
-          visibleHandle.kernelState = {
-            ...visibleHandle.kernelState,
-            pipeUsed: visiblePipeUsed,
-          };
-        }
         deps.appendRuntimeLifecycleEvent(
           visibleHandle.runtimeId,
           `pipe-sync-drain:${handle.pid}->${visibleHandle.pid}:${drainedHiddenOutput || drainedVisibleOutput ? 1 : 0}`,

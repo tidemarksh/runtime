@@ -417,7 +417,7 @@ test("createProcess delegates cwd resolution and lifecycle seeding for runtime-o
   );
 
   expect(resolveProcessCwdInoViaKernelWorker).toHaveBeenCalledWith(kernelWorkerRequest, "/work/child");
-  expect(registerProcessWithKernelWorker).toHaveBeenCalledWith(handle, { seedMemfsMode: "full" });
+  expect(registerProcessWithKernelWorker).toHaveBeenCalledWith(handle, { seedMemfsMode: "none" });
   expect(fakeKernel.processSetCwdIno).toHaveBeenCalledWith(0x1234, 33);
   expect(assertProcessStandardFdIntegrity).toHaveBeenCalledWith(handle, "create-process");
   expect(handle.stdinPipe).toBe(1);
@@ -564,6 +564,7 @@ test("createProcess fetches a metadata-only kernel-worker snapshot when runtime 
       }],
     };
   });
+  const registerProcessWithKernelWorker = vi.fn(async () => {});
   const factory = createWorkerProcessFactory({
     processHandles,
     attachThreadWorker: vi.fn(),
@@ -571,7 +572,7 @@ test("createProcess fetches a metadata-only kernel-worker snapshot when runtime 
     ensureCompiledModule: async () => ({}) as WebAssembly.Module,
     getRuntimeFsEntries,
     initializeProcessLifecycleViaKernelWorker: vi.fn(async () => {}),
-    registerProcessWithKernelWorker: vi.fn(async () => {}),
+    registerProcessWithKernelWorker,
     resolveProcessCwdInoViaKernelWorker: vi.fn(async () => 1),
     bootstrapMemoryBytes: 64 * 1024 * 1024,
     wasmPageSize: 65536,
@@ -598,6 +599,7 @@ test("createProcess fetches a metadata-only kernel-worker snapshot when runtime 
   expect(Number(fakeKernel.memfs_file_size(ino))).toBe("materialized-app".length);
   expect(fakeKernel.externalizedInos.has(ino)).toBe(true);
   expect(fakeKernel.callLog).toContain("memfs_set_file_external");
+  expect(registerProcessWithKernelWorker).toHaveBeenCalledWith(expect.anything(), { seedMemfsMode: "metadata" });
 });
 
 test("createProcess computes guest base after preloading runtime fs entries", async () => {
