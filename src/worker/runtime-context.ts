@@ -46,6 +46,7 @@ export interface RuntimeFailureSnapshot {
   exitCode: number;
   termSignal: number;
   debug: string;
+  memorySyscalls: string[];
   workerFocus: RuntimeProcessWorkerLogFocus[];
 }
 
@@ -98,12 +99,14 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
     exitCode: number,
     termSignal: number,
   ): void {
+    const memorySyscalls = captureMemorySyscallTrace(handle);
     runtimeFailureSnapshots.set(handle.runtimeId, {
       pid: handle.pid,
       cmd: handle.debugCommand,
       exitCode,
       termSignal,
-      debug: debugRuntimeProcessHandles(handle.runtimeId),
+      debug: handle.lastDebugMessage ?? debugRuntimeProcessHandles(handle.runtimeId),
+      memorySyscalls,
       workerFocus: [{
         pid: handle.pid,
         cmd: handle.debugCommand,
@@ -118,6 +121,64 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
 
   function clearRuntimeFailureSnapshot(runtimeId: number): void {
     runtimeFailureSnapshots.delete(runtimeId);
+  }
+
+  function extractDebugFieldValues(debug: string | undefined, key: string): string[] {
+    if (!debug) {
+      return [];
+    }
+    const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const matches = debug.matchAll(new RegExp(`(?:^|\\s)${escapedKey}=([^\\s]+)`, "g"));
+    const values: string[] = [];
+    for (const match of matches) {
+      if (match[1]) {
+        values.push(match[1]);
+      }
+    }
+    return values;
+  }
+
+  function captureMemorySyscallTrace(handle: ProcessHandle): string[] {
+    const debugValues = extractDebugFieldValues(handle.lastDebugMessage, "memory_syscalls");
+    if (debugValues.length > 0) {
+      return debugValues.at(-1)?.split(",").filter((entry) => entry.length > 0) ?? [];
+    }
+
+    const processPtr = handle.kernel.thread_process_ptr?.(handle.vmPtr) ?? 0;
+    const len = handle.kernel.debug_memory_syscall_trace_len?.() ?? 0;
+    if (len <= 0) {
+      return [];
+    }
+
+    const byProcessPtr: string[] = [];
+    const byPid: string[] = [];
+    for (let index = 0; index < len; index += 1) {
+      const entryProcessPtr = handle.kernel.debug_memory_syscall_trace_entry_process_ptr?.(index) ?? 0;
+      const entryPid = handle.kernel.debug_memory_syscall_trace_entry_pid?.(index) ?? 0;
+      const line = [
+        `idx=${index}`,
+        `nr=${handle.kernel.debug_memory_syscall_trace_entry_nr?.(index)?.toString() ?? "n/a"}`,
+        `a0=${handle.kernel.debug_memory_syscall_trace_entry_arg0?.(index)?.toString() ?? "n/a"}`,
+        `a1=${handle.kernel.debug_memory_syscall_trace_entry_arg1?.(index)?.toString() ?? "n/a"}`,
+        `a2=${handle.kernel.debug_memory_syscall_trace_entry_arg2?.(index)?.toString() ?? "n/a"}`,
+        `a3=${handle.kernel.debug_memory_syscall_trace_entry_arg3?.(index)?.toString() ?? "n/a"}`,
+        `a4=${handle.kernel.debug_memory_syscall_trace_entry_arg4?.(index)?.toString() ?? "n/a"}`,
+        `a5=${handle.kernel.debug_memory_syscall_trace_entry_arg5?.(index)?.toString() ?? "n/a"}`,
+        `ret=${handle.kernel.debug_memory_syscall_trace_entry_result?.(index)?.toString() ?? "n/a"}`,
+        `pid=${entryPid}`,
+        `process=0x${entryProcessPtr.toString(16)}`,
+      ].join(" ");
+
+      if (processPtr !== 0 && entryProcessPtr === processPtr) {
+        byProcessPtr.push(line);
+      }
+      if (entryPid === handle.pid) {
+        byPid.push(line);
+      }
+    }
+
+    const selected = byProcessPtr.length > 0 ? byProcessPtr : byPid;
+    return selected.slice(-32);
   }
 
   function debugRuntimeProcessHandles(runtimeId: number): string {

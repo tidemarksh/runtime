@@ -346,20 +346,30 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       nextSibling: 0,
     };
 
-    const data = readFileByInode(sourceExports, ino);
-    ensurePublishedInodeInTarget(canonicalExports, ino, published);
-    writeFileByInode(canonicalExports, ino, data);
-    publishInode(deps.getSabPageCache(), ino, {
-      mode,
-      size: data.length,
-      parentIno: published.parentIno,
-      name: published.name,
-      nextSibling: published.nextSibling,
-    }, data);
+    try {
+      const data = readFileByInode(sourceExports, ino);
+      ensurePublishedInodeInTarget(canonicalExports, ino, published);
+      if ((canonicalExports.memfs_inode_mode(ino) & MEMFS_S_IFMT) !== MEMFS_S_IFREG) {
+        return false;
+      }
+      writeFileByInode(canonicalExports, ino, data);
+      publishInode(deps.getSabPageCache(), ino, {
+        mode,
+        size: data.length,
+        parentIno: published.parentIno,
+        name: published.name,
+        nextSibling: published.nextSibling,
+      }, data);
 
-    syncExternalFileDataIntoTarget(canonicalExports, ino, mode, data.length, published);
-    for (const memberExports of deps.processKernels.values()) {
-      syncExternalFileDataIntoTarget(memberExports, ino, mode, data.length, published);
+      syncExternalFileDataIntoTarget(canonicalExports, ino, mode, data.length, published);
+      for (const memberExports of deps.processKernels.values()) {
+        syncExternalFileDataIntoTarget(memberExports, ino, mode, data.length, published);
+      }
+    } catch {
+      // Path-scoped file-data sync is only an optimization. If the target inode
+      // cannot be reconstructed from published metadata yet, fall back to the
+      // full memfs sync path in process-control.
+      return false;
     }
 
     return true;

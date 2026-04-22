@@ -89,6 +89,7 @@ interface KernelWorkerMessageHandlerDeps {
     kernelState: KernelRuntimeState,
   ): KernelRuntimeState;
   syncProcessLifecycle(pid: number, vmPtr: number, kernelState: KernelRuntimeState): KernelRuntimeState;
+  syncProcessMemfs(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
   syncPipeState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
   syncEpollState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
   syncOfdState(pid: number, ofdIds: number[], kernelState: KernelRuntimeState): KernelRuntimeState;
@@ -190,10 +191,11 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
           deps.postResponse({ type: "fs-loaded", requestId: msg.requestId });
           break;
         case "register-process": {
+          const memory = msg.memory;
           const kernelState = await deps.registerProcess(
             msg.pid,
             msg.vmPtr,
-            msg.memory,
+            memory,
             msg.kernelState,
             msg.seedMemfsMode ?? "full",
             msg.pipeSeedMode ?? "canonical",
@@ -309,6 +311,13 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
             type: "process-lifecycle-synced",
             requestId: msg.requestId,
             kernelState: deps.syncProcessLifecycle(msg.pid, msg.vmPtr, msg.kernelState),
+          });
+          break;
+        case "sync-process-memfs":
+          deps.postResponse({
+            type: "process-memfs-synced",
+            requestId: msg.requestId,
+            kernelState: deps.syncProcessMemfs(msg.pid, msg.kernelState),
           });
           break;
         case "sync-pipe-state":

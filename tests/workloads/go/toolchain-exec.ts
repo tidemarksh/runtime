@@ -1,6 +1,7 @@
 import type { ToolchainExecEntry } from "../../support/toolchain-exec-harness.js";
 import {
   GO_BINARY_PATH,
+  GO_BUILD_EXPERIMENT,
   GO_EXEC_CAPTURE_HELPER_PATH,
   GO_TOOLCHAIN_DIR,
 } from "./support.js";
@@ -78,7 +79,7 @@ export const goBuildToolchainEntry: ToolchainExecEntry = {
     "GOFLAGS=-mod=mod",
     "HOME=/root",
     "GOGC=off",
-    "GOEXPERIMENT=nodwarf5",
+    ...(GO_BUILD_EXPERIMENT ? [`GOEXPERIMENT=${GO_BUILD_EXPERIMENT}`] : []),
   ],
   timeoutMs: 30_000,
   ramSize: 768 * 1024 * 1024,

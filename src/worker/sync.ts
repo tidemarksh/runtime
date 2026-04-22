@@ -17,28 +17,64 @@ import {
 } from "./fork-shared.js";
 import type { ProcessHandle } from "./types.js";
 
+const lastForkSharedActiveOfdIdsByHandle = new WeakMap<ProcessHandle, Set<number>>();
+
+function collectTracedForkSharedOfdIds(
+  handle: ProcessHandle,
+  sourceVmPtr: number,
+): number[] {
+  const len = handle.kernel.debug_fd_syscall_trace_len?.() ?? 0;
+  if (len <= 0) {
+    return [];
+  }
+  const traced = new Set<number>();
+  for (let index = 0; index < len; index += 1) {
+    const traceVmPtr = handle.kernel.debug_fd_syscall_trace_vm_ptr?.(index) ?? 0;
+    if (traceVmPtr !== 0 && sourceVmPtr !== 0 && traceVmPtr !== sourceVmPtr) {
+      continue;
+    }
+    const arg0OfdId = handle.kernel.debug_fd_syscall_trace_arg0_ofd_id?.(index) ?? 0;
+    const arg2OfdId = handle.kernel.debug_fd_syscall_trace_arg2_ofd_id?.(index) ?? 0;
+    if (arg0OfdId > 0) {
+      traced.add(arg0OfdId);
+    }
+    if (arg2OfdId > 0) {
+      traced.add(arg2OfdId);
+    }
+  }
+  return [...traced];
+}
+
 export function adoptKernelState(
   current: KernelRuntimeState,
   incoming: KernelRuntimeState,
 ): KernelRuntimeState {
   return {
-    ...current,
     heapBase: incoming.heapBase,
     heapPtr: Math.max(current.heapPtr, incoming.heapPtr),
-    ofdTablePtr: incoming.ofdTablePtr,
-    memfsPtr: incoming.memfsPtr,
-    memStatePtr: incoming.memStatePtr,
-    epollTablePtr: incoming.epollTablePtr,
-    socketTablePtr: incoming.socketTablePtr,
+    ofdTablePtr: current.ofdTablePtr,
+    memfsPtr: current.memfsPtr,
+    memfsHeaderBytes: current.memfsHeaderBytes > 0 ? current.memfsHeaderBytes : incoming.memfsHeaderBytes,
+    memfsInodesBytes: current.memfsInodesBytes > 0 ? current.memfsInodesBytes : incoming.memfsInodesBytes,
+    memfsFirstChildBytes: current.memfsFirstChildBytes > 0
+      ? current.memfsFirstChildBytes
+      : incoming.memfsFirstChildBytes,
+    memfsDirEntriesBytes: current.memfsDirEntriesBytes > 0
+      ? current.memfsDirEntriesBytes
+      : incoming.memfsDirEntriesBytes,
+    memfsDataBytes: current.memfsDataBytes > 0 ? current.memfsDataBytes : incoming.memfsDataBytes,
+    memStatePtr: current.memStatePtr,
+    epollTablePtr: current.epollTablePtr,
+    socketTablePtr: current.socketTablePtr,
     socketUsed: incoming.socketUsed,
-    pipeBase: incoming.pipeBase,
+    pipeBase: current.pipeBase,
     pipeUsed: incoming.pipeUsed,
-    netBufBase: incoming.netBufBase,
+    netBufBase: current.netBufBase,
     netBufUsed: incoming.netBufUsed,
-    sigSlotsPtr: incoming.sigSlotsPtr,
-    processPendingPtr: incoming.processPendingPtr,
-    processRuntimeStatePtr: incoming.processRuntimeStatePtr,
-    timeStatePtr: incoming.timeStatePtr,
+    sigSlotsPtr: current.sigSlotsPtr,
+    processPendingPtr: current.processPendingPtr,
+    processRuntimeStatePtr: current.processRuntimeStatePtr,
+    timeStatePtr: current.timeStatePtr,
   };
 }
 
@@ -88,7 +124,9 @@ export async function syncForkSharedStateViaKernelWorker(
   options: {
     includeMemfs?: boolean;
     trackHeldOfds?: boolean;
+    deltaOfdIds?: boolean;
     preserveSourceRefcounts?: boolean;
+    sourceVmPtr?: number;
   } = {},
 ): Promise<void> {
   if (!handle.kernelWorkerRequest || handle.pid <= 0) {
@@ -100,8 +138,21 @@ export async function syncForkSharedStateViaKernelWorker(
   const sourceActiveOfdIds = activeOfdIds
     .filter((ofdId) => sourceHeldOfdIds.has(ofdId));
   const staleOfdIds = staleKernelShareOfdIds(handle);
-  const syncOfdIds = [...new Set([...sourceActiveOfdIds, ...staleOfdIds])]
+  const previousActiveOfdIds = lastForkSharedActiveOfdIdsByHandle.get(handle) ?? new Set<number>();
+  let syncOfdIds = [...new Set([...sourceActiveOfdIds, ...staleOfdIds])]
     .sort((left, right) => left - right);
+  if (options.deltaOfdIds) {
+    const sourceVmPtr = options.sourceVmPtr ?? handle.vmPtr;
+    const tracedOfdIds = collectTracedForkSharedOfdIds(handle, sourceVmPtr);
+    const newlyActiveOfdIds = sourceActiveOfdIds.filter((ofdId) => !previousActiveOfdIds.has(ofdId));
+    const deltaOfdIds = [...new Set([...tracedOfdIds, ...newlyActiveOfdIds, ...staleOfdIds])]
+      .sort((left, right) => left - right);
+    if (deltaOfdIds.length === 0) {
+      lastForkSharedActiveOfdIdsByHandle.set(handle, new Set(sourceActiveOfdIds));
+      return;
+    }
+    syncOfdIds = deltaOfdIds;
+  }
   mergeKernelShareOfdStateInto(handle, sourceActiveOfdIds);
   handle.kernelState = readKernelRuntimeState(handle.kernel);
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
@@ -118,7 +169,7 @@ export async function syncForkSharedStateViaKernelWorker(
   const response = await handle.kernelWorkerRequest({
     type: "sync-fork-shared-state",
     pid: handle.pid,
-    vmPtr: handle.vmPtr,
+    vmPtr: options.sourceVmPtr ?? handle.vmPtr,
     targetPids,
     targetKernelStates,
     ofdIds: syncOfdIds,
@@ -132,6 +183,7 @@ export async function syncForkSharedStateViaKernelWorker(
   }
   handle.kernelState = adoptKernelState(handle.kernelState, response.kernelState);
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
+  lastForkSharedActiveOfdIdsByHandle.set(handle, new Set(sourceActiveOfdIds));
   pruneStaleKernelShareOfdIds(handle, staleOfdIds);
 }
 
@@ -150,11 +202,15 @@ export async function rehydrateForkSharedStateViaKernelWorker(
   const targetPids = [...new Set(targets.map((target) => target.pid).filter((pid) => pid > 0))];
   const targetKernelStates: KernelWorkerPidStateSnapshot[] = targets
     .filter((target) => target.pid > 0)
-    .map((target) => ({
-      pid: target.pid,
-      vmPtr: target.vmPtr,
-      kernelState: target.kernelState,
-    }));
+    .map((target) => {
+      target.kernelState = readKernelRuntimeState(target.kernel);
+      attachKernelRuntimeState(target.kernel, target.kernelState);
+      return {
+        pid: target.pid,
+        vmPtr: target.vmPtr,
+        kernelState: target.kernelState,
+      };
+    });
   if (targetPids.length === 0) {
     return;
   }
@@ -173,14 +229,21 @@ export async function rehydrateForkSharedStateViaKernelWorker(
   }
 }
 
-export async function syncBlockedForkSharedStateViaKernelWorker(handle: ProcessHandle): Promise<void> {
+export async function syncBlockedForkSharedStateViaKernelWorker(
+  handle: ProcessHandle,
+  sourceVmPtr = handle.vmPtr,
+): Promise<void> {
   if (!handle.kernelWorkerRequest || handle.pid <= 0) {
     return;
   }
   await syncForkSharedStateViaKernelWorker(
     handle,
     kernelShareOtherMembers(handle),
-    { includeMemfs: false },
+    {
+      includeMemfs: false,
+      deltaOfdIds: true,
+      sourceVmPtr,
+    },
   );
 }
 

@@ -39,6 +39,8 @@ export type ThreadWorkerInbound =
       type: "prepare";
       wasmModule: WebAssembly.Module;
       memory: WebAssembly.Memory;
+      preserveBytes?: number;
+      kernelStackSlot: number;
       sabPageCache: SharedArrayBuffer | null;
       runtimeNotify: SharedArrayBuffer;
       runtimeState: SharedArrayBuffer;
@@ -47,11 +49,11 @@ export type ThreadWorkerInbound =
       type: "init";
       wasmModule: WebAssembly.Module;
       memory: WebAssembly.Memory;
+      forcePrepare?: boolean;
       vmPtr: number;
       guestBase: number;
-      guestBytes?: number;
-      preserveKernelHeapBase?: number;
-      preserveKernelHeapBytes?: number;
+      kernelStackSlot: number;
+      generation: number;
       runtimeEpoch?: number;
       guestWriteWatchRegions?: GuestWriteWatchRegion[];
       kernelState: KernelRuntimeState;
@@ -76,6 +78,7 @@ export interface ThreadWorkerPreparedMessage {
 
 export interface ThreadWorkerReadyMessage {
   type: "ready";
+  generation: number;
   vmPtr: number;
   kernelState: KernelRuntimeState;
   wasmFeatures: WasmFeatureSupport;
@@ -84,6 +87,7 @@ export interface ThreadWorkerReadyMessage {
 
 export interface ThreadWorkerStatusMessage {
   type: "status";
+  generation: number;
   status: number;
   exitCode: number;
   termSignal: number;
@@ -100,6 +104,7 @@ export interface ThreadWorkerStatusMessage {
 
 export interface ThreadWorkerErrorMessage {
   type: "error";
+  generation: number;
   vmPtr: number;
   message: string;
 }
@@ -109,7 +114,7 @@ export type ThreadWorkerOutbound =
   | ThreadWorkerReadyMessage
   | ThreadWorkerStatusMessage
   | ThreadWorkerErrorMessage
-  | { type: "exit"; code: number; vmPtr: number };
+  | { type: "exit"; code: number; vmPtr: number; generation: number };
 
 // ============================================================================
 // kernel-worker RPC (Runtime <-> kernel-worker)
@@ -252,6 +257,11 @@ export type KernelWorkerRequest =
       type: "sync-process-lifecycle";
       pid: number;
       vmPtr: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "sync-process-memfs";
+      pid: number;
       kernelState: KernelRuntimeState;
     }
   | {
@@ -423,6 +433,11 @@ export type KernelWorkerResponse =
     }
   | {
       type: "process-lifecycle-synced";
+      requestId: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "process-memfs-synced";
       requestId: number;
       kernelState: KernelRuntimeState;
     }

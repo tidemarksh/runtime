@@ -2,11 +2,11 @@ import { readKernelRuntimeState } from "../../abi.js";
 import { publishKernelRuntimeState, wakeRuntimeBridge } from "../../bridge/runtime-state.js";
 import {
   acquireWorker,
-  maybeUnrefTimer,
   releaseWorker,
 } from "../pool.js";
 import { kernelShareOtherMembers } from "../kernel-share.js";
 import { processHasLiveThreads } from "../live-threads.js";
+import { assertHandleWorkerProcessIdentity } from "../process-identity.js";
 import { blockedStatusUsesForkSharedStateSync } from "../sync.js";
 import type {
   ProcessHandle,
@@ -16,6 +16,7 @@ import type {
   ThreadWorkerStatusMessage,
   WorkerMessageHandlerDeps,
 } from "./types.js";
+import { createWorkerOwnershipGuard } from "./worker-ownership.js";
 
 interface StatusTransitionArgs {
   handle: ProcessHandle;
@@ -39,6 +40,29 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     drainedPipe,
     completedSyncEffects,
   }: StatusTransitionArgs): void {
+    const vforkWaitStatus = handle.kernel.abi_status_vfork_wait?.();
+    const execveSpawnStatus = handle.kernel.abi_status_execve_spawn?.();
+    const assertHandleProcessIdentity = (context: string): void => {
+      assertHandleWorkerProcessIdentity(handle, deps.threadWorkerStates, context, {
+        status,
+        threadVmPtr: thread.vmPtr,
+        workerLogTail: handle.workerDebugLog.slice(-16),
+        skipVmPtrs: [handle.vforkSnapshot?.vmPtr ?? 0].filter((vmPtr) => vmPtr !== 0),
+      });
+    };
+    const workerStillOwnedByHandle = createWorkerOwnershipGuard(
+      handle,
+      worker,
+      thread,
+      deps.threadWorkerStates,
+    );
+    if (
+      status !== vforkWaitStatus
+      && status !== execveSpawnStatus
+    ) {
+      assertHandleProcessIdentity("handleStatusTransition:start");
+    }
+
     if (status === handle.kernel.abi_status_ok()) {
       const shouldSyncPipeState = wroteToPipe
         || drainedPipe
@@ -52,22 +76,40 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           ? deps.requestPipeStateSync(handle, true)
           : Promise.resolve();
         void syncPipeState
+          .then(() => {
+            assertHandleProcessIdentity("handleStatusTransition:after-pipe-sync");
+          })
           .then(() => (shouldSyncLifecycle
             ? deps.syncProcessLifecycleViaKernelWorker(handle, thread.vmPtr)
             : Promise.resolve()))
           .then(() => {
+            assertHandleProcessIdentity("handleStatusTransition:after-lifecycle-sync");
+            if (!workerStillOwnedByHandle()) {
+              return;
+            }
+            if (shouldSyncLifecycle) {
+              deps.pruneDetachedProcessWorkers(handle, thread.vmPtr, worker);
+              assertHandleProcessIdentity("handleStatusTransition:after-prune-detached");
+            }
             deps.appendWorkerDebugLog(handle, `ok-sync-done:0x${thread.vmPtr.toString(16)}`);
             if (shouldWakeSignalWaiters) {
               wakeRuntimeBridge(handle.runtimeBridge);
             }
             deps.kickBlockedWorkers(handle);
+            assertHandleProcessIdentity("handleStatusTransition:before-enqueue");
             deps.enqueueWorker(handle, worker);
           })
           .catch((error) => {
+            if (!workerStillOwnedByHandle()) {
+              return;
+            }
             deps.appendWorkerDebugLog(handle, `ok-sync-err:0x${thread.vmPtr.toString(16)}`);
             deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
           });
         return;
+      }
+      if (shouldSyncLifecycle) {
+        deps.pruneDetachedProcessWorkers(handle, thread.vmPtr, worker);
       }
       if (shouldWakeSignalWaiters) {
         wakeRuntimeBridge(handle.runtimeBridge);
@@ -93,6 +135,9 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
         });
       } else {
+        if (handle.runningWorker === worker) {
+          handle.runningWorker = null;
+        }
         handle.workers.delete(worker);
         deps.threadWorkerStates.delete(worker);
         releaseWorker(worker);
@@ -120,22 +165,17 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     }
 
     if (status === handle.kernel.abi_status_sleep()) {
-      const sec = Number(handle.kernel.thread_sleep_seconds(thread.vmPtr));
-      const nsec = Number(handle.kernel.thread_sleep_nanoseconds(thread.vmPtr));
-      const ms = sec * 1000 + Math.floor(nsec / 1_000_000);
-      if (ms <= 0) {
+      const sec = handle.kernel.thread_sleep_seconds(thread.vmPtr);
+      const nsec = handle.kernel.thread_sleep_nanoseconds(thread.vmPtr);
+      if (sec === 0n && nsec === 0n) {
         deps.appendWorkerDebugLog(handle, `yield:0x${thread.vmPtr.toString(16)}`);
+        deps.kickBlockedWorkers(handle);
         deps.enqueueWorker(handle, worker);
         return;
       }
-      deps.appendWorkerDebugLog(handle, `sleep:0x${thread.vmPtr.toString(16)}@${ms}`);
-      const sleepTimer = setTimeout(() => {
-        if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
-          return;
-        }
-        deps.enqueueWorker(handle, worker);
-      }, ms);
-      maybeUnrefTimer(sleepTimer);
+      deps.appendWorkerDebugLog(handle, `sleep:0x${thread.vmPtr.toString(16)}@${sec.toString()}s+${nsec.toString()}ns`);
+      deps.blockWorker(handle, worker, status, thread.vmPtr);
+      deps.kickBlockedWorkers(handle);
       deps.pumpProcess(handle);
       return;
     }
@@ -166,12 +206,6 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       return;
     }
 
-    if (status === handle.kernel.abi_status_futex_wait()) {
-      deps.kickBlockedWorkers(handle);
-      deps.pumpProcess(handle);
-      return;
-    }
-
     if (status === handle.kernel.abi_status_clone_spawn()) {
       if (msg.debug) {
         deps.appendWorkerDebugLog(
@@ -183,17 +217,38 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       if (childVmPtr === 0) {
         throw new Error(`thread_spawn_from_clone failed for pid=${handle.pid}`);
       }
-      handle.kernelState = readKernelRuntimeState(handle.kernel);
-      deps.assertProcessStandardFdIntegrity(handle, "clone-spawn");
-      publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
-      const childWorker = acquireWorker();
-      deps.attachThreadWorker(handle, childWorker, childVmPtr);
-      const childThread = deps.threadWorkerStates.get(childWorker);
-      if (!childThread) {
-        throw new Error(`child thread state missing for pid=${handle.pid} vm=0x${childVmPtr.toString(16)}`);
+      const finishCloneSpawn = (): void => {
+        handle.kernelState = readKernelRuntimeState(handle.kernel);
+        deps.assertProcessStandardFdIntegrity(handle, "clone-spawn");
+        publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
+        const childWorker = acquireWorker();
+        deps.attachThreadWorker(handle, { worker: childWorker, vmPtr: childVmPtr });
+        const childThread = deps.threadWorkerStates.get(childWorker);
+        if (!childThread) {
+          throw new Error(`child thread state missing for pid=${handle.pid} vm=0x${childVmPtr.toString(16)}`);
+        }
+        childThread.resumeWorkersOnReady.push(worker);
+        deps.kickBlockedWorkers(handle);
+      };
+
+      if (handle.kernelWorkerRequest && handle.pid > 0) {
+        void deps.syncProcessLifecycleViaKernelWorker(handle, thread.vmPtr)
+          .then(() => {
+            if (!workerStillOwnedByHandle()) {
+              return;
+            }
+            finishCloneSpawn();
+          })
+          .catch((error) => {
+            if (!workerStillOwnedByHandle()) {
+              return;
+            }
+            deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+          });
+        return;
       }
-      childThread.resumeWorkersOnReady.push(worker);
-      deps.kickBlockedWorkers(handle);
+
+      finishCloneSpawn();
       return;
     }
 
@@ -206,7 +261,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
 
     if (status === handle.kernel.abi_status_vfork_wait()) {
       if (handle.vforkSnapshot === null) {
-        handle.vforkSnapshot = deps.captureVforkSnapshot(handle, thread.vmPtr);
+        handle.vforkSnapshot = deps.captureVforkSnapshot(handle, thread);
         handle.vforkWorker = worker;
       }
       if (
@@ -218,7 +273,11 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         void deps.syncForkSharedStateViaKernelWorker(
           handle,
           kernelShareOtherMembers(handle),
-          { includeMemfs: false, preserveSourceRefcounts: true },
+          {
+            includeMemfs: false,
+            preserveSourceRefcounts: true,
+            sourceVmPtr: thread.vmPtr,
+          },
         )
           .then(() => {
             if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
@@ -262,7 +321,8 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     }
 
     if (
-      status === handle.kernel.abi_status_wait4()
+      status === handle.kernel.abi_status_futex_wait()
+      || status === handle.kernel.abi_status_wait4()
       || status === handle.kernel.abi_status_pipe_wait()
       || status === handle.kernel.abi_status_epoll_wait()
       || status === handle.kernel.abi_status_socket_recv()
@@ -271,7 +331,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       || status === handle.kernel.abi_status_connect()
     ) {
       if (blockedStatusUsesForkSharedStateSync(handle, status) && handle.kernelWorkerRequest && handle.pid > 0) {
-        void deps.syncBlockedForkSharedStateViaKernelWorker(handle)
+        void deps.syncBlockedForkSharedStateViaKernelWorker(handle, thread.vmPtr)
           .then(() => {
             if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
               return;

@@ -14,6 +14,12 @@ func main() {
 	switch mode {
 	case "combined-goarch":
 		runCombinedGoarch()
+	case "go-version":
+		runGoVersion(false)
+	case "go-version-explicit-env":
+		runGoVersion(true)
+	case "inherited-goarch":
+		runInheritedGoarch()
 	case "two-step-goarch":
 		runTwoStepGoarch(false)
 	case "two-step-goarch-explicit-env":
@@ -40,7 +46,7 @@ func compileCommand() *exec.Cmd {
 		"-buildid",
 		"helper-buildid",
 		"-goversion",
-		"go1.26.1-X:nodwarf5",
+		"go1.26.1",
 		"-nolocalimports",
 		"-importcfg",
 		"/tmp/importcfg",
@@ -71,6 +77,44 @@ func runCombinedGoarch() {
 	}
 	fmt.Println("combined_output_err=<nil>")
 	fmt.Printf("combined_output=%s", out)
+}
+
+func runInheritedGoarch() {
+	fmt.Println("mode=inherited-goarch")
+	cmd := compileCommand()
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Printf("inherited_err=%T %v\n", err, err)
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(50 + exitErr.ExitCode())
+		}
+		os.Exit(51)
+	}
+	fmt.Println("inherited_err=<nil>")
+}
+
+func runGoVersion(explicitEnv bool) {
+	mode := "go-version"
+	if explicitEnv {
+		mode = "go-version-explicit-env"
+	}
+	fmt.Printf("mode=%s\n", mode)
+	cmd := exec.Command("/usr/local/go/bin/go", "version")
+	if explicitEnv {
+		cmd.Env = os.Environ()
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("go_version_err=%T %v\n", err, err)
+		fmt.Printf("go_version_output=%s", out)
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(60 + exitErr.ExitCode())
+		}
+		os.Exit(61)
+	}
+	fmt.Println("go_version_err=<nil>")
+	fmt.Printf("go_version_output=%s", out)
 }
 
 func runTwoStepGoarch(explicitEnv bool) {

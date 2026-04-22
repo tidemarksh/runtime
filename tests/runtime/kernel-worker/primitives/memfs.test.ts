@@ -200,4 +200,81 @@ describe("createKernelWorkerMemfsPrimitives", () => {
     expect(new Uint8Array(targetMemory.buffer, 0x4d0, 16)).toEqual(new Uint8Array(16).fill(0xcc));
     expect(readMemfsLayout(targetMemory, targetState.memfsPtr).dataUsed).toBe(16);
   });
+
+  it("copies referenced regular-file data even when the source dataUsed header is stale", () => {
+    const memoryPages = { initial: 1, maximum: 4, shared: true } as const;
+    const sourceMemory = new WebAssembly.Memory(memoryPages);
+    const targetMemory = new WebAssembly.Memory(memoryPages);
+    const primitives = createKernelWorkerMemfsPrimitives();
+
+    const sourceState: KernelRuntimeState = {
+      heapBase: 0,
+      heapPtr: 0,
+      ofdTablePtr: 0,
+      memfsPtr: 0x80,
+      memStatePtr: 0,
+      epollTablePtr: 0,
+      socketTablePtr: 0,
+      socketUsed: 0,
+      pipeBase: 0,
+      pipeUsed: 0n,
+      netBufBase: 0,
+      netBufUsed: 0n,
+      sigSlotsPtr: 0,
+      processPendingPtr: 0,
+      processRuntimeStatePtr: 0,
+      timeStatePtr: 0,
+    };
+    const targetState: KernelRuntimeState = {
+      ...sourceState,
+      memfsPtr: 0x180,
+    };
+
+    writeMemfsHeader(sourceMemory, sourceState.memfsPtr, {
+      inodeCount: 2,
+      dataUsed: 8,
+      dataCap: 64,
+      inodesPtr: 0x200,
+      firstChildPtr: 0x280,
+      dirEntriesPtr: 0x2a0,
+      dataPtr: 0x300,
+    });
+    writeMemfsHeader(targetMemory, targetState.memfsPtr, {
+      inodeCount: 2,
+      dataUsed: 0,
+      dataCap: 64,
+      inodesPtr: 0x400,
+      firstChildPtr: 0x480,
+      dirEntriesPtr: 0x4a0,
+      dataPtr: 0x500,
+    });
+
+    const sourceInodeView = new DataView(sourceMemory.buffer);
+    const sourceInodeBase = 0x200 + 32;
+    sourceInodeView.setUint32(sourceInodeBase + 0, 0o100755, true);
+    sourceInodeView.setBigUint64(sourceInodeBase + 16, 16n, true);
+    sourceInodeView.setUint32(sourceInodeBase + 24, 32, true);
+    sourceInodeView.setUint32(sourceInodeBase + 28, 16, true);
+    new Uint8Array(sourceMemory.buffer).set(new TextEncoder().encode("0123456789abcdef"), 0x300 + 32);
+
+    const sourceExports = createFakeExports(sourceMemory, {
+      inodesBytes: 64,
+      firstChildBytes: 8,
+      dirEntriesBytes: 32,
+      dataBytes: 64,
+      dataPtr: 0x300,
+    });
+    const targetExports = createFakeExports(targetMemory, {
+      inodesBytes: 64,
+      firstChildBytes: 8,
+      dirEntriesBytes: 32,
+      dataBytes: 64,
+      dataPtr: 0x500,
+    });
+
+    primitives.copyMemfsState(sourceExports, sourceState, targetExports, targetState);
+
+    expect(new TextDecoder().decode(new Uint8Array(targetMemory.buffer, 0x500 + 32, 16))).toBe("0123456789abcdef");
+    expect(readMemfsLayout(targetMemory, targetState.memfsPtr).dataUsed).toBe(48);
+  });
 });

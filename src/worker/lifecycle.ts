@@ -29,7 +29,13 @@ interface WorkerLifecycleDeps {
   syncForkSharedStateViaKernelWorker(
     handle: ProcessHandle,
     targets: ProcessHandle[],
-    options?: { includeMemfs?: boolean; trackHeldOfds?: boolean; preserveSourceRefcounts?: boolean },
+    options?: {
+      includeMemfs?: boolean;
+      trackHeldOfds?: boolean;
+      deltaOfdIds?: boolean;
+      preserveSourceRefcounts?: boolean;
+      sourceVmPtr?: number;
+    },
   ): Promise<void>;
   workerExitCompleteProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number): Promise<void>;
   workerExitFailProcess(handle: ProcessHandle, error: Error): void;
@@ -43,24 +49,24 @@ function encodeWaitStatus(exitCode: number, termSignal: number): number {
 }
 
 export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
-  async function completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number): Promise<void> {
+  function beginProcessTeardown(handle: ProcessHandle): boolean {
     if (handle.exitInProgress) {
-      return;
+      return false;
     }
     handle.exitInProgress = true;
     if (handle.stdioOwner === null) {
       deps.drainProcessOutput(handle);
     }
+    return true;
+  }
+
+  async function syncOwnedStateBeforeExit(handle: ProcessHandle): Promise<void> {
     if (kernelWorkerOwnsPipeState(handle)) {
       await deps.requestPipeStateSync(handle, false);
     }
-    deps.appendRuntimeLifecycleEvent(
-      handle.runtimeId,
-      `exit-begin:${handle.pid}:held=[${[...collectProcessHeldOfds(handle)].sort((left, right) => left - right).join(",")}]:shared=[${[...handle.kernelShare.sharedOfdIds].sort((left, right) => left - right).join(",")}]`,
-    );
     if (handle.kernelWorkerRequest && handle.pid > 0) {
       await deps.syncForkSharedStateViaKernelWorker(handle, kernelShareOtherMembers(handle), {
-        includeMemfs: false,
+        includeMemfs: true,
       });
     }
     if (kernelWorkerOwnsSocketState(handle)) {
@@ -69,16 +75,26 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
     if (kernelWorkerOwnsEpollState(handle)) {
       await deps.requestEpollStateSync(handle, false);
     }
+  }
+
+  async function completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number): Promise<void> {
+    if (!beginProcessTeardown(handle)) {
+      return;
+    }
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `exit-begin:${handle.pid}:held=[${[...collectProcessHeldOfds(handle)].sort((left, right) => left - right).join(",")}]:shared=[${[...handle.kernelShare.sharedOfdIds].sort((left, right) => left - right).join(",")}]`
+        + `:mem=${handle.kernel.debug_memory_brk_base?.() ?? "n/a"}`
+        + `:${handle.kernel.debug_memory_brk_current?.() ?? "n/a"}`
+        + `:${handle.kernel.debug_memory_mmap_next?.() ?? "n/a"}`,
+    );
+    await syncOwnedStateBeforeExit(handle);
     await deps.workerExitCompleteProcessExit(handle, exitCode, termSignal);
   }
 
   function failProcess(handle: ProcessHandle, error: Error): void {
-    if (handle.exitInProgress) {
+    if (!beginProcessTeardown(handle)) {
       return;
-    }
-    handle.exitInProgress = true;
-    if (handle.stdioOwner === null) {
-      deps.drainProcessOutput(handle);
     }
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,

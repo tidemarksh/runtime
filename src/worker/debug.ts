@@ -1,5 +1,4 @@
 import type {
-  KernelShareGroup,
   ProcessHandle,
   ThreadWorkerState,
 } from "./types.js";
@@ -32,23 +31,10 @@ export interface RuntimeProcessWorkerLogFocus {
   workers: WorkerLogFocus[];
 }
 
-const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-
-function debugScratchBase(handle: ProcessHandle): number {
-  return (handle.kernel.kernel_scratch_base?.() ?? (handle.kernel.kernel_heap_ptr() + 0x10000));
-}
 
 function formatU64(value: bigint): string {
   return BigInt.asUintN(64, value).toString(16);
-}
-
-function formatTracePidSample(pidSample0: bigint, pidSample1: bigint): string {
-  const bytes = new Uint8Array(16);
-  const view = new DataView(bytes.buffer);
-  view.setBigUint64(0, pidSample0, true);
-  view.setBigUint64(8, pidSample1, true);
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function readWorkerOwnerState(
@@ -436,31 +422,6 @@ function formatThreadDebug(handle: ProcessHandle, vmPtr: number): string {
     parts.push(`execve_v0=${handle.kernel.debug_execve_value0?.().toString() ?? "n/a"}`);
     parts.push(`execve_v1=${handle.kernel.debug_execve_value1?.().toString() ?? "n/a"}`);
   }
-  const execveApproachTraceLen = handle.kernel.debug_execve_approach_trace_len?.() ?? 0;
-  if (execveApproachTraceLen > 0) {
-    const traces: string[] = [];
-    for (let index = 0; index < execveApproachTraceLen; index += 1) {
-      const pc = handle.kernel.debug_execve_approach_trace_pc?.(index) ?? 0n;
-      const raw = handle.kernel.debug_execve_approach_trace_raw?.(index) ?? 0;
-      const pidSample0 = handle.kernel.debug_execve_approach_trace_pid_sample0?.(index) ?? 0n;
-      const pidSample1 = handle.kernel.debug_execve_approach_trace_pid_sample1?.(index) ?? 0n;
-      traces.push(
-        `0x${formatU64(pc)}:0x${raw.toString(16)}:${formatTracePidSample(pidSample0, pidSample1)}`,
-      );
-    }
-    parts.push(`execve_approach_trace=[${traces.join(",")}]`);
-  }
-  const execveDispatchTraceLen = handle.kernel.debug_execve_dispatch_trace_len?.() ?? 0;
-  if (execveDispatchTraceLen > 0) {
-    const traces: string[] = [];
-    for (let index = 0; index < execveDispatchTraceLen; index += 1) {
-      const stage = handle.kernel.debug_execve_dispatch_trace_stage?.(index) ?? 0;
-      const pidSample0 = handle.kernel.debug_execve_dispatch_trace_pid_sample0?.(index) ?? 0n;
-      const pidSample1 = handle.kernel.debug_execve_dispatch_trace_pid_sample1?.(index) ?? 0n;
-      traces.push(`${stage}:${formatTracePidSample(pidSample0, pidSample1)}`);
-    }
-    parts.push(`execve_dispatch_trace=[${traces.join(",")}]`);
-  }
   return parts.join(" ");
 }
 
@@ -600,61 +561,6 @@ function formatProcessPathTrace(handle: ProcessHandle): string {
   return entries.join(" ");
 }
 
-function formatProcessExecTrace(handle: ProcessHandle): string {
-  const len = handle.kernel.debug_exec_trace_len?.() ?? 0;
-  if (len <= 0) {
-    return "";
-  }
-  const start = Math.max(0, len - 8);
-  const entries: string[] = [];
-  for (let index = start; index < len; index += 1) {
-    const vmPtr = handle.kernel.debug_exec_trace_entry_vm_ptr?.(index) ?? 0;
-    const tid = handle.kernel.debug_exec_trace_entry_tid?.(index) ?? 0;
-    const pc = handle.kernel.debug_exec_trace_entry_pc?.(index) ?? 0n;
-    const raw = handle.kernel.debug_exec_trace_entry_raw?.(index) ?? 0;
-    const step = handle.kernel.debug_exec_trace_entry_step?.(index) ?? 0;
-    const sp = handle.kernel.debug_exec_trace_entry_sp?.(index) ?? 0n;
-    const ra = handle.kernel.debug_exec_trace_entry_ra?.(index) ?? 0n;
-    const a0 = handle.kernel.debug_exec_trace_entry_a0?.(index) ?? 0n;
-    const s11 = handle.kernel.debug_exec_trace_entry_s11?.(index) ?? 0n;
-    entries.push(
-      `${index}:vm=0x${vmPtr.toString(16)}:tid=${tid}:pc=0x${pc.toString(16)}:raw=0x${raw.toString(16)}:step=${step}:sp=0x${sp.toString(16)}:ra=0x${ra.toString(16)}:a0=${a0.toString()}:s11=0x${s11.toString(16)}`,
-    );
-  }
-  return entries.join(" ");
-}
-
-function formatProcessExecveApproachTrace(handle: ProcessHandle): string {
-  const len = handle.kernel.debug_execve_approach_trace_len?.() ?? 0;
-  if (len <= 0) {
-    return "";
-  }
-  const entries: string[] = [];
-  for (let index = 0; index < len; index += 1) {
-    const pc = handle.kernel.debug_execve_approach_trace_pc?.(index) ?? 0n;
-    const raw = handle.kernel.debug_execve_approach_trace_raw?.(index) ?? 0;
-    const pidSample0 = handle.kernel.debug_execve_approach_trace_pid_sample0?.(index) ?? 0n;
-    const pidSample1 = handle.kernel.debug_execve_approach_trace_pid_sample1?.(index) ?? 0n;
-    entries.push(`0x${formatU64(pc)}:0x${raw.toString(16)}:${formatTracePidSample(pidSample0, pidSample1)}`);
-  }
-  return entries.join(" ");
-}
-
-function formatProcessExecveDispatchTrace(handle: ProcessHandle): string {
-  const len = handle.kernel.debug_execve_dispatch_trace_len?.() ?? 0;
-  if (len <= 0) {
-    return "";
-  }
-  const entries: string[] = [];
-  for (let index = 0; index < len; index += 1) {
-    const stage = handle.kernel.debug_execve_dispatch_trace_stage?.(index) ?? 0;
-    const pidSample0 = handle.kernel.debug_execve_dispatch_trace_pid_sample0?.(index) ?? 0n;
-    const pidSample1 = handle.kernel.debug_execve_dispatch_trace_pid_sample1?.(index) ?? 0n;
-    entries.push(`${stage}:${formatTracePidSample(pidSample0, pidSample1)}`);
-  }
-  return entries.join(" ");
-}
-
 export function debugRuntimeProcessHandles(
   runtimeId: number,
   processHandles: Map<number, ProcessHandle>,
@@ -667,198 +573,71 @@ export function debugRuntimeProcessHandles(
     .sort((left, right) => left.pid - right.pid)
     .map((handle) => {
       try {
-      const processPtr = handle.kernel.thread_process_ptr(handle.vmPtr);
-      const blocked = [...handle.blockedWorkers.values()]
-        .map((state) => `${state.status}@0x${state.vmPtr.toString(16)}`)
-        .join(",");
-      const attachedWorkerVmPtrs = [...handle.workers]
-        .map((worker) => threadWorkerStates.get(worker)?.vmPtr ?? 0)
-        .filter((vmPtr) => vmPtr !== 0)
-        .map((vmPtr) => `0x${vmPtr.toString(16)}`)
-        .join(",");
-      const workerStates = [...handle.workers]
-        .map((worker) => {
-          const state = threadWorkerStates.get(worker);
-          if (!state) {
+        const processPtr = handle.kernel.thread_process_ptr(handle.vmPtr);
+        const blocked = [...handle.blockedWorkers.values()]
+          .map((state) => `${state.status}@0x${state.vmPtr.toString(16)}`)
+          .join(",");
+        const workerStates = [...handle.workers]
+          .map((worker) => {
+            const state = threadWorkerStates.get(worker);
+            if (!state) {
+              return null;
+            }
+            return `0x${state.vmPtr.toString(16)}:${readWorkerOwnerState(handle, worker, state)}`;
+          })
+          .filter(Boolean)
+          .join(",");
+        const workerFocusSummary = summarizeProcessWorkerLogFocus(handle, threadWorkerStates)
+          .map((worker) => [
+            `0x${worker.vmPtr.toString(16)}`,
+            worker.ownerState,
+            worker.lastCredibleState ? `credible=${JSON.stringify(worker.lastCredibleState)}` : null,
+            worker.lastWait20 ? `wait=${JSON.stringify(worker.lastWait20)}` : null,
+            worker.lastResume20 ? `resume=${JSON.stringify(worker.lastResume20)}` : null,
+            worker.lastSleep ? `sleep=${JSON.stringify(worker.lastSleep)}` : null,
+            worker.lastFaultDebug ? `fault=${JSON.stringify(worker.lastFaultDebug)}` : null,
+          ].filter(Boolean).join(":"))
+          .join(" ");
+        const threadStates = Array.from({ length: handle.kernel.abi_max_threads() }, (_value, slot) => {
+          const threadVmPtr = handle.kernel.process_thread_vm_ptr(handle.vmPtr, slot);
+          if (threadVmPtr === 0) {
             return null;
           }
-          return `0x${state.vmPtr.toString(16)}:${readWorkerOwnerState(handle, worker, state)}`;
-        })
-        .filter(Boolean)
-        .join(",");
-      const workerFocusSummary = summarizeProcessWorkerLogFocus(handle, threadWorkerStates)
-        .map((worker) => [
-          `0x${worker.vmPtr.toString(16)}`,
-          worker.ownerState,
-          worker.lastCredibleState ? `credible=${JSON.stringify(worker.lastCredibleState)}` : null,
-          worker.lastWait20 ? `wait=${JSON.stringify(worker.lastWait20)}` : null,
-          worker.lastResume20 ? `resume=${JSON.stringify(worker.lastResume20)}` : null,
-          worker.lastWrite ? `write=${JSON.stringify(worker.lastWrite)}` : null,
-          worker.lastSleep ? `sleep=${JSON.stringify(worker.lastSleep)}` : null,
-          worker.lastYield ? `yield=${JSON.stringify(worker.lastYield)}` : null,
-          worker.lastFaultDebug ? `fault=${JSON.stringify(worker.lastFaultDebug)}` : null,
-        ].filter(Boolean).join(":"))
-        .join(" ");
-      const liveThreadVmPtrs = Array.from({ length: handle.kernel.abi_max_threads() }, (_value, slot) =>
-        handle.kernel.process_thread_vm_ptr(handle.vmPtr, slot))
-        .filter((vmPtr) => vmPtr !== 0)
-        .map((vmPtr) => `0x${vmPtr.toString(16)}`)
-        .join(",");
-      const threadStates = Array.from({ length: handle.kernel.abi_max_threads() }, (_value, slot) => {
-        const threadVmPtr = handle.kernel.process_thread_vm_ptr(handle.vmPtr, slot);
-        if (threadVmPtr === 0) {
-          return null;
-        }
-        return `${slot}:${handle.kernel.process_thread_tid(handle.vmPtr, slot)}/${handle.kernel.process_thread_state(handle.vmPtr, slot)}/0x${threadVmPtr.toString(16)}`;
-      }).filter(Boolean).join(",");
-      const fdSummary = Array.from({ length: 16 }, (_, fd) => {
-        const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
-        if (ofdId === 0) {
-          return null;
-        }
-        return `${fd}->${ofdId}/${handle.kernel.process_fd_flags(handle.vmPtr, fd)}/${handle.kernel.kernel_ofd_fd_type(ofdId)}/${handle.kernel.kernel_ofd_ino(ofdId)}/${handle.kernel.kernel_ofd_host_fd(ofdId)}`;
-      }).filter(Boolean).join(" ");
-      const ofdSummary = Array.from({ length: 16 }, (_value, ofdId) => {
-        if (ofdId === 0) {
-          return null;
-        }
-        const type = handle.kernel.kernel_ofd_fd_type(ofdId);
-        if (type === 0) {
-          return null;
-        }
-        return `${ofdId}:${type}/${handle.kernel.kernel_ofd_ino(ofdId)}/${handle.kernel.kernel_ofd_host_fd(ofdId)}/rc=${handle.kernel.kernel_ofd_refcount(ofdId)}`;
-      }).filter(Boolean).join(" ");
-      const epollTable = new Uint32Array(
-        handle.memory.buffer,
-        handle.kernelState.epollTablePtr,
-        handle.kernel.kernel_epoll_table_bytes() >>> 2,
-      );
-      const epollSummary = Array.from({ length: 16 }, (_value, ofdId) => {
-        if (ofdId === 0) {
-          return null;
-        }
-        const type = handle.kernel.kernel_ofd_fd_type(ofdId);
-        if (type !== handle.kernel.abi_fd_type_epoll()) {
-          return null;
-        }
-        const ino = handle.kernel.kernel_ofd_ino(ofdId);
-        const ptr = ino >= 0 && ino < epollTable.length ? epollTable[ino] ?? 0 : 0;
-        return `${ofdId}:${ino}->0x${ptr.toString(16)}`;
-      }).filter(Boolean).join(" ");
-      let procSelfExe = "unavailable";
-      try {
-        const pathBytes = encoder.encode("/proc/self/exe");
-        const scratchBase = debugScratchBase(handle);
-        const pathPtr = scratchBase;
-        const bufPtr = scratchBase + 0x200;
-        new Uint8Array(handle.kernel.memory.buffer, pathPtr, pathBytes.length).set(pathBytes);
-        const ino = handle.kernel.memfs_resolve_path(pathPtr, pathBytes.length);
-        if (ino === 0 || (handle.kernel.memfs_inode_mode(ino) & 0o170000) !== 0o120000) {
-          procSelfExe = "missing";
-        } else {
-          const len = Number(handle.kernel.memfs_read_link(ino, bufPtr, 1024));
-          if (len <= 0) {
-            procSelfExe = "empty";
-          } else {
-            procSelfExe = JSON.stringify(
-              decoder.decode(new Uint8Array(handle.kernel.memory.buffer.slice(bufPtr, bufPtr + len))),
-            );
+          return `${slot}:${handle.kernel.process_thread_tid(handle.vmPtr, slot)}/${handle.kernel.process_thread_state(handle.vmPtr, slot)}/0x${threadVmPtr.toString(16)}`;
+        }).filter(Boolean).join(",");
+        const fdSummary = Array.from({ length: 16 }, (_, fd) => {
+          const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+          if (ofdId === 0) {
+            return null;
           }
-        }
-      } catch {
-        procSelfExe = "unavailable";
-      }
-      const runningState = handle.runningWorker ? threadWorkerStates.get(handle.runningWorker) : undefined;
-      const runningVmPtr = runningState?.vmPtr ?? 0;
-      const runningDebug = runningVmPtr !== 0 ? formatThreadDebug(handle, runningVmPtr) : "n/a";
-      const stackWord0 = handle.kernel.thread_stack_word?.(handle.vmPtr, 0) ?? 0n;
-      const stackWord1 = handle.kernel.thread_stack_word?.(handle.vmPtr, 1) ?? 0n;
-      const stackWord2 = handle.kernel.thread_stack_word?.(handle.vmPtr, 2) ?? 0n;
-      const stackWord3 = handle.kernel.thread_stack_word?.(handle.vmPtr, 3) ?? 0n;
-      const stackWord4 = handle.kernel.thread_stack_word?.(handle.vmPtr, 4) ?? 0n;
-      const stackWord5 = handle.kernel.thread_stack_word?.(handle.vmPtr, 5) ?? 0n;
-      const argv0 = readGuestCString(handle, stackWord1);
-      const argv1 = readGuestCString(handle, stackWord2);
-      const env0 = readGuestCString(handle, stackWord4);
-      const writeTraceNr = handle.kernel.debug_write_trace_last_nr?.();
-      const writeTrace = writeTraceNr !== undefined && writeTraceNr !== 0n
-        ? [
-            `nr=${writeTraceNr.toString()}`,
-            `fd=${handle.kernel.debug_write_trace_last_fd?.().toString() ?? "n/a"}`,
-            `result=${handle.kernel.debug_write_trace_last_result?.().toString() ?? "n/a"}`,
-            `ofd=${handle.kernel.debug_write_trace_last_ofd_id?.() ?? "n/a"}`,
-            `type=${handle.kernel.debug_write_trace_last_ofd_type?.() ?? "n/a"}`,
-            `ino=${handle.kernel.debug_write_trace_last_ofd_ino?.() ?? "n/a"}`,
-            `count=${handle.kernel.debug_write_trace_last_count?.().toString() ?? "n/a"}`,
-            `ro=${handle.kernel.debug_write_trace_last_pipe_read_open?.() ?? "n/a"}`,
-            `wo=${handle.kernel.debug_write_trace_last_pipe_write_open?.() ?? "n/a"}`,
-          ].join(":")
-        : "none";
-      const allThreadDebug = Array.from({ length: handle.kernel.abi_max_threads() }, (_value, slot) => {
-        const threadVmPtr = handle.kernel.process_thread_vm_ptr(handle.vmPtr, slot);
-        if (threadVmPtr === 0) {
-          return null;
-        }
-        const tid = handle.kernel.process_thread_tid(handle.vmPtr, slot);
-        return `${tid}:${JSON.stringify(formatThreadDebug(handle, threadVmPtr))}`;
-      }).filter(Boolean).join(" ");
-      return [
-        `pid=${handle.pid}`,
-        `cmd=${JSON.stringify(handle.debugCommand)}`,
-        `ppid=${handle.parentPid ?? 0}`,
-        `vm=0x${handle.vmPtr.toString(16)}`,
-        `process=0x${processPtr.toString(16)}`,
-        `workers=${handle.workers.size}`,
-        `worker_vms=[${attachedWorkerVmPtrs}]`,
-        `worker_states=[${workerStates}]`,
-        `worker_focus=[${workerFocusSummary}]`,
-        `thread_vms=[${liveThreadVmPtrs}]`,
-        `thread_states=[${threadStates}]`,
-        `ready=${handle.readyWorkers.length}`,
-        `running=${handle.runningWorker ? "1" : "0"}`,
-        `blocked=[${blocked}]`,
-        `vfork=${handle.vforkSnapshot ? "1" : "0"}`,
-        `stdio_pipes=${handle.stdinPipe}/${handle.stdoutPipe}/${handle.stderrPipe}`,
-        `stdio_pipe_counters=[${[0, 1, 2, 10]
-          .map((fd) => formatPipeCounterDebug(handle, fd))
-          .join(" ")}]`,
-        `shared_ofds=[${[...handle.kernelShare.sharedOfdIds].sort((left, right) => left - right).join(",")}]`,
-        `ofd_table=0x${handle.kernelState.ofdTablePtr.toString(16)}`,
-        `memfs=0x${handle.kernelState.memfsPtr.toString(16)}`,
-        `memfs_data=0x${handle.kernel.kernel_memfs_data_ptr?.().toString(16) ?? "n/a"}`,
-        `memfs_data_bytes=${handle.kernel.kernel_memfs_data_bytes?.().toString() ?? "n/a"}`,
-        `mem_state=0x${handle.kernelState.memStatePtr.toString(16)}`,
-        `pipe=0x${handle.kernelState.pipeBase.toString(16)}`,
-        `process_runtime=0x${handle.kernelState.processRuntimeStatePtr.toString(16)}`,
-        `mem_brk_base=${handle.kernel.debug_memory_brk_base?.().toString() ?? "n/a"}`,
-        `mem_brk_current=${handle.kernel.debug_memory_brk_current?.().toString() ?? "n/a"}`,
-        `mem_mmap_next=${handle.kernel.debug_memory_mmap_next?.().toString() ?? "n/a"}`,
-        `stack0=${stackWord0.toString()}`,
-        `stack1=0x${stackWord1.toString(16)}`,
-        `stack2=0x${stackWord2.toString(16)}`,
-        `stack3=0x${stackWord3.toString(16)}`,
-        `stack4=0x${stackWord4.toString(16)}`,
-        `stack5=0x${stackWord5.toString(16)}`,
-        `argv0=${argv0 === null ? "n/a" : JSON.stringify(argv0)}`,
-        `argv1=${argv1 === null ? "n/a" : JSON.stringify(argv1)}`,
-        `env0=${env0 === null ? "n/a" : JSON.stringify(env0)}`,
-        `write_trace=${writeTrace}`,
-        `worker_log=[${handle.workerDebugLog.join(", ")}]`,
-        `fds=[${fdSummary}]`,
-        `ofds=[${ofdSummary}]`,
-        `epolls=[${epollSummary}]`,
-        `proc_self_exe=${procSelfExe}`,
-        `running_vm=${runningVmPtr === 0 ? "0x0" : `0x${runningVmPtr.toString(16)}`}`,
-        `running_debug=${JSON.stringify(runningDebug)}`,
-        `thread_debugs=[${allThreadDebug}]`,
-        `debug=${handle.lastDebugMessage ?? "n/a"}`,
-        `exec_trace=[${formatProcessExecTrace(handle)}]`,
-        `execve_approach_trace=[${formatProcessExecveApproachTrace(handle)}]`,
-        `execve_dispatch_trace=[${formatProcessExecveDispatchTrace(handle)}]`,
-        `syscalls=[${formatProcessSyscallTrace(handle)}]`,
-        `riscv_syscalls=[${formatProcessRiscvSyscallTrace(handle)}]`,
-        `path_syscalls=[${formatProcessPathTrace(handle)}]`,
-      ].join(" ");
+          return `${fd}->${ofdId}/${handle.kernel.process_fd_flags(handle.vmPtr, fd)}/${handle.kernel.kernel_ofd_fd_type(ofdId)}`;
+        }).filter(Boolean).join(" ");
+
+        return [
+          `pid=${handle.pid}`,
+          `cmd=${JSON.stringify(handle.debugCommand)}`,
+          `ppid=${handle.parentPid ?? 0}`,
+          `vm=0x${handle.vmPtr.toString(16)}`,
+          `process=0x${processPtr.toString(16)}`,
+          `workers=${handle.workers.size}`,
+          `worker_states=[${workerStates}]`,
+          `worker_focus=[${workerFocusSummary}]`,
+          `thread_states=[${threadStates}]`,
+          `ready=${handle.readyWorkers.length}`,
+          `running=${handle.runningWorker ? "1" : "0"}`,
+          `blocked=[${blocked}]`,
+          `vfork=${handle.vforkSnapshot ? "1" : "0"}`,
+          `stdio_pipes=${handle.stdinPipe}/${handle.stdoutPipe}/${handle.stderrPipe}`,
+          `stdio_pipe_counters=[${[0, 1, 2, 10]
+            .map((fd) => formatPipeCounterDebug(handle, fd))
+            .join(" ")}]`,
+          `shared_ofds=[${[...handle.kernelShare.sharedOfdIds].sort((left, right) => left - right).join(",")}]`,
+          `fds=[${fdSummary}]`,
+          `debug=${handle.lastDebugMessage ?? "n/a"}`,
+          `syscalls=[${formatProcessSyscallTrace(handle)}]`,
+          `riscv_syscalls=[${formatProcessRiscvSyscallTrace(handle)}]`,
+          `path_syscalls=[${formatProcessPathTrace(handle)}]`,
+        ].join(" ");
       } catch (error) {
         const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
         return [
@@ -866,13 +645,9 @@ export function debugRuntimeProcessHandles(
           `cmd=${JSON.stringify(handle.debugCommand)}`,
           `vm=0x${handle.vmPtr.toString(16)}`,
           `debug_error=${JSON.stringify(detail)}`,
-          `exec_trace=[${formatProcessExecTrace(handle)}]`,
-          `execve_approach_trace=[${formatProcessExecveApproachTrace(handle)}]`,
-          `execve_dispatch_trace=[${formatProcessExecveDispatchTrace(handle)}]`,
           `syscalls=[${formatProcessSyscallTrace(handle)}]`,
           `riscv_syscalls=[${formatProcessRiscvSyscallTrace(handle)}]`,
           `path_syscalls=[${formatProcessPathTrace(handle)}]`,
-          `worker_log=[${handle.workerDebugLog.join(", ")}]`,
         ].join(" ");
       }
     });
@@ -954,30 +729,4 @@ export function assertProcessStandardFdIntegrity(
       + debugSnapshot,
     );
   }
-}
-
-export function collectRuntimeKernelShareRepresentatives(
-  runtimeId: number,
-  processHandles: Map<number, ProcessHandle>,
-  kernelShareRepresentative: (handle: ProcessHandle) => ProcessHandle | null,
-): ProcessHandle[] {
-  if (runtimeId <= 0) {
-    return [];
-  }
-
-  const visited = new Set<KernelShareGroup>();
-  const representatives: ProcessHandle[] = [];
-  for (const handle of processHandles.values()) {
-    if (handle.runtimeId !== runtimeId) {
-      continue;
-    }
-    const representative = kernelShareRepresentative(handle) ?? handle;
-    const group = representative.kernelShare;
-    if (visited.has(group)) {
-      continue;
-    }
-    visited.add(group);
-    representatives.push(representative);
-  }
-  return representatives;
 }

@@ -1,6 +1,7 @@
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
+  type KernelExports,
 } from "../../../abi.js";
 import { publishKernelRuntimeState } from "../../../bridge/runtime-state.js";
 import { adoptKernelState } from "../../sync.js";
@@ -17,6 +18,21 @@ interface WorkerKernelRpcResumeLifecycleDeps extends WorkerKernelRpcLifecycleDep
     vmPtr: number,
     provisionalChildPid: number,
   ): Promise<CanonicalizedChildLifecycle>;
+}
+
+function restoreVforkParentLocally(
+  kernel: KernelExports,
+  vmPtr: number,
+  childPid: number,
+): void {
+  kernel.thread_clear_spawn_handoff(vmPtr);
+  if (kernel.thread_restore_vfork_parent_without_cleanup) {
+    kernel.thread_restore_vfork_parent_without_cleanup(vmPtr, childPid);
+    kernel.thread_clear_vfork_runtime_state?.();
+    return;
+  }
+  kernel.thread_resume_vfork_parent(vmPtr, childPid);
+  kernel.thread_clear_vfork_runtime_state?.();
 }
 
 export function createWorkerKernelRpcResumeLifecycleHelpers(
@@ -73,9 +89,22 @@ export function createWorkerKernelRpcResumeLifecycleHelpers(
     }
 
     try {
+      const localStatus = handle.kernel.thread_status(vmPtr);
+      if (localStatus !== handle.kernel.abi_status_wait4()) {
+        const blocked = handle.blockedWorkers.get(worker);
+        if (blocked && blocked.vmPtr === vmPtr) {
+          blocked.rpcPending = false;
+        }
+        deps.appendWorkerDebugLog(
+          handle,
+          `wait4-rpc-skip:0x${vmPtr.toString(16)}:local=${localStatus}`,
+        );
+        deps.handleBlockedRetryResult(handle, worker, vmPtr, localStatus);
+        return;
+      }
       deps.appendWorkerDebugLog(
         handle,
-        `wait4-rpc-start:0x${vmPtr.toString(16)}:local=${handle.kernel.thread_status(vmPtr)}`,
+        `wait4-rpc-start:0x${vmPtr.toString(16)}:local=${localStatus}`,
       );
       const response = await handle.kernelWorkerRequest({
         type: "resume-wait4",
@@ -103,13 +132,9 @@ export function createWorkerKernelRpcResumeLifecycleHelpers(
         handle,
         `wait4-rpc-adopted:0x${vmPtr.toString(16)}:local=${handle.kernel.thread_status(vmPtr)}`,
       );
-      handle.kernel.thread_resume_wait4(vmPtr);
-      deps.appendWorkerDebugLog(
-        handle,
-        `wait4-rpc-local-resume:0x${vmPtr.toString(16)}:local=${handle.kernel.thread_status(vmPtr)}`,
-      );
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
+      publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
       await deps.requestPipeStateSync(handle, true);
       await settleVisibleProcessOutput(handle, deps.requestPipeStateSync);
       deps.appendWorkerDebugLog(
@@ -221,6 +246,7 @@ export function createWorkerKernelRpcResumeLifecycleHelpers(
       return;
     }
 
+    deps.appendWorkerDebugLog(handle, `resume-vfork-execve-parent:rpc-start:0x${vmPtr.toString(16)}:${childPid}`);
     const response = await handle.kernelWorkerRequest({
       type: "resume-vfork-execve-parent",
       pid: handle.pid,
@@ -233,14 +259,12 @@ export function createWorkerKernelRpcResumeLifecycleHelpers(
     }
     handle.kernelState = adoptKernelState(handle.kernelState, response.kernelState);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
-    handle.kernel.thread_clear_spawn_handoff(vmPtr);
-    if (handle.kernel.thread_restore_vfork_parent_without_cleanup) {
-      handle.kernel.thread_restore_vfork_parent_without_cleanup(vmPtr, childPid);
-    } else {
-      handle.kernel.thread_resume_vfork_parent(vmPtr, childPid);
-    }
+
+      deps.appendWorkerDebugLog(handle, `resume-vfork-execve-parent:local-start:0x${vmPtr.toString(16)}:${childPid}`);
+      restoreVforkParentLocally(handle.kernel, vmPtr, childPid);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
+    deps.appendWorkerDebugLog(handle, `resume-vfork-execve-parent:local-done:0x${vmPtr.toString(16)}:${childPid}`);
   }
 
   async function releaseHostStdioViaKernelWorker(handle: ProcessHandle): Promise<bigint> {

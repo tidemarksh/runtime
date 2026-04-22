@@ -81,6 +81,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
   let runtimeState = makeKernelState();
   let sleepSec = 0n;
   let sleepNsec = 10_000_000n; // 10ms
+  let monotonicTicks = 1n;
   let currentPid = 2;
   let currentPpid = 1;
   let currentPgid = 1;
@@ -95,6 +96,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
 
   return {
     memory,
+    __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, 0),
     abi_status_ok: () => 0, abi_status_fault: () => 3, abi_status_fs: () => 4,
     abi_status_futex_wait: () => 5, abi_status_pipe_wait: () => 6,
     abi_status_epoll_wait: () => 7, abi_status_vfork_wait: () => 8,
@@ -120,11 +122,23 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     abi_enomem: () => 12, abi_enosys: () => 38, abi_eintr: () => 4, abi_eagain: () => 11,
     abi_epipe: () => 32,
     set_base_time: () => {},
+    sync_monotonic_ticks_floor: (ticks) => {
+      const nextTicks = BigInt(ticks);
+      if (nextTicks > monotonicTicks) {
+        monotonicTicks = nextTicks;
+      }
+    },
+    monotonic_ticks_current: () => monotonicTicks,
     kernel_init: () => {},
     kernel_heap_base: () => runtimeState.heapBase,
     kernel_heap_ptr: () => runtimeState.heapPtr,
     kernel_ofd_table_ptr: () => runtimeState.ofdTablePtr,
     kernel_memfs_ptr: () => runtimeState.memfsPtr,
+    kernel_memfs_header_bytes: () => runtimeState.memfsHeaderBytes,
+    kernel_memfs_inodes_bytes: () => runtimeState.memfsInodesBytes,
+    kernel_memfs_first_child_bytes: () => runtimeState.memfsFirstChildBytes,
+    kernel_memfs_dir_entries_bytes: () => runtimeState.memfsDirEntriesBytes,
+    kernel_memfs_data_bytes: () => runtimeState.memfsDataBytes,
     kernel_mem_state_ptr: () => runtimeState.memStatePtr,
     kernel_epoll_table_ptr: () => runtimeState.epollTablePtr,
     kernel_socket_table_ptr: () => runtimeState.socketTablePtr,
@@ -162,7 +176,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     },
     thread_step: () => 0, thread_status: () => 0,
     thread_exit_code: () => 0, thread_term_signal: () => 0,
-    thread_pc: () => 0n, thread_a0: () => 0n,
+    thread_pc: () => 0x1000n, thread_sp: () => 0x8000n, thread_s11: () => 0x9000n, thread_a0: () => 0n,
     thread_pending_fs_effects: () => 0,
     thread_pending_fs_target_ino: () => 0,
     thread_pending_fs_opcode: () => 0,
@@ -177,10 +191,17 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_resume_futex_wait_result: () => {},
     thread_sleep_seconds: () => sleepSec,
     thread_sleep_nanoseconds: () => sleepNsec,
+    thread_sleep_deadline_ticks: () => {
+      const secTicks = sleepSec * 100_000_000n;
+      const subTicks = sleepNsec * 100_000_000n;
+      const roundedSubTicks = subTicks === 0n ? 0n : (subTicks + 999_999_999n) / 1_000_000_000n;
+      return monotonicTicks + secTicks + roundedSubTicks;
+    },
     thread_record_blocked_addr: () => 0,
     thread_resume_wait4: () => 0n,
     thread_epoll_wait_timeout: () => 0n,
     thread_resume_epoll_wait_timeout: () => {},
+    thread_resume_sleep: () => {},
     thread_resume_blocked_syscall: () => 0n,
     thread_vfork_child_pid: () => 0,
     thread_clone_flags: () => 0n,
@@ -191,6 +212,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_restore_vfork_parent_without_cleanup: () => {},
     thread_complete_execve_handoff: () => 0n,
     thread_spawn_from_clone: () => 0x2000,
+    thread_set_guest_ram_limit: () => {},
     thread_process_thread_count: () => 1,
     thread_process_ptr: () => 0x5000,
     process_thread_tid: (_vmPtr, slot) => slot === 0 ? 1 : 0,
@@ -271,8 +293,7 @@ afterEach(() => {
   vi.resetModules();
 });
 
-test("STATUS_SLEEP schedules owner-side wakeup after the sleep timer fires", async () => {
-  vi.useFakeTimers();
+test("STATUS_SLEEP advances guest time and resumes without a host sleep timer", async () => {
   await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
   const worker = createdWorkers[0];
   emitReady(worker);
@@ -288,15 +309,11 @@ test("STATUS_SLEEP schedules owner-side wakeup after the sleep timer fires", asy
     kernelState: makeKernelState(),
   });
 
-  expect(worker.postedMessages).toEqual([]);
-  vi.advanceTimersByTime(15);
   expect(worker.postedMessages).toEqual([{
     type: "step",
     budget: 20_000,
     kernelState: makeKernelState(),
   }]);
-
-  vi.useRealTimers();
 });
 
 test("STATUS_SLEEP with zero duration requeues immediately on the owner", async () => {
@@ -327,10 +344,14 @@ test("STATUS_SLEEP with zero duration requeues immediately on the owner", async 
 test("STATUS_EPOLL_WAIT with zero timeout resumes on the owner without a 1ms floor", async () => {
   vi.useFakeTimers();
   const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
-  const resumeTimeout = vi.fn(() => 0n);
+  let status = 7;
+  const resumeTimeout = vi.fn(() => {
+    status = 0;
+    return 0n;
+  });
   handle.kernel.thread_epoll_wait_timeout = () => 0n;
   handle.kernel.thread_resume_epoll_wait_timeout = resumeTimeout;
-  handle.kernel.thread_status = () => 0;
+  handle.kernel.thread_status = () => status;
   const worker = createdWorkers[0];
 
   emitReady(worker);
@@ -348,7 +369,7 @@ test("STATUS_EPOLL_WAIT with zero timeout resumes on the owner without a 1ms flo
   expect(resumeTimeout).not.toHaveBeenCalled();
   expect(worker.postedMessages).toEqual([]);
 
-  vi.advanceTimersByTime(0);
+  await vi.advanceTimersByTimeAsync(0);
 
   expect(resumeTimeout).toHaveBeenCalledWith(0x1234);
   expect(worker.postedMessages).toEqual([{

@@ -1,7 +1,15 @@
 import { attachKernelRuntimeState, readKernelRuntimeState, type KernelExports, type KernelRuntimeState } from "../abi.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import { resetPageCache } from "../fs/sab-page-cache.js";
+import {
+  restoreThreadWorkerPrepareMemory,
+  snapshotThreadWorkerPrepareMemory,
+} from "../thread-worker/prepare-memory.js";
 import { createKernelEnv } from "../wasm/env.js";
+import {
+  configureKernelInstanceStack,
+  KERNEL_WORKER_STACK_SLOT,
+} from "../wasm/stack.js";
 
 interface CanonicalProcessEntry {
   pid: number;
@@ -16,6 +24,19 @@ interface ProcessFsResult {
   kernelState: KernelRuntimeState;
   memfsMutated: boolean;
   ofdStateChanged: boolean;
+}
+
+interface PendingFsMutationContext {
+  effects: number;
+  pendingPath: string | null;
+  pendingSecondaryPath: string | null;
+  fileDataTargetIno: number;
+}
+
+interface AppliedFsMutationResult {
+  memfsMutated: boolean;
+  ofdStateChanged: boolean;
+  needsFullSync: boolean;
 }
 
 interface KernelWorkerProcessControlDeps {
@@ -140,6 +161,76 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     return decoder.decode(new Uint8Array(processExports.memory.buffer, linearPtr, pathLen));
   }
 
+  function fallbackToFullMemfsSync(
+    processExports: KernelExports,
+    canonicalExports: KernelExports,
+  ): void {
+    const sourceState = readKernelRuntimeState(processExports);
+    const canonicalState = readKernelRuntimeState(canonicalExports);
+    deps.copyMemfsState(processExports, sourceState, canonicalExports, canonicalState, {
+      // A fallback full sync must preserve regular-file bodies. Tree-only
+      // metadata copies can reconstruct directory shape, but they also turn
+      // unrelated executables into zero-filled stubs once canonical state is
+      // rebuilt and fanned out.
+      includeData: true,
+    });
+    deps.rebuildPageCacheFromCanonical();
+    deps.fanoutCanonicalMemfs();
+  }
+
+  function readPendingFsMutationContext(
+    processExports: KernelExports,
+    vmPtr: number,
+  ): PendingFsMutationContext {
+    const effects = processExports.thread_pending_fs_effects(vmPtr);
+    return {
+      effects,
+      pendingPath: (effects & (deps.fsEffectMemfsMutation | deps.fsEffectMemfsFileData)) !== 0
+        ? readPendingFsPath(processExports, vmPtr)
+        : null,
+      pendingSecondaryPath: (effects & deps.fsEffectMemfsMutation) !== 0
+        ? readPendingFsPath(processExports, vmPtr, true)
+        : null,
+      fileDataTargetIno: (effects & deps.fsEffectMemfsFileData) !== 0
+        ? processExports.thread_pending_fs_target_ino(vmPtr)
+        : 0,
+    };
+  }
+
+  function applyPendingFsMutation(
+    processExports: KernelExports,
+    context: PendingFsMutationContext,
+    fsSucceeded: boolean,
+  ): AppliedFsMutationResult {
+    const treeMutated = fsSucceeded && (context.effects & deps.fsEffectMemfsMutation) !== 0;
+    const fileDataMutated = fsSucceeded && (context.effects & deps.fsEffectMemfsFileData) !== 0;
+    let handledFileDataMutation = false;
+    let handledMetadataMutation = false;
+
+    if (fileDataMutated && context.fileDataTargetIno !== 0) {
+      handledFileDataMutation = deps.syncFileDataMutation(processExports, context.fileDataTargetIno);
+    } else if (fileDataMutated && context.pendingPath) {
+      handledFileDataMutation = deps.syncFileDataMutationByPath(processExports, context.pendingPath);
+    }
+
+    if (treeMutated && context.pendingPath) {
+      handledMetadataMutation = deps.syncMetadataMutation(processExports, context.pendingPath);
+      if (
+        handledMetadataMutation
+        && context.pendingSecondaryPath
+        && context.pendingSecondaryPath !== context.pendingPath
+      ) {
+        handledMetadataMutation = deps.syncMetadataMutation(processExports, context.pendingSecondaryPath);
+      }
+    }
+
+    return {
+      memfsMutated: treeMutated || fileDataMutated,
+      ofdStateChanged: fsSucceeded && (context.effects & deps.fsEffectSharedOfdState) !== 0,
+      needsFullSync: (treeMutated && !handledMetadataMutation) || (fileDataMutated && !handledFileDataMutation),
+    };
+  }
+
   async function initKernel(
     module: WebAssembly.Module,
     pageCache: SharedArrayBuffer,
@@ -158,9 +249,10 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       env: createKernelEnv(privateMemory, { sabPageCache: pageCache }),
     });
     const nextExports = instance.exports as unknown as KernelExports;
+    configureKernelInstanceStack(nextExports, KERNEL_WORKER_STACK_SLOT);
     deps.setCanonicalExports(nextExports);
 
-    const wasmHeapBase = (nextExports as { __heap_base?: { value: number } }).__heap_base?.value ?? 0x200000;
+    const wasmHeapBase = nextExports.__heap_base?.value ?? 0x200000;
     nextExports.kernel_init(wasmHeapBase);
 
     const now = Date.now();
@@ -200,10 +292,23 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       throw new Error("kernel worker is not initialized");
     }
     const canonicalExports = deps.getCanonicalExports();
+    const memorySnapshot = snapshotThreadWorkerPrepareMemory(
+      memory,
+      null,
+      kernelState,
+      kernelState.heapBase,
+      { includeMemfsData: false },
+    );
     const instance = await WebAssembly.instantiate(wasmModule, {
       env: createKernelEnv(memory, { sabPageCache: deps.getSabPageCache() }),
     });
+    // Registering a process must not mutate the caller-owned shared memory.
+    // Browsers can replay data segments on instantiation. Restore the live
+    // thread/process regions that sit outside the static kernel image instead
+    // of snapshotting the entire shared linear memory.
+    restoreThreadWorkerPrepareMemory(memory, memorySnapshot);
     const processExports = instance.exports as unknown as KernelExports;
+    configureKernelInstanceStack(processExports, KERNEL_WORKER_STACK_SLOT);
     attachKernelRuntimeState(processExports, kernelState);
     deps.processKernels.set(pid, processExports);
     const existingProcess = deps.canonicalProcesses.get(pid);
@@ -321,51 +426,18 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     const canonicalExports = deps.getCanonicalExports();
     const processExports = requireProcessKernel(pid);
     attachKernelRuntimeState(processExports, kernelState);
-    const effects = processExports.thread_pending_fs_effects(vmPtr);
-    const pendingPath = (effects & (deps.fsEffectMemfsMutation | deps.fsEffectMemfsFileData)) !== 0
-      ? readPendingFsPath(processExports, vmPtr)
-      : null;
-    const pendingSecondaryPath = (effects & deps.fsEffectMemfsMutation) !== 0
-      ? readPendingFsPath(processExports, vmPtr, true)
-      : null;
-    const fileDataTargetIno = (effects & deps.fsEffectMemfsFileData) !== 0
-      ? processExports.thread_pending_fs_target_ino(vmPtr)
-      : 0;
+    const pendingContext = readPendingFsMutationContext(processExports, vmPtr);
     processExports.thread_process_fs(vmPtr);
     const result = Number(processExports.thread_resume_fs(vmPtr));
     const fsSucceeded = result >= 0;
-    const treeMutated = fsSucceeded && (effects & deps.fsEffectMemfsMutation) !== 0;
-    const fileDataMutated = fsSucceeded && (effects & deps.fsEffectMemfsFileData) !== 0;
-    let handledFileDataMutation = false;
-    let handledMetadataMutation = false;
-    if (fileDataMutated && fileDataTargetIno !== 0) {
-      handledFileDataMutation = deps.syncFileDataMutation(processExports, fileDataTargetIno);
-    } else if (fileDataMutated && pendingPath) {
-      handledFileDataMutation = deps.syncFileDataMutationByPath(processExports, pendingPath);
-    }
-    if (treeMutated && pendingPath) {
-      handledMetadataMutation = deps.syncMetadataMutation(processExports, pendingPath);
-      if (handledMetadataMutation && pendingSecondaryPath && pendingSecondaryPath !== pendingPath) {
-        handledMetadataMutation = deps.syncMetadataMutation(processExports, pendingSecondaryPath);
-      }
-    }
-    const needsFullSync = (treeMutated && !handledMetadataMutation) || (fileDataMutated && !handledFileDataMutation);
-    if (needsFullSync) {
-      const sourceState = readKernelRuntimeState(processExports);
-      const canonicalState = readKernelRuntimeState(canonicalExports);
-      const metadataOnlyTreeSync = treeMutated && !fileDataMutated;
-      deps.copyMemfsState(processExports, sourceState, canonicalExports, canonicalState, {
-        includeData: !metadataOnlyTreeSync,
-      });
-      // Even metadata-only mutations must publish new inode records so later
-      // file-data sync can reconstruct missing targets by inode.
-      deps.rebuildPageCacheFromCanonical();
-      deps.fanoutCanonicalMemfs();
+    const mutation = applyPendingFsMutation(processExports, pendingContext, fsSucceeded);
+    if (mutation.needsFullSync) {
+      fallbackToFullMemfsSync(processExports, canonicalExports);
     }
     return {
       kernelState: readKernelRuntimeState(processExports),
-      memfsMutated: treeMutated || fileDataMutated,
-      ofdStateChanged: fsSucceeded && (effects & deps.fsEffectSharedOfdState) !== 0,
+      memfsMutated: mutation.memfsMutated,
+      ofdStateChanged: mutation.ofdStateChanged,
     };
   }
 

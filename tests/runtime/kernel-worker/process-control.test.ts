@@ -12,6 +12,11 @@ function makeKernelState(): KernelRuntimeState {
     heapPtr: 0x210000,
     ofdTablePtr: 0x220000,
     memfsPtr: 0x230000,
+    memfsHeaderBytes: 0x1000,
+    memfsInodesBytes: 0x2000,
+    memfsFirstChildBytes: 0x1000,
+    memfsDirEntriesBytes: 0x2000,
+    memfsDataBytes: 0x4000,
     memStatePtr: 0x240000,
     epollTablePtr: 0x250000,
     socketTablePtr: 0x260000,
@@ -39,6 +44,7 @@ function makeKernelExports(options: {
   let runtimeState = makeKernelState();
   const opLog: string[] = [];
   const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
+  const stackPointer = new WebAssembly.Global({ value: "i32", mutable: true }, 0);
   const guestBase = 0x1000;
   const pathPtr = 0x2000;
   const pathBytes = options.path ? new TextEncoder().encode(options.path) : null;
@@ -51,10 +57,16 @@ function makeKernelExports(options: {
   }
   return {
     memory,
+    __stack_pointer: stackPointer,
     kernel_heap_base: () => runtimeState.heapBase,
     kernel_heap_ptr: () => runtimeState.heapPtr,
     kernel_ofd_table_ptr: () => runtimeState.ofdTablePtr,
     kernel_memfs_ptr: () => runtimeState.memfsPtr,
+    kernel_memfs_header_bytes: () => runtimeState.memfsHeaderBytes,
+    kernel_memfs_inodes_bytes: () => runtimeState.memfsInodesBytes,
+    kernel_memfs_first_child_bytes: () => runtimeState.memfsFirstChildBytes,
+    kernel_memfs_dir_entries_bytes: () => runtimeState.memfsDirEntriesBytes,
+    kernel_memfs_data_bytes: () => runtimeState.memfsDataBytes,
     kernel_mem_state_ptr: () => runtimeState.memStatePtr,
     kernel_epoll_table_ptr: () => runtimeState.epollTablePtr,
     kernel_socket_table_ptr: () => runtimeState.socketTablePtr,
@@ -413,7 +425,7 @@ test("processFs treats unlink as metadata-only canonical sync", () => {
   const result = processControl.processFs(7, 0x1234, makeKernelState());
 
   expect(result.memfsMutated).toBe(true);
-  expect(copyMemfsCalls).toEqual([false]);
+  expect(copyMemfsCalls).toEqual([true]);
   expect(fanoutCalls).toEqual([true]);
 });
 

@@ -1,0 +1,84 @@
+import { collectLiveThreadVmPtrs } from "./live-threads.js";
+import type { ProcessHandle, ThreadWorkerState } from "./types.js";
+
+interface ProcessIdentityAssertionOptions {
+  status?: number;
+  threadVmPtr?: number;
+  workerLogTail?: string[];
+  skipVmPtrs?: Iterable<number>;
+}
+
+export function assertHandleWorkerProcessIdentity(
+  handle: ProcessHandle,
+  threadWorkerStates: WeakMap<Worker, ThreadWorkerState>,
+  context: string,
+  options: ProcessIdentityAssertionOptions = {},
+): void {
+  if (handle.pid <= 0 || handle.pendingChildSpawnRecords > 0) {
+    return;
+  }
+
+  const skipVmPtrs = new Set(options.skipVmPtrs ?? []);
+  const ownedWorkerVmPtrs = new Set<number>();
+  const liveVmPtrs = new Map<string, number>();
+  let anchorVmPtr: number | null = null;
+  let workerIndex = 0;
+
+  for (const worker of handle.workers) {
+    const threadState = threadWorkerStates.get(worker);
+    if (!threadState || threadState.vmPtr === 0) {
+      continue;
+    }
+    ownedWorkerVmPtrs.add(threadState.vmPtr);
+    if (
+      anchorVmPtr === null
+      && handle.kernel.process_current_pid(threadState.vmPtr) === handle.pid
+    ) {
+      anchorVmPtr = threadState.vmPtr;
+    }
+    liveVmPtrs.set(`worker${workerIndex}`, threadState.vmPtr);
+    workerIndex += 1;
+  }
+
+  if (handle.vmPtr !== 0) {
+    const includeHandleVmPtr = ownedWorkerVmPtrs.has(handle.vmPtr)
+      || (ownedWorkerVmPtrs.size === 0 && handle.pendingChildSpawnRecords === 0);
+    if (includeHandleVmPtr) {
+      if (
+        anchorVmPtr === null
+        && handle.kernel.process_current_pid(handle.vmPtr) === handle.pid
+      ) {
+        anchorVmPtr = handle.vmPtr;
+      }
+      liveVmPtrs.set("handle", handle.vmPtr);
+    }
+  }
+
+  const liveThreadVmPtrs = anchorVmPtr === null
+    ? null
+    : collectLiveThreadVmPtrs(handle.kernel, anchorVmPtr);
+
+  for (const [label, vmPtr] of liveVmPtrs) {
+    if (skipVmPtrs.has(vmPtr)) {
+      continue;
+    }
+    if (liveThreadVmPtrs !== null && !liveThreadVmPtrs.has(vmPtr)) {
+      continue;
+    }
+    const actualPid = handle.kernel.process_current_pid(vmPtr);
+    if (actualPid === handle.pid) {
+      continue;
+    }
+    const workerLogTail = options.workerLogTail ?? [];
+    throw new Error(
+      `${context} process identity drift expected_pid=${handle.pid} actual_pid=${actualPid}`
+        + (options.status !== undefined ? ` status=${options.status}` : "")
+        + (options.threadVmPtr !== undefined ? ` thread_vm=0x${options.threadVmPtr.toString(16)}` : "")
+        + ` label=${label}`
+        + ` vm=0x${vmPtr.toString(16)}`
+        + ` process_ptr=0x${handle.kernel.thread_process_ptr(vmPtr).toString(16)}`
+        + ` last_debug=${JSON.stringify(handle.lastDebugMessage ?? "n/a")}`
+        + (workerLogTail.length > 0 ? ` worker_log_tail=[${workerLogTail.join(", ")}]` : ""),
+    );
+  }
+}

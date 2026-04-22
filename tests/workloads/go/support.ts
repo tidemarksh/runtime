@@ -10,11 +10,49 @@ import {
 } from "../../support/runtime-workload.js";
 
 export const SAMPLE_MODULE_DIR = "/work/hello";
-export const GO_BINARY_PATH = process.env.TIDEMARK_TEST_GO_BINARY ?? "";
 export const BUSYBOX_BINARY_PATH = process.env.TIDEMARK_TEST_BUSYBOX_BINARY ?? "";
-export const GO_TOOLCHAIN_DIR = process.env.TIDEMARK_TEST_GO_TOOLCHAIN_DIR ?? "";
 export const GO_EXEC_CAPTURE_HELPER_PATH = process.env.TIDEMARK_TEST_GO_EXEC_CAPTURE_HELPER
   ?? resolve(__dirname, "./fixtures/exec-capture-helper.riscv64");
+export const GO_TOOL_VERSION = process.env.TIDEMARK_TEST_GO_TOOL_VERSION ?? "go1.26.1";
+export const GO_BUILD_EXPERIMENT = process.env.TIDEMARK_ACCEPTANCE_GO_EXPERIMENT ?? "";
+
+const WORKSPACE_ROOT = resolve(__dirname, "../../../..");
+const REQUIRED_GO_TOOL_RELATIVE_PATH = "pkg/tool/linux_riscv64/compile";
+
+function hasRequiredGoToolchainBinary(candidate: string): boolean {
+  return candidate !== "" && existsSync(resolve(candidate, REQUIRED_GO_TOOL_RELATIVE_PATH));
+}
+
+function resolveGoToolchainDir(): { dir: string; error: string | null } {
+  const envDir = process.env.TIDEMARK_TEST_GO_TOOLCHAIN_DIR ?? "";
+  if (envDir !== "") {
+    return hasRequiredGoToolchainBinary(envDir)
+      ? { dir: envDir, error: null }
+      : {
+        dir: "",
+        error: `missing riscv64 Go tool binary: ${resolve(envDir, REQUIRED_GO_TOOL_RELATIVE_PATH)}`,
+      };
+  }
+
+  const fallback = [
+    resolve(WORKSPACE_ROOT, "artifacts/go/toolchain"),
+    resolve(WORKSPACE_ROOT, "artifacts/reference-linux/go/build/goroot-overlay2"),
+    resolve(WORKSPACE_ROOT, "legacy/core/images/go-toolchain"),
+  ].find(hasRequiredGoToolchainBinary);
+
+  return fallback
+    ? { dir: fallback, error: null }
+    : {
+      dir: "",
+      error: `missing Go toolchain dir with ${REQUIRED_GO_TOOL_RELATIVE_PATH}`,
+    };
+}
+
+const GO_TOOLCHAIN_RESOLUTION = resolveGoToolchainDir();
+export const GO_TOOLCHAIN_DIR = GO_TOOLCHAIN_RESOLUTION.dir;
+export const GO_TOOLCHAIN_DIR_ERROR = GO_TOOLCHAIN_RESOLUTION.error;
+export const GO_BINARY_PATH = process.env.TIDEMARK_TEST_GO_BINARY
+  ?? (GO_TOOLCHAIN_DIR ? resolve(GO_TOOLCHAIN_DIR, "bin/go") : "");
 
 function normalizeGuestPath(path: string): string {
   const normalized = `/${path.split("/").filter(Boolean).join("/")}`;
@@ -102,6 +140,9 @@ export function buildGoRuntimeSnapshot(options: {
   setSnapshotFile(entries, "/usr/local/go/go.env", encoder.encode("GOTOOLCHAIN=local\n"), 0o644);
 
   if (includeToolchain) {
+    if (!GO_TOOLCHAIN_DIR) {
+      throw new Error(GO_TOOLCHAIN_DIR_ERROR ?? "missing Go toolchain dir");
+    }
     appendHostDirSnapshot(entries, GO_TOOLCHAIN_DIR, "/usr/local/go");
     setSnapshotFile(
       entries,
@@ -167,10 +208,8 @@ export async function prepareGoRuntime(options: {
   if (!GO_BINARY_PATH || !existsSync(GO_BINARY_PATH)) {
     return logSkip(`missing Go binary: ${GO_BINARY_PATH || "TIDEMARK_TEST_GO_BINARY"}`);
   }
-  if (includeToolchain && (!GO_TOOLCHAIN_DIR || !existsSync(GO_TOOLCHAIN_DIR))) {
-    return logSkip(
-      `missing Go toolchain dir: ${GO_TOOLCHAIN_DIR || "TIDEMARK_TEST_GO_TOOLCHAIN_DIR"}`,
-    );
+  if (includeToolchain && !GO_TOOLCHAIN_DIR) {
+    return logSkip(GO_TOOLCHAIN_DIR_ERROR ?? "missing Go toolchain dir");
   }
 
   const runtime = await Runtime.create({
@@ -201,8 +240,10 @@ export function goEnv(gomaxprocs: number): string[] {
     "GOFLAGS=-mod=mod",
     "HOME=/root",
     "GOGC=off",
-    "GOEXPERIMENT=nodwarf5",
   ];
+  if (GO_BUILD_EXPERIMENT) {
+    env.push(`GOEXPERIMENT=${GO_BUILD_EXPERIMENT}`);
+  }
   if (process.env.TIDEMARK_ACCEPTANCE_GO_BUILD_GODEBUG) {
     env.push(`GODEBUG=${process.env.TIDEMARK_ACCEPTANCE_GO_BUILD_GODEBUG}`);
   }
@@ -224,6 +265,9 @@ export function readGoExecCaptureHelperBinary(): Uint8Array | null {
 }
 
 export function readGoToolBinary(relativePath: string): Uint8Array | null {
+  if (!GO_TOOLCHAIN_DIR) {
+    return logSkip(GO_TOOLCHAIN_DIR_ERROR ?? "missing Go toolchain dir");
+  }
   const absolutePath = resolve(GO_TOOLCHAIN_DIR, relativePath);
   if (!existsSync(absolutePath)) {
     return logSkip(`missing Go tool binary: ${absolutePath}`);

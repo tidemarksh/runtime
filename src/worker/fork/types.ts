@@ -1,4 +1,4 @@
-import type { CanonicalizedChildLifecycle, KernelWorkerMemfsSeedMode, KernelWorkerPipeSeedMode, ProcessHandle, ThreadWorkerState } from "../types.js";
+import type { AttachThreadWorkerRequest, CanonicalizedChildLifecycle, KernelWorkerMemfsSeedMode, KernelWorkerPipeSeedMode, ProcessHandle, ThreadWorkerState } from "../types.js";
 import type { KernelWorkerPidBytesSnapshot } from "../../messages.js";
 
 export interface WorkerForkDeps {
@@ -6,7 +6,7 @@ export interface WorkerForkDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   assertProcessStandardFdIntegrity(handle: ProcessHandle, context: string): void;
-  attachThreadWorker(handle: ProcessHandle, worker: Worker, vmPtr: number): void;
+  attachThreadWorker(handle: ProcessHandle, request: AttachThreadWorkerRequest): void;
   clearVforkSnapshot(handle: ProcessHandle): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   failProcess(handle: ProcessHandle, error: Error): void;
@@ -48,8 +48,15 @@ export interface WorkerForkDeps {
   syncForkSharedStateViaKernelWorker(
     handle: ProcessHandle,
     targets: ProcessHandle[],
-    options?: { includeMemfs?: boolean; trackHeldOfds?: boolean; preserveSourceRefcounts?: boolean },
+    options?: {
+      includeMemfs?: boolean;
+      trackHeldOfds?: boolean;
+      deltaOfdIds?: boolean;
+      preserveSourceRefcounts?: boolean;
+      sourceVmPtr?: number;
+    },
   ): Promise<void>;
+  syncProcessMemfsViaKernelWorker(handle: ProcessHandle): Promise<void>;
   canonicalizeChildLifecycleViaKernelWorker(
     handle: ProcessHandle,
     vmPtr: number,

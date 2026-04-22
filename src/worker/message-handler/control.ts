@@ -10,6 +10,8 @@ import { adoptKernelState } from "../sync.js";
 import type { ProcessHandle } from "../types.js";
 import type { ThreadWorkerOutbound } from "../../messages.js";
 import type { WorkerMessageHandlerDeps } from "./types.js";
+import { readProcessPidField } from "./debug-summary.js";
+import { createWorkerOwnershipGuard } from "./worker-ownership.js";
 
 function formatDebugError(error: unknown): string {
   return error instanceof Error ? (error.stack ?? error.message) : String(error);
@@ -64,6 +66,81 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
       if (!thread) {
         return true;
       }
+      const workerStillOwnedByHandle = createWorkerOwnershipGuard(
+        handle,
+        worker,
+        thread,
+        deps.threadWorkerStates,
+      );
+      deps.appendWorkerDebugLog(
+        handle,
+        `ready-route:0x${thread.vmPtr.toString(16)}`
+          + `:owner_pid=${thread.ownerPid}`
+          + `:handle_pid=${handle.pid}`
+          + `:generation=${msg.generation}`,
+      );
+      const readyProcessPidField = readProcessPidField(msg.debug);
+      if (readyProcessPidField !== null && readyProcessPidField !== handle.pid) {
+        deps.appendWorkerDebugLog(
+          handle,
+          `ready-pid-mismatch:0x${thread.vmPtr.toString(16)}`
+            + `:expected_pid=${handle.pid}`
+            + `:actual_pid=${readyProcessPidField}`
+            + `:reinit_count=${thread.reinitCount}`,
+        );
+        if (thread.reinitCount < 1) {
+          deps.attachThreadWorker(handle, {
+            worker,
+            vmPtr: thread.vmPtr,
+            forcePrepare: true,
+          });
+          return true;
+        }
+        deps.failProcess(
+          handle,
+          new Error(
+            `ready pid mismatch persisted vm=0x${thread.vmPtr.toString(16)}`
+              + ` expected_pid=${handle.pid} actual_pid=${readyProcessPidField}`
+              + (msg.debug ? ` ready_debug=${JSON.stringify(msg.debug)}` : ""),
+          ),
+        );
+        return true;
+      }
+      const vforkSnapshot = handle.vforkSnapshot;
+      if (
+        vforkSnapshot
+        && handle.vforkWorker === null
+        && thread.vmPtr === vforkSnapshot.vmPtr
+      ) {
+        const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
+        const currentProcessPtr = handle.kernel.thread_process_ptr(thread.vmPtr);
+        deps.appendWorkerDebugLog(
+          handle,
+          `vfork-parent-ready-check:0x${thread.vmPtr.toString(16)}`
+            + `:expected_pid=${vforkSnapshot.parentPid}`
+            + `:actual_pid=${currentPid}`
+            + `:expected_process_ptr=0x${vforkSnapshot.parentProcessPtr.toString(16)}`
+            + `:actual_process_ptr=0x${currentProcessPtr.toString(16)}`
+            + (msg.debug ? `:${msg.debug}` : ""),
+        );
+        if (
+          currentPid !== vforkSnapshot.parentPid
+          || currentProcessPtr !== vforkSnapshot.parentProcessPtr
+        ) {
+          deps.failProcess(
+            handle,
+            new Error(
+              `vfork parent replacement worker drift vm=0x${thread.vmPtr.toString(16)}`
+                + ` expected_pid=${vforkSnapshot.parentPid} actual_pid=${currentPid}`
+                + ` expected_process_ptr=0x${vforkSnapshot.parentProcessPtr.toString(16)}`
+                + ` actual_process_ptr=0x${currentProcessPtr.toString(16)}`
+                + (msg.debug ? ` ready_debug=${JSON.stringify(msg.debug)}` : ""),
+            ),
+          );
+          return true;
+        }
+        deps.clearVforkSnapshot(handle);
+      }
       const resumeWorkersOnReady = thread.resumeWorkersOnReady.splice(0);
       handle.kernelState = adoptKernelState(handle.kernelState, msg.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
@@ -86,6 +163,9 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
       if (readySyncs.length > 0) {
         void Promise.all(readySyncs)
           .then(() => {
+            if (!workerStillOwnedByHandle()) {
+              return;
+            }
             deps.enqueueWorker(handle, worker);
             for (const resumeWorker of resumeWorkersOnReady) {
               if (handle.workers.has(resumeWorker)) {

@@ -201,11 +201,31 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
   }
 
+  async function syncProcessMemfsViaKernelWorker(handle: ProcessHandle): Promise<void> {
+    if (!handle.kernelWorkerRequest || handle.pid <= 0) {
+      return;
+    }
+    handle.kernelState = readKernelRuntimeState(handle.kernel);
+    attachKernelRuntimeState(handle.kernel, handle.kernelState);
+
+    const response = await handle.kernelWorkerRequest({
+      type: "sync-process-memfs",
+      pid: handle.pid,
+      kernelState: handle.kernelState,
+    });
+    if (response.type !== "process-memfs-synced") {
+      throw new Error(`unexpected kernel-worker response for sync-process-memfs: ${response.type}`);
+    }
+    handle.kernelState = adoptKernelState(handle.kernelState, response.kernelState);
+    attachKernelRuntimeState(handle.kernel, handle.kernelState);
+  }
+
   return {
     canonicalizeChildLifecycleViaKernelWorker,
     initializeProcessLifecycleViaKernelWorker,
     recordChildExitViaKernelWorker,
     registerProcessWithKernelWorker,
+    syncProcessMemfsViaKernelWorker,
     syncProcessLifecycleViaKernelWorker,
     unregisterProcessWithKernelWorker,
   };

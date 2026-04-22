@@ -28,15 +28,9 @@ function epollWaitShouldStayInWorker(
   status: number,
   statusCodes: StatusCodes,
 ): boolean {
-  if (status !== statusCodes.EPOLL_WAIT) {
-    return false;
-  }
-  // Keep the in-worker fast path only for single-threaded indefinite waits.
-  // Multi-threaded processes can deliver epoll wakeups from sibling threads,
-  // and owner-side blocked retry avoids the detached child-worker path that
-  // can surface in heavier browser pages.
-  return Number(exports.thread_epoll_wait_timeout(vmPtr)) < 0
-    && exports.thread_process_thread_count(vmPtr) <= 1;
+  void exports;
+  void vmPtr;
+  return status === statusCodes.EPOLL_WAIT && false;
 }
 
 export function isRuntimeBridgeBlockedStatus(
@@ -45,8 +39,8 @@ export function isRuntimeBridgeBlockedStatus(
   status: number,
   statusCodes: StatusCodes,
 ): boolean {
-  // STATUS_SLEEP must stay owner-side so its JS timer can fire while this
-  // worker is idle. EPOLL_WAIT stays in-worker only for indefinite waits.
+  // Keep blocked waits owner-side so the runtime scheduler remains the single
+  // authority over process progress.
   return epollWaitShouldStayInWorker(exports, vmPtr, status, statusCodes);
 }
 

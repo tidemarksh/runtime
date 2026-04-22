@@ -6,6 +6,7 @@ import {
   debugRuntimeWorkerLogFocus,
   destroyProcessTree,
   destroyRuntimeProcesses,
+  getRuntimeFsState,
   publishRuntimeFsState,
   replaceRuntimeFsSnapshot,
   destroyWorkerPool,
@@ -37,6 +38,11 @@ export interface RuntimeOptions {
 
 const MIN_RAM_SIZE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MAX_MEMORY_PAGES = 32768;
+
+function normalizeRuntimePath(path: string): string {
+  const normalized = `/${path.split("/").filter(Boolean).join("/")}`;
+  return normalized === "//" ? "/" : normalized || "/";
+}
 
 export interface RuntimeFs {
   writeFile(path: string, data: Uint8Array, mode?: number): Promise<void>;
@@ -301,13 +307,26 @@ export class Runtime {
   }
 
   async readFile(path: string): Promise<Uint8Array> {
-    const response = await this.sendKernelRequest<
-      Extract<KernelWorkerOutbound, { type: "file-read" }>
-    >({
-      type: "read-file",
-      path,
-    });
-    return response.data;
+    try {
+      const response = await this.sendKernelRequest<
+        Extract<KernelWorkerOutbound, { type: "file-read" }>
+      >({
+        type: "read-file",
+        path,
+      });
+      return response.data;
+    } catch (error) {
+      const normalized = normalizeRuntimePath(path);
+      const snapshot = getRuntimeFsState(this.runtimeId);
+      const entry = snapshot?.entries.find((candidate) => (
+        candidate.kind === "file"
+        && normalizeRuntimePath(candidate.path) === normalized
+      ));
+      if (entry?.kind === "file" && entry.data) {
+        return new Uint8Array(entry.data);
+      }
+      throw error;
+    }
   }
 
   async mkdir(path: string, mode?: number): Promise<void> {

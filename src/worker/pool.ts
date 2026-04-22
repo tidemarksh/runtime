@@ -2,16 +2,44 @@ interface WorkerPoolEntry {
   worker: Worker;
   lastUsed: number;
   busy: boolean;
+  stackSlot: number;
 }
 
 const workerPool: WorkerPoolEntry[] = [];
 const workerEntryMap = new WeakMap<Worker, WorkerPoolEntry>();
+const workerStackSlotMap = new WeakMap<Worker, number>();
 const MAX_WORKERS = 4;
 const IDLE_TIMEOUT_MS = 60_000;
 const EVICTION_INTERVAL_MS = 10_000;
 const REUSE_WORKERS = typeof window === "undefined";
 
 let evictionTimer: ReturnType<typeof setInterval> | null = null;
+let nextThreadWorkerStackSlot = 2;
+const freeThreadWorkerStackSlots: number[] = [];
+
+function allocateThreadWorkerStackSlot(): number {
+  const reused = freeThreadWorkerStackSlots.pop();
+  if (reused !== undefined) {
+    return reused;
+  }
+  const slot = nextThreadWorkerStackSlot;
+  nextThreadWorkerStackSlot += 1;
+  if (slot >= 32) {
+    throw new Error("exhausted kernel thread-worker stack slots");
+  }
+  return slot;
+}
+
+function releaseThreadWorkerStackSlot(worker: Worker): void {
+  const slot = workerStackSlotMap.get(worker);
+  if (slot === undefined) {
+    return;
+  }
+  workerStackSlotMap.delete(worker);
+  if (slot >= 2) {
+    freeThreadWorkerStackSlots.push(slot);
+  }
+}
 
 function maybeUnrefWorker(worker: Worker): void {
   const nodeWorker = worker as Worker & { unref?: () => void };
@@ -36,6 +64,7 @@ function evictIdleWorkers(): void {
       continue;
     }
     entry.worker.terminate();
+    releaseThreadWorkerStackSlot(entry.worker);
     workerEntryMap.delete(entry.worker);
     workerPool.splice(i, 1);
   }
@@ -45,6 +74,7 @@ export function acquireWorker(): Worker {
   if (!REUSE_WORKERS) {
     const workerUrl = new URL("../thread-worker.mjs", import.meta.url);
     const worker = new Worker(workerUrl, { type: "module" });
+    workerStackSlotMap.set(worker, allocateThreadWorkerStackSlot());
     maybeUnrefWorker(worker);
     return worker;
   }
@@ -61,14 +91,17 @@ export function acquireWorker(): Worker {
   const workerUrl = new URL("../thread-worker.mjs", import.meta.url);
   if (workerPool.length < MAX_WORKERS) {
     const worker = new Worker(workerUrl, { type: "module" });
+    const stackSlot = allocateThreadWorkerStackSlot();
     maybeUnrefWorker(worker);
     const entry: WorkerPoolEntry = {
       worker,
       lastUsed: Date.now(),
       busy: true,
+      stackSlot,
     };
     workerPool.push(entry);
     workerEntryMap.set(worker, entry);
+    workerStackSlotMap.set(worker, stackSlot);
     return worker;
   }
 
@@ -84,23 +117,28 @@ export function acquireWorker(): Worker {
 
   if (lruIndex === -1) {
     const worker = new Worker(workerUrl, { type: "module" });
+    workerStackSlotMap.set(worker, allocateThreadWorkerStackSlot());
     maybeUnrefWorker(worker);
     return worker;
   }
 
   const evicted = workerPool[lruIndex];
   evicted.worker.terminate();
+  releaseThreadWorkerStackSlot(evicted.worker);
   workerEntryMap.delete(evicted.worker);
 
   const worker = new Worker(workerUrl, { type: "module" });
+  const stackSlot = allocateThreadWorkerStackSlot();
   maybeUnrefWorker(worker);
   const entry: WorkerPoolEntry = {
     worker,
     lastUsed: Date.now(),
     busy: true,
+    stackSlot,
   };
   workerPool[lruIndex] = entry;
   workerEntryMap.set(worker, entry);
+  workerStackSlotMap.set(worker, stackSlot);
   return worker;
 }
 
@@ -108,10 +146,19 @@ export function releaseWorker(worker: Worker): void {
   const entry = workerEntryMap.get(worker);
   if (!entry) {
     worker.terminate();
+    releaseThreadWorkerStackSlot(worker);
     return;
   }
   entry.busy = false;
   entry.lastUsed = Date.now();
+}
+
+export function kernelStackSlotForWorker(worker: Worker): number {
+  const slot = workerStackSlotMap.get(worker);
+  if (slot === undefined) {
+    throw new Error("thread worker stack slot is unavailable");
+  }
+  return slot;
 }
 
 export function removeWorkerFromPool(worker: Worker): void {
@@ -124,6 +171,7 @@ export function removeWorkerFromPool(worker: Worker): void {
     workerPool.splice(index, 1);
   }
   workerEntryMap.delete(worker);
+  releaseThreadWorkerStackSlot(worker);
 }
 
 export function destroyWorkerPool(): void {
@@ -133,6 +181,7 @@ export function destroyWorkerPool(): void {
   }
   for (const entry of workerPool) {
     entry.worker.terminate();
+    releaseThreadWorkerStackSlot(entry.worker);
     workerEntryMap.delete(entry.worker);
   }
   workerPool.length = 0;

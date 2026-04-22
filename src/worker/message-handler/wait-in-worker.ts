@@ -14,6 +14,7 @@ import type {
   WorkerMessageHandlerDeps,
 } from "./types.js";
 import { formatCompactDebugSuffix } from "./debug-summary.js";
+import { createWorkerOwnershipGuard } from "./worker-ownership.js";
 
 export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandlerDeps) {
   return function handleWaitInWorkerStatus(
@@ -24,6 +25,12 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
     isRunningWorker: boolean,
   ): void {
     const epollWaitStatus = handle.kernel.abi_status_epoll_wait();
+    const workerStillOwnedByHandle = createWorkerOwnershipGuard(
+      handle,
+      worker,
+      thread,
+      deps.threadWorkerStates,
+    );
     const epollTimeoutMs = msg.status === epollWaitStatus
       ? Number(handle.kernel.thread_epoll_wait_timeout(thread.vmPtr))
       : null;
@@ -47,6 +54,20 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
     }
 
     thread.waitingInWorkerStatus = msg.status;
+    if (
+      handle.vforkSnapshot !== null
+      && handle.vforkWorker !== null
+      && handle.vforkWorker !== worker
+    ) {
+      deps.appendWorkerDebugLog(
+        handle,
+        `wait-vfork-hold:0x${thread.vmPtr.toString(16)}@${msg.status}${formatCompactDebugSuffix(msg.debug)}`,
+      );
+      if (isRunningWorker) {
+        handle.runningWorker = null;
+      }
+      return;
+    }
 
     const continueWaitInWorker = (): void => {
       if (drainedPipe) {
@@ -81,10 +102,16 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       void syncSocketState
         .then(() => deps.requestEpollStateSync(handle, false))
         .then(() => {
+          if (!workerStillOwnedByHandle()) {
+            return;
+          }
           publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
           continueWaitInWorker();
         })
         .catch((error) => {
+          if (!workerStillOwnedByHandle()) {
+            return;
+          }
           deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
         });
       return;
@@ -99,10 +126,16 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
     ) {
       void deps.requestSocketStateSync(handle, false)
         .then(() => {
+          if (!workerStillOwnedByHandle()) {
+            return;
+          }
           publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
           continueWaitInWorker();
         })
         .catch((error) => {
+          if (!workerStillOwnedByHandle()) {
+            return;
+          }
           deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
         });
       return;

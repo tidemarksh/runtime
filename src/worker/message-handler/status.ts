@@ -15,7 +15,7 @@ import type {
   ThreadWorkerStatusMessage,
   WorkerMessageHandlerDeps,
 } from "./types.js";
-import { formatCompactDebugSuffix, WRITE_DEBUG_KEYS } from "./debug-summary.js";
+import { formatCompactDebugSuffix, readProcessPidField, WRITE_DEBUG_KEYS } from "./debug-summary.js";
 import { createWorkerWaitInWorkerStatusHandler } from "./wait-in-worker.js";
 
 interface ThreadRegisterSnapshot {
@@ -53,6 +53,14 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     const status = msg.status;
     const faultStatus = handle.kernel.abi_status_fault?.();
     const suspiciousLowStateDebug = hasSuspiciousLowStateDebug(msg.debug);
+    deps.appendWorkerDebugLog(
+      handle,
+      `status-route:0x${thread.vmPtr.toString(16)}`
+        + `:owner_pid=${thread.ownerPid}`
+        + `:handle_pid=${handle.pid}`
+        + `:generation=${msg.generation}`
+        + `:status=${status}`,
+    );
     if (!(status === faultStatus && suspiciousLowStateDebug && handle.lastDebugMessage)) {
       handle.lastDebugMessage = msg.debug;
     }
@@ -83,6 +91,15 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         `status_debug:0x${thread.vmPtr.toString(16)}:${msg.debug}`,
       );
     }
+    const processPidField = readProcessPidField(msg.debug);
+    const transientProcessOwnerMismatch = processPidField !== null && processPidField !== handle.pid;
+    const activeVforkWorker = handle.vforkSnapshot !== null && handle.vforkWorker === worker;
+    if (processPidField !== null && processPidField !== handle.pid) {
+      deps.appendWorkerDebugLog(
+        handle,
+        `status_debug:0x${thread.vmPtr.toString(16)}:handle_pid=${handle.pid}:process_pid_field=${processPidField}`,
+      );
+    }
     const writeDebugSuffix = formatCompactDebugSuffix(msg.debug, WRITE_DEBUG_KEYS);
     if (writeDebugSuffix !== "") {
       deps.appendWorkerDebugLog(handle, `write:0x${thread.vmPtr.toString(16)}${writeDebugSuffix}`);
@@ -103,7 +120,10 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         s11: handle.kernel.thread_s11?.(candidateThread.vmPtr) ?? 0n,
       });
     }
-    if (status !== handle.kernel.abi_status_clone_spawn()) {
+    if (
+      status !== handle.kernel.abi_status_clone_spawn()
+      && (!transientProcessOwnerMismatch || activeVforkWorker)
+    ) {
       handle.kernelState = adoptKernelState(handle.kernelState, msg.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       for (const pre of adoptPreSnapshots) {
@@ -145,7 +165,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
 
     const completedSyncEffects = (
       status === handle.kernel.abi_status_ok()
-      && (msg.syncEffects === undefined || msg.syncEffects === 0)
+      && msg.syncEffects === undefined
     )
       ? deps.statusOkCompletedSyncEffects
       : (msg.syncEffects ?? 0);
@@ -163,7 +183,10 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     };
     if (maybeHandleOwnedStateSync({
       handle,
+      worker,
+      thread,
       status,
+      rawSyncEffects: msg.syncEffects,
       completedSyncEffects,
       isRunningWorker,
       wroteToPipe,

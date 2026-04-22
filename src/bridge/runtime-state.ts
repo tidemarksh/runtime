@@ -4,25 +4,30 @@ const NOTIFY_INDEX = 0;
 const EPOCH_INDEX = 1;
 const STATE_VERSION_INDEX = 0;
 const STATE_HEADER_BYTES = 8;
-const STATE_FIELD_COUNT = 16;
+const STATE_FIELD_COUNT = 21;
 
 const FIELD_OFFSETS = {
   heapBase: STATE_HEADER_BYTES + 0,
   heapPtr: STATE_HEADER_BYTES + 8,
   ofdTablePtr: STATE_HEADER_BYTES + 16,
   memfsPtr: STATE_HEADER_BYTES + 24,
-  memStatePtr: STATE_HEADER_BYTES + 32,
-  epollTablePtr: STATE_HEADER_BYTES + 40,
-  socketTablePtr: STATE_HEADER_BYTES + 48,
-  socketUsed: STATE_HEADER_BYTES + 56,
-  pipeBase: STATE_HEADER_BYTES + 64,
-  pipeUsed: STATE_HEADER_BYTES + 72,
-  netBufBase: STATE_HEADER_BYTES + 80,
-  netBufUsed: STATE_HEADER_BYTES + 88,
-  sigSlotsPtr: STATE_HEADER_BYTES + 96,
-  processPendingPtr: STATE_HEADER_BYTES + 104,
-  processRuntimeStatePtr: STATE_HEADER_BYTES + 112,
-  timeStatePtr: STATE_HEADER_BYTES + 120,
+  memfsHeaderBytes: STATE_HEADER_BYTES + 32,
+  memfsInodesBytes: STATE_HEADER_BYTES + 40,
+  memfsFirstChildBytes: STATE_HEADER_BYTES + 48,
+  memfsDirEntriesBytes: STATE_HEADER_BYTES + 56,
+  memfsDataBytes: STATE_HEADER_BYTES + 64,
+  memStatePtr: STATE_HEADER_BYTES + 72,
+  epollTablePtr: STATE_HEADER_BYTES + 80,
+  socketTablePtr: STATE_HEADER_BYTES + 88,
+  socketUsed: STATE_HEADER_BYTES + 96,
+  pipeBase: STATE_HEADER_BYTES + 104,
+  pipeUsed: STATE_HEADER_BYTES + 112,
+  netBufBase: STATE_HEADER_BYTES + 120,
+  netBufUsed: STATE_HEADER_BYTES + 128,
+  sigSlotsPtr: STATE_HEADER_BYTES + 136,
+  processPendingPtr: STATE_HEADER_BYTES + 144,
+  processRuntimeStatePtr: STATE_HEADER_BYTES + 152,
+  timeStatePtr: STATE_HEADER_BYTES + 160,
 } as const;
 
 export interface RuntimeStateBridge {
@@ -54,6 +59,11 @@ function writeState(view: DataView, state: KernelRuntimeState): void {
   view.setUint32(FIELD_OFFSETS.heapPtr, state.heapPtr, true);
   view.setUint32(FIELD_OFFSETS.ofdTablePtr, state.ofdTablePtr, true);
   view.setUint32(FIELD_OFFSETS.memfsPtr, state.memfsPtr, true);
+  view.setUint32(FIELD_OFFSETS.memfsHeaderBytes, state.memfsHeaderBytes, true);
+  view.setUint32(FIELD_OFFSETS.memfsInodesBytes, state.memfsInodesBytes, true);
+  view.setUint32(FIELD_OFFSETS.memfsFirstChildBytes, state.memfsFirstChildBytes, true);
+  view.setUint32(FIELD_OFFSETS.memfsDirEntriesBytes, state.memfsDirEntriesBytes, true);
+  view.setUint32(FIELD_OFFSETS.memfsDataBytes, state.memfsDataBytes, true);
   view.setUint32(FIELD_OFFSETS.memStatePtr, state.memStatePtr, true);
   view.setUint32(FIELD_OFFSETS.epollTablePtr, state.epollTablePtr, true);
   view.setUint32(FIELD_OFFSETS.socketTablePtr, state.socketTablePtr, true);
@@ -146,6 +156,11 @@ export function readPublishedKernelRuntimeState(bridge: RuntimeStateBridge): Ker
       heapPtr: view.getUint32(FIELD_OFFSETS.heapPtr, true),
       ofdTablePtr: view.getUint32(FIELD_OFFSETS.ofdTablePtr, true),
       memfsPtr: view.getUint32(FIELD_OFFSETS.memfsPtr, true),
+      memfsHeaderBytes: view.getUint32(FIELD_OFFSETS.memfsHeaderBytes, true),
+      memfsInodesBytes: view.getUint32(FIELD_OFFSETS.memfsInodesBytes, true),
+      memfsFirstChildBytes: view.getUint32(FIELD_OFFSETS.memfsFirstChildBytes, true),
+      memfsDirEntriesBytes: view.getUint32(FIELD_OFFSETS.memfsDirEntriesBytes, true),
+      memfsDataBytes: view.getUint32(FIELD_OFFSETS.memfsDataBytes, true),
       memStatePtr: view.getUint32(FIELD_OFFSETS.memStatePtr, true),
       epollTablePtr: view.getUint32(FIELD_OFFSETS.epollTablePtr, true),
       socketTablePtr: view.getUint32(FIELD_OFFSETS.socketTablePtr, true),

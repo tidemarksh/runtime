@@ -1,4 +1,5 @@
 import type {
+  AttachThreadWorkerRequest,
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
@@ -33,7 +34,7 @@ export interface WorkerSchedulerDeps {
 
 export interface WorkerScheduler {
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
-  attachThreadWorker(handle: ProcessHandle, worker: Worker, vmPtr: number): void;
+  attachThreadWorker(handle: ProcessHandle, request: AttachThreadWorkerRequest): void;
   blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
   clearBlockedWorker(handle: ProcessHandle, worker: Worker): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
@@ -45,6 +46,7 @@ export interface WorkerScheduler {
   ): void;
   kickBlockedWorkers(handle: ProcessHandle): void;
   pumpProcess(handle: ProcessHandle): void;
+  pruneDetachedProcessWorkers(handle: ProcessHandle, anchorVmPtr: number, currentWorker: Worker | null): void;
   requestEpollDependentOfdStateSync(handle: ProcessHandle): Promise<void>;
   requestEpollStateSync(handle: ProcessHandle, retryWaiters?: boolean): Promise<void>;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
@@ -53,7 +55,7 @@ export interface WorkerScheduler {
 }
 
 export interface WorkerSchedulerQueueHelpers {
-  attachThreadWorker(handle: ProcessHandle, worker: Worker, vmPtr: number): void;
+  attachThreadWorker(handle: ProcessHandle, request: AttachThreadWorkerRequest): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   pumpProcess(handle: ProcessHandle): void;
 }

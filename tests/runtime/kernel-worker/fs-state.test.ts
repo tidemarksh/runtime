@@ -435,7 +435,7 @@ function makeFsState() {
   return { canonicalExports, memberExports, fsState, sabPageCache, seedEntries };
 }
 
-test("kernel-worker loadFsSnapshot externalizes file data into page cache", () => {
+test("kernel-worker loadFsSnapshot materializes provided file data while publishing page cache metadata", () => {
   const { canonicalExports, fsState, sabPageCache } = makeFsState();
   const data = new Uint8Array(128 * 1024).map((_, index) => index & 0xff);
 
@@ -447,9 +447,9 @@ test("kernel-worker loadFsSnapshot externalizes file data into page cache", () =
   const ino = canonicalExports.fileIno("/lib/runtime.bin");
   expect(ino).toBeGreaterThan(1);
   expect(canonicalExports.fileData("/lib/runtime.bin")).toEqual(data);
-  expect(canonicalExports.opLog).toContain(`external:/lib/runtime.bin:${data.length}`);
-  expect(canonicalExports.opLog.some((entry) => entry.startsWith("truncate:/lib/runtime.bin:"))).toBe(false);
-  expect(canonicalExports.opLog.some((entry) => entry.startsWith("write:/lib/runtime.bin:"))).toBe(false);
+  expect(canonicalExports.opLog).not.toContain(`external:/lib/runtime.bin:${data.length}`);
+  expect(canonicalExports.opLog).toContain(`truncate:/lib/runtime.bin:${data.length}`);
+  expect(canonicalExports.opLog).toContain(`write:/lib/runtime.bin:${data.length}`);
   expect(readInodeRecord(sabPageCache, ino)?.size).toBe(data.length);
 });
 

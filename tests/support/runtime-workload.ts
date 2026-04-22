@@ -226,6 +226,21 @@ function formatSyscallTrace(handle: RuntimeDebugHandle): string {
   return entries.join(" ");
 }
 
+function formatExecveStageTrace(handle: RuntimeDebugHandle): string {
+  const len = handle.kernel.debug_execve_stage_trace_len?.() ?? 0;
+  if (len <= 0) {
+    return "";
+  }
+  const entries: string[] = [];
+  for (let index = 0; index < len; index += 1) {
+    const stage = handle.kernel.debug_execve_stage_trace_stage?.(index) ?? 0;
+    const value0 = handle.kernel.debug_execve_stage_trace_value0?.(index) ?? 0n;
+    const value1 = handle.kernel.debug_execve_stage_trace_value1?.(index) ?? 0n;
+    entries.push(`${stage}:${value0.toString(16)}:${value1.toString(16)}`);
+  }
+  return entries.join(" ");
+}
+
 function safeDebugValue(read: () => string): string {
   try {
     return read();
@@ -327,6 +342,7 @@ export async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<str
           `ofds=[${ofdSummary}]`,
           `pipes=[${pipeSummary}]`,
           `debug=${debug}`,
+          `execve_stage_trace=[${formatExecveStageTrace(handle)}]`,
           `syscalls=[${formatSyscallTrace(handle)}]`,
         ].join(" ");
       })

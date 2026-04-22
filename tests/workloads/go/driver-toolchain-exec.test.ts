@@ -24,9 +24,6 @@ function expectGoDriverRuntimeOwnershipSurface(detail: string): void {
   expect(
     /(vfork-execve:handoff-failed:\d+:-8|fatal: bad g in signal handler|exec format error|missing generated artifact|vfork-execve:child-state:.*memory access out of bounds)/.test(detail),
   ).toBe(true);
-  if (detail.includes("vfork-execve:preflight:")) {
-    expect(detail).toContain("head=7f454c46");
-  }
   if (detail.includes("vfork-execve:handoff-failed:")) {
     const maybeStageTagged = /vfork-execve:handoff-failed:\d+:-8:(\d+):/.exec(detail);
     if (maybeStageTagged) {

@@ -203,7 +203,7 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
     return parts.join(" ");
   }
 
-  function fanoutCanonicalMemfs(includeData = false): void {
+  function fanoutCanonicalMemfs(includeData = true): void {
     const canonicalState = readKernelRuntimeState(deps.getCanonicalExports());
     for (const processExports of deps.processKernels.values()) {
       const processState = readKernelRuntimeState(processExports);

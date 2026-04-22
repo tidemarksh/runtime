@@ -2,6 +2,7 @@ import type { KernelExports, KernelRuntimeState } from "../../abi.js";
 import {
   clearMaterializedMemfsFiles,
   clearMemoryRange,
+  computeReferencedMemfsDataUsed,
   copyMemoryRange,
   normalizeMetadataOnlyMemfsState,
   readMemfsLayout,
@@ -18,6 +19,9 @@ export function createKernelWorkerMemfsPrimitives() {
     const includeData = options.includeData ?? true;
     const sourceLayout = readMemfsLayout(sourceExports.memory, sourceState.memfsPtr);
     const targetLayout = readMemfsLayout(targetExports.memory, targetState.memfsPtr);
+    const sourceDataUsed = includeData
+      ? computeReferencedMemfsDataUsed(sourceExports, sourceLayout)
+      : sourceLayout.dataUsed;
     copyMemoryRange(
       sourceExports.memory,
       sourceLayout.inodesPtr,
@@ -40,7 +44,7 @@ export function createKernelWorkerMemfsPrimitives() {
       sourceExports.kernel_memfs_dir_entries_bytes(),
     );
     if (includeData) {
-      const dataBytes = Math.min(sourceLayout.dataUsed, targetLayout.dataCap);
+      const dataBytes = Math.min(sourceDataUsed, targetLayout.dataCap);
       copyMemoryRange(
         sourceExports.memory,
         sourceLayout.dataPtr,
@@ -71,7 +75,7 @@ export function createKernelWorkerMemfsPrimitives() {
     const targetHeader = new DataView(targetExports.memory.buffer, targetState.memfsPtr, 32);
     targetHeader.setUint32(0, sourceLayout.inodeCount, true);
     targetHeader.setUint32(4, sourceLayout.dirEntryCount, true);
-    targetHeader.setUint32(8, includeData ? Math.min(sourceLayout.dataUsed, targetLayout.dataCap) : 8, true);
+    targetHeader.setUint32(8, includeData ? Math.min(sourceDataUsed, targetLayout.dataCap) : 8, true);
     targetHeader.setUint32(12, targetLayout.dataCap, true);
     targetHeader.setUint32(16, targetLayout.inodesPtr, true);
     targetHeader.setUint32(20, targetLayout.firstChildPtr, true);

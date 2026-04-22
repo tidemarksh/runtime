@@ -14,7 +14,9 @@ function boundedThreadSlotCount(processExports: KernelExports, vmPtr: number): n
     if (!Number.isFinite(processThreadCount) || processThreadCount <= 0) {
       return 0;
     }
-    return Math.min(maxThreads, Math.trunc(processThreadCount));
+    // Kernel thread slots are sparse and keyed by tid-1, so thread_count is a
+    // population count, not a dense slot upper bound.
+    return maxThreads;
   } catch {
     return maxThreads;
   }

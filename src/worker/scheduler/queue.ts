@@ -4,14 +4,20 @@ import {
   setWorkerMessageHandler,
 } from "../../bridge/compat.js";
 import { publishRuntimeBridgeEpoch } from "../../bridge/runtime-state.js";
-import type { ProcessHandle, ThreadWorkerState } from "../types.js";
+import type {
+  AttachThreadWorkerRequest,
+  ProcessHandle,
+  ThreadWorkerState,
+} from "../types.js";
 import type { ThreadWorkerOutbound } from "../../messages.js";
+import { kernelStackSlotForWorker } from "../pool.js";
 import type {
   ThreadWorkerInbound,
   WorkerSchedulerQueueHelpers,
 } from "./types.js";
 
 const SCHEDULER_STEP_BUDGET = typeof window === "undefined" ? 20_000 : 2_000;
+let nextThreadWorkerGeneration = 1;
 
 interface WorkerSchedulerQueueDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
@@ -20,15 +26,16 @@ interface WorkerSchedulerQueueDeps {
   handleWorkerMessage(handle: ProcessHandle, worker: Worker, msg: ThreadWorkerOutbound): void;
 }
 
-function readKernelAddress(value: bigint | number | undefined): number {
-  if (typeof value === "bigint") {
-    return Number(value);
-  }
-  return typeof value === "number" ? value : 0;
-}
-
 function formatStepDebugSuffix(handle: ProcessHandle, vmPtr: number): string {
   const parts: string[] = [];
+  const pid = handle.kernel.process_current_pid?.(vmPtr);
+  if (pid !== undefined) {
+    parts.push(`pid=${pid}`);
+  }
+  const tid = handle.kernel.thread_tid?.(vmPtr);
+  if (tid !== undefined) {
+    parts.push(`tid=${tid}`);
+  }
   const pc = handle.kernel.thread_pc?.(vmPtr);
   if (pc !== undefined) {
     parts.push(`pc=0x${pc.toString(16)}`);
@@ -91,36 +98,149 @@ function hasBrokenThreadState(handle: ProcessHandle, vmPtr: number): boolean {
   return pc < 0x1000n || sp === 0n || s11 === 0n;
 }
 
+function removeReadyWorker(handle: ProcessHandle, worker: Worker): void {
+  for (let index = handle.readyWorkers.length - 1; index >= 0; index -= 1) {
+    if (handle.readyWorkers[index] === worker) {
+      handle.readyWorkers.splice(index, 1);
+    }
+  }
+}
+
+function clearBlockedWorker(handle: ProcessHandle, worker: Worker): void {
+  const blocked = handle.blockedWorkers.get(worker);
+  if (!blocked) {
+    return;
+  }
+  if (blocked.retryTimer !== null) {
+    clearTimeout(blocked.retryTimer);
+  }
+  handle.blockedWorkers.delete(worker);
+}
+
 export function createWorkerSchedulerQueueHelpers(
   deps: WorkerSchedulerQueueDeps,
 ): WorkerSchedulerQueueHelpers {
-  function liveGuestBytes(handle: ProcessHandle): number {
-    const guestCapacity = Math.max(0, handle.memory.buffer.byteLength - handle.guestBase);
-    const fallback = Math.max(0, Math.min(handle.ramSize, guestCapacity));
-    let used = Math.max(
-      0,
-      readKernelAddress(handle.kernel.debug_memory_brk_current?.()),
-      readKernelAddress(handle.kernel.debug_memory_mmap_next?.()),
-    );
-    const vmaLen = handle.kernel.debug_memory_vma_len?.() ?? 0;
-    for (let index = 0; index < vmaLen; index += 1) {
-      used = Math.max(used, readKernelAddress(handle.kernel.debug_memory_vma_end?.(index)));
+  function sanitizeRunningWorker(handle: ProcessHandle): Worker | null {
+    const runningWorker = handle.runningWorker;
+    if (runningWorker === null) {
+      return null;
     }
-    if (used === 0) {
-      used = fallback;
+    if (handle.workers.has(runningWorker) && deps.threadWorkerStates.has(runningWorker)) {
+      return runningWorker;
     }
-    return Math.max(0, Math.min(used, guestCapacity));
+    handle.runningWorker = null;
+    deps.appendWorkerDebugLog(handle, "running-worker-cleared:stale");
+    return null;
   }
 
   function hasExclusiveVforkWorker(handle: ProcessHandle): boolean {
-    return handle.vforkSnapshot !== null && handle.vforkWorker !== null;
+    const worker = handle.vforkWorker;
+    if (handle.vforkSnapshot === null || worker === null) {
+      return false;
+    }
+    if (sanitizeRunningWorker(handle) === worker) {
+      return true;
+    }
+    if (handle.readyWorkers.includes(worker)) {
+      return true;
+    }
+    if (handle.blockedWorkers.has(worker)) {
+      return true;
+    }
+    const thread = deps.threadWorkerStates.get(worker);
+    return thread?.waitingInWorkerStatus !== null;
   }
 
-  function attachThreadWorker(handle: ProcessHandle, worker: Worker, vmPtr: number): void {
+  function assertThreadOwnershipInvariant(
+    handle: ProcessHandle,
+    vmPtr: number,
+    context: string,
+  ): void {
+    if (vmPtr === 0 || handle.pid <= 0) {
+      return;
+    }
+    const currentPid = handle.kernel.process_current_pid(vmPtr);
+    if (currentPid !== handle.pid) {
+      throw new Error(
+        `${context} worker/process ownership mismatch vm=0x${vmPtr.toString(16)}`
+          + ` expected_pid=${handle.pid} actual_pid=${currentPid}`,
+      );
+    }
+  }
+
+  function detachTransferredWorker(handle: ProcessHandle, worker: Worker): void {
+    clearBlockedWorker(handle, worker);
+    removeReadyWorker(handle, worker);
+    if (handle.runningWorker === worker) {
+      handle.runningWorker = null;
+    }
+    if (handle.vforkWorker === worker) {
+      handle.vforkWorker = null;
+    }
+    handle.workers.delete(worker);
+  }
+
+  function attachThreadWorker(handle: ProcessHandle, request: AttachThreadWorkerRequest): void {
+    const { worker, vmPtr, forcePrepare, transferFrom } = request;
+    const generation = nextThreadWorkerGeneration++;
+    const existingThread = deps.threadWorkerStates.get(worker);
+    const reinitWithinHandle = existingThread !== undefined
+      && transferFrom === undefined
+      && existingThread.ownerPid === handle.pid;
+    if (existingThread) {
+      if (reinitWithinHandle) {
+        clearBlockedWorker(handle, worker);
+        removeReadyWorker(handle, worker);
+        if (handle.runningWorker === worker) {
+          handle.runningWorker = null;
+        }
+        if (handle.vforkWorker === worker) {
+          handle.vforkWorker = null;
+        }
+      } else {
+        const sourceHandle = transferFrom;
+        if (!sourceHandle) {
+          throw new Error(
+            `attachThreadWorker requires transferFrom for existing worker owner=${existingThread.ownerPid}`
+              + ` target=${handle.pid} vm=0x${vmPtr.toString(16)}`,
+          );
+        }
+        if (sourceHandle === handle) {
+          throw new Error(
+            `attachThreadWorker transferFrom must differ from target pid=${handle.pid}`
+              + ` vm=0x${vmPtr.toString(16)}`,
+          );
+        }
+        if (existingThread.ownerPid !== sourceHandle.pid) {
+          throw new Error(
+            `attachThreadWorker owner mismatch worker_owner=${existingThread.ownerPid}`
+              + ` transfer_from=${sourceHandle.pid} target=${handle.pid}`,
+          );
+        }
+        detachTransferredWorker(sourceHandle, worker);
+      }
+    } else if (transferFrom) {
+      throw new Error(
+        `attachThreadWorker received transferFrom for unattached worker`
+          + ` source=${transferFrom.pid} target=${handle.pid} vm=0x${vmPtr.toString(16)}`,
+      );
+    }
+
+    assertThreadOwnershipInvariant(handle, vmPtr, "attachThreadWorker");
     handle.workers.add(worker);
-    deps.appendWorkerDebugLog(handle, `attach:0x${vmPtr.toString(16)}`);
+    deps.appendWorkerDebugLog(
+      handle,
+      `${reinitWithinHandle ? "reinit" : "attach"}:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`,
+    );
     deps.threadWorkerStates.set(worker, {
       vmPtr,
+      ownerPid: handle.pid,
+      generation,
+      reinitCount: reinitWithinHandle ? (existingThread?.reinitCount ?? 0) + 1 : 0,
+      lastStepProcessPtr: null,
+      lastStepPc: null,
+      lastStepSp: null,
+      lastStepS11: null,
       initialized: false,
       waitingInWorkerStatus: null,
       resumeWorkersOnReady: [],
@@ -148,24 +268,15 @@ export function createWorkerSchedulerQueueHelpers(
       event.preventDefault?.();
     });
     const runtimeEpoch = publishRuntimeBridgeEpoch(handle.runtimeBridge);
-    const guestBytes = liveGuestBytes(handle);
-    const heapBase = Math.max(0, Math.trunc(handle.kernelState.heapBase));
-    const heapPtr = Math.max(heapBase, Math.trunc(handle.kernelState.heapPtr));
-    const preserveKernelHeapBase = Math.min(heapBase, handle.memory.buffer.byteLength);
-    const preserveKernelHeapBytes = Math.max(
-      0,
-      Math.min(handle.memory.buffer.byteLength, heapPtr) - preserveKernelHeapBase,
-    );
-
     worker.postMessage({
       type: "init",
       wasmModule: handle.wasmModule,
       memory: handle.memory,
+      forcePrepare,
       vmPtr,
       guestBase: handle.guestBase,
-      guestBytes,
-      preserveKernelHeapBase,
-      preserveKernelHeapBytes,
+      kernelStackSlot: kernelStackSlotForWorker(worker),
+      generation,
       runtimeEpoch,
       guestWriteWatchRegions: handle.guestWriteWatchRegions,
       kernelState: handle.kernelState,
@@ -191,6 +302,8 @@ export function createWorkerSchedulerQueueHelpers(
         }
       }
       handle.readyWorkers.push(worker);
+      if (handle.vforkSnapshot !== null && handle.vforkWorker === worker) {
+      }
     }
     pumpProcess(handle);
   }
@@ -199,7 +312,8 @@ export function createWorkerSchedulerQueueHelpers(
     if (handle.exitInProgress) {
       return;
     }
-    if (handle.runningWorker !== null) {
+    const runningWorker = sanitizeRunningWorker(handle);
+    if (runningWorker !== null) {
       return;
     }
     let next: Worker | undefined;
@@ -217,7 +331,12 @@ export function createWorkerSchedulerQueueHelpers(
     }
     handle.runningWorker = next;
     const vmPtr = deps.threadWorkerStates.get(next)?.vmPtr;
-    if (vmPtr !== undefined) {
+    const thread = deps.threadWorkerStates.get(next);
+    if (thread && vmPtr !== undefined) {
+      thread.lastStepProcessPtr = handle.kernel.thread_process_ptr(vmPtr);
+      thread.lastStepPc = handle.kernel.thread_pc(vmPtr);
+      thread.lastStepSp = handle.kernel.thread_sp(vmPtr);
+      thread.lastStepS11 = handle.kernel.thread_s11?.(vmPtr) ?? 0n;
       deps.appendWorkerDebugLog(handle, `step:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`);
       if (hasBrokenThreadState(handle, vmPtr)) {
         deps.appendWorkerDebugLog(

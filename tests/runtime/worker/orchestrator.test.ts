@@ -342,6 +342,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_spawn_path: () => 0n,
     thread_spawn_argv: () => 0n,
     thread_spawn_envp: () => 0n,
+    thread_spawn_ram_size: () => 0,
     thread_set_execve_handoff: () => {},
     thread_set_guest_ram_limit: () => {},
     thread_clear_spawn_handoff: () => {},
@@ -1322,11 +1323,11 @@ test("createProcess blocks STATUS_CONNECT until socket timeout expires", async (
   vi.useRealTimers();
 });
 
-test("child exit bookkeeping is delegated to kernel-worker when available", async () => {
+test("kernel-worker child exit bookkeeping tears down the child and resumes parent wait4", async () => {
   const requests: KernelWorkerRequest[] = [];
   threadCountQueue.push(1, 0);
 
-  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+  const parent = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
     pid: 1,
     kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
       requests.push(msg);
@@ -1354,6 +1355,15 @@ test("child exit bookkeeping is delegated to kernel-worker when available", asyn
             kernelState: {
               ...msg.kernelState,
               heapPtr: msg.kernelState.heapPtr + 0x80,
+            },
+          };
+        case "resume-wait4":
+          return {
+            type: "wait4-resumed",
+            requestId: 0,
+            kernelState: {
+              ...msg.kernelState,
+              heapPtr: msg.kernelState.heapPtr + 0x40,
             },
           };
         case "unregister-process":
@@ -1396,6 +1406,8 @@ test("child exit bookkeeping is delegated to kernel-worker when available", asyn
   const parentWorker = createdWorkers[0];
   const childWorker = createdWorkers[1];
   const parentKernel = createdKernelExports[0];
+  const resumeWait4 = vi.fn(() => 0n);
+  parentKernel.thread_resume_wait4 = resumeWait4;
 
   emitReady(parentWorker);
   emitReady(childWorker);
@@ -1413,6 +1425,8 @@ test("child exit bookkeeping is delegated to kernel-worker when available", asyn
   await flushMicrotasks(100);
   await new Promise((resolve) => setTimeout(resolve, 0));
   await flushMicrotasks(100);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await flushMicrotasks(100);
 
   expect(
     requests.some((msg) => msg.type === "record-child-exit" && msg.pid === 1 && msg.childPid === 2),
@@ -1422,6 +1436,37 @@ test("child exit bookkeeping is delegated to kernel-worker when available", asyn
   ).toBe(true);
   expect(parentKernel.recordedChildExits).toEqual([[2, 7 << 8]]);
   expect(parentKernel.kernel_heap_ptr()).toBe(makeKernelState().heapPtr + 0x80);
+
+  vi.useFakeTimers();
+  parentWorker.clearPostedMessages();
+  parentWorker.emit({
+    type: "status",
+    status: 31,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: parent.kernelState,
+  });
+
+  await flushMicrotasks();
+  vi.advanceTimersByTime(15);
+  await flushMicrotasks();
+
+  expect(requests.some((msg) => msg.type === "resume-wait4" && msg.pid === 1)).toBe(false);
+  expect(resumeWait4).toHaveBeenCalledWith(0x1234);
+  expect(parentKernel.kernel_heap_ptr()).toBe(makeKernelState().heapPtr + 0x80);
+  expect(parentWorker.postedMessages).toEqual([
+    {
+      type: "step",
+      budget: 20_000,
+      kernelState: {
+        ...makeKernelState(),
+        heapPtr: makeKernelState().heapPtr + 0x80,
+      },
+    },
+  ]);
+  vi.useRealTimers();
 });
 
 test("createProcess does not grow linear memory to requested ramSize during spawn staging", async () => {
@@ -1739,6 +1784,139 @@ test("plain fork canonicalizes child pid and reinitializes child lifecycle throu
   ).toBe(true);
 });
 
+test("plain fork spawn path records child exit and resumes parent wait4", async () => {
+  const requests: KernelWorkerRequest[] = [];
+  threadCountQueue.push(1, 0);
+  const parent = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+      requests.push(msg);
+      switch (msg.type) {
+        case "register-process":
+          return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+        case "initialize-process-lifecycle":
+          return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+        case "sync-pipe-state":
+          return { type: "pipe-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "sync-socket-state":
+          return { type: "socket-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "release-host-stdio":
+          return { type: "host-stdio-released", requestId: 0, kernelState: msg.kernelState };
+        case "canonicalize-child-pid":
+          return {
+            type: "child-pid-canonicalized",
+            requestId: 0,
+            childPid: 177,
+            nextPid: 178,
+            pgid: 1,
+            sid: 1,
+            kernelState: msg.kernelState,
+          };
+        case "record-child-exit":
+          return {
+            type: "child-exit-recorded",
+            requestId: 0,
+            kernelState: {
+              ...msg.kernelState,
+              heapPtr: msg.kernelState.heapPtr + 0x80,
+            },
+          };
+        case "sync-fork-shared-state":
+          return {
+            type: "fork-shared-state-synced",
+            requestId: 0,
+            kernelState: msg.kernelState,
+          };
+        case "rehydrate-fork-shared-state":
+          return {
+            type: "fork-shared-state-rehydrated",
+            requestId: 0,
+          };
+        case "unregister-process":
+          return { type: "process-unregistered", requestId: 0 };
+        default:
+          throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+      }
+    },
+  });
+  const parentWorker = createdWorkers[0];
+  const parentKernel = createdKernelExports[0];
+  const resumeWait4 = vi.fn(() => 0n);
+
+  parentKernel.thread_resume_wait4 = resumeWait4;
+  parentKernel.thread_spawn_kind = () => parentKernel.abi_spawn_kind_fork();
+  parentKernel.thread_spawn_child_pid = () => 77;
+
+  emitReady(parentWorker);
+  parentWorker.clearPostedMessages();
+  parentWorker.emit({
+    type: "status",
+    status: 9,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+  await flushMicrotasks(100);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await flushMicrotasks(100);
+
+  expect(createdWorkers).toHaveLength(2);
+  const childWorker = createdWorkers[1];
+  emitReady(childWorker);
+  childWorker.emit({
+    type: "status",
+    status: 3,
+    exitCode: 7,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+  await flushMicrotasks(100);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await flushMicrotasks(100);
+
+  expect(
+    requests.some((msg) => msg.type === "canonicalize-child-pid" && msg.provisionalChildPid === 77),
+  ).toBe(true);
+  expect(
+    requests.some((msg) => msg.type === "record-child-exit" && msg.pid === 1 && msg.childPid === 177),
+  ).toBe(true);
+  expect(parentKernel.recordedChildExits).toEqual([[177, 7 << 8]]);
+  expect(parentKernel.kernel_heap_ptr()).toBe(makeKernelState().heapPtr + 0x80);
+
+  vi.useFakeTimers();
+  parentWorker.clearPostedMessages();
+  parentWorker.emit({
+    type: "status",
+    status: 31,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: parent.kernelState,
+  });
+  await flushMicrotasks();
+  vi.advanceTimersByTime(15);
+  await flushMicrotasks();
+
+  expect(resumeWait4).toHaveBeenCalledWith(0x1234);
+  expect(parentKernel.kernel_heap_ptr()).toBe(makeKernelState().heapPtr + 0x80);
+  expect(parentWorker.postedMessages).toEqual([
+    {
+      type: "step",
+      budget: 20_000,
+      kernelState: {
+        ...makeKernelState(),
+        heapPtr: makeKernelState().heapPtr + 0x80,
+      },
+    },
+  ]);
+  vi.useRealTimers();
+});
+
 test("plain fork rehydrates shared kernel objects after child memory scrub", async () => {
   const restoreDefaultInstantiate = (): void => {
     vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {
@@ -2010,6 +2188,105 @@ test("plain fork does not keep process lifecycle state synchronized after the in
   expect(
     [...new Uint8Array(childKernel.memory.buffer, processRuntimeStatePtr, initialLifecycleState.length)],
   ).toEqual([...initialLifecycleState]);
+});
+
+test("plain fork child teardown opens the parent wait4 retry gate", async () => {
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
+  const parentWorker = createdWorkers[0];
+  const parentKernel = createdKernelExports[0];
+  const resumeWait4 = vi.fn(() => 0n);
+
+  parentKernel.thread_resume_wait4 = resumeWait4;
+  parentKernel.thread_spawn_kind = () => parentKernel.abi_spawn_kind_fork();
+  parentKernel.thread_spawn_child_pid = () => 77;
+
+  emitReady(parentWorker);
+  parentWorker.clearPostedMessages();
+  parentWorker.emit({
+    type: "status",
+    status: 9,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+  await flushMicrotasks(40);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  for (let i = 0; i < 10 && createdWorkers.length < 2; i++) {
+    await Promise.resolve();
+  }
+
+  expect(createdWorkers).toHaveLength(2);
+
+  vi.useFakeTimers();
+  destroyProcessTree(77, handle.runtimeId);
+  parentKernel.process_record_child_exit(77, 7 << 8);
+
+  parentWorker.clearPostedMessages();
+  parentWorker.emit({
+    type: "status",
+    status: 31,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+
+  await flushMicrotasks();
+  vi.advanceTimersByTime(15);
+  await flushMicrotasks();
+
+  expect(resumeWait4).toHaveBeenCalledWith(0x1234);
+  vi.useRealTimers();
+});
+
+test("plain fork child fault records child exit on the parent state", async () => {
+  threadCountQueue.push(1, 0);
+  const onError = vi.fn();
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    onError,
+  });
+  const parentWorker = createdWorkers[0];
+  const parentKernel = createdKernelExports[0];
+  parentKernel.thread_spawn_kind = () => parentKernel.abi_spawn_kind_fork();
+  parentKernel.thread_spawn_child_pid = () => 77;
+
+  emitReady(parentWorker);
+  parentWorker.clearPostedMessages();
+  parentWorker.emit({
+    type: "status",
+    status: 9,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+  await flushMicrotasks(400);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await flushMicrotasks(400);
+
+  const childWorker = createdWorkers[1];
+  emitReady(childWorker);
+  childWorker.emit({
+    type: "status",
+    status: 3,
+    exitCode: 7,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+  await flushMicrotasks(100);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await flushMicrotasks(100);
+
+  expect(onError).not.toHaveBeenCalled();
+  expect(parentKernel.recordedChildExits).toEqual([[77, 7 << 8]]);
+  expect(handle.lastDebugMessage).toContain("child-exit:77");
 });
 
 test("child exit records wait status on parent kernel state", async () => {
@@ -3741,6 +4018,7 @@ test("STATUS_VFORK_WAIT syncs pre-vfork fork-shared OFD state before child canon
   if (syncRequest?.type !== "sync-fork-shared-state") {
     throw new Error("expected sync-fork-shared-state request");
   }
+  expect(syncRequest.includeMemfs).toBe(false);
   expect(syncRequest.preserveSourceRefcounts).toBe(true);
 });
 

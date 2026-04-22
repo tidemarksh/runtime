@@ -8,6 +8,7 @@ import {
   kernelWorkerOwnsPipeState,
   kernelWorkerOwnsSocketState,
 } from "../kernel-share.js";
+import { assertHandleWorkerProcessIdentity } from "../process-identity.js";
 import {
   composeHandlePipeUsed,
   syncEpollStateViaKernelWorker,
@@ -32,6 +33,10 @@ interface WorkerSchedulerStateSyncDeps {
 export function createWorkerSchedulerStateSyncHelpers(
   deps: WorkerSchedulerStateSyncDeps,
 ): WorkerSchedulerStateSyncHelpers {
+  function assertProcessIdentity(handle: ProcessHandle, context: string): void {
+    assertHandleWorkerProcessIdentity(handle, deps.threadWorkerStates, context);
+  }
+
   function visibleOutputHandle(handle: ProcessHandle): ProcessHandle {
     return handle.stdioOwner ?? handle;
   }
@@ -155,6 +160,7 @@ export function createWorkerSchedulerStateSyncHelpers(
         const shouldRetry = handle.epollWaiterWakeQueued;
         handle.epollWaiterWakeQueued = false;
         await syncEpollStateViaKernelWorker(handle);
+        assertProcessIdentity(handle, "requestEpollStateSync");
         if (shouldRetry) {
           retryEpollWaitersInKernelShare(handle);
         }
@@ -186,6 +192,7 @@ export function createWorkerSchedulerStateSyncHelpers(
         const ofdIds = [...handle.ofdSyncQueuedIds];
         handle.ofdSyncQueuedIds.clear();
         await syncOfdStateViaKernelWorker(handle, ofdIds);
+        assertProcessIdentity(handle, "requestEpollDependentOfdStateSync");
       }
     })().finally(() => {
       handle.ofdSyncPromise = null;
@@ -216,6 +223,7 @@ export function createWorkerSchedulerStateSyncHelpers(
         const shouldWake = handle.pipeWaiterWakeQueued;
         handle.pipeWaiterWakeQueued = false;
         const pipeUsed = await syncPipeStateViaKernelWorker(handle);
+        assertProcessIdentity(handle, "requestPipeStateSync");
         const visibleHandle = visibleOutputHandle(handle);
         if (
           visibleHandle !== handle
@@ -224,6 +232,7 @@ export function createWorkerSchedulerStateSyncHelpers(
           && visibleHandle.pid > 0
         ) {
           const visiblePipeUsed = await syncPipeStateViaKernelWorker(visibleHandle);
+          assertProcessIdentity(visibleHandle, "requestPipeStateSync:visible");
           visibleHandle.kernelState = {
             ...visibleHandle.kernelState,
             pipeUsed: visiblePipeUsed,
@@ -280,6 +289,7 @@ export function createWorkerSchedulerStateSyncHelpers(
         const shouldWake = handle.socketWaiterWakeQueued;
         handle.socketWaiterWakeQueued = false;
         const { socketUsed, netBufUsed } = await syncSocketStateViaKernelWorker(handle);
+        assertProcessIdentity(handle, "requestSocketStateSync");
         if (shouldWake) {
           wakeSocketWaitersInKernelShare(handle, socketUsed, netBufUsed);
         }

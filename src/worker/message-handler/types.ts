@@ -1,5 +1,5 @@
 import type { ThreadWorkerOutbound } from "../../messages.js";
-import type { ProcessHandle, ThreadWorkerState } from "../types.js";
+import type { AttachThreadWorkerRequest, ProcessHandle, ThreadWorkerState } from "../types.js";
 
 export type ThreadWorkerStatusMessage = Extract<ThreadWorkerOutbound, { type: "status" }>;
 
@@ -16,7 +16,7 @@ export interface WorkerMessageHandlerDeps {
   syncEffectForkSharedOfdState: number;
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   assertProcessStandardFdIntegrity(handle: ProcessHandle, context: string): void;
-  attachThreadWorker(handle: ProcessHandle, worker: Worker, vmPtr: number): void;
+  attachThreadWorker(handle: ProcessHandle, request: AttachThreadWorkerRequest): void;
   blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
   canonicalizeActiveVforkChildViaKernelWorker(
     handle: ProcessHandle,
@@ -26,8 +26,9 @@ export interface WorkerMessageHandlerDeps {
   ): Promise<void>;
   captureVforkSnapshot(
     handle: ProcessHandle,
-    vmPtr: number,
+    thread: ThreadWorkerState,
   ): NonNullable<ProcessHandle["vforkSnapshot"]>;
+  clearVforkSnapshot(handle: ProcessHandle): void;
   clearBlockedWorker(handle: ProcessHandle, worker: Worker): void;
   completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number): Promise<void>;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
@@ -35,6 +36,7 @@ export interface WorkerMessageHandlerDeps {
   handleExecveSpawn(handle: ProcessHandle, worker: Worker, thread: ThreadWorkerState): Promise<void>;
   kickBlockedWorkers(handle: ProcessHandle): void;
   pumpProcess(handle: ProcessHandle): void;
+  pruneDetachedProcessWorkers(handle: ProcessHandle, anchorVmPtr: number, currentWorker: Worker | null): void;
   requestEpollDependentOfdStateSync(handle: ProcessHandle): Promise<void>;
   requestEpollStateSync(handle: ProcessHandle, retryWaiters?: boolean): Promise<void>;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
@@ -49,11 +51,18 @@ export interface WorkerMessageHandlerDeps {
     termSignal: number,
   ): boolean;
   statusDefersOwnedStateSync(handle: ProcessHandle, status: number): boolean;
-  syncBlockedForkSharedStateViaKernelWorker(handle: ProcessHandle): Promise<void>;
+  syncBlockedForkSharedStateViaKernelWorker(handle: ProcessHandle, sourceVmPtr?: number): Promise<void>;
   syncForkSharedStateViaKernelWorker(
     handle: ProcessHandle,
     targets: ProcessHandle[],
-    options?: { includeMemfs?: boolean; trackHeldOfds?: boolean; preserveSourceRefcounts?: boolean },
+    options?: {
+      includeMemfs?: boolean;
+      trackHeldOfds?: boolean;
+      deltaOfdIds?: boolean;
+      preserveSourceRefcounts?: boolean;
+      sourceVmPtr?: number;
+    },
   ): Promise<void>;
+  syncProcessMemfsViaKernelWorker(handle: ProcessHandle): Promise<void>;
   syncProcessLifecycleViaKernelWorker(handle: ProcessHandle, vmPtr: number): Promise<void>;
 }

@@ -54,9 +54,23 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
       return;
     }
     const perms = normalizePermMode(mode, 0o644);
-    const externalized = Number(targetExports.memfs_set_file_external(ino, BigInt(size)));
-    if (externalized < 0) {
-      throw new Error(`failed to externalize snapshot file: ${path}`);
+    if (data !== null) {
+      const truncateResult = Number(targetExports.memfs_truncate_file(ino, BigInt(data.length)));
+      if (truncateResult < 0) {
+        throw new Error(`failed to materialize snapshot file: ${path}`);
+      }
+      if (data.length > 0) {
+        const dataPtr = writeScratchFor(targetExports, data, 0xa000);
+        const written = Number(targetExports.memfs_write_file_at(ino, 0n, dataPtr, data.length));
+        if (written < 0 || written !== data.length) {
+          throw new Error(`failed to write snapshot file: ${path}`);
+        }
+      }
+    } else {
+      const externalized = Number(targetExports.memfs_set_file_external(ino, BigInt(size)));
+      if (externalized < 0) {
+        throw new Error(`failed to externalize snapshot file: ${path}`);
+      }
     }
     const modeResult = Number(targetExports.memfs_set_mode(ino, perms));
     if (modeResult < 0) {

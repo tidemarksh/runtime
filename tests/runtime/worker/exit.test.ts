@@ -81,6 +81,7 @@ test("recordExitOnParent syncs and drains child output before waking the parent"
     appendWorkerDebugLog(handle) {
       order.push(`debug:${handle.pid}`);
     },
+    captureRuntimeFailureSnapshot: () => {},
     debugRuntimeProcessHandles: () => "pid=1,pid=3",
     drainHiddenProcessOutput(handle) {
       order.push(`hidden-drain:${handle.pid}`);
@@ -97,15 +98,18 @@ test("recordExitOnParent syncs and drains child output before waking the parent"
     kickBlockedWorkers(handle) {
       order.push(`kick:${handle.pid}`);
     },
+    publishRuntimeFsState: () => 1,
     recordChildExitViaKernelWorker: async (parentHandle) => {
       order.push(`record:${parentHandle.pid}`);
     },
+    replaceRuntimeFsSnapshot: () => {},
     releaseSharedHostStdio: async (handle) => {
       order.push(`release:${handle.pid}`);
     },
     requestPipeStateSync: async (handle, wakeWaiters = false) => {
       order.push(`pipe-sync:${handle.pid}:${wakeWaiters ? "wake" : "sync"}`);
     },
+    snapshotProcessFs: () => [],
   });
 
   await helpers.completeProcessExit(child, 0, 0);
@@ -148,6 +152,7 @@ test("recordExitOnParent skips child-side drain when stdio is owned by the paren
     appendWorkerDebugLog(handle) {
       order.push(`debug:${handle.pid}`);
     },
+    captureRuntimeFailureSnapshot: () => {},
     debugRuntimeProcessHandles: () => "pid=1,pid=3",
     drainHiddenProcessOutput(handle) {
       order.push(`hidden-drain:${handle.pid}`);
@@ -164,15 +169,18 @@ test("recordExitOnParent skips child-side drain when stdio is owned by the paren
     kickBlockedWorkers(handle) {
       order.push(`kick:${handle.pid}`);
     },
+    publishRuntimeFsState: () => 1,
     recordChildExitViaKernelWorker: async (parentHandle) => {
       order.push(`record:${parentHandle.pid}`);
     },
+    replaceRuntimeFsSnapshot: () => {},
     releaseSharedHostStdio: async (handle) => {
       order.push(`release:${handle.pid}`);
     },
     requestPipeStateSync: async (handle, wakeWaiters = false) => {
       order.push(`pipe-sync:${handle.pid}:${wakeWaiters ? "wake" : "sync"}`);
     },
+    snapshotProcessFs: () => [],
   });
 
   await helpers.completeProcessExit(child, 0, 0);
@@ -205,6 +213,7 @@ test("recordExitOnParent re-kicks blocked parent after pending child exit bookke
     processHandles,
     appendRuntimeLifecycleEvent: () => {},
     appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
     debugRuntimeProcessHandles: () => "pid=1,pid=3",
     drainHiddenProcessOutput: () => false,
     drainProcessOutput: () => false,
@@ -213,11 +222,14 @@ test("recordExitOnParent re-kicks blocked parent after pending child exit bookke
     kickBlockedWorkers(handle) {
       kicked.push(handle.pendingChildExitRecords);
     },
+    publishRuntimeFsState: () => 1,
     recordChildExitViaKernelWorker: async (parentHandle) => {
       observedPendingCounts.push(parentHandle.pendingChildExitRecords);
     },
+    replaceRuntimeFsSnapshot: () => {},
     releaseSharedHostStdio: async () => {},
     requestPipeStateSync: async () => {},
+    snapshotProcessFs: () => [],
   });
 
   await helpers.completeProcessExit(child, 0, 0);
@@ -225,4 +237,86 @@ test("recordExitOnParent re-kicks blocked parent after pending child exit bookke
   expect(observedPendingCounts).toEqual([1]);
   expect(kicked).toEqual([0, 0]);
   expect(parent.pendingChildExitRecords).toBe(0);
+});
+
+test("completeProcessExit still destroys the handle when cleanup fails", async () => {
+  const order: string[] = [];
+  const child = makeHandle({
+    parentPid: null,
+  });
+  const processHandles = new Map<number, ProcessHandle>([
+    [3, child],
+  ]);
+
+  const helpers = createWorkerExitHelpers({
+    processHandles,
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      order.push(event);
+    },
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle: (handle) => {
+      order.push(`destroy:${handle.pid}`);
+    },
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers: () => {
+      order.push("kick");
+    },
+    publishRuntimeFsState: () => 1,
+    recordChildExitViaKernelWorker: async () => {},
+    replaceRuntimeFsSnapshot: () => {},
+    releaseSharedHostStdio: async () => {
+      throw new Error("release failed");
+    },
+    requestPipeStateSync: async () => {},
+    snapshotProcessFs: () => [],
+  });
+
+  await helpers.completeProcessExit(child, 0, 0);
+
+  expect(order).toContain("destroy:3");
+  expect(order).toContain('exit-cleanup-error:3:"release failed"');
+});
+
+test("completeProcessExit keeps execve stage summary without dispatch trace noise", async () => {
+  const child = makeHandle({
+    parentPid: null,
+    kernel: {
+      debug_execve_stage: () => 9,
+      debug_execve_value0: () => 0x55n,
+      debug_execve_value1: () => 0x66n,
+      debug_execve_stage_trace_len: () => 2,
+      debug_execve_stage_trace_stage: (index: number) => [10, 11][index] ?? 0,
+      debug_execve_stage_trace_value0: (index: number) => [0x100n, 0x300n][index] ?? 0n,
+      debug_execve_stage_trace_value1: (index: number) => [0x200n, 0x400n][index] ?? 0n,
+      debug_riscv_syscall_trace_len: () => 0,
+      debug_path_syscall_trace_len: () => 0,
+    } as never,
+  });
+  const processHandles = new Map<number, ProcessHandle>([[3, child]]);
+
+  const helpers = createWorkerExitHelpers({
+    processHandles,
+    appendRuntimeLifecycleEvent: () => {},
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle: () => {},
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers: () => {},
+    recordChildExitViaKernelWorker: async () => {},
+    releaseSharedHostStdio: async () => {},
+    requestPipeStateSync: async () => {},
+  });
+
+  await helpers.completeProcessExit(child, 1, 0);
+
+  expect(child.lastDebugMessage).toContain("execve_stage=9");
+  expect(child.lastDebugMessage).toContain("execve_stage_trace=[10:100:200,11:300:400]");
+  expect(child.lastDebugMessage).not.toContain("execve_dispatch=[");
 });

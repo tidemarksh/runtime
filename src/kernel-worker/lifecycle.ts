@@ -196,11 +196,10 @@ export function createKernelWorkerLifecycle(deps: KernelWorkerLifecycleDeps) {
     const processExports = deps.requireProcessKernel(pid);
     attachKernelRuntimeState(processExports, kernelState);
     processExports.thread_clear_spawn_handoff(vmPtr);
-    if (processExports.thread_restore_vfork_parent_without_cleanup) {
-      processExports.thread_restore_vfork_parent_without_cleanup(vmPtr, childPid);
-    } else {
-      processExports.thread_resume_vfork_parent(vmPtr, childPid);
-    }
+    // The runtime resumes the suspended parent thread locally after the child
+    // worker has been materialized. This kernel-worker copy must not clear the
+    // vfork snapshot before the owner runtime restores the parent locally,
+    // otherwise thread_restore_vfork_parent_without_cleanup() becomes a no-op.
     if (childPid > 0 && !deps.processKernels.has(childPid)) {
       dropCanonicalProcess(childPid);
     }

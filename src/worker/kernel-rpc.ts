@@ -15,6 +15,14 @@ import type { KernelWorkerPidBytesSnapshot } from "../messages.js";
 
 const FS_DEBUG_PATH_BUF_LEN = 4096;
 
+interface PendingFsContext {
+  opcode: number;
+  effects: number;
+  targetIno: number;
+  path: string | null;
+  secondaryPath: string | null;
+}
+
 interface WorkerKernelRpcDeps {
   processHandles: Map<number, ProcessHandle>;
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
@@ -26,7 +34,7 @@ interface WorkerKernelRpcDeps {
   kickBlockedWorkers(handle: ProcessHandle): void;
   markRuntimeFsDirty(handle: ProcessHandle): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
-  syncBlockedForkSharedStateViaKernelWorker(handle: ProcessHandle): Promise<void>;
+  syncBlockedForkSharedStateViaKernelWorker(handle: ProcessHandle, sourceVmPtr?: number): Promise<void>;
   syncForkSharedStateLocally(
     handle: ProcessHandle,
     targets: ProcessHandle[],
@@ -35,7 +43,13 @@ interface WorkerKernelRpcDeps {
   syncForkSharedStateViaKernelWorker(
     handle: ProcessHandle,
     targets: ProcessHandle[],
-    options?: { includeMemfs?: boolean; trackHeldOfds?: boolean; preserveSourceRefcounts?: boolean },
+    options?: {
+      includeMemfs?: boolean;
+      trackHeldOfds?: boolean;
+      deltaOfdIds?: boolean;
+      preserveSourceRefcounts?: boolean;
+      sourceVmPtr?: number;
+    },
   ): Promise<void>;
   rehydrateForkSharedStateViaKernelWorker(
     targets: ProcessHandle[],
@@ -98,6 +112,7 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     resumeVforkExecveParentViaKernelWorker,
     resumeVforkParentViaKernelWorker,
     resumeWait4ViaKernelWorker,
+    syncProcessMemfsViaKernelWorker,
     syncProcessLifecycleViaKernelWorker,
     unregisterProcessWithKernelWorker,
   } = kernelRpcLifecycleHelpers;
@@ -117,26 +132,35 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     return decoder.decode(new Uint8Array(handle.kernel.memory.buffer, bufPtr, length));
   }
 
+  function readPendingFsContext(handle: ProcessHandle, vmPtr: number): PendingFsContext {
+    return {
+      opcode: handle.kernel.thread_pending_fs_opcode(vmPtr),
+      effects: handle.kernel.thread_pending_fs_effects(vmPtr),
+      targetIno: handle.kernel.thread_pending_fs_target_ino(vmPtr),
+      path: readPendingFsPath(handle, vmPtr),
+      secondaryPath: readPendingFsPath(handle, vmPtr, true),
+    };
+  }
+
+  function formatPendingFsDebugSuffix(context: PendingFsContext): string {
+    const pathSuffix = context.path ? `:path=${JSON.stringify(context.path)}` : "";
+    const secondaryPathSuffix = context.secondaryPath
+      ? `:path2=${JSON.stringify(context.secondaryPath)}`
+      : "";
+    return `:op=${context.opcode}:fx=${context.effects}:ino=${context.targetIno}${pathSuffix}${secondaryPathSuffix}`;
+  }
+
   async function resumeFsViaKernelWorker(
     handle: ProcessHandle,
     worker: Worker,
     vmPtr: number,
     fsEffects: { memfsMutation: number; memfsFileData: number; sharedOfdState: number },
   ): Promise<void> {
-    const pendingOpcode = handle.kernel.thread_pending_fs_opcode(vmPtr);
-    const pendingEffects = handle.kernel.thread_pending_fs_effects(vmPtr);
-    const pendingTargetIno = handle.kernel.thread_pending_fs_target_ino(vmPtr);
-    const pendingPath = readPendingFsPath(handle, vmPtr);
-    const pendingSecondaryPath = readPendingFsPath(handle, vmPtr, true);
-    const pathSuffix = pendingPath ? `:path=${JSON.stringify(pendingPath)}` : "";
-    const secondaryPathSuffix = pendingSecondaryPath
-      ? `:path2=${JSON.stringify(pendingSecondaryPath)}`
-      : "";
-    const fsDebugSuffix =
-      `:op=${pendingOpcode}:fx=${pendingEffects}:ino=${pendingTargetIno}${pathSuffix}${secondaryPathSuffix}`;
+    const pendingFs = readPendingFsContext(handle, vmPtr);
+    const fsDebugSuffix = formatPendingFsDebugSuffix(pendingFs);
     const memfsMutated =
-      (pendingEffects & (fsEffects.memfsMutation | fsEffects.memfsFileData)) !== 0;
-    const ofdStateChanged = (pendingEffects & fsEffects.sharedOfdState) !== 0;
+      (pendingFs.effects & (fsEffects.memfsMutation | fsEffects.memfsFileData)) !== 0;
+    const ofdStateChanged = (pendingFs.effects & fsEffects.sharedOfdState) !== 0;
     if (!handle.kernelWorkerRequest || handle.pid <= 0) {
       deps.appendWorkerDebugLog(handle, `fs-start:0x${vmPtr.toString(16)}:local${fsDebugSuffix}`);
       handle.kernel.thread_process_fs(vmPtr);
@@ -162,21 +186,26 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     try {
       deps.appendWorkerDebugLog(handle, `fs-start:0x${vmPtr.toString(16)}${fsDebugSuffix}`);
       deps.assertProcessStandardFdIntegrity(handle, "resume-fs-before");
+      handle.kernelState = readKernelRuntimeState(handle.kernel);
       handle.kernel.thread_process_fs(vmPtr);
       handle.kernel.thread_resume_fs(vmPtr);
       handle.kernelState = readKernelRuntimeState(handle.kernel);
+      const currentPid = handle.kernel.process_current_pid?.(vmPtr) ?? handle.pid;
+      const transientProcessOwnerMismatch = currentPid > 0 && currentPid !== handle.pid;
       const fsResult = handle.kernel.thread_a0?.(vmPtr) ?? 0n;
       if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
         return;
       }
       deps.assertProcessStandardFdIntegrity(handle, "resume-fs");
-      if (memfsMutated || ofdStateChanged) {
+      if (ofdStateChanged && !transientProcessOwnerMismatch) {
         await deps.syncForkSharedStateViaKernelWorker(
           handle,
           kernelShareOtherMembers(handle),
           {
-            includeMemfs: memfsMutated,
+            includeMemfs: false,
             trackHeldOfds: ofdStateChanged,
+            deltaOfdIds: true,
+            sourceVmPtr: vmPtr,
           },
         );
       }
@@ -219,14 +248,21 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
         handle.kernel.thread_resume_blocked_syscall(vmPtr);
       }
       handle.kernelState = readKernelRuntimeState(handle.kernel);
-      await deps.syncBlockedForkSharedStateViaKernelWorker(handle);
+      const currentPid = handle.kernel.process_current_pid?.(vmPtr) ?? handle.pid;
+      const transientProcessOwnerMismatch = currentPid > 0 && currentPid !== handle.pid;
+      if (!transientProcessOwnerMismatch) {
+        await deps.syncBlockedForkSharedStateViaKernelWorker(handle, vmPtr);
+      }
 
-      if (blockedStatus === handle.kernel.abi_status_pipe_wait()) {
-        await deps.syncPipeStateViaKernelWorker(handle);
+      if (!transientProcessOwnerMismatch && blockedStatus === handle.kernel.abi_status_pipe_wait()) {
+        await deps.requestPipeStateSync(handle, true);
       } else if (
-        blockedStatus === handle.kernel.abi_status_connect()
-        || blockedStatus === handle.kernel.abi_status_socket_recv()
-        || blockedStatus === handle.kernel.abi_status_socket_send()
+        !transientProcessOwnerMismatch
+        && (
+          blockedStatus === handle.kernel.abi_status_connect()
+          || blockedStatus === handle.kernel.abi_status_socket_recv()
+          || blockedStatus === handle.kernel.abi_status_socket_send()
+        )
       ) {
         await deps.syncSocketStateViaKernelWorker(handle);
       }
@@ -284,6 +320,7 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     resumeVforkExecveParentViaKernelWorker,
     resumeVforkParentViaKernelWorker,
     resumeWait4ViaKernelWorker,
+    syncProcessMemfsViaKernelWorker,
     syncProcessLifecycleViaKernelWorker,
     unregisterProcessWithKernelWorker,
   };

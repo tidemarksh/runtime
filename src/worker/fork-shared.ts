@@ -1,4 +1,4 @@
-import type { KernelSyncHandle, ProcessHandle, VforkSnapshot } from "./types.js";
+import type { KernelSyncHandle, ProcessHandle, ThreadWorkerState, VforkSnapshot } from "./types.js";
 import { trackForkSharedOfds } from "./kernel-share.js";
 
 function boundedThreadSlotCount(handle: ProcessHandle): number {
@@ -8,7 +8,9 @@ function boundedThreadSlotCount(handle: ProcessHandle): number {
     if (!Number.isFinite(processThreadCount) || processThreadCount <= 0) {
       return 0;
     }
-    return Math.min(maxThreads, Math.trunc(processThreadCount));
+    // Kernel thread slots are sparse and keyed by tid-1, so thread_count is a
+    // population count, not a dense slot upper bound.
+    return maxThreads;
   } catch {
     return maxThreads;
   }
@@ -225,14 +227,22 @@ export function reconcileForkSharedOfdRefcounts(handle: ProcessHandle, sharedOfd
   }
 }
 
-export function captureVforkSnapshot(handle: ProcessHandle, vmPtr: number): VforkSnapshot {
-  const ofdIds = trackForkSharedOfds(handle, vmPtr, true);
+export function captureVforkSnapshot(
+  handle: ProcessHandle,
+  thread: Pick<ThreadWorkerState, "vmPtr" | "lastStepProcessPtr" | "lastStepPc" | "lastStepSp" | "lastStepS11">,
+): VforkSnapshot {
+  const ofdIds = trackForkSharedOfds(handle, thread.vmPtr, true);
   return {
-    vmPtr,
+    vmPtr: thread.vmPtr,
     childPid: null,
     nextPid: null,
     pgid: null,
     sid: null,
+    parentPid: handle.pid,
+    parentProcessPtr: thread.lastStepProcessPtr ?? handle.kernel.thread_process_ptr(thread.vmPtr),
+    parentPc: thread.lastStepPc ?? handle.kernel.thread_pc(thread.vmPtr),
+    parentSp: thread.lastStepSp ?? handle.kernel.thread_sp(thread.vmPtr),
+    parentS11: thread.lastStepS11 ?? (handle.kernel.thread_s11?.(thread.vmPtr) ?? 0n),
     inheritedSharedOfdIds: ofdIds,
   };
 }

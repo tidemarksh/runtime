@@ -69,13 +69,13 @@ export function stepThread(ctx: ThreadWorkerExecContext, budget: number): void {
     const status = ctx.exports.thread_status(ctx.vmPtr);
 
     if (status === ctx.statusCodes.FUTEX_WAIT) {
+      // Keep futex waits inside the thread-worker so wakeups come from
+      // shared-memory Atomics.notify instead of owner-side 1ms retry polling.
       if (handleFutexWait({
         ...ctx,
-        runtimeBridge: ctx.runtimeBridge,
         step: (nextBudget: number) => stepThread(ctx, nextBudget),
       }, status)) {
-        budget = ctx.threadStepBudget;
-        continue;
+        stepThread(ctx, ctx.threadStepBudget);
       }
       return;
     }

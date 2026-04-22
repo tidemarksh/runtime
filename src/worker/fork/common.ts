@@ -75,6 +75,7 @@ export function createForkChildHandle({
     epollSyncPromise: null,
     epollSyncQueued: false,
     epollWaiterWakeQueued: false,
+    forkSharedSyncPromise: null,
     ofdSyncPromise: null,
     ofdSyncQueuedIds: new Set(),
     socketSyncPromise: null,

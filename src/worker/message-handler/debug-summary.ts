@@ -43,6 +43,18 @@ function extractDebugField(debug: string, key: string): string | null {
   return match?.[1] ?? null;
 }
 
+export function readProcessPidField(debug?: string): number | null {
+  if (!debug) {
+    return null;
+  }
+  const value = extractDebugField(debug, "process_pid_field");
+  if (value === null) {
+    return null;
+  }
+  const pid = Number.parseInt(value, 10);
+  return Number.isFinite(pid) ? pid : null;
+}
+
 export function formatCompactDebugSuffix(
   debug?: string,
   keys: readonly string[] = DEFAULT_DEBUG_KEYS,

@@ -249,7 +249,8 @@ export function retainSharedHostStdio(shared: SharedHostStdio): SharedHostStdio 
 }
 
 export function releaseSharedHostStdioLocal(handle: ProcessHandle): void {
-  if (handle.stdinPipe === 0 && handle.stdoutPipe === 0 && handle.stderrPipe === 0) {
+  const hadLocalHostStdio = handle.stdinPipe !== 0 || handle.stdoutPipe !== 0 || handle.stderrPipe !== 0;
+  if (!hadLocalHostStdio) {
     return;
   }
   const shared = handle.hostStdio;
@@ -259,10 +260,9 @@ export function releaseSharedHostStdioLocal(handle: ProcessHandle): void {
   handle.stdinPipe = 0;
   handle.stdoutPipe = 0;
   handle.stderrPipe = 0;
-  if (shared.refCount !== 0) {
-    return;
-  }
   try {
+    // Local teardown still has to clear this process's hidden stdio pipe slots
+    // even if the visible host stdio attachment remains shared elsewhere.
     handle.kernel.process_release_host_stdio(handle.vmPtr);
   } catch {
     // Worker-error teardown can race with corrupted or already-released process state.

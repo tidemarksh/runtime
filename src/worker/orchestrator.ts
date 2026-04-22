@@ -47,6 +47,7 @@ import { createWorkerLifecycleHelpers } from "./lifecycle.js";
 import { createWorkerMessageHandler } from "./message-handler.js";
 import { createWorkerRuntimeContext } from "./runtime-context.js";
 import { createWorkerScheduler } from "./scheduler.js";
+import { hasActiveChildProcess as hasActiveChildProcessImpl } from "./child-processes.js";
 
 interface WorkerOrchestratorDeps {
   ensureCompiledModule(wasmBytes: BufferSource): Promise<WebAssembly.Module>;
@@ -136,14 +137,7 @@ const workerScheduler = createWorkerScheduler({
   threadWorkerStates,
   completeProcessExit,
   failProcess,
-  hasActiveChildProcess: (parentPid) => {
-    for (const candidate of processHandles.values()) {
-      if (candidate.parentPid === parentPid) {
-        return true;
-      }
-    }
-    return false;
-  },
+  hasActiveChildProcess: (parentPid) => hasActiveChildProcessImpl(processHandles, parentPid),
   resumeBlockedSyscallLocally: (handle, worker, vmPtr, blockedStatus, timeoutExpired) => (
     workerKernelRpcHelpers.resumeBlockedSyscallLocally(
       handle,
@@ -168,6 +162,7 @@ const {
   handleBlockedRetryResult,
   kickBlockedWorkers,
   pumpProcess,
+  pruneDetachedProcessWorkers,
   requestEpollDependentOfdStateSync,
   requestEpollStateSync,
   requestPipeStateSync,
@@ -204,6 +199,7 @@ const {
   resumeFsViaKernelWorker: resumeFsViaKernelWorkerImpl,
   resumeVforkExecveParentViaKernelWorker,
   resumeVforkParentViaKernelWorker,
+  syncProcessMemfsViaKernelWorker,
   syncProcessLifecycleViaKernelWorker,
   unregisterProcessWithKernelWorker,
 } = workerKernelRpcHelpers;
@@ -225,6 +221,7 @@ const workerForkHandlers = createWorkerForkHandlers({
   resumeVforkExecveParentViaKernelWorker,
   syncForkSharedStateLocally,
   syncForkSharedStateViaKernelWorker,
+  syncProcessMemfsViaKernelWorker,
   canonicalizeChildLifecycleViaKernelWorker,
   bootStrapMemoryBytes: 64 * 1024 * 1024,
   wasmPageSize: 65536,
@@ -296,8 +293,7 @@ const STATUS_OK_COMPLETED_SYNC_EFFECTS = SYNC_EFFECT_PIPE_STATE
   | SYNC_EFFECT_SOCKET_STATE
   | SYNC_EFFECT_EPOLL_STATE
   | SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE
-  | SYNC_EFFECT_PROCESS_LIFECYCLE
-  | SYNC_EFFECT_FORK_SHARED_OFD_STATE;
+  | SYNC_EFFECT_PROCESS_LIFECYCLE;
 
 async function ensureCompiledModule(wasmBytes: BufferSource): Promise<WebAssembly.Module> {
   if (!ensureCompiledModuleImpl) {
@@ -323,6 +319,7 @@ handleWorkerMessageImpl = createWorkerMessageHandler({
   blockWorker,
   canonicalizeActiveVforkChildViaKernelWorker,
   captureVforkSnapshot,
+  clearVforkSnapshot,
   clearBlockedWorker,
   completeProcessExit,
   enqueueWorker,
@@ -330,6 +327,7 @@ handleWorkerMessageImpl = createWorkerMessageHandler({
   handleExecveSpawn,
   kickBlockedWorkers,
   pumpProcess,
+  pruneDetachedProcessWorkers,
   requestEpollDependentOfdStateSync,
   requestEpollStateSync,
   requestPipeStateSync,
@@ -340,6 +338,7 @@ handleWorkerMessageImpl = createWorkerMessageHandler({
   statusDefersOwnedStateSync,
   syncBlockedForkSharedStateViaKernelWorker,
   syncForkSharedStateViaKernelWorker,
+  syncProcessMemfsViaKernelWorker,
   syncProcessLifecycleViaKernelWorker,
 });
 const workerProcessFactory = createWorkerProcessFactory({
@@ -491,7 +490,9 @@ async function syncForkSharedStateViaKernelWorker(
   options: {
     includeMemfs?: boolean;
     trackHeldOfds?: boolean;
+    deltaOfdIds?: boolean;
     preserveSourceRefcounts?: boolean;
+    sourceVmPtr?: number;
   } = {},
 ): Promise<void> {
   if (!handle.kernelWorkerRequest || handle.pid <= 0) {
@@ -515,8 +516,11 @@ async function rehydrateForkSharedStateViaKernelWorker(
   await rehydrateForkSharedStateViaKernelWorkerImpl(targets, ofdIds, options);
 }
 
-async function syncBlockedForkSharedStateViaKernelWorker(handle: ProcessHandle): Promise<void> {
-  await syncBlockedForkSharedStateViaKernelWorkerImpl(handle);
+async function syncBlockedForkSharedStateViaKernelWorker(
+  handle: ProcessHandle,
+  sourceVmPtr?: number,
+): Promise<void> {
+  await syncBlockedForkSharedStateViaKernelWorkerImpl(handle, sourceVmPtr);
 }
 
 async function syncPipeStateViaKernelWorker(handle: ProcessHandle): Promise<bigint> {
@@ -531,19 +535,19 @@ async function syncSocketStateViaKernelWorker(handle: ProcessHandle): Promise<{
 }
 
 async function releaseSharedHostStdio(handle: ProcessHandle): Promise<void> {
-  if (handle.stdinPipe === 0 && handle.stdoutPipe === 0 && handle.stderrPipe === 0) {
+  const hadLocalHostStdio = handle.stdinPipe !== 0 || handle.stdoutPipe !== 0 || handle.stderrPipe !== 0;
+  if (!hadLocalHostStdio) {
     return;
   }
   const shared = handle.hostStdio;
   if (shared.refCount > 0) {
     shared.refCount -= 1;
   }
+  // Process-local hidden stdio pipe slots must always be cleared on exit even
+  // when visible host stdio is still shared with a parent process.
   handle.stdinPipe = 0;
   handle.stdoutPipe = 0;
   handle.stderrPipe = 0;
-  if (shared.refCount !== 0) {
-    return;
-  }
   const pipeUsed = await releaseHostStdioViaKernelWorker(handle);
   if (kernelWorkerOwnsPipeState(handle)) {
     wakePipeAndEpollWaitersInKernelShare(handle, pipeUsed);

@@ -26,7 +26,7 @@
  *     Append-only file data blocks + name strings.
  */
 
-export const MAX_INODES = 16384;
+export const MAX_INODES = 65536;
 export const HEADER_SIZE = 64;
 export const INODE_ENTRY_SIZE = 32;
 export const INODE_TABLE_SIZE = MAX_INODES * INODE_ENTRY_SIZE;
@@ -149,8 +149,14 @@ export function readInodeMeta(
   sab: SharedArrayBuffer,
   ino: number,
 ): { dataOff: number; size: number; mode: number } | null {
+  if (!Number.isInteger(ino) || ino < 0 || ino >= MAX_INODES) {
+    return null;
+  }
   const u32 = new Uint32Array(sab);
   const base = inodeOffset(ino);
+  if (base < INODE_TABLE_OFFSET || base + INODE_ENTRY_SIZE > sab.byteLength) {
+    return null;
+  }
   const base32 = base >>> 2;
 
   for (let retry = 0; retry < 4; retry++) {
@@ -164,6 +170,17 @@ export function readInodeMeta(
 
     const v2 = Atomics.load(u32, base32 + (INODE_OFF_VERSION >>> 2));
     if (v1 === v2) {
+      if (size < 0 || dataOff < 0) {
+        return null;
+      }
+      if (size > 0) {
+        if (dataOff < DATA_REGION_OFFSET) {
+          return null;
+        }
+        if (dataOff + size > sab.byteLength) {
+          return null;
+        }
+      }
       return { dataOff, size, mode };
     }
     // torn read — retry
@@ -182,9 +199,15 @@ export function readInodeRecord(
   name: Uint8Array;
   nextSibling: number;
 } | null {
+  if (!Number.isInteger(ino) || ino < 0 || ino >= MAX_INODES) {
+    return null;
+  }
   const u32 = new Uint32Array(sab);
   const u8 = new Uint8Array(sab);
   const base = inodeOffset(ino);
+  if (base < INODE_TABLE_OFFSET || base + INODE_ENTRY_SIZE > sab.byteLength) {
+    return null;
+  }
   const base32 = base >>> 2;
 
   for (let retry = 0; retry < 4; retry++) {
@@ -203,6 +226,19 @@ export function readInodeRecord(
 
     const v2 = Atomics.load(u32, base32 + (INODE_OFF_VERSION >>> 2));
     if (v1 === v2) {
+      if (size < 0 || dataOff < 0 || nameOff < 0 || nameLen < 0) {
+        return null;
+      }
+      if (size > 0) {
+        if (dataOff < DATA_REGION_OFFSET || dataOff + size > sab.byteLength) {
+          return null;
+        }
+      }
+      if (nameLen > 0) {
+        if (nameOff < DATA_REGION_OFFSET || nameOff + nameLen > sab.byteLength) {
+          return null;
+        }
+      }
       return {
         dataOff,
         size,

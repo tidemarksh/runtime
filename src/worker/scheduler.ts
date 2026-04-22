@@ -15,6 +15,7 @@ import { collectLiveThreadVmPtrs, processHasLiveThreads } from "./live-threads.j
 import { createWorkerSchedulerQueueHelpers } from "./scheduler/queue.js";
 import { createWorkerSchedulerStateSyncHelpers } from "./scheduler/state-sync.js";
 import type {
+  BlockedWorkerState,
   ProcessHandle,
 } from "./types.js";
 import type {
@@ -23,6 +24,8 @@ import type {
 } from "./scheduler/types.js";
 
 const WORKER_DEBUG_LOG_ENABLED = true;
+const GUEST_TICKS_PER_SEC = 100_000_000n;
+const GUEST_NSEC_PER_SEC = 1_000_000_000n;
 
 export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerScheduler {
   const { threadWorkerStates } = deps;
@@ -39,8 +42,26 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     pumpProcess,
   } = schedulerQueueHelpers;
 
+  function hasActiveExclusiveVforkWorker(handle: ProcessHandle): boolean {
+    const worker = handle.vforkWorker;
+    if (handle.vforkSnapshot === null || worker === null) {
+      return false;
+    }
+    if (handle.runningWorker === worker) {
+      return true;
+    }
+    if (handle.readyWorkers.includes(worker)) {
+      return true;
+    }
+    if (handle.blockedWorkers.has(worker)) {
+      return true;
+    }
+    const thread = threadWorkerStates.get(worker);
+    return thread?.waitingInWorkerStatus !== null;
+  }
+
   function canScheduleWorker(handle: ProcessHandle, worker: Worker): boolean {
-    return handle.vforkWorker === null || handle.vforkSnapshot === null || handle.vforkWorker === worker;
+    return !hasActiveExclusiveVforkWorker(handle) || handle.vforkWorker === worker;
   }
 
   function clearBlockedWorker(handle: ProcessHandle, worker: Worker): void {
@@ -52,6 +73,107 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       clearTimeout(blocked.retryTimer);
     }
     handle.blockedWorkers.delete(worker);
+  }
+
+  function monotonicTicksCurrent(handle: ProcessHandle): bigint {
+    const ticks = handle.kernel.monotonic_ticks_current?.();
+    return ticks === undefined ? 0n : BigInt(ticks);
+  }
+
+  function sleepDurationToTicks(sec: bigint, nsec: bigint): bigint {
+    const base = sec * GUEST_TICKS_PER_SEC;
+    const sub = nsec * GUEST_TICKS_PER_SEC;
+    const rounded = sub === 0n ? 0n : (sub + (GUEST_NSEC_PER_SEC - 1n)) / GUEST_NSEC_PER_SEC;
+    return base + rounded;
+  }
+
+  function sleepDeadlineTicks(handle: ProcessHandle, vmPtr: number): bigint {
+    const exportedDeadline = handle.kernel.thread_sleep_deadline_ticks?.(vmPtr);
+    if (exportedDeadline !== undefined) {
+      return BigInt(exportedDeadline);
+    }
+    const sec = handle.kernel.thread_sleep_seconds(vmPtr);
+    const nsec = handle.kernel.thread_sleep_nanoseconds(vmPtr);
+    return monotonicTicksCurrent(handle) + sleepDurationToTicks(sec, nsec);
+  }
+
+  function wakeBlockedSleepWorker(handle: ProcessHandle, worker: Worker, blocked: { vmPtr: number }): void {
+    handle.kernel.thread_resume_sleep?.(blocked.vmPtr);
+    clearBlockedWorker(handle, worker);
+    enqueueWorker(handle, worker);
+  }
+
+  function wakeDueSleepWorkers(handle: ProcessHandle): boolean {
+    const now = monotonicTicksCurrent(handle);
+    let wokeAny = false;
+    for (const [worker, blocked] of [...handle.blockedWorkers.entries()]) {
+      if (
+        blocked.status !== handle.kernel.abi_status_sleep()
+        || blocked.sleepDeadlineTicks === null
+        || blocked.sleepDeadlineTicks > now
+      ) {
+        continue;
+      }
+      wakeBlockedSleepWorker(handle, worker, blocked);
+      wokeAny = true;
+    }
+    return wokeAny;
+  }
+
+  function maybeAdvanceGuestTimeToNextSleep(handle: ProcessHandle): boolean {
+    if (handle.runningWorker !== null || handle.readyWorkers.length > 0) {
+      return false;
+    }
+    let nextDeadline: bigint | null = null;
+    for (const blocked of handle.blockedWorkers.values()) {
+      if (blocked.status !== handle.kernel.abi_status_sleep() || blocked.sleepDeadlineTicks === null) {
+        continue;
+      }
+      if (nextDeadline === null || blocked.sleepDeadlineTicks < nextDeadline) {
+        nextDeadline = blocked.sleepDeadlineTicks;
+      }
+    }
+    if (nextDeadline === null) {
+      return false;
+    }
+    if (nextDeadline > monotonicTicksCurrent(handle)) {
+      handle.kernel.sync_monotonic_ticks_floor?.(nextDeadline);
+    }
+    return wakeDueSleepWorkers(handle);
+  }
+
+  function clearStaleRunningWorker(handle: ProcessHandle, blockedWorker: Worker): boolean {
+    const runningWorker = handle.runningWorker;
+    if (runningWorker === null || runningWorker === blockedWorker) {
+      return false;
+    }
+    if (!handle.workers.has(runningWorker)) {
+      handle.runningWorker = null;
+      return true;
+    }
+    const runningThread = threadWorkerStates.get(runningWorker);
+    if (!runningThread) {
+      handle.runningWorker = null;
+      return true;
+    }
+    if (runningThread.waitingInWorkerStatus !== null) {
+      handle.runningWorker = null;
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `running-worker-cleared:${handle.pid}:wait=${runningThread.waitingInWorkerStatus}`,
+      );
+      return true;
+    }
+    const runningStatus = handle.kernel.thread_status(runningThread.vmPtr);
+    if (runningStatus !== handle.kernel.abi_status_ok()) {
+      handle.runningWorker = null;
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `running-worker-cleared:${handle.pid}:status=${runningStatus}`,
+      );
+      return true;
+    }
+    return false;
   }
 
   function selectProcessAnchorVmPtr(
@@ -95,6 +217,13 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
   }
 
+  function shouldPreserveTransientWorker(handle: ProcessHandle, vmPtr: number): boolean {
+    const status = handle.kernel.thread_status(vmPtr);
+    return status === handle.kernel.abi_status_vfork_wait()
+      || status === handle.kernel.abi_status_execve_spawn()
+      || status === handle.kernel.abi_status_clone_spawn();
+  }
+
   function pruneStaleProcessWorkers(
     handle: ProcessHandle,
     liveVmPtrs: Set<number>,
@@ -112,8 +241,18 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       if (!thread || liveVmPtrs.has(thread.vmPtr)) {
         continue;
       }
+      if (shouldPreserveTransientWorker(handle, thread.vmPtr)) {
+        appendWorkerDebugLog(
+          handle,
+          `prune-skip-transient:0x${thread.vmPtr.toString(16)}:${handle.kernel.thread_status(thread.vmPtr)}`,
+        );
+        continue;
+      }
       clearBlockedWorker(handle, worker);
       removeReadyWorker(handle, worker);
+      if (handle.runningWorker === worker) {
+        handle.runningWorker = null;
+      }
       if (handle.vforkWorker === worker) {
         handle.vforkWorker = null;
       }
@@ -122,6 +261,22 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       threadWorkerStates.delete(worker);
       releaseWorker(worker);
     }
+  }
+
+  function pruneDetachedProcessWorkers(
+    handle: ProcessHandle,
+    anchorVmPtr: number,
+    currentWorker: Worker | null,
+  ): void {
+    if (anchorVmPtr === 0 || handle.workers.size <= 1) {
+      return;
+    }
+    if (handle.pendingChildSpawnRecords > 0) {
+      appendWorkerDebugLog(handle, `prune-skip-spawn:${handle.pendingChildSpawnRecords}`);
+      return;
+    }
+    const liveVmPtrs = collectLiveThreadVmPtrs(handle.kernel, anchorVmPtr);
+    pruneStaleProcessWorkers(handle, liveVmPtrs, currentWorker);
   }
 
   function scheduleBlockedRetry(
@@ -179,15 +334,20 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
 
   function blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void {
     clearBlockedWorker(handle, worker);
-    const blocked = {
+    const blocked: BlockedWorkerState = {
       vmPtr,
       status,
       retryTimer: null,
       timeoutExpired: false,
       timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
       rpcPending: false,
     };
     handle.blockedWorkers.set(worker, blocked);
+    if (status === handle.kernel.abi_status_sleep()) {
+      blocked.sleepDeadlineTicks = sleepDeadlineTicks(handle, vmPtr);
+      return;
+    }
     if (status === handle.kernel.abi_status_epoll_wait()) {
       const timeoutMs = Number(handle.kernel.thread_epoll_wait_timeout(vmPtr));
       if (timeoutMs >= 0) {
@@ -231,6 +391,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       const remainingThreads = handle.kernel.thread_process_thread_count(vmPtr);
       const hasLiveThreads = remainingThreads !== 0 && processHasLiveThreads(handle.kernel, vmPtr);
       appendWorkerDebugLog(handle, `fault:0x${vmPtr.toString(16)} remaining=${remainingThreads}`);
+      if (handle.runningWorker === worker) {
+        handle.runningWorker = null;
+      }
       handle.workers.delete(worker);
       threadWorkerStates.delete(worker);
       releaseWorker(worker);
@@ -267,16 +430,40 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (!blocked) {
       return;
     }
+    if (blocked.status === handle.kernel.abi_status_sleep()) {
+      const currentStatus = handle.kernel.thread_status(blocked.vmPtr);
+      if (currentStatus !== blocked.status) {
+        handleBlockedRetryResult(handle, worker, blocked.vmPtr, currentStatus);
+        return;
+      }
+      if (blocked.sleepDeadlineTicks !== null && blocked.sleepDeadlineTicks > monotonicTicksCurrent(handle)) {
+        return;
+      }
+      wakeBlockedSleepWorker(handle, worker, blocked);
+      return;
+    }
+    const currentStatus = handle.kernel.thread_status(blocked.vmPtr);
+    if (currentStatus !== blocked.status) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `wait4-retry-reconcile:${handle.pid}:0x${blocked.vmPtr.toString(16)}:blocked=${blocked.status}:local=${currentStatus}`,
+      );
+      handleBlockedRetryResult(handle, worker, blocked.vmPtr, currentStatus);
+      return;
+    }
     if (blocked.rpcPending) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-skip:${handle.pid}:rpc-pending`);
       return;
     }
+    clearStaleRunningWorker(handle, worker);
     if (handle.runningWorker !== null) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-skip:${handle.pid}:running`);
+      scheduleBlockedRetry(handle, worker, blocked.status === handle.kernel.abi_status_wait4() ? 10 : 1);
       return;
     }
     if (!canScheduleWorker(handle, worker)) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-skip:${handle.pid}:cannot-schedule`);
+      scheduleBlockedRetry(handle, worker, blocked.status === handle.kernel.abi_status_wait4() ? 10 : 1);
       return;
     }
     if (
@@ -291,6 +478,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         handle.runtimeId,
         `wait4-retry-skip:${handle.pid}:gate:exit=${handle.pendingChildExitRecords}:spawn=${handle.pendingChildSpawnRecords}:active=${deps.hasActiveChildProcess(handle.pid) ? 1 : 0}`,
       );
+      scheduleBlockedRetry(handle, worker, 50);
       return;
     }
 
@@ -357,6 +545,16 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
 
     if (
+      blocked.status === handle.kernel.abi_status_wait4()
+      && handle.kernelWorkerRequest
+      && handle.pid > 0
+    ) {
+      blocked.rpcPending = true;
+      void deps.resumeWait4ViaKernelWorker(handle, worker, blocked.vmPtr);
+      return;
+    }
+
+    if (
       handle.kernelWorkerRequest
       && handle.pid > 0
       && (
@@ -419,7 +617,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   } = schedulerStateSyncHelpers;
 
   function kickBlockedWorkers(handle: ProcessHandle): void {
-    for (const worker of handle.blockedWorkers.keys()) {
+    wakeDueSleepWorkers(handle);
+    maybeAdvanceGuestTimeToNextSleep(handle);
+    for (const worker of [...handle.blockedWorkers.keys()]) {
       retryBlockedWorker(handle, worker);
     }
   }
@@ -433,6 +633,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     handleBlockedRetryResult,
     kickBlockedWorkers,
     pumpProcess,
+    pruneDetachedProcessWorkers,
     requestEpollDependentOfdStateSync,
     requestEpollStateSync,
     requestPipeStateSync,

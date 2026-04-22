@@ -2,11 +2,6 @@ import {
   readKernelRuntimeState,
   type KernelExports,
 } from "../abi.js";
-import {
-  setWorkerErrorHandler,
-  setWorkerMessageErrorHandler,
-  setWorkerMessageHandler,
-} from "../bridge/compat.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import { createRuntimeStateBridge, publishKernelRuntimeState } from "../bridge/runtime-state.js";
 import { createKernelEnv } from "../wasm/env.js";
@@ -20,17 +15,21 @@ import {
   detachedKernelScratchBase,
   writeDetachedKernelScratch,
 } from "./kernel-scratch.js";
-import type { ThreadWorkerOutbound } from "../messages.js";
 import {
   acquireWorker,
   ensureEvictionTimer,
 } from "./pool.js";
 import { computeGuestRamLimitBytes } from "./fork/common.js";
 import type {
+  AttachThreadWorkerRequest,
   CreateProcessOptions,
   KernelWorkerMemfsSeedMode,
   ProcessHandle,
 } from "./types.js";
+import {
+  configureKernelInstanceStack,
+  MAIN_THREAD_KERNEL_STACK_SLOT,
+} from "../wasm/stack.js";
 
 const encoder = new TextEncoder();
 const WORKER_DEBUG_LOG_ENABLED = false;
@@ -82,7 +81,7 @@ function snapshotHasPath(entries: readonly FsSnapshotEntry[], path: string): boo
 
 interface WorkerCreateProcessDeps {
   processHandles: Map<number, ProcessHandle>;
-  attachThreadWorker(handle: ProcessHandle, worker: Worker, vmPtr: number): void;
+  attachThreadWorker(handle: ProcessHandle, request: AttachThreadWorkerRequest): void;
   assertProcessStandardFdIntegrity(handle: ProcessHandle, context: string): void;
   ensureCompiledModule(wasmBytes: BufferSource): Promise<WebAssembly.Module>;
   getRuntimeFsEntries(runtimeId: number): FsSnapshotEntry[];
@@ -178,7 +177,8 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       env: createKernelEnv(memory, { sabPageCache }),
     });
     const exports = mainInstance.exports as unknown as KernelExports;
-    const wasmHeapBase = (exports as { __heap_base?: { value: number } }).__heap_base?.value
+    configureKernelInstanceStack(exports, MAIN_THREAD_KERNEL_STACK_SLOT);
+    const wasmHeapBase = exports.__heap_base?.value
       ?? (ramSize - 4 * 1024 * 1024);
     exports.kernel_init(wasmHeapBase);
 
@@ -303,6 +303,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       epollSyncPromise: null,
       epollSyncQueued: false,
       epollWaiterWakeQueued: false,
+      forkSharedSyncPromise: null,
       ofdSyncPromise: null,
       ofdSyncQueuedIds: new Set(),
       socketSyncPromise: null,
@@ -369,44 +370,6 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     ensureEvictionTimer();
     const worker = acquireWorker();
     const runtimeBridge = createRuntimeStateBridge();
-    await new Promise<void>((resolve, reject) => {
-      const rejectWithWorkerError = (detail: string): void => {
-        reject(new Error(`thread worker prepare failed: ${detail}`));
-      };
-      setWorkerErrorHandler(worker, (event) => {
-        const detail = [
-          event.message,
-          event.filename ? `at ${event.filename}:${event.lineno}:${event.colno}` : null,
-          event.error instanceof Error ? (event.error.stack ?? event.error.message) : null,
-        ].filter((part): part is string => !!part).join(" ");
-        rejectWithWorkerError(detail || "unknown worker error");
-        event.preventDefault?.();
-      });
-      setWorkerMessageErrorHandler(worker, (event) => {
-        rejectWithWorkerError("messageerror");
-        event.preventDefault?.();
-      });
-      setWorkerMessageHandler<ThreadWorkerOutbound>(worker, (event) => {
-        const msg = event.data;
-        if (msg.type === "prepared") {
-          resolve();
-          return;
-        }
-        if (msg.type === "error") {
-          reject(new Error(msg.message));
-          return;
-        }
-        reject(new Error(`unexpected thread-worker prepare message: ${msg.type}`));
-      });
-      worker.postMessage({
-        type: "prepare",
-        wasmModule,
-        memory,
-        sabPageCache: options.sabPageCache ?? null,
-        runtimeNotify: runtimeBridge.notifySab,
-        runtimeState: runtimeBridge.stateSab,
-      });
-    });
 
     const elfOffset = stageProcessCreation(exports, guestBase, elfData, ramSize, options, elfBrk);
     const vmPtr = exports.process_create(elfOffset, elfData.length, ramSize, stackSize);
@@ -451,16 +414,10 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     );
     appendMemoryStateDebug(handle, "create");
 
-    const preRegisterGuestPrefix = new Uint8Array(
-      memory.buffer,
-      0,
-      handle.kernelState.heapBase,
-    ).slice();
     const memfsSeedMode: KernelWorkerMemfsSeedMode = delegateFsHydrationToKernelWorker
       ? bootstrapEntriesRequireMaterializedData ? "metadata" : "none"
       : "full";
     await deps.registerProcessWithKernelWorker(handle, { seedMemfsMode: memfsSeedMode });
-    new Uint8Array(memory.buffer).set(preRegisterGuestPrefix, 0);
     appendMemoryStateDebug(handle, "register");
     if (delegateFsHydrationToKernelWorker) {
       handle.kernel.process_set_cwd_ino(vmPtr, cwdIno);
@@ -488,7 +445,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       deps.processHandles.set(handle.pid, handle);
     }
 
-    deps.attachThreadWorker(handle, worker, vmPtr);
+    deps.attachThreadWorker(handle, { worker, vmPtr });
     return handle;
   }
 

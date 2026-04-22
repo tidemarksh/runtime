@@ -8,7 +8,12 @@
  * in-worker kernel instance.
  */
 
-import type { KernelExports, KernelRuntimeState } from "./abi.js";
+import {
+  attachKernelRuntimeState,
+  readKernelRuntimeState,
+  type KernelExports,
+  type KernelRuntimeState,
+} from "./abi.js";
 import type { FsSnapshotEntry } from "./fs/types.js";
 import {
   OFF_DATA_USED,
@@ -187,6 +192,22 @@ function syncSocketState(pid: number, kernelState: KernelRuntimeState): KernelRu
   return syncSocketStateImpl(pid, kernelState);
 }
 
+function syncProcessMemfs(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState {
+  const canonicalExports = exports;
+  const processExports = requireProcessKernel(pid);
+  attachKernelRuntimeState(processExports, kernelState);
+  const canonicalState = readKernelRuntimeState(canonicalExports);
+  const processState = readKernelRuntimeState(processExports);
+  copyCanonicalMemfsToProcess(canonicalState, processExports, processState, {
+    // Plain-fork uses this RPC to make sure the parent has a materialized
+    // executable/toolchain view before its memory image is cloned. Publishing a
+    // metadata-only process view back into canonical state corrupts external
+    // file bodies and later execve paths.
+    includeData: true,
+  });
+  return readKernelRuntimeState(processExports);
+}
+
 const kernelWorkerSharedStateSync = createKernelWorkerSharedStateSync({
   getCanonicalExports: () => exports,
   getCanonicalProcessVmPtr: (pid) => canonicalProcesses.get(pid)?.vmPtr ?? 0,
@@ -327,6 +348,7 @@ const handleKernelWorkerMessage = createKernelWorkerMessageHandler({
   initializeProcessLifecycle,
   resumeVforkExecveParent,
   syncProcessLifecycle,
+  syncProcessMemfs,
   syncPipeState,
   syncEpollState,
   syncOfdState,

@@ -163,6 +163,7 @@ test("captureRuntimeFailureSnapshot stores and clears the last runtime failure",
     exitCode: 2,
     termSignal: 11,
     debug: expect.any(String),
+    memorySyscalls: [],
     workerFocus: [{
       pid: 91,
       cmd: "go version",

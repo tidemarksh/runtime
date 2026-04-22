@@ -4,6 +4,8 @@
  */
 export interface KernelExports {
   memory: WebAssembly.Memory;
+  __stack_pointer?: WebAssembly.Global;
+  __heap_base?: WebAssembly.Global;
 
   // Status codes
   abi_status_ok(): number;
@@ -50,6 +52,7 @@ export interface KernelExports {
   abi_sigpipe(): number;
   abi_clone_parent(): bigint | number;
   abi_sys_read?(): bigint | number;
+  abi_sys_openat?(): bigint | number;
   abi_sys_write?(): bigint | number;
   abi_sys_lseek?(): bigint | number;
   abi_sys_execve?(): bigint | number;
@@ -63,6 +66,7 @@ export interface KernelExports {
   abi_sys_readv?(): bigint | number;
   abi_sys_writev?(): bigint | number;
   abi_sys_socket?(): bigint | number;
+  abi_sys_socketpair?(): bigint | number;
   abi_sys_bind?(): bigint | number;
   abi_sys_listen?(): bigint | number;
   abi_sys_accept4?(): bigint | number;
@@ -97,13 +101,6 @@ export interface KernelExports {
   debug_path_syscall_trace_status?(index: number): number;
   debug_path_syscall_trace_path_ptr?(index: number): number;
   debug_path_syscall_trace_path_len?(index: number): number;
-  debug_thread_count_trace_len?(): number;
-  debug_thread_count_trace_kind?(index: number): number;
-  debug_thread_count_trace_vm_ptr?(index: number): number;
-  debug_thread_count_trace_tid?(index: number): number;
-  debug_thread_count_trace_process_ptr?(index: number): number;
-  debug_thread_count_trace_before?(index: number): number;
-  debug_thread_count_trace_after?(index: number): number;
 
   // Open flags
   abi_o_rdonly(): number;
@@ -128,6 +125,8 @@ export interface KernelExports {
 
   // Kernel lifecycle
   set_base_time(sec: bigint, nsec: bigint): void;
+  sync_monotonic_ticks_floor?(ticks: bigint | number): void;
+  monotonic_ticks_current?(): bigint | number;
   kernel_init(heap_base: number): void;
   kernel_heap_base(): number;
   kernel_heap_ptr(): number;
@@ -165,6 +164,17 @@ export interface KernelExports {
   kernel_process_runtime_state_bytes(): number;
   kernel_time_state_ptr(): number;
   kernel_time_state_bytes(): number;
+  debug_memory_syscall_trace_len?(): number;
+  debug_memory_syscall_trace_entry_nr?(index: number): bigint;
+  debug_memory_syscall_trace_entry_arg0?(index: number): bigint;
+  debug_memory_syscall_trace_entry_arg1?(index: number): bigint;
+  debug_memory_syscall_trace_entry_arg2?(index: number): bigint;
+  debug_memory_syscall_trace_entry_arg3?(index: number): bigint;
+  debug_memory_syscall_trace_entry_arg4?(index: number): bigint;
+  debug_memory_syscall_trace_entry_arg5?(index: number): bigint;
+  debug_memory_syscall_trace_entry_result?(index: number): bigint;
+  debug_memory_syscall_trace_entry_pid?(index: number): number;
+  debug_memory_syscall_trace_entry_process_ptr?(index: number): number;
   kernel_scratch_base?(): number;
   kernel_reset_memfs(): void;
   kernel_attach_runtime_state(
@@ -240,6 +250,7 @@ export interface KernelExports {
   thread_resume_futex_wait_result(vm_ptr: number, result: bigint): void;
   thread_sleep_seconds(vm_ptr: number): bigint;
   thread_sleep_nanoseconds(vm_ptr: number): bigint;
+  thread_sleep_deadline_ticks?(vm_ptr: number): bigint | number;
   thread_record_blocked_addr(vm_ptr: number): number;
   thread_resume_wait4(vm_ptr: number): bigint;
   thread_epoll_wait_timeout(vm_ptr: number): bigint;
@@ -248,6 +259,7 @@ export interface KernelExports {
   thread_resume_socket_wait_timeout?(vm_ptr: number): void;
   thread_interrupt_epoll_wait?(vm_ptr: number, errno: number): number;
   thread_resume_blocked_syscall(vm_ptr: number): bigint;
+  thread_resume_sleep?(vm_ptr: number): void;
   thread_resume_connect_result(vm_ptr: number, result: bigint): void;
   thread_vfork_child_pid(): number;
   thread_clone_flags(vm_ptr: number): bigint;
@@ -273,6 +285,7 @@ export interface KernelExports {
     ramSize: number,
   ): void;
   thread_clear_spawn_handoff(vm_ptr: number): void;
+  thread_clear_vfork_runtime_state?(): void;
   thread_resume_vfork_parent(vm_ptr: number, child_pid: number): void;
   thread_restore_vfork_parent_without_cleanup?(vm_ptr: number, child_pid: number): void;
   thread_complete_execve_handoff(vm_ptr: number): bigint;
@@ -302,6 +315,7 @@ export interface KernelExports {
     didExec: number,
   ): void;
   thread_prepare_fork_child?(vm_ptr: number, pid: number): void;
+  thread_restore_fork_parent?(vm_ptr: number, processPtr: number, pid: number, ppid: number): void;
   process_upsert_process_entry(pid: number, ppid: number, pgid: number, sid: number, didExec: number): void;
   process_remove_process_entry(pid: number): void;
   process_stdin_pipe(vm_ptr: number): number;
@@ -338,41 +352,8 @@ export interface KernelExports {
   debug_clear_syscall_trace?(): void;
   debug_clear_signal_trace?(): void;
   debug_clear_cpu_trace?(): void;
-  debug_clear_memory_trace?(): void;
   debug_clear_guest_write_watch_trace?(): void;
   debug_configure_guest_write_watch?(slot: number, start: bigint | number, end: bigint | number): void;
-  debug_guest_write_overlap_trace_len?(): number;
-  debug_guest_write_overlap_trace_slot?(index: number): number;
-  debug_guest_write_overlap_trace_op?(index: number): number;
-  debug_guest_write_overlap_trace_addr?(index: number): bigint | number;
-  debug_guest_write_overlap_trace_len_bytes?(index: number): number;
-  debug_guest_write_overlap_trace_sample_len?(index: number): number;
-  debug_guest_write_overlap_trace_sample?(index: number): bigint | number;
-  debug_guest_write_overlap_trace_execve_stage?(index: number): number;
-  debug_clear_write_trace?(): void;
-  debug_write_trace_write_calls?(): number;
-  debug_write_trace_writev_calls?(): number;
-  debug_write_trace_last_fd?(): bigint;
-  debug_write_trace_last_nr?(): bigint;
-  debug_write_trace_last_buf_addr?(): bigint;
-  debug_write_trace_last_count?(): bigint;
-  debug_write_trace_last_result?(): bigint;
-  debug_write_trace_last_ofd_id?(): number;
-  debug_write_trace_last_ofd_type?(): number;
-  debug_write_trace_last_ofd_ino?(): number;
-  debug_write_trace_last_status_flags?(): number;
-  debug_write_trace_last_pipe_read_open?(): number;
-  debug_write_trace_last_pipe_write_open?(): number;
-  debug_write_trace_ptr?(): number;
-  debug_write_trace_len?(): number;
-  debug_pipe_read_open?(slot: number): number;
-  debug_pipe_write_open?(slot: number): number;
-  debug_last_pipe_close_slot?(): number;
-  debug_last_pipe_close_is_read_end?(): number;
-  debug_last_pipe_close_ofd_id?(): number;
-  debug_last_pipe_close_read_open?(): number;
-  debug_last_pipe_close_write_open?(): number;
-  debug_syscall_trace_vm_ptr?(): number;
   debug_syscall_trace_nr?(): bigint;
   debug_syscall_trace_result?(): bigint;
   debug_syscall_trace_status?(): number;
@@ -422,17 +403,6 @@ export interface KernelExports {
   debug_memory_vma_end?(index: number): bigint | number;
   debug_memory_vma_prot?(index: number): number;
   debug_memory_vma_flags?(index: number): number;
-  debug_epoll_wait_epfd?(): bigint | number;
-  debug_epoll_wait_ofd_id?(): number;
-  debug_epoll_wait_ofd_type?(): number;
-  debug_epoll_wait_idx?(): number;
-  debug_epoll_wait_ptr?(): number;
-  debug_epoll_wait_count?(): number;
-  debug_epoll_wait_result?(): bigint | number;
-  debug_epoll_wait_reason?(): number;
-  debug_guest_mem_last_addr?(): bigint;
-  debug_guest_mem_last_len?(): number;
-  debug_guest_mem_last_kind?(): number;
   sig_slots_ptr?(): number;
   process_pending_ptr?(): number;
   debug_signal_delivery_sig?(): number;
@@ -497,32 +467,18 @@ export interface KernelExports {
   debug_s11_write_for_vm_prev_value?(vmPtr: number): bigint;
   debug_s11_write_value?(): bigint;
   debug_s11_write_for_vm_value?(vmPtr: number): bigint;
-  debug_tp_write_tid?(): number;
-  debug_tp_write_pc?(): bigint;
-  debug_tp_write_raw?(): number;
-  debug_tp_write_source?(): number;
-  debug_tp_write_prev_value?(): bigint;
-  debug_tp_write_value?(): bigint;
-  debug_tp_write_rs1?(): number;
-  debug_tp_write_rs1_value?(): bigint;
   debug_sp_write_pc?(): bigint;
   debug_sp_write_for_vm_pc?(vmPtr: number): bigint;
-  debug_sp_write_for_vm_back_pc?(vmPtr: number, back: number): bigint;
   debug_sp_write_raw?(): number;
   debug_sp_write_for_vm_raw?(vmPtr: number): number;
-  debug_sp_write_for_vm_back_raw?(vmPtr: number, back: number): number;
   debug_sp_write_source?(): number;
   debug_sp_write_for_vm_source?(vmPtr: number): number;
-  debug_sp_write_for_vm_back_source?(vmPtr: number, back: number): number;
   debug_sp_write_prev_value?(): bigint;
   debug_sp_write_for_vm_prev_value?(vmPtr: number): bigint;
-  debug_sp_write_for_vm_back_prev_value?(vmPtr: number, back: number): bigint;
   debug_sp_write_value?(): bigint;
   debug_sp_write_for_vm_value?(vmPtr: number): bigint;
-  debug_sp_write_for_vm_back_value?(vmPtr: number, back: number): bigint;
   debug_sp_write_tid?(): number;
   debug_sp_write_for_vm_tid?(vmPtr: number): number;
-  debug_sp_write_for_vm_back_tid?(vmPtr: number, back: number): number;
   debug_jalr_pc?(): bigint;
   debug_clone_jalr_pc?(): bigint;
   debug_jalr_for_vm_pc?(vmPtr: number): bigint;
@@ -551,21 +507,6 @@ export interface KernelExports {
   debug_execve_stage?(): number;
   debug_execve_value0?(): bigint;
   debug_execve_value1?(): bigint;
-  debug_execve_ecall_value0?(): bigint;
-  debug_execve_ecall_value1?(): bigint;
-  debug_execve_pre_pc?(): bigint;
-  debug_execve_pre_raw?(): number;
-  debug_execve_pre_value0?(): bigint;
-  debug_execve_pre_value1?(): bigint;
-  debug_execve_approach_trace_len?(): number;
-  debug_execve_approach_trace_pc?(index: number): bigint;
-  debug_execve_approach_trace_raw?(index: number): number;
-  debug_execve_approach_trace_pid_sample0?(index: number): bigint;
-  debug_execve_approach_trace_pid_sample1?(index: number): bigint;
-  debug_execve_dispatch_trace_len?(): number;
-  debug_execve_dispatch_trace_stage?(index: number): number;
-  debug_execve_dispatch_trace_pid_sample0?(index: number): bigint;
-  debug_execve_dispatch_trace_pid_sample1?(index: number): bigint;
   debug_execve_stage_trace_len?(): number;
   debug_execve_stage_trace_stage?(index: number): number;
   debug_execve_stage_trace_value0?(index: number): bigint;
@@ -615,15 +556,6 @@ export interface KernelExports {
   debug_break_exec_trace_entry_a0_for_vm?(vmPtr: number, index: number): bigint;
   debug_break_exec_trace_entry_s11_for_vm?(vmPtr: number, index: number): bigint;
   debug_thread_step_trace_len?(): number;
-  debug_thread_step_entry_trace_len?(): number;
-  debug_thread_step_entry_trace_entry_vm_ptr?(index: number): number;
-  debug_thread_step_entry_trace_entry_tid?(index: number): number;
-  debug_thread_step_entry_trace_entry_status?(index: number): number;
-  debug_thread_step_entry_trace_entry_budget?(index: number): number;
-  debug_thread_step_entry_trace_entry_pc?(index: number): bigint;
-  debug_thread_step_entry_trace_entry_ra?(index: number): bigint;
-  debug_thread_step_entry_trace_entry_sp?(index: number): bigint;
-  debug_thread_step_entry_trace_entry_s11?(index: number): bigint;
   debug_thread_step_trace_entry_vm_ptr?(index: number): number;
   debug_thread_step_trace_entry_tid?(index: number): number;
   debug_thread_step_trace_entry_status?(index: number): number;
@@ -681,32 +613,6 @@ export interface KernelExports {
   debug_fault_dispatch_for_vm_sp?(vmPtr: number): bigint;
   debug_fault_dispatch_for_vm_s11?(vmPtr: number): bigint;
   debug_fault_dispatch_for_vm_addr?(vmPtr: number): bigint;
-  debug_sync_signal_for_vm_tid?(vmPtr: number): number;
-  debug_sync_signal_for_vm_local_pc?(vmPtr: number): bigint;
-  debug_sync_signal_for_vm_local_ra?(vmPtr: number): bigint;
-  debug_sync_signal_for_vm_local_sp?(vmPtr: number): bigint;
-  debug_sync_signal_for_vm_local_s11?(vmPtr: number): bigint;
-  debug_sync_signal_for_vm_local_a0?(vmPtr: number): bigint;
-  debug_sync_signal_for_vm_vm_pc?(vmPtr: number): bigint;
-  debug_sync_signal_for_vm_vm_ra?(vmPtr: number): bigint;
-  debug_sync_signal_for_vm_vm_sp?(vmPtr: number): bigint;
-  debug_sync_signal_for_vm_vm_s11?(vmPtr: number): bigint;
-  debug_sync_signal_for_vm_vm_a0?(vmPtr: number): bigint;
-  debug_sync_signal_for_vm_addr?(vmPtr: number): bigint;
-  debug_sync_signal_for_vm_sig_pending?(vmPtr: number): bigint;
-  debug_sync_signal_for_vm_sig_mask?(vmPtr: number): bigint;
-  debug_sync_signal_for_vm_sig_info_code?(vmPtr: number): number;
-  debug_futex_resume_for_vm_phase?(vmPtr: number): number;
-  debug_futex_resume_for_vm_tid?(vmPtr: number): number;
-  debug_futex_resume_for_vm_status?(vmPtr: number): number;
-  debug_futex_resume_for_vm_pc?(vmPtr: number): bigint;
-  debug_futex_resume_for_vm_ra?(vmPtr: number): bigint;
-  debug_futex_resume_for_vm_sp?(vmPtr: number): bigint;
-  debug_futex_resume_for_vm_s11?(vmPtr: number): bigint;
-  debug_futex_resume_for_vm_a0?(vmPtr: number): bigint;
-  debug_futex_resume_for_vm_sig_pending?(vmPtr: number): bigint;
-  debug_futex_resume_for_vm_sig_mask?(vmPtr: number): bigint;
-
   // MemFS operations (kernel Worker only)
   memfs_resolve_path(path_ptr: number, path_len: number): number;
   memfs_lookup(parent_ino: number, name_ptr: number, name_len: number): number;
@@ -783,6 +689,11 @@ export interface KernelRuntimeState {
   heapPtr: number;
   ofdTablePtr: number;
   memfsPtr: number;
+  memfsHeaderBytes: number;
+  memfsInodesBytes: number;
+  memfsFirstChildBytes: number;
+  memfsDirEntriesBytes: number;
+  memfsDataBytes: number;
   memStatePtr: number;
   epollTablePtr: number;
   socketTablePtr: number;
@@ -841,6 +752,11 @@ export function readKernelRuntimeState(exports: KernelExports): KernelRuntimeSta
     heapPtr: exports.kernel_heap_ptr(),
     ofdTablePtr: exports.kernel_ofd_table_ptr(),
     memfsPtr: exports.kernel_memfs_ptr(),
+    memfsHeaderBytes: exports.kernel_memfs_header_bytes(),
+    memfsInodesBytes: exports.kernel_memfs_inodes_bytes(),
+    memfsFirstChildBytes: exports.kernel_memfs_first_child_bytes(),
+    memfsDirEntriesBytes: exports.kernel_memfs_dir_entries_bytes(),
+    memfsDataBytes: exports.kernel_memfs_data_bytes(),
     memStatePtr: exports.kernel_mem_state_ptr(),
     epollTablePtr: exports.kernel_epoll_table_ptr(),
     socketTablePtr: exports.kernel_socket_table_ptr(),

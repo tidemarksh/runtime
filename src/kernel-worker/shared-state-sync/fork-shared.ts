@@ -48,7 +48,7 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
     );
     if (includeMemfs) {
       deps.copyMemfsState(processExports, sourceState, canonicalExports, canonicalState, {
-        includeData: false,
+        includeData: true,
       });
     }
 
@@ -113,7 +113,7 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
       );
       if (includeMemfs) {
         deps.copyCanonicalMemfsToProcess(reconciledCanonicalState, targetExports, targetState, {
-          includeData: false,
+          includeData: true,
         });
       }
     }
@@ -153,9 +153,8 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
         attachKernelRuntimeState(targetExports, targetKernelState);
       }
       const targetState = readKernelRuntimeState(targetExports);
-      const procSelfExe = includeMemfs
-        ? (procSelfExeTargetByPid.get(targetPid) ?? deps.snapshotProcSelfExe(targetExports))
-        : null;
+      const procSelfExe = procSelfExeTargetByPid.get(targetPid)
+        ?? (includeMemfs ? deps.snapshotProcSelfExe(targetExports) : null);
       deps.clearSelectedOfdState(targetExports, targetState, ofdIds);
       if (includeMemfs) {
         deps.clearMemfsState(targetExports, targetState);
@@ -174,8 +173,10 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
       deps.copySelectedOfdState(canonicalExports, canonicalState, targetExports, targetState, ofdIds);
       if (includeMemfs) {
         deps.copyMemfsState(canonicalExports, canonicalState, targetExports, targetState, {
-          includeData: false,
+          includeData: true,
         });
+      }
+      if (procSelfExe !== null) {
         deps.restoreProcSelfExe(targetExports, procSelfExe);
       }
       deps.copySelectedPipeSlots(canonicalExports, canonicalState, targetExports, targetState, sharedPipeSlots);

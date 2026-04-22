@@ -147,6 +147,38 @@ export function readMemfsLayout(memory: WebAssembly.Memory, memfsPtr: number): M
   };
 }
 
+export function computeReferencedMemfsDataUsed(
+  targetExports: KernelExports,
+  layout = readMemfsLayout(targetExports.memory, targetExports.kernel_memfs_ptr()),
+): number {
+  const maxInodes = targetExports.kernel_memfs_first_child_bytes() / 4;
+  if (maxInodes <= 0) {
+    return Math.min(layout.dataUsed, layout.dataCap);
+  }
+  const inodeBytes = targetExports.kernel_memfs_inodes_bytes() / maxInodes;
+  if (inodeBytes < 32) {
+    return Math.min(layout.dataUsed, layout.dataCap);
+  }
+  const inodeLimit = Math.min(layout.inodeCount, maxInodes);
+  const inodeView = new DataView(targetExports.memory.buffer);
+  let dataUsed = layout.dataUsed;
+  for (let ino = 1; ino < inodeLimit; ino += 1) {
+    const inodeBase = layout.inodesPtr + ino * inodeBytes;
+    const mode = inodeView.getUint32(inodeBase + MEMFS_INODE_OFF_MODE, true);
+    if ((mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG) {
+      continue;
+    }
+    const dataCap = inodeView.getUint32(inodeBase + MEMFS_INODE_OFF_DATA_CAP, true);
+    if (dataCap === 0) {
+      continue;
+    }
+    const size = Number(inodeView.getBigUint64(inodeBase + MEMFS_INODE_OFF_SIZE, true));
+    const dataOffset = inodeView.getUint32(inodeBase + MEMFS_INODE_OFF_DATA_OFFSET, true);
+    dataUsed = Math.max(dataUsed, dataOffset + Math.min(Math.max(size, 0), dataCap));
+  }
+  return Math.min(dataUsed, layout.dataCap);
+}
+
 export function readMemfsFileDataDirect(targetExports: KernelExports, ino: number): Uint8Array | null {
   const layout = readMemfsLayout(targetExports.memory, targetExports.kernel_memfs_ptr());
   const maxInodes = targetExports.kernel_memfs_first_child_bytes() / 4;

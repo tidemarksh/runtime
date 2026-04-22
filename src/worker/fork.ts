@@ -12,6 +12,10 @@ export function createWorkerForkHandlers(deps: WorkerForkDeps) {
     const handoff = readProcessSpawnHandoff(handle.kernel, thread.vmPtr);
     const spawnKindExecve = handle.kernel.abi_spawn_kind_execve();
     const spawnKindFork = handle.kernel.abi_spawn_kind_fork();
+    deps.appendWorkerDebugLog(
+      handle,
+      `execve-spawn:vm=0x${thread.vmPtr.toString(16)}:kind=${handoff.kind}:child=${handoff.childPid}`,
+    );
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
       `spawn-handoff:${handle.pid}:${handoff.kind}:${handoff.childPid}`,
@@ -27,8 +31,11 @@ export function createWorkerForkHandlers(deps: WorkerForkDeps) {
       return;
     }
 
-    handle.kernel.thread_clear_spawn_handoff(thread.vmPtr);
-    deps.enqueueWorker(handle, worker);
+    throw new Error(
+      `unexpected spawn handoff kind pid=${handle.pid} vm=0x${thread.vmPtr.toString(16)}`
+        + ` kind=${handoff.kind} child=${handoff.childPid}`
+        + ` execve=${spawnKindExecve} fork=${spawnKindFork}`,
+    );
   }
 
   return {

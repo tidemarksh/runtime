@@ -24,11 +24,23 @@ export interface VforkSnapshot {
   nextPid: number | null;
   pgid: number | null;
   sid: number | null;
+  parentPid: number;
+  parentProcessPtr: number;
+  parentPc: bigint;
+  parentSp: bigint;
+  parentS11: bigint;
   inheritedSharedOfdIds: number[];
 }
 
 export interface ThreadWorkerState {
   vmPtr: number;
+  ownerPid: number;
+  generation: number;
+  reinitCount: number;
+  lastStepProcessPtr: number | null;
+  lastStepPc: bigint | null;
+  lastStepSp: bigint | null;
+  lastStepS11: bigint | null;
   initialized: boolean;
   waitingInWorkerStatus: number | null;
   resumeWorkersOnReady: Worker[];
@@ -40,6 +52,7 @@ export interface BlockedWorkerState {
   retryTimer: ReturnType<typeof setTimeout> | null;
   timeoutExpired: boolean;
   timeoutDeadlineMs: number | null;
+  sleepDeadlineTicks: bigint | null;
   rpcPending: boolean;
 }
 
@@ -98,6 +111,7 @@ export interface ProcessHandle {
   epollSyncPromise: Promise<void> | null;
   epollSyncQueued: boolean;
   epollWaiterWakeQueued: boolean;
+  forkSharedSyncPromise: Promise<void> | null;
   ofdSyncPromise: Promise<void> | null;
   ofdSyncQueuedIds: Set<number>;
   socketSyncPromise: Promise<void> | null;
@@ -111,6 +125,13 @@ export interface ProcessHandle {
   onStdout?: (data: Uint8Array) => void;
   workerDebugLog: string[];
   guestWriteWatchRegions: GuestWriteWatchRegion[];
+}
+
+export interface AttachThreadWorkerRequest {
+  worker: Worker;
+  vmPtr: number;
+  forcePrepare?: boolean;
+  transferFrom?: ProcessHandle;
 }
 
 export interface KernelShareGroup {

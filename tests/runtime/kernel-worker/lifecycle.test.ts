@@ -12,6 +12,11 @@ function makeKernelState(): KernelRuntimeState {
     heapPtr: 0x210000,
     ofdTablePtr: 0x220000,
     memfsPtr: 0x230000,
+    memfsHeaderBytes: 0,
+    memfsInodesBytes: 0,
+    memfsFirstChildBytes: 0,
+    memfsDirEntriesBytes: 0,
+    memfsDataBytes: 0,
     memStatePtr: 0x240000,
     epollTablePtr: 0x250000,
     socketTablePtr: 0x260000,
@@ -36,6 +41,11 @@ function makeKernelExports(): FakeKernelExports {
     kernel_heap_ptr: () => runtimeState.heapPtr,
     kernel_ofd_table_ptr: () => runtimeState.ofdTablePtr,
     kernel_memfs_ptr: () => runtimeState.memfsPtr,
+    kernel_memfs_header_bytes: () => runtimeState.memfsHeaderBytes,
+    kernel_memfs_inodes_bytes: () => runtimeState.memfsInodesBytes,
+    kernel_memfs_first_child_bytes: () => runtimeState.memfsFirstChildBytes,
+    kernel_memfs_dir_entries_bytes: () => runtimeState.memfsDirEntriesBytes,
+    kernel_memfs_data_bytes: () => runtimeState.memfsDataBytes,
     kernel_mem_state_ptr: () => runtimeState.memStatePtr,
     kernel_epoll_table_ptr: () => runtimeState.epollTablePtr,
     kernel_socket_table_ptr: () => runtimeState.socketTablePtr,
@@ -53,6 +63,11 @@ function makeKernelExports(): FakeKernelExports {
       heapPtr: number,
       ofdTablePtr: number,
       memfsPtr: number,
+      memfsHeaderBytes: number,
+      memfsInodesBytes: number,
+      memfsFirstChildBytes: number,
+      memfsDirEntriesBytes: number,
+      memfsDataBytes: number,
       memStatePtr: number,
       epollTablePtr: number,
       socketTablePtr: number,
@@ -71,6 +86,11 @@ function makeKernelExports(): FakeKernelExports {
         heapPtr,
         ofdTablePtr,
         memfsPtr,
+        memfsHeaderBytes,
+        memfsInodesBytes,
+        memfsFirstChildBytes,
+        memfsDirEntriesBytes,
+        memfsDataBytes,
         memStatePtr,
         epollTablePtr,
         socketTablePtr,
@@ -100,6 +120,9 @@ function makeKernelExports(): FakeKernelExports {
     thread_clear_spawn_handoff: (vmPtr: number) => {
       opLog.push(`clear-spawn:${vmPtr}`);
     },
+    thread_clear_vfork_runtime_state: () => {
+      opLog.push("clear-vfork");
+    },
     thread_restore_vfork_parent_without_cleanup: (vmPtr: number, childPid: number) => {
       opLog.push(`restore-vfork:${vmPtr}:${childPid}`);
     },
@@ -112,7 +135,7 @@ function makeKernelExports(): FakeKernelExports {
   return exports as unknown as FakeKernelExports;
 }
 
-test("resumeVforkExecveParent drops canonical child state for handoff failure rollbacks", () => {
+test("resumeVforkExecveParent drops canonical child state without clearing the owner-side vfork snapshot", () => {
   const parentKernel = makeKernelExports();
   const siblingKernel = makeKernelExports();
   const processKernels = new Map<number, KernelExports>([
@@ -158,7 +181,8 @@ test("resumeVforkExecveParent drops canonical child state for handoff failure ro
 
   expect(canonicalProcesses.has(3)).toBe(false);
   expect(parentKernel.opLog).toContain("clear-spawn:4660");
-  expect(parentKernel.opLog).toContain("restore-vfork:4660:3");
+  expect(parentKernel.opLog).not.toContain("restore-vfork:4660:3");
+  expect(parentKernel.opLog).not.toContain("clear-vfork");
   expect(parentKernel.opLog).toContain("remove:3");
   expect(siblingKernel.opLog).toContain("remove:3");
 });
