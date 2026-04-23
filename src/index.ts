@@ -53,6 +53,16 @@ export interface RuntimeFs {
   readdir(path: string): Promise<string[]>;
 }
 
+export type RuntimeFileLayerEntry =
+  | { kind: "dir"; path: string; mode?: number }
+  | { kind: "file"; path: string; data: Uint8Array; mode?: number }
+  | { kind: "symlink"; path: string; target: Uint8Array; mode?: number };
+
+export interface RuntimeFileLayer {
+  id?: string;
+  entries: RuntimeFileLayerEntry[];
+}
+
 export interface SpawnOptions {
   cwd?: string;
 }
@@ -294,6 +304,33 @@ export class Runtime {
       entries,
     });
     await this.refreshRuntimeFsSnapshot();
+  }
+
+  async applyFileLayer(layer: RuntimeFileLayer | RuntimeFileLayerEntry[]): Promise<void> {
+    const entries = Array.isArray(layer) ? layer : layer.entries;
+    const files: Array<{ path: string; data: Uint8Array; mode?: number }> = [];
+    const symlinks: Array<{ path: string; target: Uint8Array; mode?: number }> = [];
+
+    for (const entry of entries) {
+      if (entry.kind === "dir") {
+        try {
+          await this.mkdir(entry.path, entry.mode);
+        } catch {
+          // Layer application is idempotent for directory entries.
+        }
+        continue;
+      }
+      if (entry.kind === "file") {
+        files.push({ path: entry.path, data: entry.data, mode: entry.mode });
+        continue;
+      }
+      symlinks.push({ path: entry.path, target: entry.target, mode: entry.mode });
+    }
+
+    await this.writeFiles(files);
+    for (const entry of symlinks) {
+      await this.symlink(entry.path, entry.target, entry.mode);
+    }
   }
 
   async symlink(path: string, target: Uint8Array, mode?: number): Promise<void> {
