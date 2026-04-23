@@ -17,6 +17,11 @@ function makeKernelState(): KernelRuntimeState {
     heapPtr: 0x210000,
     ofdTablePtr: 0x220000,
     memfsPtr: 0x230000,
+    memfsHeaderBytes: 0x1000,
+    memfsInodesBytes: 0x10000,
+    memfsFirstChildBytes: 0x4000,
+    memfsDirEntriesBytes: 0x10000,
+    memfsDataBytes: 0x40000,
     memStatePtr: 0x240000,
     epollTablePtr: 0x250000,
     socketTablePtr: 0x260000,
@@ -54,6 +59,11 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
     kernel_ofd_table_ptr: () => runtimeState.ofdTablePtr,
     kernel_ofd_table_bytes: () => 256 * 32,
     kernel_memfs_ptr: () => runtimeState.memfsPtr,
+    kernel_memfs_header_bytes: () => runtimeState.memfsHeaderBytes,
+    kernel_memfs_inodes_bytes: () => runtimeState.memfsInodesBytes,
+    kernel_memfs_first_child_bytes: () => runtimeState.memfsFirstChildBytes,
+    kernel_memfs_dir_entries_bytes: () => runtimeState.memfsDirEntriesBytes,
+    kernel_memfs_data_bytes: () => runtimeState.memfsDataBytes,
     kernel_mem_state_ptr: () => runtimeState.memStatePtr,
     kernel_epoll_table_ptr: () => runtimeState.epollTablePtr,
     kernel_epoll_table_bytes: () => 64 * 4,
@@ -93,6 +103,11 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
         heapPtr,
         ofdTablePtr,
         memfsPtr,
+        memfsHeaderBytes: runtimeState.memfsHeaderBytes,
+        memfsInodesBytes: runtimeState.memfsInodesBytes,
+        memfsFirstChildBytes: runtimeState.memfsFirstChildBytes,
+        memfsDirEntriesBytes: runtimeState.memfsDirEntriesBytes,
+        memfsDataBytes: runtimeState.memfsDataBytes,
         memStatePtr,
         epollTablePtr,
         socketTablePtr,
@@ -568,5 +583,91 @@ test("kernel-worker canonical PTY refresh preserves the parent's local read head
   const base = pipeSlotBase(state, 4);
   expect(view.getUint32(base, true)).toBe(7);
   expect(view.getUint32(base + 4, true)).toBe(82);
+  expect(pipeMarker(parentMemory, 4)).toBe(0xcc);
+});
+
+test("kernel-worker canonical PTY refresh preserves the process-local read head on private stdin", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const processKernels = new Map<number, KernelExports>([[1, parentExports]]);
+  const primitives = createKernelWorkerPrimitives({
+    getCanonicalExports: () => canonicalExports,
+    processKernels,
+    getCanonicalProcessVmPtr: (pid) => (pid === 1 ? 0x1234 : 0),
+  });
+
+  parentExports.setHostStdioSlots({ stdin: 4 });
+
+  seedPipeSlotState(parentMemory, 4, {
+    head: 7,
+    tail: 12,
+    marker: 0xaa,
+    readOpen: 1,
+    writeOpen: 1,
+  });
+  seedPipeSlotState(canonicalMemory, 4, {
+    head: 0,
+    tail: 12,
+    marker: 0xcc,
+    readOpen: 1,
+    writeOpen: 1,
+  });
+
+  primitives.mergePipeSlotsFromCanonical(
+    canonicalExports,
+    makeKernelState(),
+    parentExports,
+    makeKernelState(),
+    0x1234,
+    [4],
+  );
+
+  expect(pipeHead(parentMemory, 4)).toBe(7);
+  expect(pipeTail(parentMemory, 4)).toBe(12);
+  expect(pipeMarker(parentMemory, 4)).toBe(0xcc);
+});
+
+test("kernel-worker canonical PTY refresh advances private stdin read head when canonical is newer", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const processKernels = new Map<number, KernelExports>([[1, parentExports]]);
+  const primitives = createKernelWorkerPrimitives({
+    getCanonicalExports: () => canonicalExports,
+    processKernels,
+    getCanonicalProcessVmPtr: (pid) => (pid === 1 ? 0x1234 : 0),
+  });
+
+  parentExports.setHostStdioSlots({ stdin: 4 });
+
+  seedPipeSlotState(parentMemory, 4, {
+    head: 3,
+    tail: 12,
+    marker: 0xaa,
+    readOpen: 1,
+    writeOpen: 1,
+  });
+  seedPipeSlotState(canonicalMemory, 4, {
+    head: 7,
+    tail: 12,
+    marker: 0xcc,
+    readOpen: 1,
+    writeOpen: 1,
+  });
+
+  primitives.mergePipeSlotsFromCanonical(
+    canonicalExports,
+    makeKernelState(),
+    parentExports,
+    makeKernelState(),
+    0x1234,
+    [4],
+  );
+
+  expect(pipeHead(parentMemory, 4)).toBe(7);
+  expect(pipeTail(parentMemory, 4)).toBe(12);
   expect(pipeMarker(parentMemory, 4)).toBe(0xcc);
 });

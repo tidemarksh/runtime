@@ -135,6 +135,12 @@ interface KernelWorkerProcessControlDeps {
 export function createKernelWorkerProcessControl(deps: KernelWorkerProcessControlDeps) {
   const decoder = new TextDecoder();
 
+  function decodeKernelBytes(memory: WebAssembly.Memory, ptr: number, length: number): string {
+    const bytes = new Uint8Array(length);
+    bytes.set(new Uint8Array(memory.buffer, ptr, length));
+    return decoder.decode(bytes);
+  }
+
   function readPendingFsPath(processExports: KernelExports, vmPtr: number, secondary = false): string | null {
     const absPathPtr = processExports.kernel_heap_ptr() + 0x8000;
     const absPathLen = Number(
@@ -143,7 +149,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
         : processExports.thread_pending_fs_absolute_path?.(vmPtr, absPathPtr, 4096)) ?? 0n,
     );
     if (absPathLen > 0 && absPathPtr + absPathLen <= processExports.memory.buffer.byteLength) {
-      return decoder.decode(new Uint8Array(processExports.memory.buffer, absPathPtr, absPathLen));
+      return decodeKernelBytes(processExports.memory, absPathPtr, absPathLen);
     }
     if (secondary) {
       return null;
@@ -158,7 +164,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     if (linearPtr + pathLen > processExports.memory.buffer.byteLength) {
       return null;
     }
-    return decoder.decode(new Uint8Array(processExports.memory.buffer, linearPtr, pathLen));
+    return decodeKernelBytes(processExports.memory, linearPtr, pathLen);
   }
 
   function fallbackToFullMemfsSync(

@@ -225,6 +225,97 @@ test("Runtime interactive shell ls handles multi-entry workspace without wedging
   }
 }, 20_000);
 
+test("Runtime interactive shell echoes fast character stdin exactly once", async () => {
+  const wasmBytes = readKernelWasm();
+  const busybox = readBusyBoxBinary();
+  if (!wasmBytes || !busybox) {
+    return;
+  }
+
+  const runtime = await Runtime.create({ wasmBytes });
+  try {
+    await runtime.fs.mkdir("/bin", 0o755).catch(() => {});
+    await runtime.fs.mkdir("/work", 0o755).catch(() => {});
+    await runtime.fs.writeFile("/bin/busybox", busybox, 0o755);
+    await runtime.fs.writeFile("/bin/sh", busybox, 0o755);
+
+    const proc = await runtime.spawn(
+      busybox,
+      ["/bin/sh", "-i"],
+      ["TERM=xterm", "HOME=/root", "PATH=/bin", "PS1=$ "],
+      { cwd: "/work" },
+    );
+    let output = "";
+    proc.onStdout((data) => {
+      output += decoder.decode(data);
+    });
+
+    await Promise.race([
+      new Promise<void>((resolve, reject) => {
+        const deadline = Date.now() + 2_000;
+        const poll = (): void => {
+          if (output.includes("$ ")) {
+            resolve();
+            return;
+          }
+          if (Date.now() >= deadline) {
+            reject(new Error(`interactive shell did not emit prompt: ${JSON.stringify({ output, debug: proc.debugInfo?.() })}`));
+            return;
+          }
+          setTimeout(poll, 10);
+        };
+        poll();
+      }),
+      new Promise<never>((_resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`timeout waiting for prompt: ${JSON.stringify({ output, debug: proc.debugInfo?.() })}`)), 2_000);
+        if (typeof timer === "object" && timer !== null && "unref" in timer) {
+          timer.unref();
+        }
+      }),
+    ]);
+
+    const promptEnd = output.length;
+    const line = "aiueo kakikukeko sasisuseso tatituteto naninuneno";
+    for (const ch of line) {
+      proc.writeStdin(encoder.encode(ch));
+    }
+
+    await Promise.race([
+      new Promise<void>((resolve, reject) => {
+        const deadline = Date.now() + 2_000;
+        let lastLength = output.length;
+        let stableSince = Date.now();
+        const poll = (): void => {
+          if (output.length !== lastLength) {
+            lastLength = output.length;
+            stableSince = Date.now();
+          }
+          if (output.length >= promptEnd + line.length && Date.now() - stableSince >= 50) {
+            resolve();
+            return;
+          }
+          if (Date.now() >= deadline) {
+            reject(new Error(`interactive shell did not echo full line: ${JSON.stringify({ output, debug: proc.debugInfo?.() })}`));
+            return;
+          }
+          setTimeout(poll, 10);
+        };
+        poll();
+      }),
+      new Promise<never>((_resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`timeout waiting for exact echo: ${JSON.stringify({ output, debug: proc.debugInfo?.() })}`)), 2_000);
+        if (typeof timer === "object" && timer !== null && "unref" in timer) {
+          timer.unref();
+        }
+      }),
+    ]);
+
+    expect(output.slice(promptEnd)).toBe(line);
+  } finally {
+    runtime.destroy();
+  }
+}, 20_000);
+
 test("Runtime interactive shell preserves absolute-path exec with demo-style env", async () => {
   const wasmBytes = readKernelWasm();
   const busybox = readBusyBoxBinary();

@@ -458,12 +458,22 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     clearStaleRunningWorker(handle, worker);
     if (handle.runningWorker !== null) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-skip:${handle.pid}:running`);
-      scheduleBlockedRetry(handle, worker, blocked.status === handle.kernel.abi_status_wait4() ? 10 : 1);
+      scheduleBlockedRetry(
+        handle,
+        worker,
+        blocked.status === handle.kernel.abi_status_wait4() ? 10 : 1,
+        blocked.timeoutExpired,
+      );
       return;
     }
     if (!canScheduleWorker(handle, worker)) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-skip:${handle.pid}:cannot-schedule`);
-      scheduleBlockedRetry(handle, worker, blocked.status === handle.kernel.abi_status_wait4() ? 10 : 1);
+      scheduleBlockedRetry(
+        handle,
+        worker,
+        blocked.status === handle.kernel.abi_status_wait4() ? 10 : 1,
+        blocked.timeoutExpired,
+      );
       return;
     }
     if (
@@ -514,7 +524,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
           }
           latestBlocked.rpcPending = false;
           if (handle.runningWorker !== null || !canScheduleWorker(handle, worker)) {
-            scheduleBlockedRetry(handle, worker, 1);
+            scheduleBlockedRetry(handle, worker, 1, latestBlocked.timeoutExpired);
             return;
           }
           attachKernelRuntimeState(handle.kernel, handle.kernelState);

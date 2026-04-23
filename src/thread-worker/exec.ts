@@ -38,7 +38,14 @@ function parseDebugBudgetClamp(value: string | undefined): DebugBudgetClamp[] {
     .filter((entry): entry is DebugBudgetClamp => entry !== null);
 }
 
-const DEBUG_BUDGET_CLAMP = parseDebugBudgetClamp(process.env.TIDEMARK_DEBUG_STEP_PC_RANGE);
+function readDebugBudgetClampEnv(): string | undefined {
+  const maybeProcess = (globalThis as typeof globalThis & {
+    process?: { env?: Record<string, string | undefined> };
+  }).process;
+  return maybeProcess?.env?.TIDEMARK_DEBUG_STEP_PC_RANGE;
+}
+
+const DEBUG_BUDGET_CLAMP = parseDebugBudgetClamp(readDebugBudgetClampEnv());
 
 interface ThreadWorkerExecContext {
   exports: KernelExports;

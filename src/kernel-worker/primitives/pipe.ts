@@ -119,7 +119,7 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
     const privatePipeCandidates = [
       {
         pipeSlot: processExports.process_stdin_pipe(vmPtr),
-        mode: PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE,
+        mode: PIPE_SLOT_MODE_READ,
       },
       { pipeSlot: processExports.process_stdout_pipe(vmPtr), mode: PIPE_SLOT_MODE_READ },
       { pipeSlot: processExports.process_stderr_pipe(vmPtr), mode: PIPE_SLOT_MODE_READ },

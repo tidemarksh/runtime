@@ -381,6 +381,56 @@ test("STATUS_EPOLL_WAIT with zero timeout resumes on the owner without a 1ms flo
   vi.useRealTimers();
 });
 
+test("STATUS_EPOLL_WAIT zero-timeout preserves timeout resume across running-worker retry", async () => {
+  vi.useFakeTimers();
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
+  let status = 7;
+  const resumeTimeout = vi.fn(() => {
+    status = 0;
+    return 0n;
+  });
+  const resumeBlocked = vi.fn(() => {
+    status = 0;
+    return 0n;
+  });
+  handle.kernel.thread_epoll_wait_timeout = () => 0n;
+  handle.kernel.thread_resume_epoll_wait_timeout = resumeTimeout;
+  handle.kernel.thread_resume_blocked_syscall = resumeBlocked;
+  handle.kernel.thread_status = () => status;
+  const worker = createdWorkers[0];
+
+  emitReady(worker);
+  worker.clearPostedMessages();
+  worker.emit({
+    type: "status",
+    status: 7,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+
+  handle.runningWorker = worker as unknown as Worker;
+  await vi.advanceTimersByTimeAsync(0);
+
+  expect(resumeTimeout).not.toHaveBeenCalled();
+  expect(resumeBlocked).not.toHaveBeenCalled();
+
+  handle.runningWorker = null;
+  await vi.advanceTimersByTimeAsync(1);
+
+  expect(resumeTimeout).toHaveBeenCalledWith(0x1234);
+  expect(resumeBlocked).not.toHaveBeenCalled();
+  expect(worker.postedMessages).toEqual([{
+    type: "step",
+    budget: 20_000,
+    kernelState: makeKernelState(),
+  }]);
+
+  vi.useRealTimers();
+});
+
 test("STATUS_EPOLL_WAIT timeout retries that become FUTEX_WAIT stay in the owner-side blocking loop", async () => {
   vi.useFakeTimers();
   const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));

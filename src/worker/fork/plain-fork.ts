@@ -34,119 +34,6 @@ type ParentProcessSnapshot = {
 
 const FORK_CHILD_EXECVE_HEADROOM_BYTES = 16 * 1024 * 1024;
 
-type ExecPathPreflight = {
-  path: string;
-  ino: number;
-  mode: number;
-  size: number;
-  dataCap: number;
-  head: string;
-};
-
-function readExecPathPreflight(
-  kernel: KernelExports,
-  path: string,
-): ExecPathPreflight {
-  if (!kernel.memfs_resolve_path) {
-    return {
-      path,
-      ino: 0,
-      mode: 0,
-      size: 0,
-      dataCap: 0,
-      head: "memfs-debug-unavailable",
-    };
-  }
-  const bytes = new TextEncoder().encode(path);
-  const ptr = kernel.kernel_scratch_base?.() ?? 0x1000;
-  const memory = new Uint8Array(kernel.memory.buffer);
-  memory.set(bytes, ptr);
-  const ino = kernel.memfs_resolve_path(ptr, bytes.length);
-  if (ino === 0) {
-    return {
-      path,
-      ino,
-      mode: 0,
-      size: 0,
-      dataCap: 0,
-      head: "ino=0",
-    };
-  }
-  const mode = kernel.memfs_inode_mode?.(ino) ?? 0;
-  const size = Number(kernel.memfs_file_size?.(ino) ?? 0n);
-  const maxInodes = kernel.kernel_memfs_first_child_bytes() / 4;
-  const inodeBytes = kernel.kernel_memfs_inodes_bytes() / maxInodes;
-  const memfsPtr = kernel.kernel_memfs_ptr();
-  const memfsView = new DataView(kernel.memory.buffer, memfsPtr, 32);
-  const inodesPtr = memfsView.getUint32(16, true);
-  const inodeBase = inodesPtr + ino * inodeBytes;
-  const dataCap = new DataView(kernel.memory.buffer).getUint32(inodeBase + 28, true);
-  const headLen = Math.min(size, 16);
-  let head = "unavailable";
-  if (headLen > 0 && kernel.memfs_read_file_to) {
-    const headPtr = ptr + 0x1000;
-    const read = Number(kernel.memfs_read_file_to(ino, 0n, headPtr, headLen));
-    if (read > 0) {
-      head = Array.from(memory.subarray(headPtr, headPtr + read))
-        .map((byte) => byte.toString(16).padStart(2, "0"))
-        .join("");
-    } else {
-      head = `read=${read}`;
-    }
-  }
-  return {
-    path,
-    ino,
-    mode,
-    size,
-    dataCap,
-    head,
-  };
-}
-
-function formatExecPathPreflight(info: ExecPathPreflight): string {
-  return `path=${JSON.stringify(info.path)}:ino=${info.ino}:mode=0o${info.mode.toString(8)}:size=${info.size}:dataCap=${info.dataCap}:head=${info.head}`;
-}
-
-function debugForkChildExecPaths(
-  kernel: KernelExports,
-  childPid: number,
-  stage: string,
-): string {
-  return [
-    `plain-fork:${stage}:${childPid}`,
-    formatExecPathPreflight(readExecPathPreflight(kernel, "/usr/local/go/bin/go")),
-    formatExecPathPreflight(readExecPathPreflight(kernel, "/usr/local/go/pkg/tool/linux_riscv64")),
-    formatExecPathPreflight(readExecPathPreflight(kernel, "/usr/local/go/pkg/tool/linux_riscv64/compile")),
-  ].join(":");
-}
-
-function assertForkChildExecPaths(
-  kernel: KernelExports,
-  childPid: number,
-  stage: string,
-): void {
-  const goBinary = readExecPathPreflight(kernel, "/usr/local/go/bin/go");
-  const compileTool = readExecPathPreflight(kernel, "/usr/local/go/pkg/tool/linux_riscv64/compile");
-  const detail = [
-    `plain-fork:${stage}:${childPid}`,
-    formatExecPathPreflight(goBinary),
-    formatExecPathPreflight(compileTool),
-  ].join(":");
-  if (goBinary.ino === 0) {
-    throw new Error(`plain-fork missing go binary: ${detail}`);
-  }
-  if (compileTool.ino === 0) {
-    throw new Error(`plain-fork missing go compile tool: ${detail}`);
-  }
-  if (goBinary.size > 4 && !goBinary.head.startsWith("7f454c46")) {
-    throw new Error(`plain-fork invalid go ELF header: ${detail}`);
-  }
-  if (compileTool.size > 4 && !compileTool.head.startsWith("7f454c46")) {
-    throw new Error(`plain-fork invalid compile ELF header: ${detail}`);
-  }
-}
-
 function captureParentProcessSnapshot(
   handle: ProcessHandle,
   parentThread: ThreadWorkerState,
@@ -303,9 +190,6 @@ export async function handlePlainFork(
     copyLinearMemoryImage(handle.memory, childMemory);
     attachKernelRuntimeState(childHandle.kernel, childHandle.kernelState);
     await deps.syncProcessMemfsViaKernelWorker(childHandle);
-    assertForkChildExecPaths(childHandle.kernel, childPid, "restored");
-    childHandle.lastDebugMessage = debugForkChildExecPaths(childHandle.kernel, childPid, "restored");
-    deps.appendWorkerDebugLog(childHandle, childHandle.lastDebugMessage);
     deps.syncForkSharedStateLocally(handle, [childHandle], { includeMemfs: false });
     await deps.syncForkSharedStateViaKernelWorker(handle, [childHandle], { includeMemfs: false });
     restoreLocalOfdSlots(childHandle, preservedOfdSlots);
@@ -313,9 +197,6 @@ export async function handlePlainFork(
     await deps.rehydrateForkSharedStateViaKernelWorker([childHandle], rehydratedSharedOfdIds, {
       includeMemfs: false,
     });
-    assertForkChildExecPaths(childHandle.kernel, childPid, "rehydrated");
-    childHandle.lastDebugMessage = debugForkChildExecPaths(childHandle.kernel, childPid, "rehydrated");
-    deps.appendWorkerDebugLog(childHandle, childHandle.lastDebugMessage);
     await deps.initializeProcessLifecycleViaKernelWorker(
       childHandle,
       childHandle.vmPtr,
@@ -329,9 +210,6 @@ export async function handlePlainFork(
     restoreLocalOfdSlots(childHandle, preservedOfdSlots);
     restoreLocalPipeSlots(childHandle, preservedPipeSlots);
     childHandle.kernel.thread_set_guest_ram_limit(childHandle.vmPtr, childGuestRamLimit);
-    assertForkChildExecPaths(childHandle.kernel, childPid, "ready");
-    childHandle.lastDebugMessage = debugForkChildExecPaths(childHandle.kernel, childPid, "ready");
-    deps.appendWorkerDebugLog(childHandle, childHandle.lastDebugMessage);
     childHandle.kernelState = readKernelRuntimeState(childHandle.kernel);
     deps.assertProcessStandardFdIntegrity(childHandle, "plain-fork-child-ready");
     publishKernelRuntimeState(childHandle.runtimeBridge, childHandle.kernelState);

@@ -117,6 +117,12 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     unregisterProcessWithKernelWorker,
   } = kernelRpcLifecycleHelpers;
 
+  function decodeKernelBytes(memory: WebAssembly.Memory, ptr: number, length: number): string {
+    const bytes = new Uint8Array(length);
+    bytes.set(new Uint8Array(memory.buffer, ptr, length));
+    return decoder.decode(bytes);
+  }
+
   function readPendingFsPath(handle: ProcessHandle, vmPtr: number, secondary = false): string | null {
     const absolutePath = secondary
       ? handle.kernel.thread_pending_fs_secondary_absolute_path
@@ -129,7 +135,7 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     if (length <= 0 || bufPtr + length > handle.kernel.memory.buffer.byteLength) {
       return null;
     }
-    return decoder.decode(new Uint8Array(handle.kernel.memory.buffer, bufPtr, length));
+    return decodeKernelBytes(handle.kernel.memory, bufPtr, length);
   }
 
   function readPendingFsContext(handle: ProcessHandle, vmPtr: number): PendingFsContext {
