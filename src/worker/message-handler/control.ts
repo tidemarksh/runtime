@@ -6,7 +6,7 @@ import {
   drainProcessOutput,
   flushStdin,
 } from "../stdio.js";
-import { adoptKernelState } from "../sync.js";
+import { adoptKernelStateForHandle } from "../sync.js";
 import type { ProcessHandle } from "../types.js";
 import type { ThreadWorkerOutbound } from "../../messages.js";
 import type { WorkerMessageHandlerDeps } from "./types.js";
@@ -142,7 +142,7 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
         deps.clearVforkSnapshot(handle);
       }
       const resumeWorkersOnReady = thread.resumeWorkersOnReady.splice(0);
-      handle.kernelState = adoptKernelState(handle.kernelState, msg.kernelState);
+      handle.kernelState = adoptKernelStateForHandle(handle, msg.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
       thread.initialized = true;

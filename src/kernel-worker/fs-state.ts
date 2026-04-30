@@ -104,6 +104,54 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     return deps.resolvePathIn(deps.getCanonicalExports(), path);
   }
 
+  function readLinkTarget(targetExports: KernelExports, ino: number): string | null {
+    if ((targetExports.memfs_inode_mode(ino) & MEMFS_S_IFMT) !== 0o120000) {
+      return null;
+    }
+    const bufPtr = scratchBaseFor(targetExports) + 0x8000;
+    const bufLen = 4096;
+    ensureMemoryCapacityFor(targetExports.memory, bufPtr + bufLen);
+    const len = Number(targetExports.memfs_read_link(ino, bufPtr, bufLen));
+    if (len <= 0) {
+      return null;
+    }
+    return deps.decoder.decode(new Uint8Array(targetExports.memory.buffer, bufPtr, len));
+  }
+
+  function resolvePathFollowingSymlinks(path: string): number {
+    const targetExports = deps.getCanonicalExports();
+    let resolvedParts: string[] = [];
+    let remainingParts = pathParts(normalizePath(path));
+    let follows = 0;
+
+    while (remainingParts.length > 0) {
+      const part = remainingParts.shift()!;
+      const candidatePath = normalizePath(`/${[...resolvedParts, part].join("/")}`);
+      const ino = resolvePath(candidatePath);
+      if (ino === 0) {
+        return 0;
+      }
+
+      const target = readLinkTarget(targetExports, ino);
+      if (!target) {
+        resolvedParts.push(part);
+        continue;
+      }
+      follows += 1;
+      if (follows > 40) {
+        return 0;
+      }
+
+      const targetPath = target.startsWith("/")
+        ? normalizePath(target)
+        : normalizePath(`/${[...resolvedParts, target].join("/")}`);
+      remainingParts = [...pathParts(targetPath), ...remainingParts];
+      resolvedParts = [];
+    }
+
+    return resolvePath(normalizePath(`/${resolvedParts.join("/")}`));
+  }
+
   function writeFile(path: string, data: Uint8Array, mode = 0o644, fanout = true): void {
     const targetExports = deps.getCanonicalExports();
     const normalized = normalizePath(path);
@@ -459,7 +507,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
 
   function readFile(path: string): Uint8Array {
     const targetExports = deps.getCanonicalExports();
-    const ino = resolvePath(path);
+    const ino = resolvePathFollowingSymlinks(path);
     if (ino === 0) {
       throw new Error(`file not found: ${path}`);
     }
@@ -473,6 +521,25 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     }
 
     return new Uint8Array(targetExports.memory.buffer.slice(bufPtr, bufPtr + read));
+  }
+
+  function readlink(path: string): Uint8Array {
+    const targetExports = deps.getCanonicalExports();
+    const ino = resolvePath(path);
+    if (ino === 0) {
+      throw new Error(`symlink not found: ${path}`);
+    }
+    if ((targetExports.memfs_inode_mode(ino) & MEMFS_S_IFMT) !== 0o120000) {
+      throw new Error(`path is not a symlink: ${path}`);
+    }
+    const bufPtr = scratchBaseFor(targetExports) + 0x8000;
+    const bufLen = 4096;
+    ensureMemoryCapacityFor(targetExports.memory, bufPtr + bufLen);
+    const len = Number(targetExports.memfs_read_link(ino, bufPtr, bufLen));
+    if (len < 0) {
+      throw new Error(`failed to read symlink: ${path}`);
+    }
+    return new Uint8Array(targetExports.memory.buffer.slice(bufPtr, bufPtr + len));
   }
 
   function readdir(path: string): string[] {
@@ -555,6 +622,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     loadFsSnapshot,
     mkdir,
     readFile,
+    readlink,
     readdir,
     rebuildPageCacheFromExports,
     rebuildPageCacheFromCanonical,

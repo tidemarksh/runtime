@@ -23,7 +23,10 @@ import {
 } from "./fs/sab-page-cache.js";
 import type {
   KernelWorkerInbound,
+  KernelWorkerFdEntrySnapshot,
+  KernelWorkerOfdSlotSnapshot,
   KernelWorkerOutbound,
+  KernelWorkerSocketStateSnapshot,
 } from "./messages.js";
 import { bindWorkerMessageHandler, workerPostMessage } from "./bridge/scope.js";
 import { createKernelWorkerFsState } from "./kernel-worker/fs-state.js";
@@ -136,6 +139,7 @@ const {
   loadFsSnapshot,
   mkdir,
   readFile,
+  readlink,
   readdir,
   rebuildPageCacheFromExports,
   rebuildPageCacheFromCanonical,
@@ -176,12 +180,24 @@ const {
   syncProcessLifecycle,
 } = kernelWorkerLifecycle;
 
-let syncPipeStateImpl: (pid: number, kernelState: KernelRuntimeState) => KernelRuntimeState;
+let syncPipeStateImpl: (
+  pid: number,
+  kernelState: KernelRuntimeState,
+  fdEntries?: KernelWorkerFdEntrySnapshot[],
+  ofdSlots?: KernelWorkerOfdSlotSnapshot[],
+  vmPtrOverride?: number,
+) => KernelRuntimeState;
 let syncEpollStateImpl: (pid: number, kernelState: KernelRuntimeState) => KernelRuntimeState;
 let syncSocketStateImpl: (pid: number, kernelState: KernelRuntimeState) => KernelRuntimeState;
 
-function syncPipeState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState {
-  return syncPipeStateImpl(pid, kernelState);
+function syncPipeState(
+  pid: number,
+  kernelState: KernelRuntimeState,
+  fdEntries?: KernelWorkerFdEntrySnapshot[],
+  ofdSlots?: KernelWorkerOfdSlotSnapshot[],
+  vmPtrOverride?: number,
+): KernelRuntimeState {
+  return syncPipeStateImpl(pid, kernelState, fdEntries, ofdSlots, vmPtrOverride);
 }
 
 function syncEpollState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState {
@@ -190,6 +206,52 @@ function syncEpollState(pid: number, kernelState: KernelRuntimeState): KernelRun
 
 function syncSocketState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState {
   return syncSocketStateImpl(pid, kernelState);
+}
+
+function applySocketStateSnapshot(
+  pid: number,
+  kernelState: KernelRuntimeState,
+  snapshot: KernelWorkerSocketStateSnapshot,
+): KernelRuntimeState {
+  const processExports = processKernels.get(pid);
+  if (!processExports) {
+    return kernelState;
+  }
+  const state = readKernelRuntimeState(processExports);
+  const memory = new Uint8Array(processExports.memory.buffer);
+  memory.set(snapshot.socketTable, state.socketTablePtr);
+  memory.set(snapshot.netBufPool, state.netBufBase);
+  attachKernelRuntimeState(processExports, {
+    ...state,
+    socketUsed: snapshot.socketUsed,
+    netBufUsed: snapshot.netBufUsed,
+  });
+  return readKernelRuntimeState(processExports);
+}
+
+function snapshotSocketState(
+  pid: number,
+  kernelState: KernelRuntimeState,
+): KernelWorkerSocketStateSnapshot | undefined {
+  const processExports = processKernels.get(pid);
+  if (!processExports) {
+    return undefined;
+  }
+  attachKernelRuntimeState(processExports, kernelState);
+  const state = readKernelRuntimeState(processExports);
+  const memory = new Uint8Array(processExports.memory.buffer);
+  return {
+    socketTable: memory.slice(
+      state.socketTablePtr,
+      state.socketTablePtr + processExports.kernel_socket_table_bytes(),
+    ),
+    netBufPool: memory.slice(
+      state.netBufBase,
+      state.netBufBase + processExports.kernel_net_buf_pool_bytes(),
+    ),
+    socketUsed: state.socketUsed,
+    netBufUsed: state.netBufUsed,
+  };
 }
 
 function syncProcessMemfs(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState {
@@ -287,6 +349,8 @@ const kernelWorkerProcessControl = createKernelWorkerProcessControl({
   syncEpollState,
   syncSocketState,
   copyCanonicalMemfsToProcess,
+  snapshotProcSelfExe,
+  restoreProcSelfExe,
   composeProcessPipeUsed,
   collectProcessHeldEpollOfdIds,
   collectProcessHeldPipeSlots,
@@ -329,8 +393,23 @@ const handleKernelWorkerMessage = createKernelWorkerMessageHandler({
     }
     fanoutCanonicalMemfs();
   },
+  applyFileLayer: (entries) => {
+    for (const entry of entries) {
+      if (entry.kind === "dir") {
+        mkdir(entry.path, entry.mode ?? 0o755, false);
+        continue;
+      }
+      if (entry.kind === "file") {
+        writeFile(entry.path, entry.data, entry.mode, false);
+        continue;
+      }
+      symlink(entry.path, entry.target, entry.mode, false);
+    }
+    fanoutCanonicalMemfs();
+  },
   symlink,
   readFile,
+  readlink,
   mkdir,
   statPath,
   readdir,
@@ -353,6 +432,8 @@ const handleKernelWorkerMessage = createKernelWorkerMessageHandler({
   syncEpollState,
   syncOfdState,
   syncSocketState,
+  applySocketStateSnapshot,
+  snapshotSocketState,
   syncForkSharedState,
   rehydrateForkSharedState,
   debugProcesses,

@@ -7,7 +7,7 @@ import {
   flushStdin,
 } from "../stdio.js";
 import { kernelWorkerOwnsPipeState } from "../kernel-share.js";
-import { adoptKernelState } from "../sync.js";
+import { adoptKernelStateForHandle } from "../sync.js";
 import type { ProcessHandle } from "../types.js";
 import { createWorkerOwnedStateSyncHandler } from "./owned-state-sync.js";
 import { createWorkerStatusTransitionHandler } from "./transitions.js";
@@ -18,11 +18,125 @@ import type {
 import { formatCompactDebugSuffix, readProcessPidField, WRITE_DEBUG_KEYS } from "./debug-summary.js";
 import { createWorkerWaitInWorkerStatusHandler } from "./wait-in-worker.js";
 
+const STATUS_SOCKET_DEBUG_LOG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_LOG ?? "") === "1";
+
 interface ThreadRegisterSnapshot {
   vmPtr: number;
   pc: bigint;
   sp: bigint;
   s11: bigint;
+}
+
+function appendStatusSocketDebug(handle: ProcessHandle, event: string): void {
+  if (!STATUS_SOCKET_DEBUG_LOG_ENABLED) {
+    return;
+  }
+  handle.workerDebugLog.push(event);
+  if (handle.workerDebugLog.length > 256) {
+    handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 256);
+  }
+}
+
+function applyThreadFdEntries(handle: ProcessHandle, msg: ThreadWorkerStatusMessage): void {
+  if (!msg.fdEntries || msg.vmPtr === 0) {
+    return;
+  }
+  const maxFds = handle.kernel.abi_max_fds();
+  for (const entry of msg.fdEntries) {
+    if (entry.fd < 0 || entry.fd >= maxFds) {
+      continue;
+    }
+    handle.kernel.process_set_fd_entry(msg.vmPtr, entry.fd, entry.ofdId, entry.fdFlags);
+  }
+}
+
+function applyThreadOfdSlots(handle: ProcessHandle, msg: ThreadWorkerStatusMessage): void {
+  if (!msg.ofdSlots || msg.ofdSlots.length === 0) {
+    return;
+  }
+  const maxFds = handle.kernel.abi_max_fds();
+  const tableBytes = handle.kernel.kernel_ofd_table_bytes();
+  const slotBytes = tableBytes / maxFds;
+  if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
+    return;
+  }
+  const memory = new Uint8Array(handle.memory.buffer);
+  for (const snapshot of msg.ofdSlots) {
+    if (
+      snapshot.ofdId <= 0
+      || snapshot.ofdId >= maxFds
+      || snapshot.slot.length !== slotBytes
+    ) {
+      continue;
+    }
+    memory.set(snapshot.slot, handle.kernelState.ofdTablePtr + snapshot.ofdId * slotBytes);
+  }
+}
+
+function applyThreadSocketState(handle: ProcessHandle, msg: ThreadWorkerStatusMessage): void {
+  if (!msg.socketState) {
+    return;
+  }
+  const before = STATUS_SOCKET_DEBUG_LOG_ENABLED && handle.networkConnections.size > 0
+    ? [...handle.networkConnections.keys()].map((fd) => ({
+      fd,
+      sock: handle.kernel.thread_socket_idx_for_fd?.(msg.vmPtr, fd) ?? -1,
+      avail: handle.kernel.thread_socket_outbound_available?.(msg.vmPtr, fd) ?? -1,
+    }))
+    : [];
+  const socketTableBytes = handle.kernel.kernel_socket_table_bytes();
+  const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes();
+  if (
+    msg.socketState.socketTable.length !== socketTableBytes
+    || msg.socketState.netBufPool.length !== netBufPoolBytes
+  ) {
+    if (handle.networkConnections.size > 0) {
+      appendStatusSocketDebug(handle, `socket-state-skip:${handle.pid}:reason=size:socket=${msg.socketState.socketTable.length}/${socketTableBytes}:net=${msg.socketState.netBufPool.length}/${netBufPoolBytes}`);
+    }
+    return;
+  }
+  const memory = new Uint8Array(handle.memory.buffer);
+  memory.set(msg.socketState.socketTable, handle.kernelState.socketTablePtr);
+  memory.set(msg.socketState.netBufPool, handle.kernelState.netBufBase);
+  handle.kernelState = {
+    ...handle.kernelState,
+    socketUsed: msg.socketState.socketUsed,
+    netBufUsed: msg.socketState.netBufUsed,
+  };
+  attachKernelRuntimeState(handle.kernel, handle.kernelState);
+  if (handle.networkConnections.size > 0) {
+    const after = [...handle.networkConnections.keys()].map((fd) => ({
+      fd,
+      sock: handle.kernel.thread_socket_idx_for_fd?.(msg.vmPtr, fd) ?? -1,
+      avail: handle.kernel.thread_socket_outbound_available?.(msg.vmPtr, fd) ?? -1,
+    }));
+    appendStatusSocketDebug(handle, `socket-state-apply:${handle.pid}:socketUsed=0x${msg.socketState.socketUsed.toString(16)}:netBufUsed=0x${msg.socketState.netBufUsed.toString(16)}:before=${JSON.stringify(before)}:after=${JSON.stringify(after)}`);
+  }
+}
+
+function incrementBoundedCounter(
+  counters: Record<string, number>,
+  key: string,
+  maxEntries = 32,
+): void {
+  const existing = counters[key];
+  if (existing !== undefined) {
+    counters[key] = existing + 1;
+    return;
+  }
+  const entries = Object.keys(counters);
+  if (entries.length < maxEntries) {
+    counters[key] = 1;
+    return;
+  }
+  for (const entry of entries) {
+    const next = (counters[entry] ?? 0) - 1;
+    if (next <= 0) {
+      delete counters[entry];
+      continue;
+    }
+    counters[entry] = next;
+  }
 }
 
 function hasSuspiciousLowStateDebug(debug: string | undefined): boolean {
@@ -51,6 +165,16 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     const previousWaitingStatus = thread.waitingInWorkerStatus;
     thread.waitingInWorkerStatus = null;
     const status = msg.status;
+    applyThreadOfdSlots(handle, msg);
+    applyThreadFdEntries(handle, msg);
+    thread.statusCount += 1;
+    thread.statusCounts[String(status)] = (thread.statusCounts[String(status)] ?? 0) + 1;
+    thread.lastStatus = status;
+    thread.lastStatusAtMs = Date.now();
+    thread.lastStatusPc = msg.pc;
+    thread.lastStatusSp = msg.sp ?? null;
+    thread.lastStatusS11 = msg.s11 ?? null;
+    incrementBoundedCounter(thread.hotStatusPcs, `0x${msg.pc.toString(16)}`);
     const faultStatus = handle.kernel.abi_status_fault?.();
     const suspiciousLowStateDebug = hasSuspiciousLowStateDebug(msg.debug);
     deps.appendWorkerDebugLog(
@@ -124,8 +248,9 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       status !== handle.kernel.abi_status_clone_spawn()
       && (!transientProcessOwnerMismatch || activeVforkWorker)
     ) {
-      handle.kernelState = adoptKernelState(handle.kernelState, msg.kernelState);
+      handle.kernelState = adoptKernelStateForHandle(handle, msg.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
+      applyThreadSocketState(handle, msg);
       for (const pre of adoptPreSnapshots) {
         const postPc = handle.kernel.thread_pc(pre.vmPtr);
         const postSp = handle.kernel.thread_sp(pre.vmPtr);
@@ -157,7 +282,9 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     }
     deps.clearBlockedWorker(handle, worker);
     const wroteToPipe = flushStdin(handle);
-    const drainedPipe = deferLocalPipeDrain ? false : drainProcessOutput(handle);
+    const drainedPipe = deferLocalPipeDrain || kernelWorkerOwnsPipeState(handle)
+      ? false
+      : drainProcessOutput(handle);
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
     if (isRunningWorker) {
       handle.runningWorker = null;

@@ -7,7 +7,7 @@ const FD_TYPE_PTY_SLAVE = 12;
 const OPEN_ACCESS_MODE_MASK = 0x3;
 const O_RDONLY = 0;
 const O_WRONLY = 1;
-const PIPE_SLOT_BYTES = 32 + 4096;
+const PIPE_SLOT_BYTES = 32 + 65_536;
 const PIPE_SLOT_MODE_READ = 1 << 0;
 const PIPE_SLOT_MODE_WRITE = 1 << 1;
 const PIPE_OFF_HEAD = 0;
@@ -203,6 +203,8 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
     const readOpen = new Int32Array(maxPipes);
     const writeOpen = new Int32Array(maxPipes);
     const managedPipeSlots = new Set<number>();
+    const readEndpointKeys = new Set<string>();
+    const writeEndpointKeys = new Set<string>();
     const priorPipeUsed = readKernelRuntimeState(canonicalExports).pipeUsed;
 
     for (let pipeIdx = 1; pipeIdx < maxPipes; pipeIdx += 1) {
@@ -251,24 +253,36 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
           }
           managedPipeSlots.add(pipeSlot);
           if ((mode & PIPE_SLOT_MODE_READ) !== 0) {
-            readOpen[pipeSlot] += refcount;
+            readEndpointKeys.add(`${pid}:${pipeSlot}:${ofdId}`);
           }
           if ((mode & PIPE_SLOT_MODE_WRITE) !== 0) {
-            writeOpen[pipeSlot] += refcount;
+            writeEndpointKeys.add(`${pid}:${pipeSlot}:${ofdId}`);
           }
         }
       }
     }
 
+    for (const key of readEndpointKeys) {
+      const [, pipeSlot] = key.split(":");
+      readOpen[Number(pipeSlot)] += 1;
+    }
+    for (const key of writeEndpointKeys) {
+      const [, pipeSlot] = key.split(":");
+      writeOpen[Number(pipeSlot)] += 1;
+    }
+
     const bytes = new DataView(canonicalExports.memory.buffer);
+    const rawBytes = new Uint8Array(canonicalExports.memory.buffer);
     let pipeUsed = 1n;
     for (const pipeIdx of managedPipeSlots) {
       const slotBase = canonicalExports.kernel_pipe_base() + pipeIdx * PIPE_SLOT_BYTES;
+      if ((readOpen[pipeIdx] ?? 0) <= 0 && (writeOpen[pipeIdx] ?? 0) <= 0) {
+        rawBytes.fill(0, slotBase, slotBase + PIPE_SLOT_BYTES);
+        continue;
+      }
       bytes.setInt32(slotBase + PIPE_OFF_READ_OPEN, readOpen[pipeIdx] ?? 0, true);
       bytes.setInt32(slotBase + PIPE_OFF_WRITE_OPEN, writeOpen[pipeIdx] ?? 0, true);
-      if ((readOpen[pipeIdx] ?? 0) > 0 || (writeOpen[pipeIdx] ?? 0) > 0) {
-        pipeUsed |= 1n << BigInt(pipeIdx);
-      }
+      pipeUsed |= 1n << BigInt(pipeIdx);
     }
 
     const kernelState = {
@@ -376,16 +390,30 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
       const sourceOffset = sourceState.pipeBase + pipeIdx * PIPE_SLOT_BYTES;
       const targetOffset = targetState.pipeBase + pipeIdx * PIPE_SLOT_BYTES;
       const mode = sourceModes.get(pipeIdx) ?? 0;
+      if (mode === 0) {
+        continue;
+      }
+      const sourceHead = sourceView.getUint32(sourceOffset + PIPE_OFF_HEAD, true);
+      const sourceTail = sourceView.getUint32(sourceOffset + PIPE_OFF_TAIL, true);
+      const targetHead = targetView.getUint32(targetOffset + PIPE_OFF_HEAD, true);
+      const targetTail = targetView.getUint32(targetOffset + PIPE_OFF_TAIL, true);
+      if (
+        sourceHead === 0
+        && sourceTail === 0
+        && (targetHead !== 0 || targetTail !== 0)
+      ) {
+        targetBytes.set(
+          sourceBytes.subarray(sourceOffset, sourceOffset + PIPE_SLOT_BYTES),
+          targetOffset,
+        );
+        continue;
+      }
       if ((mode & PIPE_SLOT_MODE_READ) !== 0) {
-        const sourceHead = sourceView.getUint32(sourceOffset + PIPE_OFF_HEAD, true);
-        const targetHead = targetView.getUint32(targetOffset + PIPE_OFF_HEAD, true);
         if (counterAhead(sourceHead, targetHead)) {
           targetView.setUint32(targetOffset + PIPE_OFF_HEAD, sourceHead, true);
         }
       }
       if ((mode & PIPE_SLOT_MODE_WRITE) !== 0) {
-        const sourceTail = sourceView.getUint32(sourceOffset + PIPE_OFF_TAIL, true);
-        const targetTail = targetView.getUint32(targetOffset + PIPE_OFF_TAIL, true);
         if (counterAhead(sourceTail, targetTail)) {
           targetBytes.set(
             sourceBytes.subarray(sourceOffset + PIPE_OFF_TAIL, sourceOffset + PIPE_OFF_READ_OPEN),
@@ -433,38 +461,43 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
       const sourceOffset = sourceState.pipeBase + pipeIdx * PIPE_SLOT_BYTES;
       const targetOffset = targetState.pipeBase + pipeIdx * PIPE_SLOT_BYTES;
       const mode = targetModes.get(pipeIdx) ?? 0;
-      if ((mode & PIPE_SLOT_MODE_READ) !== 0 && (mode & PIPE_SLOT_MODE_WRITE) !== 0) {
-        targetBytes.set(sourceBytes.subarray(sourceOffset, sourceOffset + PIPE_SLOT_BYTES), targetOffset);
-        continue;
-      }
       if ((mode & PIPE_SLOT_MODE_READ) !== 0) {
         const sourceHead = sourceView.getUint32(sourceOffset + PIPE_OFF_HEAD, true);
         const targetHead = targetView.getUint32(targetOffset + PIPE_OFF_HEAD, true);
         if (counterAhead(sourceHead, targetHead)) {
           targetView.setUint32(targetOffset + PIPE_OFF_HEAD, sourceHead, true);
         }
-        targetBytes.set(
-          sourceBytes.subarray(sourceOffset + PIPE_OFF_TAIL, sourceOffset + PIPE_OFF_READ_OPEN),
-          targetOffset + PIPE_OFF_TAIL,
-        );
-        targetBytes.set(
-          sourceBytes.subarray(sourceOffset + PIPE_OFF_DATA, sourceOffset + PIPE_SLOT_BYTES),
-          targetOffset + PIPE_OFF_DATA,
-        );
+        const sourceTail = sourceView.getUint32(sourceOffset + PIPE_OFF_TAIL, true);
+        const targetTail = targetView.getUint32(targetOffset + PIPE_OFF_TAIL, true);
+        if (counterAhead(sourceTail, targetTail)) {
+          targetBytes.set(
+            sourceBytes.subarray(sourceOffset + PIPE_OFF_TAIL, sourceOffset + PIPE_OFF_READ_OPEN),
+            targetOffset + PIPE_OFF_TAIL,
+          );
+          targetBytes.set(
+            sourceBytes.subarray(sourceOffset + PIPE_OFF_DATA, sourceOffset + PIPE_SLOT_BYTES),
+            targetOffset + PIPE_OFF_DATA,
+          );
+        }
       }
       if ((mode & PIPE_SLOT_MODE_WRITE) !== 0) {
-        targetBytes.set(
-          sourceBytes.subarray(sourceOffset + PIPE_OFF_HEAD, sourceOffset + PIPE_OFF_TAIL),
-          targetOffset + PIPE_OFF_HEAD,
-        );
-        targetBytes.set(
-          sourceBytes.subarray(sourceOffset + PIPE_OFF_TAIL, sourceOffset + PIPE_OFF_READ_OPEN),
-          targetOffset + PIPE_OFF_TAIL,
-        );
-        targetBytes.set(
-          sourceBytes.subarray(sourceOffset + PIPE_OFF_DATA, sourceOffset + PIPE_SLOT_BYTES),
-          targetOffset + PIPE_OFF_DATA,
-        );
+        const sourceHead = sourceView.getUint32(sourceOffset + PIPE_OFF_HEAD, true);
+        const targetHead = targetView.getUint32(targetOffset + PIPE_OFF_HEAD, true);
+        if (counterAhead(sourceHead, targetHead)) {
+          targetView.setUint32(targetOffset + PIPE_OFF_HEAD, sourceHead, true);
+        }
+        const sourceTail = sourceView.getUint32(sourceOffset + PIPE_OFF_TAIL, true);
+        const targetTail = targetView.getUint32(targetOffset + PIPE_OFF_TAIL, true);
+        if (counterAhead(sourceTail, targetTail)) {
+          targetBytes.set(
+            sourceBytes.subarray(sourceOffset + PIPE_OFF_TAIL, sourceOffset + PIPE_OFF_READ_OPEN),
+            targetOffset + PIPE_OFF_TAIL,
+          );
+          targetBytes.set(
+            sourceBytes.subarray(sourceOffset + PIPE_OFF_DATA, sourceOffset + PIPE_SLOT_BYTES),
+            targetOffset + PIPE_OFF_DATA,
+          );
+        }
       }
     }
   }

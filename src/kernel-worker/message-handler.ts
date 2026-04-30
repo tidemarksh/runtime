@@ -2,8 +2,12 @@ import type { KernelRuntimeState } from "../abi.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import type {
   KernelWorkerInbound,
+  KernelWorkerFdEntrySnapshot,
+  KernelWorkerFileLayerEntry,
+  KernelWorkerOfdSlotSnapshot,
   KernelWorkerOutbound,
   KernelWorkerPidStateSnapshot,
+  KernelWorkerSocketStateSnapshot,
 } from "../messages.js";
 import { cloneSnapshotEntry } from "./common.js";
 
@@ -22,8 +26,10 @@ interface KernelWorkerMessageHandlerDeps {
   ): Promise<KernelRuntimeState>;
   writeFile(path: string, data: Uint8Array, mode?: number, fanout?: boolean): void;
   writeFiles(entries: Array<{ path: string; data: Uint8Array; mode?: number }>): void;
+  applyFileLayer(entries: KernelWorkerFileLayerEntry[]): void;
   symlink(path: string, target: Uint8Array, mode?: number, fanout?: boolean): void;
   readFile(path: string): Uint8Array;
+  readlink(path: string): Uint8Array;
   mkdir(path: string, mode?: number, fanout?: boolean): void;
   statPath(path: string): {
     ino: number;
@@ -90,10 +96,18 @@ interface KernelWorkerMessageHandlerDeps {
   ): KernelRuntimeState;
   syncProcessLifecycle(pid: number, vmPtr: number, kernelState: KernelRuntimeState): KernelRuntimeState;
   syncProcessMemfs(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
-  syncPipeState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
+  syncPipeState(
+    pid: number,
+    kernelState: KernelRuntimeState,
+    fdEntries?: KernelWorkerFdEntrySnapshot[],
+    ofdSlots?: KernelWorkerOfdSlotSnapshot[],
+    vmPtrOverride?: number,
+  ): KernelRuntimeState;
   syncEpollState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
   syncOfdState(pid: number, ofdIds: number[], kernelState: KernelRuntimeState): KernelRuntimeState;
   syncSocketState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
+  applySocketStateSnapshot(pid: number, kernelState: KernelRuntimeState, snapshot: KernelWorkerSocketStateSnapshot): KernelRuntimeState;
+  snapshotSocketState(pid: number, kernelState: KernelRuntimeState): KernelWorkerSocketStateSnapshot | undefined;
   syncForkSharedState(
     pid: number,
     vmPtr: number,
@@ -101,6 +115,7 @@ interface KernelWorkerMessageHandlerDeps {
     targetKernelStates: KernelWorkerPidStateSnapshot[],
     ofdIds: number[],
     ofdSlots: Array<{ ofdId: number; slot: Uint8Array }>,
+    fdEntries: KernelWorkerFdEntrySnapshot[],
     includeMemfs: boolean,
     preserveSourceRefcounts: boolean,
     kernelState: KernelRuntimeState,
@@ -150,6 +165,10 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
           deps.writeFiles(msg.entries);
           deps.postResponse({ type: "files-written", requestId: msg.requestId });
           break;
+        case "apply-file-layer":
+          deps.applyFileLayer(msg.entries);
+          deps.postResponse({ type: "file-layer-applied", requestId: msg.requestId });
+          break;
         case "symlink":
           deps.symlink(msg.path, msg.target, msg.mode);
           deps.postResponse({ type: "symlink-created", requestId: msg.requestId });
@@ -159,6 +178,13 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
             type: "file-read",
             requestId: msg.requestId,
             data: deps.readFile(msg.path),
+          });
+          break;
+        case "readlink":
+          deps.postResponse({
+            type: "readlink-result",
+            requestId: msg.requestId,
+            target: deps.readlink(msg.path),
           });
           break;
         case "mkdir":
@@ -324,7 +350,7 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
           deps.postResponse({
             type: "pipe-state-synced",
             requestId: msg.requestId,
-            kernelState: deps.syncPipeState(msg.pid, msg.kernelState),
+            kernelState: deps.syncPipeState(msg.pid, msg.kernelState, msg.fdEntries, msg.ofdSlots, msg.vmPtr),
           });
           break;
         case "sync-epoll-state":
@@ -342,11 +368,18 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
           });
           break;
         case "sync-socket-state":
-          deps.postResponse({
-            type: "socket-state-synced",
-            requestId: msg.requestId,
-            kernelState: deps.syncSocketState(msg.pid, msg.kernelState),
-          });
+          {
+            const inputState = msg.socketState
+              ? deps.applySocketStateSnapshot(msg.pid, msg.kernelState, msg.socketState)
+              : msg.kernelState;
+            const kernelState = deps.syncSocketState(msg.pid, inputState);
+            deps.postResponse({
+              type: "socket-state-synced",
+              requestId: msg.requestId,
+              kernelState,
+              socketState: deps.snapshotSocketState(msg.pid, kernelState),
+            });
+          }
           break;
         case "sync-fork-shared-state":
           deps.postResponse({
@@ -359,6 +392,7 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
               msg.targetKernelStates,
               msg.ofdIds,
               msg.ofdSlots,
+              msg.fdEntries,
               msg.includeMemfs ?? true,
               msg.preserveSourceRefcounts ?? false,
               msg.kernelState,

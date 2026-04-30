@@ -5,6 +5,13 @@ import type { ProcessHandle } from "../../../src/worker/types.js";
 function makeHandle(
   overrides: Partial<ProcessHandle> = {},
 ): ProcessHandle {
+  const kernel = {
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fd >= 0 && fd <= 2 ? fd + 1 : 0,
+    kernel_ofd_fd_type: (ofdId: number) => ofdId >= 1 && ofdId <= 3 ? 6 : 0,
+    abi_fd_type_pipe: () => 6,
+    kernel_ofd_ino: (ofdId: number) => ofdId === 1 ? 1 : 2,
+    ...(overrides.kernel as Partial<ProcessHandle["kernel"]> | undefined),
+  } as ProcessHandle["kernel"];
   return {
     runtimeId: 1,
     pid: 3,
@@ -16,7 +23,7 @@ function makeHandle(
     worker: {} as Worker,
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     wasmModule: {} as WebAssembly.Module,
-    kernel: {} as ProcessHandle["kernel"],
+    kernel,
     kernelState: {} as ProcessHandle["kernelState"],
     stdinPipe: 0,
     stdoutPipe: 2,
@@ -59,6 +66,7 @@ function makeHandle(
     workerDebugLog: [],
     guestWriteWatchRegions: [],
     ...overrides,
+    kernel,
   } as unknown as ProcessHandle;
 }
 
@@ -109,6 +117,9 @@ test("recordExitOnParent syncs and drains child output before waking the parent"
     requestPipeStateSync: async (handle, wakeWaiters = false) => {
       order.push(`pipe-sync:${handle.pid}:${wakeWaiters ? "wake" : "sync"}`);
     },
+    unregisterProcessWithKernelWorker: async (handle) => {
+      order.push(`unregister:${handle.pid}`);
+    },
     snapshotProcessFs: () => [],
   });
 
@@ -124,8 +135,9 @@ test("recordExitOnParent syncs and drains child output before waking the parent"
     "pipe-sync:1:sync",
     "kick:1",
     "release:3",
+    "unregister:3",
     "destroy:3",
-    "pipe-sync:1:sync",
+    "pipe-sync:1:wake",
     "drain:1",
     "kick:1",
   ]);
@@ -180,6 +192,9 @@ test("recordExitOnParent skips child-side drain when stdio is owned by the paren
     requestPipeStateSync: async (handle, wakeWaiters = false) => {
       order.push(`pipe-sync:${handle.pid}:${wakeWaiters ? "wake" : "sync"}`);
     },
+    unregisterProcessWithKernelWorker: async (handle) => {
+      order.push(`unregister:${handle.pid}`);
+    },
     snapshotProcessFs: () => [],
   });
 
@@ -190,9 +205,77 @@ test("recordExitOnParent skips child-side drain when stdio is owned by the paren
   expect(order.filter((entry) => entry === "pipe-sync:1:sync")).toHaveLength(0);
   expect(order).toContain("record:1");
   expect(order).toContain("release:3");
+  expect(order).toContain("unregister:3");
   expect(order).toContain("destroy:3");
   expect(order).not.toContain("drain:1");
   expect(order.at(-1)).toBe("kick:1");
+});
+
+test("completeProcessExit treats duped child stdio pipes as internal protocol pipes", async () => {
+  const order: string[] = [];
+  const parent = makeHandle({
+    pid: 1,
+    parentPid: null,
+    kernelWorkerRequest: vi.fn(async () => ({ type: "pipe-state-synced" } as never)),
+  });
+  const child = makeHandle({
+    stdioOwner: parent,
+    kernel: {
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 1 ? 4 : fd === 2 ? 5 : 0,
+      kernel_ofd_fd_type: (ofdId: number) => ofdId === 4 || ofdId === 5 ? 6 : 0,
+      abi_fd_type_pipe: () => 6,
+      kernel_ofd_ino: (ofdId: number) => ofdId === 4 ? 9 : ofdId === 5 ? 10 : 0,
+    } as never,
+  });
+  const processHandles = new Map<number, ProcessHandle>([
+    [1, parent],
+    [3, child],
+  ]);
+
+  const helpers = createWorkerExitHelpers({
+    processHandles,
+    appendRuntimeLifecycleEvent: () => {},
+    appendWorkerDebugLog(handle) {
+      order.push(`debug:${handle.pid}`);
+    },
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=1,pid=3",
+    drainHiddenProcessOutput(handle) {
+      order.push(`hidden-drain:${handle.pid}`);
+      return true;
+    },
+    drainProcessOutput(handle) {
+      order.push(`drain:${handle.pid}`);
+      return true;
+    },
+    destroyProcessHandle(handle) {
+      order.push(`destroy:${handle.pid}`);
+    },
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers(handle) {
+      order.push(`kick:${handle.pid}`);
+    },
+    recordChildExitViaKernelWorker: async (parentHandle) => {
+      order.push(`record:${parentHandle.pid}`);
+    },
+    releaseSharedHostStdio: async (handle) => {
+      order.push(`release:${handle.pid}`);
+    },
+    requestPipeStateSync: async (handle, wakeWaiters = false) => {
+      order.push(`pipe-sync:${handle.pid}:${wakeWaiters ? "wake" : "sync"}`);
+    },
+    unregisterProcessWithKernelWorker: async (handle) => {
+      order.push(`unregister:${handle.pid}`);
+    },
+  });
+
+  await helpers.completeProcessExit(child, 0, 0);
+
+  expect(order).toContain("pipe-sync:3:sync");
+  expect(order).not.toContain("hidden-drain:3");
+  expect(order).toContain("record:1");
+  expect(order).toContain("unregister:3");
+  expect(order).toContain("pipe-sync:1:wake");
 });
 
 test("recordExitOnParent re-kicks blocked parent after pending child exit bookkeeping clears", async () => {
@@ -229,6 +312,7 @@ test("recordExitOnParent re-kicks blocked parent after pending child exit bookke
     replaceRuntimeFsSnapshot: () => {},
     releaseSharedHostStdio: async () => {},
     requestPipeStateSync: async () => {},
+    unregisterProcessWithKernelWorker: async () => {},
     snapshotProcessFs: () => [],
   });
 
@@ -272,6 +356,7 @@ test("completeProcessExit still destroys the handle when cleanup fails", async (
       throw new Error("release failed");
     },
     requestPipeStateSync: async () => {},
+    unregisterProcessWithKernelWorker: async () => {},
     snapshotProcessFs: () => [],
   });
 
@@ -312,6 +397,7 @@ test("completeProcessExit keeps execve stage summary without dispatch trace nois
     recordChildExitViaKernelWorker: async () => {},
     releaseSharedHostStdio: async () => {},
     requestPipeStateSync: async () => {},
+    unregisterProcessWithKernelWorker: async () => {},
   });
 
   await helpers.completeProcessExit(child, 1, 0);

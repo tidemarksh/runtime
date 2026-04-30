@@ -1,6 +1,6 @@
 import type { KernelExports } from "../../abi.js";
 import type { FsSnapshotEntry } from "../../fs/types.js";
-import { publishInode, resetPageCache } from "../../fs/sab-page-cache.js";
+import { publishInode, readFileData, readInodeMeta, resetPageCache } from "../../fs/sab-page-cache.js";
 import {
   ensureMemoryCapacityFor,
   normalizePath,
@@ -151,6 +151,10 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
     const direct = readMemfsFileDataDirect(targetExports, ino);
     if (direct) {
       return direct;
+    }
+    const cached = readInodeMeta(deps.getSabPageCache(), ino);
+    if (cached && (cached.mode & 0o170000) === 0o100000) {
+      return readFileData(deps.getSabPageCache(), cached.dataOff, cached.size, 0, cached.size);
     }
     try {
       return readFileIn(targetExports, path);

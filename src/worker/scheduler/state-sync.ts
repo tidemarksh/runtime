@@ -1,4 +1,7 @@
 import {
+  readKernelRuntimeState,
+} from "../../abi.js";
+import {
   publishKernelRuntimeState,
   wakeRuntimeBridge,
 } from "../../bridge/runtime-state.js";
@@ -54,12 +57,22 @@ export function createWorkerSchedulerStateSyncHelpers(
         visibleHandle.hostStdio.stderrPipe,
       ].filter((slot) => slot > 0),
     );
-    const hiddenSlots = [handle.stdoutPipe, handle.stderrPipe]
+    const fdPipeSlot = (fd: number): number => {
+      const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+      if (
+        ofdId === 0
+        || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
+      ) {
+        return 0;
+      }
+      return handle.kernel.kernel_ofd_ino(ofdId);
+    };
+    const hiddenSlots = [fdPipeSlot(1), fdPipeSlot(2)]
       .filter((slot, index, slots) => slot > 0 && slots.indexOf(slot) === index);
     if (hiddenSlots.length === 0) {
       return false;
     }
-    return hiddenSlots.some((slot) => !visibleSlots.has(slot));
+    return hiddenSlots.some((slot) => visibleSlots.has(slot));
   }
 
   function wakeBlockedStatusesInKernelShare(
@@ -86,6 +99,9 @@ export function createWorkerSchedulerStateSyncHelpers(
       }
       for (const [blockedWorker, blocked] of member.blockedWorkers) {
         if (blockedStatuses.has(blocked.status)) {
+          if (blocked.status === member.kernel.abi_status_pipe_wait()) {
+            blocked.pipeSyncedBeforePassive = false;
+          }
           deps.retryBlockedWorker(member, blockedWorker);
         }
       }
@@ -222,7 +238,9 @@ export function createWorkerSchedulerStateSyncHelpers(
         handle.pipeSyncQueued = false;
         const shouldWake = handle.pipeWaiterWakeQueued;
         handle.pipeWaiterWakeQueued = false;
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-start:${handle.pid}:wake=${shouldWake ? 1 : 0}`);
         const pipeUsed = await syncPipeStateViaKernelWorker(handle);
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-canonical:${handle.pid}:used=${pipeUsed.toString()}`);
         assertProcessIdentity(handle, "requestPipeStateSync");
         const visibleHandle = visibleOutputHandle(handle);
         if (
@@ -231,7 +249,9 @@ export function createWorkerSchedulerStateSyncHelpers(
           && visibleHandle.kernelWorkerRequest
           && visibleHandle.pid > 0
         ) {
+          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-visible-start:${handle.pid}->${visibleHandle.pid}`);
           const visiblePipeUsed = await syncPipeStateViaKernelWorker(visibleHandle);
+          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-visible-done:${handle.pid}->${visibleHandle.pid}:used=${visiblePipeUsed.toString()}`);
           assertProcessIdentity(visibleHandle, "requestPipeStateSync:visible");
           visibleHandle.kernelState = {
             ...visibleHandle.kernelState,
@@ -242,10 +262,29 @@ export function createWorkerSchedulerStateSyncHelpers(
           ? deps.drainHiddenProcessOutput(handle)
           : false;
         const drainedVisibleOutput = deps.drainProcessOutput(visibleHandle);
-        deps.appendRuntimeLifecycleEvent(
-          visibleHandle.runtimeId,
-          `pipe-sync-drain:${handle.pid}->${visibleHandle.pid}:${drainedHiddenOutput || drainedVisibleOutput ? 1 : 0}`,
-        );
+        if (drainedHiddenOutput) {
+          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-hidden-drain:${handle.pid}`);
+          const refreshedPipeUsed = await syncPipeStateViaKernelWorker(handle);
+          assertProcessIdentity(handle, "requestPipeStateSync:after-hidden-drain");
+          handle.kernelState = {
+            ...handle.kernelState,
+            pipeUsed: refreshedPipeUsed,
+          };
+        }
+        if (
+          drainedVisibleOutput
+          && kernelWorkerOwnsPipeState(visibleHandle)
+          && visibleHandle.kernelWorkerRequest
+          && visibleHandle.pid > 0
+        ) {
+          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-visible-drain:${visibleHandle.pid}`);
+          const visiblePipeUsed = await syncPipeStateViaKernelWorker(visibleHandle);
+          assertProcessIdentity(visibleHandle, "requestPipeStateSync:after-visible-drain");
+          visibleHandle.kernelState = {
+            ...visibleHandle.kernelState,
+            pipeUsed: visiblePipeUsed,
+          };
+        }
         if (shouldWake) {
           wakePipeWaitersInKernelShare(handle, pipeUsed);
           if (kernelWorkerOwnsEpollState(handle)) {
@@ -259,6 +298,7 @@ export function createWorkerSchedulerStateSyncHelpers(
             );
           }
         }
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-done:${handle.pid}:wake=${shouldWake ? 1 : 0}`);
       }
     })().finally(() => {
       handle.pipeSyncPromise = null;
@@ -269,6 +309,7 @@ export function createWorkerSchedulerStateSyncHelpers(
 
   function requestSocketStateSync(handle: ProcessHandle, wakeWaiters = false): Promise<void> {
     if (!kernelWorkerOwnsSocketState(handle)) {
+      handle.kernelState = readKernelRuntimeState(handle.kernel);
       if (wakeWaiters) {
         wakeSocketWaitersInKernelShare(handle, handle.kernelState.socketUsed, handle.kernelState.netBufUsed);
       }

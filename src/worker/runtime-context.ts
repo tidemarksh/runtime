@@ -2,6 +2,7 @@ import type { FsSnapshotEntry } from "../fs/types.js";
 import {
   appendRuntimeLifecycleEvent as appendRuntimeLifecycleEventImpl,
   assertProcessStandardFdIntegrity as assertProcessStandardFdIntegrityImpl,
+  debugRuntimeExecutionStats as debugRuntimeExecutionStatsImpl,
   debugRuntimeProcessHandles as debugRuntimeProcessHandlesImpl,
   debugRuntimeWorkerLogFocus as debugRuntimeWorkerLogFocusImpl,
   formatAllLiveThreadDebug as formatAllLiveThreadDebugImpl,
@@ -211,6 +212,21 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
     }
   }
 
+  function debugRuntimeExecutionStats(runtimeId: number) {
+    try {
+      return debugRuntimeExecutionStatsImpl(runtimeId, processHandles, threadWorkerStates);
+    } catch (error) {
+      return [{
+        pid: -1,
+        cmd: `unavailable:${error instanceof Error ? error.message : String(error)}`,
+        running: false,
+        readyWorkers: 0,
+        blockedWorkers: 0,
+        workers: [],
+      }];
+    }
+  }
+
   function formatAllLiveThreadDebug(handle: ProcessHandle): string {
     try {
       return formatAllLiveThreadDebugImpl(handle, threadWorkerStates);
@@ -247,6 +263,7 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
     clearRuntimeFsState,
     clearRuntimeFailureSnapshot,
     debugRuntimeLastFailureSnapshot,
+    debugRuntimeExecutionStats,
     debugRuntimeProcessHandles,
     debugRuntimeWorkerLogFocus,
     flushRuntimeFsStateFromDirtyHandle,

@@ -31,6 +31,47 @@ export interface RuntimeProcessWorkerLogFocus {
   workers: WorkerLogFocus[];
 }
 
+export interface WorkerExecutionStats {
+  vmPtr: number;
+  ownerState: string;
+  stepCount: number;
+  totalStepBudget: number;
+  statusCount: number;
+  statusCounts: Record<string, number>;
+  statusCountsByName: Record<string, number>;
+  lastStatus: number | null;
+  lastStatusName: string | null;
+  lastStepAtMs: number | null;
+  lastStatusAtMs: number | null;
+  lastStepPc: string | null;
+  lastStepSp: string | null;
+  lastStepS11: string | null;
+  hotStepPcs: Array<{ pc: string; count: number }>;
+  lastStatusPc: string | null;
+  lastStatusSp: string | null;
+  lastStatusS11: string | null;
+  hotStatusPcs: Array<{ pc: string; count: number }>;
+  waitingInWorkerStatus: number | null;
+}
+
+export interface ProcessExecutionStats {
+  pid: number;
+  cmd: string;
+  running: boolean;
+  readyWorkers: number;
+  blockedWorkers: number;
+  pendingChildExitRecords: number;
+  pendingChildSpawnRecords: number;
+  activeChildren: number;
+  memoryVmas: Array<{
+    start: string;
+    end: string;
+    prot: number;
+    flags: number;
+  }>;
+  workers: WorkerExecutionStats[];
+}
+
 const decoder = new TextDecoder();
 
 function formatU64(value: bigint): string {
@@ -366,6 +407,126 @@ export function debugRuntimeWorkerLogFocus(
     }));
 }
 
+function formatOptionalBigIntHex(value: bigint | null): string | null {
+  return value === null ? null : `0x${formatU64(value)}`;
+}
+
+function readStatusNames(handle: Pick<ProcessHandle, "kernel">): Map<number, string> {
+  return new Map([
+    [handle.kernel.abi_status_ok(), "OK"],
+    [handle.kernel.abi_status_fault(), "FAULT"],
+    [handle.kernel.abi_status_fs(), "FS"],
+    [handle.kernel.abi_status_futex_wait(), "FUTEX_WAIT"],
+    [handle.kernel.abi_status_pipe_wait(), "PIPE_WAIT"],
+    [handle.kernel.abi_status_epoll_wait(), "EPOLL_WAIT"],
+    [handle.kernel.abi_status_vfork_wait(), "VFORK_WAIT"],
+    [handle.kernel.abi_status_execve_spawn(), "EXECVE_SPAWN"],
+    [handle.kernel.abi_status_clone_spawn(), "CLONE_SPAWN"],
+    [handle.kernel.abi_status_sleep(), "SLEEP"],
+    [handle.kernel.abi_status_jit_ready(), "JIT_READY"],
+    [handle.kernel.abi_status_wait4(), "WAIT4"],
+    [handle.kernel.abi_status_connect(), "CONNECT"],
+    [handle.kernel.abi_status_socket_send(), "SOCKET_SEND"],
+    [handle.kernel.abi_status_socket_recv(), "SOCKET_RECV"],
+    [handle.kernel.abi_status_flock_wait(), "FLOCK_WAIT"],
+  ]);
+}
+
+function formatStatusCountsByName(
+  statusCounts: Record<string, number>,
+  statusNames: Map<number, string>,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [rawStatus, count] of Object.entries(statusCounts)) {
+    const status = Number(rawStatus);
+    out[statusNames.get(status) ?? rawStatus] = count;
+  }
+  return out;
+}
+
+function formatHotCounters(
+  counters: Record<string, number>,
+): Array<{ pc: string; count: number }> {
+  return Object.entries(counters)
+    .map(([pc, count]) => ({ pc, count }))
+    .sort((left, right) => (
+      right.count - left.count
+      || left.pc.localeCompare(right.pc)
+    ))
+    .slice(0, 8);
+}
+
+function readMemoryVmas(
+  handle: Pick<ProcessHandle, "kernel">,
+): ProcessExecutionStats["memoryVmas"] {
+  const len = handle.kernel.debug_memory_vma_len?.() ?? 0;
+  const out: ProcessExecutionStats["memoryVmas"] = [];
+  for (let index = 0; index < len; index += 1) {
+    out.push({
+      start: `0x${BigInt(handle.kernel.debug_memory_vma_start?.(index) ?? 0).toString(16)}`,
+      end: `0x${BigInt(handle.kernel.debug_memory_vma_end?.(index) ?? 0).toString(16)}`,
+      prot: handle.kernel.debug_memory_vma_prot?.(index) ?? 0,
+      flags: handle.kernel.debug_memory_vma_flags?.(index) ?? 0,
+    });
+  }
+  return out;
+}
+
+export function debugRuntimeExecutionStats(
+  runtimeId: number,
+  processHandles: Map<number, ProcessHandle>,
+  threadWorkerStates: WeakMap<Worker, ThreadWorkerState>,
+): ProcessExecutionStats[] {
+  return [...processHandles.values()]
+    .filter((handle) => handle.runtimeId === runtimeId)
+    .sort((left, right) => left.pid - right.pid)
+    .map((handle) => {
+      const statusNames = readStatusNames(handle);
+      return {
+        pid: handle.pid,
+        cmd: handle.debugCommand,
+        running: handle.runningWorker !== null,
+        readyWorkers: handle.readyWorkers.length,
+        blockedWorkers: handle.blockedWorkers.size,
+        pendingChildExitRecords: handle.pendingChildExitRecords,
+        pendingChildSpawnRecords: handle.pendingChildSpawnRecords,
+        activeChildren: [...processHandles.values()].filter((candidate) => candidate.parentPid === handle.pid).length,
+        memoryVmas: readMemoryVmas(handle),
+        workers: [...handle.workers]
+          .map((worker) => {
+            const state = threadWorkerStates.get(worker);
+            if (!state || state.vmPtr === 0) {
+              return null;
+            }
+            return {
+              vmPtr: state.vmPtr,
+              ownerState: readWorkerOwnerState(handle, worker, state),
+              stepCount: state.stepCount,
+              totalStepBudget: state.totalStepBudget,
+              statusCount: state.statusCount,
+              statusCounts: { ...state.statusCounts },
+              statusCountsByName: formatStatusCountsByName(state.statusCounts, statusNames),
+              lastStatus: state.lastStatus,
+              lastStatusName: state.lastStatus === null ? null : statusNames.get(state.lastStatus) ?? String(state.lastStatus),
+              lastStepAtMs: state.lastStepAtMs,
+              lastStatusAtMs: state.lastStatusAtMs,
+              lastStepPc: formatOptionalBigIntHex(state.lastStepPc),
+              lastStepSp: formatOptionalBigIntHex(state.lastStepSp),
+              lastStepS11: formatOptionalBigIntHex(state.lastStepS11),
+              hotStepPcs: formatHotCounters(state.hotStepPcs),
+              lastStatusPc: formatOptionalBigIntHex(state.lastStatusPc),
+              lastStatusSp: formatOptionalBigIntHex(state.lastStatusSp),
+              lastStatusS11: formatOptionalBigIntHex(state.lastStatusS11),
+              hotStatusPcs: formatHotCounters(state.hotStatusPcs),
+              waitingInWorkerStatus: state.waitingInWorkerStatus,
+            } satisfies WorkerExecutionStats;
+          })
+          .filter((entry): entry is WorkerExecutionStats => entry !== null)
+          .sort((left, right) => left.vmPtr - right.vmPtr),
+      };
+    });
+}
+
 function formatThreadDebug(handle: ProcessHandle, vmPtr: number): string {
   const tid = handle.kernel.thread_tid?.(vmPtr) ?? 0;
   const pc = handle.kernel.thread_pc?.(vmPtr) ?? 0n;
@@ -541,6 +702,40 @@ function formatProcessRiscvSyscallTrace(handle: ProcessHandle): string {
   return entries.join(" ");
 }
 
+function formatProcessFdTrace(handle: ProcessHandle): string {
+  const len = handle.kernel.debug_fd_syscall_trace_len?.() ?? 0;
+  if (len <= 0) {
+    return "";
+  }
+  const entries: string[] = [];
+  for (let index = 0; index < len; index += 1) {
+    const traceVmPtr = handle.kernel.debug_fd_syscall_trace_vm_ptr?.(index) ?? 0;
+    const nr = handle.kernel.debug_fd_syscall_trace_nr?.(index);
+    const arg0 = handle.kernel.debug_fd_syscall_trace_arg0?.(index);
+    const arg0Ofd = handle.kernel.debug_fd_syscall_trace_arg0_ofd_id?.(index) ?? 0;
+    const arg0Type = handle.kernel.debug_fd_syscall_trace_arg0_ofd_type?.(index) ?? 0;
+    const arg1 = handle.kernel.debug_fd_syscall_trace_arg1?.(index);
+    const arg2 = handle.kernel.debug_fd_syscall_trace_arg2?.(index);
+    const arg2Ofd = handle.kernel.debug_fd_syscall_trace_arg2_ofd_id?.(index) ?? 0;
+    const arg2Type = handle.kernel.debug_fd_syscall_trace_arg2_ofd_type?.(index) ?? 0;
+    const arg3 = handle.kernel.debug_fd_syscall_trace_arg3?.(index);
+    const result = handle.kernel.debug_fd_syscall_trace_result?.(index);
+    const status = handle.kernel.debug_fd_syscall_trace_status?.(index) ?? 0;
+    const pidSample0 = handle.kernel.debug_fd_syscall_trace_pid_sample0?.(index);
+    const pidSample1 = handle.kernel.debug_fd_syscall_trace_pid_sample1?.(index);
+    entries.push(
+      `${index}:vm=0x${traceVmPtr.toString(16)}:nr=${nr?.toString() ?? "n/a"}`
+      + `:a0=${arg0?.toString() ?? "n/a"}/ofd=${arg0Ofd}/type=${arg0Type}`
+      + `:a1=${arg1?.toString() ?? "n/a"}`
+      + `:a2=${arg2?.toString() ?? "n/a"}/ofd=${arg2Ofd}/type=${arg2Type}`
+      + `:a3=${arg3?.toString() ?? "n/a"}`
+      + `:status=${status}:result=${result?.toString() ?? "n/a"}`
+      + `:pid=${pidSample0?.toString() ?? "n/a"}/${pidSample1?.toString() ?? "n/a"}`,
+    );
+  }
+  return entries.join(" ");
+}
+
 function formatProcessPathTrace(handle: ProcessHandle): string {
   const len = handle.kernel.debug_path_syscall_trace_len?.() ?? 0;
   if (len <= 0) {
@@ -605,12 +800,19 @@ export function debugRuntimeProcessHandles(
           }
           return `${slot}:${handle.kernel.process_thread_tid(handle.vmPtr, slot)}/${handle.kernel.process_thread_state(handle.vmPtr, slot)}/0x${threadVmPtr.toString(16)}`;
         }).filter(Boolean).join(",");
-        const fdSummary = Array.from({ length: 16 }, (_, fd) => {
+        const fdSummary = Array.from({ length: handle.kernel.abi_max_fds() }, (_, fd) => {
           const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
           if (ofdId === 0) {
             return null;
           }
-          return `${fd}->${ofdId}/${handle.kernel.process_fd_flags(handle.vmPtr, fd)}/${handle.kernel.kernel_ofd_fd_type(ofdId)}`;
+          return [
+            `${fd}->${ofdId}`,
+            `flags=${handle.kernel.process_fd_flags(handle.vmPtr, fd)}`,
+            `type=${handle.kernel.kernel_ofd_fd_type(ofdId)}`,
+            `ino=${handle.kernel.kernel_ofd_ino(ofdId)}`,
+            `host=${handle.kernel.kernel_ofd_host_fd(ofdId)}`,
+            `status=${handle.kernel.kernel_ofd_status_flags(ofdId)}`,
+          ].join("/");
         }).filter(Boolean).join(" ");
 
         return [
@@ -628,7 +830,8 @@ export function debugRuntimeProcessHandles(
           `blocked=[${blocked}]`,
           `vfork=${handle.vforkSnapshot ? "1" : "0"}`,
           `stdio_pipes=${handle.stdinPipe}/${handle.stdoutPipe}/${handle.stderrPipe}`,
-          `stdio_pipe_counters=[${[0, 1, 2, 10]
+          `process_stdio=${handle.kernel.process_stdin_pipe(handle.vmPtr)}/${handle.kernel.process_stdout_pipe(handle.vmPtr)}/${handle.kernel.process_stderr_pipe(handle.vmPtr)}`,
+          `stdio_pipe_counters=[${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
             .map((fd) => formatPipeCounterDebug(handle, fd))
             .join(" ")}]`,
           `shared_ofds=[${[...handle.kernelShare.sharedOfdIds].sort((left, right) => left - right).join(",")}]`,
@@ -636,6 +839,7 @@ export function debugRuntimeProcessHandles(
           `debug=${handle.lastDebugMessage ?? "n/a"}`,
           `syscalls=[${formatProcessSyscallTrace(handle)}]`,
           `riscv_syscalls=[${formatProcessRiscvSyscallTrace(handle)}]`,
+          `fd_syscalls=[${formatProcessFdTrace(handle)}]`,
           `path_syscalls=[${formatProcessPathTrace(handle)}]`,
         ].join(" ");
       } catch (error) {
@@ -665,8 +869,8 @@ export function appendRuntimeLifecycleEvent(
 ): void {
   const events = runtimeLifecycleEvents.get(runtimeId) ?? [];
   events.push(event);
-  if (events.length > 64) {
-    events.splice(0, events.length - 64);
+  if (events.length > 256) {
+    events.splice(0, events.length - 256);
   }
   runtimeLifecycleEvents.set(runtimeId, events);
 }
@@ -698,6 +902,13 @@ export function assertProcessStandardFdIntegrity(
   debugSnapshot: string,
   formatPipeCounterDebug: (handle: ProcessHandle, fd: number) => string,
 ): void {
+  const selfFdSummary = (): string => Array.from({ length: 16 }, (_value, fd) => {
+    const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+    if (ofdId === 0) {
+      return null;
+    }
+    return `${fd}->${ofdId}/${handle.kernel.process_fd_flags(handle.vmPtr, fd)}/${handle.kernel.kernel_ofd_fd_type(ofdId)}/${handle.kernel.kernel_ofd_ino(ofdId)}`;
+  }).filter(Boolean).join(" ");
   if (handle.pid <= 0) {
     return;
   }
@@ -709,14 +920,17 @@ export function assertProcessStandardFdIntegrity(
     const type = handle.kernel.kernel_ofd_fd_type(ofdId);
     if (type <= 0 || type > 64) {
       throw new Error(
-        `${context}: pid=${handle.pid} fd=${fd} ofd=${ofdId} type=${type}\n${debugSnapshot}`,
+        `${context}: pid=${handle.pid} fd=${fd} ofd=${ofdId} type=${type}`
+        + ` self_fds=[${selfFdSummary()}]`
+        + ` self_syscalls=[${formatProcessSyscallTrace(handle)}]`
+        + ` self_riscv_syscalls=[${formatProcessRiscvSyscallTrace(handle)}]\n${debugSnapshot}`,
       );
     }
     if (type !== handle.kernel.abi_fd_type_pipe()) {
       continue;
     }
     const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-    const base = handle.kernelState.pipeBase + pipeSlot * (32 + 4096);
+    const base = handle.kernelState.pipeBase + pipeSlot * (32 + 65_536);
     const i32 = new Int32Array(handle.memory.buffer);
     const readOpen = Atomics.load(i32, (base + 8) >>> 2);
     const writeOpen = Atomics.load(i32, (base + 12) >>> 2);

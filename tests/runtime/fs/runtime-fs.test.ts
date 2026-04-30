@@ -18,6 +18,8 @@ class FakeKernelWorker {
   readonly fileSizes = new Map<string, number>();
   readonly fileModes = new Map<string, number>();
   readonly externalFiles = new Set<string>();
+  readonly symlinks = new Map<string, Uint8Array>();
+  readonly symlinkModes = new Map<string, number>();
   readonly dirModes = new Map<string, number>([["/", 0o755]]);
   readonly dirs = new Set<string>(["/"]);
   terminated = false;
@@ -86,6 +88,16 @@ class FakeKernelWorker {
         size,
       };
     }
+    if (this.symlinks.has(normalized)) {
+      return {
+        ino: normalized.length,
+        mode: 0o120000 | (this.symlinkModes.get(normalized) ?? 0o777),
+        nlink: 1,
+        uid: 0,
+        gid: 0,
+        size: this.symlinks.get(normalized)?.length ?? 0,
+      };
+    }
     if (this.dirs.has(normalized)) {
       return {
         ino: normalized.length || 1,
@@ -123,6 +135,15 @@ class FakeKernelWorker {
         children.add(rest);
       }
     }
+    for (const symlink of this.symlinks.keys()) {
+      if (!symlink.startsWith(prefix)) {
+        continue;
+      }
+      const rest = symlink.slice(prefix.length);
+      if (rest.length > 0 && !rest.includes("/")) {
+        children.add(rest);
+      }
+    }
 
     return [...children].sort();
   }
@@ -152,6 +173,14 @@ class FakeKernelWorker {
             mode: this.fileModes.get(path) ?? 0o644,
           });
     }
+    for (const [path, target] of [...this.symlinks.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+      entries.push({
+        kind: "symlink" as const,
+        path,
+        target: new Uint8Array(target),
+        mode: this.symlinkModes.get(path) ?? 0o777,
+      });
+    }
     return entries;
   }
 
@@ -160,6 +189,8 @@ class FakeKernelWorker {
     this.fileSizes.clear();
     this.fileModes.clear();
     this.externalFiles.clear();
+    this.symlinks.clear();
+    this.symlinkModes.clear();
     this.dirModes.clear();
     this.dirs.clear();
     this.dirs.add("/");
@@ -170,6 +201,12 @@ class FakeKernelWorker {
       if (entry.kind === "dir") {
         this.ensureDir(normalized, entry.mode ?? 0o755);
         this.dirModes.set(normalized, entry.mode ?? 0o755);
+        continue;
+      }
+      if (entry.kind === "symlink") {
+        this.ensureDir(normalized.split("/").slice(0, -1).join("/"));
+        this.symlinks.set(normalized, new Uint8Array(entry.target ?? new Uint8Array()));
+        this.symlinkModes.set(normalized, entry.mode ?? 0o777);
         continue;
       }
       this.ensureDir(normalized.split("/").slice(0, -1).join("/"));
@@ -218,6 +255,54 @@ class FakeKernelWorker {
         this.externalFiles.delete(normalizePath(message.path));
         this.emit({ type: "file-written", requestId: message.requestId });
         break;
+      case "write-files":
+        for (const entry of message.entries) {
+          this.ensureDir(normalizePath(entry.path).split("/").slice(0, -1).join("/"));
+          this.files.set(normalizePath(entry.path), new Uint8Array(entry.data));
+          this.fileSizes.set(normalizePath(entry.path), entry.data.length);
+          this.fileModes.set(normalizePath(entry.path), entry.mode ?? 0o644);
+          this.externalFiles.delete(normalizePath(entry.path));
+        }
+        this.emit({ type: "files-written", requestId: message.requestId });
+        break;
+      case "apply-file-layer":
+        for (const entry of message.entries) {
+          if (entry.kind === "dir") {
+            this.ensureDir(entry.path, entry.mode ?? 0o755);
+            continue;
+          }
+          this.ensureDir(normalizePath(entry.path).split("/").slice(0, -1).join("/"));
+          if (entry.kind === "file") {
+            this.files.set(normalizePath(entry.path), new Uint8Array(entry.data));
+            this.fileSizes.set(normalizePath(entry.path), entry.data.length);
+            this.fileModes.set(normalizePath(entry.path), entry.mode ?? 0o644);
+            this.externalFiles.delete(normalizePath(entry.path));
+            continue;
+          }
+          this.symlinks.set(normalizePath(entry.path), new Uint8Array(entry.target));
+          this.symlinkModes.set(normalizePath(entry.path), entry.mode ?? 0o777);
+        }
+        this.emit({ type: "file-layer-applied", requestId: message.requestId });
+        break;
+      case "symlink":
+        this.ensureDir(normalizePath(message.path).split("/").slice(0, -1).join("/"));
+        this.symlinks.set(normalizePath(message.path), new Uint8Array(message.target));
+        this.symlinkModes.set(normalizePath(message.path), message.mode ?? 0o777);
+        this.emit({ type: "symlink-created", requestId: message.requestId });
+        break;
+      case "readlink": {
+        const target = this.symlinks.get(normalizePath(message.path));
+        if (!target) {
+          this.emit({
+            type: "error",
+            requestId: message.requestId,
+            message: `EINVAL: ${message.path}`,
+          });
+          break;
+        }
+        this.emit({ type: "readlink-result", requestId: message.requestId, target: new Uint8Array(target) });
+        break;
+      }
       case "read-file": {
         const normalized = normalizePath(message.path);
         const data = this.files.get(normalized);
@@ -370,6 +455,37 @@ test("Runtime.applyFsSnapshot preserves metadata-only file size in canonical sna
     size: 128 * 1024,
   });
   expect(createdWorkers[0].postedMessages.some((msg) => msg.type === "load-fs-snapshot")).toBe(true);
+
+  runtime.destroy();
+});
+
+test("Runtime.applyFileLayer applies dirs files and symlinks through one kernel-worker RPC", async () => {
+  const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
+
+  await runtime.applyFileLayer([
+    { kind: "dir", path: "/usr/bin", mode: 0o755 },
+    {
+      kind: "file",
+      path: "/usr/bin/tool",
+      data: new TextEncoder().encode("tool"),
+      mode: 0o755,
+    },
+    {
+      kind: "symlink",
+      path: "/bin/tool",
+      target: new TextEncoder().encode("../usr/bin/tool"),
+      mode: 0o777,
+    },
+  ]);
+
+  await expect(runtime.fs.readFile("/usr/bin/tool")).resolves.toEqual(new TextEncoder().encode("tool"));
+  await expect(runtime.fs.readlink("/bin/tool")).resolves.toEqual(new TextEncoder().encode("../usr/bin/tool"));
+
+  const worker = createdWorkers[0];
+  expect(worker.postedMessages.filter((msg) => msg.type === "apply-file-layer")).toHaveLength(1);
+  expect(worker.postedMessages.filter((msg) => msg.type === "mkdir")).toHaveLength(0);
+  expect(worker.postedMessages.filter((msg) => msg.type === "write-files")).toHaveLength(0);
+  expect(worker.postedMessages.filter((msg) => msg.type === "symlink")).toHaveLength(0);
 
   runtime.destroy();
 });

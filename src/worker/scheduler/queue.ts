@@ -16,8 +16,10 @@ import type {
   WorkerSchedulerQueueHelpers,
 } from "./types.js";
 
-const SCHEDULER_STEP_BUDGET = typeof window === "undefined" ? 20_000 : 2_000;
+const SCHEDULER_STEP_BUDGET = typeof window === "undefined" ? 100_000 : 10_000;
+const SCHEDULER_QUEUE_DEBUG_LOG_ENABLED = false;
 let nextThreadWorkerGeneration = 1;
+const HOT_PC_COUNTER_LIMIT = 32;
 
 interface WorkerSchedulerQueueDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
@@ -115,6 +117,31 @@ function clearBlockedWorker(handle: ProcessHandle, worker: Worker): void {
     clearTimeout(blocked.retryTimer);
   }
   handle.blockedWorkers.delete(worker);
+}
+
+function incrementBoundedCounter(
+  counters: Record<string, number>,
+  key: string,
+  maxEntries = HOT_PC_COUNTER_LIMIT,
+): void {
+  const existing = counters[key];
+  if (existing !== undefined) {
+    counters[key] = existing + 1;
+    return;
+  }
+  const entries = Object.keys(counters);
+  if (entries.length < maxEntries) {
+    counters[key] = 1;
+    return;
+  }
+  for (const entry of entries) {
+    const next = (counters[entry] ?? 0) - 1;
+    if (next <= 0) {
+      delete counters[entry];
+      continue;
+    }
+    counters[entry] = next;
+  }
 }
 
 export function createWorkerSchedulerQueueHelpers(
@@ -237,10 +264,22 @@ export function createWorkerSchedulerQueueHelpers(
       ownerPid: handle.pid,
       generation,
       reinitCount: reinitWithinHandle ? (existingThread?.reinitCount ?? 0) + 1 : 0,
+      stepCount: 0,
+      totalStepBudget: 0,
+      statusCount: 0,
+      statusCounts: {},
+      lastStatus: null,
+      lastStepAtMs: null,
+      lastStatusAtMs: null,
       lastStepProcessPtr: null,
       lastStepPc: null,
       lastStepSp: null,
       lastStepS11: null,
+      hotStepPcs: {},
+      lastStatusPc: null,
+      lastStatusSp: null,
+      lastStatusS11: null,
+      hotStatusPcs: {},
       initialized: false,
       waitingInWorkerStatus: null,
       resumeWorkersOnReady: [],
@@ -280,6 +319,10 @@ export function createWorkerSchedulerQueueHelpers(
       runtimeEpoch,
       guestWriteWatchRegions: handle.guestWriteWatchRegions,
       kernelState: handle.kernelState,
+      childExitRecords: [...handle.childExitSyncRecords].map(([childPid, waitStatus]) => ({
+        childPid,
+        waitStatus,
+      })),
       sabPageCache: handle.sabPageCache,
       runtimeNotify: handle.runtimeBridge.notifySab,
       runtimeState: handle.runtimeBridge.stateSab,
@@ -293,8 +336,11 @@ export function createWorkerSchedulerQueueHelpers(
     if (!handle.readyWorkers.includes(worker)) {
       const vmPtr = deps.threadWorkerStates.get(worker)?.vmPtr;
       if (vmPtr !== undefined) {
-        deps.appendWorkerDebugLog(handle, `ready:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`);
-        if (hasBrokenThreadState(handle, vmPtr)) {
+        const brokenThreadState = hasBrokenThreadState(handle, vmPtr);
+        if (SCHEDULER_QUEUE_DEBUG_LOG_ENABLED) {
+          deps.appendWorkerDebugLog(handle, `ready:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`);
+        }
+        if (brokenThreadState) {
           deps.appendWorkerDebugLog(
             handle,
             `ready_break:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`,
@@ -308,14 +354,39 @@ export function createWorkerSchedulerQueueHelpers(
     pumpProcess(handle);
   }
 
+  function recoverRunnableIdleWorkers(handle: ProcessHandle): void {
+    const exclusiveWorker = handle.vforkSnapshot !== null ? handle.vforkWorker : null;
+    for (const worker of handle.workers) {
+      if (handle.runningWorker === worker || handle.readyWorkers.includes(worker) || handle.blockedWorkers.has(worker)) {
+        continue;
+      }
+      if (exclusiveWorker !== null && worker !== exclusiveWorker) {
+        continue;
+      }
+      const thread = deps.threadWorkerStates.get(worker);
+      if (!thread?.initialized || thread.waitingInWorkerStatus !== null) {
+        continue;
+      }
+      if (handle.kernel.thread_status(thread.vmPtr) !== handle.kernel.abi_status_ok()) {
+        continue;
+      }
+      deps.appendWorkerDebugLog(handle, `ready_recover:0x${thread.vmPtr.toString(16)}${formatStepDebugSuffix(handle, thread.vmPtr)}`);
+      handle.readyWorkers.push(worker);
+    }
+  }
+
   function pumpProcess(handle: ProcessHandle): void {
     if (handle.exitInProgress) {
+      return;
+    }
+    if (handle.kernelShare.forkSharedSyncPromise !== null) {
       return;
     }
     const runningWorker = sanitizeRunningWorker(handle);
     if (runningWorker !== null) {
       return;
     }
+    recoverRunnableIdleWorkers(handle);
     let next: Worker | undefined;
     if (hasExclusiveVforkWorker(handle)) {
       const index = handle.readyWorkers.indexOf(handle.vforkWorker!);
@@ -333,12 +404,19 @@ export function createWorkerSchedulerQueueHelpers(
     const vmPtr = deps.threadWorkerStates.get(next)?.vmPtr;
     const thread = deps.threadWorkerStates.get(next);
     if (thread && vmPtr !== undefined) {
+      thread.stepCount += 1;
+      thread.totalStepBudget += SCHEDULER_STEP_BUDGET;
+      thread.lastStepAtMs = Date.now();
       thread.lastStepProcessPtr = handle.kernel.thread_process_ptr(vmPtr);
       thread.lastStepPc = handle.kernel.thread_pc(vmPtr);
       thread.lastStepSp = handle.kernel.thread_sp(vmPtr);
       thread.lastStepS11 = handle.kernel.thread_s11?.(vmPtr) ?? 0n;
-      deps.appendWorkerDebugLog(handle, `step:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`);
-      if (hasBrokenThreadState(handle, vmPtr)) {
+      incrementBoundedCounter(thread.hotStepPcs, `0x${thread.lastStepPc.toString(16)}`);
+      const brokenThreadState = hasBrokenThreadState(handle, vmPtr);
+      if (SCHEDULER_QUEUE_DEBUG_LOG_ENABLED) {
+        deps.appendWorkerDebugLog(handle, `step:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`);
+      }
+      if (brokenThreadState) {
         deps.appendWorkerDebugLog(
           handle,
           `step_break:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`,
@@ -350,6 +428,10 @@ export function createWorkerSchedulerQueueHelpers(
       type: "step",
       budget: SCHEDULER_STEP_BUDGET,
       kernelState: handle.kernelState,
+      childExitRecords: [...handle.childExitSyncRecords].map(([childPid, waitStatus]) => ({
+        childPid,
+        waitStatus,
+      })),
     } satisfies ThreadWorkerInbound);
   }
 

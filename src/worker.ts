@@ -89,6 +89,10 @@ export function debugRuntimeProcessHandles(runtimeId: number): string {
   return workerOrchestrator.debugRuntimeProcessHandles(runtimeId);
 }
 
+export function debugRuntimeExecutionStats(runtimeId: number) {
+  return workerOrchestrator.debugRuntimeExecutionStats(runtimeId);
+}
+
 export function debugRuntimeLastFailureSnapshot(runtimeId: number) {
   return workerOrchestrator.debugRuntimeLastFailureSnapshot(runtimeId);
 }

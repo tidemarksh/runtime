@@ -32,7 +32,7 @@ function pipeStateSignature(handle: ProcessHandle): string {
     .filter((slot, index, array) => slot > 0 && array.indexOf(slot) === index);
   return slots
     .map((pipeSlot) => {
-      const base = pipeBase + pipeSlot * (32 + 4096);
+      const base = pipeBase + pipeSlot * (32 + 65_536);
       const head = bytes.getUint32(base, true);
       const tail = bytes.getUint32(base + 4, true);
       const readOpen = bytes.getInt32(base + 8, true);
@@ -46,12 +46,23 @@ function readPipeCounters(handle: ProcessHandle, pipeSlot: number): {
   head: number;
   tail: number;
 } {
-  const base = handle.kernelState.pipeBase + pipeSlot * (32 + 4096);
+  const base = handle.kernelState.pipeBase + pipeSlot * (32 + 65_536);
   const bytes = new DataView(handle.memory.buffer);
   return {
     head: bytes.getUint32(base, true),
     tail: bytes.getUint32(base + 4, true),
   };
+}
+
+function fdPipeSlot(handle: ProcessHandle, fd: number): number {
+  const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+  if (
+    ofdId === 0
+    || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
+  ) {
+    return 0;
+  }
+  return handle.kernel.kernel_ofd_ino(ofdId);
 }
 
 export function writeProcessStdin(handle: ProcessHandle, data: Uint8Array): void {
@@ -150,10 +161,18 @@ export function drainHiddenProcessOutput(handle: ProcessHandle): boolean {
   if (handle.stdioOwner === null) {
     return false;
   }
+  const inheritedSlots = new Set(
+    [
+      handle.stdioOwner.hostStdio.stdoutPipe,
+      handle.stdioOwner.hostStdio.stderrPipe,
+    ].filter((slot) => slot > 0),
+  );
   const target = outputTarget(handle);
   const source = handle;
-  const stdoutPipe = handle.stdoutPipe;
-  const stderrPipe = handle.stderrPipe;
+  const stdoutSlot = fdPipeSlot(handle, 1);
+  const stderrSlot = fdPipeSlot(handle, 2);
+  const stdoutPipe = inheritedSlots.has(stdoutSlot) ? stdoutSlot : 0;
+  const stderrPipe = inheritedSlots.has(stderrSlot) ? stderrSlot : 0;
   const stdoutDrained = stdoutPipe !== 0
     ? drainPipeOutput(source, target, stdoutPipe)
     : false;
@@ -181,6 +200,9 @@ export async function settleVisibleProcessOutput(
     }
     const before = pipeStateSignature(visible);
     const drained = drainProcessOutput(visible);
+    if (drained && visible.kernelWorkerRequest && visible.pid > 0) {
+      await requestPipeStateSync(visible, false);
+    }
     const after = pipeStateSignature(visible);
     drainedAny ||= drained;
     if (!drained && before === after) {
@@ -205,8 +227,18 @@ export async function settleInheritedChildOutput(
   if (!parent) {
     return false;
   }
-  const slots = [child.stdoutPipe, child.stderrPipe]
+  const inheritedSlots = new Set(
+    [
+      parent.hostStdio.stdoutPipe,
+      parent.hostStdio.stderrPipe,
+    ].filter((slot) => slot > 0),
+  );
+  const slots = [fdPipeSlot(child, 1), fdPipeSlot(child, 2)]
+    .filter((slot) => inheritedSlots.has(slot))
     .filter((slot, index, array) => slot > 0 && array.indexOf(slot) === index);
+  if (slots.length === 0) {
+    return false;
+  }
   let stablePasses = 0;
 
   for (let pass = 0; pass < maxPasses; pass += 1) {

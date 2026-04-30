@@ -9,6 +9,7 @@ import type {
   KernelWorkerRequest,
 } from "../messages.js";
 import type { RuntimeStateBridge } from "../bridge/runtime-state.js";
+import type { RuntimeNetworkBridge, RuntimeNetworkConnection } from "../network.js";
 
 export interface SharedHostStdio {
   stdinPipe: number;
@@ -37,10 +38,22 @@ export interface ThreadWorkerState {
   ownerPid: number;
   generation: number;
   reinitCount: number;
+  stepCount: number;
+  totalStepBudget: number;
+  statusCount: number;
+  statusCounts: Record<string, number>;
+  lastStatus: number | null;
+  lastStepAtMs: number | null;
+  lastStatusAtMs: number | null;
   lastStepProcessPtr: number | null;
   lastStepPc: bigint | null;
   lastStepSp: bigint | null;
   lastStepS11: bigint | null;
+  hotStepPcs: Record<string, number>;
+  lastStatusPc: bigint | null;
+  lastStatusSp: bigint | null;
+  lastStatusS11: bigint | null;
+  hotStatusPcs: Record<string, number>;
   initialized: boolean;
   waitingInWorkerStatus: number | null;
   resumeWorkersOnReady: Worker[];
@@ -54,6 +67,8 @@ export interface BlockedWorkerState {
   timeoutDeadlineMs: number | null;
   sleepDeadlineTicks: bigint | null;
   rpcPending: boolean;
+  skipNextNetworkPump: boolean;
+  pipeSyncedBeforePassive: boolean;
 }
 
 export interface RuntimeFsState {
@@ -99,12 +114,15 @@ export interface ProcessHandle {
   runtimeBridge: RuntimeStateBridge;
   sabPageCache: SharedArrayBuffer | null;
   kernelWorkerRequest?: KernelWorkerRequestFn;
+  networkBridge?: RuntimeNetworkBridge;
+  networkConnections: Map<number, RuntimeNetworkConnection>;
   workers: Set<Worker>;
   readyWorkers: Worker[];
   runningWorker: Worker | null;
   blockedWorkers: Map<Worker, BlockedWorkerState>;
   pendingChildExitRecords: number;
   pendingChildSpawnRecords: number;
+  childExitSyncRecords: Map<number, number>;
   pipeSyncPromise: Promise<void> | null;
   pipeSyncQueued: boolean;
   pipeWaiterWakeQueued: boolean;
@@ -137,6 +155,8 @@ export interface AttachThreadWorkerRequest {
 export interface KernelShareGroup {
   members: Set<ProcessHandle>;
   sharedOfdIds: Set<number>;
+  ofdSlotSnapshots: Map<number, Uint8Array>;
+  forkSharedSyncPromise: Promise<void> | null;
 }
 
 export type KernelSyncHandle = Pick<
@@ -161,6 +181,9 @@ export interface CreateProcessOptions {
   sabPageCache?: SharedArrayBuffer | null;
   hydrateFsFromKernelWorker?: boolean;
   kernelWorkerRequest?: KernelWorkerRequestFn;
+  networkBridge?: RuntimeNetworkBridge;
+  stdio?: "pipe" | "pty";
+  stdin?: "pipe" | "closed";
   onExit?: (code: number) => void;
   onError?: (error: Error) => void;
   onStdout?: (data: Uint8Array) => void;

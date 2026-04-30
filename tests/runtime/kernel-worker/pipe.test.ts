@@ -230,6 +230,11 @@ function pipeReadOpen(memory: WebAssembly.Memory, pipeSlot: number): number {
   return new DataView(memory.buffer).getInt32(pipeSlotBase(state, pipeSlot) + 8, true);
 }
 
+function pipeWriteOpen(memory: WebAssembly.Memory, pipeSlot: number): number {
+  const state = makeKernelState();
+  return new DataView(memory.buffer).getInt32(pipeSlotBase(state, pipeSlot) + 12, true);
+}
+
 function makeSharedStateSync(
   parentExports: TestKernelExports,
   childExports: TestKernelExports,
@@ -308,6 +313,34 @@ test("kernel-worker pipe sync propagates shared pipe slots by shared OFD ids", (
 
   expect(pipeMarker(parentMemory, 6)).toBe(0xcc);
   expect(pipeMarker(canonicalMemory, 6)).toBe(0xcc);
+});
+
+test("kernel-worker pipe sync counts shared pipe endpoints by process-held OFD, not fd aliases", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
+
+  seedPipeOfd(parentExports, parentMemory, 7, 6, 10);
+  seedPipeOfd(parentExports, parentMemory, 8, 6, -11);
+  seedPipeOfd(childExports, childMemory, 7, 6, 10);
+  seedPipeOfd(childExports, childMemory, 8, 6, -11);
+  parentExports.setFdMap(new Map([[4, 7], [5, 8], [6, 7], [7, 8]]));
+  childExports.setFdMap(new Map([[4, 7], [5, 8], [6, 7], [7, 8]]));
+  seedPipeSlot(parentMemory, 6, 0xaa, 4, 4);
+  seedPipeSlot(childMemory, 6, 0xcc, 4, 4);
+
+  sharedStateSync.syncPipeState(2, makeKernelState());
+
+  expect(pipeReadOpen(canonicalMemory, 6)).toBe(2);
+  expect(pipeWriteOpen(canonicalMemory, 6)).toBe(2);
+  expect(pipeReadOpen(parentMemory, 6)).toBe(2);
+  expect(pipeWriteOpen(parentMemory, 6)).toBe(2);
+  expect(pipeReadOpen(childMemory, 6)).toBe(2);
+  expect(pipeWriteOpen(childMemory, 6)).toBe(2);
 });
 
 test("kernel-worker pipe sync keeps private stdio pipe slots process-local", () => {

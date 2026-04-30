@@ -19,10 +19,24 @@ export interface KernelWorkerOfdSlotSnapshot {
   slot: Uint8Array;
 }
 
+export interface KernelWorkerSocketStateSnapshot {
+  socketTable: Uint8Array;
+  netBufPool: Uint8Array;
+  socketUsed: number;
+  netBufUsed: bigint;
+}
+
+export interface KernelWorkerFdEntrySnapshot {
+  fd: number;
+  ofdId: number;
+  fdFlags: number;
+}
+
 export interface KernelWorkerPidStateSnapshot {
   pid: number;
   vmPtr: number;
   kernelState: KernelRuntimeState;
+  fdEntries?: KernelWorkerFdEntrySnapshot[];
 }
 
 export interface KernelWorkerPidBytesSnapshot {
@@ -57,6 +71,7 @@ export type ThreadWorkerInbound =
       runtimeEpoch?: number;
       guestWriteWatchRegions?: GuestWriteWatchRegion[];
       kernelState: KernelRuntimeState;
+      childExitRecords?: Array<{ childPid: number; waitStatus: number }>;
       sabPageCache: SharedArrayBuffer | null;
       runtimeNotify: SharedArrayBuffer;
       runtimeState: SharedArrayBuffer;
@@ -65,6 +80,7 @@ export type ThreadWorkerInbound =
       type: "step";
       budget: number;
       kernelState: KernelRuntimeState;
+      childExitRecords?: Array<{ childPid: number; waitStatus: number }>;
     };
 
 // ============================================================================
@@ -97,6 +113,9 @@ export interface ThreadWorkerStatusMessage {
   s11?: bigint;
   vmPtr: number;
   kernelState: KernelRuntimeState;
+  fdEntries?: KernelWorkerFdEntrySnapshot[];
+  ofdSlots?: KernelWorkerOfdSlotSnapshot[];
+  socketState?: KernelWorkerSocketStateSnapshot;
   debug?: string;
   syncEffects?: number;
   waitInWorker?: boolean;
@@ -124,6 +143,11 @@ export interface KernelWorkerRequestBase {
   requestId: number;
 }
 
+export type KernelWorkerFileLayerEntry =
+  | { kind: "dir"; path: string; mode?: number }
+  | { kind: "file"; path: string; data: Uint8Array; mode?: number }
+  | { kind: "symlink"; path: string; target: Uint8Array; mode?: number };
+
 export type KernelWorkerRequest =
   | {
       type: "init-kernel";
@@ -146,6 +170,10 @@ export type KernelWorkerRequest =
       }>;
     }
   | {
+      type: "apply-file-layer";
+      entries: KernelWorkerFileLayerEntry[];
+    }
+  | {
       type: "symlink";
       path: string;
       target: Uint8Array;
@@ -153,6 +181,10 @@ export type KernelWorkerRequest =
     }
   | {
       type: "read-file";
+      path: string;
+    }
+  | {
+      type: "readlink";
       path: string;
     }
   | {
@@ -267,6 +299,9 @@ export type KernelWorkerRequest =
   | {
       type: "sync-pipe-state";
       pid: number;
+      vmPtr: number;
+      fdEntries: KernelWorkerFdEntrySnapshot[];
+      ofdSlots?: KernelWorkerOfdSlotSnapshot[];
       kernelState: KernelRuntimeState;
     }
   | {
@@ -284,6 +319,7 @@ export type KernelWorkerRequest =
       type: "sync-socket-state";
       pid: number;
       kernelState: KernelRuntimeState;
+      socketState?: KernelWorkerSocketStateSnapshot;
     }
   | {
       type: "sync-fork-shared-state";
@@ -293,6 +329,7 @@ export type KernelWorkerRequest =
       targetKernelStates: KernelWorkerPidStateSnapshot[];
       ofdIds: number[];
       ofdSlots: KernelWorkerOfdSlotSnapshot[];
+      fdEntries: KernelWorkerFdEntrySnapshot[];
       includeMemfs?: boolean;
       preserveSourceRefcounts?: boolean;
       kernelState: KernelRuntimeState;
@@ -339,6 +376,10 @@ export type KernelWorkerResponse =
       requestId: number;
     }
   | {
+      type: "file-layer-applied";
+      requestId: number;
+    }
+  | {
       type: "symlink-created";
       requestId: number;
     }
@@ -346,6 +387,11 @@ export type KernelWorkerResponse =
       type: "file-read";
       requestId: number;
       data: Uint8Array;
+    }
+  | {
+      type: "readlink-result";
+      requestId: number;
+      target: Uint8Array;
     }
   | {
       type: "dir-created";
@@ -460,6 +506,7 @@ export type KernelWorkerResponse =
       type: "socket-state-synced";
       requestId: number;
       kernelState: KernelRuntimeState;
+      socketState?: KernelWorkerSocketStateSnapshot;
     }
   | {
       type: "fork-shared-state-synced";

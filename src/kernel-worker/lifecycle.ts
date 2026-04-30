@@ -117,8 +117,12 @@ export function createKernelWorkerLifecycle(deps: KernelWorkerLifecycleDeps) {
     attachKernelRuntimeState(processExports, kernelState);
     const childPid = processExports.thread_vfork_child_pid();
     if (childPid > 0) {
-      processExports.process_record_child_exit(childPid, waitStatus);
       processExports.thread_resume_vfork_parent(vmPtr, childPid);
+      if (processExports.process_record_child_exit_for_parent) {
+        processExports.process_record_child_exit_for_parent(pid, childPid, waitStatus);
+      } else {
+        processExports.process_record_child_exit(childPid, waitStatus);
+      }
     }
     return {
       childPid,

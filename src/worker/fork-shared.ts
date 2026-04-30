@@ -62,6 +62,41 @@ export function collectProcessHeldOfds(handle: ProcessHandle): Set<number> {
   return heldOfds;
 }
 
+function collectProcessHeldOfdRefcounts(handle: ProcessHandle): Int32Array {
+  const maxFds = handle.kernel.abi_max_fds();
+  const heldOfdRefcounts = new Int32Array(maxFds);
+
+  for (let fd = 0; fd < maxFds; fd += 1) {
+    const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+    if (ofdId !== 0 && ofdId < maxFds) {
+      heldOfdRefcounts[ofdId] += 1;
+    }
+  }
+
+  for (let slot = 0; slot < boundedThreadSlotCount(handle); slot += 1) {
+    let threadVmPtr = 0;
+    try {
+      threadVmPtr = handle.kernel.process_thread_vm_ptr(handle.vmPtr, slot);
+    } catch {
+      continue;
+    }
+    if (threadVmPtr === 0 || !plausibleThreadVmPtr(handle, threadVmPtr)) {
+      continue;
+    }
+    let blockedOfdId = 0;
+    try {
+      blockedOfdId = handle.kernel.thread_blocked_ofd_id?.(threadVmPtr) ?? 0;
+    } catch {
+      continue;
+    }
+    if (blockedOfdId !== 0 && blockedOfdId < maxFds) {
+      heldOfdRefcounts[blockedOfdId] += 1;
+    }
+  }
+
+  return heldOfdRefcounts;
+}
+
 export function collectHeldOfdIdsByType(handle: ProcessHandle, types: number[]): number[] {
   const held = collectProcessHeldOfds(handle);
   const ofdIds: number[] = [];
@@ -109,13 +144,22 @@ export function snapshotKernelShareOfdSlots(
     if (ofdId <= 0 || ofdId >= maxFds || snapshots.has(ofdId)) {
       continue;
     }
-    for (const member of members) {
+    const heldMembers = members.filter((member) => collectProcessHeldOfds(member).has(ofdId));
+    for (const member of [...heldMembers, ...members.filter((member) => !heldMembers.includes(member))]) {
       if (!hasPlausibleOfdState(member, ofdId)) {
         continue;
       }
       const slotOffset = member.kernelState.ofdTablePtr + ofdId * slotBytes;
-      snapshots.set(ofdId, new Uint8Array(member.memory.buffer, slotOffset, slotBytes).slice());
+      const slot = new Uint8Array(member.memory.buffer, slotOffset, slotBytes).slice();
+      snapshots.set(ofdId, slot);
+      handle.kernelShare.ofdSlotSnapshots.set(ofdId, slot);
       break;
+    }
+    if (!snapshots.has(ofdId)) {
+      const cached = handle.kernelShare.ofdSlotSnapshots.get(ofdId);
+      if (cached?.length === slotBytes) {
+        snapshots.set(ofdId, cached.slice());
+      }
     }
   }
   return snapshots;
@@ -155,9 +199,23 @@ export function staleKernelShareOfdIds(handle: ProcessHandle): number[] {
   return stale.sort((left, right) => left - right);
 }
 
+export function syncKernelShareOfdReservations(handle: ProcessHandle): void {
+  const activeOfdIds = activeKernelShareOfdIds(handle);
+  const staleOfdIds = staleKernelShareOfdIds(handle);
+  for (const member of handle.kernelShare.members) {
+    for (const ofdId of activeOfdIds) {
+      member.kernel.kernel_reserve_ofd?.(ofdId);
+    }
+    for (const ofdId of staleOfdIds) {
+      member.kernel.kernel_unreserve_ofd?.(ofdId);
+    }
+  }
+}
+
 export function pruneStaleKernelShareOfdIds(handle: ProcessHandle, staleOfdIds: Iterable<number>): void {
   for (const ofdId of staleOfdIds) {
     handle.kernelShare.sharedOfdIds.delete(ofdId);
+    handle.kernelShare.ofdSlotSnapshots.delete(ofdId);
   }
 }
 
@@ -202,11 +260,12 @@ export function reconcileForkSharedOfdRefcounts(handle: ProcessHandle, sharedOfd
   const expectedRefcounts = new Int32Array(maxFds);
 
   for (const member of handle.kernelShare.members) {
-    for (const ofdId of collectProcessHeldOfds(member)) {
-      if (!sharedOfdIdSet.has(ofdId)) {
+    const memberRefcounts = collectProcessHeldOfdRefcounts(member);
+    for (const ofdId of sharedOfdIdSet) {
+      if (ofdId <= 0 || ofdId >= maxFds) {
         continue;
       }
-      expectedRefcounts[ofdId] += 1;
+      expectedRefcounts[ofdId] += memberRefcounts[ofdId] ?? 0;
     }
   }
 

@@ -1,5 +1,6 @@
 import { attachKernelRuntimeState, readKernelRuntimeState, type KernelExports, type KernelRuntimeState } from "../abi.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
+import type { KernelWorkerFdEntrySnapshot, KernelWorkerOfdSlotSnapshot } from "../messages.js";
 import { resetPageCache } from "../fs/sab-page-cache.js";
 import {
   restoreThreadWorkerPrepareMemory,
@@ -68,7 +69,13 @@ interface KernelWorkerProcessControlDeps {
   ): void;
   rebuildPageCacheFromExports(sourceExports: KernelExports): void;
   rebuildPageCacheFromCanonical(): void;
-  syncPipeState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
+  syncPipeState(
+    pid: number,
+    kernelState: KernelRuntimeState,
+    fdEntries?: KernelWorkerFdEntrySnapshot[],
+    ofdSlots?: KernelWorkerOfdSlotSnapshot[],
+    vmPtrOverride?: number,
+  ): KernelRuntimeState;
   syncEpollState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
   syncSocketState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
   copyCanonicalMemfsToProcess(
@@ -77,6 +84,8 @@ interface KernelWorkerProcessControlDeps {
     targetState: KernelRuntimeState,
     options?: { includeData?: boolean },
   ): void;
+  snapshotProcSelfExe(targetExports: KernelExports): Uint8Array | null;
+  restoreProcSelfExe(targetExports: KernelExports, target: Uint8Array | null): void;
   composeProcessPipeUsed(processExports: KernelExports, vmPtr: number, sharedPipeUsed: bigint): bigint;
   collectProcessHeldEpollOfdIds(processExports: KernelExports, vmPtr: number): number[];
   collectProcessHeldPipeSlots(processExports: KernelExports, vmPtr: number): Set<number>;
@@ -173,6 +182,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
   ): void {
     const sourceState = readKernelRuntimeState(processExports);
     const canonicalState = readKernelRuntimeState(canonicalExports);
+    const canonicalProcSelfExe = deps.snapshotProcSelfExe(canonicalExports);
     deps.copyMemfsState(processExports, sourceState, canonicalExports, canonicalState, {
       // A fallback full sync must preserve regular-file bodies. Tree-only
       // metadata copies can reconstruct directory shape, but they also turn
@@ -180,6 +190,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       // rebuilt and fanned out.
       includeData: true,
     });
+    deps.restoreProcSelfExe(canonicalExports, canonicalProcSelfExe);
     deps.rebuildPageCacheFromCanonical();
     deps.fanoutCanonicalMemfs();
   }
@@ -345,7 +356,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
         const memberState = readKernelRuntimeState(processExports);
         const updatedCanonicalState = readKernelRuntimeState(canonicalExports);
         deps.copyCanonicalMemfsToProcess(updatedCanonicalState, processExports, memberState, {
-          includeData: false,
+          includeData: seedMemfsMode === "full",
         });
       }
       return readKernelRuntimeState(processExports) ?? socketState;
@@ -386,7 +397,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     const registeredProcessState = readKernelRuntimeState(processExports);
     if (seedMemfsMode !== "none") {
       deps.copyCanonicalMemfsToProcess(registeredCanonicalState, processExports, registeredProcessState, {
-        includeData: false,
+        includeData: seedMemfsMode === "full",
       });
     }
     deps.copySelectedEpollState(

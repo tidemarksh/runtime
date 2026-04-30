@@ -1,8 +1,32 @@
 import { attachKernelRuntimeState, readKernelRuntimeState } from "../../abi.js";
+import type { KernelWorkerFdEntrySnapshot, KernelWorkerOfdSlotSnapshot } from "../../messages.js";
 import type { KernelWorkerSharedStateSyncDeps, KernelRuntimeState } from "./types.js";
 
 export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyncDeps) {
-  function syncPipeState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState {
+  function applyFdEntrySnapshot(
+    processExports: ReturnType<KernelWorkerSharedStateSyncDeps["requireProcessKernel"]>,
+    vmPtr: number,
+    fdEntries: KernelWorkerFdEntrySnapshot[] | undefined,
+  ): void {
+    if (vmPtr === 0 || !fdEntries || fdEntries.length === 0) {
+      return;
+    }
+    const maxFds = processExports.abi_max_fds();
+    for (const entry of fdEntries) {
+      if (entry.fd < 0 || entry.fd >= maxFds) {
+        continue;
+      }
+      processExports.process_set_fd_entry(vmPtr, entry.fd, entry.ofdId, entry.fdFlags);
+    }
+  }
+
+  function syncPipeState(
+    pid: number,
+    kernelState: KernelRuntimeState,
+    fdEntries?: KernelWorkerFdEntrySnapshot[],
+    ofdSlots?: KernelWorkerOfdSlotSnapshot[],
+    vmPtrOverride?: number,
+  ): KernelRuntimeState {
     const canonicalExports = deps.getCanonicalExports();
     const processExports = deps.processKernels.get(pid);
     if (!processExports) {
@@ -12,7 +36,12 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
 
     const sourceState = readKernelRuntimeState(processExports);
     const canonicalState = readKernelRuntimeState(canonicalExports);
-    const sourceVmPtr = deps.getCanonicalProcessVmPtr(pid);
+    const sourceVmPtr = vmPtrOverride ?? deps.getCanonicalProcessVmPtr(pid);
+    applyFdEntrySnapshot(processExports, sourceVmPtr, fdEntries);
+    if (ofdSlots && ofdSlots.length > 0) {
+      deps.applySelectedOfdSnapshots(processExports, sourceState, ofdSlots);
+      deps.applySelectedOfdSnapshots(canonicalExports, canonicalState, ofdSlots);
+    }
     const canonicalManagedPipeSlots = new Set<number>(deps.collectCanonicalManagedPipeSlots(canonicalState));
     if (sourceVmPtr !== 0) {
       const privatePipeSlotModes = deps.collectProcessPrivatePipeSourceModes(processExports, sourceVmPtr);
@@ -64,12 +93,10 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
         }
       }
     }
-    for (const pipeSlot of canonicalManagedPipeSlots) {
-      if (pipeSlot <= 0 || pipeSlot >= processExports.abi_max_pipes()) {
-        continue;
-      }
-      const sourceOffset = sourceState.pipeBase + pipeSlot * (32 + 4096);
-      const canonicalOffset = canonicalState.pipeBase + pipeSlot * (32 + 4096);
+    const maxPipeSlots = Math.min(processExports.abi_max_pipes(), canonicalExports.abi_max_pipes());
+    for (let pipeSlot = 1; pipeSlot < maxPipeSlots; pipeSlot += 1) {
+      const sourceOffset = sourceState.pipeBase + pipeSlot * (32 + 65_536);
+      const canonicalOffset = canonicalState.pipeBase + pipeSlot * (32 + 65_536);
       const sourceHead = sourcePipeView.getUint32(sourceOffset, true);
       const sourceTail = sourcePipeView.getUint32(sourceOffset + 4, true);
       const canonicalHead = canonicalPipeView.getUint32(canonicalOffset, true);
@@ -82,6 +109,7 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
         mode |= 1 << 1;
       }
       if (mode !== 0) {
+        canonicalManagedPipeSlots.add(pipeSlot);
         sourcePipeSlotModes.set(pipeSlot, mode);
         sourceSyncPipeSlots.add(pipeSlot);
       }

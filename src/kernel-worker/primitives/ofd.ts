@@ -32,17 +32,12 @@ function plausibleThreadVmPtr(processExports: KernelExports, vmPtr: number): boo
 export function collectProcessHeldOfdRefcounts(processExports: KernelExports, vmPtr: number): Int32Array {
   const maxFds = processExports.abi_max_fds();
   const heldOfdRefcounts = new Int32Array(maxFds);
-  const processHeldOfds = new Set<number>();
 
   for (let fd = 0; fd < maxFds; fd += 1) {
     const ofdId = processExports.process_fd_ofd_id(vmPtr, fd);
     if (ofdId !== 0 && ofdId < maxFds) {
-      processHeldOfds.add(ofdId);
+      heldOfdRefcounts[ofdId] += 1;
     }
-  }
-
-  for (const ofdId of processHeldOfds) {
-    heldOfdRefcounts[ofdId] += 1;
   }
 
   for (let slot = 0; slot < boundedThreadSlotCount(processExports, vmPtr); slot += 1) {
@@ -171,7 +166,8 @@ export function createKernelWorkerOfdPrimitives(deps: KernelWorkerPrimitivesDeps
     }
 
     const expectedRefcounts = new Int32Array(maxFds);
-    for (const pid of memberPids) {
+    const refcountPids = new Set([...memberPids, ...deps.processKernels.keys()]);
+    for (const pid of refcountPids) {
       const vmPtr = memberVmPtrs.get(pid) ?? 0;
       if (vmPtr === 0) {
         continue;

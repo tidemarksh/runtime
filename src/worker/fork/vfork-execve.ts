@@ -24,6 +24,7 @@ import {
 } from "../kernel-share.js";
 import {
   copyKernelPrivateRegion,
+  ensureMemoryCapacity,
 } from "../kernel-scratch.js";
 import { acquireWorker, ensureEvictionTimer } from "../pool.js";
 import { createForkChildHandle } from "./common.js";
@@ -31,6 +32,82 @@ import { computeGuestRamLimitBytes } from "./common.js";
 import type { ProcessHandle, ThreadWorkerState, WorkerForkDeps } from "./types.js";
 
 const VFORK_EXECVE_HANDOFF_FAILURE_WAIT_STATUS = 127 << 8;
+
+function copyKernelRuntimeRegion(
+  source: WebAssembly.Memory,
+  target: WebAssembly.Memory,
+  start: number,
+  byteLength: number,
+): void {
+  if (start === 0 || byteLength <= 0) {
+    return;
+  }
+  const end = start + byteLength;
+  ensureMemoryCapacity(target, end);
+  new Uint8Array(target.buffer).set(new Uint8Array(source.buffer, start, byteLength), start);
+}
+
+function copyExecveKernelRuntimeRegions(handle: ProcessHandle, target: WebAssembly.Memory): void {
+  copyKernelRuntimeRegion(
+    handle.memory,
+    target,
+    handle.kernelState.memfsPtr,
+    handle.kernelState.memfsHeaderBytes
+      + handle.kernelState.memfsInodesBytes
+      + handle.kernelState.memfsFirstChildBytes
+      + handle.kernelState.memfsDirEntriesBytes
+      + handle.kernelState.memfsDataBytes,
+  );
+  copyKernelRuntimeRegion(
+    handle.memory,
+    target,
+    handle.kernelState.epollTablePtr,
+    handle.kernel.kernel_epoll_table_bytes(),
+  );
+  copyKernelRuntimeRegion(
+    handle.memory,
+    target,
+    handle.kernelState.socketTablePtr,
+    handle.kernel.kernel_socket_table_bytes(),
+  );
+  copyKernelRuntimeRegion(
+    handle.memory,
+    target,
+    handle.kernelState.pipeBase,
+    handle.kernel.kernel_pipe_region_bytes(),
+  );
+  copyKernelRuntimeRegion(
+    handle.memory,
+    target,
+    handle.kernelState.netBufBase,
+    handle.kernel.kernel_net_buf_pool_bytes(),
+  );
+  copyKernelRuntimeRegion(
+    handle.memory,
+    target,
+    handle.kernelState.sigSlotsPtr,
+    handle.kernel.kernel_sig_slots_bytes() + handle.kernel.kernel_signal_action_table_bytes(),
+  );
+  copyKernelRuntimeRegion(
+    handle.memory,
+    target,
+    handle.kernelState.processPendingPtr,
+    handle.kernel.kernel_process_pending_bytes(),
+  );
+  copyKernelRuntimeRegion(
+    handle.memory,
+    target,
+    handle.kernelState.processRuntimeStatePtr,
+    handle.kernel.kernel_process_runtime_state_bytes(),
+  );
+  copyKernelRuntimeRegion(
+    handle.memory,
+    target,
+    handle.kernelState.timeStatePtr,
+    handle.kernel.kernel_time_state_bytes(),
+  );
+}
+
 function debugVforkVmState(
   handle: ProcessHandle,
   vmPtr: number,
@@ -193,8 +270,11 @@ export async function handleVforkExecve(
   configureKernelInstanceStack(childKernel, MAIN_THREAD_KERNEL_STACK_SLOT);
   // vfork+execve does not need the pre-exec guest image. The kernel handoff
   // only requires the live kernel/private region; argv/envp/process state are
-  // restaged explicitly into the child guest window below.
+  // restaged explicitly into the child guest window below. Kernel runtime
+  // regions must still be present so inherited fds, pipes, and MemFS-backed
+  // dynamic loader reads remain valid before kernel-worker rehydration.
   copyKernelPrivateRegion(handle.memory, childMemory, handle.kernelState.heapPtr);
+  copyExecveKernelRuntimeRegions(handle, childMemory);
   attachKernelRuntimeState(childKernel, handle.kernelState);
 
   const rollbackParentAfterHandoffFailure = async (): Promise<void> => {

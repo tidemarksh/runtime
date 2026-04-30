@@ -277,4 +277,102 @@ describe("createKernelWorkerMemfsPrimitives", () => {
     expect(new TextDecoder().decode(new Uint8Array(targetMemory.buffer, 0x500 + 32, 16))).toBe("0123456789abcdef");
     expect(readMemfsLayout(targetMemory, targetState.memfsPtr).dataUsed).toBe(48);
   });
+
+  it("metadata-only copy preserves symlink targets while dropping regular file data", () => {
+    const memoryPages = { initial: 1, maximum: 4, shared: true } as const;
+    const sourceMemory = new WebAssembly.Memory(memoryPages);
+    const targetMemory = new WebAssembly.Memory(memoryPages);
+    const primitives = createKernelWorkerMemfsPrimitives();
+
+    const sourceState: KernelRuntimeState = {
+      heapBase: 0,
+      heapPtr: 0,
+      ofdTablePtr: 0,
+      memfsPtr: 0x80,
+      memStatePtr: 0,
+      epollTablePtr: 0,
+      socketTablePtr: 0,
+      socketUsed: 0,
+      pipeBase: 0,
+      pipeUsed: 0n,
+      netBufBase: 0,
+      netBufUsed: 0n,
+      sigSlotsPtr: 0,
+      processPendingPtr: 0,
+      processRuntimeStatePtr: 0,
+      timeStatePtr: 0,
+    };
+    const targetState: KernelRuntimeState = {
+      ...sourceState,
+      memfsPtr: 0x180,
+    };
+
+    writeMemfsHeader(sourceMemory, sourceState.memfsPtr, {
+      inodeCount: 3,
+      dataUsed: 48,
+      dataCap: 64,
+      inodesPtr: 0x200,
+      firstChildPtr: 0x280,
+      dirEntriesPtr: 0x2a0,
+      dataPtr: 0x300,
+    });
+    writeMemfsHeader(targetMemory, targetState.memfsPtr, {
+      inodeCount: 3,
+      dataUsed: 0,
+      dataCap: 64,
+      inodesPtr: 0x400,
+      firstChildPtr: 0x480,
+      dirEntriesPtr: 0x4a0,
+      dataPtr: 0x500,
+    });
+
+    const sourceInodeView = new DataView(sourceMemory.buffer);
+    const regularInodeBase = 0x200 + 32;
+    sourceInodeView.setUint32(regularInodeBase + 0, 0o100644, true);
+    sourceInodeView.setBigUint64(regularInodeBase + 16, 4n, true);
+    sourceInodeView.setUint32(regularInodeBase + 24, 16, true);
+    sourceInodeView.setUint32(regularInodeBase + 28, 4, true);
+
+    const symlinkInodeBase = 0x200 + 64;
+    const symlinkTarget = new TextEncoder().encode("usr/lib");
+    sourceInodeView.setUint32(symlinkInodeBase + 0, 0o120777, true);
+    sourceInodeView.setBigUint64(symlinkInodeBase + 16, BigInt(symlinkTarget.length), true);
+    sourceInodeView.setUint32(symlinkInodeBase + 24, 32, true);
+    sourceInodeView.setUint32(symlinkInodeBase + 28, symlinkTarget.length, true);
+
+    new Uint8Array(sourceMemory.buffer).set(new TextEncoder().encode("file"), 0x300 + 16);
+    new Uint8Array(sourceMemory.buffer).set(symlinkTarget, 0x300 + 32);
+
+    const sourceExports = createFakeExports(sourceMemory, {
+      inodesBytes: 96,
+      firstChildBytes: 12,
+      dirEntriesBytes: 32,
+      dataBytes: 64,
+      dataPtr: 0x300,
+    });
+    const targetExports = createFakeExports(targetMemory, {
+      inodesBytes: 96,
+      firstChildBytes: 12,
+      dirEntriesBytes: 32,
+      dataBytes: 64,
+      dataPtr: 0x500,
+    });
+
+    primitives.copyMemfsState(sourceExports, sourceState, targetExports, targetState, {
+      includeData: false,
+    });
+
+    const targetInodeView = new DataView(targetMemory.buffer);
+    const targetRegularInodeBase = 0x400 + 32;
+    const targetSymlinkInodeBase = 0x400 + 64;
+    const symlinkDataOffset = targetInodeView.getUint32(targetSymlinkInodeBase + 24, true);
+    const symlinkDataCap = targetInodeView.getUint32(targetSymlinkInodeBase + 28, true);
+
+    expect(targetInodeView.getUint32(targetRegularInodeBase + 24, true)).toBe(0);
+    expect(targetInodeView.getUint32(targetRegularInodeBase + 28, true)).toBe(0);
+    expect(symlinkDataOffset).toBe(8);
+    expect(symlinkDataCap).toBe(symlinkTarget.length);
+    expect(new TextDecoder().decode(new Uint8Array(targetMemory.buffer, 0x500 + symlinkDataOffset, symlinkTarget.length))).toBe("usr/lib");
+    expect(readMemfsLayout(targetMemory, targetState.memfsPtr).dataUsed).toBe(8 + symlinkTarget.length);
+  });
 });

@@ -54,20 +54,23 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
       return false;
     }
     handle.exitInProgress = true;
-    if (handle.stdioOwner === null) {
+    if (handle.stdioOwner === null && !kernelWorkerOwnsPipeState(handle)) {
       deps.drainProcessOutput(handle);
     }
     return true;
   }
 
   async function syncOwnedStateBeforeExit(handle: ProcessHandle): Promise<void> {
-    if (kernelWorkerOwnsPipeState(handle)) {
-      await deps.requestPipeStateSync(handle, false);
-    }
     if (handle.kernelWorkerRequest && handle.pid > 0) {
       await deps.syncForkSharedStateViaKernelWorker(handle, kernelShareOtherMembers(handle), {
-        includeMemfs: true,
+        includeMemfs: false,
+        trackHeldOfds: true,
+        deltaOfdIds: true,
+        sourceVmPtr: handle.vmPtr,
       });
+    }
+    if (kernelWorkerOwnsPipeState(handle)) {
+      await deps.requestPipeStateSync(handle, true);
     }
     if (kernelWorkerOwnsSocketState(handle)) {
       await deps.requestSocketStateSync(handle, false);
@@ -127,10 +130,10 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
       return false;
     }
 
-    void deps.recordChildExitViaKernelWorker(handle, childPid, waitStatus);
     handle.vforkSnapshot = null;
     handle.vforkWorker = null;
     handle.kernel.thread_resume_vfork_parent(vmPtr, childPid);
+    void deps.recordChildExitViaKernelWorker(handle, childPid, waitStatus);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
     deps.kickBlockedWorkers(handle);

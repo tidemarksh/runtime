@@ -57,6 +57,7 @@ export interface KernelExports {
   abi_sys_lseek?(): bigint | number;
   abi_sys_execve?(): bigint | number;
   abi_sys_close?(): bigint | number;
+  abi_sys_close_range?(): bigint | number;
   abi_sys_pipe2?(): bigint | number;
   abi_sys_epoll_create1?(): bigint | number;
   abi_sys_epoll_ctl?(): bigint | number;
@@ -69,13 +70,22 @@ export interface KernelExports {
   abi_sys_socketpair?(): bigint | number;
   abi_sys_bind?(): bigint | number;
   abi_sys_listen?(): bigint | number;
+  abi_sys_connect?(): bigint | number;
   abi_sys_accept4?(): bigint | number;
+  abi_sys_sendto?(): bigint | number;
+  abi_sys_recvfrom?(): bigint | number;
+  abi_sys_sendmsg?(): bigint | number;
+  abi_sys_recvmsg?(): bigint | number;
+  abi_sys_setsockopt?(): bigint | number;
+  abi_sys_shutdown?(): bigint | number;
   abi_sys_eventfd2?(): bigint | number;
   abi_sys_setpgid?(): bigint | number;
   abi_sys_setsid?(): bigint | number;
   abi_sys_kill?(): bigint | number;
   abi_sys_tkill?(): bigint | number;
   abi_sys_tgkill?(): bigint | number;
+  abi_sys_ppoll?(): bigint | number;
+  abi_sys_pselect6?(): bigint | number;
   debug_panic_file_ptr?(): number;
   debug_panic_file_len?(): number;
   debug_panic_line?(): number;
@@ -93,6 +103,8 @@ export interface KernelExports {
   debug_fd_syscall_trace_arg3?(index: number): bigint | number;
   debug_fd_syscall_trace_result?(index: number): bigint | number;
   debug_fd_syscall_trace_status?(index: number): number;
+  debug_fd_syscall_trace_pid_sample0?(index: number): bigint | number;
+  debug_fd_syscall_trace_pid_sample1?(index: number): bigint | number;
   debug_path_syscall_trace_len?(): number;
   debug_path_syscall_trace_vm_ptr?(index: number): number;
   debug_path_syscall_trace_nr?(index: number): bigint | number;
@@ -120,7 +132,10 @@ export interface KernelExports {
   abi_eintr(): number;
   abi_eagain(): number;
   abi_etimedout?(): number;
+  abi_einprogress?(): number;
   abi_epipe(): number;
+  abi_enotsock?(): number;
+  abi_enotconn?(): number;
   abi_econnrefused(): number;
 
   // Kernel lifecycle
@@ -227,6 +242,7 @@ export interface KernelExports {
   thread_stack_minus?(vm_ptr: number, byteOffset: number): bigint;
   thread_a0(vm_ptr: number): bigint;
   thread_a1(vm_ptr: number): bigint;
+  thread_a7?(vm_ptr: number): bigint;
   thread_stack_word?(vm_ptr: number, word_index: number): bigint;
   thread_blocked_fd(vm_ptr: number): number;
   thread_blocked_ofd_id(vm_ptr: number): number;
@@ -254,8 +270,32 @@ export interface KernelExports {
   thread_record_blocked_addr(vm_ptr: number): number;
   thread_resume_wait4(vm_ptr: number): bigint;
   thread_epoll_wait_timeout(vm_ptr: number): bigint;
+  thread_poll_wait_timeout?(vm_ptr: number): bigint;
+  thread_poll_wait_has_socket?(vm_ptr: number): number;
+  thread_poll_wait_ready_count?(vm_ptr: number): number;
+  thread_poll_wait_first_socket_revents?(vm_ptr: number): number;
+  thread_poll_wait_first_pipe_revents?(vm_ptr: number): number;
+  thread_pipe_read_eof_sync_pending?(vm_ptr: number): number;
+  thread_blocked_pipe_buffered_len?(vm_ptr: number): number;
+  thread_blocked_pipe_write_open?(vm_ptr: number): number;
+  thread_blocked_pipe_read_ready?(vm_ptr: number): number;
+  thread_resume_pipe_read_open_empty?(vm_ptr: number): number;
   thread_socket_wait_timeout?(vm_ptr: number): bigint;
+  thread_connect_fd?(vm_ptr: number): number;
+  thread_connect_peer_addr?(vm_ptr: number, dst_ptr: number, dst_len: number): number;
+  thread_socket_drain_outbound?(vm_ptr: number, fd: number, dst_ptr: number, dst_len: number): number;
+  thread_socket_close_external_peer?(vm_ptr: number, fd: number): number;
+  thread_socket_mark_external_peer?(vm_ptr: number, fd: number): number;
+  thread_socket_outbound_available?(vm_ptr: number, fd: number): number;
+  thread_socket_idx_for_fd?(vm_ptr: number, fd: number): number;
+  thread_socket_peer_idx?(socket_idx: number): number;
+  thread_socket_state?(socket_idx: number): number;
+  thread_socket_external_peer?(socket_idx: number): number;
+  thread_socket_recv_buf_idx?(socket_idx: number): number;
+  thread_socket_recv_available?(socket_idx: number): number;
+  thread_socket_inject_inbound?(vm_ptr: number, fd: number, src_ptr: number, src_len: number): number;
   thread_resume_epoll_wait_timeout(vm_ptr: number): void;
+  thread_resume_poll_wait_timeout?(vm_ptr: number): void;
   thread_resume_socket_wait_timeout?(vm_ptr: number): void;
   thread_interrupt_epoll_wait?(vm_ptr: number, errno: number): number;
   thread_resume_blocked_syscall(vm_ptr: number): bigint;
@@ -322,6 +362,8 @@ export interface KernelExports {
   process_stdout_pipe(vm_ptr: number): number;
   process_stderr_pipe(vm_ptr: number): number;
   process_tty_pty_slot?(vm_ptr: number): number;
+  process_use_pipe_stdio?(vm_ptr: number): number;
+  process_close_host_stdin?(vm_ptr: number): void;
   process_host_write_stdin?(vm_ptr: number, srcPtr: number, srcLen: number): number;
   process_set_host_stdio(
     vm_ptr: number,
@@ -337,6 +379,9 @@ export interface KernelExports {
   process_set_fd_entry(vm_ptr: number, fd: number, ofdId: number, fdFlags: number): void;
   kernel_retain_ofd(ofdId: number): void;
   kernel_release_ofd(ofdId: number): void;
+  kernel_reserve_ofd?(ofdId: number): void;
+  kernel_unreserve_ofd?(ofdId: number): void;
+  kernel_ofd_reserved?(ofdId: number): number;
   kernel_ofd_fd_type(ofdId: number): number;
   kernel_pty_input_pipe?(ptyIdx: number): number;
   kernel_pty_output_pipe?(ptyIdx: number): number;

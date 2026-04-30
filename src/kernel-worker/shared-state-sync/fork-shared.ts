@@ -1,9 +1,26 @@
 import { attachKernelRuntimeState, readKernelRuntimeState } from "../../abi.js";
-import type { KernelWorkerOfdSlotSnapshot } from "../../messages.js";
+import type { KernelWorkerFdEntrySnapshot, KernelWorkerOfdSlotSnapshot } from "../../messages.js";
 import { clearMemoryRange } from "../common.js";
 import type { KernelWorkerSharedStateSyncDeps, KernelWorkerPidBytesSnapshot, KernelWorkerPidStateSnapshot, KernelRuntimeState } from "./types.js";
 
 export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedStateSyncDeps) {
+  function applyFdEntrySnapshot(
+    processExports: ReturnType<KernelWorkerSharedStateSyncDeps["requireProcessKernel"]>,
+    vmPtr: number,
+    fdEntries: KernelWorkerFdEntrySnapshot[],
+  ): void {
+    if (vmPtr === 0 || fdEntries.length === 0) {
+      return;
+    }
+    const maxFds = processExports.abi_max_fds();
+    for (const entry of fdEntries) {
+      if (entry.fd < 0 || entry.fd >= maxFds) {
+        continue;
+      }
+      processExports.process_set_fd_entry(vmPtr, entry.fd, entry.ofdId, entry.fdFlags);
+    }
+  }
+
   function syncForkSharedState(
     pid: number,
     vmPtr: number,
@@ -11,13 +28,18 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
     targetKernelStates: KernelWorkerPidStateSnapshot[],
     ofdIds: number[],
     ofdSlots: KernelWorkerOfdSlotSnapshot[],
+    fdEntries: KernelWorkerFdEntrySnapshot[],
     includeMemfs: boolean,
     preserveSourceRefcounts: boolean,
     kernelState: KernelRuntimeState,
   ): KernelRuntimeState {
     const canonicalExports = deps.getCanonicalExports();
-    const processExports = deps.requireProcessKernel(pid);
+    const processExports = deps.processKernels.get(pid);
+    if (!processExports) {
+      return kernelState;
+    }
     attachKernelRuntimeState(processExports, kernelState);
+    applyFdEntrySnapshot(processExports, vmPtr, fdEntries);
 
     const sourceState = readKernelRuntimeState(processExports);
     const snappedOfdIds = new Set<number>();
@@ -47,18 +69,26 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
       sourceHeldOfdIds.filter((ofdId) => !snappedOfdIds.has(ofdId)),
     );
     if (includeMemfs) {
+      const canonicalProcSelfExe = deps.snapshotProcSelfExe(canonicalExports);
       deps.copyMemfsState(processExports, sourceState, canonicalExports, canonicalState, {
         includeData: true,
       });
+      deps.restoreProcSelfExe(canonicalExports, canonicalProcSelfExe);
     }
 
     const memberVmPtrs = new Map<number, number>([[pid, vmPtr]]);
     const memberPids = new Set<number>([pid]);
     for (const target of targetKernelStates) {
-      memberVmPtrs.set(target.pid, target.vmPtr);
+      const targetExports = deps.processKernels.get(target.pid);
+      if (targetExports) {
+        attachKernelRuntimeState(targetExports, target.kernelState);
+        memberVmPtrs.set(target.pid, target.vmPtr);
+      }
     }
     for (const targetPid of targetPids) {
-      memberPids.add(targetPid);
+      if (deps.processKernels.has(targetPid)) {
+        memberPids.add(targetPid);
+      }
     }
     if (!preserveSourceRefcounts) {
       deps.reconcileCanonicalOfdRefcounts(memberPids, memberVmPtrs, ofdIds);
@@ -67,18 +97,17 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
       kernelState: reconciledCanonicalState,
       readOpen,
       writeOpen,
+      managedPipeSlots,
     } = deps.recomputeCanonicalPipeControlState();
-    const sharedPipeSlots = deps.collectPipeSlotsForOfdIds(canonicalExports, ofdIds);
     attachKernelRuntimeState(processExports, sourceState);
     deps.copySelectedOfdState(canonicalExports, reconciledCanonicalState, processExports, sourceState, ofdIds);
-    deps.copySelectedPipeSlots(canonicalExports, reconciledCanonicalState, processExports, sourceState, sharedPipeSlots);
     deps.applyPipeControlState(
       processExports,
       sourceState,
       readOpen,
       writeOpen,
       deps.composeProcessPipeUsed(processExports, vmPtr, reconciledCanonicalState.pipeUsed),
-      sharedPipeSlots,
+      managedPipeSlots,
     );
 
     const targetStateByPid = new Map<number, KernelRuntimeState>();
@@ -90,7 +119,10 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
     const uniqueTargets = new Set(targetPids);
     uniqueTargets.delete(pid);
     for (const targetPid of uniqueTargets) {
-      const targetExports = deps.requireProcessKernel(targetPid);
+      const targetExports = deps.processKernels.get(targetPid);
+      if (!targetExports) {
+        continue;
+      }
       const targetKernelState = targetStateByPid.get(targetPid);
       if (targetKernelState) {
         attachKernelRuntimeState(targetExports, targetKernelState);
@@ -98,7 +130,6 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
       const targetState = readKernelRuntimeState(targetExports);
       attachKernelRuntimeState(targetExports, targetState);
       deps.copySelectedOfdState(canonicalExports, reconciledCanonicalState, targetExports, targetState, ofdIds);
-      deps.copySelectedPipeSlots(canonicalExports, reconciledCanonicalState, targetExports, targetState, sharedPipeSlots);
       deps.applyPipeControlState(
         targetExports,
         targetState,
@@ -109,7 +140,7 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
           targetVmPtrByPid.get(targetPid) ?? 0,
           reconciledCanonicalState.pipeUsed,
         ),
-        sharedPipeSlots,
+        managedPipeSlots,
       );
       if (includeMemfs) {
         deps.copyCanonicalMemfsToProcess(reconciledCanonicalState, targetExports, targetState, {
@@ -133,6 +164,7 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
       kernelState: canonicalState,
       readOpen,
       writeOpen,
+      managedPipeSlots,
     } = deps.recomputeCanonicalPipeControlState();
     const targetStateByPid = new Map<number, KernelRuntimeState>();
     const targetVmPtrByPid = new Map<number, number>();
@@ -190,7 +222,7 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
           targetVmPtrByPid.get(targetPid) ?? 0,
           canonicalState.pipeUsed,
         ),
-        sharedPipeSlots,
+        managedPipeSlots,
       );
       deps.copySelectedEpollState(canonicalExports, canonicalState, targetExports, targetState, ofdIds);
       deps.copySocketState(canonicalExports, canonicalState, targetExports, targetState);

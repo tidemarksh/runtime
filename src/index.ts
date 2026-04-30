@@ -6,6 +6,7 @@ import {
   debugRuntimeWorkerLogFocus,
   destroyProcessTree,
   destroyRuntimeProcesses,
+  debugRuntimeExecutionStats,
   getRuntimeFsState,
   publishRuntimeFsState,
   replaceRuntimeFsSnapshot,
@@ -27,6 +28,7 @@ import {
   setWorkerErrorHandler,
   setWorkerMessageErrorHandler,
 } from "./bridge/compat.js";
+import type { RuntimeNetworkBridge } from "./network.js";
 
 export interface RuntimeOptions {
   wasmBytes: BufferSource;
@@ -34,6 +36,7 @@ export interface RuntimeOptions {
   maxKernelMemoryPages?: number;
   maxProcessMemoryPages?: number;
   maxForkMemoryPages?: number;
+  networkBridge?: RuntimeNetworkBridge;
 }
 
 const MIN_RAM_SIZE_BYTES = 16 * 1024 * 1024;
@@ -48,6 +51,7 @@ export interface RuntimeFs {
   writeFile(path: string, data: Uint8Array, mode?: number): Promise<void>;
   symlink(path: string, target: Uint8Array, mode?: number): Promise<void>;
   readFile(path: string): Promise<Uint8Array>;
+  readlink(path: string): Promise<Uint8Array>;
   mkdir(path: string, mode?: number): Promise<void>;
   stat(path: string): Promise<RuntimeStat>;
   readdir(path: string): Promise<string[]>;
@@ -65,6 +69,8 @@ export interface RuntimeFileLayer {
 
 export interface SpawnOptions {
   cwd?: string;
+  stdio?: "pipe" | "pty";
+  stdin?: "pipe" | "closed";
 }
 
 export interface GuestWriteWatchRegion {
@@ -84,6 +90,7 @@ export class Runtime {
     writeFile: async (path, data, mode) => this.writeFile(path, data, mode),
     symlink: async (path, target, mode) => this.symlink(path, target, mode),
     readFile: async (path) => this.readFile(path),
+    readlink: async (path) => this.readlink(path),
     mkdir: async (path, mode) => this.mkdir(path, mode),
     stat: async (path) => this.stat(path),
     readdir: async (path) => this.readdir(path),
@@ -94,6 +101,7 @@ export class Runtime {
   private readonly maxKernelMemoryPages: number;
   private readonly maxProcessMemoryPages: number;
   private readonly maxForkMemoryPages: number;
+  private readonly networkBridge: RuntimeNetworkBridge | undefined;
   private readonly runtimeId: number;
   private readonly processes = new Map<number, ProcessHandle>();
   private readonly kernelRequests = new Map<number, {
@@ -122,6 +130,7 @@ export class Runtime {
       options.maxForkMemoryPages ?? this.maxProcessMemoryPages,
       this.maxProcessMemoryPages,
     );
+    this.networkBridge = options.networkBridge;
     this.runtimeId = Runtime.nextRuntimeId++;
   }
 
@@ -253,6 +262,9 @@ export class Runtime {
       sabPageCache: this.sabPageCache,
       maxMemoryPages: this.maxProcessMemoryPages,
       forkMaxMemoryPages: this.maxForkMemoryPages,
+      networkBridge: this.networkBridge,
+      stdio: options.stdio ?? "pipe",
+      stdin: options.stdin ?? "pipe",
       hydrateFsFromKernelWorker: true,
       kernelWorkerRequest: (msg) => this.sendKernelRequest(msg),
     });
@@ -308,29 +320,11 @@ export class Runtime {
 
   async applyFileLayer(layer: RuntimeFileLayer | RuntimeFileLayerEntry[]): Promise<void> {
     const entries = Array.isArray(layer) ? layer : layer.entries;
-    const files: Array<{ path: string; data: Uint8Array; mode?: number }> = [];
-    const symlinks: Array<{ path: string; target: Uint8Array; mode?: number }> = [];
-
-    for (const entry of entries) {
-      if (entry.kind === "dir") {
-        try {
-          await this.mkdir(entry.path, entry.mode);
-        } catch {
-          // Layer application is idempotent for directory entries.
-        }
-        continue;
-      }
-      if (entry.kind === "file") {
-        files.push({ path: entry.path, data: entry.data, mode: entry.mode });
-        continue;
-      }
-      symlinks.push({ path: entry.path, target: entry.target, mode: entry.mode });
-    }
-
-    await this.writeFiles(files);
-    for (const entry of symlinks) {
-      await this.symlink(entry.path, entry.target, entry.mode);
-    }
+    await this.sendKernelRequest<Extract<KernelWorkerOutbound, { type: "file-layer-applied" }>>({
+      type: "apply-file-layer",
+      entries,
+    });
+    await this.refreshRuntimeFsSnapshot();
   }
 
   async symlink(path: string, target: Uint8Array, mode?: number): Promise<void> {
@@ -364,6 +358,16 @@ export class Runtime {
       }
       throw error;
     }
+  }
+
+  async readlink(path: string): Promise<Uint8Array> {
+    const response = await this.sendKernelRequest<
+      Extract<KernelWorkerOutbound, { type: "readlink-result" }>
+    >({
+      type: "readlink",
+      path,
+    });
+    return response.target;
   }
 
   async mkdir(path: string, mode?: number): Promise<void> {
@@ -499,6 +503,10 @@ export class Runtime {
     return debugRuntimeProcessHandles(this.runtimeId);
   }
 
+  debugExecutionStats() {
+    return debugRuntimeExecutionStats(this.runtimeId);
+  }
+
   debugLastFailureSnapshot() {
     return debugRuntimeLastFailureSnapshot(this.runtimeId);
   }
@@ -576,6 +584,13 @@ export class Process {
 
 export type { FsSnapshotEntry, RuntimeStat } from "./fs/types.js";
 export type { KernelExports, StatusCodes, SpawnKindCodes } from "./abi.js";
+export type {
+  RuntimeNetworkBridge,
+  RuntimeNetworkConnection,
+  RuntimeNetworkConnectRequest,
+  RuntimeNetworkConnectResult,
+  RuntimeNetworkEndpoint,
+} from "./network.js";
 export { readSpawnKindCodes, readStatusCodes } from "./abi.js";
 export { assertSharedMemoryBridge, detectBridgeSupport, diagnoseBridgeSupport } from "./bridge.js";
 export { detectWasmFeatures } from "./wasm/features.js";

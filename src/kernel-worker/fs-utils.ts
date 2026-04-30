@@ -49,7 +49,13 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
   }
 
   function restoreProcSelfExe(targetExports: KernelExports, target: Uint8Array | null): void {
-    if (!target || target.length === 0 || resolvePathIn(targetExports, "/proc/self/exe") !== 0) {
+    if (!target || target.length === 0) {
+      const selfIno = resolvePathIn(targetExports, "/proc/self");
+      if (selfIno !== 0) {
+        const exeName = deps.encoder.encode("exe");
+        const exeNamePtr = writeScratchFor(targetExports, exeName, 0x200);
+        targetExports.memfs_unlink(selfIno, exeNamePtr, exeName.length);
+      }
       return;
     }
     const procName = deps.encoder.encode("proc");
@@ -67,6 +73,7 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
     if (selfIno === 0) {
       return;
     }
+    targetExports.memfs_unlink(selfIno, exeNamePtr, exeName.length);
     targetExports.memfs_create_symlink(selfIno, exeNamePtr, exeName.length, targetPtr, target.length);
   }
 
@@ -127,6 +134,9 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
       parts.push("fd=unavailable");
     }
     try {
+      parts.push(`syscall_a7=${processExports.thread_a7?.(vmPtr)?.toString() ?? "n/a"}`);
+      parts.push(`syscall_a0=${processExports.thread_a0(vmPtr).toString()}`);
+      parts.push(`poll_pipe=0x${(processExports.thread_poll_wait_first_pipe_revents?.(vmPtr) ?? 0).toString(16)}`);
       const blockedFd = processExports.thread_blocked_fd(vmPtr);
       const blockedOfdId = processExports.thread_blocked_ofd_id(vmPtr);
       parts.push(`blocked_fd=${blockedFd}`);

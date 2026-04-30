@@ -83,6 +83,18 @@ function pipeMarker(memory: WebAssembly.Memory, pipeBase: number, pipeSlot: numb
   return new Uint8Array(memory.buffer)[pipeBase + pipeSlot * (32 + 4096) + 32] ?? 0;
 }
 
+function pipeOpenCounts(memory: WebAssembly.Memory, pipeBase: number, pipeSlot: number): {
+  readOpen: number;
+  writeOpen: number;
+} {
+  const view = new DataView(memory.buffer);
+  const slotBase = pipeBase + pipeSlot * (32 + 4096);
+  return {
+    readOpen: view.getInt32(slotBase + 8, true),
+    writeOpen: view.getInt32(slotBase + 12, true),
+  };
+}
+
 function makeKernel(memory: WebAssembly.Memory): FakeKernel {
   let fdMap = new Map<number, number>();
   let threadVmPtrs = [0x1234];
@@ -318,6 +330,8 @@ test("local OFD and pipe snapshots preserve child-private dup-style pipe aliases
     handle.kernelState.pipeBase + 14 * (32 + 4096),
     handle.kernelState.pipeBase + 16 * (32 + 4096),
   );
+  new DataView(memory.buffer).setInt32(handle.kernelState.pipeBase + 14 * (32 + 4096) + 8, 7, true);
+  new DataView(memory.buffer).setInt32(handle.kernelState.pipeBase + 14 * (32 + 4096) + 12, 8, true);
 
   restoreLocalOfdSlots(handle, preservedOfds);
 
@@ -329,6 +343,10 @@ test("local OFD and pipe snapshots preserve child-private dup-style pipe aliases
   restoreLocalPipeSlots(handle, preservedPipes);
 
   expect(pipeMarker(memory, handle.kernelState.pipeBase, 14)).toBe(0xa4);
+  expect(pipeOpenCounts(memory, handle.kernelState.pipeBase, 14)).toEqual({
+    readOpen: 7,
+    writeOpen: 8,
+  });
   expect(pipeMarker(memory, handle.kernelState.pipeBase, 15)).toBe(0);
 });
 

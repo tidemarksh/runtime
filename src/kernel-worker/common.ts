@@ -227,11 +227,12 @@ export function normalizeMetadataOnlyMemfsState(
   targetState: KernelRuntimeState,
   sourceLayout: MemfsLayout,
   targetLayout: MemfsLayout,
+  dataUsed = 8,
 ): void {
   const header = new DataView(targetExports.memory.buffer, targetState.memfsPtr, 32);
   header.setUint32(MEMFS_HEADER_OFF_INODE_COUNT, sourceLayout.inodeCount, true);
   header.setUint32(MEMFS_HEADER_OFF_DIR_ENTRY_COUNT, sourceLayout.dirEntryCount, true);
-  header.setUint32(MEMFS_HEADER_OFF_DATA_USED, 8, true);
+  header.setUint32(MEMFS_HEADER_OFF_DATA_USED, Math.min(Math.max(dataUsed, 8), targetLayout.dataCap), true);
   header.setUint32(MEMFS_HEADER_OFF_DATA_CAP, targetLayout.dataCap, true);
   header.setUint32(MEMFS_HEADER_OFF_INODES_PTR, targetLayout.inodesPtr, true);
   header.setUint32(MEMFS_HEADER_OFF_FIRST_CHILD_PTR, targetLayout.firstChildPtr, true);

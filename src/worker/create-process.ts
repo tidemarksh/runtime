@@ -79,6 +79,103 @@ function snapshotHasPath(entries: readonly FsSnapshotEntry[], path: string): boo
   return entries.some((entry) => entry.path === path);
 }
 
+function normalizeGuestPath(path: string): string {
+  const parts: string[] = [];
+  for (const part of path.split("/")) {
+    if (!part || part === ".") {
+      continue;
+    }
+    if (part === "..") {
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return `/${parts.join("/")}`;
+}
+
+function snapshotEntryMap(entries: readonly FsSnapshotEntry[]): Map<string, FsSnapshotEntry> {
+  return new Map(entries.map((entry) => [normalizeGuestPath(entry.path), entry]));
+}
+
+function resolveSnapshotPathFollowingSymlinks(
+  entries: readonly FsSnapshotEntry[],
+  path: string,
+): string | null {
+  const entriesByPath = snapshotEntryMap(entries);
+  const decoder = new TextDecoder();
+  let resolvedParts: string[] = [];
+  let remainingParts = normalizeGuestPath(path).split("/").filter(Boolean);
+  let follows = 0;
+
+  while (remainingParts.length > 0) {
+    const part = remainingParts.shift()!;
+    const candidate = normalizeGuestPath(`/${[...resolvedParts, part].join("/")}`);
+    const entry = entriesByPath.get(candidate);
+    if (!entry) {
+      return null;
+    }
+    if (entry.kind !== "symlink") {
+      resolvedParts.push(part);
+      continue;
+    }
+    follows += 1;
+    if (follows > 40 || !entry.target) {
+      return null;
+    }
+
+    const target = decoder.decode(entry.target);
+    const targetPath = target.startsWith("/")
+      ? normalizeGuestPath(target)
+      : normalizeGuestPath(`/${[...resolvedParts, target].join("/")}`);
+    remainingParts = [
+      ...targetPath.split("/").filter(Boolean),
+      ...remainingParts,
+    ];
+    resolvedParts = [];
+  }
+
+  return normalizeGuestPath(`/${resolvedParts.join("/")}`);
+}
+
+async function materializeInterpEntry(
+  entries: FsSnapshotEntry[],
+  interpPath: string | null,
+  kernelWorkerRequest: NonNullable<CreateProcessOptions["kernelWorkerRequest"]> | undefined,
+): Promise<FsSnapshotEntry[]> {
+  if (!interpPath || !kernelWorkerRequest) {
+    return entries;
+  }
+  const materializedPath = resolveSnapshotPathFollowingSymlinks(entries, interpPath) ?? normalizeGuestPath(interpPath);
+  const existing = entries.find((entry) => normalizeGuestPath(entry.path) === materializedPath);
+  if (existing?.kind === "file" && existing.data !== undefined) {
+    return entries;
+  }
+
+  const response = await kernelWorkerRequest({
+    type: "read-file",
+    path: interpPath,
+  });
+  if (response.type !== "file-read") {
+    throw new Error(`unexpected kernel-worker read-file response: ${response.type}`);
+  }
+
+  let replaced = false;
+  const nextEntries = entries.map((entry) => {
+    if (normalizeGuestPath(entry.path) !== materializedPath || entry.kind !== "file") {
+      return entry;
+    }
+    replaced = true;
+    return { ...entry, data: response.data, size: response.data.length };
+  });
+  return replaced
+    ? nextEntries
+    : [
+        ...nextEntries,
+        { kind: "file", path: materializedPath, data: response.data, size: response.data.length, mode: 0o755 },
+      ];
+}
+
 interface WorkerCreateProcessDeps {
   processHandles: Map<number, ProcessHandle>;
   attachThreadWorker(handle: ProcessHandle, request: AttachThreadWorkerRequest): void;
@@ -116,9 +213,27 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     runtimeId: number,
     options: CreateProcessOptions,
     delegateFsHydrationToKernelWorker: boolean,
+    interpPath: string | null,
   ): Promise<FsSnapshotEntry[]> {
     const bootstrapEntries = options.preloadEntries
       ?? deps.getRuntimeFsEntries(runtimeId);
+    if (
+      !delegateFsHydrationToKernelWorker
+      && options.kernelWorkerRequest
+      && entriesRequireMaterializedData(bootstrapEntries)
+    ) {
+      const response = await options.kernelWorkerRequest({
+        type: "snapshot-fs",
+        // Guest-side execve must be able to read executable bytes for child
+        // processes launched by shells/package managers. Metadata-only dynamic
+        // snapshots make nested execve fail with ENOEXEC.
+        includeData: true,
+      });
+      if (response.type !== "snapshot-fs-result") {
+        throw new Error(`unexpected kernel-worker snapshot response: ${response.type}`);
+      }
+      return response.entries;
+    }
     if (
       !delegateFsHydrationToKernelWorker
       || !options.kernelWorkerRequest
@@ -291,12 +406,15 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       runtimeBridge,
       sabPageCache: options.sabPageCache ?? null,
       kernelWorkerRequest: options.kernelWorkerRequest,
+      networkBridge: options.networkBridge,
+      networkConnections: new Map(),
       workers: new Set(),
       readyWorkers: [],
       runningWorker: null,
       blockedWorkers: new Map(),
       pendingChildExitRecords: 0,
       pendingChildSpawnRecords: 0,
+      childExitSyncRecords: new Map(),
       pipeSyncPromise: null,
       pipeSyncQueued: false,
       pipeWaiterWakeQueued: false,
@@ -340,18 +458,21 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     );
 
     const runtimeId = options.runtimeId ?? 0;
+    const interpPath = readElfInterpPath(elfData);
     const delegateFsHydrationToKernelWorker = !!(
       options.hydrateFsFromKernelWorker
       && options.kernelWorkerRequest
       && (options.pid ?? 0) > 0
       && options.preloadEntries === undefined
+      && !interpPath
     );
     const preloadScratchBase = detachedKernelScratchBase(exports.memory, 0, 0);
-    const bootstrapEntries = await resolveBootstrapEntries(
+    const bootstrapEntries = await materializeInterpEntry(await resolveBootstrapEntries(
       runtimeId,
       options,
       delegateFsHydrationToKernelWorker,
-    );
+      interpPath,
+    ), interpPath, options.kernelWorkerRequest);
     const bootstrapEntriesRequireMaterializedData = entriesRequireMaterializedData(bootstrapEntries);
     preloadSnapshotEntries(exports, bootstrapEntries, preloadScratchBase);
     const guestBase = exports.process_guest_base(ramSize);
@@ -374,7 +495,6 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     const elfOffset = stageProcessCreation(exports, guestBase, elfData, ramSize, options, elfBrk);
     const vmPtr = exports.process_create(elfOffset, elfData.length, ramSize, stackSize);
     if (vmPtr === 0) {
-      const interpPath = readElfInterpPath(elfData);
       const interpInSnapshot = interpPath ? snapshotHasPath(bootstrapEntries, interpPath) : null;
       const processCreateLastError = exports.process_create_last_error?.() ?? null;
       throw new Error([
@@ -390,6 +510,15 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
         `argvCount=${options.argv?.length ?? 0}`,
         `envCount=${options.env?.length ?? 0}`,
       ].join(" "));
+    }
+    if ((options.stdio ?? "pipe") === "pipe" && exports.process_use_pipe_stdio) {
+      const stdioRet = exports.process_use_pipe_stdio(vmPtr);
+      if (stdioRet !== 0) {
+        throw new Error("process_use_pipe_stdio failed");
+      }
+      if ((options.stdin ?? "pipe") === "closed") {
+        exports.process_close_host_stdin?.(vmPtr);
+      }
     }
     if (!delegateFsHydrationToKernelWorker) {
       exports.process_set_cwd_ino(vmPtr, cwdIno);

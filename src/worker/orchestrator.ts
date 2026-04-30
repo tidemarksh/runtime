@@ -61,6 +61,7 @@ export interface WorkerOrchestrator {
     elfData: Uint8Array,
     options?: CreateProcessOptions,
   ): Promise<ProcessHandle>;
+  debugRuntimeExecutionStats(runtimeId: number): ReturnType<typeof debugRuntimeExecutionStatsCtx>;
   debugRuntimeLastFailureSnapshot(runtimeId: number): ReturnType<typeof debugRuntimeLastFailureSnapshotCtx>;
   debugRuntimeProcessHandles(runtimeId: number): string;
   debugRuntimeWorkerLogFocus(runtimeId: number): ReturnType<typeof debugRuntimeWorkerLogFocusCtx>;
@@ -86,6 +87,7 @@ const {
   captureRuntimeFailureSnapshot: captureRuntimeFailureSnapshotCtx,
   clearRuntimeFsState: clearRuntimeFsStateCtx,
   clearRuntimeFailureSnapshot: clearRuntimeFailureSnapshotCtx,
+  debugRuntimeExecutionStats: debugRuntimeExecutionStatsCtx,
   debugRuntimeLastFailureSnapshot: debugRuntimeLastFailureSnapshotCtx,
   debugRuntimeProcessHandles: debugRuntimeProcessHandlesCtx,
   debugRuntimeWorkerLogFocus: debugRuntimeWorkerLogFocusCtx,
@@ -138,6 +140,7 @@ const workerScheduler = createWorkerScheduler({
   completeProcessExit,
   failProcess,
   hasActiveChildProcess: (parentPid) => hasActiveChildProcessImpl(processHandles, parentPid),
+  pumpNetworkConnections,
   resumeBlockedSyscallLocally: (handle, worker, vmPtr, blockedStatus, timeoutExpired) => (
     workerKernelRpcHelpers.resumeBlockedSyscallLocally(
       handle,
@@ -172,6 +175,7 @@ const {
 workerKernelRpcHelpers = createWorkerKernelRpcHelpers({
   processHandles,
   threadWorkerStates,
+  appendRuntimeLifecycleEvent,
   appendWorkerDebugLog,
   assertProcessStandardFdIntegrity,
   enqueueWorker,
@@ -259,6 +263,7 @@ const workerExitHelpers = createWorkerExitHelpers({
   recordChildExitViaKernelWorker,
   releaseSharedHostStdio,
   requestPipeStateSync,
+  unregisterProcessWithKernelWorker,
 });
 workerLifecycleHelpers = createWorkerLifecycleHelpers({
   appendRuntimeLifecycleEvent,
@@ -302,6 +307,22 @@ async function ensureCompiledModule(wasmBytes: BufferSource): Promise<WebAssembl
   return ensureCompiledModuleImpl(wasmBytes);
 }
 
+let resolveNetworkConnectImpl: (handle: ProcessHandle, vmPtr: number) => Promise<bigint>;
+let pumpNetworkConnectionsImpl: (handle: ProcessHandle, vmPtr?: number) => Promise<boolean>;
+let commitNetworkConnectImpl: (handle: ProcessHandle, vmPtr: number) => Promise<void>;
+
+function resolveNetworkConnect(handle: ProcessHandle, vmPtr: number): Promise<bigint> {
+  return resolveNetworkConnectImpl(handle, vmPtr);
+}
+
+function pumpNetworkConnections(handle: ProcessHandle, vmPtr?: number): Promise<boolean> {
+  return pumpNetworkConnectionsImpl(handle, vmPtr);
+}
+
+function commitNetworkConnect(handle: ProcessHandle, vmPtr: number): Promise<void> {
+  return commitNetworkConnectImpl(handle, vmPtr);
+}
+
 handleWorkerMessageImpl = createWorkerMessageHandler({
   processHandles,
   threadWorkerStates,
@@ -313,6 +334,7 @@ handleWorkerMessageImpl = createWorkerMessageHandler({
   syncEffectProcessLifecycle: SYNC_EFFECT_PROCESS_LIFECYCLE,
   syncEffectSignalWaiters: SYNC_EFFECT_SIGNAL_WAITERS,
   syncEffectForkSharedOfdState: SYNC_EFFECT_FORK_SHARED_OFD_STATE,
+  appendRuntimeLifecycleEvent,
   appendWorkerDebugLog,
   assertProcessStandardFdIntegrity,
   attachThreadWorker,
@@ -326,12 +348,15 @@ handleWorkerMessageImpl = createWorkerMessageHandler({
   failProcess,
   handleExecveSpawn,
   kickBlockedWorkers,
+  pumpNetworkConnections,
+  commitNetworkConnect,
   pumpProcess,
   pruneDetachedProcessWorkers,
   requestEpollDependentOfdStateSync,
   requestEpollStateSync,
   requestPipeStateSync,
   requestSocketStateSync,
+  resolveNetworkConnect,
   resumeConnectViaKernelWorker,
   resumeFsViaKernelWorker,
   resumeVforkParentAfterChildExit,
@@ -355,6 +380,7 @@ const workerProcessFactory = createWorkerProcessFactory({
   wasmMaxPages: WASM_MAX_PAGES,
 });
 const workerProcessIoHelpers = createWorkerProcessIoHelpers({
+  appendWorkerDebugLog,
   drainProcessOutput,
   failProcess,
   flushStdin,
@@ -363,6 +389,9 @@ const workerProcessIoHelpers = createWorkerProcessIoHelpers({
   requestPipeStateSync,
   writeProcessStdin: bufferProcessStdin,
 });
+resolveNetworkConnectImpl = workerProcessIoHelpers.resolveNetworkConnect;
+pumpNetworkConnectionsImpl = workerProcessIoHelpers.pumpNetworkConnections;
+commitNetworkConnectImpl = workerProcessIoHelpers.commitNetworkConnect;
 
 export function primeRuntimeFsState(runtimeId: number, entries: FsSnapshotEntry[]): number {
   return primeRuntimeFsStateCtx(runtimeId, entries);
@@ -393,14 +422,25 @@ export function clearRuntimeFailureSnapshot(runtimeId: number): void {
 }
 
 function collectTrackableForkSharedOfds(handle: ProcessHandle): Set<number> {
-  const stdioPipeSlots = new Set<number>([handle.stdinPipe, handle.stdoutPipe, handle.stderrPipe]
-    .filter((pipeSlot) => pipeSlot > 0));
+  const stdioOfdIds = new Set<number>();
+  for (const [fd, stdioPipeSlot] of [
+    [0, handle.stdinPipe],
+    [1, handle.stdoutPipe],
+    [2, handle.stderrPipe],
+  ] as const) {
+    const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+    if (
+      ofdId !== 0
+      && stdioPipeSlot > 0
+      && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
+      && handle.kernel.kernel_ofd_ino(ofdId) === stdioPipeSlot
+    ) {
+      stdioOfdIds.add(ofdId);
+    }
+  }
   const tracked = new Set<number>();
   for (const ofdId of collectProcessHeldOfds(handle)) {
-    if (
-      handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
-      && stdioPipeSlots.has(handle.kernel.kernel_ofd_ino(ofdId))
-    ) {
+    if (stdioOfdIds.has(ofdId)) {
       continue;
     }
     tracked.add(ofdId);
@@ -430,6 +470,10 @@ export async function injectHttpRequest(
 
 export function debugRuntimeProcessHandles(runtimeId: number): string {
   return debugRuntimeProcessHandlesCtx(runtimeId);
+}
+
+export function debugRuntimeExecutionStats(runtimeId: number) {
+  return debugRuntimeExecutionStatsCtx(runtimeId);
 }
 
 export function debugRuntimeLastFailureSnapshot(runtimeId: number) {
@@ -500,7 +544,7 @@ async function syncForkSharedStateViaKernelWorker(
     return;
   }
 
-  if (options.trackHeldOfds === true) {
+  if (options.trackHeldOfds === true && options.deltaOfdIds !== true) {
     for (const ofdId of collectTrackableForkSharedOfds(handle)) {
       handle.kernelShare.sharedOfdIds.add(ofdId);
     }
@@ -566,6 +610,7 @@ const workerOrchestrator: WorkerOrchestrator = {
   clearRuntimeFsState,
   clearRuntimeFailureSnapshot,
   createProcess,
+  debugRuntimeExecutionStats,
   debugRuntimeLastFailureSnapshot,
   debugRuntimeProcessHandles,
   debugRuntimeWorkerLogFocus,

@@ -13,5 +13,6 @@ export interface WorkerKernelRpcLifecycleDeps {
   handleBlockedRetryResult(handle: ProcessHandle, worker: Worker, vmPtr: number, status: number): void;
   kickBlockedWorkers(handle: ProcessHandle): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
+  syncSocketStateViaKernelWorker(handle: ProcessHandle): Promise<{ socketUsed: number; netBufUsed: bigint }>;
   clearVforkSnapshot(handle: ProcessHandle): void;
 }

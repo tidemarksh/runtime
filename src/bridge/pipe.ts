@@ -1,4 +1,4 @@
-const PIPE_BUF_SIZE = 4096;
+const PIPE_BUF_SIZE = 65_536;
 const PIPE_SLOT_SIZE = 32 + PIPE_BUF_SIZE;
 
 const OFF_HEAD = 0;

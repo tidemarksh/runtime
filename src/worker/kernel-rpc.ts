@@ -3,7 +3,11 @@ import {
   readKernelRuntimeState,
 } from "../abi.js";
 import { publishKernelRuntimeState } from "../bridge/runtime-state.js";
-import { kernelShareOtherMembers } from "./kernel-share.js";
+import { activeKernelShareOfdIds, collectProcessHeldOfds, hasPlausibleOfdState } from "./fork-shared.js";
+import {
+  kernelShareOtherMembers,
+  reconcileKernelSharePipeControl,
+} from "./kernel-share.js";
 import { createWorkerKernelRpcLifecycleHelpers } from "./kernel-rpc/lifecycle.js";
 import { drainProcessOutput } from "./stdio.js";
 import type {
@@ -14,6 +18,7 @@ import type {
 import type { KernelWorkerPidBytesSnapshot } from "../messages.js";
 
 const FS_DEBUG_PATH_BUF_LEN = 4096;
+const GUEST_TICKS_PER_SEC = 100_000_000n;
 
 interface PendingFsContext {
   opcode: number;
@@ -26,6 +31,7 @@ interface PendingFsContext {
 interface WorkerKernelRpcDeps {
   processHandles: Map<number, ProcessHandle>;
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
+  appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   assertProcessStandardFdIntegrity(handle: ProcessHandle, context: string): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
@@ -61,6 +67,19 @@ interface WorkerKernelRpcDeps {
   collectTrackableForkSharedOfds(handle: ProcessHandle): Set<number>;
 }
 
+function hasActiveChildProcess(deps: WorkerKernelRpcDeps, handle: ProcessHandle): boolean {
+  for (const candidate of deps.processHandles.values()) {
+    if (
+      candidate.parentPid === handle.pid
+      && candidate.workers.size > 0
+      && !candidate.exitInProgress
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function clearVforkSnapshot(handle: ProcessHandle): void {
   handle.vforkSnapshot = null;
   handle.vforkWorker = null;
@@ -87,7 +106,35 @@ export async function resolveProcessCwdInoViaKernelWorker(
 }
 
 export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
+  function monotonicTicksCurrent(handle: ProcessHandle): bigint {
+    const ticks = handle.kernel.monotonic_ticks_current?.();
+    return ticks === undefined ? 0n : BigInt(ticks);
+  }
+
+  function advanceGuestTimeByMs(handle: ProcessHandle, timeoutMs: number): void {
+    if (timeoutMs <= 0 || !Number.isFinite(timeoutMs)) {
+      return;
+    }
+    const deltaTicks = BigInt(Math.ceil(timeoutMs)) * GUEST_TICKS_PER_SEC / 1000n;
+    handle.kernel.sync_monotonic_ticks_floor?.(monotonicTicksCurrent(handle) + deltaTicks);
+  }
+
   const decoder = new TextDecoder();
+
+  async function syncSocketStatePreservingNetworkBridge(handle: ProcessHandle): Promise<{
+    socketUsed: number;
+    netBufUsed: bigint;
+  }> {
+    if (handle.networkConnections.size > 0) {
+      handle.kernelState = readKernelRuntimeState(handle.kernel);
+      return {
+        socketUsed: handle.kernelState.socketUsed,
+        netBufUsed: handle.kernelState.netBufUsed,
+      };
+    }
+    return deps.syncSocketStateViaKernelWorker(handle);
+  }
+
   const kernelRpcLifecycleHelpers = createWorkerKernelRpcLifecycleHelpers({
     appendWorkerDebugLog: deps.appendWorkerDebugLog,
     processHandles: deps.processHandles,
@@ -98,6 +145,7 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     handleBlockedRetryResult: deps.handleBlockedRetryResult,
     kickBlockedWorkers: deps.kickBlockedWorkers,
     requestPipeStateSync: deps.requestPipeStateSync,
+    syncSocketStateViaKernelWorker: syncSocketStatePreservingNetworkBridge,
     clearVforkSnapshot,
   });
 
@@ -191,6 +239,14 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
 
     try {
       deps.appendWorkerDebugLog(handle, `fs-start:0x${vmPtr.toString(16)}${fsDebugSuffix}`);
+      const heldOfdIds = collectProcessHeldOfds(handle);
+      const missingSharedOfdIds = activeKernelShareOfdIds(handle)
+        .filter((ofdId) => !heldOfdIds.has(ofdId) || !hasPlausibleOfdState(handle, ofdId));
+      if (missingSharedOfdIds.length > 0) {
+        await deps.rehydrateForkSharedStateViaKernelWorker([handle], missingSharedOfdIds, {
+          includeMemfs: false,
+        });
+      }
       deps.assertProcessStandardFdIntegrity(handle, "resume-fs-before");
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       handle.kernel.thread_process_fs(vmPtr);
@@ -203,19 +259,33 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
         return;
       }
       deps.assertProcessStandardFdIntegrity(handle, "resume-fs");
+      const syncTargets = kernelShareOtherMembers(handle)
+        .filter((member) => member.runningWorker === null);
       if (ofdStateChanged && !transientProcessOwnerMismatch) {
         await deps.syncForkSharedStateViaKernelWorker(
           handle,
-          kernelShareOtherMembers(handle),
+          syncTargets,
           {
             includeMemfs: false,
-            trackHeldOfds: ofdStateChanged,
+            trackHeldOfds: false,
             deltaOfdIds: true,
             sourceVmPtr: vmPtr,
           },
         );
       }
       if (memfsMutated) {
+        if (!transientProcessOwnerMismatch && syncTargets.length > 0) {
+          deps.syncForkSharedStateLocally(handle, syncTargets);
+          await deps.syncForkSharedStateViaKernelWorker(
+            handle,
+            syncTargets,
+            {
+              includeMemfs: true,
+              trackHeldOfds: false,
+              sourceVmPtr: vmPtr,
+            },
+          );
+        }
         deps.markRuntimeFsDirty(handle);
       }
       publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
@@ -239,8 +309,80 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     timeoutExpired = false,
   ): Promise<void> {
     try {
-      attachKernelRuntimeState(handle.kernel, handle.kernelState);
+      deps.appendWorkerDebugLog(handle, `blocked-rpc-start:${blockedStatus}:0x${vmPtr.toString(16)}`);
+      deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:start:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-start:${handle.pid}:${blockedStatus}`);
+      let forkSharedSyncedBeforeResume = false;
+      const resumePollTimeoutFn = timeoutExpired
+        && blockedStatus === handle.kernel.abi_status_pipe_wait()
+        ? handle.kernel.thread_resume_poll_wait_timeout
+        : undefined;
+      const resumePollTimeout = resumePollTimeoutFn !== undefined;
+      if (blockedStatus === handle.kernel.abi_status_pipe_wait() && !resumePollTimeout) {
+        if (handle.kernelShare.forkSharedSyncPromise !== null) {
+          deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:await-fork-sync:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
+          await handle.kernelShare.forkSharedSyncPromise;
+        }
+        for (const member of [...kernelShareOtherMembers(handle), handle]) {
+          if (member !== handle && member.runningWorker !== null) {
+            deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-pipe-skip-running:${member.pid}:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
+            continue;
+          }
+          if (member.kernelWorkerRequest && member.pid > 0) {
+            deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-pipe:${member.pid}:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
+            deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-pipe-start:${handle.pid}->${member.pid}`);
+            await deps.requestPipeStateSync(member, false);
+            deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-pipe-done:${handle.pid}->${member.pid}`);
+          }
+        }
+        if (handle.kernelWorkerRequest && handle.pid > 0) {
+          deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-blocked:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
+          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-blocked-start:${handle.pid}`);
+          await deps.syncBlockedForkSharedStateViaKernelWorker(handle, vmPtr);
+          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-blocked-done:${handle.pid}`);
+          forkSharedSyncedBeforeResume = true;
+        }
+        deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:reconcile:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
+        reconcileKernelSharePipeControl(handle);
+        if (handle.kernel.thread_poll_wait_has_socket?.(vmPtr) === 1) {
+          deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-socket:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
+          await syncSocketStatePreservingNetworkBridge(handle);
+        }
+      }
       if (
+        blockedStatus === handle.kernel.abi_status_pipe_wait()
+        && !resumePollTimeout
+        && handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) === 1
+        && (handle.kernel.thread_blocked_pipe_buffered_len?.(vmPtr) ?? 0) === 0
+      ) {
+        if (
+          (handle.kernel.thread_blocked_pipe_write_open?.(vmPtr) ?? 0) > 0
+          && handle.kernel.thread_resume_pipe_read_open_empty?.(vmPtr) === 1
+        ) {
+          handle.kernelState = readKernelRuntimeState(handle.kernel);
+          const blocked = handle.blockedWorkers.get(worker);
+          if (blocked && blocked.vmPtr === vmPtr) {
+            blocked.rpcPending = false;
+          }
+          deps.appendWorkerDebugLog(handle, `blocked-rpc-pipe-open-empty:0x${vmPtr.toString(16)}`);
+          deps.handleBlockedRetryResult(handle, worker, vmPtr, handle.kernel.thread_status(vmPtr));
+          return;
+        }
+        if (hasActiveChildProcess(deps, handle)) {
+          const blocked = handle.blockedWorkers.get(worker);
+          if (blocked && blocked.vmPtr === vmPtr) {
+            blocked.rpcPending = false;
+          }
+          deps.appendWorkerDebugLog(handle, `blocked-rpc-defer-pipe-eof:0x${vmPtr.toString(16)}`);
+          deps.handleBlockedRetryResult(handle, worker, vmPtr, blockedStatus);
+          return;
+        }
+      }
+      attachKernelRuntimeState(handle.kernel, handle.kernelState);
+      if (resumePollTimeout) {
+        advanceGuestTimeByMs(handle, Number(handle.kernel.thread_poll_wait_timeout?.(vmPtr) ?? 0));
+        resumePollTimeoutFn(vmPtr);
+      } else if (
         timeoutExpired
         && (
           blockedStatus === handle.kernel.abi_status_connect()
@@ -256,12 +398,20 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       const currentPid = handle.kernel.process_current_pid?.(vmPtr) ?? handle.pid;
       const transientProcessOwnerMismatch = currentPid > 0 && currentPid !== handle.pid;
-      if (!transientProcessOwnerMismatch) {
+      if (!transientProcessOwnerMismatch && !forkSharedSyncedBeforeResume && !resumePollTimeout) {
+        deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-after-resume:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
         await deps.syncBlockedForkSharedStateViaKernelWorker(handle, vmPtr);
       }
 
-      if (!transientProcessOwnerMismatch && blockedStatus === handle.kernel.abi_status_pipe_wait()) {
+      if (
+        !transientProcessOwnerMismatch
+        && blockedStatus === handle.kernel.abi_status_pipe_wait()
+        && !resumePollTimeout
+      ) {
+        deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-pipe-after:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-pipe-after-start:${handle.pid}`);
         await deps.requestPipeStateSync(handle, true);
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-pipe-after-done:${handle.pid}`);
       } else if (
         !transientProcessOwnerMismatch
         && (
@@ -270,7 +420,7 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
           || blockedStatus === handle.kernel.abi_status_socket_send()
         )
       ) {
-        await deps.syncSocketStateViaKernelWorker(handle);
+        await syncSocketStatePreservingNetworkBridge(handle);
       }
 
       const blocked = handle.blockedWorkers.get(worker);
@@ -278,6 +428,8 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
         return;
       }
       blocked.rpcPending = false;
+      deps.appendWorkerDebugLog(handle, `blocked-rpc-done:${handle.kernel.thread_status(vmPtr)}:0x${vmPtr.toString(16)}`);
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-done:${handle.pid}:${handle.kernel.thread_status(vmPtr)}`);
 
       if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
         return;

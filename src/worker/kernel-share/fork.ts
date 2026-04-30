@@ -14,18 +14,30 @@ export function trackForkSharedOfds(
   vmPtr: number,
   retainRefcounts: boolean,
 ): number[] {
-  const stdioPipeSlots = new Set<number>([handle.stdinPipe, handle.stdoutPipe, handle.stderrPipe]
-    .filter((pipeSlot) => pipeSlot > 0));
+  const stdioOfdIds = new Set<number>();
+  const stdioPipeSlotByFd = new Map<number, number>([
+    [0, handle.stdinPipe],
+    [1, handle.stdoutPipe],
+    [2, handle.stderrPipe],
+  ]);
+  for (const [fd, stdioPipeSlot] of stdioPipeSlotByFd) {
+    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    if (
+      ofdId !== 0
+      && stdioPipeSlot > 0
+      && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
+      && handle.kernel.kernel_ofd_ino(ofdId) === stdioPipeSlot
+    ) {
+      stdioOfdIds.add(ofdId);
+    }
+  }
   const retained = new Set<number>();
   for (let fd = 0; fd < handle.kernel.abi_max_fds(); fd++) {
     const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
-    if (ofdId === 0 || retained.has(ofdId)) {
+    if (ofdId === 0) {
       continue;
     }
-    if (
-      handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
-      && stdioPipeSlots.has(handle.kernel.kernel_ofd_ino(ofdId))
-    ) {
+    if (stdioOfdIds.has(ofdId)) {
       continue;
     }
     retained.add(ofdId);

@@ -33,6 +33,11 @@ function makeKernelState(): KernelRuntimeState {
     heapPtr: 0x210000,
     ofdTablePtr: 0x220000,
     memfsPtr: 0x230000,
+    memfsHeaderBytes: 32,
+    memfsInodesBytes: 4096,
+    memfsFirstChildBytes: 1024,
+    memfsDirEntriesBytes: 4096,
+    memfsDataBytes: 16384,
     memStatePtr: 0x240000,
     epollTablePtr: 0x250000,
     socketTablePtr: 0x260000,
@@ -61,6 +66,7 @@ type FakeProcessKernel = KernelExports & {
   argPtrs: number[];
   envPtrs: number[];
   processSetCwdIno: ReturnType<typeof vi.fn>;
+  processUsePipeStdio: ReturnType<typeof vi.fn>;
   memfsPaths: Map<string, number>;
   callLog: string[];
   externalizedInos: Set<number>;
@@ -71,6 +77,7 @@ function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
   const argPtrs: number[] = [];
   const envPtrs: number[] = [];
   const processSetCwdIno = vi.fn();
+  const processUsePipeStdio = vi.fn(() => 0);
   const callLog: string[] = [];
   const pathToIno = new Map<string, number>([["/", 1]]);
   const inoToPath = new Map<number, string>([[1, "/"]]);
@@ -100,6 +107,7 @@ function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
   };
   return {
     memory,
+    __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, 0),
     abi_max_fds: () => 64,
     abi_max_threads: () => 8,
     kernel_init: vi.fn(),
@@ -109,6 +117,11 @@ function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
     kernel_ofd_table_ptr: () => runtimeState.ofdTablePtr,
     kernel_ofd_table_bytes: () => 64 * 32,
     kernel_memfs_ptr: () => runtimeState.memfsPtr,
+    kernel_memfs_header_bytes: () => runtimeState.memfsHeaderBytes,
+    kernel_memfs_inodes_bytes: () => runtimeState.memfsInodesBytes,
+    kernel_memfs_first_child_bytes: () => runtimeState.memfsFirstChildBytes,
+    kernel_memfs_dir_entries_bytes: () => runtimeState.memfsDirEntriesBytes,
+    kernel_memfs_data_bytes: () => runtimeState.memfsDataBytes,
     kernel_mem_state_ptr: () => runtimeState.memStatePtr,
     kernel_epoll_table_ptr: () => runtimeState.epollTablePtr,
     kernel_socket_table_ptr: () => runtimeState.socketTablePtr,
@@ -140,6 +153,7 @@ function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
       timeStatePtr: number,
     ) => {
       runtimeState = {
+        ...runtimeState,
         heapBase,
         heapPtr,
         ofdTablePtr,
@@ -174,10 +188,12 @@ function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
       return 0x100000;
     }),
     process_create: vi.fn(() => 0x1234),
+    processUsePipeStdio,
     thread_set_guest_ram_limit: vi.fn(),
     process_stdin_pipe: () => 1,
     process_stdout_pipe: () => 2,
     process_stderr_pipe: () => 3,
+    process_use_pipe_stdio: processUsePipeStdio,
     process_set_cwd_ino: processSetCwdIno,
     process_current_pgid: () => 77,
     process_current_sid: () => 88,
@@ -259,6 +275,22 @@ function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
     callLog,
     externalizedInos,
   } as unknown as FakeProcessKernel;
+}
+
+function makeDynamicElfWithInterp(interpPath: string): Uint8Array {
+  const interpBytes = encoder.encode(`${interpPath}\0`);
+  const elf = new Uint8Array(0x78 + interpBytes.length);
+  const view = new DataView(elf.buffer);
+  elf.set([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00], 0);
+  view.setBigUint64(32, 0x40n, true);
+  view.setUint16(54, 56, true);
+  view.setUint16(56, 1, true);
+  view.setUint32(0x40, 3, true);
+  view.setBigUint64(0x40 + 8, 0x78n, true);
+  view.setBigUint64(0x40 + 32, BigInt(interpBytes.length), true);
+  view.setBigUint64(0x40 + 40, BigInt(interpBytes.length), true);
+  elf.set(interpBytes, 0x78);
+  return elf;
 }
 
 function makeParentHandle(): ProcessHandle {
@@ -356,6 +388,7 @@ test("createProcess stages argv/env strings and seeds full memfs for standalone 
 
   expect(fakeKernel.argPtrs.map((ptr) => readCString(kernelMemory, ptr))).toEqual(["/bin/test", "--flag"]);
   expect(fakeKernel.envPtrs.map((ptr) => readCString(kernelMemory, ptr))).toEqual(["KEY=VALUE", "LANG=C"]);
+  expect(fakeKernel.processUsePipeStdio).toHaveBeenCalledWith(0x1234);
   expect(fakeKernel.processSetCwdIno).toHaveBeenCalledWith(0x1234, 1);
   expect(registerProcessWithKernelWorker).toHaveBeenCalledWith(handle, { seedMemfsMode: "full" });
   expect(assertProcessStandardFdIntegrity).toHaveBeenCalledWith(handle, "create-process");
@@ -371,7 +404,44 @@ test("createProcess stages argv/env strings and seeds full memfs for standalone 
   expect(handle.kernelShare.members.has(handle)).toBe(true);
   expect(handle.debugCommand).toBe("/bin/test");
   expect(processHandles.size).toBe(0);
-  expect(attachThreadWorker).toHaveBeenCalledWith(handle, handle.worker, 0x1234);
+  expect(attachThreadWorker).toHaveBeenCalledWith(handle, {
+    worker: handle.worker,
+    vmPtr: 0x1234,
+  });
+});
+
+test("createProcess preserves PTY stdio only when requested", async () => {
+  const processHandles = new Map<number, ProcessHandle>();
+  const kernelMemory = new WebAssembly.Memory({ initial: 1024, maximum: 2048, shared: true });
+  const fakeKernel = makeFakeProcessKernel(kernelMemory);
+  vi.spyOn(WebAssembly, "instantiate").mockResolvedValue({
+    exports: fakeKernel,
+  } as unknown as WebAssembly.Instance);
+  const factory = createWorkerProcessFactory({
+    processHandles,
+    attachThreadWorker: vi.fn(),
+    assertProcessStandardFdIntegrity: vi.fn(),
+    ensureCompiledModule: async () => ({}) as WebAssembly.Module,
+    getRuntimeFsEntries: () => [],
+    initializeProcessLifecycleViaKernelWorker: vi.fn(async () => {}),
+    registerProcessWithKernelWorker: vi.fn(async () => {}),
+    resolveProcessCwdInoViaKernelWorker: vi.fn(async () => 0),
+    bootstrapMemoryBytes: 64 * 1024 * 1024,
+    wasmPageSize: 65536,
+    wasmMaxPages: 65536,
+  });
+
+  await factory.createProcess(
+    new Uint8Array([0]),
+    new Uint8Array([0x7f, 0x45, 0x4c, 0x46]),
+    {
+      argv: ["/bin/sh"],
+      preloadEntries: [],
+      stdio: "pty",
+    },
+  );
+
+  expect(fakeKernel.processUsePipeStdio).not.toHaveBeenCalled();
 });
 
 test("createProcess delegates cwd resolution and lifecycle seeding for runtime-owned children", async () => {
@@ -469,7 +539,10 @@ test("createProcess publishes kernel runtime state before attaching the first wo
     },
   );
 
-  expect(attachThreadWorker).toHaveBeenCalledWith(handle, handle.worker, 0x1234);
+  expect(attachThreadWorker).toHaveBeenCalledWith(handle, {
+    worker: handle.worker,
+    vmPtr: 0x1234,
+  });
   expect(bridgeStatesAtAttach).toEqual([handle.kernelState]);
 });
 
@@ -528,7 +601,10 @@ test("createProcess publishes lifecycle-updated kernel state before attaching ru
     },
   );
 
-  expect(attachThreadWorker).toHaveBeenCalledWith(handle, handle.worker, 0x1234);
+  expect(attachThreadWorker).toHaveBeenCalledWith(handle, {
+    worker: handle.worker,
+    vmPtr: 0x1234,
+  });
   expect(bridgeStatesAtAttach).toEqual([handle.kernelState]);
   expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x60);
   expect(handle.kernelState.processRuntimeStatePtr).toBe(makeKernelState().processRuntimeStatePtr + 0x80);
@@ -600,6 +676,82 @@ test("createProcess fetches a metadata-only kernel-worker snapshot when runtime 
   expect(fakeKernel.externalizedInos.has(ino)).toBe(true);
   expect(fakeKernel.callLog).toContain("memfs_set_file_external");
   expect(registerProcessWithKernelWorker).toHaveBeenCalledWith(expect.anything(), { seedMemfsMode: "metadata" });
+});
+
+test("createProcess materializes only PT_INTERP for dynamic ELF metadata-only snapshots", async () => {
+  const processHandles = new Map<number, ProcessHandle>([[1, makeParentHandle()]]);
+  const kernelMemory = new WebAssembly.Memory({ initial: 1024, maximum: 2048, shared: true });
+  const fakeKernel = makeFakeProcessKernel(kernelMemory);
+  vi.spyOn(WebAssembly, "instantiate").mockResolvedValue({
+    exports: fakeKernel,
+  } as unknown as WebAssembly.Instance);
+  const getRuntimeFsEntries = vi.fn(() => [{
+    kind: "file" as const,
+    path: "/lib/ld-linux-riscv64-lp64d.so.1",
+    size: 32,
+    mode: 0o755,
+  }]);
+  const kernelWorkerRequest = vi.fn(async (msg: { type: string; includeData?: boolean; path?: string }) => {
+    if (msg.type === "snapshot-fs") {
+      expect(msg).toEqual({
+        type: "snapshot-fs",
+        includeData: false,
+      });
+      return {
+        type: "snapshot-fs-result" as const,
+        requestId: 1,
+        entries: [{
+          kind: "file" as const,
+          path: "/lib/ld-linux-riscv64-lp64d.so.1",
+          size: 32,
+          mode: 0o755,
+        }],
+      };
+    }
+    if (msg.type === "read-file") {
+      expect(msg.path).toBe("/lib/ld-linux-riscv64-lp64d.so.1");
+      return {
+        type: "file-read" as const,
+        requestId: 2,
+        data: encoder.encode("dynamic-loader-materialized"),
+      };
+    }
+    throw new Error(`unexpected kernel worker request: ${msg.type}`);
+  });
+  const registerProcessWithKernelWorker = vi.fn(async () => {});
+  const factory = createWorkerProcessFactory({
+    processHandles,
+    attachThreadWorker: vi.fn(),
+    assertProcessStandardFdIntegrity: vi.fn(),
+    ensureCompiledModule: async () => ({}) as WebAssembly.Module,
+    getRuntimeFsEntries,
+    initializeProcessLifecycleViaKernelWorker: vi.fn(async () => {}),
+    registerProcessWithKernelWorker,
+    resolveProcessCwdInoViaKernelWorker: vi.fn(async () => 1),
+    bootstrapMemoryBytes: 64 * 1024 * 1024,
+    wasmPageSize: 65536,
+    wasmMaxPages: 65536,
+  });
+
+  await factory.createProcess(
+    new Uint8Array([0]),
+    makeDynamicElfWithInterp("/lib/ld-linux-riscv64-lp64d.so.1"),
+    {
+      runtimeId: 7,
+      pid: 2,
+      parentPid: 1,
+      argv: ["app"],
+      hydrateFsFromKernelWorker: true,
+      kernelWorkerRequest,
+    },
+  );
+
+  expect(getRuntimeFsEntries).toHaveBeenCalledTimes(1);
+  expect(kernelWorkerRequest).toHaveBeenCalledTimes(2);
+  const ino = fakeKernel.memfsPaths.get("/lib/ld-linux-riscv64-lp64d.so.1");
+  expect(ino).toBeGreaterThan(0);
+  expect(fakeKernel.externalizedInos.has(ino!)).toBe(false);
+  expect(Number(fakeKernel.memfs_file_size(ino!))).toBe("dynamic-loader-materialized".length);
 });
 
 test("createProcess computes guest base after preloading runtime fs entries", async () => {

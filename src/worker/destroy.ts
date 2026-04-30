@@ -11,7 +11,7 @@ interface WorkerDestroyDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   clearBlockedWorker(handle: ProcessHandle, worker: Worker): void;
   clearVforkSnapshot(handle: ProcessHandle): void;
-  unregisterProcessWithKernelWorker(handle: ProcessHandle): void;
+  unregisterProcessWithKernelWorker(handle: ProcessHandle): Promise<void>;
 }
 
 export function createWorkerDestroyHelpers(deps: WorkerDestroyDeps) {
@@ -38,7 +38,7 @@ export function createWorkerDestroyHelpers(deps: WorkerDestroyDeps) {
     }
     handle.workers.clear();
 
-    deps.unregisterProcessWithKernelWorker(handle);
+    void deps.unregisterProcessWithKernelWorker(handle).catch(() => {});
     releaseSharedHostStdioLocal(handle);
     detachKernelShare(handle);
     if (handle.pid > 0 && deps.processHandles.get(handle.pid) === handle) {

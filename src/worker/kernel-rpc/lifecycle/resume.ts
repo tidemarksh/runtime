@@ -4,7 +4,7 @@ import {
   type KernelExports,
 } from "../../../abi.js";
 import { publishKernelRuntimeState } from "../../../bridge/runtime-state.js";
-import { adoptKernelState } from "../../sync.js";
+import { adoptKernelStateForHandle } from "../../sync.js";
 import { settleVisibleProcessOutput } from "../../stdio.js";
 import type {
   CanonicalizedChildLifecycle,
@@ -40,43 +40,21 @@ export function createWorkerKernelRpcResumeLifecycleHelpers(
 ) {
   async function resumeConnectViaKernelWorker(
     handle: ProcessHandle,
-    worker: Worker,
+    _worker: Worker,
     vmPtr: number,
     result: bigint,
   ): Promise<void> {
-    if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-      handle.kernel.thread_resume_connect_result(vmPtr, result);
-      handle.kernelState = readKernelRuntimeState(handle.kernel);
-      publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
-      deps.kickBlockedWorkers(handle);
-      deps.enqueueWorker(handle, worker);
-      return;
-    }
-
-    try {
-      const response = await handle.kernelWorkerRequest({
-        type: "resume-connect",
-        pid: handle.pid,
-        vmPtr,
-        result,
-        kernelState: handle.kernelState,
-      });
-      if (response.type !== "connect-resumed") {
-        throw new Error(`unexpected kernel-worker response for resume-connect: ${response.type}`);
-      }
-      if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
-        return;
-      }
-      handle.kernelState = adoptKernelState(handle.kernelState, response.kernelState);
-      attachKernelRuntimeState(handle.kernel, handle.kernelState);
-      publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
-      deps.kickBlockedWorkers(handle);
-      deps.enqueueWorker(handle, worker);
-    } catch (error) {
-      if (handle.workers.has(worker) && deps.threadWorkerStates.has(worker)) {
-        deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-      }
-    }
+    const blockedFd = handle.kernel.thread_blocked_fd(vmPtr);
+    deps.appendWorkerDebugLog(handle, `connect-resume:${handle.pid}:vm=0x${vmPtr.toString(16)}:result=${result.toString()}:blocked_fd=${blockedFd}:a0=${handle.kernel.thread_a0(vmPtr).toString()}`);
+    handle.kernel.thread_resume_connect_result(vmPtr, result);
+    const fd = blockedFd !== 0 ? blockedFd : Number(BigInt.asUintN(32, handle.kernel.thread_a0(vmPtr)));
+    const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd);
+    const peerIdx = socketIdx !== undefined && socketIdx >= 0
+      ? handle.kernel.thread_socket_peer_idx?.(socketIdx)
+      : undefined;
+    deps.appendWorkerDebugLog(handle, `connect-resumed:${handle.pid}:vm=0x${vmPtr.toString(16)}:fd=${fd}:status=${handle.kernel.thread_status(vmPtr)}:a0=${handle.kernel.thread_a0(vmPtr).toString()}:sock=${socketIdx ?? "n/a"}:peer=${peerIdx ?? "n/a"}`);
+    handle.kernelState = readKernelRuntimeState(handle.kernel);
+    publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
   }
 
   async function resumeWait4ViaKernelWorker(
@@ -126,7 +104,7 @@ export function createWorkerKernelRpcResumeLifecycleHelpers(
         return;
       }
 
-      handle.kernelState = adoptKernelState(handle.kernelState, response.kernelState);
+      handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       deps.appendWorkerDebugLog(
         handle,
@@ -182,14 +160,14 @@ export function createWorkerKernelRpcResumeLifecycleHelpers(
         return;
       }
 
-      handle.kernelState = adoptKernelState(handle.kernelState, response.kernelState);
+      handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
+      handle.kernel.thread_resume_vfork_parent(vmPtr, response.childPid);
       if (handle.kernel.process_record_child_exit_for_parent) {
         handle.kernel.process_record_child_exit_for_parent(handle.pid, response.childPid, waitStatus);
       } else {
         handle.kernel.process_record_child_exit(response.childPid, waitStatus);
       }
-      handle.kernel.thread_resume_vfork_parent(vmPtr, response.childPid);
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       deps.clearVforkSnapshot(handle);
@@ -257,7 +235,7 @@ export function createWorkerKernelRpcResumeLifecycleHelpers(
     if (response.type !== "vfork-execve-parent-resumed") {
       throw new Error(`unexpected kernel-worker response for resume-vfork-execve-parent: ${response.type}`);
     }
-    handle.kernelState = adoptKernelState(handle.kernelState, response.kernelState);
+    handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
 
       deps.appendWorkerDebugLog(handle, `resume-vfork-execve-parent:local-start:0x${vmPtr.toString(16)}:${childPid}`);
@@ -280,7 +258,7 @@ export function createWorkerKernelRpcResumeLifecycleHelpers(
     if (response.type !== "host-stdio-released") {
       throw new Error(`unexpected kernel-worker response for release-host-stdio: ${response.type}`);
     }
-    handle.kernelState = adoptKernelState(handle.kernelState, response.kernelState);
+    handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
     return handle.kernelState.pipeUsed;
   }

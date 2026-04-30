@@ -586,6 +586,9 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
   debugParts.push(`sig_mask=0x${formatU64(readOptionalThreadU64(exports.thread_sig_mask, vmPtr))}`);
   debugParts.push(`sig_pending=0x${formatU64(exports.thread_sig_pending(vmPtr))}`);
   debugParts.push(`sig_code=${readOptionalThreadI32(exports.thread_sig_info_code, vmPtr)}`);
+  debugParts.push(`syscall_a7=${formatU64(readOptionalThreadU64(exports.thread_a7, vmPtr))}`);
+  debugParts.push(`syscall_a0=${formatU64(readOptionalThreadU64(exports.thread_a0, vmPtr))}`);
+  debugParts.push(`poll_pipe=0x${(exports.thread_poll_wait_first_pipe_revents?.(vmPtr) ?? 0).toString(16)}`);
   debugParts.push(`blocked_fd=${exports.thread_blocked_fd?.(vmPtr) ?? 0}`);
   debugParts.push(`blocked_ofd_id=${exports.thread_blocked_ofd_id?.(vmPtr) ?? 0}`);
   debugParts.push(`epoll_timeout_ms=${exports.thread_epoll_wait_timeout?.(vmPtr)?.toString() ?? "n/a"}`);
@@ -849,34 +852,6 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     if (panicFilePtr !== 0 && panicFileLen !== 0) {
       const panicFileBytes = copyBytes(new Uint8Array(exports.memory.buffer, panicFilePtr, panicFileLen));
       debugParts.push(`panic_file=${JSON.stringify(decoder.decode(panicFileBytes))}`);
-    }
-  }
-  const fdTraceLen = exports.debug_fd_syscall_trace_len?.() ?? 0;
-  if (fdTraceLen > 0) {
-    const traces: string[] = [];
-    for (let index = 0; index < fdTraceLen; index += 1) {
-      const nr = readOptionalTraceU64(exports.debug_fd_syscall_trace_nr?.(index));
-      if (nr === 0n) {
-        continue;
-      }
-      const arg0 = readOptionalTraceU64(exports.debug_fd_syscall_trace_arg0?.(index));
-      const arg0OfdId = exports.debug_fd_syscall_trace_arg0_ofd_id?.(index) ?? 0;
-      const arg0OfdType = exports.debug_fd_syscall_trace_arg0_ofd_type?.(index) ?? 0;
-      const arg1 = readOptionalTraceU64(exports.debug_fd_syscall_trace_arg1?.(index));
-      const arg2 = readOptionalTraceU64(exports.debug_fd_syscall_trace_arg2?.(index));
-      const arg2OfdId = exports.debug_fd_syscall_trace_arg2_ofd_id?.(index) ?? 0;
-      const arg2OfdType = exports.debug_fd_syscall_trace_arg2_ofd_type?.(index) ?? 0;
-      const arg3 = readOptionalTraceU64(exports.debug_fd_syscall_trace_arg3?.(index));
-      const result = readOptionalTraceU64(exports.debug_fd_syscall_trace_result?.(index));
-      const status = exports.debug_fd_syscall_trace_status?.(index) ?? 0;
-      const traceVmPtr = exports.debug_fd_syscall_trace_vm_ptr?.(index) ?? 0;
-      traces.push(
-        `0x${traceVmPtr.toString(16)}:${nr.toString()}(${arg0.toString()}[${arg0OfdId}/${arg0OfdType}],${arg1.toString()},${arg2.toString()}[${arg2OfdId}/${arg2OfdType}],${arg3.toString()})=`
-        + `${BigInt.asIntN(64, result).toString()}/${status}`,
-      );
-    }
-    if (traces.length > 0) {
-      debugParts.push(`fd_syscalls=[${traces.join(",")}]`);
     }
   }
   const pathTraceLen = exports.debug_path_syscall_trace_len?.() ?? 0;

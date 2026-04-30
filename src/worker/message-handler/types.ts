@@ -14,6 +14,7 @@ export interface WorkerMessageHandlerDeps {
   syncEffectProcessLifecycle: number;
   syncEffectSignalWaiters: number;
   syncEffectForkSharedOfdState: number;
+  appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   assertProcessStandardFdIntegrity(handle: ProcessHandle, context: string): void;
   attachThreadWorker(handle: ProcessHandle, request: AttachThreadWorkerRequest): void;
@@ -31,16 +32,19 @@ export interface WorkerMessageHandlerDeps {
   clearVforkSnapshot(handle: ProcessHandle): void;
   clearBlockedWorker(handle: ProcessHandle, worker: Worker): void;
   completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number): Promise<void>;
+  commitNetworkConnect(handle: ProcessHandle, vmPtr: number): Promise<void>;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   failProcess(handle: ProcessHandle, error: Error): void;
   handleExecveSpawn(handle: ProcessHandle, worker: Worker, thread: ThreadWorkerState): Promise<void>;
   kickBlockedWorkers(handle: ProcessHandle): void;
   pumpProcess(handle: ProcessHandle): void;
   pruneDetachedProcessWorkers(handle: ProcessHandle, anchorVmPtr: number, currentWorker: Worker | null): void;
+  pumpNetworkConnections(handle: ProcessHandle, vmPtr?: number): Promise<boolean>;
   requestEpollDependentOfdStateSync(handle: ProcessHandle): Promise<void>;
   requestEpollStateSync(handle: ProcessHandle, retryWaiters?: boolean): Promise<void>;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   requestSocketStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
+  resolveNetworkConnect(handle: ProcessHandle, vmPtr: number): Promise<bigint>;
   resumeConnectViaKernelWorker(handle: ProcessHandle, worker: Worker, vmPtr: number, result: bigint): Promise<void>;
   resumeFsViaKernelWorker(handle: ProcessHandle, worker: Worker, vmPtr: number): Promise<void>;
   resumeVforkParentAfterChildExit(

@@ -430,6 +430,117 @@ test("status handler leaves blocked fork-shared sync to blocked-status handling"
   expect(pumpProcess).toHaveBeenCalledWith(handle);
 });
 
+test("status handler syncs explicit fork-shared effects before any OFD is tracked", async () => {
+  const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
+  const worker = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, {
+    vmPtr: number;
+    initialized: boolean;
+    waitingInWorkerStatus: number | null;
+    ownerPid: number;
+    generation: number;
+  }>();
+  threadWorkerStates.set(worker, makeThreadState());
+
+  const handle = {
+    pid: 7,
+    stdoutPipe: 0,
+    stderrPipe: 0,
+    stdinPipe: 0,
+    stdinQueue: [],
+    hostStdio: {
+      stdinPipe: 0,
+      stdoutPipe: 0,
+      stderrPipe: 0,
+      refCount: 1,
+    },
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    outputBacklog: [],
+    workers: new Set([worker]),
+    readyWorkers: [],
+    blockedWorkers: new Map(),
+    kernelWorkerRequest: vi.fn(async () => ({ type: "noop" })),
+    kernelShare: { members: new Set(), sharedOfdIds: new Set() },
+    forkSharedSyncPromise: null,
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(12),
+      stateSab: new SharedArrayBuffer(176),
+    },
+    kernel: makeKernel(7, {
+      abi_status_clone_spawn: () => 9,
+    }),
+    kernelState: makeKernelState(),
+    onStdout: null,
+    runningWorker: worker,
+  } as never;
+
+  const handler = createWorkerStatusMessageHandler({
+    threadWorkerStates,
+    appendWorkerDebugLog: () => {},
+    clearBlockedWorker: () => {},
+    enqueueWorker: () => {},
+    pumpProcess: () => {},
+    kickBlockedWorkers: () => {},
+    failProcess: () => {},
+    requestPipeStateSync: async () => {},
+    requestEpollStateSync: async () => {},
+    requestSocketStateSync: async () => {},
+    resumeFsViaKernelWorker: async () => {},
+    resumeConnectViaKernelWorker: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    captureVforkSnapshot: () => {
+      throw new Error("unexpected");
+    },
+    syncForkSharedStateViaKernelWorker,
+    syncBlockedForkSharedStateViaKernelWorker: async () => {},
+    syncProcessLifecycleViaKernelWorker: async () => {},
+    canonicalizeActiveVforkChildViaKernelWorker: async () => {},
+    attachThreadWorker: () => {},
+    completeProcessExit: async () => {},
+    handleExecveSpawn: async () => {},
+    blockWorker: () => {},
+    assertProcessStandardFdIntegrity: () => {},
+    requestEpollDependentOfdStateSync: async () => {},
+    statusOkCompletedSyncEffects: 0,
+    syncEffectPipeState: 1,
+    syncEffectSocketState: 2,
+    syncEffectEpollState: 4,
+    syncEffectEpollDependentOfdState: 8,
+    syncEffectProcessLifecycle: 16,
+    syncEffectSignalWaiters: 32,
+    syncEffectForkSharedOfdState: 64,
+    statusDefersOwnedStateSync: () => false,
+  } as never);
+
+  handler(
+    handle,
+    worker,
+    {
+      type: "status",
+      status: 0,
+      vmPtr: 0x1234,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0x5000n,
+      sp: 0x6000n,
+      s11: 0x7000n,
+      kernelState: makeKernelState(),
+      syncEffects: 64,
+      debug: "pc=0x5000 sp=0x6000 s11=0x7000 process_thread_count=1",
+    },
+  );
+
+  await Promise.resolve();
+  await Promise.resolve();
+
+  expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalledWith(handle, [], {
+    deltaOfdIds: true,
+    includeMemfs: false,
+    trackHeldOfds: true,
+    sourceVmPtr: 0x1234,
+  });
+});
+
 test("status handler logs quoted write debug fields before wait handling", () => {
   const appendWorkerDebugLog = vi.fn();
   const worker = {} as Worker;
