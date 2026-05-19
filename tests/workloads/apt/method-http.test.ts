@@ -47,6 +47,9 @@ const probeVfork = process.env.TIDEMARK_TEST_APT_METHOD_PROBE_VFORK === "1";
 const failOnOutput = process.env.TIDEMARK_TEST_APT_METHOD_FAIL_ON_OUTPUT ?? "";
 const stopChainAfterHttp = process.env.TIDEMARK_TEST_APT_METHOD_CHAIN_STOP_AFTER_HTTP === "1";
 const chainVerifyMethod = process.env.TIDEMARK_TEST_APT_METHOD_CHAIN_VERIFY_METHOD ?? "sqv";
+const packageIndexGatePackageCount = Number(
+  process.env.TIDEMARK_TEST_APT_PACKAGE_INDEX_PACKAGE_COUNT ?? "1",
+);
 const libraryRoots = (process.env.TIDEMARK_TEST_APT_METHOD_LIBRARY_ROOTS ?? "")
   .split(":")
   .filter(Boolean);
@@ -57,6 +60,14 @@ type MethodHttpResponse = Uint8Array | {
   body: Uint8Array;
 };
 type MethodResponseSelector = (request: string) => MethodHttpResponse;
+type MethodBridgeMetrics = {
+  readCalls: number;
+  readBytes: number;
+  responseChunks: number;
+  packageResponseBytes: number;
+  packageResponseChunks: number;
+  maxReadRequestBytes: number;
+};
 
 const methodAcquireFilename = "/var/lib/apt/lists/partial/deb.debian.org_debian_dists_trixie_InRelease";
 const aptPartialPackagesXzFilename =
@@ -81,13 +92,19 @@ function buildSyntheticAptRepository(): {
   const tmp = mkdtempSync(join(tmpdir(), "tidemark-apt-repo-"));
   try {
     const packagesPath = join(tmp, "Packages");
-    const packagesText = [
-      "Package: tidemark-local",
-      "Version: 1",
-      "Architecture: riscv64",
-      "Description: local apt update gate",
-      "",
-    ].join("\n");
+    const packageCount = Math.max(1, Math.trunc(packageIndexGatePackageCount));
+    const packageStanzas: string[] = [];
+    for (let index = 0; index < packageCount; index += 1) {
+      const digest = createHash("sha256").update(`tidemark-local-${index}`).digest("hex");
+      packageStanzas.push([
+        `Package: tidemark-local-${index}`,
+        "Version: 1",
+        "Architecture: riscv64",
+        `Description: local apt update gate ${digest}`,
+        "",
+      ].join("\n"));
+    }
+    const packagesText = packageStanzas.join("");
     writeFileSync(packagesPath, packagesText);
     const packages = new TextEncoder().encode(packagesText);
     const packagesBuffer = Buffer.from(packages);
@@ -1911,6 +1928,7 @@ function createAsyncMethodNetworkBridge(
   requests: string[],
   events: string[] = [],
   selectResponseBody: MethodResponseSelector = selectMethodResponseBody,
+  metrics?: MethodBridgeMetrics,
 ): RuntimeNetworkBridge {
   const record = (event: string): void => {
     if (events.length < 64) {
@@ -1929,6 +1947,7 @@ function createAsyncMethodNetworkBridge(
       let requestText = "";
       let responseBytes: Uint8Array | null = null;
       let responseOffset = 0;
+      let responseTarget = "";
       const connection: RuntimeNetworkConnection = {
         write(data) {
           const request = decoder.decode(data);
@@ -1940,10 +1959,22 @@ function createAsyncMethodNetworkBridge(
           record(`write:${data.length}`);
         },
         async read(maxBytes) {
+          if (metrics) {
+            metrics.readCalls += 1;
+            metrics.maxReadRequestBytes = Math.max(metrics.maxReadRequestBytes, maxBytes);
+          }
           record(`read:start:requests=${requests.length}:local=${sawRequest ? 1 : 0}:sent=${responseSent ? 1 : 0}`);
           if (responseBytes !== null && responseOffset < responseBytes.length) {
             const chunk = responseBytes.subarray(responseOffset, responseOffset + maxBytes);
             responseOffset += chunk.length;
+            if (metrics) {
+              metrics.readBytes += chunk.length;
+              metrics.responseChunks += 1;
+              if (isPackageIndexTarget(responseTarget)) {
+                metrics.packageResponseBytes += chunk.length;
+                metrics.packageResponseChunks += 1;
+              }
+            }
             record(`read:chunk:${chunk.length}:${responseOffset}/${responseBytes.length}`);
             return chunk;
           }
@@ -1956,10 +1987,20 @@ function createAsyncMethodNetworkBridge(
             record("read:no-request");
             return undefined;
           }
+          const targets = extractHttpGetTargets([requestText]);
+          responseTarget = targets[targets.length - 1] ?? "";
           responseBytes = serializeHttpResponse(selectResponseBody(requestText));
           await new Promise((resolveDone) => setTimeout(resolveDone, 1));
           const chunk = responseBytes.subarray(0, maxBytes);
           responseOffset = chunk.length;
+          if (metrics) {
+            metrics.readBytes += chunk.length;
+            metrics.responseChunks += 1;
+            if (isPackageIndexTarget(responseTarget)) {
+              metrics.packageResponseBytes += chunk.length;
+              metrics.packageResponseChunks += 1;
+            }
+          }
           record(`read:response:${chunk.length}:${responseOffset}/${responseBytes.length}`);
           return chunk;
         },
@@ -2025,6 +2066,19 @@ async function describeGuestFile(
   }
 }
 
+async function describeGuestFileBrief(
+  runtime: Awaited<ReturnType<typeof Runtime.create>>,
+  path: string,
+): Promise<string> {
+  try {
+    const data = await runtime.readFile(path);
+    const sha256 = createHash("sha256").update(Buffer.from(data)).digest("hex");
+    return `${path}:size=${data.length}:sha256=${sha256}`;
+  } catch {
+    return `${path}:missing`;
+  }
+}
+
 async function describeGuestSqvTmpFiles(
   runtime: Awaited<ReturnType<typeof Runtime.create>>,
 ): Promise<string> {
@@ -2064,6 +2118,24 @@ function extractHttpGetTargets(chunks: readonly string[]): string[] {
     .split(/\r?\n/)
     .filter((line) => line.startsWith("GET "))
     .map((line) => line.split(" ")[1] ?? "");
+}
+
+function isPackageIndexTarget(target: string): boolean {
+  return (
+    target.includes("/dists/trixie/main/binary-riscv64/")
+    && (target.includes("/by-hash/SHA256/") || target.endsWith("/Packages.xz") || target.endsWith("/Packages"))
+  );
+}
+
+function createMethodBridgeMetrics(): MethodBridgeMetrics {
+  return {
+    readCalls: 0,
+    readBytes: 0,
+    responseChunks: 0,
+    packageResponseBytes: 0,
+    packageResponseChunks: 0,
+    maxReadRequestBytes: 0,
+  };
 }
 
 async function waitForBridgeRequestOrExit(
@@ -2677,10 +2749,12 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
   };
   const guestRequests: string[] = [];
   const bridgeEvents: string[] = [];
+  const metrics = createMethodBridgeMetrics();
   const prepared = await prepareAptGetRuntime(createAsyncMethodNetworkBridge(
     guestRequests,
     bridgeEvents,
     selectResponseBody,
+    metrics,
   ));
   if (!prepared) {
     return;
@@ -2688,6 +2762,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
   const { runtime, aptGetElf } = prepared;
 
   let output = "";
+  const started = Date.now();
   try {
     const proc = await runtime.spawn(
       aptGetElf,
@@ -2756,10 +2831,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
     });
 
     const targets = extractHttpGetTargets(guestRequests);
-    const packageIndexTargets = targets.filter((target) => (
-      target.includes("/dists/trixie/main/binary-riscv64/")
-      && (target.includes("/by-hash/SHA256/") || target.endsWith("/Packages.xz") || target.endsWith("/Packages"))
-    ));
+    const packageIndexTargets = targets.filter(isPackageIndexTarget);
     expect(
       targets,
       [
@@ -2775,6 +2847,23 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
     ).toEqual(expect.arrayContaining([expect.stringMatching(/\/dists\/trixie\/main\/binary-riscv64\/.*(?:by-hash\/SHA256\/|Packages(?:\.xz)?$)/)]));
     expect(packageIndexTargets.length).toBeGreaterThan(0);
     expect([0, 100]).toContain(exitCode);
+    console.log([
+      `apt package index metrics durationMs=${Date.now() - started}`,
+      `exitCode=${exitCode}`,
+      `packageCount=${Math.max(1, Math.trunc(packageIndexGatePackageCount))}`,
+      `packagesBytes=${repo.packages.length}`,
+      `packagesXzBytes=${repo.packagesXz.length}`,
+      `requestTargets=${JSON.stringify(targets)}`,
+      `packageRequestTargets=${JSON.stringify(packageIndexTargets)}`,
+      `bridgeReadCalls=${metrics.readCalls}`,
+      `bridgeReadBytes=${metrics.readBytes}`,
+      `bridgeChunks=${metrics.responseChunks}`,
+      `bridgePackageBytes=${metrics.packageResponseBytes}`,
+      `bridgePackageChunks=${metrics.packageResponseChunks}`,
+      `bridgeMaxReadRequestBytes=${metrics.maxReadRequestBytes}`,
+      `partialPackagesXz=${await describeGuestFileBrief(runtime, aptPartialPackagesXzFilename)}`,
+      `finalPackagesXz=${await describeGuestFileBrief(runtime, aptFinalPackagesXzFilename)}`,
+    ].join(" "));
   } finally {
     runtime.destroy();
   }
