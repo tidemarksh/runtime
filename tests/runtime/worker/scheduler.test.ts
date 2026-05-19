@@ -476,6 +476,67 @@ test("pipe pselect retry applies child exit records before passive parking", asy
   expect(handle.blockedWorkers.get(worker)?.pipeChildExitResumeKey).toContain("7/0:sys=72");
 });
 
+test("pipe pselect retry resumes after pipe sync when no writer remains", async () => {
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, makeThreadState(0x1234));
+  const { exports: kernel } = makeKernel();
+  kernel.abi_sys_pselect6 = () => 72;
+  kernel.abi_fd_type_pipe = () => 6;
+  kernel.thread_a7 = () => 72n;
+  kernel.thread_a0 = () => 0n;
+  kernel.thread_status = () => kernel.abi_status_pipe_wait();
+  kernel.thread_poll_wait_timeout = () => -1n;
+  kernel.thread_poll_wait_ready_count = () => 0;
+  kernel.thread_poll_wait_has_socket = () => 0;
+  kernel.thread_poll_wait_first_pipe_revents = () => 4 | (0x001 << 8);
+  kernel.thread_pipe_read_eof_sync_pending = () => 0;
+  kernel.thread_poll_hup_sync_pending = () => 0;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => fd === 4 ? 10 : 0;
+  kernel.kernel_ofd_fd_type = (ofdId: number) => ofdId === 10 ? kernel.abi_fd_type_pipe() : 0;
+  kernel.kernel_ofd_ino = (ofdId: number) => ofdId === 10 ? 2 : 0;
+  const handle = makeHandle(kernel, worker);
+  handle.memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  handle.pendingChildSpawnRecords = 0;
+  handle.kernelWorkerRequest = vi.fn(async () => {
+    throw new Error("scheduler retry should leave pipe wait resume to local helper");
+  });
+  const resumeBlockedSyscallLocally = vi.fn(async () => {});
+  const lifecycleEvents: string[] = [];
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      lifecycleEvents.push(event);
+    },
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally,
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.blockWorker(handle, worker, handle.kernel.abi_status_pipe_wait(), 0x1234);
+  const blocked = handle.blockedWorkers.get(worker);
+  expect(blocked).toBeDefined();
+  blocked!.pipeSyncedBeforePassive = true;
+  scheduler.kickBlockedWorkers(handle);
+  await Promise.resolve();
+
+  expect(lifecycleEvents.some((event) => event.startsWith("pipe-retry:1:a7=72"))).toBe(true);
+  expect(resumeBlockedSyscallLocally).toHaveBeenCalledWith(
+    handle,
+    worker,
+    0x1234,
+    handle.kernel.abi_status_pipe_wait(),
+    false,
+  );
+});
+
 test("kernel-worker blocked syscall retry leaves rpc ownership to local resume helper", () => {
   const worker = {
     postMessage: vi.fn(),

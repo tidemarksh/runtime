@@ -580,17 +580,22 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     const readv = handle.kernel.abi_sys_readv?.();
     const ppoll = handle.kernel.abi_sys_ppoll?.();
     const pselect6 = handle.kernel.abi_sys_pselect6?.();
+    const isPollLike = (ppoll !== undefined && syscall === BigInt(ppoll))
+      || (pselect6 !== undefined && syscall === BigInt(pselect6));
     const canPark = (
       (read !== undefined && syscall === BigInt(read))
       || (readv !== undefined && syscall === BigInt(readv))
-      || (ppoll !== undefined && syscall === BigInt(ppoll))
-      || (pselect6 !== undefined && syscall === BigInt(pselect6))
+      || isPollLike
     );
     const blockedReadIsReady = (
       ((read !== undefined && syscall === BigInt(read)) || (readv !== undefined && syscall === BigInt(readv)))
       && handle.kernel.thread_blocked_pipe_read_ready?.(vmPtr) === 1
     );
     const blockedPollPipeIsReady = blockedPollPipeHasBufferedData(handle, vmPtr);
+    const pollLikePipeHasNoWriter = isPollLike
+      && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) !== 1
+      && !blockedPollPipeIsReady
+      && pollPipeWriteOpenForThreadStep(handle, vmPtr) <= 0;
     const childExitRecordsAlreadyResumed = pipeChildExitRecordsAlreadyResumedForWait(
       handle,
       vmPtr,
@@ -601,6 +606,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       && childExitRecordsAlreadyResumed
       && !blockedReadIsReady
       && !blockedPollPipeIsReady
+      && !pollLikePipeHasNoWriter
       && pollTimeoutMs < 0
       && timeoutDeadlineMs === null
       && (readyCount === undefined || readyCount === 0)
@@ -715,6 +721,52 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     const head = view.getUint32(slotBase + PIPE_OFF_HEAD, true);
     const tail = view.getUint32(slotBase + PIPE_OFF_TAIL, true);
     return head !== tail;
+  }
+
+  function pollPipeSlotsForThreadStep(handle: ProcessHandle, vmPtr: number): Set<number> {
+    const rawMask = handle.kernel.thread_poll_wait_pipe_slots_mask?.(vmPtr);
+    const mask = rawMask === undefined
+      ? 0n
+      : typeof rawMask === "bigint" ? rawMask : BigInt(rawMask);
+    const pipeSlots = new Set<number>();
+    const maxPipes = Math.min(handle.kernel.abi_max_pipes?.() ?? 64, 64);
+    for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
+      if ((mask & (1n << BigInt(pipeSlot))) !== 0n) {
+        pipeSlots.add(pipeSlot);
+      }
+    }
+    if (pipeSlots.size > 0) {
+      return pipeSlots;
+    }
+    const packed = handle.kernel.thread_poll_wait_first_pipe_revents?.(vmPtr);
+    if (packed === undefined || packed === 0) {
+      return pipeSlots;
+    }
+    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, packed & 0xff);
+    if (
+      ofdId > 0
+      && ofdId < handle.kernel.abi_max_fds()
+      && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
+    ) {
+      const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
+      if (pipeSlot > 0 && pipeSlot < maxPipes) {
+        pipeSlots.add(pipeSlot);
+      }
+    }
+    return pipeSlots;
+  }
+
+  function pollPipeWriteOpenForThreadStep(handle: ProcessHandle, vmPtr: number): number {
+    let writeOpen = 0;
+    const view = new DataView(handle.memory.buffer);
+    for (const pipeSlot of pollPipeSlotsForThreadStep(handle, vmPtr)) {
+      const slotBase = handle.kernelState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
+      if (slotBase < 0 || slotBase + PIPE_OFF_WRITE_OPEN + 4 > view.byteLength) {
+        continue;
+      }
+      writeOpen = Math.max(writeOpen, view.getInt32(slotBase + PIPE_OFF_WRITE_OPEN, true));
+    }
+    return writeOpen;
   }
 
   function formatPipeSlotHolders(handle: ProcessHandle, pipeSlot: number): string {
