@@ -2096,6 +2096,27 @@ async function describeGuestFileBrief(
   }
 }
 
+function compactAptRuntimeDebug(summary: string): string {
+  const local = summary.split("\n").find((line) => line.startsWith("pid=")) ?? "";
+  const workerStates = summary.match(/worker_states=\[[^\]]*\]/)?.[0] ?? "";
+  const workerDetails = summary.match(/worker_details=\[[^\]]*\]/)?.[0] ?? "";
+  const blockedStates = [...summary.matchAll(/blocked-state:[^,\]]+/g)]
+    .slice(-3)
+    .map((match) => match[0]);
+  const pipeRetries = [...summary.matchAll(/pipe-retry:[^,\]]+/g)]
+    .slice(-3)
+    .map((match) => match[0]);
+  const fsTail = summary.match(/fs_lifecycle_tail=\[([^\]]*)\]/)?.[1] ?? "";
+  return [
+    local.slice(0, 512),
+    workerStates.slice(0, 256),
+    workerDetails.slice(0, 512),
+    `blockedTail=${JSON.stringify(blockedStates)}`,
+    `pipeRetryTail=${JSON.stringify(pipeRetries)}`,
+    `fsTail=${JSON.stringify(fsTail.slice(-512))}`,
+  ].filter(Boolean).join(" ");
+}
+
 async function describeGuestSqvTmpFiles(
   runtime: Awaited<ReturnType<typeof Runtime.create>>,
 ): Promise<string> {
@@ -2142,6 +2163,29 @@ function isPackageIndexTarget(target: string): boolean {
     target.includes("/dists/trixie/main/binary-riscv64/")
     && (target.includes("/by-hash/SHA256/") || target.endsWith("/Packages.xz") || target.endsWith("/Packages"))
   );
+}
+
+async function waitForPackageIndexRequestCount(
+  requests: readonly string[],
+  proc: Awaited<ReturnType<Awaited<ReturnType<typeof Runtime.create>>["spawn"]>>,
+  count: number,
+  timeoutMs: number,
+): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const targets = extractHttpGetTargets(requests);
+    if (targets.filter(isPackageIndexTarget).length >= count) {
+      return;
+    }
+    const exitCode = await Promise.race([
+      proc.waitForExit(),
+      new Promise<null>((resolveDone) => setTimeout(() => resolveDone(null), 25)),
+    ]);
+    if (exitCode !== null) {
+      throw new Error(`process exited before package index request count ${count}: exit=${exitCode}`);
+    }
+  }
+  throw new Error(`timeout waiting for package index request count ${count}: targets=${JSON.stringify(extractHttpGetTargets(requests))}`);
 }
 
 function createMethodBridgeMetrics(): MethodBridgeMetrics {
@@ -2791,6 +2835,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
   const { runtime, aptGetElf } = prepared;
 
   let output = "";
+  let secondPackageObservation = "not-observed";
   const started = Date.now();
   try {
     const proc = await runtime.spawn(
@@ -2831,10 +2876,35 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `output=${JSON.stringify(output)}`,
         `partialInRelease=${await describeGuestFile(runtime, methodAcquireFilename)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+        `secondPackageObservation=${secondPackageObservation}`,
         `debug=${await runtimeDebugSummary(runtime)}`,
         `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
       ].join("\n"));
     });
+
+    if (packageIndexGateTruncateFirstPackage) {
+      await waitForPackageIndexRequestCount(guestRequests, proc, 2, asyncDoneTimeoutMs).catch(async (error) => {
+        const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+        throw new Error([
+          detail,
+          `targets=${JSON.stringify(extractHttpGetTargets(guestRequests))}`,
+          `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
+          `output=${JSON.stringify(output)}`,
+          `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+          `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
+          `debug=${await runtimeDebugSummary(runtime)}`,
+          `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
+        ].join("\n"));
+      });
+      const debugSummary = await runtimeDebugSummary(runtime);
+      secondPackageObservation = [
+        `atMs=${Date.now() - started}`,
+        `targets=${JSON.stringify(extractHttpGetTargets(guestRequests).filter(isPackageIndexTarget))}`,
+        `partialPackagesXz=${await describeGuestFileBrief(runtime, aptPartialPackagesXzFilename)}`,
+        `finalPackagesXz=${await describeGuestFileBrief(runtime, aptFinalPackagesXzFilename)}`,
+        `debug=${JSON.stringify(compactAptRuntimeDebug(debugSummary))}`,
+      ].join(" ");
+    }
 
     const exitCode = await Promise.race([
       proc.waitForExit(),
@@ -2852,6 +2922,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `output=${JSON.stringify(output)}`,
         `partialInRelease=${await describeGuestFile(runtime, methodAcquireFilename)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+        `secondPackageObservation=${secondPackageObservation}`,
         `finalInRelease=${await describeGuestFile(runtime, aptFinalInReleaseFilename)}`,
         `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
         `debug=${await runtimeDebugSummary(runtime)}`,
@@ -2870,6 +2941,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `output=${JSON.stringify(output)}`,
         `partialInRelease=${await describeGuestFile(runtime, methodAcquireFilename)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+        `secondPackageObservation=${secondPackageObservation}`,
         `finalInRelease=${await describeGuestFile(runtime, aptFinalInReleaseFilename)}`,
         `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
       ].join("\n"),
@@ -2897,6 +2969,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
       `bridgePackageBytes=${metrics.packageResponseBytes}`,
       `bridgePackageChunks=${metrics.packageResponseChunks}`,
       `bridgeMaxReadRequestBytes=${metrics.maxReadRequestBytes}`,
+      `secondPackageObservation=${secondPackageObservation}`,
       `partialPackagesXz=${await describeGuestFileBrief(runtime, aptPartialPackagesXzFilename)}`,
       `finalPackagesXz=${await describeGuestFileBrief(runtime, aptFinalPackagesXzFilename)}`,
     ].join(" "));
