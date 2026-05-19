@@ -249,6 +249,9 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       if (snapshot === undefined) {
         return -1;
       }
+      if (snapshot.deliveredBytes !== undefined) {
+        return snapshot.deliveredBytes;
+      }
       if (snapshot.readBytes !== undefined && snapshot.availableBytes !== undefined) {
         return snapshot.readBytes + snapshot.availableBytes;
       }
@@ -269,6 +272,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         capacity: payload.capacity,
         readBytes: payload.readBytes,
         availableBytes: payload.availableBytes,
+        deliveredBytes: payload.deliveredBytes,
         data: payload.data.slice(),
       });
     }
@@ -281,7 +285,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     }
   }
 
-  function rememberNetworkRecvPayload(handle: ProcessHandle, vmPtr: number, fd: number): void {
+  function rememberNetworkRecvPayload(handle: ProcessHandle, vmPtr: number, fd: number, writtenBytes?: number): void {
     const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
     handle.networkRecvPayloadWatermarks ??= new Map();
     if (socketIdx < 0) {
@@ -314,6 +318,16 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     const safeAvailableBytes = Number.isSafeInteger(availableBytes) && availableBytes !== undefined && availableBytes >= 0
       ? availableBytes
       : undefined;
+    const observedDeliveredBytes = safeReadBytes !== undefined && safeAvailableBytes !== undefined
+      ? safeReadBytes + safeAvailableBytes
+      : undefined;
+    const previousPayload = handle.networkRecvPayloadWatermarks.get(fd);
+    const previousDeliveredBytes = previousPayload === undefined
+      ? undefined
+      : networkRecvPayloadDeliveredBytes(previousPayload);
+    const deliveredBytes = previousDeliveredBytes !== undefined && writtenBytes !== undefined && writtenBytes > 0
+      ? previousDeliveredBytes + writtenBytes
+      : observedDeliveredBytes;
     const socketSlot = snapshotNetworkSocketSlot(handle, vmPtr, fd);
     if (socketSlot !== null) {
       handle.networkSocketSlotWatermarks ??= new Map();
@@ -328,8 +342,23 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       capacity,
       readBytes: safeReadBytes,
       availableBytes: safeAvailableBytes,
+      deliveredBytes,
       data: memory.slice(absolute + 16, absolute + netBufferBytes),
     });
+  }
+
+  function networkRecvPayloadDeliveredBytes(payload: {
+    readBytes?: number;
+    availableBytes?: number;
+    deliveredBytes?: number;
+  }): number | undefined {
+    if (payload.deliveredBytes !== undefined) {
+      return payload.deliveredBytes;
+    }
+    if (payload.readBytes !== undefined && payload.availableBytes !== undefined) {
+      return payload.readBytes + payload.availableBytes;
+    }
+    return undefined;
   }
 
   function counterAhead(sourceValue: number, targetValue: number, capacity: number): boolean {
@@ -385,19 +414,69 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       }
     }
     let partialReadProgress: number | null = null;
+    let partialReadTail: number | null = null;
+    let progressConfirmsUnreadPayload = false;
     if (
       payload.readBytes !== undefined
       && payload.availableBytes !== undefined
     ) {
       const readBytesRaw = handle.kernel.thread_socket_read_bytes?.(socketIdx);
       const readBytes = typeof readBytesRaw === "bigint" ? Number(readBytesRaw) : readBytesRaw;
+      const deliveredBytes = networkRecvPayloadDeliveredBytes(payload);
       if (
         Number.isSafeInteger(readBytes)
-        && (readBytes as number) > payload.readBytes
       ) {
         const availableBytes = handle.kernel.thread_socket_recv_available?.(socketIdx);
+        const readProgress = (readBytes as number) - payload.readBytes;
+        const deliveredRemaining = deliveredBytes === undefined
+          ? undefined
+          : deliveredBytes - (readBytes as number);
+        const payloadStillCoversReadProgress = deliveredRemaining === undefined
+          ? readProgress >= 0 && readProgress < payload.availableBytes
+          : readProgress >= 0
+            && readProgress <= payload.availableBytes
+            && deliveredRemaining >= 0
+            && deliveredRemaining <= payload.availableBytes - readProgress;
         if (
-          Number.isSafeInteger(availableBytes)
+          deliveredBytes !== undefined
+          && Number.isSafeInteger(availableBytes)
+          && availableBytes !== undefined
+          && availableBytes >= 0
+          && (readBytes as number) + availableBytes > deliveredBytes
+          && !payloadStillCoversReadProgress
+        ) {
+          appendNetworkLifecycle(
+            handle,
+            `net-watermark-restore-skip-progress:${handle.pid}:fd=${fd}:payload=${deliveredBytes}:current=${(readBytes as number) + availableBytes}:ptail=${payload.tail}`,
+          );
+          return false;
+        }
+        if (
+          !payloadStillCoversReadProgress
+          && readProgress >= payload.availableBytes
+        ) {
+          return false;
+        }
+        progressConfirmsUnreadPayload = deliveredBytes === undefined && readProgress >= 0;
+        if (
+          readProgress > 0
+          && (
+            !options.allowPartialReadProgress
+            || deliveredBytes === undefined
+          )
+        ) {
+          return false;
+        }
+        if (payloadStillCoversReadProgress && (readProgress > 0 || deliveredRemaining !== undefined)) {
+          partialReadProgress = readProgress;
+          partialReadTail = deliveredRemaining === undefined
+            ? payload.tail
+            : (payload.head + readProgress + deliveredRemaining) % payload.capacity;
+        }
+        if (
+          deliveredBytes === undefined
+          && readProgress > 0
+          && Number.isSafeInteger(availableBytes)
           && availableBytes !== undefined
           && availableBytes >= 0
           && (readBytes as number) + availableBytes > payload.readBytes + payload.availableBytes
@@ -408,14 +487,16 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
           );
           return false;
         }
-        const readProgress = (readBytes as number) - payload.readBytes;
         if (
-          !options.allowPartialReadProgress
-          || readProgress >= payload.availableBytes
+          readProgress > 0
+          && !(
+            Number.isSafeInteger(availableBytes)
+            && availableBytes !== undefined
+            && availableBytes >= 0
+          )
         ) {
-          return false;
+          progressConfirmsUnreadPayload = false;
         }
-        partialReadProgress = readProgress;
       }
     }
     const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes?.();
@@ -436,16 +517,28 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     if (
       partialReadProgress !== null
       && payload.availableBytes !== undefined
-      && partialReadProgress < payload.availableBytes
-      && currentHead === payload.tail
+      && (
+        partialReadProgress < payload.availableBytes
+        || partialReadTail !== null
+      )
     ) {
       const restoredHead = (payload.head + partialReadProgress) % payload.capacity;
       appendNetworkLifecycle(
         handle,
-        `net-watermark-restore-partial:${handle.pid}:fd=${fd}:head=${currentHead}:restoredHead=${restoredHead}:tail=${currentTail}:ptail=${payload.tail}:progress=${partialReadProgress}:avail=${payload.availableBytes}`,
+        `net-watermark-restore-partial:${handle.pid}:fd=${fd}:head=${currentHead}:restoredHead=${restoredHead}:tail=${currentTail}:ptail=${payload.tail}:rtail=${partialReadTail ?? payload.tail}:progress=${partialReadProgress}:avail=${payload.availableBytes}`,
       );
       memory.set(payload.data, absolute + 16);
       view.setUint32(0, restoredHead, true);
+      view.setUint32(4, partialReadTail ?? payload.tail, true);
+      return true;
+    }
+    if (progressConfirmsUnreadPayload) {
+      appendNetworkLifecycle(
+        handle,
+        `net-watermark-restore-progress:${handle.pid}:fd=${fd}:head=${currentHead}:tail=${currentTail}:phead=${payload.head}:ptail=${payload.tail}`,
+      );
+      memory.set(payload.data, absolute + 16);
+      view.setUint32(0, payload.head, true);
       view.setUint32(4, payload.tail, true);
       return true;
     }
@@ -543,6 +636,24 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     if (socketIdx >= 0) {
       const available = handle.kernel.thread_socket_recv_available?.(socketIdx);
       if (available !== undefined) {
+        const readBytesRaw = handle.kernel.thread_socket_read_bytes?.(socketIdx);
+        const readBytes = typeof readBytesRaw === "bigint" ? Number(readBytesRaw) : readBytesRaw;
+        const safeReadBytes = Number.isSafeInteger(readBytes) ? readBytes as number : undefined;
+        if (payload && safeReadBytes !== undefined) {
+          const deliveredBytes = networkRecvPayloadDeliveredBytes(payload);
+          if (deliveredBytes !== undefined && safeReadBytes >= deliveredBytes) {
+            restoreBufferedNetworkRecvFromWatermark(handle, vmPtr, fd, { allowPartialReadProgress: true });
+            const restoredAvailable = handle.kernel.thread_socket_recv_available?.(socketIdx);
+            if (restoredAvailable !== undefined && restoredAvailable <= 0) {
+              appendNetworkLifecycle(
+                handle,
+                `net-buffered:${handle.pid}:fd=${fd}:false:socket=${socketIdx}:available=${restoredAvailable}:payload=delivered`,
+              );
+              clearNetworkRecvWatermarks(handle, fd);
+              return false;
+            }
+          }
+        }
         if (available > 0) {
           appendNetworkLifecycle(handle, `net-buffered:${handle.pid}:fd=${fd}:available=${available}`);
           return true;
@@ -575,6 +686,33 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       return false;
     }
     return (handle.kernel.thread_socket_recv_available?.(socketIdx) ?? 0) > 0;
+  }
+
+  function clearCurrentNetworkRecvBuffer(handle: ProcessHandle, vmPtr: number, fd: number): void {
+    const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
+    if (socketIdx < 0) {
+      return;
+    }
+    const recvBufIdx = handle.kernel.thread_socket_recv_buf_idx?.(socketIdx) ?? -1;
+    if (recvBufIdx < 0) {
+      return;
+    }
+    const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes?.();
+    if (netBufPoolBytes === undefined) {
+      return;
+    }
+    const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+    const netBufferCount = maxSockets * 2;
+    const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
+    if (!Number.isInteger(netBufferBytes) || netBufferBytes <= 16 || recvBufIdx >= netBufferCount) {
+      return;
+    }
+    const absolute = handle.kernelState.netBufBase + recvBufIdx * netBufferBytes;
+    const view = new DataView(handle.memory.buffer, absolute, 16);
+    const head = view.getUint32(0, true);
+    view.setUint32(4, head, true);
+    handle.networkRecvHeadWatermarks.set(fd, head);
+    handle.networkRecvTailWatermarks.set(fd, head);
   }
 
   function queueNetworkReadPromise(
@@ -1147,6 +1285,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       }
       const beforeClose = formatSocketStateForFd(fd);
       closeExternalPeer?.(vmPtr, fd);
+      clearCurrentNetworkRecvBuffer(handle, vmPtr, fd);
       const closedSlot = snapshotNetworkSocketSlot(handle, vmPtr, fd);
       if (closedSlot !== null) {
         handle.networkClosedSocketSlots.set(fd, closedSlot);
@@ -1406,7 +1545,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         appendNetworkLifecycle(handle, `net-inject-result:${handle.pid}:fd=${fd}:written=${written}:after=${formatSocketStateForFd(fd)}`);
         if (written > 0) {
           rememberNetworkOfdSlot(handle, handle.kernel.process_fd_ofd_id(vmPtr, fd));
-          rememberNetworkRecvPayload(handle, vmPtr, fd);
+          rememberNetworkRecvPayload(handle, vmPtr, fd, written);
           networkDrainMisses.delete(connection);
           networkEofDeferrals.delete(connection);
           suppressNetworkDrainAfterInbound.add(connection);

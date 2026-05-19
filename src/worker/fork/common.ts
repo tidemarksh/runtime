@@ -93,6 +93,7 @@ export function createForkChildHandle({
         capacity: snapshot.capacity,
         readBytes: snapshot.readBytes,
         availableBytes: snapshot.availableBytes,
+        deliveredBytes: snapshot.deliveredBytes,
         data: snapshot.data.slice(),
       }]),
     ),

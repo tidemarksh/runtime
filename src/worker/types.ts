@@ -146,6 +146,7 @@ export interface ProcessHandle {
     capacity: number;
     readBytes?: number;
     availableBytes?: number;
+    deliveredBytes?: number;
     data: Uint8Array;
   }>;
   workers: Set<Worker>;

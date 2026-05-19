@@ -2288,6 +2288,165 @@ test("status handler keeps newer thread recv payload when producer tail is not a
   expect(handle.kernelState.netBufUsed).toBe(0b10n);
 });
 
+test("status handler preserves host recv payload when producer tail wraps", () => {
+  const worker = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, { vmPtr: number; initialized: boolean; waitingInWorkerStatus: number | null }>();
+  threadWorkerStates.set(worker, makeThreadState());
+  const netBufferBytes = 64;
+  const netBufPoolBytes = netBufferBytes * 2;
+  const capacity = netBufferBytes - 16;
+  const netBufBase = 0x1000;
+  const recvBufIdx = 1;
+  const recvBufBase = netBufBase + recvBufIdx * netBufferBytes;
+  const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+  const bytes = new Uint8Array(memory.buffer);
+  const view = new DataView(memory.buffer);
+  const staleTail = capacity - 1;
+  const wrappedTail = Math.floor(capacity * 0.65);
+  const availableBytes = (wrappedTail - staleTail + capacity) % capacity;
+  view.setUint32(recvBufBase, staleTail, true);
+  view.setUint32(recvBufBase + 4, wrappedTail, true);
+  bytes[recvBufBase + 16] = 0xaa;
+  bytes[recvBufBase + 17] = 0xbb;
+
+  const incomingNetBufPool = new Uint8Array(netBufPoolBytes);
+  const incomingView = new DataView(incomingNetBufPool.buffer);
+  incomingView.setUint32(recvBufIdx * netBufferBytes, staleTail, true);
+  incomingView.setUint32(recvBufIdx * netBufferBytes + 4, staleTail, true);
+  incomingNetBufPool[recvBufIdx * netBufferBytes + 16] = 0x11;
+  incomingNetBufPool[recvBufIdx * netBufferBytes + 17] = 0x22;
+
+  const handle = {
+    pid: 7,
+    stdoutPipe: 0,
+    stderrPipe: 0,
+    stdinPipe: 0,
+    stdinQueue: [],
+    hostStdio: {
+      stdinPipe: 0,
+      stdoutPipe: 0,
+      stderrPipe: 0,
+      refCount: 1,
+    },
+    memory,
+    outputBacklog: [],
+    workers: new Set([worker]),
+    readyWorkers: [],
+    blockedWorkers: new Map(),
+    kernelWorkerRequest: undefined,
+    kernelShare: { members: new Set(), sharedOfdIds: new Set() },
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(12),
+      stateSab: new SharedArrayBuffer(176),
+    },
+    kernel: makeKernel(7, {
+      abi_max_sockets: () => 1,
+      abi_status_clone_spawn: () => 9,
+      kernel_socket_table_bytes: () => 32,
+      kernel_net_buf_pool_bytes: () => netBufPoolBytes,
+      thread_socket_idx_for_fd: () => 0,
+      thread_socket_recv_buf_idx: () => recvBufIdx,
+      thread_socket_recv_available: () => availableBytes,
+      thread_socket_read_bytes: () => BigInt(staleTail),
+    }),
+    kernelState: {
+      ...makeKernelState(),
+      socketTablePtr: 0x800,
+      netBufBase,
+      netBufUsed: 0b10n,
+    },
+    onStdout: null,
+    runningWorker: worker,
+    networkConnections: new Map([[7, {
+      read: () => undefined,
+      write: () => {},
+    }]]),
+    networkPendingConnectFds: new Set(),
+    networkClosedFds: new Set(),
+    networkClosedSocketSlots: new Map(),
+    networkRecvHeadWatermarks: new Map(),
+    networkRecvTailWatermarks: new Map(),
+    networkRecvPayloadWatermarks: new Map([[7, {
+      recvBufIdx,
+      head: staleTail,
+      tail: wrappedTail,
+      capacity,
+      readBytes: staleTail,
+      availableBytes,
+      deliveredBytes: staleTail + availableBytes,
+      data: bytes.slice(recvBufBase + 16, recvBufBase + netBufferBytes),
+    }]]),
+  } as never;
+
+  const handler = createWorkerStatusMessageHandler({
+    threadWorkerStates,
+    appendWorkerDebugLog: () => {},
+    clearBlockedWorker: () => {},
+    enqueueWorker: () => {},
+    pumpProcess: () => {},
+    kickBlockedWorkers: () => {},
+    failProcess: () => {},
+    requestPipeStateSync: async () => {},
+    requestEpollStateSync: async () => {},
+    requestSocketStateSync: async () => {},
+    resumeFsViaKernelWorker: async () => {},
+    resumeConnectViaKernelWorker: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    captureVforkSnapshot: () => {
+      throw new Error("unexpected");
+    },
+    syncForkSharedStateViaKernelWorker: async () => {},
+    syncBlockedForkSharedStateViaKernelWorker: async () => {},
+    syncProcessLifecycleViaKernelWorker: async () => {},
+    canonicalizeActiveVforkChildViaKernelWorker: async () => {},
+    attachThreadWorker: () => {},
+    completeProcessExit: async () => {},
+    handleExecveSpawn: async () => {},
+    blockWorker: () => {},
+    assertProcessStandardFdIntegrity: () => {},
+    requestEpollDependentOfdStateSync: async () => {},
+    statusOkCompletedSyncEffects: 0,
+    syncEffectPipeState: 1,
+    syncEffectSocketState: 2,
+    syncEffectEpollState: 4,
+    syncEffectEpollDependentOfdState: 8,
+    syncEffectProcessLifecycle: 16,
+    syncEffectSignalWaiters: 32,
+    syncEffectForkSharedOfdState: 64,
+    syncEffectProcessMemfs: 128,
+    statusDefersOwnedStateSync: () => false,
+  } as never);
+
+  handler(
+    handle,
+    worker,
+    {
+      type: "status",
+      status: 0,
+      vmPtr: 0x1234,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0x2000n,
+      sp: 0x3000n,
+      s11: 0x4000n,
+      kernelState: makeKernelState(),
+      socketState: {
+        socketTable: new Uint8Array(32),
+        netBufPool: incomingNetBufPool,
+        socketUsed: 1,
+        netBufUsed: 0b10n,
+      },
+      debug: "pc=0x2000 sp=0x3000 s11=0x4000 process_thread_count=1",
+    },
+  );
+
+  expect(view.getUint32(recvBufBase, true)).toBe(staleTail);
+  expect(view.getUint32(recvBufBase + 4, true)).toBe(wrappedTail);
+  expect(bytes[recvBufBase + 16]).toBe(0xaa);
+  expect(bytes[recvBufBase + 17]).toBe(0xbb);
+  expect(handle.kernelState.netBufUsed).toBe(0b10n);
+});
+
 test("status handler preserves closed network socket recv head when fd no longer resolves", () => {
   const worker = {} as Worker;
   const threadWorkerStates = new WeakMap<Worker, { vmPtr: number; initialized: boolean; waitingInWorkerStatus: number | null }>();

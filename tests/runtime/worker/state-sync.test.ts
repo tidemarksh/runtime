@@ -468,6 +468,116 @@ test("requestSocketStateSync keeps newer incoming network recv payload when tail
   expect(memory[netBufBase + 17]).toBe(0x22);
 });
 
+test("requestSocketStateSync preserves host recv payload when producer tail wraps", async () => {
+  const retryBlockedWorker = vi.fn();
+  const handle = makeHandle();
+  handle.memory = new WebAssembly.Memory({ initial: 32, maximum: 32, shared: true });
+  const socketTablePtr = 0x2000;
+  const netBufBase = 0x4000;
+  const maxSockets = handle.kernel.abi_max_sockets();
+  const netBufferCount = maxSockets * 2;
+  const netBufferBytes = handle.kernel.kernel_net_buf_pool_bytes() / netBufferCount;
+  const capacity = netBufferBytes - 16;
+  const memory = new Uint8Array(handle.memory.buffer);
+  const view = new DataView(handle.memory.buffer);
+  handle.kernel.kernel_attach_runtime_state(
+    0,
+    0,
+    0x1000,
+    0,
+    0,
+    0,
+    socketTablePtr,
+    1,
+    0,
+    0n,
+    netBufBase,
+    1n,
+    0,
+    0,
+    0,
+    0,
+  );
+  handle.kernelState = {
+    ...handle.kernelState,
+    ofdTablePtr: 0x1000,
+    socketTablePtr,
+    socketUsed: 1,
+    netBufBase,
+    netBufUsed: 1n,
+  };
+  const wrappedTail = Math.floor(capacity * 0.65);
+  const staleTail = capacity - 1;
+  const availableBytes = (wrappedTail - staleTail + capacity) % capacity;
+  view.setInt32(socketTablePtr + 312, 0, true);
+  view.setUint32(netBufBase, staleTail, true);
+  view.setUint32(netBufBase + 4, wrappedTail, true);
+  memory[netBufBase + 16] = 0xab;
+  memory[netBufBase + 17] = 0xcd;
+  handle.networkConnections.set(3, { read: () => undefined, write: () => {} } as never);
+  handle.networkRecvPayloadWatermarks.set(3, {
+    recvBufIdx: 0,
+    head: staleTail,
+    tail: wrappedTail,
+    capacity,
+    readBytes: staleTail,
+    availableBytes,
+    deliveredBytes: staleTail + availableBytes,
+    data: memory.slice(netBufBase + 16, netBufBase + netBufferBytes),
+  });
+  handle.kernel.abi_fd_type_socket = () => 8;
+  handle.kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => (fd === 3 ? 4 : 0);
+  handle.kernel.kernel_ofd_fd_type = (ofdId: number) => (ofdId === 4 ? 8 : 0);
+  handle.kernel.thread_socket_idx_for_fd = (_vmPtr: number, fd: number) => (fd === 3 ? 0 : -1);
+  handle.kernel.thread_socket_recv_buf_idx = (socketIdx: number) => (socketIdx === 0 ? 0 : -1);
+  handle.kernel.thread_socket_recv_available = () => availableBytes;
+  handle.kernel.thread_socket_read_bytes = () => BigInt(staleTail);
+  handle.kernel.thread_socket_read_count = () => 64;
+  handle.kernel.thread_socket_state = () => 3;
+  handle.kernel.thread_socket_peer_idx = () => -1;
+  handle.kernel.thread_socket_outbound_available = () => 0;
+  handle.kernelWorkerRequest = vi.fn(async (msg) => {
+    expect(msg.type).toBe("sync-socket-state");
+    const staleNetBufPool = new Uint8Array(handle.kernel.kernel_net_buf_pool_bytes());
+    const staleView = new DataView(staleNetBufPool.buffer);
+    staleView.setUint32(0, staleTail, true);
+    staleView.setUint32(4, staleTail, true);
+    staleNetBufPool[16] = 0x11;
+    staleNetBufPool[17] = 0x22;
+    return {
+      type: "socket-state-synced",
+      requestId: 0,
+      kernelState: {
+        ...msg.kernelState,
+        socketUsed: 1,
+        netBufUsed: 1n,
+      },
+      socketState: {
+        socketTable: new Uint8Array(handle.kernel.kernel_socket_table_bytes()),
+        netBufPool: staleNetBufPool,
+        socketUsed: 1,
+        netBufUsed: 1n,
+      },
+    };
+  });
+  handle.kernelShare.members.add(handle);
+
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent: () => {},
+    drainProcessOutput: vi.fn(() => false),
+    drainHiddenProcessOutput: vi.fn(() => false),
+    threadWorkerStates: new WeakMap(),
+    retryBlockedWorker,
+  });
+
+  await helpers.requestSocketStateSync(handle, false);
+
+  expect(view.getUint32(netBufBase, true)).toBe(staleTail);
+  expect(view.getUint32(netBufBase + 4, true)).toBe(wrappedTail);
+  expect(memory[netBufBase + 16]).toBe(0xab);
+  expect(memory[netBufBase + 17]).toBe(0xcd);
+});
+
 test("requestSocketStateSync does not restore stale recv bytes after local socket drain", async () => {
   const retryBlockedWorker = vi.fn();
   const handle = makeHandle();
