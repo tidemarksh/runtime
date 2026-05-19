@@ -127,6 +127,7 @@ function buildSyntheticAptRepository(): {
       "Date: Fri, 01 May 2026 00:00:00 UTC",
       "Architectures: riscv64",
       "Components: main",
+      "Acquire-By-Hash: yes",
       "MD5Sum:",
       ` ${packagesMd5} ${packages.length} ${packagesPathInRelease}`,
       ` ${packagesXzMd5} ${packagesXz.length} ${packagesXzPathInRelease}`,
