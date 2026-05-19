@@ -61,6 +61,9 @@ type MethodHttpResponse = Uint8Array | {
 };
 type MethodResponseSelector = (request: string) => MethodHttpResponse;
 type MethodBridgeMetrics = {
+  connections: number;
+  writes: number;
+  emptyReads: number;
   readCalls: number;
   readBytes: number;
   responseChunks: number;
@@ -1937,6 +1940,9 @@ function createAsyncMethodNetworkBridge(
   };
   return {
     connect({ endpoint }) {
+      if (metrics) {
+        metrics.connections += 1;
+      }
       record(`connect:${endpoint.family}:${endpoint.address}:${endpoint.port}`);
       if (endpoint.family !== "inet" || endpoint.address !== "127.0.0.1" || endpoint.port !== 8080) {
         record("connect:refused");
@@ -1950,6 +1956,9 @@ function createAsyncMethodNetworkBridge(
       let responseTarget = "";
       const connection: RuntimeNetworkConnection = {
         write(data) {
+          if (metrics) {
+            metrics.writes += 1;
+          }
           const request = decoder.decode(data);
           requestText += request;
           requests.push(request);
@@ -1984,6 +1993,9 @@ function createAsyncMethodNetworkBridge(
             return null;
           }
           if (!sawRequest) {
+            if (metrics) {
+              metrics.emptyReads += 1;
+            }
             record("read:no-request");
             return undefined;
           }
@@ -2129,6 +2141,9 @@ function isPackageIndexTarget(target: string): boolean {
 
 function createMethodBridgeMetrics(): MethodBridgeMetrics {
   return {
+    connections: 0,
+    writes: 0,
+    emptyReads: 0,
     readCalls: 0,
     readBytes: 0,
     responseChunks: 0,
@@ -2855,7 +2870,10 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
       `packagesXzBytes=${repo.packagesXz.length}`,
       `requestTargets=${JSON.stringify(targets)}`,
       `packageRequestTargets=${JSON.stringify(packageIndexTargets)}`,
+      `bridgeConnections=${metrics.connections}`,
+      `bridgeWrites=${metrics.writes}`,
       `bridgeReadCalls=${metrics.readCalls}`,
+      `bridgeEmptyReads=${metrics.emptyReads}`,
       `bridgeReadBytes=${metrics.readBytes}`,
       `bridgeChunks=${metrics.responseChunks}`,
       `bridgePackageBytes=${metrics.packageResponseBytes}`,
