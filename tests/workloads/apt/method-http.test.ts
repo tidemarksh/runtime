@@ -50,6 +50,8 @@ const chainVerifyMethod = process.env.TIDEMARK_TEST_APT_METHOD_CHAIN_VERIFY_METH
 const packageIndexGatePackageCount = Number(
   process.env.TIDEMARK_TEST_APT_PACKAGE_INDEX_PACKAGE_COUNT ?? "1",
 );
+const packageIndexGateTruncateFirstPackage =
+  process.env.TIDEMARK_TEST_APT_PACKAGE_INDEX_TRUNCATE_FIRST === "1";
 const libraryRoots = (process.env.TIDEMARK_TEST_APT_METHOD_LIBRARY_ROOTS ?? "")
   .split(":")
   .filter(Boolean);
@@ -58,6 +60,7 @@ const aptTraceFile = process.env.TIDEMARK_TEST_APT_TRACE_FILE ?? "";
 type MethodHttpResponse = Uint8Array | {
   statusLine: string;
   body: Uint8Array;
+  contentLength?: number;
 };
 type MethodResponseSelector = (request: string) => MethodHttpResponse;
 type MethodBridgeMetrics = {
@@ -1857,12 +1860,13 @@ function buildForkExecSocketOpenFcntlProbe(): Uint8Array | null {
 function serializeHttpResponse(response: MethodHttpResponse): Uint8Array {
   const statusLine = response instanceof Uint8Array ? "HTTP/1.1 200 OK" : response.statusLine;
   const body = response instanceof Uint8Array ? response : response.body;
+  const contentLength = response instanceof Uint8Array ? body.length : response.contentLength ?? body.length;
   const headers = methodResponseHeaderLines.length > 0
     ? methodResponseHeaderLines
     : [
       "Date: Fri, 01 May 2026 00:00:00 GMT",
       "Last-Modified: Fri, 01 May 2026 00:00:00 GMT",
-      `Content-Length: ${body.length}`,
+      `Content-Length: ${contentLength}`,
       "Connection: close",
     ];
   const head = new TextEncoder().encode([
@@ -2746,6 +2750,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
   if (!repo) {
     return;
   }
+  let packageResponseCount = 0;
   const selectResponseBody: MethodResponseSelector = (request) => {
     const targets = extractHttpGetTargets([request]);
     const target = targets[targets.length - 1] ?? "";
@@ -2756,6 +2761,14 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
       target.includes("/dists/trixie/main/binary-riscv64/")
       && (target.includes("/by-hash/SHA256/") || target.endsWith("/Packages.xz"))
     ) {
+      packageResponseCount += 1;
+      if (packageIndexGateTruncateFirstPackage && packageResponseCount === 1) {
+        return {
+          statusLine: "HTTP/1.1 200 OK",
+          body: repo.packagesXz.subarray(0, Math.max(1, Math.floor(repo.packagesXz.length / 2))),
+          contentLength: repo.packagesXz.length,
+        };
+      }
       return repo.packagesXz;
     }
     if (target.endsWith("/dists/trixie/main/binary-riscv64/Packages")) {
@@ -2862,11 +2875,15 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
       ].join("\n"),
     ).toEqual(expect.arrayContaining([expect.stringMatching(/\/dists\/trixie\/main\/binary-riscv64\/.*(?:by-hash\/SHA256\/|Packages(?:\.xz)?$)/)]));
     expect(packageIndexTargets.length).toBeGreaterThan(0);
+    if (packageIndexGateTruncateFirstPackage) {
+      expect(packageIndexTargets.length).toBeGreaterThan(1);
+    }
     expect([0, 100]).toContain(exitCode);
     console.log([
       `apt package index metrics durationMs=${Date.now() - started}`,
       `exitCode=${exitCode}`,
       `packageCount=${Math.max(1, Math.trunc(packageIndexGatePackageCount))}`,
+      `truncateFirstPackage=${packageIndexGateTruncateFirstPackage ? 1 : 0}`,
       `packagesBytes=${repo.packages.length}`,
       `packagesXzBytes=${repo.packagesXz.length}`,
       `requestTargets=${JSON.stringify(targets)}`,
