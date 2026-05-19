@@ -1120,13 +1120,6 @@ function counterAhead(sourceValue: number, targetValue: number, capacity: number
     );
 }
 
-function rememberNetworkRecvHead(handle: ProcessHandle, fd: number, head: number, capacity: number): number {
-  const previous = handle.networkRecvHeadWatermarks.get(fd) ?? 0;
-  const next = counterAhead(head, previous, capacity) ? head : previous;
-  handle.networkRecvHeadWatermarks.set(fd, next);
-  return next;
-}
-
 function rememberNetworkRecvTail(handle: ProcessHandle, fd: number, tail: number, capacity: number): number {
   const previous = handle.networkRecvTailWatermarks.get(fd) ?? 0;
   const next = counterAhead(tail, previous, capacity) ? tail : previous;

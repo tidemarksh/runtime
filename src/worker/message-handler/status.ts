@@ -1305,13 +1305,6 @@ function counterAhead(sourceValue: number, targetValue: number, capacity: number
     );
 }
 
-function rememberNetworkRecvHead(handle: ProcessHandle, fd: number, head: number, capacity: number): number {
-  const previous = handle.networkRecvHeadWatermarks.get(fd) ?? 0;
-  const next = counterAhead(head, previous, capacity) ? head : previous;
-  handle.networkRecvHeadWatermarks.set(fd, next);
-  return next;
-}
-
 function rememberNetworkRecvTail(handle: ProcessHandle, fd: number, tail: number, capacity: number): number {
   const previous = handle.networkRecvTailWatermarks.get(fd) ?? 0;
   const next = counterAhead(tail, previous, capacity) ? tail : previous;
@@ -1542,10 +1535,6 @@ function preserveNetworkRecvBuffers(
     if (preservedOffsets.has(offset)) {
       return true;
     }
-    const absolute = handle.kernelState.netBufBase + offset;
-    const view = new DataView(memory.buffer, absolute, NET_BUFFER_HEADER_BYTES);
-    const currentHead = view.getUint32(NET_BUFFER_HEAD_OFFSET, true);
-    const currentTail = view.getUint32(NET_BUFFER_TAIL_OFFSET, true);
     handle.networkRecvHeadWatermarks.set(fd, payload.head);
     const watermarkHead = payload.head;
     handle.networkRecvTailWatermarks.set(fd, payload.tail);
