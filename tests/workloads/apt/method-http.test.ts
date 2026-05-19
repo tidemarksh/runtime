@@ -52,13 +52,76 @@ const libraryRoots = (process.env.TIDEMARK_TEST_APT_METHOD_LIBRARY_ROOTS ?? "")
   .filter(Boolean);
 const aptTraceFile = process.env.TIDEMARK_TEST_APT_TRACE_FILE ?? "";
 
+type MethodHttpResponse = Uint8Array | {
+  statusLine: string;
+  body: Uint8Array;
+};
+type MethodResponseSelector = (request: string) => MethodHttpResponse;
+
 const methodAcquireFilename = "/var/lib/apt/lists/partial/deb.debian.org_debian_dists_trixie_InRelease";
+const aptPartialPackagesXzFilename =
+  "/var/lib/apt/lists/partial/deb.debian.org_debian_dists_trixie_main_binary-riscv64_Packages.xz";
+const aptFinalInReleaseFilename = "/var/lib/apt/lists/deb.debian.org_debian_dists_trixie_InRelease";
+const aptFinalPackagesXzFilename =
+  "/var/lib/apt/lists/deb.debian.org_debian_dists_trixie_main_binary-riscv64_Packages.xz";
 
 function traceApt(message: string): void {
   if (!aptTraceFile) {
     return;
   }
   writeFileSync(aptTraceFile, `${new Date().toISOString()} ${message}\n`, { flag: "a" });
+}
+
+function buildSyntheticAptRepository(): {
+  inRelease: Uint8Array;
+  packages: Uint8Array;
+  packagesXz: Uint8Array;
+  packagesXzSha256: string;
+} | null {
+  const tmp = mkdtempSync(join(tmpdir(), "tidemark-apt-repo-"));
+  try {
+    const packagesPath = join(tmp, "Packages");
+    const packagesText = [
+      "Package: tidemark-local",
+      "Version: 1",
+      "Architecture: riscv64",
+      "Description: local apt update gate",
+      "",
+    ].join("\n");
+    writeFileSync(packagesPath, packagesText);
+    const packages = new TextEncoder().encode(packagesText);
+    const packagesBuffer = Buffer.from(packages);
+    const packagesMd5 = createHash("md5").update(packagesBuffer).digest("hex");
+    const packagesSha256 = createHash("sha256").update(packagesBuffer).digest("hex");
+    const packagesXz = new Uint8Array(execFileSync("xz", ["-zc", packagesPath], { stdio: "pipe" }));
+    const packagesXzBuffer = Buffer.from(packagesXz);
+    const packagesXzMd5 = createHash("md5").update(packagesXzBuffer).digest("hex");
+    const packagesXzSha256 = createHash("sha256").update(packagesXzBuffer).digest("hex");
+    const packagesPathInRelease = "main/binary-riscv64/Packages";
+    const packagesXzPathInRelease = "main/binary-riscv64/Packages.xz";
+    const inRelease = new TextEncoder().encode([
+      "Origin: Tidemark Local",
+      "Label: Tidemark Local",
+      "Suite: trixie",
+      "Codename: trixie",
+      "Date: Fri, 01 May 2026 00:00:00 UTC",
+      "Architectures: riscv64",
+      "Components: main",
+      "MD5Sum:",
+      ` ${packagesMd5} ${packages.length} ${packagesPathInRelease}`,
+      ` ${packagesXzMd5} ${packagesXz.length} ${packagesXzPathInRelease}`,
+      "SHA256:",
+      ` ${packagesSha256} ${packages.length} ${packagesPathInRelease}`,
+      ` ${packagesXzSha256} ${packagesXz.length} ${packagesXzPathInRelease}`,
+      "",
+    ].join("\n"));
+    return { inRelease, packages, packagesXz, packagesXzSha256 };
+  } catch (error) {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    return logSkip(`failed to build synthetic apt repository with xz: ${detail}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 function firstMismatchOffset(left: Uint8Array, right: Uint8Array): number {
@@ -1770,7 +1833,9 @@ function buildForkExecSocketOpenFcntlProbe(): Uint8Array | null {
   }
 }
 
-function serializeHttpResponse(body: Uint8Array): Uint8Array {
+function serializeHttpResponse(response: MethodHttpResponse): Uint8Array {
+  const statusLine = response instanceof Uint8Array ? "HTTP/1.1 200 OK" : response.statusLine;
+  const body = response instanceof Uint8Array ? response : response.body;
   const headers = methodResponseHeaderLines.length > 0
     ? methodResponseHeaderLines
     : [
@@ -1780,7 +1845,7 @@ function serializeHttpResponse(body: Uint8Array): Uint8Array {
       "Connection: close",
     ];
   const head = new TextEncoder().encode([
-    "HTTP/1.1 200 OK",
+    statusLine,
     ...headers,
     "",
     "",
@@ -1802,7 +1867,10 @@ function selectMethodResponseBody(request: string): Uint8Array {
   return methodResponseBody;
 }
 
-function createMethodNetworkBridge(requests: string[]): RuntimeNetworkBridge {
+function createMethodNetworkBridge(
+  requests: string[],
+  selectResponseBody: MethodResponseSelector = selectMethodResponseBody,
+): RuntimeNetworkBridge {
   return {
     connect({ endpoint }) {
       if (endpoint.family !== "inet" || endpoint.address !== "127.0.0.1" || endpoint.port !== 8080) {
@@ -1830,7 +1898,7 @@ function createMethodNetworkBridge(requests: string[]): RuntimeNetworkBridge {
             return undefined;
           }
           responseSent = true;
-          return serializeHttpResponse(selectMethodResponseBody(requestText));
+          return serializeHttpResponse(selectResponseBody(requestText));
         },
         close() {},
       };
@@ -1839,7 +1907,11 @@ function createMethodNetworkBridge(requests: string[]): RuntimeNetworkBridge {
   };
 }
 
-function createAsyncMethodNetworkBridge(requests: string[], events: string[] = []): RuntimeNetworkBridge {
+function createAsyncMethodNetworkBridge(
+  requests: string[],
+  events: string[] = [],
+  selectResponseBody: MethodResponseSelector = selectMethodResponseBody,
+): RuntimeNetworkBridge {
   const record = (event: string): void => {
     if (events.length < 64) {
       events.push(event);
@@ -1884,7 +1956,7 @@ function createAsyncMethodNetworkBridge(requests: string[], events: string[] = [
             record("read:no-request");
             return undefined;
           }
-          responseBytes = serializeHttpResponse(selectMethodResponseBody(requestText));
+          responseBytes = serializeHttpResponse(selectResponseBody(requestText));
           await new Promise((resolveDone) => setTimeout(resolveDone, 1));
           const chunk = responseBytes.subarray(0, maxBytes);
           responseOffset = chunk.length;
@@ -1984,6 +2056,14 @@ async function describeGuestSqvTmpFiles(
     const detail = error instanceof Error ? error.message : String(error);
     return `tmp-list-failed:${detail}`;
   }
+}
+
+function extractHttpGetTargets(chunks: readonly string[]): string[] {
+  return chunks
+    .join("")
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("GET "))
+    .map((line) => line.split(" ")[1] ?? "");
 }
 
 async function waitForBridgeRequestOrExit(
@@ -2572,6 +2652,133 @@ test("apt-get update local gate: parent acquire loop exits after in-memory HTTP 
     runtime.destroy();
   }
 }, Math.max(90_000, asyncDoneTimeoutMs + 20_000));
+
+test("apt-get update local gate: package index request reaches in-memory bridge", async () => {
+  const repo = buildSyntheticAptRepository();
+  if (!repo) {
+    return;
+  }
+  const selectResponseBody: MethodResponseSelector = (request) => {
+    const targets = extractHttpGetTargets([request]);
+    const target = targets[targets.length - 1] ?? "";
+    if (target.endsWith("/dists/trixie/InRelease") || target.endsWith("/dists/trixie/Release.gpg")) {
+      return { statusLine: "HTTP/1.1 404 Not Found", body: new Uint8Array() };
+    }
+    if (
+      target.includes("/dists/trixie/main/binary-riscv64/")
+      && (target.includes("/by-hash/SHA256/") || target.endsWith("/Packages.xz"))
+    ) {
+      return repo.packagesXz;
+    }
+    if (target.endsWith("/dists/trixie/main/binary-riscv64/Packages")) {
+      return repo.packages;
+    }
+    return repo.inRelease;
+  };
+  const guestRequests: string[] = [];
+  const bridgeEvents: string[] = [];
+  const prepared = await prepareAptGetRuntime(createAsyncMethodNetworkBridge(
+    guestRequests,
+    bridgeEvents,
+    selectResponseBody,
+  ));
+  if (!prepared) {
+    return;
+  }
+  const { runtime, aptGetElf } = prepared;
+
+  let output = "";
+  try {
+    const proc = await runtime.spawn(
+      aptGetElf,
+      [
+        "/usr/bin/apt-get",
+        "update",
+        "-o", "Acquire::http::Timeout=10",
+        "-o", "Acquire::http::Proxy=http://127.0.0.1:8080",
+        "-o", "Acquire::AllowInsecureRepositories=true",
+        "-o", "Acquire::AllowDowngradeToInsecureRepositories=true",
+        "-o", "Debug::NoLocking=true",
+        "-o", "APT::Get::List-Cleanup=false",
+      ],
+      [
+        "PATH=/usr/bin:/bin",
+        "HOME=/root",
+        "TMPDIR=/tmp",
+        "LC_ALL=C",
+        "LANG=C",
+        "http_proxy=http://127.0.0.1:8080",
+        "https_proxy=http://127.0.0.1:8080",
+        "HTTP_PROXY=http://127.0.0.1:8080",
+        "HTTPS_PROXY=http://127.0.0.1:8080",
+      ],
+      { cwd: "/work", stdin: "closed" },
+    );
+    proc.onStdout((data) => {
+      output += decoder.decode(data);
+    });
+
+    await waitForBridgeRequestOrExit(guestRequests, proc, asyncDoneTimeoutMs).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([
+        detail,
+        `guestRequests=${JSON.stringify(guestRequests)}`,
+        `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
+        `output=${JSON.stringify(output)}`,
+        `partialInRelease=${await describeGuestFile(runtime, methodAcquireFilename)}`,
+        `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+        `debug=${await runtimeDebugSummary(runtime)}`,
+        `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
+      ].join("\n"));
+    });
+
+    const exitCode = await Promise.race([
+      proc.waitForExit(),
+      new Promise<number>((_, reject) => {
+        setTimeout(() => {
+          reject(new Error("timeout waiting for apt-get update exit"));
+        }, aptGetUpdateExitTimeoutMs);
+      }),
+    ]).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([
+        detail,
+        `guestRequests=${JSON.stringify(guestRequests)}`,
+        `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
+        `output=${JSON.stringify(output)}`,
+        `partialInRelease=${await describeGuestFile(runtime, methodAcquireFilename)}`,
+        `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+        `finalInRelease=${await describeGuestFile(runtime, aptFinalInReleaseFilename)}`,
+        `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
+        `debug=${await runtimeDebugSummary(runtime)}`,
+        `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
+      ].join("\n"));
+    });
+
+    const targets = extractHttpGetTargets(guestRequests);
+    const packageIndexTargets = targets.filter((target) => (
+      target.includes("/dists/trixie/main/binary-riscv64/")
+      && (target.includes("/by-hash/SHA256/") || target.endsWith("/Packages.xz") || target.endsWith("/Packages"))
+    ));
+    expect(
+      targets,
+      [
+        "apt-get did not request the riscv64 package index after the in-memory Release",
+        `packagesXzSha256=${repo.packagesXzSha256}`,
+        `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
+        `output=${JSON.stringify(output)}`,
+        `partialInRelease=${await describeGuestFile(runtime, methodAcquireFilename)}`,
+        `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+        `finalInRelease=${await describeGuestFile(runtime, aptFinalInReleaseFilename)}`,
+        `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
+      ].join("\n"),
+    ).toEqual(expect.arrayContaining([expect.stringMatching(/\/dists\/trixie\/main\/binary-riscv64\/.*(?:by-hash\/SHA256\/|Packages(?:\.xz)?$)/)]));
+    expect(packageIndexTargets.length).toBeGreaterThan(0);
+    expect([0, 100]).toContain(exitCode);
+  } finally {
+    runtime.destroy();
+  }
+}, Math.max(120_000, asyncDoneTimeoutMs + 20_000));
 
 test("apt method sqv local gate: clearsigned InRelease split returns a method response", async () => {
   const prepared = await prepareSqvRuntime();
