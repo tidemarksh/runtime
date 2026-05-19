@@ -68,6 +68,8 @@ function buildLargeHttpClientProbe(): Uint8Array | null {
       "  int saw_header = 0;",
       "  unsigned long long body_count = 0;",
       "  unsigned long long checksum = 0;",
+      "  unsigned long long read_calls = 0;",
+      "  unsigned long long socket_bytes = 0;",
       "  for (;;) {",
       "    ssize_t n = read(sock, buf, sizeof(buf));",
       "    if (n < 0) {",
@@ -76,6 +78,8 @@ function buildLargeHttpClientProbe(): Uint8Array | null {
       "      return 23;",
       "    }",
       "    if (n == 0) break;",
+      "    read_calls++;",
+      "    socket_bytes += (unsigned long long)n;",
       "    if (!saw_header) {",
       "      if (header_len + (size_t)n > sizeof(header)) {",
       "        fprintf(stderr, \"header-too-large\\n\");",
@@ -100,7 +104,7 @@ function buildLargeHttpClientProbe(): Uint8Array | null {
       "  }",
       "  close(sock);",
       "  if (!saw_header) { fprintf(stderr, \"missing-header\\n\"); return 25; }",
-      "  printf(\"large-http bytes=%llu checksum=%llu\\n\", body_count, checksum);",
+      "  printf(\"large-http bytes=%llu checksum=%llu read_calls=%llu socket_bytes=%llu\\n\", body_count, checksum, read_calls, socket_bytes);",
       "  if (expected != 0 && body_count != expected) return 26;",
       "  return 0;",
       "}",
@@ -133,9 +137,19 @@ function createLargeResponseBridge(body: Uint8Array): {
   bridge: RuntimeNetworkBridge;
   requests: string[];
   readChunks: number[];
+  metrics: {
+    readCalls: number;
+    readBytes: number;
+    maxReadRequestBytes: number;
+  };
 } {
   const requests: string[] = [];
   const readChunks: number[] = [];
+  const metrics = {
+    readCalls: 0,
+    readBytes: 0,
+    maxReadRequestBytes: 0,
+  };
   const head = new TextEncoder().encode([
     "HTTP/1.1 200 OK",
     `Content-Length: ${body.length}`,
@@ -163,6 +177,8 @@ function createLargeResponseBridge(body: Uint8Array): {
           }
         },
         read(maxBytes) {
+          metrics.readCalls += 1;
+          metrics.maxReadRequestBytes = Math.max(metrics.maxReadRequestBytes, maxBytes);
           if (!sawRequest) {
             return undefined;
           }
@@ -172,6 +188,7 @@ function createLargeResponseBridge(body: Uint8Array): {
           const chunk = response.subarray(offset, Math.min(response.length, offset + maxBytes));
           offset += chunk.length;
           readChunks.push(chunk.length);
+          metrics.readBytes += chunk.length;
           return chunk;
         },
         close() {},
@@ -180,7 +197,7 @@ function createLargeResponseBridge(body: Uint8Array): {
     },
   };
 
-  return { bridge, requests, readChunks };
+  return { bridge, requests, readChunks, metrics };
 }
 
 test("network large response local gate: guest reads multi-megabyte HTTP body byte-for-byte", async () => {
@@ -194,9 +211,10 @@ test("network large response local gate: guest reads multi-megabyte HTTP body by
   }
 
   const payload = buildPayload(largeBodyBytes);
-  const { bridge, requests, readChunks } = createLargeResponseBridge(payload.bytes);
+  const { bridge, requests, readChunks, metrics } = createLargeResponseBridge(payload.bytes);
   const runtime = await Runtime.create({ wasmBytes, networkBridge: bridge });
   try {
+    const started = Date.now();
     const result = await spawnWithOutput(
       runtime,
       probeBytes,
@@ -211,6 +229,18 @@ test("network large response local gate: guest reads multi-megabyte HTTP body by
     expect(readChunks.some((chunk) => chunk >= 128 * 1024)).toBe(true);
     expect(result.output).toContain(`large-http bytes=${payload.bytes.length}`);
     expect(result.output).toContain(`checksum=${payload.checksum.toString()}`);
+    expect(result.output).toMatch(/read_calls=\d+/);
+    expect(result.output).toMatch(/socket_bytes=\d+/);
+    expect(metrics.readBytes).toBeGreaterThan(payload.bytes.length);
+    console.log([
+      `network large response metrics durationMs=${Date.now() - started}`,
+      `guestReadCalls=${result.output.match(/read_calls=([0-9]+)/)?.[1] ?? "unknown"}`,
+      `guestSocketBytes=${result.output.match(/socket_bytes=([0-9]+)/)?.[1] ?? "unknown"}`,
+      `bridgeReadCalls=${metrics.readCalls}`,
+      `bridgeReadBytes=${metrics.readBytes}`,
+      `bridgeChunks=${readChunks.length}`,
+      `bridgeMaxReadRequestBytes=${metrics.maxReadRequestBytes}`,
+    ].join(" "));
   } finally {
     runtime.destroy();
   }
