@@ -1036,6 +1036,19 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     keys.set(vmPtr, key);
   }
 
+  function markPipeChildExitRecordsResumedForWait(
+    handle: ProcessHandle,
+    blocked: BlockedWorkerState,
+  ): void {
+    const recordsKey = formatChildExitRecords(handle);
+    if (recordsKey === "") {
+      return;
+    }
+    const resumeKey = formatPipeChildExitResumeKey(handle, blocked.vmPtr, recordsKey);
+    blocked.pipeChildExitResumeKey = resumeKey;
+    setPipeChildExitResumeKey(handle, blocked.vmPtr, resumeKey);
+  }
+
   function applyLocalChildExitRecords(handle: ProcessHandle): void {
     if (handle.childExitSyncRecords.size === 0) {
       return;
@@ -1567,15 +1580,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         blocked.pipeChildExitResumeKey,
       )
     ) {
-      const resumeKey = formatPipeChildExitResumeKey(handle, blocked.vmPtr, pipeWaitChildExitRecordsKey);
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `pipe-retry-apply-child-records:${handle.pid}:${pipeWaitChildExitRecordsKey}`,
       );
       applyLocalChildExitRecords(handle);
       markChildExitRecordsApplied(handle, pipeWaitChildExitRecordsKey);
-      blocked.pipeChildExitResumeKey = resumeKey;
-      setPipeChildExitResumeKey(handle, blocked.vmPtr, resumeKey);
     }
     const pipeEofSyncPending = blocked.status === handle.kernel.abi_status_pipe_wait()
       && handle.kernel.thread_pipe_read_eof_sync_pending?.(blocked.vmPtr) === 1;
@@ -1824,10 +1834,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         blocked.status === handle.kernel.abi_status_pipe_wait()
         && handle.childExitSyncRecords.size > 0
       ) {
-        const recordsKey = formatChildExitRecords(handle);
-        const resumeKey = formatPipeChildExitResumeKey(handle, blocked.vmPtr, recordsKey);
-        blocked.pipeChildExitResumeKey = resumeKey;
-        setPipeChildExitResumeKey(handle, blocked.vmPtr, resumeKey);
+        markPipeChildExitRecordsResumedForWait(handle, blocked);
       }
       void deps.resumeBlockedSyscallLocally(
         handle,
@@ -1881,6 +1888,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         handle.childExitSyncRecords.delete(Number(wait4Result));
       }
     } else {
+      if (
+        blocked.status === handle.kernel.abi_status_pipe_wait()
+        && handle.childExitSyncRecords.size > 0
+      ) {
+        markPipeChildExitRecordsResumedForWait(handle, blocked);
+      }
       handle.kernel.thread_resume_blocked_syscall(blocked.vmPtr);
     }
     handle.kernelState = readKernelRuntimeState(handle.kernel);
