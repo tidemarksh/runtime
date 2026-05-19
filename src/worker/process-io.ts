@@ -25,7 +25,7 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const SOCK_STATE_CONNECTED = 3;
 const SOCK_STATE_SHUTDOWN = 5;
-const NETWORK_BRIDGE_CHUNK_SIZE = 128 * 1024;
+const NETWORK_BRIDGE_CHUNK_SIZE = 240 * 1024;
 const NETWORK_FD_TRACE_LOG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_FD_TRACE ?? "") === "1";
 const NETWORK_LIFECYCLE_LOG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_NETWORK ?? "") === "1";
 
