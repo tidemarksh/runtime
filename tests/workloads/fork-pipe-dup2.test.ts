@@ -730,6 +730,99 @@ function buildPselectChildExitPipeEofProbe(): Uint8Array | null {
   }
 }
 
+function buildPselectProtocolTimeoutThenWriteProbe(): Uint8Array | null {
+  const tmp = mkdtempSync(join(tmpdir(), "tidemark-pselect-protocol-timeout-write-"));
+  const sourcePath = join(tmp, "pselect_protocol_timeout_write.c");
+  const outputPath = join(tmp, "pselect-protocol-timeout-write");
+  try {
+    writeFileSync(sourcePath, [
+      "#include <errno.h>",
+      "#include <stdio.h>",
+      "#include <string.h>",
+      "#include <sys/select.h>",
+      "#include <sys/wait.h>",
+      "#include <time.h>",
+      "#include <unistd.h>",
+      "",
+      "static int write_all(int fd, const char *data, size_t len) {",
+      "  size_t off = 0;",
+      "  while (off < len) {",
+      "    ssize_t n = write(fd, data + off, len - off);",
+      "    if (n < 0) {",
+      "      if (errno == EINTR) continue;",
+      "      return -1;",
+      "    }",
+      "    off += (size_t)n;",
+      "  }",
+      "  return 0;",
+      "}",
+      "",
+      "static int wait_readable(int fd, long timeout_ms) {",
+      "  fd_set rfds;",
+      "  FD_ZERO(&rfds);",
+      "  FD_SET(fd, &rfds);",
+      "  struct timespec ts = { .tv_sec = timeout_ms / 1000, .tv_nsec = (timeout_ms % 1000) * 1000000L };",
+      "  return pselect(fd + 1, &rfds, NULL, NULL, timeout_ms < 0 ? NULL : &ts, NULL);",
+      "}",
+      "",
+      "int main(void) {",
+      "  int in_pipe[2];",
+      "  int out_pipe[2];",
+      "  if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0) { perror(\"pipe\"); return 12; }",
+      "  pid_t child = fork();",
+      "  if (child < 0) { perror(\"fork\"); return 13; }",
+      "  if (child == 0) {",
+      "    if (dup2(in_pipe[0], 0) < 0) _exit(120);",
+      "    if (dup2(out_pipe[1], 1) < 0) _exit(121);",
+      "    close(in_pipe[0]); close(in_pipe[1]);",
+      "    close(out_pipe[0]); close(out_pipe[1]);",
+      "    int ready = wait_readable(0, -1);",
+      "    if (ready < 0) _exit(122);",
+      "    if (ready != 1) _exit(123);",
+      "    char buf[16];",
+      "    ssize_t n = read(0, buf, sizeof(buf));",
+      "    if (n < 2 || memmem(buf, (size_t)n, \"go\", 2) == NULL) _exit(124);",
+      "    if (write_all(1, \"child-protocol-timeout-ok\\n\", 26) != 0) _exit(125);",
+      "    _exit(0);",
+      "  }",
+      "  close(in_pipe[0]);",
+      "  close(out_pipe[1]);",
+      "  int initial = wait_readable(out_pipe[0], 50);",
+      "  if (initial < 0) { perror(\"pselect-initial\"); return 14; }",
+      "  if (initial != 0) { fprintf(stderr, \"unexpected-initial-ready:%d\\n\", initial); return 15; }",
+      "  if (write_all(in_pipe[1], \"go\\n\", 3) != 0) { perror(\"write-go\"); return 16; }",
+      "  int ready = wait_readable(out_pipe[0], 1000);",
+      "  if (ready < 0) { perror(\"pselect-response\"); return 17; }",
+      "  if (ready != 1) { fprintf(stderr, \"missing-response-ready:%d\\n\", ready); return 18; }",
+      "  char output[128];",
+      "  ssize_t n = read(out_pipe[0], output, sizeof(output) - 1);",
+      "  if (n < 0) { perror(\"read-response\"); return 19; }",
+      "  output[n] = '\\0';",
+      "  if (strstr(output, \"child-protocol-timeout-ok\") == NULL) {",
+      "    fprintf(stderr, \"missing-response:%s\\n\", output);",
+      "    return 20;",
+      "  }",
+      "  close(in_pipe[1]);",
+      "  close(out_pipe[0]);",
+      "  int status = 0;",
+      "  if (waitpid(child, &status, 0) < 0) { perror(\"wait-child\"); return 21; }",
+      "  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) { fprintf(stderr, \"child-status:%d\\n\", status); return 22; }",
+      "  return write_all(1, \"pselect-protocol-timeout-write-ok\\n\", 34) == 0 ? 0 : 23;",
+      "}",
+      "",
+    ].join("\n"));
+    execFileSync(hostRiscvGcc, ["-static", "-O2", "-D_GNU_SOURCE", "-o", outputPath, sourcePath], {
+      stdio: "pipe",
+    });
+    return new Uint8Array(readFileSync(outputPath));
+  } catch (error) {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    return logSkip(`failed to build pselect protocol timeout/write probe with ${hostRiscvGcc}: ${detail}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 function buildNestedForkWaitPipeResponseProbe(): Uint8Array | null {
   const tmp = mkdtempSync(join(tmpdir(), "tidemark-nested-fork-wait-pipe-response-"));
   const sourcePath = join(tmp, "nested_fork_wait_pipe_response.c");
@@ -1385,6 +1478,45 @@ test("pselect wakes on child pipe EOF while another child is live", async () => 
       ].join("\n"),
     ).toBe(0);
     expect(result.output).toBe("pselect-child-exit-pipe-eof-ok\n");
+  } finally {
+    runtime.destroy();
+  }
+}, 25_000);
+
+test("pselect protocol timeout lets parent write to a child-held pipe", async () => {
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return;
+  }
+  const probeBytes = buildPselectProtocolTimeoutThenWriteProbe();
+  if (!probeBytes) {
+    return;
+  }
+
+  const runtime = await Runtime.create({ wasmBytes });
+  try {
+    const result = await spawnWithOutput(
+      runtime,
+      probeBytes,
+      ["/pselect-protocol-timeout-write"],
+      ["LC_ALL=C", "LANG=C"],
+      15_000,
+      { cwd: "/", stdin: "closed" },
+    ).catch(async (error) => {
+      const summary = await runtimeDebugSummary(runtime);
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([detail, summary].join("\n"));
+    });
+    expect(
+      result.exitCode,
+      [
+        "pselect protocol timeout/write probe exit mismatch",
+        `exit=${result.exitCode}`,
+        `output=${JSON.stringify(result.output)}`,
+        `debug=${result.debugInfo ?? ""}`,
+      ].join("\n"),
+    ).toBe(0);
+    expect(result.output).toBe("pselect-protocol-timeout-write-ok\n");
   } finally {
     runtime.destroy();
   }
