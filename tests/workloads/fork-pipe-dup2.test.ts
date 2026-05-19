@@ -643,6 +643,93 @@ function buildForkPipeParentExitBeforeChildProbe(): Uint8Array | null {
   }
 }
 
+function buildPselectChildExitPipeEofProbe(): Uint8Array | null {
+  const tmp = mkdtempSync(join(tmpdir(), "tidemark-pselect-child-exit-pipe-eof-"));
+  const sourcePath = join(tmp, "pselect_child_exit_pipe_eof.c");
+  const outputPath = join(tmp, "pselect-child-exit-pipe-eof");
+  try {
+    writeFileSync(sourcePath, [
+      "#include <errno.h>",
+      "#include <signal.h>",
+      "#include <stdio.h>",
+      "#include <string.h>",
+      "#include <sys/select.h>",
+      "#include <sys/wait.h>",
+      "#include <unistd.h>",
+      "",
+      "int main(void) {",
+      "  int keep_pipe[2];",
+      "  if (pipe(keep_pipe) != 0) { perror(\"keep-pipe\"); return 12; }",
+      "  pid_t keepalive = fork();",
+      "  if (keepalive < 0) { perror(\"fork-keepalive\"); return 13; }",
+      "  if (keepalive == 0) {",
+      "    close(keep_pipe[1]);",
+      "    char buf[16];",
+      "    while (read(keep_pipe[0], buf, sizeof(buf)) > 0) {}",
+      "    _exit(0);",
+      "  }",
+      "  close(keep_pipe[0]);",
+      "",
+      "  int out_pipe[2];",
+      "  if (pipe(out_pipe) != 0) { perror(\"out-pipe\"); return 14; }",
+      "  pid_t child = fork();",
+      "  if (child < 0) { perror(\"fork-child\"); return 15; }",
+      "  if (child == 0) {",
+      "    close(keep_pipe[1]);",
+      "    close(out_pipe[0]);",
+      "    if (dup2(out_pipe[1], 1) < 0) { perror(\"dup2-stdout\"); _exit(126); }",
+      "    close(out_pipe[1]);",
+      "    usleep(1000);",
+      "    _exit(0);",
+      "  }",
+      "  close(out_pipe[1]);",
+      "",
+      "  fd_set rfds;",
+      "  FD_ZERO(&rfds);",
+      "  FD_SET(out_pipe[0], &rfds);",
+      "  int ready = pselect(out_pipe[0] + 1, &rfds, NULL, NULL, NULL, NULL);",
+      "  if (ready < 0) { perror(\"pselect\"); return 16; }",
+      "  if (ready != 1 || !FD_ISSET(out_pipe[0], &rfds)) {",
+      "    fprintf(stderr, \"unexpected-pselect-ready:%d\\n\", ready);",
+      "    return 17;",
+      "  }",
+      "  char byte = 0;",
+      "  ssize_t n = read(out_pipe[0], &byte, 1);",
+      "  if (n != 0) {",
+      "    fprintf(stderr, \"unexpected-pipe-read:%zd:%d\\n\", n, (int)byte);",
+      "    return 18;",
+      "  }",
+      "  close(out_pipe[0]);",
+      "",
+      "  int status = 0;",
+      "  if (waitpid(child, &status, 0) < 0) { perror(\"wait-child\"); return 19; }",
+      "  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {",
+      "    fprintf(stderr, \"child-status:%d\\n\", status);",
+      "    return 20;",
+      "  }",
+      "  close(keep_pipe[1]);",
+      "  if (waitpid(keepalive, &status, 0) < 0) { perror(\"wait-keepalive\"); return 21; }",
+      "  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {",
+      "    fprintf(stderr, \"keepalive-status:%d\\n\", status);",
+      "    return 22;",
+      "  }",
+      "  fputs(\"pselect-child-exit-pipe-eof-ok\\n\", stdout);",
+      "  return 0;",
+      "}",
+      "",
+    ].join("\n"));
+    execFileSync(hostRiscvGcc, ["-static", "-O2", "-o", outputPath, sourcePath], {
+      stdio: "pipe",
+    });
+    return new Uint8Array(readFileSync(outputPath));
+  } catch (error) {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    return logSkip(`failed to build pselect child-exit pipe EOF probe with ${hostRiscvGcc}: ${detail}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 function buildNestedForkWaitPipeResponseProbe(): Uint8Array | null {
   const tmp = mkdtempSync(join(tmpdir(), "tidemark-nested-fork-wait-pipe-response-"));
   const sourcePath = join(tmp, "nested_fork_wait_pipe_response.c");
@@ -1259,6 +1346,45 @@ test("visible parent stdout survives exit while pipe child is still live", async
       ].join("\n"),
     ).toBe(0);
     expect(result.output).toBe("child-response-before-parent-exit\nparent-exit-before-child:done\n");
+  } finally {
+    runtime.destroy();
+  }
+}, 25_000);
+
+test("pselect wakes on child pipe EOF while another child is live", async () => {
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return;
+  }
+  const probeBytes = buildPselectChildExitPipeEofProbe();
+  if (!probeBytes) {
+    return;
+  }
+
+  const runtime = await Runtime.create({ wasmBytes });
+  try {
+    const result = await spawnWithOutput(
+      runtime,
+      probeBytes,
+      ["/pselect-child-exit-pipe-eof"],
+      ["LC_ALL=C", "LANG=C"],
+      15_000,
+      { cwd: "/", stdin: "closed" },
+    ).catch(async (error) => {
+      const summary = await runtimeDebugSummary(runtime);
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([detail, summary].join("\n"));
+    });
+    expect(
+      result.exitCode,
+      [
+        "pselect child-exit pipe EOF probe exit mismatch",
+        `exit=${result.exitCode}`,
+        `output=${JSON.stringify(result.output)}`,
+        `debug=${result.debugInfo ?? ""}`,
+      ].join("\n"),
+    ).toBe(0);
+    expect(result.output).toBe("pselect-child-exit-pipe-eof-ok\n");
   } finally {
     runtime.destroy();
   }
