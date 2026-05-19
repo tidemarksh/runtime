@@ -1,23 +1,40 @@
 import { attachKernelRuntimeState, readKernelRuntimeState } from "../../abi.js";
-import type { KernelWorkerFdEntrySnapshot, KernelWorkerOfdSlotSnapshot } from "../../messages.js";
+import type {
+  KernelWorkerFdEntrySnapshot,
+  KernelWorkerOfdSlotSnapshot,
+  KernelWorkerPipeSlotSnapshot,
+} from "../../messages.js";
 import type { KernelWorkerSharedStateSyncDeps, KernelRuntimeState } from "./types.js";
 
+const PIPE_SLOT_BYTES = 32 + 65_536;
+const PIPE_BUF_SIZE = 65_536;
+const PIPE_SLOT_MODE_READ = 1 << 0;
+const PIPE_SLOT_MODE_WRITE = 1 << 1;
+const PIPE_SLOT_MODE_CONTROL = 1 << 2;
+
 export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyncDeps) {
-  function applyFdEntrySnapshot(
-    processExports: ReturnType<KernelWorkerSharedStateSyncDeps["requireProcessKernel"]>,
-    vmPtr: number,
-    fdEntries: KernelWorkerFdEntrySnapshot[] | undefined,
-  ): void {
-    if (vmPtr === 0 || !fdEntries || fdEntries.length === 0) {
-      return;
-    }
-    const maxFds = processExports.abi_max_fds();
-    for (const entry of fdEntries) {
-      if (entry.fd < 0 || entry.fd >= maxFds) {
+  function snapshotCanonicalPipeSlots(
+    kernelState: KernelRuntimeState,
+    pipeSlots: Iterable<number>,
+    pipeSlotModes?: ReadonlyMap<number, number>,
+  ): KernelWorkerPipeSlotSnapshot[] {
+    const canonicalExports = deps.getCanonicalExports();
+    const memory = new Uint8Array(canonicalExports.memory.buffer);
+    const snapshots: KernelWorkerPipeSlotSnapshot[] = [];
+    for (const pipeSlot of pipeSlots) {
+      if (pipeSlot <= 0 || pipeSlot >= canonicalExports.abi_max_pipes()) {
         continue;
       }
-      processExports.process_set_fd_entry(vmPtr, entry.fd, entry.ofdId, entry.fdFlags);
+      const offset = kernelState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
+      const slot = memory.slice(offset, offset + PIPE_SLOT_BYTES);
+      const mode = pipeSlotModes?.get(pipeSlot);
+      snapshots.push({
+        pipeSlot,
+        slot,
+        mode: mode === undefined ? undefined : mode | PIPE_SLOT_MODE_CONTROL,
+      });
     }
+    return snapshots;
   }
 
   function syncPipeState(
@@ -25,26 +42,35 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
     kernelState: KernelRuntimeState,
     fdEntries?: KernelWorkerFdEntrySnapshot[],
     ofdSlots?: KernelWorkerOfdSlotSnapshot[],
+    pipeSlots?: KernelWorkerPipeSlotSnapshot[],
     vmPtrOverride?: number,
-  ): KernelRuntimeState {
+  ): { kernelState: KernelRuntimeState; pipeSlots: KernelWorkerPipeSlotSnapshot[] } {
     const canonicalExports = deps.getCanonicalExports();
     const processExports = deps.processKernels.get(pid);
     if (!processExports) {
-      return kernelState;
+      return { kernelState, pipeSlots: [] };
     }
     attachKernelRuntimeState(processExports, kernelState);
 
     const sourceState = readKernelRuntimeState(processExports);
     const canonicalState = readKernelRuntimeState(canonicalExports);
     const sourceVmPtr = vmPtrOverride ?? deps.getCanonicalProcessVmPtr(pid);
-    applyFdEntrySnapshot(processExports, sourceVmPtr, fdEntries);
     if (ofdSlots && ofdSlots.length > 0) {
       deps.applySelectedOfdSnapshots(processExports, sourceState, ofdSlots);
       deps.applySelectedOfdSnapshots(canonicalExports, canonicalState, ofdSlots);
     }
+    // `processExports` is backed by the live process memory. Applying an older
+    // fd snapshot here can race with dup/close/pipe2 in the running worker and
+    // roll the live fd table backward. The fd entries are still used by the
+    // caller to provide OFD/pipe snapshots; the live process table remains the
+    // source of truth for the source process itself.
+    if (pipeSlots && pipeSlots.length > 0) {
+      deps.applySelectedPipeSlotSnapshots(processExports, sourceState, pipeSlots);
+      deps.applySelectedPipeSlotSnapshots(canonicalExports, canonicalState, pipeSlots);
+    }
     const canonicalManagedPipeSlots = new Set<number>(deps.collectCanonicalManagedPipeSlots(canonicalState));
     if (sourceVmPtr !== 0) {
-      const privatePipeSlotModes = deps.collectProcessPrivatePipeSourceModes(processExports, sourceVmPtr);
+      const privatePipeSlotModes = deps.collectProcessPrivatePipeSourceModes(processExports, sourceVmPtr, pid);
       for (const pipeSlot of privatePipeSlotModes.keys()) {
         canonicalManagedPipeSlots.add(pipeSlot);
       }
@@ -55,6 +81,17 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
     const currentSourcePipeSlotModes = sourceVmPtr !== 0
       ? deps.collectProcessPipeSlotModes(processExports, sourceVmPtr)
       : new Map<number, number>();
+    const snapshotPipeSlotModes = new Map<number, number>();
+    if (pipeSlots && pipeSlots.length > 0) {
+      for (const snapshot of pipeSlots) {
+        const mode = snapshot.mode === undefined
+          ? PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE
+          : snapshot.mode & (PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE);
+        if (mode !== 0) {
+          snapshotPipeSlotModes.set(snapshot.pipeSlot, mode);
+        }
+      }
+    }
     const previousSourcePipeSlotModes = deps.lastProcessPipeSlotModes.get(pid) ?? new Map<number, number>();
     const sourcePipeSlotModes = new Map(currentSourcePipeSlotModes);
     const sourceSyncPipeSlots = new Set<number>(sourcePipeSlotModes.keys());
@@ -62,12 +99,12 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
     const canonicalPipeView = new DataView(canonicalExports.memory.buffer);
 
     function counterAhead(sourceValue: number, targetValue: number): boolean {
-      const delta = (sourceValue - targetValue) >>> 0;
-      return delta !== 0 && delta < 0x80000000;
+      return sourceValue > targetValue
+        || (sourceValue < targetValue && targetValue > PIPE_BUF_SIZE / 2 && sourceValue < PIPE_BUF_SIZE / 2);
     }
 
     if (sourceVmPtr !== 0) {
-      const privatePipeSlotModes = deps.collectProcessPrivatePipeSourceModes(processExports, sourceVmPtr);
+      const privatePipeSlotModes = deps.collectProcessPrivatePipeSourceModes(processExports, sourceVmPtr, pid);
       const privatePipeSlots = new Set<number>(privatePipeSlotModes.keys());
       for (const [pipeSlot, mode] of privatePipeSlotModes) {
         sourcePipeSlotModes.set(pipeSlot, (sourcePipeSlotModes.get(pipeSlot) ?? 0) | mode);
@@ -93,20 +130,25 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
         }
       }
     }
+    for (const [pipeSlot, mode] of snapshotPipeSlotModes) {
+      sourcePipeSlotModes.set(pipeSlot, mode);
+      sourceSyncPipeSlots.add(pipeSlot);
+      canonicalManagedPipeSlots.add(pipeSlot);
+    }
     const maxPipeSlots = Math.min(processExports.abi_max_pipes(), canonicalExports.abi_max_pipes());
     for (let pipeSlot = 1; pipeSlot < maxPipeSlots; pipeSlot += 1) {
-      const sourceOffset = sourceState.pipeBase + pipeSlot * (32 + 65_536);
-      const canonicalOffset = canonicalState.pipeBase + pipeSlot * (32 + 65_536);
+      const sourceOffset = sourceState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
+      const canonicalOffset = canonicalState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
       const sourceHead = sourcePipeView.getUint32(sourceOffset, true);
       const sourceTail = sourcePipeView.getUint32(sourceOffset + 4, true);
       const canonicalHead = canonicalPipeView.getUint32(canonicalOffset, true);
       const canonicalTail = canonicalPipeView.getUint32(canonicalOffset + 4, true);
       let mode = sourcePipeSlotModes.get(pipeSlot) ?? 0;
-      if (counterAhead(sourceHead, canonicalHead)) {
-        mode |= 1 << 0;
+      if ((mode & PIPE_SLOT_MODE_READ) !== 0 && counterAhead(sourceHead, canonicalHead)) {
+        mode |= PIPE_SLOT_MODE_READ;
       }
-      if (counterAhead(sourceTail, canonicalTail)) {
-        mode |= 1 << 1;
+      if ((mode & PIPE_SLOT_MODE_WRITE) !== 0 && counterAhead(sourceTail, canonicalTail)) {
+        mode |= PIPE_SLOT_MODE_WRITE;
       }
       if (mode !== 0) {
         canonicalManagedPipeSlots.add(pipeSlot);
@@ -163,7 +205,14 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
       deps.lastProcessPipeSlotModes.set(pid, currentSourcePipeSlotModes);
     }
 
-    return readKernelRuntimeState(processExports);
+    return {
+      kernelState: readKernelRuntimeState(processExports),
+      pipeSlots: snapshotCanonicalPipeSlots(
+        reconciledCanonicalState,
+        [...sourceSyncPipeSlots].sort((left, right) => left - right),
+        sourcePipeSlotModes,
+      ),
+    };
   }
 
   function syncEpollState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState {
@@ -245,9 +294,18 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
     const canonicalState = readKernelRuntimeState(canonicalExports);
     deps.copySelectedOfdState(processExports, sourceState, canonicalExports, canonicalState, ofdIds);
 
-    for (const memberExports of deps.processKernels.values()) {
+    for (const [memberPid, memberExports] of deps.processKernels) {
+      const memberVmPtr = deps.getCanonicalProcessVmPtr(memberPid);
+      if (memberVmPtr === 0) {
+        continue;
+      }
+      const memberHeldOfdRefcounts = deps.collectProcessHeldOfdRefcounts(memberExports, memberVmPtr);
+      const memberOfdIds = ofdIds.filter((ofdId) => (memberHeldOfdRefcounts[ofdId] ?? 0) > 0);
+      if (memberOfdIds.length === 0) {
+        continue;
+      }
       const memberState = readKernelRuntimeState(memberExports);
-      deps.copySelectedOfdState(canonicalExports, canonicalState, memberExports, memberState, ofdIds);
+      deps.copySelectedOfdState(canonicalExports, canonicalState, memberExports, memberState, memberOfdIds);
     }
 
     return readKernelRuntimeState(processExports);
@@ -264,10 +322,20 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
     const sourceState = readKernelRuntimeState(processExports);
     const canonicalState = readKernelRuntimeState(canonicalExports);
     deps.copySocketState(processExports, sourceState, canonicalExports, canonicalState);
+    const syncedCanonicalState = readKernelRuntimeState(canonicalExports);
 
-    for (const memberExports of deps.processKernels.values()) {
+    for (const [memberPid, memberExports] of deps.processKernels) {
       const memberState = readKernelRuntimeState(memberExports);
-      deps.copySocketState(canonicalExports, canonicalState, memberExports, memberState);
+      if (
+        memberPid !== pid
+        && (
+          memberState.socketUsed !== syncedCanonicalState.socketUsed
+          || memberState.netBufUsed !== syncedCanonicalState.netBufUsed
+        )
+      ) {
+        continue;
+      }
+      deps.copySocketState(canonicalExports, syncedCanonicalState, memberExports, memberState);
     }
 
     return readKernelRuntimeState(processExports);
@@ -283,7 +351,7 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
       return kernelState;
     }
     attachKernelRuntimeState(processExports, kernelState);
-    const releasedPrivatePipeSlots = deps.collectProcessPrivatePipeSlots(processExports, vmPtr);
+    const releasedPrivatePipeSlots = deps.collectProcessPrivatePipeSlots(processExports, vmPtr, pid);
     processExports.process_release_host_stdio(vmPtr);
     if (releasedPrivatePipeSlots.size > 0) {
       const processState = readKernelRuntimeState(processExports);
@@ -292,7 +360,7 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
       deps.clearSelectedPipeSlots(processExports, processState, releasedPrivatePipeSlots);
       deps.clearSelectedPipeSlots(canonicalExports, canonicalState, releasedPrivatePipeSlots);
     }
-    return syncPipeState(pid, readKernelRuntimeState(processExports));
+    return syncPipeState(pid, readKernelRuntimeState(processExports)).kernelState;
   }
 
   return {

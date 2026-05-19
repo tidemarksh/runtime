@@ -1,5 +1,8 @@
 import { expect, test } from "vite-plus/test";
-import { hasActiveChildProcess } from "../../../src/worker/child-processes.js";
+import {
+  hasActiveChildProcess,
+  pumpActiveChildProcesses,
+} from "../../../src/worker/child-processes.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
 
 function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
@@ -81,4 +84,62 @@ test("hasActiveChildProcess still reports live children", () => {
   ]);
 
   expect(hasActiveChildProcess(processHandles, 1)).toBe(true);
+});
+
+test("hasActiveChildProcess reports child handles whose workers are temporarily detached", () => {
+  const childWorker = {} as Worker;
+  const liveWorker = {} as Worker;
+  const detachedChild = makeHandle({
+    pid: 2,
+    parentPid: 1,
+    worker: childWorker,
+    workers: new Set([childWorker]),
+    exitInProgress: false,
+  });
+  const liveChild = makeHandle({
+    pid: 3,
+    parentPid: 1,
+    worker: liveWorker,
+    workers: new Set([liveWorker]),
+    exitInProgress: false,
+  });
+  const processHandles = new Map<number, ProcessHandle>([
+    [1, makeHandle({ pid: 1 })],
+    [2, detachedChild],
+    [3, liveChild],
+  ]);
+  const threadWorkerStates = new WeakMap<Worker, never>([
+    [liveWorker, {} as never],
+  ]);
+
+  expect(hasActiveChildProcess(processHandles, 1, threadWorkerStates)).toBe(true);
+  processHandles.delete(3);
+  expect(hasActiveChildProcess(processHandles, 1, threadWorkerStates)).toBe(true);
+});
+
+test("pumpActiveChildProcesses pumps live children and skips exit cleanup", () => {
+  const liveChild = makeHandle({ pid: 3, parentPid: 1, exitInProgress: false });
+  const exitingChild = makeHandle({ pid: 2, parentPid: 1, exitInProgress: true });
+  const unrelated = makeHandle({ pid: 4, parentPid: 9, exitInProgress: false });
+  const processHandles = new Map<number, ProcessHandle>([
+    [1, makeHandle({ pid: 1 })],
+    [2, exitingChild],
+    [3, liveChild],
+    [4, unrelated],
+  ]);
+  const events: string[] = [];
+
+  const result = pumpActiveChildProcesses(
+    processHandles,
+    1,
+    (handle) => {
+      events.push(`pump:${handle.pid}`);
+    },
+    (handle) => {
+      events.push(`kick:${handle.pid}`);
+    },
+  );
+
+  expect(result).toBe(true);
+  expect(events).toEqual(["kick:3", "pump:3"]);
 });

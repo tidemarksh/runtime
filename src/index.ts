@@ -7,6 +7,7 @@ import {
   destroyProcessTree,
   destroyRuntimeProcesses,
   debugRuntimeExecutionStats,
+  flushRuntimeFsStateFromDirtyHandle,
   getRuntimeFsState,
   publishRuntimeFsState,
   replaceRuntimeFsSnapshot,
@@ -338,6 +339,16 @@ export class Runtime {
   }
 
   async readFile(path: string): Promise<Uint8Array> {
+    const normalized = normalizeRuntimePath(path);
+    const flushed = flushRuntimeFsStateFromDirtyHandle(this.runtimeId);
+    const currentSnapshot = flushed ?? getRuntimeFsState(this.runtimeId);
+    const snapshotEntry = currentSnapshot?.entries.find((candidate) => (
+      candidate.kind === "file"
+      && normalizeRuntimePath(candidate.path) === normalized
+    ));
+    if (snapshotEntry?.kind === "file" && snapshotEntry.data) {
+      return new Uint8Array(snapshotEntry.data);
+    }
     try {
       const response = await this.sendKernelRequest<
         Extract<KernelWorkerOutbound, { type: "file-read" }>
@@ -347,7 +358,6 @@ export class Runtime {
       });
       return response.data;
     } catch (error) {
-      const normalized = normalizeRuntimePath(path);
       const snapshot = getRuntimeFsState(this.runtimeId);
       const entry = snapshot?.entries.find((candidate) => (
         candidate.kind === "file"

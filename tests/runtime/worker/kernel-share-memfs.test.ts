@@ -45,6 +45,7 @@ function createHandle(
     kernelState: runtimeState,
     kernel: {
       memory,
+      kernel_heap_ptr: () => runtimeState.heapPtr,
       kernel_memfs_inodes_bytes: () => layout.inodesBytes,
       kernel_memfs_first_child_bytes: () => layout.firstChildBytes,
       kernel_memfs_dir_entries_bytes: () => layout.dirEntriesBytes,

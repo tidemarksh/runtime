@@ -54,6 +54,10 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
     }
 
     thread.waitingInWorkerStatus = msg.status;
+    if (isRunningWorker) {
+      handle.runningWorker = null;
+      thread.runningGeneration = null;
+    }
     if (
       handle.vforkSnapshot !== null
       && handle.vforkWorker !== null
@@ -63,9 +67,6 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
         handle,
         `wait-vfork-hold:0x${thread.vmPtr.toString(16)}@${msg.status}${formatCompactDebugSuffix(msg.debug)}`,
       );
-      if (isRunningWorker) {
-        handle.runningWorker = null;
-      }
       return;
     }
 
@@ -74,9 +75,6 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
         void deps.requestPipeStateSync(handle, true).catch((error) => {
           deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
         });
-      }
-      if (isRunningWorker) {
-        handle.runningWorker = null;
       }
       deps.kickBlockedWorkers(handle);
       deps.pumpProcess(handle);

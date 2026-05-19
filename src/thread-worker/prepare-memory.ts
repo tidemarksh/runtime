@@ -235,6 +235,8 @@ export function snapshotThreadWorkerPrepareMemory(
     | "kernel_memfs_data_bytes"
     | "memfs_data_used"
     | "kernel_ofd_table_bytes"
+    | "kernel_ofd_reserved_ptr"
+    | "kernel_ofd_reserved_bytes"
     | "kernel_epoll_table_bytes"
     | "kernel_socket_table_bytes"
     | "kernel_pipe_region_bytes"
@@ -278,6 +280,7 @@ export function snapshotThreadWorkerPrepareMemory(
       overlays.push(memStateSnapshot);
     }
     snapshotKernelRegion(kernelState.ofdTablePtr, exports?.kernel_ofd_table_bytes?.() ?? 0);
+    snapshotKernelRegion(exports?.kernel_ofd_reserved_ptr?.() ?? 0, exports?.kernel_ofd_reserved_bytes?.() ?? 0);
     snapshotKernelRegion(kernelState.epollTablePtr, exports?.kernel_epoll_table_bytes?.() ?? 0);
     snapshotKernelRegion(kernelState.socketTablePtr, exports?.kernel_socket_table_bytes?.() ?? 0);
     snapshotKernelRegion(kernelState.pipeBase, exports?.kernel_pipe_region_bytes?.() ?? 0);

@@ -52,19 +52,19 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
     if (!thread) {
       return true;
     }
+    if ("generation" in msg && msg.generation !== thread.generation) {
+      deps.appendWorkerDebugLog(
+        handle,
+        `stale-message:0x${thread.vmPtr.toString(16)}:${msg.type}:${msg.generation}->${thread.generation}`,
+      );
+      return false;
+    }
     if (thread.ownerPid !== handle.pid) {
       failOwnershipInvariant(
         handle,
         worker,
         msg,
         `owner_pid=${thread.ownerPid} handle_pid=${handle.pid}`,
-      );
-      return false;
-    }
-    if ("generation" in msg && msg.generation !== thread.generation) {
-      deps.appendWorkerDebugLog(
-        handle,
-        `stale-message:0x${thread.vmPtr.toString(16)}:${msg.type}:${msg.generation}->${thread.generation}`,
       );
       return false;
     }
@@ -90,6 +90,16 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
     }
     if (handle.pid > 0) {
       const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
+      const messageProcessPidField = msg.type === "status" && "debug" in msg
+        ? readProcessPidField(msg.debug)
+        : null;
+      if (
+        msg.type === "status"
+        && msg.status === handle.kernel.abi_status_fault()
+        && (currentPid === 0 || currentPid > 0xffff || messageProcessPidField === handle.pid)
+      ) {
+        return true;
+      }
       if (currentPid !== handle.pid) {
         failOwnershipInvariant(handle, worker, msg, `kernel_pid=${currentPid} expected_pid=${handle.pid}`);
         return false;

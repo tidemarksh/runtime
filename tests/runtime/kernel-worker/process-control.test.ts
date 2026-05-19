@@ -143,6 +143,9 @@ function makeKernelExports(options: {
       opLog.push("resume-fs");
       return BigInt(options.resumeResult ?? 0);
     },
+    process_remove_process_entry: (pid: number) => {
+      opLog.push(`remove-process:${pid}`);
+    },
     opLog,
   } as unknown as FakeKernelExports;
 }
@@ -215,7 +218,7 @@ test("registerProcess rehydrates first process memfs metadata-only after canonic
 
     expect(copyMemfsModes).toEqual([false]);
     expect(rebuiltFrom).toEqual([processExports]);
-    expect(copyCanonicalModes).toEqual([false]);
+    expect(copyCanonicalModes).toEqual([true]);
   } finally {
     instantiateSpy.mockRestore();
   }
@@ -284,7 +287,7 @@ test("registerProcess rehydrates canonical snapshot metadata-only for the first 
 
     await processControl.registerProcess(7, 0x1234, processExports.memory, makeKernelState(), "full");
 
-    expect(copyCanonicalModes).toEqual([false]);
+    expect(copyCanonicalModes).toEqual([true]);
   } finally {
     instantiateSpy.mockRestore();
   }
@@ -354,7 +357,7 @@ test("registerProcess rehydrates later process memfs metadata-only", async () =>
 
     await processControl.registerProcess(7, 0x1234, processExports.memory, makeKernelState(), "full");
 
-    expect(copyCanonicalModes).toEqual([false]);
+    expect(copyCanonicalModes).toEqual([true]);
   } finally {
     instantiateSpy.mockRestore();
   }
@@ -395,6 +398,8 @@ test("processFs treats unlink as metadata-only canonical sync", () => {
     syncEpollState: (_pid, kernelState) => kernelState,
     syncSocketState: (_pid, kernelState) => kernelState,
     copyCanonicalMemfsToProcess: () => {},
+    snapshotProcSelfExe: () => null,
+    restoreProcSelfExe: () => {},
     composeProcessPipeUsed: () => 0n,
     collectProcessHeldEpollOfdIds: () => [],
     collectProcessHeldPipeSlots: () => new Set(),
@@ -947,4 +952,98 @@ test("processFs uses targeted metadata sync for both rename paths", () => {
   expect(result.memfsMutated).toBe(true);
   expect(syncedPaths).toEqual(["/work/old.txt", "/work/new.txt"]);
   expect(copyMemfsCalls).toEqual([]);
+});
+
+test("unregisterProcess refreshes remaining pipe control state", () => {
+  const canonicalExports = makeKernelExports();
+  const parentExports = makeKernelExports();
+  const childExports = makeKernelExports();
+  const processKernels = new Map<number, KernelExports>([
+    [1, parentExports],
+    [4, childExports],
+  ]);
+  const lastProcessPipeSlotModes = new Map<number, Map<number, number>>([[4, new Map([[2, 1]])]]);
+  const canonicalProcesses = new Map([
+    [1, { pid: 1, ppid: 0, pgid: 1, sid: 1, didExec: true, vmPtr: 0x1111 }],
+    [4, { pid: 4, ppid: 1, pgid: 1, sid: 1, didExec: true, vmPtr: 0x4444 }],
+  ]);
+  const readOpen = new Int32Array(4);
+  const writeOpen = new Int32Array(4);
+  readOpen[2] = 1;
+  const canonicalState = {
+    ...makeKernelState(),
+    pipeUsed: 1n << 2n,
+  };
+  const applyCalls: Array<{ target: KernelExports; pipeUsed: bigint; managedPipeSlots: number[] }> = [];
+  const composedCalls: Array<{ vmPtr: number; sharedPipeUsed: bigint }> = [];
+
+  const processControl = createKernelWorkerProcessControl({
+    getCanonicalExports: () => canonicalExports,
+    setCanonicalExports: () => {},
+    getWasmModule: () => null,
+    setWasmModule: () => {},
+    getSabPageCache: () => new SharedArrayBuffer(65536),
+    setSabPageCache: () => {},
+    processKernels,
+    lastProcessPipeSlotModes,
+    canonicalProcesses,
+    seedEntries: new Map(),
+    getCanonicalNextPid: () => 3,
+    setCanonicalNextPid: () => {},
+    publishRootInode: () => {},
+    copyOfdState: () => {},
+    copyMemfsState: () => {},
+    rebuildPageCacheFromExports: () => {},
+    rebuildPageCacheFromCanonical: () => {},
+    syncPipeState: (_pid, kernelState) => kernelState,
+    syncEpollState: (_pid, kernelState) => kernelState,
+    syncSocketState: (_pid, kernelState) => kernelState,
+    copyCanonicalMemfsToProcess: () => {},
+    snapshotProcSelfExe: () => null,
+    restoreProcSelfExe: () => {},
+    composeProcessPipeUsed: (_processExports, vmPtr, sharedPipeUsed) => {
+      composedCalls.push({ vmPtr, sharedPipeUsed });
+      return sharedPipeUsed | (1n << 9n);
+    },
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    mergePipeSlotsFromCanonical: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: canonicalState,
+      readOpen,
+      writeOpen,
+      managedPipeSlots: [2],
+    }),
+    applyPipeControlState: (targetExports, _targetState, _readOpen, _writeOpen, pipeUsed, managedPipeSlots) => {
+      applyCalls.push({ target: targetExports, pipeUsed, managedPipeSlots: [...managedPipeSlots] });
+    },
+    copyEpollState: () => {},
+    copySelectedEpollState: () => {},
+    copySocketState: () => {},
+    syncFileDataMutation: () => false,
+    syncFileDataMutationByPath: () => false,
+    syncMetadataMutation: () => false,
+    fanoutCanonicalMemfs: () => {},
+    fsEffectMemfsMutation: 1 << 0,
+    fsEffectSharedOfdState: 1 << 1,
+    fsEffectMemfsFileData: 1 << 2,
+    fsOpOpenAt: 3,
+    fsOpMkdir: 6,
+    fsOpUnlink: 7,
+  });
+
+  processControl.unregisterProcess(4);
+
+  expect(processKernels.has(4)).toBe(false);
+  expect(lastProcessPipeSlotModes.has(4)).toBe(false);
+  expect(canonicalProcesses.has(4)).toBe(false);
+  expect(parentExports.opLog).toEqual(["remove-process:4"]);
+  expect(composedCalls).toEqual([{ vmPtr: 0x1111, sharedPipeUsed: 1n << 2n }]);
+  expect(applyCalls).toEqual([
+    {
+      target: parentExports,
+      pipeUsed: (1n << 2n) | (1n << 9n),
+      managedPipeSlots: [2],
+    },
+  ]);
 });

@@ -47,7 +47,10 @@ import { createWorkerLifecycleHelpers } from "./lifecycle.js";
 import { createWorkerMessageHandler } from "./message-handler.js";
 import { createWorkerRuntimeContext } from "./runtime-context.js";
 import { createWorkerScheduler } from "./scheduler.js";
-import { hasActiveChildProcess as hasActiveChildProcessImpl } from "./child-processes.js";
+import {
+  hasActiveChildProcess as hasActiveChildProcessImpl,
+  pumpActiveChildProcesses as pumpActiveChildProcessesImpl,
+} from "./child-processes.js";
 
 interface WorkerOrchestratorDeps {
   ensureCompiledModule(wasmBytes: BufferSource): Promise<WebAssembly.Module>;
@@ -101,6 +104,7 @@ const {
   publishRuntimeFsState: publishRuntimeFsStateCtx,
   replaceRuntimeFsSnapshot: replaceRuntimeFsSnapshotCtx,
   runtimeFsDirtyHandles,
+  snapshotProcessFs: snapshotProcessFsCtx,
   threadWorkerStates,
 } = workerRuntimeContext;
 let workerKernelRpcHelpers: ReturnType<typeof createWorkerKernelRpcHelpers>;
@@ -139,8 +143,12 @@ const workerScheduler = createWorkerScheduler({
   threadWorkerStates,
   completeProcessExit,
   failProcess,
-  hasActiveChildProcess: (parentPid) => hasActiveChildProcessImpl(processHandles, parentPid),
+  hasActiveChildProcess: (parentPid) => hasActiveChildProcessImpl(processHandles, parentPid, threadWorkerStates),
+  pumpActiveChildProcesses: (parentPid) => (
+    pumpActiveChildProcessesImpl(processHandles, parentPid, pumpProcess, kickBlockedWorkers, threadWorkerStates)
+  ),
   pumpNetworkConnections,
+  resumeFsViaKernelWorker,
   resumeBlockedSyscallLocally: (handle, worker, vmPtr, blockedStatus, timeoutExpired) => (
     workerKernelRpcHelpers.resumeBlockedSyscallLocally(
       handle,
@@ -178,6 +186,7 @@ workerKernelRpcHelpers = createWorkerKernelRpcHelpers({
   appendRuntimeLifecycleEvent,
   appendWorkerDebugLog,
   assertProcessStandardFdIntegrity,
+  blockWorker,
   enqueueWorker,
   failProcess,
   handleBlockedRetryResult,
@@ -260,9 +269,12 @@ const workerExitHelpers = createWorkerExitHelpers({
   destroyProcessHandle,
   formatAllLiveThreadDebug,
   kickBlockedWorkers,
+  publishRuntimeFsState: publishRuntimeFsStateCtx,
   recordChildExitViaKernelWorker,
   releaseSharedHostStdio,
   requestPipeStateSync,
+  snapshotProcessFs: snapshotProcessFsCtx,
+  syncForkSharedStateViaKernelWorker,
   unregisterProcessWithKernelWorker,
 });
 workerLifecycleHelpers = createWorkerLifecycleHelpers({
@@ -280,6 +292,7 @@ workerLifecycleHelpers = createWorkerLifecycleHelpers({
   syncForkSharedStateViaKernelWorker,
   workerExitCompleteProcessExit: workerExitHelpers.completeProcessExit,
   workerExitFailProcess: workerExitHelpers.failProcess,
+  workerExitPrepublishParentWaitStatus: workerExitHelpers.prepublishParentWaitStatus,
 });
 const WASM_PAGE_SIZE = 65536;
 const WASM_MAX_PAGES = 64512;
@@ -294,6 +307,7 @@ const SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE = 1 << 3;
 const SYNC_EFFECT_PROCESS_LIFECYCLE = 1 << 4;
 const SYNC_EFFECT_SIGNAL_WAITERS = 1 << 5;
 const SYNC_EFFECT_FORK_SHARED_OFD_STATE = 1 << 6;
+const SYNC_EFFECT_PROCESS_MEMFS = 1 << 7;
 const STATUS_OK_COMPLETED_SYNC_EFFECTS = SYNC_EFFECT_PIPE_STATE
   | SYNC_EFFECT_SOCKET_STATE
   | SYNC_EFFECT_EPOLL_STATE
@@ -309,7 +323,7 @@ async function ensureCompiledModule(wasmBytes: BufferSource): Promise<WebAssembl
 
 let resolveNetworkConnectImpl: (handle: ProcessHandle, vmPtr: number) => Promise<bigint>;
 let pumpNetworkConnectionsImpl: (handle: ProcessHandle, vmPtr?: number) => Promise<boolean>;
-let commitNetworkConnectImpl: (handle: ProcessHandle, vmPtr: number) => Promise<void>;
+let commitNetworkConnectImpl: (handle: ProcessHandle, vmPtr: number, result?: bigint) => Promise<void>;
 
 function resolveNetworkConnect(handle: ProcessHandle, vmPtr: number): Promise<bigint> {
   return resolveNetworkConnectImpl(handle, vmPtr);
@@ -319,8 +333,8 @@ function pumpNetworkConnections(handle: ProcessHandle, vmPtr?: number): Promise<
   return pumpNetworkConnectionsImpl(handle, vmPtr);
 }
 
-function commitNetworkConnect(handle: ProcessHandle, vmPtr: number): Promise<void> {
-  return commitNetworkConnectImpl(handle, vmPtr);
+function commitNetworkConnect(handle: ProcessHandle, vmPtr: number, result?: bigint): Promise<void> {
+  return commitNetworkConnectImpl(handle, vmPtr, result);
 }
 
 handleWorkerMessageImpl = createWorkerMessageHandler({
@@ -334,6 +348,7 @@ handleWorkerMessageImpl = createWorkerMessageHandler({
   syncEffectProcessLifecycle: SYNC_EFFECT_PROCESS_LIFECYCLE,
   syncEffectSignalWaiters: SYNC_EFFECT_SIGNAL_WAITERS,
   syncEffectForkSharedOfdState: SYNC_EFFECT_FORK_SHARED_OFD_STATE,
+  syncEffectProcessMemfs: SYNC_EFFECT_PROCESS_MEMFS,
   appendRuntimeLifecycleEvent,
   appendWorkerDebugLog,
   assertProcessStandardFdIntegrity,
@@ -348,6 +363,7 @@ handleWorkerMessageImpl = createWorkerMessageHandler({
   failProcess,
   handleExecveSpawn,
   kickBlockedWorkers,
+  markRuntimeFsDirty,
   pumpNetworkConnections,
   commitNetworkConnect,
   pumpProcess,
@@ -380,13 +396,17 @@ const workerProcessFactory = createWorkerProcessFactory({
   wasmMaxPages: WASM_MAX_PAGES,
 });
 const workerProcessIoHelpers = createWorkerProcessIoHelpers({
+  appendRuntimeLifecycleEvent,
   appendWorkerDebugLog,
   drainProcessOutput,
   failProcess,
   flushStdin,
+  getActiveHandle: (handle) => processHandles.get(handle.pid),
   isActiveHandle: (handle) => handle.pid <= 0 || processHandles.get(handle.pid) === handle,
   kickBlockedWorkers,
+  pumpProcess,
   requestPipeStateSync,
+  requestSocketStateSync,
   writeProcessStdin: bufferProcessStdin,
 });
 resolveNetworkConnectImpl = workerProcessIoHelpers.resolveNetworkConnect;
@@ -423,12 +443,16 @@ export function clearRuntimeFailureSnapshot(runtimeId: number): void {
 
 function collectTrackableForkSharedOfds(handle: ProcessHandle): Set<number> {
   const stdioOfdIds = new Set<number>();
+  const stdioFdOfdIds = new Set<number>();
   for (const [fd, stdioPipeSlot] of [
     [0, handle.stdinPipe],
     [1, handle.stdoutPipe],
     [2, handle.stderrPipe],
   ] as const) {
     const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+    if (ofdId !== 0) {
+      stdioFdOfdIds.add(ofdId);
+    }
     if (
       ofdId !== 0
       && stdioPipeSlot > 0
@@ -439,8 +463,23 @@ function collectTrackableForkSharedOfds(handle: ProcessHandle): Set<number> {
     }
   }
   const tracked = new Set<number>();
+  for (const ofdId of handle.kernelShare.sharedOfdIds) {
+    if (
+      ofdId > 0
+      && ofdId < handle.kernel.abi_max_fds()
+    ) {
+      tracked.add(ofdId);
+    }
+  }
   for (const ofdId of collectProcessHeldOfds(handle)) {
     if (stdioOfdIds.has(ofdId)) {
+      continue;
+    }
+    if (
+      !handle.kernelShare.sharedOfdIds.has(ofdId)
+      && !stdioFdOfdIds.has(ofdId)
+      && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_file()
+    ) {
       continue;
     }
     tracked.add(ofdId);
@@ -523,7 +562,7 @@ async function resumeFsViaKernelWorker(
 function syncForkSharedStateLocally(
   handle: ProcessHandle,
   targets: ProcessHandle[],
-  options: { includeMemfs?: boolean; trackHeldOfds?: boolean } = {},
+  options: { includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] } = {},
 ): void {
   syncForkSharedStateLocallyImpl(handle, targets, options, collectTrackableForkSharedOfds);
 }
@@ -535,8 +574,11 @@ async function syncForkSharedStateViaKernelWorker(
     includeMemfs?: boolean;
     trackHeldOfds?: boolean;
     deltaOfdIds?: boolean;
+    memfsOnly?: boolean;
     preserveSourceRefcounts?: boolean;
+    preservePublishedRegularFileData?: boolean;
     sourceVmPtr?: number;
+    ofdIds?: number[];
   } = {},
 ): Promise<void> {
   if (!handle.kernelWorkerRequest || handle.pid <= 0) {
@@ -587,11 +629,15 @@ async function releaseSharedHostStdio(handle: ProcessHandle): Promise<void> {
   if (shared.refCount > 0) {
     shared.refCount -= 1;
   }
-  // Process-local hidden stdio pipe slots must always be cleared on exit even
-  // when visible host stdio is still shared with a parent process.
   handle.stdinPipe = 0;
   handle.stdoutPipe = 0;
   handle.stderrPipe = 0;
+  if (shared.refCount > 0) {
+    return;
+  }
+  if (handle.stdioOwner !== null && !handle.stdioOwner.exitInProgress) {
+    return;
+  }
   const pipeUsed = await releaseHostStdioViaKernelWorker(handle);
   if (kernelWorkerOwnsPipeState(handle)) {
     wakePipeAndEpollWaitersInKernelShare(handle, pipeUsed);

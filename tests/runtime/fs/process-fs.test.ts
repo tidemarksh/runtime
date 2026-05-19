@@ -358,3 +358,23 @@ test("preloadSnapshotEntries externalizes metadata-only files", () => {
   expect(externalCalls[0]?.[1]).toBe(18n);
   expect(kernel.recordsByPath.get("/bin/app")?.mode).toBe(0o100755);
 });
+
+test("preloadSnapshotEntries keeps file payload scratch above grown MemFS data", () => {
+  const kernel = makeMemfsKernel();
+  let payloadPtr = 0;
+  kernel.kernel_memfs_data_ptr = () => 0x40000;
+  kernel.kernel_memfs_data_bytes = () => 0x20000;
+  const originalWriteFileAt = kernel.memfs_write_file_at;
+  kernel.memfs_write_file_at = (ino, offset, ptr, len) => {
+    payloadPtr = ptr;
+    return originalWriteFileAt(ino, offset, ptr, len);
+  };
+
+  preloadSnapshotEntries(kernel, [
+    { kind: "dir", path: "/bin", mode: 0o755 },
+    { kind: "file", path: "/bin/app", data: encoder.encode("payload"), mode: 0o755 },
+  ], 0x20000);
+
+  expect(payloadPtr).toBeGreaterThanOrEqual(0x70000);
+  expect(kernel.recordsByPath.get("/bin/app")?.data).toEqual(encoder.encode("payload"));
+});

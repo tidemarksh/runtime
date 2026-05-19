@@ -2,6 +2,90 @@ import { attachKernelRuntimeState, type KernelExports, type KernelRuntimeState }
 import { clearMemoryRange, copyMemoryRange } from "../common.js";
 
 export function createKernelWorkerObjectStatePrimitives() {
+  const NET_BUF_OFF_HEAD = 0;
+  const NET_BUF_OFF_TAIL = 4;
+  const NET_BUF_OFF_DATA = 16;
+
+  function counterAhead(sourceValue: number, targetValue: number, capacity: number): boolean {
+    void capacity;
+    return sourceValue > targetValue;
+  }
+
+  function copySocketNetBufferState(
+    sourceExports: KernelExports,
+    sourceState: KernelRuntimeState,
+    targetExports: KernelExports,
+    targetState: KernelRuntimeState,
+  ): void {
+    const maxBuffers = Math.max(1, Number(sourceExports.abi_max_sockets?.() ?? 32) * 2);
+    const poolBytes = sourceExports.kernel_net_buf_pool_bytes();
+    const slotBytes = Math.floor(poolBytes / maxBuffers);
+    const dataBytes = slotBytes - NET_BUF_OFF_DATA;
+    if (slotBytes <= NET_BUF_OFF_DATA || dataBytes <= 0) {
+      copyMemoryRange(
+        sourceExports.memory,
+        sourceState.netBufBase,
+        targetExports.memory,
+        targetState.netBufBase,
+        poolBytes,
+      );
+      return;
+    }
+    const sourceView = new DataView(sourceExports.memory.buffer);
+    const targetView = new DataView(targetExports.memory.buffer);
+    for (let bufferIndex = 0; bufferIndex < maxBuffers; bufferIndex += 1) {
+      const mask = 1n << BigInt(bufferIndex);
+      const sourceOffset = sourceState.netBufBase + bufferIndex * slotBytes;
+      const targetOffset = targetState.netBufBase + bufferIndex * slotBytes;
+      if ((sourceState.netBufUsed & mask) === 0n) {
+        if ((targetState.netBufUsed & mask) !== 0n) {
+          clearMemoryRange(targetExports.memory, targetOffset, slotBytes);
+        }
+        continue;
+      }
+      if ((targetState.netBufUsed & mask) === 0n) {
+        copyMemoryRange(
+          sourceExports.memory,
+          sourceOffset,
+          targetExports.memory,
+          targetOffset,
+          slotBytes,
+        );
+        continue;
+      }
+
+      const sourceHead = sourceView.getUint32(sourceOffset + NET_BUF_OFF_HEAD, true);
+      const sourceTail = sourceView.getUint32(sourceOffset + NET_BUF_OFF_TAIL, true);
+      const targetHead = targetView.getUint32(targetOffset + NET_BUF_OFF_HEAD, true);
+      const targetTail = targetView.getUint32(targetOffset + NET_BUF_OFF_TAIL, true);
+      const mergedHead = counterAhead(sourceHead, targetHead, dataBytes) ? sourceHead : targetHead;
+      const sourceTailAhead = counterAhead(sourceTail, targetTail, dataBytes);
+
+      if (sourceTailAhead) {
+        copyMemoryRange(
+          sourceExports.memory,
+          sourceOffset + NET_BUF_OFF_DATA,
+          targetExports.memory,
+          targetOffset + NET_BUF_OFF_DATA,
+          dataBytes,
+        );
+      }
+      copyMemoryRange(
+        sourceExports.memory,
+        sourceOffset + 8,
+        targetExports.memory,
+        targetOffset + 8,
+        NET_BUF_OFF_DATA - 8,
+      );
+      targetView.setUint32(targetOffset + NET_BUF_OFF_HEAD, mergedHead, true);
+      targetView.setUint32(
+        targetOffset + NET_BUF_OFF_TAIL,
+        sourceTailAhead ? sourceTail : targetTail,
+        true,
+      );
+    }
+  }
+
   function copyEpollState(
     sourceExports: KernelExports,
     sourceState: KernelRuntimeState,
@@ -54,13 +138,7 @@ export function createKernelWorkerObjectStatePrimitives() {
       targetState.socketTablePtr,
       sourceExports.kernel_socket_table_bytes(),
     );
-    copyMemoryRange(
-      sourceExports.memory,
-      sourceState.netBufBase,
-      targetExports.memory,
-      targetState.netBufBase,
-      sourceExports.kernel_net_buf_pool_bytes(),
-    );
+    copySocketNetBufferState(sourceExports, sourceState, targetExports, targetState);
   }
 
   return {

@@ -15,6 +15,7 @@ function makeDeps(failProcess: ReturnType<typeof vi.fn>): WorkerMessageHandlerDe
     syncEffectProcessLifecycle: 0,
     syncEffectSignalWaiters: 0,
     syncEffectForkSharedOfdState: 0,
+    syncEffectProcessMemfs: 0,
     appendWorkerDebugLog: () => {},
     assertProcessStandardFdIntegrity: () => {},
     attachThreadWorker: () => {},

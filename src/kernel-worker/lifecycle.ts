@@ -73,10 +73,15 @@ export function createKernelWorkerLifecycle(deps: KernelWorkerLifecycleDeps) {
     vmPtr: number,
     result: bigint,
     kernelState: KernelRuntimeState,
+    connectFd?: number,
   ): KernelRuntimeState {
     const processExports = deps.requireProcessKernel(pid);
     attachKernelRuntimeState(processExports, kernelState);
-    processExports.thread_resume_connect_result(vmPtr, result);
+    if (connectFd !== undefined && connectFd > 0 && processExports.thread_resume_connect_result_for_fd) {
+      processExports.thread_resume_connect_result_for_fd(vmPtr, connectFd, result);
+    } else {
+      processExports.thread_resume_connect_result(vmPtr, result);
+    }
     return readKernelRuntimeState(processExports);
   }
 
@@ -200,6 +205,7 @@ export function createKernelWorkerLifecycle(deps: KernelWorkerLifecycleDeps) {
     const processExports = deps.requireProcessKernel(pid);
     attachKernelRuntimeState(processExports, kernelState);
     processExports.thread_clear_spawn_handoff(vmPtr);
+    processExports.thread_restore_vfork_parent_proc_self_exe_snapshot?.();
     // The runtime resumes the suspended parent thread locally after the child
     // worker has been materialized. This kernel-worker copy must not clear the
     // vfork snapshot before the owner runtime restores the parent locally,

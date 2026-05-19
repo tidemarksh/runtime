@@ -62,22 +62,25 @@ function writeSnapshotScratch(
   bytes: Uint8Array,
   offset = 0,
 ): number {
-  return scratchBase === undefined
-    ? writeKernelScratch(exports, bytes, offset)
-    : writeDetachedKernelScratch(exports, scratchBase, bytes, offset);
+  if (scratchBase === undefined) {
+    return writeKernelScratch(exports, bytes, offset);
+  }
+  const dynamicBase = Math.max(scratchBase, kernelScratchBase(exports));
+  return writeDetachedKernelScratch(exports, dynamicBase, bytes, offset);
 }
 
 function replaceFileData(
   exports: KernelExports,
   ino: number,
   data: Uint8Array,
+  scratchBase?: number,
 ): boolean {
   const truncateResult = Number(exports.memfs_truncate_file(ino, BigInt(data.length)));
   if (truncateResult < 0) {
     return false;
   }
   if (data.length > 0) {
-    const dataPtr = writeKernelScratch(exports, data);
+    const dataPtr = writeSnapshotScratch(exports, scratchBase, data);
     const written = Number(exports.memfs_write_file_at(ino, 0n, dataPtr, data.length));
     if (written < 0 || written !== data.length) {
       return false;
@@ -197,7 +200,7 @@ export function preloadSnapshotEntries(
     pathInos.set(normalizedPath, ino);
 
     if (data) {
-      if (!replaceFileData(exports, ino, data)) {
+      if (!replaceFileData(exports, ino, data, scratchBase)) {
         continue;
       }
     } else {

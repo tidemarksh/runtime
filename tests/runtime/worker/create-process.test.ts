@@ -695,7 +695,7 @@ test("createProcess materializes only PT_INTERP for dynamic ELF metadata-only sn
     if (msg.type === "snapshot-fs") {
       expect(msg).toEqual({
         type: "snapshot-fs",
-        includeData: false,
+        includeData: true,
       });
       return {
         type: "snapshot-fs-result" as const,

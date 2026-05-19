@@ -11,6 +11,7 @@ const SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE = 1 << 3;
 const SYNC_EFFECT_PROCESS_LIFECYCLE = 1 << 4;
 const SYNC_EFFECT_SIGNAL_WAITERS = 1 << 5;
 const SYNC_EFFECT_FORK_SHARED_OFD_STATE = 1 << 6;
+const SYNC_EFFECT_PROCESS_MEMFS = 1 << 7;
 
 function makeKernelExports(syscallNr: bigint | null, fdTraceOfdType?: number) {
   return {
@@ -21,12 +22,14 @@ function makeKernelExports(syscallNr: bigint | null, fdTraceOfdType?: number) {
     abi_sys_read: () => 63n,
     abi_sys_openat: () => 56n,
     abi_sys_write: () => 64n,
+    abi_sys_pwrite64: () => 68n,
     abi_sys_lseek: () => 62n,
     abi_sys_close: () => 57n,
     abi_sys_pipe2: () => 59n,
     abi_sys_dup: () => 23n,
     abi_sys_dup3: () => 24n,
     abi_sys_fcntl: () => 25n,
+    abi_sys_ioctl: () => 29n,
     abi_sys_readv: () => 65n,
     abi_sys_writev: () => 66n,
     abi_sys_socket: () => 198n,
@@ -80,7 +83,7 @@ test("readCompletedSyncEffects marks close/dup/dup3 as fork-shared OFD mutations
 });
 
 test("readCompletedSyncEffects does not treat stream I/O as fork-shared mutations", () => {
-  for (const syscallNr of [63n, 64n, 62n, 65n, 66n, 25n]) {
+  for (const syscallNr of [63n, 64n, 62n, 65n, 66n]) {
     const exports = makeKernelExports(syscallNr);
     const syscallNumbers = loadSyscallNumbers(exports);
     expect(readCompletedSyncEffects(exports, statusCodes, statusCodes.OK, syscallNumbers)).toBe(
@@ -92,14 +95,111 @@ test("readCompletedSyncEffects does not treat stream I/O as fork-shared mutation
   }
 });
 
+test("readCompletedSyncEffects marks fcntl/ioctl as fd-state sync without process MemFS sync", () => {
+  for (const syscallNr of [25n, 29n]) {
+    const exports = makeKernelExports(syscallNr);
+    const syscallNumbers = loadSyscallNumbers(exports);
+    expect(readCompletedSyncEffects(exports, statusCodes, statusCodes.OK, syscallNumbers)).toBe(
+      SYNC_EFFECT_PIPE_STATE
+        | SYNC_EFFECT_SOCKET_STATE
+        | SYNC_EFFECT_EPOLL_STATE
+        | SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE
+        | SYNC_EFFECT_FORK_SHARED_OFD_STATE,
+    );
+  }
+});
+
 test("readCompletedSyncEffects keeps regular-file stream I/O off the pipe/socket sync path", () => {
-  for (const syscallNr of [63n, 64n, 62n, 65n, 66n]) {
+  for (const syscallNr of [63n, 62n, 65n]) {
     const exports = makeKernelExports(syscallNr, 1);
     const syscallNumbers = loadSyscallNumbers(exports);
     expect(readCompletedSyncEffects(exports, statusCodes, statusCodes.OK, syscallNumbers)).toBe(
       SYNC_EFFECT_FORK_SHARED_OFD_STATE,
     );
   }
+});
+
+test("readCompletedSyncEffects marks regular-file writes as process MemFS mutations", () => {
+  for (const syscallNr of [64n, 66n, 68n]) {
+    const exports = makeKernelExports(syscallNr, 1);
+    const syscallNumbers = loadSyscallNumbers(exports);
+    expect(readCompletedSyncEffects(exports, statusCodes, statusCodes.OK, syscallNumbers)).toBe(
+      SYNC_EFFECT_FORK_SHARED_OFD_STATE | SYNC_EFFECT_PROCESS_MEMFS,
+    );
+  }
+});
+
+test("readCompletedSyncEffects uses explicit thread effects for stream I/O when present", () => {
+  const explicitReadExports = {
+    ...makeKernelExports(63n),
+    thread_take_completed_sync_effects: () => SYNC_EFFECT_FORK_SHARED_OFD_STATE,
+  };
+  expect(readCompletedSyncEffects(
+    explicitReadExports,
+    statusCodes,
+    statusCodes.OK,
+    loadSyscallNumbers(explicitReadExports),
+    0x1234,
+  )).toBe(SYNC_EFFECT_FORK_SHARED_OFD_STATE);
+
+  const explicitPipeWriteExports = {
+    ...makeKernelExports(64n),
+    thread_take_completed_sync_effects: () => SYNC_EFFECT_PIPE_STATE,
+  };
+  expect(readCompletedSyncEffects(
+    explicitPipeWriteExports,
+    statusCodes,
+    statusCodes.OK,
+    loadSyscallNumbers(explicitPipeWriteExports),
+    0x1234,
+  )).toBe(SYNC_EFFECT_PIPE_STATE);
+});
+
+test("readCompletedSyncEffects strips pipe effects from explicit regular-file stream I/O", () => {
+  const explicitRegularReadExports = {
+    ...makeKernelExports(63n, 1),
+    thread_take_completed_sync_effects: () => SYNC_EFFECT_PIPE_STATE | SYNC_EFFECT_EPOLL_STATE,
+  };
+  expect(readCompletedSyncEffects(
+    explicitRegularReadExports,
+    statusCodes,
+    statusCodes.OK,
+    loadSyscallNumbers(explicitRegularReadExports),
+    0x1234,
+  )).toBe(SYNC_EFFECT_FORK_SHARED_OFD_STATE);
+
+  const explicitRegularWriteExports = {
+    ...makeKernelExports(64n, 1),
+    thread_take_completed_sync_effects: () => SYNC_EFFECT_PIPE_STATE,
+  };
+  expect(readCompletedSyncEffects(
+    explicitRegularWriteExports,
+    statusCodes,
+    statusCodes.OK,
+    loadSyscallNumbers(explicitRegularWriteExports),
+    0x1234,
+  )).toBe(SYNC_EFFECT_FORK_SHARED_OFD_STATE | SYNC_EFFECT_PROCESS_MEMFS);
+});
+
+test("readCompletedSyncEffects uses explicit thread effects without harness syscall trace", () => {
+  const exports = {
+    ...makeKernelExports(null),
+    debug_completed_sync_effects: undefined,
+    debug_fd_syscall_trace_len: undefined,
+    debug_fd_syscall_trace_nr: undefined,
+    debug_fd_syscall_trace_arg0_ofd_type: undefined,
+    debug_syscall_trace_nr: undefined,
+    thread_take_completed_sync_effects: () => (
+      SYNC_EFFECT_PIPE_STATE | SYNC_EFFECT_EPOLL_STATE | SYNC_EFFECT_FORK_SHARED_OFD_STATE
+    ),
+  };
+  expect(readCompletedSyncEffects(
+    exports,
+    statusCodes,
+    statusCodes.OK,
+    loadSyscallNumbers(exports),
+    0x1234,
+  )).toBe(SYNC_EFFECT_PIPE_STATE | SYNC_EFFECT_EPOLL_STATE | SYNC_EFFECT_FORK_SHARED_OFD_STATE);
 });
 
 test("readCompletedSyncEffects keeps passive socket ops out of fork-shared sync", () => {
@@ -156,7 +256,12 @@ test("readCompletedSyncEffects keeps lifecycle and signal wakeups distinct from 
   const execveExports = makeKernelExports(221n);
   const execveSyscalls = loadSyscallNumbers(execveExports);
   expect(readCompletedSyncEffects(execveExports, statusCodes, statusCodes.OK, execveSyscalls)).toBe(
-    SYNC_EFFECT_PROCESS_LIFECYCLE,
+    SYNC_EFFECT_PIPE_STATE
+      | SYNC_EFFECT_SOCKET_STATE
+      | SYNC_EFFECT_EPOLL_STATE
+      | SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE
+      | SYNC_EFFECT_FORK_SHARED_OFD_STATE
+      | SYNC_EFFECT_PROCESS_LIFECYCLE,
   );
 
   const killExports = makeKernelExports(129n);

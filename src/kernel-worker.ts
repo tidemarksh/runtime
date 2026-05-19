@@ -26,6 +26,7 @@ import type {
   KernelWorkerFdEntrySnapshot,
   KernelWorkerOfdSlotSnapshot,
   KernelWorkerOutbound,
+  KernelWorkerPipeSlotSnapshot,
   KernelWorkerSocketStateSnapshot,
 } from "./messages.js";
 import { bindWorkerMessageHandler, workerPostMessage } from "./bridge/scope.js";
@@ -69,12 +70,14 @@ function postResponse(msg: KernelWorkerOutbound): void {
 const kernelWorkerPrimitives = createKernelWorkerPrimitives({
   getCanonicalExports: () => exports,
   processKernels,
+  canonicalProcesses,
   getCanonicalProcessVmPtr: (pid) => canonicalProcesses.get(pid)?.vmPtr ?? 0,
 });
 
 const {
   applyPipeControlState,
   applySelectedOfdSnapshots,
+  applySelectedPipeSlotSnapshots,
   clearMemfsState,
   clearSelectedOfdState,
   clearSelectedPipeSlots,
@@ -143,6 +146,7 @@ const {
   readdir,
   rebuildPageCacheFromExports,
   rebuildPageCacheFromCanonical,
+  restorePublishedRegularFileDataFromPageCache,
   snapshotCanonicalFs,
   statPath,
   syncFileDataMutation,
@@ -185,8 +189,9 @@ let syncPipeStateImpl: (
   kernelState: KernelRuntimeState,
   fdEntries?: KernelWorkerFdEntrySnapshot[],
   ofdSlots?: KernelWorkerOfdSlotSnapshot[],
+  pipeSlots?: KernelWorkerPipeSlotSnapshot[],
   vmPtrOverride?: number,
-) => KernelRuntimeState;
+) => { kernelState: KernelRuntimeState; pipeSlots: KernelWorkerPipeSlotSnapshot[] };
 let syncEpollStateImpl: (pid: number, kernelState: KernelRuntimeState) => KernelRuntimeState;
 let syncSocketStateImpl: (pid: number, kernelState: KernelRuntimeState) => KernelRuntimeState;
 
@@ -195,9 +200,10 @@ function syncPipeState(
   kernelState: KernelRuntimeState,
   fdEntries?: KernelWorkerFdEntrySnapshot[],
   ofdSlots?: KernelWorkerOfdSlotSnapshot[],
+  pipeSlots?: KernelWorkerPipeSlotSnapshot[],
   vmPtrOverride?: number,
-): KernelRuntimeState {
-  return syncPipeStateImpl(pid, kernelState, fdEntries, ofdSlots, vmPtrOverride);
+): { kernelState: KernelRuntimeState; pipeSlots: KernelWorkerPipeSlotSnapshot[] } {
+  return syncPipeStateImpl(pid, kernelState, fdEntries, ofdSlots, pipeSlots, vmPtrOverride);
 }
 
 function syncEpollState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState {
@@ -261,12 +267,9 @@ function syncProcessMemfs(pid: number, kernelState: KernelRuntimeState): KernelR
   const canonicalState = readKernelRuntimeState(canonicalExports);
   const processState = readKernelRuntimeState(processExports);
   copyCanonicalMemfsToProcess(canonicalState, processExports, processState, {
-    // Plain-fork uses this RPC to make sure the parent has a materialized
-    // executable/toolchain view before its memory image is cloned. Publishing a
-    // metadata-only process view back into canonical state corrupts external
-    // file bodies and later execve paths.
     includeData: true,
   });
+  restorePublishedRegularFileDataFromPageCache(processExports);
   return readKernelRuntimeState(processExports);
 }
 
@@ -288,12 +291,14 @@ const kernelWorkerSharedStateSync = createKernelWorkerSharedStateSync({
   copySelectedEpollState,
   clearSelectedOfdState,
   copyMemfsState,
+  restorePublishedRegularFileDataFromPageCache,
   clearMemfsState,
   reconcileCanonicalOfdRefcounts,
   recomputeCanonicalPipeControlState,
   collectPipeSlotsForOfdIds,
   copySelectedPipeSlots,
   clearSelectedPipeSlots,
+  applySelectedPipeSlotSnapshots,
   mergePipeSlotsFromProcess,
   mergePipeSlotsFromCanonical,
   applyPipeControlState,
@@ -345,6 +350,7 @@ const kernelWorkerProcessControl = createKernelWorkerProcessControl({
   copyMemfsState,
   rebuildPageCacheFromExports,
   rebuildPageCacheFromCanonical,
+  restorePublishedRegularFileDataFromPageCache,
   syncPipeState,
   syncEpollState,
   syncSocketState,

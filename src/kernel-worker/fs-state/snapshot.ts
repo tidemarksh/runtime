@@ -153,7 +153,7 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
       return direct;
     }
     const cached = readInodeMeta(deps.getSabPageCache(), ino);
-    if (cached && (cached.mode & 0o170000) === 0o100000) {
+    if (cached && cached.dataOff !== 0 && (cached.mode & 0o170000) === 0o100000) {
       return readFileData(deps.getSabPageCache(), cached.dataOff, cached.size, 0, cached.size);
     }
     try {

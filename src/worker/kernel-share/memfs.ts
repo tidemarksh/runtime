@@ -1,5 +1,7 @@
 import type { KernelSyncHandle } from "../types.js";
+import type { KernelExports } from "../../abi.js";
 import { clearKernelRegion, copyKernelRegion } from "./common.js";
+import { ensureKernelMemoryCapacity, kernelScratchBase } from "../kernel-scratch.js";
 
 type MemfsLayout = {
   inodeCount: number;
@@ -13,10 +15,83 @@ type MemfsLayout = {
 
 const MEMFS_S_IFMT = 0o170000;
 const MEMFS_S_IFREG = 0o100000;
+const MEMFS_S_IFLNK = 0o120000;
 const MEMFS_INODE_OFF_MODE = 0;
 const MEMFS_INODE_OFF_SIZE = 16;
 const MEMFS_INODE_OFF_DATA_OFFSET = 24;
 const MEMFS_INODE_OFF_DATA_CAP = 28;
+const encoder = new TextEncoder();
+
+type ProcfsMemfsExports = Pick<
+  KernelExports,
+  | "memfs_resolve_path"
+  | "memfs_inode_mode"
+  | "memfs_read_link"
+  | "memfs_unlink"
+  | "memfs_create_symlink"
+>;
+
+function writeMemfsScratch(handle: KernelSyncHandle, bytes: Uint8Array, offset = 0): number {
+  const scratch = kernelScratchBase(handle.kernel) + offset;
+  ensureKernelMemoryCapacity(handle.kernel, scratch + bytes.length);
+  new Uint8Array(handle.memory.buffer).set(bytes, scratch);
+  return scratch;
+}
+
+function resolveMemfsPath(handle: KernelSyncHandle, path: string): number {
+  const memfs = handle.kernel as Partial<ProcfsMemfsExports>;
+  if (typeof memfs.memfs_resolve_path !== "function") {
+    return 0;
+  }
+  const normalized = `/${path.split("/").filter(Boolean).join("/")}`;
+  const bytes = encoder.encode(normalized || "/");
+  const ptr = writeMemfsScratch(handle, bytes);
+  return memfs.memfs_resolve_path(ptr, bytes.length);
+}
+
+export function snapshotProcSelfExe(handle: KernelSyncHandle): Uint8Array | null {
+  const memfs = handle.kernel as Partial<ProcfsMemfsExports>;
+  if (
+    typeof memfs.memfs_inode_mode !== "function"
+    || typeof memfs.memfs_read_link !== "function"
+  ) {
+    return null;
+  }
+  const ino = resolveMemfsPath(handle, "/proc/self/exe");
+  if (ino === 0 || (memfs.memfs_inode_mode(ino) & MEMFS_S_IFMT) !== MEMFS_S_IFLNK) {
+    return null;
+  }
+  const bufPtr = kernelScratchBase(handle.kernel) + 0x34000;
+  const bufLen = 4096;
+  ensureKernelMemoryCapacity(handle.kernel, bufPtr + bufLen);
+  const len = Number(memfs.memfs_read_link(ino, bufPtr, bufLen));
+  if (len <= 0) {
+    return null;
+  }
+  return new Uint8Array(handle.memory.buffer.slice(bufPtr, bufPtr + len));
+}
+
+export function restoreProcSelfExe(handle: KernelSyncHandle, target: Uint8Array | null): void {
+  const memfs = handle.kernel as Partial<ProcfsMemfsExports>;
+  if (
+    typeof memfs.memfs_unlink !== "function"
+    || typeof memfs.memfs_create_symlink !== "function"
+  ) {
+    return;
+  }
+  const selfIno = resolveMemfsPath(handle, "/proc/self");
+  if (selfIno === 0) {
+    return;
+  }
+  const exeName = encoder.encode("exe");
+  const exeNamePtr = writeMemfsScratch(handle, exeName, 0x200);
+  memfs.memfs_unlink(selfIno, exeNamePtr, exeName.length);
+  if (!target || target.length === 0) {
+    return;
+  }
+  const targetPtr = writeMemfsScratch(handle, target, 0x300);
+  memfs.memfs_create_symlink(selfIno, exeNamePtr, exeName.length, targetPtr, target.length);
+}
 
 function readMemfsLayout(handle: KernelSyncHandle): MemfsLayout {
   const view = new DataView(handle.memory.buffer, handle.kernelState.memfsPtr, 32);
@@ -90,6 +165,7 @@ export function clearMemfsState(target: KernelSyncHandle): void {
 }
 
 export function syncMemfsState(source: KernelSyncHandle, target: KernelSyncHandle): void {
+  const procSelfExe = snapshotProcSelfExe(target);
   const sourceLayout = readMemfsLayout(source);
   const targetLayout = readMemfsLayout(target);
   const sourceDataUsed = computeReferencedMemfsDataUsed(source, sourceLayout);
@@ -141,4 +217,5 @@ export function syncMemfsState(source: KernelSyncHandle, target: KernelSyncHandl
   targetHeader.setUint32(20, targetLayout.firstChildPtr, true);
   targetHeader.setUint32(24, targetLayout.dirEntriesPtr, true);
   targetHeader.setUint32(28, targetLayout.dataPtr, true);
+  restoreProcSelfExe(target, procSelfExe);
 }

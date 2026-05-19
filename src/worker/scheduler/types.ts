@@ -14,6 +14,7 @@ export interface WorkerSchedulerDeps {
   completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number): Promise<void>;
   failProcess(handle: ProcessHandle, error: Error): void;
   hasActiveChildProcess(parentPid: number): boolean;
+  pumpActiveChildProcesses?(parentPid: number): boolean;
   pumpNetworkConnections(handle: ProcessHandle, vmPtr?: number): Promise<boolean>;
   resumeBlockedSyscallLocally(
     handle: ProcessHandle,
@@ -22,6 +23,7 @@ export interface WorkerSchedulerDeps {
     status: number,
     timeoutExpired?: boolean,
   ): Promise<void>;
+  resumeFsViaKernelWorker(handle: ProcessHandle, worker: Worker, vmPtr: number): Promise<void>;
   resumeVforkParentAfterChildExit(
     handle: ProcessHandle,
     worker: Worker,

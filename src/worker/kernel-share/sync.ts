@@ -8,6 +8,11 @@ import {
 } from "./common.js";
 import { clearMemfsState, syncMemfsState } from "./memfs.js";
 
+const OFD_TYPE_OFFSET = 0;
+const OFD_HOST_FD_OFFSET = 4;
+const OFD_OFFSET_OFFSET = 16;
+const OFD_INO_OFFSET = 24;
+
 export function copySelectedOfdState(
   source: KernelSyncHandle,
   target: KernelSyncHandle,
@@ -24,9 +29,81 @@ export function copySelectedOfdState(
     if (ofdId <= 0 || ofdId >= maxFds) {
       continue;
     }
+    if (!ofdSlotsCanBeShared(source, target, ofdId)) {
+      continue;
+    }
     const slotOffset = source.kernelState.ofdTablePtr + ofdId * slotBytes;
     copyKernelRegion(source, slotOffset, target, target.kernelState.ofdTablePtr + ofdId * slotBytes, slotBytes);
   }
+}
+
+function ofdSlotsCanBeShared(
+  source: KernelSyncHandle,
+  target: KernelSyncHandle,
+  ofdId: number,
+): boolean {
+  const sourceType = source.kernel.kernel_ofd_fd_type(ofdId);
+  const targetType = target.kernel.kernel_ofd_fd_type(ofdId);
+  if (sourceType === 0) {
+    return targetType === 0;
+  }
+  if (targetType === 0) {
+    return true;
+  }
+  if (sourceType !== targetType) {
+    return false;
+  }
+  if (
+    source.kernel.kernel_ofd_ino(ofdId) !== target.kernel.kernel_ofd_ino(ofdId)
+    || source.kernel.kernel_ofd_host_fd(ofdId) !== target.kernel.kernel_ofd_host_fd(ofdId)
+  ) {
+    return false;
+  }
+  if (
+    sourceType === source.kernel.abi_fd_type_file()
+    && target.kernel.kernel_ofd_refcount(ofdId) > 0
+    && source.kernel.kernel_ofd_offset(ofdId) < target.kernel.kernel_ofd_offset(ofdId)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function ofdSlotSnapshotCanApply(
+  handle: KernelSyncHandle,
+  ofdId: number,
+  slot: Uint8Array,
+  slotBytes: number,
+): boolean {
+  if (slot.length !== slotBytes) {
+    return false;
+  }
+  const targetType = handle.kernel.kernel_ofd_fd_type(ofdId);
+  if (targetType === 0) {
+    return true;
+  }
+  const sourceView = new DataView(slot.buffer, slot.byteOffset, slot.byteLength);
+  const sourceType = sourceView.getInt32(OFD_TYPE_OFFSET, true);
+  if (sourceType === 0) {
+    return targetType === 0;
+  }
+  if (sourceType !== targetType) {
+    return false;
+  }
+  if (
+    sourceView.getUint32(OFD_INO_OFFSET, true) !== handle.kernel.kernel_ofd_ino(ofdId)
+    || sourceView.getInt32(OFD_HOST_FD_OFFSET, true) !== handle.kernel.kernel_ofd_host_fd(ofdId)
+  ) {
+    return false;
+  }
+  if (
+    sourceType === handle.kernel.abi_fd_type_file()
+    && handle.kernel.kernel_ofd_refcount(ofdId) > 0
+    && sourceView.getBigInt64(OFD_OFFSET_OFFSET, true) < handle.kernel.kernel_ofd_offset(ofdId)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 export function clearEpollState(target: KernelSyncHandle): void {
@@ -95,6 +172,9 @@ export function discardCopiedSharedKernelObjects(
   if (preservedOfdSlots && preservedOfdSlots.size > 0 && Number.isInteger(slotBytes) && slotBytes > 0) {
     const bytes = new Uint8Array(handle.memory.buffer);
     for (const [ofdId, slot] of preservedOfdSlots) {
+      if (!ofdSlotSnapshotCanApply(handle, ofdId, slot, slotBytes)) {
+        continue;
+      }
       bytes.set(slot, handle.kernelState.ofdTablePtr + ofdId * slotBytes);
     }
   }
@@ -134,6 +214,9 @@ export function restoreLocalOfdSlots(
   }
   const bytes = new Uint8Array(handle.memory.buffer);
   for (const [ofdId, slot] of preservedOfdSlots) {
+    if (!ofdSlotSnapshotCanApply(handle, ofdId, slot, slotBytes)) {
+      continue;
+    }
     bytes.set(slot, handle.kernelState.ofdTablePtr + ofdId * slotBytes);
   }
 }

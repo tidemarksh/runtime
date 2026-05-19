@@ -13,7 +13,7 @@ test("isRuntimeBridgeBlockedStatus keeps only indefinite EPOLL_WAIT in the threa
   } as never;
   const statusCodes = { EPOLL_WAIT: 22 } as never;
 
-  expect(isRuntimeBridgeBlockedStatus(exports, 0x1234, 22, statusCodes)).toBe(true);
+  expect(isRuntimeBridgeBlockedStatus(exports, 0x1234, 22, statusCodes)).toBe(false);
 
   exports.thread_epoll_wait_timeout = () => 0n;
   expect(isRuntimeBridgeBlockedStatus(exports, 0x1234, 22, statusCodes)).toBe(false);

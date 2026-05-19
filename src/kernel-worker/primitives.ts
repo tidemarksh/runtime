@@ -8,6 +8,7 @@ import { createKernelWorkerPipePrimitives } from "./primitives/pipe.js";
 interface KernelWorkerPrimitivesDeps {
   getCanonicalExports(): KernelExports;
   processKernels: Map<number, KernelExports>;
+  canonicalProcesses: Map<number, { ppid: number }>;
   getCanonicalProcessVmPtr(pid: number): number;
 }
 

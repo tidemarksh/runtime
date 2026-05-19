@@ -68,11 +68,19 @@ function readElfInterpPath(elfData: Uint8Array): string | null {
     }
     const bytes = elfData.subarray(offset, end);
     const nul = bytes.indexOf(0);
-    const interp = new TextDecoder().decode(nul >= 0 ? bytes.subarray(0, nul) : bytes);
+    const interp = decodeBytes(nul >= 0 ? bytes.subarray(0, nul) : bytes);
     return interp.length > 0 ? interp : null;
   }
 
   return null;
+}
+
+function decodeBytes(bytes: Uint8Array): string {
+  const decoder = new TextDecoder();
+  if (typeof SharedArrayBuffer !== "undefined" && bytes.buffer instanceof SharedArrayBuffer) {
+    return decoder.decode(new Uint8Array(bytes));
+  }
+  return decoder.decode(bytes);
 }
 
 function snapshotHasPath(entries: readonly FsSnapshotEntry[], path: string): boolean {
@@ -103,7 +111,6 @@ function resolveSnapshotPathFollowingSymlinks(
   path: string,
 ): string | null {
   const entriesByPath = snapshotEntryMap(entries);
-  const decoder = new TextDecoder();
   let resolvedParts: string[] = [];
   let remainingParts = normalizeGuestPath(path).split("/").filter(Boolean);
   let follows = 0;
@@ -124,7 +131,7 @@ function resolveSnapshotPathFollowingSymlinks(
       return null;
     }
 
-    const target = decoder.decode(entry.target);
+    const target = decodeBytes(entry.target);
     const targetPath = target.startsWith("/")
       ? normalizeGuestPath(target)
       : normalizeGuestPath(`/${[...resolvedParts, target].join("/")}`);
@@ -408,6 +415,15 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       kernelWorkerRequest: options.kernelWorkerRequest,
       networkBridge: options.networkBridge,
       networkConnections: new Map(),
+      networkConnectionOfds: new Map(),
+      networkOfdSlotWatermarks: new Map(),
+      networkPendingConnectFds: new Set(),
+      networkClosedFds: new Set(),
+      networkClosedSocketSlots: new Map(),
+      networkSocketSlotWatermarks: new Map(),
+      networkRecvHeadWatermarks: new Map(),
+      networkRecvTailWatermarks: new Map(),
+      networkRecvPayloadWatermarks: new Map(),
       workers: new Set(),
       readyWorkers: [],
       runningWorker: null,
@@ -418,10 +434,12 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       pipeSyncPromise: null,
       pipeSyncQueued: false,
       pipeWaiterWakeQueued: false,
+      pendingPipeSlotSnapshots: [],
       epollSyncPromise: null,
       epollSyncQueued: false,
       epollWaiterWakeQueued: false,
       forkSharedSyncPromise: null,
+      processMemfsDirty: false,
       ofdSyncPromise: null,
       ofdSyncQueuedIds: new Set(),
       socketSyncPromise: null,

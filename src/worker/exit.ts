@@ -1,4 +1,5 @@
 import { settleInheritedChildOutput, settleVisibleProcessOutput } from "./stdio.js";
+import type { FsSnapshotEntry } from "../fs/types.js";
 import type { ProcessHandle } from "./types.js";
 
 interface WorkerExitDeps {
@@ -12,13 +13,31 @@ interface WorkerExitDeps {
   destroyProcessHandle(handle: ProcessHandle, signal: number, notifyExit: boolean): void;
   formatAllLiveThreadDebug(handle: ProcessHandle): string;
   kickBlockedWorkers(handle: ProcessHandle): void;
+  publishRuntimeFsState?(runtimeId: number, entries: FsSnapshotEntry[]): number;
   recordChildExitViaKernelWorker(parent: ProcessHandle, childPid: number, waitStatus: number): Promise<void>;
   releaseSharedHostStdio(handle: ProcessHandle): Promise<void>;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
+  snapshotProcessFs?(handle: ProcessHandle): FsSnapshotEntry[];
+  syncForkSharedStateViaKernelWorker?(
+    handle: ProcessHandle,
+    targets: ProcessHandle[],
+      options?: {
+        includeMemfs?: boolean;
+        memfsOnly?: boolean;
+        trackHeldOfds?: boolean;
+        preserveSourceRefcounts?: boolean;
+        preservePublishedRegularFileData?: boolean;
+        sourceVmPtr?: number;
+      },
+  ): Promise<void>;
   unregisterProcessWithKernelWorker(handle: ProcessHandle): Promise<void>;
 }
 
 export function createWorkerExitHelpers(deps: WorkerExitDeps) {
+  const unregisteredKernelWorkerHandles = new WeakSet<ProcessHandle>();
+  const exitCompletionPromises = new WeakMap<ProcessHandle, Promise<void>>();
+  const parentWaitStatusPrepublishedHandles = new WeakSet<ProcessHandle>();
+
   function readAbsoluteCString(handle: ProcessHandle, ptr: number): string {
     if (ptr <= 0 || ptr >= handle.memory.buffer.byteLength) {
       return "";
@@ -98,7 +117,46 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     return entries.slice(-64).join(",");
   }
 
-  function formatFdSyscalls(handle: ProcessHandle): string {
+  function formatAllPathSyscalls(handle: ProcessHandle): string {
+    const len = handle.kernel.debug_path_syscall_trace_len?.() ?? 0;
+    if (len <= 0) {
+      return "";
+    }
+    const entries: string[] = [];
+    for (let index = 0; index < len; index += 1) {
+      const vmPtr = handle.kernel.debug_path_syscall_trace_vm_ptr?.(index) ?? 0;
+      const nr = handle.kernel.debug_path_syscall_trace_nr?.(index);
+      const status = handle.kernel.debug_path_syscall_trace_status?.(index) ?? 0;
+      const result = handle.kernel.debug_path_syscall_trace_result?.(index);
+      const pathPtr = handle.kernel.debug_path_syscall_trace_path_ptr?.(index) ?? 0;
+      entries.push(
+        `${index}:vm=0x${vmPtr.toString(16)}:${nr?.toString() ?? "n/a"}:${status}:${result?.toString() ?? "n/a"}:${JSON.stringify(readAbsoluteCString(handle, pathPtr))}`,
+      );
+    }
+    return entries.slice(-96).join(",");
+  }
+
+  function formatAllRiscvSyscalls(handle: ProcessHandle): string {
+    const len = handle.kernel.debug_riscv_syscall_trace_len?.() ?? 0;
+    if (len <= 0) {
+      return "";
+    }
+    const entries: string[] = [];
+    for (let index = 0; index < len; index += 1) {
+      const vmPtr = handle.kernel.debug_riscv_syscall_trace_entry_vm_ptr?.(index) ?? 0;
+      const nr = handle.kernel.debug_riscv_syscall_trace_entry_nr?.(index);
+      const result = handle.kernel.debug_riscv_syscall_trace_entry_result?.(index);
+      const status = handle.kernel.debug_riscv_syscall_trace_entry_status?.(index) ?? 0;
+      const arg0 = handle.kernel.debug_riscv_syscall_trace_entry_arg0?.(index);
+      const arg1 = handle.kernel.debug_riscv_syscall_trace_entry_arg1?.(index);
+      entries.push(
+        `${index}:vm=0x${vmPtr.toString(16)}:${nr?.toString() ?? "n/a"}:${arg0?.toString() ?? "n/a"}:${arg1?.toString() ?? "n/a"}:${status}:${result?.toString() ?? "n/a"}`,
+      );
+    }
+    return entries.slice(-48).join(",");
+  }
+
+  function formatFdSyscalls(handle: ProcessHandle, pidFilter: number | null = null, limit = 256): string {
     const len = handle.kernel.debug_fd_syscall_trace_len?.() ?? 0;
     if (len <= 0) {
       return "";
@@ -116,18 +174,24 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         continue;
       }
       const nr = Number(handle.kernel.debug_fd_syscall_trace_nr?.(index) ?? -1n);
-      if (![24, 25, 56, 57, 59, 62, 63, 64, 66, 67, 436].includes(nr)) {
+      if (![24, 25, 56, 57, 59, 62, 63, 64, 66, 67, 68, 70, 198, 199, 203, 242, 436].includes(nr)) {
         continue;
       }
       const arg0OfdType = handle.kernel.debug_fd_syscall_trace_arg0_ofd_type?.(index) ?? 0;
       const arg2OfdType = handle.kernel.debug_fd_syscall_trace_arg2_ofd_type?.(index) ?? 0;
       const pid = sampleToPid(handle.kernel.debug_fd_syscall_trace_pid_sample0?.(index));
+      if (pidFilter !== null && pid !== pidFilter) {
+        continue;
+      }
       entries.push([
         `${index}:${nr}`,
         `pid=${pid}`,
         `a0=${handle.kernel.debug_fd_syscall_trace_arg0?.(index)?.toString() ?? "n/a"}`,
         `a0ofd=${handle.kernel.debug_fd_syscall_trace_arg0_ofd_id?.(index) ?? "n/a"}`,
         `a0ty=${arg0OfdType}`,
+        `a0flags=${handle.kernel.debug_fd_syscall_trace_arg0_ofd_status_flags?.(index) ?? "n/a"}`,
+        `a0ino=${handle.kernel.debug_fd_syscall_trace_arg0_ofd_ino?.(index) ?? "n/a"}`,
+        `a0mode=${handle.kernel.debug_fd_syscall_trace_arg0_inode_mode?.(index) ?? "n/a"}`,
         `a1=${handle.kernel.debug_fd_syscall_trace_arg1?.(index)?.toString() ?? "n/a"}`,
         `a2=${handle.kernel.debug_fd_syscall_trace_arg2?.(index)?.toString() ?? "n/a"}`,
         `a2ofd=${handle.kernel.debug_fd_syscall_trace_arg2_ofd_id?.(index) ?? "n/a"}`,
@@ -136,7 +200,18 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         `st=${handle.kernel.debug_fd_syscall_trace_status?.(index) ?? "n/a"}`,
       ].join(":"));
     }
-    return entries.slice(-256).join(",");
+    return entries.slice(-limit).join(",");
+  }
+
+  function formatChildExitSyncRecords(handle: ProcessHandle): string {
+    return [...handle.childExitSyncRecords]
+      .map(([childPid, waitStatus]) => `${childPid}/${waitStatus}`)
+      .join(".") || "none";
+  }
+
+  function boundedChildDebugMessage(handle: ProcessHandle, limit = 8192): string {
+    const message = handle.lastDebugMessage ?? "debug=n/a";
+    return message.length <= limit ? message : `${message.slice(0, limit)}...<truncated:${message.length}>`;
   }
 
   function formatMemorySyscalls(handle: ProcessHandle): string {
@@ -176,7 +251,9 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       `execve_stage_trace=[${formatExecveStageTrace(handle)}]`,
       `exit_fds=[${formatFdSummary(handle)}]`,
       `riscv_syscalls=[${formatRiscvSyscalls(handle)}]`,
+      `all_riscv_syscalls=[${formatAllRiscvSyscalls(handle)}]`,
       `path_syscalls=[${formatPathSyscalls(handle)}]`,
+      `all_path_syscalls=[${formatAllPathSyscalls(handle)}]`,
       `fd_syscalls=[${formatFdSyscalls(handle)}]`,
       `memory_syscalls=[${formatMemorySyscalls(handle)}]`,
     ].join(" ");
@@ -203,6 +280,75 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       return termSignal & 0x7f;
     }
     return (exitCode & 0xff) << 8;
+  }
+
+  function invalidateBlockedParentRpcsForChildExit(parent: ProcessHandle, childPid: number): void {
+    for (const blocked of parent.blockedWorkers.values()) {
+      if (!blocked.rpcPending) {
+        continue;
+      }
+      if (
+        blocked.status !== parent.kernel.abi_status_wait4()
+        && blocked.status !== parent.kernel.abi_status_pipe_wait()
+      ) {
+        continue;
+      }
+      blocked.rpcPending = false;
+      blocked.rpcGeneration += 1;
+      blocked.pipeSyncedBeforePassive = false;
+      deps.appendRuntimeLifecycleEvent(
+        parent.runtimeId,
+        `exit-parent-clear-blocked-rpc:${parent.pid}:${childPid}:status=${blocked.status}`,
+      );
+    }
+  }
+
+  function prepublishParentWaitStatus(
+    handle: ProcessHandle,
+    exitCode: number,
+    termSignal: number,
+  ): boolean {
+    if (handle.parentPid === null || handle.pid <= 0) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `exit-parent-early-prepublish-skip:${handle.pid}:parent=${handle.parentPid ?? 0}`,
+      );
+      return false;
+    }
+    const parent = deps.processHandles.get(handle.parentPid);
+    if (!parent) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `exit-parent-early-prepublish-skip:${handle.pid}:parent=${handle.parentPid}`,
+      );
+      return false;
+    }
+    if (parentWaitStatusPrepublishedHandles.has(handle)) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `exit-parent-early-prepublish-existing:${parent.pid}:${handle.pid}:pending=${parent.pendingChildExitRecords}:records=${formatChildExitSyncRecords(parent)}`,
+      );
+      return true;
+    }
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `exit-parent-early-prepublish-start:${parent.pid}:${handle.pid}:pending=${parent.pendingChildExitRecords}:records=${formatChildExitSyncRecords(parent)}`,
+    );
+    if (!parent.childExitSyncRecords.has(handle.pid)) {
+      parent.pendingChildExitRecords += 1;
+      parent.childExitSyncRecords.set(handle.pid, encodeWaitStatus(exitCode, termSignal));
+      if (parent.pendingChildExitRecords > 0) {
+        parent.pendingChildExitRecords -= 1;
+      }
+    }
+    parentWaitStatusPrepublishedHandles.add(handle);
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `exit-parent-early-prepublish-done:${parent.pid}:${handle.pid}:pending=${parent.pendingChildExitRecords}:records=${formatChildExitSyncRecords(parent)}`,
+    );
+    invalidateBlockedParentRpcsForChildExit(parent, handle.pid);
+    deps.kickBlockedWorkers(parent);
+    return true;
   }
 
   function fdPipeSlot(handle: ProcessHandle, fd: number): number {
@@ -245,81 +391,270 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         parent.hostStdio.stderrPipe,
       ].filter((slot) => slot > 0),
     );
-    return [fdPipeSlot(handle, 1), fdPipeSlot(handle, 2)]
-      .some((slot) => inheritedSlots.has(slot));
+    const fdSlots = [fdPipeSlot(handle, 1), fdPipeSlot(handle, 2)]
+      .filter((slot) => slot > 0);
+    if (fdSlots.length > 0) {
+      return fdSlots.some((slot) => inheritedSlots.has(slot));
+    }
+    return parent.stdioOwner === null
+      && [handle.hostStdio.stdoutPipe, handle.hostStdio.stderrPipe]
+        .some((slot) => slot > 0 && inheritedSlots.has(slot));
+  }
+
+  function formatVisibleOutputDebug(handle: ProcessHandle): string {
+    const maxPipes = handle.kernel.abi_max_pipes?.() ?? 0;
+    const regionBytes = handle.kernel.kernel_pipe_region_bytes?.() ?? 0;
+    const slotBytes = maxPipes > 0 ? regionBytes / maxPipes : 0;
+    if (!Number.isInteger(slotBytes) || slotBytes <= 32) {
+      return "pipe-layout=invalid";
+    }
+    const view = new DataView(handle.memory.buffer);
+    const memory = new Uint8Array(handle.memory.buffer);
+    const formatSlot = (label: string, pipeSlot: number): string => {
+      if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
+        return `${label}=0`;
+      }
+      const offset = handle.kernelState.pipeBase + pipeSlot * slotBytes;
+      const head = view.getUint32(offset, true);
+      const tail = view.getUint32(offset + 4, true);
+      const readOpen = view.getInt32(offset + 8, true);
+      const writeOpen = view.getInt32(offset + 12, true);
+      const unread = tail >= head ? tail - head : (slotBytes - 32) - head + tail;
+      const previewStart = offset + 32 + head;
+      const previewLen = Math.max(0, Math.min(96, unread, offset + slotBytes - previewStart));
+      const preview = [...memory.subarray(previewStart, previewStart + previewLen)]
+        .map((byte) => {
+          if (byte === 10) {
+            return "\\n";
+          }
+          if (byte >= 32 && byte <= 126 && byte !== 34 && byte !== 92) {
+            return String.fromCharCode(byte);
+          }
+          return ".";
+        })
+        .join("");
+      return `${label}=slot${pipeSlot}/h${head}/t${tail}/ro${readOpen}/wo${writeOpen}/u${unread}/d=${JSON.stringify(preview)}`;
+    };
+    return [
+      `on=${handle.onStdout ? 1 : 0}`,
+      `backlog=${handle.outputBacklog.length}`,
+      formatSlot("stdout", handle.hostStdio.stdoutPipe),
+      formatSlot("stderr", handle.hostStdio.stderrPipe),
+    ].join(":");
+  }
+
+  async function publishProcessFsStateOnExit(handle: ProcessHandle, targets: ProcessHandle[] = []): Promise<void> {
+    if (!deps.snapshotProcessFs || !deps.publishRuntimeFsState) {
+      return;
+    }
+    if (!handle.processMemfsDirty && (!handle.kernelWorkerRequest || handle.pid <= 0)) {
+      return;
+    }
+    try {
+      if (handle.kernelWorkerRequest && handle.pid > 0) {
+        await deps.syncForkSharedStateViaKernelWorker?.(handle, targets, {
+          includeMemfs: true,
+          memfsOnly: true,
+          preservePublishedRegularFileData: false,
+          trackHeldOfds: false,
+          sourceVmPtr: handle.vmPtr,
+        });
+      }
+      const entries = deps.snapshotProcessFs(handle);
+      deps.publishRuntimeFsState(handle.runtimeId, entries);
+      handle.processMemfsDirty = false;
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `exit-fs-publish:${handle.pid}:${entries.length}`);
+    } catch (error) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `exit-fs-publish-error:${handle.pid}:${JSON.stringify(error instanceof Error ? error.message : String(error))}`,
+      );
+    }
   }
 
   async function recordExitOnParent(
     handle: ProcessHandle,
     exitCode: number,
     termSignal: number,
-  ): Promise<void> {
+  ): Promise<number | null> {
     if (handle.parentPid === null || handle.pid <= 0) {
-      return;
+      return null;
     }
 
     const parent = deps.processHandles.get(handle.parentPid);
     if (!parent) {
-      return;
+      return null;
     }
 
-    parent.pendingChildExitRecords += 1;
-    try {
-      const hasInheritedParentOutput = usesInheritedParentOutput(handle, parent);
-      if (!hasInheritedParentOutput && handle.kernelWorkerRequest && handle.pid > 0) {
-        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `child-pipe-sync-start:${handle.pid}`);
+    const hasInheritedParentOutput = usesInheritedParentOutput(handle, parent);
+    if (!hasInheritedParentOutput && handle.kernelWorkerRequest && handle.pid > 0) {
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-pipe-sync-before-child-exit-start:${parent.pid}:${handle.pid}`);
+      await deps.requestPipeStateSync(parent, true);
+      deps.drainProcessOutput(parent);
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-pipe-sync-before-child-exit-done:${parent.pid}:${handle.pid}`);
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `child-pipe-sync-start:${handle.pid}`);
+      try {
         await deps.requestPipeStateSync(handle, true);
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `child-pipe-sync-done:${handle.pid}`);
+      } catch (error) {
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `child-pipe-sync-error:${handle.pid}:${JSON.stringify(error instanceof Error ? error.message : String(error))}`,
+        );
       }
-      if (handle.stdioOwner === null) {
-        deps.drainProcessOutput(handle);
-      } else if (!hasInheritedParentOutput) {
-        deps.drainHiddenProcessOutput(handle);
-      }
-
-      deps.appendWorkerDebugLog(
-        parent,
-        `child-exit:${handle.pid}:${JSON.stringify(handle.debugCommand)}:${exitCode}:${termSignal}`,
-      );
-      deps.appendWorkerDebugLog(
-        parent,
-        `child-debug:${handle.pid}:${handle.lastDebugMessage ?? "debug=n/a"}`,
-      );
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `child-debug:${handle.pid}:${(handle.lastDebugMessage ?? "debug=n/a").slice(0, 4096)}`,
-      );
-      parent.lastDebugMessage = [
-        `child-exit:${handle.pid}:${JSON.stringify(handle.debugCommand)}:${exitCode}:${termSignal}`,
-        `child-debug:${handle.pid}:${handle.lastDebugMessage ?? "debug=n/a"}`,
-        parent.lastDebugMessage ?? "debug=n/a",
-      ].join(" ");
-
-      const waitStatus = encodeWaitStatus(exitCode, termSignal);
-      parent.childExitSyncRecords.set(handle.pid, waitStatus);
-      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-record-start:${parent.pid}:${handle.pid}`);
-      await deps.recordChildExitViaKernelWorker(parent, handle.pid, waitStatus);
-      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-record-done:${parent.pid}:${handle.pid}`);
-      if (hasInheritedParentOutput) {
-        void settleInheritedChildOutput(handle, deps.requestPipeStateSync)
-          .then(() => {
-            deps.appendRuntimeLifecycleEvent(handle.runtimeId, `child-parent-pipe-refresh:${parent.pid}:${handle.pid}`);
-            deps.kickBlockedWorkers(parent);
-          })
-          .catch(() => {});
-      }
-      if (!hasInheritedParentOutput) {
-        await settleVisibleProcessOutput(parent, deps.requestPipeStateSync);
-      }
-    } finally {
-      if (parent.pendingChildExitRecords > 0) {
-        parent.pendingChildExitRecords -= 1;
-      }
+    }
+    if (handle.stdioOwner === null) {
+      deps.drainProcessOutput(handle);
+    } else if (!hasInheritedParentOutput) {
+      deps.drainHiddenProcessOutput(handle);
+    }
+    if (hasInheritedParentOutput) {
+      await settleInheritedChildOutput(handle, deps.requestPipeStateSync);
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `child-parent-pipe-refresh:${parent.pid}:${handle.pid}`);
       deps.kickBlockedWorkers(parent);
+    }
+    await publishProcessFsStateOnExit(handle, [parent]);
+    if (handle.kernelWorkerRequest && handle.pid > 0) {
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `child-unregister-before-parent-record:${handle.pid}`);
+      await deps.unregisterProcessWithKernelWorker(handle);
+      unregisteredKernelWorkerHandles.add(handle);
+      handle.kernelWorkerRequest = undefined;
+    }
+
+    deps.appendWorkerDebugLog(
+      parent,
+      `child-exit:${handle.pid}:${JSON.stringify(handle.debugCommand)}:${exitCode}:${termSignal}`,
+    );
+    const childDebug = boundedChildDebugMessage(handle);
+    deps.appendWorkerDebugLog(parent, `child-debug:${handle.pid}:${childDebug}`);
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `child-debug:${handle.pid}:${childDebug.slice(0, 4096)}`,
+    );
+    parent.lastDebugMessage = [
+      `child-exit:${handle.pid}:${JSON.stringify(handle.debugCommand)}:${exitCode}:${termSignal}`,
+      `child-debug:${handle.pid}:${childDebug}`,
+      parent.lastDebugMessage ?? "debug=n/a",
+    ].join(" ");
+
+    const waitStatus = encodeWaitStatus(exitCode, termSignal);
+    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-record-start:${parent.pid}:${handle.pid}`);
+    await deps.recordChildExitViaKernelWorker(parent, handle.pid, waitStatus);
+    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-record-done:${parent.pid}:${handle.pid}`);
+    if (!hasInheritedParentOutput) {
+      await settleVisibleProcessOutput(parent, deps.requestPipeStateSync);
+    }
+    return waitStatus;
+  }
+
+  function visibleInheritedChildren(handle: ProcessHandle): ProcessHandle[] {
+    return [...deps.processHandles.values()].filter((child) => (
+      child !== handle
+      && child.stdioOwner === handle
+      && child.pid > 0
+      && !!child.kernelWorkerRequest
+    ));
+  }
+
+  function formatVisibleChildState(child: ProcessHandle): string {
+    const parts = [`${child.pid}`];
+    try {
+      parts.push(`status=${child.kernel.thread_status(child.vmPtr)}`);
+      parts.push(`a7=${child.kernel.thread_a7?.(child.vmPtr)?.toString() ?? "n/a"}`);
+      parts.push(`a0=${child.kernel.thread_a0(child.vmPtr).toString()}`);
+      parts.push(`blocked_fd=${child.kernel.thread_blocked_fd(child.vmPtr)}`);
+      parts.push(`blocked_ofd=${child.kernel.thread_blocked_ofd_id(child.vmPtr)}`);
+      parts.push(`poll_ready=${child.kernel.thread_poll_wait_ready_count?.(child.vmPtr) ?? -1}`);
+      parts.push(`poll_pipe=0x${(child.kernel.thread_poll_wait_first_pipe_revents?.(child.vmPtr) ?? 0).toString(16)}`);
+      parts.push(`pipe_buf=${child.kernel.thread_blocked_pipe_buffered_len?.(child.vmPtr) ?? -1}`);
+      parts.push(`pipe_wo=${child.kernel.thread_blocked_pipe_write_open?.(child.vmPtr) ?? -1}`);
+      const fdParts: string[] = [];
+      const maxFds = child.kernel.abi_max_fds();
+      for (let fd = 0; fd < Math.min(maxFds, 6); fd += 1) {
+        const ofdId = child.kernel.process_fd_ofd_id(child.vmPtr, fd);
+        if (ofdId === 0) {
+          continue;
+        }
+        const type = ofdId > 0 && ofdId < maxFds ? child.kernel.kernel_ofd_fd_type(ofdId) : -1;
+        const ino = ofdId > 0 && ofdId < maxFds ? child.kernel.kernel_ofd_ino(ofdId) : -1;
+        const hostFd = ofdId > 0 && ofdId < maxFds ? child.kernel.kernel_ofd_host_fd(ofdId) : -1;
+        fdParts.push(`${fd}->${ofdId}/${type}/${ino}/${hostFd}`);
+      }
+      parts.push(`fds=${fdParts.join("_") || "none"}`);
+    } catch (error) {
+      parts.push(`state_error=${JSON.stringify(error instanceof Error ? error.message : String(error))}`);
+    }
+    parts.push(`running=${child.runningWorker === null ? 0 : 1}`);
+    parts.push(`ready=${child.readyWorkers.length}`);
+    parts.push(`blocked=${child.blockedWorkers.size}`);
+    parts.push(`exit=${child.exitInProgress ? 1 : 0}`);
+    return parts.join("/");
+  }
+
+  async function settleVisibleInheritedChildrenOutput(handle: ProcessHandle): Promise<void> {
+    if (handle.stdioOwner !== null) {
+      return;
+    }
+    let pass = 0;
+    for (;;) {
+      const children = visibleInheritedChildren(handle);
+      if (children.length === 0) {
+        break;
+      }
+      let active = false;
+      for (const child of children) {
+        if (pass === 0) {
+          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `visible-inherited-child-output-start:${handle.pid}:${child.pid}`);
+        }
+        await settleInheritedChildOutput(child, deps.requestPipeStateSync);
+        if (pass === 0) {
+          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `visible-inherited-child-output-done:${handle.pid}:${child.pid}`);
+        }
+        const exitCompletionPromise = exitCompletionPromises.get(child);
+        if (exitCompletionPromise) {
+          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `visible-inherited-child-exit-wait-start:${handle.pid}:${child.pid}`);
+          try {
+            await exitCompletionPromise;
+          } finally {
+            deps.appendRuntimeLifecycleEvent(handle.runtimeId, `visible-inherited-child-exit-wait-done:${handle.pid}:${child.pid}`);
+          }
+          active = true;
+          continue;
+        }
+        active ||= deps.processHandles.get(child.pid) === child && !child.exitInProgress;
+      }
+      if (!active) {
+        break;
+      }
+      if (pass % 100 === 0) {
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `visible-inherited-child-live-wait:${handle.pid}:${children.map(formatVisibleChildState).join(".")}`,
+        );
+      }
+      pass += 1;
+      await new Promise((resolve) => setTimeout(resolve, 10));
     }
   }
 
   async function completeProcessExit(
+    handle: ProcessHandle,
+    exitCode: number,
+    termSignal: number,
+  ): Promise<void> {
+    const existingCompletionPromise = exitCompletionPromises.get(handle);
+    if (existingCompletionPromise) {
+      return existingCompletionPromise;
+    }
+    const completionPromise = completeProcessExitImpl(handle, exitCode, termSignal)
+      .finally(() => {
+        exitCompletionPromises.delete(handle);
+      });
+    exitCompletionPromises.set(handle, completionPromise);
+    return completionPromise;
+  }
+
+  async function completeProcessExitImpl(
     handle: ProcessHandle,
     exitCode: number,
     termSignal: number,
@@ -337,16 +672,103 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       handle.runtimeId,
       `exit:${handle.pid}:${JSON.stringify(handle.debugCommand)}:${exitCode}:${termSignal}`,
     );
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `exit-fd-debug:${handle.pid}:${formatFdSyscalls(handle).slice(-4096)}`,
+    );
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `exit-fd-debug-self:${handle.pid}:${formatFdSyscalls(handle, handle.pid, 512).slice(-12000)}`,
+    );
     if (exitCode !== 0 || termSignal !== 0) {
       deps.captureRuntimeFailureSnapshot(handle, exitCode, termSignal);
     }
 
     const parent = handle.parentPid !== null ? (deps.processHandles.get(handle.parentPid) ?? null) : null;
     const hasInheritedParentOutput = parent !== null && usesInheritedParentOutput(handle, parent);
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `exit-output-branch:${handle.pid}:parent=${parent?.pid ?? 0}:owner=${handle.stdioOwner?.pid ?? 0}`,
+    );
+    let parentWaitStatusPublished = false;
+    if (parent) {
+      if (parentWaitStatusPrepublishedHandles.has(handle)) {
+        parentWaitStatusPublished = true;
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `exit-parent-prepublish-already-published:${parent.pid}:${handle.pid}:pending=${parent.pendingChildExitRecords}:records=${formatChildExitSyncRecords(parent)}`,
+        );
+      } else if (handle.pid > 0 && parent.childExitSyncRecords.has(handle.pid)) {
+        parentWaitStatusPrepublishedHandles.add(handle);
+        parentWaitStatusPublished = true;
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `exit-parent-prepublish-existing:${parent.pid}:${handle.pid}:pending=${parent.pendingChildExitRecords}:records=${formatChildExitSyncRecords(parent)}`,
+        );
+      } else {
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `exit-parent-prepublish-start:${parent.pid}:${handle.pid}:pending=${parent.pendingChildExitRecords}:records=${formatChildExitSyncRecords(parent)}`,
+        );
+        parent.pendingChildExitRecords += 1;
+        if (handle.pid > 0) {
+          parent.childExitSyncRecords.set(handle.pid, encodeWaitStatus(exitCode, termSignal));
+          if (parent.pendingChildExitRecords > 0) {
+            parent.pendingChildExitRecords -= 1;
+          }
+          parentWaitStatusPublished = true;
+          deps.appendRuntimeLifecycleEvent(
+            handle.runtimeId,
+            `exit-parent-prepublish-done:${parent.pid}:${handle.pid}:pending=${parent.pendingChildExitRecords}:records=${formatChildExitSyncRecords(parent)}`,
+          );
+          invalidateBlockedParentRpcsForChildExit(parent, handle.pid);
+          deps.kickBlockedWorkers(parent);
+        }
+      }
+    } else {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `exit-parent-prepublish-skip:${handle.pid}:parent=${handle.parentPid ?? 0}`,
+      );
+    }
     let cleanupError: Error | null = null;
+    let parentWaitStatus: number | null = null;
 
     try {
-      await recordExitOnParent(handle, exitCode, termSignal);
+      parentWaitStatus = await recordExitOnParent(handle, exitCode, termSignal);
+      if (parent && parentWaitStatus !== null && !parentWaitStatusPublished) {
+        parent.childExitSyncRecords.set(handle.pid, parentWaitStatus);
+        if (parent.pendingChildExitRecords > 0) {
+          parent.pendingChildExitRecords -= 1;
+        }
+        parentWaitStatus = null;
+        deps.kickBlockedWorkers(parent);
+      } else if (parentWaitStatusPublished) {
+        parentWaitStatus = null;
+      }
+      if (parent === null && handle.stdioOwner === null) {
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `exit-visible-output-start:${handle.pid}:${formatVisibleOutputDebug(handle)}`);
+        try {
+          await handle.forkSharedSyncPromise;
+        } catch {
+          // The final visible-output drain below should still run so process
+          // exit cannot hide bytes that were already written to stdout/stderr.
+        }
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `exit-visible-output-after-fork-sync:${handle.pid}:${formatVisibleOutputDebug(handle)}`);
+        await settleVisibleInheritedChildrenOutput(handle);
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `exit-visible-output-after-inherited:${handle.pid}:${formatVisibleOutputDebug(handle)}`);
+        if (handle.kernelWorkerRequest && handle.pid > 0) {
+          await deps.requestPipeStateSync(handle, true);
+        }
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `exit-visible-output-after-pipe-sync:${handle.pid}:${formatVisibleOutputDebug(handle)}`);
+        const firstDrain = deps.drainProcessOutput(handle);
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `exit-visible-output-after-first-drain:${handle.pid}:drained=${firstDrain ? 1 : 0}:${formatVisibleOutputDebug(handle)}`);
+        const settled = await settleVisibleProcessOutput(handle, deps.requestPipeStateSync);
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `exit-visible-output-after-settle:${handle.pid}:settled=${settled ? 1 : 0}:${formatVisibleOutputDebug(handle)}`);
+        const finalDrain = deps.drainProcessOutput(handle);
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `exit-visible-output-after-final-drain:${handle.pid}:drained=${finalDrain ? 1 : 0}:${formatVisibleOutputDebug(handle)}`);
+      }
+      await publishProcessFsStateOnExit(handle);
       await deps.releaseSharedHostStdio(handle);
     } catch (error) {
       cleanupError = error instanceof Error ? error : new Error(String(error));
@@ -368,7 +790,9 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         );
       }
       try {
-        await deps.unregisterProcessWithKernelWorker(handle);
+        if (!unregisteredKernelWorkerHandles.has(handle)) {
+          await deps.unregisterProcessWithKernelWorker(handle);
+        }
       } catch (error) {
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
@@ -378,15 +802,21 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       deps.destroyProcessHandle(handle, termSignal || 15, false);
     }
 
-    if (parent && !hasInheritedParentOutput) {
-      try {
+    try {
+      if (parent && !hasInheritedParentOutput) {
         await deps.requestPipeStateSync(parent, true);
         deps.drainProcessOutput(parent);
-      } finally {
+      }
+    } finally {
+      if (parent) {
+        if (parentWaitStatus !== null) {
+          parent.childExitSyncRecords.set(handle.pid, parentWaitStatus);
+        }
+        if (parent.pendingChildExitRecords > 0) {
+          parent.pendingChildExitRecords -= 1;
+        }
         deps.kickBlockedWorkers(parent);
       }
-    } else if (parent) {
-      deps.kickBlockedWorkers(parent);
     }
     handle.onExit?.(exitCode);
   }
@@ -408,6 +838,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
   return {
     completeProcessExit,
     failProcess,
+    prepublishParentWaitStatus,
     recordExitOnParent,
   };
 }

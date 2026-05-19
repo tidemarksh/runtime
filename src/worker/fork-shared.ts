@@ -1,6 +1,11 @@
 import type { KernelSyncHandle, ProcessHandle, ThreadWorkerState, VforkSnapshot } from "./types.js";
 import { trackForkSharedOfds } from "./kernel-share.js";
 
+const OFD_TYPE_OFFSET = 0;
+const OFD_HOST_FD_OFFSET = 4;
+const OFD_OFFSET_OFFSET = 16;
+const OFD_INO_OFFSET = 24;
+
 function boundedThreadSlotCount(handle: ProcessHandle): number {
   const maxThreads = handle.kernel.abi_max_threads();
   try {
@@ -59,6 +64,18 @@ export function collectProcessHeldOfds(handle: ProcessHandle): Set<number> {
     }
   }
 
+  for (const blocked of (handle.blockedWorkers?.values() ?? [])) {
+    let blockedOfdId = 0;
+    try {
+      blockedOfdId = handle.kernel.thread_blocked_ofd_id?.(blocked.vmPtr) ?? 0;
+    } catch {
+      continue;
+    }
+    if (blockedOfdId !== 0 && blockedOfdId < maxFds) {
+      heldOfds.add(blockedOfdId);
+    }
+  }
+
   return heldOfds;
 }
 
@@ -86,6 +103,18 @@ function collectProcessHeldOfdRefcounts(handle: ProcessHandle): Int32Array {
     let blockedOfdId = 0;
     try {
       blockedOfdId = handle.kernel.thread_blocked_ofd_id?.(threadVmPtr) ?? 0;
+    } catch {
+      continue;
+    }
+    if (blockedOfdId !== 0 && blockedOfdId < maxFds) {
+      heldOfdRefcounts[blockedOfdId] += 1;
+    }
+  }
+
+  for (const blocked of (handle.blockedWorkers?.values() ?? [])) {
+    let blockedOfdId = 0;
+    try {
+      blockedOfdId = handle.kernel.thread_blocked_ofd_id?.(blocked.vmPtr) ?? 0;
     } catch {
       continue;
     }
@@ -201,19 +230,19 @@ export function staleKernelShareOfdIds(handle: ProcessHandle): number[] {
 
 export function syncKernelShareOfdReservations(handle: ProcessHandle): void {
   const activeOfdIds = activeKernelShareOfdIds(handle);
-  const staleOfdIds = staleKernelShareOfdIds(handle);
+  const reservedOfdIds = [...new Set([...handle.kernelShare.sharedOfdIds, ...activeOfdIds])];
   for (const member of handle.kernelShare.members) {
-    for (const ofdId of activeOfdIds) {
+    for (const ofdId of reservedOfdIds) {
       member.kernel.kernel_reserve_ofd?.(ofdId);
-    }
-    for (const ofdId of staleOfdIds) {
-      member.kernel.kernel_unreserve_ofd?.(ofdId);
     }
   }
 }
 
 export function pruneStaleKernelShareOfdIds(handle: ProcessHandle, staleOfdIds: Iterable<number>): void {
   for (const ofdId of staleOfdIds) {
+    for (const member of handle.kernelShare.members) {
+      member.kernel.kernel_unreserve_ofd?.(ofdId);
+    }
     handle.kernelShare.sharedOfdIds.delete(ofdId);
     handle.kernelShare.ofdSlotSnapshots.delete(ofdId);
   }
@@ -249,9 +278,29 @@ export function mergeKernelShareOfdStateInto(handle: ProcessHandle, sharedOfdIds
 
   const targetTable = new Uint8Array(handle.memory.buffer);
   for (const [ofdId, slotBytesView] of slotCopies) {
+    if (slotWouldRollBackRegularFileOffset(handle, ofdId, slotBytesView)) {
+      continue;
+    }
     const slotOffset = handle.kernelState.ofdTablePtr + ofdId * slotBytes;
     targetTable.set(slotBytesView, slotOffset);
   }
+}
+
+function slotWouldRollBackRegularFileOffset(
+  handle: ProcessHandle,
+  ofdId: number,
+  slot: Uint8Array,
+): boolean {
+  const targetType = handle.kernel.kernel_ofd_fd_type(ofdId);
+  if (targetType !== handle.kernel.abi_fd_type_file()) {
+    return false;
+  }
+  const view = new DataView(slot.buffer, slot.byteOffset, slot.byteLength);
+  return view.getInt32(OFD_TYPE_OFFSET, true) === targetType
+    && view.getUint32(OFD_INO_OFFSET, true) === handle.kernel.kernel_ofd_ino(ofdId)
+    && view.getInt32(OFD_HOST_FD_OFFSET, true) === handle.kernel.kernel_ofd_host_fd(ofdId)
+    && handle.kernel.kernel_ofd_refcount(ofdId) > 0
+    && view.getBigInt64(OFD_OFFSET_OFFSET, true) < handle.kernel.kernel_ofd_offset(ofdId);
 }
 
 export function reconcileForkSharedOfdRefcounts(handle: ProcessHandle, sharedOfdIds: Iterable<number>): void {

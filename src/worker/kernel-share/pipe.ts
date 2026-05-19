@@ -5,6 +5,89 @@ const PIPE_CONTROL_START = 8;
 const PIPE_DATA_START = 32;
 const PIPE_OFF_READ_OPEN = 8;
 const PIPE_OFF_WRITE_OPEN = 12;
+const PIPE_BUF_SIZE = 65_536;
+
+function pipeDebugPreviewEnabled(): boolean {
+  const globalWithProcess = globalThis as typeof globalThis & {
+    process?: { env?: Record<string, string | undefined> };
+  };
+  return globalWithProcess.process?.env?.TIDEMARK_PIPE_DEBUG_PREVIEW === "1";
+}
+
+function pipeDebugDumpEnabled(): boolean {
+  const globalWithProcess = globalThis as typeof globalThis & {
+    process?: { env?: Record<string, string | undefined> };
+  };
+  return globalWithProcess.process?.env?.TIDEMARK_PIPE_DEBUG_DUMP === "1";
+}
+
+function fnv1a32(bytes: Uint8Array): string {
+  let hash = 0x811c9dc5;
+  for (const byte of bytes) {
+    hash ^= byte;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `0x${hash.toString(16).padStart(8, "0")}`;
+}
+
+function formatAsciiPreview(bytes: Uint8Array, maxLen = 96): string {
+  let out = "";
+  for (const byte of bytes.subarray(0, maxLen)) {
+    if (byte === 0x0a) {
+      out += "\\n";
+    } else if (byte === 0x0d) {
+      out += "\\r";
+    } else if (byte === 0x09) {
+      out += "\\t";
+    } else if (byte >= 0x20 && byte <= 0x7e && byte !== 0x5c && byte !== 0x22) {
+      out += String.fromCharCode(byte);
+    } else {
+      out += `\\x${byte.toString(16).padStart(2, "0")}`;
+    }
+  }
+  if (bytes.length > maxLen) {
+    out += "...";
+  }
+  return out;
+}
+
+function formatHex(bytes: Uint8Array): string {
+  let out = "";
+  for (const byte of bytes) {
+    out += byte.toString(16).padStart(2, "0");
+  }
+  return out;
+}
+
+function pipeDebugPreview(handle: ProcessHandle, base: number, head: number, tail: number): string[] {
+  if (!pipeDebugPreviewEnabled() || tail === 0) {
+    return [];
+  }
+  const dataBase = base + PIPE_DATA_START;
+  const bytes = new Uint8Array(handle.memory.buffer);
+  const len = head === tail
+    ? tail
+    : tail > head
+      ? tail - head
+      : PIPE_BUF_SIZE - head + tail;
+  if (len <= 0 || len > PIPE_BUF_SIZE) {
+    return [];
+  }
+  const contiguousStart = head === tail ? 0 : head;
+  const previewLen = Math.min(len, PIPE_BUF_SIZE - contiguousStart);
+  const data = bytes.slice(dataBase + contiguousStart, dataBase + contiguousStart + previewLen);
+  const tailStart = Math.max(0, data.length - 96);
+  const parts = [
+    `data_len=${len}`,
+    `data_hash=${fnv1a32(data)}`,
+    `data_ascii=${JSON.stringify(formatAsciiPreview(data))}`,
+    `data_tail=${JSON.stringify(formatAsciiPreview(data.subarray(tailStart), 96))}`,
+  ];
+  if (pipeDebugDumpEnabled()) {
+    parts.push(`data_hex=${formatHex(data)}`);
+  }
+  return parts;
+}
 
 function collectLocalPipeSlotsForOfd(handle: ProcessHandle, ofdId: number): number[] {
   const fdType = handle.kernel.kernel_ofd_fd_type(ofdId);
@@ -84,8 +167,33 @@ export function restoreLocalPipeSlots(
   }
 }
 
+function hostStdioPipeSlotsForFd(handle: ProcessHandle, fd: 0 | 1 | 2): Set<number> {
+  const owner = handle.stdioOwner;
+  const slotsByFd = fd === 0
+    ? [
+        handle.stdinPipe,
+        handle.hostStdio.stdinPipe,
+        owner?.stdinPipe ?? 0,
+        owner?.hostStdio.stdinPipe ?? 0,
+      ]
+    : fd === 1
+      ? [
+          handle.stdoutPipe,
+          handle.hostStdio.stdoutPipe,
+          owner?.stdoutPipe ?? 0,
+          owner?.hostStdio.stdoutPipe ?? 0,
+        ]
+      : [
+          handle.stderrPipe,
+          handle.hostStdio.stderrPipe,
+          owner?.stderrPipe ?? 0,
+          owner?.hostStdio.stderrPipe ?? 0,
+        ];
+  return new Set(slotsByFd.filter((slot) => slot > 0));
+}
+
 export function reconcileKernelSharePipeControl(handle: ProcessHandle): void {
-  const members = [...handle.kernelShare.members];
+  const members = [...handle.kernelShare.members].filter((member) => !member.exitInProgress);
   if (members.length === 0) {
     return;
   }
@@ -119,6 +227,34 @@ export function reconcileKernelSharePipeControl(handle: ProcessHandle): void {
         writeKeys.add(key);
       }
     }
+    if ((member.hostStdio?.refCount ?? 0) > 0) {
+      const owner = member.stdioOwner ?? member;
+      for (const fd of [0, 1, 2] as const) {
+        const ofdId = member.kernel.process_fd_ofd_id(member.vmPtr, fd);
+        if (
+          ofdId <= 0
+          || ofdId >= maxFds
+          || member.kernel.kernel_ofd_fd_type(ofdId) !== member.kernel.abi_fd_type_pipe()
+        ) {
+          continue;
+        }
+        const pipeSlot = member.kernel.kernel_ofd_ino(ofdId);
+        if (
+          pipeSlot <= 0
+          || pipeSlot >= maxPipes
+          || !hostStdioPipeSlotsForFd(member, fd).has(pipeSlot)
+        ) {
+          continue;
+        }
+        pipeUsed |= 1n << BigInt(pipeSlot);
+        const key = `host:${pipeSlot}:${owner.pid}:${fd}`;
+        if (fd === 0) {
+          writeKeys.add(key);
+        } else {
+          readKeys.add(key);
+        }
+      }
+    }
   }
 
   for (const key of readKeys) {
@@ -132,12 +268,16 @@ export function reconcileKernelSharePipeControl(handle: ProcessHandle): void {
 
   const slotBytes = 32 + 65_536;
   for (const member of members) {
+    if (typeof member.kernel.kernel_pipe_base !== "function") {
+      continue;
+    }
     const view = new DataView(member.memory.buffer);
+    const pipeBase = member.kernel.kernel_pipe_base();
     for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
       if ((pipeUsed & (1n << BigInt(pipeSlot))) === 0n) {
         continue;
       }
-      const slotOffset = member.kernelState.pipeBase + pipeSlot * slotBytes;
+      const slotOffset = pipeBase + pipeSlot * slotBytes;
       view.setInt32(slotOffset + PIPE_OFF_READ_OPEN, readOpen[pipeSlot] ?? 0, true);
       view.setInt32(slotOffset + PIPE_OFF_WRITE_OPEN, writeOpen[pipeSlot] ?? 0, true);
     }
@@ -177,14 +317,17 @@ export function formatPipeCounterDebug(handle: ProcessHandle, fd: number): strin
   const base = handle.kernelState.pipeBase + pipeSlot * (32 + 65_536);
   const i32 = new Int32Array(handle.memory.buffer);
   const u32 = new Uint32Array(handle.memory.buffer);
+  const head = Atomics.load(u32, base >>> 2);
+  const tail = Atomics.load(u32, (base + 4) >>> 2);
   return [
     `${fd}:ofd=${ofdId}`,
     `type=${fdType}`,
     `slot=${pipeSlot}`,
     `ro=${Atomics.load(i32, (base + 8) >>> 2)}`,
     `wo=${Atomics.load(i32, (base + 12) >>> 2)}`,
-    `head=${Atomics.load(u32, base >>> 2)}`,
-    `tail=${Atomics.load(u32, (base + 4) >>> 2)}`,
+    `head=${head}`,
+    `tail=${tail}`,
+    ...pipeDebugPreview(handle, base, head, tail),
   ].join(":");
 }
 

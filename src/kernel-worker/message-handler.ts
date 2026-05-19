@@ -7,12 +7,14 @@ import type {
   KernelWorkerOfdSlotSnapshot,
   KernelWorkerOutbound,
   KernelWorkerPidStateSnapshot,
+  KernelWorkerPipeSlotSnapshot,
   KernelWorkerSocketStateSnapshot,
 } from "../messages.js";
 import { cloneSnapshotEntry } from "./common.js";
 
 interface ProcessFsResult {
   kernelState: KernelRuntimeState;
+  result: bigint;
   memfsMutated: boolean;
   ofdStateChanged: boolean;
 }
@@ -63,6 +65,7 @@ interface KernelWorkerMessageHandlerDeps {
     vmPtr: number,
     result: bigint,
     kernelState: KernelRuntimeState,
+    connectFd?: number,
   ): KernelRuntimeState;
   resumeWait4(pid: number, vmPtr: number, kernelState: KernelRuntimeState): KernelRuntimeState;
   resumeBlockedSyscall(pid: number, vmPtr: number, kernelState: KernelRuntimeState): KernelRuntimeState;
@@ -101,8 +104,9 @@ interface KernelWorkerMessageHandlerDeps {
     kernelState: KernelRuntimeState,
     fdEntries?: KernelWorkerFdEntrySnapshot[],
     ofdSlots?: KernelWorkerOfdSlotSnapshot[],
+    pipeSlots?: KernelWorkerPipeSlotSnapshot[],
     vmPtrOverride?: number,
-  ): KernelRuntimeState;
+  ): { kernelState: KernelRuntimeState; pipeSlots: KernelWorkerPipeSlotSnapshot[] };
   syncEpollState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
   syncOfdState(pid: number, ofdIds: number[], kernelState: KernelRuntimeState): KernelRuntimeState;
   syncSocketState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
@@ -118,6 +122,7 @@ interface KernelWorkerMessageHandlerDeps {
     fdEntries: KernelWorkerFdEntrySnapshot[],
     includeMemfs: boolean,
     preserveSourceRefcounts: boolean,
+    preservePublishedRegularFileData: boolean,
     kernelState: KernelRuntimeState,
   ): KernelRuntimeState;
   rehydrateForkSharedState(
@@ -243,6 +248,7 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
             type: "fs-processed",
             requestId: msg.requestId,
             kernelState: result.kernelState,
+            result: result.result,
             memfsMutated: result.memfsMutated,
             ofdStateChanged: result.ofdStateChanged,
           });
@@ -256,11 +262,31 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
           });
           break;
         case "resume-connect":
-          deps.postResponse({
-            type: "connect-resumed",
-            requestId: msg.requestId,
-            kernelState: deps.resumeConnect(msg.pid, msg.vmPtr, msg.result, msg.kernelState),
-          });
+          {
+            const syncedState = msg.fdEntries || msg.ofdSlots
+              ? deps.syncPipeState(
+                msg.pid,
+                msg.kernelState,
+                msg.fdEntries,
+                msg.ofdSlots,
+                undefined,
+                msg.vmPtr,
+              ).kernelState
+              : msg.kernelState;
+            const kernelState = deps.resumeConnect(
+              msg.pid,
+              msg.vmPtr,
+              msg.result,
+              syncedState,
+              msg.connectFd,
+            );
+            deps.postResponse({
+              type: "connect-resumed",
+              requestId: msg.requestId,
+              kernelState,
+              socketState: deps.snapshotSocketState(msg.pid, kernelState),
+            });
+          }
           break;
         case "resume-wait4":
           deps.postResponse({
@@ -339,19 +365,30 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
             kernelState: deps.syncProcessLifecycle(msg.pid, msg.vmPtr, msg.kernelState),
           });
           break;
-        case "sync-process-memfs":
-          deps.postResponse({
-            type: "process-memfs-synced",
-            requestId: msg.requestId,
-            kernelState: deps.syncProcessMemfs(msg.pid, msg.kernelState),
-          });
-          break;
+	        case "sync-process-memfs":
+	          deps.postResponse({
+	            type: "process-memfs-synced",
+	            requestId: msg.requestId,
+	            kernelState: deps.syncProcessMemfs(msg.pid, msg.kernelState),
+	          });
+	          break;
         case "sync-pipe-state":
-          deps.postResponse({
-            type: "pipe-state-synced",
-            requestId: msg.requestId,
-            kernelState: deps.syncPipeState(msg.pid, msg.kernelState, msg.fdEntries, msg.ofdSlots, msg.vmPtr),
-          });
+          {
+            const result = deps.syncPipeState(
+              msg.pid,
+              msg.kernelState,
+              msg.fdEntries,
+              msg.ofdSlots,
+              msg.pipeSlots,
+              msg.vmPtr,
+            );
+            deps.postResponse({
+              type: "pipe-state-synced",
+              requestId: msg.requestId,
+              kernelState: result.kernelState,
+              pipeSlots: result.pipeSlots,
+            });
+          }
           break;
         case "sync-epoll-state":
           deps.postResponse({
@@ -395,6 +432,7 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
               msg.fdEntries,
               msg.includeMemfs ?? true,
               msg.preserveSourceRefcounts ?? false,
+              msg.preservePublishedRegularFileData ?? false,
               msg.kernelState,
             ),
           });

@@ -35,6 +35,7 @@ export interface KernelExports {
   abi_max_fds(): number;
   abi_max_threads(): number;
   abi_max_pipes(): number;
+  abi_max_sockets?(): number;
 
   // FD types
   abi_fd_type_none(): number;
@@ -54,6 +55,7 @@ export interface KernelExports {
   abi_sys_read?(): bigint | number;
   abi_sys_openat?(): bigint | number;
   abi_sys_write?(): bigint | number;
+  abi_sys_pwrite64?(): bigint | number;
   abi_sys_lseek?(): bigint | number;
   abi_sys_execve?(): bigint | number;
   abi_sys_close?(): bigint | number;
@@ -64,6 +66,7 @@ export interface KernelExports {
   abi_sys_dup?(): bigint | number;
   abi_sys_dup3?(): bigint | number;
   abi_sys_fcntl?(): bigint | number;
+  abi_sys_ioctl?(): bigint | number;
   abi_sys_readv?(): bigint | number;
   abi_sys_writev?(): bigint | number;
   abi_sys_socket?(): bigint | number;
@@ -96,6 +99,12 @@ export interface KernelExports {
   debug_fd_syscall_trace_arg0?(index: number): bigint | number;
   debug_fd_syscall_trace_arg0_ofd_id?(index: number): number;
   debug_fd_syscall_trace_arg0_ofd_type?(index: number): number;
+  debug_fd_syscall_trace_arg0_ofd_offset?(index: number): bigint | number;
+  debug_fd_syscall_trace_arg0_ofd_host_fd?(index: number): number;
+  debug_fd_syscall_trace_arg0_ofd_status_flags?(index: number): number;
+  debug_fd_syscall_trace_arg0_ofd_ino?(index: number): number;
+  debug_fd_syscall_trace_arg0_inode_mode?(index: number): number;
+  debug_fd_syscall_trace_arg0_pipe_generation?(index: number): number;
   debug_fd_syscall_trace_arg1?(index: number): bigint | number;
   debug_fd_syscall_trace_arg2?(index: number): bigint | number;
   debug_fd_syscall_trace_arg2_ofd_id?(index: number): number;
@@ -246,17 +255,34 @@ export interface KernelExports {
   thread_stack_word?(vm_ptr: number, word_index: number): bigint;
   thread_blocked_fd(vm_ptr: number): number;
   thread_blocked_ofd_id(vm_ptr: number): number;
-
+  thread_blocked_syscall_nr?(vm_ptr: number): bigint;
+  thread_blocked_syscall_arg?(vm_ptr: number, index: number): bigint;
   // FS handling
   thread_pending_fs_effects(vm_ptr: number): number;
+  thread_take_completed_sync_effects?(vm_ptr: number): number;
+  thread_take_completed_pipe_sync_slots?(vm_ptr: number): bigint | number;
+  thread_take_completed_pipe_sync_read_slots?(vm_ptr: number): bigint | number;
+  thread_take_completed_pipe_sync_write_slots?(vm_ptr: number): bigint | number;
+  thread_take_completed_pipe_fresh_slots?(vm_ptr: number): bigint | number;
+  thread_completed_pipe_read_guest_ptr?(vm_ptr: number): bigint | number;
+  thread_take_completed_pipe_read_len?(vm_ptr: number): number;
   thread_pending_fs_target_ino(vm_ptr: number): number;
   thread_pending_fs_opcode(vm_ptr: number): number;
   thread_pending_fs_path_ptr?(vm_ptr: number): number;
   thread_pending_fs_path_len?(vm_ptr: number): number;
   thread_pending_fs_absolute_path?(vm_ptr: number, buf_ptr: number, buf_len: number): bigint;
   thread_pending_fs_secondary_absolute_path?(vm_ptr: number, buf_ptr: number, buf_len: number): bigint;
+  thread_fs_ring_base?(vm_ptr: number): number;
+  thread_fs_ring_submit_head?(vm_ptr: number): number;
+  thread_fs_ring_submit_tail?(vm_ptr: number): number;
+  thread_fs_ring_complete_head?(vm_ptr: number): number;
+  thread_fs_ring_complete_tail?(vm_ptr: number): number;
+  thread_fs_ring_request_opcode_at?(vm_ptr: number, pos: number): number;
+  thread_fs_ring_request_vm_ptr_at?(vm_ptr: number, pos: number): number;
+  thread_fs_ring_completion_vm_ptr_at?(vm_ptr: number, pos: number): number;
+  thread_fs_ring_completion_result_at?(vm_ptr: number, pos: number): bigint;
   thread_process_fs(vm_ptr: number): void;
-  thread_resume_fs(vm_ptr: number): number;
+  thread_resume_fs(vm_ptr: number): bigint;
 
   // Blocking state accessors
   thread_futex_wait_addr(vm_ptr: number): bigint;
@@ -275,24 +301,37 @@ export interface KernelExports {
   thread_poll_wait_ready_count?(vm_ptr: number): number;
   thread_poll_wait_first_socket_revents?(vm_ptr: number): number;
   thread_poll_wait_first_pipe_revents?(vm_ptr: number): number;
+  thread_poll_wait_pipe_slots_mask?(vm_ptr: number): bigint | number;
   thread_pipe_read_eof_sync_pending?(vm_ptr: number): number;
+  thread_poll_hup_sync_pending?(vm_ptr: number): number;
   thread_blocked_pipe_buffered_len?(vm_ptr: number): number;
   thread_blocked_pipe_write_open?(vm_ptr: number): number;
   thread_blocked_pipe_read_ready?(vm_ptr: number): number;
+  thread_blocked_pipe_write_ready?(vm_ptr: number): number;
   thread_resume_pipe_read_open_empty?(vm_ptr: number): number;
   thread_socket_wait_timeout?(vm_ptr: number): bigint;
   thread_connect_fd?(vm_ptr: number): number;
   thread_connect_peer_addr?(vm_ptr: number, dst_ptr: number, dst_len: number): number;
+  thread_connect_peer_addr_for_fd?(vm_ptr: number, fd: number, dst_ptr: number, dst_len: number): number;
   thread_socket_drain_outbound?(vm_ptr: number, fd: number, dst_ptr: number, dst_len: number): number;
   thread_socket_close_external_peer?(vm_ptr: number, fd: number): number;
+  thread_socket_force_shutdown?(vm_ptr: number, fd: number): number;
   thread_socket_mark_external_peer?(vm_ptr: number, fd: number): number;
+  thread_socket_commit_external_connect?(vm_ptr: number, fd: number): number;
   thread_socket_outbound_available?(vm_ptr: number, fd: number): number;
   thread_socket_idx_for_fd?(vm_ptr: number, fd: number): number;
   thread_socket_peer_idx?(socket_idx: number): number;
   thread_socket_state?(socket_idx: number): number;
+  thread_socket_type?(socket_idx: number): number;
   thread_socket_external_peer?(socket_idx: number): number;
   thread_socket_recv_buf_idx?(socket_idx: number): number;
   thread_socket_recv_available?(socket_idx: number): number;
+  thread_socket_read_count?(socket_idx: number): number;
+  thread_socket_read_bytes?(socket_idx: number): bigint | number;
+  thread_socket_read_last_fd?(socket_idx: number): number;
+  thread_socket_read_last_result?(socket_idx: number): bigint | number;
+  thread_socket_read_last_before?(socket_idx: number): number;
+  thread_socket_read_last_after?(socket_idx: number): number;
   thread_socket_inject_inbound?(vm_ptr: number, fd: number, src_ptr: number, src_len: number): number;
   thread_resume_epoll_wait_timeout(vm_ptr: number): void;
   thread_resume_poll_wait_timeout?(vm_ptr: number): void;
@@ -301,6 +340,7 @@ export interface KernelExports {
   thread_resume_blocked_syscall(vm_ptr: number): bigint;
   thread_resume_sleep?(vm_ptr: number): void;
   thread_resume_connect_result(vm_ptr: number, result: bigint): void;
+  thread_resume_connect_result_for_fd?(vm_ptr: number, fd: number, result: bigint): void;
   thread_vfork_child_pid(): number;
   thread_clone_flags(vm_ptr: number): bigint;
   thread_clone_child_stack?(vm_ptr: number): bigint;
@@ -328,6 +368,7 @@ export interface KernelExports {
   thread_clear_vfork_runtime_state?(): void;
   thread_resume_vfork_parent(vm_ptr: number, child_pid: number): void;
   thread_restore_vfork_parent_without_cleanup?(vm_ptr: number, child_pid: number): void;
+  thread_restore_vfork_parent_proc_self_exe_snapshot?(): void;
   thread_complete_execve_handoff(vm_ptr: number): bigint;
   thread_spawn_from_clone(parent_vm_ptr: number): number;
   thread_process_thread_count(vm_ptr: number): number;
@@ -382,6 +423,8 @@ export interface KernelExports {
   kernel_reserve_ofd?(ofdId: number): void;
   kernel_unreserve_ofd?(ofdId: number): void;
   kernel_ofd_reserved?(ofdId: number): number;
+  kernel_ofd_reserved_ptr?(): number;
+  kernel_ofd_reserved_bytes?(): number;
   kernel_ofd_fd_type(ofdId: number): number;
   kernel_pty_input_pipe?(ptyIdx: number): number;
   kernel_pty_output_pipe?(ptyIdx: number): number;
@@ -792,16 +835,24 @@ export function readSpawnKindCodes(exports: KernelExports): SpawnKindCodes {
 }
 
 export function readKernelRuntimeState(exports: KernelExports): KernelRuntimeState {
+  const memfsExports = exports as Partial<Pick<
+    KernelExports,
+    | "kernel_memfs_header_bytes"
+    | "kernel_memfs_inodes_bytes"
+    | "kernel_memfs_first_child_bytes"
+    | "kernel_memfs_dir_entries_bytes"
+    | "kernel_memfs_data_bytes"
+  >>;
   return {
     heapBase: exports.kernel_heap_base(),
     heapPtr: exports.kernel_heap_ptr(),
     ofdTablePtr: exports.kernel_ofd_table_ptr(),
     memfsPtr: exports.kernel_memfs_ptr(),
-    memfsHeaderBytes: exports.kernel_memfs_header_bytes(),
-    memfsInodesBytes: exports.kernel_memfs_inodes_bytes(),
-    memfsFirstChildBytes: exports.kernel_memfs_first_child_bytes(),
-    memfsDirEntriesBytes: exports.kernel_memfs_dir_entries_bytes(),
-    memfsDataBytes: exports.kernel_memfs_data_bytes(),
+    memfsHeaderBytes: memfsExports.kernel_memfs_header_bytes?.() ?? 0,
+    memfsInodesBytes: memfsExports.kernel_memfs_inodes_bytes?.() ?? 0,
+    memfsFirstChildBytes: memfsExports.kernel_memfs_first_child_bytes?.() ?? 0,
+    memfsDirEntriesBytes: memfsExports.kernel_memfs_dir_entries_bytes?.() ?? 0,
+    memfsDataBytes: memfsExports.kernel_memfs_data_bytes?.() ?? 0,
     memStatePtr: exports.kernel_mem_state_ptr(),
     epollTablePtr: exports.kernel_epoll_table_ptr(),
     socketTablePtr: exports.kernel_socket_table_ptr(),

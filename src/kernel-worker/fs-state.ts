@@ -1,6 +1,6 @@
 import type { KernelExports } from "../abi.js";
 import type { FsSnapshotEntry, RuntimeStat } from "../fs/types.js";
-import { bumpDirEpoch, publishInode, readInodeRecord } from "../fs/sab-page-cache.js";
+import { bumpDirEpoch, MAX_INODES, publishInode, readFileData, readInodeRecord } from "../fs/sab-page-cache.js";
 import {
   ensureMemoryCapacityFor,
   memfsFileHasInlineData,
@@ -378,6 +378,34 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     }
   }
 
+  function trySyncExternalFileDataIntoTarget(
+    targetExports: KernelExports,
+    ino: number,
+    mode: number,
+    size: number,
+    published: ReturnType<typeof readInodeRecord>,
+  ): boolean {
+    try {
+      syncExternalFileDataIntoTarget(targetExports, ino, mode, size, published);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function tryEnsurePublishedInodeInTarget(
+    targetExports: KernelExports,
+    ino: number,
+    published: ReturnType<typeof readInodeRecord>,
+  ): boolean {
+    try {
+      ensurePublishedInodeInTarget(targetExports, ino, published);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function syncFileDataMutation(sourceExports: KernelExports, ino: number): boolean {
     const canonicalExports = deps.getCanonicalExports();
     const mode = sourceExports.memfs_inode_mode(ino);
@@ -411,7 +439,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
 
       syncExternalFileDataIntoTarget(canonicalExports, ino, mode, data.length, published);
       for (const memberExports of deps.processKernels.values()) {
-        syncExternalFileDataIntoTarget(memberExports, ino, mode, data.length, published);
+        trySyncExternalFileDataIntoTarget(memberExports, ino, mode, data.length, published);
       }
     } catch {
       // Path-scoped file-data sync is only an optimization. If the target inode
@@ -430,6 +458,34 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       return false;
     }
     return syncFileDataMutation(sourceExports, ino);
+  }
+
+  function restorePublishedRegularFileDataFromPageCache(targetExports = deps.getCanonicalExports()): void {
+    const sab = deps.getSabPageCache();
+
+    for (let ino = 1; ino < MAX_INODES; ino += 1) {
+      const published = readInodeRecord(sab, ino);
+      if (
+        !published
+        || (published.mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG
+        || published.size <= 0
+        || published.dataOff === 0
+      ) {
+        continue;
+      }
+
+      const mode = targetExports.memfs_inode_mode(ino);
+      if ((mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG) {
+        continue;
+      }
+      if (Number(targetExports.memfs_file_size(ino)) !== published.size) {
+        continue;
+      }
+
+      const data = readFileData(sab, published.dataOff, published.size, 0, published.size);
+      replaceFileData(targetExports, ino, data);
+      syncExternalFileDataIntoTarget(targetExports, ino, mode, data.length, published);
+    }
   }
 
   function syncMetadataMutation(sourceExports: KernelExports, path: string): boolean {
@@ -497,9 +553,16 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       }
     }
 
-    ensurePublishedInodeInTarget(deps.getCanonicalExports(), ino, published);
+    if (!tryEnsurePublishedInodeInTarget(deps.getCanonicalExports(), ino, published)) {
+      return false;
+    }
     for (const memberExports of deps.processKernels.values()) {
-      ensurePublishedInodeInTarget(memberExports, ino, published);
+      // A live sibling may already have advanced beyond this inode while
+      // leaving a hole. The fast path cannot reconstruct that exact inode in
+      // the sibling, but forcing a full fanout would roll unrelated live MemFS
+      // state backward. Keep canonical authoritative and let the sibling retain
+      // its own inherited namespace until it synchronizes from its own process.
+      tryEnsurePublishedInodeInTarget(memberExports, ino, published);
     }
     bumpDirEpoch(deps.getSabPageCache());
     return true;
@@ -517,6 +580,23 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     ensureMemoryCapacityFor(targetExports.memory, bufPtr + size);
     const read = Number(targetExports.memfs_read_file_to(ino, 0n, bufPtr, size));
     if (read < 0) {
+      const published = readInodeRecord(deps.getSabPageCache(), ino);
+      if (
+        published
+        && (published.mode & MEMFS_S_IFMT) === MEMFS_S_IFREG
+        && published.dataOff !== 0
+        && published.size === size
+      ) {
+        return readFileData(deps.getSabPageCache(), published.dataOff, published.size, 0, published.size);
+      }
+      const seed = deps.seedEntries.get(normalizePath(path));
+      if (
+        seed?.kind === "file"
+        && seed.data
+        && seed.data.length === size
+      ) {
+        return new Uint8Array(seed.data);
+      }
       throw new Error(`failed to read file: ${path}`);
     }
 
@@ -629,6 +709,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     resolvePath,
     snapshotCanonicalFs,
     statPath,
+    restorePublishedRegularFileDataFromPageCache,
     syncFileDataMutation,
     syncFileDataMutationByPath,
     syncMetadataMutation,

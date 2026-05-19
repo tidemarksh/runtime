@@ -1,7 +1,7 @@
 import { expect, test } from "vite-plus/test";
 import { readPipe, writePipe } from "../../../src/bridge/pipe.js";
 
-const PIPE_SLOT_BYTES = 32 + 4096;
+const PIPE_SLOT_BYTES = 32 + 65_536;
 const PIPE_BASE = 0x1000;
 
 function slotBase(pipeSlot: number): number {
@@ -53,7 +53,7 @@ test("writePipe returns backpressure without broken when the pipe buffer is full
   const view = new DataView(memory.buffer);
   setPipeEnds(memory, 1, 1, 1);
   view.setUint32(base, 0, true);
-  view.setUint32(base + 4, 4095, true);
+  view.setUint32(base + 4, 65_535, true);
 
   const write = writePipe(memory, PIPE_BASE, 1, new TextEncoder().encode("x"));
 

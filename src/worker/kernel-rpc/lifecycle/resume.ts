@@ -4,7 +4,11 @@ import {
   type KernelExports,
 } from "../../../abi.js";
 import { publishKernelRuntimeState } from "../../../bridge/runtime-state.js";
-import { adoptKernelStateForHandle } from "../../sync.js";
+import {
+  adoptKernelStateForHandle,
+  applySocketStateFromKernelWorker,
+  snapshotProcessFdOfdStateForKernelWorker,
+} from "../../sync.js";
 import { settleVisibleProcessOutput } from "../../stdio.js";
 import type {
   CanonicalizedChildLifecycle,
@@ -40,14 +44,71 @@ export function createWorkerKernelRpcResumeLifecycleHelpers(
 ) {
   async function resumeConnectViaKernelWorker(
     handle: ProcessHandle,
-    _worker: Worker,
+    worker: Worker,
     vmPtr: number,
     result: bigint,
   ): Promise<void> {
+    if (handle.kernelWorkerRequest && handle.pid > 0) {
+      const blockedFd = handle.kernel.thread_blocked_fd(vmPtr);
+      const pendingConnectFd = handle.networkPendingConnectFds.size === 1
+        ? [...handle.networkPendingConnectFds][0]
+        : 0;
+      const connectFd = blockedFd !== 0 ? blockedFd : pendingConnectFd;
+      const { fdEntries, ofdSlots } = snapshotProcessFdOfdStateForKernelWorker(handle, vmPtr);
+      deps.appendWorkerDebugLog(handle, `connect-rpc-start:${handle.pid}:vm=0x${vmPtr.toString(16)}:result=${result.toString()}:fd=${connectFd}:blocked_fd=${blockedFd}:a0=${handle.kernel.thread_a0(vmPtr).toString()}`);
+      const response = await handle.kernelWorkerRequest({
+        type: "resume-connect",
+        pid: handle.pid,
+        vmPtr,
+        result,
+        connectFd: connectFd > 0 ? connectFd : undefined,
+        fdEntries,
+        ofdSlots,
+        kernelState: handle.kernelState,
+      });
+      if (response.type !== "connect-resumed") {
+        throw new Error(`unexpected kernel-worker response for resume-connect: ${response.type}`);
+      }
+      if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
+        return;
+      }
+      handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
+      attachKernelRuntimeState(handle.kernel, handle.kernelState);
+      const fd = connectFd > 0 ? connectFd : Number(BigInt.asUintN(32, handle.kernel.thread_a0(vmPtr)));
+      const restorePendingFd = handle.networkPendingConnectFds.has(fd);
+      if (response.socketState) {
+        handle.networkPendingConnectFds.delete(fd);
+        try {
+          applySocketStateFromKernelWorker(handle, response.socketState);
+        } finally {
+          if (restorePendingFd) {
+            handle.networkPendingConnectFds.add(fd);
+          }
+        }
+      }
+      const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd);
+      const peerIdx = socketIdx !== undefined && socketIdx >= 0
+        ? handle.kernel.thread_socket_peer_idx?.(socketIdx)
+        : undefined;
+      deps.appendWorkerDebugLog(handle, `connect-rpc-adopted:${handle.pid}:vm=0x${vmPtr.toString(16)}:fd=${fd}:status=${handle.kernel.thread_status(vmPtr)}:a0=${handle.kernel.thread_a0(vmPtr).toString()}:sock=${socketIdx ?? "n/a"}:peer=${peerIdx ?? "n/a"}`);
+      handle.kernelState = readKernelRuntimeState(handle.kernel);
+      attachKernelRuntimeState(handle.kernel, handle.kernelState);
+      publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
+      return;
+    }
+
     const blockedFd = handle.kernel.thread_blocked_fd(vmPtr);
-    deps.appendWorkerDebugLog(handle, `connect-resume:${handle.pid}:vm=0x${vmPtr.toString(16)}:result=${result.toString()}:blocked_fd=${blockedFd}:a0=${handle.kernel.thread_a0(vmPtr).toString()}`);
-    handle.kernel.thread_resume_connect_result(vmPtr, result);
-    const fd = blockedFd !== 0 ? blockedFd : Number(BigInt.asUintN(32, handle.kernel.thread_a0(vmPtr)));
+    const pendingConnectFd = handle.networkPendingConnectFds.size === 1
+      ? [...handle.networkPendingConnectFds][0]
+      : 0;
+    const connectFd = blockedFd !== 0 ? blockedFd : pendingConnectFd;
+    deps.appendWorkerDebugLog(handle, `connect-resume:${handle.pid}:vm=0x${vmPtr.toString(16)}:result=${result.toString()}:fd=${connectFd}:blocked_fd=${blockedFd}:a0=${handle.kernel.thread_a0(vmPtr).toString()}`);
+    if (connectFd > 0 && handle.kernel.thread_resume_connect_result_for_fd) {
+      handle.kernel.thread_resume_connect_result_for_fd(vmPtr, connectFd, result);
+    } else {
+      handle.kernel.thread_resume_connect_result(vmPtr, result);
+    }
+    const fd = connectFd > 0 ? connectFd : Number(BigInt.asUintN(32, handle.kernel.thread_a0(vmPtr)));
     const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd);
     const peerIdx = socketIdx !== undefined && socketIdx >= 0
       ? handle.kernel.thread_socket_peer_idx?.(socketIdx)
@@ -237,11 +298,11 @@ export function createWorkerKernelRpcResumeLifecycleHelpers(
     }
     handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
-
-      deps.appendWorkerDebugLog(handle, `resume-vfork-execve-parent:local-start:0x${vmPtr.toString(16)}:${childPid}`);
-      restoreVforkParentLocally(handle.kernel, vmPtr, childPid);
+    deps.appendWorkerDebugLog(handle, `resume-vfork-execve-parent:local-start:0x${vmPtr.toString(16)}:${childPid}`);
+    restoreVforkParentLocally(handle.kernel, vmPtr, childPid);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
+    deps.clearVforkSnapshot(handle);
     deps.appendWorkerDebugLog(handle, `resume-vfork-execve-parent:local-done:0x${vmPtr.toString(16)}:${childPid}`);
   }
 

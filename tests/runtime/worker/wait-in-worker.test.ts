@@ -144,12 +144,17 @@ test("waitInWorker debug log keeps compact futex fields", () => {
 test("waitInWorker defers local pipe drain when kernel-worker owns pipe state", async () => {
   const requestPipeStateSync = vi.fn(async () => {});
   const delivered: string[] = [];
-  const memory = new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true });
+  const memory = new WebAssembly.Memory({ initial: 8, maximum: 8, shared: true });
   const kernelState = {
     heapBase: 0,
     heapPtr: 0,
     ofdTablePtr: 0,
     memfsPtr: 0,
+    memfsHeaderBytes: 32,
+    memfsInodesBytes: 0,
+    memfsFirstChildBytes: 0,
+    memfsDirEntriesBytes: 0,
+    memfsDataBytes: 0,
     memStatePtr: 0,
     epollTablePtr: 0,
     socketTablePtr: 0,
@@ -163,7 +168,7 @@ test("waitInWorker defers local pipe drain when kernel-worker owns pipe state", 
     processRuntimeStatePtr: 0,
     timeStatePtr: 0,
   };
-  const pipeBase = kernelState.pipeBase + 2 * (32 + 4096);
+  const pipeBase = kernelState.pipeBase + 2 * (32 + 65_536);
   const view = new DataView(memory.buffer);
   view.setInt32(pipeBase + 8, 1, true);
   view.setInt32(pipeBase + 12, 0, true);

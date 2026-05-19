@@ -348,11 +348,16 @@ export async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<str
       })
       .join("\n");
 
-  const kernelSummary = await runtimeView.sendKernelRequest?.({
-    type: "debug-processes",
-  }).then((response) => (
-    `kernel_pids=[${response.pids.join(",")}] canonical_pids=[${response.canonicalPids.join(",")}]`
-  )).catch(() => "");
+  const kernelSummary = await Promise.race([
+    runtimeView.sendKernelRequest?.({
+      type: "debug-processes",
+    }).then((response) => (
+      `kernel_pids=[${response.pids.join(",")}] canonical_pids=[${response.canonicalPids.join(",")}]`
+    )) ?? Promise.resolve(""),
+    new Promise<string>((resolve) => {
+      setTimeout(() => resolve("kernel_debug=timeout"), 1_000);
+    }),
+  ]).catch(() => "");
 
   const internalSummary = runtimeView.debugSnapshot?.() ?? "";
 

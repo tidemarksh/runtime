@@ -10,6 +10,11 @@ function makeKernelState(): KernelRuntimeState {
     heapPtr: 0x210000,
     ofdTablePtr: 0x220000,
     memfsPtr: 0x230000,
+    memfsHeaderBytes: 32,
+    memfsInodesBytes: 16_384 * 32,
+    memfsFirstChildBytes: 16_384 * 4,
+    memfsDirEntriesBytes: 16_384 * 264,
+    memfsDataBytes: 256 * 1024,
     memStatePtr: 0x240000,
     epollTablePtr: 0x250000,
     socketTablePtr: 0x260000,
@@ -51,6 +56,11 @@ function makeHandle(
         heapPtr: number,
         ofdTablePtr: number,
         memfsPtr: number,
+        memfsHeaderBytes: number,
+        memfsInodesBytes: number,
+        memfsFirstChildBytes: number,
+        memfsDirEntriesBytes: number,
+        memfsDataBytes: number,
         memStatePtr: number,
         epollTablePtr: number,
         socketTablePtr: number,
@@ -69,6 +79,11 @@ function makeHandle(
           heapPtr,
           ofdTablePtr,
           memfsPtr,
+          memfsHeaderBytes,
+          memfsInodesBytes,
+          memfsFirstChildBytes,
+          memfsDirEntriesBytes,
+          memfsDataBytes,
           memStatePtr,
           epollTablePtr,
           socketTablePtr,
@@ -87,6 +102,11 @@ function makeHandle(
       kernel_heap_ptr: () => attachedState.heapPtr,
       kernel_ofd_table_ptr: () => attachedState.ofdTablePtr,
       kernel_memfs_ptr: () => attachedState.memfsPtr,
+      kernel_memfs_header_bytes: () => attachedState.memfsHeaderBytes,
+      kernel_memfs_inodes_bytes: () => attachedState.memfsInodesBytes,
+      kernel_memfs_first_child_bytes: () => attachedState.memfsFirstChildBytes,
+      kernel_memfs_dir_entries_bytes: () => attachedState.memfsDirEntriesBytes,
+      kernel_memfs_data_bytes: () => attachedState.memfsDataBytes,
       kernel_mem_state_ptr: () => attachedState.memStatePtr,
       kernel_epoll_table_ptr: () => attachedState.epollTablePtr,
       kernel_socket_table_ptr: () => attachedState.socketTablePtr,
@@ -99,6 +119,13 @@ function makeHandle(
       kernel_process_pending_ptr: () => attachedState.processPendingPtr,
       kernel_process_runtime_state_ptr: () => attachedState.processRuntimeStatePtr,
       kernel_time_state_ptr: () => attachedState.timeStatePtr,
+      abi_max_fds: () => 16,
+      abi_max_pipes: () => 16,
+      abi_fd_type_pipe: () => 6,
+      process_fd_ofd_id: () => 0,
+      kernel_ofd_fd_type: () => 0,
+      kernel_ofd_ino: () => 0,
+      kernel_ofd_host_fd: () => 0,
       process_record_child_exit(childPid: number, waitStatus: number) {
         recordedChildExits.push([childPid, waitStatus]);
       },
@@ -194,13 +221,72 @@ test("recordChildExitViaKernelWorker syncs parent pipe state and drains output b
   await helpers.recordChildExitViaKernelWorker(handle, 7, 0x0300);
 
   expect(order).toEqual([
-    "pipe-sync:1:sync",
     "drain:1",
-    "pipe-sync:1:sync",
-    "pipe-sync:1:sync",
+    "pipe-sync:1:wake",
+    "kick:1",
     "drain:1",
   ]);
   expect(handle.recordedChildExits).toEqual([[7, 0x0300]]);
   expect(handle.kernelState.heapPtr).toBe(syncedState.heapPtr);
   expect(originalKernelState.heapPtr).toBe(baseState.heapPtr);
+});
+
+test("syncProcessLifecycleViaKernelWorker rewrites provisional child pid after state attach", async () => {
+  const baseState = makeKernelState();
+  const syncedState = {
+    ...baseState,
+    heapPtr: baseState.heapPtr + 0x80,
+  };
+  let currentPid = 3;
+  const rewriteChildPid = vi.fn((
+    _vmPtr: number,
+    oldPid: number,
+    newPid: number,
+    _nextPid: number,
+  ) => {
+    if (currentPid === oldPid) {
+      currentPid = newPid;
+    }
+  });
+  const handle = makeHandle({
+    pid: 3,
+    kernelWorkerRequest: vi.fn(async () => ({
+      type: "process-lifecycle-synced",
+      requestId: 0,
+      kernelState: syncedState,
+    })),
+  });
+  handle.kernel.process_current_pid = vi.fn(() => currentPid);
+  handle.kernel.process_rewrite_child_pid = rewriteChildPid;
+  const originalAttach = handle.kernel.kernel_attach_runtime_state.bind(handle.kernel);
+  let clobberPidOnSyncedAttach = true;
+  handle.kernel.kernel_attach_runtime_state = vi.fn((...args: Parameters<typeof handle.kernel.kernel_attach_runtime_state>) => {
+    originalAttach(...args);
+    if (clobberPidOnSyncedAttach && args[1] === syncedState.heapPtr) {
+      clobberPidOnSyncedAttach = false;
+      currentPid = 87703;
+    }
+  });
+
+  const helpers = createWorkerKernelRpcProcessLifecycleHelpers({
+    processHandles: new Map([[handle.pid, handle]]),
+    threadWorkerStates: new WeakMap(),
+    drainProcessOutput() {
+      return false;
+    },
+    enqueueWorker() {},
+    failProcess(errorHandle, error) {
+      throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
+    },
+    handleBlockedRetryResult() {},
+    kickBlockedWorkers() {},
+    requestPipeStateSync: async () => {},
+    clearVforkSnapshot() {},
+  });
+
+  await helpers.syncProcessLifecycleViaKernelWorker(handle, 0x1234);
+
+  expect(rewriteChildPid).toHaveBeenCalledWith(0x1234, 87703, 3, 4);
+  expect(currentPid).toBe(3);
+  expect(handle.kernelState.heapPtr).toBe(syncedState.heapPtr);
 });

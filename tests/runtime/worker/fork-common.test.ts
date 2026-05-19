@@ -38,22 +38,22 @@ test("detachInheritedHostStdioFromChild leaves standalone process host stdio unt
   expect(processSetHostStdio).not.toHaveBeenCalled();
 });
 
-test("computeGuestRamLimitBytes trims guest window when guestBase consumes linear-memory headroom", () => {
+test("computeGuestRamLimitBytes preserves configured guest RAM when it fits the wasm window", () => {
   expect(
     computeGuestRamLimitBytes(
       0x14b0_0000,
       192 * 1024 * 1024,
       32768,
     ),
-  ).toBe(0x6b50_0000);
+  ).toBe(192 * 1024 * 1024);
 });
 
-test("computeGuestRamLimitBytes preserves the full wasm32 guest window when max pages allow it", () => {
+test("computeGuestRamLimitBytes caps configured guest RAM at the wasm32 guest window", () => {
   expect(
     computeGuestRamLimitBytes(
       0x14b0_0000,
-      192 * 1024 * 1024,
-      65536,
+      0x7fff_ffff,
+      32768,
     ),
-  ).toBe(0xeb50_0000);
+  ).toBe(0x6b50_0000);
 });

@@ -3,6 +3,7 @@ import {
   DATA_REGION_OFFSET,
   MAX_INODES,
   publishInode,
+  readFileData,
   readInodeMeta,
   readInodeRecord,
 } from "../../../src/fs/sab-page-cache.js";
@@ -70,4 +71,23 @@ test("page-cache supports kernel-sized high inode numbers", () => {
   expect(record).not.toBeNull();
   expect(meta?.size).toBe(2);
   expect(record?.name).toEqual(name);
+});
+
+test("readFileData honors byte offsets", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 256);
+  const name = new TextEncoder().encode("file");
+  const fileData = Uint8Array.from({ length: 64 }, (_value, index) => index);
+
+  publishInode(sab, 2, {
+    mode: 0o100644,
+    size: fileData.length,
+    parentIno: 1,
+    name,
+    nextSibling: 0,
+  }, fileData);
+
+  const meta = readInodeMeta(sab, 2);
+  expect(meta).not.toBeNull();
+  expect(readFileData(sab, meta!.dataOff, meta!.size, 16, 8)).toEqual(fileData.slice(16, 24));
+  expect(readFileData(sab, meta!.dataOff, meta!.size, 60, 16)).toEqual(fileData.slice(60));
 });

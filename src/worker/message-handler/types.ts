@@ -14,6 +14,7 @@ export interface WorkerMessageHandlerDeps {
   syncEffectProcessLifecycle: number;
   syncEffectSignalWaiters: number;
   syncEffectForkSharedOfdState: number;
+  syncEffectProcessMemfs: number;
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   assertProcessStandardFdIntegrity(handle: ProcessHandle, context: string): void;
@@ -32,11 +33,12 @@ export interface WorkerMessageHandlerDeps {
   clearVforkSnapshot(handle: ProcessHandle): void;
   clearBlockedWorker(handle: ProcessHandle, worker: Worker): void;
   completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number): Promise<void>;
-  commitNetworkConnect(handle: ProcessHandle, vmPtr: number): Promise<void>;
+  commitNetworkConnect(handle: ProcessHandle, vmPtr: number, result?: bigint): Promise<void>;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   failProcess(handle: ProcessHandle, error: Error): void;
   handleExecveSpawn(handle: ProcessHandle, worker: Worker, thread: ThreadWorkerState): Promise<void>;
   kickBlockedWorkers(handle: ProcessHandle): void;
+  markRuntimeFsDirty(handle: ProcessHandle): void;
   pumpProcess(handle: ProcessHandle): void;
   pruneDetachedProcessWorkers(handle: ProcessHandle, anchorVmPtr: number, currentWorker: Worker | null): void;
   pumpNetworkConnections(handle: ProcessHandle, vmPtr?: number): Promise<boolean>;
@@ -63,7 +65,9 @@ export interface WorkerMessageHandlerDeps {
       includeMemfs?: boolean;
       trackHeldOfds?: boolean;
       deltaOfdIds?: boolean;
+      memfsOnly?: boolean;
       preserveSourceRefcounts?: boolean;
+      preservePublishedRegularFileData?: boolean;
       sourceVmPtr?: number;
     },
   ): Promise<void>;

@@ -101,9 +101,10 @@ export function publishInode(
   let dataOff = 0;
   if (fileData && fileData.length > 0) {
     dataOff = allocateDataRegion(fileData.length);
-    if (dataOff !== 0) {
-      u8.set(fileData, dataOff);
+    if (dataOff === 0) {
+      return;
     }
+    u8.set(fileData, dataOff);
   }
 
   // Allocate space for name
@@ -173,7 +174,7 @@ export function readInodeMeta(
       if (size < 0 || dataOff < 0) {
         return null;
       }
-      if (size > 0) {
+      if (size > 0 && dataOff !== 0) {
         if (dataOff < DATA_REGION_OFFSET) {
           return null;
         }
@@ -229,7 +230,7 @@ export function readInodeRecord(
       if (size < 0 || dataOff < 0 || nameOff < 0 || nameLen < 0) {
         return null;
       }
-      if (size > 0) {
+      if (size > 0 && dataOff !== 0) {
         if (dataOff < DATA_REGION_OFFSET || dataOff + size > sab.byteLength) {
           return null;
         }
@@ -266,8 +267,12 @@ export function readFileData(
   dstLen: number,
 ): Uint8Array {
   const u8 = new Uint8Array(sab);
-  const readLen = Math.min(size, dstLen);
-  return u8.slice(dataOff, dataOff + readLen);
+  if (dstLen <= 0 || dstOffset < 0 || dstOffset >= size) {
+    return new Uint8Array();
+  }
+  const readLen = Math.min(size - dstOffset, dstLen);
+  const start = dataOff + dstOffset;
+  return u8.slice(start, start + readLen);
 }
 
 /**

@@ -1,11 +1,16 @@
 import { attachKernelRuntimeState, readKernelRuntimeState, type KernelExports, type KernelRuntimeState } from "../abi.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
-import type { KernelWorkerFdEntrySnapshot, KernelWorkerOfdSlotSnapshot } from "../messages.js";
+import type {
+  KernelWorkerFdEntrySnapshot,
+  KernelWorkerOfdSlotSnapshot,
+  KernelWorkerPipeSlotSnapshot,
+} from "../messages.js";
 import { resetPageCache } from "../fs/sab-page-cache.js";
 import {
   restoreThreadWorkerPrepareMemory,
   snapshotThreadWorkerPrepareMemory,
 } from "../thread-worker/prepare-memory.js";
+import { ensureMemoryCapacityFor, scratchBaseFor } from "./common.js";
 import { createKernelEnv } from "../wasm/env.js";
 import {
   configureKernelInstanceStack,
@@ -23,6 +28,7 @@ interface CanonicalProcessEntry {
 
 interface ProcessFsResult {
   kernelState: KernelRuntimeState;
+  result: bigint;
   memfsMutated: boolean;
   ofdStateChanged: boolean;
 }
@@ -38,6 +44,7 @@ interface AppliedFsMutationResult {
   memfsMutated: boolean;
   ofdStateChanged: boolean;
   needsFullSync: boolean;
+  preservePublishedRegularFileData: boolean;
 }
 
 interface KernelWorkerProcessControlDeps {
@@ -69,13 +76,15 @@ interface KernelWorkerProcessControlDeps {
   ): void;
   rebuildPageCacheFromExports(sourceExports: KernelExports): void;
   rebuildPageCacheFromCanonical(): void;
+  restorePublishedRegularFileDataFromPageCache?(targetExports?: KernelExports): void;
   syncPipeState(
     pid: number,
     kernelState: KernelRuntimeState,
     fdEntries?: KernelWorkerFdEntrySnapshot[],
     ofdSlots?: KernelWorkerOfdSlotSnapshot[],
+    pipeSlots?: KernelWorkerPipeSlotSnapshot[],
     vmPtrOverride?: number,
-  ): KernelRuntimeState;
+  ): { kernelState: KernelRuntimeState; pipeSlots: KernelWorkerPipeSlotSnapshot[] };
   syncEpollState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
   syncSocketState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
   copyCanonicalMemfsToProcess(
@@ -101,6 +110,7 @@ interface KernelWorkerProcessControlDeps {
     kernelState: KernelRuntimeState;
     readOpen: Int32Array;
     writeOpen: Int32Array;
+    managedPipeSlots?: number[];
   };
   applyPipeControlState(
     targetExports: KernelExports,
@@ -151,7 +161,8 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
   }
 
   function readPendingFsPath(processExports: KernelExports, vmPtr: number, secondary = false): string | null {
-    const absPathPtr = processExports.kernel_heap_ptr() + 0x8000;
+    const absPathPtr = scratchBaseFor(processExports) + 0x8000 + (secondary ? 4096 : 0);
+    ensureMemoryCapacityFor(processExports.memory, absPathPtr + 4096);
     const absPathLen = Number(
       (secondary
         ? processExports.thread_pending_fs_secondary_absolute_path?.(vmPtr, absPathPtr, 4096)
@@ -179,6 +190,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
   function fallbackToFullMemfsSync(
     processExports: KernelExports,
     canonicalExports: KernelExports,
+    preservePublishedRegularFileData = false,
   ): void {
     const sourceState = readKernelRuntimeState(processExports);
     const canonicalState = readKernelRuntimeState(canonicalExports);
@@ -191,6 +203,9 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       includeData: true,
     });
     deps.restoreProcSelfExe(canonicalExports, canonicalProcSelfExe);
+    if (preservePublishedRegularFileData) {
+      deps.restorePublishedRegularFileDataFromPageCache?.();
+    }
     deps.rebuildPageCacheFromCanonical();
     deps.fanoutCanonicalMemfs();
   }
@@ -241,10 +256,14 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       }
     }
 
+    const needsMetadataFullSync = treeMutated && !handledMetadataMutation;
+    const needsFileDataFullSync = fileDataMutated && !handledFileDataMutation;
+
     return {
       memfsMutated: treeMutated || fileDataMutated,
       ofdStateChanged: fsSucceeded && (context.effects & deps.fsEffectSharedOfdState) !== 0,
-      needsFullSync: (treeMutated && !handledMetadataMutation) || (fileDataMutated && !handledFileDataMutation),
+      needsFullSync: needsMetadataFullSync || needsFileDataFullSync,
+      preservePublishedRegularFileData: needsMetadataFullSync && !needsFileDataFullSync,
     };
   }
 
@@ -314,7 +333,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       null,
       kernelState,
       kernelState.heapBase,
-      { includeMemfsData: false },
+      { includeMemfsData: seedMemfsMode === "none" },
     );
     const instance = await WebAssembly.instantiate(wasmModule, {
       env: createKernelEnv(memory, { sabPageCache: deps.getSabPageCache() }),
@@ -349,7 +368,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
         });
         deps.rebuildPageCacheFromExports(processExports);
       }
-      const pipeState = deps.syncPipeState(pid, readKernelRuntimeState(processExports));
+      const pipeState = deps.syncPipeState(pid, readKernelRuntimeState(processExports)).kernelState;
       const epollState = deps.syncEpollState(pid, pipeState);
       const socketState = deps.syncSocketState(pid, epollState);
       if (seedMemfsMode !== "none") {
@@ -418,6 +437,27 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     for (const processExports of deps.processKernels.values()) {
       processExports.process_remove_process_entry(pid);
     }
+    const {
+      kernelState: canonicalState,
+      readOpen,
+      writeOpen,
+      managedPipeSlots = [],
+    } = deps.recomputeCanonicalPipeControlState();
+    for (const [memberPid, memberExports] of deps.processKernels) {
+      const memberProcess = deps.canonicalProcesses.get(memberPid);
+      const memberState = readKernelRuntimeState(memberExports);
+      const memberPipeUsed = memberProcess?.vmPtr
+        ? deps.composeProcessPipeUsed(memberExports, memberProcess.vmPtr, canonicalState.pipeUsed)
+        : canonicalState.pipeUsed;
+      deps.applyPipeControlState(
+        memberExports,
+        memberState,
+        readOpen,
+        writeOpen,
+        memberPipeUsed,
+        managedPipeSlots,
+      );
+    }
   }
 
   function debugProcesses(): { pids: number[]; canonicalPids: number[] } {
@@ -445,14 +485,19 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     attachKernelRuntimeState(processExports, kernelState);
     const pendingContext = readPendingFsMutationContext(processExports, vmPtr);
     processExports.thread_process_fs(vmPtr);
-    const result = Number(processExports.thread_resume_fs(vmPtr));
-    const fsSucceeded = result >= 0;
+    const result = BigInt(processExports.thread_resume_fs(vmPtr));
+    const fsSucceeded = Number(BigInt.asIntN(64, result)) >= 0;
     const mutation = applyPendingFsMutation(processExports, pendingContext, fsSucceeded);
     if (mutation.needsFullSync) {
-      fallbackToFullMemfsSync(processExports, canonicalExports);
+      fallbackToFullMemfsSync(
+        processExports,
+        canonicalExports,
+        mutation.preservePublishedRegularFileData,
+      );
     }
     return {
       kernelState: readKernelRuntimeState(processExports),
+      result,
       memfsMutated: mutation.memfsMutated,
       ofdStateChanged: mutation.ofdStateChanged,
     };

@@ -51,6 +51,12 @@ function copyExecveKernelRuntimeRegions(handle: ProcessHandle, target: WebAssemb
   copyKernelRuntimeRegion(
     handle.memory,
     target,
+    handle.kernelState.ofdTablePtr,
+    handle.kernel.kernel_ofd_table_bytes(),
+  );
+  copyKernelRuntimeRegion(
+    handle.memory,
+    target,
     handle.kernelState.memfsPtr,
     handle.kernelState.memfsHeaderBytes
       + handle.kernelState.memfsInodesBytes
@@ -122,6 +128,37 @@ function debugVforkVmState(
     `process_ptr=0x${handle.kernel.thread_process_ptr(vmPtr).toString(16)}`,
     `thread_count=${handle.kernel.thread_process_thread_count(vmPtr)}`,
   ].join(":");
+}
+
+interface ProcessFdEntrySnapshot {
+  fd: number;
+  ofdId: number;
+  fdFlags: number;
+}
+
+function snapshotProcessFdEntries(
+  handle: ProcessHandle,
+  vmPtr: number,
+): ProcessFdEntrySnapshot[] {
+  return Array.from({ length: handle.kernel.abi_max_fds() }, (_value, fd) => ({
+    fd,
+    ofdId: handle.kernel.process_fd_ofd_id(vmPtr, fd),
+    fdFlags: handle.kernel.process_fd_flags(vmPtr, fd),
+  }));
+}
+
+function restoreProcessFdEntries(
+  handle: ProcessHandle,
+  vmPtr: number,
+  entries: readonly ProcessFdEntrySnapshot[],
+): void {
+  const maxFds = handle.kernel.abi_max_fds();
+  for (const entry of entries) {
+    if (entry.fd < 0 || entry.fd >= maxFds || entry.ofdId < 0 || entry.ofdId >= maxFds) {
+      continue;
+    }
+    handle.kernel.process_set_fd_entry(vmPtr, entry.fd, entry.ofdId, entry.fdFlags);
+  }
 }
 
 function assertVforkChildHandoffState(
@@ -213,6 +250,20 @@ function reconcileInheritedSharedOfdsAfterVforkExecve(
   }
 }
 
+function trackVforkExecveChildSharedOfds(
+  childHandle: ProcessHandle,
+  childExecFdEntries: readonly ProcessFdEntrySnapshot[],
+): void {
+  for (const entry of childExecFdEntries) {
+    if (entry.ofdId > 0 && entry.ofdId < childHandle.kernel.abi_max_fds()) {
+      childHandle.kernelShare.sharedOfdIds.add(entry.ofdId);
+    }
+  }
+  for (const ofdId of collectProcessHeldOfds(childHandle)) {
+    childHandle.kernelShare.sharedOfdIds.add(ofdId);
+  }
+}
+
 export async function handleVforkExecve(
   deps: WorkerForkDeps,
   handle: ProcessHandle,
@@ -242,6 +293,7 @@ export async function handleVforkExecve(
       Number(handoff.path),
       Number(handoff.argv),
       Number(handoff.envp),
+      parentThread.execveProcessState,
     );
     const debugPath = decodeExecveBytes(execveGuestPayload.path);
     const debugArgv0 = execveGuestPayload.argv[0]
@@ -385,7 +437,12 @@ export async function handleVforkExecve(
       childHandle.maxMemoryPages,
     ),
   );
+  const childExecFdEntries = snapshotProcessFdEntries(childHandle, childVmPtr);
   deps.assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-execve");
+  deps.appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `vfork-execve:child-exec-fds:${childPid}:${formatOpenFdSummary(childHandle)}`,
+  );
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-kernel-ready:${childPid}`);
   handle.lastDebugMessage = `vfork-execve:child-kernel-ready child=${childPid}`;
   if (handle.kernelWorkerRequest && handle.pid > 0) {
@@ -430,6 +487,7 @@ export async function handleVforkExecve(
       includeMemfs: false,
       trackHeldOfds: false,
     });
+    trackVforkExecveChildSharedOfds(childHandle, childExecFdEntries);
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-sync:done:${childPid}`);
     assertVforkParentState(handle, parentThread.vmPtr, "parent-post-child-sync");
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-synced:${childPid}`);
@@ -463,6 +521,12 @@ export async function handleVforkExecve(
     handle.lastDebugMessage = `vfork-execve:child-rehydrated child=${childPid}`;
     restoreLocalOfdSlots(childHandle, preservedOfdSlots);
     restoreLocalPipeSlots(childHandle, preservedPipeSlots);
+    restoreProcessFdEntries(childHandle, childVmPtr, childExecFdEntries);
+    trackVforkExecveChildSharedOfds(childHandle, childExecFdEntries);
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `vfork-execve:child-fds-restored:${childPid}:${formatOpenFdSummary(childHandle)}`,
+    );
     deps.assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-rehydrate");
   } else {
     const childHeldOfdIds = collectProcessHeldOfds(childHandle);
@@ -480,6 +544,11 @@ export async function handleVforkExecve(
     });
     restoreLocalOfdSlots(childHandle, preservedOfdSlots);
     restoreLocalPipeSlots(childHandle, preservedPipeSlots);
+    restoreProcessFdEntries(childHandle, childVmPtr, childExecFdEntries);
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `vfork-execve:child-fds-restored:${childPid}:${formatOpenFdSummary(childHandle)}`,
+    );
   }
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-lifecycle:start:${childPid}`);
   await deps.initializeProcessLifecycleViaKernelWorker(
@@ -492,6 +561,12 @@ export async function handleVforkExecve(
     true,
   );
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-lifecycle:done:${childPid}`);
+  restoreProcessFdEntries(childHandle, childVmPtr, childExecFdEntries);
+  trackVforkExecveChildSharedOfds(childHandle, childExecFdEntries);
+  deps.appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `vfork-execve:child-fds-ready:${childPid}:${formatOpenFdSummary(childHandle)}`,
+  );
   assertVforkParentState(handle, parentThread.vmPtr, "parent-post-child-lifecycle");
   const childThreadCount = childHandle.kernel.thread_process_thread_count(childVmPtr);
   if (childThreadCount !== 1) {

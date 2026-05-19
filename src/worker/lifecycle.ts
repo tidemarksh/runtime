@@ -5,6 +5,7 @@ import {
   kernelWorkerOwnsEpollState,
   kernelWorkerOwnsPipeState,
   kernelWorkerOwnsSocketState,
+  reconcileKernelSharePipeControl,
 } from "./kernel-share.js";
 import { collectProcessHeldOfds } from "./fork-shared.js";
 import type { ProcessHandle } from "./types.js";
@@ -34,11 +35,13 @@ interface WorkerLifecycleDeps {
       trackHeldOfds?: boolean;
       deltaOfdIds?: boolean;
       preserveSourceRefcounts?: boolean;
+      preservePublishedRegularFileData?: boolean;
       sourceVmPtr?: number;
     },
   ): Promise<void>;
   workerExitCompleteProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number): Promise<void>;
   workerExitFailProcess(handle: ProcessHandle, error: Error): void;
+  workerExitPrepublishParentWaitStatus?(handle: ProcessHandle, exitCode: number, termSignal: number): boolean;
 }
 
 function encodeWaitStatus(exitCode: number, termSignal: number): number {
@@ -91,7 +94,11 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
         + `:${handle.kernel.debug_memory_brk_current?.() ?? "n/a"}`
         + `:${handle.kernel.debug_memory_mmap_next?.() ?? "n/a"}`,
     );
+    deps.workerExitPrepublishParentWaitStatus?.(handle, exitCode, termSignal);
     await syncOwnedStateBeforeExit(handle);
+    if (kernelWorkerOwnsPipeState(handle)) {
+      reconcileKernelSharePipeControl(handle);
+    }
     await deps.workerExitCompleteProcessExit(handle, exitCode, termSignal);
   }
 

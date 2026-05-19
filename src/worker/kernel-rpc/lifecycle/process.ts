@@ -11,6 +11,44 @@ import type {
 } from "../../types.js";
 import type { WorkerKernelRpcLifecycleDeps } from "./types.js";
 
+type ProcessStateSnapshot = {
+  offset: number;
+  bytes: Uint8Array;
+};
+
+function snapshotProcessState(handle: ProcessHandle): ProcessStateSnapshot | null {
+  if (handle.vmPtr === 0) {
+    return null;
+  }
+  const processPtr = handle.kernel.thread_process_ptr(handle.vmPtr);
+  const processBytes = handle.kernel.process_state_bytes();
+  const offset = handle.guestBase + processPtr;
+  if (
+    processPtr === 0
+    || processBytes <= 0
+    || offset < 0
+    || offset + processBytes > handle.memory.buffer.byteLength
+  ) {
+    return null;
+  }
+  return {
+    offset,
+    bytes: new Uint8Array(handle.memory.buffer, offset, processBytes).slice(),
+  };
+}
+
+function restoreProcessState(handle: ProcessHandle, snapshot: ProcessStateSnapshot | null): void {
+  if (snapshot === null) {
+    return;
+  }
+  if (snapshot.offset + snapshot.bytes.length > handle.memory.buffer.byteLength) {
+    return;
+  }
+  new Uint8Array(handle.memory.buffer, snapshot.offset, snapshot.bytes.length).set(snapshot.bytes);
+  handle.kernelState = readKernelRuntimeState(handle.kernel);
+  attachKernelRuntimeState(handle.kernel, handle.kernelState);
+}
+
 export function createWorkerKernelRpcProcessLifecycleHelpers(
   deps: WorkerKernelRpcLifecycleDeps,
 ) {
@@ -148,9 +186,7 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     }
 
     try {
-      await deps.requestPipeStateSync(parent, false);
       deps.drainProcessOutput(parent);
-      await deps.requestPipeStateSync(parent, false);
 
       const response = await parent.kernelWorkerRequest({
         type: "record-child-exit",
@@ -174,7 +210,8 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
       }
       parent.kernelState = readKernelRuntimeState(parent.kernel);
       attachKernelRuntimeState(parent.kernel, parent.kernelState);
-      await deps.requestPipeStateSync(parent, false);
+      await deps.requestPipeStateSync(parent, true);
+      deps.kickBlockedWorkers(parent);
       deps.drainProcessOutput(parent);
     } catch (error) {
       if (parent.pid > 0 && deps.processHandles.get(parent.pid) === parent) {
@@ -191,6 +228,7 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
       return;
     }
 
+    const pidBeforeSync = handle.kernel.process_current_pid(vmPtr);
     const response = await handle.kernelWorkerRequest({
       type: "sync-process-lifecycle",
       pid: handle.pid,
@@ -202,12 +240,19 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     }
     handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
+    const pidAfterSync = handle.kernel.process_current_pid(vmPtr);
+    if (pidBeforeSync === handle.pid && pidAfterSync > 0 && pidAfterSync !== handle.pid) {
+      handle.kernel.process_rewrite_child_pid(vmPtr, pidAfterSync, handle.pid, handle.pid + 1);
+      handle.kernelState = readKernelRuntimeState(handle.kernel);
+      attachKernelRuntimeState(handle.kernel, handle.kernelState);
+    }
   }
 
   async function syncProcessMemfsViaKernelWorker(handle: ProcessHandle): Promise<void> {
     if (!handle.kernelWorkerRequest || handle.pid <= 0) {
       return;
     }
+    const processStateSnapshot = snapshotProcessState(handle);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
 
@@ -221,6 +266,8 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     }
     handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
+    restoreProcessState(handle, processStateSnapshot);
+    handle.processMemfsDirty = false;
   }
 
   return {

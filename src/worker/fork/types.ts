@@ -43,7 +43,7 @@ export interface WorkerForkDeps {
   syncForkSharedStateLocally(
     handle: ProcessHandle,
     targets: ProcessHandle[],
-    options?: { includeMemfs?: boolean; trackHeldOfds?: boolean },
+    options?: { includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] },
   ): void;
   syncForkSharedStateViaKernelWorker(
     handle: ProcessHandle,
@@ -52,8 +52,11 @@ export interface WorkerForkDeps {
       includeMemfs?: boolean;
       trackHeldOfds?: boolean;
       deltaOfdIds?: boolean;
+      memfsOnly?: boolean;
       preserveSourceRefcounts?: boolean;
+      preservePublishedRegularFileData?: boolean;
       sourceVmPtr?: number;
+      ofdIds?: number[];
     },
   ): Promise<void>;
   syncProcessMemfsViaKernelWorker(handle: ProcessHandle): Promise<void>;

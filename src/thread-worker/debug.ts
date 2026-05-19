@@ -2,6 +2,8 @@ import type { KernelExports } from "../abi.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const FD_TRACE_LOG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_FD_TRACE ?? "") === "1";
+const loggedFdTraceEntries = new Set<string>();
 
 function copyBytes(view: Uint8Array): Uint8Array {
   const copy = new Uint8Array(view.byteLength);
@@ -22,6 +24,237 @@ function readOptionalTraceU64(value: bigint | number | undefined): bigint {
     return 0n;
   }
   return typeof value === "bigint" ? value : BigInt(value);
+}
+
+function readOptionalTraceI64(value: bigint | number | undefined): bigint {
+  return BigInt.asIntN(64, readOptionalTraceU64(value));
+}
+
+function sampleToPid(sample: bigint | number | undefined): number {
+  if (sample === undefined) {
+    return 0;
+  }
+  return Number(BigInt.asUintN(32, readOptionalTraceU64(sample)));
+}
+
+function readGuestSlice(
+  exports: KernelExports,
+  guestBase: number,
+  ptr: bigint,
+  len: bigint,
+  maxLen: number,
+): Uint8Array | null {
+  const start = Number(ptr);
+  const requestedLen = Number(len);
+  if (
+    !Number.isFinite(start)
+    || !Number.isFinite(requestedLen)
+    || start <= 0
+    || requestedLen <= 0
+  ) {
+    return null;
+  }
+  const clampedLen = Math.min(requestedLen, maxLen);
+  const absolute = guestBase + start;
+  if (absolute < 0 || absolute + clampedLen > exports.memory.buffer.byteLength) {
+    return null;
+  }
+  return copyBytes(new Uint8Array(exports.memory.buffer, absolute, clampedLen));
+}
+
+function readGuestU64(
+  exports: KernelExports,
+  guestBase: number,
+  ptr: bigint,
+): bigint | null {
+  const start = Number(ptr);
+  const absolute = guestBase + start;
+  if (
+    !Number.isFinite(start)
+    || start <= 0
+    || absolute < 0
+    || absolute + 8 > exports.memory.buffer.byteLength
+  ) {
+    return null;
+  }
+  return new DataView(exports.memory.buffer).getBigUint64(absolute, true);
+}
+
+function formatFdTraceWriteSample(
+  exports: KernelExports,
+  guestBase: number,
+  nr: bigint,
+  arg1: bigint,
+  arg2: bigint,
+): string {
+  if (nr === 64n) {
+    const bytes = readGuestSlice(exports, guestBase, arg1, arg2, 160);
+    return bytes === null ? "" : `:text=${JSON.stringify(decoder.decode(bytes))}`;
+  }
+  if (nr !== 66n) {
+    return "";
+  }
+  const iovBase = readGuestU64(exports, guestBase, arg1);
+  const iovLen = readGuestU64(exports, guestBase, arg1 + 8n);
+  if (iovBase === null || iovLen === null) {
+    return "";
+  }
+  const bytes = readGuestSlice(exports, guestBase, iovBase, iovLen, 160);
+  return bytes === null ? "" : `:iov0=${JSON.stringify(decoder.decode(bytes))}`;
+}
+
+function formatFdTraceReadSample(
+  exports: KernelExports,
+  guestBase: number,
+  nr: bigint,
+  arg1: bigint,
+  result: bigint,
+): string {
+  if (nr !== 63n || result <= 0n) {
+    return "";
+  }
+  const bytes = readGuestSlice(exports, guestBase, arg1, result, 160);
+  return bytes === null ? "" : `:read=${JSON.stringify(decoder.decode(bytes))}`;
+}
+
+export function collectFdTraceDebug(
+  exports: KernelExports,
+  vmPtr: number,
+  guestBase: number,
+): string | undefined {
+  if (!FD_TRACE_LOG_ENABLED) {
+    return undefined;
+  }
+  const len = exports.debug_fd_syscall_trace_len?.() ?? 0;
+  if (len <= 0) {
+    return undefined;
+  }
+  const pipeType = exports.abi_fd_type_pipe();
+  const interestingSyscalls = new Set<bigint>([
+    23n, // dup
+    24n, // dup3
+    25n, // fcntl
+    45n, // truncate
+    46n, // ftruncate
+    56n, // openat
+    57n, // close
+    59n, // pipe2
+    62n, // lseek
+    63n, // read
+    64n, // write
+    65n, // readv
+    66n, // writev
+    67n, // pread64
+    73n, // ppoll
+    198n, // socket
+    199n, // socketpair
+    203n, // connect
+    242n, // accept4
+    436n, // close_range
+  ]);
+  const entries: string[] = [];
+  for (let index = 0; index < len; index += 1) {
+    const traceVmPtr = exports.debug_fd_syscall_trace_vm_ptr?.(index) ?? 0;
+    if (traceVmPtr !== 0 && traceVmPtr !== vmPtr) {
+      continue;
+    }
+    const nr = readOptionalTraceU64(exports.debug_fd_syscall_trace_nr?.(index));
+    if (!interestingSyscalls.has(nr)) {
+      continue;
+    }
+    const arg0 = readOptionalTraceU64(exports.debug_fd_syscall_trace_arg0?.(index));
+    const arg1 = readOptionalTraceU64(exports.debug_fd_syscall_trace_arg1?.(index));
+    const arg2 = readOptionalTraceU64(exports.debug_fd_syscall_trace_arg2?.(index));
+    const arg3 = readOptionalTraceU64(exports.debug_fd_syscall_trace_arg3?.(index));
+    const arg0Ofd = exports.debug_fd_syscall_trace_arg0_ofd_id?.(index) ?? 0;
+    const arg0Type = exports.debug_fd_syscall_trace_arg0_ofd_type?.(index) ?? 0;
+    const arg0Offset = readOptionalTraceI64(exports.debug_fd_syscall_trace_arg0_ofd_offset?.(index));
+    const arg0HostFd = exports.debug_fd_syscall_trace_arg0_ofd_host_fd?.(index);
+    const arg0StatusFlags = exports.debug_fd_syscall_trace_arg0_ofd_status_flags?.(index);
+    const arg0Ino = exports.debug_fd_syscall_trace_arg0_ofd_ino?.(index);
+    const arg0InodeMode = exports.debug_fd_syscall_trace_arg0_inode_mode?.(index);
+    const arg0PipeGeneration = exports.debug_fd_syscall_trace_arg0_pipe_generation?.(index);
+    const arg2Ofd = exports.debug_fd_syscall_trace_arg2_ofd_id?.(index) ?? 0;
+    const arg2Type = exports.debug_fd_syscall_trace_arg2_ofd_type?.(index) ?? 0;
+    const result = readOptionalTraceI64(exports.debug_fd_syscall_trace_result?.(index));
+    if (
+      result >= 0n
+      && arg0Type !== pipeType
+      && arg2Type !== pipeType
+      && arg0 > 20n
+      && arg2 > 20n
+    ) {
+      continue;
+    }
+    const entry = [
+      `${nr.toString()}`,
+      `pid=${sampleToPid(exports.debug_fd_syscall_trace_pid_sample0?.(index))}`,
+      `fd=${arg0.toString()}`,
+      `ofd=${arg0Ofd}`,
+      `ty=${arg0Type}`,
+      `sampleOff=${arg0Offset.toString()}`,
+      `sampleHost=${arg0HostFd ?? "n/a"}`,
+      `sampleFlags=${arg0StatusFlags ?? "n/a"}`,
+      `sampleIno=${arg0Ino ?? "n/a"}`,
+      `sampleMode=${arg0InodeMode ?? "n/a"}`,
+      `pipeGen=${arg0PipeGeneration ?? "n/a"}`,
+      `off=${arg0Ofd > 0 && exports.kernel_ofd_offset ? exports.kernel_ofd_offset(arg0Ofd).toString() : "-1"}`,
+      `a1=${arg1.toString()}`,
+      `a2=${arg2.toString()}`,
+      `a2ofd=${arg2Ofd}`,
+      `a2ty=${arg2Type}`,
+      `a3=${arg3.toString()}`,
+      `ret=${result.toString()}`,
+      `st=${exports.debug_fd_syscall_trace_status?.(index) ?? 0}`,
+    ].join(":")
+      + formatFdTraceWriteSample(exports, guestBase, nr, arg1, arg2)
+      + formatFdTraceReadSample(exports, guestBase, nr, arg1, result);
+    if (loggedFdTraceEntries.has(entry)) {
+      continue;
+    }
+    loggedFdTraceEntries.add(entry);
+    entries.push(entry);
+  }
+  if (loggedFdTraceEntries.size > 8192) {
+    loggedFdTraceEntries.clear();
+  }
+  return entries.length === 0 ? undefined : entries.slice(-48).join(",");
+}
+
+function collectFdTraceSummaryForDebug(exports: KernelExports, vmPtr: number): string | null {
+  const len = exports.debug_fd_syscall_trace_len?.() ?? 0;
+  if (len <= 0) {
+    return null;
+  }
+  const entries: string[] = [];
+  for (let index = 0; index < len; index += 1) {
+    const traceVmPtr = exports.debug_fd_syscall_trace_vm_ptr?.(index) ?? 0;
+    if (traceVmPtr !== 0 && traceVmPtr !== vmPtr) {
+      continue;
+    }
+    const nr = readOptionalTraceU64(exports.debug_fd_syscall_trace_nr?.(index));
+    if (nr === 0n) {
+      continue;
+    }
+    const result = readOptionalTraceI64(exports.debug_fd_syscall_trace_result?.(index));
+    entries.push([
+      `nr=${nr.toString()}`,
+      `fd=${readOptionalTraceU64(exports.debug_fd_syscall_trace_arg0?.(index)).toString()}`,
+      `ofd=${exports.debug_fd_syscall_trace_arg0_ofd_id?.(index) ?? 0}`,
+      `ty=${exports.debug_fd_syscall_trace_arg0_ofd_type?.(index) ?? 0}`,
+      `sampleOff=${readOptionalTraceI64(exports.debug_fd_syscall_trace_arg0_ofd_offset?.(index)).toString()}`,
+      `sampleHost=${exports.debug_fd_syscall_trace_arg0_ofd_host_fd?.(index) ?? "n/a"}`,
+      `pipeGen=${exports.debug_fd_syscall_trace_arg0_pipe_generation?.(index) ?? "n/a"}`,
+      `a1=${readOptionalTraceU64(exports.debug_fd_syscall_trace_arg1?.(index)).toString()}`,
+      `a2=${readOptionalTraceU64(exports.debug_fd_syscall_trace_arg2?.(index)).toString()}`,
+      `a2ofd=${exports.debug_fd_syscall_trace_arg2_ofd_id?.(index) ?? 0}`,
+      `a2ty=${exports.debug_fd_syscall_trace_arg2_ofd_type?.(index) ?? 0}`,
+      `ret=${result.toString()}`,
+      `st=${exports.debug_fd_syscall_trace_status?.(index) ?? 0}`,
+      `pid=${sampleToPid(exports.debug_fd_syscall_trace_pid_sample0?.(index))}`,
+    ].join(":"));
+  }
+  return entries.length === 0 ? null : entries.slice(-64).join(",");
 }
 
 function debugScratchBase(exports: KernelExports): number {
@@ -723,6 +956,15 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
   const memorySyscallTrace = formatMemorySyscallTraceEntries(exports, vmPtr);
   if (memorySyscallTrace !== null) {
     debugParts.push(`memory_syscalls=${memorySyscallTrace}`);
+  }
+  try {
+    const fdSyscallTrace = collectFdTraceSummaryForDebug(exports, vmPtr);
+    if (fdSyscallTrace !== null) {
+      debugParts.push(`fd_syscalls=${fdSyscallTrace}`);
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    debugParts.push(`debug_collect_error=${JSON.stringify(detail)}`);
   }
   const vmaLen = exports.debug_memory_vma_len?.() ?? 0;
   const memBrkBase = exports.debug_memory_brk_base?.();

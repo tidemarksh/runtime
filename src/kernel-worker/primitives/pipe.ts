@@ -1,4 +1,5 @@
 import { attachKernelRuntimeState, readKernelRuntimeState, type KernelExports, type KernelRuntimeState } from "../../abi.js";
+import type { KernelWorkerPipeSlotSnapshot } from "../../messages.js";
 import { collectProcessHeldOfdRefcounts } from "./ofd.js";
 
 const FD_TYPE_PIPE = 6;
@@ -10,19 +11,77 @@ const O_WRONLY = 1;
 const PIPE_SLOT_BYTES = 32 + 65_536;
 const PIPE_SLOT_MODE_READ = 1 << 0;
 const PIPE_SLOT_MODE_WRITE = 1 << 1;
+const PIPE_SLOT_MODE_CONTROL = 1 << 2;
 const PIPE_OFF_HEAD = 0;
 const PIPE_OFF_TAIL = 4;
 const PIPE_OFF_READ_OPEN = 8;
 const PIPE_OFF_WRITE_OPEN = 12;
+const PIPE_OFF_GENERATION = 20;
 const PIPE_OFF_DATA = 32;
+const PIPE_BUF_SIZE = PIPE_SLOT_BYTES - PIPE_OFF_DATA;
+const OFD_TYPE_OFFSET = 0;
+const OFD_OFFSET_OFFSET = 16;
+const OFD_INO_OFFSET = 24;
 
 interface KernelWorkerPrimitivesDeps {
   getCanonicalExports(): KernelExports;
   processKernels: Map<number, KernelExports>;
+  canonicalProcesses: Map<number, { ppid: number }>;
   getCanonicalProcessVmPtr(pid: number): number;
 }
 
 export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDeps) {
+  function syncPipeOfdGenerations(
+    targetExports: KernelExports,
+    targetState: KernelRuntimeState,
+    pipeSlot: number,
+  ): void {
+    if (pipeSlot <= 0 || pipeSlot >= targetExports.abi_max_pipes()) {
+      return;
+    }
+    const maxFds = targetExports.abi_max_fds();
+    const ofdTableBytes = targetExports.kernel_ofd_table_bytes();
+    const ofdSlotBytes = ofdTableBytes / maxFds;
+    if (!Number.isInteger(ofdSlotBytes) || ofdSlotBytes <= OFD_INO_OFFSET + 4) {
+      return;
+    }
+    const view = new DataView(targetExports.memory.buffer);
+    const pipeGeneration = view.getUint32(
+      targetState.pipeBase + pipeSlot * PIPE_SLOT_BYTES + PIPE_OFF_GENERATION,
+      true,
+    );
+    if (pipeGeneration === 0) {
+      return;
+    }
+    for (let ofdId = 1; ofdId < maxFds; ofdId += 1) {
+      const ofdOffset = targetState.ofdTablePtr + ofdId * ofdSlotBytes;
+      if (
+        view.getInt32(ofdOffset + OFD_TYPE_OFFSET, true) === FD_TYPE_PIPE
+        && view.getUint32(ofdOffset + OFD_INO_OFFSET, true) === pipeSlot
+      ) {
+        view.setBigInt64(ofdOffset + OFD_OFFSET_OFFSET, BigInt(pipeGeneration), true);
+      }
+    }
+  }
+
+  function collectActiveHostStdioPipeSlots(processExports: KernelExports, vmPtr: number): {
+    stdin: number;
+    stdout: number;
+    stderr: number;
+  } {
+    const validPipeSlot = (pipeSlot: number): number => (
+      pipeSlot > 0 && pipeSlot < processExports.abi_max_pipes() ? pipeSlot : 0
+    );
+    const stdinPipe = processExports.process_stdin_pipe(vmPtr);
+    const stdoutPipe = processExports.process_stdout_pipe(vmPtr);
+    const stderrPipe = processExports.process_stderr_pipe(vmPtr);
+    return {
+      stdin: validPipeSlot(stdinPipe),
+      stdout: validPipeSlot(stdoutPipe),
+      stderr: validPipeSlot(stderrPipe),
+    };
+  }
+
   function collectOfdPipeModes(
     processExports: KernelExports,
     ofdId: number,
@@ -67,14 +126,26 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
     return modes;
   }
 
-  function collectProcessPrivatePipeSlots(processExports: KernelExports, vmPtr: number): Set<number> {
+  function collectBlockedOfdPipeModes(
+    processExports: KernelExports,
+    vmPtr: number,
+  ): Array<{ ofdId: number; pipeSlot: number; mode: number }> {
+    const ofdId = processExports.thread_blocked_ofd_id?.(vmPtr) ?? 0;
+    if (ofdId <= 0 || ofdId >= processExports.abi_max_fds()) {
+      return [];
+    }
+    return collectOfdPipeModes(processExports, ofdId)
+      .map(({ pipeSlot, mode }) => ({ ofdId, pipeSlot, mode }));
+  }
+
+  function collectProcessPrivatePipeSlots(
+    processExports: KernelExports,
+    vmPtr: number,
+  ): Set<number> {
     const maxPipes = processExports.abi_max_pipes();
     const privatePipeSlots = new Set<number>();
-    const candidatePipeSlots = [
-      processExports.process_stdin_pipe(vmPtr),
-      processExports.process_stdout_pipe(vmPtr),
-      processExports.process_stderr_pipe(vmPtr),
-    ];
+    const activeHostStdio = collectActiveHostStdioPipeSlots(processExports, vmPtr);
+    const candidatePipeSlots = [activeHostStdio.stdin, activeHostStdio.stdout, activeHostStdio.stderr];
 
     for (const pipeSlot of candidatePipeSlots) {
       if (pipeSlot > 0 && pipeSlot < maxPipes) {
@@ -91,13 +162,14 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
   ): Map<number, number> {
     const maxPipes = processExports.abi_max_pipes();
     const privatePipeSlotModes = new Map<number, number>();
+    const activeHostStdio = collectActiveHostStdioPipeSlots(processExports, vmPtr);
     const privatePipeCandidates = [
       {
-        pipeSlot: processExports.process_stdin_pipe(vmPtr),
+        pipeSlot: activeHostStdio.stdin,
         mode: PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE,
       },
-      { pipeSlot: processExports.process_stdout_pipe(vmPtr), mode: PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE },
-      { pipeSlot: processExports.process_stderr_pipe(vmPtr), mode: PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE },
+      { pipeSlot: activeHostStdio.stdout, mode: PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE },
+      { pipeSlot: activeHostStdio.stderr, mode: PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE },
     ];
 
     for (const { pipeSlot, mode } of privatePipeCandidates) {
@@ -116,13 +188,14 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
   ): Map<number, number> {
     const maxPipes = processExports.abi_max_pipes();
     const privatePipeSlotModes = new Map<number, number>();
+    const activeHostStdio = collectActiveHostStdioPipeSlots(processExports, vmPtr);
     const privatePipeCandidates = [
       {
-        pipeSlot: processExports.process_stdin_pipe(vmPtr),
+        pipeSlot: activeHostStdio.stdin,
         mode: PIPE_SLOT_MODE_READ,
       },
-      { pipeSlot: processExports.process_stdout_pipe(vmPtr), mode: PIPE_SLOT_MODE_READ },
-      { pipeSlot: processExports.process_stderr_pipe(vmPtr), mode: PIPE_SLOT_MODE_READ },
+      { pipeSlot: activeHostStdio.stdout, mode: PIPE_SLOT_MODE_READ },
+      { pipeSlot: activeHostStdio.stderr, mode: PIPE_SLOT_MODE_READ },
     ];
 
     for (const { pipeSlot, mode } of privatePipeCandidates) {
@@ -150,6 +223,11 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
         if (pipeSlot > 0 && pipeSlot < maxPipes && !privatePipeSlots.has(pipeSlot)) {
           pipeSlots.add(pipeSlot);
         }
+      }
+    }
+    for (const { pipeSlot } of collectBlockedOfdPipeModes(processExports, vmPtr)) {
+      if (pipeSlot > 0 && pipeSlot < maxPipes && !privatePipeSlots.has(pipeSlot)) {
+        pipeSlots.add(pipeSlot);
       }
     }
 
@@ -187,6 +265,13 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
         pipeSlotModes.set(pipeSlot, currentMode | mode);
       }
     }
+    for (const { pipeSlot, mode } of collectBlockedOfdPipeModes(processExports, vmPtr)) {
+      if (pipeSlot <= 0 || pipeSlot >= maxPipes || privatePipeSlots.has(pipeSlot)) {
+        continue;
+      }
+      const currentMode = pipeSlotModes.get(pipeSlot) ?? 0;
+      pipeSlotModes.set(pipeSlot, currentMode | mode);
+    }
 
     return pipeSlotModes;
   }
@@ -203,6 +288,8 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
     const readOpen = new Int32Array(maxPipes);
     const writeOpen = new Int32Array(maxPipes);
     const managedPipeSlots = new Set<number>();
+    const hostReadPipeSlots = new Set<number>();
+    const hostWritePipeSlots = new Set<number>();
     const readEndpointKeys = new Set<string>();
     const writeEndpointKeys = new Set<string>();
     const priorPipeUsed = readKernelRuntimeState(canonicalExports).pipeUsed;
@@ -219,26 +306,23 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
         continue;
       }
 
-      const stdinPipeSlot = processExports.process_stdin_pipe(vmPtr);
+      const activeHostStdio = collectActiveHostStdioPipeSlots(processExports, vmPtr);
+      const stdinPipeSlot = activeHostStdio.stdin;
       if (stdinPipeSlot > 0 && stdinPipeSlot < maxPipes) {
         managedPipeSlots.add(stdinPipeSlot);
-        writeOpen[stdinPipeSlot] += 1;
+        hostWritePipeSlots.add(stdinPipeSlot);
       }
 
-      const hostReadPipeSlots = new Set<number>();
-      const stdoutPipeSlot = processExports.process_stdout_pipe(vmPtr);
+      const stdoutPipeSlot = activeHostStdio.stdout;
       if (stdoutPipeSlot > 0 && stdoutPipeSlot < maxPipes) {
         managedPipeSlots.add(stdoutPipeSlot);
         hostReadPipeSlots.add(stdoutPipeSlot);
       }
 
-      const stderrPipeSlot = processExports.process_stderr_pipe(vmPtr);
+      const stderrPipeSlot = activeHostStdio.stderr;
       if (stderrPipeSlot > 0 && stderrPipeSlot < maxPipes) {
         managedPipeSlots.add(stderrPipeSlot);
         hostReadPipeSlots.add(stderrPipeSlot);
-      }
-      for (const pipeSlot of hostReadPipeSlots) {
-        readOpen[pipeSlot] += 1;
       }
 
       const heldRefcounts = collectProcessHeldOfdRefcounts(processExports, vmPtr);
@@ -260,6 +344,18 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
           }
         }
       }
+      for (const { ofdId, pipeSlot, mode } of collectBlockedOfdPipeModes(processExports, vmPtr)) {
+        if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
+          continue;
+        }
+        managedPipeSlots.add(pipeSlot);
+        if ((mode & PIPE_SLOT_MODE_READ) !== 0) {
+          readEndpointKeys.add(`${pid}:${pipeSlot}:${ofdId}`);
+        }
+        if ((mode & PIPE_SLOT_MODE_WRITE) !== 0) {
+          writeEndpointKeys.add(`${pid}:${pipeSlot}:${ofdId}`);
+        }
+      }
     }
 
     for (const key of readEndpointKeys) {
@@ -269,6 +365,12 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
     for (const key of writeEndpointKeys) {
       const [, pipeSlot] = key.split(":");
       writeOpen[Number(pipeSlot)] += 1;
+    }
+    for (const pipeSlot of hostReadPipeSlots) {
+      readOpen[pipeSlot] += 1;
+    }
+    for (const pipeSlot of hostWritePipeSlots) {
+      writeOpen[pipeSlot] += 1;
     }
 
     const bytes = new DataView(canonicalExports.memory.buffer);
@@ -347,6 +449,7 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
       const sourceOffset = sourceState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
       const targetOffset = targetState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
       targetBytes.set(sourceBytes.subarray(sourceOffset, sourceOffset + PIPE_SLOT_BYTES), targetOffset);
+      syncPipeOfdGenerations(targetExports, targetState, pipeSlot);
     }
   }
 
@@ -365,6 +468,160 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
     }
   }
 
+  function applySelectedPipeSlotSnapshots(
+    targetExports: KernelExports,
+    targetState: KernelRuntimeState,
+    snapshots: KernelWorkerPipeSlotSnapshot[],
+  ): void {
+    const targetBytes = new Uint8Array(targetExports.memory.buffer);
+    const targetView = new DataView(targetExports.memory.buffer);
+    function counterAhead(sourceValue: number, targetValue: number): boolean {
+      return sourceValue > targetValue
+        || (sourceValue < targetValue && targetValue > PIPE_BUF_SIZE / 2 && sourceValue < PIPE_BUF_SIZE / 2);
+    }
+    function generationAhead(sourceValue: number, targetValue: number): boolean {
+      return targetValue === 0
+        || sourceValue > targetValue
+        || (sourceValue < targetValue && targetValue > 0x80000000 && sourceValue < 0x80000000);
+    }
+    for (const snapshot of snapshots) {
+      if (
+        snapshot.pipeSlot <= 0
+        || snapshot.pipeSlot >= targetExports.abi_max_pipes()
+        || snapshot.slot.length !== PIPE_SLOT_BYTES
+      ) {
+        continue;
+      }
+      const targetOffset = targetState.pipeBase + snapshot.pipeSlot * PIPE_SLOT_BYTES;
+      const sourceView = new DataView(snapshot.slot.buffer, snapshot.slot.byteOffset, snapshot.slot.byteLength);
+      const sourceHead = sourceView.getUint32(PIPE_OFF_HEAD, true);
+      const sourceTail = sourceView.getUint32(PIPE_OFF_TAIL, true);
+      const sourceReadOpen = sourceView.getInt32(PIPE_OFF_READ_OPEN, true);
+      const sourceWriteOpen = sourceView.getInt32(PIPE_OFF_WRITE_OPEN, true);
+      let targetHead = targetView.getUint32(targetOffset + PIPE_OFF_HEAD, true);
+      const targetTail = targetView.getUint32(targetOffset + PIPE_OFF_TAIL, true);
+      const targetReadOpen = targetView.getInt32(targetOffset + PIPE_OFF_READ_OPEN, true);
+      const targetWriteOpen = targetView.getInt32(targetOffset + PIPE_OFF_WRITE_OPEN, true);
+      const mode = snapshot.mode ?? (PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE | PIPE_SLOT_MODE_CONTROL);
+      const sourceGeneration = sourceView.getUint32(PIPE_OFF_GENERATION, true);
+      const targetGeneration = targetView.getUint32(targetOffset + PIPE_OFF_GENERATION, true);
+      if (
+        sourceGeneration !== 0
+        && sourceGeneration !== targetGeneration
+      ) {
+        if (
+          sourceHead === 0
+          && sourceTail === 0
+          && targetHead !== targetTail
+          && snapshot.fresh !== true
+          && !generationAhead(sourceGeneration, targetGeneration)
+        ) {
+          continue;
+        }
+        if (
+          snapshot.fresh === true
+          || generationAhead(sourceGeneration, targetGeneration)
+          || (targetReadOpen <= 0 && targetWriteOpen <= 0)
+        ) {
+          targetBytes.set(snapshot.slot, targetOffset);
+        }
+        syncPipeOfdGenerations(targetExports, targetState, snapshot.pipeSlot);
+        continue;
+      }
+    if (
+      snapshot.fresh === true
+      && sourceHead === 0
+      && sourceTail === 0
+        && targetHead === targetTail
+        && sourceReadOpen > 0
+        && sourceWriteOpen > 0
+        && (mode & (PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE)) === (PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE)
+      ) {
+        targetBytes.set(snapshot.slot, targetOffset);
+        syncPipeOfdGenerations(targetExports, targetState, snapshot.pipeSlot);
+        continue;
+      }
+      if (
+        sourceHead === 0
+        && sourceTail === 0
+        && (targetHead !== 0 || targetTail !== 0)
+        && targetReadOpen <= 0
+        && targetWriteOpen <= 0
+      ) {
+        targetBytes.set(snapshot.slot, targetOffset);
+        syncPipeOfdGenerations(targetExports, targetState, snapshot.pipeSlot);
+        continue;
+      }
+      if (
+        targetReadOpen <= 0
+        && targetWriteOpen <= 0
+        && targetHead === targetTail
+        && (sourceReadOpen > 0 || sourceWriteOpen > 0)
+        && ((mode & (PIPE_SLOT_MODE_WRITE | PIPE_SLOT_MODE_CONTROL)) !== 0)
+      ) {
+        targetBytes.set(snapshot.slot, targetOffset);
+        syncPipeOfdGenerations(targetExports, targetState, snapshot.pipeSlot);
+        continue;
+      }
+      if ((mode & PIPE_SLOT_MODE_CONTROL) !== 0) {
+        targetView.setInt32(targetOffset + PIPE_OFF_READ_OPEN, sourceReadOpen, true);
+        targetView.setInt32(targetOffset + PIPE_OFF_WRITE_OPEN, sourceWriteOpen, true);
+      }
+      if (
+        (mode & PIPE_SLOT_MODE_READ) !== 0
+        && (mode & PIPE_SLOT_MODE_WRITE) === 0
+        && sourceHead !== 0
+        && sourceHead === sourceTail
+        && targetTail !== sourceTail
+        && counterAhead(sourceTail, targetTail)
+      ) {
+        targetView.setUint32(targetOffset + PIPE_OFF_HEAD, sourceHead, true);
+        targetView.setUint32(targetOffset + PIPE_OFF_TAIL, sourceTail, true);
+        targetHead = sourceHead;
+      }
+      if (
+        (mode & PIPE_SLOT_MODE_WRITE) !== 0
+        && (mode & PIPE_SLOT_MODE_READ) === 0
+        && sourceHead === 0
+        && sourceTail !== 0
+        && targetHead !== 0
+        && (targetHead === targetTail || targetTail === 0)
+        && counterAhead(sourceTail, targetTail)
+      ) {
+        targetView.setUint32(targetOffset + PIPE_OFF_HEAD, 0, true);
+        targetHead = 0;
+      }
+      if (
+        (mode & PIPE_SLOT_MODE_READ) !== 0
+        && counterAhead(sourceHead, targetHead)
+        && (sourceHead !== sourceTail || targetTail === sourceTail)
+      ) {
+        targetView.setUint32(targetOffset + PIPE_OFF_HEAD, sourceHead, true);
+      }
+      if ((mode & PIPE_SLOT_MODE_WRITE) !== 0 && counterAhead(sourceTail, targetTail)) {
+        targetBytes.set(
+          snapshot.slot.subarray(PIPE_OFF_TAIL, PIPE_OFF_READ_OPEN),
+          targetOffset + PIPE_OFF_TAIL,
+        );
+        targetBytes.set(
+          snapshot.slot.subarray(PIPE_OFF_DATA, PIPE_SLOT_BYTES),
+          targetOffset + PIPE_OFF_DATA,
+        );
+      } else if (
+        (mode & PIPE_SLOT_MODE_WRITE) !== 0
+        && sourceTail === targetTail
+        && sourceHead !== sourceTail
+        && !((mode & PIPE_SLOT_MODE_READ) !== 0 && counterAhead(targetHead, sourceHead))
+      ) {
+        targetBytes.set(
+          snapshot.slot.subarray(PIPE_OFF_DATA, PIPE_SLOT_BYTES),
+          targetOffset + PIPE_OFF_DATA,
+        );
+      }
+      syncPipeOfdGenerations(targetExports, targetState, snapshot.pipeSlot);
+    }
+  }
+
   function mergePipeSlotsFromProcess(
     sourceExports: KernelExports,
     sourceState: KernelRuntimeState,
@@ -379,8 +636,13 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
     const targetView = new DataView(targetExports.memory.buffer);
 
     function counterAhead(sourceValue: number, targetValue: number): boolean {
-      const delta = (sourceValue - targetValue) >>> 0;
-      return delta !== 0 && delta < 0x80000000;
+      return sourceValue > targetValue
+        || (sourceValue < targetValue && targetValue > PIPE_BUF_SIZE / 2 && sourceValue < PIPE_BUF_SIZE / 2);
+    }
+    function generationAhead(sourceValue: number, targetValue: number): boolean {
+      return targetValue === 0
+        || sourceValue > targetValue
+        || (sourceValue < targetValue && targetValue > 0x80000000 && sourceValue < 0x80000000);
     }
 
     for (const pipeIdx of pipeSlots) {
@@ -395,21 +657,96 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
       }
       const sourceHead = sourceView.getUint32(sourceOffset + PIPE_OFF_HEAD, true);
       const sourceTail = sourceView.getUint32(sourceOffset + PIPE_OFF_TAIL, true);
-      const targetHead = targetView.getUint32(targetOffset + PIPE_OFF_HEAD, true);
+      const sourceWasZeroEmpty = sourceHead === 0 && sourceTail === 0;
+      const sourceReadOpen = sourceView.getInt32(sourceOffset + PIPE_OFF_READ_OPEN, true);
+      const sourceWriteOpen = sourceView.getInt32(sourceOffset + PIPE_OFF_WRITE_OPEN, true);
+      let targetHead = targetView.getUint32(targetOffset + PIPE_OFF_HEAD, true);
       const targetTail = targetView.getUint32(targetOffset + PIPE_OFF_TAIL, true);
+      const targetReadOpen = targetView.getInt32(targetOffset + PIPE_OFF_READ_OPEN, true);
+      const targetWriteOpen = targetView.getInt32(targetOffset + PIPE_OFF_WRITE_OPEN, true);
+      const sourceGeneration = sourceView.getUint32(sourceOffset + PIPE_OFF_GENERATION, true);
+      const targetGeneration = targetView.getUint32(targetOffset + PIPE_OFF_GENERATION, true);
+      if (
+        sourceGeneration !== 0
+        && sourceGeneration !== targetGeneration
+      ) {
+        if (
+          sourceWasZeroEmpty
+          && targetHead !== targetTail
+          && !generationAhead(sourceGeneration, targetGeneration)
+        ) {
+          continue;
+        }
+        if (generationAhead(sourceGeneration, targetGeneration) || (targetReadOpen <= 0 && targetWriteOpen <= 0)) {
+          targetBytes.set(
+            sourceBytes.subarray(sourceOffset, sourceOffset + PIPE_SLOT_BYTES),
+            targetOffset,
+          );
+        }
+        syncPipeOfdGenerations(targetExports, targetState, pipeIdx);
+        continue;
+      }
       if (
         sourceHead === 0
         && sourceTail === 0
-        && (targetHead !== 0 || targetTail !== 0)
+        && sourceReadOpen > 0
+        && sourceWriteOpen > 0
+        && targetReadOpen <= 0
+        && targetWriteOpen <= 0
+        && targetHead === targetTail
+        && (mode & (PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE)) === (PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE)
       ) {
         targetBytes.set(
           sourceBytes.subarray(sourceOffset, sourceOffset + PIPE_SLOT_BYTES),
           targetOffset,
         );
+        syncPipeOfdGenerations(targetExports, targetState, pipeIdx);
         continue;
       }
+      if (
+        sourceHead === 0
+        && sourceTail === 0
+        && (targetHead !== 0 || targetTail !== 0)
+      ) {
+        const targetReadOpen = targetView.getInt32(targetOffset + PIPE_OFF_READ_OPEN, true);
+        const targetWriteOpen = targetView.getInt32(targetOffset + PIPE_OFF_WRITE_OPEN, true);
+        if (targetReadOpen <= 0 && targetWriteOpen <= 0) {
+          targetBytes.set(
+            sourceBytes.subarray(sourceOffset, sourceOffset + PIPE_SLOT_BYTES),
+            targetOffset,
+          );
+        }
+        syncPipeOfdGenerations(targetExports, targetState, pipeIdx);
+        continue;
+      }
+      if (
+        (mode & PIPE_SLOT_MODE_WRITE) !== 0
+        && (mode & PIPE_SLOT_MODE_READ) === 0
+        && sourceHead === 0
+        && sourceTail !== 0
+        && targetHead !== 0
+        && (targetHead === targetTail || targetTail === 0)
+        && counterAhead(sourceTail, targetTail)
+      ) {
+        targetView.setUint32(targetOffset + PIPE_OFF_HEAD, 0, true);
+        targetHead = 0;
+      }
+      if (
+        (mode & PIPE_SLOT_MODE_READ) !== 0
+        && sourceHead !== 0
+        && sourceHead === sourceTail
+        && targetTail !== sourceTail
+        && counterAhead(sourceTail, targetTail)
+      ) {
+        targetView.setUint32(targetOffset + PIPE_OFF_HEAD, sourceHead, true);
+        targetView.setUint32(targetOffset + PIPE_OFF_TAIL, sourceTail, true);
+        targetHead = sourceHead;
+      }
       if ((mode & PIPE_SLOT_MODE_READ) !== 0) {
-        if (counterAhead(sourceHead, targetHead)) {
+        if (
+          counterAhead(sourceHead, targetHead)
+          && (sourceHead !== sourceTail || targetTail === sourceTail)
+        ) {
           targetView.setUint32(targetOffset + PIPE_OFF_HEAD, sourceHead, true);
         }
       }
@@ -423,8 +760,14 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
             sourceBytes.subarray(sourceOffset + PIPE_OFF_DATA, sourceOffset + PIPE_SLOT_BYTES),
             targetOffset + PIPE_OFF_DATA,
           );
+        } else if (sourceTail === targetTail && sourceHead !== sourceTail) {
+          targetBytes.set(
+            sourceBytes.subarray(sourceOffset + PIPE_OFF_DATA, sourceOffset + PIPE_SLOT_BYTES),
+            targetOffset + PIPE_OFF_DATA,
+          );
         }
       }
+      syncPipeOfdGenerations(targetExports, targetState, pipeIdx);
     }
   }
 
@@ -450,8 +793,13 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
     }
 
     function counterAhead(sourceValue: number, targetValue: number): boolean {
-      const delta = (sourceValue - targetValue) >>> 0;
-      return delta !== 0 && delta < 0x80000000;
+      return sourceValue > targetValue
+        || (sourceValue < targetValue && targetValue > PIPE_BUF_SIZE / 2 && sourceValue < PIPE_BUF_SIZE / 2);
+    }
+    function generationAhead(sourceValue: number, targetValue: number): boolean {
+      return targetValue === 0
+        || sourceValue > targetValue
+        || (sourceValue < targetValue && targetValue > 0x80000000 && sourceValue < 0x80000000);
     }
 
     for (const pipeIdx of pipeSlots) {
@@ -461,14 +809,80 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
       const sourceOffset = sourceState.pipeBase + pipeIdx * PIPE_SLOT_BYTES;
       const targetOffset = targetState.pipeBase + pipeIdx * PIPE_SLOT_BYTES;
       const mode = targetModes.get(pipeIdx) ?? 0;
-      if ((mode & PIPE_SLOT_MODE_READ) !== 0) {
-        const sourceHead = sourceView.getUint32(sourceOffset + PIPE_OFF_HEAD, true);
-        const targetHead = targetView.getUint32(targetOffset + PIPE_OFF_HEAD, true);
-        if (counterAhead(sourceHead, targetHead)) {
-          targetView.setUint32(targetOffset + PIPE_OFF_HEAD, sourceHead, true);
+      const sourceHead = sourceView.getUint32(sourceOffset + PIPE_OFF_HEAD, true);
+      const sourceTail = sourceView.getUint32(sourceOffset + PIPE_OFF_TAIL, true);
+      const sourceWasZeroEmpty = sourceHead === 0 && sourceTail === 0;
+      const sourceReadOpen = sourceView.getInt32(sourceOffset + PIPE_OFF_READ_OPEN, true);
+      const sourceWriteOpen = sourceView.getInt32(sourceOffset + PIPE_OFF_WRITE_OPEN, true);
+      const sourceGeneration = sourceView.getUint32(sourceOffset + PIPE_OFF_GENERATION, true);
+      const targetGeneration = targetView.getUint32(targetOffset + PIPE_OFF_GENERATION, true);
+      const targetReadOpen = targetView.getInt32(targetOffset + PIPE_OFF_READ_OPEN, true);
+      const targetWriteOpen = targetView.getInt32(targetOffset + PIPE_OFF_WRITE_OPEN, true);
+      if (
+        sourceGeneration !== 0
+        && sourceGeneration !== targetGeneration
+      ) {
+        if (
+          sourceWasZeroEmpty
+          && targetReadOpen > 0
+          && targetWriteOpen > 0
+          && !generationAhead(sourceGeneration, targetGeneration)
+        ) {
+          const targetHead = targetView.getUint32(targetOffset + PIPE_OFF_HEAD, true);
+          const targetTail = targetView.getUint32(targetOffset + PIPE_OFF_TAIL, true);
+          if (targetHead !== targetTail) {
+            continue;
+          }
         }
-        const sourceTail = sourceView.getUint32(sourceOffset + PIPE_OFF_TAIL, true);
+        if (generationAhead(sourceGeneration, targetGeneration) || (targetReadOpen <= 0 && targetWriteOpen <= 0)) {
+          targetBytes.set(
+            sourceBytes.subarray(sourceOffset, sourceOffset + PIPE_SLOT_BYTES),
+            targetOffset,
+          );
+        }
+        syncPipeOfdGenerations(targetExports, targetState, pipeIdx);
+        continue;
+      }
+      const initialTargetHead = targetView.getUint32(targetOffset + PIPE_OFF_HEAD, true);
+      const initialTargetTail = targetView.getUint32(targetOffset + PIPE_OFF_TAIL, true);
+      if (
+        sourceHead === 0
+        && sourceTail === 0
+        && sourceReadOpen > 0
+        && sourceWriteOpen > 0
+        && targetReadOpen <= 0
+        && targetWriteOpen <= 0
+        && initialTargetHead === initialTargetTail
+        && (mode & (PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE)) === (PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE)
+      ) {
+        targetBytes.set(
+          sourceBytes.subarray(sourceOffset, sourceOffset + PIPE_SLOT_BYTES),
+          targetOffset,
+        );
+        syncPipeOfdGenerations(targetExports, targetState, pipeIdx);
+        continue;
+      }
+      if ((mode & PIPE_SLOT_MODE_READ) !== 0) {
+        let targetHead = targetView.getUint32(targetOffset + PIPE_OFF_HEAD, true);
         const targetTail = targetView.getUint32(targetOffset + PIPE_OFF_TAIL, true);
+        if (
+          (mode & PIPE_SLOT_MODE_WRITE) === 0
+          && sourceHead !== 0
+          && sourceHead === sourceTail
+          && targetTail !== sourceTail
+          && counterAhead(sourceTail, targetTail)
+        ) {
+          targetView.setUint32(targetOffset + PIPE_OFF_HEAD, sourceHead, true);
+          targetView.setUint32(targetOffset + PIPE_OFF_TAIL, sourceTail, true);
+          targetHead = sourceHead;
+        }
+        if (
+          counterAhead(sourceHead, targetHead)
+          && (sourceHead !== sourceTail || targetTail === sourceTail)
+        ) {
+          targetView.setUint32(targetOffset + PIPE_OFF_HEAD, sourceHead, true);
+          targetHead = sourceHead;
+        }
         if (counterAhead(sourceTail, targetTail)) {
           targetBytes.set(
             sourceBytes.subarray(sourceOffset + PIPE_OFF_TAIL, sourceOffset + PIPE_OFF_READ_OPEN),
@@ -481,14 +895,18 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
         }
       }
       if ((mode & PIPE_SLOT_MODE_WRITE) !== 0) {
-        const sourceHead = sourceView.getUint32(sourceOffset + PIPE_OFF_HEAD, true);
-        const targetHead = targetView.getUint32(targetOffset + PIPE_OFF_HEAD, true);
-        if (counterAhead(sourceHead, targetHead)) {
-          targetView.setUint32(targetOffset + PIPE_OFF_HEAD, sourceHead, true);
-        }
-        const sourceTail = sourceView.getUint32(sourceOffset + PIPE_OFF_TAIL, true);
+        let targetHead = targetView.getUint32(targetOffset + PIPE_OFF_HEAD, true);
         const targetTail = targetView.getUint32(targetOffset + PIPE_OFF_TAIL, true);
-        if (counterAhead(sourceTail, targetTail)) {
+        let repairedHead = false;
+        if (
+          counterAhead(sourceHead, targetHead)
+          && (sourceHead !== sourceTail || targetTail === sourceTail)
+        ) {
+          targetView.setUint32(targetOffset + PIPE_OFF_HEAD, sourceHead, true);
+          targetHead = sourceHead;
+          repairedHead = true;
+        }
+        if (counterAhead(sourceTail, targetTail) || (repairedHead && sourceHead !== sourceTail)) {
           targetBytes.set(
             sourceBytes.subarray(sourceOffset + PIPE_OFF_TAIL, sourceOffset + PIPE_OFF_READ_OPEN),
             targetOffset + PIPE_OFF_TAIL,
@@ -497,8 +915,14 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
             sourceBytes.subarray(sourceOffset + PIPE_OFF_DATA, sourceOffset + PIPE_SLOT_BYTES),
             targetOffset + PIPE_OFF_DATA,
           );
+        } else if (sourceTail === targetTail && sourceHead !== sourceTail) {
+          targetBytes.set(
+            sourceBytes.subarray(sourceOffset + PIPE_OFF_DATA, sourceOffset + PIPE_SLOT_BYTES),
+            targetOffset + PIPE_OFF_DATA,
+          );
         }
       }
+      syncPipeOfdGenerations(targetExports, targetState, pipeIdx);
     }
   }
 
@@ -528,6 +952,7 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
   }
 
   return {
+    applySelectedPipeSlotSnapshots,
     applyPipeControlState,
     clearSelectedPipeSlots,
     collectCanonicalManagedPipeSlots,

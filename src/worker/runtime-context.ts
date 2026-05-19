@@ -278,6 +278,7 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
     runtimeFailureSnapshots,
     runtimeFsDirtyHandles,
     runtimeFsStates,
+    snapshotProcessFs,
     threadWorkerStates,
   };
 }

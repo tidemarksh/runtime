@@ -101,7 +101,7 @@ test("handleExecveSpawn routes fork spawn handoffs into the plain-fork ownership
   expect(vforkExecveMock).not.toHaveBeenCalled();
 });
 
-test("handleExecveSpawn clears the handoff and re-enqueues the worker when no child ownership path is requested", async () => {
+test("handleExecveSpawn rejects an unknown spawn handoff kind", async () => {
   plainForkMock.mockClear();
   vforkExecveMock.mockClear();
   const { createWorkerForkHandlers } = await loadForkHandlers();
@@ -111,11 +111,13 @@ test("handleExecveSpawn clears the handoff and re-enqueues the worker when no ch
   const handle = makeHandle(0, 0);
   const clearSpawnHandoff = handle.kernel.thread_clear_spawn_handoff as ReturnType<typeof vi.fn>;
 
-  await handlers.handleExecveSpawn(handle, worker, makeThread());
+  await expect(handlers.handleExecveSpawn(handle, worker, makeThread())).rejects.toThrow(
+    "unexpected spawn handoff kind",
+  );
 
   expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(1, "spawn-handoff:11:0:0");
-  expect(clearSpawnHandoff).toHaveBeenCalledWith(0x1234);
-  expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
+  expect(clearSpawnHandoff).not.toHaveBeenCalled();
+  expect(deps.enqueueWorker).not.toHaveBeenCalled();
   expect(plainForkMock).not.toHaveBeenCalled();
   expect(vforkExecveMock).not.toHaveBeenCalled();
 });

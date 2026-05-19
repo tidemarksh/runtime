@@ -13,6 +13,11 @@ function makeKernelState(): KernelRuntimeState {
     heapPtr: 0x210000,
     ofdTablePtr: 0x220000,
     memfsPtr: 0x230000,
+    memfsHeaderBytes: 0x100,
+    memfsInodesBytes: 0x200,
+    memfsFirstChildBytes: 0x300,
+    memfsDirEntriesBytes: 0x400,
+    memfsDataBytes: 0x500,
     memStatePtr: 0x240000,
     epollTablePtr: 0x250000,
     socketTablePtr: 0x260000,
@@ -30,14 +35,24 @@ function makeKernelState(): KernelRuntimeState {
 
 function makeKernelExports(): FakeKernelExports {
   let runtimeState = makeKernelState();
+  const fdOfdIds = new Map<number, number>();
+  const fdFlags = new Map<number, number>();
   const opLog: string[] = [];
   return {
     memory: new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true }),
     abi_max_fds: () => 32,
+    abi_fd_type_file: () => 1,
     kernel_heap_base: () => runtimeState.heapBase,
     kernel_heap_ptr: () => runtimeState.heapPtr,
     kernel_ofd_table_ptr: () => runtimeState.ofdTablePtr,
+    kernel_ofd_table_bytes: () => 32 * 32,
+    kernel_ofd_fd_type: () => 0,
     kernel_memfs_ptr: () => runtimeState.memfsPtr,
+    kernel_memfs_header_bytes: () => runtimeState.memfsHeaderBytes,
+    kernel_memfs_inodes_bytes: () => runtimeState.memfsInodesBytes,
+    kernel_memfs_first_child_bytes: () => runtimeState.memfsFirstChildBytes,
+    kernel_memfs_dir_entries_bytes: () => runtimeState.memfsDirEntriesBytes,
+    kernel_memfs_data_bytes: () => runtimeState.memfsDataBytes,
     kernel_mem_state_ptr: () => runtimeState.memStatePtr,
     kernel_epoll_table_ptr: () => runtimeState.epollTablePtr,
     kernel_socket_table_bytes: () => 256,
@@ -75,6 +90,11 @@ function makeKernelExports(): FakeKernelExports {
         heapPtr,
         ofdTablePtr,
         memfsPtr,
+        memfsHeaderBytes: runtimeState.memfsHeaderBytes,
+        memfsInodesBytes: runtimeState.memfsInodesBytes,
+        memfsFirstChildBytes: runtimeState.memfsFirstChildBytes,
+        memfsDirEntriesBytes: runtimeState.memfsDirEntriesBytes,
+        memfsDataBytes: runtimeState.memfsDataBytes,
         memStatePtr,
         epollTablePtr,
         socketTablePtr,
@@ -90,11 +110,22 @@ function makeKernelExports(): FakeKernelExports {
       };
       opLog.push("attach");
     },
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fdOfdIds.get(fd) ?? 0,
+    process_fd_flags: (_vmPtr: number, fd: number) => fdFlags.get(fd) ?? 0,
+    process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number, flags: number) => {
+      if (ofdId === 0) {
+        fdOfdIds.delete(fd);
+        fdFlags.delete(fd);
+        return;
+      }
+      fdOfdIds.set(fd, ofdId);
+      fdFlags.set(fd, flags);
+    },
     opLog,
   } as unknown as FakeKernelExports;
 }
 
-test("syncForkSharedState copies memfs metadata-only when includeMemfs is enabled", () => {
+test("syncForkSharedState copies memfs data when includeMemfs is enabled", () => {
   const canonicalExports = makeKernelExports();
   const sourceExports = makeKernelExports();
   const targetExports = makeKernelExports();
@@ -156,16 +187,94 @@ test("syncForkSharedState copies memfs metadata-only when includeMemfs is enable
     [{ pid: 2, vmPtr: 0x5678, kernelState: makeKernelState() }],
     [7],
     [] as KernelWorkerOfdSlotSnapshot[],
+    [],
     true,
+    false,
     false,
     makeKernelState(),
   );
 
-  expect(memfsCopyModes).toEqual([false]);
-  expect(canonicalFanoutModes).toEqual([false]);
+  expect(memfsCopyModes).toEqual([true]);
+  expect(canonicalFanoutModes).toEqual([true]);
 });
 
-test("rehydrateForkSharedState copies memfs metadata-only when includeMemfs is enabled", () => {
+test("syncForkSharedState filters private fd entries outside tracked OFDs", () => {
+  const canonicalExports = makeKernelExports();
+  const sourceExports = makeKernelExports();
+  const processKernels = new Map<number, KernelExports>([[1, sourceExports]]);
+
+  sourceExports.process_set_fd_entry(0x1234, 5, 7, 0);
+  sourceExports.process_set_fd_entry(0x1234, 6, 8, 1);
+
+  const sync = createKernelWorkerForkSharedStateSync({
+    getCanonicalExports: () => canonicalExports,
+    getCanonicalProcessVmPtr: () => 0x1234,
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    requireProcessKernel: (pid) => processKernels.get(pid)!,
+    applySelectedOfdSnapshots: () => {},
+    collectProcessHeldOfdRefcounts: () => {
+      const refcounts = new Int32Array(32);
+      refcounts[8] = 1;
+      return refcounts;
+    },
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    collectProcessPrivatePipeSourceModes: () => new Map(),
+    collectProcessPipeSlotModes: () => new Map(),
+    collectProcessPrivatePipeSlots: () => new Set(),
+    collectCanonicalManagedPipeSlots: () => [],
+    copySelectedOfdState: () => {},
+    copySelectedEpollState: () => {},
+    clearSelectedOfdState: () => {},
+    copyMemfsState: () => {},
+    clearMemfsState: () => {},
+    reconcileCanonicalOfdRefcounts: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+      managedPipeSlots: [],
+    }),
+    collectPipeSlotsForOfdIds: () => [],
+    copySelectedPipeSlots: () => {},
+    clearSelectedPipeSlots: () => {},
+    mergePipeSlotsFromProcess: () => {},
+    mergePipeSlotsFromCanonical: () => {},
+    applyPipeControlState: () => {},
+    composeProcessPipeUsed: () => 0n,
+    copyCanonicalMemfsToProcess: () => {},
+    snapshotProcSelfExe: () => null,
+    restoreProcSelfExe: () => {},
+    copyEpollState: () => {},
+    copySocketState: () => {},
+  });
+
+  sync.syncForkSharedState(
+    1,
+    0x1234,
+    [],
+    [],
+    [7, 8],
+    [],
+    [
+      { fd: 5, ofdId: 10, fdFlags: 0 },
+      { fd: 6, ofdId: 8, fdFlags: 1 },
+      { fd: 7, ofdId: 11, fdFlags: 0 },
+    ],
+    false,
+    false,
+    false,
+    makeKernelState(),
+  );
+
+  expect(sourceExports.process_fd_ofd_id(0x1234, 5)).toBe(0);
+  expect(sourceExports.process_fd_ofd_id(0x1234, 6)).toBe(8);
+  expect(sourceExports.process_fd_flags(0x1234, 6)).toBe(1);
+  expect(sourceExports.process_fd_ofd_id(0x1234, 7)).toBe(0);
+});
+
+test("rehydrateForkSharedState copies memfs data when includeMemfs is enabled", () => {
   const canonicalExports = makeKernelExports();
   const targetExports = makeKernelExports();
   const processKernels = new Map<number, KernelExports>([[2, targetExports]]);
@@ -221,7 +330,7 @@ test("rehydrateForkSharedState copies memfs metadata-only when includeMemfs is e
     true,
   );
 
-  expect(memfsCopyModes).toEqual([false]);
+  expect(memfsCopyModes).toEqual([true]);
 });
 
 test("rehydrateForkSharedState restores proc_self_exe from explicit targets even when memfs rehydrate is disabled", () => {

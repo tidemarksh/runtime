@@ -120,7 +120,7 @@ test("destroyProcessHandle tears down workers, clears process maps, and releases
     targetHandle.vforkSnapshot = null;
     targetHandle.vforkWorker = null;
   });
-  const unregisterProcessWithKernelWorker = vi.fn();
+  const unregisterProcessWithKernelWorker = vi.fn(async () => {});
 
   const destroyHelpers = createWorkerDestroyHelpers({
     processHandles,
@@ -182,7 +182,7 @@ test("destroyRuntimeProcesses only notifies exits for handles in the selected ru
     appendRuntimeLifecycleEvent: vi.fn(),
     clearBlockedWorker: vi.fn(),
     clearVforkSnapshot: vi.fn(),
-    unregisterProcessWithKernelWorker: vi.fn(),
+    unregisterProcessWithKernelWorker: vi.fn(async () => {}),
   });
 
   destroyHelpers.destroyRuntimeProcesses(1, 9);

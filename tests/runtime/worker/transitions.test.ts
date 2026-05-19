@@ -54,6 +54,12 @@ function makeHandle(worker: Worker) {
     stdinPipe: 0,
     stdoutPipe: 0,
     stderrPipe: 0,
+    networkConnections: new Map(),
+    networkPendingConnectFds: new Set(),
+    networkClosedFds: new Set(),
+    networkClosedSocketSlots: new Map(),
+    networkRecvHeadWatermarks: new Map(),
+    networkRecvTailWatermarks: new Map(),
     kernel: {
       abi_status_ok: () => 0,
       abi_status_fault: () => 3,
@@ -70,12 +76,41 @@ function makeHandle(worker: Worker) {
       abi_status_socket_recv: () => 30,
       abi_status_wait4: () => 31,
       abi_status_flock_wait: () => 32,
+      abi_eagain: () => -11,
       abi_econnrefused: () => 111,
+      kernel_heap_base: () => 0,
+      kernel_heap_ptr: () => 0,
+      kernel_ofd_table_ptr: () => 0,
+      kernel_memfs_ptr: () => 0,
+      kernel_memfs_header_bytes: () => 0,
+      kernel_memfs_inodes_bytes: () => 0,
+      kernel_memfs_first_child_bytes: () => 0,
+      kernel_memfs_dir_entries_bytes: () => 0,
+      kernel_memfs_data_bytes: () => 0,
+      kernel_mem_state_ptr: () => 0,
+      kernel_epoll_table_ptr: () => 0,
+      kernel_socket_table_ptr: () => 0,
+      kernel_socket_used: () => 0,
+      kernel_pipe_base: () => 0,
+      kernel_pipe_used: () => 0n,
+      kernel_net_buf_base: () => 0,
+      kernel_net_buf_used: () => 0n,
+      kernel_sig_slots_ptr: () => 0,
+      kernel_process_pending_ptr: () => 0,
+      kernel_process_runtime_state_ptr: () => 0,
+      kernel_time_state_ptr: () => 0,
+      thread_a0: () => 0n,
       thread_sleep_seconds: () => 0n,
       thread_sleep_nanoseconds: () => 0n,
+      abi_max_threads: () => 1,
       process_current_pid: () => 0,
+      process_thread_vm_ptr: () => 0x1234,
       thread_process_ptr: () => 0,
       thread_process_thread_count: () => 1,
+      process_fd_ofd_id: () => 0,
+      kernel_ofd_fd_type: () => 0,
+      abi_fd_type_socket: () => 8,
+      abi_max_fds: () => 8,
     },
   };
 }
@@ -107,17 +142,20 @@ function makeDeps(worker: Worker) {
     clearVforkSnapshot: vi.fn(),
     clearBlockedWorker: vi.fn(),
     completeProcessExit: vi.fn(async () => {}),
+    commitNetworkConnect: vi.fn(async () => {}),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn(),
     handleExecveSpawn: vi.fn(async () => {}),
     kickBlockedWorkers: vi.fn(),
     pumpProcess: vi.fn(),
+    pumpNetworkConnections: vi.fn(async () => false),
     pruneDetachedProcessWorkers: vi.fn(),
     processHandles: new Map(),
     requestEpollDependentOfdStateSync: vi.fn(async () => {}),
     requestEpollStateSync: vi.fn(async () => {}),
     requestPipeStateSync: vi.fn(async () => {}),
     requestSocketStateSync: vi.fn(async () => {}),
+    resolveNetworkConnect: vi.fn(async () => 0n),
     resumeConnectViaKernelWorker: vi.fn(async () => {}),
     resumeFsViaKernelWorker: vi.fn(async () => {}),
     resumeVforkParentAfterChildExit: vi.fn(() => false),
@@ -127,6 +165,7 @@ function makeDeps(worker: Worker) {
     syncEffectEpollDependentOfdState: 0,
     syncEffectEpollState: 0,
     syncEffectForkSharedOfdState: 0,
+    syncEffectProcessMemfs: 0,
     syncEffectPipeState: 0,
     syncEffectProcessLifecycle: 0,
     syncEffectSignalWaiters: 0,
@@ -139,6 +178,112 @@ function makeDeps(worker: Worker) {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+test("STATUS_CONNECT restores the runtime network bridge from a related handle", async () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 4;
+  handle.runtimeId = 99;
+  handle.kernel.process_current_pid = () => 4;
+  handle.networkConnections.set(3, {} as never);
+  const bridge = {
+    connect: vi.fn(),
+  };
+  const parent = {
+    ...makeHandle({} as Worker),
+    pid: 1,
+    runtimeId: 99,
+    networkBridge: bridge,
+  };
+  handle.kernelShare.members.add(parent as never);
+  const deps = makeDeps(worker);
+  deps.processHandles.set(1, parent as never);
+  deps.processHandles.set(4, handle as never);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: {
+      type: "status",
+      status: 28,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 28,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  await vi.waitFor(() => {
+    expect(deps.commitNetworkConnect).toHaveBeenCalledWith(handle, 0x1234, 0n);
+  });
+  expect(deps.resolveNetworkConnect).toHaveBeenCalledWith(handle, 0x1234);
+  expect(handle.networkBridge).toBe(bridge);
+  expect(deps.resumeConnectViaKernelWorker).toHaveBeenCalledWith(handle, worker, 0x1234, 0n);
+  expect(deps.pumpNetworkConnections).not.toHaveBeenCalled();
+  expect(deps.blockWorker).not.toHaveBeenCalled();
+});
+
+test("STATUS_SOCKET_RECV restores a related runtime network connection before blocking", async () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 4;
+  handle.runtimeId = 99;
+  handle.kernel.process_current_pid = () => 4;
+  handle.kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => (fd === 3 ? 12 : 0);
+  handle.kernel.kernel_ofd_fd_type = (ofdId: number) => (ofdId === 12 ? 8 : 0);
+  const connection = {} as never;
+  const bridge = {
+    connect: vi.fn(),
+  };
+  const parent = {
+    ...makeHandle({} as Worker),
+    pid: 1,
+    runtimeId: 99,
+    networkBridge: bridge,
+  };
+  parent.networkConnections.set(3, connection);
+  parent.kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => (fd === 3 ? 12 : 0);
+  parent.kernel.kernel_ofd_fd_type = (ofdId: number) => (ofdId === 12 ? 8 : 0);
+  handle.kernelShare.members.add(parent as never);
+  const deps = makeDeps(worker);
+  deps.processHandles.set(1, parent as never);
+  deps.processHandles.set(4, handle as never);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: {
+      type: "status",
+      status: 30,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 30,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  await vi.waitFor(() => {
+    expect(deps.pumpNetworkConnections).toHaveBeenCalledWith(handle, 0x1234);
+  });
+  expect(handle.networkBridge).toBe(bridge);
+  expect(handle.networkConnections.get(3)).toBe(connection);
+  expect(handle.networkConnectionOfds?.get(3)).toBe(12);
+  expect(deps.blockWorker).toHaveBeenCalledWith(handle, worker, 30, 0x1234);
 });
 
 test("STATUS_SLEEP zero-duration yield kicks blocked workers before requeueing", () => {
@@ -209,4 +354,82 @@ test("STATUS_SLEEP blocks in the owner scheduler instead of arming a host timer"
   expect(
     deps.kickBlockedWorkers.mock.invocationCallOrder[0],
   ).toBeLessThan(deps.pumpProcess.mock.invocationCallOrder[0]);
+});
+
+test("STATUS_FS does not sync pipe state before filesystem resume completes", () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  const deps = makeDeps(worker);
+  deps.syncEffectPipeState = 1;
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: {
+      type: "status",
+      status: 6,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 6,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 1,
+  });
+
+  expect(deps.requestPipeStateSync).not.toHaveBeenCalled();
+  expect(deps.resumeFsViaKernelWorker).toHaveBeenCalledWith(handle, worker, 0x1234);
+  expect(deps.kickBlockedWorkers).not.toHaveBeenCalled();
+  expect(deps.pumpProcess).not.toHaveBeenCalled();
+});
+
+test("STATUS_OK network pump syncs socket state before requeueing", async () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.networkConnections.set(7, {} as never);
+  const deps = makeDeps(worker);
+  deps.pumpNetworkConnections = vi.fn(async () => true);
+  let resolveSocketSync: (() => void) | undefined;
+  deps.requestSocketStateSync = vi.fn(() => new Promise<void>((resolve) => {
+    resolveSocketSync = resolve;
+  }));
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: {
+      type: "status",
+      status: 0,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  await Promise.resolve();
+
+  expect(deps.pumpNetworkConnections).toHaveBeenCalledWith(handle, 0x1234);
+  expect(deps.requestSocketStateSync).toHaveBeenCalledWith(handle, true);
+  expect(deps.enqueueWorker).not.toHaveBeenCalled();
+
+  resolveSocketSync?.();
+  for (let i = 0; i < 5; i += 1) {
+    await Promise.resolve();
+  }
+
+  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });

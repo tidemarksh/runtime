@@ -5,6 +5,7 @@ import {
   snapshotKernelShareOfdSlots,
 } from "../../../src/worker/fork-shared.js";
 import {
+  reconcileKernelSharePipeControl,
   restoreLocalPipeSlots,
   restoreLocalOfdSlots,
   snapshotLocalPipeSlots,
@@ -53,10 +54,12 @@ function seedOfd(
   type: number,
   ino: number,
   marker: number,
+  hostFd = 0,
 ): void {
   const view = new DataView(memory.buffer);
   const base = ofdTablePtr + ofdId * 32;
   view.setInt32(base, type, true);
+  view.setInt32(base + 4, hostFd, true);
   view.setInt32(base + 16, 1, true);
   view.setUint32(base + 24, ino, true);
   new Uint8Array(memory.buffer)[base + 28] = marker;
@@ -72,7 +75,7 @@ function seedPipeSlot(
   pipeSlot: number,
   marker: number,
 ): void {
-  const slotBase = pipeBase + pipeSlot * (32 + 4096);
+  const slotBase = pipeBase + pipeSlot * (32 + 65_536);
   const view = new DataView(memory.buffer);
   view.setInt32(slotBase + 8, 1, true);
   view.setInt32(slotBase + 12, 1, true);
@@ -80,7 +83,7 @@ function seedPipeSlot(
 }
 
 function pipeMarker(memory: WebAssembly.Memory, pipeBase: number, pipeSlot: number): number {
-  return new Uint8Array(memory.buffer)[pipeBase + pipeSlot * (32 + 4096) + 32] ?? 0;
+  return new Uint8Array(memory.buffer)[pipeBase + pipeSlot * (32 + 65_536) + 32] ?? 0;
 }
 
 function pipeOpenCounts(memory: WebAssembly.Memory, pipeBase: number, pipeSlot: number): {
@@ -88,7 +91,7 @@ function pipeOpenCounts(memory: WebAssembly.Memory, pipeBase: number, pipeSlot: 
   writeOpen: number;
 } {
   const view = new DataView(memory.buffer);
-  const slotBase = pipeBase + pipeSlot * (32 + 4096);
+  const slotBase = pipeBase + pipeSlot * (32 + 65_536);
   return {
     readOpen: view.getInt32(slotBase + 8, true),
     writeOpen: view.getInt32(slotBase + 12, true),
@@ -119,6 +122,8 @@ function makeKernel(memory: WebAssembly.Memory): FakeKernel {
     abi_fd_type_pty_slave: () => FD_TYPE_PTY_SLAVE,
     abi_o_rdonly: () => 0,
     abi_o_wronly: () => 1,
+    kernel_pipe_base: () => state.pipeBase,
+    kernel_attach_runtime_state: () => {},
     kernel_memfs_header_bytes: () => 32,
     kernel_memfs_inodes_ptr: () => state.memfsPtr + 0x100,
     kernel_memfs_inodes_bytes: () => 16384 * 32,
@@ -133,6 +138,8 @@ function makeKernel(memory: WebAssembly.Memory): FakeKernel {
     thread_blocked_ofd_id: (vmPtr: number) => blockedOfdMap.get(vmPtr) ?? 0,
     kernel_ofd_fd_type: (ofdId: number) => new DataView(memory.buffer)
       .getInt32(state.ofdTablePtr + ofdId * 32, true),
+    kernel_ofd_host_fd: (ofdId: number) => new DataView(memory.buffer)
+      .getInt32(state.ofdTablePtr + ofdId * 32 + 4, true),
     kernel_ofd_ino: (ofdId: number) => new DataView(memory.buffer)
       .getUint32(state.ofdTablePtr + ofdId * 32 + 24, true),
     kernel_ofd_status_flags: () => 0,
@@ -140,7 +147,7 @@ function makeKernel(memory: WebAssembly.Memory): FakeKernel {
       .getInt32(state.ofdTablePtr + ofdId * 32 + 16, true),
     kernel_pty_input_pipe: (ptyIdx: number) => ptyIdx * 2 + 1,
     kernel_pty_output_pipe: (ptyIdx: number) => ptyIdx * 2 + 2,
-    kernel_pipe_region_bytes: () => 64 * (32 + 4096),
+    kernel_pipe_region_bytes: () => 64 * (32 + 65_536),
     kernel_retain_ofd: retainOfd,
     kernel_release_ofd: releaseOfd,
     kernel_ofd_table_bytes: () => 32 * 32,
@@ -183,6 +190,8 @@ function makeHandle(kernel: FakeKernel, memory: WebAssembly.Memory): ProcessHand
     kernelShare: {
       members: new Set(),
       sharedOfdIds: new Set<number>(),
+      ofdSlotSnapshots: new Map(),
+      forkSharedSyncPromise: null,
     },
     stdinQueue: [],
     outputBacklog: [],
@@ -270,9 +279,8 @@ test("trackForkSharedOfds skips hidden stdio pipes and retains non-stdio OFDs on
 
   expect(retained).toEqual([11, 13]);
   expect([...handle.kernelShare.sharedOfdIds].sort((left, right) => left - right)).toEqual([11, 13]);
-  expect(kernel.retainOfd).toHaveBeenCalledTimes(2);
-  expect(kernel.retainOfd).toHaveBeenNthCalledWith(1, 11);
-  expect(kernel.retainOfd).toHaveBeenNthCalledWith(2, 13);
+  expect(kernel.retainOfd).toHaveBeenCalledWith(11);
+  expect(kernel.retainOfd).toHaveBeenCalledWith(13);
 });
 
 test("activeKernelShareOfdIds ignores stale entries and restoreLocalOfdSlots restores preserved OFD bytes", () => {
@@ -327,11 +335,11 @@ test("local OFD and pipe snapshots preserve child-private dup-style pipe aliases
   );
   new Uint8Array(memory.buffer).fill(
     0,
-    handle.kernelState.pipeBase + 14 * (32 + 4096),
-    handle.kernelState.pipeBase + 16 * (32 + 4096),
+    handle.kernelState.pipeBase + 14 * (32 + 65_536),
+    handle.kernelState.pipeBase + 16 * (32 + 65_536),
   );
-  new DataView(memory.buffer).setInt32(handle.kernelState.pipeBase + 14 * (32 + 4096) + 8, 7, true);
-  new DataView(memory.buffer).setInt32(handle.kernelState.pipeBase + 14 * (32 + 4096) + 12, 8, true);
+  new DataView(memory.buffer).setInt32(handle.kernelState.pipeBase + 14 * (32 + 65_536) + 8, 7, true);
+  new DataView(memory.buffer).setInt32(handle.kernelState.pipeBase + 14 * (32 + 65_536) + 12, 8, true);
 
   restoreLocalOfdSlots(handle, preservedOfds);
 
@@ -374,12 +382,34 @@ test("local pipe snapshots preserve PTY-backed stdio pipe slots across scrubbed 
   const preservedPipes = snapshotLocalPipeSlots(handle, [20, 21]);
   new Uint8Array(memory.buffer).fill(
     0,
-    handle.kernelState.pipeBase + 21 * (32 + 4096),
-    handle.kernelState.pipeBase + 23 * (32 + 4096),
+    handle.kernelState.pipeBase + 21 * (32 + 65_536),
+    handle.kernelState.pipeBase + 23 * (32 + 65_536),
   );
 
   restoreLocalPipeSlots(handle, preservedPipes);
 
   expect(pipeMarker(memory, handle.kernelState.pipeBase, 21)).toBe(0xa1);
   expect(pipeMarker(memory, handle.kernelState.pipeBase, 22)).toBe(0xb2);
+});
+
+test("kernel-share pipe reconcile keeps host stderr reader open for stdio pipes", () => {
+  const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
+  const kernel = makeKernel(memory);
+  const handle = makeHandle(kernel, memory);
+  seedOfd(memory, handle.kernelState.ofdTablePtr, 3, FD_TYPE_PIPE, handle.stderrPipe, 0xe3, -7);
+  seedPipeSlot(memory, handle.kernelState.pipeBase, handle.stderrPipe, 0xa6);
+  kernel.setFdMap(new Map([[2, 3]]));
+  handle.kernelShare.members.add(handle);
+
+  const view = new DataView(memory.buffer);
+  const slotBase = handle.kernelState.pipeBase + handle.stderrPipe * (32 + 65_536);
+  view.setInt32(slotBase + 8, 0, true);
+  view.setInt32(slotBase + 12, 0, true);
+
+  reconcileKernelSharePipeControl(handle);
+
+  expect(pipeOpenCounts(memory, handle.kernelState.pipeBase, handle.stderrPipe)).toEqual({
+    readOpen: 1,
+    writeOpen: 1,
+  });
 });

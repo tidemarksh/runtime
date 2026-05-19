@@ -82,6 +82,9 @@ export function flushRuntimeFsStateFromDirtyHandle(
 
   const liveRepresentatives = new Map<KernelShareGroup, ProcessHandle>();
   for (const handle of dirtyHandles) {
+    if (!handle.processMemfsDirty) {
+      continue;
+    }
     if (handle.pid > 0 && context.processHandles.get(handle.pid) !== handle) {
       continue;
     }

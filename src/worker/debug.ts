@@ -3,6 +3,10 @@ import type {
   ThreadWorkerState,
 } from "./types.js";
 
+const NET_BUFFER_HEADER_BYTES = 16;
+const NET_BUFFER_HEAD_OFFSET = 0;
+const NET_BUFFER_TAIL_OFFSET = 4;
+
 export interface WorkerLogFocus {
   vmPtr: number;
   ownerState: string;
@@ -95,10 +99,43 @@ function readWorkerOwnerState(
   if (state.waitingInWorkerStatus !== null) {
     return `wait:${state.waitingInWorkerStatus}`;
   }
+  if (state.ownerAsyncStatus !== null) {
+    return `async:${state.ownerAsyncStatus}`;
+  }
   if (!state.initialized) {
     return "init";
   }
   return "idle";
+}
+
+function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, state: ThreadWorkerState): string {
+  const ownerState = readWorkerOwnerState(handle, worker, state);
+  const threadStatus = handle.kernel.thread_status?.(state.vmPtr);
+  const processPtr = handle.kernel.thread_process_ptr?.(state.vmPtr);
+  const currentPid = handle.kernel.process_current_pid?.(state.vmPtr);
+  const tid = handle.kernel.thread_tid?.(state.vmPtr);
+  return [
+    `0x${state.vmPtr.toString(16)}`,
+    `owner=${ownerState}`,
+    `ownerPid=${state.ownerPid}`,
+    `gen=${state.generation}`,
+    `runGen=${state.runningGeneration ?? "null"}`,
+    `init=${state.initialized ? 1 : 0}`,
+    `wait=${state.waitingInWorkerStatus ?? "null"}`,
+    `async=${state.ownerAsyncStatus ?? "null"}`,
+    `kernelStatus=${threadStatus ?? "n/a"}`,
+    `currentPid=${currentPid ?? "n/a"}`,
+    `tid=${tid ?? "n/a"}`,
+    `process=0x${(processPtr ?? 0).toString(16)}`,
+    `steps=${state.stepCount}`,
+    `statuses=${state.statusCount}`,
+    `last=${state.lastStatus ?? "null"}`,
+    `lastPc=${state.lastStatusPc === null ? "null" : `0x${state.lastStatusPc.toString(16)}`}`,
+    `lastStepPc=${state.lastStepPc === null ? "null" : `0x${state.lastStepPc.toString(16)}`}`,
+    `pendingPipeSlots=${state.pendingPipeSlotsForNextStep.length}`,
+    `pendingGuestWrites=${state.pendingGuestMemoryWrites.length}`,
+    `resumeReady=${state.resumeWorkersOnReady.length}`,
+  ].join(":");
 }
 
 function findLastWorkerLogEntry(
@@ -128,6 +165,7 @@ function collectWorkerEventTail(
     "wait",
     "resume",
     "write",
+    "fdtrace",
     "sleep",
     "yield",
     "fault_debug",
@@ -165,6 +203,7 @@ function collectWorkerStatusTail(
     "step",
     "wait",
     "resume",
+    "fdtrace",
     "fault_debug",
   ];
   const out: string[] = [];
@@ -714,6 +753,11 @@ function formatProcessFdTrace(handle: ProcessHandle): string {
     const arg0 = handle.kernel.debug_fd_syscall_trace_arg0?.(index);
     const arg0Ofd = handle.kernel.debug_fd_syscall_trace_arg0_ofd_id?.(index) ?? 0;
     const arg0Type = handle.kernel.debug_fd_syscall_trace_arg0_ofd_type?.(index) ?? 0;
+    const arg0HostFd = handle.kernel.debug_fd_syscall_trace_arg0_ofd_host_fd?.(index);
+    const arg0StatusFlags = handle.kernel.debug_fd_syscall_trace_arg0_ofd_status_flags?.(index);
+    const arg0Ino = handle.kernel.debug_fd_syscall_trace_arg0_ofd_ino?.(index);
+    const arg0InodeMode = handle.kernel.debug_fd_syscall_trace_arg0_inode_mode?.(index);
+    const arg0PipeGeneration = handle.kernel.debug_fd_syscall_trace_arg0_pipe_generation?.(index);
     const arg1 = handle.kernel.debug_fd_syscall_trace_arg1?.(index);
     const arg2 = handle.kernel.debug_fd_syscall_trace_arg2?.(index);
     const arg2Ofd = handle.kernel.debug_fd_syscall_trace_arg2_ofd_id?.(index) ?? 0;
@@ -725,7 +769,8 @@ function formatProcessFdTrace(handle: ProcessHandle): string {
     const pidSample1 = handle.kernel.debug_fd_syscall_trace_pid_sample1?.(index);
     entries.push(
       `${index}:vm=0x${traceVmPtr.toString(16)}:nr=${nr?.toString() ?? "n/a"}`
-      + `:a0=${arg0?.toString() ?? "n/a"}/ofd=${arg0Ofd}/type=${arg0Type}`
+      + `:a0=${arg0?.toString() ?? "n/a"}/ofd=${arg0Ofd}/type=${arg0Type}/host=${arg0HostFd ?? "n/a"}`
+      + `/flags=${arg0StatusFlags ?? "n/a"}/ino=${arg0Ino ?? "n/a"}/mode=${arg0InodeMode ?? "n/a"}/gen=${arg0PipeGeneration ?? "n/a"}`
       + `:a1=${arg1?.toString() ?? "n/a"}`
       + `:a2=${arg2?.toString() ?? "n/a"}/ofd=${arg2Ofd}/type=${arg2Type}`
       + `:a3=${arg3?.toString() ?? "n/a"}`
@@ -756,6 +801,25 @@ function formatProcessPathTrace(handle: ProcessHandle): string {
   return entries.join(" ");
 }
 
+function formatSocketRecvBufferHeadTail(handle: ProcessHandle, socketIdx: number): string {
+  if (socketIdx < 0) {
+    return "-1/-1";
+  }
+  const recvBufIdx = handle.kernel.thread_socket_recv_buf_idx?.(socketIdx) ?? -1;
+  if (recvBufIdx < 0) {
+    return "-1/-1";
+  }
+  const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+  const netBufferCount = maxSockets * 2;
+  const netBufferBytes = netBufferCount > 0 ? handle.kernel.kernel_net_buf_pool_bytes() / netBufferCount : 0;
+  if (!Number.isInteger(netBufferBytes) || netBufferBytes <= NET_BUFFER_HEADER_BYTES) {
+    return "-1/-1";
+  }
+  const absolute = handle.kernelState.netBufBase + recvBufIdx * netBufferBytes;
+  const view = new DataView(handle.memory.buffer, absolute, NET_BUFFER_HEADER_BYTES);
+  return `${view.getUint32(NET_BUFFER_HEAD_OFFSET, true)}/${view.getUint32(NET_BUFFER_TAIL_OFFSET, true)}`;
+}
+
 export function debugRuntimeProcessHandles(
   runtimeId: number,
   processHandles: Map<number, ProcessHandle>,
@@ -763,6 +827,7 @@ export function debugRuntimeProcessHandles(
   runtimeLifecycleEvents: Map<number, string[]>,
   formatPipeCounterDebug: (handle: ProcessHandle, fd: number) => string,
 ): string {
+  const lifecycle = runtimeLifecycleEvents.get(runtimeId);
   const lines = [...processHandles.values()]
     .filter((handle) => handle.runtimeId === runtimeId)
     .sort((left, right) => left.pid - right.pid)
@@ -782,6 +847,16 @@ export function debugRuntimeProcessHandles(
           })
           .filter(Boolean)
           .join(",");
+        const workerDetails = [...handle.workers]
+          .map((worker) => {
+            const state = threadWorkerStates.get(worker);
+            if (!state) {
+              return null;
+            }
+            return formatWorkerSchedulerDetails(handle, worker, state);
+          })
+          .filter(Boolean)
+          .join(" ");
         const workerFocusSummary = summarizeProcessWorkerLogFocus(handle, threadWorkerStates)
           .map((worker) => [
             `0x${worker.vmPtr.toString(16)}`,
@@ -812,7 +887,86 @@ export function debugRuntimeProcessHandles(
             `ino=${handle.kernel.kernel_ofd_ino(ofdId)}`,
             `host=${handle.kernel.kernel_ofd_host_fd(ofdId)}`,
             `status=${handle.kernel.kernel_ofd_status_flags(ofdId)}`,
+            `offset=${handle.kernel.kernel_ofd_offset(ofdId).toString()}`,
           ].join("/");
+        }).filter(Boolean).join(" ");
+        const networkLogSummary = [
+          `inject=${handle.workerDebugLog.filter((entry) => entry.startsWith("net-inject:")).length}`,
+          `drain_write=${handle.workerDebugLog.filter((entry) => entry.startsWith("net-drain:") && entry.endsWith(":write")).length}`,
+          `drain_empty=${handle.workerDebugLog.filter((entry) => entry.startsWith("net-drain:") && entry.includes(":n=0:")).length}`,
+          `close=${handle.workerDebugLog.filter((entry) => entry.startsWith("net-close:")).length}`,
+          `samples=${handle.workerDebugLog
+            .filter((entry) => (
+              entry.startsWith("net-read-")
+              || entry.startsWith("net-inbound:")
+              || entry.startsWith("net-inject")
+              || entry.startsWith("net-close:")
+              || entry.startsWith("net-force-close:")
+              || entry.startsWith("socket-state-")
+              || entry.startsWith("socket-sync-")
+              || entry.startsWith("socket-restore-")
+            ))
+            .slice(-80)
+            .join("|")}`,
+        ].join("/");
+        const networkFdSummary = [...handle.networkConnections.keys()]
+          .map((fd) => {
+            const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(handle.vmPtr, fd) ?? -1;
+            const peerIdx = socketIdx >= 0
+              ? handle.kernel.thread_socket_peer_idx?.(socketIdx) ?? -1
+              : -1;
+            return [
+              `fd=${fd}`,
+              `sock=${socketIdx}`,
+              `state=${socketIdx >= 0 ? handle.kernel.thread_socket_state?.(socketIdx) ?? -1 : -1}`,
+              `buf=${socketIdx >= 0 ? handle.kernel.thread_socket_recv_buf_idx?.(socketIdx) ?? -1 : -1}`,
+              `recv=${socketIdx >= 0 ? handle.kernel.thread_socket_recv_available?.(socketIdx) ?? -1 : -1}`,
+              `ht=${formatSocketRecvBufferHeadTail(handle, socketIdx)}`,
+              `read_count=${socketIdx >= 0 ? handle.kernel.thread_socket_read_count?.(socketIdx) ?? -1 : -1}`,
+              `read_bytes=${socketIdx >= 0 ? handle.kernel.thread_socket_read_bytes?.(socketIdx)?.toString() ?? "-1" : "-1"}`,
+              `read_last=${socketIdx >= 0 ? [
+                handle.kernel.thread_socket_read_last_fd?.(socketIdx) ?? -1,
+                handle.kernel.thread_socket_read_last_result?.(socketIdx)?.toString() ?? "-1",
+                handle.kernel.thread_socket_read_last_before?.(socketIdx) ?? -1,
+                handle.kernel.thread_socket_read_last_after?.(socketIdx) ?? -1,
+              ].join("/") : "-1"}`,
+              `peer=${peerIdx}`,
+              `peer_buf=${peerIdx >= 0 ? handle.kernel.thread_socket_recv_buf_idx?.(peerIdx) ?? -1 : -1}`,
+              `peer_recv=${peerIdx >= 0 ? handle.kernel.thread_socket_recv_available?.(peerIdx) ?? -1 : -1}`,
+            ].join(":");
+          })
+          .join(" ");
+        const socketFdSummary = Array.from({ length: handle.kernel.abi_max_fds() }, (_, fd) => {
+          const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+          if (
+            ofdId === 0
+            || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_socket()
+          ) {
+            return null;
+          }
+          const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(handle.vmPtr, fd) ?? -1;
+          const peerIdx = socketIdx >= 0
+            ? handle.kernel.thread_socket_peer_idx?.(socketIdx) ?? -1
+            : -1;
+          return [
+            `fd=${fd}`,
+            `sock=${socketIdx}`,
+            `state=${socketIdx >= 0 ? handle.kernel.thread_socket_state?.(socketIdx) ?? -1 : -1}`,
+            `buf=${socketIdx >= 0 ? handle.kernel.thread_socket_recv_buf_idx?.(socketIdx) ?? -1 : -1}`,
+            `recv=${socketIdx >= 0 ? handle.kernel.thread_socket_recv_available?.(socketIdx) ?? -1 : -1}`,
+            `ht=${formatSocketRecvBufferHeadTail(handle, socketIdx)}`,
+            `read_count=${socketIdx >= 0 ? handle.kernel.thread_socket_read_count?.(socketIdx) ?? -1 : -1}`,
+            `read_bytes=${socketIdx >= 0 ? handle.kernel.thread_socket_read_bytes?.(socketIdx)?.toString() ?? "-1" : "-1"}`,
+            `read_last=${socketIdx >= 0 ? [
+              handle.kernel.thread_socket_read_last_fd?.(socketIdx) ?? -1,
+              handle.kernel.thread_socket_read_last_result?.(socketIdx)?.toString() ?? "-1",
+              handle.kernel.thread_socket_read_last_before?.(socketIdx) ?? -1,
+              handle.kernel.thread_socket_read_last_after?.(socketIdx) ?? -1,
+            ].join("/") : "-1"}`,
+            `peer=${peerIdx}`,
+            `peer_buf=${peerIdx >= 0 ? handle.kernel.thread_socket_recv_buf_idx?.(peerIdx) ?? -1 : -1}`,
+            `peer_recv=${peerIdx >= 0 ? handle.kernel.thread_socket_recv_available?.(peerIdx) ?? -1 : -1}`,
+          ].join(":");
         }).filter(Boolean).join(" ");
 
         return [
@@ -823,11 +977,14 @@ export function debugRuntimeProcessHandles(
           `process=0x${processPtr.toString(16)}`,
           `workers=${handle.workers.size}`,
           `worker_states=[${workerStates}]`,
+          `worker_details=[${workerDetails}]`,
           `worker_focus=[${workerFocusSummary}]`,
           `thread_states=[${threadStates}]`,
           `ready=${handle.readyWorkers.length}`,
           `running=${handle.runningWorker ? "1" : "0"}`,
           `blocked=[${blocked}]`,
+          `pipe_sync=${handle.pipeSyncPromise === null ? 0 : 1}/${handle.pipeSyncQueued ? 1 : 0}`,
+          `fork_sync=${handle.forkSharedSyncPromise === null ? 0 : 1}/${handle.kernelShare.forkSharedSyncPromise === null ? 0 : 1}`,
           `vfork=${handle.vforkSnapshot ? "1" : "0"}`,
           `stdio_pipes=${handle.stdinPipe}/${handle.stdoutPipe}/${handle.stderrPipe}`,
           `process_stdio=${handle.kernel.process_stdin_pipe(handle.vmPtr)}/${handle.kernel.process_stdout_pipe(handle.vmPtr)}/${handle.kernel.process_stderr_pipe(handle.vmPtr)}`,
@@ -836,6 +993,11 @@ export function debugRuntimeProcessHandles(
             .join(" ")}]`,
           `shared_ofds=[${[...handle.kernelShare.sharedOfdIds].sort((left, right) => left - right).join(",")}]`,
           `fds=[${fdSummary}]`,
+          `worker_net=[${networkLogSummary}]`,
+          `network_fds=[${networkFdSummary}]`,
+          `network_closed_fds=[${[...handle.networkClosedFds].sort((left, right) => left - right).join(",")}]`,
+          `socket_fds=[${socketFdSummary}]`,
+          `worker_log=[${handle.workerDebugLog.slice(-48).join(", ")}]`,
           `debug=${handle.lastDebugMessage ?? "n/a"}`,
           `syscalls=[${formatProcessSyscallTrace(handle)}]`,
           `riscv_syscalls=[${formatProcessRiscvSyscallTrace(handle)}]`,
@@ -855,8 +1017,27 @@ export function debugRuntimeProcessHandles(
         ].join(" ");
       }
     });
-  const lifecycle = runtimeLifecycleEvents.get(runtimeId);
   if (lifecycle && lifecycle.length > 0) {
+    const fsLifecycleTail = lifecycle
+      .filter((event) => event.startsWith("fs-"))
+      .slice(-120);
+    if (fsLifecycleTail.length > 0) {
+      lines.unshift(`fs_lifecycle_tail=[${fsLifecycleTail.join(", ")}]`);
+    }
+    const processLifecycleTail = lifecycle
+      .filter((event) => (
+        event.includes("fork")
+        || event.includes("spawn")
+        || event.includes("child")
+        || event.includes("exit")
+        || event.includes("wait4")
+        || event.includes("reroute")
+        || event.includes("ownership")
+      ))
+      .slice(-160);
+    if (processLifecycleTail.length > 0) {
+      lines.push(`process_lifecycle_tail=[${processLifecycleTail.join(", ")}]`);
+    }
     lines.push(`lifecycle=[${lifecycle.join(", ")}]`);
   }
   return lines.join("\n");
@@ -869,8 +1050,19 @@ export function appendRuntimeLifecycleEvent(
 ): void {
   const events = runtimeLifecycleEvents.get(runtimeId) ?? [];
   events.push(event);
-  if (events.length > 256) {
-    events.splice(0, events.length - 256);
+  if (events.length > 5000) {
+    const important = events.filter((entry) => (
+      entry.includes("fork")
+      || entry.includes("spawn")
+      || entry.includes("child")
+      || entry.includes("exit")
+      || entry.includes("wait4")
+      || entry.includes("status-file")
+      || entry.includes("reroute")
+      || entry.includes("ownership")
+    ));
+    const tail = events.slice(-3000);
+    events.splice(0, events.length, ...[...new Set([...important.slice(-2000), ...tail])]);
   }
   runtimeLifecycleEvents.set(runtimeId, events);
 }

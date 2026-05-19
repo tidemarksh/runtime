@@ -30,6 +30,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     memory,
     abi_max_fds: () => 256,
     abi_max_threads: () => 64,
+    abi_fd_type_file: () => 1,
     abi_fd_type_epoll: () => 3,
     kernel_heap_base: () => runtimeState.heapBase,
     kernel_heap_ptr: () => runtimeState.heapPtr,
@@ -94,6 +95,12 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
       .getInt32(runtimeState.ofdTablePtr + ofdId * 32, true),
     kernel_ofd_ino: (ofdId: number) => new DataView(memory.buffer)
       .getUint32(runtimeState.ofdTablePtr + ofdId * 32 + 24, true),
+    kernel_ofd_host_fd: (ofdId: number) => new DataView(memory.buffer)
+      .getInt32(runtimeState.ofdTablePtr + ofdId * 32 + 4, true),
+    kernel_ofd_refcount: (ofdId: number) => new DataView(memory.buffer)
+      .getInt32(runtimeState.ofdTablePtr + ofdId * 32 + 12, true),
+    kernel_ofd_offset: (ofdId: number) => new DataView(memory.buffer)
+      .getBigInt64(runtimeState.ofdTablePtr + ofdId * 32 + 16, true),
   };
   return exports as unknown as KernelExports;
 }

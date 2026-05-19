@@ -570,6 +570,42 @@ test("kernel-worker writeFile keeps large files page-cache-backed instead of mat
   expect(roundTrip.subarray(data.length - 64)).toEqual(data.subarray(data.length - 64));
 });
 
+test("kernel-worker readFile falls back to page-cache data for externalized large files", () => {
+  const { canonicalExports, fsState } = makeFsState();
+  const data = new Uint8Array((1024 * 1024) + 17).map((_, index) => (index * 7) & 0xff);
+
+  fsState.writeFile("/usr/bin/sqv", data, 0o755, false);
+  canonicalExports.memfs_read_file_to = () => -1n;
+
+  const roundTrip = fsState.readFile("/usr/bin/sqv");
+
+  expect(roundTrip.length).toBe(data.length);
+  expect(roundTrip.subarray(0, 128)).toEqual(data.subarray(0, 128));
+  expect(roundTrip.subarray(data.length - 128)).toEqual(data.subarray(data.length - 128));
+});
+
+test("kernel-worker readFile falls back to seed data when page-cache data is unavailable", () => {
+  const { canonicalExports, fsState, sabPageCache } = makeFsState();
+  const data = new Uint8Array((1024 * 1024) + 17).map((_, index) => (index * 11) & 0xff);
+
+  fsState.writeFile("/usr/bin/sqv", data, 0o755, false);
+  const ino = canonicalExports.fileIno("/usr/bin/sqv");
+  publishInode(sabPageCache, ino, {
+    mode: 0o100755,
+    size: data.length,
+    parentIno: canonicalExports.fileIno("/usr/bin"),
+    name: encoder.encode("sqv"),
+    nextSibling: 0,
+  }, null);
+  canonicalExports.memfs_read_file_to = () => -1n;
+
+  const roundTrip = fsState.readFile("/usr/bin/sqv");
+
+  expect(roundTrip.length).toBe(data.length);
+  expect(roundTrip.subarray(0, 128)).toEqual(data.subarray(0, 128));
+  expect(roundTrip.subarray(data.length - 128)).toEqual(data.subarray(data.length - 128));
+});
+
 test("kernel-worker symlink uses basename scratch independently from resolvePath scratch", () => {
   const { canonicalExports, fsState } = makeFsState();
 

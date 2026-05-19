@@ -1,13 +1,19 @@
 import { expect, test, vi } from "vite-plus/test";
 import { createWorkerExitHelpers } from "../../../src/worker/exit.js";
+import { drainProcessOutput } from "../../../src/worker/stdio.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
 
 function makeHandle(
   overrides: Partial<ProcessHandle> = {},
 ): ProcessHandle {
   const kernel = {
+    abi_max_fds: () => 16,
     process_fd_ofd_id: (_vmPtr: number, fd: number) => fd >= 0 && fd <= 2 ? fd + 1 : 0,
+    process_fd_flags: () => 0,
     kernel_ofd_fd_type: (ofdId: number) => ofdId >= 1 && ofdId <= 3 ? 6 : 0,
+    kernel_ofd_host_fd: () => -1,
+    kernel_ofd_refcount: () => 1,
+    kernel_ofd_status_flags: () => 0,
     abi_fd_type_pipe: () => 6,
     kernel_ofd_ino: (ofdId: number) => ofdId === 1 ? 1 : 2,
     ...(overrides.kernel as Partial<ProcessHandle["kernel"]> | undefined),
@@ -21,10 +27,10 @@ function makeHandle(
     maxMemoryPages: 0,
     guestBase: 0,
     worker: {} as Worker,
-    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    memory: new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true }),
     wasmModule: {} as WebAssembly.Module,
     kernel,
-    kernelState: {} as ProcessHandle["kernelState"],
+    kernelState: { pipeBase: 0 } as ProcessHandle["kernelState"],
     stdinPipe: 0,
     stdoutPipe: 2,
     stderrPipe: 2,
@@ -49,6 +55,7 @@ function makeHandle(
     readyWorkers: [],
     runningWorker: null,
     blockedWorkers: new Map(),
+    childExitSyncRecords: new Map(),
     pendingChildExitRecords: 0,
     pipeSyncPromise: null,
     pipeSyncQueued: false,
@@ -126,21 +133,169 @@ test("recordExitOnParent syncs and drains child output before waking the parent"
   await helpers.completeProcessExit(child, 0, 0);
 
   expect(order).toEqual([
-    "pipe-sync:3:sync",
+    "kick:1",
+    "pipe-sync:1:wake",
+    "drain:1",
+    "pipe-sync:3:wake",
     "drain:3",
+    "unregister:3",
     "debug:1",
     "debug:1",
     "record:1",
     "pipe-sync:1:sync",
     "pipe-sync:1:sync",
-    "kick:1",
     "release:3",
-    "unregister:3",
     "destroy:3",
     "pipe-sync:1:wake",
     "drain:1",
     "kick:1",
   ]);
+});
+
+test("completeProcessExit drains top-level visible output before releasing stdio", async () => {
+  const order: string[] = [];
+  const stdoutChunks: string[] = [];
+  const encoder = new TextEncoder();
+  const handle = makeHandle({
+    parentPid: null,
+    stderrPipe: 3,
+    hostStdio: {
+      stdinPipe: 1,
+      stdoutPipe: 2,
+      stderrPipe: 3,
+      refCount: 1,
+    },
+    onStdout: (data) => {
+      stdoutChunks.push(new TextDecoder().decode(data));
+    },
+    kernel: {
+      kernel_ofd_ino: (ofdId: number) => ofdId,
+    } as never,
+  });
+  const payload = encoder.encode("final stdout\n");
+  const slotBase = handle.kernelState.pipeBase + handle.hostStdio.stdoutPipe * (32 + 65_536);
+  const view = new DataView(handle.memory.buffer);
+  view.setUint32(slotBase, 0, true);
+  view.setUint32(slotBase + 4, payload.length, true);
+  view.setInt32(slotBase + 8, 1, true);
+  view.setInt32(slotBase + 12, 1, true);
+  new Uint8Array(handle.memory.buffer).set(payload, slotBase + 32);
+  const processHandles = new Map<number, ProcessHandle>([
+    [3, handle],
+  ]);
+
+  const helpers = createWorkerExitHelpers({
+    processHandles,
+    appendRuntimeLifecycleEvent: () => {},
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput(drainHandle) {
+      order.push(`drain:${drainHandle.pid}`);
+      return drainProcessOutput(drainHandle);
+    },
+    destroyProcessHandle(destroyHandle) {
+      order.push(`destroy:${destroyHandle.pid}`);
+    },
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers: () => {},
+    recordChildExitViaKernelWorker: async () => {},
+    releaseSharedHostStdio: async (releaseHandle) => {
+      order.push(`release:${releaseHandle.pid}`);
+    },
+    requestPipeStateSync: async (syncHandle) => {
+      order.push(`pipe-sync:${syncHandle.pid}`);
+    },
+    unregisterProcessWithKernelWorker: async (unregisterHandle) => {
+      order.push(`unregister:${unregisterHandle.pid}`);
+    },
+  });
+
+  await helpers.completeProcessExit(handle, 0, 0);
+
+  expect(order).toEqual([
+    "pipe-sync:3",
+    "drain:3",
+    "pipe-sync:3",
+    "pipe-sync:3",
+    "drain:3",
+    "release:3",
+    "unregister:3",
+    "destroy:3",
+  ]);
+  expect(stdoutChunks.join("")).toBe("final stdout\n");
+});
+
+test("completeProcessExit waits for stdio-owned child exit before releasing visible owner stdio", async () => {
+  const order: string[] = [];
+  let markChildRecordStarted!: () => void;
+  let finishChildRecord!: () => void;
+  const childRecordStarted = new Promise<void>((resolve) => {
+    markChildRecordStarted = resolve;
+  });
+  const childRecordFinished = new Promise<void>((resolve) => {
+    finishChildRecord = resolve;
+  });
+  const parent = makeHandle({
+    pid: 1,
+    parentPid: null,
+    debugCommand: "/bin/parent",
+  });
+  const child = makeHandle({
+    pid: 3,
+    parentPid: 1,
+    stdioOwner: parent,
+    debugCommand: "/bin/child",
+  });
+  const processHandles = new Map<number, ProcessHandle>([
+    [1, parent],
+    [3, child],
+  ]);
+
+  const helpers = createWorkerExitHelpers({
+    processHandles,
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      order.push(event);
+    },
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=1,pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: (handle) => {
+      order.push(`drain:${handle.pid}`);
+      return false;
+    },
+    destroyProcessHandle(handle) {
+      order.push(`destroy:${handle.pid}`);
+      processHandles.delete(handle.pid);
+    },
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers: () => {},
+    recordChildExitViaKernelWorker: async () => {
+      order.push("record-child-start");
+      markChildRecordStarted();
+      await childRecordFinished;
+      order.push("record-child-done");
+    },
+    releaseSharedHostStdio: async (handle) => {
+      order.push(`release:${handle.pid}`);
+    },
+    requestPipeStateSync: async () => {},
+    unregisterProcessWithKernelWorker: async () => {},
+  });
+
+  const childExit = helpers.completeProcessExit(child, 0, 0);
+
+  await childRecordStarted;
+  const ownerExit = helpers.completeProcessExit(parent, 0, 0);
+  expect(order).toContain("record-child-start");
+  expect(order).not.toContain("release:1");
+
+  finishChildRecord();
+  await childExit;
+  await ownerExit;
+  expect(order.indexOf("destroy:3")).toBeLessThan(order.indexOf("release:1"));
 });
 
 test("recordExitOnParent skips child-side drain when stdio is owned by the parent", async () => {
@@ -271,8 +426,8 @@ test("completeProcessExit treats duped child stdio pipes as internal protocol pi
 
   await helpers.completeProcessExit(child, 0, 0);
 
-  expect(order).toContain("pipe-sync:3:sync");
-  expect(order).not.toContain("hidden-drain:3");
+  expect(order).toContain("pipe-sync:3:wake");
+  expect(order).toContain("hidden-drain:3");
   expect(order).toContain("record:1");
   expect(order).toContain("unregister:3");
   expect(order).toContain("pipe-sync:1:wake");
@@ -318,7 +473,7 @@ test("recordExitOnParent re-kicks blocked parent after pending child exit bookke
 
   await helpers.completeProcessExit(child, 0, 0);
 
-  expect(observedPendingCounts).toEqual([1]);
+  expect(observedPendingCounts).toEqual([0]);
   expect(kicked).toEqual([0, 0]);
   expect(parent.pendingChildExitRecords).toBe(0);
 });

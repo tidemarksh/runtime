@@ -3,6 +3,7 @@ import type {
   KernelWorkerOfdSlotSnapshot,
   KernelWorkerPidBytesSnapshot,
   KernelWorkerPidStateSnapshot,
+  KernelWorkerPipeSlotSnapshot,
 } from "../../messages.js";
 
 export interface RecomputedPipeControlState {
@@ -26,9 +27,9 @@ export interface KernelWorkerSharedStateSyncDeps {
   collectProcessHeldOfdRefcounts(processExports: KernelExports, vmPtr: number): Int32Array;
   collectProcessHeldEpollOfdIds(processExports: KernelExports, vmPtr: number): number[];
   collectProcessHeldPipeSlots(processExports: KernelExports, vmPtr: number): Set<number>;
-  collectProcessPrivatePipeSourceModes(processExports: KernelExports, vmPtr: number): Map<number, number>;
+  collectProcessPrivatePipeSourceModes(processExports: KernelExports, vmPtr: number, pid?: number): Map<number, number>;
   collectProcessPipeSlotModes(processExports: KernelExports, vmPtr: number): Map<number, number>;
-  collectProcessPrivatePipeSlots(processExports: KernelExports, vmPtr: number): Set<number>;
+  collectProcessPrivatePipeSlots(processExports: KernelExports, vmPtr: number, pid?: number): Set<number>;
   collectCanonicalManagedPipeSlots(kernelState: KernelRuntimeState): number[];
   copySelectedOfdState(
     sourceExports: KernelExports,
@@ -56,6 +57,7 @@ export interface KernelWorkerSharedStateSyncDeps {
     targetState: KernelRuntimeState,
     options?: { includeData?: boolean },
   ): void;
+  restorePublishedRegularFileDataFromPageCache?(targetExports?: KernelExports): void;
   clearMemfsState(targetExports: KernelExports, targetState: KernelRuntimeState): void;
   reconcileCanonicalOfdRefcounts(
     memberPids: ReadonlySet<number>,
@@ -70,6 +72,11 @@ export interface KernelWorkerSharedStateSyncDeps {
     targetExports: KernelExports,
     targetState: KernelRuntimeState,
     pipeSlots: Iterable<number>,
+  ): void;
+  applySelectedPipeSlotSnapshots(
+    targetExports: KernelExports,
+    targetState: KernelRuntimeState,
+    snapshots: KernelWorkerPipeSlotSnapshot[],
   ): void;
   clearSelectedPipeSlots(
     targetExports: KernelExports,

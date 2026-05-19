@@ -5,8 +5,11 @@ import type {
 import type { FsSnapshotEntry } from "../fs/types.js";
 import type {
   KernelWorkerOutbound,
+  ForkStackSnapshot,
   GuestWriteWatchRegion,
   KernelWorkerRequest,
+  KernelWorkerPipeSlotSnapshot,
+  GuestMemoryWriteSnapshot,
 } from "../messages.js";
 import type { RuntimeStateBridge } from "../bridge/runtime-state.js";
 import type { RuntimeNetworkBridge, RuntimeNetworkConnection } from "../network.js";
@@ -37,6 +40,7 @@ export interface ThreadWorkerState {
   vmPtr: number;
   ownerPid: number;
   generation: number;
+  runningGeneration?: number | null;
   reinitCount: number;
   stepCount: number;
   totalStepBudget: number;
@@ -53,9 +57,15 @@ export interface ThreadWorkerState {
   lastStatusPc: bigint | null;
   lastStatusSp: bigint | null;
   lastStatusS11: bigint | null;
+  forkStackSnapshot?: ForkStackSnapshot;
+  execveProcessState?: Uint8Array;
   hotStatusPcs: Record<string, number>;
   initialized: boolean;
   waitingInWorkerStatus: number | null;
+  ownerAsyncStatus: number | null;
+  resumeBlockedOnNextStep: boolean;
+  pendingPipeSlotsForNextStep: KernelWorkerPipeSlotSnapshot[];
+  pendingGuestMemoryWrites: GuestMemoryWriteSnapshot[];
   resumeWorkersOnReady: Worker[];
 }
 
@@ -67,8 +77,13 @@ export interface BlockedWorkerState {
   timeoutDeadlineMs: number | null;
   sleepDeadlineTicks: bigint | null;
   rpcPending: boolean;
+  rpcGeneration: number;
   skipNextNetworkPump: boolean;
   pipeSyncedBeforePassive: boolean;
+  pipeChildExitResumeKey: string | null;
+  pipeEofChildExitDeferrals: number;
+  lastPipeRetryLifecycleEvent?: string;
+  lastWait4RetryLifecycleEvent?: string;
 }
 
 export interface RuntimeFsState {
@@ -116,6 +131,23 @@ export interface ProcessHandle {
   kernelWorkerRequest?: KernelWorkerRequestFn;
   networkBridge?: RuntimeNetworkBridge;
   networkConnections: Map<number, RuntimeNetworkConnection>;
+  networkConnectionOfds?: Map<number, number>;
+  networkOfdSlotWatermarks?: Map<number, Uint8Array>;
+  networkPendingConnectFds: Set<number>;
+  networkClosedFds: Set<number>;
+  networkClosedSocketSlots: Map<number, { offset: number; data: Uint8Array }>;
+  networkSocketSlotWatermarks: Map<number, { offset: number; data: Uint8Array }>;
+  networkRecvHeadWatermarks: Map<number, number>;
+  networkRecvTailWatermarks: Map<number, number>;
+  networkRecvPayloadWatermarks: Map<number, {
+    recvBufIdx: number;
+    head: number;
+    tail: number;
+    capacity: number;
+    readBytes?: number;
+    availableBytes?: number;
+    data: Uint8Array;
+  }>;
   workers: Set<Worker>;
   readyWorkers: Worker[];
   runningWorker: Worker | null;
@@ -126,10 +158,13 @@ export interface ProcessHandle {
   pipeSyncPromise: Promise<void> | null;
   pipeSyncQueued: boolean;
   pipeWaiterWakeQueued: boolean;
+  pendingPipeSlotSnapshots: KernelWorkerPipeSlotSnapshot[];
   epollSyncPromise: Promise<void> | null;
   epollSyncQueued: boolean;
   epollWaiterWakeQueued: boolean;
   forkSharedSyncPromise: Promise<void> | null;
+  processMemfsDirty: boolean;
+  regularFileOfdOffsets?: Map<number, { ino: number; hostFd: number; offset: bigint }>;
   ofdSyncPromise: Promise<void> | null;
   ofdSyncQueuedIds: Set<number>;
   socketSyncPromise: Promise<void> | null;
@@ -150,6 +185,7 @@ export interface AttachThreadWorkerRequest {
   vmPtr: number;
   forcePrepare?: boolean;
   transferFrom?: ProcessHandle;
+  preserveMemoryBytes?: number;
 }
 
 export interface KernelShareGroup {

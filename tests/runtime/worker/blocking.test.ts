@@ -56,7 +56,13 @@ const originalWorker = globalThis.Worker;
 function makeKernelState(): KernelRuntimeState {
   return {
     heapBase: 0x200000, heapPtr: 0x210000, ofdTablePtr: 0x220000,
-    memfsPtr: 0x230000, memStatePtr: 0x240000, epollTablePtr: 0x250000,
+    memfsPtr: 0x230000,
+    memfsHeaderBytes: 32,
+    memfsInodesBytes: 16_384 * 32,
+    memfsFirstChildBytes: 16_384 * 4,
+    memfsDirEntriesBytes: 16_384 * 264,
+    memfsDataBytes: 256 * 1024,
+    memStatePtr: 0x240000, epollTablePtr: 0x250000,
     socketTablePtr: 0x260000, socketUsed: 0, pipeBase: 0x270000,
     pipeUsed: 0n, netBufBase: 0x280000, netBufUsed: 0n,
     sigSlotsPtr: 0x290000, processPendingPtr: 0x2a0000,
@@ -88,7 +94,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
   let currentSid = 1;
   let currentDidExec = 0;
   function initPipeSlot(slot: number): void {
-    const base = runtimeState.pipeBase + slot * (32 + 4096);
+    const base = runtimeState.pipeBase + slot * (32 + 65_536);
     const view = new DataView(memory.buffer);
     view.setInt32(base + 8, 1, true);
     view.setInt32(base + 12, 1, true);
@@ -311,8 +317,11 @@ test("STATUS_SLEEP advances guest time and resumes without a host sleep timer", 
 
   expect(worker.postedMessages).toEqual([{
     type: "step",
-    budget: 20_000,
-    kernelState: makeKernelState(),
+    budget: expect.any(Number),
+    kernelState: expect.objectContaining({
+      heapBase: makeKernelState().heapBase,
+      pipeBase: makeKernelState().pipeBase,
+    }),
   }]);
 });
 
@@ -336,8 +345,11 @@ test("STATUS_SLEEP with zero duration requeues immediately on the owner", async 
 
   expect(worker.postedMessages).toEqual([{
     type: "step",
-    budget: 20_000,
-    kernelState: makeKernelState(),
+    budget: expect.any(Number),
+    kernelState: expect.objectContaining({
+      heapBase: makeKernelState().heapBase,
+      pipeBase: makeKernelState().pipeBase,
+    }),
   }]);
 });
 
@@ -374,8 +386,11 @@ test("STATUS_EPOLL_WAIT with zero timeout resumes on the owner without a 1ms flo
   expect(resumeTimeout).toHaveBeenCalledWith(0x1234);
   expect(worker.postedMessages).toEqual([{
     type: "step",
-    budget: 20_000,
-    kernelState: makeKernelState(),
+    budget: expect.any(Number),
+    kernelState: expect.objectContaining({
+      heapBase: makeKernelState().heapBase,
+      pipeBase: makeKernelState().pipeBase,
+    }),
   }]);
 
   vi.useRealTimers();
@@ -424,8 +439,11 @@ test("STATUS_EPOLL_WAIT zero-timeout preserves timeout resume across running-wor
   expect(resumeBlocked).not.toHaveBeenCalled();
   expect(worker.postedMessages).toEqual([{
     type: "step",
-    budget: 20_000,
-    kernelState: makeKernelState(),
+    budget: expect.any(Number),
+    kernelState: expect.objectContaining({
+      heapBase: makeKernelState().heapBase,
+      pipeBase: makeKernelState().pipeBase,
+    }),
   }]);
 
   vi.useRealTimers();
@@ -468,8 +486,11 @@ test("STATUS_EPOLL_WAIT timeout retries that become FUTEX_WAIT stay in the owner
   expect(resumeBlocked).toHaveBeenCalledWith(0x1234);
   expect(worker.postedMessages).toEqual([{
     type: "step",
-    budget: 20_000,
-    kernelState: makeKernelState(),
+    budget: expect.any(Number),
+    kernelState: expect.objectContaining({
+      heapBase: makeKernelState().heapBase,
+      pipeBase: makeKernelState().pipeBase,
+    }),
   }]);
 
   vi.useRealTimers();

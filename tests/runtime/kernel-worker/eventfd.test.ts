@@ -38,6 +38,7 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
     memory,
     abi_max_fds: () => 256,
     abi_max_threads: () => 64,
+    abi_fd_type_file: () => 1,
     kernel_heap_base: () => runtimeState.heapBase,
     kernel_heap_ptr: () => runtimeState.heapPtr,
     kernel_ofd_table_ptr: () => runtimeState.ofdTablePtr,
@@ -102,8 +103,14 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
     thread_blocked_ofd_id: (_vmPtr: number) => 0,
     kernel_ofd_fd_type: (ofdId: number) => new DataView(memory.buffer)
       .getInt32(runtimeState.ofdTablePtr + ofdId * 32, true),
+    kernel_ofd_ino: (ofdId: number) => new DataView(memory.buffer)
+      .getUint32(runtimeState.ofdTablePtr + ofdId * 32 + 24, true),
+    kernel_ofd_host_fd: (ofdId: number) => new DataView(memory.buffer)
+      .getInt32(runtimeState.ofdTablePtr + ofdId * 32 + 4, true),
     kernel_ofd_refcount: (ofdId: number) => new DataView(memory.buffer)
       .getInt32(runtimeState.ofdTablePtr + ofdId * 32 + 16, true),
+    kernel_ofd_offset: (ofdId: number) => new DataView(memory.buffer)
+      .getBigInt64(runtimeState.ofdTablePtr + ofdId * 32 + 16, true),
     kernel_retain_ofd: () => {},
     kernel_release_ofd: () => {},
     setFdMap: (map: Map<number, number>) => {
@@ -119,13 +126,13 @@ function seedEventfdOfd(memory: WebAssembly.Memory, ofdId: number, marker: numbe
   const view = new DataView(memory.buffer);
   const base = state.ofdTablePtr + ofdId * 32;
   view.setInt32(base, FD_TYPE_EVENTFD, true);
-  view.setInt32(base + 16, 1, true);
-  view.setUint32(base + 24, marker, true);
+  view.setInt32(base + 12, 1, true);
+  view.setBigInt64(base + 16, BigInt(marker), true);
 }
 
 function eventfdMarker(memory: WebAssembly.Memory, ofdId: number): number {
   const state = makeKernelState();
-  return new DataView(memory.buffer).getUint32(state.ofdTablePtr + ofdId * 32 + 24, true);
+  return Number(new DataView(memory.buffer).getBigInt64(state.ofdTablePtr + ofdId * 32 + 16, true));
 }
 
 function makeSharedStateSync(

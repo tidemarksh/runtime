@@ -1,6 +1,10 @@
 import { readPipe, writePipe } from "../bridge/pipe.js";
 import { writeKernelScratch } from "./kernel-scratch.js";
+import type { KernelWorkerPipeSlotSnapshot } from "../messages.js";
 import type { ProcessHandle, SharedHostStdio } from "./types.js";
+
+const PIPE_HEADER_BYTES = 32;
+const PIPE_SLOT_MODE_READ = 1 << 0;
 
 function flushOutputBacklog(handle: ProcessHandle): void {
   const onStdout = handle.onStdout;
@@ -54,6 +58,44 @@ function readPipeCounters(handle: ProcessHandle, pipeSlot: number): {
   };
 }
 
+function snapshotPipeSlotReadProgress(
+  handle: ProcessHandle,
+  pipeSlot: number,
+): KernelWorkerPipeSlotSnapshot | null {
+  const maxPipes = handle.kernel.abi_max_pipes?.() ?? 0;
+  const pipeRegionBytes = handle.kernel.kernel_pipe_region_bytes?.() ?? 0;
+  const slotBytes = maxPipes > 0 ? pipeRegionBytes / maxPipes : 0;
+  if (
+    pipeSlot <= 0
+    || pipeSlot >= maxPipes
+    || !Number.isInteger(slotBytes)
+    || slotBytes <= PIPE_HEADER_BYTES
+  ) {
+    return null;
+  }
+  const offset = handle.kernelState.pipeBase + pipeSlot * slotBytes;
+  return {
+    pipeSlot,
+    slot: new Uint8Array(handle.memory.buffer).slice(offset, offset + slotBytes),
+    mode: PIPE_SLOT_MODE_READ,
+  };
+}
+
+function queueDrainedPipeReadProgress(handle: ProcessHandle, pipeSlot: number): void {
+  const snapshot = snapshotPipeSlotReadProgress(handle, pipeSlot);
+  if (snapshot === null) {
+    return;
+  }
+  handle.pendingPipeSlotSnapshots ??= [];
+  const existingIndex = handle.pendingPipeSlotSnapshots.findIndex((pending) => (
+    pending.pipeSlot === pipeSlot
+  ));
+  if (existingIndex >= 0) {
+    handle.pendingPipeSlotSnapshots.splice(existingIndex, 1);
+  }
+  handle.pendingPipeSlotSnapshots.push(snapshot);
+}
+
 function fdPipeSlot(handle: ProcessHandle, fd: number): number {
   const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
   if (
@@ -63,6 +105,32 @@ function fdPipeSlot(handle: ProcessHandle, fd: number): number {
     return 0;
   }
   return handle.kernel.kernel_ofd_ino(ofdId);
+}
+
+function fdPipeOfdId(handle: ProcessHandle, fd: number): number {
+  const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+  if (
+    ofdId === 0
+    || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
+  ) {
+    return 0;
+  }
+  return ofdId;
+}
+
+function stdioFdExclusivelyOwnsPipeSlot(handle: ProcessHandle, fd: number, pipeSlot: number): boolean {
+  if (pipeSlot <= 0 || fdPipeSlot(handle, fd) !== pipeSlot) {
+    return false;
+  }
+  for (let candidate = 0; candidate < handle.kernel.abi_max_fds(); candidate += 1) {
+    if (candidate === fd) {
+      continue;
+    }
+    if (fdPipeSlot(handle, candidate) === pipeSlot) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function writeProcessStdin(handle: ProcessHandle, data: Uint8Array): void {
@@ -135,6 +203,9 @@ export function drainPipeOutput(
       enqueueOutput(target, result.data);
     }
     if (result.eof || result.data.length === 0) {
+      if (drained) {
+        queueDrainedPipeReadProgress(source, pipeSlot);
+      }
       return drained;
     }
   }
@@ -146,8 +217,17 @@ export function drainProcessOutput(handle: ProcessHandle): boolean {
   }
   const target = outputTarget(handle);
   const source = handle;
-  const stdoutPipe = handle.hostStdio.stdoutPipe;
-  const stderrPipe = handle.hostStdio.stderrPipe;
+  const allowHostPipeFallback = handle.parentPid === null;
+  const stdoutPipe = stdioFdExclusivelyOwnsPipeSlot(handle, 1, handle.hostStdio.stdoutPipe)
+    ? handle.hostStdio.stdoutPipe
+    : allowHostPipeFallback
+      ? handle.hostStdio.stdoutPipe
+      : 0;
+  const stderrPipe = stdioFdExclusivelyOwnsPipeSlot(handle, 2, handle.hostStdio.stderrPipe)
+    ? handle.hostStdio.stderrPipe
+    : allowHostPipeFallback
+      ? handle.hostStdio.stderrPipe
+      : 0;
   const stdoutDrained = stdoutPipe !== 0
     ? drainPipeOutput(source, target, stdoutPipe)
     : false;
@@ -171,8 +251,18 @@ export function drainHiddenProcessOutput(handle: ProcessHandle): boolean {
   const source = handle;
   const stdoutSlot = fdPipeSlot(handle, 1);
   const stderrSlot = fdPipeSlot(handle, 2);
-  const stdoutPipe = inheritedSlots.has(stdoutSlot) ? stdoutSlot : 0;
-  const stderrPipe = inheritedSlots.has(stderrSlot) ? stderrSlot : 0;
+  const ownerStdoutOfd = handle.stdioOwner ? fdPipeOfdId(handle.stdioOwner, 1) : 0;
+  const ownerStderrOfd = handle.stdioOwner ? fdPipeOfdId(handle.stdioOwner, 2) : 0;
+  const stdoutPipe = inheritedSlots.has(stdoutSlot) && fdPipeOfdId(handle, 1) === ownerStdoutOfd
+    ? stdoutSlot
+    : stdoutSlot > 0 && stdoutSlot === handle.stdoutPipe
+      ? stdoutSlot
+      : 0;
+  const stderrPipe = inheritedSlots.has(stderrSlot) && fdPipeOfdId(handle, 2) === ownerStderrOfd
+    ? stderrSlot
+    : stderrSlot > 0 && stderrSlot === handle.stderrPipe
+      ? stderrSlot
+      : 0;
   const stdoutDrained = stdoutPipe !== 0
     ? drainPipeOutput(source, target, stdoutPipe)
     : false;
@@ -192,6 +282,10 @@ export async function settleVisibleProcessOutput(
   let stablePasses = 0;
 
   for (let pass = 0; pass < maxPasses; pass += 1) {
+    const preSyncDrained = drainProcessOutput(visible);
+    if (preSyncDrained && visible.kernelWorkerRequest && visible.pid > 0) {
+      await requestPipeStateSync(visible, false);
+    }
     if (handle.kernelWorkerRequest && handle.pid > 0) {
       await requestPipeStateSync(handle, false);
     }
@@ -204,8 +298,8 @@ export async function settleVisibleProcessOutput(
       await requestPipeStateSync(visible, false);
     }
     const after = pipeStateSignature(visible);
-    drainedAny ||= drained;
-    if (!drained && before === after) {
+    drainedAny ||= preSyncDrained || drained;
+    if (!preSyncDrained && !drained && before === after) {
       stablePasses += 1;
       if (stablePasses >= 2) {
         break;
@@ -237,12 +331,20 @@ export async function settleInheritedChildOutput(
     .filter((slot) => inheritedSlots.has(slot))
     .filter((slot, index, array) => slot > 0 && array.indexOf(slot) === index);
   if (slots.length === 0) {
+    for (const slot of [child.hostStdio.stdoutPipe, child.hostStdio.stderrPipe]) {
+      if (slot > 0 && inheritedSlots.has(slot) && !slots.includes(slot)) {
+        slots.push(slot);
+      }
+    }
+  }
+  if (slots.length === 0) {
     return false;
   }
   let stablePasses = 0;
 
   for (let pass = 0; pass < maxPasses; pass += 1) {
     await requestPipeStateSync(child, false);
+    drainProcessOutput(parent);
     const settled = slots.every((pipeSlot) => {
       const childCounters = readPipeCounters(child, pipeSlot);
       const parentCounters = readPipeCounters(parent, pipeSlot);
@@ -292,9 +394,13 @@ export function releaseSharedHostStdioLocal(handle: ProcessHandle): void {
   handle.stdinPipe = 0;
   handle.stdoutPipe = 0;
   handle.stderrPipe = 0;
+  if (shared.refCount > 0) {
+    return;
+  }
+  if (handle.stdioOwner && !handle.stdioOwner.exitInProgress) {
+    return;
+  }
   try {
-    // Local teardown still has to clear this process's hidden stdio pipe slots
-    // even if the visible host stdio attachment remains shared elsewhere.
     handle.kernel.process_release_host_stdio(handle.vmPtr);
   } catch {
     // Worker-error teardown can race with corrupted or already-released process state.

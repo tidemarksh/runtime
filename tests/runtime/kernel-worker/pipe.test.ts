@@ -4,9 +4,10 @@ import { createKernelWorkerPrimitives } from "../../../src/kernel-worker/primiti
 import { createKernelWorkerSharedStateSync } from "../../../src/kernel-worker/shared-state-sync.js";
 
 const FD_TYPE_PIPE = 6;
-const PIPE_SLOT_BYTES = 32 + 4096;
+const PIPE_SLOT_BYTES = 32 + 65_536;
 
 type TestKernelExports = KernelExports & {
+  fdMap(): Map<number, number>;
   setFdMap(map: Map<number, number>): void;
   setHostStdioSlots(slots: { stdin?: number; stdout?: number; stderr?: number }): void;
 };
@@ -53,6 +54,7 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
     abi_max_fds: () => 256,
     abi_max_threads: () => 64,
     abi_max_pipes: () => 64,
+    abi_fd_type_file: () => 1,
     abi_fd_type_pipe: () => FD_TYPE_PIPE,
     kernel_heap_base: () => runtimeState.heapBase,
     kernel_heap_ptr: () => runtimeState.heapPtr,
@@ -123,6 +125,14 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
       };
     },
     process_fd_ofd_id: (_vmPtr: number, fd: number) => fdMap.get(fd) ?? 0,
+    process_fd_flags: () => 0,
+    process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number, _fdFlags: number) => {
+      if (ofdId === 0) {
+        fdMap.delete(fd);
+      } else {
+        fdMap.set(fd, ofdId);
+      }
+    },
     process_thread_vm_ptr: (_vmPtr: number, slot: number) => (slot === 0 ? 0x1234 : 0),
     thread_blocked_ofd_id: (_vmPtr: number) => 0,
     process_stdin_pipe: () => stdinPipeSlot,
@@ -143,6 +153,7 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
       .getUint32(runtimeState.ofdTablePtr + ofdId * 32 + 24, true),
     kernel_ofd_refcount: (ofdId: number) => new DataView(memory.buffer)
       .getInt32(runtimeState.ofdTablePtr + ofdId * 32 + 16, true),
+    fdMap: () => new Map(fdMap),
     setFdMap: (map: Map<number, number>) => {
       fdMap = new Map(map);
     },
@@ -150,6 +161,22 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
       stdinPipeSlot = slots.stdin ?? 0;
       stdoutPipeSlot = slots.stdout ?? 0;
       stderrPipeSlot = slots.stderr ?? 0;
+      const view = new DataView(memory.buffer);
+      const seedImplicitPipeOfd = (fd: number, ofdId: number, pipeSlot: number, hostFd: number): void => {
+        if (pipeSlot <= 0) {
+          fdMap.delete(fd);
+          return;
+        }
+        view.setInt32(runtimeState.ofdTablePtr + ofdId * 32, FD_TYPE_PIPE, true);
+        view.setInt32(runtimeState.ofdTablePtr + ofdId * 32 + 4, hostFd, true);
+        view.setInt32(runtimeState.ofdTablePtr + ofdId * 32 + 8, hostFd >= 0 ? 0 : 1, true);
+        view.setInt32(runtimeState.ofdTablePtr + ofdId * 32 + 16, 1, true);
+        view.setUint32(runtimeState.ofdTablePtr + ofdId * 32 + 24, pipeSlot, true);
+        fdMap.set(fd, ofdId);
+      };
+      seedImplicitPipeOfd(0, 250, stdinPipeSlot, 10);
+      seedImplicitPipeOfd(1, 251, stdoutPipeSlot, -11);
+      seedImplicitPipeOfd(2, 252, stderrPipeSlot, -12);
     },
   };
 
@@ -177,6 +204,12 @@ function seedPipeOfd(
   if (exports.kernel_ofd_fd_type(ofdId) !== FD_TYPE_PIPE) {
     throw new Error(`failed to seed pipe OFD ${ofdId}`);
   }
+}
+
+function snapshotOfdSlot(memory: WebAssembly.Memory, ofdId: number): Uint8Array {
+  const state = makeKernelState();
+  const start = state.ofdTablePtr + ofdId * 32;
+  return new Uint8Array(memory.buffer, start, 32).slice();
 }
 
 function seedPipeSlot(
@@ -239,6 +272,10 @@ function makeSharedStateSync(
   parentExports: TestKernelExports,
   childExports: TestKernelExports,
   canonicalExports: TestKernelExports,
+  canonicalProcesses = new Map<number, { ppid: number }>([
+    [1, { ppid: 0 }],
+    [2, { ppid: 0 }],
+  ]),
 ) {
   const processKernels = new Map<number, KernelExports>([
     [1, parentExports],
@@ -248,6 +285,7 @@ function makeSharedStateSync(
   const primitives = createKernelWorkerPrimitives({
     getCanonicalExports: () => canonicalExports,
     processKernels,
+    canonicalProcesses,
     getCanonicalProcessVmPtr,
   });
 
@@ -289,6 +327,65 @@ test("kernel-worker releaseHostStdio keeps sibling private host stdio pipe count
   expect(pipeReadOpen(parentMemory, 4)).toBe(1);
   expect(pipeReadOpen(childMemory, 5)).toBe(0);
   expect(pipeReadOpen(canonicalMemory, 4)).toBe(1);
+});
+
+test("kernel-worker pipe sync keeps host stdout readable for a spawned process with a parent pid", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const sharedStateSync = makeSharedStateSync(
+    parentExports,
+    childExports,
+    canonicalExports,
+    new Map([
+      [1, { ppid: 0 }],
+      [2, { ppid: 1 }],
+    ]),
+  );
+
+  childExports.setHostStdioSlots({ stdout: 4 });
+  seedPipeSlotState(childMemory, 4, {
+    head: 0,
+    tail: 0,
+    marker: 0xcc,
+    readOpen: 1,
+    writeOpen: 1,
+  });
+
+  sharedStateSync.syncPipeState(2, makeKernelState());
+
+  expect(pipeReadOpen(canonicalMemory, 4)).toBe(1);
+  expect(pipeWriteOpen(canonicalMemory, 4)).toBe(1);
+  expect(pipeReadOpen(childMemory, 4)).toBe(1);
+  expect(pipeWriteOpen(childMemory, 4)).toBe(1);
+});
+
+test("kernel-worker pipe sync keeps host output readable after guest fd remapping", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
+
+  parentExports.setHostStdioSlots({ stderr: 5 });
+  parentExports.setFdMap(new Map());
+  seedPipeSlotState(parentMemory, 5, {
+    head: 0,
+    tail: 0,
+    marker: 0xdd,
+    readOpen: 1,
+    writeOpen: 0,
+  });
+
+  sharedStateSync.syncPipeState(1, makeKernelState());
+
+  expect(pipeReadOpen(canonicalMemory, 5)).toBe(1);
+  expect(pipeReadOpen(parentMemory, 5)).toBe(1);
 });
 
 test("kernel-worker pipe sync propagates shared pipe slots by shared OFD ids", () => {
@@ -341,6 +438,112 @@ test("kernel-worker pipe sync counts shared pipe endpoints by process-held OFD, 
   expect(pipeWriteOpen(parentMemory, 6)).toBe(2);
   expect(pipeReadOpen(childMemory, 6)).toBe(2);
   expect(pipeWriteOpen(childMemory, 6)).toBe(2);
+});
+
+test("kernel-worker pipe sync keeps live fd table authoritative before recomputing pipe readers", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
+
+  seedPipeOfd(parentExports, parentMemory, 7, 6, 10);
+  seedPipeOfd(childExports, childMemory, 8, 6, -11);
+  childExports.setFdMap(new Map([[1, 8]]));
+  seedPipeSlot(parentMemory, 6, 0xaa, 1, 1);
+  seedPipeSlot(childMemory, 6, 0xcc, 1, 1);
+
+  sharedStateSync.syncPipeState(
+    1,
+    makeKernelState(),
+    [{ fd: 4, ofdId: 7, fdFlags: 0 }],
+    [{ ofdId: 7, slot: snapshotOfdSlot(parentMemory, 7) }],
+  );
+
+  expect(parentExports.fdMap().has(4)).toBe(false);
+  expect(pipeReadOpen(childMemory, 6)).toBe(0);
+  expect(pipeWriteOpen(childMemory, 6)).toBe(1);
+});
+
+test("fork-shared OFD sync preserves parent reader while method child owns writer", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
+
+  seedPipeOfd(parentExports, parentMemory, 7, 6, 10);
+  seedPipeOfd(childExports, childMemory, 8, 6, -11);
+  parentExports.setFdMap(new Map([[4, 7]]));
+  childExports.setFdMap(new Map([[5, 8]]));
+  seedPipeSlotState(parentMemory, 6, {
+    head: 0,
+    tail: 0,
+    marker: 0xaa,
+    readOpen: 1,
+    writeOpen: 1,
+  });
+  seedPipeSlotState(childMemory, 6, {
+    head: 0,
+    tail: 1,
+    marker: 0xcc,
+    readOpen: 1,
+    writeOpen: 1,
+  });
+
+  sharedStateSync.syncForkSharedState(
+    2,
+    0x1234,
+    [1],
+    [{ pid: 1, vmPtr: 0x1234, kernelState: makeKernelState() }],
+    [8],
+    [{ ofdId: 8, slot: snapshotOfdSlot(childMemory, 8) }],
+    [{ fd: 5, ofdId: 8, fdFlags: 0 }],
+    false,
+    false,
+    false,
+    makeKernelState(),
+  );
+
+  expect(pipeReadOpen(canonicalMemory, 6)).toBe(1);
+  expect(pipeWriteOpen(canonicalMemory, 6)).toBe(1);
+  expect(pipeReadOpen(parentMemory, 6)).toBe(1);
+  expect(pipeWriteOpen(parentMemory, 6)).toBe(1);
+  expect(pipeReadOpen(childMemory, 6)).toBe(1);
+  expect(pipeWriteOpen(childMemory, 6)).toBe(1);
+});
+
+test("kernel-worker pipe sync ignores fd snapshots while applying matching OFD snapshots", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
+
+  seedPipeOfd(parentExports, parentMemory, 7, 6, 10);
+  seedPipeOfd(parentExports, parentMemory, 8, 6, -11);
+  parentExports.setFdMap(new Map([[5, 7]]));
+
+  sharedStateSync.syncPipeState(
+    1,
+    makeKernelState(),
+    [
+      { fd: 5, ofdId: 10, fdFlags: 0 },
+      { fd: 6, ofdId: 8, fdFlags: 1 },
+      { fd: 7, ofdId: 11, fdFlags: 0 },
+    ],
+    [{ ofdId: 8, slot: snapshotOfdSlot(parentMemory, 8) }],
+  );
+
+  expect(parentExports.fdMap().get(5)).toBe(7);
+  expect(parentExports.fdMap().has(6)).toBe(false);
+  expect(parentExports.fdMap().has(7)).toBe(false);
 });
 
 test("kernel-worker pipe sync keeps private stdio pipe slots process-local", () => {
@@ -400,6 +603,42 @@ test("kernel-worker pipe sync refreshes shared write-only pipe slots for sibling
   expect(pipeTail(canonicalMemory, 6)).toBe(3);
 });
 
+test("kernel-worker pipe sync propagates shared writer tail across ring wrap", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
+
+  seedPipeOfd(parentExports, parentMemory, 8, 6, -11);
+  seedPipeOfd(childExports, childMemory, 8, 6, -11);
+  parentExports.setFdMap(new Map([[5, 8]]));
+  childExports.setFdMap(new Map([[5, 8]]));
+  seedPipeSlotState(parentMemory, 6, {
+    head: 0,
+    tail: 65_520,
+    marker: 0xaa,
+    readOpen: 1,
+    writeOpen: 1,
+  });
+  seedPipeSlotState(childMemory, 6, {
+    head: 0,
+    tail: 20,
+    marker: 0xcc,
+    readOpen: 1,
+    writeOpen: 1,
+  });
+
+  sharedStateSync.syncPipeState(2, makeKernelState());
+
+  expect(pipeMarker(parentMemory, 6)).toBe(0xcc);
+  expect(pipeTail(parentMemory, 6)).toBe(20);
+  expect(pipeMarker(canonicalMemory, 6)).toBe(0xcc);
+  expect(pipeTail(canonicalMemory, 6)).toBe(20);
+});
+
 test("kernel-worker pipe sync does not let a stale writer clobber canonical output", () => {
   const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
   const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
@@ -435,6 +674,183 @@ test("kernel-worker pipe sync does not let a stale writer clobber canonical outp
   expect(pipeTail(canonicalMemory, 6)).toBe(3);
   expect(pipeMarker(parentMemory, 6)).toBe(0xcc);
   expect(pipeTail(parentMemory, 6)).toBe(3);
+});
+
+test("kernel-worker pipe sync does not promote reader-only stale tail as writer output", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
+
+  seedPipeOfd(parentExports, parentMemory, 7, 6, 10);
+  parentExports.setFdMap(new Map([[4, 7]]));
+
+  seedPipeSlotState(canonicalMemory, 6, {
+    head: 0,
+    tail: 3,
+    marker: 0xcc,
+    readOpen: 1,
+    writeOpen: 1,
+  });
+  seedPipeSlotState(parentMemory, 6, {
+    head: 0,
+    tail: 5,
+    marker: 0xaa,
+    readOpen: 1,
+    writeOpen: 1,
+  });
+
+  sharedStateSync.syncPipeState(1, makeKernelState());
+
+  expect(pipeMarker(canonicalMemory, 6)).toBe(0xcc);
+  expect(pipeTail(canonicalMemory, 6)).toBe(3);
+});
+
+test("kernel-worker pipe sync does not promote writer-only stale head as reader progress", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
+
+  seedPipeOfd(parentExports, parentMemory, 8, 6, -11);
+  parentExports.setFdMap(new Map([[5, 8]]));
+
+  seedPipeSlotState(canonicalMemory, 6, {
+    head: 2,
+    tail: 8,
+    marker: 0xcc,
+    readOpen: 1,
+    writeOpen: 1,
+  });
+  seedPipeSlotState(parentMemory, 6, {
+    head: 6,
+    tail: 8,
+    marker: 0xaa,
+    readOpen: 1,
+    writeOpen: 1,
+  });
+
+  sharedStateSync.syncPipeState(1, makeKernelState());
+
+  expect(pipeHead(canonicalMemory, 6)).toBe(2);
+  expect(pipeTail(canonicalMemory, 6)).toBe(8);
+});
+
+test("kernel-worker pipe sync does not reset canonical data from a stale zeroed reader slot", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
+
+  seedPipeOfd(parentExports, parentMemory, 9, 6, 10);
+  parentExports.setFdMap(new Map([[4, 9]]));
+
+  seedPipeSlotState(canonicalMemory, 6, {
+    head: 0,
+    tail: 3,
+    marker: 0xcc,
+    readOpen: 1,
+    writeOpen: 1,
+  });
+  seedPipeSlotState(parentMemory, 6, {
+    head: 0,
+    tail: 0,
+    marker: 0xaa,
+    readOpen: 1,
+    writeOpen: 1,
+  });
+
+  sharedStateSync.syncPipeState(1, makeKernelState());
+
+  expect(pipeMarker(canonicalMemory, 6)).toBe(0xcc);
+  expect(pipeTail(canonicalMemory, 6)).toBe(3);
+  expect(pipeMarker(parentMemory, 6)).toBe(0xcc);
+  expect(pipeTail(parentMemory, 6)).toBe(3);
+});
+
+test("kernel-worker pipe snapshot apply does not full-copy stale reader slots", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const targetMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const targetExports = makeKernelExports(targetMemory);
+  const primitives = createKernelWorkerPrimitives({
+    getCanonicalExports: () => canonicalExports,
+    processKernels: new Map([[1, targetExports]]),
+    canonicalProcesses: new Map([[1, { ppid: 0 }]]),
+    getCanonicalProcessVmPtr: (pid) => (pid === 1 ? 0x1234 : 0),
+  });
+
+  seedPipeSlotState(targetMemory, 6, {
+    head: 9,
+    tail: 9,
+    marker: 0x7a,
+    readOpen: 1,
+    writeOpen: 1,
+  });
+  const staleReaderSlot = new Uint8Array(PIPE_SLOT_BYTES);
+  const staleReaderView = new DataView(staleReaderSlot.buffer);
+  staleReaderView.setUint32(0, 0, true);
+  staleReaderView.setUint32(4, 9, true);
+  staleReaderView.setInt32(8, 1, true);
+  staleReaderView.setInt32(12, 1, true);
+  staleReaderSlot[32] = 0x99;
+
+  primitives.applySelectedPipeSlotSnapshots(
+    targetExports,
+    makeKernelState(),
+    [{ pipeSlot: 6, slot: staleReaderSlot }],
+  );
+
+  expect(pipeHead(targetMemory, 6)).toBe(9);
+  expect(pipeTail(targetMemory, 6)).toBe(9);
+  expect(pipeMarker(targetMemory, 6)).toBe(0x7a);
+});
+
+test("kernel-worker pipe snapshot apply preserves full-drain reader progress", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const targetMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const targetExports = makeKernelExports(targetMemory);
+  const primitives = createKernelWorkerPrimitives({
+    getCanonicalExports: () => canonicalExports,
+    processKernels: new Map([[1, targetExports]]),
+    canonicalProcesses: new Map([[1, { ppid: 0 }]]),
+    getCanonicalProcessVmPtr: (pid) => (pid === 1 ? 0x1234 : 0),
+  });
+
+  seedPipeSlotState(targetMemory, 6, {
+    head: 0,
+    tail: 0,
+    marker: 0x7a,
+    readOpen: 1,
+    writeOpen: 1,
+  });
+  const drainedReaderSlot = new Uint8Array(PIPE_SLOT_BYTES);
+  const drainedReaderView = new DataView(drainedReaderSlot.buffer);
+  drainedReaderView.setUint32(0, 12, true);
+  drainedReaderView.setUint32(4, 12, true);
+  drainedReaderView.setInt32(8, 1, true);
+  drainedReaderView.setInt32(12, 1, true);
+  drainedReaderSlot[32] = 0x99;
+
+  primitives.applySelectedPipeSlotSnapshots(
+    targetExports,
+    makeKernelState(),
+    [{ pipeSlot: 6, slot: drainedReaderSlot, mode: 1 }],
+  );
+
+  expect(pipeHead(targetMemory, 6)).toBe(12);
+  expect(pipeTail(targetMemory, 6)).toBe(12);
+  expect(pipeMarker(targetMemory, 6)).toBe(0x7a);
 });
 
 test("kernel-worker pipe sync does not let a stale private stdout slot clobber canonical PTY output", () => {
@@ -628,6 +1044,7 @@ test("kernel-worker canonical PTY refresh preserves the process-local read head 
   const primitives = createKernelWorkerPrimitives({
     getCanonicalExports: () => canonicalExports,
     processKernels,
+    canonicalProcesses: new Map([[1, { ppid: 0 }]]),
     getCanonicalProcessVmPtr: (pid) => (pid === 1 ? 0x1234 : 0),
   });
 
@@ -659,7 +1076,7 @@ test("kernel-worker canonical PTY refresh preserves the process-local read head 
 
   expect(pipeHead(parentMemory, 4)).toBe(7);
   expect(pipeTail(parentMemory, 4)).toBe(12);
-  expect(pipeMarker(parentMemory, 4)).toBe(0xcc);
+  expect(pipeMarker(parentMemory, 4)).toBe(0xaa);
 });
 
 test("kernel-worker canonical PTY refresh advances private stdin read head when canonical is newer", () => {
@@ -671,6 +1088,7 @@ test("kernel-worker canonical PTY refresh advances private stdin read head when 
   const primitives = createKernelWorkerPrimitives({
     getCanonicalExports: () => canonicalExports,
     processKernels,
+    canonicalProcesses: new Map([[1, { ppid: 0 }]]),
     getCanonicalProcessVmPtr: (pid) => (pid === 1 ? 0x1234 : 0),
   });
 
@@ -702,5 +1120,5 @@ test("kernel-worker canonical PTY refresh advances private stdin read head when 
 
   expect(pipeHead(parentMemory, 4)).toBe(7);
   expect(pipeTail(parentMemory, 4)).toBe(12);
-  expect(pipeMarker(parentMemory, 4)).toBe(0xcc);
+  expect(pipeMarker(parentMemory, 4)).toBe(0xaa);
 });

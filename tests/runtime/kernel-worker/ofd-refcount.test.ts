@@ -94,7 +94,7 @@ test("reconcileCanonicalOfdRefcounts does not last-close an OFD while one member
   expect(canonical.kernel_ofd_refcount(7)).toBe(1);
 });
 
-test("reconcileCanonicalOfdRefcounts preserves duplicate aliases in one process as a single shared holder", () => {
+test("reconcileCanonicalOfdRefcounts counts duplicate fd aliases as OFD references", () => {
   const canonicalMemory = makeMemory();
   const parentMemory = makeMemory();
   const canonical = makeKernelExports(canonicalMemory);
@@ -116,9 +116,9 @@ test("reconcileCanonicalOfdRefcounts preserves duplicate aliases in one process 
     [7],
   );
 
-  expect(canonical.retainOfd).not.toHaveBeenCalled();
+  expect(canonical.retainOfd).toHaveBeenCalledWith(7);
   expect(canonical.releaseOfd).not.toHaveBeenCalled();
-  expect(canonical.kernel_ofd_refcount(7)).toBe(1);
+  expect(canonical.kernel_ofd_refcount(7)).toBe(2);
 });
 
 test("reconcileCanonicalOfdRefcounts does not last-close an eventfd while another member still holds it", () => {

@@ -44,6 +44,22 @@ export function createWorkerSchedulerStateSyncHelpers(
     return handle.stdioOwner ?? handle;
   }
 
+  function hasActiveVforkChildOwnerMismatch(handle: ProcessHandle): boolean {
+    if (handle.vforkSnapshot == null || handle.vforkWorker == null || handle.pid <= 0) {
+      return false;
+    }
+    const thread = deps.threadWorkerStates.get(handle.vforkWorker);
+    if (!thread || thread.vmPtr === 0) {
+      return false;
+    }
+    try {
+      const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
+      return currentPid > 0 && currentPid !== handle.pid;
+    } catch {
+      return false;
+    }
+  }
+
   function shouldDrainHiddenInheritedOutput(
     handle: ProcessHandle,
     visibleHandle: ProcessHandle,
@@ -142,6 +158,8 @@ export function createWorkerSchedulerStateSyncHelpers(
     wakeBlockedStatusesInKernelShare(
       handle,
       [
+        handle.kernel.abi_status_pipe_wait(),
+        handle.kernel.abi_status_epoll_wait(),
         handle.kernel.abi_status_socket_recv(),
         handle.kernel.abi_status_socket_send(),
       ],
@@ -149,6 +167,9 @@ export function createWorkerSchedulerStateSyncHelpers(
   }
 
   function requestEpollStateSync(handle: ProcessHandle, retryWaiters = false): Promise<void> {
+    if (hasActiveVforkChildOwnerMismatch(handle)) {
+      return Promise.resolve();
+    }
     if (!kernelWorkerOwnsEpollState(handle)) {
       if (retryWaiters) {
         retryEpollWaitersInKernelShare(handle);
@@ -189,6 +210,9 @@ export function createWorkerSchedulerStateSyncHelpers(
   }
 
   function requestEpollDependentOfdStateSync(handle: ProcessHandle): Promise<void> {
+    if (hasActiveVforkChildOwnerMismatch(handle)) {
+      return Promise.resolve();
+    }
     if (!handle.kernelWorkerRequest || handle.pid <= 0) {
       return Promise.resolve();
     }
@@ -218,6 +242,9 @@ export function createWorkerSchedulerStateSyncHelpers(
   }
 
   function requestPipeStateSync(handle: ProcessHandle, wakeWaiters = false): Promise<void> {
+    if (hasActiveVforkChildOwnerMismatch(handle)) {
+      return Promise.resolve();
+    }
     if (!kernelWorkerOwnsPipeState(handle)) {
       if (wakeWaiters) {
         wakeRuntimeBridge(handle.runtimeBridge);
@@ -243,21 +270,6 @@ export function createWorkerSchedulerStateSyncHelpers(
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-canonical:${handle.pid}:used=${pipeUsed.toString()}`);
         assertProcessIdentity(handle, "requestPipeStateSync");
         const visibleHandle = visibleOutputHandle(handle);
-        if (
-          visibleHandle !== handle
-          && kernelWorkerOwnsPipeState(visibleHandle)
-          && visibleHandle.kernelWorkerRequest
-          && visibleHandle.pid > 0
-        ) {
-          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-visible-start:${handle.pid}->${visibleHandle.pid}`);
-          const visiblePipeUsed = await syncPipeStateViaKernelWorker(visibleHandle);
-          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-visible-done:${handle.pid}->${visibleHandle.pid}:used=${visiblePipeUsed.toString()}`);
-          assertProcessIdentity(visibleHandle, "requestPipeStateSync:visible");
-          visibleHandle.kernelState = {
-            ...visibleHandle.kernelState,
-            pipeUsed: visiblePipeUsed,
-          };
-        }
         const drainedHiddenOutput = shouldDrainHiddenInheritedOutput(handle, visibleHandle)
           ? deps.drainHiddenProcessOutput(handle)
           : false;
@@ -308,6 +320,9 @@ export function createWorkerSchedulerStateSyncHelpers(
   }
 
   function requestSocketStateSync(handle: ProcessHandle, wakeWaiters = false): Promise<void> {
+    if (hasActiveVforkChildOwnerMismatch(handle)) {
+      return Promise.resolve();
+    }
     if (!kernelWorkerOwnsSocketState(handle)) {
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       if (wakeWaiters) {

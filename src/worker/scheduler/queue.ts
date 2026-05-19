@@ -9,17 +9,291 @@ import type {
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
-import type { ThreadWorkerOutbound } from "../../messages.js";
+import type {
+  KernelWorkerFdEntrySnapshot,
+  KernelWorkerOfdSlotSnapshot,
+  KernelWorkerSocketStateSnapshot,
+  ThreadWorkerOutbound,
+} from "../../messages.js";
 import { kernelStackSlotForWorker } from "../pool.js";
 import type {
   ThreadWorkerInbound,
   WorkerSchedulerQueueHelpers,
 } from "./types.js";
 
-const SCHEDULER_STEP_BUDGET = typeof window === "undefined" ? 100_000 : 10_000;
+const DEFAULT_NODE_SCHEDULER_STEP_BUDGET = 100_000;
+const DEFAULT_BROWSER_SCHEDULER_STEP_BUDGET = 10_000;
+const MIN_SCHEDULER_STEP_BUDGET = 1_000;
+const MAX_SCHEDULER_STEP_BUDGET = 5_000_000;
+const SCHEDULER_STEP_BUDGET = readSchedulerStepBudget();
 const SCHEDULER_QUEUE_DEBUG_LOG_ENABLED = false;
 let nextThreadWorkerGeneration = 1;
 const HOT_PC_COUNTER_LIMIT = 32;
+const PIPE_HEADER_BYTES = 32;
+const PIPE_READ_OPEN_OFFSET = 8;
+const PIPE_WRITE_OPEN_OFFSET = 12;
+const OFD_OFFSET_OFFSET = 16;
+
+function snapshotSocketStateForThread(handle: ProcessHandle): KernelWorkerSocketStateSnapshot | undefined {
+  if (
+    handle.kernelState.socketUsed === 0
+    && handle.kernelState.netBufUsed === 0n
+    && (handle.networkConnections?.size ?? 0) === 0
+    && (handle.networkPendingConnectFds?.size ?? 0) === 0
+    && (handle.networkClosedFds?.size ?? 0) === 0
+    && (handle.networkClosedSocketSlots?.size ?? 0) === 0
+    && (handle.networkSocketSlotWatermarks?.size ?? 0) === 0
+    && (handle.networkRecvPayloadWatermarks?.size ?? 0) === 0
+  ) {
+    return undefined;
+  }
+  const socketTableBytes = handle.kernel.kernel_socket_table_bytes?.() ?? 0;
+  const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes?.() ?? 0;
+  if (socketTableBytes <= 0 || netBufPoolBytes <= 0) {
+    return undefined;
+  }
+  const memory = new Uint8Array(handle.memory.buffer);
+  return {
+    socketTable: memory.slice(
+      handle.kernelState.socketTablePtr,
+      handle.kernelState.socketTablePtr + socketTableBytes,
+    ),
+    netBufPool: memory.slice(
+      handle.kernelState.netBufBase,
+      handle.kernelState.netBufBase + netBufPoolBytes,
+    ),
+    socketUsed: handle.kernelState.socketUsed | handle.kernel.kernel_socket_used(),
+    netBufUsed: handle.kernelState.netBufUsed | handle.kernel.kernel_net_buf_used(),
+  };
+}
+
+function runtimeNetworkFds(handle: ProcessHandle): number[] {
+  return [...new Set([
+    ...(handle.networkConnections?.keys() ?? []),
+    ...(handle.networkPendingConnectFds ?? []),
+    ...(handle.networkClosedFds ?? []),
+    ...(handle.networkClosedSocketSlots?.keys() ?? []),
+    ...(handle.networkSocketSlotWatermarks?.keys() ?? []),
+    ...(handle.networkRecvPayloadWatermarks?.keys() ?? []),
+  ])].sort((left, right) => left - right);
+}
+
+function snapshotRuntimeNetworkFdEntriesForThread(handle: ProcessHandle): KernelWorkerFdEntrySnapshot[] | undefined {
+  if (handle.vmPtr === 0) {
+    return undefined;
+  }
+  const maxFds = handle.kernel.abi_max_fds();
+  const fdEntries: KernelWorkerFdEntrySnapshot[] = [];
+  for (const fd of runtimeNetworkFds(handle)) {
+    if (fd < 0 || fd >= maxFds) {
+      continue;
+    }
+    const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+    if (ofdId <= 0 || ofdId >= maxFds) {
+      continue;
+    }
+    const hasWatermark = handle.networkOfdSlotWatermarks?.has(ofdId) ?? false;
+    if (handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_socket() && !hasWatermark) {
+      continue;
+    }
+    fdEntries.push({
+      fd,
+      ofdId,
+      fdFlags: handle.kernel.process_fd_flags(handle.vmPtr, fd),
+    });
+  }
+  return fdEntries.length > 0 ? fdEntries : undefined;
+}
+
+function snapshotOfdSlotsForThread(
+  handle: ProcessHandle,
+  fdEntries: readonly KernelWorkerFdEntrySnapshot[] | undefined,
+): KernelWorkerOfdSlotSnapshot[] | undefined {
+  if (!fdEntries || fdEntries.length === 0) {
+    return undefined;
+  }
+  const maxFds = handle.kernel.abi_max_fds();
+  const tableBytes = handle.kernel.kernel_ofd_table_bytes();
+  const slotBytes = tableBytes / maxFds;
+  if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
+    return undefined;
+  }
+  const memory = new Uint8Array(handle.memory.buffer);
+  const ofdSlots: KernelWorkerOfdSlotSnapshot[] = [];
+  for (const ofdId of [...new Set(fdEntries.map((entry) => entry.ofdId))]) {
+    if (ofdId <= 0 || ofdId >= maxFds) {
+      continue;
+    }
+    const watermarked = handle.networkOfdSlotWatermarks?.get(ofdId);
+    if (watermarked && watermarked.length === slotBytes) {
+      ofdSlots.push({
+        ofdId,
+        slot: watermarked.slice(),
+      });
+      continue;
+    }
+    const offset = handle.kernelState.ofdTablePtr + ofdId * slotBytes;
+    ofdSlots.push({
+      ofdId,
+      slot: memory.slice(offset, offset + slotBytes),
+    });
+  }
+  return ofdSlots.length > 0 ? ofdSlots : undefined;
+}
+
+function readSchedulerStepBudget(): number {
+  const hostConfigured = (globalThis as typeof globalThis & {
+    process?: { env?: Record<string, string | undefined> };
+    TIDEMARK_SCHEDULER_STEP_BUDGET?: unknown;
+  }).TIDEMARK_SCHEDULER_STEP_BUDGET;
+  const envConfigured = (globalThis as typeof globalThis & {
+    process?: { env?: Record<string, string | undefined> };
+  }).process?.env?.TIDEMARK_SCHEDULER_STEP_BUDGET;
+  const parsed = Number.parseInt(String(hostConfigured ?? envConfigured ?? ""), 10);
+  if (Number.isFinite(parsed)) {
+    return Math.min(MAX_SCHEDULER_STEP_BUDGET, Math.max(MIN_SCHEDULER_STEP_BUDGET, parsed));
+  }
+  return typeof window === "undefined"
+    ? DEFAULT_NODE_SCHEDULER_STEP_BUDGET
+    : DEFAULT_BROWSER_SCHEDULER_STEP_BUDGET;
+}
+
+function formatChildExitRecords(
+  handle: ProcessHandle,
+): Array<{ childPid: number; waitStatus: number; parentPid: number }> {
+  return [...handle.childExitSyncRecords].map(([childPid, waitStatus]) => ({
+    childPid,
+    waitStatus,
+    parentPid: handle.pid,
+  }));
+}
+
+function composeHostStdioPipeUsed(handle: ProcessHandle, pipeUsed: bigint): bigint {
+  let composed = pipeUsed | 1n;
+  const owner = handle.stdioOwner;
+  for (const pipeSlot of [
+    handle.stdinPipe,
+    handle.stdoutPipe,
+    handle.stderrPipe,
+    handle.hostStdio.stdinPipe,
+    handle.hostStdio.stdoutPipe,
+    handle.hostStdio.stderrPipe,
+    owner?.stdinPipe ?? 0,
+    owner?.stdoutPipe ?? 0,
+    owner?.stderrPipe ?? 0,
+    owner?.hostStdio.stdinPipe ?? 0,
+    owner?.hostStdio.stdoutPipe ?? 0,
+    owner?.hostStdio.stderrPipe ?? 0,
+  ]) {
+    if (pipeSlot > 0) {
+      composed |= 1n << BigInt(pipeSlot);
+    }
+  }
+  return composed;
+}
+
+function hostStdioPipeSlotsForFd(handle: ProcessHandle, fd: 0 | 1 | 2): Set<number> {
+  const owner = handle.stdioOwner;
+  const slotsByFd = fd === 0
+    ? [
+        handle.stdinPipe,
+        handle.hostStdio.stdinPipe,
+        owner?.stdinPipe ?? 0,
+        owner?.hostStdio.stdinPipe ?? 0,
+      ]
+    : fd === 1
+      ? [
+          handle.stdoutPipe,
+          handle.hostStdio.stdoutPipe,
+          owner?.stdoutPipe ?? 0,
+          owner?.hostStdio.stdoutPipe ?? 0,
+        ]
+      : [
+          handle.stderrPipe,
+          handle.hostStdio.stderrPipe,
+          owner?.stderrPipe ?? 0,
+          owner?.hostStdio.stderrPipe ?? 0,
+        ];
+  return new Set(slotsByFd.filter((slot) => slot > 0));
+}
+
+function preserveHostStdioPipeControlForStep(handle: ProcessHandle, vmPtr: number): void {
+  const maxPipes = handle.kernel.abi_max_pipes?.() ?? 0;
+  const pipeRegionBytes = handle.kernel.kernel_pipe_region_bytes?.() ?? 0;
+  const slotBytes = maxPipes > 0 ? pipeRegionBytes / maxPipes : 0;
+  if (!Number.isInteger(slotBytes) || slotBytes <= PIPE_HEADER_BYTES) {
+    return;
+  }
+  const view = new DataView(handle.memory.buffer);
+  const preserve = (pipeSlot: number, readOpenMin: number, writeOpenMin: number): void => {
+    if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
+      return;
+    }
+    const offset = handle.kernelState.pipeBase + pipeSlot * slotBytes;
+    if (readOpenMin > 0) {
+      const readOpen = view.getInt32(offset + PIPE_READ_OPEN_OFFSET, true);
+      if (readOpen < readOpenMin) {
+        view.setInt32(offset + PIPE_READ_OPEN_OFFSET, readOpenMin, true);
+      }
+    }
+    if (writeOpenMin > 0) {
+      const writeOpen = view.getInt32(offset + PIPE_WRITE_OPEN_OFFSET, true);
+      if (writeOpen < writeOpenMin) {
+        view.setInt32(offset + PIPE_WRITE_OPEN_OFFSET, writeOpenMin, true);
+      }
+    }
+  };
+
+  for (const [fd, readOpenMin, writeOpenMin] of [
+    [0, 0, 1],
+    [1, 1, 0],
+    [2, 1, 0],
+  ] as const) {
+    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    if (
+      ofdId <= 0
+      || ofdId >= handle.kernel.abi_max_fds()
+      || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
+    ) {
+      continue;
+    }
+    const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
+    if (hostStdioPipeSlotsForFd(handle, fd).has(pipeSlot)) {
+      preserve(pipeSlot, readOpenMin, writeOpenMin);
+    }
+  }
+}
+
+function restoreRegularFileOffsetsForStep(handle: ProcessHandle): void {
+  const offsets = handle.regularFileOfdOffsets;
+  if (!offsets || offsets.size === 0) {
+    return;
+  }
+  const maxFds = handle.kernel.abi_max_fds();
+  const fileType = handle.kernel.abi_fd_type_file?.();
+  const tableBytes = handle.kernel.kernel_ofd_table_bytes();
+  const slotBytes = tableBytes / maxFds;
+  if (fileType === undefined || !Number.isInteger(slotBytes) || slotBytes <= 0) {
+    return;
+  }
+  const view = new DataView(handle.memory.buffer);
+  for (const [ofdId, snapshot] of offsets) {
+    if (
+      ofdId <= 0
+      || ofdId >= maxFds
+      || handle.kernel.kernel_ofd_fd_type(ofdId) !== fileType
+      || handle.kernel.kernel_ofd_refcount(ofdId) <= 0
+      || handle.kernel.kernel_ofd_ino(ofdId) !== snapshot.ino
+      || handle.kernel.kernel_ofd_host_fd(ofdId) !== snapshot.hostFd
+    ) {
+      continue;
+    }
+    if (handle.kernel.kernel_ofd_offset(ofdId) >= snapshot.offset) {
+      continue;
+    }
+    view.setBigInt64(handle.kernelState.ofdTablePtr + ofdId * slotBytes + OFD_OFFSET_OFFSET, snapshot.offset, true);
+  }
+}
 
 interface WorkerSchedulerQueueDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
@@ -147,15 +421,45 @@ function incrementBoundedCounter(
 export function createWorkerSchedulerQueueHelpers(
   deps: WorkerSchedulerQueueDeps,
 ): WorkerSchedulerQueueHelpers {
+  const observedForkSharedSyncGates = new WeakMap<ProcessHandle, Promise<void>>();
+
+  function observeForkSharedSyncGate(handle: ProcessHandle, promise: Promise<void>): void {
+    if (observedForkSharedSyncGates.get(handle) === promise) {
+      return;
+    }
+    observedForkSharedSyncGates.set(handle, promise);
+    const onSettled = (): void => {
+      if (observedForkSharedSyncGates.get(handle) === promise) {
+        observedForkSharedSyncGates.delete(handle);
+      }
+      if (handle.kernelShare.forkSharedSyncPromise === promise) {
+        handle.kernelShare.forkSharedSyncPromise = null;
+      }
+      if (handle.forkSharedSyncPromise === promise) {
+        handle.forkSharedSyncPromise = null;
+      }
+      pumpProcess(handle);
+    };
+    promise.then(onSettled, onSettled);
+  }
+
   function sanitizeRunningWorker(handle: ProcessHandle): Worker | null {
     const runningWorker = handle.runningWorker;
     if (runningWorker === null) {
       return null;
     }
-    if (handle.workers.has(runningWorker) && deps.threadWorkerStates.has(runningWorker)) {
+    const thread = deps.threadWorkerStates.get(runningWorker);
+    if (
+      handle.workers.has(runningWorker)
+      && thread
+      && (thread.runningGeneration ?? thread.generation) === thread.generation
+    ) {
       return runningWorker;
     }
     handle.runningWorker = null;
+    if (thread) {
+      thread.runningGeneration = null;
+    }
     deps.appendWorkerDebugLog(handle, "running-worker-cleared:stale");
     return null;
   }
@@ -208,7 +512,7 @@ export function createWorkerSchedulerQueueHelpers(
   }
 
   function attachThreadWorker(handle: ProcessHandle, request: AttachThreadWorkerRequest): void {
-    const { worker, vmPtr, forcePrepare, transferFrom } = request;
+    const { worker, vmPtr, forcePrepare, transferFrom, preserveMemoryBytes } = request;
     const generation = nextThreadWorkerGeneration++;
     const existingThread = deps.threadWorkerStates.get(worker);
     const reinitWithinHandle = existingThread !== undefined
@@ -263,6 +567,7 @@ export function createWorkerSchedulerQueueHelpers(
       vmPtr,
       ownerPid: handle.pid,
       generation,
+      runningGeneration: null,
       reinitCount: reinitWithinHandle ? (existingThread?.reinitCount ?? 0) + 1 : 0,
       stepCount: 0,
       totalStepBudget: 0,
@@ -282,6 +587,10 @@ export function createWorkerSchedulerQueueHelpers(
       hotStatusPcs: {},
       initialized: false,
       waitingInWorkerStatus: null,
+      ownerAsyncStatus: null,
+      resumeBlockedOnNextStep: false,
+      pendingPipeSlotsForNextStep: [],
+      pendingGuestMemoryWrites: [],
       resumeWorkersOnReady: [],
     });
     setWorkerMessageHandler(worker, (event: MessageEvent<ThreadWorkerOutbound>) => {
@@ -307,7 +616,8 @@ export function createWorkerSchedulerQueueHelpers(
       event.preventDefault?.();
     });
     const runtimeEpoch = publishRuntimeBridgeEpoch(handle.runtimeBridge);
-    worker.postMessage({
+    const networkFdEntries = snapshotRuntimeNetworkFdEntriesForThread(handle);
+    const initMessage: ThreadWorkerInbound = {
       type: "init",
       wasmModule: handle.wasmModule,
       memory: handle.memory,
@@ -317,20 +627,40 @@ export function createWorkerSchedulerQueueHelpers(
       kernelStackSlot: kernelStackSlotForWorker(worker),
       generation,
       runtimeEpoch,
+      preserveMemoryBytes,
       guestWriteWatchRegions: handle.guestWriteWatchRegions,
       kernelState: handle.kernelState,
-      childExitRecords: [...handle.childExitSyncRecords].map(([childPid, waitStatus]) => ({
-        childPid,
-        waitStatus,
-      })),
       sabPageCache: handle.sabPageCache,
       runtimeNotify: handle.runtimeBridge.notifySab,
       runtimeState: handle.runtimeBridge.stateSab,
-    } satisfies ThreadWorkerInbound);
+    };
+    const initSocketState = snapshotSocketStateForThread(handle);
+    const initOfdSlots = snapshotOfdSlotsForThread(handle, networkFdEntries);
+    if (initSocketState !== undefined) {
+      initMessage.socketState = initSocketState;
+    }
+    if (networkFdEntries !== undefined) {
+      initMessage.fdEntries = networkFdEntries;
+    }
+    if (initOfdSlots !== undefined) {
+      initMessage.ofdSlots = initOfdSlots;
+    }
+    const initChildExitRecords = formatChildExitRecords(handle);
+    if (initChildExitRecords.length > 0) {
+      initMessage.childExitRecords = initChildExitRecords;
+    }
+    worker.postMessage(initMessage);
   }
 
   function enqueueWorker(handle: ProcessHandle, worker: Worker): void {
     if (handle.exitInProgress) {
+      return;
+    }
+    if (
+      handle.runningWorker === worker
+      && handle.workers.has(worker)
+      && deps.threadWorkerStates.has(worker)
+    ) {
       return;
     }
     if (!handle.readyWorkers.includes(worker)) {
@@ -364,7 +694,11 @@ export function createWorkerSchedulerQueueHelpers(
         continue;
       }
       const thread = deps.threadWorkerStates.get(worker);
-      if (!thread?.initialized || thread.waitingInWorkerStatus !== null) {
+      if (
+        !thread?.initialized
+        || thread.waitingInWorkerStatus !== null
+        || thread.ownerAsyncStatus !== null
+      ) {
         continue;
       }
       if (handle.kernel.thread_status(thread.vmPtr) !== handle.kernel.abi_status_ok()) {
@@ -379,7 +713,9 @@ export function createWorkerSchedulerQueueHelpers(
     if (handle.exitInProgress) {
       return;
     }
-    if (handle.kernelShare.forkSharedSyncPromise !== null) {
+    const forkSharedSyncPromise = handle.kernelShare.forkSharedSyncPromise;
+    if (forkSharedSyncPromise !== null) {
+      observeForkSharedSyncGate(handle, forkSharedSyncPromise);
       return;
     }
     const runningWorker = sanitizeRunningWorker(handle);
@@ -393,9 +729,21 @@ export function createWorkerSchedulerQueueHelpers(
       if (index === -1) {
         return;
       }
+      const candidate = handle.readyWorkers[index];
+      const candidateThread = candidate ? deps.threadWorkerStates.get(candidate) : undefined;
+      if ((candidateThread?.ownerAsyncStatus ?? null) !== null) {
+        return;
+      }
       next = handle.readyWorkers.splice(index, 1)[0];
     } else {
-      next = handle.readyWorkers.shift();
+      const index = handle.readyWorkers.findIndex((candidate) => {
+        const candidateThread = deps.threadWorkerStates.get(candidate);
+        return (candidateThread?.ownerAsyncStatus ?? null) === null;
+      });
+      if (index === -1) {
+        return;
+      }
+      next = handle.readyWorkers.splice(index, 1)[0];
     }
     if (!next) {
       return;
@@ -404,7 +752,10 @@ export function createWorkerSchedulerQueueHelpers(
     const vmPtr = deps.threadWorkerStates.get(next)?.vmPtr;
     const thread = deps.threadWorkerStates.get(next);
     if (thread && vmPtr !== undefined) {
+      restoreRegularFileOffsetsForStep(handle);
+      preserveHostStdioPipeControlForStep(handle, vmPtr);
       thread.stepCount += 1;
+      thread.runningGeneration = thread.generation;
       thread.totalStepBudget += SCHEDULER_STEP_BUDGET;
       thread.lastStepAtMs = Date.now();
       thread.lastStepProcessPtr = handle.kernel.thread_process_ptr(vmPtr);
@@ -424,15 +775,42 @@ export function createWorkerSchedulerQueueHelpers(
       }
     }
     publishRuntimeBridgeEpoch(handle.runtimeBridge);
-    next.postMessage({
+    const networkFdEntries = snapshotRuntimeNetworkFdEntriesForThread(handle);
+    const stepMessage: ThreadWorkerInbound = {
       type: "step",
       budget: SCHEDULER_STEP_BUDGET,
       kernelState: handle.kernelState,
-      childExitRecords: [...handle.childExitSyncRecords].map(([childPid, waitStatus]) => ({
-        childPid,
-        waitStatus,
-      })),
-    } satisfies ThreadWorkerInbound);
+    };
+    const stepSocketState = snapshotSocketStateForThread(handle);
+    const stepOfdSlots = snapshotOfdSlotsForThread(handle, networkFdEntries);
+    if (stepSocketState !== undefined) {
+      stepMessage.socketState = stepSocketState;
+    }
+    if (networkFdEntries !== undefined) {
+      stepMessage.fdEntries = networkFdEntries;
+    }
+    if (stepOfdSlots !== undefined) {
+      stepMessage.ofdSlots = stepOfdSlots;
+    }
+    if (thread?.pendingPipeSlotsForNextStep?.length) {
+      stepMessage.pipeSlots = thread.pendingPipeSlotsForNextStep.splice(0);
+    }
+    const stepChildExitRecords = formatChildExitRecords(handle);
+    if (stepChildExitRecords.length > 0) {
+      stepMessage.childExitRecords = stepChildExitRecords;
+      stepMessage.kernelState = {
+        ...stepMessage.kernelState,
+        pipeUsed: composeHostStdioPipeUsed(handle, stepMessage.kernelState.pipeUsed),
+      };
+    }
+    if (thread && (thread.pendingGuestMemoryWrites?.length ?? 0) > 0) {
+      stepMessage.guestMemoryWrites = thread.pendingGuestMemoryWrites.splice(0);
+    }
+    if (thread?.resumeBlockedOnNextStep) {
+      thread.resumeBlockedOnNextStep = false;
+      stepMessage.resumeBlockedSyscall = true;
+    }
+    next.postMessage(stepMessage);
   }
 
   return {

@@ -17,6 +17,11 @@ function makeKernelState(): KernelRuntimeState {
     heapPtr: 0x210000,
     ofdTablePtr: 0x220000,
     memfsPtr: 0x230000,
+    memfsHeaderBytes: 32,
+    memfsInodesBytes: 16_384 * 32,
+    memfsFirstChildBytes: 16_384 * 4,
+    memfsDirEntriesBytes: 16_384 * 264,
+    memfsDataBytes: 256 * 1024,
     memStatePtr: 0x240000,
     epollTablePtr: 0x250000,
     socketTablePtr: 0x260000,
@@ -40,7 +45,7 @@ function setPipeEnds(
   writeOpen: number,
 ): void {
   const view = new DataView(memory.buffer);
-  const base = kernelState.pipeBase + pipeSlot * (32 + 4096);
+  const base = kernelState.pipeBase + pipeSlot * (32 + 65_536);
   view.setInt32(base + 8, readOpen, true);
   view.setInt32(base + 12, writeOpen, true);
 }
@@ -62,11 +67,28 @@ function seedPipe(
 function makeHandle(
   overrides: Partial<ProcessHandle> = {},
 ): { handle: ProcessHandle; releaseHostStdio: ReturnType<typeof vi.fn> } {
-  const memory = new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true });
+  const memory = new WebAssembly.Memory({ initial: 8, maximum: 8, shared: true });
   const kernelState = makeKernelState();
   const releaseHostStdio = vi.fn();
   const kernel = {
     process_release_host_stdio: releaseHostStdio,
+    abi_max_fds: () => 16,
+    abi_fd_type_pipe: () => 2,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => {
+      if (fd === 0) return 3;
+      if (fd === 1) return 4;
+      if (fd === 2) return 5;
+      return 0;
+    },
+    kernel_ofd_fd_type: (ofdId: number) => (ofdId >= 3 && ofdId <= 5 ? 2 : 0),
+    kernel_ofd_ino: (ofdId: number) => {
+      if (ofdId === 3) return 0;
+      if (ofdId === 4) return 4;
+      if (ofdId === 5) return 5;
+      return 0;
+    },
+    abi_max_pipes: () => 64,
+    kernel_pipe_region_bytes: () => 64 * (32 + 65_536),
     kernel_heap_ptr: () => 0x2000,
   } as unknown as KernelExports;
   const handle = {
@@ -138,6 +160,26 @@ test("drainProcessOutput drains final stdout and stderr bytes from hidden host s
   expect(drainProcessOutput(handle)).toBe(true);
   expect(drainedChunks).toEqual(["stdout-tail\n", "stderr-tail\n"]);
   expect(drainProcessOutput(handle)).toBe(false);
+});
+
+test("drainProcessOutput queues stdout read progress for the next pipe sync", () => {
+  const { handle } = makeHandle();
+  const drainedChunks: string[] = [];
+  handle.onStdout = (data) => {
+    drainedChunks.push(new TextDecoder().decode(data));
+  };
+  seedPipe(handle.memory, handle.kernelState, handle.stdoutPipe, "stdout-tail\n");
+
+  expect(drainProcessOutput(handle)).toBe(true);
+
+  expect(drainedChunks).toEqual(["stdout-tail\n"]);
+  expect(handle.pendingPipeSlotSnapshots).toHaveLength(1);
+  expect(handle.pendingPipeSlotSnapshots[0].pipeSlot).toBe(handle.stdoutPipe);
+  expect(handle.pendingPipeSlotSnapshots[0].mode).toBe(1);
+  const snapshotView = new DataView(handle.pendingPipeSlotSnapshots[0].slot.buffer);
+  expect(snapshotView.getUint32(0, true)).toBe(snapshotView.getUint32(4, true));
+  expect(drainProcessOutput(handle)).toBe(false);
+  expect(handle.pendingPipeSlotSnapshots).toHaveLength(1);
 });
 
 test("drainProcessOutput does not emit visible bytes from child handles owned by the parent", () => {
@@ -323,7 +365,7 @@ test("settleInheritedChildOutput keeps syncing until child stdout tail is visibl
       seedPipe(child.memory, child.kernelState, child.stdoutPipe, "child-late\n");
       const childView = new DataView(child.memory.buffer);
       const ownerView = new DataView(owner.memory.buffer);
-      const base = child.kernelState.pipeBase + child.stdoutPipe * (32 + 4096);
+      const base = child.kernelState.pipeBase + child.stdoutPipe * (32 + 65_536);
       ownerView.setUint32(base + 4, childView.getUint32(base + 4, true), true);
       const childBytes = new Uint8Array(child.memory.buffer, base + 32, 4096);
       const ownerBytes = new Uint8Array(owner.memory.buffer, base + 32, 4096);
@@ -448,7 +490,7 @@ test("flushStdin routes controlling-tty input through process_host_write_stdin",
       process_release_host_stdio: vi.fn(),
       process_host_write_stdin: hostWrite,
       kernel_heap_ptr: () => 0x2000,
-      memory: new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true }),
+      memory: new WebAssembly.Memory({ initial: 8, maximum: 8, shared: true }),
     } as unknown as KernelExports,
   });
   handle.memory = (handle.kernel as unknown as KernelExports).memory;
@@ -477,6 +519,31 @@ test("releaseSharedHostStdioLocal clears local pipe slots without releasing the 
   expect(handle.stdoutPipe).toBe(0);
   expect(handle.stderrPipe).toBe(0);
   expect(handle.hostStdio.refCount).toBe(1);
+  expect(releaseHostStdio).not.toHaveBeenCalled();
+});
+
+test("releaseSharedHostStdioLocal does not release a live stdio owner's backend from a child", () => {
+  const { handle: owner } = makeHandle({
+    hostStdio: {
+      stdinPipe: 3,
+      stdoutPipe: 4,
+      stderrPipe: 5,
+      refCount: 1,
+    },
+  });
+  const { handle: child, releaseHostStdio } = makeHandle({
+    hostStdio: owner.hostStdio,
+    stdinPipe: 3,
+    stdoutPipe: 4,
+    stderrPipe: 5,
+    stdioOwner: owner,
+  });
+
+  releaseSharedHostStdioLocal(child);
+
+  expect(child.stdoutPipe).toBe(0);
+  expect(child.stderrPipe).toBe(0);
+  expect(child.hostStdio.refCount).toBe(0);
   expect(releaseHostStdio).not.toHaveBeenCalled();
 });
 

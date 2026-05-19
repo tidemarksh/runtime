@@ -141,10 +141,9 @@ test("completeProcessExit syncs pipe state before draining output when kernel-wo
   await lifecycle.completeProcessExit(handle, 0, 0);
 
   expect(order).toEqual([
-    "drain",
-    "sync-pipe",
     "append",
     "sync-fork",
+    "sync-pipe",
     "sync-socket",
     "sync-epoll",
     "complete",
@@ -152,9 +151,14 @@ test("completeProcessExit syncs pipe state before draining output when kernel-wo
   expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalledWith(
     handle,
     [],
-    { includeMemfs: false },
+    {
+      includeMemfs: false,
+      deltaOfdIds: true,
+      trackHeldOfds: true,
+      sourceVmPtr: handle.vmPtr,
+    },
   );
-  expect(requestPipeStateSync).toHaveBeenCalledWith(handle, false);
+  expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
 });
 
 test("completeProcessExit skips child-side visible drain when stdio is owned by the parent", async () => {
@@ -205,9 +209,9 @@ test("completeProcessExit skips child-side visible drain when stdio is owned by 
   await lifecycle.completeProcessExit(handle, 0, 0);
 
   expect(order).toEqual([
-    "sync-pipe",
     "append",
     "sync-fork",
+    "sync-pipe",
     "sync-socket",
     "sync-epoll",
     "complete",
@@ -381,7 +385,7 @@ test("completeProcessExit runs only once while a kernel-worker-owned exit is alr
   await lifecycle.completeProcessExit(handle, 0, 6);
   expect(handle.exitInProgress).toBe(true);
   expect(appendRuntimeLifecycleEvent).toHaveBeenCalledTimes(1);
-  expect(drainProcessOutput).toHaveBeenCalledTimes(1);
+  expect(drainProcessOutput).toHaveBeenCalledTimes(0);
   expect(requestPipeStateSync).toHaveBeenCalledTimes(1);
   expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalledTimes(1);
   expect(requestSocketStateSync).toHaveBeenCalledTimes(1);

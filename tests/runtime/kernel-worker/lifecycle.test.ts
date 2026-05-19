@@ -126,6 +126,9 @@ function makeKernelExports(): FakeKernelExports {
     thread_restore_vfork_parent_without_cleanup: (vmPtr: number, childPid: number) => {
       opLog.push(`restore-vfork:${vmPtr}:${childPid}`);
     },
+    thread_restore_vfork_parent_proc_self_exe_snapshot: () => {
+      opLog.push("restore-vfork-proc-self-exe");
+    },
     thread_resume_vfork_parent: (vmPtr: number, childPid: number) => {
       opLog.push(`resume-vfork:${vmPtr}:${childPid}`);
     },
@@ -181,6 +184,7 @@ test("resumeVforkExecveParent drops canonical child state without clearing the o
 
   expect(canonicalProcesses.has(3)).toBe(false);
   expect(parentKernel.opLog).toContain("clear-spawn:4660");
+  expect(parentKernel.opLog).toContain("restore-vfork-proc-self-exe");
   expect(parentKernel.opLog).not.toContain("restore-vfork:4660:3");
   expect(parentKernel.opLog).not.toContain("clear-vfork");
   expect(parentKernel.opLog).toContain("remove:3");

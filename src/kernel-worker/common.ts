@@ -72,7 +72,12 @@ export function cloneSnapshotEntry(entry: FsSnapshotEntry): FsSnapshotEntry {
 }
 
 export function scratchBaseFor(targetExports: KernelExports): number {
-  return targetExports.kernel_heap_ptr() + 0x10000;
+  const heapScratch = targetExports.kernel_heap_ptr() + 0x10000;
+  const memfsDataEnd = typeof targetExports.kernel_memfs_data_ptr === "function"
+    && typeof targetExports.kernel_memfs_data_bytes === "function"
+    ? targetExports.kernel_memfs_data_ptr() + targetExports.kernel_memfs_data_bytes() + 0x10000
+    : 0;
+  return (Math.max(heapScratch, memfsDataEnd) + 15) & ~15;
 }
 
 export function ensureMemoryCapacityFor(memory: WebAssembly.Memory, endOffset: number): void {

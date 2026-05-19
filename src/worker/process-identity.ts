@@ -57,12 +57,15 @@ export function assertHandleWorkerProcessIdentity(
   const liveThreadVmPtrs = anchorVmPtr === null
     ? null
     : collectLiveThreadVmPtrs(handle.kernel, anchorVmPtr);
+  if (liveThreadVmPtrs === null) {
+    return;
+  }
 
   for (const [label, vmPtr] of liveVmPtrs) {
     if (skipVmPtrs.has(vmPtr)) {
       continue;
     }
-    if (liveThreadVmPtrs !== null && !liveThreadVmPtrs.has(vmPtr)) {
+    if (!liveThreadVmPtrs.has(vmPtr)) {
       continue;
     }
     const actualPid = handle.kernel.process_current_pid(vmPtr);

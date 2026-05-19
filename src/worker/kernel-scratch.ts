@@ -14,7 +14,12 @@ export function ensureMemoryCapacity(memory: WebAssembly.Memory, endOffset: numb
 }
 
 export function kernelScratchBase(exports: KernelExports): number {
-  return exports.kernel_heap_ptr() + 0x10000;
+  const heapScratch = exports.kernel_heap_ptr() + 0x10000;
+  const memfsDataEnd = typeof exports.kernel_memfs_data_ptr === "function"
+    && typeof exports.kernel_memfs_data_bytes === "function"
+    ? exports.kernel_memfs_data_ptr() + exports.kernel_memfs_data_bytes() + 0x10000
+    : 0;
+  return alignUp(Math.max(heapScratch, memfsDataEnd), 16);
 }
 
 export function ensureKernelMemoryCapacity(exports: KernelExports, endOffset: number): void {

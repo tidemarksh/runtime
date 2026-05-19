@@ -65,6 +65,37 @@ export function createForkChildHandle({
     kernelWorkerRequest: parent.kernelWorkerRequest,
     networkBridge: parent.networkBridge,
     networkConnections: new Map(parent.networkConnections),
+    networkConnectionOfds: new Map(parent.networkConnectionOfds),
+    networkOfdSlotWatermarks: new Map(
+      [...(parent.networkOfdSlotWatermarks ?? new Map())].map(([ofdId, slot]) => [ofdId, slot.slice()]),
+    ),
+    networkPendingConnectFds: new Set(parent.networkPendingConnectFds),
+    networkClosedFds: new Set(parent.networkClosedFds),
+    networkClosedSocketSlots: new Map(
+      [...parent.networkClosedSocketSlots].map(([fd, slot]) => [fd, {
+        offset: slot.offset,
+        data: slot.data.slice(),
+      }]),
+    ),
+    networkSocketSlotWatermarks: new Map(
+      [...parent.networkSocketSlotWatermarks].map(([fd, slot]) => [fd, {
+        offset: slot.offset,
+        data: slot.data.slice(),
+      }]),
+    ),
+    networkRecvHeadWatermarks: new Map(parent.networkRecvHeadWatermarks),
+    networkRecvTailWatermarks: new Map(parent.networkRecvTailWatermarks),
+    networkRecvPayloadWatermarks: new Map(
+      [...parent.networkRecvPayloadWatermarks].map(([fd, snapshot]) => [fd, {
+        recvBufIdx: snapshot.recvBufIdx,
+        head: snapshot.head,
+        tail: snapshot.tail,
+        capacity: snapshot.capacity,
+        readBytes: snapshot.readBytes,
+        availableBytes: snapshot.availableBytes,
+        data: snapshot.data.slice(),
+      }]),
+    ),
     workers: new Set(),
     readyWorkers: [],
     runningWorker: null,
@@ -75,10 +106,12 @@ export function createForkChildHandle({
     pipeSyncPromise: null,
     pipeSyncQueued: false,
     pipeWaiterWakeQueued: false,
+    pendingPipeSlotSnapshots: [],
     epollSyncPromise: null,
     epollSyncQueued: false,
     epollWaiterWakeQueued: false,
     forkSharedSyncPromise: null,
+    processMemfsDirty: false,
     ofdSyncPromise: null,
     ofdSyncQueuedIds: new Set(),
     socketSyncPromise: null,
@@ -108,10 +141,7 @@ export function computeGuestRamLimitBytes(
     WASM32_LINEAR_MEMORY_LIMIT_BYTES,
   );
   const guestWindowBytes = Math.max(0, totalLinearBytes - guestBase);
-  return Math.max(
-    minRamSize,
-    guestWindowBytes,
-  );
+  return Math.min(minRamSize, guestWindowBytes);
 }
 
 export function detachInheritedHostStdioFromChild(child: ProcessHandle): void {

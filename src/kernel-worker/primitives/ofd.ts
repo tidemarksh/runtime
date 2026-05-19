@@ -7,6 +7,12 @@ interface KernelWorkerPrimitivesDeps {
   processKernels: Map<number, KernelExports>;
 }
 
+const OFD_TYPE_OFFSET = 0;
+const OFD_HOST_FD_OFFSET = 4;
+const OFD_REFCOUNT_OFFSET = 12;
+const OFD_OFFSET_OFFSET = 16;
+const OFD_INO_OFFSET = 24;
+
 function boundedThreadSlotCount(processExports: KernelExports, vmPtr: number): number {
   const maxThreads = processExports.abi_max_threads();
   try {
@@ -27,6 +33,78 @@ function plausibleThreadVmPtr(processExports: KernelExports, vmPtr: number): boo
     return false;
   }
   return vmPtr < processExports.memory.buffer.byteLength;
+}
+
+function ofdSlotsCanBeShared(
+  sourceExports: KernelExports,
+  targetExports: KernelExports,
+  ofdId: number,
+): boolean {
+  const sourceType = sourceExports.kernel_ofd_fd_type(ofdId);
+  const targetType = targetExports.kernel_ofd_fd_type(ofdId);
+  if (sourceType === 0) {
+    return targetType === 0;
+  }
+  if (targetType === 0) {
+    return true;
+  }
+  if (sourceType !== targetType) {
+    return false;
+  }
+  if (
+    sourceExports.kernel_ofd_ino(ofdId) !== targetExports.kernel_ofd_ino(ofdId)
+    || sourceExports.kernel_ofd_host_fd(ofdId) !== targetExports.kernel_ofd_host_fd(ofdId)
+  ) {
+    return false;
+  }
+  if (
+    sourceType === sourceExports.abi_fd_type_file()
+    && targetExports.kernel_ofd_refcount(ofdId) > 0
+    && sourceExports.kernel_ofd_offset(ofdId) < targetExports.kernel_ofd_offset(ofdId)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function ofdSnapshotCanApply(
+  targetExports: KernelExports,
+  targetState: KernelRuntimeState,
+  snapshot: KernelWorkerOfdSlotSnapshot,
+  slotBytes: number,
+): boolean {
+  const targetType = targetExports.kernel_ofd_fd_type(snapshot.ofdId);
+  if (targetType === 0) {
+    return true;
+  }
+  const view = new DataView(snapshot.slot.buffer, snapshot.slot.byteOffset, snapshot.slot.byteLength);
+  const sourceType = view.getInt32(OFD_TYPE_OFFSET, true);
+  if (sourceType === 0) {
+    return targetType === 0;
+  }
+  if (sourceType !== targetType) {
+    return false;
+  }
+  const sourceHostFd = view.getInt32(OFD_HOST_FD_OFFSET, true);
+  const sourceIno = view.getUint32(OFD_INO_OFFSET, true);
+  const targetOffset = targetState.ofdTablePtr + snapshot.ofdId * slotBytes;
+  const targetView = new DataView(targetExports.memory.buffer, targetOffset, slotBytes);
+  const targetHostFd = targetView.getInt32(OFD_HOST_FD_OFFSET, true);
+  const targetIno = targetView.getUint32(OFD_INO_OFFSET, true);
+  if (sourceIno !== targetIno || sourceHostFd !== targetHostFd) {
+    return false;
+  }
+  const fileType = targetExports.abi_fd_type_file?.();
+  if (fileType !== undefined) {
+    if (
+      sourceType === fileType
+      && targetView.getInt32(OFD_REFCOUNT_OFFSET, true) > 0
+      && view.getBigInt64(OFD_OFFSET_OFFSET, true) < targetView.getBigInt64(OFD_OFFSET_OFFSET, true)
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function collectProcessHeldOfdRefcounts(processExports: KernelExports, vmPtr: number): Int32Array {
@@ -101,6 +179,9 @@ export function createKernelWorkerOfdPrimitives(deps: KernelWorkerPrimitivesDeps
       if (ofdId <= 0 || ofdId >= maxFds) {
         continue;
       }
+      if (!ofdSlotsCanBeShared(sourceExports, targetExports, ofdId)) {
+        continue;
+      }
       copyMemoryRange(
         sourceExports.memory,
         sourceState.ofdTablePtr + ofdId * slotBytes,
@@ -147,6 +228,9 @@ export function createKernelWorkerOfdPrimitives(deps: KernelWorkerPrimitivesDeps
     const bytes = new Uint8Array(targetExports.memory.buffer);
     for (const snapshot of snapshots) {
       if (snapshot.ofdId <= 0 || snapshot.ofdId >= maxFds || snapshot.slot.length !== slotBytes) {
+        continue;
+      }
+      if (!ofdSnapshotCanApply(targetExports, targetState, snapshot, slotBytes)) {
         continue;
       }
       bytes.set(snapshot.slot, targetState.ofdTablePtr + snapshot.ofdId * slotBytes);

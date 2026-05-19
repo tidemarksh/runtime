@@ -11,6 +11,11 @@ function makeKernelState(): KernelRuntimeState {
     heapPtr: 0x210000,
     ofdTablePtr: 0x220000,
     memfsPtr: 0x230000,
+    memfsHeaderBytes: 32,
+    memfsInodesBytes: 16_384 * 32,
+    memfsFirstChildBytes: 16_384 * 4,
+    memfsDirEntriesBytes: 16_384 * 264,
+    memfsDataBytes: 256 * 1024,
     memStatePtr: 0x240000,
     epollTablePtr: 0x250000,
     socketTablePtr: 0x260000,
@@ -49,6 +54,11 @@ function makeKernel(options: {
     kernel_heap_ptr: () => runtimeState.heapPtr,
     kernel_ofd_table_ptr: () => runtimeState.ofdTablePtr,
     kernel_memfs_ptr: () => runtimeState.memfsPtr,
+    kernel_memfs_header_bytes: () => runtimeState.memfsHeaderBytes,
+    kernel_memfs_inodes_bytes: () => runtimeState.memfsInodesBytes,
+    kernel_memfs_first_child_bytes: () => runtimeState.memfsFirstChildBytes,
+    kernel_memfs_dir_entries_bytes: () => runtimeState.memfsDirEntriesBytes,
+    kernel_memfs_data_bytes: () => runtimeState.memfsDataBytes,
     kernel_mem_state_ptr: () => runtimeState.memStatePtr,
     kernel_epoll_table_ptr: () => runtimeState.epollTablePtr,
     kernel_socket_table_ptr: () => runtimeState.socketTablePtr,
@@ -88,7 +98,7 @@ function makeHandle(
     ramSize: 0,
     guestBase: 0,
     worker,
-    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    memory: new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true }),
     wasmModule: {} as WebAssembly.Module,
     kernel: makeKernel({ resumeParent }),
     kernelState: makeKernelState(),
@@ -174,7 +184,7 @@ function setPipeWritable(
   pipeSlot: number,
 ): void {
   const view = new DataView(memory.buffer);
-  const base = kernelState.pipeBase + pipeSlot * (32 + 4096);
+  const base = kernelState.pipeBase + pipeSlot * (32 + 65_536);
   view.setInt32(base + 8, 1, true);
   view.setInt32(base + 12, 1, true);
 }
