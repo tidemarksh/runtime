@@ -433,3 +433,52 @@ test("STATUS_OK network pump syncs socket state before requeueing", async () => 
   expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
   expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });
+
+test("STATUS_OK pipe sync clears owner async state before requeueing", async () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 7;
+  handle.kernelWorkerRequest = vi.fn(async () => ({ type: "pipe-state-synced" }));
+  const deps = makeDeps(worker);
+  deps.syncEffectPipeState = 1;
+  let resolvePipeSync: (() => void) | undefined;
+  deps.requestPipeStateSync = vi.fn(() => new Promise<void>((resolve) => {
+    resolvePipeSync = resolve;
+  }));
+  const thread = deps.threadWorkerStates.get(worker)!;
+  thread.ownerPid = handle.pid;
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: {
+      type: "status",
+      status: 0,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 1,
+  });
+
+  await Promise.resolve();
+
+  expect(thread.ownerAsyncStatus).toBe(0);
+  expect(deps.requestPipeStateSync).toHaveBeenCalledWith(handle, true);
+  expect(deps.enqueueWorker).not.toHaveBeenCalled();
+
+  resolvePipeSync?.();
+  await vi.waitFor(() => {
+    expect(thread.ownerAsyncStatus).toBeNull();
+  });
+
+  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
+});
