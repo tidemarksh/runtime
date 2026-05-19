@@ -155,8 +155,10 @@ function activeChildMayHoldBlockedPipeWriter(
     const ownsVisibleOutputForHandle = candidate.stdioOwner === handle
       || candidate.stdioOwner?.pid === handle.pid;
     if (
-      (candidate.parentPid !== handle.pid && !ownsVisibleOutputForHandle)
+      candidate.exitInProgress
+      || deps.processHandles.get(candidate.pid) !== candidate
       || candidate.workers.size === 0
+      || (candidate.parentPid !== handle.pid && !ownsVisibleOutputForHandle)
     ) {
       continue;
     }
