@@ -57,7 +57,7 @@ let generation = 0;
 let wasmFeatures: WasmFeatureSupport;
 let runtimeBridge: RuntimeStateBridge | null = null;
 let preparedInputs: ThreadWorkerPrepareInputs | null = null;
-const DEFAULT_NODE_THREAD_STEP_BUDGET = 250_000;
+const DEFAULT_NODE_THREAD_STEP_BUDGET = 1_000_000;
 const DEFAULT_BROWSER_THREAD_STEP_BUDGET = 2_000;
 const THREAD_STEP_BUDGET = readThreadStepBudget();
 const EINTR_ERRNO = 4;
@@ -75,6 +75,7 @@ const PIPE_RESUME_DEBUG_ENABLED = PIPE_SLOT_DEBUG_ENABLED
   }).process?.env?.TIDEMARK_PIPE_RESUME_DEBUG ?? "") === "1";
 let lastResumeBlockedDebug: string | undefined;
 let syscallNumbers: SyscallNumbers | null = null;
+const regularFileDataLayouts = new Map<number, { dataOffset: number; dataCap: number }>();
 
 function acquirePipeSlotForSnapshot(buffer: ArrayBufferLike, slotOffset: number): void {
   if (buffer instanceof SharedArrayBuffer && slotOffset % 4 === 0) {
@@ -810,7 +811,7 @@ function computeReferencedMemfsDataUsed(
 
 function latestCompletedRegularFileWriteTrace(
   kernelExports: KernelExports,
-): { ofdId: number; writeLen: number } | null {
+): { ofdId: number; ino: number; startOffset: number; endOffset: number; writeLen: number } | null {
   if (syscallNumbers === null) {
     return null;
   }
@@ -836,10 +837,35 @@ function latestCompletedRegularFileWriteTrace(
     const result = readOptionalTraceI64(kernelExports.debug_fd_syscall_trace_result?.(index));
     if (result !== null && result > 0n) {
       const ofdId = kernelExports.debug_fd_syscall_trace_arg0_ofd_id?.(index) ?? 0;
+      const ino = kernelExports.debug_fd_syscall_trace_arg0_ofd_ino?.(index)
+        ?? kernelExports.kernel_ofd_ino?.(ofdId)
+        ?? 0;
       const writeLen = Number(result);
-      return Number.isFinite(writeLen) && ofdId > 0
-        ? { ofdId, writeLen }
-        : null;
+      if (!Number.isFinite(writeLen) || ofdId <= 0 || ino <= 0) {
+        return null;
+      }
+      const nr = readOptionalTraceU64(kernelExports.debug_fd_syscall_trace_nr?.(index));
+      const pwriteOffset = nr !== null && nr === syscallNumbers.pwrite64
+        ? Number(readOptionalTraceU64(kernelExports.debug_fd_syscall_trace_arg3?.(index)) ?? -1n)
+        : -1;
+      const endOffset = Number(kernelExports.debug_fd_syscall_trace_arg0_ofd_offset?.(index)
+        ?? kernelExports.kernel_ofd_offset?.(ofdId)
+        ?? 0n);
+      const startOffset = pwriteOffset >= 0 ? pwriteOffset : endOffset - writeLen;
+      if (
+        !Number.isFinite(startOffset)
+        || !Number.isFinite(endOffset)
+        || startOffset < 0
+      ) {
+        return null;
+      }
+      return {
+        ofdId,
+        ino,
+        startOffset,
+        endOffset: pwriteOffset >= 0 ? startOffset + writeLen : endOffset,
+        writeLen,
+      };
     }
   }
   return null;
@@ -852,8 +878,7 @@ function snapshotRegularFileWriteMemfsMemory(
   if (!trace) {
     return [];
   }
-  const ino = kernelExports.kernel_ofd_ino?.(trace.ofdId) ?? 0;
-  const endOffset = Number(kernelExports.kernel_ofd_offset?.(trace.ofdId) ?? 0n);
+  const ino = trace.ino;
   const inodesPtr = kernelExports.kernel_memfs_inodes_ptr?.() ?? 0;
   const dataPtr = kernelExports.kernel_memfs_data_ptr?.() ?? 0;
   const inodeBytes = 32;
@@ -865,16 +890,29 @@ function snapshotRegularFileWriteMemfsMemory(
     || dataPtr <= 0
     || inodePtr < 0
     || inodePtr + inodeBytes > memory.byteLength
-    || !Number.isFinite(endOffset)
-    || endOffset <= 0
+    || !Number.isFinite(trace.startOffset)
+    || !Number.isFinite(trace.endOffset)
+    || trace.endOffset <= 0
   ) {
     return [];
   }
   const inodeView = new DataView(memory.buffer, inodePtr, inodeBytes);
   const fileSize = Number(inodeView.getBigUint64(16, true));
   const dataOffset = inodeView.getUint32(24, true);
-  const snapshotLen = Math.max(0, Math.min(fileSize, endOffset));
-  const dataStart = dataPtr + dataOffset;
+  const dataCap = inodeView.getUint32(28, true);
+  const previousLayout = regularFileDataLayouts.get(ino);
+  const layoutChanged = previousLayout === undefined
+    || previousLayout.dataOffset !== dataOffset
+    || previousLayout.dataCap !== dataCap;
+  regularFileDataLayouts.set(ino, { dataOffset, dataCap });
+
+  const snapshotStart = layoutChanged ? 0 : trace.startOffset;
+  const snapshotEnd = Math.min(
+    fileSize,
+    layoutChanged ? trace.endOffset : trace.startOffset + trace.writeLen,
+  );
+  const snapshotLen = Math.max(0, snapshotEnd - snapshotStart);
+  const dataStart = dataPtr + dataOffset + snapshotStart;
   const snapshots: KernelMemoryWriteSnapshot[] = [];
   const inodeSnapshot = snapshotAbsoluteMemory(kernelExports, inodePtr, inodeBytes);
   if (inodeSnapshot) {
