@@ -25,6 +25,7 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const SOCK_STATE_CONNECTED = 3;
 const SOCK_STATE_SHUTDOWN = 5;
+const NETWORK_BRIDGE_CHUNK_SIZE = 128 * 1024;
 const NETWORK_FD_TRACE_LOG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_FD_TRACE ?? "") === "1";
 const NETWORK_LIFECYCLE_LOG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_NETWORK ?? "") === "1";
 
@@ -129,6 +130,19 @@ function formatNetworkFdTrace(handle: ProcessHandle): string {
 
 function isPromiseLike<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {
   return value !== null && value !== undefined && typeof (value as { then?: unknown }).then === "function";
+}
+
+function copyBytes(bytes: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(bytes.length);
+  out.set(bytes);
+  return out;
+}
+
+function ownedBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
+  if (bytes.buffer instanceof ArrayBuffer) {
+    return bytes as Uint8Array<ArrayBuffer>;
+  }
+  return copyBytes(bytes);
 }
 
 export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
@@ -603,7 +617,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
               return;
             }
           }
-          pendingNetworkInbound.set(connection, value === null ? null : new Uint8Array(value));
+          pendingNetworkInbound.set(connection, value === null ? null : ownedBytes(value));
           void (async () => {
             const activeHandle = resolveActiveNetworkHandle(handle, vmPtr, fd, connection);
             if (!activeHandle) {
@@ -1071,9 +1085,17 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     if (!drainOutbound || !injectInbound || handle.networkConnections.size === 0) {
       return false;
     }
-    const chunkSize = 16 * 1024;
     const scratch = kernelScratchBase(handle.kernel) + 0x24000;
-    ensureMemoryCapacity(handle.kernel.memory ?? handle.memory, scratch + chunkSize);
+    let chunkSize = NETWORK_BRIDGE_CHUNK_SIZE;
+    try {
+      ensureMemoryCapacity(handle.kernel.memory ?? handle.memory, scratch + chunkSize);
+    } catch (error) {
+      if (!(error instanceof RangeError)) {
+        throw error;
+      }
+      chunkSize = 16 * 1024;
+      ensureMemoryCapacity(handle.kernel.memory ?? handle.memory, scratch + chunkSize);
+    }
     const memory = new Uint8Array(handle.memory.buffer);
     let changed = false;
     const closeNetworkConnection = async (
@@ -1354,7 +1376,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         if (inbound === undefined || inbound.length === 0) {
           return "idle";
         }
-        const owned = new Uint8Array(inbound);
+        const owned = ownedBytes(inbound);
         const injection = owned.length > chunkSize ? owned.subarray(0, chunkSize) : owned;
         deps.appendWorkerDebugLog(handle, `net-inbound:${handle.pid}:fd=${fd}:n=${injection.length}:pending=${owned.length - injection.length}:before=${formatSocketStateForFd(fd)}`);
         appendNetworkLifecycle(handle, `net-inbound:${handle.pid}:fd=${fd}:n=${injection.length}:pending=${owned.length - injection.length}:before=${formatSocketStateForFd(fd)}`);
@@ -1393,7 +1415,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
           changed = true;
         }
         if (written > 0 && written < owned.length) {
-          pendingNetworkInbound.set(connection, owned.slice(written));
+          pendingNetworkInbound.set(connection, owned.subarray(written));
           appendNetworkLifecycle(handle, `net-inject-partial:${handle.pid}:fd=${fd}:written=${written}:pending=${owned.length - written}`);
           logNetworkDebug(`inject-partial pid=${handle.pid} fd=${fd} written=${written} pending=${owned.length - written}`);
           return "changed";

@@ -125,3 +125,47 @@ test("stale generated messages are dropped before transferred worker ownership i
     "stale-message:0x1234:status:1->2",
   );
 });
+
+test("status from a removed process state is dropped as stale", () => {
+  const worker = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, makeThreadState({ ownerPid: 4 }));
+  const appendWorkerDebugLog = vi.fn();
+  const failProcess = vi.fn();
+  const deps = makeDeps(threadWorkerStates, appendWorkerDebugLog, failProcess);
+  const handle = {
+    pid: 4,
+    exitInProgress: false,
+    workerDebugLog: [],
+    workers: new Set<Worker>(),
+    vforkSnapshot: null,
+    kernel: {
+      abi_status_fault: () => 31,
+      abi_status_vfork_wait: () => 11,
+      abi_status_execve_spawn: () => 13,
+      process_current_pid: () => 0,
+      thread_process_thread_count: () => 0,
+      thread_process_ptr: () => 0x48000,
+      process_current_ppid: () => 0,
+    },
+  } as unknown as ProcessHandle;
+  deps.processHandles.set(4, handle);
+  const handleWorkerMessage = createWorkerMessageHandler(deps);
+
+  handleWorkerMessage(handle, worker, {
+    type: "status",
+    generation: 2,
+    status: 0,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0x1000n,
+    vmPtr: 0x1234,
+    kernelState: {} as ThreadWorkerOutbound extends { kernelState: infer State } ? State : never,
+  } as ThreadWorkerOutbound);
+
+  expect(failProcess).not.toHaveBeenCalled();
+  expect(appendWorkerDebugLog).toHaveBeenCalledWith(
+    handle,
+    "stale-process-status:0x1234:0:pid=4",
+  );
+});

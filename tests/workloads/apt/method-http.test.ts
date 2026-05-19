@@ -373,6 +373,7 @@ function buildAptGetSnapshot(): { entries?: ReturnType<typeof buildSnapshotFromS
         "APT::CDROM::Fast \"true\";",
         "APT::Sandbox::User \"root\";",
         "Acquire::Languages \"none\";",
+        "Acquire::GzipIndexes \"true\";",
         "Dir::Cache::pkgcache \"\";",
         "Dir::Cache::srcpkgcache \"\";",
         "Dir::State::cdroms \"/var/lib/apt/cdroms.list\";",
@@ -1869,7 +1870,7 @@ function createAsyncMethodNetworkBridge(requests: string[], events: string[] = [
         async read(maxBytes) {
           record(`read:start:requests=${requests.length}:local=${sawRequest ? 1 : 0}:sent=${responseSent ? 1 : 0}`);
           if (responseBytes !== null && responseOffset < responseBytes.length) {
-            const chunk = responseBytes.slice(responseOffset, responseOffset + maxBytes);
+            const chunk = responseBytes.subarray(responseOffset, responseOffset + maxBytes);
             responseOffset += chunk.length;
             record(`read:chunk:${chunk.length}:${responseOffset}/${responseBytes.length}`);
             return chunk;
@@ -1885,7 +1886,7 @@ function createAsyncMethodNetworkBridge(requests: string[], events: string[] = [
           }
           responseBytes = serializeHttpResponse(selectMethodResponseBody(requestText));
           await new Promise((resolveDone) => setTimeout(resolveDone, 1));
-          const chunk = responseBytes.slice(0, maxBytes);
+          const chunk = responseBytes.subarray(0, maxBytes);
           responseOffset = chunk.length;
           record(`read:response:${chunk.length}:${responseOffset}/${responseBytes.length}`);
           return chunk;

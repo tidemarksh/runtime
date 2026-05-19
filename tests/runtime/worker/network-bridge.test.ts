@@ -274,6 +274,55 @@ test("pumpNetworkConnections drains guest outbound bytes and injects inbound byt
   expect(handle.kernel.thread_socket_inject_inbound).toHaveBeenCalledWith(0x2000, 7, 0x34100, 21);
 });
 
+test("pumpNetworkConnections requests and injects large generic inbound chunks", async () => {
+  const memory = new WebAssembly.Memory({ initial: 8, maximum: 8, shared: true });
+  const payload = new Uint8Array(96 * 1024);
+  payload.fill(0x61);
+  let inboundRead = false;
+  const readMaxBytes: number[] = [];
+  const handle = {
+    pid: 42,
+    vmPtr: 0x2000,
+    memory,
+    networkConnections: new Map([
+      [7, {
+        write: vi.fn(),
+        read: vi.fn((maxBytes: number) => {
+          readMaxBytes.push(maxBytes);
+          if (inboundRead) {
+            return undefined;
+          }
+          inboundRead = true;
+          return payload;
+        }),
+      }],
+    ]),
+    networkPendingConnectFds: new Set(),
+    networkClosedFds: new Set(),
+    networkRecvHeadWatermarks: new Map(),
+    networkRecvTailWatermarks: new Map(),
+    networkClosedSocketSlots: new Map(),
+    kernel: {
+      kernel_heap_ptr: () => 0x100,
+      abi_max_fds: () => 16,
+      abi_fd_type_socket: () => 8,
+      abi_enotconn: () => -107,
+      abi_enotsock: () => -88,
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 7 ? 7 : 0,
+      kernel_ofd_fd_type: (ofdId: number) => ofdId === 7 ? 8 : 0,
+      thread_socket_mark_external_peer: vi.fn(() => 0),
+      thread_socket_drain_outbound: vi.fn(() => 0),
+      thread_socket_inject_inbound: vi.fn((_vmPtr: number, _fd: number, _srcPtr: number, srcLen: number) => srcLen),
+    },
+  } as unknown as ProcessHandle;
+  const helpers = createWorkerProcessIoHelpers(createDeps());
+
+  await expect(helpers.pumpNetworkConnections(handle)).resolves.toBe(true);
+
+  expect(readMaxBytes[0]).toBe(128 * 1024);
+  expect(handle.kernel.thread_socket_inject_inbound).toHaveBeenCalledWith(0x2000, 7, 0x34100, payload.length);
+});
+
 test("async inbound read resumes pump with the source thread vm", async () => {
   const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
   let resolveRead: ((data: Uint8Array) => void) | null = null;

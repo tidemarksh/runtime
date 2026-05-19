@@ -100,6 +100,14 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
       ) {
         return true;
       }
+      const processThreadCount = handle.kernel.thread_process_thread_count(thread.vmPtr);
+      if (msg.type === "status" && currentPid === 0 && processThreadCount === 0) {
+        deps.appendWorkerDebugLog(
+          handle,
+          `stale-process-status:0x${thread.vmPtr.toString(16)}:${msg.status}:pid=${handle.pid}`,
+        );
+        return false;
+      }
       if (currentPid !== handle.pid) {
         failOwnershipInvariant(handle, worker, msg, `kernel_pid=${currentPid} expected_pid=${handle.pid}`);
         return false;
