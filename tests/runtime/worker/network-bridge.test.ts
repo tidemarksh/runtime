@@ -323,6 +323,70 @@ test("pumpNetworkConnections requests and injects large generic inbound chunks",
   expect(handle.kernel.thread_socket_inject_inbound).toHaveBeenCalledWith(0x2000, 7, 0x34100, payload.length);
 });
 
+test("pumpNetworkConnections preserves pending large inbound bytes across partial socket writes", async () => {
+  const memory = new WebAssembly.Memory({ initial: 16, maximum: 16, shared: true });
+  const view = new Uint8Array(memory.buffer);
+  const payload = new Uint8Array(384 * 1024);
+  for (let i = 0; i < payload.length; i += 1) {
+    payload[i] = i % 251;
+  }
+  const readMaxBytes: number[] = [];
+  let readOffset = 0;
+  let injectedOffset = 0;
+  const maxSocketWrite = 48 * 1024;
+  const handle = {
+    pid: 42,
+    vmPtr: 0x2000,
+    memory,
+    networkConnections: new Map([
+      [7, {
+        write: vi.fn(),
+        read: vi.fn((maxBytes: number) => {
+          readMaxBytes.push(maxBytes);
+          if (readOffset >= payload.length) {
+            return undefined;
+          }
+          const end = Math.min(payload.length, readOffset + maxBytes);
+          const chunk = payload.subarray(readOffset, end);
+          readOffset = end;
+          return chunk;
+        }),
+      }],
+    ]),
+    networkPendingConnectFds: new Set(),
+    networkClosedFds: new Set(),
+    networkRecvHeadWatermarks: new Map(),
+    networkRecvTailWatermarks: new Map(),
+    networkClosedSocketSlots: new Map(),
+    kernel: {
+      kernel_heap_ptr: () => 0x100,
+      abi_max_fds: () => 16,
+      abi_fd_type_socket: () => 8,
+      abi_enotconn: () => -107,
+      abi_enotsock: () => -88,
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 7 ? 7 : 0,
+      kernel_ofd_fd_type: (ofdId: number) => ofdId === 7 ? 8 : 0,
+      thread_socket_mark_external_peer: vi.fn(() => 0),
+      thread_socket_drain_outbound: vi.fn(() => 0),
+      thread_socket_inject_inbound: vi.fn((_vmPtr: number, _fd: number, srcPtr: number, srcLen: number) => {
+        const written = Math.min(srcLen, maxSocketWrite);
+        expect(view.slice(srcPtr, srcPtr + written)).toEqual(payload.slice(injectedOffset, injectedOffset + written));
+        injectedOffset += written;
+        return written;
+      }),
+    },
+  } as unknown as ProcessHandle;
+  const helpers = createWorkerProcessIoHelpers(createDeps());
+
+  while (injectedOffset < payload.length) {
+    await expect(helpers.pumpNetworkConnections(handle)).resolves.toBe(true);
+  }
+
+  expect(readMaxBytes.every((value) => value === 128 * 1024)).toBe(true);
+  expect(readOffset).toBe(payload.length);
+  expect(injectedOffset).toBe(payload.length);
+});
+
 test("async inbound read resumes pump with the source thread vm", async () => {
   const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
   let resolveRead: ((data: Uint8Array) => void) | null = null;
