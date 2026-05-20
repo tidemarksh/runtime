@@ -21,10 +21,10 @@ import type {
   WorkerSchedulerQueueHelpers,
 } from "./types.js";
 
-const DEFAULT_NODE_SCHEDULER_STEP_BUDGET = 1_000_000;
+const DEFAULT_NODE_SCHEDULER_STEP_BUDGET = 5_000_000;
 const DEFAULT_BROWSER_SCHEDULER_STEP_BUDGET = 10_000;
 const MIN_SCHEDULER_STEP_BUDGET = 1_000;
-const MAX_SCHEDULER_STEP_BUDGET = 5_000_000;
+const MAX_SCHEDULER_STEP_BUDGET = 20_000_000;
 const SCHEDULER_STEP_BUDGET = readSchedulerStepBudget();
 const SCHEDULER_QUEUE_DEBUG_LOG_ENABLED = false;
 let nextThreadWorkerGeneration = 1;
