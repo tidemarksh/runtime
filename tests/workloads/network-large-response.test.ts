@@ -13,7 +13,8 @@ import {
 } from "../support/runtime-workload.js";
 
 const hostRiscvGcc = process.env.TIDEMARK_TEST_HOST_RISCV_GCC ?? "riscv64-linux-gnu-gcc";
-const largeBodyBytes = 2 * 1024 * 1024;
+const largeBodyBytes = Number(process.env.TIDEMARK_TEST_NETWORK_LARGE_RESPONSE_BYTES ?? 2 * 1024 * 1024);
+const largeClientReadBufferBytes = Number(process.env.TIDEMARK_TEST_NETWORK_LARGE_RESPONSE_READ_BUFFER_BYTES ?? 8192);
 
 function buildLargeHttpClientProbe(): Uint8Array | null {
   const tmp = mkdtempSync(join(tmpdir(), "tidemark-network-large-response-"));
@@ -62,8 +63,8 @@ function buildLargeHttpClientProbe(): Uint8Array | null {
       "  if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) != 0) { perror(\"connect\"); return 21; }",
       "  const char *request = \"GET http://large.test/payload HTTP/1.1\\r\\nHost: large.test\\r\\nConnection: close\\r\\n\\r\\n\";",
       "  if (write_all(sock, request, strlen(request)) != 0) { perror(\"write-request\"); return 22; }",
-      "  unsigned char buf[8192];",
-      "  unsigned char header[16384];",
+      `  unsigned char buf[${Math.max(1, Math.trunc(largeClientReadBufferBytes))}];`,
+      `  unsigned char header[${Math.max(16 * 1024, Math.trunc(largeClientReadBufferBytes) + 1024)}];`,
       "  size_t header_len = 0;",
       "  int saw_header = 0;",
       "  unsigned long long body_count = 0;",

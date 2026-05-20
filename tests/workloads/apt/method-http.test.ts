@@ -102,25 +102,36 @@ function buildSyntheticAptRepository(): {
   const tmp = mkdtempSync(join(tmpdir(), "tidemark-apt-repo-"));
   try {
     const packagesPath = join(tmp, "Packages");
-    const packageCount = Math.max(1, Math.trunc(packageIndexGatePackageCount));
-    const packageStanzas: string[] = [];
-    for (let index = 0; index < packageCount; index += 1) {
-      const digest = createHash("sha256").update(`tidemark-local-${index}`).digest("hex");
-      packageStanzas.push([
-        `Package: tidemark-local-${index}`,
-        "Version: 1",
-        "Architecture: riscv64",
-        `Description: local apt update gate ${digest}`,
-        "",
-      ].join("\n"));
+    let packages: Uint8Array;
+    let packagesXz: Uint8Array;
+    if (methodPackagesXzResponseBody) {
+      packagesXz = methodPackagesXzResponseBody;
+      packages = new Uint8Array(execFileSync("xz", ["-dc"], {
+        input: Buffer.from(methodPackagesXzResponseBody),
+        maxBuffer: 128 * 1024 * 1024,
+        stdio: "pipe",
+      }));
+    } else {
+      const packageCount = Math.max(1, Math.trunc(packageIndexGatePackageCount));
+      const packageStanzas: string[] = [];
+      for (let index = 0; index < packageCount; index += 1) {
+        const digest = createHash("sha256").update(`tidemark-local-${index}`).digest("hex");
+        packageStanzas.push([
+          `Package: tidemark-local-${index}`,
+          "Version: 1",
+          "Architecture: riscv64",
+          `Description: local apt update gate ${digest}`,
+          "",
+        ].join("\n"));
+      }
+      const packagesText = packageStanzas.join("");
+      writeFileSync(packagesPath, packagesText);
+      packages = new TextEncoder().encode(packagesText);
+      packagesXz = new Uint8Array(execFileSync("xz", ["-zc", packagesPath], { stdio: "pipe" }));
     }
-    const packagesText = packageStanzas.join("");
-    writeFileSync(packagesPath, packagesText);
-    const packages = new TextEncoder().encode(packagesText);
     const packagesBuffer = Buffer.from(packages);
     const packagesMd5 = createHash("md5").update(packagesBuffer).digest("hex");
     const packagesSha256 = createHash("sha256").update(packagesBuffer).digest("hex");
-    const packagesXz = new Uint8Array(execFileSync("xz", ["-zc", packagesPath], { stdio: "pipe" }));
     const packagesXzBuffer = Buffer.from(packagesXz);
     const packagesXzMd5 = createHash("md5").update(packagesXzBuffer).digest("hex");
     const packagesXzSha256 = createHash("sha256").update(packagesXzBuffer).digest("hex");
