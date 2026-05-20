@@ -40,6 +40,9 @@ const SOCKET_SYNC_DEBUG_LOG_ENABLED = ((globalThis as {
   || ((globalThis as {
     process?: { env?: Record<string, string | undefined> };
   }).process?.env?.TIDEMARK_WORKER_DEBUG_NETWORK ?? "") === "1";
+const FORK_SHARED_MEMFS_DEBUG_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_FS_PUBLICATION_DEBUG ?? "") === "1";
 const SOCK_STATE_SHUTDOWN = 5;
 const NET_BUFFER_HEADER_BYTES = 16;
 const NET_BUFFER_HEAD_OFFSET = 0;
@@ -202,6 +205,16 @@ interface PreservedRuntimeNetworkKernelState {
 
 function appendSocketSyncDebug(handle: ProcessHandle, event: string): void {
   if (!SOCKET_SYNC_DEBUG_LOG_ENABLED) {
+    return;
+  }
+  handle.workerDebugLog.push(event);
+  if (handle.workerDebugLog.length > 4096) {
+    handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 4096);
+  }
+}
+
+function appendForkSharedMemfsDebug(handle: ProcessHandle, event: string): void {
+  if (!FORK_SHARED_MEMFS_DEBUG_ENABLED) {
     return;
   }
   handle.workerDebugLog.push(event);
@@ -2640,6 +2653,9 @@ export async function syncForkSharedStateViaKernelWorker(
   }
   if (response.type !== "fork-shared-state-synced") {
     throw new Error(`unexpected kernel-worker response for sync-fork-shared-state: ${response.type}`);
+  }
+  if (response.forkSharedDebug) {
+    appendForkSharedMemfsDebug(handle, `fork-shared-memfs:${handle.pid}:${response.forkSharedDebug}`);
   }
   for (const ofdId of syncOfdIds) {
     handle.kernelShare.sharedOfdIds.add(ofdId);

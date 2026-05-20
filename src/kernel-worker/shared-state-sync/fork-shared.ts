@@ -13,6 +13,11 @@ import {
 } from "../common.js";
 import type { KernelWorkerSharedStateSyncDeps, KernelWorkerPidBytesSnapshot, KernelWorkerPidStateSnapshot, KernelRuntimeState } from "./types.js";
 
+const FORK_SHARED_MEMFS_DEBUG_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_FS_PUBLICATION_DEBUG ?? "") === "1";
+const LOADER_PATH_BYTES = new TextEncoder().encode("/lib/ld-linux-riscv64-lp64d.so.1");
+
 export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedStateSyncDeps) {
   interface RegularFileDataSnapshot {
     ino: number;
@@ -109,6 +114,31 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
     }
   }
 
+  function describeLoaderHead(
+    label: string,
+    targetExports: ReturnType<KernelWorkerSharedStateSyncDeps["requireProcessKernel"]>,
+  ): string {
+    const pathPtr = writeScratchFor(targetExports, LOADER_PATH_BYTES);
+    const ino = targetExports.memfs_resolve_path(pathPtr, LOADER_PATH_BYTES.length);
+    if (ino === 0) {
+      return `${label}=missing`;
+    }
+    const mode = targetExports.memfs_inode_mode(ino);
+    const size = Number(targetExports.memfs_file_size(ino));
+    let head = "n/a";
+    if ((mode & MEMFS_S_IFMT) === MEMFS_S_IFREG && size > 0) {
+      const readLen = Math.min(4, size);
+      const readPtr = writeScratchFor(targetExports, new Uint8Array(readLen));
+      const read = Number(targetExports.memfs_read_file_to(ino, 0n, readPtr, readLen));
+      if (read > 0) {
+        head = [...new Uint8Array(targetExports.memory.buffer, readPtr, read)]
+          .map((byte) => byte.toString(16).padStart(2, "0"))
+          .join("");
+      }
+    }
+    return `${label}=ino${ino}/mode${mode.toString(8)}/size${size}/head${head}`;
+  }
+
   function syncForkSharedState(
     pid: number,
     vmPtr: number,
@@ -121,12 +151,26 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
     preserveSourceRefcounts: boolean,
     preservePublishedRegularFileData: boolean,
     kernelState: KernelRuntimeState,
-  ): KernelRuntimeState {
+  ): { kernelState: KernelRuntimeState; forkSharedDebug?: string } {
     const canonicalExports = deps.getCanonicalExports();
     const processExports = deps.processKernels.get(pid);
     if (!processExports) {
-      return kernelState;
+      return { kernelState };
     }
+    const debug: string[] = [];
+    const pushMemfsDebug = (phase: string): void => {
+      if (!FORK_SHARED_MEMFS_DEBUG_ENABLED || !includeMemfs) {
+        return;
+      }
+      debug.push([
+        `phase=${phase}`,
+        `pid=${pid}`,
+        `targets=${targetPids.join(".")}`,
+        `preserve=${preservePublishedRegularFileData ? 1 : 0}`,
+        describeLoaderHead("source", processExports),
+        describeLoaderHead("canonical", canonicalExports),
+      ].join(":"));
+    };
     attachKernelRuntimeState(processExports, kernelState);
     applyFdEntrySnapshot(processExports, vmPtr, fdEntries, ofdIds);
     const preservedRegularFileData = includeMemfs && preservePublishedRegularFileData
@@ -176,6 +220,7 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
       );
     }
     if (includeMemfs) {
+      pushMemfsDebug("before-source-to-canonical");
       const canonicalProcSelfExe = deps.snapshotProcSelfExe(canonicalExports);
       deps.copyMemfsState(processExports, sourceState, canonicalExports, canonicalState, {
         includeData: true,
@@ -185,6 +230,7 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
         deps.restorePublishedRegularFileDataFromPageCache?.();
         restoreRegularFileDataToCanonicalAndSource(processExports, preservedRegularFileData);
       }
+      pushMemfsDebug("after-source-to-canonical");
     }
 
     const memberVmPtrs = new Map<number, number>([[pid, vmPtr]]);
@@ -257,15 +303,29 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
         managedPipeSlots,
       );
       if (includeMemfs) {
+        pushMemfsDebug(`before-canonical-to-target-${targetPid}`);
         const targetProcSelfExe = deps.snapshotProcSelfExe(targetExports);
         deps.copyCanonicalMemfsToProcess(reconciledCanonicalState, targetExports, targetState, {
           includeData: true,
         });
         deps.restoreProcSelfExe(targetExports, targetProcSelfExe);
+        if (FORK_SHARED_MEMFS_DEBUG_ENABLED) {
+          debug.push([
+            `phase=after-canonical-to-target-${targetPid}`,
+            `pid=${pid}`,
+            `targets=${targetPids.join(".")}`,
+            `preserve=${preservePublishedRegularFileData ? 1 : 0}`,
+            describeLoaderHead("target", targetExports),
+            describeLoaderHead("canonical", canonicalExports),
+          ].join(":"));
+        }
       }
     }
 
-    return readKernelRuntimeState(processExports);
+    return {
+      kernelState: readKernelRuntimeState(processExports),
+      forkSharedDebug: debug.length > 0 ? debug.join(";") : undefined,
+    };
   }
 
   function rehydrateForkSharedState(

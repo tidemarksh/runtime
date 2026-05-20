@@ -582,6 +582,7 @@ export type KernelWorkerResponse =
       type: "fork-shared-state-synced";
       requestId: number;
       kernelState: KernelRuntimeState;
+      forkSharedDebug?: string;
     }
   | {
       type: "fork-shared-state-rehydrated";

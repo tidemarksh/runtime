@@ -125,7 +125,7 @@ interface KernelWorkerMessageHandlerDeps {
     preserveSourceRefcounts: boolean,
     preservePublishedRegularFileData: boolean,
     kernelState: KernelRuntimeState,
-  ): KernelRuntimeState;
+  ): { kernelState: KernelRuntimeState; forkSharedDebug?: string };
   rehydrateForkSharedState(
     targetPids: number[],
     targetKernelStates: KernelWorkerPidStateSnapshot[],
@@ -421,10 +421,8 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
           }
           break;
         case "sync-fork-shared-state":
-          deps.postResponse({
-            type: "fork-shared-state-synced",
-            requestId: msg.requestId,
-            kernelState: deps.syncForkSharedState(
+          {
+            const result = deps.syncForkSharedState(
               msg.pid,
               msg.vmPtr,
               msg.targetPids,
@@ -436,8 +434,14 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
               msg.preserveSourceRefcounts ?? false,
               msg.preservePublishedRegularFileData ?? false,
               msg.kernelState,
-            ),
-          });
+            );
+            deps.postResponse({
+              type: "fork-shared-state-synced",
+              requestId: msg.requestId,
+              kernelState: result.kernelState,
+              forkSharedDebug: result.forkSharedDebug,
+            });
+          }
           break;
         case "rehydrate-fork-shared-state":
           deps.rehydrateForkSharedState(
