@@ -56,6 +56,8 @@ const packageIndexGateObserveFile =
   process.env.TIDEMARK_TEST_APT_PACKAGE_INDEX_OBSERVE_FILE === "1";
 const methodFullPackageGate = process.env.TIDEMARK_TEST_APT_METHOD_FULL_PACKAGE_GATE === "1";
 const methodFullPackageBytes = Number(process.env.TIDEMARK_TEST_APT_METHOD_FULL_PACKAGE_BYTES ?? "0");
+const storeFullPackageExpectedHash = process.env.TIDEMARK_TEST_APT_STORE_EXPECTED_HASH !== "0";
+const storeFullPackageHashMode = storeFullPackageExpectedHash ? "sha256-only" : "apt-default-all";
 const libraryRoots = (process.env.TIDEMARK_TEST_APT_METHOD_LIBRARY_ROOTS ?? "")
   .split(":")
   .filter(Boolean);
@@ -532,6 +534,32 @@ function buildAptGetSnapshot(): { entries?: ReturnType<typeof buildSnapshotFromS
       mode: 0o755,
     },
   ];
+
+  const xzHelper = firstExistingFile([
+    resolve(aptRoot, "usr/bin/xz"),
+    resolve(aptRoot, "bin/xz"),
+  ]);
+  if (xzHelper) {
+    sources.push({
+      kind: "file",
+      hostPath: xzHelper,
+      guestPath: "/usr/bin/xz",
+      mode: 0o755,
+    });
+  }
+
+  const gzipHelper = firstExistingFile([
+    resolve(aptRoot, "usr/bin/gzip"),
+    resolve(aptRoot, "bin/gzip"),
+  ]);
+  if (gzipHelper) {
+    sources.push({
+      kind: "fileCopies",
+      hostPath: gzipHelper,
+      guestPaths: ["/usr/bin/gzip", "/bin/gzip"],
+      mode: 0o755,
+    });
+  }
 
   const privateLib = firstExistingFile([
     resolve(aptRoot, "usr/lib/riscv64-linux-gnu/libapt-private.so.0.0.0"),
@@ -3242,6 +3270,117 @@ test("apt method store local gate: stdout EOF follows stdin close", async () => 
     runtime.destroy();
   }
 }, 60_000);
+
+test("apt method store local gate: full package xz reaches URI Done", async () => {
+  if (!methodPackagesXzResponseBody) {
+    return logSkip("missing full package xz response body: set TIDEMARK_TEST_APT_METHOD_PACKAGES_XZ_RESPONSE_BODY");
+  }
+  const prepared = await prepareAptGetRuntime(createMethodNetworkBridge([]));
+  if (!prepared) {
+    return;
+  }
+  const { runtime } = prepared;
+  const storeElf = new Uint8Array(readFileSync(resolve(aptRoot, "usr/lib/apt/methods/store")));
+  const sourcePath = "/tmp/tidemark-store-source-Packages.xz";
+  const destPath = "/dev/null";
+  const expectedPackages = new Uint8Array(execFileSync("xz", ["-dc"], {
+    input: Buffer.from(methodPackagesXzResponseBody),
+    maxBuffer: 128 * 1024 * 1024,
+    stdio: "pipe",
+  }));
+  const expectedSha256 = createHash("sha256").update(Buffer.from(expectedPackages)).digest("hex");
+  const command = new TextEncoder().encode(`${[
+    "601 Configuration",
+    "Config-Item: APT::Architecture=riscv64",
+    "Config-Item: APT::Architectures::=riscv64",
+    "Config-Item: APT::Sandbox::User=root",
+    "Config-Item: Dir=/",
+    "",
+    "600 URI Acquire",
+    `URI: store:${sourcePath}`,
+    `Filename: ${destPath}`,
+    ...(storeFullPackageExpectedHash ? [`Expected-SHA256: ${expectedSha256}`] : []),
+    "",
+  ].join("\n")}\n`);
+
+  let output = "";
+  const startedMs = Date.now();
+  try {
+    await runtime.writeFile(sourcePath, methodPackagesXzResponseBody);
+    const proc = await runtime.spawn(
+      storeElf,
+      ["/usr/lib/apt/methods/store"],
+      ["LC_ALL=C", "LANG=C", "PATH=/usr/bin:/bin"],
+      { cwd: "/", stdin: "pipe" },
+    );
+    proc.onStdout((data) => {
+      output += decoder.decode(data);
+    });
+
+    await waitForOutput(() => output, "100 Capabilities", asyncDoneTimeoutMs).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([
+        detail,
+        `output=${JSON.stringify(output)}`,
+        `hashMode=${storeFullPackageHashMode}`,
+        `source=${await describeGuestFileBrief(runtime, sourcePath)}`,
+        `storeFile=${await describeGuestFile(runtime, "/usr/lib/apt/methods/store")}`,
+        `debug=${await runtimeDebugSummary(runtime)}`,
+      ].join("\n"));
+    });
+    proc.writeStdin(command);
+
+    await waitForOutput(() => output, "201 URI Done", asyncDoneTimeoutMs).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([
+        detail,
+        `durationMs=${Date.now() - startedMs}`,
+        `output=${JSON.stringify(output)}`,
+        `hashMode=${storeFullPackageHashMode}`,
+        `source=${await describeGuestFileBrief(runtime, sourcePath)}`,
+        `storeFile=${await describeGuestFile(runtime, "/usr/lib/apt/methods/store")}`,
+        `storeLoader=${await describeGuestFile(runtime, "/lib/ld-linux-riscv64-lp64d.so.1")}`,
+        `debug=${await runtimeDebugSummary(runtime)}`,
+        `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
+      ].join("\n"));
+    });
+
+    proc.closeStdin();
+    const exitCode = await Promise.race([
+      proc.waitForExit(),
+      new Promise<number>((_, reject) => {
+        setTimeout(() => reject(new Error("timeout waiting for store full package gate exit")), asyncDoneTimeoutMs);
+      }),
+    ]).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([
+        detail,
+        `durationMs=${Date.now() - startedMs}`,
+        `output=${JSON.stringify(output)}`,
+        `hashMode=${storeFullPackageHashMode}`,
+        `source=${await describeGuestFileBrief(runtime, sourcePath)}`,
+        `debug=${await runtimeDebugSummary(runtime)}`,
+      ].join("\n"));
+    });
+
+    expect(output).toContain("201 URI Done");
+    if (storeFullPackageExpectedHash) {
+      expect(output).toContain(`SHA256-Hash: ${expectedSha256}`);
+    }
+    expect(exitCode).toBe(0);
+    console.log([
+      "apt store full package gate",
+      `durationMs=${Date.now() - startedMs}`,
+      `sourceBytes=${methodPackagesXzResponseBody.length}`,
+      `decompressedBytes=${expectedPackages.length}`,
+      `expectedHash=${storeFullPackageExpectedHash}`,
+      `hashMode=${storeFullPackageHashMode}`,
+      `sha256=${expectedSha256}`,
+    ].join(" "));
+  } finally {
+    runtime.destroy();
+  }
+}, Math.max(90_000, asyncDoneTimeoutMs + 30_000));
 
 test("apt method http local gate: captured stdin reaches generic network bridge", async () => {
   const guestRequests: string[] = [];
