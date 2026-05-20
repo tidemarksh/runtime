@@ -9,6 +9,15 @@ import type {
   RuntimeFsState,
 } from "./types.js";
 
+const RUNTIME_FS_SNAPSHOT_DEBUG_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_FS_PUBLICATION_DEBUG ?? "") === "1";
+const RUNTIME_FS_DEBUG_PATHS = [
+  "/lib/ld-linux-riscv64-lp64d.so.1",
+  "/usr/lib/apt/methods/store",
+  "/var/lib/apt/lists/partial/deb.debian.org_debian_dists_trixie_main_binary-riscv64_Packages.xz",
+] as const;
+
 export interface RuntimeFsContext {
   processHandles: Map<number, ProcessHandle>;
   runtimeFsStates: Map<number, RuntimeFsState>;
@@ -20,6 +29,42 @@ export interface RuntimeFsContext {
   snapshotEntriesEqual(left: FsSnapshotEntry[], right: FsSnapshotEntry[]): boolean;
   applyFsEntryToHandle(handle: ProcessHandle, entry: FsSnapshotEntry): void;
   syncMemfsState(source: KernelSyncHandle, target: KernelSyncHandle): void;
+}
+
+function headHex(data: Uint8Array | undefined): string {
+  if (!data || data.length === 0) {
+    return "empty";
+  }
+  return [...data.subarray(0, Math.min(4, data.length))]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function appendRuntimeFsSnapshotDebug(
+  representative: ProcessHandle,
+  runtimeId: number,
+  entries: FsSnapshotEntry[],
+): void {
+  if (!RUNTIME_FS_SNAPSHOT_DEBUG_ENABLED) {
+    return;
+  }
+  const details = RUNTIME_FS_DEBUG_PATHS.map((path) => {
+    const normalized = normalizePath(path);
+    const entry = entries.find((candidate) => normalizePath(candidate.path) === normalized);
+    if (!entry) {
+      return `${path}:missing`;
+    }
+    if (entry.kind !== "file") {
+      return `${path}:${entry.kind}:size=${entry.size ?? 0}`;
+    }
+    return `${path}:size=${entry.size ?? entry.data?.length ?? 0}:head=${headHex(entry.data)}`;
+  });
+  representative.workerDebugLog.push(
+    `runtime-fs-snapshot:runtime=${runtimeId}:pid=${representative.pid}:${details.join(",")}`,
+  );
+  if (representative.workerDebugLog.length > 4096) {
+    representative.workerDebugLog.splice(0, representative.workerDebugLog.length - 4096);
+  }
 }
 
 function writeRuntimeFsState(
@@ -100,6 +145,7 @@ export function flushRuntimeFsStateFromDirtyHandle(
   let entries: FsSnapshotEntry[] | null = null;
   for (const representative of liveRepresentatives.values()) {
     const snapshot = context.snapshotProcessFs(representative);
+    appendRuntimeFsSnapshotDebug(representative, runtimeId, snapshot);
     if (entries === null) {
       entries = snapshot;
       continue;
