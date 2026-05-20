@@ -122,6 +122,10 @@ export interface KernelExports {
   debug_path_syscall_trace_status?(index: number): number;
   debug_path_syscall_trace_path_ptr?(index: number): number;
   debug_path_syscall_trace_path_len?(index: number): number;
+  debug_execve_error_errno?(): bigint | number;
+  debug_execve_error_stage?(): number;
+  debug_execve_error_value0?(): bigint | number;
+  debug_execve_error_value1?(): bigint | number;
 
   // Open flags
   abi_o_rdonly(): number;

@@ -2216,6 +2216,27 @@ async function waitForOutput(
   throw new Error(`timeout waiting for output ${JSON.stringify(pattern)}: ${JSON.stringify(output())}`);
 }
 
+async function waitForOutputWithObservation(
+  output: () => string,
+  pattern: string,
+  timeoutMs: number,
+  observe: (text: string) => Promise<void>,
+): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const text = output();
+    if (text.includes(pattern)) {
+      await observe(text);
+      return;
+    }
+    if (failOnOutput && text.includes(failOnOutput)) {
+      throw new Error(`output contained fail-fast pattern ${JSON.stringify(failOnOutput)}: ${JSON.stringify(text)}`);
+    }
+    await new Promise((resolveDone) => setTimeout(resolveDone, 25));
+  }
+  throw new Error(`timeout waiting for output ${JSON.stringify(pattern)}: ${JSON.stringify(output())}`);
+}
+
 async function describeGuestFile(
   runtime: Awaited<ReturnType<typeof Runtime.create>>,
   path: string,
@@ -2313,6 +2334,63 @@ function compactAptRuntimeDebug(summary: string): string {
     `pipeRetryTail=${JSON.stringify(pipeRetries)}`,
     `fsTail=${JSON.stringify(fsTail.slice(-512))}`,
   ].filter(Boolean).join(" ");
+}
+
+function compactAptMethodExecFailureDebug(summary: string): string {
+  const take = <T>(values: T[], count: number): T[] => values.slice(Math.max(0, values.length - count));
+  const matches = (pattern: RegExp, count: number): string[] => take(
+    [...summary.matchAll(pattern)].map((match) => match[0]),
+    count,
+  );
+  const methodPathMatches = (text: string, count: number): string[] => take(
+    [...text.matchAll(/(?:nr=\d+:dirfd=-?\d+:status=\d+:result=-?\d+:path=\\?")\/usr\/lib\/apt\/methods\/[^"\\]*(?:\\?")/g)]
+      .map((match) => match[0]),
+    count,
+  );
+  const processes = summary
+    .split("\n")
+    .filter((line) => line.startsWith("pid="))
+    .map((line) => {
+      const parts = [
+        line.match(/^pid=\d+/)?.[0],
+        line.match(/cmd="[^"]*"/)?.[0],
+        line.match(/ppid=\d+/)?.[0],
+        line.match(/workers=\d+/)?.[0],
+        line.match(/ready=\d+/)?.[0],
+        line.match(/running=\d+/)?.[0],
+        line.match(/blocked=\[[^\]]*\]/)?.[0],
+        line.match(/pipe_sync=\d+\/\d+/)?.[0],
+        line.match(/fork_sync=\d+\/\d+/)?.[0],
+        line.match(/vfork=\d+/)?.[0],
+        line.match(/stdio_pipes=\d+\/\d+\/\d+/)?.[0],
+        line.match(/process_stdio=\d+\/\d+\/\d+/)?.[0],
+      ];
+      const workerLog = line.match(/worker_log=\[([^\]]*)\]/)?.[1] ?? "";
+      const focusedWorkerLog = workerLog
+        .split(", ")
+        .filter((entry) => /exec|fork|spawn|child|method|exit|fail|handoff/.test(entry))
+        .slice(-16);
+      const methodPaths = methodPathMatches(line, 12);
+      return [
+        parts.filter(Boolean).join(" "),
+        focusedWorkerLog.length > 0 ? `workerLog=${JSON.stringify(focusedWorkerLog)}` : "",
+        methodPaths.length > 0 ? `methodPaths=${JSON.stringify(methodPaths)}` : "",
+      ].filter(Boolean).join(" ");
+    });
+  const processLifecycle = summary.match(/process_lifecycle_tail=\[([^\]]*)\]/)?.[1] ?? "";
+  const focusedLifecycle = processLifecycle
+    .split(", ")
+    .filter((entry) => /exec|fork|spawn|child|method|exit|fail|handoff|ownership/.test(entry))
+    .slice(-48);
+  return JSON.stringify({
+    processes,
+    focusedLifecycle,
+    methodPathEvents: methodPathMatches(summary, 32),
+    execveErrors: matches(/execve_error=[^ ]+/g, 16),
+    execveStageTrace: matches(/execve_stage_trace=\[[^\]]*\]/g, 8),
+    childDebug: matches(/child-debug:[^,\]]+/g, 16),
+    spawnEvents: matches(/(?:spawn-handoff|execve-spawn|plain-fork|child-exit)[^,\]]*/g, 48),
+  });
 }
 
 function compactAptExecutionStats(
@@ -2490,6 +2568,24 @@ async function collectAptRuntimeObservation(
     `execution=${execution}`,
     `pageCacheStats=${pageCacheStats}`,
     `pageCachePaths=${await describeAptPageCachePaths(runtime)}`,
+  ].join(" ");
+}
+
+async function collectAptMethodExecFailureObservation(
+  runtime: Awaited<ReturnType<typeof Runtime.create>>,
+  outputText: string,
+  startedMs: number,
+): Promise<string> {
+  const atMs = Date.now() - startedMs;
+  const stats = runtime.debugExecutionStats();
+  const debugSummary = await runtimeDebugSummary(runtime);
+  return [
+    `atMs=${atMs}`,
+    `hostMemory=${compactHostMemoryUsage()}`,
+    `processCounts=${compactAptProcessCounts(stats)}`,
+    `execution=${compactAptExecutionStats(stats)}`,
+    `outputTail=${JSON.stringify(outputText.slice(-2048))}`,
+    `debug=${compactAptMethodExecFailureDebug(debugSummary)}`,
   ].join(" ");
 }
 
@@ -3604,6 +3700,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
   let secondPackageObservation = "not-observed";
   let afterSecondPackageResponseObservation = "not-observed";
   let exitRuntimeObservation = "not-observed";
+  let methodExecFailureObservation = "not-observed";
   const started = Date.now();
   metrics.startedAtMs = started;
   try {
@@ -3756,7 +3853,14 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
 
     const exitCode = await Promise.race([
       proc.waitForExit(),
-      waitForOutput(() => output, "Failed to exec method", aptGetUpdateExitTimeoutMs).then(() => {
+      waitForOutputWithObservation(
+        () => output,
+        "Failed to exec method",
+        aptGetUpdateExitTimeoutMs,
+        async (text) => {
+          methodExecFailureObservation = await collectAptMethodExecFailureObservation(runtime, text, started);
+        },
+      ).then(() => {
         throw new Error("apt-get reported method exec failure");
       }),
       new Promise<number>((_, reject) => {
@@ -3784,6 +3888,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `secondPackageObservation=${secondPackageObservation}`,
         `afterSecondPackageResponseObservation=${afterSecondPackageResponseObservation}`,
         `exitRuntimeObservation=${exitRuntimeObservation}`,
+        `methodExecFailureObservation=${methodExecFailureObservation}`,
         `finalInRelease=${await describeGuestFile(runtime, aptFinalInReleaseFilename)}`,
         `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
         `debug=${await runtimeDebugSummary(runtime)}`,

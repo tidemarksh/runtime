@@ -886,6 +886,22 @@ function formatProcessPathTrace(handle: ProcessHandle): string {
   return entries.join(" ");
 }
 
+function formatExecveError(handle: ProcessHandle): string {
+  const errno = handle.kernel.debug_execve_error_errno?.();
+  const stage = handle.kernel.debug_execve_error_stage?.() ?? 0;
+  const value0 = handle.kernel.debug_execve_error_value0?.();
+  const value1 = handle.kernel.debug_execve_error_value1?.();
+  if ((errno === undefined || Number(errno) === 0) && stage === 0) {
+    return "none";
+  }
+  return [
+    `errno=${errno?.toString() ?? "n/a"}`,
+    `stage=${stage}`,
+    `value0=${value0?.toString() ?? "n/a"}`,
+    `value1=${value1?.toString() ?? "n/a"}`,
+  ].join(":");
+}
+
 function formatSocketRecvBufferHeadTail(handle: ProcessHandle, socketIdx: number): string {
   if (socketIdx < 0) {
     return "-1/-1";
@@ -1084,6 +1100,7 @@ export function debugRuntimeProcessHandles(
           `socket_fds=[${socketFdSummary}]`,
           `worker_log=[${handle.workerDebugLog.slice(-48).join(", ")}]`,
           `debug=${handle.lastDebugMessage ?? "n/a"}`,
+          `execve_error=${formatExecveError(handle)}`,
           `syscalls=[${formatProcessSyscallTrace(handle)}]`,
           `riscv_syscalls=[${formatProcessRiscvSyscallTrace(handle)}]`,
           `fd_syscalls=[${formatProcessFdTrace(handle)}]`,
@@ -1096,6 +1113,7 @@ export function debugRuntimeProcessHandles(
           `cmd=${JSON.stringify(handle.debugCommand)}`,
           `vm=0x${handle.vmPtr.toString(16)}`,
           `debug_error=${JSON.stringify(detail)}`,
+          `execve_error=${formatExecveError(handle)}`,
           `syscalls=[${formatProcessSyscallTrace(handle)}]`,
           `riscv_syscalls=[${formatProcessRiscvSyscallTrace(handle)}]`,
           `path_syscalls=[${formatProcessPathTrace(handle)}]`,
