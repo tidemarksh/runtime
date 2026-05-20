@@ -7,8 +7,18 @@ export function createKernelWorkerObjectStatePrimitives() {
   const NET_BUF_OFF_DATA = 16;
 
   function counterAhead(sourceValue: number, targetValue: number, capacity: number): boolean {
-    void capacity;
-    return sourceValue > targetValue;
+    if (sourceValue === targetValue) {
+      return false;
+    }
+    if (!Number.isFinite(capacity) || capacity <= 0) {
+      return sourceValue > targetValue;
+    }
+    return sourceValue > targetValue
+      || (
+        sourceValue < targetValue
+        && targetValue > capacity / 2
+        && sourceValue < capacity / 2
+      );
   }
 
   function copySocketNetBufferState(
