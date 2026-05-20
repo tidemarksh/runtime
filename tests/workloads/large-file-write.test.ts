@@ -114,11 +114,12 @@ test("large regular file write local gate: guest sequential writes publish byte-
   }
 
   const runtime = await Runtime.create({ wasmBytes });
-  const started = Date.now();
+  const startedMs = Date.now();
   try {
     await runtime.applyFsSnapshot([
       { kind: "dir", path: "/work", mode: 0o755 },
     ]);
+    const spawnStartedMs = Date.now();
     const result = await spawnWithOutput(
       runtime,
       probeBytes,
@@ -127,18 +128,25 @@ test("large regular file write local gate: guest sequential writes publish byte-
       120_000,
       { cwd: "/", stdin: "closed" },
     );
-    const durationMs = Date.now() - started;
+    const spawnDurationMs = Date.now() - spawnStartedMs;
     const expected = expectedChecksum(largeFileBytes);
     expect(result.exitCode, result.output + (result.debugInfo ? `\n${result.debugInfo}` : "")).toBe(0);
     expect(result.output).toContain(`large-file-write bytes=${largeFileBytes}`);
     expect(result.output).toContain(`checksum=${expected.toString()}`);
 
+    const readStartedMs = Date.now();
     const saved = await runtime.readFile(largeFilePath);
+    const readDurationMs = Date.now() - readStartedMs;
     expect(saved.length).toBe(largeFileBytes);
     expect(checksum(saved)).toBe(expected);
     expect(saved[0]).toBe(expectedByte(0));
     expect(saved[saved.length - 1]).toBe(expectedByte(saved.length - 1));
-    console.log(`large regular file write gate durationMs=${durationMs} bytes=${largeFileBytes}`);
+    console.log([
+      `large regular file write gate durationMs=${Date.now() - startedMs}`,
+      `spawnDurationMs=${spawnDurationMs}`,
+      `readbackDurationMs=${readDurationMs}`,
+      `bytes=${largeFileBytes}`,
+    ].join(" "));
   } finally {
     runtime.destroy();
   }
