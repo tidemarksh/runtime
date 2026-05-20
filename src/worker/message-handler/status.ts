@@ -1007,6 +1007,28 @@ function applyThreadPipeSlots(
   const memory = new Uint8Array(handle.memory.buffer);
   const view = new DataView(handle.memory.buffer);
   const appliedSnapshots: NonNullable<ThreadWorkerStatusMessage["pipeSlots"]> = [];
+  const copyPipeDataTailDelta = (
+    sourceBytes: Uint8Array,
+    targetDataOffset: number,
+    previousTail: number,
+    nextTail: number,
+  ): void => {
+    const copySpan = (start: number, end: number): void => {
+      if (end <= start) {
+        return;
+      }
+      memory.set(
+        sourceBytes.subarray(PIPE_HEADER_BYTES + start, PIPE_HEADER_BYTES + end),
+        targetDataOffset + start,
+      );
+    };
+    if (previousTail < nextTail) {
+      copySpan(previousTail, nextTail);
+    } else if (previousTail > nextTail) {
+      copySpan(previousTail, pipeBufferBytes);
+      copySpan(0, nextTail);
+    }
+  };
   for (const snapshot of msg.pipeSlots) {
     if (
       snapshot.pipeSlot <= 0
@@ -1145,10 +1167,7 @@ function applyThreadPipeSlots(
     }
     if ((mode & PIPE_SLOT_MODE_WRITE) !== 0 && counterAhead(sourceTail, targetTail)) {
       view.setUint32(targetOffset + PIPE_TAIL_OFFSET, sourceTail, true);
-      memory.set(
-        snapshot.slot.subarray(PIPE_HEADER_BYTES, slotBytes),
-        targetOffset + PIPE_HEADER_BYTES,
-      );
+      copyPipeDataTailDelta(snapshot.slot, targetOffset + PIPE_HEADER_BYTES, targetTail, sourceTail);
     } else if (
       (mode & PIPE_SLOT_MODE_WRITE) !== 0
       && sourceTail === targetTail

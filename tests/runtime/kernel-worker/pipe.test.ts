@@ -4,7 +4,8 @@ import { createKernelWorkerPrimitives } from "../../../src/kernel-worker/primiti
 import { createKernelWorkerSharedStateSync } from "../../../src/kernel-worker/shared-state-sync.js";
 
 const FD_TYPE_PIPE = 6;
-const PIPE_SLOT_BYTES = 32 + 65_536;
+const PIPE_BUF_SIZE = 65_536;
+const PIPE_SLOT_BYTES = 32 + PIPE_BUF_SIZE;
 
 type TestKernelExports = KernelExports & {
   fdMap(): Map<number, number>;
@@ -813,6 +814,99 @@ test("kernel-worker pipe snapshot apply does not full-copy stale reader slots", 
   expect(pipeHead(targetMemory, 6)).toBe(9);
   expect(pipeTail(targetMemory, 6)).toBe(9);
   expect(pipeMarker(targetMemory, 6)).toBe(0x7a);
+});
+
+test("kernel-worker pipe snapshot apply copies only forward writer tail delta", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const targetMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const targetExports = makeKernelExports(targetMemory);
+  const primitives = createKernelWorkerPrimitives({
+    getCanonicalExports: () => canonicalExports,
+    processKernels: new Map([[1, targetExports]]),
+    canonicalProcesses: new Map([[1, { ppid: 0 }]]),
+    getCanonicalProcessVmPtr: (pid) => (pid === 1 ? 0x1234 : 0),
+  });
+
+  const state = makeKernelState();
+  const base = pipeSlotBase(state, 6);
+  seedPipeSlotState(targetMemory, 6, {
+    head: 0,
+    tail: 8,
+    marker: 0x11,
+    readOpen: 1,
+    writeOpen: 1,
+  });
+  const targetBytes = new Uint8Array(targetMemory.buffer);
+  targetBytes[base + 32 + 2] = 0xc2;
+
+  const writerSlot = new Uint8Array(PIPE_SLOT_BYTES);
+  const writerView = new DataView(writerSlot.buffer);
+  writerView.setUint32(0, 0, true);
+  writerView.setUint32(4, 16, true);
+  writerView.setInt32(8, 1, true);
+  writerView.setInt32(12, 1, true);
+  writerSlot[32 + 2] = 0xd2;
+  writerSlot[32 + 12] = 0xd0;
+
+  primitives.applySelectedPipeSlotSnapshots(
+    targetExports,
+    state,
+    [{ pipeSlot: 6, slot: writerSlot }],
+  );
+
+  expect(pipeHead(targetMemory, 6)).toBe(0);
+  expect(pipeTail(targetMemory, 6)).toBe(16);
+  expect(targetBytes[base + 32 + 2]).toBe(0xc2);
+  expect(targetBytes[base + 32 + 12]).toBe(0xd0);
+});
+
+test("kernel-worker pipe snapshot apply copies wrapped writer tail delta in two spans", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const targetMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const targetExports = makeKernelExports(targetMemory);
+  const primitives = createKernelWorkerPrimitives({
+    getCanonicalExports: () => canonicalExports,
+    processKernels: new Map([[1, targetExports]]),
+    canonicalProcesses: new Map([[1, { ppid: 0 }]]),
+    getCanonicalProcessVmPtr: (pid) => (pid === 1 ? 0x1234 : 0),
+  });
+
+  const state = makeKernelState();
+  const base = pipeSlotBase(state, 6);
+  const targetTail = PIPE_BUF_SIZE - 8;
+  seedPipeSlotState(targetMemory, 6, {
+    head: 0,
+    tail: targetTail,
+    marker: 0x11,
+    readOpen: 1,
+    writeOpen: 1,
+  });
+  const targetBytes = new Uint8Array(targetMemory.buffer);
+  targetBytes[base + 32 + 512] = 0xc5;
+
+  const writerSlot = new Uint8Array(PIPE_SLOT_BYTES);
+  const writerView = new DataView(writerSlot.buffer);
+  writerView.setUint32(0, 0, true);
+  writerView.setUint32(4, 8, true);
+  writerView.setInt32(8, 1, true);
+  writerView.setInt32(12, 1, true);
+  writerSlot[32 + PIPE_BUF_SIZE - 4] = 0xd1;
+  writerSlot[32 + 4] = 0xd2;
+  writerSlot[32 + 512] = 0xd5;
+
+  primitives.applySelectedPipeSlotSnapshots(
+    targetExports,
+    state,
+    [{ pipeSlot: 6, slot: writerSlot }],
+  );
+
+  expect(pipeHead(targetMemory, 6)).toBe(0);
+  expect(pipeTail(targetMemory, 6)).toBe(8);
+  expect(targetBytes[base + 32 + PIPE_BUF_SIZE - 4]).toBe(0xd1);
+  expect(targetBytes[base + 32 + 4]).toBe(0xd2);
+  expect(targetBytes[base + 32 + 512]).toBe(0xc5);
 });
 
 test("kernel-worker pipe snapshot apply preserves full-drain reader progress", () => {

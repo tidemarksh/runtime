@@ -23,6 +23,31 @@ const OFD_TYPE_OFFSET = 0;
 const OFD_OFFSET_OFFSET = 16;
 const OFD_INO_OFFSET = 24;
 
+function copyPipeDataTailDelta(
+  sourceBytes: Uint8Array,
+  sourceDataOffset: number,
+  targetBytes: Uint8Array,
+  targetDataOffset: number,
+  previousTail: number,
+  nextTail: number,
+): void {
+  const copySpan = (start: number, end: number): void => {
+    if (end <= start) {
+      return;
+    }
+    targetBytes.set(
+      sourceBytes.subarray(sourceDataOffset + start, sourceDataOffset + end),
+      targetDataOffset + start,
+    );
+  };
+  if (previousTail < nextTail) {
+    copySpan(previousTail, nextTail);
+  } else if (previousTail > nextTail) {
+    copySpan(previousTail, PIPE_BUF_SIZE);
+    copySpan(0, nextTail);
+  }
+}
+
 interface KernelWorkerPrimitivesDeps {
   getCanonicalExports(): KernelExports;
   processKernels: Map<number, KernelExports>;
@@ -603,9 +628,13 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
           snapshot.slot.subarray(PIPE_OFF_TAIL, PIPE_OFF_READ_OPEN),
           targetOffset + PIPE_OFF_TAIL,
         );
-        targetBytes.set(
-          snapshot.slot.subarray(PIPE_OFF_DATA, PIPE_SLOT_BYTES),
+        copyPipeDataTailDelta(
+          snapshot.slot,
+          PIPE_OFF_DATA,
+          targetBytes,
           targetOffset + PIPE_OFF_DATA,
+          targetTail,
+          sourceTail,
         );
       } else if (
         (mode & PIPE_SLOT_MODE_WRITE) !== 0

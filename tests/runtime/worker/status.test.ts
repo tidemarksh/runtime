@@ -1743,7 +1743,9 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
   writerView.setUint32(4, 12, true);
   writerView.setInt32(8, 1, true);
   writerView.setInt32(12, 1, true);
+  writerSlot[32 + 1] = 0xde;
   writerSlot[32 + 9] = 0xab;
+  applied[32 + 1] = 0x7b;
 
   thread.generation = 3;
   handler(handle, worker, {
@@ -1763,12 +1765,14 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
 
   expect(appliedView.getUint32(0, true)).toBe(9);
   expect(appliedView.getUint32(4, true)).toBe(12);
+  expect(applied[32 + 1]).toBe(0x7b);
   expect(applied[32 + 9]).toBe(0xab);
   {
     const pending = withHandleDefaults(handle).pendingPipeSlotSnapshots;
     const pendingView = new DataView(pending[2].slot.buffer, pending[2].slot.byteOffset, pending[2].slot.byteLength);
     expect(pendingView.getUint32(0, true)).toBe(9);
     expect(pendingView.getUint32(4, true)).toBe(12);
+    expect(pending[2].slot[32 + 1]).toBe(0x7b);
     expect(pending[2].slot[32 + 9]).toBe(0xab);
   }
 
