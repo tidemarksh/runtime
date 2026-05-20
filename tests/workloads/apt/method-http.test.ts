@@ -61,6 +61,7 @@ type MethodHttpResponse = Uint8Array | {
   statusLine: string;
   body: Uint8Array;
   contentLength?: number;
+  headers?: string[];
 };
 type MethodResponseSelector = (request: string) => MethodHttpResponse;
 type MethodBridgeMetrics = {
@@ -157,6 +158,33 @@ function firstMismatchOffset(left: Uint8Array, right: Uint8Array): number {
     }
   }
   return left.length === right.length ? -1 : len;
+}
+
+function countOccurrences(text: string, needle: string): number {
+  let count = 0;
+  let offset = 0;
+  for (;;) {
+    const found = text.indexOf(needle, offset);
+    if (found < 0) {
+      return count;
+    }
+    count += 1;
+    offset = found + needle.length;
+  }
+}
+
+function buildHttpMethodAcquirePayload(uri: string, filename: string): Uint8Array {
+  return new TextEncoder().encode(`${[
+    "601 Configuration",
+    "Config-Item: Acquire::http::Proxy=http://127.0.0.1:8080",
+    "Config-Item: Acquire::http::Timeout=10",
+    "Config-Item: APT::Architecture=riscv64",
+    "",
+    "600 URI Acquire",
+    `URI: ${uri}`,
+    `Filename: ${filename}`,
+    "",
+  ].join("\n")}\n`);
 }
 
 const directSonames = [
@@ -1862,7 +1890,9 @@ function serializeHttpResponse(response: MethodHttpResponse): Uint8Array {
   const statusLine = response instanceof Uint8Array ? "HTTP/1.1 200 OK" : response.statusLine;
   const body = response instanceof Uint8Array ? response : response.body;
   const contentLength = response instanceof Uint8Array ? body.length : response.contentLength ?? body.length;
-  const headers = methodResponseHeaderLines.length > 0
+  const headers = !(response instanceof Uint8Array) && response.headers
+    ? response.headers
+    : methodResponseHeaderLines.length > 0
     ? methodResponseHeaderLines
     : [
       "Date: Fri, 01 May 2026 00:00:00 GMT",
@@ -1961,6 +1991,10 @@ function createAsyncMethodNetworkBridge(
       let responseOffset = 0;
       let responseTarget = "";
       let responseCompleteRecorded = false;
+      let pendingRead: {
+        resolve(): void;
+        timer: ReturnType<typeof setTimeout>;
+      } | null = null;
       const recordResponseChunk = (chunkLength: number): void => {
         if (!metrics) {
           return;
@@ -1998,6 +2032,11 @@ function createAsyncMethodNetworkBridge(
             sawRequest = true;
           }
           record(`write:${data.length}`);
+          if (pendingRead) {
+            clearTimeout(pendingRead.timer);
+            pendingRead.resolve();
+          }
+          pendingRead = null;
         },
         async read(maxBytes) {
           if (metrics) {
@@ -2023,6 +2062,15 @@ function createAsyncMethodNetworkBridge(
               metrics.emptyReads += 1;
             }
             record("read:no-request");
+            await new Promise<void>((resolveDone) => {
+              const timer = setTimeout(() => {
+                if (pendingRead?.resolve === resolveDone) {
+                  pendingRead = null;
+                }
+                resolveDone();
+              }, 100);
+              pendingRead = { resolve: resolveDone, timer };
+            });
             return undefined;
           }
           const targets = extractHttpGetTargets([requestText]);
@@ -2277,7 +2325,10 @@ async function waitForBridgeRequestOrExit(
   }
 }
 
-async function prepareMethodRuntime(networkBridge: RuntimeNetworkBridge): Promise<{
+async function prepareMethodRuntime(
+  networkBridge: RuntimeNetworkBridge,
+  options: { requireMethodPayload?: boolean } = {},
+): Promise<{
   runtime: Awaited<ReturnType<typeof Runtime.create>>;
   methodElf: Uint8Array;
 } | null> {
@@ -2288,7 +2339,7 @@ async function prepareMethodRuntime(networkBridge: RuntimeNetworkBridge): Promis
   if (!methodRoot || !existsSync(methodRoot)) {
     return logSkip(`missing apt method root: ${methodRoot || "set TIDEMARK_TEST_APT_METHOD_ROOT"}`);
   }
-  if (!methodPayload || !existsSync(methodPayload)) {
+  if (options.requireMethodPayload !== false && (!methodPayload || !existsSync(methodPayload))) {
     return logSkip(`missing apt method payload: ${methodPayload || "set TIDEMARK_TEST_APT_METHOD_PAYLOAD"}`);
   }
 
@@ -2565,6 +2616,178 @@ test("apt method http local gate: async bridge response is delivered to method",
     runtime.destroy();
   }
 }, Math.max(60_000, asyncDoneTimeoutMs + 10_000));
+
+test("apt method http local gate: repeated package fetch delivers ranged retry response", async () => {
+  const repo = buildSyntheticAptRepository();
+  if (!repo) {
+    return;
+  }
+  let packageResponseCount = 0;
+  const packageLastModified = "Thu, 01 Jan 1970 00:00:00 GMT";
+  const packageUri =
+    `http://deb.debian.org/debian/dists/trixie/main/binary-riscv64/by-hash/SHA256/${repo.packagesXzSha256}`;
+  const selectResponseBody: MethodResponseSelector = (request) => {
+    const targets = extractHttpGetTargets([request]);
+    const target = targets[targets.length - 1] ?? "";
+    if (isPackageIndexTarget(target)) {
+      packageResponseCount += 1;
+      if (packageResponseCount === 1) {
+        const truncatedLength = Math.max(1, Math.floor(repo.packagesXz.length / 2));
+        return {
+          statusLine: "HTTP/1.1 200 OK",
+          body: repo.packagesXz.subarray(0, truncatedLength),
+          headers: [
+            "Date: Fri, 01 May 2026 00:00:00 GMT",
+            `Last-Modified: ${packageLastModified}`,
+            `Content-Length: ${repo.packagesXz.length}`,
+            "Accept-Ranges: bytes",
+            "Connection: close",
+          ],
+        };
+      }
+      const range = request.match(/\r?\nRange: bytes=(\d+)-\r?\n/i);
+      if (range) {
+        const start = Number(range[1]);
+        const body = repo.packagesXz.subarray(start);
+        return {
+          statusLine: "HTTP/1.1 206 Partial Content",
+          body,
+          headers: [
+            "Date: Fri, 01 May 2026 00:00:00 GMT",
+            `Last-Modified: ${packageLastModified}`,
+            `Content-Length: ${body.length}`,
+            `Content-Range: bytes ${start}-${repo.packagesXz.length - 1}/${repo.packagesXz.length}`,
+            "Accept-Ranges: bytes",
+            "Connection: close",
+          ],
+        };
+      }
+      return repo.packagesXz;
+    }
+    return repo.inRelease;
+  };
+  const guestRequests: string[] = [];
+  const bridgeEvents: string[] = [];
+  const metrics = createMethodBridgeMetrics();
+  const prepared = await prepareMethodRuntime(createAsyncMethodNetworkBridge(
+    guestRequests,
+    bridgeEvents,
+    selectResponseBody,
+    metrics,
+  ), { requireMethodPayload: false });
+  if (!prepared) {
+    return;
+  }
+  const { runtime, methodElf } = prepared;
+
+  let output = "";
+  let afterFirstFailure = "not-observed";
+  let afterSecondTerminal = "not-observed";
+  try {
+    const proc = await runtime.spawn(
+      methodElf,
+      [methodArgv0],
+      methodEnv,
+      { stdin: "pipe" },
+    );
+    proc.onStdout((data) => {
+      output += decoder.decode(data);
+    });
+
+    await waitForOutput(() => output, "100 Capabilities", asyncDoneTimeoutMs);
+    proc.writeStdin(buildHttpMethodAcquirePayload(packageUri, aptPartialPackagesXzFilename));
+    await waitForOutput(() => output, "400 URI Failure", asyncDoneTimeoutMs).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([
+        detail,
+        `guestRequests=${JSON.stringify(guestRequests)}`,
+        `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
+        `metrics=${JSON.stringify(metrics)}`,
+        `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+        `output=${JSON.stringify(output)}`,
+        `debug=${await runtimeDebugSummary(runtime)}`,
+        `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
+      ].join("\n"));
+    });
+    afterFirstFailure = [
+      `requests=${extractHttpGetTargets(guestRequests).filter(isPackageIndexTarget).length}`,
+      `partialPackagesXz=${await describeGuestFileBrief(runtime, aptPartialPackagesXzFilename)}`,
+      `finalPackagesXz=${await describeGuestFileBrief(runtime, aptFinalPackagesXzFilename)}`,
+    ].join(" ");
+
+    proc.writeStdin(buildHttpMethodAcquirePayload(packageUri, aptPartialPackagesXzFilename));
+    await waitForOutput(() => (
+      countOccurrences(output, "201 URI Done") >= 1 || countOccurrences(output, "400 URI Failure") >= 2
+        ? "second-terminal"
+        : output
+    ), "second-terminal", asyncDoneTimeoutMs).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([
+        detail,
+        `guestRequests=${JSON.stringify(guestRequests)}`,
+        `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
+        `metrics=${JSON.stringify(metrics)}`,
+        `afterFirstFailure=${afterFirstFailure}`,
+        `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+        `output=${JSON.stringify(output)}`,
+        `debug=${await runtimeDebugSummary(runtime)}`,
+        `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
+      ].join("\n"));
+    });
+    afterSecondTerminal = [
+      `requests=${extractHttpGetTargets(guestRequests).filter(isPackageIndexTarget).length}`,
+      `completed=${metrics.packageResponsesCompleted}`,
+      `done=${countOccurrences(output, "201 URI Done")}`,
+      `failures=${countOccurrences(output, "400 URI Failure")}`,
+      `partialPackagesXz=${await describeGuestFileBrief(runtime, aptPartialPackagesXzFilename)}`,
+      `finalPackagesXz=${await describeGuestFileBrief(runtime, aptFinalPackagesXzFilename)}`,
+    ].join(" ");
+
+    const packageRequests = guestRequests.filter((request) => (
+      extractHttpGetTargets([request]).some(isPackageIndexTarget)
+    ));
+    expect(
+      packageRequests.length,
+      [
+        "apt http method did not issue the repeated package-index request",
+        `afterFirstFailure=${afterFirstFailure}`,
+        `afterSecondTerminal=${afterSecondTerminal}`,
+        `guestRequests=${JSON.stringify(guestRequests)}`,
+        `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
+        `metrics=${JSON.stringify(metrics)}`,
+        `output=${JSON.stringify(output)}`,
+        `debug=${await runtimeDebugSummary(runtime)}`,
+      ].join("\n"),
+    ).toBeGreaterThanOrEqual(2);
+    expect(packageRequests.at(-1)).toContain("Range: bytes=108-");
+    expect(
+      metrics.packageResponsesCompleted,
+      [
+        "apt http method repeated package-index response was not fully delivered",
+        `afterFirstFailure=${afterFirstFailure}`,
+        `afterSecondTerminal=${afterSecondTerminal}`,
+        `guestRequests=${JSON.stringify(guestRequests)}`,
+        `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
+        `metrics=${JSON.stringify(metrics)}`,
+        `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+        `output=${JSON.stringify(output)}`,
+        `debug=${await runtimeDebugSummary(runtime)}`,
+      ].join("\n"),
+    ).toBeGreaterThanOrEqual(2);
+    console.log([
+      `apt method repeated fetch metrics requests=${extractHttpGetTargets(guestRequests).filter(isPackageIndexTarget).length}`,
+      `completed=${metrics.packageResponsesCompleted}`,
+      `bridgeReadCalls=${metrics.readCalls}`,
+      `bridgeEmptyReads=${metrics.emptyReads}`,
+      `bridgePackageBytes=${metrics.packageResponseBytes}`,
+      `bridgePackageChunks=${metrics.packageResponseChunks}`,
+      `afterFirstFailure=${afterFirstFailure}`,
+      `afterSecondTerminal=${afterSecondTerminal}`,
+    ].join(" "));
+  } finally {
+    runtime.destroy();
+  }
+}, Math.max(90_000, asyncDoneTimeoutMs + 20_000));
 
 test("apt method http local gate: guest fork/exec pipe payload reaches generic network bridge", async () => {
   const guestRequests: string[] = [];
