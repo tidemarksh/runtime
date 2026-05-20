@@ -2393,6 +2393,30 @@ function compactAptMethodExecFailureDebug(summary: string): string {
   });
 }
 
+function compactAptDebugValue(value: unknown, depth = 0): unknown {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  if (typeof value === "string") {
+    return value.length > 2048 ? `${value.slice(0, 2048)}...<truncated:${value.length}>` : value;
+  }
+  if (typeof value !== "object") {
+    return value;
+  }
+  if (depth >= 4) {
+    return "<truncated-depth>";
+  }
+  if (Array.isArray(value)) {
+    const tail = value.slice(Math.max(0, value.length - 16));
+    return tail.map((entry) => compactAptDebugValue(entry, depth + 1));
+  }
+  const compacted: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    compacted[key] = compactAptDebugValue(entry, depth + 1);
+  }
+  return compacted;
+}
+
 function compactAptExecutionStats(
   stats: ReturnType<Awaited<ReturnType<typeof Runtime.create>>["debugExecutionStats"]>,
 ): string {
@@ -2572,6 +2596,24 @@ async function collectAptRuntimeObservation(
 }
 
 async function collectAptMethodExecFailureObservation(
+  runtime: Awaited<ReturnType<typeof Runtime.create>>,
+  outputText: string,
+  startedMs: number,
+): Promise<string> {
+  const atMs = Date.now() - startedMs;
+  const stats = runtime.debugExecutionStats();
+  const debugSummary = await runtimeDebugSummary(runtime);
+  return [
+    `atMs=${atMs}`,
+    `hostMemory=${compactHostMemoryUsage()}`,
+    `processCounts=${compactAptProcessCounts(stats)}`,
+    `execution=${compactAptExecutionStats(stats)}`,
+    `outputTail=${JSON.stringify(outputText.slice(-2048))}`,
+    `debug=${compactAptMethodExecFailureDebug(debugSummary)}`,
+  ].join(" ");
+}
+
+async function collectAptUpdateTimeoutObservation(
   runtime: Awaited<ReturnType<typeof Runtime.create>>,
   outputText: string,
   startedMs: number,
@@ -3594,9 +3636,11 @@ test("apt-get update local gate: parent acquire loop exits after in-memory HTTP 
 
     await waitForBridgeRequestOrExit(guestRequests, proc, asyncDoneTimeoutMs).catch(async (error) => {
       const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      const debugSummary = await runtimeDebugSummary(runtime);
       throw new Error([
         detail,
-        `guestRequests=${JSON.stringify(guestRequests)}`,
+        `guestRequestCount=${guestRequests.length}`,
+        `guestTargets=${JSON.stringify(extractHttpGetTargets(guestRequests))}`,
         `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
         `output=${JSON.stringify(output)}`,
         `partialInRelease=${await describeGuestFile(runtime, methodAcquireFilename)}`,
@@ -3701,6 +3745,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
   let afterSecondPackageResponseObservation = "not-observed";
   let exitRuntimeObservation = "not-observed";
   let methodExecFailureObservation = "not-observed";
+  let updateTimeoutObservation = "not-observed";
   const started = Date.now();
   metrics.startedAtMs = started;
   try {
@@ -3751,13 +3796,14 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `storeLoaderAtPackageResponseComplete=${storeLoaderAtPackageResponseComplete}`,
         `storeLoaderAtPackageFileComplete=${storeLoaderAtPackageFileComplete}`,
         `secondPackageObservation=${secondPackageObservation}`,
-        `debug=${await runtimeDebugSummary(runtime)}`,
-        `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
+        `debug=${compactAptMethodExecFailureDebug(debugSummary)}`,
+        `lastFailure=${JSON.stringify(compactAptDebugValue(runtime.debugLastFailureSnapshot?.() ?? null))}`,
       ].join("\n"));
     });
 
     await waitForPackageResponseCompleteCount(metrics, proc, 1, asyncDoneTimeoutMs).catch(async (error) => {
       const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      const debugSummary = await runtimeDebugSummary(runtime);
       throw new Error([
         detail,
         `targets=${JSON.stringify(extractHttpGetTargets(guestRequests))}`,
@@ -3769,8 +3815,8 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `storeLoader=${await describeGuestFile(runtime, "/lib/ld-linux-riscv64-lp64d.so.1")}`,
         `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
         `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
-        `debug=${await runtimeDebugSummary(runtime)}`,
-        `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
+        `debug=${compactAptMethodExecFailureDebug(debugSummary)}`,
+        `lastFailure=${JSON.stringify(compactAptDebugValue(runtime.debugLastFailureSnapshot?.() ?? null))}`,
       ].join("\n"));
     });
     firstPackageResponseCompleteAtMs = Date.now() - started;
@@ -3860,19 +3906,35 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         async (text) => {
           methodExecFailureObservation = await collectAptMethodExecFailureObservation(runtime, text, started);
         },
-      ).then(() => {
+      ).then<number>(() => {
         throw new Error("apt-get reported method exec failure");
+      }, (error) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        if (detail.startsWith("timeout waiting for output \"Failed to exec method\"")) {
+          return new Promise<number>(() => {});
+        }
+        throw error;
       }),
       new Promise<number>((_, reject) => {
-        setTimeout(() => {
+        setTimeout(async () => {
+          try {
+            updateTimeoutObservation = await collectAptUpdateTimeoutObservation(runtime, output, started);
+          } catch (observationError) {
+            const detail = observationError instanceof Error
+              ? (observationError.stack ?? observationError.message)
+              : String(observationError);
+            updateTimeoutObservation = `observation-error=${JSON.stringify(detail)}`;
+          }
           reject(new Error("timeout waiting for apt-get update exit"));
         }, aptGetUpdateExitTimeoutMs);
       }),
     ]).catch(async (error) => {
       const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      const debugSummary = await runtimeDebugSummary(runtime);
       throw new Error([
         detail,
-        `guestRequests=${JSON.stringify(guestRequests)}`,
+        `guestRequestCount=${guestRequests.length}`,
+        `guestTargets=${JSON.stringify(extractHttpGetTargets(guestRequests))}`,
         `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
         `metrics=${compactMethodBridgeMetrics(metrics)}`,
         `output=${JSON.stringify(output)}`,
@@ -3889,10 +3951,11 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `afterSecondPackageResponseObservation=${afterSecondPackageResponseObservation}`,
         `exitRuntimeObservation=${exitRuntimeObservation}`,
         `methodExecFailureObservation=${methodExecFailureObservation}`,
+        `updateTimeoutObservation=${updateTimeoutObservation}`,
         `finalInRelease=${await describeGuestFile(runtime, aptFinalInReleaseFilename)}`,
         `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
-        `debug=${await runtimeDebugSummary(runtime)}`,
-        `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
+        `debug=${compactAptMethodExecFailureDebug(debugSummary)}`,
+        `lastFailure=${JSON.stringify(compactAptDebugValue(runtime.debugLastFailureSnapshot?.() ?? null))}`,
       ].join("\n"));
     });
     const exitObservedAtMs = Date.now() - started;
