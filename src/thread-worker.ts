@@ -57,7 +57,7 @@ let generation = 0;
 let wasmFeatures: WasmFeatureSupport;
 let runtimeBridge: RuntimeStateBridge | null = null;
 let preparedInputs: ThreadWorkerPrepareInputs | null = null;
-const DEFAULT_NODE_THREAD_STEP_BUDGET = 5_000_000;
+const DEFAULT_NODE_THREAD_STEP_BUDGET = 1_000_000;
 const DEFAULT_BROWSER_THREAD_STEP_BUDGET = 2_000;
 const THREAD_STEP_BUDGET = readThreadStepBudget();
 const EINTR_ERRNO = 4;
