@@ -3440,6 +3440,8 @@ test("apt method http local gate: full package fetch saves response body", async
         `metrics=${compactMethodBridgeMetrics(metrics)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
         `output=${JSON.stringify(output)}`,
+        `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
+        `hotPcVmas=${compactAptExecutionHotPcVmas(runtime.debugExecutionStats())}`,
         `debug=${await runtimeDebugSummary(runtime)}`,
         `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
       ].join("\n"));
@@ -3552,6 +3554,8 @@ test("apt method http local gate: repeated package fetch delivers ranged retry r
         `metrics=${compactMethodBridgeMetrics(metrics)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
         `output=${JSON.stringify(output)}`,
+        `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
+        `hotPcVmas=${compactAptExecutionHotPcVmas(runtime.debugExecutionStats())}`,
         `debug=${await runtimeDebugSummary(runtime)}`,
         `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
       ].join("\n"));
@@ -3879,6 +3883,8 @@ test("apt method parent wait local gate: full package stdout EOF follows URI Don
         `metrics=${compactMethodBridgeMetrics(metrics)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
         `output=${JSON.stringify(output)}`,
+        `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
+        `hotPcVmas=${compactAptExecutionHotPcVmas(runtime.debugExecutionStats())}`,
         `debug=${await runtimeDebugSummary(runtime)}`,
         `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
       ].join("\n"));
@@ -3898,6 +3904,8 @@ test("apt method parent wait local gate: full package stdout EOF follows URI Don
         `metrics=${compactMethodBridgeMetrics(metrics)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
         `output=${JSON.stringify(output)}`,
+        `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
+        `hotPcVmas=${compactAptExecutionHotPcVmas(runtime.debugExecutionStats())}`,
         `debug=${await runtimeDebugSummary(runtime)}`,
         `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
       ].join("\n"));
