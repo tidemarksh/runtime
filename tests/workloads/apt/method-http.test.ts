@@ -751,6 +751,179 @@ function buildStoreForkExecProbe(): Uint8Array | null {
   }
 }
 
+function buildStoreEofWaitProbe(): Uint8Array | null {
+  const tmp = mkdtempSync(join(tmpdir(), "tidemark-apt-store-eof-wait-"));
+  const sourcePath = join(tmp, "apt_store_eof_wait.c");
+  const outputPath = join(tmp, "apt-store-eof-wait-probe");
+  try {
+    writeFileSync(sourcePath, [
+      "#include <errno.h>",
+      "#include <fcntl.h>",
+      "#include <poll.h>",
+      "#include <signal.h>",
+      "#include <stdio.h>",
+      "#include <string.h>",
+      "#include <sys/wait.h>",
+      "#include <unistd.h>",
+      "",
+      "static int write_all(int fd, const char *data, ssize_t len) {",
+      "  ssize_t off = 0;",
+      "  while (off < len) {",
+      "    ssize_t n = write(fd, data + off, (size_t)(len - off));",
+      "    if (n < 0) {",
+      "      if (errno == EINTR) continue;",
+      "      return -1;",
+      "    }",
+      "    off += n;",
+      "  }",
+      "  return 0;",
+      "}",
+      "",
+      "static int append_output(char *output, size_t *len, const char *chunk, ssize_t chunk_len) {",
+      "  if (chunk_len <= 0) return 0;",
+      "  if (*len + (size_t)chunk_len >= 4096) return -1;",
+      "  memcpy(output + *len, chunk, (size_t)chunk_len);",
+      "  *len += (size_t)chunk_len;",
+      "  output[*len] = '\\0';",
+      "  return 0;",
+      "}",
+      "",
+      "static int drain_until(int fd, const char *needle, char *output, size_t *output_len, int timeout_ms) {",
+      "  char chunk[512];",
+      "  int elapsed = 0;",
+      "  while (elapsed < timeout_ms) {",
+      "    struct pollfd pfd = { .fd = fd, .events = POLLIN | POLLHUP, .revents = 0 };",
+      "    int pr = poll(&pfd, 1, 100);",
+      "    if (pr < 0) {",
+      "      if (errno == EINTR) continue;",
+      "      perror(\"poll-output\");",
+      "      return -1;",
+      "    }",
+      "    elapsed += 100;",
+      "    if (pr == 0) continue;",
+      "    if (pfd.revents & POLLIN) {",
+      "      for (;;) {",
+      "        ssize_t n = read(fd, chunk, sizeof(chunk));",
+      "        if (n < 0) {",
+      "          if (errno == EINTR) continue;",
+      "          if (errno == EAGAIN || errno == EWOULDBLOCK) break;",
+      "          perror(\"read-output\");",
+      "          return -1;",
+      "        }",
+      "        if (n == 0) break;",
+      "        if (write_all(1, chunk, n) != 0) return -1;",
+      "        if (append_output(output, output_len, chunk, n) != 0) return -1;",
+      "        if (strstr(output, needle) != NULL) return 0;",
+      "      }",
+      "    }",
+      "    if ((pfd.revents & POLLHUP) && strstr(output, needle) == NULL) return 1;",
+      "  }",
+      "  return 1;",
+      "}",
+      "",
+      "static int drain_to_eof(int fd, int timeout_ms) {",
+      "  char chunk[512];",
+      "  int elapsed = 0;",
+      "  while (elapsed < timeout_ms) {",
+      "    struct pollfd pfd = { .fd = fd, .events = POLLIN | POLLHUP, .revents = 0 };",
+      "    int pr = poll(&pfd, 1, 100);",
+      "    if (pr < 0) {",
+      "      if (errno == EINTR) continue;",
+      "      perror(\"poll-eof\");",
+      "      return -1;",
+      "    }",
+      "    elapsed += 100;",
+      "    if (pr == 0) continue;",
+      "    if (pfd.revents & POLLIN) {",
+      "      for (;;) {",
+      "        ssize_t n = read(fd, chunk, sizeof(chunk));",
+      "        if (n < 0) {",
+      "          if (errno == EINTR) continue;",
+      "          if (errno == EAGAIN || errno == EWOULDBLOCK) break;",
+      "          perror(\"read-eof\");",
+      "          return -1;",
+      "        }",
+      "        if (n == 0) return 0;",
+      "        if (write_all(1, chunk, n) != 0) return -1;",
+      "      }",
+      "    }",
+      "    if (pfd.revents & POLLHUP) {",
+      "      ssize_t n = read(fd, chunk, sizeof(chunk));",
+      "      if (n == 0) return 0;",
+      "      if (n > 0 && write_all(1, chunk, n) != 0) return -1;",
+      "      if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) return -1;",
+      "    }",
+      "  }",
+      "  return 1;",
+      "}",
+      "",
+      "static int wait_child(pid_t child, int timeout_ms) {",
+      "  int elapsed = 0;",
+      "  while (elapsed < timeout_ms) {",
+      "    int status = 0;",
+      "    pid_t waited = waitpid(child, &status, WNOHANG);",
+      "    if (waited == child) {",
+      "      return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);",
+      "    }",
+      "    if (waited < 0 && errno != EINTR) return 127;",
+      "    usleep(100000);",
+      "    elapsed += 100;",
+      "  }",
+      "  return 124;",
+      "}",
+      "",
+      "int main(void) {",
+      "  int in_pipe[2];",
+      "  int out_pipe[2];",
+      "  char output[4096];",
+      "  size_t output_len = 0;",
+      "  output[0] = '\\0';",
+      "  signal(SIGPIPE, SIG_IGN);",
+      "  if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0) { perror(\"pipe\"); return 12; }",
+      "  fcntl(out_pipe[0], F_SETFL, fcntl(out_pipe[0], F_GETFL, 0) | O_NONBLOCK);",
+      cStringArray("argv", ["/usr/lib/apt/methods/store"]),
+      cStringArray("envp", ["LC_ALL=C", "LANG=C"]),
+      "  pid_t child = fork();",
+      "  if (child < 0) { perror(\"fork\"); return 13; }",
+      "  if (child == 0) {",
+      "    if (dup2(in_pipe[0], 0) < 0) { perror(\"dup2-stdin\"); _exit(125); }",
+      "    if (dup2(out_pipe[1], 1) < 0) { perror(\"dup2-stdout\"); _exit(126); }",
+      "    close(in_pipe[0]); close(in_pipe[1]);",
+      "    close(out_pipe[0]); close(out_pipe[1]);",
+      "    execve(\"/usr/lib/apt/methods/store\", argv, envp);",
+      "    perror(\"execve-store\");",
+      "    _exit(127);",
+      "  }",
+      "  close(in_pipe[0]);",
+      "  close(out_pipe[1]);",
+      "  if (drain_until(out_pipe[0], \"100 Capabilities\", output, &output_len, 30000) != 0) return 15;",
+      "  if (write_all(1, \"parent:store-caps\\n\", 18) != 0) return 16;",
+      "  close(in_pipe[1]);",
+      "  if (drain_to_eof(out_pipe[0], 30000) != 0) return 17;",
+      "  if (write_all(1, \"parent:store-stdout-eof\\n\", 24) != 0) return 18;",
+      "  int exit_code = wait_child(child, 30000);",
+      "  dprintf(1, \"parent:store-child-exit=%d\\n\", exit_code);",
+      "  close(out_pipe[0]);",
+      "  return exit_code == 0 ? 0 : 100 + exit_code;",
+      "}",
+      "",
+    ].join("\n"));
+    execFileSync(hostRiscvGcc, [
+      "-O2",
+      "-Wl,--dynamic-linker=/lib/ld-linux-riscv64-lp64d.so.1",
+      "-o",
+      outputPath,
+      sourcePath,
+    ], { stdio: "pipe" });
+    return new Uint8Array(readFileSync(outputPath));
+  } catch (error) {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    return logSkip(`failed to build apt store EOF/wait probe with ${hostRiscvGcc}: ${detail}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 function buildForkExecMethodEofWaitProbe(): Uint8Array | null {
   const tmp = mkdtempSync(join(tmpdir(), "tidemark-apt-method-eof-wait-"));
   const sourcePath = join(tmp, "apt_method_eof_wait.c");
@@ -3020,6 +3193,56 @@ test("apt method store local gate: guest fork/exec starts from apt-get snapshot"
   }
 }, 45_000);
 
+test("apt method store local gate: stdout EOF follows stdin close", async () => {
+  const prepared = await prepareAptGetRuntime(createMethodNetworkBridge([]));
+  if (!prepared) {
+    return;
+  }
+  const probeElf = buildStoreEofWaitProbe();
+  if (!probeElf) {
+    prepared.runtime.destroy();
+    return;
+  }
+  const { runtime } = prepared;
+
+  let output = "";
+  try {
+    const proc = await runtime.spawn(
+      probeElf,
+      ["/work/apt-store-eof-wait-probe"],
+      ["LC_ALL=C", "LANG=C"],
+      { cwd: "/work", stdin: "closed" },
+    );
+    proc.onStdout((data) => {
+      output += decoder.decode(data);
+    });
+
+    const exitCode = await Promise.race([
+      proc.waitForExit(),
+      new Promise<number>((_, reject) => {
+        setTimeout(() => reject(new Error("timeout waiting for store EOF/wait probe exit")), 45_000);
+      }),
+    ]).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([
+        detail,
+        `output=${JSON.stringify(output)}`,
+        `storeFile=${await describeGuestFile(runtime, "/usr/lib/apt/methods/store")}`,
+        `debug=${await runtimeDebugSummary(runtime)}`,
+        `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
+      ].join("\n"));
+    });
+
+    expect(output).toContain("100 Capabilities");
+    expect(output).toContain("parent:store-caps");
+    expect(output).toContain("parent:store-stdout-eof");
+    expect(output).toContain("parent:store-child-exit=0");
+    expect(exitCode).toBe(0);
+  } finally {
+    runtime.destroy();
+  }
+}, 60_000);
+
 test("apt method http local gate: captured stdin reaches generic network bridge", async () => {
   const guestRequests: string[] = [];
   const prepared = await prepareMethodRuntime(createMethodNetworkBridge(guestRequests));
@@ -3591,6 +3814,117 @@ test("apt method parent wait local gate: stdout EOF follows URI Done after stdin
     runtime.destroy();
   }
 }, Math.max(90_000, asyncDoneTimeoutMs + 20_000));
+
+test("apt method parent wait local gate: full package stdout EOF follows URI Done after stdin closes", async () => {
+  if (!methodFullPackageGate) {
+    return logSkip("set TIDEMARK_TEST_APT_METHOD_FULL_PACKAGE_GATE=1 to run full package EOF/wait gate");
+  }
+  const packageBody = methodPackagesXzResponseBody;
+  if (!packageBody) {
+    return logSkip("set TIDEMARK_TEST_APT_METHOD_PACKAGES_XZ_RESPONSE_BODY to run full package EOF/wait gate");
+  }
+  const responseBody = methodFullPackageBytes > 0
+    ? packageBody.subarray(0, Math.min(methodFullPackageBytes, packageBody.length))
+    : packageBody;
+  const sha256 = createHash("sha256").update(responseBody).digest("hex");
+  const packageUri =
+    `http://deb.debian.org/debian/dists/trixie/main/binary-riscv64/by-hash/SHA256/${sha256}`;
+  const guestRequests: string[] = [];
+  const bridgeEvents: string[] = [];
+  const metrics = createMethodBridgeMetrics();
+  const prepared = await prepareMethodRuntime(createAsyncMethodNetworkBridge(
+    guestRequests,
+    bridgeEvents,
+    (request) => {
+      const targets = extractHttpGetTargets([request]);
+      const target = targets[targets.length - 1] ?? "";
+      return isPackageIndexTarget(target) ? responseBody : methodResponseBody;
+    },
+    metrics,
+  ), { requireMethodPayload: false });
+  if (!prepared) {
+    return;
+  }
+  const probeElf = buildForkExecMethodEofWaitProbe();
+  if (!probeElf) {
+    prepared.runtime.destroy();
+    return;
+  }
+  const { runtime } = prepared;
+
+  let output = "";
+  const started = Date.now();
+  metrics.startedAtMs = started;
+  try {
+    await runtime.writeFile(
+      "/work/apt-method-payload.txt",
+      buildHttpMethodAcquirePayload(packageUri, aptPartialPackagesXzFilename),
+    );
+    const proc = await runtime.spawn(
+      probeElf,
+      ["/work/apt-method-eof-wait-probe"],
+      ["LC_ALL=C", "LANG=C"],
+      { cwd: "/work", stdin: "closed" },
+    );
+    proc.onStdout((data) => {
+      output += decoder.decode(data);
+    });
+
+    await waitForOutput(() => output, "parent:stdout-eof", asyncDoneTimeoutMs).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([
+        detail,
+        `guestRequests=${JSON.stringify(guestRequests)}`,
+        `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
+        `metrics=${compactMethodBridgeMetrics(metrics)}`,
+        `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+        `output=${JSON.stringify(output)}`,
+        `debug=${await runtimeDebugSummary(runtime)}`,
+        `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
+      ].join("\n"));
+    });
+
+    const exitCode = await Promise.race([
+      proc.waitForExit(),
+      new Promise<number>((_, reject) => {
+        setTimeout(() => reject(new Error("timeout waiting for full package parent EOF/wait probe exit")), asyncDoneTimeoutMs);
+      }),
+    ]).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([
+        detail,
+        `guestRequests=${JSON.stringify(guestRequests)}`,
+        `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
+        `metrics=${compactMethodBridgeMetrics(metrics)}`,
+        `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+        `output=${JSON.stringify(output)}`,
+        `debug=${await runtimeDebugSummary(runtime)}`,
+        `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
+      ].join("\n"));
+    });
+
+    expect(output).toContain("201 URI Done");
+    expect(output).toContain("parent:http-done");
+    expect(output).toContain("parent:stdout-eof");
+    expect(output).toMatch(/parent:child-exit=(0|100)/);
+    expect(exitCode).toBe(0);
+    expect(await runtime.readFile(aptPartialPackagesXzFilename)).toEqual(responseBody);
+    console.log([
+      `apt method full package EOF metrics durationMs=${Date.now() - started}`,
+      `bodyBytes=${responseBody.length}`,
+      `bridgeReadCalls=${metrics.readCalls}`,
+      `bridgeEmptyReads=${metrics.emptyReads}`,
+      `bridgeReadBytes=${metrics.readBytes}`,
+      `bridgePackageBytes=${metrics.packageResponseBytes}`,
+      `bridgePackageChunks=${metrics.packageResponseChunks}`,
+      `bridgePackageResponsesCompleted=${metrics.packageResponsesCompleted}`,
+      `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
+      `hotPcVmas=${compactAptExecutionHotPcVmas(runtime.debugExecutionStats())}`,
+    ].join(" "));
+  } finally {
+    runtime.destroy();
+  }
+}, Math.max(120_000, asyncDoneTimeoutMs * 2 + 20_000));
 
 test("apt-get update local gate: parent acquire loop exits after in-memory HTTP response", async () => {
   const guestRequests: string[] = [];

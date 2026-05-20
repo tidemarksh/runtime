@@ -72,13 +72,24 @@ export function createKernelWorkerObjectStatePrimitives() {
       const sourceTailAhead = counterAhead(sourceTail, targetTail, dataBytes);
 
       if (sourceTailAhead) {
-        copyMemoryRange(
-          sourceExports.memory,
-          sourceOffset + NET_BUF_OFF_DATA,
-          targetExports.memory,
-          targetOffset + NET_BUF_OFF_DATA,
-          dataBytes,
-        );
+        const copySpan = (start: number, end: number): void => {
+          if (end <= start) {
+            return;
+          }
+          copyMemoryRange(
+            sourceExports.memory,
+            sourceOffset + NET_BUF_OFF_DATA + start,
+            targetExports.memory,
+            targetOffset + NET_BUF_OFF_DATA + start,
+            end - start,
+          );
+        };
+        if (targetTail < sourceTail) {
+          copySpan(targetTail, sourceTail);
+        } else {
+          copySpan(targetTail, dataBytes);
+          copySpan(0, sourceTail);
+        }
       }
       copyMemoryRange(
         sourceExports.memory,

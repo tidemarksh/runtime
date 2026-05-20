@@ -266,3 +266,69 @@ test("kernel-worker socket sync does not rewind a process-local net buffer consu
   expect(childView.getUint32(childSlotBase + 4, true)).toBe(8192);
   expect(new Uint8Array(childMemory.buffer)[childSlotBase + 16]).toBe(0x22);
 });
+
+test("kernel-worker socket sync copies only forward net buffer tail delta", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
+
+  seedSocketState(parentExports, parentMemory, 1, 1n, 0xaa, 0xab);
+  seedSocketState(childExports, childMemory, 1, 1n, 0xbb, 0xbc);
+  seedNetBuffer(parentExports, parentMemory, 0, { head: 0, tail: 1000, marker: 0x11 });
+  seedNetBuffer(childExports, childMemory, 0, { head: 0, tail: 512, marker: 0x22 });
+
+  const state = makeKernelState();
+  const childSlotBase = state.netBufBase;
+  const parentBytes = new Uint8Array(parentMemory.buffer);
+  const childBytes = new Uint8Array(childMemory.buffer);
+  parentBytes[childSlotBase + 16 + 700] = 0xa7;
+  childBytes[childSlotBase + 16 + 100] = 0xc1;
+
+  sharedStateSync.syncSocketState(1, readKernelRuntimeState(parentExports));
+
+  const childView = new DataView(childMemory.buffer);
+  expect(childView.getUint32(childSlotBase, true)).toBe(0);
+  expect(childView.getUint32(childSlotBase + 4, true)).toBe(1000);
+  expect(childBytes[childSlotBase + 16 + 100]).toBe(0xc1);
+  expect(childBytes[childSlotBase + 16 + 700]).toBe(0xa7);
+});
+
+test("kernel-worker socket sync copies wrapped net buffer tail delta in two spans", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
+
+  const slotBytes = netBufferSlotBytes(parentExports);
+  const dataBytes = slotBytes - 16;
+  const targetTail = dataBytes - 64;
+
+  seedSocketState(parentExports, parentMemory, 1, 1n, 0xaa, 0xab);
+  seedSocketState(childExports, childMemory, 1, 1n, 0xbb, 0xbc);
+  seedNetBuffer(parentExports, parentMemory, 0, { head: 0, tail: 128, marker: 0x11 });
+  seedNetBuffer(childExports, childMemory, 0, { head: 0, tail: targetTail, marker: 0x22 });
+
+  const state = makeKernelState();
+  const childSlotBase = state.netBufBase;
+  const parentBytes = new Uint8Array(parentMemory.buffer);
+  const childBytes = new Uint8Array(childMemory.buffer);
+  parentBytes[childSlotBase + 16 + dataBytes - 32] = 0xd1;
+  parentBytes[childSlotBase + 16 + 32] = 0xd2;
+  childBytes[childSlotBase + 16 + 256] = 0xc2;
+
+  sharedStateSync.syncSocketState(1, readKernelRuntimeState(parentExports));
+
+  const childView = new DataView(childMemory.buffer);
+  expect(childView.getUint32(childSlotBase, true)).toBe(0);
+  expect(childView.getUint32(childSlotBase + 4, true)).toBe(128);
+  expect(childBytes[childSlotBase + 16 + dataBytes - 32]).toBe(0xd1);
+  expect(childBytes[childSlotBase + 16 + 32]).toBe(0xd2);
+  expect(childBytes[childSlotBase + 16 + 256]).toBe(0xc2);
+});
