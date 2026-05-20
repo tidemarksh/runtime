@@ -2352,6 +2352,43 @@ function compactAptExecutionStats(
   })));
 }
 
+function compactAptExecutionHotPcVmas(
+  stats: ReturnType<Awaited<ReturnType<typeof Runtime.create>>["debugExecutionStats"]>,
+): string {
+  function parseHex(value: string | null): bigint | null {
+    if (!value) {
+      return null;
+    }
+    try {
+      return BigInt(value);
+    } catch {
+      return null;
+    }
+  }
+  return JSON.stringify(stats.map((proc) => ({
+    pid: proc.pid,
+    cmd: proc.cmd.split(/\s+/).slice(0, 3).join(" ").slice(0, 96),
+    workers: proc.workers.map((worker) => {
+      const pcs = [
+        ...worker.hotStepPcs.slice(0, 6).map((entry) => ({ kind: "step", ...entry })),
+        ...worker.hotStatusPcs.slice(0, 6).map((entry) => ({ kind: "status", ...entry })),
+      ];
+      return {
+        ownerState: worker.ownerState,
+        pcs: pcs.map((entry) => {
+          const pc = parseHex(entry.pc);
+          const vma = pc === null ? null : proc.memoryVmas.find((candidate) => {
+            const start = parseHex(candidate.start);
+            const end = parseHex(candidate.end);
+            return start !== null && end !== null && start <= pc && pc < end;
+          }) ?? null;
+          return { ...entry, vma };
+        }),
+      };
+    }),
+  })));
+}
+
 function compactAptProcessCounts(
   stats: ReturnType<Awaited<ReturnType<typeof Runtime.create>>["debugExecutionStats"]>,
 ): string {
@@ -3058,6 +3095,7 @@ test("apt method http local gate: full package fetch saves response body", async
       `bridgePackageChunks=${metrics.packageResponseChunks}`,
       `bridgePackageResponsesCompleted=${metrics.packageResponsesCompleted}`,
       `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
+      `hotPcVmas=${compactAptExecutionHotPcVmas(runtime.debugExecutionStats())}`,
     ].join(" "));
   } finally {
     runtime.destroy();
