@@ -681,6 +681,70 @@ function buildForkExecMethodProbe(): Uint8Array | null {
   }
 }
 
+function buildStoreForkExecProbe(): Uint8Array | null {
+  const tmp = mkdtempSync(join(tmpdir(), "tidemark-apt-store-fork-exec-"));
+  const sourcePath = join(tmp, "apt_store_fork_exec.c");
+  const outputPath = join(tmp, "apt-store-fork-exec-probe");
+  try {
+    writeFileSync(sourcePath, [
+      "#include <errno.h>",
+      "#include <poll.h>",
+      "#include <signal.h>",
+      "#include <stdio.h>",
+      "#include <string.h>",
+      "#include <sys/wait.h>",
+      "#include <unistd.h>",
+      "",
+      "int main(void) {",
+      "  int out_pipe[2];",
+      "  char output[512];",
+      "  if (pipe(out_pipe) != 0) { perror(\"pipe\"); return 12; }",
+      cStringArray("argv", ["/usr/lib/apt/methods/store"]),
+      cStringArray("envp", ["LC_ALL=C", "LANG=C"]),
+      "  pid_t child = fork();",
+      "  if (child < 0) { perror(\"fork\"); return 13; }",
+      "  if (child == 0) {",
+      "    if (dup2(out_pipe[1], 1) < 0) { perror(\"dup2-stdout\"); _exit(126); }",
+      "    close(out_pipe[0]); close(out_pipe[1]);",
+      "    execve(\"/usr/lib/apt/methods/store\", argv, envp);",
+      "    perror(\"execve-store\");",
+      "    _exit(127);",
+      "  }",
+      "  close(out_pipe[1]);",
+      "  for (int iter = 0; iter < 300; iter++) {",
+      "    struct pollfd pfd = { .fd = out_pipe[0], .events = POLLIN | POLLHUP, .revents = 0 };",
+      "    int status = 0;",
+      "    int pr = poll(&pfd, 1, 100);",
+      "    if (pr > 0 && (pfd.revents & POLLIN)) {",
+      "      ssize_t n = read(out_pipe[0], output, sizeof(output) - 1);",
+      "      if (n > 0) {",
+      "        output[n] = '\\0';",
+      "        if (strstr(output, \"100 Capabilities\") != NULL) { kill(child, SIGTERM); waitpid(child, &status, 0); return 0; }",
+      "      }",
+      "    }",
+      "    pid_t waited = waitpid(child, &status, WNOHANG);",
+      "    if (waited == child) return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);",
+      "  }",
+      "  return 124;",
+      "}",
+      "",
+    ].join("\n"));
+    execFileSync(hostRiscvGcc, [
+      "-O2",
+      "-Wl,--dynamic-linker=/lib/ld-linux-riscv64-lp64d.so.1",
+      "-o",
+      outputPath,
+      sourcePath,
+    ], { stdio: "pipe" });
+    return new Uint8Array(readFileSync(outputPath));
+  } catch (error) {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    return logSkip(`failed to build apt store fork/exec probe with ${hostRiscvGcc}: ${detail}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 function buildForkExecMethodEofWaitProbe(): Uint8Array | null {
   const tmp = mkdtempSync(join(tmpdir(), "tidemark-apt-method-eof-wait-"));
   const sourcePath = join(tmp, "apt_method_eof_wait.c");
@@ -2290,6 +2354,8 @@ async function describeAptPageCachePaths(
     aptPartialPackagesXzFilename,
     aptFinalInReleaseFilename,
     aptFinalPackagesXzFilename,
+    "/usr/lib/apt/methods/store",
+    "/lib/ld-linux-riscv64-lp64d.so.1",
   ];
   const entries = await Promise.all(paths.map(async (path) => {
     try {
@@ -2623,6 +2689,96 @@ async function prepareAptGetRuntime(networkBridge: RuntimeNetworkBridge): Promis
     throw error;
   }
 }
+
+test("apt method store local gate: direct exec starts from apt-get snapshot", async () => {
+  const prepared = await prepareAptGetRuntime(createMethodNetworkBridge([]));
+  if (!prepared) {
+    return;
+  }
+  const { runtime } = prepared;
+  const storeElf = new Uint8Array(readFileSync(resolve(aptRoot, "usr/lib/apt/methods/store")));
+
+  let output = "";
+  try {
+    const proc = await runtime.spawn(
+      storeElf,
+      ["/usr/lib/apt/methods/store"],
+      ["LC_ALL=C", "LANG=C"],
+      { cwd: "/work", stdin: "pipe" },
+    );
+    proc.onStdout((data) => {
+      output += decoder.decode(data);
+    });
+
+    await Promise.race([
+      waitForOutput(() => output, "100 Capabilities", asyncDoneTimeoutMs),
+      proc.waitForExit().then((exitCode) => {
+        throw new Error(`store method exited before capabilities: exit=${exitCode}`);
+      }),
+    ]).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([
+        detail,
+        `output=${JSON.stringify(output)}`,
+        `storeFile=${await describeGuestFile(runtime, "/usr/lib/apt/methods/store")}`,
+        `debug=${await runtimeDebugSummary(runtime)}`,
+        `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
+      ].join("\n"));
+    });
+
+    expect(output).toContain("100 Capabilities");
+  } finally {
+    runtime.destroy();
+  }
+}, Math.max(90_000, asyncDoneTimeoutMs + 10_000));
+
+test("apt method store local gate: guest fork/exec starts from apt-get snapshot", async () => {
+  const prepared = await prepareAptGetRuntime(createMethodNetworkBridge([]));
+  if (!prepared) {
+    return;
+  }
+  const probeElf = buildStoreForkExecProbe();
+  if (!probeElf) {
+    prepared.runtime.destroy();
+    return;
+  }
+  const { runtime } = prepared;
+
+  try {
+    const proc = await runtime.spawn(
+      probeElf,
+      ["/work/apt-store-fork-exec-probe"],
+      ["LC_ALL=C", "LANG=C"],
+      { cwd: "/work", stdin: "closed" },
+    );
+
+    const exitCode = await Promise.race([
+      proc.waitForExit(),
+      new Promise<number>((_, reject) => {
+        setTimeout(() => reject(new Error("timeout waiting for store fork/exec probe")), 30_000);
+      }),
+    ]).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([
+        detail,
+        `storeFile=${await describeGuestFile(runtime, "/usr/lib/apt/methods/store")}`,
+        `debug=${await runtimeDebugSummary(runtime)}`,
+        `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
+      ].join("\n"));
+    });
+
+    expect(
+      exitCode,
+      [
+        "store fork/exec probe did not reach capabilities",
+        `storeFile=${await describeGuestFile(runtime, "/usr/lib/apt/methods/store")}`,
+        `debug=${await runtimeDebugSummary(runtime)}`,
+      ].join("\n"),
+    ).toBe(0);
+  } finally {
+    runtime.destroy();
+  }
+}, 45_000);
 
 test("apt method http local gate: captured stdin reaches generic network bridge", async () => {
   const guestRequests: string[] = [];
@@ -3261,6 +3417,8 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
   let firstPackageRuntimeObservation = "not-observed";
   let firstPackageFileCompleteAtMs = -1;
   let firstPackageFileCompleteObservation = "not-observed";
+  let storeLoaderAtPackageResponseComplete = "not-observed";
+  let storeLoaderAtPackageFileComplete = "not-observed";
   let secondPackageObservation = "not-observed";
   let afterSecondPackageResponseObservation = "not-observed";
   let exitRuntimeObservation = "not-observed";
@@ -3305,9 +3463,13 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `output=${JSON.stringify(output)}`,
         `partialInRelease=${await describeGuestFile(runtime, methodAcquireFilename)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+        `storeMethod=${await describeGuestFile(runtime, "/usr/lib/apt/methods/store")}`,
+        `storeLoader=${await describeGuestFile(runtime, "/lib/ld-linux-riscv64-lp64d.so.1")}`,
         `firstPackageResponseCompleteObservation=${firstPackageResponseCompleteObservation}`,
         `firstPackageRuntimeObservation=${firstPackageRuntimeObservation}`,
         `firstPackageFileCompleteObservation=${firstPackageFileCompleteObservation}`,
+        `storeLoaderAtPackageResponseComplete=${storeLoaderAtPackageResponseComplete}`,
+        `storeLoaderAtPackageFileComplete=${storeLoaderAtPackageFileComplete}`,
         `secondPackageObservation=${secondPackageObservation}`,
         `debug=${await runtimeDebugSummary(runtime)}`,
         `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
@@ -3323,6 +3485,8 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `metrics=${compactMethodBridgeMetrics(metrics)}`,
         `output=${JSON.stringify(output)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+        `storeMethod=${await describeGuestFile(runtime, "/usr/lib/apt/methods/store")}`,
+        `storeLoader=${await describeGuestFile(runtime, "/lib/ld-linux-riscv64-lp64d.so.1")}`,
         `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
         `debug=${await runtimeDebugSummary(runtime)}`,
         `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
@@ -3335,6 +3499,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
       `partialPackagesXz=${await describeGuestFileBrief(runtime, aptPartialPackagesXzFilename)}`,
       `finalPackagesXz=${await describeGuestFileBrief(runtime, aptFinalPackagesXzFilename)}`,
     ].join(" ");
+    storeLoaderAtPackageResponseComplete = await describeGuestFile(runtime, "/lib/ld-linux-riscv64-lp64d.so.1");
     firstPackageRuntimeObservation = await collectAptRuntimeObservation(
       runtime,
       "first-package-response-complete",
@@ -3351,6 +3516,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
       );
       firstPackageFileCompleteAtMs = firstPackageFileObservation.atMs;
       firstPackageFileCompleteObservation = firstPackageFileObservation.text;
+      storeLoaderAtPackageFileComplete = await describeGuestFile(runtime, "/lib/ld-linux-riscv64-lp64d.so.1");
     }
 
     if (packageIndexGateTruncateFirstPackage) {
@@ -3406,6 +3572,9 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
 
     const exitCode = await Promise.race([
       proc.waitForExit(),
+      waitForOutput(() => output, "Failed to exec method", aptGetUpdateExitTimeoutMs).then(() => {
+        throw new Error("apt-get reported method exec failure");
+      }),
       new Promise<number>((_, reject) => {
         setTimeout(() => {
           reject(new Error("timeout waiting for apt-get update exit"));
@@ -3421,9 +3590,13 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `output=${JSON.stringify(output)}`,
         `partialInRelease=${await describeGuestFile(runtime, methodAcquireFilename)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+        `storeMethod=${await describeGuestFile(runtime, "/usr/lib/apt/methods/store")}`,
+        `storeLoader=${await describeGuestFile(runtime, "/lib/ld-linux-riscv64-lp64d.so.1")}`,
         `firstPackageResponseCompleteObservation=${firstPackageResponseCompleteObservation}`,
         `firstPackageRuntimeObservation=${firstPackageRuntimeObservation}`,
         `firstPackageFileCompleteObservation=${firstPackageFileCompleteObservation}`,
+        `storeLoaderAtPackageResponseComplete=${storeLoaderAtPackageResponseComplete}`,
+        `storeLoaderAtPackageFileComplete=${storeLoaderAtPackageFileComplete}`,
         `secondPackageObservation=${secondPackageObservation}`,
         `afterSecondPackageResponseObservation=${afterSecondPackageResponseObservation}`,
         `exitRuntimeObservation=${exitRuntimeObservation}`,
@@ -3452,9 +3625,13 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `output=${JSON.stringify(output)}`,
         `partialInRelease=${await describeGuestFile(runtime, methodAcquireFilename)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+        `storeMethod=${await describeGuestFile(runtime, "/usr/lib/apt/methods/store")}`,
+        `storeLoader=${await describeGuestFile(runtime, "/lib/ld-linux-riscv64-lp64d.so.1")}`,
         `firstPackageResponseCompleteObservation=${firstPackageResponseCompleteObservation}`,
         `firstPackageRuntimeObservation=${firstPackageRuntimeObservation}`,
         `firstPackageFileCompleteObservation=${firstPackageFileCompleteObservation}`,
+        `storeLoaderAtPackageResponseComplete=${storeLoaderAtPackageResponseComplete}`,
+        `storeLoaderAtPackageFileComplete=${storeLoaderAtPackageFileComplete}`,
         `secondPackageObservation=${secondPackageObservation}`,
         `afterSecondPackageResponseObservation=${afterSecondPackageResponseObservation}`,
         `exitRuntimeObservation=${exitRuntimeObservation}`,
@@ -3500,7 +3677,16 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
   } finally {
     runtime.destroy();
   }
-}, Math.max(120_000, asyncDoneTimeoutMs + 20_000));
+}, Math.max(
+  120_000,
+  asyncDoneTimeoutMs * (
+    2
+    + (packageIndexGateObserveFile ? 1 : 0)
+    + (packageIndexGateTruncateFirstPackage ? 2 : 0)
+  )
+    + aptGetUpdateExitTimeoutMs
+    + 20_000,
+));
 
 test("apt method sqv local gate: clearsigned InRelease split returns a method response", async () => {
   const prepared = await prepareSqvRuntime();

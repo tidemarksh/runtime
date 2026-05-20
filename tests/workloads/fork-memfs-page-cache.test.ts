@@ -240,6 +240,114 @@ function buildDynamicForkLargeFileProbe(): Uint8Array | null {
   }
 }
 
+function buildDynamicForkLargeWriteLoaderProbe(): Uint8Array | null {
+  const tmp = mkdtempSync(join(tmpdir(), "tidemark-dynamic-fork-large-write-loader-"));
+  const sourcePath = join(tmp, "dynamic_fork_large_write_loader.c");
+  const outputPath = join(tmp, "dynamic-fork-large-write-loader");
+  try {
+    writeFileSync(sourcePath, [
+      "#include <errno.h>",
+      "#include <fcntl.h>",
+      "#include <stdio.h>",
+      "#include <stdlib.h>",
+      "#include <string.h>",
+      "#include <sys/wait.h>",
+      "#include <unistd.h>",
+      "",
+      "#define WRITE_CHUNK 245760",
+      "",
+      "static int read_loader_magic(const char *label) {",
+      "  int fd = open(\"/lib/ld-linux-riscv64-lp64d.so.1\", O_RDONLY);",
+      "  if (fd < 0) { perror(label); return 10; }",
+      "  unsigned char magic[4] = {0, 0, 0, 0};",
+      "  ssize_t n = read(fd, magic, sizeof(magic));",
+      "  close(fd);",
+      "  if (n != 4 || magic[0] != 0x7f || magic[1] != 'E' || magic[2] != 'L' || magic[3] != 'F') {",
+      "    fprintf(stdout, \"%s:not-elf:%02x%02x%02x%02x\\n\", label, magic[0], magic[1], magic[2], magic[3]);",
+      "    fflush(stdout);",
+      "    return 11;",
+      "  }",
+      "  fprintf(stdout, \"%s:elf\\n\", label);",
+      "  fflush(stdout);",
+      "  return 0;",
+      "}",
+      "",
+      "static int write_all(int fd, const unsigned char *data, size_t len) {",
+      "  size_t off = 0;",
+      "  while (off < len) {",
+      "    ssize_t n = write(fd, data + off, len - off);",
+      "    if (n < 0) {",
+      "      if (errno == EINTR) continue;",
+      "      return -1;",
+      "    }",
+      "    if (n == 0) return -1;",
+      "    off += (size_t)n;",
+      "  }",
+      "  return 0;",
+      "}",
+      "",
+      "static int write_large_file(unsigned long long total) {",
+      "  int fd = open(\"/var/lib/apt/lists/partial/repro_Packages.xz\", O_CREAT | O_TRUNC | O_WRONLY, 0644);",
+      "  if (fd < 0) { perror(\"open-large-file\"); return 20; }",
+      "  static unsigned char buf[WRITE_CHUNK];",
+      "  unsigned long long written = 0;",
+      "  while (written < total) {",
+      "    size_t chunk = (size_t)((total - written) < WRITE_CHUNK ? (total - written) : WRITE_CHUNK);",
+      "    for (size_t i = 0; i < chunk; i++) {",
+      "      buf[i] = (unsigned char)(((written + (unsigned long long)i) * 13ull + 19ull) & 0xffu);",
+      "    }",
+      "    if (write_all(fd, buf, chunk) != 0) { perror(\"write-large-file\"); close(fd); return 21; }",
+      "    written += (unsigned long long)chunk;",
+      "  }",
+      "  if (close(fd) != 0) { perror(\"close-large-file\"); return 22; }",
+      "  fprintf(stdout, \"child-large-write:bytes=%llu\\n\", written);",
+      "  fflush(stdout);",
+      "  return written == total ? 0 : 23;",
+      "}",
+      "",
+      "int main(int argc, char **argv) {",
+      "  unsigned long long total = argc > 1 ? strtoull(argv[1], NULL, 10) : 9379800ull;",
+      "  int before = read_loader_magic(\"parent-before-large-write\");",
+      "  if (before != 0) return before;",
+      "  pid_t child = fork();",
+      "  if (child < 0) { perror(\"fork\"); return 12; }",
+      "  if (child == 0) {",
+      "    int child_before = read_loader_magic(\"child-before-large-write\");",
+      "    if (child_before != 0) _exit(child_before);",
+      "    int written = write_large_file(total);",
+      "    if (written != 0) _exit(written);",
+      "    int child_after = read_loader_magic(\"child-after-large-write\");",
+      "    _exit(child_after);",
+      "  }",
+      "  int status = 0;",
+      "  if (waitpid(child, &status, 0) < 0) { perror(\"waitpid\"); return 13; }",
+      "  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {",
+      "    fprintf(stdout, \"child-status:%d\\n\", status);",
+      "    fflush(stdout);",
+      "    return 14;",
+      "  }",
+      "  int after = read_loader_magic(\"parent-after-large-write\");",
+      "  if (after != 0) return after;",
+      "  return 0;",
+      "}",
+      "",
+    ].join("\n"));
+    execFileSync(hostRiscvGcc, [
+      "-O2",
+      "-Wl,--dynamic-linker=/lib/ld-linux-riscv64-lp64d.so.1",
+      "-o",
+      outputPath,
+      sourcePath,
+    ], { stdio: "pipe" });
+    return new Uint8Array(readFileSync(outputPath));
+  } catch (error) {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    return logSkip(`failed to build dynamic fork large write loader probe with ${hostRiscvGcc}: ${detail}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 test("plain fork preserves page-cache-backed large snapshot file reads", async () => {
   const wasmBytes = readKernelWasm();
   if (!wasmBytes) {
@@ -291,6 +399,68 @@ test("plain fork preserves page-cache-backed large snapshot file reads", async (
     ).toBe(0);
     expect(result.output).toContain("parent-large-file:elf");
     expect(result.output).toContain("child-large-file:elf");
+  } finally {
+    runtime.destroy();
+  }
+});
+
+test("dynamic fork large regular-file write preserves loader bytes", async () => {
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return;
+  }
+  const probeBytes = buildDynamicForkLargeWriteLoaderProbe();
+  if (!probeBytes) {
+    return;
+  }
+  const loader = findLibrary("ld-linux-riscv64-lp64d.so.1");
+  const libc = findLibrary("libc.so.6");
+  if (!loader || !libc) {
+    return logSkip("missing dynamic loader/libc root: set TIDEMARK_TEST_APT_METHOD_LIBRARY_ROOTS");
+  }
+
+  const runtime = await Runtime.create({
+    wasmBytes,
+    ramSize: 256 * 1024 * 1024,
+    maxProcessMemoryPages: 16384,
+  });
+  try {
+    await runtime.applyFsSnapshot([
+      { kind: "dir", path: "/var/lib/apt/lists/partial", mode: 0o755 },
+      {
+        kind: "file",
+        path: "/lib/ld-linux-riscv64-lp64d.so.1",
+        data: new Uint8Array(readFileSync(loader)),
+        mode: 0o755,
+      },
+      {
+        kind: "file",
+        path: "/usr/lib/riscv64-linux-gnu/ld-linux-riscv64-lp64d.so.1",
+        data: new Uint8Array(readFileSync(loader)),
+        mode: 0o755,
+      },
+      {
+        kind: "file",
+        path: "/usr/lib/riscv64-linux-gnu/libc.so.6",
+        data: new Uint8Array(readFileSync(libc)),
+        mode: 0o755,
+      },
+    ]);
+    const result = await spawnWithOutput(
+      runtime,
+      probeBytes,
+      ["/work/dynamic-fork-large-write-loader", "9379800"],
+      ["LC_ALL=C"],
+      180_000,
+    );
+    expect(
+      result.exitCode,
+      `${result.output}\n${result.debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`,
+    ).toBe(0);
+    expect(result.output).toContain("parent-before-large-write:elf");
+    expect(result.output).toContain("child-before-large-write:elf");
+    expect(result.output).toContain("child-after-large-write:elf");
+    expect(result.output).toContain("parent-after-large-write:elf");
   } finally {
     runtime.destroy();
   }
