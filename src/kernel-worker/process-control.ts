@@ -17,6 +17,10 @@ import {
   KERNEL_WORKER_STACK_SLOT,
 } from "../wasm/stack.js";
 
+const FS_PUBLICATION_DEBUG_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_FS_PUBLICATION_DEBUG ?? "") === "1";
+
 interface CanonicalProcessEntry {
   pid: number;
   ppid: number;
@@ -332,6 +336,23 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     ].join(":");
   }
 
+  function shouldEmitProcessFsDebug(
+    context: PendingFsMutationContext,
+    mutation: AppliedFsMutationResult,
+    fullSyncApplied: boolean,
+  ): boolean {
+    if (!FS_PUBLICATION_DEBUG_ENABLED) {
+      return false;
+    }
+    if (fullSyncApplied || (mutation.fileDataMutated && !mutation.handledFileDataMutation)) {
+      return true;
+    }
+    const path = `${context.pendingPath ?? ""}\n${context.pendingSecondaryPath ?? ""}`;
+    return path.includes("/var/lib/apt/lists")
+      || path.includes("/lib/ld-linux-riscv64-lp64d.so.1")
+      || path.includes("/usr/lib/apt/methods/store");
+  }
+
   async function initKernel(
     module: WebAssembly.Module,
     pageCache: SharedArrayBuffer,
@@ -567,15 +588,17 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       result,
       memfsMutated: mutation.memfsMutated,
       ofdStateChanged: mutation.ofdStateChanged,
-      fsDebug: formatProcessFsDebug(
-        pid,
-        vmPtr,
-        pendingContext,
-        fsSucceeded,
-        mutation,
-        fullSyncApplied,
-        processExports,
-      ),
+      fsDebug: shouldEmitProcessFsDebug(pendingContext, mutation, fullSyncApplied)
+        ? formatProcessFsDebug(
+            pid,
+            vmPtr,
+            pendingContext,
+            fsSucceeded,
+            mutation,
+            fullSyncApplied,
+            processExports,
+          )
+        : undefined,
     };
   }
 
