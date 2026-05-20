@@ -17,6 +17,7 @@ import type {
   KernelWorkerOfdSlotSnapshot,
   KernelWorkerPipeSlotSnapshot,
   KernelWorkerSocketStateSnapshot,
+  ThreadWorkerMemoryPreserveRange,
   ThreadWorkerInbound,
   ThreadWorkerOutbound,
 } from "./messages.js";
@@ -212,12 +213,14 @@ async function prepare(
   _notifySab: SharedArrayBuffer,
   _stateSab: SharedArrayBuffer,
   kernelStackSlot: number,
+  preserveMemoryRanges?: readonly ThreadWorkerMemoryPreserveRange[],
 ): Promise<void> {
   // Instantiation replays active data segments into imported memory. When this
   // worker already has exports, preserve precise runtime overlays. A fresh
   // worker cannot derive overlay sizes yet, so preserve the allocated kernel
   // heap prefix to keep inherited fd/OFD state intact across fork/exec attach.
-  const effectivePreserveBytes = !exports && kernelState
+  const hasExplicitPreserveRanges = (preserveMemoryRanges?.length ?? 0) > 0;
+  const effectivePreserveBytes = !hasExplicitPreserveRanges && !exports && kernelState
     ? Math.max(preserveBytes, kernelState.heapPtr)
     : preserveBytes;
   const preservedMemory = snapshotThreadWorkerPrepareMemory(
@@ -225,6 +228,7 @@ async function prepare(
     exports,
     kernelState,
     effectivePreserveBytes,
+    { preserveRanges: preserveMemoryRanges },
   );
   const instance = await WebAssembly.instantiate(inputs.wasmModule, {
     env: createKernelEnv(inputs.memory, { sabPageCache: inputs.sabPageCache }),
@@ -1388,6 +1392,7 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
           msg.runtimeNotify,
           msg.runtimeState,
           msg.kernelStackSlot,
+          msg.preserveMemoryRanges,
         );
         postPrepared();
       } catch (error) {
@@ -1421,6 +1426,7 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
             msg.runtimeNotify,
             msg.runtimeState,
             msg.kernelStackSlot,
+            msg.preserveMemoryRanges,
           );
         } else {
           runtimeBridge = nextBridge;

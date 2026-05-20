@@ -748,7 +748,7 @@ test("clone child init preserves only live guest bytes when kernel debug memory 
   const worker = createdWorkers[0];
   handle.ramSize = 0x200000;
   handle.kernel.debug_memory_brk_current = () => 0x4000n;
-  handle.kernel.debug_memory_mmap_next = () => 0x9000n;
+  handle.kernel.debug_memory_mmap_next = () => 0x1f0000n;
   handle.kernel.debug_memory_vma_len = () => 2;
   handle.kernel.debug_memory_vma_end = (index: number) => (index === 0 ? 0x6000n : 0x8000n);
 
@@ -1767,6 +1767,11 @@ test("plain fork retains shared OFDs before spawning the child worker", async ()
 
   kernel.thread_spawn_kind = () => kernel.abi_spawn_kind_fork();
   kernel.thread_spawn_child_pid = () => 77;
+  kernel.debug_memory_brk_current = () => 0x4000n;
+  kernel.debug_memory_mmap_next = () => 0x1f0000n;
+  kernel.debug_memory_vma_len = () => 2;
+  kernel.debug_memory_vma_start = (index: number) => (index === 0 ? 0x5000n : 0x7000n);
+  kernel.debug_memory_vma_end = (index: number) => (index === 0 ? 0x6000n : 0x8000n);
   kernel.process_fd_ofd_id = (_vmPtr, fd) => {
     switch (fd) {
       case 0:
@@ -1950,6 +1955,11 @@ test("plain fork spawn path records child exit and resumes parent replacement wo
   parentKernel.thread_status = () => parentStatus;
   parentKernel.thread_spawn_kind = () => parentKernel.abi_spawn_kind_fork();
   parentKernel.thread_spawn_child_pid = () => 77;
+  parentKernel.debug_memory_brk_current = () => 0x4000n;
+  parentKernel.debug_memory_mmap_next = () => 0x1f0000n;
+  parentKernel.debug_memory_vma_len = () => 2;
+  parentKernel.debug_memory_vma_start = (index: number) => (index === 0 ? 0x5000n : 0x7000n);
+  parentKernel.debug_memory_vma_end = (index: number) => (index === 0 ? 0x6000n : 0x8000n);
 
   emitReady(parentWorker);
   await flushMicrotasks();
@@ -1986,6 +1996,15 @@ test("plain fork spawn path records child exit and resumes parent replacement wo
 
   expect(createdWorkers).toHaveLength(2);
   const parentReplacementWorker = createdWorkers[1];
+  const parentReplacementInit = parentReplacementWorker.postedMessages.find((message) => message.type === "init");
+  expect(parentReplacementInit?.type).toBe("init");
+  expect(
+    parentReplacementInit?.type === "init"
+      ? parentReplacementInit.preserveMemoryRanges
+        ?.filter((range) => range.start >= 0x1000000)
+        .reduce((max, range) => Math.max(max, range.end), 0)
+      : 0,
+  ).toBeLessThanOrEqual(0x1008000);
   expect(
     requests.some((msg) => msg.type === "canonicalize-child-pid" && msg.provisionalChildPid === 77),
   ).toBe(true);

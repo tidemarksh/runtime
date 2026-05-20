@@ -29,6 +29,7 @@ import { createForkChildHandle } from "./common.js";
 import { detachInheritedHostStdioFromChild } from "./common.js";
 import { computeGuestRamLimitBytes } from "./common.js";
 import type { WorkerForkDeps, ProcessHandle, ThreadWorkerState } from "./types.js";
+import type { ThreadWorkerMemoryPreserveRange } from "../../messages.js";
 
 type ParentProcessSnapshot = {
   processPtr: number;
@@ -56,6 +57,13 @@ function nextTurn(): Promise<void> {
 
 function acquireWorkerMemoryFence(handle: ProcessHandle): void {
   Atomics.load(new Int32Array(handle.runtimeBridge.notifySab), 0);
+}
+
+function forkMemoryPreserveRanges(snapshot: ForkMemorySnapshot): ThreadWorkerMemoryPreserveRange[] {
+  return snapshot.ranges.map((range) => ({
+    start: range.start,
+    end: range.end,
+  }));
 }
 
 const OFD_OFFSET_OFFSET = 16;
@@ -382,7 +390,6 @@ function captureForkMemorySnapshot(handle: ProcessHandle, stackPointer = 0n): Fo
 
   const lowGuestEnd = Math.max(
     Number(handle.kernel.debug_memory_brk_current?.() ?? 0),
-    Number(handle.kernel.debug_memory_mmap_next?.() ?? 0),
     handle.kernel.thread_process_ptr(handle.vmPtr) + handle.kernel.process_state_bytes(),
   );
   addForkCopyRange(ranges, handle.guestBase, handle.guestBase + lowGuestEnd, limit);
@@ -641,14 +648,14 @@ export async function handlePlainFork(
       worker: parentWorker,
       vmPtr: childHandle.vmPtr,
       transferFrom: handle,
-      preserveMemoryBytes: forkMemorySnapshot.endOffset,
+      preserveMemoryRanges: forkMemoryPreserveRanges(forkMemorySnapshot),
     });
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     const parentReplacementWorker = acquireWorker();
     deps.attachThreadWorker(handle, {
       worker: parentReplacementWorker,
       vmPtr: parentThread.vmPtr,
-      preserveMemoryBytes: forkMemorySnapshot.endOffset,
+      preserveMemoryRanges: forkMemoryPreserveRanges(forkMemorySnapshot),
     });
     deps.kickBlockedWorkers(handle);
     await waitForForkChildSchedulingPoint(childHandle);

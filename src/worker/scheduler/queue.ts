@@ -512,7 +512,7 @@ export function createWorkerSchedulerQueueHelpers(
   }
 
   function attachThreadWorker(handle: ProcessHandle, request: AttachThreadWorkerRequest): void {
-    const { worker, vmPtr, forcePrepare, transferFrom, preserveMemoryBytes } = request;
+    const { worker, vmPtr, forcePrepare, transferFrom, preserveMemoryBytes, preserveMemoryRanges } = request;
     const generation = nextThreadWorkerGeneration++;
     const existingThread = deps.threadWorkerStates.get(worker);
     const reinitWithinHandle = existingThread !== undefined
@@ -628,6 +628,7 @@ export function createWorkerSchedulerQueueHelpers(
       generation,
       runtimeEpoch,
       preserveMemoryBytes,
+      preserveMemoryRanges,
       guestWriteWatchRegions: handle.guestWriteWatchRegions,
       kernelState: handle.kernelState,
       sabPageCache: handle.sabPageCache,

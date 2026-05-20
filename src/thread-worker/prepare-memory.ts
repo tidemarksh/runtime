@@ -1,4 +1,5 @@
 import type { KernelExports, KernelRuntimeState } from "../abi.js";
+import type { ThreadWorkerMemoryPreserveRange } from "../messages.js";
 
 const MEMORY_SNAPSHOT_CHUNK_BYTES = 4 * 1024 * 1024;
 const MAX_HEADER_SNAPSHOT_BYTES = 4096;
@@ -31,6 +32,7 @@ export interface ThreadWorkerPrepareMemorySnapshot {
 
 interface PrepareMemorySnapshotOptions {
   includeMemfsData?: boolean;
+  preserveRanges?: readonly ThreadWorkerMemoryPreserveRange[];
 }
 
 function snapshotMemoryRange(
@@ -54,6 +56,33 @@ function snapshotMemoryRange(
     });
   }
   return { chunks };
+}
+
+function normalizePreserveRanges(
+  memory: WebAssembly.Memory,
+  ranges: readonly ThreadWorkerMemoryPreserveRange[] | undefined,
+): ThreadWorkerMemoryPreserveRange[] {
+  if (!ranges || ranges.length === 0) {
+    return [];
+  }
+  const byteLength = memory.buffer.byteLength;
+  const normalized = ranges
+    .map((range) => ({
+      start: Math.max(0, Math.min(byteLength, Math.trunc(range.start))),
+      end: Math.max(0, Math.min(byteLength, Math.trunc(range.end))),
+    }))
+    .filter((range) => Number.isFinite(range.start) && Number.isFinite(range.end) && range.end > range.start)
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+  const coalesced: ThreadWorkerMemoryPreserveRange[] = [];
+  for (const range of normalized) {
+    const previous = coalesced[coalesced.length - 1];
+    if (previous && range.start <= previous.end) {
+      previous.end = Math.max(previous.end, range.end);
+      continue;
+    }
+    coalesced.push({ ...range });
+  }
+  return coalesced;
 }
 
 function restoreMemoryRange(
@@ -252,6 +281,19 @@ export function snapshotThreadWorkerPrepareMemory(
 ): ThreadWorkerPrepareMemorySnapshot {
   const normalizedPreserveBytes = Math.max(0, Math.min(preserveBytes, memory.buffer.byteLength));
   const overlays: MemorySnapshotRange[] = [];
+  const explicitPreserveRanges = normalizePreserveRanges(memory, options.preserveRanges);
+  if (explicitPreserveRanges.length > 0) {
+    for (const range of explicitPreserveRanges) {
+      const snapshot = snapshotMemoryRange(memory, range.start, range.end - range.start);
+      if (snapshot) {
+        overlays.push(snapshot);
+      }
+    }
+    return {
+      prefix: null,
+      overlays,
+    };
+  }
   const includeMemfsData = options.includeMemfsData ?? true;
   if (kernelState) {
     const snapshotKernelRegion = (start: number, length: number): void => {

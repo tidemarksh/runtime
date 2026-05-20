@@ -72,6 +72,11 @@ export interface KernelMemoryWriteSnapshot {
   bytes: Uint8Array;
 }
 
+export interface ThreadWorkerMemoryPreserveRange {
+  start: number;
+  end: number;
+}
+
 // ============================================================================
 // thread-worker inbound (process owner -> thread-worker)
 // ============================================================================
@@ -82,6 +87,7 @@ export type ThreadWorkerInbound =
       wasmModule: WebAssembly.Module;
       memory: WebAssembly.Memory;
       preserveBytes?: number;
+      preserveMemoryRanges?: ThreadWorkerMemoryPreserveRange[];
       kernelStackSlot: number;
       sabPageCache: SharedArrayBuffer | null;
       runtimeNotify: SharedArrayBuffer;
@@ -98,6 +104,7 @@ export type ThreadWorkerInbound =
       generation: number;
       runtimeEpoch?: number;
       preserveMemoryBytes?: number;
+      preserveMemoryRanges?: ThreadWorkerMemoryPreserveRange[];
       guestWriteWatchRegions?: GuestWriteWatchRegion[];
       kernelState: KernelRuntimeState;
       pipeSlots?: KernelWorkerPipeSlotSnapshot[];

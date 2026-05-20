@@ -10,6 +10,7 @@ import type {
   KernelWorkerRequest,
   KernelWorkerPipeSlotSnapshot,
   GuestMemoryWriteSnapshot,
+  ThreadWorkerMemoryPreserveRange,
 } from "../messages.js";
 import type { RuntimeStateBridge } from "../bridge/runtime-state.js";
 import type { RuntimeNetworkBridge, RuntimeNetworkConnection } from "../network.js";
@@ -187,6 +188,7 @@ export interface AttachThreadWorkerRequest {
   forcePrepare?: boolean;
   transferFrom?: ProcessHandle;
   preserveMemoryBytes?: number;
+  preserveMemoryRanges?: ThreadWorkerMemoryPreserveRange[];
 }
 
 export interface KernelShareGroup {

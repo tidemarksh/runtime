@@ -155,3 +155,44 @@ test("thread-worker prepare snapshot preserves referenced memfs file data beyond
   expect(bytes[memfsDataPtr + 0x120]).toBe(0xbb);
   expect(bytes[memfsDataPtr + 0x190]).toBe(0);
 });
+
+test("thread-worker prepare snapshot can preserve explicit ranges without copying the whole prefix", () => {
+  const memory = new WebAssembly.Memory({ initial: 3, maximum: 3, shared: true });
+  const bytes = new Uint8Array(memory.buffer);
+  const firstRangeStart = 0x4000;
+  const firstRangeEnd = 0x4400;
+  const secondRangeStart = 0x18000;
+  const secondRangeEnd = 0x18800;
+
+  bytes.fill(0x11, 0, firstRangeStart);
+  bytes.fill(0x22, firstRangeStart, firstRangeEnd);
+  bytes.fill(0x33, firstRangeEnd, secondRangeStart);
+  bytes.fill(0x44, secondRangeStart, secondRangeEnd);
+  bytes.fill(0x55, secondRangeEnd);
+
+  const snapshot = snapshotThreadWorkerPrepareMemory(
+    memory,
+    null,
+    makeState(),
+    0,
+    {
+      preserveRanges: [
+        { start: secondRangeStart, end: secondRangeEnd },
+        { start: firstRangeStart, end: firstRangeEnd },
+      ],
+    },
+  );
+
+  bytes.fill(0);
+
+  restoreThreadWorkerPrepareMemory(memory, snapshot);
+
+  expect(bytes[firstRangeStart - 1]).toBe(0);
+  expect(bytes[firstRangeStart]).toBe(0x22);
+  expect(bytes[firstRangeEnd - 1]).toBe(0x22);
+  expect(bytes[firstRangeEnd]).toBe(0);
+  expect(bytes[secondRangeStart - 1]).toBe(0);
+  expect(bytes[secondRangeStart]).toBe(0x44);
+  expect(bytes[secondRangeEnd - 1]).toBe(0x44);
+  expect(bytes[secondRangeEnd]).toBe(0);
+});
