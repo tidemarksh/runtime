@@ -529,8 +529,8 @@ export async function handlePlainFork(
     restoreParentProcessSnapshot(handle, parentThread, parentProcessSnapshot);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     const childMemoryBytes = Math.max(
-      forkMemorySnapshot.endOffset,
-      handle.guestBase + handle.ramSize + FORK_CHILD_EXECVE_HEADROOM_BYTES,
+      forkMemorySnapshot.endOffset + FORK_CHILD_EXECVE_HEADROOM_BYTES,
+      handle.guestBase,
     );
     appendPlainForkMemoryDebug(handle, childPid, forkMemorySnapshot, childMemoryBytes);
     const childMemory = new WebAssembly.Memory({
