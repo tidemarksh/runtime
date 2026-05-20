@@ -62,11 +62,17 @@ export interface ProcessExecutionStats {
   pid: number;
   cmd: string;
   running: boolean;
+  memoryBytes: number;
+  ramSize: number;
+  maxMemoryBytes: number;
+  forkMaxMemoryBytes: number;
+  guestBase: number;
   readyWorkers: number;
   blockedWorkers: number;
   pendingChildExitRecords: number;
   pendingChildSpawnRecords: number;
   activeChildren: number;
+  memoryLogTail: string[];
   memoryVmas: Array<{
     start: string;
     end: string;
@@ -525,11 +531,22 @@ export function debugRuntimeExecutionStats(
         pid: handle.pid,
         cmd: handle.debugCommand,
         running: handle.runningWorker !== null,
+        memoryBytes: handle.memory.buffer.byteLength,
+        ramSize: handle.ramSize,
+        maxMemoryBytes: handle.maxMemoryPages * 65536,
+        forkMaxMemoryBytes: handle.forkMaxMemoryPages * 65536,
+        guestBase: handle.guestBase,
         readyWorkers: handle.readyWorkers.length,
         blockedWorkers: handle.blockedWorkers.size,
         pendingChildExitRecords: handle.pendingChildExitRecords,
         pendingChildSpawnRecords: handle.pendingChildSpawnRecords,
         activeChildren: [...processHandles.values()].filter((candidate) => candidate.parentPid === handle.pid).length,
+        memoryLogTail: handle.workerDebugLog
+          .filter((entry) =>
+            entry.startsWith("memory-state:")
+            || entry.startsWith("plain-fork-memory:")
+          )
+          .slice(-8),
         memoryVmas: readMemoryVmas(handle),
         workers: [...handle.workers]
           .map((worker) => {

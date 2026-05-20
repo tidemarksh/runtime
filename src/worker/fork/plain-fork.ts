@@ -428,6 +428,35 @@ function applyForkMemorySnapshot(snapshot: ForkMemorySnapshot, target: WebAssemb
   }
 }
 
+function forkSnapshotCopiedBytes(snapshot: ForkMemorySnapshot): number {
+  return snapshot.ranges.reduce((total, range) => total + range.bytes.byteLength, 0);
+}
+
+function appendPlainForkMemoryDebug(
+  handle: ProcessHandle,
+  childPid: number,
+  snapshot: ForkMemorySnapshot,
+  childMemoryBytes: number,
+): void {
+  handle.workerDebugLog.push([
+    "plain-fork-memory",
+    `parent=${handle.pid}`,
+    `child=${childPid}`,
+    `parentMemoryBytes=${handle.memory.buffer.byteLength}`,
+    `childInitialBytes=${childMemoryBytes}`,
+    `snapshotRanges=${snapshot.ranges.length}`,
+    `snapshotBytes=${forkSnapshotCopiedBytes(snapshot)}`,
+    `snapshotEnd=${snapshot.endOffset}`,
+    `guestBase=${handle.guestBase}`,
+    `ramSize=${handle.ramSize}`,
+    `maxMemoryBytes=${handle.maxMemoryPages * 65536}`,
+    `forkMaxMemoryBytes=${handle.forkMaxMemoryPages * 65536}`,
+  ].join(":"));
+  if (handle.workerDebugLog.length > 4096) {
+    handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 4096);
+  }
+}
+
 export async function handlePlainFork(
   deps: WorkerForkDeps,
   handle: ProcessHandle,
@@ -503,6 +532,7 @@ export async function handlePlainFork(
       forkMemorySnapshot.endOffset,
       handle.guestBase + handle.ramSize + FORK_CHILD_EXECVE_HEADROOM_BYTES,
     );
+    appendPlainForkMemoryDebug(handle, childPid, forkMemorySnapshot, childMemoryBytes);
     const childMemory = new WebAssembly.Memory({
       initial: Math.ceil(childMemoryBytes / 65536),
       maximum: Math.max(handle.maxMemoryPages, handle.forkMaxMemoryPages),
