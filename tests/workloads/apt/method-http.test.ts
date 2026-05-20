@@ -2331,6 +2331,38 @@ function compactAptExecutionStats(
   })));
 }
 
+function compactAptProcessCounts(
+  stats: ReturnType<Awaited<ReturnType<typeof Runtime.create>>["debugExecutionStats"]>,
+): string {
+  let workers = 0;
+  let readyWorkers = 0;
+  let blockedWorkers = 0;
+  let activeChildren = 0;
+  for (const proc of stats) {
+    workers += proc.workers.length;
+    readyWorkers += proc.readyWorkers;
+    blockedWorkers += proc.blockedWorkers;
+    activeChildren += proc.activeChildren;
+  }
+  return JSON.stringify({
+    processes: stats.length,
+    workers,
+    readyWorkers,
+    blockedWorkers,
+    activeChildren,
+  });
+}
+
+function compactHostMemoryUsage(): string {
+  const usage = process.memoryUsage();
+  return JSON.stringify({
+    rss: usage.rss,
+    heapUsed: usage.heapUsed,
+    external: usage.external,
+    arrayBuffers: usage.arrayBuffers,
+  });
+}
+
 function compactMethodBridgeMetrics(metrics: MethodBridgeMetrics): string {
   return JSON.stringify({
     connections: metrics.connections,
@@ -2378,7 +2410,8 @@ async function collectAptRuntimeObservation(
   startedMs: number,
 ): Promise<string> {
   const atMs = Date.now() - startedMs;
-  const execution = compactAptExecutionStats(runtime.debugExecutionStats());
+  const stats = runtime.debugExecutionStats();
+  const execution = compactAptExecutionStats(stats);
   let pageCacheStats = "unavailable";
   try {
     pageCacheStats = JSON.stringify(await runtime.debugPageCacheStats());
@@ -2389,6 +2422,8 @@ async function collectAptRuntimeObservation(
   return [
     `label=${label}`,
     `atMs=${atMs}`,
+    `hostMemory=${compactHostMemoryUsage()}`,
+    `processCounts=${compactAptProcessCounts(stats)}`,
     `execution=${execution}`,
     `pageCacheStats=${pageCacheStats}`,
     `pageCachePaths=${await describeAptPageCachePaths(runtime)}`,
