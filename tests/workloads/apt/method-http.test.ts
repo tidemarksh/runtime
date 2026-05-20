@@ -2334,6 +2334,7 @@ function compactAptExecutionStats(
     pendingChildSpawnRecords: proc.pendingChildSpawnRecords,
     transferDebugStats: proc.transferDebugStats,
     memoryLogTail: proc.memoryLogTail,
+    cpuDebugStats: proc.cpuDebugStats,
     workers: proc.workers.map((worker) => ({
       ownerState: worker.ownerState,
       stepCount: worker.stepCount,

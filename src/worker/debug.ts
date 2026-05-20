@@ -81,13 +81,39 @@ export interface ProcessExecutionStats {
     prot: number;
     flags: number;
   }>;
+  cpuDebugStats: CpuDebugStats | null;
   workers: WorkerExecutionStats[];
+}
+
+export interface CpuDebugStats {
+  blockHits: string;
+  blockMisses: string;
+  blockBuilds: string;
+  blockBuildFailures: string;
+  blockBuildOps: string;
+  blockBuildBudget: string;
+  blockBudgetSkips: string;
+  blockCacheUnsupported: string;
+  blockExecOps: string;
+  blockExecUnsupported: string;
+  interpreterOps: string;
+  blockBuildOpCounts: Array<{ opId: number; count: string }>;
+  blockExecOpCounts: Array<{ opId: number; count: string }>;
+  interpreterOpCounts: Array<{ opId: number; count: string }>;
+  unsupportedOpCounts: Array<{ opId: number; count: string }>;
 }
 
 const decoder = new TextDecoder();
 
 function formatU64(value: bigint): string {
   return BigInt.asUintN(64, value).toString(16);
+}
+
+function formatU64Decimal(value: bigint | number | undefined): string {
+  if (typeof value === "bigint") {
+    return BigInt.asUintN(64, value).toString(10);
+  }
+  return String(value ?? 0);
 }
 
 function readWorkerOwnerState(
@@ -229,6 +255,44 @@ function collectWorkerStatusTail(
     }
   }
   return out.reverse();
+}
+
+function readCpuDebugStats(handle: ProcessHandle): CpuDebugStats | null {
+  if (!handle.kernel.debug_cpu_profile_block_hits) {
+    return null;
+  }
+  const readCounts = (
+    accessor: ((opId: number) => bigint | number) | undefined,
+  ): Array<{ opId: number; count: string }> => {
+    if (!accessor) {
+      return [];
+    }
+    const counts: Array<{ opId: number; count: string }> = [];
+    for (let opId = 0; opId < 32; opId += 1) {
+      const count = formatU64Decimal(accessor(opId));
+      if (count !== "0") {
+        counts.push({ opId, count });
+      }
+    }
+    return counts;
+  };
+  return {
+    blockHits: formatU64Decimal(handle.kernel.debug_cpu_profile_block_hits()),
+    blockMisses: formatU64Decimal(handle.kernel.debug_cpu_profile_block_misses?.()),
+    blockBuilds: formatU64Decimal(handle.kernel.debug_cpu_profile_block_builds?.()),
+    blockBuildFailures: formatU64Decimal(handle.kernel.debug_cpu_profile_block_build_failures?.()),
+    blockBuildOps: formatU64Decimal(handle.kernel.debug_cpu_profile_block_build_ops?.()),
+    blockBuildBudget: formatU64Decimal(handle.kernel.debug_cpu_profile_block_build_budget?.()),
+    blockBudgetSkips: formatU64Decimal(handle.kernel.debug_cpu_profile_block_budget_skips?.()),
+    blockCacheUnsupported: formatU64Decimal(handle.kernel.debug_cpu_profile_block_cache_unsupported?.()),
+    blockExecOps: formatU64Decimal(handle.kernel.debug_cpu_profile_block_exec_ops?.()),
+    blockExecUnsupported: formatU64Decimal(handle.kernel.debug_cpu_profile_block_exec_unsupported?.()),
+    interpreterOps: formatU64Decimal(handle.kernel.debug_cpu_profile_interpreter_ops?.()),
+    blockBuildOpCounts: readCounts(handle.kernel.debug_cpu_profile_block_build_op_count),
+    blockExecOpCounts: readCounts(handle.kernel.debug_cpu_profile_block_exec_op_count),
+    interpreterOpCounts: readCounts(handle.kernel.debug_cpu_profile_interpreter_op_count),
+    unsupportedOpCounts: readCounts(handle.kernel.debug_cpu_profile_unsupported_op_count),
+  };
 }
 
 function isSuspiciousLowStateWorkerLogEntry(entry: string | null): boolean {
@@ -551,6 +615,7 @@ export function debugRuntimeExecutionStats(
           )
           .slice(-8),
         memoryVmas: readMemoryVmas(handle),
+        cpuDebugStats: readCpuDebugStats(handle),
         workers: [...handle.workers]
           .map((worker) => {
             const state = threadWorkerStates.get(worker);
