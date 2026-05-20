@@ -72,6 +72,7 @@ type MethodBridgeMetrics = {
   responseChunks: number;
   packageResponseBytes: number;
   packageResponseChunks: number;
+  packageResponsesCompleted: number;
   maxReadRequestBytes: number;
 };
 
@@ -1959,6 +1960,32 @@ function createAsyncMethodNetworkBridge(
       let responseBytes: Uint8Array | null = null;
       let responseOffset = 0;
       let responseTarget = "";
+      let responseCompleteRecorded = false;
+      const recordResponseChunk = (chunkLength: number): void => {
+        if (!metrics) {
+          return;
+        }
+        metrics.readBytes += chunkLength;
+        metrics.responseChunks += 1;
+        if (isPackageIndexTarget(responseTarget)) {
+          metrics.packageResponseBytes += chunkLength;
+          metrics.packageResponseChunks += 1;
+        }
+      };
+      const recordResponseComplete = (): void => {
+        if (
+          !metrics
+          || responseCompleteRecorded
+          || !responseBytes
+          || responseOffset < responseBytes.length
+        ) {
+          return;
+        }
+        responseCompleteRecorded = true;
+        if (isPackageIndexTarget(responseTarget)) {
+          metrics.packageResponsesCompleted += 1;
+        }
+      };
       const connection: RuntimeNetworkConnection = {
         write(data) {
           if (metrics) {
@@ -1981,14 +2008,8 @@ function createAsyncMethodNetworkBridge(
           if (responseBytes !== null && responseOffset < responseBytes.length) {
             const chunk = responseBytes.subarray(responseOffset, responseOffset + maxBytes);
             responseOffset += chunk.length;
-            if (metrics) {
-              metrics.readBytes += chunk.length;
-              metrics.responseChunks += 1;
-              if (isPackageIndexTarget(responseTarget)) {
-                metrics.packageResponseBytes += chunk.length;
-                metrics.packageResponseChunks += 1;
-              }
-            }
+            recordResponseChunk(chunk.length);
+            recordResponseComplete();
             record(`read:chunk:${chunk.length}:${responseOffset}/${responseBytes.length}`);
             return chunk;
           }
@@ -2007,17 +2028,12 @@ function createAsyncMethodNetworkBridge(
           const targets = extractHttpGetTargets([requestText]);
           responseTarget = targets[targets.length - 1] ?? "";
           responseBytes = serializeHttpResponse(selectResponseBody(requestText));
+          responseCompleteRecorded = false;
           await new Promise((resolveDone) => setTimeout(resolveDone, 1));
           const chunk = responseBytes.subarray(0, maxBytes);
           responseOffset = chunk.length;
-          if (metrics) {
-            metrics.readBytes += chunk.length;
-            metrics.responseChunks += 1;
-            if (isPackageIndexTarget(responseTarget)) {
-              metrics.packageResponseBytes += chunk.length;
-              metrics.packageResponseChunks += 1;
-            }
-          }
+          recordResponseChunk(chunk.length);
+          recordResponseComplete();
           record(`read:response:${chunk.length}:${responseOffset}/${responseBytes.length}`);
           return chunk;
         },
@@ -2172,13 +2188,14 @@ async function waitForPackageIndexRequestCount(
   timeoutMs: number,
 ): Promise<void> {
   const started = Date.now();
+  const exitPromise = proc.waitForExit();
   while (Date.now() - started < timeoutMs) {
     const targets = extractHttpGetTargets(requests);
     if (targets.filter(isPackageIndexTarget).length >= count) {
       return;
     }
     const exitCode = await Promise.race([
-      proc.waitForExit(),
+      exitPromise,
       new Promise<null>((resolveDone) => setTimeout(() => resolveDone(null), 25)),
     ]);
     if (exitCode !== null) {
@@ -2186,6 +2203,38 @@ async function waitForPackageIndexRequestCount(
     }
   }
   throw new Error(`timeout waiting for package index request count ${count}: targets=${JSON.stringify(extractHttpGetTargets(requests))}`);
+}
+
+async function waitForPackageResponseCompleteCount(
+  metrics: MethodBridgeMetrics,
+  proc: Awaited<ReturnType<Awaited<ReturnType<typeof Runtime.create>>["spawn"]>>,
+  count: number,
+  timeoutMs: number,
+): Promise<void> {
+  const started = Date.now();
+  const exitPromise = proc.waitForExit();
+  while (Date.now() - started < timeoutMs) {
+    if (metrics.packageResponsesCompleted >= count) {
+      return;
+    }
+    const exitCode = await Promise.race([
+      exitPromise,
+      new Promise<null>((resolveDone) => setTimeout(() => resolveDone(null), 25)),
+    ]);
+    if (metrics.packageResponsesCompleted >= count) {
+      return;
+    }
+    if (exitCode !== null) {
+      throw new Error(
+        `process exited before package response complete count ${count}: `
+        + `exit=${exitCode} completed=${metrics.packageResponsesCompleted}`,
+      );
+    }
+  }
+  throw new Error(
+    `timeout waiting for package response complete count ${count}: `
+    + `completed=${metrics.packageResponsesCompleted}`,
+  );
 }
 
 function createMethodBridgeMetrics(): MethodBridgeMetrics {
@@ -2198,6 +2247,7 @@ function createMethodBridgeMetrics(): MethodBridgeMetrics {
     responseChunks: 0,
     packageResponseBytes: 0,
     packageResponseChunks: 0,
+    packageResponsesCompleted: 0,
     maxReadRequestBytes: 0,
   };
 }
@@ -2836,6 +2886,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
 
   let output = "";
   let secondPackageObservation = "not-observed";
+  let afterSecondPackageResponseObservation = "not-observed";
   const started = Date.now();
   try {
     const proc = await runtime.spawn(
@@ -2904,6 +2955,29 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `finalPackagesXz=${await describeGuestFileBrief(runtime, aptFinalPackagesXzFilename)}`,
         `debug=${JSON.stringify(compactAptRuntimeDebug(debugSummary))}`,
       ].join(" ");
+      await waitForPackageResponseCompleteCount(metrics, proc, 2, asyncDoneTimeoutMs).catch(async (error) => {
+        const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+        throw new Error([
+          detail,
+          `targets=${JSON.stringify(extractHttpGetTargets(guestRequests))}`,
+          `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
+          `metrics=${JSON.stringify(metrics)}`,
+          `output=${JSON.stringify(output)}`,
+          `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+          `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
+          `secondPackageObservation=${secondPackageObservation}`,
+          `debug=${await runtimeDebugSummary(runtime)}`,
+          `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
+        ].join("\n"));
+      });
+      const afterResponseDebugSummary = await runtimeDebugSummary(runtime);
+      afterSecondPackageResponseObservation = [
+        `atMs=${Date.now() - started}`,
+        `completed=${metrics.packageResponsesCompleted}`,
+        `partialPackagesXz=${await describeGuestFileBrief(runtime, aptPartialPackagesXzFilename)}`,
+        `finalPackagesXz=${await describeGuestFileBrief(runtime, aptFinalPackagesXzFilename)}`,
+        `debug=${JSON.stringify(compactAptRuntimeDebug(afterResponseDebugSummary))}`,
+      ].join(" ");
     }
 
     const exitCode = await Promise.race([
@@ -2923,6 +2997,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `partialInRelease=${await describeGuestFile(runtime, methodAcquireFilename)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
         `secondPackageObservation=${secondPackageObservation}`,
+        `afterSecondPackageResponseObservation=${afterSecondPackageResponseObservation}`,
         `finalInRelease=${await describeGuestFile(runtime, aptFinalInReleaseFilename)}`,
         `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
         `debug=${await runtimeDebugSummary(runtime)}`,
@@ -2942,6 +3017,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `partialInRelease=${await describeGuestFile(runtime, methodAcquireFilename)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
         `secondPackageObservation=${secondPackageObservation}`,
+        `afterSecondPackageResponseObservation=${afterSecondPackageResponseObservation}`,
         `finalInRelease=${await describeGuestFile(runtime, aptFinalInReleaseFilename)}`,
         `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
       ].join("\n"),
@@ -2968,8 +3044,10 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
       `bridgeChunks=${metrics.responseChunks}`,
       `bridgePackageBytes=${metrics.packageResponseBytes}`,
       `bridgePackageChunks=${metrics.packageResponseChunks}`,
+      `bridgePackageResponsesCompleted=${metrics.packageResponsesCompleted}`,
       `bridgeMaxReadRequestBytes=${metrics.maxReadRequestBytes}`,
       `secondPackageObservation=${secondPackageObservation}`,
+      `afterSecondPackageResponseObservation=${afterSecondPackageResponseObservation}`,
       `partialPackagesXz=${await describeGuestFileBrief(runtime, aptPartialPackagesXzFilename)}`,
       `finalPackagesXz=${await describeGuestFileBrief(runtime, aptFinalPackagesXzFilename)}`,
     ].join(" "));
