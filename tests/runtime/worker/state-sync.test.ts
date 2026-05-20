@@ -1,6 +1,7 @@
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../src/bridge/pipe.js";
 import { createWorkerSchedulerStateSyncHelpers } from "../../../src/worker/scheduler/state-sync.js";
+import { createTransferDebugStats } from "../../../src/worker/types.js";
 
 function makeHandle(overrides: Record<string, unknown> = {}) {
   let runtimeState = {
@@ -155,6 +156,7 @@ function makeHandle(overrides: Record<string, unknown> = {}) {
     networkRecvHeadWatermarks: new Map(),
     networkRecvTailWatermarks: new Map(),
     networkRecvPayloadWatermarks: new Map(),
+    transferDebugStats: createTransferDebugStats(),
     vforkSnapshot: null,
     vforkWorker: null,
     ...overrides,
