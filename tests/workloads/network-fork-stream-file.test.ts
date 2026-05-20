@@ -17,6 +17,7 @@ const runForkStreamFileGate = process.env.TIDEMARK_TEST_FORK_STREAM_FILE_GATE ==
 const streamBodyBytes = Number(process.env.TIDEMARK_TEST_FORK_STREAM_FILE_BYTES ?? 2 * 1024 * 1024);
 const streamReadBufferBytes = Number(process.env.TIDEMARK_TEST_FORK_STREAM_FILE_READ_BUFFER_BYTES ?? 8192);
 const streamTimeoutMs = Number(process.env.TIDEMARK_TEST_FORK_STREAM_FILE_TIMEOUT_MS ?? 150_000);
+const streamAsyncBridge = process.env.TIDEMARK_TEST_FORK_STREAM_FILE_ASYNC_BRIDGE === "1";
 
 function buildForkStreamFileProbe(): { parent: Uint8Array; child: Uint8Array } | null {
   const tmp = mkdtempSync(join(tmpdir(), "tidemark-network-fork-stream-file-"));
@@ -250,7 +251,7 @@ function buildPayload(length: number): { bytes: Uint8Array; checksum: bigint } {
   return { bytes, checksum };
 }
 
-function createStreamFileBridge(body: Uint8Array): {
+function createStreamFileBridge(body: Uint8Array, asyncBridge = false): {
   bridge: RuntimeNetworkBridge;
   requests: string[];
   readChunks: number[];
@@ -274,6 +275,23 @@ function createStreamFileBridge(body: Uint8Array): {
       }
       let sawRequest = false;
       let offset = 0;
+      let pendingRead: {
+        resolve(): void;
+        timer: ReturnType<typeof setTimeout>;
+      } | null = null;
+      const readNext = (maxBytes: number): Uint8Array | null | undefined => {
+        if (!sawRequest) {
+          return undefined;
+        }
+        if (offset >= body.length) {
+          return null;
+        }
+        const chunk = body.subarray(offset, Math.min(body.length, offset + maxBytes));
+        offset += chunk.length;
+        readChunks.push(chunk.length);
+        metrics.readBytes += chunk.length;
+        return chunk;
+      };
       const connection: RuntimeNetworkConnection = {
         write(data) {
           const request = decoder.decode(data);
@@ -281,22 +299,34 @@ function createStreamFileBridge(body: Uint8Array): {
           if (request.includes("GET ")) {
             sawRequest = true;
           }
-        },
-        read(maxBytes) {
-          metrics.readCalls += 1;
-          metrics.maxReadRequestBytes = Math.max(metrics.maxReadRequestBytes, maxBytes);
-          if (!sawRequest) {
-            return undefined;
+          if (pendingRead) {
+            clearTimeout(pendingRead.timer);
+            pendingRead.resolve();
           }
-          if (offset >= body.length) {
-            return null;
-          }
-          const chunk = body.subarray(offset, Math.min(body.length, offset + maxBytes));
-          offset += chunk.length;
-          readChunks.push(chunk.length);
-          metrics.readBytes += chunk.length;
-          return chunk;
+          pendingRead = null;
         },
+        read: asyncBridge
+          ? async (maxBytes) => {
+              metrics.readCalls += 1;
+              metrics.maxReadRequestBytes = Math.max(metrics.maxReadRequestBytes, maxBytes);
+              if (!sawRequest) {
+                await new Promise<void>((resolveDone) => {
+                  const timer = setTimeout(() => {
+                    if (pendingRead?.resolve === resolveDone) {
+                      pendingRead = null;
+                    }
+                    resolveDone();
+                  }, 100);
+                  pendingRead = { resolve: resolveDone, timer };
+                });
+              }
+              return readNext(maxBytes);
+            }
+          : (maxBytes) => {
+              metrics.readCalls += 1;
+              metrics.maxReadRequestBytes = Math.max(metrics.maxReadRequestBytes, maxBytes);
+              return readNext(maxBytes);
+            },
         close() {},
       };
       return { connection };
@@ -320,7 +350,7 @@ test("network fork stream file local gate: exec child writes socket body while p
   }
 
   const payload = buildPayload(streamBodyBytes);
-  const { bridge, requests, readChunks, metrics } = createStreamFileBridge(payload.bytes);
+  const { bridge, requests, readChunks, metrics } = createStreamFileBridge(payload.bytes, streamAsyncBridge);
   const runtime = await Runtime.create({ wasmBytes, networkBridge: bridge });
   try {
     await runtime.writeFile("/work/socket-file-child", probeBytes.child, 0o755);
@@ -360,6 +390,7 @@ test("network fork stream file local gate: exec child writes socket body while p
     expect(metrics.readBytes).toBe(payload.bytes.length);
     console.log([
       `network fork stream file metrics durationMs=${Date.now() - started}`,
+      `asyncBridge=${streamAsyncBridge ? 1 : 0}`,
       `childReadCalls=${result.output.match(/read_calls=([0-9]+)/)?.[1] ?? "unknown"}`,
       `childSocketBytes=${result.output.match(/socket_bytes=([0-9]+)/)?.[1] ?? "unknown"}`,
       `parentPselectCalls=${result.output.match(/pselect_calls=([0-9]+)/)?.[1] ?? "unknown"}`,
