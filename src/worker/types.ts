@@ -92,6 +92,42 @@ export interface RuntimeFsState {
   entries: FsSnapshotEntry[];
 }
 
+export interface TransferDebugStats {
+  fsResumeCalls: number;
+  fsKernelWorkerCalls: number;
+  fsLocalCalls: number;
+  fsReadCalls: number;
+  fsReadBytes: number;
+  fsWriteCalls: number;
+  fsWriteBytes: number;
+  packagePathWriteCalls: number;
+  packagePathWriteBytes: number;
+  memfsMutationOps: number;
+  memfsFileDataOps: number;
+  pageCachePublishCandidates: number;
+  pageCachePublishCalls: number;
+  forkSharedMemfsSyncCalls: number;
+}
+
+export function createTransferDebugStats(): TransferDebugStats {
+  return {
+    fsResumeCalls: 0,
+    fsKernelWorkerCalls: 0,
+    fsLocalCalls: 0,
+    fsReadCalls: 0,
+    fsReadBytes: 0,
+    fsWriteCalls: 0,
+    fsWriteBytes: 0,
+    packagePathWriteCalls: 0,
+    packagePathWriteBytes: 0,
+    memfsMutationOps: 0,
+    memfsFileDataOps: 0,
+    pageCachePublishCandidates: 0,
+    pageCachePublishCalls: 0,
+    forkSharedMemfsSyncCalls: 0,
+  };
+}
+
 export interface CanonicalizedChildLifecycle {
   childPid: number;
   nextPid: number;
@@ -179,6 +215,7 @@ export interface ProcessHandle {
   onError?: (error: Error) => void;
   onStdout?: (data: Uint8Array) => void;
   workerDebugLog: string[];
+  transferDebugStats: TransferDebugStats;
   guestWriteWatchRegions: GuestWriteWatchRegion[];
 }
 

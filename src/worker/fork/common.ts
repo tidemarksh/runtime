@@ -1,6 +1,7 @@
 import { createRuntimeStateBridge } from "../../bridge/runtime-state.js";
 import { createInheritedErrorSink, retainSharedHostStdio } from "../stdio.js";
 import type { KernelExports } from "../../abi.js";
+import { createTransferDebugStats } from "../types.js";
 import type { ProcessHandle } from "../types.js";
 import type { WorkerForkDeps } from "./types.js";
 
@@ -128,6 +129,7 @@ export function createForkChildHandle({
       deps.failProcess,
     ),
     workerDebugLog: [],
+    transferDebugStats: createTransferDebugStats(),
     guestWriteWatchRegions: parent.guestWriteWatchRegions.map((region) => ({ ...region })),
   };
 }

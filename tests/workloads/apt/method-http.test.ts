@@ -67,6 +67,7 @@ type MethodHttpResponse = Uint8Array | {
 };
 type MethodResponseSelector = (request: string) => MethodHttpResponse;
 type MethodBridgeMetrics = {
+  startedAtMs: number;
   connections: number;
   writes: number;
   emptyReads: number;
@@ -76,6 +77,9 @@ type MethodBridgeMetrics = {
   packageResponseBytes: number;
   packageResponseChunks: number;
   packageResponsesCompleted: number;
+  firstPackageResponseChunkAtMs: number;
+  lastPackageResponseChunkAtMs: number;
+  firstPackageResponseCompleteAtMs: number;
   maxReadRequestBytes: number;
 };
 
@@ -2076,9 +2080,14 @@ function createAsyncMethodNetworkBridge(
         if (!metrics) {
           return;
         }
+        const nowMs = Date.now();
         metrics.readBytes += chunkLength;
         metrics.responseChunks += 1;
         if (isPackageIndexTarget(responseTarget)) {
+          if (metrics.firstPackageResponseChunkAtMs < 0) {
+            metrics.firstPackageResponseChunkAtMs = nowMs;
+          }
+          metrics.lastPackageResponseChunkAtMs = nowMs;
           metrics.packageResponseBytes += chunkLength;
           metrics.packageResponseChunks += 1;
         }
@@ -2095,6 +2104,9 @@ function createAsyncMethodNetworkBridge(
         responseCompleteRecorded = true;
         if (isPackageIndexTarget(responseTarget)) {
           metrics.packageResponsesCompleted += 1;
+          if (metrics.firstPackageResponseCompleteAtMs < 0) {
+            metrics.firstPackageResponseCompleteAtMs = Date.now();
+          }
         }
       };
       const connection: RuntimeNetworkConnection = {
@@ -2318,6 +2330,7 @@ function compactAptExecutionStats(
     activeChildren: proc.activeChildren,
     pendingChildExitRecords: proc.pendingChildExitRecords,
     pendingChildSpawnRecords: proc.pendingChildSpawnRecords,
+    transferDebugStats: proc.transferDebugStats,
     memoryLogTail: proc.memoryLogTail,
     workers: proc.workers.map((worker) => ({
       ownerState: worker.ownerState,
@@ -2370,6 +2383,7 @@ function compactHostMemoryUsage(): string {
 }
 
 function compactMethodBridgeMetrics(metrics: MethodBridgeMetrics): string {
+  const relativeMs = (value: number): number => value < 0 ? -1 : value - metrics.startedAtMs;
   return JSON.stringify({
     connections: metrics.connections,
     writes: metrics.writes,
@@ -2380,6 +2394,9 @@ function compactMethodBridgeMetrics(metrics: MethodBridgeMetrics): string {
     packageResponseBytes: metrics.packageResponseBytes,
     packageResponseChunks: metrics.packageResponseChunks,
     packageResponsesCompleted: metrics.packageResponsesCompleted,
+    firstPackageResponseChunkAtMs: relativeMs(metrics.firstPackageResponseChunkAtMs),
+    lastPackageResponseChunkAtMs: relativeMs(metrics.lastPackageResponseChunkAtMs),
+    firstPackageResponseCompleteAtMs: relativeMs(metrics.firstPackageResponseCompleteAtMs),
     maxReadRequestBytes: metrics.maxReadRequestBytes,
   });
 }
@@ -2542,6 +2559,7 @@ async function waitForPackageResponseCompleteCount(
 
 function createMethodBridgeMetrics(): MethodBridgeMetrics {
   return {
+    startedAtMs: Date.now(),
     connections: 0,
     writes: 0,
     emptyReads: 0,
@@ -2551,6 +2569,9 @@ function createMethodBridgeMetrics(): MethodBridgeMetrics {
     packageResponseBytes: 0,
     packageResponseChunks: 0,
     packageResponsesCompleted: 0,
+    firstPackageResponseChunkAtMs: -1,
+    lastPackageResponseChunkAtMs: -1,
+    firstPackageResponseCompleteAtMs: -1,
     maxReadRequestBytes: 0,
   };
 }
@@ -3464,6 +3485,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
   let afterSecondPackageResponseObservation = "not-observed";
   let exitRuntimeObservation = "not-observed";
   const started = Date.now();
+  metrics.startedAtMs = started;
   try {
     const proc = await runtime.spawn(
       aptGetElf,
@@ -3529,6 +3551,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `storeMethod=${await describeGuestFile(runtime, "/usr/lib/apt/methods/store")}`,
         `storeLoader=${await describeGuestFile(runtime, "/lib/ld-linux-riscv64-lp64d.so.1")}`,
         `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
+        `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
         `debug=${await runtimeDebugSummary(runtime)}`,
         `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
       ].join("\n"));

@@ -25,6 +25,7 @@ import type {
 
 const FS_DEBUG_PATH_BUF_LEN = 4096;
 const GUEST_TICKS_PER_SEC = 100_000_000n;
+const FS_OP_READ = 1;
 const FS_OP_WRITE = 2;
 const FS_RING_SUBMIT_HEAD_OFFSET = 0;
 const FS_RING_SUBMIT_TAIL_OFFSET = 4;
@@ -1049,6 +1050,57 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     return typeof result === "bigint" ? result : BigInt(result);
   }
 
+  function isPackageIndexTransferPath(path: string | null): boolean {
+    return path?.includes("_Packages.xz") === true || path?.endsWith("/Packages") === true;
+  }
+
+  function recordFsTransferStats(
+    handle: ProcessHandle,
+    pendingFs: PendingFsContext,
+    fsResult: bigint | number,
+    fsSucceeded: boolean,
+    fsEffects: { memfsMutation: number; memfsFileData: number; sharedOfdState: number },
+    viaKernelWorker: boolean,
+    memfsPublishReady: boolean,
+  ): void {
+    const stats = handle.transferDebugStats;
+    stats.fsResumeCalls += 1;
+    if (viaKernelWorker) {
+      stats.fsKernelWorkerCalls += 1;
+    } else {
+      stats.fsLocalCalls += 1;
+    }
+    if (!fsSucceeded) {
+      return;
+    }
+
+    if ((pendingFs.effects & fsEffects.memfsMutation) !== 0) {
+      stats.memfsMutationOps += 1;
+    }
+    if ((pendingFs.effects & fsEffects.memfsFileData) !== 0) {
+      stats.memfsFileDataOps += 1;
+    }
+    if (memfsPublishReady) {
+      stats.pageCachePublishCandidates += 1;
+    }
+
+    const byteCount = Number(BigInt.asIntN(64, normalizeFsResult(fsResult)));
+    if (!Number.isFinite(byteCount) || byteCount <= 0) {
+      return;
+    }
+    if (pendingFs.opcode === FS_OP_READ) {
+      stats.fsReadCalls += 1;
+      stats.fsReadBytes += byteCount;
+    } else if (pendingFs.opcode === FS_OP_WRITE) {
+      stats.fsWriteCalls += 1;
+      stats.fsWriteBytes += byteCount;
+      if (isPackageIndexTransferPath(pendingFs.path)) {
+        stats.packagePathWriteCalls += 1;
+        stats.packagePathWriteBytes += byteCount;
+      }
+    }
+  }
+
   function fsResultIsPending(handle: ProcessHandle, vmPtr: number, fsResult: bigint | number): boolean {
     const result = Number(BigInt.asIntN(64, normalizeFsResult(fsResult)));
     const eagain = handle.kernel.abi_eagain?.() ?? 11;
@@ -1212,11 +1264,14 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
       const memfsMutated = fsSucceeded && (memfsStateMayChange || pendingRingRequest);
       const memfsPublishReady = fsSucceeded && memfsPublishMayBeReady;
       const ofdStateChanged = fsSucceeded && (ofdStateMayChange || pendingRingRequest);
+      recordFsTransferStats(handle, pendingFs, fsResult, fsSucceeded, fsEffects, false, memfsPublishReady);
       const postFsRingProgress = snapshotFsRingProgress(handle, vmPtr);
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       if (memfsMutated) {
         handle.processMemfsDirty = true;
         if (memfsPublishReady) {
+          handle.transferDebugStats.pageCachePublishCalls += 1;
+          handle.transferDebugStats.forkSharedMemfsSyncCalls += 1;
           deps.syncForkSharedStateLocally(handle, kernelShareOtherMembers(handle));
         }
         deps.markRuntimeFsDirty(handle);
@@ -1279,6 +1334,7 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
             && member.runningWorker === null
             && members.indexOf(member) === index
           ));
+        peer.transferDebugStats.forkSharedMemfsSyncCalls += 1;
         await deps.syncForkSharedStateViaKernelWorker(peer, targets, {
           includeMemfs: true,
           memfsOnly: true,
@@ -1308,6 +1364,7 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
       const memfsMutated = processFsResponse.memfsMutated || (fsSucceeded && (memfsStateMayChange || pendingRingRequest));
       const memfsPublishReady = fsSucceeded && memfsPublishMayBeReady;
       const ofdStateChanged = processFsResponse.ofdStateChanged || (fsSucceeded && (ofdStateMayChange || pendingRingRequest));
+      recordFsTransferStats(handle, pendingFs, fsResult, fsSucceeded, fsEffects, true, memfsPublishReady);
       const postFsRingProgress = snapshotFsRingProgress(handle, vmPtr);
       const postFsFdState = snapshotFsFdState(handle, vmPtr);
       handle.kernelState = readKernelRuntimeState(handle.kernel);
@@ -1347,6 +1404,8 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
             // MemFS publication must not fan out OFD slots: during fork/exec
             // a child may not hold the parent's pipe OFDs, and copying those
             // slots from the child clears the parent's standard streams.
+            handle.transferDebugStats.pageCachePublishCalls += 1;
+            handle.transferDebugStats.forkSharedMemfsSyncCalls += 1;
             await deps.syncForkSharedStateViaKernelWorker(
               handle,
               syncTargets,

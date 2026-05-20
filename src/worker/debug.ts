@@ -1,6 +1,7 @@
 import type {
   ProcessHandle,
   ThreadWorkerState,
+  TransferDebugStats,
 } from "./types.js";
 
 const NET_BUFFER_HEADER_BYTES = 16;
@@ -72,6 +73,7 @@ export interface ProcessExecutionStats {
   pendingChildExitRecords: number;
   pendingChildSpawnRecords: number;
   activeChildren: number;
+  transferDebugStats: TransferDebugStats;
   memoryLogTail: string[];
   memoryVmas: Array<{
     start: string;
@@ -541,6 +543,7 @@ export function debugRuntimeExecutionStats(
         pendingChildExitRecords: handle.pendingChildExitRecords,
         pendingChildSpawnRecords: handle.pendingChildSpawnRecords,
         activeChildren: [...processHandles.values()].filter((candidate) => candidate.parentPid === handle.pid).length,
+        transferDebugStats: { ...handle.transferDebugStats },
         memoryLogTail: handle.workerDebugLog
           .filter((entry) =>
             entry.startsWith("memory-state:")
