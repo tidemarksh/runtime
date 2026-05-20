@@ -348,6 +348,134 @@ function buildDynamicForkLargeWriteLoaderProbe(): Uint8Array | null {
   }
 }
 
+function buildDynamicExecFanoutLargeWriteLoaderProbe(): Uint8Array | null {
+  const tmp = mkdtempSync(join(tmpdir(), "tidemark-dynamic-exec-fanout-large-write-loader-"));
+  const sourcePath = join(tmp, "dynamic_exec_fanout_large_write_loader.c");
+  const outputPath = join(tmp, "dynamic-exec-fanout-large-write-loader");
+  try {
+    writeFileSync(sourcePath, [
+      "#include <errno.h>",
+      "#include <fcntl.h>",
+      "#include <stdio.h>",
+      "#include <stdlib.h>",
+      "#include <string.h>",
+      "#include <sys/wait.h>",
+      "#include <unistd.h>",
+      "",
+      "#define WRITE_CHUNK 245760",
+      "",
+      "extern char **environ;",
+      "",
+      "static int read_loader_magic(const char *label) {",
+      "  int fd = open(\"/lib/ld-linux-riscv64-lp64d.so.1\", O_RDONLY);",
+      "  if (fd < 0) { perror(label); return 10; }",
+      "  unsigned char magic[4] = {0, 0, 0, 0};",
+      "  ssize_t n = read(fd, magic, sizeof(magic));",
+      "  close(fd);",
+      "  if (n != 4 || magic[0] != 0x7f || magic[1] != 'E' || magic[2] != 'L' || magic[3] != 'F') {",
+      "    fprintf(stdout, \"%s:not-elf:%02x%02x%02x%02x\\n\", label, magic[0], magic[1], magic[2], magic[3]);",
+      "    fflush(stdout);",
+      "    return 11;",
+      "  }",
+      "  fprintf(stdout, \"%s:elf\\n\", label);",
+      "  fflush(stdout);",
+      "  return 0;",
+      "}",
+      "",
+      "static int write_all(int fd, const unsigned char *data, size_t len) {",
+      "  size_t off = 0;",
+      "  while (off < len) {",
+      "    ssize_t n = write(fd, data + off, len - off);",
+      "    if (n < 0) { if (errno == EINTR) continue; return -1; }",
+      "    if (n == 0) return -1;",
+      "    off += (size_t)n;",
+      "  }",
+      "  return 0;",
+      "}",
+      "",
+      "static int write_large_file(unsigned long long total) {",
+      "  int fd = open(\"/var/lib/apt/lists/partial/repro_Packages.xz\", O_CREAT | O_TRUNC | O_WRONLY, 0644);",
+      "  if (fd < 0) { perror(\"open-large-file\"); return 20; }",
+      "  static unsigned char buf[WRITE_CHUNK];",
+      "  unsigned long long written = 0;",
+      "  while (written < total) {",
+      "    size_t chunk = (size_t)((total - written) < WRITE_CHUNK ? (total - written) : WRITE_CHUNK);",
+      "    for (size_t i = 0; i < chunk; i++) {",
+      "      buf[i] = (unsigned char)(((written + (unsigned long long)i) * 13ull + 19ull) & 0xffu);",
+      "    }",
+      "    if (write_all(fd, buf, chunk) != 0) { perror(\"write-large-file\"); close(fd); return 21; }",
+      "    written += (unsigned long long)chunk;",
+      "  }",
+      "  if (close(fd) != 0) { perror(\"close-large-file\"); return 22; }",
+      "  fprintf(stdout, \"writer-large-write:bytes=%llu\\n\", written);",
+      "  fflush(stdout);",
+      "  return written == total ? 0 : 23;",
+      "}",
+      "",
+      "static int wait_child(pid_t child, const char *label) {",
+      "  int status = 0;",
+      "  if (waitpid(child, &status, 0) < 0) { perror(label); return 30; }",
+      "  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {",
+      "    fprintf(stdout, \"%s-status:%d\\n\", label, status);",
+      "    fflush(stdout);",
+      "    return 31;",
+      "  }",
+      "  return 0;",
+      "}",
+      "",
+      "static int fork_exec(const char *mode, const char *total) {",
+      "  pid_t child = fork();",
+      "  if (child < 0) { perror(\"fork-exec\"); return 40; }",
+      "  if (child == 0) {",
+      "    char *const args[] = { \"/work/apt-fanout-loader-probe\", (char *)mode, (char *)total, NULL };",
+      "    execve(\"/work/apt-fanout-loader-probe\", args, environ);",
+      "    perror(\"execve-fanout-probe\");",
+      "    _exit(127);",
+      "  }",
+      "  return wait_child(child, mode);",
+      "}",
+      "",
+      "int main(int argc, char **argv) {",
+      "  const char *total_arg = argc > 2 ? argv[2] : \"9379800\";",
+      "  unsigned long long total = strtoull(total_arg, NULL, 10);",
+      "  if (argc > 1 && strcmp(argv[1], \"--writer\") == 0) {",
+      "    int before = read_loader_magic(\"writer-before-large-write\");",
+      "    if (before != 0) return before;",
+      "    int written = write_large_file(total);",
+      "    if (written != 0) return written;",
+      "    return read_loader_magic(\"writer-after-large-write\");",
+      "  }",
+      "  if (argc > 1 && strcmp(argv[1], \"--loader-check\") == 0) {",
+      "    return read_loader_magic(\"post-writer-exec-loader-check\");",
+      "  }",
+      "  int before = read_loader_magic(\"driver-before-writer\");",
+      "  if (before != 0) return before;",
+      "  int writer = fork_exec(\"--writer\", total_arg);",
+      "  if (writer != 0) return writer;",
+      "  int after_writer = read_loader_magic(\"driver-after-writer-exit\");",
+      "  if (after_writer != 0) return after_writer;",
+      "  int checker = fork_exec(\"--loader-check\", total_arg);",
+      "  if (checker != 0) return checker;",
+      "  return read_loader_magic(\"driver-after-loader-check\");",
+      "}",
+      "",
+    ].join("\n"));
+    execFileSync(hostRiscvGcc, [
+      "-O2",
+      "-Wl,--dynamic-linker=/lib/ld-linux-riscv64-lp64d.so.1",
+      "-o",
+      outputPath,
+      sourcePath,
+    ], { stdio: "pipe" });
+    return new Uint8Array(readFileSync(outputPath));
+  } catch (error) {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    return logSkip(`failed to build dynamic exec fanout large write loader probe with ${hostRiscvGcc}: ${detail}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 test("plain fork preserves page-cache-backed large snapshot file reads", async () => {
   const wasmBytes = readKernelWasm();
   if (!wasmBytes) {
@@ -461,6 +589,77 @@ test("dynamic fork large regular-file write preserves loader bytes", async () =>
     expect(result.output).toContain("child-before-large-write:elf");
     expect(result.output).toContain("child-after-large-write:elf");
     expect(result.output).toContain("parent-after-large-write:elf");
+  } finally {
+    runtime.destroy();
+  }
+});
+
+test("dynamic exec fanout large regular-file write preserves loader bytes", async () => {
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return;
+  }
+  const probeBytes = buildDynamicExecFanoutLargeWriteLoaderProbe();
+  if (!probeBytes) {
+    return;
+  }
+  const loader = findLibrary("ld-linux-riscv64-lp64d.so.1");
+  const libc = findLibrary("libc.so.6");
+  if (!loader || !libc) {
+    return logSkip("missing dynamic loader/libc root: set TIDEMARK_TEST_APT_METHOD_LIBRARY_ROOTS");
+  }
+
+  const runtime = await Runtime.create({
+    wasmBytes,
+    ramSize: 256 * 1024 * 1024,
+    maxProcessMemoryPages: 16384,
+  });
+  try {
+    await runtime.applyFsSnapshot([
+      { kind: "dir", path: "/var/lib/apt/lists/partial", mode: 0o755 },
+      {
+        kind: "file",
+        path: "/work/apt-fanout-loader-probe",
+        data: probeBytes,
+        mode: 0o755,
+      },
+      {
+        kind: "file",
+        path: "/lib/ld-linux-riscv64-lp64d.so.1",
+        data: new Uint8Array(readFileSync(loader)),
+        mode: 0o755,
+      },
+      {
+        kind: "file",
+        path: "/usr/lib/riscv64-linux-gnu/ld-linux-riscv64-lp64d.so.1",
+        data: new Uint8Array(readFileSync(loader)),
+        mode: 0o755,
+      },
+      {
+        kind: "file",
+        path: "/usr/lib/riscv64-linux-gnu/libc.so.6",
+        data: new Uint8Array(readFileSync(libc)),
+        mode: 0o755,
+      },
+    ]);
+    const result = await spawnWithOutput(
+      runtime,
+      probeBytes,
+      ["/work/apt-fanout-loader-probe", "9379800"],
+      ["LC_ALL=C"],
+      180_000,
+    );
+    expect(
+      result.exitCode,
+      `${result.output}\n${result.debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`,
+    ).toBe(0);
+    expect(result.output).toContain("driver-before-writer:elf");
+    expect(result.output).toContain("writer-before-large-write:elf");
+    expect(result.output).toContain("writer-large-write:bytes=9379800");
+    expect(result.output).toContain("writer-after-large-write:elf");
+    expect(result.output).toContain("driver-after-writer-exit:elf");
+    expect(result.output).toContain("post-writer-exec-loader-check:elf");
+    expect(result.output).toContain("driver-after-loader-check:elf");
   } finally {
     runtime.destroy();
   }
