@@ -157,6 +157,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
   const retryNetworkReadAfterPending = new WeakSet<RuntimeNetworkConnection>();
   const networkDrainMisses = new WeakMap<RuntimeNetworkConnection, number>();
   const networkEofDeferrals = new WeakMap<RuntimeNetworkConnection, number>();
+  const observedSocketReads = new WeakMap<ProcessHandle, Map<number, { calls: number; bytes: bigint }>>();
   const pendingNetworkConnects = new WeakMap<ProcessHandle, Map<number, {
     fd: number;
     connection: RuntimeNetworkConnection;
@@ -165,6 +166,61 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
   function networkConnectionOfds(handle: ProcessHandle): Map<number, number> {
     handle.networkConnectionOfds ??= new Map();
     return handle.networkConnectionOfds;
+  }
+
+  function recordNetworkPendingInbound(handle: ProcessHandle, bytes: Uint8Array<ArrayBuffer> | null): void {
+    if (bytes !== null && bytes.length > handle.transferDebugStats.networkPendingInboundBytesMax) {
+      handle.transferDebugStats.networkPendingInboundBytesMax = bytes.length;
+    }
+  }
+
+  function setPendingNetworkInbound(
+    handle: ProcessHandle,
+    connection: RuntimeNetworkConnection,
+    bytes: Uint8Array<ArrayBuffer> | null,
+  ): void {
+    recordNetworkPendingInbound(handle, bytes);
+    pendingNetworkInbound.set(connection, bytes);
+  }
+
+  function recordNetworkBridgeRead(handle: ProcessHandle, value: Uint8Array | null | undefined): void {
+    if (value === undefined || value === null) {
+      return;
+    }
+    handle.transferDebugStats.networkBridgeReadCalls += 1;
+    handle.transferDebugStats.networkBridgeReadBytes += value.length;
+  }
+
+  function recordGuestSocketReadProgress(handle: ProcessHandle, socketIdx: number | undefined): void {
+    if (socketIdx === undefined || socketIdx < 0) {
+      return;
+    }
+    const calls = handle.kernel.thread_socket_read_count?.(socketIdx);
+    const bytes = handle.kernel.thread_socket_read_bytes?.(socketIdx);
+    if (calls === undefined || bytes === undefined) {
+      return;
+    }
+    let bySocket = observedSocketReads.get(handle);
+    if (bySocket === undefined) {
+      bySocket = new Map();
+      observedSocketReads.set(handle, bySocket);
+    }
+    const current = { calls, bytes: BigInt(bytes) };
+    const previous = bySocket.get(socketIdx);
+    bySocket.set(socketIdx, current);
+    if (previous === undefined) {
+      return;
+    }
+    if (current.calls > previous.calls) {
+      handle.transferDebugStats.networkGuestSocketReadCalls += current.calls - previous.calls;
+    }
+    if (current.bytes > previous.bytes) {
+      handle.transferDebugStats.networkGuestSocketReadBytes += Number(current.bytes - previous.bytes);
+    }
+  }
+
+  function recordGuestSocketReadProgressForFd(handle: ProcessHandle, vmPtr: number, fd: number): void {
+    recordGuestSocketReadProgress(handle, handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd));
   }
 
   function ensureNetworkBookkeeping(handle: ProcessHandle): void {
@@ -726,6 +782,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       deps.appendWorkerDebugLog(handle, `net-read-skip:${handle.pid}:vm=0x${vmPtr.toString(16)}`);
       return;
     }
+    handle.transferDebugStats.networkBridgeReadQueued += 1;
     deps.appendWorkerDebugLog(handle, `net-read-queue:${handle.pid}:vm=0x${vmPtr.toString(16)}`);
     appendNetworkLifecycle(handle, `net-read-queue:${handle.pid}:0x${vmPtr.toString(16)}`);
     const pending = Promise.resolve(read)
@@ -743,6 +800,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
           }`,
         );
         if (value !== undefined) {
+          recordNetworkBridgeRead(handle, value);
           if (value === null) {
             const pendingInbound = pendingNetworkInbound.get(connection);
             if (pendingInbound && pendingInbound.length > 0) {
@@ -755,7 +813,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
               return;
             }
           }
-          pendingNetworkInbound.set(connection, value === null ? null : ownedBytes(value));
+          setPendingNetworkInbound(handle, connection, value === null ? null : ownedBytes(value));
           void (async () => {
             const activeHandle = resolveActiveNetworkHandle(handle, vmPtr, fd, connection);
             if (!activeHandle) {
@@ -830,6 +888,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     }
     const result = connection.read(maxBytes);
     if (!isPromiseLike(result)) {
+      recordNetworkBridgeRead(handle, result);
       return result;
     }
     queueNetworkReadPromise(handle, vmPtr, fd, connection, result);
@@ -1214,14 +1273,24 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
   }
 
   async function pumpNetworkConnections(handle: ProcessHandle, vmPtr = handle.vmPtr): Promise<boolean> {
+    const pumpStartedAtMs = Date.now();
+    handle.transferDebugStats.networkPumpCalls += 1;
     ensureNetworkBookkeeping(handle);
     const drainOutbound = handle.kernel.thread_socket_drain_outbound;
     const injectInbound = handle.kernel.thread_socket_inject_inbound;
     const markExternalPeer = handle.kernel.thread_socket_mark_external_peer;
     const commitExternalConnect = handle.kernel.thread_socket_commit_external_connect;
     const closeExternalPeer = handle.kernel.thread_socket_close_external_peer;
+    let changed = false;
+    const finishPump = (): boolean => {
+      if (changed) {
+        handle.transferDebugStats.networkPumpChangedCalls += 1;
+      }
+      handle.transferDebugStats.networkPumpElapsedMs += Date.now() - pumpStartedAtMs;
+      return changed;
+    };
     if (!drainOutbound || !injectInbound || handle.networkConnections.size === 0) {
-      return false;
+      return finishPump();
     }
     const scratch = kernelScratchBase(handle.kernel) + 0x24000;
     let chunkSize = NETWORK_BRIDGE_CHUNK_SIZE;
@@ -1235,7 +1304,6 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       ensureMemoryCapacity(handle.kernel.memory ?? handle.memory, scratch + chunkSize);
     }
     const memory = new Uint8Array(handle.memory.buffer);
-    let changed = false;
     const closeNetworkConnection = async (
       fd: number,
       connection: RuntimeNetworkConnection,
@@ -1544,6 +1612,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         deps.appendWorkerDebugLog(handle, `net-inject-result:${handle.pid}:fd=${fd}:written=${written}:after=${formatSocketStateForFd(fd)}`);
         appendNetworkLifecycle(handle, `net-inject-result:${handle.pid}:fd=${fd}:written=${written}:after=${formatSocketStateForFd(fd)}`);
         if (written > 0) {
+          handle.transferDebugStats.networkInboundInjectCalls += 1;
+          handle.transferDebugStats.networkInboundInjectedBytes += written;
           rememberNetworkOfdSlot(handle, handle.kernel.process_fd_ofd_id(vmPtr, fd));
           rememberNetworkRecvPayload(handle, vmPtr, fd, written);
           networkDrainMisses.delete(connection);
@@ -1554,7 +1624,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
           changed = true;
         }
         if (written > 0 && written < owned.length) {
-          pendingNetworkInbound.set(connection, owned.subarray(written));
+          setPendingNetworkInbound(handle, connection, owned.subarray(written));
           appendNetworkLifecycle(handle, `net-inject-partial:${handle.pid}:fd=${fd}:written=${written}:pending=${owned.length - written}`);
           logNetworkDebug(`inject-partial pid=${handle.pid} fd=${fd} written=${written} pending=${owned.length - written}`);
           return "changed";
@@ -1572,10 +1642,11 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
           return "closed";
         }
         if (written <= 0) {
+          handle.transferDebugStats.networkInboundBlockedCalls += 1;
           deps.appendWorkerDebugLog(handle, `net-inject:${handle.pid}:fd=${fd}:blocked=${written}:pending=${owned.length}`);
           appendNetworkLifecycle(handle, `net-inject-blocked:${handle.pid}:fd=${fd}:written=${written}:pending=${owned.length}`);
           logNetworkDebug(`inject-blocked pid=${handle.pid} fd=${fd} written=${written} pending=${owned.length}`);
-          pendingNetworkInbound.set(connection, owned);
+          setPendingNetworkInbound(handle, connection, owned);
           return "blocked";
         }
         pendingNetworkInbound.delete(connection);
@@ -1606,7 +1677,9 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
           activeFd = replacementFd;
         }
       }
+      recordGuestSocketReadProgressForFd(handle, vmPtr, activeFd);
       const initialInbound = await pumpInbound(activeFd, connection);
+      recordGuestSocketReadProgressForFd(handle, vmPtr, activeFd);
       if (initialInbound === "closed") {
         continue;
       }
@@ -1717,6 +1790,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
           }
           const outbound = new Uint8Array(handle.memory.buffer.slice(scratch, scratch + n));
           await connection.write(outbound);
+          handle.transferDebugStats.networkOutboundDrainCalls += 1;
+          handle.transferDebugStats.networkOutboundDrainedBytes += n;
           await Promise.resolve();
           if (pendingNetworkReads.has(connection)) {
             retryNetworkReadAfterPending.add(connection);
@@ -1730,8 +1805,9 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         }
       }
       await pumpInbound(activeFd, connection);
+      recordGuestSocketReadProgressForFd(handle, vmPtr, activeFd);
     }
-    return changed;
+    return finishPump();
   }
 
   return {

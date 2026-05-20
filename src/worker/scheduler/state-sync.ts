@@ -242,6 +242,7 @@ export function createWorkerSchedulerStateSyncHelpers(
   }
 
   function requestPipeStateSync(handle: ProcessHandle, wakeWaiters = false): Promise<void> {
+    handle.transferDebugStats.pipeSyncRequests += 1;
     if (hasActiveVforkChildOwnerMismatch(handle)) {
       return Promise.resolve();
     }
@@ -266,6 +267,7 @@ export function createWorkerSchedulerStateSyncHelpers(
         const shouldWake = handle.pipeWaiterWakeQueued;
         handle.pipeWaiterWakeQueued = false;
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-start:${handle.pid}:wake=${shouldWake ? 1 : 0}`);
+        handle.transferDebugStats.pipeSyncKernelCalls += 1;
         const pipeUsed = await syncPipeStateViaKernelWorker(handle);
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-canonical:${handle.pid}:used=${pipeUsed.toString()}`);
         assertProcessIdentity(handle, "requestPipeStateSync");
@@ -276,6 +278,7 @@ export function createWorkerSchedulerStateSyncHelpers(
         const drainedVisibleOutput = deps.drainProcessOutput(visibleHandle);
         if (drainedHiddenOutput) {
           deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-hidden-drain:${handle.pid}`);
+          handle.transferDebugStats.pipeSyncKernelCalls += 1;
           const refreshedPipeUsed = await syncPipeStateViaKernelWorker(handle);
           assertProcessIdentity(handle, "requestPipeStateSync:after-hidden-drain");
           handle.kernelState = {
@@ -290,6 +293,8 @@ export function createWorkerSchedulerStateSyncHelpers(
           && visibleHandle.pid > 0
         ) {
           deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-visible-drain:${visibleHandle.pid}`);
+          handle.transferDebugStats.pipeSyncVisibleDrainCalls += 1;
+          visibleHandle.transferDebugStats.pipeSyncKernelCalls += 1;
           const visiblePipeUsed = await syncPipeStateViaKernelWorker(visibleHandle);
           assertProcessIdentity(visibleHandle, "requestPipeStateSync:after-visible-drain");
           visibleHandle.kernelState = {
@@ -320,6 +325,7 @@ export function createWorkerSchedulerStateSyncHelpers(
   }
 
   function requestSocketStateSync(handle: ProcessHandle, wakeWaiters = false): Promise<void> {
+    handle.transferDebugStats.socketSyncRequests += 1;
     if (hasActiveVforkChildOwnerMismatch(handle)) {
       return Promise.resolve();
     }
@@ -344,6 +350,7 @@ export function createWorkerSchedulerStateSyncHelpers(
         handle.socketSyncQueued = false;
         const shouldWake = handle.socketWaiterWakeQueued;
         handle.socketWaiterWakeQueued = false;
+        handle.transferDebugStats.socketSyncKernelCalls += 1;
         const { socketUsed, netBufUsed } = await syncSocketStateViaKernelWorker(handle);
         assertProcessIdentity(handle, "requestSocketStateSync");
         if (shouldWake) {

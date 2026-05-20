@@ -107,6 +107,25 @@ export interface TransferDebugStats {
   pageCachePublishCandidates: number;
   pageCachePublishCalls: number;
   forkSharedMemfsSyncCalls: number;
+  networkPumpCalls: number;
+  networkPumpChangedCalls: number;
+  networkPumpElapsedMs: number;
+  networkBridgeReadCalls: number;
+  networkBridgeReadBytes: number;
+  networkBridgeReadQueued: number;
+  networkInboundInjectCalls: number;
+  networkInboundInjectedBytes: number;
+  networkInboundBlockedCalls: number;
+  networkPendingInboundBytesMax: number;
+  networkOutboundDrainCalls: number;
+  networkOutboundDrainedBytes: number;
+  networkGuestSocketReadCalls: number;
+  networkGuestSocketReadBytes: number;
+  pipeSyncRequests: number;
+  pipeSyncKernelCalls: number;
+  pipeSyncVisibleDrainCalls: number;
+  socketSyncRequests: number;
+  socketSyncKernelCalls: number;
 }
 
 export function createTransferDebugStats(): TransferDebugStats {
@@ -125,6 +144,25 @@ export function createTransferDebugStats(): TransferDebugStats {
     pageCachePublishCandidates: 0,
     pageCachePublishCalls: 0,
     forkSharedMemfsSyncCalls: 0,
+    networkPumpCalls: 0,
+    networkPumpChangedCalls: 0,
+    networkPumpElapsedMs: 0,
+    networkBridgeReadCalls: 0,
+    networkBridgeReadBytes: 0,
+    networkBridgeReadQueued: 0,
+    networkInboundInjectCalls: 0,
+    networkInboundInjectedBytes: 0,
+    networkInboundBlockedCalls: 0,
+    networkPendingInboundBytesMax: 0,
+    networkOutboundDrainCalls: 0,
+    networkOutboundDrainedBytes: 0,
+    networkGuestSocketReadCalls: 0,
+    networkGuestSocketReadBytes: 0,
+    pipeSyncRequests: 0,
+    pipeSyncKernelCalls: 0,
+    pipeSyncVisibleDrainCalls: 0,
+    socketSyncRequests: 0,
+    socketSyncKernelCalls: 0,
   };
 }
 
