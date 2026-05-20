@@ -13,6 +13,7 @@ vi.mock("../../../src/worker/pool.js", async (importOriginal) => {
 });
 
 import { createWorkerScheduler } from "../../../src/worker/scheduler.js";
+import { createTransferDebugStats } from "../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../src/worker/types.js";
 
 function makeKernel() {
@@ -233,6 +234,7 @@ function makeHandle(kernel: ProcessHandle["kernel"], worker: Worker): ProcessHan
     networkRecvHeadWatermarks: new Map(),
     networkRecvTailWatermarks: new Map(),
     networkRecvPayloadWatermarks: new Map(),
+    transferDebugStats: createTransferDebugStats(),
     vforkSnapshot: null,
     vforkWorker: null,
     exitInProgress: false,
