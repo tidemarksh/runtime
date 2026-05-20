@@ -54,6 +54,8 @@ const packageIndexGateTruncateFirstPackage =
   process.env.TIDEMARK_TEST_APT_PACKAGE_INDEX_TRUNCATE_FIRST === "1";
 const packageIndexGateObserveFile =
   process.env.TIDEMARK_TEST_APT_PACKAGE_INDEX_OBSERVE_FILE === "1";
+const methodFullPackageGate = process.env.TIDEMARK_TEST_APT_METHOD_FULL_PACKAGE_GATE === "1";
+const methodFullPackageBytes = Number(process.env.TIDEMARK_TEST_APT_METHOD_FULL_PACKAGE_BYTES ?? "0");
 const libraryRoots = (process.env.TIDEMARK_TEST_APT_METHOD_LIBRARY_ROOTS ?? "")
   .split(":")
   .filter(Boolean);
@@ -2982,6 +2984,85 @@ test("apt method http local gate: async bridge response is delivered to method",
     runtime.destroy();
   }
 }, Math.max(60_000, asyncDoneTimeoutMs + 10_000));
+
+test("apt method http local gate: full package fetch saves response body", async () => {
+  if (!methodFullPackageGate) {
+    return logSkip("set TIDEMARK_TEST_APT_METHOD_FULL_PACKAGE_GATE=1 to run package method gate");
+  }
+  const packageBody = methodPackagesXzResponseBody;
+  if (!packageBody) {
+    return logSkip("set TIDEMARK_TEST_APT_METHOD_PACKAGES_XZ_RESPONSE_BODY to run package method gate");
+  }
+  const responseBody = methodFullPackageBytes > 0
+    ? packageBody.subarray(0, Math.min(methodFullPackageBytes, packageBody.length))
+    : packageBody;
+  const sha256 = createHash("sha256").update(responseBody).digest("hex");
+  const packageUri =
+    `http://deb.debian.org/debian/dists/trixie/main/binary-riscv64/by-hash/SHA256/${sha256}`;
+  const guestRequests: string[] = [];
+  const bridgeEvents: string[] = [];
+  const metrics = createMethodBridgeMetrics();
+  const prepared = await prepareMethodRuntime(createAsyncMethodNetworkBridge(
+    guestRequests,
+    bridgeEvents,
+    (request) => {
+      const targets = extractHttpGetTargets([request]);
+      const target = targets[targets.length - 1] ?? "";
+      return isPackageIndexTarget(target) ? responseBody : methodResponseBody;
+    },
+    metrics,
+  ), { requireMethodPayload: false });
+  if (!prepared) {
+    return;
+  }
+  const { runtime, methodElf } = prepared;
+
+  let output = "";
+  const started = Date.now();
+  metrics.startedAtMs = started;
+  try {
+    const proc = await runtime.spawn(
+      methodElf,
+      [methodArgv0],
+      methodEnv,
+      { stdin: "pipe" },
+    );
+    proc.onStdout((data) => {
+      output += decoder.decode(data);
+    });
+    proc.writeStdin(buildHttpMethodAcquirePayload(packageUri, aptPartialPackagesXzFilename));
+
+    await waitForOutput(() => output, "201 URI Done", asyncDoneTimeoutMs).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([
+        detail,
+        `guestRequests=${JSON.stringify(guestRequests)}`,
+        `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
+        `metrics=${compactMethodBridgeMetrics(metrics)}`,
+        `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+        `output=${JSON.stringify(output)}`,
+        `debug=${await runtimeDebugSummary(runtime)}`,
+        `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
+      ].join("\n"));
+    });
+
+    const saved = await runtime.readFile(aptPartialPackagesXzFilename);
+    expect(saved).toEqual(responseBody);
+    console.log([
+      `apt method full package metrics durationMs=${Date.now() - started}`,
+      `bodyBytes=${responseBody.length}`,
+      `bridgeReadCalls=${metrics.readCalls}`,
+      `bridgeEmptyReads=${metrics.emptyReads}`,
+      `bridgeReadBytes=${metrics.readBytes}`,
+      `bridgePackageBytes=${metrics.packageResponseBytes}`,
+      `bridgePackageChunks=${metrics.packageResponseChunks}`,
+      `bridgePackageResponsesCompleted=${metrics.packageResponsesCompleted}`,
+      `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
+    ].join(" "));
+  } finally {
+    runtime.destroy();
+  }
+}, Math.max(90_000, asyncDoneTimeoutMs + 20_000));
 
 test("apt method http local gate: repeated package fetch delivers ranged retry response", async () => {
   const repo = buildSyntheticAptRepository();
