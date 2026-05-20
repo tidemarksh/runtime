@@ -1115,15 +1115,27 @@ function snapshotSocketState(
   const memory = new Uint8Array(kernelExports.memory.buffer);
   const socketTableBytes = kernelExports.kernel_socket_table_bytes();
   const netBufPoolBytes = kernelExports.kernel_net_buf_pool_bytes();
+  const maxBuffers = Math.max(1, Number(kernelExports.abi_max_sockets?.() ?? 32) * 2);
+  const netBufSlotBytes = Math.floor(netBufPoolBytes / maxBuffers);
+  const netBufSlots: KernelWorkerSocketStateSnapshot["netBufSlots"] = [];
+  if (netBufSlotBytes > 0) {
+    for (let bufferIndex = 0; bufferIndex < maxBuffers; bufferIndex += 1) {
+      if ((kernelState.netBufUsed & (1n << BigInt(bufferIndex))) === 0n) {
+        continue;
+      }
+      const offset = kernelState.netBufBase + bufferIndex * netBufSlotBytes;
+      netBufSlots.push({
+        bufferIndex,
+        bytes: memory.slice(offset, offset + netBufSlotBytes),
+      });
+    }
+  }
   return {
     socketTable: memory.slice(
       kernelState.socketTablePtr,
       kernelState.socketTablePtr + socketTableBytes,
     ),
-    netBufPool: memory.slice(
-      kernelState.netBufBase,
-      kernelState.netBufBase + netBufPoolBytes,
-    ),
+    netBufSlots,
     socketUsed: kernelState.socketUsed,
     netBufUsed: kernelState.netBufUsed,
   };
@@ -1140,14 +1152,25 @@ function applySocketState(
   const memory = new Uint8Array(kernelExports.memory.buffer);
   const socketTableBytes = kernelExports.kernel_socket_table_bytes();
   const netBufPoolBytes = kernelExports.kernel_net_buf_pool_bytes();
+  const maxBuffers = Math.max(1, Number(kernelExports.abi_max_sockets?.() ?? 32) * 2);
+  const netBufSlotBytes = Math.floor(netBufPoolBytes / maxBuffers);
   if (
     socketState.socketTable.length !== socketTableBytes
-    || socketState.netBufPool.length !== netBufPoolBytes
+    || (socketState.netBufPool !== undefined && socketState.netBufPool.length !== netBufPoolBytes)
   ) {
     return;
   }
   memory.set(socketState.socketTable, kernelState.socketTablePtr);
-  memory.set(socketState.netBufPool, kernelState.netBufBase);
+  if (socketState.netBufPool !== undefined) {
+    memory.set(socketState.netBufPool, kernelState.netBufBase);
+  } else if (netBufSlotBytes > 0) {
+    for (const slot of socketState.netBufSlots ?? []) {
+      if (slot.bufferIndex < 0 || slot.bufferIndex >= maxBuffers || slot.bytes.length !== netBufSlotBytes) {
+        continue;
+      }
+      memory.set(slot.bytes, kernelState.netBufBase + slot.bufferIndex * netBufSlotBytes);
+    }
+  }
   attachKernelRuntimeState(kernelExports, {
     ...kernelState,
     socketUsed: kernelState.socketUsed | socketState.socketUsed,

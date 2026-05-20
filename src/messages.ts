@@ -26,9 +26,15 @@ export interface KernelWorkerPipeSlotSnapshot {
   fresh?: boolean;
 }
 
+export interface KernelWorkerNetBufferSnapshot {
+  bufferIndex: number;
+  bytes: Uint8Array;
+}
+
 export interface KernelWorkerSocketStateSnapshot {
   socketTable: Uint8Array;
-  netBufPool: Uint8Array;
+  netBufPool?: Uint8Array;
+  netBufSlots?: KernelWorkerNetBufferSnapshot[];
   socketUsed: number;
   netBufUsed: bigint;
 }

@@ -163,7 +163,11 @@ interface NetworkBridgeSocketStateSnapshot {
     readCount: number;
   }>;
   socketTable: Uint8Array;
-  netBufPool: Uint8Array;
+  netBufPoolBytes: number;
+  netBufSlots: Array<{
+    bufferIndex: number;
+    bytes: Uint8Array;
+  }>;
   ofdSlots: Array<{
     ofdId: number;
     bytes: Uint8Array;
@@ -1097,6 +1101,77 @@ function currentSocketUsed(handle: ProcessHandle): number {
   return handle.kernelState.socketUsed | handle.kernel.kernel_socket_used();
 }
 
+function netBufferSlotBytesForHandle(handle: ProcessHandle): number {
+  const maxBuffers = Math.max(1, Number(handle.kernel.abi_max_sockets?.() ?? 32) * 2);
+  const poolBytes = handle.kernel.kernel_net_buf_pool_bytes();
+  const slotBytes = Math.floor(poolBytes / maxBuffers);
+  return Number.isInteger(slotBytes) && slotBytes > 0 ? slotBytes : 0;
+}
+
+function snapshotUsedNetBufferSlots(
+  memory: Uint8Array,
+  netBufBase: number,
+  slotBytes: number,
+  maxBuffers: number,
+  netBufUsed: bigint,
+): Array<{ bufferIndex: number; bytes: Uint8Array }> {
+  if (slotBytes <= 0) {
+    return [];
+  }
+  const slots: Array<{ bufferIndex: number; bytes: Uint8Array }> = [];
+  for (let bufferIndex = 0; bufferIndex < maxBuffers; bufferIndex += 1) {
+    if ((netBufUsed & (1n << BigInt(bufferIndex))) === 0n) {
+      continue;
+    }
+    const offset = netBufBase + bufferIndex * slotBytes;
+    slots.push({
+      bufferIndex,
+      bytes: memory.slice(offset, offset + slotBytes),
+    });
+  }
+  return slots;
+}
+
+function restoreNetBufferSlots(
+  memory: Uint8Array,
+  netBufBase: number,
+  slotBytes: number,
+  maxBuffers: number,
+  slots: Array<{ bufferIndex: number; bytes: Uint8Array }>,
+): void {
+  if (slotBytes <= 0) {
+    return;
+  }
+  for (const slot of slots) {
+    if (slot.bufferIndex < 0 || slot.bufferIndex >= maxBuffers || slot.bytes.length !== slotBytes) {
+      continue;
+    }
+    memory.set(slot.bytes, netBufBase + slot.bufferIndex * slotBytes);
+  }
+}
+
+function socketSnapshotNetBufPoolBytes(handle: ProcessHandle, snapshot: KernelWorkerSocketStateSnapshot): number {
+  return snapshot.netBufPool?.length ?? handle.kernel.kernel_net_buf_pool_bytes();
+}
+
+function applyKernelWorkerNetBuffers(
+  handle: ProcessHandle,
+  memory: Uint8Array,
+  snapshot: KernelWorkerSocketStateSnapshot,
+): void {
+  if (snapshot.netBufPool) {
+    memory.set(snapshot.netBufPool, handle.kernelState.netBufBase);
+    return;
+  }
+  restoreNetBufferSlots(
+    memory,
+    handle.kernelState.netBufBase,
+    netBufferSlotBytesForHandle(handle),
+    Math.max(1, Number(handle.kernel.abi_max_sockets?.() ?? 32) * 2),
+    snapshot.netBufSlots ?? [],
+  );
+}
+
 function networkBridgeOutboundAvailable(handle: ProcessHandle): boolean {
   const fds = [...new Set([
     ...(handle.networkConnections?.keys() ?? []),
@@ -1478,6 +1553,9 @@ function snapshotNetworkBridgeSocketState(
     const memory = new Uint8Array(handle.memory.buffer);
     const socketTableBytes = handle.kernel.kernel_socket_table_bytes();
     const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes();
+    const netBufUsed = currentNetBufUsed(handle);
+    const maxNetBuffers = Math.max(1, Number(handle.kernel.abi_max_sockets?.() ?? 32) * 2);
+    const netBufferSlotBytes = netBufferSlotBytesForHandle(handle);
     const ofdSlotBytes = Math.floor(handle.kernel.kernel_ofd_table_bytes() / handle.kernel.abi_max_fds());
     const ofdSlots: NetworkBridgeSocketStateSnapshot["ofdSlots"] = [];
     const connectionFds = [...(handle.networkConnections?.keys() ?? [])];
@@ -1518,13 +1596,17 @@ function snapshotNetworkBridgeSocketState(
         handle.kernelState.socketTablePtr,
         handle.kernelState.socketTablePtr + socketTableBytes,
       ),
-      netBufPool: memory.slice(
+      netBufPoolBytes,
+      netBufSlots: snapshotUsedNetBufferSlots(
+        memory,
         handle.kernelState.netBufBase,
-        handle.kernelState.netBufBase + netBufPoolBytes,
+        netBufferSlotBytes,
+        maxNetBuffers,
+        netBufUsed,
       ),
       ofdSlots,
       socketUsed: handle.kernelState.socketUsed,
-      netBufUsed: currentNetBufUsed(handle),
+      netBufUsed,
     });
   }
   return snapshots;
@@ -1535,16 +1617,20 @@ function snapshotSocketStateForKernelWorker(handle: ProcessHandle): KernelWorker
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
   const memory = new Uint8Array(handle.memory.buffer);
   const socketTableBytes = handle.kernel.kernel_socket_table_bytes();
-  const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes();
   const netBufUsed = currentNetBufUsed(handle);
+  const maxNetBuffers = Math.max(1, Number(handle.kernel.abi_max_sockets?.() ?? 32) * 2);
+  const netBufferSlotBytes = netBufferSlotBytesForHandle(handle);
   return {
     socketTable: memory.slice(
       handle.kernelState.socketTablePtr,
       handle.kernelState.socketTablePtr + socketTableBytes,
     ),
-    netBufPool: memory.slice(
+    netBufSlots: snapshotUsedNetBufferSlots(
+      memory,
       handle.kernelState.netBufBase,
-      handle.kernelState.netBufBase + netBufPoolBytes,
+      netBufferSlotBytes,
+      maxNetBuffers,
+      netBufUsed,
     ),
     socketUsed: currentSocketUsed(handle),
     netBufUsed,
@@ -1566,17 +1652,18 @@ export function applySocketStateFromKernelWorker(
   const preservedSocketUsed = preservedSocketSlots.reduce((mask, slot) => mask | slot.socketMask, 0);
   const preservedSocketRecvBuffers = preservedSocketRecvBufferIndices(preservedSocketSlots);
   const preservedSocketNetBufUsed = netBufUsedMaskFromBufferIndices(preservedSocketRecvBuffers);
+  const netBufPoolBytes = socketSnapshotNetBufPoolBytes(handle, snapshot);
   const preservedNetBufferHeads = [
     ...preserveUsedNetBufferHeads(
       handle,
-      snapshot.netBufPool.length,
+      netBufPoolBytes,
       netBufUsed | preservedSocketNetBufUsed,
       preservedSocketRecvBuffers,
     ),
-    ...preserveNetworkRecvHeadWatermarks(handle, snapshot.netBufPool.length),
+    ...preserveNetworkRecvHeadWatermarks(handle, netBufPoolBytes),
   ];
   memory.set(snapshot.socketTable, handle.kernelState.socketTablePtr);
-  memory.set(snapshot.netBufPool, handle.kernelState.netBufBase);
+  applyKernelWorkerNetBuffers(handle, memory, snapshot);
   restoreNetworkSocketSlots(handle, preservedSocketSlots);
   restoreMergedNetBufferHeads(memory, handle.kernelState.netBufBase, preservedNetBufferHeads);
   restoreClosedNetworkSocketSlots(handle);
@@ -1632,17 +1719,24 @@ function restoreNetworkBridgeSocketState(
     const preservedSocketUsed = preservedSocketSlots.reduce((mask, slot) => mask | slot.socketMask, 0);
     const preservedSocketRecvBuffers = preservedSocketRecvBufferIndices(preservedSocketSlots);
     const preservedSocketNetBufUsed = netBufUsedMaskFromBufferIndices(preservedSocketRecvBuffers);
+    const netBufPoolBytes = snapshot.netBufPoolBytes;
     const preservedNetBufferHeads = [
       ...preserveUsedNetBufferHeads(
         handle,
-        snapshot.netBufPool.length,
+        netBufPoolBytes,
         netBufUsed | preservedSocketNetBufUsed,
         preservedSocketRecvBuffers,
       ),
-      ...preserveNetworkRecvHeadWatermarks(handle, snapshot.netBufPool.length),
+      ...preserveNetworkRecvHeadWatermarks(handle, netBufPoolBytes),
     ];
     memory.set(snapshot.socketTable, handle.kernelState.socketTablePtr);
-    memory.set(snapshot.netBufPool, handle.kernelState.netBufBase);
+    restoreNetBufferSlots(
+      memory,
+      handle.kernelState.netBufBase,
+      netBufferSlotBytesForHandle(handle),
+      Math.max(1, Number(handle.kernel.abi_max_sockets?.() ?? 32) * 2),
+      snapshot.netBufSlots,
+    );
     restoreNetworkSocketSlots(handle, preservedSocketSlots);
     restoreMergedNetBufferHeads(memory, handle.kernelState.netBufBase, preservedNetBufferHeads);
     restoreClosedNetworkSocketSlots(handle);
