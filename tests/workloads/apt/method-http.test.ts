@@ -2267,6 +2267,21 @@ function compactAptExecutionStats(
   })));
 }
 
+function compactMethodBridgeMetrics(metrics: MethodBridgeMetrics): string {
+  return JSON.stringify({
+    connections: metrics.connections,
+    writes: metrics.writes,
+    readCalls: metrics.readCalls,
+    emptyReads: metrics.emptyReads,
+    readBytes: metrics.readBytes,
+    responseChunks: metrics.responseChunks,
+    packageResponseBytes: metrics.packageResponseBytes,
+    packageResponseChunks: metrics.packageResponseChunks,
+    packageResponsesCompleted: metrics.packageResponsesCompleted,
+    maxReadRequestBytes: metrics.maxReadRequestBytes,
+  });
+}
+
 async function describeAptPageCachePaths(
   runtime: Awaited<ReturnType<typeof Runtime.create>>,
 ): Promise<string> {
@@ -2835,7 +2850,7 @@ test("apt method http local gate: repeated package fetch delivers ranged retry r
         detail,
         `guestRequests=${JSON.stringify(guestRequests)}`,
         `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
-        `metrics=${JSON.stringify(metrics)}`,
+        `metrics=${compactMethodBridgeMetrics(metrics)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
         `output=${JSON.stringify(output)}`,
         `debug=${await runtimeDebugSummary(runtime)}`,
@@ -2859,7 +2874,7 @@ test("apt method http local gate: repeated package fetch delivers ranged retry r
         detail,
         `guestRequests=${JSON.stringify(guestRequests)}`,
         `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
-        `metrics=${JSON.stringify(metrics)}`,
+        `metrics=${compactMethodBridgeMetrics(metrics)}`,
         `afterFirstFailure=${afterFirstFailure}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
         `output=${JSON.stringify(output)}`,
@@ -2887,7 +2902,7 @@ test("apt method http local gate: repeated package fetch delivers ranged retry r
         `afterSecondTerminal=${afterSecondTerminal}`,
         `guestRequests=${JSON.stringify(guestRequests)}`,
         `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
-        `metrics=${JSON.stringify(metrics)}`,
+        `metrics=${compactMethodBridgeMetrics(metrics)}`,
         `output=${JSON.stringify(output)}`,
         `debug=${await runtimeDebugSummary(runtime)}`,
       ].join("\n"),
@@ -2901,7 +2916,7 @@ test("apt method http local gate: repeated package fetch delivers ranged retry r
         `afterSecondTerminal=${afterSecondTerminal}`,
         `guestRequests=${JSON.stringify(guestRequests)}`,
         `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
-        `metrics=${JSON.stringify(metrics)}`,
+        `metrics=${compactMethodBridgeMetrics(metrics)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
         `output=${JSON.stringify(output)}`,
         `debug=${await runtimeDebugSummary(runtime)}`,
@@ -3286,6 +3301,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         detail,
         `guestRequests=${JSON.stringify(guestRequests)}`,
         `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
+        `metrics=${compactMethodBridgeMetrics(metrics)}`,
         `output=${JSON.stringify(output)}`,
         `partialInRelease=${await describeGuestFile(runtime, methodAcquireFilename)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
@@ -3304,7 +3320,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         detail,
         `targets=${JSON.stringify(extractHttpGetTargets(guestRequests))}`,
         `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
-        `metrics=${JSON.stringify(metrics)}`,
+        `metrics=${compactMethodBridgeMetrics(metrics)}`,
         `output=${JSON.stringify(output)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
         `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
@@ -3344,6 +3360,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
           detail,
           `targets=${JSON.stringify(extractHttpGetTargets(guestRequests))}`,
           `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
+          `metrics=${compactMethodBridgeMetrics(metrics)}`,
           `output=${JSON.stringify(output)}`,
           `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
           `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
@@ -3368,7 +3385,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
           detail,
           `targets=${JSON.stringify(extractHttpGetTargets(guestRequests))}`,
           `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
-          `metrics=${JSON.stringify(metrics)}`,
+          `metrics=${compactMethodBridgeMetrics(metrics)}`,
           `output=${JSON.stringify(output)}`,
           `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
           `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
@@ -3400,6 +3417,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         detail,
         `guestRequests=${JSON.stringify(guestRequests)}`,
         `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
+        `metrics=${compactMethodBridgeMetrics(metrics)}`,
         `output=${JSON.stringify(output)}`,
         `partialInRelease=${await describeGuestFile(runtime, methodAcquireFilename)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
@@ -3430,6 +3448,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         "apt-get did not request the riscv64 package index after the in-memory Release",
         `packagesXzSha256=${repo.packagesXzSha256}`,
         `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
+        `metrics=${compactMethodBridgeMetrics(metrics)}`,
         `output=${JSON.stringify(output)}`,
         `partialInRelease=${await describeGuestFile(runtime, methodAcquireFilename)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
