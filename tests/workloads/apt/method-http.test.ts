@@ -52,6 +52,8 @@ const packageIndexGatePackageCount = Number(
 );
 const packageIndexGateTruncateFirstPackage =
   process.env.TIDEMARK_TEST_APT_PACKAGE_INDEX_TRUNCATE_FIRST === "1";
+const packageIndexGateObserveFile =
+  process.env.TIDEMARK_TEST_APT_PACKAGE_INDEX_OBSERVE_FILE === "1";
 const libraryRoots = (process.env.TIDEMARK_TEST_APT_METHOD_LIBRARY_ROOTS ?? "")
   .split(":")
   .filter(Boolean);
@@ -2160,6 +2162,49 @@ async function describeGuestFileBrief(
   }
 }
 
+async function observeGuestFileSizeAtLeast(
+  runtime: Awaited<ReturnType<typeof Runtime.create>>,
+  proc: Awaited<ReturnType<Awaited<ReturnType<typeof Runtime.create>>["spawn"]>>,
+  path: string,
+  expectedBytes: number,
+  startedMs: number,
+  timeoutMs: number,
+): Promise<{ atMs: number; text: string }> {
+  const observeStartedMs = Date.now();
+  const exitPromise = proc.waitForExit();
+  let lastSize = -1;
+  while (Date.now() - observeStartedMs < timeoutMs) {
+    try {
+      lastSize = (await runtime.readFile(path)).length;
+      if (lastSize >= expectedBytes) {
+        const atMs = Date.now() - startedMs;
+        return {
+          atMs,
+          text: `status=complete atMs=${atMs} size=${lastSize} expected=${expectedBytes}`,
+        };
+      }
+    } catch {
+      lastSize = -1;
+    }
+    const exitCode = await Promise.race([
+      exitPromise,
+      new Promise<null>((resolveDone) => setTimeout(() => resolveDone(null), 100)),
+    ]);
+    if (exitCode !== null) {
+      const atMs = Date.now() - startedMs;
+      return {
+        atMs,
+        text: `status=exited atMs=${atMs} exit=${exitCode} size=${lastSize >= 0 ? lastSize : "missing"} expected=${expectedBytes}`,
+      };
+    }
+  }
+  const atMs = Date.now() - startedMs;
+  return {
+    atMs,
+    text: `status=timeout atMs=${atMs} size=${lastSize >= 0 ? lastSize : "missing"} expected=${expectedBytes}`,
+  };
+}
+
 function compactAptRuntimeDebug(summary: string): string {
   const local = summary.split("\n").find((line) => line.startsWith("pid=")) ?? "";
   const workerStates = summary.match(/worker_states=\[[^\]]*\]/)?.[0] ?? "";
@@ -3108,6 +3153,10 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
   const { runtime, aptGetElf } = prepared;
 
   let output = "";
+  let firstPackageResponseCompleteAtMs = -1;
+  let firstPackageResponseCompleteObservation = "not-observed";
+  let firstPackageFileCompleteAtMs = -1;
+  let firstPackageFileCompleteObservation = "not-observed";
   let secondPackageObservation = "not-observed";
   let afterSecondPackageResponseObservation = "not-observed";
   const started = Date.now();
@@ -3150,11 +3199,47 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `output=${JSON.stringify(output)}`,
         `partialInRelease=${await describeGuestFile(runtime, methodAcquireFilename)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+        `firstPackageResponseCompleteObservation=${firstPackageResponseCompleteObservation}`,
+        `firstPackageFileCompleteObservation=${firstPackageFileCompleteObservation}`,
         `secondPackageObservation=${secondPackageObservation}`,
         `debug=${await runtimeDebugSummary(runtime)}`,
         `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
       ].join("\n"));
     });
+
+    await waitForPackageResponseCompleteCount(metrics, proc, 1, asyncDoneTimeoutMs).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([
+        detail,
+        `targets=${JSON.stringify(extractHttpGetTargets(guestRequests))}`,
+        `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
+        `metrics=${JSON.stringify(metrics)}`,
+        `output=${JSON.stringify(output)}`,
+        `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+        `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
+        `debug=${await runtimeDebugSummary(runtime)}`,
+        `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
+      ].join("\n"));
+    });
+    firstPackageResponseCompleteAtMs = Date.now() - started;
+    firstPackageResponseCompleteObservation = [
+      `atMs=${firstPackageResponseCompleteAtMs}`,
+      `completed=${metrics.packageResponsesCompleted}`,
+      `partialPackagesXz=${await describeGuestFileBrief(runtime, aptPartialPackagesXzFilename)}`,
+      `finalPackagesXz=${await describeGuestFileBrief(runtime, aptFinalPackagesXzFilename)}`,
+    ].join(" ");
+    if (packageIndexGateObserveFile) {
+      const firstPackageFileObservation = await observeGuestFileSizeAtLeast(
+        runtime,
+        proc,
+        aptPartialPackagesXzFilename,
+        repo.packagesXz.length,
+        started,
+        asyncDoneTimeoutMs,
+      );
+      firstPackageFileCompleteAtMs = firstPackageFileObservation.atMs;
+      firstPackageFileCompleteObservation = firstPackageFileObservation.text;
+    }
 
     if (packageIndexGateTruncateFirstPackage) {
       await waitForPackageIndexRequestCount(guestRequests, proc, 2, asyncDoneTimeoutMs).catch(async (error) => {
@@ -3166,6 +3251,8 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
           `output=${JSON.stringify(output)}`,
           `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
           `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
+          `firstPackageResponseCompleteObservation=${firstPackageResponseCompleteObservation}`,
+          `firstPackageFileCompleteObservation=${firstPackageFileCompleteObservation}`,
           `debug=${await runtimeDebugSummary(runtime)}`,
           `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
         ].join("\n"));
@@ -3219,6 +3306,8 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `output=${JSON.stringify(output)}`,
         `partialInRelease=${await describeGuestFile(runtime, methodAcquireFilename)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+        `firstPackageResponseCompleteObservation=${firstPackageResponseCompleteObservation}`,
+        `firstPackageFileCompleteObservation=${firstPackageFileCompleteObservation}`,
         `secondPackageObservation=${secondPackageObservation}`,
         `afterSecondPackageResponseObservation=${afterSecondPackageResponseObservation}`,
         `finalInRelease=${await describeGuestFile(runtime, aptFinalInReleaseFilename)}`,
@@ -3227,6 +3316,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
       ].join("\n"));
     });
+    const exitObservedAtMs = Date.now() - started;
 
     const targets = extractHttpGetTargets(guestRequests);
     const packageIndexTargets = targets.filter(isPackageIndexTarget);
@@ -3239,6 +3329,8 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `output=${JSON.stringify(output)}`,
         `partialInRelease=${await describeGuestFile(runtime, methodAcquireFilename)}`,
         `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
+        `firstPackageResponseCompleteObservation=${firstPackageResponseCompleteObservation}`,
+        `firstPackageFileCompleteObservation=${firstPackageFileCompleteObservation}`,
         `secondPackageObservation=${secondPackageObservation}`,
         `afterSecondPackageResponseObservation=${afterSecondPackageResponseObservation}`,
         `finalInRelease=${await describeGuestFile(runtime, aptFinalInReleaseFilename)}`,
@@ -3251,7 +3343,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
     }
     expect([0, 100]).toContain(exitCode);
     console.log([
-      `apt package index metrics durationMs=${Date.now() - started}`,
+      `apt package index metrics durationMs=${exitObservedAtMs}`,
       `exitCode=${exitCode}`,
       `packageCount=${Math.max(1, Math.trunc(packageIndexGatePackageCount))}`,
       `truncateFirstPackage=${packageIndexGateTruncateFirstPackage ? 1 : 0}`,
@@ -3269,6 +3361,10 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
       `bridgePackageChunks=${metrics.packageResponseChunks}`,
       `bridgePackageResponsesCompleted=${metrics.packageResponsesCompleted}`,
       `bridgeMaxReadRequestBytes=${metrics.maxReadRequestBytes}`,
+      `firstPackageResponseCompleteObservation=${firstPackageResponseCompleteObservation}`,
+      `exitAfterFirstPackageResponseMs=${firstPackageResponseCompleteAtMs >= 0 ? exitObservedAtMs - firstPackageResponseCompleteAtMs : "unknown"}`,
+      `firstPackageFileCompleteObservation=${firstPackageFileCompleteObservation}`,
+      `exitAfterFirstPackageFileCompleteMs=${firstPackageFileCompleteAtMs >= 0 ? exitObservedAtMs - firstPackageFileCompleteAtMs : "unknown"}`,
       `secondPackageObservation=${secondPackageObservation}`,
       `afterSecondPackageResponseObservation=${afterSecondPackageResponseObservation}`,
       `partialPackagesXz=${await describeGuestFileBrief(runtime, aptPartialPackagesXzFilename)}`,
