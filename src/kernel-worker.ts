@@ -366,6 +366,7 @@ const kernelWorkerProcessControl = createKernelWorkerProcessControl({
   lastProcessPipeSlotModes,
   canonicalProcesses,
   seedEntries,
+  encoder,
   getCanonicalNextPid: () => canonicalNextPid,
   setCanonicalNextPid: (nextPid) => {
     canonicalNextPid = nextPid;

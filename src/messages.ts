@@ -498,6 +498,7 @@ export type KernelWorkerResponse =
       result: bigint;
       memfsMutated: boolean;
       ofdStateChanged: boolean;
+      fsDebug?: string;
     }
   | {
       type: "child-exit-recorded";

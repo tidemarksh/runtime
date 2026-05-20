@@ -10,7 +10,7 @@ import {
   restoreThreadWorkerPrepareMemory,
   snapshotThreadWorkerPrepareMemory,
 } from "../thread-worker/prepare-memory.js";
-import { ensureMemoryCapacityFor, scratchBaseFor } from "./common.js";
+import { ensureMemoryCapacityFor, scratchBaseFor, writeScratchFor } from "./common.js";
 import { createKernelEnv } from "../wasm/env.js";
 import {
   configureKernelInstanceStack,
@@ -31,6 +31,7 @@ interface ProcessFsResult {
   result: bigint;
   memfsMutated: boolean;
   ofdStateChanged: boolean;
+  fsDebug?: string;
 }
 
 interface PendingFsMutationContext {
@@ -45,6 +46,10 @@ interface AppliedFsMutationResult {
   ofdStateChanged: boolean;
   needsFullSync: boolean;
   preservePublishedRegularFileData: boolean;
+  treeMutated: boolean;
+  fileDataMutated: boolean;
+  handledMetadataMutation: boolean;
+  handledFileDataMutation: boolean;
 }
 
 interface KernelWorkerProcessControlDeps {
@@ -58,6 +63,7 @@ interface KernelWorkerProcessControlDeps {
   lastProcessPipeSlotModes: Map<number, Map<number, number>>;
   canonicalProcesses: Map<number, CanonicalProcessEntry>;
   seedEntries: Map<string, FsSnapshotEntry>;
+  encoder: TextEncoder;
   getCanonicalNextPid(): number;
   setCanonicalNextPid(nextPid: number): void;
   publishRootInode(mode?: number): void;
@@ -264,7 +270,66 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       ofdStateChanged: fsSucceeded && (context.effects & deps.fsEffectSharedOfdState) !== 0,
       needsFullSync: needsMetadataFullSync || needsFileDataFullSync,
       preservePublishedRegularFileData: needsMetadataFullSync && !needsFileDataFullSync,
+      treeMutated,
+      fileDataMutated,
+      handledMetadataMutation,
+      handledFileDataMutation,
     };
+  }
+
+  function describePathIn(targetExports: KernelExports, path: string): string {
+    const pathBytes = deps.encoder.encode(path);
+    const pathPtr = writeScratchFor(targetExports, pathBytes, 0x18000);
+    const ino = targetExports.memfs_resolve_path(pathPtr, pathBytes.length);
+    if (ino === 0) {
+      return `${path}:missing`;
+    }
+    const mode = targetExports.memfs_inode_mode(ino);
+    const size = Number(targetExports.memfs_file_size(ino));
+    let head = "n/a";
+    if ((mode & 0o170000) === 0o100000 && size > 0) {
+      const bufPtr = scratchBaseFor(targetExports) + 0x1a000;
+      const readLen = Math.min(4, size);
+      ensureMemoryCapacityFor(targetExports.memory, bufPtr + readLen);
+      const read = Number(targetExports.memfs_read_file_to(ino, 0n, bufPtr, readLen));
+      if (read > 0) {
+        head = [...new Uint8Array(targetExports.memory.buffer, bufPtr, read)]
+          .map((byte) => byte.toString(16).padStart(2, "0"))
+          .join("");
+      }
+    }
+    return `${path}:ino=${ino}:mode=${mode.toString(8)}:size=${size}:head=${head}`;
+  }
+
+  function formatProcessFsDebug(
+    pid: number,
+    vmPtr: number,
+    context: PendingFsMutationContext,
+    fsSucceeded: boolean,
+    mutation: AppliedFsMutationResult,
+    fullSyncApplied: boolean,
+    processExports: KernelExports,
+  ): string {
+    const path = context.pendingPath ? `:path=${JSON.stringify(context.pendingPath)}` : "";
+    const path2 = context.pendingSecondaryPath ? `:path2=${JSON.stringify(context.pendingSecondaryPath)}` : "";
+    const loader = describePathIn(processExports, "/lib/ld-linux-riscv64-lp64d.so.1");
+    const canonicalLoader = describePathIn(deps.getCanonicalExports(), "/lib/ld-linux-riscv64-lp64d.so.1");
+    return [
+      `pid=${pid}`,
+      `vm=0x${vmPtr.toString(16)}`,
+      `ok=${fsSucceeded ? 1 : 0}`,
+      `fx=${context.effects}`,
+      `ino=${context.fileDataTargetIno}`,
+      `tree=${mutation.treeMutated ? 1 : 0}`,
+      `file=${mutation.fileDataMutated ? 1 : 0}`,
+      `metaFast=${mutation.handledMetadataMutation ? 1 : 0}`,
+      `dataFast=${mutation.handledFileDataMutation ? 1 : 0}`,
+      `full=${fullSyncApplied ? 1 : 0}`,
+      `preserve=${mutation.preservePublishedRegularFileData ? 1 : 0}`,
+      `${path}${path2}`,
+      `loader=${loader}`,
+      `canonicalLoader=${canonicalLoader}`,
+    ].join(":");
   }
 
   async function initKernel(
@@ -488,18 +553,29 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     const result = BigInt(processExports.thread_resume_fs(vmPtr));
     const fsSucceeded = Number(BigInt.asIntN(64, result)) >= 0;
     const mutation = applyPendingFsMutation(processExports, pendingContext, fsSucceeded);
+    let fullSyncApplied = false;
     if (mutation.needsFullSync) {
       fallbackToFullMemfsSync(
         processExports,
         canonicalExports,
         mutation.preservePublishedRegularFileData,
       );
+      fullSyncApplied = true;
     }
     return {
       kernelState: readKernelRuntimeState(processExports),
       result,
       memfsMutated: mutation.memfsMutated,
       ofdStateChanged: mutation.ofdStateChanged,
+      fsDebug: formatProcessFsDebug(
+        pid,
+        vmPtr,
+        pendingContext,
+        fsSucceeded,
+        mutation,
+        fullSyncApplied,
+        processExports,
+      ),
     };
   }
 

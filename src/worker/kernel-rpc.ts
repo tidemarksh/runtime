@@ -1298,6 +1298,9 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
       if (processFsResponse.type !== "fs-processed") {
         throw new Error(`unexpected kernel-worker response for process-fs: ${processFsResponse.type}`);
       }
+      if (processFsResponse.fsDebug) {
+        appendFsLifecycleEvent(handle, "processed", vmPtr, `:${processFsResponse.fsDebug}`);
+      }
       handle.kernelState = adoptKernelStateForHandle(handle, processFsResponse.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       const fsResult = normalizeFsResult(processFsResponse.result);

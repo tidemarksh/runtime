@@ -17,6 +17,7 @@ interface ProcessFsResult {
   result: bigint;
   memfsMutated: boolean;
   ofdStateChanged: boolean;
+  fsDebug?: string;
 }
 
 interface KernelWorkerMessageHandlerDeps {
@@ -251,6 +252,7 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
             result: result.result,
             memfsMutated: result.memfsMutated,
             ofdStateChanged: result.ofdStateChanged,
+            fsDebug: result.fsDebug,
           });
           break;
         }
