@@ -16,6 +16,7 @@ export const RUNTIME_WORKER_DIST_DIR = resolve(__dirname, "../../dist");
 export const encoder = new TextEncoder();
 export const decoder = new TextDecoder();
 const WORKSPACE_ROOT = resolve(__dirname, "../../..");
+const TIMEOUT_OUTPUT_PREVIEW_BYTES = 4096;
 
 const originalWorker = globalThis.Worker;
 export let Runtime: typeof import("../../dist/index.mjs").Runtime;
@@ -153,7 +154,15 @@ export async function spawnWithOutput(
     const exitCode = await Promise.race([
       proc.waitForExit(),
       new Promise<never>((_resolve, reject) => {
-        timeoutId = setTimeout(() => reject(new Error(`timeout after ${timeoutMs}ms`)), timeoutMs);
+        timeoutId = setTimeout(() => {
+          const preview = output.length > TIMEOUT_OUTPUT_PREVIEW_BYTES
+            ? `${output.slice(0, TIMEOUT_OUTPUT_PREVIEW_BYTES)}<truncated ${output.length - TIMEOUT_OUTPUT_PREVIEW_BYTES} chars>`
+            : output;
+          reject(new Error([
+            `timeout after ${timeoutMs}ms`,
+            preview ? `capturedOutput=${JSON.stringify(preview)}` : "",
+          ].filter(Boolean).join("\n")));
+        }, timeoutMs);
         if (typeof timeoutId === "object" && timeoutId !== null && "unref" in timeoutId) {
           timeoutId.unref();
         }
