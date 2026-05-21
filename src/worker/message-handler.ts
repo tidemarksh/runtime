@@ -115,7 +115,9 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
         recordWorkerMessageDebugEvent(
           handle.workerMessageDebugStats,
           "staleProcessStatusDrops",
-          `stale-process-status:${handle.pid}:0x${thread.vmPtr.toString(16)}:${msg.status}`,
+          `stale-process-status:${handle.pid}:0x${thread.vmPtr.toString(16)}:${msg.status}`
+            + `:field=${messageProcessPidField ?? "n/a"}`
+            + `:current=${currentPid}:threads=${processThreadCount}`,
         );
         deps.appendWorkerDebugLog(
           handle,
