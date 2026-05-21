@@ -54,6 +54,8 @@ const packageIndexGateTruncateFirstPackage =
   process.env.TIDEMARK_TEST_APT_PACKAGE_INDEX_TRUNCATE_FIRST === "1";
 const packageIndexGateObserveFile =
   process.env.TIDEMARK_TEST_APT_PACKAGE_INDEX_OBSERVE_FILE === "1";
+const aptCachePackagesInput = process.env.TIDEMARK_TEST_APT_CACHE_PACKAGES_INPUT ?? "";
+const aptCacheStatsTimeoutMs = Number(process.env.TIDEMARK_TEST_APT_CACHE_STATS_TIMEOUT_MS ?? "300000");
 const methodFullPackageGate = process.env.TIDEMARK_TEST_APT_METHOD_FULL_PACKAGE_GATE === "1";
 const methodFullPackageBytes = Number(process.env.TIDEMARK_TEST_APT_METHOD_FULL_PACKAGE_BYTES ?? "0");
 const storeFullPackageExpectedHash = process.env.TIDEMARK_TEST_APT_STORE_EXPECTED_HASH !== "0";
@@ -102,6 +104,8 @@ const aptPartialPackagesXzFilename =
 const aptFinalInReleaseFilename = "/var/lib/apt/lists/deb.debian.org_debian_dists_trixie_InRelease";
 const aptFinalPackagesXzFilename =
   "/var/lib/apt/lists/deb.debian.org_debian_dists_trixie_main_binary-riscv64_Packages.xz";
+const aptFinalPackagesLz4Filename =
+  "/var/lib/apt/lists/deb.debian.org_debian_dists_trixie_main_binary-riscv64_Packages.lz4";
 
 function traceApt(message: string): void {
   if (!aptTraceFile) {
@@ -197,6 +201,24 @@ function buildSyntheticAptRepository(): {
     return logSkip(`failed to build synthetic apt repository with xz: ${detail}`);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+function buildPackagesLz4FromInput(inputPath: string): Uint8Array | null {
+  if (!inputPath || !existsSync(inputPath)) {
+    return logSkip(`missing apt cache Packages input: ${inputPath || "set TIDEMARK_TEST_APT_CACHE_PACKAGES_INPUT"}`);
+  }
+  if (inputPath.endsWith(".lz4")) {
+    return new Uint8Array(readFileSync(inputPath));
+  }
+  try {
+    return new Uint8Array(execFileSync("lz4", ["-z", "-c", inputPath], {
+      maxBuffer: 256 * 1024 * 1024,
+      stdio: "pipe",
+    }));
+  } catch (error) {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    return logSkip(`failed to build Packages.lz4 with host lz4: ${detail}`);
   }
 }
 
@@ -4714,6 +4736,117 @@ test("apt-get update local gate: parent acquire loop exits after in-memory HTTP 
     runtime.destroy();
   }
 }, Math.max(90_000, asyncDoneTimeoutMs + 20_000));
+
+test("apt-cache stats local gate: preloaded package list is parsed from lists cache", async () => {
+  const packagesLz4 = buildPackagesLz4FromInput(aptCachePackagesInput);
+  if (!packagesLz4) {
+    return;
+  }
+  const prepared = await prepareAptGetRuntime(createMethodNetworkBridge([]));
+  if (!prepared) {
+    return;
+  }
+  const { runtime } = prepared;
+  const aptCachePath = resolve(aptRoot, "usr/bin/apt-cache");
+  if (!existsSync(aptCachePath)) {
+    runtime.destroy();
+    return logSkip(`missing apt-cache binary: ${aptCachePath}`);
+  }
+
+  let output = "";
+  let observation = "not-observed";
+  let sampledExecution = "[]";
+  let sampledHotPcVmas = "[]";
+  const started = Date.now();
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  let sampleId: ReturnType<typeof setInterval> | null = null;
+  try {
+    await runtime.writeFile("/usr/bin/apt-cache", new Uint8Array(readFileSync(aptCachePath)), 0o755);
+    await runtime.writeFile(aptFinalPackagesLz4Filename, packagesLz4, 0o644);
+    const aptCacheElf = new Uint8Array(readFileSync(aptCachePath));
+    const proc = await runtime.spawn(
+      aptCacheElf,
+      [
+        "/usr/bin/apt-cache",
+        "-o", "Debug::NoLocking=true",
+        "-o", "Dir::State::lists=/var/lib/apt/lists",
+        "stats",
+      ],
+      ["PATH=/usr/bin:/bin", "HOME=/root", "TMPDIR=/tmp", "LC_ALL=C", "LANG=C"],
+      { cwd: "/", stdin: "closed" },
+    );
+    proc.onStdout((data) => {
+      output += decoder.decode(data);
+    });
+    sampleId = setInterval(() => {
+      const stats = runtime.debugExecutionStats();
+      if (stats.length > 0) {
+        sampledExecution = compactAptExecutionStats(stats);
+        sampledHotPcVmas = compactAptExecutionHotPcVmas(stats);
+      }
+    }, 1000);
+    if (typeof sampleId === "object" && sampleId !== null && "unref" in sampleId) {
+      sampleId.unref();
+    }
+    const exitCode = await Promise.race([
+      proc.waitForExit(),
+      new Promise<never>((_resolve, reject) => {
+        timeoutId = setTimeout(async () => {
+          try {
+            observation = await collectAptRuntimeObservation(runtime, "apt-cache-stats-timeout", started);
+          } catch (observationError) {
+            const detail = observationError instanceof Error
+              ? (observationError.stack ?? observationError.message)
+              : String(observationError);
+            observation = `observation-error=${JSON.stringify(detail)}`;
+          }
+          reject(new Error(`timeout waiting for apt-cache stats after ${aptCacheStatsTimeoutMs}ms`));
+        }, aptCacheStatsTimeoutMs);
+        if (typeof timeoutId === "object" && timeoutId !== null && "unref" in timeoutId) {
+          timeoutId.unref();
+        }
+      }),
+    ]).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([
+        detail,
+        `packagesInput=${aptCachePackagesInput}`,
+        `packagesLz4Bytes=${packagesLz4.length}`,
+        `outputTail=${JSON.stringify(output.slice(-2048))}`,
+        `sampledExecution=${sampledExecution}`,
+        `sampledHotPcVmas=${sampledHotPcVmas}`,
+        `observation=${observation}`,
+        `debug=${compactAptMethodExecFailureDebug(await runtimeDebugSummary(runtime))}`,
+        `lastFailure=${JSON.stringify(compactAptDebugValue(runtime.debugLastFailureSnapshot?.() ?? null))}`,
+      ].join("\n"));
+    });
+    const durationMs = Date.now() - started;
+    const finalObservation = await collectAptRuntimeObservation(runtime, "apt-cache-stats-exit", started);
+    expect(exitCode, [
+      `output=${JSON.stringify(output)}`,
+      `observation=${finalObservation}`,
+      `debug=${compactAptMethodExecFailureDebug(await runtimeDebugSummary(runtime))}`,
+    ].join("\n")).toBe(0);
+    expect(output).toMatch(/Total package names|Total packages|Normal packages/);
+    console.log([
+      `apt-cache stats metrics durationMs=${durationMs}`,
+      `packagesInput=${aptCachePackagesInput}`,
+      `packagesLz4Bytes=${packagesLz4.length}`,
+      `outputTail=${JSON.stringify(output.slice(-1024))}`,
+      `sampledExecution=${sampledExecution}`,
+      `sampledHotPcVmas=${sampledHotPcVmas}`,
+      `observation=${finalObservation}`,
+    ].join(" "));
+  } finally {
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+    }
+    if (sampleId !== null) {
+      clearInterval(sampleId);
+    }
+    runtime.destroy();
+  }
+}, Math.max(330_000, aptCacheStatsTimeoutMs + 30_000));
 
 test("apt-get update local gate: package index request reaches in-memory bridge", async () => {
   const repo = buildSyntheticAptRepository();
