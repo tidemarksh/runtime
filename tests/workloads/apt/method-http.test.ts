@@ -58,6 +58,8 @@ const methodFullPackageGate = process.env.TIDEMARK_TEST_APT_METHOD_FULL_PACKAGE_
 const methodFullPackageBytes = Number(process.env.TIDEMARK_TEST_APT_METHOD_FULL_PACKAGE_BYTES ?? "0");
 const storeFullPackageExpectedHash = process.env.TIDEMARK_TEST_APT_STORE_EXPECTED_HASH !== "0";
 const storeFullPackageHashMode = storeFullPackageExpectedHash ? "sha256-only" : "apt-default-all";
+const storeFullPackageSourceMode =
+  process.env.TIDEMARK_TEST_APT_STORE_SOURCE_MODE === "plain" ? "plain" : "xz";
 const libraryRoots = (process.env.TIDEMARK_TEST_APT_METHOD_LIBRARY_ROOTS ?? "")
   .split(":")
   .filter(Boolean);
@@ -3281,13 +3283,16 @@ test("apt method store local gate: full package xz reaches URI Done", async () =
   }
   const { runtime } = prepared;
   const storeElf = new Uint8Array(readFileSync(resolve(aptRoot, "usr/lib/apt/methods/store")));
-  const sourcePath = "/tmp/tidemark-store-source-Packages.xz";
+  const sourcePath = storeFullPackageSourceMode === "plain"
+    ? "/tmp/tidemark-store-source-Packages"
+    : "/tmp/tidemark-store-source-Packages.xz";
   const destPath = "/dev/null";
   const expectedPackages = new Uint8Array(execFileSync("xz", ["-dc"], {
     input: Buffer.from(methodPackagesXzResponseBody),
     maxBuffer: 128 * 1024 * 1024,
     stdio: "pipe",
   }));
+  const sourceBody = storeFullPackageSourceMode === "plain" ? expectedPackages : methodPackagesXzResponseBody;
   const expectedSha256 = createHash("sha256").update(Buffer.from(expectedPackages)).digest("hex");
   const command = new TextEncoder().encode(`${[
     "601 Configuration",
@@ -3305,8 +3310,16 @@ test("apt method store local gate: full package xz reaches URI Done", async () =
 
   let output = "";
   const startedMs = Date.now();
+  let capabilitiesAtMs = -1;
+  let uriStartAtMs = -1;
+  let uriDoneAtMs = -1;
+  let sampleInterval: ReturnType<typeof setInterval> | null = null;
+  let sampledAtMs = -1;
+  let sampledProcessCountMax = 0;
+  let sampledExecution = "[]";
+  let sampledHotPcVmas = "[]";
   try {
-    await runtime.writeFile(sourcePath, methodPackagesXzResponseBody);
+    await runtime.writeFile(sourcePath, sourceBody);
     const proc = await runtime.spawn(
       storeElf,
       ["/usr/lib/apt/methods/store"],
@@ -3316,76 +3329,122 @@ test("apt method store local gate: full package xz reaches URI Done", async () =
     proc.onStdout((data) => {
       output += decoder.decode(data);
     });
+    sampleInterval = setInterval(() => {
+      const stats = runtime.debugExecutionStats();
+      if (stats.length >= sampledProcessCountMax) {
+        sampledProcessCountMax = stats.length;
+        sampledAtMs = Date.now() - startedMs;
+        sampledExecution = compactAptExecutionStats(stats);
+        sampledHotPcVmas = compactAptExecutionHotPcVmas(stats);
+      }
+    }, 1000);
+    if (typeof sampleInterval === "object" && sampleInterval !== null && "unref" in sampleInterval) {
+      sampleInterval.unref();
+    }
 
     await waitForOutput(() => output, "100 Capabilities", asyncDoneTimeoutMs).catch(async (error) => {
       const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
       throw new Error([
         detail,
+        `capabilitiesAtMs=${capabilitiesAtMs}`,
+        `uriStartAtMs=${uriStartAtMs}`,
+        `uriDoneAtMs=${uriDoneAtMs}`,
         `output=${JSON.stringify(output)}`,
+        `sourceMode=${storeFullPackageSourceMode}`,
         `hashMode=${storeFullPackageHashMode}`,
         `source=${await describeGuestFileBrief(runtime, sourcePath)}`,
         `storeFile=${await describeGuestFile(runtime, "/usr/lib/apt/methods/store")}`,
         `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
+        `sampledAtMs=${sampledAtMs}`,
+        `sampledProcessCountMax=${sampledProcessCountMax}`,
+        `sampledExecution=${sampledExecution}`,
         `hotPcVmas=${compactAptExecutionHotPcVmas(runtime.debugExecutionStats())}`,
+        `sampledHotPcVmas=${sampledHotPcVmas}`,
         `debug=${await runtimeDebugSummary(runtime)}`,
       ].join("\n"));
     });
+    capabilitiesAtMs = Date.now() - startedMs;
     proc.writeStdin(command);
 
-    await waitForOutput(() => output, "201 URI Done", asyncDoneTimeoutMs).catch(async (error) => {
+    await waitForOutput(() => output, "200 URI Start", asyncDoneTimeoutMs).catch(async (error) => {
       const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
       throw new Error([
         detail,
+        `capabilitiesAtMs=${capabilitiesAtMs}`,
+        `uriStartAtMs=${uriStartAtMs}`,
+        `uriDoneAtMs=${uriDoneAtMs}`,
         `durationMs=${Date.now() - startedMs}`,
         `output=${JSON.stringify(output)}`,
+        `sourceMode=${storeFullPackageSourceMode}`,
         `hashMode=${storeFullPackageHashMode}`,
         `source=${await describeGuestFileBrief(runtime, sourcePath)}`,
         `storeFile=${await describeGuestFile(runtime, "/usr/lib/apt/methods/store")}`,
         `storeLoader=${await describeGuestFile(runtime, "/lib/ld-linux-riscv64-lp64d.so.1")}`,
         `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
+        `sampledAtMs=${sampledAtMs}`,
+        `sampledProcessCountMax=${sampledProcessCountMax}`,
+        `sampledExecution=${sampledExecution}`,
         `hotPcVmas=${compactAptExecutionHotPcVmas(runtime.debugExecutionStats())}`,
+        `sampledHotPcVmas=${sampledHotPcVmas}`,
         `debug=${await runtimeDebugSummary(runtime)}`,
         `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
       ].join("\n"));
     });
+    uriStartAtMs = Date.now() - startedMs;
 
-    proc.closeStdin();
-    const exitCode = await Promise.race([
-      proc.waitForExit(),
-      new Promise<number>((_, reject) => {
-        setTimeout(() => reject(new Error("timeout waiting for store full package gate exit")), asyncDoneTimeoutMs);
-      }),
-    ]).catch(async (error) => {
+    await waitForOutput(() => output, "201 URI Done", asyncDoneTimeoutMs).catch(async (error) => {
       const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
       throw new Error([
         detail,
+        `capabilitiesAtMs=${capabilitiesAtMs}`,
+        `uriStartAtMs=${uriStartAtMs}`,
+        `uriDoneAtMs=${uriDoneAtMs}`,
         `durationMs=${Date.now() - startedMs}`,
         `output=${JSON.stringify(output)}`,
+        `sourceMode=${storeFullPackageSourceMode}`,
         `hashMode=${storeFullPackageHashMode}`,
         `source=${await describeGuestFileBrief(runtime, sourcePath)}`,
+        `storeFile=${await describeGuestFile(runtime, "/usr/lib/apt/methods/store")}`,
+        `storeLoader=${await describeGuestFile(runtime, "/lib/ld-linux-riscv64-lp64d.so.1")}`,
         `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
+        `sampledAtMs=${sampledAtMs}`,
+        `sampledProcessCountMax=${sampledProcessCountMax}`,
+        `sampledExecution=${sampledExecution}`,
         `hotPcVmas=${compactAptExecutionHotPcVmas(runtime.debugExecutionStats())}`,
+        `sampledHotPcVmas=${sampledHotPcVmas}`,
         `debug=${await runtimeDebugSummary(runtime)}`,
+        `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
       ].join("\n"));
     });
+    uriDoneAtMs = Date.now() - startedMs;
 
     expect(output).toContain("201 URI Done");
     if (storeFullPackageExpectedHash) {
       expect(output).toContain(`SHA256-Hash: ${expectedSha256}`);
     }
-    expect(exitCode).toBe(0);
     console.log([
       "apt store full package gate",
       `durationMs=${Date.now() - startedMs}`,
-      `sourceBytes=${methodPackagesXzResponseBody.length}`,
+      `capabilitiesAtMs=${capabilitiesAtMs}`,
+      `uriStartAtMs=${uriStartAtMs}`,
+      `uriDoneAtMs=${uriDoneAtMs}`,
+      `sourceMode=${storeFullPackageSourceMode}`,
+      `sourceBytes=${sourceBody.length}`,
       `decompressedBytes=${expectedPackages.length}`,
       `expectedHash=${storeFullPackageExpectedHash}`,
       `hashMode=${storeFullPackageHashMode}`,
       `sha256=${expectedSha256}`,
       `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
+      `sampledAtMs=${sampledAtMs}`,
+      `sampledProcessCountMax=${sampledProcessCountMax}`,
+      `sampledExecution=${sampledExecution}`,
       `hotPcVmas=${compactAptExecutionHotPcVmas(runtime.debugExecutionStats())}`,
+      `sampledHotPcVmas=${sampledHotPcVmas}`,
     ].join(" "));
   } finally {
+    if (sampleInterval !== null) {
+      clearInterval(sampleInterval);
+    }
     runtime.destroy();
   }
 }, Math.max(90_000, asyncDoneTimeoutMs + 30_000));

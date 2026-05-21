@@ -7,17 +7,33 @@ import {
   Runtime,
   logSkip,
   readKernelWasm,
-  spawnWithOutput,
 } from "../support/runtime-workload.js";
 import { buildSnapshotFromSources } from "../support/snapshot-sources.js";
+
+type RuntimeInstance = Awaited<ReturnType<typeof Runtime.create>>;
 
 const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), "../../..");
 const defaultDevtoolsToolsetDir = resolve(repoRoot, "artifacts/devtools/toolset");
 const devtoolsToolsetDir = process.env.TIDEMARK_TEST_DEVTOOLS_TOOLSET_DIR || defaultDevtoolsToolsetDir;
 const packageCount = Number(process.env.TIDEMARK_TEST_LARGE_XZ_PACKAGE_COUNT ?? 20_000);
+const packageXzInput = process.env.TIDEMARK_TEST_LARGE_XZ_INPUT ?? "";
 const packagesXzPath = "/work/Packages.xz";
 
 function buildPackagesCorpus(): { packages: Uint8Array; packagesXz: Uint8Array } | null {
+  if (packageXzInput) {
+    try {
+      const packagesXz = new Uint8Array(readFileSync(packageXzInput));
+      const packages = new Uint8Array(execFileSync("xz", ["-dc", packageXzInput], {
+        maxBuffer: 256 * 1024 * 1024,
+        stdio: "pipe",
+      }));
+      return { packages, packagesXz };
+    } catch (error) {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      return logSkip(`failed to read large xz input ${packageXzInput}: ${detail}`);
+    }
+  }
+
   const tmp = mkdtempSync(join(tmpdir(), "tidemark-large-xz-"));
   try {
     const packagesHostPath = join(tmp, "Packages");
@@ -50,6 +66,83 @@ function checksum(bytes: Uint8Array): bigint {
     sum += BigInt(byte);
   }
   return sum;
+}
+
+function compactExecutionStats(
+  stats: ReturnType<Awaited<ReturnType<typeof Runtime.create>>["debugExecutionStats"]>,
+): string {
+  return JSON.stringify(stats.map((proc) => ({
+    pid: proc.pid,
+    cmd: proc.cmd.split(/\s+/).slice(0, 3).join(" ").slice(0, 96),
+    running: proc.running,
+    memoryBytes: proc.memoryBytes,
+    readyWorkers: proc.readyWorkers,
+    blockedWorkers: proc.blockedWorkers,
+    transferDebugStats: proc.transferDebugStats,
+    cpuDebugStats: proc.cpuDebugStats,
+    workers: proc.workers.map((worker) => ({
+      ownerState: worker.ownerState,
+      stepCount: worker.stepCount,
+      totalStepBudget: worker.totalStepBudget,
+      lastStatusName: worker.lastStatusName,
+      lastStepPc: worker.lastStepPc,
+      hotStepPcs: worker.hotStepPcs.slice(0, 3),
+      statusCountsByName: Object.fromEntries(
+        Object.entries(worker.statusCountsByName)
+          .sort((left, right) => right[1] - left[1])
+          .slice(0, 5),
+      ),
+    })),
+  })));
+}
+
+async function spawnWithOutputAndStats(
+  runtime: RuntimeInstance,
+  elfBytes: Uint8Array,
+  argv: string[],
+  env: string[],
+  timeoutMs: number,
+  options: Parameters<RuntimeInstance["spawn"]>[3],
+): Promise<{ exitCode: number; output: string; debugInfo?: string; execution: string }> {
+  const decoder = new TextDecoder();
+  const proc = await runtime.spawn(new Uint8Array(elfBytes), argv, env, options);
+  let output = "";
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  let sampleId: ReturnType<typeof setInterval> | null = null;
+  let execution = compactExecutionStats(runtime.debugExecutionStats());
+
+  proc.onStdout((data) => {
+    output += decoder.decode(data);
+  });
+  sampleId = setInterval(() => {
+    const stats = runtime.debugExecutionStats();
+    if (stats.length > 0) {
+      execution = compactExecutionStats(stats);
+    }
+  }, 1000);
+  if (typeof sampleId === "object" && sampleId !== null && "unref" in sampleId) {
+    sampleId.unref();
+  }
+
+  try {
+    const exitCode = await Promise.race([
+      proc.waitForExit(),
+      new Promise<never>((_resolve, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`timeout after ${timeoutMs}ms`)), timeoutMs);
+        if (typeof timeoutId === "object" && timeoutId !== null && "unref" in timeoutId) {
+          timeoutId.unref();
+        }
+      }),
+    ]);
+    return { exitCode, output, debugInfo: proc.debugInfo?.(), execution };
+  } finally {
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+    }
+    if (sampleId !== null) {
+      clearInterval(sampleId);
+    }
+  }
 }
 
 test("large xz local gate: guest xz decompresses package-index sized input", async () => {
@@ -87,7 +180,7 @@ test("large xz local gate: guest xz decompresses package-index sized input", asy
   try {
     await runtime.applyFsSnapshot(snapshot.entries ?? []);
     const spawnStartedMs = Date.now();
-    const result = await spawnWithOutput(
+    const result = await spawnWithOutputAndStats(
       runtime,
       new Uint8Array(readFileSync(xzHostPath)),
       ["/usr/bin/xz", "-dc", packagesXzPath],
@@ -98,16 +191,23 @@ test("large xz local gate: guest xz decompresses package-index sized input", asy
     const spawnDurationMs = Date.now() - spawnStartedMs;
     expect(result.exitCode, result.output + (result.debugInfo ? `\n${result.debugInfo}` : "")).toBe(0);
     const outputBytes = new TextEncoder().encode(result.output);
-    expect(outputBytes.length).toBe(corpus.packages.length);
-    expect(checksum(outputBytes)).toBe(checksum(corpus.packages));
-    expect(result.output).toContain("Package: tidemark-local-0\n");
-    expect(result.output).toContain(`Package: tidemark-local-${Math.max(1, Math.trunc(packageCount)) - 1}\n`);
+    if (packageXzInput) {
+      expect(result.output).toContain("Package:");
+    } else {
+      expect(outputBytes.length).toBe(corpus.packages.length);
+      expect(checksum(outputBytes)).toBe(checksum(corpus.packages));
+      expect(result.output).toContain("Package: tidemark-local-0\n");
+      expect(result.output).toContain(`Package: tidemark-local-${Math.max(1, Math.trunc(packageCount)) - 1}\n`);
+    }
     console.log([
       `large xz gate durationMs=${Date.now() - startedMs}`,
       `spawnDurationMs=${spawnDurationMs}`,
       `packageCount=${Math.max(1, Math.trunc(packageCount))}`,
       `packagesBytes=${corpus.packages.length}`,
+      `outputBytes=${outputBytes.length}`,
       `packagesXzBytes=${corpus.packagesXz.length}`,
+      `input=${packageXzInput || "synthetic"}`,
+      `execution=${result.execution}`,
     ].join(" "));
   } finally {
     runtime.destroy();
