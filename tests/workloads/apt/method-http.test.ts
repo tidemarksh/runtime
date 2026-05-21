@@ -64,6 +64,8 @@ const libraryRoots = (process.env.TIDEMARK_TEST_APT_METHOD_LIBRARY_ROOTS ?? "")
   .split(":")
   .filter(Boolean);
 const aptTraceFile = process.env.TIDEMARK_TEST_APT_TRACE_FILE ?? "";
+const traceBridgeWrites = process.env.TIDEMARK_TEST_APT_BRIDGE_TRACE_WRITES === "1";
+const disableAptHttpPipeline = process.env.TIDEMARK_TEST_APT_DISABLE_HTTP_PIPELINE === "1";
 
 type MethodHttpResponse = Uint8Array | {
   statusLine: string;
@@ -101,6 +103,26 @@ function traceApt(message: string): void {
     return;
   }
   writeFileSync(aptTraceFile, `${new Date().toISOString()} ${message}\n`, { flag: "a" });
+}
+
+function compactBridgePreview(text: string, limit = 96): string {
+  return text
+    .slice(0, limit)
+    .replace(/[^\x20-\x7e]/g, ".");
+}
+
+function aptGetUpdateArgs(): string[] {
+  return [
+    "/usr/bin/apt-get",
+    "update",
+    "-o", "Acquire::http::Timeout=10",
+    "-o", "Acquire::http::Proxy=http://127.0.0.1:8080",
+    "-o", "Acquire::AllowInsecureRepositories=true",
+    "-o", "Acquire::AllowDowngradeToInsecureRepositories=true",
+    "-o", "Debug::NoLocking=true",
+    "-o", "APT::Get::List-Cleanup=false",
+    ...(disableAptHttpPipeline ? ["-o", "Acquire::http::Pipeline-Depth=0"] : []),
+  ];
 }
 
 function buildSyntheticAptRepository(): {
@@ -2255,8 +2277,9 @@ function createAsyncMethodNetworkBridge(
   selectResponseBody: MethodResponseSelector = selectMethodResponseBody,
   metrics?: MethodBridgeMetrics,
 ): RuntimeNetworkBridge {
+  const eventLimit = traceBridgeWrites ? 256 : 64;
   const record = (event: string): void => {
-    if (events.length < 64) {
+    if (events.length < eventLimit) {
       events.push(event);
     }
   };
@@ -2325,7 +2348,14 @@ function createAsyncMethodNetworkBridge(
           if (request.includes("GET ")) {
             sawRequest = true;
           }
-          record(`write:${data.length}`);
+          if (traceBridgeWrites) {
+            record(
+              `write:${data.length}:targets=${JSON.stringify(extractHttpGetTargets([request]))}`
+                + `:head=${JSON.stringify(compactBridgePreview(request))}`,
+            );
+          } else {
+            record(`write:${data.length}`);
+          }
           if (pendingRead) {
             clearTimeout(pendingRead.timer);
             pendingRead.resolve();
@@ -2370,6 +2400,9 @@ function createAsyncMethodNetworkBridge(
           const targets = extractHttpGetTargets([requestText]);
           responseTarget = targets[targets.length - 1] ?? "";
           responseBytes = serializeHttpResponse(selectResponseBody(requestText));
+          if (traceBridgeWrites) {
+            record(`read:select:${JSON.stringify(responseTarget)}:bytes=${responseBytes.length}`);
+          }
           responseCompleteRecorded = false;
           await new Promise((resolveDone) => setTimeout(resolveDone, 1));
           const chunk = responseBytes.subarray(0, maxBytes);
@@ -4153,16 +4186,7 @@ test("apt-get update local gate: parent acquire loop exits after in-memory HTTP 
   try {
     const proc = await runtime.spawn(
       aptGetElf,
-      [
-        "/usr/bin/apt-get",
-        "update",
-        "-o", "Acquire::http::Timeout=10",
-        "-o", "Acquire::http::Proxy=http://127.0.0.1:8080",
-        "-o", "Acquire::AllowInsecureRepositories=true",
-        "-o", "Acquire::AllowDowngradeToInsecureRepositories=true",
-        "-o", "Debug::NoLocking=true",
-        "-o", "APT::Get::List-Cleanup=false",
-      ],
+      aptGetUpdateArgs(),
       [
         "PATH=/usr/bin:/bin",
         "HOME=/root",
@@ -4299,16 +4323,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
   try {
     const proc = await runtime.spawn(
       aptGetElf,
-      [
-        "/usr/bin/apt-get",
-        "update",
-        "-o", "Acquire::http::Timeout=10",
-        "-o", "Acquire::http::Proxy=http://127.0.0.1:8080",
-        "-o", "Acquire::AllowInsecureRepositories=true",
-        "-o", "Acquire::AllowDowngradeToInsecureRepositories=true",
-        "-o", "Debug::NoLocking=true",
-        "-o", "APT::Get::List-Cleanup=false",
-      ],
+      aptGetUpdateArgs(),
       [
         "PATH=/usr/bin:/bin",
         "HOME=/root",
