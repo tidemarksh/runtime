@@ -3122,11 +3122,25 @@ async function describeGuestSqvTmpFiles(
 }
 
 function extractHttpGetTargets(chunks: readonly string[]): string[] {
-  return chunks
-    .join("")
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith("GET "))
-    .map((line) => line.split(" ")[1] ?? "");
+  const targets: string[] = [];
+  let pending = "";
+  for (const chunk of chunks) {
+    pending += chunk;
+    const lines = pending.split(/\r?\n/);
+    pending = lines.pop() ?? "";
+    if (pending.length > 8192) {
+      pending = pending.slice(-8192);
+    }
+    for (const line of lines) {
+      if (line.startsWith("GET ")) {
+        targets.push(line.split(" ")[1] ?? "");
+      }
+    }
+  }
+  if (pending.startsWith("GET ")) {
+    targets.push(pending.split(" ")[1] ?? "");
+  }
+  return targets;
 }
 
 function isPackageIndexTarget(target: string): boolean {
