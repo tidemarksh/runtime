@@ -2874,6 +2874,9 @@ function compactAptExecutionStats(
       lastStepAtMs: worker.lastStepAtMs,
       lastStatusAtMs: worker.lastStatusAtMs,
       lastStepPc: worker.lastStepPc,
+      threadStepEntry: worker.threadStepEntry,
+      threadStepStatus: worker.threadStepStatus,
+      threadStepPhase: worker.threadStepPhase,
       hotStepPcs: worker.hotStepPcs.slice(0, 3),
       statusCountsByName: Object.fromEntries(
         Object.entries(worker.statusCountsByName)

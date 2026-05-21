@@ -30,6 +30,19 @@ export interface WorkerLogFocus {
   statusTail: string[];
 }
 
+export interface ThreadStepDebugSnapshot {
+  vmPtr: number;
+  tid: number | null;
+  phase: number | null;
+  status: number;
+  budget: number;
+  remaining: number | null;
+  pc: string;
+  ra: string;
+  sp: string;
+  s11: string;
+}
+
 export interface RuntimeProcessWorkerLogFocus {
   pid: number;
   cmd: string;
@@ -57,6 +70,9 @@ export interface WorkerExecutionStats {
   lastStatusS11: string | null;
   hotStatusPcs: Array<{ pc: string; count: number }>;
   waitingInWorkerStatus: number | null;
+  threadStepEntry: ThreadStepDebugSnapshot | null;
+  threadStepStatus: ThreadStepDebugSnapshot | null;
+  threadStepPhase: ThreadStepDebugSnapshot | null;
 }
 
 export interface ProcessExecutionStats {
@@ -293,6 +309,84 @@ function readCpuDebugStats(handle: ProcessHandle): CpuDebugStats | null {
     interpreterOpCounts: readCounts(handle.kernel.debug_cpu_profile_interpreter_op_count),
     unsupportedOpCounts: readCounts(handle.kernel.debug_cpu_profile_unsupported_op_count),
   };
+}
+
+function hasThreadStepDebugSignal(snapshot: ThreadStepDebugSnapshot): boolean {
+  return (snapshot.tid ?? 0) !== 0
+    || (snapshot.phase ?? 0) !== 0
+    || snapshot.status !== 0
+    || snapshot.budget !== 0
+    || (snapshot.remaining ?? 0) !== 0
+    || snapshot.pc !== "0x0"
+    || snapshot.ra !== "0x0"
+    || snapshot.sp !== "0x0"
+    || snapshot.s11 !== "0x0";
+}
+
+function readThreadStepEntryDebug(
+  handle: Pick<ProcessHandle, "kernel">,
+  vmPtr: number,
+): ThreadStepDebugSnapshot | null {
+  if (!handle.kernel.debug_thread_step_entry_for_vm_status) {
+    return null;
+  }
+  const snapshot = {
+    vmPtr,
+    tid: handle.kernel.debug_thread_step_entry_for_vm_tid?.(vmPtr) ?? null,
+    phase: null,
+    status: handle.kernel.debug_thread_step_entry_for_vm_status?.(vmPtr) ?? 0,
+    budget: handle.kernel.debug_thread_step_entry_for_vm_budget?.(vmPtr) ?? 0,
+    remaining: null,
+    pc: `0x${formatU64(handle.kernel.debug_thread_step_entry_for_vm_pc?.(vmPtr) ?? 0n)}`,
+    ra: `0x${formatU64(handle.kernel.debug_thread_step_entry_for_vm_ra?.(vmPtr) ?? 0n)}`,
+    sp: `0x${formatU64(handle.kernel.debug_thread_step_entry_for_vm_sp?.(vmPtr) ?? 0n)}`,
+    s11: `0x${formatU64(handle.kernel.debug_thread_step_entry_for_vm_s11?.(vmPtr) ?? 0n)}`,
+  } satisfies ThreadStepDebugSnapshot;
+  return hasThreadStepDebugSignal(snapshot) ? snapshot : null;
+}
+
+function readThreadStepStatusDebug(
+  handle: Pick<ProcessHandle, "kernel">,
+  vmPtr: number,
+): ThreadStepDebugSnapshot | null {
+  if (!handle.kernel.debug_thread_step_for_vm_status) {
+    return null;
+  }
+  const snapshot = {
+    vmPtr,
+    tid: handle.kernel.debug_thread_step_for_vm_tid?.(vmPtr) ?? null,
+    phase: null,
+    status: handle.kernel.debug_thread_step_for_vm_status?.(vmPtr) ?? 0,
+    budget: handle.kernel.debug_thread_step_for_vm_budget?.(vmPtr) ?? 0,
+    remaining: handle.kernel.debug_thread_step_for_vm_remaining?.(vmPtr) ?? null,
+    pc: `0x${formatU64(handle.kernel.debug_thread_step_for_vm_pc?.(vmPtr) ?? 0n)}`,
+    ra: `0x${formatU64(handle.kernel.debug_thread_step_for_vm_ra?.(vmPtr) ?? 0n)}`,
+    sp: `0x${formatU64(handle.kernel.debug_thread_step_for_vm_sp?.(vmPtr) ?? 0n)}`,
+    s11: `0x${formatU64(handle.kernel.debug_thread_step_for_vm_s11?.(vmPtr) ?? 0n)}`,
+  } satisfies ThreadStepDebugSnapshot;
+  return hasThreadStepDebugSignal(snapshot) ? snapshot : null;
+}
+
+function readThreadStepPhaseDebug(
+  handle: Pick<ProcessHandle, "kernel">,
+  vmPtr: number,
+): ThreadStepDebugSnapshot | null {
+  if (!handle.kernel.debug_thread_step_phase_for_vm) {
+    return null;
+  }
+  const snapshot = {
+    vmPtr,
+    tid: null,
+    phase: handle.kernel.debug_thread_step_phase_for_vm?.(vmPtr) ?? 0,
+    status: handle.kernel.debug_thread_step_phase_for_vm_status?.(vmPtr) ?? 0,
+    budget: handle.kernel.debug_thread_step_phase_for_vm_budget?.(vmPtr) ?? 0,
+    remaining: handle.kernel.debug_thread_step_phase_for_vm_remaining?.(vmPtr) ?? null,
+    pc: `0x${formatU64(handle.kernel.debug_thread_step_phase_for_vm_pc?.(vmPtr) ?? 0n)}`,
+    ra: `0x${formatU64(handle.kernel.debug_thread_step_phase_for_vm_ra?.(vmPtr) ?? 0n)}`,
+    sp: `0x${formatU64(handle.kernel.debug_thread_step_phase_for_vm_sp?.(vmPtr) ?? 0n)}`,
+    s11: `0x${formatU64(handle.kernel.debug_thread_step_phase_for_vm_s11?.(vmPtr) ?? 0n)}`,
+  } satisfies ThreadStepDebugSnapshot;
+  return hasThreadStepDebugSignal(snapshot) ? snapshot : null;
 }
 
 function isSuspiciousLowStateWorkerLogEntry(entry: string | null): boolean {
@@ -643,6 +737,9 @@ export function debugRuntimeExecutionStats(
               lastStatusS11: formatOptionalBigIntHex(state.lastStatusS11),
               hotStatusPcs: formatHotCounters(state.hotStatusPcs),
               waitingInWorkerStatus: state.waitingInWorkerStatus,
+              threadStepEntry: readThreadStepEntryDebug(handle, state.vmPtr),
+              threadStepStatus: readThreadStepStatusDebug(handle, state.vmPtr),
+              threadStepPhase: readThreadStepPhaseDebug(handle, state.vmPtr),
             } satisfies WorkerExecutionStats;
           })
           .filter((entry): entry is WorkerExecutionStats => entry !== null)
