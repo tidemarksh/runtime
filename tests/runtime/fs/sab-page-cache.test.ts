@@ -6,6 +6,7 @@ import {
   readFileData,
   readInodeMeta,
   readInodeRecord,
+  writeFileData,
 } from "../../../src/fs/sab-page-cache.js";
 import { createKernelEnv } from "../../../src/wasm/env.js";
 
@@ -90,4 +91,40 @@ test("readFileData honors byte offsets", () => {
   expect(meta).not.toBeNull();
   expect(readFileData(sab, meta!.dataOff, meta!.size, 16, 8)).toEqual(fileData.slice(16, 24));
   expect(readFileData(sab, meta!.dataOff, meta!.size, 60, 16)).toEqual(fileData.slice(60));
+});
+
+test("writeFileData appends in place and preserves inode metadata", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 256);
+  const name = new TextEncoder().encode("file");
+  const initial = new Uint8Array([1, 2, 3, 4]);
+  const append = new Uint8Array([5, 6, 7]);
+
+  publishInode(sab, 2, {
+    mode: 0o100644,
+    size: initial.length,
+    parentIno: 1,
+    name,
+    nextSibling: 9,
+  }, initial);
+  const before = readInodeRecord(sab, 2);
+  expect(before).not.toBeNull();
+
+  expect(writeFileData(sab, 2, initial.length, append)).toBe(append.length);
+  const moved = readInodeRecord(sab, 2);
+  expect(moved).not.toBeNull();
+  expect(moved?.dataOff).toBeGreaterThan(before!.dataOff);
+
+  const secondAppend = new Uint8Array([8, 9]);
+  expect(writeFileData(sab, 2, initial.length + append.length, secondAppend)).toBe(secondAppend.length);
+
+  const after = readInodeRecord(sab, 2);
+  expect(after).not.toBeNull();
+  expect(after?.dataOff).toBe(moved?.dataOff);
+  expect(after?.size).toBe(initial.length + append.length + secondAppend.length);
+  expect(after?.mode).toBe(0o100644);
+  expect(after?.parentIno).toBe(1);
+  expect(after?.name).toEqual(name);
+  expect(after?.nextSibling).toBe(9);
+  expect(readFileData(sab, after!.dataOff, after!.size, 0, after!.size))
+    .toEqual(new Uint8Array([...initial, ...append, ...secondAppend]));
 });

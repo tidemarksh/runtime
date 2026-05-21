@@ -140,6 +140,97 @@ export function publishInode(
   }
 }
 
+function allocateDataRegion(sab: SharedArrayBuffer, byteLength: number): number {
+  if (byteLength <= 0) {
+    return 0;
+  }
+  const u32 = new Uint32Array(sab);
+  const currentUsed = Atomics.load(u32, OFF_DATA_USED >>> 2);
+  const start = DATA_REGION_OFFSET + currentUsed;
+  const end = start + byteLength;
+  if (end > sab.byteLength) {
+    return 0;
+  }
+  Atomics.store(u32, OFF_DATA_USED >>> 2, currentUsed + byteLength);
+  return start;
+}
+
+export function writeFileData(
+  sab: SharedArrayBuffer,
+  ino: number,
+  offset: number,
+  data: Uint8Array,
+): number {
+  if (!Number.isInteger(ino) || ino <= 0 || ino >= MAX_INODES || offset < 0) {
+    return -22;
+  }
+  if (data.length === 0) {
+    return 0;
+  }
+
+  const u32 = new Uint32Array(sab);
+  const u8 = new Uint8Array(sab);
+  const base = inodeOffset(ino);
+  if (base < INODE_TABLE_OFFSET || base + INODE_ENTRY_SIZE > sab.byteLength) {
+    return -22;
+  }
+  const base32 = base >>> 2;
+  const oldNameOff = Atomics.load(u32, base32 + (INODE_OFF_NAME_OFF >>> 2));
+  const oldNameLen = Atomics.load(u32, base32 + (INODE_OFF_NAME_LEN >>> 2));
+  const oldRecord = readInodeRecord(sab, ino);
+  const oldSize = oldRecord?.size ?? 0;
+  const oldDataOff = oldRecord?.dataOff ?? 0;
+  const end = offset + data.length;
+  const nextSize = Math.max(oldSize, end);
+  if (!Number.isFinite(nextSize) || nextSize > 0xffffffff) {
+    return -28;
+  }
+
+  let dataOff = oldDataOff;
+  if (
+    oldDataOff >= DATA_REGION_OFFSET
+    && end <= oldSize
+    && oldDataOff + end <= sab.byteLength
+  ) {
+    u8.set(data, oldDataOff + offset);
+  } else if (
+    oldDataOff >= DATA_REGION_OFFSET
+    && offset === oldSize
+    && oldDataOff + oldSize === DATA_REGION_OFFSET + Atomics.load(u32, OFF_DATA_USED >>> 2)
+    && oldDataOff + nextSize <= sab.byteLength
+  ) {
+    u8.set(data, oldDataOff + offset);
+    Atomics.store(u32, OFF_DATA_USED >>> 2, oldDataOff + nextSize - DATA_REGION_OFFSET);
+  } else {
+    dataOff = allocateDataRegion(sab, nextSize);
+    if (dataOff === 0) {
+      return -28;
+    }
+    if (oldRecord && oldRecord.dataOff >= DATA_REGION_OFFSET && oldRecord.size > 0) {
+      u8.set(readFileData(sab, oldRecord.dataOff, oldRecord.size, 0, oldRecord.size), dataOff);
+    }
+    u8.set(data, dataOff + offset);
+  }
+
+  const currentVersion = Atomics.load(u32, base32 + (INODE_OFF_VERSION >>> 2));
+  const oddVersion = (currentVersion | 1) + (currentVersion & 1 ? 1 : 0);
+  Atomics.store(u32, base32 + (INODE_OFF_VERSION >>> 2), oddVersion);
+  Atomics.store(u32, base32 + (INODE_OFF_DATA_OFF >>> 2), dataOff);
+  Atomics.store(u32, base32 + (INODE_OFF_DATA_SIZE >>> 2), nextSize);
+  Atomics.store(u32, base32 + (INODE_OFF_MODE >>> 2), oldRecord?.mode ?? 0o100644);
+  Atomics.store(u32, base32 + (INODE_OFF_PARENT >>> 2), oldRecord?.parentIno ?? 0);
+  Atomics.store(u32, base32 + (INODE_OFF_NAME_OFF >>> 2), oldNameLen > 0 ? oldNameOff : 0);
+  Atomics.store(u32, base32 + (INODE_OFF_NAME_LEN >>> 2), oldNameLen);
+  Atomics.store(u32, base32 + (INODE_OFF_NEXT_SIBLING >>> 2), oldRecord?.nextSibling ?? 0);
+  Atomics.store(u32, base32 + (INODE_OFF_VERSION >>> 2), oddVersion + 1);
+
+  const inodeCount = Atomics.load(u32, OFF_INODE_COUNT >>> 2);
+  if (ino >= inodeCount) {
+    Atomics.store(u32, OFF_INODE_COUNT >>> 2, ino + 1);
+  }
+  return data.length;
+}
+
 /**
  * Read an inode's metadata from the SAB page cache with seqlock validation.
  * Returns null if the inode doesn't exist or a torn read is detected after retries.

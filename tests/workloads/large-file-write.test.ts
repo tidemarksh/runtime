@@ -7,11 +7,16 @@ import {
   Runtime,
   logSkip,
   readKernelWasm,
-  spawnWithOutput,
 } from "../support/runtime-workload.js";
+
+type RuntimeInstance = Awaited<ReturnType<typeof Runtime.create>>;
 
 const hostRiscvGcc = process.env.TIDEMARK_TEST_HOST_RISCV_GCC ?? "riscv64-linux-gnu-gcc";
 const largeFileBytes = Number(process.env.TIDEMARK_TEST_LARGE_FILE_WRITE_BYTES ?? 8 * 1024 * 1024);
+const largeFileWriteRamSize = Number(process.env.TIDEMARK_TEST_LARGE_FILE_WRITE_RAM_BYTES ?? 512 * 1024 * 1024);
+const largeFileWriteMaxProcessMemoryPages = Number(
+  process.env.TIDEMARK_TEST_LARGE_FILE_WRITE_MAX_PROCESS_MEMORY_PAGES ?? 32768,
+);
 const largeFilePath = "/work/large-file-write.bin";
 
 function buildLargeFileWriteProbe(): Uint8Array | null {
@@ -103,6 +108,83 @@ function expectedChecksum(length: number): bigint {
   return sum;
 }
 
+function compactExecutionStats(
+  stats: ReturnType<Awaited<ReturnType<typeof Runtime.create>>["debugExecutionStats"]>,
+): string {
+  return JSON.stringify(stats.map((proc) => ({
+    pid: proc.pid,
+    cmd: proc.cmd.split(/\s+/).slice(0, 3).join(" ").slice(0, 96),
+    running: proc.running,
+    memoryBytes: proc.memoryBytes,
+    readyWorkers: proc.readyWorkers,
+    blockedWorkers: proc.blockedWorkers,
+    transferDebugStats: proc.transferDebugStats,
+    cpuDebugStats: proc.cpuDebugStats,
+    workers: proc.workers.map((worker) => ({
+      ownerState: worker.ownerState,
+      stepCount: worker.stepCount,
+      totalStepBudget: worker.totalStepBudget,
+      lastStatusName: worker.lastStatusName,
+      lastStepPc: worker.lastStepPc,
+      hotStepPcs: worker.hotStepPcs.slice(0, 3),
+      statusCountsByName: Object.fromEntries(
+        Object.entries(worker.statusCountsByName)
+          .sort((left, right) => right[1] - left[1])
+          .slice(0, 5),
+      ),
+    })),
+  })));
+}
+
+async function spawnWithOutputAndStats(
+  runtime: RuntimeInstance,
+  elfBytes: Uint8Array,
+  argv: string[],
+  env: string[],
+  timeoutMs: number,
+  options: Parameters<RuntimeInstance["spawn"]>[3],
+): Promise<{ exitCode: number; output: string; debugInfo?: string; execution: string }> {
+  const decoder = new TextDecoder();
+  const proc = await runtime.spawn(new Uint8Array(elfBytes), argv, env, options);
+  let output = "";
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  let sampleId: ReturnType<typeof setInterval> | null = null;
+  let execution = compactExecutionStats(runtime.debugExecutionStats());
+
+  proc.onStdout((data) => {
+    output += decoder.decode(data);
+  });
+  sampleId = setInterval(() => {
+    const stats = runtime.debugExecutionStats();
+    if (stats.length > 0) {
+      execution = compactExecutionStats(stats);
+    }
+  }, 1000);
+  if (typeof sampleId === "object" && sampleId !== null && "unref" in sampleId) {
+    sampleId.unref();
+  }
+
+  try {
+    const exitCode = await Promise.race([
+      proc.waitForExit(),
+      new Promise<never>((_resolve, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`timeout after ${timeoutMs}ms`)), timeoutMs);
+        if (typeof timeoutId === "object" && timeoutId !== null && "unref" in timeoutId) {
+          timeoutId.unref();
+        }
+      }),
+    ]);
+    return { exitCode, output, debugInfo: proc.debugInfo?.(), execution };
+  } finally {
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+    }
+    if (sampleId !== null) {
+      clearInterval(sampleId);
+    }
+  }
+}
+
 test("large regular file write local gate: guest sequential writes publish byte-for-byte", async () => {
   const wasmBytes = readKernelWasm();
   if (!wasmBytes) {
@@ -113,14 +195,18 @@ test("large regular file write local gate: guest sequential writes publish byte-
     return;
   }
 
-  const runtime = await Runtime.create({ wasmBytes });
+  const runtime = await Runtime.create({
+    wasmBytes,
+    ramSize: largeFileWriteRamSize,
+    maxProcessMemoryPages: largeFileWriteMaxProcessMemoryPages,
+  });
   const startedMs = Date.now();
   try {
     await runtime.applyFsSnapshot([
       { kind: "dir", path: "/work", mode: 0o755 },
     ]);
     const spawnStartedMs = Date.now();
-    const result = await spawnWithOutput(
+    const result = await spawnWithOutputAndStats(
       runtime,
       probeBytes,
       ["/work/large-file-write", largeFilePath, String(largeFileBytes)],
@@ -146,6 +232,9 @@ test("large regular file write local gate: guest sequential writes publish byte-
       `spawnDurationMs=${spawnDurationMs}`,
       `readbackDurationMs=${readDurationMs}`,
       `bytes=${largeFileBytes}`,
+      `ramBytes=${largeFileWriteRamSize}`,
+      `maxProcessMemoryPages=${largeFileWriteMaxProcessMemoryPages}`,
+      `execution=${result.execution}`,
     ].join(" "));
   } finally {
     runtime.destroy();

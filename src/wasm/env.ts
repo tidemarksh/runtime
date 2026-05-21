@@ -1,4 +1,4 @@
-import { readInodeMeta } from "../fs/sab-page-cache.js";
+import { readInodeMeta, writeFileData } from "../fs/sab-page-cache.js";
 
 export interface KernelEnvImports {
   [key: string]: WebAssembly.ImportValue;
@@ -6,6 +6,7 @@ export interface KernelEnvImports {
   tidemark_memory_atomic_notify(ptr: number, maxWake: number): number;
   tidemark_page_cache_read(ino: number, offset: bigint, dstPtr: number, dstLen: number): bigint;
   tidemark_page_cache_stat(ino: number, outPtr: number): number;
+  tidemark_page_cache_write(ino: number, offset: bigint, srcPtr: number, srcLen: number): bigint;
 }
 
 export interface KernelEnvOptions {
@@ -54,6 +55,20 @@ export function createKernelEnv(
       view.setUint32(outPtr, meta.mode, true);
       view.setBigUint64(outPtr + 8, BigInt(meta.size), true);
       return 1;
+    },
+    tidemark_page_cache_write(ino, offset, srcPtr, srcLen) {
+      if (!sabPageCache || srcLen <= 0) {
+        return 0n;
+      }
+      const offsetNumber = Number(offset);
+      if (!Number.isFinite(offsetNumber) || offsetNumber < 0) {
+        return -22n;
+      }
+      if (srcPtr < 0 || srcPtr + srcLen > memory.buffer.byteLength) {
+        return -14n;
+      }
+      const source = new Uint8Array(memory.buffer, srcPtr, srcLen);
+      return BigInt(writeFileData(sabPageCache, ino, offsetNumber, source));
     },
   };
 }
