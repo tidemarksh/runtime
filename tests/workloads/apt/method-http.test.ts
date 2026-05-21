@@ -2864,6 +2864,7 @@ function compactAptExecutionStats(
     pendingChildExitRecords: proc.pendingChildExitRecords,
     pendingChildSpawnRecords: proc.pendingChildSpawnRecords,
     runtimeBridgeDebugStage: proc.runtimeBridgeDebugStage,
+    workerMessageDebugStats: proc.workerMessageDebugStats,
     transferDebugStats: proc.transferDebugStats,
     memoryLogTail: proc.memoryLogTail,
     cpuDebugStats: proc.cpuDebugStats,
@@ -4785,6 +4786,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
 
     await waitForBridgeRequestOrExit(guestRequests, proc, asyncDoneTimeoutMs).catch(async (error) => {
       const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      const debugSummary = await runtimeDebugSummary(runtime);
       throw new Error([
         detail,
         `guestRequests=${JSON.stringify(guestRequests)}`,

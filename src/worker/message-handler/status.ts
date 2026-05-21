@@ -18,7 +18,7 @@ import {
   forceNetworkClosedFds,
   networkSocketSlotRecvBufferIndex,
 } from "../network-socket-close.js";
-import type { ProcessHandle } from "../types.js";
+import { recordWorkerMessageDebugEvent, type ProcessHandle } from "../types.js";
 import { createWorkerOwnedStateSyncHandler } from "./owned-state-sync.js";
 import { createWorkerStatusTransitionHandler } from "./transitions.js";
 import type {
@@ -1953,6 +1953,11 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
   ): void {
     const thread = deps.threadWorkerStates.get(worker);
     if (!thread) {
+      recordWorkerMessageDebugEvent(
+        handle.workerMessageDebugStats,
+        "statusHandlerNoThreadDrops",
+        `status-no-thread:${handle.pid}:${msg.status}`,
+      );
       return;
     }
     if (msg.generation !== undefined && msg.generation !== thread.generation) {
@@ -1998,6 +2003,11 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
           + `:owner=${thread.ownerAsyncStatus}:status=${msg.status}`
           + `:ownerMatch=${statusBelongsToHandle ? 1 : 0}`,
       );
+      recordWorkerMessageDebugEvent(
+        handle.workerMessageDebugStats,
+        "ownerAsyncStatusReturns",
+        `status-owner-async:${handle.pid}:0x${thread.vmPtr.toString(16)}:${msg.status}`,
+      );
       return;
     }
     const previousWaitingStatus = thread.waitingInWorkerStatus;
@@ -2031,6 +2041,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       );
     }
     thread.statusCount += 1;
+    recordWorkerMessageDebugEvent(handle.workerMessageDebugStats, "statusHandled");
     thread.statusCounts[String(status)] = (thread.statusCounts[String(status)] ?? 0) + 1;
     thread.lastStatus = status;
     thread.lastStatusAtMs = Date.now();
@@ -2103,6 +2114,13 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     }
 
     const isRunningWorker = handle.runningWorker === worker;
+    if (!isRunningWorker) {
+      recordWorkerMessageDebugEvent(
+        handle.workerMessageDebugStats,
+        "statusNotRunning",
+        `status-not-running:${handle.pid}:0x${thread.vmPtr.toString(16)}:${status}`,
+      );
+    }
     const deferLocalPipeDrain = kernelWorkerOwnsPipeState(handle);
     const adoptPreSnapshots: ThreadRegisterSnapshot[] = [];
     for (const candidate of handle.workers) {
@@ -2171,6 +2189,11 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     if (isRunningWorker) {
       handle.runningWorker = null;
       thread.runningGeneration = null;
+      recordWorkerMessageDebugEvent(
+        handle.workerMessageDebugStats,
+        "statusClearedRunning",
+        `status-cleared-running:${handle.pid}:0x${thread.vmPtr.toString(16)}:${status}`,
+      );
     }
 
     let transitionStatus = status;

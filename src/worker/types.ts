@@ -70,6 +70,59 @@ export interface ThreadWorkerState {
   resumeWorkersOnReady: Worker[];
 }
 
+export interface WorkerMessageDebugStats {
+  received: number;
+  statusReceived: number;
+  controlReceived: number;
+  rerouted: number;
+  inactiveHandleDrops: number;
+  exitInProgressDrops: number;
+  ownershipInvariantDrops: number;
+  staleGenerationDrops: number;
+  staleProcessStatusDrops: number;
+  statusHandlerNoThreadDrops: number;
+  ownerAsyncStatusReturns: number;
+  statusHandled: number;
+  statusClearedRunning: number;
+  statusNotRunning: number;
+  lastEvents: string[];
+}
+
+export function createWorkerMessageDebugStats(): WorkerMessageDebugStats {
+  return {
+    received: 0,
+    statusReceived: 0,
+    controlReceived: 0,
+    rerouted: 0,
+    inactiveHandleDrops: 0,
+    exitInProgressDrops: 0,
+    ownershipInvariantDrops: 0,
+    staleGenerationDrops: 0,
+    staleProcessStatusDrops: 0,
+    statusHandlerNoThreadDrops: 0,
+    ownerAsyncStatusReturns: 0,
+    statusHandled: 0,
+    statusClearedRunning: 0,
+    statusNotRunning: 0,
+    lastEvents: [],
+  };
+}
+
+export function recordWorkerMessageDebugEvent(
+  stats: WorkerMessageDebugStats,
+  key: Exclude<keyof WorkerMessageDebugStats, "lastEvents">,
+  event?: string,
+): void {
+  stats[key] += 1;
+  if (event === undefined) {
+    return;
+  }
+  stats.lastEvents.push(event);
+  if (stats.lastEvents.length > 32) {
+    stats.lastEvents.splice(0, stats.lastEvents.length - 32);
+  }
+}
+
 export interface BlockedWorkerState {
   vmPtr: number;
   status: number;
@@ -253,6 +306,7 @@ export interface ProcessHandle {
   onError?: (error: Error) => void;
   onStdout?: (data: Uint8Array) => void;
   workerDebugLog: string[];
+  workerMessageDebugStats: WorkerMessageDebugStats;
   transferDebugStats: TransferDebugStats;
   guestWriteWatchRegions: GuestWriteWatchRegion[];
 }

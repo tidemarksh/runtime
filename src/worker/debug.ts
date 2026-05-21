@@ -91,6 +91,7 @@ export interface ProcessExecutionStats {
   pendingChildSpawnRecords: number;
   activeChildren: number;
   runtimeBridgeDebugStage: { stage: number; value: number };
+  workerMessageDebugStats: ProcessHandle["workerMessageDebugStats"];
   transferDebugStats: TransferDebugStats;
   memoryLogTail: string[];
   memoryVmas: Array<{
@@ -704,6 +705,10 @@ export function debugRuntimeExecutionStats(
         pendingChildSpawnRecords: handle.pendingChildSpawnRecords,
         activeChildren: [...processHandles.values()].filter((candidate) => candidate.parentPid === handle.pid).length,
         runtimeBridgeDebugStage: readRuntimeBridgeDebugStage(handle.runtimeBridge),
+        workerMessageDebugStats: {
+          ...handle.workerMessageDebugStats,
+          lastEvents: handle.workerMessageDebugStats.lastEvents.slice(-16),
+        },
         transferDebugStats: { ...handle.transferDebugStats },
         memoryLogTail: handle.workerDebugLog
           .filter((entry) =>

@@ -20,7 +20,7 @@ import {
   ensureEvictionTimer,
 } from "./pool.js";
 import { computeGuestRamLimitBytes } from "./fork/common.js";
-import { createTransferDebugStats } from "./types.js";
+import { createTransferDebugStats, createWorkerMessageDebugStats } from "./types.js";
 import type {
   AttachThreadWorkerRequest,
   CreateProcessOptions,
@@ -453,6 +453,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       onError: options.onError,
       onStdout: options.onStdout,
       workerDebugLog: [],
+      workerMessageDebugStats: createWorkerMessageDebugStats(),
       transferDebugStats: createTransferDebugStats(),
       guestWriteWatchRegions: [],
     };

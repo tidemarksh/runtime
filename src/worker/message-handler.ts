@@ -2,7 +2,7 @@ import { createWorkerControlMessageHandler } from "./message-handler/control.js"
 import { readProcessPidField } from "./message-handler/debug-summary.js";
 import { createWorkerStatusMessageHandler } from "./message-handler/status.js";
 import type { WorkerMessageHandlerDeps } from "./message-handler/types.js";
-import type { ProcessHandle } from "./types.js";
+import { recordWorkerMessageDebugEvent, type ProcessHandle } from "./types.js";
 import type { ThreadWorkerOutbound } from "../messages.js";
 
 export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
@@ -15,6 +15,11 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
     msg: ThreadWorkerOutbound,
     detail: string,
   ): void {
+    recordWorkerMessageDebugEvent(
+      handle.workerMessageDebugStats,
+      "ownershipInvariantDrops",
+      `ownership-invariant:${handle.pid}:${msg.type}:${detail}`,
+    );
     const thread = deps.threadWorkerStates.get(worker);
     const vmPtr = thread?.vmPtr ?? 0;
     const workerLogTail = handle.workerDebugLog.slice(-12).join(", ");
@@ -53,6 +58,11 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
       return true;
     }
     if ("generation" in msg && msg.generation !== thread.generation) {
+      recordWorkerMessageDebugEvent(
+        handle.workerMessageDebugStats,
+        "staleGenerationDrops",
+        `stale-generation:${handle.pid}:${msg.type}:${msg.generation}->${thread.generation}`,
+      );
       deps.appendWorkerDebugLog(
         handle,
         `stale-message:0x${thread.vmPtr.toString(16)}:${msg.type}:${msg.generation}->${thread.generation}`,
@@ -102,6 +112,11 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
       }
       const processThreadCount = handle.kernel.thread_process_thread_count(thread.vmPtr);
       if (msg.type === "status" && currentPid === 0 && processThreadCount === 0) {
+        recordWorkerMessageDebugEvent(
+          handle.workerMessageDebugStats,
+          "staleProcessStatusDrops",
+          `stale-process-status:${handle.pid}:0x${thread.vmPtr.toString(16)}:${msg.status}`,
+        );
         deps.appendWorkerDebugLog(
           handle,
           `stale-process-status:0x${thread.vmPtr.toString(16)}:${msg.status}:pid=${handle.pid}`,
@@ -121,6 +136,12 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
     worker: Worker,
     msg: ThreadWorkerOutbound,
   ): void {
+    recordWorkerMessageDebugEvent(handle.workerMessageDebugStats, "received");
+    if (msg.type === "status") {
+      recordWorkerMessageDebugEvent(handle.workerMessageDebugStats, "statusReceived");
+    } else {
+      recordWorkerMessageDebugEvent(handle.workerMessageDebugStats, "controlReceived");
+    }
     const messageProcessPidField = "debug" in msg ? readProcessPidField(msg.debug) : null;
     if (
       handle.pid > 0
@@ -130,6 +151,11 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
     ) {
       const rerouteHandle = deps.processHandles.get(messageProcessPidField);
       if (rerouteHandle && rerouteHandle !== handle) {
+        recordWorkerMessageDebugEvent(
+          handle.workerMessageDebugStats,
+          "rerouted",
+          `reroute:${handle.pid}->${messageProcessPidField}:${msg.type}`,
+        );
         deps.appendWorkerDebugLog(
           handle,
           `reroute-message:pid=${handle.pid}->${messageProcessPidField}:type=${msg.type}`,
@@ -139,9 +165,19 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
       }
     }
     if (handle.pid > 0 && deps.processHandles.get(handle.pid) !== handle) {
+      recordWorkerMessageDebugEvent(
+        handle.workerMessageDebugStats,
+        "inactiveHandleDrops",
+        `inactive-handle:${handle.pid}:${msg.type}`,
+      );
       return;
     }
     if (handle.exitInProgress) {
+      recordWorkerMessageDebugEvent(
+        handle.workerMessageDebugStats,
+        "exitInProgressDrops",
+        `exit-in-progress:${handle.pid}:${msg.type}`,
+      );
       return;
     }
     if (!assertWorkerOwnershipInvariant(handle, worker, msg)) {
