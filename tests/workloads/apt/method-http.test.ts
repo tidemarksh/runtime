@@ -3325,6 +3325,8 @@ test("apt method store local gate: full package xz reaches URI Done", async () =
         `hashMode=${storeFullPackageHashMode}`,
         `source=${await describeGuestFileBrief(runtime, sourcePath)}`,
         `storeFile=${await describeGuestFile(runtime, "/usr/lib/apt/methods/store")}`,
+        `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
+        `hotPcVmas=${compactAptExecutionHotPcVmas(runtime.debugExecutionStats())}`,
         `debug=${await runtimeDebugSummary(runtime)}`,
       ].join("\n"));
     });
@@ -3340,6 +3342,8 @@ test("apt method store local gate: full package xz reaches URI Done", async () =
         `source=${await describeGuestFileBrief(runtime, sourcePath)}`,
         `storeFile=${await describeGuestFile(runtime, "/usr/lib/apt/methods/store")}`,
         `storeLoader=${await describeGuestFile(runtime, "/lib/ld-linux-riscv64-lp64d.so.1")}`,
+        `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
+        `hotPcVmas=${compactAptExecutionHotPcVmas(runtime.debugExecutionStats())}`,
         `debug=${await runtimeDebugSummary(runtime)}`,
         `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
       ].join("\n"));
@@ -3359,6 +3363,8 @@ test("apt method store local gate: full package xz reaches URI Done", async () =
         `output=${JSON.stringify(output)}`,
         `hashMode=${storeFullPackageHashMode}`,
         `source=${await describeGuestFileBrief(runtime, sourcePath)}`,
+        `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
+        `hotPcVmas=${compactAptExecutionHotPcVmas(runtime.debugExecutionStats())}`,
         `debug=${await runtimeDebugSummary(runtime)}`,
       ].join("\n"));
     });
@@ -3376,6 +3382,8 @@ test("apt method store local gate: full package xz reaches URI Done", async () =
       `expectedHash=${storeFullPackageExpectedHash}`,
       `hashMode=${storeFullPackageHashMode}`,
       `sha256=${expectedSha256}`,
+      `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
+      `hotPcVmas=${compactAptExecutionHotPcVmas(runtime.debugExecutionStats())}`,
     ].join(" "));
   } finally {
     runtime.destroy();
