@@ -976,6 +976,194 @@ function buildStoreEofWaitProbe(): Uint8Array | null {
   }
 }
 
+function buildStoreFullForkExecProbe(): Uint8Array | null {
+  const tmp = mkdtempSync(join(tmpdir(), "tidemark-apt-store-full-fork-exec-"));
+  const sourcePath = join(tmp, "apt_store_full_fork_exec.c");
+  const outputPath = join(tmp, "apt-store-full-fork-exec-probe");
+  try {
+    writeFileSync(sourcePath, [
+      "#include <errno.h>",
+      "#include <fcntl.h>",
+      "#include <poll.h>",
+      "#include <signal.h>",
+      "#include <stdio.h>",
+      "#include <stdlib.h>",
+      "#include <string.h>",
+      "#include <sys/wait.h>",
+      "#include <unistd.h>",
+      "",
+      "#define OUTPUT_CAP 65536",
+      "#define COMMAND_CAP 16384",
+      "",
+      "static int write_all(int fd, const char *data, ssize_t len) {",
+      "  ssize_t off = 0;",
+      "  while (off < len) {",
+      "    ssize_t n = write(fd, data + off, (size_t)(len - off));",
+      "    if (n < 0) {",
+      "      if (errno == EINTR) continue;",
+      "      return -1;",
+      "    }",
+      "    off += n;",
+      "  }",
+      "  return 0;",
+      "}",
+      "",
+      "static int append_output(char *output, size_t *len, const char *chunk, ssize_t chunk_len) {",
+      "  if (chunk_len <= 0) return 0;",
+      "  if (*len + (size_t)chunk_len >= OUTPUT_CAP) return -1;",
+      "  memcpy(output + *len, chunk, (size_t)chunk_len);",
+      "  *len += (size_t)chunk_len;",
+      "  output[*len] = '\\0';",
+      "  return 0;",
+      "}",
+      "",
+      "static int drain_until(int fd, const char *needle, char *output, size_t *output_len, int timeout_ms) {",
+      "  char chunk[4096];",
+      "  int elapsed = 0;",
+      "  while (elapsed < timeout_ms) {",
+      "    struct pollfd pfd = { .fd = fd, .events = POLLIN | POLLHUP, .revents = 0 };",
+      "    int pr = poll(&pfd, 1, 100);",
+      "    if (pr < 0) {",
+      "      if (errno == EINTR) continue;",
+      "      perror(\"poll-output\");",
+      "      return -1;",
+      "    }",
+      "    elapsed += 100;",
+      "    if (pr == 0) continue;",
+      "    if (pfd.revents & POLLIN) {",
+      "      for (;;) {",
+      "        ssize_t n = read(fd, chunk, sizeof(chunk));",
+      "        if (n < 0) {",
+      "          if (errno == EINTR) continue;",
+      "          if (errno == EAGAIN || errno == EWOULDBLOCK) break;",
+      "          perror(\"read-output\");",
+      "          return -1;",
+      "        }",
+      "        if (n == 0) break;",
+      "        if (write_all(1, chunk, n) != 0) return -1;",
+      "        if (append_output(output, output_len, chunk, n) != 0) return -1;",
+      "        if (strstr(output, needle) != NULL) return 0;",
+      "      }",
+      "    }",
+      "    if ((pfd.revents & POLLHUP) && strstr(output, needle) == NULL) return 1;",
+      "  }",
+      "  return 1;",
+      "}",
+      "",
+      "static int drain_to_eof(int fd, int timeout_ms) {",
+      "  char chunk[4096];",
+      "  int elapsed = 0;",
+      "  while (elapsed < timeout_ms) {",
+      "    struct pollfd pfd = { .fd = fd, .events = POLLIN | POLLHUP, .revents = 0 };",
+      "    int pr = poll(&pfd, 1, 100);",
+      "    if (pr < 0) {",
+      "      if (errno == EINTR) continue;",
+      "      perror(\"poll-eof\");",
+      "      return -1;",
+      "    }",
+      "    elapsed += 100;",
+      "    if (pr == 0) continue;",
+      "    if (pfd.revents & POLLIN) {",
+      "      for (;;) {",
+      "        ssize_t n = read(fd, chunk, sizeof(chunk));",
+      "        if (n < 0) {",
+      "          if (errno == EINTR) continue;",
+      "          if (errno == EAGAIN || errno == EWOULDBLOCK) break;",
+      "          perror(\"read-eof\");",
+      "          return -1;",
+      "        }",
+      "        if (n == 0) return 0;",
+      "        if (write_all(1, chunk, n) != 0) return -1;",
+      "      }",
+      "    }",
+      "    if (pfd.revents & POLLHUP) {",
+      "      ssize_t n = read(fd, chunk, sizeof(chunk));",
+      "      if (n == 0) return 0;",
+      "      if (n > 0 && write_all(1, chunk, n) != 0) return -1;",
+      "      if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) return -1;",
+      "    }",
+      "  }",
+      "  return 1;",
+      "}",
+      "",
+      "static int wait_child(pid_t child, int timeout_ms) {",
+      "  int elapsed = 0;",
+      "  while (elapsed < timeout_ms) {",
+      "    int status = 0;",
+      "    pid_t waited = waitpid(child, &status, WNOHANG);",
+      "    if (waited == child) {",
+      "      return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);",
+      "    }",
+      "    if (waited < 0 && errno != EINTR) return 127;",
+      "    usleep(100000);",
+      "    elapsed += 100;",
+      "  }",
+      "  return 124;",
+      "}",
+      "",
+      "int main(void) {",
+      "  int in_pipe[2];",
+      "  int out_pipe[2];",
+      "  char output[OUTPUT_CAP];",
+      "  char command[COMMAND_CAP];",
+      "  size_t output_len = 0;",
+      "  int command_fd;",
+      "  ssize_t command_len;",
+      "  output[0] = '\\0';",
+      "  signal(SIGPIPE, SIG_IGN);",
+      "  command_fd = open(\"/work/apt-store-command.txt\", O_RDONLY);",
+      "  if (command_fd < 0) { perror(\"open-command\"); return 10; }",
+      "  command_len = read(command_fd, command, sizeof(command));",
+      "  close(command_fd);",
+      "  if (command_len <= 0) { perror(\"read-command\"); return 11; }",
+      "  if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0) { perror(\"pipe\"); return 12; }",
+      "  fcntl(out_pipe[0], F_SETFL, fcntl(out_pipe[0], F_GETFL, 0) | O_NONBLOCK);",
+      cStringArray("argv", ["/usr/lib/apt/methods/store"]),
+      cStringArray("envp", ["LC_ALL=C", "LANG=C", "PATH=/usr/bin:/bin"]),
+      "  pid_t child = fork();",
+      "  if (child < 0) { perror(\"fork\"); return 13; }",
+      "  if (child == 0) {",
+      "    if (dup2(in_pipe[0], 0) < 0) { perror(\"dup2-stdin\"); _exit(125); }",
+      "    if (dup2(out_pipe[1], 1) < 0) { perror(\"dup2-stdout\"); _exit(126); }",
+      "    close(in_pipe[0]); close(in_pipe[1]);",
+      "    close(out_pipe[0]); close(out_pipe[1]);",
+      "    execve(\"/usr/lib/apt/methods/store\", argv, envp);",
+      "    perror(\"execve-store\");",
+      "    _exit(127);",
+      "  }",
+      "  close(in_pipe[0]);",
+      "  close(out_pipe[1]);",
+      `  if (drain_until(out_pipe[0], "100 Capabilities", output, &output_len, ${asyncDoneTimeoutMs}) != 0) return 15;`,
+      "  if (write_all(1, \"parent:store-caps\\n\", 18) != 0) return 16;",
+      "  if (write_all(in_pipe[1], command, command_len) != 0) { perror(\"write-command\"); return 14; }",
+      `  if (drain_until(out_pipe[0], "201 URI Done", output, &output_len, ${asyncDoneTimeoutMs}) != 0) return 17;`,
+      "  if (write_all(1, \"parent:store-uri-done\\n\", 22) != 0) return 18;",
+      "  close(in_pipe[1]);",
+      `  if (drain_to_eof(out_pipe[0], ${chainChildTimeoutMs}) != 0) return 19;`,
+      "  if (write_all(1, \"parent:store-stdout-eof\\n\", 24) != 0) return 20;",
+      `  int exit_code = wait_child(child, ${chainChildTimeoutMs});`,
+      "  dprintf(1, \"parent:store-child-exit=%d\\n\", exit_code);",
+      "  close(out_pipe[0]);",
+      "  return exit_code == 0 ? 0 : 100 + exit_code;",
+      "}",
+      "",
+    ].join("\n"));
+    execFileSync(hostRiscvGcc, [
+      "-O2",
+      "-Wl,--dynamic-linker=/lib/ld-linux-riscv64-lp64d.so.1",
+      "-o",
+      outputPath,
+      sourcePath,
+    ], { stdio: "pipe" });
+    return new Uint8Array(readFileSync(outputPath));
+  } catch (error) {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    return logSkip(`failed to build apt store full fork/exec probe with ${hostRiscvGcc}: ${detail}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 function buildForkExecMethodEofWaitProbe(): Uint8Array | null {
   const tmp = mkdtempSync(join(tmpdir(), "tidemark-apt-method-eof-wait-"));
   const sourcePath = join(tmp, "apt_method_eof_wait.c");
@@ -3481,6 +3669,226 @@ test("apt method store local gate: full package xz reaches URI Done", async () =
     runtime.destroy();
   }
 }, Math.max(90_000, asyncDoneTimeoutMs + 30_000));
+
+test("apt method store local gate: forked full package xz reaches URI Done", async () => {
+  if (!methodPackagesXzResponseBody) {
+    return logSkip("missing full package xz response body: set TIDEMARK_TEST_APT_METHOD_PACKAGES_XZ_RESPONSE_BODY");
+  }
+  const prepared = await prepareAptGetRuntime(createMethodNetworkBridge([]));
+  if (!prepared) {
+    return;
+  }
+  const probeElf = buildStoreFullForkExecProbe();
+  if (!probeElf) {
+    prepared.runtime.destroy();
+    return;
+  }
+  const { runtime } = prepared;
+  const sourcePath = storeFullPackageSourceMode === "plain"
+    ? "/tmp/tidemark-store-source-Packages"
+    : "/tmp/tidemark-store-source-Packages.xz";
+  const destPath = "/dev/null";
+  const expectedPackages = new Uint8Array(execFileSync("xz", ["-dc"], {
+    input: Buffer.from(methodPackagesXzResponseBody),
+    maxBuffer: 128 * 1024 * 1024,
+    stdio: "pipe",
+  }));
+  const sourceBody = storeFullPackageSourceMode === "plain" ? expectedPackages : methodPackagesXzResponseBody;
+  const expectedSha256 = createHash("sha256").update(Buffer.from(expectedPackages)).digest("hex");
+  const command = new TextEncoder().encode(`${[
+    "601 Configuration",
+    "Config-Item: APT::Architecture=riscv64",
+    "Config-Item: APT::Architectures::=riscv64",
+    "Config-Item: APT::Sandbox::User=root",
+    "Config-Item: Dir=/",
+    "",
+    "600 URI Acquire",
+    `URI: store:${sourcePath}`,
+    `Filename: ${destPath}`,
+    ...(storeFullPackageExpectedHash ? [`Expected-SHA256: ${expectedSha256}`] : []),
+    "",
+  ].join("\n")}\n`);
+
+  let output = "";
+  const startedMs = Date.now();
+  let capabilitiesAtMs = -1;
+  let uriStartAtMs = -1;
+  let uriDoneAtMs = -1;
+  let sampleInterval: ReturnType<typeof setInterval> | null = null;
+  let sampledAtMs = -1;
+  let sampledProcessCountMax = 0;
+  let sampledExecution = "[]";
+  let sampledHotPcVmas = "[]";
+  try {
+    await runtime.writeFile(sourcePath, sourceBody);
+    await runtime.writeFile("/work/apt-store-command.txt", command);
+    const proc = await runtime.spawn(
+      probeElf,
+      ["/work/apt-store-full-fork-exec-probe"],
+      ["LC_ALL=C", "LANG=C", "PATH=/usr/bin:/bin"],
+      { cwd: "/work", stdin: "closed" },
+    );
+    proc.onStdout((data) => {
+      output += decoder.decode(data);
+    });
+    sampleInterval = setInterval(() => {
+      const stats = runtime.debugExecutionStats();
+      if (stats.length >= sampledProcessCountMax) {
+        sampledProcessCountMax = stats.length;
+        sampledAtMs = Date.now() - startedMs;
+        sampledExecution = compactAptExecutionStats(stats);
+        sampledHotPcVmas = compactAptExecutionHotPcVmas(stats);
+      }
+    }, 1000);
+    if (typeof sampleInterval === "object" && sampleInterval !== null && "unref" in sampleInterval) {
+      sampleInterval.unref();
+    }
+
+    await waitForOutput(() => output, "parent:store-caps", asyncDoneTimeoutMs).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([
+        detail,
+        `capabilitiesAtMs=${capabilitiesAtMs}`,
+        `uriStartAtMs=${uriStartAtMs}`,
+        `uriDoneAtMs=${uriDoneAtMs}`,
+        `output=${JSON.stringify(output)}`,
+        `sourceMode=${storeFullPackageSourceMode}`,
+        `hashMode=${storeFullPackageHashMode}`,
+        `source=${await describeGuestFileBrief(runtime, sourcePath)}`,
+        `command=${await describeGuestFileBrief(runtime, "/work/apt-store-command.txt")}`,
+        `storeFile=${await describeGuestFile(runtime, "/usr/lib/apt/methods/store")}`,
+        `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
+        `sampledAtMs=${sampledAtMs}`,
+        `sampledProcessCountMax=${sampledProcessCountMax}`,
+        `sampledExecution=${sampledExecution}`,
+        `hotPcVmas=${compactAptExecutionHotPcVmas(runtime.debugExecutionStats())}`,
+        `sampledHotPcVmas=${sampledHotPcVmas}`,
+        `debug=${await runtimeDebugSummary(runtime)}`,
+        `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
+      ].join("\n"));
+    });
+    capabilitiesAtMs = Date.now() - startedMs;
+
+    await waitForOutput(() => output, "200 URI Start", asyncDoneTimeoutMs).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([
+        detail,
+        `capabilitiesAtMs=${capabilitiesAtMs}`,
+        `uriStartAtMs=${uriStartAtMs}`,
+        `uriDoneAtMs=${uriDoneAtMs}`,
+        `durationMs=${Date.now() - startedMs}`,
+        `output=${JSON.stringify(output)}`,
+        `sourceMode=${storeFullPackageSourceMode}`,
+        `hashMode=${storeFullPackageHashMode}`,
+        `source=${await describeGuestFileBrief(runtime, sourcePath)}`,
+        `command=${await describeGuestFileBrief(runtime, "/work/apt-store-command.txt")}`,
+        `storeFile=${await describeGuestFile(runtime, "/usr/lib/apt/methods/store")}`,
+        `storeLoader=${await describeGuestFile(runtime, "/lib/ld-linux-riscv64-lp64d.so.1")}`,
+        `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
+        `sampledAtMs=${sampledAtMs}`,
+        `sampledProcessCountMax=${sampledProcessCountMax}`,
+        `sampledExecution=${sampledExecution}`,
+        `hotPcVmas=${compactAptExecutionHotPcVmas(runtime.debugExecutionStats())}`,
+        `sampledHotPcVmas=${sampledHotPcVmas}`,
+        `debug=${await runtimeDebugSummary(runtime)}`,
+        `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
+      ].join("\n"));
+    });
+    uriStartAtMs = Date.now() - startedMs;
+
+    await waitForOutput(() => output, "parent:store-uri-done", asyncDoneTimeoutMs).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([
+        detail,
+        `capabilitiesAtMs=${capabilitiesAtMs}`,
+        `uriStartAtMs=${uriStartAtMs}`,
+        `uriDoneAtMs=${uriDoneAtMs}`,
+        `durationMs=${Date.now() - startedMs}`,
+        `output=${JSON.stringify(output)}`,
+        `sourceMode=${storeFullPackageSourceMode}`,
+        `hashMode=${storeFullPackageHashMode}`,
+        `source=${await describeGuestFileBrief(runtime, sourcePath)}`,
+        `command=${await describeGuestFileBrief(runtime, "/work/apt-store-command.txt")}`,
+        `storeFile=${await describeGuestFile(runtime, "/usr/lib/apt/methods/store")}`,
+        `storeLoader=${await describeGuestFile(runtime, "/lib/ld-linux-riscv64-lp64d.so.1")}`,
+        `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
+        `sampledAtMs=${sampledAtMs}`,
+        `sampledProcessCountMax=${sampledProcessCountMax}`,
+        `sampledExecution=${sampledExecution}`,
+        `hotPcVmas=${compactAptExecutionHotPcVmas(runtime.debugExecutionStats())}`,
+        `sampledHotPcVmas=${sampledHotPcVmas}`,
+        `debug=${await runtimeDebugSummary(runtime)}`,
+        `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
+      ].join("\n"));
+    });
+    uriDoneAtMs = Date.now() - startedMs;
+
+    const exitCode = await Promise.race([
+      proc.waitForExit(),
+      new Promise<number>((_, reject) => {
+        setTimeout(() => reject(new Error("timeout waiting for forked store probe exit")), chainChildTimeoutMs);
+      }),
+    ]).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([
+        detail,
+        `capabilitiesAtMs=${capabilitiesAtMs}`,
+        `uriStartAtMs=${uriStartAtMs}`,
+        `uriDoneAtMs=${uriDoneAtMs}`,
+        `durationMs=${Date.now() - startedMs}`,
+        `output=${JSON.stringify(output)}`,
+        `sourceMode=${storeFullPackageSourceMode}`,
+        `hashMode=${storeFullPackageHashMode}`,
+        `source=${await describeGuestFileBrief(runtime, sourcePath)}`,
+        `command=${await describeGuestFileBrief(runtime, "/work/apt-store-command.txt")}`,
+        `storeFile=${await describeGuestFile(runtime, "/usr/lib/apt/methods/store")}`,
+        `storeLoader=${await describeGuestFile(runtime, "/lib/ld-linux-riscv64-lp64d.so.1")}`,
+        `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
+        `sampledAtMs=${sampledAtMs}`,
+        `sampledProcessCountMax=${sampledProcessCountMax}`,
+        `sampledExecution=${sampledExecution}`,
+        `hotPcVmas=${compactAptExecutionHotPcVmas(runtime.debugExecutionStats())}`,
+        `sampledHotPcVmas=${sampledHotPcVmas}`,
+        `debug=${await runtimeDebugSummary(runtime)}`,
+        `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
+      ].join("\n"));
+    });
+
+    expect(output).toContain("201 URI Done");
+    expect(output).toContain("parent:store-uri-done");
+    expect(output).toContain("parent:store-stdout-eof");
+    expect(output).toContain("parent:store-child-exit=0");
+    expect(exitCode).toBe(0);
+    if (storeFullPackageExpectedHash) {
+      expect(output).toContain(`SHA256-Hash: ${expectedSha256}`);
+    }
+    console.log([
+      "apt store forked full package gate",
+      `durationMs=${Date.now() - startedMs}`,
+      `capabilitiesAtMs=${capabilitiesAtMs}`,
+      `uriStartAtMs=${uriStartAtMs}`,
+      `uriDoneAtMs=${uriDoneAtMs}`,
+      `exitCode=${exitCode}`,
+      `sourceMode=${storeFullPackageSourceMode}`,
+      `sourceBytes=${sourceBody.length}`,
+      `decompressedBytes=${expectedPackages.length}`,
+      `expectedHash=${storeFullPackageExpectedHash}`,
+      `hashMode=${storeFullPackageHashMode}`,
+      `sha256=${expectedSha256}`,
+      `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
+      `sampledAtMs=${sampledAtMs}`,
+      `sampledProcessCountMax=${sampledProcessCountMax}`,
+      `sampledExecution=${sampledExecution}`,
+      `hotPcVmas=${compactAptExecutionHotPcVmas(runtime.debugExecutionStats())}`,
+      `sampledHotPcVmas=${sampledHotPcVmas}`,
+    ].join(" "));
+  } finally {
+    if (sampleInterval !== null) {
+      clearInterval(sampleInterval);
+    }
+    runtime.destroy();
+  }
+}, Math.max(120_000, asyncDoneTimeoutMs + chainChildTimeoutMs + 30_000));
 
 test("apt method http local gate: captured stdin reaches generic network bridge", async () => {
   const guestRequests: string[] = [];
