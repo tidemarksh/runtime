@@ -3,6 +3,7 @@ import type {
   ThreadWorkerState,
   TransferDebugStats,
 } from "./types.js";
+import { readRuntimeBridgeDebugStage } from "../bridge/runtime-state.js";
 
 const NET_BUFFER_HEADER_BYTES = 16;
 const NET_BUFFER_HEAD_OFFSET = 0;
@@ -89,6 +90,7 @@ export interface ProcessExecutionStats {
   pendingChildExitRecords: number;
   pendingChildSpawnRecords: number;
   activeChildren: number;
+  runtimeBridgeDebugStage: { stage: number; value: number };
   transferDebugStats: TransferDebugStats;
   memoryLogTail: string[];
   memoryVmas: Array<{
@@ -701,6 +703,7 @@ export function debugRuntimeExecutionStats(
         pendingChildExitRecords: handle.pendingChildExitRecords,
         pendingChildSpawnRecords: handle.pendingChildSpawnRecords,
         activeChildren: [...processHandles.values()].filter((candidate) => candidate.parentPid === handle.pid).length,
+        runtimeBridgeDebugStage: readRuntimeBridgeDebugStage(handle.runtimeBridge),
         transferDebugStats: { ...handle.transferDebugStats },
         memoryLogTail: handle.workerDebugLog
           .filter((entry) =>

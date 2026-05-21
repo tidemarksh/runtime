@@ -24,6 +24,7 @@ import type {
 import {
   readPublishedRuntimeBridgeEpoch,
   readPublishedKernelRuntimeState,
+  publishRuntimeBridgeDebugStage,
   type RuntimeStateBridge,
 } from "./bridge/runtime-state.js";
 import { detectWasmFeatures, type WasmFeatureSupport } from "./wasm/features.js";
@@ -74,6 +75,9 @@ const PIPE_RESUME_DEBUG_ENABLED = PIPE_SLOT_DEBUG_ENABLED
   || ((globalThis as {
     process?: { env?: Record<string, string | undefined> };
   }).process?.env?.TIDEMARK_PIPE_RESUME_DEBUG ?? "") === "1";
+const THREAD_WORKER_STAGE_DEBUG_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_THREAD_WORKER_STAGE_DEBUG ?? "") === "1";
 let lastResumeBlockedDebug: string | undefined;
 let syscallNumbers: SyscallNumbers | null = null;
 const regularFileDataLayouts = new Map<number, { dataOffset: number; dataCap: number }>();
@@ -1254,12 +1258,22 @@ function formatPipeSlotDebug(pipeSlots: KernelWorkerPipeSlotSnapshot[] | undefin
   return `pipe_slots=[${entries.join(",")}]`;
 }
 
+function publishThreadWorkerStage(stage: number, value = 0): void {
+  if (THREAD_WORKER_STAGE_DEBUG_ENABLED && runtimeBridge !== null) {
+    publishRuntimeBridgeDebugStage(runtimeBridge, stage, value);
+  }
+}
+
 function postStatus(status: number, waitInWorker = false): void {
+  publishThreadWorkerStage(100, status);
   const kernelExports = requireExports();
   const includeDebug = status !== statusCodes.FS;
   const syncEffects = readCompletedSyncEffects(kernelExports, statusCodes, status, syscallNumbers, vmPtr);
+  publishThreadWorkerStage(101, status);
   const kernelState = readKernelRuntimeState(kernelExports);
+  publishThreadWorkerStage(102, status);
   const fdEntries = snapshotProcessFdEntries(kernelExports, vmPtr);
+  publishThreadWorkerStage(103, status);
   const shouldSnapshotPipeSlots = status === statusCodes.FAULT
     || (syncEffects & SYNC_EFFECT_PIPE_STATE) !== 0;
   const pipeSlots = shouldSnapshotPipeSlots
@@ -1275,10 +1289,12 @@ function postStatus(status: number, waitInWorker = false): void {
         return processSlots;
       })()
     : undefined;
+  publishThreadWorkerStage(104, status);
   const guestMemoryWrites = [
     ...(snapshotCompletedPipeReadGuestMemory(kernelExports, status, syncEffects) ?? []),
     ...snapshotPendingFsRequestGuestMemory(kernelExports),
   ];
+  publishThreadWorkerStage(105, status);
   const memfsSnapshotMode = shouldSnapshotProcessMemfsMemory(status, syncEffects, kernelExports);
   const kernelMemoryWrites = [
     ...(snapshotFsRingMemory(kernelExports, status) ?? []),
@@ -1288,8 +1304,32 @@ function postStatus(status: number, waitInWorker = false): void {
       memfsSnapshotMode,
     ),
   ];
+  publishThreadWorkerStage(106, status);
   const ofdSlots = snapshotOfdSlotsForFdEntries(kernelExports, kernelState, vmPtr, fdEntries);
+  publishThreadWorkerStage(107, status);
   const latestFdTrace = snapshotLatestFdTraceForStatus(kernelExports, vmPtr);
+  publishThreadWorkerStage(108, status);
+  const socketState = snapshotSocketState(kernelExports, kernelState);
+  publishThreadWorkerStage(109, status);
+  const debug = includeDebug ? (() => {
+    publishThreadWorkerStage(120, status);
+    const parts = collectDebugParts(kernelExports, vmPtr, guestBase);
+    const pipeSlotDebug = formatPipeSlotDebug(pipeSlots);
+    if (pipeSlotDebug) {
+      parts.push(pipeSlotDebug);
+    }
+    if (lastResumeBlockedDebug) {
+      parts.push(lastResumeBlockedDebug);
+      lastResumeBlockedDebug = undefined;
+    }
+    const pipeReadDebug = formatLatestPipeReadDebug(kernelExports, status);
+    if (pipeReadDebug) {
+      parts.push(pipeReadDebug);
+    }
+    publishThreadWorkerStage(121, status);
+    return parts.length === 0 ? undefined : parts.join(" ");
+  })() : formatOwnerDebug(kernelExports);
+  publishThreadWorkerStage(122, status);
   const msg: ThreadWorkerOutbound = {
     type: "status",
     generation,
@@ -1308,7 +1348,7 @@ function postStatus(status: number, waitInWorker = false): void {
     ofdSlots,
     processState: snapshotExecveProcessState(kernelExports, status),
     pipeSlots,
-    socketState: snapshotSocketState(kernelExports, kernelState),
+    socketState,
     guestMemoryWrites: guestMemoryWrites.length > 0 ? guestMemoryWrites : undefined,
     kernelMemoryWrites: kernelMemoryWrites.length > 0 ? kernelMemoryWrites : undefined,
     fdTraceDebug: collectFdTraceDebug(kernelExports, vmPtr, guestBase),
@@ -1320,22 +1360,7 @@ function postStatus(status: number, waitInWorker = false): void {
     fdTraceArg2OfdType: latestFdTrace?.arg2OfdType,
     fdTraceResult: latestFdTrace?.result,
     forkStackSnapshot: snapshotForkStack(kernelExports, status),
-    debug: includeDebug ? (() => {
-      const parts = collectDebugParts(kernelExports, vmPtr, guestBase);
-      const pipeSlotDebug = formatPipeSlotDebug(pipeSlots);
-      if (pipeSlotDebug) {
-        parts.push(pipeSlotDebug);
-      }
-      if (lastResumeBlockedDebug) {
-        parts.push(lastResumeBlockedDebug);
-        lastResumeBlockedDebug = undefined;
-      }
-      const pipeReadDebug = formatLatestPipeReadDebug(kernelExports, status);
-      if (pipeReadDebug) {
-        parts.push(pipeReadDebug);
-      }
-      return parts.length === 0 ? undefined : parts.join(" ");
-    })() : formatOwnerDebug(kernelExports),
+    debug,
   };
   if (waitInWorker) {
     msg.waitInWorker = true;
@@ -1343,7 +1368,9 @@ function postStatus(status: number, waitInWorker = false): void {
   if (runtimeBridge !== null) {
     Atomics.add(new Int32Array(runtimeBridge.notifySab), 0, 1);
   }
+  publishThreadWorkerStage(130, status);
   workerPostMessage(msg);
+  publishThreadWorkerStage(131, status);
 }
 
 function postError(error: unknown): void {

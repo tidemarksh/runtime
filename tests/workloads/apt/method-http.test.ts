@@ -2863,6 +2863,7 @@ function compactAptExecutionStats(
     activeChildren: proc.activeChildren,
     pendingChildExitRecords: proc.pendingChildExitRecords,
     pendingChildSpawnRecords: proc.pendingChildSpawnRecords,
+    runtimeBridgeDebugStage: proc.runtimeBridgeDebugStage,
     transferDebugStats: proc.transferDebugStats,
     memoryLogTail: proc.memoryLogTail,
     cpuDebugStats: proc.cpuDebugStats,

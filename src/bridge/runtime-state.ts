@@ -2,6 +2,8 @@ import type { KernelRuntimeState } from "../abi.js";
 
 const NOTIFY_INDEX = 0;
 const EPOCH_INDEX = 1;
+const DEBUG_STAGE_INDEX = 2;
+const DEBUG_VALUE_INDEX = 3;
 const STATE_VERSION_INDEX = 0;
 const STATE_HEADER_BYTES = 8;
 const STATE_FIELD_COUNT = 21;
@@ -37,7 +39,7 @@ export interface RuntimeStateBridge {
 
 export function createRuntimeStateBridge(): RuntimeStateBridge {
   return {
-    notifySab: new SharedArrayBuffer(8),
+    notifySab: new SharedArrayBuffer(16),
     stateSab: new SharedArrayBuffer(STATE_HEADER_BYTES + STATE_FIELD_COUNT * 8),
   };
 }
@@ -107,6 +109,26 @@ export function publishRuntimeBridgeEpoch(bridge: RuntimeStateBridge): number {
 
 export function readPublishedRuntimeBridgeEpoch(bridge: RuntimeStateBridge): number {
   return Atomics.load(notifyView(bridge), EPOCH_INDEX);
+}
+
+export function publishRuntimeBridgeDebugStage(
+  bridge: RuntimeStateBridge,
+  stage: number,
+  value = 0,
+): void {
+  const notify = notifyView(bridge);
+  Atomics.store(notify, DEBUG_STAGE_INDEX, stage);
+  Atomics.store(notify, DEBUG_VALUE_INDEX, value);
+}
+
+export function readRuntimeBridgeDebugStage(
+  bridge: RuntimeStateBridge,
+): { stage: number; value: number } {
+  const notify = notifyView(bridge);
+  return {
+    stage: Atomics.load(notify, DEBUG_STAGE_INDEX),
+    value: Atomics.load(notify, DEBUG_VALUE_INDEX),
+  };
 }
 
 export function observeRuntimeBridgeEpoch(

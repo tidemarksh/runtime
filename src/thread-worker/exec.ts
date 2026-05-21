@@ -1,4 +1,8 @@
 import type { KernelExports, StatusCodes } from "../abi.js";
+import {
+  publishRuntimeBridgeDebugStage,
+  type RuntimeStateBridge,
+} from "../bridge/runtime-state.js";
 import { clearSyscallTrace } from "./debug.js";
 import {
   handleFutexWait,
@@ -46,6 +50,9 @@ function readDebugBudgetClampEnv(): string | undefined {
 }
 
 const DEBUG_BUDGET_CLAMP = parseDebugBudgetClamp(readDebugBudgetClampEnv());
+const STAGE_DEBUG_ENABLED = ((globalThis as typeof globalThis & {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_THREAD_WORKER_STAGE_DEBUG ?? "") === "1";
 
 interface ThreadWorkerExecContext {
   exports: KernelExports;
@@ -55,13 +62,20 @@ interface ThreadWorkerExecContext {
   threadStepBudget: number;
   eintrErrno: number;
   futexWaitSliceMs: number;
-  runtimeBridge: ReturnType<() => import("../bridge/runtime-state.js").RuntimeStateBridge | null>;
+  runtimeBridge: RuntimeStateBridge | null;
   postStatus(status: number, waitInWorker?: boolean): void;
   reattachPublishedKernelRuntimeState(): void;
 }
 
+function publishStage(ctx: ThreadWorkerExecContext, stage: number, value = 0): void {
+  if (STAGE_DEBUG_ENABLED && ctx.runtimeBridge !== null) {
+    publishRuntimeBridgeDebugStage(ctx.runtimeBridge, stage, value);
+  }
+}
+
 export function stepThread(ctx: ThreadWorkerExecContext, budget: number): void {
   for (;;) {
+    publishStage(ctx, 1, budget);
     clearSyscallTrace(ctx.exports);
     let effectiveBudget = budget;
     if (DEBUG_BUDGET_CLAMP.length > 0) {
@@ -72,8 +86,10 @@ export function stepThread(ctx: ThreadWorkerExecContext, budget: number): void {
         }
       }
     }
+    publishStage(ctx, 2, effectiveBudget);
     ctx.exports.thread_step(ctx.vmPtr, effectiveBudget);
     const status = ctx.exports.thread_status(ctx.vmPtr);
+    publishStage(ctx, 3, status);
 
     if (status === ctx.statusCodes.FUTEX_WAIT) {
       // Keep futex waits inside the thread-worker so wakeups come from
@@ -88,6 +104,7 @@ export function stepThread(ctx: ThreadWorkerExecContext, budget: number): void {
     }
 
     if (isRuntimeBridgeBlockedStatus(ctx.exports, ctx.vmPtr, status, ctx.statusCodes)) {
+      publishStage(ctx, 4, status);
       handleRuntimeBridgeBlockedStatus({
         ...ctx,
         runtimeBridge: ctx.runtimeBridge,
@@ -96,7 +113,9 @@ export function stepThread(ctx: ThreadWorkerExecContext, budget: number): void {
       return;
     }
 
+    publishStage(ctx, 5, status);
     ctx.postStatus(status);
+    publishStage(ctx, 6, status);
     return;
   }
 }
