@@ -2,6 +2,7 @@ import { expect, test, vi } from "vite-plus/test";
 import { createWorkerMessageHandler } from "../../../src/worker/message-handler.js";
 import type { ThreadWorkerOutbound } from "../../../src/messages.js";
 import type { WorkerMessageHandlerDeps } from "../../../src/worker/message-handler/types.js";
+import { createWorkerMessageDebugStats } from "../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../src/worker/types.js";
 
 function makeThreadState(overrides: Partial<ThreadWorkerState> = {}): ThreadWorkerState {
@@ -12,6 +13,9 @@ function makeThreadState(overrides: Partial<ThreadWorkerState> = {}): ThreadWork
     reinitCount: 0,
     stepCount: 0,
     totalStepBudget: 0,
+    totalStepWallMs: 0,
+    maxStepWallMs: 0,
+    lastStepDurationMs: null,
     statusCount: 0,
     statusCounts: {},
     lastStatus: null,
@@ -103,6 +107,7 @@ test("stale generated messages are dropped before transferred worker ownership i
     pid: 1,
     exitInProgress: false,
     workerDebugLog: [],
+    workerMessageDebugStats: createWorkerMessageDebugStats(),
     workers: new Set<Worker>(),
   } as unknown as ProcessHandle;
   deps.processHandles.set(1, handle);
@@ -137,6 +142,7 @@ test("status from a removed process state is dropped as stale", () => {
     pid: 4,
     exitInProgress: false,
     workerDebugLog: [],
+    workerMessageDebugStats: createWorkerMessageDebugStats(),
     workers: new Set<Worker>(),
     vforkSnapshot: null,
     kernel: {

@@ -45,6 +45,9 @@ export interface ThreadWorkerState {
   reinitCount: number;
   stepCount: number;
   totalStepBudget: number;
+  totalStepWallMs: number;
+  maxStepWallMs: number;
+  lastStepDurationMs: number | null;
   statusCount: number;
   statusCounts: Record<string, number>;
   lastStatus: number | null;

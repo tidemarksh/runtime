@@ -55,6 +55,9 @@ export interface WorkerExecutionStats {
   ownerState: string;
   stepCount: number;
   totalStepBudget: number;
+  totalStepWallMs: number;
+  maxStepWallMs: number;
+  lastStepDurationMs: number | null;
   statusCount: number;
   statusCounts: Record<string, number>;
   statusCountsByName: Record<string, number>;
@@ -792,6 +795,9 @@ export function debugRuntimeExecutionStats(
               ownerState: readWorkerOwnerState(handle, worker, state),
               stepCount: state.stepCount,
               totalStepBudget: state.totalStepBudget,
+              totalStepWallMs: state.totalStepWallMs,
+              maxStepWallMs: state.maxStepWallMs,
+              lastStepDurationMs: state.lastStepDurationMs,
               statusCount: state.statusCount,
               statusCounts: { ...state.statusCounts },
               statusCountsByName: formatStatusCountsByName(state.statusCounts, statusNames),

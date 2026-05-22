@@ -2044,7 +2044,14 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     recordWorkerMessageDebugEvent(handle.workerMessageDebugStats, "statusHandled");
     thread.statusCounts[String(status)] = (thread.statusCounts[String(status)] ?? 0) + 1;
     thread.lastStatus = status;
-    thread.lastStatusAtMs = Date.now();
+    const statusAtMs = Date.now();
+    thread.lastStatusAtMs = statusAtMs;
+    if (thread.runningGeneration === msg.generation && thread.lastStepAtMs !== null) {
+      const stepWallMs = Math.max(0, statusAtMs - thread.lastStepAtMs);
+      thread.lastStepDurationMs = stepWallMs;
+      thread.totalStepWallMs += stepWallMs;
+      thread.maxStepWallMs = Math.max(thread.maxStepWallMs, stepWallMs);
+    }
     thread.lastStatusPc = msg.pc;
     thread.lastStatusSp = msg.sp ?? null;
     thread.lastStatusS11 = msg.s11 ?? null;

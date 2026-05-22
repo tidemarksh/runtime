@@ -13,7 +13,7 @@ vi.mock("../../../src/worker/pool.js", async (importOriginal) => {
 });
 
 import { createWorkerScheduler } from "../../../src/worker/scheduler.js";
-import { createTransferDebugStats } from "../../../src/worker/types.js";
+import { createTransferDebugStats, createWorkerMessageDebugStats } from "../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../src/worker/types.js";
 
 function makeKernel() {
@@ -120,6 +120,9 @@ function makeThreadState(vmPtr: number): ThreadWorkerState {
     reinitCount: 0,
     stepCount: 0,
     totalStepBudget: 0,
+    totalStepWallMs: 0,
+    maxStepWallMs: 0,
+    lastStepDurationMs: null,
     statusCount: 0,
     statusCounts: {},
     lastStatus: null,
@@ -235,6 +238,7 @@ function makeHandle(kernel: ProcessHandle["kernel"], worker: Worker): ProcessHan
     networkRecvTailWatermarks: new Map(),
     networkRecvPayloadWatermarks: new Map(),
     transferDebugStats: createTransferDebugStats(),
+    workerMessageDebugStats: createWorkerMessageDebugStats(),
     vforkSnapshot: null,
     vforkWorker: null,
     exitInProgress: false,

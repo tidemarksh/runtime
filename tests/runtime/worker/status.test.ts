@@ -1,6 +1,7 @@
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../src/bridge/pipe.js";
 import { createWorkerStatusMessageHandler as createRawWorkerStatusMessageHandler } from "../../../src/worker/message-handler/status.js";
+import { createWorkerMessageDebugStats } from "../../../src/worker/types.js";
 
 const PIPE_BUF_SIZE = 65_536;
 const PIPE_SLOT_SIZE = 32 + PIPE_BUF_SIZE;
@@ -14,6 +15,7 @@ function withHandleDefaults<T extends Record<string, unknown>>(handle: T): T {
   handle.networkRecvTailWatermarks ??= new Map();
   handle.networkRecvPayloadWatermarks ??= new Map();
   handle.workerDebugLog ??= [];
+  handle.workerMessageDebugStats ??= createWorkerMessageDebugStats();
   handle.vforkSnapshot ??= null;
   handle.processMemfsDirty ??= false;
   handle.pendingPipeSlotSnapshots ??= [];
@@ -60,6 +62,9 @@ function makeThreadState(overrides: Record<string, unknown> = {}) {
     reinitCount: 0,
     stepCount: 0,
     totalStepBudget: 0,
+    totalStepWallMs: 0,
+    maxStepWallMs: 0,
+    lastStepDurationMs: null,
     statusCount: 0,
     statusCounts: {},
     lastStatus: null,
@@ -133,7 +138,13 @@ test("status handler logs futex resume with compact debug fields", () => {
   const clearBlockedWorker = vi.fn();
   const worker = {} as Worker;
   const threadWorkerStates = new WeakMap<Worker, { vmPtr: number; initialized: boolean; waitingInWorkerStatus: number | null }>();
-  threadWorkerStates.set(worker, makeThreadState({ waitingInWorkerStatus: 20 }));
+  const thread = makeThreadState({
+    waitingInWorkerStatus: 20,
+    runningGeneration: undefined,
+    lastStepAtMs: 100,
+  });
+  threadWorkerStates.set(worker, thread);
+  const dateNow = vi.spyOn(Date, "now").mockReturnValue(125);
 
   const handler = createWorkerStatusMessageHandler({
     threadWorkerStates,
@@ -238,8 +249,12 @@ test("status handler logs futex resume with compact debug fields", () => {
       ].join(" "),
     },
   );
+  dateNow.mockRestore();
 
   expect(clearBlockedWorker).toHaveBeenCalledWith(expect.anything(), worker);
+  expect(thread.lastStepDurationMs).toBe(25);
+  expect(thread.totalStepWallMs).toBe(25);
+  expect(thread.maxStepWallMs).toBe(25);
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
     expect.anything(),
     "resume:0x1234@20->0:"
