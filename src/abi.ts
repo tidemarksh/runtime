@@ -468,6 +468,14 @@ export interface KernelExports {
   debug_cpu_profile_block_exec_op_count?(opId: number): bigint | number;
   debug_cpu_profile_interpreter_op_count?(opId: number): bigint | number;
   debug_cpu_profile_unsupported_op_count?(opId: number): bigint | number;
+  debug_memory_permit_checks?(): bigint | number;
+  debug_memory_permit_cache_hits?(): bigint | number;
+  debug_memory_permit_cover_hits?(): bigint | number;
+  debug_memory_permit_denied?(): bigint | number;
+  debug_memory_permit_checks_by_prot?(prot: number): bigint | number;
+  debug_memory_permit_cache_hits_by_prot?(prot: number): bigint | number;
+  debug_memory_permit_cover_hits_by_prot?(prot: number): bigint | number;
+  debug_memory_permit_denied_by_prot?(prot: number): bigint | number;
   debug_clear_guest_write_watch_trace?(): void;
   debug_configure_guest_write_watch?(slot: number, start: bigint | number, end: bigint | number): void;
   debug_syscall_trace_nr?(): bigint;

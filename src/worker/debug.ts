@@ -133,6 +133,17 @@ export interface CpuDebugStats {
   blockExecOpCounts: Array<{ opId: number; count: string }>;
   interpreterOpCounts: Array<{ opId: number; count: string }>;
   unsupportedOpCounts: Array<{ opId: number; count: string }>;
+  memoryPermitChecks: string;
+  memoryPermitCacheHits: string;
+  memoryPermitCoverHits: string;
+  memoryPermitDenied: string;
+  memoryPermitByProt: Array<{
+    prot: number;
+    checks: string;
+    cacheHits: string;
+    coverHits: string;
+    denied: string;
+  }>;
 }
 
 const decoder = new TextDecoder();
@@ -331,6 +342,23 @@ function readCpuDebugStats(handle: ProcessHandle): CpuDebugStats | null {
     samples.sort((left, right) => Number(BigInt(right.count) - BigInt(left.count)));
     return samples.slice(0, 16);
   };
+  const readMemoryPermitByProt = (): CpuDebugStats["memoryPermitByProt"] => {
+    const rows: CpuDebugStats["memoryPermitByProt"] = [];
+    for (let prot = 0; prot < 8; prot += 1) {
+      const checks = formatU64Decimal(handle.kernel.debug_memory_permit_checks_by_prot?.(prot));
+      if (checks === "0") {
+        continue;
+      }
+      rows.push({
+        prot,
+        checks,
+        cacheHits: formatU64Decimal(handle.kernel.debug_memory_permit_cache_hits_by_prot?.(prot)),
+        coverHits: formatU64Decimal(handle.kernel.debug_memory_permit_cover_hits_by_prot?.(prot)),
+        denied: formatU64Decimal(handle.kernel.debug_memory_permit_denied_by_prot?.(prot)),
+      });
+    }
+    return rows;
+  };
   return {
     blockHits: formatU64Decimal(handle.kernel.debug_cpu_profile_block_hits()),
     blockMisses: formatU64Decimal(handle.kernel.debug_cpu_profile_block_misses?.()),
@@ -352,6 +380,11 @@ function readCpuDebugStats(handle: ProcessHandle): CpuDebugStats | null {
     blockExecOpCounts: readCounts(handle.kernel.debug_cpu_profile_block_exec_op_count),
     interpreterOpCounts: readCounts(handle.kernel.debug_cpu_profile_interpreter_op_count),
     unsupportedOpCounts: readCounts(handle.kernel.debug_cpu_profile_unsupported_op_count),
+    memoryPermitChecks: formatU64Decimal(handle.kernel.debug_memory_permit_checks?.()),
+    memoryPermitCacheHits: formatU64Decimal(handle.kernel.debug_memory_permit_cache_hits?.()),
+    memoryPermitCoverHits: formatU64Decimal(handle.kernel.debug_memory_permit_cover_hits?.()),
+    memoryPermitDenied: formatU64Decimal(handle.kernel.debug_memory_permit_denied?.()),
+    memoryPermitByProt: readMemoryPermitByProt(),
   };
 }
 
