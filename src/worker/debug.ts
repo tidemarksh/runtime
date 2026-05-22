@@ -117,6 +117,9 @@ export interface CpuDebugStats {
   blockExecUnsupported: string;
   blockExecOpSampleInterval: string;
   blockExecSampledBlocks: string;
+  blockMissSampleInterval: string;
+  blockMissSampled: string;
+  blockMissSamples: Array<{ pc: string; evictedPc: string; cacheIndex: number; count: string }>;
   interpreterOps: string;
   blockBuildOpCounts: Array<{ opId: number; count: string }>;
   blockExecOpCounts: Array<{ opId: number; count: string }>;
@@ -297,6 +300,29 @@ function readCpuDebugStats(handle: ProcessHandle): CpuDebugStats | null {
     }
     return counts;
   };
+  const readBlockMissSamples = (): Array<{
+    pc: string;
+    evictedPc: string;
+    cacheIndex: number;
+    count: string;
+  }> => {
+    const sampleCount = handle.kernel.debug_cpu_profile_block_miss_sample_count?.() ?? 0;
+    const samples: Array<{ pc: string; evictedPc: string; cacheIndex: number; count: string }> = [];
+    for (let index = 0; index < sampleCount; index += 1) {
+      const count = formatU64Decimal(handle.kernel.debug_cpu_profile_block_miss_sample_count_at?.(index));
+      if (count === "0") {
+        continue;
+      }
+      samples.push({
+        pc: `0x${formatU64(BigInt(handle.kernel.debug_cpu_profile_block_miss_sample_pc?.(index) ?? 0))}`,
+        evictedPc: `0x${formatU64(BigInt(handle.kernel.debug_cpu_profile_block_miss_sample_evicted_pc?.(index) ?? 0))}`,
+        cacheIndex: handle.kernel.debug_cpu_profile_block_miss_sample_cache_index?.(index) ?? 0,
+        count,
+      });
+    }
+    samples.sort((left, right) => Number(BigInt(right.count) - BigInt(left.count)));
+    return samples.slice(0, 16);
+  };
   return {
     blockHits: formatU64Decimal(handle.kernel.debug_cpu_profile_block_hits()),
     blockMisses: formatU64Decimal(handle.kernel.debug_cpu_profile_block_misses?.()),
@@ -310,6 +336,9 @@ function readCpuDebugStats(handle: ProcessHandle): CpuDebugStats | null {
     blockExecUnsupported: formatU64Decimal(handle.kernel.debug_cpu_profile_block_exec_unsupported?.()),
     blockExecOpSampleInterval: formatU64Decimal(handle.kernel.debug_cpu_profile_block_exec_op_sample_interval?.()),
     blockExecSampledBlocks: formatU64Decimal(handle.kernel.debug_cpu_profile_block_exec_sampled_blocks?.()),
+    blockMissSampleInterval: formatU64Decimal(handle.kernel.debug_cpu_profile_block_miss_sample_interval?.()),
+    blockMissSampled: formatU64Decimal(handle.kernel.debug_cpu_profile_block_miss_sampled?.()),
+    blockMissSamples: readBlockMissSamples(),
     interpreterOps: formatU64Decimal(handle.kernel.debug_cpu_profile_interpreter_ops?.()),
     blockBuildOpCounts: readCounts(handle.kernel.debug_cpu_profile_block_build_op_count),
     blockExecOpCounts: readCounts(handle.kernel.debug_cpu_profile_block_exec_op_count),

@@ -456,6 +456,13 @@ export interface KernelExports {
   debug_cpu_profile_block_exec_unsupported?(): bigint | number;
   debug_cpu_profile_block_exec_op_sample_interval?(): bigint | number;
   debug_cpu_profile_block_exec_sampled_blocks?(): bigint | number;
+  debug_cpu_profile_block_miss_sample_interval?(): bigint | number;
+  debug_cpu_profile_block_miss_sampled?(): bigint | number;
+  debug_cpu_profile_block_miss_sample_count?(): number;
+  debug_cpu_profile_block_miss_sample_pc?(index: number): bigint | number;
+  debug_cpu_profile_block_miss_sample_evicted_pc?(index: number): bigint | number;
+  debug_cpu_profile_block_miss_sample_cache_index?(index: number): number;
+  debug_cpu_profile_block_miss_sample_count_at?(index: number): bigint | number;
   debug_cpu_profile_interpreter_ops?(): bigint | number;
   debug_cpu_profile_block_build_op_count?(opId: number): bigint | number;
   debug_cpu_profile_block_exec_op_count?(opId: number): bigint | number;
