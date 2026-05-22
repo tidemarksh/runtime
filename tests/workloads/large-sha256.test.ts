@@ -18,6 +18,39 @@ const largeSha256Bytes = Number(process.env.TIDEMARK_TEST_LARGE_SHA256_BYTES ?? 
 const largeSha256Input = process.env.TIDEMARK_TEST_LARGE_SHA256_INPUT ?? "";
 const largeSha256Path = "/work/large-sha256.bin";
 
+function buildPipeReadBlockerProbe(): Uint8Array | null {
+  const tmp = mkdtempSync(join(tmpdir(), "tidemark-pipe-read-blocker-"));
+  const sourcePath = join(tmp, "pipe_read_blocker.c");
+  const outputPath = join(tmp, "pipe-read-blocker");
+  try {
+    writeFileSync(sourcePath, [
+      "#include <errno.h>",
+      "#include <stdio.h>",
+      "#include <unistd.h>",
+      "",
+      "int main(void) {",
+      "  unsigned char byte = 0;",
+      "  for (;;) {",
+      "    ssize_t n = read(0, &byte, 1);",
+      "    if (n < 0 && errno == EINTR) continue;",
+      "    if (n < 0) { perror(\"read-stdin\"); return 20; }",
+      "    if (n == 0) return 0;",
+      "  }",
+      "}",
+      "",
+    ].join("\n"));
+    execFileSync(hostRiscvGcc, ["-static", "-O2", "-o", outputPath, sourcePath], {
+      stdio: "pipe",
+    });
+    return new Uint8Array(readFileSync(outputPath));
+  } catch (error) {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    return logSkip(`failed to build pipe read blocker probe with ${hostRiscvGcc}: ${detail}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 function buildLargeSha256Probe(): Uint8Array | null {
   const tmp = mkdtempSync(join(tmpdir(), "tidemark-large-sha256-"));
   const sourcePath = join(tmp, "large_sha256.c");
@@ -257,6 +290,25 @@ async function spawnWithOutputAndStats(
   }
 }
 
+async function waitForBlockedWorkerCount(
+  runtime: RuntimeInstance,
+  expected: number,
+  timeoutMs: number,
+): Promise<string> {
+  const started = Date.now();
+  let execution = compactExecutionStats(runtime.debugExecutionStats());
+  while (Date.now() - started < timeoutMs) {
+    const stats = runtime.debugExecutionStats();
+    execution = compactExecutionStats(stats);
+    const blocked = stats.reduce((sum, proc) => sum + proc.blockedWorkers, 0);
+    if (blocked >= expected) {
+      return execution;
+    }
+    await new Promise((resolveDone) => setTimeout(resolveDone, 25));
+  }
+  throw new Error(`timeout waiting for ${expected} blocked workers: execution=${execution}`);
+}
+
 test("large sha256 local gate: guest hashes package-index sized input", async () => {
   const wasmBytes = readKernelWasm();
   if (!wasmBytes) {
@@ -305,3 +357,65 @@ test("large sha256 local gate: guest hashes package-index sized input", async ()
     runtime.destroy();
   }
 }, 210_000);
+
+test("large sha256 local gate: blocked pipe siblings do not starve hashing worker", async () => {
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return;
+  }
+  const probeBytes = buildLargeSha256Probe();
+  const blockerBytes = buildPipeReadBlockerProbe();
+  if (!probeBytes || !blockerBytes) {
+    return;
+  }
+  const input = buildInput();
+  const expected = createHash("sha256").update(Buffer.from(input)).digest("hex");
+  const blockedSiblingCount = Number(process.env.TIDEMARK_TEST_LARGE_SHA256_BLOCKED_SIBLINGS ?? "2");
+
+  const runtime = await Runtime.create({
+    wasmBytes,
+    ramSize: 512 * 1024 * 1024,
+    maxProcessMemoryPages: 32768,
+  });
+  const startedMs = Date.now();
+  try {
+    const snapshot = buildSnapshotFromSources([
+      { kind: "inlineFile", guestPath: largeSha256Path, data: input, mode: 0o644 },
+    ]);
+    await runtime.applyFsSnapshot(snapshot.entries ?? []);
+    for (let index = 0; index < blockedSiblingCount; index += 1) {
+      await runtime.spawn(
+        blockerBytes,
+        ["/work/pipe-read-blocker"],
+        ["LC_ALL=C", "LANG=C"],
+        { cwd: "/", stdin: "pipe" },
+      );
+    }
+    const preExecution = await waitForBlockedWorkerCount(runtime, blockedSiblingCount, 10_000);
+    const spawnStartedMs = Date.now();
+    const result = await spawnWithOutputAndStats(
+      runtime,
+      probeBytes,
+      ["/work/large-sha256", largeSha256Path],
+      ["LC_ALL=C", "LANG=C"],
+      180_000,
+      { cwd: "/", stdin: "closed" },
+    );
+    const spawnDurationMs = Date.now() - spawnStartedMs;
+    expect(result.exitCode, result.output + (result.debugInfo ? `\n${result.debugInfo}` : "")).toBe(0);
+    expect(result.output).toContain(`large-sha256 bytes=${input.length}`);
+    expect(result.output).toContain(`sha256=${expected}`);
+    console.log([
+      `large sha256 blocked siblings gate durationMs=${Date.now() - startedMs}`,
+      `spawnDurationMs=${spawnDurationMs}`,
+      `blockedSiblingCount=${blockedSiblingCount}`,
+      `bytes=${input.length}`,
+      `input=${largeSha256Input || "synthetic"}`,
+      `sha256=${expected}`,
+      `preExecution=${preExecution}`,
+      `execution=${result.execution}`,
+    ].join(" "));
+  } finally {
+    runtime.destroy();
+  }
+}, 230_000);
