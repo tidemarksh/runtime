@@ -18,6 +18,10 @@ const streamBodyBytes = Number(process.env.TIDEMARK_TEST_FORK_STREAM_FILE_BYTES 
 const streamReadBufferBytes = Number(process.env.TIDEMARK_TEST_FORK_STREAM_FILE_READ_BUFFER_BYTES ?? 8192);
 const streamTimeoutMs = Number(process.env.TIDEMARK_TEST_FORK_STREAM_FILE_TIMEOUT_MS ?? 150_000);
 const streamAsyncBridge = process.env.TIDEMARK_TEST_FORK_STREAM_FILE_ASYNC_BRIDGE === "1";
+const streamParentPselectTimeoutMs = Math.max(
+  0,
+  Math.trunc(Number(process.env.TIDEMARK_TEST_FORK_STREAM_FILE_PARENT_PSELECT_TIMEOUT_MS ?? 10)),
+);
 
 function buildForkStreamFileProbe(): { parent: Uint8Array; child: Uint8Array } | null {
   const tmp = mkdtempSync(join(tmpdir(), "tidemark-network-fork-stream-file-"));
@@ -185,8 +189,8 @@ function buildForkStreamFileProbe(): { parent: Uint8Array; child: Uint8Array } |
       "    FD_ZERO(&rfds);",
       "    if (!pipe_eof) FD_SET(out_pipe[0], &rfds);",
       "    struct timespec timeout;",
-      "    timeout.tv_sec = 0;",
-      "    timeout.tv_nsec = 10 * 1000 * 1000;",
+      `    timeout.tv_sec = ${Math.floor(streamParentPselectTimeoutMs / 1000)};`,
+      `    timeout.tv_nsec = ${(streamParentPselectTimeoutMs % 1000) * 1000 * 1000};`,
       "    pselect_calls++;",
       "    int ready = pselect(out_pipe[0] + 1, &rfds, NULL, NULL, &timeout, NULL);",
       "    if (ready < 0) {",
@@ -399,6 +403,7 @@ test("network fork stream file local gate: exec child writes socket body while p
     console.log([
       `network fork stream file metrics durationMs=${Date.now() - started}`,
       `asyncBridge=${streamAsyncBridge ? 1 : 0}`,
+      `parentPselectTimeoutMs=${streamParentPselectTimeoutMs}`,
       `childReadCalls=${result.output.match(/read_calls=([0-9]+)/)?.[1] ?? "unknown"}`,
       `childSocketBytes=${result.output.match(/socket_bytes=([0-9]+)/)?.[1] ?? "unknown"}`,
       `parentPselectCalls=${result.output.match(/pselect_calls=([0-9]+)/)?.[1] ?? "unknown"}`,
