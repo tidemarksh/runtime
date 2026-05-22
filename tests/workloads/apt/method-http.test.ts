@@ -3152,19 +3152,34 @@ function extractHttpGetTargets(chunks: readonly string[]): string[] {
   let pending = "";
   for (const chunk of chunks) {
     pending += chunk;
-    const lines = pending.split(/\r?\n/);
-    pending = lines.pop() ?? "";
-    if (pending.length > 8192) {
-      pending = pending.slice(-8192);
-    }
-    for (const line of lines) {
-      if (line.startsWith("GET ")) {
-        targets.push(line.split(" ")[1] ?? "");
+    let consumed = 0;
+    for (;;) {
+      const start = pending.indexOf("GET ", consumed);
+      if (start < 0) {
+        break;
       }
+      const end = pending.indexOf("\n", start);
+      if (end < 0) {
+        break;
+      }
+      const target = pending.slice(start, end).trimEnd().split(/\s+/)[1] ?? "";
+      if (target) {
+        targets.push(target);
+      }
+      consumed = end + 1;
+    }
+    pending = pending.slice(consumed);
+    if (pending.length > 8192) {
+      const lastGet = pending.lastIndexOf("GET ");
+      pending = lastGet >= 0 ? pending.slice(lastGet) : pending.slice(-8192);
     }
   }
-  if (pending.startsWith("GET ")) {
-    targets.push(pending.split(" ")[1] ?? "");
+  const start = pending.lastIndexOf("GET ");
+  if (start >= 0) {
+    const target = pending.slice(start).split(/\s+/)[1] ?? "";
+    if (target) {
+      targets.push(target);
+    }
   }
   return targets;
 }
