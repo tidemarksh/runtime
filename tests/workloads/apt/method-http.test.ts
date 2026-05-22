@@ -95,6 +95,7 @@ type MethodBridgeMetrics = {
   firstPackageResponseChunkAtMs: number;
   lastPackageResponseChunkAtMs: number;
   firstPackageResponseCompleteAtMs: number;
+  packageResponseEvents: string[];
   maxReadRequestBytes: number;
 };
 
@@ -2519,6 +2520,12 @@ function createAsyncMethodNetworkBridge(
         resolve(): void;
         timer: ReturnType<typeof setTimeout>;
       } | null = null;
+      const recordPackageResponseEvent = (event: string): void => {
+        if (!metrics || !isPackageIndexTarget(responseTarget) || metrics.packageResponseEvents.length >= 32) {
+          return;
+        }
+        metrics.packageResponseEvents.push(`${Date.now() - metrics.startedAtMs}:${event}`);
+      };
       const recordResponseChunk = (chunkLength: number): void => {
         if (!metrics) {
           return;
@@ -2529,6 +2536,7 @@ function createAsyncMethodNetworkBridge(
         if (isPackageIndexTarget(responseTarget)) {
           if (metrics.firstPackageResponseChunkAtMs < 0) {
             metrics.firstPackageResponseChunkAtMs = nowMs;
+            recordPackageResponseEvent(`first-chunk:${chunkLength}`);
           }
           metrics.lastPackageResponseChunkAtMs = nowMs;
           metrics.packageResponseBytes += chunkLength;
@@ -2547,6 +2555,7 @@ function createAsyncMethodNetworkBridge(
         responseCompleteRecorded = true;
         if (isPackageIndexTarget(responseTarget)) {
           metrics.packageResponsesCompleted += 1;
+          recordPackageResponseEvent(`complete:${metrics.packageResponsesCompleted}:${responseOffset}`);
           if (metrics.firstPackageResponseCompleteAtMs < 0) {
             metrics.firstPackageResponseCompleteAtMs = Date.now();
           }
@@ -2615,6 +2624,7 @@ function createAsyncMethodNetworkBridge(
           const targets = extractHttpGetTargets([requestText]);
           responseTarget = targets[targets.length - 1] ?? "";
           responseBytes = serializeHttpResponse(selectResponseBody(requestText));
+          recordPackageResponseEvent(`select:${responseTarget}:bytes=${responseBytes.length}`);
           if (traceBridgeWrites) {
             record(`read:select:${JSON.stringify(responseTarget)}:bytes=${responseBytes.length}`);
           }
@@ -2999,6 +3009,7 @@ function compactMethodBridgeMetrics(metrics: MethodBridgeMetrics): string {
     firstPackageResponseChunkAtMs: relativeMs(metrics.firstPackageResponseChunkAtMs),
     lastPackageResponseChunkAtMs: relativeMs(metrics.lastPackageResponseChunkAtMs),
     firstPackageResponseCompleteAtMs: relativeMs(metrics.firstPackageResponseCompleteAtMs),
+    packageResponseEvents: metrics.packageResponseEvents,
     maxReadRequestBytes: metrics.maxReadRequestBytes,
   });
 }
@@ -3262,6 +3273,7 @@ function createMethodBridgeMetrics(): MethodBridgeMetrics {
     firstPackageResponseChunkAtMs: -1,
     lastPackageResponseChunkAtMs: -1,
     firstPackageResponseCompleteAtMs: -1,
+    packageResponseEvents: [],
     maxReadRequestBytes: 0,
   };
 }
@@ -4925,6 +4937,8 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
   let exitRuntimeObservation = "not-observed";
   let methodExecFailureObservation = "not-observed";
   let updateTimeoutObservation = "not-observed";
+  let fetchedOutputAtMs = -1;
+  let readingPackageListsAtMs = -1;
   const storeChildProgressObservationEntries: string[] = [];
   const storeChildProgressObservationTimers: ReturnType<typeof setTimeout>[] = [];
   const started = Date.now();
@@ -4947,7 +4961,18 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
       { cwd: "/work", stdin: "closed" },
     );
     proc.onStdout((data) => {
+      const previousOutput = output;
       output += decoder.decode(data);
+      if (fetchedOutputAtMs < 0 && !previousOutput.includes("Fetched ") && output.includes("Fetched ")) {
+        fetchedOutputAtMs = Date.now() - started;
+      }
+      if (
+        readingPackageListsAtMs < 0
+        && !previousOutput.includes("Reading package lists")
+        && output.includes("Reading package lists")
+      ) {
+        readingPackageListsAtMs = Date.now() - started;
+      }
     });
 
     await waitForBridgeRequestOrExit(guestRequests, proc, asyncDoneTimeoutMs).catch(async (error) => {
@@ -5215,12 +5240,17 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
       `bridgePackageBytes=${metrics.packageResponseBytes}`,
       `bridgePackageChunks=${metrics.packageResponseChunks}`,
       `bridgePackageResponsesCompleted=${metrics.packageResponsesCompleted}`,
+      `bridgePackageResponseEvents=${JSON.stringify(metrics.packageResponseEvents)}`,
       `bridgeMaxReadRequestBytes=${metrics.maxReadRequestBytes}`,
       `firstPackageResponseCompleteObservation=${firstPackageResponseCompleteObservation}`,
       `firstPackageRuntimeObservation=${firstPackageRuntimeObservation}`,
       `exitAfterFirstPackageResponseMs=${firstPackageResponseCompleteAtMs >= 0 ? exitObservedAtMs - firstPackageResponseCompleteAtMs : "unknown"}`,
       `firstPackageFileCompleteObservation=${firstPackageFileCompleteObservation}`,
       `exitAfterFirstPackageFileCompleteMs=${firstPackageFileCompleteAtMs >= 0 ? exitObservedAtMs - firstPackageFileCompleteAtMs : "unknown"}`,
+      `fetchedOutputAtMs=${fetchedOutputAtMs}`,
+      `readingPackageListsAtMs=${readingPackageListsAtMs}`,
+      `exitAfterFetchedOutputMs=${fetchedOutputAtMs >= 0 ? exitObservedAtMs - fetchedOutputAtMs : "unknown"}`,
+      `exitAfterReadingPackageListsMs=${readingPackageListsAtMs >= 0 ? exitObservedAtMs - readingPackageListsAtMs : "unknown"}`,
       `secondPackageObservation=${secondPackageObservation}`,
       `afterSecondPackageResponseObservation=${afterSecondPackageResponseObservation}`,
       `exitRuntimeObservation=${exitRuntimeObservation}`,
