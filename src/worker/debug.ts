@@ -115,6 +115,8 @@ export interface CpuDebugStats {
   blockCacheUnsupported: string;
   blockExecOps: string;
   blockExecUnsupported: string;
+  blockExecOpSampleInterval: string;
+  blockExecSampledBlocks: string;
   interpreterOps: string;
   blockBuildOpCounts: Array<{ opId: number; count: string }>;
   blockExecOpCounts: Array<{ opId: number; count: string }>;
@@ -306,6 +308,8 @@ function readCpuDebugStats(handle: ProcessHandle): CpuDebugStats | null {
     blockCacheUnsupported: formatU64Decimal(handle.kernel.debug_cpu_profile_block_cache_unsupported?.()),
     blockExecOps: formatU64Decimal(handle.kernel.debug_cpu_profile_block_exec_ops?.()),
     blockExecUnsupported: formatU64Decimal(handle.kernel.debug_cpu_profile_block_exec_unsupported?.()),
+    blockExecOpSampleInterval: formatU64Decimal(handle.kernel.debug_cpu_profile_block_exec_op_sample_interval?.()),
+    blockExecSampledBlocks: formatU64Decimal(handle.kernel.debug_cpu_profile_block_exec_sampled_blocks?.()),
     interpreterOps: formatU64Decimal(handle.kernel.debug_cpu_profile_interpreter_ops?.()),
     blockBuildOpCounts: readCounts(handle.kernel.debug_cpu_profile_block_build_op_count),
     blockExecOpCounts: readCounts(handle.kernel.debug_cpu_profile_block_exec_op_count),

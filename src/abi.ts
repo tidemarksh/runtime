@@ -454,6 +454,8 @@ export interface KernelExports {
   debug_cpu_profile_block_cache_unsupported?(): bigint | number;
   debug_cpu_profile_block_exec_ops?(): bigint | number;
   debug_cpu_profile_block_exec_unsupported?(): bigint | number;
+  debug_cpu_profile_block_exec_op_sample_interval?(): bigint | number;
+  debug_cpu_profile_block_exec_sampled_blocks?(): bigint | number;
   debug_cpu_profile_interpreter_ops?(): bigint | number;
   debug_cpu_profile_block_build_op_count?(opId: number): bigint | number;
   debug_cpu_profile_block_exec_op_count?(opId: number): bigint | number;
