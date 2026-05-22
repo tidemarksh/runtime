@@ -17,7 +17,9 @@ const defaultDevtoolsToolsetDir = resolve(repoRoot, "artifacts/devtools/toolset"
 const devtoolsToolsetDir = process.env.TIDEMARK_TEST_DEVTOOLS_TOOLSET_DIR || defaultDevtoolsToolsetDir;
 const packageCount = Number(process.env.TIDEMARK_TEST_LARGE_XZ_PACKAGE_COUNT ?? 20_000);
 const packageXzInput = process.env.TIDEMARK_TEST_LARGE_XZ_INPUT ?? "";
+const outputMode = process.env.TIDEMARK_TEST_LARGE_XZ_OUTPUT_MODE === "file" ? "file" : "stdout";
 const packagesXzPath = "/work/Packages.xz";
+const packagesOutputPath = "/work/Packages";
 
 function buildPackagesCorpus(): { packages: Uint8Array; packagesXz: Uint8Array } | null {
   if (packageXzInput) {
@@ -181,28 +183,35 @@ test("large xz local gate: guest xz decompresses package-index sized input", asy
   try {
     await runtime.applyFsSnapshot(snapshot.entries ?? []);
     const spawnStartedMs = Date.now();
+    const argv = outputMode === "file"
+      ? ["/usr/bin/xz", "-dk", packagesXzPath]
+      : ["/usr/bin/xz", "-dc", packagesXzPath];
     const result = await spawnWithOutputAndStats(
       runtime,
       new Uint8Array(readFileSync(xzHostPath)),
-      ["/usr/bin/xz", "-dc", packagesXzPath],
+      argv,
       ["PATH=/usr/bin:/bin", "HOME=/tmp", "LD_LIBRARY_PATH=/usr/lib/riscv64-linux-gnu:/lib"],
       180_000,
       { cwd: "/work", stdin: "closed" },
     );
     const spawnDurationMs = Date.now() - spawnStartedMs;
     expect(result.exitCode, result.output + (result.debugInfo ? `\n${result.debugInfo}` : "")).toBe(0);
-    const outputBytes = new TextEncoder().encode(result.output);
+    const outputBytes = outputMode === "file"
+      ? await runtime.readFile(packagesOutputPath)
+      : new TextEncoder().encode(result.output);
     if (packageXzInput) {
-      expect(result.output).toContain("Package:");
+      expect(new TextDecoder().decode(outputBytes.subarray(0, 128))).toContain("Package:");
     } else {
       expect(outputBytes.length).toBe(corpus.packages.length);
       expect(checksum(outputBytes)).toBe(checksum(corpus.packages));
-      expect(result.output).toContain("Package: tidemark-local-0\n");
-      expect(result.output).toContain(`Package: tidemark-local-${Math.max(1, Math.trunc(packageCount)) - 1}\n`);
+      const output = new TextDecoder().decode(outputBytes);
+      expect(output).toContain("Package: tidemark-local-0\n");
+      expect(output).toContain(`Package: tidemark-local-${Math.max(1, Math.trunc(packageCount)) - 1}\n`);
     }
     console.log([
       `large xz gate durationMs=${Date.now() - startedMs}`,
       `spawnDurationMs=${spawnDurationMs}`,
+      `outputMode=${outputMode}`,
       `packageCount=${Math.max(1, Math.trunc(packageCount))}`,
       `packagesBytes=${corpus.packages.length}`,
       `outputBytes=${outputBytes.length}`,
