@@ -2890,6 +2890,7 @@ function compactAptExecutionStats(
     transferDebugStats: proc.transferDebugStats,
     memoryLogTail: proc.memoryLogTail,
     cpuDebugStats: proc.cpuDebugStats,
+    syscallDebugStats: proc.syscallDebugStats,
     workers: proc.workers.map((worker) => ({
       ownerState: worker.ownerState,
       stepCount: worker.stepCount,

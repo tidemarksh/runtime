@@ -80,6 +80,7 @@ function compactExecutionStats(
     blockedWorkers: proc.blockedWorkers,
     transferDebugStats: proc.transferDebugStats,
     cpuDebugStats: proc.cpuDebugStats,
+    syscallDebugStats: proc.syscallDebugStats,
     workers: proc.workers.map((worker) => ({
       ownerState: worker.ownerState,
       stepCount: worker.stepCount,

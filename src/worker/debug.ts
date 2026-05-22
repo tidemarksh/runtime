@@ -101,7 +101,12 @@ export interface ProcessExecutionStats {
     flags: number;
   }>;
   cpuDebugStats: CpuDebugStats | null;
+  syscallDebugStats: SyscallDebugStats | null;
   workers: WorkerExecutionStats[];
+}
+
+export interface SyscallDebugStats {
+  topSyscalls: Array<{ nr: number; count: string; nonOkStatusCount: string; errorCount: string }>;
 }
 
 export interface CpuDebugStats {
@@ -345,6 +350,30 @@ function readCpuDebugStats(handle: ProcessHandle): CpuDebugStats | null {
     interpreterOpCounts: readCounts(handle.kernel.debug_cpu_profile_interpreter_op_count),
     unsupportedOpCounts: readCounts(handle.kernel.debug_cpu_profile_unsupported_op_count),
   };
+}
+
+function readSyscallDebugStats(handle: ProcessHandle): SyscallDebugStats | null {
+  const countAccessor = handle.kernel.debug_syscall_profile_count;
+  if (!countAccessor) {
+    return null;
+  }
+  const nonOkAccessor = handle.kernel.debug_syscall_profile_non_ok_status_count;
+  const errorAccessor = handle.kernel.debug_syscall_profile_error_count;
+  const topSyscalls: SyscallDebugStats["topSyscalls"] = [];
+  for (let nr = 0; nr < 512; nr += 1) {
+    const count = formatU64Decimal(countAccessor(nr));
+    if (count === "0") {
+      continue;
+    }
+    topSyscalls.push({
+      nr,
+      count,
+      nonOkStatusCount: formatU64Decimal(nonOkAccessor?.(nr)),
+      errorCount: formatU64Decimal(errorAccessor?.(nr)),
+    });
+  }
+  topSyscalls.sort((left, right) => Number(BigInt(right.count) - BigInt(left.count)) || left.nr - right.nr);
+  return { topSyscalls: topSyscalls.slice(0, 32) };
 }
 
 function hasThreadStepDebugSignal(snapshot: ThreadStepDebugSnapshot): boolean {
@@ -751,6 +780,7 @@ export function debugRuntimeExecutionStats(
           .slice(-8),
         memoryVmas: readMemoryVmas(handle),
         cpuDebugStats: readCpuDebugStats(handle),
+        syscallDebugStats: readSyscallDebugStats(handle),
         workers: [...handle.workers]
           .map((worker) => {
             const state = threadWorkerStates.get(worker);

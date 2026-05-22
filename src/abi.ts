@@ -486,6 +486,9 @@ export interface KernelExports {
   debug_syscall_trace_entry_status?(index: number): number;
   debug_syscall_trace_entry_pid_sample0?(index: number): bigint | number;
   debug_syscall_trace_entry_pid_sample1?(index: number): bigint | number;
+  debug_syscall_profile_count?(nr: number): bigint | number;
+  debug_syscall_profile_non_ok_status_count?(nr: number): bigint | number;
+  debug_syscall_profile_error_count?(nr: number): bigint | number;
   debug_riscv_syscall_trace_len?(): number;
   debug_riscv_syscall_trace_entry_vm_ptr?(index: number): number;
   debug_riscv_syscall_trace_entry_nr?(index: number): bigint | number;
