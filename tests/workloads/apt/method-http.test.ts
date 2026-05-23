@@ -58,6 +58,8 @@ const packageIndexGateObserveOutputPhases =
   process.env.TIDEMARK_TEST_APT_PACKAGE_INDEX_OBSERVE_OUTPUT_PHASES === "1";
 const aptCachePackagesInput = process.env.TIDEMARK_TEST_APT_CACHE_PACKAGES_INPUT ?? "";
 const aptCacheStatsTimeoutMs = Number(process.env.TIDEMARK_TEST_APT_CACHE_STATS_TIMEOUT_MS ?? "300000");
+const aptCheckPackagesInput = process.env.TIDEMARK_TEST_APT_CHECK_PACKAGES_INPUT ?? aptCachePackagesInput;
+const aptCheckTimeoutMs = Number(process.env.TIDEMARK_TEST_APT_CHECK_TIMEOUT_MS ?? "300000");
 const methodFullPackageGate = process.env.TIDEMARK_TEST_APT_METHOD_FULL_PACKAGE_GATE === "1";
 const methodFullPackageBytes = Number(process.env.TIDEMARK_TEST_APT_METHOD_FULL_PACKAGE_BYTES ?? "0");
 const storeFullPackageExpectedHash = process.env.TIDEMARK_TEST_APT_STORE_EXPECTED_HASH !== "0";
@@ -216,9 +218,12 @@ function buildSyntheticAptRepository(): {
   }
 }
 
-function buildPackagesLz4FromInput(inputPath: string): Uint8Array | null {
+function buildPackagesLz4FromInput(
+  inputPath: string,
+  inputLabel = "TIDEMARK_TEST_APT_CACHE_PACKAGES_INPUT",
+): Uint8Array | null {
   if (!inputPath || !existsSync(inputPath)) {
-    return logSkip(`missing apt cache Packages input: ${inputPath || "set TIDEMARK_TEST_APT_CACHE_PACKAGES_INPUT"}`);
+    return logSkip(`missing apt Packages input: ${inputPath || `set ${inputLabel}`}`);
   }
   if (inputPath.endsWith(".lz4")) {
     return new Uint8Array(readFileSync(inputPath));
@@ -4966,6 +4971,114 @@ test("apt-cache stats local gate: preloaded package list is parsed from lists ca
     runtime.destroy();
   }
 }, Math.max(330_000, aptCacheStatsTimeoutMs + 30_000));
+
+test("apt-get check local gate: preloaded package list is parsed by apt parent", async () => {
+  const packagesLz4 = buildPackagesLz4FromInput(
+    aptCheckPackagesInput,
+    "TIDEMARK_TEST_APT_CHECK_PACKAGES_INPUT",
+  );
+  if (!packagesLz4) {
+    return;
+  }
+  const prepared = await prepareAptGetRuntime(createMethodNetworkBridge([]));
+  if (!prepared) {
+    return;
+  }
+  const { runtime, aptGetElf } = prepared;
+
+  let output = "";
+  let observation = "not-observed";
+  let sampledExecution = "[]";
+  let sampledHotPcVmas = "[]";
+  const started = Date.now();
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  let sampleId: ReturnType<typeof setInterval> | null = null;
+  try {
+    await runtime.writeFile(aptFinalPackagesLz4Filename, packagesLz4, 0o644);
+    const proc = await runtime.spawn(
+      aptGetElf,
+      [
+        "/usr/bin/apt-get",
+        "-o", "Debug::NoLocking=true",
+        "-o", "Dir::State::lists=/var/lib/apt/lists",
+        "check",
+      ],
+      ["PATH=/usr/bin:/bin", "HOME=/root", "TMPDIR=/tmp", "LC_ALL=C", "LANG=C"],
+      { cwd: "/", stdin: "closed" },
+    );
+    proc.onStdout((data) => {
+      output += decoder.decode(data);
+    });
+    sampleId = setInterval(() => {
+      const stats = runtime.debugExecutionStats();
+      if (stats.length > 0) {
+        sampledExecution = compactAptExecutionStats(stats);
+        sampledHotPcVmas = compactAptExecutionHotPcVmas(stats);
+      }
+    }, 1000);
+    if (typeof sampleId === "object" && sampleId !== null && "unref" in sampleId) {
+      sampleId.unref();
+    }
+    const exitCode = await Promise.race([
+      proc.waitForExit(),
+      new Promise<never>((_resolve, reject) => {
+        timeoutId = setTimeout(async () => {
+          try {
+            observation = await collectAptRuntimeObservation(runtime, "apt-get-check-timeout", started);
+          } catch (observationError) {
+            const detail = observationError instanceof Error
+              ? (observationError.stack ?? observationError.message)
+              : String(observationError);
+            observation = `observation-error=${JSON.stringify(detail)}`;
+          }
+          reject(new Error(`timeout waiting for apt-get check after ${aptCheckTimeoutMs}ms`));
+        }, aptCheckTimeoutMs);
+        if (typeof timeoutId === "object" && timeoutId !== null && "unref" in timeoutId) {
+          timeoutId.unref();
+        }
+      }),
+    ]).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error([
+        detail,
+        `packagesInput=${aptCheckPackagesInput}`,
+        `packagesLz4Bytes=${packagesLz4.length}`,
+        `outputTail=${JSON.stringify(output.slice(-2048))}`,
+        `sampledExecution=${sampledExecution}`,
+        `sampledHotPcVmas=${sampledHotPcVmas}`,
+        `observation=${observation}`,
+        `debug=${compactAptMethodExecFailureDebug(await runtimeDebugSummary(runtime))}`,
+        `lastFailure=${JSON.stringify(compactAptDebugValue(runtime.debugLastFailureSnapshot?.() ?? null))}`,
+      ].join("\n"));
+    });
+    const durationMs = Date.now() - started;
+    const finalObservation = await collectAptRuntimeObservation(runtime, "apt-get-check-exit", started);
+    expect(exitCode, [
+      `output=${JSON.stringify(output)}`,
+      `observation=${finalObservation}`,
+      `debug=${compactAptMethodExecFailureDebug(await runtimeDebugSummary(runtime))}`,
+    ].join("\n")).toBe(0);
+    expect(output).toMatch(/Reading package lists/);
+    console.log([
+      `apt-get check metrics durationMs=${durationMs}`,
+      `packagesInput=${aptCheckPackagesInput}`,
+      `packagesLz4Bytes=${packagesLz4.length}`,
+      `outputTail=${JSON.stringify(output.slice(-1024))}`,
+      `sampledExecution=${sampledExecution}`,
+      `sampledHotPcVmas=${sampledHotPcVmas}`,
+      `observation=${finalObservation}`,
+      `finalPackagesLz4=${await describeGuestFileBrief(runtime, aptFinalPackagesLz4Filename)}`,
+    ].join(" "));
+  } finally {
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+    }
+    if (sampleId !== null) {
+      clearInterval(sampleId);
+    }
+    runtime.destroy();
+  }
+}, Math.max(330_000, aptCheckTimeoutMs + 30_000));
 
 test("apt-get update local gate: package index request reaches in-memory bridge", async () => {
   const repo = buildSyntheticAptRepository();
