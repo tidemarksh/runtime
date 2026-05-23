@@ -156,6 +156,106 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     return entries.slice(-48).join(",");
   }
 
+  function formatTraceU64(value: bigint | number | undefined): string {
+    return BigInt.asUintN(64, BigInt(value ?? 0)).toString(16);
+  }
+
+  function formatFrozenExecTrace(
+    handle: ProcessHandle,
+    len: () => number,
+    entry: (index: number) => {
+      pc?: bigint;
+      raw?: number;
+      step?: number;
+      sp?: bigint;
+      ra?: bigint;
+      a0?: bigint;
+      s11?: bigint;
+    },
+  ): string {
+    const count = len();
+    if (count <= 0) {
+      return "";
+    }
+    const entries: string[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const item = entry(index);
+      entries.push(
+        `${index}:pc=0x${formatTraceU64(item.pc)}`
+        + `:raw=0x${(item.raw ?? 0).toString(16)}`
+        + `:step=${item.step ?? 0}`
+        + `:sp=0x${formatTraceU64(item.sp)}`
+        + `:ra=0x${formatTraceU64(item.ra)}`
+        + `:a0=0x${formatTraceU64(item.a0)}`
+        + `:s11=0x${formatTraceU64(item.s11)}`,
+      );
+    }
+    return entries.join(",");
+  }
+
+  function safeFrozenExecTrace(label: string, read: () => string): string {
+    try {
+      const trace = read();
+      return trace.length > 0 ? `${label}=[${trace}]` : "";
+    } catch (error) {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      return `${label}_error=${JSON.stringify(detail)}`;
+    }
+  }
+
+  function formatFrozenExitTraces(handle: ProcessHandle): string {
+    return [
+      safeFrozenExecTrace(
+        "thread_step_exec_trace",
+        () => formatFrozenExecTrace(
+          handle,
+          () => handle.kernel.debug_thread_step_exec_trace_len_for_vm?.(handle.vmPtr) ?? 0,
+          (index) => ({
+            pc: handle.kernel.debug_thread_step_exec_trace_entry_pc_for_vm?.(handle.vmPtr, index),
+            raw: handle.kernel.debug_thread_step_exec_trace_entry_raw_for_vm?.(handle.vmPtr, index),
+            step: handle.kernel.debug_thread_step_exec_trace_entry_step_for_vm?.(handle.vmPtr, index),
+            sp: handle.kernel.debug_thread_step_exec_trace_entry_sp_for_vm?.(handle.vmPtr, index),
+            ra: handle.kernel.debug_thread_step_exec_trace_entry_ra_for_vm?.(handle.vmPtr, index),
+            a0: handle.kernel.debug_thread_step_exec_trace_entry_a0_for_vm?.(handle.vmPtr, index),
+            s11: handle.kernel.debug_thread_step_exec_trace_entry_s11_for_vm?.(handle.vmPtr, index),
+          }),
+        ),
+      ),
+      safeFrozenExecTrace(
+        "sync_fault_exec_trace",
+        () => formatFrozenExecTrace(
+          handle,
+          () => handle.kernel.debug_sync_fault_exec_trace_len_for_vm?.(handle.vmPtr) ?? 0,
+          (index) => ({
+            pc: handle.kernel.debug_sync_fault_exec_trace_entry_pc_for_vm?.(handle.vmPtr, index),
+            raw: handle.kernel.debug_sync_fault_exec_trace_entry_raw_for_vm?.(handle.vmPtr, index),
+            step: handle.kernel.debug_sync_fault_exec_trace_entry_step_for_vm?.(handle.vmPtr, index),
+            sp: handle.kernel.debug_sync_fault_exec_trace_entry_sp_for_vm?.(handle.vmPtr, index),
+            ra: handle.kernel.debug_sync_fault_exec_trace_entry_ra_for_vm?.(handle.vmPtr, index),
+            a0: handle.kernel.debug_sync_fault_exec_trace_entry_a0_for_vm?.(handle.vmPtr, index),
+            s11: handle.kernel.debug_sync_fault_exec_trace_entry_s11_for_vm?.(handle.vmPtr, index),
+          }),
+        ),
+      ),
+      safeFrozenExecTrace(
+        "break_exec_trace",
+        () => formatFrozenExecTrace(
+          handle,
+          () => handle.kernel.debug_break_exec_trace_len_for_vm?.(handle.vmPtr) ?? 0,
+          (index) => ({
+            pc: handle.kernel.debug_break_exec_trace_entry_pc_for_vm?.(handle.vmPtr, index),
+            raw: handle.kernel.debug_break_exec_trace_entry_raw_for_vm?.(handle.vmPtr, index),
+            step: handle.kernel.debug_break_exec_trace_entry_step_for_vm?.(handle.vmPtr, index),
+            sp: handle.kernel.debug_break_exec_trace_entry_sp_for_vm?.(handle.vmPtr, index),
+            ra: handle.kernel.debug_break_exec_trace_entry_ra_for_vm?.(handle.vmPtr, index),
+            a0: handle.kernel.debug_break_exec_trace_entry_a0_for_vm?.(handle.vmPtr, index),
+            s11: handle.kernel.debug_break_exec_trace_entry_s11_for_vm?.(handle.vmPtr, index),
+          }),
+        ),
+      ),
+    ].filter((entry) => entry.length > 0).join(" ");
+  }
+
   function formatFdSyscalls(handle: ProcessHandle, pidFilter: number | null = null, limit = 256): string {
     const len = handle.kernel.debug_fd_syscall_trace_len?.() ?? 0;
     if (len <= 0) {
@@ -256,6 +356,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       `all_path_syscalls=[${formatAllPathSyscalls(handle)}]`,
       `fd_syscalls=[${formatFdSyscalls(handle)}]`,
       `memory_syscalls=[${formatMemorySyscalls(handle)}]`,
+      formatFrozenExitTraces(handle),
     ].join(" ");
   }
 

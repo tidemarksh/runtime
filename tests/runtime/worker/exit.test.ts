@@ -561,3 +561,40 @@ test("completeProcessExit keeps execve stage summary without dispatch trace nois
   expect(child.lastDebugMessage).toContain("execve_stage_trace=[10:100:200,11:300:400]");
   expect(child.lastDebugMessage).not.toContain("execve_dispatch=[");
 });
+
+test("completeProcessExit includes frozen per-vm exec trace in exit trace", async () => {
+  const child = makeHandle({
+    parentPid: null,
+    kernel: {
+      debug_thread_step_exec_trace_len_for_vm: (vmPtr: number) => vmPtr === 0x1234 ? 2 : 0,
+      debug_thread_step_exec_trace_entry_pc_for_vm: (_vmPtr: number, index: number) => [0x83336n, 0x83340n][index] ?? 0n,
+      debug_thread_step_exec_trace_entry_raw_for_vm: (_vmPtr: number, index: number) => [0x00a00563, 0xfe013283][index] ?? 0,
+      debug_thread_step_exec_trace_entry_step_for_vm: (_vmPtr: number, index: number) => [4, 4][index] ?? 0,
+      debug_thread_step_exec_trace_entry_sp_for_vm: (_vmPtr: number, index: number) => [0x37d6c000n, 0x37d6c000n][index] ?? 0n,
+      debug_thread_step_exec_trace_entry_ra_for_vm: (_vmPtr: number, index: number) => [0x4d9b4n, 0x4d9b4n][index] ?? 0n,
+      debug_thread_step_exec_trace_entry_a0_for_vm: (_vmPtr: number, index: number) => [0n, 0n][index] ?? 0n,
+      debug_thread_step_exec_trace_entry_s11_for_vm: (_vmPtr: number, index: number) => [0xbfdc80n, 0xbfdc80n][index] ?? 0n,
+    } as never,
+  });
+  const helpers = createWorkerExitHelpers({
+    processHandles: new Map<number, ProcessHandle>([[3, child]]),
+    appendRuntimeLifecycleEvent: () => {},
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle: () => {},
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers: () => {},
+    recordChildExitViaKernelWorker: async () => {},
+    releaseSharedHostStdio: async () => {},
+    requestPipeStateSync: async () => {},
+    unregisterProcessWithKernelWorker: async () => {},
+  });
+
+  await helpers.completeProcessExit(child, 1, 0);
+
+  expect(child.lastDebugMessage).toContain("thread_step_exec_trace=[0:pc=0x83336:raw=0xa00563");
+  expect(child.lastDebugMessage).toContain("1:pc=0x83340:raw=0xfe013283");
+});
