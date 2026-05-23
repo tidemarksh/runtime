@@ -434,8 +434,35 @@ function applyForkMemorySnapshot(snapshot: ForkMemorySnapshot, target: WebAssemb
   }
 }
 
+function forkSnapshotContainsBytes(
+  snapshot: ForkMemorySnapshot,
+  start: number,
+  bytes: Uint8Array,
+): boolean {
+  const end = start + bytes.byteLength;
+  for (const range of snapshot.ranges) {
+    if (start < range.start || end > range.end) {
+      continue;
+    }
+    const offset = start - range.start;
+    for (let index = 0; index < bytes.byteLength; index += 1) {
+      if (range.bytes[offset + index] !== bytes[index]) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
 function forkSnapshotCopiedBytes(snapshot: ForkMemorySnapshot): number {
   return snapshot.ranges.reduce((total, range) => total + range.bytes.byteLength, 0);
+}
+
+function formatForkSnapshotRanges(snapshot: ForkMemorySnapshot): string {
+  return snapshot.ranges
+    .map((range) => `${range.start}-${range.end}:${range.bytes.byteLength}`)
+    .join(",");
 }
 
 function appendPlainForkMemoryDebug(
@@ -453,6 +480,7 @@ function appendPlainForkMemoryDebug(
     `snapshotRanges=${snapshot.ranges.length}`,
     `snapshotBytes=${forkSnapshotCopiedBytes(snapshot)}`,
     `snapshotEnd=${snapshot.endOffset}`,
+    `snapshotRangeSpans=${formatForkSnapshotRanges(snapshot)}`,
     `guestBase=${handle.guestBase}`,
     `ramSize=${handle.ramSize}`,
     `maxMemoryBytes=${handle.maxMemoryPages * 65536}`,
@@ -594,12 +622,14 @@ export async function handlePlainFork(
     if (parentThread.forkStackSnapshot) {
       const start = handle.guestBase + parentThread.forkStackSnapshot.startGuest;
       const end = start + parentThread.forkStackSnapshot.bytes.length;
-      forkMemorySnapshot.ranges.push({
-        start,
-        end,
-        bytes: parentThread.forkStackSnapshot.bytes,
-      });
-      forkMemorySnapshot.endOffset = Math.max(forkMemorySnapshot.endOffset, end);
+      if (!forkSnapshotContainsBytes(forkMemorySnapshot, start, parentThread.forkStackSnapshot.bytes)) {
+        forkMemorySnapshot.ranges.push({
+          start,
+          end,
+          bytes: parentThread.forkStackSnapshot.bytes,
+        });
+        forkMemorySnapshot.endOffset = Math.max(forkMemorySnapshot.endOffset, end);
+      }
       parentThread.forkStackSnapshot = undefined;
     }
     restoreParentProcessSnapshot(handle, parentThread, parentProcessSnapshot);

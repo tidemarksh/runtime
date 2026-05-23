@@ -1804,6 +1804,48 @@ test("plain fork retains shared OFDs before spawning the child worker", async ()
   expect([...new Set(kernel.retainedOfds)].sort((a, b) => a - b)).toEqual([11, 12, 13]);
 });
 
+test("plain fork skips byte-identical captured stack snapshot", async () => {
+  const parent = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
+  const worker = createdWorkers[0];
+  const kernel = createdKernelExports[0];
+  const stackPointer = parent.ramSize - 0x8000;
+  const stackStartGuest = Math.max(0, Math.floor(stackPointer / 65536) * 65536 - 1024 * 1024);
+  const stackBytes = 1024 * 1024;
+  const stackStart = parent.guestBase + stackStartGuest;
+  const memory = new Uint8Array(parent.memory.buffer);
+
+  for (let index = 0; index < stackBytes; index += 1) {
+    memory[stackStart + index] = index & 0xff;
+  }
+  kernel.thread_spawn_kind = () => kernel.abi_spawn_kind_fork();
+  kernel.thread_spawn_child_pid = () => 77;
+  kernel.thread_sp = () => BigInt(stackPointer);
+  kernel.debug_memory_brk_current = () => 0x4000n;
+  kernel.debug_memory_vma_len = () => 0;
+
+  emitReady(worker);
+  worker.clearPostedMessages();
+  worker.emit({
+    type: "status",
+    status: 9,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+    forkStackSnapshot: {
+      startGuest: stackStartGuest,
+      bytes: memory.slice(stackStart, stackStart + stackBytes),
+    },
+  });
+  await flushMicrotasks();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const memoryLog = parent.workerDebugLog.find((entry) => entry.startsWith("plain-fork-memory:"));
+  expect(memoryLog).toBeDefined();
+  expect(memoryLog).not.toContain(`${stackStart}-${stackStart + stackBytes}:${stackBytes},${stackStart}-${stackStart + stackBytes}:${stackBytes}`);
+});
+
 test("plain fork canonicalizes child pid and reinitializes child lifecycle through kernel-worker", async () => {
   const requests: KernelWorkerRequest[] = [];
   await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
