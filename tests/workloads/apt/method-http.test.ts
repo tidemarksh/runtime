@@ -79,6 +79,11 @@ const aptStoreChildObserveScheduleMs = (process.env.TIDEMARK_TEST_APT_STORE_CHIL
   .map((entry) => Number(entry.trim()))
   .filter((entry) => Number.isFinite(entry) && entry >= 0)
   .sort((left, right) => left - right);
+const aptOutputPhaseObserveScheduleMs = (process.env.TIDEMARK_TEST_APT_OUTPUT_PHASE_OBSERVE_MS ?? "")
+  .split(",")
+  .map((entry) => Number(entry.trim()))
+  .filter((entry) => Number.isFinite(entry) && entry >= 0)
+  .sort((left, right) => left - right);
 
 type MethodHttpResponse = Uint8Array | {
   statusLine: string;
@@ -3098,6 +3103,7 @@ async function describeAptPageCachePaths(
     aptPartialPackagesXzFilename,
     aptFinalInReleaseFilename,
     aptFinalPackagesXzFilename,
+    aptFinalPackagesLz4Filename,
     "/usr/lib/apt/methods/store",
     "/lib/ld-linux-riscv64-lp64d.so.1",
   ];
@@ -5025,9 +5031,44 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
   const storeChildProgressObservationTimers: ReturnType<typeof setTimeout>[] = [];
   const outputPhaseObservationEntries: string[] = [];
   const outputPhaseObservationPromises: Promise<void>[] = [];
+  const outputPhaseObservationTimers: ReturnType<typeof setTimeout>[] = [];
   const started = Date.now();
   metrics.startedAtMs = started;
   try {
+    const scheduleOutputPhaseObservations = (phaseLabel: string, phaseAtMs: number): void => {
+      const delays = aptOutputPhaseObserveScheduleMs.length > 0 ? aptOutputPhaseObserveScheduleMs : [0];
+      for (const delayAfterPhaseMs of delays) {
+        const label = delays.length === 1 && delayAfterPhaseMs === 0
+          ? `after-output-${phaseLabel}`
+          : `after-output-${phaseLabel}-${delayAfterPhaseMs}`;
+        const runObservation = (): void => {
+          outputPhaseObservationPromises.push(collectAptStoreChildProgressObservation(
+            runtime,
+            label,
+            started,
+            output,
+          ).then((observation) => {
+            outputPhaseObservationEntries.push(observation);
+          }, (error) => {
+            const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+            outputPhaseObservationEntries.push(
+              `label=${label} observation-error=${JSON.stringify(detail)}`,
+            );
+          }));
+        };
+        const delayMs = Math.max(0, phaseAtMs + delayAfterPhaseMs - (Date.now() - started));
+        if (delayMs === 0) {
+          runObservation();
+          continue;
+        }
+        const timer = setTimeout(runObservation, delayMs);
+        if (typeof timer === "object" && timer !== null && "unref" in timer) {
+          timer.unref();
+        }
+        outputPhaseObservationTimers.push(timer);
+      }
+    };
+
     const proc = await runtime.spawn(
       aptGetElf,
       aptGetUpdateArgs(),
@@ -5050,19 +5091,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
       if (fetchedOutputAtMs < 0 && !previousOutput.includes("Fetched ") && output.includes("Fetched ")) {
         fetchedOutputAtMs = Date.now() - started;
         if (packageIndexGateObserveOutputPhases) {
-          outputPhaseObservationPromises.push(collectAptStoreChildProgressObservation(
-            runtime,
-            "after-output-fetched",
-            started,
-            output,
-          ).then((observation) => {
-            outputPhaseObservationEntries.push(observation);
-          }, (error) => {
-            const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
-            outputPhaseObservationEntries.push(
-              `label=after-output-fetched observation-error=${JSON.stringify(detail)}`,
-            );
-          }));
+          scheduleOutputPhaseObservations("fetched", fetchedOutputAtMs);
         }
       }
       if (
@@ -5072,19 +5101,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
       ) {
         readingPackageListsAtMs = Date.now() - started;
         if (packageIndexGateObserveOutputPhases) {
-          outputPhaseObservationPromises.push(collectAptStoreChildProgressObservation(
-            runtime,
-            "after-output-reading-package-lists",
-            started,
-            output,
-          ).then((observation) => {
-            outputPhaseObservationEntries.push(observation);
-          }, (error) => {
-            const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
-            outputPhaseObservationEntries.push(
-              `label=after-output-reading-package-lists observation-error=${JSON.stringify(detail)}`,
-            );
-          }));
+          scheduleOutputPhaseObservations("reading-package-lists", readingPackageListsAtMs);
         }
       }
     });
@@ -5126,6 +5143,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `storeMethod=${await describeGuestFile(runtime, "/usr/lib/apt/methods/store")}`,
         `storeLoader=${await describeGuestFile(runtime, "/lib/ld-linux-riscv64-lp64d.so.1")}`,
         `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
+        `finalPackagesLz4=${await describeGuestFile(runtime, aptFinalPackagesLz4Filename)}`,
         `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
         `debug=${compactAptMethodExecFailureDebug(debugSummary)}`,
         `lastFailure=${JSON.stringify(compactAptDebugValue(runtime.debugLastFailureSnapshot?.() ?? null))}`,
@@ -5137,6 +5155,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
       `completed=${metrics.packageResponsesCompleted}`,
       `partialPackagesXz=${await describeGuestFileBrief(runtime, aptPartialPackagesXzFilename)}`,
       `finalPackagesXz=${await describeGuestFileBrief(runtime, aptFinalPackagesXzFilename)}`,
+      `finalPackagesLz4=${await describeGuestFileBrief(runtime, aptFinalPackagesLz4Filename)}`,
     ].join(" ");
     storeLoaderAtPackageResponseComplete = await describeGuestFile(runtime, "/lib/ld-linux-riscv64-lp64d.so.1");
     firstPackageRuntimeObservation = await collectAptRuntimeObservation(
@@ -5196,6 +5215,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
           `output=${JSON.stringify(output)}`,
           `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
           `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
+          `finalPackagesLz4=${await describeGuestFile(runtime, aptFinalPackagesLz4Filename)}`,
           `firstPackageResponseCompleteObservation=${firstPackageResponseCompleteObservation}`,
           `firstPackageRuntimeObservation=${firstPackageRuntimeObservation}`,
           `firstPackageFileCompleteObservation=${firstPackageFileCompleteObservation}`,
@@ -5209,6 +5229,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `targets=${JSON.stringify(extractHttpGetTargets(guestRequests).filter(isPackageIndexTarget))}`,
         `partialPackagesXz=${await describeGuestFileBrief(runtime, aptPartialPackagesXzFilename)}`,
         `finalPackagesXz=${await describeGuestFileBrief(runtime, aptFinalPackagesXzFilename)}`,
+        `finalPackagesLz4=${await describeGuestFileBrief(runtime, aptFinalPackagesLz4Filename)}`,
         `debug=${JSON.stringify(compactAptRuntimeDebug(debugSummary))}`,
       ].join(" ");
       await waitForPackageResponseCompleteCount(metrics, proc, 2, asyncDoneTimeoutMs).catch(async (error) => {
@@ -5221,6 +5242,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
           `output=${JSON.stringify(output)}`,
           `partialPackagesXz=${await describeGuestFile(runtime, aptPartialPackagesXzFilename)}`,
           `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
+          `finalPackagesLz4=${await describeGuestFile(runtime, aptFinalPackagesLz4Filename)}`,
           `secondPackageObservation=${secondPackageObservation}`,
           `debug=${await runtimeDebugSummary(runtime)}`,
           `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null, null, 2)}`,
@@ -5232,6 +5254,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `completed=${metrics.packageResponsesCompleted}`,
         `partialPackagesXz=${await describeGuestFileBrief(runtime, aptPartialPackagesXzFilename)}`,
         `finalPackagesXz=${await describeGuestFileBrief(runtime, aptFinalPackagesXzFilename)}`,
+        `finalPackagesLz4=${await describeGuestFileBrief(runtime, aptFinalPackagesLz4Filename)}`,
         `debug=${JSON.stringify(compactAptRuntimeDebug(afterResponseDebugSummary))}`,
       ].join(" ");
     }
@@ -5294,6 +5317,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `storeChildProgressObservations=${JSON.stringify(storeChildProgressObservationEntries)}`,
         `finalInRelease=${await describeGuestFile(runtime, aptFinalInReleaseFilename)}`,
         `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
+        `finalPackagesLz4=${await describeGuestFile(runtime, aptFinalPackagesLz4Filename)}`,
         `debug=${compactAptMethodExecFailureDebug(debugSummary)}`,
         `lastFailure=${JSON.stringify(compactAptDebugValue(runtime.debugLastFailureSnapshot?.() ?? null))}`,
       ].join("\n"));
@@ -5332,6 +5356,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         `exitRuntimeObservation=${exitRuntimeObservation}`,
         `finalInRelease=${await describeGuestFile(runtime, aptFinalInReleaseFilename)}`,
         `finalPackagesXz=${await describeGuestFile(runtime, aptFinalPackagesXzFilename)}`,
+        `finalPackagesLz4=${await describeGuestFile(runtime, aptFinalPackagesLz4Filename)}`,
       ].join("\n"),
     ).toEqual(expect.arrayContaining([expect.stringMatching(/\/dists\/trixie\/main\/binary-riscv64\/.*(?:by-hash\/SHA256\/|Packages(?:\.xz)?$)/)]));
     expect(packageIndexTargets.length).toBeGreaterThan(0);
@@ -5375,9 +5400,13 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
       `outputPhaseObservations=${JSON.stringify(outputPhaseObservationEntries)}`,
       `partialPackagesXz=${await describeGuestFileBrief(runtime, aptPartialPackagesXzFilename)}`,
       `finalPackagesXz=${await describeGuestFileBrief(runtime, aptFinalPackagesXzFilename)}`,
+      `finalPackagesLz4=${await describeGuestFileBrief(runtime, aptFinalPackagesLz4Filename)}`,
     ].join(" "));
   } finally {
     for (const timer of storeChildProgressObservationTimers) {
+      clearTimeout(timer);
+    }
+    for (const timer of outputPhaseObservationTimers) {
       clearTimeout(timer);
     }
     runtime.destroy();
