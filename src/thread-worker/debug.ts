@@ -801,6 +801,45 @@ function pushAddressVmaDebug(
   }
 }
 
+function pushRecoveredDebugPart(
+  debugParts: string[],
+  label: string,
+  read: () => string | null,
+) {
+  try {
+    const value = read();
+    if (value !== null) {
+      debugParts.push(`${label}=[${value}]`);
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    debugParts.push(`${label}_recover_error=${JSON.stringify(detail)}`);
+  }
+}
+
+function pushRecoveredTraceDebug(debugParts: string[], exports: KernelExports, vmPtr: number) {
+  pushRecoveredDebugPart(
+    debugParts,
+    "thread_step_traces",
+    () => formatThreadStepTraceEntries(exports, vmPtr),
+  );
+  pushRecoveredDebugPart(
+    debugParts,
+    "thread_step_exec_trace",
+    () => formatExecTraceEntries(exports, vmPtr),
+  );
+  pushRecoveredDebugPart(
+    debugParts,
+    "sync_fault_exec_trace",
+    () => formatSyncFaultExecTraceEntries(exports, vmPtr),
+  );
+  pushRecoveredDebugPart(
+    debugParts,
+    "break_exec_trace",
+    () => formatBreakExecTraceEntries(exports, vmPtr),
+  );
+}
+
 export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBase: number): string[] {
   const debugParts: string[] = [];
   try {
@@ -1277,6 +1316,7 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     debugParts.push("proc_self_exe=unavailable");
   }
   } catch (error) {
+    pushRecoveredTraceDebug(debugParts, exports, vmPtr);
     const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
     debugParts.push(`debug_collect_error=${JSON.stringify(detail)}`);
   }

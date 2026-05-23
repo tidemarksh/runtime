@@ -57,6 +57,33 @@ test("formatWorkerError preserves signal delivery evidence when debug collection
   expect(detail).toContain('debug_collect_error="RuntimeError: operation does not support unaligned accesses');
 });
 
+test("formatWorkerError recovers frozen trace when thread state debug faults early", () => {
+  const detail = formatWorkerError(
+    {
+      ...makeThreadWorkerDebugExports(),
+      thread_guest_base: () => {
+        throw new WebAssembly.RuntimeError("operation does not support unaligned accesses");
+      },
+      debug_exec_trace_len: () => 0,
+      debug_thread_step_exec_trace_len_for_vm: (vmPtr: number) => vmPtr === 0x1234 ? 2 : 0,
+      debug_thread_step_exec_trace_entry_pc_for_vm: (_vmPtr: number, index: number) => [0x83336n, 0x83340n][index] ?? 0n,
+      debug_thread_step_exec_trace_entry_raw_for_vm: (_vmPtr: number, index: number) => [0x00a00563, 0xfe013283][index] ?? 0,
+      debug_thread_step_exec_trace_entry_step_for_vm: (_vmPtr: number, index: number) => [4, 4][index] ?? 0,
+      debug_thread_step_exec_trace_entry_sp_for_vm: (_vmPtr: number, index: number) => [0x37d6c000n, 0x37d6c000n][index] ?? 0n,
+      debug_thread_step_exec_trace_entry_ra_for_vm: (_vmPtr: number, index: number) => [0x4d9b4n, 0x4d9b4n][index] ?? 0n,
+      debug_thread_step_exec_trace_entry_a0_for_vm: (_vmPtr: number, index: number) => [0n, 0n][index] ?? 0n,
+      debug_thread_step_exec_trace_entry_s11_for_vm: (_vmPtr: number, index: number) => [0xbfdc80n, 0xbfdc80n][index] ?? 0n,
+    } as never,
+    0x1234,
+    0,
+    new WebAssembly.RuntimeError("operation does not support unaligned accesses"),
+  );
+
+  expect(detail).toContain("thread_step_exec_trace=[0:pc=0x83336:raw=0xa00563");
+  expect(detail).toContain("1:pc=0x83340:raw=0xfe013283");
+  expect(detail).toContain('debug_collect_error="RuntimeError: operation does not support unaligned accesses');
+});
+
 test("formatWorkerError marks pc and fault pc when no containing vma exists", () => {
   const detail = formatWorkerError(
     {
