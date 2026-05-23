@@ -54,6 +54,8 @@ const packageIndexGateTruncateFirstPackage =
   process.env.TIDEMARK_TEST_APT_PACKAGE_INDEX_TRUNCATE_FIRST === "1";
 const packageIndexGateObserveFile =
   process.env.TIDEMARK_TEST_APT_PACKAGE_INDEX_OBSERVE_FILE === "1";
+const packageIndexGateObserveOutputPhases =
+  process.env.TIDEMARK_TEST_APT_PACKAGE_INDEX_OBSERVE_OUTPUT_PHASES === "1";
 const aptCachePackagesInput = process.env.TIDEMARK_TEST_APT_CACHE_PACKAGES_INPUT ?? "";
 const aptCacheStatsTimeoutMs = Number(process.env.TIDEMARK_TEST_APT_CACHE_STATS_TIMEOUT_MS ?? "300000");
 const methodFullPackageGate = process.env.TIDEMARK_TEST_APT_METHOD_FULL_PACKAGE_GATE === "1";
@@ -62,6 +64,10 @@ const storeFullPackageExpectedHash = process.env.TIDEMARK_TEST_APT_STORE_EXPECTE
 const storeFullPackageHashMode = storeFullPackageExpectedHash ? "sha256-only" : "apt-default-all";
 const storeFullPackageSourceMode =
   process.env.TIDEMARK_TEST_APT_STORE_SOURCE_MODE === "plain" ? "plain" : "xz";
+const storeFullPackageDestMode =
+  process.env.TIDEMARK_TEST_APT_STORE_DEST_MODE === "file" ? "file" : "null";
+const storeFullPackageExtraHttpSibling =
+  process.env.TIDEMARK_TEST_APT_STORE_EXTRA_HTTP_SIBLING === "1";
 const libraryRoots = (process.env.TIDEMARK_TEST_APT_METHOD_LIBRARY_ROOTS ?? "")
   .split(":")
   .filter(Boolean);
@@ -1045,6 +1051,16 @@ function buildStoreFullForkExecProbe(): Uint8Array | null {
       "  return 0;",
       "}",
       "",
+      "static int output_contains(const char *output, size_t output_len, const char *needle) {",
+      "  size_t needle_len = strlen(needle);",
+      "  if (needle_len == 0) return 1;",
+      "  if (output_len < needle_len) return 0;",
+      "  for (size_t i = 0; i + needle_len <= output_len; i++) {",
+      "    if (memcmp(output + i, needle, needle_len) == 0) return 1;",
+      "  }",
+      "  return 0;",
+      "}",
+      "",
       "static int drain_until(int fd, const char *needle, char *output, size_t *output_len, int timeout_ms) {",
       "  char chunk[4096];",
       "  int elapsed = 0;",
@@ -1070,10 +1086,10 @@ function buildStoreFullForkExecProbe(): Uint8Array | null {
       "        if (n == 0) break;",
       "        if (write_all(1, chunk, n) != 0) return -1;",
       "        if (append_output(output, output_len, chunk, n) != 0) return -1;",
-      "        if (strstr(output, needle) != NULL) return 0;",
+      "        if (output_contains(output, *output_len, needle)) return 0;",
       "      }",
       "    }",
-      "    if ((pfd.revents & POLLHUP) && strstr(output, needle) == NULL) return 1;",
+      "    if ((pfd.revents & POLLHUP) && !output_contains(output, *output_len, needle)) return 1;",
       "  }",
       "  return 1;",
       "}",
@@ -1132,12 +1148,18 @@ function buildStoreFullForkExecProbe(): Uint8Array | null {
       "int main(void) {",
       "  int in_pipe[2];",
       "  int out_pipe[2];",
+      "  int http_in_pipe[2] = { -1, -1 };",
+      "  int http_out_pipe[2] = { -1, -1 };",
       "  char output[OUTPUT_CAP];",
+      "  char http_output[OUTPUT_CAP];",
       "  char command[COMMAND_CAP];",
       "  size_t output_len = 0;",
+      "  size_t http_output_len = 0;",
       "  int command_fd;",
       "  ssize_t command_len;",
+      "  pid_t http_child = -1;",
       "  output[0] = '\\0';",
+      "  http_output[0] = '\\0';",
       "  signal(SIGPIPE, SIG_IGN);",
       "  command_fd = open(\"/work/apt-store-command.txt\", O_RDONLY);",
       "  if (command_fd < 0) { perror(\"open-command\"); return 10; }",
@@ -1148,6 +1170,29 @@ function buildStoreFullForkExecProbe(): Uint8Array | null {
       "  fcntl(out_pipe[0], F_SETFL, fcntl(out_pipe[0], F_GETFL, 0) | O_NONBLOCK);",
       cStringArray("argv", ["/usr/lib/apt/methods/store"]),
       cStringArray("envp", ["LC_ALL=C", "LANG=C", "PATH=/usr/bin:/bin"]),
+      storeFullPackageExtraHttpSibling ? [
+        "  if (pipe(http_in_pipe) != 0 || pipe(http_out_pipe) != 0) { perror(\"pipe-http\"); return 21; }",
+        "  fcntl(http_out_pipe[0], F_SETFL, fcntl(http_out_pipe[0], F_GETFL, 0) | O_NONBLOCK);",
+        cStringArray("http_argv", ["/usr/lib/apt/methods/http"]),
+        cStringArray("http_envp", ["LC_ALL=C", "LANG=C", "PATH=/usr/bin:/bin"]),
+        "  http_child = fork();",
+        "  if (http_child < 0) { perror(\"fork-http\"); return 22; }",
+        "  if (http_child == 0) {",
+        "    if (dup2(http_in_pipe[0], 0) < 0) { perror(\"dup2-http-stdin\"); _exit(125); }",
+        "    if (dup2(http_out_pipe[1], 1) < 0) { perror(\"dup2-http-stdout\"); _exit(126); }",
+        "    close(in_pipe[0]); close(in_pipe[1]);",
+        "    close(out_pipe[0]); close(out_pipe[1]);",
+        "    close(http_in_pipe[0]); close(http_in_pipe[1]);",
+        "    close(http_out_pipe[0]); close(http_out_pipe[1]);",
+        "    execve(\"/usr/lib/apt/methods/http\", http_argv, http_envp);",
+        "    perror(\"execve-http\");",
+        "    _exit(127);",
+        "  }",
+        "  close(http_in_pipe[0]);",
+        "  close(http_out_pipe[1]);",
+        `  if (drain_until(http_out_pipe[0], "100 Capabilities", http_output, &http_output_len, ${asyncDoneTimeoutMs}) != 0) return 23;`,
+        "  if (write_all(1, \"parent:http-sibling-caps\\n\", 25) != 0) return 24;",
+      ].join("\n") : "",
       "  pid_t child = fork();",
       "  if (child < 0) { perror(\"fork\"); return 13; }",
       "  if (child == 0) {",
@@ -1155,6 +1200,10 @@ function buildStoreFullForkExecProbe(): Uint8Array | null {
       "    if (dup2(out_pipe[1], 1) < 0) { perror(\"dup2-stdout\"); _exit(126); }",
       "    close(in_pipe[0]); close(in_pipe[1]);",
       "    close(out_pipe[0]); close(out_pipe[1]);",
+      "    if (http_child > 0) {",
+      "      close(http_in_pipe[1]);",
+      "      close(http_out_pipe[0]);",
+      "    }",
       "    execve(\"/usr/lib/apt/methods/store\", argv, envp);",
       "    perror(\"execve-store\");",
       "    _exit(127);",
@@ -1166,12 +1215,39 @@ function buildStoreFullForkExecProbe(): Uint8Array | null {
       "  if (write_all(in_pipe[1], command, command_len) != 0) { perror(\"write-command\"); return 14; }",
       `  if (drain_until(out_pipe[0], "201 URI Done", output, &output_len, ${asyncDoneTimeoutMs}) != 0) return 17;`,
       "  if (write_all(1, \"parent:store-uri-done\\n\", 22) != 0) return 18;",
+      "  if (http_child > 0) {",
+      "    int http_exit;",
+      "    close(http_in_pipe[1]);",
+      "    http_in_pipe[1] = -1;",
+      "    (void)drain_to_eof(http_out_pipe[0], 5000);",
+      "    http_exit = wait_child(http_child, 5000);",
+      "    if (http_exit == 124) {",
+      "      kill(http_child, SIGTERM);",
+      "      http_exit = wait_child(http_child, 5000);",
+      "    }",
+      "    dprintf(1, \"parent:http-sibling-exit=%d\\n\", http_exit);",
+      "    close(http_out_pipe[0]);",
+      "    http_out_pipe[0] = -1;",
+      "    http_child = -1;",
+      "  }",
       "  close(in_pipe[1]);",
       `  if (drain_to_eof(out_pipe[0], ${chainChildTimeoutMs}) != 0) return 19;`,
       "  if (write_all(1, \"parent:store-stdout-eof\\n\", 24) != 0) return 20;",
       `  int exit_code = wait_child(child, ${chainChildTimeoutMs});`,
       "  dprintf(1, \"parent:store-child-exit=%d\\n\", exit_code);",
       "  close(out_pipe[0]);",
+      "  if (http_child > 0) {",
+      "    int http_exit;",
+      "    close(http_in_pipe[1]);",
+      "    (void)drain_to_eof(http_out_pipe[0], 5000);",
+      "    http_exit = wait_child(http_child, 5000);",
+      "    if (http_exit == 124) {",
+      "      kill(http_child, SIGTERM);",
+      "      http_exit = wait_child(http_child, 5000);",
+      "    }",
+      "    dprintf(1, \"parent:http-sibling-exit=%d\\n\", http_exit);",
+      "    close(http_out_pipe[0]);",
+      "  }",
       "  return exit_code == 0 ? 0 : 100 + exit_code;",
       "}",
       "",
@@ -3607,7 +3683,9 @@ test("apt method store local gate: full package xz reaches URI Done", async () =
   const sourcePath = storeFullPackageSourceMode === "plain"
     ? "/tmp/tidemark-store-source-Packages"
     : "/tmp/tidemark-store-source-Packages.xz";
-  const destPath = "/dev/null";
+  const destPath = storeFullPackageDestMode === "file"
+    ? "/tmp/tidemark-store-dest-Packages"
+    : "/dev/null";
   const expectedPackages = new Uint8Array(execFileSync("xz", ["-dc"], {
     input: Buffer.from(methodPackagesXzResponseBody),
     maxBuffer: 128 * 1024 * 1024,
@@ -3754,6 +3832,7 @@ test("apt method store local gate: full package xz reaches URI Done", async () =
       `decompressedBytes=${expectedPackages.length}`,
       `expectedHash=${storeFullPackageExpectedHash}`,
       `hashMode=${storeFullPackageHashMode}`,
+      `destMode=${storeFullPackageDestMode}`,
       `sha256=${expectedSha256}`,
       `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
       `sampledAtMs=${sampledAtMs}`,
@@ -3787,7 +3866,9 @@ test("apt method store local gate: forked full package xz reaches URI Done", asy
   const sourcePath = storeFullPackageSourceMode === "plain"
     ? "/tmp/tidemark-store-source-Packages"
     : "/tmp/tidemark-store-source-Packages.xz";
-  const destPath = "/dev/null";
+  const destPath = storeFullPackageDestMode === "file"
+    ? "/tmp/tidemark-store-dest-Packages"
+    : "/dev/null";
   const expectedPackages = new Uint8Array(execFileSync("xz", ["-dc"], {
     input: Buffer.from(methodPackagesXzResponseBody),
     maxBuffer: 128 * 1024 * 1024,
@@ -3974,6 +4055,7 @@ test("apt method store local gate: forked full package xz reaches URI Done", asy
       `decompressedBytes=${expectedPackages.length}`,
       `expectedHash=${storeFullPackageExpectedHash}`,
       `hashMode=${storeFullPackageHashMode}`,
+      `destMode=${storeFullPackageDestMode}`,
       `sha256=${expectedSha256}`,
       `execution=${compactAptExecutionStats(runtime.debugExecutionStats())}`,
       `sampledAtMs=${sampledAtMs}`,
@@ -4941,6 +5023,8 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
   let readingPackageListsAtMs = -1;
   const storeChildProgressObservationEntries: string[] = [];
   const storeChildProgressObservationTimers: ReturnType<typeof setTimeout>[] = [];
+  const outputPhaseObservationEntries: string[] = [];
+  const outputPhaseObservationPromises: Promise<void>[] = [];
   const started = Date.now();
   metrics.startedAtMs = started;
   try {
@@ -4965,6 +5049,21 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
       output += decoder.decode(data);
       if (fetchedOutputAtMs < 0 && !previousOutput.includes("Fetched ") && output.includes("Fetched ")) {
         fetchedOutputAtMs = Date.now() - started;
+        if (packageIndexGateObserveOutputPhases) {
+          outputPhaseObservationPromises.push(collectAptStoreChildProgressObservation(
+            runtime,
+            "after-output-fetched",
+            started,
+            output,
+          ).then((observation) => {
+            outputPhaseObservationEntries.push(observation);
+          }, (error) => {
+            const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+            outputPhaseObservationEntries.push(
+              `label=after-output-fetched observation-error=${JSON.stringify(detail)}`,
+            );
+          }));
+        }
       }
       if (
         readingPackageListsAtMs < 0
@@ -4972,6 +5071,21 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
         && output.includes("Reading package lists")
       ) {
         readingPackageListsAtMs = Date.now() - started;
+        if (packageIndexGateObserveOutputPhases) {
+          outputPhaseObservationPromises.push(collectAptStoreChildProgressObservation(
+            runtime,
+            "after-output-reading-package-lists",
+            started,
+            output,
+          ).then((observation) => {
+            outputPhaseObservationEntries.push(observation);
+          }, (error) => {
+            const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+            outputPhaseObservationEntries.push(
+              `label=after-output-reading-package-lists observation-error=${JSON.stringify(detail)}`,
+            );
+          }));
+        }
       }
     });
 
@@ -5190,6 +5304,9 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
       "after-exit",
       started,
     );
+    if (outputPhaseObservationPromises.length > 0) {
+      await Promise.allSettled(outputPhaseObservationPromises);
+    }
 
     const targets = extractHttpGetTargets(guestRequests);
     const packageIndexTargets = targets.filter(isPackageIndexTarget);
@@ -5255,6 +5372,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
       `afterSecondPackageResponseObservation=${afterSecondPackageResponseObservation}`,
       `exitRuntimeObservation=${exitRuntimeObservation}`,
       `storeChildProgressObservations=${JSON.stringify(storeChildProgressObservationEntries)}`,
+      `outputPhaseObservations=${JSON.stringify(outputPhaseObservationEntries)}`,
       `partialPackagesXz=${await describeGuestFileBrief(runtime, aptPartialPackagesXzFilename)}`,
       `finalPackagesXz=${await describeGuestFileBrief(runtime, aptFinalPackagesXzFilename)}`,
     ].join(" "));
