@@ -13,10 +13,11 @@ import { ensureKernelMemoryCapacity, kernelScratchBase } from "./kernel-scratch.
 import { forceNetworkClosedFds } from "./network-socket-close.js";
 import { drainProcessOutput } from "./stdio.js";
 import { adoptKernelStateForHandle } from "./sync.js";
-import type {
-  KernelWorkerRequestFn,
-  ProcessHandle,
-  ThreadWorkerState,
+import {
+  createTransferDebugStats,
+  type KernelWorkerRequestFn,
+  type ProcessHandle,
+  type ThreadWorkerState,
 } from "./types.js";
 import type {
   KernelWorkerPidBytesSnapshot,
@@ -1063,6 +1064,7 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     viaKernelWorker: boolean,
     memfsPublishReady: boolean,
   ): void {
+    handle.transferDebugStats ??= createTransferDebugStats();
     const stats = handle.transferDebugStats;
     stats.fsResumeCalls += 1;
     if (viaKernelWorker) {

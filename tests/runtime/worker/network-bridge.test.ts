@@ -2,6 +2,8 @@ import { expect, test, vi } from "vite-plus/test";
 import { createWorkerProcessIoHelpers } from "../../../src/worker/process-io.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
 
+const EXPECTED_NETWORK_BRIDGE_CHUNK_SIZE = 240 * 1024;
+
 function createDeps() {
   return {
     appendRuntimeLifecycleEvent: vi.fn(),
@@ -319,7 +321,7 @@ test("pumpNetworkConnections requests and injects large generic inbound chunks",
 
   await expect(helpers.pumpNetworkConnections(handle)).resolves.toBe(true);
 
-  expect(readMaxBytes[0]).toBe(128 * 1024);
+  expect(readMaxBytes[0]).toBe(EXPECTED_NETWORK_BRIDGE_CHUNK_SIZE);
   expect(handle.kernel.thread_socket_inject_inbound).toHaveBeenCalledWith(0x2000, 7, 0x34100, payload.length);
 });
 
@@ -382,7 +384,7 @@ test("pumpNetworkConnections preserves pending large inbound bytes across partia
     await expect(helpers.pumpNetworkConnections(handle)).resolves.toBe(true);
   }
 
-  expect(readMaxBytes.every((value) => value === 128 * 1024)).toBe(true);
+  expect(readMaxBytes.every((value) => value === EXPECTED_NETWORK_BRIDGE_CHUNK_SIZE)).toBe(true);
   expect(readOffset).toBe(payload.length);
   expect(injectedOffset).toBe(payload.length);
 });

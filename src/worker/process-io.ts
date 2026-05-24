@@ -4,7 +4,7 @@ import type { RuntimeNetworkConnection, RuntimeNetworkEndpoint } from "../networ
 import { ensureMemoryCapacity, ensureKernelMemoryCapacity, kernelScratchBase, writeKernelScratch } from "./kernel-scratch.js";
 import { kernelWorkerOwnsPipeState } from "./kernel-share.js";
 import { forceNetworkClosedFd, restoreNetworkSocketSlotSnapshot, snapshotNetworkSocketSlot } from "./network-socket-close.js";
-import type { ProcessHandle } from "./types.js";
+import { createTransferDebugStats, type ProcessHandle } from "./types.js";
 
 interface WorkerProcessIoDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
@@ -224,6 +224,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
   }
 
   function ensureNetworkBookkeeping(handle: ProcessHandle): void {
+    handle.transferDebugStats ??= createTransferDebugStats();
     handle.networkConnections ??= new Map();
     handle.networkPendingConnectFds ??= new Set();
     handle.networkClosedFds ??= new Set();
@@ -1274,8 +1275,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
 
   async function pumpNetworkConnections(handle: ProcessHandle, vmPtr = handle.vmPtr): Promise<boolean> {
     const pumpStartedAtMs = Date.now();
-    handle.transferDebugStats.networkPumpCalls += 1;
     ensureNetworkBookkeeping(handle);
+    handle.transferDebugStats.networkPumpCalls += 1;
     const drainOutbound = handle.kernel.thread_socket_drain_outbound;
     const injectInbound = handle.kernel.thread_socket_inject_inbound;
     const markExternalPeer = handle.kernel.thread_socket_mark_external_peer;
