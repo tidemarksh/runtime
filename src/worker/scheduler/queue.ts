@@ -454,6 +454,14 @@ export function createWorkerSchedulerQueueHelpers(
       && thread
       && (thread.runningGeneration ?? thread.generation) === thread.generation
     ) {
+      const status = handle.kernel.thread_status(thread.vmPtr);
+      if (status === handle.kernel.abi_status_futex_wait()) {
+        handle.runningWorker = null;
+        thread.runningGeneration = null;
+        thread.waitingInWorkerStatus = status;
+        deps.appendWorkerDebugLog(handle, `running-worker-cleared:futex-wait:0x${thread.vmPtr.toString(16)}`);
+        return null;
+      }
       return runningWorker;
     }
     handle.runningWorker = null;

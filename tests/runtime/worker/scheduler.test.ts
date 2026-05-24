@@ -1500,6 +1500,52 @@ test("pumpProcess skips ready workers that are still waiting inside the worker",
   expect(handle.readyWorkers).toEqual([waitingWorker]);
 });
 
+test("pumpProcess clears a running worker that reached worker-local futex wait", () => {
+  const waitingWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const runnableWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const waitingThread = makeThreadState(0x1234);
+  const runnableThread = makeThreadState(0x5678);
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(waitingWorker, waitingThread);
+  threadWorkerStates.set(runnableWorker, runnableThread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = (vmPtr: number) => vmPtr === 0x1234
+    ? kernel.abi_status_futex_wait()
+    : kernel.abi_status_ok();
+  const handle = makeHandle(kernel, waitingWorker);
+  handle.workers.add(runnableWorker);
+  handle.runningWorker = waitingWorker;
+  waitingThread.runningGeneration = waitingThread.generation;
+  handle.readyWorkers = [runnableWorker];
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+
+  expect(waitingThread.waitingInWorkerStatus).toBe(kernel.abi_status_futex_wait());
+  expect(waitingThread.runningGeneration).toBeNull();
+  expect(handle.runningWorker).toBe(runnableWorker);
+  expect(waitingWorker.postMessage).not.toHaveBeenCalled();
+  expect(runnableWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+});
+
 test("enqueue does not place the current running worker back on the ready queue", () => {
   const worker = {
     postMessage: vi.fn(),
