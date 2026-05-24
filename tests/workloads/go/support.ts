@@ -15,6 +15,7 @@ export const GO_EXEC_CAPTURE_HELPER_PATH = process.env.TIDEMARK_TEST_GO_EXEC_CAP
   ?? resolve(__dirname, "./fixtures/exec-capture-helper.riscv64");
 export const GO_TOOL_VERSION = process.env.TIDEMARK_TEST_GO_TOOL_VERSION ?? "go1.26.1";
 export const GO_BUILD_EXPERIMENT = process.env.TIDEMARK_ACCEPTANCE_GO_EXPERIMENT ?? "";
+export const GO_RUNTIME_RAM_SIZE = 1024 * 1024 * 1024;
 
 const WORKSPACE_ROOT = resolve(__dirname, "../../../..");
 const REQUIRED_GO_TOOL_RELATIVE_PATH = "pkg/tool/linux_riscv64/compile";
@@ -214,7 +215,7 @@ export async function prepareGoRuntime(options: {
 
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: 512 * 1024 * 1024,
+    ramSize: GO_RUNTIME_RAM_SIZE,
   });
   await runtime.applyFsSnapshot(buildGoRuntimeSnapshot({
     includeToolchain,
