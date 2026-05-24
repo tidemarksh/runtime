@@ -713,6 +713,10 @@ export function createWorkerSchedulerQueueHelpers(
     }
   }
 
+  function hasWorkerLocalWait(handle: ProcessHandle, thread: ThreadWorkerState | undefined): boolean {
+    return thread?.waitingInWorkerStatus === handle.kernel.abi_status_futex_wait();
+  }
+
   function pumpProcess(handle: ProcessHandle): void {
     if (handle.exitInProgress) {
       return;
@@ -735,14 +739,18 @@ export function createWorkerSchedulerQueueHelpers(
       }
       const candidate = handle.readyWorkers[index];
       const candidateThread = candidate ? deps.threadWorkerStates.get(candidate) : undefined;
-      if ((candidateThread?.ownerAsyncStatus ?? null) !== null) {
+      if (
+        (candidateThread?.ownerAsyncStatus ?? null) !== null
+        || hasWorkerLocalWait(handle, candidateThread)
+      ) {
         return;
       }
       next = handle.readyWorkers.splice(index, 1)[0];
     } else {
       const index = handle.readyWorkers.findIndex((candidate) => {
         const candidateThread = deps.threadWorkerStates.get(candidate);
-        return (candidateThread?.ownerAsyncStatus ?? null) === null;
+        return (candidateThread?.ownerAsyncStatus ?? null) === null
+          && !hasWorkerLocalWait(handle, candidateThread);
       });
       if (index === -1) {
         return;
