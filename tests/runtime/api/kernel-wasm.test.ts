@@ -13,6 +13,12 @@ import {
   type KernelExports,
 } from "../../../src/abi.js";
 import { createKernelEnv } from "../../../src/wasm/env.js";
+import { stageExecveGuestHandoff } from "../../../src/worker/execve-handoff.js";
+import {
+  copyKernelPrivateRegion,
+  ensureMemoryCapacity,
+  writeKernelScratch,
+} from "../../../src/worker/kernel-scratch.js";
 import { findRiscvElf, logSkip, readKernelWasm } from "../../support/runtime-workload.js";
 
 function encodeI(opcode: number, rd: number, funct3: number, rs1: number, imm: number): number {
@@ -66,6 +72,76 @@ const PROT_EXEC = 4;
 const MAP_PRIVATE = 0x02;
 const MAP_FIXED = 0x10;
 const MAP_ANONYMOUS = 0x20;
+const encoder = new TextEncoder();
+
+function cstr(value: string): Uint8Array {
+  return encoder.encode(`${value}\0`);
+}
+
+function copyKernelRuntimeRegion(
+  source: WebAssembly.Memory,
+  target: WebAssembly.Memory,
+  start: number,
+  byteLength: number,
+): void {
+  if (start === 0 || byteLength <= 0) {
+    return;
+  }
+  const end = start + byteLength;
+  ensureMemoryCapacity(target, end);
+  new Uint8Array(target.buffer).set(new Uint8Array(source.buffer, start, byteLength), start);
+}
+
+function copyExecveKernelRuntimeRegions(
+  source: KernelExports,
+  sourceMemory: WebAssembly.Memory,
+  targetMemory: WebAssembly.Memory,
+): void {
+  const state = readKernelRuntimeState(source);
+  copyKernelRuntimeRegion(sourceMemory, targetMemory, state.ofdTablePtr, source.kernel_ofd_table_bytes());
+  copyKernelRuntimeRegion(
+    sourceMemory,
+    targetMemory,
+    state.memfsPtr,
+    state.memfsHeaderBytes
+      + state.memfsInodesBytes
+      + state.memfsFirstChildBytes
+      + state.memfsDirEntriesBytes
+      + state.memfsDataBytes,
+  );
+  copyKernelRuntimeRegion(sourceMemory, targetMemory, state.epollTablePtr, source.kernel_epoll_table_bytes());
+  copyKernelRuntimeRegion(sourceMemory, targetMemory, state.socketTablePtr, source.kernel_socket_table_bytes());
+  copyKernelRuntimeRegion(sourceMemory, targetMemory, state.pipeBase, source.kernel_pipe_region_bytes());
+  copyKernelRuntimeRegion(sourceMemory, targetMemory, state.netBufBase, source.kernel_net_buf_pool_bytes());
+  copyKernelRuntimeRegion(
+    sourceMemory,
+    targetMemory,
+    state.sigSlotsPtr,
+    source.kernel_sig_slots_bytes() + source.kernel_signal_action_table_bytes(),
+  );
+  copyKernelRuntimeRegion(
+    sourceMemory,
+    targetMemory,
+    state.processPendingPtr,
+    source.kernel_process_pending_bytes(),
+  );
+  copyKernelRuntimeRegion(
+    sourceMemory,
+    targetMemory,
+    state.processRuntimeStatePtr,
+    source.kernel_process_runtime_state_bytes(),
+  );
+  copyKernelRuntimeRegion(sourceMemory, targetMemory, state.timeStatePtr, source.kernel_time_state_bytes());
+}
+
+function installExecutableFile(exports: KernelExports, name: string, data: Uint8Array): void {
+  const nameBytes = encoder.encode(name);
+  const namePtr = writeKernelScratch(exports, nameBytes);
+  const dataPtr = writeKernelScratch(exports, data, 0x1000);
+  const ino = exports.memfs_create_file_with_data(1, namePtr, nameBytes.length, dataPtr, data.length);
+  expect(ino).toBeGreaterThan(0);
+  expect(exports.memfs_set_mode(ino, 0o755)).toBe(0n);
+}
 
 async function loadKernel(opts?: { memory?: WebAssembly.Memory }) {
   const wasmBytes = readKernelWasm();
@@ -148,6 +224,72 @@ test("kernel_init + process_create + thread_step runs to exit", async () => {
   }
 
   throw new Error(`Did not exit within ${totalSteps} instructions`);
+});
+
+test("detached kernel instance completes staged execve handoff", async () => {
+  const loaded = await loadKernel();
+  if (!loaded) {
+    return;
+  }
+  const { exports: owner, memory, module } = loaded;
+
+  const elfData = findRiscvElf("add");
+  if (!elfData) {
+    logSkip("add.elf not found");
+    return;
+  }
+
+  const heapBase = (owner as any).__heap_base?.value ?? 0x200000;
+  owner.kernel_init(heapBase);
+  installExecutableFile(owner, "child", elfData);
+
+  const ramSize = memory.buffer.byteLength;
+  const elfOffset = ramSize - 256 * 1024;
+  new Uint8Array(memory.buffer).set(elfData, elfOffset);
+  const vmPtr = owner.process_create(elfOffset, elfData.length, ramSize, 1024 * 1024);
+  expect(vmPtr).toBeGreaterThan(0);
+
+  const ownerState = readKernelRuntimeState(owner);
+  const guestBase = owner.thread_guest_base?.(vmPtr) ?? 0;
+  const processPtr = owner.thread_process_ptr(vmPtr);
+  const processStateBytes = owner.process_state_bytes();
+  const processState = new Uint8Array(
+    memory.buffer,
+    guestBase + processPtr,
+    processStateBytes,
+  ).slice();
+
+  const childMemory = new WebAssembly.Memory({
+    initial: Math.ceil(Math.max(memory.buffer.byteLength, guestBase + 0x10000) / 65536),
+    maximum: 32768,
+    shared: true,
+  });
+  const childInstance = await WebAssembly.instantiate(module, {
+    env: createKernelEnv(childMemory),
+  });
+  const child = childInstance.exports as unknown as KernelExports;
+
+  copyKernelPrivateRegion(memory, childMemory, ownerState.heapPtr);
+  copyExecveKernelRuntimeRegions(owner, memory, childMemory);
+  attachKernelRuntimeState(child, ownerState);
+
+  const staged = stageExecveGuestHandoff(child, guestBase, {
+    processState,
+    path: cstr("/child"),
+    argv: [cstr("/child")],
+    envp: [],
+  });
+  child.thread_set_execve_handoff(
+    vmPtr,
+    staged.processPtr,
+    staged.pathPtr,
+    staged.argvPtr,
+    staged.envpPtr,
+    ramSize,
+  );
+
+  expect(child.thread_complete_execve_handoff(vmPtr)).toBe(0n);
+  expect(child.thread_status(vmPtr)).toBe(child.abi_status_ok());
 });
 
 test("shared-memory dual kernel instances preserve parent clone return after child futex wait", async () => {
