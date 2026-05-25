@@ -4388,6 +4388,58 @@ test("vfork execve resumes the parent and initializes the child lifecycle throug
   ]);
 });
 
+test("vfork execve detached child memory covers the parent linear memory size", async () => {
+  const instantiatedPages: number[] = [];
+  vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {
+    const memory = (imports as { env: { memory: WebAssembly.Memory } }).env.memory;
+    instantiatedPages.push(memory.buffer.byteLength / 65536);
+    return {
+      exports: makeKernelExports(memory),
+    } as WebAssembly.WebAssemblyInstantiatedSource;
+  });
+
+  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
+  const parentWorker = createdWorkers[0];
+  const parentKernel = createdKernelExports[0];
+
+  parentKernel.memory.grow(32);
+  const parentPages = parentKernel.memory.buffer.byteLength / 65536;
+  parentKernel.thread_vfork_child_pid = () => 55;
+  parentKernel.thread_spawn_kind = () => parentKernel.abi_spawn_kind_execve();
+  parentKernel.thread_spawn_child_pid = () => {
+    parentKernel.process_reset_lifecycle(0x1234, 156, 1, 201, 33, 44, 0);
+    return 156;
+  };
+
+  emitReady(parentWorker);
+  parentWorker.clearPostedMessages();
+  parentWorker.emit({
+    type: "status",
+    status: 8,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+  await flushMicrotasks();
+
+  parentWorker.clearPostedMessages();
+  parentWorker.emit({
+    type: "status",
+    status: 9,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+  await flushMicrotasks(40);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(instantiatedPages[1]).toBeGreaterThanOrEqual(parentPages);
+});
+
 test("vfork execve preserves child-private OFDs across kernel-worker scrub", async () => {
   const restoreDefaultInstantiate = (): void => {
     vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {

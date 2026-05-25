@@ -307,9 +307,13 @@ export async function handleVforkExecve(
       `vfork-execve:guest:${childPid}:${JSON.stringify(debugPath)}:${JSON.stringify(debugArgv0)}:${JSON.stringify(debugArgv1)}`,
     );
     handle.kernelState = readKernelRuntimeState(handle.kernel);
-    const childMemory = new WebAssembly.Memory({
+  const childMemory = new WebAssembly.Memory({
     initial: Math.ceil(
-      Math.max(deps.bootStrapMemoryBytes, handle.guestBase + 0x10000) / deps.wasmPageSize,
+      Math.max(
+        deps.bootStrapMemoryBytes,
+        handle.memory.buffer.byteLength,
+        handle.guestBase + 0x10000,
+      ) / deps.wasmPageSize,
     ),
     maximum: Math.max(handle.maxMemoryPages, handle.forkMaxMemoryPages),
     shared: true,
