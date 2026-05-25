@@ -1283,6 +1283,10 @@ export function debugRuntimeProcessHandles(
           `ppid=${handle.parentPid ?? 0}`,
           `vm=0x${handle.vmPtr.toString(16)}`,
           `process=0x${processPtr.toString(16)}`,
+          `runtime_bridge_stage=${(() => {
+            const stage = readRuntimeBridgeDebugStage(handle.runtimeBridge);
+            return `${stage.stage}:${stage.value}`;
+          })()}`,
           `workers=${handle.workers.size}`,
           `worker_states=[${workerStates}]`,
           `worker_details=[${workerDetails}]`,
