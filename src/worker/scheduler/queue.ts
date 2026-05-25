@@ -67,18 +67,21 @@ function snapshotSocketStateForThread(handle: ProcessHandle): KernelWorkerSocket
   };
 }
 
-function snapshotProcessFdEntriesForThread(handle: ProcessHandle): KernelWorkerFdEntrySnapshot[] | undefined {
-  if (handle.vmPtr === 0) {
+function snapshotProcessFdEntriesForThread(
+  handle: ProcessHandle,
+  vmPtr: number,
+): KernelWorkerFdEntrySnapshot[] | undefined {
+  if (vmPtr === 0) {
     return undefined;
   }
   const maxFds = handle.kernel.abi_max_fds();
   const fdEntries: KernelWorkerFdEntrySnapshot[] = [];
   for (let fd = 0; fd < maxFds; fd += 1) {
-    const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
     fdEntries.push({
       fd,
       ofdId,
-      fdFlags: handle.kernel.process_fd_flags?.(handle.vmPtr, fd) ?? 0,
+      fdFlags: handle.kernel.process_fd_flags?.(vmPtr, fd) ?? 0,
     });
   }
   return fdEntries.length > 0 ? fdEntries : undefined;
@@ -606,7 +609,7 @@ export function createWorkerSchedulerQueueHelpers(
       event.preventDefault?.();
     });
     const runtimeEpoch = publishRuntimeBridgeEpoch(handle.runtimeBridge);
-    const fdEntries = snapshotProcessFdEntriesForThread(handle);
+    const fdEntries = snapshotProcessFdEntriesForThread(handle, vmPtr);
     const initMessage: ThreadWorkerInbound = {
       type: "init",
       wasmModule: handle.wasmModule,
@@ -789,7 +792,7 @@ export function createWorkerSchedulerQueueHelpers(
       }
     }
     publishRuntimeBridgeEpoch(handle.runtimeBridge);
-    const fdEntries = snapshotProcessFdEntriesForThread(handle);
+    const fdEntries = snapshotProcessFdEntriesForThread(handle, vmPtr ?? 0);
     const stepMessage: ThreadWorkerInbound = {
       type: "step",
       budget: SCHEDULER_STEP_BUDGET,

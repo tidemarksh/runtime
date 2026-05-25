@@ -1467,7 +1467,10 @@ test("step publishes the full process fd table to the selected worker", () => {
   threadWorkerStates.set(worker, makeThreadState(0x5678));
   const { exports: kernel } = makeKernel();
   kernel.abi_max_fds = () => 6;
-  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => {
+  kernel.process_fd_ofd_id = (vmPtr: number, fd: number) => {
+    if (vmPtr !== 0x5678) {
+      return fd === 4 ? 99 : 0;
+    }
     if (fd === 4) {
       return 7;
     }
@@ -1476,7 +1479,12 @@ test("step publishes the full process fd table to the selected worker", () => {
     }
     return 0;
   };
-  kernel.process_fd_flags = (_vmPtr: number, fd: number) => (fd === 4 ? 1 : 0);
+  kernel.process_fd_flags = (vmPtr: number, fd: number) => {
+    if (vmPtr !== 0x5678) {
+      return fd === 4 ? 2 : 0;
+    }
+    return fd === 4 ? 1 : 0;
+  };
   const handle = makeHandle(kernel, worker);
   handle.readyWorkers = [worker];
 
