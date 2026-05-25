@@ -1264,11 +1264,12 @@ function publishThreadWorkerStage(stage: number, value = 0): void {
   }
 }
 
-function postStatus(status: number, waitInWorker = false): void {
+function postStatus(status: number, waitInWorker = false, completedSyncEffects?: number): void {
   publishThreadWorkerStage(100, status);
   const kernelExports = requireExports();
   const includeDebug = status !== statusCodes.FS;
-  const syncEffects = readCompletedSyncEffects(kernelExports, statusCodes, status, syscallNumbers, vmPtr);
+  const syncEffects = completedSyncEffects
+    ?? readCompletedSyncEffects(kernelExports, statusCodes, status, syscallNumbers, vmPtr);
   publishThreadWorkerStage(101, status);
   const kernelState = readKernelRuntimeState(kernelExports);
   publishThreadWorkerStage(102, status);
@@ -1396,6 +1397,7 @@ function step(budget: number): void {
     threadStepBudget: THREAD_STEP_BUDGET,
     eintrErrno: EINTR_ERRNO,
     futexWaitSliceMs: FUTEX_WAIT_SLICE_MS,
+    syscallNumbers,
     runtimeBridge,
     postStatus,
     reattachPublishedKernelRuntimeState,

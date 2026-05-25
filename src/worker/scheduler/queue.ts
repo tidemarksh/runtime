@@ -67,39 +67,18 @@ function snapshotSocketStateForThread(handle: ProcessHandle): KernelWorkerSocket
   };
 }
 
-function runtimeNetworkFds(handle: ProcessHandle): number[] {
-  return [...new Set([
-    ...(handle.networkConnections?.keys() ?? []),
-    ...(handle.networkPendingConnectFds ?? []),
-    ...(handle.networkClosedFds ?? []),
-    ...(handle.networkClosedSocketSlots?.keys() ?? []),
-    ...(handle.networkSocketSlotWatermarks?.keys() ?? []),
-    ...(handle.networkRecvPayloadWatermarks?.keys() ?? []),
-  ])].sort((left, right) => left - right);
-}
-
-function snapshotRuntimeNetworkFdEntriesForThread(handle: ProcessHandle): KernelWorkerFdEntrySnapshot[] | undefined {
+function snapshotProcessFdEntriesForThread(handle: ProcessHandle): KernelWorkerFdEntrySnapshot[] | undefined {
   if (handle.vmPtr === 0) {
     return undefined;
   }
   const maxFds = handle.kernel.abi_max_fds();
   const fdEntries: KernelWorkerFdEntrySnapshot[] = [];
-  for (const fd of runtimeNetworkFds(handle)) {
-    if (fd < 0 || fd >= maxFds) {
-      continue;
-    }
+  for (let fd = 0; fd < maxFds; fd += 1) {
     const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
-    if (ofdId <= 0 || ofdId >= maxFds) {
-      continue;
-    }
-    const hasWatermark = handle.networkOfdSlotWatermarks?.has(ofdId) ?? false;
-    if (handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_socket() && !hasWatermark) {
-      continue;
-    }
     fdEntries.push({
       fd,
       ofdId,
-      fdFlags: handle.kernel.process_fd_flags(handle.vmPtr, fd),
+      fdFlags: handle.kernel.process_fd_flags?.(handle.vmPtr, fd) ?? 0,
     });
   }
   return fdEntries.length > 0 ? fdEntries : undefined;
@@ -627,7 +606,7 @@ export function createWorkerSchedulerQueueHelpers(
       event.preventDefault?.();
     });
     const runtimeEpoch = publishRuntimeBridgeEpoch(handle.runtimeBridge);
-    const networkFdEntries = snapshotRuntimeNetworkFdEntriesForThread(handle);
+    const fdEntries = snapshotProcessFdEntriesForThread(handle);
     const initMessage: ThreadWorkerInbound = {
       type: "init",
       wasmModule: handle.wasmModule,
@@ -647,12 +626,12 @@ export function createWorkerSchedulerQueueHelpers(
       runtimeState: handle.runtimeBridge.stateSab,
     };
     const initSocketState = snapshotSocketStateForThread(handle);
-    const initOfdSlots = snapshotOfdSlotsForThread(handle, networkFdEntries);
+    const initOfdSlots = snapshotOfdSlotsForThread(handle, fdEntries);
     if (initSocketState !== undefined) {
       initMessage.socketState = initSocketState;
     }
-    if (networkFdEntries !== undefined) {
-      initMessage.fdEntries = networkFdEntries;
+    if (fdEntries !== undefined) {
+      initMessage.fdEntries = fdEntries;
     }
     if (initOfdSlots !== undefined) {
       initMessage.ofdSlots = initOfdSlots;
@@ -810,19 +789,19 @@ export function createWorkerSchedulerQueueHelpers(
       }
     }
     publishRuntimeBridgeEpoch(handle.runtimeBridge);
-    const networkFdEntries = snapshotRuntimeNetworkFdEntriesForThread(handle);
+    const fdEntries = snapshotProcessFdEntriesForThread(handle);
     const stepMessage: ThreadWorkerInbound = {
       type: "step",
       budget: SCHEDULER_STEP_BUDGET,
       kernelState: handle.kernelState,
     };
     const stepSocketState = snapshotSocketStateForThread(handle);
-    const stepOfdSlots = snapshotOfdSlotsForThread(handle, networkFdEntries);
+    const stepOfdSlots = snapshotOfdSlotsForThread(handle, fdEntries);
     if (stepSocketState !== undefined) {
       stepMessage.socketState = stepSocketState;
     }
-    if (networkFdEntries !== undefined) {
-      stepMessage.fdEntries = networkFdEntries;
+    if (fdEntries !== undefined) {
+      stepMessage.fdEntries = fdEntries;
     }
     if (stepOfdSlots !== undefined) {
       stepMessage.ofdSlots = stepOfdSlots;

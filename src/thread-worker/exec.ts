@@ -9,6 +9,7 @@ import {
   handleRuntimeBridgeBlockedStatus,
   isRuntimeBridgeBlockedStatus,
 } from "./blocking.js";
+import { readCompletedSyncEffects, type SyscallNumbers } from "./sync-effects.js";
 
 interface DebugBudgetClamp {
   start: bigint;
@@ -62,8 +63,9 @@ interface ThreadWorkerExecContext {
   threadStepBudget: number;
   eintrErrno: number;
   futexWaitSliceMs: number;
+  syscallNumbers: SyscallNumbers | null;
   runtimeBridge: RuntimeStateBridge | null;
-  postStatus(status: number, waitInWorker?: boolean): void;
+  postStatus(status: number, waitInWorker?: boolean, syncEffects?: number): void;
   reattachPublishedKernelRuntimeState(): void;
 }
 
@@ -128,6 +130,17 @@ export function stepThread(ctx: ThreadWorkerExecContext, budget: number): void {
     }
 
     publishStage(ctx, 5, status);
+    const completedSyncEffects = status === ctx.statusCodes.OK
+      ? readCompletedSyncEffects(ctx.exports, ctx.statusCodes, status, ctx.syscallNumbers, ctx.vmPtr)
+      : 0;
+    if (
+      status === ctx.statusCodes.OK
+      && completedSyncEffects !== 0
+    ) {
+      ctx.postStatus(status, false, completedSyncEffects);
+      publishStage(ctx, 6, status);
+      return;
+    }
     if (
       status === ctx.statusCodes.OK
       && remainingBudget > 0

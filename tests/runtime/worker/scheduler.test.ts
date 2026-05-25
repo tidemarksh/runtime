@@ -1459,6 +1459,54 @@ test("enqueue clears a dangling running worker before stepping the next ready wo
   }));
 });
 
+test("step publishes the full process fd table to the selected worker", () => {
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, makeThreadState(0x5678));
+  const { exports: kernel } = makeKernel();
+  kernel.abi_max_fds = () => 6;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => {
+    if (fd === 4) {
+      return 7;
+    }
+    if (fd === 5) {
+      return 8;
+    }
+    return 0;
+  };
+  kernel.process_fd_flags = (_vmPtr: number, fd: number) => (fd === 4 ? 1 : 0);
+  const handle = makeHandle(kernel, worker);
+  handle.readyWorkers = [worker];
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+
+  expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    fdEntries: [
+      { fd: 0, ofdId: 0, fdFlags: 0 },
+      { fd: 1, ofdId: 0, fdFlags: 0 },
+      { fd: 2, ofdId: 0, fdFlags: 0 },
+      { fd: 3, ofdId: 0, fdFlags: 0 },
+      { fd: 4, ofdId: 7, fdFlags: 1 },
+      { fd: 5, ofdId: 8, fdFlags: 0 },
+    ],
+  }));
+});
+
 test("pumpProcess prunes ready workers that are still waiting inside the worker", () => {
   const waitingWorker = {
     postMessage: vi.fn(),

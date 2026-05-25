@@ -24,6 +24,7 @@ test("stepThread forwards non-blocked fault status directly to postStatus", () =
     threadStepBudget: 20_000,
     eintrErrno: 4,
     futexWaitSliceMs: 10,
+    syscallNumbers: null,
     runtimeBridge: null,
     postStatus,
     reattachPublishedKernelRuntimeState: () => {},
@@ -57,6 +58,7 @@ test("stepThread does not reroute OK through the blocked-status handlers", () =>
     threadStepBudget: 20_000,
     eintrErrno: 4,
     futexWaitSliceMs: 10,
+    syscallNumbers: null,
     runtimeBridge: createRuntimeStateBridge(),
     postStatus,
     reattachPublishedKernelRuntimeState: () => {},
@@ -102,6 +104,7 @@ test("stepThread resolves FUTEX_WAIT in-worker before reporting completion", () 
     threadStepBudget: 20_000,
     eintrErrno: 4,
     futexWaitSliceMs: 10,
+    syscallNumbers: null,
     runtimeBridge: null,
     postStatus,
     reattachPublishedKernelRuntimeState: () => {},
@@ -138,6 +141,7 @@ test("stepThread consumes the owner budget in worker quanta when no runtime stat
     threadStepBudget: 1_000,
     eintrErrno: 4,
     futexWaitSliceMs: 10,
+    syscallNumbers: null,
     runtimeBridge: bridge,
     postStatus,
     reattachPublishedKernelRuntimeState: () => {},
@@ -176,6 +180,7 @@ test("stepThread publishes OK early when another runtime status arrives during a
     threadStepBudget: 1_000,
     eintrErrno: 4,
     futexWaitSliceMs: 10,
+    syscallNumbers: null,
     runtimeBridge: bridge,
     postStatus,
     reattachPublishedKernelRuntimeState: () => {},
@@ -186,4 +191,40 @@ test("stepThread publishes OK early when another runtime status arrives during a
   expect(threadStep).toHaveBeenCalledWith(0x1234, 1_000);
   expect(postStatus).toHaveBeenCalledTimes(1);
   expect(postStatus).toHaveBeenCalledWith(0);
+});
+
+test("stepThread forwards consumed sync effects when yielding OK early", () => {
+  const clearSyscallTrace = vi.fn();
+  const threadStep = vi.fn();
+  const takeCompletedSyncEffects = vi.fn(() => 4);
+  const postStatus = vi.fn();
+
+  stepThread({
+    exports: {
+      debug_clear_syscall_trace: clearSyscallTrace,
+      thread_step: threadStep,
+      thread_status: () => 0,
+      thread_take_completed_sync_effects: takeCompletedSyncEffects,
+    } as never,
+    statusCodes: {
+      OK: 0,
+      FUTEX_WAIT: 20,
+      EPOLL_WAIT: 22,
+    } as never,
+    vmPtr: 0x1234,
+    guestBase: 0,
+    threadStepBudget: 1_000,
+    eintrErrno: 4,
+    futexWaitSliceMs: 10,
+    syscallNumbers: null,
+    runtimeBridge: createRuntimeStateBridge(),
+    postStatus,
+    reattachPublishedKernelRuntimeState: () => {},
+  }, 5_000);
+
+  expect(clearSyscallTrace).toHaveBeenCalledTimes(1);
+  expect(threadStep).toHaveBeenCalledWith(0x1234, 1_000);
+  expect(takeCompletedSyncEffects).toHaveBeenCalledWith(0x1234);
+  expect(postStatus).toHaveBeenCalledTimes(1);
+  expect(postStatus).toHaveBeenCalledWith(0, false, 4);
 });
