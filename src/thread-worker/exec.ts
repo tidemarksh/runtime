@@ -73,11 +73,24 @@ function publishStage(ctx: ThreadWorkerExecContext, stage: number, value = 0): v
   }
 }
 
+function readRuntimeNotifyCounter(bridge: RuntimeStateBridge | null): number {
+  return bridge === null ? 0 : Atomics.load(new Int32Array(bridge.notifySab), 0);
+}
+
 export function stepThread(ctx: ThreadWorkerExecContext, budget: number): void {
+  let remainingBudget = budget;
+  let observedNotifyCounter = readRuntimeNotifyCounter(ctx.runtimeBridge);
   for (;;) {
-    publishStage(ctx, 1, budget);
+    const requestedBudget = (
+      ctx.runtimeBridge !== null
+      && ctx.threadStepBudget > 0
+      && remainingBudget > ctx.threadStepBudget
+    )
+      ? ctx.threadStepBudget
+      : remainingBudget;
+    publishStage(ctx, 1, requestedBudget);
     clearSyscallTrace(ctx.exports);
-    let effectiveBudget = budget;
+    let effectiveBudget = requestedBudget;
     if (DEBUG_BUDGET_CLAMP.length > 0) {
       const pc = ctx.exports.thread_pc(ctx.vmPtr);
       for (const clamp of DEBUG_BUDGET_CLAMP) {
@@ -90,6 +103,7 @@ export function stepThread(ctx: ThreadWorkerExecContext, budget: number): void {
     ctx.exports.thread_step(ctx.vmPtr, effectiveBudget);
     const status = ctx.exports.thread_status(ctx.vmPtr);
     publishStage(ctx, 3, status);
+    remainingBudget = Math.max(0, remainingBudget - effectiveBudget);
 
     if (status === ctx.statusCodes.FUTEX_WAIT) {
       // Keep futex waits inside the thread-worker so wakeups come from
@@ -114,6 +128,17 @@ export function stepThread(ctx: ThreadWorkerExecContext, budget: number): void {
     }
 
     publishStage(ctx, 5, status);
+    if (
+      status === ctx.statusCodes.OK
+      && remainingBudget > 0
+      && ctx.runtimeBridge !== null
+    ) {
+      const currentNotifyCounter = readRuntimeNotifyCounter(ctx.runtimeBridge);
+      if (currentNotifyCounter === observedNotifyCounter) {
+        continue;
+      }
+      observedNotifyCounter = currentNotifyCounter;
+    }
     ctx.postStatus(status);
     publishStage(ctx, 6, status);
     return;
