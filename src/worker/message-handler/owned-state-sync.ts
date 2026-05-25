@@ -396,13 +396,17 @@ function targetHasIncompatibleForkSharedOfd(source: ProcessHandle, target: Proce
   if (target.vmPtr === 0) {
     return false;
   }
+  const sharedOfdIds = source.kernelShare.sharedOfdIds;
+  if (sharedOfdIds === undefined) {
+    return false;
+  }
   const maxFds = target.kernel.abi_max_fds();
   for (let fd = 0; fd < maxFds; fd += 1) {
     const ofdId = target.kernel.process_fd_ofd_id(target.vmPtr, fd);
     if (
       ofdId <= 0
       || ofdId >= maxFds
-      || !source.kernelShare.sharedOfdIds.has(ofdId)
+      || !sharedOfdIds.has(ofdId)
     ) {
       continue;
     }
@@ -424,6 +428,9 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
     const otherMembers = kernelShareOtherMembers(handle);
     const activeSync = handle.kernelShare.forkSharedSyncPromise ?? handle.forkSharedSyncPromise;
     const syncTargetIsUsable = (member: ProcessHandle): boolean => {
+      if (!Number.isFinite(member.pid) || member.pid <= 0) {
+        return false;
+      }
       const registered = deps.processHandles?.get(member.pid);
       if (
         member.runningWorker !== null
@@ -435,8 +442,38 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
       }
       return registered === undefined || registered === member;
     };
-    const startForkSharedStateSync = (): Promise<void> => {
-      const targets = otherMembers.filter(syncTargetIsUsable);
+    const syncTargetCanBecomeUsable = (member: ProcessHandle): boolean => {
+      if (!Number.isFinite(member.pid) || member.pid <= 0) {
+        return false;
+      }
+      const registered = deps.processHandles?.get(member.pid);
+      if (
+        member.exitInProgress
+        || registered?.exitInProgress
+        || targetHasIncompatibleForkSharedOfd(handle, member)
+      ) {
+        return false;
+      }
+      return registered === undefined || registered === member;
+    };
+    const hasSyncTargetCandidate = otherMembers.some(syncTargetCanBecomeUsable);
+    const startForkSharedStateSync = (targets = otherMembers.filter(syncTargetIsUsable)): Promise<void> => {
+      if (targets.length === 0) {
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `fork-shared-sync-local:${handle.pid}:src=0x${thread.vmPtr.toString(16)}:targets=none`,
+        );
+        return deps.syncForkSharedStateViaKernelWorker(
+          handle,
+          targets,
+          {
+            deltaOfdIds: true,
+            includeMemfs: false,
+            trackHeldOfds: true,
+            sourceVmPtr: thread.vmPtr,
+          },
+        );
+      }
       const promise = deps.syncForkSharedStateViaKernelWorker(
         handle,
         targets,
@@ -475,6 +512,13 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
     };
 
     if (activeSync !== null) {
+      if (!hasSyncTargetCandidate) {
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `fork-shared-sync-local-queue:${describeForkSharedSyncPromise(activeSync)}:owner=${handle.pid}:src=0x${thread.vmPtr.toString(16)}`,
+        );
+        return activeSync.then(() => startForkSharedStateSync([]));
+      }
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `fork-shared-sync-queue:${describeForkSharedSyncPromise(activeSync)}:owner=${handle.pid}:src=0x${thread.vmPtr.toString(16)}`,

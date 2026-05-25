@@ -140,6 +140,7 @@ test("fork-shared OFD sync accepts an owned worker status after running slot is 
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
   const handle = {
+    runtimeId: 7,
     pid: 7,
     vmPtr: 0x1234,
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
@@ -180,7 +181,10 @@ test("fork-shared OFD sync accepts an owned worker status after running slot is 
   handle.kernelShare.members.add(handle);
   handle.kernelShare.members.add(peer);
   const continueAfterOwnedStateSync = vi.fn();
-  const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
+  let resolveSync!: () => void;
+  const syncForkSharedStateViaKernelWorker = vi.fn(() => new Promise<void>((resolve) => {
+    resolveSync = resolve;
+  }));
   const deps = {
     threadWorkerStates,
     appendRuntimeLifecycleEvent: vi.fn(),
@@ -213,6 +217,17 @@ test("fork-shared OFD sync accepts an owned worker status after running slot is 
   });
 
   expect(handled).toBe(true);
+  await vi.waitFor(() => {
+    expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalled();
+  });
+  expect(handle.forkSharedSyncPromise).toBeNull();
+  expect(handle.kernelShare.forkSharedSyncPromise).toBeNull();
+  expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
+    7,
+    "fork-shared-sync-local:7:src=0x1234:targets=none",
+  );
+  expect(continueAfterOwnedStateSync).not.toHaveBeenCalled();
+  resolveSync();
   await vi.waitFor(() => {
     expect(continueAfterOwnedStateSync).toHaveBeenCalled();
   });
@@ -713,6 +728,14 @@ test("queued fork-shared OFD sync clears both handle and share promises", async 
     },
   };
   handle.kernelShare.members.add(handle);
+  handle.kernelShare.members.add({
+    pid: 3,
+    vmPtr: 0x5678,
+    runningWorker: null,
+    exitInProgress: false,
+    kernel: handle.kernel,
+    kernelShare: handle.kernelShare,
+  } as never);
   const continueAfterOwnedStateSync = vi.fn();
   const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const deps = {
@@ -760,6 +783,124 @@ test("queued fork-shared OFD sync clears both handle and share promises", async 
   expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalledTimes(1);
   expect(handle.forkSharedSyncPromise).toBeNull();
   expect(handle.kernelShare.forkSharedSyncPromise).toBeNull();
+});
+
+test("queued no-target fork-shared OFD sync waits without replacing the active share promise", async () => {
+  const worker = {} as Worker;
+  const thread = {
+    vmPtr: 0x1234,
+    ownerPid: 7,
+    generation: 1,
+    waitingInWorkerStatus: null,
+    resumeWorkersOnReady: [],
+  };
+  const threadWorkerStates = new WeakMap<Worker, typeof thread>();
+  threadWorkerStates.set(worker, thread);
+  let resolveActiveSync!: () => void;
+  const activeSync = new Promise<void>((resolve) => {
+    resolveActiveSync = resolve;
+  });
+  const handle = {
+    runtimeId: 7,
+    pid: 7,
+    vmPtr: 0x1234,
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    workers: new Set([worker]),
+    kernelWorkerRequest: vi.fn(),
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set(),
+      forkSharedSyncPromise: activeSync,
+    },
+    forkSharedSyncPromise: null,
+    processMemfsDirty: false,
+    kernelState: makeKernelState(),
+    kernel: {
+      abi_status_ok: () => 0,
+      abi_max_fds: () => 4,
+      abi_max_pipes: () => 1,
+      abi_max_threads: () => 1,
+      abi_fd_type_file: () => 3,
+      abi_fd_type_epoll: () => 7,
+      abi_fd_type_pipe: () => 6,
+      abi_sys_dup: () => 32n,
+      thread_a7: () => 32n,
+      process_thread_vm_ptr: () => 0,
+      process_fd_ofd_id: () => 0,
+      kernel_ofd_fd_type: (ofdId: number) => (ofdId === 2 ? 3 : 0),
+      kernel_ofd_ino: () => 0,
+      kernel_ofd_host_fd: () => 0,
+      kernel_attach_runtime_state: vi.fn(),
+    },
+  };
+  handle.kernelShare.members.add(handle);
+  handle.kernelShare.members.add({
+    pid: 0,
+    vmPtr: 0,
+    runningWorker: null,
+    exitInProgress: false,
+    kernel: handle.kernel,
+    kernelShare: handle.kernelShare,
+  } as never);
+  const continueAfterOwnedStateSync = vi.fn();
+  const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
+  const deps = {
+    threadWorkerStates,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    pumpProcess: vi.fn(),
+    requestEpollDependentOfdStateSync: vi.fn(async () => {}),
+    requestEpollStateSync: vi.fn(async () => {}),
+    requestSocketStateSync: vi.fn(async () => {}),
+    statusDefersOwnedStateSync: vi.fn(() => false),
+    syncEffectEpollDependentOfdState: 8,
+    syncEffectEpollState: 4,
+    syncEffectForkSharedOfdState: 64,
+    syncEffectProcessMemfs: 128,
+    syncEffectSocketState: 2,
+    syncForkSharedStateViaKernelWorker,
+  };
+  const maybeHandleOwnedStateSync = createWorkerOwnedStateSyncHandler(deps as never);
+
+  const handled = maybeHandleOwnedStateSync({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    status: 0,
+    syscallNr: 32n,
+    rawSyncEffects: 64,
+    completedSyncEffects: 64,
+    isRunningWorker: true,
+    wroteToPipe: false,
+    drainedPipe: false,
+    continueAfterOwnedStateSync,
+  });
+
+  expect(handled).toBe(true);
+  expect(handle.forkSharedSyncPromise).toBeNull();
+  expect(handle.kernelShare.forkSharedSyncPromise).toBe(activeSync);
+  expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
+  await vi.waitFor(() => {
+    expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
+      7,
+      expect.stringContaining("fork-shared-sync-local-queue:"),
+    );
+  });
+
+  resolveActiveSync();
+  await vi.waitFor(() => {
+    expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalled();
+  });
+  expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalledWith(handle, [], {
+    deltaOfdIds: true,
+    includeMemfs: false,
+    sourceVmPtr: thread.vmPtr,
+    trackHeldOfds: true,
+  });
+  await vi.waitFor(() => {
+    expect(continueAfterOwnedStateSync).toHaveBeenCalled();
+  });
+  expect(handle.forkSharedSyncPromise).toBeNull();
+  expect(handle.kernelShare.forkSharedSyncPromise).toBe(activeSync);
 });
 
 test("fork-shared-only pipe effects sync when the source holds tracked shared state", async () => {
