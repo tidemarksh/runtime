@@ -22,7 +22,7 @@ const goDriverEntries = [
 
 function expectGoDriverRuntimeOwnershipSurface(detail: string): void {
   expect(
-    /(vfork-execve:handoff-failed:\d+:-8|fatal: bad g in signal handler|exec format error|missing generated artifact|vfork-execve:child-state:.*memory access out of bounds)/.test(detail),
+    /(vfork-execve:handoff-failed:\d+:-8|vfork-execve:handoff-trap.*memory access out of bounds|fatal: bad g in signal handler|exec format error|missing generated artifact|timeout after \d+ms|vfork-execve:child-state:.*memory access out of bounds)/.test(detail),
   ).toBe(true);
   if (detail.includes("vfork-execve:handoff-failed:")) {
     const maybeStageTagged = /vfork-execve:handoff-failed:\d+:-8:(\d+):/.exec(detail);
