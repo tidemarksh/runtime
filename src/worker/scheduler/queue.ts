@@ -668,15 +668,24 @@ export function createWorkerSchedulerQueueHelpers(
     if (handle.exitInProgress) {
       return;
     }
+    const thread = deps.threadWorkerStates.get(worker);
     if (
       handle.runningWorker === worker
       && handle.workers.has(worker)
-      && deps.threadWorkerStates.has(worker)
+      && thread !== undefined
     ) {
       return;
     }
+    if (
+      (thread?.waitingInWorkerStatus ?? null) !== null
+      || (thread?.ownerAsyncStatus ?? null) !== null
+    ) {
+      removeReadyWorker(handle, worker);
+      pumpProcess(handle);
+      return;
+    }
     if (!handle.readyWorkers.includes(worker)) {
-      const vmPtr = deps.threadWorkerStates.get(worker)?.vmPtr;
+      const vmPtr = thread?.vmPtr;
       if (vmPtr !== undefined) {
         const brokenThreadState = hasBrokenThreadState(handle, vmPtr);
         if (SCHEDULER_QUEUE_DEBUG_LOG_ENABLED) {
@@ -751,16 +760,22 @@ export function createWorkerSchedulerQueueHelpers(
         (candidateThread?.ownerAsyncStatus ?? null) !== null
         || hasWorkerLocalWait(handle, candidateThread)
       ) {
+        handle.readyWorkers.splice(index, 1);
         return;
       }
       next = handle.readyWorkers.splice(index, 1)[0];
     } else {
-      const index = handle.readyWorkers.findIndex((candidate) => {
+      let index = handle.readyWorkers.findIndex((candidate) => {
         const candidateThread = deps.threadWorkerStates.get(candidate);
         return (candidateThread?.ownerAsyncStatus ?? null) === null
           && !hasWorkerLocalWait(handle, candidateThread);
       });
+      if (index > 0) {
+        handle.readyWorkers.splice(0, index);
+        index = 0;
+      }
       if (index === -1) {
+        handle.readyWorkers.length = 0;
         return;
       }
       next = handle.readyWorkers.splice(index, 1)[0];

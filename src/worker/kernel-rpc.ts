@@ -32,6 +32,17 @@ const FS_RING_SUBMIT_HEAD_OFFSET = 0;
 const FS_RING_SUBMIT_TAIL_OFFSET = 4;
 const FS_RING_COMPLETE_HEAD_OFFSET = 8;
 const FS_RING_COMPLETE_TAIL_OFFSET = 12;
+const FS_RING_HEADER_BYTES = 32;
+const FS_RING_SUBMIT_QUEUE_SIZE = 64;
+const FS_RING_COMPLETE_QUEUE_SIZE = 64;
+const FS_RING_REQUEST_BYTES = 64;
+const FS_RING_RESPONSE_BYTES = 16;
+const FS_RING_REQUEST_OPCODE_OFFSET = 0;
+const FS_RING_REQUEST_VM_PTR_OFFSET = 48;
+const FS_RING_RESPONSE_RESULT_OFFSET = 0;
+const FS_RING_RESPONSE_VM_PTR_OFFSET = 8;
+const FS_RING_COMPLETE_QUEUE_OFFSET = FS_RING_HEADER_BYTES + FS_RING_SUBMIT_QUEUE_SIZE * FS_RING_REQUEST_BYTES;
+const FS_RING_TOTAL_BYTES = FS_RING_COMPLETE_QUEUE_OFFSET + FS_RING_COMPLETE_QUEUE_SIZE * FS_RING_RESPONSE_BYTES;
 const POLLFD_BYTES = 8;
 const PIPE_HEAD_OFFSET = 0;
 const PIPE_TAIL_OFFSET = 4;
@@ -928,44 +939,54 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
   }
 
   function formatFsRingDebug(handle: ProcessHandle, vmPtr: number): string {
-    const base = handle.kernel.thread_fs_ring_base?.(vmPtr) ?? 0;
-    if (base === 0) {
+    const progress = snapshotFsRingProgress(handle, vmPtr);
+    if (progress === null) {
       return "";
     }
-    const submitHead = handle.kernel.thread_fs_ring_submit_head?.(vmPtr) ?? 0;
-    const submitTail = handle.kernel.thread_fs_ring_submit_tail?.(vmPtr) ?? 0;
-    const completeHead = handle.kernel.thread_fs_ring_complete_head?.(vmPtr) ?? 0;
-    const completeTail = handle.kernel.thread_fs_ring_complete_tail?.(vmPtr) ?? 0;
+    const {
+      ringBase,
+      submitHead,
+      submitTail,
+      completeHead,
+      completeTail,
+    } = progress;
+    const view = new DataView(handle.memory.buffer);
     const requests: string[] = [];
     for (let pos = submitTail; pos < submitHead && requests.length < 4; pos += 1) {
-      const opcode = handle.kernel.thread_fs_ring_request_opcode_at?.(vmPtr, pos) ?? 0;
-      const requestVmPtr = handle.kernel.thread_fs_ring_request_vm_ptr_at?.(vmPtr, pos) ?? 0;
+      const entry = fsRingRequestEntryOffset(ringBase, pos);
+      const opcode = view.getUint32(entry + FS_RING_REQUEST_OPCODE_OFFSET, true);
+      const requestVmPtr = view.getUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, true);
       requests.push(`${pos}:op=${opcode}/vm=0x${requestVmPtr.toString(16)}`);
     }
     const completions: string[] = [];
     for (let pos = completeTail; pos < completeHead && completions.length < 4; pos += 1) {
-      const result = handle.kernel.thread_fs_ring_completion_result_at?.(vmPtr, pos) ?? 0n;
-      const completionVmPtr = handle.kernel.thread_fs_ring_completion_vm_ptr_at?.(vmPtr, pos) ?? 0;
+      const entry = fsRingCompletionEntryOffset(ringBase, pos);
+      const result = view.getBigInt64(entry + FS_RING_RESPONSE_RESULT_OFFSET, true);
+      const completionVmPtr = view.getUint32(entry + FS_RING_RESPONSE_VM_PTR_OFFSET, true);
       completions.push(`${pos}:rv=${result.toString()}/vm=0x${completionVmPtr.toString(16)}`);
     }
     return [
-      `:ring=0x${base.toString(16)}`,
+      `:ring=0x${ringBase.toString(16)}`,
       `:sq=${submitTail}->${submitHead}[${requests.join("|")}]`,
       `:cq=${completeTail}->${completeHead}[${completions.join("|")}]`,
     ].join("");
   }
 
   function fsRingHasPendingRequests(handle: ProcessHandle, vmPtr: number): boolean {
-    const submitHead = handle.kernel.thread_fs_ring_submit_head?.(vmPtr) ?? 0;
-    const submitTail = handle.kernel.thread_fs_ring_submit_tail?.(vmPtr) ?? 0;
-    return submitHead !== submitTail;
+    const progress = snapshotFsRingProgress(handle, vmPtr);
+    return progress !== null && progress.submitHead !== progress.submitTail;
   }
 
   function fsRingHasPendingRequestForVm(handle: ProcessHandle, vmPtr: number): boolean {
-    const submitHead = handle.kernel.thread_fs_ring_submit_head?.(vmPtr) ?? 0;
-    const submitTail = handle.kernel.thread_fs_ring_submit_tail?.(vmPtr) ?? 0;
+    const progress = snapshotFsRingProgress(handle, vmPtr);
+    if (progress === null) {
+      return false;
+    }
+    const view = new DataView(handle.memory.buffer);
+    const { ringBase, submitHead, submitTail } = progress;
     for (let pos = submitTail; pos < submitHead; pos += 1) {
-      const requestVmPtr = handle.kernel.thread_fs_ring_request_vm_ptr_at?.(vmPtr, pos) ?? 0;
+      const entry = fsRingRequestEntryOffset(ringBase, pos);
+      const requestVmPtr = view.getUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, true);
       if (requestVmPtr === vmPtr) {
         return true;
       }
@@ -974,10 +995,15 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
   }
 
   function fsRingHasPendingCompletionForVm(handle: ProcessHandle, vmPtr: number): boolean {
-    const completeHead = handle.kernel.thread_fs_ring_complete_head?.(vmPtr) ?? 0;
-    const completeTail = handle.kernel.thread_fs_ring_complete_tail?.(vmPtr) ?? 0;
+    const progress = snapshotFsRingProgress(handle, vmPtr);
+    if (progress === null) {
+      return false;
+    }
+    const view = new DataView(handle.memory.buffer);
+    const { ringBase, completeHead, completeTail } = progress;
     for (let pos = completeTail; pos < completeHead; pos += 1) {
-      const completionVmPtr = handle.kernel.thread_fs_ring_completion_vm_ptr_at?.(vmPtr, pos) ?? 0;
+      const entry = fsRingCompletionEntryOffset(ringBase, pos);
+      const completionVmPtr = view.getUint32(entry + FS_RING_RESPONSE_VM_PTR_OFFSET, true);
       if (completionVmPtr === vmPtr) {
         return true;
       }
@@ -985,9 +1011,22 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     return false;
   }
 
+  function fsRingRequestEntryOffset(ringBase: number, pos: number): number {
+    return ringBase + FS_RING_HEADER_BYTES + (pos % FS_RING_SUBMIT_QUEUE_SIZE) * FS_RING_REQUEST_BYTES;
+  }
+
+  function fsRingCompletionEntryOffset(ringBase: number, pos: number): number {
+    return ringBase + FS_RING_COMPLETE_QUEUE_OFFSET + (pos % FS_RING_COMPLETE_QUEUE_SIZE) * FS_RING_RESPONSE_BYTES;
+  }
+
   function snapshotFsRingProgress(handle: ProcessHandle, vmPtr: number): FsRingProgressSnapshot | null {
-    const ringBase = handle.kernel.thread_fs_ring_base?.(vmPtr) ?? 0;
-    if (ringBase <= 0 || ringBase + FS_RING_COMPLETE_TAIL_OFFSET + 4 > handle.memory.buffer.byteLength) {
+    let ringBase = 0;
+    try {
+      ringBase = handle.kernel.thread_fs_ring_base?.(vmPtr) ?? 0;
+    } catch {
+      return null;
+    }
+    if (ringBase <= 0 || ringBase + FS_RING_TOTAL_BYTES > handle.memory.buffer.byteLength) {
       return null;
     }
     const view = new DataView(handle.memory.buffer);

@@ -1459,7 +1459,7 @@ test("enqueue clears a dangling running worker before stepping the next ready wo
   }));
 });
 
-test("pumpProcess skips ready workers that are still waiting inside the worker", () => {
+test("pumpProcess prunes ready workers that are still waiting inside the worker", () => {
   const waitingWorker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -1497,7 +1497,7 @@ test("pumpProcess skips ready workers that are still waiting inside the worker",
     type: "step",
     budget: expect.any(Number),
   }));
-  expect(handle.readyWorkers).toEqual([waitingWorker]);
+  expect(handle.readyWorkers).toEqual([]);
 });
 
 test("pumpProcess clears a running worker that reached worker-local futex wait", () => {
@@ -1571,6 +1571,35 @@ test("enqueue does not place the current running worker back on the ready queue"
   scheduler.enqueueWorker(handle, worker);
 
   expect(handle.runningWorker).toBe(worker);
+  expect(handle.readyWorkers).not.toContain(worker);
+  expect(worker.postMessage).not.toHaveBeenCalled();
+});
+
+test("enqueue does not place a worker-local wait worker on the ready queue", () => {
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const thread = makeThreadState(0x1234);
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, thread);
+  const { exports: kernel } = makeKernel();
+  const handle = makeHandle(kernel, worker);
+  thread.waitingInWorkerStatus = kernel.abi_status_futex_wait();
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.enqueueWorker(handle, worker);
+
   expect(handle.readyWorkers).not.toContain(worker);
   expect(worker.postMessage).not.toHaveBeenCalled();
 });
