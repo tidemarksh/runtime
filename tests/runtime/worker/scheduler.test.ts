@@ -1130,7 +1130,11 @@ test("sleep-blocked worker advances guest time to the earliest deadline and resu
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, makeThreadState(0x1234));
   const { exports: kernel } = makeKernel();
-  kernel.thread_status = () => kernel.abi_status_sleep();
+  let status = kernel.abi_status_sleep();
+  kernel.thread_status = () => status;
+  kernel.thread_resume_sleep = vi.fn(() => {
+    status = kernel.abi_status_ok();
+  });
   kernel.thread_sleep_deadline_ticks = () => 1_000n;
   const handle = makeHandle(kernel, worker);
   handle.pendingChildSpawnRecords = 0;
@@ -1578,6 +1582,9 @@ test("pumpProcess prunes ready workers that are still waiting inside the worker"
   threadWorkerStates.set(waitingWorker, waitingThread);
   threadWorkerStates.set(runnableWorker, runnableThread);
   const { exports: kernel } = makeKernel();
+  kernel.thread_status = (vmPtr: number) => vmPtr === 0x1234
+    ? kernel.abi_status_futex_wait()
+    : kernel.abi_status_ok();
   const handle = makeHandle(kernel, waitingWorker);
   handle.workers.add(runnableWorker);
   handle.readyWorkers = [waitingWorker, runnableWorker];
@@ -1604,6 +1611,40 @@ test("pumpProcess prunes ready workers that are still waiting inside the worker"
     budget: expect.any(Number),
   }));
   expect(handle.readyWorkers).toEqual([]);
+});
+
+test("pumpProcess reconciles a worker-local futex wait that is already runnable in canonical state", () => {
+  const waitingWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const thread = makeThreadState(0x1234);
+  thread.waitingInWorkerStatus = 20;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(waitingWorker, thread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_ok();
+  const handle = makeHandle(kernel, waitingWorker);
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+
+  expect(thread.waitingInWorkerStatus).toBeNull();
+  expect(handle.runningWorker).toBe(waitingWorker);
+  expect(waitingWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
 });
 
 test("pumpProcess clears a running worker that reached worker-local futex wait", () => {
@@ -1689,6 +1730,7 @@ test("enqueue does not place a worker-local wait worker on the ready queue", () 
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, thread);
   const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_futex_wait();
   const handle = makeHandle(kernel, worker);
   thread.waitingInWorkerStatus = kernel.abi_status_futex_wait();
 

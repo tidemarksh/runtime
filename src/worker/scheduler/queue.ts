@@ -712,6 +712,34 @@ export function createWorkerSchedulerQueueHelpers(
     }
   }
 
+  function reconcileResolvedWorkerLocalWaits(handle: ProcessHandle): void {
+    for (const worker of handle.workers) {
+      if (handle.runningWorker === worker || handle.readyWorkers.includes(worker) || handle.blockedWorkers.has(worker)) {
+        continue;
+      }
+      const thread = deps.threadWorkerStates.get(worker);
+      const waitingStatus = thread?.waitingInWorkerStatus ?? null;
+      if (
+        thread === undefined
+        || waitingStatus === null
+        || thread.ownerAsyncStatus !== null
+      ) {
+        continue;
+      }
+      const currentStatus = handle.kernel.thread_status(thread.vmPtr);
+      if (currentStatus !== handle.kernel.abi_status_ok()) {
+        continue;
+      }
+      thread.waitingInWorkerStatus = null;
+      thread.runningGeneration = null;
+      deps.appendWorkerDebugLog(
+        handle,
+        `wait-in-worker-reconciled:0x${thread.vmPtr.toString(16)}:${waitingStatus}->${currentStatus}`,
+      );
+      handle.readyWorkers.push(worker);
+    }
+  }
+
   function hasWorkerLocalWait(handle: ProcessHandle, thread: ThreadWorkerState | undefined): boolean {
     return thread?.waitingInWorkerStatus === handle.kernel.abi_status_futex_wait();
   }
@@ -729,6 +757,7 @@ export function createWorkerSchedulerQueueHelpers(
     if (runningWorker !== null) {
       return;
     }
+    reconcileResolvedWorkerLocalWaits(handle);
     recoverRunnableIdleWorkers(handle);
     let next: Worker | undefined;
     if (hasExclusiveVforkWorker(handle)) {
