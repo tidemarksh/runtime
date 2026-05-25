@@ -1159,6 +1159,56 @@ test("sleep-blocked worker advances guest time to the earliest deadline and resu
   }));
 });
 
+test("sleep-blocked worker retries at its deadline when other workers are runnable", async () => {
+  const blockedWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const readyWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(blockedWorker, makeThreadState(0x1234));
+  threadWorkerStates.set(readyWorker, makeThreadState(0x5678));
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = (vmPtr: number) => vmPtr === 0x1234
+    ? kernel.abi_status_sleep()
+    : kernel.abi_status_ok();
+  kernel.thread_sleep_deadline_ticks = () => 1_000_001n;
+  const handle = makeHandle(kernel, blockedWorker);
+  handle.pendingChildSpawnRecords = 0;
+  handle.workers.add(readyWorker);
+  handle.readyWorkers.push(readyWorker);
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.blockWorker(handle, blockedWorker, handle.kernel.abi_status_sleep(), 0x1234);
+  scheduler.kickBlockedWorkers(handle);
+
+  expect(kernel.sync_monotonic_ticks_floor).not.toHaveBeenCalled();
+  expect(kernel.thread_resume_sleep).not.toHaveBeenCalled();
+  expect(handle.blockedWorkers.has(blockedWorker)).toBe(true);
+
+  await vi.advanceTimersByTimeAsync(9);
+  expect(kernel.thread_resume_sleep).not.toHaveBeenCalled();
+
+  await vi.advanceTimersByTimeAsync(1);
+
+  expect(kernel.sync_monotonic_ticks_floor).toHaveBeenCalledWith(1_000_001n);
+  expect(kernel.thread_resume_sleep).toHaveBeenCalledWith(0x1234);
+  expect(handle.blockedWorkers.has(blockedWorker)).toBe(false);
+  expect(handle.readyWorkers).toContain(blockedWorker);
+});
+
 test("blocked syscall retry is rescheduled after a running-worker skip", async () => {
   const blockedWorker = {
     postMessage: vi.fn(),

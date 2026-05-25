@@ -151,6 +151,19 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     return base + rounded;
   }
 
+  function sleepRetryDelayMs(handle: ProcessHandle, deadlineTicks: bigint): number {
+    const now = monotonicTicksCurrent(handle);
+    if (deadlineTicks <= now) {
+      return 0;
+    }
+    const remainingTicks = deadlineTicks - now;
+    const delayMs = Number((remainingTicks * 1000n + (GUEST_TICKS_PER_SEC - 1n)) / GUEST_TICKS_PER_SEC);
+    if (!Number.isFinite(delayMs)) {
+      return 2_147_483_647;
+    }
+    return Math.max(0, Math.min(delayMs, 2_147_483_647));
+  }
+
   function advanceGuestTimeByMs(handle: ProcessHandle, timeoutMs: number): void {
     if (timeoutMs <= 0 || !Number.isFinite(timeoutMs)) {
       return;
@@ -1263,6 +1276,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     handle.blockedWorkers.set(worker, blocked);
     if (status === handle.kernel.abi_status_sleep()) {
       blocked.sleepDeadlineTicks = sleepDeadlineTicks(handle, vmPtr);
+      scheduleBlockedRetry(handle, worker, sleepRetryDelayMs(handle, blocked.sleepDeadlineTicks), true);
       return;
     }
     if (status === handle.kernel.abi_status_epoll_wait()) {
@@ -1436,7 +1450,11 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         return;
       }
       if (blocked.sleepDeadlineTicks !== null && blocked.sleepDeadlineTicks > monotonicTicksCurrent(handle)) {
-        return;
+        if (!blocked.timeoutExpired) {
+          scheduleBlockedRetry(handle, worker, sleepRetryDelayMs(handle, blocked.sleepDeadlineTicks), true);
+          return;
+        }
+        handle.kernel.sync_monotonic_ticks_floor?.(blocked.sleepDeadlineTicks);
       }
       wakeBlockedSleepWorker(handle, worker, blocked);
       return;
