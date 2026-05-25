@@ -17,6 +17,25 @@ import { formatCompactDebugSuffix } from "./debug-summary.js";
 import { createWorkerOwnershipGuard } from "./worker-ownership.js";
 
 export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandlerDeps) {
+  function clearRunningWorkerAlreadyWaiting(handle: ProcessHandle): void {
+    const runningWorker = handle.runningWorker;
+    if (runningWorker == null) {
+      return;
+    }
+    const runningThread = deps.threadWorkerStates.get(runningWorker);
+    if ((runningThread?.waitingInWorkerStatus ?? null) === null) {
+      return;
+    }
+    handle.runningWorker = null;
+    if (runningThread) {
+      runningThread.runningGeneration = null;
+      deps.appendWorkerDebugLog(
+        handle,
+        `running-worker-cleared:wait-in-worker:0x${runningThread.vmPtr.toString(16)}`,
+      );
+    }
+  }
+
   return function handleWaitInWorkerStatus(
     handle: ProcessHandle,
     worker: Worker,
@@ -58,6 +77,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       handle.runningWorker = null;
       thread.runningGeneration = null;
     }
+    clearRunningWorkerAlreadyWaiting(handle);
     if (
       handle.vforkSnapshot !== null
       && handle.vforkWorker !== null
