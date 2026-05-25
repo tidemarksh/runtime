@@ -53,7 +53,7 @@ export const goCompileVersionToolchainEntry: ToolchainExecEntry = {
     "HOME=/root",
   ],
   timeoutMs: 10_000,
-  ramSize: 256 * 1024 * 1024,
+  ramSize: GO_RUNTIME_RAM_SIZE,
   snapshotSources: [
     { kind: "tree", hostPath: `${GO_TOOLCHAIN_DIR}/pkg/tool/linux_riscv64`, guestPath: "/usr/local/go/pkg/tool/linux_riscv64" },
   ],

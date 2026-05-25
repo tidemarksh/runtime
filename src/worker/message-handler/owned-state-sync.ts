@@ -263,6 +263,16 @@ function latestFdTraceRulesOutForkSharedTopologyChange(
   ) {
     return !fdTraceTouchesForkSharedPeer(handle, trace);
   }
+  if (matchesOptionalSyscall(trace.nr, handle.kernel.abi_sys_fcntl?.())) {
+    return fcntlCommandMayChangeForkSharedOfdTopology(trace.arg1)
+      ? !fdTraceTouchesForkSharedPeer(handle, trace)
+      : true;
+  }
+  if (matchesOptionalSyscall(trace.nr, handle.kernel.abi_sys_ioctl?.())) {
+    return ioctlRequestMayChangeForkSharedOfdTopology(trace.arg1)
+      ? !fdTraceTouchesForkSharedPeer(handle, trace)
+      : true;
+  }
   return false;
 }
 

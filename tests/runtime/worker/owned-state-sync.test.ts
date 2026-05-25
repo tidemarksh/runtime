@@ -344,6 +344,116 @@ test("dup3 replacement cannot be ruled out by oldfd-only fd trace", async () => 
   });
 });
 
+test("fcntl F_SETFL on an unshared OFD does not request fork-shared sync", () => {
+  const worker = {} as Worker;
+  const thread = {
+    vmPtr: 0x1234,
+    ownerPid: 7,
+    generation: 1,
+    waitingInWorkerStatus: null,
+    resumeWorkersOnReady: [],
+  };
+  const threadWorkerStates = new WeakMap<Worker, typeof thread>();
+  threadWorkerStates.set(worker, thread);
+  const handle = {
+    pid: 7,
+    vmPtr: 0x1234,
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    workers: new Set([worker]),
+    kernelWorkerRequest: vi.fn(),
+    runningWorker: worker,
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set([8]),
+      forkSharedSyncPromise: null,
+    },
+    hostStdio: { refCount: 0, stdinPipe: 0, stdoutPipe: 0, stderrPipe: 0 },
+    forkSharedSyncPromise: null,
+    processMemfsDirty: false,
+    kernelState: makeKernelState(),
+    kernel: {
+      abi_status_ok: () => 0,
+      abi_max_fds: () => 16,
+      abi_max_pipes: () => 16,
+      abi_max_threads: () => 1,
+      abi_fd_type_file: () => 1,
+      abi_fd_type_epoll: () => 7,
+      abi_fd_type_pipe: () => 6,
+      abi_sys_fcntl: () => 25n,
+      thread_a7: () => 25n,
+      thread_a1: () => 4n,
+      process_thread_vm_ptr: () => 0,
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => (fd === 3 ? 8 : 0),
+      kernel_ofd_fd_type: (ofdId: number) => (ofdId === 8 ? 1 : 0),
+      kernel_ofd_ino: (ofdId: number) => (ofdId === 8 ? 21 : 0),
+      kernel_ofd_host_fd: () => -1,
+      kernel_attach_runtime_state: vi.fn(),
+    },
+  };
+  const parent = {
+    pid: 3,
+    vmPtr: 0x5678,
+    runningWorker: null,
+    exitInProgress: false,
+    workers: new Set(),
+    hostStdio: { refCount: 0, stdinPipe: 0, stdoutPipe: 0, stderrPipe: 0 },
+    kernel: {
+      ...handle.kernel,
+      process_fd_ofd_id: () => 0,
+    },
+  };
+  handle.kernelShare.members.add(handle);
+  handle.kernelShare.members.add(parent);
+  const continueAfterOwnedStateSync = vi.fn();
+  const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
+  const deps = {
+    processHandles: new Map([
+      [7, handle],
+      [3, parent],
+    ]),
+    threadWorkerStates,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    failProcess: vi.fn(),
+    pumpProcess: vi.fn(),
+    requestEpollDependentOfdStateSync: vi.fn(async () => {}),
+    requestEpollStateSync: vi.fn(async () => {}),
+    requestSocketStateSync: vi.fn(async () => {}),
+    statusDefersOwnedStateSync: vi.fn(() => false),
+    syncEffectEpollDependentOfdState: 8,
+    syncEffectEpollState: 4,
+    syncEffectForkSharedOfdState: 64,
+    syncEffectProcessMemfs: 128,
+    syncEffectSocketState: 2,
+    syncForkSharedStateViaKernelWorker,
+  };
+  const maybeHandleOwnedStateSync = createWorkerOwnedStateSyncHandler(deps as never);
+
+  const handled = maybeHandleOwnedStateSync({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    status: 0,
+    rawSyncEffects: 64,
+    completedSyncEffects: 64,
+    latestFdTrace: {
+      nr: 25n,
+      arg0OfdId: 8,
+      arg0OfdType: 1,
+      arg1: 4n,
+      arg2OfdId: 0,
+      arg2OfdType: 0,
+      result: 0n,
+    },
+    isRunningWorker: true,
+    wroteToPipe: false,
+    drainedPipe: false,
+    continueAfterOwnedStateSync,
+  });
+
+  expect(handled).toBe(false);
+  expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
+});
+
 test("fork-shared OFD sync skips exiting peer targets", async () => {
   const worker = {} as Worker;
   const thread = {

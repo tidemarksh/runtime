@@ -102,6 +102,7 @@ function makeHandle(worker: Worker) {
       thread_a0: () => 0n,
       thread_sleep_seconds: () => 0n,
       thread_sleep_nanoseconds: () => 0n,
+      thread_resume_sleep: vi.fn(),
       abi_max_threads: () => 1,
       process_current_pid: () => 0,
       process_thread_vm_ptr: () => 0x1234,
@@ -313,6 +314,10 @@ test("STATUS_SLEEP zero-duration yield kicks blocked workers before requeueing",
 
   expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
   expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
+  expect(handle.kernel.thread_resume_sleep).toHaveBeenCalledWith(0x1234);
+  expect(
+    handle.kernel.thread_resume_sleep.mock.invocationCallOrder[0],
+  ).toBeLessThan(deps.enqueueWorker.mock.invocationCallOrder[0]);
   expect(
     deps.kickBlockedWorkers.mock.invocationCallOrder[0],
   ).toBeLessThan(deps.enqueueWorker.mock.invocationCallOrder[0]);

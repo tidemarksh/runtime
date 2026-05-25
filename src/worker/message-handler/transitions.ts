@@ -505,6 +505,11 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       const nsec = handle.kernel.thread_sleep_nanoseconds(thread.vmPtr);
       if (sec === 0n && nsec === 0n) {
         deps.appendWorkerDebugLog(handle, `yield:0x${thread.vmPtr.toString(16)}`);
+        const resumeZeroDurationSleep = (): void => {
+          handle.kernel.thread_resume_sleep?.(thread.vmPtr);
+          handle.kernelState = readKernelRuntimeState(handle.kernel);
+          publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
+        };
         const shouldSyncPipeState = (completedSyncEffects & deps.syncEffectPipeState) !== 0;
         if (handle.kernelWorkerRequest && handle.pid > 0 && shouldSyncPipeState) {
           void deps.requestPipeStateSync(handle, false)
@@ -512,6 +517,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
               if (!workerStillOwnedByHandle()) {
                 return;
               }
+              resumeZeroDurationSleep();
               deps.kickBlockedWorkers(handle);
               deps.enqueueWorker(handle, worker);
             })
@@ -523,6 +529,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             });
           return;
         }
+        resumeZeroDurationSleep();
         deps.kickBlockedWorkers(handle);
         deps.enqueueWorker(handle, worker);
         return;
