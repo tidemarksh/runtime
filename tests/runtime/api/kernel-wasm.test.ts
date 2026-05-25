@@ -50,11 +50,39 @@ function writeU64(memory: WebAssembly.Memory, addr: number, value: bigint): void
   new DataView(memory.buffer).setBigUint64(addr, value, true);
 }
 
+function readU64(memory: WebAssembly.Memory, addr: number): bigint {
+  return new DataView(memory.buffer).getBigUint64(addr, true);
+}
+
 function threadRegOffset(regIndex: number): number {
   return regIndex * 8;
 }
 
 const THREAD_PC_OFFSET = 32 * 8;
+const THREAD_FAULT_PC_OFFSET = 688;
+const THREAD_FAULT_ADDR_OFFSET = 696;
+
+function readThreadReg(
+  exports: KernelExports,
+  memory: WebAssembly.Memory,
+  vmPtr: number,
+  regIndex: number,
+): bigint {
+  return exports.thread_reg?.(vmPtr, regIndex) ?? readU64(memory, vmPtr + threadRegOffset(regIndex));
+}
+
+function readThreadRa(exports: KernelExports, memory: WebAssembly.Memory, vmPtr: number): bigint {
+  return exports.thread_ra?.(vmPtr) ?? readThreadReg(exports, memory, vmPtr, 1);
+}
+
+function readThreadFaultPc(exports: KernelExports, memory: WebAssembly.Memory, vmPtr: number): bigint {
+  return exports.thread_fault_pc?.(vmPtr) ?? readU64(memory, vmPtr + THREAD_FAULT_PC_OFFSET);
+}
+
+function readThreadFaultAddr(exports: KernelExports, memory: WebAssembly.Memory, vmPtr: number): bigint {
+  return exports.thread_fault_addr?.(vmPtr) ?? readU64(memory, vmPtr + THREAD_FAULT_ADDR_OFFSET);
+}
+
 const SYS_CLONE = 220;
 const SYS_FUTEX = 98;
 const SYS_MMAP = 222;
@@ -388,7 +416,7 @@ test("shared-memory dual kernel instances preserve parent clone return after chi
 
   expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_ok());
   expect(owner.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc));
-  expect(owner.thread_ra?.(vmPtr)).toBe(BigInt(finalTargetPc));
+  expect(readThreadRa(owner, memory, vmPtr)).toBe(BigInt(finalTargetPc));
   expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp + 16));
 });
 
@@ -456,7 +484,7 @@ test("shared imported memory materializes a top-of-limit prot-none page without 
   expect(exports.thread_status(vmPtr)).toBe(exports.abi_status_ok());
   expect(exports.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc));
   expect(exports.thread_sp(vmPtr)).toBe(BigInt(parentSp));
-  expect(exports.thread_reg?.(vmPtr, 10)).toBe(BigInt(reserveAddr));
+  expect(readThreadReg(exports, wasmMemory, vmPtr, 10)).toBe(BigInt(reserveAddr));
 
   writeU64(wasmMemory, vmPtr + threadRegOffset(1), BigInt(finalTargetPc + 8));
   writeU64(wasmMemory, vmPtr + threadRegOffset(2), BigInt(parentSp));
@@ -472,8 +500,8 @@ test("shared imported memory materializes a top-of-limit prot-none page without 
   expect(exports.thread_status(vmPtr)).toBe(exports.abi_status_ok());
   expect(exports.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc + 8));
   expect(exports.thread_sp(vmPtr)).toBe(BigInt(parentSp));
-  expect(exports.thread_reg?.(vmPtr, 27)).toBe(0x34567890n);
-  expect(exports.thread_reg?.(vmPtr, 10)).toBe(0n);
+  expect(readThreadReg(exports, wasmMemory, vmPtr, 27)).toBe(0x34567890n);
+  expect(readThreadReg(exports, wasmMemory, vmPtr, 10)).toBe(0n);
   expect(wasmMemory.buffer.byteLength).toBe(maxBytes);
   const topPage = new Uint8Array(wasmMemory.buffer, guestBase + topPageAddr, 0x1000);
   expect(Array.from(topPage).every((byte) => byte === 0)).toBe(true);
@@ -539,7 +567,7 @@ test("shared-memory dual kernel instances preserve parent context across clone a
   expect(owner.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc));
   expect(owner.thread_exit_code(vmPtr)).toBe(0);
   expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp));
-  expect(owner.thread_reg?.(vmPtr, 10)).toBe(BigInt(reserveAddr));
+  expect(readThreadReg(owner, memory, vmPtr, 10)).toBe(BigInt(reserveAddr));
 
   writeU32(memory, guestBase + helperPc, encodeB(4, 10, 0, 10));
   writeU16(memory, guestBase + helperPc + 4, 0xc511);
@@ -598,7 +626,7 @@ test("shared-memory dual kernel instances preserve parent context across clone a
   owner.thread_step(vmPtr, 9);
   expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_ok());
   expect(owner.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc));
-  expect(owner.thread_ra?.(vmPtr)).toBe(BigInt(finalTargetPc));
+  expect(readThreadRa(owner, memory, vmPtr)).toBe(BigInt(finalTargetPc));
   expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp + 16));
 
   writeU64(memory, vmPtr + threadRegOffset(1), BigInt(finalTargetPc + 8));
@@ -616,8 +644,8 @@ test("shared-memory dual kernel instances preserve parent context across clone a
   expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_ok());
   expect(owner.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc + 8));
   expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp + 16));
-  expect(owner.thread_reg?.(vmPtr, 27)).toBe(0x34567890n);
-  expect(owner.thread_reg?.(vmPtr, 10)).toBe(0n);
+  expect(readThreadReg(owner, memory, vmPtr, 27)).toBe(0x34567890n);
+  expect(readThreadReg(owner, memory, vmPtr, 10)).toBe(0n);
 });
 
 test("shared-memory dual kernel instances preserve parent context across clone, flush_icache, and re-exec", async () => {
@@ -680,7 +708,7 @@ test("shared-memory dual kernel instances preserve parent context across clone, 
   expect(owner.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc));
   expect(owner.thread_exit_code(vmPtr)).toBe(0);
   expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp));
-  expect(owner.thread_reg?.(vmPtr, 10)).toBe(BigInt(codePageAddr));
+  expect(readThreadReg(owner, memory, vmPtr, 10)).toBe(BigInt(codePageAddr));
 
   writeU32(memory, guestBase + helperPc, encodeB(4, 10, 0, 10));
   writeU16(memory, guestBase + helperPc + 4, 0xc511);
@@ -739,7 +767,7 @@ test("shared-memory dual kernel instances preserve parent context across clone, 
   owner.thread_step(vmPtr, 9);
   expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_ok());
   expect(owner.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc));
-  expect(owner.thread_ra?.(vmPtr)).toBe(BigInt(finalTargetPc));
+  expect(readThreadRa(owner, memory, vmPtr)).toBe(BigInt(finalTargetPc));
   expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp + 16));
 
   const runParentSyscall = (sysno: number, a0: number, a1: number, a2: number, s11: bigint) => {
@@ -757,8 +785,8 @@ test("shared-memory dual kernel instances preserve parent context across clone, 
     expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_ok());
     expect(owner.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc + 8));
     expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp + 16));
-    expect(owner.thread_reg?.(vmPtr, 27)).toBe(s11);
-    expect(owner.thread_reg?.(vmPtr, 10)).toBe(0n);
+    expect(readThreadReg(owner, memory, vmPtr, 27)).toBe(s11);
+    expect(readThreadReg(owner, memory, vmPtr, 10)).toBe(0n);
   };
 
   const runParentCode = (expectedA0: bigint, s11: bigint) => {
@@ -773,8 +801,8 @@ test("shared-memory dual kernel instances preserve parent context across clone, 
     expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_ok());
     expect(owner.thread_pc(vmPtr)).toBe(BigInt(codePageAddr + 8));
     expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp + 16));
-    expect(owner.thread_reg?.(vmPtr, 10)).toBe(expectedA0);
-    expect(owner.thread_reg?.(vmPtr, 27)).toBe(s11);
+    expect(readThreadReg(owner, memory, vmPtr, 10)).toBe(expectedA0);
+    expect(readThreadReg(owner, memory, vmPtr, 27)).toBe(s11);
   };
 
   runParentSyscall(SYS_MPROTECT, codePageAddr, codePageLen, PROT_READ | PROT_WRITE, 0x34567890n);
@@ -899,7 +927,7 @@ test("shared-memory dual kernel instances preserve parent fault snapshot with bl
   owner.thread_step(vmPtr, 1);
 
   expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_fault());
-  expect(owner.thread_fault_pc?.(vmPtr)).toBe(4n);
-  expect(owner.thread_fault_addr?.(vmPtr)).toBe(4n);
+  expect(readThreadFaultPc(owner, memory, vmPtr)).toBe(4n);
+  expect(readThreadFaultAddr(owner, memory, vmPtr)).toBe(4n);
   expect(owner.thread_term_signal(vmPtr)).toBe(SIGSEGV);
 });
