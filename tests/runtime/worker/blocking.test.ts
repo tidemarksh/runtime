@@ -41,13 +41,26 @@ class FakeWorker {
       });
       return;
     }
-    this.postedMessages.push(message);
+    this.postedMessages.push(stripWorkerStateSnapshots(message));
   }
   terminate(): void { this.terminated = true; }
   emit(message: ThreadWorkerOutbound): void {
     this.onmessage?.({ data: message } as MessageEvent<ThreadWorkerOutbound>);
   }
   clearPostedMessages(): void { this.postedMessages.length = 0; }
+}
+
+function stripWorkerStateSnapshots(message: ThreadWorkerInbound): ThreadWorkerInbound {
+  if (message.type !== "init" && message.type !== "step") {
+    return message;
+  }
+  const stripped = { ...message } as ThreadWorkerInbound & {
+    fdEntries?: unknown;
+    ofdSlots?: unknown;
+  };
+  delete stripped.fdEntries;
+  delete stripped.ofdSlots;
+  return stripped;
 }
 
 const createdWorkers: FakeWorker[] = [];

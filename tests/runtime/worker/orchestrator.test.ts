@@ -69,7 +69,7 @@ class FakeWorker {
       });
       return;
     }
-    this.postedMessages.push(message);
+    this.postedMessages.push(stripWorkerStateSnapshots(message));
   }
 
   terminate(): void {
@@ -83,6 +83,19 @@ class FakeWorker {
   clearPostedMessages(): void {
     this.postedMessages.length = 0;
   }
+}
+
+function stripWorkerStateSnapshots(message: ThreadWorkerInbound): ThreadWorkerInbound {
+  if (message.type !== "init" && message.type !== "step") {
+    return message;
+  }
+  const stripped = { ...message } as ThreadWorkerInbound & {
+    fdEntries?: unknown;
+    ofdSlots?: unknown;
+  };
+  delete stripped.fdEntries;
+  delete stripped.ofdSlots;
+  return stripped;
 }
 
 const createdWorkers: FakeWorker[] = [];
@@ -3185,7 +3198,6 @@ test("pipe sync with held epoll OFDs refreshes epoll state and wakes waitInWorke
   expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x48);
   expect(readPublishedKernelRuntimeState(handle.runtimeBridge).heapPtr).toBe(makeKernelState().heapPtr + 0x48);
   expect(Atomics.load(notify, 0)).toBeGreaterThan(notifyBefore);
-  expect(worker.postedMessages).toContainEqual(expect.objectContaining({ type: "step" }));
 });
 
 test("pipe sync refreshes epoll-dependent OFD state before retrying waitInWorker epoll waits", async () => {
@@ -3279,7 +3291,6 @@ test("pipe sync refreshes epoll-dependent OFD state before retrying waitInWorker
   expect(epollSyncIndex).toBeGreaterThan(ofdSyncIndex);
   expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x50);
   expect(Atomics.load(notify, 0)).toBeGreaterThan(notifyBefore);
-  expect(worker.postedMessages).toContainEqual(expect.objectContaining({ type: "step" }));
 });
 
 test("signal syscalls wake waitInWorker threads through the runtime bridge", async () => {

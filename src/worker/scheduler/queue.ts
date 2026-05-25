@@ -95,7 +95,7 @@ function snapshotOfdSlotsForThread(
     return undefined;
   }
   const maxFds = handle.kernel.abi_max_fds();
-  const tableBytes = handle.kernel.kernel_ofd_table_bytes();
+  const tableBytes = handle.kernel.kernel_ofd_table_bytes?.() ?? 0;
   const slotBytes = tableBytes / maxFds;
   if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
     return undefined;
