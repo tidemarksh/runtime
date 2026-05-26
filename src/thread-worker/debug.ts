@@ -3,6 +3,7 @@ import type { KernelExports } from "../abi.js";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const FD_TRACE_LOG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_FD_TRACE ?? "") === "1";
+const RESERVATION_DEBUG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_RESERVATION ?? "") === "1";
 const loggedFdTraceEntries = new Set<string>();
 
 function copyBytes(view: Uint8Array): Uint8Array {
@@ -1061,7 +1062,9 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     const ppidAddr = pidAddr + 4;
     debugParts.push(`process_ptr=0x${processPtr.toString(16)}`);
     debugParts.push(`process_thread_count=${readGuestU32(exports, guestBase, threadCountAddr) ?? "n/a"}`);
-    debugParts.push(`reservation=${summarizeReservationSlots(exports, guestBase, reservationGenAddr, reservationLockAddr)}`);
+    if (RESERVATION_DEBUG_ENABLED) {
+      debugParts.push(`reservation=${summarizeReservationSlots(exports, guestBase, reservationGenAddr, reservationLockAddr)}`);
+    }
     debugParts.push(`process_pid_field=${readGuestI32(exports, guestBase, pidAddr) ?? "n/a"}`);
     debugParts.push(`process_ppid_field=${readGuestI32(exports, guestBase, ppidAddr) ?? "n/a"}`);
   }

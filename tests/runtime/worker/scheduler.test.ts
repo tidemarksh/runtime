@@ -259,6 +259,35 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+test("scheduler uses the Node step budget when Node process globals are present", () => {
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, makeThreadState(0x1234));
+  const { exports: kernel } = makeKernel();
+  const handle = makeHandle(kernel, worker);
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.enqueueWorker(handle, worker);
+
+  expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: 5_000_000,
+  }));
+});
+
 test("wait4 retry stays blocked while child spawn is still in flight", async () => {
   const worker = {
     postMessage: vi.fn(),

@@ -1247,6 +1247,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       }
       handle.networkClosedFds.delete(connect.fd);
       handle.networkClosedSocketSlots.delete(connect.fd);
+      clearCurrentNetworkRecvBuffer(handle, vmPtr, connect.fd);
       clearNetworkRecvWatermarks(handle, connect.fd);
       handle.networkConnections.set(connect.fd, connect.connection);
       const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, connect.fd);

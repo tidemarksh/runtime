@@ -59,7 +59,7 @@ let generation = 0;
 let wasmFeatures: WasmFeatureSupport;
 let runtimeBridge: RuntimeStateBridge | null = null;
 let preparedInputs: ThreadWorkerPrepareInputs | null = null;
-const DEFAULT_NODE_THREAD_STEP_BUDGET = 10_000;
+const DEFAULT_NODE_THREAD_STEP_BUDGET = 5_000_000;
 const DEFAULT_BROWSER_THREAD_STEP_BUDGET = 2_000;
 const THREAD_STEP_BUDGET = readThreadStepBudget();
 const EINTR_ERRNO = 4;
@@ -110,9 +110,14 @@ function readThreadStepBudget(): number {
   if (Number.isFinite(parsed) && parsed > 0) {
     return parsed;
   }
-  return typeof window === "undefined"
-    ? DEFAULT_NODE_THREAD_STEP_BUDGET
-    : DEFAULT_BROWSER_THREAD_STEP_BUDGET;
+  const processLike = (globalThis as typeof globalThis & {
+    process?: { versions?: { node?: string } };
+  }).process;
+  const isNodeRuntime = typeof processLike?.versions?.node === "string";
+  const isBrowserRuntime = typeof window !== "undefined" && !isNodeRuntime;
+  return isBrowserRuntime
+    ? DEFAULT_BROWSER_THREAD_STEP_BUDGET
+    : DEFAULT_NODE_THREAD_STEP_BUDGET;
 }
 
 function applyChildExitRecords(

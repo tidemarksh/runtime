@@ -110,6 +110,11 @@ test("resolveNetworkConnect tracks pending fd while bridge connect is in flight"
 test("commitNetworkConnect adopts a successful bridge connection after the local status advances", async () => {
   const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
   const view = new Uint8Array(memory.buffer);
+  const netBufBase = 0x1000;
+  const netBufPoolBytes = 128 * 1024;
+  const netBufHeader = new DataView(memory.buffer, netBufBase, 16);
+  netBufHeader.setUint32(0, 4096, true);
+  netBufHeader.setUint32(4, 7000, true);
   const connection = {
     close: vi.fn(async () => {}),
     read: vi.fn(() => undefined),
@@ -133,7 +138,9 @@ test("commitNetworkConnect adopts a successful bridge connection after the local
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(176),
     },
-    kernelState: {},
+    kernelState: {
+      netBufBase,
+    },
     kernel: {
       kernel_heap_base: () => 0,
       kernel_heap_ptr: () => 0x100,
@@ -151,11 +158,13 @@ test("commitNetworkConnect adopts a successful bridge connection after the local
       kernel_pipe_base: () => 0,
       kernel_pipe_used: () => 0n,
       kernel_net_buf_base: () => 0,
+      kernel_net_buf_pool_bytes: () => netBufPoolBytes,
       kernel_net_buf_used: () => 0n,
       kernel_sig_slots_ptr: () => 0,
       kernel_process_pending_ptr: () => 0,
       kernel_process_runtime_state_ptr: () => 0,
       kernel_time_state_ptr: () => 0,
+      abi_max_sockets: () => 8,
       abi_econnrefused: () => 111,
       abi_einprogress: () => -115,
       abi_status_ok: () => 0,
@@ -187,6 +196,8 @@ test("commitNetworkConnect adopts a successful bridge connection after the local
   expect(handle.networkClosedFds.has(3)).toBe(false);
   expect(handle.networkRecvHeadWatermarks.has(3)).toBe(false);
   expect(handle.networkRecvTailWatermarks.has(3)).toBe(false);
+  expect(netBufHeader.getUint32(0, true)).toBe(4096);
+  expect(netBufHeader.getUint32(4, true)).toBe(4096);
   expect(connection.close).not.toHaveBeenCalled();
 });
 

@@ -1708,6 +1708,131 @@ test("resumeBlockedSyscallLocally collapses pipe read that becomes ready after p
   expect(handle.blockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
+test("resumeBlockedSyscallLocally queues the full socket read buffer after owner resume", async () => {
+  const worker = {} as Worker;
+  const runtimeBridge = createRuntimeStateBridge();
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  const bytes = new Uint8Array(memory.buffer);
+  const readPtr = 0x200;
+  const readLen = 70_000;
+  const threadResumeBlockedSyscall = vi.fn(() => {
+    for (let offset = 0; offset < readLen; offset += 1) {
+      bytes[readPtr + offset] = offset & 0xff;
+    }
+    return BigInt(readLen);
+  });
+  const handleBlockedRetryResult = vi.fn();
+  const kernel = {
+    memory,
+    kernel_attach_runtime_state: vi.fn(),
+    kernel_heap_base: () => 0,
+    kernel_heap_ptr: () => 0,
+    kernel_ofd_table_ptr: () => 0,
+    kernel_memfs_ptr: () => 0,
+    kernel_memfs_header_bytes: () => 0,
+    kernel_memfs_inodes_bytes: () => 0,
+    kernel_memfs_first_child_bytes: () => 0,
+    kernel_memfs_dir_entries_bytes: () => 0,
+    kernel_memfs_data_bytes: () => 0,
+    kernel_mem_state_ptr: () => 0,
+    kernel_epoll_table_ptr: () => 0,
+    kernel_socket_table_ptr: () => 0,
+    kernel_socket_used: () => 0,
+    kernel_pipe_base: () => 0,
+    kernel_pipe_used: () => 0n,
+    kernel_net_buf_base: () => 0,
+    kernel_net_buf_used: () => 0n,
+    kernel_sig_slots_ptr: () => 0,
+    kernel_process_pending_ptr: () => 0,
+    kernel_process_runtime_state_ptr: () => 0,
+    kernel_time_state_ptr: () => 0,
+    abi_status_pipe_wait: () => 21,
+    abi_status_connect: () => 28,
+    abi_status_socket_recv: () => 29,
+    abi_status_socket_send: () => 30,
+    abi_sys_read: () => 63n,
+    abi_sys_recvfrom: () => 207n,
+    thread_resume_blocked_syscall: threadResumeBlockedSyscall,
+    thread_status: () => 0,
+    process_current_pid: () => 1,
+    thread_a0: () => 0n,
+    thread_a1: () => BigInt(readPtr),
+    thread_process_ptr: () => 0x5000,
+    thread_blocked_syscall_nr: () => 63n,
+    thread_blocked_syscall_arg: (_vmPtr: number, index: number) => {
+      if (index === 0) return 4n;
+      if (index === 1) return BigInt(readPtr);
+      if (index === 2) return BigInt(readLen);
+      return 0n;
+    },
+    process_fd_ofd_id: () => 0,
+    kernel_ofd_fd_type: () => 0,
+    kernel_ofd_host_fd: () => 0,
+    kernel_ofd_status_flags: () => 0,
+    kernel_ofd_ino: () => 0,
+    kernel_ofd_offset: () => 0n,
+    thread_blocked_fd: () => 4,
+    thread_blocked_ofd_id: () => 0,
+  } as unknown as KernelExports;
+
+  const handle = makeHandle(kernel, runtimeBridge, worker, {
+    memory,
+    kernelWorkerRequest: vi.fn(async () => ({ type: "unexpected" }) as never),
+  });
+  handle.blockedWorkers.set(worker, {
+    vmPtr: 0x1234,
+    status: 29,
+    retryTimer: null,
+    timeoutExpired: false,
+    timeoutDeadlineMs: null,
+    sleepDeadlineTicks: null,
+    rpcPending: true,
+  });
+
+  const threadState = {
+    vmPtr: 0x1234,
+    initialized: true,
+    waitingInWorkerStatus: null,
+    pendingGuestMemoryWrites: [],
+  };
+  const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
+  threadWorkerStates.set(worker, threadState);
+
+  const helpers = createWorkerKernelRpcHelpers({
+    processHandles: new Map([[1, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: () => {},
+    appendWorkerDebugLog: () => {},
+    assertProcessStandardFdIntegrity: () => {},
+    enqueueWorker: () => {},
+    failProcess(errorHandle, error) {
+      throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
+    },
+    handleBlockedRetryResult,
+    kickBlockedWorkers: () => {},
+    markRuntimeFsDirty: () => {},
+    requestPipeStateSync: async () => {},
+    syncBlockedForkSharedStateViaKernelWorker: async () => {},
+    syncForkSharedStateLocally: () => {},
+    syncForkSharedStateViaKernelWorker: async () => {},
+    rehydrateForkSharedStateViaKernelWorker: async () => {},
+    syncPipeStateViaKernelWorker: async () => 0n,
+    syncSocketStateViaKernelWorker: async () => ({ socketUsed: 0, netBufUsed: 0n }),
+    collectTrackableForkSharedOfds: () => new Set(),
+  });
+
+  await helpers.resumeBlockedSyscallLocally(handle, worker, 0x1234, 29);
+
+  expect(threadResumeBlockedSyscall).toHaveBeenCalledWith(0x1234);
+  expect(threadState.pendingGuestMemoryWrites).toHaveLength(1);
+  expect(threadState.pendingGuestMemoryWrites[0].guestPtr).toBe(readPtr);
+  expect(threadState.pendingGuestMemoryWrites[0].bytes.length).toBe(readLen);
+  expect(threadState.pendingGuestMemoryWrites[0].bytes[65_535]).toBe(0xff);
+  expect(threadState.pendingGuestMemoryWrites[0].bytes[65_536]).toBe(0x00);
+  expect(threadState.pendingGuestMemoryWrites[0].bytes[readLen - 1]).toBe((readLen - 1) & 0xff);
+  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
+});
+
 test("resumeFsViaKernelWorker skips memfs sync during active vfork child ownership mismatch after fs resume", async () => {
   const worker = {} as Worker;
   const runtimeBridge = createRuntimeStateBridge();

@@ -136,9 +136,14 @@ function readSchedulerStepBudget(): number {
   if (Number.isFinite(parsed)) {
     return Math.min(MAX_SCHEDULER_STEP_BUDGET, Math.max(MIN_SCHEDULER_STEP_BUDGET, parsed));
   }
-  return typeof window === "undefined"
-    ? DEFAULT_NODE_SCHEDULER_STEP_BUDGET
-    : DEFAULT_BROWSER_SCHEDULER_STEP_BUDGET;
+  const processLike = (globalThis as typeof globalThis & {
+    process?: { versions?: { node?: string } };
+  }).process;
+  const isNodeRuntime = typeof processLike?.versions?.node === "string";
+  const isBrowserRuntime = typeof window !== "undefined" && !isNodeRuntime;
+  return isBrowserRuntime
+    ? DEFAULT_BROWSER_SCHEDULER_STEP_BUDGET
+    : DEFAULT_NODE_SCHEDULER_STEP_BUDGET;
 }
 
 function formatChildExitRecords(

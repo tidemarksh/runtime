@@ -306,7 +306,7 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
       return;
     }
     const absolute = handle.guestBase + start;
-    const writeLen = Math.min(requested, 65_536);
+    const writeLen = requested;
     const memory = new Uint8Array(handle.memory.buffer);
     if (absolute < 0 || absolute + writeLen > memory.byteLength) {
       return;
