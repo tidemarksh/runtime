@@ -32,6 +32,8 @@ import { computeGuestRamLimitBytes } from "./common.js";
 import type { ProcessHandle, ThreadWorkerState, WorkerForkDeps } from "./types.js";
 
 const VFORK_EXECVE_HANDOFF_FAILURE_WAIT_STATUS = 127 << 8;
+const OFD_OFFSET_OFFSET = 16;
+const PIPE_GENERATION_OFFSET = 20;
 
 function copyKernelRuntimeRegion(
   source: WebAssembly.Memory,
@@ -158,6 +160,54 @@ function restoreProcessFdEntries(
       continue;
     }
     handle.kernel.process_set_fd_entry(vmPtr, entry.fd, entry.ofdId, entry.fdFlags);
+  }
+}
+
+function currentPipeGeneration(handle: ProcessHandle, pipeSlot: number): number | null {
+  const pipeSlotBytes = handle.kernel.kernel_pipe_region_bytes() / handle.kernel.abi_max_pipes();
+  if (
+    !Number.isInteger(pipeSlotBytes)
+    || pipeSlotBytes <= PIPE_GENERATION_OFFSET
+    || pipeSlot <= 0
+    || pipeSlot >= handle.kernel.abi_max_pipes()
+  ) {
+    return null;
+  }
+  return new DataView(handle.memory.buffer).getUint32(
+    handle.kernelState.pipeBase + pipeSlot * pipeSlotBytes + PIPE_GENERATION_OFFSET,
+    true,
+  );
+}
+
+function alignPipeOfdGenerationOffsets(
+  handle: ProcessHandle,
+  ofdIds: Iterable<number>,
+): void {
+  const maxFds = handle.kernel.abi_max_fds();
+  const tableBytes = handle.kernel.kernel_ofd_table_bytes();
+  const slotBytes = tableBytes / maxFds;
+  if (!Number.isInteger(slotBytes) || slotBytes <= OFD_OFFSET_OFFSET) {
+    throw new Error(`invalid OFD table layout: bytes=${tableBytes} maxFds=${maxFds}`);
+  }
+
+  const view = new DataView(handle.memory.buffer);
+  for (const ofdId of ofdIds) {
+    if (
+      ofdId <= 0
+      || ofdId >= maxFds
+      || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
+    ) {
+      continue;
+    }
+    const pipeGeneration = currentPipeGeneration(handle, handle.kernel.kernel_ofd_ino(ofdId));
+    if (pipeGeneration === null || handle.kernel.kernel_ofd_offset(ofdId) === BigInt(pipeGeneration)) {
+      continue;
+    }
+    view.setBigInt64(
+      handle.kernelState.ofdTablePtr + ofdId * slotBytes + OFD_OFFSET_OFFSET,
+      BigInt(pipeGeneration),
+      true,
+    );
   }
 }
 
@@ -526,6 +576,7 @@ export async function handleVforkExecve(
     restoreLocalOfdSlots(childHandle, preservedOfdSlots);
     restoreLocalPipeSlots(childHandle, preservedPipeSlots);
     restoreProcessFdEntries(childHandle, childVmPtr, childExecFdEntries);
+    alignPipeOfdGenerationOffsets(childHandle, collectProcessHeldOfds(childHandle));
     trackVforkExecveChildSharedOfds(childHandle, childExecFdEntries);
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
@@ -549,6 +600,7 @@ export async function handleVforkExecve(
     restoreLocalOfdSlots(childHandle, preservedOfdSlots);
     restoreLocalPipeSlots(childHandle, preservedPipeSlots);
     restoreProcessFdEntries(childHandle, childVmPtr, childExecFdEntries);
+    alignPipeOfdGenerationOffsets(childHandle, collectProcessHeldOfds(childHandle));
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
       `vfork-execve:child-fds-restored:${childPid}:${formatOpenFdSummary(childHandle)}`,
@@ -566,6 +618,7 @@ export async function handleVforkExecve(
   );
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-lifecycle:done:${childPid}`);
   restoreProcessFdEntries(childHandle, childVmPtr, childExecFdEntries);
+  alignPipeOfdGenerationOffsets(childHandle, collectProcessHeldOfds(childHandle));
   trackVforkExecveChildSharedOfds(childHandle, childExecFdEntries);
   deps.appendRuntimeLifecycleEvent(
     handle.runtimeId,

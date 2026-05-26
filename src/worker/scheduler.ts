@@ -100,6 +100,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   const schedulerQueueHelpers = createWorkerSchedulerQueueHelpers({
     threadWorkerStates,
     appendWorkerDebugLog,
+    blockWorker,
     failProcess: deps.failProcess,
     handleWorkerMessage: deps.handleWorkerMessage,
   });

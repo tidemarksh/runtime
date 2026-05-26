@@ -68,10 +68,6 @@ export type ToolchainExecFailureBucket =
 export async function prepareToolchainExecRuntime(
   entry: ToolchainExecEntry,
 ): Promise<{ runtime: RuntimeInstance; executableBytes: Uint8Array } | null> {
-  const wasmBytes = readKernelWasm();
-  if (!wasmBytes) {
-    return null;
-  }
   if (!existsSync(entry.hostExecutablePath)) {
     return logSkip(`missing toolchain exec driver: ${entry.hostExecutablePath}`);
   }
@@ -80,6 +76,10 @@ export async function prepareToolchainExecRuntime(
   });
   if (snapshot.skipReason) {
     return logSkip(snapshot.skipReason);
+  }
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return null;
   }
 
   const runtime = await Runtime.create({

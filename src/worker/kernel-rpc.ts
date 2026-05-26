@@ -367,6 +367,11 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     return syscallMatches(syscallNr, handle.kernel.abi_sys_read);
   }
 
+  function blockedSocketResumeWritesGuestBuffer(handle: ProcessHandle, syscallNr: bigint): boolean {
+    return syscallMatches(syscallNr, handle.kernel.abi_sys_read)
+      || syscallMatches(syscallNr, handle.kernel.abi_sys_recvfrom);
+  }
+
   function snapshotPipeSlotForThreadStepFd(
     handle: ProcessHandle,
     vmPtr: number,
@@ -1948,6 +1953,13 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
           if (!queuedPollWrites && blockedPipeResumeWritesGuestBuffer(handle, blockedSyscallNr)) {
             queueGuestBufferWrite(handle, worker, resumeBuf, resumeResult);
           }
+        }
+        if (
+          blockedStatus === handle.kernel.abi_status_socket_recv()
+          && resumeResult > 0n
+          && blockedSocketResumeWritesGuestBuffer(handle, blockedSyscallNr)
+        ) {
+          queueGuestBufferWrite(handle, worker, resumeBuf, resumeResult);
         }
         if (PIPE_RESUME_DEBUG_ENABLED && blockedStatus === handle.kernel.abi_status_pipe_wait()) {
           const event = [

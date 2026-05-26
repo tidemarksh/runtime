@@ -29,6 +29,7 @@ const SCHEDULER_STEP_BUDGET = readSchedulerStepBudget();
 const SCHEDULER_QUEUE_DEBUG_LOG_ENABLED = false;
 let nextThreadWorkerGeneration = 1;
 const HOT_PC_COUNTER_LIMIT = 32;
+const STALE_SLEEP_RUNNING_WORKER_REPAIR_MS = 2_000;
 const PIPE_HEADER_BYTES = 32;
 const PIPE_READ_OPEN_OFFSET = 8;
 const PIPE_WRITE_OPEN_OFFSET = 12;
@@ -280,6 +281,7 @@ function restoreRegularFileOffsetsForStep(handle: ProcessHandle): void {
 interface WorkerSchedulerQueueDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
+  blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
   failProcess(handle: ProcessHandle, error: Error): void;
   handleWorkerMessage(handle: ProcessHandle, worker: Worker, msg: ThreadWorkerOutbound): void;
 }
@@ -375,6 +377,14 @@ function clearBlockedWorker(handle: ProcessHandle, worker: Worker): void {
   handle.blockedWorkers.delete(worker);
 }
 
+function statusBlocksInOwnerScheduler(handle: ProcessHandle, status: number): boolean {
+  return status === handle.kernel.abi_status_epoll_wait()
+    || status === handle.kernel.abi_status_sleep()
+    || status === handle.kernel.abi_status_pipe_wait()
+    || status === handle.kernel.abi_status_wait4()
+    || status === handle.kernel.abi_status_flock_wait();
+}
+
 function incrementBoundedCounter(
   counters: Record<string, number>,
   key: string,
@@ -404,6 +414,7 @@ export function createWorkerSchedulerQueueHelpers(
   deps: WorkerSchedulerQueueDeps,
 ): WorkerSchedulerQueueHelpers {
   const observedForkSharedSyncGates = new WeakMap<ProcessHandle, Promise<void>>();
+  const pendingRunningWorkerPumps = new WeakMap<ProcessHandle, Set<number>>();
 
   function observeForkSharedSyncGate(handle: ProcessHandle, promise: Promise<void>): void {
     if (observedForkSharedSyncGates.get(handle) === promise) {
@@ -425,6 +436,42 @@ export function createWorkerSchedulerQueueHelpers(
     promise.then(onSettled, onSettled);
   }
 
+  function scheduleRunningWorkerPump(handle: ProcessHandle, delayMs: number): void {
+    let pendingDelays = pendingRunningWorkerPumps.get(handle);
+    if (!pendingDelays) {
+      pendingDelays = new Set();
+      pendingRunningWorkerPumps.set(handle, pendingDelays);
+    }
+    if (pendingDelays.has(delayMs)) {
+      return;
+    }
+    pendingDelays.add(delayMs);
+    setTimeout(() => {
+      const currentPendingDelays = pendingRunningWorkerPumps.get(handle);
+      currentPendingDelays?.delete(delayMs);
+      if (currentPendingDelays?.size === 0) {
+        pendingRunningWorkerPumps.delete(handle);
+      }
+      pumpProcess(handle);
+    }, delayMs);
+  }
+
+  function runningWorkerStepAppearsIdle(handle: ProcessHandle, thread: ThreadWorkerState): boolean {
+    const activeStepVmPtr = handle.kernel.debug_thread_step_vm_ptr?.();
+    if (activeStepVmPtr === undefined) {
+      return false;
+    }
+    if (activeStepVmPtr === thread.vmPtr) {
+      return false;
+    }
+    const lastStepAtMs = thread.lastStepAtMs;
+    const lastStatusAtMs = thread.lastStatusAtMs;
+    if (lastStepAtMs === null || lastStatusAtMs === null || lastStepAtMs <= lastStatusAtMs) {
+      return false;
+    }
+    return Date.now() - lastStepAtMs >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
+  }
+
   function sanitizeRunningWorker(handle: ProcessHandle): Worker | null {
     const runningWorker = handle.runningWorker;
     if (runningWorker === null) {
@@ -442,6 +489,24 @@ export function createWorkerSchedulerQueueHelpers(
         thread.runningGeneration = null;
         thread.waitingInWorkerStatus = status;
         deps.appendWorkerDebugLog(handle, `running-worker-cleared:futex-wait:0x${thread.vmPtr.toString(16)}`);
+        return null;
+      }
+      if (statusBlocksInOwnerScheduler(handle, status)) {
+        handle.runningWorker = null;
+        thread.runningGeneration = null;
+        deps.blockWorker(handle, runningWorker, status, thread.vmPtr);
+        deps.appendWorkerDebugLog(handle, `running-worker-cleared:blocking-status-${status}:0x${thread.vmPtr.toString(16)}`);
+        return null;
+      }
+      if (
+        handle.readyWorkers.length > 0
+        && status === handle.kernel.abi_status_ok()
+        && thread.lastStatus === handle.kernel.abi_status_sleep()
+        && runningWorkerStepAppearsIdle(handle, thread)
+      ) {
+        handle.runningWorker = null;
+        thread.runningGeneration = null;
+        deps.appendWorkerDebugLog(handle, `running-worker-cleared:stale-sleep-ok:0x${thread.vmPtr.toString(16)}`);
         return null;
       }
       return runningWorker;
@@ -684,6 +749,8 @@ export function createWorkerSchedulerQueueHelpers(
       handle.readyWorkers.push(worker);
       if (handle.runningWorker !== null) {
         wakeRuntimeBridge(handle.runtimeBridge);
+        scheduleRunningWorkerPump(handle, 0);
+        scheduleRunningWorkerPump(handle, STALE_SLEEP_RUNNING_WORKER_REPAIR_MS);
       }
       if (handle.vforkSnapshot !== null && handle.vforkWorker === worker) {
       }

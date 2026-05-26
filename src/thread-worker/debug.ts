@@ -643,6 +643,28 @@ function readGuestI32(exports: KernelExports, guestBase: number, addr: number): 
   return new DataView(exports.memory.buffer).getInt32(absolute, true);
 }
 
+function summarizeReservationSlots(
+  exports: KernelExports,
+  guestBase: number,
+  reservationGenAddr: number,
+  reservationLockAddr: number,
+): string {
+  const oddGenerations: string[] = [];
+  const lockedSlots: string[] = [];
+  for (let slot = 0; slot < 64; slot += 1) {
+    const generation = readGuestU32(exports, guestBase, reservationGenAddr + slot * 4);
+    const lock = readGuestU32(exports, guestBase, reservationLockAddr + slot * 4);
+    if (generation !== null && (generation & 1) !== 0) {
+      oddGenerations.push(`${slot}:${generation}`);
+    }
+    if (lock !== null && lock !== 0) {
+      lockedSlots.push(`${slot}:${lock}`);
+    }
+  }
+  return `odd=${oddGenerations.length === 0 ? "-" : oddGenerations.join(",")}`
+    + `:locked=${lockedSlots.length === 0 ? "-" : lockedSlots.join(",")}`;
+}
+
 export function clearSyscallTrace(exports: KernelExports): void {
   exports.debug_clear_syscall_trace?.();
   exports.debug_clear_signal_trace?.();
@@ -1039,6 +1061,7 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     const ppidAddr = pidAddr + 4;
     debugParts.push(`process_ptr=0x${processPtr.toString(16)}`);
     debugParts.push(`process_thread_count=${readGuestU32(exports, guestBase, threadCountAddr) ?? "n/a"}`);
+    debugParts.push(`reservation=${summarizeReservationSlots(exports, guestBase, reservationGenAddr, reservationLockAddr)}`);
     debugParts.push(`process_pid_field=${readGuestI32(exports, guestBase, pidAddr) ?? "n/a"}`);
     debugParts.push(`process_ppid_field=${readGuestI32(exports, guestBase, ppidAddr) ?? "n/a"}`);
   }
