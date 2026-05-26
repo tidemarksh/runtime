@@ -66,6 +66,7 @@ export interface ThreadWorkerState {
   hotStatusPcs: Record<string, number>;
   initialized: boolean;
   waitingInWorkerStatus: number | null;
+  waitingInWorkerReconcileDeferred?: boolean;
   ownerAsyncStatus: number | null;
   resumeBlockedOnNextStep: boolean;
   pendingPipeSlotsForNextStep: KernelWorkerPipeSlotSnapshot[];

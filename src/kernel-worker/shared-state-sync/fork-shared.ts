@@ -77,15 +77,13 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
     }
   }
 
-  function restoreRegularFileDataToCanonicalAndSource(
-    sourceExports: ReturnType<KernelWorkerSharedStateSyncDeps["requireProcessKernel"]>,
+  function restoreRegularFileDataToCanonical(
     snapshots: RegularFileDataSnapshot[],
   ): void {
     if (snapshots.length === 0) {
       return;
     }
     restoreRegularFileData(deps.getCanonicalExports(), snapshots);
-    restoreRegularFileData(sourceExports, snapshots);
   }
 
   function applyFdEntrySnapshot(
@@ -228,7 +226,7 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
       deps.restoreProcSelfExe(canonicalExports, canonicalProcSelfExe);
       if (preservePublishedRegularFileData) {
         deps.restorePublishedRegularFileDataFromPageCache?.();
-        restoreRegularFileDataToCanonicalAndSource(processExports, preservedRegularFileData);
+        restoreRegularFileDataToCanonical(preservedRegularFileData);
       }
       pushMemfsDebug("after-source-to-canonical");
     }

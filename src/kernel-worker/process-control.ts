@@ -94,6 +94,7 @@ interface KernelWorkerProcessControlDeps {
     ofdSlots?: KernelWorkerOfdSlotSnapshot[],
     pipeSlots?: KernelWorkerPipeSlotSnapshot[],
     vmPtrOverride?: number,
+    applyFdEntries?: boolean,
   ): { kernelState: KernelRuntimeState; pipeSlots: KernelWorkerPipeSlotSnapshot[] };
   syncEpollState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
   syncSocketState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;

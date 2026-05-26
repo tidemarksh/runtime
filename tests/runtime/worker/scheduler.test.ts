@@ -69,6 +69,7 @@ function makeKernel() {
       thread_sp: () => 0x8000n,
       thread_s11: () => 0x9000n,
       process_current_pid: () => 1,
+      process_record_child_exit_for_parent: vi.fn(),
       abi_max_fds: () => 64,
       abi_max_pipes: () => 64,
       abi_fd_type_pipe: () => 2,
@@ -1262,6 +1263,48 @@ test("blocked syscall retry is rescheduled after a running-worker skip", async (
   }));
 });
 
+test("wait4 retry with a local child exit record wakes the running worker before rescheduling", async () => {
+  const blockedWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const runningWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(blockedWorker, makeThreadState(0x1234));
+  threadWorkerStates.set(runningWorker, makeThreadState(0x5678));
+  const { exports: kernel, threadResumeWait4 } = makeKernel();
+  kernel.thread_status = (vmPtr: number) => vmPtr === 0x1234
+    ? kernel.abi_status_wait4()
+    : kernel.abi_status_ok();
+  const handle = makeHandle(kernel, blockedWorker);
+  handle.pendingChildSpawnRecords = 0;
+  handle.childExitSyncRecords.set(7, 0);
+  handle.workers.add(runningWorker);
+  handle.runningWorker = runningWorker;
+  const notify = new Int32Array(handle.runtimeBridge.notifySab);
+  const notifyBefore = Atomics.load(notify, 0);
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.blockWorker(handle, blockedWorker, handle.kernel.abi_status_wait4(), 0x1234);
+  await vi.advanceTimersByTimeAsync(11);
+
+  expect(threadResumeWait4).not.toHaveBeenCalled();
+  expect(Atomics.load(notify, 0)).toBeGreaterThan(notifyBefore);
+  expect(handle.blockedWorkers.has(blockedWorker)).toBe(true);
+});
+
 test("wait4 retry clears a stale running worker that already published a blocked status", () => {
   const blockedWorker = {
     postMessage: vi.fn(),
@@ -1647,6 +1690,87 @@ test("pumpProcess reconciles a worker-local futex wait that is already runnable 
   }));
 });
 
+test("pumpProcess prioritizes reconciled worker-local futex waits over queued sleepers", () => {
+  const sleeperWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const waitingWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const sleeperThread = makeThreadState(0x5678);
+  const waitingThread = makeThreadState(0x1234);
+  waitingThread.waitingInWorkerStatus = 20;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(sleeperWorker, sleeperThread);
+  threadWorkerStates.set(waitingWorker, waitingThread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_ok();
+  const handle = makeHandle(kernel, sleeperWorker);
+  handle.workers.add(waitingWorker);
+  handle.readyWorkers = [sleeperWorker];
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+
+  expect(waitingThread.waitingInWorkerStatus).toBeNull();
+  expect(handle.runningWorker).toBe(waitingWorker);
+  expect(waitingWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+  expect(sleeperWorker.postMessage).not.toHaveBeenCalled();
+  expect(handle.readyWorkers).toEqual([sleeperWorker]);
+});
+
+test("kickBlockedWorkers applies child exit records for worker-local futex waits once", () => {
+  const waitingWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const waitingThread = makeThreadState(0x1234);
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(waitingWorker, waitingThread);
+  const { exports: kernel } = makeKernel();
+  const recordChildExit = vi.fn();
+  kernel.process_record_child_exit_for_parent = recordChildExit;
+  waitingThread.waitingInWorkerStatus = kernel.abi_status_futex_wait();
+  const handle = makeHandle(kernel, waitingWorker);
+  handle.childExitSyncRecords.set(4, 0);
+
+  const lifecycleEvents: string[] = [];
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      lifecycleEvents.push(event);
+    },
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.kickBlockedWorkers(handle);
+  scheduler.kickBlockedWorkers(handle);
+
+  expect(recordChildExit).toHaveBeenCalledTimes(1);
+  expect(recordChildExit).toHaveBeenCalledWith(1, 4, 0);
+  expect(lifecycleEvents).toContain("futex-wait-apply-child-records:1:4/0");
+  expect(lifecycleEvents).toContain("wait4-apply-records:1:4/0");
+});
+
 test("pumpProcess clears a running worker that reached worker-local futex wait", () => {
   const waitingWorker = {
     postMessage: vi.fn(),
@@ -1720,6 +1844,43 @@ test("enqueue does not place the current running worker back on the ready queue"
   expect(handle.runningWorker).toBe(worker);
   expect(handle.readyWorkers).not.toContain(worker);
   expect(worker.postMessage).not.toHaveBeenCalled();
+});
+
+test("enqueue wakes the running worker when another worker becomes ready", () => {
+  const runningWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const readyWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(runningWorker, makeThreadState(0x1234));
+  threadWorkerStates.set(readyWorker, makeThreadState(0x5678));
+  const { exports: kernel } = makeKernel();
+  const handle = makeHandle(kernel, runningWorker);
+  handle.workers.add(readyWorker);
+  handle.runningWorker = runningWorker;
+  const notify = new Int32Array(handle.runtimeBridge.notifySab);
+  const before = Atomics.load(notify, 0);
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.enqueueWorker(handle, readyWorker);
+
+  expect(handle.runningWorker).toBe(runningWorker);
+  expect(handle.readyWorkers).toContain(readyWorker);
+  expect(Atomics.load(notify, 0)).toBe(before + 1);
+  expect(readyWorker.postMessage).not.toHaveBeenCalled();
 });
 
 test("enqueue does not place a worker-local wait worker on the ready queue", () => {

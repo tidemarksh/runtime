@@ -44,6 +44,7 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
     ofdSlots?: KernelWorkerOfdSlotSnapshot[],
     pipeSlots?: KernelWorkerPipeSlotSnapshot[],
     vmPtrOverride?: number,
+    applyFdEntries = false,
   ): { kernelState: KernelRuntimeState; pipeSlots: KernelWorkerPipeSlotSnapshot[] } {
     const canonicalExports = deps.getCanonicalExports();
     const processExports = deps.processKernels.get(pid);
@@ -58,6 +59,15 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
     if (ofdSlots && ofdSlots.length > 0) {
       deps.applySelectedOfdSnapshots(processExports, sourceState, ofdSlots);
       deps.applySelectedOfdSnapshots(canonicalExports, canonicalState, ofdSlots);
+    }
+    if (applyFdEntries && fdEntries && fdEntries.length > 0 && sourceVmPtr !== 0) {
+      const maxFds = processExports.abi_max_fds();
+      for (const entry of fdEntries) {
+        if (entry.fd < 0 || entry.fd >= maxFds || entry.ofdId < 0 || entry.ofdId >= maxFds) {
+          continue;
+        }
+        processExports.process_set_fd_entry(sourceVmPtr, entry.fd, entry.ofdId, entry.fdFlags);
+      }
     }
     // `processExports` is backed by the live process memory. Applying an older
     // fd snapshot here can race with dup/close/pipe2 in the running worker and

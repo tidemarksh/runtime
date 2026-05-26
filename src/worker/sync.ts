@@ -281,6 +281,43 @@ function formatPipeSnapshotDebug(
   }).join(",")}${snapshots.length > limit ? `,+${snapshots.length - limit}` : ""}`;
 }
 
+function formatFdSnapshotDebug(
+  label: string,
+  snapshots: readonly KernelWorkerFdEntrySnapshot[],
+  fds: readonly number[] = [0, 1, 2],
+): string {
+  const byFd = new Map(snapshots.map((snapshot) => [snapshot.fd, snapshot]));
+  return `${label}=${fds.map((fd) => {
+    const snapshot = byFd.get(fd);
+    return snapshot === undefined
+      ? `${fd}->missing`
+      : `${fd}->${snapshot.ofdId}/${snapshot.fdFlags}`;
+  }).join(",")}`;
+}
+
+function formatOfdSnapshotDebug(
+  label: string,
+  snapshots: readonly KernelWorkerOfdSlotSnapshot[],
+  limit = 12,
+): string {
+  if (snapshots.length === 0) {
+    return `${label}=none`;
+  }
+  return `${label}=${snapshots.slice(0, limit).map((snapshot) => {
+    const view = new DataView(snapshot.slot.buffer, snapshot.slot.byteOffset, snapshot.slot.byteLength);
+    const offset = snapshot.slot.byteLength >= OFD_OFFSET_OFFSET + 8
+      ? view.getBigUint64(OFD_OFFSET_OFFSET, true)
+      : 0n;
+    return [
+      `ofd${snapshot.ofdId}`,
+      `t${view.getUint32(OFD_TYPE_OFFSET, true)}`,
+      `h${view.getInt32(OFD_HOST_FD_OFFSET, true)}`,
+      `o${offset.toString()}`,
+      `i${view.getUint32(OFD_INO_OFFSET, true)}`,
+    ].join("/");
+  }).join(",")}${snapshots.length > limit ? `,+${snapshots.length - limit}` : ""}`;
+}
+
 function formatOfdIdList(ofdIds: readonly number[]): string {
   return ofdIds.length > 0 ? ofdIds.join(".") : "none";
 }
@@ -2846,12 +2883,34 @@ export async function syncPipeStateViaKernelWorker(handle: ProcessHandle): Promi
   );
   const networkSocketSnapshots = snapshotNetworkBridgeSocketState(handle.kernelShare.members);
   let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
+  const applyFdEntries = handle.runningWorker === null
+    && handle.readyWorkers.length === 0
+    && handle.workers.size === 0
+    && handle.blockedWorkers.size === 0;
+  appendSocketSyncDebug(
+    handle,
+    [
+      `pipe-sync-request:${handle.pid}`,
+      `vm=0x${handle.vmPtr.toString(16)}`,
+      `applyFd=${applyFdEntries ? 1 : 0}`,
+      `running=${handle.runningWorker === null ? 0 : 1}`,
+      `ready=${handle.readyWorkers.length}`,
+      `workers=${handle.workers.size}`,
+      `blocked=${handle.blockedWorkers.size}`,
+      `stdioOwner=${handle.stdioOwner?.pid ?? 0}`,
+      formatFdSnapshotDebug("fds", fdEntries),
+      `pipeOfds=${formatOfdIdList(pipeOfdIds)}`,
+      `localPipeOfds=${formatOfdIdList(localPipeOfdIds)}`,
+      formatOfdSnapshotDebug("ofds", ofdSlots),
+    ].join(":"),
+  );
   try {
     response = await handle.kernelWorkerRequest({
       type: "sync-pipe-state",
       pid: handle.pid,
       vmPtr: handle.vmPtr,
       fdEntries,
+      applyFdEntries,
       ofdSlots,
       pipeSlots,
       kernelState: handle.kernelState,

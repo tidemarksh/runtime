@@ -3,6 +3,10 @@ import {
   readKernelRuntimeState,
 } from "../abi.js";
 import {
+  publishKernelRuntimeState,
+  wakeRuntimeBridge,
+} from "../bridge/runtime-state.js";
+import {
   releaseWorker,
 } from "./pool.js";
 import {
@@ -1119,6 +1123,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
     const recordsKey = formatChildExitRecords(handle);
+    if (childExitRecordsAlreadyApplied(handle, recordsKey)) {
+      return;
+    }
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
       `wait4-apply-records:${handle.pid}:${recordsKey}`,
@@ -1131,6 +1138,37 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       }
     }
     handle.kernelState = readKernelRuntimeState(handle.kernel);
+    markChildExitRecordsApplied(handle, recordsKey);
+  }
+
+  function hasWorkerLocalFutexWait(handle: ProcessHandle): boolean {
+    const futexWaitStatus = handle.kernel.abi_status_futex_wait();
+    for (const worker of handle.workers) {
+      const thread = threadWorkerStates.get(worker);
+      if (
+        thread?.ownerPid === handle.pid
+        && thread.waitingInWorkerStatus === futexWaitStatus
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function applyChildExitRecordsForWorkerLocalWaits(handle: ProcessHandle): void {
+    if (handle.childExitSyncRecords.size === 0 || !hasWorkerLocalFutexWait(handle)) {
+      return;
+    }
+    const recordsKey = formatChildExitRecords(handle);
+    if (childExitRecordsAlreadyApplied(handle, recordsKey)) {
+      return;
+    }
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `futex-wait-apply-child-records:${handle.pid}:${recordsKey}`,
+    );
+    applyLocalChildExitRecords(handle);
+    publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
   }
 
   function formatBlockedFdEntries(handle: ProcessHandle, vmPtr: number, limit = 32): string {
@@ -1537,6 +1575,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
     clearStaleRunningWorker(handle, worker);
     if (handle.runningWorker !== null) {
+      if (wait4HasLocalExitRecord || pipeHasLocalExitRecord) {
+        wakeRuntimeBridge(handle.runtimeBridge);
+      }
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-skip:${handle.pid}:running`);
       scheduleBlockedRetry(
         handle,
@@ -1986,6 +2027,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   } = schedulerStateSyncHelpers;
 
   function kickBlockedWorkers(handle: ProcessHandle): void {
+    applyChildExitRecordsForWorkerLocalWaits(handle);
     wakeDueSleepWorkers(handle);
     maybeAdvanceGuestTimeToNextSleep(handle);
     for (const worker of [...handle.blockedWorkers.keys()]) {

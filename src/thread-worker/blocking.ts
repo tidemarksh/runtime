@@ -168,7 +168,8 @@ export function handleFutexWait(
       return false;
     }
     const stillBlockedAddr = ctx.exports.thread_record_blocked_addr(ctx.vmPtr);
-    const hasPendingSignal = ctx.exports.thread_sig_pending(ctx.vmPtr) !== 0n;
+    const hasPendingSignal = ctx.exports.thread_pending_signal_interrupts_blocked_syscall?.(ctx.vmPtr) === 1
+      || ctx.exports.thread_sig_pending(ctx.vmPtr) !== 0n;
     if (stillBlockedAddr === BLOCKED_ADDR_NOT_FOUND) {
       clearSyscallTrace(ctx.exports);
       ctx.exports.thread_resume_futex_wait_result(ctx.vmPtr, BigInt(ctx.exports.abi_eagain()));

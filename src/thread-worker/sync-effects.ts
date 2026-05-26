@@ -132,6 +132,27 @@ function isRegularFileWritingSyscall(
     || matchesSyscall(syscallNr, syscallNumbers.pwrite64);
 }
 
+function fcntlCommandNeedsFdStateSync(command: bigint | null): boolean {
+  if (command === null) {
+    return true;
+  }
+  switch (command) {
+    case 1n: // F_GETFD
+    case 2n: // F_SETFD: FD-table-only in process memory.
+    case 3n: // F_GETFL
+      return false;
+    default:
+      return true;
+  }
+}
+
+function ioctlRequestNeedsFdStateSync(request: bigint | null): boolean {
+  if (request === null) {
+    return true;
+  }
+  return request === 0x5421n; // FIONBIO changes O_NONBLOCK on the open file description.
+}
+
 function syscallMutatesForkSharedOfdState(
   syscallNr: bigint,
   syscallNumbers: SyscallNumbers,
@@ -277,6 +298,14 @@ export function readCompletedSyncEffects(
     const fdTrace = readLatestFdTrace(exports, syscallNr);
     if (latestFdTraceFailed(exports, syscallNr)) {
       return completedEffects & ~SYNC_EFFECT_FORK_SHARED_OFD_STATE;
+    }
+    const needsFdStateSync = fdTrace === null
+      ? true
+      : matchesSyscall(syscallNr, syscallNumbers.fcntl)
+        ? fcntlCommandNeedsFdStateSync(fdTrace.arg1)
+        : ioctlRequestNeedsFdStateSync(fdTrace.arg1);
+    if (!needsFdStateSync) {
+      return 0;
     }
     const mayMutateForkSharedOfd = fdTrace === null || fdTrace.arg1 === null
       ? true

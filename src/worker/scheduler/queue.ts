@@ -3,7 +3,7 @@ import {
   setWorkerMessageErrorHandler,
   setWorkerMessageHandler,
 } from "../../bridge/compat.js";
-import { publishRuntimeBridgeEpoch } from "../../bridge/runtime-state.js";
+import { publishRuntimeBridgeEpoch, wakeRuntimeBridge } from "../../bridge/runtime-state.js";
 import type {
   AttachThreadWorkerRequest,
   ProcessHandle,
@@ -580,6 +580,7 @@ export function createWorkerSchedulerQueueHelpers(
       hotStatusPcs: {},
       initialized: false,
       waitingInWorkerStatus: null,
+      waitingInWorkerReconcileDeferred: false,
       ownerAsyncStatus: null,
       resumeBlockedOnNextStep: false,
       pendingPipeSlotsForNextStep: [],
@@ -681,6 +682,9 @@ export function createWorkerSchedulerQueueHelpers(
         }
       }
       handle.readyWorkers.push(worker);
+      if (handle.runningWorker !== null) {
+        wakeRuntimeBridge(handle.runtimeBridge);
+      }
       if (handle.vforkSnapshot !== null && handle.vforkWorker === worker) {
       }
     }
@@ -713,6 +717,7 @@ export function createWorkerSchedulerQueueHelpers(
   }
 
   function reconcileResolvedWorkerLocalWaits(handle: ProcessHandle): void {
+    const reconciledWorkers: Worker[] = [];
     for (const worker of handle.workers) {
       if (handle.runningWorker === worker || handle.readyWorkers.includes(worker) || handle.blockedWorkers.has(worker)) {
         continue;
@@ -726,22 +731,33 @@ export function createWorkerSchedulerQueueHelpers(
       ) {
         continue;
       }
+      if (waitingStatus !== handle.kernel.abi_status_futex_wait()) {
+        continue;
+      }
+      if (thread.waitingInWorkerReconcileDeferred) {
+        thread.waitingInWorkerReconcileDeferred = false;
+        continue;
+      }
       const currentStatus = handle.kernel.thread_status(thread.vmPtr);
       if (currentStatus !== handle.kernel.abi_status_ok()) {
         continue;
       }
       thread.waitingInWorkerStatus = null;
+      thread.waitingInWorkerReconcileDeferred = false;
       thread.runningGeneration = null;
       deps.appendWorkerDebugLog(
         handle,
         `wait-in-worker-reconciled:0x${thread.vmPtr.toString(16)}:${waitingStatus}->${currentStatus}`,
       );
-      handle.readyWorkers.push(worker);
+      reconciledWorkers.push(worker);
+    }
+    if (reconciledWorkers.length > 0) {
+      handle.readyWorkers.unshift(...reconciledWorkers);
     }
   }
 
-  function hasWorkerLocalWait(handle: ProcessHandle, thread: ThreadWorkerState | undefined): boolean {
-    return thread?.waitingInWorkerStatus === handle.kernel.abi_status_futex_wait();
+  function hasWorkerLocalWait(_handle: ProcessHandle, thread: ThreadWorkerState | undefined): boolean {
+    return (thread?.waitingInWorkerStatus ?? null) !== null;
   }
 
   function pumpProcess(handle: ProcessHandle): void {

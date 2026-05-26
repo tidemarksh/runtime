@@ -107,6 +107,7 @@ interface KernelWorkerMessageHandlerDeps {
     ofdSlots?: KernelWorkerOfdSlotSnapshot[],
     pipeSlots?: KernelWorkerPipeSlotSnapshot[],
     vmPtrOverride?: number,
+    applyFdEntries?: boolean,
   ): { kernelState: KernelRuntimeState; pipeSlots: KernelWorkerPipeSlotSnapshot[] };
   syncEpollState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
   syncOfdState(pid: number, ofdIds: number[], kernelState: KernelRuntimeState): KernelRuntimeState;
@@ -383,6 +384,7 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
               msg.ofdSlots,
               msg.pipeSlots,
               msg.vmPtr,
+              msg.applyFdEntries,
             );
             deps.postResponse({
               type: "pipe-state-synced",

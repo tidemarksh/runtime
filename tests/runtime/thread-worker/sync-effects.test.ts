@@ -13,7 +13,11 @@ const SYNC_EFFECT_SIGNAL_WAITERS = 1 << 5;
 const SYNC_EFFECT_FORK_SHARED_OFD_STATE = 1 << 6;
 const SYNC_EFFECT_PROCESS_MEMFS = 1 << 7;
 
-function makeKernelExports(syscallNr: bigint | null, fdTraceOfdType?: number) {
+function makeKernelExports(
+  syscallNr: bigint | null,
+  fdTraceOfdType?: number,
+  fdTraceArg1?: bigint | null,
+) {
   return {
     abi_fd_type_file: () => 1,
     abi_fd_type_pipe: () => 2,
@@ -49,6 +53,7 @@ function makeKernelExports(syscallNr: bigint | null, fdTraceOfdType?: number) {
     debug_fd_syscall_trace_len: () => (fdTraceOfdType === undefined ? 0 : 1),
     debug_fd_syscall_trace_nr: () => syscallNr ?? 0n,
     debug_fd_syscall_trace_arg0_ofd_type: () => fdTraceOfdType ?? 0,
+    debug_fd_syscall_trace_arg1: () => fdTraceArg1 === undefined ? undefined : fdTraceArg1,
     debug_syscall_trace_nr: () => syscallNr ?? 0n,
     debug_completed_sync_effects: () => 0,
   } as const;
@@ -95,9 +100,9 @@ test("readCompletedSyncEffects does not treat stream I/O as fork-shared mutation
   }
 });
 
-test("readCompletedSyncEffects marks fcntl/ioctl as fd-state sync without process MemFS sync", () => {
-  for (const syscallNr of [25n, 29n]) {
-    const exports = makeKernelExports(syscallNr);
+test("readCompletedSyncEffects marks mutating fcntl/ioctl as fd-state sync without process MemFS sync", () => {
+  for (const [syscallNr, command] of [[25n, 4n], [29n, 0x5421n]] as const) {
+    const exports = makeKernelExports(syscallNr, 2, command);
     const syscallNumbers = loadSyscallNumbers(exports);
     expect(readCompletedSyncEffects(exports, statusCodes, statusCodes.OK, syscallNumbers)).toBe(
       SYNC_EFFECT_PIPE_STATE
@@ -107,6 +112,21 @@ test("readCompletedSyncEffects marks fcntl/ioctl as fd-state sync without proces
         | SYNC_EFFECT_FORK_SHARED_OFD_STATE,
     );
   }
+});
+
+test("readCompletedSyncEffects keeps read-only fcntl off the pipe sync path", () => {
+  for (const command of [1n, 3n]) {
+    const exports = makeKernelExports(25n, 2, command);
+    const syscallNumbers = loadSyscallNumbers(exports);
+    expect(readCompletedSyncEffects(exports, statusCodes, statusCodes.OK, syscallNumbers)).toBe(0);
+  }
+});
+
+test("readCompletedSyncEffects keeps FD-table-only fcntl off the pipe sync path", () => {
+  const exports = makeKernelExports(25n, 2, 2n);
+  const syscallNumbers = loadSyscallNumbers(exports);
+
+  expect(readCompletedSyncEffects(exports, statusCodes, statusCodes.OK, syscallNumbers)).toBe(0);
 });
 
 test("readCompletedSyncEffects keeps regular-file stream I/O off the pipe/socket sync path", () => {

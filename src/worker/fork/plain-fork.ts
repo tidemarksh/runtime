@@ -434,6 +434,28 @@ function applyForkMemorySnapshot(snapshot: ForkMemorySnapshot, target: WebAssemb
   }
 }
 
+function overwriteForkMemorySnapshot(
+  snapshot: ForkMemorySnapshot,
+  start: number,
+  bytes: Uint8Array,
+): void {
+  const end = start + bytes.byteLength;
+  for (const range of snapshot.ranges) {
+    if (start < range.start || end > range.end) {
+      continue;
+    }
+    range.bytes.set(bytes, start - range.start);
+    return;
+  }
+  snapshot.ranges.push({
+    start,
+    end,
+    bytes: bytes.slice(),
+  });
+  snapshot.ranges = snapshot.ranges.sort((left, right) => left.start - right.start || left.end - right.end);
+  snapshot.endOffset = Math.max(snapshot.endOffset, end);
+}
+
 function forkSnapshotContainsBytes(
   snapshot: ForkMemorySnapshot,
   start: number,
@@ -574,6 +596,8 @@ export async function handlePlainFork(
       handle,
       `plain-fork-parent:start:${childPid}:vm=0x${parentThread.vmPtr.toString(16)}:handle_vm=0x${handle.vmPtr.toString(16)}`,
     );
+    acquireWorkerMemoryFence(handle);
+    const parentProcessSnapshot = captureParentProcessSnapshot(handle, parentThread);
     const pendingForkSharedSync = handle.kernelShare.forkSharedSyncPromise ?? handle.forkSharedSyncPromise;
     if (pendingForkSharedSync !== null) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `plain-fork:await-fork-shared-sync:${handle.pid}`);
@@ -596,7 +620,6 @@ export async function handlePlainFork(
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `plain-fork:parent-memfs-clean:${handle.pid}`);
       }
     }
-    const parentProcessSnapshot = captureParentProcessSnapshot(handle, parentThread);
     const cloneFlags = Number(handle.kernel.thread_clone_flags(parentThread.vmPtr));
     const childPpid = (cloneFlags & Number(handle.kernel.abi_clone_parent())) !== 0
       ? (handle.parentPid ?? handle.pid)
@@ -616,7 +639,6 @@ export async function handlePlainFork(
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
 
     const parentStackPointer = parentThread.lastStepSp ?? handle.kernel.thread_sp(parentThread.vmPtr);
-    acquireWorkerMemoryFence(handle);
     normalizePageCacheBackedExecutableFilesForFork(handle);
     const forkMemorySnapshot = captureForkMemorySnapshot(handle, parentStackPointer);
     if (parentThread.forkStackSnapshot) {
@@ -632,6 +654,11 @@ export async function handlePlainFork(
       }
       parentThread.forkStackSnapshot = undefined;
     }
+    overwriteForkMemorySnapshot(
+      forkMemorySnapshot,
+      handle.guestBase + parentProcessSnapshot.processPtr,
+      parentProcessSnapshot.processState,
+    );
     restoreParentProcessSnapshot(handle, parentThread, parentProcessSnapshot);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     const childMemoryBytes = Math.max(

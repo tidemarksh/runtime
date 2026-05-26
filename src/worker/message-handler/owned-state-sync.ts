@@ -693,6 +693,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
           handle.processMemfsDirty = false;
         })
       : Promise.resolve();
+    thread.ownerAsyncStatus = status;
     void syncSocketState()
       .then(() => syncForkSharedState())
       .then(() => syncOfdState())
@@ -701,6 +702,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
         ? deps.requestEpollStateSync(handle, !(wroteToPipe || drainedPipe))
         : Promise.resolve()))
       .then(() => {
+        thread.ownerAsyncStatus = null;
         if (!workerStillOwnedByHandle()) {
           return;
         }
@@ -710,6 +712,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
         }
       })
       .catch((error) => {
+        thread.ownerAsyncStatus = null;
         if (!workerStillOwnedByHandle()) {
           return;
         }

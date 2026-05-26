@@ -323,6 +323,42 @@ test("STATUS_SLEEP zero-duration yield kicks blocked workers before requeueing",
   ).toBeLessThan(deps.enqueueWorker.mock.invocationCallOrder[0]);
 });
 
+test("STATUS_SLEEP zero-duration yield lets existing ready work run before requeueing itself", async () => {
+  vi.useFakeTimers();
+  const worker = {} as Worker;
+  const readyWorker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.readyWorkers.push(readyWorker);
+  const deps = makeDeps(worker);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: {
+      type: "status",
+      status: 26,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 26,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
+  expect(deps.enqueueWorker).not.toHaveBeenCalled();
+
+  await vi.advanceTimersByTimeAsync(0);
+
+  expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
+});
+
 test("STATUS_SLEEP blocks in the owner scheduler instead of arming a host timer", () => {
   const worker = {} as Worker;
   const handle = makeHandle(worker);

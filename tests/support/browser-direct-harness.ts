@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import type { AddressInfo } from "node:net";
+import { createServer as createNetServer, type AddressInfo } from "node:net";
 import type { FsSnapshotEntry } from "../../src/fs/types.js";
 import {
   KERNEL_WASM_PATH,
@@ -166,6 +166,23 @@ class CdpClient {
       this.ws.close();
     }
   }
+}
+
+async function allocateLoopbackPort(): Promise<number> {
+  const server = createNetServer();
+  await new Promise<void>((resolve, reject) => {
+    server.listen(0, "127.0.0.1", () => resolve());
+    server.on("error", reject);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    throw new Error("failed to allocate browser direct CDP port");
+  }
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
+  return address.port;
 }
 
 function encodeBytes(bytes: Uint8Array): string {
@@ -508,7 +525,9 @@ export async function runBrowserDirectStartupEntry(
 
   const port = (server.address() as AddressInfo).port;
   const baseUrl = `http://127.0.0.1:${port}/`;
-  const cdpPort = Number(process.env.TIDEMARK_BROWSER_DIRECT_CDP_PORT ?? "9225");
+  const cdpPort = process.env.TIDEMARK_BROWSER_DIRECT_CDP_PORT
+    ? Number(process.env.TIDEMARK_BROWSER_DIRECT_CDP_PORT)
+    : await allocateLoopbackPort();
   const userDataDir = await mkdtemp(`${tmpdir()}/tidemark-browser-direct-`);
   const chromeProc = spawn(
     chromiumBin,

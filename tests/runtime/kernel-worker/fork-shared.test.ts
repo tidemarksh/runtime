@@ -33,13 +33,17 @@ function makeKernelState(): KernelRuntimeState {
   };
 }
 
-function makeKernelExports(): FakeKernelExports {
+function makeKernelExports(label = "kernel", regularFiles: ReadonlyMap<number, Uint8Array> = new Map()): FakeKernelExports {
   let runtimeState = makeKernelState();
   const fdOfdIds = new Map<number, number>();
   const fdFlags = new Map<number, number>();
+  const memfsFiles = new Map<number, Uint8Array>(
+    [...regularFiles].map(([ino, data]) => [ino, data.slice()]),
+  );
+  const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
   const opLog: string[] = [];
   return {
-    memory: new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true }),
+    memory,
     abi_max_fds: () => 32,
     abi_fd_type_file: () => 1,
     kernel_heap_base: () => runtimeState.heapBase,
@@ -52,6 +56,7 @@ function makeKernelExports(): FakeKernelExports {
     kernel_memfs_inodes_bytes: () => runtimeState.memfsInodesBytes,
     kernel_memfs_first_child_bytes: () => runtimeState.memfsFirstChildBytes,
     kernel_memfs_dir_entries_bytes: () => runtimeState.memfsDirEntriesBytes,
+    kernel_memfs_data_ptr: () => 0,
     kernel_memfs_data_bytes: () => runtimeState.memfsDataBytes,
     kernel_mem_state_ptr: () => runtimeState.memStatePtr,
     kernel_epoll_table_ptr: () => runtimeState.epollTablePtr,
@@ -120,6 +125,38 @@ function makeKernelExports(): FakeKernelExports {
       }
       fdOfdIds.set(fd, ofdId);
       fdFlags.set(fd, flags);
+    },
+    memfs_inode_mode: (ino: number) => memfsFiles.has(ino) ? 0o100000 | 0o755 : 0,
+    memfs_file_size: (ino: number) => BigInt(memfsFiles.get(ino)?.byteLength ?? 0),
+    memfs_read_file_to: (ino: number, offset: bigint, bufPtr: number, bufLen: number) => {
+      const data = memfsFiles.get(ino);
+      if (!data) {
+        return -1n;
+      }
+      const start = Number(offset);
+      const chunk = data.subarray(start, Math.min(start + bufLen, data.byteLength));
+      new Uint8Array(memory.buffer).set(chunk, bufPtr);
+      return BigInt(chunk.byteLength);
+    },
+    memfs_truncate_file: (ino: number, size: bigint) => {
+      const data = memfsFiles.get(ino);
+      if (!data) {
+        return -1n;
+      }
+      memfsFiles.set(ino, data.slice(0, Number(size)));
+      opLog.push(`${label}:truncate:${ino}:${size.toString()}`);
+      return size;
+    },
+    memfs_write_file_at: (ino: number, offset: bigint, dataPtr: number, dataLen: number) => {
+      const data = memfsFiles.get(ino);
+      if (!data) {
+        return -1n;
+      }
+      const next = data.slice();
+      next.set(new Uint8Array(memory.buffer, dataPtr, dataLen), Number(offset));
+      memfsFiles.set(ino, next);
+      opLog.push(`${label}:write:${ino}:${dataLen}`);
+      return BigInt(dataLen);
     },
     opLog,
   } as unknown as FakeKernelExports;
@@ -196,6 +233,77 @@ test("syncForkSharedState copies memfs data when includeMemfs is enabled", () =>
 
   expect(memfsCopyModes).toEqual([true]);
   expect(canonicalFanoutModes).toEqual([true]);
+});
+
+test("syncForkSharedState restores preserved published file data only to canonical state", () => {
+  const publishedData = new TextEncoder().encode("node");
+  const canonicalExports = makeKernelExports("canonical", new Map([[3, publishedData]]));
+  const sourceExports = makeKernelExports("source", new Map([[3, new Uint8Array(publishedData.byteLength)]]));
+  const processKernels = new Map<number, KernelExports>([[1, sourceExports]]);
+  const restorePublishedRegularFileDataFromPageCache = vi.fn(() => {
+    canonicalExports.opLog.push("page-cache-restore");
+  });
+
+  const sync = createKernelWorkerForkSharedStateSync({
+    getCanonicalExports: () => canonicalExports,
+    getCanonicalProcessVmPtr: () => 0x1234,
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    requireProcessKernel: (pid) => processKernels.get(pid)!,
+    applySelectedOfdSnapshots: () => {},
+    collectProcessHeldOfdRefcounts: () => new Int32Array(32),
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    collectProcessPrivatePipeSourceModes: () => new Map(),
+    collectProcessPipeSlotModes: () => new Map(),
+    collectProcessPrivatePipeSlots: () => new Set(),
+    collectCanonicalManagedPipeSlots: () => [],
+    copySelectedOfdState: () => {},
+    copySelectedEpollState: () => {},
+    clearSelectedOfdState: () => {},
+    copyMemfsState: () => {},
+    clearMemfsState: () => {},
+    restorePublishedRegularFileDataFromPageCache,
+    reconcileCanonicalOfdRefcounts: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+      managedPipeSlots: [],
+    }),
+    collectPipeSlotsForOfdIds: () => [],
+    copySelectedPipeSlots: () => {},
+    clearSelectedPipeSlots: () => {},
+    mergePipeSlotsFromProcess: () => {},
+    mergePipeSlotsFromCanonical: () => {},
+    applyPipeControlState: () => {},
+    composeProcessPipeUsed: () => 0n,
+    copyCanonicalMemfsToProcess: () => {},
+    snapshotProcSelfExe: () => null,
+    restoreProcSelfExe: () => {},
+    copyEpollState: () => {},
+    copySocketState: () => {},
+  });
+
+  sync.syncForkSharedState(
+    1,
+    0x1234,
+    [],
+    [],
+    [],
+    [] as KernelWorkerOfdSlotSnapshot[],
+    [],
+    true,
+    false,
+    true,
+    makeKernelState(),
+  );
+
+  expect(restorePublishedRegularFileDataFromPageCache).toHaveBeenCalledTimes(1);
+  expect(canonicalExports.opLog).toContain("canonical:truncate:3:4");
+  expect(canonicalExports.opLog).toContain("canonical:write:3:4");
+  expect(sourceExports.opLog).not.toContain("source:truncate:3:4");
+  expect(sourceExports.opLog).not.toContain("source:write:3:4");
 });
 
 test("syncForkSharedState filters private fd entries outside tracked OFDs", () => {

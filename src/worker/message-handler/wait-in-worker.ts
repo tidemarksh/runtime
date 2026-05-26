@@ -73,6 +73,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
     }
 
     thread.waitingInWorkerStatus = msg.status;
+    thread.waitingInWorkerReconcileDeferred = true;
     if (isRunningWorker) {
       handle.runningWorker = null;
       thread.runningGeneration = null;

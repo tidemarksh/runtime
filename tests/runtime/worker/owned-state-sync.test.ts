@@ -34,6 +34,7 @@ test("socket state sync runs before fork-shared OFD sync when both effects are p
     ownerPid: 7,
     generation: 1,
     waitingInWorkerStatus: null,
+    ownerAsyncStatus: null,
     resumeWorkersOnReady: [],
   };
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
@@ -220,6 +221,7 @@ test("fork-shared OFD sync accepts an owned worker status after running slot is 
   await vi.waitFor(() => {
     expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalled();
   });
+  expect(thread.ownerAsyncStatus).toBe(0);
   expect(handle.forkSharedSyncPromise).toBeNull();
   expect(handle.kernelShare.forkSharedSyncPromise).toBeNull();
   expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
@@ -231,6 +233,7 @@ test("fork-shared OFD sync accepts an owned worker status after running slot is 
   await vi.waitFor(() => {
     expect(continueAfterOwnedStateSync).toHaveBeenCalled();
   });
+  expect(thread.ownerAsyncStatus).toBeNull();
   expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalledWith(handle, [], {
     deltaOfdIds: true,
     includeMemfs: false,

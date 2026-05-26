@@ -247,6 +247,7 @@ export interface KernelExports {
   thread_tls_base?(vm_ptr: number): bigint;
   thread_sig_mask?(vm_ptr: number): bigint;
   thread_sig_pending(vm_ptr: number): bigint;
+  thread_pending_signal_interrupts_blocked_syscall?(vm_ptr: number): number;
   thread_sig_info_code?(vm_ptr: number): number;
   thread_fault_pc?(vm_ptr: number): bigint;
   thread_fault_addr?(vm_ptr: number): bigint;

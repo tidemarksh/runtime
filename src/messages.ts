@@ -365,6 +365,7 @@ export type KernelWorkerRequest =
       pid: number;
       vmPtr: number;
       fdEntries: KernelWorkerFdEntrySnapshot[];
+      applyFdEntries?: boolean;
       ofdSlots?: KernelWorkerOfdSlotSnapshot[];
       pipeSlots?: KernelWorkerPipeSlotSnapshot[];
       kernelState: KernelRuntimeState;

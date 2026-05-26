@@ -468,6 +468,33 @@ test("kernel-worker pipe sync keeps live fd table authoritative before recomputi
   expect(pipeWriteOpen(childMemory, 6)).toBe(1);
 });
 
+test("kernel-worker pipe sync can seed an unpublished child fd table from snapshots", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
+
+  seedPipeOfd(childExports, childMemory, 8, 6, -11);
+  seedPipeSlot(childMemory, 6, 0xcc, 0, 1);
+
+  sharedStateSync.syncPipeState(
+    2,
+    makeKernelState(),
+    [{ fd: 1, ofdId: 8, fdFlags: 0 }],
+    [{ ofdId: 8, slot: snapshotOfdSlot(childMemory, 8) }],
+    undefined,
+    0x1234,
+    true,
+  );
+
+  expect(childExports.fdMap().get(1)).toBe(8);
+  expect(pipeWriteOpen(canonicalMemory, 6)).toBe(1);
+  expect(pipeWriteOpen(childMemory, 6)).toBe(1);
+});
+
 test("fork-shared OFD sync preserves parent reader while method child owns writer", () => {
   const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
   const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
