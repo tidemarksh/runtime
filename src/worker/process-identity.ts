@@ -68,6 +68,10 @@ export function assertHandleWorkerProcessIdentity(
     if (!liveThreadVmPtrs.has(vmPtr)) {
       continue;
     }
+    const processPtr = handle.kernel.thread_process_ptr(vmPtr);
+    if (processPtr === 0) {
+      continue;
+    }
     const actualPid = handle.kernel.process_current_pid(vmPtr);
     if (actualPid === handle.pid) {
       continue;
@@ -79,7 +83,7 @@ export function assertHandleWorkerProcessIdentity(
         + (options.threadVmPtr !== undefined ? ` thread_vm=0x${options.threadVmPtr.toString(16)}` : "")
         + ` label=${label}`
         + ` vm=0x${vmPtr.toString(16)}`
-        + ` process_ptr=0x${handle.kernel.thread_process_ptr(vmPtr).toString(16)}`
+        + ` process_ptr=0x${processPtr.toString(16)}`
         + ` last_debug=${JSON.stringify(handle.lastDebugMessage ?? "n/a")}`
         + (workerLogTail.length > 0 ? ` worker_log_tail=[${workerLogTail.join(", ")}]` : ""),
     );
