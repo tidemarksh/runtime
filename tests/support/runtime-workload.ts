@@ -17,6 +17,7 @@ export const encoder = new TextEncoder();
 export const decoder = new TextDecoder();
 const WORKSPACE_ROOT = resolve(__dirname, "../../..");
 const TIMEOUT_OUTPUT_PREVIEW_BYTES = 4096;
+const FAIL_ON_RUNTIME_WORKLOAD_SKIP = process.env.TIDEMARK_TEST_RUNTIME_WORKLOAD_FAIL_ON_SKIP === "1";
 
 const originalWorker = globalThis.Worker;
 export let Runtime: typeof import("../../dist/index.mjs").Runtime;
@@ -56,6 +57,9 @@ afterAll(() => {
 
 export function logSkip(reason: string): null {
   console.log(`skip runtime workload: ${reason}`);
+  if (FAIL_ON_RUNTIME_WORKLOAD_SKIP) {
+    throw new Error(`runtime workload skip: ${reason}`);
+  }
   return null;
 }
 
