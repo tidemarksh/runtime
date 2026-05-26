@@ -1,23 +1,20 @@
-# tsdown-starter
+# Tidemark Runtime
 
-A starter for creating a TypeScript package.
+Tidemark Runtime runs guest processes in browser workers on top of the
+[Tidemark Kernel](https://github.com/tidemarksh/kernel).
+
+It provides process orchestration, worker scheduling, filesystem snapshots,
+terminal I/O, and network bridge integration for browser-hosted Linux userland
+workloads.
 
 ## Development
 
-- Install dependencies:
-
 ```bash
-npm install
+pnpm install
+pnpm test
+pnpm build
 ```
 
-- Run the unit tests:
+## License
 
-```bash
-npm run test
-```
-
-- Build the library:
-
-```bash
-npm run build
-```
+Apache-2.0

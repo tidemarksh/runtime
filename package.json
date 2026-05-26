@@ -2,16 +2,16 @@
   "name": "runtime",
   "type": "module",
   "version": "0.0.0",
-  "description": "A starter for creating a TypeScript package.",
-  "author": "Author Name <author.name@mail.com>",
-  "license": "MIT",
-  "homepage": "https://github.com/author/library#readme",
+  "description": "Browser runtime for the Tidemark RISC-V Linux userland kernel.",
+  "author": "Tidemark",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/tidemarksh/runtime#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/author/library.git"
+    "url": "git+https://github.com/tidemarksh/runtime.git"
   },
   "bugs": {
-    "url": "https://github.com/author/library/issues"
+    "url": "https://github.com/tidemarksh/runtime/issues"
   },
   "exports": {
     ".": "./dist/index.mjs",
