@@ -1,4 +1,10 @@
-import { attachKernelRuntimeState, type KernelExports, type KernelRuntimeState } from "../../abi.js";
+import {
+  attachKernelRuntimeState,
+  kernelSocketStateBytes,
+  kernelSocketStatePtr,
+  type KernelExports,
+  type KernelRuntimeState,
+} from "../../abi.js";
 import { clearMemoryRange, copyMemoryRange } from "../common.js";
 
 export function createKernelWorkerObjectStatePrimitives() {
@@ -152,12 +158,20 @@ export function createKernelWorkerObjectStatePrimitives() {
       socketUsed: sourceState.socketUsed,
       netBufUsed: sourceState.netBufUsed,
     });
+    const tableBytes = sourceExports.kernel_socket_table_bytes?.() ?? 0;
+    const stateBytes = kernelSocketStateBytes(sourceExports, sourceState);
+    const hasFullState = Boolean(
+      sourceExports.kernel_socket_state_ptr
+        || sourceExports.kernel_socket_state_bytes
+        || (sourceState.socketStatePtr !== undefined && sourceState.socketStatePtr > 0 && sourceState.socketStatePtr !== sourceState.socketTablePtr)
+        || stateBytes > tableBytes,
+    );
     copyMemoryRange(
       sourceExports.memory,
-      sourceState.socketTablePtr,
+      hasFullState ? kernelSocketStatePtr(sourceState) : sourceState.socketTablePtr,
       targetExports.memory,
-      targetState.socketTablePtr,
-      sourceExports.kernel_socket_table_bytes(),
+      hasFullState ? kernelSocketStatePtr(targetState) : targetState.socketTablePtr,
+      hasFullState ? stateBytes : tableBytes,
     );
     copySocketNetBufferState(sourceExports, sourceState, targetExports, targetState);
   }

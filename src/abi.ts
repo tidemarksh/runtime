@@ -160,6 +160,10 @@ export interface KernelExports {
   kernel_heap_ptr(): number;
   kernel_ofd_table_ptr(): number;
   kernel_ofd_table_bytes(): number;
+  kernel_ofd_state_ptr?(): number;
+  kernel_ofd_state_bytes?(): number;
+  kernel_ofd_offset_floor_ptr?(): number;
+  kernel_ofd_offset_floor_bytes?(): number;
   kernel_memfs_ptr(): number;
   kernel_memfs_header_bytes(): number;
   kernel_memfs_inodes_ptr(): number;
@@ -176,6 +180,8 @@ export interface KernelExports {
   kernel_epoll_instance_bytes(): number;
   kernel_socket_table_ptr(): number;
   kernel_socket_table_bytes(): number;
+  kernel_socket_state_ptr?(): number;
+  kernel_socket_state_bytes?(): number;
   kernel_socket_used(): number;
   kernel_pipe_base(): number;
   kernel_pipe_region_bytes(): number;
@@ -208,11 +214,11 @@ export interface KernelExports {
   kernel_attach_runtime_state(
     heapBase: number,
     heapPtr: number,
-    ofdTablePtr: number,
+    ofdStatePtr: number,
     memfsPtr: number,
     memStatePtr: number,
     epollTablePtr: number,
-    socketTablePtr: number,
+    socketStatePtr: number,
     socketUsed: number,
     pipeBase: number,
     pipeUsed: bigint,
@@ -816,6 +822,10 @@ export interface KernelRuntimeState {
   heapBase: number;
   heapPtr: number;
   ofdTablePtr: number;
+  ofdStatePtr?: number;
+  ofdStateBytes?: number;
+  ofdOffsetFloorPtr?: number;
+  ofdOffsetFloorBytes?: number;
   memfsPtr: number;
   memfsHeaderBytes: number;
   memfsInodesBytes: number;
@@ -825,6 +835,8 @@ export interface KernelRuntimeState {
   memStatePtr: number;
   epollTablePtr: number;
   socketTablePtr: number;
+  socketStatePtr?: number;
+  socketStateBytes?: number;
   socketUsed: number;
   pipeBase: number;
   pipeUsed: bigint;
@@ -834,6 +846,42 @@ export interface KernelRuntimeState {
   processPendingPtr: number;
   processRuntimeStatePtr: number;
   timeStatePtr: number;
+}
+
+export function kernelOfdStatePtr(state: KernelRuntimeState): number {
+  return state.ofdStatePtr !== undefined && state.ofdStatePtr > 0 ? state.ofdStatePtr : state.ofdTablePtr;
+}
+
+export function kernelOfdStateBytes(
+  exports: Partial<Pick<KernelExports, "kernel_ofd_table_bytes" | "kernel_ofd_state_bytes">>,
+  state?: KernelRuntimeState | null,
+): number {
+  const exportedBytes = exports.kernel_ofd_state_bytes?.();
+  if (exportedBytes !== undefined && exportedBytes > 0) {
+    return exportedBytes;
+  }
+  if (state?.ofdStateBytes !== undefined && state.ofdStateBytes > 0) {
+    return state.ofdStateBytes;
+  }
+  return exports.kernel_ofd_table_bytes?.() ?? 0;
+}
+
+export function kernelSocketStatePtr(state: KernelRuntimeState): number {
+  return state.socketStatePtr !== undefined && state.socketStatePtr > 0 ? state.socketStatePtr : state.socketTablePtr;
+}
+
+export function kernelSocketStateBytes(
+  exports: Partial<Pick<KernelExports, "kernel_socket_table_bytes" | "kernel_socket_state_bytes">>,
+  state?: KernelRuntimeState | null,
+): number {
+  const exportedBytes = exports.kernel_socket_state_bytes?.();
+  if (exportedBytes !== undefined && exportedBytes > 0) {
+    return exportedBytes;
+  }
+  if (state?.socketStateBytes !== undefined && state.socketStateBytes > 0) {
+    return state.socketStateBytes;
+  }
+  return exports.kernel_socket_table_bytes?.() ?? 0;
 }
 
 export interface ProcessSpawnHandoff {
@@ -883,7 +931,7 @@ export function readKernelRuntimeState(exports: KernelExports): KernelRuntimeSta
     | "kernel_memfs_dir_entries_bytes"
     | "kernel_memfs_data_bytes"
   >>;
-  return {
+  const state: KernelRuntimeState = {
     heapBase: exports.kernel_heap_base(),
     heapPtr: exports.kernel_heap_ptr(),
     ofdTablePtr: exports.kernel_ofd_table_ptr(),
@@ -906,6 +954,31 @@ export function readKernelRuntimeState(exports: KernelExports): KernelRuntimeSta
     processRuntimeStatePtr: exports.kernel_process_runtime_state_ptr(),
     timeStatePtr: exports.kernel_time_state_ptr(),
   };
+  const ofdStatePtr = exports.kernel_ofd_state_ptr?.();
+  const ofdStateBytes = exports.kernel_ofd_state_bytes?.();
+  const ofdOffsetFloorPtr = exports.kernel_ofd_offset_floor_ptr?.();
+  const ofdOffsetFloorBytes = exports.kernel_ofd_offset_floor_bytes?.();
+  const socketStatePtr = exports.kernel_socket_state_ptr?.();
+  const socketStateBytes = exports.kernel_socket_state_bytes?.();
+  if (ofdStatePtr !== undefined && ofdStatePtr > 0) {
+    state.ofdStatePtr = ofdStatePtr;
+  }
+  if (ofdStateBytes !== undefined && ofdStateBytes > 0) {
+    state.ofdStateBytes = ofdStateBytes;
+  }
+  if (ofdOffsetFloorPtr !== undefined && ofdOffsetFloorPtr > 0) {
+    state.ofdOffsetFloorPtr = ofdOffsetFloorPtr;
+  }
+  if (ofdOffsetFloorBytes !== undefined && ofdOffsetFloorBytes > 0) {
+    state.ofdOffsetFloorBytes = ofdOffsetFloorBytes;
+  }
+  if (socketStatePtr !== undefined && socketStatePtr > 0) {
+    state.socketStatePtr = socketStatePtr;
+  }
+  if (socketStateBytes !== undefined && socketStateBytes > 0) {
+    state.socketStateBytes = socketStateBytes;
+  }
+  return state;
 }
 
 export function attachKernelRuntimeState(
@@ -915,11 +988,11 @@ export function attachKernelRuntimeState(
   exports.kernel_attach_runtime_state(
     state.heapBase,
     state.heapPtr,
-    state.ofdTablePtr,
+    kernelOfdStatePtr(state),
     state.memfsPtr,
     state.memStatePtr,
     state.epollTablePtr,
-    state.socketTablePtr,
+    kernelSocketStatePtr(state),
     state.socketUsed,
     state.pipeBase,
     state.pipeUsed,

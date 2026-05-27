@@ -1,4 +1,11 @@
-import type { KernelExports, KernelRuntimeState } from "../abi.js";
+import {
+  kernelOfdStateBytes,
+  kernelOfdStatePtr,
+  kernelSocketStateBytes,
+  kernelSocketStatePtr,
+  type KernelExports,
+  type KernelRuntimeState,
+} from "../abi.js";
 import type { ThreadWorkerMemoryPreserveRange } from "../messages.js";
 
 const MEMORY_SNAPSHOT_CHUNK_BYTES = 4 * 1024 * 1024;
@@ -108,9 +115,11 @@ function deriveMemStateBytes(state: KernelRuntimeState): number {
     state.sigSlotsPtr,
     state.processPendingPtr,
     state.epollTablePtr,
+    state.socketStatePtr ?? 0,
     state.socketTablePtr,
     state.pipeBase,
     state.netBufBase,
+    state.ofdStatePtr ?? 0,
     state.ofdTablePtr,
     state.memfsPtr,
   ]
@@ -264,10 +273,16 @@ export function snapshotThreadWorkerPrepareMemory(
     | "kernel_memfs_data_bytes"
     | "memfs_data_used"
     | "kernel_ofd_table_bytes"
+    | "kernel_ofd_state_ptr"
+    | "kernel_ofd_state_bytes"
     | "kernel_ofd_reserved_ptr"
     | "kernel_ofd_reserved_bytes"
+    | "kernel_ofd_offset_floor_ptr"
+    | "kernel_ofd_offset_floor_bytes"
     | "kernel_epoll_table_bytes"
     | "kernel_socket_table_bytes"
+    | "kernel_socket_state_ptr"
+    | "kernel_socket_state_bytes"
     | "kernel_pipe_region_bytes"
     | "kernel_net_buf_pool_bytes"
     | "kernel_sig_slots_bytes"
@@ -321,10 +336,42 @@ export function snapshotThreadWorkerPrepareMemory(
     if (memStateSnapshot) {
       overlays.push(memStateSnapshot);
     }
-    snapshotKernelRegion(kernelState.ofdTablePtr, exports?.kernel_ofd_table_bytes?.() ?? 0);
-    snapshotKernelRegion(exports?.kernel_ofd_reserved_ptr?.() ?? 0, exports?.kernel_ofd_reserved_bytes?.() ?? 0);
+    const ofdTableBytes = exports?.kernel_ofd_table_bytes?.() ?? 0;
+    const ofdStateBytes = exports
+      ? kernelOfdStateBytes(exports, kernelState)
+      : kernelState.ofdStateBytes ?? 0;
+    const hasOfdStateExport = Boolean(
+      exports?.kernel_ofd_state_ptr
+        || exports?.kernel_ofd_state_bytes
+        || (kernelState.ofdStatePtr !== undefined && kernelState.ofdStatePtr > 0 && kernelState.ofdStatePtr !== kernelState.ofdTablePtr)
+        || (ofdTableBytes > 0 && ofdStateBytes > ofdTableBytes)
+        || (kernelState.ofdOffsetFloorBytes ?? 0) > 0,
+    );
+    if (hasOfdStateExport) {
+      snapshotKernelRegion(kernelOfdStatePtr(kernelState), ofdStateBytes);
+    } else {
+      snapshotKernelRegion(kernelState.ofdTablePtr, ofdTableBytes);
+      snapshotKernelRegion(exports?.kernel_ofd_reserved_ptr?.() ?? 0, exports?.kernel_ofd_reserved_bytes?.() ?? 0);
+      snapshotKernelRegion(
+        exports?.kernel_ofd_offset_floor_ptr?.() ?? kernelState.ofdOffsetFloorPtr ?? 0,
+        exports?.kernel_ofd_offset_floor_bytes?.() ?? kernelState.ofdOffsetFloorBytes ?? 0,
+      );
+    }
     snapshotKernelRegion(kernelState.epollTablePtr, exports?.kernel_epoll_table_bytes?.() ?? 0);
-    snapshotKernelRegion(kernelState.socketTablePtr, exports?.kernel_socket_table_bytes?.() ?? 0);
+    const socketTableBytes = exports?.kernel_socket_table_bytes?.() ?? 0;
+    const socketStateBytes = exports
+      ? kernelSocketStateBytes(exports, kernelState)
+      : kernelState.socketStateBytes ?? 0;
+    const hasSocketStateExport = Boolean(
+      exports?.kernel_socket_state_ptr
+        || exports?.kernel_socket_state_bytes
+        || (kernelState.socketStatePtr !== undefined && kernelState.socketStatePtr > 0 && kernelState.socketStatePtr !== kernelState.socketTablePtr)
+        || (socketTableBytes > 0 && socketStateBytes > socketTableBytes),
+    );
+    snapshotKernelRegion(
+      hasSocketStateExport ? kernelSocketStatePtr(kernelState) : kernelState.socketTablePtr,
+      hasSocketStateExport ? socketStateBytes : socketTableBytes,
+    );
     snapshotKernelRegion(kernelState.pipeBase, exports?.kernel_pipe_region_bytes?.() ?? 0);
     snapshotKernelRegion(kernelState.netBufBase, exports?.kernel_net_buf_pool_bytes?.() ?? 0);
     snapshotKernelRegion(kernelState.sigSlotsPtr, exports?.kernel_sig_slots_bytes?.() ?? 0);

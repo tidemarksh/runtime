@@ -8,6 +8,10 @@
 import { expect, test } from "vite-plus/test";
 import {
   attachKernelRuntimeState,
+  kernelOfdStateBytes,
+  kernelOfdStatePtr,
+  kernelSocketStateBytes,
+  kernelSocketStatePtr,
   readKernelRuntimeState,
   readStatusCodes,
   type KernelExports,
@@ -126,7 +130,7 @@ function copyExecveKernelRuntimeRegions(
   targetMemory: WebAssembly.Memory,
 ): void {
   const state = readKernelRuntimeState(source);
-  copyKernelRuntimeRegion(sourceMemory, targetMemory, state.ofdTablePtr, source.kernel_ofd_table_bytes());
+  copyKernelRuntimeRegion(sourceMemory, targetMemory, kernelOfdStatePtr(state), kernelOfdStateBytes(source, state));
   copyKernelRuntimeRegion(
     sourceMemory,
     targetMemory,
@@ -138,7 +142,7 @@ function copyExecveKernelRuntimeRegions(
       + state.memfsDataBytes,
   );
   copyKernelRuntimeRegion(sourceMemory, targetMemory, state.epollTablePtr, source.kernel_epoll_table_bytes());
-  copyKernelRuntimeRegion(sourceMemory, targetMemory, state.socketTablePtr, source.kernel_socket_table_bytes());
+  copyKernelRuntimeRegion(sourceMemory, targetMemory, kernelSocketStatePtr(state), kernelSocketStateBytes(source, state));
   copyKernelRuntimeRegion(sourceMemory, targetMemory, state.pipeBase, source.kernel_pipe_region_bytes());
   copyKernelRuntimeRegion(sourceMemory, targetMemory, state.netBufBase, source.kernel_net_buf_pool_bytes());
   copyKernelRuntimeRegion(

@@ -196,3 +196,52 @@ test("thread-worker prepare snapshot can preserve explicit ranges without copyin
   expect(bytes[secondRangeEnd - 1]).toBe(0x44);
   expect(bytes[secondRangeEnd]).toBe(0);
 });
+
+test("thread-worker prepare snapshot preserves full OFD and socket state ranges when exported", () => {
+  const memory = new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true });
+  const state = {
+    ...makeState(),
+    ofdStatePtr: 0x2f00,
+    ofdStateBytes: 0x180,
+    ofdTablePtr: 0x3000,
+    socketStatePtr: 0x5f00,
+    socketStateBytes: 0x180,
+    socketTablePtr: 0x6000,
+  };
+  const bytes = new Uint8Array(memory.buffer);
+
+  bytes.fill(0xa1, state.ofdStatePtr, state.ofdStatePtr + state.ofdStateBytes);
+  bytes.fill(0xb2, state.socketStatePtr, state.socketStatePtr + state.socketStateBytes);
+  bytes[state.ofdStatePtr + state.ofdStateBytes] = 0xcc;
+  bytes[state.socketStatePtr + state.socketStateBytes] = 0xdd;
+
+  const snapshot = snapshotThreadWorkerPrepareMemory(
+    memory,
+    {
+      kernel_ofd_table_bytes: () => 0x80,
+      kernel_ofd_state_ptr: () => state.ofdStatePtr,
+      kernel_ofd_state_bytes: () => state.ofdStateBytes,
+      kernel_socket_table_bytes: () => 0x80,
+      kernel_socket_state_ptr: () => state.socketStatePtr,
+      kernel_socket_state_bytes: () => state.socketStateBytes,
+    } as never,
+    state,
+    state.heapBase,
+  );
+
+  bytes.fill(0, state.ofdStatePtr, state.ofdStatePtr + state.ofdStateBytes);
+  bytes.fill(0, state.socketStatePtr, state.socketStatePtr + state.socketStateBytes);
+  bytes[state.ofdStatePtr + state.ofdStateBytes] = 0x11;
+  bytes[state.socketStatePtr + state.socketStateBytes] = 0x22;
+
+  restoreThreadWorkerPrepareMemory(memory, snapshot);
+
+  expect(bytes[state.ofdStatePtr]).toBe(0xa1);
+  expect(bytes[state.ofdTablePtr]).toBe(0xa1);
+  expect(bytes[state.ofdStatePtr + state.ofdStateBytes - 1]).toBe(0xa1);
+  expect(bytes[state.ofdStatePtr + state.ofdStateBytes]).toBe(0x11);
+  expect(bytes[state.socketStatePtr]).toBe(0xb2);
+  expect(bytes[state.socketTablePtr]).toBe(0xb2);
+  expect(bytes[state.socketStatePtr + state.socketStateBytes - 1]).toBe(0xb2);
+  expect(bytes[state.socketStatePtr + state.socketStateBytes]).toBe(0x22);
+});

@@ -1,4 +1,9 @@
-import type { KernelExports, KernelRuntimeState } from "../../abi.js";
+import {
+  kernelOfdStateBytes,
+  kernelOfdStatePtr,
+  type KernelExports,
+  type KernelRuntimeState,
+} from "../../abi.js";
 import type { KernelWorkerOfdSlotSnapshot } from "../../messages.js";
 import { copyMemoryRange } from "../common.js";
 
@@ -152,12 +157,21 @@ export function createKernelWorkerOfdPrimitives(deps: KernelWorkerPrimitivesDeps
     targetExports: KernelExports,
     targetState: KernelRuntimeState,
   ): void {
+    const tableBytes = sourceExports.kernel_ofd_table_bytes?.() ?? 0;
+    const stateBytes = kernelOfdStateBytes(sourceExports, sourceState);
+    const hasFullState = Boolean(
+      sourceExports.kernel_ofd_state_ptr
+        || sourceExports.kernel_ofd_state_bytes
+        || (sourceState.ofdStatePtr !== undefined && sourceState.ofdStatePtr > 0 && sourceState.ofdStatePtr !== sourceState.ofdTablePtr)
+        || stateBytes > tableBytes
+        || (sourceState.ofdOffsetFloorBytes ?? 0) > 0,
+    );
     copyMemoryRange(
       sourceExports.memory,
-      sourceState.ofdTablePtr,
+      hasFullState ? kernelOfdStatePtr(sourceState) : sourceState.ofdTablePtr,
       targetExports.memory,
-      targetState.ofdTablePtr,
-      sourceExports.kernel_ofd_table_bytes(),
+      hasFullState ? kernelOfdStatePtr(targetState) : targetState.ofdTablePtr,
+      hasFullState ? stateBytes : tableBytes,
     );
   }
 

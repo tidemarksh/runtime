@@ -6,7 +6,7 @@ const DEBUG_STAGE_INDEX = 2;
 const DEBUG_VALUE_INDEX = 3;
 const STATE_VERSION_INDEX = 0;
 const STATE_HEADER_BYTES = 8;
-const STATE_FIELD_COUNT = 21;
+const STATE_FIELD_COUNT = 27;
 
 const FIELD_OFFSETS = {
   heapBase: STATE_HEADER_BYTES + 0,
@@ -30,6 +30,12 @@ const FIELD_OFFSETS = {
   processPendingPtr: STATE_HEADER_BYTES + 144,
   processRuntimeStatePtr: STATE_HEADER_BYTES + 152,
   timeStatePtr: STATE_HEADER_BYTES + 160,
+  ofdStatePtr: STATE_HEADER_BYTES + 168,
+  ofdStateBytes: STATE_HEADER_BYTES + 176,
+  ofdOffsetFloorPtr: STATE_HEADER_BYTES + 184,
+  ofdOffsetFloorBytes: STATE_HEADER_BYTES + 192,
+  socketStatePtr: STATE_HEADER_BYTES + 200,
+  socketStateBytes: STATE_HEADER_BYTES + 208,
 } as const;
 
 export interface RuntimeStateBridge {
@@ -56,6 +62,10 @@ function stateVersionView(bridge: RuntimeStateBridge): Int32Array {
   return new Int32Array(bridge.stateSab, 0, 2);
 }
 
+function canAccessField(view: DataView, offset: number): boolean {
+  return offset + 4 <= view.byteLength;
+}
+
 function writeState(view: DataView, state: KernelRuntimeState): void {
   view.setUint32(FIELD_OFFSETS.heapBase, state.heapBase, true);
   view.setUint32(FIELD_OFFSETS.heapPtr, state.heapPtr, true);
@@ -78,6 +88,15 @@ function writeState(view: DataView, state: KernelRuntimeState): void {
   view.setUint32(FIELD_OFFSETS.processPendingPtr, state.processPendingPtr, true);
   view.setUint32(FIELD_OFFSETS.processRuntimeStatePtr, state.processRuntimeStatePtr, true);
   view.setUint32(FIELD_OFFSETS.timeStatePtr, state.timeStatePtr, true);
+  if (!canAccessField(view, FIELD_OFFSETS.socketStateBytes)) {
+    return;
+  }
+  view.setUint32(FIELD_OFFSETS.ofdStatePtr, state.ofdStatePtr ?? 0, true);
+  view.setUint32(FIELD_OFFSETS.ofdStateBytes, state.ofdStateBytes ?? 0, true);
+  view.setUint32(FIELD_OFFSETS.ofdOffsetFloorPtr, state.ofdOffsetFloorPtr ?? 0, true);
+  view.setUint32(FIELD_OFFSETS.ofdOffsetFloorBytes, state.ofdOffsetFloorBytes ?? 0, true);
+  view.setUint32(FIELD_OFFSETS.socketStatePtr, state.socketStatePtr ?? 0, true);
+  view.setUint32(FIELD_OFFSETS.socketStateBytes, state.socketStateBytes ?? 0, true);
 }
 
 export function publishKernelRuntimeState(
@@ -196,6 +215,32 @@ export function readPublishedKernelRuntimeState(bridge: RuntimeStateBridge): Ker
       processRuntimeStatePtr: view.getUint32(FIELD_OFFSETS.processRuntimeStatePtr, true),
       timeStatePtr: view.getUint32(FIELD_OFFSETS.timeStatePtr, true),
     };
+    if (canAccessField(view, FIELD_OFFSETS.socketStateBytes)) {
+      const ofdStatePtr = view.getUint32(FIELD_OFFSETS.ofdStatePtr, true);
+      const ofdStateBytes = view.getUint32(FIELD_OFFSETS.ofdStateBytes, true);
+      const ofdOffsetFloorPtr = view.getUint32(FIELD_OFFSETS.ofdOffsetFloorPtr, true);
+      const ofdOffsetFloorBytes = view.getUint32(FIELD_OFFSETS.ofdOffsetFloorBytes, true);
+      const socketStatePtr = view.getUint32(FIELD_OFFSETS.socketStatePtr, true);
+      const socketStateBytes = view.getUint32(FIELD_OFFSETS.socketStateBytes, true);
+      if (ofdStatePtr > 0) {
+        state.ofdStatePtr = ofdStatePtr;
+      }
+      if (ofdStateBytes > 0) {
+        state.ofdStateBytes = ofdStateBytes;
+      }
+      if (ofdOffsetFloorPtr > 0) {
+        state.ofdOffsetFloorPtr = ofdOffsetFloorPtr;
+      }
+      if (ofdOffsetFloorBytes > 0) {
+        state.ofdOffsetFloorBytes = ofdOffsetFloorBytes;
+      }
+      if (socketStatePtr > 0) {
+        state.socketStatePtr = socketStatePtr;
+      }
+      if (socketStateBytes > 0) {
+        state.socketStateBytes = socketStateBytes;
+      }
+    }
 
     const after = Atomics.load(versionView, STATE_VERSION_INDEX);
     if (before === after) {
