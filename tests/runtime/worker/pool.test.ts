@@ -5,19 +5,7 @@ import {
   kernelStackSlotForWorker,
   releaseWorker,
 } from "../../../src/worker/pool.js";
-
-class FakeWorker {
-  terminated = false;
-
-  constructor(
-    readonly _url: URL,
-    readonly _options: WorkerOptions,
-  ) {}
-
-  terminate(): void {
-    this.terminated = true;
-  }
-}
+import { FakeWorker } from "../../support/fake-worker.js";
 
 const originalWorker = globalThis.Worker;
 

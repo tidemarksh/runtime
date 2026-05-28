@@ -4,28 +4,11 @@ import { readPublishedKernelRuntimeState } from "../../../src/bridge/runtime-sta
 import { createWorkerProcessFactory } from "../../../src/worker/create-process.js";
 import { destroyWorkerPool } from "../../../src/worker/pool.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
+import { AutoPreparedFakeWorker } from "../../support/fake-worker.js";
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 const originalWorker = globalThis.Worker;
-
-class FakeWorker {
-  onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
-  terminate = vi.fn();
-
-  constructor(
-    readonly _url: URL,
-    readonly _options: WorkerOptions,
-  ) {}
-
-  postMessage(message: { type: string }): void {
-    if (message.type === "prepare") {
-      queueMicrotask(() => {
-        this.onmessage?.({ data: { type: "prepared", wasmFeatures: {} } } as MessageEvent<unknown>);
-      });
-    }
-  }
-}
 
 function makeKernelState(): KernelRuntimeState {
   return {
@@ -342,7 +325,7 @@ function makeParentHandle(): ProcessHandle {
 }
 
 beforeEach(() => {
-  globalThis.Worker = class extends FakeWorker {} as unknown as typeof globalThis.Worker;
+  globalThis.Worker = class extends AutoPreparedFakeWorker {} as unknown as typeof globalThis.Worker;
 });
 
 afterEach(() => {
