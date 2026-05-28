@@ -1,0 +1,42 @@
+export type {
+  ForkStackSnapshot,
+  GuestMemoryWriteSnapshot,
+  GuestWriteWatchRegion,
+  KernelMemoryWriteSnapshot,
+  KernelWorkerFdEntrySnapshot,
+  KernelWorkerFileLayerEntry,
+  KernelWorkerInbound,
+  KernelWorkerNetBufferSnapshot,
+  KernelWorkerOfdSlotSnapshot,
+  KernelWorkerOutbound,
+  KernelWorkerPidBytesSnapshot,
+  KernelWorkerPidStateSnapshot,
+  KernelWorkerPipeSlotSnapshot,
+  KernelWorkerRequest,
+  KernelWorkerRequestBase,
+  KernelWorkerResponse,
+  KernelWorkerSocketStateSnapshot,
+  ThreadWorkerErrorMessage,
+  ThreadWorkerInbound,
+  ThreadWorkerMemoryPreserveRange,
+  ThreadWorkerOutbound,
+  ThreadWorkerPreparedMessage,
+  ThreadWorkerReadyMessage,
+  ThreadWorkerStatusMessage,
+} from "./events.js";
+
+export type {
+  RuntimeFailureOutcome,
+  RuntimeOutcome,
+  RuntimeSuccessOutcome,
+} from "./outcomes.js";
+
+export type {
+  RuntimeMessagePort,
+  RuntimeWorkerFactory,
+} from "./ports.js";
+
+export type {
+  RuntimeReadonlyQuery,
+  RuntimeReadonlyQueryResult,
+} from "./queries.js";
