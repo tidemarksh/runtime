@@ -23,26 +23,24 @@ import type {
   KernelWorkerPidBytesSnapshot,
   KernelWorkerPipeSlotSnapshot,
 } from "../messages.js";
+import {
+  FS_OP_READ,
+  FS_OP_WRITE,
+  FS_RING_COMPLETE_HEAD_OFFSET,
+  FS_RING_COMPLETE_TAIL_OFFSET,
+  FS_RING_REQUEST_OPCODE_OFFSET,
+  FS_RING_REQUEST_VM_PTR_OFFSET,
+  FS_RING_RESPONSE_RESULT_OFFSET,
+  FS_RING_RESPONSE_VM_PTR_OFFSET,
+  FS_RING_SUBMIT_HEAD_OFFSET,
+  FS_RING_SUBMIT_TAIL_OFFSET,
+  FS_RING_TOTAL_BYTES,
+  fsRingCompletionEntryOffset,
+  fsRingRequestEntryOffset,
+} from "../layout/fs-ring.js";
 
 const FS_DEBUG_PATH_BUF_LEN = 4096;
 const GUEST_TICKS_PER_SEC = 100_000_000n;
-const FS_OP_READ = 1;
-const FS_OP_WRITE = 2;
-const FS_RING_SUBMIT_HEAD_OFFSET = 0;
-const FS_RING_SUBMIT_TAIL_OFFSET = 4;
-const FS_RING_COMPLETE_HEAD_OFFSET = 8;
-const FS_RING_COMPLETE_TAIL_OFFSET = 12;
-const FS_RING_HEADER_BYTES = 32;
-const FS_RING_SUBMIT_QUEUE_SIZE = 64;
-const FS_RING_COMPLETE_QUEUE_SIZE = 64;
-const FS_RING_REQUEST_BYTES = 64;
-const FS_RING_RESPONSE_BYTES = 16;
-const FS_RING_REQUEST_OPCODE_OFFSET = 0;
-const FS_RING_REQUEST_VM_PTR_OFFSET = 48;
-const FS_RING_RESPONSE_RESULT_OFFSET = 0;
-const FS_RING_RESPONSE_VM_PTR_OFFSET = 8;
-const FS_RING_COMPLETE_QUEUE_OFFSET = FS_RING_HEADER_BYTES + FS_RING_SUBMIT_QUEUE_SIZE * FS_RING_REQUEST_BYTES;
-const FS_RING_TOTAL_BYTES = FS_RING_COMPLETE_QUEUE_OFFSET + FS_RING_COMPLETE_QUEUE_SIZE * FS_RING_RESPONSE_BYTES;
 const POLLFD_BYTES = 8;
 const PIPE_HEAD_OFFSET = 0;
 const PIPE_TAIL_OFFSET = 4;
@@ -1014,14 +1012,6 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
       }
     }
     return false;
-  }
-
-  function fsRingRequestEntryOffset(ringBase: number, pos: number): number {
-    return ringBase + FS_RING_HEADER_BYTES + (pos % FS_RING_SUBMIT_QUEUE_SIZE) * FS_RING_REQUEST_BYTES;
-  }
-
-  function fsRingCompletionEntryOffset(ringBase: number, pos: number): number {
-    return ringBase + FS_RING_COMPLETE_QUEUE_OFFSET + (pos % FS_RING_COMPLETE_QUEUE_SIZE) * FS_RING_RESPONSE_BYTES;
   }
 
   function snapshotFsRingProgress(handle: ProcessHandle, vmPtr: number): FsRingProgressSnapshot | null {

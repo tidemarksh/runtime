@@ -27,6 +27,7 @@ import type {
 } from "./types.js";
 import { formatCompactDebugSuffix, readProcessPidField, WRITE_DEBUG_KEYS } from "./debug-summary.js";
 import { createWorkerWaitInWorkerStatusHandler } from "./wait-in-worker.js";
+import { FS_RING_TOTAL_BYTES } from "../../layout/fs-ring.js";
 
 const STATUS_SOCKET_DEBUG_LOG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_LOG ?? "") === "1"
   || ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_NETWORK ?? "") === "1";
@@ -44,7 +45,6 @@ const PIPE_GENERATION_OFFSET = 20;
 const PIPE_SLOT_MODE_READ = 1 << 0;
 const PIPE_SLOT_MODE_WRITE = 1 << 1;
 const PIPE_SLOT_MODE_CONTROL = 1 << 2;
-const FS_RING_BUFFER_BYTES = 32 + 64 * 64 + 64 * 16;
 const OFD_TYPE_OFFSET = 0;
 const OFD_HOST_FD_OFFSET = 4;
 const OFD_REFCOUNT_OFFSET = 12;
@@ -478,7 +478,7 @@ function isFsRingKernelMemoryWrite(
   if (ringBase <= 0) {
     return false;
   }
-  const ringEnd = ringBase + FS_RING_BUFFER_BYTES;
+  const ringEnd = ringBase + FS_RING_TOTAL_BYTES;
   return ptr < ringEnd && ptr + length > ringBase;
 }
 

@@ -50,6 +50,18 @@ import {
   readCompletedSyncEffects,
   type SyscallNumbers,
 } from "./thread-worker/sync-effects.js";
+import {
+  FS_OP_WRITE,
+  FS_RING_REQUEST_BUF_PTR_OFFSET,
+  FS_RING_REQUEST_LEN_OFFSET,
+  FS_RING_REQUEST_OPCODE_OFFSET,
+  FS_RING_REQUEST_PATH_PTR_OFFSET,
+  FS_RING_SUBMIT_HEAD_OFFSET,
+  FS_RING_SUBMIT_QUEUE_SIZE,
+  FS_RING_SUBMIT_TAIL_OFFSET,
+  FS_RING_TOTAL_BYTES,
+  fsRingRequestEntryOffset,
+} from "./layout/fs-ring.js";
 
 let exports: KernelExports | undefined;
 let statusCodes: StatusCodes;
@@ -66,8 +78,6 @@ const EINTR_ERRNO = 4;
 const FUTEX_WAIT_SLICE_MS = 10;
 const SYNC_EFFECT_PIPE_STATE = 1 << 0;
 const SYNC_EFFECT_PROCESS_MEMFS = 1 << 7;
-const FS_RING_BUFFER_BYTES = 32 + 64 * 64 + 64 * 16;
-const FS_OP_WRITE = 2;
 const PIPE_SLOT_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_PIPE_SLOT_DEBUG ?? "") === "1";
@@ -695,21 +705,21 @@ function snapshotPendingFsRequestGuestMemory(kernelExports: KernelExports): Gues
   }
   const ringBase = kernelExports.thread_fs_ring_base(vmPtr);
   const memory = new Uint8Array(kernelExports.memory.buffer);
-  if (ringBase <= 0 || ringBase + FS_RING_BUFFER_BYTES > memory.byteLength) {
+  if (ringBase <= 0 || ringBase + FS_RING_TOTAL_BYTES > memory.byteLength) {
     return [];
   }
   const view = new DataView(memory.buffer);
-  const submitHead = view.getUint32(ringBase, true);
-  const submitTail = view.getUint32(ringBase + 4, true);
+  const submitHead = view.getUint32(ringBase + FS_RING_SUBMIT_HEAD_OFFSET, true);
+  const submitTail = view.getUint32(ringBase + FS_RING_SUBMIT_TAIL_OFFSET, true);
   const snapshots: GuestMemoryWriteSnapshot[] = [];
-  const count = Math.min(submitHead - submitTail, 64);
+  const count = Math.min(submitHead - submitTail, FS_RING_SUBMIT_QUEUE_SIZE);
   for (let offset = 0; offset < count; offset += 1) {
     const pos = submitTail + offset;
-    const entry = ringBase + 32 + (pos % 64) * 64;
-    const opcode = view.getUint32(entry, true);
-    const len = Number(view.getBigUint64(entry + 16, true));
-    const bufPtr = Number(view.getBigUint64(entry + 24, true));
-    const pathPtr = Number(view.getBigUint64(entry + 32, true));
+    const entry = fsRingRequestEntryOffset(ringBase, pos);
+    const opcode = view.getUint32(entry + FS_RING_REQUEST_OPCODE_OFFSET, true);
+    const len = Number(view.getBigUint64(entry + FS_RING_REQUEST_LEN_OFFSET, true));
+    const bufPtr = Number(view.getBigUint64(entry + FS_RING_REQUEST_BUF_PTR_OFFSET, true));
+    const pathPtr = Number(view.getBigUint64(entry + FS_RING_REQUEST_PATH_PTR_OFFSET, true));
     if (opcode === FS_OP_WRITE && len > 0 && bufPtr > 0) {
       const snapshot = snapshotGuestMemoryWrite(kernelExports, bufPtr, Math.min(len, 1 << 20));
       if (snapshot) {
@@ -734,7 +744,7 @@ function snapshotFsRingMemory(
     return undefined;
   }
   const ringBase = kernelExports.thread_fs_ring_base(vmPtr);
-  const snapshot = snapshotAbsoluteMemory(kernelExports, ringBase, FS_RING_BUFFER_BYTES);
+  const snapshot = snapshotAbsoluteMemory(kernelExports, ringBase, FS_RING_TOTAL_BYTES);
   return snapshot ? [snapshot] : undefined;
 }
 
