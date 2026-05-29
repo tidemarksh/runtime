@@ -7,6 +7,7 @@ const OFD_OFFSET_OFFSET = 16;
 const OFD_INO_OFFSET = 24;
 
 interface FdEntryLike {
+  fd?: number;
   ofdId: number;
 }
 
@@ -14,6 +15,17 @@ interface OfdSlotSnapshotLike {
   ofdId: number;
   slot: Uint8Array;
 }
+
+interface StatusMessageLike {
+  vmPtr: number;
+  fdEntries?: readonly ({ fd: number } & FdEntryLike)[];
+  ofdSlots?: readonly OfdSlotSnapshotLike[];
+  syscallNr?: bigint;
+}
+
+const FD_ENTRY_BYTES = 8;
+const FD_ENTRY_OFD_ID_OFFSET = 0;
+const maxRegularFileOffsetByHandle = new WeakMap<ProcessHandle, Map<number, bigint>>();
 
 export function explicitPipeFdEntryWouldRollBack(
   handle: ProcessHandle,
@@ -114,4 +126,215 @@ export function ofdSnapshotWouldClobberExistingSlot(
   }
   return sourceView.getInt32(OFD_HOST_FD_OFFSET, true) !== targetView.getInt32(OFD_HOST_FD_OFFSET, true)
     || sourceView.getUint32(OFD_INO_OFFSET, true) !== targetView.getUint32(OFD_INO_OFFSET, true);
+}
+
+export function maskRegularFileFdEntryRollbackGuestWrite(
+  handle: ProcessHandle,
+  msg: StatusMessageLike,
+  guestPtr: number,
+  bytes: Uint8Array,
+): Uint8Array {
+  const fileType = handle.kernel.abi_fd_type_file?.();
+  const processPtr = msg.vmPtr === 0 ? 0 : handle.kernel.thread_process_ptr?.(msg.vmPtr);
+  if (fileType === undefined || processPtr === undefined || processPtr <= 0) {
+    return bytes;
+  }
+  const maxFds = handle.kernel.abi_max_fds();
+  const fdTableStart = processPtr;
+  const fdTableEnd = fdTableStart + maxFds * FD_ENTRY_BYTES;
+  const writeStart = guestPtr;
+  const writeEnd = guestPtr + bytes.length;
+  if (writeEnd <= fdTableStart || writeStart >= fdTableEnd) {
+    return bytes;
+  }
+
+  let masked: Uint8Array | null = null;
+  const firstFd = Math.max(0, Math.floor((Math.max(writeStart, fdTableStart) - fdTableStart) / FD_ENTRY_BYTES));
+  const lastFd = Math.min(
+    maxFds - 1,
+    Math.floor((Math.min(writeEnd - 1, fdTableEnd - 1) - fdTableStart) / FD_ENTRY_BYTES),
+  );
+  const memory = new Uint8Array(handle.memory.buffer);
+  for (let fd = firstFd; fd <= lastFd; fd += 1) {
+    const entryStart = fdTableStart + fd * FD_ENTRY_BYTES;
+    const entryEnd = entryStart + FD_ENTRY_BYTES;
+    const overlapStart = Math.max(writeStart, entryStart);
+    const overlapEnd = Math.min(writeEnd, entryEnd);
+    if (overlapStart >= overlapEnd) {
+      continue;
+    }
+    const currentEntry = memory.subarray(
+      handle.guestBase + entryStart,
+      handle.guestBase + entryEnd,
+    ).slice();
+    const candidateEntry = currentEntry.slice();
+    candidateEntry.set(
+      bytes.subarray(overlapStart - writeStart, overlapEnd - writeStart),
+      overlapStart - entryStart,
+    );
+    const currentOfdId = new DataView(
+      currentEntry.buffer,
+      currentEntry.byteOffset,
+      currentEntry.byteLength,
+    ).getUint32(FD_ENTRY_OFD_ID_OFFSET, true);
+    const candidateOfdId = new DataView(
+      candidateEntry.buffer,
+      candidateEntry.byteOffset,
+      candidateEntry.byteLength,
+    ).getUint32(FD_ENTRY_OFD_ID_OFFSET, true);
+    const explicitFdEntry = msg.fdEntries?.find((entry) => entry.fd === fd);
+    if (
+      !regularFileFdEntryWouldRollBack(handle, fileType, currentOfdId, candidateOfdId)
+      && !explicitPipeFdEntryWouldRollBack(handle, explicitFdEntry?.ofdId, currentOfdId, candidateOfdId)
+    ) {
+      continue;
+    }
+    if (masked === null) {
+      masked = bytes.slice();
+    }
+    masked.set(
+      currentEntry.subarray(overlapStart - entryStart, overlapEnd - entryStart),
+      overlapStart - writeStart,
+    );
+  }
+  return masked ?? bytes;
+}
+
+export function maskIncompatibleOfdSlotKernelWrite(
+  handle: ProcessHandle,
+  ptr: number,
+  bytes: Uint8Array,
+): Uint8Array {
+  const maxFds = handle.kernel.abi_max_fds();
+  const tableBytes = handle.kernel.kernel_ofd_table_bytes();
+  const slotBytes = tableBytes / maxFds;
+  if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
+    return bytes;
+  }
+  const tableStart = handle.kernelState.ofdTablePtr;
+  const tableEnd = tableStart + tableBytes;
+  const writeStart = ptr;
+  const writeEnd = ptr + bytes.length;
+  if (writeEnd <= tableStart || writeStart >= tableEnd) {
+    return bytes;
+  }
+
+  let masked: Uint8Array | null = null;
+  const firstOfdId = Math.max(1, Math.floor((Math.max(writeStart, tableStart) - tableStart) / slotBytes));
+  const lastOfdId = Math.min(
+    maxFds - 1,
+    Math.floor((Math.min(writeEnd - 1, tableEnd - 1) - tableStart) / slotBytes),
+  );
+  for (let ofdId = firstOfdId; ofdId <= lastOfdId; ofdId += 1) {
+    const slotStart = tableStart + ofdId * slotBytes;
+    const slotEnd = slotStart + slotBytes;
+    const overlapStart = Math.max(writeStart, slotStart);
+    const overlapEnd = Math.min(writeEnd, slotEnd);
+    if (overlapStart >= overlapEnd) {
+      continue;
+    }
+    const currentSlot = new Uint8Array(handle.memory.buffer, slotStart, slotBytes).slice();
+    const candidateSlot = currentSlot.slice();
+    candidateSlot.set(
+      bytes.subarray(overlapStart - writeStart, overlapEnd - writeStart),
+      overlapStart - slotStart,
+    );
+    if (!ofdSlotWriteWouldClobberIdentityOrRollBack(handle, currentSlot, candidateSlot)) {
+      continue;
+    }
+    if (masked === null) {
+      masked = bytes.slice();
+    }
+    masked.set(
+      currentSlot.subarray(overlapStart - slotStart, overlapEnd - slotStart),
+      overlapStart - writeStart,
+    );
+  }
+  return masked ?? bytes;
+}
+
+export function ofdSnapshotWouldRollBackRegularFileOffset(
+  handle: ProcessHandle,
+  msg: StatusMessageLike,
+  snapshot: OfdSlotSnapshotLike,
+  slotBytes: number,
+): boolean {
+  const fileType = handle.kernel.abi_fd_type_file?.();
+  if (fileType === undefined) {
+    return false;
+  }
+  const sourceView = new DataView(snapshot.slot.buffer, snapshot.slot.byteOffset, snapshot.slot.byteLength);
+  const sourceType = sourceView.getInt32(OFD_TYPE_OFFSET, true);
+  if (sourceType !== fileType) {
+    return false;
+  }
+  const targetType = handle.kernel.kernel_ofd_fd_type(snapshot.ofdId);
+  if (targetType !== fileType) {
+    return false;
+  }
+  const targetOffset = handle.kernelState.ofdTablePtr + snapshot.ofdId * slotBytes;
+  const targetView = new DataView(handle.memory.buffer, targetOffset, slotBytes);
+  const targetRefcount = targetView.getInt32(OFD_REFCOUNT_OFFSET, true);
+  if (targetRefcount <= 0) {
+    return false;
+  }
+  const sourceHostFd = sourceView.getInt32(OFD_HOST_FD_OFFSET, true);
+  const targetHostFd = targetView.getInt32(OFD_HOST_FD_OFFSET, true);
+  const sourceIno = sourceView.getUint32(OFD_INO_OFFSET, true);
+  const targetIno = targetView.getUint32(OFD_INO_OFFSET, true);
+  if (sourceHostFd !== targetHostFd || sourceIno !== targetIno) {
+    return false;
+  }
+  const sourceOffset = sourceView.getBigInt64(OFD_OFFSET_OFFSET, true);
+  const targetCurrentOffset = targetView.getBigInt64(OFD_OFFSET_OFFSET, true);
+  let maxOffsets = maxRegularFileOffsetByHandle.get(handle);
+  if (maxOffsets === undefined) {
+    maxOffsets = new Map();
+    maxRegularFileOffsetByHandle.set(handle, maxOffsets);
+  }
+  const maxSeenOffset = maxOffsets.get(snapshot.ofdId) ?? targetCurrentOffset;
+  const nextMaxOffset = sourceOffset > targetCurrentOffset ? sourceOffset : targetCurrentOffset;
+  if (nextMaxOffset > maxSeenOffset) {
+    maxOffsets.set(snapshot.ofdId, nextMaxOffset);
+  }
+  if (sourceOffset < maxSeenOffset) {
+    return true;
+  }
+  if (sourceOffset >= targetCurrentOffset) {
+    return false;
+  }
+  const syscallNr = msg.syscallNr;
+  const lseekNr = handle.kernel.abi_sys_lseek?.();
+  return syscallNr === undefined || syscallNr !== BigInt(lseekNr ?? 62);
+}
+
+export function recordRegularFileOfdOffsets(
+  handle: ProcessHandle,
+  msg: StatusMessageLike,
+  slotBytes: number,
+): void {
+  const fileType = handle.kernel.abi_fd_type_file?.();
+  if (fileType === undefined || !msg.ofdSlots || msg.ofdSlots.length === 0) {
+    return;
+  }
+  for (const snapshot of msg.ofdSlots) {
+    if (
+      snapshot.ofdId <= 0
+      || snapshot.ofdId >= handle.kernel.abi_max_fds()
+      || snapshot.slot.length !== slotBytes
+    ) {
+      continue;
+    }
+    const view = new DataView(snapshot.slot.buffer, snapshot.slot.byteOffset, snapshot.slot.byteLength);
+    if (view.getInt32(OFD_TYPE_OFFSET, true) !== fileType) {
+      continue;
+    }
+    const offsets = handle.regularFileOfdOffsets ?? new Map<number, { ino: number; hostFd: number; offset: bigint }>();
+    offsets.set(snapshot.ofdId, {
+      ino: view.getUint32(OFD_INO_OFFSET, true),
+      hostFd: view.getInt32(OFD_HOST_FD_OFFSET, true),
+      offset: view.getBigInt64(OFD_OFFSET_OFFSET, true),
+    });
+    handle.regularFileOfdOffsets = offsets;
+  }
 }
