@@ -7,11 +7,10 @@ import {
 } from "../../bridge/runtime-state.js";
 import { collectHeldEpollOfdIds, collectHeldOfdIdsByType } from "../ownership/ofd-table.js";
 import { kernelWorkerOwnsEpollState } from "../ownership/epoll-control.js";
-import { kernelWorkerOwnsPipeState } from "../ownership/pipe-control.js";
+import { composeHandlePipeUsed, kernelWorkerOwnsPipeState } from "../ownership/pipe-control.js";
 import { kernelWorkerOwnsSocketState } from "../ownership/socket-control.js";
 import { assertHandleWorkerProcessIdentity } from "../process-identity.js";
 import {
-  composeHandlePipeUsed,
   syncEpollStateViaKernelWorker,
   syncOfdStateViaKernelWorker,
   syncPipeStateViaKernelWorker,
