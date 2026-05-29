@@ -1,4 +1,8 @@
 import type { ProcessHandle } from "../types.js";
+import {
+  networkConnectionOfds,
+  restoreNetworkOfdSlotWatermarks,
+} from "./socket-control.js";
 
 const OFD_TYPE_OFFSET = 0;
 const OFD_HOST_FD_OFFSET = 4;
@@ -337,4 +341,44 @@ export function recordRegularFileOfdOffsets(
     });
     handle.regularFileOfdOffsets = offsets;
   }
+}
+
+export function applyThreadOfdSlots(
+  handle: ProcessHandle,
+  msg: StatusMessageLike,
+  appendStatusSocketDebug?: (handle: ProcessHandle, event: string) => void,
+): void {
+  restoreNetworkOfdSlotWatermarks(handle, appendStatusSocketDebug);
+  if (!msg.ofdSlots || msg.ofdSlots.length === 0) {
+    return;
+  }
+  const maxFds = handle.kernel.abi_max_fds();
+  const protectedNetworkOfds = new Set(networkConnectionOfds(handle).values());
+  const tableBytes = handle.kernel.kernel_ofd_table_bytes();
+  const slotBytes = tableBytes / maxFds;
+  if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
+    return;
+  }
+  const memory = new Uint8Array(handle.memory.buffer);
+  for (const snapshot of msg.ofdSlots) {
+    if (
+      snapshot.ofdId <= 0
+      || snapshot.ofdId >= maxFds
+      || snapshot.slot.length !== slotBytes
+    ) {
+      continue;
+    }
+    if (protectedNetworkOfds.has(snapshot.ofdId)) {
+      continue;
+    }
+    if (ofdSnapshotWouldClobberExistingSlot(handle, msg.fdEntries, snapshot, slotBytes)) {
+      continue;
+    }
+    if (ofdSnapshotWouldRollBackRegularFileOffset(handle, msg, snapshot, slotBytes)) {
+      continue;
+    }
+    memory.set(snapshot.slot, handle.kernelState.ofdTablePtr + snapshot.ofdId * slotBytes);
+  }
+  restoreNetworkOfdSlotWatermarks(handle, appendStatusSocketDebug);
+  recordRegularFileOfdOffsets(handle, msg, slotBytes);
 }

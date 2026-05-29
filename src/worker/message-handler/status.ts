@@ -19,10 +19,16 @@ import {
   networkSocketSlotRecvBufferIndex,
 } from "../network-socket-close.js";
 import {
-  networkConnectionOfds,
   pruneStaleNetworkConnectionsFromFdEntries,
-  restoreNetworkOfdSlotWatermarks,
 } from "../ownership/socket-control.js";
+import {
+  applyThreadFdEntries,
+} from "../ownership/fd-table.js";
+import {
+  applyThreadOfdSlots,
+  maskIncompatibleOfdSlotKernelWrite,
+  maskRegularFileFdEntryRollbackGuestWrite,
+} from "../ownership/ofd-slot.js";
 import { recordWorkerMessageDebugEvent, type ProcessHandle } from "../types.js";
 import { createWorkerOwnedStateSyncHandler } from "./owned-state-sync.js";
 import { createWorkerStatusTransitionHandler } from "./transitions.js";
@@ -33,13 +39,6 @@ import type {
 import { formatCompactDebugSuffix, readProcessPidField, WRITE_DEBUG_KEYS } from "./debug-summary.js";
 import { createWorkerWaitInWorkerStatusHandler } from "./wait-in-worker.js";
 import { FS_RING_TOTAL_BYTES } from "../../layout/fs-ring.js";
-import {
-  maskIncompatibleOfdSlotKernelWrite,
-  maskRegularFileFdEntryRollbackGuestWrite,
-  ofdSnapshotWouldClobberExistingSlot,
-  ofdSnapshotWouldRollBackRegularFileOffset,
-  recordRegularFileOfdOffsets,
-} from "../ownership/ofd-slot.js";
 
 const STATUS_SOCKET_DEBUG_LOG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_LOG ?? "") === "1"
   || ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_NETWORK ?? "") === "1";
@@ -174,30 +173,6 @@ function readNetworkRecvBufferDebug(
   const absolute = handle.kernelState.netBufBase + recvBufIdx * netBufferBytes;
   const view = new DataView(handle.memory.buffer, absolute, NET_BUFFER_HEADER_BYTES);
   return `${view.getUint32(NET_BUFFER_HEAD_OFFSET, true)}/${view.getUint32(NET_BUFFER_TAIL_OFFSET, true)}`;
-}
-
-function applyThreadFdEntries(handle: ProcessHandle, msg: ThreadWorkerStatusMessage): void {
-  if (!msg.fdEntries || msg.vmPtr === 0) {
-    return;
-  }
-  restoreNetworkOfdSlotWatermarks(handle, appendStatusSocketDebug);
-  const maxFds = handle.kernel.abi_max_fds();
-  const networkOfds = networkConnectionOfds(handle);
-  for (const entry of msg.fdEntries) {
-    if (entry.fd < 0 || entry.fd >= maxFds) {
-      continue;
-    }
-    const expectedNetworkOfd = networkOfds.get(entry.fd);
-    if (
-      expectedNetworkOfd !== undefined
-      && entry.ofdId !== 0
-      && entry.ofdId !== expectedNetworkOfd
-      && !handle.networkClosedFds.has(entry.fd)
-    ) {
-      continue;
-    }
-    handle.kernel.process_set_fd_entry(msg.vmPtr, entry.fd, entry.ofdId, entry.fdFlags);
-  }
 }
 
 function applyThreadGuestMemoryWrites(
@@ -442,51 +417,6 @@ function formatLifecycleFdTrace(trace: string, maxLength = 360): string {
   return trace.length <= maxLength
     ? trace
     : `${trace.slice(0, maxLength)}...`;
-}
-
-function applyThreadOfdSlots(handle: ProcessHandle, msg: ThreadWorkerStatusMessage): void {
-  restoreNetworkOfdSlotWatermarks(handle, appendStatusSocketDebug);
-  if (!msg.ofdSlots || msg.ofdSlots.length === 0) {
-    return;
-  }
-  const maxFds = handle.kernel.abi_max_fds();
-  const protectedNetworkOfds = new Set(networkConnectionOfds(handle).values());
-  const tableBytes = handle.kernel.kernel_ofd_table_bytes();
-  const slotBytes = tableBytes / maxFds;
-  if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
-    return;
-  }
-  const fdByOfd = new Map<number, number[]>();
-  for (const entry of msg.fdEntries ?? []) {
-    if (entry.ofdId <= 0) {
-      continue;
-    }
-    const fds = fdByOfd.get(entry.ofdId) ?? [];
-    fds.push(entry.fd);
-    fdByOfd.set(entry.ofdId, fds);
-  }
-  const memory = new Uint8Array(handle.memory.buffer);
-  for (const snapshot of msg.ofdSlots) {
-    if (
-      snapshot.ofdId <= 0
-      || snapshot.ofdId >= maxFds
-      || snapshot.slot.length !== slotBytes
-    ) {
-      continue;
-    }
-    if (protectedNetworkOfds.has(snapshot.ofdId)) {
-      continue;
-    }
-    if (ofdSnapshotWouldClobberExistingSlot(handle, msg.fdEntries, snapshot, slotBytes)) {
-      continue;
-    }
-    if (ofdSnapshotWouldRollBackRegularFileOffset(handle, msg, snapshot, slotBytes)) {
-      continue;
-    }
-    memory.set(snapshot.slot, handle.kernelState.ofdTablePtr + snapshot.ofdId * slotBytes);
-  }
-  restoreNetworkOfdSlotWatermarks(handle, appendStatusSocketDebug);
-  recordRegularFileOfdOffsets(handle, msg, slotBytes);
 }
 
 function pipeSlotLifecycleDebugEnabled(): boolean {
@@ -1545,8 +1475,8 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
           { skipFsRingWrites: msg.status === handle.kernel.abi_status_fs() },
         );
         applyThreadGuestMemoryWrites(handle, msg, deps.appendRuntimeLifecycleEvent);
-        applyThreadOfdSlots(handle, msg);
-        applyThreadFdEntries(handle, msg);
+        applyThreadOfdSlots(handle, msg, appendStatusSocketDebug);
+        applyThreadFdEntries(handle, msg.vmPtr, msg.fdEntries, appendStatusSocketDebug);
         pruneStaleNetworkConnectionsFromFdEntries(handle, msg.vmPtr, msg.fdEntries, {
           appendStatusSocketDebug,
           appendWorkerDebugLog: deps.appendWorkerDebugLog,
@@ -1580,8 +1510,8 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       );
     }
     if (statusBelongsToHandle) {
-      applyThreadOfdSlots(handle, msg);
-      applyThreadFdEntries(handle, msg);
+      applyThreadOfdSlots(handle, msg, appendStatusSocketDebug);
+      applyThreadFdEntries(handle, msg.vmPtr, msg.fdEntries, appendStatusSocketDebug);
       pruneStaleNetworkConnectionsFromFdEntries(handle, msg.vmPtr, msg.fdEntries, {
         appendStatusSocketDebug,
         appendWorkerDebugLog: deps.appendWorkerDebugLog,
@@ -1712,8 +1642,8 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       applyThreadKernelMemoryWrites(handle, msg, deps.appendRuntimeLifecycleEvent);
       applyThreadGuestMemoryWrites(handle, msg, deps.appendRuntimeLifecycleEvent);
       applyThreadPipeSlots(handle, msg, deps.appendRuntimeLifecycleEvent);
-      applyThreadOfdSlots(handle, msg);
-      applyThreadFdEntries(handle, msg);
+      applyThreadOfdSlots(handle, msg, appendStatusSocketDebug);
+      applyThreadFdEntries(handle, msg.vmPtr, msg.fdEntries, appendStatusSocketDebug);
       applyThreadSocketState(handle, msg);
       for (const pre of adoptPreSnapshots) {
         const postPc = handle.kernel.thread_pc(pre.vmPtr);
