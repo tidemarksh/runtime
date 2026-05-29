@@ -11,7 +11,7 @@ import {
   type RuntimeProcessWorkerLogFocus,
 } from "./diagnostics/worker-focus.js";
 import {
-  appendRuntimeLifecycleEvent as appendRuntimeLifecycleEventImpl,
+  retainRuntimeLifecycleEvents,
 } from "./diagnostics/lifecycle-log.js";
 import {
   applyFsEntryToHandle,
@@ -201,7 +201,8 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
   }
 
   function appendRuntimeLifecycleEvent(runtimeId: number, event: string): void {
-    appendRuntimeLifecycleEventImpl(runtimeId, event, runtimeLifecycleEvents);
+    const events = runtimeLifecycleEvents.get(runtimeId) ?? [];
+    runtimeLifecycleEvents.set(runtimeId, retainRuntimeLifecycleEvents([...events, event]));
   }
 
   function debugRuntimeWorkerLogFocus(runtimeId: number) {

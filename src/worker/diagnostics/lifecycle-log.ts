@@ -1,10 +1,4 @@
-export function appendRuntimeLifecycleEvent(
-  runtimeId: number,
-  event: string,
-  runtimeLifecycleEvents: Map<number, string[]>,
-): void {
-  const events = runtimeLifecycleEvents.get(runtimeId) ?? [];
-  events.push(event);
+export function retainRuntimeLifecycleEvents(events: readonly string[]): string[] {
   if (events.length > 5000) {
     const important = events.filter((entry) => (
       entry.includes("fork")
@@ -17,7 +11,7 @@ export function appendRuntimeLifecycleEvent(
       || entry.includes("ownership")
     ));
     const tail = events.slice(-3000);
-    events.splice(0, events.length, ...[...new Set([...important.slice(-2000), ...tail])]);
+    return [...new Set([...important.slice(-2000), ...tail])];
   }
-  runtimeLifecycleEvents.set(runtimeId, events);
+  return [...events];
 }
