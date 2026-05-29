@@ -27,6 +27,17 @@ import {
   staleKernelShareOfdIds,
   trackForkSharedOfds,
 } from "./ownership/ofd-table.js";
+import {
+  ofdIdsFromFdEntries,
+  restoreProcessFdEntries,
+  snapshotProcessFdEntries,
+} from "./ownership/fd-table.js";
+import {
+  restoreProcessState,
+  restoreProcessStates,
+  snapshotProcessState,
+  snapshotProcessStates,
+} from "./ownership/process-state.js";
 import type { ProcessHandle } from "./types.js";
 import {
   forceNetworkClosedFds,
@@ -62,79 +73,6 @@ const OFD_TYPE_OFFSET = 0;
 const OFD_HOST_FD_OFFSET = 4;
 const OFD_OFFSET_OFFSET = 16;
 const OFD_INO_OFFSET = 24;
-
-type ProcessStateSnapshot = {
-  offset: number;
-  bytes: Uint8Array;
-};
-
-type HandleProcessStateSnapshot = {
-  handle: ProcessHandle;
-  snapshot: ProcessStateSnapshot | null;
-};
-
-function snapshotProcessState(handle: ProcessHandle): ProcessStateSnapshot | null {
-  if (handle.vmPtr === 0) {
-    return null;
-  }
-  const processPtr = handle.kernel.thread_process_ptr(handle.vmPtr);
-  const processBytes = handle.kernel.process_state_bytes();
-  const offset = handle.guestBase + processPtr;
-  if (
-    processPtr === 0
-    || processBytes <= 0
-    || offset < 0
-    || offset + processBytes > handle.memory.buffer.byteLength
-  ) {
-    return null;
-  }
-  return {
-    offset,
-    bytes: new Uint8Array(handle.memory.buffer, offset, processBytes).slice(),
-  };
-}
-
-function restoreProcessState(
-  handle: ProcessHandle,
-  snapshot: ProcessStateSnapshot | null,
-  options: { preserveCurrentFdTable?: boolean } = {},
-): void {
-  if (snapshot === null || snapshot.offset + snapshot.bytes.length > handle.memory.buffer.byteLength) {
-    return;
-  }
-  const target = new Uint8Array(handle.memory.buffer, snapshot.offset, snapshot.bytes.length);
-  const preservedFdTable = options.preserveCurrentFdTable === true
-    ? target.slice(0, Math.min(snapshot.bytes.length, handle.kernel.abi_max_fds() * 8))
-    : null;
-  target.set(snapshot.bytes);
-  if (preservedFdTable !== null) {
-    target.set(preservedFdTable, 0);
-  }
-  handle.kernelState = readKernelRuntimeState(handle.kernel);
-  attachKernelRuntimeState(handle.kernel, handle.kernelState);
-}
-
-function snapshotProcessStates(handles: Iterable<ProcessHandle>): HandleProcessStateSnapshot[] {
-  const snapshots: HandleProcessStateSnapshot[] = [];
-  const seen = new Set<ProcessHandle>();
-  for (const handle of handles) {
-    if (seen.has(handle)) {
-      continue;
-    }
-    seen.add(handle);
-    snapshots.push({
-      handle,
-      snapshot: snapshotProcessState(handle),
-    });
-  }
-  return snapshots;
-}
-
-function restoreProcessStates(snapshots: readonly HandleProcessStateSnapshot[]): void {
-  for (const { handle, snapshot } of snapshots) {
-    restoreProcessState(handle, snapshot, { preserveCurrentFdTable: true });
-  }
-}
 
 function int32AtomicView(buffer: ArrayBufferLike): Int32Array | null {
   return buffer instanceof SharedArrayBuffer ? new Int32Array(buffer) : null;
@@ -1835,18 +1773,6 @@ function repairHandleVmPidAfterKernelStateAttach(
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
 }
 
-function snapshotProcessFdEntries(handle: ProcessHandle, vmPtr: number): KernelWorkerFdEntrySnapshot[] {
-  const fdEntries: KernelWorkerFdEntrySnapshot[] = [];
-  for (let fd = 0; fd < handle.kernel.abi_max_fds(); fd += 1) {
-    fdEntries.push({
-      fd,
-      ofdId: handle.kernel.process_fd_ofd_id(vmPtr, fd),
-      fdFlags: handle.kernel.process_fd_flags(vmPtr, fd),
-    });
-  }
-  return fdEntries;
-}
-
 function snapshotRuntimeNetworkFdEntries(
   handle: ProcessHandle,
   vmPtr: number,
@@ -1904,35 +1830,6 @@ function restoreRuntimeNetworkKernelState(
   restoreProcessFdEntries(snapshot.handle, snapshot.vmPtr, snapshot.fdEntries);
   snapshot.handle.kernelState = readKernelRuntimeState(snapshot.handle.kernel);
   attachKernelRuntimeState(snapshot.handle.kernel, snapshot.handle.kernelState);
-}
-
-function restoreProcessFdEntries(
-  handle: ProcessHandle,
-  vmPtr: number,
-  entries: readonly KernelWorkerFdEntrySnapshot[],
-): void {
-  if (vmPtr === 0 || entries.length === 0 || !handle.kernel.process_set_fd_entry) {
-    return;
-  }
-  const maxFds = handle.kernel.abi_max_fds();
-  for (const entry of entries) {
-    if (entry.fd < 0 || entry.fd >= maxFds || entry.ofdId < 0 || entry.ofdId >= maxFds) {
-      continue;
-    }
-    handle.kernel.process_set_fd_entry(vmPtr, entry.fd, entry.ofdId, entry.fdFlags);
-  }
-}
-
-function ofdIdsFromFdEntries(
-  handle: ProcessHandle,
-  fdEntries: KernelWorkerFdEntrySnapshot[],
-): number[] {
-  const maxFds = handle.kernel.abi_max_fds();
-  return [...new Set(
-    fdEntries
-      .map((entry) => entry.ofdId)
-      .filter((ofdId) => ofdId > 0 && ofdId < maxFds),
-  )];
 }
 
 export function snapshotProcessFdOfdStateForKernelWorker(
