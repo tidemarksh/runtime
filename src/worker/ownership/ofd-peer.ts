@@ -1,6 +1,13 @@
 import type { ProcessHandle } from "../types.js";
-import { collectProcessHeldOfds } from "./ofd-table.js";
-import { hasPipePeerInOtherKernelShareMember } from "./pipe-control.js";
+import {
+  collectProcessHeldOfds,
+  trackForkSharedOfds,
+} from "./ofd-table.js";
+import {
+  hasPipePeerInOtherKernelShareMember,
+  isProcessHostStdioOfd,
+  isProcessHostStdioPipeOfd,
+} from "./pipe-control.js";
 
 function forkSharedOfdIdentityKey(handle: ProcessHandle, ofdId: number): string | null {
   if (ofdId <= 0 || ofdId >= handle.kernel.abi_max_fds()) {
@@ -157,6 +164,22 @@ export function collectTrackableForkSharedOfds(handle: ProcessHandle): Set<numbe
     tracked.add(ofdId);
   }
   return tracked;
+}
+
+export function trackHeldForkSharedOfds(handle: ProcessHandle, vmPtr: number): void {
+  trackForkSharedOfds(handle, vmPtr, false);
+  for (const ofdId of collectProcessHeldOfds(handle)) {
+    if (isProcessHostStdioOfd(handle, vmPtr, ofdId) || isProcessHostStdioPipeOfd(handle, ofdId)) {
+      continue;
+    }
+    if (
+      !handle.kernelShare.sharedOfdIds.has(ofdId)
+      && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_file()
+    ) {
+      continue;
+    }
+    handle.kernelShare.sharedOfdIds.add(ofdId);
+  }
 }
 
 export function isRegularFileOfd(handle: ProcessHandle, ofdId: number): boolean {

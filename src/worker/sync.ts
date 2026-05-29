@@ -30,7 +30,6 @@ import {
   snapshotRuntimeNetworkOfdSlots,
   staleKernelShareOfdIds,
   syncPipeOfdGenerationsForSlot,
-  trackForkSharedOfds,
 } from "./ownership/ofd-table.js";
 import {
   isRegularFileOfd,
@@ -38,6 +37,7 @@ import {
   sourceOfdCanPublishForkSharedState,
   targetHasIncompatibleForkSharedOfd,
   targetHoldsSyncedRegularFileOfd,
+  trackHeldForkSharedOfds,
 } from "./ownership/ofd-peer.js";
 import {
   ofdIdsFromFdEntries,
@@ -54,10 +54,9 @@ import {
   composeHandlePipeUsed,
   expandPipePeerOfdIds,
   hasPipePeerInOtherKernelShareMember,
-  hostStdioPipeSlotsForFd,
-  isProcessHostStdioOfd,
   isProcessHostStdioPipeOfd,
   liveProcessPipeUsedBits,
+  preserveHostStdioPipeControlForStep,
 } from "./ownership/pipe-control.js";
 import {
   collectRuntimeNetworkSocketOfdIds,
@@ -706,56 +705,6 @@ function snapshotNonEmptyHostOutputPipeSlots(
     });
   }
   return snapshots;
-}
-
-function preserveHostStdioPipeControl(handle: ProcessHandle): void {
-  const maxPipes = handle.kernel.abi_max_pipes();
-  const pipeRegionBytes = handle.kernel.kernel_pipe_region_bytes();
-  const slotBytes = pipeRegionBytes / maxPipes;
-  if (!Number.isInteger(slotBytes) || slotBytes <= PIPE_DEBUG_HEADER_BYTES) {
-    return;
-  }
-  const view = new DataView(handle.memory.buffer);
-  const preserve = (
-    pipeSlot: number,
-    readOpenMin: number,
-    writeOpenMin: number,
-  ): void => {
-    if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
-      return;
-    }
-    const offset = handle.kernelState.pipeBase + pipeSlot * slotBytes;
-    if (readOpenMin > 0) {
-      const readOpen = view.getInt32(offset + PIPE_DEBUG_READ_OPEN_OFFSET, true);
-      if (readOpen < readOpenMin) {
-        view.setInt32(offset + PIPE_DEBUG_READ_OPEN_OFFSET, readOpenMin, true);
-      }
-    }
-    if (writeOpenMin > 0) {
-      const writeOpen = view.getInt32(offset + PIPE_DEBUG_WRITE_OPEN_OFFSET, true);
-      if (writeOpen < writeOpenMin) {
-        view.setInt32(offset + PIPE_DEBUG_WRITE_OPEN_OFFSET, writeOpenMin, true);
-      }
-    }
-  };
-  for (const [fd, readOpenMin, writeOpenMin] of [
-    [0, 0, 1],
-    [1, 1, 0],
-    [2, 1, 0],
-  ] as const) {
-    const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
-    if (
-      ofdId <= 0
-      || ofdId >= handle.kernel.abi_max_fds()
-      || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
-    ) {
-      continue;
-    }
-    const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-    if (hostStdioPipeSlotsForFd(handle, fd).has(pipeSlot)) {
-      preserve(pipeSlot, readOpenMin, writeOpenMin);
-    }
-  }
 }
 
 function formatNetworkSocketDebug(handle: ProcessHandle): string {
@@ -1682,22 +1631,6 @@ export function snapshotProcessFdOfdStateForKernelWorker(
   return { fdEntries, ofdSlots };
 }
 
-function trackHeldForkSharedOfds(handle: ProcessHandle, vmPtr: number): void {
-  trackForkSharedOfds(handle, vmPtr, false);
-  for (const ofdId of collectProcessHeldOfds(handle)) {
-    if (isProcessHostStdioOfd(handle, vmPtr, ofdId) || isProcessHostStdioPipeOfd(handle, ofdId)) {
-      continue;
-    }
-    if (
-      !handle.kernelShare.sharedOfdIds.has(ofdId)
-      && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_file()
-    ) {
-      continue;
-    }
-    handle.kernelShare.sharedOfdIds.add(ofdId);
-  }
-}
-
 function collectTracedForkSharedOfdIds(
   handle: ProcessHandle,
   sourceVmPtr: number,
@@ -2091,12 +2024,12 @@ export async function syncForkSharedStateViaKernelWorker(
   for (const snapshot of preservedRuntimeNetworkKernelStates) {
     restoreRuntimeNetworkKernelState(snapshot);
   }
-  preserveHostStdioPipeControl(handle);
+  preserveHostStdioPipeControlForStep(handle, handle.vmPtr);
   for (const member of kernelShareOtherMembers(handle)) {
     if (member.runningWorker !== null || member.exitInProgress) {
       continue;
     }
-    preserveHostStdioPipeControl(member);
+    preserveHostStdioPipeControlForStep(member, member.vmPtr);
   }
   handle.kernelState = readKernelRuntimeState(handle.kernel);
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
@@ -2326,14 +2259,14 @@ export async function syncPipeStateViaKernelWorker(handle: ProcessHandle): Promi
   if (hostOutputPipeSlots.length > 0) {
     mergePipeSlotSnapshotsIntoHandle(handle, hostOutputPipeSlots);
   }
-  preserveHostStdioPipeControl(handle);
+  preserveHostStdioPipeControlForStep(handle, handle.vmPtr);
   if (pipeSlots.length > 0) {
     for (const member of kernelShareOtherMembers(handle)) {
       if (member.runningWorker !== null || member.exitInProgress) {
         continue;
       }
       mergePipeSlotSnapshotsIntoHandle(member, pipeSlots);
-      preserveHostStdioPipeControl(member);
+      preserveHostStdioPipeControlForStep(member, member.vmPtr);
     }
   }
   restoreLocalOfdSlots(handle, preservedFdOfdSlots);
