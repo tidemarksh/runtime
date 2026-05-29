@@ -1,5 +1,8 @@
 import type { RuntimeNetworkBridge } from "../../network.js";
-import type { KernelWorkerSocketStateSnapshot } from "../../messages.js";
+import type {
+  KernelWorkerFdEntrySnapshot,
+  KernelWorkerSocketStateSnapshot,
+} from "../../messages.js";
 import type { KernelOwnershipHandle, ProcessHandle } from "../types.js";
 
 const OFD_TYPE_OFFSET = 0;
@@ -26,6 +29,163 @@ export function socketOfdForFd(handle: ProcessHandle, vmPtr: number, fd: number)
 export function networkConnectionOfds(handle: ProcessHandle): Map<number, number> {
   handle.networkConnectionOfds ??= new Map();
   return handle.networkConnectionOfds;
+}
+
+type SocketStatusDebug = (handle: ProcessHandle, event: string) => void;
+
+export function restoreNetworkOfdSlotWatermarks(
+  handle: ProcessHandle,
+  appendStatusSocketDebug?: SocketStatusDebug,
+): void {
+  const watermarks = handle.networkOfdSlotWatermarks;
+  if (!watermarks || watermarks.size === 0) {
+    return;
+  }
+  const maxFds = handle.kernel.abi_max_fds();
+  const tableBytes = handle.kernel.kernel_ofd_table_bytes();
+  const slotBytes = tableBytes / maxFds;
+  if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
+    return;
+  }
+  const memory = new Uint8Array(handle.memory.buffer);
+  for (const ofdId of networkConnectionOfds(handle).values()) {
+    const slot = watermarks.get(ofdId);
+    if (!slot || slot.length !== slotBytes || ofdId <= 0 || ofdId >= maxFds) {
+      continue;
+    }
+    if (handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_socket()) {
+      continue;
+    }
+    memory.set(slot, handle.kernelState.ofdTablePtr + ofdId * slotBytes);
+    appendStatusSocketDebug?.(handle, `net-status-ofd-restore:${handle.pid}:ofd=${ofdId}`);
+  }
+}
+
+function clearNetworkRecvWatermarks(
+  handle: ProcessHandle,
+  fd: number,
+  appendStatusSocketDebug?: SocketStatusDebug,
+): void {
+  if (handle.networkRecvPayloadWatermarks?.has(fd)) {
+    appendStatusSocketDebug?.(handle, `net-status-watermark-clear:${handle.pid}:fd=${fd}`);
+  }
+  handle.networkRecvHeadWatermarks.delete(fd);
+  handle.networkRecvTailWatermarks.delete(fd);
+  handle.networkRecvPayloadWatermarks ??= new Map();
+  handle.networkRecvPayloadWatermarks.delete(fd);
+  handle.networkSocketSlotWatermarks ??= new Map();
+  handle.networkSocketSlotWatermarks.delete(fd);
+}
+
+function moveNetworkRecvWatermarks(
+  handle: ProcessHandle,
+  fromFd: number,
+  toFd: number,
+  appendStatusSocketDebug?: SocketStatusDebug,
+): void {
+  if (fromFd === toFd) {
+    return;
+  }
+  const head = handle.networkRecvHeadWatermarks.get(fromFd);
+  const tail = handle.networkRecvTailWatermarks.get(fromFd);
+  handle.networkRecvPayloadWatermarks ??= new Map();
+  const payload = handle.networkRecvPayloadWatermarks.get(fromFd);
+  handle.networkSocketSlotWatermarks ??= new Map();
+  const socketSlot = handle.networkSocketSlotWatermarks.get(fromFd);
+  clearNetworkRecvWatermarks(handle, fromFd, appendStatusSocketDebug);
+  if (head !== undefined) {
+    handle.networkRecvHeadWatermarks.set(toFd, head);
+  }
+  if (tail !== undefined) {
+    handle.networkRecvTailWatermarks.set(toFd, tail);
+  }
+  if (payload !== undefined) {
+    handle.networkRecvPayloadWatermarks.set(toFd, payload);
+  }
+  if (socketSlot !== undefined) {
+    handle.networkSocketSlotWatermarks.set(toFd, socketSlot);
+  }
+}
+
+export function pruneStaleNetworkConnectionsFromFdEntries(
+  handle: ProcessHandle,
+  vmPtr: number,
+  fdEntries: readonly KernelWorkerFdEntrySnapshot[] | undefined,
+  callbacks: {
+    appendWorkerDebugLog: (handle: ProcessHandle, event: string) => void;
+    failProcess: (handle: ProcessHandle, error: Error) => void;
+    appendStatusSocketDebug?: SocketStatusDebug;
+  },
+): void {
+  if (!fdEntries || vmPtr === 0 || handle.networkConnections.size === 0) {
+    return;
+  }
+  const ofds = networkConnectionOfds(handle);
+  const maxFds = handle.kernel.abi_max_fds();
+  const findFdForOfd = (ofdId: number, preferredFd: number): number | null => {
+    if (ofdId <= 0) {
+      return null;
+    }
+    if (handle.kernel.process_fd_ofd_id(vmPtr, preferredFd) === ofdId) {
+      return preferredFd;
+    }
+    for (let fd = 0; fd < maxFds; fd += 1) {
+      if (fd !== preferredFd && handle.kernel.process_fd_ofd_id(vmPtr, fd) === ofdId) {
+        return fd;
+      }
+    }
+    return null;
+  };
+  for (const [fd, connection] of [...handle.networkConnections]) {
+    const fdEntry = fdEntries.find((entry) => entry.fd === fd);
+    const expectedOfd = ofds.get(fd);
+    const currentOfd = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    if (expectedOfd === undefined) {
+      if (currentOfd > 0) {
+        ofds.set(fd, currentOfd);
+        continue;
+      }
+    } else if (currentOfd === expectedOfd) {
+      continue;
+    } else {
+      const replacementFd = findFdForOfd(expectedOfd, fd);
+      if (replacementFd !== null) {
+        if (replacementFd !== fd) {
+          handle.networkConnections.delete(fd);
+          handle.networkConnections.set(replacementFd, connection);
+          ofds.delete(fd);
+          ofds.set(replacementFd, expectedOfd);
+          moveNetworkRecvWatermarks(handle, fd, replacementFd, callbacks.appendStatusSocketDebug);
+          callbacks.appendWorkerDebugLog(handle, `net-status-rekey:${handle.pid}:fd=${fd}->${replacementFd}:ofd=${expectedOfd}`);
+        }
+        continue;
+      }
+      if (
+        currentOfd > 0
+        && handle.kernel.kernel_ofd_fd_type(currentOfd) === handle.kernel.abi_fd_type_socket()
+        && !handle.networkPendingConnectFds.has(fd)
+      ) {
+        ofds.set(fd, currentOfd);
+        callbacks.appendWorkerDebugLog(handle, `net-status-rekey:${handle.pid}:fd=${fd}:ofd=${expectedOfd}->${currentOfd}`);
+        continue;
+      }
+    }
+    if (
+      !handle.networkClosedFds.has(fd)
+      && !(fdEntry?.ofdId === 0 && currentOfd === 0)
+    ) {
+      callbacks.appendWorkerDebugLog(handle, `net-status-keep:${handle.pid}:fd=${fd}:ofd=${expectedOfd ?? "unknown"}->${currentOfd}`);
+      continue;
+    }
+    handle.networkConnections.delete(fd);
+    ofds.delete(fd);
+    handle.networkPendingConnectFds.delete(fd);
+    clearNetworkRecvWatermarks(handle, fd, callbacks.appendStatusSocketDebug);
+    callbacks.appendWorkerDebugLog(handle, `net-status-close:${handle.pid}:fd=${fd}:ofd=${expectedOfd ?? "unknown"}->${currentOfd}`);
+    void Promise.resolve(connection.close?.()).catch((error) => {
+      callbacks.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+    });
+  }
 }
 
 export function isSocketOfd(handle: ProcessHandle, ofdId: number): boolean {

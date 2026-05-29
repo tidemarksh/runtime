@@ -18,6 +18,11 @@ import {
   forceNetworkClosedFds,
   networkSocketSlotRecvBufferIndex,
 } from "../network-socket-close.js";
+import {
+  networkConnectionOfds,
+  pruneStaleNetworkConnectionsFromFdEntries,
+  restoreNetworkOfdSlotWatermarks,
+} from "../ownership/socket-control.js";
 import { recordWorkerMessageDebugEvent, type ProcessHandle } from "../types.js";
 import { createWorkerOwnedStateSyncHandler } from "./owned-state-sync.js";
 import { createWorkerStatusTransitionHandler } from "./transitions.js";
@@ -175,7 +180,7 @@ function applyThreadFdEntries(handle: ProcessHandle, msg: ThreadWorkerStatusMess
   if (!msg.fdEntries || msg.vmPtr === 0) {
     return;
   }
-  restoreNetworkOfdSlotWatermarks(handle);
+  restoreNetworkOfdSlotWatermarks(handle, appendStatusSocketDebug);
   const maxFds = handle.kernel.abi_max_fds();
   const networkOfds = networkConnectionOfds(handle);
   for (const entry of msg.fdEntries) {
@@ -388,149 +393,6 @@ function memfsKernelWriteTargetPtr(
   }
 }
 
-function networkConnectionOfds(handle: ProcessHandle): Map<number, number> {
-  handle.networkConnectionOfds ??= new Map();
-  return handle.networkConnectionOfds;
-}
-
-function restoreNetworkOfdSlotWatermarks(handle: ProcessHandle): void {
-  const watermarks = handle.networkOfdSlotWatermarks;
-  if (!watermarks || watermarks.size === 0) {
-    return;
-  }
-  const maxFds = handle.kernel.abi_max_fds();
-  const tableBytes = handle.kernel.kernel_ofd_table_bytes();
-  const slotBytes = tableBytes / maxFds;
-  if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
-    return;
-  }
-  const memory = new Uint8Array(handle.memory.buffer);
-  for (const ofdId of networkConnectionOfds(handle).values()) {
-    const slot = watermarks.get(ofdId);
-    if (!slot || slot.length !== slotBytes || ofdId <= 0 || ofdId >= maxFds) {
-      continue;
-    }
-    if (handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_socket()) {
-      continue;
-    }
-    memory.set(slot, handle.kernelState.ofdTablePtr + ofdId * slotBytes);
-    appendStatusSocketDebug(handle, `net-status-ofd-restore:${handle.pid}:ofd=${ofdId}`);
-  }
-}
-
-function clearNetworkRecvWatermarks(handle: ProcessHandle, fd: number): void {
-  if (handle.networkRecvPayloadWatermarks?.has(fd)) {
-    appendStatusSocketDebug(handle, `net-status-watermark-clear:${handle.pid}:fd=${fd}`);
-  }
-  handle.networkRecvHeadWatermarks.delete(fd);
-  handle.networkRecvTailWatermarks.delete(fd);
-  handle.networkRecvPayloadWatermarks ??= new Map();
-  handle.networkRecvPayloadWatermarks.delete(fd);
-  handle.networkSocketSlotWatermarks ??= new Map();
-  handle.networkSocketSlotWatermarks.delete(fd);
-}
-
-function moveNetworkRecvWatermarks(handle: ProcessHandle, fromFd: number, toFd: number): void {
-  if (fromFd === toFd) {
-    return;
-  }
-  const head = handle.networkRecvHeadWatermarks.get(fromFd);
-  const tail = handle.networkRecvTailWatermarks.get(fromFd);
-  handle.networkRecvPayloadWatermarks ??= new Map();
-  const payload = handle.networkRecvPayloadWatermarks.get(fromFd);
-  handle.networkSocketSlotWatermarks ??= new Map();
-  const socketSlot = handle.networkSocketSlotWatermarks.get(fromFd);
-  clearNetworkRecvWatermarks(handle, fromFd);
-  if (head !== undefined) {
-    handle.networkRecvHeadWatermarks.set(toFd, head);
-  }
-  if (tail !== undefined) {
-    handle.networkRecvTailWatermarks.set(toFd, tail);
-  }
-  if (payload !== undefined) {
-    handle.networkRecvPayloadWatermarks.set(toFd, payload);
-  }
-  if (socketSlot !== undefined) {
-    handle.networkSocketSlotWatermarks.set(toFd, socketSlot);
-  }
-}
-
-function pruneStaleNetworkConnectionsFromFdEntries(
-  handle: ProcessHandle,
-  msg: ThreadWorkerStatusMessage,
-  deps: WorkerMessageHandlerDeps,
-): void {
-  if (!msg.fdEntries || msg.vmPtr === 0 || handle.networkConnections.size === 0) {
-    return;
-  }
-  const ofds = networkConnectionOfds(handle);
-  const maxFds = handle.kernel.abi_max_fds();
-  const findFdForOfd = (ofdId: number, preferredFd: number): number | null => {
-    if (ofdId <= 0) {
-      return null;
-    }
-    if (handle.kernel.process_fd_ofd_id(msg.vmPtr, preferredFd) === ofdId) {
-      return preferredFd;
-    }
-    for (let fd = 0; fd < maxFds; fd += 1) {
-      if (fd !== preferredFd && handle.kernel.process_fd_ofd_id(msg.vmPtr, fd) === ofdId) {
-        return fd;
-      }
-    }
-    return null;
-  };
-  for (const [fd, connection] of [...handle.networkConnections]) {
-    const fdEntry = msg.fdEntries.find((entry) => entry.fd === fd);
-    const expectedOfd = ofds.get(fd);
-    const currentOfd = handle.kernel.process_fd_ofd_id(msg.vmPtr, fd);
-    if (expectedOfd === undefined) {
-      if (currentOfd > 0) {
-        ofds.set(fd, currentOfd);
-        continue;
-      }
-    } else if (currentOfd === expectedOfd) {
-      continue;
-    } else {
-      const replacementFd = findFdForOfd(expectedOfd, fd);
-      if (replacementFd !== null) {
-        if (replacementFd !== fd) {
-          handle.networkConnections.delete(fd);
-          handle.networkConnections.set(replacementFd, connection);
-          ofds.delete(fd);
-          ofds.set(replacementFd, expectedOfd);
-          moveNetworkRecvWatermarks(handle, fd, replacementFd);
-          deps.appendWorkerDebugLog(handle, `net-status-rekey:${handle.pid}:fd=${fd}->${replacementFd}:ofd=${expectedOfd}`);
-        }
-        continue;
-      }
-      if (
-        currentOfd > 0
-        && handle.kernel.kernel_ofd_fd_type(currentOfd) === handle.kernel.abi_fd_type_socket()
-        && !handle.networkPendingConnectFds.has(fd)
-      ) {
-        ofds.set(fd, currentOfd);
-        deps.appendWorkerDebugLog(handle, `net-status-rekey:${handle.pid}:fd=${fd}:ofd=${expectedOfd}->${currentOfd}`);
-        continue;
-      }
-    }
-    if (
-      !handle.networkClosedFds.has(fd)
-      && !(fdEntry?.ofdId === 0 && currentOfd === 0)
-    ) {
-      deps.appendWorkerDebugLog(handle, `net-status-keep:${handle.pid}:fd=${fd}:ofd=${expectedOfd ?? "unknown"}->${currentOfd}`);
-      continue;
-    }
-    handle.networkConnections.delete(fd);
-    ofds.delete(fd);
-    handle.networkPendingConnectFds.delete(fd);
-    clearNetworkRecvWatermarks(handle, fd);
-    deps.appendWorkerDebugLog(handle, `net-status-close:${handle.pid}:fd=${fd}:ofd=${expectedOfd ?? "unknown"}->${currentOfd}`);
-    void Promise.resolve(connection.close?.()).catch((error) => {
-      deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-    });
-  }
-}
-
 function formatStatusFdEntries(
   handle: ProcessHandle,
   msg: ThreadWorkerStatusMessage,
@@ -583,7 +445,7 @@ function formatLifecycleFdTrace(trace: string, maxLength = 360): string {
 }
 
 function applyThreadOfdSlots(handle: ProcessHandle, msg: ThreadWorkerStatusMessage): void {
-  restoreNetworkOfdSlotWatermarks(handle);
+  restoreNetworkOfdSlotWatermarks(handle, appendStatusSocketDebug);
   if (!msg.ofdSlots || msg.ofdSlots.length === 0) {
     return;
   }
@@ -623,7 +485,7 @@ function applyThreadOfdSlots(handle: ProcessHandle, msg: ThreadWorkerStatusMessa
     }
     memory.set(snapshot.slot, handle.kernelState.ofdTablePtr + snapshot.ofdId * slotBytes);
   }
-  restoreNetworkOfdSlotWatermarks(handle);
+  restoreNetworkOfdSlotWatermarks(handle, appendStatusSocketDebug);
   recordRegularFileOfdOffsets(handle, msg, slotBytes);
 }
 
@@ -1685,7 +1547,11 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         applyThreadGuestMemoryWrites(handle, msg, deps.appendRuntimeLifecycleEvent);
         applyThreadOfdSlots(handle, msg);
         applyThreadFdEntries(handle, msg);
-        pruneStaleNetworkConnectionsFromFdEntries(handle, msg, deps);
+        pruneStaleNetworkConnectionsFromFdEntries(handle, msg.vmPtr, msg.fdEntries, {
+          appendStatusSocketDebug,
+          appendWorkerDebugLog: deps.appendWorkerDebugLog,
+          failProcess: deps.failProcess,
+        });
       }
       deps.appendWorkerDebugLog(
         handle,
@@ -1716,7 +1582,11 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     if (statusBelongsToHandle) {
       applyThreadOfdSlots(handle, msg);
       applyThreadFdEntries(handle, msg);
-      pruneStaleNetworkConnectionsFromFdEntries(handle, msg, deps);
+      pruneStaleNetworkConnectionsFromFdEntries(handle, msg.vmPtr, msg.fdEntries, {
+        appendStatusSocketDebug,
+        appendWorkerDebugLog: deps.appendWorkerDebugLog,
+        failProcess: deps.failProcess,
+      });
     }
     if (STATUS_SOCKET_DEBUG_LOG_ENABLED && msg.fdEntries) {
       appendStatusSocketDebug(
