@@ -1,3 +1,4 @@
+import type { KernelWorkerPipeSlotSnapshot } from "../../messages.js";
 import type { KernelOwnershipHandle, ProcessHandle } from "../types.js";
 import { collectProcessHeldOfds } from "./ofd-table.js";
 
@@ -219,4 +220,140 @@ export function preserveHostStdioPipeControlForStep(handle: ProcessHandle, vmPtr
       preserve(pipeSlot, readOpenMin, writeOpenMin);
     }
   }
+}
+
+export function processHasPipeFd(handle: ProcessHandle, vmPtr: number): boolean {
+  if (vmPtr === 0) {
+    return false;
+  }
+  const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
+  const pipeType = handle.kernel.abi_fd_type_pipe?.();
+  if (maxFds <= 0 || pipeType === undefined) {
+    return false;
+  }
+  for (let fd = 0; fd < maxFds; fd += 1) {
+    const ofdId = handle.kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
+    if (ofdId <= 0) {
+      continue;
+    }
+    if (handle.kernel.kernel_ofd_fd_type?.(ofdId) === pipeType) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function snapshotProcessPipeSlotsForThreadStep(
+  handle: ProcessHandle,
+  vmPtr: number,
+): KernelWorkerPipeSlotSnapshot[] {
+  if (vmPtr === 0) {
+    return [];
+  }
+  const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
+  const maxPipes = handle.kernel.abi_max_pipes?.() ?? 0;
+  const pipeType = handle.kernel.abi_fd_type_pipe?.();
+  const slotBytes = maxPipes > 0 ? handle.kernel.kernel_pipe_region_bytes() / maxPipes : 0;
+  if (
+    maxFds <= 0
+    || maxPipes <= 0
+    || pipeType === undefined
+    || !Number.isInteger(slotBytes)
+    || slotBytes <= 0
+  ) {
+    return [];
+  }
+  const memory = new Uint8Array(handle.memory.buffer);
+  const snapshots = new Map<number, KernelWorkerPipeSlotSnapshot>();
+  for (let fd = 0; fd < maxFds; fd += 1) {
+    const ofdId = handle.kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
+    if (
+      ofdId <= 0
+      || ofdId >= maxFds
+      || handle.kernel.kernel_ofd_fd_type?.(ofdId) !== pipeType
+    ) {
+      continue;
+    }
+    const pipeSlot = handle.kernel.kernel_ofd_ino?.(ofdId) ?? 0;
+    if (pipeSlot <= 0 || pipeSlot >= maxPipes || snapshots.has(pipeSlot)) {
+      continue;
+    }
+    const offset = handle.kernelState.pipeBase + pipeSlot * slotBytes;
+    if (offset < 0 || offset + slotBytes > memory.byteLength) {
+      continue;
+    }
+    snapshots.set(pipeSlot, {
+      pipeSlot,
+      slot: memory.slice(offset, offset + slotBytes),
+    });
+  }
+  return [...snapshots.values()];
+}
+
+export function refreshPipeControlFromKernelShare(handle: ProcessHandle): void {
+  const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
+  const maxPipes = handle.kernel.abi_max_pipes?.() ?? 0;
+  const pipeType = handle.kernel.abi_fd_type_pipe?.();
+  const slotBytes = maxPipes > 0 ? handle.kernel.kernel_pipe_region_bytes() / maxPipes : 0;
+  if (
+    maxFds <= 0
+    || maxPipes <= 0
+    || pipeType === undefined
+    || !Number.isInteger(slotBytes)
+    || slotBytes <= 0
+  ) {
+    return;
+  }
+  const readOpen = new Int32Array(maxPipes);
+  const writeOpen = new Int32Array(maxPipes);
+  for (const member of handle.kernelShare.members) {
+    if (member.vmPtr === 0) {
+      continue;
+    }
+    for (let fd = 0; fd < maxFds; fd += 1) {
+      const ofdId = member.kernel.process_fd_ofd_id?.(member.vmPtr, fd) ?? 0;
+      if (
+        ofdId <= 0
+        || ofdId >= maxFds
+        || member.kernel.kernel_ofd_fd_type?.(ofdId) !== pipeType
+      ) {
+        continue;
+      }
+      const pipeSlot = member.kernel.kernel_ofd_ino?.(ofdId) ?? 0;
+      if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
+        continue;
+      }
+      if ((member.kernel.kernel_ofd_host_fd?.(ofdId) ?? -1) >= 0) {
+        readOpen[pipeSlot] += 1;
+      } else {
+        writeOpen[pipeSlot] += 1;
+      }
+    }
+  }
+  const view = new DataView(handle.memory.buffer);
+  for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
+    if (readOpen[pipeSlot] <= 0 && writeOpen[pipeSlot] <= 0) {
+      continue;
+    }
+    const offset = handle.kernelState.pipeBase + pipeSlot * slotBytes;
+    if (offset < 0 || offset + 16 > handle.memory.buffer.byteLength) {
+      continue;
+    }
+    view.setInt32(offset + PIPE_READ_OPEN_OFFSET, readOpen[pipeSlot], true);
+    view.setInt32(offset + PIPE_WRITE_OPEN_OFFSET, writeOpen[pipeSlot], true);
+  }
+}
+
+export function shouldRefreshPipeStateBeforeFsResume(handle: ProcessHandle, vmPtr: number): boolean {
+  let hasOtherKernelShareMember = false;
+  for (const member of handle.kernelShare.members) {
+    if (member !== handle) {
+      hasOtherKernelShareMember = true;
+      break;
+    }
+  }
+  return Boolean(handle.kernelWorkerRequest)
+    && handle.pid > 0
+    && hasOtherKernelShareMember
+    && processHasPipeFd(handle, vmPtr);
 }

@@ -13,13 +13,17 @@ import type {
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
-import type { RuntimeNetworkBridge } from "../../network.js";
-import type { KernelWorkerPipeSlotSnapshot } from "../../messages.js";
 import type {
   ThreadWorkerStatusMessage,
   WorkerMessageHandlerDeps,
 } from "./types.js";
 import { createWorkerOwnershipGuard } from "../ownership/process-state.js";
+import {
+  refreshPipeControlFromKernelShare,
+  shouldRefreshPipeStateBeforeFsResume,
+  snapshotProcessPipeSlotsForThreadStep,
+} from "../ownership/pipe-control.js";
+import { restoreRuntimeNetworkSidecarForHandle } from "../ownership/socket-control.js";
 
 interface StatusTransitionArgs {
   handle: ProcessHandle;
@@ -30,171 +34,6 @@ interface StatusTransitionArgs {
   wroteToPipe: boolean;
   drainedPipe: boolean;
   completedSyncEffects: number;
-}
-
-function socketOfdForFd(handle: ProcessHandle, vmPtr: number, fd: number): number {
-  return handle.kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
-}
-
-function networkConnectionOfds(handle: ProcessHandle): Map<number, number> {
-  handle.networkConnectionOfds ??= new Map();
-  return handle.networkConnectionOfds;
-}
-
-function isSocketOfd(handle: ProcessHandle, ofdId: number): boolean {
-  if (ofdId <= 0) {
-    return false;
-  }
-  const fdType = handle.kernel.kernel_ofd_fd_type?.(ofdId);
-  const socketType = handle.kernel.abi_fd_type_socket?.();
-  return fdType === undefined || socketType === undefined || fdType === socketType;
-}
-
-function findSocketFdForOfd(
-  handle: ProcessHandle,
-  vmPtr: number,
-  ofdId: number,
-  preferredFd: number,
-): number | null {
-  if (isSocketOfd(handle, ofdId) && socketOfdForFd(handle, vmPtr, preferredFd) === ofdId) {
-    return preferredFd;
-  }
-  const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
-  for (let fd = 0; fd < maxFds; fd += 1) {
-    if (fd !== preferredFd && socketOfdForFd(handle, vmPtr, fd) === ofdId && isSocketOfd(handle, ofdId)) {
-      return fd;
-    }
-  }
-  return null;
-}
-
-function processHasPipeFd(handle: ProcessHandle, vmPtr: number): boolean {
-  if (vmPtr === 0) {
-    return false;
-  }
-  const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
-  const pipeType = handle.kernel.abi_fd_type_pipe?.();
-  if (maxFds <= 0 || pipeType === undefined) {
-    return false;
-  }
-  for (let fd = 0; fd < maxFds; fd += 1) {
-    const ofdId = handle.kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
-    if (ofdId <= 0) {
-      continue;
-    }
-    if (handle.kernel.kernel_ofd_fd_type?.(ofdId) === pipeType) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function snapshotProcessPipeSlotsForThreadStep(
-  handle: ProcessHandle,
-  vmPtr: number,
-): KernelWorkerPipeSlotSnapshot[] {
-  if (vmPtr === 0) {
-    return [];
-  }
-  const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
-  const maxPipes = handle.kernel.abi_max_pipes?.() ?? 0;
-  const pipeType = handle.kernel.abi_fd_type_pipe?.();
-  const slotBytes = maxPipes > 0 ? handle.kernel.kernel_pipe_region_bytes() / maxPipes : 0;
-  if (
-    maxFds <= 0
-    || maxPipes <= 0
-    || pipeType === undefined
-    || !Number.isInteger(slotBytes)
-    || slotBytes <= 0
-  ) {
-    return [];
-  }
-  const memory = new Uint8Array(handle.memory.buffer);
-  const snapshots = new Map<number, KernelWorkerPipeSlotSnapshot>();
-  for (let fd = 0; fd < maxFds; fd += 1) {
-    const ofdId = handle.kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
-    if (
-      ofdId <= 0
-      || ofdId >= maxFds
-      || handle.kernel.kernel_ofd_fd_type?.(ofdId) !== pipeType
-    ) {
-      continue;
-    }
-    const pipeSlot = handle.kernel.kernel_ofd_ino?.(ofdId) ?? 0;
-    if (pipeSlot <= 0 || pipeSlot >= maxPipes || snapshots.has(pipeSlot)) {
-      continue;
-    }
-    const offset = handle.kernelState.pipeBase + pipeSlot * slotBytes;
-    if (offset < 0 || offset + slotBytes > memory.byteLength) {
-      continue;
-    }
-    snapshots.set(pipeSlot, {
-      pipeSlot,
-      slot: memory.slice(offset, offset + slotBytes),
-    });
-  }
-  return [...snapshots.values()];
-}
-
-function refreshPipeControlFromKernelShare(handle: ProcessHandle): void {
-  const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
-  const maxPipes = handle.kernel.abi_max_pipes?.() ?? 0;
-  const pipeType = handle.kernel.abi_fd_type_pipe?.();
-  const slotBytes = maxPipes > 0 ? handle.kernel.kernel_pipe_region_bytes() / maxPipes : 0;
-  if (
-    maxFds <= 0
-    || maxPipes <= 0
-    || pipeType === undefined
-    || !Number.isInteger(slotBytes)
-    || slotBytes <= 0
-  ) {
-    return;
-  }
-  const readOpen = new Int32Array(maxPipes);
-  const writeOpen = new Int32Array(maxPipes);
-  for (const member of handle.kernelShare.members) {
-    if (member.vmPtr === 0) {
-      continue;
-    }
-    for (let fd = 0; fd < maxFds; fd += 1) {
-      const ofdId = member.kernel.process_fd_ofd_id?.(member.vmPtr, fd) ?? 0;
-      if (
-        ofdId <= 0
-        || ofdId >= maxFds
-        || member.kernel.kernel_ofd_fd_type?.(ofdId) !== pipeType
-      ) {
-        continue;
-      }
-      const pipeSlot = member.kernel.kernel_ofd_ino?.(ofdId) ?? 0;
-      if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
-        continue;
-      }
-      if ((member.kernel.kernel_ofd_host_fd?.(ofdId) ?? -1) >= 0) {
-        readOpen[pipeSlot] += 1;
-      } else {
-        writeOpen[pipeSlot] += 1;
-      }
-    }
-  }
-  const view = new DataView(handle.memory.buffer);
-  for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
-    if (readOpen[pipeSlot] <= 0 && writeOpen[pipeSlot] <= 0) {
-      continue;
-    }
-    const offset = handle.kernelState.pipeBase + pipeSlot * slotBytes;
-    if (offset < 0 || offset + 16 > handle.memory.buffer.byteLength) {
-      continue;
-    }
-    view.setInt32(offset + 8, readOpen[pipeSlot], true);
-    view.setInt32(offset + 12, writeOpen[pipeSlot], true);
-  }
-}
-
-function shouldRefreshPipeStateBeforeFsResume(handle: ProcessHandle, vmPtr: number): boolean {
-  return Boolean(handle.kernelWorkerRequest)
-    && handle.pid > 0
-    && kernelShareOtherMembers(handle).length > 0
-    && processHasPipeFd(handle, vmPtr);
 }
 
 function beginStatusTransitionRpc(blocked: BlockedWorkerState): number {
@@ -217,52 +56,6 @@ function finishStatusTransitionRpc(
     latestBlocked.rpcPending = false;
   }
   return latestBlocked;
-}
-
-function restoreRuntimeNetworkSidecarForHandle(
-  handle: ProcessHandle,
-  processHandles: Map<number, ProcessHandle>,
-  vmPtr: number,
-): RuntimeNetworkBridge | undefined {
-  const relatedHandles = [
-    ...handle.kernelShare.members,
-    ...processHandles.values(),
-  ].filter((member) => member !== handle && member.runtimeId === handle.runtimeId);
-
-  if (handle.networkBridge) {
-    // Keep the existing bridge, but still restore fd sidecars below.
-  } else {
-    for (const member of relatedHandles) {
-      if (member.networkBridge) {
-        handle.networkBridge = member.networkBridge;
-        break;
-      }
-    }
-  }
-
-  if (handle.networkBridge) {
-    for (const member of relatedHandles) {
-      for (const [sourceFd, connection] of member.networkConnections) {
-        const sourceOfd = socketOfdForFd(member, member.vmPtr, sourceFd);
-        if (!isSocketOfd(member, sourceOfd)) {
-          continue;
-        }
-        const targetFd = findSocketFdForOfd(handle, vmPtr, sourceOfd, sourceFd);
-        if (
-          targetFd === null
-          || handle.networkConnections.has(targetFd)
-          || handle.networkClosedFds.has(targetFd)
-        ) {
-          continue;
-        }
-        handle.networkConnections.set(targetFd, connection);
-        networkConnectionOfds(handle).set(targetFd, sourceOfd);
-        handle.networkPendingConnectFds.delete(targetFd);
-        handle.networkClosedSocketSlots.delete(targetFd);
-      }
-    }
-  }
-  return handle.networkBridge;
 }
 
 export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDeps) {

@@ -1,3 +1,4 @@
+import type { RuntimeNetworkBridge } from "../../network.js";
 import type { KernelOwnershipHandle, ProcessHandle } from "../types.js";
 
 const OFD_TYPE_OFFSET = 0;
@@ -15,6 +16,88 @@ export function runtimeNetworkFds(handle: ProcessHandle): Set<number> {
     ...(handle.networkSocketSlotWatermarks?.keys() ?? []),
     ...(handle.networkRecvPayloadWatermarks?.keys() ?? []),
   ]);
+}
+
+export function socketOfdForFd(handle: ProcessHandle, vmPtr: number, fd: number): number {
+  return handle.kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
+}
+
+export function networkConnectionOfds(handle: ProcessHandle): Map<number, number> {
+  handle.networkConnectionOfds ??= new Map();
+  return handle.networkConnectionOfds;
+}
+
+export function isSocketOfd(handle: ProcessHandle, ofdId: number): boolean {
+  if (ofdId <= 0) {
+    return false;
+  }
+  const fdType = handle.kernel.kernel_ofd_fd_type?.(ofdId);
+  const socketType = handle.kernel.abi_fd_type_socket?.();
+  return fdType === undefined || socketType === undefined || fdType === socketType;
+}
+
+export function findSocketFdForOfd(
+  handle: ProcessHandle,
+  vmPtr: number,
+  ofdId: number,
+  preferredFd: number,
+): number | null {
+  if (isSocketOfd(handle, ofdId) && socketOfdForFd(handle, vmPtr, preferredFd) === ofdId) {
+    return preferredFd;
+  }
+  const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
+  for (let fd = 0; fd < maxFds; fd += 1) {
+    if (fd !== preferredFd && socketOfdForFd(handle, vmPtr, fd) === ofdId && isSocketOfd(handle, ofdId)) {
+      return fd;
+    }
+  }
+  return null;
+}
+
+export function restoreRuntimeNetworkSidecarForHandle(
+  handle: ProcessHandle,
+  processHandles: Map<number, ProcessHandle>,
+  vmPtr: number,
+): RuntimeNetworkBridge | undefined {
+  const relatedHandles = [
+    ...handle.kernelShare.members,
+    ...processHandles.values(),
+  ].filter((member) => member !== handle && member.runtimeId === handle.runtimeId);
+
+  if (handle.networkBridge) {
+    // Keep the existing bridge, but still restore fd sidecars below.
+  } else {
+    for (const member of relatedHandles) {
+      if (member.networkBridge) {
+        handle.networkBridge = member.networkBridge;
+        break;
+      }
+    }
+  }
+
+  if (handle.networkBridge) {
+    for (const member of relatedHandles) {
+      for (const [sourceFd, connection] of member.networkConnections) {
+        const sourceOfd = socketOfdForFd(member, member.vmPtr, sourceFd);
+        if (!isSocketOfd(member, sourceOfd)) {
+          continue;
+        }
+        const targetFd = findSocketFdForOfd(handle, vmPtr, sourceOfd, sourceFd);
+        if (
+          targetFd === null
+          || handle.networkConnections.has(targetFd)
+          || handle.networkClosedFds.has(targetFd)
+        ) {
+          continue;
+        }
+        handle.networkConnections.set(targetFd, connection);
+        networkConnectionOfds(handle).set(targetFd, sourceOfd);
+        handle.networkPendingConnectFds.delete(targetFd);
+        handle.networkClosedSocketSlots.delete(targetFd);
+      }
+    }
+  }
+  return handle.networkBridge;
 }
 
 export function collectRuntimeNetworkSocketOfdIds(handles: Iterable<ProcessHandle>): Set<number> {
