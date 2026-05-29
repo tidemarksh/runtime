@@ -1,6 +1,6 @@
 import { attachKernelRuntimeState } from "../../abi.js";
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
-import { collectHeldEpollOfdIds } from "../fork-shared.js";
+import { collectHeldEpollOfdIds } from "../ownership/ofd-table.js";
 import { kernelWorkerOwnsEpollState, kernelWorkerOwnsPipeState } from "../kernel-share.js";
 import {
   drainProcessOutput,
@@ -11,7 +11,7 @@ import type { ProcessHandle } from "../types.js";
 import type { ThreadWorkerOutbound } from "../../messages.js";
 import type { WorkerMessageHandlerDeps } from "./types.js";
 import { readProcessPidField } from "./debug-summary.js";
-import { createWorkerOwnershipGuard } from "./worker-ownership.js";
+import { createWorkerOwnershipGuard } from "../ownership/process-state.js";
 
 function formatDebugError(error: unknown): string {
   return error instanceof Error ? (error.stack ?? error.message) : String(error);

@@ -19,7 +19,7 @@ import type {
   ThreadWorkerStatusMessage,
   WorkerMessageHandlerDeps,
 } from "./types.js";
-import { createWorkerOwnershipGuard } from "./worker-ownership.js";
+import { createWorkerOwnershipGuard } from "../ownership/process-state.js";
 
 interface StatusTransitionArgs {
   handle: ProcessHandle;

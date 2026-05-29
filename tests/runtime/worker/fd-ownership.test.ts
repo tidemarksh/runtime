@@ -1,15 +1,17 @@
 import { expect, test, vi } from "vite-plus/test";
 import {
-  activeKernelShareOfdIds,
-  collectProcessHeldOfds,
   snapshotKernelShareOfdSlots,
 } from "../../../src/worker/fork-shared.js";
+import {
+  activeKernelShareOfdIds,
+  collectProcessHeldOfds,
+  trackForkSharedOfds,
+} from "../../../src/worker/ownership/ofd-table.js";
 import {
   reconcileKernelSharePipeControl,
   restoreLocalPipeSlots,
   restoreLocalOfdSlots,
   snapshotLocalPipeSlots,
-  trackForkSharedOfds,
 } from "../../../src/worker/kernel-share.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
 

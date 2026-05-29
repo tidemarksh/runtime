@@ -12,19 +12,21 @@ import {
   kernelShareOtherMembers,
   reconcileKernelSharePipeControl,
   restoreLocalOfdSlots,
-  trackForkSharedOfds,
 } from "./kernel-share.js";
 import {
-  activeKernelShareOfdIds,
-  collectHeldEpollOfdIds,
-  collectProcessHeldOfds,
   mergeKernelShareOfdStateInto,
   pruneStaleKernelShareOfdIds,
   reconcileForkSharedOfdRefcounts,
   snapshotKernelShareOfdSlots,
-  staleKernelShareOfdIds,
   syncKernelShareOfdReservations,
 } from "./fork-shared.js";
+import {
+  activeKernelShareOfdIds,
+  collectHeldEpollOfdIds,
+  collectProcessHeldOfds,
+  staleKernelShareOfdIds,
+  trackForkSharedOfds,
+} from "./ownership/ofd-table.js";
 import type { ProcessHandle } from "./types.js";
 import {
   forceNetworkClosedFds,

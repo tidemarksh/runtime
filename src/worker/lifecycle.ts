@@ -7,7 +7,7 @@ import {
   kernelWorkerOwnsSocketState,
   reconcileKernelSharePipeControl,
 } from "./kernel-share.js";
-import { collectProcessHeldOfds } from "./fork-shared.js";
+import { collectProcessHeldOfds } from "./ownership/ofd-table.js";
 import type { ProcessHandle } from "./types.js";
 
 interface WorkerLifecycleDeps {

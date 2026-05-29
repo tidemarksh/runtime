@@ -1,4 +1,4 @@
-import { collectHeldEpollOfdIds } from "../fork-shared.js";
+import { collectHeldEpollOfdIds } from "../ownership/ofd-table.js";
 import {
   describeForkSharedSyncPromise,
   registerForkSharedSyncPromise,
@@ -11,7 +11,7 @@ import {
 } from "../kernel-share.js";
 import type { ProcessHandle, ThreadWorkerState } from "../types.js";
 import type { WorkerMessageHandlerDeps } from "./types.js";
-import { createWorkerOwnershipGuard } from "./worker-ownership.js";
+import { createWorkerOwnershipGuard } from "../ownership/process-state.js";
 
 interface OwnedStateSyncArgs {
   handle: ProcessHandle;

@@ -13,8 +13,8 @@ import {
 } from "./kernel-share.js";
 import {
   captureVforkSnapshot,
-  collectProcessHeldOfds,
 } from "./fork-shared.js";
+import { collectProcessHeldOfds } from "./ownership/ofd-table.js";
 import {
   drainHiddenProcessOutput,
   drainProcessOutput,

@@ -11,7 +11,8 @@ import {
   MAIN_THREAD_KERNEL_STACK_SLOT,
 } from "../../wasm/stack.js";
 import { captureExecveGuestHandoff, decodeExecveBytes, stageExecveGuestHandoff } from "../execve-handoff.js";
-import { activeKernelShareOfdIds, captureVforkSnapshot, collectProcessHeldOfds, snapshotKernelShareOfdSlots } from "../fork-shared.js";
+import { captureVforkSnapshot, snapshotKernelShareOfdSlots } from "../fork-shared.js";
+import { activeKernelShareOfdIds, collectProcessHeldOfds } from "../ownership/ofd-table.js";
 import {
   adoptKernelShare,
   discardCopiedSharedKernelObjects,

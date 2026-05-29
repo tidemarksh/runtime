@@ -3,7 +3,11 @@ import {
   readKernelRuntimeState,
 } from "../abi.js";
 import { publishKernelRuntimeState } from "../bridge/runtime-state.js";
-import { activeKernelShareOfdIds, collectProcessHeldOfds, hasPlausibleOfdState } from "./fork-shared.js";
+import {
+  activeKernelShareOfdIds,
+  collectProcessHeldOfds,
+  hasPlausibleOfdState,
+} from "./ownership/ofd-table.js";
 import {
   kernelShareOtherMembers,
   reconcileKernelSharePipeControl,

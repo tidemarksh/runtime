@@ -5,7 +5,7 @@ import {
   publishKernelRuntimeState,
   wakeRuntimeBridge,
 } from "../../bridge/runtime-state.js";
-import { collectHeldEpollOfdIds, collectHeldOfdIdsByType } from "../fork-shared.js";
+import { collectHeldEpollOfdIds, collectHeldOfdIdsByType } from "../ownership/ofd-table.js";
 import {
   kernelWorkerOwnsEpollState,
   kernelWorkerOwnsPipeState,

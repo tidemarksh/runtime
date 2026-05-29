@@ -22,13 +22,15 @@ import {
   restoreLocalOfdSlots,
   restoreLocalPipeSlots,
   snapshotLocalPipeSlots,
-  trackForkSharedOfds,
 } from "../kernel-share.js";
+import {
+  syncKernelShareOfdReservations,
+} from "../fork-shared.js";
 import {
   activeKernelShareOfdIds,
   collectProcessHeldOfds,
-  syncKernelShareOfdReservations,
-} from "../fork-shared.js";
+  trackForkSharedOfds,
+} from "../ownership/ofd-table.js";
 import { acquireWorker, ensureEvictionTimer } from "../pool.js";
 import { adoptKernelStateForHandle } from "../sync.js";
 import { createForkChildHandle } from "./common.js";

@@ -14,7 +14,7 @@ import type {
   WorkerMessageHandlerDeps,
 } from "./types.js";
 import { formatCompactDebugSuffix } from "./debug-summary.js";
-import { createWorkerOwnershipGuard } from "./worker-ownership.js";
+import { createWorkerOwnershipGuard } from "../ownership/process-state.js";
 
 export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandlerDeps) {
   function clearRunningWorkerAlreadyWaiting(handle: ProcessHandle): void {
