@@ -27,9 +27,10 @@ import {
 
 const KERNEL_FS_RING_SOURCE = "../kernel/kernel/src/fs/ring_buffer.rs";
 
+const KERNEL_FS_RING_SOURCE_TEXT = readFileSync(KERNEL_FS_RING_SOURCE, "utf8");
+
 function readKernelConst(name: string): number {
-  const source = readFileSync(KERNEL_FS_RING_SOURCE, "utf8");
-  const match = new RegExp(`pub const ${name}: (?:usize|u32) = ([^;]+);`).exec(source);
+  const match = new RegExp(`pub const ${name}: (?:usize|u32) = ([^;]+);`).exec(KERNEL_FS_RING_SOURCE_TEXT);
   if (!match) {
     throw new Error(`kernel FS ring const not found: ${name}`);
   }
@@ -44,6 +45,38 @@ function readKernelConst(name: string): number {
     throw new Error(`unsupported kernel FS ring const expression: ${name} = ${match[1]}`);
   }
   return Function(`"use strict"; return (${expression});`)() as number;
+}
+
+function readKernelRequestFieldOffset(field: string): number {
+  const constructor = /Some\(FsRequestInfo \{(?<body>[\s\S]*?)\n\s*\}\)/.exec(KERNEL_FS_RING_SOURCE_TEXT)
+    ?.groups?.body;
+  if (!constructor) {
+    throw new Error("kernel FS request constructor not found");
+  }
+  const line = new RegExp(`${field}: \\*\\((?<expr>[^\\n]+)\\),`).exec(constructor)
+    ?.groups?.expr;
+  if (!line) {
+    throw new Error(`kernel FS request field read not found: ${field}`);
+  }
+  if (line.startsWith("p as ")) {
+    return 0;
+  }
+  const offset = /p\.add\((\d+)\)/.exec(line)?.[1];
+  if (offset === undefined) {
+    throw new Error(`kernel FS request field offset not found: ${field}`);
+  }
+  return Number.parseInt(offset, 10);
+}
+
+function readKernelResponseFieldOffset(field: "result" | "vm_ptr"): number {
+  const pattern = field === "result"
+    ? /\*\(\(cq_off as \*mut u8\) as \*mut i64\) = result;/
+    : /\*\(\(cq_off as \*mut u8\)\.add\((\d+)\) as \*mut u32\) = target_vm_ptr;/;
+  const match = pattern.exec(KERNEL_FS_RING_SOURCE_TEXT);
+  if (!match) {
+    throw new Error(`kernel FS response field write not found: ${field}`);
+  }
+  return field === "result" ? 0 : Number.parseInt(match[1], 10);
 }
 
 describe("FS ring layout", () => {
@@ -64,14 +97,14 @@ describe("FS ring layout", () => {
     expect(FS_RING_COMPLETE_QUEUE_OFFSET).toBe(readKernelConst("OFF_CQ_BASE"));
   });
 
-  it("keeps request and response field offsets explicit", () => {
-    expect(FS_RING_REQUEST_OPCODE_OFFSET).toBe(0);
-    expect(FS_RING_REQUEST_LEN_OFFSET).toBe(16);
-    expect(FS_RING_REQUEST_BUF_PTR_OFFSET).toBe(24);
-    expect(FS_RING_REQUEST_PATH_PTR_OFFSET).toBe(32);
-    expect(FS_RING_REQUEST_VM_PTR_OFFSET).toBe(48);
-    expect(FS_RING_RESPONSE_RESULT_OFFSET).toBe(0);
-    expect(FS_RING_RESPONSE_VM_PTR_OFFSET).toBe(8);
+  it("matches kernel request and response field offsets", () => {
+    expect(FS_RING_REQUEST_OPCODE_OFFSET).toBe(readKernelRequestFieldOffset("opcode"));
+    expect(FS_RING_REQUEST_LEN_OFFSET).toBe(readKernelRequestFieldOffset("len"));
+    expect(FS_RING_REQUEST_BUF_PTR_OFFSET).toBe(readKernelRequestFieldOffset("buf_ptr"));
+    expect(FS_RING_REQUEST_PATH_PTR_OFFSET).toBe(readKernelRequestFieldOffset("path_ptr"));
+    expect(FS_RING_REQUEST_VM_PTR_OFFSET).toBe(readKernelRequestFieldOffset("vm_ptr"));
+    expect(FS_RING_RESPONSE_RESULT_OFFSET).toBe(readKernelResponseFieldOffset("result"));
+    expect(FS_RING_RESPONSE_VM_PTR_OFFSET).toBe(readKernelResponseFieldOffset("vm_ptr"));
   });
 
   it("computes entry offsets from the shared queue layout", () => {
