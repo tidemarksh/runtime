@@ -14,7 +14,7 @@ import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
 import {
   captureVforkSnapshot,
 } from "./fork-shared.js";
-import { collectProcessHeldOfds } from "./ownership/ofd-table.js";
+import { collectTrackableForkSharedOfds } from "./ownership/ofd-peer.js";
 import {
   drainHiddenProcessOutput,
   drainProcessOutput,
@@ -439,52 +439,6 @@ export function clearRuntimeFsState(runtimeId: number): void {
 
 export function clearRuntimeFailureSnapshot(runtimeId: number): void {
   clearRuntimeFailureSnapshotCtx(runtimeId);
-}
-
-function collectTrackableForkSharedOfds(handle: ProcessHandle): Set<number> {
-  const stdioOfdIds = new Set<number>();
-  const stdioFdOfdIds = new Set<number>();
-  for (const [fd, stdioPipeSlot] of [
-    [0, handle.stdinPipe],
-    [1, handle.stdoutPipe],
-    [2, handle.stderrPipe],
-  ] as const) {
-    const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
-    if (ofdId !== 0) {
-      stdioFdOfdIds.add(ofdId);
-    }
-    if (
-      ofdId !== 0
-      && stdioPipeSlot > 0
-      && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
-      && handle.kernel.kernel_ofd_ino(ofdId) === stdioPipeSlot
-    ) {
-      stdioOfdIds.add(ofdId);
-    }
-  }
-  const tracked = new Set<number>();
-  for (const ofdId of handle.kernelShare.sharedOfdIds) {
-    if (
-      ofdId > 0
-      && ofdId < handle.kernel.abi_max_fds()
-    ) {
-      tracked.add(ofdId);
-    }
-  }
-  for (const ofdId of collectProcessHeldOfds(handle)) {
-    if (stdioOfdIds.has(ofdId)) {
-      continue;
-    }
-    if (
-      !handle.kernelShare.sharedOfdIds.has(ofdId)
-      && !stdioFdOfdIds.has(ofdId)
-      && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_file()
-    ) {
-      continue;
-    }
-    tracked.add(ofdId);
-  }
-  return tracked;
 }
 
 export async function createProcess(
