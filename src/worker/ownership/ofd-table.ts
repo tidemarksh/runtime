@@ -1,5 +1,11 @@
 import type { KernelSyncHandle, ProcessHandle } from "../types.js";
 
+const PIPE_GENERATION_OFFSET = 20;
+const OFD_TYPE_OFFSET = 0;
+const OFD_HOST_FD_OFFSET = 4;
+const OFD_OFFSET_OFFSET = 16;
+const OFD_INO_OFFSET = 24;
+
 export function boundedThreadSlotCount(handle: ProcessHandle): number {
   const maxThreads = handle.kernel.abi_max_threads();
   try {
@@ -226,4 +232,186 @@ export function trackForkSharedOfds(
 
 export function retainForkSharedOfds(handle: ProcessHandle): void {
   trackForkSharedOfds(handle, handle.vmPtr, true);
+}
+
+export function snapshotLocalOfdSlots(
+  handle: ProcessHandle,
+  ofdIds: Iterable<number>,
+): Map<number, Uint8Array> {
+  const maxFds = handle.kernel.abi_max_fds();
+  const tableBytes = handle.kernel.kernel_ofd_table_bytes();
+  const slotBytes = tableBytes / maxFds;
+  if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
+    throw new Error(`invalid OFD table layout: bytes=${tableBytes} maxFds=${maxFds}`);
+  }
+  const snapshots = new Map<number, Uint8Array>();
+  for (const ofdId of ofdIds) {
+    if (ofdId <= 0 || ofdId >= maxFds || snapshots.has(ofdId)) {
+      continue;
+    }
+    const fdType = handle.kernel.kernel_ofd_fd_type(ofdId);
+    if (fdType <= 0 || fdType > 64) {
+      continue;
+    }
+    const slotOffset = handle.kernelState.ofdTablePtr + ofdId * slotBytes;
+    snapshots.set(
+      ofdId,
+      new Uint8Array(handle.memory.buffer, slotOffset, slotBytes).slice(),
+    );
+  }
+  return snapshots;
+}
+
+export function snapshotRuntimeNetworkOfdSlots(
+  handle: ProcessHandle,
+  ofdIds: Iterable<number>,
+): Map<number, Uint8Array> {
+  const maxFds = handle.kernel.abi_max_fds();
+  const tableBytes = handle.kernel.kernel_ofd_table_bytes();
+  const slotBytes = tableBytes / maxFds;
+  if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
+    throw new Error(`invalid OFD table layout: bytes=${tableBytes} maxFds=${maxFds}`);
+  }
+  const snapshots = new Map<number, Uint8Array>();
+  const memory = new Uint8Array(handle.memory.buffer);
+  for (const ofdId of ofdIds) {
+    if (ofdId <= 0 || ofdId >= maxFds || snapshots.has(ofdId)) {
+      continue;
+    }
+    if (handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_socket()) {
+      const slotOffset = handle.kernelState.ofdTablePtr + ofdId * slotBytes;
+      snapshots.set(ofdId, memory.slice(slotOffset, slotOffset + slotBytes));
+      continue;
+    }
+    const watermarked = handle.networkOfdSlotWatermarks?.get(ofdId);
+    if (watermarked && watermarked.length === slotBytes) {
+      snapshots.set(ofdId, watermarked.slice());
+    }
+  }
+  return snapshots;
+}
+
+export function restoreRuntimeNetworkOfdSlots(
+  handle: ProcessHandle,
+  preservedOfdSlots: ReadonlyMap<number, Uint8Array>,
+): void {
+  if (preservedOfdSlots.size === 0) {
+    return;
+  }
+  const maxFds = handle.kernel.abi_max_fds();
+  const tableBytes = handle.kernel.kernel_ofd_table_bytes();
+  const slotBytes = tableBytes / maxFds;
+  if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
+    throw new Error(`invalid OFD table layout: bytes=${tableBytes} maxFds=${maxFds}`);
+  }
+  const bytes = new Uint8Array(handle.memory.buffer);
+  for (const [ofdId, slot] of preservedOfdSlots) {
+    if (ofdId <= 0 || ofdId >= maxFds || slot.length !== slotBytes) {
+      continue;
+    }
+    const view = new DataView(slot.buffer, slot.byteOffset, slot.byteLength);
+    if (view.getInt32(OFD_TYPE_OFFSET, true) !== handle.kernel.abi_fd_type_socket()) {
+      continue;
+    }
+    bytes.set(slot, handle.kernelState.ofdTablePtr + ofdId * slotBytes);
+  }
+}
+
+export function currentPipeGeneration(handle: ProcessHandle, pipeSlot: number): number | null {
+  const pipeSlotBytes = handle.kernel.kernel_pipe_region_bytes() / handle.kernel.abi_max_pipes();
+  if (
+    !Number.isInteger(pipeSlotBytes)
+    || pipeSlotBytes <= PIPE_GENERATION_OFFSET
+    || pipeSlot <= 0
+    || pipeSlot >= handle.kernel.abi_max_pipes()
+  ) {
+    return null;
+  }
+  return new DataView(handle.memory.buffer).getUint32(
+    handle.kernelState.pipeBase + pipeSlot * pipeSlotBytes + PIPE_GENERATION_OFFSET,
+    true,
+  );
+}
+
+export function syncPipeOfdGenerationsForSlot(handle: ProcessHandle, pipeSlot: number): void {
+  const pipeGeneration = currentPipeGeneration(handle, pipeSlot);
+  if (pipeGeneration === null || pipeGeneration === 0) {
+    return;
+  }
+  const maxFds = handle.kernel.abi_max_fds();
+  const tableBytes = handle.kernel.kernel_ofd_table_bytes();
+  const slotBytes = tableBytes / maxFds;
+  if (!Number.isInteger(slotBytes) || slotBytes <= OFD_INO_OFFSET + 4) {
+    return;
+  }
+  const view = new DataView(handle.memory.buffer);
+  for (let ofdId = 1; ofdId < maxFds; ofdId += 1) {
+    const ofdOffset = handle.kernelState.ofdTablePtr + ofdId * slotBytes;
+    if (
+      view.getInt32(ofdOffset + OFD_TYPE_OFFSET, true) === handle.kernel.abi_fd_type_pipe()
+      && view.getUint32(ofdOffset + OFD_INO_OFFSET, true) === pipeSlot
+    ) {
+      view.setBigInt64(ofdOffset + OFD_OFFSET_OFFSET, BigInt(pipeGeneration), true);
+    }
+  }
+}
+
+export function pipeOfdGenerationDiffers(handle: ProcessHandle, ofdId: number): boolean {
+  if (handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()) {
+    return false;
+  }
+  const pipeGeneration = currentPipeGeneration(handle, handle.kernel.kernel_ofd_ino(ofdId));
+  return pipeGeneration !== null && handle.kernel.kernel_ofd_offset(ofdId) !== BigInt(pipeGeneration);
+}
+
+export function localOfdSlotDiffersFromHandle(handle: ProcessHandle, ofdId: number, slot: Uint8Array): boolean {
+  if (ofdId <= 0 || ofdId >= handle.kernel.abi_max_fds()) {
+    return false;
+  }
+  const view = new DataView(slot.buffer, slot.byteOffset, slot.byteLength);
+  const sourceType = view.getInt32(OFD_TYPE_OFFSET, true);
+  if (sourceType === 0) {
+    return false;
+  }
+  const targetType = handle.kernel.kernel_ofd_fd_type(ofdId);
+  if (targetType === 0 || targetType !== sourceType) {
+    return true;
+  }
+  if (pipeOfdGenerationDiffers(handle, ofdId)) {
+    return true;
+  }
+  return handle.kernel.kernel_ofd_host_fd(ofdId) !== view.getInt32(OFD_HOST_FD_OFFSET, true)
+    || handle.kernel.kernel_ofd_ino(ofdId) !== view.getUint32(OFD_INO_OFFSET, true);
+}
+
+export function restoreIncompatibleLocalOfdSlots(
+  handle: ProcessHandle,
+  preservedOfdSlots: ReadonlyMap<number, Uint8Array>,
+): void {
+  if (preservedOfdSlots.size === 0) {
+    return;
+  }
+  const maxFds = handle.kernel.abi_max_fds();
+  const tableBytes = handle.kernel.kernel_ofd_table_bytes();
+  const slotBytes = tableBytes / maxFds;
+  if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
+    throw new Error(`invalid OFD table layout: bytes=${tableBytes} maxFds=${maxFds}`);
+  }
+  const bytes = new Uint8Array(handle.memory.buffer);
+  const view = new DataView(handle.memory.buffer);
+  for (const [ofdId, slot] of preservedOfdSlots) {
+    if (slot.length !== slotBytes || !localOfdSlotDiffersFromHandle(handle, ofdId, slot)) {
+      continue;
+    }
+    const ofdSlotOffset = handle.kernelState.ofdTablePtr + ofdId * slotBytes;
+    bytes.set(slot, ofdSlotOffset);
+    if (
+      handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
+    ) {
+      const pipeGeneration = currentPipeGeneration(handle, handle.kernel.kernel_ofd_ino(ofdId));
+      if (pipeGeneration !== null) {
+        view.setBigInt64(ofdSlotOffset + OFD_OFFSET_OFFSET, BigInt(pipeGeneration), true);
+      }
+    }
+  }
 }
