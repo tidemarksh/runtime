@@ -16,6 +16,26 @@ export function snapshotProcessFdEntries(
   return fdEntries;
 }
 
+export function snapshotProcessFdEntriesForThread(
+  handle: ProcessHandle,
+  vmPtr: number,
+): KernelWorkerFdEntrySnapshot[] | undefined {
+  if (vmPtr === 0) {
+    return undefined;
+  }
+  const maxFds = handle.kernel.abi_max_fds();
+  const fdEntries: KernelWorkerFdEntrySnapshot[] = [];
+  for (let fd = 0; fd < maxFds; fd += 1) {
+    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    fdEntries.push({
+      fd,
+      ofdId,
+      fdFlags: handle.kernel.process_fd_flags?.(vmPtr, fd) ?? 0,
+    });
+  }
+  return fdEntries.length > 0 ? fdEntries : undefined;
+}
+
 export function restoreProcessFdEntries(
   handle: ProcessHandle,
   vmPtr: number,

@@ -1,6 +1,10 @@
 import type { KernelOwnershipHandle, ProcessHandle } from "../types.js";
 import { collectProcessHeldOfds } from "./ofd-table.js";
 
+const PIPE_HEADER_BYTES = 32;
+const PIPE_READ_OPEN_OFFSET = 8;
+const PIPE_WRITE_OPEN_OFFSET = 12;
+
 export function kernelWorkerOwnsPipeState(handle: KernelOwnershipHandle): boolean {
   return !!handle.kernelWorkerRequest && handle.pid > 0;
 }
@@ -168,4 +172,51 @@ export function composeHandlePipeUsed(handle: ProcessHandle, sharedPipeUsed: big
     }
   }
   return pipeUsed;
+}
+
+export function preserveHostStdioPipeControlForStep(handle: ProcessHandle, vmPtr: number): void {
+  const maxPipes = handle.kernel.abi_max_pipes?.() ?? 0;
+  const pipeRegionBytes = handle.kernel.kernel_pipe_region_bytes?.() ?? 0;
+  const slotBytes = maxPipes > 0 ? pipeRegionBytes / maxPipes : 0;
+  if (!Number.isInteger(slotBytes) || slotBytes <= PIPE_HEADER_BYTES) {
+    return;
+  }
+  const view = new DataView(handle.memory.buffer);
+  const preserve = (pipeSlot: number, readOpenMin: number, writeOpenMin: number): void => {
+    if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
+      return;
+    }
+    const offset = handle.kernelState.pipeBase + pipeSlot * slotBytes;
+    if (readOpenMin > 0) {
+      const readOpen = view.getInt32(offset + PIPE_READ_OPEN_OFFSET, true);
+      if (readOpen < readOpenMin) {
+        view.setInt32(offset + PIPE_READ_OPEN_OFFSET, readOpenMin, true);
+      }
+    }
+    if (writeOpenMin > 0) {
+      const writeOpen = view.getInt32(offset + PIPE_WRITE_OPEN_OFFSET, true);
+      if (writeOpen < writeOpenMin) {
+        view.setInt32(offset + PIPE_WRITE_OPEN_OFFSET, writeOpenMin, true);
+      }
+    }
+  };
+
+  for (const [fd, readOpenMin, writeOpenMin] of [
+    [0, 0, 1],
+    [1, 1, 0],
+    [2, 1, 0],
+  ] as const) {
+    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    if (
+      ofdId <= 0
+      || ofdId >= handle.kernel.abi_max_fds()
+      || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
+    ) {
+      continue;
+    }
+    const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
+    if (hostStdioPipeSlotsForFd(handle, fd).has(pipeSlot)) {
+      preserve(pipeSlot, readOpenMin, writeOpenMin);
+    }
+  }
 }

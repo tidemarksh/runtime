@@ -10,12 +10,19 @@ import type {
   ThreadWorkerState,
 } from "../types.js";
 import type {
-  KernelWorkerFdEntrySnapshot,
-  KernelWorkerOfdSlotSnapshot,
   KernelWorkerSocketStateSnapshot,
   ThreadWorkerOutbound,
 } from "../../messages.js";
 import { kernelStackSlotForWorker } from "../pool.js";
+import { snapshotProcessFdEntriesForThread } from "../ownership/fd-table.js";
+import {
+  restoreRegularFileOffsetsForStep,
+  snapshotOfdSlotsForThread,
+} from "../ownership/ofd-table.js";
+import {
+  composeHandlePipeUsed,
+  preserveHostStdioPipeControlForStep,
+} from "../ownership/pipe-control.js";
 import type {
   ThreadWorkerInbound,
   WorkerSchedulerQueueHelpers,
@@ -30,11 +37,6 @@ const SCHEDULER_QUEUE_DEBUG_LOG_ENABLED = false;
 let nextThreadWorkerGeneration = 1;
 const HOT_PC_COUNTER_LIMIT = 32;
 const STALE_SLEEP_RUNNING_WORKER_REPAIR_MS = 2_000;
-const PIPE_HEADER_BYTES = 32;
-const PIPE_READ_OPEN_OFFSET = 8;
-const PIPE_WRITE_OPEN_OFFSET = 12;
-const OFD_OFFSET_OFFSET = 16;
-
 function snapshotSocketStateForThread(handle: ProcessHandle): KernelWorkerSocketStateSnapshot | undefined {
   if (
     handle.kernelState.socketUsed === 0
@@ -68,62 +70,6 @@ function snapshotSocketStateForThread(handle: ProcessHandle): KernelWorkerSocket
   };
 }
 
-function snapshotProcessFdEntriesForThread(
-  handle: ProcessHandle,
-  vmPtr: number,
-): KernelWorkerFdEntrySnapshot[] | undefined {
-  if (vmPtr === 0) {
-    return undefined;
-  }
-  const maxFds = handle.kernel.abi_max_fds();
-  const fdEntries: KernelWorkerFdEntrySnapshot[] = [];
-  for (let fd = 0; fd < maxFds; fd += 1) {
-    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
-    fdEntries.push({
-      fd,
-      ofdId,
-      fdFlags: handle.kernel.process_fd_flags?.(vmPtr, fd) ?? 0,
-    });
-  }
-  return fdEntries.length > 0 ? fdEntries : undefined;
-}
-
-function snapshotOfdSlotsForThread(
-  handle: ProcessHandle,
-  fdEntries: readonly KernelWorkerFdEntrySnapshot[] | undefined,
-): KernelWorkerOfdSlotSnapshot[] | undefined {
-  if (!fdEntries || fdEntries.length === 0) {
-    return undefined;
-  }
-  const maxFds = handle.kernel.abi_max_fds();
-  const tableBytes = handle.kernel.kernel_ofd_table_bytes?.() ?? 0;
-  const slotBytes = tableBytes / maxFds;
-  if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
-    return undefined;
-  }
-  const memory = new Uint8Array(handle.memory.buffer);
-  const ofdSlots: KernelWorkerOfdSlotSnapshot[] = [];
-  for (const ofdId of [...new Set(fdEntries.map((entry) => entry.ofdId))]) {
-    if (ofdId <= 0 || ofdId >= maxFds) {
-      continue;
-    }
-    const watermarked = handle.networkOfdSlotWatermarks?.get(ofdId);
-    if (watermarked && watermarked.length === slotBytes) {
-      ofdSlots.push({
-        ofdId,
-        slot: watermarked.slice(),
-      });
-      continue;
-    }
-    const offset = handle.kernelState.ofdTablePtr + ofdId * slotBytes;
-    ofdSlots.push({
-      ofdId,
-      slot: memory.slice(offset, offset + slotBytes),
-    });
-  }
-  return ofdSlots.length > 0 ? ofdSlots : undefined;
-}
-
 function readSchedulerStepBudget(): number {
   const hostConfigured = (globalThis as typeof globalThis & {
     process?: { env?: Record<string, string | undefined> };
@@ -154,133 +100,6 @@ function formatChildExitRecords(
     waitStatus,
     parentPid: handle.pid,
   }));
-}
-
-function composeHostStdioPipeUsed(handle: ProcessHandle, pipeUsed: bigint): bigint {
-  let composed = pipeUsed | 1n;
-  const owner = handle.stdioOwner;
-  for (const pipeSlot of [
-    handle.stdinPipe,
-    handle.stdoutPipe,
-    handle.stderrPipe,
-    handle.hostStdio.stdinPipe,
-    handle.hostStdio.stdoutPipe,
-    handle.hostStdio.stderrPipe,
-    owner?.stdinPipe ?? 0,
-    owner?.stdoutPipe ?? 0,
-    owner?.stderrPipe ?? 0,
-    owner?.hostStdio.stdinPipe ?? 0,
-    owner?.hostStdio.stdoutPipe ?? 0,
-    owner?.hostStdio.stderrPipe ?? 0,
-  ]) {
-    if (pipeSlot > 0) {
-      composed |= 1n << BigInt(pipeSlot);
-    }
-  }
-  return composed;
-}
-
-function hostStdioPipeSlotsForFd(handle: ProcessHandle, fd: 0 | 1 | 2): Set<number> {
-  const owner = handle.stdioOwner;
-  const slotsByFd = fd === 0
-    ? [
-        handle.stdinPipe,
-        handle.hostStdio.stdinPipe,
-        owner?.stdinPipe ?? 0,
-        owner?.hostStdio.stdinPipe ?? 0,
-      ]
-    : fd === 1
-      ? [
-          handle.stdoutPipe,
-          handle.hostStdio.stdoutPipe,
-          owner?.stdoutPipe ?? 0,
-          owner?.hostStdio.stdoutPipe ?? 0,
-        ]
-      : [
-          handle.stderrPipe,
-          handle.hostStdio.stderrPipe,
-          owner?.stderrPipe ?? 0,
-          owner?.hostStdio.stderrPipe ?? 0,
-        ];
-  return new Set(slotsByFd.filter((slot) => slot > 0));
-}
-
-function preserveHostStdioPipeControlForStep(handle: ProcessHandle, vmPtr: number): void {
-  const maxPipes = handle.kernel.abi_max_pipes?.() ?? 0;
-  const pipeRegionBytes = handle.kernel.kernel_pipe_region_bytes?.() ?? 0;
-  const slotBytes = maxPipes > 0 ? pipeRegionBytes / maxPipes : 0;
-  if (!Number.isInteger(slotBytes) || slotBytes <= PIPE_HEADER_BYTES) {
-    return;
-  }
-  const view = new DataView(handle.memory.buffer);
-  const preserve = (pipeSlot: number, readOpenMin: number, writeOpenMin: number): void => {
-    if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
-      return;
-    }
-    const offset = handle.kernelState.pipeBase + pipeSlot * slotBytes;
-    if (readOpenMin > 0) {
-      const readOpen = view.getInt32(offset + PIPE_READ_OPEN_OFFSET, true);
-      if (readOpen < readOpenMin) {
-        view.setInt32(offset + PIPE_READ_OPEN_OFFSET, readOpenMin, true);
-      }
-    }
-    if (writeOpenMin > 0) {
-      const writeOpen = view.getInt32(offset + PIPE_WRITE_OPEN_OFFSET, true);
-      if (writeOpen < writeOpenMin) {
-        view.setInt32(offset + PIPE_WRITE_OPEN_OFFSET, writeOpenMin, true);
-      }
-    }
-  };
-
-  for (const [fd, readOpenMin, writeOpenMin] of [
-    [0, 0, 1],
-    [1, 1, 0],
-    [2, 1, 0],
-  ] as const) {
-    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
-    if (
-      ofdId <= 0
-      || ofdId >= handle.kernel.abi_max_fds()
-      || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
-    ) {
-      continue;
-    }
-    const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-    if (hostStdioPipeSlotsForFd(handle, fd).has(pipeSlot)) {
-      preserve(pipeSlot, readOpenMin, writeOpenMin);
-    }
-  }
-}
-
-function restoreRegularFileOffsetsForStep(handle: ProcessHandle): void {
-  const offsets = handle.regularFileOfdOffsets;
-  if (!offsets || offsets.size === 0) {
-    return;
-  }
-  const maxFds = handle.kernel.abi_max_fds();
-  const fileType = handle.kernel.abi_fd_type_file?.();
-  const tableBytes = handle.kernel.kernel_ofd_table_bytes();
-  const slotBytes = tableBytes / maxFds;
-  if (fileType === undefined || !Number.isInteger(slotBytes) || slotBytes <= 0) {
-    return;
-  }
-  const view = new DataView(handle.memory.buffer);
-  for (const [ofdId, snapshot] of offsets) {
-    if (
-      ofdId <= 0
-      || ofdId >= maxFds
-      || handle.kernel.kernel_ofd_fd_type(ofdId) !== fileType
-      || handle.kernel.kernel_ofd_refcount(ofdId) <= 0
-      || handle.kernel.kernel_ofd_ino(ofdId) !== snapshot.ino
-      || handle.kernel.kernel_ofd_host_fd(ofdId) !== snapshot.hostFd
-    ) {
-      continue;
-    }
-    if (handle.kernel.kernel_ofd_offset(ofdId) >= snapshot.offset) {
-      continue;
-    }
-    view.setBigInt64(handle.kernelState.ofdTablePtr + ofdId * slotBytes + OFD_OFFSET_OFFSET, snapshot.offset, true);
-  }
 }
 
 interface WorkerSchedulerQueueDeps {
@@ -934,7 +753,7 @@ export function createWorkerSchedulerQueueHelpers(
       stepMessage.childExitRecords = stepChildExitRecords;
       stepMessage.kernelState = {
         ...stepMessage.kernelState,
-        pipeUsed: composeHostStdioPipeUsed(handle, stepMessage.kernelState.pipeUsed),
+        pipeUsed: composeHandlePipeUsed(handle, stepMessage.kernelState.pipeUsed),
       };
     }
     if (thread && (thread.pendingGuestMemoryWrites?.length ?? 0) > 0) {

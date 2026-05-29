@@ -1,3 +1,7 @@
+import type {
+  KernelWorkerFdEntrySnapshot,
+  KernelWorkerOfdSlotSnapshot,
+} from "../../messages.js";
 import type { KernelSyncHandle, ProcessHandle } from "../types.js";
 
 const PIPE_GENERATION_OFFSET = 20;
@@ -146,6 +150,73 @@ export function collectHeldEpollOfdIds(handle: ProcessHandle): number[] {
     }
   }
   return epollOfdIds;
+}
+
+export function snapshotOfdSlotsForThread(
+  handle: ProcessHandle,
+  fdEntries: readonly KernelWorkerFdEntrySnapshot[] | undefined,
+): KernelWorkerOfdSlotSnapshot[] | undefined {
+  if (!fdEntries || fdEntries.length === 0) {
+    return undefined;
+  }
+  const maxFds = handle.kernel.abi_max_fds();
+  const tableBytes = handle.kernel.kernel_ofd_table_bytes?.() ?? 0;
+  const slotBytes = tableBytes / maxFds;
+  if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
+    return undefined;
+  }
+  const memory = new Uint8Array(handle.memory.buffer);
+  const ofdSlots: KernelWorkerOfdSlotSnapshot[] = [];
+  for (const ofdId of [...new Set(fdEntries.map((entry) => entry.ofdId))]) {
+    if (ofdId <= 0 || ofdId >= maxFds) {
+      continue;
+    }
+    const watermarked = handle.networkOfdSlotWatermarks?.get(ofdId);
+    if (watermarked && watermarked.length === slotBytes) {
+      ofdSlots.push({
+        ofdId,
+        slot: watermarked.slice(),
+      });
+      continue;
+    }
+    const offset = handle.kernelState.ofdTablePtr + ofdId * slotBytes;
+    ofdSlots.push({
+      ofdId,
+      slot: memory.slice(offset, offset + slotBytes),
+    });
+  }
+  return ofdSlots.length > 0 ? ofdSlots : undefined;
+}
+
+export function restoreRegularFileOffsetsForStep(handle: ProcessHandle): void {
+  const offsets = handle.regularFileOfdOffsets;
+  if (!offsets || offsets.size === 0) {
+    return;
+  }
+  const maxFds = handle.kernel.abi_max_fds();
+  const fileType = handle.kernel.abi_fd_type_file?.();
+  const tableBytes = handle.kernel.kernel_ofd_table_bytes();
+  const slotBytes = tableBytes / maxFds;
+  if (fileType === undefined || !Number.isInteger(slotBytes) || slotBytes <= 0) {
+    return;
+  }
+  const view = new DataView(handle.memory.buffer);
+  for (const [ofdId, snapshot] of offsets) {
+    if (
+      ofdId <= 0
+      || ofdId >= maxFds
+      || handle.kernel.kernel_ofd_fd_type(ofdId) !== fileType
+      || handle.kernel.kernel_ofd_refcount(ofdId) <= 0
+      || handle.kernel.kernel_ofd_ino(ofdId) !== snapshot.ino
+      || handle.kernel.kernel_ofd_host_fd(ofdId) !== snapshot.hostFd
+    ) {
+      continue;
+    }
+    if (handle.kernel.kernel_ofd_offset(ofdId) >= snapshot.offset) {
+      continue;
+    }
+    view.setBigInt64(handle.kernelState.ofdTablePtr + ofdId * slotBytes + OFD_OFFSET_OFFSET, snapshot.offset, true);
+  }
 }
 
 export function hasPlausibleOfdState(handle: KernelSyncHandle, ofdId: number): boolean {
