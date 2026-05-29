@@ -5,12 +5,19 @@ import {
   type KernelExports,
   type KernelRuntimeState,
 } from "../../abi.js";
+import {
+  NET_BUFFER_CAPACITY_OFFSET,
+  NET_BUFFER_DATA_OFFSET,
+  NET_BUFFER_HEAD_OFFSET,
+  NET_BUFFER_TAIL_OFFSET,
+} from "../../layout/net-buffer.js";
 import { clearMemoryRange, copyMemoryRange } from "../common.js";
 
 export function createKernelWorkerObjectStatePrimitives() {
-  const NET_BUF_OFF_HEAD = 0;
-  const NET_BUF_OFF_TAIL = 4;
-  const NET_BUF_OFF_DATA = 16;
+  const NET_BUF_OFF_HEAD = NET_BUFFER_HEAD_OFFSET;
+  const NET_BUF_OFF_TAIL = NET_BUFFER_TAIL_OFFSET;
+  const NET_BUF_OFF_CAPACITY = NET_BUFFER_CAPACITY_OFFSET;
+  const NET_BUF_OFF_DATA = NET_BUFFER_DATA_OFFSET;
 
   function counterAhead(sourceValue: number, targetValue: number, capacity: number): boolean {
     if (sourceValue === targetValue) {
@@ -99,10 +106,10 @@ export function createKernelWorkerObjectStatePrimitives() {
       }
       copyMemoryRange(
         sourceExports.memory,
-        sourceOffset + 8,
+        sourceOffset + NET_BUF_OFF_CAPACITY,
         targetExports.memory,
-        targetOffset + 8,
-        NET_BUF_OFF_DATA - 8,
+        targetOffset + NET_BUF_OFF_CAPACITY,
+        NET_BUF_OFF_DATA - NET_BUF_OFF_CAPACITY,
       );
       targetView.setUint32(targetOffset + NET_BUF_OFF_HEAD, mergedHead, true);
       targetView.setUint32(

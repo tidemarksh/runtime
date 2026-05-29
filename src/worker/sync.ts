@@ -1,4 +1,27 @@
 import { attachKernelRuntimeState, readKernelRuntimeState, type KernelRuntimeState } from "../abi.js";
+import {
+  NET_BUFFER_HEAD_OFFSET,
+  NET_BUFFER_HEADER_BYTES,
+  NET_BUFFER_TAIL_OFFSET,
+} from "../layout/net-buffer.js";
+import {
+  OFD_HOST_FD_OFFSET,
+  OFD_INO_OFFSET,
+  OFD_OFFSET_OFFSET,
+  OFD_TYPE_OFFSET,
+} from "../layout/ofd.js";
+import {
+  PIPE_GENERATION_OFFSET as PIPE_DEBUG_GENERATION_OFFSET,
+  PIPE_HEAD_OFFSET as PIPE_DEBUG_HEAD_OFFSET,
+  PIPE_HEADER_BYTES as PIPE_DEBUG_HEADER_BYTES,
+  PIPE_READ_OPEN_OFFSET as PIPE_DEBUG_READ_OPEN_OFFSET,
+  PIPE_SLOT_MODE_CONTROL,
+  PIPE_SLOT_MODE_READ,
+  PIPE_SLOT_MODE_WRITE,
+  PIPE_TAIL_OFFSET as PIPE_DEBUG_TAIL_OFFSET,
+  PIPE_WRITE_OPEN_OFFSET as PIPE_DEBUG_WRITE_OPEN_OFFSET,
+} from "../layout/pipe.js";
+import { SOCKET_STATE_SHUTDOWN } from "../layout/socket.js";
 import type {
   KernelWorkerFdEntrySnapshot,
   KernelWorkerOfdSlotSnapshot,
@@ -81,23 +104,7 @@ const SOCKET_SYNC_DEBUG_LOG_ENABLED = ((globalThis as {
 const FORK_SHARED_MEMFS_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_FS_PUBLICATION_DEBUG ?? "") === "1";
-const SOCK_STATE_SHUTDOWN = 5;
-const NET_BUFFER_HEADER_BYTES = 16;
-const NET_BUFFER_HEAD_OFFSET = 0;
-const NET_BUFFER_TAIL_OFFSET = 4;
-const PIPE_DEBUG_HEADER_BYTES = 32;
-const PIPE_DEBUG_HEAD_OFFSET = 0;
-const PIPE_DEBUG_TAIL_OFFSET = 4;
-const PIPE_DEBUG_READ_OPEN_OFFSET = 8;
-const PIPE_DEBUG_WRITE_OPEN_OFFSET = 12;
-const PIPE_DEBUG_GENERATION_OFFSET = 20;
-const PIPE_SLOT_MODE_READ = 1 << 0;
-const PIPE_SLOT_MODE_WRITE = 1 << 1;
-const PIPE_SLOT_MODE_CONTROL = 1 << 2;
-const OFD_TYPE_OFFSET = 0;
-const OFD_HOST_FD_OFFSET = 4;
-const OFD_OFFSET_OFFSET = 16;
-const OFD_INO_OFFSET = 24;
+const SOCK_STATE_SHUTDOWN = SOCKET_STATE_SHUTDOWN;
 
 function int32AtomicView(buffer: ArrayBufferLike): Int32Array | null {
   return buffer instanceof SharedArrayBuffer ? new Int32Array(buffer) : null;

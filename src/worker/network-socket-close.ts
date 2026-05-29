@@ -1,11 +1,12 @@
 import type { ProcessHandle } from "./types.js";
-
-const SOCKET_STATE_SHUTDOWN = 5;
-const SHUT_RD_WR_MASK = 3;
-const SOCKET_SLOT_STATE_OFFSET = 12;
-const SOCKET_SLOT_EXTERNAL_PEER_OFFSET = 308;
-const SOCKET_SLOT_RECV_BUF_IDX_OFFSET = 312;
-const SOCKET_SLOT_SHUTDOWN_MASK_OFFSET = 404;
+import {
+  SOCKET_SHUT_RD_WR_MASK,
+  SOCKET_SLOT_EXTERNAL_PEER_OFFSET,
+  SOCKET_SLOT_RECV_BUF_IDX_OFFSET,
+  SOCKET_SLOT_SHUTDOWN_MASK_OFFSET,
+  SOCKET_SLOT_STATE_OFFSET,
+  SOCKET_STATE_SHUTDOWN,
+} from "../layout/socket.js";
 const NETWORK_CLOSE_DEBUG_LOG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_LOG ?? "") === "1"
   || ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_NETWORK ?? "") === "1";
 
@@ -33,7 +34,7 @@ function patchSocketSlotShutdown(memory: Uint8Array, absolute: number): void {
   const view = new DataView(memory.buffer);
   view.setUint32(absolute + SOCKET_SLOT_STATE_OFFSET, SOCKET_STATE_SHUTDOWN, true);
   view.setUint32(absolute + SOCKET_SLOT_EXTERNAL_PEER_OFFSET, 0, true);
-  view.setUint32(absolute + SOCKET_SLOT_SHUTDOWN_MASK_OFFSET, SHUT_RD_WR_MASK, true);
+  view.setUint32(absolute + SOCKET_SLOT_SHUTDOWN_MASK_OFFSET, SOCKET_SHUT_RD_WR_MASK, true);
 }
 
 function socketTablePtrs(handle: ProcessHandle): number[] {

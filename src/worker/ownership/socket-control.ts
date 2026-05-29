@@ -3,9 +3,8 @@ import type {
   KernelWorkerFdEntrySnapshot,
   KernelWorkerSocketStateSnapshot,
 } from "../../messages.js";
+import { OFD_TYPE_OFFSET } from "../../layout/ofd.js";
 import type { KernelOwnershipHandle, ProcessHandle } from "../types.js";
-
-const OFD_TYPE_OFFSET = 0;
 
 export function kernelWorkerOwnsSocketState(handle: KernelOwnershipHandle): boolean {
   return !!handle.kernelWorkerRequest && handle.pid > 0;

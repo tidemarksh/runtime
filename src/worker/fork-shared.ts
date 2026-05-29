@@ -6,11 +6,12 @@ import {
   hasPlausibleOfdState,
   trackForkSharedOfds,
 } from "./ownership/ofd-table.js";
-
-const OFD_TYPE_OFFSET = 0;
-const OFD_HOST_FD_OFFSET = 4;
-const OFD_OFFSET_OFFSET = 16;
-const OFD_INO_OFFSET = 24;
+import {
+  OFD_HOST_FD_OFFSET,
+  OFD_INO_OFFSET,
+  OFD_OFFSET_OFFSET,
+  OFD_TYPE_OFFSET,
+} from "../layout/ofd.js";
 
 export function snapshotKernelShareOfdSlots(
   handle: ProcessHandle,

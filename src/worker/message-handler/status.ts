@@ -42,13 +42,16 @@ import type {
 import { formatCompactDebugSuffix, readProcessPidField, WRITE_DEBUG_KEYS } from "./debug-summary.js";
 import { createWorkerWaitInWorkerStatusHandler } from "./wait-in-worker.js";
 import { FS_RING_TOTAL_BYTES } from "../../layout/fs-ring.js";
+import {
+  NET_BUFFER_HEAD_OFFSET,
+  NET_BUFFER_HEADER_BYTES,
+  NET_BUFFER_TAIL_OFFSET,
+} from "../../layout/net-buffer.js";
+import { SOCKET_STATE_SHUTDOWN } from "../../layout/socket.js";
 
 const STATUS_SOCKET_DEBUG_LOG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_LOG ?? "") === "1"
   || ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_NETWORK ?? "") === "1";
-const SOCK_STATE_SHUTDOWN = 5;
-const NET_BUFFER_HEADER_BYTES = 16;
-const NET_BUFFER_HEAD_OFFSET = 0;
-const NET_BUFFER_TAIL_OFFSET = 4;
+const SOCK_STATE_SHUTDOWN = SOCKET_STATE_SHUTDOWN;
 
 interface KernelMemoryWriteOptions {
   skipFsRingWrites?: boolean;

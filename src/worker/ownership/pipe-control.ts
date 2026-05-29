@@ -1,19 +1,20 @@
 import type { KernelWorkerPipeSlotSnapshot } from "../../messages.js";
+import {
+  PIPE_GENERATION_OFFSET,
+  PIPE_HEAD_OFFSET,
+  PIPE_HEADER_BYTES,
+  PIPE_READ_OPEN_OFFSET,
+  PIPE_SLOT_MODE_CONTROL,
+  PIPE_SLOT_MODE_READ,
+  PIPE_SLOT_MODE_WRITE,
+  PIPE_TAIL_OFFSET,
+  PIPE_WRITE_OPEN_OFFSET,
+} from "../../layout/pipe.js";
 import type { KernelOwnershipHandle, ProcessHandle } from "../types.js";
 import {
   collectProcessHeldOfds,
   syncPipeOfdGenerationsForSlot,
 } from "./ofd-table.js";
-
-const PIPE_HEADER_BYTES = 32;
-const PIPE_HEAD_OFFSET = 0;
-const PIPE_TAIL_OFFSET = 4;
-const PIPE_READ_OPEN_OFFSET = 8;
-const PIPE_WRITE_OPEN_OFFSET = 12;
-const PIPE_GENERATION_OFFSET = 20;
-const PIPE_SLOT_MODE_READ = 1 << 0;
-const PIPE_SLOT_MODE_WRITE = 1 << 1;
-const PIPE_SLOT_MODE_CONTROL = 1 << 2;
 
 export function kernelWorkerOwnsPipeState(handle: KernelOwnershipHandle): boolean {
   return !!handle.kernelWorkerRequest && handle.pid > 0;

@@ -15,6 +15,8 @@ import {
   MEMFS_S_IFREG,
   memfsFileHasInlineData,
 } from "../../kernel-worker/common.js";
+import { OFD_OFFSET_OFFSET } from "../../layout/ofd.js";
+import { PIPE_GENERATION_OFFSET } from "../../layout/pipe.js";
 import {
   adoptKernelShare,
   discardCopiedSharedKernelObjects,
@@ -73,9 +75,6 @@ function forkMemoryPreserveRanges(snapshot: ForkMemorySnapshot): ThreadWorkerMem
     end: range.end,
   }));
 }
-
-const OFD_OFFSET_OFFSET = 16;
-const PIPE_GENERATION_OFFSET = 20;
 
 function currentPipeGeneration(handle: ProcessHandle, pipeSlot: number): number | null {
   const pipeSlotBytes = handle.kernel.kernel_pipe_region_bytes() / handle.kernel.abi_max_pipes();

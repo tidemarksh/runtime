@@ -2,13 +2,14 @@ import type {
   KernelWorkerFdEntrySnapshot,
   KernelWorkerOfdSlotSnapshot,
 } from "../../messages.js";
+import {
+  OFD_HOST_FD_OFFSET,
+  OFD_INO_OFFSET,
+  OFD_OFFSET_OFFSET,
+  OFD_TYPE_OFFSET,
+} from "../../layout/ofd.js";
+import { PIPE_GENERATION_OFFSET } from "../../layout/pipe.js";
 import type { KernelSyncHandle, ProcessHandle } from "../types.js";
-
-const PIPE_GENERATION_OFFSET = 20;
-const OFD_TYPE_OFFSET = 0;
-const OFD_HOST_FD_OFFSET = 4;
-const OFD_OFFSET_OFFSET = 16;
-const OFD_INO_OFFSET = 24;
 
 export function boundedThreadSlotCount(handle: ProcessHandle): number {
   const maxThreads = handle.kernel.abi_max_threads();

@@ -4,13 +4,16 @@ import type {
   KernelWorkerOfdSlotSnapshot,
   KernelWorkerPipeSlotSnapshot,
 } from "../../messages.js";
+import {
+  PIPE_BUFFER_BYTES,
+  PIPE_SLOT_BYTES,
+  PIPE_SLOT_MODE_CONTROL,
+  PIPE_SLOT_MODE_READ,
+  PIPE_SLOT_MODE_WRITE,
+} from "../../layout/pipe.js";
 import type { KernelWorkerSharedStateSyncDeps, KernelRuntimeState } from "./types.js";
 
-const PIPE_SLOT_BYTES = 32 + 65_536;
-const PIPE_BUF_SIZE = 65_536;
-const PIPE_SLOT_MODE_READ = 1 << 0;
-const PIPE_SLOT_MODE_WRITE = 1 << 1;
-const PIPE_SLOT_MODE_CONTROL = 1 << 2;
+const PIPE_BUF_SIZE = PIPE_BUFFER_BYTES;
 
 export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyncDeps) {
   function snapshotCanonicalPipeSlots(

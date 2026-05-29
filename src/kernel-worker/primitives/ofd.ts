@@ -4,6 +4,13 @@ import {
   type KernelExports,
   type KernelRuntimeState,
 } from "../../abi.js";
+import {
+  OFD_HOST_FD_OFFSET,
+  OFD_INO_OFFSET,
+  OFD_OFFSET_OFFSET,
+  OFD_REFCOUNT_OFFSET,
+  OFD_TYPE_OFFSET,
+} from "../../layout/ofd.js";
 import type { KernelWorkerOfdSlotSnapshot } from "../../messages.js";
 import { copyMemoryRange } from "../common.js";
 
@@ -11,12 +18,6 @@ interface KernelWorkerPrimitivesDeps {
   getCanonicalExports(): KernelExports;
   processKernels: Map<number, KernelExports>;
 }
-
-const OFD_TYPE_OFFSET = 0;
-const OFD_HOST_FD_OFFSET = 4;
-const OFD_REFCOUNT_OFFSET = 12;
-const OFD_OFFSET_OFFSET = 16;
-const OFD_INO_OFFSET = 24;
 
 function boundedThreadSlotCount(processExports: KernelExports, vmPtr: number): number {
   const maxThreads = processExports.abi_max_threads();

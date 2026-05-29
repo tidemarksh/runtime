@@ -4,10 +4,16 @@ import type {
   TransferDebugStats,
 } from "./types.js";
 import { readRuntimeBridgeDebugStage } from "../bridge/runtime-state.js";
-
-const NET_BUFFER_HEADER_BYTES = 16;
-const NET_BUFFER_HEAD_OFFSET = 0;
-const NET_BUFFER_TAIL_OFFSET = 4;
+import {
+  NET_BUFFER_HEAD_OFFSET,
+  NET_BUFFER_HEADER_BYTES,
+  NET_BUFFER_TAIL_OFFSET,
+} from "../layout/net-buffer.js";
+import {
+  PIPE_READ_OPEN_OFFSET,
+  PIPE_SLOT_BYTES,
+  PIPE_WRITE_OPEN_OFFSET,
+} from "../layout/pipe.js";
 
 export interface WorkerLogFocus {
   vmPtr: number;
@@ -1436,10 +1442,10 @@ export function assertProcessStandardFdIntegrity(
       continue;
     }
     const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-    const base = handle.kernelState.pipeBase + pipeSlot * (32 + 65_536);
+    const base = handle.kernelState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
     const i32 = new Int32Array(handle.memory.buffer);
-    const readOpen = Atomics.load(i32, (base + 8) >>> 2);
-    const writeOpen = Atomics.load(i32, (base + 12) >>> 2);
+    const readOpen = Atomics.load(i32, (base + PIPE_READ_OPEN_OFFSET) >>> 2);
+    const writeOpen = Atomics.load(i32, (base + PIPE_WRITE_OPEN_OFFSET) >>> 2);
     if (readOpen >= 0 && writeOpen >= 0) {
       continue;
     }

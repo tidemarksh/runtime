@@ -1,4 +1,22 @@
 import { attachKernelRuntimeState, readKernelRuntimeState, type KernelExports, type KernelRuntimeState } from "../../abi.js";
+import {
+  OFD_INO_OFFSET,
+  OFD_OFFSET_OFFSET,
+  OFD_TYPE_OFFSET,
+} from "../../layout/ofd.js";
+import {
+  PIPE_BUFFER_BYTES,
+  PIPE_DATA_OFFSET,
+  PIPE_GENERATION_OFFSET,
+  PIPE_HEAD_OFFSET,
+  PIPE_READ_OPEN_OFFSET,
+  PIPE_SLOT_BYTES,
+  PIPE_SLOT_MODE_CONTROL,
+  PIPE_SLOT_MODE_READ,
+  PIPE_SLOT_MODE_WRITE,
+  PIPE_TAIL_OFFSET,
+  PIPE_WRITE_OPEN_OFFSET,
+} from "../../layout/pipe.js";
 import type { KernelWorkerPipeSlotSnapshot } from "../../messages.js";
 import { collectProcessHeldOfdRefcounts } from "./ofd.js";
 
@@ -8,20 +26,13 @@ const FD_TYPE_PTY_SLAVE = 12;
 const OPEN_ACCESS_MODE_MASK = 0x3;
 const O_RDONLY = 0;
 const O_WRONLY = 1;
-const PIPE_SLOT_BYTES = 32 + 65_536;
-const PIPE_SLOT_MODE_READ = 1 << 0;
-const PIPE_SLOT_MODE_WRITE = 1 << 1;
-const PIPE_SLOT_MODE_CONTROL = 1 << 2;
-const PIPE_OFF_HEAD = 0;
-const PIPE_OFF_TAIL = 4;
-const PIPE_OFF_READ_OPEN = 8;
-const PIPE_OFF_WRITE_OPEN = 12;
-const PIPE_OFF_GENERATION = 20;
-const PIPE_OFF_DATA = 32;
-const PIPE_BUF_SIZE = PIPE_SLOT_BYTES - PIPE_OFF_DATA;
-const OFD_TYPE_OFFSET = 0;
-const OFD_OFFSET_OFFSET = 16;
-const OFD_INO_OFFSET = 24;
+const PIPE_OFF_HEAD = PIPE_HEAD_OFFSET;
+const PIPE_OFF_TAIL = PIPE_TAIL_OFFSET;
+const PIPE_OFF_READ_OPEN = PIPE_READ_OPEN_OFFSET;
+const PIPE_OFF_WRITE_OPEN = PIPE_WRITE_OPEN_OFFSET;
+const PIPE_OFF_GENERATION = PIPE_GENERATION_OFFSET;
+const PIPE_OFF_DATA = PIPE_DATA_OFFSET;
+const PIPE_BUF_SIZE = PIPE_BUFFER_BYTES;
 
 function copyPipeDataTailDelta(
   sourceBytes: Uint8Array,

@@ -1,11 +1,20 @@
 import { attachKernelRuntimeState } from "../../abi.js";
+import {
+  PIPE_BUFFER_BYTES,
+  PIPE_DATA_OFFSET,
+  PIPE_READ_OPEN_OFFSET,
+  PIPE_SLOT_BYTES,
+  PIPE_TAIL_OFFSET,
+  PIPE_WRITE_OPEN_OFFSET,
+} from "../../layout/pipe.js";
 import type { KernelSyncHandle, ProcessHandle } from "../types.js";
 
-const PIPE_CONTROL_START = 8;
-const PIPE_DATA_START = 32;
-const PIPE_OFF_READ_OPEN = 8;
-const PIPE_OFF_WRITE_OPEN = 12;
-const PIPE_BUF_SIZE = 65_536;
+const PIPE_CONTROL_START = PIPE_READ_OPEN_OFFSET;
+const PIPE_DATA_START = PIPE_DATA_OFFSET;
+const PIPE_OFF_READ_OPEN = PIPE_READ_OPEN_OFFSET;
+const PIPE_OFF_TAIL = PIPE_TAIL_OFFSET;
+const PIPE_OFF_WRITE_OPEN = PIPE_WRITE_OPEN_OFFSET;
+const PIPE_BUF_SIZE = PIPE_BUFFER_BYTES;
 
 function pipeDebugPreviewEnabled(): boolean {
   const globalWithProcess = globalThis as typeof globalThis & {
@@ -266,7 +275,7 @@ export function reconcileKernelSharePipeControl(handle: ProcessHandle): void {
     writeOpen[Number(pipeSlot)] += 1;
   }
 
-  const slotBytes = 32 + 65_536;
+  const slotBytes = PIPE_SLOT_BYTES;
   for (const member of members) {
     if (typeof member.kernel.kernel_pipe_base !== "function") {
       continue;
@@ -314,17 +323,17 @@ export function formatPipeCounterDebug(handle: ProcessHandle, fd: number): strin
   if (pipeSlot === 0) {
     return `${fd}:ofd=${ofdId}:type=${fdType}:slot=0`;
   }
-  const base = handle.kernelState.pipeBase + pipeSlot * (32 + 65_536);
+  const base = handle.kernelState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
   const i32 = new Int32Array(handle.memory.buffer);
   const u32 = new Uint32Array(handle.memory.buffer);
   const head = Atomics.load(u32, base >>> 2);
-  const tail = Atomics.load(u32, (base + 4) >>> 2);
+  const tail = Atomics.load(u32, (base + PIPE_OFF_TAIL) >>> 2);
   return [
     `${fd}:ofd=${ofdId}`,
     `type=${fdType}`,
     `slot=${pipeSlot}`,
-    `ro=${Atomics.load(i32, (base + 8) >>> 2)}`,
-    `wo=${Atomics.load(i32, (base + 12) >>> 2)}`,
+    `ro=${Atomics.load(i32, (base + PIPE_OFF_READ_OPEN) >>> 2)}`,
+    `wo=${Atomics.load(i32, (base + PIPE_OFF_WRITE_OPEN) >>> 2)}`,
     `head=${head}`,
     `tail=${tail}`,
     ...pipeDebugPreview(handle, base, head, tail),

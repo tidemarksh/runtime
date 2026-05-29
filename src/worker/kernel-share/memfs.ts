@@ -1,5 +1,11 @@
 import type { KernelSyncHandle } from "../types.js";
 import type { KernelExports } from "../../abi.js";
+import {
+  MEMFS_INODE_OFF_DATA_CAP,
+  MEMFS_INODE_OFF_DATA_OFFSET,
+  MEMFS_INODE_OFF_MODE,
+  MEMFS_INODE_OFF_SIZE,
+} from "../../layout/memfs.js";
 import { clearKernelRegion, copyKernelRegion } from "./common.js";
 import { ensureKernelMemoryCapacity, kernelScratchBase } from "../kernel-scratch.js";
 
@@ -16,10 +22,6 @@ type MemfsLayout = {
 const MEMFS_S_IFMT = 0o170000;
 const MEMFS_S_IFREG = 0o100000;
 const MEMFS_S_IFLNK = 0o120000;
-const MEMFS_INODE_OFF_MODE = 0;
-const MEMFS_INODE_OFF_SIZE = 16;
-const MEMFS_INODE_OFF_DATA_OFFSET = 24;
-const MEMFS_INODE_OFF_DATA_CAP = 28;
 const encoder = new TextEncoder();
 
 type ProcfsMemfsExports = Pick<

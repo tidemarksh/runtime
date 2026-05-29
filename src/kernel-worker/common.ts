@@ -1,5 +1,19 @@
 import type { KernelExports, KernelRuntimeState } from "../abi.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
+import {
+  MEMFS_HEADER_OFF_DATA_CAP,
+  MEMFS_HEADER_OFF_DATA_PTR,
+  MEMFS_HEADER_OFF_DATA_USED,
+  MEMFS_HEADER_OFF_DIR_ENTRIES_PTR,
+  MEMFS_HEADER_OFF_DIR_ENTRY_COUNT,
+  MEMFS_HEADER_OFF_FIRST_CHILD_PTR,
+  MEMFS_HEADER_OFF_INODES_PTR,
+  MEMFS_HEADER_OFF_INODE_COUNT,
+  MEMFS_INODE_OFF_DATA_CAP,
+  MEMFS_INODE_OFF_DATA_OFFSET,
+  MEMFS_INODE_OFF_MODE,
+  MEMFS_INODE_OFF_SIZE,
+} from "../layout/memfs.js";
 
 const materializedMemfsFiles = new WeakMap<KernelExports, Set<number>>();
 
@@ -16,18 +30,6 @@ export type MemfsLayout = {
 
 export const MEMFS_S_IFMT = 0o170000;
 export const MEMFS_S_IFREG = 0o100000;
-const MEMFS_INODE_OFF_SIZE = 16;
-const MEMFS_HEADER_OFF_INODE_COUNT = 0;
-const MEMFS_HEADER_OFF_DIR_ENTRY_COUNT = 4;
-const MEMFS_HEADER_OFF_DATA_USED = 8;
-const MEMFS_HEADER_OFF_DATA_CAP = 12;
-const MEMFS_HEADER_OFF_INODES_PTR = 16;
-const MEMFS_HEADER_OFF_FIRST_CHILD_PTR = 20;
-const MEMFS_HEADER_OFF_DIR_ENTRIES_PTR = 24;
-const MEMFS_HEADER_OFF_DATA_PTR = 28;
-const MEMFS_INODE_OFF_MODE = 0;
-const MEMFS_INODE_OFF_DATA_OFFSET = 24;
-const MEMFS_INODE_OFF_DATA_CAP = 28;
 
 export function normalizePermMode(mode: number | undefined, fallback: number): number {
   return (mode ?? fallback) & 0o7777;

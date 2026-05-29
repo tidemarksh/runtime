@@ -10,12 +10,14 @@ import {
   normalizeMetadataOnlyMemfsState,
   readMemfsLayout,
 } from "../common.js";
+import {
+  MEMFS_INODE_OFF_DATA_CAP,
+  MEMFS_INODE_OFF_DATA_OFFSET,
+  MEMFS_INODE_OFF_MODE,
+  MEMFS_INODE_OFF_SIZE,
+} from "../../layout/memfs.js";
 
 const MEMFS_S_IFLNK = 0o120000;
-const MEMFS_INODE_OFF_MODE = 0;
-const MEMFS_INODE_OFF_SIZE = 16;
-const MEMFS_INODE_OFF_DATA_OFFSET = 24;
-const MEMFS_INODE_OFF_DATA_CAP = 28;
 
 export function createKernelWorkerMemfsPrimitives() {
   function preserveMetadataOnlySymlinkData(

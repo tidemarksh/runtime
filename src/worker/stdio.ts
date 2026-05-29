@@ -1,10 +1,16 @@
 import { readPipe, writePipe } from "../bridge/pipe.js";
 import { writeKernelScratch } from "./kernel-scratch.js";
+import {
+  PIPE_HEAD_OFFSET,
+  PIPE_HEADER_BYTES,
+  PIPE_READ_OPEN_OFFSET,
+  PIPE_SLOT_BYTES,
+  PIPE_SLOT_MODE_READ,
+  PIPE_TAIL_OFFSET,
+  PIPE_WRITE_OPEN_OFFSET,
+} from "../layout/pipe.js";
 import type { KernelWorkerPipeSlotSnapshot } from "../messages.js";
 import type { ProcessHandle, SharedHostStdio } from "./types.js";
-
-const PIPE_HEADER_BYTES = 32;
-const PIPE_SLOT_MODE_READ = 1 << 0;
 
 function flushOutputBacklog(handle: ProcessHandle): void {
   const onStdout = handle.onStdout;
@@ -36,11 +42,11 @@ function pipeStateSignature(handle: ProcessHandle): string {
     .filter((slot, index, array) => slot > 0 && array.indexOf(slot) === index);
   return slots
     .map((pipeSlot) => {
-      const base = pipeBase + pipeSlot * (32 + 65_536);
-      const head = bytes.getUint32(base, true);
-      const tail = bytes.getUint32(base + 4, true);
-      const readOpen = bytes.getInt32(base + 8, true);
-      const writeOpen = bytes.getInt32(base + 12, true);
+      const base = pipeBase + pipeSlot * PIPE_SLOT_BYTES;
+      const head = bytes.getUint32(base + PIPE_HEAD_OFFSET, true);
+      const tail = bytes.getUint32(base + PIPE_TAIL_OFFSET, true);
+      const readOpen = bytes.getInt32(base + PIPE_READ_OPEN_OFFSET, true);
+      const writeOpen = bytes.getInt32(base + PIPE_WRITE_OPEN_OFFSET, true);
       return `${pipeSlot}:${head}:${tail}:${readOpen}:${writeOpen}`;
     })
     .join("|");
@@ -50,11 +56,11 @@ function readPipeCounters(handle: ProcessHandle, pipeSlot: number): {
   head: number;
   tail: number;
 } {
-  const base = handle.kernelState.pipeBase + pipeSlot * (32 + 65_536);
+  const base = handle.kernelState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
   const bytes = new DataView(handle.memory.buffer);
   return {
-    head: bytes.getUint32(base, true),
-    tail: bytes.getUint32(base + 4, true),
+    head: bytes.getUint32(base + PIPE_HEAD_OFFSET, true),
+    tail: bytes.getUint32(base + PIPE_TAIL_OFFSET, true),
   };
 }
 

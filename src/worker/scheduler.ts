@@ -27,6 +27,16 @@ import type {
   WorkerScheduler,
   WorkerSchedulerDeps,
 } from "./scheduler/types.js";
+import {
+  PIPE_BUFFER_BYTES,
+  PIPE_DATA_OFFSET,
+  PIPE_HEAD_OFFSET,
+  PIPE_READ_OPEN_OFFSET,
+  PIPE_SLOT_BYTES,
+  PIPE_TAIL_OFFSET,
+  PIPE_WRITE_OPEN_OFFSET,
+} from "../layout/pipe.js";
+import { POLLFD_BYTES } from "../layout/poll.js";
 
 const WORKER_DEBUG_LOG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
@@ -36,14 +46,12 @@ function logNetworkDebug(_event: string): void {
 }
 const GUEST_TICKS_PER_SEC = 100_000_000n;
 const GUEST_NSEC_PER_SEC = 1_000_000_000n;
-const POLLFD_BYTES = 8;
-const PIPE_SLOT_BYTES = 32 + 65_536;
-const PIPE_OFF_HEAD = 0;
-const PIPE_OFF_TAIL = 4;
-const PIPE_OFF_READ_OPEN = 8;
-const PIPE_OFF_WRITE_OPEN = 12;
-const PIPE_DATA_START = 32;
-const PIPE_BUF_SIZE = 65_536;
+const PIPE_OFF_HEAD = PIPE_HEAD_OFFSET;
+const PIPE_OFF_TAIL = PIPE_TAIL_OFFSET;
+const PIPE_OFF_READ_OPEN = PIPE_READ_OPEN_OFFSET;
+const PIPE_OFF_WRITE_OPEN = PIPE_WRITE_OPEN_OFFSET;
+const PIPE_DATA_START = PIPE_DATA_OFFSET;
+const PIPE_BUF_SIZE = PIPE_BUFFER_BYTES;
 
 function pipeDebugPreviewEnabled(): boolean {
   return ((globalThis as {
@@ -197,7 +205,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
     const absolute = handle.guestBase + start;
-    const writeLen = Math.min(requested, 65_536);
+    const writeLen = Math.min(requested, PIPE_BUFFER_BYTES);
     const memory = new Uint8Array(handle.memory.buffer);
     if (absolute < 0 || absolute + writeLen > memory.byteLength) {
       return;

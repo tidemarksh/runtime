@@ -1,14 +1,19 @@
 import type { ProcessHandle } from "../types.js";
 import {
+  FD_ENTRY_BYTES,
+  FD_ENTRY_OFD_ID_OFFSET,
+} from "../../layout/fd.js";
+import {
+  OFD_HOST_FD_OFFSET,
+  OFD_INO_OFFSET,
+  OFD_OFFSET_OFFSET,
+  OFD_REFCOUNT_OFFSET,
+  OFD_TYPE_OFFSET,
+} from "../../layout/ofd.js";
+import {
   networkConnectionOfds,
   restoreNetworkOfdSlotWatermarks,
 } from "./socket-control.js";
-
-const OFD_TYPE_OFFSET = 0;
-const OFD_HOST_FD_OFFSET = 4;
-const OFD_REFCOUNT_OFFSET = 12;
-const OFD_OFFSET_OFFSET = 16;
-const OFD_INO_OFFSET = 24;
 
 interface FdEntryLike {
   fd?: number;
@@ -27,8 +32,6 @@ interface StatusMessageLike {
   syscallNr?: bigint;
 }
 
-const FD_ENTRY_BYTES = 8;
-const FD_ENTRY_OFD_ID_OFFSET = 0;
 const maxRegularFileOffsetByHandle = new WeakMap<ProcessHandle, Map<number, bigint>>();
 
 export function explicitPipeFdEntryWouldRollBack(

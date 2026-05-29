@@ -1,11 +1,21 @@
-const PIPE_BUF_SIZE = 65_536;
-const PIPE_SLOT_SIZE = 32 + PIPE_BUF_SIZE;
+import {
+  PIPE_BUFFER_BYTES,
+  PIPE_DATA_OFFSET,
+  PIPE_HEAD_OFFSET,
+  PIPE_READ_OPEN_OFFSET,
+  PIPE_SLOT_BYTES,
+  PIPE_TAIL_OFFSET,
+  PIPE_WRITE_OPEN_OFFSET,
+} from "../layout/pipe.js";
 
-const OFF_HEAD = 0;
-const OFF_TAIL = 4;
-const OFF_READ_OPEN = 8;
-const OFF_WRITE_OPEN = 12;
-const OFF_DATA = 32;
+const PIPE_BUF_SIZE = PIPE_BUFFER_BYTES;
+const PIPE_SLOT_SIZE = PIPE_SLOT_BYTES;
+
+const OFF_HEAD = PIPE_HEAD_OFFSET;
+const OFF_TAIL = PIPE_TAIL_OFFSET;
+const OFF_READ_OPEN = PIPE_READ_OPEN_OFFSET;
+const OFF_WRITE_OPEN = PIPE_WRITE_OPEN_OFFSET;
+const OFF_DATA = PIPE_DATA_OFFSET;
 
 function slotBase(pipeBase: number, pipeSlot: number): number {
   return pipeBase + pipeSlot * PIPE_SLOT_SIZE;

@@ -42,13 +42,11 @@ import {
   fsRingCompletionEntryOffset,
   fsRingRequestEntryOffset,
 } from "../layout/fs-ring.js";
+import { PIPE_HEAD_OFFSET, PIPE_TAIL_OFFSET, PIPE_WRITE_OPEN_OFFSET } from "../layout/pipe.js";
+import { POLLFD_BYTES } from "../layout/poll.js";
 
 const FS_DEBUG_PATH_BUF_LEN = 4096;
 const GUEST_TICKS_PER_SEC = 100_000_000n;
-const POLLFD_BYTES = 8;
-const PIPE_HEAD_OFFSET = 0;
-const PIPE_TAIL_OFFSET = 4;
-const PIPE_WRITE_OPEN_OFFSET = 12;
 const PIPE_SLOT_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_PIPE_SLOT_DEBUG ?? "") === "1";

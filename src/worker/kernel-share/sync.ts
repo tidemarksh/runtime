@@ -7,11 +7,12 @@ import { kernelWorkerOwnsEpollState } from "../ownership/epoll-control.js";
 import { kernelWorkerOwnsPipeState } from "../ownership/pipe-control.js";
 import { kernelWorkerOwnsSocketState } from "../ownership/socket-control.js";
 import { clearMemfsState, syncMemfsState } from "./memfs.js";
-
-const OFD_TYPE_OFFSET = 0;
-const OFD_HOST_FD_OFFSET = 4;
-const OFD_OFFSET_OFFSET = 16;
-const OFD_INO_OFFSET = 24;
+import {
+  OFD_HOST_FD_OFFSET,
+  OFD_INO_OFFSET,
+  OFD_OFFSET_OFFSET,
+  OFD_TYPE_OFFSET,
+} from "../../layout/ofd.js";
 
 export function copySelectedOfdState(
   source: KernelSyncHandle,

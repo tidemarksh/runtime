@@ -27,14 +27,14 @@ import {
   copyKernelPrivateRegion,
   ensureMemoryCapacity,
 } from "../kernel-scratch.js";
+import { OFD_OFFSET_OFFSET } from "../../layout/ofd.js";
+import { PIPE_GENERATION_OFFSET } from "../../layout/pipe.js";
 import { acquireWorker, ensureEvictionTimer } from "../pool.js";
 import { createForkChildHandle } from "./common.js";
 import { computeGuestRamLimitBytes } from "./common.js";
 import type { ProcessHandle, ThreadWorkerState, WorkerForkDeps } from "./types.js";
 
 const VFORK_EXECVE_HANDOFF_FAILURE_WAIT_STATUS = 127 << 8;
-const OFD_OFFSET_OFFSET = 16;
-const PIPE_GENERATION_OFFSET = 20;
 
 function copyKernelRuntimeRegion(
   source: WebAssembly.Memory,
