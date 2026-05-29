@@ -1,5 +1,5 @@
 import { createWorkerControlMessageHandler } from "./message-handler/control.js";
-import { readProcessPidField } from "./message-handler/debug-summary.js";
+import { readProcessPidField } from "./diagnostics/format.js";
 import { createWorkerStatusMessageHandler } from "./message-handler/status.js";
 import type { WorkerMessageHandlerDeps } from "./message-handler/types.js";
 import { recordWorkerMessageDebugEvent, type ProcessHandle } from "./types.js";

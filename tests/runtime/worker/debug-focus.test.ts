@@ -1,5 +1,5 @@
 import { expect, test } from "vite-plus/test";
-import { summarizeProcessWorkerLogFocus } from "../../../src/worker/debug.js";
+import { summarizeProcessWorkerLogFocus } from "../../../src/worker/diagnostics/debug.js";
 
 test("summarizeProcessWorkerLogFocus keeps the last credible state ahead of low-pc postmortem entries", () => {
   const worker = {} as Worker;

@@ -11,7 +11,7 @@ import type {
   ThreadWorkerStatusMessage,
   WorkerMessageHandlerDeps,
 } from "./types.js";
-import { formatCompactDebugSuffix } from "./debug-summary.js";
+import { formatCompactDebugSuffix } from "../diagnostics/format.js";
 import { createWorkerOwnershipGuard } from "../ownership/process-state.js";
 
 export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandlerDeps) {

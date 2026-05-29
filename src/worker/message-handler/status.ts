@@ -39,7 +39,7 @@ import type {
   ThreadWorkerStatusMessage,
   WorkerMessageHandlerDeps,
 } from "./types.js";
-import { formatCompactDebugSuffix, readProcessPidField, WRITE_DEBUG_KEYS } from "./debug-summary.js";
+import { formatCompactDebugSuffix, readProcessPidField, WRITE_DEBUG_KEYS } from "../diagnostics/format.js";
 import { createWorkerWaitInWorkerStatusHandler } from "./wait-in-worker.js";
 import { FS_RING_TOTAL_BYTES } from "../../layout/fs-ring.js";
 import {

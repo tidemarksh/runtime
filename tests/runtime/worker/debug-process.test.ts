@@ -1,5 +1,5 @@
 import { expect, test } from "vite-plus/test";
-import { debugRuntimeProcessHandles, formatAllLiveThreadDebug } from "../../../src/worker/debug.js";
+import { debugRuntimeProcessHandles, formatAllLiveThreadDebug } from "../../../src/worker/diagnostics/debug.js";
 
 test("debugRuntimeProcessHandles keeps riscv syscall trace when process formatting throws", () => {
   const handle = {

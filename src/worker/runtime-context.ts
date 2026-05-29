@@ -1,14 +1,18 @@
 import type { FsSnapshotEntry } from "../fs/types.js";
 import {
-  appendRuntimeLifecycleEvent as appendRuntimeLifecycleEventImpl,
   assertProcessStandardFdIntegrity as assertProcessStandardFdIntegrityImpl,
   debugRuntimeExecutionStats as debugRuntimeExecutionStatsImpl,
   debugRuntimeProcessHandles as debugRuntimeProcessHandlesImpl,
-  debugRuntimeWorkerLogFocus as debugRuntimeWorkerLogFocusImpl,
   formatAllLiveThreadDebug as formatAllLiveThreadDebugImpl,
+} from "./diagnostics/snapshot.js";
+import {
+  debugRuntimeWorkerLogFocus as debugRuntimeWorkerLogFocusImpl,
   summarizeProcessWorkerLogFocus as summarizeProcessWorkerLogFocusImpl,
   type RuntimeProcessWorkerLogFocus,
-} from "./debug.js";
+} from "./diagnostics/worker-focus.js";
+import {
+  appendRuntimeLifecycleEvent as appendRuntimeLifecycleEventImpl,
+} from "./diagnostics/lifecycle-log.js";
 import {
   applyFsEntryToHandle,
   cloneSnapshotEntries,

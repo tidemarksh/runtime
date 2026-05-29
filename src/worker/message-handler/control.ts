@@ -11,7 +11,7 @@ import { adoptKernelStateForHandle } from "../sync.js";
 import type { ProcessHandle } from "../types.js";
 import type { ThreadWorkerOutbound } from "../../messages.js";
 import type { WorkerMessageHandlerDeps } from "./types.js";
-import { readProcessPidField } from "./debug-summary.js";
+import { readProcessPidField } from "../diagnostics/format.js";
 import { createWorkerOwnershipGuard } from "../ownership/process-state.js";
 
 function formatDebugError(error: unknown): string {
