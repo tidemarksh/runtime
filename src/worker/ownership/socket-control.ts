@@ -1,4 +1,5 @@
 import type { RuntimeNetworkBridge } from "../../network.js";
+import type { KernelWorkerSocketStateSnapshot } from "../../messages.js";
 import type { KernelOwnershipHandle, ProcessHandle } from "../types.js";
 
 const OFD_TYPE_OFFSET = 0;
@@ -98,6 +99,39 @@ export function restoreRuntimeNetworkSidecarForHandle(
     }
   }
   return handle.networkBridge;
+}
+
+export function snapshotSocketStateForThread(handle: ProcessHandle): KernelWorkerSocketStateSnapshot | undefined {
+  if (
+    handle.kernelState.socketUsed === 0
+    && handle.kernelState.netBufUsed === 0n
+    && (handle.networkConnections?.size ?? 0) === 0
+    && (handle.networkPendingConnectFds?.size ?? 0) === 0
+    && (handle.networkClosedFds?.size ?? 0) === 0
+    && (handle.networkClosedSocketSlots?.size ?? 0) === 0
+    && (handle.networkSocketSlotWatermarks?.size ?? 0) === 0
+    && (handle.networkRecvPayloadWatermarks?.size ?? 0) === 0
+  ) {
+    return undefined;
+  }
+  const socketTableBytes = handle.kernel.kernel_socket_table_bytes?.() ?? 0;
+  const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes?.() ?? 0;
+  if (socketTableBytes <= 0 || netBufPoolBytes <= 0) {
+    return undefined;
+  }
+  const memory = new Uint8Array(handle.memory.buffer);
+  return {
+    socketTable: memory.slice(
+      handle.kernelState.socketTablePtr,
+      handle.kernelState.socketTablePtr + socketTableBytes,
+    ),
+    netBufPool: memory.slice(
+      handle.kernelState.netBufBase,
+      handle.kernelState.netBufBase + netBufPoolBytes,
+    ),
+    socketUsed: handle.kernelState.socketUsed | handle.kernel.kernel_socket_used(),
+    netBufUsed: handle.kernelState.netBufUsed | handle.kernel.kernel_net_buf_used(),
+  };
 }
 
 export function collectRuntimeNetworkSocketOfdIds(handles: Iterable<ProcessHandle>): Set<number> {

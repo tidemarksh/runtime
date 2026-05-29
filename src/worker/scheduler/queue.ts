@@ -9,10 +9,7 @@ import type {
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
-import type {
-  KernelWorkerSocketStateSnapshot,
-  ThreadWorkerOutbound,
-} from "../../messages.js";
+import type { ThreadWorkerOutbound } from "../../messages.js";
 import { kernelStackSlotForWorker } from "../pool.js";
 import { snapshotProcessFdEntriesForThread } from "../ownership/fd-table.js";
 import {
@@ -23,6 +20,7 @@ import {
   composeHandlePipeUsed,
   preserveHostStdioPipeControlForStep,
 } from "../ownership/pipe-control.js";
+import { snapshotSocketStateForThread } from "../ownership/socket-control.js";
 import type {
   ThreadWorkerInbound,
   WorkerSchedulerQueueHelpers,
@@ -37,38 +35,6 @@ const SCHEDULER_QUEUE_DEBUG_LOG_ENABLED = false;
 let nextThreadWorkerGeneration = 1;
 const HOT_PC_COUNTER_LIMIT = 32;
 const STALE_SLEEP_RUNNING_WORKER_REPAIR_MS = 2_000;
-function snapshotSocketStateForThread(handle: ProcessHandle): KernelWorkerSocketStateSnapshot | undefined {
-  if (
-    handle.kernelState.socketUsed === 0
-    && handle.kernelState.netBufUsed === 0n
-    && (handle.networkConnections?.size ?? 0) === 0
-    && (handle.networkPendingConnectFds?.size ?? 0) === 0
-    && (handle.networkClosedFds?.size ?? 0) === 0
-    && (handle.networkClosedSocketSlots?.size ?? 0) === 0
-    && (handle.networkSocketSlotWatermarks?.size ?? 0) === 0
-    && (handle.networkRecvPayloadWatermarks?.size ?? 0) === 0
-  ) {
-    return undefined;
-  }
-  const socketTableBytes = handle.kernel.kernel_socket_table_bytes?.() ?? 0;
-  const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes?.() ?? 0;
-  if (socketTableBytes <= 0 || netBufPoolBytes <= 0) {
-    return undefined;
-  }
-  const memory = new Uint8Array(handle.memory.buffer);
-  return {
-    socketTable: memory.slice(
-      handle.kernelState.socketTablePtr,
-      handle.kernelState.socketTablePtr + socketTableBytes,
-    ),
-    netBufPool: memory.slice(
-      handle.kernelState.netBufBase,
-      handle.kernelState.netBufBase + netBufPoolBytes,
-    ),
-    socketUsed: handle.kernelState.socketUsed | handle.kernel.kernel_socket_used(),
-    netBufUsed: handle.kernelState.netBufUsed | handle.kernel.kernel_net_buf_used(),
-  };
-}
 
 function readSchedulerStepBudget(): number {
   const hostConfigured = (globalThis as typeof globalThis & {
