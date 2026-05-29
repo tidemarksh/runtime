@@ -3,7 +3,8 @@ import {
   setWorkerMessageErrorHandler,
   setWorkerMessageHandler,
 } from "../../bridge/compat.js";
-import { publishRuntimeBridgeEpoch, wakeRuntimeBridge } from "../../bridge/runtime-state.js";
+import { publishRuntimeBridgeEpoch } from "../../bridge/runtime-state.js";
+import { createReadyWorkerFairness } from "./fairness.js";
 import type {
   AttachThreadWorkerRequest,
   ProcessHandle,
@@ -204,7 +205,7 @@ export function createWorkerSchedulerQueueHelpers(
   deps: WorkerSchedulerQueueDeps,
 ): WorkerSchedulerQueueHelpers {
   const observedForkSharedSyncGates = new WeakMap<ProcessHandle, Promise<void>>();
-  const pendingRunningWorkerPumps = new WeakMap<ProcessHandle, Set<number>>();
+  const readyWorkerFairness = createReadyWorkerFairness(pumpProcess);
 
   function observeForkSharedSyncGate(handle: ProcessHandle, promise: Promise<void>): void {
     if (observedForkSharedSyncGates.get(handle) === promise) {
@@ -224,26 +225,6 @@ export function createWorkerSchedulerQueueHelpers(
       pumpProcess(handle);
     };
     promise.then(onSettled, onSettled);
-  }
-
-  function scheduleRunningWorkerPump(handle: ProcessHandle, delayMs: number): void {
-    let pendingDelays = pendingRunningWorkerPumps.get(handle);
-    if (!pendingDelays) {
-      pendingDelays = new Set();
-      pendingRunningWorkerPumps.set(handle, pendingDelays);
-    }
-    if (pendingDelays.has(delayMs)) {
-      return;
-    }
-    pendingDelays.add(delayMs);
-    setTimeout(() => {
-      const currentPendingDelays = pendingRunningWorkerPumps.get(handle);
-      currentPendingDelays?.delete(delayMs);
-      if (currentPendingDelays?.size === 0) {
-        pendingRunningWorkerPumps.delete(handle);
-      }
-      pumpProcess(handle);
-    }, delayMs);
   }
 
   function runningWorkerStepAppearsIdle(handle: ProcessHandle, thread: ThreadWorkerState): boolean {
@@ -538,9 +519,7 @@ export function createWorkerSchedulerQueueHelpers(
       }
       handle.readyWorkers.push(worker);
       if (handle.runningWorker !== null) {
-        wakeRuntimeBridge(handle.runtimeBridge);
-        scheduleRunningWorkerPump(handle, 0);
-        scheduleRunningWorkerPump(handle, STALE_SLEEP_RUNNING_WORKER_REPAIR_MS);
+        readyWorkerFairness.wakeRunningWorkerForReadyWork(handle);
       }
       if (handle.vforkSnapshot !== null && handle.vforkWorker === worker) {
       }

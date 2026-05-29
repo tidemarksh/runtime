@@ -3,7 +3,6 @@ import {
   readKernelRuntimeState,
 } from "../abi.js";
 import {
-  publishKernelRuntimeState,
   wakeRuntimeBridge,
 } from "../bridge/runtime-state.js";
 import {
@@ -17,8 +16,17 @@ import {
 import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
 import { describeForkSharedSyncPromise } from "./fork-shared-sync-debug.js";
 import { collectLiveThreadVmPtrs, processHasLiveThreads } from "./live-threads.js";
+import { appendWorkerDebugLog } from "./scheduler/fairness.js";
+import { createFutexScheduler } from "./scheduler/futex.js";
+import { createPipePollScheduler } from "./scheduler/pipe-poll.js";
+import { createPruningScheduler } from "./scheduler/pruning.js";
 import { createWorkerSchedulerQueueHelpers } from "./scheduler/queue.js";
+import { logNetworkDebug } from "./scheduler/run-loop.js";
+import { createSleepScheduler } from "./scheduler/sleep.js";
+import { createSocketWaitScheduler } from "./scheduler/socket-wait.js";
 import { createWorkerSchedulerStateSyncHelpers } from "./scheduler/state-sync.js";
+import { createVforkExclusiveScheduler } from "./scheduler/vfork-exclusive.js";
+import { createWait4Scheduler } from "./scheduler/wait4.js";
 import type {
   BlockedWorkerState,
   ProcessHandle,
@@ -27,79 +35,6 @@ import type {
   WorkerScheduler,
   WorkerSchedulerDeps,
 } from "./scheduler/types.js";
-import {
-  PIPE_BUFFER_BYTES,
-  PIPE_DATA_OFFSET,
-  PIPE_HEAD_OFFSET,
-  PIPE_READ_OPEN_OFFSET,
-  PIPE_SLOT_BYTES,
-  PIPE_TAIL_OFFSET,
-  PIPE_WRITE_OPEN_OFFSET,
-} from "../layout/pipe.js";
-import { POLLFD_BYTES } from "../layout/poll.js";
-
-const WORKER_DEBUG_LOG_ENABLED = ((globalThis as {
-  process?: { env?: Record<string, string | undefined> };
-}).process?.env?.TIDEMARK_WORKER_DEBUG_LOG ?? "") === "1";
-function logNetworkDebug(_event: string): void {
-  // Runtime diagnostics are kept in the per-process worker debug buffer.
-}
-const GUEST_TICKS_PER_SEC = 100_000_000n;
-const GUEST_NSEC_PER_SEC = 1_000_000_000n;
-const PIPE_OFF_HEAD = PIPE_HEAD_OFFSET;
-const PIPE_OFF_TAIL = PIPE_TAIL_OFFSET;
-const PIPE_OFF_READ_OPEN = PIPE_READ_OPEN_OFFSET;
-const PIPE_OFF_WRITE_OPEN = PIPE_WRITE_OPEN_OFFSET;
-const PIPE_DATA_START = PIPE_DATA_OFFSET;
-const PIPE_BUF_SIZE = PIPE_BUFFER_BYTES;
-
-function pipeDebugPreviewEnabled(): boolean {
-  return ((globalThis as {
-    process?: { env?: Record<string, string | undefined> };
-  }).process?.env?.TIDEMARK_PIPE_DEBUG_PREVIEW ?? "") === "1";
-}
-
-function formatPipeDebugAscii(bytes: Uint8Array, maxLen = 96): string {
-  let out = "";
-  for (const byte of bytes.subarray(0, maxLen)) {
-    if (byte === 0x0a) {
-      out += "\\n";
-    } else if (byte === 0x0d) {
-      out += "\\r";
-    } else if (byte === 0x09) {
-      out += "\\t";
-    } else if (byte >= 0x20 && byte <= 0x7e && byte !== 0x5c && byte !== 0x22) {
-      out += String.fromCharCode(byte);
-    } else {
-      out += `\\x${byte.toString(16).padStart(2, "0")}`;
-    }
-  }
-  if (bytes.length > maxLen) {
-    out += "...";
-  }
-  return out;
-}
-
-function formatPipeWaitDataDebug(handle: ProcessHandle, slotBase: number, head: number, tail: number): string {
-  if (!pipeDebugPreviewEnabled()) {
-    return "";
-  }
-  const len = tail >= head
-    ? tail - head
-    : PIPE_BUF_SIZE - head + tail;
-  if (len <= 0 || len > PIPE_BUF_SIZE) {
-    return `:data_len=${len}`;
-  }
-  const bytes = new Uint8Array(handle.memory.buffer);
-  const dataBase = slotBase + PIPE_DATA_START;
-  const previewLen = Math.min(len, 96);
-  const preview = new Uint8Array(previewLen);
-  for (let i = 0; i < previewLen; i += 1) {
-    preview[i] = bytes[dataBase + ((head + i) % PIPE_BUF_SIZE)];
-  }
-  return `:data_len=${len}:data_ascii=${JSON.stringify(formatPipeDebugAscii(preview))}`;
-}
-
 export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerScheduler {
   const { threadWorkerStates } = deps;
   const observedForkSharedSyncPromises = new WeakSet<Promise<void>>();
@@ -119,28 +54,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     pumpProcess,
   } = schedulerQueueHelpers;
 
-  function hasActiveExclusiveVforkWorker(handle: ProcessHandle): boolean {
-    const worker = handle.vforkWorker;
-    if (handle.vforkSnapshot === null || worker === null) {
-      return false;
-    }
-    if (handle.runningWorker === worker) {
-      return true;
-    }
-    if (handle.readyWorkers.includes(worker)) {
-      return true;
-    }
-    if (handle.blockedWorkers.has(worker)) {
-      return true;
-    }
-    const thread = threadWorkerStates.get(worker);
-    return thread?.waitingInWorkerStatus !== null || thread?.ownerAsyncStatus !== null;
-  }
-
-  function canScheduleWorker(handle: ProcessHandle, worker: Worker): boolean {
-    return !hasActiveExclusiveVforkWorker(handle) || handle.vforkWorker === worker;
-  }
-
   function clearBlockedWorker(handle: ProcessHandle, worker: Worker): void {
     const blocked = handle.blockedWorkers.get(worker);
     if (!blocked) {
@@ -152,155 +65,71 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     handle.blockedWorkers.delete(worker);
   }
 
-  function monotonicTicksCurrent(handle: ProcessHandle): bigint {
-    const ticks = handle.kernel.monotonic_ticks_current?.();
-    return ticks === undefined ? 0n : BigInt(ticks);
-  }
-
-  function sleepDurationToTicks(sec: bigint, nsec: bigint): bigint {
-    const base = sec * GUEST_TICKS_PER_SEC;
-    const sub = nsec * GUEST_TICKS_PER_SEC;
-    const rounded = sub === 0n ? 0n : (sub + (GUEST_NSEC_PER_SEC - 1n)) / GUEST_NSEC_PER_SEC;
-    return base + rounded;
-  }
-
-  function sleepRetryDelayMs(handle: ProcessHandle, deadlineTicks: bigint): number {
-    const now = monotonicTicksCurrent(handle);
-    if (deadlineTicks <= now) {
-      return 0;
-    }
-    const remainingTicks = deadlineTicks - now;
-    const delayMs = Number((remainingTicks * 1000n + (GUEST_TICKS_PER_SEC - 1n)) / GUEST_TICKS_PER_SEC);
-    if (!Number.isFinite(delayMs)) {
-      return 2_147_483_647;
-    }
-    return Math.max(0, Math.min(delayMs, 2_147_483_647));
-  }
-
-  function advanceGuestTimeByMs(handle: ProcessHandle, timeoutMs: number): void {
-    if (timeoutMs <= 0 || !Number.isFinite(timeoutMs)) {
-      return;
-    }
-    const deltaTicks = BigInt(Math.ceil(timeoutMs)) * GUEST_TICKS_PER_SEC / 1000n;
-    handle.kernel.sync_monotonic_ticks_floor?.(monotonicTicksCurrent(handle) + deltaTicks);
-  }
-
-  function syscallMatches(
-    syscallNr: bigint,
-    abiSyscall: (() => bigint | number) | undefined,
-  ): boolean {
-    const value = abiSyscall?.();
-    return value !== undefined && syscallNr === BigInt(value);
-  }
-
-  function queueGuestBufferWrite(
-    handle: ProcessHandle,
-    worker: Worker,
-    ptr: bigint | number,
-    length: bigint | number,
-  ): void {
-    const start = typeof ptr === "bigint" ? Number(ptr) : ptr;
-    const requested = typeof length === "bigint" ? Number(length) : length;
-    if (!Number.isFinite(start) || !Number.isFinite(requested) || start <= 0 || requested <= 0) {
-      return;
-    }
-    const absolute = handle.guestBase + start;
-    const writeLen = Math.min(requested, PIPE_BUFFER_BYTES);
-    const memory = new Uint8Array(handle.memory.buffer);
-    if (absolute < 0 || absolute + writeLen > memory.byteLength) {
-      return;
-    }
-    const thread = threadWorkerStates.get(worker);
-    if (!thread) {
-      return;
-    }
-    thread.pendingGuestMemoryWrites.push({
-      guestPtr: start,
-      bytes: memory.slice(absolute, absolute + writeLen),
-    });
-    if (thread.pendingGuestMemoryWrites.length > 32) {
-      thread.pendingGuestMemoryWrites.splice(0, thread.pendingGuestMemoryWrites.length - 32);
-    }
-  }
-
-  function queueBlockedPollWaitGuestMemoryWrites(
-    handle: ProcessHandle,
-    worker: Worker,
-    syscallNr: bigint,
-    arg0: bigint,
-    arg1: bigint,
-    arg2: bigint,
-    arg3: bigint,
-  ): void {
-    const maxFds = Math.max(0, handle.kernel.abi_max_fds?.() ?? 1024);
-    if (syscallMatches(syscallNr, handle.kernel.abi_sys_ppoll)) {
-      const nfds = Math.min(Number(arg1), maxFds);
-      if (Number.isFinite(nfds) && nfds > 0) {
-        queueGuestBufferWrite(handle, worker, arg0, nfds * POLLFD_BYTES);
-      }
-      return;
-    }
-    if (syscallMatches(syscallNr, handle.kernel.abi_sys_pselect6)) {
-      const nfds = Math.min(Number(arg0), maxFds);
-      if (!Number.isFinite(nfds) || nfds <= 0) {
-        return;
-      }
-      const setBytes = Math.floor((nfds + 63) / 64) * 8;
-      queueGuestBufferWrite(handle, worker, arg1, setBytes);
-      queueGuestBufferWrite(handle, worker, arg2, setBytes);
-      queueGuestBufferWrite(handle, worker, arg3, setBytes);
-    }
-  }
-
-  function resumePipePollTimeoutLocally(
-    handle: ProcessHandle,
-    worker: Worker,
-    blocked: BlockedWorkerState,
-    timeoutMs: number,
-  ): void {
-    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-retry-timeout-local:${handle.pid}`);
-    attachKernelRuntimeState(handle.kernel, handle.kernelState);
-    const blockedSyscallNr = handle.kernel.thread_blocked_syscall_nr?.(blocked.vmPtr) ?? 0n;
-    const blockedArg0 = handle.kernel.thread_blocked_syscall_arg?.(blocked.vmPtr, 0) ?? 0n;
-    const blockedArg1 = handle.kernel.thread_blocked_syscall_arg?.(blocked.vmPtr, 1) ?? 0n;
-    const blockedArg2 = handle.kernel.thread_blocked_syscall_arg?.(blocked.vmPtr, 2) ?? 0n;
-    const blockedArg3 = handle.kernel.thread_blocked_syscall_arg?.(blocked.vmPtr, 3) ?? 0n;
-    advanceGuestTimeByMs(handle, timeoutMs);
-    handle.kernel.thread_resume_poll_wait_timeout?.(blocked.vmPtr);
-    queueBlockedPollWaitGuestMemoryWrites(
-      handle,
-      worker,
-      BigInt(blockedSyscallNr),
-      BigInt(blockedArg0),
-      BigInt(blockedArg1),
-      BigInt(blockedArg2),
-      BigInt(blockedArg3),
-    );
-    blocked.timeoutExpired = false;
-    handle.kernelState = readKernelRuntimeState(handle.kernel);
-    handleBlockedRetryResult(
-      handle,
-      worker,
-      blocked.vmPtr,
-      handle.kernel.thread_status(blocked.vmPtr),
-    );
-  }
-
-  function sleepDeadlineTicks(handle: ProcessHandle, vmPtr: number): bigint {
-    const exportedDeadline = handle.kernel.thread_sleep_deadline_ticks?.(vmPtr);
-    if (exportedDeadline !== undefined) {
-      return BigInt(exportedDeadline);
-    }
-    const sec = handle.kernel.thread_sleep_seconds(vmPtr);
-    const nsec = handle.kernel.thread_sleep_nanoseconds(vmPtr);
-    return monotonicTicksCurrent(handle) + sleepDurationToTicks(sec, nsec);
-  }
-
-  function wakeBlockedSleepWorker(handle: ProcessHandle, worker: Worker, blocked: { vmPtr: number }): void {
-    handle.kernel.thread_resume_sleep?.(blocked.vmPtr);
-    clearBlockedWorker(handle, worker);
-    enqueueWorker(handle, worker);
-  }
+  const {
+    canScheduleWorker,
+  } = createVforkExclusiveScheduler(threadWorkerStates);
+  const {
+    advanceGuestTimeByMs,
+    maybeAdvanceGuestTimeToNextSleep,
+    monotonicTicksCurrent,
+    sleepDeadlineTicks,
+    sleepRetryDelayMs,
+    wakeBlockedSleepWorker,
+    wakeDueSleepWorkers,
+  } = createSleepScheduler({
+    clearBlockedWorker,
+    enqueueWorker,
+  });
+  const {
+    blockedOrCurrentSyscallNr,
+    blockedPollPipeHasBufferedData,
+    formatBlockedPollFdSet,
+    formatFirstPipeWaitDebug,
+    pollPipeWriteOpenForThreadStep,
+    pollWaitTimeoutMs,
+    resumePipePollTimeoutLocally,
+  } = createPipePollScheduler({
+    threadWorkerStates,
+    appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
+    advanceGuestTimeByMs,
+    handleBlockedRetryResult,
+  });
+  const {
+    formatFirstSocketWaitDebug,
+    networkInboundAvailable,
+    socketWaitTimeoutMs,
+    blockedWaitShouldPumpNetwork,
+  } = createSocketWaitScheduler({
+    appendWorkerDebugLog,
+    logNetworkDebug,
+  });
+  const {
+    pruneDetachedProcessWorkers,
+    pruneStaleProcessWorkers,
+    selectProcessAnchorVmPtr,
+  } = createPruningScheduler({
+    threadWorkerStates,
+    appendWorkerDebugLog,
+    clearBlockedWorker,
+  });
+  const {
+    applyLocalChildExitRecords,
+    childExitRecordsAlreadyApplied,
+    formatChildExitRecords,
+    markChildExitRecordsApplied,
+  } = createWait4Scheduler({
+    threadWorkerStates,
+    appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
+  }, appliedChildExitRecordKeys);
+  const {
+    applyChildExitRecordsForWorkerLocalWaits,
+  } = createFutexScheduler({
+    threadWorkerStates,
+    appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
+    formatChildExitRecords,
+    childExitRecordsAlreadyApplied,
+    applyLocalChildExitRecords,
+  });
 
   function beginBlockedRpc(blocked: BlockedWorkerState): number {
     blocked.rpcPending = true;
@@ -355,45 +184,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     promise.then(onSettled, onSettled);
   }
 
-  function wakeDueSleepWorkers(handle: ProcessHandle): boolean {
-    const now = monotonicTicksCurrent(handle);
-    let wokeAny = false;
-    for (const [worker, blocked] of [...handle.blockedWorkers.entries()]) {
-      if (
-        blocked.status !== handle.kernel.abi_status_sleep()
-        || blocked.sleepDeadlineTicks === null
-        || blocked.sleepDeadlineTicks > now
-      ) {
-        continue;
-      }
-      wakeBlockedSleepWorker(handle, worker, blocked);
-      wokeAny = true;
-    }
-    return wokeAny;
-  }
-
-  function maybeAdvanceGuestTimeToNextSleep(handle: ProcessHandle): boolean {
-    if (handle.runningWorker !== null || handle.readyWorkers.length > 0) {
-      return false;
-    }
-    let nextDeadline: bigint | null = null;
-    for (const blocked of handle.blockedWorkers.values()) {
-      if (blocked.status !== handle.kernel.abi_status_sleep() || blocked.sleepDeadlineTicks === null) {
-        continue;
-      }
-      if (nextDeadline === null || blocked.sleepDeadlineTicks < nextDeadline) {
-        nextDeadline = blocked.sleepDeadlineTicks;
-      }
-    }
-    if (nextDeadline === null) {
-      return false;
-    }
-    if (nextDeadline > monotonicTicksCurrent(handle)) {
-      handle.kernel.sync_monotonic_ticks_floor?.(nextDeadline);
-    }
-    return wakeDueSleepWorkers(handle);
-  }
-
   function clearStaleRunningWorker(handle: ProcessHandle, blockedWorker: Worker): boolean {
     const runningWorker = handle.runningWorker;
     if (runningWorker === null || runningWorker === blockedWorker) {
@@ -428,109 +218,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     return false;
   }
 
-  function selectProcessAnchorVmPtr(
-    handle: ProcessHandle,
-    excludedWorker: Worker | null = null,
-  ): number | null {
-    const candidates: Worker[] = [];
-    if (handle.runningWorker !== null) {
-      candidates.push(handle.runningWorker);
-    }
-    candidates.push(...handle.readyWorkers, ...handle.workers);
-    const seen = new Set<Worker>();
-    for (const candidate of candidates) {
-      if (candidate === excludedWorker || seen.has(candidate)) {
-        continue;
-      }
-      seen.add(candidate);
-      const vmPtr = threadWorkerStates.get(candidate)?.vmPtr;
-      if (vmPtr !== undefined && vmPtr !== 0) {
-        return vmPtr;
-      }
-    }
-    return null;
-  }
-
-  function removeReadyWorker(handle: ProcessHandle, worker: Worker): void {
-    for (let index = handle.readyWorkers.length - 1; index >= 0; index--) {
-      if (handle.readyWorkers[index] === worker) {
-        handle.readyWorkers.splice(index, 1);
-      }
-    }
-  }
-
-  function appendWorkerDebugLog(handle: ProcessHandle, event: string): void {
-    if (!WORKER_DEBUG_LOG_ENABLED) {
-      return;
-    }
-    handle.workerDebugLog.push(event);
-    if (handle.workerDebugLog.length > 4096) {
-      handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 4096);
-    }
-  }
-
-  function shouldPreserveTransientWorker(handle: ProcessHandle, vmPtr: number): boolean {
-    const status = handle.kernel.thread_status(vmPtr);
-    return status === handle.kernel.abi_status_vfork_wait()
-      || status === handle.kernel.abi_status_execve_spawn()
-      || status === handle.kernel.abi_status_clone_spawn();
-  }
-
-  function pruneStaleProcessWorkers(
-    handle: ProcessHandle,
-    liveVmPtrs: Set<number>,
-    currentWorker: Worker | null,
-  ): void {
-    if (liveVmPtrs.size === 0) {
-      return;
-    }
-
-    for (const worker of [...handle.workers]) {
-      if (worker === currentWorker) {
-        continue;
-      }
-      const thread = threadWorkerStates.get(worker);
-      if (!thread || liveVmPtrs.has(thread.vmPtr)) {
-        continue;
-      }
-      if (shouldPreserveTransientWorker(handle, thread.vmPtr)) {
-        appendWorkerDebugLog(
-          handle,
-          `prune-skip-transient:0x${thread.vmPtr.toString(16)}:${handle.kernel.thread_status(thread.vmPtr)}`,
-        );
-        continue;
-      }
-      clearBlockedWorker(handle, worker);
-      removeReadyWorker(handle, worker);
-      if (handle.runningWorker === worker) {
-        handle.runningWorker = null;
-      }
-      if (handle.vforkWorker === worker) {
-        handle.vforkWorker = null;
-      }
-      appendWorkerDebugLog(handle, `prune:0x${thread.vmPtr.toString(16)}`);
-      handle.workers.delete(worker);
-      threadWorkerStates.delete(worker);
-      releaseWorker(worker);
-    }
-  }
-
-  function pruneDetachedProcessWorkers(
-    handle: ProcessHandle,
-    anchorVmPtr: number,
-    currentWorker: Worker | null,
-  ): void {
-    if (anchorVmPtr === 0 || handle.workers.size <= 1) {
-      return;
-    }
-    if (handle.pendingChildSpawnRecords > 0) {
-      appendWorkerDebugLog(handle, `prune-skip-spawn:${handle.pendingChildSpawnRecords}`);
-      return;
-    }
-    const liveVmPtrs = collectLiveThreadVmPtrs(handle.kernel, anchorVmPtr);
-    pruneStaleProcessWorkers(handle, liveVmPtrs, currentWorker);
-  }
-
   function scheduleBlockedRetry(
     handle: ProcessHandle,
     worker: Worker,
@@ -546,47 +233,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       blocked.timeoutExpired = timeoutExpired;
       retryBlockedWorker(handle, worker);
     }, delayMs);
-  }
-
-  function socketWaitTimeoutMs(handle: ProcessHandle, status: number, vmPtr: number): number {
-    if (
-      status !== handle.kernel.abi_status_connect()
-      && status !== handle.kernel.abi_status_socket_recv()
-      && status !== handle.kernel.abi_status_socket_send()
-    ) {
-      return -1;
-    }
-    const timeout = handle.kernel.thread_socket_wait_timeout?.(vmPtr);
-    return timeout === undefined ? -1 : Number(timeout);
-  }
-
-  function blockedOrCurrentSyscallNr(handle: ProcessHandle, vmPtr: number): bigint | null {
-    const blockedSyscall = handle.kernel.thread_blocked_syscall_nr?.(vmPtr);
-    if (blockedSyscall !== undefined && BigInt(blockedSyscall) !== 0n) {
-      return BigInt(blockedSyscall);
-    }
-    const currentSyscall = handle.kernel.thread_a7?.(vmPtr);
-    return currentSyscall === undefined ? null : BigInt(currentSyscall);
-  }
-
-  function pollWaitTimeoutMs(handle: ProcessHandle, status: number, vmPtr: number): number {
-    if (status !== handle.kernel.abi_status_pipe_wait()) {
-      return -1;
-    }
-    const syscall = blockedOrCurrentSyscallNr(handle, vmPtr);
-    if (syscall === null) {
-      return -1;
-    }
-    const ppoll = handle.kernel.abi_sys_ppoll?.();
-    const pselect6 = handle.kernel.abi_sys_pselect6?.();
-    if (
-      (ppoll === undefined || syscall !== BigInt(ppoll))
-      && (pselect6 === undefined || syscall !== BigInt(pselect6))
-    ) {
-      return -1;
-    }
-    const timeout = handle.kernel.thread_poll_wait_timeout?.(vmPtr);
-    return timeout === undefined ? -1 : Number(timeout);
   }
 
   function pipeWaitShouldRemainPassive(
@@ -656,20 +302,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     return childExitResumeKey === "" || pipeChildExitResumeKey === childExitResumeKey;
   }
 
-  function childExitRecordsAlreadyApplied(handle: ProcessHandle, recordsKey: string): boolean {
-    return appliedChildExitRecordKeys.get(`${handle.runtimeId}:${handle.pid}`)?.has(recordsKey) ?? false;
-  }
-
-  function markChildExitRecordsApplied(handle: ProcessHandle, recordsKey: string): void {
-    const processKey = `${handle.runtimeId}:${handle.pid}`;
-    let records = appliedChildExitRecordKeys.get(processKey);
-    if (records === undefined) {
-      records = new Set();
-      appliedChildExitRecordKeys.set(processKey, records);
-    }
-    records.add(recordsKey);
-  }
-
   function pipeWaitHasImmediateWakeReason(
     handle: ProcessHandle,
     vmPtr: number,
@@ -699,290 +331,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       && handle.kernel.thread_poll_wait_has_socket?.(blocked.vmPtr) !== 1
       && deps.hasActiveChildProcess(handle.pid)
       && !pipeWaitHasImmediateWakeReason(handle, blocked.vmPtr, readyCount);
-  }
-
-  function blockedPollPipeHasBufferedData(handle: ProcessHandle, vmPtr: number): boolean {
-    const rawMask = handle.kernel.thread_poll_wait_pipe_slots_mask?.(vmPtr);
-    const mask = rawMask === undefined
-      ? 0n
-      : typeof rawMask === "bigint" ? rawMask : BigInt(rawMask);
-    if (mask !== 0n) {
-      const maxPipes = Math.min(handle.kernel.abi_max_pipes?.() ?? 64, 64);
-      const view = new DataView(handle.memory.buffer);
-      for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
-        if ((mask & (1n << BigInt(pipeSlot))) === 0n) {
-          continue;
-        }
-        const slotBase = handle.kernelState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
-        const head = view.getUint32(slotBase + PIPE_OFF_HEAD, true);
-        const tail = view.getUint32(slotBase + PIPE_OFF_TAIL, true);
-        if (head !== tail) {
-          return true;
-        }
-      }
-    }
-    const packed = handle.kernel.thread_poll_wait_first_pipe_revents?.(vmPtr) ?? 0;
-    const fd = packed & 0xff;
-    const interest = (packed >>> 8) & 0xffff;
-    const revents = (packed >>> 24) & 0xff;
-    if (revents !== 0) {
-      return true;
-    }
-    if ((interest & 0x001) === 0) {
-      return false;
-    }
-    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
-    if (
-      ofdId === 0
-      || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
-    ) {
-      return false;
-    }
-    const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-    if (pipeSlot <= 0 || pipeSlot >= handle.kernel.abi_max_pipes()) {
-      return false;
-    }
-    const slotBase = handle.kernelState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
-    const view = new DataView(handle.memory.buffer);
-    const head = view.getUint32(slotBase + PIPE_OFF_HEAD, true);
-    const tail = view.getUint32(slotBase + PIPE_OFF_TAIL, true);
-    return head !== tail;
-  }
-
-  function pollPipeSlotsForThreadStep(handle: ProcessHandle, vmPtr: number): Set<number> {
-    const rawMask = handle.kernel.thread_poll_wait_pipe_slots_mask?.(vmPtr);
-    const mask = rawMask === undefined
-      ? 0n
-      : typeof rawMask === "bigint" ? rawMask : BigInt(rawMask);
-    const pipeSlots = new Set<number>();
-    const maxPipes = Math.min(handle.kernel.abi_max_pipes?.() ?? 64, 64);
-    for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
-      if ((mask & (1n << BigInt(pipeSlot))) !== 0n) {
-        pipeSlots.add(pipeSlot);
-      }
-    }
-    if (pipeSlots.size > 0) {
-      return pipeSlots;
-    }
-    const packed = handle.kernel.thread_poll_wait_first_pipe_revents?.(vmPtr);
-    if (packed === undefined || packed === 0) {
-      return pipeSlots;
-    }
-    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, packed & 0xff);
-    if (
-      ofdId > 0
-      && ofdId < handle.kernel.abi_max_fds()
-      && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
-    ) {
-      const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-      if (pipeSlot > 0 && pipeSlot < maxPipes) {
-        pipeSlots.add(pipeSlot);
-      }
-    }
-    return pipeSlots;
-  }
-
-  function pollPipeWriteOpenForThreadStep(handle: ProcessHandle, vmPtr: number): number {
-    let writeOpen = 0;
-    const view = new DataView(handle.memory.buffer);
-    for (const pipeSlot of pollPipeSlotsForThreadStep(handle, vmPtr)) {
-      const slotBase = handle.kernelState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
-      if (slotBase < 0 || slotBase + PIPE_OFF_WRITE_OPEN + 4 > view.byteLength) {
-        continue;
-      }
-      writeOpen = Math.max(writeOpen, view.getInt32(slotBase + PIPE_OFF_WRITE_OPEN, true));
-    }
-    return writeOpen;
-  }
-
-  function formatPipeSlotHolders(handle: ProcessHandle, pipeSlot: number): string {
-    if (pipeSlot <= 0 || pipeSlot >= handle.kernel.abi_max_pipes()) {
-      return "n/a";
-    }
-    const holders: string[] = [];
-    for (const member of handle.kernelShare.members) {
-      if (member.vmPtr === 0 || member.exitInProgress) {
-        continue;
-      }
-      const maxFds = member.kernel.abi_max_fds();
-      for (let fd = 0; fd < maxFds; fd += 1) {
-        const ofdId = member.kernel.process_fd_ofd_id(member.vmPtr, fd);
-        if (
-          ofdId <= 0
-          || ofdId >= maxFds
-          || member.kernel.kernel_ofd_fd_type(ofdId) !== member.kernel.abi_fd_type_pipe()
-          || member.kernel.kernel_ofd_ino(ofdId) !== pipeSlot
-        ) {
-          continue;
-        }
-        const hostFd = member.kernel.kernel_ofd_host_fd(ofdId);
-        holders.push(`${member.pid}/${fd}/${ofdId}/${hostFd >= 0 ? "r" : "w"}/h${hostFd}`);
-      }
-    }
-    return holders.join(".") || "none";
-  }
-
-  function formatFirstPipeWaitDebug(handle: ProcessHandle, vmPtr: number): string {
-    const packed = handle.kernel.thread_poll_wait_first_pipe_revents?.(vmPtr);
-    if (packed === undefined) {
-      return "pipe=n/a";
-    }
-    const fd = packed & 0xff;
-    const interest = (packed >>> 8) & 0xffff;
-    const revents = (packed >>> 24) & 0xff;
-    try {
-      const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
-      if (
-        ofdId <= 0
-        || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
-      ) {
-        return `pipe=fd${fd}/i0x${interest.toString(16)}/r0x${revents.toString(16)}/ofd${ofdId}`;
-      }
-      const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-      if (pipeSlot <= 0 || pipeSlot >= handle.kernel.abi_max_pipes()) {
-        return `pipe=fd${fd}/i0x${interest.toString(16)}/r0x${revents.toString(16)}/ofd${ofdId}/slot${pipeSlot}`;
-      }
-      const slotBase = handle.kernelState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
-      const view = new DataView(handle.memory.buffer);
-      const head = view.getUint32(slotBase + PIPE_OFF_HEAD, true);
-      const tail = view.getUint32(slotBase + PIPE_OFF_TAIL, true);
-      const readOpen = view.getInt32(slotBase + PIPE_OFF_READ_OPEN, true);
-      const writeOpen = view.getInt32(slotBase + PIPE_OFF_WRITE_OPEN, true);
-      return `pipe=fd${fd}/i0x${interest.toString(16)}/r0x${revents.toString(16)}/ofd${ofdId}/slot${pipeSlot}/h${head}/t${tail}/ro${readOpen}/wo${writeOpen}${formatPipeWaitDataDebug(handle, slotBase, head, tail)}/holders=${formatPipeSlotHolders(handle, pipeSlot)}`;
-    } catch (error) {
-      return `pipe=fd${fd}/i0x${interest.toString(16)}/r0x${revents.toString(16)}/err=${JSON.stringify(error instanceof Error ? error.message : String(error))}`;
-    }
-  }
-
-  function formatFirstSocketWaitDebug(handle: ProcessHandle, vmPtr: number): string {
-    const packed = handle.kernel.thread_poll_wait_first_socket_revents?.(vmPtr);
-    if (packed === undefined) {
-      return "sock=n/a";
-    }
-    const fd = packed & 0xff;
-    const interest = (packed >>> 8) & 0xffff;
-    const revents = (packed >>> 24) & 0xff;
-    try {
-      const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
-      if (
-        ofdId <= 0
-        || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_socket()
-      ) {
-        return `sock=fd${fd}/i0x${interest.toString(16)}/r0x${revents.toString(16)}/ofd${ofdId}`;
-      }
-      const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
-      const state = socketIdx >= 0 ? handle.kernel.thread_socket_state?.(socketIdx) : undefined;
-      const available = socketIdx >= 0 ? handle.kernel.thread_socket_recv_available?.(socketIdx) : undefined;
-      const peerIdx = socketIdx >= 0 ? handle.kernel.thread_socket_peer_idx?.(socketIdx) : undefined;
-      return `sock=fd${fd}/i0x${interest.toString(16)}/r0x${revents.toString(16)}/ofd${ofdId}/idx${socketIdx}/st${state ?? "n/a"}/avail${available ?? "n/a"}/peer${peerIdx ?? "n/a"}/conn${handle.networkConnections.has(fd) ? 1 : 0}`;
-    } catch (error) {
-      return `sock=fd${fd}/i0x${interest.toString(16)}/r0x${revents.toString(16)}/err=${JSON.stringify(error instanceof Error ? error.message : String(error))}`;
-    }
-  }
-
-  function formatPollFdTarget(handle: ProcessHandle, vmPtr: number, fd: number): string {
-    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
-    const maxFds = handle.kernel.abi_max_fds();
-    if (ofdId <= 0 || ofdId >= maxFds) {
-      return `ofd${ofdId}`;
-    }
-    const type = handle.kernel.kernel_ofd_fd_type(ofdId);
-    const ino = handle.kernel.kernel_ofd_ino(ofdId);
-    const hostFd = handle.kernel.kernel_ofd_host_fd(ofdId);
-    if (type !== handle.kernel.abi_fd_type_pipe()) {
-      return `ofd${ofdId}/ty${type}/ino${ino}/host${hostFd}`;
-    }
-    if (ino <= 0 || ino >= handle.kernel.abi_max_pipes()) {
-      return `ofd${ofdId}/ty${type}/slot${ino}/host${hostFd}`;
-    }
-    const slotBase = handle.kernelState.pipeBase + ino * PIPE_SLOT_BYTES;
-    const view = new DataView(handle.memory.buffer);
-    const head = view.getUint32(slotBase + PIPE_OFF_HEAD, true);
-    const tail = view.getUint32(slotBase + PIPE_OFF_TAIL, true);
-    const readOpen = view.getInt32(slotBase + PIPE_OFF_READ_OPEN, true);
-    const writeOpen = view.getInt32(slotBase + PIPE_OFF_WRITE_OPEN, true);
-    return `ofd${ofdId}/ty${type}/slot${ino}/h${head}/t${tail}/ro${readOpen}/wo${writeOpen}/host${hostFd}/holders=${formatPipeSlotHolders(handle, ino)}`;
-  }
-
-  function guestAbsoluteRange(handle: ProcessHandle, ptr: bigint, byteLength: number): number | null {
-    const guestPtr = Number(ptr);
-    if (!Number.isFinite(guestPtr) || guestPtr <= 0 || byteLength <= 0) {
-      return null;
-    }
-    const absolute = handle.guestBase + guestPtr;
-    if (absolute < 0 || absolute + byteLength > handle.memory.buffer.byteLength) {
-      return null;
-    }
-    return absolute;
-  }
-
-  function formatBlockedPollFdSet(handle: ProcessHandle, vmPtr: number, limit = 16): string {
-    const syscall = blockedOrCurrentSyscallNr(handle, vmPtr);
-    if (syscall === null) {
-      return "pollfds=n/a";
-    }
-    const ppoll = handle.kernel.abi_sys_ppoll?.();
-    const pselect6 = handle.kernel.abi_sys_pselect6?.();
-    const maxFds = handle.kernel.abi_max_fds();
-    const view = new DataView(handle.memory.buffer);
-    try {
-      if (ppoll !== undefined && syscall === BigInt(ppoll)) {
-        const fdsPtr = BigInt(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 0) ?? 0n);
-        const nfds = Number(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 1) ?? 0n);
-        if (!Number.isFinite(nfds) || nfds <= 0) {
-          return "pollfds=ppoll:none";
-        }
-        const count = Math.min(nfds, maxFds, limit);
-        const absolute = guestAbsoluteRange(handle, fdsPtr, count * POLLFD_BYTES);
-        if (absolute === null) {
-          return `pollfds=ppoll:invalid:ptr=0x${fdsPtr.toString(16)}:nfds=${nfds}`;
-        }
-        const entries: string[] = [];
-        for (let index = 0; index < count; index += 1) {
-          const offset = absolute + index * POLLFD_BYTES;
-          const fd = view.getInt32(offset, true);
-          const events = view.getUint16(offset + 4, true);
-          const revents = view.getUint16(offset + 6, true);
-          if (fd < 0 || events === 0) {
-            continue;
-          }
-          entries.push(`${index}=fd${fd}/ev0x${events.toString(16)}/rev0x${revents.toString(16)}/${formatPollFdTarget(handle, vmPtr, fd)}`);
-        }
-        return `pollfds=ppoll:${entries.join(",") || "none"}`;
-      }
-      if (pselect6 !== undefined && syscall === BigInt(pselect6)) {
-        const nfds = Number(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 0) ?? 0n);
-        const readPtr = BigInt(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 1) ?? 0n);
-        const writePtr = BigInt(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 2) ?? 0n);
-        const exceptPtr = BigInt(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 3) ?? 0n);
-        if (!Number.isFinite(nfds) || nfds <= 0) {
-          return "pollfds=pselect:none";
-        }
-        const count = Math.min(nfds, maxFds, limit);
-        const setBytes = Math.floor((Math.min(nfds, maxFds) + 63) / 64) * 8;
-        const readBase = readPtr === 0n ? null : guestAbsoluteRange(handle, readPtr, setBytes);
-        const writeBase = writePtr === 0n ? null : guestAbsoluteRange(handle, writePtr, setBytes);
-        const exceptBase = exceptPtr === 0n ? null : guestAbsoluteRange(handle, exceptPtr, setBytes);
-        const hasBit = (base: number | null, fd: number): boolean => {
-          if (base === null) {
-            return false;
-          }
-          return (view.getUint8(base + Math.floor(fd / 8)) & (1 << (fd % 8))) !== 0;
-        };
-        const entries: string[] = [];
-        for (let fd = 0; fd < count; fd += 1) {
-          const interest = `${hasBit(readBase, fd) ? "r" : ""}${hasBit(writeBase, fd) ? "w" : ""}${hasBit(exceptBase, fd) ? "e" : ""}`;
-          if (interest === "") {
-            continue;
-          }
-          entries.push(`fd${fd}/${interest}/${formatPollFdTarget(handle, vmPtr, fd)}`);
-        }
-        return `pollfds=pselect:${entries.join(",") || "none"}`;
-      }
-    } catch (error) {
-      return `pollfds=err:${JSON.stringify(error instanceof Error ? error.message : String(error))}`;
-    }
-    return "pollfds=not-poll";
   }
 
   function scheduleSocketBlockedRetry(
@@ -1031,60 +379,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     scheduleBlockedRetry(handle, worker, remaining);
   }
 
-  function blockedWaitMayDependOnNetwork(handle: ProcessHandle, status: number, vmPtr: number): boolean {
-    const pollWaitHasSocket = pollWaitTimeoutMs(handle, status, vmPtr) >= 0
-      && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) === 1;
-    const readyCount = handle.kernel.thread_poll_wait_ready_count?.(vmPtr);
-    const socketRevents = handle.kernel.thread_poll_wait_first_socket_revents?.(vmPtr);
-    appendWorkerDebugLog(
-      handle,
-      `net-wait:${handle.pid}:status=${status}:poll=${pollWaitTimeoutMs(handle, status, vmPtr)}:hasSocket=${pollWaitHasSocket ? 1 : 0}:ready=${readyCount ?? "n/a"}:sock=0x${(socketRevents ?? 0).toString(16)}:conns=${handle.networkConnections.size}`,
-    );
-    logNetworkDebug(`wait pid=${handle.pid} status=${status} poll=${pollWaitTimeoutMs(handle, status, vmPtr)} hasSocket=${pollWaitHasSocket ? 1 : 0} ready=${readyCount ?? "n/a"} sock=0x${(socketRevents ?? 0).toString(16)} conns=${handle.networkConnections.size}`);
-    if (pollWaitHasSocket) {
-      return true;
-    }
-    if (readyCount !== undefined && readyCount > 0) {
-      return false;
-    }
-    return status === handle.kernel.abi_status_socket_recv()
-      || status === handle.kernel.abi_status_socket_send()
-      || status === handle.kernel.abi_status_connect();
-  }
-
-  function blockedWaitShouldPumpNetwork(handle: ProcessHandle, status: number, vmPtr: number): boolean {
-    if (handle.networkConnections.size === 0) {
-      return false;
-    }
-    if (blockedWaitMayDependOnNetwork(handle, status, vmPtr)) {
-      return true;
-    }
-    const readyCount = status === handle.kernel.abi_status_pipe_wait()
-      ? handle.kernel.thread_poll_wait_ready_count?.(vmPtr)
-      : undefined;
-    return status === handle.kernel.abi_status_pipe_wait()
-      && (readyCount === undefined || readyCount <= 0);
-  }
-
-  function networkInboundAvailable(handle: ProcessHandle, vmPtr: number): boolean {
-    if (handle.networkConnections.size === 0) {
-      return false;
-    }
-    for (const fd of handle.networkConnections.keys()) {
-      const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
-      if (socketIdx >= 0 && (handle.kernel.thread_socket_recv_available?.(socketIdx) ?? 0) > 0) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  function formatChildExitRecords(handle: ProcessHandle): string {
-    return [...handle.childExitSyncRecords]
-      .map(([childPid, waitStatus]) => `${childPid}/${waitStatus}`)
-      .join(".");
-  }
-
   function formatPipeChildExitResumeKey(
     handle: ProcessHandle,
     vmPtr: number,
@@ -1125,59 +419,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     const resumeKey = formatPipeChildExitResumeKey(handle, blocked.vmPtr, recordsKey);
     blocked.pipeChildExitResumeKey = resumeKey;
     setPipeChildExitResumeKey(handle, blocked.vmPtr, resumeKey);
-  }
-
-  function applyLocalChildExitRecords(handle: ProcessHandle): void {
-    if (handle.childExitSyncRecords.size === 0) {
-      return;
-    }
-    const recordsKey = formatChildExitRecords(handle);
-    if (childExitRecordsAlreadyApplied(handle, recordsKey)) {
-      return;
-    }
-    deps.appendRuntimeLifecycleEvent(
-      handle.runtimeId,
-      `wait4-apply-records:${handle.pid}:${recordsKey}`,
-    );
-    for (const [childPid, waitStatus] of handle.childExitSyncRecords) {
-      if (handle.kernel.process_record_child_exit_for_parent && handle.pid > 0) {
-        handle.kernel.process_record_child_exit_for_parent(handle.pid, childPid, waitStatus);
-      } else {
-        handle.kernel.process_record_child_exit(childPid, waitStatus);
-      }
-    }
-    handle.kernelState = readKernelRuntimeState(handle.kernel);
-    markChildExitRecordsApplied(handle, recordsKey);
-  }
-
-  function hasWorkerLocalFutexWait(handle: ProcessHandle): boolean {
-    const futexWaitStatus = handle.kernel.abi_status_futex_wait();
-    for (const worker of handle.workers) {
-      const thread = threadWorkerStates.get(worker);
-      if (
-        thread?.ownerPid === handle.pid
-        && thread.waitingInWorkerStatus === futexWaitStatus
-      ) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  function applyChildExitRecordsForWorkerLocalWaits(handle: ProcessHandle): void {
-    if (handle.childExitSyncRecords.size === 0 || !hasWorkerLocalFutexWait(handle)) {
-      return;
-    }
-    const recordsKey = formatChildExitRecords(handle);
-    if (childExitRecordsAlreadyApplied(handle, recordsKey)) {
-      return;
-    }
-    deps.appendRuntimeLifecycleEvent(
-      handle.runtimeId,
-      `futex-wait-apply-child-records:${handle.pid}:${recordsKey}`,
-    );
-    applyLocalChildExitRecords(handle);
-    publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
   }
 
   function formatBlockedFdEntries(handle: ProcessHandle, vmPtr: number, limit = 32): string {
