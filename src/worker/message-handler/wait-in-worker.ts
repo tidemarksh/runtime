@@ -1,9 +1,7 @@
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
-import {
-  kernelWorkerOwnsEpollState,
-  kernelWorkerOwnsPipeState,
-  kernelWorkerOwnsSocketState,
-} from "../kernel-share.js";
+import { kernelWorkerOwnsEpollState } from "../ownership/epoll-control.js";
+import { kernelWorkerOwnsPipeState } from "../ownership/pipe-control.js";
+import { kernelWorkerOwnsSocketState } from "../ownership/socket-control.js";
 import { drainProcessOutput } from "../stdio.js";
 import type {
   ProcessHandle,

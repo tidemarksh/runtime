@@ -14,7 +14,7 @@ import {
   drainProcessOutput,
   flushStdin,
 } from "./stdio.js";
-import { kernelWorkerOwnsPipeState } from "./kernel-share.js";
+import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
 import { describeForkSharedSyncPromise } from "./fork-shared-sync-debug.js";
 import { collectLiveThreadVmPtrs, processHasLiveThreads } from "./live-threads.js";
 import { createWorkerSchedulerQueueHelpers } from "./scheduler/queue.js";

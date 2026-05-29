@@ -1,7 +1,8 @@
 import { attachKernelRuntimeState } from "../../abi.js";
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
 import { collectHeldEpollOfdIds } from "../ownership/ofd-table.js";
-import { kernelWorkerOwnsEpollState, kernelWorkerOwnsPipeState } from "../kernel-share.js";
+import { kernelWorkerOwnsEpollState } from "../ownership/epoll-control.js";
+import { kernelWorkerOwnsPipeState } from "../ownership/pipe-control.js";
 import {
   drainProcessOutput,
   flushStdin,

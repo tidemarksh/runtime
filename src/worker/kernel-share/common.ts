@@ -1,6 +1,5 @@
 import { ensureMemoryCapacity } from "../kernel-scratch.js";
 import type {
-  KernelOwnershipHandle,
   KernelShareGroup,
   KernelSyncHandle,
   ProcessHandle,
@@ -62,16 +61,4 @@ export function clearKernelRegion(
     return;
   }
   new Uint8Array(target.memory.buffer, targetOffset, Math.min(byteLength, available)).fill(0);
-}
-
-export function kernelWorkerOwnsPipeState(handle: KernelOwnershipHandle): boolean {
-  return !!handle.kernelWorkerRequest && handle.pid > 0;
-}
-
-export function kernelWorkerOwnsEpollState(handle: KernelOwnershipHandle): boolean {
-  return !!handle.kernelWorkerRequest && handle.pid > 0;
-}
-
-export function kernelWorkerOwnsSocketState(handle: KernelOwnershipHandle): boolean {
-  return !!handle.kernelWorkerRequest && handle.pid > 0;
 }

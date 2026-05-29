@@ -9,8 +9,8 @@ import type {
 } from "../messages.js";
 import {
   formatPipeCounterDebug,
-  kernelWorkerOwnsPipeState,
 } from "./kernel-share.js";
+import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
 import {
   captureVforkSnapshot,
 } from "./fork-shared.js";

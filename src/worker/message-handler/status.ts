@@ -8,10 +8,10 @@ import {
 } from "../stdio.js";
 import {
   kernelShareOtherMembers,
-  kernelWorkerOwnsPipeState,
   restoreProcSelfExe,
   snapshotProcSelfExe,
 } from "../kernel-share.js";
+import { kernelWorkerOwnsPipeState } from "../ownership/pipe-control.js";
 import { processHasLiveThreads } from "../live-threads.js";
 import { adoptKernelStateForHandle } from "../sync.js";
 import {

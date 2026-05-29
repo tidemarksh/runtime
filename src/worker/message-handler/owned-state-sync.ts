@@ -5,10 +5,10 @@ import {
 } from "../fork-shared-sync-debug.js";
 import {
   kernelShareOtherMembers,
-  kernelWorkerOwnsEpollState,
-  kernelWorkerOwnsSocketState,
   reconcileKernelSharePipeControl,
 } from "../kernel-share.js";
+import { kernelWorkerOwnsEpollState } from "../ownership/epoll-control.js";
+import { kernelWorkerOwnsSocketState } from "../ownership/socket-control.js";
 import type { ProcessHandle, ThreadWorkerState } from "../types.js";
 import type { WorkerMessageHandlerDeps } from "./types.js";
 import { createWorkerOwnershipGuard } from "../ownership/process-state.js";

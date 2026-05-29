@@ -2,12 +2,12 @@ import { readKernelRuntimeState } from "../abi.js";
 import { publishKernelRuntimeState } from "../bridge/runtime-state.js";
 import {
   kernelShareOtherMembers,
-  kernelWorkerOwnsEpollState,
-  kernelWorkerOwnsPipeState,
-  kernelWorkerOwnsSocketState,
   reconcileKernelSharePipeControl,
 } from "./kernel-share.js";
 import { collectProcessHeldOfds } from "./ownership/ofd-table.js";
+import { kernelWorkerOwnsEpollState } from "./ownership/epoll-control.js";
+import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
+import { kernelWorkerOwnsSocketState } from "./ownership/socket-control.js";
 import type { ProcessHandle } from "./types.js";
 
 interface WorkerLifecycleDeps {

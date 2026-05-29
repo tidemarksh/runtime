@@ -2,7 +2,7 @@ import { readKernelRuntimeState } from "../abi.js";
 import { publishKernelRuntimeState } from "../bridge/runtime-state.js";
 import type { RuntimeNetworkConnection, RuntimeNetworkEndpoint } from "../network.js";
 import { ensureMemoryCapacity, ensureKernelMemoryCapacity, kernelScratchBase, writeKernelScratch } from "./kernel-scratch.js";
-import { kernelWorkerOwnsPipeState } from "./kernel-share.js";
+import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
 import { forceNetworkClosedFd, restoreNetworkSocketSlotSnapshot, snapshotNetworkSocketSlot } from "./network-socket-close.js";
 import { createTransferDebugStats, type ProcessHandle } from "./types.js";
 

@@ -2,10 +2,10 @@ import type { KernelSyncHandle } from "../types.js";
 import {
   clearKernelRegion,
   copyKernelRegion,
-  kernelWorkerOwnsEpollState,
-  kernelWorkerOwnsPipeState,
-  kernelWorkerOwnsSocketState,
 } from "./common.js";
+import { kernelWorkerOwnsEpollState } from "../ownership/epoll-control.js";
+import { kernelWorkerOwnsPipeState } from "../ownership/pipe-control.js";
+import { kernelWorkerOwnsSocketState } from "../ownership/socket-control.js";
 import { clearMemfsState, syncMemfsState } from "./memfs.js";
 
 const OFD_TYPE_OFFSET = 0;
