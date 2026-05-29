@@ -7,29 +7,23 @@ import {
   flushStdin,
 } from "../stdio.js";
 import {
-  applyThreadPipeSlots,
-  kernelWorkerOwnsPipeState,
-} from "../ownership/pipe-control.js";
+  applyStatusPipeSlots,
+  statusKernelWorkerOwnsPipeState,
+} from "./status/pipe-slots.js";
 import { processHasLiveThreads } from "../live-threads.js";
 import { adoptKernelStateForHandle } from "../sync.js";
 import {
-  pruneStaleNetworkConnectionsFromFdEntries,
-} from "../ownership/socket-control.js";
-import {
-  applyThreadFdEntries,
-} from "../ownership/fd-table.js";
-import {
-  applyThreadOfdSlots,
-} from "../ownership/ofd-slot.js";
+  pruneStatusNetworkConnectionsFromFdEntries,
+} from "./status/network-recv.js";
 import { recordWorkerMessageDebugEvent, type ProcessHandle } from "../types.js";
-import { createWorkerOwnedStateSyncHandler } from "./owned-state-sync.js";
-import { createWorkerStatusTransitionHandler } from "./transitions.js";
+import { createWorkerOwnedStateSyncHandler } from "./status/owned-state-sync.js";
+import { createWorkerStatusTransitionHandler } from "./status/transitions.js";
 import type {
   ThreadWorkerStatusMessage,
   WorkerMessageHandlerDeps,
 } from "./types.js";
 import { formatCompactDebugSuffix, readProcessPidField, WRITE_DEBUG_KEYS } from "../diagnostics/format.js";
-import { createWorkerWaitInWorkerStatusHandler } from "./wait-in-worker.js";
+import { createWorkerWaitInWorkerStatusHandler } from "./status/wait-in-worker.js";
 import {
   appendStatusSocketDebug,
   formatLifecycleFdTrace,
@@ -49,6 +43,8 @@ import {
   applyThreadSocketState,
 } from "./status/socket-state.js";
 import { handleOwnerAsyncStatusReturn } from "./status/owner-async.js";
+import { applyStatusFdEntries } from "./status/fd-entries.js";
+import { applyStatusOfdSlots } from "./status/ofd-slots.js";
 
 interface ThreadRegisterSnapshot {
   vmPtr: number;
@@ -121,13 +117,9 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       );
     }
     if (statusBelongsToHandle) {
-      applyThreadOfdSlots(handle, msg, appendStatusSocketDebug);
-      applyThreadFdEntries(handle, msg.vmPtr, msg.fdEntries, appendStatusSocketDebug);
-      pruneStaleNetworkConnectionsFromFdEntries(handle, msg.vmPtr, msg.fdEntries, {
-        appendStatusSocketDebug,
-        appendWorkerDebugLog: deps.appendWorkerDebugLog,
-        failProcess: deps.failProcess,
-      });
+      applyStatusOfdSlots(handle, msg);
+      applyStatusFdEntries(handle, msg);
+      pruneStatusNetworkConnectionsFromFdEntries(handle, msg, deps);
     }
     if (STATUS_SOCKET_DEBUG_LOG_ENABLED && msg.fdEntries) {
       appendStatusSocketDebug(
@@ -229,7 +221,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         `status-not-running:${handle.pid}:0x${thread.vmPtr.toString(16)}:${status}`,
       );
     }
-    const deferLocalPipeDrain = kernelWorkerOwnsPipeState(handle);
+    const deferLocalPipeDrain = statusKernelWorkerOwnsPipeState(handle);
     const adoptPreSnapshots: ThreadRegisterSnapshot[] = [];
     for (const candidate of handle.workers) {
       const candidateThread = deps.threadWorkerStates.get(candidate);
@@ -252,13 +244,13 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       applyThreadKernelMemoryWrites(handle, msg, deps.appendRuntimeLifecycleEvent);
       applyThreadGuestMemoryWrites(handle, msg, deps.appendRuntimeLifecycleEvent);
-      applyThreadPipeSlots(
+      applyStatusPipeSlots(
         handle,
         msg.pipeSlots,
         pipeSlotLifecycleDebugEnabled() ? deps.appendRuntimeLifecycleEvent : undefined,
       );
-      applyThreadOfdSlots(handle, msg, appendStatusSocketDebug);
-      applyThreadFdEntries(handle, msg.vmPtr, msg.fdEntries, appendStatusSocketDebug);
+      applyStatusOfdSlots(handle, msg);
+      applyStatusFdEntries(handle, msg);
       applyThreadSocketState(handle, msg);
       for (const pre of adoptPreSnapshots) {
         const postPc = handle.kernel.thread_pc(pre.vmPtr);
@@ -294,7 +286,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     }
     deps.clearBlockedWorker(handle, worker);
     const wroteToPipe = flushStdin(handle);
-    const drainedPipe = deferLocalPipeDrain || kernelWorkerOwnsPipeState(handle)
+    const drainedPipe = deferLocalPipeDrain || statusKernelWorkerOwnsPipeState(handle)
       ? false
       : drainProcessOutput(handle);
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);

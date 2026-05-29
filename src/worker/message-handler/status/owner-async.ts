@@ -1,12 +1,11 @@
-import { applyThreadFdEntries } from "../../ownership/fd-table.js";
-import { applyThreadOfdSlots } from "../../ownership/ofd-slot.js";
-import { pruneStaleNetworkConnectionsFromFdEntries } from "../../ownership/socket-control.js";
 import { recordWorkerMessageDebugEvent, type ProcessHandle, type ThreadWorkerState } from "../../types.js";
 import type {
   ThreadWorkerStatusMessage,
   WorkerMessageHandlerDeps,
 } from "../types.js";
-import { appendStatusSocketDebug } from "./debug.js";
+import { applyStatusFdEntries } from "./fd-entries.js";
+import { pruneStatusNetworkConnectionsFromFdEntries } from "./network-recv.js";
+import { applyStatusOfdSlots } from "./ofd-slots.js";
 import {
   applyThreadGuestMemoryWrites,
   applyThreadKernelMemoryWrites,
@@ -43,13 +42,9 @@ export function handleOwnerAsyncStatusReturn(args: {
       { skipFsRingWrites: msg.status === handle.kernel.abi_status_fs() },
     );
     applyThreadGuestMemoryWrites(handle, msg, deps.appendRuntimeLifecycleEvent);
-    applyThreadOfdSlots(handle, msg, appendStatusSocketDebug);
-    applyThreadFdEntries(handle, msg.vmPtr, msg.fdEntries, appendStatusSocketDebug);
-    pruneStaleNetworkConnectionsFromFdEntries(handle, msg.vmPtr, msg.fdEntries, {
-      appendStatusSocketDebug,
-      appendWorkerDebugLog: deps.appendWorkerDebugLog,
-      failProcess: deps.failProcess,
-    });
+    applyStatusOfdSlots(handle, msg);
+    applyStatusFdEntries(handle, msg);
+    pruneStatusNetworkConnectionsFromFdEntries(handle, msg, deps);
   }
   deps.appendWorkerDebugLog(
     handle,
