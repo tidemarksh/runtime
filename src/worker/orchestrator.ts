@@ -208,7 +208,7 @@ const {
   canonicalizeActiveVforkChildViaKernelWorker: canonicalizeActiveVforkChildViaKernelWorkerImpl,
   canonicalizeChildLifecycleViaKernelWorker,
   initializeProcessLifecycleViaKernelWorker,
-  recordChildExitViaKernelWorker,
+  recordChildExitViaKernelWorker: recordChildExitViaKernelWorkerImpl,
   registerProcessWithKernelWorker,
   releaseHostStdioViaKernelWorker,
   resumeConnectViaKernelWorker: resumeConnectViaKernelWorkerImpl,
@@ -672,6 +672,15 @@ async function resumeVforkExecveParentViaKernelWorker(
 ): Promise<KernelRpcResumeOutcome> {
   const outcome = await resumeVforkExecveParentViaKernelWorkerImpl(handle, vmPtr, childPid);
   return applyKernelRpcResumeEffects(handle, {} as Worker, vmPtr, outcome);
+}
+
+async function recordChildExitViaKernelWorker(
+  parent: ProcessHandle,
+  childPid: number,
+  waitStatus: number,
+): Promise<void> {
+  const outcome = await recordChildExitViaKernelWorkerImpl(parent, childPid, waitStatus);
+  await applyKernelRpcResumeEffects(parent, {} as Worker, parent.vmPtr, outcome);
 }
 
 function syncForkSharedStateLocally(

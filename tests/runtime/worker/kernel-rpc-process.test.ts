@@ -218,13 +218,15 @@ test("recordChildExitViaKernelWorker syncs parent pipe state and drains output b
     clearVforkSnapshot() {},
   });
 
-  await helpers.recordChildExitViaKernelWorker(handle, 7, 0x0300);
+  const outcome = await helpers.recordChildExitViaKernelWorker(handle, 7, 0x0300);
 
   expect(order).toEqual([
     "drain:1",
-    "pipe-sync:1:wake",
-    "kick:1",
     "drain:1",
+  ]);
+  expect(outcome.effects).toEqual([
+    { kind: "request-pipe-state-sync", wakeWaiters: true },
+    { kind: "kick-blocked-workers" },
   ]);
   expect(handle.recordedChildExits).toEqual([[7, 0x0300]]);
   expect(handle.kernelState.heapPtr).toBe(syncedState.heapPtr);
