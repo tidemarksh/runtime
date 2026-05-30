@@ -38,6 +38,44 @@ test("stepThread forwards non-blocked fault status directly to postStatus", () =
   expect(postStatus).toHaveBeenCalledWith(createThreadWorkerStatusOutcome(3));
 });
 
+test("stepThread returns syscall and invalidation statuses to the owner", () => {
+  for (const status of [2, 10]) {
+    const clearSyscallTrace = vi.fn();
+    const threadStep = vi.fn();
+    const postStatus = vi.fn();
+
+    stepThread({
+      exports: {
+        debug_clear_syscall_trace: clearSyscallTrace,
+        thread_step: threadStep,
+        thread_status: () => status,
+      } as never,
+      statusCodes: {
+        OK: 0,
+        FAULT: 1,
+        FS: 2,
+        FUTEX_WAIT: 20,
+        EPOLL_WAIT: 22,
+        JIT_READY: 10,
+      } as never,
+      vmPtr: 0x1234,
+      guestBase: 0,
+      threadStepBudget: 20_000,
+      eintrErrno: 4,
+      futexWaitSliceMs: 10,
+      syscallNumbers: null,
+      runtimeBridge: null,
+      postStatus,
+      reattachPublishedKernelRuntimeState: () => {},
+    }, 20_000);
+
+    expect(clearSyscallTrace).toHaveBeenCalledTimes(1);
+    expect(threadStep).toHaveBeenCalledWith(0x1234, 20_000);
+    expect(postStatus).toHaveBeenCalledTimes(1);
+    expect(postStatus).toHaveBeenCalledWith(createThreadWorkerStatusOutcome(status));
+  }
+});
+
 test("stepThread does not reroute OK through the blocked-status handlers", () => {
   const clearSyscallTrace = vi.fn();
   const threadStep = vi.fn();

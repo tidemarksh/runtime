@@ -3,6 +3,7 @@ import {
   publishRuntimeBridgeDebugStage,
   type RuntimeStateBridge,
 } from "../bridge/runtime-state.js";
+import { executeInterpreterStep } from "../execution/interpreter.js";
 import { clearSyscallTrace } from "./debug.js";
 import {
   handleFutexWait,
@@ -106,8 +107,13 @@ export function stepThread(ctx: ThreadWorkerExecContext, budget: number): void {
       }
     }
     publishStage(ctx, 2, effectiveBudget);
-    ctx.exports.thread_step(ctx.vmPtr, effectiveBudget);
-    const status = ctx.exports.thread_status(ctx.vmPtr);
+    const execution = executeInterpreterStep({
+      exports: ctx.exports,
+      statusCodes: ctx.statusCodes,
+      vmPtr: ctx.vmPtr,
+      budget: effectiveBudget,
+    });
+    const status = execution.status;
     publishStage(ctx, 3, status);
     remainingBudget = Math.max(0, remainingBudget - effectiveBudget);
 
