@@ -82,3 +82,10 @@ export async function syncSocketStateViaKernelWorker(
     netBufUsed: handle.kernelState.netBufUsed,
   };
 }
+
+export function syncSocketStateForWorkerRuntime(handle: ProcessHandle): Promise<{
+  socketUsed: number;
+  netBufUsed: bigint;
+}> {
+  return syncSocketStateViaKernelWorker(handle, { kind: "syscall", nr: -1n, name: "socket-state-sync" });
+}

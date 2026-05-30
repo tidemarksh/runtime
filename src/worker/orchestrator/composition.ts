@@ -30,12 +30,12 @@ import { applyKernelRpcResumeEffects as applyKernelRpcResumeEffectsImpl } from "
 import { createWorkerProcessFactory } from "../create-process.js";
 import {
   releaseSharedHostStdioViaKernelWorker as releaseSharedHostStdioImpl,
-  rehydrateForkSharedStateViaKernelWorker as rehydrateForkSharedStateViaKernelWorkerImpl,
+  rehydrateForkSharedStateForWorkerRuntime as rehydrateForkSharedStateViaKernelWorkerImpl,
   syncBlockedForkSharedStateForWorkerRuntime as syncBlockedForkSharedStateViaKernelWorkerImpl,
   syncForkSharedStateForWorkerRuntime as syncForkSharedStateViaKernelWorkerImpl,
   syncForkSharedStateLocallyForWorkerRuntime as syncForkSharedStateLocallyImpl,
-  syncPipeStateViaKernelWorker as syncPipeStateViaKernelWorkerImpl,
-  syncSocketStateViaKernelWorker as syncSocketStateViaKernelWorkerImpl,
+  syncPipeStateForWorkerRuntime as syncPipeStateViaKernelWorkerImpl,
+  syncSocketStateForWorkerRuntime as syncSocketStateViaKernelWorkerImpl,
 } from "../sync.js";
 import { createWorkerDestroyHelpers } from "../destroy.js";
 import { createWorkerExitHelpers } from "../exit.js";
@@ -614,10 +614,7 @@ async function rehydrateForkSharedStateViaKernelWorker(
   ofdIds: number[],
   options: { procSelfExeTargets?: KernelWorkerPidBytesSnapshot[]; includeMemfs?: boolean } = {},
 ): Promise<void> {
-  await rehydrateForkSharedStateViaKernelWorkerImpl(targets, ofdIds, {
-    ...options,
-    cause: { kind: "syscall", nr: -1n, name: "fork-shared-rehydrate" },
-  });
+  await rehydrateForkSharedStateViaKernelWorkerImpl(targets, ofdIds, options);
 }
 
 async function syncBlockedForkSharedStateViaKernelWorker(
@@ -628,14 +625,14 @@ async function syncBlockedForkSharedStateViaKernelWorker(
 }
 
 async function syncPipeStateViaKernelWorker(handle: ProcessHandle): Promise<bigint> {
-  return syncPipeStateViaKernelWorkerImpl(handle, { kind: "syscall", nr: -1n, name: "pipe-state-sync" });
+  return syncPipeStateViaKernelWorkerImpl(handle);
 }
 
 async function syncSocketStateViaKernelWorker(handle: ProcessHandle): Promise<{
   socketUsed: number;
   netBufUsed: bigint;
 }> {
-  return syncSocketStateViaKernelWorkerImpl(handle, { kind: "syscall", nr: -1n, name: "socket-state-sync" });
+  return syncSocketStateViaKernelWorkerImpl(handle);
 }
 
 async function releaseSharedHostStdio(handle: ProcessHandle): Promise<void> {

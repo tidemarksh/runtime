@@ -477,6 +477,17 @@ export async function rehydrateForkSharedStateViaKernelWorker(
   restoreNetworkBridgeSocketState(networkSocketSnapshots);
 }
 
+export async function rehydrateForkSharedStateForWorkerRuntime(
+  targets: ProcessHandle[],
+  ofdIds: number[],
+  options: { procSelfExeTargets?: KernelWorkerPidBytesSnapshot[]; includeMemfs?: boolean } = {},
+): Promise<void> {
+  await rehydrateForkSharedStateViaKernelWorker(targets, ofdIds, {
+    ...options,
+    cause: { kind: "syscall", nr: -1n, name: "fork-shared-rehydrate" },
+  });
+}
+
 export async function syncBlockedForkSharedStateViaKernelWorker(
   handle: ProcessHandle,
   sourceVmPtr = handle.vmPtr,
