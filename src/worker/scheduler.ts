@@ -35,9 +35,36 @@ import type {
   WorkerScheduler,
   WorkerSchedulerDeps,
 } from "./scheduler/types.js";
+import type { KernelRpcResumeOutcome } from "./kernel-rpc/outcomes.js";
 export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerScheduler {
   const { threadWorkerStates } = deps;
   const pipeChildExitResumeKeys = new WeakMap<ProcessHandle, Map<number, string>>();
+
+  function consumeKernelRpcResumeOutcome(
+    handle: ProcessHandle,
+    worker: Worker,
+    vmPtr: number,
+    outcome: KernelRpcResumeOutcome,
+  ): void {
+    switch (outcome.kind) {
+      case "completed":
+      case "queued-in-worker":
+      case "process-gone":
+      case "stale":
+        return;
+      case "blocked": {
+        const blocked = handle.blockedWorkers.get(worker);
+        if (blocked && blocked.vmPtr === vmPtr) {
+          blocked.status = outcome.status;
+        }
+        return;
+      }
+      default: {
+        const exhaustive: never = outcome;
+        throw new Error(`unhandled kernel-rpc outcome: ${JSON.stringify(exhaustive)}`);
+      }
+    }
+  }
   const appliedChildExitRecordKeys = new Map<string, Set<string>>();
   const schedulerQueueHelpers = createWorkerSchedulerQueueHelpers({
     threadWorkerStates,
@@ -904,6 +931,11 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       clearBlockedWorker(handle, worker);
       const resumeFs = deps.resumeFsViaKernelWorkerOutcome ?? deps.resumeFsViaKernelWorker;
       void resumeFs(handle, worker, blocked.vmPtr)
+        .then((outcome) => {
+          if (outcome !== undefined) {
+            consumeKernelRpcResumeOutcome(handle, worker, blocked.vmPtr, outcome);
+          }
+        })
         .finally(() => {
           if (thread) {
             thread.ownerAsyncStatus = null;
@@ -989,7 +1021,13 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         blocked.vmPtr,
         blocked.status,
         blocked.timeoutExpired,
-      );
+      ).then((outcome) => {
+        if (outcome !== undefined) {
+          consumeKernelRpcResumeOutcome(handle, worker, blocked.vmPtr, outcome);
+        }
+      }).catch((error) => {
+        deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+      });
       return;
     }
 

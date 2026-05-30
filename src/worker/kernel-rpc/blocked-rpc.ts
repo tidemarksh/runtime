@@ -12,10 +12,7 @@ import type { KernelWorkerPipeSlotSnapshot } from "../../messages.js";
 import { PIPE_HEAD_OFFSET, PIPE_TAIL_OFFSET, PIPE_WRITE_OPEN_OFFSET } from "../../layout/pipe.js";
 import { POLLFD_BYTES } from "../../layout/poll.js";
 import { activeChildMayHoldBlockedPipeWriter } from "./pipe.js";
-import {
-  completedKernelRpcOutcome,
-  type KernelRpcResumeOutcome,
-} from "./outcomes.js";
+import type { KernelRpcResumeOutcome } from "./outcomes.js";
 
 const GUEST_TICKS_PER_SEC = 100_000_000n;
 const PIPE_SLOT_DEBUG_ENABLED = ((globalThis as {
@@ -1331,7 +1328,10 @@ async function resumeBlockedSyscallLocally(
       return { kind: "queued-in-worker" };
     }
     const status = handle.kernel.thread_status?.(vmPtr);
-    return status === undefined ? { kind: "stale" } : completedKernelRpcOutcome(status);
+    if (status === undefined) {
+      return { kind: "stale" };
+    }
+    return { kind: "blocked", status };
   }
 
   return {

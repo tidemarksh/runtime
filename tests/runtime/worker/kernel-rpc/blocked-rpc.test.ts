@@ -107,7 +107,9 @@ test("kernel-rpc blocked-rpc helper owns local resume and returns a typed outcom
   } as unknown as ProcessHandle;
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
-  const handleBlockedRetryResult = vi.fn();
+  const handleBlockedRetryResult = vi.fn(() => {
+    handle.blockedWorkers.delete(worker);
+  });
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
     threadWorkerStates: threadWorkerStates as never,
@@ -122,12 +124,69 @@ test("kernel-rpc blocked-rpc helper owns local resume and returns a typed outcom
   });
 
   await expect(helpers.resumeBlockedSyscallLocally(handle, worker, 0x1234, 21)).resolves.toBeUndefined();
+  handle.blockedWorkers.set(worker, {
+    vmPtr: 0x1234,
+    status: 21,
+    retryTimer: null,
+    timeoutExpired: false,
+    timeoutDeadlineMs: null,
+    sleepDeadlineTicks: null,
+    rpcPending: false,
+  });
   await expect(helpers.resumeBlockedSyscallOutcome(handle, worker, 0x1234, 21)).resolves.toEqual({
-    kind: "completed",
-    status: 0,
+    kind: "queued-in-worker",
   });
   expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledTimes(2);
   expect(handleBlockedRetryResult).toHaveBeenCalledTimes(2);
+});
+
+test("kernel-rpc blocked-rpc outcome reports blocked while the worker remains blocked", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const handle = {
+    pid: 1,
+    runtimeId: 1,
+    vmPtr: 0x1234,
+    kernel,
+    kernelState: makeKernelState(),
+    memory: kernel.memory,
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, {
+      vmPtr: 0x1234,
+      status: 21,
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare: {
+      members: new Set(),
+      forkSharedSyncPromise: null,
+    },
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, {});
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[1, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    appendWorkerDebugLog: vi.fn(),
+    enqueueWorker: vi.fn(),
+    failProcess: vi.fn(),
+    handleBlockedRetryResult: vi.fn(),
+    requestPipeStateSync: vi.fn(async () => {}),
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  await expect(helpers.resumeBlockedSyscallOutcome(handle, worker, 0x1234, 21)).resolves.toEqual({
+    kind: "blocked",
+    status: 0,
+  });
 });
 
 test("kernel-rpc blocked-rpc outcome reports queued-in-worker when retry unblocks the worker", async () => {

@@ -17,6 +17,7 @@ import type {
   ThreadWorkerStatusMessage,
   WorkerMessageHandlerDeps,
 } from "./types.js";
+import type { KernelRpcResumeOutcome } from "../kernel-rpc/outcomes.js";
 import { createWorkerOwnershipGuard } from "../ownership/process-state.js";
 import {
   refreshPipeControlFromKernelShare,
@@ -59,6 +60,32 @@ function finishStatusTransitionRpc(
 }
 
 export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDeps) {
+  function consumeKernelRpcResumeOutcome(
+    handle: ProcessHandle,
+    worker: Worker,
+    vmPtr: number,
+    outcome: KernelRpcResumeOutcome,
+  ): void {
+    switch (outcome.kind) {
+      case "completed":
+      case "queued-in-worker":
+      case "process-gone":
+      case "stale":
+        return;
+      case "blocked": {
+        const blocked = handle.blockedWorkers.get(worker);
+        if (blocked && blocked.vmPtr === vmPtr) {
+          blocked.status = outcome.status;
+        }
+        return;
+      }
+      default: {
+        const exhaustive: never = outcome;
+        throw new Error(`unhandled kernel-rpc outcome: ${JSON.stringify(exhaustive)}`);
+      }
+    }
+  }
+
   return function handleStatusTransition({
     handle,
     worker,
@@ -364,6 +391,11 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             }
             const resumeFs = deps.resumeFsViaKernelWorkerOutcome ?? deps.resumeFsViaKernelWorker;
             return resumeFs(handle, worker, thread.vmPtr)
+              .then((outcome) => {
+                if (outcome !== undefined) {
+                  consumeKernelRpcResumeOutcome(handle, worker, thread.vmPtr, outcome);
+                }
+              })
               .then(() => undefined)
               .finally(() => {
                 thread.ownerAsyncStatus = null;
@@ -382,6 +414,11 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       if (!handle.kernelWorkerRequest || handle.pid <= 0) {
         const resumeFs = deps.resumeFsViaKernelWorkerOutcome ?? deps.resumeFsViaKernelWorker;
         void resumeFs(handle, worker, thread.vmPtr)
+          .then((outcome) => {
+            if (outcome !== undefined) {
+              consumeKernelRpcResumeOutcome(handle, worker, thread.vmPtr, outcome);
+            }
+          })
           .catch((error) => {
             if (!workerStillOwnedByHandle()) {
               return;
@@ -393,6 +430,11 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       thread.ownerAsyncStatus = status;
       const resumeFs = deps.resumeFsViaKernelWorkerOutcome ?? deps.resumeFsViaKernelWorker;
       void resumeFs(handle, worker, thread.vmPtr)
+        .then((outcome) => {
+          if (outcome !== undefined) {
+            consumeKernelRpcResumeOutcome(handle, worker, thread.vmPtr, outcome);
+          }
+        })
         .finally(() => {
           thread.ownerAsyncStatus = null;
           deps.pumpProcess(handle);
