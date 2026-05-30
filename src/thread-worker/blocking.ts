@@ -4,7 +4,10 @@ import {
   type RuntimeStateBridge,
 } from "../bridge/runtime-state.js";
 import { clearSyscallTrace } from "./debug.js";
-import type { ThreadWorkerStatusPublisher } from "./outcomes.js";
+import {
+  createThreadWorkerStatusOutcome,
+  type ThreadWorkerOutcomePublisher,
+} from "./outcomes.js";
 import { checkPendingSignalsAtBoundary } from "./signals.js";
 
 const BLOCKED_ADDR_NOT_FOUND = 0xffff_ffff;
@@ -18,7 +21,7 @@ interface ThreadWorkerBlockingContext {
   threadStepBudget: number;
   eintrErrno: number;
   futexWaitSliceMs: number;
-  postStatus: ThreadWorkerStatusPublisher;
+  postStatus: ThreadWorkerOutcomePublisher;
   reattachPublishedKernelRuntimeState(): void;
   step(budget: number): void;
 }
@@ -50,13 +53,13 @@ export function handleRuntimeBridgeBlockedStatus(
   status: number,
 ): void {
   if (ctx.runtimeBridge === null) {
-    ctx.postStatus(status);
+    ctx.postStatus(createThreadWorkerStatusOutcome(status));
     return;
   }
 
   let blockedStatus = status;
   for (;;) {
-    ctx.postStatus(blockedStatus, true);
+    ctx.postStatus(createThreadWorkerStatusOutcome(blockedStatus, true));
 
     const timeoutMs = Number(ctx.exports.thread_epoll_wait_timeout(ctx.vmPtr));
     const waitResult = timeoutMs < 0
@@ -71,13 +74,13 @@ export function handleRuntimeBridgeBlockedStatus(
         if (interrupted === 0) {
           blockedStatus = ctx.exports.thread_status(ctx.vmPtr);
           if (!isRuntimeBridgeBlockedStatus(ctx.exports, ctx.vmPtr, blockedStatus, ctx.statusCodes)) {
-            ctx.postStatus(blockedStatus);
+            ctx.postStatus(createThreadWorkerStatusOutcome(blockedStatus));
             return;
           }
           continue;
         }
       }
-      ctx.postStatus(ctx.statusCodes.OK);
+      ctx.postStatus(createThreadWorkerStatusOutcome(ctx.statusCodes.OK));
       return;
     }
     if (
@@ -95,7 +98,7 @@ export function handleRuntimeBridgeBlockedStatus(
         return;
       }
       if (!isRuntimeBridgeBlockedStatus(ctx.exports, ctx.vmPtr, blockedStatus, ctx.statusCodes)) {
-        ctx.postStatus(blockedStatus);
+        ctx.postStatus(createThreadWorkerStatusOutcome(blockedStatus));
         return;
       }
       continue;
@@ -109,7 +112,7 @@ export function handleRuntimeBridgeBlockedStatus(
         return;
       }
       if (!isRuntimeBridgeBlockedStatus(ctx.exports, ctx.vmPtr, blockedStatus, ctx.statusCodes)) {
-        ctx.postStatus(blockedStatus);
+        ctx.postStatus(createThreadWorkerStatusOutcome(blockedStatus));
         return;
       }
       continue;
@@ -130,7 +133,7 @@ export function handleRuntimeBridgeBlockedStatus(
       return;
     }
     if (!isRuntimeBridgeBlockedStatus(ctx.exports, ctx.vmPtr, blockedStatus, ctx.statusCodes)) {
-      ctx.postStatus(blockedStatus);
+      ctx.postStatus(createThreadWorkerStatusOutcome(blockedStatus));
       return;
     }
   }
@@ -149,7 +152,7 @@ export function handleFutexWait(
     return true;
   }
 
-  ctx.postStatus(status, true);
+  ctx.postStatus(createThreadWorkerStatusOutcome(status, true));
 
   const timeoutPtr = Number(ctx.exports.thread_futex_wait_timeout(ctx.vmPtr));
   const timeoutMs = readTimespecMillis(ctx.exports, ctx.guestBase, timeoutPtr);
@@ -165,7 +168,7 @@ export function handleFutexWait(
     ctx.reattachPublishedKernelRuntimeState();
     const currentStatus = ctx.exports.thread_status(ctx.vmPtr);
     if (currentStatus !== ctx.statusCodes.FUTEX_WAIT) {
-      ctx.postStatus(currentStatus);
+      ctx.postStatus(createThreadWorkerStatusOutcome(currentStatus));
       return false;
     }
     const stillBlockedAddr = ctx.exports.thread_record_blocked_addr(ctx.vmPtr);
@@ -206,7 +209,7 @@ export function handleFutexWait(
   }
 
   const resumedStatus = ctx.exports.thread_status(ctx.vmPtr);
-  ctx.postStatus(resumedStatus);
+  ctx.postStatus(createThreadWorkerStatusOutcome(resumedStatus));
   return false;
 }
 

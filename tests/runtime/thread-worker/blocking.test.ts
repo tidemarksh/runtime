@@ -6,6 +6,7 @@ import {
   handleRuntimeBridgeBlockedStatus,
   isRuntimeBridgeBlockedStatus,
 } from "../../../src/thread-worker/blocking.js";
+import { createThreadWorkerStatusOutcome } from "../../../src/thread-worker/outcomes.js";
 
 test("isRuntimeBridgeBlockedStatus keeps only indefinite EPOLL_WAIT in the thread-worker", () => {
   const exports = {
@@ -88,8 +89,8 @@ test("handleFutexWait re-waits on the requeued futex address", () => {
   expect(waitCalls).toBe(2);
   expect(resumeWait).toHaveBeenCalledTimes(1);
   expect(resumeWaitResult).not.toHaveBeenCalled();
-  expect(postStatus).toHaveBeenNthCalledWith(1, 20, true);
-  expect(postStatus).toHaveBeenNthCalledWith(2, 0);
+  expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
+  expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(0));
 
   waitSpy.mockRestore();
 });
@@ -151,8 +152,8 @@ test("handleFutexWait resumes with EINTR when a signal becomes pending", () => {
   expect(handled).toBe(false);
   expect(resumeWait).not.toHaveBeenCalled();
   expect(resumeWaitResult).toHaveBeenCalledWith(BigInt(-4));
-  expect(postStatus).toHaveBeenNthCalledWith(1, 20, true);
-  expect(postStatus).toHaveBeenNthCalledWith(2, 0);
+  expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
+  expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(0));
 
   waitSpy.mockRestore();
 });
@@ -214,8 +215,8 @@ test("handleFutexWait resumes with EINTR when a signal wake notifies the futex",
   expect(handled).toBe(false);
   expect(resumeWait).not.toHaveBeenCalled();
   expect(resumeWaitResult).toHaveBeenCalledWith(BigInt(-4));
-  expect(postStatus).toHaveBeenNthCalledWith(1, 20, true);
-  expect(postStatus).toHaveBeenNthCalledWith(2, 0);
+  expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
+  expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(0));
 
   waitSpy.mockRestore();
 });
@@ -278,8 +279,8 @@ test("handleFutexWait resumes with EINTR for process-directed pending signals", 
   expect(handled).toBe(false);
   expect(resumeWait).not.toHaveBeenCalled();
   expect(resumeWaitResult).toHaveBeenCalledWith(BigInt(-4));
-  expect(postStatus).toHaveBeenNthCalledWith(1, 20, true);
-  expect(postStatus).toHaveBeenNthCalledWith(2, 0);
+  expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
+  expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(0));
 
   waitSpy.mockRestore();
 });
@@ -340,8 +341,8 @@ test("handleFutexWait treats missing thread-record sentinel as EAGAIN instead of
   expect(handled).toBe(false);
   expect(resumeWait).not.toHaveBeenCalled();
   expect(resumeWaitResult).toHaveBeenCalledWith(BigInt(-11));
-  expect(postStatus).toHaveBeenNthCalledWith(1, 20, true);
-  expect(postStatus).toHaveBeenNthCalledWith(2, 0);
+  expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
+  expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(0));
 
   waitSpy.mockRestore();
 });
@@ -395,8 +396,8 @@ test("handleFutexWait exits when reattached kernel state changes the thread stat
   expect(handled).toBe(false);
   expect(resumeWait).not.toHaveBeenCalled();
   expect(resumeWaitResult).not.toHaveBeenCalled();
-  expect(postStatus).toHaveBeenNthCalledWith(1, 20, true);
-  expect(postStatus).toHaveBeenNthCalledWith(2, 9);
+  expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
+  expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(9));
 
   waitSpy.mockRestore();
 });
@@ -441,8 +442,8 @@ test("handleRuntimeBridgeBlockedStatus treats epoll timeout=0 as an immediate ti
 
   expect(resumeTimeout).toHaveBeenCalledWith(0x1234);
   expect(resumeBlocked).not.toHaveBeenCalled();
-  expect(postStatus).toHaveBeenNthCalledWith(1, 22, true);
-  expect(postStatus).toHaveBeenNthCalledWith(2, 0);
+  expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(22, true));
+  expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(0));
 
   waitSpy.mockRestore();
 });
@@ -500,7 +501,7 @@ test("handleRuntimeBridgeBlockedStatus hands off EPOLL_WAIT timeout retries into
   expect(resumeFutexWait).toHaveBeenCalledWith(0x1234);
   expect(resumeBlocked).not.toHaveBeenCalled();
   expect(step).toHaveBeenCalledWith(1000);
-  expect(postStatus).toHaveBeenCalledWith(22, true);
+  expect(postStatus).toHaveBeenCalledWith(createThreadWorkerStatusOutcome(22, true));
 
   waitSpy.mockRestore();
 });

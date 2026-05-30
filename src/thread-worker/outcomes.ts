@@ -6,11 +6,12 @@ export interface ThreadWorkerStatusOutcome {
 }
 
 export type ThreadWorkerBoundaryOutcome = ThreadWorkerStatusOutcome;
-export type ThreadWorkerStatusPublisher = (
+export type ThreadWorkerStatusEmitter = (
   status: number,
   waitInWorker?: boolean,
   syncEffects?: number,
 ) => void;
+export type ThreadWorkerOutcomePublisher = (outcome: ThreadWorkerBoundaryOutcome) => void;
 
 export function createThreadWorkerStatusOutcome(
   status: number,
@@ -26,7 +27,7 @@ export function createThreadWorkerStatusOutcome(
 }
 
 export function publishThreadWorkerStatusOutcome(
-  publish: ThreadWorkerStatusPublisher,
+  publish: ThreadWorkerStatusEmitter,
   outcome: ThreadWorkerStatusOutcome,
 ): void {
   if (outcome.syncEffects !== undefined) {

@@ -9,7 +9,10 @@ import {
   handleRuntimeBridgeBlockedStatus,
   isRuntimeBridgeBlockedStatus,
 } from "./blocking.js";
-import type { ThreadWorkerStatusPublisher } from "./outcomes.js";
+import {
+  createThreadWorkerStatusOutcome,
+  type ThreadWorkerOutcomePublisher,
+} from "./outcomes.js";
 import { readCompletedSyncEffects, type SyscallNumbers } from "./sync-effects.js";
 
 interface DebugBudgetClamp {
@@ -66,7 +69,7 @@ interface ThreadWorkerExecContext {
   futexWaitSliceMs: number;
   syscallNumbers: SyscallNumbers | null;
   runtimeBridge: RuntimeStateBridge | null;
-  postStatus: ThreadWorkerStatusPublisher;
+  postStatus: ThreadWorkerOutcomePublisher;
   reattachPublishedKernelRuntimeState(): void;
 }
 
@@ -138,7 +141,7 @@ export function stepThread(ctx: ThreadWorkerExecContext, budget: number): void {
       status === ctx.statusCodes.OK
       && completedSyncEffects !== 0
     ) {
-      ctx.postStatus(status, false, completedSyncEffects);
+      ctx.postStatus(createThreadWorkerStatusOutcome(status, false, completedSyncEffects));
       publishStage(ctx, 6, status);
       return;
     }
@@ -153,7 +156,7 @@ export function stepThread(ctx: ThreadWorkerExecContext, budget: number): void {
       }
       observedNotifyCounter = currentNotifyCounter;
     }
-    ctx.postStatus(status);
+    ctx.postStatus(createThreadWorkerStatusOutcome(status));
     publishStage(ctx, 6, status);
     return;
   }

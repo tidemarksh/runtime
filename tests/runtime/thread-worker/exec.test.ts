@@ -2,6 +2,7 @@
 import { expect, test, vi } from "vite-plus/test";
 import { createRuntimeStateBridge } from "../../../src/bridge/runtime-state.js";
 import { stepThread } from "../../../src/thread-worker/exec.js";
+import { createThreadWorkerStatusOutcome } from "../../../src/thread-worker/outcomes.js";
 
 test("stepThread forwards non-blocked fault status directly to postStatus", () => {
   const clearSyscallTrace = vi.fn();
@@ -34,7 +35,7 @@ test("stepThread forwards non-blocked fault status directly to postStatus", () =
   expect(clearSyscallTrace).toHaveBeenCalledTimes(1);
   expect(threadStep).toHaveBeenCalledWith(0x1234, 20_000);
   expect(postStatus).toHaveBeenCalledTimes(1);
-  expect(postStatus).toHaveBeenCalledWith(3);
+  expect(postStatus).toHaveBeenCalledWith(createThreadWorkerStatusOutcome(3));
 });
 
 test("stepThread does not reroute OK through the blocked-status handlers", () => {
@@ -68,7 +69,7 @@ test("stepThread does not reroute OK through the blocked-status handlers", () =>
   expect(clearSyscallTrace).toHaveBeenCalledTimes(1);
   expect(threadStep).toHaveBeenCalledWith(0x1234, 0);
   expect(postStatus).toHaveBeenCalledTimes(1);
-  expect(postStatus).toHaveBeenCalledWith(0);
+  expect(postStatus).toHaveBeenCalledWith(createThreadWorkerStatusOutcome(0));
 });
 
 test("stepThread resolves FUTEX_WAIT in-worker before reporting completion", () => {
@@ -117,7 +118,7 @@ test("stepThread resolves FUTEX_WAIT in-worker before reporting completion", () 
   expect(threadStep).toHaveBeenNthCalledWith(2, 0x1234, 20_000);
   expect(resumeFutexWait).toHaveBeenCalledTimes(1);
   expect(postStatus).toHaveBeenCalledTimes(1);
-  expect(postStatus).toHaveBeenCalledWith(0);
+  expect(postStatus).toHaveBeenCalledWith(createThreadWorkerStatusOutcome(0));
 });
 
 test("stepThread consumes the owner budget in worker quanta when no runtime status is published", () => {
@@ -153,7 +154,7 @@ test("stepThread consumes the owner budget in worker quanta when no runtime stat
   expect(threadStep).toHaveBeenNthCalledWith(2, 0x1234, 1_000);
   expect(threadStep).toHaveBeenNthCalledWith(3, 0x1234, 500);
   expect(postStatus).toHaveBeenCalledTimes(1);
-  expect(postStatus).toHaveBeenCalledWith(0);
+  expect(postStatus).toHaveBeenCalledWith(createThreadWorkerStatusOutcome(0));
 });
 
 test("stepThread publishes OK early when another runtime status arrives during a long step", () => {
@@ -191,7 +192,7 @@ test("stepThread publishes OK early when another runtime status arrives during a
   expect(threadStep).toHaveBeenCalledTimes(1);
   expect(threadStep).toHaveBeenCalledWith(0x1234, 1_000);
   expect(postStatus).toHaveBeenCalledTimes(1);
-  expect(postStatus).toHaveBeenCalledWith(0);
+  expect(postStatus).toHaveBeenCalledWith(createThreadWorkerStatusOutcome(0));
 });
 
 test("stepThread forwards consumed sync effects when yielding OK early", () => {
@@ -227,5 +228,5 @@ test("stepThread forwards consumed sync effects when yielding OK early", () => {
   expect(threadStep).toHaveBeenCalledWith(0x1234, 1_000);
   expect(takeCompletedSyncEffects).toHaveBeenCalledWith(0x1234);
   expect(postStatus).toHaveBeenCalledTimes(1);
-  expect(postStatus).toHaveBeenCalledWith(0, false, 4);
+  expect(postStatus).toHaveBeenCalledWith(createThreadWorkerStatusOutcome(0, false, 4));
 });

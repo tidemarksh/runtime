@@ -51,6 +51,11 @@ import {
   type SyscallNumbers,
 } from "./thread-worker/sync-effects.js";
 import {
+  createThreadWorkerStatusOutcome,
+  publishThreadWorkerStatusOutcome,
+  type ThreadWorkerBoundaryOutcome,
+} from "./thread-worker/outcomes.js";
+import {
   FS_OP_WRITE,
   FS_RING_REQUEST_BUF_PTR_OFFSET,
   FS_RING_REQUEST_LEN_OFFSET,
@@ -1389,6 +1394,10 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
   publishThreadWorkerStage(131, status);
 }
 
+function postStatusOutcome(outcome: ThreadWorkerBoundaryOutcome): void {
+  publishThreadWorkerStatusOutcome(postStatus, outcome);
+}
+
 function postError(error: unknown): void {
   const base = error instanceof Error ? (error.stack ?? error.message) : String(error);
   const msg: ThreadWorkerOutbound = {
@@ -1414,7 +1423,7 @@ function step(budget: number): void {
     futexWaitSliceMs: FUTEX_WAIT_SLICE_MS,
     syscallNumbers,
     runtimeBridge,
-    postStatus,
+    postStatus: postStatusOutcome,
     reattachPublishedKernelRuntimeState,
   }, budget);
 }
@@ -1524,7 +1533,7 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
               )}"`,
             ].join(":");
           }
-          postStatus(kernelExports.thread_status(vmPtr));
+          postStatusOutcome(createThreadWorkerStatusOutcome(kernelExports.thread_status(vmPtr)));
           return;
         }
         applyGuestMemoryWrites(requireExports(), msg.guestMemoryWrites);
