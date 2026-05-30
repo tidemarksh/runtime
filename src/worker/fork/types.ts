@@ -1,5 +1,6 @@
 import type { AttachThreadWorkerRequest, CanonicalizedChildLifecycle, KernelWorkerMemfsSeedMode, KernelWorkerPipeSeedMode, ProcessHandle, ThreadWorkerState } from "../types.js";
 import type { KernelWorkerPidBytesSnapshot } from "../../messages.js";
+import type { KernelRpcResumeOutcome } from "../kernel-rpc/outcomes.js";
 
 export interface WorkerForkDeps {
   processHandles: Map<number, ProcessHandle>;
@@ -39,7 +40,7 @@ export interface WorkerForkDeps {
     handle: ProcessHandle,
     vmPtr: number,
     childPid: number,
-  ): Promise<void>;
+  ): Promise<KernelRpcResumeOutcome>;
   syncForkSharedStateLocally(
     handle: ProcessHandle,
     targets: ProcessHandle[],

@@ -1133,6 +1133,7 @@ test("createProcess processes STATUS_FS and resumes worker with refreshed kernel
     vmPtr: 0x1234,
     kernelState: makeKernelState(),
   });
+  await flushMicrotasks();
 
   expect(worker.postedMessages).toEqual([
     {

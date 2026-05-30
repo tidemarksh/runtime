@@ -44,7 +44,7 @@ export interface WorkerSchedulerDeps {
     exitCode: number,
     termSignal: number,
   ): boolean;
-  resumeWait4ViaKernelWorker(handle: ProcessHandle, worker: Worker, vmPtr: number): Promise<void>;
+  resumeWait4ViaKernelWorker(handle: ProcessHandle, worker: Worker, vmPtr: number): Promise<KernelRpcResumeOutcome>;
   handleWorkerMessage(handle: ProcessHandle, worker: Worker, msg: ThreadWorkerOutbound): void;
 }
 

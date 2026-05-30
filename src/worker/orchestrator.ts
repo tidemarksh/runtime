@@ -7,6 +7,7 @@ import type {
   KernelWorkerPidBytesSnapshot,
   ThreadWorkerOutbound,
 } from "../messages.js";
+import { publishKernelRuntimeState } from "../bridge/runtime-state.js";
 import {
   formatPipeCounterDebug,
 } from "./kernel-share.js";
@@ -19,6 +20,7 @@ import {
   drainHiddenProcessOutput,
   drainProcessOutput,
   flushStdin,
+  settleVisibleProcessOutput,
   writeProcessStdin as bufferProcessStdin,
 } from "./stdio.js";
 import { createWorkerProcessIoHelpers } from "./process-io.js";
@@ -26,7 +28,7 @@ import type {
   CreateProcessOptions,
   ProcessHandle,
 } from "./types.js";
-import type { KernelRpcResumeOutcome } from "./kernel-rpc/outcomes.js";
+import type { KernelRpcResumeEffect, KernelRpcResumeOutcome } from "./kernel-rpc/outcomes.js";
 import { createWorkerProcessFactory } from "./create-process.js";
 import {
   rehydrateForkSharedStateViaKernelWorker as rehydrateForkSharedStateViaKernelWorkerImpl,
@@ -160,19 +162,9 @@ const workerScheduler = createWorkerScheduler({
       timeoutExpired,
     )
   ),
-  resumeBlockedSyscallOutcome: (handle, worker, vmPtr, blockedStatus, timeoutExpired) => (
-    workerKernelRpcHelpers.resumeBlockedSyscallOutcome(
-      handle,
-      worker,
-      vmPtr,
-      blockedStatus,
-      timeoutExpired,
-    )
-  ),
+  resumeBlockedSyscallOutcome,
   resumeVforkParentAfterChildExit,
-  resumeWait4ViaKernelWorker: (handle, worker, vmPtr) => (
-    workerKernelRpcHelpers.resumeWait4ViaKernelWorker(handle, worker, vmPtr)
-  ),
+  resumeWait4ViaKernelWorker,
   handleWorkerMessage,
 });
 const {
@@ -213,17 +205,17 @@ workerKernelRpcHelpers = createWorkerKernelRpcHelpers({
   collectTrackableForkSharedOfds,
 });
 const {
-  canonicalizeActiveVforkChildViaKernelWorker,
+  canonicalizeActiveVforkChildViaKernelWorker: canonicalizeActiveVforkChildViaKernelWorkerImpl,
   canonicalizeChildLifecycleViaKernelWorker,
   initializeProcessLifecycleViaKernelWorker,
   recordChildExitViaKernelWorker,
   registerProcessWithKernelWorker,
   releaseHostStdioViaKernelWorker,
-  resumeConnectViaKernelWorker,
+  resumeConnectViaKernelWorker: resumeConnectViaKernelWorkerImpl,
   resumeFsViaKernelWorkerOutcome: resumeFsViaKernelWorkerOutcomeImpl,
   resumeFsViaKernelWorker: resumeFsViaKernelWorkerImpl,
-  resumeVforkExecveParentViaKernelWorker,
-  resumeVforkParentViaKernelWorker,
+  resumeVforkExecveParentViaKernelWorker: resumeVforkExecveParentViaKernelWorkerImpl,
+  resumeVforkParentViaKernelWorker: resumeVforkParentViaKernelWorkerImpl,
   syncProcessMemfsViaKernelWorker,
   syncProcessLifecycleViaKernelWorker,
   unregisterProcessWithKernelWorker,
@@ -514,16 +506,89 @@ function markRuntimeFsDirty(handle: ProcessHandle): void {
   markRuntimeFsDirtyCtx(handle);
 }
 
+async function applyKernelRpcResumeEffects(
+  handle: ProcessHandle,
+  worker: Worker,
+  vmPtr: number,
+  outcome: KernelRpcResumeOutcome,
+): Promise<KernelRpcResumeOutcome> {
+  for (const effect of outcome.effects ?? []) {
+    await applyKernelRpcResumeEffect(handle, worker, vmPtr, effect);
+  }
+  const { effects: _effects, ...withoutEffects } = outcome;
+  return withoutEffects;
+}
+
+async function applyKernelRpcResumeEffect(
+  handle: ProcessHandle,
+  worker: Worker,
+  vmPtr: number,
+  effect: KernelRpcResumeEffect,
+): Promise<void> {
+  switch (effect.kind) {
+    case "block-worker":
+      blockWorker(handle, worker, effect.status, vmPtr);
+      return;
+    case "enqueue-worker":
+      enqueueWorker(handle, worker);
+      return;
+    case "handle-blocked-retry-result":
+      handleBlockedRetryResult(handle, worker, vmPtr, effect.status);
+      return;
+    case "kick-blocked-workers":
+      kickBlockedWorkers(handle);
+      return;
+    case "mark-runtime-fs-dirty":
+      markRuntimeFsDirty(effect.handle);
+      return;
+    case "publish-runtime-kernel-state":
+      publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
+      return;
+    case "request-pipe-state-sync":
+      await requestPipeStateSync(handle, effect.wakeWaiters);
+      return;
+    case "settle-visible-process-output":
+      await settleVisibleProcessOutput(handle, requestPipeStateSync);
+      return;
+    case "sync-fork-shared-state-local-after-fs":
+      syncForkSharedStateLocally(handle, effect.targets, effect.options);
+      return;
+    case "sync-shared-ofd-state-after-fs":
+      await syncForkSharedStateViaKernelWorker(handle, effect.targets, {
+        includeMemfs: false,
+        trackHeldOfds: false,
+        deltaOfdIds: true,
+        sourceVmPtr: effect.sourceVmPtr,
+      });
+      return;
+    case "publish-memfs-after-fs":
+      await syncForkSharedStateViaKernelWorker(handle, effect.targets, {
+        includeMemfs: true,
+        trackHeldOfds: false,
+        memfsOnly: true,
+        preservePublishedRegularFileData: effect.preservePublishedRegularFileData,
+        sourceVmPtr: effect.sourceVmPtr,
+      });
+      await syncPipeStateViaKernelWorker(handle);
+      return;
+    default: {
+      const exhaustive: never = effect;
+      throw new Error(`unhandled kernel-rpc effect: ${JSON.stringify(exhaustive)}`);
+    }
+  }
+}
+
 async function resumeFsViaKernelWorker(
   handle: ProcessHandle,
   worker: Worker,
   vmPtr: number,
 ): Promise<void> {
-  await resumeFsViaKernelWorkerImpl(handle, worker, vmPtr, {
+  const outcome = await resumeFsViaKernelWorkerImpl(handle, worker, vmPtr, {
     memfsMutation: FS_EFFECT_MEMFS_MUTATION,
     memfsFileData: FS_EFFECT_MEMFS_FILE_DATA,
     sharedOfdState: FS_EFFECT_SHARED_OFD_STATE,
   });
+  await applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
 }
 
 async function resumeFsViaKernelWorkerOutcome(
@@ -531,11 +596,82 @@ async function resumeFsViaKernelWorkerOutcome(
   worker: Worker,
   vmPtr: number,
 ): Promise<KernelRpcResumeOutcome> {
-  return resumeFsViaKernelWorkerOutcomeImpl(handle, worker, vmPtr, {
+  const outcome = await resumeFsViaKernelWorkerOutcomeImpl(handle, worker, vmPtr, {
     memfsMutation: FS_EFFECT_MEMFS_MUTATION,
     memfsFileData: FS_EFFECT_MEMFS_FILE_DATA,
     sharedOfdState: FS_EFFECT_SHARED_OFD_STATE,
   });
+  return applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
+}
+
+async function resumeBlockedSyscallOutcome(
+  handle: ProcessHandle,
+  worker: Worker,
+  vmPtr: number,
+  blockedStatus: number,
+  timeoutExpired?: boolean,
+): Promise<KernelRpcResumeOutcome> {
+  const outcome = await workerKernelRpcHelpers.resumeBlockedSyscallOutcome(
+    handle,
+    worker,
+    vmPtr,
+    blockedStatus,
+    timeoutExpired,
+  );
+  return applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
+}
+
+async function resumeWait4ViaKernelWorker(
+  handle: ProcessHandle,
+  worker: Worker,
+  vmPtr: number,
+): Promise<KernelRpcResumeOutcome> {
+  const outcome = await workerKernelRpcHelpers.resumeWait4ViaKernelWorker(handle, worker, vmPtr);
+  return applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
+}
+
+async function resumeConnectViaKernelWorker(
+  handle: ProcessHandle,
+  worker: Worker,
+  vmPtr: number,
+  result: bigint,
+): Promise<KernelRpcResumeOutcome> {
+  const outcome = await resumeConnectViaKernelWorkerImpl(handle, worker, vmPtr, result);
+  return applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
+}
+
+async function resumeVforkParentViaKernelWorker(
+  handle: ProcessHandle,
+  worker: Worker,
+  vmPtr: number,
+  waitStatus: number,
+): Promise<KernelRpcResumeOutcome> {
+  const outcome = await resumeVforkParentViaKernelWorkerImpl(handle, worker, vmPtr, waitStatus);
+  return applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
+}
+
+async function canonicalizeActiveVforkChildViaKernelWorker(
+  handle: ProcessHandle,
+  worker: Worker,
+  vmPtr: number,
+  provisionalChildPid: number,
+): Promise<KernelRpcResumeOutcome> {
+  const outcome = await canonicalizeActiveVforkChildViaKernelWorkerImpl(
+    handle,
+    worker,
+    vmPtr,
+    provisionalChildPid,
+  );
+  return applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
+}
+
+async function resumeVforkExecveParentViaKernelWorker(
+  handle: ProcessHandle,
+  vmPtr: number,
+  childPid: number,
+): Promise<KernelRpcResumeOutcome> {
+  const outcome = await resumeVforkExecveParentViaKernelWorkerImpl(handle, vmPtr, childPid);
+  return applyKernelRpcResumeEffects(handle, {} as Worker, vmPtr, outcome);
 }
 
 function syncForkSharedStateLocally(

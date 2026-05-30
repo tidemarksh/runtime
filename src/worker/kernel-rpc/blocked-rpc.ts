@@ -12,7 +12,7 @@ import type { KernelWorkerPipeSlotSnapshot } from "../../messages.js";
 import { PIPE_HEAD_OFFSET, PIPE_TAIL_OFFSET, PIPE_WRITE_OPEN_OFFSET } from "../../layout/pipe.js";
 import { POLLFD_BYTES } from "../../layout/poll.js";
 import { activeChildMayHoldBlockedPipeWriter } from "./pipe.js";
-import type { KernelRpcResumeOutcome } from "./outcomes.js";
+import type { KernelRpcResumeEffect, KernelRpcResumeOutcome } from "./outcomes.js";
 
 const GUEST_TICKS_PER_SEC = 100_000_000n;
 const PIPE_SLOT_DEBUG_ENABLED = ((globalThis as {
@@ -40,6 +40,23 @@ export interface WorkerKernelRpcBlockedRpcDeps {
 }
 
 export function createWorkerKernelRpcBlockedRpcHelpers(deps: WorkerKernelRpcBlockedRpcDeps) {
+  const pendingOutcomeEffects = new WeakMap<Worker, KernelRpcResumeEffect[]>();
+
+  function pushOutcomeEffect(worker: Worker, effect: KernelRpcResumeEffect): void {
+    const effects = pendingOutcomeEffects.get(worker);
+    if (effects) {
+      effects.push(effect);
+      return;
+    }
+    pendingOutcomeEffects.set(worker, [effect]);
+  }
+
+  function takeOutcomeEffects(worker: Worker): KernelRpcResumeEffect[] | undefined {
+    const effects = pendingOutcomeEffects.get(worker);
+    pendingOutcomeEffects.delete(worker);
+    return effects;
+  }
+
 function monotonicTicksCurrent(handle: ProcessHandle): bigint {
   const ticks = handle.kernel.monotonic_ticks_current?.();
   return ticks === undefined ? 0n : BigInt(ticks);
@@ -878,7 +895,7 @@ async function resumeBlockedSyscallLocally(
       handle.blockedWorkers.delete(worker);
       deps.appendWorkerDebugLog(handle, `blocked-rpc-resume-socket-poll-in-worker:0x${vmPtr.toString(16)}`);
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-resume-socket-poll-in-worker:${handle.pid}`);
-      deps.enqueueWorker(handle, worker);
+      pushOutcomeEffect(worker, { kind: "enqueue-worker" });
       return;
     }
     const blockedPipeFd = blockedPipeWaitFd(handle, vmPtr);
@@ -1031,7 +1048,7 @@ async function resumeBlockedSyscallLocally(
       handle.blockedWorkers.delete(worker);
       deps.appendWorkerDebugLog(handle, `blocked-rpc-resume-in-worker:0x${vmPtr.toString(16)}`);
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-resume-in-worker:${handle.pid}`);
-      deps.enqueueWorker(handle, worker);
+      pushOutcomeEffect(worker, { kind: "enqueue-worker" });
       return;
     }
     if (readPipeReachedEofAfterWait) {
@@ -1320,18 +1337,20 @@ async function resumeBlockedSyscallLocally(
     blockedStatus: number,
     timeoutExpired = false,
   ): Promise<KernelRpcResumeOutcome> {
+    pendingOutcomeEffects.delete(worker);
     await resumeBlockedSyscallLocally(handle, worker, vmPtr, blockedStatus, timeoutExpired);
+    const effects = takeOutcomeEffects(worker);
     if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
-      return { kind: "process-gone" };
+      return { kind: "process-gone", effects };
     }
     if (!handle.blockedWorkers.has(worker)) {
-      return { kind: "queued-in-worker" };
+      return { kind: "queued-in-worker", effects };
     }
     const status = handle.kernel.thread_status?.(vmPtr);
     if (status === undefined) {
-      return { kind: "stale" };
+      return { kind: "stale", effects };
     }
-    return { kind: "blocked", status };
+    return { kind: "blocked", status, effects };
   }
 
   return {

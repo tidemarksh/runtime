@@ -4,6 +4,7 @@ import {
   kernelShareOtherMembers,
   reconcileKernelSharePipeControl,
 } from "./kernel-share.js";
+import type { KernelRpcResumeOutcome } from "./kernel-rpc/outcomes.js";
 import { collectProcessHeldOfds } from "./ownership/ofd-table.js";
 import { kernelWorkerOwnsEpollState } from "./ownership/epoll-control.js";
 import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
@@ -26,7 +27,7 @@ interface WorkerLifecycleDeps {
     worker: Worker,
     vmPtr: number,
     waitStatus: number,
-  ): Promise<void>;
+  ): Promise<KernelRpcResumeOutcome>;
   syncForkSharedStateViaKernelWorker(
     handle: ProcessHandle,
     targets: ProcessHandle[],

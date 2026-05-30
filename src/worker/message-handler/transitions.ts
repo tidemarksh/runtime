@@ -464,7 +464,10 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         void connectResult
           .then(async (result) => {
             await deps.requestSocketStateSync(handle, false);
-            await deps.resumeConnectViaKernelWorker(handle, worker, thread.vmPtr, result);
+            const outcome = await deps.resumeConnectViaKernelWorker(handle, worker, thread.vmPtr, result);
+            if (outcome !== undefined) {
+              consumeKernelRpcResumeOutcome(handle, worker, thread.vmPtr, outcome);
+            }
             await deps.commitNetworkConnect(handle, thread.vmPtr, result);
           })
           .then(() => {
@@ -483,7 +486,11 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           worker,
           thread.vmPtr,
           BigInt(-handle.kernel.abi_econnrefused()),
-        ).catch((error) => {
+        ).then((outcome) => {
+          if (outcome !== undefined) {
+            consumeKernelRpcResumeOutcome(handle, worker, thread.vmPtr, outcome);
+          }
+        }).catch((error) => {
           deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
         });
         deps.kickBlockedWorkers(handle);
@@ -497,7 +504,10 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           thread.vmPtr,
           BigInt(-handle.kernel.abi_econnrefused()),
         ))
-        .then(() => {
+        .then((outcome) => {
+          if (outcome !== undefined) {
+            consumeKernelRpcResumeOutcome(handle, worker, thread.vmPtr, outcome);
+          }
           deps.kickBlockedWorkers(handle);
           deps.enqueueWorker(handle, worker);
         })
@@ -609,7 +619,11 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
                   worker,
                   thread.vmPtr,
                   provisionalChildPid,
-                );
+                ).then((outcome) => {
+                  if (outcome !== undefined) {
+                    consumeKernelRpcResumeOutcome(handle, worker, thread.vmPtr, outcome);
+                  }
+                });
                 return;
               }
             }
@@ -627,7 +641,16 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       ) {
         const provisionalChildPid = handle.kernel.thread_vfork_child_pid();
         if (provisionalChildPid > 0) {
-          void deps.canonicalizeActiveVforkChildViaKernelWorker(handle, worker, thread.vmPtr, provisionalChildPid);
+          void deps.canonicalizeActiveVforkChildViaKernelWorker(
+            handle,
+            worker,
+            thread.vmPtr,
+            provisionalChildPid,
+          ).then((outcome) => {
+            if (outcome !== undefined) {
+              consumeKernelRpcResumeOutcome(handle, worker, thread.vmPtr, outcome);
+            }
+          });
           return;
         }
       }

@@ -102,14 +102,17 @@ test("kernel-rpc fs helper owns local resume and returns a typed outcome", async
   });
   const effects = { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 };
 
-  await expect(helpers.resumeFsViaKernelWorker(handle, worker, 0x1234, effects)).resolves.toBeUndefined();
-  await expect(helpers.resumeFsViaKernelWorkerOutcome(handle, worker, 0x1234, effects)).resolves.toEqual({
+  await expect(helpers.resumeFsViaKernelWorker(handle, worker, 0x1234, effects)).resolves.toMatchObject({
+    kind: "completed",
+    status: 0,
+  });
+  await expect(helpers.resumeFsViaKernelWorkerOutcome(handle, worker, 0x1234, effects)).resolves.toMatchObject({
     kind: "completed",
     status: 0,
   });
   expect(kernel.thread_process_fs).toHaveBeenCalledTimes(2);
   expect(kernel.thread_resume_fs).toHaveBeenCalledTimes(2);
-  expect(enqueueWorker).toHaveBeenCalledTimes(2);
+  expect(enqueueWorker).not.toHaveBeenCalled();
 });
 
 test("kernel-rpc fs outcome reports blocked fs status", async () => {
@@ -159,9 +162,9 @@ test("kernel-rpc fs outcome reports blocked fs status", async () => {
     worker,
     0x1234,
     { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
-  )).resolves.toEqual({
+  )).resolves.toMatchObject({
     kind: "blocked",
     status: 31,
   });
-  expect(blockWorker).toHaveBeenCalledWith(handle, worker, 31, 0x1234);
+  expect(blockWorker).not.toHaveBeenCalled();
 });

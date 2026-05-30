@@ -2,7 +2,6 @@ import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
 } from "../../abi.js";
-import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
 import {
   adoptKernelStateForHandle,
   applySocketStateFromKernelWorker,
@@ -10,6 +9,7 @@ import {
 } from "../sync.js";
 import type { ProcessHandle } from "../types.js";
 import type { WorkerKernelRpcLifecycleDeps } from "./lifecycle/types.js";
+import { completedKernelRpcOutcome, type KernelRpcResumeEffect, type KernelRpcResumeOutcome } from "./outcomes.js";
 import { expectKernelWorkerResponse } from "./transport.js";
 
 export function createWorkerKernelRpcSocketHelpers(
@@ -20,7 +20,8 @@ export function createWorkerKernelRpcSocketHelpers(
     worker: Worker,
     vmPtr: number,
     result: bigint,
-  ): Promise<void> {
+  ): Promise<KernelRpcResumeOutcome> {
+    const effects: KernelRpcResumeEffect[] = [];
     if (handle.kernelWorkerRequest && handle.pid > 0) {
       const blockedFd = handle.kernel.thread_blocked_fd(vmPtr);
       const pendingConnectFd = handle.networkPendingConnectFds.size === 1
@@ -40,7 +41,7 @@ export function createWorkerKernelRpcSocketHelpers(
         kernelState: handle.kernelState,
       }), "connect-resumed", "resume-connect");
       if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
-        return;
+        return { kind: "process-gone", effects };
       }
       handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
@@ -63,8 +64,8 @@ export function createWorkerKernelRpcSocketHelpers(
       deps.appendWorkerDebugLog(handle, `connect-rpc-adopted:${handle.pid}:vm=0x${vmPtr.toString(16)}:fd=${fd}:status=${handle.kernel.thread_status(vmPtr)}:a0=${handle.kernel.thread_a0(vmPtr).toString()}:sock=${socketIdx ?? "n/a"}:peer=${peerIdx ?? "n/a"}`);
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
-      publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
-      return;
+      effects.push({ kind: "publish-runtime-kernel-state" });
+      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr), effects);
     }
 
     const blockedFd = handle.kernel.thread_blocked_fd(vmPtr);
@@ -85,7 +86,8 @@ export function createWorkerKernelRpcSocketHelpers(
       : undefined;
     deps.appendWorkerDebugLog(handle, `connect-resumed:${handle.pid}:vm=0x${vmPtr.toString(16)}:fd=${fd}:status=${handle.kernel.thread_status(vmPtr)}:a0=${handle.kernel.thread_a0(vmPtr).toString()}:sock=${socketIdx ?? "n/a"}:peer=${peerIdx ?? "n/a"}`);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
-    publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
+    effects.push({ kind: "publish-runtime-kernel-state" });
+    return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr), effects);
   }
 
   return {

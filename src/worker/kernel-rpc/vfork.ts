@@ -3,7 +3,6 @@ import {
   readKernelRuntimeState,
   type KernelExports,
 } from "../../abi.js";
-import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
 import {
   adoptKernelStateForHandle,
 } from "../sync.js";
@@ -12,6 +11,7 @@ import type {
   ProcessHandle,
 } from "../types.js";
 import type { WorkerKernelRpcLifecycleDeps } from "./lifecycle/types.js";
+import { completedKernelRpcOutcome, type KernelRpcResumeEffect, type KernelRpcResumeOutcome } from "./outcomes.js";
 import { expectKernelWorkerResponse } from "./transport.js";
 
 export interface WorkerKernelRpcVforkDeps extends WorkerKernelRpcLifecycleDeps {
@@ -45,9 +45,10 @@ export function createWorkerKernelRpcVforkHelpers(
     worker: Worker,
     vmPtr: number,
     waitStatus: number,
-  ): Promise<void> {
+  ): Promise<KernelRpcResumeOutcome> {
+    const effects: KernelRpcResumeEffect[] = [];
     if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-      return;
+      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
     }
 
     try {
@@ -62,7 +63,7 @@ export function createWorkerKernelRpcVforkHelpers(
         throw new Error(`kernel-worker did not report an active vfork child for pid=${handle.pid}`);
       }
       if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
-        return;
+        return { kind: "process-gone", effects };
       }
 
       handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
@@ -76,13 +77,17 @@ export function createWorkerKernelRpcVforkHelpers(
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       deps.clearVforkSnapshot(handle);
-      publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
-      deps.kickBlockedWorkers(handle);
-      deps.enqueueWorker(handle, worker);
+      effects.push(
+        { kind: "publish-runtime-kernel-state" },
+        { kind: "kick-blocked-workers" },
+        { kind: "enqueue-worker" },
+      );
+      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr), effects);
     } catch (error) {
       if (handle.workers.has(worker) && deps.threadWorkerStates.has(worker)) {
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
       }
+      return { kind: "process-gone", effects };
     }
   }
 
@@ -91,10 +96,11 @@ export function createWorkerKernelRpcVforkHelpers(
     worker: Worker,
     vmPtr: number,
     provisionalChildPid: number,
-  ): Promise<void> {
+  ): Promise<KernelRpcResumeOutcome> {
+    const effects: KernelRpcResumeEffect[] = [];
     const snapshot = handle.vforkSnapshot;
     if (!snapshot || snapshot.vmPtr !== vmPtr) {
-      return;
+      return { kind: "stale", effects };
     }
 
     try {
@@ -104,19 +110,23 @@ export function createWorkerKernelRpcVforkHelpers(
         provisionalChildPid,
       );
       if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
-        return;
+        return { kind: "process-gone", effects };
       }
 
       snapshot.childPid = lifecycle.childPid;
       snapshot.nextPid = lifecycle.nextPid;
       snapshot.pgid = lifecycle.pgid;
       snapshot.sid = lifecycle.sid;
-      publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
-      deps.enqueueWorker(handle, worker);
+      effects.push(
+        { kind: "publish-runtime-kernel-state" },
+        { kind: "enqueue-worker" },
+      );
+      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr), effects);
     } catch (error) {
       if (handle.workers.has(worker) && deps.threadWorkerStates.has(worker)) {
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
       }
+      return { kind: "process-gone", effects };
     }
   }
 
@@ -124,9 +134,9 @@ export function createWorkerKernelRpcVforkHelpers(
     handle: ProcessHandle,
     vmPtr: number,
     childPid: number,
-  ): Promise<void> {
+  ): Promise<KernelRpcResumeOutcome> {
     if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-      return;
+      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
     }
 
     deps.appendWorkerDebugLog(handle, `resume-vfork-execve-parent:rpc-start:0x${vmPtr.toString(16)}:${childPid}`);
@@ -145,6 +155,7 @@ export function createWorkerKernelRpcVforkHelpers(
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
     deps.clearVforkSnapshot(handle);
     deps.appendWorkerDebugLog(handle, `resume-vfork-execve-parent:local-done:0x${vmPtr.toString(16)}:${childPid}`);
+    return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
   }
 
   return {

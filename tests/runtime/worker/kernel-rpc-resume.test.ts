@@ -193,11 +193,17 @@ test("resumeWait4ViaKernelWorker does not re-run local wait4 after kernel-worker
     threadWorkerStates: threadWorkerStates as never,
   });
 
-  await helpers.resumeWait4ViaKernelWorker(handle, worker, 0x1234);
+  const outcome = await helpers.resumeWait4ViaKernelWorker(handle, worker, 0x1234);
 
   expect(threadResumeWait4).not.toHaveBeenCalled();
-  expect(handledStatuses).toEqual([0]);
-  expect(pipeSyncWakeArgs[0]).toBe(true);
+  expect(handledStatuses).toEqual([]);
+  expect(pipeSyncWakeArgs).toEqual([]);
+  expect(outcome.effects).toEqual([
+    { kind: "publish-runtime-kernel-state" },
+    { kind: "request-pipe-state-sync", wakeWaiters: true },
+    { kind: "settle-visible-process-output" },
+    { kind: "handle-blocked-retry-result", status: 0 },
+  ]);
   expect(handle.kernelState.heapPtr).toBe(resumedState.heapPtr);
 });
 
@@ -279,10 +285,13 @@ test("resumeWait4ViaKernelWorker skips RPC when local wait4 already resolved", a
     threadWorkerStates: threadWorkerStates as never,
   });
 
-  await helpers.resumeWait4ViaKernelWorker(handle, worker, 0x1234);
+  const outcome = await helpers.resumeWait4ViaKernelWorker(handle, worker, 0x1234);
 
   expect(kernelWorkerRequest).not.toHaveBeenCalled();
-  expect(handledStatuses).toEqual([0]);
+  expect(handledStatuses).toEqual([]);
+  expect(outcome.effects).toEqual([
+    { kind: "handle-blocked-retry-result", status: 0 },
+  ]);
   expect(handle.blockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
@@ -900,12 +909,13 @@ test("resumeBlockedSyscallLocally resumes ready socket pselect in the owning wor
     collectTrackableForkSharedOfds: () => new Set(),
   });
 
-  await helpers.resumeBlockedSyscallLocally(handle, worker, 0x1234, 21);
+  const outcome = await helpers.resumeBlockedSyscallOutcome(handle, worker, 0x1234, 21);
 
   expect(threadResumeBlockedSyscall).not.toHaveBeenCalled();
   expect(threadState.resumeBlockedOnNextStep).toBe(true);
   expect(handle.blockedWorkers.has(worker)).toBe(false);
-  expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+  expect(enqueueWorker).not.toHaveBeenCalled();
+  expect(outcome.effects).toEqual([{ kind: "enqueue-worker" }]);
   expect(handleBlockedRetryResult).not.toHaveBeenCalled();
 });
 
@@ -1932,7 +1942,7 @@ test("resumeFsViaKernelWorker skips memfs sync during active vfork child ownersh
     collectTrackableForkSharedOfds: () => new Set(),
   });
 
-  await helpers.resumeFsViaKernelWorker(handle, worker, 0x1234, {
+  const outcome = await helpers.resumeFsViaKernelWorker(handle, worker, 0x1234, {
     memfsMutation: 1,
     memfsFileData: 4,
     sharedOfdState: 2,
@@ -1940,6 +1950,8 @@ test("resumeFsViaKernelWorker skips memfs sync during active vfork child ownersh
 
   expect(processFsRequests).toHaveLength(1);
   expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
-  expect(markRuntimeFsDirty).toHaveBeenCalledWith(handle);
-  expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+  expect(markRuntimeFsDirty).not.toHaveBeenCalled();
+  expect(enqueueWorker).not.toHaveBeenCalled();
+  expect(outcome.effects).toContainEqual({ kind: "mark-runtime-fs-dirty", handle });
+  expect(outcome.effects).toContainEqual({ kind: "enqueue-worker" });
 });

@@ -26,7 +26,7 @@ export interface WorkerMessageHandlerDeps {
     worker: Worker,
     vmPtr: number,
     provisionalChildPid: number,
-  ): Promise<void>;
+  ): Promise<KernelRpcResumeOutcome>;
   captureVforkSnapshot(
     handle: ProcessHandle,
     thread: ThreadWorkerState,
@@ -48,7 +48,12 @@ export interface WorkerMessageHandlerDeps {
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   requestSocketStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   resolveNetworkConnect(handle: ProcessHandle, vmPtr: number): Promise<bigint>;
-  resumeConnectViaKernelWorker(handle: ProcessHandle, worker: Worker, vmPtr: number, result: bigint): Promise<void>;
+  resumeConnectViaKernelWorker(
+    handle: ProcessHandle,
+    worker: Worker,
+    vmPtr: number,
+    result: bigint,
+  ): Promise<KernelRpcResumeOutcome>;
   resumeFsViaKernelWorker(handle: ProcessHandle, worker: Worker, vmPtr: number): Promise<void>;
   resumeFsViaKernelWorkerOutcome?(
     handle: ProcessHandle,

@@ -32,6 +32,7 @@ import {
 } from "../../layout/fs-ring.js";
 import {
   completedKernelRpcOutcome,
+  type KernelRpcResumeEffect,
   type KernelRpcResumeOutcome,
 } from "./outcomes.js";
 import { expectKernelWorkerResponse } from "./transport.js";
@@ -114,7 +115,7 @@ export interface WorkerKernelRpcFsDeps {
 }
 
 export function createWorkerKernelRpcFsHelpers(deps: WorkerKernelRpcFsDeps) {
-  const fsResumeInFlight = new WeakMap<ProcessHandle, Map<string, Promise<void>>>();
+  const fsResumeInFlight = new WeakMap<ProcessHandle, Map<string, Promise<KernelRpcResumeOutcome>>>();
   const decoder = new TextDecoder();
 
 function decodeKernelBytes(memory: WebAssembly.Memory, ptr: number, length: number): string {
@@ -477,7 +478,7 @@ async function resumeFsViaKernelWorker(
   worker: Worker,
   vmPtr: number,
   fsEffects: { memfsMutation: number; memfsFileData: number; sharedOfdState: number },
-): Promise<void> {
+): Promise<KernelRpcResumeOutcome> {
   let byVmPtr = fsResumeInFlight.get(handle);
   const key = fsResumeKey(handle, vmPtr);
   const existing = byVmPtr?.get(key);
@@ -485,7 +486,7 @@ async function resumeFsViaKernelWorker(
     deps.appendWorkerDebugLog(handle, `fs-join:0x${vmPtr.toString(16)}`);
     appendFsLifecycleEvent(handle, "join", vmPtr, "");
     await existing;
-    return;
+    return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
   }
   if (byVmPtr === undefined) {
     byVmPtr = new Map();
@@ -494,7 +495,7 @@ async function resumeFsViaKernelWorker(
   const resume = resumeFsViaKernelWorkerInner(handle, worker, vmPtr, fsEffects);
   byVmPtr.set(key, resume);
   try {
-    await resume;
+    return await resume;
   } finally {
     if (byVmPtr.get(key) === resume) {
       byVmPtr.delete(key);
@@ -510,7 +511,8 @@ async function resumeFsViaKernelWorkerInner(
   worker: Worker,
   vmPtr: number,
   fsEffects: { memfsMutation: number; memfsFileData: number; sharedOfdState: number },
-): Promise<void> {
+): Promise<KernelRpcResumeOutcome> {
+  const effects: KernelRpcResumeEffect[] = [];
   const pendingFs = readPendingFsContext(handle, vmPtr);
   const fsDebugSuffix = formatPendingFsDebugSuffix(pendingFs);
   const pendingRingRequest = pendingFs.opcode === 0 && fsRingHasPendingRequests(handle, vmPtr);
@@ -540,20 +542,23 @@ async function resumeFsViaKernelWorkerInner(
       if (memfsPublishReady) {
         handle.transferDebugStats.pageCachePublishCalls += 1;
         handle.transferDebugStats.forkSharedMemfsSyncCalls += 1;
-        deps.syncForkSharedStateLocallyAfterFs(handle, deps.kernelShareOtherMembers(handle));
+        effects.push({
+          kind: "sync-fork-shared-state-local-after-fs",
+          targets: deps.kernelShareOtherMembers(handle),
+        });
       }
-      deps.markRuntimeFsDirty(handle);
+      effects.push({ kind: "mark-runtime-fs-dirty", handle });
     } else if (ofdStateChanged) {
-      deps.syncForkSharedStateLocallyAfterFs(
-        handle,
-        deps.kernelShareOtherMembers(handle),
-        { includeMemfs: false },
-      );
+      effects.push({
+        kind: "sync-fork-shared-state-local-after-fs",
+        targets: deps.kernelShareOtherMembers(handle),
+        options: { includeMemfs: false },
+      });
     }
     restoreFsRingProgress(handle, postFsRingProgress);
     clearStaleFsStatusAfterResume(handle, vmPtr, fsResult);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
-    deps.kickBlockedWorkers(handle);
+    effects.push({ kind: "kick-blocked-workers" });
     deps.appendWorkerDebugLog(handle, `fs-done:0x${vmPtr.toString(16)}:local:rv=${fsResult.toString()}`);
     appendFsLifecycleEvent(
       handle,
@@ -568,11 +573,12 @@ async function resumeFsViaKernelWorkerInner(
         vmPtr,
         `:local:rv=${fsResult.toString()}${formatFsRingDebug(handle, vmPtr)}`,
       );
-      deps.blockWorker(handle, worker, handle.kernel.abi_status_fs?.() ?? -1, vmPtr);
-      return;
+      const status = handle.kernel.abi_status_fs?.() ?? -1;
+      effects.push({ kind: "block-worker", status });
+      return { kind: "blocked", status, effects };
     }
-    deps.enqueueWorker(handle, worker);
-    return;
+    effects.push({ kind: "enqueue-worker" });
+    return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr), effects);
   }
 
   try {
@@ -641,14 +647,18 @@ async function resumeFsViaKernelWorkerInner(
     const currentPid = handle.kernel.process_current_pid?.(vmPtr) ?? handle.pid;
     const transientProcessOwnerMismatch = currentPid > 0 && currentPid !== handle.pid;
     if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
-      return;
+      return { kind: "process-gone", effects };
     }
     deps.assertProcessStandardFdIntegrity(handle, "resume-fs");
     const forkShareMembers = deps.kernelShareOtherMembers(handle);
     const syncTargets = forkShareMembers
       .filter((member) => member.runningWorker === null);
     if (ofdStateChanged && !transientProcessOwnerMismatch && forkShareMembers.length > 0) {
-      await deps.syncSharedOfdStateAfterFs(handle, syncTargets, { sourceVmPtr: vmPtr });
+      effects.push({
+        kind: "sync-shared-ofd-state-after-fs",
+        targets: syncTargets,
+        sourceVmPtr: vmPtr,
+      });
     }
     restoreFsFdState(handle, postFsFdState);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
@@ -667,25 +677,29 @@ async function resumeFsViaKernelWorkerInner(
           // slots from the child clears the parent's standard streams.
           handle.transferDebugStats.pageCachePublishCalls += 1;
           handle.transferDebugStats.forkSharedMemfsSyncCalls += 1;
-          await deps.publishMemfsAfterFs(handle, syncTargets, {
+          effects.push({
+            kind: "publish-memfs-after-fs",
+            targets: syncTargets,
             preservePublishedRegularFileData,
             sourceVmPtr: vmPtr,
           });
           if (forkShareMembers.length > 0) {
             for (const member of forkShareMembers) {
-              deps.markRuntimeFsDirty(member);
+              effects.push({ kind: "mark-runtime-fs-dirty", handle: member });
             }
           }
         }
       }
-      deps.markRuntimeFsDirty(handle);
+      effects.push({ kind: "mark-runtime-fs-dirty", handle });
     }
     restoreFsFdState(handle, postFsFdState);
     restoreFsRingProgress(handle, postFsRingProgress);
     clearStaleFsStatusAfterResume(handle, vmPtr, fsResult);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
-    deps.publishRuntimeKernelState(handle);
-    deps.kickBlockedWorkers(handle);
+    effects.push(
+      { kind: "publish-runtime-kernel-state" },
+      { kind: "kick-blocked-workers" },
+    );
     deps.appendWorkerDebugLog(handle, `fs-done:0x${vmPtr.toString(16)}:rv=${fsResult.toString()}`);
     appendFsLifecycleEvent(
       handle,
@@ -700,17 +714,20 @@ async function resumeFsViaKernelWorkerInner(
         vmPtr,
         `:rv=${fsResult.toString()}${formatFsRingDebug(handle, vmPtr)}`,
       );
-      deps.blockWorker(handle, worker, handle.kernel.abi_status_fs(), vmPtr);
-      return;
+      const status = handle.kernel.abi_status_fs();
+      effects.push({ kind: "block-worker", status });
+      return { kind: "blocked", status, effects };
     }
-    deps.enqueueWorker(handle, worker);
+    effects.push({ kind: "enqueue-worker" });
+    return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr), effects);
   } catch (error) {
     deps.appendWorkerDebugLog(handle, `fs-err:0x${vmPtr.toString(16)}`);
     appendFsLifecycleEvent(handle, "err", vmPtr, formatFsRingDebug(handle, vmPtr));
     if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
-      return;
+      return { kind: "process-gone", effects };
     }
     deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+    return { kind: "process-gone", effects };
   }
 }
 
@@ -722,11 +739,7 @@ async function resumeFsViaKernelWorkerInner(
     vmPtr: number,
     fsEffects: { memfsMutation: number; memfsFileData: number; sharedOfdState: number },
   ): Promise<KernelRpcResumeOutcome> {
-    await resumeFsViaKernelWorker(handle, worker, vmPtr, fsEffects);
-    const status = handle.kernel.thread_status?.(vmPtr);
-    return status === handle.kernel.abi_status_fs?.()
-      ? { kind: "blocked", status }
-      : completedKernelRpcOutcome(status);
+    return resumeFsViaKernelWorker(handle, worker, vmPtr, fsEffects);
   }
 
   return {
