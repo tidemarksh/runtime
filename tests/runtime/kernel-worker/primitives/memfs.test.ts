@@ -1,3 +1,4 @@
+// Kernel-worker tests in this file validate transitional runtime-owned bridge behavior.
 import { describe, expect, it } from "vitest";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { readMemfsLayout } from "../../../../src/kernel-worker/common.js";

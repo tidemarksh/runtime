@@ -1,3 +1,4 @@
+// Kernel-worker tests in this file validate transitional runtime-owned bridge behavior.
 import { expect, test, vi } from "vite-plus/test";
 import type { KernelRuntimeState } from "../../../src/abi.js";
 import type { KernelWorkerOutbound } from "../../../src/messages.js";

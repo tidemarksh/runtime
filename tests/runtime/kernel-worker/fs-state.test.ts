@@ -1,3 +1,4 @@
+// Kernel-worker tests in this file validate transitional runtime-owned bridge behavior.
 import { expect, test } from "vite-plus/test";
 import type { KernelExports } from "../../../src/abi.js";
 import { DATA_REGION_OFFSET, publishInode, readInodeRecord } from "../../../src/fs/sab-page-cache.js";

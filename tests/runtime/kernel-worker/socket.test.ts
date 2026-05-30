@@ -1,3 +1,4 @@
+// Kernel-worker tests in this file validate transitional runtime-owned bridge behavior.
 import { expect, test } from "vite-plus/test";
 import { readKernelRuntimeState, type KernelExports, type KernelRuntimeState } from "../../../src/abi.js";
 import { createKernelWorkerPrimitives } from "../../../src/kernel-worker/primitives.js";

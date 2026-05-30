@@ -9,7 +9,7 @@ import { resetPageCache } from "../fs/sab-page-cache.js";
 import {
   restoreThreadWorkerPrepareMemory,
   snapshotThreadWorkerPrepareMemory,
-} from "../thread-worker/prepare-memory.js";
+} from "../wasm/prepare-memory.js";
 import { ensureMemoryCapacityFor, scratchBaseFor, writeScratchFor } from "./common.js";
 import { createKernelEnv } from "../wasm/env.js";
 import {
