@@ -17,7 +17,7 @@ import {
   type KernelExports,
 } from "../../../src/abi.js";
 import { createKernelEnv } from "../../../src/wasm/env.js";
-import { stageExecveGuestHandoff } from "../../../src/worker/execve-handoff.js";
+import { stageExecveGuestHandoff } from "../../../src/worker/fork/execve-handoff.js";
 import {
   copyKernelPrivateRegion,
   ensureMemoryCapacity,

@@ -4,7 +4,7 @@ import type { ProcessHandle, ThreadWorkerState, WorkerForkDeps } from "../../../
 const plainForkMock = vi.fn(async () => {});
 const vforkExecveMock = vi.fn(async () => {});
 
-vi.mock("../../../src/worker/fork/plain-fork.js", () => ({
+vi.mock("../../../src/worker/fork/plain.js", () => ({
   handlePlainFork: plainForkMock,
 }));
 

@@ -10,9 +10,14 @@ import {
   configureKernelInstanceStack,
   MAIN_THREAD_KERNEL_STACK_SLOT,
 } from "../../wasm/stack.js";
-import { captureExecveGuestHandoff, decodeExecveBytes, stageExecveGuestHandoff } from "../execve-handoff.js";
+import { captureExecveGuestHandoff, decodeExecveBytes, stageExecveGuestHandoff } from "./execve-handoff.js";
 import { captureVforkSnapshot, snapshotKernelShareOfdSlots } from "../fork-shared.js";
 import { activeKernelShareOfdIds, collectProcessHeldOfds } from "../ownership/ofd-table.js";
+import { snapshotProcessFdEntries, restoreProcessFdEntries } from "../ownership/fd-table.js";
+import {
+  assertExecveChildReadyOwnership,
+  assertVforkParentResumeOwnership,
+} from "../ownership/invariants.js";
 import {
   adoptKernelShare,
   discardCopiedSharedKernelObjects,
@@ -27,11 +32,14 @@ import {
   copyKernelPrivateRegion,
   ensureMemoryCapacity,
 } from "../kernel-scratch.js";
-import { OFD_OFFSET_OFFSET } from "../../layout/ofd.js";
-import { PIPE_GENERATION_OFFSET } from "../../layout/pipe.js";
 import { acquireWorker, ensureEvictionTimer } from "../pool.js";
 import { createForkChildHandle } from "./common.js";
 import { computeGuestRamLimitBytes } from "./common.js";
+import {
+  alignPipeOfdGenerationOffsets,
+  reconcileInheritedSharedOfdsAfterVforkExecve,
+  trackVforkExecveChildSharedOfds,
+} from "./shared-ofd.js";
 import type { ProcessHandle, ThreadWorkerState, WorkerForkDeps } from "./types.js";
 
 const VFORK_EXECVE_HANDOFF_FAILURE_WAIT_STATUS = 127 << 8;
@@ -133,85 +141,6 @@ function debugVforkVmState(
   ].join(":");
 }
 
-interface ProcessFdEntrySnapshot {
-  fd: number;
-  ofdId: number;
-  fdFlags: number;
-}
-
-function snapshotProcessFdEntries(
-  handle: ProcessHandle,
-  vmPtr: number,
-): ProcessFdEntrySnapshot[] {
-  return Array.from({ length: handle.kernel.abi_max_fds() }, (_value, fd) => ({
-    fd,
-    ofdId: handle.kernel.process_fd_ofd_id(vmPtr, fd),
-    fdFlags: handle.kernel.process_fd_flags(vmPtr, fd),
-  }));
-}
-
-function restoreProcessFdEntries(
-  handle: ProcessHandle,
-  vmPtr: number,
-  entries: readonly ProcessFdEntrySnapshot[],
-): void {
-  const maxFds = handle.kernel.abi_max_fds();
-  for (const entry of entries) {
-    if (entry.fd < 0 || entry.fd >= maxFds || entry.ofdId < 0 || entry.ofdId >= maxFds) {
-      continue;
-    }
-    handle.kernel.process_set_fd_entry(vmPtr, entry.fd, entry.ofdId, entry.fdFlags);
-  }
-}
-
-function currentPipeGeneration(handle: ProcessHandle, pipeSlot: number): number | null {
-  const pipeSlotBytes = handle.kernel.kernel_pipe_region_bytes() / handle.kernel.abi_max_pipes();
-  if (
-    !Number.isInteger(pipeSlotBytes)
-    || pipeSlotBytes <= PIPE_GENERATION_OFFSET
-    || pipeSlot <= 0
-    || pipeSlot >= handle.kernel.abi_max_pipes()
-  ) {
-    return null;
-  }
-  return new DataView(handle.memory.buffer).getUint32(
-    handle.kernelState.pipeBase + pipeSlot * pipeSlotBytes + PIPE_GENERATION_OFFSET,
-    true,
-  );
-}
-
-function alignPipeOfdGenerationOffsets(
-  handle: ProcessHandle,
-  ofdIds: Iterable<number>,
-): void {
-  const maxFds = handle.kernel.abi_max_fds();
-  const tableBytes = handle.kernel.kernel_ofd_table_bytes();
-  const slotBytes = tableBytes / maxFds;
-  if (!Number.isInteger(slotBytes) || slotBytes <= OFD_OFFSET_OFFSET) {
-    throw new Error(`invalid OFD table layout: bytes=${tableBytes} maxFds=${maxFds}`);
-  }
-
-  const view = new DataView(handle.memory.buffer);
-  for (const ofdId of ofdIds) {
-    if (
-      ofdId <= 0
-      || ofdId >= maxFds
-      || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
-    ) {
-      continue;
-    }
-    const pipeGeneration = currentPipeGeneration(handle, handle.kernel.kernel_ofd_ino(ofdId));
-    if (pipeGeneration === null || handle.kernel.kernel_ofd_offset(ofdId) === BigInt(pipeGeneration)) {
-      continue;
-    }
-    view.setBigInt64(
-      handle.kernelState.ofdTablePtr + ofdId * slotBytes + OFD_OFFSET_OFFSET,
-      BigInt(pipeGeneration),
-      true,
-    );
-  }
-}
-
 function assertVforkChildHandoffState(
   handle: ProcessHandle,
   vmPtr: number,
@@ -280,39 +209,6 @@ function reattachRestoredVforkParentWorker(
     vmPtr,
   });
   deps.kickBlockedWorkers(handle);
-}
-
-function reconcileInheritedSharedOfdsAfterVforkExecve(
-  handle: ProcessHandle,
-  inheritedSharedOfdIds: Iterable<number>,
-): void {
-  const heldByExistingMembers = new Set<number>();
-  for (const member of handle.kernelShare.members) {
-    for (const ofdId of collectProcessHeldOfds(member)) {
-      heldByExistingMembers.add(ofdId);
-    }
-  }
-  for (const ofdId of inheritedSharedOfdIds) {
-    if (heldByExistingMembers.has(ofdId)) {
-      handle.kernelShare.sharedOfdIds.add(ofdId);
-    } else {
-      handle.kernelShare.sharedOfdIds.delete(ofdId);
-    }
-  }
-}
-
-function trackVforkExecveChildSharedOfds(
-  childHandle: ProcessHandle,
-  childExecFdEntries: readonly ProcessFdEntrySnapshot[],
-): void {
-  for (const entry of childExecFdEntries) {
-    if (entry.ofdId > 0 && entry.ofdId < childHandle.kernel.abi_max_fds()) {
-      childHandle.kernelShare.sharedOfdIds.add(entry.ofdId);
-    }
-  }
-  for (const ofdId of collectProcessHeldOfds(childHandle)) {
-    childHandle.kernelShare.sharedOfdIds.add(ofdId);
-  }
 }
 
 export async function handleVforkExecve(
@@ -510,10 +406,21 @@ export async function handleVforkExecve(
       `vfork-parent-restored-fds:${childPid}:${formatOpenFdSummary(handle)}`,
     );
     deps.appendWorkerDebugLog(handle, `vfork-parent-restored-fds:${childPid}:${formatOpenFdSummary(handle)}`);
-    deps.assertProcessStandardFdIntegrity(handle, "vfork-parent-restored");
+    assertVforkParentResumeOwnership(
+      deps,
+      handle,
+      parentThread.vmPtr,
+      "vfork-parent-restored",
+    );
   } else {
     restoreVforkParentLocally(handle.kernel, parentThread.vmPtr, childPid);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
+    assertVforkParentResumeOwnership(
+      deps,
+      handle,
+      parentThread.vmPtr,
+      "vfork-parent-restored-local",
+    );
   }
   publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
 
@@ -637,8 +544,10 @@ export async function handleVforkExecve(
         + ` thread_slots=[${threadSlots.join(", ")}]`,
     );
   }
-  deps.assertProcessStandardFdIntegrity(
+  assertExecveChildReadyOwnership(
+    deps,
     childHandle,
+    childVmPtr,
     `vfork-child-ready shared=[${activeKernelShareOfdIds(childHandle).join(",")}]`
       + ` private=[${[...collectProcessHeldOfds(childHandle)]
         .filter((ofdId) => !inheritedSharedOfdIds.has(ofdId))

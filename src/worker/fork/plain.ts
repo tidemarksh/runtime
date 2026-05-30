@@ -1,0 +1,333 @@
+import {
+  attachKernelRuntimeState,
+  readKernelRuntimeState,
+  type KernelExports,
+} from "../../abi.js";
+import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
+import { createKernelEnv } from "../../wasm/env.js";
+import {
+  configureKernelInstanceStack,
+  MAIN_THREAD_KERNEL_STACK_SLOT,
+} from "../../wasm/stack.js";
+import {
+  adoptKernelShare,
+  discardCopiedSharedKernelObjects,
+  reconcileKernelSharePipeControl,
+  restoreLocalOfdSlots,
+  restoreLocalPipeSlots,
+  snapshotLocalPipeSlots,
+} from "../kernel-share.js";
+import {
+  syncKernelShareOfdReservations,
+} from "../fork-shared.js";
+import {
+  activeKernelShareOfdIds,
+  collectProcessHeldOfds,
+  trackForkSharedOfds,
+} from "../ownership/ofd-table.js";
+import { acquireWorker, ensureEvictionTimer } from "../pool.js";
+import { adoptKernelStateForHandle } from "../sync.js";
+import { createForkChildHandle } from "./common.js";
+import { detachInheritedHostStdioFromChild } from "./common.js";
+import { computeGuestRamLimitBytes } from "./common.js";
+import {
+  appendPlainForkMemoryDebug,
+  applyForkMemorySnapshot,
+  captureForkMemorySnapshot,
+  captureParentProcessSnapshot,
+  forkMemoryPreserveRanges,
+  forkSnapshotContainsBytes,
+  normalizePageCacheBackedExecutableFilesForFork,
+  overwriteForkMemorySnapshot,
+  restoreParentProcessSnapshot,
+} from "./memory-snapshot.js";
+import {
+  restoreIncompatibleLocalOfdSlots,
+  restoreLocalPipeSlotGenerations,
+  snapshotLocalOfdSlots,
+} from "./shared-ofd.js";
+import {
+  assertForkChildReadyOwnership,
+} from "../ownership/invariants.js";
+import type { WorkerForkDeps, ProcessHandle, ThreadWorkerState } from "./types.js";
+
+const FORK_CHILD_EXECVE_HEADROOM_BYTES = 16 * 1024 * 1024;
+const FORK_CHILD_FIRST_SCHEDULING_TURNS = 32;
+
+function nextTurn(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function acquireWorkerMemoryFence(handle: ProcessHandle): void {
+  Atomics.load(new Int32Array(handle.runtimeBridge.notifySab), 0);
+}
+
+async function waitForForkChildSchedulingPoint(childHandle: ProcessHandle): Promise<void> {
+  for (let turn = 0; turn < FORK_CHILD_FIRST_SCHEDULING_TURNS; turn += 1) {
+    if (
+      childHandle.exitInProgress
+      || childHandle.workers.size === 0
+      || childHandle.blockedWorkers.size > 0
+      || childHandle.runningWorker !== null
+      || childHandle.readyWorkers.length > 0
+    ) {
+      return;
+    }
+    await nextTurn();
+  }
+}
+
+export async function handlePlainFork(
+  deps: WorkerForkDeps,
+  handle: ProcessHandle,
+  parentWorker: Worker,
+  parentThread: ThreadWorkerState,
+  childPid: number,
+): Promise<void> {
+  handle.pendingChildSpawnRecords += 1;
+  try {
+    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `plain-fork:start:${childPid}`);
+    deps.appendWorkerDebugLog(
+      handle,
+      `plain-fork-parent:start:${childPid}:vm=0x${parentThread.vmPtr.toString(16)}:handle_vm=0x${handle.vmPtr.toString(16)}`,
+    );
+    acquireWorkerMemoryFence(handle);
+    const parentProcessSnapshot = captureParentProcessSnapshot(handle, parentThread);
+    const pendingForkSharedSync = handle.kernelShare.forkSharedSyncPromise ?? handle.forkSharedSyncPromise;
+    if (pendingForkSharedSync !== null) {
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `plain-fork:await-fork-shared-sync:${handle.pid}`);
+      await pendingForkSharedSync;
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `plain-fork:await-fork-shared-sync-done:${handle.pid}`);
+    }
+    if (handle.kernelWorkerRequest && handle.pid > 0) {
+      await deps.requestPipeStateSync(handle, false);
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `plain-fork:parent-pipe-synced:${handle.pid}`);
+      if (handle.processMemfsDirty) {
+        await deps.syncForkSharedStateViaKernelWorker(handle, [], {
+          includeMemfs: true,
+          memfsOnly: true,
+          preservePublishedRegularFileData: true,
+          sourceVmPtr: parentThread.vmPtr,
+        });
+        handle.processMemfsDirty = false;
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `plain-fork:parent-memfs-published:${handle.pid}`);
+      } else {
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `plain-fork:parent-memfs-clean:${handle.pid}`);
+      }
+    }
+    const cloneFlags = Number(handle.kernel.thread_clone_flags(parentThread.vmPtr));
+    const childPpid = (cloneFlags & Number(handle.kernel.abi_clone_parent())) !== 0
+      ? (handle.parentPid ?? handle.pid)
+      : handle.pid;
+    const lifecycle = handle.kernelWorkerRequest && handle.pid > 0
+      ? await deps.canonicalizeChildLifecycleViaKernelWorker(handle, parentThread.vmPtr, childPid)
+      : {
+          childPid,
+          nextPid: childPid + 1,
+          pgid: handle.kernel.process_current_pgid(parentThread.vmPtr),
+          sid: handle.kernel.process_current_sid(parentThread.vmPtr),
+        };
+    childPid = lifecycle.childPid;
+
+    trackForkSharedOfds(handle, parentThread.vmPtr, true);
+    handle.kernelState = adoptKernelStateForHandle(handle, readKernelRuntimeState(handle.kernel));
+    attachKernelRuntimeState(handle.kernel, handle.kernelState);
+
+    const parentStackPointer = parentThread.lastStepSp ?? handle.kernel.thread_sp(parentThread.vmPtr);
+    normalizePageCacheBackedExecutableFilesForFork(handle);
+    const forkMemorySnapshot = captureForkMemorySnapshot(handle, parentStackPointer);
+    if (parentThread.forkStackSnapshot) {
+      const start = handle.guestBase + parentThread.forkStackSnapshot.startGuest;
+      const end = start + parentThread.forkStackSnapshot.bytes.length;
+      if (!forkSnapshotContainsBytes(forkMemorySnapshot, start, parentThread.forkStackSnapshot.bytes)) {
+        forkMemorySnapshot.ranges.push({
+          start,
+          end,
+          bytes: parentThread.forkStackSnapshot.bytes,
+        });
+        forkMemorySnapshot.endOffset = Math.max(forkMemorySnapshot.endOffset, end);
+      }
+      parentThread.forkStackSnapshot = undefined;
+    }
+    overwriteForkMemorySnapshot(
+      forkMemorySnapshot,
+      handle.guestBase + parentProcessSnapshot.processPtr,
+      parentProcessSnapshot.processState,
+    );
+    restoreParentProcessSnapshot(handle, parentThread, parentProcessSnapshot);
+    handle.kernelState = readKernelRuntimeState(handle.kernel);
+    const childMemoryBytes = Math.max(
+      forkMemorySnapshot.endOffset + FORK_CHILD_EXECVE_HEADROOM_BYTES,
+      handle.guestBase,
+    );
+    appendPlainForkMemoryDebug(handle, childPid, forkMemorySnapshot, childMemoryBytes);
+    const childMemory = new WebAssembly.Memory({
+      initial: Math.ceil(childMemoryBytes / 65536),
+      maximum: Math.max(handle.maxMemoryPages, handle.forkMaxMemoryPages),
+      shared: true,
+    });
+    applyForkMemorySnapshot(forkMemorySnapshot, childMemory);
+
+    const childInstance = await WebAssembly.instantiate(handle.wasmModule, {
+      env: createKernelEnv(childMemory, { sabPageCache: handle.sabPageCache }),
+    });
+    const childKernel = childInstance.exports as unknown as KernelExports;
+    configureKernelInstanceStack(childKernel, MAIN_THREAD_KERNEL_STACK_SLOT);
+    // Instantiating a kernel instance over imported child memory replays the
+    // module's data segments. In browsers that can clobber copied guest text/data
+    // below the probe's argv/envp strings, so restore the whole copied image here
+    // and after kernel-worker registration before reattaching shared state.
+    applyForkMemorySnapshot(forkMemorySnapshot, childMemory);
+    attachKernelRuntimeState(childKernel, handle.kernelState);
+
+    ensureEvictionTimer();
+    const childHandle = createForkChildHandle({
+      deps,
+      parent: handle,
+      childPid,
+      childPpid,
+      vmPtr: parentThread.vmPtr,
+      worker: parentWorker,
+      memory: childMemory,
+      kernel: childKernel,
+      kernelState: readKernelRuntimeState(childKernel),
+      debugCommand: handle.debugCommand,
+      workerDebugLabel: "spawn:plain-fork",
+    });
+    childHandle.onError = (error: Error) => {
+      if (handle.pid <= 0 || deps.processHandles.get(handle.pid) !== handle) {
+        return;
+      }
+      const childLogTail = childHandle.workerDebugLog.slice(-12).join(", ");
+      deps.failProcess(handle, new Error(
+        `child-debug:${childPid}:${childHandle.lastDebugMessage ?? "last-debug-unavailable"}`
+        + ` worker_log=[${childLogTail}]`
+        + ` cause=${error.message}`,
+      ));
+    };
+    const childGuestRamLimit = computeGuestRamLimitBytes(
+      childHandle.guestBase,
+      childHandle.ramSize,
+      childHandle.maxMemoryPages,
+    );
+    detachInheritedHostStdioFromChild(childHandle);
+    const childHeldOfdIds = collectProcessHeldOfds(childHandle);
+    const sharedOfdIds = activeKernelShareOfdIds(handle);
+    const sharedOfdIdSet = new Set(sharedOfdIds);
+    const childSharedOfdIds = sharedOfdIds.filter((ofdId) => childHeldOfdIds.has(ofdId));
+    const childPrivateOfdIds = [...childHeldOfdIds].filter((ofdId) => !sharedOfdIdSet.has(ofdId));
+    const preservedChildHeldOfdSlots = snapshotLocalOfdSlots(childHandle, childHeldOfdIds);
+    const preservedOfdSlots = snapshotLocalOfdSlots(childHandle, childPrivateOfdIds);
+    const preservedPipeSlots = snapshotLocalPipeSlots(childHandle, childPrivateOfdIds);
+    const inheritedSharedPipeSlots = snapshotLocalPipeSlots(childHandle, sharedOfdIds);
+    // A fork child inherits the parent's filesystem namespace. The linear
+    // memory copy already carries MemFS, so only shared kernel objects are
+    // discarded before rehydrating OFD/pipe/socket state.
+    discardCopiedSharedKernelObjects(childHandle, preservedOfdSlots, {
+      clearMemfs: false,
+    });
+    await deps.registerProcessWithKernelWorker(childHandle, {
+      seedMemfsMode: "none",
+      pipeSeedMode: "process",
+    });
+    // Kernel-worker registration also instantiates over the shared child memory,
+    // so restore the copied parent image again before rebuilding canonical shared
+    // state for the child.
+    applyForkMemorySnapshot(forkMemorySnapshot, childMemory);
+    attachKernelRuntimeState(childHandle.kernel, childHandle.kernelState);
+    await deps.initializeProcessLifecycleViaKernelWorker(
+      childHandle,
+      childHandle.vmPtr,
+      childPpid,
+      lifecycle.nextPid,
+      lifecycle.pgid,
+      lifecycle.sid,
+      false,
+    );
+    childHandle.kernel.thread_prepare_fork_child?.(childHandle.vmPtr, childPid);
+    detachInheritedHostStdioFromChild(childHandle);
+    childHandle.kernel.thread_set_guest_ram_limit(childHandle.vmPtr, childGuestRamLimit);
+    childHandle.kernelState = readKernelRuntimeState(childHandle.kernel);
+    adoptKernelShare(handle, childHandle);
+    deps.syncForkSharedStateLocally(handle, [childHandle], {
+      includeMemfs: false,
+      ofdIds: childSharedOfdIds,
+    });
+    await deps.syncForkSharedStateViaKernelWorker(handle, [childHandle], {
+      includeMemfs: false,
+      ofdIds: childSharedOfdIds,
+    });
+    await deps.rehydrateForkSharedStateViaKernelWorker([childHandle], childSharedOfdIds, {
+      includeMemfs: false,
+    });
+    restoreLocalOfdSlots(childHandle, preservedOfdSlots);
+    restoreIncompatibleLocalOfdSlots(childHandle, preservedOfdSlots);
+    restoreIncompatibleLocalOfdSlots(childHandle, preservedChildHeldOfdSlots);
+    restoreLocalPipeSlots(childHandle, preservedPipeSlots);
+    restoreLocalPipeSlots(childHandle, inheritedSharedPipeSlots);
+    restoreLocalPipeSlotGenerations(childHandle, preservedPipeSlots);
+    restoreLocalPipeSlotGenerations(childHandle, inheritedSharedPipeSlots);
+    restoreLocalOfdSlots(childHandle, preservedOfdSlots);
+    restoreIncompatibleLocalOfdSlots(childHandle, preservedOfdSlots);
+    restoreIncompatibleLocalOfdSlots(childHandle, preservedChildHeldOfdSlots);
+    restoreLocalPipeSlots(childHandle, preservedPipeSlots);
+    restoreLocalPipeSlots(childHandle, inheritedSharedPipeSlots);
+    restoreLocalPipeSlotGenerations(childHandle, preservedPipeSlots);
+    restoreLocalPipeSlotGenerations(childHandle, inheritedSharedPipeSlots);
+    syncKernelShareOfdReservations(childHandle);
+    await deps.requestPipeStateSync(childHandle, false);
+    restoreIncompatibleLocalOfdSlots(childHandle, preservedChildHeldOfdSlots);
+    syncKernelShareOfdReservations(childHandle);
+    restoreLocalOfdSlots(childHandle, preservedOfdSlots);
+    restoreIncompatibleLocalOfdSlots(childHandle, preservedOfdSlots);
+    restoreIncompatibleLocalOfdSlots(childHandle, preservedChildHeldOfdSlots);
+    restoreLocalPipeSlots(childHandle, preservedPipeSlots);
+    restoreLocalPipeSlots(childHandle, inheritedSharedPipeSlots);
+    restoreLocalPipeSlotGenerations(childHandle, preservedPipeSlots);
+    restoreLocalPipeSlotGenerations(childHandle, inheritedSharedPipeSlots);
+    syncKernelShareOfdReservations(childHandle);
+    assertForkChildReadyOwnership(
+      deps,
+      childHandle,
+      childHandle.vmPtr,
+      "plain-fork-child-ready",
+    );
+    publishKernelRuntimeState(childHandle.runtimeBridge, childHandle.kernelState);
+    deps.processHandles.set(childPid, childHandle);
+    if (handle.kernelWorkerRequest && handle.pid > 0) {
+      await deps.requestPipeStateSync(handle, true);
+      if (childHandle.runningWorker === null) {
+        await deps.requestPipeStateSync(childHandle, false);
+        restoreIncompatibleLocalOfdSlots(childHandle, preservedChildHeldOfdSlots);
+        syncKernelShareOfdReservations(childHandle);
+      }
+    }
+    reconcileKernelSharePipeControl(handle);
+    deps.appendWorkerDebugLog(
+      handle,
+      `plain-fork-parent:spawn-child:${childPid}:vm=0x${childHandle.vmPtr.toString(16)}`,
+    );
+    deps.attachThreadWorker(childHandle, {
+      worker: parentWorker,
+      vmPtr: childHandle.vmPtr,
+      transferFrom: handle,
+      preserveMemoryRanges: forkMemoryPreserveRanges(forkMemorySnapshot),
+    });
+    handle.kernelState = readKernelRuntimeState(handle.kernel);
+    const parentReplacementWorker = acquireWorker();
+    deps.attachThreadWorker(handle, {
+      worker: parentReplacementWorker,
+      vmPtr: parentThread.vmPtr,
+      preserveMemoryRanges: forkMemoryPreserveRanges(forkMemorySnapshot),
+    });
+    deps.kickBlockedWorkers(handle);
+    await waitForForkChildSchedulingPoint(childHandle);
+    deps.kickBlockedWorkers(handle);
+    deps.appendWorkerDebugLog(handle, `plain-fork-parent:done:${childPid}`);
+  } finally {
+    if (handle.pendingChildSpawnRecords > 0) {
+      handle.pendingChildSpawnRecords -= 1;
+    }
+    deps.kickBlockedWorkers(handle);
+  }
+}

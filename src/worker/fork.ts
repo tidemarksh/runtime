@@ -1,5 +1,5 @@
 import { readProcessSpawnHandoff } from "../abi.js";
-import { handlePlainFork } from "./fork/plain-fork.js";
+import { handlePlainFork } from "./fork/plain.js";
 import { handleVforkExecve } from "./fork/vfork-execve.js";
 import type { WorkerForkDeps, ProcessHandle, ThreadWorkerState } from "./fork/types.js";
 
