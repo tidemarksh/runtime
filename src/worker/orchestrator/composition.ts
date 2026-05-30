@@ -10,11 +10,9 @@ import type {
 import {
   formatPipeCounterDebug,
 } from "../kernel-share.js";
-import { kernelWorkerOwnsPipeState } from "../ownership/pipe-control.js";
 import {
   captureVforkSnapshot,
 } from "../fork-shared.js";
-import { collectTrackableForkSharedOfds } from "../ownership/ofd-peer.js";
 import {
   drainHiddenProcessOutput,
   drainProcessOutput,
@@ -31,10 +29,11 @@ import type { KernelRpcResumeOutcome } from "../kernel-rpc/outcomes.js";
 import { applyKernelRpcResumeEffects as applyKernelRpcResumeEffectsImpl } from "../kernel-rpc/effects.js";
 import { createWorkerProcessFactory } from "../create-process.js";
 import {
+  releaseSharedHostStdioViaKernelWorker as releaseSharedHostStdioImpl,
   rehydrateForkSharedStateViaKernelWorker as rehydrateForkSharedStateViaKernelWorkerImpl,
   syncBlockedForkSharedStateViaKernelWorker as syncBlockedForkSharedStateViaKernelWorkerImpl,
-  syncForkSharedStateLocally as syncForkSharedStateLocallyImpl,
-  syncForkSharedStateViaKernelWorker as syncForkSharedStateViaKernelWorkerImpl,
+  syncForkSharedStateForWorkerRuntime as syncForkSharedStateViaKernelWorkerImpl,
+  syncForkSharedStateLocallyForWorkerRuntime as syncForkSharedStateLocallyImpl,
   syncPipeStateViaKernelWorker as syncPipeStateViaKernelWorkerImpl,
   syncSocketStateViaKernelWorker as syncSocketStateViaKernelWorkerImpl,
 } from "../sync.js";
@@ -179,7 +178,6 @@ workerKernelRpcHelpers = createWorkerKernelRpcHelpers({
   rehydrateForkSharedStateViaKernelWorker,
   syncPipeStateViaKernelWorker,
   syncSocketStateViaKernelWorker,
-  collectTrackableForkSharedOfds,
 });
 const {
   canonicalizeActiveVforkChildViaKernelWorker: canonicalizeActiveVforkChildViaKernelWorkerImpl,
@@ -187,7 +185,6 @@ const {
   initializeProcessLifecycleViaKernelWorker,
   recordChildExitViaKernelWorker: recordChildExitViaKernelWorkerImpl,
   registerProcessWithKernelWorker,
-  releaseHostStdioViaKernelWorker,
   resumeConnectViaKernelWorker: resumeConnectViaKernelWorkerImpl,
   resumeFsViaKernelWorkerOutcome: resumeFsViaKernelWorkerOutcomeImpl,
   resumeFsViaKernelWorker: resumeFsViaKernelWorkerImpl,
@@ -496,6 +493,10 @@ const kernelRpcResumeEffectPorts = {
   syncPipeStateViaKernelWorker,
 };
 
+const sharedHostStdioReleasePorts = {
+  wakePipeAndEpollWaitersInKernelShare,
+};
+
 function applyKernelRpcResumeEffects(
   handle: ProcessHandle,
   worker: Worker,
@@ -621,12 +622,7 @@ function syncForkSharedStateLocally(
   targets: ProcessHandle[],
   options: { includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] } = {},
 ): void {
-  syncForkSharedStateLocallyImpl(
-    handle,
-    targets,
-    { ...options, cause: { kind: "syscall", nr: -1n, name: "fork-shared-local-sync" } },
-    collectTrackableForkSharedOfds,
-  );
+  syncForkSharedStateLocallyImpl(handle, targets, options);
 }
 
 async function syncForkSharedStateViaKernelWorker(
@@ -643,21 +639,7 @@ async function syncForkSharedStateViaKernelWorker(
     ofdIds?: number[];
   } = {},
 ): Promise<void> {
-  if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-    syncForkSharedStateLocally(handle, targets, options);
-    return;
-  }
-
-  if (options.trackHeldOfds === true && options.deltaOfdIds !== true) {
-    for (const ofdId of collectTrackableForkSharedOfds(handle)) {
-      handle.kernelShare.sharedOfdIds.add(ofdId);
-    }
-  }
-  await syncForkSharedStateViaKernelWorkerImpl(
-    handle,
-    targets,
-    { ...options, cause: { kind: "syscall", nr: -1n, name: "fork-shared-state-sync" } },
-  );
+  await syncForkSharedStateViaKernelWorkerImpl(handle, targets, options);
 }
 
 async function rehydrateForkSharedStateViaKernelWorker(
@@ -694,30 +676,7 @@ async function syncSocketStateViaKernelWorker(handle: ProcessHandle): Promise<{
 }
 
 async function releaseSharedHostStdio(handle: ProcessHandle): Promise<void> {
-  const hadLocalHostStdio = handle.stdinPipe !== 0 || handle.stdoutPipe !== 0 || handle.stderrPipe !== 0;
-  if (!hadLocalHostStdio) {
-    return;
-  }
-  const shared = handle.hostStdio;
-  if (shared.refCount > 0) {
-    shared.refCount -= 1;
-  }
-  handle.stdinPipe = 0;
-  handle.stdoutPipe = 0;
-  handle.stderrPipe = 0;
-  if (shared.refCount > 0) {
-    return;
-  }
-  if (handle.stdioOwner !== null && !handle.stdioOwner.exitInProgress) {
-    return;
-  }
-  const pipeUsed = await releaseHostStdioViaKernelWorker(
-    handle,
-    { kind: "syscall", nr: -1n, name: "release-host-stdio" },
-  );
-  if (kernelWorkerOwnsPipeState(handle)) {
-    wakePipeAndEpollWaitersInKernelShare(handle, pipeUsed);
-  }
+  await releaseSharedHostStdioImpl(handle, sharedHostStdioReleasePorts);
 }
 
 function handleWorkerMessage(

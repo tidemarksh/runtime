@@ -42,6 +42,7 @@ import {
   restoreRuntimeNetworkKernelState,
   collectTracedForkSharedOfdIds
 } from "./shared.js";
+import { collectTrackableForkSharedOfds } from "../ownership/ofd-peer.js";
 import type {
   KernelWorkerOfdSlotSnapshot,
   KernelWorkerPidBytesSnapshot,
@@ -91,6 +92,19 @@ export function syncForkSharedStateLocally(
     restoreProcessStates(processStateSnapshots);
   }
   pruneStaleKernelShareOfdIds(handle, staleOfdIds);
+}
+
+export function syncForkSharedStateLocallyForWorkerRuntime(
+  handle: ProcessHandle,
+  targets: ProcessHandle[],
+  options: { includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] } = {},
+): void {
+  syncForkSharedStateLocally(
+    handle,
+    targets,
+    { ...options, cause: { kind: "syscall", nr: -1n, name: "fork-shared-local-sync" } },
+    collectTrackableForkSharedOfds,
+  );
 }
 
 function isQuiescentForkSharedSyncTarget(target: ProcessHandle): boolean {
@@ -377,6 +391,37 @@ export async function syncForkSharedStateViaKernelWorker(
       includeMemfs: false,
     });
   }
+}
+
+export async function syncForkSharedStateForWorkerRuntime(
+  handle: ProcessHandle,
+  targets: ProcessHandle[],
+  options: {
+    includeMemfs?: boolean;
+    trackHeldOfds?: boolean;
+    deltaOfdIds?: boolean;
+    memfsOnly?: boolean;
+    preserveSourceRefcounts?: boolean;
+    preservePublishedRegularFileData?: boolean;
+    sourceVmPtr?: number;
+    ofdIds?: number[];
+  } = {},
+): Promise<void> {
+  if (!handle.kernelWorkerRequest || handle.pid <= 0) {
+    syncForkSharedStateLocallyForWorkerRuntime(handle, targets, options);
+    return;
+  }
+
+  if (options.trackHeldOfds === true && options.deltaOfdIds !== true) {
+    for (const ofdId of collectTrackableForkSharedOfds(handle)) {
+      handle.kernelShare.sharedOfdIds.add(ofdId);
+    }
+  }
+  await syncForkSharedStateViaKernelWorker(
+    handle,
+    targets,
+    { ...options, cause: { kind: "syscall", nr: -1n, name: "fork-shared-state-sync" } },
+  );
 }
 
 export async function rehydrateForkSharedStateViaKernelWorker(

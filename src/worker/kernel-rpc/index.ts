@@ -52,7 +52,6 @@ interface WorkerKernelRpcDeps {
   ): Promise<void>;
   syncPipeStateViaKernelWorker(handle: ProcessHandle): Promise<bigint>;
   syncSocketStateViaKernelWorker(handle: ProcessHandle): Promise<{ socketUsed: number; netBufUsed: bigint }>;
-  collectTrackableForkSharedOfds(handle: ProcessHandle): Set<number>;
 }
 
 export function clearVforkSnapshot(handle: ProcessHandle): void {
