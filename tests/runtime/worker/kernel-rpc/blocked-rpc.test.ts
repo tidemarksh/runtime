@@ -133,11 +133,13 @@ test("kernel-rpc blocked-rpc helper owns local resume and returns a typed outcom
     sleepDeadlineTicks: null,
     rpcPending: false,
   });
-  await expect(helpers.resumeBlockedSyscallOutcome(handle, worker, 0x1234, 21)).resolves.toEqual({
-    kind: "queued-in-worker",
+  await expect(helpers.resumeBlockedSyscallOutcome(handle, worker, 0x1234, 21)).resolves.toMatchObject({
+    kind: "blocked",
+    status: 0,
+    effects: [{ kind: "handle-blocked-retry-result", status: 0 }],
   });
   expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledTimes(2);
-  expect(handleBlockedRetryResult).toHaveBeenCalledTimes(2);
+  expect(handleBlockedRetryResult).toHaveBeenCalledTimes(1);
 });
 
 test("kernel-rpc blocked-rpc outcome reports blocked while the worker remains blocked", async () => {
@@ -183,13 +185,14 @@ test("kernel-rpc blocked-rpc outcome reports blocked while the worker remains bl
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
   });
 
-  await expect(helpers.resumeBlockedSyscallOutcome(handle, worker, 0x1234, 21)).resolves.toEqual({
+  await expect(helpers.resumeBlockedSyscallOutcome(handle, worker, 0x1234, 21)).resolves.toMatchObject({
     kind: "blocked",
     status: 0,
+    effects: [{ kind: "handle-blocked-retry-result", status: 0 }],
   });
 });
 
-test("kernel-rpc blocked-rpc outcome reports queued-in-worker when retry unblocks the worker", async () => {
+test("kernel-rpc blocked-rpc outcome reports retry effect without running scheduler retry", async () => {
   const kernel = makeKernel();
   const worker = {} as Worker;
   const handle = {
@@ -234,7 +237,10 @@ test("kernel-rpc blocked-rpc outcome reports queued-in-worker when retry unblock
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
   });
 
-  await expect(helpers.resumeBlockedSyscallOutcome(handle, worker, 0x1234, 21)).resolves.toEqual({
-    kind: "queued-in-worker",
+  await expect(helpers.resumeBlockedSyscallOutcome(handle, worker, 0x1234, 21)).resolves.toMatchObject({
+    kind: "blocked",
+    status: 0,
+    effects: [{ kind: "handle-blocked-retry-result", status: 0 }],
   });
+  expect(handle.blockedWorkers.has(worker)).toBe(true);
 });
