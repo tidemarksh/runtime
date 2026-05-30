@@ -1,21 +1,13 @@
 import type { ThreadWorkerOutbound } from "../../messages.js";
 import type { KernelRpcResumeOutcome } from "../kernel-rpc/outcomes.js";
 import type { AttachThreadWorkerRequest, ProcessHandle, ThreadWorkerState } from "../types.js";
+import type { WorkerMessageHandlerSyncEffects } from "./sync-effects.js";
 
 export type ThreadWorkerStatusMessage = Extract<ThreadWorkerOutbound, { type: "status" }>;
 
-export interface WorkerMessageHandlerDeps {
+export interface WorkerMessageHandlerDeps extends Partial<WorkerMessageHandlerSyncEffects> {
   processHandles: Map<number, ProcessHandle>;
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
-  statusOkCompletedSyncEffects: number;
-  syncEffectPipeState: number;
-  syncEffectSocketState: number;
-  syncEffectEpollState: number;
-  syncEffectEpollDependentOfdState: number;
-  syncEffectProcessLifecycle: number;
-  syncEffectSignalWaiters: number;
-  syncEffectForkSharedOfdState: number;
-  syncEffectProcessMemfs: number;
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   assertProcessStandardFdIntegrity(handle: ProcessHandle, context: string): void;

@@ -17,6 +17,7 @@ import type {
   ThreadWorkerStatusMessage,
   WorkerMessageHandlerDeps,
 } from "./types.js";
+import { resolveWorkerMessageHandlerSyncEffects } from "./sync-effects.js";
 import type { KernelRpcResumeOutcome } from "../kernel-rpc/outcomes.js";
 import { createWorkerOwnershipGuard } from "../ownership/process-state.js";
 import {
@@ -60,6 +61,7 @@ function finishStatusTransitionRpc(
 }
 
 export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDeps) {
+  const syncEffects = resolveWorkerMessageHandlerSyncEffects(deps);
   function consumeKernelRpcResumeOutcome(
     handle: ProcessHandle,
     worker: Worker,
@@ -133,10 +135,10 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     if (status === handle.kernel.abi_status_ok()) {
       const shouldSyncPipeState = wroteToPipe
         || drainedPipe
-        || (completedSyncEffects & deps.syncEffectPipeState) !== 0;
-      const shouldSyncSocketState = (completedSyncEffects & deps.syncEffectSocketState) !== 0;
-      const shouldSyncLifecycle = (completedSyncEffects & deps.syncEffectProcessLifecycle) !== 0;
-      const shouldWakeSignalWaiters = (completedSyncEffects & deps.syncEffectSignalWaiters) !== 0;
+        || (completedSyncEffects & syncEffects.syncEffectPipeState) !== 0;
+      const shouldSyncSocketState = (completedSyncEffects & syncEffects.syncEffectSocketState) !== 0;
+      const shouldSyncLifecycle = (completedSyncEffects & syncEffects.syncEffectProcessLifecycle) !== 0;
+      const shouldWakeSignalWaiters = (completedSyncEffects & syncEffects.syncEffectSignalWaiters) !== 0;
       if (
         handle.kernelWorkerRequest
         && handle.pid > 0
@@ -264,7 +266,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         handle.workers.delete(worker);
         deps.threadWorkerStates.delete(worker);
         releaseWorker(worker);
-        if (wroteToPipe || drainedPipe || (completedSyncEffects & deps.syncEffectPipeState) !== 0) {
+        if (wroteToPipe || drainedPipe || (completedSyncEffects & syncEffects.syncEffectPipeState) !== 0) {
           void deps.requestPipeStateSync(handle, true)
             .then(() => {
               deps.kickBlockedWorkers(handle);
@@ -283,7 +285,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
 
     const shouldSyncPipeState = wroteToPipe
       || drainedPipe
-      || (completedSyncEffects & deps.syncEffectPipeState) !== 0;
+      || (completedSyncEffects & syncEffects.syncEffectPipeState) !== 0;
     const pendingHostResume = status === handle.kernel.abi_status_fs();
     if (shouldSyncPipeState && !pendingHostResume) {
       void deps.requestPipeStateSync(handle, true).catch((error) => {
@@ -343,7 +345,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           }
           deps.enqueueWorker(handle, worker);
         };
-        const shouldSyncPipeState = (completedSyncEffects & deps.syncEffectPipeState) !== 0;
+        const shouldSyncPipeState = (completedSyncEffects & syncEffects.syncEffectPipeState) !== 0;
         if (handle.kernelWorkerRequest && handle.pid > 0 && shouldSyncPipeState) {
           void deps.requestPipeStateSync(handle, false)
             .then(() => {

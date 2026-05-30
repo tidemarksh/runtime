@@ -12,6 +12,7 @@ import { kernelWorkerOwnsSocketState } from "../ownership/socket-control.js";
 import type { ProcessHandle, ThreadWorkerState } from "../types.js";
 import type { WorkerMessageHandlerDeps } from "./types.js";
 import { createWorkerOwnershipGuard } from "../ownership/process-state.js";
+import { resolveWorkerMessageHandlerSyncEffects } from "./sync-effects.js";
 
 interface OwnedStateSyncArgs {
   handle: ProcessHandle;
@@ -420,6 +421,7 @@ function targetHasIncompatibleForkSharedOfd(source: ProcessHandle, target: Proce
 }
 
 export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps) {
+  const syncEffects = resolveWorkerMessageHandlerSyncEffects(deps);
   function requestForkSharedStateSync(
     handle: ProcessHandle,
     thread: ThreadWorkerState,
@@ -573,9 +575,9 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
     );
     const workerOwnsAuthoritativeState = isRunningWorker || workerStillOwnedByHandle();
     const shouldWakeSocketWaiters = status === handle.kernel.abi_status_ok()
-      && (completedSyncEffects & deps.syncEffectSocketState) !== 0;
+      && (completedSyncEffects & syncEffects.syncEffectSocketState) !== 0;
     const hasExplicitForkSharedEffect = rawSyncEffects !== undefined
-      && (rawSyncEffects & deps.syncEffectForkSharedOfdState) !== 0;
+      && (rawSyncEffects & syncEffects.syncEffectForkSharedOfdState) !== 0;
     const fdTraceRulesOutForkSharedTopologyChange =
       latestFdTraceRulesOutForkSharedTopologyChange(handle, thread.vmPtr, latestFdTrace);
     const explicitForkSharedEffectMaySync = explicitForkSharedEffectMayRequireSync(
@@ -610,7 +612,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
           )
         )
       );
-    const hasProcessMemfsEffect = (completedSyncEffects & deps.syncEffectProcessMemfs) !== 0
+    const hasProcessMemfsEffect = (completedSyncEffects & syncEffects.syncEffectProcessMemfs) !== 0
       || regularFileWriteMutatedMemfs(handle, latestFdTrace);
     if (isRunningWorker && hasProcessMemfsEffect) {
       handle.processMemfsDirty = true;
@@ -629,17 +631,17 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
       && !deps.statusDefersOwnedStateSync(handle, status);
     const shouldSyncEpollDependentOfds = isRunningWorker
       && kernelWorkerOwnsEpollState(handle)
-      && (completedSyncEffects & deps.syncEffectEpollDependentOfdState) !== 0
+      && (completedSyncEffects & syncEffects.syncEffectEpollDependentOfdState) !== 0
       && !activeVforkChildOwnerMismatch
       && !deps.statusDefersOwnedStateSync(handle, status);
     const shouldSyncSocketState = shouldSyncForkSharedState
       && isRunningWorker
       && kernelWorkerOwnsSocketState(handle)
-      && (completedSyncEffects & deps.syncEffectSocketState) !== 0
+      && (completedSyncEffects & syncEffects.syncEffectSocketState) !== 0
       && !activeVforkChildOwnerMismatch
       && !deps.statusDefersOwnedStateSync(handle, status);
     const shouldPublishDirtyMemfs = status !== handle.kernel.abi_status_ok()
-      || (completedSyncEffects & deps.syncEffectPipeState) !== 0;
+      || (completedSyncEffects & syncEffects.syncEffectPipeState) !== 0;
     const shouldSyncProcessMemfs = isRunningWorker
       && handle.kernelWorkerRequest !== null
       && handle.pid > 0
@@ -650,7 +652,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
     const shouldSyncEpollState = isRunningWorker
       && kernelWorkerOwnsEpollState(handle)
       && collectHeldEpollOfdIds(handle).length > 0
-      && (completedSyncEffects & deps.syncEffectEpollState) !== 0
+      && (completedSyncEffects & syncEffects.syncEffectEpollState) !== 0
       && !activeVforkChildOwnerMismatch
       && !deps.statusDefersOwnedStateSync(handle, status);
     if (

@@ -517,3 +517,14 @@ export async function syncBlockedForkSharedStateViaKernelWorker(
   handle.kernelShare.forkSharedSyncPromise = syncPromise;
   await syncPromise;
 }
+
+export async function syncBlockedForkSharedStateForWorkerRuntime(
+  handle: ProcessHandle,
+  sourceVmPtr?: number,
+): Promise<void> {
+  await syncBlockedForkSharedStateViaKernelWorker(
+    handle,
+    sourceVmPtr,
+    { kind: "blocked-rpc", status: handle.kernel.abi_status_pipe_wait() },
+  );
+}

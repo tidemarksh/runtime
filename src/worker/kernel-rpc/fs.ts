@@ -42,6 +42,18 @@ const FS_LIFECYCLE_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_FS_LIFECYCLE_DEBUG ?? "") === "1";
 
+export interface KernelRpcFsEffects {
+  memfsMutation: number;
+  memfsFileData: number;
+  sharedOfdState: number;
+}
+
+const KERNEL_RPC_FS_EFFECTS: KernelRpcFsEffects = {
+  memfsMutation: 1 << 0,
+  sharedOfdState: 1 << 1,
+  memfsFileData: 1 << 2,
+};
+
 interface PendingFsContext {
   opcode: number;
   effects: number;
@@ -327,7 +339,7 @@ function recordFsTransferStats(
   pendingFs: PendingFsContext,
   fsResult: bigint | number,
   fsSucceeded: boolean,
-  fsEffects: { memfsMutation: number; memfsFileData: number; sharedOfdState: number },
+  fsEffects: KernelRpcFsEffects,
   viaKernelWorker: boolean,
   memfsPublishReady: boolean,
 ): void {
@@ -477,7 +489,7 @@ async function resumeFsViaKernelWorker(
   handle: ProcessHandle,
   worker: Worker,
   vmPtr: number,
-  fsEffects: { memfsMutation: number; memfsFileData: number; sharedOfdState: number },
+  fsEffects: KernelRpcFsEffects = KERNEL_RPC_FS_EFFECTS,
 ): Promise<KernelRpcResumeOutcome> {
   let byVmPtr = fsResumeInFlight.get(handle);
   const key = fsResumeKey(handle, vmPtr);
@@ -510,7 +522,7 @@ async function resumeFsViaKernelWorkerInner(
   handle: ProcessHandle,
   worker: Worker,
   vmPtr: number,
-  fsEffects: { memfsMutation: number; memfsFileData: number; sharedOfdState: number },
+  fsEffects: KernelRpcFsEffects,
 ): Promise<KernelRpcResumeOutcome> {
   const effects: KernelRpcResumeEffect[] = [];
   const pendingFs = readPendingFsContext(handle, vmPtr);
@@ -737,7 +749,7 @@ async function resumeFsViaKernelWorkerInner(
     handle: ProcessHandle,
     worker: Worker,
     vmPtr: number,
-    fsEffects: { memfsMutation: number; memfsFileData: number; sharedOfdState: number },
+    fsEffects: KernelRpcFsEffects = KERNEL_RPC_FS_EFFECTS,
   ): Promise<KernelRpcResumeOutcome> {
     return resumeFsViaKernelWorker(handle, worker, vmPtr, fsEffects);
   }

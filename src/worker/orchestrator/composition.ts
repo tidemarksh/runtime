@@ -31,7 +31,7 @@ import { createWorkerProcessFactory } from "../create-process.js";
 import {
   releaseSharedHostStdioViaKernelWorker as releaseSharedHostStdioImpl,
   rehydrateForkSharedStateViaKernelWorker as rehydrateForkSharedStateViaKernelWorkerImpl,
-  syncBlockedForkSharedStateViaKernelWorker as syncBlockedForkSharedStateViaKernelWorkerImpl,
+  syncBlockedForkSharedStateForWorkerRuntime as syncBlockedForkSharedStateViaKernelWorkerImpl,
   syncForkSharedStateForWorkerRuntime as syncForkSharedStateViaKernelWorkerImpl,
   syncForkSharedStateLocallyForWorkerRuntime as syncForkSharedStateLocallyImpl,
   syncPipeStateViaKernelWorker as syncPipeStateViaKernelWorkerImpl,
@@ -275,22 +275,6 @@ workerLifecycleHelpers = createWorkerLifecycleHelpers({
 const WASM_PAGE_SIZE = 65536;
 const WASM_MAX_PAGES = 64512;
 const BOOTSTRAP_MEMORY_BYTES = 64 * 1024 * 1024;
-const FS_EFFECT_MEMFS_MUTATION = 1 << 0;
-const FS_EFFECT_SHARED_OFD_STATE = 1 << 1;
-const FS_EFFECT_MEMFS_FILE_DATA = 1 << 2;
-const SYNC_EFFECT_PIPE_STATE = 1 << 0;
-const SYNC_EFFECT_SOCKET_STATE = 1 << 1;
-const SYNC_EFFECT_EPOLL_STATE = 1 << 2;
-const SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE = 1 << 3;
-const SYNC_EFFECT_PROCESS_LIFECYCLE = 1 << 4;
-const SYNC_EFFECT_SIGNAL_WAITERS = 1 << 5;
-const SYNC_EFFECT_FORK_SHARED_OFD_STATE = 1 << 6;
-const SYNC_EFFECT_PROCESS_MEMFS = 1 << 7;
-const STATUS_OK_COMPLETED_SYNC_EFFECTS = SYNC_EFFECT_PIPE_STATE
-  | SYNC_EFFECT_SOCKET_STATE
-  | SYNC_EFFECT_EPOLL_STATE
-  | SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE
-  | SYNC_EFFECT_PROCESS_LIFECYCLE;
 
 async function ensureCompiledModule(wasmBytes: BufferSource): Promise<WebAssembly.Module> {
   if (!ensureCompiledModuleImpl) {
@@ -318,15 +302,6 @@ function commitNetworkConnect(handle: ProcessHandle, vmPtr: number, result?: big
 handleWorkerMessageImpl = createWorkerMessageHandler({
   processHandles,
   threadWorkerStates,
-  statusOkCompletedSyncEffects: STATUS_OK_COMPLETED_SYNC_EFFECTS,
-  syncEffectPipeState: SYNC_EFFECT_PIPE_STATE,
-  syncEffectSocketState: SYNC_EFFECT_SOCKET_STATE,
-  syncEffectEpollState: SYNC_EFFECT_EPOLL_STATE,
-  syncEffectEpollDependentOfdState: SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE,
-  syncEffectProcessLifecycle: SYNC_EFFECT_PROCESS_LIFECYCLE,
-  syncEffectSignalWaiters: SYNC_EFFECT_SIGNAL_WAITERS,
-  syncEffectForkSharedOfdState: SYNC_EFFECT_FORK_SHARED_OFD_STATE,
-  syncEffectProcessMemfs: SYNC_EFFECT_PROCESS_MEMFS,
   appendRuntimeLifecycleEvent,
   appendWorkerDebugLog,
   assertProcessStandardFdIntegrity,
@@ -517,11 +492,7 @@ async function resumeFsViaKernelWorker(
   worker: Worker,
   vmPtr: number,
 ): Promise<void> {
-  const outcome = await resumeFsViaKernelWorkerImpl(handle, worker, vmPtr, {
-    memfsMutation: FS_EFFECT_MEMFS_MUTATION,
-    memfsFileData: FS_EFFECT_MEMFS_FILE_DATA,
-    sharedOfdState: FS_EFFECT_SHARED_OFD_STATE,
-  });
+  const outcome = await resumeFsViaKernelWorkerImpl(handle, worker, vmPtr);
   await applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
 }
 
@@ -530,11 +501,7 @@ async function resumeFsViaKernelWorkerOutcome(
   worker: Worker,
   vmPtr: number,
 ): Promise<KernelRpcResumeOutcome> {
-  const outcome = await resumeFsViaKernelWorkerOutcomeImpl(handle, worker, vmPtr, {
-    memfsMutation: FS_EFFECT_MEMFS_MUTATION,
-    memfsFileData: FS_EFFECT_MEMFS_FILE_DATA,
-    sharedOfdState: FS_EFFECT_SHARED_OFD_STATE,
-  });
+  const outcome = await resumeFsViaKernelWorkerOutcomeImpl(handle, worker, vmPtr);
   return applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
 }
 
@@ -657,11 +624,7 @@ async function syncBlockedForkSharedStateViaKernelWorker(
   handle: ProcessHandle,
   sourceVmPtr?: number,
 ): Promise<void> {
-  await syncBlockedForkSharedStateViaKernelWorkerImpl(
-    handle,
-    sourceVmPtr,
-    { kind: "blocked-rpc", status: handle.kernel.abi_status_pipe_wait() },
-  );
+  await syncBlockedForkSharedStateViaKernelWorkerImpl(handle, sourceVmPtr);
 }
 
 async function syncPipeStateViaKernelWorker(handle: ProcessHandle): Promise<bigint> {

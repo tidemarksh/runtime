@@ -45,6 +45,7 @@ import {
 import { handleOwnerAsyncStatusReturn } from "./status/owner-async.js";
 import { applyStatusFdEntries } from "./status/fd-entries.js";
 import { applyStatusOfdSlots } from "./status/ofd-slots.js";
+import { resolveWorkerMessageHandlerSyncEffects } from "./sync-effects.js";
 
 interface ThreadRegisterSnapshot {
   vmPtr: number;
@@ -55,6 +56,7 @@ interface ThreadRegisterSnapshot {
 
 
 export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps) {
+  const syncEffects = resolveWorkerMessageHandlerSyncEffects(deps);
   const handleWaitInWorkerStatus = createWorkerWaitInWorkerStatusHandler(deps);
   const maybeHandleOwnedStateSync = createWorkerOwnedStateSyncHandler(deps);
   const handleStatusTransition = createWorkerStatusTransitionHandler(deps);
@@ -331,7 +333,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       transitionStatus === handle.kernel.abi_status_ok()
       && transitionMsg.syncEffects === undefined
     )
-      ? deps.statusOkCompletedSyncEffects
+      ? syncEffects.statusOkCompletedSyncEffects
       : (transitionMsg.syncEffects ?? 0);
     const continueAfterOwnedStateSync = (): void => {
       handleStatusTransition({
