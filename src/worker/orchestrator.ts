@@ -562,7 +562,10 @@ async function rehydrateForkSharedStateViaKernelWorker(
   ofdIds: number[],
   options: { procSelfExeTargets?: KernelWorkerPidBytesSnapshot[]; includeMemfs?: boolean } = {},
 ): Promise<void> {
-  await rehydrateForkSharedStateViaKernelWorkerImpl(targets, ofdIds, options);
+  await rehydrateForkSharedStateViaKernelWorkerImpl(targets, ofdIds, {
+    ...options,
+    cause: { kind: "syscall", nr: -1n, name: "fork-shared-rehydrate" },
+  });
 }
 
 async function syncBlockedForkSharedStateViaKernelWorker(
@@ -605,7 +608,10 @@ async function releaseSharedHostStdio(handle: ProcessHandle): Promise<void> {
   if (handle.stdioOwner !== null && !handle.stdioOwner.exitInProgress) {
     return;
   }
-  const pipeUsed = await releaseHostStdioViaKernelWorker(handle);
+  const pipeUsed = await releaseHostStdioViaKernelWorker(
+    handle,
+    { kind: "syscall", nr: -1n, name: "release-host-stdio" },
+  );
   if (kernelWorkerOwnsPipeState(handle)) {
     wakePipeAndEpollWaitersInKernelShare(handle, pipeUsed);
   }

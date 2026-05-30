@@ -373,6 +373,7 @@ export async function syncForkSharedStateViaKernelWorker(
     );
   if (unheldActiveOfdIds.length > 0) {
     await rehydrateForkSharedStateViaKernelWorker([handle], unheldActiveOfdIds, {
+      cause: options.cause,
       includeMemfs: false,
     });
   }
@@ -381,7 +382,7 @@ export async function syncForkSharedStateViaKernelWorker(
 export async function rehydrateForkSharedStateViaKernelWorker(
   targets: ProcessHandle[],
   ofdIds: number[],
-  options: { procSelfExeTargets?: KernelWorkerPidBytesSnapshot[]; includeMemfs?: boolean } = {},
+  options: { cause: SyncCause; procSelfExeTargets?: KernelWorkerPidBytesSnapshot[]; includeMemfs?: boolean },
 ): Promise<void> {
   if (targets.length === 0) {
     return;
@@ -406,6 +407,10 @@ export async function rehydrateForkSharedStateViaKernelWorker(
     return;
   }
   const networkSocketSnapshots = snapshotNetworkBridgeSocketState(targets);
+  appendSocketSyncDebug(
+    owner,
+    `fork-shared-rehydrate:${owner.pid}:${formatSyncCause(options.cause)}:targets=${targetPids.join(",") || "none"}:ofds=${ofdIds.join(",") || "none"}`,
+  );
   let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
   try {
     response = await owner.kernelWorkerRequest({

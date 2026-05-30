@@ -17,7 +17,7 @@ export function hostStdioReleaseCause(): SyncCause {
 
 export async function releaseHostStdioViaKernelWorker(
   handle: ProcessHandle,
-  cause: SyncCause = hostStdioReleaseCause(),
+  cause: SyncCause,
 ): Promise<bigint> {
   if (!handle.kernelWorkerRequest || handle.pid <= 0) {
     handle.kernel.process_release_host_stdio(handle.vmPtr);

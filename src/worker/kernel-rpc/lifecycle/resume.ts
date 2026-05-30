@@ -9,6 +9,7 @@ import {
   applySocketStateFromKernelWorker,
   snapshotProcessFdOfdStateForKernelWorker,
 } from "../../sync.js";
+import { describeSyncCause, type SyncCause } from "../../sync/effects.js";
 import { settleVisibleProcessOutput } from "../../stdio.js";
 import type {
   CanonicalizedChildLifecycle,
@@ -306,10 +307,11 @@ export function createWorkerKernelRpcResumeLifecycleHelpers(
     deps.appendWorkerDebugLog(handle, `resume-vfork-execve-parent:local-done:0x${vmPtr.toString(16)}:${childPid}`);
   }
 
-  async function releaseHostStdioViaKernelWorker(handle: ProcessHandle): Promise<bigint> {
+  async function releaseHostStdioViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<bigint> {
     if (!handle.kernelWorkerRequest || handle.pid <= 0) {
       return 0n;
     }
+    deps.appendWorkerDebugLog(handle, `release-host-stdio:rpc-start:${describeSyncCause(cause)}`);
     const response = await handle.kernelWorkerRequest({
       type: "release-host-stdio",
       pid: handle.pid,
@@ -321,6 +323,7 @@ export function createWorkerKernelRpcResumeLifecycleHelpers(
     }
     handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
+    deps.appendWorkerDebugLog(handle, `release-host-stdio:rpc-done:${describeSyncCause(cause)}`);
     return handle.kernelState.pipeUsed;
   }
 

@@ -4,6 +4,8 @@ import {
   collectProcessHeldOfds,
   ofdIdsFromFdEntries,
   adoptKernelStateForHandle,
+  appendSocketSyncDebug,
+  formatSyncCause,
   snapshotKernelShareOfdSlots,
   snapshotProcessFdEntries,
   snapshotNetworkBridgeSocketState,
@@ -45,6 +47,7 @@ export async function syncEpollStateViaKernelWorker(
   }
 
   const networkSocketSnapshots = snapshotNetworkBridgeSocketState([handle]);
+  appendSocketSyncDebug(handle, `epoll-sync-request:${handle.pid}:${formatSyncCause(cause)}`);
   let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
   try {
     response = await handle.kernelWorkerRequest({
@@ -73,6 +76,10 @@ export async function syncOfdStateViaKernelWorker(
   }
 
   const networkSocketSnapshots = snapshotNetworkBridgeSocketState([handle]);
+  appendSocketSyncDebug(
+    handle,
+    `ofd-sync-request:${handle.pid}:${formatSyncCause(cause)}:ofds=${ofdIds.join(",") || "none"}`,
+  );
   let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
   try {
     response = await handle.kernelWorkerRequest({
