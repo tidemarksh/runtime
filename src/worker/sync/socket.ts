@@ -1,18 +1,84 @@
-import type { ProcessHandle } from "../types.js";
+import {
+  attachKernelRuntimeState,
+  adoptKernelState,
+  adoptKernelStateForHandle,
+  repairHandleVmPidAfterKernelStateAttach,
+  appendSocketSyncDebug,
+  formatSyncCause,
+  formatNetworkSocketDebug,
+  snapshotNetworkBridgeSocketState,
+  snapshotSocketStateForKernelWorker,
+  applySocketStateFromKernelWorker,
+  restoreNetworkBridgeSocketState,
+  networkBridgeSocketSnapshotProgressed
+} from "./shared.js";
+import type {
+  ProcessHandle,
+  SyncCause
+} from "./shared.js";
 
-export const socketSyncDebugLogEnabled = ((globalThis as {
-  process?: { env?: Record<string, string | undefined> };
-}).process?.env?.TIDEMARK_WORKER_DEBUG_LOG ?? "") === "1"
-  || ((globalThis as {
-    process?: { env?: Record<string, string | undefined> };
-  }).process?.env?.TIDEMARK_WORKER_DEBUG_NETWORK ?? "") === "1";
+export {
+  appendSocketSyncDebug,
+  applySocketStateFromKernelWorker,
+  socketSyncDebugLogEnabled,
+} from "./shared.js";
 
-export function appendSocketSyncDebug(handle: ProcessHandle, event: string): void {
-  if (!socketSyncDebugLogEnabled) {
-    return;
+export async function syncSocketStateViaKernelWorker(
+  handle: ProcessHandle,
+  cause: SyncCause,
+): Promise<{
+  socketUsed: number;
+  netBufUsed: bigint;
+}> {
+  if (!handle.kernelWorkerRequest || handle.pid <= 0) {
+    return {
+      socketUsed: handle.kernelState.socketUsed,
+      netBufUsed: handle.kernelState.netBufUsed,
+    };
   }
-  handle.workerDebugLog.push(event);
-  if (handle.workerDebugLog.length > 4096) {
-    handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 4096);
+
+  const pidBeforeSync = handle.vmPtr === 0
+    ? 0
+    : handle.kernel.process_current_pid(handle.vmPtr);
+  const networkSocketSnapshots = snapshotNetworkBridgeSocketState([handle]);
+  appendSocketSyncDebug(
+    handle,
+    `socket-sync-start:${handle.pid}:${formatSyncCause(cause)}:${formatNetworkSocketDebug(handle)}`,
+  );
+  let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
+  try {
+    response = await handle.kernelWorkerRequest({
+      type: "sync-socket-state",
+      pid: handle.pid,
+      kernelState: handle.kernelState,
+      socketState: snapshotSocketStateForKernelWorker(handle),
+    });
+  } finally {
+    restoreNetworkBridgeSocketState(networkSocketSnapshots);
+    appendSocketSyncDebug(handle, `socket-sync-finally-restore:${handle.pid}:${formatNetworkSocketDebug(handle)}`);
   }
+  if (response.type !== "socket-state-synced") {
+    throw new Error(`unexpected kernel-worker response for sync-socket-state: ${response.type}`);
+  }
+  const localNetworkProgress = networkSocketSnapshots.some(networkBridgeSocketSnapshotProgressed);
+  handle.kernelState = response.socketState && !localNetworkProgress
+    ? adoptKernelState(handle.kernelState, response.kernelState)
+    : adoptKernelStateForHandle(handle, response.kernelState);
+  if (response.socketState && !localNetworkProgress) {
+    applySocketStateFromKernelWorker(handle, response.socketState);
+    appendSocketSyncDebug(
+      handle,
+      `socket-sync-response-apply:${handle.pid}:${formatNetworkSocketDebug(handle)}`,
+    );
+  } else if (response.socketState) {
+    appendSocketSyncDebug(handle, `socket-sync-response-skip-progress:${handle.pid}:${formatNetworkSocketDebug(handle)}`);
+  }
+  restoreNetworkBridgeSocketState(networkSocketSnapshots);
+  appendSocketSyncDebug(handle, `socket-sync-restore:${handle.pid}:${formatNetworkSocketDebug(handle)}`);
+  attachKernelRuntimeState(handle.kernel, handle.kernelState);
+  repairHandleVmPidAfterKernelStateAttach(handle, handle.vmPtr, pidBeforeSync);
+  return {
+    socketUsed: handle.kernelState.socketUsed,
+    netBufUsed: handle.kernelState.netBufUsed,
+  };
 }

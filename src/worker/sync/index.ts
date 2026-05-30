@@ -15,4 +15,4 @@ export {
   loadPipeU32,
 } from "./pipe.js";
 export { appendSocketSyncDebug, socketSyncDebugLogEnabled } from "./socket.js";
-export { hostStdioReleaseCause, releaseHostStdioViaKernelWorkerForPlane } from "./stdio.js";
+export { hostStdioReleaseCause, releaseHostStdioViaKernelWorker } from "./stdio.js";

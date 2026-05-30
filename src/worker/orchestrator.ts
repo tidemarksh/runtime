@@ -518,7 +518,12 @@ function syncForkSharedStateLocally(
   targets: ProcessHandle[],
   options: { includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] } = {},
 ): void {
-  syncForkSharedStateLocallyImpl(handle, targets, options, collectTrackableForkSharedOfds);
+  syncForkSharedStateLocallyImpl(
+    handle,
+    targets,
+    { ...options, cause: { kind: "syscall", nr: -1n, name: "fork-shared-local-sync" } },
+    collectTrackableForkSharedOfds,
+  );
 }
 
 async function syncForkSharedStateViaKernelWorker(
@@ -545,7 +550,11 @@ async function syncForkSharedStateViaKernelWorker(
       handle.kernelShare.sharedOfdIds.add(ofdId);
     }
   }
-  await syncForkSharedStateViaKernelWorkerImpl(handle, targets, options);
+  await syncForkSharedStateViaKernelWorkerImpl(
+    handle,
+    targets,
+    { ...options, cause: { kind: "syscall", nr: -1n, name: "fork-shared-state-sync" } },
+  );
 }
 
 async function rehydrateForkSharedStateViaKernelWorker(
@@ -560,18 +569,22 @@ async function syncBlockedForkSharedStateViaKernelWorker(
   handle: ProcessHandle,
   sourceVmPtr?: number,
 ): Promise<void> {
-  await syncBlockedForkSharedStateViaKernelWorkerImpl(handle, sourceVmPtr);
+  await syncBlockedForkSharedStateViaKernelWorkerImpl(
+    handle,
+    sourceVmPtr,
+    { kind: "blocked-rpc", status: handle.kernel.abi_status_pipe_wait() },
+  );
 }
 
 async function syncPipeStateViaKernelWorker(handle: ProcessHandle): Promise<bigint> {
-  return syncPipeStateViaKernelWorkerImpl(handle);
+  return syncPipeStateViaKernelWorkerImpl(handle, { kind: "syscall", nr: -1n, name: "pipe-state-sync" });
 }
 
 async function syncSocketStateViaKernelWorker(handle: ProcessHandle): Promise<{
   socketUsed: number;
   netBufUsed: bigint;
 }> {
-  return syncSocketStateViaKernelWorkerImpl(handle);
+  return syncSocketStateViaKernelWorkerImpl(handle, { kind: "syscall", nr: -1n, name: "socket-state-sync" });
 }
 
 async function releaseSharedHostStdio(handle: ProcessHandle): Promise<void> {

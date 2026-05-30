@@ -373,6 +373,7 @@ test("fork-shared sync keeps a pipe reader target that also owns runtime network
   } as never);
 
   await syncForkSharedStateViaKernelWorker(child, [parent], {
+    cause: { kind: "syscall", nr: -1n, name: "test-fork-shared-sync" },
     deltaOfdIds: true,
     includeMemfs: false,
     trackHeldOfds: true,

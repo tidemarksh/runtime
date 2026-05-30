@@ -1,21 +1,22 @@
-import type { SyncCause } from "./effects.js";
-import type { KernelRuntimeState } from "../../abi.js";
-import type { ProcessHandle } from "../types.js";
+import {
+  adoptKernelStateForHandle,
+  appendSocketSyncDebug,
+  attachKernelRuntimeState,
+  formatSyncCause,
+  snapshotNetworkBridgeSocketState,
+  restoreNetworkBridgeSocketState,
+} from "./shared.js";
+import type {
+  ProcessHandle,
+  SyncCause,
+} from "./shared.js";
 
 export function hostStdioReleaseCause(): SyncCause {
   return { kind: "syscall", nr: -1n, name: "release-host-stdio" };
 }
 
-interface HostStdioReleaseDeps<TSocketSnapshot> {
-  snapshotNetworkBridgeSocketState(handles: ProcessHandle[]): TSocketSnapshot[];
-  restoreNetworkBridgeSocketState(snapshots: TSocketSnapshot[]): void;
-  adoptKernelStateForHandle(handle: ProcessHandle, incoming: KernelRuntimeState): KernelRuntimeState;
-  attachKernelRuntimeState(kernel: ProcessHandle["kernel"], state: KernelRuntimeState): void;
-}
-
-export async function releaseHostStdioViaKernelWorkerForPlane<TSocketSnapshot>(
+export async function releaseHostStdioViaKernelWorker(
   handle: ProcessHandle,
-  deps: HostStdioReleaseDeps<TSocketSnapshot>,
   cause: SyncCause = hostStdioReleaseCause(),
 ): Promise<bigint> {
   if (!handle.kernelWorkerRequest || handle.pid <= 0) {
@@ -23,8 +24,7 @@ export async function releaseHostStdioViaKernelWorkerForPlane<TSocketSnapshot>(
     return handle.kernelState.pipeUsed;
   }
 
-  void cause;
-  const networkSocketSnapshots = deps.snapshotNetworkBridgeSocketState([handle]);
+  const networkSocketSnapshots = snapshotNetworkBridgeSocketState([handle]);
   let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
   try {
     response = await handle.kernelWorkerRequest({
@@ -34,13 +34,14 @@ export async function releaseHostStdioViaKernelWorkerForPlane<TSocketSnapshot>(
       kernelState: handle.kernelState,
     });
   } finally {
-    deps.restoreNetworkBridgeSocketState(networkSocketSnapshots);
+    restoreNetworkBridgeSocketState(networkSocketSnapshots);
   }
   if (response.type !== "host-stdio-released") {
     throw new Error(`unexpected kernel-worker response for release-host-stdio: ${response.type}`);
   }
-  handle.kernelState = deps.adoptKernelStateForHandle(handle, response.kernelState);
-  deps.restoreNetworkBridgeSocketState(networkSocketSnapshots);
-  deps.attachKernelRuntimeState(handle.kernel, handle.kernelState);
+  appendSocketSyncDebug(handle, `host-stdio-release:${handle.pid}:${formatSyncCause(cause)}`);
+  handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
+  restoreNetworkBridgeSocketState(networkSocketSnapshots);
+  attachKernelRuntimeState(handle.kernel, handle.kernelState);
   return handle.kernelState.pipeUsed;
 }
