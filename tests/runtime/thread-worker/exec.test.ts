@@ -1,3 +1,4 @@
+// Thread-worker tests in this file validate typed execution outcomes.
 import { expect, test, vi } from "vite-plus/test";
 import { createRuntimeStateBridge } from "../../../src/bridge/runtime-state.js";
 import { stepThread } from "../../../src/thread-worker/exec.js";

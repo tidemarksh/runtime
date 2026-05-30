@@ -9,6 +9,7 @@ import {
   handleRuntimeBridgeBlockedStatus,
   isRuntimeBridgeBlockedStatus,
 } from "./blocking.js";
+import type { ThreadWorkerStatusPublisher } from "./outcomes.js";
 import { readCompletedSyncEffects, type SyscallNumbers } from "./sync-effects.js";
 
 interface DebugBudgetClamp {
@@ -65,7 +66,7 @@ interface ThreadWorkerExecContext {
   futexWaitSliceMs: number;
   syscallNumbers: SyscallNumbers | null;
   runtimeBridge: RuntimeStateBridge | null;
-  postStatus(status: number, waitInWorker?: boolean, syncEffects?: number): void;
+  postStatus: ThreadWorkerStatusPublisher;
   reattachPublishedKernelRuntimeState(): void;
 }
 

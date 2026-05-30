@@ -1,8 +1,9 @@
+// Thread-worker tests in this file validate memory-boundary behavior.
 import { expect, test } from "vite-plus/test";
 import {
   restoreThreadWorkerPrepareMemory,
   snapshotThreadWorkerPrepareMemory,
-} from "../../../src/thread-worker/prepare-memory.js";
+} from "../../../src/thread-worker/memory.js";
 import type { KernelRuntimeState } from "../../../src/abi.js";
 
 function makeState(): KernelRuntimeState {

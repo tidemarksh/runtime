@@ -4,6 +4,7 @@ import {
   type RuntimeStateBridge,
 } from "../bridge/runtime-state.js";
 import { clearSyscallTrace } from "./debug.js";
+import type { ThreadWorkerStatusPublisher } from "./outcomes.js";
 import { checkPendingSignalsAtBoundary } from "./signals.js";
 
 const BLOCKED_ADDR_NOT_FOUND = 0xffff_ffff;
@@ -17,7 +18,7 @@ interface ThreadWorkerBlockingContext {
   threadStepBudget: number;
   eintrErrno: number;
   futexWaitSliceMs: number;
-  postStatus(status: number, waitInWorker?: boolean): void;
+  postStatus: ThreadWorkerStatusPublisher;
   reattachPublishedKernelRuntimeState(): void;
   step(budget: number): void;
 }

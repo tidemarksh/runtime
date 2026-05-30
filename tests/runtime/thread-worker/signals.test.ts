@@ -1,3 +1,4 @@
+// Thread-worker tests in this file validate signal-boundary behavior.
 import { expect, test, vi } from "vite-plus/test";
 import { checkPendingSignalsAtBoundary } from "../../../src/thread-worker/signals.js";
 

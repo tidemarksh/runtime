@@ -1,3 +1,4 @@
+// Thread-worker tests in this file validate session-boundary behavior.
 import { expect, test } from "vite-plus/test";
 import {
   shouldPrepareThreadWorker,

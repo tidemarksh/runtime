@@ -1,3 +1,4 @@
+// Thread-worker tests in this file validate scheduler/sync effect outcomes.
 import { expect, test } from "vite-plus/test";
 import {
   loadSyscallNumbers,

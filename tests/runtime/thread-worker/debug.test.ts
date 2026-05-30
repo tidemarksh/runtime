@@ -1,5 +1,15 @@
+// Thread-worker tests in this file validate read-only debug observations.
 import { expect, test } from "vite-plus/test";
-import { collectDebugParts, formatExecTraceEntries, formatWorkerError } from "../../../src/thread-worker/debug.js";
+import {
+  collectDebugParts,
+  formatExecTraceEntries,
+  formatWorkerError,
+  THREAD_WORKER_DEBUG_OBSERVATION_MODE,
+} from "../../../src/thread-worker/debug.js";
+
+test("debug observations are marked read-only and do not own state repair", () => {
+  expect(THREAD_WORKER_DEBUG_OBSERVATION_MODE).toBe("read-only-observation");
+});
 
 function makeThreadWorkerDebugExports() {
   const memory = new WebAssembly.Memory({ initial: 1 });

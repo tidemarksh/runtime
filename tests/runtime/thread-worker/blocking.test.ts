@@ -1,3 +1,4 @@
+// Thread-worker tests in this file validate typed blocking outcomes.
 import { expect, test, vi } from "vite-plus/test";
 import { createRuntimeStateBridge } from "../../../src/bridge/runtime-state.js";
 import {
