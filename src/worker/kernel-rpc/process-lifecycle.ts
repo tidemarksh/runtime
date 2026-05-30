@@ -1,16 +1,17 @@
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
-} from "../../../abi.js";
-import { adoptKernelStateForHandle } from "../../sync.js";
-import { syncProcessMemfsViaKernelWorker as syncProcessMemfsViaKernelWorkerForPlane } from "../../sync/memfs.js";
+} from "../../abi.js";
+import { adoptKernelStateForHandle } from "../sync.js";
+import { syncProcessMemfsViaKernelWorker as syncProcessMemfsViaKernelWorkerForPlane } from "../sync/memfs.js";
 import type {
   CanonicalizedChildLifecycle,
   KernelWorkerMemfsSeedMode,
   KernelWorkerPipeSeedMode,
   ProcessHandle,
-} from "../../types.js";
-import type { WorkerKernelRpcLifecycleDeps } from "./types.js";
+} from "../types.js";
+import type { WorkerKernelRpcLifecycleDeps } from "./lifecycle/types.js";
+import { expectKernelWorkerResponse } from "./transport.js";
 
 export function createWorkerKernelRpcProcessLifecycleHelpers(
   deps: WorkerKernelRpcLifecycleDeps,
@@ -22,7 +23,7 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     if (!handle.kernelWorkerRequest || handle.pid <= 0) {
       return;
     }
-    const response = await handle.kernelWorkerRequest({
+    const response = expectKernelWorkerResponse(await handle.kernelWorkerRequest({
       type: "register-process",
       pid: handle.pid,
       vmPtr: handle.vmPtr,
@@ -30,10 +31,7 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
       kernelState: handle.kernelState,
       seedMemfsMode: options.seedMemfsMode ?? "full",
       pipeSeedMode: options.pipeSeedMode ?? "canonical",
-    });
-    if (response.type !== "process-registered") {
-      throw new Error(`unexpected kernel-worker response for register-process: ${response.type}`);
-    }
+    }), "process-registered", "register-process");
     handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
@@ -53,7 +51,7 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
       return;
     }
 
-    const response = await handle.kernelWorkerRequest({
+    const response = expectKernelWorkerResponse(await handle.kernelWorkerRequest({
       type: "initialize-process-lifecycle",
       pid: handle.pid,
       vmPtr,
@@ -63,10 +61,7 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
       sid,
       didExec,
       kernelState: handle.kernelState,
-    });
-    if (response.type !== "process-lifecycle-initialized") {
-      throw new Error(`unexpected kernel-worker response for initialize-process-lifecycle: ${response.type}`);
-    }
+    }), "process-lifecycle-initialized", "initialize-process-lifecycle");
     handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
     handle.kernel.process_reset_lifecycle(
@@ -96,16 +91,13 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
       };
     }
 
-    const response = await handle.kernelWorkerRequest({
+    const response = expectKernelWorkerResponse(await handle.kernelWorkerRequest({
       type: "canonicalize-child-pid",
       pid: handle.pid,
       vmPtr,
       provisionalChildPid,
       kernelState: handle.kernelState,
-    });
-    if (response.type !== "child-pid-canonicalized") {
-      throw new Error(`unexpected kernel-worker response for canonicalize-child-pid: ${response.type}`);
-    }
+    }), "child-pid-canonicalized", "canonicalize-child-pid");
     handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
     handle.kernel.process_rewrite_child_pid(vmPtr, provisionalChildPid, response.childPid, response.nextPid);
@@ -123,13 +115,10 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     if (!handle.kernelWorkerRequest || handle.pid <= 0) {
       return;
     }
-    const response = await handle.kernelWorkerRequest({
+    expectKernelWorkerResponse(await handle.kernelWorkerRequest({
       type: "unregister-process",
       pid: handle.pid,
-    });
-    if (response.type !== "process-unregistered") {
-      throw new Error(`unexpected kernel-worker response for unregister-process: ${response.type}`);
-    }
+    }), "process-unregistered", "unregister-process");
   }
 
   async function recordChildExitViaKernelWorker(
@@ -151,16 +140,13 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     try {
       deps.drainProcessOutput(parent);
 
-      const response = await parent.kernelWorkerRequest({
+      const response = expectKernelWorkerResponse(await parent.kernelWorkerRequest({
         type: "record-child-exit",
         pid: parent.pid,
         childPid,
         waitStatus,
         kernelState: parent.kernelState,
-      });
-      if (response.type !== "child-exit-recorded") {
-        throw new Error(`unexpected kernel-worker response for record-child-exit: ${response.type}`);
-      }
+      }), "child-exit-recorded", "record-child-exit");
       if (parent.pid <= 0 || deps.processHandles.get(parent.pid) !== parent) {
         return;
       }
@@ -192,15 +178,12 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     }
 
     const pidBeforeSync = handle.kernel.process_current_pid(vmPtr);
-    const response = await handle.kernelWorkerRequest({
+    const response = expectKernelWorkerResponse(await handle.kernelWorkerRequest({
       type: "sync-process-lifecycle",
       pid: handle.pid,
       vmPtr,
       kernelState: handle.kernelState,
-    });
-    if (response.type !== "process-lifecycle-synced") {
-      throw new Error(`unexpected kernel-worker response for sync-process-lifecycle: ${response.type}`);
-    }
+    }), "process-lifecycle-synced", "sync-process-lifecycle");
     handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
     const pidAfterSync = handle.kernel.process_current_pid(vmPtr);

@@ -1,4 +1,4 @@
-import { createWorkerKernelRpcProcessLifecycleHelpers } from "./lifecycle/process.js";
+import { createWorkerKernelRpcProcessLifecycleHelpers } from "./process-lifecycle.js";
 import { createWorkerKernelRpcResumeLifecycleHelpers } from "./lifecycle/resume.js";
 import type { WorkerKernelRpcLifecycleDeps } from "./lifecycle/types.js";
 
