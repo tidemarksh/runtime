@@ -21,7 +21,7 @@ import { createFutexScheduler } from "./scheduler/futex.js";
 import { createPipePollScheduler } from "./scheduler/pipe-poll.js";
 import { createPruningScheduler } from "./scheduler/pruning.js";
 import { createWorkerSchedulerQueueHelpers } from "./scheduler/queue.js";
-import { logNetworkDebug } from "./scheduler/run-loop.js";
+import { createRunLoopScheduler, logNetworkDebug } from "./scheduler/run-loop.js";
 import { createSleepScheduler } from "./scheduler/sleep.js";
 import { createSocketWaitScheduler } from "./scheduler/socket-wait.js";
 import { createWorkerSchedulerStateSyncHelpers } from "./scheduler/state-sync.js";
@@ -37,7 +37,6 @@ import type {
 } from "./scheduler/types.js";
 export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerScheduler {
   const { threadWorkerStates } = deps;
-  const observedForkSharedSyncPromises = new WeakSet<Promise<void>>();
   const pipeChildExitResumeKeys = new WeakMap<ProcessHandle, Map<number, string>>();
   const appliedChildExitRecordKeys = new Map<string, Set<string>>();
   const schedulerQueueHelpers = createWorkerSchedulerQueueHelpers({
@@ -66,6 +65,17 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   }
 
   const {
+    beginBlockedRpc,
+    clearStaleRunningWorker,
+    finishBlockedRpc,
+    observeForkSharedSyncCompletion,
+    scheduleBlockedRetry,
+  } = createRunLoopScheduler({
+    threadWorkerStates,
+    appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
+    retryBlockedWorker,
+  });
+  const {
     canScheduleWorker,
   } = createVforkExclusiveScheduler(threadWorkerStates);
   const {
@@ -82,26 +92,32 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   });
   const {
     blockedOrCurrentSyscallNr,
-    blockedPollPipeHasBufferedData,
     formatBlockedPollFdSet,
     formatFirstPipeWaitDebug,
-    pollPipeWriteOpenForThreadStep,
     pollWaitTimeoutMs,
+    pipeWaitShouldParkBehindActiveChild,
+    pipeWaitShouldRemainPassive,
     resumePipePollTimeoutLocally,
+    schedulePipePollTimeoutRetry,
   } = createPipePollScheduler({
     threadWorkerStates,
     appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
     advanceGuestTimeByMs,
     handleBlockedRetryResult,
+    scheduleBlockedRetry,
+    pipeChildExitRecordsAlreadyResumedForWait,
+    hasActiveChildProcess: deps.hasActiveChildProcess,
   });
   const {
     formatFirstSocketWaitDebug,
     networkInboundAvailable,
     socketWaitTimeoutMs,
     blockedWaitShouldPumpNetwork,
+    scheduleSocketBlockedRetry,
   } = createSocketWaitScheduler({
     appendWorkerDebugLog,
     logNetworkDebug,
+    scheduleBlockedRetry,
   });
   const {
     pruneDetachedProcessWorkers,
@@ -131,161 +147,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     applyLocalChildExitRecords,
   });
 
-  function beginBlockedRpc(blocked: BlockedWorkerState): number {
-    blocked.rpcPending = true;
-    blocked.rpcGeneration += 1;
-    return blocked.rpcGeneration;
-  }
-
-  function finishBlockedRpc(
-    handle: ProcessHandle,
-    worker: Worker,
-    vmPtr: number,
-    rpcGeneration: number,
-  ): BlockedWorkerState | null {
-    const latestBlocked = handle.blockedWorkers.get(worker);
-    if (
-      !latestBlocked
-      || latestBlocked.vmPtr !== vmPtr
-      || latestBlocked.rpcGeneration !== rpcGeneration
-    ) {
-      return null;
-    }
-    latestBlocked.rpcPending = false;
-    return latestBlocked;
-  }
-
-  function observeForkSharedSyncCompletion(
-    handle: ProcessHandle,
-    worker: Worker,
-    promise: Promise<void>,
-  ): void {
-    if (observedForkSharedSyncPromises.has(promise)) {
-      return;
-    }
-    observedForkSharedSyncPromises.add(promise);
-    const onSettled = (): void => {
-      if (handle.kernelShare.forkSharedSyncPromise === promise) {
-        handle.kernelShare.forkSharedSyncPromise = null;
-      }
-      if (handle.forkSharedSyncPromise === promise) {
-        handle.forkSharedSyncPromise = null;
-      }
-      const blocked = handle.blockedWorkers.get(worker);
-      if (!blocked) {
-        return;
-      }
-      if (blocked.retryTimer !== null) {
-        clearTimeout(blocked.retryTimer);
-        blocked.retryTimer = null;
-      }
-      scheduleBlockedRetry(handle, worker, 0, blocked.timeoutExpired);
-    };
-    promise.then(onSettled, onSettled);
-  }
-
-  function clearStaleRunningWorker(handle: ProcessHandle, blockedWorker: Worker): boolean {
-    const runningWorker = handle.runningWorker;
-    if (runningWorker === null || runningWorker === blockedWorker) {
-      return false;
-    }
-    if (!handle.workers.has(runningWorker)) {
-      handle.runningWorker = null;
-      return true;
-    }
-    const runningThread = threadWorkerStates.get(runningWorker);
-    if (!runningThread) {
-      handle.runningWorker = null;
-      return true;
-    }
-    if (runningThread.waitingInWorkerStatus !== null) {
-      handle.runningWorker = null;
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `running-worker-cleared:${handle.pid}:wait=${runningThread.waitingInWorkerStatus}`,
-      );
-      return true;
-    }
-    const runningStatus = handle.kernel.thread_status(runningThread.vmPtr);
-    if (runningStatus !== handle.kernel.abi_status_ok()) {
-      handle.runningWorker = null;
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `running-worker-cleared:${handle.pid}:status=${runningStatus}`,
-      );
-      return true;
-    }
-    return false;
-  }
-
-  function scheduleBlockedRetry(
-    handle: ProcessHandle,
-    worker: Worker,
-    delayMs = 10,
-    timeoutExpired = false,
-  ): void {
-    const blocked = handle.blockedWorkers.get(worker);
-    if (!blocked || blocked.retryTimer !== null) {
-      return;
-    }
-    blocked.retryTimer = setTimeout(() => {
-      blocked.retryTimer = null;
-      blocked.timeoutExpired = timeoutExpired;
-      retryBlockedWorker(handle, worker);
-    }, delayMs);
-  }
-
-  function pipeWaitShouldRemainPassive(
-    handle: ProcessHandle,
-    status: number,
-    vmPtr: number,
-    pollTimeoutMs: number,
-    timeoutDeadlineMs: number | null,
-    readyCount: number | undefined,
-    pipeChildExitResumeKey: string | null,
-  ): boolean {
-    const syscall = blockedOrCurrentSyscallNr(handle, vmPtr);
-    if (syscall === null) {
-      return false;
-    }
-    const read = handle.kernel.abi_sys_read?.();
-    const readv = handle.kernel.abi_sys_readv?.();
-    const ppoll = handle.kernel.abi_sys_ppoll?.();
-    const pselect6 = handle.kernel.abi_sys_pselect6?.();
-    const isPollLike = (ppoll !== undefined && syscall === BigInt(ppoll))
-      || (pselect6 !== undefined && syscall === BigInt(pselect6));
-    const canPark = (
-      (read !== undefined && syscall === BigInt(read))
-      || (readv !== undefined && syscall === BigInt(readv))
-      || isPollLike
-    );
-    const blockedReadIsReady = (
-      ((read !== undefined && syscall === BigInt(read)) || (readv !== undefined && syscall === BigInt(readv)))
-      && handle.kernel.thread_blocked_pipe_read_ready?.(vmPtr) === 1
-    );
-    const blockedPollPipeIsReady = blockedPollPipeHasBufferedData(handle, vmPtr);
-    const pollLikePipeHasNoWriter = isPollLike
-      && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) !== 1
-      && !blockedPollPipeIsReady
-      && pollPipeWriteOpenForThreadStep(handle, vmPtr) <= 0;
-    const childExitRecordsAlreadyResumed = pipeChildExitRecordsAlreadyResumedForWait(
-      handle,
-      vmPtr,
-      pipeChildExitResumeKey,
-    );
-    return status === handle.kernel.abi_status_pipe_wait()
-      && canPark
-      && childExitRecordsAlreadyResumed
-      && !blockedReadIsReady
-      && !blockedPollPipeIsReady
-      && !pollLikePipeHasNoWriter
-      && pollTimeoutMs < 0
-      && timeoutDeadlineMs === null
-      && (readyCount === undefined || readyCount === 0)
-      && handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) !== 1
-      && handle.kernel.thread_poll_hup_sync_pending?.(vmPtr) !== 1;
-  }
-
   function pipeChildExitRecordsResumeKeyForWait(handle: ProcessHandle, vmPtr: number): string {
     const childExitRecordsKey = formatChildExitRecords(handle);
     return childExitRecordsKey === ""
@@ -300,83 +161,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   ): boolean {
     const childExitResumeKey = pipeChildExitRecordsResumeKeyForWait(handle, vmPtr);
     return childExitResumeKey === "" || pipeChildExitResumeKey === childExitResumeKey;
-  }
-
-  function pipeWaitHasImmediateWakeReason(
-    handle: ProcessHandle,
-    vmPtr: number,
-    readyCount: number | undefined,
-  ): boolean {
-    return (readyCount !== undefined && readyCount !== 0)
-      || handle.kernel.thread_blocked_pipe_read_ready?.(vmPtr) === 1
-      || handle.kernel.thread_blocked_pipe_write_ready?.(vmPtr) === 1
-      || blockedPollPipeHasBufferedData(handle, vmPtr)
-      || handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) === 1
-      || handle.kernel.thread_poll_hup_sync_pending?.(vmPtr) === 1;
-  }
-
-  function pipeWaitShouldParkBehindActiveChild(
-    handle: ProcessHandle,
-    blocked: BlockedWorkerState,
-    pollTimeoutMs: number,
-    readyCount: number | undefined,
-  ): boolean {
-    return blocked.status === handle.kernel.abi_status_pipe_wait()
-      && pollTimeoutMs < 0
-      && blocked.timeoutDeadlineMs === null
-      && !blocked.timeoutExpired
-      && pipeChildExitRecordsAlreadyResumedForWait(handle, blocked.vmPtr)
-      && handle.pendingChildExitRecords === 0
-      && handle.pendingChildSpawnRecords === 0
-      && handle.kernel.thread_poll_wait_has_socket?.(blocked.vmPtr) !== 1
-      && deps.hasActiveChildProcess(handle.pid)
-      && !pipeWaitHasImmediateWakeReason(handle, blocked.vmPtr, readyCount);
-  }
-
-  function scheduleSocketBlockedRetry(
-    handle: ProcessHandle,
-    worker: Worker,
-    blocked: { timeoutDeadlineMs: number | null },
-    timeoutMs: number,
-  ): void {
-    if (timeoutMs < 0) {
-      blocked.timeoutDeadlineMs = null;
-      scheduleBlockedRetry(handle, worker, 1);
-      return;
-    }
-    const now = Date.now();
-    if (blocked.timeoutDeadlineMs === null) {
-      blocked.timeoutDeadlineMs = now + timeoutMs;
-    }
-    const remaining = blocked.timeoutDeadlineMs - now;
-    if (remaining <= 0) {
-      scheduleBlockedRetry(handle, worker, 0, true);
-      return;
-    }
-    scheduleBlockedRetry(handle, worker, Math.min(10, remaining));
-  }
-
-  function schedulePipePollTimeoutRetry(
-    handle: ProcessHandle,
-    worker: Worker,
-    blocked: { timeoutDeadlineMs: number | null },
-    timeoutMs: number,
-  ): void {
-    if (timeoutMs < 0) {
-      blocked.timeoutDeadlineMs = null;
-      scheduleBlockedRetry(handle, worker, 1);
-      return;
-    }
-    const now = Date.now();
-    if (blocked.timeoutDeadlineMs === null) {
-      blocked.timeoutDeadlineMs = now + timeoutMs;
-    }
-    const remaining = blocked.timeoutDeadlineMs - now;
-    if (remaining <= 0) {
-      scheduleBlockedRetry(handle, worker, 0, true);
-      return;
-    }
-    scheduleBlockedRetry(handle, worker, remaining);
   }
 
   function formatPipeChildExitResumeKey(

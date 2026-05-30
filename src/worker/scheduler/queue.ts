@@ -5,6 +5,7 @@ import {
 } from "../../bridge/compat.js";
 import { publishRuntimeBridgeEpoch } from "../../bridge/runtime-state.js";
 import { createReadyWorkerFairness } from "./fairness.js";
+import { createFutexReconciliation } from "./futex.js";
 import type {
   AttachThreadWorkerRequest,
   ProcessHandle,
@@ -206,6 +207,10 @@ export function createWorkerSchedulerQueueHelpers(
 ): WorkerSchedulerQueueHelpers {
   const observedForkSharedSyncGates = new WeakMap<ProcessHandle, Promise<void>>();
   const readyWorkerFairness = createReadyWorkerFairness(pumpProcess);
+  const futexReconciliation = createFutexReconciliation({
+    threadWorkerStates: deps.threadWorkerStates,
+    appendWorkerDebugLog: deps.appendWorkerDebugLog,
+  });
 
   function observeForkSharedSyncGate(handle: ProcessHandle, promise: Promise<void>): void {
     if (observedForkSharedSyncGates.get(handle) === promise) {
@@ -552,50 +557,6 @@ export function createWorkerSchedulerQueueHelpers(
     }
   }
 
-  function reconcileResolvedWorkerLocalWaits(handle: ProcessHandle): void {
-    const reconciledWorkers: Worker[] = [];
-    for (const worker of handle.workers) {
-      if (handle.runningWorker === worker || handle.readyWorkers.includes(worker) || handle.blockedWorkers.has(worker)) {
-        continue;
-      }
-      const thread = deps.threadWorkerStates.get(worker);
-      const waitingStatus = thread?.waitingInWorkerStatus ?? null;
-      if (
-        thread === undefined
-        || waitingStatus === null
-        || thread.ownerAsyncStatus !== null
-      ) {
-        continue;
-      }
-      if (waitingStatus !== handle.kernel.abi_status_futex_wait()) {
-        continue;
-      }
-      if (thread.waitingInWorkerReconcileDeferred) {
-        thread.waitingInWorkerReconcileDeferred = false;
-        continue;
-      }
-      const currentStatus = handle.kernel.thread_status(thread.vmPtr);
-      if (currentStatus !== handle.kernel.abi_status_ok()) {
-        continue;
-      }
-      thread.waitingInWorkerStatus = null;
-      thread.waitingInWorkerReconcileDeferred = false;
-      thread.runningGeneration = null;
-      deps.appendWorkerDebugLog(
-        handle,
-        `wait-in-worker-reconciled:0x${thread.vmPtr.toString(16)}:${waitingStatus}->${currentStatus}`,
-      );
-      reconciledWorkers.push(worker);
-    }
-    if (reconciledWorkers.length > 0) {
-      handle.readyWorkers.unshift(...reconciledWorkers);
-    }
-  }
-
-  function hasWorkerLocalWait(_handle: ProcessHandle, thread: ThreadWorkerState | undefined): boolean {
-    return (thread?.waitingInWorkerStatus ?? null) !== null;
-  }
-
   function pumpProcess(handle: ProcessHandle): void {
     if (handle.exitInProgress) {
       return;
@@ -609,7 +570,7 @@ export function createWorkerSchedulerQueueHelpers(
     if (runningWorker !== null) {
       return;
     }
-    reconcileResolvedWorkerLocalWaits(handle);
+    futexReconciliation.reconcileResolvedWorkerLocalWaits(handle);
     recoverRunnableIdleWorkers(handle);
     let next: Worker | undefined;
     if (hasExclusiveVforkWorker(handle)) {
@@ -621,7 +582,7 @@ export function createWorkerSchedulerQueueHelpers(
       const candidateThread = candidate ? deps.threadWorkerStates.get(candidate) : undefined;
       if (
         (candidateThread?.ownerAsyncStatus ?? null) !== null
-        || hasWorkerLocalWait(handle, candidateThread)
+        || futexReconciliation.hasWorkerLocalWait(candidateThread)
       ) {
         handle.readyWorkers.splice(index, 1);
         return;
@@ -631,7 +592,7 @@ export function createWorkerSchedulerQueueHelpers(
       let index = handle.readyWorkers.findIndex((candidate) => {
         const candidateThread = deps.threadWorkerStates.get(candidate);
         return (candidateThread?.ownerAsyncStatus ?? null) === null
-          && !hasWorkerLocalWait(handle, candidateThread);
+          && !futexReconciliation.hasWorkerLocalWait(candidateThread);
       });
       if (index > 0) {
         handle.readyWorkers.splice(0, index);

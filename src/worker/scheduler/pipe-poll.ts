@@ -30,6 +30,13 @@ export interface PipePollSchedulerDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   advanceGuestTimeByMs(handle: ProcessHandle, timeoutMs: number): void;
   handleBlockedRetryResult(handle: ProcessHandle, worker: Worker, vmPtr: number, status: number): void;
+  scheduleBlockedRetry(handle: ProcessHandle, worker: Worker, delayMs?: number, timeoutExpired?: boolean): void;
+  pipeChildExitRecordsAlreadyResumedForWait(
+    handle: ProcessHandle,
+    vmPtr: number,
+    pipeChildExitResumeKey?: string | null,
+  ): boolean;
+  hasActiveChildProcess(parentPid: number): boolean;
 }
 
 export interface PipePollScheduler {
@@ -52,6 +59,27 @@ export interface PipePollScheduler {
   pollWaitTimeoutMs(handle: ProcessHandle, status: number, vmPtr: number): number;
   blockedPollPipeHasBufferedData(handle: ProcessHandle, vmPtr: number): boolean;
   pollPipeWriteOpenForThreadStep(handle: ProcessHandle, vmPtr: number): number;
+  pipeWaitShouldRemainPassive(
+    handle: ProcessHandle,
+    status: number,
+    vmPtr: number,
+    pollTimeoutMs: number,
+    timeoutDeadlineMs: number | null,
+    readyCount: number | undefined,
+    pipeChildExitResumeKey: string | null,
+  ): boolean;
+  pipeWaitShouldParkBehindActiveChild(
+    handle: ProcessHandle,
+    blocked: BlockedWorkerState,
+    pollTimeoutMs: number,
+    readyCount: number | undefined,
+  ): boolean;
+  schedulePipePollTimeoutRetry(
+    handle: ProcessHandle,
+    worker: Worker,
+    blocked: { timeoutDeadlineMs: number | null },
+    timeoutMs: number,
+  ): void;
   formatFirstPipeWaitDebug(handle: ProcessHandle, vmPtr: number): string;
   formatBlockedPollFdSet(handle: ProcessHandle, vmPtr: number, limit?: number): string;
 }
@@ -232,6 +260,111 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
     }
     const timeout = handle.kernel.thread_poll_wait_timeout?.(vmPtr);
     return timeout === undefined ? -1 : Number(timeout);
+  }
+
+  function pipeWaitShouldRemainPassive(
+    handle: ProcessHandle,
+    status: number,
+    vmPtr: number,
+    pollTimeoutMs: number,
+    timeoutDeadlineMs: number | null,
+    readyCount: number | undefined,
+    pipeChildExitResumeKey: string | null,
+  ): boolean {
+    const syscall = blockedOrCurrentSyscallNr(handle, vmPtr);
+    if (syscall === null) {
+      return false;
+    }
+    const read = handle.kernel.abi_sys_read?.();
+    const readv = handle.kernel.abi_sys_readv?.();
+    const ppoll = handle.kernel.abi_sys_ppoll?.();
+    const pselect6 = handle.kernel.abi_sys_pselect6?.();
+    const isPollLike = (ppoll !== undefined && syscall === BigInt(ppoll))
+      || (pselect6 !== undefined && syscall === BigInt(pselect6));
+    const canPark = (
+      (read !== undefined && syscall === BigInt(read))
+      || (readv !== undefined && syscall === BigInt(readv))
+      || isPollLike
+    );
+    const blockedReadIsReady = (
+      ((read !== undefined && syscall === BigInt(read)) || (readv !== undefined && syscall === BigInt(readv)))
+      && handle.kernel.thread_blocked_pipe_read_ready?.(vmPtr) === 1
+    );
+    const blockedPollPipeIsReady = blockedPollPipeHasBufferedData(handle, vmPtr);
+    const pollLikePipeHasNoWriter = isPollLike
+      && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) !== 1
+      && !blockedPollPipeIsReady
+      && pollPipeWriteOpenForThreadStep(handle, vmPtr) <= 0;
+    const childExitRecordsAlreadyResumed = deps.pipeChildExitRecordsAlreadyResumedForWait(
+      handle,
+      vmPtr,
+      pipeChildExitResumeKey,
+    );
+    return status === handle.kernel.abi_status_pipe_wait()
+      && canPark
+      && childExitRecordsAlreadyResumed
+      && !blockedReadIsReady
+      && !blockedPollPipeIsReady
+      && !pollLikePipeHasNoWriter
+      && pollTimeoutMs < 0
+      && timeoutDeadlineMs === null
+      && (readyCount === undefined || readyCount === 0)
+      && handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) !== 1
+      && handle.kernel.thread_poll_hup_sync_pending?.(vmPtr) !== 1;
+  }
+
+  function pipeWaitHasImmediateWakeReason(
+    handle: ProcessHandle,
+    vmPtr: number,
+    readyCount: number | undefined,
+  ): boolean {
+    return (readyCount !== undefined && readyCount !== 0)
+      || handle.kernel.thread_blocked_pipe_read_ready?.(vmPtr) === 1
+      || handle.kernel.thread_blocked_pipe_write_ready?.(vmPtr) === 1
+      || blockedPollPipeHasBufferedData(handle, vmPtr)
+      || handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) === 1
+      || handle.kernel.thread_poll_hup_sync_pending?.(vmPtr) === 1;
+  }
+
+  function pipeWaitShouldParkBehindActiveChild(
+    handle: ProcessHandle,
+    blocked: BlockedWorkerState,
+    pollTimeoutMs: number,
+    readyCount: number | undefined,
+  ): boolean {
+    return blocked.status === handle.kernel.abi_status_pipe_wait()
+      && pollTimeoutMs < 0
+      && blocked.timeoutDeadlineMs === null
+      && !blocked.timeoutExpired
+      && deps.pipeChildExitRecordsAlreadyResumedForWait(handle, blocked.vmPtr)
+      && handle.pendingChildExitRecords === 0
+      && handle.pendingChildSpawnRecords === 0
+      && handle.kernel.thread_poll_wait_has_socket?.(blocked.vmPtr) !== 1
+      && deps.hasActiveChildProcess(handle.pid)
+      && !pipeWaitHasImmediateWakeReason(handle, blocked.vmPtr, readyCount);
+  }
+
+  function schedulePipePollTimeoutRetry(
+    handle: ProcessHandle,
+    worker: Worker,
+    blocked: { timeoutDeadlineMs: number | null },
+    timeoutMs: number,
+  ): void {
+    if (timeoutMs < 0) {
+      blocked.timeoutDeadlineMs = null;
+      deps.scheduleBlockedRetry(handle, worker, 1);
+      return;
+    }
+    const now = Date.now();
+    if (blocked.timeoutDeadlineMs === null) {
+      blocked.timeoutDeadlineMs = now + timeoutMs;
+    }
+    const remaining = blocked.timeoutDeadlineMs - now;
+    if (remaining <= 0) {
+      deps.scheduleBlockedRetry(handle, worker, 0, true);
+      return;
+    }
+    deps.scheduleBlockedRetry(handle, worker, remaining);
   }
 
   function blockedPollPipeHasBufferedData(handle: ProcessHandle, vmPtr: number): boolean {
@@ -499,6 +632,9 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
     pollWaitTimeoutMs,
     blockedPollPipeHasBufferedData,
     pollPipeWriteOpenForThreadStep,
+    pipeWaitShouldRemainPassive,
+    pipeWaitShouldParkBehindActiveChild,
+    schedulePipePollTimeoutRetry,
     formatFirstPipeWaitDebug,
     formatBlockedPollFdSet,
   };

@@ -3,6 +3,7 @@ import type { ProcessHandle } from "../types.js";
 export interface SocketWaitSchedulerDeps {
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   logNetworkDebug(event: string): void;
+  scheduleBlockedRetry(handle: ProcessHandle, worker: Worker, delayMs?: number, timeoutExpired?: boolean): void;
 }
 
 export interface SocketWaitScheduler {
@@ -11,6 +12,12 @@ export interface SocketWaitScheduler {
   blockedWaitMayDependOnNetwork(handle: ProcessHandle, status: number, vmPtr: number): boolean;
   blockedWaitShouldPumpNetwork(handle: ProcessHandle, status: number, vmPtr: number): boolean;
   networkInboundAvailable(handle: ProcessHandle, vmPtr: number): boolean;
+  scheduleSocketBlockedRetry(
+    handle: ProcessHandle,
+    worker: Worker,
+    blocked: { timeoutDeadlineMs: number | null },
+    timeoutMs: number,
+  ): void;
 }
 
 export function createSocketWaitScheduler(deps: SocketWaitSchedulerDeps): SocketWaitScheduler {
@@ -124,11 +131,35 @@ export function createSocketWaitScheduler(deps: SocketWaitSchedulerDeps): Socket
     return false;
   }
 
+  function scheduleSocketBlockedRetry(
+    handle: ProcessHandle,
+    worker: Worker,
+    blocked: { timeoutDeadlineMs: number | null },
+    timeoutMs: number,
+  ): void {
+    if (timeoutMs < 0) {
+      blocked.timeoutDeadlineMs = null;
+      deps.scheduleBlockedRetry(handle, worker, 1);
+      return;
+    }
+    const now = Date.now();
+    if (blocked.timeoutDeadlineMs === null) {
+      blocked.timeoutDeadlineMs = now + timeoutMs;
+    }
+    const remaining = blocked.timeoutDeadlineMs - now;
+    if (remaining <= 0) {
+      deps.scheduleBlockedRetry(handle, worker, 0, true);
+      return;
+    }
+    deps.scheduleBlockedRetry(handle, worker, Math.min(10, remaining));
+  }
+
   return {
     socketWaitTimeoutMs,
     formatFirstSocketWaitDebug,
     blockedWaitMayDependOnNetwork,
     blockedWaitShouldPumpNetwork,
     networkInboundAvailable,
+    scheduleSocketBlockedRetry,
   };
 }
