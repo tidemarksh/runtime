@@ -11,6 +11,11 @@ import {
   type ProcessHandle,
 } from "../types.js";
 import type { KernelWorkerPidBytesSnapshot } from "../../messages.js";
+import type {
+  KernelWorkerFdEntrySnapshot,
+  KernelWorkerOfdSlotSnapshot,
+  KernelWorkerSocketStateSnapshot,
+} from "../contracts/index.js";
 
 interface WorkerKernelRpcDeps {
   processHandles: Map<number, ProcessHandle>;
@@ -25,6 +30,7 @@ interface WorkerKernelRpcDeps {
   kickBlockedWorkers(handle: ProcessHandle): void;
   markRuntimeFsDirty(handle: ProcessHandle): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
+  syncProcessMemfsViaKernelWorker(handle: ProcessHandle): Promise<void>;
   syncBlockedForkSharedStateViaKernelWorker(handle: ProcessHandle, sourceVmPtr?: number): Promise<void>;
   syncForkSharedStateLocally(
     handle: ProcessHandle,
@@ -52,6 +58,14 @@ interface WorkerKernelRpcDeps {
   ): Promise<void>;
   syncPipeStateViaKernelWorker(handle: ProcessHandle): Promise<bigint>;
   syncSocketStateViaKernelWorker(handle: ProcessHandle): Promise<{ socketUsed: number; netBufUsed: bigint }>;
+  snapshotProcessFdOfdStateForKernelWorker(
+    handle: ProcessHandle,
+    vmPtr: number,
+  ): {
+    fdEntries: KernelWorkerFdEntrySnapshot[];
+    ofdSlots: KernelWorkerOfdSlotSnapshot[];
+  };
+  applySocketStateFromKernelWorker(handle: ProcessHandle, snapshot: KernelWorkerSocketStateSnapshot): void;
 }
 
 export function clearVforkSnapshot(handle: ProcessHandle): void {
@@ -102,7 +116,10 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     handleBlockedRetryResult: deps.handleBlockedRetryResult,
     kickBlockedWorkers: deps.kickBlockedWorkers,
     requestPipeStateSync: deps.requestPipeStateSync,
+    syncProcessMemfsViaKernelWorker: deps.syncProcessMemfsViaKernelWorker,
     syncSocketStateViaKernelWorker: syncSocketStatePreservingNetworkBridge,
+    snapshotProcessFdOfdStateForKernelWorker: deps.snapshotProcessFdOfdStateForKernelWorker,
+    applySocketStateFromKernelWorker: deps.applySocketStateFromKernelWorker,
     clearVforkSnapshot,
   });
 

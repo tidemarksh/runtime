@@ -40,3 +40,6 @@ export type {
   RuntimeReadonlyQuery,
   RuntimeReadonlyQueryResult,
 } from "./queries.js";
+
+export { describeSyncCause } from "./sync.js";
+export type { SyncCause } from "./sync.js";

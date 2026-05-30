@@ -4,9 +4,7 @@ import {
 } from "../../abi.js";
 import {
   adoptKernelStateForHandle,
-  applySocketStateFromKernelWorker,
-  snapshotProcessFdOfdStateForKernelWorker,
-} from "../sync.js";
+} from "../kernel-state.js";
 import type { ProcessHandle } from "../types.js";
 import type { WorkerKernelRpcLifecycleDeps } from "./lifecycle/types.js";
 import { completedKernelRpcOutcome, type KernelRpcResumeEffect, type KernelRpcResumeOutcome } from "./outcomes.js";
@@ -28,7 +26,7 @@ export function createWorkerKernelRpcSocketHelpers(
         ? [...handle.networkPendingConnectFds][0]
         : 0;
       const connectFd = blockedFd !== 0 ? blockedFd : pendingConnectFd;
-      const { fdEntries, ofdSlots } = snapshotProcessFdOfdStateForKernelWorker(handle, vmPtr);
+      const { fdEntries, ofdSlots } = deps.snapshotProcessFdOfdStateForKernelWorker(handle, vmPtr);
       deps.appendWorkerDebugLog(handle, `connect-rpc-start:${handle.pid}:vm=0x${vmPtr.toString(16)}:result=${result.toString()}:fd=${connectFd}:blocked_fd=${blockedFd}:a0=${handle.kernel.thread_a0(vmPtr).toString()}`);
       const response = expectKernelWorkerResponse(await handle.kernelWorkerRequest({
         type: "resume-connect",
@@ -50,7 +48,7 @@ export function createWorkerKernelRpcSocketHelpers(
       if (response.socketState) {
         handle.networkPendingConnectFds.delete(fd);
         try {
-          applySocketStateFromKernelWorker(handle, response.socketState);
+          deps.applySocketStateFromKernelWorker(handle, response.socketState);
         } finally {
           if (restorePendingFd) {
             handle.networkPendingConnectFds.add(fd);

@@ -3,8 +3,8 @@ import {
 } from "../../abi.js";
 import {
   adoptKernelStateForHandle,
-} from "../sync.js";
-import { describeSyncCause, type SyncCause } from "../sync/effects.js";
+} from "../kernel-state.js";
+import { describeSyncCause, type SyncCause } from "../contracts/sync.js";
 import type { ProcessHandle } from "../types.js";
 import type { WorkerKernelRpcLifecycleDeps } from "./lifecycle/types.js";
 import { expectKernelWorkerResponse } from "./transport.js";

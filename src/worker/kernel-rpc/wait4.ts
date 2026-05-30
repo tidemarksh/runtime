@@ -4,7 +4,7 @@ import {
 } from "../../abi.js";
 import {
   adoptKernelStateForHandle,
-} from "../sync.js";
+} from "../kernel-state.js";
 import type { ProcessHandle } from "../types.js";
 import type { WorkerKernelRpcLifecycleDeps } from "./lifecycle/types.js";
 import { completedKernelRpcOutcome, type KernelRpcResumeEffect, type KernelRpcResumeOutcome } from "./outcomes.js";

@@ -96,7 +96,7 @@ import {
   adoptKernelState,
   adoptKernelStateForHandle,
   repairHandleVmPidAfterKernelStateAttach,
-} from "./kernel-state.js";
+} from "../kernel-state.js";
 import { appendForkSharedMemfsDebug } from "./memfs.js";
 import { describeSyncCause, type SyncCause } from "./effects.js";
 

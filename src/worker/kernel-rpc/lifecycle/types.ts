@@ -1,4 +1,9 @@
 import type {
+  KernelWorkerFdEntrySnapshot,
+  KernelWorkerOfdSlotSnapshot,
+  KernelWorkerSocketStateSnapshot,
+} from "../../contracts/index.js";
+import type {
   ProcessHandle,
   ThreadWorkerState,
 } from "../../types.js";
@@ -14,5 +19,14 @@ export interface WorkerKernelRpcLifecycleDeps {
   kickBlockedWorkers(handle: ProcessHandle): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   syncSocketStateViaKernelWorker(handle: ProcessHandle): Promise<{ socketUsed: number; netBufUsed: bigint }>;
+  syncProcessMemfsViaKernelWorker(handle: ProcessHandle): Promise<void>;
+  snapshotProcessFdOfdStateForKernelWorker(
+    handle: ProcessHandle,
+    vmPtr: number,
+  ): {
+    fdEntries: KernelWorkerFdEntrySnapshot[];
+    ofdSlots: KernelWorkerOfdSlotSnapshot[];
+  };
+  applySocketStateFromKernelWorker(handle: ProcessHandle, snapshot: KernelWorkerSocketStateSnapshot): void;
   clearVforkSnapshot(handle: ProcessHandle): void;
 }

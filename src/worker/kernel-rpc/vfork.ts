@@ -5,7 +5,7 @@ import {
 } from "../../abi.js";
 import {
   adoptKernelStateForHandle,
-} from "../sync.js";
+} from "../kernel-state.js";
 import type {
   CanonicalizedChildLifecycle,
   ProcessHandle,

@@ -6,9 +6,9 @@ export {
   adoptKernelState,
   adoptKernelStateForHandle,
   repairHandleVmPidAfterKernelStateAttach,
-} from "./kernel-state.js";
+} from "../kernel-state.js";
 export { appendForkSharedMemfsDebug } from "./memfs.js";
-export { syncProcessMemfsViaKernelWorker } from "./memfs.js";
+export { syncProcessMemfsForWorkerRuntime, syncProcessMemfsViaKernelWorker } from "./memfs.js";
 export {
   formatPipeSnapshotDebug,
   int32AtomicView,

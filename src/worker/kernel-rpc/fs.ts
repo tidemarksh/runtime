@@ -8,7 +8,7 @@ import {
   hasPlausibleOfdState,
 } from "../ownership/ofd-table.js";
 import { ensureKernelMemoryCapacity, kernelScratchBase } from "../kernel-scratch.js";
-import { adoptKernelStateForHandle } from "../sync.js";
+import { adoptKernelStateForHandle } from "../kernel-state.js";
 import {
   createTransferDebugStats,
   type ProcessHandle,

@@ -2,8 +2,7 @@ import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
 } from "../../abi.js";
-import { adoptKernelStateForHandle } from "../sync.js";
-import { syncProcessMemfsViaKernelWorker as syncProcessMemfsViaKernelWorkerForPlane } from "../sync/memfs.js";
+import { adoptKernelStateForHandle } from "../kernel-state.js";
 import type {
   CanonicalizedChildLifecycle,
   KernelWorkerMemfsSeedMode,
@@ -201,11 +200,7 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
   }
 
   async function syncProcessMemfsViaKernelWorker(handle: ProcessHandle): Promise<void> {
-    await syncProcessMemfsViaKernelWorkerForPlane(handle, {
-      kind: "syscall",
-      nr: -1n,
-      name: "process-memfs-sync",
-    });
+    await deps.syncProcessMemfsViaKernelWorker(handle);
   }
 
   return {

@@ -29,12 +29,15 @@ import type { KernelRpcResumeOutcome } from "../kernel-rpc/outcomes.js";
 import { applyKernelRpcResumeEffects as applyKernelRpcResumeEffectsImpl } from "../kernel-rpc/effects.js";
 import { createWorkerProcessFactory } from "../create-process.js";
 import {
+  applySocketStateFromKernelWorker,
   releaseSharedHostStdioViaKernelWorker as releaseSharedHostStdioImpl,
   rehydrateForkSharedStateForWorkerRuntime as rehydrateForkSharedStateViaKernelWorkerImpl,
+  snapshotProcessFdOfdStateForKernelWorker,
   syncBlockedForkSharedStateForWorkerRuntime as syncBlockedForkSharedStateViaKernelWorkerImpl,
   syncForkSharedStateForWorkerRuntime as syncForkSharedStateViaKernelWorkerImpl,
   syncForkSharedStateLocallyForWorkerRuntime as syncForkSharedStateLocallyImpl,
   syncPipeStateForWorkerRuntime as syncPipeStateViaKernelWorkerImpl,
+  syncProcessMemfsForWorkerRuntime as syncProcessMemfsViaKernelWorkerImpl,
   syncSocketStateForWorkerRuntime as syncSocketStateViaKernelWorkerImpl,
 } from "../sync.js";
 import { createWorkerDestroyHelpers } from "../destroy.js";
@@ -172,12 +175,15 @@ workerKernelRpcHelpers = createWorkerKernelRpcHelpers({
   kickBlockedWorkers,
   markRuntimeFsDirty,
   requestPipeStateSync,
+  syncProcessMemfsViaKernelWorker: syncProcessMemfsViaKernelWorkerImpl,
   syncBlockedForkSharedStateViaKernelWorker,
   syncForkSharedStateLocally,
   syncForkSharedStateViaKernelWorker,
   rehydrateForkSharedStateViaKernelWorker,
   syncPipeStateViaKernelWorker,
   syncSocketStateViaKernelWorker,
+  snapshotProcessFdOfdStateForKernelWorker,
+  applySocketStateFromKernelWorker,
 });
 const {
   canonicalizeActiveVforkChildViaKernelWorker: canonicalizeActiveVforkChildViaKernelWorkerImpl,
