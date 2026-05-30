@@ -1,4 +1,5 @@
 import type { ThreadWorkerOutbound } from "../../messages.js";
+import type { KernelRpcResumeOutcome } from "../kernel-rpc/outcomes.js";
 import type { AttachThreadWorkerRequest, ProcessHandle, ThreadWorkerState } from "../types.js";
 
 export type ThreadWorkerStatusMessage = Extract<ThreadWorkerOutbound, { type: "status" }>;
@@ -49,6 +50,11 @@ export interface WorkerMessageHandlerDeps {
   resolveNetworkConnect(handle: ProcessHandle, vmPtr: number): Promise<bigint>;
   resumeConnectViaKernelWorker(handle: ProcessHandle, worker: Worker, vmPtr: number, result: bigint): Promise<void>;
   resumeFsViaKernelWorker(handle: ProcessHandle, worker: Worker, vmPtr: number): Promise<void>;
+  resumeFsViaKernelWorkerOutcome?(
+    handle: ProcessHandle,
+    worker: Worker,
+    vmPtr: number,
+  ): Promise<KernelRpcResumeOutcome>;
   resumeVforkParentAfterChildExit(
     handle: ProcessHandle,
     worker: Worker,

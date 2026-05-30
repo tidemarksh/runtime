@@ -2,6 +2,8 @@ import { createWorkerKernelRpcLifecycleHelpers } from "./lifecycle.js";
 import { createWorkerKernelRpcBlockedRpcHelpers } from "./blocked-rpc.js";
 import { createWorkerKernelRpcFsHelpers } from "./fs.js";
 import { expectKernelWorkerResponse } from "./transport.js";
+import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
+import { kernelShareOtherMembers } from "../kernel-share.js";
 import { drainProcessOutput } from "../stdio.js";
 import { readKernelRuntimeState } from "../../abi.js";
 import {
@@ -130,10 +132,37 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     failProcess: deps.failProcess,
     kickBlockedWorkers: deps.kickBlockedWorkers,
     markRuntimeFsDirty: deps.markRuntimeFsDirty,
-    syncForkSharedStateLocally: deps.syncForkSharedStateLocally,
-    syncForkSharedStateViaKernelWorker: deps.syncForkSharedStateViaKernelWorker,
+    kernelShareOtherMembers,
+    syncForkSharedStateLocallyAfterFs: deps.syncForkSharedStateLocally,
+    syncDirtyMemfsPeerViaKernelWorker: deps.syncForkSharedStateViaKernelWorker,
+    syncSharedOfdStateAfterFs: (handle, targets, options) => (
+      deps.syncForkSharedStateViaKernelWorker(
+        handle,
+        targets,
+        {
+          includeMemfs: false,
+          trackHeldOfds: false,
+          deltaOfdIds: true,
+          sourceVmPtr: options.sourceVmPtr,
+        },
+      )
+    ),
+    publishMemfsAfterFs: async (handle, targets, options) => {
+      await deps.syncForkSharedStateViaKernelWorker(
+        handle,
+        targets,
+        {
+          includeMemfs: true,
+          trackHeldOfds: false,
+          memfsOnly: true,
+          preservePublishedRegularFileData: options.preservePublishedRegularFileData,
+          sourceVmPtr: options.sourceVmPtr,
+        },
+      );
+      await deps.syncPipeStateViaKernelWorker(handle);
+    },
     rehydrateForkSharedStateViaKernelWorker: deps.rehydrateForkSharedStateViaKernelWorker,
-    syncPipeStateViaKernelWorker: deps.syncPipeStateViaKernelWorker,
+    publishRuntimeKernelState: (handle) => publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true),
   });
   const kernelRpcBlockedRpcHelpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: deps.processHandles,
@@ -155,8 +184,10 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     recordChildExitViaKernelWorker,
     registerProcessWithKernelWorker,
     releaseHostStdioViaKernelWorker,
+    resumeBlockedSyscallOutcome: kernelRpcBlockedRpcHelpers.resumeBlockedSyscallOutcome,
     resumeBlockedSyscallLocally: kernelRpcBlockedRpcHelpers.resumeBlockedSyscallLocally,
     resumeConnectViaKernelWorker,
+    resumeFsViaKernelWorkerOutcome: kernelRpcFsHelpers.resumeFsViaKernelWorkerOutcome,
     resumeFsViaKernelWorker: kernelRpcFsHelpers.resumeFsViaKernelWorker,
     resumeVforkExecveParentViaKernelWorker,
     resumeVforkParentViaKernelWorker,

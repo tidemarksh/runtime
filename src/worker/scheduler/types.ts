@@ -7,6 +7,7 @@ import type {
   ThreadWorkerInbound,
   ThreadWorkerOutbound,
 } from "../../messages.js";
+import type { KernelRpcResumeOutcome } from "../kernel-rpc/outcomes.js";
 
 export interface WorkerSchedulerDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
@@ -23,7 +24,19 @@ export interface WorkerSchedulerDeps {
     status: number,
     timeoutExpired?: boolean,
   ): Promise<void>;
+  resumeBlockedSyscallOutcome?(
+    handle: ProcessHandle,
+    worker: Worker,
+    vmPtr: number,
+    status: number,
+    timeoutExpired?: boolean,
+  ): Promise<KernelRpcResumeOutcome>;
   resumeFsViaKernelWorker(handle: ProcessHandle, worker: Worker, vmPtr: number): Promise<void>;
+  resumeFsViaKernelWorkerOutcome?(
+    handle: ProcessHandle,
+    worker: Worker,
+    vmPtr: number,
+  ): Promise<KernelRpcResumeOutcome>;
   resumeVforkParentAfterChildExit(
     handle: ProcessHandle,
     worker: Worker,

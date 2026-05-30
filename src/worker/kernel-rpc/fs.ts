@@ -2,13 +2,11 @@ import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
 } from "../../abi.js";
-import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
 import {
   activeKernelShareOfdIds,
   collectProcessHeldOfds,
   hasPlausibleOfdState,
 } from "../ownership/ofd-table.js";
-import { kernelShareOtherMembers } from "../kernel-share.js";
 import { ensureKernelMemoryCapacity, kernelScratchBase } from "../kernel-scratch.js";
 import { adoptKernelStateForHandle } from "../sync.js";
 import {
@@ -77,12 +75,13 @@ export interface WorkerKernelRpcFsDeps {
   failProcess(handle: ProcessHandle, error: Error): void;
   kickBlockedWorkers(handle: ProcessHandle): void;
   markRuntimeFsDirty(handle: ProcessHandle): void;
-  syncForkSharedStateLocally(
+  kernelShareOtherMembers(handle: ProcessHandle): ProcessHandle[];
+  syncForkSharedStateLocallyAfterFs(
     handle: ProcessHandle,
     targets: ProcessHandle[],
     options?: { includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] },
   ): void;
-  syncForkSharedStateViaKernelWorker(
+  syncDirtyMemfsPeerViaKernelWorker(
     handle: ProcessHandle,
     targets: ProcessHandle[],
     options?: {
@@ -96,12 +95,22 @@ export interface WorkerKernelRpcFsDeps {
       ofdIds?: number[];
     },
   ): Promise<void>;
+  syncSharedOfdStateAfterFs(
+    handle: ProcessHandle,
+    targets: ProcessHandle[],
+    options: { sourceVmPtr: number },
+  ): Promise<void>;
+  publishMemfsAfterFs(
+    handle: ProcessHandle,
+    targets: ProcessHandle[],
+    options: { preservePublishedRegularFileData: boolean; sourceVmPtr: number },
+  ): Promise<void>;
   rehydrateForkSharedStateViaKernelWorker(
     targets: ProcessHandle[],
     ofdIds: number[],
     options?: { procSelfExeTargets?: KernelWorkerPidBytesSnapshot[]; includeMemfs?: boolean },
   ): Promise<void>;
-  syncPipeStateViaKernelWorker(handle: ProcessHandle): Promise<bigint>;
+  publishRuntimeKernelState(handle: ProcessHandle): void;
 }
 
 export function createWorkerKernelRpcFsHelpers(deps: WorkerKernelRpcFsDeps) {
@@ -531,13 +540,13 @@ async function resumeFsViaKernelWorkerInner(
       if (memfsPublishReady) {
         handle.transferDebugStats.pageCachePublishCalls += 1;
         handle.transferDebugStats.forkSharedMemfsSyncCalls += 1;
-        deps.syncForkSharedStateLocally(handle, kernelShareOtherMembers(handle));
+        deps.syncForkSharedStateLocallyAfterFs(handle, deps.kernelShareOtherMembers(handle));
       }
       deps.markRuntimeFsDirty(handle);
     } else if (ofdStateChanged) {
-      deps.syncForkSharedStateLocally(
+      deps.syncForkSharedStateLocallyAfterFs(
         handle,
-        kernelShareOtherMembers(handle),
+        deps.kernelShareOtherMembers(handle),
         { includeMemfs: false },
       );
     }
@@ -577,7 +586,7 @@ async function resumeFsViaKernelWorkerInner(
         includeMemfs: false,
       });
     }
-    const dirtyMemfsPeers = kernelShareOtherMembers(handle)
+    const dirtyMemfsPeers = deps.kernelShareOtherMembers(handle)
       .filter((member) => (
         member.processMemfsDirty
         && member.runningWorker === null
@@ -586,7 +595,7 @@ async function resumeFsViaKernelWorkerInner(
         && member.pid > 0
       ));
     for (const peer of dirtyMemfsPeers) {
-      const targets = [handle, ...kernelShareOtherMembers(peer)]
+      const targets = [handle, ...deps.kernelShareOtherMembers(peer)]
         .filter((member, index, members) => (
           member !== peer
           && !member.exitInProgress
@@ -594,7 +603,7 @@ async function resumeFsViaKernelWorkerInner(
           && members.indexOf(member) === index
         ));
       peer.transferDebugStats.forkSharedMemfsSyncCalls += 1;
-      await deps.syncForkSharedStateViaKernelWorker(peer, targets, {
+      await deps.syncDirtyMemfsPeerViaKernelWorker(peer, targets, {
         includeMemfs: true,
         memfsOnly: true,
         preservePublishedRegularFileData: true,
@@ -635,20 +644,11 @@ async function resumeFsViaKernelWorkerInner(
       return;
     }
     deps.assertProcessStandardFdIntegrity(handle, "resume-fs");
-    const forkShareMembers = kernelShareOtherMembers(handle);
+    const forkShareMembers = deps.kernelShareOtherMembers(handle);
     const syncTargets = forkShareMembers
       .filter((member) => member.runningWorker === null);
     if (ofdStateChanged && !transientProcessOwnerMismatch && forkShareMembers.length > 0) {
-      await deps.syncForkSharedStateViaKernelWorker(
-        handle,
-        syncTargets,
-        {
-          includeMemfs: false,
-          trackHeldOfds: false,
-          deltaOfdIds: true,
-          sourceVmPtr: vmPtr,
-        },
-      );
+      await deps.syncSharedOfdStateAfterFs(handle, syncTargets, { sourceVmPtr: vmPtr });
     }
     restoreFsFdState(handle, postFsFdState);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
@@ -667,19 +667,11 @@ async function resumeFsViaKernelWorkerInner(
           // slots from the child clears the parent's standard streams.
           handle.transferDebugStats.pageCachePublishCalls += 1;
           handle.transferDebugStats.forkSharedMemfsSyncCalls += 1;
-          await deps.syncForkSharedStateViaKernelWorker(
-            handle,
-            syncTargets,
-            {
-              includeMemfs: true,
-              trackHeldOfds: false,
-              memfsOnly: true,
-              preservePublishedRegularFileData,
-              sourceVmPtr: vmPtr,
-            },
-          );
+          await deps.publishMemfsAfterFs(handle, syncTargets, {
+            preservePublishedRegularFileData,
+            sourceVmPtr: vmPtr,
+          });
           if (forkShareMembers.length > 0) {
-            await deps.syncPipeStateViaKernelWorker(handle);
             for (const member of forkShareMembers) {
               deps.markRuntimeFsDirty(member);
             }
@@ -692,7 +684,7 @@ async function resumeFsViaKernelWorkerInner(
     restoreFsRingProgress(handle, postFsRingProgress);
     clearStaleFsStatusAfterResume(handle, vmPtr, fsResult);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
-    publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
+    deps.publishRuntimeKernelState(handle);
     deps.kickBlockedWorkers(handle);
     deps.appendWorkerDebugLog(handle, `fs-done:0x${vmPtr.toString(16)}:rv=${fsResult.toString()}`);
     appendFsLifecycleEvent(

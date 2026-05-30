@@ -362,7 +362,9 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
               thread.ownerAsyncStatus = null;
               return;
             }
-            return deps.resumeFsViaKernelWorker(handle, worker, thread.vmPtr)
+            const resumeFs = deps.resumeFsViaKernelWorkerOutcome ?? deps.resumeFsViaKernelWorker;
+            return resumeFs(handle, worker, thread.vmPtr)
+              .then(() => undefined)
               .finally(() => {
                 thread.ownerAsyncStatus = null;
                 deps.pumpProcess(handle);
@@ -378,7 +380,8 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         return;
       }
       if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-        void deps.resumeFsViaKernelWorker(handle, worker, thread.vmPtr)
+        const resumeFs = deps.resumeFsViaKernelWorkerOutcome ?? deps.resumeFsViaKernelWorker;
+        void resumeFs(handle, worker, thread.vmPtr)
           .catch((error) => {
             if (!workerStillOwnedByHandle()) {
               return;
@@ -388,7 +391,8 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         return;
       }
       thread.ownerAsyncStatus = status;
-      void deps.resumeFsViaKernelWorker(handle, worker, thread.vmPtr)
+      const resumeFs = deps.resumeFsViaKernelWorkerOutcome ?? deps.resumeFsViaKernelWorker;
+      void resumeFs(handle, worker, thread.vmPtr)
         .finally(() => {
           thread.ownerAsyncStatus = null;
           deps.pumpProcess(handle);

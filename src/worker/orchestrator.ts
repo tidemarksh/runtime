@@ -26,6 +26,7 @@ import type {
   CreateProcessOptions,
   ProcessHandle,
 } from "./types.js";
+import type { KernelRpcResumeOutcome } from "./kernel-rpc/outcomes.js";
 import { createWorkerProcessFactory } from "./create-process.js";
 import {
   rehydrateForkSharedStateViaKernelWorker as rehydrateForkSharedStateViaKernelWorkerImpl,
@@ -149,8 +150,18 @@ const workerScheduler = createWorkerScheduler({
   ),
   pumpNetworkConnections,
   resumeFsViaKernelWorker,
+  resumeFsViaKernelWorkerOutcome,
   resumeBlockedSyscallLocally: (handle, worker, vmPtr, blockedStatus, timeoutExpired) => (
     workerKernelRpcHelpers.resumeBlockedSyscallLocally(
+      handle,
+      worker,
+      vmPtr,
+      blockedStatus,
+      timeoutExpired,
+    )
+  ),
+  resumeBlockedSyscallOutcome: (handle, worker, vmPtr, blockedStatus, timeoutExpired) => (
+    workerKernelRpcHelpers.resumeBlockedSyscallOutcome(
       handle,
       worker,
       vmPtr,
@@ -209,6 +220,7 @@ const {
   registerProcessWithKernelWorker,
   releaseHostStdioViaKernelWorker,
   resumeConnectViaKernelWorker,
+  resumeFsViaKernelWorkerOutcome: resumeFsViaKernelWorkerOutcomeImpl,
   resumeFsViaKernelWorker: resumeFsViaKernelWorkerImpl,
   resumeVforkExecveParentViaKernelWorker,
   resumeVforkParentViaKernelWorker,
@@ -375,6 +387,7 @@ handleWorkerMessageImpl = createWorkerMessageHandler({
   resolveNetworkConnect,
   resumeConnectViaKernelWorker,
   resumeFsViaKernelWorker,
+  resumeFsViaKernelWorkerOutcome,
   resumeVforkParentAfterChildExit,
   statusDefersOwnedStateSync,
   syncBlockedForkSharedStateViaKernelWorker,
@@ -507,6 +520,18 @@ async function resumeFsViaKernelWorker(
   vmPtr: number,
 ): Promise<void> {
   await resumeFsViaKernelWorkerImpl(handle, worker, vmPtr, {
+    memfsMutation: FS_EFFECT_MEMFS_MUTATION,
+    memfsFileData: FS_EFFECT_MEMFS_FILE_DATA,
+    sharedOfdState: FS_EFFECT_SHARED_OFD_STATE,
+  });
+}
+
+async function resumeFsViaKernelWorkerOutcome(
+  handle: ProcessHandle,
+  worker: Worker,
+  vmPtr: number,
+): Promise<KernelRpcResumeOutcome> {
+  return resumeFsViaKernelWorkerOutcomeImpl(handle, worker, vmPtr, {
     memfsMutation: FS_EFFECT_MEMFS_MUTATION,
     memfsFileData: FS_EFFECT_MEMFS_FILE_DATA,
     sharedOfdState: FS_EFFECT_SHARED_OFD_STATE,

@@ -92,10 +92,13 @@ test("kernel-rpc fs helper owns local resume and returns a typed outcome", async
     failProcess: vi.fn(),
     kickBlockedWorkers: vi.fn(),
     markRuntimeFsDirty: vi.fn(),
-    syncForkSharedStateLocally: vi.fn(),
-    syncForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    kernelShareOtherMembers: () => [],
+    syncForkSharedStateLocallyAfterFs: vi.fn(),
+    syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
+    syncSharedOfdStateAfterFs: vi.fn(async () => {}),
+    publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
-    syncPipeStateViaKernelWorker: vi.fn(async () => 0n),
+    publishRuntimeKernelState: vi.fn(),
   });
   const effects = { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 };
 
@@ -107,4 +110,58 @@ test("kernel-rpc fs helper owns local resume and returns a typed outcome", async
   expect(kernel.thread_process_fs).toHaveBeenCalledTimes(2);
   expect(kernel.thread_resume_fs).toHaveBeenCalledTimes(2);
   expect(enqueueWorker).toHaveBeenCalledTimes(2);
+});
+
+test("kernel-rpc fs outcome reports blocked fs status", async () => {
+  const kernel = {
+    ...makeKernel(),
+    thread_resume_fs: vi.fn(() => 11n),
+    thread_status: () => 31,
+  };
+  const handle = {
+    pid: 1,
+    runtimeId: 1,
+    vmPtr: 0x1234,
+    kernel,
+    kernelState: makeKernelState(),
+    memory: kernel.memory,
+    processMemfsDirty: false,
+    transferDebugStats: undefined,
+    kernelShare: { members: new Set() },
+    workers: new Set(),
+  } as unknown as ProcessHandle;
+  const worker = {} as Worker;
+  handle.workers.add(worker);
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, {});
+  const blockWorker = vi.fn();
+  const helpers = createWorkerKernelRpcFsHelpers({
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    appendWorkerDebugLog: vi.fn(),
+    assertProcessStandardFdIntegrity: vi.fn(),
+    blockWorker,
+    enqueueWorker: vi.fn(),
+    failProcess: vi.fn(),
+    kickBlockedWorkers: vi.fn(),
+    markRuntimeFsDirty: vi.fn(),
+    kernelShareOtherMembers: () => [],
+    syncForkSharedStateLocallyAfterFs: vi.fn(),
+    syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
+    syncSharedOfdStateAfterFs: vi.fn(async () => {}),
+    publishMemfsAfterFs: vi.fn(async () => {}),
+    rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    publishRuntimeKernelState: vi.fn(),
+  });
+
+  await expect(helpers.resumeFsViaKernelWorkerOutcome(
+    handle,
+    worker,
+    0x1234,
+    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+  )).resolves.toEqual({
+    kind: "blocked",
+    status: 31,
+  });
+  expect(blockWorker).toHaveBeenCalledWith(handle, worker, 31, 0x1234);
 });

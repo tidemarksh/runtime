@@ -902,7 +902,8 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         thread.ownerAsyncStatus = blocked.status;
       }
       clearBlockedWorker(handle, worker);
-      void deps.resumeFsViaKernelWorker(handle, worker, blocked.vmPtr)
+      const resumeFs = deps.resumeFsViaKernelWorkerOutcome ?? deps.resumeFsViaKernelWorker;
+      void resumeFs(handle, worker, blocked.vmPtr)
         .finally(() => {
           if (thread) {
             thread.ownerAsyncStatus = null;
@@ -981,7 +982,8 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       ) {
         markPipeChildExitRecordsResumedForWait(handle, blocked);
       }
-      void deps.resumeBlockedSyscallLocally(
+      const resumeBlockedRpc = deps.resumeBlockedSyscallOutcome ?? deps.resumeBlockedSyscallLocally;
+      void resumeBlockedRpc(
         handle,
         worker,
         blocked.vmPtr,
