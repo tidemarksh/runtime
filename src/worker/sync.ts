@@ -1,4 +1,4 @@
-import { attachKernelRuntimeState, readKernelRuntimeState, type KernelRuntimeState } from "../abi.js";
+import { attachKernelRuntimeState, readKernelRuntimeState } from "../abi.js";
 import {
   NET_BUFFER_HEAD_OFFSET,
   NET_BUFFER_HEADER_BYTES,
@@ -78,7 +78,6 @@ import {
   expandPipePeerOfdIds,
   hasPipePeerInOtherKernelShareMember,
   isProcessHostStdioPipeOfd,
-  liveProcessPipeUsedBits,
   preserveHostStdioPipeControlForStep,
 } from "./ownership/pipe-control.js";
 import {
@@ -93,35 +92,31 @@ import {
   restoreNetworkSocketSlotSnapshot,
   snapshotNetworkSocketSlot,
 } from "./network-socket-close.js";
+import {
+  adoptKernelState,
+  adoptKernelStateForHandle,
+  repairHandleVmPidAfterKernelStateAttach,
+} from "./sync/kernel-state.js";
+import { appendForkSharedMemfsDebug } from "./sync/memfs.js";
+import {
+  formatPipeSnapshotDebug,
+  int32AtomicView,
+  loadPipeI32,
+  loadPipeU32,
+} from "./sync/pipe.js";
+import { appendSocketSyncDebug, socketSyncDebugLogEnabled } from "./sync/socket.js";
+import { describeSyncCause, type SyncCause } from "./sync/effects.js";
+import { hostStdioReleaseCause, releaseHostStdioViaKernelWorkerForPlane } from "./sync/stdio.js";
+export { blockedStatusUsesForkSharedStateSync } from "./sync/fork-shared.js";
+export { snapshotProcessFdOfdStateForKernelWorker } from "./sync/fd-ofd.js";
+export { adoptKernelState, adoptKernelStateForHandle } from "./sync/kernel-state.js";
+export type { SyncCause } from "./sync/effects.js";
 
 const lastForkSharedActiveOfdIdsByHandle = new WeakMap<ProcessHandle, Set<number>>();
-const SOCKET_SYNC_DEBUG_LOG_ENABLED = ((globalThis as {
-  process?: { env?: Record<string, string | undefined> };
-}).process?.env?.TIDEMARK_WORKER_DEBUG_LOG ?? "") === "1"
-  || ((globalThis as {
-    process?: { env?: Record<string, string | undefined> };
-  }).process?.env?.TIDEMARK_WORKER_DEBUG_NETWORK ?? "") === "1";
-const FORK_SHARED_MEMFS_DEBUG_ENABLED = ((globalThis as {
-  process?: { env?: Record<string, string | undefined> };
-}).process?.env?.TIDEMARK_FS_PUBLICATION_DEBUG ?? "") === "1";
 const SOCK_STATE_SHUTDOWN = SOCKET_STATE_SHUTDOWN;
 
-function int32AtomicView(buffer: ArrayBufferLike): Int32Array | null {
-  return buffer instanceof SharedArrayBuffer ? new Int32Array(buffer) : null;
-}
-
-function loadPipeU32(view: DataView, atomicView: Int32Array | null, byteOffset: number): number {
-  if (atomicView !== null && byteOffset % 4 === 0) {
-    return Atomics.load(atomicView, byteOffset / 4) >>> 0;
-  }
-  return view.getUint32(byteOffset, true);
-}
-
-function loadPipeI32(view: DataView, atomicView: Int32Array | null, byteOffset: number): number {
-  if (atomicView !== null && byteOffset % 4 === 0) {
-    return Atomics.load(atomicView, byteOffset / 4);
-  }
-  return view.getInt32(byteOffset, true);
+function formatSyncCause(cause: SyncCause | undefined): string {
+  return cause === undefined ? "cause=none" : `cause=${describeSyncCause(cause)}`;
 }
 
 interface NetworkBridgeSocketStateSnapshot {
@@ -175,26 +170,6 @@ interface PreservedRuntimeNetworkKernelState {
   fdEntries: KernelWorkerFdEntrySnapshot[];
 }
 
-function appendSocketSyncDebug(handle: ProcessHandle, event: string): void {
-  if (!SOCKET_SYNC_DEBUG_LOG_ENABLED) {
-    return;
-  }
-  handle.workerDebugLog.push(event);
-  if (handle.workerDebugLog.length > 4096) {
-    handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 4096);
-  }
-}
-
-function appendForkSharedMemfsDebug(handle: ProcessHandle, event: string): void {
-  if (!FORK_SHARED_MEMFS_DEBUG_ENABLED) {
-    return;
-  }
-  handle.workerDebugLog.push(event);
-  if (handle.workerDebugLog.length > 4096) {
-    handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 4096);
-  }
-}
-
 const networkSocketMetaDebug = new WeakMap<ProcessHandle, Map<number, string>>();
 
 function recordNetworkSocketMetaTransition(
@@ -208,7 +183,7 @@ function recordNetworkSocketMetaTransition(
   buf: number,
   recv: number,
 ): void {
-  if (!SOCKET_SYNC_DEBUG_LOG_ENABLED) {
+  if (!socketSyncDebugLogEnabled) {
     return;
   }
   let byFd = networkSocketMetaDebug.get(handle);
@@ -223,34 +198,6 @@ function recordNetworkSocketMetaTransition(
   }
   byFd.set(fd, next);
   appendSocketSyncDebug(handle, `socket-meta-transition:${handle.pid}:source=${source}:fd=${fd}:prev=${previous ?? "none"}:next=${next}`);
-}
-
-function formatPipeSnapshotDebug(
-  label: string,
-  snapshots: readonly KernelWorkerPipeSlotSnapshot[],
-  limit = 8,
-): string {
-  if (snapshots.length === 0) {
-    return `${label}=none`;
-  }
-  return `${label}=${snapshots.slice(0, limit).map((snapshot) => {
-    const view = new DataView(snapshot.slot.buffer, snapshot.slot.byteOffset, snapshot.slot.byteLength);
-    const data = snapshot.slot.subarray(PIPE_DEBUG_HEADER_BYTES, PIPE_DEBUG_HEADER_BYTES + 24);
-    const ascii = [...data]
-      .map((byte) => byte >= 0x20 && byte <= 0x7e ? String.fromCharCode(byte) : ".")
-      .join("");
-    return [
-      `slot${snapshot.pipeSlot}`,
-      `m${snapshot.mode ?? -1}`,
-      `f${snapshot.fresh ? 1 : 0}`,
-      `h${view.getUint32(PIPE_DEBUG_HEAD_OFFSET, true)}`,
-      `t${view.getUint32(PIPE_DEBUG_TAIL_OFFSET, true)}`,
-      `ro${view.getInt32(PIPE_DEBUG_READ_OPEN_OFFSET, true)}`,
-      `wo${view.getInt32(PIPE_DEBUG_WRITE_OPEN_OFFSET, true)}`,
-      `g${view.getUint32(PIPE_DEBUG_GENERATION_OFFSET, true)}`,
-      `d=${JSON.stringify(ascii)}`,
-    ].join("/");
-  }).join(",")}${snapshots.length > limit ? `,+${snapshots.length - limit}` : ""}`;
 }
 
 function formatFdSnapshotDebug(
@@ -1545,23 +1492,6 @@ function networkBridgeSocketSnapshotProgressed(snapshot: NetworkBridgeSocketStat
   });
 }
 
-function repairHandleVmPidAfterKernelStateAttach(
-  handle: ProcessHandle,
-  vmPtr: number,
-  pidBeforeSync: number,
-): void {
-  if (vmPtr === 0 || pidBeforeSync !== handle.pid) {
-    return;
-  }
-  const pidAfterSync = handle.kernel.process_current_pid(vmPtr);
-  if (pidAfterSync <= 0 || pidAfterSync === handle.pid) {
-    return;
-  }
-  handle.kernel.process_rewrite_child_pid(vmPtr, pidAfterSync, handle.pid, handle.pid + 1);
-  handle.kernelState = readKernelRuntimeState(handle.kernel);
-  attachKernelRuntimeState(handle.kernel, handle.kernelState);
-}
-
 function snapshotRuntimeNetworkFdEntries(
   handle: ProcessHandle,
   vmPtr: number,
@@ -1621,23 +1551,6 @@ function restoreRuntimeNetworkKernelState(
   attachKernelRuntimeState(snapshot.handle.kernel, snapshot.handle.kernelState);
 }
 
-export function snapshotProcessFdOfdStateForKernelWorker(
-  handle: ProcessHandle,
-  vmPtr: number,
-): {
-  fdEntries: KernelWorkerFdEntrySnapshot[];
-  ofdSlots: KernelWorkerOfdSlotSnapshot[];
-} {
-  const fdEntries = snapshotProcessFdEntries(handle, vmPtr);
-  const ofdIds = [...new Set([
-    ...ofdIdsFromFdEntries(handle, fdEntries),
-    ...collectProcessHeldOfds(handle),
-  ])];
-  const ofdSlots = [...snapshotKernelShareOfdSlots(handle, ofdIds)]
-    .map(([ofdId, slot]) => ({ ofdId, slot }));
-  return { fdEntries, ofdSlots };
-}
-
 function collectTracedForkSharedOfdIds(
   handle: ProcessHandle,
   sourceVmPtr: number,
@@ -1672,72 +1585,6 @@ function collectTracedForkSharedOfdIds(
     }
   }
   return [...traced];
-}
-
-export function adoptKernelState(
-  current: KernelRuntimeState,
-  incoming: KernelRuntimeState,
-): KernelRuntimeState {
-  return {
-    heapBase: incoming.heapBase,
-    heapPtr: Math.max(current.heapPtr, incoming.heapPtr),
-    ofdTablePtr: current.ofdTablePtr,
-    memfsPtr: current.memfsPtr,
-    memfsHeaderBytes: current.memfsHeaderBytes > 0 ? current.memfsHeaderBytes : incoming.memfsHeaderBytes,
-    memfsInodesBytes: current.memfsInodesBytes > 0 ? current.memfsInodesBytes : incoming.memfsInodesBytes,
-    memfsFirstChildBytes: current.memfsFirstChildBytes > 0
-      ? current.memfsFirstChildBytes
-      : incoming.memfsFirstChildBytes,
-    memfsDirEntriesBytes: current.memfsDirEntriesBytes > 0
-      ? current.memfsDirEntriesBytes
-      : incoming.memfsDirEntriesBytes,
-    memfsDataBytes: current.memfsDataBytes > 0 ? current.memfsDataBytes : incoming.memfsDataBytes,
-    memStatePtr: current.memStatePtr,
-    epollTablePtr: current.epollTablePtr,
-    socketTablePtr: current.socketTablePtr,
-    socketUsed: incoming.socketUsed,
-    pipeBase: current.pipeBase,
-    pipeUsed: incoming.pipeUsed,
-    netBufBase: current.netBufBase,
-    netBufUsed: incoming.netBufUsed,
-    sigSlotsPtr: current.sigSlotsPtr,
-    processPendingPtr: current.processPendingPtr,
-    processRuntimeStatePtr: current.processRuntimeStatePtr,
-    timeStatePtr: current.timeStatePtr,
-  };
-}
-
-export function adoptKernelStateForHandle(
-  handle: ProcessHandle,
-  incoming: KernelRuntimeState,
-): KernelRuntimeState {
-  const current = handle.kernelState;
-  const adopted = adoptKernelState(current, incoming);
-  const pipeUsed = adopted.pipeUsed | liveProcessPipeUsedBits(handle);
-  if (
-    (handle.networkConnections?.size ?? 0) === 0
-    && (handle.networkPendingConnectFds?.size ?? 0) === 0
-    && (handle.networkClosedFds?.size ?? 0) === 0
-    && (handle.networkClosedSocketSlots?.size ?? 0) === 0
-  ) {
-    return {
-      ...adopted,
-      pipeUsed,
-    };
-  }
-  return {
-    ...adopted,
-    pipeUsed,
-    socketUsed: current.socketUsed | incoming.socketUsed,
-    netBufUsed: current.netBufUsed | incoming.netBufUsed,
-  };
-}
-
-export function blockedStatusUsesForkSharedStateSync(handle: ProcessHandle, status: number): boolean {
-  return status === handle.kernel.abi_status_pipe_wait()
-    || status === handle.kernel.abi_status_socket_recv()
-    || status === handle.kernel.abi_status_socket_send()
-    || status === handle.kernel.abi_status_flock_wait();
 }
 
 export function syncForkSharedStateLocally(
@@ -1792,6 +1639,7 @@ export async function syncForkSharedStateViaKernelWorker(
   handle: ProcessHandle,
   targets: ProcessHandle[],
   options: {
+    cause?: SyncCause;
     includeMemfs?: boolean;
     trackHeldOfds?: boolean;
     deltaOfdIds?: boolean;
@@ -1941,6 +1789,7 @@ export async function syncForkSharedStateViaKernelWorker(
       handle,
       [
         `fork-shared-delta:${handle.pid}`,
+        formatSyncCause(options.cause),
         `src=0x${sourceVmPtr.toString(16)}`,
         `source_fd=${formatOfdIdList(sourceFdOfdIds)}`,
         `source_shared_fd=${formatOfdIdList(sourceForkSharedFdOfdIds)}`,
@@ -2111,6 +1960,7 @@ export async function rehydrateForkSharedStateViaKernelWorker(
 export async function syncBlockedForkSharedStateViaKernelWorker(
   handle: ProcessHandle,
   sourceVmPtr = handle.vmPtr,
+  cause?: SyncCause,
 ): Promise<void> {
   if (!handle.kernelWorkerRequest || handle.pid <= 0) {
     return;
@@ -2129,6 +1979,7 @@ export async function syncBlockedForkSharedStateViaKernelWorker(
     handle,
     syncTargets,
     {
+      cause,
       includeMemfs: false,
       deltaOfdIds: true,
       trackHeldOfds: true,
@@ -2147,7 +1998,10 @@ export async function syncBlockedForkSharedStateViaKernelWorker(
   await syncPromise;
 }
 
-export async function syncPipeStateViaKernelWorker(handle: ProcessHandle): Promise<bigint> {
+export async function syncPipeStateViaKernelWorker(
+  handle: ProcessHandle,
+  cause?: SyncCause,
+): Promise<bigint> {
   if (!handle.kernelWorkerRequest || handle.pid <= 0) {
     return handle.kernelState.pipeUsed;
   }
@@ -2214,6 +2068,7 @@ export async function syncPipeStateViaKernelWorker(handle: ProcessHandle): Promi
     handle,
     [
       `pipe-sync-request:${handle.pid}`,
+      formatSyncCause(cause),
       `vm=0x${handle.vmPtr.toString(16)}`,
       `applyFd=${applyFdEntries ? 1 : 0}`,
       `running=${handle.runningWorker === null ? 0 : 1}`,
@@ -2290,7 +2145,10 @@ export async function syncPipeStateViaKernelWorker(handle: ProcessHandle): Promi
   return handle.kernelState.pipeUsed;
 }
 
-export async function syncEpollStateViaKernelWorker(handle: ProcessHandle): Promise<void> {
+export async function syncEpollStateViaKernelWorker(
+  handle: ProcessHandle,
+  cause?: SyncCause,
+): Promise<void> {
   if (!handle.kernelWorkerRequest || handle.pid <= 0) {
     return;
   }
@@ -2317,7 +2175,11 @@ export async function syncEpollStateViaKernelWorker(handle: ProcessHandle): Prom
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
 }
 
-export async function syncOfdStateViaKernelWorker(handle: ProcessHandle, ofdIds: number[]): Promise<void> {
+export async function syncOfdStateViaKernelWorker(
+  handle: ProcessHandle,
+  ofdIds: number[],
+  cause?: SyncCause,
+): Promise<void> {
   if (!handle.kernelWorkerRequest || handle.pid <= 0 || ofdIds.length === 0) {
     return;
   }
@@ -2342,7 +2204,10 @@ export async function syncOfdStateViaKernelWorker(handle: ProcessHandle, ofdIds:
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
 }
 
-export async function syncSocketStateViaKernelWorker(handle: ProcessHandle): Promise<{
+export async function syncSocketStateViaKernelWorker(
+  handle: ProcessHandle,
+  cause?: SyncCause,
+): Promise<{
   socketUsed: number;
   netBufUsed: bigint;
 }> {
@@ -2357,7 +2222,10 @@ export async function syncSocketStateViaKernelWorker(handle: ProcessHandle): Pro
     ? 0
     : handle.kernel.process_current_pid(handle.vmPtr);
   const networkSocketSnapshots = snapshotNetworkBridgeSocketState([handle]);
-  appendSocketSyncDebug(handle, `socket-sync-start:${handle.pid}:${formatNetworkSocketDebug(handle)}`);
+  appendSocketSyncDebug(
+    handle,
+    `socket-sync-start:${handle.pid}:${formatSyncCause(cause)}:${formatNetworkSocketDebug(handle)}`,
+  );
   let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
   try {
     response = await handle.kernelWorkerRequest({
@@ -2396,29 +2264,14 @@ export async function syncSocketStateViaKernelWorker(handle: ProcessHandle): Pro
   };
 }
 
-export async function releaseHostStdioViaKernelWorker(handle: ProcessHandle): Promise<bigint> {
-  if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-    handle.kernel.process_release_host_stdio(handle.vmPtr);
-    return handle.kernelState.pipeUsed;
-  }
-
-  const networkSocketSnapshots = snapshotNetworkBridgeSocketState([handle]);
-  let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
-  try {
-    response = await handle.kernelWorkerRequest({
-      type: "release-host-stdio",
-      pid: handle.pid,
-      vmPtr: handle.vmPtr,
-      kernelState: handle.kernelState,
-    });
-  } finally {
-    restoreNetworkBridgeSocketState(networkSocketSnapshots);
-  }
-  if (response.type !== "host-stdio-released") {
-    throw new Error(`unexpected kernel-worker response for release-host-stdio: ${response.type}`);
-  }
-  handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
-  restoreNetworkBridgeSocketState(networkSocketSnapshots);
-  attachKernelRuntimeState(handle.kernel, handle.kernelState);
-  return handle.kernelState.pipeUsed;
+export async function releaseHostStdioViaKernelWorker(
+  handle: ProcessHandle,
+  cause: SyncCause = hostStdioReleaseCause(),
+): Promise<bigint> {
+  return releaseHostStdioViaKernelWorkerForPlane(handle, {
+    snapshotNetworkBridgeSocketState,
+    restoreNetworkBridgeSocketState,
+    adoptKernelStateForHandle,
+    attachKernelRuntimeState,
+  }, cause);
 }

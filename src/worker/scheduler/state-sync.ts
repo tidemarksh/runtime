@@ -16,6 +16,7 @@ import {
   syncPipeStateViaKernelWorker,
   syncSocketStateViaKernelWorker,
 } from "../sync.js";
+import type { SyncCause } from "../sync/effects.js";
 import type {
   ProcessHandle,
   ThreadWorkerState,
@@ -140,6 +141,14 @@ export function createWorkerSchedulerStateSyncHelpers(
     wakeBlockedStatusesInKernelShare(handle, [handle.kernel.abi_status_epoll_wait()]);
   }
 
+  function syscallSyncCause(name: string): SyncCause {
+    return { kind: "syscall", nr: -1n, name };
+  }
+
+  function blockedRpcSyncCause(status: number): SyncCause {
+    return { kind: "blocked-rpc", status };
+  }
+
   function wakeSocketWaitersInKernelShare(
     handle: ProcessHandle,
     socketUsed: number,
@@ -193,7 +202,12 @@ export function createWorkerSchedulerStateSyncHelpers(
         handle.epollSyncQueued = false;
         const shouldRetry = handle.epollWaiterWakeQueued;
         handle.epollWaiterWakeQueued = false;
-        await syncEpollStateViaKernelWorker(handle);
+        await syncEpollStateViaKernelWorker(
+          handle,
+          shouldRetry
+            ? blockedRpcSyncCause(handle.kernel.abi_status_epoll_wait())
+            : syscallSyncCause("epoll-state-sync"),
+        );
         assertProcessIdentity(handle, "requestEpollStateSync");
         if (shouldRetry) {
           retryEpollWaitersInKernelShare(handle);
@@ -228,7 +242,7 @@ export function createWorkerSchedulerStateSyncHelpers(
       while (handle.ofdSyncQueuedIds.size > 0) {
         const ofdIds = [...handle.ofdSyncQueuedIds];
         handle.ofdSyncQueuedIds.clear();
-        await syncOfdStateViaKernelWorker(handle, ofdIds);
+        await syncOfdStateViaKernelWorker(handle, ofdIds, syscallSyncCause("epoll-dependent-ofd-sync"));
         assertProcessIdentity(handle, "requestEpollDependentOfdStateSync");
       }
     })().finally(() => {
@@ -265,7 +279,12 @@ export function createWorkerSchedulerStateSyncHelpers(
         handle.pipeWaiterWakeQueued = false;
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-start:${handle.pid}:wake=${shouldWake ? 1 : 0}`);
         handle.transferDebugStats.pipeSyncKernelCalls += 1;
-        const pipeUsed = await syncPipeStateViaKernelWorker(handle);
+        const pipeUsed = await syncPipeStateViaKernelWorker(
+          handle,
+          shouldWake
+            ? blockedRpcSyncCause(handle.kernel.abi_status_pipe_wait())
+            : syscallSyncCause("pipe-state-sync"),
+        );
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-canonical:${handle.pid}:used=${pipeUsed.toString()}`);
         assertProcessIdentity(handle, "requestPipeStateSync");
         const visibleHandle = visibleOutputHandle(handle);
@@ -276,7 +295,10 @@ export function createWorkerSchedulerStateSyncHelpers(
         if (drainedHiddenOutput) {
           deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-hidden-drain:${handle.pid}`);
           handle.transferDebugStats.pipeSyncKernelCalls += 1;
-          const refreshedPipeUsed = await syncPipeStateViaKernelWorker(handle);
+          const refreshedPipeUsed = await syncPipeStateViaKernelWorker(
+            handle,
+            syscallSyncCause("pipe-hidden-output-drain"),
+          );
           assertProcessIdentity(handle, "requestPipeStateSync:after-hidden-drain");
           handle.kernelState = {
             ...handle.kernelState,
@@ -292,7 +314,10 @@ export function createWorkerSchedulerStateSyncHelpers(
           deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-visible-drain:${visibleHandle.pid}`);
           handle.transferDebugStats.pipeSyncVisibleDrainCalls += 1;
           visibleHandle.transferDebugStats.pipeSyncKernelCalls += 1;
-          const visiblePipeUsed = await syncPipeStateViaKernelWorker(visibleHandle);
+          const visiblePipeUsed = await syncPipeStateViaKernelWorker(
+            visibleHandle,
+            syscallSyncCause("pipe-visible-output-drain"),
+          );
           assertProcessIdentity(visibleHandle, "requestPipeStateSync:after-visible-drain");
           visibleHandle.kernelState = {
             ...visibleHandle.kernelState,
@@ -348,7 +373,12 @@ export function createWorkerSchedulerStateSyncHelpers(
         const shouldWake = handle.socketWaiterWakeQueued;
         handle.socketWaiterWakeQueued = false;
         handle.transferDebugStats.socketSyncKernelCalls += 1;
-        const { socketUsed, netBufUsed } = await syncSocketStateViaKernelWorker(handle);
+        const { socketUsed, netBufUsed } = await syncSocketStateViaKernelWorker(
+          handle,
+          shouldWake
+            ? blockedRpcSyncCause(handle.kernel.abi_status_socket_recv())
+            : syscallSyncCause("socket-state-sync"),
+        );
         assertProcessIdentity(handle, "requestSocketStateSync");
         if (shouldWake) {
           wakeSocketWaitersInKernelShare(handle, socketUsed, netBufUsed);
