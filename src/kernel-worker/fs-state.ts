@@ -16,6 +16,7 @@ import {
 import { createKernelWorkerFsSnapshotHelpers } from "./fs-state/snapshot.js";
 
 const LARGE_FILE_SHALLOW_THRESHOLD_BYTES = 512 * 1024;
+export const KERNEL_WORKER_FS_STATE_OWNERSHIP = "transitional-runtime-owner" as const;
 
 interface KernelWorkerFsStateDeps {
   getCanonicalExports(): KernelExports;

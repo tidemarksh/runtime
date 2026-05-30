@@ -9,8 +9,6 @@
  */
 
 import {
-  attachKernelRuntimeState,
-  readKernelRuntimeState,
   type KernelExports,
   type KernelRuntimeState,
 } from "./abi.js";
@@ -27,7 +25,6 @@ import type {
   KernelWorkerOfdSlotSnapshot,
   KernelWorkerOutbound,
   KernelWorkerPipeSlotSnapshot,
-  KernelWorkerSocketStateSnapshot,
 } from "./messages.js";
 import { bindWorkerMessageHandler, workerPostMessage } from "./bridge/scope.js";
 import { createKernelWorkerFsState } from "./kernel-worker/fs-state.js";
@@ -37,6 +34,8 @@ import { createKernelWorkerMessageHandler } from "./kernel-worker/message-handle
 import { createKernelWorkerProcessControl } from "./kernel-worker/process-control.js";
 import { createKernelWorkerPrimitives } from "./kernel-worker/primitives.js";
 import { createKernelWorkerSharedStateSync } from "./kernel-worker/shared-state-sync.js";
+import { createKernelWorkerProcessMemfsSync } from "./kernel-worker/fs-state/process-memfs.js";
+import { createKernelWorkerSocketStateBridge } from "./kernel-worker/shared-state-sync/socket-state.js";
 
 let exports: KernelExports;
 let wasmModule: WebAssembly.Module | null = null;
@@ -214,90 +213,6 @@ function syncSocketState(pid: number, kernelState: KernelRuntimeState): KernelRu
   return syncSocketStateImpl(pid, kernelState);
 }
 
-function applySocketStateSnapshot(
-  pid: number,
-  kernelState: KernelRuntimeState,
-  snapshot: KernelWorkerSocketStateSnapshot,
-): KernelRuntimeState {
-  const processExports = processKernels.get(pid);
-  if (!processExports) {
-    return kernelState;
-  }
-  const state = readKernelRuntimeState(processExports);
-  const memory = new Uint8Array(processExports.memory.buffer);
-  const netBufPoolBytes = processExports.kernel_net_buf_pool_bytes();
-  const maxBuffers = Math.max(1, Number(processExports.abi_max_sockets?.() ?? 32) * 2);
-  const netBufSlotBytes = Math.floor(netBufPoolBytes / maxBuffers);
-  memory.set(snapshot.socketTable, state.socketTablePtr);
-  if (snapshot.netBufPool !== undefined) {
-    memory.set(snapshot.netBufPool, state.netBufBase);
-  } else if (netBufSlotBytes > 0) {
-    for (const slot of snapshot.netBufSlots ?? []) {
-      if (slot.bufferIndex < 0 || slot.bufferIndex >= maxBuffers || slot.bytes.length !== netBufSlotBytes) {
-        continue;
-      }
-      memory.set(slot.bytes, state.netBufBase + slot.bufferIndex * netBufSlotBytes);
-    }
-  }
-  attachKernelRuntimeState(processExports, {
-    ...state,
-    socketUsed: snapshot.socketUsed,
-    netBufUsed: snapshot.netBufUsed,
-  });
-  return readKernelRuntimeState(processExports);
-}
-
-function snapshotSocketState(
-  pid: number,
-  kernelState: KernelRuntimeState,
-): KernelWorkerSocketStateSnapshot | undefined {
-  const processExports = processKernels.get(pid);
-  if (!processExports) {
-    return undefined;
-  }
-  attachKernelRuntimeState(processExports, kernelState);
-  const state = readKernelRuntimeState(processExports);
-  const memory = new Uint8Array(processExports.memory.buffer);
-  const netBufPoolBytes = processExports.kernel_net_buf_pool_bytes();
-  const maxBuffers = Math.max(1, Number(processExports.abi_max_sockets?.() ?? 32) * 2);
-  const netBufSlotBytes = Math.floor(netBufPoolBytes / maxBuffers);
-  const netBufSlots: KernelWorkerSocketStateSnapshot["netBufSlots"] = [];
-  if (netBufSlotBytes > 0) {
-    for (let bufferIndex = 0; bufferIndex < maxBuffers; bufferIndex += 1) {
-      if ((state.netBufUsed & (1n << BigInt(bufferIndex))) === 0n) {
-        continue;
-      }
-      const offset = state.netBufBase + bufferIndex * netBufSlotBytes;
-      netBufSlots.push({
-        bufferIndex,
-        bytes: memory.slice(offset, offset + netBufSlotBytes),
-      });
-    }
-  }
-  return {
-    socketTable: memory.slice(
-      state.socketTablePtr,
-      state.socketTablePtr + processExports.kernel_socket_table_bytes(),
-    ),
-    netBufSlots,
-    socketUsed: state.socketUsed,
-    netBufUsed: state.netBufUsed,
-  };
-}
-
-function syncProcessMemfs(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState {
-  const canonicalExports = exports;
-  const processExports = requireProcessKernel(pid);
-  attachKernelRuntimeState(processExports, kernelState);
-  const canonicalState = readKernelRuntimeState(canonicalExports);
-  const processState = readKernelRuntimeState(processExports);
-  copyCanonicalMemfsToProcess(canonicalState, processExports, processState, {
-    includeData: true,
-  });
-  restorePublishedRegularFileDataFromPageCache(processExports);
-  return readKernelRuntimeState(processExports);
-}
-
 const kernelWorkerSharedStateSync = createKernelWorkerSharedStateSync({
   getCanonicalExports: () => exports,
   getCanonicalProcessVmPtr: (pid) => canonicalProcesses.get(pid)?.vmPtr ?? 0,
@@ -348,6 +263,20 @@ const {
 syncPipeStateImpl = nextSyncPipeState;
 syncEpollStateImpl = nextSyncEpollState;
 syncSocketStateImpl = nextSyncSocketState;
+
+const syncProcessMemfs = createKernelWorkerProcessMemfsSync({
+  getCanonicalExports: () => exports,
+  requireProcessKernel,
+  copyCanonicalMemfsToProcess,
+  restorePublishedRegularFileDataFromPageCache,
+});
+
+const {
+  applySocketStateSnapshot,
+  snapshotSocketState,
+} = createKernelWorkerSocketStateBridge({
+  processKernels,
+});
 
 const kernelWorkerProcessControl = createKernelWorkerProcessControl({
   getCanonicalExports: () => exports,

@@ -14,6 +14,12 @@ import {
   MEMFS_INODE_OFF_MODE,
   MEMFS_INODE_OFF_SIZE,
 } from "../layout/memfs.js";
+export {
+  MEMFS_S_IFMT,
+  MEMFS_S_IFREG,
+  memfsFileHasInlineData,
+} from "../fs/memfs-inline-data.js";
+import { MEMFS_S_IFMT, MEMFS_S_IFREG } from "../fs/memfs-inline-data.js";
 
 const materializedMemfsFiles = new WeakMap<KernelExports, Set<number>>();
 
@@ -27,9 +33,6 @@ export type MemfsLayout = {
   dirEntriesPtr: number;
   dataPtr: number;
 };
-
-export const MEMFS_S_IFMT = 0o170000;
-export const MEMFS_S_IFREG = 0o100000;
 
 export function normalizePermMode(mode: number | undefined, fallback: number): number {
   return (mode ?? fallback) & 0o7777;
@@ -207,26 +210,6 @@ export function readMemfsFileDataDirect(targetExports: KernelExports, ino: numbe
   }
   const dataStart = layout.dataPtr + dataOffset;
   return new Uint8Array(targetExports.memory.buffer.slice(dataStart, dataStart + size));
-}
-
-export function memfsFileHasInlineData(targetExports: KernelExports, ino: number): boolean {
-  if (
-    typeof targetExports.kernel_memfs_ptr !== "function"
-    || typeof targetExports.kernel_memfs_first_child_bytes !== "function"
-    || typeof targetExports.kernel_memfs_inodes_bytes !== "function"
-  ) {
-    return false;
-  }
-  const layout = readMemfsLayout(targetExports.memory, targetExports.kernel_memfs_ptr());
-  const maxInodes = targetExports.kernel_memfs_first_child_bytes() / 4;
-  const inodeBytes = targetExports.kernel_memfs_inodes_bytes() / maxInodes;
-  const inodeBase = layout.inodesPtr + ino * inodeBytes;
-  const inodeView = new DataView(targetExports.memory.buffer);
-  const mode = inodeView.getUint32(inodeBase + MEMFS_INODE_OFF_MODE, true);
-  if ((mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG) {
-    return false;
-  }
-  return inodeView.getUint32(inodeBase + MEMFS_INODE_OFF_DATA_CAP, true) !== 0;
 }
 
 export function normalizeMetadataOnlyMemfsState(

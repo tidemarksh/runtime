@@ -3,7 +3,7 @@ import {
   MEMFS_S_IFMT,
   MEMFS_S_IFREG,
   memfsFileHasInlineData,
-} from "../../kernel-worker/common.js";
+} from "../../fs/memfs-inline-data.js";
 import type { ThreadWorkerMemoryPreserveRange } from "../../messages.js";
 import type { ProcessHandle, ThreadWorkerState } from "./types.js";
 
