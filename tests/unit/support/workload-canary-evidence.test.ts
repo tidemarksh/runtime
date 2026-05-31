@@ -6,7 +6,7 @@ import { describe, expect, test } from "vite-plus/test";
 const here = dirname(fileURLToPath(import.meta.url));
 const testsRoot = resolve(here, "../..");
 const unitRoot = resolve(testsRoot, "unit");
-const workloadRoot = resolve(testsRoot, "workloads");
+const runtimeIntegrationRoot = resolve(testsRoot, "integration/runtime");
 const targetRoot = resolve(testsRoot, "integration/targets");
 
 type CanaryEvidence = {
@@ -115,13 +115,19 @@ const workloadCanaries: readonly CanaryEvidence[] = [
     primaryRuntimeEvidence: networkEvidence,
   },
   {
-    workload: "archive-orchestrator.test.ts",
+    workload: "devtools/archive-orchestrator.test.ts",
     contracts: ["process launch", "filesystem snapshot", "stdio drain"],
     canaryReason: "Archive orchestration validates an external archive workflow; generic process, filesystem, and stdio behavior is primary in owner runtime tests.",
     primaryRuntimeEvidence: [...dynamicStartupEvidence, ...fsEvidence, "worker/io/stdio.test.ts"],
   },
   {
-    workload: "browser-direct-startup.test.ts",
+    workload: "go/browser-direct-startup.test.ts",
+    contracts: ["dynamic startup", "process creation", "interpreter execution"],
+    canaryReason: "Browser-direct startup is a dynamic startup canary with external fixture shape; process creation and interpreter boundaries are owned by runtime tests.",
+    primaryRuntimeEvidence: dynamicStartupEvidence,
+  },
+  {
+    workload: "node/browser-direct-startup.test.ts",
     contracts: ["dynamic startup", "process creation", "interpreter execution"],
     canaryReason: "Browser-direct startup is a dynamic startup canary with external fixture shape; process creation and interpreter boundaries are owned by runtime tests.",
     primaryRuntimeEvidence: dynamicStartupEvidence,
@@ -133,31 +139,79 @@ const workloadCanaries: readonly CanaryEvidence[] = [
     primaryRuntimeEvidence: [...runtimeApiEvidence, ...shellAndStdioEvidence, ...fsEvidence],
   },
   {
-    workload: "dynamic-startup-bucket.test.ts",
+    workload: "dynamic-loader/dynamic-startup-bucket.test.ts",
     contracts: ["dynamic startup", "process creation"],
     canaryReason: "Dynamic startup bucket covers fixture breadth; the generic startup and process creation contracts are primary in process and thread execution tests.",
     primaryRuntimeEvidence: dynamicStartupEvidence,
   },
   {
-    workload: "dynamic-startup.test.ts",
+    workload: "node/dynamic-startup.test.ts",
     contracts: ["dynamic startup", "process creation"],
     canaryReason: "Dynamic startup is retained as workload coverage for representative binaries; generic startup contracts are owned by runtime process tests.",
     primaryRuntimeEvidence: dynamicStartupEvidence,
   },
   {
-    workload: "execve-script.test.ts",
+    workload: "python/dynamic-startup.test.ts",
+    contracts: ["dynamic startup", "process creation"],
+    canaryReason: "Dynamic startup is retained as workload coverage for representative binaries; generic startup contracts are owned by runtime process tests.",
+    primaryRuntimeEvidence: dynamicStartupEvidence,
+  },
+  {
+    workload: "java/dynamic-startup.test.ts",
+    contracts: ["dynamic startup", "process creation"],
+    canaryReason: "Dynamic startup is retained as workload coverage for representative binaries; generic startup contracts are owned by runtime process tests.",
+    primaryRuntimeEvidence: dynamicStartupEvidence,
+  },
+  {
+    workload: "ruby/dynamic-startup.test.ts",
+    contracts: ["dynamic startup", "process creation"],
+    canaryReason: "Dynamic startup is retained as workload coverage for representative binaries; generic startup contracts are owned by runtime process tests.",
+    primaryRuntimeEvidence: dynamicStartupEvidence,
+  },
+  {
+    workload: "elixir/dynamic-startup.test.ts",
+    contracts: ["dynamic startup", "process creation"],
+    canaryReason: "Dynamic startup is retained as workload coverage for representative binaries; generic startup contracts are owned by runtime process tests.",
+    primaryRuntimeEvidence: dynamicStartupEvidence,
+  },
+  {
+    workload: "php/dynamic-startup.test.ts",
+    contracts: ["dynamic startup", "process creation"],
+    canaryReason: "Dynamic startup is retained as workload coverage for representative binaries; generic startup contracts are owned by runtime process tests.",
+    primaryRuntimeEvidence: dynamicStartupEvidence,
+  },
+  {
+    workload: "lua/dynamic-startup.test.ts",
+    contracts: ["dynamic startup", "process creation"],
+    canaryReason: "Dynamic startup is retained as workload coverage for representative binaries; generic startup contracts are owned by runtime process tests.",
+    primaryRuntimeEvidence: dynamicStartupEvidence,
+  },
+  {
+    workload: "perl/dynamic-startup.test.ts",
+    contracts: ["dynamic startup", "process creation"],
+    canaryReason: "Dynamic startup is retained as workload coverage for representative binaries; generic startup contracts are owned by runtime process tests.",
+    primaryRuntimeEvidence: dynamicStartupEvidence,
+  },
+  {
+    workload: "r/dynamic-startup.test.ts",
+    contracts: ["dynamic startup", "process creation"],
+    canaryReason: "Dynamic startup is retained as workload coverage for representative binaries; generic startup contracts are owned by runtime process tests.",
+    primaryRuntimeEvidence: dynamicStartupEvidence,
+  },
+  {
+    workload: "execve/execve-script.test.ts",
     contracts: ["execve handoff", "script interpreter path", "filesystem lookup"],
     canaryReason: "Host-built execve probes through BusyBox scripts are workload canaries; generic execve handoff and filesystem contracts are primary in fork/process/fs owner tests.",
     primaryRuntimeEvidence: [...execHandoffEvidence, ...fsEvidence, "worker/io/stdio.test.ts"],
   },
   {
-    workload: "fork-memfs-page-cache.test.ts",
+    workload: "apt/fork-memfs-page-cache.test.ts",
     contracts: ["fork shared state", "process memfs sync", "page cache"],
     canaryReason: "Fork plus memfs page-cache uses a full guest flow as a canary; shared state, memfs, and page-cache mechanics are owned by runtime tests.",
     primaryRuntimeEvidence: [...forkPipeEvidence, ...fsEvidence, "fs/sab-page-cache.test.ts"],
   },
   {
-    workload: "fork-pipe-dup2.test.ts",
+    workload: "fork/fork-pipe-dup2.test.ts",
     contracts: ["fork", "pipe state", "dup2 stdio", "scheduler liveness"],
     canaryReason: "The fork/pipe/dup2 binary is a workload canary for combined process and pipe behavior; primary generic coverage is in fork, pipe, stdio, and scheduler tests.",
     primaryRuntimeEvidence: forkPipeEvidence,
@@ -229,19 +283,19 @@ const workloadCanaries: readonly CanaryEvidence[] = [
     primaryRuntimeEvidence: packageModuleEvidence,
   },
   {
-    workload: "large-file-read.test.ts",
+    workload: "fs/large-file-read.test.ts",
     contracts: ["large regular file read", "process fs", "thread memory"],
     canaryReason: "Large regular-file read is a size and artifact canary; generic file IO and memory snapshot behavior is primary in runtime fs and thread memory tests.",
     primaryRuntimeEvidence: largeFileEvidence,
   },
   {
-    workload: "large-file-write.test.ts",
+    workload: "fs/large-file-write.test.ts",
     contracts: ["large regular file write", "process fs", "thread memory"],
     canaryReason: "Large regular-file write is a size canary for representative artifacts; generic write and page-cache contracts are owner-tested in runtime fs tests.",
     primaryRuntimeEvidence: largeFileEvidence,
   },
   {
-    workload: "large-sha256.test.ts",
+    workload: "fs/large-sha256.test.ts",
     contracts: ["large file read", "pipe scheduling", "blocked sibling liveness"],
     canaryReason: "Large sha256 combines a package-index sized file with blocked sibling pressure; generic fs, pipe, and scheduler behavior is primary in runtime owner tests.",
     primaryRuntimeEvidence: [...largeFileEvidence, ...forkPipeEvidence],
@@ -259,13 +313,13 @@ const workloadCanaries: readonly CanaryEvidence[] = [
     primaryRuntimeEvidence: [...nodeEventLoopEvidence, ...networkEvidence, ...forkPipeEvidence],
   },
   {
-    workload: "network-fork-stream-file.test.ts",
+    workload: "network/network-fork-stream-file.test.ts",
     contracts: ["network bridge", "fork", "pipe stdio", "file streaming"],
     canaryReason: "Network fork stream file combines socket, fork, pipe, and file streaming in one workload; each generic contract has separate runtime owner evidence.",
     primaryRuntimeEvidence: [...networkEvidence, ...forkPipeEvidence, ...largeFileEvidence],
   },
   {
-    workload: "network-large-response.test.ts",
+    workload: "network/network-large-response.test.ts",
     contracts: ["network bridge", "socket buffering", "scheduler liveness"],
     canaryReason: "Large network response is a network throughput canary; socket, bridge, epoll, and scheduler behavior is primary in runtime owner tests.",
     primaryRuntimeEvidence: networkEvidence,
@@ -325,7 +379,25 @@ const workloadCanaries: readonly CanaryEvidence[] = [
     primaryRuntimeEvidence: nodeEventLoopEvidence,
   },
   {
-    workload: "package-module-driver.test.ts",
+    workload: "ruby/package-module-driver.test.ts",
+    contracts: ["package module isolation", "process launch", "filesystem snapshot"],
+    canaryReason: "Package module driver is a package-layout canary; generic process, exec, stdio, and fs contracts are owner-tested.",
+    primaryRuntimeEvidence: packageModuleEvidence,
+  },
+  {
+    workload: "perl/package-module-driver.test.ts",
+    contracts: ["package module isolation", "process launch", "filesystem snapshot"],
+    canaryReason: "Package module driver is a package-layout canary; generic process, exec, stdio, and fs contracts are owner-tested.",
+    primaryRuntimeEvidence: packageModuleEvidence,
+  },
+  {
+    workload: "lua/package-module-driver.test.ts",
+    contracts: ["package module isolation", "process launch", "filesystem snapshot"],
+    canaryReason: "Package module driver is a package-layout canary; generic process, exec, stdio, and fs contracts are owner-tested.",
+    primaryRuntimeEvidence: packageModuleEvidence,
+  },
+  {
+    workload: "java/package-module-driver.test.ts",
     contracts: ["package module isolation", "process launch", "filesystem snapshot"],
     canaryReason: "Package module driver is a package-layout canary; generic process, exec, stdio, and fs contracts are owner-tested.",
     primaryRuntimeEvidence: packageModuleEvidence,
@@ -349,7 +421,19 @@ const workloadCanaries: readonly CanaryEvidence[] = [
     primaryRuntimeEvidence: packageModuleEvidence,
   },
   {
-    workload: "process-create-dynamic.test.ts",
+    workload: "lua/process-create-dynamic.test.ts",
+    contracts: ["process creation", "dynamic startup"],
+    canaryReason: "Dynamic process-create is a workload canary for representative binaries; process creation and lifecycle contracts are runtime-owned.",
+    primaryRuntimeEvidence: dynamicStartupEvidence,
+  },
+  {
+    workload: "php/process-create-dynamic.test.ts",
+    contracts: ["process creation", "dynamic startup"],
+    canaryReason: "Dynamic process-create is a workload canary for representative binaries; process creation and lifecycle contracts are runtime-owned.",
+    primaryRuntimeEvidence: dynamicStartupEvidence,
+  },
+  {
+    workload: "perl/process-create-dynamic.test.ts",
     contracts: ["process creation", "dynamic startup"],
     canaryReason: "Dynamic process-create is a workload canary for representative binaries; process creation and lifecycle contracts are runtime-owned.",
     primaryRuntimeEvidence: dynamicStartupEvidence,
@@ -391,19 +475,91 @@ const workloadCanaries: readonly CanaryEvidence[] = [
     primaryRuntimeEvidence: [...nodeEventLoopEvidence, ...forkPipeEvidence, ...languageToolchainEvidence],
   },
   {
-    workload: "script-runtime.test.ts",
+    workload: "ruby/script-runtime.test.ts",
     contracts: ["script runtime", "process launch", "filesystem snapshot"],
     canaryReason: "Script runtime is a cross-language workload canary; generic process, exec, stdio, and fs contracts are primary in runtime owner tests.",
     primaryRuntimeEvidence: packageModuleEvidence,
   },
   {
-    workload: "shell-wrapper-exec.test.ts",
+    workload: "php/script-runtime.test.ts",
+    contracts: ["script runtime", "process launch", "filesystem snapshot"],
+    canaryReason: "Script runtime is a cross-language workload canary; generic process, exec, stdio, and fs contracts are primary in runtime owner tests.",
+    primaryRuntimeEvidence: packageModuleEvidence,
+  },
+  {
+    workload: "perl/script-runtime.test.ts",
+    contracts: ["script runtime", "process launch", "filesystem snapshot"],
+    canaryReason: "Script runtime is a cross-language workload canary; generic process, exec, stdio, and fs contracts are primary in runtime owner tests.",
+    primaryRuntimeEvidence: packageModuleEvidence,
+  },
+  {
+    workload: "lua/script-runtime.test.ts",
+    contracts: ["script runtime", "process launch", "filesystem snapshot"],
+    canaryReason: "Script runtime is a cross-language workload canary; generic process, exec, stdio, and fs contracts are primary in runtime owner tests.",
+    primaryRuntimeEvidence: packageModuleEvidence,
+  },
+  {
+    workload: "r/script-runtime.test.ts",
+    contracts: ["script runtime", "process launch", "filesystem snapshot"],
+    canaryReason: "Script runtime is a cross-language workload canary; generic process, exec, stdio, and fs contracts are primary in runtime owner tests.",
+    primaryRuntimeEvidence: packageModuleEvidence,
+  },
+  {
+    workload: "elixir/script-runtime.test.ts",
+    contracts: ["script runtime", "process launch", "filesystem snapshot"],
+    canaryReason: "Script runtime is a cross-language workload canary; generic process, exec, stdio, and fs contracts are primary in runtime owner tests.",
+    primaryRuntimeEvidence: packageModuleEvidence,
+  },
+  {
+    workload: "shell/shell-wrapper-exec.test.ts",
     contracts: ["shell wrapper exec", "stdio", "PATH/env", "process launch"],
     canaryReason: "BusyBox shell-wrapper exec chains are workload canaries; generic shell stdio, exec handoff, process, and fs contracts are owner-tested.",
     primaryRuntimeEvidence: [...execHandoffEvidence, ...shellAndStdioEvidence, ...fsEvidence],
   },
   {
-    workload: "toolchain-exec.test.ts",
+    workload: "node/shell-wrapper-exec.test.ts",
+    contracts: ["shell wrapper exec", "stdio", "PATH/env", "process launch"],
+    canaryReason: "BusyBox shell-wrapper exec chains are workload canaries; generic shell stdio, exec handoff, process, and fs contracts are owner-tested.",
+    primaryRuntimeEvidence: [...execHandoffEvidence, ...shellAndStdioEvidence, ...fsEvidence],
+  },
+  {
+    workload: "go/toolchain-exec.test.ts",
+    contracts: ["toolchain exec", "process launch", "filesystem snapshot", "stdio"],
+    canaryReason: "Toolchain exec is representative external toolchain canary evidence; generic process, exec, stdio, and filesystem contracts are runtime-owned.",
+    primaryRuntimeEvidence: [...languageToolchainEvidence, ...execHandoffEvidence],
+  },
+  {
+    workload: "rust/toolchain-exec.test.ts",
+    contracts: ["toolchain exec", "process launch", "filesystem snapshot", "stdio"],
+    canaryReason: "Toolchain exec is representative external toolchain canary evidence; generic process, exec, stdio, and filesystem contracts are runtime-owned.",
+    primaryRuntimeEvidence: [...languageToolchainEvidence, ...execHandoffEvidence],
+  },
+  {
+    workload: "java/toolchain-exec.test.ts",
+    contracts: ["toolchain exec", "process launch", "filesystem snapshot", "stdio"],
+    canaryReason: "Toolchain exec is representative external toolchain canary evidence; generic process, exec, stdio, and filesystem contracts are runtime-owned.",
+    primaryRuntimeEvidence: [...languageToolchainEvidence, ...execHandoffEvidence],
+  },
+  {
+    workload: "c/toolchain-exec.test.ts",
+    contracts: ["toolchain exec", "process launch", "filesystem snapshot", "stdio"],
+    canaryReason: "Toolchain exec is representative external toolchain canary evidence; generic process, exec, stdio, and filesystem contracts are runtime-owned.",
+    primaryRuntimeEvidence: [...languageToolchainEvidence, ...execHandoffEvidence],
+  },
+  {
+    workload: "cpp/toolchain-exec.test.ts",
+    contracts: ["toolchain exec", "process launch", "filesystem snapshot", "stdio"],
+    canaryReason: "Toolchain exec is representative external toolchain canary evidence; generic process, exec, stdio, and filesystem contracts are runtime-owned.",
+    primaryRuntimeEvidence: [...languageToolchainEvidence, ...execHandoffEvidence],
+  },
+  {
+    workload: "haskell/toolchain-exec.test.ts",
+    contracts: ["toolchain exec", "process launch", "filesystem snapshot", "stdio"],
+    canaryReason: "Toolchain exec is representative external toolchain canary evidence; generic process, exec, stdio, and filesystem contracts are runtime-owned.",
+    primaryRuntimeEvidence: [...languageToolchainEvidence, ...execHandoffEvidence],
+  },
+  {
+    workload: "devtools/toolchain-exec.test.ts",
     contracts: ["toolchain exec", "process launch", "filesystem snapshot", "stdio"],
     canaryReason: "Toolchain exec is representative external toolchain canary evidence; generic process, exec, stdio, and filesystem contracts are runtime-owned.",
     primaryRuntimeEvidence: [...languageToolchainEvidence, ...execHandoffEvidence],
@@ -433,7 +589,7 @@ function fileExists(root: string, path: string): boolean {
 describe("workload canary evidence", () => {
   test("every workload test has exact canary inventory and no stale inventory entries", () => {
     const workloadTests = [
-      ...listTestFiles(workloadRoot),
+      ...listTestFiles(runtimeIntegrationRoot),
       ...listTestFiles(targetRoot),
     ].sort();
     const inventory = workloadCanaries.map(({ workload }) => workload).sort();

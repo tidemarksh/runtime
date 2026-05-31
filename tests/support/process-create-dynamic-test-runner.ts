@@ -1,0 +1,115 @@
+import { existsSync, readFileSync } from "node:fs";
+import { expect, test } from "vite-plus/test";
+import type { KernelExports } from "../../src/abi.js";
+import { createKernelEnv } from "../../src/wasm/env.js";
+import { preloadSnapshotEntries } from "../../src/worker/process-fs.js";
+import {
+  buildDynamicStartupSnapshot,
+  type DynamicStartupEntry,
+} from "./dynamic-startup-harness.js";
+import { readKernelWasm } from "./runtime-workload.js";
+
+async function loadKernel() {
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return null;
+  }
+  const module = await WebAssembly.compile(wasmBytes);
+  const memory = new WebAssembly.Memory({
+    initial: 1024,
+    maximum: 32768,
+    shared: true,
+  });
+  const instance = await WebAssembly.instantiate(module, {
+    env: createKernelEnv(memory),
+  });
+  const exports = instance.exports as unknown as KernelExports;
+  const heapBase = (exports as { __heap_base?: { value: number } }).__heap_base?.value ?? 0x200000;
+  exports.kernel_init(heapBase);
+  const now = Date.now();
+  exports.set_base_time(
+    BigInt(Math.floor(now / 1000)),
+    BigInt((now % 1000) * 1_000_000),
+  );
+  return { exports, memory };
+}
+
+function minimalInterpSnapshot(entry: DynamicStartupEntry, guestInterpreterPath: string) {
+  const interpSource = entry.snapshotSources.find(
+    (source) => source.kind === "file" && source.guestPath === guestInterpreterPath,
+  );
+  if (!interpSource || !existsSync(interpSource.hostPath)) {
+    return null;
+  }
+  return [{
+    kind: "file" as const,
+    path: guestInterpreterPath,
+    data: new Uint8Array(readFileSync(interpSource.hostPath)),
+    mode: 0o755,
+  }];
+}
+
+async function runProcessCreate(
+  entry: DynamicStartupEntry,
+  preloadMode: "minimal" | "full",
+  guestInterpreterPath: string,
+) {
+  if (!existsSync(entry.hostExecutablePath)) {
+    return null;
+  }
+  const loaded = await loadKernel();
+  if (!loaded) {
+    return null;
+  }
+  const { exports, memory } = loaded;
+  const ramSize = entry.ramSize;
+  const snapshot = preloadMode === "minimal"
+    ? minimalInterpSnapshot(entry, guestInterpreterPath)
+    : buildDynamicStartupSnapshot(entry);
+  if (!snapshot) {
+    return null;
+  }
+
+  preloadSnapshotEntries(exports, snapshot);
+  const elfData = new Uint8Array(readFileSync(entry.hostExecutablePath));
+  const elfOffset = memory.buffer.byteLength - Math.max(elfData.length + 0x20_000, 0x40_000);
+  new Uint8Array(memory.buffer).set(elfData, elfOffset);
+  exports.process_clear_args();
+  const encoder = new TextEncoder();
+  let scratchPtr = 0x10_000;
+  for (const arg of entry.argv) {
+    const bytes = encoder.encode(`${arg}\0`);
+    new Uint8Array(memory.buffer).set(bytes, scratchPtr);
+    exports.process_push_arg(scratchPtr);
+    scratchPtr += bytes.length + 16;
+  }
+  for (const env of entry.env) {
+    const bytes = encoder.encode(`${env}\0`);
+    new Uint8Array(memory.buffer).set(bytes, scratchPtr);
+    exports.process_push_env(scratchPtr);
+    scratchPtr += bytes.length + 16;
+  }
+  const vmPtr = exports.process_create(elfOffset, elfData.length, ramSize, 1024 * 1024);
+  return {
+    vmPtr,
+    lastError: exports.process_create_last_error?.() ?? null,
+  };
+}
+
+export function registerProcessCreateDynamicGate(
+  entry: DynamicStartupEntry,
+  guestInterpreterPath: string,
+): void {
+  for (const preloadMode of ["minimal", "full"] as const) {
+    test(`kernel process_create ${preloadMode} preload: ${entry.id}`, async () => {
+      const result = await runProcessCreate(entry, preloadMode, guestInterpreterPath);
+      if (!result) {
+        return;
+      }
+      expect(
+        result.vmPtr,
+        `process_create ${preloadMode} failed: ${entry.id} lastError=${result.lastError ?? "<unavailable>"}`,
+      ).toBeGreaterThan(0);
+    });
+  }
+}
