@@ -297,6 +297,12 @@ export async function handleVforkExecve(
       restoreVforkParentLocally(handle.kernel, parentThread.vmPtr, childPid);
       handle.kernelState = readKernelRuntimeState(handle.kernel);
     }
+    assertVforkParentResumeOwnership(
+      deps,
+      handle,
+      parentThread.vmPtr,
+      "vfork-parent-restored-rollback",
+    );
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
     reattachRestoredVforkParentWorker(deps, handle, parentWorker, parentThread.vmPtr);
   };

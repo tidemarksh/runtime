@@ -5067,6 +5067,19 @@ test("vfork execve handoff failure restores the parent without surfacing a fatal
 
     const parentWorker = createdWorkers[0];
     const parentKernel = createdKernelExports[0];
+    const rollbackResumeEvents: string[] = [];
+    const postParentWorkerMessage = parentWorker.postMessage.bind(parentWorker);
+    parentWorker.postMessage = (message): void => {
+      if (message.type === "init") {
+        rollbackResumeEvents.push("parent-reattach");
+      }
+      postParentWorkerMessage(message);
+    };
+    const processCurrentPid = parentKernel.process_current_pid.bind(parentKernel);
+    parentKernel.process_current_pid = (vmPtr): number => {
+      rollbackResumeEvents.push("parent-resume-invariant");
+      return processCurrentPid(vmPtr);
+    };
     parentKernel.thread_vfork_child_pid = () => 55;
     parentKernel.thread_spawn_kind = () => parentKernel.abi_spawn_kind_execve();
     parentKernel.thread_spawn_child_pid = () => {
@@ -5089,6 +5102,7 @@ test("vfork execve handoff failure restores the parent without surfacing a fatal
     await flushMicrotasks();
 
     parentWorker.clearPostedMessages();
+    rollbackResumeEvents.length = 0;
     parentWorker.emit({
       type: "status",
       status: 9,
@@ -5110,6 +5124,10 @@ test("vfork execve handoff failure restores the parent without surfacing a fatal
     expect(handle.kernelState.heapPtr).toBe(resumedState.heapPtr);
     expect(handle.kernelState.processPendingPtr).toBe(makeKernelState().processPendingPtr);
     expect(readPublishedKernelRuntimeState(handle.runtimeBridge)).toEqual(handle.kernelState);
+    expect(rollbackResumeEvents).toContain("parent-resume-invariant");
+    expect(rollbackResumeEvents.indexOf("parent-resume-invariant")).toBeLessThan(
+      rollbackResumeEvents.indexOf("parent-reattach"),
+    );
     expect(parentWorker.postedMessages).toEqual([
       expect.objectContaining({
         type: "init",
