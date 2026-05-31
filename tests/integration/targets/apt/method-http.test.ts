@@ -61,6 +61,7 @@ const aptCacheStatsTimeoutMs = Number(process.env.TIDEMARK_TEST_APT_CACHE_STATS_
 const aptCheckPackagesInput = process.env.TIDEMARK_TEST_APT_CHECK_PACKAGES_INPUT ?? aptCachePackagesInput;
 const aptCheckTimeoutMs = Number(process.env.TIDEMARK_TEST_APT_CHECK_TIMEOUT_MS ?? "300000");
 const methodFullPackageGate = process.env.TIDEMARK_TEST_APT_METHOD_FULL_PACKAGE_GATE === "1";
+const methodFullPackageGateTest = methodFullPackageGate ? test : test.skip;
 const methodFullPackageBytes = Number(process.env.TIDEMARK_TEST_APT_METHOD_FULL_PACKAGE_BYTES ?? "0");
 const storeFullPackageExpectedHash = process.env.TIDEMARK_TEST_APT_STORE_EXPECTED_HASH !== "0";
 const storeFullPackageHashMode = storeFullPackageExpectedHash ? "sha256-only" : "apt-default-all";
@@ -4224,10 +4225,7 @@ test("apt method http local gate: async bridge response is delivered to method",
   }
 }, Math.max(60_000, asyncDoneTimeoutMs + 10_000));
 
-test("apt method http local gate: full package fetch saves response body", async () => {
-  if (!methodFullPackageGate) {
-    return logSkip("set TIDEMARK_TEST_APT_METHOD_FULL_PACKAGE_GATE=1 to run package method gate");
-  }
+methodFullPackageGateTest("apt method http local gate: full package fetch saves response body", async () => {
   const packageBody = methodPackagesXzResponseBody;
   if (!packageBody) {
     return logSkip("set TIDEMARK_TEST_APT_METHOD_PACKAGES_XZ_RESPONSE_BODY to run package method gate");
@@ -4659,10 +4657,7 @@ test("apt method parent wait local gate: stdout EOF follows URI Done after stdin
   }
 }, Math.max(90_000, asyncDoneTimeoutMs + 20_000));
 
-test("apt method parent wait local gate: full package stdout EOF follows URI Done after stdin closes", async () => {
-  if (!methodFullPackageGate) {
-    return logSkip("set TIDEMARK_TEST_APT_METHOD_FULL_PACKAGE_GATE=1 to run full package EOF/wait gate");
-  }
+methodFullPackageGateTest("apt method parent wait local gate: full package stdout EOF follows URI Done after stdin closes", async () => {
   const packageBody = methodPackagesXzResponseBody;
   if (!packageBody) {
     return logSkip("set TIDEMARK_TEST_APT_METHOD_PACKAGES_XZ_RESPONSE_BODY to run full package EOF/wait gate");

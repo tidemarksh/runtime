@@ -1,4 +1,4 @@
-import { afterAll, beforeAll } from "vite-plus/test";
+import { afterAll, beforeAll, expect } from "vite-plus/test";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -17,7 +17,6 @@ export const encoder = new TextEncoder();
 export const decoder = new TextDecoder();
 const WORKSPACE_ROOT = resolve(__dirname, "../../..");
 const TIMEOUT_OUTPUT_PREVIEW_BYTES = 4096;
-const FAIL_ON_RUNTIME_WORKLOAD_SKIP = process.env.TIDEMARK_TEST_RUNTIME_WORKLOAD_FAIL_ON_SKIP === "1";
 
 const originalWorker = globalThis.Worker;
 export let Runtime: typeof import("../../dist/index.mjs").Runtime;
@@ -55,11 +54,30 @@ afterAll(() => {
   globalThis.Worker = originalWorker;
 });
 
-export function logSkip(reason: string): null {
-  console.log(`skip runtime workload: ${reason}`);
-  if (FAIL_ON_RUNTIME_WORKLOAD_SKIP) {
-    throw new Error(`runtime workload skip: ${reason}`);
+function isIntegrationRun(): boolean {
+  if ((process.env.npm_lifecycle_event ?? "").startsWith("test:integration")) {
+    return true;
   }
+  const testPath = ((expect.getState() as { testPath?: string }).testPath ?? "").replaceAll("\\", "/");
+  if (testPath.includes("/tests/integration/") || testPath.startsWith("tests/integration/")) {
+    return true;
+  }
+  const args = process.argv.map((arg) => arg.replaceAll("\\", "/"));
+  return args.some((arg) => (
+    arg === "tests/integration"
+    || arg.startsWith("tests/integration/")
+    || arg.endsWith("/tests/integration")
+    || arg.includes("/tests/integration/")
+  ));
+}
+
+export function logSkip(reason: string): null {
+  const integrationRun = isIntegrationRun();
+  if (integrationRun) {
+    console.log(`integration requirement missing: ${reason}`);
+    throw new Error(`integration requirement missing: ${reason}`);
+  }
+  console.log(`test input unavailable: ${reason}`);
   return null;
 }
 

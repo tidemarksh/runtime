@@ -14,6 +14,7 @@ import {
 
 const hostRiscvGcc = process.env.TIDEMARK_TEST_HOST_RISCV_GCC ?? "riscv64-linux-gnu-gcc";
 const runForkStreamFileGate = process.env.TIDEMARK_TEST_FORK_STREAM_FILE_GATE === "1";
+const forkStreamFileGateTest = runForkStreamFileGate ? test : test.skip;
 const streamBodyBytes = Number(process.env.TIDEMARK_TEST_FORK_STREAM_FILE_BYTES ?? 2 * 1024 * 1024);
 const streamReadBufferBytes = Number(process.env.TIDEMARK_TEST_FORK_STREAM_FILE_READ_BUFFER_BYTES ?? 8192);
 const streamTimeoutMs = Number(process.env.TIDEMARK_TEST_FORK_STREAM_FILE_TIMEOUT_MS ?? 150_000);
@@ -348,10 +349,7 @@ function createStreamFileBridge(body: Uint8Array, asyncBridge = false): {
   return { bridge, requests, readChunks, metrics };
 }
 
-test("network fork stream file local gate: exec child writes socket body while parent pselect/waits", async () => {
-  if (!runForkStreamFileGate) {
-    return logSkip("set TIDEMARK_TEST_FORK_STREAM_FILE_GATE=1 to run fork stream file observation gate");
-  }
+forkStreamFileGateTest("network fork stream file local gate: exec child writes socket body while parent pselect/waits", async () => {
   const wasmBytes = readKernelWasm();
   if (!wasmBytes) {
     return;

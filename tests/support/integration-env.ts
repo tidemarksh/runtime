@@ -10,6 +10,9 @@ function isIntegrationRun(): boolean {
   if (process.env.TIDEMARK_TEST_ENABLE_INTEGRATION_ENV === "1") {
     return true;
   }
+  if ((process.env.npm_lifecycle_event ?? "").startsWith("test:integration")) {
+    return true;
+  }
   const args = process.argv.map((arg) => arg.replaceAll("\\", "/"));
   return args.some((arg) => (
     arg === "tests/integration"
