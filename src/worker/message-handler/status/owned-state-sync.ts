@@ -162,6 +162,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
           handle,
           targets,
           {
+            cause: { kind: "syscall", nr: -1n, name: "owned-state-empty-fork-shared-sync" },
             deltaOfdIds: true,
             includeMemfs: false,
             trackHeldOfds: true,
@@ -173,6 +174,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
         handle,
         targets,
         {
+          cause: { kind: "syscall", nr: -1n, name: "owned-state-fork-shared-sync" },
           deltaOfdIds: true,
           includeMemfs: false,
           trackHeldOfds: true,
@@ -375,6 +377,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
           handle,
           kernelShareOtherMembers(handle),
           {
+            cause: { kind: "syscall", nr: -1n, name: "owned-state-process-memfs-sync" },
             includeMemfs: true,
             memfsOnly: true,
             trackHeldOfds: false,

@@ -10,6 +10,7 @@ import { kernelWorkerOwnsEpollState } from "./ownership/epoll-control.js";
 import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
 import { kernelWorkerOwnsSocketState } from "./ownership/socket-control.js";
 import type { ProcessHandle } from "./types.js";
+import type { SyncCause } from "./contracts/sync.js";
 
 interface WorkerLifecycleDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
@@ -31,7 +32,8 @@ interface WorkerLifecycleDeps {
   syncForkSharedStateViaKernelWorker(
     handle: ProcessHandle,
     targets: ProcessHandle[],
-    options?: {
+    options: {
+      cause: SyncCause;
       includeMemfs?: boolean;
       trackHeldOfds?: boolean;
       deltaOfdIds?: boolean;
@@ -67,6 +69,7 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
   async function syncOwnedStateBeforeExit(handle: ProcessHandle): Promise<void> {
     if (handle.kernelWorkerRequest && handle.pid > 0) {
       await deps.syncForkSharedStateViaKernelWorker(handle, kernelShareOtherMembers(handle), {
+        cause: { kind: "syscall", nr: -1n, name: "process-exit-owned-state" },
         includeMemfs: false,
         trackHeldOfds: true,
         deltaOfdIds: true,

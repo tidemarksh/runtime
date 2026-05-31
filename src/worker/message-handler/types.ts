@@ -1,5 +1,6 @@
 import type { ThreadWorkerOutbound } from "../../messages.js";
 import type { KernelRpcResumeOutcome } from "../kernel-rpc/outcomes.js";
+import type { SyncCause } from "../contracts/sync.js";
 import type { AttachThreadWorkerRequest, ProcessHandle, ThreadWorkerState } from "../types.js";
 import type { WorkerMessageHandlerSyncEffects } from "./sync-effects.js";
 
@@ -60,11 +61,12 @@ export interface WorkerMessageHandlerDeps extends Partial<WorkerMessageHandlerSy
     termSignal: number,
   ): boolean;
   statusDefersOwnedStateSync(handle: ProcessHandle, status: number): boolean;
-  syncBlockedForkSharedStateViaKernelWorker(handle: ProcessHandle, sourceVmPtr?: number): Promise<void>;
+  syncBlockedForkSharedStateViaKernelWorker(handle: ProcessHandle, sourceVmPtr: number | undefined, cause: SyncCause): Promise<void>;
   syncForkSharedStateViaKernelWorker(
     handle: ProcessHandle,
     targets: ProcessHandle[],
-    options?: {
+    options: {
+      cause: SyncCause;
       includeMemfs?: boolean;
       trackHeldOfds?: boolean;
       deltaOfdIds?: boolean;
@@ -74,6 +76,6 @@ export interface WorkerMessageHandlerDeps extends Partial<WorkerMessageHandlerSy
       sourceVmPtr?: number;
     },
   ): Promise<void>;
-  syncProcessMemfsViaKernelWorker(handle: ProcessHandle): Promise<void>;
+  syncProcessMemfsViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<void>;
   syncProcessLifecycleViaKernelWorker(handle: ProcessHandle, vmPtr: number): Promise<void>;
 }

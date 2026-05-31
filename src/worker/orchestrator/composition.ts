@@ -31,14 +31,15 @@ import { createWorkerProcessFactory } from "../create-process.js";
 import {
   applySocketStateFromKernelWorker,
   releaseSharedHostStdioViaKernelWorker as releaseSharedHostStdioImpl,
-  rehydrateForkSharedStateForWorkerRuntime as rehydrateForkSharedStateViaKernelWorkerImpl,
+  rehydrateForkSharedStateViaKernelWorker as rehydrateForkSharedStateViaKernelWorkerImpl,
   snapshotProcessFdOfdStateForKernelWorker,
-  syncBlockedForkSharedStateForWorkerRuntime as syncBlockedForkSharedStateViaKernelWorkerImpl,
-  syncForkSharedStateForWorkerRuntime as syncForkSharedStateViaKernelWorkerImpl,
-  syncForkSharedStateLocallyForWorkerRuntime as syncForkSharedStateLocallyImpl,
-  syncPipeStateForWorkerRuntime as syncPipeStateViaKernelWorkerImpl,
-  syncProcessMemfsForWorkerRuntime as syncProcessMemfsViaKernelWorkerImpl,
-  syncSocketStateForWorkerRuntime as syncSocketStateViaKernelWorkerImpl,
+  syncBlockedForkSharedStateViaKernelWorker as syncBlockedForkSharedStateViaKernelWorkerImpl,
+  syncForkSharedStateLocally as syncForkSharedStateLocallyImpl,
+  syncForkSharedStateViaKernelWorker as syncForkSharedStateViaKernelWorkerImpl,
+  syncPipeStateViaKernelWorker as syncPipeStateViaKernelWorkerImpl,
+  syncProcessMemfsViaKernelWorker as syncProcessMemfsViaKernelWorkerImpl,
+  syncSocketStateViaKernelWorker as syncSocketStateViaKernelWorkerImpl,
+  type SyncCause,
 } from "../sync.js";
 import { createWorkerDestroyHelpers } from "../destroy.js";
 import { createWorkerExitHelpers } from "../exit.js";
@@ -56,6 +57,7 @@ import {
   hasActiveChildProcess as hasActiveChildProcessImpl,
   pumpActiveChildProcesses as pumpActiveChildProcessesImpl,
 } from "../child-processes.js";
+import { collectTrackableForkSharedOfds } from "../ownership/ofd-peer.js";
 import { createWorkerOrchestratorFacade } from "./facade.js";
 import type {
   WorkerOrchestrator,
@@ -593,9 +595,9 @@ async function recordChildExitViaKernelWorker(
 function syncForkSharedStateLocally(
   handle: ProcessHandle,
   targets: ProcessHandle[],
-  options: { includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] } = {},
+  options: { cause: SyncCause; includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] },
 ): void {
-  syncForkSharedStateLocallyImpl(handle, targets, options);
+  syncForkSharedStateLocallyImpl(handle, targets, options, collectTrackableForkSharedOfds);
 }
 
 async function syncForkSharedStateViaKernelWorker(
@@ -610,35 +612,46 @@ async function syncForkSharedStateViaKernelWorker(
     preservePublishedRegularFileData?: boolean;
     sourceVmPtr?: number;
     ofdIds?: number[];
-  } = {},
+    cause: SyncCause;
+  },
 ): Promise<void> {
+  if (!handle.kernelWorkerRequest || handle.pid <= 0) {
+    syncForkSharedStateLocally(handle, targets, {
+      cause: options.cause,
+      includeMemfs: options.includeMemfs,
+      trackHeldOfds: options.trackHeldOfds,
+      ofdIds: options.ofdIds,
+    });
+    return;
+  }
   await syncForkSharedStateViaKernelWorkerImpl(handle, targets, options);
 }
 
 async function rehydrateForkSharedStateViaKernelWorker(
   targets: ProcessHandle[],
   ofdIds: number[],
-  options: { procSelfExeTargets?: KernelWorkerPidBytesSnapshot[]; includeMemfs?: boolean } = {},
+  options: { cause: SyncCause; procSelfExeTargets?: KernelWorkerPidBytesSnapshot[]; includeMemfs?: boolean },
 ): Promise<void> {
   await rehydrateForkSharedStateViaKernelWorkerImpl(targets, ofdIds, options);
 }
 
 async function syncBlockedForkSharedStateViaKernelWorker(
   handle: ProcessHandle,
-  sourceVmPtr?: number,
+  sourceVmPtr: number | undefined,
+  cause: SyncCause,
 ): Promise<void> {
-  await syncBlockedForkSharedStateViaKernelWorkerImpl(handle, sourceVmPtr);
+  await syncBlockedForkSharedStateViaKernelWorkerImpl(handle, sourceVmPtr, cause);
 }
 
-async function syncPipeStateViaKernelWorker(handle: ProcessHandle): Promise<bigint> {
-  return syncPipeStateViaKernelWorkerImpl(handle);
+async function syncPipeStateViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<bigint> {
+  return syncPipeStateViaKernelWorkerImpl(handle, cause);
 }
 
-async function syncSocketStateViaKernelWorker(handle: ProcessHandle): Promise<{
+async function syncSocketStateViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<{
   socketUsed: number;
   netBufUsed: bigint;
 }> {
-  return syncSocketStateViaKernelWorkerImpl(handle);
+  return syncSocketStateViaKernelWorkerImpl(handle, cause);
 }
 
 async function releaseSharedHostStdio(handle: ProcessHandle): Promise<void> {

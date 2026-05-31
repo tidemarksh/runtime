@@ -13,6 +13,7 @@ import { PIPE_HEAD_OFFSET, PIPE_TAIL_OFFSET, PIPE_WRITE_OPEN_OFFSET } from "../.
 import { POLLFD_BYTES } from "../../layout/poll.js";
 import { activeChildMayHoldBlockedPipeWriter } from "./pipe.js";
 import type { KernelRpcResumeEffect, KernelRpcResumeOutcome } from "./outcomes.js";
+import type { SyncCause } from "../contracts/sync.js";
 
 const GUEST_TICKS_PER_SEC = 100_000_000n;
 const PIPE_SLOT_DEBUG_ENABLED = ((globalThis as {
@@ -35,8 +36,8 @@ export interface WorkerKernelRpcBlockedRpcDeps {
   failProcess(handle: ProcessHandle, error: Error): void;
   handleBlockedRetryResult(handle: ProcessHandle, worker: Worker, vmPtr: number, status: number): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
-  syncBlockedForkSharedStateViaKernelWorker(handle: ProcessHandle, sourceVmPtr?: number): Promise<void>;
-  syncSocketStateViaKernelWorker(handle: ProcessHandle): Promise<{ socketUsed: number; netBufUsed: bigint }>;
+  syncBlockedForkSharedStateViaKernelWorker(handle: ProcessHandle, sourceVmPtr: number | undefined, cause: SyncCause): Promise<void>;
+  syncSocketStateViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<{ socketUsed: number; netBufUsed: bigint }>;
 }
 
 export function createWorkerKernelRpcBlockedRpcHelpers(deps: WorkerKernelRpcBlockedRpcDeps) {
@@ -82,6 +83,10 @@ function advanceGuestTimeByMs(handle: ProcessHandle, timeoutMs: number): void {
   }
   const deltaTicks = BigInt(Math.ceil(timeoutMs)) * GUEST_TICKS_PER_SEC / 1000n;
   handle.kernel.sync_monotonic_ticks_floor?.(monotonicTicksCurrent(handle) + deltaTicks);
+}
+
+function blockedRpcSyncCause(status: number): SyncCause {
+  return { kind: "blocked-rpc", status };
 }
 
 function formatGuestBufferPreview(handle: ProcessHandle, ptr: bigint | number, length: bigint | number): string {
@@ -653,7 +658,7 @@ function blockedPollPipeHasBufferedData(handle: ProcessHandle, vmPtr: number): b
   return view.getUint32(offset, true) !== view.getUint32(offset + 4, true);
 }
 
-async function syncSocketStatePreservingNetworkBridge(handle: ProcessHandle): Promise<{
+async function syncSocketStatePreservingNetworkBridge(handle: ProcessHandle, status: number): Promise<{
   socketUsed: number;
   netBufUsed: bigint;
 }> {
@@ -664,7 +669,7 @@ async function syncSocketStatePreservingNetworkBridge(handle: ProcessHandle): Pr
       netBufUsed: handle.kernelState.netBufUsed,
     };
   }
-  return deps.syncSocketStateViaKernelWorker(handle);
+  return deps.syncSocketStateViaKernelWorker(handle, blockedRpcSyncCause(status));
 }
 
 
@@ -777,7 +782,7 @@ async function resumeBlockedSyscallLocally(
       if (handle.kernelWorkerRequest && handle.pid > 0) {
         deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-blocked:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-blocked-start:${handle.pid}`);
-        await deps.syncBlockedForkSharedStateViaKernelWorker(handle, vmPtr);
+        await deps.syncBlockedForkSharedStateViaKernelWorker(handle, vmPtr, blockedRpcSyncCause(blockedStatus));
         if (abortIfStaleBlockedRpc()) {
           return;
         }
@@ -796,7 +801,7 @@ async function resumeBlockedSyscallLocally(
       reconcileKernelSharePipeControl(handle);
       if (handle.kernel.thread_poll_wait_has_socket?.(vmPtr) === 1) {
         deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-socket:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
-        await syncSocketStatePreservingNetworkBridge(handle);
+        await syncSocketStatePreservingNetworkBridge(handle, blockedStatus);
         if (abortIfStaleBlockedRpc()) {
           return;
         }
@@ -1156,7 +1161,7 @@ async function resumeBlockedSyscallLocally(
     const transientProcessOwnerMismatch = currentPid > 0 && currentPid !== handle.pid;
     if (!transientProcessOwnerMismatch && !forkSharedSyncedBeforeResume && !resumePollTimeout) {
       deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-after-resume:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
-      await deps.syncBlockedForkSharedStateViaKernelWorker(handle, vmPtr);
+      await deps.syncBlockedForkSharedStateViaKernelWorker(handle, vmPtr, blockedRpcSyncCause(blockedStatus));
       if (abortIfStaleBlockedRpc()) {
         return;
       }
@@ -1295,7 +1300,7 @@ async function resumeBlockedSyscallLocally(
         || blockedStatus === handle.kernel.abi_status_socket_send()
       )
     ) {
-      await syncSocketStatePreservingNetworkBridge(handle);
+      await syncSocketStatePreservingNetworkBridge(handle, blockedStatus);
       if (abortIfStaleBlockedRpc()) {
         return;
       }

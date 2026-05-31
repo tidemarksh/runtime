@@ -5,4 +5,4 @@ export { blockedStatusUsesForkSharedStateSync, syncForkSharedStateLocally, syncF
 export { syncPipeStateViaKernelWorker, syncPipeStateForWorkerRuntime } from "./sync/pipe.js";
 export { applySocketStateFromKernelWorker, syncSocketStateViaKernelWorker, syncSocketStateForWorkerRuntime } from "./sync/socket.js";
 export { releaseHostStdioViaKernelWorker, releaseSharedHostStdioViaKernelWorker } from "./sync/stdio.js";
-export { syncProcessMemfsForWorkerRuntime } from "./sync/memfs.js";
+export { syncProcessMemfsForWorkerRuntime, syncProcessMemfsViaKernelWorker } from "./sync/memfs.js";

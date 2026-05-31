@@ -15,6 +15,7 @@ import type {
   KernelWorkerFdEntrySnapshot,
   KernelWorkerOfdSlotSnapshot,
   KernelWorkerSocketStateSnapshot,
+  SyncCause,
 } from "../contracts/index.js";
 
 interface WorkerKernelRpcDeps {
@@ -30,17 +31,18 @@ interface WorkerKernelRpcDeps {
   kickBlockedWorkers(handle: ProcessHandle): void;
   markRuntimeFsDirty(handle: ProcessHandle): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
-  syncProcessMemfsViaKernelWorker(handle: ProcessHandle): Promise<void>;
-  syncBlockedForkSharedStateViaKernelWorker(handle: ProcessHandle, sourceVmPtr?: number): Promise<void>;
+  syncProcessMemfsViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<void>;
+  syncBlockedForkSharedStateViaKernelWorker(handle: ProcessHandle, sourceVmPtr: number | undefined, cause: SyncCause): Promise<void>;
   syncForkSharedStateLocally(
     handle: ProcessHandle,
     targets: ProcessHandle[],
-    options?: { includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] },
+    options: { cause: SyncCause; includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] },
   ): void;
   syncForkSharedStateViaKernelWorker(
     handle: ProcessHandle,
     targets: ProcessHandle[],
-    options?: {
+    options: {
+      cause: SyncCause;
       includeMemfs?: boolean;
       trackHeldOfds?: boolean;
       deltaOfdIds?: boolean;
@@ -54,10 +56,10 @@ interface WorkerKernelRpcDeps {
   rehydrateForkSharedStateViaKernelWorker(
     targets: ProcessHandle[],
     ofdIds: number[],
-    options?: { procSelfExeTargets?: KernelWorkerPidBytesSnapshot[]; includeMemfs?: boolean },
+    options: { cause: SyncCause; procSelfExeTargets?: KernelWorkerPidBytesSnapshot[]; includeMemfs?: boolean },
   ): Promise<void>;
-  syncPipeStateViaKernelWorker(handle: ProcessHandle): Promise<bigint>;
-  syncSocketStateViaKernelWorker(handle: ProcessHandle): Promise<{ socketUsed: number; netBufUsed: bigint }>;
+  syncPipeStateViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<bigint>;
+  syncSocketStateViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<{ socketUsed: number; netBufUsed: bigint }>;
   snapshotProcessFdOfdStateForKernelWorker(
     handle: ProcessHandle,
     vmPtr: number,
@@ -92,7 +94,11 @@ export async function resolveProcessCwdInoViaKernelWorker(
 }
 
 export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
-  async function syncSocketStatePreservingNetworkBridge(handle: ProcessHandle): Promise<{
+  function kernelRpcSyncCause(name: string): SyncCause {
+    return { kind: "syscall", nr: -1n, name };
+  }
+
+  async function syncSocketStatePreservingNetworkBridge(handle: ProcessHandle, cause: SyncCause): Promise<{
     socketUsed: number;
     netBufUsed: bigint;
   }> {
@@ -103,7 +109,7 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
         netBufUsed: handle.kernelState.netBufUsed,
       };
     }
-    return deps.syncSocketStateViaKernelWorker(handle);
+    return deps.syncSocketStateViaKernelWorker(handle, cause);
   }
 
   const kernelRpcLifecycleHelpers = createWorkerKernelRpcLifecycleHelpers({
@@ -156,6 +162,7 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
         handle,
         targets,
         {
+          cause: kernelRpcSyncCause("fs-shared-ofd-sync"),
           includeMemfs: false,
           trackHeldOfds: false,
           deltaOfdIds: true,
@@ -168,6 +175,7 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
         handle,
         targets,
         {
+          cause: kernelRpcSyncCause("fs-memfs-publication"),
           includeMemfs: true,
           trackHeldOfds: false,
           memfsOnly: true,
@@ -175,7 +183,7 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
           sourceVmPtr: options.sourceVmPtr,
         },
       );
-      await deps.syncPipeStateViaKernelWorker(handle);
+      await deps.syncPipeStateViaKernelWorker(handle, kernelRpcSyncCause("fs-memfs-pipe-refresh"));
     },
     rehydrateForkSharedStateViaKernelWorker: deps.rehydrateForkSharedStateViaKernelWorker,
     publishRuntimeKernelState: (handle) => publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true),

@@ -824,7 +824,11 @@ test("status handler leaves blocked fork-shared sync to blocked-status handling"
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
-  expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(handle, 0x1234);
+  expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(
+    handle,
+    0x1234,
+    { kind: "blocked-rpc", status: 24 },
+  );
   expect(blockWorker).toHaveBeenCalledWith(handle, worker, 24, 0x1234);
   expect(pumpProcess).toHaveBeenCalledWith(handle);
 });

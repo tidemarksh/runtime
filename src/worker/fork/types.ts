@@ -1,6 +1,7 @@
 import type { AttachThreadWorkerRequest, CanonicalizedChildLifecycle, KernelWorkerMemfsSeedMode, KernelWorkerPipeSeedMode, ProcessHandle, ThreadWorkerState } from "../types.js";
 import type { KernelWorkerPidBytesSnapshot } from "../../messages.js";
 import type { KernelRpcResumeOutcome } from "../kernel-rpc/outcomes.js";
+import type { SyncCause } from "../contracts/sync.js";
 
 export interface WorkerForkDeps {
   processHandles: Map<number, ProcessHandle>;
@@ -30,7 +31,7 @@ export interface WorkerForkDeps {
   rehydrateForkSharedStateViaKernelWorker(
     targets: ProcessHandle[],
     ofdIds: number[],
-    options?: { procSelfExeTargets?: KernelWorkerPidBytesSnapshot[]; includeMemfs?: boolean },
+    options: { cause: SyncCause; procSelfExeTargets?: KernelWorkerPidBytesSnapshot[]; includeMemfs?: boolean },
   ): Promise<void>;
   registerProcessWithKernelWorker(
     handle: ProcessHandle,
@@ -44,12 +45,13 @@ export interface WorkerForkDeps {
   syncForkSharedStateLocally(
     handle: ProcessHandle,
     targets: ProcessHandle[],
-    options?: { includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] },
+    options: { cause: SyncCause; includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] },
   ): void;
   syncForkSharedStateViaKernelWorker(
     handle: ProcessHandle,
     targets: ProcessHandle[],
-    options?: {
+    options: {
+      cause: SyncCause;
       includeMemfs?: boolean;
       trackHeldOfds?: boolean;
       deltaOfdIds?: boolean;
@@ -60,7 +62,7 @@ export interface WorkerForkDeps {
       ofdIds?: number[];
     },
   ): Promise<void>;
-  syncProcessMemfsViaKernelWorker(handle: ProcessHandle): Promise<void>;
+  syncProcessMemfsViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<void>;
   canonicalizeChildLifecycleViaKernelWorker(
     handle: ProcessHandle,
     vmPtr: number,

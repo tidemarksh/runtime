@@ -221,7 +221,11 @@ export async function handleVforkExecve(
   handle.pendingChildSpawnRecords += 1;
   try {
     if (handle.kernelWorkerRequest && handle.pid > 0) {
-      await deps.syncProcessMemfsViaKernelWorker(handle);
+      await deps.syncProcessMemfsViaKernelWorker(handle, {
+        kind: "syscall",
+        nr: -1n,
+        name: "vfork-execve-parent-memfs-preflight",
+      });
       assertVforkChildHandoffState(handle, parentThread.vmPtr, childPid, "child-handoff-preflight");
     }
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:start:${childPid}`);
@@ -446,6 +450,7 @@ export async function handleVforkExecve(
     deps.assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-register");
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-sync:start:${childPid}`);
     await deps.syncForkSharedStateViaKernelWorker(childHandle, kernelShareOtherMembers(childHandle), {
+      cause: { kind: "fork-child-ready", childPid },
       includeMemfs: false,
       trackHeldOfds: false,
     });
@@ -467,6 +472,7 @@ export async function handleVforkExecve(
     deps.assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-discard");
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-rehydrate:start:${childPid}`);
     await deps.rehydrateForkSharedStateViaKernelWorker([childHandle], rehydratedSharedOfdIds, {
+      cause: { kind: "fork-child-ready", childPid },
       procSelfExeTargets: procSelfExeTarget.length > 0
         ? [{ pid: childHandle.pid, bytes: procSelfExeTarget }]
         : undefined,
@@ -496,6 +502,7 @@ export async function handleVforkExecve(
     const preservedOfdSlots = snapshotKernelShareOfdSlots(childHandle, childHeldOfdIds);
     const preservedPipeSlots = snapshotLocalPipeSlots(childHandle, childHeldOfdIds);
     deps.syncForkSharedStateLocally(childHandle, kernelShareOtherMembers(childHandle), {
+      cause: { kind: "fork-child-ready", childPid },
       includeMemfs: false,
       trackHeldOfds: false,
     });
@@ -503,6 +510,7 @@ export async function handleVforkExecve(
       clearMemfs: false,
     });
     deps.syncForkSharedStateLocally(handle, [childHandle], {
+      cause: { kind: "fork-child-ready", childPid },
       includeMemfs: false,
     });
     restoreLocalOfdSlots(childHandle, preservedOfdSlots);

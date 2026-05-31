@@ -601,6 +601,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           handle,
           kernelShareOtherMembers(handle),
           {
+            cause: { kind: "syscall", nr: -1n, name: "vfork-wait-preserve-source" },
             includeMemfs: false,
             preserveSourceRefcounts: true,
             sourceVmPtr: thread.vmPtr,
@@ -741,7 +742,11 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         void syncPipeState
           .then(() => {
             deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-start:${handle.pid}:status=${status}`);
-            return deps.syncBlockedForkSharedStateViaKernelWorker(handle, thread.vmPtr);
+            return deps.syncBlockedForkSharedStateViaKernelWorker(
+              handle,
+              thread.vmPtr,
+              { kind: "blocked-rpc", status },
+            );
           })
           .then(() => {
             deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-done:${handle.pid}:status=${status}`);

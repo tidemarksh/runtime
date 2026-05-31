@@ -2,6 +2,7 @@ import type {
   KernelWorkerFdEntrySnapshot,
   KernelWorkerOfdSlotSnapshot,
   KernelWorkerSocketStateSnapshot,
+  SyncCause,
 } from "../../contracts/index.js";
 import type {
   ProcessHandle,
@@ -18,8 +19,8 @@ export interface WorkerKernelRpcLifecycleDeps {
   handleBlockedRetryResult(handle: ProcessHandle, worker: Worker, vmPtr: number, status: number): void;
   kickBlockedWorkers(handle: ProcessHandle): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
-  syncSocketStateViaKernelWorker(handle: ProcessHandle): Promise<{ socketUsed: number; netBufUsed: bigint }>;
-  syncProcessMemfsViaKernelWorker(handle: ProcessHandle): Promise<void>;
+  syncSocketStateViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<{ socketUsed: number; netBufUsed: bigint }>;
+  syncProcessMemfsViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<void>;
   snapshotProcessFdOfdStateForKernelWorker(
     handle: ProcessHandle,
     vmPtr: number,

@@ -2,6 +2,7 @@ import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
 } from "../../abi.js";
+import type { SyncCause } from "../contracts/sync.js";
 import { adoptKernelStateForHandle } from "../kernel-state.js";
 import type {
   CanonicalizedChildLifecycle,
@@ -199,8 +200,8 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     }
   }
 
-  async function syncProcessMemfsViaKernelWorker(handle: ProcessHandle): Promise<void> {
-    await deps.syncProcessMemfsViaKernelWorker(handle);
+  async function syncProcessMemfsViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<void> {
+    await deps.syncProcessMemfsViaKernelWorker(handle, cause);
   }
 
   return {

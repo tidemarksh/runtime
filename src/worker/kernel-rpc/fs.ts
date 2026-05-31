@@ -15,6 +15,7 @@ import {
   type ThreadWorkerState,
 } from "../types.js";
 import type { KernelWorkerPidBytesSnapshot } from "../../messages.js";
+import type { SyncCause } from "../contracts/sync.js";
 import {
   FS_OP_READ,
   FS_OP_WRITE,
@@ -92,12 +93,13 @@ export interface WorkerKernelRpcFsDeps {
   syncForkSharedStateLocallyAfterFs(
     handle: ProcessHandle,
     targets: ProcessHandle[],
-    options?: { includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] },
+    options: { cause: SyncCause; includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] },
   ): void;
   syncDirtyMemfsPeerViaKernelWorker(
     handle: ProcessHandle,
     targets: ProcessHandle[],
-    options?: {
+    options: {
+      cause: SyncCause;
       includeMemfs?: boolean;
       trackHeldOfds?: boolean;
       deltaOfdIds?: boolean;
@@ -121,7 +123,7 @@ export interface WorkerKernelRpcFsDeps {
   rehydrateForkSharedStateViaKernelWorker(
     targets: ProcessHandle[],
     ofdIds: number[],
-    options?: { procSelfExeTargets?: KernelWorkerPidBytesSnapshot[]; includeMemfs?: boolean },
+    options: { cause: SyncCause; procSelfExeTargets?: KernelWorkerPidBytesSnapshot[]; includeMemfs?: boolean },
   ): Promise<void>;
   publishRuntimeKernelState(handle: ProcessHandle): void;
 }
@@ -601,6 +603,7 @@ async function resumeFsViaKernelWorkerInner(
       .filter((ofdId) => !heldOfdIds.has(ofdId) || !hasPlausibleOfdState(handle, ofdId));
     if (missingSharedOfdIds.length > 0) {
       await deps.rehydrateForkSharedStateViaKernelWorker([handle], missingSharedOfdIds, {
+        cause: { kind: "syscall", nr: -1n, name: "fs-rehydrate-shared-ofd" },
         includeMemfs: false,
       });
     }
@@ -622,6 +625,7 @@ async function resumeFsViaKernelWorkerInner(
         ));
       peer.transferDebugStats.forkSharedMemfsSyncCalls += 1;
       await deps.syncDirtyMemfsPeerViaKernelWorker(peer, targets, {
+        cause: { kind: "syscall", nr: -1n, name: "fs-dirty-memfs-peer" },
         includeMemfs: true,
         memfsOnly: true,
         preservePublishedRegularFileData: true,

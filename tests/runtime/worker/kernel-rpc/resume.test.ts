@@ -1021,7 +1021,11 @@ test("resumeBlockedSyscallLocally wakes pipe waiters through requestPipeStateSyn
   await helpers.resumeBlockedSyscallLocally(handle, worker, 0x1234, 21);
 
   expect(threadResumeBlockedSyscall).not.toHaveBeenCalled();
-  expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(handle, 0x1234);
+  expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(
+    handle,
+    0x1234,
+    { kind: "blocked-rpc", status: 21 },
+  );
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
   expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 21);
   expect(handle.blockedWorkers.get(worker)?.rpcPending).toBe(false);
@@ -1137,7 +1141,11 @@ test("resumeBlockedSyscallLocally resumes pipe EOF after writers close even with
   await helpers.resumeBlockedSyscallLocally(handle, worker, 0x1234, 21);
 
   expect(threadResumeBlockedSyscall).toHaveBeenCalledWith(0x1234);
-  expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(handle, 0x1234);
+  expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(
+    handle,
+    0x1234,
+    { kind: "blocked-rpc", status: 21 },
+  );
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
   expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
   expect(handle.blockedWorkers.get(worker)?.rpcPending).toBe(false);
@@ -1280,7 +1288,11 @@ test("resumeBlockedSyscallLocally defers poll readiness while an active child st
   await helpers.resumeBlockedSyscallLocally(handle, worker, 0x1234, 21);
 
   expect(threadResumeBlockedSyscall).not.toHaveBeenCalled();
-  expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(handle, 0x1234);
+  expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(
+    handle,
+    0x1234,
+    { kind: "blocked-rpc", status: 21 },
+  );
   expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 21);
   expect(handle.blockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
@@ -1435,7 +1447,11 @@ test("resumeBlockedSyscallLocally ignores exiting child pipe writers for pselect
   await helpers.resumeBlockedSyscallLocally(handle, worker, 0x1234, 21);
 
   expect(threadResumeBlockedSyscall).toHaveBeenCalledWith(0x1234);
-  expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(handle, 0x1234);
+  expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(
+    handle,
+    0x1234,
+    { kind: "blocked-rpc", status: 21 },
+  );
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
   expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
   expect(handle.blockedWorkers.get(worker)?.rpcPending).toBe(false);
@@ -1593,7 +1609,11 @@ test("resumeBlockedSyscallLocally completes pselect HUP marker despite an active
   await helpers.resumeBlockedSyscallLocally(handle, worker, 0x1234, 21);
 
   expect(threadResumeBlockedSyscall).toHaveBeenCalledWith(0x1234);
-  expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(handle, 0x1234);
+  expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(
+    handle,
+    0x1234,
+    { kind: "blocked-rpc", status: 21 },
+  );
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
   expect(threadState.pendingGuestMemoryWrites.map((write) => write.guestPtr)).toEqual([0x200]);
   expect([...threadState.pendingGuestMemoryWrites[0].bytes]).toEqual([0x20, 0, 0, 0, 0, 0, 0, 0]);
@@ -1713,7 +1733,11 @@ test("resumeBlockedSyscallLocally collapses pipe read that becomes ready after p
 
   expect(threadResumeBlockedSyscall).toHaveBeenCalledTimes(2);
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
-  expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(handle, 0x1234);
+  expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(
+    handle,
+    0x1234,
+    { kind: "blocked-rpc", status: 21 },
+  );
   expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
   expect(handle.blockedWorkers.get(worker)?.rpcPending).toBe(false);
 });

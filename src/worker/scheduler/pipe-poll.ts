@@ -317,7 +317,6 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
       : typeof rawMask === "bigint" ? rawMask : BigInt(rawMask);
     if (mask !== 0n) {
       const maxPipes = Math.min(handle.kernel.abi_max_pipes?.() ?? 64, 64);
-      const view = new DataView(handle.memory.buffer);
       for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
         if ((mask & (1n << BigInt(pipeSlot))) === 0n) {
           continue;

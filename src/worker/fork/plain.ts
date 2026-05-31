@@ -104,6 +104,7 @@ export async function handlePlainFork(
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `plain-fork:parent-pipe-synced:${handle.pid}`);
       if (handle.processMemfsDirty) {
         await deps.syncForkSharedStateViaKernelWorker(handle, [], {
+          cause: { kind: "syscall", nr: -1n, name: "plain-fork-parent-memfs-publication" },
           includeMemfs: true,
           memfsOnly: true,
           preservePublishedRegularFileData: true,
@@ -250,14 +251,17 @@ export async function handlePlainFork(
     childHandle.kernelState = readKernelRuntimeState(childHandle.kernel);
     adoptKernelShare(handle, childHandle);
     deps.syncForkSharedStateLocally(handle, [childHandle], {
+      cause: { kind: "fork-child-ready", childPid },
       includeMemfs: false,
       ofdIds: childSharedOfdIds,
     });
     await deps.syncForkSharedStateViaKernelWorker(handle, [childHandle], {
+      cause: { kind: "fork-child-ready", childPid },
       includeMemfs: false,
       ofdIds: childSharedOfdIds,
     });
     await deps.rehydrateForkSharedStateViaKernelWorker([childHandle], childSharedOfdIds, {
+      cause: { kind: "fork-child-ready", childPid },
       includeMemfs: false,
     });
     restoreLocalOfdSlots(childHandle, preservedOfdSlots);

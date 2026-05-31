@@ -1,5 +1,6 @@
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
 import type { ProcessHandle } from "../types.js";
+import type { SyncCause } from "../contracts/sync.js";
 import type {
   KernelRpcResumeEffect,
   KernelRpcResumeOutcome,
@@ -19,12 +20,13 @@ export interface KernelRpcResumeEffectPorts {
   syncForkSharedStateLocally(
     handle: ProcessHandle,
     targets: ProcessHandle[],
-    options?: { includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] },
+    options: { cause: SyncCause; includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] },
   ): void;
   syncForkSharedStateViaKernelWorker(
     handle: ProcessHandle,
     targets: ProcessHandle[],
-    options?: {
+    options: {
+      cause: SyncCause;
       includeMemfs?: boolean;
       trackHeldOfds?: boolean;
       deltaOfdIds?: boolean;
@@ -33,7 +35,11 @@ export interface KernelRpcResumeEffectPorts {
       sourceVmPtr?: number;
     },
   ): Promise<void>;
-  syncPipeStateViaKernelWorker(handle: ProcessHandle): Promise<bigint>;
+  syncPipeStateViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<bigint>;
+}
+
+function kernelRpcEffectCause(name: string): SyncCause {
+  return { kind: "syscall", nr: -1n, name };
 }
 
 export async function applyKernelRpcResumeEffects(
@@ -83,10 +89,14 @@ async function applyKernelRpcResumeEffect(
       await ports.settleVisibleProcessOutput(handle, ports.requestPipeStateSync);
       return;
     case "sync-fork-shared-state-local-after-fs":
-      ports.syncForkSharedStateLocally(handle, effect.targets, effect.options);
+      ports.syncForkSharedStateLocally(handle, effect.targets, {
+        ...effect.options,
+        cause: kernelRpcEffectCause("fs-local-fork-shared-sync"),
+      });
       return;
     case "sync-shared-ofd-state-after-fs":
       await ports.syncForkSharedStateViaKernelWorker(handle, effect.targets, {
+        cause: kernelRpcEffectCause("fs-shared-ofd-sync"),
         includeMemfs: false,
         trackHeldOfds: false,
         deltaOfdIds: true,
@@ -95,13 +105,14 @@ async function applyKernelRpcResumeEffect(
       return;
     case "publish-memfs-after-fs":
       await ports.syncForkSharedStateViaKernelWorker(handle, effect.targets, {
+        cause: kernelRpcEffectCause("fs-memfs-publication"),
         includeMemfs: true,
         trackHeldOfds: false,
         memfsOnly: true,
         preservePublishedRegularFileData: effect.preservePublishedRegularFileData,
         sourceVmPtr: effect.sourceVmPtr,
       });
-      await ports.syncPipeStateViaKernelWorker(handle);
+      await ports.syncPipeStateViaKernelWorker(handle, kernelRpcEffectCause("fs-memfs-pipe-refresh"));
       return;
     default: {
       const exhaustive: never = effect;

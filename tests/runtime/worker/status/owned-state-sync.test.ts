@@ -235,6 +235,7 @@ test("fork-shared OFD sync accepts an owned worker status after running slot is 
   });
   expect(thread.ownerAsyncStatus).toBeNull();
   expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalledWith(handle, [], {
+    cause: { kind: "syscall", nr: -1n, name: "owned-state-empty-fork-shared-sync" },
     deltaOfdIds: true,
     includeMemfs: false,
     trackHeldOfds: true,
@@ -355,6 +356,7 @@ test("dup3 replacement cannot be ruled out by oldfd-only fd trace", async () => 
     expect(continueAfterOwnedStateSync).toHaveBeenCalled();
   });
   expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalledWith(handle, [parent], {
+    cause: { kind: "syscall", nr: -1n, name: "owned-state-fork-shared-sync" },
     deltaOfdIds: true,
     includeMemfs: false,
     trackHeldOfds: true,
@@ -564,6 +566,7 @@ test("fork-shared OFD sync skips exiting peer targets", async () => {
     expect(continueAfterOwnedStateSync).toHaveBeenCalled();
   });
   expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalledWith(handle, [], {
+    cause: { kind: "syscall", nr: -1n, name: "owned-state-empty-fork-shared-sync" },
     deltaOfdIds: true,
     includeMemfs: false,
     trackHeldOfds: true,
@@ -676,6 +679,7 @@ test("fork-shared OFD sync keeps a quiescent parent reader target for a method-c
     expect(continueAfterOwnedStateSync).toHaveBeenCalled();
   });
   expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalledWith(handle, [parent], {
+    cause: { kind: "syscall", nr: -1n, name: "owned-state-fork-shared-sync" },
     deltaOfdIds: true,
     includeMemfs: false,
     trackHeldOfds: true,
@@ -894,6 +898,7 @@ test("queued no-target fork-shared OFD sync waits without replacing the active s
     expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalled();
   });
   expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalledWith(handle, [], {
+    cause: { kind: "syscall", nr: -1n, name: "owned-state-empty-fork-shared-sync" },
     deltaOfdIds: true,
     includeMemfs: false,
     sourceVmPtr: thread.vmPtr,
@@ -1082,6 +1087,7 @@ test("dirty process memfs syncs before publishing a pipe-status boundary", async
     expect(continueAfterOwnedStateSync).toHaveBeenCalled();
   });
   expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalledWith(handle, [], {
+    cause: { kind: "syscall", nr: -1n, name: "owned-state-process-memfs-sync" },
     includeMemfs: true,
     memfsOnly: true,
     preservePublishedRegularFileData: false,

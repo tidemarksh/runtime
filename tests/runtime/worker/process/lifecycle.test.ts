@@ -152,6 +152,7 @@ test("completeProcessExit syncs pipe state before draining output when kernel-wo
     handle,
     [],
     {
+      cause: { kind: "syscall", nr: -1n, name: "process-exit-owned-state" },
       includeMemfs: false,
       deltaOfdIds: true,
       trackHeldOfds: true,

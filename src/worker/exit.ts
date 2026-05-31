@@ -1,6 +1,7 @@
 import { settleInheritedChildOutput, settleVisibleProcessOutput } from "./stdio.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import type { ProcessHandle } from "./types.js";
+import type { SyncCause } from "./contracts/sync.js";
 
 interface WorkerExitDeps {
   processHandles: Map<number, ProcessHandle>;
@@ -21,7 +22,8 @@ interface WorkerExitDeps {
   syncForkSharedStateViaKernelWorker?(
     handle: ProcessHandle,
     targets: ProcessHandle[],
-      options?: {
+      options: {
+        cause: SyncCause;
         includeMemfs?: boolean;
         memfsOnly?: boolean;
         trackHeldOfds?: boolean;
@@ -554,6 +556,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     try {
       if (handle.kernelWorkerRequest && handle.pid > 0) {
         await deps.syncForkSharedStateViaKernelWorker?.(handle, targets, {
+          cause: { kind: "syscall", nr: -1n, name: "process-exit-memfs-publication" },
           includeMemfs: true,
           memfsOnly: true,
           preservePublishedRegularFileData: false,
