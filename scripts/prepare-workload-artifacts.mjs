@@ -219,6 +219,20 @@ function setEnv(env, name, value) {
   }
 }
 
+function writeAptMethodPayload(path) {
+  writeFileSync(path, `${[
+    "601 Configuration",
+    "Config-Item: Acquire::http::Proxy=http://127.0.0.1:8080",
+    "Config-Item: Acquire::http::Timeout=10",
+    "Config-Item: APT::Architecture=riscv64",
+    "",
+    "600 URI Acquire",
+    "URI: http://deb.debian.org/debian/dists/trixie/InRelease",
+    "Filename: /var/lib/apt/lists/partial/deb.debian.org_debian_dists_trixie_InRelease",
+    "",
+  ].join("\n")}\n`);
+}
+
 function linkOrCopy(from, to) {
   mkdirSync(dirname(to), { recursive: true });
   rmSync(to, { force: true });
@@ -305,8 +319,12 @@ function applyKnownEnv(env, artifact, root, adapterRoot) {
     setEnv(env, "TIDEMARK_TEST_NODE_SYSROOT_DIR", makeFlatNodeSysroot(root, resolve(adapterRoot, id)));
   }
   if (id === "apt-riscv64-debian-trixie" || id.startsWith("apt-riscv64-")) {
+    const aptMethodPayloadPath = resolve(adapterRoot, id, "apt-method-payload.txt");
+    mkdirSync(dirname(aptMethodPayloadPath), { recursive: true });
+    writeAptMethodPayload(aptMethodPayloadPath);
     setEnv(env, "TIDEMARK_TEST_APT_METHOD_ROOT", root);
     setEnv(env, "TIDEMARK_TEST_APT_METHOD_LIBRARY_ROOTS", root);
+    setEnv(env, "TIDEMARK_TEST_APT_METHOD_PAYLOAD", aptMethodPayloadPath);
     setEnv(env, "TIDEMARK_TEST_APT_GET_ROOT", root);
     setEnv(env, "TIDEMARK_TEST_APT_SQV_ROOT", root);
   }
