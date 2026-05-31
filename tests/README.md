@@ -1,57 +1,59 @@
 # runtime/tests
 
-top-level は次の 3 つだけに固定する。
+The test tree is split by suite responsibility:
 
-- `runtime/`
-  - runtime invariant
-  - ownership boundary
-  - parent/child lifecycle
-  - fd/pipe/epoll/socket/stdio/fs の一般契約
-- `workloads/`
-  - language / toolchain 固有 smoke
-  - 例: `go build`, `go env`, `go tool compile`
+- `unit/`
+  - artifact-free runtime unit and contract tests
+  - public Runtime / Process API contracts
+  - worker lifecycle, fd/ofd/pipe/epoll/socket/fs ownership, ABI inventory
+- `integration/runtime/`
+  - language-neutral runtime integration probes
+  - runtime behavior that is not owned by one support target
+- `integration/targets/`
+  - concrete support-target artifact tests
+  - language runtimes, toolchains, package substrates, upstream suites, and
+    binary targets
 - `support/`
-  - shared harness
-  - worker URL rewrite, common spawn helper, snapshot helper など
+  - shared test harnesses and integration env loading
+  - generic spawn, snapshot, stdout, timeout, and result helpers
 
-ルール:
+Rules:
 
-- test の所属は `何を検証しているか` で決める
-- helper / fixture の実装言語では決めない
-- top-level `tests/fixtures/...` は作らない
-- generic runtime invariant を `workloads/<language>/...` に置かない
-- language 固有 fixture は `workloads/<language>/fixtures/...` に閉じる
+- Place tests by what they validate, not by the helper implementation language.
+- Keep target-specific artifact paths, argv, version strings, sysroot layout,
+  package-manager behavior, and expected output under
+  `integration/targets/<target>/`.
+- Keep language-neutral runtime probes under `integration/runtime/<area>/`.
+- Keep shared mechanics in `support/`; do not create a language registry there.
+- Do not add top-level `tests/fixtures/...`.
+- Missing required artifacts fail in integration tests. They are not successful
+  skips.
+- Intentionally disabled observation gates must be registered as explicit
+  skipped tests, usually with `test.skip` selected from the gate env variable.
 
-代表:
-
-- `runtime/api/`
-  - public Runtime / Process contract
-- `runtime/worker/`
-  - lifecycle, execve handoff, vfork/execve orchestration
-- `runtime/kernel-worker/`
-  - shared/private state sync
-- `runtime/fs/`
-  - MemFS / runtime-owned snapshot sync
-
-## workload artifacts
-
-workload tests は既存の `TIDEMARK_TEST_*` environment contract を維持する。
-artifact 準備の共通処理は `scripts/prepare-workload-artifacts.mjs` に置き、
-個別の workload test には置かない。
+## Commands
 
 ```bash
-pnpm run prepare:workloads -- \
+pnpm test
+pnpm run test:unit
+pnpm run test:integration
+pnpm run test:integration:runtime
+pnpm run test:integration:targets
+pnpm run prepare:integration -- \
   --manifest ../artifacts/manifests/runtime-workloads.json \
-  --profile core-smoke
+  --profile <profile>
 ```
 
-script は `artifacts` repository の pin 済み GitHub release asset を
-download し、SHA256 を検証し、payload を `.artifacts/cache` に展開して
-`.artifacts/workload-env.json` を書く。test setup file は workload module
-の import 前にこの env file を読む。明示的に指定された environment variable
-は生成値より優先される。
+`pnpm test` and `pnpm run test:unit` run only `tests/unit`.
 
-apt の `Packages.xz` response body のように `payload.tar.zst` 外の入力が
-必要な workload では、manifest entry が `packageIndex.sha256` でその入力を
-明示 pin するか、`sourceManifestSha256` を pin している場合だけ release
-source metadata を使う。
+`prepare:integration` downloads pinned GitHub Release assets from the
+`artifacts` repository manifest, verifies SHA256, extracts payloads into
+`.artifacts/cache`, and writes `.artifacts/workload-env.json`.
+
+Integration tests consume the generated `TIDEMARK_TEST_*` input variables. Test
+files do not read the artifact repository, GitHub Releases, or manifest files
+directly. Explicitly provided environment variables take precedence over values
+from `.artifacts/workload-env.json`.
+
+Artifact preparation proves input identity. It is not behavior coverage by
+itself; behavior evidence comes from the relevant integration test run.
