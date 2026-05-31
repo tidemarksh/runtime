@@ -6,6 +6,19 @@ type WorkloadArtifactEnvFile = {
   env?: Record<string, unknown>;
 };
 
+function isIntegrationRun(): boolean {
+  if (process.env.TIDEMARK_TEST_ENABLE_INTEGRATION_ENV === "1") {
+    return true;
+  }
+  const args = process.argv.map((arg) => arg.replaceAll("\\", "/"));
+  return args.some((arg) => (
+    arg === "tests/integration"
+    || arg.startsWith("tests/integration/")
+    || arg.endsWith("/tests/integration")
+    || arg.includes("/tests/integration/")
+  ));
+}
+
 function resolveEnvFilePath(): string {
   const configured = process.env.TIDEMARK_TEST_WORKLOAD_ARTIFACT_ENV
     ?? ".artifacts/workload-env.json";
@@ -13,6 +26,9 @@ function resolveEnvFilePath(): string {
 }
 
 function applyWorkloadArtifactEnv(): void {
+  if (!isIntegrationRun()) {
+    return;
+  }
   const envFilePath = resolveEnvFilePath();
   if (!existsSync(envFilePath)) {
     return;
