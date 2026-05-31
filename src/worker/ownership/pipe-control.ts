@@ -1,5 +1,7 @@
 import type { KernelWorkerPipeSlotSnapshot } from "../../messages.js";
 import {
+  PIPE_BUFFER_BYTES,
+  PIPE_DATA_OFFSET,
   PIPE_GENERATION_OFFSET,
   PIPE_HEAD_OFFSET,
   PIPE_HEADER_BYTES,
@@ -7,6 +9,7 @@ import {
   PIPE_SLOT_MODE_CONTROL,
   PIPE_SLOT_MODE_READ,
   PIPE_SLOT_MODE_WRITE,
+  PIPE_SLOT_BYTES,
   PIPE_TAIL_OFFSET,
   PIPE_WRITE_OPEN_OFFSET,
 } from "../../layout/pipe.js";
@@ -183,6 +186,99 @@ export function composeHandlePipeUsed(handle: ProcessHandle, sharedPipeUsed: big
     }
   }
   return pipeUsed;
+}
+
+export const PIPE_WAIT_GUEST_MEMORY_WRITE_BYTES = PIPE_BUFFER_BYTES;
+
+function pipeDebugPreviewEnabled(): boolean {
+  return ((globalThis as {
+    process?: { env?: Record<string, string | undefined> };
+  }).process?.env?.TIDEMARK_PIPE_DEBUG_PREVIEW ?? "") === "1";
+}
+
+function formatPipeDebugAscii(bytes: Uint8Array, maxLen = 96): string {
+  let out = "";
+  for (const byte of bytes.subarray(0, maxLen)) {
+    if (byte === 0x0a) {
+      out += "\\n";
+    } else if (byte === 0x0d) {
+      out += "\\r";
+    } else if (byte === 0x09) {
+      out += "\\t";
+    } else if (byte >= 0x20 && byte <= 0x7e && byte !== 0x5c && byte !== 0x22) {
+      out += String.fromCharCode(byte);
+    } else {
+      out += `\\x${byte.toString(16).padStart(2, "0")}`;
+    }
+  }
+  if (bytes.length > maxLen) {
+    out += "...";
+  }
+  return out;
+}
+
+function pipeSlotBase(handle: ProcessHandle, pipeSlot: number): number | null {
+  if (pipeSlot <= 0 || pipeSlot >= handle.kernel.abi_max_pipes()) {
+    return null;
+  }
+  return handle.kernelState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
+}
+
+function readPipeSlotCounters(
+  handle: ProcessHandle,
+  pipeSlot: number,
+): { base: number; head: number; tail: number; readOpen: number; writeOpen: number } | null {
+  const base = pipeSlotBase(handle, pipeSlot);
+  if (base === null || base < 0 || base + PIPE_HEADER_BYTES > handle.memory.buffer.byteLength) {
+    return null;
+  }
+  const view = new DataView(handle.memory.buffer);
+  return {
+    base,
+    head: view.getUint32(base + PIPE_HEAD_OFFSET, true),
+    tail: view.getUint32(base + PIPE_TAIL_OFFSET, true),
+    readOpen: view.getInt32(base + PIPE_READ_OPEN_OFFSET, true),
+    writeOpen: view.getInt32(base + PIPE_WRITE_OPEN_OFFSET, true),
+  };
+}
+
+export function pipeSlotHasBufferedData(handle: ProcessHandle, pipeSlot: number): boolean {
+  const counters = readPipeSlotCounters(handle, pipeSlot);
+  return counters !== null && counters.head !== counters.tail;
+}
+
+export function pipeSlotWriteOpen(handle: ProcessHandle, pipeSlot: number): number | null {
+  return readPipeSlotCounters(handle, pipeSlot)?.writeOpen ?? null;
+}
+
+function formatPipeWaitDataDebug(handle: ProcessHandle, base: number, head: number, tail: number): string {
+  if (!pipeDebugPreviewEnabled()) {
+    return "";
+  }
+  const len = tail >= head
+    ? tail - head
+    : PIPE_BUFFER_BYTES - head + tail;
+  if (len <= 0 || len > PIPE_BUFFER_BYTES) {
+    return `:data_len=${len}`;
+  }
+  const bytes = new Uint8Array(handle.memory.buffer);
+  const dataBase = base + PIPE_DATA_OFFSET;
+  const previewLen = Math.min(len, 96);
+  const preview = new Uint8Array(previewLen);
+  for (let i = 0; i < previewLen; i += 1) {
+    preview[i] = bytes[dataBase + ((head + i) % PIPE_BUFFER_BYTES)];
+  }
+  return `:data_len=${len}:data_ascii=${JSON.stringify(formatPipeDebugAscii(preview))}`;
+}
+
+export function formatPipeSlotControlDebug(handle: ProcessHandle, pipeSlot: number): string {
+  const counters = readPipeSlotCounters(handle, pipeSlot);
+  if (counters === null) {
+    return `slot${pipeSlot}/invalid`;
+  }
+  return `slot${pipeSlot}/h${counters.head}/t${counters.tail}`
+    + `/ro${counters.readOpen}/wo${counters.writeOpen}`
+    + formatPipeWaitDataDebug(handle, counters.base, counters.head, counters.tail);
 }
 
 export function preserveHostStdioPipeControlForStep(handle: ProcessHandle, vmPtr: number): void {

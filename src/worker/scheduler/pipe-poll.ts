@@ -3,27 +3,17 @@ import {
   readKernelRuntimeState,
 } from "../../abi.js";
 import {
-  PIPE_BUFFER_BYTES,
-  PIPE_DATA_OFFSET,
-  PIPE_HEAD_OFFSET,
-  PIPE_READ_OPEN_OFFSET,
-  PIPE_SLOT_BYTES,
-  PIPE_TAIL_OFFSET,
-  PIPE_WRITE_OPEN_OFFSET,
-} from "../../layout/pipe.js";
+  formatPipeSlotControlDebug,
+  pipeSlotHasBufferedData,
+  pipeSlotWriteOpen,
+  PIPE_WAIT_GUEST_MEMORY_WRITE_BYTES,
+} from "../ownership/pipe-control.js";
 import { POLLFD_BYTES } from "../../layout/poll.js";
 import type {
   BlockedWorkerState,
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
-
-const PIPE_OFF_HEAD = PIPE_HEAD_OFFSET;
-const PIPE_OFF_TAIL = PIPE_TAIL_OFFSET;
-const PIPE_OFF_READ_OPEN = PIPE_READ_OPEN_OFFSET;
-const PIPE_OFF_WRITE_OPEN = PIPE_WRITE_OPEN_OFFSET;
-const PIPE_DATA_START = PIPE_DATA_OFFSET;
-const PIPE_BUF_SIZE = PIPE_BUFFER_BYTES;
 
 export interface PipePollSchedulerDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
@@ -84,53 +74,6 @@ export interface PipePollScheduler {
   formatBlockedPollFdSet(handle: ProcessHandle, vmPtr: number, limit?: number): string;
 }
 
-function pipeDebugPreviewEnabled(): boolean {
-  return ((globalThis as {
-    process?: { env?: Record<string, string | undefined> };
-  }).process?.env?.TIDEMARK_PIPE_DEBUG_PREVIEW ?? "") === "1";
-}
-
-function formatPipeDebugAscii(bytes: Uint8Array, maxLen = 96): string {
-  let out = "";
-  for (const byte of bytes.subarray(0, maxLen)) {
-    if (byte === 0x0a) {
-      out += "\\n";
-    } else if (byte === 0x0d) {
-      out += "\\r";
-    } else if (byte === 0x09) {
-      out += "\\t";
-    } else if (byte >= 0x20 && byte <= 0x7e && byte !== 0x5c && byte !== 0x22) {
-      out += String.fromCharCode(byte);
-    } else {
-      out += `\\x${byte.toString(16).padStart(2, "0")}`;
-    }
-  }
-  if (bytes.length > maxLen) {
-    out += "...";
-  }
-  return out;
-}
-
-function formatPipeWaitDataDebug(handle: ProcessHandle, slotBase: number, head: number, tail: number): string {
-  if (!pipeDebugPreviewEnabled()) {
-    return "";
-  }
-  const len = tail >= head
-    ? tail - head
-    : PIPE_BUF_SIZE - head + tail;
-  if (len <= 0 || len > PIPE_BUF_SIZE) {
-    return `:data_len=${len}`;
-  }
-  const bytes = new Uint8Array(handle.memory.buffer);
-  const dataBase = slotBase + PIPE_DATA_START;
-  const previewLen = Math.min(len, 96);
-  const preview = new Uint8Array(previewLen);
-  for (let i = 0; i < previewLen; i += 1) {
-    preview[i] = bytes[dataBase + ((head + i) % PIPE_BUF_SIZE)];
-  }
-  return `:data_len=${len}:data_ascii=${JSON.stringify(formatPipeDebugAscii(preview))}`;
-}
-
 function syscallMatches(
   syscallNr: bigint,
   abiSyscall: (() => bigint | number) | undefined,
@@ -152,7 +95,7 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
       return;
     }
     const absolute = handle.guestBase + start;
-    const writeLen = Math.min(requested, PIPE_BUFFER_BYTES);
+    const writeLen = Math.min(requested, PIPE_WAIT_GUEST_MEMORY_WRITE_BYTES);
     const memory = new Uint8Array(handle.memory.buffer);
     if (absolute < 0 || absolute + writeLen > memory.byteLength) {
       return;
@@ -379,10 +322,7 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
         if ((mask & (1n << BigInt(pipeSlot))) === 0n) {
           continue;
         }
-        const slotBase = handle.kernelState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
-        const head = view.getUint32(slotBase + PIPE_OFF_HEAD, true);
-        const tail = view.getUint32(slotBase + PIPE_OFF_TAIL, true);
-        if (head !== tail) {
+        if (pipeSlotHasBufferedData(handle, pipeSlot)) {
           return true;
         }
       }
@@ -408,11 +348,7 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
     if (pipeSlot <= 0 || pipeSlot >= handle.kernel.abi_max_pipes()) {
       return false;
     }
-    const slotBase = handle.kernelState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
-    const view = new DataView(handle.memory.buffer);
-    const head = view.getUint32(slotBase + PIPE_OFF_HEAD, true);
-    const tail = view.getUint32(slotBase + PIPE_OFF_TAIL, true);
-    return head !== tail;
+    return pipeSlotHasBufferedData(handle, pipeSlot);
   }
 
   function pollPipeSlotsForThreadStep(handle: ProcessHandle, vmPtr: number): Set<number> {
@@ -450,13 +386,12 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
 
   function pollPipeWriteOpenForThreadStep(handle: ProcessHandle, vmPtr: number): number {
     let writeOpen = 0;
-    const view = new DataView(handle.memory.buffer);
     for (const pipeSlot of pollPipeSlotsForThreadStep(handle, vmPtr)) {
-      const slotBase = handle.kernelState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
-      if (slotBase < 0 || slotBase + PIPE_OFF_WRITE_OPEN + 4 > view.byteLength) {
+      const slotWriteOpen = pipeSlotWriteOpen(handle, pipeSlot);
+      if (slotWriteOpen === null) {
         continue;
       }
-      writeOpen = Math.max(writeOpen, view.getInt32(slotBase + PIPE_OFF_WRITE_OPEN, true));
+      writeOpen = Math.max(writeOpen, slotWriteOpen);
     }
     return writeOpen;
   }
@@ -508,13 +443,7 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
       if (pipeSlot <= 0 || pipeSlot >= handle.kernel.abi_max_pipes()) {
         return `pipe=fd${fd}/i0x${interest.toString(16)}/r0x${revents.toString(16)}/ofd${ofdId}/slot${pipeSlot}`;
       }
-      const slotBase = handle.kernelState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
-      const view = new DataView(handle.memory.buffer);
-      const head = view.getUint32(slotBase + PIPE_OFF_HEAD, true);
-      const tail = view.getUint32(slotBase + PIPE_OFF_TAIL, true);
-      const readOpen = view.getInt32(slotBase + PIPE_OFF_READ_OPEN, true);
-      const writeOpen = view.getInt32(slotBase + PIPE_OFF_WRITE_OPEN, true);
-      return `pipe=fd${fd}/i0x${interest.toString(16)}/r0x${revents.toString(16)}/ofd${ofdId}/slot${pipeSlot}/h${head}/t${tail}/ro${readOpen}/wo${writeOpen}${formatPipeWaitDataDebug(handle, slotBase, head, tail)}/holders=${formatPipeSlotHolders(handle, pipeSlot)}`;
+      return `pipe=fd${fd}/i0x${interest.toString(16)}/r0x${revents.toString(16)}/ofd${ofdId}/${formatPipeSlotControlDebug(handle, pipeSlot)}/holders=${formatPipeSlotHolders(handle, pipeSlot)}`;
     } catch (error) {
       return `pipe=fd${fd}/i0x${interest.toString(16)}/r0x${revents.toString(16)}/err=${JSON.stringify(error instanceof Error ? error.message : String(error))}`;
     }
@@ -535,13 +464,7 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
     if (ino <= 0 || ino >= handle.kernel.abi_max_pipes()) {
       return `ofd${ofdId}/ty${type}/slot${ino}/host${hostFd}`;
     }
-    const slotBase = handle.kernelState.pipeBase + ino * PIPE_SLOT_BYTES;
-    const view = new DataView(handle.memory.buffer);
-    const head = view.getUint32(slotBase + PIPE_OFF_HEAD, true);
-    const tail = view.getUint32(slotBase + PIPE_OFF_TAIL, true);
-    const readOpen = view.getInt32(slotBase + PIPE_OFF_READ_OPEN, true);
-    const writeOpen = view.getInt32(slotBase + PIPE_OFF_WRITE_OPEN, true);
-    return `ofd${ofdId}/ty${type}/slot${ino}/h${head}/t${tail}/ro${readOpen}/wo${writeOpen}/host${hostFd}/holders=${formatPipeSlotHolders(handle, ino)}`;
+    return `ofd${ofdId}/ty${type}/${formatPipeSlotControlDebug(handle, ino)}/host${hostFd}/holders=${formatPipeSlotHolders(handle, ino)}`;
   }
 
   function guestAbsoluteRange(handle: ProcessHandle, ptr: bigint, byteLength: number): number | null {
