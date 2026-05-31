@@ -6,9 +6,11 @@ import {
 import { clearSyscallTrace } from "./debug.js";
 import {
   createThreadWorkerStatusOutcome,
+  type ThreadWorkerBoundaryOutcome,
   type ThreadWorkerOutcomePublisher,
 } from "./outcomes.js";
 import { checkPendingSignalsAtBoundary } from "./signals.js";
+import { formatThreadWorkerGuestBufferPreview } from "./status.js";
 
 const BLOCKED_ADDR_NOT_FOUND = 0xffff_ffff;
 
@@ -24,6 +26,16 @@ interface ThreadWorkerBlockingContext {
   postStatus: ThreadWorkerOutcomePublisher;
   reattachPublishedKernelRuntimeState(): void;
   step(budget: number): void;
+}
+
+export interface ThreadWorkerResumeBlockedSyscallContext {
+  exports: KernelExports;
+  vmPtr: number;
+  guestBase: number;
+  resumeBlockedSyscall: boolean;
+  pipeResumeDebugEnabled: boolean;
+  applyGuestMemoryWrites(): void;
+  recordResumeBlockedDebug(debug: string): void;
 }
 
 function epollWaitShouldStayInWorker(
@@ -137,6 +149,42 @@ export function handleRuntimeBridgeBlockedStatus(
       return;
     }
   }
+}
+
+export function resumeBlockedSyscallStep(
+  ctx: ThreadWorkerResumeBlockedSyscallContext,
+): ThreadWorkerBoundaryOutcome | undefined {
+  if (!ctx.resumeBlockedSyscall) {
+    return undefined;
+  }
+
+  ctx.applyGuestMemoryWrites();
+  const resumeFd = ctx.exports.thread_a0(ctx.vmPtr);
+  const resumeBuf = ctx.exports.thread_a1(ctx.vmPtr);
+  const resumeCount = ctx.exports.thread_reg?.(ctx.vmPtr, 12) ?? 0n;
+  const blockedSyscallNr = ctx.exports.thread_blocked_syscall_nr?.(ctx.vmPtr) ?? 0n;
+  const blockedArg0 = ctx.exports.thread_blocked_syscall_arg?.(ctx.vmPtr, 0) ?? 0n;
+  const blockedArg1 = ctx.exports.thread_blocked_syscall_arg?.(ctx.vmPtr, 1) ?? 0n;
+  const blockedArg2 = ctx.exports.thread_blocked_syscall_arg?.(ctx.vmPtr, 2) ?? 0n;
+  const resumeResult = ctx.exports.thread_resume_blocked_syscall(ctx.vmPtr);
+  if (ctx.pipeResumeDebugEnabled) {
+    ctx.recordResumeBlockedDebug([
+      "thread-resume-blocked",
+      `fd=${resumeFd.toString()}`,
+      `buf=0x${resumeBuf.toString(16)}`,
+      `count=${resumeCount.toString()}`,
+      `saved=${blockedSyscallNr.toString()}/${blockedArg0.toString()}/0x${blockedArg1.toString(16)}/${blockedArg2.toString()}`,
+      `ret=${resumeResult.toString()}`,
+      `status=${ctx.exports.thread_status(ctx.vmPtr)}`,
+      `data="${formatThreadWorkerGuestBufferPreview(
+        ctx.exports,
+        ctx.guestBase,
+        resumeBuf,
+        resumeResult > 0n ? resumeResult : resumeCount,
+      )}"`,
+    ].join(":"));
+  }
+  return createThreadWorkerStatusOutcome(ctx.exports.thread_status(ctx.vmPtr));
 }
 
 export function handleFutexWait(

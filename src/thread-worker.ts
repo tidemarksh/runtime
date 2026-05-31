@@ -26,6 +26,7 @@ import {
   collectDebugParts,
   formatWorkerError,
 } from "./thread-worker/debug.js";
+import { resumeBlockedSyscallStep } from "./thread-worker/blocking.js";
 import { stepThread } from "./thread-worker/exec.js";
 import {
   shouldPrepareThreadWorker,
@@ -40,14 +41,10 @@ import {
   type SyscallNumbers,
 } from "./thread-worker/sync-effects.js";
 import {
-  createThreadWorkerStatusOutcome,
   publishThreadWorkerStatusOutcome,
   type ThreadWorkerBoundaryOutcome,
 } from "./thread-worker/outcomes.js";
-import {
-  formatThreadWorkerGuestBufferPreview,
-  postThreadWorkerStatus,
-} from "./thread-worker/status.js";
+import { postThreadWorkerStatus } from "./thread-worker/status.js";
 import {
   applyThreadWorkerGuestMemoryWrites,
   applyThreadWorkerInboundState,
@@ -341,34 +338,21 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
           pipeSlots: msg.pipeSlots,
         });
         acquireSharedMemoryForStep(kernelExports.memory.buffer);
-        if (msg.resumeBlockedSyscall === true) {
-          applyThreadWorkerGuestMemoryWrites({ kernelExports, guestBase }, msg.guestMemoryWrites);
-          const resumeFd = kernelExports.thread_a0(vmPtr);
-          const resumeBuf = kernelExports.thread_a1(vmPtr);
-          const resumeCount = kernelExports.thread_reg?.(vmPtr, 12) ?? 0n;
-          const blockedSyscallNr = kernelExports.thread_blocked_syscall_nr?.(vmPtr) ?? 0n;
-          const blockedArg0 = kernelExports.thread_blocked_syscall_arg?.(vmPtr, 0) ?? 0n;
-          const blockedArg1 = kernelExports.thread_blocked_syscall_arg?.(vmPtr, 1) ?? 0n;
-          const blockedArg2 = kernelExports.thread_blocked_syscall_arg?.(vmPtr, 2) ?? 0n;
-          const resumeResult = kernelExports.thread_resume_blocked_syscall(vmPtr);
-          if (PIPE_RESUME_DEBUG_ENABLED) {
-            lastResumeBlockedDebug = [
-              "thread-resume-blocked",
-              `fd=${resumeFd.toString()}`,
-              `buf=0x${resumeBuf.toString(16)}`,
-              `count=${resumeCount.toString()}`,
-              `saved=${blockedSyscallNr.toString()}/${blockedArg0.toString()}/0x${blockedArg1.toString(16)}/${blockedArg2.toString()}`,
-              `ret=${resumeResult.toString()}`,
-              `status=${kernelExports.thread_status(vmPtr)}`,
-              `data="${formatThreadWorkerGuestBufferPreview(
-                kernelExports,
-                guestBase,
-                resumeBuf,
-                resumeResult > 0n ? resumeResult : resumeCount,
-              )}"`,
-            ].join(":");
-          }
-          postStatusOutcome(createThreadWorkerStatusOutcome(kernelExports.thread_status(vmPtr)));
+        const resumeOutcome = resumeBlockedSyscallStep({
+          exports: kernelExports,
+          vmPtr,
+          guestBase,
+          resumeBlockedSyscall: msg.resumeBlockedSyscall === true,
+          pipeResumeDebugEnabled: PIPE_RESUME_DEBUG_ENABLED,
+          applyGuestMemoryWrites() {
+            applyThreadWorkerGuestMemoryWrites({ kernelExports, guestBase }, msg.guestMemoryWrites);
+          },
+          recordResumeBlockedDebug(debug) {
+            lastResumeBlockedDebug = debug;
+          },
+        });
+        if (resumeOutcome !== undefined) {
+          postStatusOutcome(resumeOutcome);
           return;
         }
         applyThreadWorkerGuestMemoryWrites({ kernelExports, guestBase }, msg.guestMemoryWrites);

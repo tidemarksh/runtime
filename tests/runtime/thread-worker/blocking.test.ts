@@ -5,6 +5,7 @@ import {
   handleFutexWait,
   handleRuntimeBridgeBlockedStatus,
   isRuntimeBridgeBlockedStatus,
+  resumeBlockedSyscallStep,
 } from "../../../src/thread-worker/blocking.js";
 import { createThreadWorkerStatusOutcome } from "../../../src/thread-worker/outcomes.js";
 
@@ -26,6 +27,64 @@ test("isRuntimeBridgeBlockedStatus keeps only indefinite EPOLL_WAIT in the threa
   exports.thread_epoll_wait_timeout = () => -1n;
   exports.thread_process_thread_count = () => 2;
   expect(isRuntimeBridgeBlockedStatus(exports, 0x1234, 22, statusCodes)).toBe(false);
+});
+
+test("resumeBlockedSyscallStep applies guest writes and returns a typed status outcome", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const bytes = new Uint8Array(memory.buffer);
+  bytes[0x20] = "O".charCodeAt(0);
+  bytes[0x21] = "K".charCodeAt(0);
+  const events: string[] = [];
+  const recordResumeBlockedDebug = vi.fn();
+
+  const outcome = resumeBlockedSyscallStep({
+    exports: {
+      memory,
+      thread_a0: () => 3n,
+      thread_a1: () => 0x20n,
+      thread_reg: () => 4n,
+      thread_blocked_syscall_nr: () => 63n,
+      thread_blocked_syscall_arg: (_vmPtr: number, index: number) => [3n, 0x20n, 4n][index] ?? 0n,
+      thread_resume_blocked_syscall: () => {
+        events.push("resume");
+        return 2n;
+      },
+      thread_status: () => 0,
+    } as never,
+    vmPtr: 0x1234,
+    guestBase: 0,
+    resumeBlockedSyscall: true,
+    pipeResumeDebugEnabled: true,
+    applyGuestMemoryWrites() {
+      events.push("apply-writes");
+    },
+    recordResumeBlockedDebug,
+  });
+
+  expect(events).toEqual(["apply-writes", "resume"]);
+  expect(outcome).toEqual(createThreadWorkerStatusOutcome(0));
+  expect(recordResumeBlockedDebug).toHaveBeenCalledWith(
+    'thread-resume-blocked:fd=3:buf=0x20:count=4:saved=63/3/0x20/4:ret=2:status=0:data="OK"',
+  );
+});
+
+test("resumeBlockedSyscallStep skips work when the step is not a blocked-syscall resume", () => {
+  const applyGuestMemoryWrites = vi.fn();
+  const outcome = resumeBlockedSyscallStep({
+    exports: {
+      memory: new WebAssembly.Memory({ initial: 1 }),
+      thread_resume_blocked_syscall: vi.fn(),
+    } as never,
+    vmPtr: 0x1234,
+    guestBase: 0,
+    resumeBlockedSyscall: false,
+    pipeResumeDebugEnabled: true,
+    applyGuestMemoryWrites,
+    recordResumeBlockedDebug: vi.fn(),
+  });
+
+  expect(outcome).toBeUndefined();
+  expect(applyGuestMemoryWrites).not.toHaveBeenCalled();
 });
 
 test("handleFutexWait re-waits on the requeued futex address", () => {
