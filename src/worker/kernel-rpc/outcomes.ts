@@ -7,8 +7,10 @@ export type KernelRpcResumeEffect =
   | { kind: "kick-blocked-workers" }
   | { kind: "mark-runtime-fs-dirty"; handle: ProcessHandle }
   | { kind: "publish-runtime-kernel-state" }
-  | { kind: "request-pipe-state-sync"; wakeWaiters?: boolean }
+  | { kind: "request-pipe-state-sync"; handle?: ProcessHandle; wakeWaiters?: boolean }
   | { kind: "settle-visible-process-output" }
+  | { kind: "sync-blocked-fork-shared-state"; sourceVmPtr?: number; status: number }
+  | { kind: "sync-blocked-socket-state"; status: number }
   | {
       kind: "sync-fork-shared-state-local-after-fs";
       targets: ProcessHandle[];

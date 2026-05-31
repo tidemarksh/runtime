@@ -1,4 +1,5 @@
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
+import { readKernelRuntimeState } from "../../abi.js";
 import type { ProcessHandle } from "../types.js";
 import type { SyncCause } from "../contracts/sync.js";
 import type {
@@ -17,6 +18,11 @@ export interface KernelRpcResumeEffectPorts {
     handle: ProcessHandle,
     requestPipeStateSync: (handle: ProcessHandle, wakeWaiters?: boolean) => Promise<void>,
   ): Promise<unknown>;
+  syncBlockedForkSharedStateViaKernelWorker(
+    handle: ProcessHandle,
+    sourceVmPtr: number | undefined,
+    cause: SyncCause,
+  ): Promise<void>;
   syncForkSharedStateLocally(
     handle: ProcessHandle,
     targets: ProcessHandle[],
@@ -36,10 +42,18 @@ export interface KernelRpcResumeEffectPorts {
     },
   ): Promise<void>;
   syncPipeStateViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<bigint>;
+  syncSocketStateViaKernelWorker(
+    handle: ProcessHandle,
+    cause: SyncCause,
+  ): Promise<{ socketUsed: number; netBufUsed: bigint }>;
 }
 
 function kernelRpcEffectCause(name: string): SyncCause {
   return { kind: "syscall", nr: -1n, name };
+}
+
+function kernelRpcBlockedCause(status: number): SyncCause {
+  return { kind: "blocked-rpc", status };
 }
 
 export async function applyKernelRpcResumeEffects(
@@ -83,10 +97,24 @@ async function applyKernelRpcResumeEffect(
       publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
       return;
     case "request-pipe-state-sync":
-      await ports.requestPipeStateSync(handle, effect.wakeWaiters);
+      await ports.requestPipeStateSync(effect.handle ?? handle, effect.wakeWaiters);
       return;
     case "settle-visible-process-output":
       await ports.settleVisibleProcessOutput(handle, ports.requestPipeStateSync);
+      return;
+    case "sync-blocked-fork-shared-state":
+      await ports.syncBlockedForkSharedStateViaKernelWorker(
+        handle,
+        effect.sourceVmPtr,
+        kernelRpcBlockedCause(effect.status),
+      );
+      return;
+    case "sync-blocked-socket-state":
+      if (handle.networkConnections.size > 0) {
+        handle.kernelState = readKernelRuntimeState(handle.kernel);
+        return;
+      }
+      await ports.syncSocketStateViaKernelWorker(handle, kernelRpcBlockedCause(effect.status));
       return;
     case "sync-fork-shared-state-local-after-fs":
       ports.syncForkSharedStateLocally(handle, effect.targets, {

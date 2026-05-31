@@ -110,6 +110,7 @@ test("kernel-rpc blocked-rpc helper owns local resume and returns a typed outcom
   const handleBlockedRetryResult = vi.fn(() => {
     handle.blockedWorkers.delete(worker);
   });
+  const syncBlockedForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
     threadWorkerStates: threadWorkerStates as never,
@@ -119,7 +120,7 @@ test("kernel-rpc blocked-rpc helper owns local resume and returns a typed outcom
     failProcess: vi.fn(),
     handleBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
-    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncBlockedForkSharedStateViaKernelWorker,
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
   });
 
@@ -136,10 +137,11 @@ test("kernel-rpc blocked-rpc helper owns local resume and returns a typed outcom
   await expect(helpers.resumeBlockedSyscallOutcome(handle, worker, 0x1234, 21)).resolves.toMatchObject({
     kind: "blocked",
     status: 0,
-    effects: [{ kind: "handle-blocked-retry-result", status: 0 }],
+    effects: [{ kind: "sync-blocked-fork-shared-state", sourceVmPtr: 0x1234, status: 21 }],
   });
   expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledTimes(2);
   expect(handleBlockedRetryResult).toHaveBeenCalledTimes(1);
+  expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledTimes(1);
 });
 
 test("kernel-rpc blocked-rpc outcome reports blocked while the worker remains blocked", async () => {
@@ -172,6 +174,7 @@ test("kernel-rpc blocked-rpc outcome reports blocked while the worker remains bl
   } as unknown as ProcessHandle;
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
+  const syncBlockedForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
     threadWorkerStates: threadWorkerStates as never,
@@ -181,15 +184,16 @@ test("kernel-rpc blocked-rpc outcome reports blocked while the worker remains bl
     failProcess: vi.fn(),
     handleBlockedRetryResult: vi.fn(),
     requestPipeStateSync: vi.fn(async () => {}),
-    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncBlockedForkSharedStateViaKernelWorker,
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
   });
 
   await expect(helpers.resumeBlockedSyscallOutcome(handle, worker, 0x1234, 21)).resolves.toMatchObject({
     kind: "blocked",
     status: 0,
-    effects: [{ kind: "handle-blocked-retry-result", status: 0 }],
+    effects: [{ kind: "sync-blocked-fork-shared-state", sourceVmPtr: 0x1234, status: 21 }],
   });
+  expect(syncBlockedForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
 });
 
 test("kernel-rpc blocked-rpc outcome reports retry effect without running scheduler retry", async () => {
@@ -222,6 +226,7 @@ test("kernel-rpc blocked-rpc outcome reports retry effect without running schedu
   } as unknown as ProcessHandle;
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
+  const syncBlockedForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
     threadWorkerStates: threadWorkerStates as never,
@@ -233,14 +238,15 @@ test("kernel-rpc blocked-rpc outcome reports retry effect without running schedu
       handle.blockedWorkers.delete(worker);
     }),
     requestPipeStateSync: vi.fn(async () => {}),
-    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncBlockedForkSharedStateViaKernelWorker,
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
   });
 
   await expect(helpers.resumeBlockedSyscallOutcome(handle, worker, 0x1234, 21)).resolves.toMatchObject({
     kind: "blocked",
     status: 0,
-    effects: [{ kind: "handle-blocked-retry-result", status: 0 }],
+    effects: [{ kind: "sync-blocked-fork-shared-state", sourceVmPtr: 0x1234, status: 21 }],
   });
   expect(handle.blockedWorkers.has(worker)).toBe(true);
+  expect(syncBlockedForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
 });

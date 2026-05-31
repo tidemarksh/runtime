@@ -25,7 +25,10 @@ import type {
   CreateProcessOptions,
   ProcessHandle,
 } from "../types.js";
-import type { KernelRpcResumeOutcome } from "../kernel-rpc/outcomes.js";
+import type {
+  KernelRpcResumeEffect,
+  KernelRpcResumeOutcome,
+} from "../kernel-rpc/outcomes.js";
 import { applyKernelRpcResumeEffects as applyKernelRpcResumeEffectsImpl } from "../kernel-rpc/effects.js";
 import { createWorkerProcessFactory } from "../create-process.js";
 import {
@@ -471,9 +474,11 @@ const kernelRpcResumeEffectPorts = {
   markRuntimeFsDirty,
   requestPipeStateSync,
   settleVisibleProcessOutput,
+  syncBlockedForkSharedStateViaKernelWorker,
   syncForkSharedStateLocally,
   syncForkSharedStateViaKernelWorker,
   syncPipeStateViaKernelWorker,
+  syncSocketStateViaKernelWorker,
 };
 
 const sharedHostStdioReleasePorts = {
@@ -493,6 +498,17 @@ function applyKernelRpcResumeEffects(
     outcome,
     kernelRpcResumeEffectPorts,
   );
+}
+
+function blockedRpcEffectRequiresResumeContinuation(effect: KernelRpcResumeEffect): boolean {
+  return effect.kind === "request-pipe-state-sync"
+    || effect.kind === "sync-blocked-fork-shared-state"
+    || effect.kind === "sync-blocked-socket-state";
+}
+
+function blockedRpcOutcomeRequiresResumeContinuation(outcome: KernelRpcResumeOutcome): boolean {
+  return outcome.kind === "blocked"
+    && (outcome.effects ?? []).some(blockedRpcEffectRequiresResumeContinuation);
 }
 
 async function resumeFsViaKernelWorker(
@@ -527,7 +543,30 @@ async function resumeBlockedSyscallOutcome(
     blockedStatus,
     timeoutExpired,
   );
-  return applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
+  const continueResume = blockedRpcOutcomeRequiresResumeContinuation(outcome);
+  const appliedOutcome = await applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
+  if (!continueResume) {
+    return appliedOutcome;
+  }
+  const blocked = handle.blockedWorkers.get(worker);
+  if (!blocked || blocked.vmPtr !== vmPtr || !handle.workers.has(worker) || !threadWorkerStates.has(worker)) {
+    return appliedOutcome;
+  }
+  await workerKernelRpcHelpers.resumeBlockedSyscallLocally(
+    handle,
+    worker,
+    vmPtr,
+    blocked.status,
+    blocked.timeoutExpired,
+  );
+  if (!handle.workers.has(worker) || !threadWorkerStates.has(worker)) {
+    return { kind: "process-gone" };
+  }
+  if (!handle.blockedWorkers.has(worker)) {
+    return { kind: "queued-in-worker" };
+  }
+  const status = handle.kernel.thread_status?.(vmPtr);
+  return status === undefined ? { kind: "stale" } : { kind: "blocked", status };
 }
 
 async function resumeWait4ViaKernelWorker(

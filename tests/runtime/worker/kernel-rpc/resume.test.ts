@@ -791,12 +791,14 @@ test("resumeBlockedSyscallLocally retries pselect pipe HUP owner-side after tran
   expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
 });
 
-test("resumeBlockedSyscallLocally resumes ready socket pselect in the owning worker", async () => {
+test("resumeBlockedSyscallOutcome returns pipe sync effect before ready socket pselect resume", async () => {
   const worker = {} as Worker;
   const runtimeBridge = createRuntimeStateBridge();
   const threadResumeBlockedSyscall = vi.fn(() => 1n);
   const handleBlockedRetryResult = vi.fn();
   const enqueueWorker = vi.fn();
+  const requestPipeStateSync = vi.fn(async () => {});
+  const syncBlockedForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const kernel = {
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     kernel_attach_runtime_state: vi.fn(),
@@ -899,8 +901,8 @@ test("resumeBlockedSyscallLocally resumes ready socket pselect in the owning wor
     handleBlockedRetryResult,
     kickBlockedWorkers: () => {},
     markRuntimeFsDirty: () => {},
-    requestPipeStateSync: async () => {},
-    syncBlockedForkSharedStateViaKernelWorker: async () => {},
+    requestPipeStateSync,
+    syncBlockedForkSharedStateViaKernelWorker,
     syncForkSharedStateLocally: () => {},
     syncForkSharedStateViaKernelWorker: async () => {},
     rehydrateForkSharedStateViaKernelWorker: async () => {},
@@ -912,11 +914,139 @@ test("resumeBlockedSyscallLocally resumes ready socket pselect in the owning wor
   const outcome = await helpers.resumeBlockedSyscallOutcome(handle, worker, 0x1234, 21);
 
   expect(threadResumeBlockedSyscall).not.toHaveBeenCalled();
-  expect(threadState.resumeBlockedOnNextStep).toBe(true);
-  expect(handle.blockedWorkers.has(worker)).toBe(false);
+  expect(threadState.resumeBlockedOnNextStep).toBe(false);
+  expect(handle.blockedWorkers.has(worker)).toBe(true);
   expect(enqueueWorker).not.toHaveBeenCalled();
-  expect(outcome.effects).toEqual([{ kind: "enqueue-worker" }]);
+  expect(outcome.effects).toMatchObject([
+    { kind: "request-pipe-state-sync", handle, wakeWaiters: false },
+  ]);
   expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+  expect(requestPipeStateSync).not.toHaveBeenCalled();
+  expect(syncBlockedForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
+});
+
+test("resumeBlockedSyscallOutcome returns socket sync effect without running socket sync port", async () => {
+  const worker = {} as Worker;
+  const runtimeBridge = createRuntimeStateBridge();
+  const threadResumeBlockedSyscall = vi.fn(() => 1n);
+  const requestPipeStateSync = vi.fn(async () => {});
+  const syncSocketStateViaKernelWorker = vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n }));
+  const kernel = {
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    kernel_attach_runtime_state: vi.fn(),
+    kernel_heap_base: () => 0,
+    kernel_heap_ptr: () => 0,
+    kernel_ofd_table_ptr: () => 0,
+    kernel_memfs_ptr: () => 0,
+    kernel_memfs_header_bytes: () => 0,
+    kernel_memfs_inodes_bytes: () => 0,
+    kernel_memfs_first_child_bytes: () => 0,
+    kernel_memfs_dir_entries_bytes: () => 0,
+    kernel_memfs_data_bytes: () => 0,
+    kernel_mem_state_ptr: () => 0,
+    kernel_epoll_table_ptr: () => 0,
+    kernel_socket_table_ptr: () => 0,
+    kernel_socket_used: () => 0,
+    kernel_pipe_base: () => 0,
+    kernel_pipe_used: () => 0n,
+    kernel_net_buf_base: () => 0,
+    kernel_net_buf_used: () => 0n,
+    kernel_sig_slots_ptr: () => 0,
+    kernel_process_pending_ptr: () => 0,
+    kernel_process_runtime_state_ptr: () => 0,
+    kernel_time_state_ptr: () => 0,
+    abi_status_pipe_wait: () => 21,
+    abi_status_connect: () => 28,
+    abi_status_socket_recv: () => 29,
+    abi_status_socket_send: () => 30,
+    abi_sys_pselect6: () => 72n,
+    abi_max_fds: () => 1024,
+    thread_resume_blocked_syscall: threadResumeBlockedSyscall,
+    thread_status: () => 21,
+    process_current_pid: () => 1,
+    thread_a0: () => 0n,
+    thread_a1: () => 0x200n,
+    thread_reg: () => 8n,
+    thread_process_ptr: () => 0x5000,
+    thread_poll_wait_has_socket: () => 1,
+    thread_poll_wait_ready_count: () => 1,
+    thread_blocked_pipe_read_ready: () => 0,
+    thread_blocked_pipe_write_ready: () => 0,
+    thread_pipe_read_eof_sync_pending: () => 0,
+    thread_poll_hup_sync_pending: () => 0,
+    thread_blocked_syscall_nr: () => 72n,
+    thread_blocked_syscall_arg: (_vmPtr: number, index: number) => {
+      if (index === 0) return 64n;
+      if (index === 1) return 0x200n;
+      if (index === 2) return 0n;
+      if (index === 3) return 0n;
+      return 0n;
+    },
+    process_fd_ofd_id: () => 0,
+    kernel_ofd_fd_type: () => 0,
+    kernel_ofd_host_fd: () => 0,
+    kernel_ofd_status_flags: () => 0,
+    kernel_ofd_ino: () => 0,
+    kernel_ofd_offset: () => 0n,
+    thread_blocked_fd: () => 0,
+    thread_blocked_ofd_id: () => 0,
+  } as unknown as KernelExports;
+
+  const handle = makeHandle(kernel, runtimeBridge, worker);
+  handle.blockedWorkers.set(worker, {
+    vmPtr: 0x1234,
+    status: 21,
+    retryTimer: null,
+    timeoutExpired: false,
+    timeoutDeadlineMs: null,
+    sleepDeadlineTicks: null,
+    rpcPending: true,
+    rpcGeneration: 0,
+    skipNextNetworkPump: false,
+    pipeSyncedBeforePassive: false,
+    pipeEofChildExitDeferrals: 0,
+  });
+
+  const threadState = {
+    vmPtr: 0x1234,
+    initialized: true,
+    waitingInWorkerStatus: null,
+    pendingGuestMemoryWrites: [],
+    pendingPipeSlotsForNextStep: [],
+    resumeBlockedOnNextStep: false,
+  };
+  const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
+  threadWorkerStates.set(worker, threadState);
+
+  const helpers = createWorkerKernelRpcHelpers({
+    processHandles: new Map([[1, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: () => {},
+    appendWorkerDebugLog: () => {},
+    assertProcessStandardFdIntegrity: () => {},
+    enqueueWorker: () => {},
+    failProcess(errorHandle, error) {
+      throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
+    },
+    handleBlockedRetryResult: () => {},
+    kickBlockedWorkers: () => {},
+    markRuntimeFsDirty: () => {},
+    requestPipeStateSync,
+    syncBlockedForkSharedStateViaKernelWorker: async () => {},
+    syncForkSharedStateLocally: () => {},
+    syncForkSharedStateViaKernelWorker: async () => {},
+    rehydrateForkSharedStateViaKernelWorker: async () => {},
+    syncPipeStateViaKernelWorker: async () => 0n,
+    syncSocketStateViaKernelWorker,
+    collectTrackableForkSharedOfds: () => new Set(),
+  });
+
+  const outcome = await helpers.resumeBlockedSyscallOutcome(handle, worker, 0x1234, 21);
+
+  expect(outcome.effects).toEqual([{ kind: "sync-blocked-socket-state", status: 21 }]);
+  expect(threadResumeBlockedSyscall).not.toHaveBeenCalled();
+  expect(requestPipeStateSync).not.toHaveBeenCalled();
+  expect(syncSocketStateViaKernelWorker).not.toHaveBeenCalled();
 });
 
 test("resumeBlockedSyscallLocally wakes pipe waiters through requestPipeStateSync", async () => {
