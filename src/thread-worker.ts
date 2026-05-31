@@ -9,11 +9,6 @@ import {
   readStatusCodes,
 } from "./abi.js";
 import type {
-  GuestWriteWatchRegion,
-  KernelWorkerFdEntrySnapshot,
-  KernelWorkerOfdSlotSnapshot,
-  KernelWorkerPipeSlotSnapshot,
-  KernelWorkerSocketStateSnapshot,
   ThreadWorkerMemoryPreserveRange,
   ThreadWorkerInbound,
   ThreadWorkerOutbound,
@@ -53,6 +48,10 @@ import {
   formatThreadWorkerGuestBufferPreview,
   postThreadWorkerStatus,
 } from "./thread-worker/status.js";
+import {
+  applyThreadWorkerGuestMemoryWrites,
+  applyThreadWorkerInboundState,
+} from "./thread-worker/inbound-state.js";
 
 let exports: KernelExports | undefined;
 let statusCodes: StatusCodes;
@@ -107,54 +106,11 @@ function readThreadStepBudget(): number {
     : DEFAULT_NODE_THREAD_STEP_BUDGET;
 }
 
-function applyChildExitRecords(
-  records?: Array<{ childPid: number; waitStatus: number; parentPid?: number }>,
-): void {
-  if (!records || records.length === 0) {
-    return;
-  }
-  const kernelExports = requireExports();
-  for (const record of records) {
-    if (
-      record.parentPid !== undefined
-      && record.parentPid > 0
-      && kernelExports.process_record_child_exit_for_parent
-    ) {
-      kernelExports.process_record_child_exit_for_parent(
-        record.parentPid,
-        record.childPid,
-        record.waitStatus,
-      );
-    } else {
-      kernelExports.process_record_child_exit(record.childPid, record.waitStatus);
-    }
-  }
-}
-
-function toKernelU64(value: number): bigint {
-  return BigInt(Math.trunc(value));
-}
-
 function requireExports(): KernelExports {
   if (!exports) {
     throw new Error("thread worker kernel exports are not initialized");
   }
   return exports;
-}
-
-function applyGuestWriteWatchRegions(regions?: GuestWriteWatchRegion[]): void {
-  const kernelExports = requireExports();
-  kernelExports.debug_clear_guest_write_watch_trace?.();
-  if (!regions || regions.length === 0) {
-    return;
-  }
-  for (const region of regions) {
-    kernelExports.debug_configure_guest_write_watch?.(
-      region.slot,
-      toKernelU64(region.start),
-      toKernelU64(region.end),
-    );
-  }
 }
 
 async function prepare(
@@ -240,134 +196,6 @@ function postReady(): void {
     })(),
   };
   workerPostMessage(msg);
-}
-
-function applyInboundPipeSlots(
-  kernelExports: KernelExports,
-  kernelState: KernelRuntimeState,
-  snapshots?: KernelWorkerPipeSlotSnapshot[],
-): void {
-  if (!snapshots || snapshots.length === 0) {
-    return;
-  }
-  const maxPipes = kernelExports.abi_max_pipes();
-  const slotBytes = kernelExports.kernel_pipe_region_bytes() / maxPipes;
-  if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
-    return;
-  }
-  const memory = new Uint8Array(kernelExports.memory.buffer);
-  for (const snapshot of snapshots) {
-    if (
-      snapshot.pipeSlot <= 0
-      || snapshot.pipeSlot >= maxPipes
-      || snapshot.slot.length !== slotBytes
-    ) {
-      continue;
-    }
-    memory.set(snapshot.slot, kernelState.pipeBase + snapshot.pipeSlot * slotBytes);
-  }
-}
-
-function applyGuestMemoryWrites(
-  kernelExports: KernelExports,
-  writes?: Array<{ guestPtr: number; bytes: Uint8Array }>,
-): void {
-  if (!writes || writes.length === 0) {
-    return;
-  }
-  const memory = new Uint8Array(kernelExports.memory.buffer);
-  for (const write of writes) {
-    const start = guestBase + write.guestPtr;
-    if (
-      !Number.isFinite(start)
-      || start < 0
-      || start + write.bytes.length > memory.byteLength
-    ) {
-      continue;
-    }
-    memory.set(write.bytes, start);
-  }
-}
-
-function applySocketState(
-  kernelExports: KernelExports,
-  kernelState: KernelRuntimeState,
-  socketState?: KernelWorkerSocketStateSnapshot,
-): void {
-  if (!socketState) {
-    return;
-  }
-  const memory = new Uint8Array(kernelExports.memory.buffer);
-  const socketTableBytes = kernelExports.kernel_socket_table_bytes();
-  const netBufPoolBytes = kernelExports.kernel_net_buf_pool_bytes();
-  const maxBuffers = Math.max(1, Number(kernelExports.abi_max_sockets?.() ?? 32) * 2);
-  const netBufSlotBytes = Math.floor(netBufPoolBytes / maxBuffers);
-  if (
-    socketState.socketTable.length !== socketTableBytes
-    || (socketState.netBufPool !== undefined && socketState.netBufPool.length !== netBufPoolBytes)
-  ) {
-    return;
-  }
-  memory.set(socketState.socketTable, kernelState.socketTablePtr);
-  if (socketState.netBufPool !== undefined) {
-    memory.set(socketState.netBufPool, kernelState.netBufBase);
-  } else if (netBufSlotBytes > 0) {
-    for (const slot of socketState.netBufSlots ?? []) {
-      if (slot.bufferIndex < 0 || slot.bufferIndex >= maxBuffers || slot.bytes.length !== netBufSlotBytes) {
-        continue;
-      }
-      memory.set(slot.bytes, kernelState.netBufBase + slot.bufferIndex * netBufSlotBytes);
-    }
-  }
-  attachKernelRuntimeState(kernelExports, {
-    ...kernelState,
-    socketUsed: kernelState.socketUsed | socketState.socketUsed,
-    netBufUsed: kernelState.netBufUsed | socketState.netBufUsed,
-  });
-}
-
-function applyOfdSlots(
-  kernelExports: KernelExports,
-  kernelState: KernelRuntimeState,
-  ofdSlots?: KernelWorkerOfdSlotSnapshot[],
-): void {
-  if (!ofdSlots || ofdSlots.length === 0) {
-    return;
-  }
-  const maxFds = kernelExports.abi_max_fds();
-  const tableBytes = kernelExports.kernel_ofd_table_bytes();
-  const slotBytes = tableBytes / maxFds;
-  if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
-    return;
-  }
-  const memory = new Uint8Array(kernelExports.memory.buffer);
-  for (const snapshot of ofdSlots) {
-    if (
-      snapshot.ofdId <= 0
-      || snapshot.ofdId >= maxFds
-      || snapshot.slot.length !== slotBytes
-    ) {
-      continue;
-    }
-    memory.set(snapshot.slot, kernelState.ofdTablePtr + snapshot.ofdId * slotBytes);
-  }
-}
-
-function applyFdEntries(
-  kernelExports: KernelExports,
-  targetVmPtr: number,
-  fdEntries?: KernelWorkerFdEntrySnapshot[],
-): void {
-  if (!fdEntries || fdEntries.length === 0 || targetVmPtr === 0) {
-    return;
-  }
-  const maxFds = kernelExports.abi_max_fds();
-  for (const entry of fdEntries) {
-    if (entry.fd < 0 || entry.fd >= maxFds || entry.ofdId < 0 || entry.ofdId >= maxFds) {
-      continue;
-    }
-    kernelExports.process_set_fd_entry(targetVmPtr, entry.fd, entry.ofdId, entry.fdFlags);
-  }
 }
 
 function postStatus(status: number, waitInWorker = false, completedSyncEffects?: number): void {
@@ -477,13 +305,20 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
           runtimeBridge = nextBridge;
         }
         attach(msg.vmPtr, msg.guestBase, msg.kernelState, msg.generation);
-        applyOfdSlots(requireExports(), msg.kernelState, msg.ofdSlots);
-        applyFdEntries(requireExports(), msg.vmPtr, msg.fdEntries);
-        applySocketState(requireExports(), msg.kernelState, msg.socketState);
-        applyChildExitRecords(msg.childExitRecords);
-        applyInboundPipeSlots(requireExports(), msg.kernelState, msg.pipeSlots);
-        applyGuestMemoryWrites(requireExports(), msg.guestMemoryWrites);
-        applyGuestWriteWatchRegions(msg.guestWriteWatchRegions);
+        applyThreadWorkerInboundState({
+          kernelExports: requireExports(),
+          guestBase,
+        }, {
+          kernelState: msg.kernelState,
+          targetVmPtr: msg.vmPtr,
+          ofdSlots: msg.ofdSlots,
+          fdEntries: msg.fdEntries,
+          socketState: msg.socketState,
+          childExitRecords: msg.childExitRecords,
+          pipeSlots: msg.pipeSlots,
+          guestMemoryWrites: msg.guestMemoryWrites,
+          guestWriteWatchRegions: msg.guestWriteWatchRegions,
+        });
         postReady();
       } catch (error) {
         postError(error);
@@ -491,16 +326,23 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
       break;
     case "step":
       try {
-        attachKernelRuntimeState(requireExports(), msg.kernelState);
-        applyOfdSlots(requireExports(), msg.kernelState, msg.ofdSlots);
-        applyFdEntries(requireExports(), vmPtr, msg.fdEntries);
-        applySocketState(requireExports(), msg.kernelState, msg.socketState);
-        applyChildExitRecords(msg.childExitRecords);
-        applyInboundPipeSlots(requireExports(), msg.kernelState, msg.pipeSlots);
-        acquireSharedMemoryForStep(requireExports().memory.buffer);
+        const kernelExports = requireExports();
+        attachKernelRuntimeState(kernelExports, msg.kernelState);
+        applyThreadWorkerInboundState({
+          kernelExports,
+          guestBase,
+        }, {
+          kernelState: msg.kernelState,
+          targetVmPtr: vmPtr,
+          ofdSlots: msg.ofdSlots,
+          fdEntries: msg.fdEntries,
+          socketState: msg.socketState,
+          childExitRecords: msg.childExitRecords,
+          pipeSlots: msg.pipeSlots,
+        });
+        acquireSharedMemoryForStep(kernelExports.memory.buffer);
         if (msg.resumeBlockedSyscall === true) {
-          const kernelExports = requireExports();
-          applyGuestMemoryWrites(kernelExports, msg.guestMemoryWrites);
+          applyThreadWorkerGuestMemoryWrites({ kernelExports, guestBase }, msg.guestMemoryWrites);
           const resumeFd = kernelExports.thread_a0(vmPtr);
           const resumeBuf = kernelExports.thread_a1(vmPtr);
           const resumeCount = kernelExports.thread_reg?.(vmPtr, 12) ?? 0n;
@@ -529,7 +371,7 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
           postStatusOutcome(createThreadWorkerStatusOutcome(kernelExports.thread_status(vmPtr)));
           return;
         }
-        applyGuestMemoryWrites(requireExports(), msg.guestMemoryWrites);
+        applyThreadWorkerGuestMemoryWrites({ kernelExports, guestBase }, msg.guestMemoryWrites);
         step(msg.budget);
       } catch (error) {
         postError(error);
