@@ -1,6 +1,6 @@
 import { expect, test, vi } from "vite-plus/test";
-import { createWorkerProcessIoHelpers } from "../../../src/worker/process-io.js";
-import type { ProcessHandle } from "../../../src/worker/types.js";
+import { createWorkerProcessIoHelpers } from "../../../../src/worker/process-io.js";
+import type { ProcessHandle } from "../../../../src/worker/types.js";
 
 const EXPECTED_NETWORK_BRIDGE_CHUNK_SIZE = 240 * 1024;
 

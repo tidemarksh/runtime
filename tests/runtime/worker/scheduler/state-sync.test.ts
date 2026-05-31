@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vite-plus/test";
-import { writePipe } from "../../../src/bridge/pipe.js";
-import { createWorkerSchedulerStateSyncHelpers } from "../../../src/worker/scheduler/state-sync.js";
-import { createTransferDebugStats } from "../../../src/worker/types.js";
+import { writePipe } from "../../../../src/bridge/pipe.js";
+import { createWorkerSchedulerStateSyncHelpers } from "../../../../src/worker/scheduler/state-sync.js";
+import { createTransferDebugStats } from "../../../../src/worker/types.js";
 
 function makeHandle(overrides: Record<string, unknown> = {}) {
   let runtimeState = {

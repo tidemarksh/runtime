@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vite-plus/test";
-import { adoptKernelState, syncForkSharedStateViaKernelWorker } from "../../../src/worker/sync.js";
-import type { KernelRuntimeState } from "../../../src/abi.js";
-import type { ProcessHandle } from "../../../src/worker/types.js";
+import { adoptKernelState, syncForkSharedStateViaKernelWorker } from "../../../../src/worker/sync.js";
+import type { KernelRuntimeState } from "../../../../src/abi.js";
+import type { ProcessHandle } from "../../../../src/worker/types.js";
 
 const FD_TYPE_NONE = 0;
 const FD_TYPE_FILE = 1;

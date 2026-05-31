@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { retainRuntimeLifecycleEvents } from "../../../src/worker/diagnostics/lifecycle-log.js";
+import { retainRuntimeLifecycleEvents } from "../../../../src/worker/diagnostics/lifecycle-log.js";
 
 test("retainRuntimeLifecycleEvents returns a new array without mutating the input", () => {
   const events = ["start", "fork:1", "exit:1"];

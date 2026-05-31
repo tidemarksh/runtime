@@ -1,5 +1,5 @@
 import { expect, test } from "vite-plus/test";
-import { formatCompactDebugSuffix } from "../../../src/worker/diagnostics/format.js";
+import { formatCompactDebugSuffix } from "../../../../src/worker/diagnostics/format.js";
 
 test("formatCompactDebugSuffix does not confuse pc/sp/s11 with fault or signal fields", () => {
   const debug = [

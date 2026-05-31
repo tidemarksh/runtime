@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vite-plus/test";
-import { createWorkerDestroyHelpers } from "../../../src/worker/destroy.js";
-import type { ProcessHandle, ThreadWorkerState } from "../../../src/worker/types.js";
-import { FakeWorker } from "../../support/fake-worker.js";
+import { createWorkerDestroyHelpers } from "../../../../src/worker/destroy.js";
+import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
+import { FakeWorker } from "../../../support/fake-worker.js";
 
 function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
   const primaryWorker = new FakeWorker() as unknown as Worker;

@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vite-plus/test";
-import { createWorkerExitHelpers } from "../../../src/worker/exit.js";
-import { drainProcessOutput } from "../../../src/worker/stdio.js";
-import type { ProcessHandle } from "../../../src/worker/types.js";
+import { createWorkerExitHelpers } from "../../../../src/worker/exit.js";
+import { drainProcessOutput } from "../../../../src/worker/stdio.js";
+import type { ProcessHandle } from "../../../../src/worker/types.js";
 
 function makeHandle(
   overrides: Partial<ProcessHandle> = {},

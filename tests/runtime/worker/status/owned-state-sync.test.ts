@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vite-plus/test";
-import { createWorkerOwnedStateSyncHandler } from "../../../src/worker/message-handler/owned-state-sync.js";
+import { createWorkerOwnedStateSyncHandler } from "../../../../src/worker/message-handler/owned-state-sync.js";
 
 function makeKernelState() {
   return {

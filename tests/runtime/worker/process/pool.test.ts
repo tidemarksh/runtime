@@ -4,8 +4,8 @@ import {
   destroyWorkerPool,
   kernelStackSlotForWorker,
   releaseWorker,
-} from "../../../src/worker/pool.js";
-import { FakeWorker } from "../../support/fake-worker.js";
+} from "../../../../src/worker/pool.js";
+import { FakeWorker } from "../../../support/fake-worker.js";
 
 const originalWorker = globalThis.Worker;
 

@@ -1,6 +1,6 @@
 import { expect, test, vi } from "vite-plus/test";
-import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
-import { readPipe, writePipe } from "../../../src/bridge/pipe.js";
+import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
+import { readPipe, writePipe } from "../../../../src/bridge/pipe.js";
 import {
   drainHiddenProcessOutput,
   drainProcessOutput,
@@ -8,8 +8,8 @@ import {
   releaseSharedHostStdioLocal,
   settleInheritedChildOutput,
   settleVisibleProcessOutput,
-} from "../../../src/worker/stdio.js";
-import type { ProcessHandle } from "../../../src/worker/types.js";
+} from "../../../../src/worker/stdio.js";
+import type { ProcessHandle } from "../../../../src/worker/types.js";
 
 function makeKernelState(): KernelRuntimeState {
   return {

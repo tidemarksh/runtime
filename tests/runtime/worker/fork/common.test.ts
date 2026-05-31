@@ -2,7 +2,7 @@ import { expect, test, vi } from "vite-plus/test";
 import {
   computeGuestRamLimitBytes,
   detachInheritedHostStdioFromChild,
-} from "../../../src/worker/fork/common.js";
+} from "../../../../src/worker/fork/common.js";
 
 test("detachInheritedHostStdioFromChild detaches guest host stdio without clearing hidden child pipe ids", () => {
   const processSetHostStdio = vi.fn();

@@ -1,9 +1,9 @@
 import { expect, test, vi } from "vite-plus/test";
-import { createRuntimeStateBridge } from "../../../src/bridge/runtime-state.js";
-import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
-import { createWorkerKernelRpcHelpers } from "../../../src/worker/kernel-rpc.js";
-import { createWorkerKernelRpcResumeLifecycleHelpers } from "../../../src/worker/kernel-rpc/lifecycle/resume.js";
-import type { ProcessHandle } from "../../../src/worker/types.js";
+import { createRuntimeStateBridge } from "../../../../src/bridge/runtime-state.js";
+import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
+import { createWorkerKernelRpcHelpers } from "../../../../src/worker/kernel-rpc.js";
+import { createWorkerKernelRpcResumeLifecycleHelpers } from "../../../../src/worker/kernel-rpc/lifecycle/resume.js";
+import type { ProcessHandle } from "../../../../src/worker/types.js";
 
 function makeKernelState(): KernelRuntimeState {
   return {

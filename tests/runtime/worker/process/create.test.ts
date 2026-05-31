@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
-import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
-import { readPublishedKernelRuntimeState } from "../../../src/bridge/runtime-state.js";
-import { createWorkerProcessFactory } from "../../../src/worker/create-process.js";
-import { destroyWorkerPool } from "../../../src/worker/pool.js";
-import type { ProcessHandle } from "../../../src/worker/types.js";
-import { AutoPreparedFakeWorker } from "../../support/fake-worker.js";
+import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
+import { readPublishedKernelRuntimeState } from "../../../../src/bridge/runtime-state.js";
+import { createWorkerProcessFactory } from "../../../../src/worker/create-process.js";
+import { destroyWorkerPool } from "../../../../src/worker/pool.js";
+import type { ProcessHandle } from "../../../../src/worker/types.js";
+import { AutoPreparedFakeWorker } from "../../../support/fake-worker.js";
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();

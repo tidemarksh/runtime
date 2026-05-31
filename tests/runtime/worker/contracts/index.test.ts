@@ -3,7 +3,7 @@ import { describe, expectTypeOf, it } from "vitest";
 import type {
   KernelWorkerInbound as LegacyKernelWorkerInbound,
   ThreadWorkerOutbound as LegacyThreadWorkerOutbound,
-} from "../../../src/messages.js";
+} from "../../../../src/messages.js";
 import type {
   KernelWorkerInbound,
   RuntimeMessagePort,
@@ -11,7 +11,7 @@ import type {
   RuntimeReadonlyQuery,
   RuntimeWorkerFactory,
   ThreadWorkerOutbound,
-} from "../../../src/worker/contracts/index.js";
+} from "../../../../src/worker/contracts/index.js";
 
 describe("worker contracts", () => {
   it("exports worker message contracts from the owner directory", () => {

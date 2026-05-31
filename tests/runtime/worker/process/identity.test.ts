@@ -1,6 +1,6 @@
 import { expect, test } from "vite-plus/test";
-import { assertHandleWorkerProcessIdentity } from "../../../src/worker/process-identity.js";
-import type { ProcessHandle, ThreadWorkerState } from "../../../src/worker/types.js";
+import { assertHandleWorkerProcessIdentity } from "../../../../src/worker/process-identity.js";
+import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 
 function makeWorkerState(vmPtr: number): ThreadWorkerState {
   return {

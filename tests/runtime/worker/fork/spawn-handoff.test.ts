@@ -1,19 +1,19 @@
 import { expect, test, vi } from "vite-plus/test";
-import type { ProcessHandle, ThreadWorkerState, WorkerForkDeps } from "../../../src/worker/fork/types.js";
+import type { ProcessHandle, ThreadWorkerState, WorkerForkDeps } from "../../../../src/worker/fork/types.js";
 
 const plainForkMock = vi.fn(async () => {});
 const vforkExecveMock = vi.fn(async () => {});
 
-vi.mock("../../../src/worker/fork/plain.js", () => ({
+vi.mock("../../../../src/worker/fork/plain.js", () => ({
   handlePlainFork: plainForkMock,
 }));
 
-vi.mock("../../../src/worker/fork/vfork-execve.js", () => ({
+vi.mock("../../../../src/worker/fork/vfork-execve.js", () => ({
   handleVforkExecve: vforkExecveMock,
 }));
 
 async function loadForkHandlers() {
-  return await import("../../../src/worker/fork.js");
+  return await import("../../../../src/worker/fork.js");
 }
 
 function makeDeps(): WorkerForkDeps & {

@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vite-plus/test";
-import { writePipe } from "../../../src/bridge/pipe.js";
-import { createWorkerStatusMessageHandler as createRawWorkerStatusMessageHandler } from "../../../src/worker/message-handler/status.js";
-import { createWorkerMessageDebugStats } from "../../../src/worker/types.js";
+import { writePipe } from "../../../../src/bridge/pipe.js";
+import { createWorkerStatusMessageHandler as createRawWorkerStatusMessageHandler } from "../../../../src/worker/message-handler/status.js";
+import { createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 
 const PIPE_BUF_SIZE = 65_536;
 const PIPE_SLOT_SIZE = 32 + PIPE_BUF_SIZE;

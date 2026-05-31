@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vite-plus/test";
-import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
-import { createWorkerLifecycleHelpers } from "../../../src/worker/lifecycle.js";
-import type { ProcessHandle } from "../../../src/worker/types.js";
+import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
+import { createWorkerLifecycleHelpers } from "../../../../src/worker/lifecycle.js";
+import type { ProcessHandle } from "../../../../src/worker/types.js";
 
 function makeKernelState(): KernelRuntimeState {
   return {

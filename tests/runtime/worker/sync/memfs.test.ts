@@ -1,7 +1,7 @@
 import { expect, test } from "vite-plus/test";
-import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
-import { syncMemfsState } from "../../../src/worker/kernel-share/memfs.js";
-import type { KernelSyncHandle } from "../../../src/worker/types.js";
+import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
+import { syncMemfsState } from "../../../../src/worker/kernel-share/memfs.js";
+import type { KernelSyncHandle } from "../../../../src/worker/types.js";
 
 function writeMemfsHeader(
   memory: WebAssembly.Memory,

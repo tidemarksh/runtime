@@ -2,19 +2,19 @@ import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
 import {
   createRuntimeStateBridge,
   readPublishedRuntimeBridgeEpoch,
-} from "../../../src/bridge/runtime-state.js";
+} from "../../../../src/bridge/runtime-state.js";
 
-vi.mock("../../../src/worker/pool.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../../src/worker/pool.js")>();
+vi.mock("../../../../src/worker/pool.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../../src/worker/pool.js")>();
   return {
     ...actual,
     kernelStackSlotForWorker: () => 2,
   };
 });
 
-import { createWorkerScheduler } from "../../../src/worker/scheduler.js";
-import { createTransferDebugStats, createWorkerMessageDebugStats } from "../../../src/worker/types.js";
-import type { ProcessHandle, ThreadWorkerState } from "../../../src/worker/types.js";
+import { createWorkerScheduler } from "../../../../src/worker/scheduler.js";
+import { createTransferDebugStats, createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
+import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 
 function makeKernel() {
   const threadResumeWait4 = vi.fn();

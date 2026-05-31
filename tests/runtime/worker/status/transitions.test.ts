@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vite-plus/test";
-import { createWorkerStatusTransitionHandler } from "../../../src/worker/message-handler/transitions.js";
+import { createWorkerStatusTransitionHandler } from "../../../../src/worker/message-handler/transitions.js";
 
 function makeKernelState() {
   return {

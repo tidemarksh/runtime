@@ -2,8 +2,8 @@ import { expect, test } from "vite-plus/test";
 import {
   hasActiveChildProcess,
   pumpActiveChildProcesses,
-} from "../../../src/worker/child-processes.js";
-import type { ProcessHandle } from "../../../src/worker/types.js";
+} from "../../../../src/worker/child-processes.js";
+import type { ProcessHandle } from "../../../../src/worker/types.js";
 
 function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
   return {
