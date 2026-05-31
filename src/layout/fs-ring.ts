@@ -2,6 +2,7 @@ export const FS_RING_SUBMIT_HEAD_OFFSET = 0;
 export const FS_RING_SUBMIT_TAIL_OFFSET = 4;
 export const FS_RING_COMPLETE_HEAD_OFFSET = 8;
 export const FS_RING_COMPLETE_TAIL_OFFSET = 12;
+export const FS_RING_NOTIFY_OFFSET = 16;
 export const FS_RING_HEADER_BYTES = 32;
 export const FS_RING_SUBMIT_QUEUE_SIZE = 64;
 export const FS_RING_COMPLETE_QUEUE_SIZE = 64;
@@ -21,6 +22,9 @@ export const FS_RING_TOTAL_BYTES =
 
 export const FS_OP_READ = 1;
 export const FS_OP_WRITE = 2;
+export const FS_OP_OPENAT = 3;
+export const FS_OP_MKDIR = 6;
+export const FS_OP_UNLINK = 7;
 
 export function fsRingRequestEntryOffset(ringBase: number, pos: number): number {
   return ringBase

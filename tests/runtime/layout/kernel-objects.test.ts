@@ -51,6 +51,7 @@ import {
   SOCKET_SLOT_RECV_BUF_IDX_OFFSET,
   SOCKET_SLOT_SHUTDOWN_MASK_OFFSET,
   SOCKET_SLOT_STATE_OFFSET,
+  SOCKET_STATE_CONNECTED,
   SOCKET_STATE_SHUTDOWN,
 } from "../../../src/layout/socket.js";
 
@@ -217,6 +218,7 @@ describe("runtime/kernel object layout", () => {
   });
 
   it("matches socket state constants and selected SocketSlot offsets", () => {
+    expect(SOCKET_STATE_CONNECTED).toBe(readKernelConst(KERNEL_SOCKET_STATE_SOURCE, "SOCK_STATE_CONNECTED"));
     expect(SOCKET_STATE_SHUTDOWN).toBe(readKernelConst(KERNEL_SOCKET_STATE_SOURCE, "SOCK_STATE_SHUTDOWN"));
     const shutRd = readKernelConst(KERNEL_SOCKET_STATE_SOURCE, "SHUT_RD_MASK");
     const shutWr = readKernelConst(KERNEL_SOCKET_STATE_SOURCE, "SHUT_WR_MASK");

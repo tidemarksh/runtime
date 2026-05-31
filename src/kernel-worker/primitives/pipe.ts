@@ -20,12 +20,6 @@ import {
 import type { KernelWorkerPipeSlotSnapshot } from "../../messages.js";
 import { collectProcessHeldOfdRefcounts } from "./ofd.js";
 
-const FD_TYPE_PIPE = 6;
-const FD_TYPE_PTY_MASTER = 11;
-const FD_TYPE_PTY_SLAVE = 12;
-const OPEN_ACCESS_MODE_MASK = 0x3;
-const O_RDONLY = 0;
-const O_WRONLY = 1;
 const PIPE_OFF_HEAD = PIPE_HEAD_OFFSET;
 const PIPE_OFF_TAIL = PIPE_TAIL_OFFSET;
 const PIPE_OFF_READ_OPEN = PIPE_READ_OPEN_OFFSET;
@@ -92,7 +86,7 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
     for (let ofdId = 1; ofdId < maxFds; ofdId += 1) {
       const ofdOffset = targetState.ofdTablePtr + ofdId * ofdSlotBytes;
       if (
-        view.getInt32(ofdOffset + OFD_TYPE_OFFSET, true) === FD_TYPE_PIPE
+        view.getInt32(ofdOffset + OFD_TYPE_OFFSET, true) === targetExports.abi_fd_type_pipe()
         && view.getUint32(ofdOffset + OFD_INO_OFFSET, true) === pipeSlot
       ) {
         view.setBigInt64(ofdOffset + OFD_OFFSET_OFFSET, BigInt(pipeGeneration), true);
@@ -124,8 +118,11 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
   ): Array<{ pipeSlot: number; mode: number }> {
     const fdType = processExports.kernel_ofd_fd_type(ofdId);
     const statusFlags = processExports.kernel_ofd_status_flags(ofdId);
-    const accessMode = statusFlags & OPEN_ACCESS_MODE_MASK;
-    if (fdType === FD_TYPE_PIPE) {
+    const oRdonly = processExports.abi_o_rdonly();
+    const oWronly = processExports.abi_o_wronly();
+    const accessModeMask = oRdonly | oWronly | processExports.abi_o_rdwr();
+    const accessMode = statusFlags & accessModeMask;
+    if (fdType === processExports.abi_fd_type_pipe()) {
       const pipeSlot = processExports.kernel_ofd_ino(ofdId);
       if (pipeSlot <= 0 || pipeSlot >= processExports.abi_max_pipes()) {
         return [];
@@ -137,26 +134,28 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
           : PIPE_SLOT_MODE_WRITE,
       }];
     }
-    if (fdType !== FD_TYPE_PTY_SLAVE && fdType !== FD_TYPE_PTY_MASTER) {
+    const ptySlaveType = processExports.abi_fd_type_pty_slave?.();
+    const ptyMasterType = processExports.abi_fd_type_pty_master?.();
+    if (fdType !== ptySlaveType && fdType !== ptyMasterType) {
       return [];
     }
     const ptyIdx = processExports.kernel_ofd_ino(ofdId);
     const inputPipe = processExports.kernel_pty_input_pipe?.(ptyIdx) ?? 0;
     const outputPipe = processExports.kernel_pty_output_pipe?.(ptyIdx) ?? 0;
     const modes: Array<{ pipeSlot: number; mode: number }> = [];
-    if (fdType === FD_TYPE_PTY_SLAVE) {
-      if (accessMode !== O_WRONLY && inputPipe > 0) {
+    if (fdType === ptySlaveType) {
+      if (accessMode !== oWronly && inputPipe > 0) {
         modes.push({ pipeSlot: inputPipe, mode: PIPE_SLOT_MODE_READ });
       }
-      if (accessMode !== O_RDONLY && outputPipe > 0) {
+      if (accessMode !== oRdonly && outputPipe > 0) {
         modes.push({ pipeSlot: outputPipe, mode: PIPE_SLOT_MODE_WRITE });
       }
       return modes;
     }
-    if (accessMode !== O_WRONLY && outputPipe > 0) {
+    if (accessMode !== oWronly && outputPipe > 0) {
       modes.push({ pipeSlot: outputPipe, mode: PIPE_SLOT_MODE_READ });
     }
-    if (accessMode !== O_RDONLY && inputPipe > 0) {
+    if (accessMode !== oRdonly && inputPipe > 0) {
       modes.push({ pipeSlot: inputPipe, mode: PIPE_SLOT_MODE_WRITE });
     }
     return modes;

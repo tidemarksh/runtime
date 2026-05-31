@@ -1,5 +1,6 @@
 import { readKernelRuntimeState } from "../abi.js";
 import { publishKernelRuntimeState } from "../bridge/runtime-state.js";
+import { SOCKET_STATE_CONNECTED, SOCKET_STATE_SHUTDOWN } from "../layout/socket.js";
 import type { RuntimeNetworkConnection, RuntimeNetworkEndpoint } from "../network.js";
 import { ensureMemoryCapacity, ensureKernelMemoryCapacity, kernelScratchBase, writeKernelScratch } from "./kernel-scratch.js";
 import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
@@ -23,8 +24,6 @@ interface WorkerProcessIoDeps {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const SOCK_STATE_CONNECTED = 3;
-const SOCK_STATE_SHUTDOWN = 5;
 const NETWORK_BRIDGE_CHUNK_SIZE = 240 * 1024;
 const NETWORK_FD_TRACE_LOG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_FD_TRACE ?? "") === "1";
 const NETWORK_LIFECYCLE_LOG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_NETWORK ?? "") === "1";
@@ -1509,7 +1508,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       const socketState = socketIdx !== undefined && socketIdx >= 0
         ? handle.kernel.thread_socket_state?.(socketIdx)
         : undefined;
-      if (socketState === SOCK_STATE_CONNECTED || socketState === SOCK_STATE_SHUTDOWN) {
+      if (socketState === SOCKET_STATE_CONNECTED || socketState === SOCKET_STATE_SHUTDOWN) {
         return false;
       }
       const before = formatSocketStateForFd(fd);
@@ -1594,7 +1593,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         const inboundSocketState = inboundSocketIdx !== undefined && inboundSocketIdx >= 0
           ? handle.kernel.thread_socket_state?.(inboundSocketIdx)
           : undefined;
-        let inboundMarkResult = inboundSocketState === SOCK_STATE_SHUTDOWN
+        let inboundMarkResult = inboundSocketState === SOCKET_STATE_SHUTDOWN
           ? undefined
           : markExternalPeer?.(vmPtr, fd);
         if (inboundMarkResult !== undefined && inboundMarkResult !== 0 && commitExternalConnect) {
@@ -1603,7 +1602,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         let written = injectInbound(vmPtr, fd, scratch, injection.length);
         if (
           written === enotconn
-          && inboundSocketState !== SOCK_STATE_SHUTDOWN
+          && inboundSocketState !== SOCKET_STATE_SHUTDOWN
           && (
             markExternalPeer?.(vmPtr, fd) === 0
             || commitExternalConnect?.(vmPtr, fd) === 0
@@ -1734,7 +1733,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
             ? handle.kernel.thread_socket_recv_available?.(peerIdx)
             : undefined;
           if (drainFd === activeFd) {
-            let markResult = socketState === SOCK_STATE_SHUTDOWN
+            let markResult = socketState === SOCKET_STATE_SHUTDOWN
               ? undefined
               : markExternalPeer?.(vmPtr, activeFd);
             if (markResult !== undefined && markResult !== 0 && commitExternalConnect) {
@@ -1742,7 +1741,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
             }
             const repairedExternalPeer = markResult === 0
               && (
-                (socketState !== undefined && socketState !== SOCK_STATE_CONNECTED)
+                (socketState !== undefined && socketState !== SOCKET_STATE_CONNECTED)
                 || (externalPeer !== undefined && externalPeer !== 1)
               );
             if (repairedExternalPeer) {
@@ -1757,7 +1756,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
           if (
             drainFd === activeFd
             && n === enotconn
-            && socketState !== SOCK_STATE_SHUTDOWN
+            && socketState !== SOCKET_STATE_SHUTDOWN
             && (
               markExternalPeer?.(vmPtr, activeFd) === 0
               || commitExternalConnect?.(vmPtr, activeFd) === 0

@@ -1,42 +1,14 @@
 import type { KernelRuntimeState } from "../abi.js";
-
-const NOTIFY_INDEX = 0;
-const EPOCH_INDEX = 1;
-const DEBUG_STAGE_INDEX = 2;
-const DEBUG_VALUE_INDEX = 3;
-const STATE_VERSION_INDEX = 0;
-const STATE_HEADER_BYTES = 8;
-const STATE_FIELD_COUNT = 27;
-
-const FIELD_OFFSETS = {
-  heapBase: STATE_HEADER_BYTES + 0,
-  heapPtr: STATE_HEADER_BYTES + 8,
-  ofdTablePtr: STATE_HEADER_BYTES + 16,
-  memfsPtr: STATE_HEADER_BYTES + 24,
-  memfsHeaderBytes: STATE_HEADER_BYTES + 32,
-  memfsInodesBytes: STATE_HEADER_BYTES + 40,
-  memfsFirstChildBytes: STATE_HEADER_BYTES + 48,
-  memfsDirEntriesBytes: STATE_HEADER_BYTES + 56,
-  memfsDataBytes: STATE_HEADER_BYTES + 64,
-  memStatePtr: STATE_HEADER_BYTES + 72,
-  epollTablePtr: STATE_HEADER_BYTES + 80,
-  socketTablePtr: STATE_HEADER_BYTES + 88,
-  socketUsed: STATE_HEADER_BYTES + 96,
-  pipeBase: STATE_HEADER_BYTES + 104,
-  pipeUsed: STATE_HEADER_BYTES + 112,
-  netBufBase: STATE_HEADER_BYTES + 120,
-  netBufUsed: STATE_HEADER_BYTES + 128,
-  sigSlotsPtr: STATE_HEADER_BYTES + 136,
-  processPendingPtr: STATE_HEADER_BYTES + 144,
-  processRuntimeStatePtr: STATE_HEADER_BYTES + 152,
-  timeStatePtr: STATE_HEADER_BYTES + 160,
-  ofdStatePtr: STATE_HEADER_BYTES + 168,
-  ofdStateBytes: STATE_HEADER_BYTES + 176,
-  ofdOffsetFloorPtr: STATE_HEADER_BYTES + 184,
-  ofdOffsetFloorBytes: STATE_HEADER_BYTES + 192,
-  socketStatePtr: STATE_HEADER_BYTES + 200,
-  socketStateBytes: STATE_HEADER_BYTES + 208,
-} as const;
+import {
+  RUNTIME_BRIDGE_DEBUG_STAGE_INDEX,
+  RUNTIME_BRIDGE_DEBUG_VALUE_INDEX,
+  RUNTIME_BRIDGE_EPOCH_INDEX,
+  RUNTIME_BRIDGE_NOTIFY_INDEX,
+  RUNTIME_STATE_FIELD_COUNT,
+  RUNTIME_STATE_FIELD_OFFSETS,
+  RUNTIME_STATE_HEADER_BYTES,
+  RUNTIME_STATE_VERSION_INDEX,
+} from "../layout/runtime-state.js";
 
 export interface RuntimeStateBridge {
   notifySab: SharedArrayBuffer;
@@ -46,7 +18,7 @@ export interface RuntimeStateBridge {
 export function createRuntimeStateBridge(): RuntimeStateBridge {
   return {
     notifySab: new SharedArrayBuffer(16),
-    stateSab: new SharedArrayBuffer(STATE_HEADER_BYTES + STATE_FIELD_COUNT * 8),
+    stateSab: new SharedArrayBuffer(RUNTIME_STATE_HEADER_BYTES + RUNTIME_STATE_FIELD_COUNT * 8),
   };
 }
 
@@ -67,36 +39,36 @@ function canAccessField(view: DataView, offset: number): boolean {
 }
 
 function writeState(view: DataView, state: KernelRuntimeState): void {
-  view.setUint32(FIELD_OFFSETS.heapBase, state.heapBase, true);
-  view.setUint32(FIELD_OFFSETS.heapPtr, state.heapPtr, true);
-  view.setUint32(FIELD_OFFSETS.ofdTablePtr, state.ofdTablePtr, true);
-  view.setUint32(FIELD_OFFSETS.memfsPtr, state.memfsPtr, true);
-  view.setUint32(FIELD_OFFSETS.memfsHeaderBytes, state.memfsHeaderBytes, true);
-  view.setUint32(FIELD_OFFSETS.memfsInodesBytes, state.memfsInodesBytes, true);
-  view.setUint32(FIELD_OFFSETS.memfsFirstChildBytes, state.memfsFirstChildBytes, true);
-  view.setUint32(FIELD_OFFSETS.memfsDirEntriesBytes, state.memfsDirEntriesBytes, true);
-  view.setUint32(FIELD_OFFSETS.memfsDataBytes, state.memfsDataBytes, true);
-  view.setUint32(FIELD_OFFSETS.memStatePtr, state.memStatePtr, true);
-  view.setUint32(FIELD_OFFSETS.epollTablePtr, state.epollTablePtr, true);
-  view.setUint32(FIELD_OFFSETS.socketTablePtr, state.socketTablePtr, true);
-  view.setUint32(FIELD_OFFSETS.socketUsed, state.socketUsed, true);
-  view.setUint32(FIELD_OFFSETS.pipeBase, state.pipeBase, true);
-  view.setBigUint64(FIELD_OFFSETS.pipeUsed, state.pipeUsed, true);
-  view.setUint32(FIELD_OFFSETS.netBufBase, state.netBufBase, true);
-  view.setBigUint64(FIELD_OFFSETS.netBufUsed, state.netBufUsed, true);
-  view.setUint32(FIELD_OFFSETS.sigSlotsPtr, state.sigSlotsPtr, true);
-  view.setUint32(FIELD_OFFSETS.processPendingPtr, state.processPendingPtr, true);
-  view.setUint32(FIELD_OFFSETS.processRuntimeStatePtr, state.processRuntimeStatePtr, true);
-  view.setUint32(FIELD_OFFSETS.timeStatePtr, state.timeStatePtr, true);
-  if (!canAccessField(view, FIELD_OFFSETS.socketStateBytes)) {
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.heapBase, state.heapBase, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.heapPtr, state.heapPtr, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.ofdTablePtr, state.ofdTablePtr, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.memfsPtr, state.memfsPtr, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.memfsHeaderBytes, state.memfsHeaderBytes, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.memfsInodesBytes, state.memfsInodesBytes, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.memfsFirstChildBytes, state.memfsFirstChildBytes, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.memfsDirEntriesBytes, state.memfsDirEntriesBytes, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.memfsDataBytes, state.memfsDataBytes, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.memStatePtr, state.memStatePtr, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.epollTablePtr, state.epollTablePtr, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.socketTablePtr, state.socketTablePtr, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.socketUsed, state.socketUsed, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.pipeBase, state.pipeBase, true);
+  view.setBigUint64(RUNTIME_STATE_FIELD_OFFSETS.pipeUsed, state.pipeUsed, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.netBufBase, state.netBufBase, true);
+  view.setBigUint64(RUNTIME_STATE_FIELD_OFFSETS.netBufUsed, state.netBufUsed, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.sigSlotsPtr, state.sigSlotsPtr, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.processPendingPtr, state.processPendingPtr, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.processRuntimeStatePtr, state.processRuntimeStatePtr, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.timeStatePtr, state.timeStatePtr, true);
+  if (!canAccessField(view, RUNTIME_STATE_FIELD_OFFSETS.socketStateBytes)) {
     return;
   }
-  view.setUint32(FIELD_OFFSETS.ofdStatePtr, state.ofdStatePtr ?? 0, true);
-  view.setUint32(FIELD_OFFSETS.ofdStateBytes, state.ofdStateBytes ?? 0, true);
-  view.setUint32(FIELD_OFFSETS.ofdOffsetFloorPtr, state.ofdOffsetFloorPtr ?? 0, true);
-  view.setUint32(FIELD_OFFSETS.ofdOffsetFloorBytes, state.ofdOffsetFloorBytes ?? 0, true);
-  view.setUint32(FIELD_OFFSETS.socketStatePtr, state.socketStatePtr ?? 0, true);
-  view.setUint32(FIELD_OFFSETS.socketStateBytes, state.socketStateBytes ?? 0, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.ofdStatePtr, state.ofdStatePtr ?? 0, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.ofdStateBytes, state.ofdStateBytes ?? 0, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.ofdOffsetFloorPtr, state.ofdOffsetFloorPtr ?? 0, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.ofdOffsetFloorBytes, state.ofdOffsetFloorBytes ?? 0, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.socketStatePtr, state.socketStatePtr ?? 0, true);
+  view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.socketStateBytes, state.socketStateBytes ?? 0, true);
 }
 
 export function publishKernelRuntimeState(
@@ -104,30 +76,30 @@ export function publishKernelRuntimeState(
   state: KernelRuntimeState,
   wake = false,
 ): void {
-  const version = Atomics.add(stateVersionView(bridge), STATE_VERSION_INDEX, 1) + 1;
+  const version = Atomics.add(stateVersionView(bridge), RUNTIME_STATE_VERSION_INDEX, 1) + 1;
   void version;
   writeState(stateView(bridge), state);
-  Atomics.add(stateVersionView(bridge), STATE_VERSION_INDEX, 1);
+  Atomics.add(stateVersionView(bridge), RUNTIME_STATE_VERSION_INDEX, 1);
   if (wake) {
     const notify = notifyView(bridge);
-    Atomics.add(notify, NOTIFY_INDEX, 1);
-    Atomics.notify(notify, NOTIFY_INDEX);
+    Atomics.add(notify, RUNTIME_BRIDGE_NOTIFY_INDEX, 1);
+    Atomics.notify(notify, RUNTIME_BRIDGE_NOTIFY_INDEX);
   }
 }
 
 export function wakeRuntimeBridge(bridge: RuntimeStateBridge): void {
   const notify = notifyView(bridge);
-  Atomics.add(notify, NOTIFY_INDEX, 1);
-  Atomics.notify(notify, NOTIFY_INDEX);
+  Atomics.add(notify, RUNTIME_BRIDGE_NOTIFY_INDEX, 1);
+  Atomics.notify(notify, RUNTIME_BRIDGE_NOTIFY_INDEX);
 }
 
 export function publishRuntimeBridgeEpoch(bridge: RuntimeStateBridge): number {
   const notify = notifyView(bridge);
-  return Atomics.add(notify, EPOCH_INDEX, 1) + 1;
+  return Atomics.add(notify, RUNTIME_BRIDGE_EPOCH_INDEX, 1) + 1;
 }
 
 export function readPublishedRuntimeBridgeEpoch(bridge: RuntimeStateBridge): number {
-  return Atomics.load(notifyView(bridge), EPOCH_INDEX);
+  return Atomics.load(notifyView(bridge), RUNTIME_BRIDGE_EPOCH_INDEX);
 }
 
 export function publishRuntimeBridgeDebugStage(
@@ -136,8 +108,8 @@ export function publishRuntimeBridgeDebugStage(
   value = 0,
 ): void {
   const notify = notifyView(bridge);
-  Atomics.store(notify, DEBUG_STAGE_INDEX, stage);
-  Atomics.store(notify, DEBUG_VALUE_INDEX, value);
+  Atomics.store(notify, RUNTIME_BRIDGE_DEBUG_STAGE_INDEX, stage);
+  Atomics.store(notify, RUNTIME_BRIDGE_DEBUG_VALUE_INDEX, value);
 }
 
 export function readRuntimeBridgeDebugStage(
@@ -145,8 +117,8 @@ export function readRuntimeBridgeDebugStage(
 ): { stage: number; value: number } {
   const notify = notifyView(bridge);
   return {
-    stage: Atomics.load(notify, DEBUG_STAGE_INDEX),
-    value: Atomics.load(notify, DEBUG_VALUE_INDEX),
+    stage: Atomics.load(notify, RUNTIME_BRIDGE_DEBUG_STAGE_INDEX),
+    value: Atomics.load(notify, RUNTIME_BRIDGE_DEBUG_VALUE_INDEX),
   };
 }
 
@@ -158,8 +130,8 @@ export function observeRuntimeBridgeEpoch(
     return;
   }
   const notify = notifyView(bridge);
-  while (Atomics.load(notify, EPOCH_INDEX) < minimumEpoch) {
-    Atomics.notify(notify, EPOCH_INDEX);
+  while (Atomics.load(notify, RUNTIME_BRIDGE_EPOCH_INDEX) < minimumEpoch) {
+    Atomics.notify(notify, RUNTIME_BRIDGE_EPOCH_INDEX);
   }
 }
 
@@ -174,11 +146,11 @@ export function waitForRuntimeBridgeWake(
   timeoutMs?: number,
 ): "ok" | "not-equal" | "timed-out" {
   const notify = notifyView(bridge);
-  const expected = Atomics.load(notify, NOTIFY_INDEX);
+  const expected = Atomics.load(notify, RUNTIME_BRIDGE_NOTIFY_INDEX);
   if (timeoutMs === undefined) {
-    return Atomics.wait(notify, NOTIFY_INDEX, expected);
+    return Atomics.wait(notify, RUNTIME_BRIDGE_NOTIFY_INDEX, expected);
   } else {
-    return Atomics.wait(notify, NOTIFY_INDEX, expected, timeoutMs);
+    return Atomics.wait(notify, RUNTIME_BRIDGE_NOTIFY_INDEX, expected, timeoutMs);
   }
 }
 
@@ -187,41 +159,41 @@ export function readPublishedKernelRuntimeState(bridge: RuntimeStateBridge): Ker
   const view = stateView(bridge);
 
   for (;;) {
-    const before = Atomics.load(versionView, STATE_VERSION_INDEX);
+    const before = Atomics.load(versionView, RUNTIME_STATE_VERSION_INDEX);
     if ((before & 1) !== 0) {
       continue;
     }
 
     const state: KernelRuntimeState = {
-      heapBase: view.getUint32(FIELD_OFFSETS.heapBase, true),
-      heapPtr: view.getUint32(FIELD_OFFSETS.heapPtr, true),
-      ofdTablePtr: view.getUint32(FIELD_OFFSETS.ofdTablePtr, true),
-      memfsPtr: view.getUint32(FIELD_OFFSETS.memfsPtr, true),
-      memfsHeaderBytes: view.getUint32(FIELD_OFFSETS.memfsHeaderBytes, true),
-      memfsInodesBytes: view.getUint32(FIELD_OFFSETS.memfsInodesBytes, true),
-      memfsFirstChildBytes: view.getUint32(FIELD_OFFSETS.memfsFirstChildBytes, true),
-      memfsDirEntriesBytes: view.getUint32(FIELD_OFFSETS.memfsDirEntriesBytes, true),
-      memfsDataBytes: view.getUint32(FIELD_OFFSETS.memfsDataBytes, true),
-      memStatePtr: view.getUint32(FIELD_OFFSETS.memStatePtr, true),
-      epollTablePtr: view.getUint32(FIELD_OFFSETS.epollTablePtr, true),
-      socketTablePtr: view.getUint32(FIELD_OFFSETS.socketTablePtr, true),
-      socketUsed: view.getUint32(FIELD_OFFSETS.socketUsed, true),
-      pipeBase: view.getUint32(FIELD_OFFSETS.pipeBase, true),
-      pipeUsed: view.getBigUint64(FIELD_OFFSETS.pipeUsed, true),
-      netBufBase: view.getUint32(FIELD_OFFSETS.netBufBase, true),
-      netBufUsed: view.getBigUint64(FIELD_OFFSETS.netBufUsed, true),
-      sigSlotsPtr: view.getUint32(FIELD_OFFSETS.sigSlotsPtr, true),
-      processPendingPtr: view.getUint32(FIELD_OFFSETS.processPendingPtr, true),
-      processRuntimeStatePtr: view.getUint32(FIELD_OFFSETS.processRuntimeStatePtr, true),
-      timeStatePtr: view.getUint32(FIELD_OFFSETS.timeStatePtr, true),
+      heapBase: view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.heapBase, true),
+      heapPtr: view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.heapPtr, true),
+      ofdTablePtr: view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.ofdTablePtr, true),
+      memfsPtr: view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.memfsPtr, true),
+      memfsHeaderBytes: view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.memfsHeaderBytes, true),
+      memfsInodesBytes: view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.memfsInodesBytes, true),
+      memfsFirstChildBytes: view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.memfsFirstChildBytes, true),
+      memfsDirEntriesBytes: view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.memfsDirEntriesBytes, true),
+      memfsDataBytes: view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.memfsDataBytes, true),
+      memStatePtr: view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.memStatePtr, true),
+      epollTablePtr: view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.epollTablePtr, true),
+      socketTablePtr: view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.socketTablePtr, true),
+      socketUsed: view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.socketUsed, true),
+      pipeBase: view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.pipeBase, true),
+      pipeUsed: view.getBigUint64(RUNTIME_STATE_FIELD_OFFSETS.pipeUsed, true),
+      netBufBase: view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.netBufBase, true),
+      netBufUsed: view.getBigUint64(RUNTIME_STATE_FIELD_OFFSETS.netBufUsed, true),
+      sigSlotsPtr: view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.sigSlotsPtr, true),
+      processPendingPtr: view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.processPendingPtr, true),
+      processRuntimeStatePtr: view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.processRuntimeStatePtr, true),
+      timeStatePtr: view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.timeStatePtr, true),
     };
-    if (canAccessField(view, FIELD_OFFSETS.socketStateBytes)) {
-      const ofdStatePtr = view.getUint32(FIELD_OFFSETS.ofdStatePtr, true);
-      const ofdStateBytes = view.getUint32(FIELD_OFFSETS.ofdStateBytes, true);
-      const ofdOffsetFloorPtr = view.getUint32(FIELD_OFFSETS.ofdOffsetFloorPtr, true);
-      const ofdOffsetFloorBytes = view.getUint32(FIELD_OFFSETS.ofdOffsetFloorBytes, true);
-      const socketStatePtr = view.getUint32(FIELD_OFFSETS.socketStatePtr, true);
-      const socketStateBytes = view.getUint32(FIELD_OFFSETS.socketStateBytes, true);
+    if (canAccessField(view, RUNTIME_STATE_FIELD_OFFSETS.socketStateBytes)) {
+      const ofdStatePtr = view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.ofdStatePtr, true);
+      const ofdStateBytes = view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.ofdStateBytes, true);
+      const ofdOffsetFloorPtr = view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.ofdOffsetFloorPtr, true);
+      const ofdOffsetFloorBytes = view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.ofdOffsetFloorBytes, true);
+      const socketStatePtr = view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.socketStatePtr, true);
+      const socketStateBytes = view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.socketStateBytes, true);
       if (ofdStatePtr > 0) {
         state.ofdStatePtr = ofdStatePtr;
       }
@@ -242,7 +214,7 @@ export function readPublishedKernelRuntimeState(bridge: RuntimeStateBridge): Ker
       }
     }
 
-    const after = Atomics.load(versionView, STATE_VERSION_INDEX);
+    const after = Atomics.load(versionView, RUNTIME_STATE_VERSION_INDEX);
     if (before === after) {
       return state;
     }
