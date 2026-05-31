@@ -17,7 +17,6 @@ export const GO_TOOL_VERSION = process.env.TIDEMARK_TEST_GO_TOOL_VERSION ?? "go1
 export const GO_BUILD_EXPERIMENT = process.env.TIDEMARK_ACCEPTANCE_GO_EXPERIMENT ?? "";
 export const GO_RUNTIME_RAM_SIZE = 1024 * 1024 * 1024;
 
-const WORKSPACE_ROOT = resolve(__dirname, "../../../..");
 const REQUIRED_GO_TOOL_RELATIVE_PATH = "pkg/tool/linux_riscv64/compile";
 
 function hasRequiredGoToolchainBinary(candidate: string): boolean {
@@ -35,18 +34,10 @@ function resolveGoToolchainDir(): { dir: string; error: string | null } {
       };
   }
 
-  const fallback = [
-    resolve(WORKSPACE_ROOT, "artifacts/go/toolchain"),
-    resolve(WORKSPACE_ROOT, "artifacts/reference-linux/go/build/goroot-overlay2"),
-    resolve(WORKSPACE_ROOT, "legacy/core/images/go-toolchain"),
-  ].find(hasRequiredGoToolchainBinary);
-
-  return fallback
-    ? { dir: fallback, error: null }
-    : {
-      dir: "",
-      error: `missing Go toolchain dir with ${REQUIRED_GO_TOOL_RELATIVE_PATH}`,
-    };
+  return {
+    dir: "",
+    error: `missing Go toolchain dir: set TIDEMARK_TEST_GO_TOOLCHAIN_DIR with ${REQUIRED_GO_TOOL_RELATIVE_PATH}`,
+  };
 }
 
 const GO_TOOLCHAIN_RESOLUTION = resolveGoToolchainDir();

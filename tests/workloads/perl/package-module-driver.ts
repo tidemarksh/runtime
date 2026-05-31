@@ -25,8 +25,8 @@ export const perlProvePackageModuleEntry: PackageModuleDriverEntry = {
       mode: 0o755,
     },
     {
-      kind: "file",
-      hostPath: resolve(process.cwd(), "../artifacts/reference-linux/perl/prove/basic.t"),
+      kind: "inlineFile",
+      data: "use Test::More tests => 1;\n\nok(1, 'perl-prove-evidence');\n",
       guestPath: "/work/basic.t",
       mode: 0o644,
     },

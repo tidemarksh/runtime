@@ -1,12 +1,11 @@
 import { expect, test } from "vite-plus/test";
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import type { FsSnapshotEntry } from "../../../src/fs/types.js";
 import { runBrowserDirectStartupEntry } from "../../support/browser-direct-harness.js";
 import { prepareNodeBrowserDirectStartupEntry } from "./browser-direct-startup.js";
 
 const BUSYBOX_BINARY_PATH = process.env.TIDEMARK_TEST_BUSYBOX_BINARY
-  ?? resolve(__dirname, "../../../../images/busybox");
+  ?? "";
 
 function shellEnv(): string[] {
   return [

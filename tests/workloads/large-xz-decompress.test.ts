@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { expect, test } from "vite-plus/test";
 import {
   Runtime,
@@ -12,9 +12,7 @@ import { buildSnapshotFromSources } from "../support/snapshot-sources.js";
 
 type RuntimeInstance = Awaited<ReturnType<typeof Runtime.create>>;
 
-const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), "../../..");
-const defaultDevtoolsToolsetDir = resolve(repoRoot, "artifacts/devtools/toolset");
-const devtoolsToolsetDir = process.env.TIDEMARK_TEST_DEVTOOLS_TOOLSET_DIR || defaultDevtoolsToolsetDir;
+const devtoolsToolsetDir = process.env.TIDEMARK_TEST_DEVTOOLS_TOOLSET_DIR ?? "";
 const packageCount = Number(process.env.TIDEMARK_TEST_LARGE_XZ_PACKAGE_COUNT ?? 20_000);
 const packageXzInput = process.env.TIDEMARK_TEST_LARGE_XZ_INPUT ?? "";
 const outputMode = process.env.TIDEMARK_TEST_LARGE_XZ_OUTPUT_MODE === "file" ? "file" : "stdout";

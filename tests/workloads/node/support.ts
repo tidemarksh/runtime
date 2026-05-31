@@ -11,9 +11,9 @@ import {
 } from "../../support/runtime-workload.js";
 
 export const NODE_BINARY_PATH = process.env.TIDEMARK_TEST_NODE_BINARY
-  ?? resolve(__dirname, "../../../../images/node");
+  ?? "";
 export const NODE_SYSROOT_DIR = process.env.TIDEMARK_TEST_NODE_SYSROOT_DIR
-  ?? resolve(__dirname, "../../../../artifacts/node/sysroot");
+  ?? "";
 const FIXTURES_DIR = resolve(__dirname, "./fixtures");
 const NODE_RUNTIME_RAM_SIZE = 256 * 1024 * 1024;
 

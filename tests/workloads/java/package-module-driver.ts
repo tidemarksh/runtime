@@ -3,6 +3,10 @@ import type { PackageModuleDriverEntry } from "../../support/package-module-driv
 import { makeJavaRuntimeSnapshotSources } from "./runtime-snapshot.js";
 
 const jdkDir = process.env.TIDEMARK_TEST_JAVA_RUNTIME_DIR ?? "";
+const helloClassBytes = Uint8Array.from(Buffer.from(
+  "yv66vgAAAEUAHQoAAgADBwAEDAAFAAYBABBqYXZhL2xhbmcvT2JqZWN0AQAGPGluaXQ+AQADKClWCQAIAAkHAAoMAAsADAEAEGphdmEvbGFuZy9TeXN0ZW0BAANvdXQBABVMamF2YS9pby9QcmludFN0cmVhbTsIAA4BABVqYXZhLWNvbXBpbGUtZXZpZGVuY2UKABAAEQcAEgwAEwAUAQATamF2YS9pby9QcmludFN0cmVhbQEAB3ByaW50bG4BABUoTGphdmEvbGFuZy9TdHJpbmc7KVYHABYBAAVIZWxsbwEABENvZGUBAA9MaW5lTnVtYmVyVGFibGUBAARtYWluAQAWKFtMamF2YS9sYW5nL1N0cmluZzspVgEAClNvdXJjZUZpbGUBAApIZWxsby5qYXZhACEAFQACAAAAAAACAAEABQAGAAEAFwAAAB0AAQABAAAABSq3AAGxAAAAAQAYAAAABgABAAAAAQAJABkAGgABABcAAAAlAAIAAQAAAAmyAAcSDbYAD7EAAAABABgAAAAKAAIAAAADAAgABAABABsAAAACABw=",
+  "base64",
+));
 
 export const javaClassLoadPackageModuleEntry: PackageModuleDriverEntry = {
   id: "java-class-load",
@@ -16,8 +20,8 @@ export const javaClassLoadPackageModuleEntry: PackageModuleDriverEntry = {
   ramSize: 1024 * 1024 * 1024,
   snapshotSources: makeJavaRuntimeSnapshotSources([
     {
-      kind: "file",
-      hostPath: resolve(process.cwd(), "../artifacts/reference-linux/java/javac/Hello.class"),
+      kind: "inlineFile",
+      data: helloClassBytes,
       guestPath: "/work/Hello.class",
       mode: 0o644,
     },

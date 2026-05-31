@@ -12,9 +12,9 @@ import {
 import { buildNodeRuntimeSnapshot, readNodeBinary } from "./support.js";
 
 const BUSYBOX_BINARY_PATH = process.env.TIDEMARK_TEST_BUSYBOX_BINARY
-  ?? resolve(__dirname, "../../../../images/busybox");
+  ?? "";
 const GO_BINARY_PATH = process.env.TIDEMARK_TEST_GO_BINARY
-  ?? resolve(__dirname, "../../../../images/go");
+  ?? "";
 
 function readBytes(path: string, label: string): Uint8Array | null {
   if (!existsSync(path)) {

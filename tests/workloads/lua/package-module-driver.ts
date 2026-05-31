@@ -23,8 +23,8 @@ export const luaLuacPackageModuleEntry: PackageModuleDriverEntry = {
       mode: 0o755,
     },
     {
-      kind: "file",
-      hostPath: resolve(process.cwd(), "../artifacts/reference-linux/lua/luac/in.lua"),
+      kind: "inlineFile",
+      data: "return 6 * 7\n",
       guestPath: "/work/in.lua",
       mode: 0o644,
     },

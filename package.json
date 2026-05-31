@@ -25,8 +25,12 @@
   "scripts": {
     "build": "vp pack",
     "dev": "vp pack --watch",
-    "prepare:workloads": "node scripts/prepare-workload-artifacts.mjs",
-    "test": "vp test --no-file-parallelism",
+    "prepare:integration": "node scripts/prepare-workload-artifacts.mjs",
+    "test": "vp test tests/unit --no-file-parallelism",
+    "test:unit": "vp test tests/unit --no-file-parallelism",
+    "test:integration": "vp test tests/integration --no-file-parallelism",
+    "test:integration:runtime": "vp test tests/integration/runtime --no-file-parallelism",
+    "test:integration:targets": "vp test tests/integration/targets --no-file-parallelism",
     "typecheck": "tsc --noEmit",
     "release": "bumpp",
     "prepublishOnly": "pnpm run build"
