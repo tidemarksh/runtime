@@ -6,6 +6,7 @@ const FD_TRACE_LOG_ENABLED = ((globalThis as { process?: { env?: Record<string, 
 const RESERVATION_DEBUG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_RESERVATION ?? "") === "1";
 const loggedFdTraceEntries = new Set<string>();
 export const THREAD_WORKER_DEBUG_OBSERVATION_MODE = "read-only-observation" as const;
+export const THREAD_WORKER_SYSCALL_TRACE_CLEAR_MODE = "trace-lifecycle-cleanup" as const;
 
 function copyBytes(view: Uint8Array): Uint8Array {
   const copy = new Uint8Array(view.byteLength);

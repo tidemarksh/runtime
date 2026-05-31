@@ -1,14 +1,19 @@
 // Thread-worker tests in this file validate read-only debug observations.
-import { expect, test } from "vite-plus/test";
+import { expect, test, vi } from "vite-plus/test";
 import {
   collectDebugParts,
   formatExecTraceEntries,
   formatWorkerError,
   THREAD_WORKER_DEBUG_OBSERVATION_MODE,
+  THREAD_WORKER_SYSCALL_TRACE_CLEAR_MODE,
 } from "../../../src/thread-worker/debug.js";
 
 test("debug observations are marked read-only and do not own state repair", () => {
   expect(THREAD_WORKER_DEBUG_OBSERVATION_MODE).toBe("read-only-observation");
+});
+
+test("syscall trace clearing is classified as trace lifecycle cleanup", () => {
+  expect(THREAD_WORKER_SYSCALL_TRACE_CLEAR_MODE).toBe("trace-lifecycle-cleanup");
 });
 
 function makeThreadWorkerDebugExports() {
@@ -65,6 +70,33 @@ test("formatWorkerError preserves signal delivery evidence when debug collection
   expect(detail).toContain("pc_vma=0x100-0x180:5/2");
   expect(detail).toContain("fault_vma=0x200-0x300:3/6");
   expect(detail).toContain('debug_collect_error="RuntimeError: operation does not support unaligned accesses');
+});
+
+test("debug collection and error formatting do not invoke repair or resume exports", () => {
+  const repairExports = {
+    thread_step: vi.fn(),
+    thread_resume_blocked_syscall: vi.fn(),
+    thread_resume_futex_wait: vi.fn(),
+    thread_resume_futex_wait_result: vi.fn(),
+    thread_resume_epoll_wait_timeout: vi.fn(),
+    debug_clear_syscall_trace: vi.fn(),
+    debug_clear_signal_trace: vi.fn(),
+    debug_clear_cpu_trace: vi.fn(),
+  };
+  const exports = {
+    ...makeThreadWorkerDebugExports(),
+    ...repairExports,
+    debug_fd_syscall_trace_len: () => 0,
+    debug_exec_trace_len: () => 0,
+    debug_thread_step_exec_trace_len_for_vm: () => 0,
+  } as never;
+
+  collectDebugParts(exports, 0x1234, 0);
+  formatWorkerError(exports, 0x1234, 0, new Error("boom"));
+
+  for (const fn of Object.values(repairExports)) {
+    expect(fn).not.toHaveBeenCalled();
+  }
 });
 
 test("formatWorkerError recovers frozen trace when thread state debug faults early", () => {
