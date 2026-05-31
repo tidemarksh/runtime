@@ -159,3 +159,41 @@ test("postThreadWorkerStatus owns status outbound assembly", () => {
   }));
   expect(lastResumeBlockedDebug).toBeUndefined();
 });
+
+test("postThreadWorkerStatus owns sync-effect snapshot payload assembly", () => {
+  const postMessage = vi.fn();
+  Object.defineProperty(globalThis, "postMessage", {
+    configurable: true,
+    value: postMessage,
+  });
+  const kernelExports = makeKernelExports();
+  const memory = new Uint8Array(kernelExports.memory.buffer);
+  const pipeSlotOffset = 0x2000 + 2 * 32;
+  memory.set(Uint8Array.from({ length: 32 }, (_, index) => 0x80 + index), pipeSlotOffset);
+  Object.assign(kernelExports, {
+    thread_take_completed_pipe_sync_slots: () => 1n << 2n,
+  });
+
+  postThreadWorkerStatus({
+    kernelExports,
+    statusCodes: makeStatusCodes(),
+    vmPtr: 0x1234,
+    guestBase: 0,
+    generation: 8,
+    runtimeBridge: null,
+    syscallNumbers: null,
+    lastResumeBlockedDebug: undefined,
+    setLastResumeBlockedDebug() {},
+  }, 0, false, 1);
+
+  const msg = postMessage.mock.calls[0]?.[0] as {
+    syncEffects?: number;
+    pipeSlots?: Array<{ pipeSlot: number; fresh?: boolean; slot: Uint8Array }>;
+  };
+  expect(msg.syncEffects).toBe(1);
+  expect(msg.pipeSlots?.[0]?.pipeSlot).toBe(2);
+  expect(msg.pipeSlots?.[0]?.fresh).toBe(false);
+  expect([...(msg.pipeSlots?.[0]?.slot ?? [])]).toEqual(
+    Array.from({ length: 32 }, (_, index) => 0x80 + index),
+  );
+});
