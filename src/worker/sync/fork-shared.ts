@@ -78,10 +78,10 @@ export function syncForkSharedStateLocally(
   handle: ProcessHandle,
   targets: ProcessHandle[],
   options: { cause: SyncCause; includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] },
-  collectTrackableForkSharedOfds: (handle: ProcessHandle) => Set<number>,
+  collectTrackableOfds: (handle: ProcessHandle) => Set<number> = collectTrackableForkSharedOfds,
 ): void {
   if (options.trackHeldOfds === true) {
-    for (const ofdId of collectTrackableForkSharedOfds(handle)) {
+    for (const ofdId of collectTrackableOfds(handle)) {
       handle.kernelShare.sharedOfdIds.add(ofdId);
     }
   }
@@ -113,13 +113,12 @@ export function syncForkSharedStateLocally(
 export function syncForkSharedStateLocallyForWorkerRuntime(
   handle: ProcessHandle,
   targets: ProcessHandle[],
-  options: { includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] } = {},
+  options: { cause?: SyncCause; includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] } = {},
 ): void {
   syncForkSharedStateLocally(
     handle,
     targets,
-    { ...options, cause: { kind: "syscall", nr: -1n, name: "fork-shared-local-sync" } },
-    collectTrackableForkSharedOfds,
+    { ...options, cause: options.cause ?? { kind: "syscall", nr: -1n, name: "fork-shared-local-sync" } },
   );
 }
 
@@ -413,6 +412,7 @@ export async function syncForkSharedStateForWorkerRuntime(
   handle: ProcessHandle,
   targets: ProcessHandle[],
   options: {
+    cause?: SyncCause;
     includeMemfs?: boolean;
     trackHeldOfds?: boolean;
     deltaOfdIds?: boolean;
@@ -436,7 +436,7 @@ export async function syncForkSharedStateForWorkerRuntime(
   await syncForkSharedStateViaKernelWorker(
     handle,
     targets,
-    { ...options, cause: { kind: "syscall", nr: -1n, name: "fork-shared-state-sync" } },
+    { ...options, cause: options.cause ?? { kind: "syscall", nr: -1n, name: "fork-shared-state-sync" } },
   );
 }
 

@@ -26,10 +26,12 @@ import type {
   ProcessHandle,
 } from "../types.js";
 import type {
-  KernelRpcResumeEffect,
   KernelRpcResumeOutcome,
 } from "../kernel-rpc/outcomes.js";
-import { applyKernelRpcResumeEffects as applyKernelRpcResumeEffectsImpl } from "../kernel-rpc/effects.js";
+import {
+  applyKernelRpcResumeEffects as applyKernelRpcResumeEffectsImpl,
+  continueBlockedRpcResumeAfterEffects,
+} from "../kernel-rpc/effects.js";
 import { createWorkerProcessFactory } from "../create-process.js";
 import {
   applySocketStateFromKernelWorker,
@@ -38,7 +40,7 @@ import {
   snapshotProcessFdOfdStateForKernelWorker,
   syncBlockedForkSharedStateViaKernelWorker as syncBlockedForkSharedStateViaKernelWorkerImpl,
   syncForkSharedStateLocally as syncForkSharedStateLocallyImpl,
-  syncForkSharedStateViaKernelWorker as syncForkSharedStateViaKernelWorkerImpl,
+  syncForkSharedStateForWorkerRuntime as syncForkSharedStateForWorkerRuntimeImpl,
   syncPipeStateViaKernelWorker as syncPipeStateViaKernelWorkerImpl,
   syncProcessMemfsViaKernelWorker as syncProcessMemfsViaKernelWorkerImpl,
   syncSocketStateViaKernelWorker as syncSocketStateViaKernelWorkerImpl,
@@ -60,7 +62,6 @@ import {
   hasActiveChildProcess as hasActiveChildProcessImpl,
   pumpActiveChildProcesses as pumpActiveChildProcessesImpl,
 } from "../child-processes.js";
-import { collectTrackableForkSharedOfds } from "../ownership/ofd-peer.js";
 import { createWorkerOrchestratorFacade } from "./facade.js";
 import type {
   WorkerOrchestrator,
@@ -500,17 +501,6 @@ function applyKernelRpcResumeEffects(
   );
 }
 
-function blockedRpcEffectRequiresResumeContinuation(effect: KernelRpcResumeEffect): boolean {
-  return effect.kind === "request-pipe-state-sync"
-    || effect.kind === "sync-blocked-fork-shared-state"
-    || effect.kind === "sync-blocked-socket-state";
-}
-
-function blockedRpcOutcomeRequiresResumeContinuation(outcome: KernelRpcResumeOutcome): boolean {
-  return outcome.kind === "blocked"
-    && (outcome.effects ?? []).some(blockedRpcEffectRequiresResumeContinuation);
-}
-
 async function resumeFsViaKernelWorker(
   handle: ProcessHandle,
   worker: Worker,
@@ -543,30 +533,11 @@ async function resumeBlockedSyscallOutcome(
     blockedStatus,
     timeoutExpired,
   );
-  const continueResume = blockedRpcOutcomeRequiresResumeContinuation(outcome);
   const appliedOutcome = await applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
-  if (!continueResume) {
-    return appliedOutcome;
-  }
-  const blocked = handle.blockedWorkers.get(worker);
-  if (!blocked || blocked.vmPtr !== vmPtr || !handle.workers.has(worker) || !threadWorkerStates.has(worker)) {
-    return appliedOutcome;
-  }
-  await workerKernelRpcHelpers.resumeBlockedSyscallLocally(
-    handle,
-    worker,
-    vmPtr,
-    blocked.status,
-    blocked.timeoutExpired,
-  );
-  if (!handle.workers.has(worker) || !threadWorkerStates.has(worker)) {
-    return { kind: "process-gone" };
-  }
-  if (!handle.blockedWorkers.has(worker)) {
-    return { kind: "queued-in-worker" };
-  }
-  const status = handle.kernel.thread_status?.(vmPtr);
-  return status === undefined ? { kind: "stale" } : { kind: "blocked", status };
+  return continueBlockedRpcResumeAfterEffects(handle, worker, vmPtr, outcome, appliedOutcome, {
+    threadWorkerStates,
+    resumeBlockedSyscallLocally: workerKernelRpcHelpers.resumeBlockedSyscallLocally,
+  });
 }
 
 async function resumeWait4ViaKernelWorker(
@@ -636,7 +607,7 @@ function syncForkSharedStateLocally(
   targets: ProcessHandle[],
   options: { cause: SyncCause; includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] },
 ): void {
-  syncForkSharedStateLocallyImpl(handle, targets, options, collectTrackableForkSharedOfds);
+  syncForkSharedStateLocallyImpl(handle, targets, options);
 }
 
 async function syncForkSharedStateViaKernelWorker(
@@ -654,16 +625,7 @@ async function syncForkSharedStateViaKernelWorker(
     cause: SyncCause;
   },
 ): Promise<void> {
-  if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-    syncForkSharedStateLocally(handle, targets, {
-      cause: options.cause,
-      includeMemfs: options.includeMemfs,
-      trackHeldOfds: options.trackHeldOfds,
-      ofdIds: options.ofdIds,
-    });
-    return;
-  }
-  await syncForkSharedStateViaKernelWorkerImpl(handle, targets, options);
+  await syncForkSharedStateForWorkerRuntimeImpl(handle, targets, options);
 }
 
 async function rehydrateForkSharedStateViaKernelWorker(

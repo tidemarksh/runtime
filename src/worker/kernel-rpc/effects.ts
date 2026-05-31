@@ -48,6 +48,17 @@ export interface KernelRpcResumeEffectPorts {
   ): Promise<{ socketUsed: number; netBufUsed: bigint }>;
 }
 
+export interface KernelRpcResumeContinuationPorts {
+  threadWorkerStates: WeakMap<Worker, unknown>;
+  resumeBlockedSyscallLocally(
+    handle: ProcessHandle,
+    worker: Worker,
+    vmPtr: number,
+    blockedStatus: number,
+    timeoutExpired?: boolean,
+  ): Promise<void>;
+}
+
 function kernelRpcEffectCause(name: string): SyncCause {
   return { kind: "syscall", nr: -1n, name };
 }
@@ -68,6 +79,54 @@ export async function applyKernelRpcResumeEffects(
   }
   const { effects: _effects, ...withoutEffects } = outcome;
   return withoutEffects;
+}
+
+export function kernelRpcOutcomeNeedsResumeContinuation(outcome: KernelRpcResumeOutcome): boolean {
+  return outcome.kind === "blocked"
+    && (outcome.effects ?? []).some(kernelRpcEffectNeedsResumeContinuation);
+}
+
+export async function continueBlockedRpcResumeAfterEffects(
+  handle: ProcessHandle,
+  worker: Worker,
+  vmPtr: number,
+  outcome: KernelRpcResumeOutcome,
+  appliedOutcome: KernelRpcResumeOutcome,
+  ports: KernelRpcResumeContinuationPorts,
+): Promise<KernelRpcResumeOutcome> {
+  if (!kernelRpcOutcomeNeedsResumeContinuation(outcome)) {
+    return appliedOutcome;
+  }
+  const blocked = handle.blockedWorkers.get(worker);
+  if (
+    !blocked
+    || blocked.vmPtr !== vmPtr
+    || !handle.workers.has(worker)
+    || !ports.threadWorkerStates.has(worker)
+  ) {
+    return appliedOutcome;
+  }
+  await ports.resumeBlockedSyscallLocally(
+    handle,
+    worker,
+    vmPtr,
+    blocked.status,
+    blocked.timeoutExpired,
+  );
+  if (!handle.workers.has(worker) || !ports.threadWorkerStates.has(worker)) {
+    return { kind: "process-gone" };
+  }
+  if (!handle.blockedWorkers.has(worker)) {
+    return { kind: "queued-in-worker" };
+  }
+  const status = handle.kernel.thread_status?.(vmPtr);
+  return status === undefined ? { kind: "stale" } : { kind: "blocked", status };
+}
+
+function kernelRpcEffectNeedsResumeContinuation(effect: KernelRpcResumeEffect): boolean {
+  return effect.kind === "request-pipe-state-sync"
+    || effect.kind === "sync-blocked-fork-shared-state"
+    || effect.kind === "sync-blocked-socket-state";
 }
 
 async function applyKernelRpcResumeEffect(
