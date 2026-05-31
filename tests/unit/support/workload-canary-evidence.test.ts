@@ -5,7 +5,7 @@ import { describe, expect, test } from "vite-plus/test";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const testsRoot = resolve(here, "../..");
-const runtimeRoot = resolve(testsRoot, "runtime");
+const unitRoot = resolve(testsRoot, "unit");
 const workloadRoot = resolve(testsRoot, "workloads");
 
 type CanaryEvidence = {
@@ -455,7 +455,7 @@ describe("workload canary evidence", () => {
         if (evidencePath.startsWith("support/")) {
           failures.push(`${entry.workload}: support test cannot be primary evidence: ${evidencePath}`);
         }
-        if (!fileExists(runtimeRoot, evidencePath)) {
+        if (!fileExists(unitRoot, evidencePath)) {
           failures.push(`${entry.workload}: missing primary runtime evidence: ${evidencePath}`);
         }
       }

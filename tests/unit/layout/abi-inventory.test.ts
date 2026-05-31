@@ -37,10 +37,10 @@ const constantModules = {
   socket: socketLayout,
 } as const;
 
-const bridgeRuntimeStateTest = "tests/runtime/bridge/runtime-state.test.ts";
-const kernelObjectsTest = "tests/runtime/layout/kernel-objects.test.ts";
-const fsRingTest = "tests/runtime/layout/fs-ring.test.ts";
-const sabPageCacheTest = "tests/runtime/fs/sab-page-cache.test.ts";
+const bridgeRuntimeStateTest = "tests/unit/bridge/runtime-state.test.ts";
+const kernelObjectsTest = "tests/unit/layout/kernel-objects.test.ts";
+const fsRingTest = "tests/unit/layout/fs-ring.test.ts";
+const sabPageCacheTest = "tests/unit/fs/sab-page-cache.test.ts";
 
 const inventory: readonly InventoryEntry[] = [
   { module: "fd", name: "FD_ENTRY_BYTES", classification: "abi-test-covered", protectedBy: [kernelObjectsTest] },
