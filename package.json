@@ -25,6 +25,7 @@
   "scripts": {
     "build": "vp pack",
     "dev": "vp pack --watch",
+    "prepare:workloads": "node scripts/prepare-workload-artifacts.mjs",
     "test": "vp test --no-file-parallelism",
     "typecheck": "tsc --noEmit",
     "release": "bumpp",
