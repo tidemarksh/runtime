@@ -470,7 +470,7 @@ export async function handleVforkExecve(
     const preservedPipeSlots = snapshotLocalPipeSlots(childHandle, childHeldOfdIds);
     // Keep the execve-completed MemFS image intact. Unlike the plain fork path,
     // vfork+execve has already rebuilt the child process in-place, so clearing
-    // MemFS here drops executable/toolchain file bodies and makes later execve
+    // MemFS here drops executable file bodies and makes later execve
     // lookups fail with ENOENT.
     discardCopiedSharedKernelObjects(childHandle, preservedOfdSlots, {
       clearMemfs: false,

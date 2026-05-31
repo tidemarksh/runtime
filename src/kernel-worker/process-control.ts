@@ -339,7 +339,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
   }
 
   function shouldEmitProcessFsDebug(
-    context: PendingFsMutationContext,
+    _context: PendingFsMutationContext,
     mutation: AppliedFsMutationResult,
     fullSyncApplied: boolean,
   ): boolean {
@@ -349,10 +349,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     if (fullSyncApplied || (mutation.fileDataMutated && !mutation.handledFileDataMutation)) {
       return true;
     }
-    const path = `${context.pendingPath ?? ""}\n${context.pendingSecondaryPath ?? ""}`;
-    return path.includes("/var/lib/apt/lists")
-      || path.includes("/lib/ld-linux-riscv64-lp64d.so.1")
-      || path.includes("/usr/lib/apt/methods/store");
+    return false;
   }
 
   async function initKernel(

@@ -12,11 +12,7 @@ import type {
 const RUNTIME_FS_SNAPSHOT_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_FS_PUBLICATION_DEBUG ?? "") === "1";
-const RUNTIME_FS_DEBUG_PATHS = [
-  "/lib/ld-linux-riscv64-lp64d.so.1",
-  "/usr/lib/apt/methods/store",
-  "/var/lib/apt/lists/partial/deb.debian.org_debian_dists_trixie_main_binary-riscv64_Packages.xz",
-] as const;
+const RUNTIME_FS_DEBUG_ENTRY_LIMIT = 8;
 
 export interface RuntimeFsContext {
   processHandles: Map<number, ProcessHandle>;
@@ -48,16 +44,11 @@ function appendRuntimeFsSnapshotDebug(
   if (!RUNTIME_FS_SNAPSHOT_DEBUG_ENABLED) {
     return;
   }
-  const details = RUNTIME_FS_DEBUG_PATHS.map((path) => {
-    const normalized = normalizePath(path);
-    const entry = entries.find((candidate) => normalizePath(candidate.path) === normalized);
-    if (!entry) {
-      return `${path}:missing`;
-    }
+  const details = entries.slice(0, RUNTIME_FS_DEBUG_ENTRY_LIMIT).map((entry) => {
     if (entry.kind !== "file") {
-      return `${path}:${entry.kind}:size=${entry.size ?? 0}`;
+      return `${entry.path}:${entry.kind}:size=${entry.size ?? 0}`;
     }
-    return `${path}:size=${entry.size ?? entry.data?.length ?? 0}:head=${headHex(entry.data)}`;
+    return `${entry.path}:size=${entry.size ?? entry.data?.length ?? 0}:head=${headHex(entry.data)}`;
   });
   representative.workerDebugLog.push(
     `runtime-fs-snapshot:runtime=${runtimeId}:pid=${representative.pid}:${details.join(",")}`,

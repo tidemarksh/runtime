@@ -233,7 +233,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       const response = await options.kernelWorkerRequest({
         type: "snapshot-fs",
         // Guest-side execve must be able to read executable bytes for child
-        // processes launched by shells/package managers. Metadata-only dynamic
+        // processes launched through nested execve. Metadata-only dynamic
         // snapshots make nested execve fail with ENOEXEC.
         includeData: true,
       });
