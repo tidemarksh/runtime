@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { expect, test } from "vite-plus/test";
-import type { RuntimeNetworkBridge, RuntimeNetworkConnection } from "../../../src/network.js";
+import type { RuntimeNetworkBridge, RuntimeNetworkConnection } from "../../../src/index.js";
 import {
   Runtime,
   decoder,

@@ -1,4 +1,4 @@
-import type { RuntimeNetworkBridge } from "../../network.js";
+import type { RuntimeNetworkBridge } from "../../bridge/network.js";
 import type {
   KernelWorkerFdEntrySnapshot,
   KernelWorkerSocketStateSnapshot,

@@ -29,7 +29,7 @@ import {
   setWorkerErrorHandler,
   setWorkerMessageErrorHandler,
 } from "./bridge/compat.js";
-import type { RuntimeNetworkBridge } from "./network.js";
+import type { RuntimeNetworkBridge } from "./bridge/network.js";
 
 export interface RuntimeOptions {
   wasmBytes: BufferSource;
@@ -600,7 +600,7 @@ export type {
   RuntimeNetworkConnectRequest,
   RuntimeNetworkConnectResult,
   RuntimeNetworkEndpoint,
-} from "./network.js";
+} from "./bridge/network.js";
 export { readSpawnKindCodes, readStatusCodes } from "./abi.js";
 export { assertSharedMemoryBridge, detectBridgeSupport, diagnoseBridgeSupport } from "./bridge.js";
 export { detectWasmFeatures } from "./wasm/features.js";

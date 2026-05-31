@@ -13,7 +13,7 @@ import type {
   ThreadWorkerMemoryPreserveRange,
 } from "../messages.js";
 import type { RuntimeStateBridge } from "../bridge/runtime-state.js";
-import type { RuntimeNetworkBridge, RuntimeNetworkConnection } from "../network.js";
+import type { RuntimeNetworkBridge, RuntimeNetworkConnection } from "../bridge/network.js";
 
 export interface SharedHostStdio {
   stdinPipe: number;
