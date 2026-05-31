@@ -1,25 +1,6 @@
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
-  kernelShareOtherMembers,
-  reconcileKernelSharePipeControl,
-  restoreLocalOfdSlots,
-  snapshotKernelShareOfdSlots,
-  activeKernelShareOfdIds,
-  collectProcessHeldOfds,
-  restoreIncompatibleLocalOfdSlots,
-  restoreRuntimeNetworkOfdSlots,
-  snapshotLocalOfdSlots,
-  snapshotRuntimeNetworkOfdSlots,
-  isRegularFileOfd,
-  ofdIdsFromFdEntries,
-  restoreProcessFdEntries,
-  snapshotProcessFdEntries,
-  restoreProcessState,
-  snapshotProcessState,
-  preserveHostStdioPipeControlForStep,
-  collectRuntimeNetworkSocketOfdIds,
-  adoptKernelStateForHandle,
   formatPipeSnapshotDebug,
   appendSocketSyncDebug,
   formatSyncCause,
@@ -36,6 +17,33 @@ import {
   snapshotRuntimeNetworkKernelState,
   restoreRuntimeNetworkKernelState
 } from "./shared.js";
+import {
+  kernelShareOtherMembers,
+  reconcileKernelSharePipeControl,
+  restoreLocalOfdSlots,
+} from "../kernel-share.js";
+import { snapshotKernelShareOfdSlots } from "../fork-shared.js";
+import { adoptKernelStateForHandle } from "../kernel-state.js";
+import {
+  activeKernelShareOfdIds,
+  collectProcessHeldOfds,
+  restoreIncompatibleLocalOfdSlots,
+  restoreRuntimeNetworkOfdSlots,
+  snapshotLocalOfdSlots,
+  snapshotRuntimeNetworkOfdSlots,
+} from "../ownership/ofd-table.js";
+import { isRegularFileOfd } from "../ownership/ofd-peer.js";
+import {
+  ofdIdsFromFdEntries,
+  restoreProcessFdEntries,
+  snapshotProcessFdEntries,
+} from "../ownership/fd-table.js";
+import {
+  restoreProcessState,
+  snapshotProcessState,
+} from "../ownership/process-state.js";
+import { preserveHostStdioPipeControlForStep } from "../ownership/pipe-control.js";
+import { collectRuntimeNetworkSocketOfdIds } from "../ownership/socket-control.js";
 import type {
   ProcessHandle,
   SyncCause

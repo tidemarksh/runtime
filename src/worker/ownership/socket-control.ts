@@ -32,6 +32,25 @@ export function networkConnectionOfds(handle: ProcessHandle): Map<number, number
 
 type SocketStatusDebug = (handle: ProcessHandle, event: string) => void;
 
+export interface PreservedNetworkSocketSlot {
+  offset: number;
+  data: Uint8Array;
+  socketMask: number;
+}
+
+export function socketTablePtrs(handle: ProcessHandle): number[] {
+  const ptrs = [handle.kernelState.socketTablePtr];
+  const activePtr = handle.kernel.kernel_socket_table_ptr?.();
+  if (activePtr !== undefined && !ptrs.includes(activePtr)) {
+    ptrs.push(activePtr);
+  }
+  return ptrs;
+}
+
+function activeSocketTablePtr(handle: ProcessHandle): number {
+  return handle.kernel.kernel_socket_table_ptr?.() ?? handle.kernelState.socketTablePtr;
+}
+
 export function restoreNetworkOfdSlotWatermarks(
   handle: ProcessHandle,
   appendStatusSocketDebug?: SocketStatusDebug,
@@ -358,4 +377,79 @@ export function hasRuntimeNetworkSocketState(handle: ProcessHandle): boolean {
     || (handle.networkSocketSlotWatermarks?.size ?? 0) > 0
     || (handle.networkRecvPayloadWatermarks?.size ?? 0) > 0
     || hasKernelSocketFdState(handle);
+}
+
+export function preserveNetworkSocketSlots(
+  handle: ProcessHandle,
+  vmPtr: number,
+  socketTableBytes: number,
+): PreservedNetworkSocketSlot[] {
+  const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+  const socketSlotBytes = maxSockets > 0 ? socketTableBytes / maxSockets : 0;
+  if (!Number.isInteger(socketSlotBytes) || socketSlotBytes <= 0) {
+    return [];
+  }
+  const preserved: PreservedNetworkSocketSlot[] = [];
+  const preservedOffsets = new Set<number>();
+  const memory = new Uint8Array(handle.memory.buffer);
+  const preserveSocketIdx = (socketIdx: number): void => {
+    if (socketIdx < 0 || socketIdx >= maxSockets) {
+      return;
+    }
+    const offset = socketIdx * socketSlotBytes;
+    if (preservedOffsets.has(offset)) {
+      return;
+    }
+    const absolute = activeSocketTablePtr(handle) + offset;
+    preservedOffsets.add(offset);
+    preserved.push({
+      offset,
+      data: memory.slice(absolute, absolute + socketSlotBytes),
+      socketMask: 1 << socketIdx,
+    });
+  };
+  for (const fd of runtimeNetworkFds(handle)) {
+    const closedSlot = handle.networkClosedSocketSlots.get(fd);
+    if (closedSlot) {
+      if (!preservedOffsets.has(closedSlot.offset)) {
+        preservedOffsets.add(closedSlot.offset);
+        preserved.push({
+          offset: closedSlot.offset,
+          data: closedSlot.data,
+          socketMask: 1 << Math.floor(closedSlot.offset / socketSlotBytes),
+        });
+      }
+      continue;
+    }
+    handle.networkSocketSlotWatermarks ??= new Map();
+    const watermarkedSlot = handle.networkSocketSlotWatermarks.get(fd);
+    if (watermarkedSlot && !preservedOffsets.has(watermarkedSlot.offset)) {
+      preservedOffsets.add(watermarkedSlot.offset);
+      preserved.push({
+        offset: watermarkedSlot.offset,
+        data: watermarkedSlot.data,
+        socketMask: 1 << Math.floor(watermarkedSlot.offset / socketSlotBytes),
+      });
+    }
+    const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd);
+    if (socketIdx === undefined || socketIdx < 0 || socketIdx >= maxSockets) {
+      handle.networkClosedFds.delete(fd);
+      continue;
+    }
+    preserveSocketIdx(socketIdx);
+    preserveSocketIdx(handle.kernel.thread_socket_peer_idx?.(socketIdx) ?? -1);
+  }
+  return preserved;
+}
+
+export function restoreNetworkSocketSlots(
+  memory: Uint8Array,
+  socketTablePtrs: number[],
+  preserved: PreservedNetworkSocketSlot[],
+): void {
+  for (const slot of preserved) {
+    for (const socketTablePtr of socketTablePtrs) {
+      memory.set(slot.data, socketTablePtr + slot.offset);
+    }
+  }
 }

@@ -44,45 +44,16 @@ import {
   syncKernelShareOfdReservations,
 } from "../fork-shared.js";
 import {
-  activeKernelShareOfdIds,
-  collectHeldEpollOfdIds,
-  collectProcessHeldOfds,
-  restoreIncompatibleLocalOfdSlots,
   restoreRuntimeNetworkOfdSlots,
-  snapshotLocalOfdSlots,
   snapshotRuntimeNetworkOfdSlots,
-  staleKernelShareOfdIds,
   syncPipeOfdGenerationsForSlot,
 } from "../ownership/ofd-table.js";
 import {
-  isRegularFileOfd,
-  sourceForkSharedOfdPeerState,
-  sourceOfdCanPublishForkSharedState,
-  targetHasIncompatibleForkSharedOfd,
-  targetHoldsSyncedRegularFileOfd,
-  trackHeldForkSharedOfds,
-} from "../ownership/ofd-peer.js";
-import {
-  ofdIdsFromFdEntries,
   restoreProcessFdEntries,
   snapshotProcessFdEntries,
 } from "../ownership/fd-table.js";
 import {
-  restoreProcessState,
-  restoreProcessStates,
-  snapshotProcessState,
-  snapshotProcessStates,
-} from "../ownership/process-state.js";
-import {
-  composeHandlePipeUsed,
-  expandPipePeerOfdIds,
-  hasPipePeerInOtherKernelShareMember,
-  isProcessHostStdioPipeOfd,
-  preserveHostStdioPipeControlForStep,
-} from "../ownership/pipe-control.js";
-import {
   collectRuntimeNetworkSocketOfdIds,
-  hasRuntimeNetworkSocketState,
   runtimeNetworkFds,
 } from "../ownership/socket-control.js";
 import type { ProcessHandle } from "../types.js";
@@ -1602,43 +1573,6 @@ export function restoreRuntimeNetworkKernelState(
   attachKernelRuntimeState(snapshot.handle.kernel, snapshot.handle.kernelState);
 }
 
-export function collectTracedForkSharedOfdIds(
-  handle: ProcessHandle,
-  sourceVmPtr: number,
-): number[] {
-  const len = handle.kernel.debug_fd_syscall_trace_len?.() ?? 0;
-  if (len <= 0) {
-    return [];
-  }
-  const traced = new Set<number>();
-  const sampleToPid = (sample: bigint | number | undefined): number => {
-    if (sample === undefined) {
-      return 0;
-    }
-    return Number(BigInt.asIntN(32, BigInt(sample) & 0xffffffffn));
-  };
-  for (let index = 0; index < len; index += 1) {
-    const traceVmPtr = handle.kernel.debug_fd_syscall_trace_vm_ptr?.(index) ?? 0;
-    if (traceVmPtr !== 0 && sourceVmPtr !== 0 && traceVmPtr !== sourceVmPtr) {
-      continue;
-    }
-    const tracePid = sampleToPid(handle.kernel.debug_fd_syscall_trace_pid_sample0?.(index));
-    if (tracePid > 0 && tracePid !== handle.pid) {
-      continue;
-    }
-    const arg0OfdId = handle.kernel.debug_fd_syscall_trace_arg0_ofd_id?.(index) ?? 0;
-    const arg2OfdId = handle.kernel.debug_fd_syscall_trace_arg2_ofd_id?.(index) ?? 0;
-    if (arg0OfdId > 0) {
-      traced.add(arg0OfdId);
-    }
-    if (arg2OfdId > 0) {
-      traced.add(arg2OfdId);
-    }
-  }
-  return [...traced];
-}
-
-
 export {
   attachKernelRuntimeState,
   readKernelRuntimeState,
@@ -1668,36 +1602,6 @@ export {
   reconcileForkSharedOfdRefcounts,
   snapshotKernelShareOfdSlots,
   syncKernelShareOfdReservations,
-  activeKernelShareOfdIds,
-  collectHeldEpollOfdIds,
-  collectProcessHeldOfds,
-  restoreIncompatibleLocalOfdSlots,
-  restoreRuntimeNetworkOfdSlots,
-  snapshotLocalOfdSlots,
-  snapshotRuntimeNetworkOfdSlots,
-  staleKernelShareOfdIds,
-  syncPipeOfdGenerationsForSlot,
-  isRegularFileOfd,
-  sourceForkSharedOfdPeerState,
-  sourceOfdCanPublishForkSharedState,
-  targetHasIncompatibleForkSharedOfd,
-  targetHoldsSyncedRegularFileOfd,
-  trackHeldForkSharedOfds,
-  ofdIdsFromFdEntries,
-  restoreProcessFdEntries,
-  snapshotProcessFdEntries,
-  restoreProcessState,
-  restoreProcessStates,
-  snapshotProcessState,
-  snapshotProcessStates,
-  composeHandlePipeUsed,
-  expandPipePeerOfdIds,
-  hasPipePeerInOtherKernelShareMember,
-  isProcessHostStdioPipeOfd,
-  preserveHostStdioPipeControlForStep,
-  collectRuntimeNetworkSocketOfdIds,
-  hasRuntimeNetworkSocketState,
-  runtimeNetworkFds,
   forceNetworkClosedFds,
   networkSocketSlotRecvBufferIndex,
   restoreNetworkSocketSlotSnapshot,

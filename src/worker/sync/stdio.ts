@@ -1,11 +1,11 @@
 import {
-  adoptKernelStateForHandle,
   appendSocketSyncDebug,
   attachKernelRuntimeState,
   formatSyncCause,
   snapshotNetworkBridgeSocketState,
   restoreNetworkBridgeSocketState,
 } from "./shared.js";
+import { adoptKernelStateForHandle } from "../kernel-state.js";
 import { kernelWorkerOwnsPipeState } from "../ownership/pipe-control.js";
 import type {
   ProcessHandle,

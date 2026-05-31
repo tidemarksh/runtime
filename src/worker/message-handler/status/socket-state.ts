@@ -3,6 +3,11 @@ import { FS_RING_TOTAL_BYTES } from "../../../layout/fs-ring.js";
 import {
   forceNetworkClosedFds,
 } from "../../network-socket-close.js";
+import {
+  preserveNetworkSocketSlots,
+  restoreNetworkSocketSlots,
+  socketTablePtrs,
+} from "../../ownership/socket-control.js";
 import type { ProcessHandle } from "../../types.js";
 import type { ThreadWorkerStatusMessage } from "../types.js";
 import {
@@ -37,25 +42,6 @@ import {
 
 interface KernelMemoryWriteOptions {
   skipFsRingWrites?: boolean;
-}
-
-interface PreservedNetworkSocketSlot {
-  offset: number;
-  data: Uint8Array;
-  socketMask: number;
-}
-
-function socketTablePtrs(handle: ProcessHandle): number[] {
-  const ptrs = [handle.kernelState.socketTablePtr];
-  const activePtr = handle.kernel.kernel_socket_table_ptr?.();
-  if (activePtr !== undefined && !ptrs.includes(activePtr)) {
-    ptrs.push(activePtr);
-  }
-  return ptrs;
-}
-
-function activeSocketTablePtr(handle: ProcessHandle): number {
-  return handle.kernel.kernel_socket_table_ptr?.() ?? handle.kernelState.socketTablePtr;
 }
 
 export function applyThreadGuestMemoryWrites(
@@ -240,7 +226,7 @@ export function applyThreadSocketState(handle: ProcessHandle, msg: ThreadWorkerS
   const derivedNetBufUsed = deriveNetBufUsedFromSocketSlots(handle, mergedSocketUsed);
   restoreNetworkRecvBufferProducers(memory, handle.kernelState.netBufBase, preservedRecvBuffers);
   restoreMergedNetBufferHeads(memory, handle.kernelState.netBufBase, preservedNetBufferHeads);
-  closeNetworkClosedFdPeers(handle, msg.vmPtr);
+  forceNetworkClosedFds(handle, msg.vmPtr);
   handle.kernelState = {
     ...handle.kernelState,
     socketUsed: mergedSocketUsed,
@@ -250,84 +236,5 @@ export function applyThreadSocketState(handle: ProcessHandle, msg: ThreadWorkerS
   if (debugFds.size > 0) {
     const after = [...debugFds].map((fd) => socketDebugEntry(fd, "status-after"));
     appendStatusSocketDebug(handle, `socket-state-apply:${handle.pid}:socketUsed=0x${msg.socketState.socketUsed.toString(16)}:netBufUsed=0x${msg.socketState.netBufUsed.toString(16)}:derivedNetBufUsed=0x${derivedNetBufUsed.toString(16)}:before=${JSON.stringify(before)}:after=${JSON.stringify(after)}`);
-  }
-}
-
-function closeNetworkClosedFdPeers(handle: ProcessHandle, vmPtr: number): void {
-  forceNetworkClosedFds(handle, vmPtr);
-}
-
-function preserveNetworkSocketSlots(
-  handle: ProcessHandle,
-  vmPtr: number,
-  socketTableBytes: number,
-): PreservedNetworkSocketSlot[] {
-  const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
-  const socketSlotBytes = maxSockets > 0 ? socketTableBytes / maxSockets : 0;
-  if (!Number.isInteger(socketSlotBytes) || socketSlotBytes <= 0) {
-    return [];
-  }
-  const preserved: PreservedNetworkSocketSlot[] = [];
-  const preservedOffsets = new Set<number>();
-  const memory = new Uint8Array(handle.memory.buffer);
-  const preserveSocketIdx = (socketIdx: number): void => {
-    if (socketIdx < 0 || socketIdx >= maxSockets) {
-      return;
-    }
-    const offset = socketIdx * socketSlotBytes;
-    if (preservedOffsets.has(offset)) {
-      return;
-    }
-    const absolute = activeSocketTablePtr(handle) + offset;
-    preservedOffsets.add(offset);
-    preserved.push({
-      offset,
-      data: memory.slice(absolute, absolute + socketSlotBytes),
-      socketMask: 1 << socketIdx,
-    });
-  };
-  for (const fd of networkAuthoritativeFds(handle)) {
-    const closedSlot = handle.networkClosedSocketSlots.get(fd);
-    if (closedSlot) {
-      if (!preservedOffsets.has(closedSlot.offset)) {
-        preservedOffsets.add(closedSlot.offset);
-        preserved.push({
-          offset: closedSlot.offset,
-          data: closedSlot.data,
-          socketMask: 1 << Math.floor(closedSlot.offset / socketSlotBytes),
-        });
-      }
-      continue;
-    }
-    handle.networkSocketSlotWatermarks ??= new Map();
-    const watermarkedSlot = handle.networkSocketSlotWatermarks.get(fd);
-    if (watermarkedSlot && !preservedOffsets.has(watermarkedSlot.offset)) {
-      preservedOffsets.add(watermarkedSlot.offset);
-      preserved.push({
-        offset: watermarkedSlot.offset,
-        data: watermarkedSlot.data,
-        socketMask: 1 << Math.floor(watermarkedSlot.offset / socketSlotBytes),
-      });
-    }
-    const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd);
-    if (socketIdx === undefined || socketIdx < 0 || socketIdx >= maxSockets) {
-      handle.networkClosedFds.delete(fd);
-      continue;
-    }
-    preserveSocketIdx(socketIdx);
-    preserveSocketIdx(handle.kernel.thread_socket_peer_idx?.(socketIdx) ?? -1);
-  }
-  return preserved;
-}
-
-function restoreNetworkSocketSlots(
-  memory: Uint8Array,
-  socketTablePtrs: number[],
-  preserved: PreservedNetworkSocketSlot[],
-): void {
-  for (const slot of preserved) {
-    for (const socketTablePtr of socketTablePtrs) {
-      memory.set(slot.data, socketTablePtr + slot.offset);
-    }
   }
 }

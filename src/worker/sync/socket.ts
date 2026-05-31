@@ -1,8 +1,5 @@
 import {
   attachKernelRuntimeState,
-  adoptKernelState,
-  adoptKernelStateForHandle,
-  repairHandleVmPidAfterKernelStateAttach,
   appendSocketSyncDebug,
   formatSyncCause,
   formatNetworkSocketDebug,
@@ -12,6 +9,11 @@ import {
   restoreNetworkBridgeSocketState,
   networkBridgeSocketSnapshotProgressed
 } from "./shared.js";
+import {
+  adoptKernelState,
+  adoptKernelStateForHandle,
+  repairHandleVmPidAfterKernelStateAttach,
+} from "../kernel-state.js";
 import type {
   ProcessHandle,
   SyncCause

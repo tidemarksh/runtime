@@ -1,16 +1,20 @@
 import {
   attachKernelRuntimeState,
-  collectHeldEpollOfdIds,
-  collectProcessHeldOfds,
-  ofdIdsFromFdEntries,
-  adoptKernelStateForHandle,
   appendSocketSyncDebug,
   formatSyncCause,
-  snapshotKernelShareOfdSlots,
-  snapshotProcessFdEntries,
   snapshotNetworkBridgeSocketState,
   restoreNetworkBridgeSocketState
 } from "./shared.js";
+import { adoptKernelStateForHandle } from "../kernel-state.js";
+import {
+  collectHeldEpollOfdIds,
+  collectProcessHeldOfds,
+} from "../ownership/ofd-table.js";
+import {
+  ofdIdsFromFdEntries,
+  snapshotProcessFdEntries,
+} from "../ownership/fd-table.js";
+import { snapshotKernelShareOfdSlots } from "../fork-shared.js";
 import type {
   KernelWorkerFdEntrySnapshot,
   KernelWorkerOfdSlotSnapshot,
