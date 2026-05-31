@@ -5,9 +5,9 @@ import { createKernelEnv } from "../../src/wasm/env.js";
 import { preloadSnapshotEntries } from "../../src/worker/process-fs.js";
 import { buildDynamicStartupSnapshot } from "../support/dynamic-startup-harness.js";
 import { readKernelWasm } from "../support/runtime-workload.js";
-import { luaDynamicStartupEntry } from "./lua/dynamic-startup.js";
-import { perlDynamicStartupEntry } from "./perl/dynamic-startup.js";
-import { phpDynamicStartupEntry } from "./php/dynamic-startup.js";
+import { luaDynamicStartupEntry } from "../integration/targets/lua/dynamic-startup.js";
+import { perlDynamicStartupEntry } from "../integration/targets/perl/dynamic-startup.js";
+import { phpDynamicStartupEntry } from "../integration/targets/php/dynamic-startup.js";
 
 async function loadKernel() {
   const wasmBytes = readKernelWasm();

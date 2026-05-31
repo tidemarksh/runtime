@@ -14,17 +14,17 @@ import {
   goHelperCombinedGoarchToolchainEntry,
   goToolCompileVersionSingleThreadToolchainEntry,
   goToolCompileVersionToolchainEntry,
-} from "./go/toolchain-exec.js";
-import { javaJavacToolchainEntry } from "./java/toolchain-exec.js";
-import { rustcCompileToolchainEntry, cargoBuildToolchainEntry } from "./rust/toolchain-exec.js";
-import { cCompileLinkToolchainEntry } from "./c/toolchain-exec.js";
-import { cppCompileLinkToolchainEntry } from "./cpp/toolchain-exec.js";
-import { haskellCompileToolchainEntry } from "./haskell/toolchain-exec.js";
+} from "../integration/targets/go/toolchain-exec.js";
+import { javaJavacToolchainEntry } from "../integration/targets/java/toolchain-exec.js";
+import { rustcCompileToolchainEntry, cargoBuildToolchainEntry } from "../integration/targets/rust/toolchain-exec.js";
+import { cCompileLinkToolchainEntry } from "../integration/targets/c/toolchain-exec.js";
+import { cppCompileLinkToolchainEntry } from "../integration/targets/cpp/toolchain-exec.js";
+import { haskellCompileToolchainEntry } from "../integration/targets/haskell/toolchain-exec.js";
 import {
   cmakeScriptToolchainEntry,
   makeBuildToolchainEntry,
   ninjaBuildToolchainEntry,
-} from "./devtools/toolchain-exec.js";
+} from "../integration/targets/devtools/toolchain-exec.js";
 
 const toolchainExecEntries = [
   goCompileVersionToolchainEntry,

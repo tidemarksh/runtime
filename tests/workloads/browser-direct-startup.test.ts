@@ -2,8 +2,8 @@ import { expect, test } from "vite-plus/test";
 import {
   runBrowserDirectStartupEntry,
 } from "../support/browser-direct-harness.js";
-import { prepareGoBrowserDirectStartupEntry } from "./go/browser-direct-startup.js";
-import { prepareNodeBrowserDirectStartupEntry } from "./node/browser-direct-startup.js";
+import { prepareGoBrowserDirectStartupEntry } from "../integration/targets/go/browser-direct-startup.js";
+import { prepareNodeBrowserDirectStartupEntry } from "../integration/targets/node/browser-direct-startup.js";
 
 for (const [label, entryFactory] of [
   ["node --version", prepareNodeBrowserDirectStartupEntry],

@@ -5,12 +5,12 @@ import {
   runScriptRuntimeEntry,
   validateScriptRuntimeOutput,
 } from "../support/script-runtime-harness.js";
-import { rubyScriptRuntimeEntry } from "./ruby/script-runtime.js";
-import { phpScriptRuntimeEntry } from "./php/script-runtime.js";
-import { perlScriptRuntimeEntry } from "./perl/script-runtime.js";
-import { luaScriptRuntimeEntry } from "./lua/script-runtime.js";
-import { rScriptRuntimeEntry } from "./r/script-runtime.js";
-import { erlEvalScriptRuntimeEntry, elixirEvalScriptRuntimeEntry } from "./elixir/script-runtime.js";
+import { rubyScriptRuntimeEntry } from "../integration/targets/ruby/script-runtime.js";
+import { phpScriptRuntimeEntry } from "../integration/targets/php/script-runtime.js";
+import { perlScriptRuntimeEntry } from "../integration/targets/perl/script-runtime.js";
+import { luaScriptRuntimeEntry } from "../integration/targets/lua/script-runtime.js";
+import { rScriptRuntimeEntry } from "../integration/targets/r/script-runtime.js";
+import { erlEvalScriptRuntimeEntry, elixirEvalScriptRuntimeEntry } from "../integration/targets/elixir/script-runtime.js";
 
 const scriptRuntimeEntries = [
   rubyScriptRuntimeEntry,

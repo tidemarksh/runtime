@@ -6,15 +6,15 @@ import {
   runDynamicStartupEntry,
   validateDynamicStartupOutput,
 } from "../support/dynamic-startup-harness.js";
-import { nodeDynamicStartupEntry } from "./node/dynamic-startup.js";
-import { pythonDynamicStartupEntry } from "./python/dynamic-startup.js";
-import { javaDynamicStartupEntry } from "./java/dynamic-startup.js";
-import { rubyDynamicStartupEntry } from "./ruby/dynamic-startup.js";
-import { elixirDynamicStartupEntry } from "./elixir/dynamic-startup.js";
-import { phpDynamicStartupEntry } from "./php/dynamic-startup.js";
-import { luaDynamicStartupEntry } from "./lua/dynamic-startup.js";
-import { perlDynamicStartupEntry } from "./perl/dynamic-startup.js";
-import { rDynamicStartupEntry } from "./r/dynamic-startup.js";
+import { nodeDynamicStartupEntry } from "../integration/targets/node/dynamic-startup.js";
+import { pythonDynamicStartupEntry } from "../integration/targets/python/dynamic-startup.js";
+import { javaDynamicStartupEntry } from "../integration/targets/java/dynamic-startup.js";
+import { rubyDynamicStartupEntry } from "../integration/targets/ruby/dynamic-startup.js";
+import { elixirDynamicStartupEntry } from "../integration/targets/elixir/dynamic-startup.js";
+import { phpDynamicStartupEntry } from "../integration/targets/php/dynamic-startup.js";
+import { luaDynamicStartupEntry } from "../integration/targets/lua/dynamic-startup.js";
+import { perlDynamicStartupEntry } from "../integration/targets/perl/dynamic-startup.js";
+import { rDynamicStartupEntry } from "../integration/targets/r/dynamic-startup.js";
 
 const dynamicStartupEntries = [
   nodeDynamicStartupEntry,

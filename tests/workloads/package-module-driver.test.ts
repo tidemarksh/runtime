@@ -6,10 +6,10 @@ import {
   validatePackageModuleArtifacts,
   validatePackageModuleDriverOutput,
 } from "../support/package-module-driver-harness.js";
-import { rubyGemPackageModuleEntry } from "./ruby/package-module-driver.js";
-import { perlProvePackageModuleEntry } from "./perl/package-module-driver.js";
-import { luaLuacPackageModuleEntry } from "./lua/package-module-driver.js";
-import { javaClassLoadPackageModuleEntry } from "./java/package-module-driver.js";
+import { rubyGemPackageModuleEntry } from "../integration/targets/ruby/package-module-driver.js";
+import { perlProvePackageModuleEntry } from "../integration/targets/perl/package-module-driver.js";
+import { luaLuacPackageModuleEntry } from "../integration/targets/lua/package-module-driver.js";
+import { javaClassLoadPackageModuleEntry } from "../integration/targets/java/package-module-driver.js";
 
 const packageModuleDriverEntries = [
   rubyGemPackageModuleEntry,

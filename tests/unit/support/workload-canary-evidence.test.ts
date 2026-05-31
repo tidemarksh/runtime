@@ -7,6 +7,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const testsRoot = resolve(here, "../..");
 const unitRoot = resolve(testsRoot, "unit");
 const workloadRoot = resolve(testsRoot, "workloads");
+const targetRoot = resolve(testsRoot, "integration/targets");
 
 type CanaryEvidence = {
   readonly workload: string;
@@ -246,7 +247,7 @@ const workloadCanaries: readonly CanaryEvidence[] = [
     primaryRuntimeEvidence: [...largeFileEvidence, ...forkPipeEvidence],
   },
   {
-    workload: "large-xz-decompress.test.ts",
+    workload: "devtools/large-xz-decompress.test.ts",
     contracts: ["large file read", "large file write", "process memory"],
     canaryReason: "Large xz decompression is an external compression workload canary; generic large fs and process memory behavior is owner-tested.",
     primaryRuntimeEvidence: largeFileEvidence,
@@ -431,7 +432,10 @@ function fileExists(root: string, path: string): boolean {
 
 describe("workload canary evidence", () => {
   test("every workload test has exact canary inventory and no stale inventory entries", () => {
-    const workloadTests = listTestFiles(workloadRoot);
+    const workloadTests = [
+      ...listTestFiles(workloadRoot),
+      ...listTestFiles(targetRoot),
+    ].sort();
     const inventory = workloadCanaries.map(({ workload }) => workload).sort();
     const duplicateInventory = inventory.filter((path, index) => inventory.indexOf(path) !== index);
 

@@ -10,7 +10,7 @@ import {
   cmakeScriptArchiveEntry,
   gzipRoundtripArchiveEntry,
   xzRoundtripArchiveEntry,
-} from "./devtools/archive-orchestrator.js";
+} from "../integration/targets/devtools/archive-orchestrator.js";
 
 const archiveOrchestratorEntries = [
   gzipRoundtripArchiveEntry,

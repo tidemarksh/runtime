@@ -2,7 +2,7 @@ import { expect, test } from "vite-plus/test";
 import { existsSync, readFileSync } from "node:fs";
 import { Runtime, logSkip, readKernelWasm, spawnWithOutput } from "../support/runtime-workload.js";
 import { buildSnapshotFromSources, type SnapshotSource } from "../support/snapshot-sources.js";
-import { buildNodeRuntimeSnapshot, readNodeBinary } from "./node/support.js";
+import { buildNodeRuntimeSnapshot, readNodeBinary } from "../integration/targets/node/support.js";
 
 const busyboxBinary = process.env.TIDEMARK_TEST_BUSYBOX_BINARY ?? "";
 
