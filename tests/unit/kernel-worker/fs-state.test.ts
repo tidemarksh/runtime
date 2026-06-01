@@ -550,6 +550,24 @@ test("kernel-worker syncFileDataMutation moves canonical/member files back to pa
   expect(canonicalExports.opLog).toContain("external:/lib/runtime.bin:3");
 });
 
+test("kernel-worker restorePublishedRegularFileDataFromPageCache externalizes without rematerializing bytes", () => {
+  const { canonicalExports, fsState } = makeFsState();
+  const publishedData = encoder.encode("published-data");
+  const staleInlineData = encoder.encode("stale-inline!!");
+
+  expect(staleInlineData.length).toBe(publishedData.length);
+  fsState.writeFile("/lib/runtime.bin", publishedData, 0o755, false);
+  canonicalExports.overwriteFile("/lib/runtime.bin", staleInlineData);
+  canonicalExports.opLog.length = 0;
+
+  fsState.restorePublishedRegularFileDataFromPageCache();
+
+  expect(canonicalExports.opLog).toContain(`external:/lib/runtime.bin:${publishedData.length}`);
+  expect(canonicalExports.opLog.some((entry) => entry.startsWith("truncate:/lib/runtime.bin:"))).toBe(false);
+  expect(canonicalExports.opLog.some((entry) => entry.startsWith("write:/lib/runtime.bin:"))).toBe(false);
+  expect(canonicalExports.fileData("/lib/runtime.bin")).toEqual(publishedData);
+});
+
 test("kernel-worker syncMetadataMutation materializes absolute-path file creation without full fanout", () => {
   const { canonicalExports, memberExports, fsState, sabPageCache } = makeFsState();
 
@@ -591,22 +609,23 @@ test("kernel-worker syncMetadataMutation removes absolute-path entries without f
   expect(memberExports.fileIno("/work/remove.txt")).toBe(0);
 });
 
-test("kernel-worker writeFile keeps large files page-cache-backed instead of materializing canonical memfs data", () => {
+test("kernel-worker writeFile keeps files page-cache-backed instead of materializing canonical memfs data", () => {
   const { canonicalExports, fsState, seedEntries } = makeFsState();
-  const data = new Uint8Array((8 * 1024 * 1024) + (1024 * 1024)).map((_, index) => (index * 13) & 0xff);
+  const data = new Uint8Array(128 * 1024).map((_, index) => (index * 13) & 0xff);
 
-  fsState.writeFile("/usr/lib/large.bin", data, 0o644, false);
-  const roundTrip = fsState.readFile("/usr/lib/large.bin");
+  fsState.writeFile("/usr/lib/runtime.bin", data, 0o644, false);
+  const roundTrip = fsState.readFile("/usr/lib/runtime.bin");
 
-  expect(canonicalExports.opLog).toContain(`shallow:/usr/lib/large.bin:${data.length}`);
-  expect(canonicalExports.opLog.some((entry) => entry.startsWith("truncate:/usr/lib/large.bin:"))).toBe(false);
-  expect(canonicalExports.opLog.some((entry) => entry.startsWith("write:/usr/lib/large.bin:"))).toBe(false);
+  expect(canonicalExports.opLog).toContain(`external:/usr/lib/runtime.bin:${data.length}`);
+  expect(canonicalExports.opLog.some((entry) => entry.startsWith("shallow:/usr/lib/runtime.bin:"))).toBe(false);
+  expect(canonicalExports.opLog.some((entry) => entry.startsWith("truncate:/usr/lib/runtime.bin:"))).toBe(false);
+  expect(canonicalExports.opLog.some((entry) => entry.startsWith("write:/usr/lib/runtime.bin:"))).toBe(false);
   expect(roundTrip.length).toBe(data.length);
   expect(roundTrip.subarray(0, 64)).toEqual(data.subarray(0, 64));
   expect(roundTrip.subarray(data.length - 64)).toEqual(data.subarray(data.length - 64));
-  expect(seedEntries.get("/usr/lib/large.bin")).toEqual({
+  expect(seedEntries.get("/usr/lib/runtime.bin")).toEqual({
     kind: "file",
-    path: "/usr/lib/large.bin",
+    path: "/usr/lib/runtime.bin",
     size: data.length,
     mode: 0o644,
   });

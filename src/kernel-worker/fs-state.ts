@@ -3,7 +3,6 @@ import type { FsSnapshotEntry, RuntimeStat } from "../fs/types.js";
 import { bumpDirEpoch, MAX_INODES, publishInode, readFileData, readInodeRecord } from "../fs/sab-page-cache.js";
 import {
   ensureMemoryCapacityFor,
-  memfsFileHasInlineData,
   markMaterializedMemfsFile,
   MEMFS_S_IFMT,
   MEMFS_S_IFREG,
@@ -15,7 +14,6 @@ import {
 } from "./common.js";
 import { createKernelWorkerFsSnapshotHelpers } from "./fs-state/snapshot.js";
 
-const LARGE_FILE_SHALLOW_THRESHOLD_BYTES = 512 * 1024;
 export const KERNEL_WORKER_FS_STATE_OWNERSHIP = "transitional-runtime-owner" as const;
 
 interface KernelWorkerFsStateDeps {
@@ -57,7 +55,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     markMaterializedMemfsFile(targetExports, ino);
   }
 
-  function replaceFileDataShallow(
+  function replaceFileDataExternal(
     targetExports: KernelExports,
     ino: number,
     meta: {
@@ -70,9 +68,16 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     data: Uint8Array,
   ): void {
     publishInode(deps.getSabPageCache(), ino, meta, data);
-    const sizeResult = Number(targetExports.memfs_set_file_size_shallow(ino, BigInt(data.length)));
-    if (sizeResult < 0) {
-      throw new Error(`failed to seed inode metadata: ${ino}`);
+    const published = readInodeRecord(deps.getSabPageCache(), ino);
+    if (
+      data.length > 0
+      && (!published || published.size !== data.length || published.dataOff === 0)
+    ) {
+      throw new Error(`failed to publish inode data: ${ino}`);
+    }
+    const externalized = Number(targetExports.memfs_set_file_external(ino, BigInt(data.length)));
+    if (externalized < 0) {
+      throw new Error(`failed to externalize inode: ${ino}`);
     }
   }
 
@@ -182,24 +187,15 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       throw new Error(`failed to create file: ${path}`);
     }
 
-    let usedShallowData = false;
     try {
-      if (
-        data.length >= LARGE_FILE_SHALLOW_THRESHOLD_BYTES
-        && !memfsFileHasInlineData(targetExports, ino)
-      ) {
-        const published = readInodeRecord(deps.getSabPageCache(), ino);
-        replaceFileDataShallow(targetExports, ino, {
-          mode: 0o100000 | fileMode,
-          size: data.length,
-          parentIno,
-          name: fileBytes,
-          nextSibling: published?.nextSibling ?? 0,
-        }, data);
-        usedShallowData = true;
-      } else {
-        replaceFileData(targetExports, ino, data);
-      }
+      const published = readInodeRecord(deps.getSabPageCache(), ino);
+      replaceFileDataExternal(targetExports, ino, {
+        mode: 0o100000 | fileMode,
+        size: data.length,
+        parentIno,
+        name: fileBytes,
+        nextSibling: published?.nextSibling ?? 0,
+      }, data);
     } catch (error) {
       throw new Error(`failed to write file ${normalized}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -208,15 +204,6 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       throw new Error(`failed to set mode on file: ${path}`);
     }
 
-    if (!usedShallowData) {
-      publishInode(deps.getSabPageCache(), ino, {
-        mode: 0o100000 | fileMode,
-        size: data.length,
-        parentIno,
-        name: fileBytes,
-        nextSibling: readInodeRecord(deps.getSabPageCache(), ino)?.nextSibling ?? 0,
-      }, data);
-    }
     bumpDirEpoch(deps.getSabPageCache());
     deps.upsertFileSeed(normalized, data, fileMode, {
       size: data.length,
@@ -490,9 +477,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         continue;
       }
 
-      const data = readFileData(sab, published.dataOff, published.size, 0, published.size);
-      replaceFileData(targetExports, ino, data);
-      syncExternalFileDataIntoTarget(targetExports, ino, mode, data.length, published);
+      syncExternalFileDataIntoTarget(targetExports, ino, mode, published.size, published);
     }
   }
 
