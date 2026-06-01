@@ -9,6 +9,7 @@ import {
 } from "./runtime-workload.js";
 import {
   type SnapshotSource,
+  applySnapshotSourcesToRuntime,
   buildSnapshotFromSources,
 } from "./snapshot-sources.js";
 
@@ -75,18 +76,19 @@ export async function prepareDynamicStartupRuntime(
   if (!existsSync(entry.hostExecutablePath)) {
     return logSkip(`missing dynamic startup executable: ${entry.hostExecutablePath}`);
   }
-  const snapshot = buildDynamicStartupSnapshot(entry);
-  if (!snapshot) {
-    return null;
-  }
-
   const runtime = await Runtime.create({
     wasmBytes,
     ramSize: entry.ramSize,
     ...entry.runtimeOptions,
   });
   try {
-    await runtime.applyFsSnapshot(snapshot);
+    const applied = await applySnapshotSourcesToRuntime(runtime, entry.snapshotSources, {
+      missingLabel: "dynamic startup artifact",
+    });
+    if (applied.skipReason) {
+      runtime.destroy();
+      return logSkip(applied.skipReason);
+    }
   } catch (error) {
     runtime.destroy();
     throw error;

@@ -3,6 +3,7 @@ import type { FsSnapshotEntry } from "../../fs/types.js";
 import { publishInode, readFileData, readInodeMeta, resetPageCache } from "../../fs/sab-page-cache.js";
 import {
   ensureMemoryCapacityFor,
+  memfsFileHasInlineData,
   normalizePath,
   normalizePermMode,
   readMemfsFileDataDirect,
@@ -54,12 +55,20 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
       return;
     }
     const perms = normalizePermMode(mode, 0o644);
+    const publishedSize = data?.length ?? size;
     if (data !== null) {
-      const truncateResult = Number(targetExports.memfs_truncate_file(ino, BigInt(data.length)));
-      if (truncateResult < 0) {
-        throw new Error(`failed to materialize snapshot file: ${path}`);
+      if (!memfsFileHasInlineData(targetExports, ino)) {
+        const sizeResult = Number(targetExports.memfs_set_file_size_shallow(ino, BigInt(data.length)));
+        if (sizeResult < 0) {
+          throw new Error(`failed to materialize snapshot file: ${path}`);
+        }
+      } else {
+        const truncateResult = Number(targetExports.memfs_truncate_file(ino, BigInt(data.length)));
+        if (truncateResult < 0) {
+          throw new Error(`failed to materialize snapshot file: ${path}`);
+        }
       }
-      if (data.length > 0) {
+      if (memfsFileHasInlineData(targetExports, ino) && data.length > 0) {
         const dataPtr = writeScratchFor(targetExports, data, 0xa000);
         const written = Number(targetExports.memfs_write_file_at(ino, 0n, dataPtr, data.length));
         if (written < 0 || written !== data.length) {
@@ -76,22 +85,15 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
     if (modeResult < 0) {
       throw new Error(`failed to set snapshot file mode: ${path}`);
     }
-    deps.seedEntries.set(normalized, data === null
-      ? {
-        kind: "file",
-        path: normalized,
-        size,
-        mode: perms,
-      }
-      : {
-        kind: "file",
-        path: normalized,
-        data: new Uint8Array(data),
-        mode: perms,
-      });
+    deps.seedEntries.set(normalized, {
+      kind: "file",
+      path: normalized,
+      size: publishedSize,
+      mode: perms,
+    });
     publishInode(deps.getSabPageCache(), ino, {
       mode: 0o100000 | perms,
-      size,
+      size: publishedSize,
       parentIno,
       name: nameBytes,
       nextSibling: 0,

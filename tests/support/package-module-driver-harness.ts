@@ -10,7 +10,7 @@ import {
 } from "./runtime-workload.js";
 import {
   type SnapshotSource,
-  buildSnapshotFromSources,
+  applySnapshotSourcesToRuntime,
 } from "./snapshot-sources.js";
 
 export interface PackageModuleArtifactCheck {
@@ -59,19 +59,18 @@ export async function preparePackageModuleDriverRuntime(
   if (!existsSync(entry.hostExecutablePath)) {
     return logSkip(`missing package/module driver executable: ${entry.hostExecutablePath}`);
   }
-  const snapshot = buildSnapshotFromSources(entry.snapshotSources, {
-    missingLabel: "package/module driver artifact",
-  });
-  if (snapshot.skipReason) {
-    return logSkip(snapshot.skipReason);
-  }
-
   const runtime = await Runtime.create({
     wasmBytes,
     ramSize: entry.ramSize,
   });
   try {
-    await runtime.applyFsSnapshot(snapshot.entries ?? []);
+    const snapshot = await applySnapshotSourcesToRuntime(runtime, entry.snapshotSources, {
+      missingLabel: "package/module driver artifact",
+    });
+    if (snapshot.skipReason) {
+      runtime.destroy();
+      return logSkip(snapshot.skipReason);
+    }
   } catch (error) {
     runtime.destroy();
     throw error;

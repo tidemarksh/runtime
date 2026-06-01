@@ -24,13 +24,23 @@ export function normalizePath(path: string): string {
   return normalized === "//" ? "/" : normalized || "/";
 }
 
-export function cloneSnapshotEntry(entry: FsSnapshotEntry): FsSnapshotEntry {
+interface CloneSnapshotOptions {
+  stripFileData?: boolean;
+}
+
+export function cloneSnapshotEntry(
+  entry: FsSnapshotEntry,
+  options: CloneSnapshotOptions = {},
+): FsSnapshotEntry {
   if (entry.kind === "file") {
+    const data = entry.data && !options.stripFileData
+      ? new Uint8Array(entry.data)
+      : undefined;
     return {
       kind: "file",
       path: entry.path,
       ino: entry.ino,
-      data: entry.data ? new Uint8Array(entry.data) : undefined,
+      data,
       size: entry.size ?? entry.data?.length ?? 0,
       mode: entry.mode,
     };
@@ -53,8 +63,11 @@ export function cloneSnapshotEntry(entry: FsSnapshotEntry): FsSnapshotEntry {
   };
 }
 
-export function cloneSnapshotEntries(entries: FsSnapshotEntry[]): FsSnapshotEntry[] {
-  return entries.map(cloneSnapshotEntry);
+export function cloneSnapshotEntries(
+  entries: FsSnapshotEntry[],
+  options: CloneSnapshotOptions = {},
+): FsSnapshotEntry[] {
+  return entries.map((entry) => cloneSnapshotEntry(entry, options));
 }
 
 function writeSnapshotScratch(

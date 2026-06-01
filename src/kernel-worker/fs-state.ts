@@ -29,7 +29,12 @@ interface KernelWorkerFsStateDeps {
   publishRootInode(mode?: number): void;
   resolvePathIn(targetExports: KernelExports, path: string): number;
   upsertDirSeed(path: string, mode?: number): void;
-  upsertFileSeed(path: string, data: Uint8Array, mode?: number): void;
+  upsertFileSeed(
+    path: string,
+    data: Uint8Array,
+    mode?: number,
+    options?: { size?: number },
+  ): void;
   upsertSymlinkSeed(path: string, target: Uint8Array, mode?: number): void;
 }
 
@@ -213,7 +218,9 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       }, data);
     }
     bumpDirEpoch(deps.getSabPageCache());
-    deps.upsertFileSeed(normalized, data, fileMode);
+    deps.upsertFileSeed(normalized, data, fileMode, {
+      size: data.length,
+    });
     if (fanout) {
       deps.fanoutCanonicalMemfs();
     }

@@ -420,8 +420,13 @@ function makeFsState() {
     upsertDirSeed: (path, mode = 0o755) => {
       seedEntries.set(normalizePath(path), { kind: "dir", path: normalizePath(path), mode });
     },
-    upsertFileSeed: (path, data, mode = 0o644) => {
-      seedEntries.set(normalizePath(path), { kind: "file", path: normalizePath(path), data, size: data.length, mode });
+    upsertFileSeed: (path, data, mode = 0o644, options = {}) => {
+      seedEntries.set(normalizePath(path), {
+        kind: "file",
+        path: normalizePath(path),
+        size: options.size ?? data.length,
+        mode,
+      });
     },
     upsertSymlinkSeed: (path, target, mode = 0o777) => {
       seedEntries.set(normalizePath(path), {
@@ -436,8 +441,8 @@ function makeFsState() {
   return { canonicalExports, memberExports, fsState, sabPageCache, seedEntries };
 }
 
-test("kernel-worker loadFsSnapshot materializes provided file data while publishing page cache metadata", () => {
-  const { canonicalExports, fsState, sabPageCache } = makeFsState();
+test("kernel-worker loadFsSnapshot keeps provided file data page-cache-backed while seed is metadata-only", () => {
+  const { canonicalExports, fsState, sabPageCache, seedEntries } = makeFsState();
   const data = new Uint8Array(128 * 1024).map((_, index) => index & 0xff);
 
   fsState.loadFsSnapshot([
@@ -448,10 +453,40 @@ test("kernel-worker loadFsSnapshot materializes provided file data while publish
   const ino = canonicalExports.fileIno("/lib/runtime.bin");
   expect(ino).toBeGreaterThan(1);
   expect(canonicalExports.fileData("/lib/runtime.bin")).toEqual(data);
-  expect(canonicalExports.opLog).not.toContain(`external:/lib/runtime.bin:${data.length}`);
-  expect(canonicalExports.opLog).toContain(`truncate:/lib/runtime.bin:${data.length}`);
-  expect(canonicalExports.opLog).toContain(`write:/lib/runtime.bin:${data.length}`);
+  expect(canonicalExports.opLog).toContain(`shallow:/lib/runtime.bin:${data.length}`);
+  expect(canonicalExports.opLog.some((entry) => entry.startsWith("truncate:/lib/runtime.bin:"))).toBe(false);
+  expect(canonicalExports.opLog.some((entry) => entry.startsWith("write:/lib/runtime.bin:"))).toBe(false);
   expect(readInodeRecord(sabPageCache, ino)?.size).toBe(data.length);
+  expect(seedEntries.get("/lib/runtime.bin")).toEqual({
+    kind: "file",
+    path: "/lib/runtime.bin",
+    size: data.length,
+    mode: 0o755,
+  });
+});
+
+test("kernel-worker loadFsSnapshot keeps large provided file data page-cache-backed", () => {
+  const { canonicalExports, fsState, sabPageCache, seedEntries } = makeFsState();
+  const data = new Uint8Array((1024 * 1024) + 17).map((_, index) => (index * 17) & 0xff);
+
+  fsState.loadFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "file", path: "/usr/lib/runtime-large.bin", data, mode: 0o755 },
+  ]);
+
+  const ino = canonicalExports.fileIno("/usr/lib/runtime-large.bin");
+  expect(ino).toBeGreaterThan(1);
+  expect(canonicalExports.fileData("/usr/lib/runtime-large.bin")).toEqual(data);
+  expect(canonicalExports.opLog).toContain(`shallow:/usr/lib/runtime-large.bin:${data.length}`);
+  expect(canonicalExports.opLog.some((entry) => entry.startsWith("truncate:/usr/lib/runtime-large.bin:"))).toBe(false);
+  expect(canonicalExports.opLog.some((entry) => entry.startsWith("write:/usr/lib/runtime-large.bin:"))).toBe(false);
+  expect(readInodeRecord(sabPageCache, ino)?.size).toBe(data.length);
+  expect(seedEntries.get("/usr/lib/runtime-large.bin")).toEqual({
+    kind: "file",
+    path: "/usr/lib/runtime-large.bin",
+    size: data.length,
+    mode: 0o755,
+  });
 });
 
 test("kernel-worker loadFsSnapshot preserves metadata-only file sizes as external state", () => {
@@ -557,7 +592,7 @@ test("kernel-worker syncMetadataMutation removes absolute-path entries without f
 });
 
 test("kernel-worker writeFile keeps large files page-cache-backed instead of materializing canonical memfs data", () => {
-  const { canonicalExports, fsState } = makeFsState();
+  const { canonicalExports, fsState, seedEntries } = makeFsState();
   const data = new Uint8Array((8 * 1024 * 1024) + (1024 * 1024)).map((_, index) => (index * 13) & 0xff);
 
   fsState.writeFile("/usr/lib/large.bin", data, 0o644, false);
@@ -569,6 +604,12 @@ test("kernel-worker writeFile keeps large files page-cache-backed instead of mat
   expect(roundTrip.length).toBe(data.length);
   expect(roundTrip.subarray(0, 64)).toEqual(data.subarray(0, 64));
   expect(roundTrip.subarray(data.length - 64)).toEqual(data.subarray(data.length - 64));
+  expect(seedEntries.get("/usr/lib/large.bin")).toEqual({
+    kind: "file",
+    path: "/usr/lib/large.bin",
+    size: data.length,
+    mode: 0o644,
+  });
 });
 
 test("kernel-worker readFile falls back to page-cache data for externalized large files", () => {
@@ -585,9 +626,9 @@ test("kernel-worker readFile falls back to page-cache data for externalized larg
   expect(roundTrip.subarray(data.length - 128)).toEqual(data.subarray(data.length - 128));
 });
 
-test("kernel-worker readFile falls back to seed data when page-cache data is unavailable", () => {
+test("kernel-worker readFile reports failure when neither memfs nor page-cache data is available", () => {
   const { canonicalExports, fsState, sabPageCache } = makeFsState();
-  const data = new Uint8Array((1024 * 1024) + 17).map((_, index) => (index * 11) & 0xff);
+  const data = new Uint8Array(128 * 1024).map((_, index) => (index * 11) & 0xff);
 
   fsState.writeFile("/usr/bin/sqv", data, 0o755, false);
   const ino = canonicalExports.fileIno("/usr/bin/sqv");
@@ -600,11 +641,7 @@ test("kernel-worker readFile falls back to seed data when page-cache data is una
   }, null);
   canonicalExports.memfs_read_file_to = () => -1n;
 
-  const roundTrip = fsState.readFile("/usr/bin/sqv");
-
-  expect(roundTrip.length).toBe(data.length);
-  expect(roundTrip.subarray(0, 128)).toEqual(data.subarray(0, 128));
-  expect(roundTrip.subarray(data.length - 128)).toEqual(data.subarray(data.length - 128));
+  expect(() => fsState.readFile("/usr/bin/sqv")).toThrow("failed to read file: /usr/bin/sqv");
 });
 
 test("kernel-worker symlink uses basename scratch independently from resolvePath scratch", () => {

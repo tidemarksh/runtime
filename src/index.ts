@@ -30,6 +30,7 @@ import {
   setWorkerMessageErrorHandler,
 } from "./bridge/compat.js";
 import type { RuntimeNetworkBridge } from "./bridge/network.js";
+import type { FsSnapshotEntry } from "./fs/types.js";
 
 export interface RuntimeOptions {
   wasmBytes: BufferSource;
@@ -46,6 +47,21 @@ const DEFAULT_MAX_MEMORY_PAGES = 32768;
 function normalizeRuntimePath(path: string): string {
   const normalized = `/${path.split("/").filter(Boolean).join("/")}`;
   return normalized === "//" ? "/" : normalized || "/";
+}
+
+function withoutSnapshotFileData(entries: FsSnapshotEntry[]): FsSnapshotEntry[] {
+  return entries.map((entry) => {
+    if (entry.kind !== "file" || entry.data === undefined) {
+      return entry;
+    }
+    return {
+      kind: "file",
+      path: entry.path,
+      ino: entry.ino,
+      size: entry.size ?? entry.data.byteLength,
+      mode: entry.mode,
+    };
+  });
 }
 
 export interface RuntimeFs {
@@ -289,13 +305,14 @@ export class Runtime {
     return proc;
   }
 
-  async applyFsSnapshot(entries: import("./fs/types.js").FsSnapshotEntry[]): Promise<void> {
+  async applyFsSnapshot(entries: FsSnapshotEntry[]): Promise<void> {
     await this.sendKernelRequest<Extract<KernelWorkerOutbound, { type: "fs-loaded" }>>({
       type: "load-fs-snapshot",
       entries,
     });
-    publishRuntimeFsState(this.runtimeId, entries);
-    replaceRuntimeFsSnapshot(this.runtimeId, entries);
+    const runtimeEntries = withoutSnapshotFileData(entries);
+    publishRuntimeFsState(this.runtimeId, runtimeEntries);
+    replaceRuntimeFsSnapshot(this.runtimeId, runtimeEntries);
   }
 
   async writeFile(path: string, data: Uint8Array, mode?: number): Promise<void> {

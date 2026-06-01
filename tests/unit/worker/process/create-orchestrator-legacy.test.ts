@@ -107,6 +107,7 @@ const createdKernelExports: Array<
     fsProcessCalls: number;
     memfsCreateCalls: Array<[number, number]>;
     memfsTruncateCalls: Array<[number, number]>;
+    memfsSetFileExternalCalls: Array<[number, number]>;
     memfsSetFileSizeShallowCalls: Array<[number, number]>;
     memfsWriteCalls: Array<[number, number]>;
     memfsCreateWithDataCalls: Array<[number, number]>;
@@ -188,6 +189,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
   let fsProcessCalls = 0;
   const memfsCreateCalls: Array<[number, number]> = [];
   const memfsTruncateCalls: Array<[number, number]> = [];
+  const memfsSetFileExternalCalls: Array<[number, number]> = [];
   const memfsSetFileSizeShallowCalls: Array<[number, number]> = [];
   const memfsWriteCalls: Array<[number, number]> = [];
   const memfsCreateWithDataCalls: Array<[number, number]> = [];
@@ -240,6 +242,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     fsProcessCalls: number;
     memfsCreateCalls: Array<[number, number]>;
     memfsTruncateCalls: Array<[number, number]>;
+    memfsSetFileExternalCalls: Array<[number, number]>;
     memfsSetFileSizeShallowCalls: Array<[number, number]>;
     memfsWriteCalls: Array<[number, number]>;
     memfsCreateWithDataCalls: Array<[number, number]>;
@@ -511,6 +514,10 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
       memfsTruncateCalls.push([ino, Number(size)]);
       return 0n;
     },
+    memfs_set_file_external: (ino, size) => {
+      memfsSetFileExternalCalls.push([ino, Number(size)]);
+      return 0n;
+    },
     memfs_set_file_size_shallow: (ino, size) => {
       memfsSetFileSizeShallowCalls.push([ino, Number(size)]);
       return 0n;
@@ -534,6 +541,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     },
     memfsCreateCalls,
     memfsTruncateCalls,
+    memfsSetFileExternalCalls,
     memfsSetFileSizeShallowCalls,
     memfsWriteCalls,
     memfsCreateWithDataCalls,
@@ -1636,9 +1644,9 @@ test("createProcess seeds local memfs from runtime FS state when preloadEntries 
   }
 
   expect(createdKernelExports[0].memfsCreateCalls).toHaveLength(1);
-  expect(createdKernelExports[0].memfsTruncateCalls).toEqual([[11, 4096]]);
-  expect(createdKernelExports[0].memfsWriteCalls).toHaveLength(1);
-  expect(createdKernelExports[0].memfsWriteCalls[0]?.[1]).toBe(4096);
+  expect(createdKernelExports[0].memfsSetFileExternalCalls).toEqual([[11, 4096]]);
+  expect(createdKernelExports[0].memfsTruncateCalls).toEqual([]);
+  expect(createdKernelExports[0].memfsWriteCalls).toEqual([]);
 });
 
 test("createProcess seeds local memfs before requesting canonical metadata hydration", async () => {
@@ -1668,6 +1676,16 @@ test("createProcess seeds local memfs before requesting canonical metadata hydra
           requestId: 0,
           kernelState: msg.kernelState,
         };
+      case "snapshot-fs":
+        return {
+          type: "snapshot-fs-result",
+          requestId: 0,
+          entries: [
+            { kind: "dir", path: "/", mode: 0o755 },
+            { kind: "dir", path: "/workspace", mode: 0o755 },
+            { kind: "file", path: "/workspace/app.bin", size: 4096, mode: 0o644 },
+          ],
+        };
       default:
         throw new Error(`unexpected kernel worker request: ${msg.type}`);
     }
@@ -1685,20 +1703,19 @@ test("createProcess seeds local memfs before requesting canonical metadata hydra
   }
 
   expect(createdKernelExports[0].memfsCreateCalls).toHaveLength(1);
-  expect(createdKernelExports[0].memfsSetFileSizeShallowCalls).toEqual([]);
-  expect(createdKernelExports[0].memfsTruncateCalls).toEqual([[11, 4096]]);
-  expect(createdKernelExports[0].memfsWriteCalls).toHaveLength(1);
-  expect(createdKernelExports[0].memfsWriteCalls[0]?.[1]).toBe(4096);
+  expect(createdKernelExports[0].memfsSetFileExternalCalls).toEqual([[11, 4096]]);
+  expect(createdKernelExports[0].memfsTruncateCalls).toEqual([]);
+  expect(createdKernelExports[0].memfsWriteCalls).toEqual([]);
   expect(
     kernelWorkerRequest.mock.calls.some(([msg]) => msg.type === "snapshot-fs"),
-  ).toBe(false);
+  ).toBe(true);
   expect(kernelWorkerRequest).toHaveBeenCalledWith(expect.objectContaining({
     type: "register-process",
-    seedMemfsMode: "none",
+    seedMemfsMode: "metadata",
   }));
 });
 
-test("createProcess materializes runtime fs entries before process_create under kernel-worker ownership", async () => {
+test("createProcess preloads runtime fs entries as external metadata before process_create under kernel-worker ownership", async () => {
   const runtimeId = 79;
   primeRuntimeFsState(runtimeId, [
     { kind: "dir", path: "/", mode: 0o755 },
@@ -1716,8 +1733,9 @@ test("createProcess materializes runtime fs entries before process_create under 
     const exports = makeKernelExports(memory);
     const processCreate = vi.fn(() => {
       expect(exports.memfsCreateCalls).toHaveLength(1);
-      expect(exports.memfsTruncateCalls).toEqual([[11, 4096]]);
-      expect(exports.memfsWriteCalls).toHaveLength(1);
+      expect(exports.memfsSetFileExternalCalls).toEqual([[11, 4096]]);
+      expect(exports.memfsTruncateCalls).toEqual([]);
+      expect(exports.memfsWriteCalls).toEqual([]);
       return 0x1234;
     });
     exports.process_create = processCreate;
@@ -1731,6 +1749,16 @@ test("createProcess materializes runtime fs entries before process_create under 
         return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
       case "initialize-process-lifecycle":
         return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+      case "snapshot-fs":
+        return {
+          type: "snapshot-fs-result",
+          requestId: 0,
+          entries: [
+            { kind: "dir", path: "/", mode: 0o755 },
+            { kind: "dir", path: "/lib", mode: 0o755 },
+            { kind: "file", path: "/lib/ld-linux-riscv64-lp64d.so.1", size: 4096, mode: 0o755 },
+          ],
+        };
       default:
         throw new Error(`unexpected kernel worker request: ${msg.type}`);
     }
@@ -1749,7 +1777,7 @@ test("createProcess materializes runtime fs entries before process_create under 
 
   expect(
     kernelWorkerRequest.mock.calls.some(([msg]) => msg.type === "snapshot-fs"),
-  ).toBe(false);
+  ).toBe(true);
 });
 
 test("STATUS_EXECVE_SPAWN with unknown spawn kind does not immediately resume", async () => {

@@ -8,6 +8,7 @@ import {
 } from "./runtime-workload.js";
 import {
   type SnapshotSource,
+  applySnapshotSourcesToRuntime,
   buildSnapshotFromSources,
 } from "./snapshot-sources.js";
 
@@ -60,17 +61,18 @@ export async function prepareScriptRuntime(
   if (!existsSync(entry.hostExecutablePath)) {
     return logSkip(`missing script runtime executable: ${entry.hostExecutablePath}`);
   }
-  const snapshot = buildScriptRuntimeSnapshot(entry);
-  if (!snapshot) {
-    return null;
-  }
-
   const runtime = await Runtime.create({
     wasmBytes,
     ramSize: entry.ramSize,
   });
   try {
-    await runtime.applyFsSnapshot(snapshot);
+    const applied = await applySnapshotSourcesToRuntime(runtime, entry.snapshotSources, {
+      missingLabel: "script runtime artifact",
+    });
+    if (applied.skipReason) {
+      runtime.destroy();
+      return logSkip(applied.skipReason);
+    }
   } catch (error) {
     runtime.destroy();
     throw error;

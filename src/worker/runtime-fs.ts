@@ -20,7 +20,7 @@ export interface RuntimeFsContext {
   runtimeFsDirtyHandles: Map<number, Set<ProcessHandle>>;
   kernelShareRepresentative(handle: ProcessHandle): ProcessHandle | null;
   kernelShareOtherMembers(handle: ProcessHandle): ProcessHandle[];
-  cloneSnapshotEntries(entries: FsSnapshotEntry[]): FsSnapshotEntry[];
+  cloneSnapshotEntries(entries: FsSnapshotEntry[], options?: { stripFileData?: boolean }): FsSnapshotEntry[];
   snapshotProcessFs(handle: ProcessHandle): FsSnapshotEntry[];
   snapshotEntriesEqual(left: FsSnapshotEntry[], right: FsSnapshotEntry[]): boolean;
   applyFsEntryToHandle(handle: ProcessHandle, entry: FsSnapshotEntry): void;
@@ -72,7 +72,7 @@ function writeRuntimeFsState(
   const version = bumpVersion ? (existing?.version ?? 0) + 1 : (existing?.version ?? 1);
   runtimeFsStates.set(runtimeId, {
     version,
-    entries: cloneSnapshotEntries(entries),
+    entries: cloneSnapshotEntries(entries, { stripFileData: true }),
   });
   return version;
 }

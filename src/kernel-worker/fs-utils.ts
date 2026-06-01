@@ -239,14 +239,20 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
     }
   }
 
-  function upsertFileSeed(path: string, data: Uint8Array, mode = 0o644): void {
+  function upsertFileSeed(
+    path: string,
+    data: Uint8Array,
+    mode = 0o644,
+    options: { size?: number } = {},
+  ): void {
     const normalized = normalizePath(path);
     const parent = normalized.split("/").slice(0, -1).join("/") || "/";
     ensureSeedDirEntries(parent);
+    const size = options.size ?? data.byteLength;
     deps.seedEntries.set(normalized, {
       kind: "file",
       path: normalized,
-      data: new Uint8Array(data),
+      size,
       mode: normalizePermMode(mode, 0o644),
     });
   }

@@ -10,7 +10,7 @@ import {
 } from "./runtime-workload.js";
 import {
   type SnapshotSource,
-  buildSnapshotFromSources,
+  applySnapshotSourcesToRuntime,
 } from "./snapshot-sources.js";
 
 export interface ToolchainArtifactCheck {
@@ -71,12 +71,6 @@ export async function prepareToolchainExecRuntime(
   if (!existsSync(entry.hostExecutablePath)) {
     return logSkip(`missing toolchain exec driver: ${entry.hostExecutablePath}`);
   }
-  const snapshot = buildSnapshotFromSources(entry.snapshotSources, {
-    missingLabel: "toolchain exec artifact",
-  });
-  if (snapshot.skipReason) {
-    return logSkip(snapshot.skipReason);
-  }
   const wasmBytes = readKernelWasm();
   if (!wasmBytes) {
     return null;
@@ -87,7 +81,13 @@ export async function prepareToolchainExecRuntime(
     ramSize: entry.ramSize,
   });
   try {
-    await runtime.applyFsSnapshot(snapshot.entries ?? []);
+    const snapshot = await applySnapshotSourcesToRuntime(runtime, entry.snapshotSources, {
+      missingLabel: "toolchain exec artifact",
+    });
+    if (snapshot.skipReason) {
+      runtime.destroy();
+      return logSkip(snapshot.skipReason);
+    }
   } catch (error) {
     runtime.destroy();
     throw error;

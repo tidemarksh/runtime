@@ -459,6 +459,29 @@ test("Runtime.applyFsSnapshot preserves metadata-only file size in canonical sna
   runtime.destroy();
 });
 
+test("Runtime.applyFsSnapshot does not retain provided file data in runtime state", async () => {
+  const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
+  const data = new TextEncoder().encode("snapshot body");
+
+  await runtime.applyFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "dir", path: "/toolchain", mode: 0o755 },
+    {
+      kind: "file",
+      path: "/toolchain/data.txt",
+      data,
+      mode: 0o644,
+    },
+  ]);
+
+  const worker = createdWorkers[0];
+  worker.postedMessages.length = 0;
+  await expect(runtime.fs.readFile("/toolchain/data.txt")).resolves.toEqual(data);
+  expect(worker.postedMessages.some((msg) => msg.type === "read-file")).toBe(true);
+
+  runtime.destroy();
+});
+
 test("Runtime.applyFileLayer applies dirs files and symlinks through one kernel-worker RPC", async () => {
   const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
 

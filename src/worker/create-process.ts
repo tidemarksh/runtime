@@ -232,10 +232,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     ) {
       const response = await options.kernelWorkerRequest({
         type: "snapshot-fs",
-        // Guest-side execve must be able to read executable bytes for child
-        // processes launched through nested execve. Metadata-only dynamic
-        // snapshots make nested execve fail with ENOEXEC.
-        includeData: true,
+        includeData: false,
       });
       if (response.type !== "snapshot-fs-result") {
         throw new Error(`unexpected kernel-worker snapshot response: ${response.type}`);
