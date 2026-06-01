@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -243,6 +244,16 @@ function linkOrCopy(from, to) {
   }
 }
 
+function linkOrCopyTree(from, to) {
+  mkdirSync(dirname(to), { recursive: true });
+  rmSync(to, { recursive: true, force: true });
+  try {
+    symlinkSync(from, to);
+  } catch {
+    cpSync(from, to, { recursive: true });
+  }
+}
+
 function makeFlatNodeSysroot(root, adapterDir) {
   const libs = [
     "ld-linux-riscv64-lp64d.so.1",
@@ -266,6 +277,57 @@ function makeFlatNodeSysroot(root, adapterDir) {
     if (source) {
       linkOrCopy(source, resolve(adapterDir, lib));
     }
+  }
+  return adapterDir;
+}
+
+function makeGlibcSysrootAdapter(root, adapterDir) {
+  const libs = [
+    "ld-linux-riscv64-lp64d.so.1",
+    "libc.so.6",
+    "libdl.so.2",
+    "libpthread.so.0",
+    "libm.so.6",
+    "librt.so.1",
+    "libutil.so.1",
+    "libgcc_s.so.1",
+    "libstdc++.so.6",
+  ];
+  const searchDirs = [
+    root,
+    resolve(root, "lib"),
+    resolve(root, "lib/riscv64-linux-gnu"),
+    resolve(root, "usr/lib"),
+    resolve(root, "usr/lib/riscv64-linux-gnu"),
+  ];
+  rmSync(adapterDir, { recursive: true, force: true });
+  mkdirSync(adapterDir, { recursive: true });
+  for (const topLevel of ["lib", "usr", "etc"]) {
+    const source = resolve(root, topLevel);
+    if (existsSync(source)) {
+      linkOrCopyTree(source, resolve(adapterDir, topLevel));
+    }
+  }
+  for (const lib of libs) {
+    const source = searchDirs.map((dir) => resolve(dir, lib)).find(existsSync);
+    if (source) {
+      linkOrCopy(source, resolve(adapterDir, lib));
+    }
+  }
+  return adapterDir;
+}
+
+function makeLibuvSuiteAdapter(root, adapterDir) {
+  const source = firstExisting(root, [
+    "libuv-1.51.0",
+    "opt/tidemark/libuv",
+    "libuv",
+    ".",
+  ]);
+  rmSync(adapterDir, { recursive: true, force: true });
+  mkdirSync(adapterDir, { recursive: true });
+  if (source) {
+    linkOrCopyTree(source, resolve(adapterDir, "libuv-1.51.0"));
   }
   return adapterDir;
 }
@@ -329,10 +391,13 @@ function applyKnownEnv(env, artifact, root, adapterRoot) {
     setEnv(env, "TIDEMARK_TEST_APT_SQV_ROOT", root);
   }
   if (id.startsWith("glibc-riscv64")) {
-    setEnv(env, "TIDEMARK_TEST_GLIBC_SYSROOT_DIR", root);
+    setEnv(env, "TIDEMARK_TEST_GLIBC_SYSROOT_DIR", makeGlibcSysrootAdapter(root, resolve(adapterRoot, id)));
   }
   if (id.startsWith("rust-riscv64")) {
-    setEnv(env, "TIDEMARK_TEST_RUST_TOOLCHAIN_DIR", root);
+    setEnv(env, "TIDEMARK_TEST_RUST_TOOLCHAIN_DIR", firstExisting(root, [
+      "opt/tidemark/rust",
+      ".",
+    ]));
   }
   if (id.startsWith("c-toolchain-riscv64")) {
     setEnv(env, "TIDEMARK_TEST_C_TOOLCHAIN_DIR", root);
@@ -344,13 +409,19 @@ function applyKnownEnv(env, artifact, root, adapterRoot) {
     setEnv(env, "TIDEMARK_TEST_DEVTOOLS_TOOLSET_DIR", root);
   }
   if (id.startsWith("libuv-suite-")) {
-    setEnv(env, "TIDEMARK_TEST_LIBUV_UPSTREAM_SUITE_DIR", root);
+    setEnv(env, "TIDEMARK_TEST_LIBUV_UPSTREAM_SUITE_DIR", makeLibuvSuiteAdapter(root, resolve(adapterRoot, id)));
   }
   if (id.startsWith("java-")) {
-    setEnv(env, "TIDEMARK_TEST_JAVA_RUNTIME_DIR", root);
+    setEnv(env, "TIDEMARK_TEST_JAVA_RUNTIME_DIR", firstExisting(root, [
+      "opt/tidemark/java",
+      ".",
+    ]));
   }
   if (id.startsWith("python-")) {
-    setEnv(env, "TIDEMARK_TEST_PYTHON_RUNTIME_DIR", root);
+    setEnv(env, "TIDEMARK_TEST_PYTHON_RUNTIME_DIR", firstExisting(root, [
+      "opt/tidemark/python",
+      ".",
+    ]));
   }
   if (id.startsWith("ruby-")) {
     setEnv(env, "TIDEMARK_TEST_RUBY_RUNTIME_DIR", root);

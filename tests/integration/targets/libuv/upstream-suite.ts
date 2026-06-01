@@ -17,7 +17,6 @@ const DEVTOOLS_RUNTIME_LIBS = [
   "librt.so.1",
   "libutil.so.1",
   "libgcc_s.so.1",
-  "libstdc++.so.6",
 ] as const;
 
 function libuvSnapshotSources(extra: readonly SnapshotSource[] = []): SnapshotSource[] {

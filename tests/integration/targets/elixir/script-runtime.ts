@@ -1,10 +1,15 @@
+import { existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ScriptRuntimeEntry } from "../../../support/script-runtime-harness.js";
 
 const runtimeDir = process.env.TIDEMARK_TEST_ELIXIR_RUNTIME_DIR ?? "";
 const erlangRootDir = resolve(runtimeDir, "usr/lib/erlang");
-const erlexecPath = resolve(erlangRootDir, "erts-15.2.7.6/bin/erlexec");
-const erlangBindir = "/usr/lib/erlang/erts-15.2.7.6/bin";
+const ertsDirName = existsSync(erlangRootDir)
+  ? (readdirSync(erlangRootDir).find((entry) => entry.startsWith("erts-")) ?? "erts-unknown")
+  : "erts-unknown";
+const erlexecGuestPath = `/usr/lib/erlang/${ertsDirName}/bin/erlexec`;
+const erlexecPath = resolve(erlangRootDir, `${ertsDirName}/bin/erlexec`);
+const erlangBindir = `/usr/lib/erlang/${ertsDirName}/bin`;
 
 function elixirRuntimeSnapshotSources() {
   return [
@@ -27,9 +32,9 @@ export const erlEvalScriptRuntimeEntry: ScriptRuntimeEntry = {
   targetClass: "Elixir / Erlang runtime",
   runnerKind: "direct-exec",
   hostExecutablePath: erlexecPath,
-  guestExecutablePath: "/usr/lib/erlang/erts-15.2.7.6/bin/erlexec",
+  guestExecutablePath: erlexecGuestPath,
   argv: [
-    "/usr/lib/erlang/erts-15.2.7.6/bin/erlexec",
+    erlexecGuestPath,
     "-noshell",
     "-eval",
     'io:format("erl-evidence~n"), halt().',
@@ -46,9 +51,9 @@ export const elixirEvalScriptRuntimeEntry: ScriptRuntimeEntry = {
   targetClass: "Elixir / Erlang runtime",
   runnerKind: "direct-exec",
   hostExecutablePath: erlexecPath,
-  guestExecutablePath: "/usr/lib/erlang/erts-15.2.7.6/bin/erlexec",
+  guestExecutablePath: erlexecGuestPath,
   argv: [
-    "/usr/lib/erlang/erts-15.2.7.6/bin/erlexec",
+    erlexecGuestPath,
     "-noshell",
     "-elixir_root",
     "/usr/lib/elixir/lib",
