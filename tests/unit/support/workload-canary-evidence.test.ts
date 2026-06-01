@@ -73,6 +73,15 @@ const forkPipeEvidence = [
   "bridge/pipe.test.ts",
 ] as const;
 
+const vforkExecveShellEvidence = [
+  "worker/fork/vfork-execve.test.ts",
+  "worker/fork/execve-handoff.test.ts",
+  "worker/fork/spawn-handoff.test.ts",
+  "worker/io/stdio.test.ts",
+  "worker/scheduler/liveness.test.ts",
+  "fs/runtime-fs.test.ts",
+] as const;
+
 const networkEvidence = [
   "worker/io/network-bridge.test.ts",
   "worker/status/route.test.ts",
@@ -119,6 +128,12 @@ const workloadCanaries: readonly CanaryEvidence[] = [
     contracts: ["process launch", "filesystem snapshot", "stdio drain"],
     canaryReason: "Archive orchestration validates an external archive workflow; generic process, filesystem, and stdio behavior is primary in owner runtime tests.",
     primaryRuntimeEvidence: [...dynamicStartupEvidence, ...fsEvidence, "worker/io/stdio.test.ts"],
+  },
+  {
+    workload: "devtools/dynamic-system-shell-diagnostic.test.ts",
+    contracts: ["dynamic startup", "vfork execve", "shell stdio", "filesystem visibility"],
+    canaryReason: "Dynamic glibc system shell probes the representative vfork-to-exec shell workflow; generic exec handoff, stdio, scheduler, and filesystem contracts are owned by runtime unit tests.",
+    primaryRuntimeEvidence: vforkExecveShellEvidence,
   },
   {
     workload: "go/browser-direct-startup.test.ts",

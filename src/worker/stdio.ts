@@ -350,7 +350,10 @@ export async function settleInheritedChildOutput(
 
   for (let pass = 0; pass < maxPasses; pass += 1) {
     await requestPipeStateSync(child, false);
-    drainProcessOutput(parent);
+    const drainedParent = drainProcessOutput(parent);
+    if (drainedParent && parent.kernelWorkerRequest && parent.pid > 0) {
+      await requestPipeStateSync(parent, false);
+    }
     const settled = slots.every((pipeSlot) => {
       const childCounters = readPipeCounters(child, pipeSlot);
       const parentCounters = readPipeCounters(parent, pipeSlot);

@@ -291,7 +291,9 @@ export function createWorkerSchedulerStateSyncHelpers(
         const drainedHiddenOutput = shouldDrainHiddenInheritedOutput(handle, visibleHandle)
           ? deps.drainHiddenProcessOutput(handle)
           : false;
-        const drainedVisibleOutput = deps.drainProcessOutput(visibleHandle);
+        const drainedVisibleOutput = drainedHiddenOutput
+          ? false
+          : deps.drainProcessOutput(visibleHandle);
         if (drainedHiddenOutput) {
           deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-hidden-drain:${handle.pid}`);
           handle.transferDebugStats.pipeSyncKernelCalls += 1;

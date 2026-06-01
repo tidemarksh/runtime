@@ -76,6 +76,37 @@ for (const testCase of CASES) {
   }, 30_000);
 }
 
+test("Runtime executes official BusyBox: sh redirects and cats workspace output", async () => {
+  const wasmBytes = readKernelWasm();
+  const busybox = readBusyBoxBinary();
+  if (!wasmBytes || !busybox) {
+    return;
+  }
+
+  const runtime = await Runtime.create({ wasmBytes });
+  try {
+    await runtime.fs.mkdir("/bin", 0o755).catch(() => {});
+    await runtime.fs.mkdir("/work", 0o755).catch(() => {});
+    await runtime.fs.writeFile("/bin/busybox", busybox, 0o755);
+    await runtime.fs.writeFile("/bin/sh", busybox, 0o755);
+    await runtime.fs.writeFile("/bin/cat", busybox, 0o755);
+
+    const result = await spawnWithOutput(
+      runtime,
+      busybox,
+      ["/bin/sh", "-c", "echo make-evidence > out.txt; cat out.txt"],
+      ["PATH=/bin"],
+      10_000,
+      { cwd: "/work" },
+    );
+
+    expect(result.exitCode, `${result.output}\n${result.debugInfo ?? ""}`).toBe(0);
+    expect(result.output).toBe("make-evidence\n");
+  } finally {
+    runtime.destroy();
+  }
+}, 30_000);
+
 for (const [argv, lineEnding] of [
   [["/bin/sh"], "\n"],
   [["/bin/sh", "-i"], "\n"],

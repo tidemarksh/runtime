@@ -9,6 +9,7 @@ import {
   validateToolchainDriverOutput,
   validateToolchainRunOutput,
 } from "./toolchain-exec-harness.js";
+import { runtimeDebugSummary } from "./runtime-workload.js";
 
 export function registerToolchainExecGate(entry: ToolchainExecEntry): void {
   test(`toolchain exec local gate: ${entry.id}`, async () => {
@@ -49,6 +50,19 @@ export function registerToolchainExecGate(entry: ToolchainExecEntry): void {
       const artifactMismatches = await validateToolchainArtifacts(runtime, entry);
       const runResults = await runToolchainArtifactChecks(runtime, entry);
 
+      if (result.exitCode !== 0) {
+        const summary = await runtimeDebugSummary(runtime).catch((error) => (
+          `runtimeDebugSummary failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`
+        ));
+        throw new Error([
+          `toolchain exec driver exited nonzero: ${entry.id}`,
+          `exitCode=${result.exitCode}`,
+          "output:",
+          result.output,
+          result.debugInfo ? `debug:\n${result.debugInfo}` : null,
+          summary ? `runtime:\n${summary}` : null,
+        ].filter((part): part is string => part !== null).join("\n"));
+      }
       expect(result.exitCode).toBe(0);
       expect(outputMismatches).toEqual([]);
       expect(artifactMismatches).toEqual([]);

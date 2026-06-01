@@ -262,6 +262,10 @@ export interface KernelExports {
   thread_stack_minus?(vm_ptr: number, byteOffset: number): bigint;
   thread_a0(vm_ptr: number): bigint;
   thread_a1(vm_ptr: number): bigint;
+  thread_a2?(vm_ptr: number): bigint;
+  thread_a3?(vm_ptr: number): bigint;
+  thread_a4?(vm_ptr: number): bigint;
+  thread_a5?(vm_ptr: number): bigint;
   thread_a7?(vm_ptr: number): bigint;
   thread_stack_word?(vm_ptr: number, word_index: number): bigint;
   thread_blocked_fd(vm_ptr: number): number;

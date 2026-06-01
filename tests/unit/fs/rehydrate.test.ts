@@ -214,6 +214,21 @@ function makeMemfsExports(): FakeMemfsExports {
       const target = readGuestBytes(targetPtr, targetLen);
       return ensureEntry(`${parentPath}/${name}`, "symlink", 0o120777, target);
     },
+    memfs_unlink: (parentIno: number, namePtr: number, nameLen: number) => {
+      const parentPath = byIno.get(parentIno);
+      if (!parentPath) {
+        return -2n;
+      }
+      const name = decodeGuestPath(namePtr, nameLen);
+      const path = normalizePath(`${parentPath}/${name}`);
+      const entry = entries.get(path);
+      if (!entry) {
+        return -2n;
+      }
+      entries.delete(path);
+      byIno.delete(entry.ino);
+      return 0n;
+    },
     process_install_procfs_snapshot: (targetPtr: number, targetLen: number) => {
       const target = readGuestBytes(targetPtr, targetLen);
       procfsInstallTargets.push(new TextDecoder().decode(target));
@@ -313,7 +328,7 @@ test("fanoutCanonicalMemfs preserves each process /proc/self/exe target while re
   expect(processB.linkTarget("/proc/self/exe")).toBe("/bin/b");
 });
 
-test("restoreProcSelfExe does not overwrite an existing proc/self/exe symlink", () => {
+test("restoreProcSelfExe replaces copied proc/self/exe with the target process symlink", () => {
   const canonicalExports = makeMemfsExports();
   const targetExports = makeMemfsExports();
   targetExports.ensurePath("/proc", "dir", 0o040555);
@@ -337,5 +352,6 @@ test("restoreProcSelfExe does not overwrite an existing proc/self/exe symlink", 
 
   fsUtils.restoreProcSelfExe(targetExports, new TextEncoder().encode("/bin/new-target"));
 
-  expect(targetExports.linkTarget("/proc/self/exe")).toBe("/bin/existing");
+  expect(targetExports.linkTarget("/proc/self/exe")).toBe("/bin/new-target");
+  expect(targetExports.procfsInstallTargets).toEqual(["/bin/new-target"]);
 });

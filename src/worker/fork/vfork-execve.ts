@@ -43,6 +43,82 @@ import {
 import type { ProcessHandle, ThreadWorkerState, WorkerForkDeps } from "./types.js";
 
 const VFORK_EXECVE_HANDOFF_FAILURE_WAIT_STATUS = 127 << 8;
+const HANDOFF_DEBUG_STRING_LIMIT = 128;
+
+function formatGuestCStringForDebug(
+  handle: ProcessHandle,
+  guestPtr: bigint | number,
+): string {
+  const ptr = Number(guestPtr);
+  if (ptr === 0) {
+    return "null";
+  }
+  const start = handle.guestBase + ptr;
+  const bytes = new Uint8Array(handle.memory.buffer);
+  if (start < 0 || start >= bytes.length) {
+    return `out-of-range:0x${ptr.toString(16)}`;
+  }
+  let end = start;
+  const limit = Math.min(bytes.length, start + HANDOFF_DEBUG_STRING_LIMIT);
+  while (end < limit && bytes[end] !== 0) {
+    end += 1;
+  }
+  const terminated = end < bytes.length && bytes[end] === 0;
+  const decoded = decodeExecveBytes(bytes.slice(start, terminated ? end + 1 : end));
+  return `${JSON.stringify(decoded)}${terminated ? "" : ":unterminated"}`;
+}
+
+function formatGuestStrvecForDebug(
+  handle: ProcessHandle,
+  guestPtr: bigint | number,
+): string {
+  const ptr = Number(guestPtr);
+  if (ptr === 0) {
+    return "null";
+  }
+  const start = handle.guestBase + ptr;
+  if (start < 0 || start + 8 > handle.memory.buffer.byteLength) {
+    return `out-of-range:0x${ptr.toString(16)}`;
+  }
+  const view = new DataView(handle.memory.buffer);
+  const values: string[] = [];
+  for (let index = 0; index < 2; index += 1) {
+    const entryOffset = start + index * 8;
+    if (entryOffset + 8 > handle.memory.buffer.byteLength) {
+      values.push(`out-of-range@${index}`);
+      break;
+    }
+    const entryPtr = view.getBigUint64(entryOffset, true);
+    values.push(`0x${entryPtr.toString(16)}=${formatGuestCStringForDebug(handle, entryPtr)}`);
+    if (entryPtr === 0n) {
+      break;
+    }
+  }
+  return `[${values.join(",")}]`;
+}
+
+function formatThreadSyscallArgsForDebug(
+  handle: ProcessHandle,
+  vmPtr: number,
+): string {
+  type RegisterAccessorName = "thread_a7" | "thread_a0" | "thread_a1" | "thread_a2" | "thread_a3" | "thread_a4" | "thread_a5";
+  const format = (value: bigint | undefined): string => (
+    value === undefined ? "n/a" : `0x${value.toString(16)}`
+  );
+  const read = (name: RegisterAccessorName): bigint | undefined => {
+    const accessor = handle.kernel[name] as (((vmPtr: number) => bigint) | undefined);
+    return typeof accessor === "function" ? accessor(vmPtr) : undefined;
+  };
+  return [
+    `a7=${format(read("thread_a7"))}`,
+    `a0=${format(read("thread_a0"))}`,
+    `a1=${format(read("thread_a1"))}`,
+    `a2=${format(read("thread_a2"))}`,
+    `a3=${format(read("thread_a3"))}`,
+    `a4=${format(read("thread_a4"))}`,
+    `a5=${format(read("thread_a5"))}`,
+  ].join(":");
+}
 
 function copyKernelRuntimeRegion(
   source: WebAssembly.Memory,
@@ -220,13 +296,31 @@ export async function handleVforkExecve(
 ): Promise<void> {
   handle.pendingChildSpawnRecords += 1;
   try {
+    const handoffBeforePreflight = readProcessSpawnHandoff(handle.kernel, parentThread.vmPtr);
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `vfork-execve:handoff-before-preflight:${childPid}`
+        + `:kind=${handoffBeforePreflight.kind}`
+        + `:child=${handoffBeforePreflight.childPid}`
+        + `:path=0x${handoffBeforePreflight.path.toString(16)}:${formatGuestCStringForDebug(handle, handoffBeforePreflight.path)}`
+        + `:argv=0x${handoffBeforePreflight.argv.toString(16)}:${formatGuestStrvecForDebug(handle, handoffBeforePreflight.argv)}`
+        + `:envp=0x${handoffBeforePreflight.envp.toString(16)}`
+        + `:${formatThreadSyscallArgsForDebug(handle, parentThread.vmPtr)}`,
+    );
+    const execveGuestPayload = captureExecveGuestHandoff(
+      handle,
+      parentThread.vmPtr,
+      Number(handoffBeforePreflight.path),
+      Number(handoffBeforePreflight.argv),
+      Number(handoffBeforePreflight.envp),
+      parentThread.execveProcessState,
+    );
     if (handle.kernelWorkerRequest && handle.pid > 0) {
-      await deps.syncProcessMemfsViaKernelWorker(handle, {
-        kind: "syscall",
-        nr: -1n,
-        name: "vfork-execve-parent-memfs-preflight",
-      });
-      assertVforkChildHandoffState(handle, parentThread.vmPtr, childPid, "child-handoff-preflight");
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `vfork-execve:memfs-preflight-skipped:${childPid}`,
+      );
+      assertVforkChildHandoffState(handle, parentThread.vmPtr, childPid, "child-handoff-no-preflight");
     }
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:start:${childPid}`);
     deps.appendRuntimeLifecycleEvent(
@@ -238,13 +332,19 @@ export async function handleVforkExecve(
     const snapshot = handle.vforkSnapshot ?? captureVforkSnapshot(handle, parentThread);
     const inheritedSharedOfdIds = new Set(snapshot.inheritedSharedOfdIds);
     const handoff = readProcessSpawnHandoff(handle.kernel, parentThread.vmPtr);
-    const execveGuestPayload = captureExecveGuestHandoff(
-      handle,
-      parentThread.vmPtr,
-      Number(handoff.path),
-      Number(handoff.argv),
-      Number(handoff.envp),
-      parentThread.execveProcessState,
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `vfork-execve:handoff:${childPid}`
+        + `:kind=${handoff.kind}`
+        + `:child=${handoff.childPid}`
+        + `:path=0x${handoff.path.toString(16)}:${formatGuestCStringForDebug(handle, handoff.path)}`
+        + `:argv=0x${handoff.argv.toString(16)}:${formatGuestStrvecForDebug(handle, handoff.argv)}`
+        + `:envp=0x${handoff.envp.toString(16)}`
+        + `:vfork_child=${handle.kernel.thread_vfork_child_pid?.() ?? "n/a"}`
+        + `:${debugVforkVmState(handle, parentThread.vmPtr)}`
+        + `:${formatThreadSyscallArgsForDebug(handle, parentThread.vmPtr)}`
+        + `:last_pc=${parentThread.lastStatusPc === null ? "n/a" : `0x${parentThread.lastStatusPc.toString(16)}`}`
+        + `:last_sp=${parentThread.lastStatusSp === null ? "n/a" : `0x${parentThread.lastStatusSp.toString(16)}`}`,
     );
     const debugPath = decodeExecveBytes(execveGuestPayload.path);
     const debugArgv0 = execveGuestPayload.argv[0]
@@ -285,6 +385,12 @@ export async function handleVforkExecve(
   attachKernelRuntimeState(childKernel, handle.kernelState);
 
   const rollbackParentAfterHandoffFailure = async (): Promise<void> => {
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `vfork-execve:rollback:start:${childPid}`
+        + `:vfork_child=${handle.kernel.thread_vfork_child_pid?.() ?? "n/a"}`
+        + `:${debugVforkVmState(handle, parentThread.vmPtr)}`,
+    );
     if (handle.kernelWorkerRequest && handle.pid > 0) {
       await deps.recordChildExitViaKernelWorker(
         handle,
@@ -297,6 +403,12 @@ export async function handleVforkExecve(
       restoreVforkParentLocally(handle.kernel, parentThread.vmPtr, childPid);
       handle.kernelState = readKernelRuntimeState(handle.kernel);
     }
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `vfork-execve:rollback:restored:${childPid}`
+        + `:vfork_child=${handle.kernel.thread_vfork_child_pid?.() ?? "n/a"}`
+        + `:${debugVforkVmState(handle, parentThread.vmPtr)}`,
+    );
     assertVforkParentResumeOwnership(
       deps,
       handle,
