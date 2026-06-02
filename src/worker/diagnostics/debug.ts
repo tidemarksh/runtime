@@ -92,6 +92,16 @@ export interface ProcessExecutionStats {
   running: boolean;
   memoryBytes: number;
   ramSize: number;
+  processCommittedBytes: number;
+  guestAddressLimitBytes: string | null;
+  guestMemoryPolicyLimitBytes: number | null;
+  processMaxMemoryBytes: number;
+  forkProcessMaxMemoryBytes: number;
+  pageCacheDataCapacityBytes: number | null;
+  publishedMetadataCapacityBytes: number | null;
+  fsRpcRingCapacityBytes: number | null;
+  artifactMaterializationBudgetBytes: number | null;
+  artifactMaterializedBytes: number | null;
   maxMemoryBytes: number;
   forkMaxMemoryBytes: number;
   memoryOwnership?: RuntimeMemoryOwnership;
@@ -796,14 +806,28 @@ export function debugRuntimeExecutionStats(
     .sort((left, right) => left.pid - right.pid)
     .map((handle) => {
       const statusNames = readStatusNames(handle);
+      const ownership = handle.memoryOwnership;
+      const processCommittedBytes = Math.max(0, handle.memory.buffer.byteLength - handle.guestBase);
+      const processMaxMemoryBytes = handle.maxMemoryPages * 65536;
+      const forkProcessMaxMemoryBytes = handle.forkMaxMemoryPages * 65536;
       return {
         pid: handle.pid,
         cmd: handle.debugCommand,
         running: handle.runningWorker !== null,
         memoryBytes: handle.memory.buffer.byteLength,
         ramSize: handle.ramSize,
-        maxMemoryBytes: handle.maxMemoryPages * 65536,
-        forkMaxMemoryBytes: handle.forkMaxMemoryPages * 65536,
+        processCommittedBytes,
+        guestAddressLimitBytes: ownership?.guestAddressLimitBytes ?? null,
+        guestMemoryPolicyLimitBytes: ownership?.guestMemoryPolicyLimitBytes ?? null,
+        processMaxMemoryBytes,
+        forkProcessMaxMemoryBytes,
+        pageCacheDataCapacityBytes: ownership?.pageCacheDataCapacityBytes ?? handle.sabPageCache?.byteLength ?? null,
+        publishedMetadataCapacityBytes: ownership?.publishedMetadataCapacityBytes ?? null,
+        fsRpcRingCapacityBytes: ownership?.fsRpcRingCapacityBytes ?? null,
+        artifactMaterializationBudgetBytes: ownership?.artifactMaterializationBudgetBytes ?? null,
+        artifactMaterializedBytes: ownership?.artifactMaterializedBytes ?? null,
+        maxMemoryBytes: processMaxMemoryBytes,
+        forkMaxMemoryBytes: forkProcessMaxMemoryBytes,
         memoryOwnership: handle.memoryOwnership,
         guestBase: handle.guestBase,
         readyWorkers: handle.readyWorkers.length,

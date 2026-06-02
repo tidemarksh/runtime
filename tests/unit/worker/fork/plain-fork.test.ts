@@ -693,6 +693,11 @@ test("plain fork skips byte-identical captured stack snapshot", async () => {
   const memoryLog = parent.workerDebugLog.find((entry) => entry.startsWith("plain-fork-memory:"));
   expect(memoryLog).toBeDefined();
   expect(memoryLog).not.toContain(`${stackStart}-${stackStart + stackBytes}:${stackBytes},${stackStart}-${stackStart + stackBytes}:${stackBytes}`);
+  expect(memoryLog).toContain("guestAddressLimitBytes=4294967295");
+  expect(memoryLog).toContain("processCommittedBytes=");
+  expect(memoryLog).toContain("processMaxMemoryBytes=");
+  expect(memoryLog).toContain("pageCacheDataCapacityBytes=0");
+  expect(memoryLog).toContain("artifactMaterializedBytes=0");
 });
 
 test("fork memory snapshot stack fallback uses committed backing instead of ramSize", async () => {

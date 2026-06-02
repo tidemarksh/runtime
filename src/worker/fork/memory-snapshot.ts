@@ -300,12 +300,18 @@ function formatForkSnapshotRanges(snapshot: ForkMemorySnapshot): string {
     .join(",");
 }
 
+function formatNullableBytes(value: number | string | null | undefined): string {
+  return value === null || value === undefined ? "null" : String(value);
+}
+
 export function appendPlainForkMemoryDebug(
   handle: ProcessHandle,
   childPid: number,
   snapshot: ForkMemorySnapshot,
   childMemoryBytes: number,
 ): void {
+  const ownership = handle.memoryOwnership;
+  const processCommittedBytes = Math.max(0, handle.memory.buffer.byteLength - handle.guestBase);
   handle.workerDebugLog.push([
     "plain-fork-memory",
     `parent=${handle.pid}`,
@@ -319,6 +325,16 @@ export function appendPlainForkMemoryDebug(
     `guestBase=${handle.guestBase}`,
     `ramSize=${handle.ramSize}`,
     `guestBackingBytes=${Math.max(0, handle.memory.buffer.byteLength - handle.guestBase)}`,
+    `guestAddressLimitBytes=${formatNullableBytes(ownership?.guestAddressLimitBytes)}`,
+    `guestMemoryPolicyLimitBytes=${formatNullableBytes(ownership?.guestMemoryPolicyLimitBytes)}`,
+    `processCommittedBytes=${processCommittedBytes}`,
+    `processMaxMemoryBytes=${handle.maxMemoryPages * 65536}`,
+    `forkProcessMaxMemoryBytes=${handle.forkMaxMemoryPages * 65536}`,
+    `pageCacheDataCapacityBytes=${formatNullableBytes(ownership?.pageCacheDataCapacityBytes ?? handle.sabPageCache?.byteLength ?? 0)}`,
+    `publishedMetadataCapacityBytes=${formatNullableBytes(ownership?.publishedMetadataCapacityBytes)}`,
+    `fsRpcRingCapacityBytes=${formatNullableBytes(ownership?.fsRpcRingCapacityBytes)}`,
+    `artifactMaterializationBudgetBytes=${formatNullableBytes(ownership?.artifactMaterializationBudgetBytes)}`,
+    `artifactMaterializedBytes=${formatNullableBytes(ownership?.artifactMaterializedBytes)}`,
     `maxMemoryBytes=${handle.maxMemoryPages * 65536}`,
     `forkMaxMemoryBytes=${handle.forkMaxMemoryPages * 65536}`,
   ].join(":"));
