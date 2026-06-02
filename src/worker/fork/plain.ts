@@ -78,6 +78,14 @@ async function waitForForkChildSchedulingPoint(childHandle: ProcessHandle): Prom
   }
 }
 
+function forkChildGuestMemoryPolicyLimit(handle: ProcessHandle): bigint {
+  const inheritedLimit = handle.kernel.thread_guest_memory_policy_limit?.(handle.vmPtr);
+  if (inheritedLimit !== undefined) {
+    return inheritedLimit < 0n ? 0n : inheritedLimit;
+  }
+  return BigInt(normalizeGuestMemoryPolicyLimitBytes(handle.ramSize));
+}
+
 export async function handlePlainFork(
   deps: WorkerForkDeps,
   handle: ProcessHandle,
@@ -207,7 +215,6 @@ export async function handlePlainFork(
         + ` cause=${error.message}`,
       ));
     };
-    const childGuestMemoryPolicyLimit = normalizeGuestMemoryPolicyLimitBytes(childHandle.ramSize);
     detachInheritedHostStdioFromChild(childHandle);
     const childHeldOfdIds = collectProcessHeldOfds(childHandle);
     const sharedOfdIds = activeKernelShareOfdIds(handle);
@@ -243,6 +250,7 @@ export async function handlePlainFork(
       false,
     );
     childHandle.kernel.thread_prepare_fork_child?.(childHandle.vmPtr, childPid);
+    const childGuestMemoryPolicyLimit = forkChildGuestMemoryPolicyLimit(childHandle);
     detachInheritedHostStdioFromChild(childHandle);
     setGuestMemoryPolicyLimit(childHandle.kernel, childHandle.vmPtr, childGuestMemoryPolicyLimit);
     childHandle.kernelState = readKernelRuntimeState(childHandle.kernel);

@@ -111,6 +111,7 @@ const createdKernelExports: Array<
     memfsSetFileSizeShallowCalls: Array<[number, number]>;
     memfsWriteCalls: Array<[number, number]>;
     memfsCreateWithDataCalls: Array<[number, number]>;
+    guestMemoryPolicyLimitCalls: Array<[number, bigint]>;
   }
 > = [];
 const threadCountQueue: number[] = [];
@@ -192,6 +193,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
   const memfsSetFileSizeShallowCalls: Array<[number, number]> = [];
   const memfsWriteCalls: Array<[number, number]> = [];
   const memfsCreateWithDataCalls: Array<[number, number]> = [];
+  const guestMemoryPolicyLimitCalls: Array<[number, bigint]> = [];
   let nextIno = 10;
   interface MockProcessIdentity {
     pid: number;
@@ -244,6 +246,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     memfsSetFileSizeShallowCalls: Array<[number, number]>;
     memfsWriteCalls: Array<[number, number]>;
     memfsCreateWithDataCalls: Array<[number, number]>;
+    guestMemoryPolicyLimitCalls: Array<[number, bigint]>;
   } = {
     memory,
     __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, 0),
@@ -420,7 +423,9 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     },
     thread_guest_address_limit: () => 0xffff_ffffn,
     thread_guest_memory_policy_limit: () => 0n,
-    thread_set_guest_memory_policy_limit: () => {},
+    thread_set_guest_memory_policy_limit: (vmPtr, limit) => {
+      guestMemoryPolicyLimitCalls.push([vmPtr, limit]);
+    },
     thread_process_max_memory_pages: () => 0,
     thread_set_guest_ram_limit: () => {},
     thread_clear_spawn_handoff: () => {},
@@ -555,6 +560,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     memfsSetFileSizeShallowCalls,
     memfsWriteCalls,
     memfsCreateWithDataCalls,
+    guestMemoryPolicyLimitCalls,
   };
   createdKernelExports.push(exports);
   return exports;
@@ -698,6 +704,40 @@ test("fork memory snapshot stack fallback uses committed backing instead of ramS
 
   expect(Number(stackPointer)).toBeGreaterThan(parent.ramSize);
   expect(snapshot.endOffset).toBe(parent.memory.buffer.byteLength);
+});
+
+test("plain fork preserves optional zero guest memory policy from child kernel state", async () => {
+  const parent = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    ramSize: 64 * 1024 * 1024,
+  });
+  const worker = createdWorkers[0];
+  const kernel = createdKernelExports[0];
+
+  kernel.thread_spawn_kind = () => kernel.abi_spawn_kind_fork();
+  kernel.thread_spawn_child_pid = () => 77;
+  kernel.debug_memory_brk_current = () => 0x4000n;
+  kernel.debug_memory_mmap_next = () => 0x1f0000n;
+  kernel.debug_memory_vma_len = () => 0;
+  kernel.thread_guest_memory_policy_limit = () => 0n;
+
+  emitReady(worker);
+  worker.clearPostedMessages();
+  worker.emit({
+    type: "status",
+    status: 9,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+  await flushMicrotasks();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const childKernel = createdKernelExports[1];
+  expect(parent.ramSize).toBeGreaterThan(0);
+  expect(childKernel?.guestMemoryPolicyLimitCalls.at(-1)).toEqual([0x1234, 0n]);
 });
 
 test("plain fork canonicalizes child pid and reinitializes child lifecycle through kernel-worker", async () => {
