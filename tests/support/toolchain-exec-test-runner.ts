@@ -1,6 +1,7 @@
 import { expect, test } from "vite-plus/test";
 import {
   bucketToolchainExecFailure,
+  scaledToolchainTimeoutMs,
   type ToolchainExecEntry,
   prepareToolchainExecRuntime,
   runToolchainArtifactChecks,
@@ -89,5 +90,5 @@ export function registerToolchainExecGate(entry: ToolchainExecEntry): void {
     } finally {
       runtime.destroy();
     }
-  }, entry.timeoutMs + 10_000);
+  }, scaledToolchainTimeoutMs(entry.timeoutMs) + 10_000);
 }

@@ -6,6 +6,7 @@ import { rustCLinkerSnapshotSources, rustToolchainSnapshotSources } from "./tool
 const rustToolchainDir = process.env.TIDEMARK_TEST_RUST_TOOLCHAIN_DIR ?? "";
 const cToolchainDir = process.env.TIDEMARK_TEST_C_TOOLCHAIN_DIR ?? "";
 const glibcSysrootDir = process.env.TIDEMARK_TEST_GLIBC_SYSROOT_DIR ?? "";
+const RUST_TOOLCHAIN_GUEST_MEMORY_POLICY_LIMIT_BYTES = 896 * 1024 * 1024;
 const RUST_TOOLCHAIN_PAGE_CACHE_DATA_CAPACITY_BYTES = 640 * 1024 * 1024;
 
 const GLIBC_RUNTIME_LIBS = [
@@ -54,6 +55,7 @@ export const rustcCompileToolchainEntry: ToolchainExecEntry = {
   ],
   timeoutMs: 20_000,
   ramSize: 768 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: RUST_TOOLCHAIN_GUEST_MEMORY_POLICY_LIMIT_BYTES,
   pageCacheDataCapacityBytes: RUST_TOOLCHAIN_PAGE_CACHE_DATA_CAPACITY_BYTES,
   snapshotSources: rustSnapshotSources([
     {
@@ -93,6 +95,7 @@ export const cargoBuildToolchainEntry: ToolchainExecEntry = {
   ],
   timeoutMs: 30_000,
   ramSize: 1024 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: RUST_TOOLCHAIN_GUEST_MEMORY_POLICY_LIMIT_BYTES,
   pageCacheDataCapacityBytes: RUST_TOOLCHAIN_PAGE_CACHE_DATA_CAPACITY_BYTES,
   snapshotSources: rustSnapshotSources([
     { kind: "dir", guestPath: "/tmp/cargo-home" },

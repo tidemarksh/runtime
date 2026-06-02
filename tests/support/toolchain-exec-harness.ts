@@ -38,6 +38,7 @@ export interface ToolchainExecEntry {
   cwd?: string;
   timeoutMs: number;
   ramSize: number;
+  guestMemoryPolicyLimitBytes?: number;
   pageCacheDataCapacityBytes?: number;
   snapshotSources: readonly SnapshotSource[];
   expectedDriverSubstrings?: readonly string[];
@@ -54,6 +55,18 @@ export interface ToolchainExecResult {
 
 export interface ToolchainRunResult extends ToolchainExecResult {
   path: string;
+}
+
+export function scaledToolchainTimeoutMs(timeoutMs: number): number {
+  const scaleText = process.env.TIDEMARK_TEST_TOOLCHAIN_EXEC_TIMEOUT_SCALE;
+  if (!scaleText) {
+    return timeoutMs;
+  }
+  const scale = Number(scaleText);
+  if (!Number.isFinite(scale) || scale <= 0) {
+    return timeoutMs;
+  }
+  return Math.max(1, Math.ceil(timeoutMs * scale));
 }
 
 type RuntimeProcessDebugView = RuntimeInstance & {
@@ -80,6 +93,7 @@ export async function prepareToolchainExecRuntime(
   const runtime = await Runtime.create({
     wasmBytes,
     ramSize: entry.ramSize,
+    guestMemoryPolicyLimitBytes: entry.guestMemoryPolicyLimitBytes,
     pageCacheDataCapacityBytes: entry.pageCacheDataCapacityBytes,
   });
   try {
@@ -142,7 +156,7 @@ export async function runToolchainExecEntry(
         executableBytes,
         [...entry.argv],
         [...entry.env],
-        entry.timeoutMs,
+        scaledToolchainTimeoutMs(entry.timeoutMs),
         entry.cwd ? { cwd: entry.cwd } : undefined,
       ),
       markerPromise,
@@ -225,7 +239,7 @@ export async function runToolchainArtifactChecks(
       elfBytes,
       runArgv,
       [...(check.env ?? [])],
-      check.timeoutMs,
+      scaledToolchainTimeoutMs(check.timeoutMs),
     ).catch(async (error) => {
       const summary = await runtimeDebugSummary(runtime);
       const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
