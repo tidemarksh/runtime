@@ -1,7 +1,10 @@
 import {
   attachKernelRuntimeState,
+  guestAddressProfileWasm32Compatible,
   readKernelRuntimeState,
   readProcessSpawnHandoff,
+  setExecveMemoryHandoff,
+  setGuestMemoryPolicyLimit,
   type KernelExports,
 } from "../../abi.js";
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
@@ -425,12 +428,18 @@ export async function handleVforkExecve(
     handle.guestBase,
     execveGuestPayload,
   );
-  childKernel.thread_set_execve_handoff(
+  const guestAddressProfile =
+    childKernel.thread_guest_address_profile?.(childVmPtr) ?? guestAddressProfileWasm32Compatible(childKernel);
+  setExecveMemoryHandoff(
+    childKernel,
     childVmPtr,
     stagedExecveHandoff.processPtr,
     stagedExecveHandoff.pathPtr,
     stagedExecveHandoff.argvPtr,
     stagedExecveHandoff.envpPtr,
+    guestAddressProfile,
+    BigInt(handle.ramSize),
+    handle.maxMemoryPages,
     handle.ramSize,
   );
   let execRet: number;
@@ -502,7 +511,8 @@ export async function handleVforkExecve(
       + ` cause=${error.message}`,
     ));
   };
-  childHandle.kernel.thread_set_guest_ram_limit(
+  setGuestMemoryPolicyLimit(
+    childHandle.kernel,
     childHandle.vmPtr,
     computeGuestRamLimitBytes(
       childHandle.guestBase,

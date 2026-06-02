@@ -234,8 +234,26 @@ export interface KernelExports {
   process_push_arg(addr: number): void;
   process_push_env(addr: number): void;
   process_clear_args(): void;
+  abi_guest_address_profile_wasm32_compatible?(): number;
+  abi_guest_address_profile_memory64?(): number;
+  process_guest_base_for_address_profile?(addressProfile: number): bigint;
+  process_guest_address_limit_for_profile?(addressProfile: number, guestBase: bigint): bigint;
   process_guest_base(ram_size: number): number;
+  process_inspect_elf_brk_with_memory_policy?(
+    elf_ptr: number,
+    elf_len: number,
+    addressProfile: number,
+    guestMemoryPolicyLimit: bigint,
+  ): bigint;
   process_inspect_elf_brk(elf_ptr: number, elf_len: number, ram_size: number): bigint;
+  process_create_with_memory_policy?(
+    elf_ptr: number,
+    elf_len: number,
+    addressProfile: number,
+    guestMemoryPolicyLimit: bigint,
+    processMaxMemoryPages: number,
+    stack_size: number,
+  ): number;
   process_create(elf_ptr: number, elf_len: number, ram_size: number, stack_size: number): number;
   process_create_last_error?(): number;
 
@@ -366,11 +384,19 @@ export interface KernelExports {
   thread_spawn_kind(vm_ptr: number): number;
   thread_guest_ram_limit(vm_ptr: number): number;
   thread_set_guest_ram_limit(vm_ptr: number, ramSize: number): void;
+  thread_guest_address_profile?(vm_ptr: number): number;
+  thread_guest_address_limit?(vm_ptr: number): bigint;
+  thread_guest_memory_policy_limit?(vm_ptr: number): bigint;
+  thread_set_guest_memory_policy_limit?(vm_ptr: number, limit: bigint): void;
+  thread_process_max_memory_pages?(vm_ptr: number): number;
   thread_spawn_child_pid(vm_ptr: number): number;
   thread_spawn_path(vm_ptr: number): bigint;
   thread_spawn_argv(vm_ptr: number): bigint;
   thread_spawn_envp(vm_ptr: number): bigint;
   thread_spawn_ram_size(vm_ptr: number): number;
+  thread_spawn_address_profile?(vm_ptr: number): number;
+  thread_spawn_guest_memory_policy_limit?(vm_ptr: number): bigint;
+  thread_spawn_process_max_memory_pages?(vm_ptr: number): number;
   thread_set_execve_handoff(
     vm_ptr: number,
     processPtr: number,
@@ -378,6 +404,16 @@ export interface KernelExports {
     argvAddr: bigint,
     envpAddr: bigint,
     ramSize: number,
+  ): void;
+  thread_set_execve_memory_handoff?(
+    vm_ptr: number,
+    processPtr: number,
+    pathAddr: bigint,
+    argvAddr: bigint,
+    envpAddr: bigint,
+    addressProfile: number,
+    guestMemoryPolicyLimit: bigint,
+    processMaxMemoryPages: number,
   ): void;
   thread_clear_spawn_handoff(vm_ptr: number): void;
   thread_clear_vfork_runtime_state?(): void;
@@ -895,6 +931,105 @@ export interface ProcessSpawnHandoff {
   argv: bigint;
   envp: bigint;
   ramSize: number;
+  addressProfile: number;
+  guestMemoryPolicyLimit: bigint;
+  processMaxMemoryPages: number;
+}
+
+export function guestAddressProfileWasm32Compatible(exports: KernelExports): number {
+  return exports.abi_guest_address_profile_wasm32_compatible?.() ?? 1;
+}
+
+export function processGuestBaseForAddressProfile(
+  exports: KernelExports,
+  addressProfile: number,
+  fallbackRamSize: number,
+): number {
+  const base = exports.process_guest_base_for_address_profile?.(addressProfile);
+  return base === undefined ? exports.process_guest_base(fallbackRamSize) : Number(base);
+}
+
+export function processInspectElfBrkWithMemoryPolicy(
+  exports: KernelExports,
+  elfPtr: number,
+  elfLen: number,
+  addressProfile: number,
+  guestMemoryPolicyLimit: bigint,
+  fallbackRamSize: number,
+): bigint {
+  return exports.process_inspect_elf_brk_with_memory_policy?.(
+    elfPtr,
+    elfLen,
+    addressProfile,
+    guestMemoryPolicyLimit,
+  ) ?? exports.process_inspect_elf_brk(elfPtr, elfLen, fallbackRamSize);
+}
+
+export function processCreateWithMemoryPolicy(
+  exports: KernelExports,
+  elfPtr: number,
+  elfLen: number,
+  addressProfile: number,
+  guestMemoryPolicyLimit: bigint,
+  processMaxMemoryPages: number,
+  stackSize: number,
+  fallbackRamSize: number,
+): number {
+  return exports.process_create_with_memory_policy?.(
+    elfPtr,
+    elfLen,
+    addressProfile,
+    guestMemoryPolicyLimit,
+    processMaxMemoryPages,
+    stackSize,
+  ) ?? exports.process_create(elfPtr, elfLen, fallbackRamSize, stackSize);
+}
+
+export function setGuestMemoryPolicyLimit(
+  exports: KernelExports,
+  vmPtr: number,
+  limit: number,
+): void {
+  if (exports.thread_set_guest_memory_policy_limit) {
+    exports.thread_set_guest_memory_policy_limit(vmPtr, BigInt(limit));
+    return;
+  }
+  exports.thread_set_guest_ram_limit(vmPtr, limit);
+}
+
+export function setExecveMemoryHandoff(
+  exports: KernelExports,
+  vmPtr: number,
+  processPtr: number,
+  pathAddr: bigint,
+  argvAddr: bigint,
+  envpAddr: bigint,
+  addressProfile: number,
+  guestMemoryPolicyLimit: bigint,
+  processMaxMemoryPages: number,
+  fallbackRamSize: number,
+): void {
+  if (exports.thread_set_execve_memory_handoff) {
+    exports.thread_set_execve_memory_handoff(
+      vmPtr,
+      processPtr,
+      pathAddr,
+      argvAddr,
+      envpAddr,
+      addressProfile,
+      guestMemoryPolicyLimit,
+      processMaxMemoryPages,
+    );
+    return;
+  }
+  exports.thread_set_execve_handoff(
+    vmPtr,
+    processPtr,
+    pathAddr,
+    argvAddr,
+    envpAddr,
+    fallbackRamSize,
+  );
 }
 
 export function readStatusCodes(exports: KernelExports): StatusCodes {
@@ -1020,5 +1155,8 @@ export function readProcessSpawnHandoff(
     argv: exports.thread_spawn_argv(vmPtr),
     envp: exports.thread_spawn_envp(vmPtr),
     ramSize: exports.thread_spawn_ram_size(vmPtr),
+    addressProfile: exports.thread_spawn_address_profile?.(vmPtr) ?? 0,
+    guestMemoryPolicyLimit: exports.thread_spawn_guest_memory_policy_limit?.(vmPtr) ?? BigInt(exports.thread_spawn_ram_size(vmPtr)),
+    processMaxMemoryPages: exports.thread_spawn_process_max_memory_pages?.(vmPtr) ?? 0,
   };
 }

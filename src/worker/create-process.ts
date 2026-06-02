@@ -1,5 +1,10 @@
 import {
+  guestAddressProfileWasm32Compatible,
+  processCreateWithMemoryPolicy,
+  processGuestBaseForAddressProfile,
+  processInspectElfBrkWithMemoryPolicy,
   readKernelRuntimeState,
+  setGuestMemoryPolicyLimit,
   type KernelExports,
 } from "../abi.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
@@ -322,7 +327,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     if (elfBrk === 0) {
       throw new Error("ELF inspection failed");
     }
- 
+
     const runtimeScratchBase = detachedKernelScratchBase(exports.memory, guestBase, elfBrk);
     let scratchOffset = 0;
     const elfOffset = writeDetachedKernelScratch(exports, runtimeScratchBase, elfData, scratchOffset);
@@ -350,10 +355,18 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     guestBase: number,
     elfData: Uint8Array,
     ramSize: number,
+    guestAddressProfile = guestAddressProfileWasm32Compatible(exports),
   ): number {
     const inspectScratchBase = detachedKernelScratchBase(exports.memory, guestBase, 0);
     const inspectElfOffset = writeDetachedKernelScratch(exports, inspectScratchBase, elfData);
-    const elfBrk = Number(exports.process_inspect_elf_brk(inspectElfOffset, elfData.length, ramSize));
+    const elfBrk = Number(processInspectElfBrkWithMemoryPolicy(
+      exports,
+      inspectElfOffset,
+      elfData.length,
+      guestAddressProfile,
+      BigInt(ramSize),
+      ramSize,
+    ));
     return elfBrk;
   }
 
@@ -493,11 +506,12 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     ), interpPath, options.kernelWorkerRequest);
     const bootstrapEntriesRequireMaterializedData = entriesRequireMaterializedData(bootstrapEntries);
     preloadSnapshotEntries(exports, bootstrapEntries, preloadScratchBase);
-    const guestBase = exports.process_guest_base(ramSize);
+    const guestAddressProfile = guestAddressProfileWasm32Compatible(exports);
+    const guestBase = processGuestBaseForAddressProfile(exports, guestAddressProfile, ramSize);
     if (guestBase === 0) {
       throw new Error("process_guest_base failed");
     }
-    const elfBrk = inspectProcessElfBrk(exports, guestBase, elfData, ramSize);
+    const elfBrk = inspectProcessElfBrk(exports, guestBase, elfData, ramSize, guestAddressProfile);
     if (elfBrk === 0) {
       throw new Error("ELF inspection failed");
     }
@@ -511,7 +525,16 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     const runtimeBridge = createRuntimeStateBridge();
 
     const elfOffset = stageProcessCreation(exports, guestBase, elfData, ramSize, options, elfBrk);
-    const vmPtr = exports.process_create(elfOffset, elfData.length, ramSize, stackSize);
+    const vmPtr = processCreateWithMemoryPolicy(
+      exports,
+      elfOffset,
+      elfData.length,
+      guestAddressProfile,
+      BigInt(ramSize),
+      boundedMaxMemoryPages,
+      stackSize,
+      ramSize,
+    );
     if (vmPtr === 0) {
       const interpInSnapshot = interpPath ? snapshotHasPath(bootstrapEntries, interpPath) : null;
       const processCreateLastError = exports.process_create_last_error?.() ?? null;
@@ -555,7 +578,8 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       worker,
       runtimeBridge,
     );
-    handle.kernel.thread_set_guest_ram_limit(
+    setGuestMemoryPolicyLimit(
+      handle.kernel,
       vmPtr,
       computeGuestRamLimitBytes(guestBase, ramSize, boundedMaxMemoryPages),
     );

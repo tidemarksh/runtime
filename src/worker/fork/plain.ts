@@ -1,6 +1,7 @@
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
+  setGuestMemoryPolicyLimit,
   type KernelExports,
 } from "../../abi.js";
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
@@ -247,7 +248,7 @@ export async function handlePlainFork(
     );
     childHandle.kernel.thread_prepare_fork_child?.(childHandle.vmPtr, childPid);
     detachInheritedHostStdioFromChild(childHandle);
-    childHandle.kernel.thread_set_guest_ram_limit(childHandle.vmPtr, childGuestRamLimit);
+    setGuestMemoryPolicyLimit(childHandle.kernel, childHandle.vmPtr, childGuestRamLimit);
     childHandle.kernelState = readKernelRuntimeState(childHandle.kernel);
     adoptKernelShare(handle, childHandle);
     deps.syncForkSharedStateLocally(handle, [childHandle], {

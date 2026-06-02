@@ -870,7 +870,9 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
   try {
   debugParts.push(`mem_bytes=${exports.memory.buffer.byteLength}`);
   debugParts.push(`guest_base=0x${(exports.thread_guest_base?.(vmPtr) ?? guestBase).toString(16)}`);
-  debugParts.push(`guest_ram_limit=${(exports.thread_guest_ram_limit?.(vmPtr) ?? 0) >>> 0}`);
+  debugParts.push(`guest_memory_policy_limit=${exports.thread_guest_memory_policy_limit?.(vmPtr) ?? BigInt(exports.thread_guest_ram_limit?.(vmPtr) ?? 0)}`);
+  debugParts.push(`guest_address_profile=${exports.thread_guest_address_profile?.(vmPtr) ?? 0}`);
+  debugParts.push(`guest_address_limit=${exports.thread_guest_address_limit?.(vmPtr) ?? 0n}`);
   const faultPc = readOptionalThreadU64(exports.thread_fault_pc, vmPtr);
   const currentPc = exports.thread_pc(vmPtr);
   debugParts.push(`process=0x${exports.thread_process_ptr(vmPtr).toString(16)}`);
