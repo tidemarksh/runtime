@@ -31,11 +31,13 @@ import type {
   CreateProcessOptions,
   KernelWorkerMemfsSeedMode,
   ProcessHandle,
+  RuntimeMemoryOwnership,
 } from "./types.js";
 import {
   configureKernelInstanceStack,
   MAIN_THREAD_KERNEL_STACK_SLOT,
 } from "../wasm/stack.js";
+import { FS_RING_TOTAL_BYTES } from "../layout/fs-ring.js";
 
 const encoder = new TextEncoder();
 const WORKER_DEBUG_LOG_ENABLED = false;
@@ -110,6 +112,55 @@ function normalizeGuestPath(path: string): string {
 
 function snapshotEntryMap(entries: readonly FsSnapshotEntry[]): Map<string, FsSnapshotEntry> {
   return new Map(entries.map((entry) => [normalizeGuestPath(entry.path), entry]));
+}
+
+function snapshotMaterializedDataBytes(entries: readonly FsSnapshotEntry[]): number {
+  let total = 0;
+  for (const entry of entries) {
+    if (entry.kind === "file" && entry.data !== undefined) {
+      total += entry.data.byteLength;
+    }
+    if (entry.kind === "symlink" && entry.target !== undefined) {
+      total += entry.target.byteLength;
+    }
+  }
+  return total;
+}
+
+function assertArtifactMaterializationBudget(
+  materializedBytes: number,
+  budgetBytes: number | undefined,
+): void {
+  if (budgetBytes === undefined) {
+    return;
+  }
+  const normalizedBudget = Math.max(Math.trunc(budgetBytes), 0);
+  if (materializedBytes <= normalizedBudget) {
+    return;
+  }
+  throw new Error(
+    `artifact materialization budget exceeded: stagedBytes=${materializedBytes} budgetBytes=${normalizedBudget}`,
+  );
+}
+
+function normalizeFsRpcRingCapacityBytes(capacityBytes: number | undefined): number {
+  if (capacityBytes === undefined) {
+    return FS_RING_TOTAL_BYTES;
+  }
+  const normalized = Math.max(Math.trunc(capacityBytes), 0);
+  if (normalized !== FS_RING_TOTAL_BYTES) {
+    throw new Error(
+      `fsRpcRingCapacityBytes is fixed by kernel ABI at ${FS_RING_TOTAL_BYTES} bytes; got ${normalized}`,
+    );
+  }
+  return normalized;
+}
+
+function publishedMetadataCapacityBytes(state: ReturnType<typeof readKernelRuntimeState>): number {
+  return state.memfsHeaderBytes
+    + state.memfsInodesBytes
+    + state.memfsFirstChildBytes
+    + state.memfsDirEntriesBytes;
 }
 
 function resolveSnapshotPathFollowingSymlinks(
@@ -379,6 +430,8 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     guestBase: number,
     maxMemoryPages: number,
     forkMaxMemoryPages: number,
+    artifactMaterializedBytes: number,
+    fsRpcRingCapacityBytes: number,
     options: CreateProcessOptions,
     worker: Worker,
     runtimeBridge: ReturnType<typeof createRuntimeStateBridge>,
@@ -387,6 +440,19 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     const stdoutPipe = exports.process_stdout_pipe(vmPtr);
     const stderrPipe = exports.process_stderr_pipe(vmPtr);
     const ttyPtySlot = exports.process_tty_pty_slot?.(vmPtr) ?? 0;
+
+    const kernelState = readKernelRuntimeState(exports);
+    const memoryOwnership: RuntimeMemoryOwnership = {
+      guestMemoryPolicyLimitBytes: ramSize,
+      processMaxMemoryBytes: maxMemoryPages * 65536,
+      forkProcessMaxMemoryBytes: forkMaxMemoryPages * 65536,
+      pageCacheDataCapacityBytes: options.sabPageCache?.byteLength ?? 0,
+      publishedMetadataCapacityBytes: publishedMetadataCapacityBytes(kernelState),
+      fsRpcRingCapacityBytes,
+      kernelWorkerPrivateMemoryBytes: options.kernelWorkerPrivateMemoryBytes ?? null,
+      artifactMaterializationBudgetBytes: options.artifactMaterializationBudgetBytes ?? null,
+      artifactMaterializedBytes,
+    };
 
     return {
       runtimeId,
@@ -401,7 +467,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       memory,
       wasmModule,
       kernel: exports,
-      kernelState: readKernelRuntimeState(exports),
+      kernelState,
       stdinPipe,
       stdoutPipe,
       stderrPipe,
@@ -465,6 +531,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       workerMessageDebugStats: createWorkerMessageDebugStats(),
       transferDebugStats: createTransferDebugStats(),
       guestWriteWatchRegions: [],
+      memoryOwnership,
     };
   }
 
@@ -479,6 +546,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     const maxMemoryPages = Math.min(requestedMaxMemoryPages, deps.wasmMaxPages);
     const boundedMaxMemoryPages = Math.max(maxMemoryPages, minMemoryPages);
     const forkMaxMemoryPages = Math.max(options.forkMaxMemoryPages ?? boundedMaxMemoryPages, boundedMaxMemoryPages);
+    const fsRpcRingCapacityBytes = normalizeFsRpcRingCapacityBytes(options.fsRpcRingCapacityBytes);
     const stackSize = options.stackSize ?? 1024 * 1024;
     const { wasmModule, memory, exports } = await instantiateProcessKernel(
       wasmBytes,
@@ -503,6 +571,11 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       delegateFsHydrationToKernelWorker,
       interpPath,
     ), interpPath, options.kernelWorkerRequest);
+    const artifactMaterializedBytes = snapshotMaterializedDataBytes(bootstrapEntries);
+    assertArtifactMaterializationBudget(
+      artifactMaterializedBytes,
+      options.artifactMaterializationBudgetBytes,
+    );
     const bootstrapEntriesRequireMaterializedData = entriesRequireMaterializedData(bootstrapEntries);
     preloadSnapshotEntries(exports, bootstrapEntries, preloadScratchBase);
     const guestAddressProfile = guestAddressProfileWasm32Compatible(exports);
@@ -572,6 +645,8 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       guestBase,
       boundedMaxMemoryPages,
       forkMaxMemoryPages,
+      artifactMaterializedBytes,
+      fsRpcRingCapacityBytes,
       options,
       worker,
       runtimeBridge,

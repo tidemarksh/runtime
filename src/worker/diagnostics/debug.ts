@@ -1,5 +1,6 @@
 import type {
   ProcessHandle,
+  RuntimeMemoryOwnership,
   ThreadWorkerState,
   TransferDebugStats,
 } from "../types.js";
@@ -93,6 +94,7 @@ export interface ProcessExecutionStats {
   ramSize: number;
   maxMemoryBytes: number;
   forkMaxMemoryBytes: number;
+  memoryOwnership?: RuntimeMemoryOwnership;
   guestBase: number;
   readyWorkers: number;
   blockedWorkers: number;
@@ -802,6 +804,7 @@ export function debugRuntimeExecutionStats(
         ramSize: handle.ramSize,
         maxMemoryBytes: handle.maxMemoryPages * 65536,
         forkMaxMemoryBytes: handle.forkMaxMemoryPages * 65536,
+        memoryOwnership: handle.memoryOwnership,
         guestBase: handle.guestBase,
         readyWorkers: handle.readyWorkers.length,
         blockedWorkers: handle.blockedWorkers.size,

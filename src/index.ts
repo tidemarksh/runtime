@@ -31,6 +31,7 @@ import {
 } from "./bridge/compat.js";
 import type { RuntimeNetworkBridge } from "./bridge/network.js";
 import type { FsSnapshotEntry } from "./fs/types.js";
+import { FS_RING_TOTAL_BYTES } from "./layout/fs-ring.js";
 
 export interface RuntimeOptions {
   wasmBytes: BufferSource;
@@ -38,9 +39,13 @@ export interface RuntimeOptions {
   ramSize?: number;
   guestMemoryPolicyLimitBytes?: number;
   pageCacheDataCapacityBytes?: number;
+  /** Deprecated compatibility alias for kernelWorkerMaxMemoryPages. */
   maxKernelMemoryPages?: number;
+  kernelWorkerMaxMemoryPages?: number;
   maxProcessMemoryPages?: number;
   maxForkMemoryPages?: number;
+  fsRpcRingCapacityBytes?: number;
+  artifactMaterializationBudgetBytes?: number;
   networkBridge?: RuntimeNetworkBridge;
 }
 
@@ -50,9 +55,31 @@ const DEFAULT_MAX_MEMORY_PAGES = 32768;
 interface RuntimeMemoryConfig {
   guestMemoryPolicyLimitBytes: number;
   pageCacheDataCapacityBytes: number;
-  maxKernelMemoryPages: number;
+  kernelWorkerMaxMemoryPages: number;
   maxProcessMemoryPages: number;
   maxForkMemoryPages: number;
+  fsRpcRingCapacityBytes: number;
+  artifactMaterializationBudgetBytes: number | null;
+}
+
+function normalizeOptionalByteBudget(value: number | undefined): number | null {
+  if (value === undefined) {
+    return null;
+  }
+  return Math.max(Math.trunc(value), 0);
+}
+
+function normalizeFsRpcRingCapacityBytes(value: number | undefined): number {
+  if (value === undefined) {
+    return FS_RING_TOTAL_BYTES;
+  }
+  const normalized = Math.max(Math.trunc(value), 0);
+  if (normalized !== FS_RING_TOTAL_BYTES) {
+    throw new Error(
+      `fsRpcRingCapacityBytes is fixed by kernel ABI at ${FS_RING_TOTAL_BYTES} bytes; got ${normalized}`,
+    );
+  }
+  return normalized;
 }
 
 function normalizeRuntimePath(path: string): string {
@@ -155,14 +182,18 @@ export class Runtime {
         options.pageCacheDataCapacityBytes ?? MIN_RAM_SIZE_BYTES,
         MIN_RAM_SIZE_BYTES,
       ),
-      maxKernelMemoryPages: Math.max(
-        options.maxKernelMemoryPages ?? DEFAULT_MAX_MEMORY_PAGES,
+      kernelWorkerMaxMemoryPages: Math.max(
+        options.kernelWorkerMaxMemoryPages ?? options.maxKernelMemoryPages ?? DEFAULT_MAX_MEMORY_PAGES,
         1,
       ),
       maxProcessMemoryPages,
       maxForkMemoryPages: Math.max(
         options.maxForkMemoryPages ?? maxProcessMemoryPages,
         maxProcessMemoryPages,
+      ),
+      fsRpcRingCapacityBytes: normalizeFsRpcRingCapacityBytes(options.fsRpcRingCapacityBytes),
+      artifactMaterializationBudgetBytes: normalizeOptionalByteBudget(
+        options.artifactMaterializationBudgetBytes,
       ),
     };
     this.networkBridge = options.networkBridge;
@@ -225,7 +256,7 @@ export class Runtime {
           type: "init-kernel",
           wasmModule: this.wasmModule!,
           sabPageCache: this.sabPageCache!,
-          maxMemoryPages: this.memoryConfig.maxKernelMemoryPages,
+          maxMemoryPages: this.memoryConfig.kernelWorkerMaxMemoryPages,
         }).then((value) => {
           clearTimeout(timeout);
           cleanup();
@@ -297,6 +328,9 @@ export class Runtime {
       sabPageCache: this.sabPageCache,
       maxMemoryPages: this.memoryConfig.maxProcessMemoryPages,
       forkMaxMemoryPages: this.memoryConfig.maxForkMemoryPages,
+      kernelWorkerPrivateMemoryBytes: this.memoryConfig.kernelWorkerMaxMemoryPages * 65536,
+      fsRpcRingCapacityBytes: this.memoryConfig.fsRpcRingCapacityBytes,
+      artifactMaterializationBudgetBytes: this.memoryConfig.artifactMaterializationBudgetBytes ?? undefined,
       networkBridge: this.networkBridge,
       stdio: options.stdio ?? "pipe",
       stdin: options.stdin ?? "pipe",

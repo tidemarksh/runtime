@@ -232,6 +232,18 @@ export interface CanonicalizedChildLifecycle {
 
 export type KernelWorkerRequestFn = (msg: KernelWorkerRequest) => Promise<KernelWorkerOutbound>;
 
+export interface RuntimeMemoryOwnership {
+  guestMemoryPolicyLimitBytes: number;
+  processMaxMemoryBytes: number;
+  forkProcessMaxMemoryBytes: number;
+  pageCacheDataCapacityBytes: number;
+  publishedMetadataCapacityBytes: number;
+  fsRpcRingCapacityBytes: number;
+  kernelWorkerPrivateMemoryBytes: number | null;
+  artifactMaterializationBudgetBytes: number | null;
+  artifactMaterializedBytes: number;
+}
+
 export interface ProcessHandle {
   runtimeId: number;
   pid: number;
@@ -313,6 +325,7 @@ export interface ProcessHandle {
   workerMessageDebugStats: WorkerMessageDebugStats;
   transferDebugStats: TransferDebugStats;
   guestWriteWatchRegions: GuestWriteWatchRegion[];
+  memoryOwnership?: RuntimeMemoryOwnership;
 }
 
 export interface AttachThreadWorkerRequest {
@@ -351,6 +364,9 @@ export interface CreateProcessOptions {
   cwd?: string;
   preloadEntries?: FsSnapshotEntry[];
   sabPageCache?: SharedArrayBuffer | null;
+  fsRpcRingCapacityBytes?: number;
+  kernelWorkerPrivateMemoryBytes?: number;
+  artifactMaterializationBudgetBytes?: number;
   hydrateFsFromKernelWorker?: boolean;
   kernelWorkerRequest?: KernelWorkerRequestFn;
   networkBridge?: RuntimeNetworkBridge;

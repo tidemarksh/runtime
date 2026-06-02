@@ -8,6 +8,7 @@ import type {
   ThreadWorkerInbound,
   ThreadWorkerOutbound,
 } from "../../../../src/messages.js";
+import { FS_RING_TOTAL_BYTES } from "../../../../src/layout/fs-ring.js";
 
 type WorkerModule = typeof import("../../../../src/worker.js");
 
@@ -1624,6 +1625,13 @@ test("createProcess does not grow linear memory to requested ramSize during spaw
 
 test("createProcess preloads snapshot files by resizing then writing payload bytes", async () => {
   const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    ramSize: 64 * 1024 * 1024,
+    maxMemoryPages: 2048,
+    forkMaxMemoryPages: 3072,
+    sabPageCache: new SharedArrayBuffer(4 * 1024 * 1024),
+    fsRpcRingCapacityBytes: FS_RING_TOTAL_BYTES,
+    kernelWorkerPrivateMemoryBytes: 128 * 1024 * 1024,
+    artifactMaterializationBudgetBytes: 9 * 1024 * 1024,
     preloadEntries: [
       {
         kind: "file",
@@ -1640,6 +1648,40 @@ test("createProcess preloads snapshot files by resizing then writing payload byt
   expect(createdKernelExports[0].memfsWriteCalls).toHaveLength(1);
   expect(createdKernelExports[0].memfsWriteCalls[0]?.[1]).toBe(8 * 1024 * 1024);
   expect(createdKernelExports[0].memfsCreateWithDataCalls).toEqual([]);
+  expect(handle.memoryOwnership).toEqual({
+    guestMemoryPolicyLimitBytes: 64 * 1024 * 1024,
+    processMaxMemoryBytes: 2048 * 65536,
+    forkProcessMaxMemoryBytes: 3072 * 65536,
+    pageCacheDataCapacityBytes: 4 * 1024 * 1024,
+    publishedMetadataCapacityBytes: 32 + 16384 * 32 + 16384 * 4 + 16384 * 264,
+    fsRpcRingCapacityBytes: FS_RING_TOTAL_BYTES,
+    kernelWorkerPrivateMemoryBytes: 128 * 1024 * 1024,
+    artifactMaterializationBudgetBytes: 9 * 1024 * 1024,
+    artifactMaterializedBytes: 8 * 1024 * 1024,
+  });
+});
+
+test("createProcess rejects artifact materialization budget separately from guest ram", async () => {
+  await expect(createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    ramSize: 64 * 1024 * 1024,
+    artifactMaterializationBudgetBytes: 4095,
+    preloadEntries: [
+      {
+        kind: "file",
+        path: "/workspace/bin/tool",
+        data: new Uint8Array(4096),
+        mode: 0o755,
+      },
+    ],
+  })).rejects.toThrow("artifact materialization budget exceeded: stagedBytes=4096 budgetBytes=4095");
+  expect(createdKernelExports[0].memfsWriteCalls).toEqual([]);
+});
+
+test("createProcess rejects non-ABI FS RPC ring capacity", async () => {
+  await expect(createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    fsRpcRingCapacityBytes: FS_RING_TOTAL_BYTES + 1,
+  })).rejects.toThrow(`fsRpcRingCapacityBytes is fixed by kernel ABI at ${FS_RING_TOTAL_BYTES} bytes`);
+  expect(createdKernelExports).toEqual([]);
 });
 
 test("createProcess seeds local memfs from runtime FS state when preloadEntries are omitted", async () => {
