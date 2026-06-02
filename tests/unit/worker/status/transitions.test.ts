@@ -112,6 +112,8 @@ function makeHandle(worker: Worker) {
       kernel_ofd_fd_type: () => 0,
       abi_fd_type_socket: () => 8,
       abi_max_fds: () => 8,
+      thread_status: () => 0,
+      thread_spawn_from_clone: vi.fn(() => 0x2000),
     },
   };
 }
@@ -134,6 +136,7 @@ function makeDeps(worker: Worker) {
 
   return {
     threadWorkerStates,
+    appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
     attachThreadWorker: vi.fn(),
@@ -395,6 +398,83 @@ test("STATUS_SLEEP blocks in the owner scheduler instead of arming a host timer"
   expect(
     deps.kickBlockedWorkers.mock.invocationCallOrder[0],
   ).toBeLessThan(deps.pumpProcess.mock.invocationCallOrder[0]);
+});
+
+test("STATUS_CLONE_SPAWN ignores stale duplicate after kernel status moved on", () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  handle.runtimeId = 77;
+  handle.kernel.thread_status = () => handle.kernel.abi_status_ok();
+  handle.kernel.thread_spawn_from_clone = vi.fn(() => 0);
+  const deps = makeDeps(worker);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  expect(() => transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: {
+      type: "status",
+      status: 25,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 25,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  })).not.toThrow();
+
+  expect(handle.kernel.thread_spawn_from_clone).toHaveBeenCalledWith(0x1234);
+  expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
+    77,
+    "clone-spawn-stale-current:1:0x1234:25->0",
+  );
+  expect(deps.appendWorkerDebugLog).toHaveBeenCalledWith(
+    handle,
+    "clone_spawn_stale:0x1234:25->0",
+  );
+  expect(deps.attachThreadWorker).not.toHaveBeenCalled();
+  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
+});
+
+test("STATUS_CLONE_SPAWN still fails when spawn handoff is missing at current clone status", () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  handle.runtimeId = 77;
+  handle.kernel.thread_status = () => handle.kernel.abi_status_clone_spawn();
+  handle.kernel.thread_spawn_from_clone = vi.fn(() => 0);
+  const deps = makeDeps(worker);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  expect(() => transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: {
+      type: "status",
+      status: 25,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 25,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  })).toThrow("thread_spawn_from_clone failed for pid=1");
+
+  expect(handle.kernel.thread_spawn_from_clone).toHaveBeenCalledWith(0x1234);
+  expect(deps.appendRuntimeLifecycleEvent).not.toHaveBeenCalled();
+  expect(deps.attachThreadWorker).not.toHaveBeenCalled();
 });
 
 test("STATUS_FS does not sync pipe state before filesystem resume completes", () => {

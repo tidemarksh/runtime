@@ -529,6 +529,20 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       }
       const childVmPtr = handle.kernel.thread_spawn_from_clone(thread.vmPtr);
       if (childVmPtr === 0) {
+        const currentStatus = handle.kernel.thread_status?.(thread.vmPtr);
+        if (currentStatus !== undefined && currentStatus !== status) {
+          deps.appendRuntimeLifecycleEvent(
+            handle.runtimeId,
+            `clone-spawn-stale-current:${handle.pid}:0x${thread.vmPtr.toString(16)}:${status}->${currentStatus}`,
+          );
+          deps.appendWorkerDebugLog(
+            handle,
+            `clone_spawn_stale:0x${thread.vmPtr.toString(16)}:${status}->${currentStatus}`,
+          );
+          deps.kickBlockedWorkers(handle);
+          deps.pumpProcess(handle);
+          return;
+        }
         throw new Error(`thread_spawn_from_clone failed for pid=${handle.pid}`);
       }
       const finishCloneSpawn = (): void => {
