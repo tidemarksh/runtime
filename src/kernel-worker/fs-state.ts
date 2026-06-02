@@ -1,6 +1,14 @@
 import type { KernelExports } from "../abi.js";
 import type { FsSnapshotEntry, RuntimeStat } from "../fs/types.js";
-import { bumpDirEpoch, MAX_INODES, publishInode, readFileData, readInodeRecord } from "../fs/sab-page-cache.js";
+import {
+  bumpDirEpoch,
+  DATA_REGION_OFFSET,
+  MAX_INODES,
+  OFF_DATA_USED,
+  publishInode,
+  readFileData,
+  readInodeRecord,
+} from "../fs/sab-page-cache.js";
 import {
   ensureMemoryCapacityFor,
   markMaterializedMemfsFile,
@@ -67,13 +75,20 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     },
     data: Uint8Array,
   ): void {
-    publishInode(deps.getSabPageCache(), ino, meta, data);
-    const published = readInodeRecord(deps.getSabPageCache(), ino);
+    const pageCache = deps.getSabPageCache();
+    publishInode(pageCache, ino, meta, data);
+    const published = readInodeRecord(pageCache, ino);
     if (
       data.length > 0
       && (!published || published.size !== data.length || published.dataOff === 0)
     ) {
-      throw new Error(`failed to publish inode data: ${ino}`);
+      const dataUsed = Atomics.load(new Uint32Array(pageCache), OFF_DATA_USED >>> 2);
+      throw new Error(
+        `page-cache data capacity exhausted while publishing inode data: ino=${ino}`
+        + ` dataBytes=${data.length}`
+        + ` pageCacheDataCapacityBytes=${Math.max(0, pageCache.byteLength - DATA_REGION_OFFSET)}`
+        + ` pageCacheDataUsedBytes=${dataUsed}`,
+      );
     }
     const externalized = Number(targetExports.memfs_set_file_external(ino, BigInt(data.length)));
     if (externalized < 0) {

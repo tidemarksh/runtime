@@ -385,8 +385,8 @@ function parentPath(path: string): string {
   return normalized.split("/").slice(0, -1).join("/") || "/";
 }
 
-function makeFsState() {
-  const sabPageCache = new SharedArrayBuffer(DATA_REGION_OFFSET + (16 * 1024 * 1024));
+function makeFsState(pageCacheDataCapacityBytes = 16 * 1024 * 1024) {
+  const sabPageCache = new SharedArrayBuffer(DATA_REGION_OFFSET + pageCacheDataCapacityBytes);
   const canonicalExports = makeKernelExports(sabPageCache);
   const memberExports = makeKernelExports(sabPageCache);
   const processKernels = new Map<number, KernelExports>([[2, memberExports]]);
@@ -629,6 +629,14 @@ test("kernel-worker writeFile keeps files page-cache-backed instead of materiali
     size: data.length,
     mode: 0o644,
   });
+});
+
+test("kernel-worker writeFile reports page-cache data capacity exhaustion separately from guest ram", () => {
+  const { fsState } = makeFsState(32);
+  const data = new Uint8Array(128).fill(0x5a);
+
+  expect(() => fsState.writeFile("/usr/lib/runtime.bin", data, 0o644, false))
+    .toThrow(/page-cache data capacity exhausted while publishing inode data: .*pageCacheDataCapacityBytes=32/);
 });
 
 test("kernel-worker readFile falls back to page-cache data for externalized large files", () => {
