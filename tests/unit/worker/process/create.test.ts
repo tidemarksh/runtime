@@ -398,6 +398,52 @@ test("createProcess stages argv/env strings and seeds full memfs for standalone 
   });
 });
 
+test("createProcess preserves explicit guest policy independently of process backing", async () => {
+  const processHandles = new Map<number, ProcessHandle>();
+  const kernelMemory = new WebAssembly.Memory({ initial: 1024, maximum: 2048, shared: true });
+  const fakeKernel = makeFakeProcessKernel(kernelMemory);
+  vi.spyOn(WebAssembly, "instantiate").mockResolvedValue({
+    exports: fakeKernel,
+  } as unknown as WebAssembly.Instance);
+  const factory = createWorkerProcessFactory({
+    processHandles,
+    attachThreadWorker: vi.fn(),
+    assertProcessStandardFdIntegrity: vi.fn(),
+    ensureCompiledModule: async () => ({}) as WebAssembly.Module,
+    getRuntimeFsEntries: () => [],
+    initializeProcessLifecycleViaKernelWorker: vi.fn(async () => {}),
+    registerProcessWithKernelWorker: vi.fn(async () => {}),
+    resolveProcessCwdInoViaKernelWorker: vi.fn(async () => 0),
+    bootstrapMemoryBytes: 64 * 1024 * 1024,
+    wasmPageSize: 65536,
+    wasmMaxPages: 65536,
+  });
+  const guestPolicyLimitBytes = 512 * 1024 * 1024;
+
+  await factory.createProcess(
+    new Uint8Array([0]),
+    new Uint8Array([0x7f, 0x45, 0x4c, 0x46]),
+    {
+      ramSize: guestPolicyLimitBytes,
+      maxMemoryPages: 1024,
+      preloadEntries: [],
+    },
+  );
+
+  expect(fakeKernel.process_create_with_memory_policy).toHaveBeenCalledWith(
+    expect.any(Number),
+    expect.any(Number),
+    1,
+    BigInt(guestPolicyLimitBytes),
+    1024,
+    expect.any(Number),
+  );
+  expect(fakeKernel.thread_set_guest_memory_policy_limit).toHaveBeenCalledWith(
+    0x1234,
+    BigInt(guestPolicyLimitBytes),
+  );
+});
+
 test("createProcess preserves PTY stdio only when requested", async () => {
   const processHandles = new Map<number, ProcessHandle>();
   const kernelMemory = new WebAssembly.Memory({ initial: 1024, maximum: 2048, shared: true });

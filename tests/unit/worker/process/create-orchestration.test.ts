@@ -420,6 +420,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_spawn_guest_memory_policy_limit: () => 0n,
     thread_spawn_process_max_memory_pages: () => 0,
     thread_guest_address_profile: () => 1,
+    thread_guest_address_limit: () => 0xffff_ffffn,
     thread_guest_memory_policy_limit: () => 0n,
     thread_set_execve_handoff: (vmPtr) => {
       setIdentityForVm(vmPtr, currentPid, currentPpid, currentPgid, currentSid, 1);
@@ -1649,6 +1650,7 @@ test("createProcess preloads snapshot files by resizing then writing payload byt
   expect(createdKernelExports[0].memfsWriteCalls[0]?.[1]).toBe(8 * 1024 * 1024);
   expect(createdKernelExports[0].memfsCreateWithDataCalls).toEqual([]);
   expect(handle.memoryOwnership).toEqual({
+    guestAddressLimitBytes: "4294967295",
     guestMemoryPolicyLimitBytes: 64 * 1024 * 1024,
     processMaxMemoryBytes: 2048 * 65536,
     forkProcessMaxMemoryBytes: 3072 * 65536,

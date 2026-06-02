@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vite-plus/test";
 import {
-  computeGuestRamLimitBytes,
   detachInheritedHostStdioFromChild,
+  normalizeGuestMemoryPolicyLimitBytes,
 } from "../../../../src/worker/fork/common.js";
 
 test("detachInheritedHostStdioFromChild detaches guest host stdio without clearing hidden child pipe ids", () => {
@@ -38,22 +38,8 @@ test("detachInheritedHostStdioFromChild leaves standalone process host stdio unt
   expect(processSetHostStdio).not.toHaveBeenCalled();
 });
 
-test("computeGuestRamLimitBytes preserves configured guest RAM when it fits the wasm window", () => {
-  expect(
-    computeGuestRamLimitBytes(
-      0x14b0_0000,
-      192 * 1024 * 1024,
-      32768,
-    ),
-  ).toBe(192 * 1024 * 1024);
-});
-
-test("computeGuestRamLimitBytes caps configured guest RAM at the wasm32 guest window", () => {
-  expect(
-    computeGuestRamLimitBytes(
-      0x14b0_0000,
-      0x7fff_ffff,
-      32768,
-    ),
-  ).toBe(0x6b50_0000);
+test("normalizeGuestMemoryPolicyLimitBytes preserves explicit policy independently of backing", () => {
+  expect(normalizeGuestMemoryPolicyLimitBytes(0x7fff_ffff)).toBe(0x7fff_ffff);
+  expect(normalizeGuestMemoryPolicyLimitBytes(192 * 1024 * 1024)).toBe(192 * 1024 * 1024);
+  expect(normalizeGuestMemoryPolicyLimitBytes(-1)).toBe(0);
 });

@@ -37,7 +37,7 @@ import {
 } from "../kernel-scratch.js";
 import { acquireWorker, ensureEvictionTimer } from "../pool.js";
 import { createForkChildHandle } from "./common.js";
-import { computeGuestRamLimitBytes } from "./common.js";
+import { normalizeGuestMemoryPolicyLimitBytes } from "./common.js";
 import {
   alignPipeOfdGenerationOffsets,
   reconcileInheritedSharedOfdsAfterVforkExecve,
@@ -513,11 +513,7 @@ export async function handleVforkExecve(
   setGuestMemoryPolicyLimit(
     childHandle.kernel,
     childHandle.vmPtr,
-    computeGuestRamLimitBytes(
-      childHandle.guestBase,
-      childHandle.ramSize,
-      childHandle.maxMemoryPages,
-    ),
+    normalizeGuestMemoryPolicyLimitBytes(childHandle.ramSize),
   );
   const childExecFdEntries = snapshotProcessFdEntries(childHandle, childVmPtr);
   deps.assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-execve");

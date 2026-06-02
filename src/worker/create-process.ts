@@ -24,7 +24,7 @@ import {
   acquireWorker,
   ensureEvictionTimer,
 } from "./pool.js";
-import { computeGuestRamLimitBytes } from "./fork/common.js";
+import { normalizeGuestMemoryPolicyLimitBytes } from "./fork/common.js";
 import { createTransferDebugStats, createWorkerMessageDebugStats } from "./types.js";
 import type {
   AttachThreadWorkerRequest,
@@ -443,6 +443,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
 
     const kernelState = readKernelRuntimeState(exports);
     const memoryOwnership: RuntimeMemoryOwnership = {
+      guestAddressLimitBytes: exports.thread_guest_address_limit?.(vmPtr)?.toString() ?? null,
       guestMemoryPolicyLimitBytes: ramSize,
       processMaxMemoryBytes: maxMemoryPages * 65536,
       forkProcessMaxMemoryBytes: forkMaxMemoryPages * 65536,
@@ -654,7 +655,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     setGuestMemoryPolicyLimit(
       handle.kernel,
       vmPtr,
-      computeGuestRamLimitBytes(guestBase, ramSize, boundedMaxMemoryPages),
+      normalizeGuestMemoryPolicyLimitBytes(ramSize),
     );
     appendMemoryStateDebug(handle, "create");
 

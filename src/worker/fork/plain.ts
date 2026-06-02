@@ -30,7 +30,7 @@ import { acquireWorker, ensureEvictionTimer } from "../pool.js";
 import { adoptKernelStateForHandle } from "../sync.js";
 import { createForkChildHandle } from "./common.js";
 import { detachInheritedHostStdioFromChild } from "./common.js";
-import { computeGuestRamLimitBytes } from "./common.js";
+import { normalizeGuestMemoryPolicyLimitBytes } from "./common.js";
 import {
   appendPlainForkMemoryDebug,
   applyForkMemorySnapshot,
@@ -207,11 +207,7 @@ export async function handlePlainFork(
         + ` cause=${error.message}`,
       ));
     };
-    const childGuestRamLimit = computeGuestRamLimitBytes(
-      childHandle.guestBase,
-      childHandle.ramSize,
-      childHandle.maxMemoryPages,
-    );
+    const childGuestMemoryPolicyLimit = normalizeGuestMemoryPolicyLimitBytes(childHandle.ramSize);
     detachInheritedHostStdioFromChild(childHandle);
     const childHeldOfdIds = collectProcessHeldOfds(childHandle);
     const sharedOfdIds = activeKernelShareOfdIds(handle);
@@ -248,7 +244,7 @@ export async function handlePlainFork(
     );
     childHandle.kernel.thread_prepare_fork_child?.(childHandle.vmPtr, childPid);
     detachInheritedHostStdioFromChild(childHandle);
-    setGuestMemoryPolicyLimit(childHandle.kernel, childHandle.vmPtr, childGuestRamLimit);
+    setGuestMemoryPolicyLimit(childHandle.kernel, childHandle.vmPtr, childGuestMemoryPolicyLimit);
     childHandle.kernelState = readKernelRuntimeState(childHandle.kernel);
     adoptKernelShare(handle, childHandle);
     deps.syncForkSharedStateLocally(handle, [childHandle], {

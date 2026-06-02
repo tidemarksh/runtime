@@ -5,9 +5,6 @@ import { createTransferDebugStats, createWorkerMessageDebugStats } from "../type
 import type { ProcessHandle } from "../types.js";
 import type { WorkerForkDeps } from "./types.js";
 
-const WASM_PAGE_SIZE_BYTES = 64 * 1024;
-const WASM32_LINEAR_MEMORY_LIMIT_BYTES = 0x1_0000_0000;
-
 interface CreateForkChildHandleArgs {
   deps: WorkerForkDeps;
   parent: ProcessHandle;
@@ -132,20 +129,12 @@ export function createForkChildHandle({
     workerMessageDebugStats: createWorkerMessageDebugStats(),
     transferDebugStats: createTransferDebugStats(),
     guestWriteWatchRegions: parent.guestWriteWatchRegions.map((region) => ({ ...region })),
+    ...(parent.memoryOwnership ? { memoryOwnership: { ...parent.memoryOwnership } } : {}),
   };
 }
 
-export function computeGuestRamLimitBytes(
-  guestBase: number,
-  minRamSize: number,
-  maxMemoryPages: number,
-): number {
-  const totalLinearBytes = Math.min(
-    maxMemoryPages * WASM_PAGE_SIZE_BYTES,
-    WASM32_LINEAR_MEMORY_LIMIT_BYTES,
-  );
-  const guestWindowBytes = Math.max(0, totalLinearBytes - guestBase);
-  return Math.min(minRamSize, guestWindowBytes);
+export function normalizeGuestMemoryPolicyLimitBytes(policyLimitBytes: number): number {
+  return Math.max(Math.trunc(policyLimitBytes), 0);
 }
 
 export function detachInheritedHostStdioFromChild(child: ProcessHandle): void {
