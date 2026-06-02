@@ -365,7 +365,6 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       elfData.length,
       guestAddressProfile,
       BigInt(ramSize),
-      ramSize,
     ));
     return elfBrk;
   }
@@ -507,7 +506,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     const bootstrapEntriesRequireMaterializedData = entriesRequireMaterializedData(bootstrapEntries);
     preloadSnapshotEntries(exports, bootstrapEntries, preloadScratchBase);
     const guestAddressProfile = guestAddressProfileWasm32Compatible(exports);
-    const guestBase = processGuestBaseForAddressProfile(exports, guestAddressProfile, ramSize);
+    const guestBase = processGuestBaseForAddressProfile(exports, guestAddressProfile);
     if (guestBase === 0) {
       throw new Error("process_guest_base failed");
     }
@@ -533,7 +532,6 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       BigInt(ramSize),
       boundedMaxMemoryPages,
       stackSize,
-      ramSize,
     );
     if (vmPtr === 0) {
       const interpInSnapshot = interpPath ? snapshotHasPath(bootstrapEntries, interpPath) : null;

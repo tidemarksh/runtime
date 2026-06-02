@@ -930,23 +930,27 @@ export interface ProcessSpawnHandoff {
   path: bigint;
   argv: bigint;
   envp: bigint;
-  ramSize: number;
   addressProfile: number;
   guestMemoryPolicyLimit: bigint;
   processMaxMemoryPages: number;
 }
 
 export function guestAddressProfileWasm32Compatible(exports: KernelExports): number {
-  return exports.abi_guest_address_profile_wasm32_compatible?.() ?? 1;
+  if (!exports.abi_guest_address_profile_wasm32_compatible) {
+    throw new Error("kernel ABI missing guest address profile export");
+  }
+  return exports.abi_guest_address_profile_wasm32_compatible();
 }
 
 export function processGuestBaseForAddressProfile(
   exports: KernelExports,
   addressProfile: number,
-  fallbackRamSize: number,
 ): number {
   const base = exports.process_guest_base_for_address_profile?.(addressProfile);
-  return base === undefined ? exports.process_guest_base(fallbackRamSize) : Number(base);
+  if (base === undefined) {
+    throw new Error("kernel ABI missing process_guest_base_for_address_profile");
+  }
+  return Number(base);
 }
 
 export function processInspectElfBrkWithMemoryPolicy(
@@ -955,14 +959,16 @@ export function processInspectElfBrkWithMemoryPolicy(
   elfLen: number,
   addressProfile: number,
   guestMemoryPolicyLimit: bigint,
-  fallbackRamSize: number,
 ): bigint {
-  return exports.process_inspect_elf_brk_with_memory_policy?.(
+  if (!exports.process_inspect_elf_brk_with_memory_policy) {
+    throw new Error("kernel ABI missing process_inspect_elf_brk_with_memory_policy");
+  }
+  return exports.process_inspect_elf_brk_with_memory_policy(
     elfPtr,
     elfLen,
     addressProfile,
     guestMemoryPolicyLimit,
-  ) ?? exports.process_inspect_elf_brk(elfPtr, elfLen, fallbackRamSize);
+  );
 }
 
 export function processCreateWithMemoryPolicy(
@@ -973,16 +979,18 @@ export function processCreateWithMemoryPolicy(
   guestMemoryPolicyLimit: bigint,
   processMaxMemoryPages: number,
   stackSize: number,
-  fallbackRamSize: number,
 ): number {
-  return exports.process_create_with_memory_policy?.(
+  if (!exports.process_create_with_memory_policy) {
+    throw new Error("kernel ABI missing process_create_with_memory_policy");
+  }
+  return exports.process_create_with_memory_policy(
     elfPtr,
     elfLen,
     addressProfile,
     guestMemoryPolicyLimit,
     processMaxMemoryPages,
     stackSize,
-  ) ?? exports.process_create(elfPtr, elfLen, fallbackRamSize, stackSize);
+  );
 }
 
 export function setGuestMemoryPolicyLimit(
@@ -990,11 +998,10 @@ export function setGuestMemoryPolicyLimit(
   vmPtr: number,
   limit: number,
 ): void {
-  if (exports.thread_set_guest_memory_policy_limit) {
-    exports.thread_set_guest_memory_policy_limit(vmPtr, BigInt(limit));
-    return;
+  if (!exports.thread_set_guest_memory_policy_limit) {
+    throw new Error("kernel ABI missing thread_set_guest_memory_policy_limit");
   }
-  exports.thread_set_guest_ram_limit(vmPtr, limit);
+  exports.thread_set_guest_memory_policy_limit(vmPtr, BigInt(limit));
 }
 
 export function setExecveMemoryHandoff(
@@ -1007,28 +1014,19 @@ export function setExecveMemoryHandoff(
   addressProfile: number,
   guestMemoryPolicyLimit: bigint,
   processMaxMemoryPages: number,
-  fallbackRamSize: number,
 ): void {
-  if (exports.thread_set_execve_memory_handoff) {
-    exports.thread_set_execve_memory_handoff(
-      vmPtr,
-      processPtr,
-      pathAddr,
-      argvAddr,
-      envpAddr,
-      addressProfile,
-      guestMemoryPolicyLimit,
-      processMaxMemoryPages,
-    );
-    return;
+  if (!exports.thread_set_execve_memory_handoff) {
+    throw new Error("kernel ABI missing thread_set_execve_memory_handoff");
   }
-  exports.thread_set_execve_handoff(
+  exports.thread_set_execve_memory_handoff(
     vmPtr,
     processPtr,
     pathAddr,
     argvAddr,
     envpAddr,
-    fallbackRamSize,
+    addressProfile,
+    guestMemoryPolicyLimit,
+    processMaxMemoryPages,
   );
 }
 
@@ -1154,9 +1152,8 @@ export function readProcessSpawnHandoff(
     path: exports.thread_spawn_path(vmPtr),
     argv: exports.thread_spawn_argv(vmPtr),
     envp: exports.thread_spawn_envp(vmPtr),
-    ramSize: exports.thread_spawn_ram_size(vmPtr),
     addressProfile: exports.thread_spawn_address_profile?.(vmPtr) ?? 0,
-    guestMemoryPolicyLimit: exports.thread_spawn_guest_memory_policy_limit?.(vmPtr) ?? BigInt(exports.thread_spawn_ram_size(vmPtr)),
+    guestMemoryPolicyLimit: exports.thread_spawn_guest_memory_policy_limit?.(vmPtr) ?? 0n,
     processMaxMemoryPages: exports.thread_spawn_process_max_memory_pages?.(vmPtr) ?? 0,
   };
 }

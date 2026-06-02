@@ -350,8 +350,19 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     process_push_arg: () => {},
     process_push_env: () => {},
     process_clear_args: () => {},
+    abi_guest_address_profile_wasm32_compatible: () => 1,
+    process_guest_base_for_address_profile: () => 0x1000000n,
+    process_guest_address_limit_for_profile: () => 0xffff_ffffn,
     process_guest_base: () => 0x1000000,
+    process_inspect_elf_brk_with_memory_policy: () => 0x40_0000n,
     process_inspect_elf_brk: () => 0x40_0000n,
+    process_create_with_memory_policy: () => {
+      initPipeSlot(1);
+      initPipeSlot(2);
+      initPipeSlot(3);
+      setIdentityForVm(0x1234, currentPid, currentPpid, currentPgid, currentSid, currentDidExec);
+      return 0x1234;
+    },
     process_create: () => {
       initPipeSlot(1);
       initPipeSlot(2);
@@ -401,9 +412,18 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_spawn_argv: () => 0n,
     thread_spawn_envp: () => 0n,
     thread_spawn_ram_size: () => 0,
+    thread_spawn_address_profile: () => 1,
+    thread_spawn_guest_memory_policy_limit: () => 0n,
+    thread_spawn_process_max_memory_pages: () => 0,
+    thread_guest_address_profile: () => 1,
+    thread_guest_memory_policy_limit: () => 0n,
     thread_set_execve_handoff: (vmPtr) => {
       setIdentityForVm(vmPtr, currentPid, currentPpid, currentPgid, currentSid, 1);
     },
+    thread_set_execve_memory_handoff: (vmPtr) => {
+      setIdentityForVm(vmPtr, currentPid, currentPpid, currentPgid, currentSid, 1);
+    },
+    thread_set_guest_memory_policy_limit: () => {},
     thread_set_guest_ram_limit: () => {},
     thread_clear_spawn_handoff: () => {},
     thread_resume_vfork_parent: (vmPtr, childPid) => {

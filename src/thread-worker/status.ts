@@ -124,7 +124,7 @@ function snapshotForkStack(kernelExports: KernelExports, status: number): ForkSt
   }
   const sp = Number(kernelExports.thread_sp?.(vmPtr) ?? 0n);
   const policyLimit = kernelExports.thread_guest_memory_policy_limit?.(vmPtr) ?? 0n;
-  const ramLimit = Number(policyLimit > 0n ? policyLimit : BigInt(kernelExports.thread_guest_ram_limit(vmPtr)));
+  const ramLimit = Number(policyLimit);
   if (!Number.isFinite(sp) || sp <= 0 || sp >= ramLimit) {
     return undefined;
   }

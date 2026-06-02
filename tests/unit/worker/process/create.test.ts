@@ -155,10 +155,12 @@ function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
         timeStatePtr,
       };
     },
-    process_inspect_elf_brk: vi.fn(() => {
-      callLog.push("process_inspect_elf_brk");
+    abi_guest_address_profile_wasm32_compatible: vi.fn(() => 1),
+    process_inspect_elf_brk_with_memory_policy: vi.fn(() => {
+      callLog.push("process_inspect_elf_brk_with_memory_policy");
       return 0x2000;
     }),
+    process_inspect_elf_brk: vi.fn(() => 0x2000),
     process_clear_args: vi.fn(),
     process_push_arg: vi.fn((ptr: number) => {
       argPtrs.push(ptr);
@@ -166,12 +168,15 @@ function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
     process_push_env: vi.fn((ptr: number) => {
       envPtrs.push(ptr);
     }),
-    process_guest_base: vi.fn(() => {
-      callLog.push("process_guest_base");
-      return 0x100000;
+    process_guest_base_for_address_profile: vi.fn(() => {
+      callLog.push("process_guest_base_for_address_profile");
+      return 0x100000n;
     }),
+    process_guest_base: vi.fn(() => 0x100000),
+    process_create_with_memory_policy: vi.fn(() => 0x1234),
     process_create: vi.fn(() => 0x1234),
     processUsePipeStdio,
+    thread_set_guest_memory_policy_limit: vi.fn(),
     thread_set_guest_ram_limit: vi.fn(),
     process_stdin_pipe: () => 1,
     process_stdout_pipe: () => 2,
@@ -741,10 +746,10 @@ test("createProcess computes guest base after preloading runtime fs entries", as
   const processHandles = new Map<number, ProcessHandle>([[1, makeParentHandle()]]);
   const kernelMemory = new WebAssembly.Memory({ initial: 1024, maximum: 2048, shared: true });
   const fakeKernel = makeFakeProcessKernel(kernelMemory);
-  const processGuestBase = vi.mocked(fakeKernel.process_guest_base);
+  const processGuestBase = vi.mocked(fakeKernel.process_guest_base_for_address_profile);
   processGuestBase.mockImplementation(() => {
-    fakeKernel.callLog.push("process_guest_base");
-    return fakeKernel.memfsPaths.has("/bin/app") ? 0x200000 : 0x100000;
+    fakeKernel.callLog.push("process_guest_base_for_address_profile");
+    return fakeKernel.memfsPaths.has("/bin/app") ? 0x200000n : 0x100000n;
   });
   vi.spyOn(WebAssembly, "instantiate").mockResolvedValue({
     exports: fakeKernel,
@@ -780,14 +785,14 @@ test("createProcess computes guest base after preloading runtime fs entries", as
   );
 
   expect(fakeKernel.callLog.some((entry) => entry.startsWith("memfs_"))).toBe(true);
-  const guestBaseIndex = fakeKernel.callLog.indexOf("process_guest_base");
-  const inspectIndex = fakeKernel.callLog.indexOf("process_inspect_elf_brk");
+  const guestBaseIndex = fakeKernel.callLog.indexOf("process_guest_base_for_address_profile");
+  const inspectIndex = fakeKernel.callLog.indexOf("process_inspect_elf_brk_with_memory_policy");
   const preloadIndex = fakeKernel.callLog.findIndex((entry) => entry.startsWith("memfs_"));
   expect(preloadIndex).toBeGreaterThanOrEqual(0);
   expect(guestBaseIndex).toBeGreaterThan(preloadIndex);
   expect(inspectIndex).toBeGreaterThan(preloadIndex);
   expect(inspectIndex).toBeGreaterThan(guestBaseIndex);
-  expect(processGuestBase).toHaveReturnedWith(0x200000);
+  expect(processGuestBase).toHaveReturnedWith(0x200000n);
 });
 
 test("createProcess rebuilds argv, env, and cwd independently for sequential runtime-owned children", async () => {

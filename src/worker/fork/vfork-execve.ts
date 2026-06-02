@@ -440,7 +440,6 @@ export async function handleVforkExecve(
     guestAddressProfile,
     BigInt(handle.ramSize),
     handle.maxMemoryPages,
-    handle.ramSize,
   );
   let execRet: number;
   try {

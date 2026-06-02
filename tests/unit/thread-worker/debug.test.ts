@@ -25,7 +25,9 @@ function makeThreadWorkerDebugExports() {
     thread_process_ptr: () => 0,
     thread_process_thread_count: () => 0,
     thread_pc: () => 0x170n,
-    thread_guest_ram_limit: () => 0x2000000,
+    thread_guest_memory_policy_limit: () => 0x2000000n,
+    thread_guest_address_profile: () => 1,
+    thread_guest_address_limit: () => 0xffff_ffffn,
     thread_sp: () => 0n,
     thread_a0: () => 0n,
     thread_a1: () => 0n,
@@ -200,7 +202,7 @@ test("collectDebugParts prefers per-vm cpu trace over global last trace", () => 
   ).join(" ");
 
   expect(parts).toContain("zero_reg_tid=3");
-  expect(parts).toContain("guest_ram_limit=33554432");
+  expect(parts).toContain("guest_memory_policy_limit=33554432");
   expect(parts).toContain("zero_reg_pc=0x222");
   expect(parts).toContain("zero_reg_pc_vma=0x200-0x300:3/6");
   expect(parts).toContain("zero_reg_raw=0x5678");
