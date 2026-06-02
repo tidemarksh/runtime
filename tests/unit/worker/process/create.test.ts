@@ -156,6 +156,7 @@ function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
       };
     },
     abi_guest_address_profile_wasm32_compatible: vi.fn(() => 1),
+    abi_guest_address_profile_target: vi.fn(() => 2),
     process_inspect_elf_brk_with_memory_policy: vi.fn(() => {
       callLog.push("process_inspect_elf_brk_with_memory_policy");
       return 0x2000;
@@ -398,7 +399,7 @@ test("createProcess stages argv/env strings and seeds full memfs for standalone 
   });
 });
 
-test("createProcess preserves explicit guest policy independently of process backing", async () => {
+test("createProcess uses target guest address profile for process memory policy", async () => {
   const processHandles = new Map<number, ProcessHandle>();
   const kernelMemory = new WebAssembly.Memory({ initial: 1024, maximum: 2048, shared: true });
   const fakeKernel = makeFakeProcessKernel(kernelMemory);
@@ -433,14 +434,69 @@ test("createProcess preserves explicit guest policy independently of process bac
   expect(fakeKernel.process_create_with_memory_policy).toHaveBeenCalledWith(
     expect.any(Number),
     expect.any(Number),
-    1,
+    2,
     BigInt(guestPolicyLimitBytes),
     1024,
     expect.any(Number),
   );
+  expect(fakeKernel.process_inspect_elf_brk_with_memory_policy).toHaveBeenCalledWith(
+    expect.any(Number),
+    expect.any(Number),
+    2,
+    BigInt(guestPolicyLimitBytes),
+  );
   expect(fakeKernel.thread_set_guest_memory_policy_limit).toHaveBeenCalledWith(
     0x1234,
     BigInt(guestPolicyLimitBytes),
+  );
+});
+
+test("createProcess falls back to compat guest profile only when target profile is unusable", async () => {
+  const processHandles = new Map<number, ProcessHandle>();
+  const kernelMemory = new WebAssembly.Memory({ initial: 1024, maximum: 2048, shared: true });
+  const fakeKernel = makeFakeProcessKernel(kernelMemory);
+  vi.mocked(fakeKernel.process_guest_base_for_address_profile).mockImplementation((profile: number) => {
+    fakeKernel.callLog.push("process_guest_base_for_address_profile");
+    return profile === 2 ? 0n : 0x100000n;
+  });
+  vi.spyOn(WebAssembly, "instantiate").mockResolvedValue({
+    exports: fakeKernel,
+  } as unknown as WebAssembly.Instance);
+  const factory = createWorkerProcessFactory({
+    processHandles,
+    attachThreadWorker: vi.fn(),
+    assertProcessStandardFdIntegrity: vi.fn(),
+    ensureCompiledModule: async () => ({}) as WebAssembly.Module,
+    getRuntimeFsEntries: () => [],
+    initializeProcessLifecycleViaKernelWorker: vi.fn(async () => {}),
+    registerProcessWithKernelWorker: vi.fn(async () => {}),
+    resolveProcessCwdInoViaKernelWorker: vi.fn(async () => 0),
+    bootstrapMemoryBytes: 64 * 1024 * 1024,
+    wasmPageSize: 65536,
+    wasmMaxPages: 65536,
+  });
+
+  await factory.createProcess(
+    new Uint8Array([0]),
+    new Uint8Array([0x7f, 0x45, 0x4c, 0x46]),
+    {
+      preloadEntries: [],
+    },
+  );
+
+  expect(fakeKernel.process_create_with_memory_policy).toHaveBeenCalledWith(
+    expect.any(Number),
+    expect.any(Number),
+    1,
+    expect.anything(),
+    expect.any(Number),
+    expect.any(Number),
+  );
+  expect(fakeKernel.process_inspect_elf_brk_with_memory_policy).toHaveBeenCalledWith(
+    expect.any(Number),
+    expect.any(Number),
+    1,
+    expect.anything(),
   );
 });
 
