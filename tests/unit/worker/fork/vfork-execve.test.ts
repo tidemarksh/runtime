@@ -110,9 +110,23 @@ const createdKernelExports: Array<
     memfsSetFileSizeShallowCalls: Array<[number, number]>;
     memfsWriteCalls: Array<[number, number]>;
     memfsCreateWithDataCalls: Array<[number, number]>;
+    execveMemoryHandoffCalls: Array<{
+      vmPtr: number;
+      processPtr: number;
+      pathAddr: bigint;
+      argvAddr: bigint;
+      envpAddr: bigint;
+      addressProfile: number;
+      guestMemoryPolicyLimit: bigint;
+      processMaxMemoryPages: number;
+    }>;
+    guestMemoryPolicyLimitCalls: Array<[number, bigint]>;
   }
 > = [];
 const threadCountQueue: number[] = [];
+const guestAddressProfileQueue: number[] = [];
+const guestMemoryPolicyLimitQueue: bigint[] = [];
+const processMaxMemoryPagesQueue: number[] = [];
 const injectedHttpRequests: Array<{ port: number; request: string }> = [];
 const httpResponseChunks: Uint8Array[] = [];
 const closedHttpConnections: number[] = [];
@@ -191,6 +205,20 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
   const memfsSetFileSizeShallowCalls: Array<[number, number]> = [];
   const memfsWriteCalls: Array<[number, number]> = [];
   const memfsCreateWithDataCalls: Array<[number, number]> = [];
+  const execveMemoryHandoffCalls: Array<{
+    vmPtr: number;
+    processPtr: number;
+    pathAddr: bigint;
+    argvAddr: bigint;
+    envpAddr: bigint;
+    addressProfile: number;
+    guestMemoryPolicyLimit: bigint;
+    processMaxMemoryPages: number;
+  }> = [];
+  const guestMemoryPolicyLimitCalls: Array<[number, bigint]> = [];
+  let guestAddressProfile = guestAddressProfileQueue.shift() ?? 1;
+  let guestMemoryPolicyLimit = guestMemoryPolicyLimitQueue.shift() ?? 0n;
+  let processMaxMemoryPages = processMaxMemoryPagesQueue.shift() ?? 0;
   let nextIno = 10;
   interface MockProcessIdentity {
     pid: number;
@@ -243,6 +271,17 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     memfsSetFileSizeShallowCalls: Array<[number, number]>;
     memfsWriteCalls: Array<[number, number]>;
     memfsCreateWithDataCalls: Array<[number, number]>;
+    execveMemoryHandoffCalls: Array<{
+      vmPtr: number;
+      processPtr: number;
+      pathAddr: bigint;
+      argvAddr: bigint;
+      envpAddr: bigint;
+      addressProfile: number;
+      guestMemoryPolicyLimit: bigint;
+      processMaxMemoryPages: number;
+    }>;
+    guestMemoryPolicyLimitCalls: Array<[number, bigint]>;
   } = {
     memory,
     __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, 0),
@@ -412,18 +451,44 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_spawn_argv: () => 0n,
     thread_spawn_envp: () => 0n,
     thread_spawn_ram_size: () => 0,
-    thread_spawn_address_profile: () => 1,
-    thread_spawn_guest_memory_policy_limit: () => 0n,
-    thread_spawn_process_max_memory_pages: () => 0,
-    thread_guest_address_profile: () => 1,
-    thread_guest_memory_policy_limit: () => 0n,
+    thread_spawn_address_profile: () => guestAddressProfile,
+    thread_spawn_guest_memory_policy_limit: () => guestMemoryPolicyLimit,
+    thread_spawn_process_max_memory_pages: () => processMaxMemoryPages,
+    thread_guest_address_profile: () => guestAddressProfile,
+    thread_guest_memory_policy_limit: () => guestMemoryPolicyLimit,
+    thread_process_max_memory_pages: () => processMaxMemoryPages,
     thread_set_execve_handoff: (vmPtr) => {
       setIdentityForVm(vmPtr, currentPid, currentPpid, currentPgid, currentSid, 1);
     },
-    thread_set_execve_memory_handoff: (vmPtr) => {
+    thread_set_execve_memory_handoff: (
+      vmPtr,
+      processPtr,
+      pathAddr,
+      argvAddr,
+      envpAddr,
+      addressProfile,
+      handoffGuestMemoryPolicyLimit,
+      handoffProcessMaxMemoryPages,
+    ) => {
+      execveMemoryHandoffCalls.push({
+        vmPtr,
+        processPtr,
+        pathAddr,
+        argvAddr,
+        envpAddr,
+        addressProfile,
+        guestMemoryPolicyLimit: handoffGuestMemoryPolicyLimit,
+        processMaxMemoryPages: handoffProcessMaxMemoryPages,
+      });
+      guestAddressProfile = addressProfile;
+      guestMemoryPolicyLimit = handoffGuestMemoryPolicyLimit;
+      processMaxMemoryPages = handoffProcessMaxMemoryPages;
       setIdentityForVm(vmPtr, currentPid, currentPpid, currentPgid, currentSid, 1);
     },
-    thread_set_guest_memory_policy_limit: () => {},
+    thread_set_guest_memory_policy_limit: (vmPtr, limit) => {
+      guestMemoryPolicyLimitCalls.push([vmPtr, limit]);
+      guestMemoryPolicyLimit = limit;
+    },
     thread_set_guest_ram_limit: () => {},
     thread_clear_spawn_handoff: () => {},
     thread_resume_vfork_parent: (vmPtr, childPid) => {
@@ -557,6 +622,8 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     memfsSetFileSizeShallowCalls,
     memfsWriteCalls,
     memfsCreateWithDataCalls,
+    execveMemoryHandoffCalls,
+    guestMemoryPolicyLimitCalls,
   };
   createdKernelExports.push(exports);
   return exports;
@@ -569,6 +636,9 @@ beforeEach(async () => {
   createdWorkers.length = 0;
   createdKernelExports.length = 0;
   threadCountQueue.length = 0;
+  guestAddressProfileQueue.length = 0;
+  guestMemoryPolicyLimitQueue.length = 0;
+  processMaxMemoryPagesQueue.length = 0;
   injectedHttpRequests.length = 0;
   httpResponseChunks.length = 0;
   closedHttpConnections.length = 0;
@@ -902,6 +972,9 @@ test("vfork execve resumes the parent and initializes the child lifecycle throug
   parentKernel.thread_vfork_child_pid = () => 55;
   parentKernel.thread_spawn_kind = () => parentKernel.abi_spawn_kind_execve();
   parentKernel.thread_spawn_child_pid = () => 156;
+  parentKernel.thread_spawn_address_profile = () => 2;
+  parentKernel.thread_spawn_guest_memory_policy_limit = () => 0n;
+  parentKernel.thread_spawn_process_max_memory_pages = () => 3333;
   parentKernel.thread_resume_vfork_parent = resumeVforkParent;
   parentKernel.thread_restore_vfork_parent_without_cleanup = restoreVforkParentWithoutCleanup;
   parentKernel.thread_clear_spawn_handoff = clearSpawnHandoff;
@@ -922,6 +995,9 @@ test("vfork execve resumes the parent and initializes the child lifecycle throug
 
   parentWorker.clearPostedMessages();
   parentKernel.process_reset_lifecycle(0x1234, 156, 1, 201, 33, 44, 0);
+  guestAddressProfileQueue.push(2);
+  guestMemoryPolicyLimitQueue.push(0n);
+  processMaxMemoryPagesQueue.push(3333);
   parentWorker.emit({
     type: "status",
     status: 9,
@@ -968,6 +1044,16 @@ test("vfork execve resumes the parent and initializes the child lifecycle throug
   expect(restoreVforkParentWithoutCleanup).toHaveBeenCalledWith(0x1234, 156);
   expect(resumeVforkParent).not.toHaveBeenCalled();
   expect(clearSpawnHandoff).toHaveBeenCalledWith(0x1234);
+  expect(handle.ramSize).toBeGreaterThan(0);
+  expect(createdKernelExports[1]?.execveMemoryHandoffCalls).toEqual([
+    expect.objectContaining({
+      vmPtr: 0x1234,
+      addressProfile: 2,
+      guestMemoryPolicyLimit: 0n,
+      processMaxMemoryPages: 3333,
+    }),
+  ]);
+  expect(createdKernelExports[1]?.guestMemoryPolicyLimitCalls.at(-1)).toEqual([0x1234, 0n]);
   expect(createdWorkers).toHaveLength(2);
   expect(parentWorker.postedMessages).toEqual([
     expect.objectContaining({

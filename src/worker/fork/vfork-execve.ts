@@ -220,6 +220,41 @@ function debugVforkVmState(
   ].join(":");
 }
 
+function currentGuestMemoryPolicyLimit(
+  handle: ProcessHandle,
+  kernel: KernelExports,
+  vmPtr: number,
+  fallbackPolicyLimit?: bigint,
+): bigint {
+  const policyLimit = kernel.thread_guest_memory_policy_limit?.(vmPtr);
+  if (policyLimit !== undefined) {
+    return policyLimit < 0n ? 0n : policyLimit;
+  }
+  if (fallbackPolicyLimit !== undefined) {
+    return fallbackPolicyLimit < 0n ? 0n : fallbackPolicyLimit;
+  }
+  return BigInt(normalizeGuestMemoryPolicyLimitBytes(handle.ramSize));
+}
+
+function normalizeProcessMaxMemoryPages(processMaxMemoryPages: number, fallbackPages: number): number {
+  if (Number.isFinite(processMaxMemoryPages) && processMaxMemoryPages > 0) {
+    return Math.trunc(processMaxMemoryPages);
+  }
+  return fallbackPages;
+}
+
+function currentProcessMaxMemoryPages(
+  handle: ProcessHandle,
+  kernel: KernelExports,
+  vmPtr: number,
+  fallbackPages = handle.maxMemoryPages,
+): number {
+  return normalizeProcessMaxMemoryPages(
+    kernel.thread_process_max_memory_pages?.(vmPtr) ?? 0,
+    fallbackPages,
+  );
+}
+
 function assertVforkChildHandoffState(
   handle: ProcessHandle,
   vmPtr: number,
@@ -361,6 +396,10 @@ export async function handleVforkExecve(
       `vfork-execve:guest:${childPid}:${JSON.stringify(debugPath)}:${JSON.stringify(debugArgv0)}:${JSON.stringify(debugArgv1)}`,
     );
     handle.kernelState = readKernelRuntimeState(handle.kernel);
+  const childProcessMaxMemoryPages = normalizeProcessMaxMemoryPages(
+    handoff.processMaxMemoryPages,
+    handle.maxMemoryPages,
+  );
   const childMemory = new WebAssembly.Memory({
     initial: Math.ceil(
       Math.max(
@@ -369,7 +408,7 @@ export async function handleVforkExecve(
         handle.guestBase + 0x10000,
       ) / deps.wasmPageSize,
     ),
-    maximum: Math.max(handle.maxMemoryPages, handle.forkMaxMemoryPages),
+    maximum: Math.max(childProcessMaxMemoryPages, handle.forkMaxMemoryPages),
     shared: true,
   });
 
@@ -430,6 +469,18 @@ export async function handleVforkExecve(
   );
   const guestAddressProfile =
     childKernel.thread_guest_address_profile?.(childVmPtr) ?? guestAddressProfileWasm32Compatible(childKernel);
+  const guestMemoryPolicyLimit = currentGuestMemoryPolicyLimit(
+    handle,
+    childKernel,
+    childVmPtr,
+    handoff.guestMemoryPolicyLimit,
+  );
+  const processMaxMemoryPages = currentProcessMaxMemoryPages(
+    handle,
+    childKernel,
+    childVmPtr,
+    childProcessMaxMemoryPages,
+  );
   setExecveMemoryHandoff(
     childKernel,
     childVmPtr,
@@ -438,8 +489,8 @@ export async function handleVforkExecve(
     stagedExecveHandoff.argvPtr,
     stagedExecveHandoff.envpPtr,
     guestAddressProfile,
-    BigInt(handle.ramSize),
-    handle.maxMemoryPages,
+    guestMemoryPolicyLimit,
+    processMaxMemoryPages,
   );
   let execRet: number;
   try {
@@ -499,6 +550,7 @@ export async function handleVforkExecve(
       : decodeExecveBytes(execveGuestPayload.path),
     workerDebugLabel: "spawn:vfork-execve",
   });
+  childHandle.maxMemoryPages = processMaxMemoryPages;
   childHandle.onError = (error: Error) => {
     if (handle.pid <= 0 || deps.processHandles.get(handle.pid) !== handle) {
       return;
@@ -513,7 +565,7 @@ export async function handleVforkExecve(
   setGuestMemoryPolicyLimit(
     childHandle.kernel,
     childHandle.vmPtr,
-    normalizeGuestMemoryPolicyLimitBytes(childHandle.ramSize),
+    guestMemoryPolicyLimit,
   );
   const childExecFdEntries = snapshotProcessFdEntries(childHandle, childVmPtr);
   deps.assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-execve");
