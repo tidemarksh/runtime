@@ -24,6 +24,11 @@ export interface KernelExports {
   abi_status_socket_send(): number;
   abi_status_socket_recv(): number;
   abi_status_flock_wait(): number;
+  abi_fault_kind_none?(): number;
+  abi_fault_kind_guest_maperr?(): number;
+  abi_fault_kind_guest_accerr?(): number;
+  abi_fault_kind_illegal_instruction?(): number;
+  abi_fault_kind_guest_bus?(): number;
 
   // Spawn kinds
   abi_spawn_kind_none(): number;
@@ -275,6 +280,9 @@ export interface KernelExports {
   thread_sig_info_code?(vm_ptr: number): number;
   thread_fault_pc?(vm_ptr: number): bigint;
   thread_fault_addr?(vm_ptr: number): bigint;
+  thread_fault_kind?(vm_ptr: number): number;
+  thread_fault_signal?(vm_ptr: number): number;
+  thread_fault_code?(vm_ptr: number): number;
   thread_ra?(vm_ptr: number): bigint;
   thread_sp(vm_ptr: number): bigint;
   thread_stack_minus?(vm_ptr: number, byteOffset: number): bigint;

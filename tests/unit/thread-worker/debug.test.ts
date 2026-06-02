@@ -583,6 +583,9 @@ test("collectDebugParts includes per-vm fault dispatch trace", () => {
       debug_fault_dispatch_for_vm_sp: (vmPtr: number) => vmPtr === 0x1234 ? 0x66n : 0n,
       debug_fault_dispatch_for_vm_s11: (vmPtr: number) => vmPtr === 0x1234 ? 0n : 0n,
       debug_fault_dispatch_for_vm_addr: (vmPtr: number) => vmPtr === 0x1234 ? 0x4n : 0n,
+      thread_fault_kind: (vmPtr: number) => vmPtr === 0x1234 ? 2 : 0,
+      thread_fault_signal: (vmPtr: number) => vmPtr === 0x1234 ? 11 : 0,
+      thread_fault_code: (vmPtr: number) => vmPtr === 0x1234 ? 2 : 0,
     } as never,
     0x1234,
     0,
@@ -595,6 +598,9 @@ test("collectDebugParts includes per-vm fault dispatch trace", () => {
   expect(parts).toContain("fault_dispatch_sp=0x66");
   expect(parts).toContain("fault_dispatch_s11=0x0");
   expect(parts).toContain("fault_dispatch_addr=0x4");
+  expect(parts).toContain("fault_kind=2");
+  expect(parts).toContain("fault_signal=11");
+  expect(parts).toContain("fault_code=2");
 });
 
 test("collectDebugParts includes per-vm exec trace tail when fault dispatch is present", () => {

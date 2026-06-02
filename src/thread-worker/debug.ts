@@ -907,6 +907,9 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     debugParts.push(`fault_insn=${faultInsn}`);
   }
   debugParts.push(`fault_addr=0x${formatU64(readOptionalThreadU64(exports.thread_fault_addr, vmPtr))}`);
+  debugParts.push(`fault_kind=${exports.thread_fault_kind?.(vmPtr) ?? 0}`);
+  debugParts.push(`fault_signal=${exports.thread_fault_signal?.(vmPtr) ?? 0}`);
+  debugParts.push(`fault_code=${exports.thread_fault_code?.(vmPtr) ?? 0}`);
   debugParts.push(`pc=0x${currentPc.toString(16)}`);
   const currentInsn = readGuestInsn(exports, guestBase, currentPc);
   if (currentInsn !== null) {
