@@ -5,6 +5,12 @@ import {
   restoreNetworkOfdSlotWatermarks,
 } from "./socket-control.js";
 
+interface ApplyThreadFdEntriesOptions {
+  appendStatusSocketDebug?: (handle: ProcessHandle, event: string) => void;
+  preserveLiveRegularFileDescriptors?: boolean;
+  syscallNr?: bigint;
+}
+
 export function snapshotProcessFdEntries(
   handle: ProcessHandle,
   vmPtr: number,
@@ -57,16 +63,48 @@ export function restoreProcessFdEntries(
   }
 }
 
+function matchesOptionalSyscall(syscallNr: bigint | undefined, candidate: (() => bigint | number) | undefined): boolean {
+  return syscallNr !== undefined && candidate !== undefined && syscallNr === BigInt(candidate());
+}
+
+function syscallMayClearFdEntries(handle: ProcessHandle, syscallNr: bigint | undefined): boolean {
+  return matchesOptionalSyscall(syscallNr, handle.kernel.abi_sys_close)
+    || matchesOptionalSyscall(syscallNr, handle.kernel.abi_sys_close_range)
+    || matchesOptionalSyscall(syscallNr, handle.kernel.abi_sys_execve);
+}
+
+function fdEntryWouldClearLiveRegularFile(
+  handle: ProcessHandle,
+  vmPtr: number,
+  entry: KernelWorkerFdEntrySnapshot,
+  syscallNr: bigint | undefined,
+): boolean {
+  if (
+    entry.ofdId !== 0
+    || syscallNr === undefined
+    || syscallMayClearFdEntries(handle, syscallNr)
+  ) {
+    return false;
+  }
+  const maxFds = handle.kernel.abi_max_fds();
+  const currentOfdId = handle.kernel.process_fd_ofd_id?.(vmPtr, entry.fd) ?? 0;
+  if (currentOfdId <= 0 || currentOfdId >= maxFds) {
+    return false;
+  }
+  return handle.kernel.kernel_ofd_fd_type(currentOfdId) === handle.kernel.abi_fd_type_file?.()
+    && handle.kernel.kernel_ofd_refcount(currentOfdId) > 0;
+}
+
 export function applyThreadFdEntries(
   handle: ProcessHandle,
   vmPtr: number,
   fdEntries: readonly KernelWorkerFdEntrySnapshot[] | undefined,
-  appendStatusSocketDebug?: (handle: ProcessHandle, event: string) => void,
+  options: ApplyThreadFdEntriesOptions = {},
 ): void {
   if (!fdEntries || vmPtr === 0) {
     return;
   }
-  restoreNetworkOfdSlotWatermarks(handle, appendStatusSocketDebug);
+  restoreNetworkOfdSlotWatermarks(handle, options.appendStatusSocketDebug);
   const maxFds = handle.kernel.abi_max_fds();
   const networkOfds = networkConnectionOfds(handle);
   for (const entry of fdEntries) {
@@ -79,6 +117,12 @@ export function applyThreadFdEntries(
       && entry.ofdId !== 0
       && entry.ofdId !== expectedNetworkOfd
       && !handle.networkClosedFds.has(entry.fd)
+    ) {
+      continue;
+    }
+    if (
+      options.preserveLiveRegularFileDescriptors === true
+      && fdEntryWouldClearLiveRegularFile(handle, vmPtr, entry, options.syscallNr)
     ) {
       continue;
     }

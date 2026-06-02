@@ -7,5 +7,9 @@ export function applyStatusFdEntries(
   handle: ProcessHandle,
   msg: ThreadWorkerStatusMessage,
 ): void {
-  applyThreadFdEntries(handle, msg.vmPtr, msg.fdEntries, appendStatusSocketDebug);
+  applyThreadFdEntries(handle, msg.vmPtr, msg.fdEntries, {
+    appendStatusSocketDebug,
+    preserveLiveRegularFileDescriptors: true,
+    syscallNr: msg.syscallNr,
+  });
 }

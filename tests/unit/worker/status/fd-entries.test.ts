@@ -40,3 +40,55 @@ test("status fd entries preserve authoritative runtime network bindings", () => 
 
   expect(fdEntries.get(4)).toBe(11);
 });
+
+test("status fd entries do not clear a live regular file from a stale non-closing snapshot", () => {
+  const fdEntries = new Map<number, number>([[5, 7]]);
+  const handle = makeHandle({
+    kernel: makeKernel({
+      abi_sys_write: () => 64n,
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => fdEntries.get(fd) ?? 0,
+      process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number) => {
+        if (ofdId === 0) {
+          fdEntries.delete(fd);
+        } else {
+          fdEntries.set(fd, ofdId);
+        }
+      },
+      kernel_ofd_fd_type: (ofdId: number) => ofdId === 7 ? 1 : 0,
+      kernel_ofd_refcount: (ofdId: number) => ofdId === 7 ? 1 : 0,
+    }),
+  });
+
+  applyStatusFdEntries(handle as never, makeStatusMessage({
+    syscallNr: 64n,
+    fdEntries: [{ fd: 5, ofdId: 0, fdFlags: 0 }],
+  }) as never);
+
+  expect(fdEntries.get(5)).toBe(7);
+});
+
+test("status fd entries allow close to clear a regular file descriptor", () => {
+  const fdEntries = new Map<number, number>([[5, 7]]);
+  const handle = makeHandle({
+    kernel: makeKernel({
+      abi_sys_close: () => 57n,
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => fdEntries.get(fd) ?? 0,
+      process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number) => {
+        if (ofdId === 0) {
+          fdEntries.delete(fd);
+        } else {
+          fdEntries.set(fd, ofdId);
+        }
+      },
+      kernel_ofd_fd_type: (ofdId: number) => ofdId === 7 ? 1 : 0,
+      kernel_ofd_refcount: (ofdId: number) => ofdId === 7 ? 1 : 0,
+    }),
+  });
+
+  applyStatusFdEntries(handle as never, makeStatusMessage({
+    syscallNr: 57n,
+    fdEntries: [{ fd: 5, ofdId: 0, fdFlags: 0 }],
+  }) as never);
+
+  expect(fdEntries.has(5)).toBe(false);
+});
