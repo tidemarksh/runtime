@@ -195,6 +195,35 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     return entries.join(",");
   }
 
+  function formatLiveExecTraceForVm(handle: ProcessHandle, vmPtr: number): string {
+    const len = handle.kernel.debug_exec_trace_len?.() ?? 0;
+    if (len <= 0) {
+      return "";
+    }
+    const targetEpoch = handle.kernel.debug_exec_trace_epoch_for_vm?.(vmPtr) ?? 0;
+    const entries: string[] = [];
+    for (let index = 0; index < len; index += 1) {
+      const entryVmPtr = handle.kernel.debug_exec_trace_entry_vm_ptr?.(index) ?? 0;
+      if (entryVmPtr !== vmPtr) {
+        continue;
+      }
+      const entryEpoch = handle.kernel.debug_exec_trace_entry_epoch?.(index) ?? 0;
+      if (targetEpoch !== 0 && entryEpoch !== targetEpoch) {
+        continue;
+      }
+      entries.push(
+        `${index}:pc=0x${formatTraceU64(handle.kernel.debug_exec_trace_entry_pc?.(index))}`
+        + `:raw=0x${(handle.kernel.debug_exec_trace_entry_raw?.(index) ?? 0).toString(16)}`
+        + `:step=${handle.kernel.debug_exec_trace_entry_step?.(index) ?? 0}`
+        + `:sp=0x${formatTraceU64(handle.kernel.debug_exec_trace_entry_sp?.(index))}`
+        + `:ra=0x${formatTraceU64(handle.kernel.debug_exec_trace_entry_ra?.(index))}`
+        + `:a0=0x${formatTraceU64(handle.kernel.debug_exec_trace_entry_a0?.(index))}`
+        + `:s11=0x${formatTraceU64(handle.kernel.debug_exec_trace_entry_s11?.(index))}`,
+      );
+    }
+    return entries.slice(-32).join(",");
+  }
+
   function safeFrozenExecTrace(label: string, read: () => string): string {
     try {
       const trace = read();
@@ -254,6 +283,10 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
             s11: handle.kernel.debug_break_exec_trace_entry_s11_for_vm?.(vmPtr, index),
           }),
         ),
+      ),
+      safeFrozenExecTrace(
+        "exec_trace",
+        () => formatLiveExecTraceForVm(handle, vmPtr),
       ),
     ].filter((entry) => entry.length > 0).join(" ");
   }
@@ -361,6 +394,53 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     ].join(":");
   }
 
+  function formatAsciiLe(value: bigint): string {
+    const chars: string[] = [];
+    for (let index = 0; index < 8; index += 1) {
+      const byte = Number((value >> BigInt(index * 8)) & 0xffn);
+      chars.push(byte >= 0x20 && byte <= 0x7e ? String.fromCharCode(byte) : ".");
+    }
+    return JSON.stringify(chars.join(""));
+  }
+
+  function classifyGuestAddress(
+    value: bigint,
+    guestAddressLimit: bigint,
+    guestBackingBytes: bigint,
+  ): string {
+    if (value === 0n) {
+      return "zero";
+    }
+    if (guestAddressLimit > 0n && value >= guestAddressLimit) {
+      return "outside_guest_limit";
+    }
+    if (value >= guestBackingBytes) {
+      return "outside_backing";
+    }
+    return "inside_backing";
+  }
+
+  function formatFaultBounds(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
+    const memoryBytes = BigInt(handle.memory.buffer.byteLength);
+    const guestBase = BigInt(Math.max(0, handle.guestBase));
+    const guestBackingBytes = memoryBytes > guestBase ? memoryBytes - guestBase : 0n;
+    const guestAddressLimit = handle.kernel.thread_guest_address_limit?.(vmPtr) ?? 0n;
+    const pc = handle.kernel.thread_pc?.(vmPtr) ?? 0n;
+    const faultPc = handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n;
+    const faultAddr = handle.kernel.thread_fault_addr?.(vmPtr) ?? 0n;
+    return [
+      `mem_bytes=${memoryBytes.toString()}`,
+      `guest_base=0x${guestBase.toString(16)}`,
+      `guest_backing_bytes=${guestBackingBytes.toString()}`,
+      `guest_address_limit=0x${guestAddressLimit.toString(16)}`,
+      `pc=${classifyGuestAddress(pc, guestAddressLimit, guestBackingBytes)}`,
+      `fault_pc=${classifyGuestAddress(faultPc, guestAddressLimit, guestBackingBytes)}`,
+      `fault_addr=${classifyGuestAddress(faultAddr, guestAddressLimit, guestBackingBytes)}`,
+      `pc_ascii_le=${formatAsciiLe(BigInt.asUintN(64, pc))}`,
+      `fault_pc_ascii_le=${formatAsciiLe(BigInt.asUintN(64, faultPc))}`,
+    ].join(":");
+  }
+
   function formatDefaultSignalTrace(handle: ProcessHandle): string {
     const sig = handle.kernel.debug_default_signal_sig?.() ?? 0;
     if (sig === 0) {
@@ -408,6 +488,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     return [
       `vm=0x${vmPtr.toString(16)}`,
       `fault_state=[${formatFaultState(handle, vmPtr)}]`,
+      `fault_bounds=[${formatFaultBounds(handle, vmPtr)}]`,
       formatDefaultSignalTrace(handle),
       formatSignalState(handle, vmPtr),
       formatFrozenExitTraces(handle, vmPtr),

@@ -599,6 +599,68 @@ test("completeProcessExit includes frozen per-vm exec trace in exit trace", asyn
   expect(child.lastDebugMessage).toContain("1:pc=0x83340:raw=0xfe013283");
 });
 
+test("completeProcessExit classifies high out-of-range fault pc and includes live exec trace", async () => {
+  const faultVmPtr = 0x5a47fe0;
+  const highPc = 0x4d5241355f534e68n;
+  const child = makeHandle({
+    pid: 5,
+    parentPid: null,
+    vmPtr: faultVmPtr,
+    guestBase: 0x1000,
+    debugCommand: "/usr/bin/riscv64-linux-gnu-gcc-16",
+    kernel: {
+      thread_pc: (vmPtr: number) => vmPtr === faultVmPtr ? highPc : 0n,
+      thread_sp: (vmPtr: number) => vmPtr === faultVmPtr ? 0x4b4ff90n : 0n,
+      thread_a0: (vmPtr: number) => vmPtr === faultVmPtr ? 6n : 0n,
+      thread_a1: (vmPtr: number) => vmPtr === faultVmPtr ? 3855792n : 0n,
+      thread_term_signal: (vmPtr: number) => vmPtr === faultVmPtr ? 11 : 0,
+      thread_fault_pc: (vmPtr: number) => vmPtr === faultVmPtr ? highPc : 0n,
+      thread_fault_addr: (vmPtr: number) => vmPtr === faultVmPtr ? highPc : 0n,
+      thread_fault_kind: (vmPtr: number) => vmPtr === faultVmPtr ? 1 : 0,
+      thread_fault_signal: (vmPtr: number) => vmPtr === faultVmPtr ? 11 : 0,
+      thread_fault_code: (vmPtr: number) => vmPtr === faultVmPtr ? 1 : 0,
+      thread_guest_address_limit: (vmPtr: number) => vmPtr === faultVmPtr ? 0x1_0000_0000n : 0n,
+      debug_exec_trace_len: () => 2,
+      debug_exec_trace_epoch_for_vm: (vmPtr: number) => vmPtr === faultVmPtr ? 7 : 0,
+      debug_exec_trace_entry_vm_ptr: () => faultVmPtr,
+      debug_exec_trace_entry_epoch: () => 7,
+      debug_exec_trace_entry_pc: (_index: number) => _index === 0 ? 0x1020b1ccn : highPc,
+      debug_exec_trace_entry_raw: (_index: number) => _index === 0 ? 0x00000013 : 0x00008067,
+      debug_exec_trace_entry_step: () => 4,
+      debug_exec_trace_entry_sp: () => 0x4b4ff90n,
+      debug_exec_trace_entry_ra: () => 0xa6d0e6n,
+      debug_exec_trace_entry_a0: () => 6n,
+      debug_exec_trace_entry_s11: () => 0xbfdc80n,
+    } as never,
+  });
+  const helpers = createWorkerExitHelpers({
+    processHandles: new Map<number, ProcessHandle>([[5, child]]),
+    appendRuntimeLifecycleEvent: () => {},
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=5",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle: () => {},
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers: () => {},
+    recordChildExitViaKernelWorker: async () => {},
+    releaseSharedHostStdio: async () => {},
+    requestPipeStateSync: async () => {},
+    unregisterProcessWithKernelWorker: async () => {},
+  });
+
+  await helpers.completeProcessExit(child, 139, 11, faultVmPtr);
+
+  expect(child.lastDebugMessage).toContain("fault_bounds=[");
+  expect(child.lastDebugMessage).toContain("pc=outside_guest_limit");
+  expect(child.lastDebugMessage).toContain("fault_pc=outside_guest_limit");
+  expect(child.lastDebugMessage).toContain("fault_addr=outside_guest_limit");
+  expect(child.lastDebugMessage).toContain("pc_ascii_le=\"hNS_5ARM\"");
+  expect(child.lastDebugMessage).toContain("exec_trace=[0:pc=0x1020b1cc:raw=0x13");
+  expect(child.lastDebugMessage).toContain("1:pc=0x4d5241355f534e68:raw=0x8067");
+});
+
 test("recordExitOnParent preserves child fault state in parent debug", async () => {
   const handleVmPtr = 0x581aa20;
   const faultVmPtr = 0x5ce3040;
