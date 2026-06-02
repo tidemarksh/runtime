@@ -341,6 +341,21 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     return entries.slice(-96).join(",");
   }
 
+  function formatFaultState(handle: ProcessHandle): string {
+    const vmPtr = handle.vmPtr;
+    return [
+      `pc=0x${(handle.kernel.thread_pc?.(vmPtr) ?? 0n).toString(16)}`,
+      `sp=0x${(handle.kernel.thread_sp?.(vmPtr) ?? 0n).toString(16)}`,
+      `a0=${(handle.kernel.thread_a0?.(vmPtr) ?? 0n).toString()}`,
+      `a1=${(handle.kernel.thread_a1?.(vmPtr) ?? 0n).toString()}`,
+      `fault_pc=0x${(handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n).toString(16)}`,
+      `fault_addr=0x${(handle.kernel.thread_fault_addr?.(vmPtr) ?? 0n).toString(16)}`,
+      `fault_kind=${handle.kernel.thread_fault_kind?.(vmPtr) ?? 0}`,
+      `fault_signal=${handle.kernel.thread_fault_signal?.(vmPtr) ?? 0}`,
+      `fault_code=${handle.kernel.thread_fault_code?.(vmPtr) ?? 0}`,
+    ].join(":");
+  }
+
   function formatExitTrace(handle: ProcessHandle): string {
     const execveStage = handle.kernel.debug_execve_stage?.() ?? 0;
     const execveValue0 = handle.kernel.debug_execve_value0?.() ?? 0n;
@@ -358,6 +373,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       `all_path_syscalls=[${formatAllPathSyscalls(handle)}]`,
       `fd_syscalls=[${formatFdSyscalls(handle)}]`,
       `memory_syscalls=[${formatMemorySyscalls(handle)}]`,
+      `fault_state=[${formatFaultState(handle)}]`,
       formatFrozenExitTraces(handle),
     ].join(" ");
   }

@@ -598,3 +598,58 @@ test("completeProcessExit includes frozen per-vm exec trace in exit trace", asyn
   expect(child.lastDebugMessage).toContain("thread_step_exec_trace=[0:pc=0x83336:raw=0xa00563");
   expect(child.lastDebugMessage).toContain("1:pc=0x83340:raw=0xfe013283");
 });
+
+test("recordExitOnParent preserves child fault state in parent debug", async () => {
+  const parent = makeHandle({
+    pid: 1,
+    parentPid: null,
+    debugCommand: "/bin/parent",
+  });
+  const child = makeHandle({
+    pid: 4,
+    parentPid: 1,
+    debugCommand: "rustc",
+    kernel: {
+      thread_pc: () => 0x7788n,
+      thread_sp: () => 0x12340000n,
+      thread_a0: () => 139n,
+      thread_a1: () => 11n,
+      thread_fault_pc: () => 0x5566n,
+      thread_fault_addr: () => 0xdeadbeefn,
+      thread_fault_kind: () => 2,
+      thread_fault_signal: () => 11,
+      thread_fault_code: () => 1,
+    } as never,
+  });
+  const processHandles = new Map<number, ProcessHandle>([
+    [1, parent],
+    [4, child],
+  ]);
+
+  const helpers = createWorkerExitHelpers({
+    processHandles,
+    appendRuntimeLifecycleEvent: () => {},
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=1,pid=4",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle: () => {},
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers: () => {},
+    recordChildExitViaKernelWorker: async () => {},
+    releaseSharedHostStdio: async () => {},
+    requestPipeStateSync: async () => {},
+    unregisterProcessWithKernelWorker: async () => {},
+  });
+
+  await helpers.completeProcessExit(child, 0, 11);
+
+  expect(parent.lastDebugMessage).toContain("child-debug:4:");
+  expect(parent.lastDebugMessage).toContain("fault_state=[");
+  expect(parent.lastDebugMessage).toContain("fault_pc=0x5566");
+  expect(parent.lastDebugMessage).toContain("fault_addr=0xdeadbeef");
+  expect(parent.lastDebugMessage).toContain("fault_kind=2");
+  expect(parent.lastDebugMessage).toContain("fault_signal=11");
+  expect(parent.lastDebugMessage).toContain("fault_code=1");
+});
