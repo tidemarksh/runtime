@@ -270,7 +270,10 @@ export function createWorkerSchedulerQueueHelpers(
     }
     const lastStepAtMs = thread.lastStepAtMs;
     const lastStatusAtMs = thread.lastStatusAtMs;
-    if (lastStepAtMs === null || lastStatusAtMs === null || lastStepAtMs <= lastStatusAtMs) {
+    if (lastStepAtMs === null) {
+      return false;
+    }
+    if (lastStatusAtMs !== null && lastStepAtMs <= lastStatusAtMs) {
       return false;
     }
     return Date.now() - lastStepAtMs >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
@@ -598,6 +601,9 @@ export function createWorkerSchedulerQueueHelpers(
     const runningWorker = sanitizeRunningWorker(handle);
     if (runningWorker !== null) {
       const thread = deps.threadWorkerStates.get(runningWorker);
+      if (handle.readyWorkers.length > 0) {
+        readyWorkerFairness.scheduleRunningWorkerRepairRetry(handle);
+      }
       appendSchedulerQueueDebugLog(
         deps,
         handle,

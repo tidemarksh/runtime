@@ -9,6 +9,7 @@ const WORKER_DEBUG_LOG_ENABLED = ((globalThis as {
 const STALE_SLEEP_RUNNING_WORKER_REPAIR_MS = 2_000;
 
 export interface ReadyWorkerFairness {
+  scheduleRunningWorkerRepairRetry(handle: ProcessHandle): void;
   wakeRunningWorkerForReadyWork(handle: ProcessHandle): void;
 }
 
@@ -52,6 +53,9 @@ export function createReadyWorkerFairness(pumpProcess: (handle: ProcessHandle) =
   }
 
   return {
+    scheduleRunningWorkerRepairRetry: (handle) => {
+      scheduleRunningWorkerPump(handle, STALE_SLEEP_RUNNING_WORKER_REPAIR_MS);
+    },
     wakeRunningWorkerForReadyWork,
   };
 }
