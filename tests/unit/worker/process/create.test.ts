@@ -437,7 +437,7 @@ test("createProcess uses target guest address profile for process memory policy"
     2,
     BigInt(guestPolicyLimitBytes),
     1024,
-    expect.any(Number),
+    8 * 1024 * 1024,
   );
   expect(fakeKernel.process_inspect_elf_brk_with_memory_policy).toHaveBeenCalledWith(
     expect.any(Number),

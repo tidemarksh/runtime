@@ -40,6 +40,8 @@ import {
 } from "../wasm/stack.js";
 import { FS_RING_TOTAL_BYTES } from "../layout/fs-ring.js";
 
+const DEFAULT_PROCESS_STACK_SIZE_BYTES = 8 * 1024 * 1024;
+
 const encoder = new TextEncoder();
 const WORKER_DEBUG_LOG_ENABLED = false;
 const MIN_PROCESS_RAM_SIZE_BYTES = 16 * 1024 * 1024;
@@ -548,7 +550,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     const boundedMaxMemoryPages = Math.max(maxMemoryPages, minMemoryPages);
     const forkMaxMemoryPages = Math.max(options.forkMaxMemoryPages ?? boundedMaxMemoryPages, boundedMaxMemoryPages);
     const fsRpcRingCapacityBytes = normalizeFsRpcRingCapacityBytes(options.fsRpcRingCapacityBytes);
-    const stackSize = options.stackSize ?? 1024 * 1024;
+    const stackSize = options.stackSize ?? DEFAULT_PROCESS_STACK_SIZE_BYTES;
     const { wasmModule, memory, exports } = await instantiateProcessKernel(
       wasmBytes,
       ramSize,
