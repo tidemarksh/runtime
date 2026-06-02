@@ -1828,6 +1828,62 @@ test("pumpProcess schedules a running-slot watchdog when ready work remains afte
   }));
 });
 
+test("pumpProcess keeps the running-slot watchdog alive when ready work appears after dispatch", async () => {
+  vi.setSystemTime(new Date(10_000));
+  const firstWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const secondWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const firstThread = makeThreadState(0x64b32a0);
+  const secondThread = makeThreadState(0x66d0748);
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(firstWorker, firstThread);
+  threadWorkerStates.set(secondWorker, secondThread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_ok();
+  kernel.debug_thread_step_vm_ptr = () => 0;
+  const handle = makeHandle(kernel, firstWorker);
+  handle.readyWorkers = [firstWorker];
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+
+  expect(handle.runningWorker).toBe(firstWorker);
+  expect(handle.readyWorkers).toEqual([]);
+  expect(firstWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+
+  await vi.advanceTimersByTimeAsync(2_000);
+
+  expect(handle.runningWorker).toBe(firstWorker);
+  handle.workers.add(secondWorker);
+  handle.readyWorkers.push(secondWorker);
+
+  await vi.advanceTimersByTimeAsync(2_000);
+
+  expect(firstThread.runningGeneration).toBeNull();
+  expect(handle.runningWorker).toBe(secondWorker);
+  expect(secondWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+});
+
 test("pumpProcess clears a stale running worker when the unanswered step shares a status millisecond", () => {
   vi.setSystemTime(new Date(10_000));
   const runningWorker = {

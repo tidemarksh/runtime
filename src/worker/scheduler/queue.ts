@@ -800,9 +800,7 @@ export function createWorkerSchedulerQueueHelpers(
       stepMessage.resumeBlockedSyscall = true;
     }
     next.postMessage(stepMessage);
-    if (handle.readyWorkers.length > 0) {
-      readyWorkerFairness.scheduleRunningWorkerRepairRetry(handle);
-    }
+    readyWorkerFairness.scheduleRunningWorkerRepairRetry(handle);
   }
 
   return {
