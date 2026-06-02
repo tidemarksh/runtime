@@ -8,7 +8,7 @@ import {
   type KernelExports,
 } from "../../abi.js";
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
-import { createKernelEnv } from "../../wasm/env.js";
+import { instantiateKernelWithSharedMemory } from "../../wasm/kernel-memory.js";
 import {
   configureKernelInstanceStack,
   MAIN_THREAD_KERNEL_STACK_SLOT,
@@ -400,21 +400,24 @@ export async function handleVforkExecve(
     handoff.processMaxMemoryPages,
     handle.maxMemoryPages,
   );
-  const childMemory = new WebAssembly.Memory({
-    initial: Math.ceil(
-      Math.max(
-        deps.bootStrapMemoryBytes,
-        handle.memory.buffer.byteLength,
-        handle.guestBase + 0x10000,
-      ) / deps.wasmPageSize,
-    ),
-    maximum: Math.max(childProcessMaxMemoryPages, handle.forkMaxMemoryPages),
-    shared: true,
-  });
-
-  const childInstance = await WebAssembly.instantiate(handle.wasmModule, {
-    env: createKernelEnv(childMemory, { sabPageCache: handle.sabPageCache }),
-  });
+  const { instance: childInstance, memory: childMemory } = await instantiateKernelWithSharedMemory(
+    handle.wasmModule,
+    {
+      initialPages: Math.ceil(
+        Math.max(
+          deps.bootStrapMemoryBytes,
+          handle.memory.buffer.byteLength,
+          handle.guestBase + 0x10000,
+        ) / deps.wasmPageSize,
+      ),
+      maximumPages: Math.max(childProcessMaxMemoryPages, handle.forkMaxMemoryPages),
+    },
+    { sabPageCache: handle.sabPageCache },
+    (memory) => {
+      copyKernelPrivateRegion(handle.memory, memory, handle.kernelState.heapPtr);
+      copyExecveKernelRuntimeRegions(handle, memory);
+    },
+  );
   const childKernel = childInstance.exports as unknown as KernelExports;
   configureKernelInstanceStack(childKernel, MAIN_THREAD_KERNEL_STACK_SLOT);
   // vfork+execve does not need the pre-exec guest image. The kernel handoff
@@ -422,8 +425,6 @@ export async function handleVforkExecve(
   // restaged explicitly into the child guest window below. Kernel runtime
   // regions must still be present so inherited fds, pipes, and MemFS-backed
   // dynamic loader reads remain valid before kernel-worker rehydration.
-  copyKernelPrivateRegion(handle.memory, childMemory, handle.kernelState.heapPtr);
-  copyExecveKernelRuntimeRegions(handle, childMemory);
   attachKernelRuntimeState(childKernel, handle.kernelState);
 
   const rollbackParentAfterHandoffFailure = async (): Promise<void> => {

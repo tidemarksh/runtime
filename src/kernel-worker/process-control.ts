@@ -12,6 +12,7 @@ import {
 } from "../wasm/prepare-memory.js";
 import { ensureMemoryCapacityFor, scratchBaseFor, writeScratchFor } from "./common.js";
 import { createKernelEnv } from "../wasm/env.js";
+import { instantiateKernelWithSharedMemory } from "../wasm/kernel-memory.js";
 import {
   configureKernelInstanceStack,
   KERNEL_WORKER_STACK_SLOT,
@@ -363,13 +364,11 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     deps.setSabPageCache(pageCache);
 
     const boundedMaxMemoryPages = Math.max(maxMemoryPages, 1024);
-    const privateMemory = new WebAssembly.Memory({
-      initial: 1024,
-      maximum: boundedMaxMemoryPages,
-      shared: true,
-    });
-    const instance = await WebAssembly.instantiate(module, {
-      env: createKernelEnv(privateMemory, { sabPageCache: pageCache }),
+    const { instance } = await instantiateKernelWithSharedMemory(module, {
+      initialPages: 1024,
+      maximumPages: boundedMaxMemoryPages,
+    }, {
+      sabPageCache: pageCache,
     });
     const nextExports = instance.exports as unknown as KernelExports;
     configureKernelInstanceStack(nextExports, KERNEL_WORKER_STACK_SLOT);

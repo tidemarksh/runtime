@@ -9,7 +9,7 @@ import {
 } from "../abi.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import { createRuntimeStateBridge, publishKernelRuntimeState } from "../bridge/runtime-state.js";
-import { createKernelEnv } from "../wasm/env.js";
+import { instantiateKernelWithSharedMemory } from "../wasm/kernel-memory.js";
 import {
   preloadSnapshotEntries,
   resolveProcessCwdIno,
@@ -343,14 +343,12 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     memory: WebAssembly.Memory;
     exports: KernelExports;
   }> {
-    const memory = new WebAssembly.Memory({
-      initial: Math.ceil(deps.bootstrapMemoryBytes / deps.wasmPageSize),
-      maximum: maxMemoryPages,
-      shared: true,
-    });
     const wasmModule = await deps.ensureCompiledModule(wasmBytes);
-    const mainInstance = await WebAssembly.instantiate(wasmModule, {
-      env: createKernelEnv(memory, { sabPageCache }),
+    const { instance: mainInstance, memory } = await instantiateKernelWithSharedMemory(wasmModule, {
+      initialPages: Math.ceil(deps.bootstrapMemoryBytes / deps.wasmPageSize),
+      maximumPages: maxMemoryPages,
+    }, {
+      sabPageCache,
     });
     const exports = mainInstance.exports as unknown as KernelExports;
     configureKernelInstanceStack(exports, MAIN_THREAD_KERNEL_STACK_SLOT);

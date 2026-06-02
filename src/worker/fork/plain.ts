@@ -5,7 +5,7 @@ import {
   type KernelExports,
 } from "../../abi.js";
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
-import { createKernelEnv } from "../../wasm/env.js";
+import { instantiateKernelWithSharedMemory } from "../../wasm/kernel-memory.js";
 import {
   configureKernelInstanceStack,
   MAIN_THREAD_KERNEL_STACK_SLOT,
@@ -171,16 +171,15 @@ export async function handlePlainFork(
       handle.guestBase,
     );
     appendPlainForkMemoryDebug(handle, childPid, forkMemorySnapshot, childMemoryBytes);
-    const childMemory = new WebAssembly.Memory({
-      initial: Math.ceil(childMemoryBytes / 65536),
-      maximum: Math.max(handle.maxMemoryPages, handle.forkMaxMemoryPages),
-      shared: true,
-    });
-    applyForkMemorySnapshot(forkMemorySnapshot, childMemory);
-
-    const childInstance = await WebAssembly.instantiate(handle.wasmModule, {
-      env: createKernelEnv(childMemory, { sabPageCache: handle.sabPageCache }),
-    });
+    const { instance: childInstance, memory: childMemory } = await instantiateKernelWithSharedMemory(
+      handle.wasmModule,
+      {
+        initialPages: Math.ceil(childMemoryBytes / 65536),
+        maximumPages: Math.max(handle.maxMemoryPages, handle.forkMaxMemoryPages),
+      },
+      { sabPageCache: handle.sabPageCache },
+      (memory) => applyForkMemorySnapshot(forkMemorySnapshot, memory),
+    );
     const childKernel = childInstance.exports as unknown as KernelExports;
     configureKernelInstanceStack(childKernel, MAIN_THREAD_KERNEL_STACK_SLOT);
     // Instantiating a kernel instance over imported child memory replays the

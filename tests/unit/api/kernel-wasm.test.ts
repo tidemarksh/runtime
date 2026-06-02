@@ -18,6 +18,7 @@ import {
   type KernelExports,
 } from "../../../src/abi.js";
 import { createKernelEnv } from "../../../src/wasm/env.js";
+import { instantiateKernelWithSharedMemory } from "../../../src/wasm/kernel-memory.js";
 import { stageExecveGuestHandoff } from "../../../src/worker/fork/execve-handoff.js";
 import {
   copyKernelPrivateRegion,
@@ -263,6 +264,40 @@ test("target kernel artifact instantiates with shared i64 memory", async () => {
   expect(exports.memory).toBe(memory);
   expect(exports.abi_guest_address_profile_target?.()).toBeGreaterThan(0);
 
+  const heapBase = (exports as any).__heap_base?.value ?? 0x200000;
+  exports.kernel_init(Number(heapBase));
+  expect(exports.abi_page_size()).toBe(4096);
+});
+
+test("kernel shared memory helper instantiates the current kernel artifact", async () => {
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return;
+  }
+  const module = await WebAssembly.compile(wasmBytes);
+  const { instance, memory } = await instantiateKernelWithSharedMemory(module, {
+    initialPages: 1024,
+    maximumPages: 65536,
+  });
+  const exports = instance.exports as unknown as KernelExports;
+  expect(exports.memory).toBe(memory);
+  const heapBase = (exports as any).__heap_base?.value ?? 0x200000;
+  exports.kernel_init(Number(heapBase));
+  expect(exports.abi_page_size()).toBe(4096);
+});
+
+test("kernel shared memory helper instantiates the target kernel artifact", async () => {
+  if (!TARGET_KERNEL_WASM_PATH) {
+    return logSkip("missing target kernel wasm path: set TIDEMARK_TEST_TARGET_KERNEL_WASM");
+  }
+  const module = await WebAssembly.compile(new Uint8Array(readFileSync(TARGET_KERNEL_WASM_PATH)));
+  const { instance, memory } = await instantiateKernelWithSharedMemory(module, {
+    initialPages: 771,
+    maximumPages: 65536,
+  });
+  const exports = instance.exports as unknown as KernelExports;
+  expect(exports.memory).toBe(memory);
+  expect(exports.abi_guest_address_profile_target?.()).toBeGreaterThan(0);
   const heapBase = (exports as any).__heap_base?.value ?? 0x200000;
   exports.kernel_init(Number(heapBase));
   expect(exports.abi_page_size()).toBe(4096);
