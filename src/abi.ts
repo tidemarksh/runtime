@@ -603,6 +603,17 @@ export interface KernelExports {
   debug_signal_delivery_for_vm_tp?(vmPtr: number): bigint;
   debug_signal_delivery_s11?(): bigint;
   debug_signal_delivery_for_vm_s11?(vmPtr: number): bigint;
+  debug_default_signal_sig?(): number;
+  debug_default_signal_code?(): number;
+  debug_default_signal_vm_ptr?(): number;
+  debug_default_signal_pc?(): bigint;
+  debug_default_signal_ra?(): bigint;
+  debug_default_signal_sp?(): bigint;
+  debug_default_signal_gp?(): bigint;
+  debug_default_signal_tp?(): bigint;
+  debug_default_signal_s11?(): bigint;
+  debug_default_signal_fault_pc?(): bigint;
+  debug_default_signal_fault_addr?(): bigint;
   debug_sigreturn_frame_base?(): bigint;
   debug_sigreturn_pc?(): bigint;
   debug_sigreturn_ra?(): bigint;

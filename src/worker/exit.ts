@@ -357,6 +357,28 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     ].join(":");
   }
 
+  function formatDefaultSignalTrace(handle: ProcessHandle): string {
+    const sig = handle.kernel.debug_default_signal_sig?.() ?? 0;
+    if (sig === 0) {
+      return "default_signal=[]";
+    }
+    return `default_signal=[${
+      [
+        `sig=${sig}`,
+        `code=${handle.kernel.debug_default_signal_code?.() ?? 0}`,
+        `vm=0x${(handle.kernel.debug_default_signal_vm_ptr?.() ?? 0).toString(16)}`,
+        `pc=0x${(handle.kernel.debug_default_signal_pc?.() ?? 0n).toString(16)}`,
+        `ra=0x${(handle.kernel.debug_default_signal_ra?.() ?? 0n).toString(16)}`,
+        `sp=0x${(handle.kernel.debug_default_signal_sp?.() ?? 0n).toString(16)}`,
+        `gp=0x${(handle.kernel.debug_default_signal_gp?.() ?? 0n).toString(16)}`,
+        `tp=0x${(handle.kernel.debug_default_signal_tp?.() ?? 0n).toString(16)}`,
+        `s11=0x${(handle.kernel.debug_default_signal_s11?.() ?? 0n).toString(16)}`,
+        `fault_pc=0x${(handle.kernel.debug_default_signal_fault_pc?.() ?? 0n).toString(16)}`,
+        `fault_addr=0x${(handle.kernel.debug_default_signal_fault_addr?.() ?? 0n).toString(16)}`,
+      ].join(":")
+    }]`;
+  }
+
   function formatExitTrace(handle: ProcessHandle): string {
     const execveStage = handle.kernel.debug_execve_stage?.() ?? 0;
     const execveValue0 = handle.kernel.debug_execve_value0?.() ?? 0n;
@@ -375,6 +397,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       `fd_syscalls=[${formatFdSyscalls(handle)}]`,
       `memory_syscalls=[${formatMemorySyscalls(handle)}]`,
       `fault_state=[${formatFaultState(handle)}]`,
+      formatDefaultSignalTrace(handle),
       formatFrozenExitTraces(handle),
     ].join(" ");
   }

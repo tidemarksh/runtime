@@ -620,6 +620,17 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
       thread_fault_kind: () => 2,
       thread_fault_signal: () => 11,
       thread_fault_code: () => 1,
+      debug_default_signal_sig: () => 11,
+      debug_default_signal_code: () => 1,
+      debug_default_signal_vm_ptr: () => 0xabc,
+      debug_default_signal_pc: () => 0x7788n,
+      debug_default_signal_ra: () => 0x123n,
+      debug_default_signal_sp: () => 0x12340000n,
+      debug_default_signal_gp: () => 0x456n,
+      debug_default_signal_tp: () => 0x789n,
+      debug_default_signal_s11: () => 0xdefn,
+      debug_default_signal_fault_pc: () => 0x5566n,
+      debug_default_signal_fault_addr: () => 0xdeadbeefn,
     } as never,
   });
   const processHandles = new Map<number, ProcessHandle>([
@@ -654,4 +665,8 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
   expect(parent.lastDebugMessage).toContain("fault_kind=2");
   expect(parent.lastDebugMessage).toContain("fault_signal=11");
   expect(parent.lastDebugMessage).toContain("fault_code=1");
+  expect(parent.lastDebugMessage).toContain("default_signal=[");
+  expect(parent.lastDebugMessage).toContain("sig=11");
+  expect(parent.lastDebugMessage).toContain("vm=0xabc");
+  expect(parent.lastDebugMessage).toContain("fault_addr=0xdeadbeef");
 });
