@@ -6,6 +6,7 @@
  */
 
 import { expect, test } from "vite-plus/test";
+import { readFileSync } from "node:fs";
 import {
   attachKernelRuntimeState,
   kernelOfdStateBytes,
@@ -33,6 +34,8 @@ import {
   FS_RING_SUBMIT_TAIL_OFFSET,
 } from "../../../src/layout/fs-ring.js";
 import { findRiscvElf, logSkip, readKernelWasm } from "../../support/runtime-workload.js";
+
+const TARGET_KERNEL_WASM_PATH = process.env.TIDEMARK_TEST_TARGET_KERNEL_WASM ?? "";
 
 function encodeI(opcode: number, rd: number, funct3: number, rs1: number, imm: number): number {
   return (((imm & 0xfff) << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode) >>> 0;
@@ -209,6 +212,30 @@ async function loadKernel(opts?: { memory?: WebAssembly.Memory }) {
   return { exports, memory, module };
 }
 
+async function instantiateKernelArtifact(opts: { wasmBytes: Uint8Array; memory: WebAssembly.Memory }) {
+  const module = await WebAssembly.compile(opts.wasmBytes);
+  const instance = await WebAssembly.instantiate(module, {
+    env: createKernelEnv(opts.memory),
+  });
+  return { exports: instance.exports as unknown as KernelExports, memory: opts.memory, module };
+}
+
+async function loadKernelTargetArtifactWithSharedI64Memory() {
+  if (!TARGET_KERNEL_WASM_PATH) {
+    return logSkip("missing target kernel wasm path: set TIDEMARK_TEST_TARGET_KERNEL_WASM");
+  }
+  const memory = new WebAssembly.Memory({
+    initial: 771n,
+    maximum: 65536n,
+    shared: true,
+    address: "i64",
+  } as unknown as WebAssembly.MemoryDescriptor);
+  return instantiateKernelArtifact({
+    wasmBytes: new Uint8Array(readFileSync(TARGET_KERNEL_WASM_PATH)),
+    memory,
+  });
+}
+
 test("kernel WASM loads and exports constants", async () => {
   const loaded = await loadKernel();
   if (!loaded) {
@@ -224,6 +251,21 @@ test("kernel WASM loads and exports constants", async () => {
   // kernel_init should not crash. heapBase must be >= __heap_base (kernel data end).
   const heapBase0 = (exports as any).__heap_base?.value ?? 0x200000;
   exports.kernel_init(heapBase0);
+});
+
+test("target kernel artifact instantiates with shared i64 memory", async () => {
+  const loaded = await loadKernelTargetArtifactWithSharedI64Memory();
+  if (!loaded) {
+    return;
+  }
+  const { exports, memory } = loaded;
+  expect(memory.buffer).toBeInstanceOf(SharedArrayBuffer);
+  expect(exports.memory).toBe(memory);
+  expect(exports.abi_guest_address_profile_memory64?.()).toBeGreaterThan(0);
+
+  const heapBase = (exports as any).__heap_base?.value ?? 0x200000;
+  exports.kernel_init(Number(heapBase));
+  expect(exports.abi_page_size()).toBe(4096);
 });
 
 test("kernel_init + process_create + thread_step runs to exit", async () => {
