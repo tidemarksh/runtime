@@ -45,6 +45,12 @@ interface KernelMemoryWriteOptions {
 }
 
 const DIRECT_EXEC_PROT = 4;
+const STATUS_EXEC_OVERLAP_DIAGNOSTICS_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_STRICT_GATE_DIAGNOSTICS ?? "") === "1"
+  || ((globalThis as {
+    process?: { env?: Record<string, string | undefined> };
+  }).process?.env?.TIDEMARK_STATUS_EXEC_OVERLAP_DEBUG ?? "") === "1";
 
 function formatSample(bytes: Uint8Array): { sample: string; ascii: string } {
   const sample = [...bytes.slice(0, 16)]
@@ -63,6 +69,9 @@ function appendGuestMemoryWriteExecOverlapEvent(
   bytes: Uint8Array,
   appendRuntimeLifecycleEvent?: WorkerMessageHandlerDeps["appendRuntimeLifecycleEvent"],
 ): void {
+  if (!STATUS_EXEC_OVERLAP_DIAGNOSTICS_ENABLED) {
+    return;
+  }
   if (!appendRuntimeLifecycleEvent || bytes.length === 0) {
     return;
   }

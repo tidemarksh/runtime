@@ -80,6 +80,17 @@ const DIAGNOSTIC_EXEC_WATCH_FIRST_SLOT = 1;
 const DIAGNOSTIC_DATA_WATCH_FIRST_SLOT = 33;
 const DIAGNOSTIC_PROT_EXEC = 4;
 const DIAGNOSTIC_PROT_WRITE = 2;
+const STRICT_GATE_DIAGNOSTICS_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_STRICT_GATE_DIAGNOSTICS ?? "") === "1";
+const RELEASE_EXEC_TRACE_DEBUG_ENABLED = STRICT_GATE_DIAGNOSTICS_ENABLED
+  || ((globalThis as {
+    process?: { env?: Record<string, string | undefined> };
+  }).process?.env?.TIDEMARK_RELEASE_EXEC_TRACE_DEBUG ?? "") === "1";
+const GUEST_WRITE_WATCH_DEBUG_ENABLED = STRICT_GATE_DIAGNOSTICS_ENABLED
+  || ((globalThis as {
+    process?: { env?: Record<string, string | undefined> };
+  }).process?.env?.TIDEMARK_GUEST_WRITE_WATCH_DEBUG ?? "") === "1";
 const PAGE_CACHE_IMPORT_EXEC_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_PAGE_CACHE_IMPORT_EXEC_DEBUG ?? "") === "1";
@@ -125,6 +136,9 @@ function configureDiagnosticGuestWriteWatch(
   kernelExports: KernelExports,
   threadVmPtr: number,
 ): void {
+  if (!GUEST_WRITE_WATCH_DEBUG_ENABLED) {
+    return;
+  }
   if (!kernelExports.debug_configure_guest_write_watch || threadVmPtr === 0) {
     return;
   }
@@ -183,6 +197,9 @@ function configureDiagnosticGuestWriteWatch(
 }
 
 function enableDiagnosticReleaseExecTrace(kernelExports: KernelExports): void {
+  if (!RELEASE_EXEC_TRACE_DEBUG_ENABLED) {
+    return;
+  }
   if (!kernelExports.debug_set_release_exec_trace_enabled) {
     return;
   }

@@ -8,6 +8,12 @@ const EXEC_PROT = 4;
 const TRACE_CAP_PER_HANDLE = 128;
 const traceCounts = new WeakMap<object, number>();
 const decoder = new TextDecoder();
+const DIRECT_MEMORY_COPY_DIAGNOSTICS_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_STRICT_GATE_DIAGNOSTICS ?? "") === "1"
+  || ((globalThis as {
+    process?: { env?: Record<string, string | undefined> };
+  }).process?.env?.TIDEMARK_DIRECT_MEMORY_COPY_DEBUG ?? "") === "1";
 
 function readVmaPath(kernel: KernelExports, index: number): string {
   const len = kernel.debug_memory_vma_path_len?.(index) ?? 0;
@@ -73,6 +79,9 @@ export function recordDirectMemoryCopyOverlap(
   targetOffset: number,
   bytes: Uint8Array,
 ): void {
+  if (!DIRECT_MEMORY_COPY_DIAGNOSTICS_ENABLED) {
+    return;
+  }
   if (!handle.workerDebugLog || handle.guestBase === undefined || bytes.length === 0) {
     return;
   }
