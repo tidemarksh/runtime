@@ -614,6 +614,7 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
       thread_sp: () => 0x12340000n,
       thread_a0: () => 139n,
       thread_a1: () => 11n,
+      thread_term_signal: () => 11,
       thread_fault_pc: () => 0x5566n,
       thread_fault_addr: () => 0xdeadbeefn,
       thread_fault_kind: () => 2,
@@ -647,6 +648,7 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
 
   expect(parent.lastDebugMessage).toContain("child-debug:4:");
   expect(parent.lastDebugMessage).toContain("fault_state=[");
+  expect(parent.lastDebugMessage).toContain("term_signal=11");
   expect(parent.lastDebugMessage).toContain("fault_pc=0x5566");
   expect(parent.lastDebugMessage).toContain("fault_addr=0xdeadbeef");
   expect(parent.lastDebugMessage).toContain("fault_kind=2");

@@ -348,6 +348,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       `sp=0x${(handle.kernel.thread_sp?.(vmPtr) ?? 0n).toString(16)}`,
       `a0=${(handle.kernel.thread_a0?.(vmPtr) ?? 0n).toString()}`,
       `a1=${(handle.kernel.thread_a1?.(vmPtr) ?? 0n).toString()}`,
+      `term_signal=${handle.kernel.thread_term_signal?.(vmPtr) ?? 0}`,
       `fault_pc=0x${(handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n).toString(16)}`,
       `fault_addr=0x${(handle.kernel.thread_fault_addr?.(vmPtr) ?? 0n).toString(16)}`,
       `fault_kind=${handle.kernel.thread_fault_kind?.(vmPtr) ?? 0}`,
