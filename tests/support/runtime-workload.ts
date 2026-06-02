@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect } from "vite-plus/test";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { delimiter, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import type { KernelExports, KernelRuntimeState } from "../../src/abi.js";
@@ -15,7 +15,6 @@ export const RUNTIME_DIST_PATH = resolve(__dirname, "../../dist/index.mjs");
 export const RUNTIME_WORKER_DIST_DIR = resolve(__dirname, "../../dist");
 export const encoder = new TextEncoder();
 export const decoder = new TextDecoder();
-const WORKSPACE_ROOT = resolve(__dirname, "../../..");
 const TIMEOUT_OUTPUT_PREVIEW_BYTES = 4096;
 
 const originalWorker = globalThis.Worker;
@@ -81,44 +80,22 @@ export function logSkip(reason: string): null {
   return null;
 }
 
-function firstExistingPath(candidates: readonly string[]): string | null {
-  for (const candidate of candidates) {
-    if (candidate && existsSync(candidate)) {
-      return candidate;
-    }
-  }
-  return null;
-}
-
 function detectKernelWasmPath(): string | null {
-  return firstExistingPath([
-    KERNEL_WASM_PATH,
-    resolve(WORKSPACE_ROOT, "kernel/target/wasm32-unknown-unknown/release/tidemark_kernel.wasm"),
-    resolve(WORKSPACE_ROOT, "kernel/target/wasm32-wasip1/release/tidemark_kernel.wasm"),
-    resolve(WORKSPACE_ROOT, "kernel/target/wasm32-unknown-unknown/debug/tidemark_kernel.wasm"),
-    resolve(WORKSPACE_ROOT, "kernel/target/wasm32-wasip1/debug/tidemark_kernel.wasm"),
-  ]);
+  return KERNEL_WASM_PATH && existsSync(KERNEL_WASM_PATH) ? KERNEL_WASM_PATH : null;
 }
 
 export function readKernelWasm(): Uint8Array | null {
   const wasmPath = detectKernelWasmPath();
   if (!wasmPath) {
-    return logSkip("missing kernel wasm path: set TIDEMARK_TEST_KERNEL_WASM or build kernel/target/wasm32-*/{debug,release}/tidemark_kernel.wasm");
+    return logSkip("missing kernel wasm path: set TIDEMARK_TEST_KERNEL_WASM");
   }
   return new Uint8Array(readFileSync(wasmPath));
 }
 
 function detectRiscvElfBuildDirs(): string[] {
-  const envDir = process.env.TIDEMARK_TEST_RISCV_ELF_BUILD_DIR ?? "";
-  const candidates = [
-    envDir,
-    resolve(WORKSPACE_ROOT, "kernel/target/release/build"),
-    resolve(WORKSPACE_ROOT, "kernel/target/wasm32-wasip1/release/build"),
-    resolve(WORKSPACE_ROOT, "kernel/target/wasm32-unknown-unknown/release/build"),
-    resolve(WORKSPACE_ROOT, "kernel/target/debug/build"),
-    resolve(WORKSPACE_ROOT, "kernel/target/wasm32-wasip1/debug/build"),
-    resolve(WORKSPACE_ROOT, "kernel/target/wasm32-unknown-unknown/debug/build"),
-  ];
+  const candidates = (process.env.TIDEMARK_TEST_RISCV_ELF_BUILD_DIR ?? "")
+    .split(delimiter)
+    .filter(Boolean);
   return candidates.filter((candidate, index) => (
     candidate
     && existsSync(candidate)
@@ -146,7 +123,7 @@ function findRiscvElfPath(buildDir: string, name: string): string | null {
 export function findRiscvElf(name: string): Uint8Array | null {
   const buildDirs = detectRiscvElfBuildDirs();
   if (buildDirs.length === 0) {
-    return logSkip("missing riscv elf build dir: set TIDEMARK_TEST_RISCV_ELF_BUILD_DIR or build kernel target outputs");
+    return logSkip("missing riscv elf build dir: set TIDEMARK_TEST_RISCV_ELF_BUILD_DIR");
   }
   for (const buildDir of buildDirs) {
     const elfPath = findRiscvElfPath(buildDir, name);
