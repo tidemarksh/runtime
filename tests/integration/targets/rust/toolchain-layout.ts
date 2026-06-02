@@ -22,6 +22,12 @@ const GCC_LINKER_FILES = [
   "libgcc.a",
   "libgcc_eh.a",
   "libgcc_s.so",
+  "liblto_plugin.so",
+] as const;
+
+const GCC_LIBEXEC_FILES = [
+  "collect2",
+  "liblto_plugin.so",
 ] as const;
 
 const GLIBC_LINKER_FILES = [
@@ -137,21 +143,31 @@ export function rustToolchainSnapshotSources(rustToolchainDir: string): Snapshot
 
 export function rustCLinkerSnapshotSources(cToolchainDir: string): SnapshotSource[] {
   const gccLibDir = resolve(cToolchainDir, `usr/lib/gcc/${GCC_TRIPLE}/${GCC_VERSION}`);
+  const gccLibexecDir = resolve(cToolchainDir, `usr/libexec/gcc/${GCC_TRIPLE}/${GCC_VERSION}`);
   const glibcLibDir = resolve(cToolchainDir, `usr/lib/${GCC_TRIPLE}`);
 
   return [
     { kind: "dir", guestPath: "/usr" },
     { kind: "dir", guestPath: "/usr/bin" },
     { kind: "dir", guestPath: "/usr/lib" },
+    { kind: "dir", guestPath: "/usr/libexec" },
     { kind: "dir", guestPath: `/usr/lib/gcc` },
     { kind: "dir", guestPath: `/usr/lib/gcc/${GCC_TRIPLE}` },
     { kind: "dir", guestPath: `/usr/lib/gcc/${GCC_TRIPLE}/${GCC_VERSION}` },
+    { kind: "dir", guestPath: `/usr/libexec/gcc` },
+    { kind: "dir", guestPath: `/usr/libexec/gcc/${GCC_TRIPLE}` },
+    { kind: "dir", guestPath: `/usr/libexec/gcc/${GCC_TRIPLE}/${GCC_VERSION}` },
     { kind: "dir", guestPath: `/usr/lib/${GCC_TRIPLE}` },
     ...fileSources(resolve(cToolchainDir, "usr/bin"), "/usr/bin", C_LINKER_BINARIES, 0o755),
     ...fileSources(
       gccLibDir,
       `/usr/lib/gcc/${GCC_TRIPLE}/${GCC_VERSION}`,
       GCC_LINKER_FILES,
+    ),
+    ...fileSources(
+      gccLibexecDir,
+      `/usr/libexec/gcc/${GCC_TRIPLE}/${GCC_VERSION}`,
+      GCC_LIBEXEC_FILES,
     ),
     ...fileSources(glibcLibDir, `/usr/lib/${GCC_TRIPLE}`, GLIBC_LINKER_FILES),
   ];
