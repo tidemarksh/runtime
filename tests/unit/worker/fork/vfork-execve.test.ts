@@ -1097,7 +1097,7 @@ test("vfork execve resumes the parent and initializes the child lifecycle throug
   ]);
 });
 
-test("vfork execve detached child memory covers the parent linear memory size", async () => {
+test("vfork execve detached child memory does not inherit the parent linear memory size", async () => {
   const instantiatedPages: number[] = [];
   vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {
     const memory = (imports as { env: { memory: WebAssembly.Memory } }).env.memory;
@@ -1111,8 +1111,10 @@ test("vfork execve detached child memory covers the parent linear memory size", 
   const parentWorker = createdWorkers[0];
   const parentKernel = createdKernelExports[0];
 
-  parentKernel.memory.grow(32);
+  const liveStackPtr = 0x2400000;
+  parentKernel.memory.grow(512);
   const parentPages = parentKernel.memory.buffer.byteLength / 65536;
+  parentKernel.thread_sp = () => BigInt(liveStackPtr);
   parentKernel.thread_vfork_child_pid = () => 55;
   parentKernel.thread_spawn_kind = () => parentKernel.abi_spawn_kind_execve();
   parentKernel.thread_spawn_child_pid = () => {
@@ -1128,6 +1130,7 @@ test("vfork execve detached child memory covers the parent linear memory size", 
     exitCode: 0,
     termSignal: 0,
     pc: 0n,
+    sp: BigInt(liveStackPtr),
     vmPtr: 0x1234,
     kernelState: makeKernelState(),
   });
@@ -1140,13 +1143,15 @@ test("vfork execve detached child memory covers the parent linear memory size", 
     exitCode: 0,
     termSignal: 0,
     pc: 0n,
+    sp: BigInt(liveStackPtr),
     vmPtr: 0x1234,
     kernelState: makeKernelState(),
   });
   await flushMicrotasks(40);
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  expect(instantiatedPages[1]).toBeGreaterThanOrEqual(parentPages);
+  expect(instantiatedPages[1]).toBeLessThan(parentPages);
+  expect(instantiatedPages[1]).toBeGreaterThanOrEqual((0x1000000 + liveStackPtr + 8 * 1024 * 1024) / 65536);
 });
 
 test("vfork execve preserves child-private OFDs across kernel-worker scrub", async () => {

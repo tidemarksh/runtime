@@ -47,6 +47,8 @@ import type { ProcessHandle, ThreadWorkerState, WorkerForkDeps } from "./types.j
 
 const VFORK_EXECVE_HANDOFF_FAILURE_WAIT_STATUS = 127 << 8;
 const HANDOFF_DEBUG_STRING_LIMIT = 128;
+const EXECVE_CHILD_HANDOFF_HEADROOM_BYTES = 0x10000;
+const EXECVE_CHILD_LIVE_STACK_WINDOW_BYTES = 8 * 1024 * 1024;
 
 function formatGuestCStringForDebug(
   handle: ProcessHandle,
@@ -201,6 +203,28 @@ function copyExecveKernelRuntimeRegions(handle: ProcessHandle, target: WebAssemb
     target,
     handle.kernelState.timeStatePtr,
     handle.kernel.kernel_time_state_bytes(),
+  );
+}
+
+function execveChildInitialMemoryBytes(
+  deps: WorkerForkDeps,
+  handle: ProcessHandle,
+  parentThread: ThreadWorkerState,
+): number {
+  const liveStackPtr = Number(
+    parentThread.lastStatusSp
+      ?? parentThread.lastStepSp
+      ?? handle.kernel.thread_sp(parentThread.vmPtr),
+  );
+  const liveStackEnd = Number.isFinite(liveStackPtr) && liveStackPtr > 0
+    ? handle.guestBase + liveStackPtr + EXECVE_CHILD_LIVE_STACK_WINDOW_BYTES
+    : 0;
+  return Math.max(
+    deps.bootStrapMemoryBytes,
+    handle.kernelState.heapPtr,
+    handle.kernel.kernel_heap_ptr?.() ?? 0,
+    handle.guestBase + EXECVE_CHILD_HANDOFF_HEADROOM_BYTES,
+    liveStackEnd,
   );
 }
 
@@ -400,16 +424,20 @@ export async function handleVforkExecve(
     handoff.processMaxMemoryPages,
     handle.maxMemoryPages,
   );
+  const childInitialMemoryBytes = execveChildInitialMemoryBytes(deps, handle, parentThread);
+  deps.appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `vfork-execve:child-memory:${childPid}`
+      + `:initial=${childInitialMemoryBytes}`
+      + `:parent=${handle.memory.buffer.byteLength}`
+      + `:guestBase=${handle.guestBase}`
+      + `:heap=${Math.max(handle.kernelState.heapPtr, handle.kernel.kernel_heap_ptr?.() ?? 0)}`
+      + `:sp=${parentThread.lastStatusSp ?? parentThread.lastStepSp ?? handle.kernel.thread_sp(parentThread.vmPtr)}`,
+  );
   const { instance: childInstance, memory: childMemory } = await instantiateKernelWithSharedMemory(
     handle.wasmModule,
     {
-      initialPages: Math.ceil(
-        Math.max(
-          deps.bootStrapMemoryBytes,
-          handle.memory.buffer.byteLength,
-          handle.guestBase + 0x10000,
-        ) / deps.wasmPageSize,
-      ),
+      initialPages: Math.ceil(childInitialMemoryBytes / deps.wasmPageSize),
       maximumPages: Math.max(childProcessMaxMemoryPages, handle.forkMaxMemoryPages),
     },
     { sabPageCache: handle.sabPageCache },
@@ -495,6 +523,22 @@ export async function handleVforkExecve(
     guestMemoryPolicyLimit,
     processMaxMemoryPages,
   );
+  const childMemfsDataPtr = childKernel.kernel_memfs_data_ptr?.() ?? 0;
+  const childMemfsDataBytes = childKernel.kernel_memfs_data_bytes?.() ?? 0;
+  const childPreCompleteDebug =
+    `memory=${childMemory.buffer.byteLength}`
+    + `:heap=${childKernel.kernel_heap_ptr?.() ?? 0}`
+    + `:memfsData=${childMemfsDataPtr}+${childMemfsDataBytes}`
+    + `:process=0x${stagedExecveHandoff.processPtr.toString(16)}`
+    + `:path=0x${stagedExecveHandoff.pathPtr.toString(16)}`
+    + `:argv=0x${stagedExecveHandoff.argvPtr.toString(16)}`
+    + `:envp=0x${stagedExecveHandoff.envpPtr.toString(16)}`
+    + `:policy=${guestMemoryPolicyLimit}`
+    + `:maxPages=${processMaxMemoryPages}`;
+  deps.appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `vfork-execve:child-pre-complete:${childPid}:${childPreCompleteDebug}`,
+  );
   let execRet: number;
   try {
     execRet = Number(childKernel.thread_complete_execve_handoff(childVmPtr));
@@ -507,10 +551,12 @@ export async function handleVforkExecve(
     deps.appendWorkerDebugLog(
       handle,
       `vfork-execve:handoff-trap:${childPid}:${detail}:stage=${debugStage ?? "n/a"}`
-      + `:value0=${debugValue0 ?? "n/a"}:value1=${debugValue1 ?? "n/a"}`,
+      + `:value0=${debugValue0 ?? "n/a"}:value1=${debugValue1 ?? "n/a"}`
+      + `:${childPreCompleteDebug}`,
     );
     handle.lastDebugMessage = `vfork-execve:handoff-trap child=${childPid} detail=${detail}`
-      + ` stage=${debugStage ?? "n/a"} value0=${debugValue0 ?? "n/a"} value1=${debugValue1 ?? "n/a"}`;
+      + ` stage=${debugStage ?? "n/a"} value0=${debugValue0 ?? "n/a"} value1=${debugValue1 ?? "n/a"}`
+      + ` ${childPreCompleteDebug}`;
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
       `vfork-execve:handoff-trap:${childPid}:${debugStage ?? "n/a"}:${debugValue0 ?? "n/a"}:${debugValue1 ?? "n/a"}`,
