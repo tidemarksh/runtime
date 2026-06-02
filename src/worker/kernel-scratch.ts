@@ -1,4 +1,5 @@
 import type { KernelExports } from "../abi.js";
+import { growKernelMemory } from "../wasm/kernel-memory.js";
 
 export function alignUp(value: number, align: number): number {
   return (value + align - 1) & ~(align - 1);
@@ -10,7 +11,7 @@ export function ensureMemoryCapacity(memory: WebAssembly.Memory, endOffset: numb
   }
   const requiredPages = Math.ceil(endOffset / 65536);
   const currentPages = memory.buffer.byteLength / 65536;
-  memory.grow(requiredPages - currentPages);
+  growKernelMemory(memory, requiredPages - currentPages);
 }
 
 export function kernelScratchBase(exports: KernelExports): number {

@@ -15,6 +15,7 @@ import { createKernelEnv } from "../wasm/env.js";
 import { instantiateKernelWithSharedMemory } from "../wasm/kernel-memory.js";
 import {
   configureKernelInstanceStack,
+  kernelHeapBase,
   KERNEL_WORKER_STACK_SLOT,
 } from "../wasm/stack.js";
 
@@ -374,7 +375,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     configureKernelInstanceStack(nextExports, KERNEL_WORKER_STACK_SLOT);
     deps.setCanonicalExports(nextExports);
 
-    const wasmHeapBase = nextExports.__heap_base?.value ?? 0x200000;
+    const wasmHeapBase = kernelHeapBase(nextExports, 0x200000);
     nextExports.kernel_init(wasmHeapBase);
 
     const now = Date.now();

@@ -1,5 +1,6 @@
 import type { KernelExports, KernelRuntimeState } from "../abi.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
+import { growKernelMemory } from "../wasm/kernel-memory.js";
 import {
   MEMFS_HEADER_OFF_DATA_CAP,
   MEMFS_HEADER_OFF_DATA_PTR,
@@ -92,7 +93,7 @@ export function ensureMemoryCapacityFor(memory: WebAssembly.Memory, endOffset: n
     return;
   }
   const additionalPages = Math.ceil((endOffset - currentBytes) / pageSize);
-  memory.grow(additionalPages);
+  growKernelMemory(memory, additionalPages);
 }
 
 export function writeScratchFor(targetExports: KernelExports, bytes: Uint8Array, offset = 0): number {

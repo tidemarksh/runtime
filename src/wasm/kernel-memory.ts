@@ -47,6 +47,24 @@ function isMemoryAddressMismatch(error: unknown): boolean {
   return /cannot import i64 memory as i32|cannot import i32 memory as i64/i.test(error.message);
 }
 
+function requiresBigIntMemoryDelta(error: unknown): boolean {
+  return error instanceof Error && /BigInt/i.test(error.message);
+}
+
+export function growKernelMemory(memory: WebAssembly.Memory, deltaPages: number): void {
+  if (deltaPages <= 0) {
+    return;
+  }
+  try {
+    memory.grow(deltaPages);
+  } catch (error) {
+    if (!requiresBigIntMemoryDelta(error)) {
+      throw error;
+    }
+    (memory.grow as unknown as (delta: bigint) => bigint)(BigInt(deltaPages));
+  }
+}
+
 export async function instantiateKernelWithSharedMemory(
   module: WebAssembly.Module,
   sizing: KernelSharedMemorySizing,

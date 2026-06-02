@@ -35,6 +35,7 @@ import type {
 } from "./types.js";
 import {
   configureKernelInstanceStack,
+  kernelHeapBase,
   MAIN_THREAD_KERNEL_STACK_SLOT,
 } from "../wasm/stack.js";
 import { FS_RING_TOTAL_BYTES } from "../layout/fs-ring.js";
@@ -352,8 +353,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     });
     const exports = mainInstance.exports as unknown as KernelExports;
     configureKernelInstanceStack(exports, MAIN_THREAD_KERNEL_STACK_SLOT);
-    const wasmHeapBase = exports.__heap_base?.value
-      ?? (ramSize - 4 * 1024 * 1024);
+    const wasmHeapBase = kernelHeapBase(exports, ramSize - 4 * 1024 * 1024);
     exports.kernel_init(wasmHeapBase);
 
     const now = Date.now();

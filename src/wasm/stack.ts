@@ -19,10 +19,27 @@ export function kernelStackTopForSlot(slot: number): number {
   return KERNEL_STACK_TOP_BASE + slot * KERNEL_STACK_WINDOW_BYTES;
 }
 
+export function kernelHeapBase(exports: KernelExports, fallback: number): number {
+  const value = exports.__heap_base?.value;
+  if (typeof value === "bigint") {
+    const normalized = Number(value);
+    if (!Number.isSafeInteger(normalized)) {
+      throw new Error(`kernel __heap_base is outside JS safe integer range: ${value}`);
+    }
+    return normalized;
+  }
+  return typeof value === "number" ? value : fallback;
+}
+
 export function configureKernelInstanceStack(exports: KernelExports, slot: number): void {
   const stackPointer = (exports as KernelExportsWithStackGlobal).__stack_pointer;
   if (!(stackPointer instanceof WebAssembly.Global)) {
     throw new Error("kernel wasm export __stack_pointer is unavailable");
   }
-  (stackPointer as WebAssembly.Global & { value: number }).value = kernelStackTopForSlot(slot);
+  const stackTop = kernelStackTopForSlot(slot);
+  if (typeof stackPointer.value === "bigint") {
+    (stackPointer as WebAssembly.Global & { value: bigint }).value = BigInt(stackTop);
+    return;
+  }
+  (stackPointer as WebAssembly.Global & { value: number }).value = stackTop;
 }
