@@ -241,6 +241,7 @@ export interface KernelExports {
   process_clear_args(): void;
   abi_guest_address_profile_wasm32_compatible?(): number;
   abi_guest_address_profile_memory64?(): number;
+  abi_guest_address_profile_target?(): number;
   process_guest_base_for_address_profile?(addressProfile: number): bigint;
   process_guest_address_limit_for_profile?(addressProfile: number, guestBase: bigint): bigint;
   process_guest_base(ram_size: number): number;
@@ -959,6 +960,18 @@ export function guestAddressProfileWasm32Compatible(exports: KernelExports): num
     throw new Error("kernel ABI missing guest address profile export");
   }
   return exports.abi_guest_address_profile_wasm32_compatible();
+}
+
+export function guestAddressProfileForProcessCreation(exports: KernelExports): number {
+  const targetProfile = exports.abi_guest_address_profile_target?.();
+  if (
+    targetProfile !== undefined
+    && targetProfile !== 0
+    && exports.process_guest_base_for_address_profile?.(targetProfile) !== 0n
+  ) {
+    return targetProfile;
+  }
+  return guestAddressProfileWasm32Compatible(exports);
 }
 
 export function processGuestBaseForAddressProfile(

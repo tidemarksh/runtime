@@ -1,5 +1,5 @@
 import {
-  guestAddressProfileWasm32Compatible,
+  guestAddressProfileForProcessCreation,
   processCreateWithMemoryPolicy,
   processGuestBaseForAddressProfile,
   processInspectElfBrkWithMemoryPolicy,
@@ -406,7 +406,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     guestBase: number,
     elfData: Uint8Array,
     ramSize: number,
-    guestAddressProfile = guestAddressProfileWasm32Compatible(exports),
+    guestAddressProfile = guestAddressProfileForProcessCreation(exports),
   ): number {
     const inspectScratchBase = detachedKernelScratchBase(exports.memory, guestBase, 0);
     const inspectElfOffset = writeDetachedKernelScratch(exports, inspectScratchBase, elfData);
@@ -581,7 +581,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     );
     const bootstrapEntriesRequireMaterializedData = entriesRequireMaterializedData(bootstrapEntries);
     preloadSnapshotEntries(exports, bootstrapEntries, preloadScratchBase);
-    const guestAddressProfile = guestAddressProfileWasm32Compatible(exports);
+    const guestAddressProfile = guestAddressProfileForProcessCreation(exports);
     const guestBase = processGuestBaseForAddressProfile(exports, guestAddressProfile);
     if (guestBase === 0) {
       throw new Error("process_guest_base failed");

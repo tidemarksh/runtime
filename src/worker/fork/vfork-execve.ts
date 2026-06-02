@@ -1,6 +1,6 @@
 import {
   attachKernelRuntimeState,
-  guestAddressProfileWasm32Compatible,
+  guestAddressProfileForProcessCreation,
   readKernelRuntimeState,
   readProcessSpawnHandoff,
   setExecveMemoryHandoff,
@@ -468,7 +468,7 @@ export async function handleVforkExecve(
     execveGuestPayload,
   );
   const guestAddressProfile =
-    childKernel.thread_guest_address_profile?.(childVmPtr) ?? guestAddressProfileWasm32Compatible(childKernel);
+    childKernel.thread_guest_address_profile?.(childVmPtr) ?? guestAddressProfileForProcessCreation(childKernel);
   const guestMemoryPolicyLimit = currentGuestMemoryPolicyLimit(
     handle,
     childKernel,

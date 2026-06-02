@@ -261,7 +261,7 @@ test("target kernel artifact instantiates with shared i64 memory", async () => {
   const { exports, memory } = loaded;
   expect(memory.buffer).toBeInstanceOf(SharedArrayBuffer);
   expect(exports.memory).toBe(memory);
-  expect(exports.abi_guest_address_profile_memory64?.()).toBeGreaterThan(0);
+  expect(exports.abi_guest_address_profile_target?.()).toBeGreaterThan(0);
 
   const heapBase = (exports as any).__heap_base?.value ?? 0x200000;
   exports.kernel_init(Number(heapBase));
