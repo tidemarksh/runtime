@@ -9,6 +9,8 @@
  */
 
 import {
+  attachKernelRuntimeState,
+  readKernelRuntimeState,
   type KernelExports,
   type KernelRuntimeState,
 } from "./abi.js";
@@ -48,6 +50,7 @@ import { createKernelWorkerProcessMemfsSync } from "./kernel-worker/fs-state/pro
 import { createKernelWorkerSocketStateBridge } from "./kernel-worker/shared-state-sync/socket-state.js";
 
 let exports: KernelExports;
+let canonicalRuntimeState: KernelRuntimeState | null = null;
 let wasmModule: WebAssembly.Module | null = null;
 let sabPageCache: SharedArrayBuffer;
 const processKernels = new Map<number, KernelExports>();
@@ -69,8 +72,24 @@ function postResponse(msg: KernelWorkerOutbound): void {
   workerPostMessage(msg);
 }
 
+function hasAttachedCanonicalRuntimeState(state: KernelRuntimeState): boolean {
+  return state.heapPtr > 0 && state.memfsPtr > 0;
+}
+
+function getCanonicalExports(): KernelExports {
+  const liveState = readKernelRuntimeState(exports);
+  if (hasAttachedCanonicalRuntimeState(liveState)) {
+    canonicalRuntimeState = liveState;
+    return exports;
+  }
+  if (canonicalRuntimeState !== null) {
+    attachKernelRuntimeState(exports, canonicalRuntimeState);
+  }
+  return exports;
+}
+
 const kernelWorkerPrimitives = createKernelWorkerPrimitives({
-  getCanonicalExports: () => exports,
+  getCanonicalExports,
   processKernels,
   canonicalProcesses,
   getCanonicalProcessVmPtr: (pid) => canonicalProcesses.get(pid)?.vmPtr ?? 0,
@@ -106,7 +125,7 @@ const {
 } = kernelWorkerPrimitives;
 
 const kernelWorkerFsUtils = createKernelWorkerFsUtils({
-  getCanonicalExports: () => exports,
+  getCanonicalExports,
   getSabPageCache: () => sabPageCache,
   processKernels,
   seedEntries,
@@ -126,7 +145,7 @@ const {
 } = kernelWorkerFsUtils;
 
 const kernelWorkerFsState = createKernelWorkerFsState({
-  getCanonicalExports: () => exports,
+  getCanonicalExports,
   getSabPageCache: () => sabPageCache,
   processKernels,
   seedEntries,
@@ -217,7 +236,7 @@ function syncSocketState(pid: number, kernelState: KernelRuntimeState): KernelRu
 }
 
 const kernelWorkerSharedStateSync = createKernelWorkerSharedStateSync({
-  getCanonicalExports: () => exports,
+  getCanonicalExports,
   getCanonicalProcessVmPtr: (pid) => canonicalProcesses.get(pid)?.vmPtr ?? 0,
   processKernels,
   lastProcessPipeSlotModes,
@@ -268,7 +287,7 @@ syncEpollStateImpl = nextSyncEpollState;
 syncSocketStateImpl = nextSyncSocketState;
 
 const syncProcessMemfs = createKernelWorkerProcessMemfsSync({
-  getCanonicalExports: () => exports,
+  getCanonicalExports,
   requireProcessKernel,
   copyCanonicalMemfsToProcess,
   restorePublishedRegularFileDataFromPageCache,
@@ -282,9 +301,10 @@ const {
 });
 
 const kernelWorkerProcessControl = createKernelWorkerProcessControl({
-  getCanonicalExports: () => exports,
+  getCanonicalExports,
   setCanonicalExports: (nextExports) => {
     exports = nextExports;
+    canonicalRuntimeState = null;
   },
   getWasmModule: () => wasmModule,
   setWasmModule: (module) => {
@@ -402,7 +422,8 @@ const handleKernelWorkerMessage = createKernelWorkerMessageHandler({
   rehydrateForkSharedState,
   debugProcesses,
   debugPageCachePath: (path) => {
-    const ino = resolvePathIn(exports, path);
+    const canonicalExports = getCanonicalExports();
+    const ino = resolvePathIn(canonicalExports, path);
     if (ino === 0) {
       return null;
     }
@@ -412,8 +433,8 @@ const handleKernelWorkerMessage = createKernelWorkerMessageHandler({
         path,
         ino,
         dataOff: 0,
-        size: Number(exports.memfs_file_size(ino)),
-        mode: exports.memfs_inode_mode(ino),
+        size: Number(canonicalExports.memfs_file_size(ino)),
+        mode: canonicalExports.memfs_inode_mode(ino),
       };
     }
     return {

@@ -17,12 +17,92 @@ import {
   normalizePath,
   normalizePermMode,
   pathParts,
+  readMemfsLayout,
   scratchBaseFor,
   writeScratchFor,
 } from "./common.js";
 import { createKernelWorkerFsSnapshotHelpers } from "./fs-state/snapshot.js";
 
 export const KERNEL_WORKER_FS_STATE_OWNERSHIP = "transitional-runtime-owner" as const;
+
+const FS_PUBLICATION_DEBUG_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_FS_PUBLICATION_DEBUG ?? "") === "1";
+const EXEC_PROT = 4;
+
+function emitFsPublicationDebug(message: string): void {
+  if (!FS_PUBLICATION_DEBUG_ENABLED) {
+    return;
+  }
+  console.error(`[tidemark-kernel-worker-fs-state] ${message}`);
+}
+
+function formatPointerRange(ptr: number, bytes: number): string {
+  return `${ptr}+${bytes}`;
+}
+
+function targetGuestBase(targetExports: KernelExports): number {
+  const profile = targetExports.abi_guest_address_profile_target?.() ?? 0;
+  const base = targetExports.process_guest_base_for_address_profile?.(profile) ?? 0n;
+  return Number(base);
+}
+
+function sampleHex(bytes: Uint8Array, offset: number, length = 16): string {
+  return [...bytes.subarray(offset, Math.min(bytes.length, offset + length))]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function recordFileDataScratchExecOverlap(
+  targetExports: KernelExports,
+  label: string,
+  targetOffset: number,
+  byteLength: number,
+  sampleBytes?: Uint8Array,
+  detail = "",
+): void {
+  if (byteLength <= 0) {
+    return;
+  }
+  const guestBase = targetGuestBase(targetExports);
+  if (!Number.isFinite(guestBase) || guestBase <= 0 || targetOffset < guestBase) {
+    return;
+  }
+  const guestStart = BigInt(targetOffset - guestBase);
+  const guestEnd = guestStart + BigInt(byteLength);
+  const vmaLen = targetExports.debug_memory_vma_len?.() ?? 0;
+  for (let index = 0; index < vmaLen; index += 1) {
+    const prot = targetExports.debug_memory_vma_prot?.(index) ?? 0;
+    if ((prot & EXEC_PROT) === 0) {
+      continue;
+    }
+    const vmaStart = BigInt(targetExports.debug_memory_vma_start?.(index) ?? 0n);
+    const vmaEnd = BigInt(targetExports.debug_memory_vma_end?.(index) ?? 0n);
+    if (vmaStart >= vmaEnd || guestEnd <= vmaStart || guestStart >= vmaEnd) {
+      continue;
+    }
+    const overlapStart = guestStart > vmaStart ? guestStart : vmaStart;
+    const overlapEnd = guestEnd < vmaEnd ? guestEnd : vmaEnd;
+    const sampleOffset = Number(overlapStart - guestStart);
+    const sample = sampleBytes ? sampleHex(sampleBytes, sampleOffset) : sampleHex(
+      new Uint8Array(targetExports.memory.buffer, targetOffset + sampleOffset, Math.min(16, byteLength - sampleOffset)),
+      0,
+    );
+    console.log([
+      "kernel-worker-filedata-scratch-exec-overlap",
+      `label=${label}`,
+      `target=0x${targetOffset.toString(16)}`,
+      `guest=0x${guestStart.toString(16)}`,
+      `len=${byteLength}`,
+      `overlap=0x${overlapStart.toString(16)}-0x${overlapEnd.toString(16)}`,
+      `vma=0x${vmaStart.toString(16)}-0x${vmaEnd.toString(16)}`,
+      `prot=${prot}`,
+      `fd=${targetExports.debug_memory_vma_fd?.(index) ?? "n/a"}`,
+      `sample=${sample}`,
+      detail,
+    ].filter((part) => part.length > 0).join(":"));
+  }
+}
 
 interface KernelWorkerFsStateDeps {
   getCanonicalExports(): KernelExports;
@@ -55,6 +135,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     }
     if (data.length > 0) {
       const dataPtr = writeScratchFor(targetExports, data);
+      recordFileDataScratchExecOverlap(targetExports, "replace-file-data", dataPtr, data.length, data, `ino=${ino}`);
       const written = Number(targetExports.memfs_write_file_at(ino, 0n, dataPtr, data.length));
       if (written < 0 || written !== data.length) {
         throw new Error(`failed to write inode: ${ino}`);
@@ -299,9 +380,6 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (ino === 1) {
       return;
     }
-    if ((targetExports.memfs_inode_mode(ino) & MEMFS_S_IFMT) !== 0) {
-      return;
-    }
     if (!published || published.name.length === 0) {
       return;
     }
@@ -315,18 +393,69 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         seen,
       );
     }
-
+    const namePtr = writeScratchFor(targetExports, published.name);
+    const linkedIno = targetExports.memfs_lookup(parentIno, namePtr, published.name.length);
+    if ((targetExports.memfs_inode_mode(ino) & MEMFS_S_IFMT) !== 0) {
+      if (linkedIno === ino) {
+        return;
+      }
+      throw new Error(`published inode ${ino} exists but lookup returned ${linkedIno}`);
+    }
     const reserveResult = Number(targetExports.memfs_reserve_inode_until(ino));
     if (reserveResult < 0) {
       throw new Error(`failed to reserve inode: ${ino}`);
     }
-    const namePtr = writeScratchFor(targetExports, published.name);
+    if (
+      (targetExports.memfs_inode_mode(ino) & MEMFS_S_IFMT) === 0
+      && (targetExports.memfs_inode_count?.() ?? 0) > ino
+    ) {
+      throw new Error(`cannot reconstruct missing inode after inode count advanced: ${ino}`);
+    }
+    if ((targetExports.memfs_inode_mode(ino) & MEMFS_S_IFMT) !== 0) {
+      const linkedAfterReserve = targetExports.memfs_lookup(parentIno, namePtr, published.name.length);
+      if (linkedAfterReserve === ino) {
+        return;
+      }
+      throw new Error(`reserved inode ${ino} exists but lookup returned ${linkedAfterReserve}`);
+    }
+    if (FS_PUBLICATION_DEBUG_ENABLED) {
+      const scratchBase = scratchBaseFor(targetExports);
+      const layout = readMemfsLayout(
+        targetExports.memory,
+        targetExports.kernel_memfs_ptr(),
+        targetExports.kernel_memfs_header_bytes(),
+      );
+      emitFsPublicationDebug(
+        `ensure-published-scratch-input`
+        + `:ino=${ino}`
+        + `:parent=${parentIno}`
+        + `:name=${deps.decoder.decode(published.name)}`
+        + `:nameLen=${published.name.length}`
+        + `:scratch=${scratchBase}`
+        + `:heap=${targetExports.kernel_heap_ptr()}`
+        + `:memoryLen=${targetExports.memory.buffer.byteLength}`
+        + `:memfs=${formatPointerRange(targetExports.kernel_memfs_ptr(), targetExports.kernel_memfs_header_bytes())}`
+        + `:inodes=${formatPointerRange(targetExports.kernel_memfs_inodes_ptr(), targetExports.kernel_memfs_inodes_bytes())}`
+        + `:firstChild=${formatPointerRange(targetExports.kernel_memfs_first_child_ptr(), targetExports.kernel_memfs_first_child_bytes())}`
+        + `:dirEntries=${formatPointerRange(targetExports.kernel_memfs_dir_entries_ptr(), targetExports.kernel_memfs_dir_entries_bytes())}`
+        + `:data=${formatPointerRange(targetExports.kernel_memfs_data_ptr(), targetExports.kernel_memfs_data_bytes())}`
+        + `:layoutInodeCount=${layout.inodeCount}`
+        + `:layoutDirEntryCount=${layout.dirEntryCount}`
+        + `:layoutDataUsed=${layout.dataUsed}`
+        + `:layoutDataCap=${layout.dataCap}`
+        + `:layoutInodesPtr=${layout.inodesPtr}`
+        + `:layoutFirstChildPtr=${layout.firstChildPtr}`
+        + `:layoutDirEntriesPtr=${layout.dirEntriesPtr}`
+        + `:layoutDataPtr=${layout.dataPtr}`,
+      );
+    }
     const perms = normalizePermMode(published.mode, 0o644);
     const fileType = published.mode & MEMFS_S_IFMT;
 
     if (fileType === MEMFS_S_IFDIR) {
       const created = targetExports.memfs_ensure_dir(parentIno, namePtr, published.name.length, perms);
-      if (created === 0) {
+      const linkedAfterCreate = targetExports.memfs_lookup(parentIno, namePtr, published.name.length);
+      if (created === 0 || linkedAfterCreate !== ino) {
         throw new Error(`failed to ensure directory inode: ${ino}`);
       }
       return;
@@ -337,7 +466,8 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     }
 
     const created = targetExports.memfs_create_file(parentIno, namePtr, published.name.length);
-    if (created === 0) {
+    const linkedAfterCreate = targetExports.memfs_lookup(parentIno, namePtr, published.name.length);
+    if (created === 0 || linkedAfterCreate !== ino) {
       throw new Error(`failed to create inode: ${ino}`);
     }
     const sizeResult = Number(targetExports.memfs_set_file_size_shallow(ino, BigInt(published.size)));
@@ -362,6 +492,14 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (read < 0) {
       throw new Error(`failed to read inode: ${ino}`);
     }
+    recordFileDataScratchExecOverlap(
+      sourceExports,
+      "read-file-by-inode",
+      bufPtr,
+      read,
+      new Uint8Array(sourceExports.memory.buffer, bufPtr, read),
+      `ino=${ino}:size=${size}`,
+    );
 
     return new Uint8Array(sourceExports.memory.buffer.slice(bufPtr, bufPtr + read));
   }
@@ -407,13 +545,55 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     targetExports: KernelExports,
     ino: number,
     published: ReturnType<typeof readInodeRecord>,
+    context: string,
   ): boolean {
     try {
       ensurePublishedInodeInTarget(targetExports, ino, published);
       return true;
+    } catch (error) {
+      const parentIno = published?.parentIno ?? 0;
+      emitFsPublicationDebug(
+        `ensure-published-failed:${context}`
+        + `:ino=${ino}`
+        + `:mode=${published?.mode.toString(8) ?? "none"}`
+        + `:size=${published?.size ?? 0}`
+        + `:parent=${parentIno}`
+        + `:parentMode=${parentIno > 0 ? targetExports.memfs_inode_mode(parentIno).toString(8) : "0"}`
+        + `:inodeCount=${targetExports.memfs_inode_count?.() ?? "n/a"}`
+        + `:dirEntryCount=${targetExports.memfs_dir_entry_count?.() ?? "n/a"}`
+        + `:dataUsed=${targetExports.memfs_data_used?.() ?? "n/a"}`
+        + `:dataCap=${targetExports.memfs_data_cap?.() ?? "n/a"}`
+        + `:err=${error instanceof Error ? error.message : String(error)}`,
+      );
+      return false;
+    }
+  }
+
+  function syncPublishedExternalFileDataMutation(
+    sourceExports: KernelExports,
+    ino: number,
+    mode: number,
+    published: ReturnType<typeof readInodeRecord>,
+  ): boolean {
+    if (!published || published.dataOff < DATA_REGION_OFFSET || published.size <= 0) {
+      return false;
+    }
+    const sourceSize = Number(sourceExports.memfs_file_size(ino));
+    if (sourceSize !== published.size) {
+      return false;
+    }
+
+    const canonicalExports = deps.getCanonicalExports();
+    try {
+      syncExternalFileDataIntoTarget(canonicalExports, ino, mode, published.size, published);
+      for (const memberExports of deps.processKernels.values()) {
+        trySyncExternalFileDataIntoTarget(memberExports, ino, mode, published.size, published);
+      }
     } catch {
       return false;
     }
+
+    return true;
   }
 
   function syncFileDataMutation(sourceExports: KernelExports, ino: number): boolean {
@@ -433,6 +613,9 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     };
 
     try {
+      if (syncPublishedExternalFileDataMutation(sourceExports, ino, mode, published)) {
+        return true;
+      }
       const data = readFileByInode(sourceExports, ino);
       ensurePublishedInodeInTarget(canonicalExports, ino, published);
       if ((canonicalExports.memfs_inode_mode(ino) & MEMFS_S_IFMT) !== MEMFS_S_IFREG) {
@@ -492,7 +675,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         continue;
       }
 
-      syncExternalFileDataIntoTarget(targetExports, ino, mode, published.size, published);
+      trySyncExternalFileDataIntoTarget(targetExports, ino, mode, published.size, published);
     }
   }
 
@@ -561,7 +744,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       }
     }
 
-    if (!tryEnsurePublishedInodeInTarget(deps.getCanonicalExports(), ino, published)) {
+    if (!tryEnsurePublishedInodeInTarget(deps.getCanonicalExports(), ino, published, `canonical:path=${normalized}`)) {
       return false;
     }
     for (const memberExports of deps.processKernels.values()) {
@@ -570,7 +753,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       // the sibling, but forcing a full fanout would roll unrelated live MemFS
       // state backward. Keep canonical authoritative and let the sibling retain
       // its own inherited namespace until it synchronizes from its own process.
-      tryEnsurePublishedInodeInTarget(memberExports, ino, published);
+      tryEnsurePublishedInodeInTarget(memberExports, ino, published, `member:path=${normalized}`);
     }
     bumpDirEpoch(deps.getSabPageCache());
     return true;

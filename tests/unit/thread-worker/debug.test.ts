@@ -101,6 +101,26 @@ test("debug collection and error formatting do not invoke repair or resume expor
   }
 });
 
+test("collectDebugParts does not write scratch memory for path probes", () => {
+  const exports = {
+    ...makeThreadWorkerDebugExports(),
+    debug_fd_syscall_trace_len: () => 0,
+    debug_exec_trace_len: () => 0,
+    debug_thread_step_exec_trace_len_for_vm: () => 0,
+    memfs_resolve_path: vi.fn(() => 0),
+    memfs_inode_mode: vi.fn(() => 0),
+    memfs_read_link: vi.fn(() => 0),
+  } as never;
+  const memory = (exports as { memory: WebAssembly.Memory }).memory;
+  const before = new Uint8Array(memory.buffer).slice();
+
+  collectDebugParts(exports, 0x1234, 0);
+
+  expect(new Uint8Array(memory.buffer)).toEqual(before);
+  expect((exports as { memfs_resolve_path: ReturnType<typeof vi.fn> }).memfs_resolve_path).not.toHaveBeenCalled();
+  expect((exports as { memfs_read_link: ReturnType<typeof vi.fn> }).memfs_read_link).not.toHaveBeenCalled();
+});
+
 test("formatWorkerError recovers frozen trace when thread state debug faults early", () => {
   const detail = formatWorkerError(
     {
@@ -664,4 +684,46 @@ test("collectDebugParts includes sync fault exec trace when present", () => {
   expect(parts).toContain("sync_fault_exec_trace=[");
   expect(parts).toContain("0:pc=0x83350");
   expect(parts).toContain("1:pc=0x0");
+});
+
+test("collectDebugParts includes default-signal fault trace without fault dispatch", () => {
+  const parts = collectDebugParts(
+    {
+      ...makeThreadWorkerDebugExports(),
+      debug_fd_syscall_trace_len: () => 0,
+      thread_status: () => 3,
+      abi_status_fault: () => 3,
+      thread_fault_pc: () => 0n,
+      thread_fault_signal: () => 0,
+      debug_default_signal_sig: () => 4,
+      debug_default_signal_code: () => 1,
+      debug_default_signal_vm_ptr: () => 0x1234,
+      debug_default_signal_pc: () => 0x1024ff5en,
+      debug_default_signal_ra: () => 0x777n,
+      debug_default_signal_sp: () => 0x377f9980n,
+      debug_default_signal_gp: () => 0x888n,
+      debug_default_signal_tp: () => 0x999n,
+      debug_default_signal_s11: () => 0xaaaan,
+      debug_default_signal_fault_pc: () => 0x1024ff5en,
+      debug_default_signal_fault_addr: () => 0x1024ff5en,
+      debug_exec_trace_len: () => 0,
+      debug_fault_exec_trace_len_for_vm: (vmPtr: number) => vmPtr === 0x1234 ? 2 : 0,
+      debug_fault_exec_trace_entry_pc_for_vm: (_vmPtr: number, index: number) => [0x1024ff5an, 0x1024ff5en][index] ?? 0n,
+      debug_fault_exec_trace_entry_raw_for_vm: (_vmPtr: number, index: number) => [0x8082, 0xe476c06f][index] ?? 0,
+      debug_fault_exec_trace_entry_step_for_vm: (_vmPtr: number, index: number) => [2, 4][index] ?? 0,
+      debug_fault_exec_trace_entry_sp_for_vm: (_vmPtr: number, index: number) => [0x377f99c0n, 0x377f9980n][index] ?? 0n,
+      debug_fault_exec_trace_entry_ra_for_vm: (_vmPtr: number, index: number) => [0x777n, 0x777n][index] ?? 0n,
+      debug_fault_exec_trace_entry_a0_for_vm: (_vmPtr: number, index: number) => [0n, 0n][index] ?? 0n,
+      debug_fault_exec_trace_entry_s11_for_vm: (_vmPtr: number, index: number) => [0xaaaan, 0xaaaan][index] ?? 0n,
+    } as never,
+    0x1234,
+    0,
+  ).join(" ");
+
+  expect(parts).toContain("default_signal=sig=4");
+  expect(parts).toContain("pc=0x1024ff5e");
+  expect(parts).toContain("fault_pc=0x1024ff5e");
+  expect(parts).toContain("exec_trace=[");
+  expect(parts).toContain("0:pc=0x1024ff5a:raw=0x8082");
+  expect(parts).toContain("1:pc=0x1024ff5e:raw=0xe476c06f");
 });

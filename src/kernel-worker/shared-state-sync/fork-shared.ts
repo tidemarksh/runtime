@@ -1,12 +1,10 @@
 import { attachKernelRuntimeState, readKernelRuntimeState } from "../../abi.js";
-import { MAX_INODES } from "../../fs/sab-page-cache.js";
 import type {
   KernelWorkerFdEntrySnapshot,
   KernelWorkerOfdSlotSnapshot,
 } from "../../messages.js";
 import {
   clearMemoryRange,
-  markMaterializedMemfsFile,
   MEMFS_S_IFMT,
   MEMFS_S_IFREG,
   writeScratchFor,
@@ -19,73 +17,6 @@ const FORK_SHARED_MEMFS_DEBUG_ENABLED = ((globalThis as {
 const LOADER_PATH_BYTES = new TextEncoder().encode("/lib/ld-linux-riscv64-lp64d.so.1");
 
 export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedStateSyncDeps) {
-  interface RegularFileDataSnapshot {
-    ino: number;
-    data: Uint8Array;
-  }
-
-  function readRegularFileData(targetExports: ReturnType<KernelWorkerSharedStateSyncDeps["requireProcessKernel"]>, ino: number): Uint8Array | null {
-    if ((targetExports.memfs_inode_mode(ino) & MEMFS_S_IFMT) !== MEMFS_S_IFREG) {
-      return null;
-    }
-    const size = Number(targetExports.memfs_file_size(ino));
-    if (size <= 0) {
-      return null;
-    }
-    const ptr = writeScratchFor(targetExports, new Uint8Array(size));
-    const read = Number(targetExports.memfs_read_file_to(ino, 0n, ptr, size));
-    if (read < 0) {
-      return null;
-    }
-    return new Uint8Array(targetExports.memory.buffer.slice(ptr, ptr + read));
-  }
-
-  function snapshotRegularFileData(targetExports: ReturnType<KernelWorkerSharedStateSyncDeps["requireProcessKernel"]>): RegularFileDataSnapshot[] {
-    const snapshots: RegularFileDataSnapshot[] = [];
-    for (let ino = 1; ino < MAX_INODES; ino += 1) {
-      const data = readRegularFileData(targetExports, ino);
-      if (data !== null) {
-        snapshots.push({ ino, data });
-      }
-    }
-    return snapshots;
-  }
-
-  function restoreRegularFileData(
-    targetExports: ReturnType<KernelWorkerSharedStateSyncDeps["requireProcessKernel"]>,
-    snapshots: RegularFileDataSnapshot[],
-  ): void {
-    for (const snapshot of snapshots) {
-      if ((targetExports.memfs_inode_mode(snapshot.ino) & MEMFS_S_IFMT) !== MEMFS_S_IFREG) {
-        continue;
-      }
-      if (Number(targetExports.memfs_file_size(snapshot.ino)) !== snapshot.data.length) {
-        continue;
-      }
-      const truncateResult = Number(targetExports.memfs_truncate_file(snapshot.ino, BigInt(snapshot.data.length)));
-      if (truncateResult < 0) {
-        continue;
-      }
-      if (snapshot.data.length > 0) {
-        const ptr = writeScratchFor(targetExports, snapshot.data);
-        const written = Number(targetExports.memfs_write_file_at(snapshot.ino, 0n, ptr, snapshot.data.length));
-        if (written !== snapshot.data.length) {
-          continue;
-        }
-      }
-      markMaterializedMemfsFile(targetExports, snapshot.ino);
-    }
-  }
-
-  function restoreRegularFileDataToCanonical(
-    snapshots: RegularFileDataSnapshot[],
-  ): void {
-    if (snapshots.length === 0) {
-      return;
-    }
-    restoreRegularFileData(deps.getCanonicalExports(), snapshots);
-  }
-
   function applyFdEntrySnapshot(
     processExports: ReturnType<KernelWorkerSharedStateSyncDeps["requireProcessKernel"]>,
     vmPtr: number,
@@ -171,10 +102,6 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
     };
     attachKernelRuntimeState(processExports, kernelState);
     applyFdEntrySnapshot(processExports, vmPtr, fdEntries, ofdIds);
-    const preservedRegularFileData = includeMemfs && preservePublishedRegularFileData
-      ? snapshotRegularFileData(canonicalExports)
-      : [];
-
     const sourceState = readKernelRuntimeState(processExports);
     const snappedOfdIds = new Set<number>();
     if (ofdSlots.length > 0) {
@@ -226,7 +153,6 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
       deps.restoreProcSelfExe(canonicalExports, canonicalProcSelfExe);
       if (preservePublishedRegularFileData) {
         deps.restorePublishedRegularFileDataFromPageCache?.();
-        restoreRegularFileDataToCanonical(preservedRegularFileData);
       }
       pushMemfsDebug("after-source-to-canonical");
     }

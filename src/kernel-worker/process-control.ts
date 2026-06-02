@@ -1,4 +1,11 @@
-import { attachKernelRuntimeState, readKernelRuntimeState, type KernelExports, type KernelRuntimeState } from "../abi.js";
+import {
+  attachKernelRuntimeState,
+  kernelOfdStatePtr,
+  kernelSocketStatePtr,
+  readKernelRuntimeState,
+  type KernelExports,
+  type KernelRuntimeState,
+} from "../abi.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import type {
   KernelWorkerFdEntrySnapshot,
@@ -22,6 +29,12 @@ import {
 const FS_PUBLICATION_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_FS_PUBLICATION_DEBUG ?? "") === "1";
+const FS_PROCESS_STAGE_DEBUG_FILTER = (((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_FS_PROCESS_STAGE_FILTER ?? "")
+  .split(",")
+  .map((stage) => stage.trim())
+  .filter((stage) => stage.length > 0));
 export const KERNEL_WORKER_PROCESS_CONTROL_OWNERSHIP = "transitional-runtime-owner" as const;
 
 interface CanonicalProcessEntry {
@@ -255,12 +268,6 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     let handledFileDataMutation = false;
     let handledMetadataMutation = false;
 
-    if (fileDataMutated && context.fileDataTargetIno !== 0) {
-      handledFileDataMutation = deps.syncFileDataMutation(processExports, context.fileDataTargetIno);
-    } else if (fileDataMutated && context.pendingPath) {
-      handledFileDataMutation = deps.syncFileDataMutationByPath(processExports, context.pendingPath);
-    }
-
     if (treeMutated && context.pendingPath) {
       handledMetadataMutation = deps.syncMetadataMutation(processExports, context.pendingPath);
       if (
@@ -270,6 +277,12 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       ) {
         handledMetadataMutation = deps.syncMetadataMutation(processExports, context.pendingSecondaryPath);
       }
+    }
+
+    if (fileDataMutated && context.fileDataTargetIno !== 0) {
+      handledFileDataMutation = deps.syncFileDataMutation(processExports, context.fileDataTargetIno);
+    } else if (fileDataMutated && context.pendingPath) {
+      handledFileDataMutation = deps.syncFileDataMutationByPath(processExports, context.pendingPath);
     }
 
     const needsMetadataFullSync = treeMutated && !handledMetadataMutation;
@@ -354,6 +367,39 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       return true;
     }
     return false;
+  }
+
+  function shouldEmitProcessFsStage(stage: string): boolean {
+    if (!FS_PUBLICATION_DEBUG_ENABLED) {
+      return false;
+    }
+    if (FS_PROCESS_STAGE_DEBUG_FILTER.length > 0 && !FS_PROCESS_STAGE_DEBUG_FILTER.includes(stage)) {
+      return false;
+    }
+    return true;
+  }
+
+  function emitProcessFsStage(stage: string, pid: number, vmPtr: number, detail = ""): void {
+    if (!shouldEmitProcessFsStage(stage)) {
+      return;
+    }
+    console.error(`[tidemark-kernel-worker-fs] stage=${stage}:pid=${pid}:vm=0x${vmPtr.toString(16)}${detail}`);
+  }
+
+  function formatProcessFsState(state: KernelRuntimeState): string {
+    return [
+      `heap=0x${state.heapBase.toString(16)}->0x${state.heapPtr.toString(16)}`,
+      `ofd=0x${kernelOfdStatePtr(state).toString(16)}`,
+      `memfs=0x${state.memfsPtr.toString(16)}`,
+      `mem=0x${state.memStatePtr.toString(16)}`,
+      `epoll=0x${state.epollTablePtr.toString(16)}`,
+      `socket=0x${kernelSocketStatePtr(state).toString(16)}/${state.socketUsed}`,
+      `pipe=0x${state.pipeBase.toString(16)}/${state.pipeUsed.toString()}`,
+      `net=0x${state.netBufBase.toString(16)}/${state.netBufUsed.toString()}`,
+      `sig=0x${state.sigSlotsPtr.toString(16)}`,
+      `proc=0x${state.processRuntimeStatePtr.toString(16)}`,
+      `time=0x${state.timeStatePtr.toString(16)}`,
+    ].join(",");
   }
 
   async function initKernel(
@@ -609,31 +655,78 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     vmPtr: number,
     kernelState: KernelRuntimeState,
   ): ProcessFsResult {
+    emitProcessFsStage("start", pid, vmPtr);
     const canonicalExports = deps.getCanonicalExports();
+    emitProcessFsStage("after-canonical", pid, vmPtr);
     const processExports = requireProcessKernel(pid);
+    emitProcessFsStage("after-require", pid, vmPtr);
+    emitProcessFsStage("before-attach", pid, vmPtr, `:${formatProcessFsState(kernelState)}`);
     attachKernelRuntimeState(processExports, kernelState);
+    emitProcessFsStage("after-attach", pid, vmPtr);
     const pendingContext = readPendingFsMutationContext(processExports, vmPtr);
+    const stagePath = pendingContext.pendingPath ? `:path=${JSON.stringify(pendingContext.pendingPath)}` : "";
+    emitProcessFsStage(
+      "context",
+      pid,
+      vmPtr,
+      `:fx=${pendingContext.effects}:ino=${pendingContext.fileDataTargetIno}${stagePath}`,
+    );
+    emitProcessFsStage("before-thread-process", pid, vmPtr);
     processExports.thread_process_fs(vmPtr);
+    emitProcessFsStage("after-thread-process", pid, vmPtr);
     const result = BigInt(processExports.thread_resume_fs(vmPtr));
+    emitProcessFsStage("after-resume", pid, vmPtr, `:rv=${result.toString()}`);
     const fsSucceeded = Number(BigInt.asIntN(64, result)) >= 0;
     const completedKernelState = readKernelRuntimeState(processExports);
+    emitProcessFsStage("after-state", pid, vmPtr, `:ok=${fsSucceeded ? 1 : 0}`);
     const fdEntries = fsSucceeded
       ? snapshotProcessFdEntries(processExports, vmPtr)
       : undefined;
+    emitProcessFsStage("after-fd-snapshot", pid, vmPtr, `:fds=${fdEntries?.length ?? 0}`);
     const ofdSlots = fdEntries
       ? snapshotOfdSlotsForFdEntries(processExports, completedKernelState, fdEntries)
       : undefined;
+    emitProcessFsStage("after-ofd-snapshot", pid, vmPtr, `:ofds=${ofdSlots?.length ?? 0}`);
     const mutation = applyPendingFsMutation(processExports, pendingContext, fsSucceeded);
+    const mutationPath = pendingContext.pendingPath ? `path=${JSON.stringify(pendingContext.pendingPath)}` : "";
+    const mutationDetail = [
+      `:tree=${mutation.treeMutated ? 1 : 0}`,
+      `file=${mutation.fileDataMutated ? 1 : 0}`,
+      `metaFast=${mutation.handledMetadataMutation ? 1 : 0}`,
+      `dataFast=${mutation.handledFileDataMutation ? 1 : 0}`,
+      `full=${mutation.needsFullSync ? 1 : 0}`,
+      `ino=${pendingContext.fileDataTargetIno}`,
+      mutationPath,
+    ];
+    if (pendingContext.pendingPath && shouldEmitProcessFsStage("after-mutation")) {
+      const parentSlash = pendingContext.pendingPath.lastIndexOf("/");
+      const parentPath = parentSlash <= 0 ? "/" : pendingContext.pendingPath.slice(0, parentSlash);
+      mutationDetail.push(
+        `source=${describePathIn(processExports, pendingContext.pendingPath)}`,
+        `canonical=${describePathIn(canonicalExports, pendingContext.pendingPath)}`,
+        `sourceParent=${describePathIn(processExports, parentPath)}`,
+        `canonicalParent=${describePathIn(canonicalExports, parentPath)}`,
+      );
+    }
+    emitProcessFsStage(
+      "after-mutation",
+      pid,
+      vmPtr,
+      mutationDetail.join(":"),
+    );
     let fullSyncApplied = false;
     if (mutation.needsFullSync) {
+      emitProcessFsStage("before-full-sync", pid, vmPtr);
       fallbackToFullMemfsSync(
         processExports,
         canonicalExports,
         mutation.preservePublishedRegularFileData,
       );
       fullSyncApplied = true;
+      emitProcessFsStage("after-full-sync", pid, vmPtr);
     }
     const nextKernelState = readKernelRuntimeState(processExports);
+    emitProcessFsStage("return", pid, vmPtr);
     return {
       kernelState: nextKernelState,
       result,

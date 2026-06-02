@@ -67,6 +67,59 @@ test("status fd entries do not clear a live regular file from a stale non-closin
   expect(fdEntries.get(5)).toBe(7);
 });
 
+test("status fd entries preserve live descriptors even when the OFD refcount snapshot is stale", () => {
+  const fdEntries = new Map<number, number>([[5, 7]]);
+  const handle = makeHandle({
+    kernel: makeKernel({
+      abi_sys_getdents64: () => 61n,
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => fdEntries.get(fd) ?? 0,
+      process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number) => {
+        if (ofdId === 0) {
+          fdEntries.delete(fd);
+        } else {
+          fdEntries.set(fd, ofdId);
+        }
+      },
+      kernel_ofd_fd_type: (ofdId: number) => ofdId === 7 ? 3 : 0,
+      kernel_ofd_refcount: () => 0,
+    }),
+  });
+
+  applyStatusFdEntries(handle as never, makeStatusMessage({
+    syscallNr: 61n,
+    fdEntries: [{ fd: 5, ofdId: 0, fdFlags: 0 }],
+  }) as never);
+
+  expect(fdEntries.get(5)).toBe(7);
+});
+
+test("status fd entries ignore invalid negative OFD sentinels from status snapshots", () => {
+  const fdEntries = new Map<number, number>([[2, 3]]);
+  const writes: Array<{ fd: number; ofdId: number }> = [];
+  const handle = makeHandle({
+    kernel: makeKernel({
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => fdEntries.get(fd) ?? 0,
+      process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number) => {
+        writes.push({ fd, ofdId });
+        if (ofdId === 0) {
+          fdEntries.delete(fd);
+        } else {
+          fdEntries.set(fd, ofdId);
+        }
+      },
+      kernel_ofd_fd_type: (ofdId: number) => ofdId === 3 ? 3 : 0,
+    }),
+  });
+
+  applyStatusFdEntries(handle as never, makeStatusMessage({
+    syscallNr: 73n,
+    fdEntries: [{ fd: 2, ofdId: -1, fdFlags: 0 }],
+  }) as never);
+
+  expect(fdEntries.get(2)).toBe(3);
+  expect(writes).toEqual([]);
+});
+
 test("status fd entries allow close to clear a regular file descriptor", () => {
   const fdEntries = new Map<number, number>([[5, 7]]);
   const handle = makeHandle({
@@ -87,8 +140,42 @@ test("status fd entries allow close to clear a regular file descriptor", () => {
 
   applyStatusFdEntries(handle as never, makeStatusMessage({
     syscallNr: 57n,
+    fdTraceArg0: 5n,
+    fdTraceResult: 0n,
     fdEntries: [{ fd: 5, ofdId: 0, fdFlags: 0 }],
   }) as never);
 
   expect(fdEntries.has(5)).toBe(false);
+});
+
+test("status fd entries do not let close clear a different live descriptor", () => {
+  const fdEntries = new Map<number, number>([[5, 7], [6, 8]]);
+  const handle = makeHandle({
+    kernel: makeKernel({
+      abi_sys_close: () => 57n,
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => fdEntries.get(fd) ?? 0,
+      process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number) => {
+        if (ofdId === 0) {
+          fdEntries.delete(fd);
+        } else {
+          fdEntries.set(fd, ofdId);
+        }
+      },
+      kernel_ofd_fd_type: (ofdId: number) => ofdId === 7 || ofdId === 8 ? 3 : 0,
+      kernel_ofd_refcount: () => 1,
+    }),
+  });
+
+  applyStatusFdEntries(handle as never, makeStatusMessage({
+    syscallNr: 57n,
+    fdTraceArg0: 6n,
+    fdTraceResult: 0n,
+    fdEntries: [
+      { fd: 5, ofdId: 0, fdFlags: 0 },
+      { fd: 6, ofdId: 0, fdFlags: 0 },
+    ],
+  }) as never);
+
+  expect(fdEntries.get(5)).toBe(7);
+  expect(fdEntries.has(6)).toBe(false);
 });

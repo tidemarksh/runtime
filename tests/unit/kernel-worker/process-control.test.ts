@@ -117,6 +117,11 @@ function makeKernelExports(options: {
         heapPtr,
         ofdTablePtr,
         memfsPtr,
+        memfsHeaderBytes: runtimeState.memfsHeaderBytes,
+        memfsInodesBytes: runtimeState.memfsInodesBytes,
+        memfsFirstChildBytes: runtimeState.memfsFirstChildBytes,
+        memfsDirEntriesBytes: runtimeState.memfsDirEntriesBytes,
+        memfsDataBytes: runtimeState.memfsDataBytes,
         memStatePtr,
         epollTablePtr,
         socketTablePtr,
@@ -979,6 +984,8 @@ test("processFs uses targeted metadata and file-data sync for openat(O_CREAT|O_T
   const copyMemfsCalls: boolean[] = [];
   const metadataPaths: string[] = [];
   const filePaths: string[] = [];
+  const syncOrder: string[] = [];
+  let metadataSynced = false;
 
   const processControl = createKernelWorkerProcessControl({
     getCanonicalExports: () => canonicalExports,
@@ -1020,10 +1027,13 @@ test("processFs uses targeted metadata and file-data sync for openat(O_CREAT|O_T
     syncFileDataMutation: () => false,
     syncFileDataMutationByPath: (_sourceExports, path) => {
       filePaths.push(path);
-      return true;
+      syncOrder.push(`data:${path}`);
+      return metadataSynced;
     },
     syncMetadataMutation: (_sourceExports, path) => {
       metadataPaths.push(path);
+      syncOrder.push(`metadata:${path}`);
+      metadataSynced = true;
       return true;
     },
     fanoutCanonicalMemfs: () => {
@@ -1042,6 +1052,7 @@ test("processFs uses targeted metadata and file-data sync for openat(O_CREAT|O_T
   expect(result.memfsMutated).toBe(true);
   expect(metadataPaths).toEqual(["/work/app.bin"]);
   expect(filePaths).toEqual(["/work/app.bin"]);
+  expect(syncOrder).toEqual(["metadata:/work/app.bin", "data:/work/app.bin"]);
   expect(copyMemfsCalls).toEqual([]);
 });
 

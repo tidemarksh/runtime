@@ -36,6 +36,7 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
       new Error(
         `thread worker ownership invariant failed pid=${handle.pid}`
           + ` msg=${msg.type}${msg.type === "status" ? `@${msg.status}` : ""}`
+          + (msg.type === "error" ? ` error=${JSON.stringify(msg.message)}` : "")
           + ` vm=0x${vmPtr.toString(16)} ${detail}`
           + ` process_ptr=0x${processPtr.toString(16)}`
           + ` process_pid_field=${processPidField}`

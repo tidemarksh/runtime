@@ -179,6 +179,13 @@ function formatU64Decimal(value: bigint | number | undefined): string {
   return String(value ?? 0);
 }
 
+function readU64(value: bigint | number | undefined): bigint {
+  if (value === undefined) {
+    return 0n;
+  }
+  return typeof value === "bigint" ? value : BigInt(value);
+}
+
 function readWorkerOwnerState(
   handle: Pick<ProcessHandle, "runningWorker" | "readyWorkers" | "blockedWorkers">,
   worker: Worker,
@@ -211,6 +218,9 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
   const processPtr = handle.kernel.thread_process_ptr?.(state.vmPtr);
   const currentPid = handle.kernel.process_current_pid?.(state.vmPtr);
   const tid = handle.kernel.thread_tid?.(state.vmPtr);
+  const nowMs = Date.now();
+  const lastStepAgeMs = state.lastStepAtMs === null ? null : Math.max(0, nowMs - state.lastStepAtMs);
+  const lastStatusAgeMs = state.lastStatusAtMs === null ? null : Math.max(0, nowMs - state.lastStatusAtMs);
   return [
     `0x${state.vmPtr.toString(16)}`,
     `owner=${ownerState}`,
@@ -226,6 +236,10 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
     `process=0x${(processPtr ?? 0).toString(16)}`,
     `steps=${state.stepCount}`,
     `statuses=${state.statusCount}`,
+    `lastStepAt=${state.lastStepAtMs ?? "null"}`,
+    `lastStatusAt=${state.lastStatusAtMs ?? "null"}`,
+    `lastStepAgeMs=${lastStepAgeMs ?? "null"}`,
+    `lastStatusAgeMs=${lastStatusAgeMs ?? "null"}`,
     `last=${state.lastStatus ?? "null"}`,
     `lastPc=${state.lastStatusPc === null ? "null" : `0x${state.lastStatusPc.toString(16)}`}`,
     `lastStepPc=${state.lastStepPc === null ? "null" : `0x${state.lastStepPc.toString(16)}`}`,
@@ -555,6 +569,17 @@ function collectLoggedWorkerVmPtrs(
     }
   }
   return [...vmPtrs];
+}
+
+function formatDirectMemoryCopyLog(workerDebugLog: readonly string[]): string {
+  return workerDebugLog
+    .filter((entry) =>
+      entry.startsWith("direct-memory-copy-vma-overlap:")
+      || entry.startsWith("direct-memory-copy-kernel-owned-overlap:")
+      || entry.startsWith("direct-memory-copy-overlap-suppressed:")
+    )
+    .slice(-32)
+    .join(",");
 }
 
 function formatWorkerExecTrace(
@@ -904,6 +929,7 @@ function formatThreadDebug(handle: ProcessHandle, vmPtr: number): string {
   const a1 = handle.kernel.thread_a1?.(vmPtr) ?? 0n;
   const exitCode = handle.kernel.thread_exit_code?.(vmPtr) ?? 0;
   const termSignal = handle.kernel.thread_term_signal?.(vmPtr) ?? 0;
+  const termReason = handle.kernel.thread_termination_reason?.(vmPtr) ?? 0;
   const faultPc = handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n;
   const faultAddr = handle.kernel.thread_fault_addr?.(vmPtr) ?? 0n;
   const sigPending = handle.kernel.thread_sig_pending?.(vmPtr) ?? 0n;
@@ -918,6 +944,7 @@ function formatThreadDebug(handle: ProcessHandle, vmPtr: number): string {
     `a1=${a1.toString()}`,
     `exit=${exitCode}`,
     `sig=${termSignal}`,
+    `term_reason=${termReason}`,
     `fault_pc=0x${faultPc.toString(16)}`,
     `fault_addr=0x${faultAddr.toString(16)}`,
     `sig_pending=0x${sigPending.toString(16)}`,
@@ -1110,6 +1137,156 @@ function formatProcessFdTrace(handle: ProcessHandle): string {
   return entries.join(" ");
 }
 
+function formatProcessProcMapsReadTrace(handle: ProcessHandle): string {
+  const len = handle.kernel.debug_proc_maps_read_trace_len?.() ?? 0;
+  if (len <= 0) {
+    return "";
+  }
+  const entries: string[] = [];
+  for (let index = 0; index < len; index += 1) {
+    const traceVmPtr = handle.kernel.debug_proc_maps_read_trace_vm_ptr?.(index) ?? 0;
+    if (traceVmPtr !== 0 && traceVmPtr !== handle.vmPtr) {
+      continue;
+    }
+    entries.push([
+      `${index}`,
+      `vm=0x${traceVmPtr.toString(16)}`,
+      `fd=${readU64(handle.kernel.debug_proc_maps_read_trace_fd?.(index)).toString()}`,
+      `ino=${handle.kernel.debug_proc_maps_read_trace_ino?.(index) ?? 0}`,
+      `buf=0x${formatU64(readU64(handle.kernel.debug_proc_maps_read_trace_buf?.(index)))}`,
+      `len=${readU64(handle.kernel.debug_proc_maps_read_trace_len_bytes?.(index)).toString()}`,
+      `ret=${BigInt.asIntN(64, readU64(handle.kernel.debug_proc_maps_read_trace_result?.(index))).toString()}`,
+      `off=0x${formatU64(readU64(handle.kernel.debug_proc_maps_read_trace_file_offset?.(index)))}`,
+      `w=${handle.kernel.debug_proc_maps_read_trace_writable?.(index) ?? 0}`,
+      `xov=${handle.kernel.debug_proc_maps_read_trace_exec_overlap?.(index) ?? 0}`,
+      `vma=0x${formatU64(readU64(handle.kernel.debug_proc_maps_read_trace_vma_start?.(index)))}-0x${formatU64(readU64(handle.kernel.debug_proc_maps_read_trace_vma_end?.(index)))}`,
+      `prot=${handle.kernel.debug_proc_maps_read_trace_vma_prot?.(index) ?? 0}`,
+      `vfd=${handle.kernel.debug_proc_maps_read_trace_vma_fd?.(index) ?? 0}`,
+      `voff=0x${formatU64(readU64(handle.kernel.debug_proc_maps_read_trace_vma_offset?.(index)))}`,
+    ].join(":"));
+  }
+  return entries.join(" ");
+}
+
+function formatProcessFileMmapMaterializeTrace(handle: ProcessHandle): string {
+  const len = handle.kernel.debug_file_mmap_materialize_trace_len?.() ?? 0;
+  if (len <= 0) {
+    return "";
+  }
+  const entries: string[] = [];
+  for (let index = 0; index < len; index += 1) {
+    const traceVmPtr = handle.kernel.debug_file_mmap_materialize_trace_vm_ptr?.(index) ?? 0;
+    if (traceVmPtr !== 0 && traceVmPtr !== handle.vmPtr) {
+      continue;
+    }
+    entries.push([
+      `${index}`,
+      `vm=0x${traceVmPtr.toString(16)}`,
+      `ino=${handle.kernel.debug_file_mmap_materialize_trace_ino?.(index) ?? 0}`,
+      `range=0x${formatU64(readU64(handle.kernel.debug_file_mmap_materialize_trace_start?.(index)))}-0x${formatU64(readU64(handle.kernel.debug_file_mmap_materialize_trace_end?.(index)))}`,
+      `prot=${handle.kernel.debug_file_mmap_materialize_trace_prot?.(index) ?? 0}`,
+      `flags=${handle.kernel.debug_file_mmap_materialize_trace_flags?.(index) ?? 0}`,
+      `off=0x${formatU64(readU64(handle.kernel.debug_file_mmap_materialize_trace_offset?.(index)))}`,
+      `procMaps=${handle.kernel.debug_file_mmap_materialize_trace_source_proc_maps?.(index) ?? 0}`,
+      `oldX=${handle.kernel.debug_file_mmap_materialize_trace_old_exec_overlap?.(index) ?? 0}`,
+      `old=0x${formatU64(readU64(handle.kernel.debug_file_mmap_materialize_trace_old_vma_start?.(index)))}-0x${formatU64(readU64(handle.kernel.debug_file_mmap_materialize_trace_old_vma_end?.(index)))}`,
+      `oldFd=${handle.kernel.debug_file_mmap_materialize_trace_old_vma_fd?.(index) ?? 0}`,
+      `oldOff=0x${formatU64(readU64(handle.kernel.debug_file_mmap_materialize_trace_old_vma_offset?.(index)))}`,
+      `sample=0x${formatU64(readU64(handle.kernel.debug_file_mmap_materialize_trace_sample?.(index)))}`,
+    ].join(":"));
+  }
+  return entries.join(" ");
+}
+
+function formatProcessCpuWritePermitTrace(handle: ProcessHandle): string {
+  const len = handle.kernel.debug_cpu_write_permit_trace_len?.() ?? 0;
+  if (len <= 0) {
+    return "";
+  }
+  const entries: string[] = [];
+  for (let index = 0; index < len; index += 1) {
+    const traceVmPtr = handle.kernel.debug_cpu_write_permit_trace_vm_ptr?.(index) ?? 0;
+    if (traceVmPtr !== 0 && traceVmPtr !== handle.vmPtr) {
+      continue;
+    }
+    entries.push([
+      `${index}`,
+      `vm=0x${traceVmPtr.toString(16)}`,
+      `tid=${handle.kernel.debug_cpu_write_permit_trace_tid?.(index) ?? 0}`,
+      `pc=0x${formatU64(readU64(handle.kernel.debug_cpu_write_permit_trace_pc?.(index)))}`,
+      `addr=0x${formatU64(readU64(handle.kernel.debug_cpu_write_permit_trace_addr?.(index)))}`,
+      `len=${readU64(handle.kernel.debug_cpu_write_permit_trace_len_bytes?.(index)).toString()}`,
+      `vma=0x${formatU64(readU64(handle.kernel.debug_cpu_write_permit_trace_vma_start?.(index)))}-0x${formatU64(readU64(handle.kernel.debug_cpu_write_permit_trace_vma_end?.(index)))}`,
+      `prot=${handle.kernel.debug_cpu_write_permit_trace_vma_prot?.(index) ?? 0}`,
+      `flags=${handle.kernel.debug_cpu_write_permit_trace_vma_flags?.(index) ?? 0}`,
+      `fd=${handle.kernel.debug_cpu_write_permit_trace_vma_fd?.(index) ?? 0}`,
+      `off=0x${formatU64(readU64(handle.kernel.debug_cpu_write_permit_trace_vma_offset?.(index)))}`,
+    ].join(":"));
+  }
+  return entries.join(" ");
+}
+
+function formatProcessMprotectTransitionTrace(handle: ProcessHandle): string {
+  const len = handle.kernel.debug_mprotect_transition_trace_len?.() ?? 0;
+  if (len <= 0) {
+    return "";
+  }
+  const entries: string[] = [];
+  for (let index = 0; index < len; index += 1) {
+    const traceVmPtr = handle.kernel.debug_mprotect_transition_trace_vm_ptr?.(index) ?? 0;
+    if (traceVmPtr !== 0 && traceVmPtr !== handle.vmPtr) {
+      continue;
+    }
+    entries.push([
+      `${index}`,
+      `vm=0x${traceVmPtr.toString(16)}`,
+      `tid=${handle.kernel.debug_mprotect_transition_trace_tid?.(index) ?? 0}`,
+      `req=0x${formatU64(readU64(handle.kernel.debug_mprotect_transition_trace_request_start?.(index)))}-0x${formatU64(readU64(handle.kernel.debug_mprotect_transition_trace_request_end?.(index)))}`,
+      `seg=0x${formatU64(readU64(handle.kernel.debug_mprotect_transition_trace_segment_start?.(index)))}-0x${formatU64(readU64(handle.kernel.debug_mprotect_transition_trace_segment_end?.(index)))}`,
+      `oldProt=${handle.kernel.debug_mprotect_transition_trace_old_prot?.(index) ?? 0}`,
+      `newProt=${handle.kernel.debug_mprotect_transition_trace_new_prot?.(index) ?? 0}`,
+      `oldFlags=${handle.kernel.debug_mprotect_transition_trace_old_flags?.(index) ?? 0}`,
+      `oldFd=${handle.kernel.debug_mprotect_transition_trace_old_fd?.(index) ?? 0}`,
+      `oldOff=0x${formatU64(readU64(handle.kernel.debug_mprotect_transition_trace_old_offset?.(index)))}`,
+      `gainX=${handle.kernel.debug_mprotect_transition_trace_gained_exec?.(index) ?? 0}`,
+      `gainW=${handle.kernel.debug_mprotect_transition_trace_gained_write?.(index) ?? 0}`,
+    ].join(":"));
+  }
+  return entries.join(" ");
+}
+
+function formatProcessMmapExecTransitionTrace(handle: ProcessHandle): string {
+  const len = handle.kernel.debug_mmap_exec_transition_trace_len?.() ?? 0;
+  if (len <= 0) {
+    return "";
+  }
+  const entries: string[] = [];
+  for (let index = 0; index < len; index += 1) {
+    const traceVmPtr = handle.kernel.debug_mmap_exec_transition_trace_vm_ptr?.(index) ?? 0;
+    if (traceVmPtr !== 0 && traceVmPtr !== handle.vmPtr) {
+      continue;
+    }
+    entries.push([
+      `${index}`,
+      `vm=0x${traceVmPtr.toString(16)}`,
+      `tid=${handle.kernel.debug_mmap_exec_transition_trace_tid?.(index) ?? 0}`,
+      `range=0x${formatU64(readU64(handle.kernel.debug_mmap_exec_transition_trace_start?.(index)))}-0x${formatU64(readU64(handle.kernel.debug_mmap_exec_transition_trace_end?.(index)))}`,
+      `prot=${handle.kernel.debug_mmap_exec_transition_trace_prot?.(index) ?? 0}`,
+      `flags=${handle.kernel.debug_mmap_exec_transition_trace_flags?.(index) ?? 0}`,
+      `fd=${handle.kernel.debug_mmap_exec_transition_trace_fd?.(index) ?? 0}`,
+      `off=0x${formatU64(readU64(handle.kernel.debug_mmap_exec_transition_trace_offset?.(index)))}`,
+      `anon=${handle.kernel.debug_mmap_exec_transition_trace_is_anon?.(index) ?? 0}`,
+      `sparse=${handle.kernel.debug_mmap_exec_transition_trace_sparse_fixed_upgrade?.(index) ?? 0}`,
+      `oldX=${handle.kernel.debug_mmap_exec_transition_trace_old_exec_overlap?.(index) ?? 0}`,
+      `old=0x${formatU64(readU64(handle.kernel.debug_mmap_exec_transition_trace_old_vma_start?.(index)))}-0x${formatU64(readU64(handle.kernel.debug_mmap_exec_transition_trace_old_vma_end?.(index)))}`,
+      `oldFd=${handle.kernel.debug_mmap_exec_transition_trace_old_vma_fd?.(index) ?? 0}`,
+      `oldOff=0x${formatU64(readU64(handle.kernel.debug_mmap_exec_transition_trace_old_vma_offset?.(index)))}`,
+      `sample=0x${formatU64(readU64(handle.kernel.debug_mmap_exec_transition_trace_sample?.(index)))}`,
+    ].join(":"));
+  }
+  return entries.join(" ");
+}
+
 function formatProcessPathTrace(handle: ProcessHandle): string {
   const len = handle.kernel.debug_path_syscall_trace_len?.() ?? 0;
   if (len <= 0) {
@@ -1163,6 +1340,254 @@ function formatSocketRecvBufferHeadTail(handle: ProcessHandle, socketIdx: number
   const absolute = handle.kernelState.netBufBase + recvBufIdx * netBufferBytes;
   const view = new DataView(handle.memory.buffer, absolute, NET_BUFFER_HEADER_BYTES);
   return `${view.getUint32(NET_BUFFER_HEAD_OFFSET, true)}/${view.getUint32(NET_BUFFER_TAIL_OFFSET, true)}`;
+}
+
+function formatThreadRecordWriteTrace(handle: Pick<ProcessHandle, "kernel">): string {
+  const len = handle.kernel.debug_thread_record_write_trace_len?.() ?? 0;
+  if (len === 0) {
+    return "";
+  }
+  const start = Math.max(0, len - 16);
+  return Array.from({ length: len - start }, (_value, offset) => {
+    const index = start + offset;
+    return [
+      `${index}`,
+      `rec=0x${(handle.kernel.debug_thread_record_write_trace_record_ptr?.(index) ?? 0).toString(16)}`,
+      `tid=${handle.kernel.debug_thread_record_write_trace_tid?.(index) ?? 0}`,
+      `state=${handle.kernel.debug_thread_record_write_trace_state?.(index) ?? 0}`,
+      `vm=0x${(handle.kernel.debug_thread_record_write_trace_vm_ptr?.(index) ?? 0).toString(16)}`,
+      `ctid=0x${(handle.kernel.debug_thread_record_write_trace_clear_child_tid?.(index) ?? 0).toString(16)}`,
+      `blk=0x${(handle.kernel.debug_thread_record_write_trace_blocked_addr?.(index) ?? 0).toString(16)}`,
+      `pending=0x${formatU64(handle.kernel.debug_thread_record_write_trace_pending_sigset?.(index) ?? 0n)}`,
+      `code=${handle.kernel.debug_thread_record_write_trace_pending_siginfo_code?.(index) ?? 0}`,
+    ].join("/");
+  }).join(",");
+}
+
+function formatFdEntryWriteTrace(handle: Pick<ProcessHandle, "kernel">): string {
+  const len = handle.kernel.debug_fd_entry_write_trace_len?.() ?? 0;
+  if (len === 0) {
+    return "";
+  }
+  const start = Math.max(0, len - 16);
+  return Array.from({ length: len - start }, (_value, offset) => {
+    const index = start + offset;
+    return [
+      `${index}`,
+      `ptr=0x${(handle.kernel.debug_fd_entry_write_trace_entry_ptr?.(index) ?? 0).toString(16)}`,
+      `ofd=${handle.kernel.debug_fd_entry_write_trace_ofd_id?.(index) ?? 0}`,
+      `flags=${handle.kernel.debug_fd_entry_write_trace_fd_flags?.(index) ?? 0}`,
+      `kind=${handle.kernel.debug_fd_entry_write_trace_kind?.(index) ?? 0}`,
+    ].join("/");
+  }).join(",");
+}
+
+function formatGuestWriteOverlapTrace(handle: Pick<ProcessHandle, "kernel">): string {
+  const len = handle.kernel.debug_guest_write_overlap_trace_len?.() ?? 0;
+  if (len === 0) {
+    return "";
+  }
+  const start = Math.max(0, len - 16);
+  return Array.from({ length: len - start }, (_value, offset) => {
+    const index = start + offset;
+    const addr = readU64(handle.kernel.debug_guest_write_overlap_trace_addr?.(index));
+    const writerPc = readU64(handle.kernel.debug_guest_write_overlap_trace_pc?.(index));
+    const raw = (handle.kernel.debug_guest_write_overlap_trace_raw?.(index) ?? 0) >>> 0;
+    return [
+      `${index}`,
+      `slot=${handle.kernel.debug_guest_write_overlap_trace_slot?.(index) ?? 0}`,
+      `watch=0x${formatU64(readU64(handle.kernel.debug_guest_write_overlap_trace_watch_start?.(index)))}-0x${formatU64(readU64(handle.kernel.debug_guest_write_overlap_trace_watch_end?.(index)))}`,
+      `op=${handle.kernel.debug_guest_write_overlap_trace_op?.(index) ?? 0}`,
+      `addr=0x${formatU64(addr)}`,
+      `len=${handle.kernel.debug_guest_write_overlap_trace_write_len?.(index) ?? 0}`,
+      `sample=0x${formatU64(readU64(handle.kernel.debug_guest_write_overlap_trace_sample?.(index)))}`,
+      `sampleLen=${handle.kernel.debug_guest_write_overlap_trace_sample_len?.(index) ?? 0}`,
+      `vm=0x${(handle.kernel.debug_guest_write_overlap_trace_vm_ptr?.(index) ?? 0).toString(16)}`,
+      `pc=0x${formatU64(writerPc)}`,
+      `pc_vma=${formatContainingMemoryVma(handle, writerPc)}`,
+      `raw=0x${raw.toString(16)}`,
+      `step=${readU64(handle.kernel.debug_guest_write_overlap_trace_step?.(index)).toString()}`,
+      `stage=${handle.kernel.debug_guest_write_overlap_trace_execve_stage?.(index) ?? 0}`,
+      `vma=${formatContainingMemoryVma(handle, addr)}`,
+    ].join("/");
+  }).join(",");
+}
+
+function formatGuestWriteOverlapByVmTrace(handle: Pick<ProcessHandle, "kernel">): string {
+  const len = handle.kernel.debug_guest_write_overlap_by_vm_trace_len?.() ?? 0;
+  if (len === 0) {
+    return "";
+  }
+  return Array.from({ length: len }, (_value, index) => {
+    const addr = readU64(handle.kernel.debug_guest_write_overlap_by_vm_trace_addr?.(index));
+    const writerPc = readU64(handle.kernel.debug_guest_write_overlap_by_vm_trace_pc?.(index));
+    const raw = (handle.kernel.debug_guest_write_overlap_by_vm_trace_raw?.(index) ?? 0) >>> 0;
+    return [
+      `${index}`,
+      `slot=${handle.kernel.debug_guest_write_overlap_by_vm_trace_slot?.(index) ?? 0}`,
+      `watch=0x${formatU64(readU64(handle.kernel.debug_guest_write_overlap_by_vm_trace_watch_start?.(index)))}-0x${formatU64(readU64(handle.kernel.debug_guest_write_overlap_by_vm_trace_watch_end?.(index)))}`,
+      `op=${handle.kernel.debug_guest_write_overlap_by_vm_trace_op?.(index) ?? 0}`,
+      `addr=0x${formatU64(addr)}`,
+      `len=${handle.kernel.debug_guest_write_overlap_by_vm_trace_write_len?.(index) ?? 0}`,
+      `sample=0x${formatU64(readU64(handle.kernel.debug_guest_write_overlap_by_vm_trace_sample?.(index)))}`,
+      `sampleLen=${handle.kernel.debug_guest_write_overlap_by_vm_trace_sample_len?.(index) ?? 0}`,
+      `vm=0x${(handle.kernel.debug_guest_write_overlap_by_vm_trace_vm_ptr?.(index) ?? 0).toString(16)}`,
+      `pc=0x${formatU64(writerPc)}`,
+      `pc_vma=${formatContainingMemoryVma(handle, writerPc)}`,
+      `raw=0x${raw.toString(16)}`,
+      `step=${readU64(handle.kernel.debug_guest_write_overlap_by_vm_trace_step?.(index)).toString()}`,
+      `stage=${handle.kernel.debug_guest_write_overlap_by_vm_trace_execve_stage?.(index) ?? 0}`,
+      `vma=${formatContainingMemoryVma(handle, addr)}`,
+    ].join("/");
+  }).join(",");
+}
+
+function formatProcMapsShapedWriteTrace(handle: Pick<ProcessHandle, "kernel">): string {
+  const len = handle.kernel.debug_proc_maps_shaped_write_trace_len?.() ?? 0;
+  if (len === 0) {
+    return "";
+  }
+  const start = Math.max(0, len - 16);
+  return Array.from({ length: len - start }, (_value, offset) => {
+    const index = start + offset;
+    const addr = readU64(handle.kernel.debug_proc_maps_shaped_write_trace_addr?.(index));
+    return [
+      `${index}`,
+      `op=${handle.kernel.debug_proc_maps_shaped_write_trace_op?.(index) ?? 0}`,
+      `addr=0x${formatU64(addr)}`,
+      `len=${handle.kernel.debug_proc_maps_shaped_write_trace_write_len?.(index) ?? 0}`,
+      `sample=0x${formatU64(readU64(handle.kernel.debug_proc_maps_shaped_write_trace_sample?.(index)))}`,
+      `sampleLen=${handle.kernel.debug_proc_maps_shaped_write_trace_sample_len?.(index) ?? 0}`,
+      `pattern=${handle.kernel.debug_proc_maps_shaped_write_trace_pattern?.(index) ?? 0}`,
+      `vma=${formatContainingMemoryVma(handle, addr)}`,
+    ].join("/");
+  }).join(",");
+}
+
+function formatContainingMemoryVma(handle: Pick<ProcessHandle, "kernel">, addr: bigint): string {
+  if (addr === 0n) {
+    return "zero";
+  }
+  const len = handle.kernel.debug_memory_vma_len?.() ?? 0;
+  for (let index = 0; index < len; index += 1) {
+    const start = BigInt(handle.kernel.debug_memory_vma_start?.(index) ?? 0n);
+    const end = BigInt(handle.kernel.debug_memory_vma_end?.(index) ?? 0n);
+    if (addr < start || addr >= end) {
+      continue;
+    }
+    const fileSampleLen = handle.kernel.debug_memory_vma_file_sample_len?.(index, addr) ?? 0;
+    const fileSample = fileSampleLen === 0
+      ? "none"
+      : `0x${formatU64(readU64(handle.kernel.debug_memory_vma_file_sample?.(index, addr)))}/${fileSampleLen}`;
+    return `0x${start.toString(16)}-0x${end.toString(16)}`
+      + `:${handle.kernel.debug_memory_vma_prot?.(index) ?? "n/a"}`
+      + `/${handle.kernel.debug_memory_vma_flags?.(index) ?? "n/a"}`
+      + `:fd=${handle.kernel.debug_memory_vma_fd?.(index) ?? "n/a"}`
+      + `:off=0x${BigInt(handle.kernel.debug_memory_vma_offset?.(index) ?? 0).toString(16)}`
+      + `:file=${fileSample}`;
+  }
+  return "none";
+}
+
+function readGuestBytesForTrace(
+  handle: Pick<ProcessHandle, "guestBase" | "memory">,
+  pc: bigint,
+  byteLength: number,
+): string {
+  const guestAddr = Number(pc);
+  if (!Number.isFinite(guestAddr) || guestAddr < 0) {
+    return "unreadable";
+  }
+  const absolute = handle.guestBase + guestAddr;
+  if (absolute < 0 || absolute + byteLength > handle.memory.buffer.byteLength) {
+    return "out_of_bounds";
+  }
+  return [...new Uint8Array(handle.memory.buffer, absolute, byteLength)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function formatReleaseExecTrace(handle: Pick<ProcessHandle, "kernel" | "guestBase" | "memory">): string {
+  const len = handle.kernel.debug_release_exec_trace_len?.() ?? 0;
+  if (len === 0) {
+    return "";
+  }
+  const start = Math.max(0, len - 16);
+  return Array.from({ length: len - start }, (_value, offset) => {
+    const index = start + offset;
+    const pc = readU64(handle.kernel.debug_release_exec_trace_pc?.(index));
+    return [
+      `${index}`,
+      `vm=0x${(handle.kernel.debug_release_exec_trace_vm_ptr?.(index) ?? 0).toString(16)}`,
+      `tid=${handle.kernel.debug_release_exec_trace_tid?.(index) ?? 0}`,
+      `pc=0x${formatU64(pc)}`,
+      `vma=${formatContainingMemoryVma(handle, pc)}`,
+      `mem=${pc === 0n ? "zero" : readGuestBytesForTrace(handle, pc, 8)}`,
+      `raw=0x${((handle.kernel.debug_release_exec_trace_raw?.(index) ?? 0) >>> 0).toString(16)}`,
+      `step=${handle.kernel.debug_release_exec_trace_step?.(index) ?? 0}`,
+      `ra=0x${formatU64(readU64(handle.kernel.debug_release_exec_trace_ra?.(index)))}`,
+      `sp=0x${formatU64(readU64(handle.kernel.debug_release_exec_trace_sp?.(index)))}`,
+      `a0=0x${formatU64(readU64(handle.kernel.debug_release_exec_trace_a0?.(index)))}`,
+      `a1=0x${formatU64(readU64(handle.kernel.debug_release_exec_trace_a1?.(index)))}`,
+      `a7=0x${formatU64(readU64(handle.kernel.debug_release_exec_trace_a7?.(index)))}`,
+      `s11=0x${formatU64(readU64(handle.kernel.debug_release_exec_trace_s11?.(index)))}`,
+    ].join("/");
+  }).join(",");
+}
+
+function formatReleaseExecMismatchTrace(handle: Pick<ProcessHandle, "kernel">): string {
+  const len = handle.kernel.debug_release_exec_mismatch_trace_len?.() ?? 0;
+  if (len === 0) {
+    return "";
+  }
+  return Array.from({ length: len }, (_value, index) => [
+    `${index}`,
+    `vm=0x${(handle.kernel.debug_release_exec_mismatch_trace_vm_ptr?.(index) ?? 0).toString(16)}`,
+    `tid=${handle.kernel.debug_release_exec_mismatch_trace_tid?.(index) ?? 0}`,
+    `pc=0x${formatU64(readU64(handle.kernel.debug_release_exec_mismatch_trace_pc?.(index)))}`,
+    `raw=0x${((handle.kernel.debug_release_exec_mismatch_trace_raw?.(index) ?? 0) >>> 0).toString(16)}`,
+    `step=${handle.kernel.debug_release_exec_mismatch_trace_step?.(index) ?? 0}`,
+    `mem=0x${formatU64(readU64(handle.kernel.debug_release_exec_mismatch_trace_mem_sample?.(index)))}`,
+    `memLen=${handle.kernel.debug_release_exec_mismatch_trace_mem_sample_len?.(index) ?? 0}`,
+    `file=0x${formatU64(readU64(handle.kernel.debug_release_exec_mismatch_trace_file_sample?.(index)))}`,
+    `fileLen=${handle.kernel.debug_release_exec_mismatch_trace_file_sample_len?.(index) ?? 0}`,
+    `vma=0x${formatU64(readU64(handle.kernel.debug_release_exec_mismatch_trace_vma_start?.(index)))}-0x${formatU64(readU64(handle.kernel.debug_release_exec_mismatch_trace_vma_end?.(index)))}`,
+    `prot=${handle.kernel.debug_release_exec_mismatch_trace_vma_prot?.(index) ?? 0}`,
+    `fd=${handle.kernel.debug_release_exec_mismatch_trace_vma_fd?.(index) ?? 0}`,
+    `off=0x${formatU64(readU64(handle.kernel.debug_release_exec_mismatch_trace_vma_offset?.(index)))}`,
+  ].join("/")).join(",");
+}
+
+function formatReleaseDefaultSignal(handle: Pick<ProcessHandle, "kernel">, vmPtr: number): string {
+  const sig = handle.kernel.debug_release_default_signal_sig?.() ?? 0;
+  if (sig === 0) {
+    return "";
+  }
+  const traceVmPtr = handle.kernel.debug_release_default_signal_vm_ptr?.() ?? 0;
+  return [
+    `sig=${sig}`,
+    `code=${handle.kernel.debug_release_default_signal_code?.() ?? 0}`,
+    `vm=0x${traceVmPtr.toString(16)}`,
+    `requested_vm=0x${vmPtr.toString(16)}`,
+    `source_match=${traceVmPtr === 0 || traceVmPtr === vmPtr ? 1 : 0}`,
+    `pc=0x${formatU64(readU64(handle.kernel.debug_release_default_signal_pc?.()))}`,
+    `ra=0x${formatU64(readU64(handle.kernel.debug_release_default_signal_ra?.()))}`,
+    `sp=0x${formatU64(readU64(handle.kernel.debug_release_default_signal_sp?.()))}`,
+    `gp=0x${formatU64(readU64(handle.kernel.debug_release_default_signal_gp?.()))}`,
+    `tp=0x${formatU64(readU64(handle.kernel.debug_release_default_signal_tp?.()))}`,
+    `s11=0x${formatU64(readU64(handle.kernel.debug_release_default_signal_s11?.()))}`,
+    `a0=0x${formatU64(readU64(handle.kernel.debug_release_default_signal_a0?.()))}`,
+    `a1=0x${formatU64(readU64(handle.kernel.debug_release_default_signal_a1?.()))}`,
+    `a2=0x${formatU64(readU64(handle.kernel.debug_release_default_signal_a2?.()))}`,
+    `a3=0x${formatU64(readU64(handle.kernel.debug_release_default_signal_a3?.()))}`,
+    `a4=0x${formatU64(readU64(handle.kernel.debug_release_default_signal_a4?.()))}`,
+    `a5=0x${formatU64(readU64(handle.kernel.debug_release_default_signal_a5?.()))}`,
+    `a6=0x${formatU64(readU64(handle.kernel.debug_release_default_signal_a6?.()))}`,
+    `a7=0x${formatU64(readU64(handle.kernel.debug_release_default_signal_a7?.()))}`,
+    `fault_pc=0x${formatU64(readU64(handle.kernel.debug_release_default_signal_fault_pc?.()))}`,
+    `fault_addr=0x${formatU64(readU64(handle.kernel.debug_release_default_signal_fault_addr?.()))}`,
+    `pending=0x${formatU64(readU64(handle.kernel.debug_release_default_signal_pending?.()))}`,
+  ].join(":");
 }
 
 export function debugRuntimeProcessHandles(
@@ -1329,6 +1754,15 @@ export function debugRuntimeProcessHandles(
           `worker_details=[${workerDetails}]`,
           `worker_focus=[${workerFocusSummary}]`,
           `thread_states=[${threadStates}]`,
+          `thread_record_writes=[${formatThreadRecordWriteTrace(handle)}]`,
+          `fd_entry_writes=[${formatFdEntryWriteTrace(handle)}]`,
+          `guest_write_overlaps=[${formatGuestWriteOverlapTrace(handle)}]`,
+          `guest_write_overlaps_by_vm=[${formatGuestWriteOverlapByVmTrace(handle)}]`,
+          `proc_maps_shaped_writes=[${formatProcMapsShapedWriteTrace(handle)}]`,
+          `direct_memory_copies=[${formatDirectMemoryCopyLog(handle.workerDebugLog)}]`,
+          `release_default_signal=${formatReleaseDefaultSignal(handle, handle.vmPtr)}`,
+          `release_exec_trace=[${formatReleaseExecTrace(handle)}]`,
+          `release_exec_mismatches=[${formatReleaseExecMismatchTrace(handle)}]`,
           `ready=${handle.readyWorkers.length}`,
           `running=${handle.runningWorker ? "1" : "0"}`,
           `blocked=[${blocked}]`,
@@ -1352,6 +1786,11 @@ export function debugRuntimeProcessHandles(
           `syscalls=[${formatProcessSyscallTrace(handle)}]`,
           `riscv_syscalls=[${formatProcessRiscvSyscallTrace(handle)}]`,
           `fd_syscalls=[${formatProcessFdTrace(handle)}]`,
+          `proc_maps_reads=[${formatProcessProcMapsReadTrace(handle)}]`,
+          `file_mmap_materialize=[${formatProcessFileMmapMaterializeTrace(handle)}]`,
+          `cpu_write_permits=[${formatProcessCpuWritePermitTrace(handle)}]`,
+          `mprotect_transitions=[${formatProcessMprotectTransitionTrace(handle)}]`,
+          `mmap_exec_transitions=[${formatProcessMmapExecTransitionTrace(handle)}]`,
           `path_syscalls=[${formatProcessPathTrace(handle)}]`,
         ].join(" ");
       } catch (error) {

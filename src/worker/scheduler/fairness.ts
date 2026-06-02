@@ -43,6 +43,9 @@ export function createReadyWorkerFairness(pumpProcess: (handle: ProcessHandle) =
         pendingRunningWorkerPumps.delete(handle);
       }
       pumpProcess(handle);
+      if (delayMs > 0 && handle.runningWorker !== null && handle.readyWorkers.length > 0) {
+        scheduleRunningWorkerPump(handle, delayMs);
+      }
     }, delayMs);
   }
 

@@ -5,6 +5,7 @@ import {
   memfsFileHasInlineData,
 } from "../../fs/memfs-inline-data.js";
 import type { ThreadWorkerMemoryPreserveRange } from "../../messages.js";
+import { recordDirectMemoryCopyOverlap } from "../diagnostics/direct-memory-copy.js";
 import type { ProcessHandle, ThreadWorkerState } from "./types.js";
 
 export type ParentProcessSnapshot = {
@@ -240,9 +241,17 @@ export function captureForkMemorySnapshot(handle: ProcessHandle, stackPointer = 
   };
 }
 
-export function applyForkMemorySnapshot(snapshot: ForkMemorySnapshot, target: WebAssembly.Memory): void {
+export function applyForkMemorySnapshot(
+  snapshot: ForkMemorySnapshot,
+  target: WebAssembly.Memory,
+  diagnosticHandle?: ProcessHandle,
+  source = "fork-memory-snapshot",
+): void {
   const targetBytes = new Uint8Array(target.buffer);
   for (const range of snapshot.ranges) {
+    if (diagnosticHandle) {
+      recordDirectMemoryCopyOverlap(diagnosticHandle, source, range.start, range.bytes);
+    }
     targetBytes.set(range.bytes, range.start);
   }
 }

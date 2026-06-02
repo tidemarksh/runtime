@@ -59,6 +59,7 @@ import { createWorkerMessageHandler } from "../message-handler.js";
 import { createWorkerRuntimeContext } from "../runtime-context.js";
 import { createWorkerScheduler } from "../scheduler.js";
 import {
+  describeActiveChildProcesses as describeActiveChildProcessesImpl,
   hasActiveChildProcess as hasActiveChildProcessImpl,
   pumpActiveChildProcesses as pumpActiveChildProcessesImpl,
 } from "../child-processes.js";
@@ -131,6 +132,7 @@ const workerScheduler = createWorkerScheduler({
   threadWorkerStates,
   completeProcessExit,
   failProcess,
+  describeActiveChildProcesses: (parentPid) => describeActiveChildProcessesImpl(processHandles, parentPid, threadWorkerStates),
   hasActiveChildProcess: (parentPid) => hasActiveChildProcessImpl(processHandles, parentPid, threadWorkerStates),
   pumpActiveChildProcesses: (parentPid) => (
     pumpActiveChildProcessesImpl(processHandles, parentPid, pumpProcess, kickBlockedWorkers, threadWorkerStates)

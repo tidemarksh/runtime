@@ -49,14 +49,19 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
   }
 
   function restoreProcSelfExe(targetExports: KernelExports, target: Uint8Array | null): void {
+    if (!target || target.length === 0) {
+      return;
+    }
+    if (targetExports.process_install_procfs_snapshot) {
+      const targetPtr = writeScratchFor(targetExports, target, 0x300);
+      targetExports.process_install_procfs_snapshot(targetPtr, target.length);
+      return;
+    }
     const existingSelfIno = resolvePathIn(targetExports, "/proc/self");
     if (existingSelfIno !== 0) {
       const exeName = deps.encoder.encode("exe");
       const exeNamePtr = writeScratchFor(targetExports, exeName, 0x200);
       targetExports.memfs_unlink(existingSelfIno, exeNamePtr, exeName.length);
-    }
-    if (!target || target.length === 0) {
-      return;
     }
     const procName = deps.encoder.encode("proc");
     const selfName = deps.encoder.encode("self");
@@ -71,10 +76,6 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
     }
     const selfIno = targetExports.memfs_ensure_dir(procIno, selfNamePtr, selfName.length, 0o555);
     if (selfIno === 0) {
-      return;
-    }
-    if (targetExports.process_install_procfs_snapshot) {
-      targetExports.process_install_procfs_snapshot(targetPtr, target.length);
       return;
     }
     targetExports.memfs_create_symlink(selfIno, exeNamePtr, exeName.length, targetPtr, target.length);

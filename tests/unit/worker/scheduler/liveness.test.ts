@@ -37,6 +37,8 @@ function makeKernel() {
       abi_status_socket_send: () => 29,
       abi_status_flock_wait: () => 32,
       abi_status_fs: () => 33,
+      abi_sys_exit: () => 93,
+      abi_sys_exit_group: () => 94,
       abi_max_threads: () => 64,
       thread_resume_wait4: threadResumeWait4,
       thread_resume_blocked_syscall: vi.fn(),
@@ -47,6 +49,9 @@ function makeKernel() {
       thread_status: () => 0,
       thread_exit_code: () => 0,
       thread_term_signal: () => 0,
+      thread_termination_reason: () => 0,
+      thread_fault_kind: () => 0,
+      thread_fault_signal: () => 0,
       monotonic_ticks_current: () => monotonicTicks,
       sync_monotonic_ticks_floor: vi.fn((ticks: bigint | number) => {
         const nextTicks = BigInt(ticks);
@@ -262,6 +267,7 @@ afterEach(() => {
 test("scheduler uses the Node step budget when Node process globals are present", () => {
   const worker = {
     postMessage: vi.fn(),
+    terminate: vi.fn(),
   } as unknown as Worker;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, makeThreadState(0x1234));
@@ -286,6 +292,95 @@ test("scheduler uses the Node step budget when Node process globals are present"
     type: "step",
     budget: 5_000_000,
   }));
+});
+
+test("blocked retry rejects zero-payload non-exit faults as runtime invariant failures", () => {
+  const worker = {
+    postMessage: vi.fn(),
+    terminate: vi.fn(),
+  } as unknown as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, makeThreadState(0x1234));
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_fault();
+  kernel.process_current_pid = () => 1;
+  kernel.thread_process_thread_count = () => 1;
+  kernel.process_thread_vm_ptr = () => 0;
+  kernel.thread_a7 = () => 0n;
+  const handle = makeHandle(kernel, worker);
+  const lifecycleEvents: string[] = [];
+  const completeProcessExit = vi.fn(async () => {});
+  const failProcess = vi.fn();
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      lifecycleEvents.push(event);
+    },
+    threadWorkerStates,
+    completeProcessExit,
+    failProcess,
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.blockWorker(handle, worker, handle.kernel.abi_status_wait4(), 0x1234);
+  scheduler.handleBlockedRetryResult(handle, worker, 0x1234, handle.kernel.abi_status_fault());
+
+  expect(completeProcessExit).not.toHaveBeenCalled();
+  expect(failProcess).toHaveBeenCalledWith(
+    handle,
+    expect.objectContaining({
+      message: "ambiguous-fault-exit:1:vm=0x1234:exit=0:0:kernel_exit=0:0:reason=0:a7=0:fault=0:0:pidField=1:threads=1:live=0:liveExcludingSelf=0",
+    }),
+  );
+  expect(lifecycleEvents).toContain(
+    "ambiguous-fault-exit:1:vm=0x1234:exit=0:0:kernel_exit=0:0:reason=0:a7=0:fault=0:0:pidField=1:threads=1:live=0:liveExcludingSelf=0",
+  );
+});
+
+test("blocked retry defers dead-process zero-payload faults while waiting for exit evidence", () => {
+  const worker = {
+    postMessage: vi.fn(),
+    terminate: vi.fn(),
+  } as unknown as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, makeThreadState(0x1234));
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_fault();
+  kernel.process_current_pid = () => 1;
+  kernel.thread_process_thread_count = () => 0;
+  kernel.process_thread_vm_ptr = () => 0;
+  kernel.thread_a7 = () => 98n;
+  const handle = makeHandle(kernel, worker);
+  const lifecycleEvents: string[] = [];
+  const completeProcessExit = vi.fn(async () => {});
+  const failProcess = vi.fn();
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      lifecycleEvents.push(event);
+    },
+    threadWorkerStates,
+    completeProcessExit,
+    failProcess,
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.blockWorker(handle, worker, handle.kernel.abi_status_wait4(), 0x1234);
+  scheduler.handleBlockedRetryResult(handle, worker, 0x1234, handle.kernel.abi_status_fault());
+
+  expect(completeProcessExit).not.toHaveBeenCalled();
+  expect(failProcess).not.toHaveBeenCalled();
+  expect(lifecycleEvents).toContain(
+    "fault-dead-zero-payload-defer:1:vm=0x1234:exit=0:0",
+  );
 });
 
 test("wait4 retry stays blocked while child spawn is still in flight", async () => {
@@ -1626,6 +1721,113 @@ test("pumpProcess retries stale running repair after an active step clears", asy
   expect(runningWorker.postMessage).not.toHaveBeenCalled();
 });
 
+test("pumpProcess keeps a running-slot watchdog until ready work appears", async () => {
+  vi.setSystemTime(new Date(10_000));
+  const runningWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const readyWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const runningThread = makeThreadState(0x64a6e10);
+  const readyThread = makeThreadState(0x66c42b8);
+  runningThread.runningGeneration = runningThread.generation;
+  runningThread.stepCount = 9;
+  runningThread.statusCount = 11;
+  runningThread.lastStatusAtMs = 6_900;
+  runningThread.lastStepAtMs = 7_000;
+  runningThread.lastStatus = 0;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(runningWorker, runningThread);
+  threadWorkerStates.set(readyWorker, readyThread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_ok();
+  kernel.debug_thread_step_vm_ptr = () => 0;
+  const handle = makeHandle(kernel, runningWorker);
+  handle.workers.add(readyWorker);
+  handle.runningWorker = runningWorker;
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+  await vi.advanceTimersByTimeAsync(2_000);
+
+  expect(handle.runningWorker).toBe(runningWorker);
+  expect(readyWorker.postMessage).not.toHaveBeenCalled();
+
+  handle.readyWorkers.push(readyWorker);
+  await vi.advanceTimersByTimeAsync(2_000);
+
+  expect(runningThread.runningGeneration).toBeNull();
+  expect(handle.runningWorker).toBe(readyWorker);
+  expect(readyWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+  expect(runningWorker.postMessage).not.toHaveBeenCalled();
+});
+
+test("pumpProcess schedules a running-slot watchdog when ready work remains after dispatch", async () => {
+  vi.setSystemTime(new Date(10_000));
+  const firstWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const secondWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const firstThread = makeThreadState(0x64a6e90);
+  const secondThread = makeThreadState(0x66c4338);
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(firstWorker, firstThread);
+  threadWorkerStates.set(secondWorker, secondThread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_ok();
+  kernel.debug_thread_step_vm_ptr = () => 0;
+  const handle = makeHandle(kernel, firstWorker);
+  handle.workers.add(secondWorker);
+  handle.readyWorkers = [firstWorker, secondWorker];
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+
+  expect(handle.runningWorker).toBe(firstWorker);
+  expect(firstWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+  expect(secondWorker.postMessage).not.toHaveBeenCalled();
+
+  await vi.advanceTimersByTimeAsync(2_000);
+
+  expect(firstThread.runningGeneration).toBeNull();
+  expect(handle.runningWorker).toBe(secondWorker);
+  expect(secondWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+});
+
 test("pumpProcess clears a stale running worker when the unanswered step shares a status millisecond", () => {
   vi.setSystemTime(new Date(10_000));
   const runningWorker = {
@@ -1641,6 +1843,106 @@ test("pumpProcess clears a stale running worker when the unanswered step shares 
   runningThread.statusCount = 2;
   runningThread.lastStepAtMs = 7_500;
   runningThread.lastStatusAtMs = 7_500;
+  runningThread.lastStatus = 0;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(runningWorker, runningThread);
+  threadWorkerStates.set(readyWorker, readyThread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_ok();
+  kernel.debug_thread_step_vm_ptr = () => 0;
+  const handle = makeHandle(kernel, runningWorker);
+  handle.workers.add(readyWorker);
+  handle.runningWorker = runningWorker;
+  handle.readyWorkers = [readyWorker];
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+
+  expect(runningThread.runningGeneration).toBeNull();
+  expect(handle.runningWorker).toBe(readyWorker);
+  expect(readyWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+  expect(runningWorker.postMessage).not.toHaveBeenCalled();
+});
+
+test("pumpProcess clears a stale running worker when prior status count exceeds steps", () => {
+  vi.setSystemTime(new Date(10_000));
+  const runningWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const readyWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const runningThread = makeThreadState(0x64a6e10);
+  const readyThread = makeThreadState(0x66c42b8);
+  runningThread.runningGeneration = runningThread.generation;
+  runningThread.stepCount = 9;
+  runningThread.statusCount = 11;
+  runningThread.lastStatusAtMs = 6_900;
+  runningThread.lastStepAtMs = 7_000;
+  runningThread.lastStatus = 0;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(runningWorker, runningThread);
+  threadWorkerStates.set(readyWorker, readyThread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_ok();
+  kernel.debug_thread_step_vm_ptr = () => 0;
+  const handle = makeHandle(kernel, runningWorker);
+  handle.workers.add(readyWorker);
+  handle.runningWorker = runningWorker;
+  handle.readyWorkers = [readyWorker];
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+
+  expect(runningThread.runningGeneration).toBeNull();
+  expect(handle.runningWorker).toBe(readyWorker);
+  expect(readyWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+  expect(runningWorker.postMessage).not.toHaveBeenCalled();
+});
+
+test("pumpProcess clears an answered ok running worker before dispatching a ready sibling", () => {
+  vi.setSystemTime(new Date(10_000));
+  const runningWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const readyWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const runningThread = makeThreadState(0x64a6e90);
+  const readyThread = makeThreadState(0x66c4338);
+  runningThread.runningGeneration = runningThread.generation;
+  runningThread.stepCount = 10;
+  runningThread.statusCount = 11;
+  runningThread.lastStepAtMs = 7_000;
+  runningThread.lastStatusAtMs = 7_100;
   runningThread.lastStatus = 0;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(runningWorker, runningThread);

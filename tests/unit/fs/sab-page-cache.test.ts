@@ -52,6 +52,33 @@ test("page-cache read/stat report miss when inode metadata is out of cache bound
   expect(env.tidemark_page_cache_stat(2, 16)).toBe(0);
 });
 
+test("page-cache env accepts Memory64 bigint pointers", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 256);
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const env = createKernelEnv(memory, { sabPageCache: sab });
+  const name = new TextEncoder().encode("file");
+
+  publishInode(sab, 2, {
+    mode: 0o100644,
+    size: 4,
+    parentIno: 1,
+    name,
+    nextSibling: 0,
+  }, new Uint8Array([0x61, 0x62, 0x63, 0x64]));
+
+  expect(env.tidemark_page_cache_read(2, 1n, 32n, 2)).toBe(2n);
+  expect([...new Uint8Array(memory.buffer, 32, 2)]).toEqual([0x62, 0x63]);
+  expect(env.tidemark_page_cache_stat(2, 48n)).toBe(1);
+  expect(new DataView(memory.buffer).getBigUint64(56, true)).toBe(4n);
+
+  new Uint8Array(memory.buffer, 64, 3).set([0x78, 0x79, 0x7a]);
+  expect(env.tidemark_page_cache_write(2, 4n, 64n, 3)).toBe(3n);
+  const updated = readInodeMeta(sab, 2);
+  expect(updated).not.toBeNull();
+  expect(readFileData(sab, updated?.dataOff ?? 0, updated?.size ?? 0, 0, updated?.size ?? 0))
+    .toEqual(new Uint8Array([0x61, 0x62, 0x63, 0x64, 0x78, 0x79, 0x7a]));
+});
+
 test("page-cache supports kernel-sized high inode numbers", () => {
   const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 64);
   const ino = MAX_INODES - 1;

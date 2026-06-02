@@ -64,7 +64,19 @@ export function registerToolchainExecGate(entry: ToolchainExecEntry): void {
       expect(result.exitCode).toBe(0);
       expect(outputMismatches).toEqual([]);
       const artifactMismatches = await validateToolchainArtifacts(runtime, entry);
-      expect(artifactMismatches).toEqual([]);
+      if (artifactMismatches.length > 0) {
+        const summary = await runtimeDebugSummary(runtime).catch((error) => (
+          `runtimeDebugSummary failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`
+        ));
+        throw new Error([
+          `toolchain exec artifact validation failed: ${entry.id}`,
+          `artifactMismatches=${JSON.stringify(artifactMismatches)}`,
+          `driverExit=${result.exitCode}`,
+          `driverOutput=${JSON.stringify(result.output)}`,
+          result.debugInfo ? `driverDebug:\n${result.debugInfo}` : null,
+          summary ? `runtime:\n${summary}` : null,
+        ].filter((part): part is string => part !== null).join("\n"));
+      }
       const runResults = await runToolchainArtifactChecks(runtime, entry).catch(async (error) => {
         const summary = await runtimeDebugSummary(runtime).catch((summaryError) => (
           `runtimeDebugSummary failed: ${summaryError instanceof Error ? (summaryError.stack ?? summaryError.message) : String(summaryError)}`

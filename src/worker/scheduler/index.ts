@@ -9,6 +9,11 @@ import {
   releaseWorker,
 } from "../pool.js";
 import {
+  consumeFaultExitPayloadForDeadProcess,
+  faultPayloadCanCompleteProcessExit,
+  formatAmbiguousFaultExitPayload,
+} from "../fault-exit.js";
+import {
   drainHiddenProcessOutput,
   drainProcessOutput,
   flushStdin,
@@ -69,6 +74,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   const appliedChildExitRecordKeys = new Map<string, Set<string>>();
   const schedulerQueueHelpers = createWorkerSchedulerQueueHelpers({
     threadWorkerStates,
+    appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
     appendWorkerDebugLog,
     blockWorker,
     failProcess: deps.failProcess,
@@ -267,6 +273,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       `records=${[...handle.childExitSyncRecords].map(([childPid, waitStatus]) => `${childPid}/${waitStatus}`).join(".") || "none"}`,
       `pending=${handle.pendingChildExitRecords}/${handle.pendingChildSpawnRecords}`,
       `active=${deps.hasActiveChildProcess(handle.pid) ? 1 : 0}`,
+      `activeChildren=${deps.describeActiveChildProcesses?.(handle.pid) ?? "n/a"}`,
     ];
     if (status === handle.kernel.abi_status_pipe_wait()) {
       parts.push(
@@ -477,6 +484,54 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       threadWorkerStates.delete(worker);
       releaseWorker(worker);
       if (remainingThreads <= 1 || !hasLiveThreads) {
+        if (!faultPayloadCanCompleteProcessExit(handle, {
+          exitCode,
+          termSignal,
+          vmPtr,
+        })) {
+          const pendingFaultExit = consumeFaultExitPayloadForDeadProcess(handle, vmPtr);
+          if (pendingFaultExit) {
+            deps.appendRuntimeLifecycleEvent(
+              handle.runtimeId,
+              `complete-exit-request:pending-fault:${handle.pid}:vm=0x${pendingFaultExit.vmPtr.toString(16)}`
+                + `:observed=0x${vmPtr.toString(16)}`
+                + `:exit=${pendingFaultExit.exitCode}:${pendingFaultExit.termSignal}`,
+            );
+            void deps.completeProcessExit(
+              handle,
+              pendingFaultExit.exitCode,
+              pendingFaultExit.termSignal,
+              pendingFaultExit.vmPtr,
+            ).catch((error) => {
+              deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+            });
+            return;
+          }
+          if (remainingThreads === 0 && !hasLiveThreads) {
+            deps.appendRuntimeLifecycleEvent(
+              handle.runtimeId,
+              `fault-dead-zero-payload-defer:${handle.pid}:vm=0x${vmPtr.toString(16)}`
+                + `:exit=${exitCode}:${termSignal}`,
+            );
+            appendWorkerDebugLog(
+              handle,
+              `fault_dead_zero_payload_defer:0x${vmPtr.toString(16)}`
+                + `:exit=${exitCode}:${termSignal}`,
+            );
+            kickBlockedWorkers(handle);
+            pumpProcess(handle);
+            return;
+          }
+          const detail = formatAmbiguousFaultExitPayload(handle, {
+            exitCode,
+            termSignal,
+            vmPtr,
+          });
+          deps.appendRuntimeLifecycleEvent(handle.runtimeId, detail);
+          appendWorkerDebugLog(handle, detail);
+          deps.failProcess(handle, new Error(detail));
+          return;
+        }
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `complete-exit-request:scheduler-fault:${handle.pid}:vm=0x${vmPtr.toString(16)}`
@@ -667,7 +722,13 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         || (handle.childExitSyncRecords.size === 0 && deps.hasActiveChildProcess(handle.pid))
       )
     ) {
-      const event = `wait4-retry-skip:${handle.pid}:gate:exit=${handle.pendingChildExitRecords}:spawn=${handle.pendingChildSpawnRecords}:active=${deps.hasActiveChildProcess(handle.pid) ? 1 : 0}`;
+      const event = [
+        `wait4-retry-skip:${handle.pid}:gate`,
+        `exit=${handle.pendingChildExitRecords}`,
+        `spawn=${handle.pendingChildSpawnRecords}`,
+        `active=${deps.hasActiveChildProcess(handle.pid) ? 1 : 0}`,
+        `activeChildren=${deps.describeActiveChildProcesses?.(handle.pid) ?? "n/a"}`,
+      ].join(":");
       if (blocked.lastWait4RetryLifecycleEvent !== event) {
         blocked.lastWait4RetryLifecycleEvent = event;
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);

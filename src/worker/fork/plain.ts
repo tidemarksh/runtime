@@ -178,7 +178,12 @@ export async function handlePlainFork(
         maximumPages: Math.max(handle.maxMemoryPages, handle.forkMaxMemoryPages),
       },
       { sabPageCache: handle.sabPageCache },
-      (memory) => applyForkMemorySnapshot(forkMemorySnapshot, memory),
+      (memory) => applyForkMemorySnapshot(
+        forkMemorySnapshot,
+        memory,
+        handle,
+        "plain-fork-instantiate-copy",
+      ),
     );
     const childKernel = childInstance.exports as unknown as KernelExports;
     configureKernelInstanceStack(childKernel, MAIN_THREAD_KERNEL_STACK_SLOT);
@@ -186,7 +191,12 @@ export async function handlePlainFork(
     // module's data segments. In browsers that can clobber copied guest text/data
     // below the probe's argv/envp strings, so restore the whole copied image here
     // and after kernel-worker registration before reattaching shared state.
-    applyForkMemorySnapshot(forkMemorySnapshot, childMemory);
+    applyForkMemorySnapshot(
+      forkMemorySnapshot,
+      childMemory,
+      handle,
+      "plain-fork-post-instantiate-copy",
+    );
     attachKernelRuntimeState(childKernel, handle.kernelState);
 
     ensureEvictionTimer();
@@ -237,7 +247,12 @@ export async function handlePlainFork(
     // Kernel-worker registration also instantiates over the shared child memory,
     // so restore the copied parent image again before rebuilding canonical shared
     // state for the child.
-    applyForkMemorySnapshot(forkMemorySnapshot, childMemory);
+    applyForkMemorySnapshot(
+      forkMemorySnapshot,
+      childMemory,
+      childHandle,
+      "plain-fork-post-register-copy",
+    );
     attachKernelRuntimeState(childHandle.kernel, childHandle.kernelState);
     await deps.initializeProcessLifecycleViaKernelWorker(
       childHandle,

@@ -44,6 +44,38 @@ export function hasActiveChildProcess(
   return false;
 }
 
+export function describeActiveChildProcesses(
+  processHandles: ReadonlyMap<number, ProcessHandle>,
+  parentPid: number,
+  threadWorkerStates?: WeakMap<Worker, ThreadWorkerState>,
+): string {
+  const entries: string[] = [];
+  for (const candidate of processHandles.values()) {
+    if (candidate.parentPid !== parentPid) {
+      continue;
+    }
+    if (candidate.exitInProgress) {
+      continue;
+    }
+    const blockedStatuses = [...candidate.blockedWorkers.values()]
+      .map((blocked) => blocked.status)
+      .join(".");
+    entries.push([
+      `pid=${candidate.pid}`,
+      `vm=0x${candidate.vmPtr.toString(16)}`,
+      `workers=${candidate.workers.size}`,
+      `ready=${candidate.readyWorkers.length}`,
+      `running=${candidate.runningWorker === null ? 0 : 1}`,
+      `blocked=${candidate.blockedWorkers.size}`,
+      `blockedStatus=${blockedStatuses || "none"}`,
+      `runnable=${hasRunnableWorker(candidate, threadWorkerStates) ? 1 : 0}`,
+      `records=${candidate.childExitSyncRecords.size}`,
+      `pending=${candidate.pendingChildExitRecords}/${candidate.pendingChildSpawnRecords}`,
+    ].join("/"));
+  }
+  return entries.join(",") || "none";
+}
+
 export function pumpActiveChildProcesses(
   processHandles: ReadonlyMap<number, ProcessHandle>,
   parentPid: number,

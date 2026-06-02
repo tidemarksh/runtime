@@ -244,7 +244,12 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     if (shouldAdoptThreadKernelState) {
       handle.kernelState = adoptKernelStateForHandle(handle, msg.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
-      applyThreadKernelMemoryWrites(handle, msg, deps.appendRuntimeLifecycleEvent);
+      applyThreadKernelMemoryWrites(
+        handle,
+        msg,
+        deps.appendRuntimeLifecycleEvent,
+        { skipFsRingWrites: status === handle.kernel.abi_status_fs() },
+      );
       applyThreadGuestMemoryWrites(handle, msg, deps.appendRuntimeLifecycleEvent);
       applyStatusPipeSlots(
         handle,
@@ -273,7 +278,12 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         );
       }
     } else if (status === handle.kernel.abi_status_fs()) {
-      applyThreadKernelMemoryWrites(handle, msg, deps.appendRuntimeLifecycleEvent);
+      applyThreadKernelMemoryWrites(
+        handle,
+        msg,
+        deps.appendRuntimeLifecycleEvent,
+        { skipFsRingWrites: true },
+      );
       applyThreadGuestMemoryWrites(handle, msg, deps.appendRuntimeLifecycleEvent);
     }
     if (msg.waitInWorker) {

@@ -44,6 +44,55 @@ interface KernelMemoryWriteOptions {
   skipFsRingWrites?: boolean;
 }
 
+const DIRECT_EXEC_PROT = 4;
+
+function formatSample(bytes: Uint8Array): { sample: string; ascii: string } {
+  const sample = [...bytes.slice(0, 16)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  const ascii = [...bytes.slice(0, 32)]
+    .map((byte) => (byte >= 0x20 && byte <= 0x7e ? String.fromCharCode(byte) : "."))
+    .join("");
+  return { sample, ascii };
+}
+
+function appendGuestMemoryWriteExecOverlapEvent(
+  handle: ProcessHandle,
+  msg: ThreadWorkerStatusMessage,
+  guestPtr: number,
+  bytes: Uint8Array,
+  appendRuntimeLifecycleEvent?: WorkerMessageHandlerDeps["appendRuntimeLifecycleEvent"],
+): void {
+  if (!appendRuntimeLifecycleEvent || bytes.length === 0) {
+    return;
+  }
+  const start = BigInt(guestPtr);
+  const end = start + BigInt(bytes.length);
+  const vmaLen = handle.kernel.debug_memory_vma_len?.() ?? 0;
+  for (let index = 0; index < vmaLen; index += 1) {
+    const prot = handle.kernel.debug_memory_vma_prot?.(index) ?? 0;
+    if ((prot & DIRECT_EXEC_PROT) === 0) {
+      continue;
+    }
+    const vmaStart = BigInt(handle.kernel.debug_memory_vma_start?.(index) ?? 0n);
+    const vmaEnd = BigInt(handle.kernel.debug_memory_vma_end?.(index) ?? 0n);
+    if (vmaStart >= vmaEnd || end <= vmaStart || start >= vmaEnd) {
+      continue;
+    }
+    const { sample, ascii } = formatSample(bytes);
+    appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `guest-write-status-exec-overlap:${handle.pid}`
+        + `:vm=0x${msg.vmPtr.toString(16)}`
+        + `:ptr=0x${guestPtr.toString(16)}`
+        + `:len=${bytes.length}`
+        + `:vma=0x${vmaStart.toString(16)}-0x${vmaEnd.toString(16)}`
+        + `:sample=${sample}`
+        + `:ascii=${JSON.stringify(ascii)}`,
+    );
+  }
+}
+
 export function applyThreadGuestMemoryWrites(
   handle: ProcessHandle,
   msg: ThreadWorkerStatusMessage,
@@ -64,6 +113,13 @@ export function applyThreadGuestMemoryWrites(
       continue;
     }
     const writeBytes = maskRegularFileFdEntryRollbackGuestWrite(handle, msg, write.guestPtr, write.bytes);
+    appendGuestMemoryWriteExecOverlapEvent(
+      handle,
+      msg,
+      write.guestPtr,
+      writeBytes,
+      appendRuntimeLifecycleEvent,
+    );
     memory.set(writeBytes, start);
     if (pipeSlotLifecycleDebugEnabled()) {
       appendRuntimeLifecycleEvent?.(

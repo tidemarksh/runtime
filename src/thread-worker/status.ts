@@ -289,6 +289,7 @@ function snapshotLatestFdTraceForStatus(
   vmPtr: number,
 ): {
   nr: bigint;
+  arg0?: bigint;
   arg0OfdId?: number;
   arg0OfdType?: number;
   arg1?: bigint;
@@ -308,6 +309,7 @@ function snapshotLatestFdTraceForStatus(
     }
     return {
       nr,
+      arg0: readOptionalTraceU64(kernelExports.debug_fd_syscall_trace_arg0?.(index)) ?? undefined,
       arg0OfdId: kernelExports.debug_fd_syscall_trace_arg0_ofd_id?.(index),
       arg0OfdType: kernelExports.debug_fd_syscall_trace_arg0_ofd_type?.(index),
       arg1: readOptionalTraceU64(kernelExports.debug_fd_syscall_trace_arg1?.(index)) ?? undefined,
@@ -1068,6 +1070,7 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
     kernelMemoryWrites: kernelMemoryWrites.length > 0 ? kernelMemoryWrites : undefined,
     fdTraceDebug: collectFdTraceDebug(kernelExports, vmPtr, guestBase),
     fdTraceSyscallNr: latestFdTrace?.nr,
+    fdTraceArg0: latestFdTrace?.arg0,
     fdTraceArg0OfdId: latestFdTrace?.arg0OfdId,
     fdTraceArg0OfdType: latestFdTrace?.arg0OfdType,
     fdTraceArg1: latestFdTrace?.arg1,

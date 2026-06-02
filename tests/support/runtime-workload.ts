@@ -311,7 +311,11 @@ export async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<str
               if (threadVmPtr === 0) {
                 return null;
               }
-              return `${slot}:${formatThreadDebug(handle, threadVmPtr)}`;
+              const tid = handle.kernel.process_thread_tid(vmPtr, slot);
+              const state = handle.kernel.process_thread_state(vmPtr, slot);
+              return safeDebugValue(
+                () => `${slot}:${formatThreadDebug(handle, threadVmPtr)}`,
+              ) + `:record=${tid}/${state}/0x${threadVmPtr.toString(16)}`;
             }).filter(Boolean).join(" | "))
           : "";
         const fdSummary = vmPtr !== 0

@@ -7,8 +7,11 @@ import {
 
 interface ApplyThreadFdEntriesOptions {
   appendStatusSocketDebug?: (handle: ProcessHandle, event: string) => void;
-  preserveLiveRegularFileDescriptors?: boolean;
+  preserveLiveDescriptors?: boolean;
   syscallNr?: bigint;
+  fdTraceArg0?: bigint;
+  fdTraceArg1?: bigint;
+  fdTraceResult?: bigint;
 }
 
 export function snapshotProcessFdEntries(
@@ -67,22 +70,60 @@ function matchesOptionalSyscall(syscallNr: bigint | undefined, candidate: (() =>
   return syscallNr !== undefined && candidate !== undefined && syscallNr === BigInt(candidate());
 }
 
-function syscallMayClearFdEntries(handle: ProcessHandle, syscallNr: bigint | undefined): boolean {
+export function syscallMayClearFdEntries(handle: ProcessHandle, syscallNr: bigint | undefined): boolean {
   return matchesOptionalSyscall(syscallNr, handle.kernel.abi_sys_close)
     || matchesOptionalSyscall(syscallNr, handle.kernel.abi_sys_close_range)
     || matchesOptionalSyscall(syscallNr, handle.kernel.abi_sys_execve);
 }
 
-function fdEntryWouldClearLiveRegularFile(
+export function syscallMayClearFdEntry(
+  handle: ProcessHandle,
+  fd: number,
+  syscallNr: bigint | undefined,
+  fdTraceArg0: bigint | undefined,
+  fdTraceArg1: bigint | undefined,
+  fdTraceResult: bigint | undefined,
+): boolean {
+  if (syscallNr === undefined) {
+    return false;
+  }
+  if (fdTraceResult !== undefined && BigInt.asIntN(64, fdTraceResult) < 0n) {
+    return false;
+  }
+  if (matchesOptionalSyscall(syscallNr, handle.kernel.abi_sys_execve)) {
+    return true;
+  }
+  if (matchesOptionalSyscall(syscallNr, handle.kernel.abi_sys_close)) {
+    return fdTraceArg0 !== undefined && BigInt(fd) === fdTraceArg0;
+  }
+  if (matchesOptionalSyscall(syscallNr, handle.kernel.abi_sys_close_range)) {
+    if (fdTraceArg0 === undefined || fdTraceArg1 === undefined) {
+      return false;
+    }
+    const first = fdTraceArg0 <= fdTraceArg1 ? fdTraceArg0 : fdTraceArg1;
+    const last = fdTraceArg0 <= fdTraceArg1 ? fdTraceArg1 : fdTraceArg0;
+    const candidate = BigInt(fd);
+    return candidate >= first && candidate <= last;
+  }
+  return false;
+}
+
+function fdEntryWouldClearLiveDescriptor(
   handle: ProcessHandle,
   vmPtr: number,
   entry: KernelWorkerFdEntrySnapshot,
-  syscallNr: bigint | undefined,
+  options: ApplyThreadFdEntriesOptions,
 ): boolean {
   if (
     entry.ofdId !== 0
-    || syscallNr === undefined
-    || syscallMayClearFdEntries(handle, syscallNr)
+    || syscallMayClearFdEntry(
+      handle,
+      entry.fd,
+      options.syscallNr,
+      options.fdTraceArg0,
+      options.fdTraceArg1,
+      options.fdTraceResult,
+    )
   ) {
     return false;
   }
@@ -91,8 +132,8 @@ function fdEntryWouldClearLiveRegularFile(
   if (currentOfdId <= 0 || currentOfdId >= maxFds) {
     return false;
   }
-  return handle.kernel.kernel_ofd_fd_type(currentOfdId) === handle.kernel.abi_fd_type_file?.()
-    && handle.kernel.kernel_ofd_refcount(currentOfdId) > 0;
+  const currentType = handle.kernel.kernel_ofd_fd_type(currentOfdId);
+  return currentType > 0 && currentType <= 64;
 }
 
 export function applyThreadFdEntries(
@@ -108,7 +149,12 @@ export function applyThreadFdEntries(
   const maxFds = handle.kernel.abi_max_fds();
   const networkOfds = networkConnectionOfds(handle);
   for (const entry of fdEntries) {
-    if (entry.fd < 0 || entry.fd >= maxFds) {
+    if (
+      entry.fd < 0
+      || entry.fd >= maxFds
+      || entry.ofdId < 0
+      || entry.ofdId >= maxFds
+    ) {
       continue;
     }
     const expectedNetworkOfd = networkOfds.get(entry.fd);
@@ -121,8 +167,8 @@ export function applyThreadFdEntries(
       continue;
     }
     if (
-      options.preserveLiveRegularFileDescriptors === true
-      && fdEntryWouldClearLiveRegularFile(handle, vmPtr, entry, options.syscallNr)
+      options.preserveLiveDescriptors === true
+      && fdEntryWouldClearLiveDescriptor(handle, vmPtr, entry, options)
     ) {
       continue;
     }

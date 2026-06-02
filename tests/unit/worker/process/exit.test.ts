@@ -298,6 +298,78 @@ test("completeProcessExit waits for stdio-owned child exit before releasing visi
   expect(order.indexOf("destroy:3")).toBeLessThan(order.indexOf("release:1"));
 });
 
+test("completeProcessExit does not wait for live stdio-owned children before releasing visible owner stdio", async () => {
+  const order: string[] = [];
+  const parent = makeHandle({
+    pid: 1,
+    parentPid: null,
+    debugCommand: "/bin/parent",
+  });
+  const child = makeHandle({
+    pid: 3,
+    parentPid: 1,
+    stdioOwner: parent,
+    debugCommand: "/bin/live-child",
+    exitInProgress: false,
+    kernelWorkerRequest: vi.fn(async () => ({ type: "pipe-state-synced" } as never)),
+    kernel: {
+      thread_status: () => 31,
+      thread_a7: () => 260n,
+      thread_a0: () => 0n,
+      thread_blocked_fd: () => -1,
+      thread_blocked_ofd_id: () => 0,
+      thread_poll_wait_ready_count: () => 0,
+      thread_poll_wait_first_pipe_revents: () => 0,
+      thread_blocked_pipe_buffered_len: () => 0,
+      thread_blocked_pipe_write_open: () => 1,
+    } as never,
+  });
+  const processHandles = new Map<number, ProcessHandle>([
+    [1, parent],
+    [3, child],
+  ]);
+
+  const helpers = createWorkerExitHelpers({
+    processHandles,
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      order.push(event);
+    },
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=1,pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: (handle) => {
+      order.push(`drain:${handle.pid}`);
+      return false;
+    },
+    destroyProcessHandle(handle) {
+      order.push(`destroy:${handle.pid}`);
+      processHandles.delete(handle.pid);
+    },
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers: () => {},
+    recordChildExitViaKernelWorker: async () => {
+      throw new Error("live child should not be recorded while parent exits");
+    },
+    releaseSharedHostStdio: async (handle) => {
+      order.push(`release:${handle.pid}`);
+    },
+    requestPipeStateSync: async (handle) => {
+      order.push(`pipe-sync:${handle.pid}`);
+    },
+    unregisterProcessWithKernelWorker: async (handle) => {
+      order.push(`unregister:${handle.pid}`);
+    },
+  });
+
+  await helpers.completeProcessExit(parent, 0, 0);
+
+  expect(order.some((entry) => entry.startsWith("visible-inherited-child-live-skip:1:3/"))).toBe(true);
+  expect(order).toContain("release:1");
+  expect(order).toContain("destroy:1");
+  expect(processHandles.get(3)).toBe(child);
+});
+
 test("recordExitOnParent skips child-side drain when stdio is owned by the parent", async () => {
   const order: string[] = [];
   const parent = makeHandle({
