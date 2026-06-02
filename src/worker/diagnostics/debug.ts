@@ -93,6 +93,7 @@ export interface ProcessExecutionStats {
   memoryBytes: number;
   ramSize: number;
   processCommittedBytes: number;
+  guestAddressProfile: number | null;
   guestAddressLimitBytes: string | null;
   guestMemoryPolicyLimitBytes: number | null;
   processMaxMemoryBytes: number;
@@ -100,6 +101,7 @@ export interface ProcessExecutionStats {
   pageCacheDataCapacityBytes: number | null;
   publishedMetadataCapacityBytes: number | null;
   fsRpcRingCapacityBytes: number | null;
+  kernelWorkerPrivateMemoryBytes: number | null;
   artifactMaterializationBudgetBytes: number | null;
   artifactMaterializedBytes: number | null;
   maxMemoryBytes: number;
@@ -817,6 +819,7 @@ export function debugRuntimeExecutionStats(
         memoryBytes: handle.memory.buffer.byteLength,
         ramSize: handle.ramSize,
         processCommittedBytes,
+        guestAddressProfile: ownership?.guestAddressProfile ?? null,
         guestAddressLimitBytes: ownership?.guestAddressLimitBytes ?? null,
         guestMemoryPolicyLimitBytes: ownership?.guestMemoryPolicyLimitBytes ?? null,
         processMaxMemoryBytes,
@@ -824,6 +827,7 @@ export function debugRuntimeExecutionStats(
         pageCacheDataCapacityBytes: ownership?.pageCacheDataCapacityBytes ?? handle.sabPageCache?.byteLength ?? null,
         publishedMetadataCapacityBytes: ownership?.publishedMetadataCapacityBytes ?? null,
         fsRpcRingCapacityBytes: ownership?.fsRpcRingCapacityBytes ?? null,
+        kernelWorkerPrivateMemoryBytes: ownership?.kernelWorkerPrivateMemoryBytes ?? null,
         artifactMaterializationBudgetBytes: ownership?.artifactMaterializationBudgetBytes ?? null,
         artifactMaterializedBytes: ownership?.artifactMaterializedBytes ?? null,
         maxMemoryBytes: processMaxMemoryBytes,

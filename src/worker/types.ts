@@ -233,6 +233,7 @@ export interface CanonicalizedChildLifecycle {
 export type KernelWorkerRequestFn = (msg: KernelWorkerRequest) => Promise<KernelWorkerOutbound>;
 
 export interface RuntimeMemoryOwnership {
+  guestAddressProfile: number | null;
   guestAddressLimitBytes: string | null;
   guestMemoryPolicyLimitBytes: number;
   processMaxMemoryBytes: number;

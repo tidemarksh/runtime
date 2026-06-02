@@ -428,6 +428,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     vmPtr: number,
     ramSize: number,
     guestBase: number,
+    guestAddressProfile: number,
     maxMemoryPages: number,
     forkMaxMemoryPages: number,
     artifactMaterializedBytes: number,
@@ -443,6 +444,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
 
     const kernelState = readKernelRuntimeState(exports);
     const memoryOwnership: RuntimeMemoryOwnership = {
+      guestAddressProfile: exports.thread_guest_address_profile?.(vmPtr) ?? guestAddressProfile,
       guestAddressLimitBytes: exports.thread_guest_address_limit?.(vmPtr)?.toString() ?? null,
       guestMemoryPolicyLimitBytes: ramSize,
       processMaxMemoryBytes: maxMemoryPages * 65536,
@@ -644,6 +646,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       vmPtr,
       ramSize,
       guestBase,
+      guestAddressProfile,
       boundedMaxMemoryPages,
       forkMaxMemoryPages,
       artifactMaterializedBytes,

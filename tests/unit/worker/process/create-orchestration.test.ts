@@ -1650,6 +1650,7 @@ test("createProcess preloads snapshot files by resizing then writing payload byt
   expect(createdKernelExports[0].memfsWriteCalls[0]?.[1]).toBe(8 * 1024 * 1024);
   expect(createdKernelExports[0].memfsCreateWithDataCalls).toEqual([]);
   expect(handle.memoryOwnership).toEqual({
+    guestAddressProfile: 1,
     guestAddressLimitBytes: "4294967295",
     guestMemoryPolicyLimitBytes: 64 * 1024 * 1024,
     processMaxMemoryBytes: 2048 * 65536,
