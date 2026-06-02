@@ -33,7 +33,10 @@ const DEFAULT_BROWSER_SCHEDULER_STEP_BUDGET = 10_000;
 const MIN_SCHEDULER_STEP_BUDGET = 1_000;
 const MAX_SCHEDULER_STEP_BUDGET = 5_000_000;
 const SCHEDULER_STEP_BUDGET = readSchedulerStepBudget();
-const SCHEDULER_QUEUE_DEBUG_LOG_ENABLED = false;
+const SCHEDULER_QUEUE_DEBUG_LOG_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_SCHEDULER_QUEUE_DEBUG_LOG ?? "") === "1";
+const SCHEDULER_QUEUE_DEBUG_LOG_LIMIT = 256;
 let nextThreadWorkerGeneration = 1;
 const HOT_PC_COUNTER_LIMIT = 32;
 const STALE_SLEEP_RUNNING_WORKER_REPAIR_MS = 2_000;
@@ -148,6 +151,31 @@ function hasBrokenThreadState(handle: ProcessHandle, vmPtr: number): boolean {
   const sp = handle.kernel.thread_sp?.(vmPtr) ?? 0n;
   const s11 = handle.kernel.thread_s11?.(vmPtr) ?? 0n;
   return pc < 0x1000n || sp === 0n || s11 === 0n;
+}
+
+function appendSchedulerQueueDebugLog(
+  deps: WorkerSchedulerQueueDeps,
+  handle: ProcessHandle,
+  event: string,
+): void {
+  if (!SCHEDULER_QUEUE_DEBUG_LOG_ENABLED) {
+    return;
+  }
+  const queueDebugCount = handle.workerDebugLog.reduce(
+    (count, entry) => count + (
+      entry.startsWith("pump-") || entry.startsWith("step:") || entry.startsWith("ready:")
+        ? 1
+        : 0
+    ),
+    0,
+  );
+  if (queueDebugCount >= SCHEDULER_QUEUE_DEBUG_LOG_LIMIT) {
+    if (!handle.workerDebugLog.includes("pump-debug-limit")) {
+      deps.appendWorkerDebugLog(handle, "pump-debug-limit");
+    }
+    return;
+  }
+  deps.appendWorkerDebugLog(handle, event);
 }
 
 function removeReadyWorker(handle: ProcessHandle, worker: Worker): void {
@@ -277,12 +305,14 @@ export function createWorkerSchedulerQueueHelpers(
       if (
         handle.readyWorkers.length > 0
         && status === handle.kernel.abi_status_ok()
-        && thread.lastStatus === handle.kernel.abi_status_sleep()
         && runningWorkerStepAppearsIdle(handle, thread)
       ) {
         handle.runningWorker = null;
         thread.runningGeneration = null;
-        deps.appendWorkerDebugLog(handle, `running-worker-cleared:stale-sleep-ok:0x${thread.vmPtr.toString(16)}`);
+        deps.appendWorkerDebugLog(
+          handle,
+          `running-worker-cleared:stale-ok:0x${thread.vmPtr.toString(16)}:last=${thread.lastStatus ?? "null"}`,
+        );
         return null;
       }
       return runningWorker;
@@ -512,9 +542,7 @@ export function createWorkerSchedulerQueueHelpers(
       const vmPtr = thread?.vmPtr;
       if (vmPtr !== undefined) {
         const brokenThreadState = hasBrokenThreadState(handle, vmPtr);
-        if (SCHEDULER_QUEUE_DEBUG_LOG_ENABLED) {
-          deps.appendWorkerDebugLog(handle, `ready:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`);
-        }
+        appendSchedulerQueueDebugLog(deps, handle, `ready:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`);
         if (brokenThreadState) {
           deps.appendWorkerDebugLog(
             handle,
@@ -563,11 +591,19 @@ export function createWorkerSchedulerQueueHelpers(
     }
     const forkSharedSyncPromise = handle.kernelShare.forkSharedSyncPromise;
     if (forkSharedSyncPromise !== null) {
+      appendSchedulerQueueDebugLog(deps, handle, `pump-held:fork-shared-sync:ready=${handle.readyWorkers.length}`);
       observeForkSharedSyncGate(handle, forkSharedSyncPromise);
       return;
     }
     const runningWorker = sanitizeRunningWorker(handle);
     if (runningWorker !== null) {
+      const thread = deps.threadWorkerStates.get(runningWorker);
+      appendSchedulerQueueDebugLog(
+        deps,
+        handle,
+        `pump-held:running:ready=${handle.readyWorkers.length}`
+          + (thread ? `:vm=0x${thread.vmPtr.toString(16)}:status=${handle.kernel.thread_status(thread.vmPtr)}` : ""),
+      );
       return;
     }
     futexReconciliation.reconcileResolvedWorkerLocalWaits(handle);
@@ -584,6 +620,14 @@ export function createWorkerSchedulerQueueHelpers(
         (candidateThread?.ownerAsyncStatus ?? null) !== null
         || futexReconciliation.hasWorkerLocalWait(candidateThread)
       ) {
+        appendSchedulerQueueDebugLog(
+          deps,
+          handle,
+          `pump-skip-candidate:vfork:ready=${handle.readyWorkers.length}`
+            + (candidateThread ? `:vm=0x${candidateThread.vmPtr.toString(16)}`
+              + `:wait=${candidateThread.waitingInWorkerStatus ?? "null"}`
+              + `:async=${candidateThread.ownerAsyncStatus ?? "null"}` : ""),
+        );
         handle.readyWorkers.splice(index, 1);
         return;
       }
@@ -599,6 +643,7 @@ export function createWorkerSchedulerQueueHelpers(
         index = 0;
       }
       if (index === -1) {
+        appendSchedulerQueueDebugLog(deps, handle, `pump-no-runnable-ready:ready=${handle.readyWorkers.length}`);
         handle.readyWorkers.length = 0;
         return;
       }
@@ -611,6 +656,11 @@ export function createWorkerSchedulerQueueHelpers(
     const vmPtr = deps.threadWorkerStates.get(next)?.vmPtr;
     const thread = deps.threadWorkerStates.get(next);
     if (thread && vmPtr !== undefined) {
+      appendSchedulerQueueDebugLog(
+        deps,
+        handle,
+        `pump-run:ready=${handle.readyWorkers.length}:vm=0x${vmPtr.toString(16)}:status=${handle.kernel.thread_status(vmPtr)}`,
+      );
       restoreRegularFileOffsetsForStep(handle);
       preserveHostStdioPipeControlForStep(handle, vmPtr);
       thread.stepCount += 1;
@@ -623,9 +673,7 @@ export function createWorkerSchedulerQueueHelpers(
       thread.lastStepS11 = handle.kernel.thread_s11?.(vmPtr) ?? 0n;
       incrementBoundedCounter(thread.hotStepPcs, `0x${thread.lastStepPc.toString(16)}`);
       const brokenThreadState = hasBrokenThreadState(handle, vmPtr);
-      if (SCHEDULER_QUEUE_DEBUG_LOG_ENABLED) {
-        deps.appendWorkerDebugLog(handle, `step:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`);
-      }
+      appendSchedulerQueueDebugLog(deps, handle, `step:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`);
       if (brokenThreadState) {
         deps.appendWorkerDebugLog(
           handle,

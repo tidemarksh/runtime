@@ -1472,6 +1472,54 @@ test("pumpProcess clears a stale sleep-resumed running worker before dispatching
   expect(runningWorker.postMessage).not.toHaveBeenCalled();
 });
 
+test("pumpProcess clears a stale ok running worker after FS before dispatching a ready sibling", () => {
+  vi.setSystemTime(new Date(10_000));
+  const runningWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const readyWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const runningThread = makeThreadState(0x5678);
+  const readyThread = makeThreadState(0x1234);
+  runningThread.runningGeneration = runningThread.generation;
+  runningThread.lastStatusAtMs = 7_000;
+  runningThread.lastStepAtMs = 7_500;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(runningWorker, runningThread);
+  threadWorkerStates.set(readyWorker, readyThread);
+  const { exports: kernel } = makeKernel();
+  runningThread.lastStatus = kernel.abi_status_fs();
+  kernel.thread_status = () => kernel.abi_status_ok();
+  kernel.debug_thread_step_vm_ptr = () => 0;
+  const handle = makeHandle(kernel, runningWorker);
+  handle.workers.add(readyWorker);
+  handle.runningWorker = runningWorker;
+  handle.readyWorkers = [readyWorker];
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+
+  expect(runningThread.runningGeneration).toBeNull();
+  expect(handle.runningWorker).toBe(readyWorker);
+  expect(readyWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+  expect(runningWorker.postMessage).not.toHaveBeenCalled();
+});
+
 test("pumpProcess waits for socket status publication before dispatching a ready sibling", () => {
   const runningWorker = {
     postMessage: vi.fn(),
