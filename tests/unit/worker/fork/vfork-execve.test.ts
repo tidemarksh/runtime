@@ -995,7 +995,6 @@ test("vfork execve resumes the parent and initializes the child lifecycle throug
 
   parentWorker.clearPostedMessages();
   parentKernel.process_reset_lifecycle(0x1234, 156, 1, 201, 33, 44, 0);
-  guestAddressProfileQueue.push(2);
   guestMemoryPolicyLimitQueue.push(0n);
   processMaxMemoryPagesQueue.push(3333);
   parentWorker.emit({

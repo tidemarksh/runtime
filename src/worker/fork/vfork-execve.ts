@@ -467,8 +467,10 @@ export async function handleVforkExecve(
     handle.guestBase,
     execveGuestPayload,
   );
-  const guestAddressProfile =
-    childKernel.thread_guest_address_profile?.(childVmPtr) ?? guestAddressProfileForProcessCreation(childKernel);
+  const threadAddressProfile = childKernel.thread_guest_address_profile?.(childVmPtr) ?? 0;
+  const guestAddressProfile = handoff.addressProfile
+    || threadAddressProfile
+    || guestAddressProfileForProcessCreation(childKernel);
   const guestMemoryPolicyLimit = currentGuestMemoryPolicyLimit(
     handle,
     childKernel,
