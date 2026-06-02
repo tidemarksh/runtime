@@ -26,7 +26,7 @@ export interface WorkerMessageHandlerDeps extends Partial<WorkerMessageHandlerSy
   ): NonNullable<ProcessHandle["vforkSnapshot"]>;
   clearVforkSnapshot(handle: ProcessHandle): void;
   clearBlockedWorker(handle: ProcessHandle, worker: Worker): void;
-  completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number): Promise<void>;
+  completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number, exitVmPtr?: number): Promise<void>;
   commitNetworkConnect(handle: ProcessHandle, vmPtr: number, result?: bigint): Promise<void>;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   failProcess(handle: ProcessHandle, error: Error): void;

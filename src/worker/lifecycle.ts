@@ -42,7 +42,7 @@ interface WorkerLifecycleDeps {
       sourceVmPtr?: number;
     },
   ): Promise<void>;
-  workerExitCompleteProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number): Promise<void>;
+  workerExitCompleteProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number, exitVmPtr?: number): Promise<void>;
   workerExitFailProcess(handle: ProcessHandle, error: Error): void;
   workerExitPrepublishParentWaitStatus?(handle: ProcessHandle, exitCode: number, termSignal: number): boolean;
 }
@@ -87,7 +87,7 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
     }
   }
 
-  async function completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number): Promise<void> {
+  async function completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number, exitVmPtr?: number): Promise<void> {
     if (!beginProcessTeardown(handle)) {
       return;
     }
@@ -103,7 +103,7 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
     if (kernelWorkerOwnsPipeState(handle)) {
       reconcileKernelSharePipeControl(handle);
     }
-    await deps.workerExitCompleteProcessExit(handle, exitCode, termSignal);
+    await deps.workerExitCompleteProcessExit(handle, exitCode, termSignal, exitVmPtr);
   }
 
   function failProcess(handle: ProcessHandle, error: Error): void {

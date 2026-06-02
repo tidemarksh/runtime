@@ -12,7 +12,7 @@ import type { KernelRpcResumeOutcome } from "../kernel-rpc/outcomes.js";
 export interface WorkerSchedulerDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
-  completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number): Promise<void>;
+  completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number, exitVmPtr?: number): Promise<void>;
   failProcess(handle: ProcessHandle, error: Error): void;
   hasActiveChildProcess(parentPid: number): boolean;
   pumpActiveChildProcesses?(parentPid: number): boolean;

@@ -483,7 +483,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             + `:status=${status}:exit=${exitCode}:${termSignal}`
             + `:current=${handle.kernel.thread_status?.(vmPtr) ?? -1}:remaining=${remainingThreads}:live=${hasLiveThreads ? 1 : 0}`,
         );
-        void deps.completeProcessExit(handle, exitCode, termSignal).catch((error) => {
+        void deps.completeProcessExit(handle, exitCode, termSignal, vmPtr).catch((error) => {
           deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
         });
       } else {

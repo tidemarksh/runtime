@@ -98,8 +98,8 @@ const {
 let workerKernelRpcHelpers: ReturnType<typeof createWorkerKernelRpcHelpers>;
 let workerLifecycleHelpers: ReturnType<typeof createWorkerLifecycleHelpers>;
 
-async function completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number): Promise<void> {
-  return workerLifecycleHelpers.completeProcessExit(handle, exitCode, termSignal);
+async function completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number, exitVmPtr?: number): Promise<void> {
+  return workerLifecycleHelpers.completeProcessExit(handle, exitCode, termSignal, exitVmPtr);
 }
 
 function failProcess(handle: ProcessHandle, error: Error): void {

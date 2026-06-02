@@ -205,21 +205,21 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     }
   }
 
-  function formatFrozenExitTraces(handle: ProcessHandle): string {
+  function formatFrozenExitTraces(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
     return [
       safeFrozenExecTrace(
         "thread_step_exec_trace",
         () => formatFrozenExecTrace(
           handle,
-          () => handle.kernel.debug_thread_step_exec_trace_len_for_vm?.(handle.vmPtr) ?? 0,
+          () => handle.kernel.debug_thread_step_exec_trace_len_for_vm?.(vmPtr) ?? 0,
           (index) => ({
-            pc: handle.kernel.debug_thread_step_exec_trace_entry_pc_for_vm?.(handle.vmPtr, index),
-            raw: handle.kernel.debug_thread_step_exec_trace_entry_raw_for_vm?.(handle.vmPtr, index),
-            step: handle.kernel.debug_thread_step_exec_trace_entry_step_for_vm?.(handle.vmPtr, index),
-            sp: handle.kernel.debug_thread_step_exec_trace_entry_sp_for_vm?.(handle.vmPtr, index),
-            ra: handle.kernel.debug_thread_step_exec_trace_entry_ra_for_vm?.(handle.vmPtr, index),
-            a0: handle.kernel.debug_thread_step_exec_trace_entry_a0_for_vm?.(handle.vmPtr, index),
-            s11: handle.kernel.debug_thread_step_exec_trace_entry_s11_for_vm?.(handle.vmPtr, index),
+            pc: handle.kernel.debug_thread_step_exec_trace_entry_pc_for_vm?.(vmPtr, index),
+            raw: handle.kernel.debug_thread_step_exec_trace_entry_raw_for_vm?.(vmPtr, index),
+            step: handle.kernel.debug_thread_step_exec_trace_entry_step_for_vm?.(vmPtr, index),
+            sp: handle.kernel.debug_thread_step_exec_trace_entry_sp_for_vm?.(vmPtr, index),
+            ra: handle.kernel.debug_thread_step_exec_trace_entry_ra_for_vm?.(vmPtr, index),
+            a0: handle.kernel.debug_thread_step_exec_trace_entry_a0_for_vm?.(vmPtr, index),
+            s11: handle.kernel.debug_thread_step_exec_trace_entry_s11_for_vm?.(vmPtr, index),
           }),
         ),
       ),
@@ -227,15 +227,15 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         "sync_fault_exec_trace",
         () => formatFrozenExecTrace(
           handle,
-          () => handle.kernel.debug_sync_fault_exec_trace_len_for_vm?.(handle.vmPtr) ?? 0,
+          () => handle.kernel.debug_sync_fault_exec_trace_len_for_vm?.(vmPtr) ?? 0,
           (index) => ({
-            pc: handle.kernel.debug_sync_fault_exec_trace_entry_pc_for_vm?.(handle.vmPtr, index),
-            raw: handle.kernel.debug_sync_fault_exec_trace_entry_raw_for_vm?.(handle.vmPtr, index),
-            step: handle.kernel.debug_sync_fault_exec_trace_entry_step_for_vm?.(handle.vmPtr, index),
-            sp: handle.kernel.debug_sync_fault_exec_trace_entry_sp_for_vm?.(handle.vmPtr, index),
-            ra: handle.kernel.debug_sync_fault_exec_trace_entry_ra_for_vm?.(handle.vmPtr, index),
-            a0: handle.kernel.debug_sync_fault_exec_trace_entry_a0_for_vm?.(handle.vmPtr, index),
-            s11: handle.kernel.debug_sync_fault_exec_trace_entry_s11_for_vm?.(handle.vmPtr, index),
+            pc: handle.kernel.debug_sync_fault_exec_trace_entry_pc_for_vm?.(vmPtr, index),
+            raw: handle.kernel.debug_sync_fault_exec_trace_entry_raw_for_vm?.(vmPtr, index),
+            step: handle.kernel.debug_sync_fault_exec_trace_entry_step_for_vm?.(vmPtr, index),
+            sp: handle.kernel.debug_sync_fault_exec_trace_entry_sp_for_vm?.(vmPtr, index),
+            ra: handle.kernel.debug_sync_fault_exec_trace_entry_ra_for_vm?.(vmPtr, index),
+            a0: handle.kernel.debug_sync_fault_exec_trace_entry_a0_for_vm?.(vmPtr, index),
+            s11: handle.kernel.debug_sync_fault_exec_trace_entry_s11_for_vm?.(vmPtr, index),
           }),
         ),
       ),
@@ -243,22 +243,27 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         "break_exec_trace",
         () => formatFrozenExecTrace(
           handle,
-          () => handle.kernel.debug_break_exec_trace_len_for_vm?.(handle.vmPtr) ?? 0,
+          () => handle.kernel.debug_break_exec_trace_len_for_vm?.(vmPtr) ?? 0,
           (index) => ({
-            pc: handle.kernel.debug_break_exec_trace_entry_pc_for_vm?.(handle.vmPtr, index),
-            raw: handle.kernel.debug_break_exec_trace_entry_raw_for_vm?.(handle.vmPtr, index),
-            step: handle.kernel.debug_break_exec_trace_entry_step_for_vm?.(handle.vmPtr, index),
-            sp: handle.kernel.debug_break_exec_trace_entry_sp_for_vm?.(handle.vmPtr, index),
-            ra: handle.kernel.debug_break_exec_trace_entry_ra_for_vm?.(handle.vmPtr, index),
-            a0: handle.kernel.debug_break_exec_trace_entry_a0_for_vm?.(handle.vmPtr, index),
-            s11: handle.kernel.debug_break_exec_trace_entry_s11_for_vm?.(handle.vmPtr, index),
+            pc: handle.kernel.debug_break_exec_trace_entry_pc_for_vm?.(vmPtr, index),
+            raw: handle.kernel.debug_break_exec_trace_entry_raw_for_vm?.(vmPtr, index),
+            step: handle.kernel.debug_break_exec_trace_entry_step_for_vm?.(vmPtr, index),
+            sp: handle.kernel.debug_break_exec_trace_entry_sp_for_vm?.(vmPtr, index),
+            ra: handle.kernel.debug_break_exec_trace_entry_ra_for_vm?.(vmPtr, index),
+            a0: handle.kernel.debug_break_exec_trace_entry_a0_for_vm?.(vmPtr, index),
+            s11: handle.kernel.debug_break_exec_trace_entry_s11_for_vm?.(vmPtr, index),
           }),
         ),
       ),
     ].filter((entry) => entry.length > 0).join(" ");
   }
 
-  function formatFdSyscalls(handle: ProcessHandle, pidFilter: number | null = null, limit = 256): string {
+  function formatFdSyscalls(
+    handle: ProcessHandle,
+    pidFilter: number | null = null,
+    limit = 256,
+    vmPtrFilter = handle.vmPtr,
+  ): string {
     const len = handle.kernel.debug_fd_syscall_trace_len?.() ?? 0;
     if (len <= 0) {
       return "";
@@ -272,7 +277,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     const entries: string[] = [];
     for (let index = 0; index < len; index += 1) {
       const vmPtr = handle.kernel.debug_fd_syscall_trace_vm_ptr?.(index) ?? 0;
-      if (vmPtr !== handle.vmPtr) {
+      if (vmPtr !== vmPtrFilter) {
         continue;
       }
       const nr = Number(handle.kernel.debug_fd_syscall_trace_nr?.(index) ?? -1n);
@@ -341,8 +346,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     return entries.slice(-96).join(",");
   }
 
-  function formatFaultState(handle: ProcessHandle): string {
-    const vmPtr = handle.vmPtr;
+  function formatFaultState(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
     return [
       `pc=0x${(handle.kernel.thread_pc?.(vmPtr) ?? 0n).toString(16)}`,
       `sp=0x${(handle.kernel.thread_sp?.(vmPtr) ?? 0n).toString(16)}`,
@@ -379,8 +383,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     }]`;
   }
 
-  function formatSignalState(handle: ProcessHandle): string {
-    const vmPtr = handle.vmPtr;
+  function formatSignalState(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
     const deliverySig = handle.kernel.debug_signal_delivery_for_vm_sig?.(vmPtr)
       ?? handle.kernel.debug_signal_delivery_sig?.()
       ?? 0;
@@ -398,12 +401,16 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     }]`;
   }
 
-  function formatExitTrace(handle: ProcessHandle): string {
+  function formatExitTrace(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
     const execveStage = handle.kernel.debug_execve_stage?.() ?? 0;
     const execveValue0 = handle.kernel.debug_execve_value0?.() ?? 0n;
     const execveValue1 = handle.kernel.debug_execve_value1?.() ?? 0n;
     return [
-      `vm=0x${handle.vmPtr.toString(16)}`,
+      `vm=0x${vmPtr.toString(16)}`,
+      `fault_state=[${formatFaultState(handle, vmPtr)}]`,
+      formatDefaultSignalTrace(handle),
+      formatSignalState(handle, vmPtr),
+      formatFrozenExitTraces(handle, vmPtr),
       `execve_stage=${execveStage}`,
       `execve_v0=${execveValue0.toString()}`,
       `execve_v1=${execveValue1.toString()}`,
@@ -413,12 +420,8 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       `all_riscv_syscalls=[${formatAllRiscvSyscalls(handle)}]`,
       `path_syscalls=[${formatPathSyscalls(handle)}]`,
       `all_path_syscalls=[${formatAllPathSyscalls(handle)}]`,
-      `fd_syscalls=[${formatFdSyscalls(handle)}]`,
+      `fd_syscalls=[${formatFdSyscalls(handle, null, 256, vmPtr)}]`,
       `memory_syscalls=[${formatMemorySyscalls(handle)}]`,
-      `fault_state=[${formatFaultState(handle)}]`,
-      formatDefaultSignalTrace(handle),
-      formatSignalState(handle),
-      formatFrozenExitTraces(handle),
     ].join(" ");
   }
 
@@ -805,12 +808,13 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     handle: ProcessHandle,
     exitCode: number,
     termSignal: number,
+    exitVmPtr = handle.vmPtr,
   ): Promise<void> {
     const existingCompletionPromise = exitCompletionPromises.get(handle);
     if (existingCompletionPromise) {
       return existingCompletionPromise;
     }
-    const completionPromise = completeProcessExitImpl(handle, exitCode, termSignal)
+    const completionPromise = completeProcessExitImpl(handle, exitCode, termSignal, exitVmPtr)
       .finally(() => {
         exitCompletionPromises.delete(handle);
       });
@@ -822,10 +826,11 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     handle: ProcessHandle,
     exitCode: number,
     termSignal: number,
+    exitVmPtr: number,
   ): Promise<void> {
     handle.lastDebugMessage = [
       `exit:${handle.pid}:${JSON.stringify(handle.debugCommand)}:${exitCode}:${termSignal}`,
-      `exit_trace=${formatExitTrace(handle)}`,
+      `exit_trace=${formatExitTrace(handle, exitVmPtr)}`,
       `live_processes=${safeDebugRuntimeProcessHandles(handle.runtimeId)}`,
       `cmd=${JSON.stringify(handle.debugCommand)}`,
       `worker_log=[${handle.workerDebugLog.join(", ")}]`,

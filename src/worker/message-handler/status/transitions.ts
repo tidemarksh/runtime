@@ -256,7 +256,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             + `:status=${status}:msg=${msg.status}:exit=${msg.exitCode}:${msg.termSignal}`
             + `:current=${handle.kernel.thread_status?.(thread.vmPtr) ?? -1}:remaining=${remainingThreads}:live=${hasLiveThreads ? 1 : 0}`,
         );
-        void deps.completeProcessExit(handle, msg.exitCode, msg.termSignal).catch((error) => {
+        void deps.completeProcessExit(handle, msg.exitCode, msg.termSignal, thread.vmPtr).catch((error) => {
           deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
         });
       } else {

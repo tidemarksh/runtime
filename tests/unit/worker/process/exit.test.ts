@@ -600,6 +600,8 @@ test("completeProcessExit includes frozen per-vm exec trace in exit trace", asyn
 });
 
 test("recordExitOnParent preserves child fault state in parent debug", async () => {
+  const handleVmPtr = 0x581aa20;
+  const faultVmPtr = 0x5ce3040;
   const parent = makeHandle({
     pid: 1,
     parentPid: null,
@@ -608,26 +610,43 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
   const child = makeHandle({
     pid: 4,
     parentPid: 1,
+    vmPtr: handleVmPtr,
     debugCommand: "rustc",
     kernel: {
-      thread_pc: () => 0x7788n,
-      thread_sp: () => 0x12340000n,
-      thread_a0: () => 139n,
-      thread_a1: () => 11n,
-      thread_term_signal: () => 11,
-      thread_fault_pc: () => 0x5566n,
-      thread_fault_addr: () => 0xdeadbeefn,
-      thread_fault_kind: () => 2,
-      thread_fault_signal: () => 11,
-      thread_fault_code: () => 1,
-      thread_sig_mask: () => 0x20n,
-      thread_sig_pending: () => 0x400n,
-      thread_sig_info_code: () => 1,
-      debug_signal_delivery_for_vm_sig: () => 11,
-      debug_signal_delivery_for_vm_frame_base: () => 0x12000n,
-      debug_signal_delivery_for_vm_pc: () => 0x7788n,
-      debug_signal_delivery_for_vm_ra: () => 0x123n,
-      debug_signal_delivery_for_vm_sp: () => 0x12340000n,
+      thread_pc: (vmPtr: number) => vmPtr === faultVmPtr ? 0x7788n : 0n,
+      thread_sp: (vmPtr: number) => vmPtr === faultVmPtr ? 0x12340000n : 0n,
+      thread_a0: (vmPtr: number) => vmPtr === faultVmPtr ? 139n : 0n,
+      thread_a1: (vmPtr: number) => vmPtr === faultVmPtr ? 11n : 0n,
+      thread_term_signal: (vmPtr: number) => vmPtr === faultVmPtr ? 11 : 0,
+      thread_fault_pc: (vmPtr: number) => vmPtr === faultVmPtr ? 0x5566n : 0n,
+      thread_fault_addr: (vmPtr: number) => vmPtr === faultVmPtr ? 0xdeadbeefn : 0n,
+      thread_fault_kind: (vmPtr: number) => vmPtr === faultVmPtr ? 2 : 0,
+      thread_fault_signal: (vmPtr: number) => vmPtr === faultVmPtr ? 11 : 0,
+      thread_fault_code: (vmPtr: number) => vmPtr === faultVmPtr ? 1 : 0,
+      thread_sig_mask: (vmPtr: number) => vmPtr === faultVmPtr ? 0x20n : 0n,
+      thread_sig_pending: (vmPtr: number) => vmPtr === faultVmPtr ? 0x400n : 0n,
+      thread_sig_info_code: (vmPtr: number) => vmPtr === faultVmPtr ? 1 : 0,
+      debug_signal_delivery_for_vm_sig: (vmPtr: number) => vmPtr === faultVmPtr ? 11 : 0,
+      debug_signal_delivery_for_vm_frame_base: (vmPtr: number) => vmPtr === faultVmPtr ? 0x12000n : 0n,
+      debug_signal_delivery_for_vm_pc: (vmPtr: number) => vmPtr === faultVmPtr ? 0x7788n : 0n,
+      debug_signal_delivery_for_vm_ra: (vmPtr: number) => vmPtr === faultVmPtr ? 0x123n : 0n,
+      debug_signal_delivery_for_vm_sp: (vmPtr: number) => vmPtr === faultVmPtr ? 0x12340000n : 0n,
+      debug_fd_syscall_trace_len: () => 320,
+      debug_fd_syscall_trace_vm_ptr: () => faultVmPtr,
+      debug_fd_syscall_trace_nr: () => 63n,
+      debug_fd_syscall_trace_arg0_ofd_type: () => 6,
+      debug_fd_syscall_trace_arg2_ofd_type: () => 6,
+      debug_fd_syscall_trace_pid_sample0: () => 4n,
+      debug_fd_syscall_trace_arg0: () => 2n,
+      debug_fd_syscall_trace_arg0_ofd_id: () => 12,
+      debug_fd_syscall_trace_arg0_ofd_status_flags: () => 2048,
+      debug_fd_syscall_trace_arg0_ofd_ino: () => 99,
+      debug_fd_syscall_trace_arg0_inode_mode: () => 0o100644,
+      debug_fd_syscall_trace_arg1: (index: number) => BigInt(0x100000 + index * 4096),
+      debug_fd_syscall_trace_arg2: () => 4096n,
+      debug_fd_syscall_trace_arg2_ofd_id: () => 13,
+      debug_fd_syscall_trace_result: () => 4096n,
+      debug_fd_syscall_trace_status: () => 0,
       debug_default_signal_sig: () => 11,
       debug_default_signal_code: () => 1,
       debug_default_signal_vm_ptr: () => 0xabc,
@@ -663,9 +682,11 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
     unregisterProcessWithKernelWorker: async () => {},
   });
 
-  await helpers.completeProcessExit(child, 0, 11);
+  await helpers.completeProcessExit(child, 0, 11, faultVmPtr);
 
   expect(parent.lastDebugMessage).toContain("child-debug:4:");
+  expect(parent.lastDebugMessage).toContain(`child-debug:4:exit:4:"rustc":0:11 exit_trace=vm=0x${faultVmPtr.toString(16)}`);
+  expect(parent.lastDebugMessage!.indexOf("fault_state=[")).toBeLessThan(parent.lastDebugMessage!.indexOf("fd_syscalls=["));
   expect(parent.lastDebugMessage).toContain("fault_state=[");
   expect(parent.lastDebugMessage).toContain("term_signal=11");
   expect(parent.lastDebugMessage).toContain("fault_pc=0x5566");
