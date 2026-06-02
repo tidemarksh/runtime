@@ -1678,6 +1678,24 @@ test("createProcess reports published metadata capacity independently from page-
     .toBe(largePageCache.memoryOwnership?.publishedMetadataCapacityBytes);
 });
 
+test("createProcess reports FS RPC ring capacity independently from page-cache data and metadata capacity", async () => {
+  const smallPageCache = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    sabPageCache: new SharedArrayBuffer(1024 * 1024),
+    fsRpcRingCapacityBytes: FS_RING_TOTAL_BYTES,
+  });
+  const largePageCache = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    sabPageCache: new SharedArrayBuffer(8 * 1024 * 1024),
+    fsRpcRingCapacityBytes: FS_RING_TOTAL_BYTES,
+  });
+
+  expect(smallPageCache.memoryOwnership?.pageCacheDataCapacityBytes).not
+    .toBe(largePageCache.memoryOwnership?.pageCacheDataCapacityBytes);
+  expect(smallPageCache.memoryOwnership?.publishedMetadataCapacityBytes)
+    .toBe(largePageCache.memoryOwnership?.publishedMetadataCapacityBytes);
+  expect(smallPageCache.memoryOwnership?.fsRpcRingCapacityBytes).toBe(FS_RING_TOTAL_BYTES);
+  expect(largePageCache.memoryOwnership?.fsRpcRingCapacityBytes).toBe(FS_RING_TOTAL_BYTES);
+});
+
 test("createProcess rejects artifact materialization budget separately from guest ram", async () => {
   await expect(createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
     ramSize: 64 * 1024 * 1024,
