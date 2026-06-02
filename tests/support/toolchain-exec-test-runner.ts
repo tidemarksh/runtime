@@ -47,9 +47,6 @@ export function registerToolchainExecGate(entry: ToolchainExecEntry): void {
       }
 
       const outputMismatches = validateToolchainDriverOutput(entry, result.output);
-      const artifactMismatches = await validateToolchainArtifacts(runtime, entry);
-      const runResults = await runToolchainArtifactChecks(runtime, entry);
-
       if (result.exitCode !== 0) {
         const summary = await runtimeDebugSummary(runtime).catch((error) => (
           `runtimeDebugSummary failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`
@@ -65,7 +62,21 @@ export function registerToolchainExecGate(entry: ToolchainExecEntry): void {
       }
       expect(result.exitCode).toBe(0);
       expect(outputMismatches).toEqual([]);
+      const artifactMismatches = await validateToolchainArtifacts(runtime, entry);
       expect(artifactMismatches).toEqual([]);
+      const runResults = await runToolchainArtifactChecks(runtime, entry).catch(async (error) => {
+        const summary = await runtimeDebugSummary(runtime).catch((summaryError) => (
+          `runtimeDebugSummary failed: ${summaryError instanceof Error ? (summaryError.stack ?? summaryError.message) : String(summaryError)}`
+        ));
+        const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+        throw new Error([
+          detail,
+          `driverExit=${result.exitCode}`,
+          `driverOutput=${JSON.stringify(result.output)}`,
+          result.debugInfo ? `driverDebug:\n${result.debugInfo}` : null,
+          summary ? `runtime:\n${summary}` : null,
+        ].filter((part): part is string => part !== null).join("\n"));
+      });
 
       for (let index = 0; index < runResults.length; index += 1) {
         const runResult = runResults[index]!;
