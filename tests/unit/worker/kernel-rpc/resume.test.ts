@@ -2109,3 +2109,114 @@ test("resumeFsViaKernelWorker skips memfs sync during active vfork child ownersh
   expect(outcome.effects).toContainEqual({ kind: "mark-runtime-fs-dirty", handle });
   expect(outcome.effects).toContainEqual({ kind: "enqueue-worker" });
 });
+
+test("resumeFsViaKernelWorker applies fd entries returned by kernel-worker fs processing", async () => {
+  const worker = {} as Worker;
+  const runtimeBridge = createRuntimeStateBridge();
+  const processFsRequests: unknown[] = [];
+  const fdEntries = new Map<number, { ofdId: number; fdFlags: number }>();
+
+  const kernel = {
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    kernel_attach_runtime_state: vi.fn(),
+    kernel_heap_base: () => 0,
+    kernel_heap_ptr: () => 0,
+    kernel_ofd_table_ptr: () => 0,
+    kernel_memfs_ptr: () => 0,
+    kernel_memfs_header_bytes: () => 0,
+    kernel_memfs_inodes_bytes: () => 0,
+    kernel_memfs_first_child_bytes: () => 0,
+    kernel_memfs_dir_entries_bytes: () => 0,
+    kernel_memfs_data_bytes: () => 0,
+    kernel_mem_state_ptr: () => 0,
+    kernel_epoll_table_ptr: () => 0,
+    kernel_socket_table_ptr: () => 0,
+    kernel_socket_used: () => 0,
+    kernel_pipe_base: () => 0,
+    kernel_pipe_used: () => 0n,
+    kernel_net_buf_base: () => 0,
+    kernel_net_buf_used: () => 0n,
+    kernel_sig_slots_ptr: () => 0,
+    kernel_process_pending_ptr: () => 0,
+    kernel_process_runtime_state_ptr: () => 0,
+    kernel_time_state_ptr: () => 0,
+    abi_max_fds: () => 16,
+    abi_max_threads: () => 1,
+    process_current_pid: () => 1,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fdEntries.get(fd)?.ofdId ?? 0,
+    process_fd_flags: (_vmPtr: number, fd: number) => fdEntries.get(fd)?.fdFlags ?? 0,
+    process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number, fdFlags: number) => {
+      fdEntries.set(fd, { ofdId, fdFlags });
+    },
+    process_thread_vm_ptr: () => 0,
+    thread_status: () => 0,
+    thread_pending_fs_opcode: () => 3,
+    thread_pending_fs_effects: () => 0,
+    thread_pending_fs_target_ino: () => 0,
+    thread_process_fs: vi.fn(),
+    thread_resume_fs: vi.fn(),
+    thread_a0: () => 0n,
+  } as unknown as KernelExports;
+
+  const handle = makeHandle(kernel, runtimeBridge, worker, {
+    pid: 1,
+    kernelWorkerRequest: vi.fn(async (message) => {
+      processFsRequests.push(message);
+      if (message.type !== "process-fs") {
+        return { type: "unexpected" } as never;
+      }
+      return {
+        type: "fs-processed",
+        requestId: 0,
+        kernelState: message.kernelState,
+        result: 5n,
+        memfsMutated: false,
+        ofdStateChanged: false,
+        fdEntries: [{ fd: 5, ofdId: 7, fdFlags: 0 }],
+      };
+    }),
+  });
+
+  const threadWorkerStates = new WeakMap<Worker, {
+    vmPtr: number;
+    initialized: boolean;
+    waitingInWorkerStatus: number | null;
+  }>();
+  threadWorkerStates.set(worker, {
+    vmPtr: 0x1234,
+    initialized: true,
+    waitingInWorkerStatus: null,
+  });
+
+  const helpers = createWorkerKernelRpcHelpers({
+    processHandles: new Map([[1, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: () => {},
+    appendWorkerDebugLog: () => {},
+    assertProcessStandardFdIntegrity: () => {},
+    enqueueWorker: () => {},
+    failProcess(errorHandle, error) {
+      throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
+    },
+    handleBlockedRetryResult: () => {},
+    kickBlockedWorkers: () => {},
+    markRuntimeFsDirty: () => {},
+    requestPipeStateSync: async () => {},
+    syncBlockedForkSharedStateViaKernelWorker: async () => {},
+    syncForkSharedStateLocally: () => {},
+    syncForkSharedStateViaKernelWorker: async () => {},
+    rehydrateForkSharedStateViaKernelWorker: async () => {},
+    syncPipeStateViaKernelWorker: async () => 0n,
+    syncSocketStateViaKernelWorker: async () => ({ socketUsed: 0, netBufUsed: 0n }),
+    collectTrackableForkSharedOfds: () => new Set(),
+  });
+
+  await helpers.resumeFsViaKernelWorker(handle, worker, 0x1234, {
+    memfsMutation: 1,
+    memfsFileData: 4,
+    sharedOfdState: 2,
+  });
+
+  expect(processFsRequests).toHaveLength(1);
+  expect(fdEntries.get(5)).toEqual({ ofdId: 7, fdFlags: 0 });
+});

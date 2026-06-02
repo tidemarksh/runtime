@@ -117,6 +117,45 @@ test("message handler routes sync-process-memfs as transitional kernel-worker br
   ]);
 });
 
+test("message handler forwards fd and OFD snapshots from process-fs responses", async () => {
+  const posted: KernelWorkerOutbound[] = [];
+  const deps = makeDeps(posted);
+  const kernelState = makeKernelState();
+  const fdEntries = [{ fd: 5, ofdId: 7, fdFlags: 1 }];
+  const ofdSlots = [{ ofdId: 7, slot: new Uint8Array([1, 2, 3, 4]) }];
+  deps.processFs.mockReturnValue({
+    kernelState,
+    result: 5n,
+    memfsMutated: false,
+    ofdStateChanged: false,
+    fdEntries,
+    ofdSlots,
+  });
+  const handleMessage = createKernelWorkerMessageHandler(deps);
+
+  await handleMessage({
+    type: "process-fs",
+    requestId: 23,
+    pid: 7,
+    vmPtr: 0x1234,
+    kernelState,
+  });
+
+  expect(posted).toEqual([
+    {
+      type: "fs-processed",
+      requestId: 23,
+      kernelState,
+      result: 5n,
+      memfsMutated: false,
+      ofdStateChanged: false,
+      fdEntries,
+      ofdSlots,
+      fsDebug: undefined,
+    },
+  ]);
+});
+
 test("message handler reports dependency errors without escaping the kernel-worker boundary", async () => {
   const posted: KernelWorkerOutbound[] = [];
   const deps = makeDeps(posted);

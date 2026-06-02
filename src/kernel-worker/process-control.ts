@@ -36,6 +36,8 @@ interface ProcessFsResult {
   result: bigint;
   memfsMutated: boolean;
   ofdStateChanged: boolean;
+  fdEntries?: KernelWorkerFdEntrySnapshot[];
+  ofdSlots?: KernelWorkerOfdSlotSnapshot[];
   fsDebug?: string;
 }
 
@@ -560,6 +562,48 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     return processExports;
   }
 
+  function snapshotProcessFdEntries(
+    processExports: KernelExports,
+    vmPtr: number,
+  ): KernelWorkerFdEntrySnapshot[] {
+    const maxFds = processExports.abi_max_fds();
+    const fdEntries: KernelWorkerFdEntrySnapshot[] = [];
+    for (let fd = 0; fd < maxFds; fd += 1) {
+      fdEntries.push({
+        fd,
+        ofdId: processExports.process_fd_ofd_id(vmPtr, fd),
+        fdFlags: processExports.process_fd_flags(vmPtr, fd),
+      });
+    }
+    return fdEntries;
+  }
+
+  function snapshotOfdSlotsForFdEntries(
+    processExports: KernelExports,
+    kernelState: KernelRuntimeState,
+    fdEntries: readonly KernelWorkerFdEntrySnapshot[],
+  ): KernelWorkerOfdSlotSnapshot[] {
+    const maxFds = processExports.abi_max_fds();
+    const tableBytes = processExports.kernel_ofd_table_bytes();
+    const slotBytes = tableBytes / maxFds;
+    if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
+      return [];
+    }
+    const memory = new Uint8Array(processExports.memory.buffer);
+    const ofdSlots: KernelWorkerOfdSlotSnapshot[] = [];
+    for (const ofdId of [...new Set(fdEntries.map((entry) => entry.ofdId))]) {
+      if (ofdId <= 0 || ofdId >= maxFds) {
+        continue;
+      }
+      const offset = kernelState.ofdTablePtr + ofdId * slotBytes;
+      ofdSlots.push({
+        ofdId,
+        slot: memory.slice(offset, offset + slotBytes),
+      });
+    }
+    return ofdSlots;
+  }
+
   function processFs(
     pid: number,
     vmPtr: number,
@@ -572,6 +616,13 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     processExports.thread_process_fs(vmPtr);
     const result = BigInt(processExports.thread_resume_fs(vmPtr));
     const fsSucceeded = Number(BigInt.asIntN(64, result)) >= 0;
+    const completedKernelState = readKernelRuntimeState(processExports);
+    const fdEntries = fsSucceeded
+      ? snapshotProcessFdEntries(processExports, vmPtr)
+      : undefined;
+    const ofdSlots = fdEntries
+      ? snapshotOfdSlotsForFdEntries(processExports, completedKernelState, fdEntries)
+      : undefined;
     const mutation = applyPendingFsMutation(processExports, pendingContext, fsSucceeded);
     let fullSyncApplied = false;
     if (mutation.needsFullSync) {
@@ -582,11 +633,14 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       );
       fullSyncApplied = true;
     }
+    const nextKernelState = readKernelRuntimeState(processExports);
     return {
-      kernelState: readKernelRuntimeState(processExports),
+      kernelState: nextKernelState,
       result,
       memfsMutated: mutation.memfsMutated,
       ofdStateChanged: mutation.ofdStateChanged,
+      fdEntries,
+      ofdSlots,
       fsDebug: shouldEmitProcessFsDebug(pendingContext, mutation, fullSyncApplied)
         ? formatProcessFsDebug(
             pid,

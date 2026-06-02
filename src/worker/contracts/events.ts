@@ -499,6 +499,8 @@ export type KernelWorkerResponse =
       result: bigint;
       memfsMutated: boolean;
       ofdStateChanged: boolean;
+      fdEntries?: KernelWorkerFdEntrySnapshot[];
+      ofdSlots?: KernelWorkerOfdSlotSnapshot[];
       fsDebug?: string;
     }
   | {

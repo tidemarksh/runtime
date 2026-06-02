@@ -41,11 +41,17 @@ function makeKernelExports(options: {
   path?: string;
   absolutePath?: string;
   secondaryAbsolutePath?: string;
+  fdEntries?: Array<{ fd: number; ofdId: number; fdFlags?: number }>;
+  ofdSlots?: Array<{ ofdId: number; bytes: Uint8Array }>;
 } = {}): FakeKernelExports {
   let runtimeState = makeKernelState();
   const opLog: string[] = [];
   const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
   const stackPointer = new WebAssembly.Global({ value: "i32", mutable: true }, 0);
+  const maxFds = 32;
+  const ofdSlotBytes = 32;
+  const fdOfdIds = new Map((options.fdEntries ?? []).map((entry) => [entry.fd, entry.ofdId]));
+  const fdFlags = new Map((options.fdEntries ?? []).map((entry) => [entry.fd, entry.fdFlags ?? 0]));
   const guestBase = 0x1000;
   const pathPtr = 0x2000;
   const pathBytes = options.path ? new TextEncoder().encode(options.path) : null;
@@ -56,12 +62,20 @@ function makeKernelExports(options: {
   if (pathBytes) {
     new Uint8Array(memory.buffer).set(pathBytes, guestBase + pathPtr);
   }
+  for (const ofdSlot of options.ofdSlots ?? []) {
+    new Uint8Array(memory.buffer).set(
+      ofdSlot.bytes,
+      runtimeState.ofdTablePtr + ofdSlot.ofdId * ofdSlotBytes,
+    );
+  }
   return {
     memory,
     __stack_pointer: stackPointer,
+    abi_max_fds: () => maxFds,
     kernel_heap_base: () => runtimeState.heapBase,
     kernel_heap_ptr: () => runtimeState.heapPtr,
     kernel_ofd_table_ptr: () => runtimeState.ofdTablePtr,
+    kernel_ofd_table_bytes: () => maxFds * ofdSlotBytes,
     kernel_memfs_ptr: () => runtimeState.memfsPtr,
     kernel_memfs_header_bytes: () => runtimeState.memfsHeaderBytes,
     kernel_memfs_inodes_bytes: () => runtimeState.memfsInodesBytes,
@@ -147,6 +161,8 @@ function makeKernelExports(options: {
     process_remove_process_entry: (pid: number) => {
       opLog.push(`remove-process:${pid}`);
     },
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fdOfdIds.get(fd) ?? 0,
+    process_fd_flags: (_vmPtr: number, fd: number) => fdFlags.get(fd) ?? 0,
     opLog,
   } as unknown as FakeKernelExports;
 }
@@ -433,6 +449,154 @@ test("processFs treats unlink as metadata-only canonical sync", () => {
   expect(result.memfsMutated).toBe(true);
   expect(copyMemfsCalls).toEqual([true]);
   expect(fanoutCalls).toEqual([true]);
+});
+
+test("processFs returns fd and OFD snapshots after successful fs processing", () => {
+  const canonicalExports = makeKernelExports();
+  const ofdBytes = Uint8Array.from({ length: 32 }, (_value, index) => index + 1);
+  const processExports = makeKernelExports({
+    resumeResult: 5,
+    fdEntries: [{ fd: 5, ofdId: 7, fdFlags: 1 }],
+    ofdSlots: [{ ofdId: 7, bytes: ofdBytes }],
+  });
+  const processKernels = new Map<number, KernelExports>([[7, processExports]]);
+
+  const processControl = createKernelWorkerProcessControl({
+    getCanonicalExports: () => canonicalExports,
+    setCanonicalExports: () => {},
+    getWasmModule: () => null,
+    setWasmModule: () => {},
+    getSabPageCache: () => new SharedArrayBuffer(65536),
+    setSabPageCache: () => {},
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    canonicalProcesses: new Map(),
+    seedEntries: new Map(),
+    getCanonicalNextPid: () => 3,
+    setCanonicalNextPid: () => {},
+    publishRootInode: () => {},
+    copyOfdState: () => {},
+    copyMemfsState: () => {},
+    rebuildPageCacheFromExports: () => {},
+    rebuildPageCacheFromCanonical: () => {},
+    syncPipeState: (_pid, kernelState) => kernelState,
+    syncEpollState: (_pid, kernelState) => kernelState,
+    syncSocketState: (_pid, kernelState) => kernelState,
+    copyCanonicalMemfsToProcess: () => {},
+    snapshotProcSelfExe: () => null,
+    restoreProcSelfExe: () => {},
+    composeProcessPipeUsed: () => 0n,
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    mergePipeSlotsFromCanonical: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+    }),
+    applyPipeControlState: () => {},
+    copyEpollState: () => {},
+    copySelectedEpollState: () => {},
+    copySocketState: () => {},
+    syncFileDataMutation: () => false,
+    syncFileDataMutationByPath: () => false,
+    syncMetadataMutation: () => false,
+    fanoutCanonicalMemfs: () => {},
+    fsEffectMemfsMutation: 1 << 0,
+    fsEffectSharedOfdState: 1 << 1,
+    fsEffectMemfsFileData: 1 << 2,
+    fsOpOpenAt: 3,
+    fsOpMkdir: 6,
+    fsOpUnlink: 7,
+  });
+
+  const result = processControl.processFs(7, 0x1234, makeKernelState());
+
+  expect(result.result).toBe(5n);
+  expect(result.fdEntries?.find((entry) => entry.fd === 5)).toEqual({
+    fd: 5,
+    ofdId: 7,
+    fdFlags: 1,
+  });
+  expect(Array.from(result.ofdSlots?.[0]?.slot ?? [])).toEqual(Array.from(ofdBytes));
+});
+
+test("processFs snapshots fd entries before metadata sync side effects", () => {
+  const canonicalExports = makeKernelExports();
+  const processExports = makeKernelExports({
+    opcode: 3,
+    effects: (1 << 0) | (1 << 1),
+    resumeResult: 5,
+    absolutePath: "/work/created.txt",
+    fdEntries: [{ fd: 5, ofdId: 7, fdFlags: 1 }],
+  });
+  let fdTableVisible = true;
+  const processFdOfdId = processExports.process_fd_ofd_id.bind(processExports);
+  const processFdFlags = processExports.process_fd_flags.bind(processExports);
+  processExports.process_fd_ofd_id = (vmPtr, fd) => (fdTableVisible ? processFdOfdId(vmPtr, fd) : 0);
+  processExports.process_fd_flags = (vmPtr, fd) => (fdTableVisible ? processFdFlags(vmPtr, fd) : 0);
+  const processKernels = new Map<number, KernelExports>([[7, processExports]]);
+
+  const processControl = createKernelWorkerProcessControl({
+    getCanonicalExports: () => canonicalExports,
+    setCanonicalExports: () => {},
+    getWasmModule: () => null,
+    setWasmModule: () => {},
+    getSabPageCache: () => new SharedArrayBuffer(65536),
+    setSabPageCache: () => {},
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    canonicalProcesses: new Map(),
+    seedEntries: new Map(),
+    getCanonicalNextPid: () => 3,
+    setCanonicalNextPid: () => {},
+    publishRootInode: () => {},
+    copyOfdState: () => {},
+    copyMemfsState: () => {},
+    rebuildPageCacheFromExports: () => {},
+    rebuildPageCacheFromCanonical: () => {},
+    syncPipeState: (_pid, kernelState) => kernelState,
+    syncEpollState: (_pid, kernelState) => kernelState,
+    syncSocketState: (_pid, kernelState) => kernelState,
+    copyCanonicalMemfsToProcess: () => {},
+    snapshotProcSelfExe: () => null,
+    restoreProcSelfExe: () => {},
+    composeProcessPipeUsed: () => 0n,
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    mergePipeSlotsFromCanonical: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+    }),
+    applyPipeControlState: () => {},
+    copyEpollState: () => {},
+    copySelectedEpollState: () => {},
+    copySocketState: () => {},
+    syncFileDataMutation: () => false,
+    syncFileDataMutationByPath: () => false,
+    syncMetadataMutation: () => {
+      fdTableVisible = false;
+      return true;
+    },
+    fanoutCanonicalMemfs: () => {},
+    fsEffectMemfsMutation: 1 << 0,
+    fsEffectSharedOfdState: 1 << 1,
+    fsEffectMemfsFileData: 1 << 2,
+    fsOpOpenAt: 3,
+    fsOpMkdir: 6,
+    fsOpUnlink: 7,
+  });
+
+  const result = processControl.processFs(7, 0x1234, makeKernelState());
+
+  expect(result.result).toBe(5n);
+  expect(result.fdEntries?.find((entry) => entry.fd === 5)).toEqual({
+    fd: 5,
+    ofdId: 7,
+    fdFlags: 1,
+  });
 });
 
 test("processFs uses targeted metadata sync for absolute mkdir paths", () => {

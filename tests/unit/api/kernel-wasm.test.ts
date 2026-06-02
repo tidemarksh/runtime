@@ -23,6 +23,15 @@ import {
   ensureMemoryCapacity,
   writeKernelScratch,
 } from "../../../src/worker/kernel-scratch.js";
+import {
+  FS_RING_HEADER_BYTES,
+  FS_RING_REQUEST_BUF_PTR_OFFSET,
+  FS_RING_REQUEST_LEN_OFFSET,
+  FS_RING_REQUEST_PATH_PTR_OFFSET,
+  FS_RING_REQUEST_VM_PTR_OFFSET,
+  FS_RING_SUBMIT_HEAD_OFFSET,
+  FS_RING_SUBMIT_TAIL_OFFSET,
+} from "../../../src/layout/fs-ring.js";
 import { findRiscvElf, logSkip, readKernelWasm } from "../../support/runtime-workload.js";
 
 function encodeI(opcode: number, rd: number, funct3: number, rs1: number, imm: number): number {
@@ -93,10 +102,14 @@ const SYS_MMAP = 222;
 const SYS_MPROTECT = 226;
 const SYS_RISCV_FLUSH_ICACHE = 259;
 const SIGSEGV = 11;
+const FS_OP_OPENAT = 3;
 const CLONE_VM = 0x00000100;
 const CLONE_FS = 0x00000200;
 const CLONE_SIGHAND = 0x00000800;
 const CLONE_THREAD = 0x00010000;
+const AT_FDCWD = -100;
+const O_RDONLY = 0;
+const O_CREAT = 0x40;
 const PROT_NONE = 0;
 const PROT_READ = 1;
 const PROT_WRITE = 2;
@@ -422,6 +435,63 @@ test("shared-memory dual kernel instances preserve parent clone return after chi
   expect(owner.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc));
   expect(readThreadRa(owner, memory, vmPtr)).toBe(BigInt(finalTargetPc));
   expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp + 16));
+});
+
+test("shared-memory dual kernel instances materialize fs-ring openat fd table entries", async () => {
+  const loaded = await loadKernel();
+  if (!loaded) {
+    return;
+  }
+  const { exports: owner, memory, module } = loaded;
+  const workerInstance = await WebAssembly.instantiate(module, {
+    env: createKernelEnv(memory),
+  });
+  const worker = workerInstance.exports as unknown as KernelExports;
+
+  const elfData = findRiscvElf("add");
+  if (!elfData) {
+    logSkip("add.elf not found");
+    return;
+  }
+
+  const heapBase = (owner as any).__heap_base?.value ?? 0x200000;
+  owner.kernel_init(heapBase);
+  const ramSize = memory.buffer.byteLength;
+  const elfOffset = ramSize - 256 * 1024;
+  new Uint8Array(memory.buffer).set(elfData, elfOffset);
+  const vmPtr = owner.process_create(elfOffset, elfData.length, ramSize, 1024 * 1024);
+  expect(vmPtr).toBeGreaterThan(0);
+  attachKernelRuntimeState(worker, readKernelRuntimeState(owner));
+
+  const guestBase = owner.thread_guest_base?.(vmPtr) ?? 0;
+  const path = cstr("/worker-openat-created.txt");
+  const pathAddr = Number(owner.debug_memory_brk_current?.() ?? 0n) + 0x1000;
+  ensureMemoryCapacity(memory, guestBase + pathAddr + path.length);
+  new Uint8Array(memory.buffer).set(path, guestBase + pathAddr);
+
+  const ringBase = owner.thread_fs_ring_base?.(vmPtr) ?? 0;
+  expect(ringBase).toBeGreaterThan(0);
+  const view = new DataView(memory.buffer);
+  const request = ringBase + FS_RING_HEADER_BYTES;
+  view.setUint32(ringBase + FS_RING_SUBMIT_HEAD_OFFSET, 0, true);
+  view.setUint32(ringBase + FS_RING_SUBMIT_TAIL_OFFSET, 0, true);
+  view.setUint32(request, FS_OP_OPENAT, true);
+  view.setInt32(request + 4, AT_FDCWD, true);
+  view.setBigUint64(request + 8, 0n, true);
+  view.setBigUint64(request + FS_RING_REQUEST_LEN_OFFSET, 0n, true);
+  view.setBigUint64(request + FS_RING_REQUEST_BUF_PTR_OFFSET, 0n, true);
+  view.setBigUint64(request + FS_RING_REQUEST_PATH_PTR_OFFSET, BigInt(pathAddr), true);
+  view.setUint32(request + 40, O_RDONLY | O_CREAT, true);
+  view.setUint32(request + 44, 0o644, true);
+  view.setUint32(request + FS_RING_REQUEST_VM_PTR_OFFSET, vmPtr, true);
+  view.setUint32(ringBase + FS_RING_SUBMIT_HEAD_OFFSET, 1, true);
+
+  worker.thread_process_fs(vmPtr);
+  const fd = Number(worker.thread_resume_fs(vmPtr));
+
+  expect(fd).toBeGreaterThanOrEqual(3);
+  expect(worker.process_fd_ofd_id(vmPtr, fd)).toBeGreaterThan(0);
+  expect(owner.process_fd_ofd_id(vmPtr, fd)).toBeGreaterThan(0);
 });
 
 test("shared imported memory materializes a top-of-limit prot-none page without early ENOMEM", async () => {

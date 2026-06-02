@@ -7,6 +7,8 @@ import {
   collectProcessHeldOfds,
   hasPlausibleOfdState,
 } from "../ownership/ofd-table.js";
+import { applyThreadFdEntries } from "../ownership/fd-table.js";
+import { applyThreadOfdSlots } from "../ownership/ofd-slot.js";
 import { ensureKernelMemoryCapacity, kernelScratchBase } from "../kernel-scratch.js";
 import { adoptKernelStateForHandle } from "../kernel-state.js";
 import {
@@ -14,7 +16,10 @@ import {
   type ProcessHandle,
   type ThreadWorkerState,
 } from "../types.js";
-import type { KernelWorkerPidBytesSnapshot } from "../../messages.js";
+import type {
+  KernelWorkerFdEntrySnapshot,
+  KernelWorkerPidBytesSnapshot,
+} from "../../messages.js";
 import type { SyncCause } from "../contracts/sync.js";
 import {
   FS_OP_READ,
@@ -186,6 +191,32 @@ function appendFsLifecycleEvent(
   if (FS_LIFECYCLE_DEBUG_ENABLED) {
     console.error(`[tidemark-fs] ${event}`);
   }
+}
+
+function formatFdEntrySummary(
+  fdEntries: readonly KernelWorkerFdEntrySnapshot[] | undefined,
+): string {
+  const nonzeroEntries = (fdEntries ?? [])
+    .filter((entry) => entry.ofdId !== 0)
+    .slice(0, 16)
+    .map((entry) => `${entry.fd}->${entry.ofdId}/${entry.fdFlags}`);
+  return nonzeroEntries.length > 0 ? nonzeroEntries.join(",") : "none";
+}
+
+function formatRuntimeFdSummary(handle: ProcessHandle, vmPtr: number): string {
+  const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
+  if (vmPtr === 0 || maxFds <= 0 || !handle.kernel.process_fd_ofd_id || !handle.kernel.process_fd_flags) {
+    return "none";
+  }
+  const entries: string[] = [];
+  for (let fd = 0; fd < maxFds && entries.length < 16; fd += 1) {
+    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    if (ofdId === 0) {
+      continue;
+    }
+    entries.push(`${fd}->${ofdId}/${handle.kernel.process_fd_flags(vmPtr, fd)}`);
+  }
+  return entries.length > 0 ? entries.join(",") : "none";
 }
 
 function formatFsRingDebug(handle: ProcessHandle, vmPtr: number): string {
@@ -649,8 +680,30 @@ async function resumeFsViaKernelWorkerInner(
     if (fsProcessedResponse.fsDebug) {
       appendFsLifecycleEvent(handle, "processed", vmPtr, `:${fsProcessedResponse.fsDebug}`);
     }
+    if (fsProcessedResponse.fdEntries) {
+      appendFsLifecycleEvent(
+        handle,
+        "fd-response",
+        vmPtr,
+        `:fds=${formatFdEntrySummary(fsProcessedResponse.fdEntries)}`,
+      );
+    }
     handle.kernelState = adoptKernelStateForHandle(handle, fsProcessedResponse.kernelState);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
+    if (fsProcessedResponse.ofdSlots || fsProcessedResponse.fdEntries) {
+      applyThreadOfdSlots(handle, {
+        vmPtr,
+        fdEntries: fsProcessedResponse.fdEntries,
+        ofdSlots: fsProcessedResponse.ofdSlots,
+      });
+      applyThreadFdEntries(handle, vmPtr, fsProcessedResponse.fdEntries);
+      appendFsLifecycleEvent(
+        handle,
+        "fd-applied",
+        vmPtr,
+        `:fds=${formatRuntimeFdSummary(handle, vmPtr)}`,
+      );
+    }
     const fsResult = normalizeFsResult(fsProcessedResponse.result);
     const fsSucceeded = Number(BigInt.asIntN(64, fsResult)) >= 0;
     const memfsMutated = fsProcessedResponse.memfsMutated || (fsSucceeded && (memfsStateMayChange || pendingRingRequest));
