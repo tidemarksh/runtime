@@ -34,7 +34,10 @@ import type { FsSnapshotEntry } from "./fs/types.js";
 
 export interface RuntimeOptions {
   wasmBytes: BufferSource;
+  /** Deprecated compatibility alias for guest memory policy limit. */
   ramSize?: number;
+  guestMemoryPolicyLimitBytes?: number;
+  pageCacheDataCapacityBytes?: number;
   maxKernelMemoryPages?: number;
   maxProcessMemoryPages?: number;
   maxForkMemoryPages?: number;
@@ -43,6 +46,14 @@ export interface RuntimeOptions {
 
 const MIN_RAM_SIZE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MAX_MEMORY_PAGES = 32768;
+
+interface RuntimeMemoryConfig {
+  guestMemoryPolicyLimitBytes: number;
+  pageCacheDataCapacityBytes: number;
+  maxKernelMemoryPages: number;
+  maxProcessMemoryPages: number;
+  maxForkMemoryPages: number;
+}
 
 function normalizeRuntimePath(path: string): string {
   const normalized = `/${path.split("/").filter(Boolean).join("/")}`;
@@ -114,10 +125,7 @@ export class Runtime {
   };
 
   private readonly wasmBytes: BufferSource;
-  private readonly ramSize: number;
-  private readonly maxKernelMemoryPages: number;
-  private readonly maxProcessMemoryPages: number;
-  private readonly maxForkMemoryPages: number;
+  private readonly memoryConfig: RuntimeMemoryConfig;
   private readonly networkBridge: RuntimeNetworkBridge | undefined;
   private readonly runtimeId: number;
   private readonly processes = new Map<number, ProcessHandle>();
@@ -134,19 +142,29 @@ export class Runtime {
 
   private constructor(options: RuntimeOptions) {
     this.wasmBytes = options.wasmBytes;
-    this.ramSize = Math.max(options.ramSize ?? MIN_RAM_SIZE_BYTES, MIN_RAM_SIZE_BYTES);
-    this.maxKernelMemoryPages = Math.max(
-      options.maxKernelMemoryPages ?? DEFAULT_MAX_MEMORY_PAGES,
-      1,
-    );
-    this.maxProcessMemoryPages = Math.max(
+    const maxProcessMemoryPages = Math.max(
       options.maxProcessMemoryPages ?? DEFAULT_MAX_MEMORY_PAGES,
       1,
     );
-    this.maxForkMemoryPages = Math.max(
-      options.maxForkMemoryPages ?? this.maxProcessMemoryPages,
-      this.maxProcessMemoryPages,
-    );
+    this.memoryConfig = {
+      guestMemoryPolicyLimitBytes: Math.max(
+        options.guestMemoryPolicyLimitBytes ?? options.ramSize ?? MIN_RAM_SIZE_BYTES,
+        MIN_RAM_SIZE_BYTES,
+      ),
+      pageCacheDataCapacityBytes: Math.max(
+        options.pageCacheDataCapacityBytes ?? MIN_RAM_SIZE_BYTES,
+        MIN_RAM_SIZE_BYTES,
+      ),
+      maxKernelMemoryPages: Math.max(
+        options.maxKernelMemoryPages ?? DEFAULT_MAX_MEMORY_PAGES,
+        1,
+      ),
+      maxProcessMemoryPages,
+      maxForkMemoryPages: Math.max(
+        options.maxForkMemoryPages ?? maxProcessMemoryPages,
+        maxProcessMemoryPages,
+      ),
+    };
     this.networkBridge = options.networkBridge;
     this.runtimeId = Runtime.nextRuntimeId++;
   }
@@ -164,7 +182,7 @@ export class Runtime {
 
   private async initKernelWorker(): Promise<void> {
     this.wasmModule = await precompileModule(this.wasmBytes);
-    this.sabPageCache = new SharedArrayBuffer(this.ramSize);
+    this.sabPageCache = new SharedArrayBuffer(this.memoryConfig.pageCacheDataCapacityBytes);
 
     const workerUrl = new URL("./kernel-worker.mjs", import.meta.url);
     this.kernelWorker = new Worker(workerUrl, { type: "module" });
@@ -207,7 +225,7 @@ export class Runtime {
           type: "init-kernel",
           wasmModule: this.wasmModule!,
           sabPageCache: this.sabPageCache!,
-          maxMemoryPages: this.maxKernelMemoryPages,
+          maxMemoryPages: this.memoryConfig.maxKernelMemoryPages,
         }).then((value) => {
           clearTimeout(timeout);
           cleanup();
@@ -272,13 +290,13 @@ export class Runtime {
     const handle = await createProcess(this.wasmBytes, elfData, {
       runtimeId: this.runtimeId,
       pid,
-      ramSize: this.ramSize,
+      ramSize: this.memoryConfig.guestMemoryPolicyLimitBytes,
       argv,
       env,
       cwd: options.cwd,
       sabPageCache: this.sabPageCache,
-      maxMemoryPages: this.maxProcessMemoryPages,
-      forkMaxMemoryPages: this.maxForkMemoryPages,
+      maxMemoryPages: this.memoryConfig.maxProcessMemoryPages,
+      forkMaxMemoryPages: this.memoryConfig.maxForkMemoryPages,
       networkBridge: this.networkBridge,
       stdio: options.stdio ?? "pipe",
       stdin: options.stdin ?? "pipe",
