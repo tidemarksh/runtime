@@ -8,6 +8,7 @@ import type {
   ThreadWorkerInbound,
   ThreadWorkerOutbound,
 } from "../../../../src/messages.js";
+import { captureForkMemorySnapshot } from "../../../../src/worker/fork/memory-snapshot.js";
 
 type WorkerModule = typeof import("../../../../src/worker.js");
 
@@ -686,6 +687,17 @@ test("plain fork skips byte-identical captured stack snapshot", async () => {
   const memoryLog = parent.workerDebugLog.find((entry) => entry.startsWith("plain-fork-memory:"));
   expect(memoryLog).toBeDefined();
   expect(memoryLog).not.toContain(`${stackStart}-${stackStart + stackBytes}:${stackBytes},${stackStart}-${stackStart + stackBytes}:${stackBytes}`);
+});
+
+test("fork memory snapshot stack fallback uses committed backing instead of ramSize", async () => {
+  const parent = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
+  parent.ramSize = 0x2000;
+  const stackPointer = 0x20_0000n;
+
+  const snapshot = captureForkMemorySnapshot(parent, stackPointer);
+
+  expect(Number(stackPointer)).toBeGreaterThan(parent.ramSize);
+  expect(snapshot.endOffset).toBe(parent.memory.buffer.byteLength);
 });
 
 test("plain fork canonicalizes child pid and reinitializes child lifecycle through kernel-worker", async () => {

@@ -220,8 +220,9 @@ export function captureForkMemorySnapshot(handle: ProcessHandle, stackPointer = 
   }
 
   const stackGuestPtr = Number(stackPointer);
-  const stackTop = handle.guestBase + handle.ramSize;
-  if (Number.isFinite(stackGuestPtr) && stackGuestPtr > 0 && stackGuestPtr < handle.ramSize) {
+  const guestBackingBytes = Math.max(0, source.byteLength - handle.guestBase);
+  const stackTop = handle.guestBase + guestBackingBytes;
+  if (Number.isFinite(stackGuestPtr) && stackGuestPtr > 0 && stackGuestPtr < guestBackingBytes) {
     const stackStartGuest = Math.max(
       0,
       Math.floor(stackGuestPtr / 65536) * 65536 - 1024 * 1024,
@@ -317,6 +318,7 @@ export function appendPlainForkMemoryDebug(
     `snapshotRangeSpans=${formatForkSnapshotRanges(snapshot)}`,
     `guestBase=${handle.guestBase}`,
     `ramSize=${handle.ramSize}`,
+    `guestBackingBytes=${Math.max(0, handle.memory.buffer.byteLength - handle.guestBase)}`,
     `maxMemoryBytes=${handle.maxMemoryPages * 65536}`,
     `forkMaxMemoryBytes=${handle.forkMaxMemoryPages * 65536}`,
   ].join(":"));
