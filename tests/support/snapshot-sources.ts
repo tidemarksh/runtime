@@ -312,7 +312,11 @@ export async function applySnapshotSourcesToRuntime(
       }
       throw error;
     }
-    await runtime.fs.writeFile(file.guestPath, data, file.mode);
+    if ("writeFileOwned" in runtime && typeof runtime.writeFileOwned === "function") {
+      await runtime.writeFileOwned(file.guestPath, data, file.mode);
+    } else {
+      await runtime.fs.writeFile(file.guestPath, data, file.mode);
+    }
   }
 
   return {};

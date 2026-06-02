@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import type { SnapshotSource } from "../../../support/snapshot-sources.js";
 import type { ToolchainExecEntry } from "../../../support/toolchain-exec-harness.js";
+import { rustCLinkerSnapshotSources, rustToolchainSnapshotSources } from "./toolchain-layout.js";
 
 const rustToolchainDir = process.env.TIDEMARK_TEST_RUST_TOOLCHAIN_DIR ?? "";
 const rustUpstreamSuiteDir = process.env.TIDEMARK_TEST_RUST_UPSTREAM_SUITE_DIR ?? "";
@@ -20,9 +21,8 @@ const GLIBC_RUNTIME_LIBS = [
 
 function rustUpstreamSnapshotSources(extra: readonly SnapshotSource[] = []): SnapshotSource[] {
   return [
-    { kind: "tree", hostPath: rustToolchainDir, guestPath: "/toolchain" },
-    { kind: "tree", hostPath: resolve(cToolchainDir, "usr/bin"), guestPath: "/usr/bin" },
-    { kind: "tree", hostPath: resolve(cToolchainDir, "usr/lib"), guestPath: "/usr/lib" },
+    ...rustToolchainSnapshotSources(rustToolchainDir),
+    ...rustCLinkerSnapshotSources(cToolchainDir),
     { kind: "tree", hostPath: resolve(rustUpstreamSuiteDir, "rust-src"), guestPath: "/rust-src" },
     ...GLIBC_RUNTIME_LIBS.map((name) => ({
       kind: "file" as const,

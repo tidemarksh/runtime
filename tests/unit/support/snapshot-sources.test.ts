@@ -79,3 +79,37 @@ test("applySnapshotSourcesToRuntime streams host files outside the metadata snap
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("applySnapshotSourcesToRuntime uses owned host-file writes when available", async () => {
+  const root = mkdtempSync(join(tmpdir(), "tidemark-snapshot-owned-"));
+  const writtenFiles: Array<{ path: string; data: Uint8Array; mode?: number; owned: boolean }> = [];
+  try {
+    const hostFile = join(root, "owned.bin");
+    const fileData = new Uint8Array((1024 * 1024) + 7).map((_, index) => (index * 11) & 0xff);
+    writeFileSync(hostFile, fileData);
+
+    const runtime = {
+      applyFsSnapshot: async (_entries: FsSnapshotEntry[]) => {},
+      writeFileOwned: async (path: string, data: Uint8Array, mode?: number) => {
+        writtenFiles.push({ path, data: new Uint8Array(data), mode, owned: true });
+      },
+      fs: {
+        writeFile: async (path: string, data: Uint8Array, mode?: number) => {
+          writtenFiles.push({ path, data: new Uint8Array(data), mode, owned: false });
+        },
+      },
+    };
+
+    const result = await applySnapshotSourcesToRuntime(runtime as never, [
+      { kind: "file", hostPath: hostFile, guestPath: "/guest/owned.bin", mode: 0o644 },
+    ]);
+
+    expect(result.skipReason).toBeUndefined();
+    expect(writtenFiles).toHaveLength(1);
+    expect(writtenFiles[0].path).toBe("/guest/owned.bin");
+    expect(writtenFiles[0].owned).toBe(true);
+    expect(writtenFiles[0].data).toEqual(fileData);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

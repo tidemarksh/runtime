@@ -294,6 +294,7 @@ export class Runtime {
 
   private sendKernelRequest<T extends KernelWorkerOutbound>(
     msg: KernelWorkerRequest,
+    transfer: Transferable[] = [],
   ): Promise<T> {
     if (!this.kernelWorker) {
       return Promise.reject(new Error("kernel worker not initialized"));
@@ -306,7 +307,7 @@ export class Runtime {
         reject,
       });
       const payload: KernelWorkerInbound = { ...msg, requestId };
-      this.kernelWorker!.postMessage(payload);
+      this.kernelWorker!.postMessage(payload, transfer);
     });
   }
 
@@ -374,6 +375,22 @@ export class Runtime {
       data,
       mode,
     });
+    await this.refreshRuntimeFsSnapshot();
+  }
+
+  async writeFileOwned(path: string, data: Uint8Array, mode?: number): Promise<void> {
+    const ownedData = data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
+      ? data
+      : new Uint8Array(data);
+    const transfer = ownedData.buffer instanceof ArrayBuffer
+      ? [ownedData.buffer]
+      : [];
+    await this.sendKernelRequest<Extract<KernelWorkerOutbound, { type: "file-written" }>>({
+      type: "write-file",
+      path,
+      data: ownedData,
+      mode,
+    }, transfer);
     await this.refreshRuntimeFsSnapshot();
   }
 
