@@ -379,6 +379,25 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     }]`;
   }
 
+  function formatSignalState(handle: ProcessHandle): string {
+    const vmPtr = handle.vmPtr;
+    const deliverySig = handle.kernel.debug_signal_delivery_for_vm_sig?.(vmPtr)
+      ?? handle.kernel.debug_signal_delivery_sig?.()
+      ?? 0;
+    return `signal_state=[${
+      [
+        `mask=0x${(handle.kernel.thread_sig_mask?.(vmPtr) ?? 0n).toString(16)}`,
+        `pending=0x${(handle.kernel.thread_sig_pending?.(vmPtr) ?? 0n).toString(16)}`,
+        `info=${handle.kernel.thread_sig_info_code?.(vmPtr) ?? 0}`,
+        `deliver_sig=${deliverySig}`,
+        `deliver_frame=0x${(handle.kernel.debug_signal_delivery_for_vm_frame_base?.(vmPtr) ?? handle.kernel.debug_signal_delivery_frame_base?.() ?? 0n).toString(16)}`,
+        `deliver_pc=0x${(handle.kernel.debug_signal_delivery_for_vm_pc?.(vmPtr) ?? handle.kernel.debug_signal_delivery_pc?.() ?? 0n).toString(16)}`,
+        `deliver_ra=0x${(handle.kernel.debug_signal_delivery_for_vm_ra?.(vmPtr) ?? handle.kernel.debug_signal_delivery_ra?.() ?? 0n).toString(16)}`,
+        `deliver_sp=0x${(handle.kernel.debug_signal_delivery_for_vm_sp?.(vmPtr) ?? handle.kernel.debug_signal_delivery_sp?.() ?? 0n).toString(16)}`,
+      ].join(":")
+    }]`;
+  }
+
   function formatExitTrace(handle: ProcessHandle): string {
     const execveStage = handle.kernel.debug_execve_stage?.() ?? 0;
     const execveValue0 = handle.kernel.debug_execve_value0?.() ?? 0n;
@@ -398,6 +417,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       `memory_syscalls=[${formatMemorySyscalls(handle)}]`,
       `fault_state=[${formatFaultState(handle)}]`,
       formatDefaultSignalTrace(handle),
+      formatSignalState(handle),
       formatFrozenExitTraces(handle),
     ].join(" ");
   }

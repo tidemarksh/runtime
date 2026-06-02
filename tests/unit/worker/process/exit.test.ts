@@ -620,6 +620,14 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
       thread_fault_kind: () => 2,
       thread_fault_signal: () => 11,
       thread_fault_code: () => 1,
+      thread_sig_mask: () => 0x20n,
+      thread_sig_pending: () => 0x400n,
+      thread_sig_info_code: () => 1,
+      debug_signal_delivery_for_vm_sig: () => 11,
+      debug_signal_delivery_for_vm_frame_base: () => 0x12000n,
+      debug_signal_delivery_for_vm_pc: () => 0x7788n,
+      debug_signal_delivery_for_vm_ra: () => 0x123n,
+      debug_signal_delivery_for_vm_sp: () => 0x12340000n,
       debug_default_signal_sig: () => 11,
       debug_default_signal_code: () => 1,
       debug_default_signal_vm_ptr: () => 0xabc,
@@ -669,4 +677,11 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
   expect(parent.lastDebugMessage).toContain("sig=11");
   expect(parent.lastDebugMessage).toContain("vm=0xabc");
   expect(parent.lastDebugMessage).toContain("fault_addr=0xdeadbeef");
+  expect(parent.lastDebugMessage).toContain("signal_state=[");
+  expect(parent.lastDebugMessage).toContain("mask=0x20");
+  expect(parent.lastDebugMessage).toContain("pending=0x400");
+  expect(parent.lastDebugMessage).toContain("info=1");
+  expect(parent.lastDebugMessage).toContain("deliver_sig=11");
+  expect(parent.lastDebugMessage).toContain("deliver_frame=0x12000");
+  expect(parent.lastDebugMessage).toContain("deliver_pc=0x7788");
 });
