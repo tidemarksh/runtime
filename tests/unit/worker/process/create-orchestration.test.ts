@@ -1663,6 +1663,21 @@ test("createProcess preloads snapshot files by resizing then writing payload byt
   });
 });
 
+test("createProcess reports published metadata capacity independently from page-cache data capacity", async () => {
+  const smallPageCache = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    sabPageCache: new SharedArrayBuffer(1024 * 1024),
+  });
+  const largePageCache = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    sabPageCache: new SharedArrayBuffer(8 * 1024 * 1024),
+  });
+
+  expect(smallPageCache.memoryOwnership?.pageCacheDataCapacityBytes).toBe(1024 * 1024);
+  expect(largePageCache.memoryOwnership?.pageCacheDataCapacityBytes).toBe(8 * 1024 * 1024);
+  expect(smallPageCache.memoryOwnership?.publishedMetadataCapacityBytes).toBeGreaterThan(0);
+  expect(smallPageCache.memoryOwnership?.publishedMetadataCapacityBytes)
+    .toBe(largePageCache.memoryOwnership?.publishedMetadataCapacityBytes);
+});
+
 test("createProcess rejects artifact materialization budget separately from guest ram", async () => {
   await expect(createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
     ramSize: 64 * 1024 * 1024,
