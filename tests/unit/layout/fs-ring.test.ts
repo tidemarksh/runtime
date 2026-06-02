@@ -8,9 +8,17 @@ import {
 import {
   FS_OP_READ,
   FS_OP_WRITE,
+  FS_OP_CLOSE,
+  FS_OP_FSTAT,
+  FS_OP_GETDENTS,
+  FS_OP_LSEEK,
   FS_OP_MKDIR,
   FS_OP_OPENAT,
+  FS_OP_RENAME,
+  FS_OP_TRUNCATE,
   FS_OP_UNLINK,
+  FS_REQ_FLAG_PWRITE,
+  FS_REQ_FLAG_WRITEV,
   FS_RING_COMPLETE_HEAD_OFFSET,
   FS_RING_COMPLETE_QUEUE_OFFSET,
   FS_RING_COMPLETE_QUEUE_SIZE,
@@ -19,7 +27,11 @@ import {
   FS_RING_NOTIFY_OFFSET,
   FS_RING_REQUEST_BUF_PTR_OFFSET,
   FS_RING_REQUEST_BYTES,
+  FS_RING_REQUEST_FD_OFFSET,
+  FS_RING_REQUEST_FLAGS_OFFSET,
   FS_RING_REQUEST_LEN_OFFSET,
+  FS_RING_REQUEST_MODE_OFFSET,
+  FS_RING_REQUEST_OFFSET_OFFSET,
   FS_RING_REQUEST_OPCODE_OFFSET,
   FS_RING_REQUEST_PATH_PTR_OFFSET,
   FS_RING_REQUEST_VM_PTR_OFFSET,
@@ -105,8 +117,16 @@ describe("FS ring layout", () => {
     expect(FS_OP_READ).toBe(readKernelConst("FS_OP_READ"));
     expect(FS_OP_WRITE).toBe(readKernelConst("FS_OP_WRITE"));
     expect(FS_OP_OPENAT).toBe(readKernelConst("FS_OP_OPENAT"));
+    expect(FS_OP_CLOSE).toBe(readKernelConst("FS_OP_CLOSE"));
+    expect(FS_OP_FSTAT).toBe(readKernelConst("FS_OP_FSTAT"));
     expect(FS_OP_MKDIR).toBe(readKernelConst("FS_OP_MKDIR"));
     expect(FS_OP_UNLINK).toBe(readKernelConst("FS_OP_UNLINK"));
+    expect(FS_OP_RENAME).toBe(readKernelConst("FS_OP_RENAME"));
+    expect(FS_OP_GETDENTS).toBe(readKernelConst("FS_OP_GETDENTS"));
+    expect(FS_OP_TRUNCATE).toBe(readKernelConst("FS_OP_TRUNCATE"));
+    expect(FS_OP_LSEEK).toBe(readKernelConst("FS_OP_LSEEK"));
+    expect(FS_REQ_FLAG_PWRITE).toBe(readKernelConst("FS_REQ_FLAG_PWRITE"));
+    expect(FS_REQ_FLAG_WRITEV).toBe(readKernelConst("FS_REQ_FLAG_WRITEV"));
     expect(FS_RING_SUBMIT_HEAD_OFFSET).toBe(readKernelConst("OFF_SUBMIT_HEAD"));
     expect(FS_RING_SUBMIT_TAIL_OFFSET).toBe(readKernelConst("OFF_SUBMIT_TAIL"));
     expect(FS_RING_COMPLETE_HEAD_OFFSET).toBe(readKernelConst("OFF_COMPLETE_HEAD"));
@@ -124,9 +144,13 @@ describe("FS ring layout", () => {
 
   it("matches kernel request and response field offsets", () => {
     expect(FS_RING_REQUEST_OPCODE_OFFSET).toBe(readKernelRequestFieldOffset("opcode"));
+    expect(FS_RING_REQUEST_FD_OFFSET).toBe(readKernelRequestFieldOffset("fd"));
+    expect(FS_RING_REQUEST_OFFSET_OFFSET).toBe(readKernelRequestFieldOffset("offset"));
     expect(FS_RING_REQUEST_LEN_OFFSET).toBe(readKernelRequestFieldOffset("len"));
     expect(FS_RING_REQUEST_BUF_PTR_OFFSET).toBe(readKernelRequestFieldOffset("buf_ptr"));
     expect(FS_RING_REQUEST_PATH_PTR_OFFSET).toBe(readKernelRequestFieldOffset("path_ptr"));
+    expect(FS_RING_REQUEST_FLAGS_OFFSET).toBe(readKernelRequestFieldOffset("flags"));
+    expect(FS_RING_REQUEST_MODE_OFFSET).toBe(readKernelRequestFieldOffset("mode"));
     expect(FS_RING_REQUEST_VM_PTR_OFFSET).toBe(readKernelRequestFieldOffset("vm_ptr"));
     expect(FS_RING_RESPONSE_RESULT_OFFSET).toBe(readKernelResponseFieldOffset("result"));
     expect(FS_RING_RESPONSE_VM_PTR_OFFSET).toBe(readKernelResponseFieldOffset("vm_ptr"));

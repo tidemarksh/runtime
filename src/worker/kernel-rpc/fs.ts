@@ -22,11 +22,25 @@ import type {
 } from "../../messages.js";
 import type { SyncCause } from "../contracts/sync.js";
 import {
+  FS_OP_CLOSE,
+  FS_OP_FSTAT,
+  FS_OP_GETDENTS,
+  FS_OP_LSEEK,
+  FS_OP_MKDIR,
+  FS_OP_OPENAT,
   FS_OP_READ,
+  FS_OP_RENAME,
+  FS_OP_TRUNCATE,
+  FS_OP_UNLINK,
   FS_OP_WRITE,
   FS_RING_COMPLETE_HEAD_OFFSET,
   FS_RING_COMPLETE_TAIL_OFFSET,
+  FS_RING_REQUEST_FD_OFFSET,
+  FS_RING_REQUEST_FLAGS_OFFSET,
   FS_RING_REQUEST_OPCODE_OFFSET,
+  FS_RING_REQUEST_OFFSET_OFFSET,
+  FS_RING_REQUEST_BUF_PTR_OFFSET,
+  FS_RING_REQUEST_LEN_OFFSET,
   FS_RING_REQUEST_VM_PTR_OFFSET,
   FS_RING_RESPONSE_RESULT_OFFSET,
   FS_RING_RESPONSE_VM_PTR_OFFSET,
@@ -219,6 +233,35 @@ function formatRuntimeFdSummary(handle: ProcessHandle, vmPtr: number): string {
   return entries.length > 0 ? entries.join(",") : "none";
 }
 
+function fsOpName(opcode: number): string {
+  switch (opcode) {
+    case FS_OP_READ:
+      return "READ";
+    case FS_OP_WRITE:
+      return "WRITE";
+    case FS_OP_OPENAT:
+      return "OPENAT";
+    case FS_OP_CLOSE:
+      return "CLOSE";
+    case FS_OP_FSTAT:
+      return "FSTAT";
+    case FS_OP_MKDIR:
+      return "MKDIR";
+    case FS_OP_UNLINK:
+      return "UNLINK";
+    case FS_OP_RENAME:
+      return "RENAME";
+    case FS_OP_GETDENTS:
+      return "GETDENTS";
+    case FS_OP_TRUNCATE:
+      return "TRUNCATE";
+    case FS_OP_LSEEK:
+      return "LSEEK";
+    default:
+      return `OP${opcode}`;
+  }
+}
+
 function formatFsRingDebug(handle: ProcessHandle, vmPtr: number): string {
   const progress = snapshotFsRingProgress(handle, vmPtr);
   if (progress === null) {
@@ -236,8 +279,21 @@ function formatFsRingDebug(handle: ProcessHandle, vmPtr: number): string {
   for (let pos = submitTail; pos < submitHead && requests.length < 4; pos += 1) {
     const entry = fsRingRequestEntryOffset(ringBase, pos);
     const opcode = view.getUint32(entry + FS_RING_REQUEST_OPCODE_OFFSET, true);
+    const fd = view.getInt32(entry + FS_RING_REQUEST_FD_OFFSET, true);
+    const offset = view.getBigUint64(entry + FS_RING_REQUEST_OFFSET_OFFSET, true);
+    const len = view.getBigUint64(entry + FS_RING_REQUEST_LEN_OFFSET, true);
+    const bufPtr = view.getBigUint64(entry + FS_RING_REQUEST_BUF_PTR_OFFSET, true);
+    const flags = view.getUint32(entry + FS_RING_REQUEST_FLAGS_OFFSET, true);
     const requestVmPtr = view.getUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, true);
-    requests.push(`${pos}:op=${opcode}/vm=0x${requestVmPtr.toString(16)}`);
+    requests.push([
+      `${pos}:op=${opcode}/${fsOpName(opcode)}`,
+      `fd=${fd}`,
+      `off=${offset.toString()}`,
+      `len=${len.toString()}`,
+      `buf=0x${bufPtr.toString(16)}`,
+      `flags=${flags}`,
+      `vm=0x${requestVmPtr.toString(16)}`,
+    ].join("/"));
   }
   const completions: string[] = [];
   for (let pos = completeTail; pos < completeHead && completions.length < 4; pos += 1) {
@@ -361,6 +417,11 @@ function fsResumeKey(handle: ProcessHandle, vmPtr: number): string {
 
 function normalizeFsResult(result: bigint | number): bigint {
   return typeof result === "bigint" ? result : BigInt(result);
+}
+
+function formatFsErrorDetail(error: unknown): string {
+  const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+  return `:err=${JSON.stringify(detail.slice(0, 1000))}`;
 }
 
 function isPackageIndexTransferPath(path: string | null): boolean {
@@ -790,8 +851,9 @@ async function resumeFsViaKernelWorkerInner(
     effects.push({ kind: "enqueue-worker" });
     return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr), effects);
   } catch (error) {
-    deps.appendWorkerDebugLog(handle, `fs-err:0x${vmPtr.toString(16)}`);
-    appendFsLifecycleEvent(handle, "err", vmPtr, formatFsRingDebug(handle, vmPtr));
+    const errorDetail = formatFsErrorDetail(error);
+    deps.appendWorkerDebugLog(handle, `fs-err:0x${vmPtr.toString(16)}${errorDetail}`);
+    appendFsLifecycleEvent(handle, "err", vmPtr, `${formatFsRingDebug(handle, vmPtr)}${errorDetail}`);
     if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
       return { kind: "process-gone", effects };
     }
