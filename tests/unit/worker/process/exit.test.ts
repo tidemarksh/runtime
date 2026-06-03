@@ -777,12 +777,24 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
       debug_memory_vma_end: (index: number) => index === 0 ? 0x6000n : 0x8000n,
       debug_memory_vma_prot: (index: number) => index === 0 ? 1 : 5,
       debug_memory_vma_flags: (index: number) => index === 0 ? 2 : 18,
+      debug_memory_vma_fd: (index: number) => index === 0 ? 25 : 26,
+      debug_memory_vma_offset: (index: number) => index === 0 ? 0x1000n : 0x2000n,
+      kernel_heap_ptr: () => 0x9000,
+      kernel_memfs_data_ptr: () => 0,
+      kernel_memfs_data_bytes: () => 0,
     } as never,
   });
   const processHandles = new Map<number, ProcessHandle>([
     [1, parent],
     [4, child],
   ]);
+  child.kernel.memfs_read_file_to = ((ino: number, offset: bigint, ptr: number, len: number) => {
+    const bytes = new Uint8Array(child.memory.buffer, ptr, len);
+    bytes.set(ino === 25
+      ? Uint8Array.from([0xaa, 0xbb, Number(offset & 0xffn), 0xdd, 0xee, 0xff, 0x11, 0x22])
+      : Uint8Array.from([0xcc, 0xdd, Number(offset & 0xffn), 0xee, 0xff, 0x11, 0x22, 0x33]));
+    return BigInt(len);
+  }) as never;
   new DataView(child.memory.buffer).setUint32(0x5566, 0x00008067, true);
   new DataView(child.memory.buffer).setUint32(0x7788, 0x00000013, true);
 
@@ -813,7 +825,8 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
   expect(parent.lastDebugMessage).toContain("fault_pc=0x5566");
   expect(parent.lastDebugMessage).toContain("fault_addr=0xdeadbeef");
   expect(parent.lastDebugMessage).toContain("fault_insn=[pc_insn=0x13:fault_insn=0x8067]");
-  expect(parent.lastDebugMessage).toContain("fault_vma=[pc=1/0x7000-0x8000/prot=5/flags=18/fd=n/a/off=0:fault_pc=0/0x5000-0x6000/prot=1/flags=2/fd=n/a/off=0:fault_addr=none]");
+  expect(parent.lastDebugMessage).toContain("fault_vma=[pc=1/0x7000-0x8000/prot=5/flags=18/fd=26/off=8192:fault_pc=0/0x5000-0x6000/prot=1/flags=2/fd=25/off=4096:fault_addr=none]");
+  expect(parent.lastDebugMessage).toContain("fault_bytes=[pc=vma1/fd=26/src=0x2788/guest=1300000000000000/file=ccdd88eeff112233:fault_pc=vma0/fd=25/src=0x1566/guest=6780000000000000/file=aabb66ddeeff1122:fault_addr=none]");
   expect(parent.lastDebugMessage).toContain("fault_kind=2");
   expect(parent.lastDebugMessage).toContain("fault_signal=11");
   expect(parent.lastDebugMessage).toContain("fault_code=1");

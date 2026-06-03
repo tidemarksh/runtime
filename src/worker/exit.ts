@@ -1,4 +1,5 @@
 import { settleInheritedChildOutput, settleVisibleProcessOutput } from "./stdio.js";
+import { ensureMemoryCapacityFor, scratchBaseFor } from "../kernel-worker/common.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import type { ProcessHandle } from "./types.js";
 import type { SyncCause } from "./contracts/sync.js";
@@ -462,9 +463,19 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     ].join(":");
   }
 
-  function formatVmaForAddress(handle: ProcessHandle, value: bigint): string {
+  interface FaultDebugVma {
+    index: number;
+    start: bigint;
+    end: bigint;
+    prot: number;
+    flags: number;
+    fd: number | null;
+    offset: bigint;
+  }
+
+  function findVmaForAddress(handle: ProcessHandle, value: bigint): FaultDebugVma | null {
     if (value === 0n) {
-      return "zero";
+      return null;
     }
     const len = handle.kernel.debug_memory_vma_len?.() ?? 0;
     for (let index = 0; index < len; index += 1) {
@@ -473,16 +484,91 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       if (value < start || value >= end) {
         continue;
       }
+      const fd = handle.kernel.debug_memory_vma_fd?.(index);
+      return {
+        index,
+        start,
+        end,
+        prot: handle.kernel.debug_memory_vma_prot?.(index) ?? 0,
+        flags: handle.kernel.debug_memory_vma_flags?.(index) ?? 0,
+        fd: typeof fd === "number" ? fd : null,
+        offset: BigInt(handle.kernel.debug_memory_vma_offset?.(index) ?? 0),
+      };
+    }
+    return null;
+  }
+
+  function formatVmaForAddress(handle: ProcessHandle, value: bigint): string {
+    if (value === 0n) {
+      return "zero";
+    }
+    const vma = findVmaForAddress(handle, value);
+    if (vma !== null) {
       return [
-        `${index}`,
-        `0x${start.toString(16)}-0x${end.toString(16)}`,
-        `prot=${handle.kernel.debug_memory_vma_prot?.(index) ?? 0}`,
-        `flags=${handle.kernel.debug_memory_vma_flags?.(index) ?? 0}`,
-        `fd=${handle.kernel.debug_memory_vma_fd?.(index) ?? "n/a"}`,
-        `off=${BigInt(handle.kernel.debug_memory_vma_offset?.(index) ?? 0).toString()}`,
+        `${vma.index}`,
+        `0x${vma.start.toString(16)}-0x${vma.end.toString(16)}`,
+        `prot=${vma.prot}`,
+        `flags=${vma.flags}`,
+        `fd=${vma.fd ?? "n/a"}`,
+        `off=${vma.offset.toString()}`,
       ].join("/");
     }
     return "none";
+  }
+
+  function formatHexBytes(bytes: Uint8Array): string {
+    return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+
+  function readGuestBytes(handle: ProcessHandle, address: bigint, len: number): string {
+    if (address < 0n || address > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return "n/a";
+    }
+    const absolute = BigInt(handle.guestBase) + address;
+    if (absolute < 0n || absolute > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return "n/a";
+    }
+    const start = Number(absolute);
+    const end = start + len;
+    if (start < 0 || end > handle.memory.buffer.byteLength) {
+      return "n/a";
+    }
+    return formatHexBytes(new Uint8Array(handle.memory.buffer, start, len));
+  }
+
+  function readVmaFileBytes(handle: ProcessHandle, fd: number, offset: bigint, len: number): string {
+    if (fd < 0 || typeof handle.kernel.memfs_read_file_to !== "function") {
+      return "n/a";
+    }
+    try {
+      const bufPtr = scratchBaseFor(handle.kernel) + 0x24000;
+      ensureMemoryCapacityFor(handle.memory, bufPtr + len);
+      const read = Number(handle.kernel.memfs_read_file_to(fd, offset, bufPtr, len));
+      if (read <= 0) {
+        return `read=${read}`;
+      }
+      return formatHexBytes(new Uint8Array(handle.memory.buffer, bufPtr, Math.min(read, len)));
+    } catch (error) {
+      return `err=${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  function formatFaultByteSource(handle: ProcessHandle, label: string, value: bigint): string {
+    if (value === 0n) {
+      return `${label}=zero`;
+    }
+    const vma = findVmaForAddress(handle, value);
+    if (vma === null) {
+      return `${label}=none`;
+    }
+    const sourceOffset = vma.offset + (value - vma.start);
+    return [
+      `${label}=vma${vma.index}`,
+      `fd=${vma.fd ?? "n/a"}`,
+      `src=0x${sourceOffset.toString(16)}`,
+      `guest=${readGuestBytes(handle, value, 8)}`,
+      `file=${vma.fd === null ? "n/a" : readVmaFileBytes(handle, vma.fd, sourceOffset, 8)}`,
+    ].join("/");
   }
 
   function formatFaultVmas(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
@@ -493,6 +579,17 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       `pc=${formatVmaForAddress(handle, pc)}`,
       `fault_pc=${formatVmaForAddress(handle, faultPc)}`,
       `fault_addr=${formatVmaForAddress(handle, faultAddr)}`,
+    ].join(":");
+  }
+
+  function formatFaultByteSources(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
+    const pc = handle.kernel.thread_pc?.(vmPtr) ?? 0n;
+    const faultPc = handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n;
+    const faultAddr = handle.kernel.thread_fault_addr?.(vmPtr) ?? 0n;
+    return [
+      formatFaultByteSource(handle, "pc", pc),
+      formatFaultByteSource(handle, "fault_pc", faultPc),
+      formatFaultByteSource(handle, "fault_addr", faultAddr),
     ].join(":");
   }
 
@@ -546,6 +643,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       `fault_insn=[${formatFaultInstructions(handle, vmPtr)}]`,
       `fault_bounds=[${formatFaultBounds(handle, vmPtr)}]`,
       `fault_vma=[${formatFaultVmas(handle, vmPtr)}]`,
+      `fault_bytes=[${formatFaultByteSources(handle, vmPtr)}]`,
       formatDefaultSignalTrace(handle),
       formatSignalState(handle, vmPtr),
       formatFrozenExitTraces(handle, vmPtr),
