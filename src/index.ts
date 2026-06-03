@@ -37,8 +37,6 @@ export interface RuntimeOptions {
   wasmBytes: BufferSource;
   guestMemoryPolicyLimitBytes?: number;
   pageCacheDataCapacityBytes?: number;
-  /** Deprecated compatibility alias for kernelWorkerMaxMemoryPages. */
-  maxKernelMemoryPages?: number;
   kernelWorkerMaxMemoryPages?: number;
   maxProcessMemoryPages?: number;
   maxForkMemoryPages?: number;
@@ -182,7 +180,7 @@ export class Runtime {
         MIN_PAGE_CACHE_DATA_CAPACITY_BYTES,
       ),
       kernelWorkerMaxMemoryPages: Math.max(
-        options.kernelWorkerMaxMemoryPages ?? options.maxKernelMemoryPages ?? DEFAULT_MAX_MEMORY_PAGES,
+        options.kernelWorkerMaxMemoryPages ?? DEFAULT_MAX_MEMORY_PAGES,
         1,
       ),
       maxProcessMemoryPages,

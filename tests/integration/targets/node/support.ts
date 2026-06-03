@@ -19,7 +19,7 @@ const NODE_RUNTIME_GUEST_MEMORY_POLICY_LIMIT_BYTES = 256 * 1024 * 1024;
 
 export interface NodeRuntimeCreateOptions {
   guestMemoryPolicyLimitBytes?: number;
-  maxKernelMemoryPages?: number;
+  kernelWorkerMaxMemoryPages?: number;
   maxProcessMemoryPages?: number;
   maxForkMemoryPages?: number;
 }
@@ -106,7 +106,7 @@ export async function prepareNodeRuntimeWithOptions(
   const runtime = await Runtime.create({
     wasmBytes,
     guestMemoryPolicyLimitBytes: options.guestMemoryPolicyLimitBytes ?? NODE_RUNTIME_GUEST_MEMORY_POLICY_LIMIT_BYTES,
-    maxKernelMemoryPages: options.maxKernelMemoryPages,
+    kernelWorkerMaxMemoryPages: options.kernelWorkerMaxMemoryPages,
     maxProcessMemoryPages: options.maxProcessMemoryPages,
     maxForkMemoryPages: options.maxForkMemoryPages,
   });

@@ -337,8 +337,6 @@ export function appendPlainForkMemoryDebug(
     `kernelWorkerPrivateMemoryBytes=${formatNullableBytes(ownership?.kernelWorkerPrivateMemoryBytes)}`,
     `artifactMaterializationBudgetBytes=${formatNullableBytes(ownership?.artifactMaterializationBudgetBytes)}`,
     `artifactMaterializedBytes=${formatNullableBytes(ownership?.artifactMaterializedBytes)}`,
-    `maxMemoryBytes=${handle.maxMemoryPages * 65536}`,
-    `forkMaxMemoryBytes=${handle.forkMaxMemoryPages * 65536}`,
   ].join(":"));
   if (handle.workerDebugLog.length > 4096) {
     handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 4096);

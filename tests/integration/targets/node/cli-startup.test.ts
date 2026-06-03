@@ -11,7 +11,7 @@ for (const [label, options] of [
     "browser-direct representative contract",
     {
       guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
-      maxKernelMemoryPages: 7168,
+      kernelWorkerMaxMemoryPages: 7168,
       maxProcessMemoryPages: 16384,
       maxForkMemoryPages: 16384,
     },
@@ -20,7 +20,7 @@ for (const [label, options] of [
     "demo direct contract",
     {
       guestMemoryPolicyLimitBytes: 192 * 1024 * 1024,
-      maxKernelMemoryPages: 7168,
+      kernelWorkerMaxMemoryPages: 7168,
       maxProcessMemoryPages: 20480,
       maxForkMemoryPages: 40960,
     },

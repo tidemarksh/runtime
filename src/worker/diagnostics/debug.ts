@@ -103,8 +103,6 @@ export interface ProcessExecutionStats {
   kernelWorkerPrivateMemoryBytes: number | null;
   artifactMaterializationBudgetBytes: number | null;
   artifactMaterializedBytes: number | null;
-  maxMemoryBytes: number;
-  forkMaxMemoryBytes: number;
   memoryOwnership?: RuntimeMemoryOwnership;
   guestBase: number;
   readyWorkers: number;
@@ -828,8 +826,6 @@ export function debugRuntimeExecutionStats(
         kernelWorkerPrivateMemoryBytes: ownership?.kernelWorkerPrivateMemoryBytes ?? null,
         artifactMaterializationBudgetBytes: ownership?.artifactMaterializationBudgetBytes ?? null,
         artifactMaterializedBytes: ownership?.artifactMaterializedBytes ?? null,
-        maxMemoryBytes: processMaxMemoryBytes,
-        forkMaxMemoryBytes: forkProcessMaxMemoryBytes,
         memoryOwnership: handle.memoryOwnership,
         guestBase: handle.guestBase,
         readyWorkers: handle.readyWorkers.length,

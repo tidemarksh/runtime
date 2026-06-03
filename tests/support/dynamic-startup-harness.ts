@@ -17,7 +17,7 @@ export type DynamicRunnerKind = "direct-exec" | "shell-script";
 
 export interface DynamicStartupRuntimeOptions {
   guestMemoryPolicyLimitBytes?: number;
-  maxKernelMemoryPages?: number;
+  kernelWorkerMaxMemoryPages?: number;
   maxProcessMemoryPages?: number;
   maxForkMemoryPages?: number;
 }
