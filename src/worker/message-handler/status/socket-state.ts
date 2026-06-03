@@ -103,6 +103,15 @@ export function applyThreadKernelMemoryWrites(
       }
       continue;
     }
+    if (isDirtyMemfsKernelMemoryWrite(handle, msg, write.ptr, write.bytes.length)) {
+      if (pipeSlotLifecycleDebugEnabled()) {
+        appendRuntimeLifecycleEvent?.(
+          handle.runtimeId,
+          `kernel-write-status-skip-dirty-memfs:${handle.pid}:ptr=0x${write.ptr.toString(16)}:len=${write.bytes.length}`,
+        );
+      }
+      continue;
+    }
     const restoreNetworkRecv = preserveNetworkRecvForKernelMemoryWrite(handle, msg, write.ptr, write.bytes.length);
     const writeBytes = maskIncompatibleOfdSlotKernelWrite(handle, write.ptr, write.bytes);
     memory.set(writeBytes, write.ptr);
@@ -132,6 +141,35 @@ function isFsRingKernelMemoryWrite(
   }
   const ringEnd = ringBase + FS_RING_TOTAL_BYTES;
   return ptr < ringEnd && ptr + length > ringBase;
+}
+
+function isDirtyMemfsKernelMemoryWrite(
+  handle: ProcessHandle,
+  msg: ThreadWorkerStatusMessage,
+  ptr: number,
+  length: number,
+): boolean {
+  if (!handle.processMemfsDirty || length <= 0) {
+    return false;
+  }
+  const faultStatus = handle.kernel.abi_status_fault?.();
+  const execveSpawnStatus = handle.kernel.abi_status_execve_spawn?.();
+  if (msg.status !== faultStatus && msg.status !== execveSpawnStatus) {
+    return false;
+  }
+  const regions = [
+    { start: handle.kernelState.memfsPtr, length: handle.kernelState.memfsHeaderBytes },
+    { start: handle.kernel.kernel_memfs_inodes_ptr?.() ?? 0, length: handle.kernelState.memfsInodesBytes },
+    { start: handle.kernel.kernel_memfs_first_child_ptr?.() ?? 0, length: handle.kernelState.memfsFirstChildBytes },
+    { start: handle.kernel.kernel_memfs_dir_entries_ptr?.() ?? 0, length: handle.kernelState.memfsDirEntriesBytes },
+    { start: handle.kernel.kernel_memfs_data_ptr?.() ?? 0, length: handle.kernelState.memfsDataBytes },
+  ];
+  return regions.some((region) => (
+    region.start > 0
+    && region.length > 0
+    && ptr < region.start + region.length
+    && ptr + length > region.start
+  ));
 }
 
 export function applyThreadSocketState(handle: ProcessHandle, msg: ThreadWorkerStatusMessage): void {

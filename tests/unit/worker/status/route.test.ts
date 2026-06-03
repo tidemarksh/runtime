@@ -479,6 +479,112 @@ test("status handler preserves FS ring snapshots while owner async status is pen
   );
 });
 
+test("status handler does not roll back dirty memfs from fault snapshots", () => {
+  const worker = {} as Worker;
+  const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+  const bytes = new Uint8Array(memory.buffer);
+  bytes.set([9, 9, 9, 9], 0x100);
+  bytes.set([8, 8, 8, 8], 0x200);
+  const threadWorkerStates = new WeakMap<Worker, ReturnType<typeof makeThreadState>>();
+  threadWorkerStates.set(worker, makeThreadState());
+
+  const handler = createWorkerStatusMessageHandler({
+    threadWorkerStates,
+    appendWorkerDebugLog: () => {},
+    clearBlockedWorker: () => {},
+    enqueueWorker: () => {},
+    pumpProcess: () => {},
+    kickBlockedWorkers: () => {},
+    failProcess: () => {},
+    requestPipeStateSync: async () => {},
+    requestEpollStateSync: async () => {},
+    requestSocketStateSync: async () => {},
+    resumeFsViaKernelWorker: async () => {},
+    resumeConnectViaKernelWorker: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    captureVforkSnapshot: () => {
+      throw new Error("unexpected");
+    },
+    syncForkSharedStateViaKernelWorker: async () => {},
+    syncBlockedForkSharedStateViaKernelWorker: async () => {},
+    syncProcessLifecycleViaKernelWorker: async () => {},
+    canonicalizeActiveVforkChildViaKernelWorker: async () => {},
+    attachThreadWorker: () => {},
+    completeProcessExit: async () => {},
+    handleExecveSpawn: async () => {},
+    blockWorker: () => {},
+    assertProcessStandardFdIntegrity: () => {},
+    requestEpollDependentOfdStateSync: async () => {},
+    statusOkCompletedSyncEffects: 0,
+    syncEffectPipeState: 1,
+    syncEffectSocketState: 2,
+    syncEffectEpollState: 4,
+    syncEffectEpollDependentOfdState: 8,
+    syncEffectProcessLifecycle: 16,
+    syncEffectSignalWaiters: 32,
+    syncEffectForkSharedOfdState: 64,
+    syncEffectProcessMemfs: 128,
+    statusDefersOwnedStateSync: () => false,
+  } as never);
+
+  const handle = {
+    pid: 7,
+    stdoutPipe: 0,
+    stderrPipe: 0,
+    stdinPipe: 0,
+    stdinQueue: [],
+    hostStdio: {
+      stdinPipe: 0,
+      stdoutPipe: 0,
+      stderrPipe: 0,
+      refCount: 1,
+    },
+    guestBase: 0,
+    memory,
+    outputBacklog: [],
+    workers: new Set([worker]),
+    readyWorkers: [],
+    blockedWorkers: new Map(),
+    kernelWorkerRequest: undefined,
+    kernelShare: { members: new Set(), sharedOfdIds: new Set() },
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(12),
+      stateSab: new SharedArrayBuffer(176),
+    },
+    kernel: makeKernel(7),
+    kernelState: {
+      ...makeKernelState(),
+      memfsPtr: 0x100,
+      memfsHeaderBytes: 0x20,
+      memfsInodesBytes: 0,
+      memfsFirstChildBytes: 0,
+      memfsDirEntriesBytes: 0,
+      memfsDataBytes: 0,
+    },
+    onStdout: null,
+    runningWorker: worker,
+    processMemfsDirty: true,
+  } as never;
+
+  handler(handle, worker, {
+    type: "status",
+    status: 3,
+    vmPtr: 0x1234,
+    exitCode: 1,
+    termSignal: 0,
+    pc: 0x2000n,
+    kernelState: makeKernelState(),
+    debug: "pc=0x2000 sp=0x3000 s11=0x4000",
+    kernelMemoryWrites: [
+      { ptr: 0x100, bytes: new Uint8Array([1, 2, 3, 4]) },
+      { ptr: 0x200, bytes: new Uint8Array([5, 6, 7, 8]) },
+    ],
+  });
+
+  expect(Array.from(bytes.slice(0x100, 0x104))).toEqual([9, 9, 9, 9]);
+  expect(Array.from(bytes.slice(0x200, 0x204))).toEqual([5, 6, 7, 8]);
+});
+
 test("status handler preserves network recv buffers while owner async status is pending", () => {
   const appendWorkerDebugLog = vi.fn();
   const worker = {} as Worker;
