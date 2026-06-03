@@ -36,6 +36,7 @@ export const FS_OP_GETDENTS = 9;
 export const FS_OP_TRUNCATE = 10;
 export const FS_OP_LSEEK = 11;
 export const FS_OP_MMAP = 12;
+export const FS_OP_EXECVE = 13;
 export const FS_REQ_FLAG_PWRITE = 1 << 0;
 export const FS_REQ_FLAG_WRITEV = 1 << 1;
 

@@ -23,6 +23,7 @@ import type {
 import type { SyncCause } from "../contracts/sync.js";
 import {
   FS_OP_CLOSE,
+  FS_OP_EXECVE,
   FS_OP_FSTAT,
   FS_OP_GETDENTS,
   FS_OP_LSEEK,
@@ -260,6 +261,8 @@ function fsOpName(opcode: number): string {
       return "LSEEK";
     case FS_OP_MMAP:
       return "MMAP";
+    case FS_OP_EXECVE:
+      return "EXECVE";
     default:
       return `OP${opcode}`;
   }
@@ -686,8 +689,14 @@ async function resumeFsViaKernelWorkerInner(
       effects.push({ kind: "block-worker", status });
       return { kind: "blocked", status, effects };
     }
+    const finalStatus = handle.kernel.thread_status?.(vmPtr);
+    const execveSpawnStatus = handle.kernel.abi_status_execve_spawn?.();
+    if (execveSpawnStatus !== undefined && finalStatus === execveSpawnStatus) {
+      effects.push({ kind: "handle-execve-spawn", status: finalStatus });
+      return completedKernelRpcOutcome(undefined, effects);
+    }
     effects.push({ kind: "enqueue-worker" });
-    return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr), effects);
+    return completedKernelRpcOutcome(finalStatus, effects);
   }
 
   try {
@@ -851,8 +860,14 @@ async function resumeFsViaKernelWorkerInner(
       effects.push({ kind: "block-worker", status });
       return { kind: "blocked", status, effects };
     }
+    const finalStatus = handle.kernel.thread_status?.(vmPtr);
+    const execveSpawnStatus = handle.kernel.abi_status_execve_spawn?.();
+    if (execveSpawnStatus !== undefined && finalStatus === execveSpawnStatus) {
+      effects.push({ kind: "handle-execve-spawn", status: finalStatus });
+      return completedKernelRpcOutcome(undefined, effects);
+    }
     effects.push({ kind: "enqueue-worker" });
-    return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr), effects);
+    return completedKernelRpcOutcome(finalStatus, effects);
   } catch (error) {
     const errorDetail = formatFsErrorDetail(error);
     deps.appendWorkerDebugLog(handle, `fs-err:0x${vmPtr.toString(16)}${errorDetail}`);

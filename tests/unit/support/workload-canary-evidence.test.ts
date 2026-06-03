@@ -220,6 +220,12 @@ const workloadCanaries: readonly CanaryEvidence[] = [
     primaryRuntimeEvidence: [...execHandoffEvidence, ...fsEvidence, "worker/io/stdio.test.ts"],
   },
   {
+    workload: "execve/dynamic-loader-backing.test.ts",
+    contracts: ["execve backing store", "dynamic loader", "filesystem snapshot", "page cache"],
+    canaryReason: "Dynamic-loader backing is a focused workload canary for execve over snapshot-backed files; generic exec handoff, filesystem, and page-cache ownership remains in runtime unit evidence.",
+    primaryRuntimeEvidence: [...execHandoffEvidence, ...fsEvidence, "fs/sab-page-cache.test.ts"],
+  },
+  {
     workload: "apt/fork-memfs-page-cache.test.ts",
     contracts: ["fork shared state", "process memfs sync", "page cache"],
     canaryReason: "Fork plus memfs page-cache uses a full guest flow as a canary; shared state, memfs, and page-cache mechanics are owned by runtime tests.",

@@ -83,6 +83,7 @@ const inventory: readonly InventoryEntry[] = [
   { module: "fs-ring", name: "FS_OP_GETDENTS", classification: "abi-test-covered", protectedBy: [fsRingTest] },
   { module: "fs-ring", name: "FS_OP_LSEEK", classification: "abi-test-covered", protectedBy: [fsRingTest] },
   { module: "fs-ring", name: "FS_OP_MMAP", classification: "abi-test-covered", protectedBy: [fsRingTest] },
+  { module: "fs-ring", name: "FS_OP_EXECVE", classification: "abi-test-covered", protectedBy: [fsRingTest] },
   { module: "fs-ring", name: "FS_OP_RENAME", classification: "abi-test-covered", protectedBy: [fsRingTest] },
   { module: "fs-ring", name: "FS_OP_TRUNCATE", classification: "abi-test-covered", protectedBy: [fsRingTest] },
   { module: "fs-ring", name: "FS_REQ_FLAG_PWRITE", classification: "abi-test-covered", protectedBy: [fsRingTest] },

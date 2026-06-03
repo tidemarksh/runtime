@@ -34,7 +34,9 @@ import {
 import {
   copyKernelPrivateRegion,
   ensureMemoryCapacity,
+  writeKernelScratch,
 } from "../kernel-scratch.js";
+import { normalizePath, resolveMemfsPath } from "../process-fs.js";
 import { acquireWorker, ensureEvictionTimer } from "../pool.js";
 import { createForkChildHandle } from "./common.js";
 import { normalizeGuestMemoryPolicyLimitBytes } from "./common.js";
@@ -49,6 +51,7 @@ const VFORK_EXECVE_HANDOFF_FAILURE_WAIT_STATUS = 127 << 8;
 const HANDOFF_DEBUG_STRING_LIMIT = 128;
 const EXECVE_CHILD_HANDOFF_HEADROOM_BYTES = 0x10000;
 const EXECVE_CHILD_LIVE_STACK_WINDOW_BYTES = 8 * 1024 * 1024;
+const execveTargetEncoder = new TextEncoder();
 
 function formatGuestCStringForDebug(
   handle: ProcessHandle,
@@ -204,6 +207,68 @@ function copyExecveKernelRuntimeRegions(handle: ProcessHandle, target: WebAssemb
     handle.kernelState.timeStatePtr,
     handle.kernel.kernel_time_state_bytes(),
   );
+}
+
+async function materializeExecveTargetForHandoff(
+  handle: ProcessHandle,
+  childKernel: KernelExports,
+  pathBytes: Uint8Array,
+): Promise<void> {
+  if (!handle.kernelWorkerRequest || pathBytes.length === 0) {
+    return;
+  }
+  const path = decodeExecveBytes(pathBytes[pathBytes.length - 1] === 0
+    ? pathBytes.subarray(0, pathBytes.length - 1)
+    : pathBytes);
+  if (!path) {
+    return;
+  }
+  const ino = resolveMemfsPath(childKernel, path);
+  if (ino === 0) {
+    return;
+  }
+  const normalizedPath = normalizePath(path);
+  if (normalizedPath === "/") {
+    return;
+  }
+  const parts = normalizedPath.split("/").filter(Boolean);
+  const name = parts.pop();
+  if (!name) {
+    return;
+  }
+  const parentPath = parts.length === 0 ? "/" : `/${parts.join("/")}`;
+  const parentIno = resolveMemfsPath(childKernel, parentPath);
+  if (parentIno === 0) {
+    throw new Error(`failed to resolve vfork exec target parent: ${parentPath}`);
+  }
+  const response = await handle.kernelWorkerRequest({ type: "read-file", path });
+  if (response.type !== "file-read") {
+    throw new Error(`unexpected kernel-worker read-file response: ${response.type}`);
+  }
+  const mode = childKernel.memfs_inode_mode(ino) & 0o7777;
+  const nameBytes = execveTargetEncoder.encode(name);
+  const namePtr = writeKernelScratch(childKernel, nameBytes);
+  const unlinkResult = Number(childKernel.memfs_unlink(parentIno, namePtr, nameBytes.length));
+  if (unlinkResult < 0) {
+    throw new Error(`failed to replace vfork exec target: ${path}`);
+  }
+  const dataPtr = response.data.length > 0
+    ? writeKernelScratch(childKernel, response.data, 0x4000)
+    : writeKernelScratch(childKernel, new Uint8Array(), 0x4000);
+  const createdIno = childKernel.memfs_create_file_with_data(
+    parentIno,
+    namePtr,
+    nameBytes.length,
+    dataPtr,
+    response.data.length,
+  );
+  if (createdIno === 0) {
+    throw new Error(`failed to materialize vfork exec target: ${path}`);
+  }
+  const modeResult = Number(childKernel.memfs_set_mode(createdIno, mode));
+  if (modeResult < 0) {
+    throw new Error(`failed to set vfork exec target mode: ${path}`);
+  }
 }
 
 function execveChildInitialMemoryBytes(
@@ -541,6 +606,7 @@ export async function handleVforkExecve(
   );
   let execRet: number;
   try {
+    await materializeExecveTargetForHandoff(handle, childKernel, execveGuestPayload.path);
     execRet = Number(childKernel.thread_complete_execve_handoff(childVmPtr));
   } catch (error) {
     const debugStage = childKernel.debug_execve_stage?.();

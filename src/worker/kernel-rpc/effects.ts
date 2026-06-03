@@ -1,6 +1,6 @@
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
 import { readKernelRuntimeState } from "../../abi.js";
-import type { ProcessHandle } from "../types.js";
+import type { ProcessHandle, ThreadWorkerState } from "../types.js";
 import type { SyncCause } from "../contracts/sync.js";
 import type {
   KernelRpcResumeEffect,
@@ -11,6 +11,7 @@ export interface KernelRpcResumeEffectPorts {
   blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   handleBlockedRetryResult(handle: ProcessHandle, worker: Worker, vmPtr: number, status: number): void;
+  handleExecveSpawn(handle: ProcessHandle, worker: Worker, thread: ThreadWorkerState): Promise<void>;
   kickBlockedWorkers(handle: ProcessHandle): void;
   markRuntimeFsDirty(handle: ProcessHandle): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
@@ -46,6 +47,7 @@ export interface KernelRpcResumeEffectPorts {
     handle: ProcessHandle,
     cause: SyncCause,
   ): Promise<{ socketUsed: number; netBufUsed: bigint }>;
+  threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
 }
 
 export interface KernelRpcResumeContinuationPorts {
@@ -146,6 +148,21 @@ async function applyKernelRpcResumeEffect(
     case "handle-blocked-retry-result":
       ports.handleBlockedRetryResult(handle, worker, vmPtr, effect.status);
       return;
+    case "handle-execve-spawn": {
+      const thread = ports.threadWorkerStates.get(worker);
+      if (!thread || thread.vmPtr !== vmPtr) {
+        return;
+      }
+      thread.ownerAsyncStatus = effect.status;
+      try {
+        await ports.handleExecveSpawn(handle, worker, thread);
+      } finally {
+        if (handle.workers.has(worker) && ports.threadWorkerStates.get(worker) === thread) {
+          thread.ownerAsyncStatus = null;
+        }
+      }
+      return;
+    }
     case "kick-blocked-workers":
       ports.kickBlockedWorkers(handle);
       return;
