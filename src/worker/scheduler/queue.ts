@@ -661,6 +661,9 @@ export function createWorkerSchedulerQueueHelpers(
       return;
     }
     handle.runningWorker = next;
+    if (handle.readyWorkers.length > 0) {
+      readyWorkerFairness.scheduleRunningWorkerRepairRetry(handle);
+    }
     const vmPtr = deps.threadWorkerStates.get(next)?.vmPtr;
     const thread = deps.threadWorkerStates.get(next);
     if (thread && vmPtr !== undefined) {
