@@ -31,6 +31,7 @@
     "test:integration": "vp test tests/integration --no-file-parallelism",
     "test:integration:runtime": "vp test tests/integration/runtime --no-file-parallelism",
     "test:integration:targets": "vp test tests/integration/targets --no-file-parallelism",
+    "test:integration:focus": "sh -c 'vp test \"$@\" --no-file-parallelism --run' --",
     "typecheck": "tsc --noEmit",
     "release": "bumpp",
     "prepublishOnly": "pnpm run build"

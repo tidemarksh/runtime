@@ -39,12 +39,17 @@ pnpm run test:unit
 pnpm run test:integration
 pnpm run test:integration:runtime
 pnpm run test:integration:targets
+pnpm run test:integration:focus -- <test-file>
 pnpm run prepare:integration -- \
   --manifest ../artifacts/manifests/runtime-workloads.json \
   --profile <profile>
 ```
 
 `pnpm test` and `pnpm run test:unit` run only `tests/unit`.
+
+`pnpm run test:integration:focus -- <test-file>` runs a selected integration
+test through the same integration environment setup as the broader integration
+package scripts.
 
 `prepare:integration` downloads pinned GitHub Release assets from the
 `artifacts` repository manifest, verifies SHA256, extracts payloads into
