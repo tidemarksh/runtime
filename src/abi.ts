@@ -571,6 +571,8 @@ export interface KernelExports {
   debug_memory_vma_end?(index: number): bigint | number;
   debug_memory_vma_prot?(index: number): number;
   debug_memory_vma_flags?(index: number): number;
+  debug_memory_vma_fd?(index: number): number;
+  debug_memory_vma_offset?(index: number): bigint | number;
   sig_slots_ptr?(): number;
   process_pending_ptr?(): number;
   debug_signal_delivery_sig?(): number;

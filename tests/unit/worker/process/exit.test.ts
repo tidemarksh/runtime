@@ -813,7 +813,7 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
   expect(parent.lastDebugMessage).toContain("fault_pc=0x5566");
   expect(parent.lastDebugMessage).toContain("fault_addr=0xdeadbeef");
   expect(parent.lastDebugMessage).toContain("fault_insn=[pc_insn=0x13:fault_insn=0x8067]");
-  expect(parent.lastDebugMessage).toContain("fault_vma=[pc=1/0x7000-0x8000/prot=5/flags=18:fault_pc=0/0x5000-0x6000/prot=1/flags=2:fault_addr=none]");
+  expect(parent.lastDebugMessage).toContain("fault_vma=[pc=1/0x7000-0x8000/prot=5/flags=18/fd=n/a/off=0:fault_pc=0/0x5000-0x6000/prot=1/flags=2/fd=n/a/off=0:fault_addr=none]");
   expect(parent.lastDebugMessage).toContain("fault_kind=2");
   expect(parent.lastDebugMessage).toContain("fault_signal=11");
   expect(parent.lastDebugMessage).toContain("fault_code=1");

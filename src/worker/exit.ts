@@ -478,6 +478,8 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         `0x${start.toString(16)}-0x${end.toString(16)}`,
         `prot=${handle.kernel.debug_memory_vma_prot?.(index) ?? 0}`,
         `flags=${handle.kernel.debug_memory_vma_flags?.(index) ?? 0}`,
+        `fd=${handle.kernel.debug_memory_vma_fd?.(index) ?? "n/a"}`,
+        `off=${BigInt(handle.kernel.debug_memory_vma_offset?.(index) ?? 0).toString()}`,
       ].join("/");
     }
     return "none";
