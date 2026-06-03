@@ -12,6 +12,7 @@ export interface KernelEnvImports {
 export interface KernelEnvOptions {
   sabPageCache?: SharedArrayBuffer | null;
   readFileDataByInode?: (ino: number, offset: number, length: number) => Uint8Array | null;
+  writeFileDataByInode?: (ino: number, offset: number, data: Uint8Array) => number;
 }
 
 export function createKernelEnv(
@@ -20,6 +21,7 @@ export function createKernelEnv(
 ): KernelEnvImports {
   const sabPageCache = options.sabPageCache ?? null;
   const readFileDataByInode = options.readFileDataByInode;
+  const writeFileDataByInode = options.writeFileDataByInode;
   return {
     memory,
     tidemark_memory_atomic_notify(ptr, maxWake) {
@@ -106,6 +108,9 @@ export function createKernelEnv(
         return -14n;
       }
       const source = new Uint8Array(memory.buffer, srcPtr, srcLen);
+      if (writeFileDataByInode) {
+        return BigInt(writeFileDataByInode(ino, offsetNumber, source));
+      }
       return BigInt(writeFileData(sabPageCache, ino, offsetNumber, source));
     },
   };

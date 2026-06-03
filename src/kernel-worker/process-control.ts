@@ -93,6 +93,7 @@ interface KernelWorkerProcessControlDeps {
   rebuildPageCacheFromCanonical(): void;
   restorePublishedRegularFileDataFromPageCache?(targetExports?: KernelExports): void;
   readBackingFileByInode(ino: number): Uint8Array | null;
+  writeBackingFileByInode(ino: number, offset: number, data: Uint8Array): number;
   syncPipeState(
     pid: number,
     kernelState: KernelRuntimeState,
@@ -240,6 +241,10 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     return backing.subarray(offset, Math.min(backing.length, offset + length));
   }
 
+  function writeBackingFileRange(ino: number, offset: number, data: Uint8Array): number {
+    return deps.writeBackingFileByInode(ino, offset, data);
+  }
+
   function readPendingFsMutationContext(
     processExports: KernelExports,
     vmPtr: number,
@@ -385,6 +390,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     }, {
       sabPageCache: pageCache,
       readFileDataByInode: readBackingFileRange,
+      writeFileDataByInode: writeBackingFileRange,
     });
     const nextExports = instance.exports as unknown as KernelExports;
     configureKernelInstanceStack(nextExports, KERNEL_WORKER_STACK_SLOT);
@@ -441,6 +447,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       env: createKernelEnv(memory, {
         sabPageCache: deps.getSabPageCache(),
         readFileDataByInode: readBackingFileRange,
+        writeFileDataByInode: writeBackingFileRange,
       }),
     });
     // Registering a process must not mutate the caller-owned shared memory.
@@ -652,14 +659,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       fullSyncApplied = true;
     }
     const nextKernelState = readKernelRuntimeState(processExports);
-    return {
-      kernelState: nextKernelState,
-      result,
-      memfsMutated: mutation.memfsMutated,
-      ofdStateChanged: mutation.ofdStateChanged,
-      fdEntries,
-      ofdSlots,
-      fsDebug: shouldEmitProcessFsDebug(pendingContext, mutation, fullSyncApplied)
+    const fsDebug = shouldEmitProcessFsDebug(pendingContext, mutation, fullSyncApplied)
         ? formatProcessFsDebug(
             pid,
             vmPtr,
@@ -669,7 +669,15 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
             fullSyncApplied,
             processExports,
           )
-        : undefined,
+        : undefined;
+    return {
+      kernelState: nextKernelState,
+      result,
+      memfsMutated: mutation.memfsMutated,
+      ofdStateChanged: mutation.ofdStateChanged,
+      fdEntries,
+      ofdSlots,
+      fsDebug,
     };
   }
 

@@ -73,6 +73,35 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     return backingStore.read(fileObjectId, 0, stat.size);
   }
 
+  function writeBackingFileByInode(ino: number, offset: number, data: Uint8Array): number {
+    if (!Number.isInteger(ino) || ino <= 0 || ino >= MAX_INODES || offset < 0) {
+      return -22;
+    }
+    if (data.length === 0) {
+      return 0;
+    }
+    try {
+      let fileObjectId = fileObjectIdsByIno.get(ino);
+      if (fileObjectId === undefined) {
+        const file = backingStore.createFile();
+        fileObjectId = file.fileObjectId;
+        fileObjectIdsByIno.set(ino, fileObjectId);
+      }
+      const stat = backingStore.write(fileObjectId, offset, data);
+      const published = readInodeRecord(deps.getSabPageCache(), ino);
+      publishInode(deps.getSabPageCache(), ino, {
+        mode: published?.mode ?? 0o100644,
+        size: stat.size,
+        parentIno: published?.parentIno ?? 0,
+        name: published?.name ?? new Uint8Array(),
+        nextSibling: published?.nextSibling ?? 0,
+      }, null);
+      return data.length;
+    } catch {
+      return -28;
+    }
+  }
+
   function hasBackingFile(ino: number): boolean {
     return readBackingFileByInode(ino) !== null;
   }
@@ -742,6 +771,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     readlink,
     readdir,
     readBackingFileByInode,
+    writeBackingFileByInode,
     rebuildPageCacheFromExports,
     rebuildPageCacheFromCanonical,
     resolvePath,

@@ -117,6 +117,42 @@ test("page-cache zero-length read on kernel-worker backing data returns zero", (
   expect(calls).toBe(0);
 });
 
+test("page-cache write can update backing data when resident capacity is smaller than the file", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 8);
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const backing = new Uint8Array(128);
+  const source = Uint8Array.from({ length: 64 }, (_value, index) => 0x40 + index);
+  new Uint8Array(memory.buffer, 256, source.length).set(source);
+
+  publishInode(sab, 2, {
+    mode: 0o100644,
+    size: 0,
+    parentIno: 1,
+    name: new TextEncoder().encode("external"),
+    nextSibling: 0,
+  }, null);
+
+  const env = createKernelEnv(memory, {
+    sabPageCache: sab,
+    readFileDataByInode: (_ino, offset, length) => backing.subarray(offset, offset + length),
+    writeFileDataByInode: (ino, offset, data) => {
+      backing.set(data, offset);
+      publishInode(sab, ino, {
+        mode: 0o100644,
+        size: offset + data.length,
+        parentIno: 1,
+        name: new TextEncoder().encode("external"),
+        nextSibling: 0,
+      }, null);
+      return data.length;
+    },
+  });
+
+  expect(env.tidemark_page_cache_write(2, 32n, 256, source.length)).toBe(BigInt(source.length));
+  expect(env.tidemark_page_cache_read(2, 32n, 512, source.length)).toBe(BigInt(source.length));
+  expect(new Uint8Array(memory.buffer, 512, source.length)).toEqual(source);
+});
+
 test("page-cache supports kernel-sized high inode numbers", () => {
   const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 64);
   const ino = MAX_INODES - 1;
