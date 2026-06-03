@@ -129,7 +129,7 @@ test("stepThread resolves FUTEX_WAIT in-worker before reporting completion", () 
       thread_futex_wait_addr: () => 0n,
       thread_futex_wait_timeout: () => 0n,
       thread_futex_wait_expected: () => 0,
-      thread_record_blocked_addr: () => 0,
+      thread_record_blocked_addr: () => 0n,
       thread_sig_pending: () => 0n,
       thread_resume_futex_wait: resumeFutexWait,
       thread_resume_futex_wait_result: () => {},

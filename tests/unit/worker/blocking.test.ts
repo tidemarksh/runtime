@@ -126,7 +126,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     abi_status_flock_wait: () => 32,
     abi_spawn_kind_none: () => 0, abi_spawn_kind_execve: () => 1,
     abi_spawn_kind_fork: () => 2,
-    abi_page_size: () => 4096, abi_max_fds: () => 256,
+    abi_page_size: () => 4096, abi_guest_address_profile_target: () => 2, abi_max_fds: () => 256,
     abi_max_threads: () => 64, abi_max_pipes: () => 64,
     abi_fd_type_none: () => 0, abi_fd_type_file: () => 1,
     abi_fd_type_pipe: () => 2, abi_fd_type_epoll: () => 3,
@@ -186,8 +186,16 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     process_push_arg: () => {}, process_push_env: () => {},
     process_clear_args: () => {},
     process_guest_base: () => 0x1000,
+    process_guest_base_for_address_profile: () => 0x1000n,
     process_inspect_elf_brk: () => 0x40_0000n,
+    process_inspect_elf_brk_with_memory_policy: () => 0x40_0000n,
     process_create: () => {
+      initPipeSlot(1);
+      initPipeSlot(2);
+      initPipeSlot(3);
+      return 0x1234;
+    },
+    process_create_with_memory_policy: () => {
       initPipeSlot(1);
       initPipeSlot(2);
       initPipeSlot(3);

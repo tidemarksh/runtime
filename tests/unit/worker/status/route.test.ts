@@ -703,7 +703,7 @@ test("status handler keeps faulting worker tracked until completeProcessExit run
     },
   );
 
-  expect(completeProcessExit).toHaveBeenCalledWith(handle, 139, 11);
+  expect(completeProcessExit).toHaveBeenCalledWith(handle, 139, 11, 0x1234);
   expect(handle.workers.has(worker)).toBe(true);
   expect(threadWorkerStates.get(worker)?.vmPtr).toBe(0x1234);
   expect(handle.lastDebugMessage).toBe("pc=0x67c5be sp=0x197d120 s11=0x1 process_thread_count=2");
