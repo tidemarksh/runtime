@@ -718,6 +718,9 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     attachKernelRuntimeState(processExports, kernelState);
     const pendingContext = readPendingFsMutationContext(processExports, vmPtr);
     const pendingMmapGuestWrite = readPendingMmapGuestWriteRequest(processExports, vmPtr);
+    if (pendingMmapGuestWrite !== null) {
+      deps.restorePublishedRegularFileDataFromPageCache?.(processExports);
+    }
     processExports.thread_process_fs(vmPtr);
     const result = BigInt(processExports.thread_resume_fs(vmPtr));
     const fsSucceeded = Number(BigInt.asIntN(64, result)) >= 0;

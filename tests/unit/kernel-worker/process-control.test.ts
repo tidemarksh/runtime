@@ -570,6 +570,10 @@ test("processFs returns mmap guest memory populated by kernel-worker fs processi
     },
   });
   const processKernels = new Map<number, KernelExports>([[7, processExports]]);
+  const restorePublishedRegularFileDataFromPageCache = vi.fn((targetExports?: KernelExports) => {
+    expect(targetExports).toBe(processExports);
+    processExports.opLog.push("restore-published-data");
+  });
 
   const processControl = createKernelWorkerProcessControl({
     getCanonicalExports: () => canonicalExports,
@@ -589,6 +593,7 @@ test("processFs returns mmap guest memory populated by kernel-worker fs processi
     copyMemfsState: () => {},
     rebuildPageCacheFromExports: () => {},
     rebuildPageCacheFromCanonical: () => {},
+    restorePublishedRegularFileDataFromPageCache,
     syncPipeState: (_pid, kernelState) => kernelState,
     syncEpollState: (_pid, kernelState) => kernelState,
     syncSocketState: (_pid, kernelState) => kernelState,
@@ -622,6 +627,10 @@ test("processFs returns mmap guest memory populated by kernel-worker fs processi
 
   const result = processControl.processFs(7, 0x1234, makeKernelState());
 
+  expect(restorePublishedRegularFileDataFromPageCache).toHaveBeenCalledTimes(1);
+  expect(processExports.opLog.indexOf("restore-published-data")).toBeLessThan(
+    processExports.opLog.indexOf("process-fs"),
+  );
   expect(result.result).toBe(0x8000n);
   expect(result.guestMemoryWrites).toHaveLength(1);
   expect(result.guestMemoryWrites?.[0]?.guestPtr).toBe(0x8000);
