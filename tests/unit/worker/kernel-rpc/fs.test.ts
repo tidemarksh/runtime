@@ -2,7 +2,7 @@ import { expect, test, vi } from "vite-plus/test";
 import { createWorkerKernelRpcFsHelpers } from "../../../../src/worker/kernel-rpc/fs.js";
 import type { KernelRuntimeState } from "../../../../src/abi.js";
 import { createTransferDebugStats } from "../../../../src/worker/types.js";
-import type { ProcessHandle } from "../../../../src/worker/types.js";
+import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 
 function makeKernelState(): KernelRuntimeState {
   return {
@@ -208,10 +208,13 @@ test("kernel-worker fs outcome skips memfs publication effect when no fork-share
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
   handle.workers.add(worker);
-  const threadWorkerStates = new WeakMap<Worker, object>();
-  threadWorkerStates.set(worker, {});
+  const threadState = {
+    pendingGuestMemoryWrites: [],
+  } as unknown as ThreadWorkerState;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, threadState);
   const helpers = createWorkerKernelRpcFsHelpers({
-    threadWorkerStates: threadWorkerStates as never,
+    threadWorkerStates,
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
@@ -284,10 +287,13 @@ test("kernel-worker fs outcome applies mmap guest memory writes from fs response
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
   handle.workers.add(worker);
-  const threadWorkerStates = new WeakMap<Worker, object>();
-  threadWorkerStates.set(worker, {});
+  const threadState = {
+    pendingGuestMemoryWrites: [],
+  } as unknown as ThreadWorkerState;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, threadState);
   const helpers = createWorkerKernelRpcFsHelpers({
-    threadWorkerStates: threadWorkerStates as never,
+    threadWorkerStates,
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
@@ -316,6 +322,9 @@ test("kernel-worker fs outcome applies mmap guest memory writes from fs response
 
   expect(outcome).toMatchObject({ kind: "completed", status: 0 });
   expect(new Uint8Array(handle.memory.buffer, 0x1200, mappedBytes.length)).toEqual(mappedBytes);
+  expect(threadState.pendingGuestMemoryWrites).toHaveLength(1);
+  expect(threadState.pendingGuestMemoryWrites[0].guestPtr).toBe(0x200);
+  expect(threadState.pendingGuestMemoryWrites[0].bytes).toEqual(mappedBytes);
 });
 
 test("kernel-worker fs outcome preserves published data when publishing file writes", async () => {

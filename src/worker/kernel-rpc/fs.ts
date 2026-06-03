@@ -588,12 +588,14 @@ function restoreFsFdState(handle: ProcessHandle, snapshot: FsFdStateSnapshot | n
 
 function applyFsGuestMemoryWrites(
   handle: ProcessHandle,
+  thread: ThreadWorkerState | undefined,
   writes: GuestMemoryWriteSnapshot[] | undefined,
 ): void {
   if (!writes || writes.length === 0) {
     return;
   }
   const memory = new Uint8Array(handle.memory.buffer);
+  const pendingWrites: GuestMemoryWriteSnapshot[] = [];
   for (const write of writes) {
     const start = handle.guestBase + write.guestPtr;
     if (
@@ -605,6 +607,17 @@ function applyFsGuestMemoryWrites(
       continue;
     }
     memory.set(write.bytes, start);
+    pendingWrites.push({
+      guestPtr: write.guestPtr,
+      bytes: memory.slice(start, start + write.bytes.length),
+    });
+  }
+  if (pendingWrites.length === 0 || !thread) {
+    return;
+  }
+  thread.pendingGuestMemoryWrites.push(...pendingWrites);
+  if (thread.pendingGuestMemoryWrites.length > 32) {
+    thread.pendingGuestMemoryWrites.splice(0, thread.pendingGuestMemoryWrites.length - 32);
   }
 }
 
@@ -785,7 +798,7 @@ async function resumeFsViaKernelWorkerInner(
     }
     handle.kernelState = adoptKernelStateForHandle(handle, fsProcessedResponse.kernelState);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
-    applyFsGuestMemoryWrites(handle, fsProcessedResponse.guestMemoryWrites);
+    applyFsGuestMemoryWrites(handle, deps.threadWorkerStates.get(worker), fsProcessedResponse.guestMemoryWrites);
     if (fsProcessedResponse.ofdSlots || fsProcessedResponse.fdEntries) {
       applyThreadOfdSlots(handle, {
         vmPtr,
