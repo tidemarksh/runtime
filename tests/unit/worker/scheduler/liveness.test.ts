@@ -1821,6 +1821,7 @@ test("pumpProcess schedules stale repair when dispatch leaves a ready sibling qu
     type: "step",
     budget: expect.any(Number),
   }));
+  expect(handle.readyWorkers).not.toContain(firstWorker);
 });
 
 test("pumpProcess clears a stale running worker when the unanswered step shares a status millisecond", () => {

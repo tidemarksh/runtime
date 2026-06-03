@@ -587,6 +587,7 @@ export function createWorkerSchedulerQueueHelpers(
         !thread?.initialized
         || thread.waitingInWorkerStatus !== null
         || thread.ownerAsyncStatus !== null
+        || thread.stepCount > thread.statusCount
       ) {
         continue;
       }
