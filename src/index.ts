@@ -47,7 +47,8 @@ export interface RuntimeOptions {
   networkBridge?: RuntimeNetworkBridge;
 }
 
-const MIN_RAM_SIZE_BYTES = 16 * 1024 * 1024;
+const MIN_GUEST_MEMORY_POLICY_LIMIT_BYTES = 16 * 1024 * 1024;
+const MIN_PAGE_CACHE_DATA_CAPACITY_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MAX_MEMORY_PAGES = 32768;
 
 interface RuntimeMemoryConfig {
@@ -173,12 +174,12 @@ export class Runtime {
     );
     this.memoryConfig = {
       guestMemoryPolicyLimitBytes: Math.max(
-        options.guestMemoryPolicyLimitBytes ?? MIN_RAM_SIZE_BYTES,
-        MIN_RAM_SIZE_BYTES,
+        options.guestMemoryPolicyLimitBytes ?? MIN_GUEST_MEMORY_POLICY_LIMIT_BYTES,
+        MIN_GUEST_MEMORY_POLICY_LIMIT_BYTES,
       ),
       pageCacheDataCapacityBytes: Math.max(
-        options.pageCacheDataCapacityBytes ?? MIN_RAM_SIZE_BYTES,
-        MIN_RAM_SIZE_BYTES,
+        options.pageCacheDataCapacityBytes ?? MIN_PAGE_CACHE_DATA_CAPACITY_BYTES,
+        MIN_PAGE_CACHE_DATA_CAPACITY_BYTES,
       ),
       kernelWorkerMaxMemoryPages: Math.max(
         options.kernelWorkerMaxMemoryPages ?? options.maxKernelMemoryPages ?? DEFAULT_MAX_MEMORY_PAGES,

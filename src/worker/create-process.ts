@@ -44,7 +44,7 @@ const DEFAULT_PROCESS_STACK_SIZE_BYTES = 8 * 1024 * 1024;
 
 const encoder = new TextEncoder();
 const WORKER_DEBUG_LOG_ENABLED = false;
-const MIN_PROCESS_RAM_SIZE_BYTES = 16 * 1024 * 1024;
+const MIN_GUEST_MEMORY_POLICY_LIMIT_BYTES = 16 * 1024 * 1024;
 
 function readElfInterpPath(elfData: Uint8Array): string | null {
   if (elfData.length < 64) {
@@ -544,8 +544,8 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     options: CreateProcessOptions = {},
   ): Promise<ProcessHandle> {
     const guestMemoryPolicyLimitBytes = Math.max(
-      options.guestMemoryPolicyLimitBytes ?? MIN_PROCESS_RAM_SIZE_BYTES,
-      MIN_PROCESS_RAM_SIZE_BYTES,
+      options.guestMemoryPolicyLimitBytes ?? MIN_GUEST_MEMORY_POLICY_LIMIT_BYTES,
+      MIN_GUEST_MEMORY_POLICY_LIMIT_BYTES,
     );
     const minMemoryPages = Math.ceil(deps.bootstrapMemoryBytes / deps.wasmPageSize);
     const requestedMaxMemoryPages = Math.max(options.maxMemoryPages ?? deps.wasmMaxPages, 1);
