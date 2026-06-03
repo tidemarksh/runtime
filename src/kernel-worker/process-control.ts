@@ -93,6 +93,7 @@ interface KernelWorkerProcessControlDeps {
   rebuildPageCacheFromCanonical(): void;
   restorePublishedRegularFileDataFromPageCache?(targetExports?: KernelExports): void;
   readBackingFileByInode(ino: number): Uint8Array | null;
+  readBackingFileRangeByInode(ino: number, offset: number, length: number): Uint8Array | null;
   writeBackingFileByInode(ino: number, offset: number, data: Uint8Array): number;
   syncPipeState(
     pid: number,
@@ -234,11 +235,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
   }
 
   function readBackingFileRange(ino: number, offset: number, length: number): Uint8Array | null {
-    const backing = deps.readBackingFileByInode(ino);
-    if (!backing || length <= 0 || offset < 0 || offset >= backing.length) {
-      return null;
-    }
-    return backing.subarray(offset, Math.min(backing.length, offset + length));
+    return deps.readBackingFileRangeByInode(ino, offset, length);
   }
 
   function writeBackingFileRange(ino: number, offset: number, data: Uint8Array): number {

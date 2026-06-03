@@ -73,6 +73,24 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     return backingStore.read(fileObjectId, 0, stat.size);
   }
 
+  function readBackingFileRangeByInode(ino: number, offset: number, length: number): Uint8Array | null {
+    const fileObjectId = fileObjectIdsByIno.get(ino);
+    if (
+      fileObjectId === undefined
+      || !Number.isInteger(offset)
+      || !Number.isInteger(length)
+      || offset < 0
+      || length <= 0
+    ) {
+      return null;
+    }
+    const stat = backingStore.stat(fileObjectId);
+    if (!stat || offset >= stat.size) {
+      return null;
+    }
+    return backingStore.read(fileObjectId, offset, Math.min(length, stat.size - offset));
+  }
+
   function writeBackingFileByInode(ino: number, offset: number, data: Uint8Array): number {
     if (!Number.isInteger(ino) || ino <= 0 || ino >= MAX_INODES || offset < 0) {
       return -22;
@@ -771,6 +789,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     readlink,
     readdir,
     readBackingFileByInode,
+    readBackingFileRangeByInode,
     writeBackingFileByInode,
     rebuildPageCacheFromExports,
     rebuildPageCacheFromCanonical,

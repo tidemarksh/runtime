@@ -670,6 +670,19 @@ test("kernel-worker readFile uses backing data when memfs and resident page-cach
   expect(fsState.readFile("/usr/bin/sqv")).toEqual(data);
 });
 
+test("kernel-worker backing range read returns only the requested byte range", () => {
+  const { canonicalExports, fsState } = makeFsState();
+  const data = new Uint8Array(128 * 1024).map((_, index) => (index * 13) & 0xff);
+
+  fsState.writeFile("/usr/bin/rustc", data, 0o755, false);
+  const ino = canonicalExports.fileIno("/usr/bin/rustc");
+
+  expect(fsState.readBackingFileRangeByInode(ino, 4093, 32)).toEqual(data.subarray(4093, 4093 + 32));
+  expect(fsState.readBackingFileRangeByInode(ino, data.length - 8, 32)).toEqual(data.subarray(data.length - 8));
+  expect(fsState.readBackingFileRangeByInode(ino, data.length, 32)).toBeNull();
+  expect(fsState.readBackingFileRangeByInode(ino, -1, 32)).toBeNull();
+});
+
 test("kernel-worker symlink uses basename scratch independently from resolvePath scratch", () => {
   const { canonicalExports, fsState } = makeFsState();
 
