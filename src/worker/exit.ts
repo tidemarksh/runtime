@@ -758,7 +758,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
           cause: { kind: "syscall", nr: -1n, name: "process-exit-memfs-publication" },
           includeMemfs: true,
           memfsOnly: true,
-          preservePublishedRegularFileData: false,
+          preservePublishedRegularFileData: true,
           trackHeldOfds: false,
           sourceVmPtr: handle.vmPtr,
         });
