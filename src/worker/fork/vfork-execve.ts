@@ -372,9 +372,9 @@ export async function handleVforkExecve(
     const execveGuestPayload = captureExecveGuestHandoff(
       handle,
       parentThread.vmPtr,
-      Number(handoffBeforePreflight.path),
-      Number(handoffBeforePreflight.argv),
-      Number(handoffBeforePreflight.envp),
+      handoffBeforePreflight.path,
+      handoffBeforePreflight.argv,
+      handoffBeforePreflight.envp,
       parentThread.execveProcessState,
     );
     if (handle.kernelWorkerRequest && handle.pid > 0) {

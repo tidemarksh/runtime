@@ -1107,7 +1107,7 @@ test("vfork execve detached child memory does not inherit the parent linear memo
   const parentKernel = createdKernelExports[0];
 
   const liveStackPtr = 0x2400000;
-  parentKernel.memory.grow(512);
+  (parentKernel.memory.grow as unknown as (delta: bigint) => number)(512n);
   const parentPages = parentKernel.memory.buffer.byteLength / 65536;
   parentKernel.thread_sp = () => BigInt(liveStackPtr);
   parentKernel.thread_vfork_child_pid = () => 55;
