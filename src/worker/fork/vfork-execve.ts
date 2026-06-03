@@ -257,7 +257,7 @@ function currentGuestMemoryPolicyLimit(
   if (fallbackPolicyLimit !== undefined) {
     return fallbackPolicyLimit < 0n ? 0n : fallbackPolicyLimit;
   }
-  return BigInt(normalizeGuestMemoryPolicyLimitBytes(handle.guestMemoryPolicyLimitBytes));
+  return normalizeGuestMemoryPolicyLimitBytes(handle.guestMemoryPolicyLimitBytes);
 }
 
 function normalizeProcessMaxMemoryPages(processMaxMemoryPages: number, fallbackPages: number): number {

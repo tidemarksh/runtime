@@ -1008,16 +1008,6 @@ export function processCreateWithMemoryPolicy(
   );
 }
 
-function normalizeMemoryPolicyLimitBigInt(limit: number | bigint): bigint {
-  if (typeof limit === "bigint") {
-    return limit < 0n ? 0n : limit;
-  }
-  if (!Number.isFinite(limit)) {
-    return 0n;
-  }
-  return BigInt(Math.max(Math.trunc(limit), 0));
-}
-
 export function setGuestMemoryPolicyLimit(
   exports: KernelExports,
   vmPtr: number,
@@ -1026,7 +1016,7 @@ export function setGuestMemoryPolicyLimit(
   if (!exports.thread_set_guest_memory_policy_limit) {
     throw new Error("kernel ABI missing thread_set_guest_memory_policy_limit");
   }
-  exports.thread_set_guest_memory_policy_limit(vmPtr, normalizeMemoryPolicyLimitBigInt(limit));
+  exports.thread_set_guest_memory_policy_limit(vmPtr, normalizeGuestMemoryPolicyLimitBytes(limit));
 }
 
 export function setExecveMemoryHandoff(
@@ -1182,3 +1172,4 @@ export function readProcessSpawnHandoff(
     processMaxMemoryPages: exports.thread_spawn_process_max_memory_pages?.(vmPtr) ?? 0,
   };
 }
+import { normalizeGuestMemoryPolicyLimitBytes } from "./worker/memory-policy.js";

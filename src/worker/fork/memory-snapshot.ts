@@ -300,7 +300,7 @@ function formatForkSnapshotRanges(snapshot: ForkMemorySnapshot): string {
     .join(",");
 }
 
-function formatNullableBytes(value: number | string | null | undefined): string {
+function formatNullableBytes(value: number | bigint | string | null | undefined): string {
   return value === null || value === undefined ? "null" : String(value);
 }
 

@@ -2289,7 +2289,7 @@ test("attachThreadWorker fails the process when a browser worker emits an error 
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   const { exports: kernel } = makeKernel();
   const handle = makeHandle(kernel, worker);
-  handle.guestMemoryPolicyLimitBytes = 16 * 1024 * 1024;
+  handle.guestMemoryPolicyLimitBytes = 16n * 1024n * 1024n;
   handle.guestBase = 0x1000;
   const failProcess = vi.fn();
 

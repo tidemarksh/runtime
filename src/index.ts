@@ -32,10 +32,15 @@ import {
 import type { RuntimeNetworkBridge } from "./bridge/network.js";
 import type { FsSnapshotEntry } from "./fs/types.js";
 import { FS_RING_TOTAL_BYTES } from "./layout/fs-ring.js";
+import {
+  MIN_GUEST_MEMORY_POLICY_LIMIT_BYTES,
+  normalizeGuestMemoryPolicyLimitBytesWithMinimum,
+  type GuestMemoryPolicyLimitInput,
+} from "./worker/memory-policy.js";
 
 export interface RuntimeOptions {
   wasmBytes: BufferSource;
-  guestMemoryPolicyLimitBytes?: number;
+  guestMemoryPolicyLimitBytes?: GuestMemoryPolicyLimitInput;
   pageCacheDataCapacityBytes?: number;
   kernelWorkerMaxMemoryPages?: number;
   maxProcessMemoryPages?: number;
@@ -45,12 +50,11 @@ export interface RuntimeOptions {
   networkBridge?: RuntimeNetworkBridge;
 }
 
-const MIN_GUEST_MEMORY_POLICY_LIMIT_BYTES = 16 * 1024 * 1024;
 const MIN_PAGE_CACHE_DATA_CAPACITY_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MAX_MEMORY_PAGES = 32768;
 
 interface RuntimeMemoryConfig {
-  guestMemoryPolicyLimitBytes: number;
+  guestMemoryPolicyLimitBytes: bigint;
   pageCacheDataCapacityBytes: number;
   kernelWorkerMaxMemoryPages: number;
   maxProcessMemoryPages: number;
@@ -171,8 +175,8 @@ export class Runtime {
       1,
     );
     this.memoryConfig = {
-      guestMemoryPolicyLimitBytes: Math.max(
-        options.guestMemoryPolicyLimitBytes ?? MIN_GUEST_MEMORY_POLICY_LIMIT_BYTES,
+      guestMemoryPolicyLimitBytes: normalizeGuestMemoryPolicyLimitBytesWithMinimum(
+        options.guestMemoryPolicyLimitBytes,
         MIN_GUEST_MEMORY_POLICY_LIMIT_BYTES,
       ),
       pageCacheDataCapacityBytes: Math.max(

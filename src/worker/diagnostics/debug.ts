@@ -91,7 +91,7 @@ export interface ProcessExecutionStats {
   cmd: string;
   running: boolean;
   memoryBytes: number;
-  guestMemoryPolicyLimitBytes: number;
+  guestMemoryPolicyLimitBytes: string;
   processCommittedBytes: number;
   guestAddressProfile: number | null;
   guestAddressLimitBytes: string | null;
@@ -814,7 +814,7 @@ export function debugRuntimeExecutionStats(
         cmd: handle.debugCommand,
         running: handle.runningWorker !== null,
         memoryBytes: handle.memory.buffer.byteLength,
-        guestMemoryPolicyLimitBytes: handle.guestMemoryPolicyLimitBytes,
+        guestMemoryPolicyLimitBytes: handle.guestMemoryPolicyLimitBytes.toString(),
         processCommittedBytes,
         guestAddressProfile: ownership?.guestAddressProfile ?? null,
         guestAddressLimitBytes: ownership?.guestAddressLimitBytes ?? null,

@@ -39,7 +39,9 @@ test("detachInheritedHostStdioFromChild leaves standalone process host stdio unt
 });
 
 test("normalizeGuestMemoryPolicyLimitBytes preserves explicit policy independently of backing", () => {
-  expect(normalizeGuestMemoryPolicyLimitBytes(0x7fff_ffff)).toBe(0x7fff_ffff);
-  expect(normalizeGuestMemoryPolicyLimitBytes(192 * 1024 * 1024)).toBe(192 * 1024 * 1024);
-  expect(normalizeGuestMemoryPolicyLimitBytes(-1)).toBe(0);
+  expect(normalizeGuestMemoryPolicyLimitBytes(0x7fff_ffff)).toBe(0x7fff_ffffn);
+  expect(normalizeGuestMemoryPolicyLimitBytes(192 * 1024 * 1024)).toBe(192n * 1024n * 1024n);
+  expect(normalizeGuestMemoryPolicyLimitBytes(0x2_0000_0000n)).toBe(0x2_0000_0000n);
+  expect(() => normalizeGuestMemoryPolicyLimitBytes(Number.MAX_SAFE_INTEGER + 1)).toThrow(RangeError);
+  expect(normalizeGuestMemoryPolicyLimitBytes(-1)).toBe(0n);
 });

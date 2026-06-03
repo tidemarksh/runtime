@@ -3,6 +3,7 @@ import type {
   KernelRuntimeState,
 } from "../abi.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
+import type { GuestMemoryPolicyLimitInput } from "./memory-policy.js";
 import type {
   KernelWorkerOutbound,
   ForkStackSnapshot,
@@ -235,7 +236,7 @@ export type KernelWorkerRequestFn = (msg: KernelWorkerRequest) => Promise<Kernel
 export interface RuntimeMemoryOwnership {
   guestAddressProfile: number | null;
   guestAddressLimitBytes: string | null;
-  guestMemoryPolicyLimitBytes: number;
+  guestMemoryPolicyLimitBytes: bigint;
   processMaxMemoryBytes: number;
   forkProcessMaxMemoryBytes: number;
   pageCacheDataCapacityBytes: number;
@@ -251,7 +252,7 @@ export interface ProcessHandle {
   pid: number;
   parentPid: number | null;
   vmPtr: number;
-  guestMemoryPolicyLimitBytes: number;
+  guestMemoryPolicyLimitBytes: bigint;
   maxMemoryPages: number;
   forkMaxMemoryPages: number;
   guestBase: number;
@@ -357,7 +358,7 @@ export interface CreateProcessOptions {
   runtimeId?: number;
   pid?: number;
   parentPid?: number | null;
-  guestMemoryPolicyLimitBytes?: number;
+  guestMemoryPolicyLimitBytes?: GuestMemoryPolicyLimitInput;
   maxMemoryPages?: number;
   forkMaxMemoryPages?: number;
   stackSize?: number;

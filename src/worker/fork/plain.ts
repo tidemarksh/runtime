@@ -83,7 +83,7 @@ function forkChildGuestMemoryPolicyLimit(handle: ProcessHandle): bigint {
   if (inheritedLimit !== undefined) {
     return inheritedLimit < 0n ? 0n : inheritedLimit;
   }
-  return BigInt(normalizeGuestMemoryPolicyLimitBytes(handle.guestMemoryPolicyLimitBytes));
+  return normalizeGuestMemoryPolicyLimitBytes(handle.guestMemoryPolicyLimitBytes);
 }
 
 export async function handlePlainFork(

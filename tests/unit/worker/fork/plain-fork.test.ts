@@ -655,8 +655,8 @@ test("plain fork skips byte-identical captured stack snapshot", async () => {
   const parent = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
   const worker = createdWorkers[0];
   const kernel = createdKernelExports[0];
-  const stackPointer = parent.guestMemoryPolicyLimitBytes - 0x8000;
-  const stackStartGuest = Math.max(0, Math.floor(stackPointer / 65536) * 65536 - 1024 * 1024);
+  const stackPointer = parent.guestMemoryPolicyLimitBytes - 0x8000n;
+  const stackStartGuest = Math.max(0, Math.floor(Number(stackPointer) / 65536) * 65536 - 1024 * 1024);
   const stackBytes = 1024 * 1024;
   const stackStart = parent.guestBase + stackStartGuest;
   const memory = new Uint8Array(parent.memory.buffer);
@@ -702,12 +702,12 @@ test("plain fork skips byte-identical captured stack snapshot", async () => {
 
 test("fork memory snapshot stack fallback uses committed backing instead of guest policy", async () => {
   const parent = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
-  parent.guestMemoryPolicyLimitBytes = 0x2000;
+  parent.guestMemoryPolicyLimitBytes = 0x2000n;
   const stackPointer = 0x20_0000n;
 
   const snapshot = captureForkMemorySnapshot(parent, stackPointer);
 
-  expect(Number(stackPointer)).toBeGreaterThan(parent.guestMemoryPolicyLimitBytes);
+  expect(stackPointer).toBeGreaterThan(parent.guestMemoryPolicyLimitBytes);
   expect(snapshot.endOffset).toBe(parent.memory.buffer.byteLength);
 });
 
@@ -741,7 +741,7 @@ test("plain fork preserves optional zero guest memory policy from child kernel s
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   const childKernel = createdKernelExports[1];
-  expect(parent.guestMemoryPolicyLimitBytes).toBeGreaterThan(0);
+  expect(parent.guestMemoryPolicyLimitBytes).toBeGreaterThan(0n);
   expect(childKernel?.guestMemoryPolicyLimitCalls.at(-1)).toEqual([0x1234, 0n]);
 });
 

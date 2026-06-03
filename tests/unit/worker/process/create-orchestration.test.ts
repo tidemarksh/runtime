@@ -762,7 +762,7 @@ test("clone spawn refreshes kernel state before child init and parent resume", a
 test("clone child init caps preserved guest bytes to guest policy limit", async () => {
   const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
   const worker = createdWorkers[0];
-  handle.guestMemoryPolicyLimitBytes = 0x2000;
+  handle.guestMemoryPolicyLimitBytes = 0x2000n;
 
   emitReady(worker);
   await flushMicrotasks();
@@ -790,7 +790,7 @@ test("clone child init caps preserved guest bytes to guest policy limit", async 
 test("clone child init preserves only live guest bytes when kernel debug memory state is narrower", async () => {
   const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
   const worker = createdWorkers[0];
-  handle.guestMemoryPolicyLimitBytes = 0x200000;
+  handle.guestMemoryPolicyLimitBytes = 0x200000n;
   handle.kernel.debug_memory_brk_current = () => 0x4000n;
   handle.kernel.debug_memory_mmap_next = () => 0x1f0000n;
   handle.kernel.debug_memory_vma_len = () => 2;
@@ -1620,13 +1620,13 @@ test("createProcess does not grow linear memory to requested guest policy during
     { guestMemoryPolicyLimitBytes: requestedGuestPolicyLimitBytes },
   );
 
-  expect(handle.guestMemoryPolicyLimitBytes).toBe(requestedGuestPolicyLimitBytes);
+  expect(handle.guestMemoryPolicyLimitBytes).toBe(BigInt(requestedGuestPolicyLimitBytes));
   expect(handle.memory.buffer.byteLength).toBeLessThan(128 * 1024 * 1024);
 });
 
 test("createProcess preloads snapshot files by resizing then writing payload bytes", async () => {
   const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
-    guestMemoryPolicyLimitBytes: 64 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 64n * 1024n * 1024n,
     maxMemoryPages: 2048,
     forkMaxMemoryPages: 3072,
     sabPageCache: new SharedArrayBuffer(4 * 1024 * 1024),
@@ -1652,7 +1652,7 @@ test("createProcess preloads snapshot files by resizing then writing payload byt
   expect(handle.memoryOwnership).toEqual({
     guestAddressProfile: 1,
     guestAddressLimitBytes: "4294967295",
-    guestMemoryPolicyLimitBytes: 64 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 64n * 1024n * 1024n,
     processMaxMemoryBytes: 2048 * 65536,
     forkProcessMaxMemoryBytes: 3072 * 65536,
     pageCacheDataCapacityBytes: 4 * 1024 * 1024,

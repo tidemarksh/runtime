@@ -4,6 +4,7 @@ import type { KernelExports } from "../../abi.js";
 import { createTransferDebugStats, createWorkerMessageDebugStats } from "../types.js";
 import type { ProcessHandle } from "../types.js";
 import type { WorkerForkDeps } from "./types.js";
+export { normalizeGuestMemoryPolicyLimitBytes } from "../memory-policy.js";
 
 interface CreateForkChildHandleArgs {
   deps: WorkerForkDeps;
@@ -131,10 +132,6 @@ export function createForkChildHandle({
     guestWriteWatchRegions: parent.guestWriteWatchRegions.map((region) => ({ ...region })),
     ...(parent.memoryOwnership ? { memoryOwnership: { ...parent.memoryOwnership } } : {}),
   };
-}
-
-export function normalizeGuestMemoryPolicyLimitBytes(policyLimitBytes: number): number {
-  return Math.max(Math.trunc(policyLimitBytes), 0);
 }
 
 export function detachInheritedHostStdioFromChild(child: ProcessHandle): void {

@@ -1038,7 +1038,7 @@ test("vfork execve resumes the parent and initializes the child lifecycle throug
   expect(restoreVforkParentWithoutCleanup).toHaveBeenCalledWith(0x1234, 156);
   expect(resumeVforkParent).not.toHaveBeenCalled();
   expect(clearSpawnHandoff).toHaveBeenCalledWith(0x1234);
-  expect(handle.guestMemoryPolicyLimitBytes).toBeGreaterThan(0);
+  expect(handle.guestMemoryPolicyLimitBytes).toBeGreaterThan(0n);
   expect(createdKernelExports[1]?.execveMemoryHandoffCalls).toEqual([
     expect.objectContaining({
       vmPtr: 0x1234,

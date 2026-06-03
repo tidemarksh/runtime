@@ -25,6 +25,10 @@ import {
   ensureEvictionTimer,
 } from "./pool.js";
 import { normalizeGuestMemoryPolicyLimitBytes } from "./fork/common.js";
+import {
+  MIN_GUEST_MEMORY_POLICY_LIMIT_BYTES,
+  normalizeGuestMemoryPolicyLimitBytesWithMinimum,
+} from "./memory-policy.js";
 import { createTransferDebugStats, createWorkerMessageDebugStats } from "./types.js";
 import type {
   AttachThreadWorkerRequest,
@@ -41,10 +45,10 @@ import {
 import { FS_RING_TOTAL_BYTES } from "../layout/fs-ring.js";
 
 const DEFAULT_PROCESS_STACK_SIZE_BYTES = 8 * 1024 * 1024;
+const KERNEL_HEAP_BASE_FALLBACK_BYTES = 12 * 1024 * 1024;
 
 const encoder = new TextEncoder();
 const WORKER_DEBUG_LOG_ENABLED = false;
-const MIN_GUEST_MEMORY_POLICY_LIMIT_BYTES = 16 * 1024 * 1024;
 
 function readElfInterpPath(elfData: Uint8Array): string | null {
   if (elfData.length < 64) {
@@ -338,7 +342,6 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
 
   async function instantiateProcessKernel(
     wasmBytes: BufferSource,
-    guestMemoryPolicyLimitBytes: number,
     sabPageCache: SharedArrayBuffer | null,
     maxMemoryPages: number,
   ): Promise<{
@@ -355,7 +358,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     });
     const exports = mainInstance.exports as unknown as KernelExports;
     configureKernelInstanceStack(exports, MAIN_THREAD_KERNEL_STACK_SLOT);
-    const wasmHeapBase = kernelHeapBase(exports, guestMemoryPolicyLimitBytes - 4 * 1024 * 1024);
+    const wasmHeapBase = kernelHeapBase(exports, KERNEL_HEAP_BASE_FALLBACK_BYTES);
     exports.kernel_init(wasmHeapBase);
 
     const now = Date.now();
@@ -371,7 +374,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     exports: KernelExports,
     guestBase: number,
     elfData: Uint8Array,
-    guestMemoryPolicyLimitBytes: number,
+    guestMemoryPolicyLimitBytes: bigint,
     options: CreateProcessOptions,
     elfBrk = inspectProcessElfBrk(exports, guestBase, elfData, guestMemoryPolicyLimitBytes),
   ): number {
@@ -405,7 +408,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     exports: KernelExports,
     guestBase: number,
     elfData: Uint8Array,
-    guestMemoryPolicyLimitBytes: number,
+    guestMemoryPolicyLimitBytes: bigint,
     guestAddressProfile = guestAddressProfileForProcessCreation(exports),
   ): number {
     const inspectScratchBase = detachedKernelScratchBase(exports.memory, guestBase, 0);
@@ -415,7 +418,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       inspectElfOffset,
       elfData.length,
       guestAddressProfile,
-      BigInt(guestMemoryPolicyLimitBytes),
+      guestMemoryPolicyLimitBytes,
     ));
     return elfBrk;
   }
@@ -426,7 +429,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     memory: WebAssembly.Memory,
     runtimeId: number,
     vmPtr: number,
-    guestMemoryPolicyLimitBytes: number,
+    guestMemoryPolicyLimitBytes: bigint,
     guestBase: number,
     guestAddressProfile: number,
     maxMemoryPages: number,
@@ -543,8 +546,8 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     elfData: Uint8Array,
     options: CreateProcessOptions = {},
   ): Promise<ProcessHandle> {
-    const guestMemoryPolicyLimitBytes = Math.max(
-      options.guestMemoryPolicyLimitBytes ?? MIN_GUEST_MEMORY_POLICY_LIMIT_BYTES,
+    const guestMemoryPolicyLimitBytes = normalizeGuestMemoryPolicyLimitBytesWithMinimum(
+      options.guestMemoryPolicyLimitBytes,
       MIN_GUEST_MEMORY_POLICY_LIMIT_BYTES,
     );
     const minMemoryPages = Math.ceil(deps.bootstrapMemoryBytes / deps.wasmPageSize);
@@ -556,7 +559,6 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     const stackSize = options.stackSize ?? DEFAULT_PROCESS_STACK_SIZE_BYTES;
     const { wasmModule, memory, exports } = await instantiateProcessKernel(
       wasmBytes,
-      guestMemoryPolicyLimitBytes,
       options.sabPageCache ?? null,
       boundedMaxMemoryPages,
     );
@@ -621,7 +623,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       elfOffset,
       elfData.length,
       guestAddressProfile,
-      BigInt(guestMemoryPolicyLimitBytes),
+      guestMemoryPolicyLimitBytes,
       boundedMaxMemoryPages,
       stackSize,
     );
