@@ -13,7 +13,6 @@ import {
   configureKernelInstanceStack,
   MAIN_THREAD_KERNEL_STACK_SLOT,
 } from "../../wasm/stack.js";
-import { recordDirectMemoryCopyOverlap } from "../diagnostics/direct-memory-copy.js";
 import { captureExecveGuestHandoff, decodeExecveBytes, stageExecveGuestHandoff } from "./execve-handoff.js";
 import { captureVforkSnapshot, snapshotKernelShareOfdSlots } from "../fork-shared.js";
 import { activeKernelShareOfdIds, collectProcessHeldOfds } from "../ownership/ofd-table.js";
@@ -127,34 +126,27 @@ function formatThreadSyscallArgsForDebug(
 }
 
 function copyKernelRuntimeRegion(
-  handle: ProcessHandle,
   source: WebAssembly.Memory,
   target: WebAssembly.Memory,
   start: number,
   byteLength: number,
-  label: string,
 ): void {
   if (start === 0 || byteLength <= 0) {
     return;
   }
   const end = start + byteLength;
   ensureMemoryCapacity(target, end);
-  const bytes = new Uint8Array(source.buffer, start, byteLength);
-  recordDirectMemoryCopyOverlap(handle, label, start, bytes);
-  new Uint8Array(target.buffer).set(bytes, start);
+  new Uint8Array(target.buffer).set(new Uint8Array(source.buffer, start, byteLength), start);
 }
 
 function copyExecveKernelRuntimeRegions(handle: ProcessHandle, target: WebAssembly.Memory): void {
   copyKernelRuntimeRegion(
-    handle,
     handle.memory,
     target,
     handle.kernelState.ofdTablePtr,
     handle.kernel.kernel_ofd_table_bytes(),
-    "vfork-execve-ofd-table-copy",
   );
   copyKernelRuntimeRegion(
-    handle,
     handle.memory,
     target,
     handle.kernelState.memfsPtr,
@@ -163,71 +155,54 @@ function copyExecveKernelRuntimeRegions(handle: ProcessHandle, target: WebAssemb
       + handle.kernelState.memfsFirstChildBytes
       + handle.kernelState.memfsDirEntriesBytes
       + handle.kernelState.memfsDataBytes,
-    "vfork-execve-memfs-copy",
   );
   copyKernelRuntimeRegion(
-    handle,
     handle.memory,
     target,
     handle.kernelState.epollTablePtr,
     handle.kernel.kernel_epoll_table_bytes(),
-    "vfork-execve-epoll-copy",
   );
   copyKernelRuntimeRegion(
-    handle,
     handle.memory,
     target,
     handle.kernelState.socketTablePtr,
     handle.kernel.kernel_socket_table_bytes(),
-    "vfork-execve-socket-copy",
   );
   copyKernelRuntimeRegion(
-    handle,
     handle.memory,
     target,
     handle.kernelState.pipeBase,
     handle.kernel.kernel_pipe_region_bytes(),
-    "vfork-execve-pipe-copy",
   );
   copyKernelRuntimeRegion(
-    handle,
     handle.memory,
     target,
     handle.kernelState.netBufBase,
     handle.kernel.kernel_net_buf_pool_bytes(),
-    "vfork-execve-netbuf-copy",
   );
   copyKernelRuntimeRegion(
-    handle,
     handle.memory,
     target,
     handle.kernelState.sigSlotsPtr,
     handle.kernel.kernel_sig_slots_bytes() + handle.kernel.kernel_signal_action_table_bytes(),
-    "vfork-execve-signal-copy",
   );
   copyKernelRuntimeRegion(
-    handle,
     handle.memory,
     target,
     handle.kernelState.processPendingPtr,
     handle.kernel.kernel_process_pending_bytes(),
-    "vfork-execve-process-pending-copy",
   );
   copyKernelRuntimeRegion(
-    handle,
     handle.memory,
     target,
     handle.kernelState.processRuntimeStatePtr,
     handle.kernel.kernel_process_runtime_state_bytes(),
-    "vfork-execve-process-runtime-copy",
   );
   copyKernelRuntimeRegion(
-    handle,
     handle.memory,
     target,
     handle.kernelState.timeStatePtr,
     handle.kernel.kernel_time_state_bytes(),
-    "vfork-execve-time-copy",
   );
 }
 

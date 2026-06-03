@@ -58,7 +58,6 @@ let generation = 0;
 let wasmFeatures: WasmFeatureSupport;
 let runtimeBridge: RuntimeStateBridge | null = null;
 let preparedInputs: ThreadWorkerPrepareInputs | null = null;
-let releaseExecTraceInitialized = false;
 const DEFAULT_NODE_THREAD_STEP_BUDGET = 5_000_000;
 const DEFAULT_BROWSER_THREAD_STEP_BUDGET = 2_000;
 const THREAD_STEP_BUDGET = readThreadStepBudget();
@@ -73,27 +72,6 @@ const PIPE_RESUME_DEBUG_ENABLED = PIPE_SLOT_DEBUG_ENABLED
   }).process?.env?.TIDEMARK_PIPE_RESUME_DEBUG ?? "") === "1";
 let lastResumeBlockedDebug: string | undefined;
 let syscallNumbers: SyscallNumbers | null = null;
-const DIAGNOSTIC_FD_ENTRY_BYTES = 8;
-const DIAGNOSTIC_GUEST_WRITE_WATCH_SLOTS = 64;
-const DIAGNOSTIC_FD_TABLE_WATCH_SLOT = 0;
-const DIAGNOSTIC_EXEC_WATCH_FIRST_SLOT = 1;
-const DIAGNOSTIC_DATA_WATCH_FIRST_SLOT = 33;
-const DIAGNOSTIC_PROT_EXEC = 4;
-const DIAGNOSTIC_PROT_WRITE = 2;
-const STRICT_GATE_DIAGNOSTICS_ENABLED = ((globalThis as {
-  process?: { env?: Record<string, string | undefined> };
-}).process?.env?.TIDEMARK_STRICT_GATE_DIAGNOSTICS ?? "") === "1";
-const RELEASE_EXEC_TRACE_DEBUG_ENABLED = STRICT_GATE_DIAGNOSTICS_ENABLED
-  || ((globalThis as {
-    process?: { env?: Record<string, string | undefined> };
-  }).process?.env?.TIDEMARK_RELEASE_EXEC_TRACE_DEBUG ?? "") === "1";
-const GUEST_WRITE_WATCH_DEBUG_ENABLED = STRICT_GATE_DIAGNOSTICS_ENABLED
-  || ((globalThis as {
-    process?: { env?: Record<string, string | undefined> };
-  }).process?.env?.TIDEMARK_GUEST_WRITE_WATCH_DEBUG ?? "") === "1";
-const PAGE_CACHE_IMPORT_EXEC_DEBUG_ENABLED = ((globalThis as {
-  process?: { env?: Record<string, string | undefined> };
-}).process?.env?.TIDEMARK_PAGE_CACHE_IMPORT_EXEC_DEBUG ?? "") === "1";
 
 function acquireSharedMemoryForStep(buffer: ArrayBufferLike): void {
   if (runtimeBridge !== null) {
@@ -132,183 +110,6 @@ function requireExports(): KernelExports {
   return exports;
 }
 
-function configureDiagnosticGuestWriteWatch(
-  kernelExports: KernelExports,
-  threadVmPtr: number,
-): void {
-  if (!GUEST_WRITE_WATCH_DEBUG_ENABLED) {
-    return;
-  }
-  if (!kernelExports.debug_configure_guest_write_watch || threadVmPtr === 0) {
-    return;
-  }
-  const processPtr = kernelExports.thread_process_ptr?.(threadVmPtr) ?? 0;
-  if (processPtr > 0) {
-    const fdTableBytes = kernelExports.abi_max_fds() * DIAGNOSTIC_FD_ENTRY_BYTES;
-    kernelExports.debug_configure_guest_write_watch(
-      DIAGNOSTIC_FD_TABLE_WATCH_SLOT,
-      BigInt(processPtr),
-      BigInt(processPtr + fdTableBytes),
-    );
-  }
-  let nextSlot = DIAGNOSTIC_EXEC_WATCH_FIRST_SLOT;
-  const vmaLen = kernelExports.debug_memory_vma_len?.() ?? 0;
-  for (
-    let index = 0;
-    index < vmaLen && nextSlot < DIAGNOSTIC_DATA_WATCH_FIRST_SLOT;
-    index += 1
-  ) {
-    const prot = kernelExports.debug_memory_vma_prot?.(index) ?? 0;
-    if ((prot & DIAGNOSTIC_PROT_EXEC) === 0) {
-      continue;
-    }
-    const start = kernelExports.debug_memory_vma_start?.(index) ?? 0n;
-    const end = kernelExports.debug_memory_vma_end?.(index) ?? 0n;
-    if (BigInt(start) >= BigInt(end)) {
-      continue;
-    }
-    kernelExports.debug_configure_guest_write_watch(nextSlot, start, end);
-    nextSlot += 1;
-  }
-  for (; nextSlot < DIAGNOSTIC_DATA_WATCH_FIRST_SLOT; nextSlot += 1) {
-    kernelExports.debug_configure_guest_write_watch(nextSlot, 0n, 0n);
-  }
-  nextSlot = DIAGNOSTIC_DATA_WATCH_FIRST_SLOT;
-  for (
-    let index = 0;
-    index < vmaLen && nextSlot < DIAGNOSTIC_GUEST_WRITE_WATCH_SLOTS;
-    index += 1
-  ) {
-    const prot = kernelExports.debug_memory_vma_prot?.(index) ?? 0;
-    if ((prot & DIAGNOSTIC_PROT_WRITE) === 0 || (prot & DIAGNOSTIC_PROT_EXEC) !== 0) {
-      continue;
-    }
-    const start = kernelExports.debug_memory_vma_start?.(index) ?? 0n;
-    const end = kernelExports.debug_memory_vma_end?.(index) ?? 0n;
-    if (BigInt(start) >= BigInt(end)) {
-      continue;
-    }
-    kernelExports.debug_configure_guest_write_watch(nextSlot, start, end);
-    nextSlot += 1;
-  }
-  for (; nextSlot < DIAGNOSTIC_GUEST_WRITE_WATCH_SLOTS; nextSlot += 1) {
-    kernelExports.debug_configure_guest_write_watch(nextSlot, 0n, 0n);
-  }
-}
-
-function enableDiagnosticReleaseExecTrace(kernelExports: KernelExports): void {
-  if (!RELEASE_EXEC_TRACE_DEBUG_ENABLED) {
-    return;
-  }
-  if (!kernelExports.debug_set_release_exec_trace_enabled) {
-    return;
-  }
-  if (!releaseExecTraceInitialized) {
-    kernelExports.debug_clear_release_exec_trace?.();
-    releaseExecTraceInitialized = true;
-  }
-  kernelExports.debug_set_release_exec_trace_enabled(1);
-}
-
-function readDiagnosticVmaPath(kernelExports: KernelExports, index: number): string {
-  const len = kernelExports.debug_memory_vma_path_len?.(index) ?? 0;
-  if (len <= 0) {
-    return "";
-  }
-  const bytes: number[] = [];
-  for (let offset = 0; offset < Math.min(len, 160); offset += 1) {
-    const byte = kernelExports.debug_memory_vma_path_byte?.(index, offset) ?? 0;
-    if (byte === 0) {
-      break;
-    }
-    bytes.push(byte & 0xff);
-  }
-  return new TextDecoder().decode(new Uint8Array(bytes));
-}
-
-function sampleBytes(bytes: Uint8Array | undefined, offset: number, length: number): string {
-  if (!bytes || offset >= bytes.length) {
-    return "";
-  }
-  return [...bytes.subarray(offset, Math.min(bytes.length, offset + length))]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-function recordPageCacheImportExecOverlap(event: {
-  source: "page-cache-read" | "page-cache-stat";
-  ino: number;
-  offset: number;
-  ptr: number;
-  length: number;
-  bytes?: Uint8Array;
-}): void {
-  if (!PAGE_CACHE_IMPORT_EXEC_DEBUG_ENABLED || !exports || guestBase <= 0 || event.length <= 0) {
-    return;
-  }
-  const guestStart = event.ptr - guestBase;
-  if (!Number.isFinite(guestStart) || guestStart < 0) {
-    return;
-  }
-  const writeStart = BigInt(guestStart);
-  const writeEnd = writeStart + BigInt(event.length);
-  const vmaLen = exports.debug_memory_vma_len?.() ?? 0;
-  for (let index = 0; index < vmaLen; index += 1) {
-    const prot = exports.debug_memory_vma_prot?.(index) ?? 0;
-    if ((prot & DIAGNOSTIC_PROT_EXEC) === 0) {
-      continue;
-    }
-    const vmaStart = BigInt(exports.debug_memory_vma_start?.(index) ?? 0n);
-    const vmaEnd = BigInt(exports.debug_memory_vma_end?.(index) ?? 0n);
-    if (vmaStart >= vmaEnd || writeEnd <= vmaStart || writeStart >= vmaEnd) {
-      continue;
-    }
-    const overlapStart = writeStart > vmaStart ? writeStart : vmaStart;
-    const overlapEnd = writeEnd < vmaEnd ? writeEnd : vmaEnd;
-    const sampleOffset = Number(overlapStart - writeStart);
-    lastResumeBlockedDebug = [
-      "page-cache-import-exec-overlap",
-      `src=${event.source}`,
-      `ino=${event.ino}`,
-      `off=${event.offset}`,
-      `ptr=0x${event.ptr.toString(16)}`,
-      `guest=0x${guestStart.toString(16)}`,
-      `len=${event.length}`,
-      `overlap=0x${overlapStart.toString(16)}-0x${overlapEnd.toString(16)}`,
-      `vma=0x${vmaStart.toString(16)}-0x${vmaEnd.toString(16)}`,
-      `prot=${prot}`,
-      `fd=${exports.debug_memory_vma_fd?.(index) ?? "n/a"}`,
-      `path=${JSON.stringify(readDiagnosticVmaPath(exports, index))}`,
-      `sample=${sampleBytes(event.bytes, sampleOffset, 16)}`,
-    ].join(":");
-    return;
-  }
-  const ownedLen = exports.debug_kernel_owned_guest_range_len?.() ?? 0;
-  for (let index = 0; index < ownedLen; index += 1) {
-    const ownedStart = BigInt(exports.debug_kernel_owned_guest_range_start?.(index) ?? 0n);
-    const ownedEnd = BigInt(exports.debug_kernel_owned_guest_range_end?.(index) ?? 0n);
-    if (ownedStart >= ownedEnd || writeEnd <= ownedStart || writeStart >= ownedEnd) {
-      continue;
-    }
-    const overlapStart = writeStart > ownedStart ? writeStart : ownedStart;
-    const overlapEnd = writeEnd < ownedEnd ? writeEnd : ownedEnd;
-    const sampleOffset = Number(overlapStart - writeStart);
-    lastResumeBlockedDebug = [
-      "page-cache-import-kernel-owned-overlap",
-      `src=${event.source}`,
-      `ino=${event.ino}`,
-      `off=${event.offset}`,
-      `ptr=0x${event.ptr.toString(16)}`,
-      `guest=0x${guestStart.toString(16)}`,
-      `len=${event.length}`,
-      `overlap=0x${overlapStart.toString(16)}-0x${overlapEnd.toString(16)}`,
-      `owned=0x${ownedStart.toString(16)}-0x${ownedEnd.toString(16)}`,
-      `sample=${sampleBytes(event.bytes, sampleOffset, 16)}`,
-    ].join(":");
-    return;
-  }
-}
-
 async function prepare(
   inputs: ThreadWorkerPrepareInputs,
   kernelState: KernelRuntimeState | undefined,
@@ -334,10 +135,7 @@ async function prepare(
     { preserveRanges: preserveMemoryRanges },
   );
   const instance = await WebAssembly.instantiate(inputs.wasmModule, {
-    env: createKernelEnv(inputs.memory, {
-      sabPageCache: inputs.sabPageCache,
-      pageCacheMemoryWriteObserver: recordPageCacheImportExecOverlap,
-    }),
+    env: createKernelEnv(inputs.memory, { sabPageCache: inputs.sabPageCache }),
   });
   const nextExports = instance.exports as unknown as KernelExports;
   exports = nextExports;
@@ -345,7 +143,6 @@ async function prepare(
   configureKernelInstanceStack(nextExports, kernelStackSlot);
   wasmFeatures = detectWasmFeatures();
   preparedInputs = inputs;
-  releaseExecTraceInitialized = false;
   runtimeBridge = {
     notifySab: _notifySab,
     stateSab: _stateSab,
@@ -519,8 +316,6 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
           guestMemoryWrites: msg.guestMemoryWrites,
           guestWriteWatchRegions: msg.guestWriteWatchRegions,
         });
-        enableDiagnosticReleaseExecTrace(requireExports());
-        configureDiagnosticGuestWriteWatch(requireExports(), vmPtr);
         postReady();
       } catch (error) {
         postError(error);
@@ -542,8 +337,6 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
           childExitRecords: msg.childExitRecords,
           pipeSlots: msg.pipeSlots,
         });
-        enableDiagnosticReleaseExecTrace(kernelExports);
-        configureDiagnosticGuestWriteWatch(kernelExports, vmPtr);
         acquireSharedMemoryForStep(kernelExports.memory.buffer);
         const resumeOutcome = resumeBlockedSyscallStep({
           exports: kernelExports,

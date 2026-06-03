@@ -1,15 +1,6 @@
 import type { KernelSyncHandle } from "../types.js";
 import type { KernelExports } from "../../abi.js";
 import {
-  MEMFS_HEADER_OFF_DATA_PTR,
-  MEMFS_HEADER_OFF_DIR_ENTRIES_PTR,
-  MEMFS_HEADER_OFF_FIRST_CHILD_PTR,
-  MEMFS_HEADER_OFF_INODES_PTR,
-  MEMFS_HEADER64_BYTES_FALLBACK,
-  MEMFS_HEADER64_OFF_DATA_PTR,
-  MEMFS_HEADER64_OFF_DIR_ENTRIES_PTR,
-  MEMFS_HEADER64_OFF_FIRST_CHILD_PTR,
-  MEMFS_HEADER64_OFF_INODES_PTR,
   MEMFS_INODE_OFF_DATA_CAP,
   MEMFS_INODE_OFF_DATA_OFFSET,
   MEMFS_INODE_OFF_MODE,
@@ -105,46 +96,16 @@ export function restoreProcSelfExe(handle: KernelSyncHandle, target: Uint8Array 
 }
 
 function readMemfsLayout(handle: KernelSyncHandle): MemfsLayout {
-  const headerBytes = handle.kernel.kernel_memfs_header_bytes();
-  const view = new DataView(handle.memory.buffer, handle.kernelState.memfsPtr, Math.max(headerBytes, 32));
-  const readPtr = (offset32: number, offset64: number): number => {
-    if (headerBytes < MEMFS_HEADER64_BYTES_FALLBACK) {
-      return view.getUint32(offset32, true);
-    }
-    const value = view.getBigUint64(offset64, true);
-    if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
-      throw new Error(`memfs pointer exceeds JS safe integer: ${value.toString()}`);
-    }
-    return Number(value);
-  };
+  const view = new DataView(handle.memory.buffer, handle.kernelState.memfsPtr, 32);
   return {
     inodeCount: view.getUint32(0, true),
     dataUsed: view.getUint32(8, true),
     dataCap: view.getUint32(12, true),
-    inodesPtr: readPtr(MEMFS_HEADER_OFF_INODES_PTR, MEMFS_HEADER64_OFF_INODES_PTR),
-    firstChildPtr: readPtr(MEMFS_HEADER_OFF_FIRST_CHILD_PTR, MEMFS_HEADER64_OFF_FIRST_CHILD_PTR),
-    dirEntriesPtr: readPtr(MEMFS_HEADER_OFF_DIR_ENTRIES_PTR, MEMFS_HEADER64_OFF_DIR_ENTRIES_PTR),
-    dataPtr: readPtr(MEMFS_HEADER_OFF_DATA_PTR, MEMFS_HEADER64_OFF_DATA_PTR),
+    inodesPtr: view.getUint32(16, true),
+    firstChildPtr: view.getUint32(20, true),
+    dirEntriesPtr: view.getUint32(24, true),
+    dataPtr: view.getUint32(28, true),
   };
-}
-
-function writeMemfsLayoutHeader(target: KernelSyncHandle, layout: MemfsLayout): void {
-  const headerBytes = target.kernel.kernel_memfs_header_bytes();
-  const view = new DataView(target.memory.buffer, target.kernelState.memfsPtr, Math.max(headerBytes, 32));
-  const writePtr = (offset32: number, offset64: number, value: number): void => {
-    if (headerBytes < MEMFS_HEADER64_BYTES_FALLBACK) {
-      view.setUint32(offset32, value, true);
-      return;
-    }
-    view.setBigUint64(offset64, BigInt(value), true);
-  };
-  view.setUint32(0, layout.inodeCount, true);
-  view.setUint32(8, layout.dataUsed, true);
-  view.setUint32(12, layout.dataCap, true);
-  writePtr(MEMFS_HEADER_OFF_INODES_PTR, MEMFS_HEADER64_OFF_INODES_PTR, layout.inodesPtr);
-  writePtr(MEMFS_HEADER_OFF_FIRST_CHILD_PTR, MEMFS_HEADER64_OFF_FIRST_CHILD_PTR, layout.firstChildPtr);
-  writePtr(MEMFS_HEADER_OFF_DIR_ENTRIES_PTR, MEMFS_HEADER64_OFF_DIR_ENTRIES_PTR, layout.dirEntriesPtr);
-  writePtr(MEMFS_HEADER_OFF_DATA_PTR, MEMFS_HEADER64_OFF_DATA_PTR, layout.dataPtr);
 }
 
 function computeReferencedMemfsDataUsed(handle: KernelSyncHandle, layout = readMemfsLayout(handle)): number {
@@ -250,10 +211,13 @@ export function syncMemfsState(source: KernelSyncHandle, target: KernelSyncHandl
     target.kernelState.memfsPtr,
     source.kernel.kernel_memfs_header_bytes(),
   );
-  writeMemfsLayoutHeader(target, {
-    ...targetLayout,
-    inodeCount: sourceLayout.inodeCount,
-    dataUsed: Math.min(sourceDataUsed, targetLayout.dataCap),
-  });
+  const targetHeader = new DataView(target.memory.buffer, target.kernelState.memfsPtr, 32);
+  targetHeader.setUint32(0, sourceLayout.inodeCount, true);
+  targetHeader.setUint32(8, Math.min(sourceDataUsed, targetLayout.dataCap), true);
+  targetHeader.setUint32(12, targetLayout.dataCap, true);
+  targetHeader.setUint32(16, targetLayout.inodesPtr, true);
+  targetHeader.setUint32(20, targetLayout.firstChildPtr, true);
+  targetHeader.setUint32(24, targetLayout.dirEntriesPtr, true);
+  targetHeader.setUint32(28, targetLayout.dataPtr, true);
   restoreProcSelfExe(target, procSelfExe);
 }

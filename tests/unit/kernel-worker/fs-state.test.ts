@@ -568,30 +568,6 @@ test("kernel-worker restorePublishedRegularFileDataFromPageCache externalizes wi
   expect(canonicalExports.fileData("/lib/runtime.bin")).toEqual(publishedData);
 });
 
-test("kernel-worker restorePublishedRegularFileDataFromPageCache skips stale path mismatches", () => {
-  const { canonicalExports, fsState, sabPageCache } = makeFsState();
-  const data = encoder.encode("published-data");
-
-  fsState.writeFile("/lib/runtime.bin", data, 0o755, false);
-  fsState.writeFile("/lib/other.bin", encoder.encode("other-data----"), 0o755, false);
-  const ino = canonicalExports.fileIno("/lib/runtime.bin");
-  const parentIno = canonicalExports.fileIno("/lib");
-  expect(ino).toBeGreaterThan(1);
-  expect(parentIno).toBeGreaterThan(1);
-  publishInode(sabPageCache, ino, {
-    mode: 0o100755,
-    size: data.length,
-    parentIno,
-    name: encoder.encode("other.bin"),
-    nextSibling: 0,
-  }, data);
-  canonicalExports.opLog.length = 0;
-
-  expect(() => fsState.restorePublishedRegularFileDataFromPageCache()).not.toThrow();
-
-  expect(canonicalExports.opLog.some((entry) => entry.startsWith("external:/lib/runtime.bin:"))).toBe(false);
-});
-
 test("kernel-worker syncMetadataMutation materializes absolute-path file creation without full fanout", () => {
   const { canonicalExports, memberExports, fsState, sabPageCache } = makeFsState();
 

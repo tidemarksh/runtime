@@ -15,7 +15,6 @@ export interface WorkerSchedulerDeps {
   completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number, exitVmPtr?: number): Promise<void>;
   failProcess(handle: ProcessHandle, error: Error): void;
   hasActiveChildProcess(parentPid: number): boolean;
-  describeActiveChildProcesses?(parentPid: number): string;
   pumpActiveChildProcesses?(parentPid: number): boolean;
   pumpNetworkConnections(handle: ProcessHandle, vmPtr?: number): Promise<boolean>;
   resumeBlockedSyscallLocally(

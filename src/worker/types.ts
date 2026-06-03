@@ -319,11 +319,6 @@ export interface ProcessHandle {
   socketWaiterWakeQueued: boolean;
   vforkSnapshot: VforkSnapshot | null;
   vforkWorker: Worker | null;
-  pendingFaultExitPayload?: {
-    exitCode: number;
-    termSignal: number;
-    vmPtr: number;
-  };
   exitInProgress?: boolean;
   onExit?: (code: number) => void;
   onError?: (error: Error) => void;

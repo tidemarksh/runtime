@@ -169,7 +169,6 @@ export interface ThreadWorkerStatusMessage {
   debug?: string;
   fdTraceDebug?: string;
   fdTraceSyscallNr?: bigint;
-  fdTraceArg0?: bigint;
   fdTraceArg0OfdId?: number;
   fdTraceArg0OfdType?: number;
   fdTraceArg1?: bigint;

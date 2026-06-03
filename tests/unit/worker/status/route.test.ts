@@ -1,9 +1,5 @@
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../../src/bridge/pipe.js";
-import {
-  FS_RING_SUBMIT_HEAD_OFFSET,
-  FS_RING_TOTAL_BYTES,
-} from "../../../../src/layout/fs-ring.js";
 import { createWorkerStatusMessageHandler as createRawWorkerStatusMessageHandler } from "../../../../src/worker/message-handler/status/route.js";
 import { createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 
@@ -114,15 +110,9 @@ function makeKernel(pid: number, overrides: Record<string, unknown> = {}) {
     abi_status_wait4: () => 25,
     abi_status_flock_wait: () => 26,
     abi_status_connect: () => 27,
-    abi_sys_exit: () => 93n,
-    abi_sys_exit_group: () => 94n,
     thread_pc: () => 0x2000n,
     thread_sp: () => 0x3000n,
     thread_s11: () => 0x4000n,
-    thread_a7: () => 93n,
-    thread_exit_code: () => 0,
-    thread_term_signal: () => 0,
-    thread_termination_reason: () => 0,
     thread_epoll_wait_timeout: () => 0n,
     thread_process_thread_count: () => 1,
     process_current_pid: () => pid,
@@ -489,110 +479,6 @@ test("status handler preserves FS ring snapshots while owner async status is pen
   );
 });
 
-test("status handler skips STATUS_FS kernel-memory writes that would rewind FS ring progress", () => {
-  const worker = {} as Worker;
-  const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
-  const bytes = new Uint8Array(memory.buffer);
-  const view = new DataView(memory.buffer);
-  const ringBase = 0x100;
-  const nonRingPtr = ringBase + FS_RING_TOTAL_BYTES + 0x40;
-  view.setUint32(ringBase + FS_RING_SUBMIT_HEAD_OFFSET, 1, true);
-  bytes[nonRingPtr] = 0;
-  const threadWorkerStates = new WeakMap<Worker, ReturnType<typeof makeThreadState>>();
-  threadWorkerStates.set(worker, makeThreadState());
-  const resumeFsViaKernelWorker = vi.fn(async () => {});
-
-  const handler = createWorkerStatusMessageHandler({
-    threadWorkerStates,
-    appendWorkerDebugLog: () => {},
-    clearBlockedWorker: () => {},
-    enqueueWorker: () => {},
-    pumpProcess: () => {},
-    kickBlockedWorkers: () => {},
-    failProcess: () => {},
-    requestPipeStateSync: async () => {},
-    requestEpollStateSync: async () => {},
-    requestSocketStateSync: async () => {},
-    resumeFsViaKernelWorker,
-    resumeConnectViaKernelWorker: async () => {},
-    resumeVforkParentAfterChildExit: () => false,
-    captureVforkSnapshot: () => {
-      throw new Error("unexpected");
-    },
-    syncForkSharedStateViaKernelWorker: async () => {},
-    syncBlockedForkSharedStateViaKernelWorker: async () => {},
-    syncProcessLifecycleViaKernelWorker: async () => {},
-    canonicalizeActiveVforkChildViaKernelWorker: async () => {},
-    attachThreadWorker: () => {},
-    completeProcessExit: async () => {},
-    handleExecveSpawn: async () => {},
-    blockWorker: () => {},
-    assertProcessStandardFdIntegrity: () => {},
-    requestEpollDependentOfdStateSync: async () => {},
-    statusOkCompletedSyncEffects: 0,
-    syncEffectPipeState: 1,
-    syncEffectSocketState: 2,
-    syncEffectEpollState: 4,
-    syncEffectEpollDependentOfdState: 8,
-    syncEffectProcessLifecycle: 16,
-    syncEffectSignalWaiters: 32,
-    syncEffectForkSharedOfdState: 64,
-    syncEffectProcessMemfs: 128,
-    statusDefersOwnedStateSync: () => false,
-  } as never);
-
-  const handle = {
-    pid: 7,
-    stdoutPipe: 0,
-    stderrPipe: 0,
-    stdinPipe: 0,
-    stdinQueue: [],
-    hostStdio: {
-      stdinPipe: 0,
-      stdoutPipe: 0,
-      stderrPipe: 0,
-      refCount: 1,
-    },
-    guestBase: 0,
-    memory,
-    outputBacklog: [],
-    workers: new Set([worker]),
-    readyWorkers: [],
-    blockedWorkers: new Map(),
-    kernelWorkerRequest: undefined,
-    kernelShare: { members: new Set(), sharedOfdIds: new Set() },
-    runtimeBridge: {
-      notifySab: new SharedArrayBuffer(12),
-      stateSab: new SharedArrayBuffer(176),
-    },
-    kernel: makeKernel(7, {
-      thread_fs_ring_base: () => ringBase,
-    }),
-    kernelState: makeKernelState(),
-    onStdout: null,
-    runningWorker: worker,
-  } as never;
-
-  handler(handle, worker, {
-    type: "status",
-    status: 4,
-    vmPtr: 0x1234,
-    exitCode: 0,
-    termSignal: 0,
-    pc: 0x2000n,
-    kernelState: { ...makeKernelState(), heapPtr: 0xdead },
-    debug: "pc=0x2000 sp=0x3000 s11=0x4000",
-    kernelMemoryWrites: [
-      { ptr: ringBase, bytes: new Uint8Array([0, 0, 0, 0]) },
-      { ptr: nonRingPtr, bytes: new Uint8Array([0x5a]) },
-    ],
-  });
-
-  expect(view.getUint32(ringBase + FS_RING_SUBMIT_HEAD_OFFSET, true)).toBe(1);
-  expect(bytes[nonRingPtr]).toBe(0x5a);
-  expect(resumeFsViaKernelWorker).toHaveBeenCalledWith(handle, worker, 0x1234);
-});
-
 test("status handler preserves network recv buffers while owner async status is pending", () => {
   const appendWorkerDebugLog = vi.fn();
   const worker = {} as Worker;
@@ -756,8 +642,6 @@ test("status handler keeps faulting worker tracked until completeProcessExit run
     kernel: makeKernel(7, {
       abi_status_clone_spawn: () => 9,
       thread_process_thread_count: () => 0,
-      thread_exit_code: () => 139,
-      thread_term_signal: () => 11,
       process_thread_vm_ptr: () => 0,
     }),
     kernelState: makeKernelState(),
@@ -819,7 +703,7 @@ test("status handler keeps faulting worker tracked until completeProcessExit run
     },
   );
 
-  expect(completeProcessExit).toHaveBeenCalledWith(handle, 139, 11, 0x1234);
+  expect(completeProcessExit).toHaveBeenCalledWith(handle, 139, 11);
   expect(handle.workers.has(worker)).toBe(true);
   expect(threadWorkerStates.get(worker)?.vmPtr).toBe(0x1234);
   expect(handle.lastDebugMessage).toBe("pc=0x67c5be sp=0x197d120 s11=0x1 process_thread_count=2");
@@ -2763,7 +2647,6 @@ test("status handler closes stale network bridge when fd snapshot drops the sock
       stateSab: new SharedArrayBuffer(176),
     },
     kernel: makeKernel(4, {
-      abi_sys_close: () => 57n,
       abi_fd_type_socket: () => 8,
       process_fd_ofd_id: (_vmPtr: number, fd: number) => fdMap.get(fd) ?? 0,
       process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number) => {
@@ -2834,9 +2717,6 @@ test("status handler closes stale network bridge when fd snapshot drops the sock
     {
       type: "status",
       status: 21,
-      syscallNr: 57n,
-      fdTraceArg0: 3n,
-      fdTraceResult: 0n,
       vmPtr: 0x1234,
       exitCode: 0,
       termSignal: 0,

@@ -9,10 +9,7 @@ export function applyStatusFdEntries(
 ): void {
   applyThreadFdEntries(handle, msg.vmPtr, msg.fdEntries, {
     appendStatusSocketDebug,
-    preserveLiveDescriptors: true,
+    preserveLiveRegularFileDescriptors: true,
     syscallNr: msg.syscallNr,
-    fdTraceArg0: msg.fdTraceArg0,
-    fdTraceArg1: msg.fdTraceArg1,
-    fdTraceResult: msg.fdTraceResult,
   });
 }

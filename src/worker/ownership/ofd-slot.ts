@@ -14,7 +14,6 @@ import {
   networkConnectionOfds,
   restoreNetworkOfdSlotWatermarks,
 } from "./socket-control.js";
-import { syscallMayClearFdEntry } from "./fd-table.js";
 
 interface FdEntryLike {
   fd?: number;
@@ -31,9 +30,6 @@ interface StatusMessageLike {
   fdEntries?: readonly ({ fd: number } & FdEntryLike)[];
   ofdSlots?: readonly OfdSlotSnapshotLike[];
   syscallNr?: bigint;
-  fdTraceArg0?: bigint;
-  fdTraceArg1?: bigint;
-  fdTraceResult?: bigint;
 }
 
 const maxRegularFileOffsetByHandle = new WeakMap<ProcessHandle, Map<number, bigint>>();
@@ -58,51 +54,6 @@ export function explicitPipeFdEntryWouldRollBack(
   return currentType === handle.kernel.abi_fd_type_pipe()
     || currentType === handle.kernel.abi_fd_type_pty_master?.()
     || currentType === handle.kernel.abi_fd_type_pty_slave?.();
-}
-
-function fdEntryClearWouldDropLiveDescriptor(
-  handle: ProcessHandle,
-  fd: number,
-  currentOfdId: number,
-  candidateOfdId: number,
-  msg: StatusMessageLike,
-): boolean {
-  if (
-    candidateOfdId !== 0
-    || syscallMayClearFdEntry(
-      handle,
-      fd,
-      msg.syscallNr,
-      msg.fdTraceArg0,
-      msg.fdTraceArg1,
-      msg.fdTraceResult,
-    )
-  ) {
-    return false;
-  }
-  const maxFds = handle.kernel.abi_max_fds();
-  if (currentOfdId <= 0 || currentOfdId >= maxFds) {
-    return false;
-  }
-  const currentType = handle.kernel.kernel_ofd_fd_type(currentOfdId);
-  return currentType > 0 && currentType <= 64;
-}
-
-function fdEntryInvalidOfdWouldDropLiveDescriptor(
-  handle: ProcessHandle,
-  currentOfdId: number,
-  candidateOfdId: number,
-): boolean {
-  const maxFds = handle.kernel.abi_max_fds();
-  if (
-    candidateOfdId < maxFds
-    || currentOfdId <= 0
-    || currentOfdId >= maxFds
-  ) {
-    return false;
-  }
-  const currentType = handle.kernel.kernel_ofd_fd_type(currentOfdId);
-  return currentType > 0 && currentType <= 64;
 }
 
 export function regularFileFdEntryWouldRollBack(
@@ -240,9 +191,7 @@ export function maskRegularFileFdEntryRollbackGuestWrite(
     ).getUint32(FD_ENTRY_OFD_ID_OFFSET, true);
     const explicitFdEntry = msg.fdEntries?.find((entry) => entry.fd === fd);
     if (
-      !fdEntryClearWouldDropLiveDescriptor(handle, fd, currentOfdId, candidateOfdId, msg)
-      && !fdEntryInvalidOfdWouldDropLiveDescriptor(handle, currentOfdId, candidateOfdId)
-      && !regularFileFdEntryWouldRollBack(handle, fileType, currentOfdId, candidateOfdId)
+      !regularFileFdEntryWouldRollBack(handle, fileType, currentOfdId, candidateOfdId)
       && !explicitPipeFdEntryWouldRollBack(handle, explicitFdEntry?.ofdId, currentOfdId, candidateOfdId)
     ) {
       continue;

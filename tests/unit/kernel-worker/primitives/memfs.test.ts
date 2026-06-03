@@ -8,7 +8,6 @@ function writeMemfsHeader(
   memory: WebAssembly.Memory,
   ptr: number,
   layout: {
-    headerBytes?: number;
     inodeCount?: number;
     dirEntryCount?: number;
     dataUsed?: number;
@@ -19,19 +18,11 @@ function writeMemfsHeader(
     dataPtr: number;
   },
 ): void {
-  const headerBytes = layout.headerBytes ?? 32;
-  const view = new DataView(memory.buffer, ptr, headerBytes);
+  const view = new DataView(memory.buffer, ptr, 32);
   view.setUint32(0, layout.inodeCount ?? 1, true);
   view.setUint32(4, layout.dirEntryCount ?? 1, true);
   view.setUint32(8, layout.dataUsed ?? layout.dataCap, true);
   view.setUint32(12, layout.dataCap, true);
-  if (headerBytes >= 48) {
-    view.setBigUint64(16, BigInt(layout.inodesPtr), true);
-    view.setBigUint64(24, BigInt(layout.firstChildPtr), true);
-    view.setBigUint64(32, BigInt(layout.dirEntriesPtr), true);
-    view.setBigUint64(40, BigInt(layout.dataPtr), true);
-    return;
-  }
   view.setUint32(16, layout.inodesPtr, true);
   view.setUint32(20, layout.firstChildPtr, true);
   view.setUint32(24, layout.dirEntriesPtr, true);
@@ -57,7 +48,6 @@ function createFakeExports(
     kernel_memfs_data_bytes: () => layout.dataBytes,
     kernel_memfs_data_ptr: () => layout.dataPtr,
     kernel_memfs_header_bytes: () => layout.headerBytes ?? 32,
-    kernel_attach_runtime_state: () => {},
   } as unknown as KernelExports;
 }
 
@@ -135,89 +125,6 @@ describe("createKernelWorkerMemfsPrimitives", () => {
     expect(new Uint8Array(targetMemory.buffer, 0x2c0, 16)).toEqual(new Uint8Array(16).fill(0xaa));
     expect(new Uint8Array(targetMemory.buffer, 0x320, 16)).toEqual(new Uint8Array(16).fill(0xbb));
     expect(readMemfsLayout(targetMemory, targetState.memfsPtr).dataPtr).toBe(0x4c0);
-  });
-
-  it("preserves Memory64 memfs header pointer slots when copying state", () => {
-    const memoryPages = { initial: 1, maximum: 4, shared: true } as const;
-    const sourceMemory = new WebAssembly.Memory(memoryPages);
-    const targetMemory = new WebAssembly.Memory(memoryPages);
-    const primitives = createKernelWorkerMemfsPrimitives();
-
-    const sourceState: KernelRuntimeState = {
-      heapBase: 0,
-      heapPtr: 0,
-      ofdTablePtr: 0,
-      memfsPtr: 0x80,
-      memStatePtr: 0,
-      epollTablePtr: 0,
-      socketTablePtr: 0,
-      socketUsed: 0,
-      pipeBase: 0,
-      pipeUsed: 0n,
-      netBufBase: 0,
-      netBufUsed: 0n,
-      sigSlotsPtr: 0,
-      processPendingPtr: 0,
-      processRuntimeStatePtr: 0,
-      timeStatePtr: 0,
-      memfsHeaderBytes: 48,
-    };
-    const targetState: KernelRuntimeState = {
-      ...sourceState,
-      memfsPtr: 0x180,
-      memStatePtr: 0x320,
-    };
-
-    writeMemfsHeader(sourceMemory, sourceState.memfsPtr, {
-      headerBytes: 48,
-      inodeCount: 3,
-      dirEntryCount: 2,
-      dataUsed: 16,
-      dataCap: 32,
-      inodesPtr: 0x200,
-      firstChildPtr: 0x240,
-      dirEntriesPtr: 0x280,
-      dataPtr: 0x2c0,
-    });
-    writeMemfsHeader(targetMemory, targetState.memfsPtr, {
-      headerBytes: 48,
-      inodeCount: 1,
-      dirEntryCount: 1,
-      dataUsed: 8,
-      dataCap: 32,
-      inodesPtr: 0x400,
-      firstChildPtr: 0x440,
-      dirEntriesPtr: 0x480,
-      dataPtr: 0x4c0,
-    });
-
-    const sourceExports = createFakeExports(sourceMemory, {
-      headerBytes: 48,
-      inodesBytes: 16,
-      firstChildBytes: 16,
-      dirEntriesBytes: 16,
-      dataBytes: 32,
-      dataPtr: 0x2c0,
-    });
-    const targetExports = createFakeExports(targetMemory, {
-      headerBytes: 48,
-      inodesBytes: 16,
-      firstChildBytes: 16,
-      dirEntriesBytes: 16,
-      dataBytes: 32,
-      dataPtr: 0x4c0,
-    });
-
-    primitives.copyMemfsState(sourceExports, sourceState, targetExports, targetState);
-
-    const header = new DataView(targetMemory.buffer, targetState.memfsPtr, 48);
-    expect(header.getUint32(0, true)).toBe(3);
-    expect(header.getUint32(4, true)).toBe(2);
-    expect(header.getUint32(8, true)).toBe(16);
-    expect(header.getBigUint64(16, true)).toBe(0x400n);
-    expect(header.getBigUint64(24, true)).toBe(0x440n);
-    expect(header.getBigUint64(32, true)).toBe(0x480n);
-    expect(header.getBigUint64(40, true)).toBe(0x4c0n);
   });
 
   it("clamps full data copy to the target memfs capacity", () => {

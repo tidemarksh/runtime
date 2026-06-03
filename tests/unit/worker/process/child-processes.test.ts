@@ -1,6 +1,5 @@
 import { expect, test } from "vite-plus/test";
 import {
-  describeActiveChildProcesses,
   hasActiveChildProcess,
   pumpActiveChildProcesses,
 } from "../../../../src/worker/child-processes.js";
@@ -48,7 +47,6 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
     blockedWorkers: new Map(),
     pendingChildExitRecords: 0,
     pendingChildSpawnRecords: 0,
-    childExitSyncRecords: new Map(),
     pipeSyncPromise: null,
     pipeSyncQueued: false,
     pipeWaiterWakeQueued: false,
@@ -117,34 +115,6 @@ test("hasActiveChildProcess reports child handles whose workers are temporarily 
   expect(hasActiveChildProcess(processHandles, 1, threadWorkerStates)).toBe(true);
   processHandles.delete(3);
   expect(hasActiveChildProcess(processHandles, 1, threadWorkerStates)).toBe(true);
-});
-
-test("describeActiveChildProcesses reports active child scheduling state", () => {
-  const worker = {} as Worker;
-  const child = makeHandle({
-    pid: 3,
-    parentPid: 1,
-    vmPtr: 0x3000,
-    worker,
-    workers: new Set([worker]),
-    blockedWorkers: new Map([[worker, { status: 31 } as ProcessHandle["blockedWorkers"] extends Map<Worker, infer T> ? T : never]]),
-    pendingChildExitRecords: 1,
-    pendingChildSpawnRecords: 2,
-    exitInProgress: false,
-  });
-  const processHandles = new Map<number, ProcessHandle>([
-    [1, makeHandle({ pid: 1 })],
-    [2, makeHandle({ pid: 2, parentPid: 1, exitInProgress: true })],
-    [3, child],
-  ]);
-  const threadWorkerStates = new WeakMap<Worker, never>([
-    [worker, {} as never],
-  ]);
-
-  expect(describeActiveChildProcesses(processHandles, 1, threadWorkerStates)).toContain(
-    "pid=3/vm=0x3000/workers=1/ready=0/running=0/blocked=1/blockedStatus=31/runnable=1/records=0/pending=1/2",
-  );
-  expect(describeActiveChildProcesses(processHandles, 9, threadWorkerStates)).toBe("none");
 });
 
 test("pumpActiveChildProcesses pumps live children and skips exit cleanup", () => {

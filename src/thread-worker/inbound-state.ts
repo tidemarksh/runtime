@@ -26,20 +26,6 @@ export interface ThreadWorkerInboundStatePayload {
   guestWriteWatchRegions?: GuestWriteWatchRegion[];
 }
 
-interface DirectGuestMemoryWriteTraceEntry {
-  source: string;
-  guestPtr: number;
-  len: number;
-  vmaStart: bigint;
-  vmaEnd: bigint;
-  prot: number;
-  sample: string;
-  ascii: string;
-}
-
-const DIRECT_GUEST_MEMORY_WRITE_TRACE_CAP = 32;
-const directGuestMemoryWriteTrace: DirectGuestMemoryWriteTraceEntry[] = [];
-
 function toKernelU64(value: number): bigint {
   return BigInt(Math.trunc(value));
 }
@@ -85,70 +71,6 @@ function applyGuestWriteWatchRegions(
   }
 }
 
-function sampleBytes(bytes: Uint8Array): { sample: string; ascii: string } {
-  const sample = [...bytes.slice(0, 16)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-  const ascii = [...bytes.slice(0, 32)]
-    .map((byte) => (byte >= 0x20 && byte <= 0x7e ? String.fromCharCode(byte) : "."))
-    .join("");
-  return { sample, ascii };
-}
-
-function recordDirectGuestMemoryWriteIfVmaOverlap(
-  kernelExports: KernelExports,
-  source: string,
-  guestPtr: number,
-  bytes: Uint8Array,
-): void {
-  if (bytes.length === 0) {
-    return;
-  }
-  const start = BigInt(guestPtr);
-  const end = start + BigInt(bytes.length);
-  const vmaLen = kernelExports.debug_memory_vma_len?.() ?? 0;
-  for (let index = 0; index < vmaLen; index += 1) {
-    const prot = kernelExports.debug_memory_vma_prot?.(index) ?? 0;
-    const vmaStart = BigInt(kernelExports.debug_memory_vma_start?.(index) ?? 0n);
-    const vmaEnd = BigInt(kernelExports.debug_memory_vma_end?.(index) ?? 0n);
-    if (vmaStart >= vmaEnd || end <= vmaStart || start >= vmaEnd) {
-      continue;
-    }
-    const { sample, ascii } = sampleBytes(bytes);
-    directGuestMemoryWriteTrace.push({
-      source,
-      guestPtr,
-      len: bytes.length,
-      vmaStart,
-      vmaEnd,
-      prot,
-      sample,
-      ascii,
-    });
-    if (directGuestMemoryWriteTrace.length > DIRECT_GUEST_MEMORY_WRITE_TRACE_CAP) {
-      directGuestMemoryWriteTrace.splice(
-        0,
-        directGuestMemoryWriteTrace.length - DIRECT_GUEST_MEMORY_WRITE_TRACE_CAP,
-      );
-    }
-  }
-}
-
-export function formatThreadWorkerDirectGuestMemoryWriteTrace(): string {
-  return directGuestMemoryWriteTrace
-    .map((entry, index) => [
-      `${index}`,
-      `src=${entry.source}`,
-      `ptr=0x${entry.guestPtr.toString(16)}`,
-      `len=${entry.len}`,
-      `vma=0x${entry.vmaStart.toString(16)}-0x${entry.vmaEnd.toString(16)}`,
-      `prot=${entry.prot}`,
-      `sample=${entry.sample}`,
-      `ascii=${JSON.stringify(entry.ascii)}`,
-    ].join("/"))
-    .join(",");
-}
-
 function applyInboundPipeSlots(
   kernelExports: KernelExports,
   kernelState: KernelRuntimeState,
@@ -192,12 +114,6 @@ export function applyThreadWorkerGuestMemoryWrites(
     ) {
       continue;
     }
-    recordDirectGuestMemoryWriteIfVmaOverlap(
-      context.kernelExports,
-      "thread-inbound-guest-write",
-      write.guestPtr,
-      write.bytes,
-    );
     memory.set(write.bytes, start);
   }
 }

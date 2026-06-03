@@ -26,12 +26,6 @@ import {
   snapshotProcessPipeSlotsForThreadStep,
 } from "../../ownership/pipe-control.js";
 import { restoreRuntimeNetworkSidecarForHandle } from "../../ownership/socket-control.js";
-import {
-  consumeFaultExitPayloadForDeadProcess,
-  faultPayloadCanCompleteProcessExit,
-  formatAmbiguousFaultExitPayload,
-  rememberFaultExitPayload,
-} from "../../fault-exit.js";
 
 interface StatusTransitionArgs {
   handle: ProcessHandle;
@@ -241,28 +235,6 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     }
 
     if (status === handle.kernel.abi_status_fault()) {
-      const currentStatus = handle.kernel.thread_status?.(thread.vmPtr);
-      if (currentStatus !== undefined && currentStatus !== status) {
-        rememberFaultExitPayload(handle, {
-          exitCode: msg.exitCode,
-          termSignal: msg.termSignal,
-          syscallNr: msg.syscallNr,
-          vmPtr: thread.vmPtr,
-        });
-        deps.appendRuntimeLifecycleEvent(
-          handle.runtimeId,
-          `fault-stale-current:${handle.pid}:0x${thread.vmPtr.toString(16)}:${status}->${currentStatus}`
-            + `:exit=${msg.exitCode}:${msg.termSignal}`,
-        );
-        deps.appendWorkerDebugLog(
-          handle,
-          `fault_stale:0x${thread.vmPtr.toString(16)}:${status}->${currentStatus}`
-            + `:exit=${msg.exitCode}:${msg.termSignal}`,
-        );
-        deps.kickBlockedWorkers(handle);
-        deps.pumpProcess(handle);
-        return;
-      }
       if (deps.resumeVforkParentAfterChildExit(handle, worker, thread.vmPtr, msg.exitCode, msg.termSignal)) {
         return;
       }
@@ -278,62 +250,6 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       const shouldExitProcess = remainingThreads <= 1 || !hasLiveThreads;
       deps.appendWorkerDebugLog(handle, `fault:0x${thread.vmPtr.toString(16)} remaining=${remainingThreads}`);
       if (shouldExitProcess) {
-        if (!faultPayloadCanCompleteProcessExit(handle, {
-          exitCode: msg.exitCode,
-          termSignal: msg.termSignal,
-          syscallNr: msg.syscallNr,
-          vmPtr: thread.vmPtr,
-        })) {
-          const pendingFaultExit = consumeFaultExitPayloadForDeadProcess(handle, thread.vmPtr);
-          if (pendingFaultExit) {
-            deps.appendRuntimeLifecycleEvent(
-              handle.runtimeId,
-              `complete-exit-request:pending-fault:${handle.pid}:vm=0x${pendingFaultExit.vmPtr.toString(16)}`
-                + `:observed=0x${thread.vmPtr.toString(16)}`
-                + `:exit=${pendingFaultExit.exitCode}:${pendingFaultExit.termSignal}`,
-            );
-            void deps.completeProcessExit(
-              handle,
-              pendingFaultExit.exitCode,
-              pendingFaultExit.termSignal,
-              pendingFaultExit.vmPtr,
-            ).catch((error) => {
-              deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-            });
-            return;
-          }
-          if (remainingThreads === 0 && !hasLiveThreads) {
-            deps.appendRuntimeLifecycleEvent(
-              handle.runtimeId,
-              `fault-dead-zero-payload-defer:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
-                + `:exit=${msg.exitCode}:${msg.termSignal}`,
-            );
-            deps.appendWorkerDebugLog(
-              handle,
-              `fault_dead_zero_payload_defer:0x${thread.vmPtr.toString(16)}`
-                + `:exit=${msg.exitCode}:${msg.termSignal}`,
-            );
-            if (handle.runningWorker === worker) {
-              handle.runningWorker = null;
-            }
-            handle.workers.delete(worker);
-            deps.threadWorkerStates.delete(worker);
-            releaseWorker(worker);
-            deps.kickBlockedWorkers(handle);
-            deps.pumpProcess(handle);
-            return;
-          }
-          const detail = formatAmbiguousFaultExitPayload(handle, {
-            exitCode: msg.exitCode,
-            termSignal: msg.termSignal,
-            syscallNr: msg.syscallNr,
-            vmPtr: thread.vmPtr,
-          });
-          deps.appendRuntimeLifecycleEvent(handle.runtimeId, detail);
-          deps.appendWorkerDebugLog(handle, detail);
-          deps.failProcess(handle, new Error(detail));
-          return;
-        }
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `complete-exit-request:transitions-fault:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`

@@ -1,6 +1,6 @@
 import type { KernelExports } from "../abi.js";
-import { formatThreadWorkerDirectGuestMemoryWriteTrace } from "./inbound-state.js";
 
+const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const FD_TRACE_LOG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_FD_TRACE ?? "") === "1";
 const RESERVATION_DEBUG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_RESERVATION ?? "") === "1";
@@ -118,156 +118,6 @@ function formatFdTraceReadSample(
   }
   const bytes = readGuestSlice(exports, guestBase, arg1, result, 160);
   return bytes === null ? "" : `:read=${JSON.stringify(decoder.decode(bytes))}`;
-}
-
-function formatProcMapsReadTrace(exports: KernelExports, vmPtr: number): string | null {
-  const len = exports.debug_proc_maps_read_trace_len?.() ?? 0;
-  if (len <= 0) {
-    return null;
-  }
-  const entries: string[] = [];
-  for (let index = 0; index < len; index += 1) {
-    const traceVmPtr = exports.debug_proc_maps_read_trace_vm_ptr?.(index) ?? 0;
-    if (traceVmPtr !== 0 && traceVmPtr !== vmPtr) {
-      continue;
-    }
-    entries.push([
-      `${index}`,
-      `vm=0x${traceVmPtr.toString(16)}`,
-      `fd=${readOptionalTraceU64(exports.debug_proc_maps_read_trace_fd?.(index)).toString()}`,
-      `ino=${exports.debug_proc_maps_read_trace_ino?.(index) ?? 0}`,
-      `buf=0x${formatU64(readOptionalTraceU64(exports.debug_proc_maps_read_trace_buf?.(index)))}`,
-      `len=${readOptionalTraceU64(exports.debug_proc_maps_read_trace_len_bytes?.(index)).toString()}`,
-      `ret=${readOptionalTraceI64(exports.debug_proc_maps_read_trace_result?.(index)).toString()}`,
-      `off=0x${formatU64(readOptionalTraceU64(exports.debug_proc_maps_read_trace_file_offset?.(index)))}`,
-      `w=${exports.debug_proc_maps_read_trace_writable?.(index) ?? 0}`,
-      `xov=${exports.debug_proc_maps_read_trace_exec_overlap?.(index) ?? 0}`,
-      `vma=0x${formatU64(readOptionalTraceU64(exports.debug_proc_maps_read_trace_vma_start?.(index)))}-0x${formatU64(readOptionalTraceU64(exports.debug_proc_maps_read_trace_vma_end?.(index)))}`,
-      `prot=${exports.debug_proc_maps_read_trace_vma_prot?.(index) ?? 0}`,
-      `vfd=${exports.debug_proc_maps_read_trace_vma_fd?.(index) ?? 0}`,
-      `voff=0x${formatU64(readOptionalTraceU64(exports.debug_proc_maps_read_trace_vma_offset?.(index)))}`,
-    ].join(":"));
-  }
-  return entries.length === 0 ? null : entries.join(",");
-}
-
-function formatFileMmapMaterializeTrace(exports: KernelExports, vmPtr: number): string | null {
-  const len = exports.debug_file_mmap_materialize_trace_len?.() ?? 0;
-  if (len <= 0) {
-    return null;
-  }
-  const entries: string[] = [];
-  for (let index = 0; index < len; index += 1) {
-    const traceVmPtr = exports.debug_file_mmap_materialize_trace_vm_ptr?.(index) ?? 0;
-    if (traceVmPtr !== 0 && traceVmPtr !== vmPtr) {
-      continue;
-    }
-    entries.push([
-      `${index}`,
-      `vm=0x${traceVmPtr.toString(16)}`,
-      `ino=${exports.debug_file_mmap_materialize_trace_ino?.(index) ?? 0}`,
-      `range=0x${formatU64(readOptionalTraceU64(exports.debug_file_mmap_materialize_trace_start?.(index)))}-0x${formatU64(readOptionalTraceU64(exports.debug_file_mmap_materialize_trace_end?.(index)))}`,
-      `prot=${exports.debug_file_mmap_materialize_trace_prot?.(index) ?? 0}`,
-      `flags=${exports.debug_file_mmap_materialize_trace_flags?.(index) ?? 0}`,
-      `off=0x${formatU64(readOptionalTraceU64(exports.debug_file_mmap_materialize_trace_offset?.(index)))}`,
-      `procMaps=${exports.debug_file_mmap_materialize_trace_source_proc_maps?.(index) ?? 0}`,
-      `oldX=${exports.debug_file_mmap_materialize_trace_old_exec_overlap?.(index) ?? 0}`,
-      `old=0x${formatU64(readOptionalTraceU64(exports.debug_file_mmap_materialize_trace_old_vma_start?.(index)))}-0x${formatU64(readOptionalTraceU64(exports.debug_file_mmap_materialize_trace_old_vma_end?.(index)))}`,
-      `oldFd=${exports.debug_file_mmap_materialize_trace_old_vma_fd?.(index) ?? 0}`,
-      `oldOff=0x${formatU64(readOptionalTraceU64(exports.debug_file_mmap_materialize_trace_old_vma_offset?.(index)))}`,
-      `sample=0x${formatU64(readOptionalTraceU64(exports.debug_file_mmap_materialize_trace_sample?.(index)))}`,
-    ].join(":"));
-  }
-  return entries.length === 0 ? null : entries.join(",");
-}
-
-function formatCpuWritePermitTrace(exports: KernelExports, vmPtr: number): string | null {
-  const len = exports.debug_cpu_write_permit_trace_len?.() ?? 0;
-  if (len <= 0) {
-    return null;
-  }
-  const entries: string[] = [];
-  for (let index = 0; index < len; index += 1) {
-    const traceVmPtr = exports.debug_cpu_write_permit_trace_vm_ptr?.(index) ?? 0;
-    if (traceVmPtr !== 0 && traceVmPtr !== vmPtr) {
-      continue;
-    }
-    entries.push([
-      `${index}`,
-      `vm=0x${traceVmPtr.toString(16)}`,
-      `tid=${exports.debug_cpu_write_permit_trace_tid?.(index) ?? 0}`,
-      `pc=0x${formatU64(readOptionalTraceU64(exports.debug_cpu_write_permit_trace_pc?.(index)))}`,
-      `addr=0x${formatU64(readOptionalTraceU64(exports.debug_cpu_write_permit_trace_addr?.(index)))}`,
-      `len=${readOptionalTraceU64(exports.debug_cpu_write_permit_trace_len_bytes?.(index)).toString()}`,
-      `vma=0x${formatU64(readOptionalTraceU64(exports.debug_cpu_write_permit_trace_vma_start?.(index)))}-0x${formatU64(readOptionalTraceU64(exports.debug_cpu_write_permit_trace_vma_end?.(index)))}`,
-      `prot=${exports.debug_cpu_write_permit_trace_vma_prot?.(index) ?? 0}`,
-      `flags=${exports.debug_cpu_write_permit_trace_vma_flags?.(index) ?? 0}`,
-      `fd=${exports.debug_cpu_write_permit_trace_vma_fd?.(index) ?? 0}`,
-      `off=0x${formatU64(readOptionalTraceU64(exports.debug_cpu_write_permit_trace_vma_offset?.(index)))}`,
-    ].join(":"));
-  }
-  return entries.length === 0 ? null : entries.join(",");
-}
-
-function formatMprotectTransitionTrace(exports: KernelExports, vmPtr: number): string | null {
-  const len = exports.debug_mprotect_transition_trace_len?.() ?? 0;
-  if (len <= 0) {
-    return null;
-  }
-  const entries: string[] = [];
-  for (let index = 0; index < len; index += 1) {
-    const traceVmPtr = exports.debug_mprotect_transition_trace_vm_ptr?.(index) ?? 0;
-    if (traceVmPtr !== 0 && traceVmPtr !== vmPtr) {
-      continue;
-    }
-    entries.push([
-      `${index}`,
-      `vm=0x${traceVmPtr.toString(16)}`,
-      `tid=${exports.debug_mprotect_transition_trace_tid?.(index) ?? 0}`,
-      `req=0x${formatU64(readOptionalTraceU64(exports.debug_mprotect_transition_trace_request_start?.(index)))}-0x${formatU64(readOptionalTraceU64(exports.debug_mprotect_transition_trace_request_end?.(index)))}`,
-      `seg=0x${formatU64(readOptionalTraceU64(exports.debug_mprotect_transition_trace_segment_start?.(index)))}-0x${formatU64(readOptionalTraceU64(exports.debug_mprotect_transition_trace_segment_end?.(index)))}`,
-      `oldProt=${exports.debug_mprotect_transition_trace_old_prot?.(index) ?? 0}`,
-      `newProt=${exports.debug_mprotect_transition_trace_new_prot?.(index) ?? 0}`,
-      `oldFlags=${exports.debug_mprotect_transition_trace_old_flags?.(index) ?? 0}`,
-      `oldFd=${exports.debug_mprotect_transition_trace_old_fd?.(index) ?? 0}`,
-      `oldOff=0x${formatU64(readOptionalTraceU64(exports.debug_mprotect_transition_trace_old_offset?.(index)))}`,
-      `gainX=${exports.debug_mprotect_transition_trace_gained_exec?.(index) ?? 0}`,
-      `gainW=${exports.debug_mprotect_transition_trace_gained_write?.(index) ?? 0}`,
-    ].join(":"));
-  }
-  return entries.length === 0 ? null : entries.join(",");
-}
-
-function formatMmapExecTransitionTrace(exports: KernelExports, vmPtr: number): string | null {
-  const len = exports.debug_mmap_exec_transition_trace_len?.() ?? 0;
-  if (len <= 0) {
-    return null;
-  }
-  const entries: string[] = [];
-  for (let index = 0; index < len; index += 1) {
-    const traceVmPtr = exports.debug_mmap_exec_transition_trace_vm_ptr?.(index) ?? 0;
-    if (traceVmPtr !== 0 && traceVmPtr !== vmPtr) {
-      continue;
-    }
-    entries.push([
-      `${index}`,
-      `vm=0x${traceVmPtr.toString(16)}`,
-      `tid=${exports.debug_mmap_exec_transition_trace_tid?.(index) ?? 0}`,
-      `range=0x${formatU64(readOptionalTraceU64(exports.debug_mmap_exec_transition_trace_start?.(index)))}-0x${formatU64(readOptionalTraceU64(exports.debug_mmap_exec_transition_trace_end?.(index)))}`,
-      `prot=${exports.debug_mmap_exec_transition_trace_prot?.(index) ?? 0}`,
-      `flags=${exports.debug_mmap_exec_transition_trace_flags?.(index) ?? 0}`,
-      `fd=${exports.debug_mmap_exec_transition_trace_fd?.(index) ?? 0}`,
-      `off=0x${formatU64(readOptionalTraceU64(exports.debug_mmap_exec_transition_trace_offset?.(index)))}`,
-      `anon=${exports.debug_mmap_exec_transition_trace_is_anon?.(index) ?? 0}`,
-      `sparse=${exports.debug_mmap_exec_transition_trace_sparse_fixed_upgrade?.(index) ?? 0}`,
-      `oldX=${exports.debug_mmap_exec_transition_trace_old_exec_overlap?.(index) ?? 0}`,
-      `old=0x${formatU64(readOptionalTraceU64(exports.debug_mmap_exec_transition_trace_old_vma_start?.(index)))}-0x${formatU64(readOptionalTraceU64(exports.debug_mmap_exec_transition_trace_old_vma_end?.(index)))}`,
-      `oldFd=${exports.debug_mmap_exec_transition_trace_old_vma_fd?.(index) ?? 0}`,
-      `oldOff=0x${formatU64(readOptionalTraceU64(exports.debug_mmap_exec_transition_trace_old_vma_offset?.(index)))}`,
-      `sample=0x${formatU64(readOptionalTraceU64(exports.debug_mmap_exec_transition_trace_sample?.(index)))}`,
-    ].join(":"));
-  }
-  return entries.length === 0 ? null : entries.join(",");
 }
 
 export function collectFdTraceDebug(
@@ -408,6 +258,10 @@ function collectFdTraceSummaryForDebug(exports: KernelExports, vmPtr: number): s
     ].join(":"));
   }
   return entries.length === 0 ? null : entries.slice(-64).join(",");
+}
+
+function debugScratchBase(exports: KernelExports): number {
+  return (exports.kernel_scratch_base?.() ?? (exports.kernel_heap_ptr() + 0x10000));
 }
 
 function readOptionalThreadU64(
@@ -905,32 +759,9 @@ function formatExecveVecForDebug(
   return `[${entries.join(",")}]`;
 }
 
-function formatMemoryVmaPath(exports: KernelExports, index: number): string {
-  const len = exports.debug_memory_vma_path_len?.(index) ?? 0;
-  if (len <= 0) {
-    return "";
-  }
-  const bytes: number[] = [];
-  for (let offset = 0; offset < Math.min(len, 160); offset += 1) {
-    bytes.push(exports.debug_memory_vma_path_byte?.(index, offset) ?? 0);
-  }
-  return new TextDecoder().decode(new Uint8Array(bytes));
-}
-
-function formatMemoryVma(exports: KernelExports, index: number, addr?: bigint): string {
-  const path = formatMemoryVmaPath(exports, index);
-  const fileSampleLen = addr === undefined
-    ? 0
-    : exports.debug_memory_vma_file_sample_len?.(index, addr) ?? 0;
-  const fileSample = addr === undefined || fileSampleLen <= 0
-    ? ""
-    : `:file=0x${BigInt.asUintN(64, BigInt(exports.debug_memory_vma_file_sample?.(index, addr) ?? 0)).toString(16)}/${fileSampleLen}`;
+function formatMemoryVma(exports: KernelExports, index: number): string {
   return `0x${exports.debug_memory_vma_start?.(index).toString(16) ?? "0"}-0x${exports.debug_memory_vma_end?.(index).toString(16) ?? "0"}`
-    + `:${exports.debug_memory_vma_prot?.(index) ?? "n/a"}/${exports.debug_memory_vma_flags?.(index) ?? "n/a"}`
-    + `:fd=${exports.debug_memory_vma_fd?.(index) ?? "n/a"}`
-    + `:off=0x${BigInt(exports.debug_memory_vma_offset?.(index) ?? 0).toString(16)}`
-    + (path ? `:path=${JSON.stringify(path)}` : "")
-    + fileSample;
+    + `:${exports.debug_memory_vma_prot?.(index) ?? "n/a"}/${exports.debug_memory_vma_flags?.(index) ?? "n/a"}`;
 }
 
 function findContainingMemoryVma(
@@ -945,7 +776,7 @@ function findContainingMemoryVma(
     const start = BigInt(exports.debug_memory_vma_start?.(i) ?? 0);
     const end = BigInt(exports.debug_memory_vma_end?.(i) ?? 0);
     if (start <= addr && addr < end) {
-      return formatMemoryVma(exports, i, addr);
+      return formatMemoryVma(exports, i);
     }
   }
   return null;
@@ -1011,7 +842,7 @@ function pushRecoveredDebugPart(
   }
 }
 
-function pushRecoveredTraceDebug(debugParts: string[], exports: KernelExports, vmPtr: number, guestBase: number) {
+function pushRecoveredTraceDebug(debugParts: string[], exports: KernelExports, vmPtr: number) {
   pushRecoveredDebugPart(
     debugParts,
     "thread_step_traces",
@@ -1032,248 +863,10 @@ function pushRecoveredTraceDebug(debugParts: string[], exports: KernelExports, v
     "break_exec_trace",
     () => formatBreakExecTraceEntries(exports, vmPtr),
   );
-  pushRecoveredDebugPart(
-    debugParts,
-    "release_exec_trace",
-    () => formatReleaseExecTrace(exports, guestBase),
-  );
-}
-
-function formatGuestWriteOverlapTrace(exports: KernelExports): string {
-  const len = exports.debug_guest_write_overlap_trace_len?.() ?? 0;
-  if (len === 0) {
-    return "";
-  }
-  const start = Math.max(0, len - 16);
-  return Array.from({ length: len - start }, (_value, offset) => {
-    const index = start + offset;
-    const addr = readOptionalTraceU64(exports.debug_guest_write_overlap_trace_addr?.(index));
-    const writerPc = readOptionalTraceU64(exports.debug_guest_write_overlap_trace_pc?.(index));
-    const raw = (exports.debug_guest_write_overlap_trace_raw?.(index) ?? 0) >>> 0;
-    return [
-      `${index}`,
-      `slot=${exports.debug_guest_write_overlap_trace_slot?.(index) ?? 0}`,
-      `watch=0x${formatU64(readOptionalTraceU64(exports.debug_guest_write_overlap_trace_watch_start?.(index)))}-0x${formatU64(readOptionalTraceU64(exports.debug_guest_write_overlap_trace_watch_end?.(index)))}`,
-      `op=${exports.debug_guest_write_overlap_trace_op?.(index) ?? 0}`,
-      `addr=0x${formatU64(addr)}`,
-      `len=${exports.debug_guest_write_overlap_trace_write_len?.(index) ?? 0}`,
-      `sample=0x${formatU64(readOptionalTraceU64(exports.debug_guest_write_overlap_trace_sample?.(index)))}`,
-      `sampleLen=${exports.debug_guest_write_overlap_trace_sample_len?.(index) ?? 0}`,
-      `vm=0x${(exports.debug_guest_write_overlap_trace_vm_ptr?.(index) ?? 0).toString(16)}`,
-      `pc=0x${formatU64(writerPc)}`,
-      `pc_vma=${formatMemoryVmaForAddr(exports, writerPc)}`,
-      `raw=0x${raw.toString(16)}`,
-      `step=${readOptionalTraceU64(exports.debug_guest_write_overlap_trace_step?.(index)).toString()}`,
-      `stage=${exports.debug_guest_write_overlap_trace_execve_stage?.(index) ?? 0}`,
-      `vma=${formatMemoryVmaForAddr(exports, addr)}`,
-    ].join("/");
-  }).join(",");
-}
-
-function formatGuestWriteOverlapByVmTrace(exports: KernelExports): string {
-  const len = exports.debug_guest_write_overlap_by_vm_trace_len?.() ?? 0;
-  if (len === 0) {
-    return "";
-  }
-  return Array.from({ length: len }, (_value, index) => {
-    const addr = readOptionalTraceU64(exports.debug_guest_write_overlap_by_vm_trace_addr?.(index));
-    const writerPc = readOptionalTraceU64(exports.debug_guest_write_overlap_by_vm_trace_pc?.(index));
-    const raw = (exports.debug_guest_write_overlap_by_vm_trace_raw?.(index) ?? 0) >>> 0;
-    return [
-      `${index}`,
-      `slot=${exports.debug_guest_write_overlap_by_vm_trace_slot?.(index) ?? 0}`,
-      `watch=0x${formatU64(readOptionalTraceU64(exports.debug_guest_write_overlap_by_vm_trace_watch_start?.(index)))}-0x${formatU64(readOptionalTraceU64(exports.debug_guest_write_overlap_by_vm_trace_watch_end?.(index)))}`,
-      `op=${exports.debug_guest_write_overlap_by_vm_trace_op?.(index) ?? 0}`,
-      `addr=0x${formatU64(addr)}`,
-      `len=${exports.debug_guest_write_overlap_by_vm_trace_write_len?.(index) ?? 0}`,
-      `sample=0x${formatU64(readOptionalTraceU64(exports.debug_guest_write_overlap_by_vm_trace_sample?.(index)))}`,
-      `sampleLen=${exports.debug_guest_write_overlap_by_vm_trace_sample_len?.(index) ?? 0}`,
-      `vm=0x${(exports.debug_guest_write_overlap_by_vm_trace_vm_ptr?.(index) ?? 0).toString(16)}`,
-      `pc=0x${formatU64(writerPc)}`,
-      `pc_vma=${formatMemoryVmaForAddr(exports, writerPc)}`,
-      `raw=0x${raw.toString(16)}`,
-      `step=${readOptionalTraceU64(exports.debug_guest_write_overlap_by_vm_trace_step?.(index)).toString()}`,
-      `stage=${exports.debug_guest_write_overlap_by_vm_trace_execve_stage?.(index) ?? 0}`,
-      `vma=${formatMemoryVmaForAddr(exports, addr)}`,
-    ].join("/");
-  }).join(",");
-}
-
-function formatMemoryVmaForAddr(exports: KernelExports, addr: bigint): string {
-  if (addr === 0n) {
-    return "zero";
-  }
-  const len = exports.debug_memory_vma_len?.() ?? 0;
-  for (let index = 0; index < len; index += 1) {
-    const start = readOptionalTraceU64(exports.debug_memory_vma_start?.(index));
-    const end = readOptionalTraceU64(exports.debug_memory_vma_end?.(index));
-    if (addr < start || addr >= end) {
-      continue;
-    }
-    return `0x${start.toString(16)}-0x${end.toString(16)}`
-      + `:${exports.debug_memory_vma_prot?.(index) ?? 0}`
-      + `/${exports.debug_memory_vma_flags?.(index) ?? 0}`
-      + `:fd=${exports.debug_memory_vma_fd?.(index) ?? 0}`
-      + `:off=0x${formatU64(readOptionalTraceU64(exports.debug_memory_vma_offset?.(index)))}`;
-  }
-  return "none";
-}
-
-function formatProcMapsShapedWriteTrace(exports: KernelExports): string {
-  const len = exports.debug_proc_maps_shaped_write_trace_len?.() ?? 0;
-  if (len === 0) {
-    return "";
-  }
-  const start = Math.max(0, len - 16);
-  return Array.from({ length: len - start }, (_value, offset) => {
-    const index = start + offset;
-    const addr = readOptionalTraceU64(exports.debug_proc_maps_shaped_write_trace_addr?.(index));
-    return [
-      `${index}`,
-      `op=${exports.debug_proc_maps_shaped_write_trace_op?.(index) ?? 0}`,
-      `addr=0x${formatU64(addr)}`,
-      `len=${exports.debug_proc_maps_shaped_write_trace_write_len?.(index) ?? 0}`,
-      `sample=0x${formatU64(readOptionalTraceU64(exports.debug_proc_maps_shaped_write_trace_sample?.(index)))}`,
-      `sampleLen=${exports.debug_proc_maps_shaped_write_trace_sample_len?.(index) ?? 0}`,
-      `pattern=${exports.debug_proc_maps_shaped_write_trace_pattern?.(index) ?? 0}`,
-      `vma=${formatMemoryVmaForAddr(exports, addr)}`,
-    ].join("/");
-  }).join(",");
-}
-
-function readGuestBytesForTrace(exports: KernelExports, guestBase: number, pc: bigint, byteLength: number): string {
-  const guestAddr = Number(pc);
-  if (!Number.isFinite(guestAddr) || guestAddr < 0) {
-    return "unreadable";
-  }
-  const absolute = guestBase + guestAddr;
-  if (absolute < 0 || absolute + byteLength > exports.memory.buffer.byteLength) {
-    return "out_of_bounds";
-  }
-  return [...new Uint8Array(exports.memory.buffer, absolute, byteLength)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-function formatReleaseExecTrace(exports: KernelExports, guestBase = 0): string {
-  const len = exports.debug_release_exec_trace_len?.() ?? 0;
-  if (len === 0) {
-    return "";
-  }
-  const start = Math.max(0, len - 16);
-  const vmaLen = exports.debug_memory_vma_len?.() ?? 0;
-  return Array.from({ length: len - start }, (_value, offset) => {
-    const index = start + offset;
-    const pc = readOptionalTraceU64(exports.debug_release_exec_trace_pc?.(index));
-    return [
-      `${index}`,
-      `vm=0x${(exports.debug_release_exec_trace_vm_ptr?.(index) ?? 0).toString(16)}`,
-      `tid=${exports.debug_release_exec_trace_tid?.(index) ?? 0}`,
-      `pc=0x${formatU64(pc)}`,
-      `vma=${findContainingMemoryVma(exports, vmaLen, pc) ?? "none"}`,
-      `mem=${guestBase > 0 && pc !== 0n ? readGuestBytesForTrace(exports, guestBase, pc, 8) : "n/a"}`,
-      `raw=0x${((exports.debug_release_exec_trace_raw?.(index) ?? 0) >>> 0).toString(16)}`,
-      `step=${exports.debug_release_exec_trace_step?.(index) ?? 0}`,
-      `ra=0x${formatU64(readOptionalTraceU64(exports.debug_release_exec_trace_ra?.(index)))}`,
-      `sp=0x${formatU64(readOptionalTraceU64(exports.debug_release_exec_trace_sp?.(index)))}`,
-      `a0=0x${formatU64(readOptionalTraceU64(exports.debug_release_exec_trace_a0?.(index)))}`,
-      `a1=0x${formatU64(readOptionalTraceU64(exports.debug_release_exec_trace_a1?.(index)))}`,
-      `a7=0x${formatU64(readOptionalTraceU64(exports.debug_release_exec_trace_a7?.(index)))}`,
-      `s11=0x${formatU64(readOptionalTraceU64(exports.debug_release_exec_trace_s11?.(index)))}`,
-    ].join("/");
-  }).join(",");
-}
-
-function formatReleaseExecMismatchTrace(exports: KernelExports): string {
-  const len = exports.debug_release_exec_mismatch_trace_len?.() ?? 0;
-  if (len === 0) {
-    return "";
-  }
-  return Array.from({ length: len }, (_value, index) => [
-    `${index}`,
-    `vm=0x${(exports.debug_release_exec_mismatch_trace_vm_ptr?.(index) ?? 0).toString(16)}`,
-    `tid=${exports.debug_release_exec_mismatch_trace_tid?.(index) ?? 0}`,
-    `pc=0x${formatU64(readOptionalTraceU64(exports.debug_release_exec_mismatch_trace_pc?.(index)))}`,
-    `raw=0x${((exports.debug_release_exec_mismatch_trace_raw?.(index) ?? 0) >>> 0).toString(16)}`,
-    `step=${exports.debug_release_exec_mismatch_trace_step?.(index) ?? 0}`,
-    `mem=0x${formatU64(readOptionalTraceU64(exports.debug_release_exec_mismatch_trace_mem_sample?.(index)))}`,
-    `memLen=${exports.debug_release_exec_mismatch_trace_mem_sample_len?.(index) ?? 0}`,
-    `file=0x${formatU64(readOptionalTraceU64(exports.debug_release_exec_mismatch_trace_file_sample?.(index)))}`,
-    `fileLen=${exports.debug_release_exec_mismatch_trace_file_sample_len?.(index) ?? 0}`,
-    `vma=0x${formatU64(readOptionalTraceU64(exports.debug_release_exec_mismatch_trace_vma_start?.(index)))}-0x${formatU64(readOptionalTraceU64(exports.debug_release_exec_mismatch_trace_vma_end?.(index)))}`,
-    `prot=${exports.debug_release_exec_mismatch_trace_vma_prot?.(index) ?? 0}`,
-    `fd=${exports.debug_release_exec_mismatch_trace_vma_fd?.(index) ?? 0}`,
-    `off=0x${formatU64(readOptionalTraceU64(exports.debug_release_exec_mismatch_trace_vma_offset?.(index)))}`,
-  ].join("/")).join(",");
-}
-
-function formatReleaseDefaultSignal(exports: KernelExports, vmPtr: number): string {
-  const sig = exports.debug_release_default_signal_sig?.() ?? 0;
-  if (sig === 0) {
-    return "";
-  }
-  const traceVmPtr = exports.debug_release_default_signal_vm_ptr?.() ?? 0;
-  return [
-    `sig=${sig}`,
-    `code=${exports.debug_release_default_signal_code?.() ?? 0}`,
-    `vm=0x${traceVmPtr.toString(16)}`,
-    `requested_vm=0x${vmPtr.toString(16)}`,
-    `source_match=${traceVmPtr === 0 || traceVmPtr === vmPtr ? 1 : 0}`,
-    `pc=0x${formatU64(readOptionalTraceU64(exports.debug_release_default_signal_pc?.()))}`,
-    `ra=0x${formatU64(readOptionalTraceU64(exports.debug_release_default_signal_ra?.()))}`,
-    `sp=0x${formatU64(readOptionalTraceU64(exports.debug_release_default_signal_sp?.()))}`,
-    `gp=0x${formatU64(readOptionalTraceU64(exports.debug_release_default_signal_gp?.()))}`,
-    `tp=0x${formatU64(readOptionalTraceU64(exports.debug_release_default_signal_tp?.()))}`,
-    `s11=0x${formatU64(readOptionalTraceU64(exports.debug_release_default_signal_s11?.()))}`,
-    `a0=0x${formatU64(readOptionalTraceU64(exports.debug_release_default_signal_a0?.()))}`,
-    `a1=0x${formatU64(readOptionalTraceU64(exports.debug_release_default_signal_a1?.()))}`,
-    `a2=0x${formatU64(readOptionalTraceU64(exports.debug_release_default_signal_a2?.()))}`,
-    `a3=0x${formatU64(readOptionalTraceU64(exports.debug_release_default_signal_a3?.()))}`,
-    `a4=0x${formatU64(readOptionalTraceU64(exports.debug_release_default_signal_a4?.()))}`,
-    `a5=0x${formatU64(readOptionalTraceU64(exports.debug_release_default_signal_a5?.()))}`,
-    `a6=0x${formatU64(readOptionalTraceU64(exports.debug_release_default_signal_a6?.()))}`,
-    `a7=0x${formatU64(readOptionalTraceU64(exports.debug_release_default_signal_a7?.()))}`,
-    `fault_pc=0x${formatU64(readOptionalTraceU64(exports.debug_release_default_signal_fault_pc?.()))}`,
-    `fault_addr=0x${formatU64(readOptionalTraceU64(exports.debug_release_default_signal_fault_addr?.()))}`,
-    `pending=0x${formatU64(readOptionalTraceU64(exports.debug_release_default_signal_pending?.()))}`,
-  ].join(":");
 }
 
 export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBase: number): string[] {
   const debugParts: string[] = [];
-  let pushedExecTrace = false;
-  let pushedSyncFaultExecTrace = false;
-  let pushedBreakExecTrace = false;
-  const pushExecTrace = (): void => {
-    if (pushedExecTrace) {
-      return;
-    }
-    const execTraceEntries = formatExecTraceEntries(exports, vmPtr);
-    if (execTraceEntries !== null) {
-      debugParts.push(`exec_trace=[${execTraceEntries}]`);
-      pushedExecTrace = true;
-    }
-  };
-  const pushSyncFaultExecTrace = (): void => {
-    if (pushedSyncFaultExecTrace) {
-      return;
-    }
-    const syncFaultExecTraceEntries = formatSyncFaultExecTraceEntries(exports, vmPtr);
-    if (syncFaultExecTraceEntries !== null) {
-      debugParts.push(`sync_fault_exec_trace=[${syncFaultExecTraceEntries}]`);
-      pushedSyncFaultExecTrace = true;
-    }
-  };
-  const pushBreakExecTrace = (): void => {
-    if (pushedBreakExecTrace) {
-      return;
-    }
-    const breakExecTraceEntries = formatBreakExecTraceEntries(exports, vmPtr);
-    if (breakExecTraceEntries !== null) {
-      debugParts.push(`break_exec_trace=[${breakExecTraceEntries}]`);
-      pushedBreakExecTrace = true;
-    }
-  };
   try {
   debugParts.push(`mem_bytes=${exports.memory.buffer.byteLength}`);
   debugParts.push(`guest_base=0x${(exports.thread_guest_base?.(vmPtr) ?? guestBase).toString(16)}`);
@@ -1314,32 +907,9 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     debugParts.push(`fault_insn=${faultInsn}`);
   }
   debugParts.push(`fault_addr=0x${formatU64(readOptionalThreadU64(exports.thread_fault_addr, vmPtr))}`);
-  const faultSignal = exports.thread_fault_signal?.(vmPtr) ?? 0;
   debugParts.push(`fault_kind=${exports.thread_fault_kind?.(vmPtr) ?? 0}`);
-  debugParts.push(`fault_signal=${faultSignal}`);
+  debugParts.push(`fault_signal=${exports.thread_fault_signal?.(vmPtr) ?? 0}`);
   debugParts.push(`fault_code=${exports.thread_fault_code?.(vmPtr) ?? 0}`);
-  debugParts.push(`term_reason=${exports.thread_termination_reason?.(vmPtr) ?? 0}`);
-  const defaultSignalSig = exports.debug_default_signal_sig?.() ?? 0;
-  const defaultSignalVm = exports.debug_default_signal_vm_ptr?.() ?? 0;
-  if (defaultSignalSig !== 0 && (defaultSignalVm === 0 || defaultSignalVm === vmPtr)) {
-    debugParts.push(
-      `default_signal=sig=${defaultSignalSig}`
-      + `:code=${exports.debug_default_signal_code?.() ?? 0}`
-      + `:vm=0x${defaultSignalVm.toString(16)}`
-      + `:pc=0x${formatU64(exports.debug_default_signal_pc?.() ?? 0n)}`
-      + `:ra=0x${formatU64(exports.debug_default_signal_ra?.() ?? 0n)}`
-      + `:sp=0x${formatU64(exports.debug_default_signal_sp?.() ?? 0n)}`
-      + `:gp=0x${formatU64(exports.debug_default_signal_gp?.() ?? 0n)}`
-      + `:tp=0x${formatU64(exports.debug_default_signal_tp?.() ?? 0n)}`
-      + `:s11=0x${formatU64(exports.debug_default_signal_s11?.() ?? 0n)}`
-      + `:fault_pc=0x${formatU64(exports.debug_default_signal_fault_pc?.() ?? 0n)}`
-      + `:fault_addr=0x${formatU64(exports.debug_default_signal_fault_addr?.() ?? 0n)}`,
-    );
-  }
-  const releaseDefaultSignal = formatReleaseDefaultSignal(exports, vmPtr);
-  if (releaseDefaultSignal !== "") {
-    debugParts.push(`release_default_signal=${releaseDefaultSignal}`);
-  }
   debugParts.push(`pc=0x${currentPc.toString(16)}`);
   const currentInsn = readGuestInsn(exports, guestBase, currentPc);
   if (currentInsn !== null) {
@@ -1452,53 +1022,9 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     debugParts.push(`mem_a3=${exports.debug_memory_trace_arg3?.().toString() ?? "n/a"}`);
     debugParts.push(`mem_result=${exports.debug_memory_trace_result?.().toString() ?? "n/a"}`);
   }
-  const guestWriteOverlaps = formatGuestWriteOverlapTrace(exports);
-  if (guestWriteOverlaps !== "") {
-    debugParts.push(`guest_write_overlaps=[${guestWriteOverlaps}]`);
-  }
-  const guestWriteOverlapsByVm = formatGuestWriteOverlapByVmTrace(exports);
-  if (guestWriteOverlapsByVm !== "") {
-    debugParts.push(`guest_write_overlaps_by_vm=[${guestWriteOverlapsByVm}]`);
-  }
-  const procMapsShapedWrites = formatProcMapsShapedWriteTrace(exports);
-  if (procMapsShapedWrites !== "") {
-    debugParts.push(`proc_maps_shaped_writes=[${procMapsShapedWrites}]`);
-  }
-  const directGuestWrites = formatThreadWorkerDirectGuestMemoryWriteTrace();
-  if (directGuestWrites !== "") {
-    debugParts.push(`direct_guest_writes=[${directGuestWrites}]`);
-  }
-  const releaseExecTrace = formatReleaseExecTrace(exports, guestBase);
-  if (releaseExecTrace !== "") {
-    debugParts.push(`release_exec_trace=[${releaseExecTrace}]`);
-  }
-  const releaseExecMismatches = formatReleaseExecMismatchTrace(exports);
-  if (releaseExecMismatches !== "") {
-    debugParts.push(`release_exec_mismatches=[${releaseExecMismatches}]`);
-  }
   const memorySyscallTrace = formatMemorySyscallTraceEntries(exports, vmPtr);
   if (memorySyscallTrace !== null) {
     debugParts.push(`memory_syscalls=${memorySyscallTrace}`);
-  }
-  const procMapsReadTrace = formatProcMapsReadTrace(exports, vmPtr);
-  if (procMapsReadTrace !== null) {
-    debugParts.push(`proc_maps_reads=[${procMapsReadTrace}]`);
-  }
-  const fileMmapMaterializeTrace = formatFileMmapMaterializeTrace(exports, vmPtr);
-  if (fileMmapMaterializeTrace !== null) {
-    debugParts.push(`file_mmap_materialize=[${fileMmapMaterializeTrace}]`);
-  }
-  const cpuWritePermitTrace = formatCpuWritePermitTrace(exports, vmPtr);
-  if (cpuWritePermitTrace !== null) {
-    debugParts.push(`cpu_write_permits=[${cpuWritePermitTrace}]`);
-  }
-  const mprotectTransitionTrace = formatMprotectTransitionTrace(exports, vmPtr);
-  if (mprotectTransitionTrace !== null) {
-    debugParts.push(`mprotect_transitions=[${mprotectTransitionTrace}]`);
-  }
-  const mmapExecTransitionTrace = formatMmapExecTransitionTrace(exports, vmPtr);
-  if (mmapExecTransitionTrace !== null) {
-    debugParts.push(`mmap_exec_transitions=[${mmapExecTransitionTrace}]`);
   }
   try {
     const fdSyscallTrace = collectFdTraceSummaryForDebug(exports, vmPtr);
@@ -1767,9 +1293,11 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     const threadStepExecTraceEntries = formatExecTraceEntries(exports, vmPtr);
     if (threadStepExecTraceEntries !== null) {
       debugParts.push(`thread_step_exec_trace=[${threadStepExecTraceEntries}]`);
-      pushedExecTrace = true;
     }
-    pushBreakExecTrace();
+    const breakExecTraceEntries = formatBreakExecTraceEntries(exports, vmPtr);
+    if (breakExecTraceEntries !== null) {
+      debugParts.push(`break_exec_trace=[${breakExecTraceEntries}]`);
+    }
   }
   const faultDispatchTrace = readFaultDispatchTraceSnapshot(exports, vmPtr);
   if (faultDispatchTrace.phase !== 0) {
@@ -1780,21 +1308,14 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     debugParts.push(`fault_dispatch_sp=0x${formatU64(faultDispatchTrace.sp)}`);
     debugParts.push(`fault_dispatch_s11=0x${formatU64(faultDispatchTrace.s11)}`);
     debugParts.push(`fault_dispatch_addr=0x${formatU64(faultDispatchTrace.faultAddr)}`);
-    pushSyncFaultExecTrace();
-    pushExecTrace();
-  }
-  const threadStatus = exports.thread_status?.(vmPtr) ?? 0;
-  const faultStatus = exports.abi_status_fault?.();
-  const defaultSignalMatchesVm = defaultSignalSig !== 0 && (defaultSignalVm === 0 || defaultSignalVm === vmPtr);
-  if (
-    threadStatus === faultStatus
-    || faultPc !== 0n
-    || faultSignal !== 0
-    || defaultSignalMatchesVm
-  ) {
-    pushSyncFaultExecTrace();
-    pushExecTrace();
-    pushBreakExecTrace();
+    const syncFaultExecTraceEntries = formatSyncFaultExecTraceEntries(exports, vmPtr);
+    if (syncFaultExecTraceEntries !== null) {
+      debugParts.push(`sync_fault_exec_trace=[${syncFaultExecTraceEntries}]`);
+    }
+    const execTraceEntries = formatExecTraceEntries(exports, vmPtr);
+    if (execTraceEntries !== null) {
+      debugParts.push(`exec_trace=[${execTraceEntries}]`);
+    }
   }
   const jalrPc = exports.debug_jalr_for_vm_pc?.(vmPtr) ?? exports.debug_jalr_pc?.();
   if (jalrPc !== undefined && jalrPc !== 0n) {
@@ -1806,8 +1327,29 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     debugParts.push(`jalr_rs1v=0x${formatU64(jalrRs1Value)}`);
     debugParts.push(`jalr_target=0x${formatU64(jalrTarget)}`);
   }
+  try {
+    const pathBytes = encoder.encode("/proc/self/exe");
+    const scratchBase = debugScratchBase(exports);
+    const pathPtr = scratchBase;
+    const bufPtr = scratchBase + 0x200;
+    new Uint8Array(exports.memory.buffer, pathPtr, pathBytes.length).set(pathBytes);
+    const ino = exports.memfs_resolve_path(pathPtr, pathBytes.length);
+    if (ino === 0 || (exports.memfs_inode_mode(ino) & 0o170000) !== 0o120000) {
+      debugParts.push("proc_self_exe=missing");
+    } else {
+      const len = Number(exports.memfs_read_link(ino, bufPtr, 1024));
+      if (len <= 0) {
+        debugParts.push("proc_self_exe=empty");
+      } else {
+        const target = copyBytes(new Uint8Array(exports.memory.buffer, bufPtr, len));
+        debugParts.push(`proc_self_exe=${JSON.stringify(decoder.decode(target))}`);
+      }
+    }
+  } catch {
+    debugParts.push("proc_self_exe=unavailable");
+  }
   } catch (error) {
-    pushRecoveredTraceDebug(debugParts, exports, vmPtr, guestBase);
+    pushRecoveredTraceDebug(debugParts, exports, vmPtr);
     const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
     debugParts.push(`debug_collect_error=${JSON.stringify(detail)}`);
   }

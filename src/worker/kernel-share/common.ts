@@ -1,5 +1,4 @@
 import { ensureMemoryCapacity } from "../kernel-scratch.js";
-import { recordDirectMemoryCopyOverlap } from "../diagnostics/direct-memory-copy.js";
 import type {
   KernelShareGroup,
   KernelSyncHandle,
@@ -46,14 +45,6 @@ export function copyKernelRegion(
   targetOffset: number,
   byteLength: number,
 ): void {
-  if (byteLength > 0) {
-    recordDirectMemoryCopyOverlap(
-      target,
-      "kernel-share-copy",
-      targetOffset,
-      new Uint8Array(source.memory.buffer, sourceOffset, byteLength),
-    );
-  }
   copyMemoryRange(source.memory, sourceOffset, target.memory, targetOffset, byteLength);
 }
 

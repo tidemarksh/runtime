@@ -75,20 +75,10 @@ function formatChildExitRecords(
 
 interface WorkerSchedulerQueueDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
-  appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
   failProcess(handle: ProcessHandle, error: Error): void;
   handleWorkerMessage(handle: ProcessHandle, worker: Worker, msg: ThreadWorkerOutbound): void;
-}
-
-interface RunningWorkerIdleCheck {
-  idle: boolean;
-  reason: string;
-  activeStepVmPtr: number | null;
-  lastStepAtMs: number | null;
-  lastStatusAtMs: number | null;
-  ageMs: number | null;
 }
 
 function formatStepDebugSuffix(handle: ProcessHandle, vmPtr: number): string {
@@ -270,60 +260,24 @@ export function createWorkerSchedulerQueueHelpers(
     promise.then(onSettled, onSettled);
   }
 
-  function runningWorkerStepAppearsIdle(handle: ProcessHandle, thread: ThreadWorkerState): RunningWorkerIdleCheck {
+  function runningWorkerStepAppearsIdle(handle: ProcessHandle, thread: ThreadWorkerState): boolean {
     const activeStepVmPtr = handle.kernel.debug_thread_step_vm_ptr?.();
     if (activeStepVmPtr === undefined) {
-      return {
-        idle: false,
-        reason: "no-active-step-export",
-        activeStepVmPtr: null,
-        lastStepAtMs: thread.lastStepAtMs,
-        lastStatusAtMs: thread.lastStatusAtMs,
-        ageMs: null,
-      };
+      return false;
     }
     if (activeStepVmPtr === thread.vmPtr) {
-      return {
-        idle: false,
-        reason: "active-step",
-        activeStepVmPtr,
-        lastStepAtMs: thread.lastStepAtMs,
-        lastStatusAtMs: thread.lastStatusAtMs,
-        ageMs: null,
-      };
+      return false;
     }
     const lastStepAtMs = thread.lastStepAtMs;
     const lastStatusAtMs = thread.lastStatusAtMs;
     if (lastStepAtMs === null) {
-      return {
-        idle: false,
-        reason: "no-last-step",
-        activeStepVmPtr,
-        lastStepAtMs,
-        lastStatusAtMs,
-        ageMs: null,
-      };
+      return false;
     }
     const hasUnansweredStep = thread.stepCount > thread.statusCount;
     if (lastStatusAtMs !== null && lastStepAtMs <= lastStatusAtMs && !hasUnansweredStep) {
-      return {
-        idle: true,
-        reason: "answered-step",
-        activeStepVmPtr,
-        lastStepAtMs,
-        lastStatusAtMs,
-        ageMs: Date.now() - lastStepAtMs,
-      };
+      return false;
     }
-    const ageMs = Date.now() - lastStepAtMs;
-    return {
-      idle: ageMs >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS,
-      reason: ageMs >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS ? "idle" : "young-step",
-      activeStepVmPtr,
-      lastStepAtMs,
-      lastStatusAtMs,
-      ageMs,
-    };
+    return Date.now() - lastStepAtMs >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
   }
 
   function sanitizeRunningWorker(handle: ProcessHandle): Worker | null {
@@ -352,41 +306,18 @@ export function createWorkerSchedulerQueueHelpers(
         deps.appendWorkerDebugLog(handle, `running-worker-cleared:blocking-status-${status}:0x${thread.vmPtr.toString(16)}`);
         return null;
       }
-      if (handle.readyWorkers.length > 0 && status === handle.kernel.abi_status_ok()) {
-        const idleCheck = runningWorkerStepAppearsIdle(handle, thread);
-        if (idleCheck.idle) {
-          handle.runningWorker = null;
-          thread.runningGeneration = null;
-          deps.appendRuntimeLifecycleEvent(
-            handle.runtimeId,
-            `running-worker-cleared-stale-ok:${handle.pid}:0x${thread.vmPtr.toString(16)}`
-              + `:ready=${handle.readyWorkers.length}`
-              + `:active=0x${(idleCheck.activeStepVmPtr ?? 0).toString(16)}`
-              + `:steps=${thread.stepCount}:statuses=${thread.statusCount}`
-              + `:lastStep=${idleCheck.lastStepAtMs ?? "null"}`
-              + `:lastStatus=${idleCheck.lastStatusAtMs ?? "null"}`
-              + `:age=${idleCheck.ageMs ?? "null"}`
-              + `:last=${thread.lastStatus ?? "null"}`,
-          );
-          deps.appendWorkerDebugLog(
-            handle,
-            `running-worker-cleared:stale-ok:0x${thread.vmPtr.toString(16)}:last=${thread.lastStatus ?? "null"}`,
-          );
-          return null;
-        }
-        if ((idleCheck.ageMs ?? 0) >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS) {
-          deps.appendRuntimeLifecycleEvent(
-            handle.runtimeId,
-            `running-worker-stale-ok-held:${handle.pid}:0x${thread.vmPtr.toString(16)}`
-              + `:${idleCheck.reason}:ready=${handle.readyWorkers.length}`
-              + `:active=${idleCheck.activeStepVmPtr === null ? "n/a" : `0x${idleCheck.activeStepVmPtr.toString(16)}`}`
-              + `:steps=${thread.stepCount}:statuses=${thread.statusCount}`
-              + `:lastStep=${idleCheck.lastStepAtMs ?? "null"}`
-              + `:lastStatus=${idleCheck.lastStatusAtMs ?? "null"}`
-              + `:age=${idleCheck.ageMs ?? "null"}`
-              + `:last=${thread.lastStatus ?? "null"}`,
-          );
-        }
+      if (
+        handle.readyWorkers.length > 0
+        && status === handle.kernel.abi_status_ok()
+        && runningWorkerStepAppearsIdle(handle, thread)
+      ) {
+        handle.runningWorker = null;
+        thread.runningGeneration = null;
+        deps.appendWorkerDebugLog(
+          handle,
+          `running-worker-cleared:stale-ok:0x${thread.vmPtr.toString(16)}:last=${thread.lastStatus ?? "null"}`,
+        );
+        return null;
       }
       return runningWorker;
     }
@@ -671,20 +602,14 @@ export function createWorkerSchedulerQueueHelpers(
     const runningWorker = sanitizeRunningWorker(handle);
     if (runningWorker !== null) {
       const thread = deps.threadWorkerStates.get(runningWorker);
-      readyWorkerFairness.scheduleRunningWorkerRepairRetry(handle);
+      if (handle.readyWorkers.length > 0) {
+        readyWorkerFairness.scheduleRunningWorkerRepairRetry(handle);
+      }
       appendSchedulerQueueDebugLog(
         deps,
         handle,
         `pump-held:running:ready=${handle.readyWorkers.length}`
-          + (thread
-            ? `:vm=0x${thread.vmPtr.toString(16)}`
-              + `:status=${handle.kernel.thread_status(thread.vmPtr)}`
-              + `:active=0x${(handle.kernel.debug_thread_step_vm_ptr?.() ?? -1).toString(16)}`
-              + `:steps=${thread.stepCount}`
-              + `:statuses=${thread.statusCount}`
-              + `:lastStep=${thread.lastStepAtMs ?? "null"}`
-              + `:lastStatus=${thread.lastStatusAtMs ?? "null"}`
-            : ""),
+          + (thread ? `:vm=0x${thread.vmPtr.toString(16)}:status=${handle.kernel.thread_status(thread.vmPtr)}` : ""),
       );
       return;
     }
@@ -800,7 +725,6 @@ export function createWorkerSchedulerQueueHelpers(
       stepMessage.resumeBlockedSyscall = true;
     }
     next.postMessage(stepMessage);
-    readyWorkerFairness.scheduleRunningWorkerRepairRetry(handle);
   }
 
   return {

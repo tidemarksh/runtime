@@ -386,7 +386,6 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       `a0=${(handle.kernel.thread_a0?.(vmPtr) ?? 0n).toString()}`,
       `a1=${(handle.kernel.thread_a1?.(vmPtr) ?? 0n).toString()}`,
       `term_signal=${handle.kernel.thread_term_signal?.(vmPtr) ?? 0}`,
-      `term_reason=${handle.kernel.thread_termination_reason?.(vmPtr) ?? 0}`,
       `fault_pc=0x${(handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n).toString(16)}`,
       `fault_addr=0x${(handle.kernel.thread_fault_addr?.(vmPtr) ?? 0n).toString(16)}`,
       `fault_kind=${handle.kernel.thread_fault_kind?.(vmPtr) ?? 0}`,
@@ -419,78 +418,6 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       return "outside_backing";
     }
     return "inside_backing";
-  }
-
-  function formatMemoryVmaPath(handle: ProcessHandle, index: number): string {
-    const len = handle.kernel.debug_memory_vma_path_len?.(index) ?? 0;
-    if (len <= 0) {
-      return "";
-    }
-    const bytes: number[] = [];
-    for (let offset = 0; offset < Math.min(len, 160); offset += 1) {
-      bytes.push(handle.kernel.debug_memory_vma_path_byte?.(index, offset) ?? 0);
-    }
-    return new TextDecoder().decode(new Uint8Array(bytes));
-  }
-
-  function formatMemoryVma(handle: ProcessHandle, index: number, addr?: bigint): string {
-    const start = handle.kernel.debug_memory_vma_start?.(index) ?? 0n;
-    const end = handle.kernel.debug_memory_vma_end?.(index) ?? 0n;
-    const path = formatMemoryVmaPath(handle, index);
-    const fileSampleLen = addr === undefined
-      ? 0
-      : handle.kernel.debug_memory_vma_file_sample_len?.(index, addr) ?? 0;
-    const fileSample = addr === undefined || fileSampleLen <= 0
-      ? ""
-      : `:file=0x${BigInt.asUintN(64, BigInt(handle.kernel.debug_memory_vma_file_sample?.(index, addr) ?? 0)).toString(16)}/${fileSampleLen}`;
-    return `0x${BigInt(start).toString(16)}-0x${BigInt(end).toString(16)}`
-      + `:${handle.kernel.debug_memory_vma_prot?.(index) ?? "n/a"}`
-      + `/${handle.kernel.debug_memory_vma_flags?.(index) ?? "n/a"}`
-      + `:fd=${handle.kernel.debug_memory_vma_fd?.(index) ?? "n/a"}`
-      + `:off=0x${BigInt(handle.kernel.debug_memory_vma_offset?.(index) ?? 0).toString(16)}`
-      + (path ? `:path=${JSON.stringify(path)}` : "")
-      + fileSample;
-  }
-
-  function findContainingMemoryVma(handle: ProcessHandle, addr: bigint): string | null {
-    if (addr === 0n) {
-      return null;
-    }
-    const vmaLen = handle.kernel.debug_memory_vma_len?.() ?? 0;
-    for (let index = 0; index < vmaLen; index += 1) {
-      const start = BigInt(handle.kernel.debug_memory_vma_start?.(index) ?? 0n);
-      const end = BigInt(handle.kernel.debug_memory_vma_end?.(index) ?? 0n);
-      if (start <= addr && addr < end) {
-        return formatMemoryVma(handle, index, addr);
-      }
-    }
-    return null;
-  }
-
-  function readGuestBytes(handle: ProcessHandle, addr: bigint, byteLength: number): string {
-    const guestAddr = Number(addr);
-    if (!Number.isFinite(guestAddr) || guestAddr < 0) {
-      return "unreadable";
-    }
-    const absolute = handle.guestBase + guestAddr;
-    if (absolute < 0 || absolute + byteLength > handle.memory.buffer.byteLength) {
-      return "out_of_bounds";
-    }
-    const bytes = new Uint8Array(handle.memory.buffer, absolute, byteLength);
-    return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  }
-
-  function formatFaultAddressDebug(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
-    const pc = handle.kernel.thread_pc?.(vmPtr) ?? 0n;
-    const faultPc = handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n;
-    const faultAddr = handle.kernel.thread_fault_addr?.(vmPtr) ?? 0n;
-    return [
-      `pc_vma=${findContainingMemoryVma(handle, pc) ?? "none"}`,
-      `fault_pc_vma=${findContainingMemoryVma(handle, faultPc) ?? "none"}`,
-      `fault_addr_vma=${findContainingMemoryVma(handle, faultAddr) ?? "none"}`,
-      `pc_bytes=${pc === 0n ? "zero" : readGuestBytes(handle, pc, 16)}`,
-      `fault_pc_bytes=${faultPc === 0n ? "zero" : readGuestBytes(handle, faultPc, 16)}`,
-    ].join(":");
   }
 
   function formatFaultBounds(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
@@ -536,93 +463,6 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     }]`;
   }
 
-  function formatReleaseDefaultSignalTrace(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
-    const sig = handle.kernel.debug_release_default_signal_sig?.() ?? 0;
-    if (sig === 0) {
-      return "release_default_signal=[]";
-    }
-    const traceVmPtr = handle.kernel.debug_release_default_signal_vm_ptr?.() ?? 0;
-    return `release_default_signal=[${
-      [
-        `sig=${sig}`,
-        `code=${handle.kernel.debug_release_default_signal_code?.() ?? 0}`,
-        `vm=0x${traceVmPtr.toString(16)}`,
-        `requested_vm=0x${vmPtr.toString(16)}`,
-        `source_match=${traceVmPtr === 0 || traceVmPtr === vmPtr ? 1 : 0}`,
-        `pc=0x${formatTraceU64(handle.kernel.debug_release_default_signal_pc?.())}`,
-        `ra=0x${formatTraceU64(handle.kernel.debug_release_default_signal_ra?.())}`,
-        `sp=0x${formatTraceU64(handle.kernel.debug_release_default_signal_sp?.())}`,
-        `gp=0x${formatTraceU64(handle.kernel.debug_release_default_signal_gp?.())}`,
-        `tp=0x${formatTraceU64(handle.kernel.debug_release_default_signal_tp?.())}`,
-        `s11=0x${formatTraceU64(handle.kernel.debug_release_default_signal_s11?.())}`,
-        `a0=0x${formatTraceU64(handle.kernel.debug_release_default_signal_a0?.())}`,
-        `a1=0x${formatTraceU64(handle.kernel.debug_release_default_signal_a1?.())}`,
-        `a2=0x${formatTraceU64(handle.kernel.debug_release_default_signal_a2?.())}`,
-        `a3=0x${formatTraceU64(handle.kernel.debug_release_default_signal_a3?.())}`,
-        `a4=0x${formatTraceU64(handle.kernel.debug_release_default_signal_a4?.())}`,
-        `a5=0x${formatTraceU64(handle.kernel.debug_release_default_signal_a5?.())}`,
-        `a6=0x${formatTraceU64(handle.kernel.debug_release_default_signal_a6?.())}`,
-        `a7=0x${formatTraceU64(handle.kernel.debug_release_default_signal_a7?.())}`,
-        `fault_pc=0x${formatTraceU64(handle.kernel.debug_release_default_signal_fault_pc?.())}`,
-        `fault_addr=0x${formatTraceU64(handle.kernel.debug_release_default_signal_fault_addr?.())}`,
-        `pending=0x${formatTraceU64(handle.kernel.debug_release_default_signal_pending?.())}`,
-      ].join(":")
-    }]`;
-  }
-
-  function formatReleaseExecTrace(handle: ProcessHandle): string {
-    const len = handle.kernel.debug_release_exec_trace_len?.() ?? 0;
-    if (len === 0) {
-      return "release_exec_trace=[]";
-    }
-    const start = Math.max(0, len - 16);
-    const entries = Array.from({ length: len - start }, (_value, offset) => {
-      const index = start + offset;
-      const pc = BigInt.asUintN(64, BigInt(handle.kernel.debug_release_exec_trace_pc?.(index) ?? 0));
-      return [
-        `${index}`,
-        `vm=0x${(handle.kernel.debug_release_exec_trace_vm_ptr?.(index) ?? 0).toString(16)}`,
-        `tid=${handle.kernel.debug_release_exec_trace_tid?.(index) ?? 0}`,
-        `pc=0x${formatTraceU64(pc)}`,
-        `vma=${findContainingMemoryVma(handle, pc) ?? "none"}`,
-        `mem=${pc === 0n ? "zero" : readGuestBytes(handle, pc, 8)}`,
-        `raw=0x${((handle.kernel.debug_release_exec_trace_raw?.(index) ?? 0) >>> 0).toString(16)}`,
-        `step=${handle.kernel.debug_release_exec_trace_step?.(index) ?? 0}`,
-        `ra=0x${formatTraceU64(handle.kernel.debug_release_exec_trace_ra?.(index))}`,
-        `sp=0x${formatTraceU64(handle.kernel.debug_release_exec_trace_sp?.(index))}`,
-        `a0=0x${formatTraceU64(handle.kernel.debug_release_exec_trace_a0?.(index))}`,
-        `a1=0x${formatTraceU64(handle.kernel.debug_release_exec_trace_a1?.(index))}`,
-        `a7=0x${formatTraceU64(handle.kernel.debug_release_exec_trace_a7?.(index))}`,
-        `s11=0x${formatTraceU64(handle.kernel.debug_release_exec_trace_s11?.(index))}`,
-      ].join("/");
-    });
-    return `release_exec_trace=[${entries.join(",")}]`;
-  }
-
-  function formatReleaseExecMismatchTrace(handle: ProcessHandle): string {
-    const len = handle.kernel.debug_release_exec_mismatch_trace_len?.() ?? 0;
-    if (len === 0) {
-      return "release_exec_mismatches=[]";
-    }
-    const entries = Array.from({ length: len }, (_value, index) => [
-      `${index}`,
-      `vm=0x${(handle.kernel.debug_release_exec_mismatch_trace_vm_ptr?.(index) ?? 0).toString(16)}`,
-      `tid=${handle.kernel.debug_release_exec_mismatch_trace_tid?.(index) ?? 0}`,
-      `pc=0x${formatTraceU64(handle.kernel.debug_release_exec_mismatch_trace_pc?.(index))}`,
-      `raw=0x${((handle.kernel.debug_release_exec_mismatch_trace_raw?.(index) ?? 0) >>> 0).toString(16)}`,
-      `step=${handle.kernel.debug_release_exec_mismatch_trace_step?.(index) ?? 0}`,
-      `mem=0x${formatTraceU64(handle.kernel.debug_release_exec_mismatch_trace_mem_sample?.(index))}`,
-      `memLen=${handle.kernel.debug_release_exec_mismatch_trace_mem_sample_len?.(index) ?? 0}`,
-      `file=0x${formatTraceU64(handle.kernel.debug_release_exec_mismatch_trace_file_sample?.(index))}`,
-      `fileLen=${handle.kernel.debug_release_exec_mismatch_trace_file_sample_len?.(index) ?? 0}`,
-      `vma=0x${formatTraceU64(handle.kernel.debug_release_exec_mismatch_trace_vma_start?.(index))}-0x${formatTraceU64(handle.kernel.debug_release_exec_mismatch_trace_vma_end?.(index))}`,
-      `prot=${handle.kernel.debug_release_exec_mismatch_trace_vma_prot?.(index) ?? 0}`,
-      `fd=${handle.kernel.debug_release_exec_mismatch_trace_vma_fd?.(index) ?? 0}`,
-      `off=0x${formatTraceU64(handle.kernel.debug_release_exec_mismatch_trace_vma_offset?.(index))}`,
-    ].join("/"));
-    return `release_exec_mismatches=[${entries.join(",")}]`;
-  }
-
   function formatSignalState(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
     const deliverySig = handle.kernel.debug_signal_delivery_for_vm_sig?.(vmPtr)
       ?? handle.kernel.debug_signal_delivery_sig?.()
@@ -649,12 +489,8 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       `vm=0x${vmPtr.toString(16)}`,
       `fault_state=[${formatFaultState(handle, vmPtr)}]`,
       `fault_bounds=[${formatFaultBounds(handle, vmPtr)}]`,
-      `fault_address=[${formatFaultAddressDebug(handle, vmPtr)}]`,
       formatDefaultSignalTrace(handle),
-      formatReleaseDefaultSignalTrace(handle, vmPtr),
       formatSignalState(handle, vmPtr),
-      formatReleaseExecTrace(handle),
-      formatReleaseExecMismatchTrace(handle),
       formatFrozenExitTraces(handle, vmPtr),
       `execve_stage=${execveStage}`,
       `execve_v0=${execveValue0.toString()}`,
@@ -1013,8 +849,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       if (children.length === 0) {
         break;
       }
-      let waitedForExitCompletion = false;
-      const liveChildren: ProcessHandle[] = [];
+      let active = false;
       for (const child of children) {
         if (pass === 0) {
           deps.appendRuntimeLifecycleEvent(handle.runtimeId, `visible-inherited-child-output-start:${handle.pid}:${child.pid}`);
@@ -1031,21 +866,12 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
           } finally {
             deps.appendRuntimeLifecycleEvent(handle.runtimeId, `visible-inherited-child-exit-wait-done:${handle.pid}:${child.pid}`);
           }
-          waitedForExitCompletion = true;
+          active = true;
           continue;
         }
-        if (deps.processHandles.get(child.pid) === child && !child.exitInProgress) {
-          liveChildren.push(child);
-        }
+        active ||= deps.processHandles.get(child.pid) === child && !child.exitInProgress;
       }
-      if (liveChildren.length > 0) {
-        deps.appendRuntimeLifecycleEvent(
-          handle.runtimeId,
-          `visible-inherited-child-live-skip:${handle.pid}:${liveChildren.map(formatVisibleChildState).join(".")}`,
-        );
-        break;
-      }
-      if (!waitedForExitCompletion) {
+      if (!active) {
         break;
       }
       if (pass % 100 === 0) {

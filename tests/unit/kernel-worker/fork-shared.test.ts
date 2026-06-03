@@ -236,7 +236,7 @@ test("syncForkSharedState copies memfs data when includeMemfs is enabled", () =>
   expect(canonicalFanoutModes).toEqual([true]);
 });
 
-test("syncForkSharedState reattaches preserved published file data from page cache", () => {
+test("syncForkSharedState restores preserved published file data only to canonical state", () => {
   const publishedData = new TextEncoder().encode("node");
   const canonicalExports = makeKernelExports("canonical", new Map([[3, publishedData]]));
   const sourceExports = makeKernelExports("source", new Map([[3, new Uint8Array(publishedData.byteLength)]]));
@@ -301,9 +301,8 @@ test("syncForkSharedState reattaches preserved published file data from page cac
   );
 
   expect(restorePublishedRegularFileDataFromPageCache).toHaveBeenCalledTimes(1);
-  expect(canonicalExports.opLog).toContain("page-cache-restore");
-  expect(canonicalExports.opLog).not.toContain("canonical:truncate:3:4");
-  expect(canonicalExports.opLog).not.toContain("canonical:write:3:4");
+  expect(canonicalExports.opLog).toContain("canonical:truncate:3:4");
+  expect(canonicalExports.opLog).toContain("canonical:write:3:4");
   expect(sourceExports.opLog).not.toContain("source:truncate:3:4");
   expect(sourceExports.opLog).not.toContain("source:write:3:4");
 });

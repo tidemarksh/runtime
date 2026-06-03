@@ -1,4 +1,4 @@
-import { attachKernelRuntimeState, type KernelExports, type KernelRuntimeState } from "../../abi.js";
+import type { KernelExports, KernelRuntimeState } from "../../abi.js";
 import {
   clearMaterializedMemfsFiles,
   clearMemoryRange,
@@ -9,7 +9,6 @@ import {
   MEMFS_S_IFREG,
   normalizeMetadataOnlyMemfsState,
   readMemfsLayout,
-  writeMemfsLayoutHeader,
 } from "../common.js";
 import {
   MEMFS_INODE_OFF_DATA_CAP,
@@ -19,98 +18,8 @@ import {
 } from "../../layout/memfs.js";
 
 const MEMFS_S_IFLNK = 0o120000;
-const EXEC_PROT = 4;
-
-function targetGuestBase(targetExports: KernelExports): number {
-  const profile = targetExports.abi_guest_address_profile_target?.() ?? 0;
-  const base = targetExports.process_guest_base_for_address_profile?.(profile) ?? 0n;
-  return Number(base);
-}
-
-function formatSample(bytes: Uint8Array, offset: number): string {
-  return [...bytes.subarray(offset, Math.min(bytes.length, offset + 16))]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-function recordMemfsCopyExecOverlap(
-  targetExports: KernelExports,
-  label: string,
-  targetOffset: number,
-  byteLength: number,
-  sourceBytes?: Uint8Array,
-): void {
-  if (byteLength <= 0) {
-    return;
-  }
-  const guestBase = targetGuestBase(targetExports);
-  if (!Number.isFinite(guestBase) || guestBase <= 0 || targetOffset < guestBase) {
-    return;
-  }
-  const guestStart = BigInt(targetOffset - guestBase);
-  const guestEnd = guestStart + BigInt(byteLength);
-  const vmaLen = targetExports.debug_memory_vma_len?.() ?? 0;
-  for (let index = 0; index < vmaLen; index += 1) {
-    const prot = targetExports.debug_memory_vma_prot?.(index) ?? 0;
-    if ((prot & EXEC_PROT) === 0) {
-      continue;
-    }
-    const vmaStart = BigInt(targetExports.debug_memory_vma_start?.(index) ?? 0n);
-    const vmaEnd = BigInt(targetExports.debug_memory_vma_end?.(index) ?? 0n);
-    if (vmaStart >= vmaEnd || guestEnd <= vmaStart || guestStart >= vmaEnd) {
-      continue;
-    }
-    const overlapStart = guestStart > vmaStart ? guestStart : vmaStart;
-    const overlapEnd = guestEnd < vmaEnd ? guestEnd : vmaEnd;
-    const sourceOffset = Number(overlapStart - guestStart);
-    const sample = sourceBytes ? formatSample(sourceBytes, sourceOffset) : "clear";
-    console.log([
-      "kernel-worker-memfs-copy-exec-overlap",
-      `label=${label}`,
-      `target=0x${targetOffset.toString(16)}`,
-      `guest=0x${guestStart.toString(16)}`,
-      `len=${byteLength}`,
-      `overlap=0x${overlapStart.toString(16)}-0x${overlapEnd.toString(16)}`,
-      `vma=0x${vmaStart.toString(16)}-0x${vmaEnd.toString(16)}`,
-      `prot=${prot}`,
-      `fd=${targetExports.debug_memory_vma_fd?.(index) ?? "n/a"}`,
-      `sample=${sample}`,
-    ].join(":"));
-  }
-}
 
 export function createKernelWorkerMemfsPrimitives() {
-  function readRuntimeMemfsLayout(
-    targetExports: KernelExports,
-    targetState: KernelRuntimeState,
-  ): ReturnType<typeof readMemfsLayout> {
-    const memfsPtr = typeof targetExports.kernel_memfs_ptr === "function"
-      ? targetExports.kernel_memfs_ptr()
-      : targetState.memfsPtr;
-    const headerBytes = targetState.memfsHeaderBytes
-      || targetExports.kernel_memfs_header_bytes?.()
-      || 32;
-    const layout = readMemfsLayout(targetExports.memory, memfsPtr, headerBytes);
-    return {
-      ...layout,
-      dataCap: typeof targetExports.kernel_memfs_data_bytes === "function"
-        ? targetExports.kernel_memfs_data_bytes()
-        : targetState.memfsDataBytes || layout.dataCap,
-      inodesPtr: typeof targetExports.kernel_memfs_inodes_ptr === "function"
-        ? targetExports.kernel_memfs_inodes_ptr()
-        : layout.inodesPtr,
-      firstChildPtr: typeof targetExports.kernel_memfs_first_child_ptr === "function"
-        ? targetExports.kernel_memfs_first_child_ptr()
-        : layout.firstChildPtr,
-      dirEntriesPtr: typeof targetExports.kernel_memfs_dir_entries_ptr === "function"
-        ? targetExports.kernel_memfs_dir_entries_ptr()
-        : layout.dirEntriesPtr,
-      dataPtr: typeof targetExports.kernel_memfs_data_ptr === "function"
-        ? targetExports.kernel_memfs_data_ptr()
-        : layout.dataPtr,
-    };
-  }
-
   function preserveMetadataOnlySymlinkData(
     sourceExports: KernelExports,
     targetExports: KernelExports,
@@ -183,81 +92,40 @@ export function createKernelWorkerMemfsPrimitives() {
     options: { includeData?: boolean } = {},
   ): void {
     const includeData = options.includeData ?? true;
-    attachKernelRuntimeState(sourceExports, sourceState);
-    const sourceLayout = readRuntimeMemfsLayout(sourceExports, sourceState);
+    const sourceLayout = readMemfsLayout(sourceExports.memory, sourceState.memfsPtr);
+    const targetLayout = readMemfsLayout(targetExports.memory, targetState.memfsPtr);
     const sourceDataUsed = includeData
       ? computeReferencedMemfsDataUsed(sourceExports, sourceLayout)
       : sourceLayout.dataUsed;
-    attachKernelRuntimeState(targetExports, targetState);
-    const targetLayout = readRuntimeMemfsLayout(targetExports, targetState);
-    const sourceInodesBytes = sourceState.memfsInodesBytes || sourceExports.kernel_memfs_inodes_bytes();
-    const sourceFirstChildBytes = sourceState.memfsFirstChildBytes || sourceExports.kernel_memfs_first_child_bytes();
-    const sourceDirEntriesBytes = sourceState.memfsDirEntriesBytes || sourceExports.kernel_memfs_dir_entries_bytes();
-    const sourceHeaderBytes = sourceState.memfsHeaderBytes || sourceExports.kernel_memfs_header_bytes();
-    const targetDataBytes = targetState.memfsDataBytes || targetExports.kernel_memfs_data_bytes();
-    recordMemfsCopyExecOverlap(
-      targetExports,
-      "memfs-inodes",
-      targetLayout.inodesPtr,
-      sourceInodesBytes,
-      new Uint8Array(sourceExports.memory.buffer, sourceLayout.inodesPtr, sourceInodesBytes),
-    );
     copyMemoryRange(
       sourceExports.memory,
       sourceLayout.inodesPtr,
       targetExports.memory,
       targetLayout.inodesPtr,
-      sourceInodesBytes,
-    );
-    recordMemfsCopyExecOverlap(
-      targetExports,
-      "memfs-first-child",
-      targetLayout.firstChildPtr,
-      sourceFirstChildBytes,
-      new Uint8Array(sourceExports.memory.buffer, sourceLayout.firstChildPtr, sourceFirstChildBytes),
+      sourceExports.kernel_memfs_inodes_bytes(),
     );
     copyMemoryRange(
       sourceExports.memory,
       sourceLayout.firstChildPtr,
       targetExports.memory,
       targetLayout.firstChildPtr,
-      sourceFirstChildBytes,
-    );
-    recordMemfsCopyExecOverlap(
-      targetExports,
-      "memfs-dir-entries",
-      targetLayout.dirEntriesPtr,
-      sourceDirEntriesBytes,
-      new Uint8Array(sourceExports.memory.buffer, sourceLayout.dirEntriesPtr, sourceDirEntriesBytes),
+      sourceExports.kernel_memfs_first_child_bytes(),
     );
     copyMemoryRange(
       sourceExports.memory,
       sourceLayout.dirEntriesPtr,
       targetExports.memory,
       targetLayout.dirEntriesPtr,
-      sourceDirEntriesBytes,
+      sourceExports.kernel_memfs_dir_entries_bytes(),
     );
     if (includeData) {
       const dataBytes = Math.min(sourceDataUsed, targetLayout.dataCap);
-      recordMemfsCopyExecOverlap(
-        targetExports,
-        "memfs-data",
-        targetLayout.dataPtr,
-        dataBytes,
-        new Uint8Array(sourceExports.memory.buffer, sourceLayout.dataPtr, dataBytes),
-      );
       copyMemoryRange(
         sourceExports.memory,
         sourceLayout.dataPtr,
         targetExports.memory,
         targetLayout.dataPtr,
         dataBytes,
-      );
-      recordMemfsCopyExecOverlap(
-        targetExports,
-        "memfs-data-clear-tail",
-        targetLayout.dataPtr + dataBytes,
-        Math.max(0, targetLayout.dataCap - dataBytes),
       );
       clearMemoryRange(
         targetExports.memory,
@@ -266,43 +134,28 @@ export function createKernelWorkerMemfsPrimitives() {
       );
     } else {
       clearMaterializedMemfsFiles(targetExports);
-      recordMemfsCopyExecOverlap(
-        targetExports,
-        "memfs-data-clear-all",
-        targetLayout.dataPtr,
-        targetDataBytes,
-      );
       clearMemoryRange(
         targetExports.memory,
-        targetLayout.dataPtr,
-        targetDataBytes,
+        targetExports.kernel_memfs_data_ptr(),
+        targetExports.kernel_memfs_data_bytes(),
       );
     }
-    recordMemfsCopyExecOverlap(
-      targetExports,
-      "memfs-header",
-      targetState.memfsPtr,
-      sourceHeaderBytes,
-      new Uint8Array(sourceExports.memory.buffer, sourceState.memfsPtr, sourceHeaderBytes),
-    );
     copyMemoryRange(
       sourceExports.memory,
       sourceState.memfsPtr,
       targetExports.memory,
       targetState.memfsPtr,
-      sourceHeaderBytes,
+      sourceExports.kernel_memfs_header_bytes(),
     );
-    writeMemfsLayoutHeader(
-      targetExports.memory,
-      targetState.memfsPtr,
-      targetState.memfsHeaderBytes || targetExports.kernel_memfs_header_bytes(),
-      {
-        ...targetLayout,
-        inodeCount: sourceLayout.inodeCount,
-        dirEntryCount: sourceLayout.dirEntryCount,
-        dataUsed: includeData ? Math.min(sourceDataUsed, targetLayout.dataCap) : 8,
-      },
-    );
+    const targetHeader = new DataView(targetExports.memory.buffer, targetState.memfsPtr, 32);
+    targetHeader.setUint32(0, sourceLayout.inodeCount, true);
+    targetHeader.setUint32(4, sourceLayout.dirEntryCount, true);
+    targetHeader.setUint32(8, includeData ? Math.min(sourceDataUsed, targetLayout.dataCap) : 8, true);
+    targetHeader.setUint32(12, targetLayout.dataCap, true);
+    targetHeader.setUint32(16, targetLayout.inodesPtr, true);
+    targetHeader.setUint32(20, targetLayout.firstChildPtr, true);
+    targetHeader.setUint32(24, targetLayout.dirEntriesPtr, true);
+    targetHeader.setUint32(28, targetLayout.dataPtr, true);
     if (!includeData) {
       const dataUsed = preserveMetadataOnlySymlinkData(sourceExports, targetExports, sourceLayout, targetLayout);
       normalizeMetadataOnlyMemfsState(targetExports, targetState, sourceLayout, targetLayout, dataUsed);
@@ -332,12 +185,12 @@ export function createKernelWorkerMemfsPrimitives() {
     clearMemoryRange(
       targetExports.memory,
       targetExports.kernel_memfs_data_ptr(),
-      targetState.memfsDataBytes || targetExports.kernel_memfs_data_bytes(),
+      targetExports.kernel_memfs_data_bytes(),
     );
     clearMemoryRange(
       targetExports.memory,
       targetState.memfsPtr,
-      targetState.memfsHeaderBytes || targetExports.kernel_memfs_header_bytes(),
+      targetExports.kernel_memfs_header_bytes(),
     );
   }
 

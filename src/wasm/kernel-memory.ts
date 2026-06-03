@@ -2,14 +2,6 @@ import { createKernelEnv, type KernelEnvOptions } from "./env.js";
 
 type KernelMemoryAddress = "i64" | "i32";
 
-const MEMORY_GROW_DEBUG_ENABLED = ((globalThis as {
-  process?: { env?: Record<string, string | undefined> };
-}).process?.env?.TIDEMARK_MEMORY_GROW_DEBUG ?? "") === "1";
-const MEMORY_GROW_DEBUG_THRESHOLD_BYTES = 64 * 1024 * 1024;
-let nextMemoryGrowDebugId = 1;
-const memoryGrowDebugIds = new WeakMap<WebAssembly.Memory, number>();
-const memoryGrowDebugNextThresholds = new WeakMap<WebAssembly.Memory, number>();
-
 export interface KernelSharedMemorySizing {
   initialPages: number;
   maximumPages: number;
@@ -59,35 +51,10 @@ function requiresBigIntMemoryDelta(error: unknown): boolean {
   return error instanceof Error && /BigInt/i.test(error.message);
 }
 
-function debugMemoryGrow(memory: WebAssembly.Memory, beforeBytes: number, afterBytes: number, deltaPages: number): void {
-  if (!MEMORY_GROW_DEBUG_ENABLED) {
-    return;
-  }
-  let nextThreshold = memoryGrowDebugNextThresholds.get(memory) ?? 0;
-  if (afterBytes < nextThreshold) {
-    return;
-  }
-  const id = memoryGrowDebugIds.get(memory) ?? nextMemoryGrowDebugId++;
-  memoryGrowDebugIds.set(memory, id);
-  nextThreshold = Math.ceil((afterBytes + 1) / MEMORY_GROW_DEBUG_THRESHOLD_BYTES)
-    * MEMORY_GROW_DEBUG_THRESHOLD_BYTES;
-  memoryGrowDebugNextThresholds.set(memory, nextThreshold);
-  const stack = new Error().stack
-    ?.split("\n")
-    .slice(2, 6)
-    .map((line) => line.trim())
-    .join(" | ")
-    ?? "n/a";
-  console.error(
-    `[tidemark-memory-grow] id=${id}:before=${beforeBytes}:after=${afterBytes}:deltaPages=${deltaPages}:stack=${stack}`,
-  );
-}
-
 export function growKernelMemory(memory: WebAssembly.Memory, deltaPages: number): void {
   if (deltaPages <= 0) {
     return;
   }
-  const beforeBytes = memory.buffer.byteLength;
   try {
     memory.grow(deltaPages);
   } catch (error) {
@@ -96,7 +63,6 @@ export function growKernelMemory(memory: WebAssembly.Memory, deltaPages: number)
     }
     (memory.grow as unknown as (delta: bigint) => bigint)(BigInt(deltaPages));
   }
-  debugMemoryGrow(memory, beforeBytes, memory.buffer.byteLength, deltaPages);
 }
 
 export async function instantiateKernelWithSharedMemory(

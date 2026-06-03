@@ -7,9 +7,7 @@ const GCC_TRIPLE = "riscv64-linux-gnu";
 const GCC_VERSION = "16";
 
 const C_LINKER_BINARIES = [
-  "ld",
   "riscv64-linux-gnu-gcc-16",
-  "riscv64-linux-gnu-ld",
   "riscv64-linux-gnu-ld.bfd",
 ] as const;
 
@@ -38,32 +36,16 @@ const GLIBC_LINKER_FILES = [
   "crti.o",
   "crtn.o",
   "ld-linux-riscv64-lp64d.so.1",
-  "libbfd-2.46-system.so",
   "libc.so",
   "libc.so.6",
   "libc_nonshared.a",
-  "libctf.so.0",
-  "libctf.so.0.0.0",
-  "libdl.a",
   "libdl.so.2",
   "libgcc_s.so.1",
-  "libjansson.so.4",
-  "libjansson.so.4.14.0",
   "libm.so",
   "libm.so.6",
-  "libpthread.a",
-  "libpthread_nonshared.a",
   "libpthread.so.0",
-  "librt.a",
   "librt.so.1",
-  "libsframe.so.3",
-  "libsframe.so.3.0.0",
-  "libutil.a",
   "libutil.so.1",
-  "libz.so.1",
-  "libz.so.1.3.2",
-  "libzstd.so.1",
-  "libzstd.so.1.5.7",
 ] as const;
 
 const RUST_HOST_LIB_PREFIXES = [
