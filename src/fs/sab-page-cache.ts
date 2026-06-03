@@ -48,6 +48,409 @@ export const INODE_OFF_NAME_OFF = 20;
 export const INODE_OFF_NAME_LEN = 24;
 export const INODE_OFF_NEXT_SIBLING = 28;
 
+const DEFAULT_RESIDENT_PAGE_SIZE = 4096;
+
+export type FileObjectId = number;
+
+export interface FileBackingStat {
+  fileObjectId: FileObjectId;
+  size: number;
+  generation: number;
+}
+
+export interface ResidentPageCacheMiss {
+  status: "miss";
+  missingPageIndex: number;
+}
+
+export interface ResidentPageCacheHit {
+  status: "hit";
+  bytes: Uint8Array;
+}
+
+export type ResidentPageCacheReadResult =
+  | ResidentPageCacheMiss
+  | ResidentPageCacheHit;
+
+export interface ResidentPageFillResult {
+  status: "filled" | "already-resident" | "dirty-pinned" | "not-found";
+  fileObjectId: FileObjectId;
+  pageIndex: number;
+  frameIndex?: number;
+}
+
+interface MemoryFileObject {
+  data: Uint8Array;
+  generation: number;
+}
+
+export class MemoryFileBackingStore {
+  private nextFileObjectId = 1;
+  private readonly files = new Map<FileObjectId, MemoryFileObject>();
+
+  createFile(data: Uint8Array = new Uint8Array()): FileBackingStat {
+    const fileObjectId = this.nextFileObjectId++;
+    this.files.set(fileObjectId, {
+      data: new Uint8Array(data),
+      generation: 1,
+    });
+    return this.stat(fileObjectId)!;
+  }
+
+  stat(fileObjectId: FileObjectId): FileBackingStat | null {
+    const file = this.files.get(fileObjectId);
+    if (!file) {
+      return null;
+    }
+    return {
+      fileObjectId,
+      size: file.data.length,
+      generation: file.generation,
+    };
+  }
+
+  read(fileObjectId: FileObjectId, offset: number, length: number): Uint8Array {
+    const file = this.files.get(fileObjectId);
+    if (!file || length <= 0 || offset < 0 || offset >= file.data.length) {
+      return new Uint8Array();
+    }
+    return file.data.slice(offset, Math.min(file.data.length, offset + length));
+  }
+
+  write(fileObjectId: FileObjectId, offset: number, data: Uint8Array): FileBackingStat {
+    if (!Number.isInteger(offset) || offset < 0) {
+      throw new RangeError(`invalid file write offset: ${offset}`);
+    }
+    const file = this.files.get(fileObjectId);
+    if (!file) {
+      throw new Error(`file object not found: ${fileObjectId}`);
+    }
+    const end = offset + data.length;
+    if (!Number.isFinite(end) || end > 0xffffffff) {
+      throw new RangeError(`file write exceeds supported size: ${end}`);
+    }
+    if (end > file.data.length) {
+      const next = new Uint8Array(end);
+      next.set(file.data);
+      file.data = next;
+    }
+    file.data.set(data, offset);
+    file.generation += 1;
+    return this.stat(fileObjectId)!;
+  }
+
+  truncate(fileObjectId: FileObjectId, size: number): FileBackingStat {
+    if (!Number.isInteger(size) || size < 0 || size > 0xffffffff) {
+      throw new RangeError(`invalid file size: ${size}`);
+    }
+    const file = this.files.get(fileObjectId);
+    if (!file) {
+      throw new Error(`file object not found: ${fileObjectId}`);
+    }
+    if (size !== file.data.length) {
+      const next = new Uint8Array(size);
+      next.set(file.data.subarray(0, Math.min(size, file.data.length)));
+      file.data = next;
+      file.generation += 1;
+    }
+    return this.stat(fileObjectId)!;
+  }
+}
+
+interface ResidentPageRecord {
+  fileObjectId: FileObjectId;
+  pageIndex: number;
+  generation: number;
+  frameIndex: number;
+  validBytes: number;
+  dirty: boolean;
+  lastUsed: number;
+}
+
+export class ResidentSabPageCache {
+  private readonly u8: Uint8Array;
+  private readonly pageSize: number;
+  private readonly frameCount: number;
+  private readonly recordsByKey = new Map<string, ResidentPageRecord>();
+  private readonly recordsByFrame = new Map<number, ResidentPageRecord>();
+  private clock = 1;
+
+  constructor(sab: SharedArrayBuffer, options: { pageSize?: number } = {}) {
+    this.pageSize = options.pageSize ?? DEFAULT_RESIDENT_PAGE_SIZE;
+    if (!Number.isInteger(this.pageSize) || this.pageSize <= 0) {
+      throw new RangeError(`invalid resident page size: ${this.pageSize}`);
+    }
+    this.u8 = new Uint8Array(sab);
+    this.frameCount = Math.floor(Math.max(0, sab.byteLength - DATA_REGION_OFFSET) / this.pageSize);
+  }
+
+  residentCapacityBytes(): number {
+    return this.frameCount * this.pageSize;
+  }
+
+  residentPageCount(): number {
+    return this.recordsByKey.size;
+  }
+
+  readResidentRange(
+    stat: FileBackingStat,
+    offset: number,
+    length: number,
+  ): ResidentPageCacheReadResult {
+    if (length <= 0 || offset >= stat.size) {
+      return { status: "hit", bytes: new Uint8Array() };
+    }
+    const readLen = Math.min(length, stat.size - offset);
+    const out = new Uint8Array(readLen);
+    let copied = 0;
+    while (copied < readLen) {
+      const absolute = offset + copied;
+      const pageIndex = Math.floor(absolute / this.pageSize);
+      const pageOffset = absolute % this.pageSize;
+      const copyLen = Math.min(readLen - copied, this.pageSize - pageOffset);
+      const record = this.recordFor(stat.fileObjectId, pageIndex);
+      if (!record || record.generation !== stat.generation || record.dirty) {
+        return { status: "miss", missingPageIndex: pageIndex };
+      }
+      if (pageOffset + copyLen > record.validBytes) {
+        return { status: "miss", missingPageIndex: pageIndex };
+      }
+      out.set(
+        this.u8.subarray(
+          this.frameOffset(record.frameIndex) + pageOffset,
+          this.frameOffset(record.frameIndex) + pageOffset + copyLen,
+        ),
+        copied,
+      );
+      record.lastUsed = this.clock++;
+      copied += copyLen;
+    }
+    return { status: "hit", bytes: out };
+  }
+
+  fillPageFromBacking(
+    backing: MemoryFileBackingStore,
+    fileObjectId: FileObjectId,
+    pageIndex: number,
+  ): ResidentPageFillResult {
+    const stat = backing.stat(fileObjectId);
+    if (!stat) {
+      return { status: "not-found", fileObjectId, pageIndex };
+    }
+    const current = this.recordFor(fileObjectId, pageIndex);
+    if (current && current.generation === stat.generation && !current.dirty) {
+      current.lastUsed = this.clock++;
+      return {
+        status: "already-resident",
+        fileObjectId,
+        pageIndex,
+        frameIndex: current.frameIndex,
+      };
+    }
+    if (current) {
+      this.removeRecord(current);
+    }
+    const frameIndex = this.allocateFrame();
+    if (frameIndex === null) {
+      return { status: "dirty-pinned", fileObjectId, pageIndex };
+    }
+    const pageStart = pageIndex * this.pageSize;
+    const bytes = backing.read(fileObjectId, pageStart, this.pageSize);
+    const frameStart = this.frameOffset(frameIndex);
+    this.u8.fill(0, frameStart, frameStart + this.pageSize);
+    this.u8.set(bytes, frameStart);
+    const record: ResidentPageRecord = {
+      fileObjectId,
+      pageIndex,
+      generation: stat.generation,
+      frameIndex,
+      validBytes: bytes.length,
+      dirty: false,
+      lastUsed: this.clock++,
+    };
+    this.setRecord(record);
+    return { status: "filled", fileObjectId, pageIndex, frameIndex };
+  }
+
+  readThroughCache(
+    backing: MemoryFileBackingStore,
+    fileObjectId: FileObjectId,
+    offset: number,
+    length: number,
+  ): Uint8Array {
+    const stat = backing.stat(fileObjectId);
+    if (!stat || length <= 0 || offset >= stat.size) {
+      return new Uint8Array();
+    }
+    const readLen = Math.min(length, stat.size - offset);
+    const out = new Uint8Array(readLen);
+    let copied = 0;
+    while (copied < readLen) {
+      const currentStat = backing.stat(fileObjectId);
+      if (!currentStat) {
+        break;
+      }
+      const absolute = offset + copied;
+      const pageOffset = absolute % this.pageSize;
+      const copyLen = Math.min(readLen - copied, this.pageSize - pageOffset);
+      const hit = this.readResidentRange(currentStat, absolute, copyLen);
+      if (hit.status === "miss") {
+        const filled = this.fillPageFromBacking(backing, fileObjectId, hit.missingPageIndex);
+        if (filled.status !== "filled" && filled.status !== "already-resident") {
+          throw new Error(`failed to fill resident page: ${filled.status}`);
+        }
+        continue;
+      }
+      out.set(hit.bytes, copied);
+      copied += hit.bytes.length;
+    }
+    return out;
+  }
+
+  writeThroughBacking(
+    backing: MemoryFileBackingStore,
+    fileObjectId: FileObjectId,
+    offset: number,
+    data: Uint8Array,
+  ): FileBackingStat {
+    const stat = backing.write(fileObjectId, offset, data);
+    this.invalidateFileRange(fileObjectId, offset, data.length);
+    return stat;
+  }
+
+  truncateBacking(
+    backing: MemoryFileBackingStore,
+    fileObjectId: FileObjectId,
+    size: number,
+  ): FileBackingStat {
+    const stat = backing.truncate(fileObjectId, size);
+    this.invalidateFile(fileObjectId);
+    return stat;
+  }
+
+  evictPage(fileObjectId: FileObjectId, pageIndex: number): "evicted" | "dirty-pinned" | "missing" {
+    const record = this.recordFor(fileObjectId, pageIndex);
+    if (!record) {
+      return "missing";
+    }
+    if (record.dirty) {
+      return "dirty-pinned";
+    }
+    this.removeRecord(record);
+    return "evicted";
+  }
+
+  markResidentPageDirty(fileObjectId: FileObjectId, pageIndex: number): boolean {
+    const record = this.recordFor(fileObjectId, pageIndex);
+    if (!record) {
+      return false;
+    }
+    record.dirty = true;
+    record.lastUsed = this.clock++;
+    return true;
+  }
+
+  writeResidentPageBytes(fileObjectId: FileObjectId, pageIndex: number, offset: number, data: Uint8Array): boolean {
+    const record = this.recordFor(fileObjectId, pageIndex);
+    if (!record || offset < 0 || offset + data.length > this.pageSize) {
+      return false;
+    }
+    this.u8.set(data, this.frameOffset(record.frameIndex) + offset);
+    record.validBytes = Math.max(record.validBytes, offset + data.length);
+    record.dirty = true;
+    record.lastUsed = this.clock++;
+    return true;
+  }
+
+  flushDirtyPage(
+    backing: MemoryFileBackingStore,
+    fileObjectId: FileObjectId,
+    pageIndex: number,
+  ): FileBackingStat | null {
+    const record = this.recordFor(fileObjectId, pageIndex);
+    if (!record || !record.dirty) {
+      return backing.stat(fileObjectId);
+    }
+    const frameStart = this.frameOffset(record.frameIndex);
+    const stat = backing.write(
+      fileObjectId,
+      pageIndex * this.pageSize,
+      this.u8.slice(frameStart, frameStart + record.validBytes),
+    );
+    record.generation = stat.generation;
+    record.dirty = false;
+    record.lastUsed = this.clock++;
+    return stat;
+  }
+
+  private frameOffset(frameIndex: number): number {
+    return DATA_REGION_OFFSET + frameIndex * this.pageSize;
+  }
+
+  private pageKey(fileObjectId: FileObjectId, pageIndex: number): string {
+    return `${fileObjectId}:${pageIndex}`;
+  }
+
+  private recordFor(fileObjectId: FileObjectId, pageIndex: number): ResidentPageRecord | undefined {
+    return this.recordsByKey.get(this.pageKey(fileObjectId, pageIndex));
+  }
+
+  private setRecord(record: ResidentPageRecord): void {
+    this.recordsByKey.set(this.pageKey(record.fileObjectId, record.pageIndex), record);
+    this.recordsByFrame.set(record.frameIndex, record);
+  }
+
+  private removeRecord(record: ResidentPageRecord): void {
+    this.recordsByKey.delete(this.pageKey(record.fileObjectId, record.pageIndex));
+    this.recordsByFrame.delete(record.frameIndex);
+  }
+
+  private allocateFrame(): number | null {
+    for (let frameIndex = 0; frameIndex < this.frameCount; frameIndex += 1) {
+      if (!this.recordsByFrame.has(frameIndex)) {
+        return frameIndex;
+      }
+    }
+    let evictable: ResidentPageRecord | null = null;
+    for (const record of this.recordsByFrame.values()) {
+      if (record.dirty) {
+        continue;
+      }
+      if (!evictable || record.lastUsed < evictable.lastUsed) {
+        evictable = record;
+      }
+    }
+    if (!evictable) {
+      return null;
+    }
+    const frameIndex = evictable.frameIndex;
+    this.removeRecord(evictable);
+    return frameIndex;
+  }
+
+  private invalidateFile(fileObjectId: FileObjectId): void {
+    for (const record of [...this.recordsByKey.values()]) {
+      if (record.fileObjectId === fileObjectId) {
+        this.removeRecord(record);
+      }
+    }
+  }
+
+  private invalidateFileRange(fileObjectId: FileObjectId, offset: number, length: number): void {
+    if (length <= 0) {
+      return;
+    }
+    const startPage = Math.floor(offset / this.pageSize);
+    const endPage = Math.floor((offset + length - 1) / this.pageSize);
+    for (let pageIndex = startPage; pageIndex <= endPage; pageIndex += 1) {
+      const record = this.recordFor(fileObjectId, pageIndex);
+      if (record) {
+        this.removeRecord(record);
+      }
+    }
+  }
+}
+
 /**
  * Get the byte offset for a given inode entry in the SAB.
  */
