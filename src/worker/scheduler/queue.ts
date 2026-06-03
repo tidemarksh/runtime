@@ -263,9 +263,6 @@ export function createWorkerSchedulerQueueHelpers(
 
   function runningWorkerStepAppearsIdle(handle: ProcessHandle, thread: ThreadWorkerState): boolean {
     const activeStepVmPtr = handle.kernel.debug_thread_step_vm_ptr?.();
-    if (activeStepVmPtr === undefined) {
-      return false;
-    }
     if (activeStepVmPtr === thread.vmPtr) {
       return false;
     }
@@ -276,6 +273,9 @@ export function createWorkerSchedulerQueueHelpers(
     }
     const hasUnansweredStep = thread.stepCount > thread.statusCount;
     if (lastStatusAtMs !== null && lastStepAtMs <= lastStatusAtMs && !hasUnansweredStep) {
+      return Date.now() - lastStatusAtMs >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
+    }
+    if (activeStepVmPtr === undefined) {
       return false;
     }
     return Date.now() - lastStepAtMs >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
