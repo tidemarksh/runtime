@@ -394,6 +394,27 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     ].join(":");
   }
 
+  function readGuestInsn(handle: ProcessHandle, pc: bigint): string | null {
+    const addr = Number(pc);
+    if (!Number.isFinite(addr) || addr < 0) {
+      return null;
+    }
+    const absolute = Math.max(0, handle.guestBase) + addr;
+    if (absolute < 0 || absolute + 4 > handle.memory.buffer.byteLength) {
+      return null;
+    }
+    return `0x${new DataView(handle.memory.buffer).getUint32(absolute, true).toString(16)}`;
+  }
+
+  function formatFaultInstructions(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
+    const pc = handle.kernel.thread_pc?.(vmPtr) ?? 0n;
+    const faultPc = handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n;
+    return [
+      `pc_insn=${readGuestInsn(handle, pc) ?? "n/a"}`,
+      `fault_insn=${faultPc === 0n ? "n/a" : (readGuestInsn(handle, faultPc) ?? "n/a")}`,
+    ].join(":");
+  }
+
   function formatAsciiLe(value: bigint): string {
     const chars: string[] = [];
     for (let index = 0; index < 8; index += 1) {
@@ -488,6 +509,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     return [
       `vm=0x${vmPtr.toString(16)}`,
       `fault_state=[${formatFaultState(handle, vmPtr)}]`,
+      `fault_insn=[${formatFaultInstructions(handle, vmPtr)}]`,
       `fault_bounds=[${formatFaultBounds(handle, vmPtr)}]`,
       formatDefaultSignalTrace(handle),
       formatSignalState(handle, vmPtr),

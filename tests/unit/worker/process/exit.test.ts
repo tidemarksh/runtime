@@ -726,6 +726,8 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
     [1, parent],
     [4, child],
   ]);
+  new DataView(child.memory.buffer).setUint32(0x5566, 0x00008067, true);
+  new DataView(child.memory.buffer).setUint32(0x7788, 0x00000013, true);
 
   const helpers = createWorkerExitHelpers({
     processHandles,
@@ -753,6 +755,7 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
   expect(parent.lastDebugMessage).toContain("term_signal=11");
   expect(parent.lastDebugMessage).toContain("fault_pc=0x5566");
   expect(parent.lastDebugMessage).toContain("fault_addr=0xdeadbeef");
+  expect(parent.lastDebugMessage).toContain("fault_insn=[pc_insn=0x13:fault_insn=0x8067]");
   expect(parent.lastDebugMessage).toContain("fault_kind=2");
   expect(parent.lastDebugMessage).toContain("fault_signal=11");
   expect(parent.lastDebugMessage).toContain("fault_code=1");
