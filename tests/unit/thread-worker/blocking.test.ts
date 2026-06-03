@@ -101,7 +101,7 @@ test("handleFutexWait re-waits on the requeued futex address", () => {
   const requeuedAddr = 0x200;
   const expected = 7;
   let status = 20;
-  let blockedAddr = requeuedAddr;
+  let blockedAddr = BigInt(requeuedAddr);
   let waitCalls = 0;
 
   i32[initialAddr >>> 2] = expected;
@@ -116,7 +116,7 @@ test("handleFutexWait re-waits on the requeued futex address", () => {
       return "timed-out";
     }
     expect(index).toBe(requeuedAddr >>> 2);
-    blockedAddr = 0;
+    blockedAddr = 0n;
     return "ok";
   });
 
@@ -154,6 +154,69 @@ test("handleFutexWait re-waits on the requeued futex address", () => {
   waitSpy.mockRestore();
 });
 
+test("handleFutexWait does not wrap a Memory64 blocked futex address to a 32-bit word index", () => {
+  const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+  const waitSpy = vi.spyOn(Atomics, "wait");
+  const resumeWait = vi.fn();
+  const resumeWaitResult = vi.fn(() => {
+    status = 0;
+  });
+  const postStatus = vi.fn();
+
+  const initialAddr = 0x100n;
+  const memory64Addr = 0x1_0000_1000n;
+  const expected = 13;
+  let status = 20;
+  let blockedAddr = memory64Addr;
+  let waitCalls = 0;
+  new Int32Array(memory.buffer)[Number(initialAddr) >>> 2] = expected;
+
+  waitSpy.mockImplementation((view, index, value) => {
+    waitCalls += 1;
+    expect(view.buffer).toBe(memory.buffer);
+    expect(index).toBe(Number(initialAddr) >>> 2);
+    expect(value).toBe(expected);
+    return "timed-out";
+  });
+
+  const handled = handleFutexWait({
+    exports: {
+      memory,
+      thread_futex_wait_addr: () => initialAddr,
+      thread_futex_wait_timeout: () => 0n,
+      thread_futex_wait_expected: () => expected,
+      thread_record_blocked_addr: () => blockedAddr,
+      thread_sig_pending: () => 0n,
+      thread_resume_futex_wait: resumeWait,
+      thread_resume_futex_wait_result: (_vmPtr, result) => {
+        blockedAddr = 0n;
+        resumeWaitResult(result);
+      },
+      thread_status: () => status,
+      abi_eagain: () => -11,
+    } as never,
+    statusCodes: { FUTEX_WAIT: 20 } as never,
+    vmPtr: 0x1234,
+    guestBase: 0,
+    runtimeBridge: null,
+    threadStepBudget: 1000,
+    eintrErrno: 4,
+    futexWaitSliceMs: 0,
+    postStatus,
+    reattachPublishedKernelRuntimeState: () => {},
+    step: () => {},
+  }, 20);
+
+  expect(handled).toBe(false);
+  expect(waitCalls).toBe(1);
+  expect(resumeWait).not.toHaveBeenCalled();
+  expect(resumeWaitResult).toHaveBeenCalledWith(BigInt(-11));
+  expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
+  expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(0));
+
+  waitSpy.mockRestore();
+});
+
 test("handleFutexWait resumes with EINTR when a signal becomes pending", () => {
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
   const i32 = new Int32Array(memory.buffer);
@@ -167,7 +230,7 @@ test("handleFutexWait resumes with EINTR when a signal becomes pending", () => {
   const guestAddr = 0x100;
   const expected = 11;
   let status = 20;
-  let blockedAddr = guestAddr;
+  let blockedAddr = BigInt(guestAddr);
   let sigPending = 0n;
 
   i32[guestAddr >>> 2] = expected;
@@ -190,7 +253,7 @@ test("handleFutexWait resumes with EINTR when a signal becomes pending", () => {
       thread_sig_pending: () => sigPending,
       thread_resume_futex_wait: resumeWait,
       thread_resume_futex_wait_result: (_vmPtr, result) => {
-        blockedAddr = 0;
+        blockedAddr = 0n;
         resumeWaitResult(result);
       },
       thread_status: () => status,
@@ -230,7 +293,7 @@ test("handleFutexWait resumes with EINTR when a signal wake notifies the futex",
   const guestAddr = 0x100;
   const expected = 17;
   let status = 20;
-  let blockedAddr = guestAddr;
+  let blockedAddr = BigInt(guestAddr);
   let sigPending = 0n;
 
   i32[guestAddr >>> 2] = expected;
@@ -253,7 +316,7 @@ test("handleFutexWait resumes with EINTR when a signal wake notifies the futex",
       thread_sig_pending: () => sigPending,
       thread_resume_futex_wait: resumeWait,
       thread_resume_futex_wait_result: (_vmPtr, result) => {
-        blockedAddr = 0;
+        blockedAddr = 0n;
         resumeWaitResult(result);
       },
       thread_status: () => status,
@@ -293,7 +356,7 @@ test("handleFutexWait resumes with EINTR for process-directed pending signals", 
   const guestAddr = 0x100;
   const expected = 19;
   let status = 20;
-  let blockedAddr = guestAddr;
+  let blockedAddr = BigInt(guestAddr);
   let processSignalInterrupts = false;
 
   i32[guestAddr >>> 2] = expected;
@@ -317,7 +380,7 @@ test("handleFutexWait resumes with EINTR for process-directed pending signals", 
       thread_pending_signal_interrupts_blocked_syscall: () => processSignalInterrupts ? 1 : 0,
       thread_resume_futex_wait: resumeWait,
       thread_resume_futex_wait_result: (_vmPtr, result) => {
-        blockedAddr = 0;
+        blockedAddr = 0n;
         resumeWaitResult(result);
       },
       thread_status: () => status,
@@ -357,7 +420,7 @@ test("handleFutexWait treats missing thread-record sentinel as EAGAIN instead of
   const guestAddr = 0x100;
   const expected = 29;
   let status = 20;
-  let blockedAddr = guestAddr;
+  let blockedAddr = BigInt(guestAddr);
 
   i32[guestAddr >>> 2] = expected;
 
@@ -365,7 +428,7 @@ test("handleFutexWait treats missing thread-record sentinel as EAGAIN instead of
     expect(view.buffer).toBe(memory.buffer);
     expect(index).toBe(guestAddr >>> 2);
     expect(value).toBe(expected);
-    blockedAddr = 0xffff_ffff;
+    blockedAddr = 0xffff_ffff_ffff_ffffn;
     return "timed-out";
   });
 
@@ -379,7 +442,7 @@ test("handleFutexWait treats missing thread-record sentinel as EAGAIN instead of
       thread_sig_pending: () => 0n,
       thread_resume_futex_wait: resumeWait,
       thread_resume_futex_wait_result: (_vmPtr, result) => {
-        blockedAddr = 0;
+        blockedAddr = 0n;
         resumeWaitResult(result);
       },
       thread_status: () => status,
@@ -434,7 +497,7 @@ test("handleFutexWait exits when reattached kernel state changes the thread stat
       thread_futex_wait_addr: () => BigInt(guestAddr),
       thread_futex_wait_timeout: () => 0n,
       thread_futex_wait_expected: () => expected,
-      thread_record_blocked_addr: () => guestAddr,
+      thread_record_blocked_addr: () => BigInt(guestAddr),
       thread_sig_pending: () => 0n,
       thread_resume_futex_wait: resumeWait,
       thread_resume_futex_wait_result: resumeWaitResult,
@@ -539,7 +602,7 @@ test("handleRuntimeBridgeBlockedStatus hands off EPOLL_WAIT timeout retries into
       thread_futex_wait_addr: () => 0n,
       thread_futex_wait_timeout: () => 0n,
       thread_futex_wait_expected: () => 0,
-      thread_record_blocked_addr: () => 0,
+      thread_record_blocked_addr: () => 0n,
       thread_sig_pending: () => 0n,
       thread_resume_futex_wait: resumeFutexWait,
       thread_resume_futex_wait_result: () => {},

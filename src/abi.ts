@@ -331,7 +331,7 @@ export interface KernelExports {
   thread_sleep_seconds(vm_ptr: number): bigint;
   thread_sleep_nanoseconds(vm_ptr: number): bigint;
   thread_sleep_deadline_ticks?(vm_ptr: number): bigint | number;
-  thread_record_blocked_addr(vm_ptr: number): number;
+  thread_record_blocked_addr(vm_ptr: number): bigint;
   thread_resume_wait4(vm_ptr: number): bigint;
   thread_epoll_wait_timeout(vm_ptr: number): bigint;
   thread_poll_wait_timeout?(vm_ptr: number): bigint;

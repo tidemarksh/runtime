@@ -12,7 +12,23 @@ import {
 import { checkPendingSignalsAtBoundary } from "./signals.js";
 import { formatThreadWorkerGuestBufferPreview } from "./status.js";
 
-const BLOCKED_ADDR_NOT_FOUND = 0xffff_ffff;
+const BLOCKED_ADDR_NOT_FOUND = 0xffff_ffff_ffff_ffffn;
+
+function futexWordIndex(guestBase: number, guestAddr: bigint, words: Int32Array): number | null {
+  if (guestBase < 0 || !Number.isSafeInteger(guestBase)) {
+    return null;
+  }
+  const absolute = BigInt(guestBase) + guestAddr;
+  if (absolute < 0n || (absolute & 3n) !== 0n) {
+    return null;
+  }
+  const index = absolute >> 2n;
+  if (index > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return null;
+  }
+  const numericIndex = Number(index);
+  return numericIndex >= 0 && numericIndex < words.length ? numericIndex : null;
+}
 
 interface ThreadWorkerBlockingContext {
   exports: KernelExports;
@@ -192,10 +208,10 @@ export function handleFutexWait(
   status: number,
 ): boolean {
   const i32 = new Int32Array(ctx.exports.memory.buffer);
-  let guestAddr = Number(ctx.exports.thread_futex_wait_addr(ctx.vmPtr));
+  let guestAddr = ctx.exports.thread_futex_wait_addr(ctx.vmPtr);
   const expected = ctx.exports.thread_futex_wait_expected(ctx.vmPtr);
 
-  if (ctx.exports.thread_record_blocked_addr(ctx.vmPtr) === 0) {
+  if (ctx.exports.thread_record_blocked_addr(ctx.vmPtr) === 0n) {
     ctx.exports.thread_resume_futex_wait(ctx.vmPtr);
     return true;
   }
@@ -207,7 +223,12 @@ export function handleFutexWait(
   const deadlineMs = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
 
   for (;;) {
-    const wordIndex = (ctx.guestBase + guestAddr) >>> 2;
+    const wordIndex = futexWordIndex(ctx.guestBase, guestAddr, i32);
+    if (wordIndex === null) {
+      clearSyscallTrace(ctx.exports);
+      ctx.exports.thread_resume_futex_wait_result(ctx.vmPtr, BigInt(ctx.exports.abi_eagain()));
+      break;
+    }
     const waitMs = deadlineMs === undefined
       ? ctx.futexWaitSliceMs
       : Math.max(0, Math.min(ctx.futexWaitSliceMs, deadlineMs - Date.now()));
@@ -227,11 +248,11 @@ export function handleFutexWait(
       ctx.exports.thread_resume_futex_wait_result(ctx.vmPtr, BigInt(ctx.exports.abi_eagain()));
       break;
     }
-    if (stillBlockedAddr !== 0 && stillBlockedAddr !== guestAddr) {
+    if (stillBlockedAddr !== 0n && stillBlockedAddr !== guestAddr) {
       guestAddr = stillBlockedAddr;
       continue;
     }
-    if (stillBlockedAddr !== 0 && hasPendingSignal) {
+    if (stillBlockedAddr !== 0n && hasPendingSignal) {
       clearSyscallTrace(ctx.exports);
       ctx.exports.thread_resume_futex_wait_result(
         ctx.vmPtr,
@@ -239,7 +260,7 @@ export function handleFutexWait(
       );
       break;
     }
-    if (stillBlockedAddr === 0) {
+    if (stillBlockedAddr === 0n) {
       clearSyscallTrace(ctx.exports);
       ctx.exports.thread_resume_futex_wait(ctx.vmPtr);
       break;

@@ -891,9 +891,9 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
   debugParts.push(`blocked_fd=${exports.thread_blocked_fd?.(vmPtr) ?? 0}`);
   debugParts.push(`blocked_ofd_id=${exports.thread_blocked_ofd_id?.(vmPtr) ?? 0}`);
   debugParts.push(`epoll_timeout_ms=${exports.thread_epoll_wait_timeout?.(vmPtr)?.toString() ?? "n/a"}`);
-  const blockedAddr = exports.thread_record_blocked_addr?.(vmPtr) ?? 0;
-  if (blockedAddr !== 0) {
-    debugParts.push(`blocked_addr=0x${blockedAddr.toString(16)}`);
+  const blockedAddr = exports.thread_record_blocked_addr?.(vmPtr) ?? 0n;
+  if (blockedAddr !== 0n) {
+    debugParts.push(`blocked_addr=0x${formatU64(blockedAddr)}`);
   }
   const futexWaitAddr = exports.thread_futex_wait_addr?.(vmPtr) ?? 0n;
   if (futexWaitAddr !== 0n) {
