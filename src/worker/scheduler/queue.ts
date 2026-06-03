@@ -271,8 +271,7 @@ export function createWorkerSchedulerQueueHelpers(
     if (lastStepAtMs === null) {
       return false;
     }
-    const hasUnansweredStep = thread.stepCount > thread.statusCount;
-    if (lastStatusAtMs !== null && lastStepAtMs <= lastStatusAtMs && !hasUnansweredStep) {
+    if (lastStatusAtMs !== null && lastStepAtMs <= lastStatusAtMs) {
       return Date.now() - lastStatusAtMs >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
     }
     if (activeStepVmPtr === undefined) {

@@ -1872,6 +1872,103 @@ test("pumpProcess clears a stale running worker when the unanswered step shares 
   expect(runningWorker.postMessage).not.toHaveBeenCalled();
 });
 
+test("pumpProcess clears a stale unanswered ok running worker without active-step export when status covers the step time", () => {
+  vi.setSystemTime(new Date(10_000));
+  const runningWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const readyWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const runningThread = makeThreadState(0x6648420);
+  const readyThread = makeThreadState(0x9ba7260);
+  runningThread.runningGeneration = runningThread.generation;
+  runningThread.stepCount = 162;
+  runningThread.statusCount = 161;
+  runningThread.lastStepAtMs = 7_500;
+  runningThread.lastStatusAtMs = 7_500;
+  runningThread.lastStatus = 0;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(runningWorker, runningThread);
+  threadWorkerStates.set(readyWorker, readyThread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_ok();
+  delete kernel.debug_thread_step_vm_ptr;
+  const handle = makeHandle(kernel, runningWorker);
+  handle.workers.add(readyWorker);
+  handle.runningWorker = runningWorker;
+  handle.readyWorkers = [readyWorker];
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+
+  expect(runningThread.runningGeneration).toBeNull();
+  expect(handle.runningWorker).toBe(readyWorker);
+  expect(readyWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+  expect(runningWorker.postMessage).not.toHaveBeenCalled();
+});
+
+test("pumpProcess keeps an unanswered ok running worker without active-step export when the step is newer than status", () => {
+  vi.setSystemTime(new Date(10_000));
+  const runningWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const readyWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const runningThread = makeThreadState(0x6648420);
+  const readyThread = makeThreadState(0x9ba7260);
+  runningThread.runningGeneration = runningThread.generation;
+  runningThread.stepCount = 162;
+  runningThread.statusCount = 161;
+  runningThread.lastStepAtMs = 7_500;
+  runningThread.lastStatusAtMs = 7_000;
+  runningThread.lastStatus = 0;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(runningWorker, runningThread);
+  threadWorkerStates.set(readyWorker, readyThread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_ok();
+  delete kernel.debug_thread_step_vm_ptr;
+  const handle = makeHandle(kernel, runningWorker);
+  handle.workers.add(readyWorker);
+  handle.runningWorker = runningWorker;
+  handle.readyWorkers = [readyWorker];
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+
+  expect(runningThread.runningGeneration).toBe(runningThread.generation);
+  expect(handle.runningWorker).toBe(runningWorker);
+  expect(readyWorker.postMessage).not.toHaveBeenCalled();
+  expect(runningWorker.postMessage).not.toHaveBeenCalled();
+});
+
 test("pumpProcess waits for socket status publication before dispatching a ready sibling", () => {
   const runningWorker = {
     postMessage: vi.fn(),
