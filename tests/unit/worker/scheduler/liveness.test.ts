@@ -1922,7 +1922,7 @@ test("pumpProcess clears a stale unanswered ok running worker without active-ste
   expect(runningWorker.postMessage).not.toHaveBeenCalled();
 });
 
-test("pumpProcess keeps an unanswered ok running worker without active-step export when the step is newer than status", () => {
+test("pumpProcess clears an unanswered ok running worker without active-step export when the step is stale", () => {
   vi.setSystemTime(new Date(10_000));
   const runningWorker = {
     postMessage: vi.fn(),
@@ -1963,9 +1963,12 @@ test("pumpProcess keeps an unanswered ok running worker without active-step expo
 
   scheduler.pumpProcess(handle);
 
-  expect(runningThread.runningGeneration).toBe(runningThread.generation);
-  expect(handle.runningWorker).toBe(runningWorker);
-  expect(readyWorker.postMessage).not.toHaveBeenCalled();
+  expect(runningThread.runningGeneration).toBeNull();
+  expect(handle.runningWorker).toBe(readyWorker);
+  expect(readyWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
   expect(runningWorker.postMessage).not.toHaveBeenCalled();
 });
 

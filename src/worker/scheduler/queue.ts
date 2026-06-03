@@ -280,9 +280,6 @@ export function createWorkerSchedulerQueueHelpers(
         return Date.now() - lastStatusAtMs >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
       }
     }
-    if (activeStepVmPtr === undefined) {
-      return false;
-    }
     return Date.now() - lastStepAtMs >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
   }
 
