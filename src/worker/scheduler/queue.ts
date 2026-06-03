@@ -199,6 +199,7 @@ function clearBlockedWorker(handle: ProcessHandle, worker: Worker): void {
 
 function statusBlocksInOwnerScheduler(handle: ProcessHandle, status: number): boolean {
   return status === handle.kernel.abi_status_epoll_wait()
+    || status === handle.kernel.abi_status_fs()
     || status === handle.kernel.abi_status_sleep()
     || status === handle.kernel.abi_status_pipe_wait()
     || status === handle.kernel.abi_status_wait4()
