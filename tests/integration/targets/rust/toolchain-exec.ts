@@ -54,7 +54,6 @@ export const rustcCompileToolchainEntry: ToolchainExecEntry = {
     "LD_LIBRARY_PATH=/toolchain/lib:/usr/lib/riscv64-linux-gnu:/usr/lib:/lib",
   ],
   timeoutMs: 20_000,
-  guestMemoryPolicyLimitBytes: 768 * 1024 * 1024,
   guestMemoryPolicyLimitBytes: RUST_TOOLCHAIN_GUEST_MEMORY_POLICY_LIMIT_BYTES,
   pageCacheDataCapacityBytes: RUST_TOOLCHAIN_PAGE_CACHE_DATA_CAPACITY_BYTES,
   snapshotSources: rustSnapshotSources([
@@ -94,7 +93,6 @@ export const cargoBuildToolchainEntry: ToolchainExecEntry = {
     "LD_LIBRARY_PATH=/toolchain/lib:/usr/lib/riscv64-linux-gnu:/usr/lib:/lib",
   ],
   timeoutMs: 30_000,
-  guestMemoryPolicyLimitBytes: 1024 * 1024 * 1024,
   guestMemoryPolicyLimitBytes: RUST_TOOLCHAIN_GUEST_MEMORY_POLICY_LIMIT_BYTES,
   pageCacheDataCapacityBytes: RUST_TOOLCHAIN_PAGE_CACHE_DATA_CAPACITY_BYTES,
   snapshotSources: rustSnapshotSources([
