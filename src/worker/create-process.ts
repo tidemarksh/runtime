@@ -338,7 +338,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
 
   async function instantiateProcessKernel(
     wasmBytes: BufferSource,
-    ramSize: number,
+    guestMemoryPolicyLimitBytes: number,
     sabPageCache: SharedArrayBuffer | null,
     maxMemoryPages: number,
   ): Promise<{
@@ -355,7 +355,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     });
     const exports = mainInstance.exports as unknown as KernelExports;
     configureKernelInstanceStack(exports, MAIN_THREAD_KERNEL_STACK_SLOT);
-    const wasmHeapBase = kernelHeapBase(exports, ramSize - 4 * 1024 * 1024);
+    const wasmHeapBase = kernelHeapBase(exports, guestMemoryPolicyLimitBytes - 4 * 1024 * 1024);
     exports.kernel_init(wasmHeapBase);
 
     const now = Date.now();
@@ -371,9 +371,9 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     exports: KernelExports,
     guestBase: number,
     elfData: Uint8Array,
-    ramSize: number,
+    guestMemoryPolicyLimitBytes: number,
     options: CreateProcessOptions,
-    elfBrk = inspectProcessElfBrk(exports, guestBase, elfData, ramSize),
+    elfBrk = inspectProcessElfBrk(exports, guestBase, elfData, guestMemoryPolicyLimitBytes),
   ): number {
     if (elfBrk === 0) {
       throw new Error("ELF inspection failed");
@@ -405,7 +405,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     exports: KernelExports,
     guestBase: number,
     elfData: Uint8Array,
-    ramSize: number,
+    guestMemoryPolicyLimitBytes: number,
     guestAddressProfile = guestAddressProfileForProcessCreation(exports),
   ): number {
     const inspectScratchBase = detachedKernelScratchBase(exports.memory, guestBase, 0);
@@ -415,7 +415,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       inspectElfOffset,
       elfData.length,
       guestAddressProfile,
-      BigInt(ramSize),
+      BigInt(guestMemoryPolicyLimitBytes),
     ));
     return elfBrk;
   }
@@ -426,7 +426,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     memory: WebAssembly.Memory,
     runtimeId: number,
     vmPtr: number,
-    ramSize: number,
+    guestMemoryPolicyLimitBytes: number,
     guestBase: number,
     guestAddressProfile: number,
     maxMemoryPages: number,
@@ -446,7 +446,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     const memoryOwnership: RuntimeMemoryOwnership = {
       guestAddressProfile: exports.thread_guest_address_profile?.(vmPtr) ?? guestAddressProfile,
       guestAddressLimitBytes: exports.thread_guest_address_limit?.(vmPtr)?.toString() ?? null,
-      guestMemoryPolicyLimitBytes: ramSize,
+      guestMemoryPolicyLimitBytes,
       processMaxMemoryBytes: maxMemoryPages * 65536,
       forkProcessMaxMemoryBytes: forkMaxMemoryPages * 65536,
       pageCacheDataCapacityBytes: options.sabPageCache?.byteLength ?? 0,
@@ -462,7 +462,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       pid: options.pid ?? 0,
       parentPid: options.parentPid ?? null,
       vmPtr,
-      ramSize,
+      guestMemoryPolicyLimitBytes,
       maxMemoryPages,
       forkMaxMemoryPages,
       guestBase,
@@ -543,7 +543,10 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     elfData: Uint8Array,
     options: CreateProcessOptions = {},
   ): Promise<ProcessHandle> {
-    const ramSize = Math.max(options.ramSize ?? MIN_PROCESS_RAM_SIZE_BYTES, MIN_PROCESS_RAM_SIZE_BYTES);
+    const guestMemoryPolicyLimitBytes = Math.max(
+      options.guestMemoryPolicyLimitBytes ?? MIN_PROCESS_RAM_SIZE_BYTES,
+      MIN_PROCESS_RAM_SIZE_BYTES,
+    );
     const minMemoryPages = Math.ceil(deps.bootstrapMemoryBytes / deps.wasmPageSize);
     const requestedMaxMemoryPages = Math.max(options.maxMemoryPages ?? deps.wasmMaxPages, 1);
     const maxMemoryPages = Math.min(requestedMaxMemoryPages, deps.wasmMaxPages);
@@ -553,7 +556,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     const stackSize = options.stackSize ?? DEFAULT_PROCESS_STACK_SIZE_BYTES;
     const { wasmModule, memory, exports } = await instantiateProcessKernel(
       wasmBytes,
-      ramSize,
+      guestMemoryPolicyLimitBytes,
       options.sabPageCache ?? null,
       boundedMaxMemoryPages,
     );
@@ -586,7 +589,13 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     if (guestBase === 0) {
       throw new Error("process_guest_base failed");
     }
-    const elfBrk = inspectProcessElfBrk(exports, guestBase, elfData, ramSize, guestAddressProfile);
+    const elfBrk = inspectProcessElfBrk(
+      exports,
+      guestBase,
+      elfData,
+      guestMemoryPolicyLimitBytes,
+      guestAddressProfile,
+    );
     if (elfBrk === 0) {
       throw new Error("ELF inspection failed");
     }
@@ -599,13 +608,20 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     const worker = acquireWorker();
     const runtimeBridge = createRuntimeStateBridge();
 
-    const elfOffset = stageProcessCreation(exports, guestBase, elfData, ramSize, options, elfBrk);
+    const elfOffset = stageProcessCreation(
+      exports,
+      guestBase,
+      elfData,
+      guestMemoryPolicyLimitBytes,
+      options,
+      elfBrk,
+    );
     const vmPtr = processCreateWithMemoryPolicy(
       exports,
       elfOffset,
       elfData.length,
       guestAddressProfile,
-      BigInt(ramSize),
+      BigInt(guestMemoryPolicyLimitBytes),
       boundedMaxMemoryPages,
       stackSize,
     );
@@ -616,7 +632,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
         "process_create failed",
         `processCreateLastError=${processCreateLastError === null ? "<unavailable>" : processCreateLastError}`,
         `elfBrk=${elfBrk}`,
-        `ramSize=${ramSize}`,
+        `guestMemoryPolicyLimitBytes=${guestMemoryPolicyLimitBytes}`,
         `stackSize=${stackSize}`,
         `guestBase=0x${guestBase.toString(16)}`,
         `interp=${interpPath ?? "<none>"}`,
@@ -644,7 +660,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       memory,
       runtimeId,
       vmPtr,
-      ramSize,
+      guestMemoryPolicyLimitBytes,
       guestBase,
       guestAddressProfile,
       boundedMaxMemoryPages,
@@ -658,7 +674,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     setGuestMemoryPolicyLimit(
       handle.kernel,
       vmPtr,
-      normalizeGuestMemoryPolicyLimitBytes(ramSize),
+      normalizeGuestMemoryPolicyLimitBytes(guestMemoryPolicyLimitBytes),
     );
     appendMemoryStateDebug(handle, "create");
 

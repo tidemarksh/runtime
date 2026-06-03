@@ -323,7 +323,7 @@ export function appendPlainForkMemoryDebug(
     `snapshotEnd=${snapshot.endOffset}`,
     `snapshotRangeSpans=${formatForkSnapshotRanges(snapshot)}`,
     `guestBase=${handle.guestBase}`,
-    `ramSize=${handle.ramSize}`,
+    `guestMemoryPolicyLimitBytes=${handle.guestMemoryPolicyLimitBytes}`,
     `guestBackingBytes=${Math.max(0, handle.memory.buffer.byteLength - handle.guestBase)}`,
     `guestAddressProfile=${formatNullableBytes(ownership?.guestAddressProfile)}`,
     `guestAddressLimitBytes=${formatNullableBytes(ownership?.guestAddressLimitBytes)}`,

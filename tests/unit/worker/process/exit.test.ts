@@ -23,7 +23,7 @@ function makeHandle(
     pid: 3,
     parentPid: 1,
     vmPtr: 0x1234,
-    ramSize: 0,
+    guestMemoryPolicyLimitBytes: 0,
     maxMemoryPages: 0,
     guestBase: 0,
     worker: {} as Worker,

@@ -35,8 +35,6 @@ import { FS_RING_TOTAL_BYTES } from "./layout/fs-ring.js";
 
 export interface RuntimeOptions {
   wasmBytes: BufferSource;
-  /** Deprecated compatibility alias for guest memory policy limit. */
-  ramSize?: number;
   guestMemoryPolicyLimitBytes?: number;
   pageCacheDataCapacityBytes?: number;
   /** Deprecated compatibility alias for kernelWorkerMaxMemoryPages. */
@@ -175,7 +173,7 @@ export class Runtime {
     );
     this.memoryConfig = {
       guestMemoryPolicyLimitBytes: Math.max(
-        options.guestMemoryPolicyLimitBytes ?? options.ramSize ?? MIN_RAM_SIZE_BYTES,
+        options.guestMemoryPolicyLimitBytes ?? MIN_RAM_SIZE_BYTES,
         MIN_RAM_SIZE_BYTES,
       ),
       pageCacheDataCapacityBytes: Math.max(
@@ -322,7 +320,7 @@ export class Runtime {
     const handle = await createProcess(this.wasmBytes, elfData, {
       runtimeId: this.runtimeId,
       pid,
-      ramSize: this.memoryConfig.guestMemoryPolicyLimitBytes,
+      guestMemoryPolicyLimitBytes: this.memoryConfig.guestMemoryPolicyLimitBytes,
       argv,
       env,
       cwd: options.cwd,

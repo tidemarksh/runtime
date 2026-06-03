@@ -34,6 +34,35 @@ async function loadKernel() {
   return { exports, memory };
 }
 
+function targetAddressProfile(exports: KernelExports): number {
+  const profile = exports.abi_guest_address_profile_target?.();
+  if (profile === undefined || profile === 0) {
+    throw new Error("kernel ABI missing target guest address profile");
+  }
+  return profile;
+}
+
+function createProcessWithPolicy(
+  exports: KernelExports,
+  elfOffset: number,
+  elfLength: number,
+  guestMemoryPolicyLimitBytes: number,
+  stackSize: number,
+): number {
+  const create = exports.process_create_with_memory_policy;
+  if (!create) {
+    throw new Error("kernel ABI missing process_create_with_memory_policy");
+  }
+  return create(
+    elfOffset,
+    elfLength,
+    targetAddressProfile(exports),
+    BigInt(guestMemoryPolicyLimitBytes),
+    0,
+    stackSize,
+  );
+}
+
 function minimalInterpSnapshot(entry: DynamicStartupEntry, guestInterpreterPath: string) {
   const interpSource = entry.snapshotSources.find(
     (source) => source.kind === "file" && source.guestPath === guestInterpreterPath,
@@ -89,7 +118,7 @@ async function runProcessCreate(
     exports.process_push_env(scratchPtr);
     scratchPtr += bytes.length + 16;
   }
-  const vmPtr = exports.process_create(elfOffset, elfData.length, ramSize, 1024 * 1024);
+  const vmPtr = createProcessWithPolicy(exports, elfOffset, elfData.length, ramSize, 1024 * 1024);
   return {
     vmPtr,
     lastError: exports.process_create_last_error?.() ?? null,

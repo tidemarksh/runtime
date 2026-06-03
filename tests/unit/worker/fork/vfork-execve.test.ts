@@ -389,7 +389,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     process_push_arg: () => {},
     process_push_env: () => {},
     process_clear_args: () => {},
-    abi_guest_address_profile_wasm32_compatible: () => 1,
+    abi_guest_address_profile_target: () => 2,
     process_guest_base_for_address_profile: () => 0x1000000n,
     process_guest_address_limit_for_profile: () => 0xffff_ffffn,
     process_guest_base: () => 0x1000000,
@@ -1043,7 +1043,7 @@ test("vfork execve resumes the parent and initializes the child lifecycle throug
   expect(restoreVforkParentWithoutCleanup).toHaveBeenCalledWith(0x1234, 156);
   expect(resumeVforkParent).not.toHaveBeenCalled();
   expect(clearSpawnHandoff).toHaveBeenCalledWith(0x1234);
-  expect(handle.ramSize).toBeGreaterThan(0);
+  expect(handle.guestMemoryPolicyLimitBytes).toBeGreaterThan(0);
   expect(createdKernelExports[1]?.execveMemoryHandoffCalls).toEqual([
     expect.objectContaining({
       vmPtr: 0x1234,

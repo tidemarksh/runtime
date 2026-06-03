@@ -239,19 +239,16 @@ export interface KernelExports {
   process_push_arg(addr: number): void;
   process_push_env(addr: number): void;
   process_clear_args(): void;
-  abi_guest_address_profile_wasm32_compatible?(): number;
   abi_guest_address_profile_memory64?(): number;
   abi_guest_address_profile_target?(): number;
   process_guest_base_for_address_profile?(addressProfile: number): bigint;
   process_guest_address_limit_for_profile?(addressProfile: number, guestBase: bigint): bigint;
-  process_guest_base(ram_size: number): number;
   process_inspect_elf_brk_with_memory_policy?(
     elf_ptr: number,
     elf_len: number,
     addressProfile: number,
     guestMemoryPolicyLimit: bigint,
   ): bigint;
-  process_inspect_elf_brk(elf_ptr: number, elf_len: number, ram_size: number): bigint;
   process_create_with_memory_policy?(
     elf_ptr: number,
     elf_len: number,
@@ -260,7 +257,6 @@ export interface KernelExports {
     processMaxMemoryPages: number,
     stack_size: number,
   ): number;
-  process_create(elf_ptr: number, elf_len: number, ram_size: number, stack_size: number): number;
   process_create_last_error?(): number;
 
   // Thread execution
@@ -391,8 +387,6 @@ export interface KernelExports {
 
   // Spawn handoff
   thread_spawn_kind(vm_ptr: number): number;
-  thread_guest_ram_limit(vm_ptr: number): number;
-  thread_set_guest_ram_limit(vm_ptr: number, ramSize: number): void;
   thread_guest_address_profile?(vm_ptr: number): number;
   thread_guest_address_limit?(vm_ptr: number): bigint;
   thread_guest_memory_policy_limit?(vm_ptr: number): bigint;
@@ -402,18 +396,9 @@ export interface KernelExports {
   thread_spawn_path(vm_ptr: number): bigint;
   thread_spawn_argv(vm_ptr: number): bigint;
   thread_spawn_envp(vm_ptr: number): bigint;
-  thread_spawn_ram_size(vm_ptr: number): number;
   thread_spawn_address_profile?(vm_ptr: number): number;
   thread_spawn_guest_memory_policy_limit?(vm_ptr: number): bigint;
   thread_spawn_process_max_memory_pages?(vm_ptr: number): number;
-  thread_set_execve_handoff(
-    vm_ptr: number,
-    processPtr: number,
-    pathAddr: bigint,
-    argvAddr: bigint,
-    envpAddr: bigint,
-    ramSize: number,
-  ): void;
   thread_set_execve_memory_handoff?(
     vm_ptr: number,
     processPtr: number,
@@ -955,23 +940,21 @@ export interface ProcessSpawnHandoff {
   processMaxMemoryPages: number;
 }
 
-export function guestAddressProfileWasm32Compatible(exports: KernelExports): number {
-  if (!exports.abi_guest_address_profile_wasm32_compatible) {
-    throw new Error("kernel ABI missing guest address profile export");
-  }
-  return exports.abi_guest_address_profile_wasm32_compatible();
-}
-
 export function guestAddressProfileForProcessCreation(exports: KernelExports): number {
-  const targetProfile = exports.abi_guest_address_profile_target?.();
-  if (
-    targetProfile !== undefined
-    && targetProfile !== 0
-    && exports.process_guest_base_for_address_profile?.(targetProfile) !== 0n
-  ) {
-    return targetProfile;
+  if (!exports.abi_guest_address_profile_target) {
+    throw new Error("kernel ABI missing abi_guest_address_profile_target");
   }
-  return guestAddressProfileWasm32Compatible(exports);
+  if (!exports.process_guest_base_for_address_profile) {
+    throw new Error("kernel ABI missing process_guest_base_for_address_profile");
+  }
+  const targetProfile = exports.abi_guest_address_profile_target();
+  if (targetProfile === 0) {
+    throw new Error("kernel ABI returned invalid target guest address profile");
+  }
+  if (exports.process_guest_base_for_address_profile(targetProfile) === 0n) {
+    throw new Error("kernel ABI returned invalid target guest address base");
+  }
+  return targetProfile;
 }
 
 export function processGuestBaseForAddressProfile(

@@ -37,7 +37,7 @@ export function createForkChildHandle({
     pid: childPid,
     parentPid: childPpid,
     vmPtr,
-    ramSize: parent.ramSize,
+    guestMemoryPolicyLimitBytes: parent.guestMemoryPolicyLimitBytes,
     maxMemoryPages: parent.maxMemoryPages,
     forkMaxMemoryPages: parent.forkMaxMemoryPages,
     guestBase: parent.guestBase,

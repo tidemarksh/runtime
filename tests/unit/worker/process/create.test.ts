@@ -155,7 +155,6 @@ function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
         timeStatePtr,
       };
     },
-    abi_guest_address_profile_wasm32_compatible: vi.fn(() => 1),
     abi_guest_address_profile_target: vi.fn(() => 2),
     process_inspect_elf_brk_with_memory_policy: vi.fn(() => {
       callLog.push("process_inspect_elf_brk_with_memory_policy");
@@ -292,7 +291,7 @@ function makeParentHandle(): ProcessHandle {
     pid: 1,
     parentPid: null,
     vmPtr: 0x4321,
-    ramSize: 0,
+    guestMemoryPolicyLimitBytes: 0,
     guestBase: 0,
     worker: {} as Worker,
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
@@ -425,7 +424,7 @@ test("createProcess uses target guest address profile for process memory policy"
     new Uint8Array([0]),
     new Uint8Array([0x7f, 0x45, 0x4c, 0x46]),
     {
-      ramSize: guestPolicyLimitBytes,
+      guestMemoryPolicyLimitBytes: guestPolicyLimitBytes,
       maxMemoryPages: 1024,
       preloadEntries: [],
     },
@@ -451,7 +450,7 @@ test("createProcess uses target guest address profile for process memory policy"
   );
 });
 
-test("createProcess falls back to compat guest profile only when target profile is unusable", async () => {
+test("createProcess rejects an unusable target guest profile instead of falling back", async () => {
   const processHandles = new Map<number, ProcessHandle>();
   const kernelMemory = new WebAssembly.Memory({ initial: 1024, maximum: 2048, shared: true });
   const fakeKernel = makeFakeProcessKernel(kernelMemory);
@@ -476,28 +475,16 @@ test("createProcess falls back to compat guest profile only when target profile 
     wasmMaxPages: 65536,
   });
 
-  await factory.createProcess(
+  await expect(factory.createProcess(
     new Uint8Array([0]),
     new Uint8Array([0x7f, 0x45, 0x4c, 0x46]),
     {
       preloadEntries: [],
     },
-  );
+  )).rejects.toThrow("kernel ABI returned invalid target guest address base");
 
-  expect(fakeKernel.process_create_with_memory_policy).toHaveBeenCalledWith(
-    expect.any(Number),
-    expect.any(Number),
-    1,
-    expect.anything(),
-    expect.any(Number),
-    expect.any(Number),
-  );
-  expect(fakeKernel.process_inspect_elf_brk_with_memory_policy).toHaveBeenCalledWith(
-    expect.any(Number),
-    expect.any(Number),
-    1,
-    expect.anything(),
-  );
+  expect(fakeKernel.process_create_with_memory_policy).not.toHaveBeenCalled();
+  expect(fakeKernel.process_inspect_elf_brk_with_memory_policy).not.toHaveBeenCalled();
 });
 
 test("createProcess preserves PTY stdio only when requested", async () => {

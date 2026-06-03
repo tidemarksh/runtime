@@ -251,7 +251,7 @@ export interface ProcessHandle {
   pid: number;
   parentPid: number | null;
   vmPtr: number;
-  ramSize: number;
+  guestMemoryPolicyLimitBytes: number;
   maxMemoryPages: number;
   forkMaxMemoryPages: number;
   guestBase: number;
@@ -357,7 +357,7 @@ export interface CreateProcessOptions {
   runtimeId?: number;
   pid?: number;
   parentPid?: number | null;
-  ramSize?: number;
+  guestMemoryPolicyLimitBytes?: number;
   maxMemoryPages?: number;
   forkMaxMemoryPages?: number;
   stackSize?: number;

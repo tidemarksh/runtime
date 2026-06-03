@@ -354,7 +354,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     process_push_arg: () => {},
     process_push_env: () => {},
     process_clear_args: () => {},
-    abi_guest_address_profile_wasm32_compatible: () => 1,
+    abi_guest_address_profile_target: () => 2,
     process_guest_base_for_address_profile: () => 0x1000000n,
     process_guest_address_limit_for_profile: () => 0xffff_ffffn,
     process_guest_base: () => 0x1000000,
@@ -657,7 +657,7 @@ test("plain fork skips byte-identical captured stack snapshot", async () => {
   const parent = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
   const worker = createdWorkers[0];
   const kernel = createdKernelExports[0];
-  const stackPointer = parent.ramSize - 0x8000;
+  const stackPointer = parent.guestMemoryPolicyLimitBytes - 0x8000;
   const stackStartGuest = Math.max(0, Math.floor(stackPointer / 65536) * 65536 - 1024 * 1024);
   const stackBytes = 1024 * 1024;
   const stackStart = parent.guestBase + stackStartGuest;
@@ -693,7 +693,7 @@ test("plain fork skips byte-identical captured stack snapshot", async () => {
   const memoryLog = parent.workerDebugLog.find((entry) => entry.startsWith("plain-fork-memory:"));
   expect(memoryLog).toBeDefined();
   expect(memoryLog).not.toContain(`${stackStart}-${stackStart + stackBytes}:${stackBytes},${stackStart}-${stackStart + stackBytes}:${stackBytes}`);
-  expect(memoryLog).toContain("guestAddressProfile=1");
+  expect(memoryLog).toContain("guestAddressProfile=2");
   expect(memoryLog).toContain("guestAddressLimitBytes=4294967295");
   expect(memoryLog).toContain("processCommittedBytes=");
   expect(memoryLog).toContain("processMaxMemoryBytes=");
@@ -702,21 +702,21 @@ test("plain fork skips byte-identical captured stack snapshot", async () => {
   expect(memoryLog).toContain("artifactMaterializedBytes=0");
 });
 
-test("fork memory snapshot stack fallback uses committed backing instead of ramSize", async () => {
+test("fork memory snapshot stack fallback uses committed backing instead of guest policy", async () => {
   const parent = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
-  parent.ramSize = 0x2000;
+  parent.guestMemoryPolicyLimitBytes = 0x2000;
   const stackPointer = 0x20_0000n;
 
   const snapshot = captureForkMemorySnapshot(parent, stackPointer);
 
-  expect(Number(stackPointer)).toBeGreaterThan(parent.ramSize);
+  expect(Number(stackPointer)).toBeGreaterThan(parent.guestMemoryPolicyLimitBytes);
   expect(snapshot.endOffset).toBe(parent.memory.buffer.byteLength);
 });
 
 test("plain fork preserves optional zero guest memory policy from child kernel state", async () => {
   const parent = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
     pid: 1,
-    ramSize: 64 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 64 * 1024 * 1024,
   });
   const worker = createdWorkers[0];
   const kernel = createdKernelExports[0];
@@ -743,7 +743,7 @@ test("plain fork preserves optional zero guest memory policy from child kernel s
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   const childKernel = createdKernelExports[1];
-  expect(parent.ramSize).toBeGreaterThan(0);
+  expect(parent.guestMemoryPolicyLimitBytes).toBeGreaterThan(0);
   expect(childKernel?.guestMemoryPolicyLimitCalls.at(-1)).toEqual([0x1234, 0n]);
 });
 

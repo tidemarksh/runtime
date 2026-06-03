@@ -354,7 +354,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     process_push_arg: () => {},
     process_push_env: () => {},
     process_clear_args: () => {},
-    abi_guest_address_profile_wasm32_compatible: () => 1,
+    abi_guest_address_profile_target: () => 2,
     process_guest_base_for_address_profile: () => 0x1000000n,
     process_guest_address_limit_for_profile: () => 0xffff_ffffn,
     process_guest_base: () => 0x1000000,
@@ -759,10 +759,10 @@ test("clone spawn refreshes kernel state before child init and parent resume", a
 });
 
 
-test("clone child init caps preserved guest bytes to ramSize", async () => {
+test("clone child init caps preserved guest bytes to guest policy limit", async () => {
   const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
   const worker = createdWorkers[0];
-  handle.ramSize = 0x2000;
+  handle.guestMemoryPolicyLimitBytes = 0x2000;
 
   emitReady(worker);
   await flushMicrotasks();
@@ -790,7 +790,7 @@ test("clone child init caps preserved guest bytes to ramSize", async () => {
 test("clone child init preserves only live guest bytes when kernel debug memory state is narrower", async () => {
   const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
   const worker = createdWorkers[0];
-  handle.ramSize = 0x200000;
+  handle.guestMemoryPolicyLimitBytes = 0x200000;
   handle.kernel.debug_memory_brk_current = () => 0x4000n;
   handle.kernel.debug_memory_mmap_next = () => 0x1f0000n;
   handle.kernel.debug_memory_vma_len = () => 2;
@@ -1612,21 +1612,21 @@ test("kernel-worker child exit bookkeeping tears down the child and resumes pare
   vi.useRealTimers();
 });
 
-test("createProcess does not grow linear memory to requested ramSize during spawn staging", async () => {
-  const requestedRam = 512 * 1024 * 1024;
+test("createProcess does not grow linear memory to requested guest policy during spawn staging", async () => {
+  const requestedGuestPolicyLimitBytes = 512 * 1024 * 1024;
   const handle = await createProcess(
     new Uint8Array([0]),
     new Uint8Array(512 * 1024),
-    { ramSize: requestedRam },
+    { guestMemoryPolicyLimitBytes: requestedGuestPolicyLimitBytes },
   );
 
-  expect(handle.ramSize).toBe(requestedRam);
+  expect(handle.guestMemoryPolicyLimitBytes).toBe(requestedGuestPolicyLimitBytes);
   expect(handle.memory.buffer.byteLength).toBeLessThan(128 * 1024 * 1024);
 });
 
 test("createProcess preloads snapshot files by resizing then writing payload bytes", async () => {
   const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
-    ramSize: 64 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 64 * 1024 * 1024,
     maxMemoryPages: 2048,
     forkMaxMemoryPages: 3072,
     sabPageCache: new SharedArrayBuffer(4 * 1024 * 1024),
@@ -1697,9 +1697,9 @@ test("createProcess reports FS RPC ring capacity independently from page-cache d
   expect(largePageCache.memoryOwnership?.fsRpcRingCapacityBytes).toBe(FS_RING_TOTAL_BYTES);
 });
 
-test("createProcess rejects artifact materialization budget separately from guest ram", async () => {
+test("createProcess rejects artifact materialization budget separately from guest policy", async () => {
   await expect(createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
-    ramSize: 64 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 64 * 1024 * 1024,
     artifactMaterializationBudgetBytes: 4095,
     preloadEntries: [
       {
