@@ -941,6 +941,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
           if (thread) {
             thread.ownerAsyncStatus = null;
           }
+          pumpProcess(handle);
         })
         .catch((error) => {
           deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));

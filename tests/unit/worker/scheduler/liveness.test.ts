@@ -288,6 +288,51 @@ test("scheduler uses the Node step budget when Node process globals are present"
   }));
 });
 
+test("blocked FS retry pumps after clearing owner async status", async () => {
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const thread = makeThreadState(0x1234);
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, thread);
+  const { exports: kernel } = makeKernel();
+  let status = kernel.abi_status_fs();
+  kernel.thread_status = () => status;
+  const handle = makeHandle(kernel, worker);
+  handle.pendingChildSpawnRecords = 0;
+  const resumeFsViaKernelWorkerOutcome = vi.fn(async () => {
+    expect(thread.ownerAsyncStatus).toBe(kernel.abi_status_fs());
+    status = kernel.abi_status_ok();
+    return { kind: "completed" as const };
+  });
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeFsViaKernelWorker: async () => {},
+    resumeFsViaKernelWorkerOutcome,
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => ({ kind: "completed" }),
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.blockWorker(handle, worker, kernel.abi_status_fs(), 0x1234);
+  await vi.advanceTimersByTimeAsync(1);
+  await Promise.resolve();
+
+  expect(resumeFsViaKernelWorkerOutcome).toHaveBeenCalledWith(handle, worker, 0x1234);
+  expect(thread.ownerAsyncStatus).toBeNull();
+  expect(handle.blockedWorkers.has(worker)).toBe(false);
+  expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+});
+
 test("wait4 retry stays blocked while child spawn is still in flight", async () => {
   const worker = {
     postMessage: vi.fn(),

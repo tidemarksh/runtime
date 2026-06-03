@@ -12,6 +12,14 @@ import {
 } from "../../../src/fs/sab-page-cache.js";
 import { createKernelEnv } from "../../../src/wasm/env.js";
 
+test("memory atomic notify accepts wasm64 BigInt pointers", () => {
+  const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+  const env = createKernelEnv(memory);
+
+  expect(env.tidemark_memory_atomic_notify(0n, 1n)).toBe(0);
+  expect(env.tidemark_memory_atomic_notify(BigInt(memory.buffer.byteLength), 1n)).toBe(0);
+});
+
 test("publishInode exposes file metadata and bytes when capacity exists", () => {
   const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 128);
   const name = new TextEncoder().encode("file");

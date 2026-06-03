@@ -807,7 +807,7 @@ async function resumeFsViaKernelWorkerInner(
     if (memfsMutated) {
       handle.processMemfsDirty = true;
       if (!transientProcessOwnerMismatch) {
-        if (memfsPublishReady) {
+        if (memfsPublishReady && syncTargets.length > 0) {
           appendFsLifecycleEvent(
             handle,
             "publish-memfs",
@@ -825,10 +825,10 @@ async function resumeFsViaKernelWorkerInner(
             preservePublishedRegularFileData,
             sourceVmPtr: vmPtr,
           });
-          if (forkShareMembers.length > 0) {
-            for (const member of forkShareMembers) {
-              effects.push({ kind: "mark-runtime-fs-dirty", handle: member });
-            }
+        }
+        if (memfsPublishReady && forkShareMembers.length > 0) {
+          for (const member of forkShareMembers) {
+            effects.push({ kind: "mark-runtime-fs-dirty", handle: member });
           }
         }
       }

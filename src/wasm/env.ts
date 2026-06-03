@@ -3,7 +3,7 @@ import { readInodeMeta, writeFileData } from "../fs/sab-page-cache.js";
 export interface KernelEnvImports {
   [key: string]: WebAssembly.ImportValue;
   memory: WebAssembly.Memory;
-  tidemark_memory_atomic_notify(ptr: number, maxWake: number): number;
+  tidemark_memory_atomic_notify(ptr: number | bigint, maxWake: number | bigint): number;
   tidemark_page_cache_read(ino: number, offset: bigint, dstPtr: number, dstLen: number): bigint;
   tidemark_page_cache_stat(ino: number, outPtr: number): number;
   tidemark_page_cache_write(ino: number, offset: bigint, srcPtr: number, srcLen: number): bigint;
@@ -23,7 +23,19 @@ export function createKernelEnv(
   return {
     memory,
     tidemark_memory_atomic_notify(ptr, maxWake) {
-      return Atomics.notify(new Int32Array(memory.buffer), ptr >>> 2, maxWake);
+      const ptrNumber = typeof ptr === "bigint" ? Number(ptr) : ptr;
+      const maxWakeNumber = typeof maxWake === "bigint" ? Number(maxWake) : maxWake;
+      const i32 = new Int32Array(memory.buffer);
+      const index = Math.trunc(ptrNumber / Int32Array.BYTES_PER_ELEMENT);
+      if (
+        !Number.isSafeInteger(ptrNumber)
+        || !Number.isFinite(maxWakeNumber)
+        || index < 0
+        || index >= i32.length
+      ) {
+        return 0;
+      }
+      return Atomics.notify(i32, index, Math.max(0, Math.trunc(maxWakeNumber)));
     },
     tidemark_page_cache_read(ino, offset, dstPtr, dstLen) {
       if (dstLen <= 0) {
