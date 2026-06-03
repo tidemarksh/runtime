@@ -286,12 +286,18 @@ test("kernel-worker fs outcome applies mmap guest memory writes from fs response
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
+  const siblingWorker = {} as Worker;
   handle.workers.add(worker);
+  handle.workers.add(siblingWorker);
   const threadState = {
+    pendingGuestMemoryWrites: [],
+  } as unknown as ThreadWorkerState;
+  const siblingThreadState = {
     pendingGuestMemoryWrites: [],
   } as unknown as ThreadWorkerState;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, threadState);
+  threadWorkerStates.set(siblingWorker, siblingThreadState);
   const helpers = createWorkerKernelRpcFsHelpers({
     threadWorkerStates,
     appendRuntimeLifecycleEvent: vi.fn(),
@@ -325,6 +331,9 @@ test("kernel-worker fs outcome applies mmap guest memory writes from fs response
   expect(threadState.pendingGuestMemoryWrites).toHaveLength(1);
   expect(threadState.pendingGuestMemoryWrites[0].guestPtr).toBe(0x200);
   expect(threadState.pendingGuestMemoryWrites[0].bytes).toEqual(mappedBytes);
+  expect(siblingThreadState.pendingGuestMemoryWrites).toHaveLength(1);
+  expect(siblingThreadState.pendingGuestMemoryWrites[0].guestPtr).toBe(0x200);
+  expect(siblingThreadState.pendingGuestMemoryWrites[0].bytes).toEqual(mappedBytes);
 });
 
 test("kernel-worker fs outcome preserves published data when publishing file writes", async () => {
