@@ -67,6 +67,63 @@ test("resolveNetworkConnect reports IPv4 connect endpoint to a generic runtime b
   });
 });
 
+test("resolveNetworkConnect does not truncate Memory64 blocked sockaddr pointers", async () => {
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  const view = new Uint8Array(memory.buffer);
+  const guestBase = 0x1000;
+  const lowSockaddrPtr = 0x20;
+  view.set([2, 0, 0x27, 0x0f, 10, 0, 0, 1], guestBase + lowSockaddrPtr);
+  const bridge = {
+    connect: vi.fn(async () => undefined),
+  };
+  const handle = {
+    pid: 42,
+    guestBase,
+    memory,
+    networkBridge: bridge,
+    networkConnections: new Map(),
+    networkPendingConnectFds: new Set(),
+    networkClosedFds: new Set(),
+    networkClosedSocketSlots: new Map(),
+    networkRecvHeadWatermarks: new Map(),
+    networkRecvTailWatermarks: new Map(),
+    kernel: {
+      kernel_heap_ptr: () => 0x100,
+      abi_econnrefused: () => 111,
+      abi_sys_connect: () => 72n,
+      thread_blocked_syscall_nr: () => 72n,
+      thread_blocked_syscall_arg: (_vmPtr: number, index: number) => {
+        if (index === 0) {
+          return 7n;
+        }
+        if (index === 1) {
+          return (1n << 32n) + BigInt(lowSockaddrPtr);
+        }
+        return 8n;
+      },
+      thread_connect_fd: () => 7,
+      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+        view.set([2, 0, 0x01, 0xbb, 93, 184, 216, 34], dstPtr);
+        return 8;
+      },
+    },
+  } as unknown as ProcessHandle;
+  const helpers = createWorkerProcessIoHelpers(createDeps());
+
+  const result = await helpers.resolveNetworkConnect(handle, 0x2000);
+
+  expect(result).toBe(0n);
+  expect(bridge.connect).toHaveBeenCalledWith({
+    pid: 42,
+    fd: 7,
+    endpoint: {
+      family: "inet",
+      address: "93.184.216.34",
+      port: 443,
+    },
+  });
+});
+
 test("resolveNetworkConnect tracks pending fd while bridge connect is in flight", async () => {
   const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
   const view = new Uint8Array(memory.buffer);

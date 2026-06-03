@@ -1097,11 +1097,18 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       && handle.kernel.thread_blocked_syscall_arg
     ) {
       const fd = Number(BigInt.asUintN(32, handle.kernel.thread_blocked_syscall_arg(vmPtr, 0)));
-      const addr = Number(BigInt.asUintN(32, handle.kernel.thread_blocked_syscall_arg(vmPtr, 1)));
+      const addr = BigInt(handle.kernel.thread_blocked_syscall_arg(vmPtr, 1));
       const addrLen = Number(BigInt.asUintN(32, handle.kernel.thread_blocked_syscall_arg(vmPtr, 2)));
-      const start = handle.guestBase + addr;
-      const end = start + addrLen;
-      if (fd >= 0 && addrLen > 0 && start >= 0 && end <= handle.memory.buffer.byteLength) {
+      const startBig = BigInt(handle.guestBase) + addr;
+      const endBig = startBig + BigInt(addrLen);
+      if (
+        fd >= 0
+        && addrLen > 0
+        && addr >= 0n
+        && startBig <= BigInt(Number.MAX_SAFE_INTEGER)
+        && endBig <= BigInt(handle.memory.buffer.byteLength)
+      ) {
+        const start = Number(startBig);
         const endpoint = endpointFromBytes(
           fd,
           new Uint8Array(handle.memory.buffer, start, addrLen),
