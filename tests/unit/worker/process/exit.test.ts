@@ -620,6 +620,11 @@ test("completeProcessExit classifies high out-of-range fault pc and includes liv
       thread_fault_signal: (vmPtr: number) => vmPtr === faultVmPtr ? 11 : 0,
       thread_fault_code: (vmPtr: number) => vmPtr === faultVmPtr ? 1 : 0,
       thread_guest_address_limit: (vmPtr: number) => vmPtr === faultVmPtr ? 0x1_0000_0000n : 0n,
+      debug_memory_vma_len: () => 1,
+      debug_memory_vma_start: () => 0x1020_0000n,
+      debug_memory_vma_end: () => 0x1021_0000n,
+      debug_memory_vma_prot: () => 5,
+      debug_memory_vma_flags: () => 2,
       debug_exec_trace_len: () => 2,
       debug_exec_trace_epoch_for_vm: (vmPtr: number) => vmPtr === faultVmPtr ? 7 : 0,
       debug_exec_trace_entry_vm_ptr: () => faultVmPtr,
@@ -653,6 +658,7 @@ test("completeProcessExit classifies high out-of-range fault pc and includes liv
   await helpers.completeProcessExit(child, 139, 11, faultVmPtr);
 
   expect(child.lastDebugMessage).toContain("fault_bounds=[");
+  expect(child.lastDebugMessage).toContain("fault_vma=[pc=none:fault_pc=none:fault_addr=none]");
   expect(child.lastDebugMessage).toContain("pc=outside_guest_limit");
   expect(child.lastDebugMessage).toContain("fault_pc=outside_guest_limit");
   expect(child.lastDebugMessage).toContain("fault_addr=outside_guest_limit");
@@ -720,6 +726,11 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
       debug_default_signal_s11: () => 0xdefn,
       debug_default_signal_fault_pc: () => 0x5566n,
       debug_default_signal_fault_addr: () => 0xdeadbeefn,
+      debug_memory_vma_len: () => 2,
+      debug_memory_vma_start: (index: number) => index === 0 ? 0x5000n : 0x7000n,
+      debug_memory_vma_end: (index: number) => index === 0 ? 0x6000n : 0x8000n,
+      debug_memory_vma_prot: (index: number) => index === 0 ? 1 : 5,
+      debug_memory_vma_flags: (index: number) => index === 0 ? 2 : 18,
     } as never,
   });
   const processHandles = new Map<number, ProcessHandle>([
@@ -756,6 +767,7 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
   expect(parent.lastDebugMessage).toContain("fault_pc=0x5566");
   expect(parent.lastDebugMessage).toContain("fault_addr=0xdeadbeef");
   expect(parent.lastDebugMessage).toContain("fault_insn=[pc_insn=0x13:fault_insn=0x8067]");
+  expect(parent.lastDebugMessage).toContain("fault_vma=[pc=1/0x7000-0x8000/prot=5/flags=18:fault_pc=0/0x5000-0x6000/prot=1/flags=2:fault_addr=none]");
   expect(parent.lastDebugMessage).toContain("fault_kind=2");
   expect(parent.lastDebugMessage).toContain("fault_signal=11");
   expect(parent.lastDebugMessage).toContain("fault_code=1");

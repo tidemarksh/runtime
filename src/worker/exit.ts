@@ -462,6 +462,38 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     ].join(":");
   }
 
+  function formatVmaForAddress(handle: ProcessHandle, value: bigint): string {
+    if (value === 0n) {
+      return "zero";
+    }
+    const len = handle.kernel.debug_memory_vma_len?.() ?? 0;
+    for (let index = 0; index < len; index += 1) {
+      const start = BigInt(handle.kernel.debug_memory_vma_start?.(index) ?? 0);
+      const end = BigInt(handle.kernel.debug_memory_vma_end?.(index) ?? 0);
+      if (value < start || value >= end) {
+        continue;
+      }
+      return [
+        `${index}`,
+        `0x${start.toString(16)}-0x${end.toString(16)}`,
+        `prot=${handle.kernel.debug_memory_vma_prot?.(index) ?? 0}`,
+        `flags=${handle.kernel.debug_memory_vma_flags?.(index) ?? 0}`,
+      ].join("/");
+    }
+    return "none";
+  }
+
+  function formatFaultVmas(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
+    const pc = handle.kernel.thread_pc?.(vmPtr) ?? 0n;
+    const faultPc = handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n;
+    const faultAddr = handle.kernel.thread_fault_addr?.(vmPtr) ?? 0n;
+    return [
+      `pc=${formatVmaForAddress(handle, pc)}`,
+      `fault_pc=${formatVmaForAddress(handle, faultPc)}`,
+      `fault_addr=${formatVmaForAddress(handle, faultAddr)}`,
+    ].join(":");
+  }
+
   function formatDefaultSignalTrace(handle: ProcessHandle): string {
     const sig = handle.kernel.debug_default_signal_sig?.() ?? 0;
     if (sig === 0) {
@@ -511,6 +543,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       `fault_state=[${formatFaultState(handle, vmPtr)}]`,
       `fault_insn=[${formatFaultInstructions(handle, vmPtr)}]`,
       `fault_bounds=[${formatFaultBounds(handle, vmPtr)}]`,
+      `fault_vma=[${formatFaultVmas(handle, vmPtr)}]`,
       formatDefaultSignalTrace(handle),
       formatSignalState(handle, vmPtr),
       formatFrozenExitTraces(handle, vmPtr),
