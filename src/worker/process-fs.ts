@@ -280,7 +280,7 @@ export function readMemfsFile(
   exports: KernelExports,
   ino: number,
   pageCache?: SharedArrayBuffer | null,
-): Uint8Array {
+): Uint8Array | undefined {
   const size = Number(exports.memfs_file_size(ino));
   if (size <= 0) {
     return new Uint8Array();
@@ -301,7 +301,7 @@ export function readMemfsFile(
   ensureKernelMemoryCapacity(exports, bufPtr + size);
   const read = Number(exports.memfs_read_file_to(ino, 0n, bufPtr, size));
   if (read < 0) {
-    throw new Error(`memfs_read_file_to failed for ino=${ino}`);
+    return undefined;
   }
   return new Uint8Array(exports.memory.buffer.slice(bufPtr, bufPtr + read));
 }
@@ -360,12 +360,13 @@ function snapshotMemfsTree(
   }
 
   const data = readMemfsFile(exports, ino, pageCache);
+  const size = Number(exports.memfs_file_size(ino));
   out.push({
     kind: "file",
     path: normalized,
     ino,
     data,
-    size: data.length,
+    size: data?.length ?? size,
     mode: perms,
   });
 }

@@ -26,18 +26,33 @@ export function createKernelEnv(
       return Atomics.notify(new Int32Array(memory.buffer), ptr >>> 2, maxWake);
     },
     tidemark_page_cache_read(ino, offset, dstPtr, dstLen) {
-      if (!sabPageCache || dstLen <= 0) {
+      if (dstLen <= 0) {
         return 0n;
+      }
+      const offsetNumber = Number(offset);
+      if (!Number.isFinite(offsetNumber) || offsetNumber < 0) {
+        return -22n;
+      }
+      if (!sabPageCache) {
+        const backing = readFileDataByInode?.(ino, offsetNumber, dstLen);
+        if (!backing) {
+          return -2n;
+        }
+        const readLen = Math.min(backing.length, dstLen);
+        new Uint8Array(memory.buffer, dstPtr, readLen).set(backing.subarray(0, readLen));
+        return BigInt(readLen);
       }
       const meta = readInodeMeta(sabPageCache, ino);
       if (!meta) {
-        return -2n;
+        const backing = readFileDataByInode?.(ino, offsetNumber, dstLen);
+        if (!backing) {
+          return -2n;
+        }
+        const readLen = Math.min(backing.length, dstLen);
+        new Uint8Array(memory.buffer, dstPtr, readLen).set(backing.subarray(0, readLen));
+        return BigInt(readLen);
       }
-      const offsetNumber = Number(offset);
-      if (!Number.isFinite(offsetNumber) || offsetNumber < 0 || offsetNumber >= meta.size) {
-        return 0n;
-      }
-      if (dstLen <= 0) {
+      if (offsetNumber >= meta.size) {
         return 0n;
       }
       if (meta.dataOff === 0 && meta.size > 0) {

@@ -34,9 +34,8 @@ import {
 import {
   copyKernelPrivateRegion,
   ensureMemoryCapacity,
-  writeKernelScratch,
 } from "../kernel-scratch.js";
-import { normalizePath, resolveMemfsPath } from "../process-fs.js";
+import { resolveMemfsPath } from "../process-fs.js";
 import { acquireWorker, ensureEvictionTimer } from "../pool.js";
 import { createForkChildHandle } from "./common.js";
 import { normalizeGuestMemoryPolicyLimitBytes } from "./common.js";
@@ -51,7 +50,6 @@ const VFORK_EXECVE_HANDOFF_FAILURE_WAIT_STATUS = 127 << 8;
 const HANDOFF_DEBUG_STRING_LIMIT = 128;
 const EXECVE_CHILD_HANDOFF_HEADROOM_BYTES = 0x10000;
 const EXECVE_CHILD_LIVE_STACK_WINDOW_BYTES = 8 * 1024 * 1024;
-const execveTargetEncoder = new TextEncoder();
 
 function formatGuestCStringForDebug(
   handle: ProcessHandle,
@@ -209,66 +207,93 @@ function copyExecveKernelRuntimeRegions(handle: ProcessHandle, target: WebAssemb
   );
 }
 
-async function materializeExecveTargetForHandoff(
+function readElfInterpPath(elfData: Uint8Array): string | null {
+  if (elfData.length < 64) {
+    return null;
+  }
+  if (elfData[0] !== 0x7f || elfData[1] !== 0x45 || elfData[2] !== 0x4c || elfData[3] !== 0x46) {
+    return null;
+  }
+  if (elfData[4] !== 2 || elfData[5] !== 1) {
+    return null;
+  }
+
+  const view = new DataView(elfData.buffer, elfData.byteOffset, elfData.byteLength);
+  const phOff = Number(view.getBigUint64(32, true));
+  const phEntSize = view.getUint16(54, true);
+  const phNum = view.getUint16(56, true);
+  const phEnd = phOff + phEntSize * phNum;
+  if (phEntSize < 56 || phEnd > elfData.length) {
+    return null;
+  }
+
+  for (let index = 0; index < phNum; index += 1) {
+    const start = phOff + index * phEntSize;
+    if (view.getUint32(start, true) !== 3) {
+      continue;
+    }
+    const offset = Number(view.getBigUint64(start + 8, true));
+    const fileSize = Number(view.getBigUint64(start + 32, true));
+    const end = offset + fileSize;
+    if (fileSize === 0 || end > elfData.length) {
+      return null;
+    }
+    const bytes = elfData.subarray(offset, end);
+    const nul = bytes.indexOf(0);
+    const interp = decodeExecveBytes(nul >= 0 ? bytes.subarray(0, nul) : bytes);
+    return interp.length > 0 ? interp : null;
+  }
+
+  return null;
+}
+
+async function prepareExecveBackingPathForHandoff(
   handle: ProcessHandle,
   childKernel: KernelExports,
-  pathBytes: Uint8Array,
-): Promise<void> {
-  if (!handle.kernelWorkerRequest || pathBytes.length === 0) {
-    return;
-  }
-  const path = decodeExecveBytes(pathBytes[pathBytes.length - 1] === 0
-    ? pathBytes.subarray(0, pathBytes.length - 1)
-    : pathBytes);
-  if (!path) {
-    return;
+  path: string,
+  backingByInode: Map<number, Uint8Array>,
+): Promise<{ path: string; ino: number; bytes: number } | null> {
+  if (!handle.kernelWorkerRequest || !path) {
+    return null;
   }
   const ino = resolveMemfsPath(childKernel, path);
   if (ino === 0) {
-    return;
-  }
-  const normalizedPath = normalizePath(path);
-  if (normalizedPath === "/") {
-    return;
-  }
-  const parts = normalizedPath.split("/").filter(Boolean);
-  const name = parts.pop();
-  if (!name) {
-    return;
-  }
-  const parentPath = parts.length === 0 ? "/" : `/${parts.join("/")}`;
-  const parentIno = resolveMemfsPath(childKernel, parentPath);
-  if (parentIno === 0) {
-    throw new Error(`failed to resolve vfork exec target parent: ${parentPath}`);
+    return { path, ino, bytes: 0 };
   }
   const response = await handle.kernelWorkerRequest({ type: "read-file", path });
   if (response.type !== "file-read") {
     throw new Error(`unexpected kernel-worker read-file response: ${response.type}`);
   }
-  const mode = childKernel.memfs_inode_mode(ino) & 0o7777;
-  const nameBytes = execveTargetEncoder.encode(name);
-  const namePtr = writeKernelScratch(childKernel, nameBytes);
-  const unlinkResult = Number(childKernel.memfs_unlink(parentIno, namePtr, nameBytes.length));
-  if (unlinkResult < 0) {
-    throw new Error(`failed to replace vfork exec target: ${path}`);
+  backingByInode.set(ino, response.data);
+  return { path, ino, bytes: response.data.length };
+}
+
+async function prepareExecveBackingForHandoff(
+  handle: ProcessHandle,
+  childKernel: KernelExports,
+  pathBytes: Uint8Array,
+  backingByInode: Map<number, Uint8Array>,
+): Promise<Array<{ path: string; ino: number; bytes: number }>> {
+  const path = decodeExecveBytes(pathBytes[pathBytes.length - 1] === 0
+    ? pathBytes.subarray(0, pathBytes.length - 1)
+    : pathBytes);
+  const prepared: Array<{ path: string; ino: number; bytes: number }> = [];
+  const target = await prepareExecveBackingPathForHandoff(handle, childKernel, path, backingByInode);
+  if (!target) {
+    return prepared;
   }
-  const dataPtr = response.data.length > 0
-    ? writeKernelScratch(childKernel, response.data, 0x4000)
-    : writeKernelScratch(childKernel, new Uint8Array(), 0x4000);
-  const createdIno = childKernel.memfs_create_file_with_data(
-    parentIno,
-    namePtr,
-    nameBytes.length,
-    dataPtr,
-    response.data.length,
-  );
-  if (createdIno === 0) {
-    throw new Error(`failed to materialize vfork exec target: ${path}`);
+  prepared.push(target);
+
+  const targetBytes = backingByInode.get(target.ino);
+  const interpPath = targetBytes ? readElfInterpPath(targetBytes) : null;
+  if (!interpPath) {
+    return prepared;
   }
-  const modeResult = Number(childKernel.memfs_set_mode(createdIno, mode));
-  if (modeResult < 0) {
-    throw new Error(`failed to set vfork exec target mode: ${path}`);
+  const interp = await prepareExecveBackingPathForHandoff(handle, childKernel, interpPath, backingByInode);
+  if (interp) {
+    prepared.push(interp);
   }
+  return prepared;
 }
 
 function execveChildInitialMemoryBytes(
@@ -499,13 +524,26 @@ export async function handleVforkExecve(
       + `:heap=${Math.max(handle.kernelState.heapPtr, handle.kernel.kernel_heap_ptr?.() ?? 0)}`
       + `:sp=${parentThread.lastStatusSp ?? parentThread.lastStepSp ?? handle.kernel.thread_sp(parentThread.vmPtr)}`,
   );
+  const childExecveBackingByInode = new Map<number, Uint8Array>();
   const { instance: childInstance, memory: childMemory } = await instantiateKernelWithSharedMemory(
     handle.wasmModule,
     {
       initialPages: Math.ceil(childInitialMemoryBytes / deps.wasmPageSize),
       maximumPages: Math.max(childProcessMaxMemoryPages, handle.forkMaxMemoryPages),
     },
-    { sabPageCache: handle.sabPageCache },
+    {
+      sabPageCache: handle.sabPageCache,
+      readFileDataByInode: (ino, offset, length) => {
+        const data = childExecveBackingByInode.get(ino);
+        if (!data || offset < 0) {
+          return null;
+        }
+        if (offset >= data.length) {
+          return new Uint8Array();
+        }
+        return data.subarray(offset, Math.min(data.length, offset + length));
+      },
+    },
     (memory) => {
       copyKernelPrivateRegion(handle.memory, memory, handle.kernelState.heapPtr);
       copyExecveKernelRuntimeRegions(handle, memory);
@@ -606,7 +644,21 @@ export async function handleVforkExecve(
   );
   let execRet: number;
   try {
-    await materializeExecveTargetForHandoff(handle, childKernel, execveGuestPayload.path);
+    const preparedBacking = await prepareExecveBackingForHandoff(
+      handle,
+      childKernel,
+      execveGuestPayload.path,
+      childExecveBackingByInode,
+    );
+    for (const prepared of preparedBacking) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `vfork-execve:target-backing:${childPid}`
+          + `:ino=${prepared.ino}`
+          + `:bytes=${prepared.bytes}`
+          + `:path=${JSON.stringify(prepared.path)}`,
+      );
+    }
     execRet = Number(childKernel.thread_complete_execve_handoff(childVmPtr));
   } catch (error) {
     const debugStage = childKernel.debug_execve_stage?.();
@@ -637,10 +689,12 @@ export async function handleVforkExecve(
     deps.appendWorkerDebugLog(
       handle,
       `vfork-execve:handoff-failed:${childPid}:ret=${execRet}:stage=${debugStage ?? "n/a"}`
-      + `:value0=${debugValue0 ?? "n/a"}:value1=${debugValue1 ?? "n/a"}`,
+      + `:value0=${debugValue0 ?? "n/a"}:value1=${debugValue1 ?? "n/a"}`
+      + `:processCreateLastError=${childKernel.process_create_last_error?.() ?? "n/a"}`,
     );
     handle.lastDebugMessage = `vfork-execve:handoff-failed child=${childPid} ret=${execRet}`
-      + ` stage=${debugStage ?? "n/a"} value0=${debugValue0 ?? "n/a"} value1=${debugValue1 ?? "n/a"}`;
+      + ` stage=${debugStage ?? "n/a"} value0=${debugValue0 ?? "n/a"} value1=${debugValue1 ?? "n/a"}`
+      + ` processCreateLastError=${childKernel.process_create_last_error?.() ?? "n/a"}`;
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
       `vfork-execve:handoff-failed:${childPid}:${execRet}:${debugStage ?? "n/a"}:${debugValue0 ?? "n/a"}:${debugValue1 ?? "n/a"}`,
