@@ -271,8 +271,14 @@ export function createWorkerSchedulerQueueHelpers(
     if (lastStepAtMs === null) {
       return false;
     }
-    if (lastStatusAtMs !== null && lastStepAtMs <= lastStatusAtMs) {
-      return Date.now() - lastStatusAtMs >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
+    const hasUnansweredStep = thread.stepCount > thread.statusCount;
+    if (lastStatusAtMs !== null) {
+      if (!hasUnansweredStep) {
+        return Date.now() - Math.max(lastStepAtMs, lastStatusAtMs) >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
+      }
+      if (lastStepAtMs <= lastStatusAtMs) {
+        return Date.now() - lastStatusAtMs >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
+      }
     }
     if (activeStepVmPtr === undefined) {
       return false;
