@@ -27,6 +27,7 @@ import {
   FS_OP_GETDENTS,
   FS_OP_LSEEK,
   FS_OP_MKDIR,
+  FS_OP_MMAP,
   FS_OP_OPENAT,
   FS_OP_READ,
   FS_OP_RENAME,
@@ -257,6 +258,8 @@ function fsOpName(opcode: number): string {
       return "TRUNCATE";
     case FS_OP_LSEEK:
       return "LSEEK";
+    case FS_OP_MMAP:
+      return "MMAP";
     default:
       return `OP${opcode}`;
   }

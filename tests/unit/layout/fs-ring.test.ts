@@ -13,6 +13,7 @@ import {
   FS_OP_GETDENTS,
   FS_OP_LSEEK,
   FS_OP_MKDIR,
+  FS_OP_MMAP,
   FS_OP_OPENAT,
   FS_OP_RENAME,
   FS_OP_TRUNCATE,
@@ -125,6 +126,7 @@ describe("FS ring layout", () => {
     expect(FS_OP_GETDENTS).toBe(readKernelConst("FS_OP_GETDENTS"));
     expect(FS_OP_TRUNCATE).toBe(readKernelConst("FS_OP_TRUNCATE"));
     expect(FS_OP_LSEEK).toBe(readKernelConst("FS_OP_LSEEK"));
+    expect(FS_OP_MMAP).toBe(readKernelConst("FS_OP_MMAP"));
     expect(FS_REQ_FLAG_PWRITE).toBe(readKernelConst("FS_REQ_FLAG_PWRITE"));
     expect(FS_REQ_FLAG_WRITEV).toBe(readKernelConst("FS_REQ_FLAG_WRITEV"));
     expect(FS_RING_SUBMIT_HEAD_OFFSET).toBe(readKernelConst("OFF_SUBMIT_HEAD"));

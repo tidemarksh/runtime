@@ -13,7 +13,7 @@ import { buildSnapshotFromSources } from "../../../support/snapshot-sources.js";
 type RuntimeInstance = Awaited<ReturnType<typeof Runtime.create>>;
 
 const hostRiscvGcc = process.env.TIDEMARK_TEST_HOST_RISCV_GCC ?? "riscv64-linux-gnu-gcc";
-const largeFileReadBytes = Number(process.env.TIDEMARK_TEST_LARGE_FILE_READ_BYTES ?? 8 * 1024 * 1024);
+const largeFileReadBytes = Number(process.env.TIDEMARK_TEST_LARGE_FILE_READ_BYTES ?? 16 * 1024 * 1024 + 17);
 const largeFileReadInput = process.env.TIDEMARK_TEST_LARGE_FILE_READ_INPUT ?? "";
 const largeFilePath = "/work/large-file-read.bin";
 
@@ -26,17 +26,20 @@ function buildLargeFileReadProbe(): Uint8Array | null {
       "#include <errno.h>",
       "#include <fcntl.h>",
       "#include <stdio.h>",
+      "#include <stdlib.h>",
+      "#include <string.h>",
+      "#include <sys/mman.h>",
+      "#include <sys/wait.h>",
       "#include <unistd.h>",
       "",
       "#define CHUNK_SIZE 65536",
       "",
-      "int main(int argc, char **argv) {",
-      "  const char *path = argc > 1 ? argv[1] : \"/work/large-file-read.bin\";",
+      "static int checksum_by_read(const char *path, unsigned long long *total, unsigned long long *checksum) {",
       "  int fd = open(path, O_RDONLY);",
       "  if (fd < 0) { perror(\"open-input\"); return 20; }",
       "  static unsigned char buf[CHUNK_SIZE];",
-      "  unsigned long long total = 0;",
-      "  unsigned long long checksum = 0;",
+      "  *total = 0;",
+      "  *checksum = 0;",
       "  for (;;) {",
       "    ssize_t n = read(fd, buf, sizeof(buf));",
       "    if (n < 0) {",
@@ -46,12 +49,57 @@ function buildLargeFileReadProbe(): Uint8Array | null {
       "      return 21;",
       "    }",
       "    if (n == 0) break;",
-      "    for (ssize_t i = 0; i < n; i++) checksum += (unsigned long long)buf[i];",
-      "    total += (unsigned long long)n;",
+      "    for (ssize_t i = 0; i < n; i++) *checksum += (unsigned long long)buf[i];",
+      "    *total += (unsigned long long)n;",
       "  }",
       "  if (close(fd) != 0) { perror(\"close-input\"); return 22; }",
-      "  printf(\"large-file-read bytes=%llu checksum=%llu\\n\", total, checksum);",
       "  return 0;",
+      "}",
+      "",
+      "static int checksum_by_mmap(const char *path, unsigned long long *total, unsigned long long *checksum) {",
+      "  int fd = open(path, O_RDONLY);",
+      "  if (fd < 0) { perror(\"open-mmap-input\"); return 30; }",
+      "  off_t size = lseek(fd, 0, SEEK_END);",
+      "  if (size < 0) { perror(\"lseek-mmap-input\"); close(fd); return 31; }",
+      "  if (size == 0) { close(fd); *total = 0; *checksum = 0; return 0; }",
+      "  void *mapped = mmap(NULL, (size_t)size, PROT_READ, MAP_PRIVATE, fd, 0);",
+      "  if (mapped == MAP_FAILED) { perror(\"mmap-input\"); close(fd); return 32; }",
+      "  const unsigned char *bytes = (const unsigned char *)mapped;",
+      "  *total = (unsigned long long)size;",
+      "  *checksum = 0;",
+      "  for (off_t i = 0; i < size; i++) *checksum += (unsigned long long)bytes[i];",
+      "  if (munmap(mapped, (size_t)size) != 0) { perror(\"munmap-input\"); close(fd); return 33; }",
+      "  if (close(fd) != 0) { perror(\"close-mmap-input\"); return 34; }",
+      "  return 0;",
+      "}",
+      "",
+      "int main(int argc, char **argv) {",
+      "  const char *path = argc > 1 ? argv[1] : \"/work/large-file-read.bin\";",
+      "  const char *mode = argc > 2 ? argv[2] : \"read\";",
+      "  unsigned long long total = 0;",
+      "  unsigned long long checksum = 0;",
+      "  if (strcmp(mode, \"fork\") == 0) {",
+      "    pid_t child = fork();",
+      "    if (child < 0) { perror(\"fork\"); return 40; }",
+      "    if (child == 0) {",
+      "      int rc = checksum_by_read(path, &total, &checksum);",
+      "      if (rc == 0) printf(\"large-file-fork-read bytes=%llu checksum=%llu\\n\", total, checksum);",
+      "      fflush(stdout);",
+      "      _exit(rc);",
+      "    }",
+      "    int status = 0;",
+      "    if (waitpid(child, &status, 0) < 0) { perror(\"waitpid\"); return 41; }",
+      "    if (!WIFEXITED(status)) return 42;",
+      "    return WEXITSTATUS(status);",
+      "  }",
+      "  if (strcmp(mode, \"mmap\") == 0) {",
+      "    int rc = checksum_by_mmap(path, &total, &checksum);",
+      "    if (rc == 0) printf(\"large-file-mmap-read bytes=%llu checksum=%llu\\n\", total, checksum);",
+      "    return rc;",
+      "  }",
+      "  int rc = checksum_by_read(path, &total, &checksum);",
+      "  if (rc == 0) printf(\"large-file-read bytes=%llu checksum=%llu\\n\", total, checksum);",
+      "  return rc;",
       "}",
       "",
     ].join("\n"));
@@ -202,6 +250,96 @@ test("large regular file read local gate: guest sequentially reads package-index
     console.log([
       `large regular file read gate durationMs=${Date.now() - startedMs}`,
       `spawnDurationMs=${spawnDurationMs}`,
+      `bytes=${input.length}`,
+      `input=${largeFileReadInput || "synthetic"}`,
+      `execution=${result.execution}`,
+    ].join(" "));
+  } finally {
+    runtime.destroy();
+  }
+}, 210_000);
+
+test("large regular file read local gate: fork child reads backing-store backed input", async () => {
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return;
+  }
+  const probeBytes = buildLargeFileReadProbe();
+  if (!probeBytes) {
+    return;
+  }
+  const input = buildInput();
+  const expected = checksum(input);
+
+  const runtime = await Runtime.create({
+    wasmBytes,
+    guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
+    maxProcessMemoryPages: 32768,
+  });
+  const startedMs = Date.now();
+  try {
+    const snapshot = buildSnapshotFromSources([
+      { kind: "inlineFile", guestPath: largeFilePath, data: input, mode: 0o644 },
+    ]);
+    await runtime.applyFsSnapshot(snapshot.entries ?? []);
+    const result = await spawnWithOutputAndStats(
+      runtime,
+      probeBytes,
+      ["/work/large-file-read", largeFilePath, "fork"],
+      ["LC_ALL=C", "LANG=C"],
+      180_000,
+      { cwd: "/", stdin: "closed" },
+    );
+    expect(result.exitCode, result.output + (result.debugInfo ? `\n${result.debugInfo}` : "")).toBe(0);
+    expect(result.output).toContain(`large-file-fork-read bytes=${input.length}`);
+    expect(result.output).toContain(`checksum=${expected.toString()}`);
+    console.log([
+      `large regular file fork read gate durationMs=${Date.now() - startedMs}`,
+      `bytes=${input.length}`,
+      `input=${largeFileReadInput || "synthetic"}`,
+      `execution=${result.execution}`,
+    ].join(" "));
+  } finally {
+    runtime.destroy();
+  }
+}, 210_000);
+
+test("large regular file read local gate: mmap reads backing-store backed input", async () => {
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return;
+  }
+  const probeBytes = buildLargeFileReadProbe();
+  if (!probeBytes) {
+    return;
+  }
+  const input = buildInput();
+  const expected = checksum(input);
+
+  const runtime = await Runtime.create({
+    wasmBytes,
+    guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
+    maxProcessMemoryPages: 32768,
+  });
+  const startedMs = Date.now();
+  try {
+    const snapshot = buildSnapshotFromSources([
+      { kind: "inlineFile", guestPath: largeFilePath, data: input, mode: 0o644 },
+    ]);
+    await runtime.applyFsSnapshot(snapshot.entries ?? []);
+    const result = await spawnWithOutputAndStats(
+      runtime,
+      probeBytes,
+      ["/work/large-file-read", largeFilePath, "mmap"],
+      ["LC_ALL=C", "LANG=C"],
+      180_000,
+      { cwd: "/", stdin: "closed" },
+    );
+    expect(result.exitCode, result.output + (result.debugInfo ? `\n${result.debugInfo}` : "")).toBe(0);
+    expect(result.output).toContain(`large-file-mmap-read bytes=${input.length}`);
+    expect(result.output).toContain(`checksum=${expected.toString()}`);
+    console.log([
+      `large regular file mmap read gate durationMs=${Date.now() - startedMs}`,
       `bytes=${input.length}`,
       `input=${largeFileReadInput || "synthetic"}`,
       `execution=${result.execution}`,
