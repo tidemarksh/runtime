@@ -190,13 +190,18 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     if (secondary) {
       return null;
     }
-    const pathPtr = processExports.thread_pending_fs_path_ptr?.(vmPtr) ?? 0;
+    const pathPtr = processExports.thread_pending_fs_path_ptr?.(vmPtr) ?? 0n;
     const pathLen = processExports.thread_pending_fs_path_len?.(vmPtr) ?? 0;
     const guestBase = processExports.thread_guest_base?.(vmPtr) ?? 0;
-    if (pathPtr === 0 || pathLen === 0 || guestBase === 0) {
+    const pathPtrBig = BigInt(pathPtr);
+    if (pathPtrBig === 0n || pathLen === 0 || guestBase === 0) {
       return null;
     }
-    const linearPtr = guestBase + pathPtr;
+    const linearPtrBig = BigInt(guestBase) + pathPtrBig;
+    if (linearPtrBig > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return null;
+    }
+    const linearPtr = Number(linearPtrBig);
     if (linearPtr + pathLen > processExports.memory.buffer.byteLength) {
       return null;
     }

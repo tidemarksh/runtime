@@ -39,6 +39,7 @@ function makeKernelExports(options: {
   resumeResult?: number;
   targetIno?: number;
   path?: string;
+  pathPtr?: bigint | number;
   absolutePath?: string;
   secondaryAbsolutePath?: string;
   fdEntries?: Array<{ fd: number; ofdId: number; fdFlags?: number }>;
@@ -53,13 +54,17 @@ function makeKernelExports(options: {
   const fdOfdIds = new Map((options.fdEntries ?? []).map((entry) => [entry.fd, entry.ofdId]));
   const fdFlags = new Map((options.fdEntries ?? []).map((entry) => [entry.fd, entry.fdFlags ?? 0]));
   const guestBase = 0x1000;
-  const pathPtr = 0x2000;
+  const pathPtr = options.pathPtr ?? 0x2000;
   const pathBytes = options.path ? new TextEncoder().encode(options.path) : null;
   const absolutePathBytes = options.absolutePath ? new TextEncoder().encode(options.absolutePath) : null;
   const secondaryAbsolutePathBytes = options.secondaryAbsolutePath
     ? new TextEncoder().encode(options.secondaryAbsolutePath)
     : null;
-  if (pathBytes) {
+  if (
+    pathBytes
+    && typeof pathPtr === "number"
+    && guestBase + pathPtr + pathBytes.length <= memory.buffer.byteLength
+  ) {
     new Uint8Array(memory.buffer).set(pathBytes, guestBase + pathPtr);
   }
   for (const ofdSlot of options.ofdSlots ?? []) {
@@ -670,6 +675,84 @@ test("processFs uses targeted metadata sync for absolute mkdir paths", () => {
   expect(result.memfsMutated).toBe(true);
   expect(syncedPaths).toEqual(["/work/cache"]);
   expect(copyMemfsCalls).toEqual([]);
+});
+
+test("processFs falls back to full sync for Memory64 path pointers outside JS safe integer range", () => {
+  const canonicalExports = makeKernelExports();
+  const processExports = makeKernelExports({
+    opcode: 6,
+    effects: 1 << 0,
+    resumeResult: 0,
+    path: "/work/cache",
+    pathPtr: BigInt(Number.MAX_SAFE_INTEGER) + 1n,
+  });
+  const processKernels = new Map<number, KernelExports>([[7, processExports]]);
+  const copyMemfsCalls: boolean[] = [];
+  const syncedPaths: string[] = [];
+  const fanoutCalls: boolean[] = [];
+
+  const processControl = createKernelWorkerProcessControl({
+    getCanonicalExports: () => canonicalExports,
+    setCanonicalExports: () => {},
+    getWasmModule: () => null,
+    setWasmModule: () => {},
+    getSabPageCache: () => new SharedArrayBuffer(65536),
+    setSabPageCache: () => {},
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    canonicalProcesses: new Map(),
+    seedEntries: new Map(),
+    getCanonicalNextPid: () => 3,
+    setCanonicalNextPid: () => {},
+    publishRootInode: () => {},
+    copyOfdState: () => {},
+    copyMemfsState: (_sourceExports, _sourceState, _targetExports, _targetState, options) => {
+      copyMemfsCalls.push(Boolean(options?.includeData));
+    },
+    rebuildPageCacheFromExports: () => {},
+    rebuildPageCacheFromCanonical: () => {},
+    syncPipeState: (_pid, kernelState) => kernelState,
+    syncEpollState: (_pid, kernelState) => kernelState,
+    syncSocketState: (_pid, kernelState) => kernelState,
+    copyCanonicalMemfsToProcess: () => {},
+    snapshotProcSelfExe: () => null,
+    restoreProcSelfExe: () => {},
+    composeProcessPipeUsed: () => 0n,
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    mergePipeSlotsFromCanonical: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+    }),
+    applyPipeControlState: () => {},
+    copyEpollState: () => {},
+    copySelectedEpollState: () => {},
+    copySocketState: () => {},
+    syncFileDataMutation: () => false,
+    syncFileDataMutationByPath: () => false,
+    syncMetadataMutation: (_sourceExports, path) => {
+      syncedPaths.push(path);
+      return true;
+    },
+    fanoutCanonicalMemfs: () => {
+      fanoutCalls.push(true);
+    },
+    fsEffectMemfsMutation: 1 << 0,
+    fsEffectSharedOfdState: 1 << 1,
+    fsEffectMemfsFileData: 1 << 2,
+    fsOpOpenAt: 3,
+    fsOpMkdir: 6,
+    fsOpUnlink: 7,
+  });
+
+  const result = processControl.processFs(7, 0x1234, makeKernelState());
+
+  expect(result.memfsMutated).toBe(true);
+  expect(syncedPaths).toEqual([]);
+  expect(copyMemfsCalls).toEqual([true]);
+  expect(fanoutCalls).toEqual([true]);
 });
 
 test("processFs uses targeted metadata sync for absolute tree mutations without an opcode allowlist", () => {

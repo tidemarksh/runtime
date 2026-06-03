@@ -306,7 +306,7 @@ export interface KernelExports {
   thread_take_completed_pipe_read_len?(vm_ptr: number): number;
   thread_pending_fs_target_ino(vm_ptr: number): number;
   thread_pending_fs_opcode(vm_ptr: number): number;
-  thread_pending_fs_path_ptr?(vm_ptr: number): number;
+  thread_pending_fs_path_ptr?(vm_ptr: number): bigint | number;
   thread_pending_fs_path_len?(vm_ptr: number): number;
   thread_pending_fs_absolute_path?(vm_ptr: number, buf_ptr: number, buf_len: number): bigint;
   thread_pending_fs_secondary_absolute_path?(vm_ptr: number, buf_ptr: number, buf_len: number): bigint;
