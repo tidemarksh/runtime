@@ -11,6 +11,7 @@ export interface KernelEnvImports {
 
 export interface KernelEnvOptions {
   sabPageCache?: SharedArrayBuffer | null;
+  readFileDataByInode?: (ino: number, offset: number, length: number) => Uint8Array | null;
 }
 
 export function createKernelEnv(
@@ -18,6 +19,7 @@ export function createKernelEnv(
   options: KernelEnvOptions = {},
 ): KernelEnvImports {
   const sabPageCache = options.sabPageCache ?? null;
+  const readFileDataByInode = options.readFileDataByInode;
   return {
     memory,
     tidemark_memory_atomic_notify(ptr, maxWake) {
@@ -31,12 +33,21 @@ export function createKernelEnv(
       if (!meta) {
         return -2n;
       }
-      if (meta.dataOff === 0 && meta.size > 0) {
-        return -2n;
-      }
       const offsetNumber = Number(offset);
       if (!Number.isFinite(offsetNumber) || offsetNumber < 0 || offsetNumber >= meta.size) {
         return 0n;
+      }
+      if (dstLen <= 0) {
+        return 0n;
+      }
+      if (meta.dataOff === 0 && meta.size > 0) {
+        const backing = readFileDataByInode?.(ino, offsetNumber, dstLen);
+        if (!backing) {
+          return -2n;
+        }
+        const readLen = Math.min(backing.length, dstLen);
+        new Uint8Array(memory.buffer, dstPtr, readLen).set(backing.subarray(0, readLen));
+        return BigInt(readLen);
       }
       const readLen = Math.min(dstLen, meta.size - offsetNumber);
       const source = new Uint8Array(sabPageCache, meta.dataOff + offsetNumber, readLen);

@@ -741,6 +741,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     readFile,
     readlink,
     readdir,
+    readBackingFileByInode,
     rebuildPageCacheFromExports,
     rebuildPageCacheFromCanonical,
     resolvePath,

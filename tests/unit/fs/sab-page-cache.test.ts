@@ -54,6 +54,61 @@ test("page-cache read/stat report miss when inode metadata is out of cache bound
   expect(env.tidemark_page_cache_stat(2, 16)).toBe(0);
 });
 
+test("page-cache read can use kernel-worker backing data when resident bytes are absent", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 128);
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const name = new TextEncoder().encode("external");
+  const backing = new TextEncoder().encode("abcdef");
+  const calls: Array<[number, number, number]> = [];
+
+  publishInode(sab, 2, {
+    mode: 0o100644,
+    size: backing.length,
+    parentIno: 1,
+    name,
+    nextSibling: 0,
+  }, null);
+
+  const env = createKernelEnv(memory, {
+    sabPageCache: sab,
+    readFileDataByInode: (ino, offset, length) => {
+      calls.push([ino, offset, length]);
+      return backing.subarray(offset, Math.min(backing.length, offset + length));
+    },
+  });
+
+  expect(env.tidemark_page_cache_read(2, 2n, 32, 3)).toBe(3n);
+  expect(calls).toEqual([[2, 2, 3]]);
+  expect(Array.from(new Uint8Array(memory.buffer, 32, 3))).toEqual(Array.from(backing.subarray(2, 5)));
+});
+
+test("page-cache zero-length read on kernel-worker backing data returns zero", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 128);
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const name = new TextEncoder().encode("external");
+  const backing = new TextEncoder().encode("abcdef");
+  let calls = 0;
+
+  publishInode(sab, 2, {
+    mode: 0o100644,
+    size: backing.length,
+    parentIno: 1,
+    name,
+    nextSibling: 0,
+  }, null);
+
+  const env = createKernelEnv(memory, {
+    sabPageCache: sab,
+    readFileDataByInode: () => {
+      calls += 1;
+      return backing;
+    },
+  });
+
+  expect(env.tidemark_page_cache_read(2, 0n, 32, 0)).toBe(0n);
+  expect(calls).toBe(0);
+});
+
 test("page-cache supports kernel-sized high inode numbers", () => {
   const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 64);
   const ino = MAX_INODES - 1;

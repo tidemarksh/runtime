@@ -92,6 +92,7 @@ interface KernelWorkerProcessControlDeps {
   rebuildPageCacheFromExports(sourceExports: KernelExports): void;
   rebuildPageCacheFromCanonical(): void;
   restorePublishedRegularFileDataFromPageCache?(targetExports?: KernelExports): void;
+  readBackingFileByInode(ino: number): Uint8Array | null;
   syncPipeState(
     pid: number,
     kernelState: KernelRuntimeState,
@@ -229,6 +230,14 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     }
     deps.rebuildPageCacheFromCanonical();
     deps.fanoutCanonicalMemfs();
+  }
+
+  function readBackingFileRange(ino: number, offset: number, length: number): Uint8Array | null {
+    const backing = deps.readBackingFileByInode(ino);
+    if (!backing || length <= 0 || offset < 0 || offset >= backing.length) {
+      return null;
+    }
+    return backing.subarray(offset, Math.min(backing.length, offset + length));
   }
 
   function readPendingFsMutationContext(
@@ -375,6 +384,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       maximumPages: boundedMaxMemoryPages,
     }, {
       sabPageCache: pageCache,
+      readFileDataByInode: readBackingFileRange,
     });
     const nextExports = instance.exports as unknown as KernelExports;
     configureKernelInstanceStack(nextExports, KERNEL_WORKER_STACK_SLOT);
@@ -428,7 +438,10 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       { includeMemfsData: seedMemfsMode === "none" },
     );
     const instance = await WebAssembly.instantiate(wasmModule, {
-      env: createKernelEnv(memory, { sabPageCache: deps.getSabPageCache() }),
+      env: createKernelEnv(memory, {
+        sabPageCache: deps.getSabPageCache(),
+        readFileDataByInode: readBackingFileRange,
+      }),
     });
     // Registering a process must not mutate the caller-owned shared memory.
     // Browsers can replay data segments on instantiation. Restore the live
