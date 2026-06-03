@@ -307,6 +307,76 @@ test("syncForkSharedState restores preserved published file data only to canonic
   expect(sourceExports.opLog).not.toContain("source:write:3:4");
 });
 
+test("syncForkSharedState restores preserved published file data to target process fanout", () => {
+  const publishedData = new TextEncoder().encode("node");
+  const canonicalExports = makeKernelExports("canonical", new Map([[3, publishedData]]));
+  const sourceExports = makeKernelExports("source", new Map([[3, new Uint8Array(publishedData.byteLength)]]));
+  const targetExports = makeKernelExports("target", new Map([[3, new Uint8Array(publishedData.byteLength)]]));
+  const processKernels = new Map<number, KernelExports>([
+    [1, sourceExports],
+    [2, targetExports],
+  ]);
+  const restorePublishedRegularFileDataFromPageCache = vi.fn();
+
+  const sync = createKernelWorkerForkSharedStateSync({
+    getCanonicalExports: () => canonicalExports,
+    getCanonicalProcessVmPtr: () => 0x1234,
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    requireProcessKernel: (pid) => processKernels.get(pid)!,
+    applySelectedOfdSnapshots: () => {},
+    collectProcessHeldOfdRefcounts: () => new Int32Array(32),
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    collectProcessPrivatePipeSourceModes: () => new Map(),
+    collectProcessPipeSlotModes: () => new Map(),
+    collectProcessPrivatePipeSlots: () => new Set(),
+    collectCanonicalManagedPipeSlots: () => [],
+    copySelectedOfdState: () => {},
+    copySelectedEpollState: () => {},
+    clearSelectedOfdState: () => {},
+    copyMemfsState: () => {},
+    clearMemfsState: () => {},
+    restorePublishedRegularFileDataFromPageCache,
+    reconcileCanonicalOfdRefcounts: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+      managedPipeSlots: [],
+    }),
+    collectPipeSlotsForOfdIds: () => [],
+    copySelectedPipeSlots: () => {},
+    clearSelectedPipeSlots: () => {},
+    mergePipeSlotsFromProcess: () => {},
+    mergePipeSlotsFromCanonical: () => {},
+    applyPipeControlState: () => {},
+    composeProcessPipeUsed: () => 0n,
+    copyCanonicalMemfsToProcess: () => {},
+    snapshotProcSelfExe: () => null,
+    restoreProcSelfExe: () => {},
+    copyEpollState: () => {},
+    copySocketState: () => {},
+  });
+
+  sync.syncForkSharedState(
+    1,
+    0x1234,
+    [2],
+    [{ pid: 2, vmPtr: 0x5678, kernelState: makeKernelState() }],
+    [],
+    [] as KernelWorkerOfdSlotSnapshot[],
+    [],
+    true,
+    false,
+    true,
+    makeKernelState(),
+  );
+
+  expect(restorePublishedRegularFileDataFromPageCache).toHaveBeenCalledWith();
+  expect(restorePublishedRegularFileDataFromPageCache).toHaveBeenCalledWith(targetExports);
+});
+
 test("syncForkSharedState filters private fd entries outside tracked OFDs", () => {
   const canonicalExports = makeKernelExports();
   const sourceExports = makeKernelExports();

@@ -307,6 +307,9 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
           includeData: true,
         });
         deps.restoreProcSelfExe(targetExports, targetProcSelfExe);
+        if (preservePublishedRegularFileData) {
+          deps.restorePublishedRegularFileDataFromPageCache?.(targetExports);
+        }
         if (FORK_SHARED_MEMFS_DEBUG_ENABLED) {
           debug.push([
             `phase=after-canonical-to-target-${targetPid}`,
