@@ -497,7 +497,7 @@ test("plain fork preserves page-cache-backed large snapshot file reads", async (
 
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: 128 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 128 * 1024 * 1024,
     maxProcessMemoryPages: 8192,
   });
   try {
@@ -549,7 +549,7 @@ test("dynamic fork large regular-file write preserves loader bytes", async () =>
 
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: 256 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
     maxProcessMemoryPages: 16384,
   });
   try {
@@ -611,7 +611,7 @@ test("dynamic exec fanout large regular-file write preserves loader bytes", asyn
 
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: 256 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
     maxProcessMemoryPages: 16384,
   });
   try {
@@ -686,7 +686,7 @@ test("dynamic plain fork preserves page-cache-backed large snapshot file reads",
 
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: 256 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
     maxProcessMemoryPages: 16384,
   });
   try {

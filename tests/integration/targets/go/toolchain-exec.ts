@@ -3,7 +3,7 @@ import {
   GO_BINARY_PATH,
   GO_BUILD_EXPERIMENT,
   GO_EXEC_CAPTURE_HELPER_PATH,
-  GO_RUNTIME_RAM_SIZE,
+  GO_RUNTIME_GUEST_MEMORY_POLICY_LIMIT_BYTES,
   GO_TOOLCHAIN_DIR,
 } from "./support.js";
 
@@ -26,7 +26,7 @@ function goHelperExecEntry(
       "TMPDIR=/tmp",
     ],
     timeoutMs: 15_000,
-    ramSize: 512 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
     snapshotSources: [
       { kind: "tree", hostPath: `${GO_TOOLCHAIN_DIR}/bin`, guestPath: "/usr/local/go/bin" },
       { kind: "tree", hostPath: `${GO_TOOLCHAIN_DIR}/pkg`, guestPath: "/usr/local/go/pkg" },
@@ -57,7 +57,7 @@ export const goCompileVersionToolchainEntry: ToolchainExecEntry = {
     "GOTELEMETRYDIR=/dev/null",
   ],
   timeoutMs: 10_000,
-  ramSize: GO_RUNTIME_RAM_SIZE,
+  guestMemoryPolicyLimitBytes: GO_RUNTIME_GUEST_MEMORY_POLICY_LIMIT_BYTES,
   snapshotSources: [
     { kind: "tree", hostPath: `${GO_TOOLCHAIN_DIR}/pkg/tool/linux_riscv64`, guestPath: "/usr/local/go/pkg/tool/linux_riscv64" },
     { kind: "inlineFile", guestPath: "/usr/local/go/go.env", data: "GOTOOLCHAIN=local\n" },
@@ -90,7 +90,7 @@ export const goBuildToolchainEntry: ToolchainExecEntry = {
     ...(GO_BUILD_EXPERIMENT ? [`GOEXPERIMENT=${GO_BUILD_EXPERIMENT}`] : []),
   ],
   timeoutMs: 30_000,
-  ramSize: GO_RUNTIME_RAM_SIZE,
+  guestMemoryPolicyLimitBytes: GO_RUNTIME_GUEST_MEMORY_POLICY_LIMIT_BYTES,
   snapshotSources: [
     { kind: "tree", hostPath: `${GO_TOOLCHAIN_DIR}/bin`, guestPath: "/usr/local/go/bin" },
     { kind: "tree", hostPath: `${GO_TOOLCHAIN_DIR}/pkg`, guestPath: "/usr/local/go/pkg" },
@@ -130,7 +130,7 @@ export const goToolCompileVersionToolchainEntry: ToolchainExecEntry = {
     "GOTELEMETRYDIR=/dev/null",
   ],
   timeoutMs: 15_000,
-  ramSize: GO_RUNTIME_RAM_SIZE,
+  guestMemoryPolicyLimitBytes: GO_RUNTIME_GUEST_MEMORY_POLICY_LIMIT_BYTES,
   snapshotSources: [
     { kind: "tree", hostPath: `${GO_TOOLCHAIN_DIR}/bin`, guestPath: "/usr/local/go/bin" },
     { kind: "tree", hostPath: `${GO_TOOLCHAIN_DIR}/pkg`, guestPath: "/usr/local/go/pkg" },

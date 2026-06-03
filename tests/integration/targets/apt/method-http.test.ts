@@ -2973,7 +2973,7 @@ function compactAptExecutionStats(
     cmd: proc.cmd.split(/\s+/).slice(0, 3).join(" ").slice(0, 96),
     running: proc.running,
     memoryBytes: proc.memoryBytes,
-    ramSize: proc.ramSize,
+    guestMemoryPolicyLimitBytes: proc.guestMemoryPolicyLimitBytes,
     maxMemoryBytes: proc.maxMemoryBytes,
     forkMaxMemoryBytes: proc.forkMaxMemoryBytes,
     guestBase: proc.guestBase,
@@ -3416,7 +3416,7 @@ async function prepareMethodRuntime(
 
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: 512 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
     maxProcessMemoryPages: 32768,
     networkBridge,
   });
@@ -3449,7 +3449,7 @@ async function prepareSqvRuntime(): Promise<{
 
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: 512 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
     maxProcessMemoryPages: 32768,
   });
 
@@ -3488,7 +3488,7 @@ async function prepareHttpThenSqvRuntime(networkBridge: RuntimeNetworkBridge): P
 
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: 512 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
     maxProcessMemoryPages: 32768,
     networkBridge,
   });
@@ -3523,7 +3523,7 @@ async function prepareAptGetRuntime(networkBridge: RuntimeNetworkBridge): Promis
 
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: 512 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
     maxProcessMemoryPages: 32768,
     networkBridge,
   });
@@ -5789,7 +5789,7 @@ test("apt method fd lifecycle local gate: fork/exec socket open fcntl", async ()
   const bridgeEvents: string[] = [];
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: 256 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
     maxProcessMemoryPages: 16384,
     networkBridge: createAsyncMethodNetworkBridge(guestRequests, bridgeEvents),
   });

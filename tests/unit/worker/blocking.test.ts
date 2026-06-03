@@ -231,7 +231,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_restore_vfork_parent_without_cleanup: () => {},
     thread_complete_execve_handoff: () => 0n,
     thread_spawn_from_clone: () => 0x2000,
-    thread_set_guest_ram_limit: () => {},
+    thread_set_guest_memory_policy_limit: () => {},
     thread_process_thread_count: () => 1,
     thread_process_ptr: () => 0x5000,
     process_thread_tid: (_vmPtr, slot) => slot === 0 ? 1 : 0,

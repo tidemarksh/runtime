@@ -95,7 +95,7 @@ function makeHandle(
     pid: 1,
     parentPid: null,
     vmPtr: 0x1234,
-    ramSize: 0,
+    guestMemoryPolicyLimitBytes: 0,
     guestBase: 0,
     worker,
     memory: new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true }),

@@ -12,7 +12,7 @@ export const phpDynamicStartupEntry: DynamicStartupEntry = {
   argv: ["/usr/bin/php8.4", "--version"],
   env: [],
   timeoutMs: 5_000,
-  ramSize: 256 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
   snapshotSources: [
     { kind: "tree", hostPath: resolve(runtimeDir, "usr/bin"), guestPath: "/usr/bin" },
     { kind: "tree", hostPath: resolve(runtimeDir, "usr/lib/php"), guestPath: "/usr/lib/php" },

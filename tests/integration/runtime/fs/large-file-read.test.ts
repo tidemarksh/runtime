@@ -177,7 +177,7 @@ test("large regular file read local gate: guest sequentially reads package-index
 
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: 512 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
     maxProcessMemoryPages: 32768,
   });
   const startedMs = Date.now();

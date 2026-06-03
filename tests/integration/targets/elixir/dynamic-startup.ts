@@ -23,7 +23,7 @@ export const elixirDynamicStartupEntry: DynamicStartupEntry = {
   argv: ["/bin/sh", "/usr/bin/elixir", "--version"],
   env: ["PATH=/bin:/usr/bin", "HOME=/tmp"],
   timeoutMs: 5_000,
-  ramSize: 512 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
   snapshotSources: [
     {
       kind: "fileCopies",

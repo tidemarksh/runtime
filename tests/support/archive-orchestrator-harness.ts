@@ -36,7 +36,7 @@ export interface ArchiveOrchestratorEntry {
   id: string;
   targetClass: string;
   workflowKind: string;
-  ramSize: number;
+  guestMemoryPolicyLimitBytes: number;
   snapshotSources: readonly SnapshotSource[];
   steps: readonly ArchiveOrchestratorStep[];
   artifactChecks?: readonly ArchiveOrchestratorArtifactCheck[];
@@ -68,7 +68,7 @@ export async function prepareArchiveOrchestratorRuntime(
   }
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: entry.ramSize,
+    guestMemoryPolicyLimitBytes: entry.guestMemoryPolicyLimitBytes,
   });
   try {
     const snapshot = await applySnapshotSourcesToRuntime(runtime, entry.snapshotSources, {

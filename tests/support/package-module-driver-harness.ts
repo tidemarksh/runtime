@@ -30,7 +30,7 @@ export interface PackageModuleDriverEntry {
   env: readonly string[];
   cwd?: string;
   timeoutMs: number;
-  ramSize: number;
+  guestMemoryPolicyLimitBytes: number;
   snapshotSources: readonly SnapshotSource[];
   expectedDriverSubstrings?: readonly string[];
   forbiddenDriverSubstrings?: readonly string[];
@@ -61,7 +61,7 @@ export async function preparePackageModuleDriverRuntime(
   }
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: entry.ramSize,
+    guestMemoryPolicyLimitBytes: entry.guestMemoryPolicyLimitBytes,
   });
   try {
     const snapshot = await applySnapshotSourcesToRuntime(runtime, entry.snapshotSources, {

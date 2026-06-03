@@ -107,7 +107,7 @@ async function runDynamicSystemProbe(probeBytes: Uint8Array, guestPath: string) 
   if (!glibcSysrootDir || !existsSync(glibcSysrootDir)) {
     return logSkip(`missing glibc sysroot: ${glibcSysrootDir || "set TIDEMARK_TEST_GLIBC_SYSROOT_DIR"}`);
   }
-  const runtime = await Runtime.create({ wasmBytes, ramSize: 512 * 1024 * 1024 });
+  const runtime = await Runtime.create({ wasmBytes, guestMemoryPolicyLimitBytes: 512 * 1024 * 1024 });
   try {
     await runtime.fs.mkdir("/bin", 0o755).catch(() => {});
     await runtime.fs.mkdir("/lib", 0o755).catch(() => {});

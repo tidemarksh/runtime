@@ -11,7 +11,7 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
     pid: 1,
     parentPid: null,
     vmPtr: 0x1000,
-    ramSize: 0,
+    guestMemoryPolicyLimitBytes: 0,
     maxMemoryPages: 0,
     forkMaxMemoryPages: 0,
     guestBase: 0,

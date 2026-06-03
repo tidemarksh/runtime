@@ -27,7 +27,7 @@ test("node shell-wrapper exec chain: /bin/sh wrapper -> /bin/node --help", async
 
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: 256 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
     maxKernelMemoryPages: 7168,
     maxProcessMemoryPages: 32768,
     maxForkMemoryPages: 40960,

@@ -44,7 +44,7 @@ export const haskellCompileToolchainEntry: ToolchainExecEntry = {
     "LD_LIBRARY_PATH=/usr/lib/riscv64-linux-gnu:/usr/lib:/lib",
   ],
   timeoutMs: 30_000,
-  ramSize: 1024 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: 1024 * 1024 * 1024,
   snapshotSources: haskellSnapshotSources([
     {
       kind: "inlineFile",

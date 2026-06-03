@@ -13,7 +13,7 @@ export const pythonDynamicStartupEntry: DynamicStartupEntry = {
   argv: ["/python/bin/python3.12", "--version"],
   env: [],
   timeoutMs: 5_000,
-  ramSize: 256 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
   snapshotSources: [
     { kind: "tree", hostPath: resolve(runtimeDir, "bin"), guestPath: "/python/bin" },
     {

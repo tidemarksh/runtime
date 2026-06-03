@@ -176,7 +176,7 @@ function makeHandle(kernel: FakeMemfsKernel): ProcessHandle {
     pid: 1,
     parentPid: null,
     vmPtr: 0x1234,
-    ramSize: 0,
+    guestMemoryPolicyLimitBytes: 0,
     guestBase: 0,
     worker: {} as Worker,
     memory: kernel.memory,

@@ -144,7 +144,7 @@ test("glibc allocator/brk local gate: dynamic ELF malloc/realloc/free progress",
 
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: 128 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 128 * 1024 * 1024,
     maxProcessMemoryPages: 32768,
   });
   try {

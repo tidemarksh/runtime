@@ -37,8 +37,7 @@ export interface ToolchainExecEntry {
   env: readonly string[];
   cwd?: string;
   timeoutMs: number;
-  ramSize: number;
-  guestMemoryPolicyLimitBytes?: number;
+  guestMemoryPolicyLimitBytes: number;
   pageCacheDataCapacityBytes?: number;
   snapshotSources: readonly SnapshotSource[];
   expectedDriverSubstrings?: readonly string[];
@@ -92,7 +91,6 @@ export async function prepareToolchainExecRuntime(
 
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: entry.ramSize,
     guestMemoryPolicyLimitBytes: entry.guestMemoryPolicyLimitBytes,
     pageCacheDataCapacityBytes: entry.pageCacheDataCapacityBytes,
   });

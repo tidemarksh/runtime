@@ -91,7 +91,7 @@ async function runProcessCreate(
     return null;
   }
   const { exports, memory } = loaded;
-  const ramSize = entry.ramSize;
+  const guestMemoryPolicyLimitBytes = entry.guestMemoryPolicyLimitBytes;
   const snapshot = preloadMode === "minimal"
     ? minimalInterpSnapshot(entry, guestInterpreterPath)
     : buildDynamicStartupSnapshot(entry);
@@ -118,7 +118,7 @@ async function runProcessCreate(
     exports.process_push_env(scratchPtr);
     scratchPtr += bytes.length + 16;
   }
-  const vmPtr = createProcessWithPolicy(exports, elfOffset, elfData.length, ramSize, 1024 * 1024);
+  const vmPtr = createProcessWithPolicy(exports, elfOffset, elfData.length, guestMemoryPolicyLimitBytes, 1024 * 1024);
   return {
     vmPtr,
     lastError: exports.process_create_last_error?.() ?? null,

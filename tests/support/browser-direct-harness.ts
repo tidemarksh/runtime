@@ -30,7 +30,7 @@ export interface BrowserDirectPrepareShellSpec {
 }
 
 export interface BrowserDirectRuntimeOptions {
-  ramSize?: number;
+  guestMemoryPolicyLimitBytes?: number;
   maxKernelMemoryPages?: number;
   maxProcessMemoryPages?: number;
   maxForkMemoryPages?: number;

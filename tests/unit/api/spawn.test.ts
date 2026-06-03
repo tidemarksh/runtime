@@ -18,7 +18,7 @@ test("Runtime.spawn preserves seeded files in process MemFS", async () => {
   try {
     runtime = await Runtime.create({
       wasmBytes,
-      ramSize: 64 * 1024 * 1024,
+      guestMemoryPolicyLimitBytes: 64 * 1024 * 1024,
     });
 
     await runtime.fs.mkdir("/work", 0o755);

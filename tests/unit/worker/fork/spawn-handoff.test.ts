@@ -57,7 +57,7 @@ function makeHandle(kind: number, childPid = 77): ProcessHandle {
       thread_spawn_path: () => 0n,
       thread_spawn_argv: () => 0n,
       thread_spawn_envp: () => 0n,
-      thread_spawn_ram_size: () => 0,
+      thread_spawn_guest_memory_policy_limit: () => 0,
       thread_clear_spawn_handoff: vi.fn(),
     },
   } as unknown as ProcessHandle;

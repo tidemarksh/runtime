@@ -19,7 +19,7 @@ export const rScriptRuntimeEntry: ScriptRuntimeEntry = {
     "R_DOC_DIR=/usr/share/R/doc",
   ],
   timeoutMs: 10_000,
-  ramSize: 512 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
   snapshotSources: [
     {
       kind: "fileCopies",

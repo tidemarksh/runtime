@@ -354,7 +354,7 @@ test("Runtime interactive shell preserves absolute-path exec with demo-style env
     return;
   }
 
-  const runtime = await Runtime.create({ wasmBytes, ramSize: 384 * 1024 * 1024 });
+  const runtime = await Runtime.create({ wasmBytes, guestMemoryPolicyLimitBytes: 384 * 1024 * 1024 });
   try {
     await runtime.fs.mkdir("/bin", 0o755).catch(() => {});
     await runtime.fs.mkdir("/root", 0o755).catch(() => {});

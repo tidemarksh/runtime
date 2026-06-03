@@ -13,7 +13,7 @@ export const javaDynamicStartupEntry: DynamicStartupEntry = {
   argv: ["/jdk/bin/java", "-Xshare:off", "-XX:CompressedClassSpaceSize=64m", "-version"],
   env: [],
   timeoutMs: 20_000,
-  ramSize: 1024 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: 1024 * 1024 * 1024,
   snapshotSources: makeJavaRuntimeSnapshotSources(),
   expectedSubstrings: ['openjdk version "25.0.2"'],
 };

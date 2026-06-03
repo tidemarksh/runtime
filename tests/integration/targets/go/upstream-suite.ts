@@ -27,7 +27,7 @@ function goUpstreamSuiteEntry(
     ],
     cwd: "/usr/local/go/src",
     timeoutMs,
-    ramSize: 1024 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 1024 * 1024 * 1024,
     snapshotSources: [
       { kind: "tree", hostPath: `${GO_TOOLCHAIN_DIR}/bin`, guestPath: "/usr/local/go/bin" },
       { kind: "tree", hostPath: `${GO_TOOLCHAIN_DIR}/pkg`, guestPath: "/usr/local/go/pkg" },

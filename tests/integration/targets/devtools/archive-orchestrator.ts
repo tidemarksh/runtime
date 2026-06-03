@@ -59,7 +59,7 @@ export const gzipRoundtripArchiveEntry: ArchiveOrchestratorEntry = {
   id: "gzip-roundtrip",
   targetClass: "major developer tools",
   workflowKind: "archive / compression roundtrip",
-  ramSize: 512 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
   snapshotSources: devtoolsSnapshotSources([
     { kind: "file", hostPath: resolve(toolsetDir, "usr/bin/gzip"), guestPath: "/usr/bin/gzip", mode: 0o755 },
     {
@@ -94,7 +94,7 @@ export const xzRoundtripArchiveEntry: ArchiveOrchestratorEntry = {
   id: "xz-roundtrip",
   targetClass: "major developer tools",
   workflowKind: "archive / compression roundtrip",
-  ramSize: 512 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
   snapshotSources: devtoolsSnapshotSources([
     { kind: "file", hostPath: resolve(toolsetDir, "usr/bin/xz"), guestPath: "/usr/bin/xz", mode: 0o755 },
     {
@@ -131,7 +131,7 @@ export const cmakeScriptArchiveEntry: ArchiveOrchestratorEntry = {
   id: "cmake-script-orchestrator",
   targetClass: "major developer tools",
   workflowKind: "build orchestrator / generator",
-  ramSize: 512 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
   snapshotSources: devtoolsSnapshotSources([
     { kind: "file", hostPath: resolve(toolsetDir, "usr/bin/cmake"), guestPath: "/usr/bin/cmake", mode: 0o755 },
     { kind: "tree", hostPath: resolve(toolsetDir, "usr/share/cmake"), guestPath: "/usr/share/cmake" },

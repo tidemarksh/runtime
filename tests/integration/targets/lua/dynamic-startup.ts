@@ -12,7 +12,7 @@ export const luaDynamicStartupEntry: DynamicStartupEntry = {
   argv: ["/usr/bin/lua5.4", "-v"],
   env: [],
   timeoutMs: 5_000,
-  ramSize: 256 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
   snapshotSources: [
     { kind: "tree", hostPath: resolve(runtimeDir, "usr/bin"), guestPath: "/usr/bin" },
     { kind: "tree", hostPath: resolve(runtimeDir, "usr/lib/riscv64-linux-gnu"), guestPath: "/usr/lib/riscv64-linux-gnu" },

@@ -375,12 +375,12 @@ test("kernel_init + process_create + thread_step runs to exit", async () => {
   exports.kernel_init(heapBase1);
 
   // Copy ELF to WASM memory (re-read buffer after potential grow)
-  const ramSize = memory.buffer.byteLength;
-  const elfOffset = ramSize - 256 * 1024;
+  const guestMemoryPolicyLimitBytes = memory.buffer.byteLength;
+  const elfOffset = guestMemoryPolicyLimitBytes - 256 * 1024;
   const memView = new Uint8Array(memory.buffer);
   memView.set(elfData, elfOffset);
 
-  const vmPtr = createProcessWithPolicy(exports, elfOffset, elfData.length, ramSize, 1024 * 1024);
+  const vmPtr = createProcessWithPolicy(exports, elfOffset, elfData.length, guestMemoryPolicyLimitBytes, 1024 * 1024);
   expect(vmPtr).toBeGreaterThan(0);
 
   const STATUS_OK = exports.abi_status_ok();
@@ -419,10 +419,10 @@ test("detached kernel instance completes staged execve handoff", async () => {
   owner.kernel_init(heapBase);
   installExecutableFile(owner, "child", elfData);
 
-  const ramSize = memory.buffer.byteLength;
-  const elfOffset = ramSize - 256 * 1024;
+  const guestMemoryPolicyLimitBytes = memory.buffer.byteLength;
+  const elfOffset = guestMemoryPolicyLimitBytes - 256 * 1024;
   new Uint8Array(memory.buffer).set(elfData, elfOffset);
-  const vmPtr = createProcessWithPolicy(owner, elfOffset, elfData.length, ramSize, 1024 * 1024);
+  const vmPtr = createProcessWithPolicy(owner, elfOffset, elfData.length, guestMemoryPolicyLimitBytes, 1024 * 1024);
   expect(vmPtr).toBeGreaterThan(0);
 
   const ownerState = readKernelRuntimeState(owner);
@@ -462,7 +462,7 @@ test("detached kernel instance completes staged execve handoff", async () => {
     staged.pathPtr,
     staged.argvPtr,
     staged.envpPtr,
-    ramSize,
+    guestMemoryPolicyLimitBytes,
   );
 
   expect(child.thread_complete_execve_handoff(vmPtr)).toBe(0n);
@@ -488,10 +488,10 @@ test("shared-memory dual kernel instances preserve parent clone return after chi
 
   const heapBase = (owner as any).__heap_base?.value ?? 0x200000;
   owner.kernel_init(heapBase);
-  const ramSize = memory.buffer.byteLength;
-  const elfOffset = ramSize - 256 * 1024;
+  const guestMemoryPolicyLimitBytes = memory.buffer.byteLength;
+  const elfOffset = guestMemoryPolicyLimitBytes - 256 * 1024;
   new Uint8Array(memory.buffer).set(elfData, elfOffset);
-  const vmPtr = createProcessWithPolicy(owner, elfOffset, elfData.length, ramSize, 1024 * 1024);
+  const vmPtr = createProcessWithPolicy(owner, elfOffset, elfData.length, guestMemoryPolicyLimitBytes, 1024 * 1024);
   expect(vmPtr).toBeGreaterThan(0);
 
   attachKernelRuntimeState(child, readKernelRuntimeState(owner));
@@ -588,10 +588,10 @@ test("shared-memory dual kernel instances materialize fs-ring openat fd table en
 
   const heapBase = (owner as any).__heap_base?.value ?? 0x200000;
   owner.kernel_init(heapBase);
-  const ramSize = memory.buffer.byteLength;
-  const elfOffset = ramSize - 256 * 1024;
+  const guestMemoryPolicyLimitBytes = memory.buffer.byteLength;
+  const elfOffset = guestMemoryPolicyLimitBytes - 256 * 1024;
   new Uint8Array(memory.buffer).set(elfData, elfOffset);
-  const vmPtr = createProcessWithPolicy(owner, elfOffset, elfData.length, ramSize, 1024 * 1024);
+  const vmPtr = createProcessWithPolicy(owner, elfOffset, elfData.length, guestMemoryPolicyLimitBytes, 1024 * 1024);
   expect(vmPtr).toBeGreaterThan(0);
   attachKernelRuntimeState(worker, readKernelRuntimeState(owner));
 
@@ -648,10 +648,10 @@ test("shared imported memory materializes a top-of-limit prot-none page without 
   const heapBase = (exports as any).__heap_base?.value ?? 0x200000;
   exports.kernel_init(heapBase);
 
-  const ramSize = wasmMemory.buffer.byteLength;
-  const elfOffset = ramSize - 256 * 1024;
+  const guestMemoryPolicyLimitBytes = wasmMemory.buffer.byteLength;
+  const elfOffset = guestMemoryPolicyLimitBytes - 256 * 1024;
   new Uint8Array(wasmMemory.buffer).set(elfData, elfOffset);
-  const vmPtr = createProcessWithPolicy(exports, elfOffset, elfData.length, ramSize, 1024 * 1024);
+  const vmPtr = createProcessWithPolicy(exports, elfOffset, elfData.length, guestMemoryPolicyLimitBytes, 1024 * 1024);
   expect(vmPtr).toBeGreaterThan(0);
 
   const guestBase = exports.thread_guest_base?.(vmPtr) ?? 0;
@@ -732,10 +732,10 @@ test("shared-memory dual kernel instances preserve parent context across clone a
 
   const heapBase = (owner as any).__heap_base?.value ?? 0x200000;
   owner.kernel_init(heapBase);
-  const ramSize = memory.buffer.byteLength;
-  const elfOffset = ramSize - 256 * 1024;
+  const guestMemoryPolicyLimitBytes = memory.buffer.byteLength;
+  const elfOffset = guestMemoryPolicyLimitBytes - 256 * 1024;
   new Uint8Array(memory.buffer).set(elfData, elfOffset);
-  const vmPtr = createProcessWithPolicy(owner, elfOffset, elfData.length, ramSize, 1024 * 1024);
+  const vmPtr = createProcessWithPolicy(owner, elfOffset, elfData.length, guestMemoryPolicyLimitBytes, 1024 * 1024);
   expect(vmPtr).toBeGreaterThan(0);
 
   attachKernelRuntimeState(child, readKernelRuntimeState(owner));
@@ -873,10 +873,10 @@ test("shared-memory dual kernel instances preserve parent context across clone, 
 
   const heapBase = (owner as any).__heap_base?.value ?? 0x200000;
   owner.kernel_init(heapBase);
-  const ramSize = memory.buffer.byteLength;
-  const elfOffset = ramSize - 256 * 1024;
+  const guestMemoryPolicyLimitBytes = memory.buffer.byteLength;
+  const elfOffset = guestMemoryPolicyLimitBytes - 256 * 1024;
   new Uint8Array(memory.buffer).set(elfData, elfOffset);
-  const vmPtr = createProcessWithPolicy(owner, elfOffset, elfData.length, ramSize, 1024 * 1024);
+  const vmPtr = createProcessWithPolicy(owner, elfOffset, elfData.length, guestMemoryPolicyLimitBytes, 1024 * 1024);
   expect(vmPtr).toBeGreaterThan(0);
 
   attachKernelRuntimeState(child, readKernelRuntimeState(owner));
@@ -1045,10 +1045,10 @@ test("shared-memory dual kernel instances preserve parent fault snapshot with bl
 
   const heapBase = (owner as any).__heap_base?.value ?? 0x200000;
   owner.kernel_init(heapBase);
-  const ramSize = memory.buffer.byteLength;
-  const elfOffset = ramSize - 256 * 1024;
+  const guestMemoryPolicyLimitBytes = memory.buffer.byteLength;
+  const elfOffset = guestMemoryPolicyLimitBytes - 256 * 1024;
   new Uint8Array(memory.buffer).set(elfData, elfOffset);
-  const vmPtr = createProcessWithPolicy(owner, elfOffset, elfData.length, ramSize, 1024 * 1024);
+  const vmPtr = createProcessWithPolicy(owner, elfOffset, elfData.length, guestMemoryPolicyLimitBytes, 1024 * 1024);
   expect(vmPtr).toBeGreaterThan(0);
 
   attachKernelRuntimeState(child, readKernelRuntimeState(owner));

@@ -15,10 +15,10 @@ export const NODE_BINARY_PATH = process.env.TIDEMARK_TEST_NODE_BINARY
 export const NODE_SYSROOT_DIR = process.env.TIDEMARK_TEST_NODE_SYSROOT_DIR
   ?? "";
 const FIXTURES_DIR = resolve(__dirname, "./fixtures");
-const NODE_RUNTIME_RAM_SIZE = 256 * 1024 * 1024;
+const NODE_RUNTIME_GUEST_MEMORY_POLICY_LIMIT_BYTES = 256 * 1024 * 1024;
 
 export interface NodeRuntimeCreateOptions {
-  ramSize?: number;
+  guestMemoryPolicyLimitBytes?: number;
   maxKernelMemoryPages?: number;
   maxProcessMemoryPages?: number;
   maxForkMemoryPages?: number;
@@ -105,7 +105,7 @@ export async function prepareNodeRuntimeWithOptions(
 
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: options.ramSize ?? NODE_RUNTIME_RAM_SIZE,
+    guestMemoryPolicyLimitBytes: options.guestMemoryPolicyLimitBytes ?? NODE_RUNTIME_GUEST_MEMORY_POLICY_LIMIT_BYTES,
     maxKernelMemoryPages: options.maxKernelMemoryPages,
     maxProcessMemoryPages: options.maxProcessMemoryPages,
     maxForkMemoryPages: options.maxForkMemoryPages,

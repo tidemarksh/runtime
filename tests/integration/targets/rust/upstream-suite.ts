@@ -58,7 +58,7 @@ function rustStdSuiteEntry(
     ],
     cwd: "/rust-src/lib/rustlib/src/rust/library",
     timeoutMs,
-    ramSize: 1024 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 1024 * 1024 * 1024,
     snapshotSources: rustUpstreamSnapshotSources([
       { kind: "dir", guestPath: "/tmp/cargo-home" },
       { kind: "dir", guestPath: "/tmp/cargo-target" },

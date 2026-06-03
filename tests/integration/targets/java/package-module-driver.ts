@@ -17,7 +17,7 @@ export const javaClassLoadPackageModuleEntry: PackageModuleDriverEntry = {
   argv: ["/jdk/bin/java", "-Xshare:off", "-XX:CompressedClassSpaceSize=64m", "-cp", "/work", "Hello"],
   env: [],
   timeoutMs: 20_000,
-  ramSize: 1024 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: 1024 * 1024 * 1024,
   snapshotSources: makeJavaRuntimeSnapshotSources([
     {
       kind: "inlineFile",

@@ -154,7 +154,7 @@ function makeHandle(kernel: ProcessHandle["kernel"], worker: Worker): ProcessHan
     pid: 1,
     parentPid: null,
     vmPtr: 0x1234,
-    ramSize: 0,
+    guestMemoryPolicyLimitBytes: 0,
     maxMemoryPages: 0,
     forkMaxMemoryPages: 0,
     guestBase: 0,
@@ -2289,7 +2289,7 @@ test("attachThreadWorker fails the process when a browser worker emits an error 
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   const { exports: kernel } = makeKernel();
   const handle = makeHandle(kernel, worker);
-  handle.ramSize = 16 * 1024 * 1024;
+  handle.guestMemoryPolicyLimitBytes = 16 * 1024 * 1024;
   handle.guestBase = 0x1000;
   const failProcess = vi.fn();
 

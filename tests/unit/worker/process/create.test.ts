@@ -177,7 +177,6 @@ function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
     process_create: vi.fn(() => 0x1234),
     processUsePipeStdio,
     thread_set_guest_memory_policy_limit: vi.fn(),
-    thread_set_guest_ram_limit: vi.fn(),
     process_stdin_pipe: () => 1,
     process_stdout_pipe: () => 2,
     process_stderr_pipe: () => 3,

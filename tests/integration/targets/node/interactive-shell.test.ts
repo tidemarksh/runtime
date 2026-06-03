@@ -144,7 +144,7 @@ test("Runtime interactive shell executes node -v with demo-style PATH lookup fro
     return;
   }
 
-  const runtime = await Runtime.create({ wasmBytes, ramSize: 384 * 1024 * 1024 });
+  const runtime = await Runtime.create({ wasmBytes, guestMemoryPolicyLimitBytes: 384 * 1024 * 1024 });
   try {
     await runtime.applyFsSnapshot(snapshot);
     const { proc, outputRef } = await startShell(runtime, busyboxBytes);
@@ -182,7 +182,7 @@ test("Runtime interactive shell executes go version with demo-style PATH lookup"
     return;
   }
 
-  const runtime = await Runtime.create({ wasmBytes, ramSize: 384 * 1024 * 1024 });
+  const runtime = await Runtime.create({ wasmBytes, guestMemoryPolicyLimitBytes: 384 * 1024 * 1024 });
   try {
     await runtime.applyFsSnapshot(snapshot);
     const { proc, outputRef } = await startShell(runtime, busyboxBytes);

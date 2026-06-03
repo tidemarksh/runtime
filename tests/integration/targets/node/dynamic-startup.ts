@@ -22,7 +22,7 @@ export const nodeDynamicStartupEntry: DynamicStartupEntry = {
   argv: ["/bin/node", "--version"],
   env: [],
   timeoutMs: 5_000,
-  ramSize: 256 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
   snapshotSources: [
     ...NODE_RUNTIME_LIBS.map((name) => ({
       kind: "file" as const,

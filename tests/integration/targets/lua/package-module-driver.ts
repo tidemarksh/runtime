@@ -12,7 +12,7 @@ export const luaLuacPackageModuleEntry: PackageModuleDriverEntry = {
   argv: ["/usr/bin/luac5.4", "-o", "/work/out.luac", "/work/in.lua"],
   env: [],
   timeoutMs: 10_000,
-  ramSize: 256 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
   snapshotSources: [
     { kind: "tree", hostPath: resolve(runtimeDir, "usr/bin"), guestPath: "/usr/bin" },
     { kind: "tree", hostPath: resolve(runtimeDir, "usr/lib/riscv64-linux-gnu"), guestPath: "/usr/lib/riscv64-linux-gnu" },

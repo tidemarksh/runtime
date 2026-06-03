@@ -173,7 +173,7 @@ function makeHandle(kernel: FakeKernel, memory: WebAssembly.Memory): ProcessHand
     pid: 11,
     parentPid: null,
     vmPtr: 0x1234,
-    ramSize: 0,
+    guestMemoryPolicyLimitBytes: 0,
     guestBase: 0,
     worker: {} as Worker,
     memory,

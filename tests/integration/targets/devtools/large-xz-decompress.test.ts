@@ -174,7 +174,7 @@ test("large xz local gate: guest xz decompresses package-index sized input", asy
 
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: 512 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
     maxProcessMemoryPages: 32768,
   });
   const startedMs = Date.now();

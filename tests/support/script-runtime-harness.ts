@@ -23,7 +23,7 @@ export interface ScriptRuntimeEntry {
   argv: readonly string[];
   env: readonly string[];
   timeoutMs: number;
-  ramSize: number;
+  guestMemoryPolicyLimitBytes: number;
   snapshotSources: readonly SnapshotSource[];
   expectedSubstrings: readonly string[];
   forbiddenSubstrings?: readonly string[];
@@ -63,7 +63,7 @@ export async function prepareScriptRuntime(
   }
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: entry.ramSize,
+    guestMemoryPolicyLimitBytes: entry.guestMemoryPolicyLimitBytes,
   });
   try {
     const applied = await applySnapshotSourcesToRuntime(runtime, entry.snapshotSources, {

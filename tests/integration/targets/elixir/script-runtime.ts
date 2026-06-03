@@ -41,7 +41,7 @@ export const erlEvalScriptRuntimeEntry: ScriptRuntimeEntry = {
   ],
   env: ["ROOTDIR=/usr/lib/erlang", `BINDIR=${erlangBindir}`, "EMU=beam", "PROGNAME=erl", "HOME=/tmp"],
   timeoutMs: 10_000,
-  ramSize: 512 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
   snapshotSources: elixirRuntimeSnapshotSources(),
   expectedSubstrings: ["erl-evidence"],
 };
@@ -68,7 +68,7 @@ export const elixirEvalScriptRuntimeEntry: ScriptRuntimeEntry = {
   ],
   env: ["ROOTDIR=/usr/lib/erlang", `BINDIR=${erlangBindir}`, "EMU=beam", "PROGNAME=erl", "HOME=/tmp"],
   timeoutMs: 10_000,
-  ramSize: 512 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
   snapshotSources: elixirRuntimeSnapshotSources(),
   expectedSubstrings: ["elixir-evidence"],
 };

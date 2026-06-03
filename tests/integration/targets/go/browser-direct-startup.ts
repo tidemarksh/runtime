@@ -25,7 +25,7 @@ export function prepareGoBrowserDirectStartupEntry(): BrowserDirectStartupEntry 
       cwd: "/work",
     },
     runtimeOptions: {
-      ramSize: 192 * 1024 * 1024,
+      guestMemoryPolicyLimitBytes: 192 * 1024 * 1024,
       maxKernelMemoryPages: 7168,
       maxProcessMemoryPages: 40960,
       maxForkMemoryPages: 40960,

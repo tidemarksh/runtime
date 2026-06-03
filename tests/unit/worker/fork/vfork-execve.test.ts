@@ -450,14 +450,14 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_spawn_path: () => 0n,
     thread_spawn_argv: () => 0n,
     thread_spawn_envp: () => 0n,
-    thread_spawn_ram_size: () => 0,
+    thread_spawn_guest_memory_policy_limit: () => 0,
     thread_spawn_address_profile: () => guestAddressProfile,
     thread_spawn_guest_memory_policy_limit: () => guestMemoryPolicyLimit,
     thread_spawn_process_max_memory_pages: () => processMaxMemoryPages,
     thread_guest_address_profile: () => guestAddressProfile,
     thread_guest_memory_policy_limit: () => guestMemoryPolicyLimit,
     thread_process_max_memory_pages: () => processMaxMemoryPages,
-    thread_set_execve_handoff: (vmPtr) => {
+    thread_set_execve_memory_handoff: (vmPtr) => {
       setIdentityForVm(vmPtr, currentPid, currentPpid, currentPgid, currentSid, 1);
     },
     thread_set_execve_memory_handoff: (
@@ -489,7 +489,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
       guestMemoryPolicyLimitCalls.push([vmPtr, limit]);
       guestMemoryPolicyLimit = limit;
     },
-    thread_set_guest_ram_limit: () => {},
+    thread_set_guest_memory_policy_limit: () => {},
     thread_clear_spawn_handoff: () => {},
     thread_resume_vfork_parent: (vmPtr, childPid) => {
       const identity = identityForVm(vmPtr);

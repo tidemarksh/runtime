@@ -106,7 +106,7 @@ function makeKernelExports(): KernelExports {
     thread_pc: () => 0x1234n,
     thread_a7: () => 0n,
     thread_spawn_kind: () => 0,
-    thread_guest_ram_limit: () => 0,
+    thread_guest_memory_policy_limit: () => 0,
     thread_process_ptr: () => 0,
     thread_status: () => 0,
     thread_step: () => 0,

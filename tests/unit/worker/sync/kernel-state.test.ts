@@ -200,7 +200,7 @@ function makeHandle(pid: number, fdMap: Map<number, number>): ProcessHandle {
     pid,
     parentPid: null,
     vmPtr: 0x1234,
-    ramSize: 0,
+    guestMemoryPolicyLimitBytes: 0,
     maxMemoryPages: 64,
     forkMaxMemoryPages: 64,
     guestBase: 0,

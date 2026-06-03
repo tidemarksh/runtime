@@ -10,7 +10,7 @@ for (const [label, options] of [
   [
     "browser-direct representative contract",
     {
-      ramSize: 256 * 1024 * 1024,
+      guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
       maxKernelMemoryPages: 7168,
       maxProcessMemoryPages: 16384,
       maxForkMemoryPages: 16384,
@@ -19,7 +19,7 @@ for (const [label, options] of [
   [
     "demo direct contract",
     {
-      ramSize: 192 * 1024 * 1024,
+      guestMemoryPolicyLimitBytes: 192 * 1024 * 1024,
       maxKernelMemoryPages: 7168,
       maxProcessMemoryPages: 20480,
       maxForkMemoryPages: 40960,

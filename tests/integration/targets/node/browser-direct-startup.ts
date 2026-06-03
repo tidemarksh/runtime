@@ -33,7 +33,7 @@ export function prepareNodeBrowserDirectStartupEntry(): BrowserDirectStartupEntr
       cwd: "/work",
     },
     runtimeOptions: {
-      ramSize: 256 * 1024 * 1024,
+      guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
       maxKernelMemoryPages: 7168,
       maxProcessMemoryPages: 16384,
       maxForkMemoryPages: 16384,

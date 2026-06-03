@@ -13,7 +13,7 @@ export const rDynamicStartupEntry: DynamicStartupEntry = {
   argv: ["/usr/lib/R/bin/exec/R", "--version"],
   env: ["R_HOME=/rhome"],
   timeoutMs: 5_000,
-  ramSize: 512 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
   snapshotSources: [
     { kind: "tree", hostPath: resolve(runtimeDir, "usr/lib/R"), guestPath: "/usr/lib/R" },
     {

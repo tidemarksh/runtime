@@ -13,7 +13,7 @@ type RuntimeInstance = Awaited<ReturnType<typeof Runtime.create>>;
 
 const hostRiscvGcc = process.env.TIDEMARK_TEST_HOST_RISCV_GCC ?? "riscv64-linux-gnu-gcc";
 const largeFileBytes = Number(process.env.TIDEMARK_TEST_LARGE_FILE_WRITE_BYTES ?? 8 * 1024 * 1024);
-const largeFileWriteRamSize = Number(process.env.TIDEMARK_TEST_LARGE_FILE_WRITE_RAM_BYTES ?? 512 * 1024 * 1024);
+const largeFileWriteGuestMemoryPolicyLimitBytes = Number(process.env.TIDEMARK_TEST_LARGE_FILE_WRITE_GUEST_MEMORY_POLICY_BYTES ?? 512 * 1024 * 1024);
 const largeFileWriteMaxProcessMemoryPages = Number(
   process.env.TIDEMARK_TEST_LARGE_FILE_WRITE_MAX_PROCESS_MEMORY_PAGES ?? 32768,
 );
@@ -197,7 +197,7 @@ test("large regular file write local gate: guest sequential writes publish byte-
 
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: largeFileWriteRamSize,
+    guestMemoryPolicyLimitBytes: largeFileWriteGuestMemoryPolicyLimitBytes,
     maxProcessMemoryPages: largeFileWriteMaxProcessMemoryPages,
   });
   const startedMs = Date.now();
@@ -232,7 +232,7 @@ test("large regular file write local gate: guest sequential writes publish byte-
       `spawnDurationMs=${spawnDurationMs}`,
       `readbackDurationMs=${readDurationMs}`,
       `bytes=${largeFileBytes}`,
-      `ramBytes=${largeFileWriteRamSize}`,
+      `guestPolicyBytes=${largeFileWriteGuestMemoryPolicyLimitBytes}`,
       `maxProcessMemoryPages=${largeFileWriteMaxProcessMemoryPages}`,
       `execution=${result.execution}`,
     ].join(" "));

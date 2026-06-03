@@ -44,7 +44,7 @@ export const makeBuildToolchainEntry: ToolchainExecEntry = {
   argv: ["/usr/bin/make", "-C", "/work"],
   env: ["PATH=/usr/bin:/bin", "HOME=/tmp", "LD_LIBRARY_PATH=/usr/lib/riscv64-linux-gnu:/lib"],
   timeoutMs: 15_000,
-  ramSize: 512 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
   snapshotSources: devtoolsSnapshotSources([
     { kind: "file", hostPath: resolve(toolsetDir, "usr/bin/make"), guestPath: "/usr/bin/make", mode: 0o755 },
     {
@@ -71,7 +71,7 @@ export const cmakeScriptToolchainEntry: ToolchainExecEntry = {
   argv: ["/usr/bin/cmake", "-P", "/work/script.cmake"],
   env: ["PATH=/usr/bin:/bin", "HOME=/tmp", "LD_LIBRARY_PATH=/usr/lib/riscv64-linux-gnu:/lib"],
   timeoutMs: 15_000,
-  ramSize: 512 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
   snapshotSources: devtoolsSnapshotSources([
     { kind: "file", hostPath: resolve(toolsetDir, "usr/bin/cmake"), guestPath: "/usr/bin/cmake", mode: 0o755 },
     { kind: "tree", hostPath: resolve(toolsetDir, "usr/share/cmake"), guestPath: "/usr/share/cmake" },
@@ -99,7 +99,7 @@ export const ninjaBuildToolchainEntry: ToolchainExecEntry = {
   argv: ["/usr/bin/ninja", "-C", "/work"],
   env: ["PATH=/usr/bin:/bin", "HOME=/tmp", "LD_LIBRARY_PATH=/usr/lib/riscv64-linux-gnu:/lib"],
   timeoutMs: 15_000,
-  ramSize: 512 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
   snapshotSources: devtoolsSnapshotSources([
     { kind: "file", hostPath: resolve(toolsetDir, "usr/bin/ninja"), guestPath: "/usr/bin/ninja", mode: 0o755 },
     {

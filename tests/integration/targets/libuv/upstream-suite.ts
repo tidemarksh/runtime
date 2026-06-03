@@ -78,7 +78,7 @@ function libuvUpstreamSuiteEntry(testName: string, timeoutMs = 180_000): Toolcha
       "LD_LIBRARY_PATH=/usr/lib/riscv64-linux-gnu:/usr/lib:/lib",
     ],
     timeoutMs,
-    ramSize: 1024 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 1024 * 1024 * 1024,
     snapshotSources: libuvSnapshotSources(),
     expectedDriverSubstrings: [`libuv-upstream-ok:${testName}`],
     artifactChecks: [{ path: "/work/build/uv_run_tests_a", minSize: 1 }],

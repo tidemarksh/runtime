@@ -23,7 +23,7 @@ export const javaJavacToolchainEntry: ToolchainExecEntry = {
   argv: ["/jdk/bin/javac", "-J-XX:CompressedClassSpaceSize=64m", "/work/Hello.java"],
   env: [],
   timeoutMs: 20_000,
-  ramSize: 768 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: 768 * 1024 * 1024,
   snapshotSources: [
     { kind: "tree", hostPath: jdkDir, guestPath: "/jdk" },
     ...JAVA_RUNTIME_LIBS.map((name) => ({

@@ -16,7 +16,7 @@ import {
 export type DynamicRunnerKind = "direct-exec" | "shell-script";
 
 export interface DynamicStartupRuntimeOptions {
-  ramSize?: number;
+  guestMemoryPolicyLimitBytes?: number;
   maxKernelMemoryPages?: number;
   maxProcessMemoryPages?: number;
   maxForkMemoryPages?: number;
@@ -31,7 +31,7 @@ export interface DynamicStartupEntry {
   argv: readonly string[];
   env: readonly string[];
   timeoutMs: number;
-  ramSize: number;
+  guestMemoryPolicyLimitBytes: number;
   runtimeOptions?: DynamicStartupRuntimeOptions;
   snapshotSources: readonly SnapshotSource[];
   expectedSubstrings: readonly string[];
@@ -78,7 +78,7 @@ export async function prepareDynamicStartupRuntime(
   }
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: entry.ramSize,
+    guestMemoryPolicyLimitBytes: entry.guestMemoryPolicyLimitBytes,
     ...entry.runtimeOptions,
   });
   try {

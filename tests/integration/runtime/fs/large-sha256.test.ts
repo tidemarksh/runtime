@@ -323,7 +323,7 @@ test("large sha256 local gate: guest hashes package-index sized input", async ()
 
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: 512 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
     maxProcessMemoryPages: 32768,
   });
   const startedMs = Date.now();
@@ -374,7 +374,7 @@ test("large sha256 local gate: blocked pipe siblings do not starve hashing worke
 
   const runtime = await Runtime.create({
     wasmBytes,
-    ramSize: 512 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
     maxProcessMemoryPages: 32768,
   });
   const startedMs = Date.now();
