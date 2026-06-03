@@ -13,6 +13,7 @@ vi.mock("../../../../src/worker/pool.js", async (importOriginal) => {
 });
 
 import { createWorkerScheduler } from "../../../../src/worker/scheduler.js";
+import { createRunLoopScheduler } from "../../../../src/worker/scheduler/run-loop.js";
 import { createTransferDebugStats, createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 
@@ -2071,6 +2072,55 @@ test("pumpProcess clears a running worker whose kernel process pointer disappear
     budget: expect.any(Number),
   }));
   expect(runningWorker.postMessage).not.toHaveBeenCalled();
+});
+
+test("blocked retry cleanup clears a running worker whose kernel process pointer disappeared", () => {
+  const runningWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const blockedWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const runningThread = makeThreadState(0x581f470);
+  const blockedThread = makeThreadState(0x6648420);
+  runningThread.runningGeneration = runningThread.generation;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(runningWorker, runningThread);
+  threadWorkerStates.set(blockedWorker, blockedThread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_ok();
+  kernel.thread_process_ptr = (vmPtr: number) => vmPtr === runningThread.vmPtr ? 0 : 0x2000;
+  const handle = makeHandle(kernel, runningWorker);
+  handle.workers.add(blockedWorker);
+  handle.runningWorker = runningWorker;
+  handle.blockedWorkers.set(blockedWorker, {
+    vmPtr: blockedThread.vmPtr,
+    status: kernel.abi_status_wait4(),
+    retryTimer: null,
+    timeoutExpired: false,
+    timeoutDeadlineMs: null,
+    sleepDeadlineTicks: null,
+    rpcPending: false,
+    rpcGeneration: 0,
+    skipNextNetworkPump: false,
+    pipeSyncedBeforePassive: false,
+    pipeEofChildExitDeferrals: 0,
+  });
+  const appendRuntimeLifecycleEvent = vi.fn();
+  const scheduler = createRunLoopScheduler({
+    threadWorkerStates,
+    appendRuntimeLifecycleEvent,
+    retryBlockedWorker: vi.fn(),
+  });
+
+  expect(scheduler.clearStaleRunningWorker(handle, blockedWorker)).toBe(true);
+
+  expect(handle.runningWorker).toBeNull();
+  expect(runningThread.runningGeneration).toBeNull();
+  expect(appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
+    1,
+    "running-worker-cleared:1:stale-process:0x581f470",
+  );
 });
 
 test("pumpProcess waits for socket status publication before dispatching a ready sibling", () => {

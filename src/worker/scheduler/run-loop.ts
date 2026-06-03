@@ -116,6 +116,10 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     }
     if (!handle.workers.has(runningWorker)) {
       handle.runningWorker = null;
+      const detachedThread = deps.threadWorkerStates.get(runningWorker);
+      if (detachedThread) {
+        detachedThread.runningGeneration = null;
+      }
       return true;
     }
     const runningThread = deps.threadWorkerStates.get(runningWorker);
@@ -125,15 +129,26 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     }
     if (runningThread.waitingInWorkerStatus !== null) {
       handle.runningWorker = null;
+      runningThread.runningGeneration = null;
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `running-worker-cleared:${handle.pid}:wait=${runningThread.waitingInWorkerStatus}`,
       );
       return true;
     }
+    if (handle.kernel.thread_process_ptr(runningThread.vmPtr) === 0) {
+      handle.runningWorker = null;
+      runningThread.runningGeneration = null;
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `running-worker-cleared:${handle.pid}:stale-process:0x${runningThread.vmPtr.toString(16)}`,
+      );
+      return true;
+    }
     const runningStatus = handle.kernel.thread_status(runningThread.vmPtr);
     if (runningStatus !== handle.kernel.abi_status_ok()) {
       handle.runningWorker = null;
+      runningThread.runningGeneration = null;
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `running-worker-cleared:${handle.pid}:status=${runningStatus}`,
