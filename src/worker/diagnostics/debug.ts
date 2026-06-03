@@ -208,6 +208,10 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
   const processPtr = handle.kernel.thread_process_ptr?.(state.vmPtr);
   const currentPid = handle.kernel.process_current_pid?.(state.vmPtr);
   const tid = handle.kernel.thread_tid?.(state.vmPtr);
+  const activeStepVmPtr = handle.kernel.debug_thread_step_vm_ptr?.();
+  const nowMs = Date.now();
+  const lastStepAgeMs = state.lastStepAtMs === null ? "null" : Math.max(0, nowMs - state.lastStepAtMs);
+  const lastStatusAgeMs = state.lastStatusAtMs === null ? "null" : Math.max(0, nowMs - state.lastStatusAtMs);
   return [
     `0x${state.vmPtr.toString(16)}`,
     `owner=${ownerState}`,
@@ -223,6 +227,11 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
     `process=0x${(processPtr ?? 0).toString(16)}`,
     `steps=${state.stepCount}`,
     `statuses=${state.statusCount}`,
+    `unansweredStep=${state.stepCount > state.statusCount ? 1 : 0}`,
+    `lastStepAgeMs=${lastStepAgeMs}`,
+    `lastStatusAgeMs=${lastStatusAgeMs}`,
+    `activeStepVm=${activeStepVmPtr === undefined ? "n/a" : `0x${activeStepVmPtr.toString(16)}`}`,
+    `activeStepSelf=${activeStepVmPtr === undefined ? "n/a" : activeStepVmPtr === state.vmPtr ? 1 : 0}`,
     `last=${state.lastStatus ?? "null"}`,
     `lastPc=${state.lastStatusPc === null ? "null" : `0x${state.lastStatusPc.toString(16)}`}`,
     `lastStepPc=${state.lastStepPc === null ? "null" : `0x${state.lastStepPc.toString(16)}`}`,

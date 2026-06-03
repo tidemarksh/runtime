@@ -1,5 +1,51 @@
-import { expect, test } from "vite-plus/test";
+import { expect, test, vi } from "vite-plus/test";
+import type { KernelExports } from "../../../../src/abi.js";
+import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { debugRuntimeProcessHandles, formatAllLiveThreadDebug } from "../../../../src/worker/diagnostics/debug.js";
+
+function makeDiagnosticsKernel(overrides: Partial<KernelExports> = {}): KernelExports {
+  return new Proxy(overrides, {
+    get(target, prop) {
+      if (prop in target) {
+        return target[prop as keyof KernelExports];
+      }
+      if (typeof prop !== "string") {
+        return undefined;
+      }
+      if (prop.startsWith("abi_max_")) {
+        return () => 0;
+      }
+      if (prop.startsWith("abi_status_")) {
+        return () => 0;
+      }
+      if (prop.endsWith("_len") || prop.endsWith("_count")) {
+        return () => 0;
+      }
+      if (
+        prop === "thread_pc"
+        || prop === "thread_ra"
+        || prop === "thread_sp"
+        || prop === "thread_a0"
+        || prop === "thread_a1"
+        || prop === "thread_reg"
+        || prop === "thread_gp"
+        || prop === "thread_tp"
+        || prop === "thread_s11"
+        || prop === "thread_sig_mask"
+        || prop === "thread_sig_pending"
+      ) {
+        return () => 0n;
+      }
+      if (prop.startsWith("process_") || prop.startsWith("kernel_") || prop.startsWith("thread_")) {
+        return () => 0;
+      }
+      if (prop.startsWith("debug_")) {
+        return () => 0;
+      }
+      return undefined;
+    },
+  }) as KernelExports;
+}
 
 test("debugRuntimeProcessHandles keeps riscv syscall trace when process formatting throws", () => {
   const handle = {
@@ -41,6 +87,105 @@ test("debugRuntimeProcessHandles keeps riscv syscall trace when process formatti
   expect(snapshot).toContain("riscv_syscalls=[");
   expect(snapshot).toContain("nr=258");
   expect(snapshot).toContain("nr=259");
+});
+
+test("debugRuntimeProcessHandles includes running worker scheduler timing details", () => {
+  vi.setSystemTime(new Date(20_000));
+  const worker = {} as Worker;
+  const thread: ThreadWorkerState = {
+    vmPtr: 0x2000,
+    ownerPid: 1,
+    generation: 3,
+    runningGeneration: 3,
+    reinitCount: 0,
+    stepCount: 7,
+    totalStepBudget: 0,
+    totalStepWallMs: 0,
+    maxStepWallMs: 0,
+    lastStepDurationMs: null,
+    statusCount: 6,
+    statusCounts: {},
+    lastStatus: 0,
+    lastStepAtMs: 17_500,
+    lastStatusAtMs: 16_000,
+    lastStepProcessPtr: null,
+    lastStepPc: 0x1234n,
+    lastStepSp: null,
+    lastStepS11: null,
+    hotStepPcs: {},
+    lastStatusPc: 0x5678n,
+    lastStatusSp: null,
+    lastStatusS11: null,
+    forkStackSnapshot: undefined,
+    execveProcessState: undefined,
+    hotStatusPcs: {},
+    initialized: true,
+    waitingInWorkerStatus: null,
+    ownerAsyncStatus: null,
+    resumeBlockedOnNextStep: false,
+    pendingPipeSlotsForNextStep: [],
+    pendingGuestMemoryWrites: [],
+    resumeWorkersOnReady: [],
+  };
+  const handle = {
+    pid: 1,
+    runtimeId: 7,
+    debugCommand: "/usr/bin/rustc",
+    parentPid: null,
+    vmPtr: 0x2000,
+    workers: new Set([worker]),
+    runningWorker: worker,
+    readyWorkers: [],
+    blockedWorkers: new Map(),
+    workerDebugLog: [],
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(16),
+      stateSab: new SharedArrayBuffer(16),
+    },
+    kernelShare: {
+      sharedOfdIds: new Set(),
+      forkSharedSyncPromise: null,
+    },
+    networkConnections: new Map(),
+    networkClosedFds: new Set(),
+    pipeSyncPromise: null,
+    pipeSyncQueued: false,
+    forkSharedSyncPromise: null,
+    vforkSnapshot: null,
+    stdinPipe: 0,
+    stdoutPipe: 1,
+    stderrPipe: 2,
+    lastDebugMessage: null,
+    kernelState: {
+      netBufBase: 0,
+    },
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    kernel: makeDiagnosticsKernel({
+      debug_thread_step_vm_ptr: () => 0x2000,
+      thread_process_ptr: () => 0x3000,
+      process_current_pid: () => 1,
+      thread_tid: () => 11,
+      thread_status: () => 0,
+      process_stdin_pipe: () => 0,
+      process_stdout_pipe: () => 1,
+      process_stderr_pipe: () => 2,
+    }),
+  } as ProcessHandle;
+
+  const snapshot = debugRuntimeProcessHandles(
+    7,
+    new Map([[1, handle]]),
+    new WeakMap([[worker, thread]]),
+    new Map(),
+    () => "",
+  );
+
+  expect(snapshot).toContain("worker_details=[0x2000:owner=running");
+  expect(snapshot).toContain("unansweredStep=1");
+  expect(snapshot).toContain("lastStepAgeMs=2500");
+  expect(snapshot).toContain("lastStatusAgeMs=4000");
+  expect(snapshot).toContain("activeStepVm=0x2000");
+  expect(snapshot).toContain("activeStepSelf=1");
 });
 
 test("formatAllLiveThreadDebug keeps execve summary without investigation traces", () => {
