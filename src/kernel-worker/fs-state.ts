@@ -2,9 +2,8 @@ import type { KernelExports } from "../abi.js";
 import type { FsSnapshotEntry, RuntimeStat } from "../fs/types.js";
 import {
   bumpDirEpoch,
-  DATA_REGION_OFFSET,
   MAX_INODES,
-  OFF_DATA_USED,
+  MemoryFileBackingStore,
   publishInode,
   readFileData,
   readInodeRecord,
@@ -46,6 +45,37 @@ interface KernelWorkerFsStateDeps {
 
 export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   const MEMFS_S_IFDIR = 0o040000;
+  const backingStore = new MemoryFileBackingStore();
+  const fileObjectIdsByIno = new Map<number, number>();
+
+  function replaceBackingFile(ino: number, data: Uint8Array): void {
+    const fileObjectId = fileObjectIdsByIno.get(ino);
+    if (fileObjectId === undefined) {
+      const stat = backingStore.createFile(data);
+      fileObjectIdsByIno.set(ino, stat.fileObjectId);
+      return;
+    }
+    backingStore.truncate(fileObjectId, 0);
+    if (data.length > 0) {
+      backingStore.write(fileObjectId, 0, data);
+    }
+  }
+
+  function readBackingFileByInode(ino: number): Uint8Array | null {
+    const fileObjectId = fileObjectIdsByIno.get(ino);
+    if (fileObjectId === undefined) {
+      return null;
+    }
+    const stat = backingStore.stat(fileObjectId);
+    if (!stat) {
+      return null;
+    }
+    return backingStore.read(fileObjectId, 0, stat.size);
+  }
+
+  function hasBackingFile(ino: number): boolean {
+    return readBackingFileByInode(ino) !== null;
+  }
 
   function replaceFileData(targetExports: KernelExports, ino: number, data: Uint8Array): void {
     const truncateResult = Number(targetExports.memfs_truncate_file(ino, BigInt(data.length)));
@@ -76,19 +106,11 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     data: Uint8Array,
   ): void {
     const pageCache = deps.getSabPageCache();
-    publishInode(pageCache, ino, meta, data);
+    replaceBackingFile(ino, data);
+    publishInode(pageCache, ino, meta, null);
     const published = readInodeRecord(pageCache, ino);
-    if (
-      data.length > 0
-      && (!published || published.size !== data.length || published.dataOff === 0)
-    ) {
-      const dataUsed = Atomics.load(new Uint32Array(pageCache), OFF_DATA_USED >>> 2);
-      throw new Error(
-        `page-cache data capacity exhausted while publishing inode data: ino=${ino}`
-        + ` dataBytes=${data.length}`
-        + ` pageCacheDataCapacityBytes=${Math.max(0, pageCache.byteLength - DATA_REGION_OFFSET)}`
-        + ` pageCacheDataUsedBytes=${dataUsed}`,
-      );
+    if (!published || published.size !== data.length) {
+      throw new Error(`failed to publish inode metadata: ino=${ino} dataBytes=${data.length}`);
     }
     const externalized = Number(targetExports.memfs_set_file_external(ino, BigInt(data.length)));
     if (externalized < 0) {
@@ -439,13 +461,14 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         return false;
       }
       writeFileByInode(canonicalExports, ino, data);
+      replaceBackingFile(ino, data);
       publishInode(deps.getSabPageCache(), ino, {
         mode,
         size: data.length,
         parentIno: published.parentIno,
         name: published.name,
         nextSibling: published.nextSibling,
-      }, data);
+      }, null);
 
       syncExternalFileDataIntoTarget(canonicalExports, ino, mode, data.length, published);
       for (const memberExports of deps.processKernels.values()) {
@@ -479,7 +502,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         !published
         || (published.mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG
         || published.size <= 0
-        || published.dataOff === 0
+        || (published.dataOff === 0 && !hasBackingFile(ino))
       ) {
         continue;
       }
@@ -584,6 +607,10 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     }
 
     const size = Number(targetExports.memfs_file_size(ino));
+    const backingData = readBackingFileByInode(ino);
+    if (backingData && backingData.length === size) {
+      return backingData;
+    }
     const bufPtr = scratchBaseFor(targetExports) + 0x4000;
     ensureMemoryCapacityFor(targetExports.memory, bufPtr + size);
     const read = Number(targetExports.memfs_read_file_to(ino, 0n, bufPtr, size));
@@ -683,6 +710,8 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     readdir,
     readFile,
     writeFile,
+    publishFileBacking: replaceBackingFile,
+    readBackingFileByInode,
     mkdir,
     upsertSymlinkSeed: deps.upsertSymlinkSeed,
     fanoutCanonicalMemfs: deps.fanoutCanonicalMemfs,

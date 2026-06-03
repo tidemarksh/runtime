@@ -452,7 +452,7 @@ test("kernel-worker loadFsSnapshot keeps provided file data page-cache-backed wh
 
   const ino = canonicalExports.fileIno("/lib/runtime.bin");
   expect(ino).toBeGreaterThan(1);
-  expect(canonicalExports.fileData("/lib/runtime.bin")).toEqual(data);
+  expect(fsState.readFile("/lib/runtime.bin")).toEqual(data);
   expect(canonicalExports.opLog).toContain(`shallow:/lib/runtime.bin:${data.length}`);
   expect(canonicalExports.opLog.some((entry) => entry.startsWith("truncate:/lib/runtime.bin:"))).toBe(false);
   expect(canonicalExports.opLog.some((entry) => entry.startsWith("write:/lib/runtime.bin:"))).toBe(false);
@@ -476,7 +476,7 @@ test("kernel-worker loadFsSnapshot keeps large provided file data page-cache-bac
 
   const ino = canonicalExports.fileIno("/usr/lib/runtime-large.bin");
   expect(ino).toBeGreaterThan(1);
-  expect(canonicalExports.fileData("/usr/lib/runtime-large.bin")).toEqual(data);
+  expect(fsState.readFile("/usr/lib/runtime-large.bin")).toEqual(data);
   expect(canonicalExports.opLog).toContain(`shallow:/usr/lib/runtime-large.bin:${data.length}`);
   expect(canonicalExports.opLog.some((entry) => entry.startsWith("truncate:/usr/lib/runtime-large.bin:"))).toBe(false);
   expect(canonicalExports.opLog.some((entry) => entry.startsWith("write:/usr/lib/runtime-large.bin:"))).toBe(false);
@@ -543,7 +543,6 @@ test("kernel-worker syncFileDataMutation moves canonical/member files back to pa
   const changed = fsState.syncFileDataMutation(canonicalExports, ino);
 
   expect(changed).toBe(true);
-  expect(memberExports.fileData("/lib/runtime.bin")).toEqual(nextData);
   expect(memberExports.opLog).toContain("external:/lib/runtime.bin:3");
   expect(memberExports.opLog.some((entry) => entry.startsWith("truncate:/lib/runtime.bin:3"))).toBe(false);
   expect(memberExports.opLog.some((entry) => entry.startsWith("write:/lib/runtime.bin:3"))).toBe(false);
@@ -565,7 +564,7 @@ test("kernel-worker restorePublishedRegularFileDataFromPageCache externalizes wi
   expect(canonicalExports.opLog).toContain(`external:/lib/runtime.bin:${publishedData.length}`);
   expect(canonicalExports.opLog.some((entry) => entry.startsWith("truncate:/lib/runtime.bin:"))).toBe(false);
   expect(canonicalExports.opLog.some((entry) => entry.startsWith("write:/lib/runtime.bin:"))).toBe(false);
-  expect(canonicalExports.fileData("/lib/runtime.bin")).toEqual(publishedData);
+  expect(fsState.readFile("/lib/runtime.bin")).toEqual(publishedData);
 });
 
 test("kernel-worker syncMetadataMutation materializes absolute-path file creation without full fanout", () => {
@@ -631,12 +630,12 @@ test("kernel-worker writeFile keeps files page-cache-backed instead of materiali
   });
 });
 
-test("kernel-worker writeFile reports page-cache data capacity exhaustion separately from guest ram", () => {
+test("kernel-worker writeFile keeps backing data independent from resident page-cache capacity", () => {
   const { fsState } = makeFsState(32);
   const data = new Uint8Array(128).fill(0x5a);
 
-  expect(() => fsState.writeFile("/usr/lib/runtime.bin", data, 0o644, false))
-    .toThrow(/page-cache data capacity exhausted while publishing inode data: .*pageCacheDataCapacityBytes=32/);
+  expect(() => fsState.writeFile("/usr/lib/runtime.bin", data, 0o644, false)).not.toThrow();
+  expect(fsState.readFile("/usr/lib/runtime.bin")).toEqual(data);
 });
 
 test("kernel-worker readFile falls back to page-cache data for externalized large files", () => {
@@ -653,7 +652,7 @@ test("kernel-worker readFile falls back to page-cache data for externalized larg
   expect(roundTrip.subarray(data.length - 128)).toEqual(data.subarray(data.length - 128));
 });
 
-test("kernel-worker readFile reports failure when neither memfs nor page-cache data is available", () => {
+test("kernel-worker readFile uses backing data when memfs and resident page-cache data are unavailable", () => {
   const { canonicalExports, fsState, sabPageCache } = makeFsState();
   const data = new Uint8Array(128 * 1024).map((_, index) => (index * 11) & 0xff);
 
@@ -668,7 +667,7 @@ test("kernel-worker readFile reports failure when neither memfs nor page-cache d
   }, null);
   canonicalExports.memfs_read_file_to = () => -1n;
 
-  expect(() => fsState.readFile("/usr/bin/sqv")).toThrow("failed to read file: /usr/bin/sqv");
+  expect(fsState.readFile("/usr/bin/sqv")).toEqual(data);
 });
 
 test("kernel-worker symlink uses basename scratch independently from resolvePath scratch", () => {

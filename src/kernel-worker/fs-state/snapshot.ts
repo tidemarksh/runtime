@@ -22,6 +22,8 @@ interface KernelWorkerFsSnapshotDeps {
   readdir(path: string): string[];
   readFile(path: string): Uint8Array;
   writeFile(path: string, data: Uint8Array, mode?: number, fanout?: boolean): void;
+  publishFileBacking(ino: number, data: Uint8Array): void;
+  readBackingFileByInode(ino: number): Uint8Array | null;
   mkdir(path: string, mode?: number, fanout?: boolean): void;
   upsertSymlinkSeed(path: string, target: Uint8Array, mode?: number): void;
 }
@@ -91,13 +93,16 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
       size: publishedSize,
       mode: perms,
     });
+    if (data !== null) {
+      deps.publishFileBacking(ino, data);
+    }
     publishInode(deps.getSabPageCache(), ino, {
       mode: 0o100000 | perms,
       size: publishedSize,
       parentIno,
       name: nameBytes,
       nextSibling: 0,
-    }, data);
+    }, null);
   }
 
   function resolvePathIn(targetExports: KernelExports, path: string): number {
@@ -153,6 +158,10 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
     const direct = readMemfsFileDataDirect(targetExports, ino);
     if (direct) {
       return direct;
+    }
+    const backing = deps.readBackingFileByInode(ino);
+    if (backing) {
+      return backing;
     }
     const cached = readInodeMeta(deps.getSabPageCache(), ino);
     if (cached && cached.dataOff !== 0 && (cached.mode & 0o170000) === 0o100000) {
@@ -277,7 +286,10 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
         parentIno,
         name: deps.encoder.encode(name),
         nextSibling: 0,
-      }, entry.kind === "file" ? (entry.data ?? new Uint8Array()) : null);
+      }, null);
+      if (entry.kind === "file" && entry.data !== undefined) {
+        deps.publishFileBacking(entry.ino, entry.data);
+      }
     }
   }
 
