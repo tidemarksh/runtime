@@ -482,6 +482,36 @@ test("Runtime.applyFsSnapshot does not retain provided file data in runtime stat
   runtime.destroy();
 });
 
+test("Runtime.applyFsSnapshot reads a file larger than default resident page-cache capacity", async () => {
+  const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
+  const data = Uint8Array.from(
+    { length: (16 * 1024 * 1024) + 17 },
+    (_value, index) => (index * 31) & 0xff,
+  );
+
+  await runtime.applyFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "dir", path: "/toolchain", mode: 0o755 },
+    {
+      kind: "file",
+      path: "/toolchain/large.bin",
+      data,
+      mode: 0o644,
+    },
+  ]);
+
+  const worker = createdWorkers[0];
+  worker.postedMessages.length = 0;
+  const roundTrip = await runtime.fs.readFile("/toolchain/large.bin");
+
+  expect(roundTrip.length).toBe(data.length);
+  expect(roundTrip.subarray(0, 128)).toEqual(data.subarray(0, 128));
+  expect(roundTrip.subarray(data.length - 128)).toEqual(data.subarray(data.length - 128));
+  expect(worker.postedMessages.some((msg) => msg.type === "read-file")).toBe(true);
+
+  runtime.destroy();
+});
+
 test("Runtime.applyFileLayer applies dirs files and symlinks through one kernel-worker RPC", async () => {
   const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
 
