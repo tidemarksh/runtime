@@ -449,6 +449,51 @@ test("createProcess uses target guest address profile for process memory policy"
   );
 });
 
+test("createProcess preserves Memory64 process backing page requests above the wasm32 page ceiling", async () => {
+  const processHandles = new Map<number, ProcessHandle>();
+  const kernelMemory = new WebAssembly.Memory({
+    initial: 1024n,
+    maximum: 70000n,
+    shared: true,
+    address: "i64",
+  } as unknown as WebAssembly.MemoryDescriptor);
+  const fakeKernel = makeFakeProcessKernel(kernelMemory);
+  vi.spyOn(WebAssembly, "instantiate").mockResolvedValue({
+    exports: fakeKernel,
+  } as unknown as WebAssembly.Instance);
+  const factory = createWorkerProcessFactory({
+    processHandles,
+    attachThreadWorker: vi.fn(),
+    assertProcessStandardFdIntegrity: vi.fn(),
+    ensureCompiledModule: async () => ({}) as WebAssembly.Module,
+    getRuntimeFsEntries: () => [],
+    initializeProcessLifecycleViaKernelWorker: vi.fn(async () => {}),
+    registerProcessWithKernelWorker: vi.fn(async () => {}),
+    resolveProcessCwdInoViaKernelWorker: vi.fn(async () => 0),
+    bootstrapMemoryBytes: 64 * 1024 * 1024,
+    wasmPageSize: 65536,
+    wasmMaxPages: 131072,
+  });
+
+  await factory.createProcess(
+    new Uint8Array([0]),
+    new Uint8Array([0x7f, 0x45, 0x4c, 0x46]),
+    {
+      maxMemoryPages: 70000,
+      preloadEntries: [],
+    },
+  );
+
+  expect(fakeKernel.process_create_with_memory_policy).toHaveBeenCalledWith(
+    expect.any(Number),
+    expect.any(Number),
+    2,
+    expect.any(BigInt),
+    70000,
+    8 * 1024 * 1024,
+  );
+});
+
 test("createProcess rejects an unusable target guest profile instead of falling back", async () => {
   const processHandles = new Map<number, ProcessHandle>();
   const kernelMemory = new WebAssembly.Memory({ initial: 1024, maximum: 2048, shared: true });

@@ -33,6 +33,10 @@ import {
   continueBlockedRpcResumeAfterEffects,
 } from "../kernel-rpc/effects.js";
 import { createWorkerProcessFactory } from "../create-process.js";
+
+const WASM_PAGE_SIZE = 65536;
+const WASM_MAX_PAGES = 131072;
+const BOOTSTRAP_MEMORY_BYTES = 64 * 1024 * 1024;
 import {
   applySocketStateFromKernelWorker,
   releaseSharedHostStdioViaKernelWorker as releaseSharedHostStdioImpl,
@@ -226,9 +230,9 @@ const workerForkHandlers = createWorkerForkHandlers({
   syncForkSharedStateViaKernelWorker,
   syncProcessMemfsViaKernelWorker,
   canonicalizeChildLifecycleViaKernelWorker,
-  bootStrapMemoryBytes: 64 * 1024 * 1024,
-  wasmPageSize: 65536,
-  wasmMaxPages: 64512,
+  bootStrapMemoryBytes: BOOTSTRAP_MEMORY_BYTES,
+  wasmPageSize: WASM_PAGE_SIZE,
+  wasmMaxPages: WASM_MAX_PAGES,
 });
 const {
   handleExecveSpawn,
@@ -284,10 +288,6 @@ workerLifecycleHelpers = createWorkerLifecycleHelpers({
   workerExitFailProcess: workerExitHelpers.failProcess,
   workerExitPrepublishParentWaitStatus: workerExitHelpers.prepublishParentWaitStatus,
 });
-const WASM_PAGE_SIZE = 65536;
-const WASM_MAX_PAGES = 64512;
-const BOOTSTRAP_MEMORY_BYTES = 64 * 1024 * 1024;
-
 async function ensureCompiledModule(wasmBytes: BufferSource): Promise<WebAssembly.Module> {
   if (!ensureCompiledModuleImpl) {
     throw new Error("worker orchestrator is not initialized");

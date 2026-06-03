@@ -51,6 +51,11 @@ function requiresBigIntMemoryDelta(error: unknown): boolean {
   return error instanceof Error && /BigInt/i.test(error.message);
 }
 
+function memoryAddressAttemptOrder(sizing: KernelSharedMemorySizing): KernelMemoryAddress[] {
+  const maximum = normalizePageCount(sizing.maximumPages);
+  return maximum > 65536 ? ["i64", "i32"] : ["i32", "i64"];
+}
+
 export function growKernelMemory(memory: WebAssembly.Memory, deltaPages: number): void {
   if (deltaPages <= 0) {
     return;
@@ -71,32 +76,32 @@ export async function instantiateKernelWithSharedMemory(
   options: KernelEnvOptions = {},
   prepareMemory?: (memory: WebAssembly.Memory) => void,
 ): Promise<KernelSharedMemoryInstance> {
-  let i32Error: unknown;
-  try {
-    const memory = createSharedKernelMemory(sizing, "i32");
-    prepareMemory?.(memory);
-    const instance = await WebAssembly.instantiate(module, {
-      env: createKernelEnv(memory, options),
-    });
-    return { instance, memory };
-  } catch (error) {
-    if (!isMemoryAddressMismatch(error)) {
-      throw error;
+  let firstMismatchError: unknown;
+  let firstAddress: KernelMemoryAddress | null = null;
+  for (const address of memoryAddressAttemptOrder(sizing)) {
+    try {
+      const memory = createSharedKernelMemory(sizing, address);
+      prepareMemory?.(memory);
+      const instance = await WebAssembly.instantiate(module, {
+        env: createKernelEnv(memory, options),
+      });
+      return { instance, memory };
+    } catch (error) {
+      if (!isMemoryAddressMismatch(error)) {
+        throw error;
+      }
+      if (firstMismatchError === undefined) {
+        firstMismatchError = error;
+        firstAddress = address;
+      }
     }
-    i32Error = error;
   }
 
-  try {
-    const memory = createSharedKernelMemory(sizing, "i64");
-    prepareMemory?.(memory);
-    const instance = await WebAssembly.instantiate(module, {
-      env: createKernelEnv(memory, options),
-    });
-    return { instance, memory };
-  } catch (error) {
-    if (i32Error instanceof Error && error instanceof Error) {
-      error.message = `${error.message}; i32 memory attempt: ${i32Error.message}`;
-    }
-    throw error;
+  const error = firstMismatchError instanceof Error
+    ? firstMismatchError
+    : new Error("kernel memory address mismatch");
+  if (firstAddress !== null) {
+    error.message = `${error.message}; first memory address attempt: ${firstAddress}`;
   }
+  throw error;
 }
