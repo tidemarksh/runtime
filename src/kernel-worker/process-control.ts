@@ -290,12 +290,13 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
 
     const needsMetadataFullSync = treeMutated && !handledMetadataMutation;
     const needsFileDataFullSync = fileDataMutated && !handledFileDataMutation;
+    const needsFullSync = needsMetadataFullSync || needsFileDataFullSync;
 
     return {
       memfsMutated: treeMutated || fileDataMutated,
       ofdStateChanged: fsSucceeded && (context.effects & deps.fsEffectSharedOfdState) !== 0,
-      needsFullSync: needsMetadataFullSync || needsFileDataFullSync,
-      preservePublishedRegularFileData: needsMetadataFullSync && !needsFileDataFullSync,
+      needsFullSync,
+      preservePublishedRegularFileData: needsFullSync,
       treeMutated,
       fileDataMutated,
       handledMetadataMutation,

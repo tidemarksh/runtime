@@ -254,3 +254,82 @@ test("kernel-worker fs outcome skips memfs publication effect when no fork-share
     expect.objectContaining({ kind: "publish-memfs-after-fs" }),
   ]));
 });
+
+test("kernel-worker fs outcome preserves published data when publishing file writes", async () => {
+  const kernel = {
+    ...makeKernel(),
+    thread_pending_fs_opcode: () => 2,
+    thread_pending_fs_effects: () => 2,
+  };
+  const kernelWorkerRequest = vi.fn(async () => ({
+    type: "fs-processed",
+    requestId: 1,
+    kernelState: makeKernelState(),
+    result: 4096n,
+    memfsMutated: true,
+    ofdStateChanged: false,
+  }));
+  const targetKernel = makeKernel();
+  const target = {
+    pid: 2,
+    vmPtr: 0x5678,
+    kernel: targetKernel,
+    memory: targetKernel.memory,
+    blockedWorkers: new Map(),
+    runningWorker: null,
+  } as unknown as ProcessHandle;
+  const handle = {
+    pid: 1,
+    runtimeId: 1,
+    vmPtr: 0x1234,
+    kernel,
+    kernelState: makeKernelState(),
+    memory: kernel.memory,
+    processMemfsDirty: false,
+    transferDebugStats: createTransferDebugStats(),
+    kernelShare: { members: new Set([target]), sharedOfdIds: new Set() },
+    workers: new Set(),
+    blockedWorkers: new Map(),
+    kernelWorkerRequest,
+  } as unknown as ProcessHandle;
+  const worker = {} as Worker;
+  handle.workers.add(worker);
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, {});
+  const helpers = createWorkerKernelRpcFsHelpers({
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    appendWorkerDebugLog: vi.fn(),
+    assertProcessStandardFdIntegrity: vi.fn(),
+    blockWorker: vi.fn(),
+    enqueueWorker: vi.fn(),
+    failProcess: vi.fn((_handle, error) => {
+      throw error;
+    }),
+    kickBlockedWorkers: vi.fn(),
+    markRuntimeFsDirty: vi.fn(),
+    kernelShareOtherMembers: () => [target],
+    syncForkSharedStateLocallyAfterFs: vi.fn(),
+    syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
+    syncSharedOfdStateAfterFs: vi.fn(async () => {}),
+    publishMemfsAfterFs: vi.fn(async () => {}),
+    rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    publishRuntimeKernelState: vi.fn(),
+  });
+
+  const outcome = await helpers.resumeFsViaKernelWorkerOutcome(
+    handle,
+    worker,
+    0x1234,
+    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+  );
+
+  expect(outcome.effects).toEqual(expect.arrayContaining([
+    {
+      kind: "publish-memfs-after-fs",
+      targets: [target],
+      preservePublishedRegularFileData: true,
+      sourceVmPtr: 0x1234,
+    },
+  ]));
+});

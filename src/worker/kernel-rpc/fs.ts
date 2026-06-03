@@ -635,8 +635,7 @@ async function resumeFsViaKernelWorkerInner(
       && pendingFs.opcode === FS_OP_WRITE
     );
   const ofdStateMayChange = (pendingFs.effects & fsEffects.sharedOfdState) !== 0;
-  const preservePublishedRegularFileData = (pendingFs.effects & fsEffects.memfsMutation) !== 0
-    && (pendingFs.effects & fsEffects.memfsFileData) === 0;
+  const preservePublishedRegularFileData = memfsPublishMayBeReady;
   if (!handle.kernelWorkerRequest || handle.pid <= 0) {
     deps.appendWorkerDebugLog(handle, `fs-start:0x${vmPtr.toString(16)}:local${fsDebugSuffix}`);
     appendFsLifecycleEvent(handle, "start", vmPtr, `:local${fsDebugSuffix}${formatFsRingDebug(handle, vmPtr)}`);
