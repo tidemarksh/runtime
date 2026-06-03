@@ -1,6 +1,7 @@
 import type { KernelRuntimeState } from "../abi.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import type {
+  GuestMemoryWriteSnapshot,
   KernelWorkerInbound,
   KernelWorkerFdEntrySnapshot,
   KernelWorkerFileLayerEntry,
@@ -19,6 +20,7 @@ interface ProcessFsResult {
   ofdStateChanged: boolean;
   fdEntries?: KernelWorkerFdEntrySnapshot[];
   ofdSlots?: KernelWorkerOfdSlotSnapshot[];
+  guestMemoryWrites?: GuestMemoryWriteSnapshot[];
   fsDebug?: string;
 }
 
@@ -257,6 +259,7 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
             ofdStateChanged: result.ofdStateChanged,
             fdEntries: result.fdEntries,
             ofdSlots: result.ofdSlots,
+            guestMemoryWrites: result.guestMemoryWrites,
             fsDebug: result.fsDebug,
           });
           break;

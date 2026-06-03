@@ -501,6 +501,7 @@ export type KernelWorkerResponse =
       ofdStateChanged: boolean;
       fdEntries?: KernelWorkerFdEntrySnapshot[];
       ofdSlots?: KernelWorkerOfdSlotSnapshot[];
+      guestMemoryWrites?: GuestMemoryWriteSnapshot[];
       fsDebug?: string;
     }
   | {

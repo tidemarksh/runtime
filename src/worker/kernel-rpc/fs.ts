@@ -17,6 +17,7 @@ import {
   type ThreadWorkerState,
 } from "../types.js";
 import type {
+  GuestMemoryWriteSnapshot,
   KernelWorkerFdEntrySnapshot,
   KernelWorkerPidBytesSnapshot,
 } from "../../messages.js";
@@ -585,6 +586,28 @@ function restoreFsFdState(handle: ProcessHandle, snapshot: FsFdStateSnapshot | n
   }
 }
 
+function applyFsGuestMemoryWrites(
+  handle: ProcessHandle,
+  writes: GuestMemoryWriteSnapshot[] | undefined,
+): void {
+  if (!writes || writes.length === 0) {
+    return;
+  }
+  const memory = new Uint8Array(handle.memory.buffer);
+  for (const write of writes) {
+    const start = handle.guestBase + write.guestPtr;
+    if (
+      !Number.isFinite(start)
+      || start < handle.guestBase
+      || write.bytes.length === 0
+      || start + write.bytes.length > memory.byteLength
+    ) {
+      continue;
+    }
+    memory.set(write.bytes, start);
+  }
+}
+
 async function resumeFsViaKernelWorker(
   handle: ProcessHandle,
   worker: Worker,
@@ -762,6 +785,7 @@ async function resumeFsViaKernelWorkerInner(
     }
     handle.kernelState = adoptKernelStateForHandle(handle, fsProcessedResponse.kernelState);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
+    applyFsGuestMemoryWrites(handle, fsProcessedResponse.guestMemoryWrites);
     if (fsProcessedResponse.ofdSlots || fsProcessedResponse.fdEntries) {
       applyThreadOfdSlots(handle, {
         vmPtr,

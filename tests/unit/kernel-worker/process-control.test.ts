@@ -2,6 +2,16 @@
 import { expect, test, vi } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
 import { createKernelWorkerProcessControl } from "../../../src/kernel-worker/process-control.js";
+import {
+  FS_OP_MMAP,
+  FS_RING_REQUEST_BUF_PTR_OFFSET,
+  FS_RING_REQUEST_FD_OFFSET,
+  FS_RING_REQUEST_LEN_OFFSET,
+  FS_RING_REQUEST_OPCODE_OFFSET,
+  FS_RING_REQUEST_VM_PTR_OFFSET,
+  FS_RING_SUBMIT_HEAD_OFFSET,
+  fsRingRequestEntryOffset,
+} from "../../../src/layout/fs-ring.js";
 
 type FakeKernelExports = KernelExports & {
   opLog: string[];
@@ -44,6 +54,7 @@ function makeKernelExports(options: {
   secondaryAbsolutePath?: string;
   fdEntries?: Array<{ fd: number; ofdId: number; fdFlags?: number }>;
   ofdSlots?: Array<{ ofdId: number; bytes: Uint8Array }>;
+  mmapRequest?: { guestPtrHint: number; length: number; resultGuestPtr: number; bytes: Uint8Array };
 } = {}): FakeKernelExports {
   let runtimeState = makeKernelState();
   const opLog: string[] = [];
@@ -54,6 +65,7 @@ function makeKernelExports(options: {
   const fdOfdIds = new Map((options.fdEntries ?? []).map((entry) => [entry.fd, entry.ofdId]));
   const fdFlags = new Map((options.fdEntries ?? []).map((entry) => [entry.fd, entry.fdFlags ?? 0]));
   const guestBase = 0x1000;
+  const fsRingBase = 0x3000;
   const pathPtr = options.pathPtr ?? 0x2000;
   const pathBytes = options.path ? new TextEncoder().encode(options.path) : null;
   const absolutePathBytes = options.absolutePath ? new TextEncoder().encode(options.absolutePath) : null;
@@ -72,6 +84,16 @@ function makeKernelExports(options: {
       ofdSlot.bytes,
       runtimeState.ofdTablePtr + ofdSlot.ofdId * ofdSlotBytes,
     );
+  }
+  if (options.mmapRequest) {
+    const view = new DataView(memory.buffer);
+    view.setUint32(fsRingBase + FS_RING_SUBMIT_HEAD_OFFSET, 1, true);
+    const entry = fsRingRequestEntryOffset(fsRingBase, 0);
+    view.setUint32(entry + FS_RING_REQUEST_OPCODE_OFFSET, FS_OP_MMAP, true);
+    view.setInt32(entry + FS_RING_REQUEST_FD_OFFSET, 5, true);
+    view.setBigUint64(entry + FS_RING_REQUEST_LEN_OFFSET, BigInt(options.mmapRequest.length), true);
+    view.setBigUint64(entry + FS_RING_REQUEST_BUF_PTR_OFFSET, BigInt(options.mmapRequest.guestPtrHint), true);
+    view.setUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, 0x1234, true);
   }
   return {
     memory,
@@ -155,12 +177,22 @@ function makeKernelExports(options: {
       new Uint8Array(memory.buffer).set(secondaryAbsolutePathBytes, bufPtr);
       return BigInt(secondaryAbsolutePathBytes.length);
     },
+    thread_fs_ring_base: () => options.mmapRequest ? fsRingBase : 0,
     thread_guest_base: () => guestBase,
     thread_process_fs: () => {
       opLog.push("process-fs");
+      if (options.mmapRequest) {
+        new Uint8Array(memory.buffer).set(
+          options.mmapRequest.bytes,
+          guestBase + options.mmapRequest.resultGuestPtr,
+        );
+      }
     },
     thread_resume_fs: () => {
       opLog.push("resume-fs");
+      if (options.mmapRequest) {
+        return BigInt(options.mmapRequest.resultGuestPtr);
+      }
       return BigInt(options.resumeResult ?? 0);
     },
     process_remove_process_entry: (pid: number) => {
@@ -524,6 +556,77 @@ test("processFs returns fd and OFD snapshots after successful fs processing", ()
     fdFlags: 1,
   });
   expect(Array.from(result.ofdSlots?.[0]?.slot ?? [])).toEqual(Array.from(ofdBytes));
+});
+
+test("processFs returns mmap guest memory populated by kernel-worker fs processing", () => {
+  const canonicalExports = makeKernelExports();
+  const mappedBytes = Uint8Array.from([0x7f, 0x45, 0x4c, 0x46, 0xaa, 0xbb, 0xcc, 0xdd]);
+  const processExports = makeKernelExports({
+    mmapRequest: {
+      guestPtrHint: 0,
+      resultGuestPtr: 0x8000,
+      length: mappedBytes.length,
+      bytes: mappedBytes,
+    },
+  });
+  const processKernels = new Map<number, KernelExports>([[7, processExports]]);
+
+  const processControl = createKernelWorkerProcessControl({
+    getCanonicalExports: () => canonicalExports,
+    setCanonicalExports: () => {},
+    getWasmModule: () => null,
+    setWasmModule: () => {},
+    getSabPageCache: () => new SharedArrayBuffer(65536),
+    setSabPageCache: () => {},
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    canonicalProcesses: new Map(),
+    seedEntries: new Map(),
+    getCanonicalNextPid: () => 3,
+    setCanonicalNextPid: () => {},
+    publishRootInode: () => {},
+    copyOfdState: () => {},
+    copyMemfsState: () => {},
+    rebuildPageCacheFromExports: () => {},
+    rebuildPageCacheFromCanonical: () => {},
+    syncPipeState: (_pid, kernelState) => kernelState,
+    syncEpollState: (_pid, kernelState) => kernelState,
+    syncSocketState: (_pid, kernelState) => kernelState,
+    copyCanonicalMemfsToProcess: () => {},
+    snapshotProcSelfExe: () => null,
+    restoreProcSelfExe: () => {},
+    composeProcessPipeUsed: () => 0n,
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    mergePipeSlotsFromCanonical: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+    }),
+    applyPipeControlState: () => {},
+    copyEpollState: () => {},
+    copySelectedEpollState: () => {},
+    copySocketState: () => {},
+    syncFileDataMutation: () => false,
+    syncFileDataMutationByPath: () => false,
+    syncMetadataMutation: () => false,
+    fanoutCanonicalMemfs: () => {},
+    fsEffectMemfsMutation: 1 << 0,
+    fsEffectSharedOfdState: 1 << 1,
+    fsEffectMemfsFileData: 1 << 2,
+    fsOpOpenAt: 3,
+    fsOpMkdir: 6,
+    fsOpUnlink: 7,
+  });
+
+  const result = processControl.processFs(7, 0x1234, makeKernelState());
+
+  expect(result.result).toBe(0x8000n);
+  expect(result.guestMemoryWrites).toHaveLength(1);
+  expect(result.guestMemoryWrites?.[0]?.guestPtr).toBe(0x8000);
+  expect(result.guestMemoryWrites?.[0]?.bytes.length).toBe(4096);
+  expect(result.guestMemoryWrites?.[0]?.bytes.subarray(0, mappedBytes.length)).toEqual(mappedBytes);
 });
 
 test("processFs snapshots fd entries before metadata sync side effects", () => {

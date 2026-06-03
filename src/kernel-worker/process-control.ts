@@ -1,10 +1,22 @@
 import { attachKernelRuntimeState, readKernelRuntimeState, type KernelExports, type KernelRuntimeState } from "../abi.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import type {
+  GuestMemoryWriteSnapshot,
   KernelWorkerFdEntrySnapshot,
   KernelWorkerOfdSlotSnapshot,
   KernelWorkerPipeSlotSnapshot,
 } from "../messages.js";
+import {
+  FS_OP_MMAP,
+  FS_RING_REQUEST_BUF_PTR_OFFSET,
+  FS_RING_REQUEST_LEN_OFFSET,
+  FS_RING_REQUEST_OPCODE_OFFSET,
+  FS_RING_REQUEST_VM_PTR_OFFSET,
+  FS_RING_SUBMIT_HEAD_OFFSET,
+  FS_RING_SUBMIT_TAIL_OFFSET,
+  FS_RING_TOTAL_BYTES,
+  fsRingRequestEntryOffset,
+} from "../layout/fs-ring.js";
 import { resetPageCache } from "../fs/sab-page-cache.js";
 import {
   restoreThreadWorkerPrepareMemory,
@@ -40,7 +52,13 @@ interface ProcessFsResult {
   ofdStateChanged: boolean;
   fdEntries?: KernelWorkerFdEntrySnapshot[];
   ofdSlots?: KernelWorkerOfdSlotSnapshot[];
+  guestMemoryWrites?: GuestMemoryWriteSnapshot[];
   fsDebug?: string;
+}
+
+interface PendingMmapGuestWriteRequest {
+  guestPtrHint: number;
+  length: number;
 }
 
 interface PendingFsMutationContext {
@@ -259,6 +277,69 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
         ? processExports.thread_pending_fs_target_ino(vmPtr)
         : 0,
     };
+  }
+
+  function readPendingMmapGuestWriteRequest(
+    processExports: KernelExports,
+    vmPtr: number,
+  ): PendingMmapGuestWriteRequest | null {
+    const ringBase = processExports.thread_fs_ring_base?.(vmPtr) ?? 0;
+    if (ringBase <= 0 || ringBase + FS_RING_TOTAL_BYTES > processExports.memory.buffer.byteLength) {
+      return null;
+    }
+    const view = new DataView(processExports.memory.buffer);
+    const submitHead = view.getUint32(ringBase + FS_RING_SUBMIT_HEAD_OFFSET, true);
+    const submitTail = view.getUint32(ringBase + FS_RING_SUBMIT_TAIL_OFFSET, true);
+    if (submitHead === submitTail) {
+      return null;
+    }
+    for (let pos = submitTail; pos < submitHead; pos += 1) {
+      const entry = fsRingRequestEntryOffset(ringBase, pos);
+      if (view.getUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, true) !== vmPtr) {
+        continue;
+      }
+      if (view.getUint32(entry + FS_RING_REQUEST_OPCODE_OFFSET, true) !== FS_OP_MMAP) {
+        continue;
+      }
+      const length = Number(view.getBigUint64(entry + FS_RING_REQUEST_LEN_OFFSET, true));
+      const guestPtrHint = Number(view.getBigUint64(entry + FS_RING_REQUEST_BUF_PTR_OFFSET, true));
+      if (!Number.isFinite(length) || length <= 0) {
+        return null;
+      }
+      return { guestPtrHint, length };
+    }
+    return null;
+  }
+
+  function snapshotMmapGuestMemoryWrite(
+    processExports: KernelExports,
+    vmPtr: number,
+    request: PendingMmapGuestWriteRequest | null,
+    result: bigint,
+  ): GuestMemoryWriteSnapshot[] | undefined {
+    if (request === null || result < 0n) {
+      return undefined;
+    }
+    const returnedGuestPtr = Number(result);
+    const guestPtr = returnedGuestPtr > 0 ? returnedGuestPtr : request.guestPtrHint;
+    const length = Math.ceil(request.length / 4096) * 4096;
+    const guestBase = processExports.thread_guest_base?.(vmPtr) ?? 0;
+    const start = guestBase + guestPtr;
+    const end = start + length;
+    if (
+      !Number.isFinite(guestPtr)
+      || !Number.isFinite(length)
+      || guestPtr <= 0
+      || length <= 0
+      || start < 0
+      || end > processExports.memory.buffer.byteLength
+    ) {
+      return undefined;
+    }
+    return [{
+      guestPtr,
+      bytes: new Uint8Array(processExports.memory.buffer.slice(start, end)),
+    }];
   }
 
   function applyPendingFsMutation(
@@ -636,9 +717,16 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     const processExports = requireProcessKernel(pid);
     attachKernelRuntimeState(processExports, kernelState);
     const pendingContext = readPendingFsMutationContext(processExports, vmPtr);
+    const pendingMmapGuestWrite = readPendingMmapGuestWriteRequest(processExports, vmPtr);
     processExports.thread_process_fs(vmPtr);
     const result = BigInt(processExports.thread_resume_fs(vmPtr));
     const fsSucceeded = Number(BigInt.asIntN(64, result)) >= 0;
+    const guestMemoryWrites = snapshotMmapGuestMemoryWrite(
+      processExports,
+      vmPtr,
+      pendingMmapGuestWrite,
+      result,
+    );
     const completedKernelState = readKernelRuntimeState(processExports);
     const fdEntries = fsSucceeded
       ? snapshotProcessFdEntries(processExports, vmPtr)
@@ -675,6 +763,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       ofdStateChanged: mutation.ofdStateChanged,
       fdEntries,
       ofdSlots,
+      guestMemoryWrites,
       fsDebug,
     };
   }
