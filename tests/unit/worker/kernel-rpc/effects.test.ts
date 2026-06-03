@@ -1,5 +1,6 @@
 import { expect, test, vi } from "vite-plus/test";
 import {
+  applyKernelRpcResumeEffects,
   continueBlockedRpcResumeAfterEffects,
   kernelRpcOutcomeNeedsResumeContinuation,
 } from "../../../../src/worker/kernel-rpc/effects.js";
@@ -74,4 +75,59 @@ test("continueBlockedRpcResumeAfterEffects leaves non-continuation outcomes unch
     { threadWorkerStates: new WeakMap([[worker, {}]]), resumeBlockedSyscallLocally },
   )).resolves.toBe(appliedOutcome);
   expect(resumeBlockedSyscallLocally).not.toHaveBeenCalled();
+});
+
+test("publish-memfs-after-fs does not refresh pipe state", async () => {
+  const worker = {} as Worker;
+  const handle = {
+    runtimeBridge: {
+      stateSab: new SharedArrayBuffer(176),
+      notifySab: new SharedArrayBuffer(12),
+    },
+    kernelState: {},
+  } as unknown as ProcessHandle;
+  const target = {} as ProcessHandle;
+  const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
+  const syncPipeStateViaKernelWorker = vi.fn(async () => 0n);
+
+  await applyKernelRpcResumeEffects(
+    handle,
+    worker,
+    0x1234,
+    {
+      kind: "completed",
+      effects: [{
+        kind: "publish-memfs-after-fs",
+        targets: [target],
+        preservePublishedRegularFileData: true,
+        sourceVmPtr: 0x5678,
+      }],
+    },
+    {
+      blockWorker: vi.fn(),
+      enqueueWorker: vi.fn(),
+      handleBlockedRetryResult: vi.fn(),
+      handleExecveSpawn: vi.fn(async () => {}),
+      kickBlockedWorkers: vi.fn(),
+      markRuntimeFsDirty: vi.fn(),
+      requestPipeStateSync: vi.fn(async () => {}),
+      settleVisibleProcessOutput: vi.fn(async () => {}),
+      syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+      syncForkSharedStateLocally: vi.fn(),
+      syncForkSharedStateViaKernelWorker,
+      syncPipeStateViaKernelWorker,
+      syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+      threadWorkerStates: new WeakMap(),
+    },
+  );
+
+  expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalledWith(handle, [target], {
+    cause: { kind: "syscall", nr: -1n, name: "fs-memfs-publication" },
+    includeMemfs: true,
+    trackHeldOfds: false,
+    memfsOnly: true,
+    preservePublishedRegularFileData: true,
+    sourceVmPtr: 0x5678,
+  });
+  expect(syncPipeStateViaKernelWorker).not.toHaveBeenCalled();
 });

@@ -216,7 +216,6 @@ async function applyKernelRpcResumeEffect(
         preservePublishedRegularFileData: effect.preservePublishedRegularFileData,
         sourceVmPtr: effect.sourceVmPtr,
       });
-      await ports.syncPipeStateViaKernelWorker(handle, kernelRpcEffectCause("fs-memfs-pipe-refresh"));
       return;
     default: {
       const exhaustive: never = effect;
