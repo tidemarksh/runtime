@@ -3,6 +3,7 @@ import {
   createRuntimeStateBridge,
   readPublishedRuntimeBridgeEpoch,
 } from "../../../../src/bridge/runtime-state.js";
+import { RUNTIME_BRIDGE_NOTIFY_INDEX } from "../../../../src/layout/runtime-state.js";
 
 vi.mock("../../../../src/worker/pool.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../../src/worker/pool.js")>();
@@ -1822,6 +1823,46 @@ test("pumpProcess schedules stale repair when dispatch leaves a ready sibling qu
     budget: expect.any(Number),
   }));
   expect(handle.readyWorkers).not.toContain(firstWorker);
+});
+
+test("pumpProcess wakes a no-ready running worker to request cooperative yield", async () => {
+  vi.setSystemTime(new Date(10_000));
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const thread = makeThreadState(0x66c42c8);
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, thread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_ok();
+  const handle = makeHandle(kernel, worker);
+  handle.readyWorkers = [worker];
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  const notify = new Int32Array(handle.runtimeBridge.notifySab);
+  const notifyBefore = Atomics.load(notify, RUNTIME_BRIDGE_NOTIFY_INDEX);
+  scheduler.pumpProcess(handle);
+
+  expect(handle.runningWorker).toBe(worker);
+  expect(worker.postMessage).toHaveBeenCalledTimes(1);
+  expect(Atomics.load(notify, RUNTIME_BRIDGE_NOTIFY_INDEX)).toBe(notifyBefore);
+
+  await vi.advanceTimersByTimeAsync(2_000);
+
+  expect(handle.runningWorker).toBe(worker);
+  expect(worker.postMessage).toHaveBeenCalledTimes(1);
+  expect(Atomics.load(notify, RUNTIME_BRIDGE_NOTIFY_INDEX)).toBeGreaterThan(notifyBefore);
 });
 
 test("pumpProcess clears a stale running worker when the unanswered step shares a status millisecond", () => {

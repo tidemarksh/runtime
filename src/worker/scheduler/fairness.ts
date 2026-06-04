@@ -10,6 +10,7 @@ const STALE_SLEEP_RUNNING_WORKER_REPAIR_MS = 2_000;
 
 export interface ReadyWorkerFairness {
   scheduleRunningWorkerRepairRetry(handle: ProcessHandle): void;
+  scheduleRunningWorkerYieldRetry(handle: ProcessHandle): void;
   wakeRunningWorkerForReadyWork(handle: ProcessHandle): void;
 }
 
@@ -24,23 +25,27 @@ export function appendWorkerDebugLog(handle: ProcessHandle, event: string): void
 }
 
 export function createReadyWorkerFairness(pumpProcess: (handle: ProcessHandle) => void): ReadyWorkerFairness {
-  const pendingRunningWorkerPumps = new WeakMap<ProcessHandle, Set<number>>();
+  const pendingRunningWorkerPumps = new WeakMap<ProcessHandle, Set<string>>();
 
-  function scheduleRunningWorkerPump(handle: ProcessHandle, delayMs: number): void {
+  function scheduleRunningWorkerPump(handle: ProcessHandle, delayMs: number, wakeBeforePump = false): void {
     let pendingDelays = pendingRunningWorkerPumps.get(handle);
     if (!pendingDelays) {
       pendingDelays = new Set();
       pendingRunningWorkerPumps.set(handle, pendingDelays);
     }
-    if (pendingDelays.has(delayMs)) {
+    const key = `${delayMs}:${wakeBeforePump ? 1 : 0}`;
+    if (pendingDelays.has(key)) {
       return;
     }
-    pendingDelays.add(delayMs);
+    pendingDelays.add(key);
     setTimeout(() => {
       const currentPendingDelays = pendingRunningWorkerPumps.get(handle);
-      currentPendingDelays?.delete(delayMs);
+      currentPendingDelays?.delete(key);
       if (currentPendingDelays?.size === 0) {
         pendingRunningWorkerPumps.delete(handle);
+      }
+      if (wakeBeforePump) {
+        wakeRuntimeBridge(handle.runtimeBridge);
       }
       pumpProcess(handle);
     }, delayMs);
@@ -55,6 +60,9 @@ export function createReadyWorkerFairness(pumpProcess: (handle: ProcessHandle) =
   return {
     scheduleRunningWorkerRepairRetry: (handle) => {
       scheduleRunningWorkerPump(handle, STALE_SLEEP_RUNNING_WORKER_REPAIR_MS);
+    },
+    scheduleRunningWorkerYieldRetry: (handle) => {
+      scheduleRunningWorkerPump(handle, STALE_SLEEP_RUNNING_WORKER_REPAIR_MS, true);
     },
     wakeRunningWorkerForReadyWork,
   };
