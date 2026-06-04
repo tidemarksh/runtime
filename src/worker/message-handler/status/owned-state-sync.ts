@@ -281,7 +281,10 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
       thread.vmPtr,
       syscallNr,
     ) && !fdTraceRulesOutForkSharedTopologyChange;
-    const forkSharedDataPlaneIoUsesSocketOrPipe = fdTraceDataPlaneIoUsesSocketOrPipe(handle, latestFdTrace);
+    const forkSharedDataPlaneIoUsesSocketOrPipe = fdTraceDataPlaneIoUsesSocketOrPipe(
+      handle,
+      latestFdTraceForTopology,
+    );
     const forkSharedTopologyMayChange = syscallMayChangeForkSharedOfdTopology(handle, thread.vmPtr, syscallNr)
       && !fdTraceRulesOutForkSharedTopologyChange;
     const forkSharedOffsetOnlyRegularFile = syscallOnlyNeedsRegularFileOffsetSyncWhenPeerShared(

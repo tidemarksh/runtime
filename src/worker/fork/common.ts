@@ -112,6 +112,8 @@ export function createForkChildHandle({
     epollWaiterWakeQueued: false,
     forkSharedSyncPromise: null,
     processMemfsDirty: false,
+    processMemfsPublishPending: false,
+    processMemfsDeletedPaths: new Set(),
     ofdSyncPromise: null,
     ofdSyncQueuedIds: new Set(),
     socketSyncPromise: null,

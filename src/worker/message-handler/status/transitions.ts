@@ -26,6 +26,7 @@ import {
   snapshotProcessPipeSlotsForThreadStep,
 } from "../../ownership/pipe-control.js";
 import { restoreRuntimeNetworkSidecarForHandle } from "../../ownership/socket-control.js";
+import { formatCompactDebugSuffix } from "../../diagnostics/format.js";
 
 interface StatusTransitionArgs {
   handle: ProcessHandle;
@@ -37,6 +38,37 @@ interface StatusTransitionArgs {
   drainedPipe: boolean;
   completedSyncEffects: number;
 }
+
+const VFORK_CHILD_FAULT_DEBUG_KEYS = [
+  "pc",
+  "pc_insn",
+  "pc_vma",
+  "pc_vma_prev",
+  "pc_vma_next",
+  "ra",
+  "sp",
+  "s11",
+  "syscall",
+  "syscall_a7",
+  "syscall_a0",
+  "syscall_a1",
+  "syscall_a2",
+  "syscall_a3",
+  "syscall_a4",
+  "syscall_a5",
+  "process_pid_field",
+  "process_thread_count",
+  "fault_pc",
+  "fault_insn",
+  "fault_vma",
+  "fault_vma_prev",
+  "fault_vma_next",
+  "fault_addr",
+  "fault_signal",
+  "fault_code",
+  "mem_brk_base",
+  "mem_brk_current",
+] as const;
 
 function beginStatusTransitionRpc(blocked: BlockedWorkerState): number {
   blocked.rpcPending = true;
@@ -235,6 +267,20 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     }
 
     if (status === handle.kernel.abi_status_fault()) {
+      if (
+        handle.vforkSnapshot !== null
+        && handle.vforkWorker === worker
+        && handle.vforkSnapshot.vmPtr === thread.vmPtr
+      ) {
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `vfork-child-fault:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
+            + `:child=${handle.vforkSnapshot.childPid ?? "none"}`
+            + `:kernel_child=${handle.kernel.thread_vfork_child_pid?.() ?? "n/a"}`
+            + `:exit=${msg.exitCode}:${msg.termSignal}`
+            + formatCompactDebugSuffix(msg.debug, VFORK_CHILD_FAULT_DEBUG_KEYS),
+        );
+      }
       if (deps.resumeVforkParentAfterChildExit(handle, worker, thread.vmPtr, msg.exitCode, msg.termSignal)) {
         return;
       }
@@ -604,6 +650,21 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       if (handle.vforkSnapshot === null) {
         handle.vforkSnapshot = deps.captureVforkSnapshot(handle, thread);
         handle.vforkWorker = worker;
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `vfork-wait-snapshot:capture:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
+            + `:child=${handle.vforkSnapshot.childPid ?? "none"}`
+            + `:kernel_child=${handle.kernel.thread_vfork_child_pid()}`,
+        );
+      } else {
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `vfork-wait-snapshot:reuse:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
+            + `:snapshot=0x${handle.vforkSnapshot.vmPtr.toString(16)}`
+            + `:child=${handle.vforkSnapshot.childPid ?? "none"}`
+            + `:worker=${handle.vforkWorker === worker ? "match" : "mismatch"}`
+            + `:kernel_child=${handle.kernel.thread_vfork_child_pid()}`,
+        );
       }
       if (
         handle.kernelWorkerRequest
@@ -631,12 +692,22 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             if (handle.vforkSnapshot.childPid === null) {
               const provisionalChildPid = handle.kernel.thread_vfork_child_pid();
               if (provisionalChildPid > 0) {
+                deps.appendRuntimeLifecycleEvent(
+                  handle.runtimeId,
+                  `vfork-wait-canonicalize:start:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
+                    + `:child=${provisionalChildPid}`,
+                );
                 void deps.canonicalizeActiveVforkChildViaKernelWorker(
                   handle,
                   worker,
                   thread.vmPtr,
                   provisionalChildPid,
                 ).then((outcome) => {
+                  deps.appendRuntimeLifecycleEvent(
+                    handle.runtimeId,
+                    `vfork-wait-canonicalize:done:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
+                      + `:child=${provisionalChildPid}:outcome=${outcome?.kind ?? "none"}`,
+                  );
                   if (outcome !== undefined) {
                     consumeKernelRpcResumeOutcome(handle, worker, thread.vmPtr, outcome);
                   }
@@ -658,12 +729,22 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       ) {
         const provisionalChildPid = handle.kernel.thread_vfork_child_pid();
         if (provisionalChildPid > 0) {
+          deps.appendRuntimeLifecycleEvent(
+            handle.runtimeId,
+            `vfork-wait-canonicalize:start:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
+              + `:child=${provisionalChildPid}`,
+          );
           void deps.canonicalizeActiveVforkChildViaKernelWorker(
             handle,
             worker,
             thread.vmPtr,
             provisionalChildPid,
           ).then((outcome) => {
+            deps.appendRuntimeLifecycleEvent(
+              handle.runtimeId,
+              `vfork-wait-canonicalize:done:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
+                + `:child=${provisionalChildPid}:outcome=${outcome?.kind ?? "none"}`,
+            );
             if (outcome !== undefined) {
               consumeKernelRpcResumeOutcome(handle, worker, thread.vmPtr, outcome);
             }

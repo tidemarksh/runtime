@@ -16,7 +16,7 @@ const GLIBC_RUNTIME_LIBS = [
   "libgcc_s.so.1",
 ] as const;
 
-function cToolchainSnapshotSources(extra: readonly SnapshotSource[]): SnapshotSource[] {
+export function cToolchainSnapshotSources(extra: readonly SnapshotSource[]): SnapshotSource[] {
   return [
     { kind: "dir", guestPath: "/tmp", mode: 0o777 },
     { kind: "tree", hostPath: resolve(cToolchainDir, "usr/bin"), guestPath: "/usr/bin" },
@@ -61,4 +61,23 @@ export const cCompileLinkToolchainEntry: ToolchainExecEntry = {
     timeoutMs: 10_000,
     expectedSubstrings: ["c-evidence"],
   }],
+};
+
+export const cLdStartupDiagnosticEntry: ToolchainExecEntry = {
+  id: "c-ld-startup-diagnostic",
+  targetClass: "C toolchain",
+  workflowKind: "linker startup diagnostic",
+  hostExecutablePath: resolve(cToolchainDir, "usr/bin/riscv64-linux-gnu-ld"),
+  guestExecutablePath: "/usr/bin/riscv64-linux-gnu-ld",
+  argv: ["/usr/bin/riscv64-linux-gnu-ld", "--version"],
+  env: [
+    "PATH=/usr/bin:/bin",
+    "HOME=/tmp",
+    "LD_LIBRARY_PATH=/usr/lib/riscv64-linux-gnu:/usr/lib:/lib",
+  ],
+  timeoutMs: 10_000,
+  guestMemoryPolicyLimitBytes: 768 * 1024 * 1024,
+  snapshotSources: cToolchainSnapshotSources([]),
+  expectedDriverSubstrings: ["GNU ld"],
+  artifactChecks: [],
 };

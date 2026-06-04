@@ -286,6 +286,7 @@ test("status handler preserves FS ring snapshots during transient process owner 
   const worker = {} as Worker;
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
   const bytes = new Uint8Array(memory.buffer);
+  bytes.set([9, 9, 9], 0x100);
   const threadWorkerStates = new WeakMap<Worker, ReturnType<typeof makeThreadState>>();
   threadWorkerStates.set(worker, makeThreadState());
   const resumeFsViaKernelWorker = vi.fn(async () => {});
@@ -353,7 +354,9 @@ test("status handler preserves FS ring snapshots during transient process owner 
       notifySab: new SharedArrayBuffer(12),
       stateSab: new SharedArrayBuffer(176),
     },
-    kernel: makeKernel(7),
+    kernel: makeKernel(7, {
+      thread_fs_ring_base: () => 0x100,
+    }),
     kernelState: makeKernelState(),
     onStdout: null,
     runningWorker: worker,
@@ -368,12 +371,16 @@ test("status handler preserves FS ring snapshots during transient process owner 
     pc: 0x2000n,
     kernelState: { ...makeKernelState(), heapPtr: 0xdead },
     debug: "process_pid_field=99 pc=0x2000 sp=0x3000 s11=0x4000",
-    kernelMemoryWrites: [{ ptr: 0x100, bytes: new Uint8Array([1, 2, 3]) }],
+    kernelMemoryWrites: [
+      { ptr: 0x100, bytes: new Uint8Array([1, 2, 3]) },
+      { ptr: 0x2000, bytes: new Uint8Array([7, 8, 9]) },
+    ],
     guestMemoryWrites: [{ guestPtr: 0x200, bytes: new Uint8Array([4, 5, 6]) }],
   });
 
-  expect(Array.from(bytes.slice(0x100, 0x103))).toEqual([1, 2, 3]);
+  expect(Array.from(bytes.slice(0x100, 0x103))).toEqual([9, 9, 9]);
   expect(Array.from(bytes.slice(0x200, 0x203))).toEqual([4, 5, 6]);
+  expect(Array.from(bytes.slice(0x2000, 0x2003))).toEqual([7, 8, 9]);
   expect((handle as { kernelState: ReturnType<typeof makeKernelState> }).kernelState.heapPtr).toBe(0);
   expect(resumeFsViaKernelWorker).toHaveBeenCalledWith(handle, worker, 0x1234);
 });

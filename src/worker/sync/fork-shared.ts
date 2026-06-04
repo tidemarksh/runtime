@@ -15,6 +15,7 @@ import {
   kernelShareOtherMembers,
   restoreLocalOfdSlots,
 } from "../kernel-share.js";
+import { reapplyMemfsDeletedPaths } from "../memfs-tombstones.js";
 import {
   mergeKernelShareOfdStateInto,
   pruneStaleKernelShareOfdIds,
@@ -134,6 +135,22 @@ function hasPendingBlockedRpc(handle: ProcessHandle): boolean {
   return [...handle.blockedWorkers.values()].some((blocked) => blocked.rpcPending);
 }
 
+function pruneUnpeeredRegularFileSharedOfds(handle: ProcessHandle): void {
+  for (const ofdId of [...handle.kernelShare.sharedOfdIds]) {
+    if (!isRegularFileOfd(handle, ofdId)) {
+      continue;
+    }
+    if (sourceForkSharedOfdPeerState(handle, ofdId).compatiblePeer) {
+      continue;
+    }
+    for (const member of handle.kernelShare.members) {
+      member.kernel.kernel_unreserve_ofd?.(ofdId);
+    }
+    handle.kernelShare.sharedOfdIds.delete(ofdId);
+    handle.kernelShare.ofdSlotSnapshots.delete(ofdId);
+  }
+}
+
 export async function syncForkSharedStateViaKernelWorker(
   handle: ProcessHandle,
   targets: ProcessHandle[],
@@ -160,6 +177,7 @@ export async function syncForkSharedStateViaKernelWorker(
 
   if (!memfsOnly && options.trackHeldOfds === true) {
     trackHeldForkSharedOfds(handle, options.sourceVmPtr ?? handle.vmPtr);
+    pruneUnpeeredRegularFileSharedOfds(handle);
   }
   const syncableForkSharedOfd = (ofdId: number): boolean => !isProcessHostStdioPipeOfd(handle, ofdId);
   const sourceVmPtr = options.sourceVmPtr ?? handle.vmPtr;
@@ -185,13 +203,14 @@ export async function syncForkSharedStateViaKernelWorker(
       }
     }
   }
+  const canSyncForkSharedOfd = (ofdId: number): boolean =>
+    syncableForkSharedOfd(ofdId)
+    && !sourceConflictingOfdIds.has(ofdId)
+    && (allowedOfdIdSet === null || allowedOfdIdSet.has(ofdId))
+    && (!isRegularFileOfd(handle, ofdId) || sourcePublishedOfdIds.has(ofdId));
   const activeOfdIds = memfsOnly
     ? []
-    : activeKernelShareOfdIds(handle).filter((ofdId) =>
-        syncableForkSharedOfd(ofdId)
-        && !sourceConflictingOfdIds.has(ofdId)
-        && (allowedOfdIdSet === null || allowedOfdIdSet.has(ofdId))
-      );
+    : activeKernelShareOfdIds(handle).filter(canSyncForkSharedOfd);
   const preservedSourceFdOfdSlots = snapshotLocalOfdSlots(
     handle,
     sourceFdOfdIds.filter((ofdId) => !isRegularFileOfd(handle, ofdId)),
@@ -213,24 +232,19 @@ export async function syncForkSharedStateViaKernelWorker(
     return ofdIds.filter((ofdId) => !runtimeNetworkSocketOfdIds.has(ofdId));
   };
   const publishableSourceHeldOfdIds = [...sourceHeldOfdIds].filter((ofdId) =>
-    syncableForkSharedOfd(ofdId)
-    && !sourceConflictingOfdIds.has(ofdId)
-    && (allowedOfdIdSet === null || allowedOfdIdSet.has(ofdId))
+    canSyncForkSharedOfd(ofdId)
   );
   const publishableSourceFdOfdIds = sourceFdOfdIds.filter((ofdId) =>
-    syncableForkSharedOfd(ofdId)
-    && !sourceConflictingOfdIds.has(ofdId)
-    && (allowedOfdIdSet === null || allowedOfdIdSet.has(ofdId))
+    canSyncForkSharedOfd(ofdId)
   );
   const sourceFdOfdIdSet = new Set(sourceFdOfdIds);
   const trackedSourceOfdIds = options.trackHeldOfds === true
     ? [...new Set([...sourceHeldOfdIds, ...sourceFdOfdIds])]
         .filter((ofdId) =>
           (handle.kernelShare.sharedOfdIds.has(ofdId) || sourceFdOfdIdSet.has(ofdId))
-          && syncableForkSharedOfd(ofdId)
+          && canSyncForkSharedOfd(ofdId)
           && handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_none()
           && (sourceFdOfdIdSet.has(ofdId) || !sourceForkSharedOfdPeerState(handle, ofdId).incompatiblePeer)
-          && (allowedOfdIdSet === null || allowedOfdIdSet.has(ofdId))
         )
     : [];
   let syncOfdIds = [...new Set([...publishableSourceHeldOfdIds, ...publishableSourceFdOfdIds, ...activeOfdIds])]
@@ -281,7 +295,7 @@ export async function syncForkSharedStateViaKernelWorker(
       deltaOfdIdSet.add(ofdId);
     }
     const deltaOfdIds = omitRuntimeNetworkSocketOfds([...deltaOfdIdSet])
-      .filter(syncableForkSharedOfd)
+      .filter(canSyncForkSharedOfd)
       .sort((left, right) => left - right);
     deltaOfdIds.sort((left, right) => left - right);
     appendSocketSyncDebug(
@@ -375,6 +389,7 @@ export async function syncForkSharedStateViaKernelWorker(
   };
   restoreNetworkBridgeSocketState(networkSocketSnapshots);
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
+  reapplyMemfsDeletedPaths(handle);
   restoreLocalOfdSlots(handle, preservedSourceFdOfdSlots);
   for (const snapshot of preservedRuntimeNetworkKernelStates) {
     restoreRuntimeNetworkKernelState(snapshot);
@@ -388,6 +403,13 @@ export async function syncForkSharedStateViaKernelWorker(
   }
   handle.kernelState = readKernelRuntimeState(handle.kernel);
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
+  for (const member of kernelShareOtherMembers(handle)) {
+    const reapplied = reapplyMemfsDeletedPaths(member);
+    if (reapplied.length > 0) {
+      member.kernelState = readKernelRuntimeState(member.kernel);
+      attachKernelRuntimeState(member.kernel, member.kernelState);
+    }
+  }
   lastForkSharedActiveOfdIdsByHandle.set(handle, new Set(sourceActiveOfdIds));
   pruneStaleKernelShareOfdIds(handle, staleOfdIds);
   if (!memfsOnly) {

@@ -13,6 +13,13 @@ import { appendPendingGuestMemoryWrites } from "../guest-memory-writes.js";
 import { ensureKernelMemoryCapacity, kernelScratchBase } from "../kernel-scratch.js";
 import { adoptKernelStateForHandle } from "../kernel-state.js";
 import {
+  forgetMemfsDeletedPath,
+  reapplyMemfsDeletedPaths,
+  rememberMemfsDeletedPath,
+  removeLocalMemfsPath,
+  resolveLocalMemfsPath,
+} from "../memfs-tombstones.js";
+import {
   createTransferDebugStats,
   type ProcessHandle,
   type ThreadWorkerState,
@@ -20,6 +27,7 @@ import {
 import type {
   GuestMemoryWriteSnapshot,
   KernelWorkerFdEntrySnapshot,
+  KernelWorkerOfdSlotSnapshot,
   KernelWorkerPidBytesSnapshot,
 } from "../../messages.js";
 import type { SyncCause } from "../contracts/sync.js";
@@ -100,6 +108,11 @@ interface FsRingProgressSnapshot {
   submitTail: number;
   completeHead: number;
   completeTail: number;
+}
+
+interface PendingRegularFileFsRequest {
+  fd: number;
+  ofdId: number;
 }
 
 export interface WorkerKernelRpcFsDeps {
@@ -193,6 +206,84 @@ function formatPendingFsDebugSuffix(context: PendingFsContext): string {
     ? `:path2=${JSON.stringify(context.secondaryPath)}`
     : "";
   return `:op=${context.opcode}:fx=${context.effects}:ino=${context.targetIno}${pathSuffix}${secondaryPathSuffix}`;
+}
+
+function applyLocalMetadataMutationAfterFs(
+  handle: ProcessHandle,
+  vmPtr: number,
+  pendingFs: PendingFsContext,
+  fsSucceeded: boolean,
+  fsEffects: KernelRpcFsEffects,
+): void {
+  if (
+    !fsSucceeded
+    || pendingFs.opcode !== FS_OP_UNLINK
+    || (pendingFs.effects & fsEffects.memfsMutation) === 0
+    || !pendingFs.path
+  ) {
+    return;
+  }
+  rememberMemfsDeletedPath(handle, pendingFs.path);
+  const removed = removeLocalMemfsPath(handle, pendingFs.path);
+  appendFsLifecycleEvent(
+    handle,
+    "local-metadata",
+    vmPtr,
+    `:op=UNLINK:path=${JSON.stringify(pendingFs.path)}:removed=${removed ? 1 : 0}:post_ino=${resolveLocalMemfsPath(handle, pendingFs.path)}`,
+  );
+  handle.kernelState = readKernelRuntimeState(handle.kernel);
+  attachKernelRuntimeState(handle.kernel, handle.kernelState);
+  for (const member of deps.kernelShareOtherMembers(handle)) {
+    rememberMemfsDeletedPath(member, pendingFs.path);
+    const memberRemoved = removeLocalMemfsPath(member, pendingFs.path);
+    appendFsLifecycleEvent(
+      member,
+      "local-metadata-peer",
+      member.vmPtr,
+      `:source=${handle.pid}:op=UNLINK:path=${JSON.stringify(pendingFs.path)}:removed=${memberRemoved ? 1 : 0}:post_ino=${resolveLocalMemfsPath(member, pendingFs.path)}`,
+    );
+    member.kernelState = readKernelRuntimeState(member.kernel);
+    attachKernelRuntimeState(member.kernel, member.kernelState);
+  }
+}
+
+function clearSupersededMemfsDeletedPath(
+  handle: ProcessHandle,
+  pendingFs: PendingFsContext,
+  fsSucceeded: boolean,
+  fsEffects: KernelRpcFsEffects,
+): void {
+  if (!fsSucceeded || !pendingFs.path || (pendingFs.effects & fsEffects.memfsMutation) === 0) {
+    return;
+  }
+  if (pendingFs.opcode === FS_OP_OPENAT || pendingFs.opcode === FS_OP_MKDIR) {
+    forgetMemfsDeletedPath(handle, pendingFs.path);
+    return;
+  }
+  if (pendingFs.opcode === FS_OP_RENAME && pendingFs.secondaryPath) {
+    forgetMemfsDeletedPath(handle, pendingFs.secondaryPath);
+  }
+}
+
+function reapplyLocalMemfsDeletedPathTombstones(
+  handle: ProcessHandle,
+  vmPtr: number,
+  phase: string,
+): void {
+  const results = reapplyMemfsDeletedPaths(handle);
+  if (results.length === 0) {
+    return;
+  }
+  for (const result of results) {
+    appendFsLifecycleEvent(
+      handle,
+      "local-metadata-tombstone",
+      vmPtr,
+      `:${phase}:path=${JSON.stringify(result.path)}:removed=${result.removed ? 1 : 0}:post_ino=${result.postIno}`,
+    );
+  }
+  handle.kernelState = readKernelRuntimeState(handle.kernel);
+  attachKernelRuntimeState(handle.kernel, handle.kernelState);
 }
 
 function appendFsLifecycleEvent(
@@ -337,6 +428,73 @@ function fsRingHasPendingRequestForVm(handle: ProcessHandle, vmPtr: number): boo
     }
   }
   return false;
+}
+
+function pendingFsRequestFd(handle: ProcessHandle, vmPtr: number): number | null {
+  const progress = snapshotFsRingProgress(handle, vmPtr);
+  if (progress === null) {
+    return null;
+  }
+  const view = new DataView(handle.memory.buffer);
+  const { ringBase, submitHead, submitTail } = progress;
+  for (let pos = submitTail; pos < submitHead; pos += 1) {
+    const entry = fsRingRequestEntryOffset(ringBase, pos);
+    const requestVmPtr = view.getUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, true);
+    if (requestVmPtr === vmPtr) {
+      return view.getInt32(entry + FS_RING_REQUEST_FD_OFFSET, true);
+    }
+  }
+  return null;
+}
+
+function pendingRegularFileFsRequest(
+  handle: ProcessHandle,
+  vmPtr: number,
+  pendingFs: PendingFsContext,
+): PendingRegularFileFsRequest | null {
+  if (
+    pendingFs.opcode !== FS_OP_READ
+    && pendingFs.opcode !== FS_OP_WRITE
+    && pendingFs.opcode !== FS_OP_LSEEK
+    && pendingFs.opcode !== FS_OP_MMAP
+  ) {
+    return null;
+  }
+  const fd = pendingFsRequestFd(handle, vmPtr);
+  if (fd === null || fd < 0 || fd >= handle.kernel.abi_max_fds()) {
+    return null;
+  }
+  const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+  if (
+    ofdId > 0
+    && ofdId < handle.kernel.abi_max_fds()
+    && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_file()
+  ) {
+    return { fd, ofdId };
+  }
+  return null;
+}
+
+function filterFsResponseToRegularFileRequest(
+  request: PendingRegularFileFsRequest,
+  fdEntries: readonly KernelWorkerFdEntrySnapshot[] | undefined,
+  ofdSlots: readonly KernelWorkerOfdSlotSnapshot[] | undefined,
+): {
+  fdEntries?: KernelWorkerFdEntrySnapshot[];
+  ofdSlots?: KernelWorkerOfdSlotSnapshot[];
+} {
+  const requestFdEntries = (fdEntries ?? [])
+    .filter((entry) => entry.fd === request.fd && entry.ofdId === request.ofdId);
+  const requestOfdIds = new Set<number>([request.ofdId]);
+  for (const entry of requestFdEntries) {
+    requestOfdIds.add(entry.ofdId);
+  }
+  const requestOfdSlots = (ofdSlots ?? [])
+    .filter((snapshot) => requestOfdIds.has(snapshot.ofdId));
+  return {
+    fdEntries: requestFdEntries.length > 0 ? requestFdEntries : undefined,
+    ofdSlots: requestOfdSlots.length > 0 ? requestOfdSlots : undefined,
+  };
 }
 
 function fsRingHasPendingCompletionForVm(handle: ProcessHandle, vmPtr: number): boolean {
@@ -676,6 +834,8 @@ async function resumeFsViaKernelWorkerInner(
     );
   const ofdStateMayChange = (pendingFs.effects & fsEffects.sharedOfdState) !== 0;
   const preservePublishedRegularFileData = memfsPublishMayBeReady;
+  const regularFilePendingFs = pendingRegularFileFsRequest(handle, vmPtr, pendingFs);
+  const regularFileOnlyPendingFs = regularFilePendingFs !== null;
   if (!handle.kernelWorkerRequest || handle.pid <= 0) {
     deps.appendWorkerDebugLog(handle, `fs-start:0x${vmPtr.toString(16)}:local${fsDebugSuffix}`);
     appendFsLifecycleEvent(handle, "start", vmPtr, `:local${fsDebugSuffix}${formatFsRingDebug(handle, vmPtr)}`);
@@ -688,10 +848,14 @@ async function resumeFsViaKernelWorkerInner(
     recordFsTransferStats(handle, pendingFs, fsResult, fsSucceeded, fsEffects, false, memfsPublishReady);
     const postFsRingProgress = snapshotFsRingProgress(handle, vmPtr);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
+    applyLocalMetadataMutationAfterFs(handle, vmPtr, pendingFs, fsSucceeded, fsEffects);
+    clearSupersededMemfsDeletedPath(handle, pendingFs, fsSucceeded, fsEffects);
+    reapplyLocalMemfsDeletedPathTombstones(handle, vmPtr, "local-after-fs");
     if (memfsMutated) {
       handle.processMemfsDirty = true;
+      handle.processMemfsPublishPending = true;
       effects.push({ kind: "mark-runtime-fs-dirty", handle });
-    } else if (ofdStateChanged) {
+    } else if (ofdStateChanged && !regularFileOnlyPendingFs) {
       effects.push({
         kind: "sync-fork-shared-state-local-after-fs",
         targets: deps.kernelShareOtherMembers(handle),
@@ -811,7 +975,18 @@ async function resumeFsViaKernelWorkerInner(
         `:rv=${fsResult.toString()}:pid=${responseCurrentPid}${fsDebugSuffix}`,
       );
     }
-    if (!failedExecveChildOwner && (fsProcessedResponse.ofdSlots || fsProcessedResponse.fdEntries)) {
+    if (!failedExecveChildOwner && !transientProcessOwnerMismatch) {
+      applyLocalMetadataMutationAfterFs(handle, vmPtr, pendingFs, fsSucceeded, fsEffects);
+    }
+    if (!failedExecveChildOwner) {
+      clearSupersededMemfsDeletedPath(handle, pendingFs, fsSucceeded, fsEffects);
+      reapplyLocalMemfsDeletedPathTombstones(handle, vmPtr, "worker-after-adopt");
+    }
+    if (
+      !failedExecveChildOwner
+      && !regularFileOnlyPendingFs
+      && (fsProcessedResponse.ofdSlots || fsProcessedResponse.fdEntries)
+    ) {
       applyThreadOfdSlots(handle, {
         vmPtr,
         fdEntries: fsProcessedResponse.fdEntries,
@@ -823,6 +998,41 @@ async function resumeFsViaKernelWorkerInner(
         "fd-applied",
         vmPtr,
         `:fds=${formatRuntimeFdSummary(handle, vmPtr)}`,
+      );
+    } else if (!failedExecveChildOwner && regularFilePendingFs) {
+      const requestFsState = filterFsResponseToRegularFileRequest(
+        regularFilePendingFs,
+        fsProcessedResponse.fdEntries,
+        fsProcessedResponse.ofdSlots,
+      );
+      if (requestFsState.fdEntries || requestFsState.ofdSlots) {
+        applyThreadOfdSlots(handle, {
+          vmPtr,
+          fdEntries: requestFsState.fdEntries,
+          ofdSlots: requestFsState.ofdSlots,
+          trustRegularFileOfdOffsets: true,
+        });
+        applyThreadFdEntries(handle, vmPtr, requestFsState.fdEntries);
+        appendFsLifecycleEvent(
+          handle,
+          "fd-apply-partial",
+          vmPtr,
+          `:fd=${regularFilePendingFs.fd}:ofd=${regularFilePendingFs.ofdId}:fds=${formatRuntimeFdSummary(handle, vmPtr)}`,
+        );
+      } else {
+        appendFsLifecycleEvent(
+          handle,
+          "fd-apply-skipped",
+          vmPtr,
+          `:fd=${regularFilePendingFs.fd}:ofd=${regularFilePendingFs.ofdId}:fds=${formatFdEntrySummary(fsProcessedResponse.fdEntries)}`,
+        );
+      }
+    } else if (regularFileOnlyPendingFs) {
+      appendFsLifecycleEvent(
+        handle,
+        "fd-apply-skipped",
+        vmPtr,
+        `:fds=${formatFdEntrySummary(fsProcessedResponse.fdEntries)}`,
       );
     }
     const memfsMutated = fsProcessedResponse.memfsMutated || (fsSucceeded && (memfsStateMayChange || pendingRingRequest));
@@ -875,7 +1085,7 @@ async function resumeFsViaKernelWorkerInner(
     const forkShareMembers = deps.kernelShareOtherMembers(handle);
     const syncTargets = forkShareMembers
       .filter((member) => member.runningWorker === null);
-    if (ofdStateChanged && !transientProcessOwnerMismatch && forkShareMembers.length > 0) {
+    if (ofdStateChanged && !regularFileOnlyPendingFs && !transientProcessOwnerMismatch && forkShareMembers.length > 0) {
       effects.push({
         kind: "sync-shared-ofd-state-after-fs",
         targets: syncTargets,
@@ -888,6 +1098,7 @@ async function resumeFsViaKernelWorkerInner(
     }
     if (memfsMutated) {
       handle.processMemfsDirty = true;
+      handle.processMemfsPublishPending = true;
       if (!transientProcessOwnerMismatch) {
         if (memfsPublishReady && forkShareMembers.length > 0) {
           for (const member of forkShareMembers) {

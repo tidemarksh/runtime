@@ -8,7 +8,9 @@ import type { ProcessHandle } from "../../../../src/worker/types.js";
 function makeHandle(
   heldOfdIds: readonly number[],
   sharedOfdIds: Iterable<number> = [],
+  regularFileOfdIds: Iterable<number> = [],
 ): ProcessHandle {
+  const regularFileOfdIdSet = new Set(regularFileOfdIds);
   return {
     vmPtr: 0x1000,
     blockedWorkers: new Map(),
@@ -19,8 +21,10 @@ function makeHandle(
     kernel: {
       abi_max_fds: () => 16,
       abi_max_threads: () => 0,
+      abi_fd_type_file: () => 1,
       process_fd_ofd_id: (_vmPtr: number, fd: number) => heldOfdIds[fd] ?? 0,
       process_thread_vm_ptr: () => 0,
+      kernel_ofd_fd_type: (ofdId: number) => regularFileOfdIdSet.has(ofdId) ? 1 : 6,
     },
   } as unknown as ProcessHandle;
 }
@@ -36,8 +40,8 @@ test("vfork execve inherited shared OFDs stay shared only while another member s
   expect(parent.kernelShare.sharedOfdIds.has(5)).toBe(false);
 });
 
-test("vfork execve child tracking records exec fd entries and live held OFDs", () => {
-  const child = makeHandle([0, 7, 0, 9]);
+test("vfork execve child tracking records only exec-inherited fd entries", () => {
+  const child = makeHandle([0, 7, 0, 9, 11], [7, 9, 11, 12], [11, 12]);
 
   trackVforkExecveChildSharedOfds(child, [
     { fd: 1, ofdId: 7, fdFlags: 0 },

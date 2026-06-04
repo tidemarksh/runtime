@@ -1045,6 +1045,34 @@ function formatProcessSyscallTrace(handle: ProcessHandle): string {
   return entries.join(" ");
 }
 
+function formatProcessSyscallErrorTrace(handle: ProcessHandle): string {
+  const len = handle.kernel.debug_syscall_trace_len?.() ?? 0;
+  if (len <= 0) {
+    return "";
+  }
+  const entries: string[] = [];
+  for (let index = 0; index < len; index += 1) {
+    const traceVmPtr = handle.kernel.debug_syscall_trace_entry_vm_ptr?.(index) ?? 0;
+    const nr = handle.kernel.debug_syscall_trace_entry_nr?.(index);
+    const status = handle.kernel.debug_syscall_trace_entry_status?.(index) ?? 0;
+    const result = handle.kernel.debug_syscall_trace_entry_result?.(index);
+    if ((result === undefined || result >= 0n) && status === 0) {
+      continue;
+    }
+    entries.push(
+      `${index}:vm=0x${traceVmPtr.toString(16)}:nr=${nr?.toString() ?? "n/a"}`
+      + `:a0=${handle.kernel.debug_syscall_trace_entry_arg0?.(index)?.toString() ?? "n/a"}`
+      + `:a1=${handle.kernel.debug_syscall_trace_entry_arg1?.(index)?.toString() ?? "n/a"}`
+      + `:a2=${handle.kernel.debug_syscall_trace_entry_arg2?.(index)?.toString() ?? "n/a"}`
+      + `:a3=${handle.kernel.debug_syscall_trace_entry_arg3?.(index)?.toString() ?? "n/a"}`
+      + `:a4=${handle.kernel.debug_syscall_trace_entry_arg4?.(index)?.toString() ?? "n/a"}`
+      + `:a5=${handle.kernel.debug_syscall_trace_entry_arg5?.(index)?.toString() ?? "n/a"}`
+      + `:status=${status}:result=${result?.toString() ?? "n/a"}`,
+    );
+  }
+  return entries.slice(-64).join(" ");
+}
+
 function formatProcessRiscvSyscallTrace(handle: ProcessHandle): string {
   const len = handle.kernel.debug_riscv_syscall_trace_len?.() ?? 0;
   if (len <= 0) {
@@ -1071,6 +1099,35 @@ function formatProcessRiscvSyscallTrace(handle: ProcessHandle): string {
     );
   }
   return entries.join(" ");
+}
+
+function formatSelectedSyscallProfile(handle: ProcessHandle): string {
+  const count = handle.kernel.debug_syscall_profile_count;
+  if (!count) {
+    return "";
+  }
+  const nonOk = handle.kernel.debug_syscall_profile_non_ok_status_count;
+  const error = handle.kernel.debug_syscall_profile_error_count;
+  const selected = [
+    ["exit_group", 94],
+    ["renameat", 38],
+    ["ftruncate", 46],
+    ["pwrite64", 68],
+    ["clone", 220],
+    ["execve", 221],
+    ["msync", 227],
+    ["wait4", 260],
+    ["renameat2", 276],
+    ["clone3", 435],
+  ] as const;
+  return selected
+    .map(([name, nr]) => {
+      const seen = formatU64Decimal(count(nr));
+      const nonOkSeen = formatU64Decimal(nonOk?.(nr));
+      const errors = formatU64Decimal(error?.(nr));
+      return `${name}/${nr}=${seen}/${nonOkSeen}/${errors}`;
+    })
+    .join(" ");
 }
 
 function formatProcessFdTrace(handle: ProcessHandle): string {
@@ -1353,7 +1410,9 @@ export function debugRuntimeProcessHandles(
           `debug=${handle.lastDebugMessage ?? "n/a"}`,
           `execve_error=${formatExecveError(handle)}`,
           `syscalls=[${formatProcessSyscallTrace(handle)}]`,
+          `syscall_errors=[${formatProcessSyscallErrorTrace(handle)}]`,
           `riscv_syscalls=[${formatProcessRiscvSyscallTrace(handle)}]`,
+          `syscall_profile=[${formatSelectedSyscallProfile(handle)}]`,
           `fd_syscalls=[${formatProcessFdTrace(handle)}]`,
           `path_syscalls=[${formatProcessPathTrace(handle)}]`,
         ].join(" ");
@@ -1367,6 +1426,7 @@ export function debugRuntimeProcessHandles(
           `execve_error=${formatExecveError(handle)}`,
           `syscalls=[${formatProcessSyscallTrace(handle)}]`,
           `riscv_syscalls=[${formatProcessRiscvSyscallTrace(handle)}]`,
+          `syscall_profile=[${formatSelectedSyscallProfile(handle)}]`,
           `path_syscalls=[${formatProcessPathTrace(handle)}]`,
         ].join(" ");
       }

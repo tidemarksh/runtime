@@ -130,13 +130,20 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
     }
 
     const waitStatus = encodeWaitStatus(exitCode, termSignal);
+    const childPid = handle.kernel.thread_vfork_child_pid();
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `resume-vfork-parent-after-exit:start:${handle.pid}:vm=0x${vmPtr.toString(16)}`
+        + `:child=${childPid}`
+        + `:snapshot_child=${snapshot.childPid ?? "none"}`
+        + `:exit=${exitCode}:${termSignal}:wait=${waitStatus}`,
+    );
 
     if (handle.kernelWorkerRequest && handle.pid > 0) {
       void deps.resumeVforkParentViaKernelWorker(handle, worker, vmPtr, waitStatus);
       return true;
     }
 
-    const childPid = handle.kernel.thread_vfork_child_pid();
     if (childPid <= 0) {
       return false;
     }

@@ -1,5 +1,15 @@
 import { expect, test, vi } from "vite-plus/test";
 import { createWorkerKernelRpcFsHelpers } from "../../../../src/worker/kernel-rpc/fs.js";
+import {
+  FS_OP_MMAP,
+  FS_OP_WRITE,
+  FS_RING_REQUEST_FD_OFFSET,
+  FS_RING_REQUEST_OPCODE_OFFSET,
+  FS_RING_REQUEST_VM_PTR_OFFSET,
+  FS_RING_SUBMIT_HEAD_OFFSET,
+  FS_RING_SUBMIT_TAIL_OFFSET,
+  fsRingRequestEntryOffset,
+} from "../../../../src/layout/fs-ring.js";
 import type { KernelRuntimeState } from "../../../../src/abi.js";
 import { createTransferDebugStats } from "../../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
@@ -63,6 +73,7 @@ function makeKernel() {
     abi_max_fds: () => 8,
     abi_max_threads: () => 4,
     abi_eagain: () => 11,
+    abi_fd_type_file: () => 3,
     abi_status_fs: () => 31,
     process_fd_ofd_id: () => 0,
     process_fd_flags: () => 0,
@@ -70,6 +81,22 @@ function makeKernel() {
     kernel_ofd_fd_type: () => 0,
     kernel_ofd_table_bytes: () => 0,
   };
+}
+
+function seedFsRingRequest(
+  memory: WebAssembly.Memory,
+  ringBase: number,
+  vmPtr: number,
+  opcode: number,
+  fd: number,
+): void {
+  const view = new DataView(memory.buffer);
+  view.setUint32(ringBase + FS_RING_SUBMIT_HEAD_OFFSET, 1, true);
+  view.setUint32(ringBase + FS_RING_SUBMIT_TAIL_OFFSET, 0, true);
+  const entry = fsRingRequestEntryOffset(ringBase, 0);
+  view.setUint32(entry + FS_RING_REQUEST_OPCODE_OFFSET, opcode, true);
+  view.setInt32(entry + FS_RING_REQUEST_FD_OFFSET, fd, true);
+  view.setUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, vmPtr, true);
 }
 
 test("kernel-rpc fs helper owns local resume and returns a typed outcome", async () => {
@@ -412,4 +439,261 @@ test("kernel-worker fs outcome defers file write publication to a later sync poi
   expect(outcome.effects).not.toEqual(expect.arrayContaining([
     expect.objectContaining({ kind: "publish-memfs-after-fs" }),
   ]));
+});
+
+test("kernel-worker fs outcome applies only request fd after regular file write", async () => {
+  const ringBase = 0x3000;
+  const kernel = {
+    ...makeKernel(),
+    thread_pending_fs_opcode: () => FS_OP_WRITE,
+    thread_pending_fs_effects: () => 4,
+    thread_pending_fs_target_ino: () => 42,
+    thread_fs_ring_base: () => ringBase,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 3 ? 5 : 0,
+    process_set_fd_entry: vi.fn(),
+    kernel_ofd_fd_type: (ofdId: number) => ofdId === 5 ? 3 : 0,
+  };
+  seedFsRingRequest(kernel.memory, ringBase, 0x1234, FS_OP_WRITE, 3);
+  const kernelWorkerRequest = vi.fn(async () => {
+    new DataView(kernel.memory.buffer).setUint32(ringBase + FS_RING_SUBMIT_TAIL_OFFSET, 1, true);
+    return {
+      type: "fs-processed",
+      requestId: 1,
+      kernelState: makeKernelState(),
+      result: 8n,
+      memfsMutated: false,
+      ofdStateChanged: true,
+      fdEntries: [
+        { fd: 3, ofdId: 5, fdFlags: 0 },
+        { fd: 4, ofdId: 7, fdFlags: 0 },
+      ],
+    };
+  });
+  const targetKernel = makeKernel();
+  const target = {
+    pid: 2,
+    vmPtr: 0x5678,
+    kernel: targetKernel,
+    kernelState: makeKernelState(),
+    memory: targetKernel.memory,
+    blockedWorkers: new Map(),
+    runningWorker: null,
+  } as unknown as ProcessHandle;
+  const handle = {
+    pid: 1,
+    runtimeId: 1,
+    vmPtr: 0x1234,
+    kernel,
+    kernelState: makeKernelState(),
+    memory: kernel.memory,
+    processMemfsDirty: false,
+    transferDebugStats: createTransferDebugStats(),
+    kernelShare: { members: new Set([target]), sharedOfdIds: new Set() },
+    workers: new Set(),
+    blockedWorkers: new Map(),
+    kernelWorkerRequest,
+  } as unknown as ProcessHandle;
+  const worker = {} as Worker;
+  handle.workers.add(worker);
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, {});
+  const helpers = createWorkerKernelRpcFsHelpers({
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    appendWorkerDebugLog: vi.fn(),
+    assertProcessStandardFdIntegrity: vi.fn(),
+    blockWorker: vi.fn(),
+    enqueueWorker: vi.fn(),
+    failProcess: vi.fn((_handle, error) => {
+      throw error;
+    }),
+    kickBlockedWorkers: vi.fn(),
+    markRuntimeFsDirty: vi.fn(),
+    kernelShareOtherMembers: () => [target],
+    syncForkSharedStateLocallyAfterFs: vi.fn(),
+    syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
+    syncSharedOfdStateAfterFs: vi.fn(async () => {}),
+    publishMemfsAfterFs: vi.fn(async () => {}),
+    rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    publishRuntimeKernelState: vi.fn(),
+  });
+
+  const outcome = await helpers.resumeFsViaKernelWorkerOutcome(
+    handle,
+    worker,
+    0x1234,
+    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+  );
+
+  expect(outcome.effects).not.toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: "sync-shared-ofd-state-after-fs" }),
+  ]));
+  expect(kernel.process_set_fd_entry).toHaveBeenCalledTimes(1);
+  expect(kernel.process_set_fd_entry).toHaveBeenCalledWith(0x1234, 3, 5, 0);
+  expect(kernel.process_set_fd_entry).not.toHaveBeenCalledWith(0x1234, 4, 7, 0);
+});
+
+test("kernel-worker fs outcome skips shared OFD sync after regular file mmap", async () => {
+  const ringBase = 0x3000;
+  const kernel = {
+    ...makeKernel(),
+    thread_pending_fs_opcode: () => FS_OP_MMAP,
+    thread_pending_fs_effects: () => 0,
+    thread_pending_fs_target_ino: () => 42,
+    thread_fs_ring_base: () => ringBase,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 3 ? 5 : 0,
+    kernel_ofd_fd_type: (ofdId: number) => ofdId === 5 ? 3 : 0,
+  };
+  seedFsRingRequest(kernel.memory, ringBase, 0x1234, FS_OP_MMAP, 3);
+  const kernelWorkerRequest = vi.fn(async () => ({
+    type: "fs-processed",
+    requestId: 1,
+    kernelState: makeKernelState(),
+    result: 0x2000n,
+    memfsMutated: false,
+    ofdStateChanged: false,
+  }));
+  const targetKernel = makeKernel();
+  const target = {
+    pid: 2,
+    vmPtr: 0x5678,
+    kernel: targetKernel,
+    kernelState: makeKernelState(),
+    memory: targetKernel.memory,
+    blockedWorkers: new Map(),
+    runningWorker: null,
+  } as unknown as ProcessHandle;
+  const handle = {
+    pid: 1,
+    runtimeId: 1,
+    vmPtr: 0x1234,
+    kernel,
+    kernelState: makeKernelState(),
+    memory: kernel.memory,
+    processMemfsDirty: false,
+    transferDebugStats: createTransferDebugStats(),
+    kernelShare: { members: new Set([target]), sharedOfdIds: new Set() },
+    workers: new Set(),
+    blockedWorkers: new Map(),
+    kernelWorkerRequest,
+  } as unknown as ProcessHandle;
+  const worker = {} as Worker;
+  handle.workers.add(worker);
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, {});
+  const helpers = createWorkerKernelRpcFsHelpers({
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    appendWorkerDebugLog: vi.fn(),
+    assertProcessStandardFdIntegrity: vi.fn(),
+    blockWorker: vi.fn(),
+    enqueueWorker: vi.fn(),
+    failProcess: vi.fn((_handle, error) => {
+      throw error;
+    }),
+    kickBlockedWorkers: vi.fn(),
+    markRuntimeFsDirty: vi.fn(),
+    kernelShareOtherMembers: () => [target],
+    syncForkSharedStateLocallyAfterFs: vi.fn(),
+    syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
+    syncSharedOfdStateAfterFs: vi.fn(async () => {}),
+    publishMemfsAfterFs: vi.fn(async () => {}),
+    rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    publishRuntimeKernelState: vi.fn(),
+  });
+
+  const outcome = await helpers.resumeFsViaKernelWorkerOutcome(
+    handle,
+    worker,
+    0x1234,
+    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+  );
+
+  expect(outcome.effects).not.toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: "sync-shared-ofd-state-after-fs" }),
+  ]));
+});
+
+test("kernel-worker fs outcome keeps shared OFD sync after pipe write", async () => {
+  const ringBase = 0x3000;
+  const kernel = {
+    ...makeKernel(),
+    thread_pending_fs_opcode: () => FS_OP_WRITE,
+    thread_pending_fs_effects: () => 4,
+    thread_pending_fs_target_ino: () => 42,
+    thread_fs_ring_base: () => ringBase,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 3 ? 5 : 0,
+    process_set_fd_entry: vi.fn(),
+    kernel_ofd_fd_type: (ofdId: number) => ofdId === 5 ? 6 : 0,
+  };
+  seedFsRingRequest(kernel.memory, ringBase, 0x1234, FS_OP_WRITE, 3);
+  const kernelWorkerRequest = vi.fn(async () => ({
+    type: "fs-processed",
+    requestId: 1,
+    kernelState: makeKernelState(),
+    result: 8n,
+    memfsMutated: false,
+    ofdStateChanged: true,
+    fdEntries: [{ fd: 3, ofdId: 6, fdFlags: 0 }],
+  }));
+  const targetKernel = makeKernel();
+  const target = {
+    pid: 2,
+    vmPtr: 0x5678,
+    kernel: targetKernel,
+    kernelState: makeKernelState(),
+    memory: targetKernel.memory,
+    blockedWorkers: new Map(),
+    runningWorker: null,
+  } as unknown as ProcessHandle;
+  const handle = {
+    pid: 1,
+    runtimeId: 1,
+    vmPtr: 0x1234,
+    kernel,
+    kernelState: makeKernelState(),
+    memory: kernel.memory,
+    processMemfsDirty: false,
+    transferDebugStats: createTransferDebugStats(),
+    kernelShare: { members: new Set([target]), sharedOfdIds: new Set() },
+    workers: new Set(),
+    blockedWorkers: new Map(),
+    kernelWorkerRequest,
+  } as unknown as ProcessHandle;
+  const worker = {} as Worker;
+  handle.workers.add(worker);
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, {});
+  const helpers = createWorkerKernelRpcFsHelpers({
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    appendWorkerDebugLog: vi.fn(),
+    assertProcessStandardFdIntegrity: vi.fn(),
+    blockWorker: vi.fn(),
+    enqueueWorker: vi.fn(),
+    failProcess: vi.fn((_handle, error) => {
+      throw error;
+    }),
+    kickBlockedWorkers: vi.fn(),
+    markRuntimeFsDirty: vi.fn(),
+    kernelShareOtherMembers: () => [target],
+    syncForkSharedStateLocallyAfterFs: vi.fn(),
+    syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
+    syncSharedOfdStateAfterFs: vi.fn(async () => {}),
+    publishMemfsAfterFs: vi.fn(async () => {}),
+    rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    publishRuntimeKernelState: vi.fn(),
+  });
+
+  const outcome = await helpers.resumeFsViaKernelWorkerOutcome(
+    handle,
+    worker,
+    0x1234,
+    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+  );
+
+  expect(outcome.effects).toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: "sync-shared-ofd-state-after-fs" }),
+  ]));
+  expect(kernel.process_set_fd_entry).toHaveBeenCalledWith(0x1234, 3, 6, 0);
 });

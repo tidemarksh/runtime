@@ -751,6 +751,13 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       );
       return false;
     }
+    if (handle.processMemfsDirty || handle.processMemfsPublishPending) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `exit-parent-early-prepublish-skip:${handle.pid}:parent=${parent.pid}:dirty-memfs=1:publish-pending=${handle.processMemfsPublishPending ? 1 : 0}`,
+      );
+      return false;
+    }
     if (parentWaitStatusPrepublishedHandles.has(handle)) {
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
@@ -892,6 +899,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       const entries = deps.snapshotProcessFs(handle);
       deps.publishRuntimeFsState(handle.runtimeId, entries);
       handle.processMemfsDirty = false;
+      handle.processMemfsPublishPending = false;
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `exit-fs-publish:${handle.pid}:${entries.length}`);
     } catch (error) {
       deps.appendRuntimeLifecycleEvent(
@@ -1135,6 +1143,11 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `exit-parent-prepublish-existing:${parent.pid}:${handle.pid}:pending=${parent.pendingChildExitRecords}:records=${formatChildExitSyncRecords(parent)}`,
+        );
+      } else if (handle.processMemfsDirty || handle.processMemfsPublishPending) {
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `exit-parent-prepublish-skip:${parent.pid}:${handle.pid}:dirty-memfs=1:publish-pending=${handle.processMemfsPublishPending ? 1 : 0}`,
         );
       } else {
         deps.appendRuntimeLifecycleEvent(

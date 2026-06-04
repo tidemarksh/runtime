@@ -30,9 +30,14 @@ interface StatusMessageLike {
   fdEntries?: readonly ({ fd: number } & FdEntryLike)[];
   ofdSlots?: readonly OfdSlotSnapshotLike[];
   syscallNr?: bigint;
+  trustRegularFileOfdOffsets?: boolean;
 }
 
-const maxRegularFileOffsetByHandle = new WeakMap<ProcessHandle, Map<number, bigint>>();
+const maxRegularFileOffsetByHandle = new WeakMap<ProcessHandle, Map<number, {
+  hostFd: number;
+  ino: number;
+  offset: bigint;
+}>>();
 
 export function explicitPipeFdEntryWouldRollBack(
   handle: ProcessHandle,
@@ -279,6 +284,9 @@ export function ofdSnapshotWouldRollBackRegularFileOffset(
   if (targetType !== fileType) {
     return false;
   }
+  if (msg.trustRegularFileOfdOffsets === true) {
+    return false;
+  }
   const targetOffset = handle.kernelState.ofdTablePtr + snapshot.ofdId * slotBytes;
   const targetView = new DataView(handle.memory.buffer, targetOffset, slotBytes);
   const targetRefcount = targetView.getInt32(OFD_REFCOUNT_OFFSET, true);
@@ -299,10 +307,17 @@ export function ofdSnapshotWouldRollBackRegularFileOffset(
     maxOffsets = new Map();
     maxRegularFileOffsetByHandle.set(handle, maxOffsets);
   }
-  const maxSeenOffset = maxOffsets.get(snapshot.ofdId) ?? targetCurrentOffset;
+  const maxSeen = maxOffsets.get(snapshot.ofdId);
+  const maxSeenOffset = maxSeen?.hostFd === sourceHostFd && maxSeen.ino === sourceIno
+    ? maxSeen.offset
+    : targetCurrentOffset;
   const nextMaxOffset = sourceOffset > targetCurrentOffset ? sourceOffset : targetCurrentOffset;
   if (nextMaxOffset > maxSeenOffset) {
-    maxOffsets.set(snapshot.ofdId, nextMaxOffset);
+    maxOffsets.set(snapshot.ofdId, {
+      hostFd: sourceHostFd,
+      ino: sourceIno,
+      offset: nextMaxOffset,
+    });
   }
   if (sourceOffset < maxSeenOffset) {
     return true;

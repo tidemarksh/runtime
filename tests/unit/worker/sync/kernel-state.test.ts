@@ -385,3 +385,45 @@ test("fork-shared sync keeps a pipe reader target that also owns runtime network
     targetPids: [3],
   }));
 });
+
+test("fork-shared delta skips regular file OFDs held only by a peer", async () => {
+  const child = makeHandle(7, new Map());
+  const parent = makeHandle(3, new Map([[4, 12]]));
+  child.kernelShare.members.add(parent);
+  parent.kernelShare = child.kernelShare;
+  child.kernelShare.sharedOfdIds.add(12);
+
+  seedOfd(child.memory, child.kernelState, 12, FD_TYPE_FILE, 44, 21);
+  seedOfd(parent.memory, parent.kernelState, 12, FD_TYPE_FILE, 44, 21);
+
+  await syncForkSharedStateViaKernelWorker(child, [parent], {
+    cause: { kind: "syscall", nr: -1n, name: "test-fork-shared-regular-file-delta" },
+    deltaOfdIds: true,
+    includeMemfs: false,
+    trackHeldOfds: false,
+    sourceVmPtr: child.vmPtr,
+  });
+
+  expect(child.kernelWorkerRequest).not.toHaveBeenCalled();
+});
+
+test("fork-shared tracking prunes regular file OFDs without a peer", async () => {
+  const child = makeHandle(7, new Map([[3, 12]]));
+  const parent = makeHandle(3, new Map());
+  child.kernelShare.members.add(parent);
+  parent.kernelShare = child.kernelShare;
+  child.kernelShare.sharedOfdIds.add(12);
+
+  seedOfd(child.memory, child.kernelState, 12, FD_TYPE_FILE, 44, 21);
+
+  await syncForkSharedStateViaKernelWorker(child, [parent], {
+    cause: { kind: "syscall", nr: -1n, name: "test-fork-shared-unpeered-regular-file-prune" },
+    deltaOfdIds: true,
+    includeMemfs: false,
+    trackHeldOfds: true,
+    sourceVmPtr: child.vmPtr,
+  });
+
+  expect(child.kernelShare.sharedOfdIds.has(12)).toBe(false);
+  expect(child.kernelWorkerRequest).not.toHaveBeenCalled();
+});

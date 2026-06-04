@@ -190,12 +190,19 @@ export function trackVforkExecveChildSharedOfds(
   childHandle: ProcessHandle,
   childExecFdEntries: readonly KernelWorkerFdEntrySnapshot[],
 ): void {
+  const execOfdIds = new Set(
+    childExecFdEntries
+      .map((entry) => entry.ofdId)
+      .filter((ofdId) => ofdId > 0 && ofdId < childHandle.kernel.abi_max_fds()),
+  );
+  for (const ofdId of childHandle.kernelShare.sharedOfdIds) {
+    if (!execOfdIds.has(ofdId)) {
+      childHandle.kernelShare.sharedOfdIds.delete(ofdId);
+    }
+  }
   for (const entry of childExecFdEntries) {
     if (entry.ofdId > 0 && entry.ofdId < childHandle.kernel.abi_max_fds()) {
       childHandle.kernelShare.sharedOfdIds.add(entry.ofdId);
     }
-  }
-  for (const ofdId of collectProcessHeldOfds(childHandle)) {
-    childHandle.kernelShare.sharedOfdIds.add(ofdId);
   }
 }

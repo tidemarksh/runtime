@@ -234,6 +234,27 @@ function formatSyscallTrace(handle: RuntimeDebugHandle): string {
   return entries.join(" ");
 }
 
+function formatSelectedSyscallProfile(handle: RuntimeDebugHandle): string {
+  const count = handle.kernel.debug_syscall_profile_count;
+  if (!count) {
+    return "";
+  }
+  const nonOk = handle.kernel.debug_syscall_profile_non_ok_status_count;
+  const error = handle.kernel.debug_syscall_profile_error_count;
+  const selected = [
+    ["exit_group", 94],
+    ["clone", 220],
+    ["execve", 221],
+    ["wait4", 260],
+    ["clone3", 435],
+  ] as const;
+  return selected
+    .map(([name, nr]) => (
+      `${name}/${nr}=${count(nr).toString()}/${nonOk?.(nr).toString() ?? "0"}/${error?.(nr).toString() ?? "0"}`
+    ))
+    .join(" ");
+}
+
 function formatExecveStageTrace(handle: RuntimeDebugHandle): string {
   const len = handle.kernel.debug_execve_stage_trace_len?.() ?? 0;
   if (len <= 0) {
@@ -352,6 +373,7 @@ export async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<str
           `debug=${debug}`,
           `execve_stage_trace=[${formatExecveStageTrace(handle)}]`,
           `syscalls=[${formatSyscallTrace(handle)}]`,
+          `syscall_profile=[${formatSelectedSyscallProfile(handle)}]`,
         ].join(" ");
       })
       .join("\n");

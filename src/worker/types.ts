@@ -315,6 +315,8 @@ export interface ProcessHandle {
   epollWaiterWakeQueued: boolean;
   forkSharedSyncPromise: Promise<void> | null;
   processMemfsDirty: boolean;
+  processMemfsPublishPending: boolean;
+  processMemfsDeletedPaths?: Set<string>;
   regularFileOfdOffsets?: Map<number, { ino: number; hostFd: number; offset: bigint }>;
   ofdSyncPromise: Promise<void> | null;
   ofdSyncQueuedIds: Set<number>;

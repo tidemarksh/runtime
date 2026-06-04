@@ -774,6 +774,7 @@ export async function handleVforkExecve(
 
   reconcileInheritedSharedOfdsAfterVforkExecve(handle, inheritedSharedOfdIds);
   adoptKernelShare(handle, childHandle);
+  trackVforkExecveChildSharedOfds(childHandle, childExecFdEntries);
   if (handle.kernelWorkerRequest && handle.pid > 0) {
     const sharedOfdIds = activeKernelShareOfdIds(handle);
     const childHeldOfdIds = collectProcessHeldOfds(childHandle);
@@ -793,6 +794,7 @@ export async function handleVforkExecve(
     handle.lastDebugMessage = `vfork-execve:child-registered child=${childPid}`;
     deps.assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-register");
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-sync:start:${childPid}`);
+    trackVforkExecveChildSharedOfds(childHandle, childExecFdEntries);
     await deps.syncForkSharedStateViaKernelWorker(childHandle, kernelShareOtherMembers(childHandle), {
       cause: { kind: "fork-child-ready", childPid },
       includeMemfs: false,
