@@ -927,7 +927,7 @@ async function resumeFsViaKernelWorkerInner(
         cause: { kind: "syscall", nr: -1n, name: "fs-dirty-memfs-peer" },
         includeMemfs: true,
         memfsOnly: true,
-        preservePublishedRegularFileData: true,
+        preservePublishedRegularFileData,
         sourceVmPtr: peer.vmPtr,
       });
       peer.processMemfsDirty = false;
