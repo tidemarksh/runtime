@@ -839,7 +839,9 @@ async function resumeFsViaKernelWorkerInner(
     recordFsTransferStats(handle, pendingFs, fsResult, fsSucceeded, fsEffects, true, memfsPublishReady);
     const postFsRingProgress = snapshotFsRingProgress(handle, vmPtr);
     const postFsFdState = snapshotFsFdState(handle, vmPtr);
-    handle.kernelState = readKernelRuntimeState(handle.kernel);
+    if (!failedExecveChildOwner) {
+      handle.kernelState = readKernelRuntimeState(handle.kernel);
+    }
     const threadState = deps.threadWorkerStates.get(worker);
     if (!handle.workers.has(worker) || !threadState) {
       return { kind: "process-gone", effects };
@@ -886,7 +888,9 @@ async function resumeFsViaKernelWorkerInner(
       });
     }
     restoreFsFdState(handle, postFsFdState);
-    handle.kernelState = readKernelRuntimeState(handle.kernel);
+    if (!failedExecveChildOwner) {
+      handle.kernelState = readKernelRuntimeState(handle.kernel);
+    }
     if (memfsMutated) {
       handle.processMemfsDirty = true;
       if (!transientProcessOwnerMismatch) {
@@ -920,7 +924,9 @@ async function resumeFsViaKernelWorkerInner(
     restoreFsFdState(handle, postFsFdState);
     restoreFsRingProgress(handle, postFsRingProgress);
     clearStaleFsStatusAfterResume(handle, vmPtr, fsResult);
-    handle.kernelState = readKernelRuntimeState(handle.kernel);
+    if (!failedExecveChildOwner) {
+      handle.kernelState = readKernelRuntimeState(handle.kernel);
+    }
     effects.push(
       { kind: "publish-runtime-kernel-state" },
       { kind: "kick-blocked-workers" },

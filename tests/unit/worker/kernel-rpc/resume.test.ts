@@ -2129,6 +2129,13 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
     pipeUsed: 11n,
     netBufUsed: 13n,
   };
+  const localChildKernelState = {
+    ...initialKernelState,
+    heapPtr: initialKernelState.heapPtr + 0x8000,
+    socketUsed: 17,
+    pipeUsed: 19n,
+    netBufUsed: 23n,
+  };
   let attachedKernelState = initialKernelState;
   let currentPid = 1;
   const fdEntries = new Map<number, { ofdId: number; fdFlags: number }>([
@@ -2221,6 +2228,7 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
         return { type: "unexpected" } as never;
       }
       currentPid = 3;
+      attachedKernelState = localChildKernelState;
       return {
         type: "fs-processed",
         requestId: 0,
@@ -2276,6 +2284,7 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
   expect(processFsRequests).toHaveLength(1);
   expect(outcome.effects).toContainEqual({ kind: "enqueue-worker" });
   expect(handle.kernelState).toEqual(initialKernelState);
+  expect(handle.kernelState).not.toEqual(localChildKernelState);
   expect(kernel.kernel_attach_runtime_state).not.toHaveBeenCalledWith(
     childKernelState.heapBase,
     childKernelState.heapPtr,
