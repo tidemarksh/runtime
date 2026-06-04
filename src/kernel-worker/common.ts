@@ -57,6 +57,7 @@ export function cloneSnapshotEntry(entry: FsSnapshotEntry): FsSnapshotEntry {
       data: entry.data ? new Uint8Array(entry.data) : undefined,
       size: entry.size ?? entry.data?.length ?? 0,
       mode: entry.mode,
+      backingExtent: entry.backingExtent ? { ...entry.backingExtent } : undefined,
     };
   }
   if (entry.kind === "symlink") {

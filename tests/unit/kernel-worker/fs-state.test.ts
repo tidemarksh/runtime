@@ -489,12 +489,18 @@ test("kernel-worker loadFsSnapshot keeps large provided file data page-cache-bac
   });
 });
 
-test("kernel-worker loadFsSnapshot preserves metadata-only file sizes as external state", () => {
-  const { canonicalExports, fsState, sabPageCache } = makeFsState();
+test("kernel-worker loadFsSnapshot preserves metadata-only file sizes and backing identity as external state", () => {
+  const { canonicalExports, fsState, sabPageCache, seedEntries } = makeFsState();
+  const backingExtent = {
+    sourceIdentity: "artifact:runtime.bin",
+    digest: "sha256:runtime",
+    offset: 0,
+    length: 128 * 1024,
+  };
 
   fsState.loadFsSnapshot([
     { kind: "dir", path: "/", mode: 0o755 },
-    { kind: "file", path: "/lib/runtime.bin", size: 128 * 1024, mode: 0o755 },
+    { kind: "file", path: "/lib/runtime.bin", size: 128 * 1024, mode: 0o755, backingExtent },
   ]);
 
   const ino = canonicalExports.fileIno("/lib/runtime.bin");
@@ -504,6 +510,13 @@ test("kernel-worker loadFsSnapshot preserves metadata-only file sizes as externa
   expect(canonicalExports.opLog.some((entry) => entry.startsWith("truncate:/lib/runtime.bin:"))).toBe(false);
   expect(canonicalExports.opLog.some((entry) => entry.startsWith("write:/lib/runtime.bin:"))).toBe(false);
   expect(readInodeRecord(sabPageCache, ino)?.size).toBe(128 * 1024);
+  expect(seedEntries.get("/lib/runtime.bin")).toEqual({
+    kind: "file",
+    path: "/lib/runtime.bin",
+    size: 128 * 1024,
+    mode: 0o755,
+    backingExtent,
+  });
 });
 
 test("kernel-worker loadFsSnapshot restores symlinks into seed entries", () => {

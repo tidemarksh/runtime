@@ -43,6 +43,7 @@ export function cloneSnapshotEntry(
       data,
       size: entry.size ?? entry.data?.length ?? 0,
       mode: entry.mode,
+      backingExtent: entry.backingExtent ? { ...entry.backingExtent } : undefined,
     };
   }
   if (entry.kind === "symlink") {

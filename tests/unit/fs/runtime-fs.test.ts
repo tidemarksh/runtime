@@ -438,6 +438,12 @@ test("Runtime.applyFsSnapshot seeds kernel-worker FS in a single RPC", async () 
 
 test("Runtime.applyFsSnapshot preserves metadata-only file size in canonical snapshot state", async () => {
   const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
+  const backingExtent = {
+    sourceIdentity: "artifact:toolchain/archive.bin",
+    digest: "sha256:archive",
+    offset: 4096,
+    length: 128 * 1024,
+  };
 
   await runtime.applyFsSnapshot([
     { kind: "dir", path: "/", mode: 0o755 },
@@ -447,6 +453,7 @@ test("Runtime.applyFsSnapshot preserves metadata-only file size in canonical sna
       path: "/toolchain/archive.bin",
       size: 128 * 1024,
       mode: 0o644,
+      backingExtent,
     },
   ]);
 
@@ -454,7 +461,18 @@ test("Runtime.applyFsSnapshot preserves metadata-only file size in canonical sna
     mode: 0o100644,
     size: 128 * 1024,
   });
-  expect(createdWorkers[0].postedMessages.some((msg) => msg.type === "load-fs-snapshot")).toBe(true);
+  const loadMessage = createdWorkers[0].postedMessages.find((msg) => msg.type === "load-fs-snapshot");
+  expect(loadMessage).toBeDefined();
+  expect(loadMessage).toMatchObject({
+    entries: expect.arrayContaining([
+      expect.objectContaining({
+        kind: "file",
+        path: "/toolchain/archive.bin",
+        size: 128 * 1024,
+        backingExtent,
+      }),
+    ]),
+  });
 
   runtime.destroy();
 });

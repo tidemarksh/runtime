@@ -37,6 +37,7 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
     data: Uint8Array | null,
     size: number,
     mode?: number,
+    backingExtent?: FsSnapshotEntry["backingExtent"],
   ): void {
     const normalized = normalizePath(path);
     const parts = normalized.split("/").filter(Boolean);
@@ -92,6 +93,7 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
       path: normalized,
       size: publishedSize,
       mode: perms,
+      backingExtent: backingExtent ? { ...backingExtent } : undefined,
     });
     if (data !== null) {
       deps.publishFileBacking(ino, data);
@@ -347,10 +349,10 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
       continue;
     }
       if (entry.data !== undefined) {
-        publishSnapshotFile(targetExports, entry.path, entry.data, entry.data.length, entry.mode);
+        publishSnapshotFile(targetExports, entry.path, entry.data, entry.data.length, entry.mode, entry.backingExtent);
         continue;
       }
-      publishSnapshotFile(targetExports, entry.path, null, entry.size ?? 0, entry.mode);
+      publishSnapshotFile(targetExports, entry.path, null, entry.size ?? 0, entry.mode, entry.backingExtent);
     }
 
     deps.fanoutCanonicalMemfs(false);

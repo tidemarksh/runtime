@@ -1,5 +1,12 @@
 export type FsEntryKind = "file" | "dir" | "symlink";
 
+export interface FsSnapshotBackingExtent {
+  sourceIdentity: string;
+  digest?: string;
+  offset?: number;
+  length?: number;
+}
+
 export interface FsSnapshotEntry {
   kind: FsEntryKind;
   path: string;
@@ -8,6 +15,7 @@ export interface FsSnapshotEntry {
   target?: Uint8Array;
   size?: number;
   mode?: number;
+  backingExtent?: FsSnapshotBackingExtent;
 }
 
 export interface RuntimeStat {

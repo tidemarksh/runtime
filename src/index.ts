@@ -99,6 +99,7 @@ function withoutSnapshotFileData(entries: FsSnapshotEntry[]): FsSnapshotEntry[] 
       ino: entry.ino,
       size: entry.size ?? entry.data.byteLength,
       mode: entry.mode,
+      backingExtent: entry.backingExtent,
     };
   });
 }
