@@ -627,7 +627,17 @@ export function createWorkerSchedulerQueueHelpers(
       (thread?.waitingInWorkerStatus ?? null) !== null
       || (thread?.ownerAsyncStatus ?? null) !== null
     ) {
-      removeReadyWorker(handle, worker);
+      if (
+        thread !== undefined
+        && thread.waitingInWorkerStatus === null
+        && thread.ownerAsyncStatus !== null
+        && !handle.readyWorkers.includes(worker)
+      ) {
+        appendSchedulerQueueDebugLog(deps, handle, `ready-defer-owner-async:0x${thread.vmPtr.toString(16)}:async=${thread.ownerAsyncStatus}`);
+        handle.readyWorkers.push(worker);
+      } else if ((thread?.ownerAsyncStatus ?? null) === null) {
+        removeReadyWorker(handle, worker);
+      }
       pumpProcess(handle);
       return;
     }
@@ -752,7 +762,16 @@ export function createWorkerSchedulerQueueHelpers(
       }
       if (index === -1) {
         appendSchedulerQueueDebugLog(deps, handle, `pump-no-runnable-ready:ready=${handle.readyWorkers.length}`);
+        const ownerAsyncReadyWorkers = handle.readyWorkers.filter((candidate) => {
+          const candidateThread = deps.threadWorkerStates.get(candidate);
+          return (candidateThread?.ownerAsyncStatus ?? null) !== null;
+        });
         handle.readyWorkers.length = 0;
+        for (const candidate of ownerAsyncReadyWorkers) {
+          if (!handle.readyWorkers.includes(candidate)) {
+            handle.readyWorkers.push(candidate);
+          }
+        }
         return;
       }
       next = handle.readyWorkers.splice(index, 1)[0];
