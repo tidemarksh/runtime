@@ -18,8 +18,11 @@ const GLIBC_RUNTIME_LIBS = [
 
 function cppToolchainSnapshotSources(extra: readonly SnapshotSource[]): SnapshotSource[] {
   return [
+    { kind: "dir", guestPath: "/tmp", mode: 0o777 },
     { kind: "tree", hostPath: resolve(cppToolchainDir, "usr/bin"), guestPath: "/usr/bin" },
+    { kind: "tree", hostPath: resolve(cppToolchainDir, "usr/include"), guestPath: "/usr/include" },
     { kind: "tree", hostPath: resolve(cppToolchainDir, "usr/lib"), guestPath: "/usr/lib" },
+    { kind: "tree", hostPath: resolve(cppToolchainDir, "usr/libexec"), guestPath: "/usr/libexec" },
     { kind: "tree", hostPath: resolve(cppToolchainDir, "etc"), guestPath: "/etc" },
     ...GLIBC_RUNTIME_LIBS.map((name) => ({
       kind: "file" as const,

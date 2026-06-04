@@ -29,3 +29,16 @@ test("target fixtures do not override resident page-cache capacity", () => {
 
   expect(offenders).toEqual([]);
 });
+
+test("c and cpp toolchain fixtures include required packaged compiler closure", () => {
+  const requiredGuestPaths = ["/tmp", "/usr/include", "/usr/libexec"];
+  for (const fixture of [
+    "c/toolchain-exec.ts",
+    "cpp/toolchain-exec.ts",
+  ]) {
+    const source = readFileSync(resolve(targetRoot, fixture), "utf8");
+    for (const guestPath of requiredGuestPaths) {
+      expect(source, `${fixture} should include ${guestPath}`).toContain(`guestPath: "${guestPath}"`);
+    }
+  }
+});

@@ -18,7 +18,9 @@ const GLIBC_RUNTIME_LIBS = [
 
 function cToolchainSnapshotSources(extra: readonly SnapshotSource[]): SnapshotSource[] {
   return [
+    { kind: "dir", guestPath: "/tmp", mode: 0o777 },
     { kind: "tree", hostPath: resolve(cToolchainDir, "usr/bin"), guestPath: "/usr/bin" },
+    { kind: "tree", hostPath: resolve(cToolchainDir, "usr/include"), guestPath: "/usr/include" },
     { kind: "tree", hostPath: resolve(cToolchainDir, "usr/lib"), guestPath: "/usr/lib" },
     { kind: "tree", hostPath: resolve(cToolchainDir, "usr/libexec"), guestPath: "/usr/libexec" },
     { kind: "tree", hostPath: resolve(cToolchainDir, "etc"), guestPath: "/etc" },

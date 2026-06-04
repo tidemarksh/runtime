@@ -12,6 +12,20 @@ import {
 } from "./toolchain-exec-harness.js";
 import { runtimeDebugSummary } from "./runtime-workload.js";
 
+const TOOLCHAIN_EXEC_PREPARE_HEADROOM_MS = 60_000;
+
+export function toolchainExecGateTimeoutMs(entry: ToolchainExecEntry): number {
+  const runCheckTimeoutMs = (entry.runChecks ?? []).reduce(
+    (sum, check) => sum + scaledToolchainTimeoutMs(check.timeoutMs),
+    0,
+  );
+  return (
+    TOOLCHAIN_EXEC_PREPARE_HEADROOM_MS
+    + scaledToolchainTimeoutMs(entry.timeoutMs)
+    + runCheckTimeoutMs
+  );
+}
+
 export function registerToolchainExecGate(entry: ToolchainExecEntry): void {
   test(`toolchain exec local gate: ${entry.id}`, async () => {
     let prepared;
@@ -90,5 +104,5 @@ export function registerToolchainExecGate(entry: ToolchainExecEntry): void {
     } finally {
       runtime.destroy();
     }
-  }, scaledToolchainTimeoutMs(entry.timeoutMs) + 10_000);
+  }, toolchainExecGateTimeoutMs(entry));
 }
