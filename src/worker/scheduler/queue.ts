@@ -341,6 +341,19 @@ export function createWorkerSchedulerQueueHelpers(
         );
         return null;
       }
+      if (
+        handle.readyWorkers.length === 0
+        && thread.stepCount <= thread.statusCount
+        && runningWorkerStepAppearsIdle(handle, thread)
+      ) {
+        handle.runningWorker = null;
+        thread.runningGeneration = null;
+        deps.appendWorkerDebugLog(
+          handle,
+          `running-worker-cleared:stale-ok-no-ready:0x${thread.vmPtr.toString(16)}:last=${thread.lastStatus ?? "null"}`,
+        );
+        return null;
+      }
       return runningWorker;
     }
     handle.runningWorker = null;

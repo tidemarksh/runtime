@@ -1870,6 +1870,48 @@ test("pumpProcess wakes a no-ready running worker to request cooperative yield",
   expect(Atomics.load(notify, RUNTIME_BRIDGE_NOTIFY_INDEX)).toBeGreaterThan(notifyBefore);
 });
 
+test("pumpProcess redispatches an answered stale ok running worker without ready siblings", async () => {
+  vi.setSystemTime(new Date(10_000));
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const thread = makeThreadState(0x9ba7260);
+  thread.runningGeneration = thread.generation;
+  thread.stepCount = 10;
+  thread.statusCount = 11;
+  thread.lastStepAtMs = 7_500;
+  thread.lastStatusAtMs = 7_000;
+  thread.lastStatus = 0;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, thread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_ok();
+  delete kernel.debug_thread_step_vm_ptr;
+  const handle = makeHandle(kernel, worker);
+  handle.runningWorker = worker;
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+
+  expect(handle.runningWorker).toBe(worker);
+  expect(thread.runningGeneration).toBe(thread.generation);
+  expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+});
+
 test("pumpProcess clears a stale running worker when the unanswered step shares a status millisecond", () => {
   vi.setSystemTime(new Date(10_000));
   const runningWorker = {
