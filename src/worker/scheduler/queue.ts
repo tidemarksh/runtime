@@ -37,6 +37,11 @@ const SCHEDULER_QUEUE_DEBUG_LOG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_SCHEDULER_QUEUE_DEBUG_LOG ?? "") === "1";
 const SCHEDULER_QUEUE_DEBUG_LOG_LIMIT = 256;
+const SCHEDULER_QUEUE_DEBUG_LOG_PREFIXES = [
+  "pump-",
+  "ready:",
+  "step:",
+] as const;
 let nextThreadWorkerGeneration = 1;
 const HOT_PC_COUNTER_LIMIT = 32;
 const STALE_SLEEP_RUNNING_WORKER_REPAIR_MS = 2_000;
@@ -170,12 +175,15 @@ function appendSchedulerQueueDebugLog(
     0,
   );
   if (queueDebugCount >= SCHEDULER_QUEUE_DEBUG_LOG_LIMIT) {
-    if (!handle.workerDebugLog.includes("pump-debug-limit")) {
-      deps.appendWorkerDebugLog(handle, "pump-debug-limit");
+    const oldestQueueDebugIndex = handle.workerDebugLog.findIndex((entry) =>
+      SCHEDULER_QUEUE_DEBUG_LOG_PREFIXES.some((prefix) => entry.startsWith(prefix)));
+    if (oldestQueueDebugIndex !== -1) {
+      handle.workerDebugLog.splice(oldestQueueDebugIndex, 1);
+    } else {
+      handle.workerDebugLog.shift();
     }
-    return;
   }
-  deps.appendWorkerDebugLog(handle, event);
+  handle.workerDebugLog.push(event);
 }
 
 function removeReadyWorker(handle: ProcessHandle, worker: Worker): void {
