@@ -519,6 +519,29 @@ test("kernel-worker loadFsSnapshot preserves metadata-only file sizes and backin
   });
 });
 
+test("kernel-worker reads metadata-only snapshot files from registered backing source", () => {
+  const { fsState } = makeFsState();
+  const source = encoder.encode("prefix:artifact-bytes:suffix");
+  const backingExtent = {
+    sourceIdentity: "artifact:runtime.bin",
+    offset: "prefix:".length,
+    length: "artifact-bytes".length,
+  };
+
+  fsState.loadFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "file", path: "/lib/runtime.bin", size: backingExtent.length, mode: 0o644, backingExtent },
+  ]);
+  fsState.registerBackingSource(backingExtent.sourceIdentity, source);
+
+  expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("artifact-bytes");
+  expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(
+    fsState.resolvePath("/lib/runtime.bin"),
+    9,
+    5,
+  ) ?? new Uint8Array())).toBe("bytes");
+});
+
 test("kernel-worker loadFsSnapshot restores symlinks into seed entries", () => {
   const { canonicalExports, fsState, seedEntries } = makeFsState();
   const target = encoder.encode("/toolchain/current/bin/node");

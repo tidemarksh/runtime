@@ -1,5 +1,5 @@
 import type { KernelExports } from "../abi.js";
-import type { FsSnapshotEntry, RuntimeStat } from "../fs/types.js";
+import type { FsSnapshotBackingExtent, FsSnapshotEntry, RuntimeStat } from "../fs/types.js";
 import {
   bumpDirEpoch,
   MAX_INODES,
@@ -47,8 +47,11 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   const MEMFS_S_IFDIR = 0o040000;
   const backingStore = new MemoryFileBackingStore();
   const fileObjectIdsByIno = new Map<number, number>();
+  const backingSourcesByIdentity = new Map<string, Uint8Array>();
+  const backingExtentsByIno = new Map<number, FsSnapshotBackingExtent>();
 
   function replaceBackingFile(ino: number, data: Uint8Array): void {
+    backingExtentsByIno.delete(ino);
     const fileObjectId = fileObjectIdsByIno.get(ino);
     if (fileObjectId === undefined) {
       const stat = backingStore.createFile(data);
@@ -59,6 +62,44 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (data.length > 0) {
       backingStore.write(fileObjectId, 0, data);
     }
+  }
+
+  function registerBackingSource(sourceIdentity: string, data: Uint8Array): void {
+    if (sourceIdentity.length === 0) {
+      throw new Error("backing source identity must not be empty");
+    }
+    backingSourcesByIdentity.set(sourceIdentity, new Uint8Array(data));
+  }
+
+  function registerSnapshotBackingExtent(ino: number, backingExtent: FsSnapshotBackingExtent | undefined): void {
+    if (!backingExtent) {
+      backingExtentsByIno.delete(ino);
+      return;
+    }
+    backingExtentsByIno.set(ino, { ...backingExtent });
+  }
+
+  function materializeBackingSourceForInode(ino: number, expectedSize: number): Uint8Array | null {
+    const extent = backingExtentsByIno.get(ino);
+    if (!extent || expectedSize < 0) {
+      return null;
+    }
+    const source = backingSourcesByIdentity.get(extent.sourceIdentity);
+    if (!source) {
+      return null;
+    }
+    const offset = Math.floor(extent.offset ?? 0);
+    const length = Math.floor(extent.length ?? expectedSize);
+    if (
+      offset < 0
+      || length < 0
+      || length !== expectedSize
+      || offset + length > source.byteLength
+    ) {
+      return null;
+    }
+    replaceBackingFile(ino, source.slice(offset, offset + length));
+    return readBackingFileByInode(ino);
   }
 
   function readBackingFileByInode(ino: number): Uint8Array | null {
@@ -74,7 +115,15 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   }
 
   function readBackingFileRangeByInode(ino: number, offset: number, length: number): Uint8Array | null {
-    const fileObjectId = fileObjectIdsByIno.get(ino);
+    let fileObjectId = fileObjectIdsByIno.get(ino);
+    if (fileObjectId === undefined) {
+      const size = Number(deps.getCanonicalExports().memfs_file_size(ino));
+      const materialized = materializeBackingSourceForInode(ino, size);
+      if (!materialized) {
+        return null;
+      }
+      fileObjectId = fileObjectIdsByIno.get(ino);
+    }
     if (
       fileObjectId === undefined
       || !Number.isInteger(offset)
@@ -654,7 +703,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     }
 
     const size = Number(targetExports.memfs_file_size(ino));
-    const backingData = readBackingFileByInode(ino);
+    const backingData = readBackingFileByInode(ino) ?? materializeBackingSourceForInode(ino, size);
     if (backingData && backingData.length === size) {
       return backingData;
     }
@@ -757,6 +806,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     readdir,
     readFile,
     writeFile,
+    registerSnapshotBackingExtent,
     publishFileBacking: replaceBackingFile,
     readBackingFileByInode,
     mkdir,
@@ -788,6 +838,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     readFile,
     readlink,
     readdir,
+    registerBackingSource,
     readBackingFileByInode,
     readBackingFileRangeByInode,
     writeBackingFileByInode,

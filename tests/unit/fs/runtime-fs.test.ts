@@ -18,6 +18,8 @@ class FakeKernelWorker {
   readonly fileSizes = new Map<string, number>();
   readonly fileModes = new Map<string, number>();
   readonly externalFiles = new Set<string>();
+  readonly backingExtents = new Map<string, NonNullable<FsSnapshotEntry["backingExtent"]>>();
+  readonly backingSources = new Map<string, Uint8Array>();
   readonly symlinks = new Map<string, Uint8Array>();
   readonly symlinkModes = new Map<string, number>();
   readonly dirModes = new Map<string, number>([["/", 0o755]]);
@@ -165,6 +167,7 @@ class FakeKernelWorker {
             path,
             size: this.fileSizes.get(path) ?? data.length,
             mode: this.fileModes.get(path) ?? 0o644,
+            backingExtent: this.backingExtents.get(path),
           }
         : {
             kind: "file" as const,
@@ -189,6 +192,7 @@ class FakeKernelWorker {
     this.fileSizes.clear();
     this.fileModes.clear();
     this.externalFiles.clear();
+    this.backingExtents.clear();
     this.symlinks.clear();
     this.symlinkModes.clear();
     this.dirModes.clear();
@@ -215,10 +219,36 @@ class FakeKernelWorker {
       this.fileModes.set(normalized, entry.mode ?? 0o644);
       if (entry.data === undefined) {
         this.externalFiles.add(normalized);
+        if (entry.backingExtent) {
+          this.backingExtents.set(normalized, { ...entry.backingExtent });
+        }
       } else {
         this.externalFiles.delete(normalized);
+        this.backingExtents.delete(normalized);
       }
     }
+  }
+
+  private materializeBackingSource(path: string): Uint8Array | null {
+    const extent = this.backingExtents.get(path);
+    if (!extent) {
+      return null;
+    }
+    const source = this.backingSources.get(extent.sourceIdentity);
+    if (!source) {
+      return null;
+    }
+    const size = this.fileSizes.get(path) ?? 0;
+    const offset = Math.floor(extent.offset ?? 0);
+    const length = Math.floor(extent.length ?? size);
+    if (offset < 0 || length !== size || offset + length > source.byteLength) {
+      return null;
+    }
+    const data = source.slice(offset, offset + length);
+    this.files.set(path, data);
+    this.fileSizes.set(path, data.length);
+    this.externalFiles.delete(path);
+    return data;
   }
 
   private respond(message: KernelWorkerInbound): void {
@@ -305,7 +335,9 @@ class FakeKernelWorker {
       }
       case "read-file": {
         const normalized = normalizePath(message.path);
-        const data = this.files.get(normalized);
+        const data = this.externalFiles.has(normalized)
+          ? this.materializeBackingSource(normalized)
+          : this.files.get(normalized);
         if (!data) {
           this.emit({
             type: "error",
@@ -317,9 +349,7 @@ class FakeKernelWorker {
         this.emit({
           type: "file-read",
           requestId: message.requestId,
-          data: this.externalFiles.has(normalized)
-            ? new Uint8Array(this.fileSizes.get(normalized) ?? 0)
-            : new Uint8Array(data),
+          data: new Uint8Array(data),
         });
         break;
       }
@@ -351,6 +381,10 @@ class FakeKernelWorker {
       case "load-fs-snapshot":
         this.loadSnapshot(message.entries);
         this.emit({ type: "fs-loaded", requestId: message.requestId });
+        break;
+      case "register-fs-backing-source":
+        this.backingSources.set(message.sourceIdentity, new Uint8Array(message.data));
+        this.emit({ type: "fs-backing-source-registered", requestId: message.requestId });
         break;
     }
   }
@@ -473,6 +507,35 @@ test("Runtime.applyFsSnapshot preserves metadata-only file size in canonical sna
       }),
     ]),
   });
+
+  runtime.destroy();
+});
+
+test("Runtime reads metadata-only snapshot files from registered backing source", async () => {
+  const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
+  const source = new TextEncoder().encode("prefix:artifact-bytes:suffix");
+  const backingExtent = {
+    sourceIdentity: "artifact:toolchain/archive.bin",
+    offset: "prefix:".length,
+    length: "artifact-bytes".length,
+  };
+
+  await runtime.applyFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "dir", path: "/toolchain", mode: 0o755 },
+    {
+      kind: "file",
+      path: "/toolchain/archive.bin",
+      size: backingExtent.length,
+      mode: 0o644,
+      backingExtent,
+    },
+  ]);
+  await runtime.registerFsBackingSource(backingExtent.sourceIdentity, source);
+
+  await expect(runtime.fs.readFile("/toolchain/archive.bin"))
+    .resolves.toEqual(new TextEncoder().encode("artifact-bytes"));
+  expect(createdWorkers[0].postedMessages.some((msg) => msg.type === "register-fs-backing-source")).toBe(true);
 
   runtime.destroy();
 });

@@ -370,6 +370,20 @@ export class Runtime {
     replaceRuntimeFsSnapshot(this.runtimeId, runtimeEntries);
   }
 
+  async registerFsBackingSource(sourceIdentity: string, data: Uint8Array): Promise<void> {
+    const ownedData = data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
+      ? data
+      : new Uint8Array(data);
+    const transfer = ownedData.buffer instanceof ArrayBuffer
+      ? [ownedData.buffer]
+      : [];
+    await this.sendKernelRequest<Extract<KernelWorkerOutbound, { type: "fs-backing-source-registered" }>>({
+      type: "register-fs-backing-source",
+      sourceIdentity,
+      data: ownedData,
+    }, transfer);
+  }
+
   async writeFile(path: string, data: Uint8Array, mode?: number): Promise<void> {
     await this.sendKernelRequest<Extract<KernelWorkerOutbound, { type: "file-written" }>>({
       type: "write-file",

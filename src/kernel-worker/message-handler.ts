@@ -49,6 +49,7 @@ interface KernelWorkerMessageHandlerDeps {
   readdir(path: string): string[];
   snapshotCanonicalFs(includeData: boolean): FsSnapshotEntry[];
   loadFsSnapshot(entries: FsSnapshotEntry[]): void;
+  registerBackingSource(sourceIdentity: string, data: Uint8Array): void;
   registerProcess(
     pid: number,
     vmPtr: number,
@@ -226,6 +227,10 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
         case "load-fs-snapshot":
           deps.loadFsSnapshot(msg.entries);
           deps.postResponse({ type: "fs-loaded", requestId: msg.requestId });
+          break;
+        case "register-fs-backing-source":
+          deps.registerBackingSource(msg.sourceIdentity, msg.data);
+          deps.postResponse({ type: "fs-backing-source-registered", requestId: msg.requestId });
           break;
         case "register-process": {
           const memory = msg.memory;

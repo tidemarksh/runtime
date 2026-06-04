@@ -22,6 +22,7 @@ interface KernelWorkerFsSnapshotDeps {
   readdir(path: string): string[];
   readFile(path: string): Uint8Array;
   writeFile(path: string, data: Uint8Array, mode?: number, fanout?: boolean): void;
+  registerSnapshotBackingExtent(ino: number, backingExtent: FsSnapshotEntry["backingExtent"] | undefined): void;
   publishFileBacking(ino: number, data: Uint8Array): void;
   readBackingFileByInode(ino: number): Uint8Array | null;
   mkdir(path: string, mode?: number, fanout?: boolean): void;
@@ -97,6 +98,8 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
     });
     if (data !== null) {
       deps.publishFileBacking(ino, data);
+    } else {
+      deps.registerSnapshotBackingExtent(ino, backingExtent);
     }
     publishInode(deps.getSabPageCache(), ino, {
       mode: 0o100000 | perms,

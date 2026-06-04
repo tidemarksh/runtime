@@ -270,6 +270,11 @@ export type KernelWorkerRequest =
       entries: FsSnapshotEntry[];
     }
   | {
+      type: "register-fs-backing-source";
+      sourceIdentity: string;
+      data: Uint8Array;
+    }
+  | {
       type: "register-process";
       pid: number;
       vmPtr: number;
@@ -481,6 +486,10 @@ export type KernelWorkerResponse =
     }
   | {
       type: "fs-loaded";
+      requestId: number;
+    }
+  | {
+      type: "fs-backing-source-registered";
       requestId: number;
     }
   | {
