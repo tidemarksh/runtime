@@ -690,14 +690,6 @@ async function resumeFsViaKernelWorkerInner(
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     if (memfsMutated) {
       handle.processMemfsDirty = true;
-      if (memfsPublishReady) {
-        handle.transferDebugStats.pageCachePublishCalls += 1;
-        handle.transferDebugStats.forkSharedMemfsSyncCalls += 1;
-        effects.push({
-          kind: "sync-fork-shared-state-local-after-fs",
-          targets: deps.kernelShareOtherMembers(handle),
-        });
-      }
       effects.push({ kind: "mark-runtime-fs-dirty", handle });
     } else if (ofdStateChanged) {
       effects.push({
@@ -897,25 +889,6 @@ async function resumeFsViaKernelWorkerInner(
     if (memfsMutated) {
       handle.processMemfsDirty = true;
       if (!transientProcessOwnerMismatch) {
-        if (memfsPublishReady && syncTargets.length > 0) {
-          appendFsLifecycleEvent(
-            handle,
-            "publish-memfs",
-            vmPtr,
-            `${fsDebugSuffix}:targets=${syncTargets.length}:members=${forkShareMembers.length}`,
-          );
-          // MemFS publication must not fan out OFD slots: during fork/exec
-          // a child may not hold the parent's pipe OFDs, and copying those
-          // slots from the child clears the parent's standard streams.
-          handle.transferDebugStats.pageCachePublishCalls += 1;
-          handle.transferDebugStats.forkSharedMemfsSyncCalls += 1;
-          effects.push({
-            kind: "publish-memfs-after-fs",
-            targets: syncTargets,
-            preservePublishedRegularFileData,
-            sourceVmPtr: vmPtr,
-          });
-        }
         if (memfsPublishReady && forkShareMembers.length > 0) {
           for (const member of forkShareMembers) {
             effects.push({ kind: "mark-runtime-fs-dirty", handle: member });

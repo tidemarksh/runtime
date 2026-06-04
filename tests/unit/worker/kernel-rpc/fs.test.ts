@@ -336,7 +336,7 @@ test("kernel-worker fs outcome applies mmap guest memory writes from fs response
   expect(siblingThreadState.pendingGuestMemoryWrites[0].bytes).toEqual(mappedBytes);
 });
 
-test("kernel-worker fs outcome preserves published data when publishing file writes", async () => {
+test("kernel-worker fs outcome defers file write publication to a later sync point", async () => {
   const kernel = {
     ...makeKernel(),
     thread_pending_fs_opcode: () => 2,
@@ -406,11 +406,10 @@ test("kernel-worker fs outcome preserves published data when publishing file wri
   );
 
   expect(outcome.effects).toEqual(expect.arrayContaining([
-    {
-      kind: "publish-memfs-after-fs",
-      targets: [target],
-      preservePublishedRegularFileData: true,
-      sourceVmPtr: 0x1234,
-    },
+    { kind: "mark-runtime-fs-dirty", handle },
+    { kind: "mark-runtime-fs-dirty", handle: target },
+  ]));
+  expect(outcome.effects).not.toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: "publish-memfs-after-fs" }),
   ]));
 });
