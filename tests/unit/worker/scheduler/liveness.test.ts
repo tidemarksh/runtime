@@ -1912,6 +1912,92 @@ test("pumpProcess redispatches an answered stale ok running worker without ready
   }));
 });
 
+test("pumpProcess redispatches a stale unanswered ok running worker without ready siblings after prior status", async () => {
+  vi.setSystemTime(new Date(10_000));
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const thread = makeThreadState(0x9ba7260);
+  thread.runningGeneration = thread.generation;
+  thread.stepCount = 12;
+  thread.statusCount = 11;
+  thread.lastStepAtMs = 7_500;
+  thread.lastStatusAtMs = 7_000;
+  thread.lastStatus = 0;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, thread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_ok();
+  delete kernel.debug_thread_step_vm_ptr;
+  const handle = makeHandle(kernel, worker);
+  handle.runningWorker = worker;
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+
+  expect(handle.runningWorker).toBe(worker);
+  expect(thread.runningGeneration).toBe(thread.generation);
+  expect(thread.stepCount).toBe(13);
+  expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+});
+
+test("pumpProcess preserves a stale unanswered no-ready running worker with pending guest writes", async () => {
+  vi.setSystemTime(new Date(10_000));
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const thread = makeThreadState(0x9ba7260);
+  thread.runningGeneration = thread.generation;
+  thread.stepCount = 12;
+  thread.statusCount = 11;
+  thread.lastStepAtMs = 7_500;
+  thread.lastStatusAtMs = 7_000;
+  thread.lastStatus = 0;
+  thread.pendingGuestMemoryWrites.push({
+    guestPtr: 0x4000,
+    bytes: new Uint8Array([1, 2, 3]),
+  });
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, thread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_ok();
+  delete kernel.debug_thread_step_vm_ptr;
+  const handle = makeHandle(kernel, worker);
+  handle.runningWorker = worker;
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+
+  expect(handle.runningWorker).toBe(worker);
+  expect(thread.runningGeneration).toBe(thread.generation);
+  expect(worker.postMessage).not.toHaveBeenCalled();
+});
+
 test("pumpProcess clears a stale running worker when the unanswered step shares a status millisecond", () => {
   vi.setSystemTime(new Date(10_000));
   const runningWorker = {

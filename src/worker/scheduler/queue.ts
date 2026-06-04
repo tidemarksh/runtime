@@ -354,6 +354,26 @@ export function createWorkerSchedulerQueueHelpers(
         );
         return null;
       }
+      if (
+        handle.readyWorkers.length === 0
+        && thread.stepCount > thread.statusCount
+        && thread.lastStatusAtMs !== null
+        && thread.lastStepAtMs !== null
+        && thread.lastStepAtMs > thread.lastStatusAtMs
+        && thread.pendingGuestMemoryWrites.length === 0
+        && runningWorkerStepAppearsIdle(handle, thread)
+      ) {
+        handle.runningWorker = null;
+        thread.runningGeneration = null;
+        if (!handle.readyWorkers.includes(runningWorker)) {
+          handle.readyWorkers.push(runningWorker);
+        }
+        deps.appendWorkerDebugLog(
+          handle,
+          `running-worker-cleared:stale-unanswered-no-ready:0x${thread.vmPtr.toString(16)}:last=${thread.lastStatus ?? "null"}`,
+        );
+        return null;
+      }
       return runningWorker;
     }
     handle.runningWorker = null;
