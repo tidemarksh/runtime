@@ -2121,6 +2121,57 @@ test("pumpProcess clears a running worker whose kernel process pointer disappear
   expect(runningWorker.postMessage).not.toHaveBeenCalled();
 });
 
+test("pumpProcess clears a faulted running worker before dispatching a ready sibling", () => {
+  vi.setSystemTime(new Date(10_000));
+  const runningWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const readyWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const runningThread = makeThreadState(0x581f470);
+  const readyThread = makeThreadState(0x6645d48);
+  runningThread.runningGeneration = runningThread.generation;
+  runningThread.stepCount = 69;
+  runningThread.statusCount = 68;
+  runningThread.lastStepAtMs = 7_500;
+  runningThread.lastStatusAtMs = 7_000;
+  runningThread.lastStatus = 20;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(runningWorker, runningThread);
+  threadWorkerStates.set(readyWorker, readyThread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = (vmPtr: number) =>
+    vmPtr === runningThread.vmPtr ? kernel.abi_status_fault() : kernel.abi_status_ok();
+  delete kernel.debug_thread_step_vm_ptr;
+  const handle = makeHandle(kernel, runningWorker);
+  handle.workers.add(readyWorker);
+  handle.runningWorker = runningWorker;
+  handle.readyWorkers = [readyWorker];
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+
+  expect(runningThread.runningGeneration).toBeNull();
+  expect(handle.runningWorker).toBe(readyWorker);
+  expect(readyWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+  expect(runningWorker.postMessage).not.toHaveBeenCalled();
+});
+
 test("blocked retry cleanup clears a running worker whose kernel process pointer disappeared", () => {
   const runningWorker = {
     postMessage: vi.fn(),

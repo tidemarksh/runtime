@@ -323,9 +323,14 @@ export function createWorkerSchedulerQueueHelpers(
         deps.appendWorkerDebugLog(handle, `running-worker-cleared:blocking-status-${status}:0x${thread.vmPtr.toString(16)}`);
         return null;
       }
+      if (status === handle.kernel.abi_status_fault()) {
+        handle.runningWorker = null;
+        thread.runningGeneration = null;
+        deps.appendWorkerDebugLog(handle, `running-worker-cleared:status-${status}:0x${thread.vmPtr.toString(16)}`);
+        return null;
+      }
       if (
         handle.readyWorkers.length > 0
-        && status === handle.kernel.abi_status_ok()
         && runningWorkerStepAppearsIdle(handle, thread)
       ) {
         handle.runningWorker = null;
