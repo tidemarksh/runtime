@@ -56,6 +56,7 @@ test("owner-async status return does not apply ownership payloads for another pr
     worker,
     thread: makeThreadState({ ownerAsyncStatus: 4 }) as never,
     msg: makeStatusMessage({
+      status: 4,
       fdEntries: [{ fd: 3, ofdId: 5, fdFlags: 0 }],
     }) as never,
     statusBelongsToHandle: false,
@@ -68,4 +69,41 @@ test("owner-async status return does not apply ownership payloads for another pr
 
   expect(handled).toBe(true);
   expect(setFdEntry).not.toHaveBeenCalled();
+});
+
+test("owner-async status return does not consume a fault from resumed guest execution", () => {
+  const worker = {} as Worker;
+  const appendWorkerDebugLog = vi.fn();
+  const handle = makeHandle({
+    runningWorker: worker,
+    kernel: makeKernel({
+      abi_status_fault: () => 3,
+      abi_status_fs: () => 6,
+    }),
+  });
+  const thread = makeThreadState({
+    ownerAsyncStatus: 6,
+    runningGeneration: 1,
+  });
+
+  const handled = handleOwnerAsyncStatusReturn({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: makeStatusMessage({
+      status: 3,
+      generation: 1,
+    }) as never,
+    statusBelongsToHandle: true,
+    deps: {
+      appendWorkerDebugLog,
+      appendRuntimeLifecycleEvent: () => {},
+      failProcess: (_handle: unknown, error: Error) => { throw error; },
+    } as never,
+  });
+
+  expect(handled).toBe(false);
+  expect(handle.runningWorker).toBe(worker);
+  expect(thread.runningGeneration).toBe(1);
+  expect(appendWorkerDebugLog).not.toHaveBeenCalled();
 });

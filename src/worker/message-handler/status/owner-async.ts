@@ -27,7 +27,11 @@ export function handleOwnerAsyncStatusReturn(args: {
     statusBelongsToHandle,
     deps,
   } = args;
-  if ((thread.ownerAsyncStatus ?? null) === null) {
+  const ownerAsyncStatus = thread.ownerAsyncStatus ?? null;
+  if (ownerAsyncStatus === null) {
+    return false;
+  }
+  if (msg.status !== ownerAsyncStatus) {
     return false;
   }
   if (handle.runningWorker === worker && thread.runningGeneration === msg.generation) {
