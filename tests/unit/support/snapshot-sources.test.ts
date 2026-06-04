@@ -113,3 +113,42 @@ test("applySnapshotSourcesToRuntime uses owned host-file writes when available",
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("applySnapshotSourcesToRuntime rejects over-budget host artifacts before mutating runtime", async () => {
+  const root = mkdtempSync(join(tmpdir(), "tidemark-snapshot-budget-"));
+  const appliedSnapshots: FsSnapshotEntry[][] = [];
+  const writtenFiles: Array<{ path: string; data: Uint8Array; mode?: number; owned: boolean }> = [];
+  try {
+    const hostFile = join(root, "large.bin");
+    writeFileSync(hostFile, new Uint8Array([1, 2, 3, 4]));
+
+    const runtime = {
+      applyFsSnapshot: async (entries: FsSnapshotEntry[]) => {
+        appliedSnapshots.push(entries);
+      },
+      writeFileOwned: async (path: string, data: Uint8Array, mode?: number) => {
+        writtenFiles.push({ path, data: new Uint8Array(data), mode, owned: true });
+      },
+      fs: {
+        writeFile: async (path: string, data: Uint8Array, mode?: number) => {
+          writtenFiles.push({ path, data: new Uint8Array(data), mode, owned: false });
+        },
+      },
+    };
+
+    await expect(
+      applySnapshotSourcesToRuntime(
+        runtime as never,
+        [
+          { kind: "inlineFile", guestPath: "/guest/config.txt", data: "ok", mode: 0o644 },
+          { kind: "file", hostPath: hostFile, guestPath: "/guest/large.bin", mode: 0o600 },
+        ],
+        { artifactMaterializationBudgetBytes: 5 },
+      ),
+    ).rejects.toThrow("snapshot artifact materialization budget exceeded: materializedBytes=6 budgetBytes=5");
+    expect(appliedSnapshots).toHaveLength(0);
+    expect(writtenFiles).toHaveLength(0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

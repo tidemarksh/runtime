@@ -39,6 +39,7 @@ export interface ToolchainExecEntry {
   timeoutMs: number;
   guestMemoryPolicyLimitBytes: number;
   pageCacheDataCapacityBytes?: number;
+  artifactMaterializationBudgetBytes?: number;
   snapshotSources: readonly SnapshotSource[];
   expectedDriverSubstrings?: readonly string[];
   forbiddenDriverSubstrings?: readonly string[];
@@ -93,10 +94,12 @@ export async function prepareToolchainExecRuntime(
     wasmBytes,
     guestMemoryPolicyLimitBytes: entry.guestMemoryPolicyLimitBytes,
     pageCacheDataCapacityBytes: entry.pageCacheDataCapacityBytes,
+    artifactMaterializationBudgetBytes: entry.artifactMaterializationBudgetBytes,
   });
   try {
     const snapshot = await applySnapshotSourcesToRuntime(runtime, entry.snapshotSources, {
       missingLabel: "toolchain exec artifact",
+      artifactMaterializationBudgetBytes: entry.artifactMaterializationBudgetBytes,
     });
     if (snapshot.skipReason) {
       runtime.destroy();

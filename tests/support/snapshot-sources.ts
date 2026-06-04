@@ -19,6 +19,7 @@ export type SnapshotSource =
 export interface SnapshotBuildOptions {
   baseDirs?: readonly string[];
   missingLabel?: string;
+  artifactMaterializationBudgetBytes?: number;
 }
 
 export interface SnapshotBuildResult {
@@ -31,6 +32,7 @@ type HostFileSnapshotTask = {
   hostPath: string;
   guestPath: string;
   mode?: number;
+  size: number;
 };
 
 interface SnapshotPlan {
@@ -95,7 +97,7 @@ function appendHostFileTask(
   const fileMode = mode ?? ((stat.mode & 0o111) !== 0 ? 0o755 : 0o644);
   const normalized = normalizeGuestPath(guestPath);
   ensureSnapshotDir(entries, normalized.split("/").slice(0, -1).join("/") || "/", 0o755);
-  hostFiles.push({ hostPath, guestPath: normalized, mode: fileMode });
+  hostFiles.push({ hostPath, guestPath: normalized, mode: fileMode, size: stat.size });
 }
 
 function appendFileSnapshot(
@@ -236,6 +238,50 @@ function encodeInlineData(data: string | Uint8Array): Uint8Array {
   return typeof data === "string" ? new TextEncoder().encode(data) : data;
 }
 
+function normalizeArtifactMaterializationBudget(value: number | undefined): number | null {
+  if (value === undefined) {
+    return null;
+  }
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`invalid artifact materialization budget: ${value}`);
+  }
+  return Math.floor(value);
+}
+
+function snapshotEntryMaterializedBytes(entry: FsSnapshotEntry): number {
+  if (entry.kind === "file") {
+    return entry.data?.byteLength ?? 0;
+  }
+  if (entry.kind === "symlink") {
+    return entry.target?.byteLength ?? 0;
+  }
+  return 0;
+}
+
+function totalSnapshotMaterializedBytes(plan: SnapshotPlan): number {
+  let total = 0;
+  for (const entry of plan.entries.values()) {
+    total += snapshotEntryMaterializedBytes(entry);
+  }
+  for (const file of plan.hostFiles) {
+    total += file.size;
+  }
+  return total;
+}
+
+function assertArtifactMaterializationBudget(plan: SnapshotPlan, budgetValue: number | undefined): void {
+  const budget = normalizeArtifactMaterializationBudget(budgetValue);
+  if (budget === null) {
+    return;
+  }
+  const materializedBytes = totalSnapshotMaterializedBytes(plan);
+  if (materializedBytes > budget) {
+    throw new Error(
+      `snapshot artifact materialization budget exceeded: materializedBytes=${materializedBytes} budgetBytes=${budget}`,
+    );
+  }
+}
+
 function buildSnapshotPlan(
   sources: readonly SnapshotSource[],
   options: SnapshotBuildOptions = {},
@@ -284,6 +330,7 @@ export function buildSnapshotFromSources(
   if (plan.skipReason) {
     return { skipReason: plan.skipReason };
   }
+  assertArtifactMaterializationBudget(plan, options.artifactMaterializationBudgetBytes);
   for (const file of plan.hostFiles) {
     appendFileSnapshot(plan.entries, file.hostPath, file.guestPath, file.mode);
   }
@@ -300,6 +347,7 @@ export async function applySnapshotSourcesToRuntime(
   if (plan.skipReason) {
     return { skipReason: plan.skipReason };
   }
+  assertArtifactMaterializationBudget(plan, options.artifactMaterializationBudgetBytes);
 
   await runtime.applyFsSnapshot([...plan.entries.values()]);
   for (const file of plan.hostFiles) {
