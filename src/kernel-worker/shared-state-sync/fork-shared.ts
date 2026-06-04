@@ -302,11 +302,9 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
       );
       if (includeMemfs) {
         pushMemfsDebug(`before-canonical-to-target-${targetPid}`);
-        const targetProcSelfExe = deps.snapshotProcSelfExe(targetExports);
         deps.copyCanonicalMemfsToProcess(reconciledCanonicalState, targetExports, targetState, {
           includeData: true,
         });
-        deps.restoreProcSelfExe(targetExports, targetProcSelfExe);
         if (preservePublishedRegularFileData) {
           deps.restorePublishedRegularFileDataFromPageCache?.(targetExports);
         }

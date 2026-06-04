@@ -265,6 +265,8 @@ function cloneEntries(source: FakeMemfsExports, target: FakeMemfsExports): void 
 
 test("copyCanonicalMemfsToProcess rehydrates /proc/self/exe after canonical memfs replacement", () => {
   const canonicalExports = makeMemfsExports();
+  canonicalExports.ensurePath("/proc/stat", "file", 0o100444, new TextEncoder().encode("cpu\n"));
+  canonicalExports.ensurePath("/proc/cpuinfo", "file", 0o100444, new TextEncoder().encode("processor\n"));
   const childExports = makeMemfsExports();
   childExports.ensurePath("/proc", "dir", 0o040555);
   childExports.ensurePath("/proc/self", "dir", 0o040555);
@@ -292,7 +294,7 @@ test("copyCanonicalMemfsToProcess rehydrates /proc/self/exe after canonical memf
   expect(childExports.linkTarget("/proc/self/exe")).toBe("/bin/child-a");
   expect(childExports.fileContents("/proc/stat")).not.toBeNull();
   expect(childExports.fileContents("/proc/cpuinfo")).not.toBeNull();
-  expect(childExports.procfsInstallTargets).toEqual(["/bin/child-a"]);
+  expect(childExports.procfsInstallTargets).toEqual([]);
 });
 
 test("fanoutCanonicalMemfs preserves each process /proc/self/exe target while replacing canonical memfs", () => {
@@ -353,5 +355,5 @@ test("restoreProcSelfExe replaces copied proc/self/exe with the target process s
   fsUtils.restoreProcSelfExe(targetExports, new TextEncoder().encode("/bin/new-target"));
 
   expect(targetExports.linkTarget("/proc/self/exe")).toBe("/bin/new-target");
-  expect(targetExports.procfsInstallTargets).toEqual(["/bin/new-target"]);
+  expect(targetExports.procfsInstallTargets).toEqual([]);
 });

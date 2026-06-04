@@ -73,10 +73,6 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
     if (selfIno === 0) {
       return;
     }
-    if (targetExports.process_install_procfs_snapshot) {
-      targetExports.process_install_procfs_snapshot(targetPtr, target.length);
-      return;
-    }
     targetExports.memfs_create_symlink(selfIno, exeNamePtr, exeName.length, targetPtr, target.length);
   }
 

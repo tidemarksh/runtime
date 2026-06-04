@@ -173,6 +173,7 @@ test("syncForkSharedState copies memfs data when includeMemfs is enabled", () =>
   ]);
   const memfsCopyModes: Array<boolean | undefined> = [];
   const canonicalFanoutModes: Array<boolean | undefined> = [];
+  const restoreProcSelfExe = vi.fn();
 
   const sync = createKernelWorkerForkSharedStateSync({
     getCanonicalExports: () => canonicalExports,
@@ -213,7 +214,7 @@ test("syncForkSharedState copies memfs data when includeMemfs is enabled", () =>
       canonicalFanoutModes.push(options?.includeData);
     },
     snapshotProcSelfExe: () => null,
-    restoreProcSelfExe: () => {},
+    restoreProcSelfExe,
     copyEpollState: () => {},
     copySocketState: () => {},
   });
@@ -234,6 +235,8 @@ test("syncForkSharedState copies memfs data when includeMemfs is enabled", () =>
 
   expect(memfsCopyModes).toEqual([true]);
   expect(canonicalFanoutModes).toEqual([true]);
+  expect(restoreProcSelfExe).toHaveBeenCalledTimes(1);
+  expect(restoreProcSelfExe).toHaveBeenCalledWith(canonicalExports, null);
 });
 
 test("syncForkSharedState restores preserved published file data only to canonical state", () => {
