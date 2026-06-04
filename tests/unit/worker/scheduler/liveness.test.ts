@@ -898,9 +898,14 @@ test("finite pipe poll timeout uses saved blocked syscall when current a7 moved 
   expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
     type: "step",
     guestMemoryWrites: [
-      { guestPtr: 0x20, bytes: new Uint8Array([0x08, 0, 0, 0, 0, 0, 0, 0]) },
-      { guestPtr: 0x28, bytes: new Uint8Array([0x10, 0, 0, 0, 0, 0, 0, 0]) },
-      { guestPtr: 0x30, bytes: new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0]) },
+      {
+        guestPtr: 0x20,
+        bytes: new Uint8Array([
+          0x08, 0, 0, 0, 0, 0, 0, 0,
+          0x10, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0,
+        ]),
+      },
     ],
   }));
 });

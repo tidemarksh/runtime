@@ -9,6 +9,7 @@ import {
   PIPE_WAIT_GUEST_MEMORY_WRITE_BYTES,
 } from "../ownership/pipe-control.js";
 import { POLLFD_BYTES } from "../../layout/poll.js";
+import { appendPendingGuestMemoryWrites } from "../guest-memory-writes.js";
 import type {
   BlockedWorkerState,
   ProcessHandle,
@@ -104,13 +105,10 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
     if (!thread) {
       return;
     }
-    thread.pendingGuestMemoryWrites.push({
+    appendPendingGuestMemoryWrites(thread, [{
       guestPtr: start,
       bytes: memory.slice(absolute, absolute + writeLen),
-    });
-    if (thread.pendingGuestMemoryWrites.length > 32) {
-      thread.pendingGuestMemoryWrites.splice(0, thread.pendingGuestMemoryWrites.length - 32);
-    }
+    }]);
   }
 
   function queueBlockedPollWaitGuestMemoryWrites(

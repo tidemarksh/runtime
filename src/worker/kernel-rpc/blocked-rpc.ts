@@ -14,6 +14,7 @@ import { POLLFD_BYTES } from "../../layout/poll.js";
 import { activeChildMayHoldBlockedPipeWriter } from "./pipe.js";
 import type { KernelRpcResumeEffect, KernelRpcResumeOutcome } from "./outcomes.js";
 import type { SyncCause } from "../contracts/sync.js";
+import { appendPendingGuestMemoryWrites } from "../guest-memory-writes.js";
 
 const GUEST_TICKS_PER_SEC = 100_000_000n;
 const PIPE_SLOT_DEBUG_ENABLED = ((globalThis as {
@@ -130,13 +131,10 @@ function queueGuestBufferWrite(
   if (!thread) {
     return;
   }
-  thread.pendingGuestMemoryWrites.push({
+  appendPendingGuestMemoryWrites(thread, [{
     guestPtr: start,
     bytes: memory.slice(absolute, absolute + writeLen),
-  });
-  if (thread.pendingGuestMemoryWrites.length > 32) {
-    thread.pendingGuestMemoryWrites.splice(0, thread.pendingGuestMemoryWrites.length - 32);
-  }
+  }]);
 }
 
 function syscallMatches(

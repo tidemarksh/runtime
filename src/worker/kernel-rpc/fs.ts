@@ -9,6 +9,7 @@ import {
 } from "../ownership/ofd-table.js";
 import { applyThreadFdEntries } from "../ownership/fd-table.js";
 import { applyThreadOfdSlots } from "../ownership/ofd-slot.js";
+import { appendPendingGuestMemoryWrites } from "../guest-memory-writes.js";
 import { ensureKernelMemoryCapacity, kernelScratchBase } from "../kernel-scratch.js";
 import { adoptKernelStateForHandle } from "../kernel-state.js";
 import {
@@ -620,10 +621,7 @@ function applyFsGuestMemoryWrites(
     if (!thread) {
       continue;
     }
-    thread.pendingGuestMemoryWrites.push(...pendingWrites);
-    if (thread.pendingGuestMemoryWrites.length > 32) {
-      thread.pendingGuestMemoryWrites.splice(0, thread.pendingGuestMemoryWrites.length - 32);
-    }
+    appendPendingGuestMemoryWrites(thread, pendingWrites);
   }
 }
 
