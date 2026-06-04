@@ -10,6 +10,7 @@ import {
 } from "./runtime-workload.js";
 import {
   type SnapshotSource,
+  type SnapshotBuildOptions,
   applySnapshotSourcesToRuntime,
 } from "./snapshot-sources.js";
 
@@ -40,6 +41,7 @@ export interface ToolchainExecEntry {
   guestMemoryPolicyLimitBytes: number;
   pageCacheDataCapacityBytes?: number;
   artifactMaterializationBudgetBytes?: number;
+  hostFileBackingMode?: SnapshotBuildOptions["hostFileBackingMode"];
   snapshotSources: readonly SnapshotSource[];
   expectedDriverSubstrings?: readonly string[];
   forbiddenDriverSubstrings?: readonly string[];
@@ -100,6 +102,7 @@ export async function prepareToolchainExecRuntime(
     const snapshot = await applySnapshotSourcesToRuntime(runtime, entry.snapshotSources, {
       missingLabel: "toolchain exec artifact",
       artifactMaterializationBudgetBytes: entry.artifactMaterializationBudgetBytes,
+      hostFileBackingMode: entry.hostFileBackingMode,
     });
     if (snapshot.skipReason) {
       runtime.destroy();

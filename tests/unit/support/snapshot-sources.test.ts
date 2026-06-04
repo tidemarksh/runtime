@@ -114,6 +114,59 @@ test("applySnapshotSourcesToRuntime uses owned host-file writes when available",
   }
 });
 
+test("applySnapshotSourcesToRuntime can register host files as backing sources", async () => {
+  const root = mkdtempSync(join(tmpdir(), "tidemark-snapshot-source-"));
+  const appliedSnapshots: FsSnapshotEntry[][] = [];
+  const registeredSources: Array<{ sourceIdentity: string; data: Uint8Array }> = [];
+  const writtenFiles: Array<{ path: string; data: Uint8Array; mode?: number; owned: boolean }> = [];
+  try {
+    const hostFile = join(root, "source.bin");
+    const fileData = new Uint8Array((1024 * 1024) + 11).map((_, index) => (index * 13) & 0xff);
+    writeFileSync(hostFile, fileData);
+
+    const runtime = {
+      applyFsSnapshot: async (entries: FsSnapshotEntry[]) => {
+        appliedSnapshots.push(entries);
+      },
+      registerFsBackingSource: async (sourceIdentity: string, data: Uint8Array) => {
+        registeredSources.push({ sourceIdentity, data: new Uint8Array(data) });
+      },
+      writeFileOwned: async (path: string, data: Uint8Array, mode?: number) => {
+        writtenFiles.push({ path, data: new Uint8Array(data), mode, owned: true });
+      },
+      fs: {
+        writeFile: async (path: string, data: Uint8Array, mode?: number) => {
+          writtenFiles.push({ path, data: new Uint8Array(data), mode, owned: false });
+        },
+      },
+    };
+
+    const result = await applySnapshotSourcesToRuntime(
+      runtime as never,
+      [{ kind: "file", hostPath: hostFile, guestPath: "/guest/source.bin", mode: 0o600 }],
+      { hostFileBackingMode: "source" },
+    );
+
+    expect(result.skipReason).toBeUndefined();
+    expect(appliedSnapshots).toHaveLength(1);
+    const fileEntry = appliedSnapshots[0].find((entry) => entry.kind === "file" && entry.path === "/guest/source.bin");
+    expect(fileEntry).toMatchObject({
+      kind: "file",
+      path: "/guest/source.bin",
+      size: fileData.length,
+      mode: 0o600,
+    });
+    expect(fileEntry?.kind === "file" ? fileEntry.data : undefined).toBeUndefined();
+    expect(fileEntry?.backingExtent?.length).toBe(fileData.length);
+    expect(registeredSources).toHaveLength(1);
+    expect(registeredSources[0].sourceIdentity).toBe(fileEntry?.backingExtent?.sourceIdentity);
+    expect(registeredSources[0].data).toEqual(fileData);
+    expect(writtenFiles).toHaveLength(0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("applySnapshotSourcesToRuntime rejects over-budget host artifacts before mutating runtime", async () => {
   const root = mkdtempSync(join(tmpdir(), "tidemark-snapshot-budget-"));
   const appliedSnapshots: FsSnapshotEntry[][] = [];

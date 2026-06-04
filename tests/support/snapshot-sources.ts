@@ -20,6 +20,7 @@ export interface SnapshotBuildOptions {
   baseDirs?: readonly string[];
   missingLabel?: string;
   artifactMaterializationBudgetBytes?: number;
+  hostFileBackingMode?: "write" | "source";
 }
 
 export interface SnapshotBuildResult {
@@ -40,6 +41,12 @@ interface SnapshotPlan {
   hostFiles: HostFileSnapshotTask[];
   skipReason?: string;
 }
+
+type HostFileBackingSourceTask = HostFileSnapshotTask & {
+  sourceIdentity: string;
+};
+
+let nextSnapshotSourceId = 1;
 
 function isSkippableHostFsError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
@@ -282,6 +289,23 @@ function assertArtifactMaterializationBudget(plan: SnapshotPlan, budgetValue: nu
   }
 }
 
+function createHostFileBackingSourceTasks(plan: SnapshotPlan): HostFileBackingSourceTask[] {
+  return plan.hostFiles.map((file) => {
+    const sourceIdentity = `snapshot-source:${nextSnapshotSourceId++}`;
+    plan.entries.set(file.guestPath, {
+      kind: "file",
+      path: file.guestPath,
+      size: file.size,
+      mode: file.mode,
+      backingExtent: {
+        sourceIdentity,
+        length: file.size,
+      },
+    });
+    return { ...file, sourceIdentity };
+  });
+}
+
 function buildSnapshotPlan(
   sources: readonly SnapshotSource[],
   options: SnapshotBuildOptions = {},
@@ -348,8 +372,30 @@ export async function applySnapshotSourcesToRuntime(
     return { skipReason: plan.skipReason };
   }
   assertArtifactMaterializationBudget(plan, options.artifactMaterializationBudgetBytes);
+  const sourceFiles = options.hostFileBackingMode === "source"
+    ? createHostFileBackingSourceTasks(plan)
+    : [];
 
   await runtime.applyFsSnapshot([...plan.entries.values()]);
+  if (options.hostFileBackingMode === "source") {
+    if (typeof runtime.registerFsBackingSource !== "function") {
+      throw new Error("runtime does not support source-backed snapshot host files");
+    }
+    for (const file of sourceFiles) {
+      let data: Uint8Array;
+      try {
+        data = new Uint8Array(readFileSync(file.hostPath));
+      } catch (error) {
+        if (isSkippableHostFsError(error)) {
+          continue;
+        }
+        throw error;
+      }
+      await runtime.registerFsBackingSource(file.sourceIdentity, data);
+    }
+    return {};
+  }
+
   for (const file of plan.hostFiles) {
     let data: Uint8Array;
     try {
