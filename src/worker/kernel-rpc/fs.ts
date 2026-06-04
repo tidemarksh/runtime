@@ -828,10 +828,41 @@ async function resumeFsViaKernelWorkerInner(
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     const currentPid = handle.kernel.process_current_pid?.(vmPtr) ?? handle.pid;
     const transientProcessOwnerMismatch = currentPid > 0 && currentPid !== handle.pid;
-    if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
+    const threadState = deps.threadWorkerStates.get(worker);
+    if (!handle.workers.has(worker) || !threadState) {
       return { kind: "process-gone", effects };
     }
-    deps.assertProcessStandardFdIntegrity(handle, "resume-fs");
+    const finalStatusAfterFs = handle.kernel.thread_status?.(vmPtr);
+    const execveSpawnStatusAfterFs = handle.kernel.abi_status_execve_spawn?.();
+    const fsResolvedToExecveSpawn = execveSpawnStatusAfterFs !== undefined
+      && pendingFs.opcode === FS_OP_EXECVE
+      && (
+        finalStatusAfterFs === execveSpawnStatusAfterFs
+        || threadState.ownerAsyncStatus === execveSpawnStatusAfterFs
+        || threadState.lastStatus === execveSpawnStatusAfterFs
+      );
+    if (fsResolvedToExecveSpawn) {
+      restoreFsFdState(handle, postFsFdState);
+      restoreFsRingProgress(handle, postFsRingProgress);
+      clearStaleFsStatusAfterResume(handle, vmPtr, fsResult);
+      handle.kernelState = readKernelRuntimeState(handle.kernel);
+      effects.push(
+        { kind: "publish-runtime-kernel-state" },
+        { kind: "kick-blocked-workers" },
+        { kind: "handle-execve-spawn", status: execveSpawnStatusAfterFs },
+      );
+      deps.appendWorkerDebugLog(handle, `fs-done:0x${vmPtr.toString(16)}:rv=${fsResult.toString()}`);
+      appendFsLifecycleEvent(
+        handle,
+        "done",
+        vmPtr,
+        `:rv=${fsResult.toString()}:status=${execveSpawnStatusAfterFs}${formatFsRingDebug(handle, vmPtr)}`,
+      );
+      return completedKernelRpcOutcome(undefined, effects);
+    }
+    if (!transientProcessOwnerMismatch) {
+      deps.assertProcessStandardFdIntegrity(handle, "resume-fs");
+    }
     const forkShareMembers = deps.kernelShareOtherMembers(handle);
     const syncTargets = forkShareMembers
       .filter((member) => member.runningWorker === null);
