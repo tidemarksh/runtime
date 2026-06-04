@@ -2134,6 +2134,145 @@ test("status handler adopts kernel state for transient pid mismatch while the ac
   );
 });
 
+test("status handler does not adopt child fault state while resuming an active vfork parent", () => {
+  const worker = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, {
+    vmPtr: number;
+    initialized: boolean;
+    waitingInWorkerStatus: number | null;
+  }>();
+  threadWorkerStates.set(worker, makeThreadState({ ownerPid: 1 }));
+
+  const appendWorkerDebugLog = vi.fn();
+  const clearBlockedWorker = vi.fn();
+  const resumeVforkParentAfterChildExit = vi.fn(() => true);
+  const initialKernelState = makeKernelState();
+  const incomingKernelState = {
+    ...makeKernelState(),
+    heapBase: 0x1000,
+    heapPtr: 0x2000,
+    socketUsed: 7,
+    pipeUsed: 11n,
+    netBufUsed: 13n,
+  };
+  const attachRuntimeState = vi.fn();
+
+  const handler = createWorkerStatusMessageHandler({
+    threadWorkerStates,
+    appendWorkerDebugLog,
+    clearBlockedWorker,
+    enqueueWorker: () => {},
+    pumpProcess: () => {},
+    kickBlockedWorkers: () => {},
+    failProcess: () => {},
+    requestPipeStateSync: async () => {},
+    requestEpollStateSync: async () => {},
+    requestSocketStateSync: async () => {},
+    resumeFsViaKernelWorker: async () => {},
+    resumeConnectViaKernelWorker: async () => {},
+    resumeVforkParentAfterChildExit,
+    captureVforkSnapshot: () => {
+      throw new Error("unexpected");
+    },
+    syncForkSharedStateViaKernelWorker: async () => {},
+    syncBlockedForkSharedStateViaKernelWorker: async () => {},
+    syncProcessLifecycleViaKernelWorker: async () => {},
+    canonicalizeActiveVforkChildViaKernelWorker: async () => {},
+    attachThreadWorker: () => {},
+    completeProcessExit: async () => {},
+    handleExecveSpawn: async () => {},
+    blockWorker: () => {},
+    assertProcessStandardFdIntegrity: () => {},
+    requestEpollDependentOfdStateSync: async () => {},
+    statusOkCompletedSyncEffects: 0,
+    syncEffectPipeState: 1,
+    syncEffectSocketState: 2,
+    syncEffectEpollState: 4,
+    syncEffectEpollDependentOfdState: 8,
+    syncEffectProcessLifecycle: 16,
+    syncEffectSignalWaiters: 32,
+    syncEffectForkSharedOfdState: 64,
+    syncEffectProcessMemfs: 128,
+    statusDefersOwnedStateSync: () => false,
+  } as never);
+
+  const handle = {
+    pid: 1,
+    stdoutPipe: 0,
+    stderrPipe: 0,
+    stdinPipe: 0,
+    stdinQueue: [],
+    hostStdio: {
+      stdinPipe: 0,
+      stdoutPipe: 0,
+      stderrPipe: 0,
+      refCount: 1,
+    },
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    outputBacklog: [],
+    workers: new Set([worker]),
+    readyWorkers: [],
+    blockedWorkers: new Map(),
+    kernelWorkerRequest: undefined,
+    kernelShare: { members: new Set(), sharedOfdIds: new Set() },
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(12),
+      stateSab: new SharedArrayBuffer(176),
+    },
+    kernel: makeKernel(1, {
+      abi_status_clone_spawn: () => 9,
+      abi_status_socket_recv: () => 23,
+      abi_status_socket_send: () => 24,
+      abi_status_connect: () => 28,
+      abi_status_flock_wait: () => 32,
+      abi_status_execve_spawn: () => 10,
+      abi_status_vfork_wait: () => 8,
+      kernel_attach_runtime_state: attachRuntimeState,
+    }),
+    kernelState: initialKernelState,
+    onStdout: null,
+    runningWorker: worker,
+    vforkSnapshot: {
+      vmPtr: 0x1234,
+      parentPid: 1,
+      parentProcessPtr: 0x5000,
+      childPid: 4,
+      nextPid: 5,
+      pgid: 1,
+      sid: 1,
+      inheritedSharedOfdIds: [],
+    },
+    vforkWorker: worker,
+  } as never;
+
+  handler(
+    handle,
+    worker,
+    {
+      type: "status",
+      status: 3,
+      generation: 1,
+      vmPtr: 0x1234,
+      exitCode: 12,
+      termSignal: 0,
+      pc: 0x2000n,
+      sp: 0x3000n,
+      s11: 0x4000n,
+      kernelState: incomingKernelState,
+      debug: "pc=0x2000 sp=0x3000 s11=0x4000 process_pid_field=4",
+    },
+  );
+
+  expect(resumeVforkParentAfterChildExit).toHaveBeenCalledWith(handle, worker, 0x1234, 12, 0);
+  expect(handle.kernelState).toBe(initialKernelState);
+  expect(attachRuntimeState).not.toHaveBeenCalled();
+  expect(clearBlockedWorker).toHaveBeenCalledWith(handle, worker);
+  expect(appendWorkerDebugLog).toHaveBeenCalledWith(
+    handle,
+    "status_debug:0x1234:handle_pid=1:process_pid_field=4",
+  );
+});
+
 test("status handler preserves host-injected network recv buffer when applying thread socket snapshots", () => {
   const worker = {} as Worker;
   const threadWorkerStates = new WeakMap<Worker, { vmPtr: number; initialized: boolean; waitingInWorkerStatus: number | null }>();

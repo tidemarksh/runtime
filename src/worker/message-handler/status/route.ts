@@ -95,12 +95,15 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       : localProcessPid !== null && localProcessPid !== handle.pid;
     const activeVforkWorker = handle.vforkSnapshot !== null && handle.vforkWorker === worker;
     const statusBelongsToHandle = !transientProcessOwnerMismatch || activeVforkWorker;
+    const faultStatus = handle.kernel.abi_status_fault?.();
+    const statusStateBelongsToHandle = statusBelongsToHandle
+      && !(activeVforkWorker && status === faultStatus);
     if (handleOwnerAsyncStatusReturn({
       handle,
       worker,
       thread,
       msg,
-      statusBelongsToHandle,
+      statusBelongsToHandle: statusStateBelongsToHandle,
       deps,
     })) {
       return;
@@ -118,7 +121,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
           + `:child=${handle.kernel.thread_spawn_child_pid?.(msg.vmPtr) ?? -1}`,
       );
     }
-    if (statusBelongsToHandle) {
+    if (statusStateBelongsToHandle) {
       applyStatusOfdSlots(handle, msg);
       applyStatusFdEntries(handle, msg);
       pruneStatusNetworkConnectionsFromFdEntries(handle, msg, deps);
@@ -157,7 +160,6 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       thread.execveProcessState = msg.processState;
     }
     incrementBoundedCounter(thread.hotStatusPcs, `0x${msg.pc.toString(16)}`);
-    const faultStatus = handle.kernel.abi_status_fault?.();
     const suspiciousLowStateDebug = hasSuspiciousLowStateDebug(msg.debug);
     deps.appendWorkerDebugLog(
       handle,
@@ -239,7 +241,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     }
     const shouldAdoptThreadKernelState = (
       status !== handle.kernel.abi_status_clone_spawn()
-      && statusBelongsToHandle
+      && statusStateBelongsToHandle
     );
     if (shouldAdoptThreadKernelState) {
       handle.kernelState = adoptKernelStateForHandle(handle, msg.kernelState);
