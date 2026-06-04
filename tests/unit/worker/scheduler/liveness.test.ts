@@ -386,6 +386,81 @@ test("pumpProcess reconciles a running FS status through the owner scheduler", a
   }));
 });
 
+test("pumpProcess recovers a stale OK owner-async worker", () => {
+  vi.setSystemTime(new Date(10_000));
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const thread = makeThreadState(0x1234);
+  thread.ownerAsyncStatus = 6;
+  thread.stepCount = 8;
+  thread.statusCount = 8;
+  thread.lastStatusAtMs = 7_000;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, thread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_ok();
+  const handle = makeHandle(kernel, worker);
+  handle.pendingChildSpawnRecords = 0;
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeFsViaKernelWorker: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => ({ kind: "completed" }),
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+
+  expect(thread.ownerAsyncStatus).toBeNull();
+  expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+});
+
+test("pumpProcess keeps a fresh owner-async worker parked", () => {
+  vi.setSystemTime(new Date(10_000));
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const thread = makeThreadState(0x1234);
+  thread.ownerAsyncStatus = 6;
+  thread.stepCount = 8;
+  thread.statusCount = 8;
+  thread.lastStatusAtMs = 9_000;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, thread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_ok();
+  const handle = makeHandle(kernel, worker);
+  handle.pendingChildSpawnRecords = 0;
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeFsViaKernelWorker: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => ({ kind: "completed" }),
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+
+  expect(thread.ownerAsyncStatus).toBe(6);
+  expect(worker.postMessage).not.toHaveBeenCalled();
+});
+
 test("wait4 retry stays blocked while child spawn is still in flight", async () => {
   const worker = {
     postMessage: vi.fn(),

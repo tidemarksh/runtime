@@ -291,6 +291,40 @@ export function createWorkerSchedulerQueueHelpers(
     return Date.now() - lastStepAtMs >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
   }
 
+  function clearStaleOwnerAsyncStatus(
+    handle: ProcessHandle,
+    worker: Worker,
+    thread: ThreadWorkerState,
+  ): boolean {
+    if ((thread.ownerAsyncStatus ?? null) === null) {
+      return false;
+    }
+    if (!thread.initialized || thread.waitingInWorkerStatus !== null) {
+      return false;
+    }
+    if (thread.stepCount > thread.statusCount || thread.lastStatusAtMs === null) {
+      return false;
+    }
+    if (Date.now() - thread.lastStatusAtMs < STALE_SLEEP_RUNNING_WORKER_REPAIR_MS) {
+      return false;
+    }
+    if (handle.kernel.thread_process_ptr(thread.vmPtr) === 0) {
+      return false;
+    }
+    if (handle.kernel.thread_status(thread.vmPtr) !== handle.kernel.abi_status_ok()) {
+      return false;
+    }
+    deps.appendWorkerDebugLog(
+      handle,
+      `owner-async-cleared:stale-ok:0x${thread.vmPtr.toString(16)}:async=${thread.ownerAsyncStatus}`,
+    );
+    thread.ownerAsyncStatus = null;
+    if (!handle.readyWorkers.includes(worker)) {
+      handle.readyWorkers.push(worker);
+    }
+    return true;
+  }
+
   function sanitizeRunningWorker(handle: ProcessHandle): Worker | null {
     const runningWorker = handle.runningWorker;
     if (runningWorker === null) {
@@ -629,6 +663,9 @@ export function createWorkerSchedulerQueueHelpers(
         continue;
       }
       const thread = deps.threadWorkerStates.get(worker);
+      if (thread && clearStaleOwnerAsyncStatus(handle, worker, thread)) {
+        continue;
+      }
       if (
         !thread?.initialized
         || thread.waitingInWorkerStatus !== null
