@@ -70,6 +70,7 @@ export interface ThreadWorkerState {
   waitingInWorkerReconcileDeferred?: boolean;
   ownerAsyncStatus: number | null;
   resumeBlockedOnNextStep: boolean;
+  pendingKernelStateForNextStep?: KernelRuntimeState;
   pendingPipeSlotsForNextStep: KernelWorkerPipeSlotSnapshot[];
   pendingGuestMemoryWrites: GuestMemoryWriteSnapshot[];
   resumeWorkersOnReady: Worker[];

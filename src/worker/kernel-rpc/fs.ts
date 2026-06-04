@@ -846,6 +846,9 @@ async function resumeFsViaKernelWorkerInner(
     if (!handle.workers.has(worker) || !threadState) {
       return { kind: "process-gone", effects };
     }
+    if (failedExecveChildOwner) {
+      threadState.pendingKernelStateForNextStep = fsProcessedResponse.kernelState;
+    }
     const finalStatusAfterFs = handle.kernel.thread_status?.(vmPtr);
     const execveSpawnStatusAfterFs = handle.kernel.abi_status_execve_spawn?.();
     const fsResolvedToExecveSpawn = execveSpawnStatusAfterFs !== undefined

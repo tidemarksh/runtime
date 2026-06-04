@@ -291,6 +291,65 @@ test("scheduler uses the Node step budget when Node process globals are present"
   }));
 });
 
+test("scheduler uses pending worker kernel state for one active vfork child step", () => {
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const thread = makeThreadState(0x1234) as ThreadWorkerState & {
+    pendingKernelStateForNextStep?: ProcessHandle["kernelState"];
+  };
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, thread);
+  const { exports: kernel } = makeKernel();
+  const handle = makeHandle(kernel, worker);
+  const parentKernelState = {
+    ...handle.kernelState,
+    heapPtr: 0x111000,
+    pipeUsed: 1n,
+  };
+  const childKernelState = {
+    ...handle.kernelState,
+    heapPtr: 0x222000,
+    pipeUsed: 3n,
+  };
+  handle.kernelState = parentKernelState;
+  handle.vforkWorker = worker;
+  handle.vforkSnapshot = {
+    vmPtr: 0x1234,
+    parentPid: 1,
+    parentProcessPtr: 0x2000,
+    parentPc: 0x1000n,
+    parentSp: 0x8000n,
+    parentS11: 0x9000n,
+    childPid: 3,
+    nextPid: 4,
+    pgid: 1,
+    sid: 1,
+    inheritedSharedOfdIds: [],
+  };
+  thread.pendingKernelStateForNextStep = childKernelState;
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.enqueueWorker(handle, worker);
+
+  expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    kernelState: childKernelState,
+  }));
+  expect(thread.pendingKernelStateForNextStep).toBeUndefined();
+});
+
 test("blocked FS retry pumps after clearing owner async status", async () => {
   const worker = {
     postMessage: vi.fn(),

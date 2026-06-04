@@ -3,7 +3,7 @@ import { createRuntimeStateBridge } from "../../../../src/bridge/runtime-state.j
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { createWorkerKernelRpcHelpers } from "../../../../src/worker/kernel-rpc.js";
 import { createWorkerKernelRpcResumeLifecycleHelpers } from "../../../../src/worker/kernel-rpc/lifecycle/resume.js";
-import type { ProcessHandle } from "../../../../src/worker/types.js";
+import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 
 function makeKernelState(): KernelRuntimeState {
   return {
@@ -2285,6 +2285,9 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
   expect(outcome.effects).toContainEqual({ kind: "enqueue-worker" });
   expect(handle.kernelState).toEqual(initialKernelState);
   expect(handle.kernelState).not.toEqual(localChildKernelState);
+  expect((threadWorkerStates.get(worker) as ThreadWorkerState & {
+    pendingKernelStateForNextStep?: KernelRuntimeState;
+  }).pendingKernelStateForNextStep).toEqual(childKernelState);
   expect(kernel.kernel_attach_runtime_state).not.toHaveBeenCalledWith(
     childKernelState.heapBase,
     childKernelState.heapPtr,

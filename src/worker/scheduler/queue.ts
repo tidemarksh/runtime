@@ -848,10 +848,14 @@ export function createWorkerSchedulerQueueHelpers(
     }
     publishRuntimeBridgeEpoch(handle.runtimeBridge);
     const fdEntries = snapshotProcessFdEntriesForThread(handle, vmPtr ?? 0);
+    const pendingKernelState = thread?.pendingKernelStateForNextStep;
+    if (thread && pendingKernelState !== undefined) {
+      thread.pendingKernelStateForNextStep = undefined;
+    }
     const stepMessage: ThreadWorkerInbound = {
       type: "step",
       budget: SCHEDULER_STEP_BUDGET,
-      kernelState: handle.kernelState,
+      kernelState: pendingKernelState ?? handle.kernelState,
     };
     const stepSocketState = snapshotSocketStateForThread(handle);
     const stepOfdSlots = snapshotOfdSlotsForThread(handle, fdEntries);
