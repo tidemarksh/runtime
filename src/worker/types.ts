@@ -85,6 +85,7 @@ export interface WorkerMessageDebugStats {
   ownershipInvariantDrops: number;
   staleGenerationDrops: number;
   staleProcessStatusDrops: number;
+  readyRehydrateAdopts: number;
   statusHandlerNoThreadDrops: number;
   ownerAsyncStatusReturns: number;
   statusHandled: number;
@@ -104,6 +105,7 @@ export function createWorkerMessageDebugStats(): WorkerMessageDebugStats {
     ownershipInvariantDrops: 0,
     staleGenerationDrops: 0,
     staleProcessStatusDrops: 0,
+    readyRehydrateAdopts: 0,
     statusHandlerNoThreadDrops: 0,
     ownerAsyncStatusReturns: 0,
     statusHandled: 0,

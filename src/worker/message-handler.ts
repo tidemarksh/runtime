@@ -100,7 +100,7 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
     }
     if (handle.pid > 0) {
       const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
-      const messageProcessPidField = msg.type === "status" && "debug" in msg
+      const messageProcessPidField = "debug" in msg
         ? readProcessPidField(msg.debug)
         : null;
       if (
@@ -111,6 +111,24 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
         return true;
       }
       const processThreadCount = handle.kernel.thread_process_thread_count(thread.vmPtr);
+      if (
+        msg.type === "ready"
+        && currentPid === 0
+        && processThreadCount === 0
+        && messageProcessPidField === handle.pid
+      ) {
+        recordWorkerMessageDebugEvent(
+          handle.workerMessageDebugStats,
+          "readyRehydrateAdopts",
+          `ready-rehydrate:${handle.pid}:0x${thread.vmPtr.toString(16)}`
+            + `:field=${messageProcessPidField}:current=${currentPid}:threads=${processThreadCount}`,
+        );
+        deps.appendWorkerDebugLog(
+          handle,
+          `ready-rehydrate:0x${thread.vmPtr.toString(16)}:pid=${handle.pid}`,
+        );
+        return true;
+      }
       if (msg.type === "status" && currentPid === 0 && processThreadCount === 0) {
         recordWorkerMessageDebugEvent(
           handle.workerMessageDebugStats,

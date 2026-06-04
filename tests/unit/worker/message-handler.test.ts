@@ -175,3 +175,96 @@ test("status from a removed process state is dropped as stale", () => {
     "stale-process-status:0x1234:0:pid=4",
   );
 });
+
+test("ready from a rehydrating process state is accepted when worker debug still identifies the owner", () => {
+  const worker = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, makeThreadState({ ownerPid: 4 }));
+  const appendWorkerDebugLog = vi.fn();
+  const failProcess = vi.fn();
+  const deps = makeDeps(threadWorkerStates, appendWorkerDebugLog, failProcess);
+  const enqueueWorker = vi.fn();
+  deps.enqueueWorker = enqueueWorker;
+  const handle = {
+    pid: 4,
+    parentPid: 1,
+    exitInProgress: false,
+    workerDebugLog: [],
+    workerMessageDebugStats: createWorkerMessageDebugStats(),
+    workers: new Set<Worker>([worker]),
+    readyWorkers: [],
+    blockedWorkers: new Set<Worker>(),
+    vforkSnapshot: null,
+    stdinPipe: 0,
+    ttyPtySlot: 0,
+    stdinQueue: [],
+    outputBacklog: [],
+    stdioOwner: null,
+    hostStdio: {
+      stdinPipe: 0,
+      stdoutPipe: 0,
+      stderrPipe: 0,
+    },
+    networkConnections: new Map(),
+    networkPendingConnectFds: new Set(),
+    networkClosedFds: new Set(),
+    networkClosedSocketSlots: new Set(),
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(16),
+      stateSab: new SharedArrayBuffer(512),
+    },
+    memory: new WebAssembly.Memory({ initial: 1 }),
+    kernelState: {
+      heapBase: 0,
+      heapPtr: 0,
+      ofdTablePtr: 0,
+      memfsPtr: 0,
+      memfsHeaderBytes: 0,
+      memfsInodesBytes: 0,
+      memfsFirstChildBytes: 0,
+      memfsDirEntriesBytes: 0,
+      memfsDataBytes: 0,
+      memStatePtr: 0,
+      epollTablePtr: 0,
+      socketTablePtr: 0,
+      socketUsed: 0,
+      pipeBase: 0,
+      pipeUsed: 0n,
+      netBufBase: 0,
+      netBufUsed: 0n,
+      sigSlotsPtr: 0,
+      processPendingPtr: 0,
+      processRuntimeStatePtr: 0,
+      timeStatePtr: 0,
+    },
+    kernel: {
+      abi_status_fault: () => 31,
+      abi_status_vfork_wait: () => 11,
+      abi_status_execve_spawn: () => 13,
+      kernel_attach_runtime_state: () => {},
+      process_current_pid: () => 0,
+      thread_process_thread_count: () => 0,
+      thread_process_ptr: () => 0,
+      process_current_ppid: () => 0,
+      process_fd_ofd_id: () => 0,
+    },
+  } as unknown as ProcessHandle;
+  deps.processHandles.set(4, handle);
+  const handleWorkerMessage = createWorkerMessageHandler(deps);
+
+  handleWorkerMessage(handle, worker, {
+    type: "ready",
+    generation: 2,
+    vmPtr: 0x1234,
+    kernelState: handle.kernelState,
+    wasmFeatures: { bulkMemory: true },
+    debug: "process_ptr=0x48000 process_pid_field=4 process_ppid_field=1",
+  } as ThreadWorkerOutbound);
+
+  expect(failProcess).not.toHaveBeenCalled();
+  expect(appendWorkerDebugLog).toHaveBeenCalledWith(
+    handle,
+    "ready-rehydrate:0x1234:pid=4",
+  );
+  expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+});
