@@ -125,13 +125,14 @@ for (const [argv, lineEnding] of [
       await runtime.fs.mkdir("/work", 0o755).catch(() => {});
       await runtime.fs.writeFile("/bin/busybox", busybox, 0o755);
       await runtime.fs.writeFile("/bin/sh", busybox, 0o755);
+      await runtime.fs.writeFile("/bin/ls", busybox, 0o755);
       await runtime.fs.writeFile("/work/hello.txt", new TextEncoder().encode("hello\n"), 0o644);
 
       const proc = await runtime.spawn(
         busybox,
         [...argv],
         ["TERM=xterm", "HOME=/root", "PATH=/bin"],
-        { cwd: "/work" },
+        { cwd: "/work", stdio: "pty" },
       );
       let output = "";
       proc.onStdout((data) => {
@@ -201,6 +202,7 @@ test("Runtime interactive shell ls handles multi-entry workspace without wedging
     await runtime.fs.mkdir("/work/go-hello", 0o755).catch(() => {});
     await runtime.fs.writeFile("/bin/busybox", busybox, 0o755);
     await runtime.fs.writeFile("/bin/sh", busybox, 0o755);
+    await runtime.fs.writeFile("/bin/ls", busybox, 0o755);
     await runtime.fs.writeFile("/work/node-hello.js", new TextEncoder().encode("console.log('ok');\n"), 0o644);
     await runtime.fs.writeFile("/work/node-timers.js", new TextEncoder().encode("setTimeout(() => {}, 1);\n"), 0o644);
 
@@ -208,7 +210,7 @@ test("Runtime interactive shell ls handles multi-entry workspace without wedging
       busybox,
       ["/bin/sh", "-i"],
       ["TERM=xterm", "HOME=/root", "PATH=/bin"],
-      { cwd: "/work" },
+      { cwd: "/work", stdio: "pty" },
     );
     let output = "";
     proc.onStdout((data) => {
@@ -269,12 +271,13 @@ test("Runtime interactive shell echoes fast character stdin exactly once", async
     await runtime.fs.mkdir("/work", 0o755).catch(() => {});
     await runtime.fs.writeFile("/bin/busybox", busybox, 0o755);
     await runtime.fs.writeFile("/bin/sh", busybox, 0o755);
+    await runtime.fs.writeFile("/bin/ls", busybox, 0o755);
 
     const proc = await runtime.spawn(
       busybox,
       ["/bin/sh", "-i"],
       ["TERM=xterm", "HOME=/root", "PATH=/bin", "PS1=$ "],
-      { cwd: "/work" },
+      { cwd: "/work", stdio: "pty" },
     );
     let output = "";
     proc.onStdout((data) => {
@@ -391,7 +394,7 @@ test("Runtime interactive shell preserves absolute-path exec with demo-style env
         "GOFLAGS=-mod=mod",
         "GONOSUMDB=*",
       ],
-      { cwd: "/work" },
+      { cwd: "/work", stdio: "pty" },
     );
     let output = "";
     const debugSnapshot = (): string => {
@@ -480,13 +483,14 @@ for (const [argv, lineEnding] of [
       await runtime.fs.mkdir("/work", 0o755).catch(() => {});
       await runtime.fs.writeFile("/bin/busybox", busybox, 0o755);
       await runtime.fs.writeFile("/bin/sh", busybox, 0o755);
+      await runtime.fs.writeFile("/bin/ls", busybox, 0o755);
       await runtime.fs.writeFile("/work/hello.txt", new TextEncoder().encode("hello\n"), 0o644);
 
       const proc = await runtime.spawn(
         busybox,
         [...argv],
         ["TERM=xterm", "HOME=/root", "PATH=/bin"],
-        { cwd: "/work" },
+        { cwd: "/work", stdio: "pty" },
       );
       let output = "";
       proc.onStdout((data) => {
