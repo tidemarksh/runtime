@@ -815,6 +815,7 @@ test("vfork child fault delegates wait status bookkeeping and parent resume to k
       kernelState: {
         ...makeKernelState(),
         heapPtr: makeKernelState().heapPtr + 0x24,
+        pipeUsed: 15n,
       },
     },
   ]);

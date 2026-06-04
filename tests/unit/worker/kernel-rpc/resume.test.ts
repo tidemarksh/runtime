@@ -2117,6 +2117,186 @@ test("resumeFsViaKernelWorker skips memfs sync during active vfork child ownersh
   expect(outcome.effects).toContainEqual({ kind: "enqueue-worker" });
 });
 
+test("resumeFsViaKernelWorker does not adopt failed execve child state into the vfork parent", async () => {
+  const worker = {} as Worker;
+  const runtimeBridge = createRuntimeStateBridge();
+  const processFsRequests: unknown[] = [];
+  const initialKernelState = makeKernelState();
+  const childKernelState = {
+    ...initialKernelState,
+    heapPtr: initialKernelState.heapPtr + 0x4000,
+    socketUsed: 7,
+    pipeUsed: 11n,
+    netBufUsed: 13n,
+  };
+  let attachedKernelState = initialKernelState;
+  let currentPid = 1;
+  const fdEntries = new Map<number, { ofdId: number; fdFlags: number }>([
+    [0, { ofdId: 1, fdFlags: 0 }],
+  ]);
+
+  const kernel = {
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    kernel_attach_runtime_state: vi.fn((
+      heapBase: number,
+      heapPtr: number,
+      ofdTablePtr: number,
+      memfsPtr: number,
+      memStatePtr: number,
+      epollTablePtr: number,
+      socketTablePtr: number,
+      socketUsed: number,
+      pipeBase: number,
+      pipeUsed: bigint,
+      netBufBase: number,
+      netBufUsed: bigint,
+      sigSlotsPtr: number,
+      processPendingPtr: number,
+      processRuntimeStatePtr: number,
+      timeStatePtr: number,
+    ) => {
+      attachedKernelState = {
+        ...attachedKernelState,
+        heapBase,
+        heapPtr,
+        ofdTablePtr,
+        memfsPtr,
+        memStatePtr,
+        epollTablePtr,
+        socketTablePtr,
+        socketUsed,
+        pipeBase,
+        pipeUsed,
+        netBufBase,
+        netBufUsed,
+        sigSlotsPtr,
+        processPendingPtr,
+        processRuntimeStatePtr,
+        timeStatePtr,
+      };
+    }),
+    kernel_heap_base: () => attachedKernelState.heapBase,
+    kernel_heap_ptr: () => attachedKernelState.heapPtr,
+    kernel_ofd_table_ptr: () => attachedKernelState.ofdTablePtr,
+    kernel_memfs_ptr: () => attachedKernelState.memfsPtr,
+    kernel_memfs_header_bytes: () => attachedKernelState.memfsHeaderBytes,
+    kernel_memfs_inodes_bytes: () => attachedKernelState.memfsInodesBytes,
+    kernel_memfs_first_child_bytes: () => attachedKernelState.memfsFirstChildBytes,
+    kernel_memfs_dir_entries_bytes: () => attachedKernelState.memfsDirEntriesBytes,
+    kernel_memfs_data_bytes: () => attachedKernelState.memfsDataBytes,
+    kernel_mem_state_ptr: () => attachedKernelState.memStatePtr,
+    kernel_epoll_table_ptr: () => attachedKernelState.epollTablePtr,
+    kernel_socket_table_ptr: () => attachedKernelState.socketTablePtr,
+    kernel_socket_used: () => attachedKernelState.socketUsed,
+    kernel_pipe_base: () => attachedKernelState.pipeBase,
+    kernel_pipe_used: () => attachedKernelState.pipeUsed,
+    kernel_net_buf_base: () => attachedKernelState.netBufBase,
+    kernel_net_buf_used: () => attachedKernelState.netBufUsed,
+    kernel_sig_slots_ptr: () => attachedKernelState.sigSlotsPtr,
+    kernel_process_pending_ptr: () => attachedKernelState.processPendingPtr,
+    kernel_process_runtime_state_ptr: () => attachedKernelState.processRuntimeStatePtr,
+    kernel_time_state_ptr: () => attachedKernelState.timeStatePtr,
+    abi_max_fds: () => 16,
+    abi_max_threads: () => 1,
+    process_current_pid: () => currentPid,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fdEntries.get(fd)?.ofdId ?? 0,
+    process_fd_flags: (_vmPtr: number, fd: number) => fdEntries.get(fd)?.fdFlags ?? 0,
+    process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number, fdFlags: number) => {
+      fdEntries.set(fd, { ofdId, fdFlags });
+    },
+    process_thread_vm_ptr: () => 0,
+    thread_status: () => 0,
+    thread_pending_fs_opcode: () => 13,
+    thread_pending_fs_effects: () => 0,
+    thread_pending_fs_target_ino: () => 0,
+    thread_a0: () => -12n,
+  } as unknown as KernelExports;
+
+  const handle = makeHandle(kernel, runtimeBridge, worker, {
+    pid: 1,
+    kernelState: initialKernelState,
+    kernelWorkerRequest: vi.fn(async (message) => {
+      processFsRequests.push(message);
+      if (message.type !== "process-fs") {
+        return { type: "unexpected" } as never;
+      }
+      currentPid = 3;
+      return {
+        type: "fs-processed",
+        requestId: 0,
+        kernelState: childKernelState,
+        result: -12n,
+        memfsMutated: false,
+        ofdStateChanged: true,
+        fdEntries: [{ fd: 0, ofdId: 1463582720, fdFlags: 1463582211 }],
+      };
+    }),
+  });
+
+  const threadWorkerStates = new WeakMap<Worker, {
+    vmPtr: number;
+    initialized: boolean;
+    waitingInWorkerStatus: number | null;
+  }>();
+  threadWorkerStates.set(worker, {
+    vmPtr: 0x1234,
+    initialized: true,
+    waitingInWorkerStatus: null,
+  });
+
+  const helpers = createWorkerKernelRpcHelpers({
+    processHandles: new Map([[1, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: () => {},
+    appendWorkerDebugLog: () => {},
+    assertProcessStandardFdIntegrity: () => {},
+    enqueueWorker: () => {},
+    failProcess(errorHandle, error) {
+      throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
+    },
+    handleBlockedRetryResult: () => {},
+    kickBlockedWorkers: () => {},
+    markRuntimeFsDirty: () => {},
+    requestPipeStateSync: async () => {},
+    syncBlockedForkSharedStateViaKernelWorker: async () => {},
+    syncForkSharedStateLocally: () => {},
+    syncForkSharedStateViaKernelWorker: async () => {},
+    rehydrateForkSharedStateViaKernelWorker: async () => {},
+    syncPipeStateViaKernelWorker: async () => 0n,
+    syncSocketStateViaKernelWorker: async () => ({ socketUsed: 0, netBufUsed: 0n }),
+    collectTrackableForkSharedOfds: () => new Set(),
+  });
+
+  const outcome = await helpers.resumeFsViaKernelWorker(handle, worker, 0x1234, {
+    memfsMutation: 1,
+    memfsFileData: 4,
+    sharedOfdState: 2,
+  });
+
+  expect(processFsRequests).toHaveLength(1);
+  expect(outcome.effects).toContainEqual({ kind: "enqueue-worker" });
+  expect(handle.kernelState).toEqual(initialKernelState);
+  expect(kernel.kernel_attach_runtime_state).not.toHaveBeenCalledWith(
+    childKernelState.heapBase,
+    childKernelState.heapPtr,
+    childKernelState.ofdTablePtr,
+    childKernelState.memfsPtr,
+    childKernelState.memStatePtr,
+    childKernelState.epollTablePtr,
+    childKernelState.socketTablePtr,
+    childKernelState.socketUsed,
+    childKernelState.pipeBase,
+    childKernelState.pipeUsed,
+    childKernelState.netBufBase,
+    childKernelState.netBufUsed,
+    childKernelState.sigSlotsPtr,
+    childKernelState.processPendingPtr,
+    childKernelState.processRuntimeStatePtr,
+    childKernelState.timeStatePtr,
+  );
+  expect(fdEntries.get(0)).toEqual({ ofdId: 1, fdFlags: 0 });
+});
+
 test("resumeFsViaKernelWorker routes execve spawn before parent fd integrity checks", async () => {
   const worker = {} as Worker;
   const runtimeBridge = createRuntimeStateBridge();

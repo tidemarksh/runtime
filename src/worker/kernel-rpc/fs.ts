@@ -800,10 +800,26 @@ async function resumeFsViaKernelWorkerInner(
         `:fds=${formatFdEntrySummary(fsProcessedResponse.fdEntries)}`,
       );
     }
-    handle.kernelState = adoptKernelStateForHandle(handle, fsProcessedResponse.kernelState);
-    attachKernelRuntimeState(handle.kernel, handle.kernelState);
-    applyFsGuestMemoryWrites(handle, deps.threadWorkerStates, fsProcessedResponse.guestMemoryWrites);
-    if (fsProcessedResponse.ofdSlots || fsProcessedResponse.fdEntries) {
+    const fsResult = normalizeFsResult(fsProcessedResponse.result);
+    const fsSucceeded = Number(BigInt.asIntN(64, fsResult)) >= 0;
+    const responseCurrentPid = handle.kernel.process_current_pid?.(vmPtr) ?? handle.pid;
+    const transientProcessOwnerMismatch = responseCurrentPid > 0 && responseCurrentPid !== handle.pid;
+    const failedExecveChildOwner = pendingFs.opcode === FS_OP_EXECVE
+      && !fsSucceeded
+      && transientProcessOwnerMismatch;
+    if (!failedExecveChildOwner) {
+      handle.kernelState = adoptKernelStateForHandle(handle, fsProcessedResponse.kernelState);
+      attachKernelRuntimeState(handle.kernel, handle.kernelState);
+      applyFsGuestMemoryWrites(handle, deps.threadWorkerStates, fsProcessedResponse.guestMemoryWrites);
+    } else {
+      appendFsLifecycleEvent(
+        handle,
+        "child-state-skipped",
+        vmPtr,
+        `:rv=${fsResult.toString()}:pid=${responseCurrentPid}${fsDebugSuffix}`,
+      );
+    }
+    if (!failedExecveChildOwner && (fsProcessedResponse.ofdSlots || fsProcessedResponse.fdEntries)) {
       applyThreadOfdSlots(handle, {
         vmPtr,
         fdEntries: fsProcessedResponse.fdEntries,
@@ -817,8 +833,6 @@ async function resumeFsViaKernelWorkerInner(
         `:fds=${formatRuntimeFdSummary(handle, vmPtr)}`,
       );
     }
-    const fsResult = normalizeFsResult(fsProcessedResponse.result);
-    const fsSucceeded = Number(BigInt.asIntN(64, fsResult)) >= 0;
     const memfsMutated = fsProcessedResponse.memfsMutated || (fsSucceeded && (memfsStateMayChange || pendingRingRequest));
     const memfsPublishReady = fsSucceeded && memfsPublishMayBeReady;
     const ofdStateChanged = fsProcessedResponse.ofdStateChanged || (fsSucceeded && (ofdStateMayChange || pendingRingRequest));
@@ -826,8 +840,6 @@ async function resumeFsViaKernelWorkerInner(
     const postFsRingProgress = snapshotFsRingProgress(handle, vmPtr);
     const postFsFdState = snapshotFsFdState(handle, vmPtr);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
-    const currentPid = handle.kernel.process_current_pid?.(vmPtr) ?? handle.pid;
-    const transientProcessOwnerMismatch = currentPid > 0 && currentPid !== handle.pid;
     const threadState = deps.threadWorkerStates.get(worker);
     if (!handle.workers.has(worker) || !threadState) {
       return { kind: "process-gone", effects };
