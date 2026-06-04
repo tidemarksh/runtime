@@ -1,5 +1,6 @@
 import { settleInheritedChildOutput, settleVisibleProcessOutput } from "./stdio.js";
 import { ensureMemoryCapacityFor, scratchBaseFor } from "../kernel-worker/common.js";
+import { readFileData, readInodeRecord } from "../fs/sab-page-cache.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import type { ProcessHandle } from "./types.js";
 import type { SyncCause } from "./contracts/sync.js";
@@ -537,7 +538,32 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
   }
 
   function readVmaFileBytes(handle: ProcessHandle, fd: number, offset: bigint, len: number): string {
-    if (fd < 0 || typeof handle.kernel.memfs_read_file_to !== "function") {
+    if (fd < 0) {
+      return "n/a";
+    }
+    const pageCache = handle.sabPageCache;
+    if (pageCache) {
+      const published = readInodeRecord(pageCache, fd);
+      const offsetNumber = Number(offset);
+      if (
+        published
+        && Number.isSafeInteger(offsetNumber)
+        && offsetNumber >= 0
+        && offsetNumber < published.size
+      ) {
+        if (published.dataOff !== 0) {
+          return `page=${formatHexBytes(readFileData(
+            pageCache,
+            published.dataOff,
+            published.size,
+            offsetNumber,
+            Math.min(len, published.size - offsetNumber),
+          ))}`;
+        }
+        return `page=external:size=${published.size}`;
+      }
+    }
+    if (typeof handle.kernel.memfs_read_file_to !== "function") {
       return "n/a";
     }
     try {
