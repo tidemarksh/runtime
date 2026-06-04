@@ -634,6 +634,7 @@ export function createWorkerSchedulerQueueHelpers(
         || thread.waitingInWorkerStatus !== null
         || thread.ownerAsyncStatus !== null
         || thread.stepCount > thread.statusCount
+        || handle.kernel.thread_process_ptr(thread.vmPtr) === 0
       ) {
         continue;
       }
@@ -684,6 +685,7 @@ export function createWorkerSchedulerQueueHelpers(
       if (
         (candidateThread?.ownerAsyncStatus ?? null) !== null
         || futexReconciliation.hasWorkerLocalWait(candidateThread)
+        || (candidateThread !== undefined && handle.kernel.thread_process_ptr(candidateThread.vmPtr) === 0)
       ) {
         appendSchedulerQueueDebugLog(
           deps,
@@ -701,7 +703,11 @@ export function createWorkerSchedulerQueueHelpers(
       let index = handle.readyWorkers.findIndex((candidate) => {
         const candidateThread = deps.threadWorkerStates.get(candidate);
         return (candidateThread?.ownerAsyncStatus ?? null) === null
-          && !futexReconciliation.hasWorkerLocalWait(candidateThread);
+          && !futexReconciliation.hasWorkerLocalWait(candidateThread)
+          && (
+            candidateThread === undefined
+            || handle.kernel.thread_process_ptr(candidateThread.vmPtr) !== 0
+          );
       });
       if (index > 0) {
         handle.readyWorkers.splice(0, index);

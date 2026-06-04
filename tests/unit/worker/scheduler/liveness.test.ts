@@ -2918,6 +2918,53 @@ test("enqueue wakes the running worker when another worker becomes ready", () =>
   expect(readyWorker.postMessage).not.toHaveBeenCalled();
 });
 
+test("enqueue repair retry clears a stale-process running worker before stepping ready work", async () => {
+  vi.setSystemTime(new Date(10_000));
+  const runningWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const readyWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const runningThread = makeThreadState(0x1234);
+  const readyThread = makeThreadState(0x5678);
+  runningThread.runningGeneration = runningThread.generation;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(runningWorker, runningThread);
+  threadWorkerStates.set(readyWorker, readyThread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_process_ptr = (vmPtr: number) => vmPtr === runningThread.vmPtr ? 0 : 0x2000;
+  const handle = makeHandle(kernel, runningWorker);
+  handle.workers.add(readyWorker);
+  handle.runningWorker = runningWorker;
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.enqueueWorker(handle, readyWorker);
+
+  expect(handle.runningWorker).toBe(readyWorker);
+  expect(runningThread.runningGeneration).toBeNull();
+  expect(readyWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+
+  await vi.advanceTimersByTimeAsync(2_000);
+
+  expect(handle.runningWorker).toBe(readyWorker);
+  expect(readyWorker.postMessage).toHaveBeenCalledTimes(1);
+});
+
 test("enqueue does not place a worker-local wait worker on the ready queue", () => {
   const worker = {
     postMessage: vi.fn(),
