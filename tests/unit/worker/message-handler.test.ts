@@ -32,8 +32,38 @@ function makeThreadState(overrides: Partial<ThreadWorkerState> = {}): ThreadWork
     hotStatusPcs: {},
     initialized: true,
     waitingInWorkerStatus: null,
+    ownerAsyncStatus: null,
+    resumeBlockedOnNextStep: false,
+    pendingPipeSlotsForNextStep: [],
+    pendingGuestMemoryWrites: [],
     resumeWorkersOnReady: [],
     ...overrides,
+  };
+}
+
+function makeKernelState() {
+  return {
+    heapBase: 0,
+    heapPtr: 0,
+    ofdTablePtr: 0,
+    memfsPtr: 0,
+    memfsHeaderBytes: 0,
+    memfsInodesBytes: 0,
+    memfsFirstChildBytes: 0,
+    memfsDirEntriesBytes: 0,
+    memfsDataBytes: 0,
+    memStatePtr: 0,
+    epollTablePtr: 0,
+    socketTablePtr: 0,
+    socketUsed: 0,
+    pipeBase: 0,
+    pipeUsed: 0n,
+    netBufBase: 0,
+    netBufUsed: 0n,
+    sigSlotsPtr: 0,
+    processPendingPtr: 0,
+    processRuntimeStatePtr: 0,
+    timeStatePtr: 0,
   };
 }
 
@@ -267,4 +297,125 @@ test("ready from a rehydrating process state is accepted when worker debug still
     "ready-rehydrate:0x1234:pid=4",
   );
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+});
+
+test("active vfork child fault remains routed through the parent handle", () => {
+  const worker = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, makeThreadState({ ownerPid: 1 }));
+  const appendWorkerDebugLog = vi.fn();
+  const failProcess = vi.fn();
+  const deps = makeDeps(threadWorkerStates, appendWorkerDebugLog, failProcess);
+  const resumeVforkParentAfterChildExit = vi.fn(() => true);
+  deps.resumeVforkParentAfterChildExit = resumeVforkParentAfterChildExit;
+  const kernelState = makeKernelState();
+  const kernel = {
+    abi_status_ok: () => 0,
+    abi_status_fault: () => 31,
+    abi_status_fs: () => 6,
+    abi_status_futex_wait: () => 12,
+    abi_status_vfork_wait: () => 23,
+    abi_status_execve_spawn: () => 24,
+    abi_status_clone_spawn: () => 25,
+    abi_max_threads: () => 1,
+    abi_max_fds: () => 0,
+    kernel_attach_runtime_state: () => {},
+    process_current_pid: () => 3,
+    process_current_ppid: () => 1,
+    process_thread_vm_ptr: () => 0x1234,
+    thread_process_ptr: () => 0x48000,
+    thread_process_thread_count: () => 1,
+    thread_pc: () => 0x1000n,
+    thread_sp: () => 0x2000n,
+    thread_s11: () => 0x3000n,
+    thread_status: () => 31,
+  };
+  const parentHandle = {
+    runtimeId: 1,
+    pid: 1,
+    parentPid: null,
+    vmPtr: 0,
+    exitInProgress: false,
+    workerDebugLog: [],
+    workerMessageDebugStats: createWorkerMessageDebugStats(),
+    workers: new Set<Worker>([worker]),
+    readyWorkers: [],
+    blockedWorkers: new Map<Worker, unknown>(),
+    pendingChildSpawnRecords: 0,
+    pendingChildExitRecords: 0,
+    childExitSyncRecords: new Map(),
+    stdinPipe: 0,
+    stdoutPipe: 0,
+    stderrPipe: 0,
+    stdinQueue: [],
+    outputBacklog: [],
+    hostStdio: {
+      stdinPipe: 0,
+      stdoutPipe: 0,
+      stderrPipe: 0,
+      refCount: 1,
+    },
+    networkConnections: new Map(),
+    networkPendingConnectFds: new Set(),
+    networkClosedFds: new Set(),
+    networkClosedSocketSlots: new Map(),
+    kernelShare: { members: new Set(), sharedOfdIds: new Set() },
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(16),
+      stateSab: new SharedArrayBuffer(512),
+    },
+    kernel,
+    kernelState,
+    runningWorker: worker,
+    memory: new WebAssembly.Memory({ initial: 1 }),
+    vforkSnapshot: {
+      vmPtr: 0x1234,
+      childPid: 3,
+      nextPid: 4,
+      pgid: 1,
+      sid: 1,
+      parentPid: 1,
+      parentProcessPtr: 0x44000,
+      parentPc: 0x1000n,
+      parentSp: 0x2000n,
+      parentS11: 0x3000n,
+      inheritedSharedOfdIds: [],
+    },
+    vforkWorker: worker,
+  } as unknown as ProcessHandle;
+  const childHandle = {
+    pid: 3,
+    exitInProgress: false,
+    workerDebugLog: [],
+    workerMessageDebugStats: createWorkerMessageDebugStats(),
+    workers: new Set<Worker>(),
+    kernel,
+  } as unknown as ProcessHandle;
+  deps.processHandles.set(1, parentHandle);
+  deps.processHandles.set(3, childHandle);
+  const handleWorkerMessage = createWorkerMessageHandler(deps);
+
+  handleWorkerMessage(parentHandle, worker, {
+    type: "status",
+    generation: 2,
+    status: 31,
+    exitCode: 12,
+    termSignal: 0,
+    pc: 0x1000n,
+    sp: 0x2000n,
+    s11: 0x3000n,
+    vmPtr: 0x1234,
+    kernelState,
+    debug: "pc=0x1000 sp=0x2000 s11=0x3000 process_pid_field=3 process_ppid_field=1",
+  } as ThreadWorkerOutbound);
+
+  expect(resumeVforkParentAfterChildExit).toHaveBeenCalledWith(
+    parentHandle,
+    worker,
+    0x1234,
+    12,
+    0,
+  );
+  expect(parentHandle.workerMessageDebugStats.rerouted).toBe(0);
+  expect(failProcess).not.toHaveBeenCalled();
 });

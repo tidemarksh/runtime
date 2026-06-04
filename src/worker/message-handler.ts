@@ -163,8 +163,13 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
       recordWorkerMessageDebugEvent(handle.workerMessageDebugStats, "controlReceived");
     }
     const messageProcessPidField = "debug" in msg ? readProcessPidField(msg.debug) : null;
+    const thread = deps.threadWorkerStates.get(worker);
+    const isActiveVforkWorker = thread !== undefined
+      && handle.vforkSnapshot !== null
+      && handle.vforkWorker === worker;
     if (
-      handle.pid > 0
+      !isActiveVforkWorker
+      && handle.pid > 0
       && messageProcessPidField !== null
       && messageProcessPidField > 0
       && messageProcessPidField !== handle.pid
