@@ -17,6 +17,7 @@ import { kernelWorkerOwnsPipeState } from "../ownership/pipe-control.js";
 import { describeForkSharedSyncPromise } from "../fork-shared-sync-debug.js";
 import { collectLiveThreadVmPtrs, processHasLiveThreads } from "../live-threads.js";
 import { appendWorkerDebugLog } from "./fairness.js";
+import { clearStaleForkSharedSyncGate } from "./fork-shared-gate.js";
 import { createFutexScheduler } from "./futex.js";
 import { createPipePollScheduler } from "./pipe-poll.js";
 import { createPruningScheduler } from "./pruning.js";
@@ -622,18 +623,23 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       && !wait4HasLocalExitRecord
       && !pipeHasLocalExitRecord
     ) {
-      observeForkSharedSyncCompletion(handle, worker, forkSharedSyncPromise);
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `wait4-retry-skip:${handle.pid}:fork-shared-sync:${describeForkSharedSyncPromise(forkSharedSyncPromise)}`,
-      );
-      scheduleBlockedRetry(
-        handle,
-        worker,
-        blocked.status === handle.kernel.abi_status_wait4() ? 10 : 1,
-        blocked.timeoutExpired,
-      );
-      return;
+      const staleGate = clearStaleForkSharedSyncGate(handle, forkSharedSyncPromise);
+      if (staleGate !== null) {
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-cleared:${handle.pid}:${staleGate}`);
+      } else {
+        observeForkSharedSyncCompletion(handle, worker, forkSharedSyncPromise);
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `wait4-retry-skip:${handle.pid}:fork-shared-sync:${describeForkSharedSyncPromise(forkSharedSyncPromise)}`,
+        );
+        scheduleBlockedRetry(
+          handle,
+          worker,
+          blocked.status === handle.kernel.abi_status_wait4() ? 10 : 1,
+          blocked.timeoutExpired,
+        );
+        return;
+      }
     }
     clearStaleRunningWorker(handle, worker);
     if (handle.runningWorker !== null) {

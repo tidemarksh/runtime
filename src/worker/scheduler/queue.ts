@@ -6,6 +6,7 @@ import {
 import { publishRuntimeBridgeEpoch } from "../../bridge/runtime-state.js";
 import { createReadyWorkerFairness } from "./fairness.js";
 import { createFutexReconciliation } from "./futex.js";
+import { clearStaleForkSharedSyncGate } from "./fork-shared-gate.js";
 import type {
   AttachThreadWorkerRequest,
   ProcessHandle,
@@ -726,9 +727,14 @@ export function createWorkerSchedulerQueueHelpers(
     }
     const forkSharedSyncPromise = handle.kernelShare.forkSharedSyncPromise;
     if (forkSharedSyncPromise !== null) {
-      appendSchedulerQueueDebugLog(deps, handle, `pump-held:fork-shared-sync:ready=${handle.readyWorkers.length}`);
-      observeForkSharedSyncGate(handle, forkSharedSyncPromise);
-      return;
+      const staleGate = clearStaleForkSharedSyncGate(handle, forkSharedSyncPromise);
+      if (staleGate !== null) {
+        appendSchedulerQueueDebugLog(deps, handle, `pump-cleared:${staleGate}`);
+      } else {
+        appendSchedulerQueueDebugLog(deps, handle, `pump-held:fork-shared-sync:ready=${handle.readyWorkers.length}`);
+        observeForkSharedSyncGate(handle, forkSharedSyncPromise);
+        return;
+      }
     }
     const runningWorker = sanitizeRunningWorker(handle);
     if (runningWorker !== null) {

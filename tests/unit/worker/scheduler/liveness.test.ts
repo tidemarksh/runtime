@@ -14,6 +14,7 @@ vi.mock("../../../../src/worker/pool.js", async (importOriginal) => {
 });
 
 import { createWorkerScheduler } from "../../../../src/worker/scheduler.js";
+import { registerForkSharedSyncPromise } from "../../../../src/worker/fork-shared-sync-debug.js";
 import { createRunLoopScheduler } from "../../../../src/worker/scheduler/run-loop.js";
 import { createTransferDebugStats, createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
@@ -1251,6 +1252,59 @@ test("wait4 retry resumes after a fork-shared sync gate settles", async () => {
   }));
 });
 
+test("wait4 retry clears a stale fork-shared sync source before retrying", async () => {
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, makeThreadState(0x1234));
+  const { exports: kernel, threadResumeWait4 } = makeKernel();
+  let status = kernel.abi_status_wait4();
+  kernel.thread_status = () => status;
+  kernel.thread_process_ptr = (vmPtr: number) => vmPtr === 0x9999 ? 0 : 0x2000;
+  kernel.thread_resume_wait4 = vi.fn((vmPtr: number) => {
+    threadResumeWait4(vmPtr);
+    status = kernel.abi_status_ok();
+  });
+  const handle = makeHandle(kernel, worker);
+  handle.pendingChildSpawnRecords = 0;
+  const forkSharedSync = new Promise<void>(() => {});
+  registerForkSharedSyncPromise(forkSharedSync, {
+    ownerPid: handle.pid,
+    sourceVmPtr: 0x9999,
+    reason: "owned-ofd",
+    targetPids: [5],
+  });
+  handle.forkSharedSyncPromise = forkSharedSync;
+  handle.kernelShare.forkSharedSyncPromise = forkSharedSync;
+  const lifecycleEvents: string[] = [];
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      lifecycleEvents.push(event);
+    },
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.blockWorker(handle, worker, handle.kernel.abi_status_wait4(), 0x1234);
+  await vi.advanceTimersByTimeAsync(11);
+
+  expect(handle.forkSharedSyncPromise).toBeNull();
+  expect(handle.kernelShare.forkSharedSyncPromise).toBeNull();
+  expect(lifecycleEvents.some((event) =>
+    event.startsWith("wait4-retry-cleared:1:fork-shared-sync-stale-source:")
+    && event.includes(":owner=1:src=0x9999:reason=owned-ofd:targets=5"),
+  )).toBe(true);
+  expect(threadResumeWait4).toHaveBeenCalledWith(0x1234);
+});
+
 test("idle ok worker resumes after a fork-shared sync gate settles", async () => {
   const worker = {
     postMessage: vi.fn(),
@@ -2423,6 +2477,68 @@ test("pumpProcess clears a running worker whose kernel process pointer disappear
 
   scheduler.pumpProcess(handle);
 
+  expect(runningThread.runningGeneration).toBeNull();
+  expect(handle.runningWorker).toBe(readyWorker);
+  expect(readyWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+  expect(runningWorker.postMessage).not.toHaveBeenCalled();
+});
+
+test("pumpProcess clears a stale fork-shared sync source before stale running cleanup", () => {
+  vi.setSystemTime(new Date(10_000));
+  const runningWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const readyWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const runningThread = makeThreadState(0x581f470);
+  const readyThread = makeThreadState(0x6645d48);
+  runningThread.runningGeneration = runningThread.generation;
+  runningThread.stepCount = 69;
+  runningThread.statusCount = 68;
+  runningThread.lastStepAtMs = 7_500;
+  runningThread.lastStatusAtMs = 7_000;
+  runningThread.lastStatus = 20;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(runningWorker, runningThread);
+  threadWorkerStates.set(readyWorker, readyThread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_ok();
+  kernel.thread_process_ptr = (vmPtr: number) => vmPtr === runningThread.vmPtr ? 0 : 0x2000;
+  delete kernel.debug_thread_step_vm_ptr;
+  const handle = makeHandle(kernel, runningWorker);
+  handle.workers.add(readyWorker);
+  handle.runningWorker = runningWorker;
+  handle.readyWorkers = [readyWorker];
+  const forkSharedSync = new Promise<void>(() => {});
+  registerForkSharedSyncPromise(forkSharedSync, {
+    ownerPid: handle.pid,
+    sourceVmPtr: runningThread.vmPtr,
+    reason: "owned-ofd",
+    targetPids: [5],
+  });
+  handle.forkSharedSyncPromise = forkSharedSync;
+  handle.kernelShare.forkSharedSyncPromise = forkSharedSync;
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+
+  expect(handle.forkSharedSyncPromise).toBeNull();
+  expect(handle.kernelShare.forkSharedSyncPromise).toBeNull();
   expect(runningThread.runningGeneration).toBeNull();
   expect(handle.runningWorker).toBe(readyWorker);
   expect(readyWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({

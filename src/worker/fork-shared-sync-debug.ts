@@ -1,4 +1,4 @@
-interface ForkSharedSyncDebugRecord {
+export interface ForkSharedSyncDebugRecord {
   id: number;
   ownerPid: number;
   sourceVmPtr: number;
@@ -30,4 +30,8 @@ export function describeForkSharedSyncPromise(promise: Promise<void>): string {
     `reason=${record.reason}`,
     `targets=${record.targetPids.join(".") || "none"}`,
   ].join(":");
+}
+
+export function getForkSharedSyncDebugRecord(promise: Promise<void>): ForkSharedSyncDebugRecord | null {
+  return forkSharedSyncDebugRecords.get(promise) ?? null;
 }
