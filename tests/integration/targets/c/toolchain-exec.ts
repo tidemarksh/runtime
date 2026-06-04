@@ -20,6 +20,7 @@ function cToolchainSnapshotSources(extra: readonly SnapshotSource[]): SnapshotSo
   return [
     { kind: "tree", hostPath: resolve(cToolchainDir, "usr/bin"), guestPath: "/usr/bin" },
     { kind: "tree", hostPath: resolve(cToolchainDir, "usr/lib"), guestPath: "/usr/lib" },
+    { kind: "tree", hostPath: resolve(cToolchainDir, "usr/libexec"), guestPath: "/usr/libexec" },
     { kind: "tree", hostPath: resolve(cToolchainDir, "etc"), guestPath: "/etc" },
     ...GLIBC_RUNTIME_LIBS.map((name) => ({
       kind: "file" as const,
