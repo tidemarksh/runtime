@@ -122,6 +122,7 @@ function makeDeps(worker: Worker) {
   const threadWorkerStates = new WeakMap<Worker, {
     vmPtr: number;
     ownerPid: number;
+    ownerAsyncStatus: number | null;
     generation: number;
     waitingInWorkerStatus: number | null;
     resumeWorkersOnReady: Worker[];
@@ -129,6 +130,7 @@ function makeDeps(worker: Worker) {
   threadWorkerStates.set(worker, {
     vmPtr: 0x1234,
     ownerPid: 0,
+    ownerAsyncStatus: null,
     generation: 1,
     waitingInWorkerStatus: null,
     resumeWorkersOnReady: [],
@@ -507,6 +509,61 @@ test("STATUS_FS does not sync pipe state before filesystem resume completes", ()
   expect(deps.resumeFsViaKernelWorker).toHaveBeenCalledWith(handle, worker, 0x1234);
   expect(deps.kickBlockedWorkers).not.toHaveBeenCalled();
   expect(deps.pumpProcess).not.toHaveBeenCalled();
+});
+
+test("STATUS_FS with shared pipe fds resumes filesystem after pipe refresh", async () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 3;
+  handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unused" }));
+  handle.kernelShare.members.add(handle as never);
+  handle.kernelShare.members.add({ pid: 1 } as never);
+  handle.kernel.abi_fd_type_pipe = () => 6;
+  handle.kernel.process_fd_ofd_id = (_vmPtr, fd) => fd === 0 ? 1 : 0;
+  handle.kernel.kernel_ofd_fd_type = (ofdId) => ofdId === 1 ? 6 : 0;
+  const deps = makeDeps(worker);
+  let resolvePipeSync: (() => void) | undefined;
+  deps.requestPipeStateSync = vi.fn(() => new Promise<void>((resolve) => {
+    resolvePipeSync = resolve;
+  }));
+  const resumeFsViaKernelWorkerOutcome = vi.fn(async () => ({ kind: "completed", status: 0 }));
+  (deps as { resumeFsViaKernelWorkerOutcome?: typeof resumeFsViaKernelWorkerOutcome })
+    .resumeFsViaKernelWorkerOutcome = resumeFsViaKernelWorkerOutcome;
+  const thread = deps.threadWorkerStates.get(worker)!;
+  thread.ownerPid = handle.pid;
+  thread.ownerAsyncStatus = null;
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: {
+      type: "status",
+      status: 6,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 6,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  expect(thread.ownerAsyncStatus).toBe(6);
+  expect(deps.requestPipeStateSync).toHaveBeenCalledWith(handle, false);
+  expect(resumeFsViaKernelWorkerOutcome).not.toHaveBeenCalled();
+
+  resolvePipeSync?.();
+  await vi.waitFor(() => {
+    expect(resumeFsViaKernelWorkerOutcome).toHaveBeenCalledWith(handle, worker, 0x1234);
+  });
+
+  expect(thread.ownerAsyncStatus).toBeNull();
+  expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
 });
 
 test("STATUS_OK network pump syncs socket state before requeueing", async () => {
