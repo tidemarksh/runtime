@@ -291,6 +291,25 @@ export function createWorkerSchedulerQueueHelpers(
     return Date.now() - lastStepAtMs >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
   }
 
+  function staleIdleUnansweredThreadCanRun(handle: ProcessHandle, thread: ThreadWorkerState): boolean {
+    if (!thread.initialized || thread.waitingInWorkerStatus !== null || thread.ownerAsyncStatus !== null) {
+      return false;
+    }
+    if (thread.pendingGuestMemoryWrites.length > 0) {
+      return false;
+    }
+    if (thread.stepCount - thread.statusCount !== 1) {
+      return false;
+    }
+    if (handle.kernel.thread_process_ptr(thread.vmPtr) === 0) {
+      return false;
+    }
+    if (handle.kernel.thread_status(thread.vmPtr) !== handle.kernel.abi_status_ok()) {
+      return false;
+    }
+    return runningWorkerStepAppearsIdle(handle, thread);
+  }
+
   function clearStaleOwnerAsyncStatus(
     handle: ProcessHandle,
     worker: Worker,
@@ -399,12 +418,13 @@ export function createWorkerSchedulerQueueHelpers(
       ) {
         handle.runningWorker = null;
         thread.runningGeneration = null;
-        if (!handle.readyWorkers.includes(runningWorker)) {
+        const unansweredSteps = thread.stepCount - thread.statusCount;
+        if (unansweredSteps <= 1 && !handle.readyWorkers.includes(runningWorker)) {
           handle.readyWorkers.push(runningWorker);
         }
         deps.appendWorkerDebugLog(
           handle,
-          `running-worker-cleared:stale-unanswered-no-ready:0x${thread.vmPtr.toString(16)}:last=${thread.lastStatus ?? "null"}`,
+          `running-worker-cleared:${unansweredSteps > 1 ? "surplus-" : ""}stale-unanswered-no-ready:0x${thread.vmPtr.toString(16)}:last=${thread.lastStatus ?? "null"}:unanswered=${unansweredSteps}`,
         );
         return null;
       }
@@ -680,9 +700,16 @@ export function createWorkerSchedulerQueueHelpers(
         !thread?.initialized
         || thread.waitingInWorkerStatus !== null
         || thread.ownerAsyncStatus !== null
-        || thread.stepCount > thread.statusCount
         || handle.kernel.thread_process_ptr(thread.vmPtr) === 0
       ) {
+        continue;
+      }
+      if (thread.stepCount > thread.statusCount) {
+        if (handle.readyWorkers.length > 0 || !staleIdleUnansweredThreadCanRun(handle, thread)) {
+          continue;
+        }
+        deps.appendWorkerDebugLog(handle, `ready_recover_unanswered:0x${thread.vmPtr.toString(16)}${formatStepDebugSuffix(handle, thread.vmPtr)}`);
+        handle.readyWorkers.push(worker);
         continue;
       }
       if (handle.kernel.thread_status(thread.vmPtr) !== handle.kernel.abi_status_ok()) {

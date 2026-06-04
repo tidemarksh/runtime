@@ -2124,6 +2124,63 @@ test("pumpProcess preserves a stale unanswered no-ready running worker with pend
   expect(worker.postMessage).not.toHaveBeenCalled();
 });
 
+test("pumpProcess stops surplus unanswered redispatch and recovers stale idle work", () => {
+  vi.setSystemTime(new Date(10_000));
+  const runningWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const idleWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const runningThread = makeThreadState(0x9ba7260);
+  runningThread.runningGeneration = runningThread.generation;
+  runningThread.stepCount = 70;
+  runningThread.statusCount = 11;
+  runningThread.lastStepAtMs = 7_500;
+  runningThread.lastStatusAtMs = 7_000;
+  runningThread.lastStatus = 0;
+  const idleThread = makeThreadState(0x6648420);
+  idleThread.stepCount = 162;
+  idleThread.statusCount = 161;
+  idleThread.lastStepAtMs = 7_500;
+  idleThread.lastStatusAtMs = 7_499;
+  idleThread.lastStatus = 0;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(runningWorker, runningThread);
+  threadWorkerStates.set(idleWorker, idleThread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_ok();
+  delete kernel.debug_thread_step_vm_ptr;
+  const handle = makeHandle(kernel, runningWorker);
+  handle.workers.add(idleWorker);
+  handle.runningWorker = runningWorker;
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+
+  expect(runningThread.runningGeneration).toBeNull();
+  expect(runningThread.stepCount).toBe(70);
+  expect(idleThread.runningGeneration).toBe(idleThread.generation);
+  expect(idleThread.stepCount).toBe(163);
+  expect(handle.runningWorker).toBe(idleWorker);
+  expect(runningWorker.postMessage).not.toHaveBeenCalled();
+  expect(idleWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+});
+
 test("pumpProcess clears a stale running worker when the unanswered step shares a status millisecond", () => {
   vi.setSystemTime(new Date(10_000));
   const runningWorker = {
