@@ -8,10 +8,12 @@ function makeHandle(runtimeId: number, pid: number): ProcessHandle {
     pid,
     parentPid: null,
     vmPtr: 0x1000 + pid,
-    guestMemoryPolicyLimitBytes: 0,
-    guestBase: 0,
+    guestMemoryPolicyLimitBytes: 64n * 1024n * 1024n,
+    guestBase: 0x100000,
+    maxMemoryPages: 2048,
+    forkMaxMemoryPages: 4096,
     worker: {} as Worker,
-    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    memory: new WebAssembly.Memory({ initial: 32, maximum: 64, shared: true }),
     wasmModule: {} as WebAssembly.Module,
     kernel: {} as ProcessHandle["kernel"],
     kernelState: {
@@ -60,6 +62,19 @@ function makeHandle(runtimeId: number, pid: number): ProcessHandle {
     vforkSnapshot: null,
     vforkWorker: null,
     workerDebugLog: [],
+    memoryOwnership: {
+      guestAddressProfile: 2,
+      guestAddressLimitBytes: "9223372036489871359",
+      guestMemoryPolicyLimitBytes: 64n * 1024n * 1024n,
+      processMaxMemoryBytes: 2048 * 65536,
+      forkProcessMaxMemoryBytes: 4096 * 65536,
+      pageCacheDataCapacityBytes: 8 * 1024 * 1024,
+      publishedMetadataCapacityBytes: 1024,
+      fsRpcRingCapacityBytes: 4096,
+      kernelWorkerPrivateMemoryBytes: 512 * 1024 * 1024,
+      artifactMaterializationBudgetBytes: 16 * 1024 * 1024,
+      artifactMaterializedBytes: 4 * 1024 * 1024,
+    },
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
   return handle;
@@ -165,6 +180,22 @@ test("captureRuntimeFailureSnapshot stores and clears the last runtime failure",
     exitCode: 2,
     termSignal: 11,
     debug: expect.any(String),
+    memory: {
+      memoryBytes: 32 * 65536,
+      guestBase: 0x100000,
+      processCommittedBytes: 0x100000,
+      guestMemoryPolicyLimitBytes: String(64n * 1024n * 1024n),
+      guestAddressProfile: 2,
+      guestAddressLimitBytes: "9223372036489871359",
+      processMaxMemoryBytes: 2048 * 65536,
+      forkProcessMaxMemoryBytes: 4096 * 65536,
+      pageCacheDataCapacityBytes: 8 * 1024 * 1024,
+      publishedMetadataCapacityBytes: 1024,
+      fsRpcRingCapacityBytes: 4096,
+      kernelWorkerPrivateMemoryBytes: 512 * 1024 * 1024,
+      artifactMaterializationBudgetBytes: 16 * 1024 * 1024,
+      artifactMaterializedBytes: 4 * 1024 * 1024,
+    },
     memorySyscalls: [],
     workerFocus: [{
       pid: 91,
@@ -172,6 +203,7 @@ test("captureRuntimeFailureSnapshot stores and clears the last runtime failure",
       workers: [],
     }],
   });
+  expect(() => JSON.stringify(context.debugRuntimeLastFailureSnapshot(9))).not.toThrow();
 
   context.clearRuntimeFailureSnapshot(9);
   expect(context.debugRuntimeLastFailureSnapshot(9)).toBeNull();

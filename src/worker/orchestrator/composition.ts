@@ -107,6 +107,7 @@ async function completeProcessExit(handle: ProcessHandle, exitCode: number, term
 }
 
 function failProcess(handle: ProcessHandle, error: Error): void {
+  captureRuntimeFailureSnapshotCtx(handle, 1, 0);
   workerLifecycleHelpers.failProcess(handle, error);
 }
 

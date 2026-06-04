@@ -51,6 +51,22 @@ export interface RuntimeFailureSnapshot {
   exitCode: number;
   termSignal: number;
   debug: string;
+  memory: {
+    memoryBytes: number;
+    guestBase: number;
+    processCommittedBytes: number;
+    guestMemoryPolicyLimitBytes: string;
+    guestAddressProfile: number | null;
+    guestAddressLimitBytes: string | null;
+    processMaxMemoryBytes: number;
+    forkProcessMaxMemoryBytes: number;
+    pageCacheDataCapacityBytes: number | null;
+    publishedMetadataCapacityBytes: number | null;
+    fsRpcRingCapacityBytes: number | null;
+    kernelWorkerPrivateMemoryBytes: number | null;
+    artifactMaterializationBudgetBytes: number | null;
+    artifactMaterializedBytes: number | null;
+  };
   memorySyscalls: string[];
   workerFocus: RuntimeProcessWorkerLogFocus[];
 }
@@ -99,6 +115,29 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
     clearRuntimeFsStateImpl(runtimeId, runtimeFsContext);
   }
 
+  function captureFailureMemorySnapshot(handle: ProcessHandle): RuntimeFailureSnapshot["memory"] {
+    const ownership = handle.memoryOwnership;
+    const memoryBytes = handle.memory.buffer.byteLength;
+    return {
+      memoryBytes,
+      guestBase: handle.guestBase,
+      processCommittedBytes: Math.max(0, memoryBytes - handle.guestBase),
+      guestMemoryPolicyLimitBytes: String(
+        ownership?.guestMemoryPolicyLimitBytes ?? handle.guestMemoryPolicyLimitBytes,
+      ),
+      guestAddressProfile: ownership?.guestAddressProfile ?? null,
+      guestAddressLimitBytes: ownership?.guestAddressLimitBytes ?? null,
+      processMaxMemoryBytes: ownership?.processMaxMemoryBytes ?? handle.maxMemoryPages * 65536,
+      forkProcessMaxMemoryBytes: ownership?.forkProcessMaxMemoryBytes ?? handle.forkMaxMemoryPages * 65536,
+      pageCacheDataCapacityBytes: ownership?.pageCacheDataCapacityBytes ?? handle.sabPageCache?.byteLength ?? null,
+      publishedMetadataCapacityBytes: ownership?.publishedMetadataCapacityBytes ?? null,
+      fsRpcRingCapacityBytes: ownership?.fsRpcRingCapacityBytes ?? null,
+      kernelWorkerPrivateMemoryBytes: ownership?.kernelWorkerPrivateMemoryBytes ?? null,
+      artifactMaterializationBudgetBytes: ownership?.artifactMaterializationBudgetBytes ?? null,
+      artifactMaterializedBytes: ownership?.artifactMaterializedBytes ?? null,
+    };
+  }
+
   function captureRuntimeFailureSnapshot(
     handle: ProcessHandle,
     exitCode: number,
@@ -111,6 +150,7 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
       exitCode,
       termSignal,
       debug: handle.lastDebugMessage ?? debugRuntimeProcessHandles(handle.runtimeId),
+      memory: captureFailureMemorySnapshot(handle),
       memorySyscalls,
       workerFocus: [{
         pid: handle.pid,
