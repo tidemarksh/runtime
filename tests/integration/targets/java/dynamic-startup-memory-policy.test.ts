@@ -2,36 +2,11 @@ import { expect, test } from "vite-plus/test";
 import {
   prepareDynamicStartupRuntime,
   runDynamicStartupEntry,
-  type DynamicStartupEntry,
 } from "../../../support/dynamic-startup-harness.js";
-import { javaDynamicStartupEntry } from "./dynamic-startup.js";
-
-const fourGiB = 4 * 1024 * 1024 * 1024;
-const fourGiBPages = fourGiB / 65536;
-const memory64HeadroomPages = fourGiBPages + 1;
-const memory64HeadroomBytes = memory64HeadroomPages * 65536;
-
-const javaFourGiBHeadroomEntry: DynamicStartupEntry = {
-  ...javaDynamicStartupEntry,
-  id: "java-version-memory-headroom-4g",
-  guestMemoryPolicyLimitBytes: fourGiB,
-  runtimeOptions: {
-    ...javaDynamicStartupEntry.runtimeOptions,
-    maxProcessMemoryPages: fourGiBPages,
-    maxForkMemoryPages: fourGiBPages,
-  },
-};
-
-const javaMemory64HeadroomEntry: DynamicStartupEntry = {
-  ...javaDynamicStartupEntry,
-  id: "java-version-memory64-headroom",
-  guestMemoryPolicyLimitBytes: memory64HeadroomBytes,
-  runtimeOptions: {
-    ...javaDynamicStartupEntry.runtimeOptions,
-    maxProcessMemoryPages: memory64HeadroomPages,
-    maxForkMemoryPages: memory64HeadroomPages,
-  },
-};
+import {
+  javaFourGiBHeadroomEntry,
+  javaMemory64HeadroomEntry,
+} from "./dynamic-startup.js";
 
 function appendRuntimeFailureEvidence(
   detail: string,
@@ -72,8 +47,10 @@ test("java dynamic startup diagnostic: 4g memory headroom exposes process memory
     }
     detail = appendRuntimeFailureEvidence(detail, runtime);
 
-    expect(detail).toContain("RuntimeError: memory access out of bounds");
-    expect(detail).toContain("guest_memory_policy_limit=4294967296");
+    expect(detail).not.toContain("RuntimeError: memory access out of bounds");
+    expect(detail).toContain("unexpected exit=134");
+    expect(detail).toContain("A fatal error has been detected by the Java Runtime Environment");
+    expect(detail).toContain("SIGSEGV");
     expect(detail).toContain("\"guestMemoryPolicyLimitBytes\":\"4294967296\"");
     expect(detail).toContain("\"processMaxMemoryBytes\":4294967296");
     expect(detail).toContain("mem_bytes=");
@@ -108,8 +85,10 @@ test("java dynamic startup diagnostic: memory64 headroom exposes remaining backi
     detail = appendRuntimeFailureEvidence(detail, runtime);
 
     expect(detail).not.toContain("module's declared maximum 65536");
-    expect(detail).toContain("RuntimeError: memory access out of bounds");
-    expect(detail).toContain("guest_memory_policy_limit=4295032832");
+    expect(detail).not.toContain("RuntimeError: memory access out of bounds");
+    expect(detail).toContain("unexpected exit=134");
+    expect(detail).toContain("A fatal error has been detected by the Java Runtime Environment");
+    expect(detail).toContain("SIGSEGV");
     expect(detail).toContain("\"guestMemoryPolicyLimitBytes\":\"4295032832\"");
     expect(detail).toContain("\"processMaxMemoryBytes\":4295032832");
     expect(detail).toContain("mem_bytes=");

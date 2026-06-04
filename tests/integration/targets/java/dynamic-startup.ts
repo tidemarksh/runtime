@@ -17,3 +17,30 @@ export const javaDynamicStartupEntry: DynamicStartupEntry = {
   snapshotSources: makeJavaRuntimeSnapshotSources(),
   expectedSubstrings: ['openjdk version "25.0.2"'],
 };
+
+const fourGiB = 4 * 1024 * 1024 * 1024;
+const fourGiBPages = fourGiB / 65536;
+const memory64HeadroomPages = fourGiBPages + 1;
+const memory64HeadroomBytes = memory64HeadroomPages * 65536;
+
+export const javaFourGiBHeadroomEntry: DynamicStartupEntry = {
+  ...javaDynamicStartupEntry,
+  id: "java-version-memory-headroom-4g",
+  guestMemoryPolicyLimitBytes: fourGiB,
+  runtimeOptions: {
+    ...javaDynamicStartupEntry.runtimeOptions,
+    maxProcessMemoryPages: fourGiBPages,
+    maxForkMemoryPages: fourGiBPages,
+  },
+};
+
+export const javaMemory64HeadroomEntry: DynamicStartupEntry = {
+  ...javaDynamicStartupEntry,
+  id: "java-version-memory64-headroom",
+  guestMemoryPolicyLimitBytes: memory64HeadroomBytes,
+  runtimeOptions: {
+    ...javaDynamicStartupEntry.runtimeOptions,
+    maxProcessMemoryPages: memory64HeadroomPages,
+    maxForkMemoryPages: memory64HeadroomPages,
+  },
+};
