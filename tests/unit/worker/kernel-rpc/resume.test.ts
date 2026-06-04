@@ -2138,6 +2138,11 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
   };
   let attachedKernelState = initialKernelState;
   let currentPid = 1;
+  let status = 3;
+  const threadResumeFs = vi.fn(() => {
+    status = 0;
+    return -12n;
+  });
   const fdEntries = new Map<number, { ofdId: number; fdFlags: number }>([
     [0, { ofdId: 1, fdFlags: 0 }],
   ]);
@@ -2211,12 +2216,14 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
     process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number, fdFlags: number) => {
       fdEntries.set(fd, { ofdId, fdFlags });
     },
+    abi_status_fs: () => 3,
     process_thread_vm_ptr: () => 0,
-    thread_status: () => 0,
+    thread_status: () => status,
     thread_pending_fs_opcode: () => 13,
     thread_pending_fs_effects: () => 0,
     thread_pending_fs_target_ino: () => 0,
     thread_a0: () => -12n,
+    thread_resume_fs: threadResumeFs,
   } as unknown as KernelExports;
 
   const handle = makeHandle(kernel, runtimeBridge, worker, {
@@ -2285,6 +2292,7 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
   expect(outcome.effects).toContainEqual({ kind: "enqueue-worker" });
   expect(handle.kernelState).toEqual(initialKernelState);
   expect(handle.kernelState).not.toEqual(localChildKernelState);
+  expect(threadResumeFs).not.toHaveBeenCalled();
   expect((threadWorkerStates.get(worker) as ThreadWorkerState & {
     pendingKernelStateForNextStep?: KernelRuntimeState;
   }).pendingKernelStateForNextStep).toEqual(childKernelState);

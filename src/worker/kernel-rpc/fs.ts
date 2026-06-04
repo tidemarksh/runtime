@@ -926,7 +926,9 @@ async function resumeFsViaKernelWorkerInner(
     }
     restoreFsFdState(handle, postFsFdState);
     restoreFsRingProgress(handle, postFsRingProgress);
-    clearStaleFsStatusAfterResume(handle, vmPtr, fsResult);
+    if (!failedExecveChildOwner) {
+      clearStaleFsStatusAfterResume(handle, vmPtr, fsResult);
+    }
     if (!failedExecveChildOwner) {
       handle.kernelState = readKernelRuntimeState(handle.kernel);
     }
