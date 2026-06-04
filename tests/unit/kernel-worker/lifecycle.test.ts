@@ -191,3 +191,58 @@ test("resumeVforkExecveParent drops canonical child state without clearing the o
   expect(parentKernel.opLog).toContain("remove:3");
   expect(siblingKernel.opLog).toContain("remove:3");
 });
+
+test("resumeVforkParent drops unregistered canonical vfork child state after child exit", () => {
+  const parentKernel = makeKernelExports();
+  const siblingKernel = makeKernelExports();
+  const processKernels = new Map<number, KernelExports>([
+    [1, parentKernel],
+    [7, siblingKernel],
+  ]);
+  const canonicalProcesses = new Map<number, {
+    pid: number;
+    ppid: number;
+    pgid: number;
+    sid: number;
+    didExec: boolean;
+    vmPtr: number;
+  }>([
+    [1, { pid: 1, ppid: 0, pgid: 1, sid: 1, didExec: false, vmPtr: 0x1234 }],
+  ]);
+  let canonicalNextPid = 3;
+
+  const lifecycle = createKernelWorkerLifecycle({
+    processKernels,
+    canonicalProcesses,
+    getCanonicalNextPid: () => canonicalNextPid,
+    setCanonicalNextPid: (nextPid) => {
+      canonicalNextPid = nextPid;
+    },
+    requireProcessKernel: (pid) => {
+      const exports = processKernels.get(pid);
+      if (!exports) {
+        throw new Error(`missing process kernel: ${pid}`);
+      }
+      return exports;
+    },
+    formatProcessDebug: () => "n/a",
+  });
+
+  const child = lifecycle.canonicalizeChildPid(1, 0x1234, 2, makeKernelState());
+  expect(child.childPid).toBe(3);
+  expect(canonicalProcesses.has(3)).toBe(true);
+
+  parentKernel.thread_vfork_child_pid = () => child.childPid;
+  parentKernel.process_record_child_exit_for_parent = (pid: number, childPid: number, waitStatus: number) => {
+    parentKernel.opLog.push(`record-exit:${pid}:${childPid}:${waitStatus}`);
+  };
+  parentKernel.opLog.length = 0;
+  siblingKernel.opLog.length = 0;
+  lifecycle.resumeVforkParent(1, 0x1234, 0x0300, makeKernelState());
+
+  expect(canonicalProcesses.has(3)).toBe(false);
+  expect(parentKernel.opLog).toContain("resume-vfork:4660:3");
+  expect(parentKernel.opLog).toContain("record-exit:1:3:768");
+  expect(parentKernel.opLog).toContain("remove:3");
+  expect(siblingKernel.opLog).toContain("remove:3");
+});

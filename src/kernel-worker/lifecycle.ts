@@ -128,6 +128,9 @@ export function createKernelWorkerLifecycle(deps: KernelWorkerLifecycleDeps) {
       } else {
         processExports.process_record_child_exit(childPid, waitStatus);
       }
+      if (!deps.processKernels.has(childPid)) {
+        dropCanonicalProcess(childPid);
+      }
     }
     return {
       childPid,
