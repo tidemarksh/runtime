@@ -1070,7 +1070,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         handle.runtimeId,
         `wait4-retry-local:${handle.pid}:0x${blocked.vmPtr.toString(16)}:records=${[...handle.childExitSyncRecords].map(([childPid, waitStatus]) => `${childPid}/${waitStatus}`).join(".") || "none"}`,
       );
-      applyLocalChildExitRecords(handle);
+      applyLocalChildExitRecords(handle, { force: true });
       const rawWait4Result = handle.kernel.thread_resume_wait4(blocked.vmPtr);
       const wait4Result = rawWait4Result ?? 0n;
       deps.appendRuntimeLifecycleEvent(

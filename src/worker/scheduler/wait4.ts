@@ -15,7 +15,7 @@ export interface Wait4Scheduler {
   formatChildExitRecords(handle: ProcessHandle): string;
   childExitRecordsAlreadyApplied(handle: ProcessHandle, recordsKey: string): boolean;
   markChildExitRecordsApplied(handle: ProcessHandle, recordsKey: string): void;
-  applyLocalChildExitRecords(handle: ProcessHandle): void;
+  applyLocalChildExitRecords(handle: ProcessHandle, options?: { force?: boolean }): void;
 }
 
 export function createWait4Scheduler(
@@ -42,12 +42,12 @@ export function createWait4Scheduler(
     records.add(recordsKey);
   }
 
-  function applyLocalChildExitRecords(handle: ProcessHandle): void {
+  function applyLocalChildExitRecords(handle: ProcessHandle, options: { force?: boolean } = {}): void {
     if (handle.childExitSyncRecords.size === 0) {
       return;
     }
     const recordsKey = formatChildExitRecords(handle);
-    if (childExitRecordsAlreadyApplied(handle, recordsKey)) {
+    if (!options.force && childExitRecordsAlreadyApplied(handle, recordsKey)) {
       return;
     }
     deps.appendRuntimeLifecycleEvent(

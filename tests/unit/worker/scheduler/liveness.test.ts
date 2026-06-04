@@ -1456,6 +1456,50 @@ test("wait4 retry consumes a local child exit record while fork-shared sync is p
   expect(handle.readyWorkers).toContain(worker);
 });
 
+test("wait4 retry reapplies a pending local child exit record until it is reaped", async () => {
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, makeThreadState(0x1234));
+  const { exports: kernel, threadResumeWait4 } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_wait4();
+  kernel.thread_resume_wait4 = vi.fn((vmPtr: number) => {
+    threadResumeWait4(vmPtr);
+    return 0n;
+  });
+  kernel.process_record_child_exit_for_parent = vi.fn();
+  const handle = makeHandle(kernel, worker);
+  handle.pendingChildSpawnRecords = 0;
+  handle.childExitSyncRecords.set(7, 0);
+  const lifecycleEvents: string[] = [];
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      lifecycleEvents.push(event);
+    },
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.blockWorker(handle, worker, handle.kernel.abi_status_wait4(), 0x1234);
+  await vi.advanceTimersByTimeAsync(11);
+  await vi.advanceTimersByTimeAsync(11);
+
+  expect(kernel.process_record_child_exit_for_parent.mock.calls.length).toBeGreaterThanOrEqual(2);
+  expect(kernel.process_record_child_exit_for_parent).toHaveBeenNthCalledWith(1, 1, 7, 0);
+  expect(kernel.process_record_child_exit_for_parent).toHaveBeenNthCalledWith(2, 1, 7, 0);
+  expect(threadResumeWait4.mock.calls.length).toBeGreaterThanOrEqual(2);
+  expect(handle.childExitSyncRecords.has(7)).toBe(true);
+  expect(lifecycleEvents.filter((event) => event === "wait4-apply-records:1:7/0").length).toBeGreaterThanOrEqual(2);
+});
+
 test("wait4 retry reconciles stale blocked state before issuing a kernel-worker resume", () => {
   const worker = {
     postMessage: vi.fn(),
