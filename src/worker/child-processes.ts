@@ -19,27 +19,49 @@ function hasRunnableWorker(
   for (const worker of handle.blockedWorkers.keys()) {
     workers.add(worker);
   }
+  let sawAttachedThread = false;
   for (const worker of workers) {
-    if (threadWorkerStates.has(worker)) {
-      return true;
+    const thread = threadWorkerStates.get(worker);
+    if (!thread) {
+      continue;
     }
+    sawAttachedThread = true;
+    if (handle.kernel.thread_process_ptr?.(thread.vmPtr) === 0) {
+      continue;
+    }
+    return true;
+  }
+  if (!sawAttachedThread) {
+    return true;
   }
   return false;
+}
+
+function childProcessCountsAsActive(
+  handle: ProcessHandle,
+  threadWorkerStates?: WeakMap<Worker, ThreadWorkerState>,
+): boolean {
+  if (handle.exitInProgress) {
+    return false;
+  }
+  if (threadWorkerStates === undefined) {
+    return true;
+  }
+  return hasRunnableWorker(handle, threadWorkerStates);
 }
 
 export function hasActiveChildProcess(
   processHandles: ReadonlyMap<number, ProcessHandle>,
   parentPid: number,
-  _threadWorkerStates?: WeakMap<Worker, ThreadWorkerState>,
+  threadWorkerStates?: WeakMap<Worker, ThreadWorkerState>,
 ): boolean {
   for (const candidate of processHandles.values()) {
     if (candidate.parentPid !== parentPid) {
       continue;
     }
-    if (candidate.exitInProgress) {
-      continue;
+    if (childProcessCountsAsActive(candidate, threadWorkerStates)) {
+      return true;
     }
-    return true;
   }
   return false;
 }
@@ -56,7 +78,7 @@ export function pumpActiveChildProcesses(
     if (candidate.parentPid !== parentPid) {
       continue;
     }
-    if (candidate.exitInProgress) {
+    if (!childProcessCountsAsActive(candidate, threadWorkerStates)) {
       continue;
     }
     if (!hasRunnableWorker(candidate, threadWorkerStates)) {

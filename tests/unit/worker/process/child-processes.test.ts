@@ -117,6 +117,44 @@ test("hasActiveChildProcess reports child handles whose workers are temporarily 
   expect(hasActiveChildProcess(processHandles, 1, threadWorkerStates)).toBe(true);
 });
 
+test("hasActiveChildProcess ignores child handles whose attached workers lost process ownership", () => {
+  const staleWorker = {} as Worker;
+  const liveWorker = {} as Worker;
+  const staleChild = makeHandle({
+    pid: 2,
+    parentPid: 1,
+    worker: staleWorker,
+    workers: new Set([staleWorker]),
+    kernel: {
+      thread_process_ptr: () => 0,
+    } as ProcessHandle["kernel"],
+    exitInProgress: false,
+  });
+  const liveChild = makeHandle({
+    pid: 3,
+    parentPid: 1,
+    worker: liveWorker,
+    workers: new Set([liveWorker]),
+    kernel: {
+      thread_process_ptr: () => 0x2000,
+    } as ProcessHandle["kernel"],
+    exitInProgress: false,
+  });
+  const processHandles = new Map<number, ProcessHandle>([
+    [1, makeHandle({ pid: 1 })],
+    [2, staleChild],
+    [3, liveChild],
+  ]);
+  const threadWorkerStates = new WeakMap<Worker, { vmPtr: number }>([
+    [staleWorker, { vmPtr: 0x1234 }],
+    [liveWorker, { vmPtr: 0x5678 }],
+  ]) as WeakMap<Worker, never>;
+
+  expect(hasActiveChildProcess(processHandles, 1, threadWorkerStates)).toBe(true);
+  processHandles.delete(3);
+  expect(hasActiveChildProcess(processHandles, 1, threadWorkerStates)).toBe(false);
+});
+
 test("pumpActiveChildProcesses pumps live children and skips exit cleanup", () => {
   const liveChild = makeHandle({ pid: 3, parentPid: 1, exitInProgress: false });
   const exitingChild = makeHandle({ pid: 2, parentPid: 1, exitInProgress: true });
