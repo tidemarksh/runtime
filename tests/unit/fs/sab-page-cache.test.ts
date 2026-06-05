@@ -9,6 +9,7 @@ import {
   publishResidentPage,
   readInodeMeta,
   readInodeRecord,
+  readResidentFileData,
   truncateDirtyResidentFileData,
   writeDirtyResidentFileData,
 } from "../../../src/fs/sab-page-cache.js";
@@ -343,15 +344,15 @@ test("page-cache write publishes dirty resident data without updating backing da
   });
 
   expect(env.tidemark_page_cache_write(2, 32n, 256, source.length)).toBe(BigInt(source.length));
-  expect(env.tidemark_page_cache_read(2, 32n, 512, source.length)).toBe(BigInt(source.length));
-  expect(new Uint8Array(memory.buffer, 512, source.length)).toEqual(source);
+  expect(env.tidemark_page_cache_read(2, 32n, 512, source.length)).toBe(-2n);
+  expect(readResidentFileData(sab, 2, 32, source.length)).toEqual(source);
   expect(backing.slice(32, 32 + source.length)).toEqual(new Uint8Array(source.length));
   expect(evictResidentPage(sab, 2, 0)).toBe("dirty-pinned");
 
   expect(env.tidemark_page_cache_truncate(2, 40n)).toBe(0);
   new Uint8Array(memory.buffer, 512, source.length).fill(0);
-  expect(env.tidemark_page_cache_read(2, 32n, 512, source.length)).toBe(8n);
-  expect(new Uint8Array(memory.buffer, 512, 8)).toEqual(source.subarray(0, 8));
+  expect(env.tidemark_page_cache_read(2, 32n, 512, source.length)).toBe(-2n);
+  expect(readResidentFileData(sab, 2, 32, 8)).toEqual(source.subarray(0, 8));
   expect(env.tidemark_page_cache_read(2, 40n, 512, 1)).toBe(0n);
 });
 
@@ -416,6 +417,29 @@ test("source-backed file range write overlays without materializing the previous
 
   expect(backing.read(file.fileObjectId, 0, 6)).toEqual(new TextEncoder().encode("abcXYZ"));
   expect(calls).toEqual([[0, 6]]);
+});
+
+test("source-backed file truncate shrinks logical backing size without materializing the previous source", () => {
+  const backing = new MemoryFileBackingStore();
+  const data = new TextEncoder().encode("abcdef");
+  const calls: Array<[number, number]> = [];
+  const file = backing.createSourceFile({
+    byteLength: data.length,
+    readRange(offset, length) {
+      calls.push([offset, length]);
+      return data.subarray(offset, Math.min(data.length, offset + length));
+    },
+  });
+
+  const patched = backing.write(file.fileObjectId, 3, new TextEncoder().encode("XYZ"));
+  const truncated = backing.truncate(file.fileObjectId, 3);
+  expect(truncated.size).toBe(3);
+  expect(truncated.generation).toBe(patched.generation + 1);
+  expect(calls).toEqual([]);
+
+  expect(backing.read(file.fileObjectId, 0, 6)).toEqual(new TextEncoder().encode("abc"));
+  expect(backing.read(file.fileObjectId, 3, 1)).toEqual(new Uint8Array());
+  expect(calls).toEqual([[0, 3]]);
 });
 
 test("live resident records use file object generation and fixed reusable frames", () => {

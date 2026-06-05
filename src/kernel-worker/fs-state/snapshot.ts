@@ -7,7 +7,6 @@ import {
   memfsFileHasInlineData,
   normalizePath,
   normalizePermMode,
-  readMemfsFileDataDirect,
   scratchBaseFor,
   writeScratchFor,
 } from "../common.js";
@@ -171,10 +170,6 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
     const backingRange = deps.readBackingFileRangeByInode(ino, 0, size);
     if (backingRange && backingRange.length === size) {
       return backingRange;
-    }
-    const direct = readMemfsFileDataDirect(targetExports, ino);
-    if (direct) {
-      return direct;
     }
     try {
       return readFileIn(targetExports, path);

@@ -95,6 +95,17 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     return backingStore.write(fileObjectId, offset, data);
   }
 
+  function truncateBackingFile(ino: number, size: number): FileBackingStat {
+    backingExtentsByIno.delete(ino);
+    const fileObjectId = fileObjectIdsByIno.get(ino);
+    if (fileObjectId === undefined) {
+      const stat = backingStore.createFile();
+      fileObjectIdsByIno.set(ino, stat.fileObjectId);
+      return backingStore.truncate(stat.fileObjectId, size);
+    }
+    return backingStore.truncate(fileObjectId, size);
+  }
+
   function backingMetaForInode(ino: number): Pick<FileBackingStat, "fileObjectId" | "generation"> | undefined {
     const fileObjectId = fileObjectIdsByIno.get(ino);
     if (fileObjectId === undefined) {
@@ -458,10 +469,15 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       return false;
     }
     const sab = deps.getSabPageCache();
-    if (!hasDirtyResidentPagesForInode(sab, ino)) {
+    const hasDirtyPages = hasDirtyResidentPagesForInode(sab, ino);
+    if (!hasDirtyPages && !residentPageMapIsNewerThanBacking(ino)) {
       return true;
     }
-    const ranges = collectDirtyResidentFileWritebackRanges(sab, ino);
+    const record = readInodeRecord(sab, ino);
+    if (!record) {
+      return false;
+    }
+    const ranges = hasDirtyPages ? collectDirtyResidentFileWritebackRanges(sab, ino) : [];
     if (!ranges) {
       return false;
     }
@@ -469,13 +485,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     for (const range of ranges) {
       stat = writeBackingFileRange(ino, range.offset, range.bytes);
     }
-    if (!stat) {
-      const fileObjectId = fileObjectIdsByIno.get(ino);
-      stat = fileObjectId === undefined ? null : backingStore.stat(fileObjectId);
-      if (!stat) {
-        return false;
-      }
-    }
+    stat = truncateBackingFile(ino, record.size);
     const cleaned = markDirtyResidentFileDataClean(sab, ino, stat.fileObjectId, stat.generation);
     if (cleaned) {
       backingExtentsByIno.delete(ino);

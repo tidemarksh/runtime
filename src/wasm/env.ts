@@ -1,6 +1,6 @@
 import {
   readInodeMeta,
-  readResidentFileData,
+  readCleanResidentFileData,
 } from "../fs/sab-page-cache.js";
 
 export interface KernelEnvImports {
@@ -102,7 +102,7 @@ export function createKernelEnv(
         if (!dstRange) {
           return -14n;
         }
-        const resident = readResidentFileData(sabPageCache, ino, offsetNumber, readLen);
+        const resident = readCleanResidentFileData(sabPageCache, ino, offsetNumber, readLen);
         if (resident) {
           new Uint8Array(memory.buffer, dstRange.ptr, resident.length).set(resident);
           return BigInt(resident.length);

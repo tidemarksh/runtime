@@ -780,6 +780,45 @@ test("kernel-worker flushes source-backed dirty resident ranges without full sou
   expect(sourceReads).toEqual([[0, source.length]]);
 });
 
+test("kernel-worker flush truncates source-backed dirty resident files to inode size", () => {
+  const { fsState, sabPageCache } = makeFsState();
+  const source = encoder.encode("abcdef");
+  const sourceReads: Array<[number, number]> = [];
+  const backingExtent = {
+    sourceIdentity: "artifact:runtime.bin",
+    offset: 0,
+    length: source.length,
+  };
+
+  fsState.loadFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "file", path: "/lib/runtime.bin", size: backingExtent.length, mode: 0o644, backingExtent },
+  ]);
+  fsState.registerBackingSourceObject(backingExtent.sourceIdentity, {
+    byteLength: source.length,
+    readRange(offset, length) {
+      sourceReads.push([offset, length]);
+      return source.subarray(offset, Math.min(source.length, offset + length));
+    },
+  });
+
+  const ino = fsState.resolvePath("/lib/runtime.bin");
+  expect(fsState.truncateDirtyResidentFileByInode(ino, 3)).toBe(0);
+  expect(sourceReads).toEqual([[0, 3]]);
+  sourceReads.length = 0;
+
+  expect(fsState.flushDirtyResidentFileByInode(ino)).toBe(true);
+  expect(sourceReads).toEqual([]);
+  expect(new TextDecoder().decode(readResidentFileData(sabPageCache, ino, 0, 3) ?? new Uint8Array()))
+    .toBe("abc");
+  expect(evictResidentPage(sabPageCache, ino, 0)).toBe("evicted");
+
+  expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 0, 6) ?? new Uint8Array()))
+    .toBe("abc");
+  expect(fsState.readBackingFileRangeByInode(ino, 3, 1)).toBeNull();
+  expect(sourceReads).toEqual([[0, 3]]);
+});
+
 test("kernel-worker reads registered partial source ranges without full source materialization", () => {
   const { fsState } = makeFsState();
   const backingExtent = {

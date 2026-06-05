@@ -115,6 +115,7 @@ interface MemoryFileObject {
   data: Uint8Array | null;
   source: FileBackingSource | null;
   patches: Array<{ offset: number; data: Uint8Array }>;
+  sizeOverride: number | null;
   generation: number;
 }
 
@@ -128,6 +129,7 @@ export class MemoryFileBackingStore {
       data: new Uint8Array(data),
       source: null,
       patches: [],
+      sizeOverride: null,
       generation: 1,
     });
     return this.stat(fileObjectId)!;
@@ -142,6 +144,7 @@ export class MemoryFileBackingStore {
       data: null,
       source,
       patches: [],
+      sizeOverride: null,
       generation: 1,
     });
     return this.stat(fileObjectId)!;
@@ -168,9 +171,13 @@ export class MemoryFileBackingStore {
     const readLen = Math.min(length, size - offset);
     const out = new Uint8Array(readLen);
     const covered = new Uint8Array(readLen);
+    const baseSize = file.data?.byteLength ?? file.source?.byteLength ?? 0;
     if (file.data) {
-      out.set(file.data.subarray(offset, offset + readLen));
-      covered.fill(1);
+      const copyLen = Math.max(0, Math.min(readLen, file.data.byteLength - offset));
+      if (copyLen > 0) {
+        out.set(file.data.subarray(offset, offset + copyLen));
+        covered.fill(1, 0, copyLen);
+      }
     } else {
       const bytes = file.source?.readRange(offset, readLen);
       if (bytes) {
@@ -178,6 +185,9 @@ export class MemoryFileBackingStore {
         out.set(bytes.subarray(0, copyLen));
         covered.fill(1, 0, copyLen);
       }
+    }
+    if (offset + readLen > baseSize) {
+      covered.fill(1, Math.max(0, baseSize - offset), readLen);
     }
     const readEnd = offset + readLen;
     for (const patch of file.patches) {
@@ -209,6 +219,7 @@ export class MemoryFileBackingStore {
     file.data = new Uint8Array(data);
     file.source = null;
     file.patches = [];
+    file.sizeOverride = null;
     file.generation += 1;
     return this.stat(fileObjectId)!;
   }
@@ -229,11 +240,53 @@ export class MemoryFileBackingStore {
       return this.stat(fileObjectId)!;
     }
     file.patches.push({ offset, data: new Uint8Array(data) });
+    if (file.sizeOverride !== null && end > file.sizeOverride) {
+      file.sizeOverride = end;
+    }
     file.generation += 1;
     return this.stat(fileObjectId)!;
   }
 
+  truncate(fileObjectId: FileObjectId, size: number): FileBackingStat {
+    const file = this.files.get(fileObjectId);
+    if (!file) {
+      throw new Error(`file object not found: ${fileObjectId}`);
+    }
+    if (!Number.isInteger(size) || size < 0 || size > 0xffffffff) {
+      throw new RangeError(`invalid file size: ${size}`);
+    }
+    const previousSize = this.fileSize(file);
+    let trimmed = false;
+    if (file.data && file.data.byteLength > size) {
+      file.data = file.data.slice(0, size);
+      trimmed = true;
+    }
+    const nextPatches: MemoryFileObject["patches"] = [];
+    for (const patch of file.patches) {
+      if (patch.offset >= size) {
+        trimmed = true;
+        continue;
+      }
+      const patchEnd = patch.offset + patch.data.length;
+      if (patchEnd > size) {
+        nextPatches.push({ offset: patch.offset, data: patch.data.slice(0, size - patch.offset) });
+        trimmed = true;
+        continue;
+      }
+      nextPatches.push(patch);
+    }
+    file.patches = nextPatches;
+    file.sizeOverride = size;
+    if (previousSize !== size || trimmed) {
+      file.generation += 1;
+    }
+    return this.stat(fileObjectId)!;
+  }
+
   private fileSize(file: MemoryFileObject): number {
+    if (file.sizeOverride !== null) {
+      return file.sizeOverride;
+    }
     let size = file.data?.byteLength ?? file.source?.byteLength ?? 0;
     for (const patch of file.patches) {
       size = Math.max(size, patch.offset + patch.data.length);
@@ -545,11 +598,12 @@ export function publishResidentPage(
   return true;
 }
 
-export function readResidentFileData(
+function readResidentFileDataWithDirtyPolicy(
   sab: SharedArrayBuffer,
   ino: number,
   offset: number,
   length: number,
+  includeDirty: boolean,
 ): Uint8Array | null {
   if (length <= 0) {
     return new Uint8Array();
@@ -583,6 +637,7 @@ export function readResidentFileData(
     if (
       v1 !== v2
       || (flags & RESIDENT_PAGE_RECORD_FLAG_VALID) === 0
+      || (!includeDirty && (flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) !== 0)
       || dataOff < residentPageFrameRegionOffset(sab)
       || dataOff + validBytes > residentPageRecordTableOffset(sab)
       || pageOffset + copyLen > validBytes
@@ -594,6 +649,24 @@ export function readResidentFileData(
     copied += copyLen;
   }
   return out;
+}
+
+export function readResidentFileData(
+  sab: SharedArrayBuffer,
+  ino: number,
+  offset: number,
+  length: number,
+): Uint8Array | null {
+  return readResidentFileDataWithDirtyPolicy(sab, ino, offset, length, true);
+}
+
+export function readCleanResidentFileData(
+  sab: SharedArrayBuffer,
+  ino: number,
+  offset: number,
+  length: number,
+): Uint8Array | null {
+  return readResidentFileDataWithDirtyPolicy(sab, ino, offset, length, false);
 }
 
 export function debugResidentPageCountForInode(sab: SharedArrayBuffer, ino: number): number {
