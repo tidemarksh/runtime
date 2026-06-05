@@ -62,6 +62,8 @@ export const INODE_OFF_GENERATION = 36;
 
 export const DEFAULT_RESIDENT_PAGE_SIZE = 4096;
 const RESIDENT_PAGE_RECORD_BYTES = 40;
+const DEFAULT_METADATA_DATA_REGION_BYTES = 1024 * 1024;
+const RESIDENT_PAGE_ALLOCATION_QUANTUM = DEFAULT_RESIDENT_PAGE_SIZE + RESIDENT_PAGE_RECORD_BYTES;
 const RESIDENT_PAGE_RECORD_VERSION = 0;
 const RESIDENT_PAGE_RECORD_FILE_OBJECT_ID = 4;
 const RESIDENT_PAGE_RECORD_PAGE_INDEX = 8;
@@ -385,7 +387,8 @@ export function publishInode(
 
 function residentPageRecordCount(sab: SharedArrayBuffer): number {
   const available = Math.max(0, sab.byteLength - DATA_REGION_OFFSET);
-  return Math.floor(available / (DEFAULT_RESIDENT_PAGE_SIZE + RESIDENT_PAGE_RECORD_BYTES));
+  const residentAvailable = Math.max(0, available - metadataDataRegionCapacity(sab));
+  return Math.floor(residentAvailable / RESIDENT_PAGE_ALLOCATION_QUANTUM);
 }
 
 export function hasResidentPageRecordCapacity(sab: SharedArrayBuffer): boolean {
@@ -401,7 +404,15 @@ function residentPageFrameRegionOffset(sab: SharedArrayBuffer): number {
 }
 
 function dataRegionLimit(sab: SharedArrayBuffer): number {
-  return residentPageFrameRegionOffset(sab);
+  return DATA_REGION_OFFSET + metadataDataRegionCapacity(sab);
+}
+
+function metadataDataRegionCapacity(sab: SharedArrayBuffer): number {
+  const available = Math.max(0, sab.byteLength - DATA_REGION_OFFSET);
+  if (available >= DEFAULT_METADATA_DATA_REGION_BYTES + RESIDENT_PAGE_ALLOCATION_QUANTUM) {
+    return DEFAULT_METADATA_DATA_REGION_BYTES;
+  }
+  return available % RESIDENT_PAGE_ALLOCATION_QUANTUM;
 }
 
 function residentPageRecordOffset(sab: SharedArrayBuffer, index: number): number {

@@ -496,3 +496,28 @@ test("live resident records use file object generation and fixed reusable frames
   expect(debugResidentPageCountForInode(sab, 2)).toBe(0);
   expect(directEnv.tidemark_page_cache_read(2, 4096n, 64, 16)).toBe(-2n);
 });
+
+test("large page-cache SAB reserves metadata name space alongside resident frames", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 2 * 1024 * 1024);
+  const encoder = new TextEncoder();
+  const names: string[] = [];
+
+  for (let index = 0; index < 5000; index += 1) {
+    const name = `runtime-tree-entry-${index.toString().padStart(5, "0")}`;
+    names.push(name);
+    publishInode(sab, index + 2, {
+      mode: 0o100644,
+      size: 1,
+      parentIno: 1,
+      name: encoder.encode(name),
+      nextSibling: 0,
+      fileObjectId: index + 2,
+      generation: 1,
+    });
+  }
+
+  expect(readInodeRecord(sab, 2)?.name).toEqual(encoder.encode(names[0]));
+  expect(readInodeRecord(sab, 5001)?.name).toEqual(encoder.encode(names.at(-1)!));
+  expect(publishResidentPage(sab, 2, 0, new Uint8Array([1]))).toBe(true);
+  expect(debugResidentPageCountForInode(sab, 2)).toBe(1);
+});
