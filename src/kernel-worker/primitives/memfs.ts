@@ -1,6 +1,5 @@
 import type { KernelExports, KernelRuntimeState } from "../../abi.js";
 import {
-  clearMaterializedMemfsFiles,
   clearMemoryRange,
   copyMemoryRange,
   ensureMemoryCapacityFor,
@@ -113,7 +112,6 @@ export function createKernelWorkerMemfsPrimitives() {
       targetLayout.dirEntriesPtr,
       sourceExports.kernel_memfs_dir_entries_bytes(),
     );
-    clearMaterializedMemfsFiles(targetExports);
     clearMemoryRange(
       targetExports.memory,
       targetExports.kernel_memfs_data_ptr(),
@@ -143,7 +141,6 @@ export function createKernelWorkerMemfsPrimitives() {
     targetExports: KernelExports,
     targetState: KernelRuntimeState,
   ): void {
-    clearMaterializedMemfsFiles(targetExports);
     clearMemoryRange(
       targetExports.memory,
       targetExports.kernel_memfs_inodes_ptr(),

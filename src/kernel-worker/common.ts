@@ -22,8 +22,6 @@ export {
 } from "../fs/memfs-inline-data.js";
 import { MEMFS_S_IFMT, MEMFS_S_IFREG } from "../fs/memfs-inline-data.js";
 
-const materializedMemfsFiles = new WeakMap<KernelExports, Set<number>>();
-
 export type MemfsLayout = {
   inodeCount: number;
   dirEntryCount: number;
@@ -130,19 +128,6 @@ export function clearMemoryRange(
   }
   ensureMemoryCapacityFor(targetMemory, targetOffset + byteLength);
   new Uint8Array(targetMemory.buffer, targetOffset, byteLength).fill(0);
-}
-
-export function markMaterializedMemfsFile(targetExports: KernelExports, ino: number): void {
-  let inos = materializedMemfsFiles.get(targetExports);
-  if (!inos) {
-    inos = new Set<number>();
-    materializedMemfsFiles.set(targetExports, inos);
-  }
-  inos.add(ino);
-}
-
-export function clearMaterializedMemfsFiles(targetExports: KernelExports): void {
-  materializedMemfsFiles.delete(targetExports);
 }
 
 export function readMemfsLayout(memory: WebAssembly.Memory, memfsPtr: number): MemfsLayout {
