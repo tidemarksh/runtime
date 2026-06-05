@@ -19,6 +19,7 @@ import {
   preloadSnapshotEntries,
   resolveProcessCwdIno,
 } from "./process-fs.js";
+import type { KernelWorkerFileLayerEntry } from "../messages.js";
 import { createKernelShareGroup } from "./kernel-share.js";
 import {
   alignUp,
@@ -137,6 +138,86 @@ function snapshotMaterializedDataBytes(entries: readonly FsSnapshotEntry[]): num
     }
   }
   return total;
+}
+
+function entriesContainInlineFileData(entries: readonly FsSnapshotEntry[]): boolean {
+  return entries.some((entry) => entry.kind === "file" && entry.data !== undefined);
+}
+
+function explicitPreloadPathSet(entries: readonly FsSnapshotEntry[]): Set<string> {
+  const paths = new Set<string>(["/"]);
+  for (const entry of entries) {
+    const normalized = normalizeGuestPath(entry.path);
+    paths.add(normalized);
+    const parts = normalized.split("/").filter(Boolean);
+    for (let index = 1; index < parts.length; index += 1) {
+      paths.add(`/${parts.slice(0, index).join("/")}`);
+    }
+  }
+  return paths;
+}
+
+function kernelWorkerLayerEntriesForExplicitPreload(
+  entries: readonly FsSnapshotEntry[],
+): KernelWorkerFileLayerEntry[] {
+  const layerEntries: KernelWorkerFileLayerEntry[] = [];
+  for (const entry of entries) {
+    if (entry.kind === "dir") {
+      layerEntries.push({ kind: "dir", path: entry.path, mode: entry.mode });
+      continue;
+    }
+    if (entry.kind === "symlink" && entry.target !== undefined) {
+      layerEntries.push({ kind: "symlink", path: entry.path, target: entry.target, mode: entry.mode });
+      continue;
+    }
+    if (entry.kind === "file" && entry.data !== undefined) {
+      layerEntries.push({ kind: "file", path: entry.path, data: entry.data, mode: entry.mode });
+    }
+  }
+  return layerEntries;
+}
+
+async function routeExplicitPreloadDataThroughKernelWorker(
+  entries: FsSnapshotEntry[],
+  kernelWorkerRequest: NonNullable<CreateProcessOptions["kernelWorkerRequest"]> | undefined,
+): Promise<FsSnapshotEntry[]> {
+  if (!kernelWorkerRequest || !entriesContainInlineFileData(entries)) {
+    return entries;
+  }
+  const layerEntries = kernelWorkerLayerEntriesForExplicitPreload(entries);
+  if (layerEntries.length === 0) {
+    return entries;
+  }
+  const layerResponse = await kernelWorkerRequest({
+    type: "apply-file-layer",
+    entries: layerEntries,
+  });
+  if (layerResponse.type !== "file-layer-applied") {
+    throw new Error(`unexpected kernel-worker apply-file-layer response: ${layerResponse.type}`);
+  }
+  const snapshotResponse = await kernelWorkerRequest({
+    type: "snapshot-fs",
+    includeData: false,
+  });
+  if (snapshotResponse.type !== "snapshot-fs-result") {
+    throw new Error(`unexpected kernel-worker snapshot response: ${snapshotResponse.type}`);
+  }
+  const selectedPaths = explicitPreloadPathSet(entries);
+  const filtered = snapshotResponse.entries
+    .filter((entry) => selectedPaths.has(normalizeGuestPath(entry.path)));
+  for (const entry of entries) {
+    if (entry.kind !== "file" || entry.data === undefined) {
+      continue;
+    }
+    const normalized = normalizeGuestPath(entry.path);
+    const published = filtered.find((candidate) => (
+      candidate.kind === "file" && normalizeGuestPath(candidate.path) === normalized
+    ));
+    if (!published) {
+      throw new Error(`kernel-worker snapshot missing explicit preload file: ${normalized}`);
+    }
+  }
+  return filtered;
 }
 
 function assertArtifactMaterializationBudget(
@@ -586,11 +667,22 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       && options.preloadEntries === undefined
     );
     const preloadScratchBase = detachedKernelScratchBase(exports.memory, 0, 0);
-    const bootstrapEntries = await resolveBootstrapEntries(
+    const resolvedBootstrapEntries = await resolveBootstrapEntries(
       runtimeId,
       options,
       delegateFsHydrationToKernelWorker,
     );
+    const artifactMaterializedBytes = snapshotMaterializedDataBytes(resolvedBootstrapEntries);
+    assertArtifactMaterializationBudget(
+      artifactMaterializedBytes,
+      options.artifactMaterializationBudgetBytes,
+    );
+    const bootstrapEntries = options.preloadEntries
+      ? await routeExplicitPreloadDataThroughKernelWorker(
+        resolvedBootstrapEntries,
+        options.kernelWorkerRequest,
+      )
+      : resolvedBootstrapEntries;
     if (delegateFsHydrationToKernelWorker) {
       await publishInterpResidentPages(
         bootstrapEntries,
@@ -599,11 +691,6 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
         options.kernelWorkerRequest,
       );
     }
-    const artifactMaterializedBytes = snapshotMaterializedDataBytes(bootstrapEntries);
-    assertArtifactMaterializationBudget(
-      artifactMaterializedBytes,
-      options.artifactMaterializationBudgetBytes,
-    );
     const bootstrapEntriesRequireMaterializedData = entriesRequireMaterializedData(bootstrapEntries);
     preloadSnapshotEntries(exports, bootstrapEntries, preloadScratchBase);
     const guestAddressProfile = guestAddressProfileForProcessCreation(exports);

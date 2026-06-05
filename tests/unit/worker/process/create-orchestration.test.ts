@@ -1624,7 +1624,43 @@ test("createProcess does not grow linear memory to requested guest policy during
   expect(handle.memory.buffer.byteLength).toBeLessThan(128 * 1024 * 1024);
 });
 
-test("createProcess preloads snapshot files by resizing then writing payload bytes", async () => {
+test("createProcess routes explicit preload file payloads through kernel-worker backing metadata", async () => {
+  const preloadBytes = new Uint8Array(8 * 1024 * 1024);
+  const kernelWorkerRequest = vi.fn(async (msg: KernelWorkerRequest): Promise<KernelWorkerOutbound> => {
+    switch (msg.type) {
+      case "apply-file-layer":
+        expect(msg.entries).toHaveLength(1);
+        expect(msg.entries[0]).toMatchObject({
+          kind: "file",
+          path: "/workspace/bin/tool",
+          mode: 0o755,
+        });
+        expect(msg.entries[0]?.kind === "file" ? msg.entries[0].data : undefined).toBe(preloadBytes);
+        return { type: "file-layer-applied", requestId: 0 };
+      case "snapshot-fs":
+        expect(msg.includeData).toBe(false);
+        return {
+          type: "snapshot-fs-result",
+          requestId: 0,
+          entries: [
+            { kind: "dir", path: "/", mode: 0o755 },
+            { kind: "dir", path: "/workspace", mode: 0o755 },
+            { kind: "dir", path: "/workspace/bin", mode: 0o755 },
+            {
+              kind: "file",
+              path: "/workspace/bin/tool",
+              size: preloadBytes.length,
+              mode: 0o755,
+            },
+          ],
+        };
+      case "register-process":
+        return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+      default:
+        throw new Error(`unexpected kernel worker request: ${msg.type}`);
+    }
+  });
+
   const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
     guestMemoryPolicyLimitBytes: 64n * 1024n * 1024n,
     maxMemoryPages: 2048,
@@ -1637,18 +1673,25 @@ test("createProcess preloads snapshot files by resizing then writing payload byt
       {
         kind: "file",
         path: "/workspace/bin/tool",
-        data: new Uint8Array(8 * 1024 * 1024),
+        data: preloadBytes,
         mode: 0o755,
       },
     ],
+    kernelWorkerRequest,
   });
 
   expect(createdKernelExports[0].memfsCreateCalls).toHaveLength(1);
-  expect(createdKernelExports[0].memfsTruncateCalls).toHaveLength(1);
-  expect(createdKernelExports[0].memfsTruncateCalls[0]?.[1]).toBe(8 * 1024 * 1024);
-  expect(createdKernelExports[0].memfsWriteCalls).toHaveLength(1);
-  expect(createdKernelExports[0].memfsWriteCalls[0]?.[1]).toBe(8 * 1024 * 1024);
+  expect(createdKernelExports[0].memfsSetFileExternalCalls).toEqual([[12, preloadBytes.length]]);
+  expect(createdKernelExports[0].memfsTruncateCalls).toEqual([]);
+  expect(createdKernelExports[0].memfsWriteCalls).toEqual([]);
   expect(createdKernelExports[0].memfsCreateWithDataCalls).toEqual([]);
+  expect(kernelWorkerRequest).toHaveBeenCalledWith(expect.objectContaining({
+    type: "apply-file-layer",
+  }));
+  expect(kernelWorkerRequest).toHaveBeenCalledWith(expect.objectContaining({
+    type: "snapshot-fs",
+    includeData: false,
+  }));
   expect(handle.memoryOwnership).toEqual({
     guestAddressProfile: 1,
     guestAddressLimitBytes: "4294967295",
@@ -1660,7 +1703,7 @@ test("createProcess preloads snapshot files by resizing then writing payload byt
     fsRpcRingCapacityBytes: FS_RING_TOTAL_BYTES,
     kernelWorkerPrivateMemoryBytes: 128 * 1024 * 1024,
     artifactMaterializationBudgetBytes: 9 * 1024 * 1024,
-    artifactMaterializedBytes: 8 * 1024 * 1024,
+    artifactMaterializedBytes: preloadBytes.length,
   });
 });
 
