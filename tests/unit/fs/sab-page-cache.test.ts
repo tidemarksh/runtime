@@ -2,6 +2,7 @@ import { expect, test } from "vite-plus/test";
 import {
   DATA_REGION_OFFSET,
   debugResidentPageCountForInode,
+  DEFAULT_RESIDENT_PAGE_SIZE,
   evictResidentPage,
   MAX_INODES,
   MemoryFileBackingStore,
@@ -14,6 +15,12 @@ import {
   writeDirtyResidentFileData,
 } from "../../../src/fs/sab-page-cache.js";
 import { createKernelEnv } from "../../../src/wasm/env.js";
+
+const RESIDENT_PAGE_RECORD_BYTES = 40;
+const RESIDENT_PAGE_RECORD_VERSION = 0;
+const RESIDENT_PAGE_RECORD_FILE_OBJECT_ID = 4;
+const RESIDENT_PAGE_RECORD_PAGE_INDEX = 8;
+const RESIDENT_PAGE_RECORD_GENERATION = 20;
 
 test("memory atomic notify accepts wasm64 BigInt pointers", () => {
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
@@ -223,6 +230,53 @@ test("page-cache read uses resident pages filled by the status path", () => {
   });
   expect(debugResidentPageCountForInode(sab, 2)).toBe(0);
   expect(directEnv.tidemark_page_cache_read(2, 2n, 32, 3)).toBe(-2n);
+});
+
+test("page-cache read rejects resident record identity changes inside the seqlock window", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + DEFAULT_RESIDENT_PAGE_SIZE + RESIDENT_PAGE_RECORD_BYTES);
+  const initial = new TextEncoder().encode("safe");
+  const raced = new TextEncoder().encode("bad!");
+
+  publishInode(sab, 2, {
+    mode: 0o100644,
+    size: initial.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("external"),
+    nextSibling: 0,
+    fileObjectId: 44,
+    generation: 7,
+  });
+  expect(publishResidentPage(sab, 2, 0, initial)).toBe(true);
+
+  const u32 = new Uint32Array(sab);
+  const u8 = new Uint8Array(sab);
+  const recordBase32 = (DATA_REGION_OFFSET + DEFAULT_RESIDENT_PAGE_SIZE) >>> 2;
+  const versionIndex = recordBase32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2);
+  const pageIndexIndex = recordBase32 + (RESIDENT_PAGE_RECORD_PAGE_INDEX >>> 2);
+  let mutateBeforeRecordVersionRead = false;
+  let mutated = false;
+  const originalLoad = Atomics.load;
+  const atomics = Atomics as typeof Atomics & { load: typeof Atomics.load };
+
+  atomics.load = ((array: Uint32Array, index: number): number => {
+    const value = originalLoad(array, index);
+    if (array.buffer === sab && index === pageIndexIndex && value === 0 && !mutated) {
+      mutateBeforeRecordVersionRead = true;
+    } else if (array.buffer === sab && index === versionIndex && mutateBeforeRecordVersionRead && !mutated) {
+      mutated = true;
+      Atomics.store(u32, recordBase32 + (RESIDENT_PAGE_RECORD_FILE_OBJECT_ID >>> 2), 45);
+      Atomics.store(u32, pageIndexIndex, 3);
+      Atomics.store(u32, recordBase32 + (RESIDENT_PAGE_RECORD_GENERATION >>> 2), 9);
+      u8.set(raced, DATA_REGION_OFFSET);
+    }
+    return value;
+  }) as typeof Atomics.load;
+  try {
+    expect(readResidentFileData(sab, 2, 0, initial.length)).toBeNull();
+  } finally {
+    atomics.load = originalLoad;
+  }
+  expect(mutated).toBe(true);
 });
 
 test("page-cache clean resident eviction returns miss until status path refills", () => {

@@ -427,6 +427,51 @@ function residentPageFrameOffset(sab: SharedArrayBuffer, index: number): number 
   return residentPageFrameRegionOffset(sab) + index * DEFAULT_RESIDENT_PAGE_SIZE;
 }
 
+interface ResidentPageRecordState {
+  fileObjectId: number;
+  pageIndex: number;
+  dataOff: number;
+  validBytes: number;
+  generation: number;
+  flags: number;
+  dirtyStart: number;
+  dirtyEnd: number;
+}
+
+function readStableResidentPageRecord(
+  sab: SharedArrayBuffer,
+  index: number,
+): ResidentPageRecordState | null {
+  const u32 = new Uint32Array(sab);
+  const base32 = residentPageRecordOffset(sab, index) >>> 2;
+  const v1 = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2));
+  if (v1 === 0 || (v1 & 1) !== 0) {
+    return null;
+  }
+  const fileObjectId = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FILE_OBJECT_ID >>> 2));
+  const pageIndex = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_PAGE_INDEX >>> 2));
+  const dataOff = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_DATA_OFF >>> 2));
+  const validBytes = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VALID_BYTES >>> 2));
+  const generation = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_GENERATION >>> 2));
+  const flags = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2));
+  const dirtyStart = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_DIRTY_START >>> 2));
+  const dirtyEnd = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_DIRTY_END >>> 2));
+  const v2 = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2));
+  if (v1 !== v2) {
+    return null;
+  }
+  return {
+    fileObjectId,
+    pageIndex,
+    dataOff,
+    validBytes,
+    generation,
+    flags,
+    dirtyStart,
+    dirtyEnd,
+  };
+}
+
 function nextResidentClock(sab: SharedArrayBuffer): number {
   const u32 = new Uint32Array(sab);
   return Atomics.add(u32, OFF_RESIDENT_CLOCK >>> 2, 1) + 1;
@@ -438,16 +483,15 @@ function findResidentPageRecordIndex(
   generation: number,
   pageIndex: number,
 ): number {
-  const u32 = new Uint32Array(sab);
   const count = residentPageRecordCount(sab);
   for (let index = 0; index < count; index += 1) {
-    const base32 = residentPageRecordOffset(sab, index) >>> 2;
-    const flags = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2));
+    const record = readStableResidentPageRecord(sab, index);
     if (
-      (flags & RESIDENT_PAGE_RECORD_FLAG_VALID) !== 0
-      && Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FILE_OBJECT_ID >>> 2)) === fileObjectId
-      && Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_GENERATION >>> 2)) === generation
-      && Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_PAGE_INDEX >>> 2)) === pageIndex
+      record
+      && (record.flags & RESIDENT_PAGE_RECORD_FLAG_VALID) !== 0
+      && record.fileObjectId === fileObjectId
+      && record.generation === generation
+      && record.pageIndex === pageIndex
     ) {
       return index;
     }
@@ -584,9 +628,6 @@ export function publishResidentPage(
     return false;
   }
   const dataOff = residentPageFrameOffset(sab, recordIndex);
-  const u8 = new Uint8Array(sab);
-  u8.fill(0, dataOff, dataOff + DEFAULT_RESIDENT_PAGE_SIZE);
-  u8.set(data, dataOff);
   const dirty = options.dirty === true;
   const dirtyStart = dirty ? Math.max(0, Math.min(data.length, options.dirtyStart ?? 0)) : 0;
   const dirtyEnd = dirty ? Math.max(dirtyStart, Math.min(data.length, options.dirtyEnd ?? data.length)) : 0;
@@ -596,19 +637,27 @@ export function publishResidentPage(
   const currentVersion = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2));
   const oddVersion = (currentVersion | 1) + (currentVersion & 1 ? 1 : 0);
   Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2), oddVersion);
+  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2), 0);
+  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_DIRTY_START >>> 2), 0);
+  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_DIRTY_END >>> 2), 0);
+
+  const u8 = new Uint8Array(sab);
+  u8.fill(0, dataOff, dataOff + DEFAULT_RESIDENT_PAGE_SIZE);
+  u8.set(data, dataOff);
+
   Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_FILE_OBJECT_ID >>> 2), meta.fileObjectId);
   Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_PAGE_INDEX >>> 2), pageIndex);
   Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_DATA_OFF >>> 2), dataOff);
   Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_VALID_BYTES >>> 2), data.length);
   Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_GENERATION >>> 2), meta.generation);
+  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_LAST_USED >>> 2), nextResidentClock(sab));
+  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_DIRTY_START >>> 2), dirtyStart);
+  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_DIRTY_END >>> 2), dirtyEnd);
   Atomics.store(
     u32,
     base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2),
     RESIDENT_PAGE_RECORD_FLAG_VALID | (dirty ? RESIDENT_PAGE_RECORD_FLAG_DIRTY : 0),
   );
-  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_LAST_USED >>> 2), nextResidentClock(sab));
-  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_DIRTY_START >>> 2), dirtyStart);
-  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_DIRTY_END >>> 2), dirtyEnd);
   Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2), oddVersion + 1);
   return true;
 }
@@ -641,25 +690,21 @@ function readResidentFileDataWithDirtyPolicy(
       return null;
     }
     const base32 = residentPageRecordOffset(sab, recordIndex) >>> 2;
-    const v1 = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2));
-    if (v1 === 0 || (v1 & 1) !== 0) {
-      return null;
-    }
-    const dataOff = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_DATA_OFF >>> 2));
-    const validBytes = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VALID_BYTES >>> 2));
-    const flags = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2));
-    const v2 = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2));
+    const record = readStableResidentPageRecord(sab, recordIndex);
     if (
-      v1 !== v2
-      || (flags & RESIDENT_PAGE_RECORD_FLAG_VALID) === 0
-      || (!includeDirty && (flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) !== 0)
-      || dataOff < residentPageFrameRegionOffset(sab)
-      || dataOff + validBytes > residentPageRecordTableOffset(sab)
-      || pageOffset + copyLen > validBytes
+      !record
+      || record.fileObjectId !== meta.fileObjectId
+      || record.generation !== meta.generation
+      || record.pageIndex !== pageIndex
+      || (record.flags & RESIDENT_PAGE_RECORD_FLAG_VALID) === 0
+      || (!includeDirty && (record.flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) !== 0)
+      || record.dataOff < residentPageFrameRegionOffset(sab)
+      || record.dataOff + record.validBytes > residentPageRecordTableOffset(sab)
+      || pageOffset + copyLen > record.validBytes
     ) {
       return null;
     }
-    out.set(u8.subarray(dataOff + pageOffset, dataOff + pageOffset + copyLen), copied);
+    out.set(u8.subarray(record.dataOff + pageOffset, record.dataOff + pageOffset + copyLen), copied);
     Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_LAST_USED >>> 2), nextResidentClock(sab));
     copied += copyLen;
   }
@@ -730,46 +775,34 @@ function collectResidentPageSnapshots(
   if (meta.fileObjectId === 0) {
     return [];
   }
-  const u32 = new Uint32Array(sab);
   const u8 = new Uint8Array(sab);
   const count = residentPageRecordCount(sab);
   const snapshots: ResidentPageSnapshot[] = [];
   for (let index = 0; index < count; index += 1) {
-    const base32 = residentPageRecordOffset(sab, index) >>> 2;
-    const v1 = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2));
-    if (v1 === 0 || (v1 & 1) !== 0) {
-      continue;
-    }
-    const flags = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2));
-    const dirty = (flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) !== 0;
+    const record = readStableResidentPageRecord(sab, index);
+    const dirty = (record?.flags ?? 0) & RESIDENT_PAGE_RECORD_FLAG_DIRTY;
     if (
-      (flags & RESIDENT_PAGE_RECORD_FLAG_VALID) === 0
-      || (dirtyOnly && !dirty)
-      || Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FILE_OBJECT_ID >>> 2)) !== meta.fileObjectId
-      || Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_GENERATION >>> 2)) !== meta.generation
+      !record
+      || (record.flags & RESIDENT_PAGE_RECORD_FLAG_VALID) === 0
+      || (dirtyOnly && dirty === 0)
+      || record.fileObjectId !== meta.fileObjectId
+      || record.generation !== meta.generation
     ) {
       continue;
     }
-    const dataOff = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_DATA_OFF >>> 2));
-    const validBytes = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VALID_BYTES >>> 2));
-    const pageIndex = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_PAGE_INDEX >>> 2));
-    const dirtyStart = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_DIRTY_START >>> 2));
-    const dirtyEnd = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_DIRTY_END >>> 2));
-    const v2 = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2));
     if (
-      v1 !== v2
-      || dataOff < residentPageFrameRegionOffset(sab)
-      || validBytes > DEFAULT_RESIDENT_PAGE_SIZE
-      || dataOff + validBytes > residentPageRecordTableOffset(sab)
+      record.dataOff < residentPageFrameRegionOffset(sab)
+      || record.validBytes > DEFAULT_RESIDENT_PAGE_SIZE
+      || record.dataOff + record.validBytes > residentPageRecordTableOffset(sab)
     ) {
       continue;
     }
     snapshots.push({
-      pageIndex,
-      bytes: new Uint8Array(u8.slice(dataOff, dataOff + validBytes)),
-      dirty,
-      dirtyStart,
-      dirtyEnd,
+      pageIndex: record.pageIndex,
+      bytes: new Uint8Array(u8.slice(record.dataOff, record.dataOff + record.validBytes)),
+      dirty: dirty !== 0,
+      dirtyStart: record.dirtyStart,
+      dirtyEnd: record.dirtyEnd,
     });
   }
   return snapshots;
