@@ -1,4 +1,4 @@
-import type { KernelWorkerBackingSource } from "./fs-state.js";
+import type { KernelWorkerBackingSource } from "./backing-source.js";
 
 type NodeFsSync = Pick<typeof import("node:fs"), "closeSync" | "openSync" | "readSync" | "statSync">;
 

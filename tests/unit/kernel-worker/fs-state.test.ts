@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { expect, test } from "vite-plus/test";
 import type { KernelExports } from "../../../src/abi.js";
 import { DATA_REGION_OFFSET, publishInode, readInodeRecord } from "../../../src/fs/sab-page-cache.js";
+import { createSha256VerifiedBackingSource } from "../../../src/kernel-worker/backing-source.js";
 import { createKernelWorkerFsState } from "../../../src/kernel-worker/fs-state.js";
 import { createNodeHostFileBackingSource } from "../../../src/kernel-worker/host-file-backing-source.js";
 
@@ -599,6 +600,37 @@ test("kernel-worker reads host-file backed snapshot ranges without whole-file ma
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("kernel-worker reads content-addressed backing sources after digest verification", async () => {
+  const { fsState } = makeFsState();
+  const source = encoder.encode("prefix:artifact-bytes:suffix");
+  const backingExtent = {
+    sourceIdentity: "sha256:8cdcc8c061d35ba62f2629549a178f433a8d7a38e6beaaafd912cad355e0d775",
+    digest: "sha256:8cdcc8c061d35ba62f2629549a178f433a8d7a38e6beaaafd912cad355e0d775",
+    offset: "prefix:".length,
+    length: "artifact-bytes".length,
+  };
+
+  fsState.loadFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "file", path: "/lib/runtime.bin", size: backingExtent.length, mode: 0o644, backingExtent },
+  ]);
+  fsState.registerBackingSourceObject(
+    backingExtent.sourceIdentity,
+    await createSha256VerifiedBackingSource(source, backingExtent.digest),
+  );
+
+  const ino = fsState.resolvePath("/lib/runtime.bin");
+  expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 9, 5) ?? new Uint8Array()))
+    .toBe("bytes");
+  expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("artifact-bytes");
+});
+
+test("kernel-worker rejects content-addressed backing sources with mismatched digests", async () => {
+  await expect(
+    createSha256VerifiedBackingSource(encoder.encode("artifact-bytes"), "sha256:".padEnd(71, "0")),
+  ).rejects.toThrow("backing source digest mismatch");
 });
 
 test("kernel-worker partial write to source-backed snapshot file preserves existing source bytes", () => {

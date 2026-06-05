@@ -52,6 +52,7 @@ function makeDeps(posted: KernelWorkerOutbound[]) {
     loadFsSnapshot: vi.fn(),
     registerProcess: vi.fn(async () => state),
     registerHostFileBackingSource: vi.fn(async () => {}),
+    registerContentAddressedBackingSource: vi.fn(async () => {}),
     unregisterProcess: vi.fn(),
     processFs: vi.fn(() => ({
       kernelState: state,
@@ -195,6 +196,29 @@ test("message handler registers host-file backing sources", async () => {
     {
       type: "fs-backing-source-registered",
       requestId: 29,
+    },
+  ]);
+});
+
+test("message handler registers content-addressed backing sources", async () => {
+  const posted: KernelWorkerOutbound[] = [];
+  const deps = makeDeps(posted);
+  const data = new Uint8Array([1, 2, 3]);
+  const handleMessage = createKernelWorkerMessageHandler(deps);
+
+  await handleMessage({
+    type: "register-fs-content-addressed-backing-source",
+    requestId: 31,
+    sourceIdentity: "sha256:source",
+    digest: "sha256:digest",
+    data,
+  });
+
+  expect(deps.registerContentAddressedBackingSource).toHaveBeenCalledWith("sha256:source", "sha256:digest", data);
+  expect(posted).toEqual([
+    {
+      type: "fs-backing-source-registered",
+      requestId: 31,
     },
   ]);
 });

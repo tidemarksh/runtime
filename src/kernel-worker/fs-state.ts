@@ -19,6 +19,11 @@ import {
   scratchBaseFor,
   writeScratchFor,
 } from "./common.js";
+import {
+  ChunkedBackingSource,
+  Uint8ArrayBackingSource,
+  type KernelWorkerBackingSource,
+} from "./backing-source.js";
 import { createKernelWorkerFsSnapshotHelpers } from "./fs-state/snapshot.js";
 
 export const KERNEL_WORKER_FS_STATE_OWNERSHIP = "transitional-runtime-owner" as const;
@@ -41,94 +46,6 @@ interface KernelWorkerFsStateDeps {
     options?: { size?: number },
   ): void;
   upsertSymlinkSeed(path: string, target: Uint8Array, mode?: number): void;
-}
-
-export interface KernelWorkerBackingSource {
-  byteLength: number;
-  readRange(offset: number, length: number): Uint8Array | null;
-}
-
-class Uint8ArrayBackingSource implements KernelWorkerBackingSource {
-  constructor(private readonly data: Uint8Array) {}
-
-  get byteLength(): number {
-    return this.data.byteLength;
-  }
-
-  readRange(offset: number, length: number): Uint8Array | null {
-    if (
-      !Number.isInteger(offset)
-      || !Number.isInteger(length)
-      || offset < 0
-      || length < 0
-      || offset + length > this.data.byteLength
-    ) {
-      return null;
-    }
-    return this.data.subarray(offset, offset + length);
-  }
-}
-
-class ChunkedBackingSource implements KernelWorkerBackingSource {
-  private readonly chunks = new Map<number, Uint8Array>();
-
-  constructor(readonly byteLength: number) {
-    if (!Number.isInteger(byteLength) || byteLength < 0) {
-      throw new RangeError(`invalid backing source byte length: ${byteLength}`);
-    }
-  }
-
-  putRange(offset: number, data: Uint8Array): void {
-    if (
-      !Number.isInteger(offset)
-      || offset < 0
-      || offset + data.byteLength > this.byteLength
-    ) {
-      throw new RangeError(`invalid backing source range: offset=${offset} length=${data.byteLength}`);
-    }
-    this.chunks.set(offset, data);
-  }
-
-  readRange(offset: number, length: number): Uint8Array | null {
-    if (
-      !Number.isInteger(offset)
-      || !Number.isInteger(length)
-      || offset < 0
-      || length < 0
-      || offset + length > this.byteLength
-    ) {
-      return null;
-    }
-    if (length === 0) {
-      return new Uint8Array();
-    }
-    const direct = this.chunks.get(offset);
-    if (direct && direct.byteLength >= length) {
-      return direct.subarray(0, length);
-    }
-
-    const out = new Uint8Array(length);
-    let copied = 0;
-    const ordered = [...this.chunks.entries()].sort(([left], [right]) => left - right);
-    for (const [chunkOffset, chunk] of ordered) {
-      const targetOffset = offset + copied;
-      if (chunkOffset > targetOffset) {
-        break;
-      }
-      const chunkEnd = chunkOffset + chunk.byteLength;
-      if (chunkEnd <= targetOffset) {
-        continue;
-      }
-      const startInChunk = targetOffset - chunkOffset;
-      const copyLength = Math.min(length - copied, chunk.byteLength - startInChunk);
-      out.set(chunk.subarray(startInChunk, startInChunk + copyLength), copied);
-      copied += copyLength;
-      if (copied === length) {
-        return out;
-      }
-    }
-    return null;
-  }
 }
 
 export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {

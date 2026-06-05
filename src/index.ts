@@ -418,6 +418,25 @@ export class Runtime {
     });
   }
 
+  async registerFsContentAddressedBackingSource(
+    sourceIdentity: string,
+    digest: string,
+    data: Uint8Array,
+  ): Promise<void> {
+    const ownedData = data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
+      ? data
+      : new Uint8Array(data);
+    const transfer = ownedData.buffer instanceof ArrayBuffer
+      ? [ownedData.buffer]
+      : [];
+    await this.sendKernelRequest<Extract<KernelWorkerOutbound, { type: "fs-backing-source-registered" }>>({
+      type: "register-fs-content-addressed-backing-source",
+      sourceIdentity,
+      digest,
+      data: ownedData,
+    }, transfer);
+  }
+
   async writeFile(path: string, data: Uint8Array, mode?: number): Promise<void> {
     await this.sendKernelRequest<Extract<KernelWorkerOutbound, { type: "file-written" }>>({
       type: "write-file",

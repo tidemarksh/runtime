@@ -46,6 +46,7 @@ import { createKernelWorkerPrimitives } from "./kernel-worker/primitives.js";
 import { createKernelWorkerSharedStateSync } from "./kernel-worker/shared-state-sync.js";
 import { createKernelWorkerProcessMemfsSync } from "./kernel-worker/fs-state/process-memfs.js";
 import { createKernelWorkerSocketStateBridge } from "./kernel-worker/shared-state-sync/socket-state.js";
+import { createSha256VerifiedBackingSource } from "./kernel-worker/backing-source.js";
 import { createNodeHostFileBackingSource } from "./kernel-worker/host-file-backing-source.js";
 
 let exports: KernelExports;
@@ -395,6 +396,12 @@ const handleKernelWorkerMessage = createKernelWorkerMessageHandler({
     registerBackingSourceObject(
       sourceIdentity,
       await createNodeHostFileBackingSource(hostPath, byteLength),
+    );
+  },
+  registerContentAddressedBackingSource: async (sourceIdentity, digest, data) => {
+    registerBackingSourceObject(
+      sourceIdentity,
+      await createSha256VerifiedBackingSource(data, digest),
     );
   },
   registerProcess,

@@ -288,6 +288,12 @@ export type KernelWorkerRequest =
       byteLength: number;
     }
   | {
+      type: "register-fs-content-addressed-backing-source";
+      sourceIdentity: string;
+      digest: string;
+      data: Uint8Array;
+    }
+  | {
       type: "register-process";
       pid: number;
       vmPtr: number;
