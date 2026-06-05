@@ -153,6 +153,7 @@ interface KernelWorkerMessageHandlerDeps {
     dataOff: number;
     size: number;
     mode: number;
+    backingBytes?: number;
     residentPages?: number;
   } | null;
   debugEvictPageCachePath(path: string, pageIndex: number): {

@@ -433,6 +433,7 @@ const handleKernelWorkerMessage = createKernelWorkerMessageHandler({
     if (ino === 0) {
       return null;
     }
+    const backingBytes = readBackingFileByInode(ino)?.length;
     const record = readInodeRecord(sabPageCache, ino);
     if (!record) {
       return {
@@ -441,6 +442,7 @@ const handleKernelWorkerMessage = createKernelWorkerMessageHandler({
         dataOff: 0,
         size: Number(exports.memfs_file_size(ino)),
         mode: exports.memfs_inode_mode(ino),
+        backingBytes,
         residentPages: debugResidentPageCountForInode(sabPageCache, ino),
       };
     }
@@ -450,6 +452,7 @@ const handleKernelWorkerMessage = createKernelWorkerMessageHandler({
       dataOff: record.dataOff,
       size: record.size,
       mode: record.mode,
+      backingBytes,
       residentPages: debugResidentPageCountForInode(sabPageCache, ino),
     };
   },

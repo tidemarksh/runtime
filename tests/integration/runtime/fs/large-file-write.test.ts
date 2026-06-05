@@ -282,6 +282,10 @@ test("resident write invalidation witness: guest rewrite clears resident pages a
     const after = await runtime.debugPageCachePath(largeFilePath);
     expect(after?.dataOff).toBe(0);
     expect(after?.residentPages ?? 0).toBe(0);
+    expect(after?.backingBytes).toBe(expected.length);
+    const evictedAfterWrite = await runtime.debugEvictPageCachePath(largeFilePath, 0);
+    expect(evictedAfterWrite?.status).toBe("not-found");
+    expect(evictedAfterWrite?.residentPages ?? 0).toBe(0);
     expect(await runtime.readFile(largeFilePath)).toEqual(expected);
   } finally {
     runtime.destroy();
