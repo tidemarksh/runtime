@@ -9,8 +9,12 @@ import {
   readKernelWasm,
 } from "../../../support/runtime-workload.js";
 import { buildSnapshotFromSources } from "../../../support/snapshot-sources.js";
+import type { FsSnapshotEntry } from "../../../../src/fs/types.js";
 
 type RuntimeInstance = Awaited<ReturnType<typeof Runtime.create>>;
+type SnapshotFsRuntime = RuntimeInstance & {
+  sendKernelRequest<T>(message: { type: "snapshot-fs"; includeData?: boolean }): Promise<T>;
+};
 
 const hostRiscvGcc = process.env.TIDEMARK_TEST_HOST_RISCV_GCC ?? "riscv64-linux-gnu-gcc";
 const largeFileBytes = Number(process.env.TIDEMARK_TEST_LARGE_FILE_WRITE_BYTES ?? 8 * 1024 * 1024);
@@ -242,6 +246,14 @@ async function spawnWithOutputAndStats(
   }
 }
 
+async function snapshotRuntimeFs(runtime: RuntimeInstance, includeData: boolean): Promise<FsSnapshotEntry[]> {
+  const response = await (runtime as SnapshotFsRuntime).sendKernelRequest<{
+    type: "snapshot-fs-result";
+    entries: FsSnapshotEntry[];
+  }>({ type: "snapshot-fs", includeData });
+  return response.entries;
+}
+
 test("resident write invalidation witness: guest rewrite clears resident pages and exports backing data", async () => {
   const wasmBytes = readKernelWasm();
   if (!wasmBytes) {
@@ -287,6 +299,79 @@ test("resident write invalidation witness: guest rewrite clears resident pages a
     expect(evictedAfterWrite?.status).toBe("not-found");
     expect(evictedAfterWrite?.residentPages ?? 0).toBe(0);
     expect(await runtime.readFile(largeFilePath)).toEqual(expected);
+  } finally {
+    runtime.destroy();
+  }
+}, 90_000);
+
+test("source-backed guest rewrite export witness: snapshot clears stale backing extent", async () => {
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return;
+  }
+  const probeBytes = buildResidentRewriteProbe();
+  if (!probeBytes) {
+    return;
+  }
+  const initial = new TextEncoder().encode("seed-original-resident-bytes");
+  const expected = new TextEncoder().encode("updated-resident-write");
+  const prefix = new TextEncoder().encode("source-prefix:");
+  const suffix = new TextEncoder().encode(":source-suffix");
+  const source = new Uint8Array(prefix.length + initial.length + suffix.length);
+  source.set(prefix, 0);
+  source.set(initial, prefix.length);
+  source.set(suffix, prefix.length + initial.length);
+  const sourceIdentity = "artifact:runtime-large-file-write.bin";
+
+  const runtime = await Runtime.create({
+    wasmBytes,
+    guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
+    maxProcessMemoryPages: 32768,
+  });
+  try {
+    await runtime.applyFsSnapshot([
+      { kind: "dir", path: "/", mode: 0o755 },
+      { kind: "dir", path: "/work", mode: 0o755 },
+      {
+        kind: "file",
+        path: largeFilePath,
+        size: initial.length,
+        mode: 0o644,
+        backingExtent: {
+          sourceIdentity,
+          offset: prefix.length,
+          length: initial.length,
+        },
+      },
+    ]);
+    await runtime.registerFsBackingSource(sourceIdentity, source);
+    const before = (await snapshotRuntimeFs(runtime, false)).find((entry) => (
+      entry.kind === "file" && entry.path === largeFilePath
+    ));
+    expect(before?.kind === "file" ? before.backingExtent : undefined)
+      .toEqual({ sourceIdentity, offset: prefix.length, length: initial.length });
+
+    const result = await spawnWithOutputAndStats(
+      runtime,
+      probeBytes,
+      ["/work/resident-rewrite", largeFilePath],
+      ["LC_ALL=C", "LANG=C"],
+      60_000,
+      { cwd: "/", stdin: "closed" },
+    );
+    expect(result.exitCode, result.output + (result.debugInfo ? `\n${result.debugInfo}` : "")).toBe(0);
+    expect(result.output).toContain(`resident-rewrite bytes=${expected.length}`);
+    expect(await runtime.readFile(largeFilePath)).toEqual(expected);
+
+    const metadataSnapshot = (await snapshotRuntimeFs(runtime, false)).find((entry) => (
+      entry.kind === "file" && entry.path === largeFilePath
+    ));
+    expect(metadataSnapshot?.kind === "file" ? metadataSnapshot.backingExtent : undefined).toBeUndefined();
+    const dataSnapshot = (await snapshotRuntimeFs(runtime, true)).find((entry) => (
+      entry.kind === "file" && entry.path === largeFilePath
+    ));
+    expect(dataSnapshot?.kind === "file" ? dataSnapshot.data : undefined).toEqual(expected);
+    expect(dataSnapshot?.kind === "file" ? dataSnapshot.backingExtent : undefined).toBeUndefined();
   } finally {
     runtime.destroy();
   }
