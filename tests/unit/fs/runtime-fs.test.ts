@@ -386,6 +386,10 @@ class FakeKernelWorker {
         this.backingSources.set(message.sourceIdentity, new Uint8Array(message.data));
         this.emit({ type: "fs-backing-source-registered", requestId: message.requestId });
         break;
+      case "register-fs-backing-source-range":
+        this.backingSources.set(message.sourceIdentity, new Uint8Array(message.data));
+        this.emit({ type: "fs-backing-source-registered", requestId: message.requestId });
+        break;
     }
   }
 }
@@ -536,6 +540,37 @@ test("Runtime reads metadata-only snapshot files from registered backing source"
   await expect(runtime.fs.readFile("/toolchain/archive.bin"))
     .resolves.toEqual(new TextEncoder().encode("artifact-bytes"));
   expect(createdWorkers[0].postedMessages.some((msg) => msg.type === "register-fs-backing-source")).toBe(true);
+
+  runtime.destroy();
+});
+
+test("Runtime registers prefetched remote backing source ranges through kernel-worker range source", async () => {
+  const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
+  const full = new TextEncoder().encode("prefix:artifact-bytes:suffix");
+  const fetch = vi.fn(async () => ({
+    ok: true,
+    status: 200,
+    arrayBuffer: async () => full.buffer.slice(full.byteOffset, full.byteOffset + full.byteLength),
+  }));
+
+  await runtime.registerFsRemoteBackingSourceRange(
+    "remote:toolchain/archive.bin",
+    full.length,
+    "https://example.test/archive.bin",
+    "prefix:".length,
+    "artifact-bytes".length,
+    { fetch },
+  );
+
+  const message = createdWorkers[0].postedMessages.find((msg) => msg.type === "register-fs-backing-source-range");
+  expect(message).toMatchObject({
+    type: "register-fs-backing-source-range",
+    sourceIdentity: "remote:toolchain/archive.bin",
+    byteLength: full.length,
+    offset: "prefix:".length,
+  });
+  expect(message?.type === "register-fs-backing-source-range" ? message.data : undefined)
+    .toEqual(new TextEncoder().encode("artifact-bytes"));
 
   runtime.destroy();
 });

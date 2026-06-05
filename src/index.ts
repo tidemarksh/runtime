@@ -37,6 +37,10 @@ import {
   normalizeGuestMemoryPolicyLimitBytesWithMinimum,
   type GuestMemoryPolicyLimitInput,
 } from "./worker/memory-policy.js";
+import {
+  fetchRemoteBackingSourceRange,
+  type RemoteBackingFetch,
+} from "./kernel-worker/remote-backing-source.js";
 
 export interface RuntimeOptions {
   wasmBytes: BufferSource;
@@ -403,6 +407,18 @@ export class Runtime {
       offset,
       data: ownedData,
     }, transfer);
+  }
+
+  async registerFsRemoteBackingSourceRange(
+    sourceIdentity: string,
+    byteLength: number,
+    url: string,
+    offset: number,
+    length: number,
+    options: { fetch?: RemoteBackingFetch } = {},
+  ): Promise<void> {
+    const range = await fetchRemoteBackingSourceRange(url, byteLength, offset, length, options.fetch);
+    await this.registerFsBackingSourceRange(sourceIdentity, range.byteLength, range.offset, range.data);
   }
 
   async registerFsHostFileBackingSource(
