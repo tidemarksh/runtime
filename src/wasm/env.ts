@@ -15,6 +15,20 @@ export interface KernelEnvOptions {
   writeFileDataByInode?: (ino: number, offset: number, data: Uint8Array) => number;
 }
 
+function copyBackingRead(
+  memory: WebAssembly.Memory,
+  dstPtr: number,
+  dstLen: number,
+  backing: Uint8Array | null | undefined,
+): bigint {
+  if (!backing || backing.length === 0) {
+    return -2n;
+  }
+  const readLen = Math.min(backing.length, dstLen);
+  new Uint8Array(memory.buffer, dstPtr, readLen).set(backing.subarray(0, readLen));
+  return BigInt(readLen);
+}
+
 export function createKernelEnv(
   memory: WebAssembly.Memory,
   options: KernelEnvOptions = {},
@@ -49,34 +63,19 @@ export function createKernelEnv(
       }
       if (!sabPageCache) {
         const backing = readFileDataByInode?.(ino, offsetNumber, dstLen);
-        if (!backing) {
-          return -2n;
-        }
-        const readLen = Math.min(backing.length, dstLen);
-        new Uint8Array(memory.buffer, dstPtr, readLen).set(backing.subarray(0, readLen));
-        return BigInt(readLen);
+        return copyBackingRead(memory, dstPtr, dstLen, backing);
       }
       const meta = readInodeMeta(sabPageCache, ino);
       if (!meta) {
         const backing = readFileDataByInode?.(ino, offsetNumber, dstLen);
-        if (!backing) {
-          return -2n;
-        }
-        const readLen = Math.min(backing.length, dstLen);
-        new Uint8Array(memory.buffer, dstPtr, readLen).set(backing.subarray(0, readLen));
-        return BigInt(readLen);
+        return copyBackingRead(memory, dstPtr, dstLen, backing);
       }
       if (offsetNumber >= meta.size) {
         return 0n;
       }
       if (meta.dataOff === 0 && meta.size > 0) {
         const backing = readFileDataByInode?.(ino, offsetNumber, dstLen);
-        if (!backing) {
-          return -2n;
-        }
-        const readLen = Math.min(backing.length, dstLen);
-        new Uint8Array(memory.buffer, dstPtr, readLen).set(backing.subarray(0, readLen));
-        return BigInt(readLen);
+        return copyBackingRead(memory, dstPtr, dstLen, backing);
       }
       const readLen = Math.min(dstLen, meta.size - offsetNumber);
       const source = new Uint8Array(sabPageCache, meta.dataOff + offsetNumber, readLen);

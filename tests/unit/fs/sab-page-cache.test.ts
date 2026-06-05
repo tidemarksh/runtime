@@ -90,6 +90,26 @@ test("page-cache read can use kernel-worker backing data when resident bytes are
   expect(Array.from(new Uint8Array(memory.buffer, 32, 3))).toEqual(Array.from(backing.subarray(2, 5)));
 });
 
+test("page-cache backing read reports miss when backing returns no bytes before eof", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 128);
+  const memory = new WebAssembly.Memory({ initial: 1 });
+
+  publishInode(sab, 2, {
+    mode: 0o100644,
+    size: 6,
+    parentIno: 1,
+    name: new TextEncoder().encode("external"),
+    nextSibling: 0,
+  }, null);
+
+  const env = createKernelEnv(memory, {
+    sabPageCache: sab,
+    readFileDataByInode: () => new Uint8Array(),
+  });
+
+  expect(env.tidemark_page_cache_read(2, 2n, 32, 3)).toBe(-2n);
+});
+
 test("page-cache zero-length read on kernel-worker backing data returns zero", () => {
   const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 128);
   const memory = new WebAssembly.Memory({ initial: 1 });
