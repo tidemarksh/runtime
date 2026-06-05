@@ -69,6 +69,68 @@ class Uint8ArrayBackingSource implements KernelWorkerBackingSource {
   }
 }
 
+class ChunkedBackingSource implements KernelWorkerBackingSource {
+  private readonly chunks = new Map<number, Uint8Array>();
+
+  constructor(readonly byteLength: number) {
+    if (!Number.isInteger(byteLength) || byteLength < 0) {
+      throw new RangeError(`invalid backing source byte length: ${byteLength}`);
+    }
+  }
+
+  putRange(offset: number, data: Uint8Array): void {
+    if (
+      !Number.isInteger(offset)
+      || offset < 0
+      || offset + data.byteLength > this.byteLength
+    ) {
+      throw new RangeError(`invalid backing source range: offset=${offset} length=${data.byteLength}`);
+    }
+    this.chunks.set(offset, data);
+  }
+
+  readRange(offset: number, length: number): Uint8Array | null {
+    if (
+      !Number.isInteger(offset)
+      || !Number.isInteger(length)
+      || offset < 0
+      || length < 0
+      || offset + length > this.byteLength
+    ) {
+      return null;
+    }
+    if (length === 0) {
+      return new Uint8Array();
+    }
+    const direct = this.chunks.get(offset);
+    if (direct && direct.byteLength >= length) {
+      return direct.subarray(0, length);
+    }
+
+    const out = new Uint8Array(length);
+    let copied = 0;
+    const ordered = [...this.chunks.entries()].sort(([left], [right]) => left - right);
+    for (const [chunkOffset, chunk] of ordered) {
+      const targetOffset = offset + copied;
+      if (chunkOffset > targetOffset) {
+        break;
+      }
+      const chunkEnd = chunkOffset + chunk.byteLength;
+      if (chunkEnd <= targetOffset) {
+        continue;
+      }
+      const startInChunk = targetOffset - chunkOffset;
+      const copyLength = Math.min(length - copied, chunk.byteLength - startInChunk);
+      out.set(chunk.subarray(startInChunk, startInChunk + copyLength), copied);
+      copied += copyLength;
+      if (copied === length) {
+        return out;
+      }
+    }
+    return null;
+  }
+}
+
 export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   const MEMFS_S_IFDIR = 0o040000;
   const backingStore = new MemoryFileBackingStore();
@@ -95,6 +157,23 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       throw new Error("backing source identity must not be empty");
     }
     backingSourcesByIdentity.set(sourceIdentity, new Uint8ArrayBackingSource(data));
+  }
+
+  function registerBackingSourceRange(
+    sourceIdentity: string,
+    byteLength: number,
+    offset: number,
+    data: Uint8Array,
+  ): void {
+    if (sourceIdentity.length === 0) {
+      throw new Error("backing source identity must not be empty");
+    }
+    const existing = backingSourcesByIdentity.get(sourceIdentity);
+    const source = existing instanceof ChunkedBackingSource && existing.byteLength === byteLength
+      ? existing
+      : new ChunkedBackingSource(byteLength);
+    source.putRange(offset, data);
+    backingSourcesByIdentity.set(sourceIdentity, source);
   }
 
   function registerSnapshotBackingExtent(ino: number, backingExtent: FsSnapshotBackingExtent | undefined): void {
@@ -884,6 +963,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     readlink,
     readdir,
     registerBackingSource,
+    registerBackingSourceRange,
     readBackingFileByInode,
     readBackingFileRangeByInode,
     writeBackingFileByInode,

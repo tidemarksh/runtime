@@ -50,6 +50,7 @@ interface KernelWorkerMessageHandlerDeps {
   snapshotCanonicalFs(includeData: boolean): FsSnapshotEntry[];
   loadFsSnapshot(entries: FsSnapshotEntry[]): void;
   registerBackingSource(sourceIdentity: string, data: Uint8Array): void;
+  registerBackingSourceRange(sourceIdentity: string, byteLength: number, offset: number, data: Uint8Array): void;
   registerProcess(
     pid: number,
     vmPtr: number,
@@ -230,6 +231,10 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
           break;
         case "register-fs-backing-source":
           deps.registerBackingSource(msg.sourceIdentity, msg.data);
+          deps.postResponse({ type: "fs-backing-source-registered", requestId: msg.requestId });
+          break;
+        case "register-fs-backing-source-range":
+          deps.registerBackingSourceRange(msg.sourceIdentity, msg.byteLength, msg.offset, msg.data);
           deps.postResponse({ type: "fs-backing-source-registered", requestId: msg.requestId });
           break;
         case "register-process": {

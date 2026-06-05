@@ -275,6 +275,13 @@ export type KernelWorkerRequest =
       data: Uint8Array;
     }
   | {
+      type: "register-fs-backing-source-range";
+      sourceIdentity: string;
+      byteLength: number;
+      offset: number;
+      data: Uint8Array;
+    }
+  | {
       type: "register-process";
       pid: number;
       vmPtr: number;

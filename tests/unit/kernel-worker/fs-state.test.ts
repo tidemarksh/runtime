@@ -564,6 +564,31 @@ test("kernel-worker source-backed range read does not materialize the whole file
   expect(fsState.readBackingFileByInode(ino)).toBeNull();
 });
 
+test("kernel-worker reads registered partial source ranges without full source materialization", () => {
+  const { fsState } = makeFsState();
+  const backingExtent = {
+    sourceIdentity: "artifact:runtime.bin",
+    offset: 0,
+    length: "artifact-bytes".length,
+  };
+
+  fsState.loadFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "file", path: "/lib/runtime.bin", size: backingExtent.length, mode: 0o644, backingExtent },
+  ]);
+  fsState.registerBackingSourceRange(
+    backingExtent.sourceIdentity,
+    backingExtent.length,
+    9,
+    encoder.encode("bytes"),
+  );
+
+  const ino = fsState.resolvePath("/lib/runtime.bin");
+  expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 9, 5) ?? new Uint8Array())).toBe("bytes");
+  expect(fsState.readBackingFileRangeByInode(ino, 0, backingExtent.length)).toBeNull();
+  expect(fsState.readBackingFileByInode(ino)).toBeNull();
+});
+
 test("kernel-worker snapshot export preserves source backing identity", () => {
   const { fsState } = makeFsState();
   const backingExtent = {
