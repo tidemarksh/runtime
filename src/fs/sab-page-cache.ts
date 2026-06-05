@@ -361,7 +361,11 @@ export function publishInode(
   // Seqlock: version → odd (writing)
   const currentVersion = Atomics.load(u32, base32 + (INODE_OFF_VERSION >>> 2));
   const oddVersion = (currentVersion | 1) + (currentVersion & 1 ? 1 : 0);
-  invalidateResidentPages(sab, ino);
+  const currentFileObjectId = Atomics.load(u32, base32 + (INODE_OFF_FILE_OBJECT_ID >>> 2));
+  const currentGeneration = Atomics.load(u32, base32 + (INODE_OFF_GENERATION >>> 2));
+  if (currentVersion === 0 || currentFileObjectId !== fileObjectId || currentGeneration !== generation) {
+    invalidateResidentPages(sab, ino);
+  }
   Atomics.store(u32, base32 + (INODE_OFF_VERSION >>> 2), oddVersion);
 
   // Update metadata

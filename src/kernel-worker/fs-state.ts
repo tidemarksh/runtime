@@ -1007,13 +1007,16 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (parentIno === 0) {
       return false;
     }
-    const size = fileType === MEMFS_S_IFREG ? Number(sourceExports.memfs_file_size(ino)) : 0;
-
     let published = readInodeRecord(deps.getSabPageCache(), ino);
-    const backingMeta = backingMetaForInode(ino)
-      ?? (published && published.size === size
-        ? { fileObjectId: published.fileObjectId, generation: published.generation }
-        : undefined);
+    const hasDirtyResidentPages = hasDirtyResidentPagesForInode(deps.getSabPageCache(), ino);
+    const sourceSize = fileType === MEMFS_S_IFREG ? Number(sourceExports.memfs_file_size(ino)) : 0;
+    const size = hasDirtyResidentPages && published ? published.size : sourceSize;
+    const publishedMeta = published && (published.size === size || hasDirtyResidentPages)
+      ? { fileObjectId: published.fileObjectId, generation: published.generation }
+      : undefined;
+    const backingMeta = hasDirtyResidentPages
+      ? publishedMeta
+      : backingMetaForInode(ino) ?? publishedMeta;
     if (
       !published
       || published.mode !== mode

@@ -362,6 +362,54 @@ test("page-cache write publishes dirty resident data without updating backing da
   expect(env.tidemark_page_cache_read(2, 40n, 512, 1)).toBe(0n);
 });
 
+test("publishInode preserves dirty residents across metadata-only updates", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 8192);
+  const initial = new TextEncoder().encode("abcdef");
+  const dirty = new TextEncoder().encode("DIRTY");
+
+  publishInode(sab, 2, {
+    mode: 0o100644,
+    size: initial.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("old-name"),
+    nextSibling: 0,
+    fileObjectId: 2,
+    generation: 1,
+  });
+  expect(publishResidentPage(sab, 2, 0, initial)).toBe(true);
+  expect(writeDirtyResidentFileData(sab, 2, 1, dirty)).toBe(dirty.length);
+  expect(debugResidentPageCountForInode(sab, 2)).toBe(1);
+  const dirtyRecord = readInodeRecord(sab, 2);
+  expect(dirtyRecord?.generation).toBeGreaterThan(1);
+
+  publishInode(sab, 2, {
+    mode: 0o100600,
+    size: initial.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("new-name"),
+    nextSibling: 0,
+    fileObjectId: dirtyRecord?.fileObjectId,
+    generation: dirtyRecord?.generation,
+  });
+
+  expect(debugResidentPageCountForInode(sab, 2)).toBe(1);
+  expect(readResidentFileData(sab, 2, 0, initial.length)).toEqual(
+    new TextEncoder().encode("aDIRTY"),
+  );
+
+  publishInode(sab, 2, {
+    mode: 0o100600,
+    size: initial.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("new-name"),
+    nextSibling: 0,
+    fileObjectId: 2,
+    generation: (dirtyRecord?.generation ?? 1) + 1,
+  });
+
+  expect(debugResidentPageCountForInode(sab, 2)).toBe(0);
+});
+
 test("page-cache supports kernel-sized high inode numbers", () => {
   const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 64);
   const ino = MAX_INODES - 1;

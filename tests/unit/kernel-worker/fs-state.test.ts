@@ -1121,6 +1121,56 @@ test("kernel-worker dirty write uses process-local truncated inode metadata", ()
   expect(readResidentFileData(sabPageCache, ino, 0, data.length)).toEqual(data);
 });
 
+test("kernel-worker metadata sync preserves dirty resident file data", () => {
+  const { canonicalExports, memberExports, fsState, sabPageCache } = makeFsState();
+
+  const workName = encoder.encode("work");
+  const workPtr = memberExports.kernel_heap_ptr() + 0x12000;
+  new Uint8Array(memberExports.memory.buffer).set(workName, workPtr);
+  const workIno = memberExports.memfs_ensure_dir(1, workPtr, workName.length, 0o755);
+  expect(workIno).toBeGreaterThan(1);
+  publishInode(sabPageCache, workIno, {
+    mode: 0o040755,
+    size: 0,
+    parentIno: 1,
+    name: workName,
+    nextSibling: 0,
+  });
+
+  const name = encoder.encode("out.txt");
+  const ptr = memberExports.kernel_heap_ptr() + 0x13000;
+  new Uint8Array(memberExports.memory.buffer).set(name, ptr);
+  const ino = memberExports.memfs_create_file(workIno, ptr, name.length);
+  expect(ino).toBeGreaterThan(1);
+  publishInode(sabPageCache, ino, {
+    mode: 0o100644,
+    size: 0,
+    parentIno: workIno,
+    name,
+    nextSibling: 0,
+  });
+
+  const dirty = encoder.encode("dirty-after-metadata\n");
+  expect(fsState.writeDirtyResidentFileByInode(ino, 0, dirty, memberExports)).toBe(dirty.length);
+  const dirtyRecord = readInodeRecord(sabPageCache, ino);
+  expect(dirtyRecord?.generation).toBeGreaterThan(1);
+  expect(readResidentFileData(sabPageCache, ino, 0, dirty.length)).toEqual(dirty);
+
+  expect(Number(memberExports.memfs_set_mode(ino, 0o600))).toBe(0);
+  expect(fsState.syncMetadataMutation(memberExports, "/work/out.txt")).toBe(true);
+
+  const after = readInodeRecord(sabPageCache, ino);
+  expect(after?.mode).toBe(0o100600);
+  expect(after?.generation).toBe(dirtyRecord?.generation);
+  expect(readResidentFileData(sabPageCache, ino, 0, dirty.length)).toEqual(dirty);
+  expectBytesEqual(fsState.readFile("/work/out.txt"), dirty);
+  const exported = fsState.snapshotCanonicalFs(true).find((entry) => (
+    entry.kind === "file" && entry.path === "/work/out.txt"
+  ));
+  expect(exported?.kind === "file" ? exported.data : undefined).toEqual(dirty);
+  expect(canonicalExports.fileIno("/work/out.txt")).toBe(ino);
+});
+
 test("kernel-worker syncMetadataMutation removes absolute-path entries without full fanout", () => {
   const { canonicalExports, memberExports, fsState } = makeFsState();
 
