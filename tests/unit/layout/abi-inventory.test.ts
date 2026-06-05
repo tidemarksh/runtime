@@ -255,6 +255,13 @@ const inventory: readonly InventoryEntry[] = [
   },
   {
     module: "sab-page-cache",
+    name: "DEFAULT_RESIDENT_PAGE_SIZE",
+    classification: "explicit-gap",
+    protectedBy: [sabPageCacheTest],
+    reason: "Runtime-owned resident page size for the SAB page-cache protocol; page-cache tests protect resident fill and fixed-frame reuse behavior.",
+  },
+  {
+    module: "sab-page-cache",
     name: "OFF_DATA_USED",
     classification: "explicit-gap",
     protectedBy: [sabPageCacheTest],
@@ -273,6 +280,13 @@ const inventory: readonly InventoryEntry[] = [
     classification: "explicit-gap",
     protectedBy: [sabPageCacheTest],
     reason: "Runtime-owned SAB page-cache directory epoch field offset; no kernel ABI export exists for this cache protocol.",
+  },
+  {
+    module: "sab-page-cache",
+    name: "OFF_RESIDENT_CLOCK",
+    classification: "explicit-gap",
+    protectedBy: [sabPageCacheTest],
+    reason: "Runtime-owned SAB page-cache resident LRU clock field; page-cache tests protect bounded resident frame reuse.",
   },
   {
     module: "sab-page-cache",
@@ -329,6 +343,20 @@ const inventory: readonly InventoryEntry[] = [
     classification: "explicit-gap",
     protectedBy: [sabPageCacheTest],
     reason: "Runtime-owned SAB page-cache inode sibling field; page-cache tests protect inode record publication.",
+  },
+  {
+    module: "sab-page-cache",
+    name: "INODE_OFF_FILE_OBJECT_ID",
+    classification: "explicit-gap",
+    protectedBy: [sabPageCacheTest],
+    reason: "Runtime-owned SAB page-cache file-object identity field; page-cache tests protect generation-validated resident records.",
+  },
+  {
+    module: "sab-page-cache",
+    name: "INODE_OFF_GENERATION",
+    classification: "explicit-gap",
+    protectedBy: [sabPageCacheTest],
+    reason: "Runtime-owned SAB page-cache file-object generation field; page-cache tests protect stale resident record rejection.",
   },
 
   { module: "socket", name: "SOCKET_STATE_CONNECTED", classification: "abi-test-covered", protectedBy: [kernelObjectsTest] },

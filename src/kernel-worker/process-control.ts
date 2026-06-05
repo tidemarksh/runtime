@@ -23,7 +23,7 @@ import {
   FS_RING_TOTAL_BYTES,
   fsRingRequestEntryOffset,
 } from "../layout/fs-ring.js";
-import { resetPageCache } from "../fs/sab-page-cache.js";
+import { DEFAULT_RESIDENT_PAGE_SIZE, resetPageCache } from "../fs/sab-page-cache.js";
 import {
   restoreThreadWorkerPrepareMemory,
   snapshotThreadWorkerPrepareMemory,
@@ -400,13 +400,23 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     if (!request) {
       return;
     }
-    if (deps.readBackingFileRangeByInode(request.ino, request.offset, request.length) !== null) {
+    const alignedOffset = Math.floor(request.offset / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE;
+    const requestedEnd = request.offset + request.length;
+    const alignedEnd = Math.min(
+      request.expectedSize,
+      Math.ceil(requestedEnd / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE,
+    );
+    const alignedLength = Math.max(0, alignedEnd - alignedOffset);
+    if (alignedLength <= 0) {
+      return;
+    }
+    if (deps.readBackingFileRangeByInode(request.ino, alignedOffset, alignedLength) !== null) {
       return;
     }
     await deps.ensureBackingSourceRangeForInode?.(
       request.ino,
-      request.offset,
-      request.length,
+      alignedOffset,
+      alignedLength,
       request.expectedSize,
     );
   }

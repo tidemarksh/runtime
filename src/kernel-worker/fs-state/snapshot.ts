@@ -1,5 +1,6 @@
 import type { KernelExports } from "../../abi.js";
 import type { FsSnapshotEntry } from "../../fs/types.js";
+import type { FileBackingStat } from "../../fs/sab-page-cache.js";
 import { publishInode, readFileData, readInodeMeta, resetPageCache } from "../../fs/sab-page-cache.js";
 import {
   ensureMemoryCapacityFor,
@@ -23,7 +24,7 @@ interface KernelWorkerFsSnapshotDeps {
   readFile(path: string): Uint8Array;
   writeFile(path: string, data: Uint8Array, mode?: number, fanout?: boolean): void;
   registerSnapshotBackingExtent(ino: number, backingExtent: FsSnapshotEntry["backingExtent"] | undefined): void;
-  publishFileBacking(ino: number, data: Uint8Array): void;
+  publishFileBacking(ino: number, data: Uint8Array): FileBackingStat;
   readBackingFileByInode(ino: number): Uint8Array | null;
   readBackingFileRangeByInode(ino: number, offset: number, length: number): Uint8Array | null;
   mkdir(path: string, mode?: number, fanout?: boolean): void;
@@ -97,9 +98,8 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
       mode: perms,
       backingExtent: backingExtent ? { ...backingExtent } : undefined,
     });
-    if (data !== null) {
-      deps.publishFileBacking(ino, data);
-    } else {
+    const backingStat = data !== null ? deps.publishFileBacking(ino, data) : undefined;
+    if (data === null) {
       deps.registerSnapshotBackingExtent(ino, backingExtent);
     }
     publishInode(deps.getSabPageCache(), ino, {
@@ -108,6 +108,8 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
       parentIno,
       name: nameBytes,
       nextSibling: 0,
+      fileObjectId: backingStat?.fileObjectId,
+      generation: backingStat?.generation,
     }, null);
   }
 
@@ -293,16 +295,18 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
         : entry.kind === "symlink"
           ? 0o120000
           : 0o100000;
+      const backingStat = entry.kind === "file" && entry.data !== undefined
+        ? deps.publishFileBacking(entry.ino, entry.data)
+        : undefined;
       publishInode(deps.getSabPageCache(), entry.ino, {
         mode: fileType | perms,
         size: entry.size ?? entry.data?.length ?? 0,
         parentIno,
         name: deps.encoder.encode(name),
         nextSibling: 0,
+        fileObjectId: backingStat?.fileObjectId,
+        generation: backingStat?.generation,
       }, null);
-      if (entry.kind === "file" && entry.data !== undefined) {
-        deps.publishFileBacking(entry.ino, entry.data);
-      }
     }
   }
 

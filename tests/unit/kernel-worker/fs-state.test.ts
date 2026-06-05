@@ -472,7 +472,7 @@ test("kernel-worker loadFsSnapshot keeps provided file data page-cache-backed wh
 
 test("kernel-worker loadFsSnapshot keeps large provided file data page-cache-backed", () => {
   const { canonicalExports, fsState, sabPageCache, seedEntries } = makeFsState();
-  const data = new Uint8Array((1024 * 1024) + 17).map((_, index) => (index * 17) & 0xff);
+  const data = new Uint8Array((256 * 1024) + 17).map((_, index) => (index * 17) & 0xff);
 
   fsState.loadFsSnapshot([
     { kind: "dir", path: "/", mode: 0o755 },

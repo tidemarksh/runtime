@@ -1,4 +1,5 @@
 import type { KernelExports } from "../abi.js";
+import type { FileBackingStat } from "../fs/sab-page-cache.js";
 import type { FsSnapshotBackingExtent, FsSnapshotEntry, RuntimeStat } from "../fs/types.js";
 import {
   bumpDirEpoch,
@@ -67,18 +68,32 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   const asyncBackingSourcesByIdentity = new Map<string, AsyncBackingSource>();
   const backingExtentsByIno = new Map<number, FsSnapshotBackingExtent>();
 
-  function replaceBackingFile(ino: number, data: Uint8Array): void {
+  function replaceBackingFile(ino: number, data: Uint8Array): FileBackingStat {
     backingExtentsByIno.delete(ino);
     const fileObjectId = fileObjectIdsByIno.get(ino);
     if (fileObjectId === undefined) {
       const stat = backingStore.createFile(data);
       fileObjectIdsByIno.set(ino, stat.fileObjectId);
-      return;
+      return stat;
     }
     backingStore.truncate(fileObjectId, 0);
     if (data.length > 0) {
       backingStore.write(fileObjectId, 0, data);
     }
+    const stat = backingStore.stat(fileObjectId);
+    if (!stat) {
+      throw new Error(`backing file object disappeared: ino=${ino}`);
+    }
+    return stat;
+  }
+
+  function backingMetaForInode(ino: number): Pick<FileBackingStat, "fileObjectId" | "generation"> | undefined {
+    const fileObjectId = fileObjectIdsByIno.get(ino);
+    if (fileObjectId === undefined) {
+      return undefined;
+    }
+    const stat = backingStore.stat(fileObjectId);
+    return stat ? { fileObjectId: stat.fileObjectId, generation: stat.generation } : undefined;
   }
 
   function registerBackingSource(sourceIdentity: string, data: Uint8Array): void {
@@ -370,6 +385,8 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         parentIno: published?.parentIno ?? 0,
         name: published?.name ?? new Uint8Array(),
         nextSibling: published?.nextSibling ?? 0,
+        fileObjectId: stat.fileObjectId,
+        generation: stat.generation,
       }, null);
       return data.length;
     } catch {
@@ -410,8 +427,12 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     data: Uint8Array,
   ): void {
     const pageCache = deps.getSabPageCache();
-    replaceBackingFile(ino, data);
-    publishInode(pageCache, ino, meta, null);
+    const stat = replaceBackingFile(ino, data);
+    publishInode(pageCache, ino, {
+      ...meta,
+      fileObjectId: stat.fileObjectId,
+      generation: stat.generation,
+    }, null);
     const published = readInodeRecord(pageCache, ino);
     if (!published || published.size !== data.length) {
       throw new Error(`failed to publish inode metadata: ino=${ino} dataBytes=${data.length}`);
@@ -749,14 +770,16 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       return false;
     }
 
-    const published = readInodeRecord(deps.getSabPageCache(), ino) ?? {
-      dataOff: 0,
-      size: 0,
-      mode,
-      parentIno: 0,
-      name: new Uint8Array(),
-      nextSibling: 0,
-    };
+      const published = readInodeRecord(deps.getSabPageCache(), ino) ?? {
+        dataOff: 0,
+        size: 0,
+        mode,
+        parentIno: 0,
+        name: new Uint8Array(),
+        nextSibling: 0,
+        fileObjectId: 0,
+        generation: 0,
+      };
 
     try {
       const data = readFileByInode(sourceExports, ino);
@@ -765,7 +788,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         return false;
       }
       writeFileByInode(canonicalExports, ino, data);
-      replaceBackingFile(ino, data);
+      const stat = replaceBackingFile(ino, data);
       clearSeedBackingExtentForInode(ino);
       publishInode(deps.getSabPageCache(), ino, {
         mode,
@@ -773,6 +796,8 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         parentIno: published.parentIno,
         name: published.name,
         nextSibling: published.nextSibling,
+        fileObjectId: stat.fileObjectId,
+        generation: stat.generation,
       }, null);
 
       syncExternalFileDataIntoTarget(canonicalExports, ino, mode, data.length, published);
@@ -882,6 +907,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         parentIno,
         name: nameBytes,
         nextSibling: 0,
+        ...backingMetaForInode(ino),
       }, null);
       published = readInodeRecord(deps.getSabPageCache(), ino);
       if (!published) {

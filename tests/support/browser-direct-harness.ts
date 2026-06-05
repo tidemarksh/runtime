@@ -401,6 +401,7 @@ function createFixtureServer(config: FixtureConfigPayload) {
           url.pathname.startsWith("/env-")
           || url.pathname.startsWith("/features-")
           || url.pathname.startsWith("/scope-")
+          || /^[A-Za-z0-9._-]+\.mjs$/.test(url.pathname.slice(1))
         ) {
           const runtimePath = resolve(RUNTIME_WORKER_DIST_DIR, url.pathname.slice(1));
           if (!existsSync(runtimePath)) {

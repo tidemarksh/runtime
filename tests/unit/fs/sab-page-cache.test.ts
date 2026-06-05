@@ -6,7 +6,6 @@ import {
   MAX_INODES,
   MemoryFileBackingStore,
   publishInode,
-  ResidentSabPageCache,
   readFileData,
   readInodeMeta,
   readInodeRecord,
@@ -390,49 +389,6 @@ test("writeFileData appends in place and preserves inode metadata", () => {
     .toEqual(new Uint8Array([...initial, ...append, ...secondAppend]));
 });
 
-test("resident cache reads a backing file larger than resident capacity at arbitrary offsets", () => {
-  const pageSize = 16;
-  const residentBytes = pageSize * 2;
-  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + residentBytes);
-  const backing = new MemoryFileBackingStore();
-  const data = Uint8Array.from({ length: 96 }, (_value, index) => index);
-  const file = backing.createFile(data);
-  const cache = new ResidentSabPageCache(sab, { pageSize });
-
-  expect(file.size).toBeGreaterThan(cache.residentCapacityBytes());
-  expect(cache.readThroughCache(backing, file.fileObjectId, 0, 7))
-    .toEqual(data.slice(0, 7));
-  expect(cache.readThroughCache(backing, file.fileObjectId, 14, 10))
-    .toEqual(data.slice(14, 24));
-  expect(cache.readThroughCache(backing, file.fileObjectId, 47, 37))
-    .toEqual(data.slice(47, 84));
-});
-
-test("resident cache fills source-backed file pages without whole-file materialization", () => {
-  const pageSize = 16;
-  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + pageSize);
-  const backing = new MemoryFileBackingStore();
-  const data = Uint8Array.from({ length: 64 }, (_value, index) => 0x20 + index);
-  const calls: Array<[number, number]> = [];
-  const file = backing.createSourceFile({
-    byteLength: data.length,
-    readRange(offset, length) {
-      calls.push([offset, length]);
-      return data.subarray(offset, Math.min(data.length, offset + length));
-    },
-  });
-  const cache = new ResidentSabPageCache(sab, { pageSize });
-
-  expect(file.size).toBe(data.length);
-  expect(cache.readThroughCache(backing, file.fileObjectId, 20, 8))
-    .toEqual(data.slice(20, 28));
-  expect(calls).toEqual([[16, 16]]);
-
-  expect(cache.readThroughCache(backing, file.fileObjectId, 20, 8))
-    .toEqual(data.slice(20, 28));
-  expect(calls).toEqual([[16, 16]]);
-});
-
 test("source-backed file materializes for backing writes and truncates", () => {
   const backing = new MemoryFileBackingStore();
   const data = new TextEncoder().encode("abcdef");
@@ -458,88 +414,52 @@ test("source-backed file materializes for backing writes and truncates", () => {
   expect(calls).toEqual([[0, data.length]]);
 });
 
-test("resident cache reports miss then fill then direct clean hit", () => {
-  const pageSize = 16;
-  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + pageSize);
-  const backing = new MemoryFileBackingStore();
-  const data = Uint8Array.from({ length: 32 }, (_value, index) => 0x80 + index);
-  const file = backing.createFile(data);
-  const cache = new ResidentSabPageCache(sab, { pageSize });
+test("live resident records use file object generation and fixed reusable frames", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 4096 + 32);
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const backing = new Uint8Array(8192);
+  for (let offset = 0; offset < backing.length; offset += 1) {
+    backing[offset] = (offset * 17 + 3) & 0xff;
+  }
 
-  const firstRead = cache.readResidentRange(file, 4, 8);
-  expect(firstRead.status).toBe("miss");
-  expect(firstRead.status === "miss" ? firstRead.missingPageIndex : -1).toBe(0);
+  publishInode(sab, 2, {
+    mode: 0o100644,
+    size: backing.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("external"),
+    nextSibling: 0,
+    fileObjectId: 44,
+    generation: 7,
+  }, null);
 
-  expect(cache.fillPageFromBacking(backing, file.fileObjectId, 0).status).toBe("filled");
-  const secondRead = cache.readResidentRange(file, 4, 8);
-  expect(secondRead.status).toBe("hit");
-  expect(secondRead.status === "hit" ? secondRead.bytes : new Uint8Array())
-    .toEqual(data.slice(4, 12));
-});
+  const env = createKernelEnv(memory, {
+    sabPageCache: sab,
+    readFileDataByInode: (_ino, offset, length) => backing.subarray(offset, offset + length),
+  });
 
-test("resident cache evicts clean pages and reloads them from backing store", () => {
-  const pageSize = 16;
-  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + pageSize);
-  const backing = new MemoryFileBackingStore();
-  const data = Uint8Array.from({ length: 48 }, (_value, index) => 0x30 + index);
-  const file = backing.createFile(data);
-  const cache = new ResidentSabPageCache(sab, { pageSize });
+  expect(env.tidemark_page_cache_read(2, 128n, 64, 16)).toBe(16n);
+  expect(debugResidentPageCountForInode(sab, 2)).toBe(1);
+  expect(new Uint8Array(memory.buffer, 64, 16)).toEqual(backing.slice(128, 144));
 
-  expect(cache.fillPageFromBacking(backing, file.fileObjectId, 0).status).toBe("filled");
-  expect(cache.fillPageFromBacking(backing, file.fileObjectId, 1).status).toBe("filled");
-  expect(cache.readResidentRange(file, 0, 4).status).toBe("miss");
-  expect(cache.readThroughCache(backing, file.fileObjectId, 0, 20))
-    .toEqual(data.slice(0, 20));
-});
+  new Uint8Array(memory.buffer, 64, 16).fill(0);
+  expect(env.tidemark_page_cache_read(2, 4096n, 64, 16)).toBe(16n);
+  expect(debugResidentPageCountForInode(sab, 2)).toBe(1);
+  expect(new Uint8Array(memory.buffer, 64, 16)).toEqual(backing.slice(4096, 4112));
 
-test("backing writes append truncate and sparse writes preserve size data and generation", () => {
-  const pageSize = 8;
-  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + pageSize * 2);
-  const backing = new MemoryFileBackingStore();
-  const file = backing.createFile(new Uint8Array([1, 2, 3, 4, 5, 6]));
-  const cache = new ResidentSabPageCache(sab, { pageSize });
+  new Uint8Array(memory.buffer, 64, 16).fill(0);
+  const directEnv = createKernelEnv(memory, { sabPageCache: sab });
+  expect(directEnv.tidemark_page_cache_read(2, 128n, 64, 16)).toBe(-2n);
+  expect(directEnv.tidemark_page_cache_read(2, 4096n, 64, 16)).toBe(16n);
 
-  const append = cache.writeThroughBacking(backing, file.fileObjectId, 6, new Uint8Array([7, 8, 9, 10]));
-  expect(append.size).toBe(10);
-  expect(append.generation).toBe(file.generation + 1);
-  expect(cache.readThroughCache(backing, file.fileObjectId, 0, append.size))
-    .toEqual(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
-
-  const write = cache.writeThroughBacking(backing, file.fileObjectId, 7, new Uint8Array([17, 18, 19, 20]));
-  expect(write.size).toBe(11);
-  expect(write.generation).toBe(append.generation + 1);
-  expect(cache.readThroughCache(backing, file.fileObjectId, 0, write.size))
-    .toEqual(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 17, 18, 19, 20]));
-
-  const sparse = cache.writeThroughBacking(backing, file.fileObjectId, 14, new Uint8Array([21, 22, 23]));
-  expect(sparse.size).toBe(17);
-  expect(sparse.generation).toBe(write.generation + 1);
-  expect(cache.readThroughCache(backing, file.fileObjectId, 0, sparse.size))
-    .toEqual(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 17, 18, 19, 20, 0, 0, 0, 21, 22, 23]));
-
-  const truncated = cache.truncateBacking(backing, file.fileObjectId, 9);
-  expect(truncated.size).toBe(9);
-  expect(truncated.generation).toBe(sparse.generation + 1);
-  expect(cache.readThroughCache(backing, file.fileObjectId, 0, 32))
-    .toEqual(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 17, 18]));
-});
-
-test("dirty resident pages are pinned until flushed before clean eviction", () => {
-  const pageSize = 8;
-  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + pageSize);
-  const backing = new MemoryFileBackingStore();
-  const file = backing.createFile(Uint8Array.from({ length: 16 }, (_value, index) => index));
-  const cache = new ResidentSabPageCache(sab, { pageSize });
-
-  expect(cache.fillPageFromBacking(backing, file.fileObjectId, 0).status).toBe("filled");
-  expect(cache.writeResidentPageBytes(file.fileObjectId, 0, 2, new Uint8Array([77, 78]))).toBe(true);
-  expect(cache.evictPage(file.fileObjectId, 0)).toBe("dirty-pinned");
-  expect(cache.fillPageFromBacking(backing, file.fileObjectId, 1).status).toBe("dirty-pinned");
-
-  const flushed = cache.flushDirtyPage(backing, file.fileObjectId, 0);
-  expect(flushed?.generation).toBe(file.generation + 1);
-  expect(cache.evictPage(file.fileObjectId, 0)).toBe("evicted");
-  expect(cache.fillPageFromBacking(backing, file.fileObjectId, 1).status).toBe("filled");
-  expect(cache.readThroughCache(backing, file.fileObjectId, 0, 8))
-    .toEqual(new Uint8Array([0, 1, 77, 78, 4, 5, 6, 7]));
+  publishInode(sab, 2, {
+    mode: 0o100644,
+    size: backing.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("external"),
+    nextSibling: 0,
+    fileObjectId: 44,
+    generation: 8,
+  }, null);
+  expect(debugResidentPageCountForInode(sab, 2)).toBe(0);
+  expect(directEnv.tidemark_page_cache_read(2, 4096n, 64, 16)).toBe(-2n);
 });

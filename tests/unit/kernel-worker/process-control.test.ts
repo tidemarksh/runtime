@@ -528,7 +528,7 @@ test("processFs treats unlink as metadata-only canonical sync", async () => {
   expect(fanoutCalls).toEqual([true]);
 });
 
-test("processFs demand-fills missing source-backed read ranges before processing fs", async () => {
+test("processFs demand-fills page-aligned source-backed read ranges before processing fs", async () => {
   const canonicalExports = makeKernelExports();
   const processExports = makeKernelExports({
     resumeResult: 16,
@@ -592,7 +592,7 @@ test("processFs demand-fills missing source-backed read ranges before processing
   const result = await processControl.processFs(7, 0x1234, makeKernelState());
 
   expect(result.result).toBe(16n);
-  expect(ensureBackingSourceRangeForInode).toHaveBeenCalledWith(11, 32, 16, 128);
+  expect(ensureBackingSourceRangeForInode).toHaveBeenCalledWith(11, 0, 128, 128);
   expect(processExports.opLog).toEqual(["process-fs", "resume-fs"]);
 });
 
