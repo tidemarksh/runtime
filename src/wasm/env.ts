@@ -113,14 +113,7 @@ export function createKernelEnv(
         }
         return -2n;
       }
-      const readLen = Math.min(dstLen, meta.size - offsetNumber);
-      const dstRange = normalizeMemoryRange(memory, dstPtr, readLen);
-      if (!dstRange) {
-        return -14n;
-      }
-      const source = new Uint8Array(sabPageCache, meta.dataOff + offsetNumber, readLen);
-      new Uint8Array(memory.buffer, dstRange.ptr, readLen).set(source);
-      return BigInt(readLen);
+      return -2n;
     },
     tidemark_page_cache_stat(ino, outPtr) {
       if (!sabPageCache) {

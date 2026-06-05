@@ -1,6 +1,6 @@
 import { settleInheritedChildOutput, settleVisibleProcessOutput } from "./stdio.js";
 import { ensureMemoryCapacityFor, scratchBaseFor } from "../kernel-worker/common.js";
-import { readFileData, readInodeRecord } from "../fs/sab-page-cache.js";
+import { readInodeRecord } from "../fs/sab-page-cache.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import type { ProcessHandle } from "./types.js";
 import type { SyncCause } from "./contracts/sync.js";
@@ -551,15 +551,6 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         && offsetNumber >= 0
         && offsetNumber < published.size
       ) {
-        if (published.dataOff !== 0) {
-          return `page=${formatHexBytes(readFileData(
-            pageCache,
-            published.dataOff,
-            published.size,
-            offsetNumber,
-            Math.min(len, published.size - offsetNumber),
-          ))}`;
-        }
         return `page=external:size=${published.size}`;
       }
     }

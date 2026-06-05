@@ -1,5 +1,4 @@
 import type { KernelExports } from "../abi.js";
-import { readFileData, readInodeMeta } from "../fs/sab-page-cache.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import {
   alignUp,
@@ -280,22 +279,10 @@ export function readMemfsDirectoryNames(exports: KernelExports, dirIno: number):
 export function readMemfsFile(
   exports: KernelExports,
   ino: number,
-  pageCache?: SharedArrayBuffer | null,
 ): Uint8Array | undefined {
   const size = Number(exports.memfs_file_size(ino));
   if (size <= 0) {
     return new Uint8Array();
-  }
-  if (pageCache) {
-    const cached = readInodeMeta(pageCache, ino);
-    if (
-      cached
-      && cached.dataOff !== 0
-      && cached.size === size
-      && (cached.mode & 0o170000) === 0o100000
-    ) {
-      return readFileData(pageCache, cached.dataOff, cached.size, 0, cached.size);
-    }
   }
 
   const bufPtr = kernelScratchBase(exports) + 0x30000;
@@ -323,7 +310,6 @@ function snapshotMemfsTree(
   ino: number,
   path: string,
   out: FsSnapshotEntry[],
-  pageCache?: SharedArrayBuffer | null,
 ): void {
   const normalized = normalizePath(path);
   const mode = exports.memfs_inode_mode(ino);
@@ -338,7 +324,7 @@ function snapshotMemfsTree(
       if (childIno === 0) {
         continue;
       }
-      snapshotMemfsTree(exports, childIno, childPath, out, pageCache);
+      snapshotMemfsTree(exports, childIno, childPath, out);
     }
     return;
   }
@@ -360,7 +346,7 @@ function snapshotMemfsTree(
     return;
   }
 
-  const data = readMemfsFile(exports, ino, pageCache);
+  const data = readMemfsFile(exports, ino);
   const size = Number(exports.memfs_file_size(ino));
   out.push({
     kind: "file",
@@ -374,7 +360,7 @@ function snapshotMemfsTree(
 
 export function snapshotProcessFs(handle: ProcessHandle): FsSnapshotEntry[] {
   const entries: FsSnapshotEntry[] = [];
-  snapshotMemfsTree(handle.kernel, 1, "/", entries, handle.sabPageCache);
+  snapshotMemfsTree(handle.kernel, 1, "/", entries);
   return entries;
 }
 

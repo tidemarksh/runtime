@@ -15,7 +15,7 @@
  *   [Inode table: MAX_INODES * 40 bytes, starting at offset 64]
  *     Per-inode entry (40 bytes):
  *       +0  AtomicU32  version    — seqlock (odd = writing, even = stable)
- *       +4  AtomicU32  data_off   — inline data offset; zero for backing-store files
+ *       +4  AtomicU32  data_off   — reserved legacy inline data offset; zero for Phase 7.5 files
  *       +8  AtomicU32  data_size  — file size in bytes
  *       +12 AtomicU32  mode       — inode mode (S_IFREG, S_IFDIR, etc.)
  *       +16 AtomicU32  parent_ino — parent directory inode
@@ -688,10 +688,6 @@ function readExistingPageBytes(
   if (existingLen === 0) {
     return bytes;
   }
-  if (record.dataOff !== 0) {
-    bytes.set(readFileData(sab, record.dataOff, record.size, pageStart, existingLen));
-    return bytes;
-  }
   const resident = readResidentFileData(sab, ino, pageStart, existingLen);
   if (resident) {
     bytes.set(resident);
@@ -957,9 +953,6 @@ export function readDirtyResidentFileRangeData(
     return length === 0 ? new Uint8Array() : null;
   }
   const readLen = Math.min(length, record.size - offset);
-  if (record.dataOff !== 0) {
-    return readFileData(sab, record.dataOff, record.size, offset, readLen);
-  }
   const meta = readInodeMeta(sab, ino);
   if (!meta || meta.fileObjectId === 0) {
     return null;
@@ -1034,12 +1027,7 @@ export function readInodeMeta(
         return null;
       }
       if (size > 0 && dataOff !== 0) {
-        if (dataOff < DATA_REGION_OFFSET) {
-          return null;
-        }
-        if (dataOff + size > sab.byteLength) {
-          return null;
-        }
+        return null;
       }
       return { dataOff, size, mode, fileObjectId, generation };
     }
@@ -1094,9 +1082,7 @@ export function readInodeRecord(
         return null;
       }
       if (size > 0 && dataOff !== 0) {
-        if (dataOff < DATA_REGION_OFFSET || dataOff + size > sab.byteLength) {
-          return null;
-        }
+        return null;
       }
       if (nameLen > 0) {
         if (nameOff < DATA_REGION_OFFSET || nameOff + nameLen > sab.byteLength) {
@@ -1116,28 +1102,6 @@ export function readInodeRecord(
     }
   }
   return null;
-}
-
-/**
- * Read file data from the SAB page cache.
- * Caller should first use readInodeMeta to get dataOff and size.
- *
- * Thread-worker side — kernel bypass for read/pread64.
- */
-export function readFileData(
-  sab: SharedArrayBuffer,
-  dataOff: number,
-  size: number,
-  dstOffset: number,
-  dstLen: number,
-): Uint8Array {
-  const u8 = new Uint8Array(sab);
-  if (dstLen <= 0 || dstOffset < 0 || dstOffset >= size) {
-    return new Uint8Array();
-  }
-  const readLen = Math.min(size - dstOffset, dstLen);
-  const start = dataOff + dstOffset;
-  return u8.slice(start, start + readLen);
 }
 
 /**

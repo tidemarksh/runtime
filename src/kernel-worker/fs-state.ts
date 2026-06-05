@@ -10,7 +10,6 @@ import {
   publishInode,
   readDirtyResidentFileData,
   readDirtyResidentFileRangeData,
-  readFileData,
   readInodeRecord,
   truncateDirtyResidentFileData,
   writeDirtyResidentFileData,
@@ -886,7 +885,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         !published
         || (published.mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG
         || published.size <= 0
-        || (published.dataOff === 0 && !hasBackingFile(ino) && !hasDirtyResidentPagesForInode(sab, ino))
+        || (!hasBackingFile(ino) && !hasDirtyResidentPagesForInode(sab, ino))
       ) {
         continue;
       }
@@ -1000,15 +999,6 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     ensureMemoryCapacityFor(targetExports.memory, bufPtr + size);
     const read = Number(targetExports.memfs_read_file_to(ino, 0n, bufPtr, size));
     if (read < 0) {
-      const published = readInodeRecord(deps.getSabPageCache(), ino);
-      if (
-        published
-        && (published.mode & MEMFS_S_IFMT) === MEMFS_S_IFREG
-        && published.dataOff !== 0
-        && published.size === size
-      ) {
-        return readFileData(deps.getSabPageCache(), published.dataOff, published.size, 0, published.size);
-      }
       const seed = deps.seedEntries.get(normalizePath(path));
       if (
         seed?.kind === "file"

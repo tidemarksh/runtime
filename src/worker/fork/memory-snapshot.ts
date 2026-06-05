@@ -1,9 +1,3 @@
-import { MAX_INODES, readInodeRecord } from "../../fs/sab-page-cache.js";
-import {
-  MEMFS_S_IFMT,
-  MEMFS_S_IFREG,
-  memfsFileHasInlineData,
-} from "../../fs/memfs-inline-data.js";
 import type { ThreadWorkerMemoryPreserveRange } from "../../messages.js";
 import type { ProcessHandle, ThreadWorkerState } from "./types.js";
 
@@ -340,74 +334,5 @@ export function appendPlainForkMemoryDebug(
   ].join(":"));
   if (handle.workerDebugLog.length > 4096) {
     handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 4096);
-  }
-}
-
-export function normalizePageCacheBackedExecutableFilesForFork(handle: ProcessHandle): void {
-  const sab = handle.sabPageCache;
-  if (!sab) {
-    return;
-  }
-
-  let candidates = 0;
-  let externalized = 0;
-  let alreadyExternal = 0;
-  let bytes = 0;
-  const sampledInodes: string[] = [];
-  for (let ino = 1; ino < MAX_INODES; ino += 1) {
-    const published = readInodeRecord(sab, ino);
-    if (
-      !published
-      || (published.mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG
-      || (published.mode & 0o111) === 0
-      || published.size <= 0
-      || published.dataOff === 0
-    ) {
-      continue;
-    }
-
-    const mode = handle.kernel.memfs_inode_mode(ino);
-    if (
-      (mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG
-      || Number(handle.kernel.memfs_file_size(ino)) !== published.size
-    ) {
-      continue;
-    }
-
-    candidates += 1;
-    bytes += published.size;
-    if (sampledInodes.length < 8) {
-      sampledInodes.push(`${ino}:${published.size}`);
-    }
-    if (!memfsFileHasInlineData(handle.kernel, ino)) {
-      alreadyExternal += 1;
-      continue;
-    }
-
-    const externalizedResult = Number(handle.kernel.memfs_set_file_external(ino, BigInt(published.size)));
-    if (externalizedResult < 0) {
-      continue;
-    }
-    const modeResult = Number(handle.kernel.memfs_set_mode(ino, mode));
-    if (modeResult < 0) {
-      continue;
-    }
-    externalized += 1;
-  }
-
-  if (candidates > 0) {
-    handle.workerDebugLog.push(
-      [
-        "plain-fork-exec-files-external",
-        `candidates=${candidates}`,
-        `externalized=${externalized}`,
-        `alreadyExternal=${alreadyExternal}`,
-        `bytes=${bytes}`,
-        `inos=${sampledInodes.join(".")}`,
-      ].join(":"),
-    );
-    if (handle.workerDebugLog.length > 4096) {
-      handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 4096);
-    }
   }
 }

@@ -55,7 +55,7 @@ function expectBytesEqual(actual: Uint8Array, expected: Uint8Array): void {
   }
 }
 
-function makeKernelExports(sabPageCache?: SharedArrayBuffer): FakeKernelExports {
+function makeKernelExports(): FakeKernelExports {
   const memory = new WebAssembly.Memory({ initial: 512, maximum: 1024, shared: true });
   const recordsByPath = new Map<string, InodeRecord>();
   const recordsByIno = new Map<number, InodeRecord>();
@@ -287,17 +287,6 @@ function makeKernelExports(sabPageCache?: SharedArrayBuffer): FakeKernelExports 
       if (!record || record.kind !== "file") {
         return -1n;
       }
-      if (!record.materialized && sabPageCache) {
-        const published = readInodeRecord(sabPageCache, ino);
-        if (published && published.dataOff !== 0 && published.size > 0) {
-          const start = Number(offset);
-          const available = Math.max(0, published.size - start);
-          const readLen = Math.min(len, available);
-          const bytes = new Uint8Array(sabPageCache, published.dataOff + start, readLen);
-          new Uint8Array(memory.buffer, ptr, readLen).set(bytes);
-          return BigInt(readLen);
-        }
-      }
       const start = Number(offset);
       const available = Math.max(0, record.data.length - start);
       const readLen = Math.min(len, available);
@@ -341,15 +330,6 @@ function makeKernelExports(sabPageCache?: SharedArrayBuffer): FakeKernelExports 
       const record = recordsByPath.get(normalizePath(path));
       if (!record || record.kind !== "file") {
         return new Uint8Array();
-      }
-      if (!record.materialized && sabPageCache) {
-        const published = readInodeRecord(sabPageCache, record.ino);
-        if (published && published.dataOff !== 0 && published.size > 0) {
-          return new Uint8Array(new Uint8Array(sabPageCache).slice(
-            published.dataOff,
-            published.dataOff + published.size,
-          ));
-        }
       }
       return new Uint8Array(record.data);
     },
@@ -407,8 +387,8 @@ function parentPath(path: string): string {
 
 function makeFsState(pageCacheDataCapacityBytes = 16 * 1024 * 1024) {
   const sabPageCache = new SharedArrayBuffer(DATA_REGION_OFFSET + pageCacheDataCapacityBytes);
-  const canonicalExports = makeKernelExports(sabPageCache);
-  const memberExports = makeKernelExports(sabPageCache);
+  const canonicalExports = makeKernelExports();
+  const memberExports = makeKernelExports();
   const processKernels = new Map<number, KernelExports>([[2, memberExports]]);
   const seedEntries = new Map<string, import("../../../src/fs/types.js").FsSnapshotEntry>();
   const fsState = createKernelWorkerFsState({

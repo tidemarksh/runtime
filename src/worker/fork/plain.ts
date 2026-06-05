@@ -38,7 +38,6 @@ import {
   captureParentProcessSnapshot,
   forkMemoryPreserveRanges,
   forkSnapshotContainsBytes,
-  normalizePageCacheBackedExecutableFilesForFork,
   overwriteForkMemorySnapshot,
   restoreParentProcessSnapshot,
 } from "./memory-snapshot.js";
@@ -144,7 +143,6 @@ export async function handlePlainFork(
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
 
     const parentStackPointer = parentThread.lastStepSp ?? handle.kernel.thread_sp(parentThread.vmPtr);
-    normalizePageCacheBackedExecutableFilesForFork(handle);
     const forkMemorySnapshot = captureForkMemorySnapshot(handle, parentStackPointer);
     if (parentThread.forkStackSnapshot) {
       const start = handle.guestBase + parentThread.forkStackSnapshot.startGuest;
