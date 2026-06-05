@@ -383,6 +383,75 @@ test("resident multi-page fill witness: guest read fills all pages in requested 
   }
 }, 90_000);
 
+test("remote source demand fill witness: guest read fills metadata-only backing extent", async () => {
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return;
+  }
+  const probeBytes = buildLargeFileReadProbe();
+  if (!probeBytes) {
+    return;
+  }
+  const input = buildResidentWitnessInput(8192);
+  const expected = checksum(input);
+  const prefix = new TextEncoder().encode("remote-prefix:");
+  const suffix = new TextEncoder().encode(":remote-suffix");
+  const source = new Uint8Array(prefix.length + input.length + suffix.length);
+  source.set(prefix, 0);
+  source.set(input, prefix.length);
+  source.set(suffix, prefix.length + input.length);
+  const sourceIdentity = "remote:runtime-large-file-read.bin";
+  const sourceUrl = `data:application/octet-stream;base64,${Buffer.from(source).toString("base64")}`;
+
+  const runtime = await Runtime.create({
+    wasmBytes,
+    guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
+    maxProcessMemoryPages: 32768,
+  });
+  try {
+    await runtime.applyFsSnapshot([
+      { kind: "dir", path: "/", mode: 0o755 },
+      { kind: "dir", path: "/work", mode: 0o755 },
+      {
+        kind: "file",
+        path: largeFilePath,
+        size: input.length,
+        mode: 0o644,
+        backingExtent: {
+          sourceIdentity,
+          offset: prefix.length,
+          length: input.length,
+        },
+      },
+    ]);
+    await runtime.registerFsRemoteBackingSource(sourceIdentity, source.length, sourceUrl);
+    const before = await runtime.debugPageCachePath(largeFilePath);
+    expect(before, "metadata-only source-backed input should publish inode metadata").not.toBeNull();
+    expect(before?.dataOff, "source-backed input must not be inline-published").toBe(0);
+    expect(before?.backingBytes, "async source should not be materialized before first read").toBeUndefined();
+    expect(before?.residentPages ?? 0).toBe(0);
+
+    const result = await spawnWithOutputAndStats(
+      runtime,
+      probeBytes,
+      ["/work/large-file-read", largeFilePath],
+      ["LC_ALL=C", "LANG=C"],
+      60_000,
+      { cwd: "/", stdin: "closed" },
+    );
+    expect(result.exitCode, result.output + (result.debugInfo ? `\n${result.debugInfo}` : "")).toBe(0);
+    expect(result.output).toContain(`large-file-read bytes=${input.length}`);
+    expect(result.output).toContain(`checksum=${expected.toString()}`);
+
+    const after = await runtime.debugPageCachePath(largeFilePath);
+    expect(after?.dataOff, "remote demand fill must keep file data out of inline SAB inode data").toBe(0);
+    expect(after?.backingBytes, "range demand fill must not materialize the whole backing file").toBeUndefined();
+    expect(after?.residentPages ?? 0).toBeGreaterThanOrEqual(2);
+  } finally {
+    runtime.destroy();
+  }
+}, 90_000);
+
 test("large regular file read local gate: guest sequentially reads package-index sized input", async () => {
   const wasmBytes = readKernelWasm();
   if (!wasmBytes) {
