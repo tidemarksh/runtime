@@ -720,6 +720,32 @@ test("kernel-worker dirty resident source-backed range reads fetch missing clean
   expect(fsState.readBackingFileRangeByInode(ino, pageSize, 16)).toEqual(source.subarray(pageSize, pageSize + 16));
 });
 
+test("kernel-worker sparse dirty resident writes read source bytes then zero holes", () => {
+  const { fsState } = makeFsState();
+  const source = encoder.encode("abcdef");
+  const backingExtent = {
+    sourceIdentity: "artifact:sparse.bin",
+    offset: 0,
+    length: source.length,
+  };
+
+  fsState.loadFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "file", path: "/lib/sparse.bin", size: backingExtent.length, mode: 0o644, backingExtent },
+  ]);
+  fsState.registerBackingSource(backingExtent.sourceIdentity, source);
+
+  const ino = fsState.resolvePath("/lib/sparse.bin");
+  const offset = 8192;
+  const data = encoder.encode("XYZ");
+  expect(fsState.writeDirtyResidentFileByInode(ino, offset, data)).toBe(data.length);
+  expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 0, source.length) ?? new Uint8Array()))
+    .toBe("abcdef");
+  expect(fsState.readBackingFileRangeByInode(ino, source.length, 16)).toEqual(new Uint8Array(16));
+  expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, offset, data.length) ?? new Uint8Array()))
+    .toBe("XYZ");
+});
+
 test("kernel-worker flushes dirty resident pages to backing and leaves clean resident pages", () => {
   const { canonicalExports, fsState, sabPageCache } = makeFsState();
 

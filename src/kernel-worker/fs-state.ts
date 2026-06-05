@@ -362,12 +362,34 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       return null;
     }
     const stat = backingStore.stat(fileObjectId);
-    if (!stat || offset >= stat.size) {
+    if (!stat) {
       return null;
     }
-    const readLen = Math.min(length, stat.size - offset);
-    const data = backingStore.read(fileObjectId, offset, readLen);
-    return data.length === readLen ? data : null;
+    const published = readInodeRecord(deps.getSabPageCache(), ino);
+    const publishedSize = published?.size ?? stat.size;
+    if (offset >= publishedSize) {
+      return null;
+    }
+    if (offset >= stat.size) {
+      return publishedSize > stat.size && offset + length <= publishedSize ? new Uint8Array(length) : null;
+    }
+    const backingLen = Math.min(length, stat.size - offset);
+    const data = backingStore.read(fileObjectId, offset, backingLen);
+    if (data.length !== backingLen) {
+      return null;
+    }
+    if (backingLen === length) {
+      return data;
+    }
+    if (publishedSize <= stat.size) {
+      return data;
+    }
+    if (offset + length > publishedSize) {
+      return null;
+    }
+    const out = new Uint8Array(length);
+    out.set(data);
+    return out;
   }
 
   function readBackingFileRangeByInode(ino: number, offset: number, length: number): Uint8Array | null {

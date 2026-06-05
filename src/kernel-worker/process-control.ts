@@ -10,6 +10,7 @@ import {
   FS_OP_READ,
   FS_OP_WRITE,
   FS_OP_MMAP,
+  FS_OP_TRUNCATE,
   FS_REQ_FLAG_PWRITE,
   FS_RING_REQUEST_FD_OFFSET,
   FS_RING_REQUEST_BUF_PTR_OFFSET,
@@ -357,17 +358,20 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
         continue;
       }
       const opcode = view.getUint32(entry + FS_RING_REQUEST_OPCODE_OFFSET, true);
-      if (opcode !== FS_OP_READ && opcode !== FS_OP_WRITE && opcode !== FS_OP_MMAP) {
+      if (opcode !== FS_OP_READ && opcode !== FS_OP_WRITE && opcode !== FS_OP_MMAP && opcode !== FS_OP_TRUNCATE) {
         continue;
       }
       const fd = view.getInt32(entry + FS_RING_REQUEST_FD_OFFSET, true);
       const length = Number(view.getBigUint64(entry + FS_RING_REQUEST_LEN_OFFSET, true));
       const flags = view.getUint32(entry + FS_RING_REQUEST_FLAGS_OFFSET, true);
       const ofdId = processExports.process_fd_ofd_id(vmPtr, fd);
-      if (ofdId <= 0 || !Number.isFinite(length) || length <= 0) {
+      const ino = ofdId > 0 ? processExports.kernel_ofd_ino(ofdId) : processExports.thread_pending_fs_target_ino(vmPtr);
+      if (ofdId <= 0 && ino <= 0) {
         return null;
       }
-      const ino = processExports.kernel_ofd_ino(ofdId);
+      if (opcode !== FS_OP_TRUNCATE && (!Number.isFinite(length) || length <= 0)) {
+        return null;
+      }
       const expectedSize = Number(processExports.memfs_file_size(ino));
       const offset = opcode === FS_OP_MMAP || (flags & FS_REQ_FLAG_PWRITE) !== 0
         ? Number(view.getBigUint64(entry + FS_RING_REQUEST_OFFSET_OFFSET, true))
@@ -381,9 +385,30 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       ) {
         return null;
       }
+      if (opcode === FS_OP_TRUNCATE) {
+        const truncateSize = Number(view.getBigUint64(entry + FS_RING_REQUEST_OFFSET_OFFSET, true));
+        if (!Number.isFinite(truncateSize) || truncateSize <= 0) {
+          return null;
+        }
+        const survivingLastByte = Math.min(truncateSize, expectedSize) - 1;
+        if (survivingLastByte < 0) {
+          return null;
+        }
+        return {
+          ino,
+          offset: survivingLastByte,
+          length: 1,
+          expectedSize,
+        };
+      }
       if (opcode === FS_OP_WRITE) {
         if (offset >= expectedSize) {
-          return null;
+          return {
+            ino,
+            offset: expectedSize - 1,
+            length: 1,
+            expectedSize,
+          };
         }
         return {
           ino,
