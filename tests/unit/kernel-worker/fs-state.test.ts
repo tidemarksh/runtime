@@ -566,6 +566,28 @@ test("kernel-worker snapshot export preserves source backing identity", () => {
   ]));
 });
 
+test("kernel-worker snapshot data export reads registered backing sources", () => {
+  const { fsState } = makeFsState();
+  const source = encoder.encode("prefix:artifact-bytes:suffix");
+  const backingExtent = {
+    sourceIdentity: "artifact:runtime.bin",
+    offset: "prefix:".length,
+    length: "artifact-bytes".length,
+  };
+
+  fsState.loadFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "file", path: "/lib/runtime.bin", size: backingExtent.length, mode: 0o644, backingExtent },
+  ]);
+  fsState.registerBackingSource(backingExtent.sourceIdentity, source);
+
+  const exported = fsState.snapshotCanonicalFs(true).find((entry) => (
+    entry.kind === "file" && entry.path === "/lib/runtime.bin"
+  ));
+  expect(exported?.kind === "file" ? exported.data : undefined).toEqual(encoder.encode("artifact-bytes"));
+  expect(exported?.backingExtent).toEqual(backingExtent);
+});
+
 test("kernel-worker loadFsSnapshot restores symlinks into seed entries", () => {
   const { canonicalExports, fsState, seedEntries } = makeFsState();
   const target = encoder.encode("/toolchain/current/bin/node");

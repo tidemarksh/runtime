@@ -25,6 +25,7 @@ interface KernelWorkerFsSnapshotDeps {
   registerSnapshotBackingExtent(ino: number, backingExtent: FsSnapshotEntry["backingExtent"] | undefined): void;
   publishFileBacking(ino: number, data: Uint8Array): void;
   readBackingFileByInode(ino: number): Uint8Array | null;
+  readBackingFileRangeByInode(ino: number, offset: number, length: number): Uint8Array | null;
   mkdir(path: string, mode?: number, fanout?: boolean): void;
   upsertSymlinkSeed(path: string, target: Uint8Array, mode?: number): void;
 }
@@ -160,13 +161,18 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
   }
 
   function readSnapshotFileData(targetExports: KernelExports, path: string, ino: number): Uint8Array | undefined {
-    const direct = readMemfsFileDataDirect(targetExports, ino);
-    if (direct) {
-      return direct;
-    }
     const backing = deps.readBackingFileByInode(ino);
     if (backing) {
       return backing;
+    }
+    const size = Number(targetExports.memfs_file_size(ino));
+    const backingRange = deps.readBackingFileRangeByInode(ino, 0, size);
+    if (backingRange && backingRange.length === size) {
+      return backingRange;
+    }
+    const direct = readMemfsFileDataDirect(targetExports, ino);
+    if (direct) {
+      return direct;
     }
     const cached = readInodeMeta(deps.getSabPageCache(), ino);
     if (cached && cached.dataOff !== 0 && (cached.mode & 0o170000) === 0o100000) {

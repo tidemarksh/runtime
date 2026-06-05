@@ -809,6 +809,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     registerSnapshotBackingExtent,
     publishFileBacking: replaceBackingFile,
     readBackingFileByInode,
+    readBackingFileRangeByInode,
     mkdir,
     upsertSymlinkSeed: deps.upsertSymlinkSeed,
     fanoutCanonicalMemfs: deps.fanoutCanonicalMemfs,
