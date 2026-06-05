@@ -457,8 +457,7 @@ export function applyFsEntryToHandle(handle: ProcessHandle, entry: FsSnapshotEnt
     return;
   }
 
-  const data = entry.data;
-  const size = entry.size ?? data?.length ?? 0;
+  const size = entry.size ?? entry.data?.length ?? 0;
   const mode = entry.mode ?? 0o644;
   if (existingIno === 0 && entry.ino !== undefined && entry.ino > 1) {
     const reserveResult = Number(exports.memfs_reserve_inode_until(entry.ino));
@@ -473,15 +472,9 @@ export function applyFsEntryToHandle(handle: ProcessHandle, entry: FsSnapshotEnt
     return;
   }
 
-  if (data) {
-    if (!replaceFileData(exports, ino, data)) {
-      return;
-    }
-  } else {
-    const sizeResult = Number(exports.memfs_set_file_size_shallow(ino, BigInt(size)));
-    if (sizeResult < 0) {
-      return;
-    }
+  const sizeResult = Number(exports.memfs_set_file_size_shallow(ino, BigInt(size)));
+  if (sizeResult < 0) {
+    return;
   }
   exports.memfs_set_mode(ino, mode);
 }

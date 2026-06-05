@@ -189,8 +189,12 @@ export function mirrorRuntimeFsEntry(
   entry: FsSnapshotEntry,
   context: RuntimeFsContext,
 ): void {
+  const [metadataEntry] = context.cloneSnapshotEntries([entry], { stripFileData: true });
+  if (!metadataEntry) {
+    return;
+  }
   forEachRuntimeKernelShare(runtimeId, context, (representative) => {
-    context.applyFsEntryToHandle(representative, entry);
+    context.applyFsEntryToHandle(representative, metadataEntry);
     for (const member of context.kernelShareOtherMembers(representative)) {
       context.syncMemfsState(representative, member);
       attachKernelRuntimeState(member.kernel, member.kernelState);
@@ -204,14 +208,15 @@ export function replaceRuntimeFsSnapshot(
   context: RuntimeFsContext,
 ): void {
   context.runtimeFsDirtyHandles.delete(runtimeId);
+  const metadataEntries = context.cloneSnapshotEntries(entries, { stripFileData: true });
   forEachRuntimeKernelShare(runtimeId, context, (representative) => {
     representative.kernel.kernel_reset_memfs();
-    const rootEntry = entries.find((entry) => entry.kind === "dir" && normalizePath(entry.path) === "/");
+    const rootEntry = metadataEntries.find((entry) => entry.kind === "dir" && normalizePath(entry.path) === "/");
     if (rootEntry) {
       representative.kernel.memfs_set_mode(1, rootEntry.mode ?? 0o755);
     }
     const preloadScratchBase = detachedKernelScratchBase(representative.memory, representative.guestBase, 0);
-    preloadSnapshotEntries(representative.kernel, entries, preloadScratchBase);
+    preloadSnapshotEntries(representative.kernel, metadataEntries, preloadScratchBase);
     for (const member of context.kernelShareOtherMembers(representative)) {
       context.syncMemfsState(representative, member);
       attachKernelRuntimeState(member.kernel, member.kernelState);

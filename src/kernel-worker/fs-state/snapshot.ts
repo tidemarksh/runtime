@@ -161,7 +161,12 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
     return names;
   }
 
-  function readSnapshotFileData(targetExports: KernelExports, path: string, ino: number): Uint8Array | undefined {
+  function readSnapshotFileData(
+    targetExports: KernelExports,
+    path: string,
+    ino: number,
+    allowProcessMemfsData: boolean,
+  ): Uint8Array | undefined {
     const backing = deps.readBackingFileByInode(ino);
     if (backing) {
       return backing;
@@ -170,6 +175,9 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
     const backingRange = deps.readBackingFileRangeByInode(ino, 0, size);
     if (backingRange && backingRange.length === size) {
       return backingRange;
+    }
+    if (!allowProcessMemfsData) {
+      return deps.readFile(path);
     }
     try {
       return readFileIn(targetExports, path);
@@ -199,6 +207,7 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
     path: string,
     out: FsSnapshotEntry[],
     includeData: boolean,
+    allowProcessMemfsData: boolean,
   ): void {
     const normalized = normalizePath(path);
     const mode = targetExports.memfs_inode_mode(ino);
@@ -213,7 +222,7 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
         if (childIno === 0) {
           continue;
         }
-        snapshotFsTree(targetExports, childIno, childPath, out, includeData);
+        snapshotFsTree(targetExports, childIno, childPath, out, includeData, allowProcessMemfsData);
       }
       return;
     }
@@ -240,25 +249,29 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
       kind: "file",
       path: normalized,
       ino,
-      data: includeData ? readSnapshotFileData(targetExports, normalized, ino) : undefined,
+      data: includeData ? readSnapshotFileData(targetExports, normalized, ino, allowProcessMemfsData) : undefined,
       size: Number(targetExports.memfs_file_size(ino)),
       mode: perms,
       backingExtent: seed?.kind === "file" && seed.backingExtent ? { ...seed.backingExtent } : undefined,
     });
   }
 
-  function snapshotFsEntries(targetExports: KernelExports, includeData: boolean): FsSnapshotEntry[] {
+  function snapshotFsEntries(
+    targetExports: KernelExports,
+    includeData: boolean,
+    allowProcessMemfsData: boolean,
+  ): FsSnapshotEntry[] {
     const entries: FsSnapshotEntry[] = [];
-    snapshotFsTree(targetExports, 1, "/", entries, includeData);
+    snapshotFsTree(targetExports, 1, "/", entries, includeData, allowProcessMemfsData);
     return entries;
   }
 
   function snapshotCanonicalFs(includeData: boolean): FsSnapshotEntry[] {
-    return snapshotFsEntries(deps.getCanonicalExports(), includeData);
+    return snapshotFsEntries(deps.getCanonicalExports(), includeData, false);
   }
 
   function rebuildPageCacheFromExports(targetExports: KernelExports): void {
-    const entries = snapshotFsEntries(targetExports, true);
+    const entries = snapshotFsEntries(targetExports, true, true);
     const rootMode = targetExports.memfs_inode_mode(1) & 0o7777;
     resetPageCache(deps.getSabPageCache());
     deps.publishRootInode(rootMode);

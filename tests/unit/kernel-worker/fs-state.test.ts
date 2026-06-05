@@ -1281,6 +1281,31 @@ test("kernel-worker readFile rejects stale canonical memfs bytes without authori
     .toThrow("failed to read authoritative regular file data: /lib/runtime.bin");
 });
 
+test("kernel-worker snapshot data export rejects stale canonical memfs bytes without authoritative backing", () => {
+  const { canonicalExports, fsState, sabPageCache } = makeFsState();
+  const stale = encoder.encode("stale-canonical");
+
+  fsState.mkdir("/lib", 0o755, false);
+  const parentIno = canonicalExports.fileIno("/lib");
+  const name = encoder.encode("runtime.bin");
+  const namePtr = canonicalExports.kernel_heap_ptr() + 0x12000;
+  new Uint8Array(canonicalExports.memory.buffer).set(name, namePtr);
+  const ino = canonicalExports.memfs_create_file(parentIno, namePtr, name.length);
+  canonicalExports.overwriteFile("/lib/runtime.bin", stale);
+  publishInode(sabPageCache, ino, {
+    mode: 0o100644,
+    size: stale.length,
+    parentIno,
+    name,
+    nextSibling: 0,
+    fileObjectId: ino,
+    generation: 1,
+  });
+
+  expect(() => fsState.snapshotCanonicalFs(true))
+    .toThrow("failed to read authoritative regular file data: /lib/runtime.bin");
+});
+
 test("kernel-worker readFile rejects stale seed data without authoritative backing", () => {
   const { canonicalExports, fsState, sabPageCache, seedEntries } = makeFsState();
   const stale = encoder.encode("stale-seed-data");

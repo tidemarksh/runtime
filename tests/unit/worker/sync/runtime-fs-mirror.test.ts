@@ -107,6 +107,7 @@ const createdKernelExports: Array<
     fsProcessCalls: number;
     memfsCreateCalls: Array<[number, number]>;
     memfsTruncateCalls: Array<[number, number]>;
+    memfsSetFileExternalCalls: Array<[number, number]>;
     memfsSetFileSizeShallowCalls: Array<[number, number]>;
     memfsWriteCalls: Array<[number, number]>;
     memfsCreateWithDataCalls: Array<[number, number]>;
@@ -188,6 +189,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
   let fsProcessCalls = 0;
   const memfsCreateCalls: Array<[number, number]> = [];
   const memfsTruncateCalls: Array<[number, number]> = [];
+  const memfsSetFileExternalCalls: Array<[number, number]> = [];
   const memfsSetFileSizeShallowCalls: Array<[number, number]> = [];
   const memfsWriteCalls: Array<[number, number]> = [];
   const memfsCreateWithDataCalls: Array<[number, number]> = [];
@@ -240,6 +242,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     fsProcessCalls: number;
     memfsCreateCalls: Array<[number, number]>;
     memfsTruncateCalls: Array<[number, number]>;
+    memfsSetFileExternalCalls: Array<[number, number]>;
     memfsSetFileSizeShallowCalls: Array<[number, number]>;
     memfsWriteCalls: Array<[number, number]>;
     memfsCreateWithDataCalls: Array<[number, number]>;
@@ -525,6 +528,10 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
       memfsSetFileSizeShallowCalls.push([ino, Number(size)]);
       return 0n;
     },
+    memfs_set_file_external: (ino, size) => {
+      memfsSetFileExternalCalls.push([ino, Number(size)]);
+      return 0n;
+    },
     memfs_inode_mode: () => 0,
     memfs_inode_nlink: () => 0,
     memfs_inode_uid: () => 0,
@@ -544,6 +551,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     },
     memfsCreateCalls,
     memfsTruncateCalls,
+    memfsSetFileExternalCalls,
     memfsSetFileSizeShallowCalls,
     memfsWriteCalls,
     memfsCreateWithDataCalls,
@@ -623,7 +631,7 @@ test("child exit records wait status on parent kernel state", async () => {
   expect(createdKernelExports[0].recordedChildExits).toEqual([[2, 7 << 8]]);
 });
 
-test("runtime-owned file writes are mirrored into live process memfs for the same runtime", async () => {
+test("runtime-owned file writes mirror metadata into live process memfs for the same runtime", async () => {
   await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
     runtimeId: 7,
     pid: 1,
@@ -640,10 +648,12 @@ test("runtime-owned file writes are mirrored into live process memfs for the sam
     mode: 0o644,
   });
 
-  expect(createdKernelExports[0].memfsTruncateCalls.at(-1)?.[1]).toBe(4);
-  expect(createdKernelExports[0].memfsWriteCalls.at(-1)?.[1]).toBe(4);
-  expect(createdKernelExports[1].memfsTruncateCalls.at(-1)?.[1]).toBe(4);
-  expect(createdKernelExports[1].memfsWriteCalls.at(-1)?.[1]).toBe(4);
+  expect(createdKernelExports[0].memfsSetFileSizeShallowCalls.at(-1)?.[1]).toBe(4);
+  expect(createdKernelExports[0].memfsTruncateCalls).toEqual([]);
+  expect(createdKernelExports[0].memfsWriteCalls).toEqual([]);
+  expect(createdKernelExports[1].memfsSetFileSizeShallowCalls.at(-1)?.[1]).toBe(4);
+  expect(createdKernelExports[1].memfsTruncateCalls).toEqual([]);
+  expect(createdKernelExports[1].memfsWriteCalls).toEqual([]);
 });
 
 test("runtime-owned snapshot replacement is mirrored into live processes for the same runtime", async () => {
@@ -668,9 +678,13 @@ test("runtime-owned snapshot replacement is mirrored into live processes for the
   ]);
 
   expect(createdKernelExports[0].memfsCreateCalls.length).toBeGreaterThan(0);
-  expect(createdKernelExports[0].memfsTruncateCalls.at(-1)?.[1]).toBe(3);
+  expect(createdKernelExports[0].memfsSetFileExternalCalls.at(-1)?.[1]).toBe(3);
+  expect(createdKernelExports[0].memfsTruncateCalls).toEqual([]);
+  expect(createdKernelExports[0].memfsWriteCalls).toEqual([]);
   expect(createdKernelExports[1].memfsCreateCalls.length).toBeGreaterThan(0);
-  expect(createdKernelExports[1].memfsTruncateCalls.at(-1)?.[1]).toBe(3);
+  expect(createdKernelExports[1].memfsSetFileExternalCalls.at(-1)?.[1]).toBe(3);
+  expect(createdKernelExports[1].memfsTruncateCalls).toEqual([]);
+  expect(createdKernelExports[1].memfsWriteCalls).toEqual([]);
 });
 
 test("runtime-owned fs mirroring preserves kernel-worker-owned pipe, epoll, and socket state", async () => {
