@@ -181,8 +181,11 @@ async function routeExplicitPreloadDataThroughKernelWorker(
   entries: FsSnapshotEntry[],
   kernelWorkerRequest: NonNullable<CreateProcessOptions["kernelWorkerRequest"]> | undefined,
 ): Promise<FsSnapshotEntry[]> {
-  if (!kernelWorkerRequest || !entriesContainInlineFileData(entries)) {
+  if (!entriesContainInlineFileData(entries)) {
     return entries;
+  }
+  if (!kernelWorkerRequest) {
+    throw new Error("explicit preload file data requires kernel-worker backing ownership");
   }
   const layerEntries = kernelWorkerLayerEntriesForExplicitPreload(entries);
   if (layerEntries.length === 0) {

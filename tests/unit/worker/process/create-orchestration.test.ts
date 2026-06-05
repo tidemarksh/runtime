@@ -1707,6 +1707,25 @@ test("createProcess routes explicit preload file payloads through kernel-worker 
   });
 });
 
+test("createProcess rejects explicit preload file payloads without kernel-worker ownership", async () => {
+  await expect(createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    guestMemoryPolicyLimitBytes: 64n * 1024n * 1024n,
+    artifactMaterializationBudgetBytes: 16 * 1024,
+    preloadEntries: [
+      {
+        kind: "file",
+        path: "/workspace/bin/tool",
+        data: new Uint8Array(4096),
+        mode: 0o755,
+      },
+    ],
+  })).rejects.toThrow("explicit preload file data requires kernel-worker backing ownership");
+
+  expect(createdKernelExports[0].memfsTruncateCalls).toEqual([]);
+  expect(createdKernelExports[0].memfsWriteCalls).toEqual([]);
+  expect(createdKernelExports[0].memfsCreateWithDataCalls).toEqual([]);
+});
+
 test("createProcess reports published metadata capacity independently from page-cache data capacity", async () => {
   const smallPageCache = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
     sabPageCache: new SharedArrayBuffer(1024 * 1024),
