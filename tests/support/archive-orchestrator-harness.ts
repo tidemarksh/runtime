@@ -9,6 +9,7 @@ import {
   spawnWithOutput,
 } from "./runtime-workload.js";
 import {
+  type SnapshotBuildOptions,
   type SnapshotSource,
   applySnapshotSourcesToRuntime,
 } from "./snapshot-sources.js";
@@ -37,6 +38,7 @@ export interface ArchiveOrchestratorEntry {
   targetClass: string;
   workflowKind: string;
   guestMemoryPolicyLimitBytes: number;
+  hostFileBackingMode?: SnapshotBuildOptions["hostFileBackingMode"];
   snapshotSources: readonly SnapshotSource[];
   steps: readonly ArchiveOrchestratorStep[];
   artifactChecks?: readonly ArchiveOrchestratorArtifactCheck[];
@@ -73,6 +75,7 @@ export async function prepareArchiveOrchestratorRuntime(
   try {
     const snapshot = await applySnapshotSourcesToRuntime(runtime, entry.snapshotSources, {
       missingLabel: "archive orchestrator artifact",
+      hostFileBackingMode: entry.hostFileBackingMode,
     });
     if (snapshot.skipReason) {
       runtime.destroy();

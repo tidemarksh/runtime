@@ -9,6 +9,7 @@ import {
   spawnWithOutput,
 } from "./runtime-workload.js";
 import {
+  type SnapshotBuildOptions,
   type SnapshotSource,
   applySnapshotSourcesToRuntime,
 } from "./snapshot-sources.js";
@@ -31,6 +32,7 @@ export interface PackageModuleDriverEntry {
   cwd?: string;
   timeoutMs: number;
   guestMemoryPolicyLimitBytes: number;
+  hostFileBackingMode?: SnapshotBuildOptions["hostFileBackingMode"];
   snapshotSources: readonly SnapshotSource[];
   expectedDriverSubstrings?: readonly string[];
   forbiddenDriverSubstrings?: readonly string[];
@@ -66,6 +68,7 @@ export async function preparePackageModuleDriverRuntime(
   try {
     const snapshot = await applySnapshotSourcesToRuntime(runtime, entry.snapshotSources, {
       missingLabel: "package/module driver artifact",
+      hostFileBackingMode: entry.hostFileBackingMode,
     });
     if (snapshot.skipReason) {
       runtime.destroy();

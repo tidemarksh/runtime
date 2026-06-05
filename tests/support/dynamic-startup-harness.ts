@@ -8,6 +8,7 @@ import {
   runtimeDebugSummary,
 } from "./runtime-workload.js";
 import {
+  type SnapshotBuildOptions,
   type SnapshotSource,
   applySnapshotSourcesToRuntime,
   buildSnapshotFromSources,
@@ -33,6 +34,7 @@ export interface DynamicStartupEntry {
   timeoutMs: number;
   guestMemoryPolicyLimitBytes: number;
   runtimeOptions?: DynamicStartupRuntimeOptions;
+  hostFileBackingMode?: SnapshotBuildOptions["hostFileBackingMode"];
   snapshotSources: readonly SnapshotSource[];
   expectedSubstrings: readonly string[];
   forbiddenSubstrings?: readonly string[];
@@ -84,6 +86,7 @@ export async function prepareDynamicStartupRuntime(
   try {
     const applied = await applySnapshotSourcesToRuntime(runtime, entry.snapshotSources, {
       missingLabel: "dynamic startup artifact",
+      hostFileBackingMode: entry.hostFileBackingMode,
     });
     if (applied.skipReason) {
       runtime.destroy();

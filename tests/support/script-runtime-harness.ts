@@ -7,6 +7,7 @@ import {
   runtimeDebugSummary,
 } from "./runtime-workload.js";
 import {
+  type SnapshotBuildOptions,
   type SnapshotSource,
   applySnapshotSourcesToRuntime,
   buildSnapshotFromSources,
@@ -24,6 +25,7 @@ export interface ScriptRuntimeEntry {
   env: readonly string[];
   timeoutMs: number;
   guestMemoryPolicyLimitBytes: number;
+  hostFileBackingMode?: SnapshotBuildOptions["hostFileBackingMode"];
   snapshotSources: readonly SnapshotSource[];
   expectedSubstrings: readonly string[];
   forbiddenSubstrings?: readonly string[];
@@ -68,6 +70,7 @@ export async function prepareScriptRuntime(
   try {
     const applied = await applySnapshotSourcesToRuntime(runtime, entry.snapshotSources, {
       missingLabel: "script runtime artifact",
+      hostFileBackingMode: entry.hostFileBackingMode,
     });
     if (applied.skipReason) {
       runtime.destroy();
