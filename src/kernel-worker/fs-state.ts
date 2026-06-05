@@ -229,6 +229,44 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     return source.readRange(sourceOffset + fileOffset, readLength);
   }
 
+  function createSourceBackedFileForInode(ino: number, expectedSize: number): number | null {
+    const extent = backingExtentsByIno.get(ino);
+    if (!extent || expectedSize < 0) {
+      return null;
+    }
+    const source = backingSourcesByIdentity.get(extent.sourceIdentity);
+    if (!source) {
+      return null;
+    }
+    const sourceOffset = Math.floor(extent.offset ?? 0);
+    const extentLength = Math.floor(extent.length ?? expectedSize);
+    if (
+      sourceOffset < 0
+      || extentLength < 0
+      || extentLength !== expectedSize
+      || sourceOffset + extentLength > source.byteLength
+    ) {
+      return null;
+    }
+    const stat = backingStore.createSourceFile({
+      byteLength: expectedSize,
+      readRange(offset, length) {
+        if (
+          !Number.isInteger(offset)
+          || !Number.isInteger(length)
+          || offset < 0
+          || length < 0
+          || offset + length > expectedSize
+        ) {
+          return null;
+        }
+        return source.readRange(sourceOffset + offset, length);
+      },
+    });
+    fileObjectIdsByIno.set(ino, stat.fileObjectId);
+    return stat.fileObjectId;
+  }
+
   function readBackingFileByInode(ino: number): Uint8Array | null {
     const fileObjectId = fileObjectIdsByIno.get(ino);
     if (fileObjectId === undefined) {
@@ -273,11 +311,18 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     try {
       let fileObjectId = fileObjectIdsByIno.get(ino);
       if (fileObjectId === undefined) {
-        const file = backingStore.createFile();
-        fileObjectId = file.fileObjectId;
-        fileObjectIdsByIno.set(ino, fileObjectId);
+        const expectedSize = Number(deps.getCanonicalExports().memfs_file_size(ino));
+        const sourceFileObjectId = createSourceBackedFileForInode(ino, expectedSize);
+        if (sourceFileObjectId !== null) {
+          fileObjectId = sourceFileObjectId;
+        } else {
+          const file = backingStore.createFile();
+          fileObjectId = file.fileObjectId;
+          fileObjectIdsByIno.set(ino, fileObjectId);
+        }
       }
       const stat = backingStore.write(fileObjectId, offset, data);
+      backingExtentsByIno.delete(ino);
       const published = readInodeRecord(deps.getSabPageCache(), ino);
       publishInode(deps.getSabPageCache(), ino, {
         mode: published?.mode ?? 0o100644,
