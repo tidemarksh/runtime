@@ -1,6 +1,9 @@
 import {
   existsSync,
+  closeSync,
   lstatSync,
+  openSync,
+  readSync,
   readFileSync,
   realpathSync,
   readdirSync,
@@ -20,7 +23,8 @@ export interface SnapshotBuildOptions {
   baseDirs?: readonly string[];
   missingLabel?: string;
   artifactMaterializationBudgetBytes?: number;
-  hostFileBackingMode?: "write" | "source";
+  hostFileBackingMode?: "write" | "source" | "source-ranges";
+  hostFileBackingRangeChunkBytes?: number;
 }
 
 export interface SnapshotBuildResult {
@@ -306,6 +310,54 @@ function createHostFileBackingSourceTasks(plan: SnapshotPlan): HostFileBackingSo
   });
 }
 
+function normalizeRangeChunkBytes(value: number | undefined): number {
+  const fallback = 1024 * 1024;
+  if (value === undefined) {
+    return fallback;
+  }
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`invalid host file backing range chunk size: ${value}`);
+  }
+  return Math.floor(value);
+}
+
+async function registerHostFileBackingSourceRanges(
+  runtime: RuntimeInstance,
+  files: HostFileBackingSourceTask[],
+  chunkBytes: number,
+): Promise<void> {
+  if (typeof runtime.registerFsBackingSourceRange !== "function") {
+    throw new Error("runtime does not support range-backed snapshot host files");
+  }
+  for (const file of files) {
+    let fd: number | null = null;
+    try {
+      fd = openSync(file.hostPath, "r");
+      let offset = 0;
+      while (offset < file.size) {
+        const readLength = Math.min(chunkBytes, file.size - offset);
+        const buffer = new Uint8Array(readLength);
+        const bytesRead = readSync(fd, buffer, 0, readLength, offset);
+        if (bytesRead <= 0) {
+          break;
+        }
+        const data = bytesRead === buffer.byteLength ? buffer : buffer.subarray(0, bytesRead);
+        await runtime.registerFsBackingSourceRange(file.sourceIdentity, file.size, offset, data);
+        offset += bytesRead;
+      }
+    } catch (error) {
+      if (isSkippableHostFsError(error)) {
+        continue;
+      }
+      throw error;
+    } finally {
+      if (fd !== null) {
+        closeSync(fd);
+      }
+    }
+  }
+}
+
 function buildSnapshotPlan(
   sources: readonly SnapshotSource[],
   options: SnapshotBuildOptions = {},
@@ -372,11 +424,19 @@ export async function applySnapshotSourcesToRuntime(
     return { skipReason: plan.skipReason };
   }
   assertArtifactMaterializationBudget(plan, options.artifactMaterializationBudgetBytes);
-  const sourceFiles = options.hostFileBackingMode === "source"
+  const sourceFiles = options.hostFileBackingMode === "source" || options.hostFileBackingMode === "source-ranges"
     ? createHostFileBackingSourceTasks(plan)
     : [];
 
   await runtime.applyFsSnapshot([...plan.entries.values()]);
+  if (options.hostFileBackingMode === "source-ranges") {
+    await registerHostFileBackingSourceRanges(
+      runtime,
+      sourceFiles,
+      normalizeRangeChunkBytes(options.hostFileBackingRangeChunkBytes),
+    );
+    return {};
+  }
   if (options.hostFileBackingMode === "source") {
     if (typeof runtime.registerFsBackingSource !== "function") {
       throw new Error("runtime does not support source-backed snapshot host files");
