@@ -285,6 +285,67 @@ test("applySnapshotSourcesToRuntime can register host files for demand backing",
   }
 });
 
+test("applySnapshotSourcesToRuntime can register host files as content-addressed backing sources", async () => {
+  const root = mkdtempSync(join(tmpdir(), "tidemark-snapshot-content-addressed-"));
+  const appliedSnapshots: FsSnapshotEntry[][] = [];
+  const registeredSources: Array<{ sourceIdentity: string; digest: string; data: Uint8Array }> = [];
+  const writtenFiles: Array<{ path: string; data: Uint8Array; mode?: number; owned: boolean }> = [];
+  try {
+    const hostFile = join(root, "content.bin");
+    const fileData = new TextEncoder().encode("content-addressed-bytes");
+    writeFileSync(hostFile, fileData);
+    const expectedDigest = "sha256:c02b63010fac71ea1434535c90525f50d394e75cb2699aef67ff736a2511a093";
+
+    const runtime = {
+      applyFsSnapshot: async (entries: FsSnapshotEntry[]) => {
+        appliedSnapshots.push(entries);
+      },
+      registerFsContentAddressedBackingSource: async (
+        sourceIdentity: string,
+        digest: string,
+        data: Uint8Array,
+      ) => {
+        registeredSources.push({ sourceIdentity, digest, data: new Uint8Array(data) });
+      },
+      writeFileOwned: async (path: string, data: Uint8Array, mode?: number) => {
+        writtenFiles.push({ path, data: new Uint8Array(data), mode, owned: true });
+      },
+      fs: {
+        writeFile: async (path: string, data: Uint8Array, mode?: number) => {
+          writtenFiles.push({ path, data: new Uint8Array(data), mode, owned: false });
+        },
+      },
+    };
+
+    const result = await applySnapshotSourcesToRuntime(
+      runtime as never,
+      [{ kind: "file", hostPath: hostFile, guestPath: "/guest/content.bin", mode: 0o600 }],
+      { hostFileBackingMode: "content-addressed-source" },
+    );
+
+    expect(result.skipReason).toBeUndefined();
+    const fileEntry = appliedSnapshots[0].find((entry) => (
+      entry.kind === "file" && entry.path === "/guest/content.bin"
+    ));
+    expect(fileEntry?.kind === "file" ? fileEntry.data : undefined).toBeUndefined();
+    expect(fileEntry?.backingExtent).toEqual({
+      sourceIdentity: expectedDigest,
+      digest: expectedDigest,
+      length: fileData.length,
+    });
+    expect(registeredSources).toEqual([
+      {
+        sourceIdentity: expectedDigest,
+        digest: expectedDigest,
+        data: fileData,
+      },
+    ]);
+    expect(writtenFiles).toHaveLength(0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("applySnapshotSourcesToRuntime rejects over-budget host artifacts before mutating runtime", async () => {
   const root = mkdtempSync(join(tmpdir(), "tidemark-snapshot-budget-"));
   const appliedSnapshots: FsSnapshotEntry[][] = [];

@@ -9,6 +9,7 @@ import {
   readdirSync,
   statSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import type { FsSnapshotEntry } from "../../src/fs/types.js";
 import type { RuntimeInstance } from "./runtime-workload.js";
 
@@ -23,7 +24,7 @@ export interface SnapshotBuildOptions {
   baseDirs?: readonly string[];
   missingLabel?: string;
   artifactMaterializationBudgetBytes?: number;
-  hostFileBackingMode?: "write" | "source" | "source-ranges" | "host-file";
+  hostFileBackingMode?: "write" | "source" | "source-ranges" | "host-file" | "content-addressed-source";
   hostFileBackingRangeChunkBytes?: number;
 }
 
@@ -48,6 +49,7 @@ interface SnapshotPlan {
 
 type HostFileBackingSourceTask = HostFileSnapshotTask & {
   sourceIdentity: string;
+  digest?: string;
 };
 
 let nextSnapshotSourceId = 1;
@@ -293,9 +295,19 @@ function assertArtifactMaterializationBudget(plan: SnapshotPlan, budgetValue: nu
   }
 }
 
-function createHostFileBackingSourceTasks(plan: SnapshotPlan): HostFileBackingSourceTask[] {
+function sha256Digest(data: Uint8Array): string {
+  return `sha256:${createHash("sha256").update(data).digest("hex")}`;
+}
+
+function createHostFileBackingSourceTasks(
+  plan: SnapshotPlan,
+  options: { contentAddressed?: boolean } = {},
+): HostFileBackingSourceTask[] {
   return plan.hostFiles.map((file) => {
-    const sourceIdentity = `snapshot-source:${nextSnapshotSourceId++}`;
+    const digest = options.contentAddressed
+      ? sha256Digest(new Uint8Array(readFileSync(file.hostPath)))
+      : undefined;
+    const sourceIdentity = digest ?? `snapshot-source:${nextSnapshotSourceId++}`;
     plan.entries.set(file.guestPath, {
       kind: "file",
       path: file.guestPath,
@@ -303,10 +315,11 @@ function createHostFileBackingSourceTasks(plan: SnapshotPlan): HostFileBackingSo
       mode: file.mode,
       backingExtent: {
         sourceIdentity,
+        ...(digest ? { digest } : {}),
         length: file.size,
       },
     });
-    return { ...file, sourceIdentity };
+    return { ...file, sourceIdentity, digest };
   });
 }
 
@@ -374,6 +387,27 @@ async function registerHostFileBackingSources(
       }
       throw error;
     }
+  }
+}
+
+async function registerContentAddressedHostFileBackingSources(
+  runtime: RuntimeInstance,
+  files: HostFileBackingSourceTask[],
+): Promise<void> {
+  if (typeof runtime.registerFsContentAddressedBackingSource !== "function") {
+    throw new Error("runtime does not support content-addressed snapshot host files");
+  }
+  for (const file of files) {
+    let data: Uint8Array;
+    try {
+      data = new Uint8Array(readFileSync(file.hostPath));
+    } catch (error) {
+      if (isSkippableHostFsError(error)) {
+        continue;
+      }
+      throw error;
+    }
+    await runtime.registerFsContentAddressedBackingSource(file.sourceIdentity, file.digest ?? sha256Digest(data), data);
   }
 }
 
@@ -446,8 +480,17 @@ export async function applySnapshotSourcesToRuntime(
   const sourceFiles = options.hostFileBackingMode === "source"
     || options.hostFileBackingMode === "source-ranges"
     || options.hostFileBackingMode === "host-file"
-    ? createHostFileBackingSourceTasks(plan)
+    || options.hostFileBackingMode === "content-addressed-source"
+    ? createHostFileBackingSourceTasks(plan, {
+      contentAddressed: options.hostFileBackingMode === "content-addressed-source",
+    })
     : [];
+
+  if (options.hostFileBackingMode === "content-addressed-source") {
+    await runtime.applyFsSnapshot([...plan.entries.values()]);
+    await registerContentAddressedHostFileBackingSources(runtime, sourceFiles);
+    return {};
+  }
 
   await runtime.applyFsSnapshot([...plan.entries.values()]);
   if (options.hostFileBackingMode === "host-file") {
