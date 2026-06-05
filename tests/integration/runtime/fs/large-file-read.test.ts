@@ -134,6 +134,14 @@ function checksum(bytes: Uint8Array): bigint {
   return sum;
 }
 
+function buildResidentWitnessInput(): Uint8Array {
+  const data = new Uint8Array(4096);
+  for (let offset = 0; offset < data.length; offset += 1) {
+    data[offset] = (offset * 29 + 7) & 0xff;
+  }
+  return data;
+}
+
 function compactExecutionStats(
   stats: ReturnType<Awaited<ReturnType<typeof Runtime.create>>["debugExecutionStats"]>,
 ): string {
@@ -210,6 +218,56 @@ async function spawnWithOutputAndStats(
     }
   }
 }
+
+test("resident page fill witness: repeated guest reads keep snapshot input resident", async () => {
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return;
+  }
+  const probeBytes = buildLargeFileReadProbe();
+  if (!probeBytes) {
+    return;
+  }
+  const input = buildResidentWitnessInput();
+  const expected = checksum(input);
+
+  const runtime = await Runtime.create({
+    wasmBytes,
+    guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
+    maxProcessMemoryPages: 32768,
+  });
+  try {
+    const snapshot = buildSnapshotFromSources([
+      { kind: "inlineFile", guestPath: largeFilePath, data: input, mode: 0o644 },
+    ]);
+    await runtime.applyFsSnapshot(snapshot.entries ?? []);
+    const before = await runtime.debugPageCachePath(largeFilePath);
+    expect(before, "snapshot input should publish metadata").not.toBeNull();
+    expect(before?.dataOff, "snapshot input should be backing-store backed").toBe(0);
+    expect(before?.residentPages ?? 0).toBe(0);
+
+    for (const runLabel of ["first", "second"]) {
+      const result = await spawnWithOutputAndStats(
+        runtime,
+        probeBytes,
+        ["/work/large-file-read", largeFilePath],
+        ["LC_ALL=C", "LANG=C"],
+        60_000,
+        { cwd: "/", stdin: "closed" },
+      );
+      expect(result.exitCode, `${runLabel} run\n${result.output}${result.debugInfo ? `\n${result.debugInfo}` : ""}`).toBe(0);
+      expect(result.output).toContain(`large-file-read bytes=${input.length}`);
+      expect(result.output).toContain(`checksum=${expected.toString()}`);
+    }
+
+    const after = await runtime.debugPageCachePath(largeFilePath);
+    expect(after, "snapshot input should remain published").not.toBeNull();
+    expect(after?.dataOff, "resident fill must not materialize whole-file inode data").toBe(0);
+    expect(after?.residentPages ?? 0).toBeGreaterThan(0);
+  } finally {
+    runtime.destroy();
+  }
+}, 90_000);
 
 test("large regular file read local gate: guest sequentially reads package-index sized input", async () => {
   const wasmBytes = readKernelWasm();
