@@ -173,68 +173,19 @@ export class MemoryFileBackingStore {
     return bytes.byteLength <= readLen ? bytes : bytes.slice(0, readLen);
   }
 
-  write(fileObjectId: FileObjectId, offset: number, data: Uint8Array): FileBackingStat {
-    if (!Number.isInteger(offset) || offset < 0) {
-      throw new RangeError(`invalid file write offset: ${offset}`);
-    }
+  replace(fileObjectId: FileObjectId, data: Uint8Array): FileBackingStat {
     const file = this.files.get(fileObjectId);
     if (!file) {
       throw new Error(`file object not found: ${fileObjectId}`);
     }
-    const fileData = this.materializeFile(fileObjectId, file);
-    const end = offset + data.length;
-    if (!Number.isFinite(end) || end > 0xffffffff) {
-      throw new RangeError(`file write exceeds supported size: ${end}`);
-    }
-    if (end > fileData.length) {
-      const next = new Uint8Array(end);
-      next.set(fileData);
-      file.data = next;
-    }
-    file.data!.set(data, offset);
+    file.data = new Uint8Array(data);
+    file.source = null;
     file.generation += 1;
-    return this.stat(fileObjectId)!;
-  }
-
-  truncate(fileObjectId: FileObjectId, size: number): FileBackingStat {
-    if (!Number.isInteger(size) || size < 0 || size > 0xffffffff) {
-      throw new RangeError(`invalid file size: ${size}`);
-    }
-    const file = this.files.get(fileObjectId);
-    if (!file) {
-      throw new Error(`file object not found: ${fileObjectId}`);
-    }
-    const fileData = this.materializeFile(fileObjectId, file);
-    if (size !== fileData.length) {
-      const next = new Uint8Array(size);
-      next.set(fileData.subarray(0, Math.min(size, fileData.length)));
-      file.data = next;
-      file.generation += 1;
-    }
     return this.stat(fileObjectId)!;
   }
 
   private fileSize(file: MemoryFileObject): number {
     return file.data?.byteLength ?? file.source?.byteLength ?? 0;
-  }
-
-  private materializeFile(fileObjectId: FileObjectId, file: MemoryFileObject): Uint8Array {
-    if (file.data) {
-      return file.data;
-    }
-    const size = this.fileSize(file);
-    if (size === 0) {
-      file.data = new Uint8Array();
-      file.source = null;
-      return file.data;
-    }
-    const bytes = file.source?.readRange(0, size);
-    if (!bytes || bytes.byteLength !== size) {
-      throw new Error(`file source unavailable: ${fileObjectId}`);
-    }
-    file.data = new Uint8Array(bytes);
-    file.source = null;
-    return file.data;
   }
 }
 
@@ -246,11 +197,11 @@ export function inodeOffset(ino: number): number {
 }
 
 /**
- * Publish (or update) an inode's metadata and file data to the SAB page cache.
- * Called by the kernel Worker after MemFS writes.
+ * Publish (or update) an inode's metadata to the SAB page cache.
+ * File bytes live in resident page records or backing objects.
  *
  * Uses seqlock protocol:
- *   1. Write data to data region (append-only)
+ *   1. Write the name to the data region (append-only)
  *   2. version = odd (writing)
  *   3. Update metadata atomics
  *   4. version = even (stable)
@@ -267,14 +218,13 @@ export function publishInode(
     fileObjectId?: number;
     generation?: number;
   },
-  fileData: Uint8Array | null,
 ): void {
   const u32 = new Uint32Array(sab);
   const u8 = new Uint8Array(sab);
   const base = inodeOffset(ino);
   const base32 = base >>> 2;
   const dataRegionEnd = dataRegionLimit(sab);
-  const fileObjectId = meta.fileObjectId ?? (fileData === null && meta.size > 0 ? ino : 0);
+  const fileObjectId = meta.fileObjectId ?? (meta.size > 0 ? ino : 0);
   const generation = meta.generation ?? 1;
 
   function allocateDataRegion(byteLength: number): number {
@@ -289,16 +239,6 @@ export function publishInode(
     }
     Atomics.store(u32, OFF_DATA_USED >>> 2, currentUsed + byteLength);
     return start;
-  }
-
-  // Allocate space in data region for file data
-  let dataOff = 0;
-  if (fileData && fileData.length > 0) {
-    dataOff = allocateDataRegion(fileData.length);
-    if (dataOff === 0) {
-      return;
-    }
-    u8.set(fileData, dataOff);
   }
 
   // Allocate space for name
@@ -317,7 +257,7 @@ export function publishInode(
   Atomics.store(u32, base32 + (INODE_OFF_VERSION >>> 2), oddVersion);
 
   // Update metadata
-  Atomics.store(u32, base32 + (INODE_OFF_DATA_OFF >>> 2), dataOff);
+  Atomics.store(u32, base32 + (INODE_OFF_DATA_OFF >>> 2), 0);
   Atomics.store(u32, base32 + (INODE_OFF_DATA_SIZE >>> 2), meta.size);
   Atomics.store(u32, base32 + (INODE_OFF_MODE >>> 2), meta.mode);
   Atomics.store(u32, base32 + (INODE_OFF_PARENT >>> 2), meta.parentIno);
@@ -335,21 +275,6 @@ export function publishInode(
   if (ino >= inodeCount) {
     Atomics.store(u32, OFF_INODE_COUNT >>> 2, ino + 1);
   }
-}
-
-function allocateDataRegion(sab: SharedArrayBuffer, byteLength: number): number {
-  if (byteLength <= 0) {
-    return 0;
-  }
-  const u32 = new Uint32Array(sab);
-  const currentUsed = Atomics.load(u32, OFF_DATA_USED >>> 2);
-  const start = DATA_REGION_OFFSET + currentUsed;
-  const end = start + byteLength;
-  if (end > dataRegionLimit(sab)) {
-    return 0;
-  }
-  Atomics.store(u32, OFF_DATA_USED >>> 2, currentUsed + byteLength);
-  return start;
 }
 
 function residentPageRecordCount(sab: SharedArrayBuffer): number {
@@ -991,85 +916,6 @@ export function readDirtyResidentFileData(
     out.set(page.bytes.subarray(0, Math.min(page.bytes.length, out.length - pageStart)), pageStart);
   }
   return out;
-}
-
-export function writeFileData(
-  sab: SharedArrayBuffer,
-  ino: number,
-  offset: number,
-  data: Uint8Array,
-): number {
-  if (!Number.isInteger(ino) || ino <= 0 || ino >= MAX_INODES || offset < 0) {
-    return -22;
-  }
-  if (data.length === 0) {
-    return 0;
-  }
-
-  const u32 = new Uint32Array(sab);
-  const u8 = new Uint8Array(sab);
-  const base = inodeOffset(ino);
-  if (base < INODE_TABLE_OFFSET || base + INODE_ENTRY_SIZE > sab.byteLength) {
-    return -22;
-  }
-  const base32 = base >>> 2;
-  const oldNameOff = Atomics.load(u32, base32 + (INODE_OFF_NAME_OFF >>> 2));
-  const oldNameLen = Atomics.load(u32, base32 + (INODE_OFF_NAME_LEN >>> 2));
-  const oldRecord = readInodeRecord(sab, ino);
-  const oldSize = oldRecord?.size ?? 0;
-  const oldDataOff = oldRecord?.dataOff ?? 0;
-  const end = offset + data.length;
-  const nextSize = Math.max(oldSize, end);
-  if (!Number.isFinite(nextSize) || nextSize > 0xffffffff) {
-    return -28;
-  }
-
-  let dataOff = oldDataOff;
-  if (
-    oldDataOff >= DATA_REGION_OFFSET
-    && end <= oldSize
-    && oldDataOff + end <= sab.byteLength
-  ) {
-    u8.set(data, oldDataOff + offset);
-  } else if (
-    oldDataOff >= DATA_REGION_OFFSET
-    && offset === oldSize
-    && oldDataOff + oldSize === DATA_REGION_OFFSET + Atomics.load(u32, OFF_DATA_USED >>> 2)
-    && oldDataOff + nextSize <= sab.byteLength
-  ) {
-    u8.set(data, oldDataOff + offset);
-    Atomics.store(u32, OFF_DATA_USED >>> 2, oldDataOff + nextSize - DATA_REGION_OFFSET);
-  } else {
-    dataOff = allocateDataRegion(sab, nextSize);
-    if (dataOff === 0) {
-      return -28;
-    }
-    if (oldRecord && oldRecord.dataOff >= DATA_REGION_OFFSET && oldRecord.size > 0) {
-      u8.set(readFileData(sab, oldRecord.dataOff, oldRecord.size, 0, oldRecord.size), dataOff);
-    }
-    u8.set(data, dataOff + offset);
-  }
-
-  const currentVersion = Atomics.load(u32, base32 + (INODE_OFF_VERSION >>> 2));
-  const oddVersion = (currentVersion | 1) + (currentVersion & 1 ? 1 : 0);
-  invalidateResidentPages(sab, ino);
-  Atomics.store(u32, base32 + (INODE_OFF_VERSION >>> 2), oddVersion);
-  Atomics.store(u32, base32 + (INODE_OFF_DATA_OFF >>> 2), dataOff);
-  Atomics.store(u32, base32 + (INODE_OFF_DATA_SIZE >>> 2), nextSize);
-  Atomics.store(u32, base32 + (INODE_OFF_MODE >>> 2), oldRecord?.mode ?? 0o100644);
-  Atomics.store(u32, base32 + (INODE_OFF_PARENT >>> 2), oldRecord?.parentIno ?? 0);
-  Atomics.store(u32, base32 + (INODE_OFF_NAME_OFF >>> 2), oldNameLen > 0 ? oldNameOff : 0);
-  Atomics.store(u32, base32 + (INODE_OFF_NAME_LEN >>> 2), oldNameLen);
-  Atomics.store(u32, base32 + (INODE_OFF_NEXT_SIBLING >>> 2), oldRecord?.nextSibling ?? 0);
-  Atomics.store(u32, base32 + (INODE_OFF_FILE_OBJECT_ID >>> 2), 0);
-  Atomics.store(u32, base32 + (INODE_OFF_GENERATION >>> 2), (oldRecord?.generation ?? 0) + 1);
-  Atomics.store(u32, base32 + (INODE_OFF_VERSION >>> 2), oddVersion + 1);
-
-  const inodeCount = Atomics.load(u32, OFF_INODE_COUNT >>> 2);
-  if (ino >= inodeCount) {
-    Atomics.store(u32, OFF_INODE_COUNT >>> 2, ino + 1);
-  }
-  return data.length;
 }
 
 /**

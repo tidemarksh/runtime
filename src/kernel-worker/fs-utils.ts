@@ -215,7 +215,7 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
       parentIno: 1,
       name: new Uint8Array(),
       nextSibling: 0,
-    }, null);
+    });
   }
 
   function ensureSeedDirEntries(path: string, mode = 0o755): void {

@@ -553,7 +553,7 @@ test("processFs demand-fills page-aligned source-backed read ranges before proce
     nextSibling: 0,
     fileObjectId: 11,
     generation: 1,
-  }, null);
+  });
 
   const processControl = createKernelWorkerProcessControl({
     getCanonicalExports: () => canonicalExports,

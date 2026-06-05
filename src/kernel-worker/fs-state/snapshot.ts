@@ -110,7 +110,7 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
       nextSibling: 0,
       fileObjectId: backingStat?.fileObjectId,
       generation: backingStat?.generation,
-    }, null);
+    });
   }
 
   function resolvePathIn(targetExports: KernelExports, path: string): number {
@@ -306,7 +306,7 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
         nextSibling: 0,
         fileObjectId: backingStat?.fileObjectId,
         generation: backingStat?.generation,
-      }, null);
+      });
     }
   }
 

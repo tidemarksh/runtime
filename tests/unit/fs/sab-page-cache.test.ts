@@ -7,10 +7,8 @@ import {
   MemoryFileBackingStore,
   publishInode,
   publishResidentPage,
-  readFileData,
   readInodeMeta,
   readInodeRecord,
-  writeFileData,
 } from "../../../src/fs/sab-page-cache.js";
 import { createKernelEnv } from "../../../src/wasm/env.js";
 
@@ -22,7 +20,7 @@ test("memory atomic notify accepts wasm64 BigInt pointers", () => {
   expect(env.tidemark_memory_atomic_notify(BigInt(memory.buffer.byteLength), 1n)).toBe(0);
 });
 
-test("publishInode exposes file metadata and bytes when capacity exists", () => {
+test("publishInode exposes file metadata without inline file bytes", () => {
   const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 128);
   const name = new TextEncoder().encode("file");
   const fileData = new Uint8Array(8).fill(0x41);
@@ -33,7 +31,7 @@ test("publishInode exposes file metadata and bytes when capacity exists", () => 
     parentIno: 1,
     name,
     nextSibling: 0,
-  }, fileData);
+  });
 
   const meta = readInodeMeta(sab, 2);
   const record = readInodeRecord(sab, 2);
@@ -41,11 +39,12 @@ test("publishInode exposes file metadata and bytes when capacity exists", () => 
   expect(record).not.toBeNull();
   expect(meta?.size).toBe(fileData.length);
   expect(meta?.mode).toBe(0o100755);
-  expect(meta?.dataOff).toBeGreaterThanOrEqual(DATA_REGION_OFFSET);
+  expect(meta?.dataOff).toBe(0);
+  expect(meta?.fileObjectId).toBe(2);
   expect(record?.name).toEqual(name);
 });
 
-test("page-cache read/stat report miss when inode metadata is out of cache bounds", () => {
+test("page-cache read reports resident miss while stat reports metadata-only inode", () => {
   const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 16);
   const memory = new WebAssembly.Memory({ initial: 1 });
   const env = createKernelEnv(memory, { sabPageCache: sab });
@@ -58,10 +57,10 @@ test("page-cache read/stat report miss when inode metadata is out of cache bound
     parentIno: 1,
     name,
     nextSibling: 0,
-  }, fileData);
+  });
 
   expect(env.tidemark_page_cache_read(2, 0n, 0, 8)).toBe(-2n);
-  expect(env.tidemark_page_cache_stat(2, 16)).toBe(0);
+  expect(env.tidemark_page_cache_stat(2, 16)).toBe(1);
 });
 
 test("page-cache read reports miss without using backing data when resident bytes are absent", () => {
@@ -77,7 +76,7 @@ test("page-cache read reports miss without using backing data when resident byte
     parentIno: 1,
     name,
     nextSibling: 0,
-  }, null);
+  });
 
   const env = createKernelEnv(memory, {
     sabPageCache: sab,
@@ -102,7 +101,7 @@ test("page-cache read reports miss when no resident page exists before eof", () 
     parentIno: 1,
     name: new TextEncoder().encode("external"),
     nextSibling: 0,
-  }, null);
+  });
 
   const env = createKernelEnv(memory, {
     sabPageCache: sab,
@@ -129,7 +128,7 @@ test("page-cache read uses resident pages filled by the status path", () => {
     nextSibling: 0,
     fileObjectId: 2,
     generation: 1,
-  }, null);
+  });
 
   expect(publishResidentPage(sab, 2, 0, backing)).toBe(true);
 
@@ -151,7 +150,7 @@ test("page-cache read uses resident pages filled by the status path", () => {
     nextSibling: 0,
     fileObjectId: 2,
     generation: 2,
-  }, null);
+  });
   expect(debugResidentPageCountForInode(sab, 2)).toBe(0);
   expect(directEnv.tidemark_page_cache_read(2, 2n, 32, 3)).toBe(-2n);
 });
@@ -169,7 +168,7 @@ test("page-cache clean resident eviction returns miss until status path refills"
     nextSibling: 0,
     fileObjectId: 2,
     generation: 1,
-  }, null);
+  });
 
   expect(publishResidentPage(sab, 2, 0, backing)).toBe(true);
   const directEnv = createKernelEnv(memory, { sabPageCache: sab });
@@ -215,7 +214,7 @@ test("page-cache read can span resident pages filled by the status path", () => 
     nextSibling: 0,
     fileObjectId: 2,
     generation: 1,
-  }, null);
+  });
 
   expect(publishResidentPage(sab, 2, 0, backing.subarray(0, 4096))).toBe(true);
   expect(publishResidentPage(sab, 2, 1, backing.subarray(4096))).toBe(true);
@@ -244,7 +243,7 @@ test("page-cache zero-length read on kernel-worker backing data returns zero", (
     parentIno: 1,
     name,
     nextSibling: 0,
-  }, null);
+  });
 
   const env = createKernelEnv(memory, {
     sabPageCache: sab,
@@ -271,7 +270,7 @@ test("page-cache write publishes dirty resident data without updating backing da
     parentIno: 1,
     name: new TextEncoder().encode("external"),
     nextSibling: 0,
-  }, null);
+  });
 
   const env = createKernelEnv(memory, {
     sabPageCache: sab,
@@ -303,7 +302,7 @@ test("page-cache supports kernel-sized high inode numbers", () => {
     parentIno: 1,
     name,
     nextSibling: 0,
-  }, fileData);
+  });
 
   const meta = readInodeMeta(sab, ino);
   const record = readInodeRecord(sab, ino);
@@ -313,62 +312,7 @@ test("page-cache supports kernel-sized high inode numbers", () => {
   expect(record?.name).toEqual(name);
 });
 
-test("readFileData honors byte offsets", () => {
-  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 256);
-  const name = new TextEncoder().encode("file");
-  const fileData = Uint8Array.from({ length: 64 }, (_value, index) => index);
-
-  publishInode(sab, 2, {
-    mode: 0o100644,
-    size: fileData.length,
-    parentIno: 1,
-    name,
-    nextSibling: 0,
-  }, fileData);
-
-  const meta = readInodeMeta(sab, 2);
-  expect(meta).not.toBeNull();
-  expect(readFileData(sab, meta!.dataOff, meta!.size, 16, 8)).toEqual(fileData.slice(16, 24));
-  expect(readFileData(sab, meta!.dataOff, meta!.size, 60, 16)).toEqual(fileData.slice(60));
-});
-
-test("writeFileData appends in place and preserves inode metadata", () => {
-  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 256);
-  const name = new TextEncoder().encode("file");
-  const initial = new Uint8Array([1, 2, 3, 4]);
-  const append = new Uint8Array([5, 6, 7]);
-
-  publishInode(sab, 2, {
-    mode: 0o100644,
-    size: initial.length,
-    parentIno: 1,
-    name,
-    nextSibling: 9,
-  }, initial);
-  const before = readInodeRecord(sab, 2);
-  expect(before).not.toBeNull();
-
-  expect(writeFileData(sab, 2, initial.length, append)).toBe(append.length);
-  const moved = readInodeRecord(sab, 2);
-  expect(moved).not.toBeNull();
-  expect(moved?.dataOff).toBeGreaterThan(before!.dataOff);
-
-  const secondAppend = new Uint8Array([8, 9]);
-  expect(writeFileData(sab, 2, initial.length + append.length, secondAppend)).toBe(secondAppend.length);
-
-  const after = readInodeRecord(sab, 2);
-  expect(after).not.toBeNull();
-  expect(after?.dataOff).toBe(moved?.dataOff);
-  expect(after?.size).toBe(initial.length + append.length + secondAppend.length);
-  expect(after?.mode).toBe(0o100644);
-  expect(after?.parentIno).toBe(1);
-  expect(after?.name).toEqual(name);
-  expect(after?.nextSibling).toBe(9);
-  expect(readFileData(sab, after!.dataOff, after!.size, 0, after!.size))
-    .toEqual(new Uint8Array([...initial, ...append, ...secondAppend]));
-});
-
-test("source-backed file materializes for backing writes and truncates", () => {
+test("source-backed file replacement does not materialize the previous source", () => {
   const backing = new MemoryFileBackingStore();
   const data = new TextEncoder().encode("abcdef");
   const calls: Array<[number, number]> = [];
@@ -380,17 +324,12 @@ test("source-backed file materializes for backing writes and truncates", () => {
     },
   });
 
-  const written = backing.write(file.fileObjectId, 3, new TextEncoder().encode("XYZ"));
-  expect(written.size).toBe(6);
-  expect(written.generation).toBe(file.generation + 1);
-  expect(backing.read(file.fileObjectId, 0, 16)).toEqual(new TextEncoder().encode("abcXYZ"));
-  expect(calls).toEqual([[0, data.length]]);
-
-  const truncated = backing.truncate(file.fileObjectId, 4);
-  expect(truncated.size).toBe(4);
-  expect(truncated.generation).toBe(written.generation + 1);
-  expect(backing.read(file.fileObjectId, 0, 16)).toEqual(new TextEncoder().encode("abcX"));
-  expect(calls).toEqual([[0, data.length]]);
+  const replacement = new TextEncoder().encode("XYZ");
+  const replaced = backing.replace(file.fileObjectId, replacement);
+  expect(replaced.size).toBe(replacement.length);
+  expect(replaced.generation).toBe(file.generation + 1);
+  expect(backing.read(file.fileObjectId, 0, 16)).toEqual(replacement);
+  expect(calls).toEqual([]);
 });
 
 test("live resident records use file object generation and fixed reusable frames", () => {
@@ -409,7 +348,7 @@ test("live resident records use file object generation and fixed reusable frames
     nextSibling: 0,
     fileObjectId: 44,
     generation: 7,
-  }, null);
+  });
 
   expect(publishResidentPage(sab, 2, 0, backing.subarray(0, 4096))).toBe(true);
 
@@ -437,7 +376,7 @@ test("live resident records use file object generation and fixed reusable frames
     nextSibling: 0,
     fileObjectId: 44,
     generation: 8,
-  }, null);
+  });
   expect(debugResidentPageCountForInode(sab, 2)).toBe(0);
   expect(directEnv.tidemark_page_cache_read(2, 4096n, 64, 16)).toBe(-2n);
 });

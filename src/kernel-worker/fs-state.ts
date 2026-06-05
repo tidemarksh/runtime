@@ -79,15 +79,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       fileObjectIdsByIno.set(ino, stat.fileObjectId);
       return stat;
     }
-    backingStore.truncate(fileObjectId, 0);
-    if (data.length > 0) {
-      backingStore.write(fileObjectId, 0, data);
-    }
-    const stat = backingStore.stat(fileObjectId);
-    if (!stat) {
-      throw new Error(`backing file object disappeared: ino=${ino}`);
-    }
-    return stat;
+    return backingStore.replace(fileObjectId, data);
   }
 
   function backingMetaForInode(ino: number): Pick<FileBackingStat, "fileObjectId" | "generation"> | undefined {
@@ -410,7 +402,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
           name: new Uint8Array(),
           nextSibling: 0,
           ...backingMetaForInode(ino),
-        }, null);
+        });
       }
       const written = writeDirtyResidentFileData(deps.getSabPageCache(), ino, offset, data, readBackingFileRangeByInode);
       if (written >= 0) {
@@ -440,7 +432,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
           name: new Uint8Array(),
           nextSibling: 0,
           ...backingMetaForInode(ino),
-        }, null);
+        });
       }
       const truncated = truncateDirtyResidentFileData(
         deps.getSabPageCache(),
@@ -480,7 +472,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       ...meta,
       fileObjectId: stat.fileObjectId,
       generation: stat.generation,
-    }, null);
+    });
     const published = readInodeRecord(pageCache, ino);
     if (!published || published.size !== data.length) {
       throw new Error(`failed to publish inode metadata: ino=${ino} dataBytes=${data.length}`);
@@ -511,7 +503,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         parentIno: prevParent,
         name: dirBytes,
         nextSibling: 0,
-      }, null);
+      });
     }
 
     if (parts.length > 0) {
@@ -673,7 +665,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       parentIno,
       name: nameBytes,
       nextSibling: 0,
-    }, null);
+    });
     bumpDirEpoch(deps.getSabPageCache());
     deps.upsertSymlinkSeed(normalized, target, mode);
     if (fanout) {
@@ -926,7 +918,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         name: nameBytes,
         nextSibling: 0,
         ...backingMetaForInode(ino),
-      }, null);
+      });
       published = readInodeRecord(deps.getSabPageCache(), ino);
       if (!published) {
         return false;

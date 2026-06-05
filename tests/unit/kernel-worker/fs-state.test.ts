@@ -40,6 +40,15 @@ function decodeGuestBytes(memory: WebAssembly.Memory, ptr: number, len: number):
   return decoder.decode(new Uint8Array(memory.buffer, ptr, len));
 }
 
+function expectBytesEqual(actual: Uint8Array, expected: Uint8Array): void {
+  expect(actual.byteLength).toBe(expected.byteLength);
+  for (let index = 0; index < expected.byteLength; index += 1) {
+    if (actual[index] !== expected[index]) {
+      throw new Error(`byte mismatch at ${index}: expected ${expected[index]} got ${actual[index]}`);
+    }
+  }
+}
+
 function makeKernelExports(sabPageCache?: SharedArrayBuffer): FakeKernelExports {
   const memory = new WebAssembly.Memory({ initial: 512, maximum: 1024, shared: true });
   const recordsByPath = new Map<string, InodeRecord>();
@@ -411,7 +420,7 @@ function makeFsState(pageCacheDataCapacityBytes = 16 * 1024 * 1024) {
         parentIno: 1,
         name: new Uint8Array(),
         nextSibling: 0,
-      }, null);
+      });
     },
     resolvePathIn: (targetExports, path) => targetExports.memfs_resolve_path(
       (() => {
@@ -457,7 +466,7 @@ test("kernel-worker loadFsSnapshot keeps provided file data page-cache-backed wh
 
   const ino = canonicalExports.fileIno("/lib/runtime.bin");
   expect(ino).toBeGreaterThan(1);
-  expect(fsState.readFile("/lib/runtime.bin")).toEqual(data);
+  expectBytesEqual(fsState.readFile("/lib/runtime.bin"), data);
   expect(canonicalExports.opLog).toContain(`shallow:/lib/runtime.bin:${data.length}`);
   expect(canonicalExports.opLog.some((entry) => entry.startsWith("truncate:/lib/runtime.bin:"))).toBe(false);
   expect(canonicalExports.opLog.some((entry) => entry.startsWith("write:/lib/runtime.bin:"))).toBe(false);
@@ -481,7 +490,7 @@ test("kernel-worker loadFsSnapshot keeps large provided file data page-cache-bac
 
   const ino = canonicalExports.fileIno("/usr/lib/runtime-large.bin");
   expect(ino).toBeGreaterThan(1);
-  expect(fsState.readFile("/usr/lib/runtime-large.bin")).toEqual(data);
+  expectBytesEqual(fsState.readFile("/usr/lib/runtime-large.bin"), data);
   expect(canonicalExports.opLog).toContain(`shallow:/usr/lib/runtime-large.bin:${data.length}`);
   expect(canonicalExports.opLog.some((entry) => entry.startsWith("truncate:/usr/lib/runtime-large.bin:"))).toBe(false);
   expect(canonicalExports.opLog.some((entry) => entry.startsWith("write:/usr/lib/runtime-large.bin:"))).toBe(false);
@@ -879,7 +888,7 @@ test("kernel-worker restorePublishedRegularFileDataFromPageCache externalizes wi
   expect(canonicalExports.opLog).toContain(`external:/lib/runtime.bin:${publishedData.length}`);
   expect(canonicalExports.opLog.some((entry) => entry.startsWith("truncate:/lib/runtime.bin:"))).toBe(false);
   expect(canonicalExports.opLog.some((entry) => entry.startsWith("write:/lib/runtime.bin:"))).toBe(false);
-  expect(fsState.readFile("/lib/runtime.bin")).toEqual(publishedData);
+  expectBytesEqual(fsState.readFile("/lib/runtime.bin"), publishedData);
 });
 
 test("kernel-worker syncMetadataMutation materializes absolute-path file creation without full fanout", () => {
@@ -950,7 +959,7 @@ test("kernel-worker writeFile keeps backing data independent from resident page-
   const data = new Uint8Array(128).fill(0x5a);
 
   expect(() => fsState.writeFile("/usr/lib/runtime.bin", data, 0o644, false)).not.toThrow();
-  expect(fsState.readFile("/usr/lib/runtime.bin")).toEqual(data);
+  expectBytesEqual(fsState.readFile("/usr/lib/runtime.bin"), data);
 });
 
 test("kernel-worker readFile falls back to page-cache data for externalized large files", () => {
@@ -979,10 +988,10 @@ test("kernel-worker readFile uses backing data when memfs and resident page-cach
     parentIno: canonicalExports.fileIno("/usr/bin"),
     name: encoder.encode("sqv"),
     nextSibling: 0,
-  }, null);
+  });
   canonicalExports.memfs_read_file_to = () => -1n;
 
-  expect(fsState.readFile("/usr/bin/sqv")).toEqual(data);
+  expectBytesEqual(fsState.readFile("/usr/bin/sqv"), data);
 });
 
 test("kernel-worker backing range read returns only the requested byte range", () => {
