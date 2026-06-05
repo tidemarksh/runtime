@@ -51,6 +51,7 @@ function makeDeps(posted: KernelWorkerOutbound[]) {
     snapshotCanonicalFs: vi.fn(() => []),
     loadFsSnapshot: vi.fn(),
     registerProcess: vi.fn(async () => state),
+    registerHostFileBackingSource: vi.fn(async () => {}),
     unregisterProcess: vi.fn(),
     processFs: vi.fn(() => ({
       kernelState: state,
@@ -174,6 +175,28 @@ test("message handler reports dependency errors without escaping the kernel-work
   expect(posted[0]?.type).toBe("error");
   expect(posted[0]?.requestId).toBe(19);
   expect(posted[0]?.type === "error" ? posted[0].message : "").toContain("read boom");
+});
+
+test("message handler registers host-file backing sources", async () => {
+  const posted: KernelWorkerOutbound[] = [];
+  const deps = makeDeps(posted);
+  const handleMessage = createKernelWorkerMessageHandler(deps);
+
+  await handleMessage({
+    type: "register-fs-host-file-backing-source",
+    requestId: 29,
+    sourceIdentity: "snapshot-source:host",
+    hostPath: "/tmp/host.bin",
+    byteLength: 123,
+  });
+
+  expect(deps.registerHostFileBackingSource).toHaveBeenCalledWith("snapshot-source:host", "/tmp/host.bin", 123);
+  expect(posted).toEqual([
+    {
+      type: "fs-backing-source-registered",
+      requestId: 29,
+    },
+  ]);
 });
 
 test("state-owning kernel-worker modules are marked transitional-runtime-owner", () => {

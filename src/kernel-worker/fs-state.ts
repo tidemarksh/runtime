@@ -43,7 +43,7 @@ interface KernelWorkerFsStateDeps {
   upsertSymlinkSeed(path: string, target: Uint8Array, mode?: number): void;
 }
 
-interface KernelWorkerBackingSource {
+export interface KernelWorkerBackingSource {
   byteLength: number;
   readRange(offset: number, length: number): Uint8Array | null;
 }
@@ -173,6 +173,16 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       ? existing
       : new ChunkedBackingSource(byteLength);
     source.putRange(offset, data);
+    backingSourcesByIdentity.set(sourceIdentity, source);
+  }
+
+  function registerBackingSourceObject(sourceIdentity: string, source: KernelWorkerBackingSource): void {
+    if (sourceIdentity.length === 0) {
+      throw new Error("backing source identity must not be empty");
+    }
+    if (!Number.isInteger(source.byteLength) || source.byteLength < 0) {
+      throw new RangeError(`invalid backing source byte length: ${source.byteLength}`);
+    }
     backingSourcesByIdentity.set(sourceIdentity, source);
   }
 
@@ -1009,6 +1019,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     readdir,
     registerBackingSource,
     registerBackingSourceRange,
+    registerBackingSourceObject,
     readBackingFileByInode,
     readBackingFileRangeByInode,
     writeBackingFileByInode,

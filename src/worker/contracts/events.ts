@@ -282,6 +282,12 @@ export type KernelWorkerRequest =
       data: Uint8Array;
     }
   | {
+      type: "register-fs-host-file-backing-source";
+      sourceIdentity: string;
+      hostPath: string;
+      byteLength: number;
+    }
+  | {
       type: "register-process";
       pid: number;
       vmPtr: number;

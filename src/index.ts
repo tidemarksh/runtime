@@ -405,6 +405,19 @@ export class Runtime {
     }, transfer);
   }
 
+  async registerFsHostFileBackingSource(
+    sourceIdentity: string,
+    hostPath: string,
+    byteLength: number,
+  ): Promise<void> {
+    await this.sendKernelRequest<Extract<KernelWorkerOutbound, { type: "fs-backing-source-registered" }>>({
+      type: "register-fs-host-file-backing-source",
+      sourceIdentity,
+      hostPath,
+      byteLength,
+    });
+  }
+
   async writeFile(path: string, data: Uint8Array, mode?: number): Promise<void> {
     await this.sendKernelRequest<Extract<KernelWorkerOutbound, { type: "file-written" }>>({
       type: "write-file",

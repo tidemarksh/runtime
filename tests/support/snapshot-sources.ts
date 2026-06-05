@@ -23,7 +23,7 @@ export interface SnapshotBuildOptions {
   baseDirs?: readonly string[];
   missingLabel?: string;
   artifactMaterializationBudgetBytes?: number;
-  hostFileBackingMode?: "write" | "source" | "source-ranges";
+  hostFileBackingMode?: "write" | "source" | "source-ranges" | "host-file";
   hostFileBackingRangeChunkBytes?: number;
 }
 
@@ -358,6 +358,25 @@ async function registerHostFileBackingSourceRanges(
   }
 }
 
+async function registerHostFileBackingSources(
+  runtime: RuntimeInstance,
+  files: HostFileBackingSourceTask[],
+): Promise<void> {
+  if (typeof runtime.registerFsHostFileBackingSource !== "function") {
+    throw new Error("runtime does not support host-file-backed snapshot host files");
+  }
+  for (const file of files) {
+    try {
+      await runtime.registerFsHostFileBackingSource(file.sourceIdentity, file.hostPath, file.size);
+    } catch (error) {
+      if (isSkippableHostFsError(error)) {
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
 function buildSnapshotPlan(
   sources: readonly SnapshotSource[],
   options: SnapshotBuildOptions = {},
@@ -424,11 +443,17 @@ export async function applySnapshotSourcesToRuntime(
     return { skipReason: plan.skipReason };
   }
   assertArtifactMaterializationBudget(plan, options.artifactMaterializationBudgetBytes);
-  const sourceFiles = options.hostFileBackingMode === "source" || options.hostFileBackingMode === "source-ranges"
+  const sourceFiles = options.hostFileBackingMode === "source"
+    || options.hostFileBackingMode === "source-ranges"
+    || options.hostFileBackingMode === "host-file"
     ? createHostFileBackingSourceTasks(plan)
     : [];
 
   await runtime.applyFsSnapshot([...plan.entries.values()]);
+  if (options.hostFileBackingMode === "host-file") {
+    await registerHostFileBackingSources(runtime, sourceFiles);
+    return {};
+  }
   if (options.hostFileBackingMode === "source-ranges") {
     await registerHostFileBackingSourceRanges(
       runtime,

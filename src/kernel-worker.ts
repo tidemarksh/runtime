@@ -46,6 +46,7 @@ import { createKernelWorkerPrimitives } from "./kernel-worker/primitives.js";
 import { createKernelWorkerSharedStateSync } from "./kernel-worker/shared-state-sync.js";
 import { createKernelWorkerProcessMemfsSync } from "./kernel-worker/fs-state/process-memfs.js";
 import { createKernelWorkerSocketStateBridge } from "./kernel-worker/shared-state-sync/socket-state.js";
+import { createNodeHostFileBackingSource } from "./kernel-worker/host-file-backing-source.js";
 
 let exports: KernelExports;
 let wasmModule: WebAssembly.Module | null = null;
@@ -147,6 +148,7 @@ const {
   readlink,
   readdir,
   registerBackingSource,
+  registerBackingSourceObject,
   registerBackingSourceRange,
   rebuildPageCacheFromExports,
   rebuildPageCacheFromCanonical,
@@ -389,6 +391,12 @@ const handleKernelWorkerMessage = createKernelWorkerMessageHandler({
   loadFsSnapshot,
   registerBackingSource,
   registerBackingSourceRange,
+  registerHostFileBackingSource: async (sourceIdentity, hostPath, byteLength) => {
+    registerBackingSourceObject(
+      sourceIdentity,
+      await createNodeHostFileBackingSource(hostPath, byteLength),
+    );
+  },
   registerProcess,
   unregisterProcess,
   processFs,
