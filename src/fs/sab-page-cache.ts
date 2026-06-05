@@ -676,6 +676,30 @@ function allocateResidentPageRecordIndex(sab: SharedArrayBuffer, ino: number, pa
   return -1;
 }
 
+function clearResidentPageRecord(sab: SharedArrayBuffer, recordIndex: number): void {
+  const u32 = new Uint32Array(sab);
+  const base32 = residentPageRecordOffset(sab, recordIndex) >>> 2;
+  const currentVersion = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2));
+  const oddVersion = (currentVersion | 1) + (currentVersion & 1 ? 1 : 0);
+  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2), oddVersion);
+  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2), 0);
+  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2), oddVersion + 1);
+}
+
+function reusableResidentPageDataOff(sab: SharedArrayBuffer, recordIndex: number): number {
+  const u32 = new Uint32Array(sab);
+  const base32 = residentPageRecordOffset(sab, recordIndex) >>> 2;
+  const flags = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2));
+  if ((flags & RESIDENT_PAGE_RECORD_FLAG_VALID) !== 0) {
+    return 0;
+  }
+  const dataOff = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_DATA_OFF >>> 2));
+  if (dataOff < DATA_REGION_OFFSET || dataOff + DEFAULT_RESIDENT_PAGE_SIZE > dataRegionLimit(sab)) {
+    return 0;
+  }
+  return dataOff;
+}
+
 function invalidateResidentPages(sab: SharedArrayBuffer, ino: number): void {
   const u32 = new Uint32Array(sab);
   const count = residentPageRecordCount(sab);
@@ -686,9 +710,31 @@ function invalidateResidentPages(sab: SharedArrayBuffer, ino: number): void {
       (flags & RESIDENT_PAGE_RECORD_FLAG_VALID) !== 0
       && Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_INO >>> 2)) === ino
     ) {
-      Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2), 0);
+      clearResidentPageRecord(sab, index);
     }
   }
+}
+
+export function evictResidentPage(
+  sab: SharedArrayBuffer,
+  ino: number,
+  pageIndex: number,
+): "evicted" | "not-found" {
+  if (
+    !Number.isInteger(ino)
+    || ino <= 0
+    || ino >= MAX_INODES
+    || !Number.isInteger(pageIndex)
+    || pageIndex < 0
+  ) {
+    return "not-found";
+  }
+  const recordIndex = findResidentPageRecordIndex(sab, ino, pageIndex);
+  if (recordIndex < 0) {
+    return "not-found";
+  }
+  clearResidentPageRecord(sab, recordIndex);
+  return "evicted";
 }
 
 export function publishResidentPage(
@@ -712,7 +758,8 @@ export function publishResidentPage(
   if (recordIndex < 0) {
     return false;
   }
-  const dataOff = allocateDataRegion(sab, DEFAULT_RESIDENT_PAGE_SIZE);
+  const dataOff = reusableResidentPageDataOff(sab, recordIndex)
+    || allocateDataRegion(sab, DEFAULT_RESIDENT_PAGE_SIZE);
   if (dataOff === 0) {
     return false;
   }
