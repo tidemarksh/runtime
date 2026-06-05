@@ -1,8 +1,12 @@
 // Kernel-worker tests in this file validate transitional runtime-owned bridge behavior.
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, test } from "vite-plus/test";
 import type { KernelExports } from "../../../src/abi.js";
 import { DATA_REGION_OFFSET, publishInode, readInodeRecord } from "../../../src/fs/sab-page-cache.js";
 import { createKernelWorkerFsState } from "../../../src/kernel-worker/fs-state.js";
+import { createNodeHostFileBackingSource } from "../../../src/kernel-worker/host-file-backing-source.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -562,6 +566,39 @@ test("kernel-worker source-backed range read does not materialize the whole file
   expect(new TextDecoder().decode(range ?? new Uint8Array())).toBe("bytes");
   expect(range?.buffer).toBe(source.buffer);
   expect(fsState.readBackingFileByInode(ino)).toBeNull();
+});
+
+test("kernel-worker reads host-file backed snapshot ranges without whole-file materialization", async () => {
+  const root = mkdtempSync(join(tmpdir(), "tidemark-fs-state-host-source-"));
+  try {
+    const { fsState } = makeFsState();
+    const source = encoder.encode("prefix:artifact-bytes:suffix");
+    const hostFile = join(root, "runtime.bin");
+    writeFileSync(hostFile, source);
+    const backingExtent = {
+      sourceIdentity: "artifact:runtime.bin",
+      offset: "prefix:".length,
+      length: "artifact-bytes".length,
+    };
+
+    fsState.loadFsSnapshot([
+      { kind: "dir", path: "/", mode: 0o755 },
+      { kind: "file", path: "/lib/runtime.bin", size: backingExtent.length, mode: 0o644, backingExtent },
+    ]);
+    fsState.registerBackingSourceObject(
+      backingExtent.sourceIdentity,
+      await createNodeHostFileBackingSource(hostFile, source.byteLength),
+    );
+
+    const ino = fsState.resolvePath("/lib/runtime.bin");
+    expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 9, 5) ?? new Uint8Array()))
+      .toBe("bytes");
+    expect(fsState.readBackingFileByInode(ino)).toBeNull();
+    expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("artifact-bytes");
+    expect(new TextDecoder().decode(fsState.readBackingFileByInode(ino) ?? new Uint8Array())).toBe("artifact-bytes");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("kernel-worker partial write to source-backed snapshot file preserves existing source bytes", () => {
