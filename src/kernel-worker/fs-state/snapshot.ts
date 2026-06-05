@@ -236,6 +236,7 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
       return;
     }
 
+    const seed = deps.seedEntries.get(normalized);
     out.push({
       kind: "file",
       path: normalized,
@@ -243,6 +244,7 @@ export function createKernelWorkerFsSnapshotHelpers(deps: KernelWorkerFsSnapshot
       data: includeData ? readSnapshotFileData(targetExports, normalized, ino) : undefined,
       size: Number(targetExports.memfs_file_size(ino)),
       mode: perms,
+      backingExtent: seed?.kind === "file" && seed.backingExtent ? { ...seed.backingExtent } : undefined,
     });
   }
 

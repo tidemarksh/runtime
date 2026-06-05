@@ -542,6 +542,30 @@ test("kernel-worker reads metadata-only snapshot files from registered backing s
   ) ?? new Uint8Array())).toBe("bytes");
 });
 
+test("kernel-worker snapshot export preserves source backing identity", () => {
+  const { fsState } = makeFsState();
+  const backingExtent = {
+    sourceIdentity: "artifact:runtime.bin",
+    digest: "sha256:runtime",
+    offset: 32,
+    length: 4096,
+  };
+
+  fsState.loadFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "file", path: "/lib/runtime.bin", size: backingExtent.length, mode: 0o644, backingExtent },
+  ]);
+
+  expect(fsState.snapshotCanonicalFs(false)).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      kind: "file",
+      path: "/lib/runtime.bin",
+      size: backingExtent.length,
+      backingExtent,
+    }),
+  ]));
+});
+
 test("kernel-worker loadFsSnapshot restores symlinks into seed entries", () => {
   const { canonicalExports, fsState, seedEntries } = makeFsState();
   const target = encoder.encode("/toolchain/current/bin/node");
