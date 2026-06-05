@@ -652,6 +652,15 @@ test("kernel-worker partial write to source-backed snapshot file preserves exist
   expect(fsState.writeBackingFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(3);
   expect(new TextDecoder().decode(fsState.readBackingFileByInode(ino) ?? new Uint8Array())).toBe("abcXYZ");
   expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("abcXYZ");
+  const metadataSnapshot = fsState.snapshotCanonicalFs(false).find((entry) => (
+    entry.kind === "file" && entry.path === "/lib/runtime.bin"
+  ));
+  expect(metadataSnapshot?.kind === "file" ? metadataSnapshot.backingExtent : undefined).toBeUndefined();
+  const dataSnapshot = fsState.snapshotCanonicalFs(true).find((entry) => (
+    entry.kind === "file" && entry.path === "/lib/runtime.bin"
+  ));
+  expect(dataSnapshot?.kind === "file" ? dataSnapshot.data : undefined).toEqual(encoder.encode("abcXYZ"));
+  expect(dataSnapshot?.kind === "file" ? dataSnapshot.backingExtent : undefined).toBeUndefined();
 });
 
 test("kernel-worker reads registered partial source ranges without full source materialization", () => {
@@ -790,6 +799,40 @@ test("kernel-worker syncFileDataMutation moves canonical/member files back to pa
   expect(memberExports.opLog.some((entry) => entry.startsWith("truncate:/lib/runtime.bin:3"))).toBe(false);
   expect(memberExports.opLog.some((entry) => entry.startsWith("write:/lib/runtime.bin:3"))).toBe(false);
   expect(canonicalExports.opLog).toContain("external:/lib/runtime.bin:3");
+});
+
+test("kernel-worker syncFileDataMutation clears stale source backing extent on export", () => {
+  const { canonicalExports, fsState } = makeFsState();
+  const source = encoder.encode("prefix:abcdef:suffix");
+  const backingExtent = {
+    sourceIdentity: "artifact:runtime.bin",
+    offset: "prefix:".length,
+    length: "abcdef".length,
+  };
+
+  fsState.loadFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "file", path: "/lib/runtime.bin", size: backingExtent.length, mode: 0o644, backingExtent },
+  ]);
+  fsState.registerBackingSource(backingExtent.sourceIdentity, source);
+  const ino = canonicalExports.fileIno("/lib/runtime.bin");
+  expect(ino).toBeGreaterThan(1);
+  expect(fsState.snapshotCanonicalFs(false).find((entry) => (
+    entry.kind === "file" && entry.path === "/lib/runtime.bin"
+  ))).toEqual(expect.objectContaining({ backingExtent }));
+
+  canonicalExports.overwriteFile("/lib/runtime.bin", encoder.encode("mutated"));
+  expect(fsState.syncFileDataMutation(canonicalExports, ino)).toBe(true);
+
+  const metadataSnapshot = fsState.snapshotCanonicalFs(false).find((entry) => (
+    entry.kind === "file" && entry.path === "/lib/runtime.bin"
+  ));
+  expect(metadataSnapshot?.kind === "file" ? metadataSnapshot.backingExtent : undefined).toBeUndefined();
+  const dataSnapshot = fsState.snapshotCanonicalFs(true).find((entry) => (
+    entry.kind === "file" && entry.path === "/lib/runtime.bin"
+  ));
+  expect(dataSnapshot?.kind === "file" ? dataSnapshot.data : undefined).toEqual(encoder.encode("mutated"));
+  expect(dataSnapshot?.kind === "file" ? dataSnapshot.backingExtent : undefined).toBeUndefined();
 });
 
 test("kernel-worker restorePublishedRegularFileDataFromPageCache externalizes without rematerializing bytes", () => {

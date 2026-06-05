@@ -182,6 +182,23 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     backingExtentsByIno.set(ino, { ...backingExtent });
   }
 
+  function clearSeedBackingExtentForInode(ino: number): void {
+    if (!Number.isInteger(ino) || ino <= 0) {
+      return;
+    }
+    const canonicalExports = deps.getCanonicalExports();
+    for (const [path, entry] of deps.seedEntries) {
+      if (entry.kind !== "file" || !entry.backingExtent) {
+        continue;
+      }
+      if (deps.resolvePathIn(canonicalExports, path) !== ino) {
+        continue;
+      }
+      const { backingExtent: _backingExtent, ...nextEntry } = entry;
+      deps.seedEntries.set(path, nextEntry);
+    }
+  }
+
   function materializeBackingSourceForInode(ino: number, expectedSize: number): Uint8Array | null {
     const data = readBackingSourceRangeForInode(ino, 0, expectedSize, expectedSize);
     if (!data) {
@@ -345,6 +362,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       }
       const stat = backingStore.write(fileObjectId, offset, data);
       backingExtentsByIno.delete(ino);
+      clearSeedBackingExtentForInode(ino);
       const published = readInodeRecord(deps.getSabPageCache(), ino);
       publishInode(deps.getSabPageCache(), ino, {
         mode: published?.mode ?? 0o100644,
@@ -748,6 +766,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       }
       writeFileByInode(canonicalExports, ino, data);
       replaceBackingFile(ino, data);
+      clearSeedBackingExtentForInode(ino);
       publishInode(deps.getSabPageCache(), ino, {
         mode,
         size: data.length,
