@@ -23,7 +23,12 @@ import {
   FS_RING_TOTAL_BYTES,
   fsRingRequestEntryOffset,
 } from "../layout/fs-ring.js";
-import { DEFAULT_RESIDENT_PAGE_SIZE, resetPageCache } from "../fs/sab-page-cache.js";
+import {
+  DEFAULT_RESIDENT_PAGE_SIZE,
+  publishResidentPage,
+  readResidentFileData,
+  resetPageCache,
+} from "../fs/sab-page-cache.js";
 import {
   restoreThreadWorkerPrepareMemory,
   snapshotThreadWorkerPrepareMemory,
@@ -415,15 +420,32 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     if (alignedLength <= 0) {
       return;
     }
-    if (deps.readBackingFileRangeByInode(request.ino, alignedOffset, alignedLength) !== null) {
+    let alignedRange = deps.readBackingFileRangeByInode(request.ino, alignedOffset, alignedLength);
+    if (alignedRange === null) {
+      await deps.ensureBackingSourceRangeForInode?.(
+        request.ino,
+        alignedOffset,
+        alignedLength,
+        request.expectedSize,
+      );
+      alignedRange = deps.readBackingFileRangeByInode(request.ino, alignedOffset, alignedLength);
+    }
+    if (alignedRange === null) {
       return;
     }
-    await deps.ensureBackingSourceRangeForInode?.(
-      request.ino,
-      alignedOffset,
-      alignedLength,
-      request.expectedSize,
-    );
+    const sab = deps.getSabPageCache();
+    for (let pageStart = alignedOffset; pageStart < alignedEnd; pageStart += DEFAULT_RESIDENT_PAGE_SIZE) {
+      const pageLen = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, request.expectedSize - pageStart);
+      if (pageLen <= 0 || readResidentFileData(sab, request.ino, pageStart, pageLen)) {
+        continue;
+      }
+      const backingOffset = pageStart - alignedOffset;
+      const page = alignedRange.subarray(backingOffset, backingOffset + pageLen);
+      if (page.length !== pageLen) {
+        return;
+      }
+      publishResidentPage(sab, request.ino, pageStart / DEFAULT_RESIDENT_PAGE_SIZE, page);
+    }
   }
 
   function snapshotMmapGuestMemoryWrite(

@@ -1,6 +1,4 @@
 import {
-  hasResidentPageRecordCapacity,
-  publishResidentPage,
   readInodeMeta,
   readResidentFileData,
   truncateDirtyResidentFileData,
@@ -22,20 +20,6 @@ export interface KernelEnvOptions {
   readFileDataByInode?: (ino: number, offset: number, length: number) => Uint8Array | null;
   truncateResidentFileDataByInode?: (ino: number, size: number) => number;
   writeResidentFileDataByInode?: (ino: number, offset: number, data: Uint8Array) => number;
-}
-
-function copyBackingRead(
-  memory: WebAssembly.Memory,
-  dstPtr: number,
-  dstLen: number,
-  backing: Uint8Array | null | undefined,
-): bigint {
-  if (!backing || backing.length === 0) {
-    return -2n;
-  }
-  const readLen = Math.min(backing.length, dstLen);
-  new Uint8Array(memory.buffer, dstPtr, readLen).set(backing.subarray(0, readLen));
-  return BigInt(readLen);
 }
 
 export function createKernelEnv(
@@ -72,13 +56,11 @@ export function createKernelEnv(
         return -22n;
       }
       if (!sabPageCache) {
-        const backing = readFileDataByInode?.(ino, offsetNumber, dstLen);
-        return copyBackingRead(memory, dstPtr, dstLen, backing);
+        return -2n;
       }
       const meta = readInodeMeta(sabPageCache, ino);
       if (!meta) {
-        const backing = readFileDataByInode?.(ino, offsetNumber, dstLen);
-        return copyBackingRead(memory, dstPtr, dstLen, backing);
+        return -2n;
       }
       if (offsetNumber >= meta.size) {
         return 0n;
@@ -90,28 +72,7 @@ export function createKernelEnv(
           new Uint8Array(memory.buffer, dstPtr, resident.length).set(resident);
           return BigInt(resident.length);
         }
-        const pageSize = 4096;
-        const firstPage = Math.floor(offsetNumber / pageSize);
-        const lastPage = Math.floor((offsetNumber + readLen - 1) / pageSize);
-        let filledRequestedRange = hasResidentPageRecordCapacity(sabPageCache);
-        for (let pageIndex = firstPage; filledRequestedRange && pageIndex <= lastPage; pageIndex += 1) {
-          const pageStart = pageIndex * pageSize;
-          const pageLen = Math.min(pageSize, meta.size - pageStart);
-          if (readResidentFileData(sabPageCache, ino, pageStart, pageLen)) {
-            continue;
-          }
-          const page = readFileDataByInode?.(ino, pageStart, pageLen);
-          filledRequestedRange = !!(page && page.length > 0 && publishResidentPage(sabPageCache, ino, pageIndex, page));
-        }
-        if (filledRequestedRange) {
-          const filled = readResidentFileData(sabPageCache, ino, offsetNumber, readLen);
-          if (filled) {
-            new Uint8Array(memory.buffer, dstPtr, filled.length).set(filled);
-            return BigInt(filled.length);
-          }
-        }
-        const backing = readFileDataByInode?.(ino, offsetNumber, readLen);
-        return copyBackingRead(memory, dstPtr, readLen, backing);
+        return -2n;
       }
       const readLen = Math.min(dstLen, meta.size - offsetNumber);
       const source = new Uint8Array(sabPageCache, meta.dataOff + offsetNumber, readLen);

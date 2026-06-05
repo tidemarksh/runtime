@@ -3,6 +3,11 @@ import { expect, test, vi } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
 import { createKernelWorkerProcessControl } from "../../../src/kernel-worker/process-control.js";
 import {
+  DATA_REGION_OFFSET,
+  publishInode,
+  readResidentFileData,
+} from "../../../src/fs/sab-page-cache.js";
+import {
   FS_OP_READ,
   FS_OP_WRITE,
   FS_OP_MMAP,
@@ -536,14 +541,26 @@ test("processFs demand-fills page-aligned source-backed read ranges before proce
     readRequest: { fd: 5, offset: 32, length: 16, ino: 11, size: 128, pwrite: true },
   });
   const processKernels = new Map<number, KernelExports>([[7, processExports]]);
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 8192);
+  const backing = Uint8Array.from({ length: 128 }, (_value, index) => 0x40 + index);
+  let backingReady = false;
   const ensureBackingSourceRangeForInode = vi.fn(async () => true);
+  publishInode(sab, 11, {
+    mode: 0o100644,
+    size: backing.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("source"),
+    nextSibling: 0,
+    fileObjectId: 11,
+    generation: 1,
+  }, null);
 
   const processControl = createKernelWorkerProcessControl({
     getCanonicalExports: () => canonicalExports,
     setCanonicalExports: () => {},
     getWasmModule: () => null,
     setWasmModule: () => {},
-    getSabPageCache: () => new SharedArrayBuffer(65536),
+    getSabPageCache: () => sab,
     setSabPageCache: () => {},
     processKernels,
     lastProcessPipeSlotModes: new Map(),
@@ -578,8 +595,17 @@ test("processFs demand-fills page-aligned source-backed read ranges before proce
     syncFileDataMutation: () => false,
     syncFileDataMutationByPath: () => false,
     syncMetadataMutation: () => false,
-    readBackingFileRangeByInode: () => null,
-    ensureBackingSourceRangeForInode,
+    readBackingFileRangeByInode: (_ino, offset, length) => {
+      if (!backingReady) {
+        return null;
+      }
+      return backing.subarray(offset, offset + length);
+    },
+    ensureBackingSourceRangeForInode: async (...args) => {
+      const result = await ensureBackingSourceRangeForInode(...args);
+      backingReady = true;
+      return result;
+    },
     fanoutCanonicalMemfs: () => {},
     fsEffectMemfsMutation: 1 << 0,
     fsEffectSharedOfdState: 1 << 1,
@@ -593,6 +619,7 @@ test("processFs demand-fills page-aligned source-backed read ranges before proce
 
   expect(result.result).toBe(16n);
   expect(ensureBackingSourceRangeForInode).toHaveBeenCalledWith(11, 0, 128, 128);
+  expect(readResidentFileData(sab, 11, 32, 16)).toEqual(backing.subarray(32, 48));
   expect(processExports.opLog).toEqual(["process-fs", "resume-fs"]);
 });
 
