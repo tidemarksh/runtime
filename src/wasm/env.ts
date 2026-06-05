@@ -1,4 +1,10 @@
-import { readInodeMeta, writeFileData } from "../fs/sab-page-cache.js";
+import {
+  hasResidentPageRecordCapacity,
+  publishResidentPage,
+  readInodeMeta,
+  readResidentFileData,
+  writeFileData,
+} from "../fs/sab-page-cache.js";
 
 export interface KernelEnvImports {
   [key: string]: WebAssembly.ImportValue;
@@ -74,8 +80,30 @@ export function createKernelEnv(
         return 0n;
       }
       if (meta.dataOff === 0 && meta.size > 0) {
-        const backing = readFileDataByInode?.(ino, offsetNumber, dstLen);
-        return copyBackingRead(memory, dstPtr, dstLen, backing);
+        const readLen = Math.min(dstLen, meta.size - offsetNumber);
+        const resident = readResidentFileData(sabPageCache, ino, offsetNumber, readLen);
+        if (resident) {
+          new Uint8Array(memory.buffer, dstPtr, resident.length).set(resident);
+          return BigInt(resident.length);
+        }
+        const pageSize = 4096;
+        const pageStart = Math.floor(offsetNumber / pageSize) * pageSize;
+        const pageLen = Math.min(pageSize, meta.size - pageStart);
+        const page = hasResidentPageRecordCapacity(sabPageCache)
+          ? readFileDataByInode?.(ino, pageStart, pageLen)
+          : undefined;
+        const published = page && page.length > 0
+          ? publishResidentPage(sabPageCache, ino, Math.floor(pageStart / pageSize), page)
+          : false;
+        if (published) {
+          const filled = readResidentFileData(sabPageCache, ino, offsetNumber, readLen);
+          if (filled) {
+            new Uint8Array(memory.buffer, dstPtr, filled.length).set(filled);
+            return BigInt(filled.length);
+          }
+        }
+        const backing = readFileDataByInode?.(ino, offsetNumber, readLen);
+        return copyBackingRead(memory, dstPtr, readLen, backing);
       }
       const readLen = Math.min(dstLen, meta.size - offsetNumber);
       const source = new Uint8Array(sabPageCache, meta.dataOff + offsetNumber, readLen);

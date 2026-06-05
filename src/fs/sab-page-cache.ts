@@ -49,6 +49,14 @@ export const INODE_OFF_NAME_LEN = 24;
 export const INODE_OFF_NEXT_SIBLING = 28;
 
 const DEFAULT_RESIDENT_PAGE_SIZE = 4096;
+const RESIDENT_PAGE_RECORD_BYTES = 32;
+const RESIDENT_PAGE_RECORD_VERSION = 0;
+const RESIDENT_PAGE_RECORD_INO = 4;
+const RESIDENT_PAGE_RECORD_PAGE_INDEX = 8;
+const RESIDENT_PAGE_RECORD_DATA_OFF = 12;
+const RESIDENT_PAGE_RECORD_VALID_BYTES = 16;
+const RESIDENT_PAGE_RECORD_FLAGS = 20;
+const RESIDENT_PAGE_RECORD_FLAG_VALID = 1;
 
 export type FileObjectId = number;
 
@@ -538,7 +546,7 @@ export function publishInode(
   const u8 = new Uint8Array(sab);
   const base = inodeOffset(ino);
   const base32 = base >>> 2;
-  const dataRegionEnd = sab.byteLength;
+  const dataRegionEnd = dataRegionLimit(sab);
 
   function allocateDataRegion(byteLength: number): number {
     if (byteLength <= 0) {
@@ -576,6 +584,7 @@ export function publishInode(
   // Seqlock: version → odd (writing)
   const currentVersion = Atomics.load(u32, base32 + (INODE_OFF_VERSION >>> 2));
   const oddVersion = (currentVersion | 1) + (currentVersion & 1 ? 1 : 0);
+  invalidateResidentPages(sab, ino);
   Atomics.store(u32, base32 + (INODE_OFF_VERSION >>> 2), oddVersion);
 
   // Update metadata
@@ -605,11 +614,170 @@ function allocateDataRegion(sab: SharedArrayBuffer, byteLength: number): number 
   const currentUsed = Atomics.load(u32, OFF_DATA_USED >>> 2);
   const start = DATA_REGION_OFFSET + currentUsed;
   const end = start + byteLength;
-  if (end > sab.byteLength) {
+  if (end > dataRegionLimit(sab)) {
     return 0;
   }
   Atomics.store(u32, OFF_DATA_USED >>> 2, currentUsed + byteLength);
   return start;
+}
+
+function residentPageRecordCount(sab: SharedArrayBuffer): number {
+  const available = Math.max(0, sab.byteLength - DATA_REGION_OFFSET);
+  return Math.floor(available / (DEFAULT_RESIDENT_PAGE_SIZE + RESIDENT_PAGE_RECORD_BYTES));
+}
+
+export function hasResidentPageRecordCapacity(sab: SharedArrayBuffer): boolean {
+  return residentPageRecordCount(sab) > 0;
+}
+
+function residentPageRecordTableOffset(sab: SharedArrayBuffer): number {
+  return sab.byteLength - residentPageRecordCount(sab) * RESIDENT_PAGE_RECORD_BYTES;
+}
+
+function dataRegionLimit(sab: SharedArrayBuffer): number {
+  return residentPageRecordTableOffset(sab);
+}
+
+function residentPageRecordOffset(sab: SharedArrayBuffer, index: number): number {
+  return residentPageRecordTableOffset(sab) + index * RESIDENT_PAGE_RECORD_BYTES;
+}
+
+function findResidentPageRecordIndex(sab: SharedArrayBuffer, ino: number, pageIndex: number): number {
+  const u32 = new Uint32Array(sab);
+  const count = residentPageRecordCount(sab);
+  for (let index = 0; index < count; index += 1) {
+    const base32 = residentPageRecordOffset(sab, index) >>> 2;
+    const flags = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2));
+    if (
+      (flags & RESIDENT_PAGE_RECORD_FLAG_VALID) !== 0
+      && Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_INO >>> 2)) === ino
+      && Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_PAGE_INDEX >>> 2)) === pageIndex
+    ) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function allocateResidentPageRecordIndex(sab: SharedArrayBuffer, ino: number, pageIndex: number): number {
+  const existing = findResidentPageRecordIndex(sab, ino, pageIndex);
+  if (existing >= 0) {
+    return existing;
+  }
+  const u32 = new Uint32Array(sab);
+  const count = residentPageRecordCount(sab);
+  for (let index = 0; index < count; index += 1) {
+    const base32 = residentPageRecordOffset(sab, index) >>> 2;
+    const flags = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2));
+    if ((flags & RESIDENT_PAGE_RECORD_FLAG_VALID) === 0) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function invalidateResidentPages(sab: SharedArrayBuffer, ino: number): void {
+  const u32 = new Uint32Array(sab);
+  const count = residentPageRecordCount(sab);
+  for (let index = 0; index < count; index += 1) {
+    const base32 = residentPageRecordOffset(sab, index) >>> 2;
+    const flags = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2));
+    if (
+      (flags & RESIDENT_PAGE_RECORD_FLAG_VALID) !== 0
+      && Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_INO >>> 2)) === ino
+    ) {
+      Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2), 0);
+    }
+  }
+}
+
+export function publishResidentPage(
+  sab: SharedArrayBuffer,
+  ino: number,
+  pageIndex: number,
+  data: Uint8Array,
+): boolean {
+  if (
+    !Number.isInteger(ino)
+    || ino <= 0
+    || ino >= MAX_INODES
+    || !Number.isInteger(pageIndex)
+    || pageIndex < 0
+    || data.length <= 0
+    || data.length > DEFAULT_RESIDENT_PAGE_SIZE
+  ) {
+    return false;
+  }
+  const recordIndex = allocateResidentPageRecordIndex(sab, ino, pageIndex);
+  if (recordIndex < 0) {
+    return false;
+  }
+  const dataOff = allocateDataRegion(sab, DEFAULT_RESIDENT_PAGE_SIZE);
+  if (dataOff === 0) {
+    return false;
+  }
+  const u8 = new Uint8Array(sab);
+  u8.fill(0, dataOff, dataOff + DEFAULT_RESIDENT_PAGE_SIZE);
+  u8.set(data, dataOff);
+
+  const u32 = new Uint32Array(sab);
+  const base32 = residentPageRecordOffset(sab, recordIndex) >>> 2;
+  const currentVersion = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2));
+  const oddVersion = (currentVersion | 1) + (currentVersion & 1 ? 1 : 0);
+  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2), oddVersion);
+  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_INO >>> 2), ino);
+  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_PAGE_INDEX >>> 2), pageIndex);
+  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_DATA_OFF >>> 2), dataOff);
+  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_VALID_BYTES >>> 2), data.length);
+  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2), RESIDENT_PAGE_RECORD_FLAG_VALID);
+  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2), oddVersion + 1);
+  return true;
+}
+
+export function readResidentFileData(
+  sab: SharedArrayBuffer,
+  ino: number,
+  offset: number,
+  length: number,
+): Uint8Array | null {
+  if (length <= 0) {
+    return new Uint8Array();
+  }
+  const out = new Uint8Array(length);
+  const u32 = new Uint32Array(sab);
+  const u8 = new Uint8Array(sab);
+  let copied = 0;
+  while (copied < length) {
+    const absolute = offset + copied;
+    const pageIndex = Math.floor(absolute / DEFAULT_RESIDENT_PAGE_SIZE);
+    const pageOffset = absolute % DEFAULT_RESIDENT_PAGE_SIZE;
+    const copyLen = Math.min(length - copied, DEFAULT_RESIDENT_PAGE_SIZE - pageOffset);
+    const recordIndex = findResidentPageRecordIndex(sab, ino, pageIndex);
+    if (recordIndex < 0) {
+      return null;
+    }
+    const base32 = residentPageRecordOffset(sab, recordIndex) >>> 2;
+    const v1 = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2));
+    if (v1 === 0 || (v1 & 1) !== 0) {
+      return null;
+    }
+    const dataOff = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_DATA_OFF >>> 2));
+    const validBytes = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VALID_BYTES >>> 2));
+    const flags = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2));
+    const v2 = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2));
+    if (
+      v1 !== v2
+      || (flags & RESIDENT_PAGE_RECORD_FLAG_VALID) === 0
+      || dataOff < DATA_REGION_OFFSET
+      || dataOff + validBytes > dataRegionLimit(sab)
+      || pageOffset + copyLen > validBytes
+    ) {
+      return null;
+    }
+    out.set(u8.subarray(dataOff + pageOffset, dataOff + pageOffset + copyLen), copied);
+    copied += copyLen;
+  }
+  return out;
 }
 
 export function writeFileData(
@@ -671,6 +839,7 @@ export function writeFileData(
 
   const currentVersion = Atomics.load(u32, base32 + (INODE_OFF_VERSION >>> 2));
   const oddVersion = (currentVersion | 1) + (currentVersion & 1 ? 1 : 0);
+  invalidateResidentPages(sab, ino);
   Atomics.store(u32, base32 + (INODE_OFF_VERSION >>> 2), oddVersion);
   Atomics.store(u32, base32 + (INODE_OFF_DATA_OFF >>> 2), dataOff);
   Atomics.store(u32, base32 + (INODE_OFF_DATA_SIZE >>> 2), nextSize);

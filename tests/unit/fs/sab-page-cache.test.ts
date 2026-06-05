@@ -110,6 +110,48 @@ test("page-cache backing read reports miss when backing returns no bytes before 
   expect(env.tidemark_page_cache_read(2, 2n, 32, 3)).toBe(-2n);
 });
 
+test("page-cache backing read fills a shared resident page for a later direct hit", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 8192);
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const backing = new TextEncoder().encode("abcdef");
+  const calls: Array<[number, number, number]> = [];
+
+  publishInode(sab, 2, {
+    mode: 0o100644,
+    size: backing.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("external"),
+    nextSibling: 0,
+  }, null);
+
+  const fillingEnv = createKernelEnv(memory, {
+    sabPageCache: sab,
+    readFileDataByInode: (ino, offset, length) => {
+      calls.push([ino, offset, length]);
+      return backing.subarray(offset, Math.min(backing.length, offset + length));
+    },
+  });
+
+  expect(fillingEnv.tidemark_page_cache_read(2, 2n, 32, 3)).toBe(3n);
+  expect(Array.from(new Uint8Array(memory.buffer, 32, 3))).toEqual(Array.from(backing.subarray(2, 5)));
+  expect(calls).toEqual([[2, 0, backing.length]]);
+
+  new Uint8Array(memory.buffer, 32, 3).fill(0);
+  const directEnv = createKernelEnv(memory, { sabPageCache: sab });
+
+  expect(directEnv.tidemark_page_cache_read(2, 2n, 32, 3)).toBe(3n);
+  expect(Array.from(new Uint8Array(memory.buffer, 32, 3))).toEqual(Array.from(backing.subarray(2, 5)));
+
+  publishInode(sab, 2, {
+    mode: 0o100644,
+    size: backing.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("external"),
+    nextSibling: 0,
+  }, null);
+  expect(directEnv.tidemark_page_cache_read(2, 2n, 32, 3)).toBe(-2n);
+});
+
 test("page-cache zero-length read on kernel-worker backing data returns zero", () => {
   const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 128);
   const memory = new WebAssembly.Memory({ initial: 1 });
