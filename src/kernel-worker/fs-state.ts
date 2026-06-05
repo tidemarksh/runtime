@@ -43,11 +43,37 @@ interface KernelWorkerFsStateDeps {
   upsertSymlinkSeed(path: string, target: Uint8Array, mode?: number): void;
 }
 
+interface KernelWorkerBackingSource {
+  byteLength: number;
+  readRange(offset: number, length: number): Uint8Array | null;
+}
+
+class Uint8ArrayBackingSource implements KernelWorkerBackingSource {
+  constructor(private readonly data: Uint8Array) {}
+
+  get byteLength(): number {
+    return this.data.byteLength;
+  }
+
+  readRange(offset: number, length: number): Uint8Array | null {
+    if (
+      !Number.isInteger(offset)
+      || !Number.isInteger(length)
+      || offset < 0
+      || length < 0
+      || offset + length > this.data.byteLength
+    ) {
+      return null;
+    }
+    return this.data.subarray(offset, offset + length);
+  }
+}
+
 export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   const MEMFS_S_IFDIR = 0o040000;
   const backingStore = new MemoryFileBackingStore();
   const fileObjectIdsByIno = new Map<number, number>();
-  const backingSourcesByIdentity = new Map<string, Uint8Array>();
+  const backingSourcesByIdentity = new Map<string, KernelWorkerBackingSource>();
   const backingExtentsByIno = new Map<number, FsSnapshotBackingExtent>();
 
   function replaceBackingFile(ino: number, data: Uint8Array): void {
@@ -68,7 +94,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (sourceIdentity.length === 0) {
       throw new Error("backing source identity must not be empty");
     }
-    backingSourcesByIdentity.set(sourceIdentity, data);
+    backingSourcesByIdentity.set(sourceIdentity, new Uint8ArrayBackingSource(data));
   }
 
   function registerSnapshotBackingExtent(ino: number, backingExtent: FsSnapshotBackingExtent | undefined): void {
@@ -121,7 +147,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       return null;
     }
     const readLength = Math.min(length, expectedSize - fileOffset);
-    return source.subarray(sourceOffset + fileOffset, sourceOffset + fileOffset + readLength);
+    return source.readRange(sourceOffset + fileOffset, readLength);
   }
 
   function readBackingFileByInode(ino: number): Uint8Array | null {
