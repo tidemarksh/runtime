@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, vi } from "vite-plus/test";
 import type { KernelExports } from "../../../src/abi.js";
-import { DATA_REGION_OFFSET, publishInode, readInodeRecord } from "../../../src/fs/sab-page-cache.js";
+import {
+  DATA_REGION_OFFSET,
+  evictResidentPage,
+  publishInode,
+  readInodeRecord,
+  readResidentFileData,
+} from "../../../src/fs/sab-page-cache.js";
 import { createSha256VerifiedBackingSource } from "../../../src/kernel-worker/backing-source.js";
 import { createKernelWorkerFsState } from "../../../src/kernel-worker/fs-state.js";
 import { createNodeHostFileBackingSource } from "../../../src/kernel-worker/host-file-backing-source.js";
@@ -670,6 +676,22 @@ test("kernel-worker partial write to source-backed snapshot file is dirty reside
   ));
   expect(dataSnapshot?.kind === "file" ? dataSnapshot.data : undefined).toEqual(encoder.encode("abcXYZ"));
   expect(dataSnapshot?.kind === "file" ? dataSnapshot.backingExtent : undefined).toBeUndefined();
+});
+
+test("kernel-worker flushes dirty resident pages to backing and leaves clean resident pages", () => {
+  const { canonicalExports, fsState, sabPageCache } = makeFsState();
+
+  fsState.writeFile("/lib/runtime.bin", encoder.encode("abcdef"), 0o644, false);
+  const ino = canonicalExports.fileIno("/lib/runtime.bin");
+  expect(ino).toBeGreaterThan(1);
+  expect(fsState.writeDirtyResidentFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(3);
+  expect(evictResidentPage(sabPageCache, ino, 0)).toBe("dirty-pinned");
+
+  expect(fsState.flushDirtyResidentFileByInode(ino)).toBe(true);
+  expect(new TextDecoder().decode(readResidentFileData(sabPageCache, ino, 0, 6) ?? new Uint8Array()))
+    .toBe("abcXYZ");
+  expect(evictResidentPage(sabPageCache, ino, 0)).toBe("evicted");
+  expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("abcXYZ");
 });
 
 test("kernel-worker reads registered partial source ranges without full source materialization", () => {

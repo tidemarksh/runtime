@@ -26,7 +26,7 @@
  *       +36 AtomicU32  generation — backing/page-map generation
  *
  *   [Data region: up to resident frame region]
- *     Append-only inline file data blocks + name strings.
+ *     Append-only name strings.
  *
  *   [Resident frame region: residentPageCount * 4096 bytes]
  *     Fixed reusable clean/dirty resident page frames, one per record slot.
@@ -708,6 +708,49 @@ function readExistingPageBytes(
 export function hasDirtyResidentPagesForInode(sab: SharedArrayBuffer, ino: number): boolean {
   const meta = readInodeMeta(sab, ino);
   return !!(meta && collectResidentPageSnapshots(sab, meta, true).length > 0);
+}
+
+export function markDirtyResidentFileDataClean(
+  sab: SharedArrayBuffer,
+  ino: number,
+  fileObjectId: number,
+  generation: number,
+): boolean {
+  if (
+    !Number.isInteger(ino)
+    || ino <= 0
+    || ino >= MAX_INODES
+    || !Number.isInteger(fileObjectId)
+    || fileObjectId <= 0
+    || !Number.isInteger(generation)
+    || generation <= 0
+  ) {
+    return false;
+  }
+  const record = readInodeRecord(sab, ino);
+  const meta = readInodeMeta(sab, ino);
+  if (!record || !meta || meta.fileObjectId === 0) {
+    return false;
+  }
+  const residentPages = collectResidentPageSnapshots(sab, meta, false)
+    .filter((page) => page.pageIndex * DEFAULT_RESIDENT_PAGE_SIZE < record.size);
+  if (residentPages.length > residentPageRecordCount(sab)) {
+    return false;
+  }
+  if (!updateInodeForResidentPages(sab, ino, record, record.size, fileObjectId, generation)) {
+    return false;
+  }
+  for (const page of residentPages) {
+    const pageStart = page.pageIndex * DEFAULT_RESIDENT_PAGE_SIZE;
+    const validBytes = Math.min(page.bytes.length, Math.max(0, record.size - pageStart));
+    if (validBytes <= 0) {
+      continue;
+    }
+    if (!publishResidentPage(sab, ino, page.pageIndex, page.bytes.subarray(0, validBytes))) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function writeDirtyResidentFileData(

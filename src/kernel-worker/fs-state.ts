@@ -4,6 +4,7 @@ import type { FsSnapshotBackingExtent, FsSnapshotEntry, RuntimeStat } from "../f
 import {
   bumpDirEpoch,
   hasDirtyResidentPagesForInode,
+  markDirtyResidentFileDataClean,
   MAX_INODES,
   MemoryFileBackingStore,
   publishInode,
@@ -413,6 +414,27 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     } catch {
       return -5;
     }
+  }
+
+  function flushDirtyResidentFileByInode(ino: number): boolean {
+    if (!Number.isInteger(ino) || ino <= 0 || ino >= MAX_INODES) {
+      return false;
+    }
+    const sab = deps.getSabPageCache();
+    if (!hasDirtyResidentPagesForInode(sab, ino)) {
+      return true;
+    }
+    const data = readDirtyResidentFileData(sab, ino, readCleanBackingFileRangeByInode);
+    if (!data) {
+      return false;
+    }
+    const stat = replaceBackingFile(ino, data);
+    const cleaned = markDirtyResidentFileDataClean(sab, ino, stat.fileObjectId, stat.generation);
+    if (cleaned) {
+      backingExtentsByIno.delete(ino);
+      clearSeedBackingExtentForInode(ino);
+    }
+    return cleaned;
   }
 
   function truncateDirtyResidentFileByInode(ino: number, size: number): number {
@@ -1114,6 +1136,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     ensureBackingSourceRangeForInode,
     readBackingFileByInode,
     readBackingFileRangeByInode,
+    flushDirtyResidentFileByInode,
     truncateDirtyResidentFileByInode,
     writeDirtyResidentFileByInode,
     rebuildPageCacheFromExports,
