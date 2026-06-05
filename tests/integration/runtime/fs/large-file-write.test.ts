@@ -8,6 +8,7 @@ import {
   logSkip,
   readKernelWasm,
 } from "../../../support/runtime-workload.js";
+import { buildSnapshotFromSources } from "../../../support/snapshot-sources.js";
 
 type RuntimeInstance = Awaited<ReturnType<typeof Runtime.create>>;
 
@@ -83,6 +84,62 @@ function buildLargeFileWriteProbe(): Uint8Array | null {
   } catch (error) {
     const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
     return logSkip(`failed to build large file write probe with ${hostRiscvGcc}: ${detail}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+function buildResidentRewriteProbe(): Uint8Array | null {
+  const tmp = mkdtempSync(join(tmpdir(), "tidemark-resident-rewrite-"));
+  const sourcePath = join(tmp, "resident_rewrite.c");
+  const outputPath = join(tmp, "resident-rewrite");
+  try {
+    writeFileSync(sourcePath, [
+      "#include <errno.h>",
+      "#include <fcntl.h>",
+      "#include <stdio.h>",
+      "#include <string.h>",
+      "#include <unistd.h>",
+      "",
+      "static int write_exact(int fd, const unsigned char *data, size_t len) {",
+      "  size_t off = 0;",
+      "  while (off < len) {",
+      "    ssize_t n = write(fd, data + off, len - off);",
+      "    if (n < 0) { if (errno == EINTR) continue; perror(\"write\"); return 1; }",
+      "    if (n == 0) { fputs(\"write-zero\\n\", stderr); return 2; }",
+      "    off += (size_t)n;",
+      "  }",
+      "  return 0;",
+      "}",
+      "",
+      "int main(int argc, char **argv) {",
+      "  const char *path = argc > 1 ? argv[1] : \"/work/large-file-write.bin\";",
+      "  static const unsigned char replacement[] = \"updated-resident-write\";",
+      "  int fd = open(path, O_RDWR);",
+      "  if (fd < 0) { perror(\"open\"); return 20; }",
+      "  unsigned char head[4];",
+      "  ssize_t n = read(fd, head, sizeof(head));",
+      "  if (n != 4 || memcmp(head, \"seed\", 4) != 0) {",
+      "    fprintf(stderr, \"bad-head n=%ld data=%.*s\\n\", (long)n, (int)(n > 0 ? n : 0), head);",
+      "    close(fd);",
+      "    return 21;",
+      "  }",
+      "  if (lseek(fd, 0, SEEK_SET) < 0) { perror(\"lseek\"); close(fd); return 22; }",
+      "  if (write_exact(fd, replacement, sizeof(replacement) - 1) != 0) { close(fd); return 23; }",
+      "  if (ftruncate(fd, (off_t)(sizeof(replacement) - 1)) != 0) { perror(\"ftruncate\"); close(fd); return 24; }",
+      "  if (close(fd) != 0) { perror(\"close\"); return 25; }",
+      "  printf(\"resident-rewrite bytes=%zu\\n\", sizeof(replacement) - 1);",
+      "  return 0;",
+      "}",
+      "",
+    ].join("\n"));
+    execFileSync(hostRiscvGcc, ["-static", "-O2", "-o", outputPath, sourcePath], {
+      stdio: "pipe",
+    });
+    return new Uint8Array(readFileSync(outputPath));
+  } catch (error) {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    return logSkip(`failed to build resident rewrite probe with ${hostRiscvGcc}: ${detail}`);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -184,6 +241,52 @@ async function spawnWithOutputAndStats(
     }
   }
 }
+
+test("resident write invalidation witness: guest rewrite clears resident pages and exports backing data", async () => {
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return;
+  }
+  const probeBytes = buildResidentRewriteProbe();
+  if (!probeBytes) {
+    return;
+  }
+  const initial = new TextEncoder().encode("seed-original-resident-bytes");
+  const expected = new TextEncoder().encode("updated-resident-write");
+
+  const runtime = await Runtime.create({
+    wasmBytes,
+    guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
+    maxProcessMemoryPages: 32768,
+  });
+  try {
+    const snapshot = buildSnapshotFromSources([
+      { kind: "inlineFile", guestPath: largeFilePath, data: initial, mode: 0o644 },
+    ]);
+    await runtime.applyFsSnapshot(snapshot.entries ?? []);
+    const before = await runtime.debugPageCachePath(largeFilePath);
+    expect(before?.dataOff).toBe(0);
+    expect(before?.residentPages ?? 0).toBe(0);
+
+    const result = await spawnWithOutputAndStats(
+      runtime,
+      probeBytes,
+      ["/work/resident-rewrite", largeFilePath],
+      ["LC_ALL=C", "LANG=C"],
+      60_000,
+      { cwd: "/", stdin: "closed" },
+    );
+    expect(result.exitCode, result.output + (result.debugInfo ? `\n${result.debugInfo}` : "")).toBe(0);
+    expect(result.output).toContain(`resident-rewrite bytes=${expected.length}`);
+
+    const after = await runtime.debugPageCachePath(largeFilePath);
+    expect(after?.dataOff).toBe(0);
+    expect(after?.residentPages ?? 0).toBe(0);
+    expect(await runtime.readFile(largeFilePath)).toEqual(expected);
+  } finally {
+    runtime.destroy();
+  }
+}, 90_000);
 
 test("large regular file write local gate: guest sequential writes publish byte-for-byte", async () => {
   const wasmBytes = readKernelWasm();
