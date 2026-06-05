@@ -558,7 +558,9 @@ test("kernel-worker source-backed range read does not materialize the whole file
   fsState.registerBackingSource(backingExtent.sourceIdentity, source);
 
   const ino = fsState.resolvePath("/lib/runtime.bin");
-  expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 9, 5) ?? new Uint8Array())).toBe("bytes");
+  const range = fsState.readBackingFileRangeByInode(ino, 9, 5);
+  expect(new TextDecoder().decode(range ?? new Uint8Array())).toBe("bytes");
+  expect(range?.buffer).toBe(source.buffer);
   expect(fsState.readBackingFileByInode(ino)).toBeNull();
 });
 

@@ -68,7 +68,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (sourceIdentity.length === 0) {
       throw new Error("backing source identity must not be empty");
     }
-    backingSourcesByIdentity.set(sourceIdentity, new Uint8Array(data));
+    backingSourcesByIdentity.set(sourceIdentity, data);
   }
 
   function registerSnapshotBackingExtent(ino: number, backingExtent: FsSnapshotBackingExtent | undefined): void {
@@ -121,7 +121,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       return null;
     }
     const readLength = Math.min(length, expectedSize - fileOffset);
-    return source.slice(sourceOffset + fileOffset, sourceOffset + fileOffset + readLength);
+    return source.subarray(sourceOffset + fileOffset, sourceOffset + fileOffset + readLength);
   }
 
   function readBackingFileByInode(ino: number): Uint8Array | null {
