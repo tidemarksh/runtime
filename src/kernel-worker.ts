@@ -365,6 +365,38 @@ const {
 
 requireProcessKernelImpl = nextRequireProcessKernel;
 
+async function readFileRangeByInode(
+  ino: number,
+  offset: number,
+  length: number,
+  expectedSize: number,
+): Promise<Uint8Array> {
+  if (
+    ino <= 0
+    || !Number.isSafeInteger(offset)
+    || offset < 0
+    || !Number.isSafeInteger(length)
+    || length < 0
+    || !Number.isFinite(expectedSize)
+    || expectedSize < 0
+  ) {
+    throw new Error("invalid file range request");
+  }
+  const readLength = Math.max(0, Math.min(length, expectedSize - offset));
+  if (readLength === 0) {
+    return new Uint8Array();
+  }
+  let range = readBackingFileRangeByInode(ino, offset, readLength);
+  if (range === null) {
+    await ensureBackingSourceRangeForInode(ino, offset, readLength, expectedSize);
+    range = readBackingFileRangeByInode(ino, offset, readLength);
+  }
+  if (range === null || range.length !== readLength) {
+    throw new Error("failed to read backing file range");
+  }
+  return range;
+}
+
 const handleKernelWorkerMessage = createKernelWorkerMessageHandler({
   postResponse,
   initKernel,
@@ -391,6 +423,7 @@ const handleKernelWorkerMessage = createKernelWorkerMessageHandler({
   },
   symlink,
   readFile: readFileAsync,
+  readFileRangeByInode,
   readlink,
   mkdir,
   statPath,

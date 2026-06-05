@@ -36,6 +36,7 @@ interface KernelWorkerMessageHandlerDeps {
   applyFileLayer(entries: KernelWorkerFileLayerEntry[]): void;
   symlink(path: string, target: Uint8Array, mode?: number, fanout?: boolean): void;
   readFile(path: string): Uint8Array | Promise<Uint8Array>;
+  readFileRangeByInode(ino: number, offset: number, length: number, expectedSize: number): Uint8Array | Promise<Uint8Array>;
   readlink(path: string): Uint8Array;
   mkdir(path: string, mode?: number, fanout?: boolean): void;
   statPath(path: string): {
@@ -208,6 +209,13 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
             type: "file-read",
             requestId: msg.requestId,
             data: await deps.readFile(msg.path),
+          });
+          break;
+        case "read-file-range-by-inode":
+          deps.postResponse({
+            type: "file-range-read",
+            requestId: msg.requestId,
+            data: await deps.readFileRangeByInode(msg.ino, msg.offset, msg.length, msg.expectedSize),
           });
           break;
         case "readlink":

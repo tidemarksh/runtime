@@ -64,7 +64,16 @@ function makeKernelExports(options: {
   secondaryAbsolutePath?: string;
   fdEntries?: Array<{ fd: number; ofdId: number; fdFlags?: number }>;
   ofdSlots?: Array<{ ofdId: number; bytes: Uint8Array }>;
-  mmapRequest?: { guestPtrHint: number; length: number; resultGuestPtr: number; bytes: Uint8Array };
+  mmapRequest?: {
+    guestPtrHint: number;
+    length: number;
+    resultGuestPtr: number;
+    bytes: Uint8Array;
+    fd?: number;
+    offset?: number;
+    ino?: number;
+    size?: number;
+  };
   readRequest?: { fd: number; offset: number; length: number; ino: number; size: number; pwrite?: boolean };
   writeRequest?: { fd: number; offset: number; length: number; ino: number; size: number; pwrite?: boolean };
 } = {}): FakeKernelExports {
@@ -102,7 +111,8 @@ function makeKernelExports(options: {
     view.setUint32(fsRingBase + FS_RING_SUBMIT_HEAD_OFFSET, 1, true);
     const entry = fsRingRequestEntryOffset(fsRingBase, 0);
     view.setUint32(entry + FS_RING_REQUEST_OPCODE_OFFSET, FS_OP_MMAP, true);
-    view.setInt32(entry + FS_RING_REQUEST_FD_OFFSET, 5, true);
+    view.setInt32(entry + FS_RING_REQUEST_FD_OFFSET, options.mmapRequest.fd ?? 5, true);
+    view.setBigUint64(entry + FS_RING_REQUEST_OFFSET_OFFSET, BigInt(options.mmapRequest.offset ?? 0), true);
     view.setBigUint64(entry + FS_RING_REQUEST_LEN_OFFSET, BigInt(options.mmapRequest.length), true);
     view.setBigUint64(entry + FS_RING_REQUEST_BUF_PTR_OFFSET, BigInt(options.mmapRequest.guestPtrHint), true);
     view.setUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, 0x1234, true);
@@ -242,9 +252,9 @@ function makeKernelExports(options: {
     },
     process_fd_ofd_id: (_vmPtr: number, fd: number) => fdOfdIds.get(fd) ?? 0,
     process_fd_flags: (_vmPtr: number, fd: number) => fdFlags.get(fd) ?? 0,
-    kernel_ofd_ino: () => options.readRequest?.ino ?? options.writeRequest?.ino ?? 0,
+    kernel_ofd_ino: () => options.readRequest?.ino ?? options.writeRequest?.ino ?? options.mmapRequest?.ino ?? 0,
     kernel_ofd_offset: () => BigInt(options.readRequest?.offset ?? options.writeRequest?.offset ?? 0),
-    memfs_file_size: () => options.readRequest?.size ?? options.writeRequest?.size ?? 0,
+    memfs_file_size: () => options.readRequest?.size ?? options.writeRequest?.size ?? options.mmapRequest?.size ?? 0,
     opLog,
   } as unknown as FakeKernelExports;
 }
@@ -621,6 +631,203 @@ test("processFs demand-fills page-aligned source-backed read ranges before proce
   expect(ensureBackingSourceRangeForInode).toHaveBeenCalledWith(11, 0, 128, 128);
   expect(readResidentFileData(sab, 11, 32, 16)).toEqual(backing.subarray(32, 48));
   expect(processExports.opLog).toEqual(["process-fs", "resume-fs"]);
+});
+
+test("processFs demand-fills source-backed mmap ranges before processing fs", async () => {
+  const canonicalExports = makeKernelExports();
+  const mappedBytes = Uint8Array.from([0xaa, 0xbb, 0xcc, 0xdd]);
+  const processExports = makeKernelExports({
+    fdEntries: [{ fd: 5, ofdId: 7 }],
+    mmapRequest: {
+      fd: 5,
+      offset: 4096,
+      length: 2048,
+      ino: 14,
+      size: 8192,
+      guestPtrHint: 0,
+      resultGuestPtr: 0x8000,
+      bytes: mappedBytes,
+    },
+  });
+  const processKernels = new Map<number, KernelExports>([[7, processExports]]);
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 16384);
+  const backing = Uint8Array.from({ length: 8192 }, (_value, index) => index & 0xff);
+  let backingReady = false;
+  const ensureBackingSourceRangeForInode = vi.fn(async () => true);
+  publishInode(sab, 14, {
+    mode: 0o100644,
+    size: backing.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("mapped"),
+    nextSibling: 0,
+    fileObjectId: 14,
+    generation: 1,
+  });
+
+  const processControl = createKernelWorkerProcessControl({
+    getCanonicalExports: () => canonicalExports,
+    setCanonicalExports: () => {},
+    getWasmModule: () => null,
+    setWasmModule: () => {},
+    getSabPageCache: () => sab,
+    setSabPageCache: () => {},
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    canonicalProcesses: new Map(),
+    seedEntries: new Map(),
+    getCanonicalNextPid: () => 3,
+    setCanonicalNextPid: () => {},
+    publishRootInode: () => {},
+    copyOfdState: () => {},
+    copyMemfsState: () => {},
+    rebuildPageCacheFromExports: () => {},
+    rebuildPageCacheFromCanonical: () => {},
+    syncPipeState: (_pid, kernelState) => kernelState,
+    syncEpollState: (_pid, kernelState) => kernelState,
+    syncSocketState: (_pid, kernelState) => kernelState,
+    copyCanonicalMemfsToProcess: () => {},
+    snapshotProcSelfExe: () => null,
+    restoreProcSelfExe: () => {},
+    composeProcessPipeUsed: () => 0n,
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    mergePipeSlotsFromCanonical: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+    }),
+    applyPipeControlState: () => {},
+    copyEpollState: () => {},
+    copySelectedEpollState: () => {},
+    copySocketState: () => {},
+    syncFileDataMutation: () => false,
+    syncFileDataMutationByPath: () => false,
+    syncMetadataMutation: () => false,
+    readBackingFileRangeByInode: (_ino, offset, length) => {
+      if (!backingReady) {
+        return null;
+      }
+      return backing.subarray(offset, offset + length);
+    },
+    ensureBackingSourceRangeForInode: async (...args) => {
+      const result = await ensureBackingSourceRangeForInode(...args);
+      backingReady = true;
+      return result;
+    },
+    restorePublishedRegularFileDataFromPageCache: () => {
+      processExports.opLog.push("restore-published-data");
+    },
+    fanoutCanonicalMemfs: () => {},
+    fsEffectMemfsMutation: 1 << 0,
+    fsEffectSharedOfdState: 1 << 1,
+    fsEffectMemfsFileData: 1 << 2,
+    fsOpOpenAt: 3,
+    fsOpMkdir: 6,
+    fsOpUnlink: 7,
+  });
+
+  const result = await processControl.processFs(7, 0x1234, makeKernelState());
+
+  expect(result.result).toBe(0x8000n);
+  expect(ensureBackingSourceRangeForInode).toHaveBeenCalledWith(14, 4096, 4096, 8192);
+  expect(readResidentFileData(sab, 14, 4096, 2048)).toEqual(backing.subarray(4096, 6144));
+  expect(processExports.opLog).toEqual(["restore-published-data", "process-fs", "resume-fs"]);
+});
+
+test("processFs retries execve after publishing kernel-reported backing miss range", async () => {
+  const canonicalExports = makeKernelExports();
+  const processExports = makeKernelExports({ resumeResult: 0 });
+  const processKernels = new Map<number, KernelExports>([[7, processExports]]);
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 8192);
+  const backing = Uint8Array.from({ length: 8192 }, (_value, index) => 0x20 + (index & 0x3f));
+  const clearMiss = vi.fn();
+  let miss: { ino: number; offset: number; length: number; expectedSize: number } | null = {
+    ino: 13,
+    offset: 128,
+    length: 16,
+    expectedSize: backing.length,
+  };
+
+  publishInode(sab, 13, {
+    mode: 0o100755,
+    size: backing.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("exec"),
+    nextSibling: 0,
+    fileObjectId: 13,
+    generation: 1,
+  });
+
+  processExports.thread_process_fs = () => {
+    processExports.opLog.push("process-fs");
+  };
+  processExports.thread_execve_backing_miss_ino = () => miss?.ino ?? 0;
+  processExports.thread_execve_backing_miss_offset = () => BigInt(miss?.offset ?? 0);
+  processExports.thread_execve_backing_miss_len = () => miss?.length ?? 0;
+  processExports.thread_execve_backing_miss_expected_size = () => miss?.expectedSize ?? 0;
+  processExports.thread_clear_execve_backing_miss = () => {
+    clearMiss();
+    miss = null;
+  };
+
+  const processControl = createKernelWorkerProcessControl({
+    getCanonicalExports: () => canonicalExports,
+    setCanonicalExports: () => {},
+    getWasmModule: () => null,
+    setWasmModule: () => {},
+    getSabPageCache: () => sab,
+    setSabPageCache: () => {},
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    canonicalProcesses: new Map(),
+    seedEntries: new Map(),
+    getCanonicalNextPid: () => 3,
+    setCanonicalNextPid: () => {},
+    publishRootInode: () => {},
+    copyOfdState: () => {},
+    copyMemfsState: () => {},
+    rebuildPageCacheFromExports: () => {},
+    rebuildPageCacheFromCanonical: () => {},
+    syncPipeState: (_pid, kernelState) => kernelState,
+    syncEpollState: (_pid, kernelState) => kernelState,
+    syncSocketState: (_pid, kernelState) => kernelState,
+    copyCanonicalMemfsToProcess: () => {},
+    snapshotProcSelfExe: () => null,
+    restoreProcSelfExe: () => {},
+    composeProcessPipeUsed: () => 0n,
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    mergePipeSlotsFromCanonical: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+    }),
+    applyPipeControlState: () => {},
+    copyEpollState: () => {},
+    copySelectedEpollState: () => {},
+    copySocketState: () => {},
+    syncFileDataMutation: () => false,
+    syncFileDataMutationByPath: () => false,
+    syncMetadataMutation: () => false,
+    readBackingFileRangeByInode: (_ino, offset, length) => backing.subarray(offset, offset + length),
+    ensureBackingSourceRangeForInode: async () => true,
+    fanoutCanonicalMemfs: () => {},
+    fsEffectMemfsMutation: 1 << 0,
+    fsEffectSharedOfdState: 1 << 1,
+    fsEffectMemfsFileData: 1 << 2,
+    fsOpOpenAt: 3,
+    fsOpMkdir: 6,
+    fsOpUnlink: 7,
+  });
+
+  const result = await processControl.processFs(7, 0x1234, makeKernelState());
+
+  expect(result.result).toBe(0n);
+  expect(clearMiss).toHaveBeenCalledTimes(1);
+  expect(readResidentFileData(sab, 13, 128, 16)).toEqual(backing.subarray(128, 144));
+  expect(processExports.opLog).toEqual(["process-fs", "process-fs", "resume-fs"]);
 });
 
 test("processFs materializes source-backed files before processing writes", async () => {

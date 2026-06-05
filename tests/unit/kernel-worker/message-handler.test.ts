@@ -44,6 +44,7 @@ function makeDeps(posted: KernelWorkerOutbound[]) {
     applyFileLayer: vi.fn(),
     symlink: vi.fn(),
     readFile: vi.fn(() => new Uint8Array([1, 2, 3])),
+    readFileRangeByInode: vi.fn(() => new Uint8Array([7, 8, 9])),
     readlink: vi.fn(() => new Uint8Array([4, 5, 6])),
     mkdir: vi.fn(),
     statPath: vi.fn(() => ({ ino: 1, mode: 0o100644, nlink: 1, uid: 0, gid: 0, size: 3 })),
@@ -198,6 +199,31 @@ test("message handler awaits async file reads before responding", async () => {
       type: "file-read",
       requestId: 20,
       data: new Uint8Array([7, 8, 9]),
+    },
+  ]);
+});
+
+test("message handler reads backing file ranges by inode", async () => {
+  const posted: KernelWorkerOutbound[] = [];
+  const deps = makeDeps(posted);
+  deps.readFileRangeByInode.mockResolvedValue(new Uint8Array([4, 5, 6, 7]));
+  const handleMessage = createKernelWorkerMessageHandler(deps);
+
+  await handleMessage({
+    type: "read-file-range-by-inode",
+    requestId: 21,
+    ino: 12,
+    offset: 4096,
+    length: 4,
+    expectedSize: 8192,
+  });
+
+  expect(deps.readFileRangeByInode).toHaveBeenCalledWith(12, 4096, 4, 8192);
+  expect(posted).toEqual([
+    {
+      type: "file-range-read",
+      requestId: 21,
+      data: new Uint8Array([4, 5, 6, 7]),
     },
   ]);
 });

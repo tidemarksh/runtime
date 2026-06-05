@@ -245,6 +245,13 @@ export type KernelWorkerRequest =
       path: string;
     }
   | {
+      type: "read-file-range-by-inode";
+      ino: number;
+      offset: number;
+      length: number;
+      expectedSize: number;
+    }
+  | {
       type: "readlink";
       path: string;
     }
@@ -493,6 +500,11 @@ export type KernelWorkerResponse =
     }
   | {
       type: "file-read";
+      requestId: number;
+      data: Uint8Array;
+    }
+  | {
+      type: "file-range-read";
       requestId: number;
       data: Uint8Array;
     }

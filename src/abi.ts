@@ -310,6 +310,11 @@ export interface KernelExports {
   thread_pending_fs_path_len?(vm_ptr: number): number;
   thread_pending_fs_absolute_path?(vm_ptr: number, buf_ptr: number, buf_len: number): bigint;
   thread_pending_fs_secondary_absolute_path?(vm_ptr: number, buf_ptr: number, buf_len: number): bigint;
+  thread_execve_backing_miss_ino?(vm_ptr: number): number;
+  thread_execve_backing_miss_offset?(vm_ptr: number): bigint | number;
+  thread_execve_backing_miss_len?(vm_ptr: number): number;
+  thread_execve_backing_miss_expected_size?(vm_ptr: number): number;
+  thread_clear_execve_backing_miss?(vm_ptr: number): void;
   thread_fs_ring_base?(vm_ptr: number): number;
   thread_fs_ring_submit_head?(vm_ptr: number): number;
   thread_fs_ring_submit_tail?(vm_ptr: number): number;

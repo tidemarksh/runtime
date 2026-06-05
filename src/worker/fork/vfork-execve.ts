@@ -13,6 +13,11 @@ import {
   configureKernelInstanceStack,
   MAIN_THREAD_KERNEL_STACK_SLOT,
 } from "../../wasm/stack.js";
+import {
+  DEFAULT_RESIDENT_PAGE_SIZE,
+  publishResidentPage,
+  readResidentFileData,
+} from "../../fs/sab-page-cache.js";
 import { captureExecveGuestHandoff, decodeExecveBytes, stageExecveGuestHandoff } from "./execve-handoff.js";
 import { captureVforkSnapshot, snapshotKernelShareOfdSlots } from "../fork-shared.js";
 import { activeKernelShareOfdIds, collectProcessHeldOfds } from "../ownership/ofd-table.js";
@@ -35,7 +40,6 @@ import {
   copyKernelPrivateRegion,
   ensureMemoryCapacity,
 } from "../kernel-scratch.js";
-import { resolveMemfsPath } from "../process-fs.js";
 import { acquireWorker, ensureEvictionTimer } from "../pool.js";
 import { createForkChildHandle } from "./common.js";
 import { normalizeGuestMemoryPolicyLimitBytes } from "./common.js";
@@ -50,6 +54,15 @@ const VFORK_EXECVE_HANDOFF_FAILURE_WAIT_STATUS = 127 << 8;
 const HANDOFF_DEBUG_STRING_LIMIT = 128;
 const EXECVE_CHILD_HANDOFF_HEADROOM_BYTES = 0x10000;
 const EXECVE_CHILD_LIVE_STACK_WINDOW_BYTES = 8 * 1024 * 1024;
+const EXECVE_BACKING_RETRY_LIMIT = 256;
+const EAGAIN = -11;
+
+interface ExecveBackingMiss {
+  ino: number;
+  offset: number;
+  length: number;
+  expectedSize: number;
+}
 
 function formatGuestCStringForDebug(
   handle: ProcessHandle,
@@ -124,6 +137,115 @@ function formatThreadSyscallArgsForDebug(
     `a4=${format(read("thread_a4"))}`,
     `a5=${format(read("thread_a5"))}`,
   ].join(":");
+}
+
+function readExecveBackingMiss(kernel: KernelExports, vmPtr: number): ExecveBackingMiss | null {
+  if (
+    typeof kernel.thread_execve_backing_miss_ino !== "function"
+    || typeof kernel.thread_execve_backing_miss_offset !== "function"
+    || typeof kernel.thread_execve_backing_miss_len !== "function"
+    || typeof kernel.thread_execve_backing_miss_expected_size !== "function"
+  ) {
+    return null;
+  }
+  const ino = kernel.thread_execve_backing_miss_ino(vmPtr);
+  const offsetRaw = kernel.thread_execve_backing_miss_offset(vmPtr);
+  const offset = typeof offsetRaw === "bigint" ? Number(offsetRaw) : offsetRaw;
+  const length = kernel.thread_execve_backing_miss_len(vmPtr);
+  const expectedSize = kernel.thread_execve_backing_miss_expected_size(vmPtr);
+  if (
+    ino <= 0
+    || !Number.isSafeInteger(offset)
+    || offset < 0
+    || !Number.isFinite(length)
+    || length <= 0
+    || !Number.isFinite(expectedSize)
+    || expectedSize <= 0
+  ) {
+    return null;
+  }
+  return { ino, offset, length, expectedSize };
+}
+
+async function publishExecveBackingMissForHandoff(
+  handle: ProcessHandle,
+  miss: ExecveBackingMiss,
+): Promise<boolean> {
+  const sab = handle.sabPageCache;
+  if (!sab || !handle.kernelWorkerRequest) {
+    return false;
+  }
+  const alignedOffset = Math.floor(miss.offset / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE;
+  const requestedEnd = miss.offset + miss.length;
+  const alignedEnd = Math.min(
+    miss.expectedSize,
+    Math.ceil(requestedEnd / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE,
+  );
+  if (alignedEnd <= alignedOffset) {
+    return false;
+  }
+  const alignedLength = alignedEnd - alignedOffset;
+  const response = await handle.kernelWorkerRequest({
+    type: "read-file-range-by-inode",
+    ino: miss.ino,
+    offset: alignedOffset,
+    length: alignedLength,
+    expectedSize: miss.expectedSize,
+  });
+  if (response.type !== "file-range-read" || response.data.length !== alignedLength) {
+    return false;
+  }
+  for (let pageStart = alignedOffset; pageStart < alignedEnd; pageStart += DEFAULT_RESIDENT_PAGE_SIZE) {
+    const pageLen = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, miss.expectedSize - pageStart);
+    if (pageLen <= 0 || readResidentFileData(sab, miss.ino, pageStart, pageLen)) {
+      continue;
+    }
+    const backingOffset = pageStart - alignedOffset;
+    const page = response.data.subarray(backingOffset, backingOffset + pageLen);
+    if (page.length !== pageLen || !publishResidentPage(sab, miss.ino, pageStart / DEFAULT_RESIDENT_PAGE_SIZE, page)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function completeExecveHandoffWithBackingRetry(
+  deps: WorkerForkDeps,
+  handle: ProcessHandle,
+  childPid: number,
+  childKernel: KernelExports,
+  childVmPtr: number,
+): Promise<number> {
+  let lastRet = EAGAIN;
+  for (let attempt = 0; attempt < EXECVE_BACKING_RETRY_LIMIT; attempt += 1) {
+    lastRet = Number(childKernel.thread_complete_execve_handoff(childVmPtr));
+    if (lastRet !== EAGAIN) {
+      return lastRet;
+    }
+    const miss = readExecveBackingMiss(childKernel, childVmPtr);
+    if (!miss) {
+      return lastRet;
+    }
+    if (!await publishExecveBackingMissForHandoff(handle, miss)) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `vfork-execve:backing-publish-failed:${childPid}`
+          + `:ino=${miss.ino}:off=${miss.offset}:len=${miss.length}:size=${miss.expectedSize}`,
+      );
+      return lastRet;
+    }
+    childKernel.thread_clear_execve_backing_miss?.(childVmPtr);
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `vfork-execve:backing-published:${childPid}`
+        + `:attempt=${attempt + 1}:ino=${miss.ino}:off=${miss.offset}:len=${miss.length}:size=${miss.expectedSize}`,
+    );
+  }
+  deps.appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `vfork-execve:backing-retry-exhausted:${childPid}:attempts=${EXECVE_BACKING_RETRY_LIMIT}`,
+  );
+  return lastRet;
 }
 
 function copyKernelRuntimeRegion(
@@ -205,95 +327,6 @@ function copyExecveKernelRuntimeRegions(handle: ProcessHandle, target: WebAssemb
     handle.kernelState.timeStatePtr,
     handle.kernel.kernel_time_state_bytes(),
   );
-}
-
-function readElfInterpPath(elfData: Uint8Array): string | null {
-  if (elfData.length < 64) {
-    return null;
-  }
-  if (elfData[0] !== 0x7f || elfData[1] !== 0x45 || elfData[2] !== 0x4c || elfData[3] !== 0x46) {
-    return null;
-  }
-  if (elfData[4] !== 2 || elfData[5] !== 1) {
-    return null;
-  }
-
-  const view = new DataView(elfData.buffer, elfData.byteOffset, elfData.byteLength);
-  const phOff = Number(view.getBigUint64(32, true));
-  const phEntSize = view.getUint16(54, true);
-  const phNum = view.getUint16(56, true);
-  const phEnd = phOff + phEntSize * phNum;
-  if (phEntSize < 56 || phEnd > elfData.length) {
-    return null;
-  }
-
-  for (let index = 0; index < phNum; index += 1) {
-    const start = phOff + index * phEntSize;
-    if (view.getUint32(start, true) !== 3) {
-      continue;
-    }
-    const offset = Number(view.getBigUint64(start + 8, true));
-    const fileSize = Number(view.getBigUint64(start + 32, true));
-    const end = offset + fileSize;
-    if (fileSize === 0 || end > elfData.length) {
-      return null;
-    }
-    const bytes = elfData.subarray(offset, end);
-    const nul = bytes.indexOf(0);
-    const interp = decodeExecveBytes(nul >= 0 ? bytes.subarray(0, nul) : bytes);
-    return interp.length > 0 ? interp : null;
-  }
-
-  return null;
-}
-
-async function prepareExecveBackingPathForHandoff(
-  handle: ProcessHandle,
-  childKernel: KernelExports,
-  path: string,
-  backingByInode: Map<number, Uint8Array>,
-): Promise<{ path: string; ino: number; bytes: number } | null> {
-  if (!handle.kernelWorkerRequest || !path) {
-    return null;
-  }
-  const ino = resolveMemfsPath(childKernel, path);
-  if (ino === 0) {
-    return { path, ino, bytes: 0 };
-  }
-  const response = await handle.kernelWorkerRequest({ type: "read-file", path });
-  if (response.type !== "file-read") {
-    throw new Error(`unexpected kernel-worker read-file response: ${response.type}`);
-  }
-  backingByInode.set(ino, response.data);
-  return { path, ino, bytes: response.data.length };
-}
-
-async function prepareExecveBackingForHandoff(
-  handle: ProcessHandle,
-  childKernel: KernelExports,
-  pathBytes: Uint8Array,
-  backingByInode: Map<number, Uint8Array>,
-): Promise<Array<{ path: string; ino: number; bytes: number }>> {
-  const path = decodeExecveBytes(pathBytes[pathBytes.length - 1] === 0
-    ? pathBytes.subarray(0, pathBytes.length - 1)
-    : pathBytes);
-  const prepared: Array<{ path: string; ino: number; bytes: number }> = [];
-  const target = await prepareExecveBackingPathForHandoff(handle, childKernel, path, backingByInode);
-  if (!target) {
-    return prepared;
-  }
-  prepared.push(target);
-
-  const targetBytes = backingByInode.get(target.ino);
-  const interpPath = targetBytes ? readElfInterpPath(targetBytes) : null;
-  if (!interpPath) {
-    return prepared;
-  }
-  const interp = await prepareExecveBackingPathForHandoff(handle, childKernel, interpPath, backingByInode);
-  if (interp) {
-    prepared.push(interp);
-  }
-  return prepared;
 }
 
 function execveChildInitialMemoryBytes(
@@ -524,7 +557,6 @@ export async function handleVforkExecve(
       + `:heap=${Math.max(handle.kernelState.heapPtr, handle.kernel.kernel_heap_ptr?.() ?? 0)}`
       + `:sp=${parentThread.lastStatusSp ?? parentThread.lastStepSp ?? handle.kernel.thread_sp(parentThread.vmPtr)}`,
   );
-  const childExecveBackingByInode = new Map<number, Uint8Array>();
   const { instance: childInstance, memory: childMemory } = await instantiateKernelWithSharedMemory(
     handle.wasmModule,
     {
@@ -533,16 +565,6 @@ export async function handleVforkExecve(
     },
     {
       sabPageCache: handle.sabPageCache,
-      readFileDataByInode: (ino, offset, length) => {
-        const data = childExecveBackingByInode.get(ino);
-        if (!data || offset < 0) {
-          return null;
-        }
-        if (offset >= data.length) {
-          return new Uint8Array();
-        }
-        return data.subarray(offset, Math.min(data.length, offset + length));
-      },
     },
     (memory) => {
       copyKernelPrivateRegion(handle.memory, memory, handle.kernelState.heapPtr);
@@ -644,22 +666,13 @@ export async function handleVforkExecve(
   );
   let execRet: number;
   try {
-    const preparedBacking = await prepareExecveBackingForHandoff(
+    execRet = await completeExecveHandoffWithBackingRetry(
+      deps,
       handle,
+      childPid,
       childKernel,
-      execveGuestPayload.path,
-      childExecveBackingByInode,
+      childVmPtr,
     );
-    for (const prepared of preparedBacking) {
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `vfork-execve:target-backing:${childPid}`
-          + `:ino=${prepared.ino}`
-          + `:bytes=${prepared.bytes}`
-          + `:path=${JSON.stringify(prepared.path)}`,
-      );
-    }
-    execRet = Number(childKernel.thread_complete_execve_handoff(childVmPtr));
   } catch (error) {
     const debugStage = childKernel.debug_execve_stage?.();
     const debugValue0 = childKernel.debug_execve_value0?.();
