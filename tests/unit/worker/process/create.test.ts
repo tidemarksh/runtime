@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { readPublishedKernelRuntimeState } from "../../../../src/bridge/runtime-state.js";
+import {
+  DATA_REGION_OFFSET,
+  publishInode,
+  readResidentFileData,
+} from "../../../../src/fs/sab-page-cache.js";
 import { createWorkerProcessFactory } from "../../../../src/worker/create-process.js";
 import { destroyWorkerPool } from "../../../../src/worker/pool.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
@@ -799,20 +804,42 @@ test("createProcess fetches a metadata-only kernel-worker snapshot when runtime 
   expect(registerProcessWithKernelWorker).toHaveBeenCalledWith(expect.anything(), { seedMemfsMode: "metadata" });
 });
 
-test("createProcess materializes only PT_INTERP for dynamic ELF metadata-only snapshots", async () => {
+test("createProcess publishes PT_INTERP through backing ranges for dynamic ELF metadata-only snapshots", async () => {
   const processHandles = new Map<number, ProcessHandle>([[1, makeParentHandle()]]);
   const kernelMemory = new WebAssembly.Memory({ initial: 1024, maximum: 2048, shared: true });
   const fakeKernel = makeFakeProcessKernel(kernelMemory);
+  const sabPageCache = new SharedArrayBuffer(DATA_REGION_OFFSET + 8192);
+  const interpIno = 42;
+  const interpSize = 30;
+  publishInode(sabPageCache, interpIno, {
+    mode: 0o100755,
+    size: interpSize,
+    parentIno: 2,
+    name: encoder.encode("ld-linux-riscv64-lp64d.so.1"),
+    nextSibling: 0,
+    fileObjectId: interpIno,
+    generation: 1,
+  });
   vi.spyOn(WebAssembly, "instantiate").mockResolvedValue({
     exports: fakeKernel,
   } as unknown as WebAssembly.Instance);
   const getRuntimeFsEntries = vi.fn(() => [{
     kind: "file" as const,
     path: "/lib/ld-linux-riscv64-lp64d.so.1",
-    size: 32,
+    ino: interpIno,
+    size: interpSize,
     mode: 0o755,
   }]);
-  const kernelWorkerRequest = vi.fn(async (msg: { type: string; includeData?: boolean; path?: string }) => {
+  const interpBytes = encoder.encode("dynamic-loader-backing-range!!");
+  expect(interpBytes.length).toBe(interpSize);
+  const kernelWorkerRequest = vi.fn(async (msg: {
+    type: string;
+    includeData?: boolean;
+    ino?: number;
+    offset?: number;
+    length?: number;
+    expectedSize?: number;
+  }) => {
     if (msg.type === "snapshot-fs") {
       expect(msg).toEqual({
         type: "snapshot-fs",
@@ -824,17 +851,24 @@ test("createProcess materializes only PT_INTERP for dynamic ELF metadata-only sn
         entries: [{
           kind: "file" as const,
           path: "/lib/ld-linux-riscv64-lp64d.so.1",
-          size: 32,
+          ino: interpIno,
+          size: interpSize,
           mode: 0o755,
         }],
       };
     }
-    if (msg.type === "read-file") {
-      expect(msg.path).toBe("/lib/ld-linux-riscv64-lp64d.so.1");
+    if (msg.type === "read-file-range-by-inode") {
+      expect(msg).toEqual({
+        type: "read-file-range-by-inode",
+        ino: interpIno,
+        offset: 0,
+        length: interpSize,
+        expectedSize: interpSize,
+      });
       return {
-        type: "file-read" as const,
+        type: "file-range-read" as const,
         requestId: 2,
-        data: encoder.encode("dynamic-loader-materialized"),
+        data: interpBytes,
       };
     }
     throw new Error(`unexpected kernel worker request: ${msg.type}`);
@@ -863,16 +897,21 @@ test("createProcess materializes only PT_INTERP for dynamic ELF metadata-only sn
       parentPid: 1,
       argv: ["app"],
       hydrateFsFromKernelWorker: true,
+      sabPageCache,
       kernelWorkerRequest,
     },
   );
 
   expect(getRuntimeFsEntries).toHaveBeenCalledTimes(1);
   expect(kernelWorkerRequest).toHaveBeenCalledTimes(2);
+  expect(kernelWorkerRequest.mock.calls.some(([msg]) => msg.type === "read-file")).toBe(false);
   const ino = fakeKernel.memfsPaths.get("/lib/ld-linux-riscv64-lp64d.so.1");
   expect(ino).toBeGreaterThan(0);
-  expect(fakeKernel.externalizedInos.has(ino!)).toBe(false);
-  expect(Number(fakeKernel.memfs_file_size(ino!))).toBe("dynamic-loader-materialized".length);
+  expect(fakeKernel.externalizedInos.has(ino!)).toBe(true);
+  expect(Number(fakeKernel.memfs_file_size(ino!))).toBe(interpSize);
+  expect(fakeKernel.callLog).toContain("memfs_set_file_external");
+  expect(fakeKernel.callLog).not.toContain("memfs_write_file_at");
+  expect(readResidentFileData(sabPageCache, interpIno, 0, interpSize)).toEqual(interpBytes);
 });
 
 test("createProcess computes guest base after preloading runtime fs entries", async () => {

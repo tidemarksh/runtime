@@ -11,6 +11,11 @@ import type { FsSnapshotEntry } from "../fs/types.js";
 import { createRuntimeStateBridge, publishKernelRuntimeState } from "../bridge/runtime-state.js";
 import { instantiateKernelWithSharedMemory } from "../wasm/kernel-memory.js";
 import {
+  DEFAULT_RESIDENT_PAGE_SIZE,
+  publishResidentPage,
+  readResidentFileData,
+} from "../fs/sab-page-cache.js";
+import {
   preloadSnapshotEntries,
   resolveProcessCwdIno,
 } from "./process-fs.js";
@@ -209,42 +214,50 @@ function resolveSnapshotPathFollowingSymlinks(
   return normalizeGuestPath(`/${resolvedParts.join("/")}`);
 }
 
-async function materializeInterpEntry(
+async function publishInterpResidentPages(
   entries: FsSnapshotEntry[],
   interpPath: string | null,
+  sabPageCache: SharedArrayBuffer | null | undefined,
   kernelWorkerRequest: NonNullable<CreateProcessOptions["kernelWorkerRequest"]> | undefined,
-): Promise<FsSnapshotEntry[]> {
-  if (!interpPath || !kernelWorkerRequest) {
-    return entries;
+): Promise<void> {
+  if (!interpPath || !sabPageCache || !kernelWorkerRequest) {
+    return;
   }
-  const materializedPath = resolveSnapshotPathFollowingSymlinks(entries, interpPath) ?? normalizeGuestPath(interpPath);
-  const existing = entries.find((entry) => normalizeGuestPath(entry.path) === materializedPath);
-  if (existing?.kind === "file" && existing.data !== undefined) {
-    return entries;
+  const resolvedPath = resolveSnapshotPathFollowingSymlinks(entries, interpPath) ?? normalizeGuestPath(interpPath);
+  const entry = entries.find((candidate) => normalizeGuestPath(candidate.path) === resolvedPath);
+  if (!entry || entry.kind !== "file" || entry.data !== undefined) {
+    return;
   }
-
-  const response = await kernelWorkerRequest({
-    type: "read-file",
-    path: interpPath,
-  });
-  if (response.type !== "file-read") {
-    throw new Error(`unexpected kernel-worker read-file response: ${response.type}`);
+  const ino = entry.ino;
+  const expectedSize = entry.size ?? 0;
+  if (!Number.isInteger(ino) || ino === undefined || ino <= 0 || expectedSize <= 0) {
+    throw new Error(`cannot publish PT_INTERP resident pages without inode metadata: ${resolvedPath}`);
   }
 
-  let replaced = false;
-  const nextEntries = entries.map((entry) => {
-    if (normalizeGuestPath(entry.path) !== materializedPath || entry.kind !== "file") {
-      return entry;
+  for (let offset = 0; offset < expectedSize; offset += DEFAULT_RESIDENT_PAGE_SIZE) {
+    const length = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, expectedSize - offset);
+    if (readResidentFileData(sabPageCache, ino, offset, length)) {
+      continue;
     }
-    replaced = true;
-    return { ...entry, data: response.data, size: response.data.length };
-  });
-  return replaced
-    ? nextEntries
-    : [
-        ...nextEntries,
-        { kind: "file", path: materializedPath, data: response.data, size: response.data.length, mode: 0o755 },
-      ];
+    const response = await kernelWorkerRequest({
+      type: "read-file-range-by-inode",
+      ino,
+      offset,
+      length,
+      expectedSize,
+    });
+    if (response.type !== "file-range-read") {
+      throw new Error(`unexpected kernel-worker file-range response: ${response.type}`);
+    }
+    if (response.data.length !== length) {
+      throw new Error(
+        `short PT_INTERP backing range: path=${resolvedPath} offset=${offset} length=${length} actual=${response.data.length}`,
+      );
+    }
+    if (!publishResidentPage(sabPageCache, ino, offset / DEFAULT_RESIDENT_PAGE_SIZE, response.data)) {
+      throw new Error(`failed to publish PT_INTERP resident page: path=${resolvedPath} offset=${offset}`);
+    }
+  }
 }
 
 interface WorkerCreateProcessDeps {
@@ -284,7 +297,6 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     runtimeId: number,
     options: CreateProcessOptions,
     delegateFsHydrationToKernelWorker: boolean,
-    interpPath: string | null,
   ): Promise<FsSnapshotEntry[]> {
     const bootstrapEntries = options.preloadEntries
       ?? deps.getRuntimeFsEntries(runtimeId);
@@ -572,15 +584,21 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       && options.kernelWorkerRequest
       && (options.pid ?? 0) > 0
       && options.preloadEntries === undefined
-      && !interpPath
     );
     const preloadScratchBase = detachedKernelScratchBase(exports.memory, 0, 0);
-    const bootstrapEntries = await materializeInterpEntry(await resolveBootstrapEntries(
+    const bootstrapEntries = await resolveBootstrapEntries(
       runtimeId,
       options,
       delegateFsHydrationToKernelWorker,
-      interpPath,
-    ), interpPath, options.kernelWorkerRequest);
+    );
+    if (delegateFsHydrationToKernelWorker) {
+      await publishInterpResidentPages(
+        bootstrapEntries,
+        interpPath,
+        options.sabPageCache,
+        options.kernelWorkerRequest,
+      );
+    }
     const artifactMaterializedBytes = snapshotMaterializedDataBytes(bootstrapEntries);
     assertArtifactMaterializationBudget(
       artifactMaterializedBytes,
