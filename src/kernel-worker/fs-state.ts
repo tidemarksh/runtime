@@ -24,9 +24,20 @@ import {
   Uint8ArrayBackingSource,
   type KernelWorkerBackingSource,
 } from "./backing-source.js";
+import {
+  fetchRemoteBackingSourceRange,
+} from "./remote-backing-source.js";
+import {
+  readOpfsBackingSourceRange,
+  type OpfsBackingFileHandle,
+} from "./opfs-backing-source.js";
 import { createKernelWorkerFsSnapshotHelpers } from "./fs-state/snapshot.js";
 
 export const KERNEL_WORKER_FS_STATE_OWNERSHIP = "transitional-runtime-owner" as const;
+
+type AsyncBackingSource =
+  | { kind: "remote"; byteLength: number; url: string }
+  | { kind: "opfs"; byteLength: number; handle: OpfsBackingFileHandle };
 
 interface KernelWorkerFsStateDeps {
   getCanonicalExports(): KernelExports;
@@ -53,6 +64,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   const backingStore = new MemoryFileBackingStore();
   const fileObjectIdsByIno = new Map<number, number>();
   const backingSourcesByIdentity = new Map<string, KernelWorkerBackingSource>();
+  const asyncBackingSourcesByIdentity = new Map<string, AsyncBackingSource>();
   const backingExtentsByIno = new Map<number, FsSnapshotBackingExtent>();
 
   function replaceBackingFile(ino: number, data: Uint8Array): void {
@@ -93,6 +105,30 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     backingSourcesByIdentity.set(sourceIdentity, source);
   }
 
+  function registerRemoteBackingSource(sourceIdentity: string, byteLength: number, url: string): void {
+    if (sourceIdentity.length === 0) {
+      throw new Error("backing source identity must not be empty");
+    }
+    if (!Number.isInteger(byteLength) || byteLength < 0) {
+      throw new RangeError(`invalid remote backing source byte length: ${byteLength}`);
+    }
+    asyncBackingSourcesByIdentity.set(sourceIdentity, { kind: "remote", byteLength, url });
+  }
+
+  function registerOpfsBackingSource(
+    sourceIdentity: string,
+    byteLength: number,
+    handle: OpfsBackingFileHandle,
+  ): void {
+    if (sourceIdentity.length === 0) {
+      throw new Error("backing source identity must not be empty");
+    }
+    if (!Number.isInteger(byteLength) || byteLength < 0) {
+      throw new RangeError(`invalid OPFS backing source byte length: ${byteLength}`);
+    }
+    asyncBackingSourcesByIdentity.set(sourceIdentity, { kind: "opfs", byteLength, handle });
+  }
+
   function registerBackingSourceObject(sourceIdentity: string, source: KernelWorkerBackingSource): void {
     if (sourceIdentity.length === 0) {
       throw new Error("backing source identity must not be empty");
@@ -101,6 +137,41 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       throw new RangeError(`invalid backing source byte length: ${source.byteLength}`);
     }
     backingSourcesByIdentity.set(sourceIdentity, source);
+  }
+
+  function sourceRangeForInode(
+    ino: number,
+    fileOffset: number,
+    length: number,
+    expectedSize: number,
+  ): { sourceIdentity: string; byteLength: number; offset: number; length: number } | null {
+    const extent = backingExtentsByIno.get(ino);
+    if (
+      !extent
+      || expectedSize < 0
+      || !Number.isInteger(fileOffset)
+      || !Number.isInteger(length)
+      || fileOffset < 0
+      || length <= 0
+      || fileOffset >= expectedSize
+    ) {
+      return null;
+    }
+    const sourceOffset = Math.floor(extent.offset ?? 0);
+    const extentLength = Math.floor(extent.length ?? expectedSize);
+    if (
+      sourceOffset < 0
+      || extentLength < 0
+      || extentLength !== expectedSize
+    ) {
+      return null;
+    }
+    return {
+      sourceIdentity: extent.sourceIdentity,
+      byteLength: sourceOffset + extentLength,
+      offset: sourceOffset + fileOffset,
+      length: Math.min(length, expectedSize - fileOffset),
+    };
   }
 
   function registerSnapshotBackingExtent(ino: number, backingExtent: FsSnapshotBackingExtent | undefined): void {
@@ -154,6 +225,30 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     }
     const readLength = Math.min(length, expectedSize - fileOffset);
     return source.readRange(sourceOffset + fileOffset, readLength);
+  }
+
+  async function ensureBackingSourceRangeForInode(
+    ino: number,
+    fileOffset: number,
+    length: number,
+    expectedSize: number,
+  ): Promise<boolean> {
+    if (readBackingSourceRangeForInode(ino, fileOffset, length, expectedSize) !== null) {
+      return true;
+    }
+    const range = sourceRangeForInode(ino, fileOffset, length, expectedSize);
+    if (!range) {
+      return false;
+    }
+    const asyncSource = asyncBackingSourcesByIdentity.get(range.sourceIdentity);
+    if (!asyncSource || asyncSource.byteLength < range.offset + range.length) {
+      return false;
+    }
+    const fetched = asyncSource.kind === "remote"
+      ? await fetchRemoteBackingSourceRange(asyncSource.url, asyncSource.byteLength, range.offset, range.length)
+      : await readOpfsBackingSourceRange(asyncSource.handle, asyncSource.byteLength, range.offset, range.length);
+    registerBackingSourceRange(range.sourceIdentity, fetched.byteLength, fetched.offset, fetched.data);
+    return readBackingSourceRangeForInode(ino, fileOffset, length, expectedSize) !== null;
   }
 
   function createSourceBackedFileForInode(ino: number, expectedSize: number): number | null {
@@ -937,6 +1032,9 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     registerBackingSource,
     registerBackingSourceRange,
     registerBackingSourceObject,
+    registerRemoteBackingSource,
+    registerOpfsBackingSource,
+    ensureBackingSourceRangeForInode,
     readBackingFileByInode,
     readBackingFileRangeByInode,
     writeBackingFileByInode,

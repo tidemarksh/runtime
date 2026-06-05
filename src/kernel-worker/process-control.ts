@@ -7,9 +7,14 @@ import type {
   KernelWorkerPipeSlotSnapshot,
 } from "../messages.js";
 import {
+  FS_OP_READ,
   FS_OP_MMAP,
+  FS_REQ_FLAG_PWRITE,
+  FS_RING_REQUEST_FD_OFFSET,
   FS_RING_REQUEST_BUF_PTR_OFFSET,
+  FS_RING_REQUEST_FLAGS_OFFSET,
   FS_RING_REQUEST_LEN_OFFSET,
+  FS_RING_REQUEST_OFFSET_OFFSET,
   FS_RING_REQUEST_OPCODE_OFFSET,
   FS_RING_REQUEST_VM_PTR_OFFSET,
   FS_RING_SUBMIT_HEAD_OFFSET,
@@ -59,6 +64,13 @@ interface ProcessFsResult {
 interface PendingMmapGuestWriteRequest {
   guestPtrHint: number;
   length: number;
+}
+
+interface PendingReadFillRequest {
+  ino: number;
+  offset: number;
+  length: number;
+  expectedSize: number;
 }
 
 interface PendingFsMutationContext {
@@ -113,6 +125,12 @@ interface KernelWorkerProcessControlDeps {
   readBackingFileByInode(ino: number): Uint8Array | null;
   readBackingFileRangeByInode(ino: number, offset: number, length: number): Uint8Array | null;
   writeBackingFileByInode(ino: number, offset: number, data: Uint8Array): number;
+  ensureBackingSourceRangeForInode?(
+    ino: number,
+    offset: number,
+    length: number,
+    expectedSize: number,
+  ): Promise<boolean>;
   syncPipeState(
     pid: number,
     kernelState: KernelRuntimeState,
@@ -309,6 +327,76 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       return { guestPtrHint, length };
     }
     return null;
+  }
+
+  function readPendingReadFillRequest(
+    processExports: KernelExports,
+    vmPtr: number,
+  ): PendingReadFillRequest | null {
+    const ringBase = processExports.thread_fs_ring_base?.(vmPtr) ?? 0;
+    if (ringBase <= 0 || ringBase + FS_RING_TOTAL_BYTES > processExports.memory.buffer.byteLength) {
+      return null;
+    }
+    const view = new DataView(processExports.memory.buffer);
+    const submitHead = view.getUint32(ringBase + FS_RING_SUBMIT_HEAD_OFFSET, true);
+    const submitTail = view.getUint32(ringBase + FS_RING_SUBMIT_TAIL_OFFSET, true);
+    for (let pos = submitTail; pos !== submitHead; pos = (pos + 1) >>> 0) {
+      const entry = fsRingRequestEntryOffset(ringBase, pos);
+      if (view.getUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, true) !== vmPtr) {
+        continue;
+      }
+      if (view.getUint32(entry + FS_RING_REQUEST_OPCODE_OFFSET, true) !== FS_OP_READ) {
+        continue;
+      }
+      const fd = view.getInt32(entry + FS_RING_REQUEST_FD_OFFSET, true);
+      const length = Number(view.getBigUint64(entry + FS_RING_REQUEST_LEN_OFFSET, true));
+      const flags = view.getUint32(entry + FS_RING_REQUEST_FLAGS_OFFSET, true);
+      const ofdId = processExports.process_fd_ofd_id(vmPtr, fd);
+      if (ofdId <= 0 || !Number.isFinite(length) || length <= 0) {
+        return null;
+      }
+      const ino = processExports.kernel_ofd_ino(ofdId);
+      const expectedSize = Number(processExports.memfs_file_size(ino));
+      const offset = (flags & FS_REQ_FLAG_PWRITE) !== 0
+        ? Number(view.getBigUint64(entry + FS_RING_REQUEST_OFFSET_OFFSET, true))
+        : Number(processExports.kernel_ofd_offset(ofdId));
+      if (
+        ino <= 0
+        || !Number.isFinite(offset)
+        || offset < 0
+        || !Number.isFinite(expectedSize)
+        || expectedSize <= 0
+        || offset >= expectedSize
+      ) {
+        return null;
+      }
+      return {
+        ino,
+        offset,
+        length: Math.min(length, expectedSize - offset),
+        expectedSize,
+      };
+    }
+    return null;
+  }
+
+  async function ensurePendingReadBackingRange(
+    processExports: KernelExports,
+    vmPtr: number,
+  ): Promise<void> {
+    const request = readPendingReadFillRequest(processExports, vmPtr);
+    if (!request) {
+      return;
+    }
+    if (deps.readBackingFileRangeByInode(request.ino, request.offset, request.length) !== null) {
+      return;
+    }
+    await deps.ensureBackingSourceRangeForInode?.(
+      request.ino,
+      request.offset,
+      request.length,
+      request.expectedSize,
+    );
   }
 
   function snapshotMmapGuestMemoryWrite(
@@ -708,16 +796,17 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     return ofdSlots;
   }
 
-  function processFs(
+  async function processFs(
     pid: number,
     vmPtr: number,
     kernelState: KernelRuntimeState,
-  ): ProcessFsResult {
+  ): Promise<ProcessFsResult> {
     const canonicalExports = deps.getCanonicalExports();
     const processExports = requireProcessKernel(pid);
     attachKernelRuntimeState(processExports, kernelState);
     const pendingContext = readPendingFsMutationContext(processExports, vmPtr);
     const pendingMmapGuestWrite = readPendingMmapGuestWriteRequest(processExports, vmPtr);
+    await ensurePendingReadBackingRange(processExports, vmPtr);
     if (pendingMmapGuestWrite !== null) {
       deps.restorePublishedRegularFileDataFromPageCache?.(processExports);
     }

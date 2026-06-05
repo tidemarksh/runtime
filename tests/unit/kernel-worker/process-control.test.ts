@@ -3,10 +3,14 @@ import { expect, test, vi } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
 import { createKernelWorkerProcessControl } from "../../../src/kernel-worker/process-control.js";
 import {
+  FS_OP_READ,
   FS_OP_MMAP,
+  FS_REQ_FLAG_PWRITE,
   FS_RING_REQUEST_BUF_PTR_OFFSET,
   FS_RING_REQUEST_FD_OFFSET,
+  FS_RING_REQUEST_FLAGS_OFFSET,
   FS_RING_REQUEST_LEN_OFFSET,
+  FS_RING_REQUEST_OFFSET_OFFSET,
   FS_RING_REQUEST_OPCODE_OFFSET,
   FS_RING_REQUEST_VM_PTR_OFFSET,
   FS_RING_SUBMIT_HEAD_OFFSET,
@@ -55,6 +59,7 @@ function makeKernelExports(options: {
   fdEntries?: Array<{ fd: number; ofdId: number; fdFlags?: number }>;
   ofdSlots?: Array<{ ofdId: number; bytes: Uint8Array }>;
   mmapRequest?: { guestPtrHint: number; length: number; resultGuestPtr: number; bytes: Uint8Array };
+  readRequest?: { fd: number; offset: number; length: number; ino: number; size: number; pwrite?: boolean };
 } = {}): FakeKernelExports {
   let runtimeState = makeKernelState();
   const opLog: string[] = [];
@@ -93,6 +98,21 @@ function makeKernelExports(options: {
     view.setInt32(entry + FS_RING_REQUEST_FD_OFFSET, 5, true);
     view.setBigUint64(entry + FS_RING_REQUEST_LEN_OFFSET, BigInt(options.mmapRequest.length), true);
     view.setBigUint64(entry + FS_RING_REQUEST_BUF_PTR_OFFSET, BigInt(options.mmapRequest.guestPtrHint), true);
+    view.setUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, 0x1234, true);
+  }
+  if (options.readRequest) {
+    const view = new DataView(memory.buffer);
+    view.setUint32(fsRingBase + FS_RING_SUBMIT_HEAD_OFFSET, 1, true);
+    const entry = fsRingRequestEntryOffset(fsRingBase, 0);
+    view.setUint32(entry + FS_RING_REQUEST_OPCODE_OFFSET, FS_OP_READ, true);
+    view.setInt32(entry + FS_RING_REQUEST_FD_OFFSET, options.readRequest.fd, true);
+    view.setBigUint64(entry + FS_RING_REQUEST_OFFSET_OFFSET, BigInt(options.readRequest.offset), true);
+    view.setBigUint64(entry + FS_RING_REQUEST_LEN_OFFSET, BigInt(options.readRequest.length), true);
+    view.setUint32(
+      entry + FS_RING_REQUEST_FLAGS_OFFSET,
+      options.readRequest.pwrite ? FS_REQ_FLAG_PWRITE : 0,
+      true,
+    );
     view.setUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, 0x1234, true);
   }
   return {
@@ -177,7 +197,7 @@ function makeKernelExports(options: {
       new Uint8Array(memory.buffer).set(secondaryAbsolutePathBytes, bufPtr);
       return BigInt(secondaryAbsolutePathBytes.length);
     },
-    thread_fs_ring_base: () => options.mmapRequest ? fsRingBase : 0,
+    thread_fs_ring_base: () => (options.mmapRequest || options.readRequest ? fsRingBase : 0),
     thread_guest_base: () => guestBase,
     thread_process_fs: () => {
       opLog.push("process-fs");
@@ -200,6 +220,9 @@ function makeKernelExports(options: {
     },
     process_fd_ofd_id: (_vmPtr: number, fd: number) => fdOfdIds.get(fd) ?? 0,
     process_fd_flags: (_vmPtr: number, fd: number) => fdFlags.get(fd) ?? 0,
+    kernel_ofd_ino: () => options.readRequest?.ino ?? 0,
+    kernel_ofd_offset: () => BigInt(options.readRequest?.offset ?? 0),
+    memfs_file_size: () => options.readRequest?.size ?? 0,
     opLog,
   } as unknown as FakeKernelExports;
 }
@@ -417,7 +440,7 @@ test("registerProcess rehydrates later process memfs metadata-only", async () =>
   }
 });
 
-test("processFs treats unlink as metadata-only canonical sync", () => {
+test("processFs treats unlink as metadata-only canonical sync", async () => {
   const canonicalExports = makeKernelExports();
   const processExports = makeKernelExports({
     opcode: 7,
@@ -481,14 +504,82 @@ test("processFs treats unlink as metadata-only canonical sync", () => {
     fsOpUnlink: 7,
   });
 
-  const result = processControl.processFs(7, 0x1234, makeKernelState());
+  const result = await processControl.processFs(7, 0x1234, makeKernelState());
 
   expect(result.memfsMutated).toBe(true);
   expect(copyMemfsCalls).toEqual([true]);
   expect(fanoutCalls).toEqual([true]);
 });
 
-test("processFs returns fd and OFD snapshots after successful fs processing", () => {
+test("processFs demand-fills missing source-backed read ranges before processing fs", async () => {
+  const canonicalExports = makeKernelExports();
+  const processExports = makeKernelExports({
+    resumeResult: 16,
+    fdEntries: [{ fd: 5, ofdId: 7 }],
+    readRequest: { fd: 5, offset: 32, length: 16, ino: 11, size: 128, pwrite: true },
+  });
+  const processKernels = new Map<number, KernelExports>([[7, processExports]]);
+  const ensureBackingSourceRangeForInode = vi.fn(async () => true);
+
+  const processControl = createKernelWorkerProcessControl({
+    getCanonicalExports: () => canonicalExports,
+    setCanonicalExports: () => {},
+    getWasmModule: () => null,
+    setWasmModule: () => {},
+    getSabPageCache: () => new SharedArrayBuffer(65536),
+    setSabPageCache: () => {},
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    canonicalProcesses: new Map(),
+    seedEntries: new Map(),
+    getCanonicalNextPid: () => 3,
+    setCanonicalNextPid: () => {},
+    publishRootInode: () => {},
+    copyOfdState: () => {},
+    copyMemfsState: () => {},
+    rebuildPageCacheFromExports: () => {},
+    rebuildPageCacheFromCanonical: () => {},
+    syncPipeState: (_pid, kernelState) => kernelState,
+    syncEpollState: (_pid, kernelState) => kernelState,
+    syncSocketState: (_pid, kernelState) => kernelState,
+    copyCanonicalMemfsToProcess: () => {},
+    snapshotProcSelfExe: () => null,
+    restoreProcSelfExe: () => {},
+    composeProcessPipeUsed: () => 0n,
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    mergePipeSlotsFromCanonical: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+    }),
+    applyPipeControlState: () => {},
+    copyEpollState: () => {},
+    copySelectedEpollState: () => {},
+    copySocketState: () => {},
+    syncFileDataMutation: () => false,
+    syncFileDataMutationByPath: () => false,
+    syncMetadataMutation: () => false,
+    readBackingFileRangeByInode: () => null,
+    ensureBackingSourceRangeForInode,
+    fanoutCanonicalMemfs: () => {},
+    fsEffectMemfsMutation: 1 << 0,
+    fsEffectSharedOfdState: 1 << 1,
+    fsEffectMemfsFileData: 1 << 2,
+    fsOpOpenAt: 3,
+    fsOpMkdir: 6,
+    fsOpUnlink: 7,
+  });
+
+  const result = await processControl.processFs(7, 0x1234, makeKernelState());
+
+  expect(result.result).toBe(16n);
+  expect(ensureBackingSourceRangeForInode).toHaveBeenCalledWith(11, 32, 16, 128);
+  expect(processExports.opLog).toEqual(["process-fs", "resume-fs"]);
+});
+
+test("processFs returns fd and OFD snapshots after successful fs processing", async () => {
   const canonicalExports = makeKernelExports();
   const ofdBytes = Uint8Array.from({ length: 32 }, (_value, index) => index + 1);
   const processExports = makeKernelExports({
@@ -547,7 +638,7 @@ test("processFs returns fd and OFD snapshots after successful fs processing", ()
     fsOpUnlink: 7,
   });
 
-  const result = processControl.processFs(7, 0x1234, makeKernelState());
+  const result = await processControl.processFs(7, 0x1234, makeKernelState());
 
   expect(result.result).toBe(5n);
   expect(result.fdEntries?.find((entry) => entry.fd === 5)).toEqual({
@@ -558,7 +649,7 @@ test("processFs returns fd and OFD snapshots after successful fs processing", ()
   expect(Array.from(result.ofdSlots?.[0]?.slot ?? [])).toEqual(Array.from(ofdBytes));
 });
 
-test("processFs returns mmap guest memory populated by kernel-worker fs processing", () => {
+test("processFs returns mmap guest memory populated by kernel-worker fs processing", async () => {
   const canonicalExports = makeKernelExports();
   const mappedBytes = Uint8Array.from([0x7f, 0x45, 0x4c, 0x46, 0xaa, 0xbb, 0xcc, 0xdd]);
   const processExports = makeKernelExports({
@@ -625,7 +716,7 @@ test("processFs returns mmap guest memory populated by kernel-worker fs processi
     fsOpUnlink: 7,
   });
 
-  const result = processControl.processFs(7, 0x1234, makeKernelState());
+  const result = await processControl.processFs(7, 0x1234, makeKernelState());
 
   expect(restorePublishedRegularFileDataFromPageCache).toHaveBeenCalledTimes(1);
   expect(processExports.opLog.indexOf("restore-published-data")).toBeLessThan(
@@ -638,7 +729,7 @@ test("processFs returns mmap guest memory populated by kernel-worker fs processi
   expect(result.guestMemoryWrites?.[0]?.bytes.subarray(0, mappedBytes.length)).toEqual(mappedBytes);
 });
 
-test("processFs snapshots fd entries before metadata sync side effects", () => {
+test("processFs snapshots fd entries before metadata sync side effects", async () => {
   const canonicalExports = makeKernelExports();
   const processExports = makeKernelExports({
     opcode: 3,
@@ -706,7 +797,7 @@ test("processFs snapshots fd entries before metadata sync side effects", () => {
     fsOpUnlink: 7,
   });
 
-  const result = processControl.processFs(7, 0x1234, makeKernelState());
+  const result = await processControl.processFs(7, 0x1234, makeKernelState());
 
   expect(result.result).toBe(5n);
   expect(result.fdEntries?.find((entry) => entry.fd === 5)).toEqual({
@@ -716,7 +807,7 @@ test("processFs snapshots fd entries before metadata sync side effects", () => {
   });
 });
 
-test("processFs uses targeted metadata sync for absolute mkdir paths", () => {
+test("processFs uses targeted metadata sync for absolute mkdir paths", async () => {
   const canonicalExports = makeKernelExports();
   const processExports = makeKernelExports({
     opcode: 6,
@@ -782,14 +873,14 @@ test("processFs uses targeted metadata sync for absolute mkdir paths", () => {
     fsOpUnlink: 7,
   });
 
-  const result = processControl.processFs(7, 0x1234, makeKernelState());
+  const result = await processControl.processFs(7, 0x1234, makeKernelState());
 
   expect(result.memfsMutated).toBe(true);
   expect(syncedPaths).toEqual(["/work/cache"]);
   expect(copyMemfsCalls).toEqual([]);
 });
 
-test("processFs falls back to full sync for Memory64 path pointers outside JS safe integer range", () => {
+test("processFs falls back to full sync for Memory64 path pointers outside JS safe integer range", async () => {
   const canonicalExports = makeKernelExports();
   const processExports = makeKernelExports({
     opcode: 6,
@@ -859,7 +950,7 @@ test("processFs falls back to full sync for Memory64 path pointers outside JS sa
     fsOpUnlink: 7,
   });
 
-  const result = processControl.processFs(7, 0x1234, makeKernelState());
+  const result = await processControl.processFs(7, 0x1234, makeKernelState());
 
   expect(result.memfsMutated).toBe(true);
   expect(syncedPaths).toEqual([]);
@@ -867,7 +958,7 @@ test("processFs falls back to full sync for Memory64 path pointers outside JS sa
   expect(fanoutCalls).toEqual([true]);
 });
 
-test("processFs preserves published file data during file-data full sync fallback", () => {
+test("processFs preserves published file data during file-data full sync fallback", async () => {
   const canonicalExports = makeKernelExports();
   const processExports = makeKernelExports({
     opcode: 2,
@@ -934,7 +1025,7 @@ test("processFs preserves published file data during file-data full sync fallbac
     fsOpUnlink: 7,
   });
 
-  const result = processControl.processFs(7, 0x1234, makeKernelState());
+  const result = await processControl.processFs(7, 0x1234, makeKernelState());
 
   expect(result.memfsMutated).toBe(true);
   expect(copyMemfsCalls).toEqual([true]);
@@ -942,7 +1033,7 @@ test("processFs preserves published file data during file-data full sync fallbac
   expect(fanoutCalls).toEqual([true]);
 });
 
-test("processFs uses targeted metadata sync for absolute tree mutations without an opcode allowlist", () => {
+test("processFs uses targeted metadata sync for absolute tree mutations without an opcode allowlist", async () => {
   const canonicalExports = makeKernelExports();
   const processExports = makeKernelExports({
     opcode: 99,
@@ -1008,14 +1099,14 @@ test("processFs uses targeted metadata sync for absolute tree mutations without 
     fsOpUnlink: 7,
   });
 
-  const result = processControl.processFs(7, 0x1234, makeKernelState());
+  const result = await processControl.processFs(7, 0x1234, makeKernelState());
 
   expect(result.memfsMutated).toBe(true);
   expect(syncedPaths).toEqual(["/work/cache"]);
   expect(copyMemfsCalls).toEqual([]);
 });
 
-test("processFs uses targeted metadata sync for absolute unlink paths", () => {
+test("processFs uses targeted metadata sync for absolute unlink paths", async () => {
   const canonicalExports = makeKernelExports();
   const processExports = makeKernelExports({
     opcode: 7,
@@ -1081,14 +1172,14 @@ test("processFs uses targeted metadata sync for absolute unlink paths", () => {
     fsOpUnlink: 7,
   });
 
-  const result = processControl.processFs(7, 0x1234, makeKernelState());
+  const result = await processControl.processFs(7, 0x1234, makeKernelState());
 
   expect(result.memfsMutated).toBe(true);
   expect(syncedPaths).toEqual(["/work/remove.txt"]);
   expect(copyMemfsCalls).toEqual([]);
 });
 
-test("processFs uses kernel-provided absolute path for relative mkdir requests", () => {
+test("processFs uses kernel-provided absolute path for relative mkdir requests", async () => {
   const canonicalExports = makeKernelExports();
   const processExports = makeKernelExports({
     opcode: 6,
@@ -1155,14 +1246,14 @@ test("processFs uses kernel-provided absolute path for relative mkdir requests",
     fsOpUnlink: 7,
   });
 
-  const result = processControl.processFs(7, 0x1234, makeKernelState());
+  const result = await processControl.processFs(7, 0x1234, makeKernelState());
 
   expect(result.memfsMutated).toBe(true);
   expect(syncedPaths).toEqual(["/work/cache"]);
   expect(copyMemfsCalls).toEqual([]);
 });
 
-test("processFs uses targeted file-data sync when target ino is unavailable but absolute path is known", () => {
+test("processFs uses targeted file-data sync when target ino is unavailable but absolute path is known", async () => {
   const canonicalExports = makeKernelExports();
   const processExports = makeKernelExports({
     opcode: 3,
@@ -1229,14 +1320,14 @@ test("processFs uses targeted file-data sync when target ino is unavailable but 
     fsOpUnlink: 7,
   });
 
-  const result = processControl.processFs(7, 0x1234, makeKernelState());
+  const result = await processControl.processFs(7, 0x1234, makeKernelState());
 
   expect(result.memfsMutated).toBe(true);
   expect(syncedPaths).toEqual(["/work/app.bin"]);
   expect(copyMemfsCalls).toEqual([]);
 });
 
-test("processFs uses targeted metadata and file-data sync for openat(O_CREAT|O_TRUNC)", () => {
+test("processFs uses targeted metadata and file-data sync for openat(O_CREAT|O_TRUNC)", async () => {
   const canonicalExports = makeKernelExports();
   const processExports = makeKernelExports({
     opcode: 3,
@@ -1307,7 +1398,7 @@ test("processFs uses targeted metadata and file-data sync for openat(O_CREAT|O_T
     fsOpUnlink: 7,
   });
 
-  const result = processControl.processFs(7, 0x1234, makeKernelState());
+  const result = await processControl.processFs(7, 0x1234, makeKernelState());
 
   expect(result.memfsMutated).toBe(true);
   expect(metadataPaths).toEqual(["/work/app.bin"]);
@@ -1315,7 +1406,7 @@ test("processFs uses targeted metadata and file-data sync for openat(O_CREAT|O_T
   expect(copyMemfsCalls).toEqual([]);
 });
 
-test("processFs uses targeted metadata sync for both rename paths", () => {
+test("processFs uses targeted metadata sync for both rename paths", async () => {
   const canonicalExports = makeKernelExports();
   const processExports = makeKernelExports({
     opcode: 8,
@@ -1382,7 +1473,7 @@ test("processFs uses targeted metadata sync for both rename paths", () => {
     fsOpUnlink: 7,
   });
 
-  const result = processControl.processFs(7, 0x1234, makeKernelState());
+  const result = await processControl.processFs(7, 0x1234, makeKernelState());
 
   expect(result.memfsMutated).toBe(true);
   expect(syncedPaths).toEqual(["/work/old.txt", "/work/new.txt"]);

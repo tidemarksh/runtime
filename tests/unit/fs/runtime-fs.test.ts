@@ -390,6 +390,10 @@ class FakeKernelWorker {
         this.backingSources.set(message.sourceIdentity, new Uint8Array(message.data));
         this.emit({ type: "fs-backing-source-registered", requestId: message.requestId });
         break;
+      case "register-fs-remote-backing-source":
+      case "register-fs-opfs-backing-source":
+        this.emit({ type: "fs-backing-source-registered", requestId: message.requestId });
+        break;
     }
   }
 }
@@ -575,6 +579,27 @@ test("Runtime registers prefetched remote backing source ranges through kernel-w
   runtime.destroy();
 });
 
+test("Runtime registers remote backing source identity for kernel-worker demand fill", async () => {
+  const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
+
+  await runtime.registerFsRemoteBackingSource(
+    "remote:toolchain/archive.bin",
+    1024,
+    "https://example.test/archive.bin",
+  );
+
+  expect(createdWorkers[0].postedMessages).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      type: "register-fs-remote-backing-source",
+      sourceIdentity: "remote:toolchain/archive.bin",
+      byteLength: 1024,
+      url: "https://example.test/archive.bin",
+    }),
+  ]));
+
+  runtime.destroy();
+});
+
 test("Runtime registers prefetched OPFS backing source ranges through kernel-worker range source", async () => {
   const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
   const full = new TextEncoder().encode("prefix:artifact-bytes:suffix");
@@ -602,6 +627,30 @@ test("Runtime registers prefetched OPFS backing source ranges through kernel-wor
   });
   expect(message?.type === "register-fs-backing-source-range" ? message.data : undefined)
     .toEqual(new TextEncoder().encode("artifact-bytes"));
+
+  runtime.destroy();
+});
+
+test("Runtime registers OPFS backing source identity for kernel-worker demand fill", async () => {
+  const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
+  const handle = {
+    getFile: vi.fn(async () => new Blob([new Uint8Array(1024)])),
+  };
+
+  await runtime.registerFsOpfsBackingSource(
+    "opfs:toolchain/archive.bin",
+    1024,
+    handle,
+  );
+
+  expect(createdWorkers[0].postedMessages).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      type: "register-fs-opfs-backing-source",
+      sourceIdentity: "opfs:toolchain/archive.bin",
+      byteLength: 1024,
+      handle,
+    }),
+  ]));
 
   runtime.destroy();
 });

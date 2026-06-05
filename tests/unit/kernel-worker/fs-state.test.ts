@@ -2,7 +2,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "vite-plus/test";
+import { expect, test, vi } from "vite-plus/test";
 import type { KernelExports } from "../../../src/abi.js";
 import { DATA_REGION_OFFSET, publishInode, readInodeRecord } from "../../../src/fs/sab-page-cache.js";
 import { createSha256VerifiedBackingSource } from "../../../src/kernel-worker/backing-source.js";
@@ -676,6 +676,30 @@ test("kernel-worker reads registered partial source ranges without full source m
   const ino = fsState.resolvePath("/lib/runtime.bin");
   expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 9, 5) ?? new Uint8Array())).toBe("bytes");
   expect(fsState.readBackingFileRangeByInode(ino, 0, backingExtent.length)).toBeNull();
+  expect(fsState.readBackingFileByInode(ino)).toBeNull();
+});
+
+test("kernel-worker demand-fills OPFS source ranges into registered backing source", async () => {
+  const { fsState } = makeFsState();
+  const source = encoder.encode("prefix:artifact-bytes:suffix");
+  const backingExtent = {
+    sourceIdentity: "opfs:runtime.bin",
+    offset: "prefix:".length,
+    length: "artifact-bytes".length,
+  };
+
+  fsState.loadFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "file", path: "/lib/runtime.bin", size: backingExtent.length, mode: 0o644, backingExtent },
+  ]);
+  fsState.registerOpfsBackingSource(backingExtent.sourceIdentity, source.length, {
+    getFile: vi.fn(async () => new Blob([source])),
+  });
+
+  const ino = fsState.resolvePath("/lib/runtime.bin");
+  expect(fsState.readBackingFileRangeByInode(ino, 9, 5)).toBeNull();
+  await expect(fsState.ensureBackingSourceRangeForInode(ino, 9, 5, backingExtent.length)).resolves.toBe(true);
+  expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 9, 5) ?? new Uint8Array())).toBe("bytes");
   expect(fsState.readBackingFileByInode(ino)).toBeNull();
 });
 

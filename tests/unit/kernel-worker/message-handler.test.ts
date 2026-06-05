@@ -51,6 +51,8 @@ function makeDeps(posted: KernelWorkerOutbound[]) {
     snapshotCanonicalFs: vi.fn(() => []),
     loadFsSnapshot: vi.fn(),
     registerProcess: vi.fn(async () => state),
+    registerRemoteBackingSource: vi.fn(),
+    registerOpfsBackingSource: vi.fn(),
     registerHostFileBackingSource: vi.fn(async () => {}),
     registerContentAddressedBackingSource: vi.fn(async () => {}),
     unregisterProcess: vi.fn(),
@@ -220,6 +222,55 @@ test("message handler registers content-addressed backing sources", async () => 
     {
       type: "fs-backing-source-registered",
       requestId: 31,
+    },
+  ]);
+});
+
+test("message handler registers remote backing source identities", async () => {
+  const posted: KernelWorkerOutbound[] = [];
+  const deps = makeDeps(posted);
+  const handleMessage = createKernelWorkerMessageHandler(deps);
+
+  await handleMessage({
+    type: "register-fs-remote-backing-source",
+    requestId: 33,
+    sourceIdentity: "remote:source",
+    byteLength: 4096,
+    url: "https://example.test/source.bin",
+  });
+
+  expect(deps.registerRemoteBackingSource)
+    .toHaveBeenCalledWith("remote:source", 4096, "https://example.test/source.bin");
+  expect(posted).toEqual([
+    {
+      type: "fs-backing-source-registered",
+      requestId: 33,
+    },
+  ]);
+});
+
+test("message handler registers OPFS backing source identities", async () => {
+  const posted: KernelWorkerOutbound[] = [];
+  const deps = makeDeps(posted);
+  const handleMessage = createKernelWorkerMessageHandler(deps);
+  const handle = {
+    getFile: vi.fn(async () => new Blob([new Uint8Array(4096)])),
+  };
+
+  await handleMessage({
+    type: "register-fs-opfs-backing-source",
+    requestId: 34,
+    sourceIdentity: "opfs:source",
+    byteLength: 4096,
+    handle,
+  });
+
+  expect(deps.registerOpfsBackingSource)
+    .toHaveBeenCalledWith("opfs:source", 4096, handle);
+  expect(posted).toEqual([
+    {
+      type: "fs-backing-source-registered",
+      requestId: 34,
     },
   ]);
 });

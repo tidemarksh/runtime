@@ -425,6 +425,19 @@ export class Runtime {
     await this.registerFsBackingSourceRange(sourceIdentity, range.byteLength, range.offset, range.data);
   }
 
+  async registerFsRemoteBackingSource(
+    sourceIdentity: string,
+    byteLength: number,
+    url: string,
+  ): Promise<void> {
+    await this.sendKernelRequest<Extract<KernelWorkerOutbound, { type: "fs-backing-source-registered" }>>({
+      type: "register-fs-remote-backing-source",
+      sourceIdentity,
+      byteLength,
+      url,
+    });
+  }
+
   async registerFsOpfsBackingSourceRange(
     sourceIdentity: string,
     byteLength: number,
@@ -434,6 +447,19 @@ export class Runtime {
   ): Promise<void> {
     const range = await readOpfsBackingSourceRange(handle, byteLength, offset, length);
     await this.registerFsBackingSourceRange(sourceIdentity, range.byteLength, range.offset, range.data);
+  }
+
+  async registerFsOpfsBackingSource(
+    sourceIdentity: string,
+    byteLength: number,
+    handle: OpfsBackingFileHandle,
+  ): Promise<void> {
+    await this.sendKernelRequest<Extract<KernelWorkerOutbound, { type: "fs-backing-source-registered" }>>({
+      type: "register-fs-opfs-backing-source",
+      sourceIdentity,
+      byteLength,
+      handle,
+    });
   }
 
   async registerFsHostFileBackingSource(

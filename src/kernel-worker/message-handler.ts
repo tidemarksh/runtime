@@ -51,6 +51,8 @@ interface KernelWorkerMessageHandlerDeps {
   loadFsSnapshot(entries: FsSnapshotEntry[]): void;
   registerBackingSource(sourceIdentity: string, data: Uint8Array): void;
   registerBackingSourceRange(sourceIdentity: string, byteLength: number, offset: number, data: Uint8Array): void;
+  registerRemoteBackingSource(sourceIdentity: string, byteLength: number, url: string): void;
+  registerOpfsBackingSource(sourceIdentity: string, byteLength: number, handle: { getFile(): Promise<Blob> }): void;
   registerHostFileBackingSource(sourceIdentity: string, hostPath: string, byteLength: number): Promise<void>;
   registerContentAddressedBackingSource(
     sourceIdentity: string,
@@ -66,7 +68,7 @@ interface KernelWorkerMessageHandlerDeps {
     pipeSeedMode?: "canonical" | "process",
   ): Promise<KernelRuntimeState>;
   unregisterProcess(pid: number): void;
-  processFs(pid: number, vmPtr: number, kernelState: KernelRuntimeState): ProcessFsResult;
+  processFs(pid: number, vmPtr: number, kernelState: KernelRuntimeState): ProcessFsResult | Promise<ProcessFsResult>;
   recordChildExit(
     pid: number,
     childPid: number,
@@ -252,6 +254,14 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
           deps.registerBackingSourceRange(msg.sourceIdentity, msg.byteLength, msg.offset, msg.data);
           deps.postResponse({ type: "fs-backing-source-registered", requestId: msg.requestId });
           break;
+        case "register-fs-remote-backing-source":
+          deps.registerRemoteBackingSource(msg.sourceIdentity, msg.byteLength, msg.url);
+          deps.postResponse({ type: "fs-backing-source-registered", requestId: msg.requestId });
+          break;
+        case "register-fs-opfs-backing-source":
+          deps.registerOpfsBackingSource(msg.sourceIdentity, msg.byteLength, msg.handle);
+          deps.postResponse({ type: "fs-backing-source-registered", requestId: msg.requestId });
+          break;
         case "register-fs-host-file-backing-source":
           await deps.registerHostFileBackingSource(msg.sourceIdentity, msg.hostPath, msg.byteLength);
           deps.postResponse({ type: "fs-backing-source-registered", requestId: msg.requestId });
@@ -282,7 +292,7 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
           deps.postResponse({ type: "process-unregistered", requestId: msg.requestId });
           break;
         case "process-fs": {
-          const result = deps.processFs(msg.pid, msg.vmPtr, msg.kernelState);
+          const result = await deps.processFs(msg.pid, msg.vmPtr, msg.kernelState);
           deps.postResponse({
             type: "fs-processed",
             requestId: msg.requestId,

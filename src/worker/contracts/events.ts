@@ -282,6 +282,18 @@ export type KernelWorkerRequest =
       data: Uint8Array;
     }
   | {
+      type: "register-fs-remote-backing-source";
+      sourceIdentity: string;
+      byteLength: number;
+      url: string;
+    }
+  | {
+      type: "register-fs-opfs-backing-source";
+      sourceIdentity: string;
+      byteLength: number;
+      handle: { getFile(): Promise<Blob> };
+    }
+  | {
       type: "register-fs-host-file-backing-source";
       sourceIdentity: string;
       hostPath: string;
