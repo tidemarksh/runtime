@@ -804,7 +804,7 @@ test("kernel-worker loadFsSnapshot restores symlinks into seed entries", () => {
   });
 });
 
-test("kernel-worker syncFileDataMutation moves canonical/member files back to page-cache-backed external state", () => {
+test("kernel-worker syncFileDataMutation exports dirty resident metadata without whole-file rewrite", () => {
   const { canonicalExports, memberExports, fsState } = makeFsState();
   const initialData = encoder.encode("abcdefghijklmnop");
   const nextData = encoder.encode("abc");
@@ -816,6 +816,8 @@ test("kernel-worker syncFileDataMutation moves canonical/member files back to pa
   fsState.syncFileDataMutation(canonicalExports, ino);
   memberExports.opLog.length = 0;
   canonicalExports.overwriteFile("/lib/runtime.bin", nextData);
+  expect(fsState.truncateDirtyResidentFileByInode(ino, nextData.length)).toBe(0);
+  expect(fsState.writeDirtyResidentFileByInode(ino, 0, nextData)).toBe(nextData.length);
 
   const changed = fsState.syncFileDataMutation(canonicalExports, ino);
 
@@ -846,7 +848,9 @@ test("kernel-worker syncFileDataMutation clears stale source backing extent on e
     entry.kind === "file" && entry.path === "/lib/runtime.bin"
   ))).toEqual(expect.objectContaining({ backingExtent }));
 
+  expect(fsState.truncateDirtyResidentFileByInode(ino, "mutated".length)).toBe(0);
   canonicalExports.overwriteFile("/lib/runtime.bin", encoder.encode("mutated"));
+  expect(fsState.writeDirtyResidentFileByInode(ino, 0, encoder.encode("mutated"))).toBe("mutated".length);
   expect(fsState.syncFileDataMutation(canonicalExports, ino)).toBe(true);
 
   const metadataSnapshot = fsState.snapshotCanonicalFs(false).find((entry) => (

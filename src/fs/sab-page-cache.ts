@@ -870,6 +870,7 @@ export function truncateDirtyResidentFileData(
   sab: SharedArrayBuffer,
   ino: number,
   size: number,
+  readBackingRange?: ResidentBackingRangeReader,
 ): number {
   if (!Number.isInteger(ino) || ino <= 0 || ino >= MAX_INODES || size < 0 || size > 0xffffffff) {
     return -22;
@@ -879,10 +880,54 @@ export function truncateDirtyResidentFileData(
     return -2;
   }
   const oldMeta = readInodeMeta(sab, ino);
-  const dirtyPages = oldMeta ? collectResidentPageSnapshots(sab, oldMeta, true) : [];
+  const residentPages = new Map<number, ResidentPageSnapshot>();
+  for (const page of oldMeta ? collectResidentPageSnapshots(sab, oldMeta, true) : []) {
+    if (page.pageIndex * DEFAULT_RESIDENT_PAGE_SIZE < size) {
+      residentPages.set(page.pageIndex, page);
+    }
+  }
+  const affectedPages = new Set<number>();
+  if (size > record.size && size > 0) {
+    const firstPage = Math.floor(record.size / DEFAULT_RESIDENT_PAGE_SIZE);
+    const lastPage = Math.floor((size - 1) / DEFAULT_RESIDENT_PAGE_SIZE);
+    for (let pageIndex = firstPage; pageIndex <= lastPage; pageIndex += 1) {
+      affectedPages.add(pageIndex);
+    }
+  } else if (size > 0 && size < record.size && size % DEFAULT_RESIDENT_PAGE_SIZE !== 0) {
+    affectedPages.add(Math.floor(size / DEFAULT_RESIDENT_PAGE_SIZE));
+  }
+  for (const pageIndex of affectedPages) {
+    const pageStart = pageIndex * DEFAULT_RESIDENT_PAGE_SIZE;
+    const validBytes = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, size - pageStart);
+    if (validBytes <= 0) {
+      continue;
+    }
+    const existing = residentPages.get(pageIndex);
+    let pageBytes: Uint8Array;
+    if (existing) {
+      pageBytes = existing.bytes.length === validBytes ? new Uint8Array(existing.bytes) : new Uint8Array(validBytes);
+      pageBytes.set(existing.bytes.subarray(0, Math.min(existing.bytes.length, validBytes)));
+    } else {
+      const read = readExistingPageBytes(sab, ino, record, pageIndex, validBytes, readBackingRange);
+      if (!read) {
+        return -5;
+      }
+      pageBytes = read;
+    }
+    const dirtyStart = size < record.size
+      ? 0
+      : Math.max(0, Math.min(validBytes, Math.max(record.size, pageStart) - pageStart));
+    residentPages.set(pageIndex, {
+      pageIndex,
+      bytes: pageBytes,
+      dirty: true,
+      dirtyStart: existing?.dirty ? Math.min(existing.dirtyStart, dirtyStart) : dirtyStart,
+      dirtyEnd: validBytes,
+    });
+  }
   const fileObjectId = record.fileObjectId || ino;
   const generation = record.generation + 1;
-  const retainedDirtyPages = dirtyPages.filter((page) => page.pageIndex * DEFAULT_RESIDENT_PAGE_SIZE < size);
+  const retainedDirtyPages = [...residentPages.values()].filter((page) => page.pageIndex * DEFAULT_RESIDENT_PAGE_SIZE < size);
   if (retainedDirtyPages.length > residentPageRecordCount(sab)) {
     return -28;
   }

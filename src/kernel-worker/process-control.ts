@@ -125,6 +125,7 @@ interface KernelWorkerProcessControlDeps {
   restorePublishedRegularFileDataFromPageCache?(targetExports?: KernelExports): void;
   readBackingFileByInode(ino: number): Uint8Array | null;
   readBackingFileRangeByInode(ino: number, offset: number, length: number): Uint8Array | null;
+  truncateDirtyResidentFileByInode(ino: number, size: number): number;
   writeDirtyResidentFileByInode(ino: number, offset: number, data: Uint8Array): number;
   ensureBackingSourceRangeForInode?(
     ino: number,
@@ -277,6 +278,10 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
 
   function writeResidentFileRange(ino: number, offset: number, data: Uint8Array): number {
     return deps.writeDirtyResidentFileByInode(ino, offset, data);
+  }
+
+  function truncateResidentFile(ino: number, size: number): number {
+    return deps.truncateDirtyResidentFileByInode(ino, size);
   }
 
   function readPendingFsMutationContext(
@@ -579,6 +584,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     }, {
       sabPageCache: pageCache,
       readFileDataByInode: readBackingFileRange,
+      truncateResidentFileDataByInode: truncateResidentFile,
       writeResidentFileDataByInode: writeResidentFileRange,
     });
     const nextExports = instance.exports as unknown as KernelExports;
@@ -636,6 +642,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       env: createKernelEnv(memory, {
         sabPageCache: deps.getSabPageCache(),
         readFileDataByInode: readBackingFileRange,
+        truncateResidentFileDataByInode: truncateResidentFile,
         writeResidentFileDataByInode: writeResidentFileRange,
       }),
     });

@@ -423,6 +423,41 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     }
   }
 
+  function truncateDirtyResidentFileByInode(ino: number, size: number): number {
+    if (!Number.isInteger(ino) || ino <= 0 || ino >= MAX_INODES || size < 0 || size > 0xffffffff) {
+      return -22;
+    }
+    try {
+      const expectedSize = Number(deps.getCanonicalExports().memfs_file_size(ino));
+      if (fileObjectIdsByIno.get(ino) === undefined) {
+        createSourceBackedFileForInode(ino, expectedSize);
+      }
+      if (!readInodeRecord(deps.getSabPageCache(), ino)) {
+        publishInode(deps.getSabPageCache(), ino, {
+          mode: deps.getCanonicalExports().memfs_inode_mode(ino) || 0o100644,
+          size: expectedSize,
+          parentIno: 0,
+          name: new Uint8Array(),
+          nextSibling: 0,
+          ...backingMetaForInode(ino),
+        }, null);
+      }
+      const truncated = truncateDirtyResidentFileData(
+        deps.getSabPageCache(),
+        ino,
+        size,
+        readCleanBackingFileRangeByInode,
+      );
+      if (truncated >= 0) {
+        backingExtentsByIno.delete(ino);
+        clearSeedBackingExtentForInode(ino);
+      }
+      return truncated;
+    } catch {
+      return -5;
+    }
+  }
+
   function hasBackingFile(ino: number): boolean {
     return readBackingFileByInode(ino) !== null;
   }
@@ -710,22 +745,6 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     }
   }
 
-  function readFileByInode(sourceExports: KernelExports, ino: number): Uint8Array {
-    const size = Number(sourceExports.memfs_file_size(ino));
-    if (size <= 0) {
-      return new Uint8Array();
-    }
-
-    const bufPtr = scratchBaseFor(sourceExports) + 0x4000;
-    ensureMemoryCapacityFor(sourceExports.memory, bufPtr + size);
-    const read = Number(sourceExports.memfs_read_file_to(ino, 0n, bufPtr, size));
-    if (read < 0) {
-      throw new Error(`failed to read inode: ${ino}`);
-    }
-
-    return new Uint8Array(sourceExports.memory.buffer.slice(bufPtr, bufPtr + read));
-  }
-
   function syncExternalFileDataIntoTarget(
     targetExports: KernelExports,
     ino: number,
@@ -796,7 +815,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         return false;
       }
       const size = Number(sourceExports.memfs_file_size(ino));
-      if (hasDirtyResidentPagesForInode(deps.getSabPageCache(), ino)) {
+      if (residentPageMapIsNewerThanBacking(ino)) {
         backingExtentsByIno.delete(ino);
         clearSeedBackingExtentForInode(ino);
         syncExternalFileDataIntoTarget(canonicalExports, ino, mode, size, published);
@@ -805,28 +824,8 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         }
         return true;
       }
-
-      const data = readFileByInode(sourceExports, ino);
-      const truncated = truncateDirtyResidentFileData(deps.getSabPageCache(), ino, data.length);
-      if (truncated < 0) {
-        return false;
-      }
-      const written = data.length === 0
-        ? 0
-        : writeDirtyResidentFileData(deps.getSabPageCache(), ino, 0, data, readBackingFileRangeByInode);
-      if (written < 0 || written !== data.length) {
-        return false;
-      }
-      syncExternalFileDataIntoTarget(canonicalExports, ino, mode, data.length, published);
-      backingExtentsByIno.delete(ino);
-      clearSeedBackingExtentForInode(ino);
-      for (const memberExports of deps.processKernels.values()) {
-        trySyncExternalFileDataIntoTarget(memberExports, ino, mode, data.length, published);
-      }
+      return false;
     } catch {
-      // Path-scoped file-data sync is only an optimization. If the target inode
-      // cannot be reconstructed from published metadata yet, fall back to the
-      // full memfs sync path in process-control.
       return false;
     }
 
@@ -1123,6 +1122,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     ensureBackingSourceRangeForInode,
     readBackingFileByInode,
     readBackingFileRangeByInode,
+    truncateDirtyResidentFileByInode,
     writeDirtyResidentFileByInode,
     rebuildPageCacheFromExports,
     rebuildPageCacheFromCanonical,
