@@ -209,6 +209,47 @@ test("page-cache clean resident eviction reloads from backing store", () => {
   expect(Array.from(new Uint8Array(memory.buffer, 32, 4))).toEqual(Array.from(backing.subarray(1, 5)));
 });
 
+test("page-cache backing read fills every resident page in a multi-page request", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 16384);
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const backing = new Uint8Array(6000);
+  for (let offset = 0; offset < backing.length; offset += 1) {
+    backing[offset] = (offset * 13 + 5) & 0xff;
+  }
+  const calls: Array<[number, number, number]> = [];
+
+  publishInode(sab, 2, {
+    mode: 0o100644,
+    size: backing.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("external"),
+    nextSibling: 0,
+  }, null);
+
+  const fillingEnv = createKernelEnv(memory, {
+    sabPageCache: sab,
+    readFileDataByInode: (ino, offset, length) => {
+      calls.push([ino, offset, length]);
+      return backing.subarray(offset, Math.min(backing.length, offset + length));
+    },
+  });
+
+  expect(fillingEnv.tidemark_page_cache_read(2, 512n, 64, 5000)).toBe(5000n);
+  expect(calls).toEqual([
+    [2, 0, 4096],
+    [2, 4096, backing.length - 4096],
+  ]);
+  expect(Array.from(new Uint8Array(memory.buffer, 64, 5000))).toEqual(Array.from(backing.subarray(512, 5512)));
+  expect(debugResidentPageCountForInode(sab, 2)).toBe(2);
+
+  new Uint8Array(memory.buffer, 64, 5000).fill(0);
+  const directEnv = createKernelEnv(memory, { sabPageCache: sab });
+
+  expect(directEnv.tidemark_page_cache_read(2, 512n, 64, 5000)).toBe(5000n);
+  expect(Array.from(new Uint8Array(memory.buffer, 64, 5000))).toEqual(Array.from(backing.subarray(512, 5512)));
+  expect(calls).toHaveLength(2);
+});
+
 test("page-cache zero-length read on kernel-worker backing data returns zero", () => {
   const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 128);
   const memory = new WebAssembly.Memory({ initial: 1 });

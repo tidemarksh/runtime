@@ -87,15 +87,19 @@ export function createKernelEnv(
           return BigInt(resident.length);
         }
         const pageSize = 4096;
-        const pageStart = Math.floor(offsetNumber / pageSize) * pageSize;
-        const pageLen = Math.min(pageSize, meta.size - pageStart);
-        const page = hasResidentPageRecordCapacity(sabPageCache)
-          ? readFileDataByInode?.(ino, pageStart, pageLen)
-          : undefined;
-        const published = page && page.length > 0
-          ? publishResidentPage(sabPageCache, ino, Math.floor(pageStart / pageSize), page)
-          : false;
-        if (published) {
+        const firstPage = Math.floor(offsetNumber / pageSize);
+        const lastPage = Math.floor((offsetNumber + readLen - 1) / pageSize);
+        let filledRequestedRange = hasResidentPageRecordCapacity(sabPageCache);
+        for (let pageIndex = firstPage; filledRequestedRange && pageIndex <= lastPage; pageIndex += 1) {
+          const pageStart = pageIndex * pageSize;
+          const pageLen = Math.min(pageSize, meta.size - pageStart);
+          if (readResidentFileData(sabPageCache, ino, pageStart, pageLen)) {
+            continue;
+          }
+          const page = readFileDataByInode?.(ino, pageStart, pageLen);
+          filledRequestedRange = !!(page && page.length > 0 && publishResidentPage(sabPageCache, ino, pageIndex, page));
+        }
+        if (filledRequestedRange) {
           const filled = readResidentFileData(sabPageCache, ino, offsetNumber, readLen);
           if (filled) {
             new Uint8Array(memory.buffer, dstPtr, filled.length).set(filled);
