@@ -90,7 +90,6 @@ interface AppliedFsMutationResult {
   memfsMutated: boolean;
   ofdStateChanged: boolean;
   needsFullSync: boolean;
-  preservePublishedRegularFileData: boolean;
   treeMutated: boolean;
   fileDataMutated: boolean;
   handledMetadataMutation: boolean;
@@ -128,7 +127,6 @@ interface KernelWorkerProcessControlDeps {
   rebuildPageCacheFromExports(sourceExports: KernelExports): void;
   rebuildPageCacheFromCanonical(): void;
   restorePublishedRegularFileDataFromPageCache?(targetExports?: KernelExports): void;
-  readBackingFileByInode(ino: number): Uint8Array | null;
   readBackingFileRangeByInode(ino: number, offset: number, length: number): Uint8Array | null;
   truncateDirtyResidentFileByInode(ino: number, size: number): number;
   writeDirtyResidentFileByInode(ino: number, offset: number, data: Uint8Array): number;
@@ -254,25 +252,18 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     return decodeKernelBytes(processExports.memory, linearPtr, pathLen);
   }
 
-  function fallbackToFullMemfsSync(
+  function fallbackToMetadataMemfsSync(
     processExports: KernelExports,
     canonicalExports: KernelExports,
-    preservePublishedRegularFileData = false,
   ): void {
     const sourceState = readKernelRuntimeState(processExports);
     const canonicalState = readKernelRuntimeState(canonicalExports);
     const canonicalProcSelfExe = deps.snapshotProcSelfExe(canonicalExports);
     deps.copyMemfsState(processExports, sourceState, canonicalExports, canonicalState, {
-      // A fallback full sync must preserve regular-file bodies. Tree-only
-      // metadata copies can reconstruct directory shape, but they also turn
-      // unrelated executables into zero-filled stubs once canonical state is
-      // rebuilt and fanned out.
-      includeData: true,
+      includeData: false,
     });
     deps.restoreProcSelfExe(canonicalExports, canonicalProcSelfExe);
-    if (preservePublishedRegularFileData) {
-      deps.restorePublishedRegularFileDataFromPageCache?.();
-    }
+    deps.restorePublishedRegularFileDataFromPageCache?.();
     deps.rebuildPageCacheFromCanonical();
     deps.fanoutCanonicalMemfs();
   }
@@ -382,10 +373,13 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
         return null;
       }
       if (opcode === FS_OP_WRITE) {
+        if (offset >= expectedSize) {
+          return null;
+        }
         return {
           ino,
-          offset: 0,
-          length: expectedSize,
+          offset,
+          length: Math.min(length, expectedSize - offset),
           expectedSize,
         };
       }
@@ -507,14 +501,11 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     }
 
     const needsMetadataFullSync = treeMutated && !handledMetadataMutation;
-    const needsFileDataFullSync = fileDataMutated && !handledFileDataMutation;
-    const needsFullSync = needsMetadataFullSync || needsFileDataFullSync;
 
     return {
       memfsMutated: treeMutated || fileDataMutated,
       ofdStateChanged: fsSucceeded && (context.effects & deps.fsEffectSharedOfdState) !== 0,
-      needsFullSync,
-      preservePublishedRegularFileData: needsFullSync,
+      needsFullSync: needsMetadataFullSync,
       treeMutated,
       fileDataMutated,
       handledMetadataMutation,
@@ -570,7 +561,6 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       `metaFast=${mutation.handledMetadataMutation ? 1 : 0}`,
       `dataFast=${mutation.handledFileDataMutation ? 1 : 0}`,
       `full=${fullSyncApplied ? 1 : 0}`,
-      `preserve=${mutation.preservePublishedRegularFileData ? 1 : 0}`,
       `${path}${path2}`,
       `loader=${loader}`,
       `canonicalLoader=${canonicalLoader}`,
@@ -880,11 +870,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     const mutation = applyPendingFsMutation(processExports, pendingContext, fsSucceeded);
     let fullSyncApplied = false;
     if (mutation.needsFullSync) {
-      fallbackToFullMemfsSync(
-        processExports,
-        canonicalExports,
-        mutation.preservePublishedRegularFileData,
-      );
+      fallbackToMetadataMemfsSync(processExports, canonicalExports);
       fullSyncApplied = true;
     }
     const nextKernelState = readKernelRuntimeState(processExports);

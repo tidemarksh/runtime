@@ -842,8 +842,6 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     } catch {
       return false;
     }
-
-    return true;
   }
 
   function syncFileDataMutationByPath(sourceExports: KernelExports, path: string): boolean {

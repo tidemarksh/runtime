@@ -322,7 +322,6 @@ const kernelWorkerProcessControl = createKernelWorkerProcessControl({
   copyMemfsState,
   rebuildPageCacheFromExports,
   rebuildPageCacheFromCanonical,
-  readBackingFileByInode,
   readBackingFileRangeByInode,
   truncateDirtyResidentFileByInode,
   writeDirtyResidentFileByInode,

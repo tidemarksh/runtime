@@ -20,6 +20,53 @@ test("memory atomic notify accepts wasm64 BigInt pointers", () => {
   expect(env.tidemark_memory_atomic_notify(BigInt(memory.buffer.byteLength), 1n)).toBe(0);
 });
 
+test("page-cache imports reject unsafe Memory64 pointers without truncation", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 8192);
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const env = createKernelEnv(memory, { sabPageCache: sab });
+  const bytes = new TextEncoder().encode("abcdef");
+
+  publishInode(sab, 2, {
+    mode: 0o100644,
+    size: bytes.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("external"),
+    nextSibling: 0,
+    fileObjectId: 2,
+    generation: 1,
+  });
+  expect(publishResidentPage(sab, 2, 0, bytes)).toBe(true);
+
+  const unsafePtr = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
+  expect(env.tidemark_page_cache_read(2, 0n, unsafePtr, bytes.length)).toBe(-14n);
+  expect(env.tidemark_page_cache_write(2, 0n, unsafePtr, bytes.length)).toBe(-14n);
+  expect(env.tidemark_page_cache_stat(2, unsafePtr)).toBe(0);
+  expect(Array.from(new Uint8Array(memory.buffer, 0, bytes.length))).toEqual(new Array(bytes.length).fill(0));
+});
+
+test("page-cache imports accept safe Memory64 BigInt pointers", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 8192);
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const env = createKernelEnv(memory, { sabPageCache: sab });
+  const bytes = new TextEncoder().encode("abcdef");
+
+  publishInode(sab, 2, {
+    mode: 0o100644,
+    size: bytes.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("external"),
+    nextSibling: 0,
+    fileObjectId: 2,
+    generation: 1,
+  });
+  expect(publishResidentPage(sab, 2, 0, bytes)).toBe(true);
+
+  expect(env.tidemark_page_cache_read(2, 0n, 32n, bytes.length)).toBe(BigInt(bytes.length));
+  expect(Array.from(new Uint8Array(memory.buffer, 32, bytes.length))).toEqual(Array.from(bytes));
+  expect(env.tidemark_page_cache_stat(2, 64n)).toBe(1);
+  expect(new DataView(memory.buffer).getBigUint64(72, true)).toBe(BigInt(bytes.length));
+});
+
 test("publishInode exposes file metadata without inline file bytes", () => {
   const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 128);
   const name = new TextEncoder().encode("file");

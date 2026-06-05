@@ -529,7 +529,7 @@ test("processFs treats unlink as metadata-only canonical sync", async () => {
   const result = await processControl.processFs(7, 0x1234, makeKernelState());
 
   expect(result.memfsMutated).toBe(true);
-  expect(copyMemfsCalls).toEqual([true]);
+  expect(copyMemfsCalls).toEqual([false]);
   expect(fanoutCalls).toEqual([true]);
 });
 
@@ -992,7 +992,7 @@ test("processFs uses targeted metadata sync for absolute mkdir paths", async () 
   expect(copyMemfsCalls).toEqual([]);
 });
 
-test("processFs falls back to full sync for Memory64 path pointers outside JS safe integer range", async () => {
+test("processFs falls back to metadata-only sync for Memory64 path pointers outside JS safe integer range", async () => {
   const canonicalExports = makeKernelExports();
   const processExports = makeKernelExports({
     opcode: 6,
@@ -1066,11 +1066,11 @@ test("processFs falls back to full sync for Memory64 path pointers outside JS sa
 
   expect(result.memfsMutated).toBe(true);
   expect(syncedPaths).toEqual([]);
-  expect(copyMemfsCalls).toEqual([true]);
+  expect(copyMemfsCalls).toEqual([false]);
   expect(fanoutCalls).toEqual([true]);
 });
 
-test("processFs preserves published file data during file-data full sync fallback", async () => {
+test("processFs does not full-sync file data when dirty resident sync fails", async () => {
   const canonicalExports = makeKernelExports();
   const processExports = makeKernelExports({
     opcode: 2,
@@ -1140,9 +1140,9 @@ test("processFs preserves published file data during file-data full sync fallbac
   const result = await processControl.processFs(7, 0x1234, makeKernelState());
 
   expect(result.memfsMutated).toBe(true);
-  expect(copyMemfsCalls).toEqual([true]);
-  expect(restorePublishedRegularFileDataFromPageCache).toHaveBeenCalledTimes(1);
-  expect(fanoutCalls).toEqual([true]);
+  expect(copyMemfsCalls).toEqual([]);
+  expect(restorePublishedRegularFileDataFromPageCache).not.toHaveBeenCalled();
+  expect(fanoutCalls).toEqual([]);
 });
 
 test("processFs uses targeted metadata sync for absolute tree mutations without an opcode allowlist", async () => {
