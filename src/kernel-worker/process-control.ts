@@ -279,10 +279,6 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     deps.fanoutCanonicalMemfs();
   }
 
-  function readBackingFileRange(ino: number, offset: number, length: number): Uint8Array | null {
-    return deps.readBackingFileRangeByInode(ino, offset, length);
-  }
-
   function writeResidentFileRange(ino: number, offset: number, data: Uint8Array): number {
     return deps.writeDirtyResidentFileByInode(ino, offset, data);
   }
@@ -689,7 +685,6 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       maximumPages: boundedMaxMemoryPages,
     }, {
       sabPageCache: pageCache,
-      readFileDataByInode: readBackingFileRange,
       flushResidentFileDataByInode: deps.flushDirtyResidentFileByInode,
       truncateResidentFileDataByInode: truncateResidentFile,
       writeResidentFileDataByInode: writeResidentFileRange,
@@ -748,7 +743,6 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     const instance = await WebAssembly.instantiate(wasmModule, {
       env: createKernelEnv(memory, {
         sabPageCache: deps.getSabPageCache(),
-        readFileDataByInode: readBackingFileRange,
         flushResidentFileDataByInode: deps.flushDirtyResidentFileByInode,
         truncateResidentFileDataByInode: truncateResidentFile,
         writeResidentFileDataByInode: writeResidentFileRange,

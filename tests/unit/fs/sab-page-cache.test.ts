@@ -9,6 +9,8 @@ import {
   publishResidentPage,
   readInodeMeta,
   readInodeRecord,
+  truncateDirtyResidentFileData,
+  writeDirtyResidentFileData,
 } from "../../../src/fs/sab-page-cache.js";
 import { createKernelEnv } from "../../../src/wasm/env.js";
 
@@ -23,7 +25,10 @@ test("memory atomic notify accepts wasm64 BigInt pointers", () => {
 test("page-cache imports reject unsafe Memory64 pointers without truncation", () => {
   const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 8192);
   const memory = new WebAssembly.Memory({ initial: 1 });
-  const env = createKernelEnv(memory, { sabPageCache: sab });
+  const env = createKernelEnv(memory, {
+    sabPageCache: sab,
+    writeResidentFileDataByInode: () => 0,
+  });
   const bytes = new TextEncoder().encode("abcdef");
 
   publishInode(sab, 2, {
@@ -91,6 +96,16 @@ test("page-cache flush import rejects unowned writeback", () => {
   expect(env.tidemark_page_cache_flush(2)).toBe(-95);
 });
 
+test("page-cache mutation imports reject unowned mutation paths", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 8192);
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const env = createKernelEnv(memory, { sabPageCache: sab });
+  new Uint8Array(memory.buffer, 256, 4).set([1, 2, 3, 4]);
+
+  expect(env.tidemark_page_cache_write(2, 0n, 256, 4)).toBe(-95n);
+  expect(env.tidemark_page_cache_truncate(2, 0n)).toBe(-95);
+});
+
 test("publishInode exposes file metadata without inline file bytes", () => {
   const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 128);
   const name = new TextEncoder().encode("file");
@@ -138,33 +153,23 @@ test("page-cache read reports miss without using backing data when resident byte
   const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 128);
   const memory = new WebAssembly.Memory({ initial: 1 });
   const name = new TextEncoder().encode("external");
-  const backing = new TextEncoder().encode("abcdef");
-  const calls: Array<[number, number, number]> = [];
 
   publishInode(sab, 2, {
     mode: 0o100644,
-    size: backing.length,
+    size: 6,
     parentIno: 1,
     name,
     nextSibling: 0,
   });
 
-  const env = createKernelEnv(memory, {
-    sabPageCache: sab,
-    readFileDataByInode: (ino, offset, length) => {
-      calls.push([ino, offset, length]);
-      return backing.subarray(offset, Math.min(backing.length, offset + length));
-    },
-  });
+  const env = createKernelEnv(memory, { sabPageCache: sab });
 
   expect(env.tidemark_page_cache_read(2, 2n, 32, 3)).toBe(-2n);
-  expect(calls).toEqual([]);
 });
 
 test("page-cache read reports miss when no resident page exists before eof", () => {
   const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 128);
   const memory = new WebAssembly.Memory({ initial: 1 });
-  let calls = 0;
 
   publishInode(sab, 2, {
     mode: 0o100644,
@@ -174,16 +179,9 @@ test("page-cache read reports miss when no resident page exists before eof", () 
     nextSibling: 0,
   });
 
-  const env = createKernelEnv(memory, {
-    sabPageCache: sab,
-    readFileDataByInode: () => {
-      calls += 1;
-      return new Uint8Array();
-    },
-  });
+  const env = createKernelEnv(memory, { sabPageCache: sab });
 
   expect(env.tidemark_page_cache_read(2, 2n, 32, 3)).toBe(-2n);
-  expect(calls).toBe(0);
 });
 
 test("page-cache read uses resident pages filled by the status path", () => {
@@ -305,27 +303,18 @@ test("page-cache zero-length read on kernel-worker backing data returns zero", (
   const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 128);
   const memory = new WebAssembly.Memory({ initial: 1 });
   const name = new TextEncoder().encode("external");
-  const backing = new TextEncoder().encode("abcdef");
-  let calls = 0;
 
   publishInode(sab, 2, {
     mode: 0o100644,
-    size: backing.length,
+    size: 6,
     parentIno: 1,
     name,
     nextSibling: 0,
   });
 
-  const env = createKernelEnv(memory, {
-    sabPageCache: sab,
-    readFileDataByInode: () => {
-      calls += 1;
-      return backing;
-    },
-  });
+  const env = createKernelEnv(memory, { sabPageCache: sab });
 
   expect(env.tidemark_page_cache_read(2, 0n, 32, 0)).toBe(0n);
-  expect(calls).toBe(0);
 });
 
 test("page-cache write publishes dirty resident data without updating backing data", () => {
@@ -345,7 +334,12 @@ test("page-cache write publishes dirty resident data without updating backing da
 
   const env = createKernelEnv(memory, {
     sabPageCache: sab,
-    readFileDataByInode: (_ino, offset, length) => backing.subarray(offset, offset + length),
+    truncateResidentFileDataByInode: (ino, size) => (
+      truncateDirtyResidentFileData(sab, ino, size, (_ino, offset, length) => backing.subarray(offset, offset + length))
+    ),
+    writeResidentFileDataByInode: (ino, offset, data) => (
+      writeDirtyResidentFileData(sab, ino, offset, data, (_ino, offset, length) => backing.subarray(offset, offset + length))
+    ),
   });
 
   expect(env.tidemark_page_cache_write(2, 32n, 256, source.length)).toBe(BigInt(source.length));
@@ -401,6 +395,27 @@ test("source-backed file replacement does not materialize the previous source", 
   expect(replaced.generation).toBe(file.generation + 1);
   expect(backing.read(file.fileObjectId, 0, 16)).toEqual(replacement);
   expect(calls).toEqual([]);
+});
+
+test("source-backed file range write overlays without materializing the previous source", () => {
+  const backing = new MemoryFileBackingStore();
+  const data = new TextEncoder().encode("abcdef");
+  const calls: Array<[number, number]> = [];
+  const file = backing.createSourceFile({
+    byteLength: data.length,
+    readRange(offset, length) {
+      calls.push([offset, length]);
+      return data.subarray(offset, Math.min(data.length, offset + length));
+    },
+  });
+
+  const patched = backing.write(file.fileObjectId, 3, new TextEncoder().encode("XYZ"));
+  expect(patched.size).toBe(data.length);
+  expect(patched.generation).toBe(file.generation + 1);
+  expect(calls).toEqual([]);
+
+  expect(backing.read(file.fileObjectId, 0, 6)).toEqual(new TextEncoder().encode("abcXYZ"));
+  expect(calls).toEqual([[0, 6]]);
 });
 
 test("live resident records use file object generation and fixed reusable frames", () => {

@@ -1,8 +1,6 @@
 import {
   readInodeMeta,
   readResidentFileData,
-  truncateDirtyResidentFileData,
-  writeDirtyResidentFileData,
 } from "../fs/sab-page-cache.js";
 
 export interface KernelEnvImports {
@@ -18,7 +16,6 @@ export interface KernelEnvImports {
 
 export interface KernelEnvOptions {
   sabPageCache?: SharedArrayBuffer | null;
-  readFileDataByInode?: (ino: number, offset: number, length: number) => Uint8Array | null;
   flushResidentFileDataByInode?: (ino: number) => boolean;
   truncateResidentFileDataByInode?: (ino: number, size: number) => number;
   writeResidentFileDataByInode?: (ino: number, offset: number, data: Uint8Array) => number;
@@ -61,7 +58,6 @@ export function createKernelEnv(
   options: KernelEnvOptions = {},
 ): KernelEnvImports {
   const sabPageCache = options.sabPageCache ?? null;
-  const readFileDataByInode = options.readFileDataByInode;
   const flushResidentFileDataByInode = options.flushResidentFileDataByInode;
   const truncateResidentFileDataByInode = options.truncateResidentFileDataByInode;
   const writeResidentFileDataByInode = options.writeResidentFileDataByInode;
@@ -146,14 +142,17 @@ export function createKernelEnv(
       if (!Number.isFinite(sizeNumber) || sizeNumber < 0 || sizeNumber > 0xffffffff) {
         return -22;
       }
-      if (truncateResidentFileDataByInode) {
-        return truncateResidentFileDataByInode(ino, sizeNumber);
+      if (!truncateResidentFileDataByInode) {
+        return -95;
       }
-      return truncateDirtyResidentFileData(sabPageCache, ino, sizeNumber, readFileDataByInode);
+      return truncateResidentFileDataByInode(ino, sizeNumber);
     },
     tidemark_page_cache_write(ino, offset, srcPtr, srcLen) {
-      if (!sabPageCache || srcLen <= 0) {
+      if (srcLen <= 0) {
         return 0n;
+      }
+      if (!sabPageCache || !writeResidentFileDataByInode) {
+        return -95n;
       }
       const offsetNumber = Number(offset);
       if (!Number.isFinite(offsetNumber) || offsetNumber < 0) {
@@ -164,10 +163,7 @@ export function createKernelEnv(
         return -14n;
       }
       const source = new Uint8Array(memory.buffer, srcRange.ptr, srcRange.length);
-      if (writeResidentFileDataByInode) {
-        return BigInt(writeResidentFileDataByInode(ino, offsetNumber, source));
-      }
-      return BigInt(writeDirtyResidentFileData(sabPageCache, ino, offsetNumber, source, readFileDataByInode));
+      return BigInt(writeResidentFileDataByInode(ino, offsetNumber, source));
     },
   };
 }
