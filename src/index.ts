@@ -580,6 +580,7 @@ export class Runtime {
     dataOff: number;
     size: number;
     mode: number;
+    residentPages?: number;
   } | null> {
     const response = await this.sendKernelRequest<
       Extract<KernelWorkerOutbound, { type: "page-cache-path-debugged" }>

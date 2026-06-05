@@ -635,6 +635,7 @@ export type KernelWorkerResponse =
         dataOff: number;
         size: number;
         mode: number;
+        residentPages?: number;
       } | null;
     }
   | {

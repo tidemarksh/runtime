@@ -14,6 +14,7 @@ import {
 } from "./abi.js";
 import type { FsSnapshotEntry } from "./fs/types.js";
 import {
+  debugResidentPageCountForInode,
   OFF_DATA_USED,
   OFF_DIR_EPOCH,
   OFF_INODE_COUNT,
@@ -439,6 +440,7 @@ const handleKernelWorkerMessage = createKernelWorkerMessageHandler({
         dataOff: 0,
         size: Number(exports.memfs_file_size(ino)),
         mode: exports.memfs_inode_mode(ino),
+        residentPages: debugResidentPageCountForInode(sabPageCache, ino),
       };
     }
     return {
@@ -447,6 +449,7 @@ const handleKernelWorkerMessage = createKernelWorkerMessageHandler({
       dataOff: record.dataOff,
       size: record.size,
       mode: record.mode,
+      residentPages: debugResidentPageCountForInode(sabPageCache, ino),
     };
   },
   debugPageCacheStats: () => {

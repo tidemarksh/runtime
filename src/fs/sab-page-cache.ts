@@ -780,6 +780,26 @@ export function readResidentFileData(
   return out;
 }
 
+export function debugResidentPageCountForInode(sab: SharedArrayBuffer, ino: number): number {
+  if (!Number.isInteger(ino) || ino <= 0 || ino >= MAX_INODES) {
+    return 0;
+  }
+  const u32 = new Uint32Array(sab);
+  const count = residentPageRecordCount(sab);
+  let residentPages = 0;
+  for (let index = 0; index < count; index += 1) {
+    const base32 = residentPageRecordOffset(sab, index) >>> 2;
+    const flags = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2));
+    if (
+      (flags & RESIDENT_PAGE_RECORD_FLAG_VALID) !== 0
+      && Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_INO >>> 2)) === ino
+    ) {
+      residentPages += 1;
+    }
+  }
+  return residentPages;
+}
+
 export function writeFileData(
   sab: SharedArrayBuffer,
   ino: number,

@@ -153,6 +153,7 @@ interface KernelWorkerMessageHandlerDeps {
     dataOff: number;
     size: number;
     mode: number;
+    residentPages?: number;
   } | null;
   debugPageCacheStats(): {
     byteLength: number;
