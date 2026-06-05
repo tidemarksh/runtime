@@ -75,7 +75,7 @@ function createRuntimeState(memfsPtr: number): KernelRuntimeState {
   };
 }
 
-test("syncMemfsState copies referenced file data even when dataUsed is stale", () => {
+test("syncMemfsState drops regular inline data and preserves symlink data", () => {
   const memoryPages = { initial: 1, maximum: 4, shared: true } as const;
   const sourceMemory = new WebAssembly.Memory(memoryPages);
   const targetMemory = new WebAssembly.Memory(memoryPages);
@@ -84,7 +84,7 @@ test("syncMemfsState copies referenced file data even when dataUsed is stale", (
   const targetState = createRuntimeState(0x180);
 
   writeMemfsHeader(sourceMemory, sourceState.memfsPtr, {
-    inodeCount: 2,
+    inodeCount: 3,
     dataUsed: 8,
     dataCap: 64,
     inodesPtr: 0x200,
@@ -93,7 +93,7 @@ test("syncMemfsState copies referenced file data even when dataUsed is stale", (
     dataPtr: 0x300,
   });
   writeMemfsHeader(targetMemory, targetState.memfsPtr, {
-    inodeCount: 2,
+    inodeCount: 3,
     dataUsed: 0,
     dataCap: 64,
     inodesPtr: 0x400,
@@ -108,27 +108,40 @@ test("syncMemfsState copies referenced file data even when dataUsed is stale", (
   sourceInodeView.setBigUint64(sourceInodeBase + 16, 16n, true);
   sourceInodeView.setUint32(sourceInodeBase + 24, 32, true);
   sourceInodeView.setUint32(sourceInodeBase + 28, 16, true);
+  const sourceSymlinkInodeBase = 0x200 + 64;
+  sourceInodeView.setUint32(sourceSymlinkInodeBase + 0, 0o120777, true);
+  sourceInodeView.setBigUint64(sourceSymlinkInodeBase + 16, 12n, true);
+  sourceInodeView.setUint32(sourceSymlinkInodeBase + 24, 48, true);
+  sourceInodeView.setUint32(sourceSymlinkInodeBase + 28, 12, true);
   new Uint8Array(sourceMemory.buffer).set(new TextEncoder().encode("0123456789abcdef"), 0x300 + 32);
+  new Uint8Array(sourceMemory.buffer).set(new TextEncoder().encode("/bin/runtime"), 0x300 + 48);
   new Uint8Array(targetMemory.buffer, 0x500 + 48, 16).fill(0xcc);
 
   const source = createHandle(sourceMemory, sourceState, {
-    inodesBytes: 64,
-    firstChildBytes: 8,
+    inodesBytes: 96,
+    firstChildBytes: 12,
     dirEntriesBytes: 32,
   });
   const target = createHandle(targetMemory, targetState, {
-    inodesBytes: 64,
-    firstChildBytes: 8,
+    inodesBytes: 96,
+    firstChildBytes: 12,
     dirEntriesBytes: 32,
   });
 
   syncMemfsState(source, target);
 
-  expect(new TextDecoder().decode(new Uint8Array(targetMemory.buffer, 0x500 + 32, 16))).toBe("0123456789abcdef");
-  expect(new Uint8Array(targetMemory.buffer, 0x500 + 48, 16)).toEqual(new Uint8Array(16));
+  expect(new Uint8Array(targetMemory.buffer, 0x500 + 32, 16)).toEqual(new Uint8Array(16));
+  expect(new TextDecoder().decode(new Uint8Array(targetMemory.buffer, 0x500 + 8, 12))).toBe("/bin/runtime");
   const targetHeader = new DataView(targetMemory.buffer, targetState.memfsPtr, 32);
-  expect(targetHeader.getUint32(8, true)).toBe(48);
+  expect(targetHeader.getUint32(8, true)).toBe(20);
   expect(targetHeader.getUint32(12, true)).toBe(64);
   expect(targetHeader.getUint32(16, true)).toBe(0x400);
   expect(targetHeader.getUint32(28, true)).toBe(0x500);
+  const targetInodeView = new DataView(targetMemory.buffer);
+  const targetRegularInodeBase = 0x400 + 32;
+  expect(targetInodeView.getUint32(targetRegularInodeBase + 24, true)).toBe(0);
+  expect(targetInodeView.getUint32(targetRegularInodeBase + 28, true)).toBe(0);
+  const targetSymlinkInodeBase = 0x400 + 64;
+  expect(targetInodeView.getUint32(targetSymlinkInodeBase + 24, true)).toBe(8);
+  expect(targetInodeView.getUint32(targetSymlinkInodeBase + 28, true)).toBe(12);
 });
