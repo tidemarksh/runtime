@@ -943,6 +943,27 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     return new Uint8Array(targetExports.memory.buffer.slice(bufPtr, bufPtr + read));
   }
 
+  async function readFileAsync(path: string): Promise<Uint8Array> {
+    const targetExports = deps.getCanonicalExports();
+    const ino = resolvePathFollowingSymlinks(path);
+    if (ino === 0) {
+      throw new Error(`file not found: ${path}`);
+    }
+
+    const size = Number(targetExports.memfs_file_size(ino));
+    const backingData = readBackingFileByInode(ino) ?? materializeBackingSourceForInode(ino, size);
+    if (backingData && backingData.length === size) {
+      return backingData;
+    }
+    if (size > 0 && await ensureBackingSourceRangeForInode(ino, 0, size, size)) {
+      const materialized = materializeBackingSourceForInode(ino, size);
+      if (materialized && materialized.length === size) {
+        return materialized;
+      }
+    }
+    return readFile(path);
+  }
+
   function readlink(path: string): Uint8Array {
     const targetExports = deps.getCanonicalExports();
     const ino = resolvePath(path);
@@ -1046,6 +1067,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     loadFsSnapshot,
     mkdir,
     readFile,
+    readFileAsync,
     readlink,
     readdir,
     registerBackingSource,

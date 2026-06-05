@@ -181,6 +181,27 @@ test("message handler reports dependency errors without escaping the kernel-work
   expect(posted[0]?.type === "error" ? posted[0].message : "").toContain("read boom");
 });
 
+test("message handler awaits async file reads before responding", async () => {
+  const posted: KernelWorkerOutbound[] = [];
+  const deps = makeDeps(posted);
+  deps.readFile.mockResolvedValue(new Uint8Array([7, 8, 9]));
+  const handleMessage = createKernelWorkerMessageHandler(deps);
+
+  await handleMessage({
+    type: "read-file",
+    requestId: 20,
+    path: "/tmp/a",
+  });
+
+  expect(posted).toEqual([
+    {
+      type: "file-read",
+      requestId: 20,
+      data: new Uint8Array([7, 8, 9]),
+    },
+  ]);
+});
+
 test("message handler registers host-file backing sources", async () => {
   const posted: KernelWorkerOutbound[] = [];
   const deps = makeDeps(posted);

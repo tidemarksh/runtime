@@ -147,7 +147,7 @@ const kernelWorkerFsState = createKernelWorkerFsState({
 const {
   loadFsSnapshot,
   mkdir,
-  readFile,
+  readFileAsync,
   readlink,
   readdir,
   registerBackingSource,
@@ -389,7 +389,7 @@ const handleKernelWorkerMessage = createKernelWorkerMessageHandler({
     fanoutCanonicalMemfs();
   },
   symlink,
-  readFile,
+  readFile: readFileAsync,
   readlink,
   mkdir,
   statPath,

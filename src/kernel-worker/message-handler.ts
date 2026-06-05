@@ -35,7 +35,7 @@ interface KernelWorkerMessageHandlerDeps {
   writeFiles(entries: Array<{ path: string; data: Uint8Array; mode?: number }>): void;
   applyFileLayer(entries: KernelWorkerFileLayerEntry[]): void;
   symlink(path: string, target: Uint8Array, mode?: number, fanout?: boolean): void;
-  readFile(path: string): Uint8Array;
+  readFile(path: string): Uint8Array | Promise<Uint8Array>;
   readlink(path: string): Uint8Array;
   mkdir(path: string, mode?: number, fanout?: boolean): void;
   statPath(path: string): {
@@ -207,7 +207,7 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
           deps.postResponse({
             type: "file-read",
             requestId: msg.requestId,
-            data: deps.readFile(msg.path),
+            data: await deps.readFile(msg.path),
           });
           break;
         case "readlink":

@@ -712,6 +712,31 @@ test("kernel-worker demand-fills OPFS source ranges into registered backing sour
   expect(fsState.readBackingFileByInode(ino)).toBeNull();
 });
 
+test("kernel-worker async readFile materializes OPFS-backed metadata-only files", async () => {
+  const { fsState } = makeFsState();
+  const source = encoder.encode("prefix:artifact-bytes:suffix");
+  const backingExtent = {
+    sourceIdentity: "opfs:runtime.bin",
+    offset: "prefix:".length,
+    length: "artifact-bytes".length,
+  };
+
+  fsState.loadFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "file", path: "/lib/runtime.bin", size: backingExtent.length, mode: 0o644, backingExtent },
+  ]);
+  fsState.registerOpfsBackingSource(backingExtent.sourceIdentity, source.length, {
+    getFile: vi.fn(async () => new Blob([source])),
+  });
+
+  const ino = fsState.resolvePath("/lib/runtime.bin");
+  expect(fsState.readBackingFileByInode(ino)).toBeNull();
+  await expect(fsState.readFileAsync("/lib/runtime.bin"))
+    .resolves.toEqual(encoder.encode("artifact-bytes"));
+  expect(new TextDecoder().decode(fsState.readBackingFileByInode(ino) ?? new Uint8Array()))
+    .toBe("artifact-bytes");
+});
+
 test("kernel-worker snapshot export preserves source backing identity", () => {
   const { fsState } = makeFsState();
   const backingExtent = {
