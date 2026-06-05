@@ -86,6 +86,7 @@ function makeDeps(posted: KernelWorkerOutbound[]) {
     rehydrateForkSharedState: vi.fn(),
     debugProcesses: vi.fn(() => ({ pids: [3], canonicalPids: [3] })),
     debugPageCachePath: vi.fn(() => null),
+    debugEvictPageCachePath: vi.fn(() => null),
     debugPageCacheStats: vi.fn(() => ({
       byteLength: 0,
       dataUsed: 0,
@@ -228,4 +229,39 @@ test("state-owning kernel-worker modules are marked transitional-runtime-owner",
   expect(KERNEL_WORKER_PRIMITIVES_OWNERSHIP).toBe("transitional-runtime-owner");
   expect(KERNEL_WORKER_PROCESS_CONTROL_OWNERSHIP).toBe("transitional-runtime-owner");
   expect(KERNEL_WORKER_SHARED_STATE_SYNC_OWNERSHIP).toBe("transitional-runtime-owner");
+});
+
+test("message handler routes debug resident page eviction through kernel-worker owner", async () => {
+  const posted: KernelWorkerOutbound[] = [];
+  const deps = makeDeps(posted);
+  const handleMessage = createKernelWorkerMessageHandler(deps);
+  deps.debugEvictPageCachePath.mockReturnValue({
+    path: "/lib/runtime.bin",
+    ino: 2,
+    pageIndex: 0,
+    status: "evicted",
+    residentPages: 0,
+  });
+
+  await handleMessage({
+    type: "debug-evict-page-cache-path",
+    requestId: 44,
+    path: "/lib/runtime.bin",
+    pageIndex: 0,
+  });
+
+  expect(deps.debugEvictPageCachePath).toHaveBeenCalledWith("/lib/runtime.bin", 0);
+  expect(posted).toEqual([
+    {
+      type: "page-cache-path-evicted",
+      requestId: 44,
+      result: {
+        path: "/lib/runtime.bin",
+        ino: 2,
+        pageIndex: 0,
+        status: "evicted",
+        residentPages: 0,
+      },
+    },
+  ]);
 });

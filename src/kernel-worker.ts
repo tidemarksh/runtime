@@ -15,6 +15,7 @@ import {
 import type { FsSnapshotEntry } from "./fs/types.js";
 import {
   debugResidentPageCountForInode,
+  evictResidentPage,
   OFF_DATA_USED,
   OFF_DIR_EPOCH,
   OFF_INODE_COUNT,
@@ -449,6 +450,20 @@ const handleKernelWorkerMessage = createKernelWorkerMessageHandler({
       dataOff: record.dataOff,
       size: record.size,
       mode: record.mode,
+      residentPages: debugResidentPageCountForInode(sabPageCache, ino),
+    };
+  },
+  debugEvictPageCachePath: (path, pageIndex) => {
+    const ino = resolvePathIn(exports, path);
+    if (ino === 0) {
+      return null;
+    }
+    const status = evictResidentPage(sabPageCache, ino, pageIndex);
+    return {
+      path,
+      ino,
+      pageIndex,
+      status,
       residentPages: debugResidentPageCountForInode(sabPageCache, ino),
     };
   },

@@ -591,6 +591,23 @@ export class Runtime {
     return response.record;
   }
 
+  async debugEvictPageCachePath(path: string, pageIndex: number): Promise<{
+    path: string;
+    ino: number;
+    pageIndex: number;
+    status: "evicted" | "not-found";
+    residentPages?: number;
+  } | null> {
+    const response = await this.sendKernelRequest<
+      Extract<KernelWorkerOutbound, { type: "page-cache-path-evicted" }>
+    >({
+      type: "debug-evict-page-cache-path",
+      path,
+      pageIndex,
+    });
+    return response.result;
+  }
+
   async debugPageCacheStats(): Promise<{
     byteLength: number;
     dataUsed: number;

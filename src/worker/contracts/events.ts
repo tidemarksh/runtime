@@ -441,6 +441,11 @@ export type KernelWorkerRequest =
       path: string;
     }
   | {
+      type: "debug-evict-page-cache-path";
+      path: string;
+      pageIndex: number;
+    }
+  | {
       type: "debug-page-cache-stats";
     }
   | {
@@ -635,6 +640,17 @@ export type KernelWorkerResponse =
         dataOff: number;
         size: number;
         mode: number;
+        residentPages?: number;
+      } | null;
+    }
+  | {
+      type: "page-cache-path-evicted";
+      requestId: number;
+      result: {
+        path: string;
+        ino: number;
+        pageIndex: number;
+        status: "evicted" | "not-found";
         residentPages?: number;
       } | null;
     }

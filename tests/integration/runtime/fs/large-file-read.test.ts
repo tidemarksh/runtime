@@ -269,6 +269,73 @@ test("resident page fill witness: repeated guest reads keep snapshot input resid
   }
 }, 90_000);
 
+test("resident eviction reload witness: kernel-worker evicts then reloads snapshot input", async () => {
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return;
+  }
+  const probeBytes = buildLargeFileReadProbe();
+  if (!probeBytes) {
+    return;
+  }
+  const input = buildResidentWitnessInput();
+  const expected = checksum(input);
+
+  const runtime = await Runtime.create({
+    wasmBytes,
+    guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
+    maxProcessMemoryPages: 32768,
+  });
+  try {
+    const snapshot = buildSnapshotFromSources([
+      { kind: "inlineFile", guestPath: largeFilePath, data: input, mode: 0o644 },
+    ]);
+    await runtime.applyFsSnapshot(snapshot.entries ?? []);
+    const before = await runtime.debugPageCachePath(largeFilePath);
+    expect(before, "snapshot input should publish metadata").not.toBeNull();
+    expect(before?.dataOff, "snapshot input should be backing-store backed").toBe(0);
+    expect(before?.residentPages ?? 0).toBe(0);
+
+    const first = await spawnWithOutputAndStats(
+      runtime,
+      probeBytes,
+      ["/work/large-file-read", largeFilePath],
+      ["LC_ALL=C", "LANG=C"],
+      60_000,
+      { cwd: "/", stdin: "closed" },
+    );
+    expect(first.exitCode, first.output + (first.debugInfo ? `\n${first.debugInfo}` : "")).toBe(0);
+    expect(first.output).toContain(`large-file-read bytes=${input.length}`);
+    expect(first.output).toContain(`checksum=${expected.toString()}`);
+
+    const filled = await runtime.debugPageCachePath(largeFilePath);
+    expect(filled?.dataOff, "resident fill must not materialize whole-file inode data").toBe(0);
+    expect(filled?.residentPages ?? 0).toBeGreaterThan(0);
+
+    const evicted = await runtime.debugEvictPageCachePath(largeFilePath, 0);
+    expect(evicted?.status).toBe("evicted");
+    expect(evicted?.residentPages ?? 0).toBe(0);
+
+    const second = await spawnWithOutputAndStats(
+      runtime,
+      probeBytes,
+      ["/work/large-file-read", largeFilePath],
+      ["LC_ALL=C", "LANG=C"],
+      60_000,
+      { cwd: "/", stdin: "closed" },
+    );
+    expect(second.exitCode, second.output + (second.debugInfo ? `\n${second.debugInfo}` : "")).toBe(0);
+    expect(second.output).toContain(`large-file-read bytes=${input.length}`);
+    expect(second.output).toContain(`checksum=${expected.toString()}`);
+
+    const reloaded = await runtime.debugPageCachePath(largeFilePath);
+    expect(reloaded?.dataOff, "reload must keep file data in backing store").toBe(0);
+    expect(reloaded?.residentPages ?? 0).toBeGreaterThan(0);
+  } finally {
+    runtime.destroy();
+  }
+}, 90_000);
+
 test("large regular file read local gate: guest sequentially reads package-index sized input", async () => {
   const wasmBytes = readKernelWasm();
   if (!wasmBytes) {

@@ -155,6 +155,13 @@ interface KernelWorkerMessageHandlerDeps {
     mode: number;
     residentPages?: number;
   } | null;
+  debugEvictPageCachePath(path: string, pageIndex: number): {
+    path: string;
+    ino: number;
+    pageIndex: number;
+    status: "evicted" | "not-found";
+    residentPages?: number;
+  } | null;
   debugPageCacheStats(): {
     byteLength: number;
     dataUsed: number;
@@ -505,6 +512,13 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
             type: "page-cache-path-debugged",
             requestId: msg.requestId,
             record: deps.debugPageCachePath(msg.path),
+          });
+          break;
+        case "debug-evict-page-cache-path":
+          deps.postResponse({
+            type: "page-cache-path-evicted",
+            requestId: msg.requestId,
+            result: deps.debugEvictPageCachePath(msg.path, msg.pageIndex),
           });
           break;
         case "debug-page-cache-stats":
