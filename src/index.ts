@@ -41,6 +41,10 @@ import {
   fetchRemoteBackingSourceRange,
   type RemoteBackingFetch,
 } from "./kernel-worker/remote-backing-source.js";
+import {
+  readOpfsBackingSourceRange,
+  type OpfsBackingFileHandle,
+} from "./kernel-worker/opfs-backing-source.js";
 
 export interface RuntimeOptions {
   wasmBytes: BufferSource;
@@ -418,6 +422,17 @@ export class Runtime {
     options: { fetch?: RemoteBackingFetch } = {},
   ): Promise<void> {
     const range = await fetchRemoteBackingSourceRange(url, byteLength, offset, length, options.fetch);
+    await this.registerFsBackingSourceRange(sourceIdentity, range.byteLength, range.offset, range.data);
+  }
+
+  async registerFsOpfsBackingSourceRange(
+    sourceIdentity: string,
+    byteLength: number,
+    handle: OpfsBackingFileHandle,
+    offset: number,
+    length: number,
+  ): Promise<void> {
+    const range = await readOpfsBackingSourceRange(handle, byteLength, offset, length);
     await this.registerFsBackingSourceRange(sourceIdentity, range.byteLength, range.offset, range.data);
   }
 

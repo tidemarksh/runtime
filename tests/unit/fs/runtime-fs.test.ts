@@ -575,6 +575,37 @@ test("Runtime registers prefetched remote backing source ranges through kernel-w
   runtime.destroy();
 });
 
+test("Runtime registers prefetched OPFS backing source ranges through kernel-worker range source", async () => {
+  const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
+  const full = new TextEncoder().encode("prefix:artifact-bytes:suffix");
+  const handle = {
+    getFile: vi.fn(async () => new Blob([full])),
+  };
+
+  await runtime.registerFsOpfsBackingSourceRange(
+    "opfs:toolchain/archive.bin",
+    full.length,
+    handle,
+    "prefix:".length,
+    "artifact-bytes".length,
+  );
+
+  const message = createdWorkers[0].postedMessages.find((msg) => (
+    msg.type === "register-fs-backing-source-range"
+    && msg.sourceIdentity === "opfs:toolchain/archive.bin"
+  ));
+  expect(message).toMatchObject({
+    type: "register-fs-backing-source-range",
+    sourceIdentity: "opfs:toolchain/archive.bin",
+    byteLength: full.length,
+    offset: "prefix:".length,
+  });
+  expect(message?.type === "register-fs-backing-source-range" ? message.data : undefined)
+    .toEqual(new TextEncoder().encode("artifact-bytes"));
+
+  runtime.destroy();
+});
+
 test("Runtime.applyFsSnapshot does not retain provided file data in runtime state", async () => {
   const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
   const data = new TextEncoder().encode("snapshot body");
