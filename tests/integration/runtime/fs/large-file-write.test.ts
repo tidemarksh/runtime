@@ -321,7 +321,8 @@ test("source-backed guest rewrite export witness: snapshot clears stale backing 
   source.set(prefix, 0);
   source.set(initial, prefix.length);
   source.set(suffix, prefix.length + initial.length);
-  const sourceIdentity = "artifact:runtime-large-file-write.bin";
+  const sourceIdentity = "remote:runtime-large-file-write.bin";
+  const sourceUrl = `data:application/octet-stream;base64,${Buffer.from(source).toString("base64")}`;
 
   const runtime = await Runtime.create({
     wasmBytes,
@@ -344,7 +345,7 @@ test("source-backed guest rewrite export witness: snapshot clears stale backing 
         },
       },
     ]);
-    await runtime.registerFsBackingSource(sourceIdentity, source);
+    await runtime.registerFsRemoteBackingSource(sourceIdentity, source.length, sourceUrl);
     const before = (await snapshotRuntimeFs(runtime, false)).find((entry) => (
       entry.kind === "file" && entry.path === largeFilePath
     ));

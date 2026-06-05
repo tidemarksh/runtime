@@ -4,6 +4,7 @@ import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
 import { createKernelWorkerProcessControl } from "../../../src/kernel-worker/process-control.js";
 import {
   FS_OP_READ,
+  FS_OP_WRITE,
   FS_OP_MMAP,
   FS_REQ_FLAG_PWRITE,
   FS_RING_REQUEST_BUF_PTR_OFFSET,
@@ -60,6 +61,7 @@ function makeKernelExports(options: {
   ofdSlots?: Array<{ ofdId: number; bytes: Uint8Array }>;
   mmapRequest?: { guestPtrHint: number; length: number; resultGuestPtr: number; bytes: Uint8Array };
   readRequest?: { fd: number; offset: number; length: number; ino: number; size: number; pwrite?: boolean };
+  writeRequest?: { fd: number; offset: number; length: number; ino: number; size: number; pwrite?: boolean };
 } = {}): FakeKernelExports {
   let runtimeState = makeKernelState();
   const opLog: string[] = [];
@@ -111,6 +113,21 @@ function makeKernelExports(options: {
     view.setUint32(
       entry + FS_RING_REQUEST_FLAGS_OFFSET,
       options.readRequest.pwrite ? FS_REQ_FLAG_PWRITE : 0,
+      true,
+    );
+    view.setUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, 0x1234, true);
+  }
+  if (options.writeRequest) {
+    const view = new DataView(memory.buffer);
+    view.setUint32(fsRingBase + FS_RING_SUBMIT_HEAD_OFFSET, 1, true);
+    const entry = fsRingRequestEntryOffset(fsRingBase, 0);
+    view.setUint32(entry + FS_RING_REQUEST_OPCODE_OFFSET, FS_OP_WRITE, true);
+    view.setInt32(entry + FS_RING_REQUEST_FD_OFFSET, options.writeRequest.fd, true);
+    view.setBigUint64(entry + FS_RING_REQUEST_OFFSET_OFFSET, BigInt(options.writeRequest.offset), true);
+    view.setBigUint64(entry + FS_RING_REQUEST_LEN_OFFSET, BigInt(options.writeRequest.length), true);
+    view.setUint32(
+      entry + FS_RING_REQUEST_FLAGS_OFFSET,
+      options.writeRequest.pwrite ? FS_REQ_FLAG_PWRITE : 0,
       true,
     );
     view.setUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, 0x1234, true);
@@ -197,7 +214,7 @@ function makeKernelExports(options: {
       new Uint8Array(memory.buffer).set(secondaryAbsolutePathBytes, bufPtr);
       return BigInt(secondaryAbsolutePathBytes.length);
     },
-    thread_fs_ring_base: () => (options.mmapRequest || options.readRequest ? fsRingBase : 0),
+    thread_fs_ring_base: () => (options.mmapRequest || options.readRequest || options.writeRequest ? fsRingBase : 0),
     thread_guest_base: () => guestBase,
     thread_process_fs: () => {
       opLog.push("process-fs");
@@ -220,9 +237,9 @@ function makeKernelExports(options: {
     },
     process_fd_ofd_id: (_vmPtr: number, fd: number) => fdOfdIds.get(fd) ?? 0,
     process_fd_flags: (_vmPtr: number, fd: number) => fdFlags.get(fd) ?? 0,
-    kernel_ofd_ino: () => options.readRequest?.ino ?? 0,
-    kernel_ofd_offset: () => BigInt(options.readRequest?.offset ?? 0),
-    memfs_file_size: () => options.readRequest?.size ?? 0,
+    kernel_ofd_ino: () => options.readRequest?.ino ?? options.writeRequest?.ino ?? 0,
+    kernel_ofd_offset: () => BigInt(options.readRequest?.offset ?? options.writeRequest?.offset ?? 0),
+    memfs_file_size: () => options.readRequest?.size ?? options.writeRequest?.size ?? 0,
     opLog,
   } as unknown as FakeKernelExports;
 }
@@ -576,6 +593,74 @@ test("processFs demand-fills missing source-backed read ranges before processing
 
   expect(result.result).toBe(16n);
   expect(ensureBackingSourceRangeForInode).toHaveBeenCalledWith(11, 32, 16, 128);
+  expect(processExports.opLog).toEqual(["process-fs", "resume-fs"]);
+});
+
+test("processFs materializes source-backed files before processing writes", async () => {
+  const canonicalExports = makeKernelExports();
+  const processExports = makeKernelExports({
+    resumeResult: 7,
+    fdEntries: [{ fd: 5, ofdId: 7 }],
+    writeRequest: { fd: 5, offset: 32, length: 7, ino: 11, size: 128, pwrite: true },
+  });
+  const processKernels = new Map<number, KernelExports>([[7, processExports]]);
+  const ensureBackingSourceRangeForInode = vi.fn(async () => true);
+
+  const processControl = createKernelWorkerProcessControl({
+    getCanonicalExports: () => canonicalExports,
+    setCanonicalExports: () => {},
+    getWasmModule: () => null,
+    setWasmModule: () => {},
+    getSabPageCache: () => new SharedArrayBuffer(65536),
+    setSabPageCache: () => {},
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    canonicalProcesses: new Map(),
+    seedEntries: new Map(),
+    getCanonicalNextPid: () => 3,
+    setCanonicalNextPid: () => {},
+    publishRootInode: () => {},
+    copyOfdState: () => {},
+    copyMemfsState: () => {},
+    rebuildPageCacheFromExports: () => {},
+    rebuildPageCacheFromCanonical: () => {},
+    syncPipeState: (_pid, kernelState) => kernelState,
+    syncEpollState: (_pid, kernelState) => kernelState,
+    syncSocketState: (_pid, kernelState) => kernelState,
+    copyCanonicalMemfsToProcess: () => {},
+    snapshotProcSelfExe: () => null,
+    restoreProcSelfExe: () => {},
+    composeProcessPipeUsed: () => 0n,
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    mergePipeSlotsFromCanonical: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+    }),
+    applyPipeControlState: () => {},
+    copyEpollState: () => {},
+    copySelectedEpollState: () => {},
+    copySocketState: () => {},
+    syncFileDataMutation: () => true,
+    syncFileDataMutationByPath: () => false,
+    syncMetadataMutation: () => false,
+    readBackingFileRangeByInode: () => null,
+    ensureBackingSourceRangeForInode,
+    fanoutCanonicalMemfs: () => {},
+    fsEffectMemfsMutation: 1 << 0,
+    fsEffectSharedOfdState: 1 << 1,
+    fsEffectMemfsFileData: 1 << 2,
+    fsOpOpenAt: 3,
+    fsOpMkdir: 6,
+    fsOpUnlink: 7,
+  });
+
+  const result = await processControl.processFs(7, 0x1234, makeKernelState());
+
+  expect(result.result).toBe(7n);
+  expect(ensureBackingSourceRangeForInode).toHaveBeenCalledWith(11, 0, 128, 128);
   expect(processExports.opLog).toEqual(["process-fs", "resume-fs"]);
 });
 

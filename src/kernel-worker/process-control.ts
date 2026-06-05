@@ -8,6 +8,7 @@ import type {
 } from "../messages.js";
 import {
   FS_OP_READ,
+  FS_OP_WRITE,
   FS_OP_MMAP,
   FS_REQ_FLAG_PWRITE,
   FS_RING_REQUEST_FD_OFFSET,
@@ -66,7 +67,7 @@ interface PendingMmapGuestWriteRequest {
   length: number;
 }
 
-interface PendingReadFillRequest {
+interface PendingBackingFillRequest {
   ino: number;
   offset: number;
   length: number;
@@ -329,10 +330,10 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     return null;
   }
 
-  function readPendingReadFillRequest(
+  function readPendingBackingFillRequest(
     processExports: KernelExports,
     vmPtr: number,
-  ): PendingReadFillRequest | null {
+  ): PendingBackingFillRequest | null {
     const ringBase = processExports.thread_fs_ring_base?.(vmPtr) ?? 0;
     if (ringBase <= 0 || ringBase + FS_RING_TOTAL_BYTES > processExports.memory.buffer.byteLength) {
       return null;
@@ -345,7 +346,8 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       if (view.getUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, true) !== vmPtr) {
         continue;
       }
-      if (view.getUint32(entry + FS_RING_REQUEST_OPCODE_OFFSET, true) !== FS_OP_READ) {
+      const opcode = view.getUint32(entry + FS_RING_REQUEST_OPCODE_OFFSET, true);
+      if (opcode !== FS_OP_READ && opcode !== FS_OP_WRITE) {
         continue;
       }
       const fd = view.getInt32(entry + FS_RING_REQUEST_FD_OFFSET, true);
@@ -366,8 +368,18 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
         || offset < 0
         || !Number.isFinite(expectedSize)
         || expectedSize <= 0
-        || offset >= expectedSize
       ) {
+        return null;
+      }
+      if (opcode === FS_OP_WRITE) {
+        return {
+          ino,
+          offset: 0,
+          length: expectedSize,
+          expectedSize,
+        };
+      }
+      if (offset >= expectedSize) {
         return null;
       }
       return {
@@ -384,7 +396,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     processExports: KernelExports,
     vmPtr: number,
   ): Promise<void> {
-    const request = readPendingReadFillRequest(processExports, vmPtr);
+    const request = readPendingBackingFillRequest(processExports, vmPtr);
     if (!request) {
       return;
     }
