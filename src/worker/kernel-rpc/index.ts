@@ -48,7 +48,6 @@ interface WorkerKernelRpcDeps {
       deltaOfdIds?: boolean;
       memfsOnly?: boolean;
       preserveSourceRefcounts?: boolean;
-      preservePublishedRegularFileData?: boolean;
       sourceVmPtr?: number;
       ofdIds?: number[];
     },
@@ -179,7 +178,6 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
           includeMemfs: true,
           trackHeldOfds: false,
           memfsOnly: true,
-          preservePublishedRegularFileData: options.preservePublishedRegularFileData,
           sourceVmPtr: options.sourceVmPtr,
         },
       );

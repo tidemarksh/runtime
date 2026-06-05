@@ -25,7 +25,6 @@ export type KernelRpcResumeEffect =
   | {
       kind: "publish-memfs-after-fs";
       targets: ProcessHandle[];
-      preservePublishedRegularFileData: boolean;
       sourceVmPtr: number;
     };
 

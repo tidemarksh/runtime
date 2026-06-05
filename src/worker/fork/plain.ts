@@ -115,7 +115,6 @@ export async function handlePlainFork(
           cause: { kind: "syscall", nr: -1n, name: "plain-fork-parent-memfs-publication" },
           includeMemfs: true,
           memfsOnly: true,
-          preservePublishedRegularFileData: true,
           sourceVmPtr: parentThread.vmPtr,
         });
         handle.processMemfsDirty = false;

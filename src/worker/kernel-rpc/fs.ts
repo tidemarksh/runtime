@@ -142,7 +142,6 @@ export interface WorkerKernelRpcFsDeps {
       deltaOfdIds?: boolean;
       memfsOnly?: boolean;
       preserveSourceRefcounts?: boolean;
-      preservePublishedRegularFileData?: boolean;
       sourceVmPtr?: number;
       ofdIds?: number[];
     },
@@ -155,7 +154,7 @@ export interface WorkerKernelRpcFsDeps {
   publishMemfsAfterFs(
     handle: ProcessHandle,
     targets: ProcessHandle[],
-    options: { preservePublishedRegularFileData: boolean; sourceVmPtr: number },
+    options: { sourceVmPtr: number },
   ): Promise<void>;
   rehydrateForkSharedStateViaKernelWorker(
     targets: ProcessHandle[],
@@ -836,7 +835,6 @@ async function resumeFsViaKernelWorkerInner(
       && pendingFs.opcode === FS_OP_WRITE
     );
   const ofdStateMayChange = (pendingFs.effects & fsEffects.sharedOfdState) !== 0;
-  const preservePublishedRegularFileData = memfsPublishMayBeReady;
   const regularFilePendingFs = pendingRegularFileFsRequest(handle, vmPtr, pendingFs);
   const regularFileOnlyPendingFs = regularFilePendingFs !== null;
   if (!handle.kernelWorkerRequest || handle.pid <= 0) {
@@ -930,7 +928,6 @@ async function resumeFsViaKernelWorkerInner(
         cause: { kind: "syscall", nr: -1n, name: "fs-dirty-memfs-peer" },
         includeMemfs: true,
         memfsOnly: true,
-        preservePublishedRegularFileData,
         sourceVmPtr: peer.vmPtr,
       });
       peer.processMemfsDirty = false;

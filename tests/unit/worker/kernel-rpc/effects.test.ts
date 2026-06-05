@@ -99,7 +99,6 @@ test("publish-memfs-after-fs does not refresh pipe state", async () => {
       effects: [{
         kind: "publish-memfs-after-fs",
         targets: [target],
-        preservePublishedRegularFileData: true,
         sourceVmPtr: 0x5678,
       }],
     },
@@ -126,7 +125,6 @@ test("publish-memfs-after-fs does not refresh pipe state", async () => {
     includeMemfs: true,
     trackHeldOfds: false,
     memfsOnly: true,
-    preservePublishedRegularFileData: true,
     sourceVmPtr: 0x5678,
   });
   expect(syncPipeStateViaKernelWorker).not.toHaveBeenCalled();

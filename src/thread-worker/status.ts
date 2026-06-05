@@ -44,7 +44,6 @@ let generation = 0;
 let runtimeBridge: RuntimeStateBridge | null = null;
 let syscallNumbers: SyscallNumbers | null = null;
 let lastResumeBlockedDebug: string | undefined;
-const regularFileDataLayouts = new Map<number, { dataOffset: number; dataCap: number }>();
 
 export interface ThreadWorkerStatusContext {
   kernelExports: KernelExports;
@@ -531,7 +530,7 @@ function snapshotFsRingMemory(
 function snapshotProcessMemfsMemory(
   kernelExports: KernelExports,
   kernelState: KernelRuntimeState,
-  mode: "none" | "full" | "regular-write",
+  mode: "none" | "full",
 ): KernelMemoryWriteSnapshot[] {
   if (mode === "none" || kernelState.memfsPtr <= 0) {
     return [];
@@ -555,13 +554,6 @@ function snapshotProcessMemfsMemory(
     }
     snapshots.push(snapshot);
   };
-  if (mode === "regular-write") {
-    pushHeader();
-    const writeSnapshots = snapshotRegularFileWriteMemfsMemory(kernelExports);
-    return writeSnapshots.length > 0
-      ? [...snapshots, ...writeSnapshots]
-      : snapshotProcessMemfsMemory(kernelExports, kernelState, "full");
-  }
   pushHeader();
   push(kernelExports.kernel_memfs_inodes_ptr?.(), kernelState.memfsInodesBytes);
   push(kernelExports.kernel_memfs_first_child_ptr?.(), kernelState.memfsFirstChildBytes);
@@ -612,135 +604,15 @@ function computeReferencedMemfsDataUsed(
   return Math.min(Math.max(dataUsed, 0), dataCap);
 }
 
-function latestCompletedRegularFileWriteTrace(
-  kernelExports: KernelExports,
-): { ofdId: number; ino: number; startOffset: number; endOffset: number; writeLen: number } | null {
-  if (syscallNumbers === null) {
-    return null;
-  }
-  const writeSyscalls = new Set(
-    [syscallNumbers.write, syscallNumbers.pwrite64, syscallNumbers.writev]
-      .filter((nr): nr is bigint => nr !== null),
-  );
-  if (writeSyscalls.size === 0) {
-    return null;
-  }
-  const len = kernelExports.debug_fd_syscall_trace_len?.() ?? 0;
-  for (let index = len - 1; index >= 0; index -= 1) {
-    if ((kernelExports.debug_fd_syscall_trace_vm_ptr?.(index) ?? vmPtr) !== vmPtr) {
-      continue;
-    }
-    const nr = readOptionalTraceU64(kernelExports.debug_fd_syscall_trace_nr?.(index));
-    if (nr === null || !writeSyscalls.has(nr)) {
-      continue;
-    }
-    if ((kernelExports.debug_fd_syscall_trace_arg0_ofd_type?.(index) ?? 0) !== kernelExports.abi_fd_type_file()) {
-      continue;
-    }
-    const result = readOptionalTraceI64(kernelExports.debug_fd_syscall_trace_result?.(index));
-    if (result !== null && result > 0n) {
-      const ofdId = kernelExports.debug_fd_syscall_trace_arg0_ofd_id?.(index) ?? 0;
-      const ino = kernelExports.debug_fd_syscall_trace_arg0_ofd_ino?.(index)
-        ?? kernelExports.kernel_ofd_ino?.(ofdId)
-        ?? 0;
-      const writeLen = Number(result);
-      if (!Number.isFinite(writeLen) || ofdId <= 0 || ino <= 0) {
-        return null;
-      }
-      const nr = readOptionalTraceU64(kernelExports.debug_fd_syscall_trace_nr?.(index));
-      const pwriteOffset = nr !== null && nr === syscallNumbers.pwrite64
-        ? Number(readOptionalTraceU64(kernelExports.debug_fd_syscall_trace_arg3?.(index)) ?? -1n)
-        : -1;
-      const endOffset = Number(kernelExports.debug_fd_syscall_trace_arg0_ofd_offset?.(index)
-        ?? kernelExports.kernel_ofd_offset?.(ofdId)
-        ?? 0n);
-      const startOffset = pwriteOffset >= 0 ? pwriteOffset : endOffset - writeLen;
-      if (
-        !Number.isFinite(startOffset)
-        || !Number.isFinite(endOffset)
-        || startOffset < 0
-      ) {
-        return null;
-      }
-      return {
-        ofdId,
-        ino,
-        startOffset,
-        endOffset: pwriteOffset >= 0 ? startOffset + writeLen : endOffset,
-        writeLen,
-      };
-    }
-  }
-  return null;
-}
-
-function snapshotRegularFileWriteMemfsMemory(
-  kernelExports: KernelExports,
-): KernelMemoryWriteSnapshot[] {
-  const trace = latestCompletedRegularFileWriteTrace(kernelExports);
-  if (!trace) {
-    return [];
-  }
-  const ino = trace.ino;
-  const inodesPtr = kernelExports.kernel_memfs_inodes_ptr?.() ?? 0;
-  const dataPtr = kernelExports.kernel_memfs_data_ptr?.() ?? 0;
-  const inodeBytes = 32;
-  const inodePtr = inodesPtr + ino * inodeBytes;
-  const memory = new Uint8Array(kernelExports.memory.buffer);
-  if (
-    ino <= 0
-    || inodesPtr <= 0
-    || dataPtr <= 0
-    || inodePtr < 0
-    || inodePtr + inodeBytes > memory.byteLength
-    || !Number.isFinite(trace.startOffset)
-    || !Number.isFinite(trace.endOffset)
-    || trace.endOffset <= 0
-  ) {
-    return [];
-  }
-  const inodeView = new DataView(memory.buffer, inodePtr, inodeBytes);
-  const fileSize = Number(inodeView.getBigUint64(16, true));
-  const dataOffset = inodeView.getUint32(24, true);
-  const dataCap = inodeView.getUint32(28, true);
-  const previousLayout = regularFileDataLayouts.get(ino);
-  const layoutChanged = previousLayout === undefined
-    || previousLayout.dataOffset !== dataOffset
-    || previousLayout.dataCap !== dataCap;
-  regularFileDataLayouts.set(ino, { dataOffset, dataCap });
-
-  const snapshotStart = layoutChanged ? 0 : trace.startOffset;
-  const snapshotEnd = Math.min(
-    fileSize,
-    layoutChanged ? trace.endOffset : trace.startOffset + trace.writeLen,
-  );
-  const snapshotLen = Math.max(0, snapshotEnd - snapshotStart);
-  const dataStart = dataPtr + dataOffset + snapshotStart;
-  const snapshots: KernelMemoryWriteSnapshot[] = [];
-  const inodeSnapshot = snapshotAbsoluteMemory(kernelExports, inodePtr, inodeBytes);
-  if (inodeSnapshot) {
-    snapshots.push(inodeSnapshot);
-  }
-  const dataSnapshot = snapshotAbsoluteMemory(kernelExports, dataStart, snapshotLen);
-  if (dataSnapshot) {
-    snapshots.push(dataSnapshot);
-  }
-  return snapshots;
-}
-
 function shouldSnapshotProcessMemfsMemory(
   status: number,
   syncEffects: number,
-  kernelExports: KernelExports,
-): "none" | "full" | "regular-write" {
+): "none" | "full" {
   if (status === statusCodes.FAULT) {
     return "full";
   }
   if (status === statusCodes.EXECVE_SPAWN) {
     return "full";
-  }
-  if (latestCompletedRegularFileWriteTrace(kernelExports)) {
-    return "regular-write";
   }
   return (syncEffects & SYNC_EFFECT_PROCESS_MEMFS) !== 0
     ? "full"
@@ -1010,7 +882,7 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
     ...snapshotPendingFsRequestGuestMemory(kernelExports),
   ];
   publishThreadWorkerStage(105, status);
-  const memfsSnapshotMode = shouldSnapshotProcessMemfsMemory(status, syncEffects, kernelExports);
+  const memfsSnapshotMode = shouldSnapshotProcessMemfsMemory(status, syncEffects);
   const kernelMemoryWrites = [
     ...(snapshotFsRingMemory(kernelExports, status) ?? []),
     ...snapshotProcessMemfsMemory(

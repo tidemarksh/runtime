@@ -72,7 +72,6 @@ export interface WorkerMessageHandlerDeps extends Partial<WorkerMessageHandlerSy
       deltaOfdIds?: boolean;
       memfsOnly?: boolean;
       preserveSourceRefcounts?: boolean;
-      preservePublishedRegularFileData?: boolean;
       sourceVmPtr?: number;
     },
   ): Promise<void>;

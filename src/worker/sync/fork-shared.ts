@@ -161,7 +161,6 @@ export async function syncForkSharedStateViaKernelWorker(
     deltaOfdIds?: boolean;
     memfsOnly?: boolean;
     preserveSourceRefcounts?: boolean;
-    preservePublishedRegularFileData?: boolean;
     sourceVmPtr?: number;
     ofdIds?: number[];
   },
@@ -367,7 +366,6 @@ export async function syncForkSharedStateViaKernelWorker(
       fdEntries: sourceFdEntries,
       includeMemfs: options.includeMemfs ?? true,
       preserveSourceRefcounts: options.preserveSourceRefcounts,
-      preservePublishedRegularFileData: options.preservePublishedRegularFileData,
       kernelState: handle.kernelState,
     });
   } finally {
@@ -440,7 +438,6 @@ export async function syncForkSharedStateForWorkerRuntime(
     deltaOfdIds?: boolean;
     memfsOnly?: boolean;
     preserveSourceRefcounts?: boolean;
-    preservePublishedRegularFileData?: boolean;
     sourceVmPtr?: number;
     ofdIds?: number[];
   } = {},

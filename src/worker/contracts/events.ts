@@ -441,7 +441,6 @@ export type KernelWorkerRequest =
       fdEntries: KernelWorkerFdEntrySnapshot[];
       includeMemfs?: boolean;
       preserveSourceRefcounts?: boolean;
-      preservePublishedRegularFileData?: boolean;
       kernelState: KernelRuntimeState;
     }
   | {

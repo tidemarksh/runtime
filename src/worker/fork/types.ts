@@ -57,7 +57,6 @@ export interface WorkerForkDeps {
       deltaOfdIds?: boolean;
       memfsOnly?: boolean;
       preserveSourceRefcounts?: boolean;
-      preservePublishedRegularFileData?: boolean;
       sourceVmPtr?: number;
       ofdIds?: number[];
     },

@@ -38,7 +38,6 @@ interface WorkerLifecycleDeps {
       trackHeldOfds?: boolean;
       deltaOfdIds?: boolean;
       preserveSourceRefcounts?: boolean;
-      preservePublishedRegularFileData?: boolean;
       sourceVmPtr?: number;
     },
   ): Promise<void>;

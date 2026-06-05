@@ -384,7 +384,6 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
             includeMemfs: true,
             memfsOnly: true,
             trackHeldOfds: false,
-            preservePublishedRegularFileData: false,
             sourceVmPtr: thread.vmPtr,
           },
         ).then(() => {

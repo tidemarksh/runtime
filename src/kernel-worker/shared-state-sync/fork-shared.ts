@@ -78,7 +78,6 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
     fdEntries: KernelWorkerFdEntrySnapshot[],
     includeMemfs: boolean,
     preserveSourceRefcounts: boolean,
-    preservePublishedRegularFileData: boolean,
     kernelState: KernelRuntimeState,
   ): { kernelState: KernelRuntimeState; forkSharedDebug?: string } {
     const canonicalExports = deps.getCanonicalExports();
@@ -95,7 +94,6 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
         `phase=${phase}`,
         `pid=${pid}`,
         `targets=${targetPids.join(".")}`,
-        `preserve=${preservePublishedRegularFileData ? 1 : 0}`,
         describeLoaderHead("source", processExports),
         describeLoaderHead("canonical", canonicalExports),
       ].join(":"));
@@ -151,9 +149,7 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
         includeData: true,
       });
       deps.restoreProcSelfExe(canonicalExports, canonicalProcSelfExe);
-      if (preservePublishedRegularFileData) {
-        deps.restorePublishedRegularFileDataFromPageCache?.();
-      }
+      deps.restorePublishedRegularFileDataFromPageCache?.();
       pushMemfsDebug("after-source-to-canonical");
     }
 
@@ -231,15 +227,12 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
         deps.copyCanonicalMemfsToProcess(reconciledCanonicalState, targetExports, targetState, {
           includeData: true,
         });
-        if (preservePublishedRegularFileData) {
-          deps.restorePublishedRegularFileDataFromPageCache?.(targetExports);
-        }
+        deps.restorePublishedRegularFileDataFromPageCache?.(targetExports);
         if (FORK_SHARED_MEMFS_DEBUG_ENABLED) {
           debug.push([
             `phase=after-canonical-to-target-${targetPid}`,
             `pid=${pid}`,
             `targets=${targetPids.join(".")}`,
-            `preserve=${preservePublishedRegularFileData ? 1 : 0}`,
             describeLoaderHead("target", targetExports),
             describeLoaderHead("canonical", canonicalExports),
           ].join(":"));

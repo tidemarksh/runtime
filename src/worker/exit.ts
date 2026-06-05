@@ -30,7 +30,6 @@ interface WorkerExitDeps {
         memfsOnly?: boolean;
         trackHeldOfds?: boolean;
         preserveSourceRefcounts?: boolean;
-        preservePublishedRegularFileData?: boolean;
         sourceVmPtr?: number;
       },
   ): Promise<void>;
@@ -882,7 +881,6 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
           cause: { kind: "syscall", nr: -1n, name: "process-exit-memfs-publication" },
           includeMemfs: true,
           memfsOnly: true,
-          preservePublishedRegularFileData: true,
           trackHeldOfds: false,
           sourceVmPtr: handle.vmPtr,
         });

@@ -139,7 +139,6 @@ interface KernelWorkerMessageHandlerDeps {
     fdEntries: KernelWorkerFdEntrySnapshot[],
     includeMemfs: boolean,
     preserveSourceRefcounts: boolean,
-    preservePublishedRegularFileData: boolean,
     kernelState: KernelRuntimeState,
   ): { kernelState: KernelRuntimeState; forkSharedDebug?: string };
   rehydrateForkSharedState(
@@ -492,7 +491,6 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
               msg.fdEntries,
               msg.includeMemfs ?? true,
               msg.preserveSourceRefcounts ?? false,
-              msg.preservePublishedRegularFileData ?? false,
               msg.kernelState,
             );
             deps.postResponse({

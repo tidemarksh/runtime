@@ -38,7 +38,6 @@ export interface KernelRpcResumeEffectPorts {
       trackHeldOfds?: boolean;
       deltaOfdIds?: boolean;
       memfsOnly?: boolean;
-      preservePublishedRegularFileData?: boolean;
       sourceVmPtr?: number;
     },
   ): Promise<void>;
@@ -213,7 +212,6 @@ async function applyKernelRpcResumeEffect(
         includeMemfs: true,
         trackHeldOfds: false,
         memfsOnly: true,
-        preservePublishedRegularFileData: effect.preservePublishedRegularFileData,
         sourceVmPtr: effect.sourceVmPtr,
       });
       return;

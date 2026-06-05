@@ -190,7 +190,6 @@ test("completeProcessExit preserves published file data during exit MemFS public
       cause: { kind: "syscall", nr: -1n, name: "process-exit-memfs-publication" },
       includeMemfs: true,
       memfsOnly: true,
-      preservePublishedRegularFileData: true,
       trackHeldOfds: false,
       sourceVmPtr: handle.vmPtr,
     }),

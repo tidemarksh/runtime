@@ -1184,7 +1184,6 @@ test("dirty process memfs syncs before publishing a pipe-status boundary", async
     cause: { kind: "syscall", nr: -1n, name: "owned-state-process-memfs-sync" },
     includeMemfs: true,
     memfsOnly: true,
-    preservePublishedRegularFileData: false,
     sourceVmPtr: thread.vmPtr,
     trackHeldOfds: false,
   });
