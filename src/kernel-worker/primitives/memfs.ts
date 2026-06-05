@@ -2,7 +2,6 @@ import type { KernelExports, KernelRuntimeState } from "../../abi.js";
 import {
   clearMaterializedMemfsFiles,
   clearMemoryRange,
-  computeReferencedMemfsDataUsed,
   copyMemoryRange,
   ensureMemoryCapacityFor,
   MEMFS_S_IFMT,
@@ -89,14 +88,10 @@ export function createKernelWorkerMemfsPrimitives() {
     sourceState: KernelRuntimeState,
     targetExports: KernelExports,
     targetState: KernelRuntimeState,
-    options: { includeData?: boolean } = {},
+    _options: { includeData?: boolean } = {},
   ): void {
-    const includeData = options.includeData ?? true;
     const sourceLayout = readMemfsLayout(sourceExports.memory, sourceState.memfsPtr);
     const targetLayout = readMemfsLayout(targetExports.memory, targetState.memfsPtr);
-    const sourceDataUsed = includeData
-      ? computeReferencedMemfsDataUsed(sourceExports, sourceLayout)
-      : sourceLayout.dataUsed;
     copyMemoryRange(
       sourceExports.memory,
       sourceLayout.inodesPtr,
@@ -118,28 +113,12 @@ export function createKernelWorkerMemfsPrimitives() {
       targetLayout.dirEntriesPtr,
       sourceExports.kernel_memfs_dir_entries_bytes(),
     );
-    if (includeData) {
-      const dataBytes = Math.min(sourceDataUsed, targetLayout.dataCap);
-      copyMemoryRange(
-        sourceExports.memory,
-        sourceLayout.dataPtr,
-        targetExports.memory,
-        targetLayout.dataPtr,
-        dataBytes,
-      );
-      clearMemoryRange(
-        targetExports.memory,
-        targetLayout.dataPtr + dataBytes,
-        Math.max(0, targetLayout.dataCap - dataBytes),
-      );
-    } else {
-      clearMaterializedMemfsFiles(targetExports);
-      clearMemoryRange(
-        targetExports.memory,
-        targetExports.kernel_memfs_data_ptr(),
-        targetExports.kernel_memfs_data_bytes(),
-      );
-    }
+    clearMaterializedMemfsFiles(targetExports);
+    clearMemoryRange(
+      targetExports.memory,
+      targetExports.kernel_memfs_data_ptr(),
+      targetExports.kernel_memfs_data_bytes(),
+    );
     copyMemoryRange(
       sourceExports.memory,
       sourceState.memfsPtr,
@@ -150,16 +129,14 @@ export function createKernelWorkerMemfsPrimitives() {
     const targetHeader = new DataView(targetExports.memory.buffer, targetState.memfsPtr, 32);
     targetHeader.setUint32(0, sourceLayout.inodeCount, true);
     targetHeader.setUint32(4, sourceLayout.dirEntryCount, true);
-    targetHeader.setUint32(8, includeData ? Math.min(sourceDataUsed, targetLayout.dataCap) : 8, true);
+    targetHeader.setUint32(8, 8, true);
     targetHeader.setUint32(12, targetLayout.dataCap, true);
     targetHeader.setUint32(16, targetLayout.inodesPtr, true);
     targetHeader.setUint32(20, targetLayout.firstChildPtr, true);
     targetHeader.setUint32(24, targetLayout.dirEntriesPtr, true);
     targetHeader.setUint32(28, targetLayout.dataPtr, true);
-    if (!includeData) {
-      const dataUsed = preserveMetadataOnlySymlinkData(sourceExports, targetExports, sourceLayout, targetLayout);
-      normalizeMetadataOnlyMemfsState(targetExports, targetState, sourceLayout, targetLayout, dataUsed);
-    }
+    const dataUsed = preserveMetadataOnlySymlinkData(sourceExports, targetExports, sourceLayout, targetLayout);
+    normalizeMetadataOnlyMemfsState(targetExports, targetState, sourceLayout, targetLayout, dataUsed);
   }
 
   function clearMemfsState(

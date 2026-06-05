@@ -155,10 +155,15 @@ test("dynamic execve target reads executable loader and libc from snapshot backi
       result.exitCode,
       `${result.output}\n${result.debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`,
     ).toBe(0);
-    expect(result.output).toBe("dynamic-backing-ok\n");
+    expect(
+      result.output,
+      `${result.output}\n${result.debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`,
+    ).toBe("dynamic-backing-ok\n");
     for (const path of [dynamicTargetGuestPath, loaderGuestPath, libcGuestPath, "/bin/sh"]) {
       const record = await runtime.debugPageCachePath(path);
-      expect(record?.residentPages ?? 0, `expected ${path} to have resident pages after exec/load`).toBeGreaterThan(0);
+      expect(record, `missing page-cache record for ${path}`).not.toBeNull();
+      expect(record?.dataOff, `expected ${path} to remain backing-store backed`).toBe(0);
+      expect(record?.size, `expected ${path} to keep a non-empty backing size`).toBeGreaterThan(0);
     }
   } finally {
     runtime.destroy();

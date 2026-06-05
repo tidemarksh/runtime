@@ -52,7 +52,7 @@ function createFakeExports(
 }
 
 describe("createKernelWorkerMemfsPrimitives", () => {
-  it("copies into the target memfs layout instead of source offsets", () => {
+  it("copies metadata into the target memfs layout without regular inline data", () => {
     const memoryPages = { initial: 1, maximum: 4, shared: true } as const;
     const sourceMemory = new WebAssembly.Memory(memoryPages);
     const targetMemory = new WebAssembly.Memory(memoryPages);
@@ -120,14 +120,14 @@ describe("createKernelWorkerMemfsPrimitives", () => {
 
     primitives.copyMemfsState(sourceExports, sourceState, targetExports, targetState);
 
-    const copied = new TextDecoder().decode(new Uint8Array(targetMemory.buffer, 0x4c0, 13));
-    expect(copied).toBe("/bin/program\0");
+    expect(new Uint8Array(targetMemory.buffer, 0x4c0, 13)).toEqual(new Uint8Array(13));
     expect(new Uint8Array(targetMemory.buffer, 0x2c0, 16)).toEqual(new Uint8Array(16).fill(0xaa));
     expect(new Uint8Array(targetMemory.buffer, 0x320, 16)).toEqual(new Uint8Array(16).fill(0xbb));
     expect(readMemfsLayout(targetMemory, targetState.memfsPtr).dataPtr).toBe(0x4c0);
+    expect(readMemfsLayout(targetMemory, targetState.memfsPtr).dataUsed).toBe(8);
   });
 
-  it("clamps full data copy to the target memfs capacity", () => {
+  it("clears target data instead of copying regular inline data", () => {
     const memoryPages = { initial: 1, maximum: 4, shared: true } as const;
     const sourceMemory = new WebAssembly.Memory(memoryPages);
     const targetMemory = new WebAssembly.Memory(memoryPages);
@@ -197,12 +197,12 @@ describe("createKernelWorkerMemfsPrimitives", () => {
 
     primitives.copyMemfsState(sourceExports, sourceState, targetExports, targetState);
 
-    expect(new Uint8Array(targetMemory.buffer, 0x4c0, 16)).toEqual(sourceBytes.subarray(0, 16));
+    expect(new Uint8Array(targetMemory.buffer, 0x4c0, 16)).toEqual(new Uint8Array(16));
     expect(new Uint8Array(targetMemory.buffer, 0x4d0, 16)).toEqual(new Uint8Array(16).fill(0xcc));
-    expect(readMemfsLayout(targetMemory, targetState.memfsPtr).dataUsed).toBe(16);
+    expect(readMemfsLayout(targetMemory, targetState.memfsPtr).dataUsed).toBe(8);
   });
 
-  it("copies referenced regular-file data even when the source dataUsed header is stale", () => {
+  it("drops referenced regular-file data even when the source dataUsed header is stale", () => {
     const memoryPages = { initial: 1, maximum: 4, shared: true } as const;
     const sourceMemory = new WebAssembly.Memory(memoryPages);
     const targetMemory = new WebAssembly.Memory(memoryPages);
@@ -275,8 +275,12 @@ describe("createKernelWorkerMemfsPrimitives", () => {
 
     primitives.copyMemfsState(sourceExports, sourceState, targetExports, targetState);
 
-    expect(new TextDecoder().decode(new Uint8Array(targetMemory.buffer, 0x500 + 32, 16))).toBe("0123456789abcdef");
-    expect(readMemfsLayout(targetMemory, targetState.memfsPtr).dataUsed).toBe(48);
+    const targetInodeView = new DataView(targetMemory.buffer);
+    const targetInodeBase = 0x400 + 32;
+    expect(new Uint8Array(targetMemory.buffer, 0x500 + 32, 16)).toEqual(new Uint8Array(16));
+    expect(targetInodeView.getUint32(targetInodeBase + 24, true)).toBe(0);
+    expect(targetInodeView.getUint32(targetInodeBase + 28, true)).toBe(0);
+    expect(readMemfsLayout(targetMemory, targetState.memfsPtr).dataUsed).toBe(8);
   });
 
   it("metadata-only copy preserves symlink targets while dropping regular file data", () => {

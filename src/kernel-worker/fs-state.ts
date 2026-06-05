@@ -427,7 +427,12 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     return readCleanBackingFileRangeByInode(ino, offset, length);
   }
 
-  function writeDirtyResidentFileByInode(ino: number, offset: number, data: Uint8Array): number {
+  function writeDirtyResidentFileByInode(
+    ino: number,
+    offset: number,
+    data: Uint8Array,
+    sourceExports: KernelExports = deps.getCanonicalExports(),
+  ): number {
     if (!Number.isInteger(ino) || ino <= 0 || ino >= MAX_INODES || offset < 0) {
       return -22;
     }
@@ -436,21 +441,39 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     }
     try {
       const fileObjectId = fileObjectIdsByIno.get(ino);
-      const expectedSize = Number(deps.getCanonicalExports().memfs_file_size(ino));
+      const expectedSize = Number(sourceExports.memfs_file_size(ino));
+      const sourceMode = sourceExports.memfs_inode_mode(ino);
+      const sourceIsRegular = (sourceMode & MEMFS_S_IFMT) === MEMFS_S_IFREG;
       if (fileObjectId === undefined) {
         const sourceFileObjectId = createSourceBackedFileForInode(ino, expectedSize);
         const published = readInodeRecord(deps.getSabPageCache(), ino);
-        if (sourceFileObjectId === null && !published?.dataOff && (published?.size ?? expectedSize) > 0) {
+        const sourceTruncatedEmpty = sourceIsRegular && expectedSize === 0;
+        if (
+          sourceFileObjectId === null
+          && !published?.dataOff
+          && (published?.size ?? expectedSize) > 0
+          && !sourceTruncatedEmpty
+        ) {
           return -95;
         }
       }
-      if (!readInodeRecord(deps.getSabPageCache(), ino)) {
+      const published = readInodeRecord(deps.getSabPageCache(), ino);
+      if (!published) {
         publishInode(deps.getSabPageCache(), ino, {
-          mode: deps.getCanonicalExports().memfs_inode_mode(ino) || 0o100644,
+          mode: sourceMode || 0o100644,
           size: expectedSize,
           parentIno: 0,
           name: new Uint8Array(),
           nextSibling: 0,
+          ...backingMetaForInode(ino),
+        });
+      } else if (sourceIsRegular && published.size !== expectedSize) {
+        publishInode(deps.getSabPageCache(), ino, {
+          mode: sourceMode || published.mode,
+          size: expectedSize,
+          parentIno: published.parentIno,
+          name: published.name,
+          nextSibling: published.nextSibling,
           ...backingMetaForInode(ino),
         });
       }
@@ -975,24 +998,36 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       return removedCanonical && removedMembers;
     }
 
+    const mode = sourceExports.memfs_inode_mode(ino);
+    const fileType = mode & MEMFS_S_IFMT;
+    if (fileType !== MEMFS_S_IFDIR && fileType !== MEMFS_S_IFREG) {
+      return false;
+    }
+    const parentIno = deps.resolvePathIn(sourceExports, parentPath);
+    if (parentIno === 0) {
+      return false;
+    }
+    const size = fileType === MEMFS_S_IFREG ? Number(sourceExports.memfs_file_size(ino)) : 0;
+
     let published = readInodeRecord(deps.getSabPageCache(), ino);
-    if (!published) {
-      const mode = sourceExports.memfs_inode_mode(ino);
-      const fileType = mode & MEMFS_S_IFMT;
-      if (fileType !== MEMFS_S_IFDIR && fileType !== MEMFS_S_IFREG) {
-        return false;
-      }
-      const parentIno = deps.resolvePathIn(sourceExports, parentPath);
-      if (parentIno === 0) {
-        return false;
-      }
+    const backingMeta = backingMetaForInode(ino)
+      ?? (published && published.size === size
+        ? { fileObjectId: published.fileObjectId, generation: published.generation }
+        : undefined);
+    if (
+      !published
+      || published.mode !== mode
+      || published.size !== size
+      || published.parentIno !== parentIno
+      || deps.decoder.decode(published.name) !== name
+    ) {
       publishInode(deps.getSabPageCache(), ino, {
         mode,
-        size: Number(sourceExports.memfs_file_size(ino)),
+        size,
         parentIno,
         name: nameBytes,
-        nextSibling: 0,
-        ...backingMetaForInode(ino),
+        nextSibling: published?.nextSibling ?? 0,
+        ...backingMeta,
       });
       published = readInodeRecord(deps.getSabPageCache(), ino);
       if (!published) {

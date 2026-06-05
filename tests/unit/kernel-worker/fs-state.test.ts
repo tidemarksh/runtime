@@ -1056,6 +1056,71 @@ test("kernel-worker syncMetadataMutation materializes absolute-path file creatio
   expect(readInodeRecord(sabPageCache, ino)).not.toBeNull();
 });
 
+test("kernel-worker syncMetadataMutation updates existing published file size", () => {
+  const { canonicalExports, memberExports, fsState, sabPageCache } = makeFsState();
+
+  const workName = encoder.encode("work");
+  const workPtr = memberExports.kernel_heap_ptr() + 0x12000;
+  new Uint8Array(memberExports.memory.buffer).set(workName, workPtr);
+  const workIno = memberExports.memfs_ensure_dir(1, workPtr, workName.length, 0o755);
+  expect(workIno).toBeGreaterThan(1);
+  publishInode(sabPageCache, workIno, {
+    mode: 0o040755,
+    size: 0,
+    parentIno: 1,
+    name: workName,
+    nextSibling: 0,
+  });
+
+  const name = encoder.encode("out.txt");
+  const ptr = memberExports.kernel_heap_ptr() + 0x13000;
+  new Uint8Array(memberExports.memory.buffer).set(name, ptr);
+  const ino = memberExports.memfs_create_file(workIno, ptr, name.length);
+  expect(ino).toBeGreaterThan(1);
+  publishInode(sabPageCache, ino, {
+    mode: 0o100644,
+    size: 4096,
+    parentIno: workIno,
+    name,
+    nextSibling: 0,
+  });
+
+  expect(fsState.syncMetadataMutation(memberExports, "/work/out.txt")).toBe(true);
+
+  expect(canonicalExports.fileIno("/work/out.txt")).toBe(ino);
+  expect(readInodeRecord(sabPageCache, ino)?.size).toBe(0);
+});
+
+test("kernel-worker dirty write uses process-local truncated inode metadata", () => {
+  const { memberExports, fsState, sabPageCache } = makeFsState();
+
+  const workName = encoder.encode("work");
+  const workPtr = memberExports.kernel_heap_ptr() + 0x12000;
+  new Uint8Array(memberExports.memory.buffer).set(workName, workPtr);
+  const workIno = memberExports.memfs_ensure_dir(1, workPtr, workName.length, 0o755);
+  expect(workIno).toBeGreaterThan(1);
+
+  const name = encoder.encode("out.txt");
+  const ptr = memberExports.kernel_heap_ptr() + 0x13000;
+  new Uint8Array(memberExports.memory.buffer).set(name, ptr);
+  const ino = memberExports.memfs_create_file(workIno, ptr, name.length);
+  expect(ino).toBeGreaterThan(1);
+
+  publishInode(sabPageCache, ino, {
+    mode: 0o100644,
+    size: 4096,
+    parentIno: workIno,
+    name,
+    nextSibling: 0,
+  });
+
+  const data = encoder.encode("dynamic-backing-ok\n");
+  expect(fsState.writeDirtyResidentFileByInode(ino, 0, data, memberExports)).toBe(data.length);
+  const record = readInodeRecord(sabPageCache, ino);
+  expect(record?.size).toBe(data.length);
+  expect(readResidentFileData(sabPageCache, ino, 0, data.length)).toEqual(data);
+});
+
 test("kernel-worker syncMetadataMutation removes absolute-path entries without full fanout", () => {
   const { canonicalExports, memberExports, fsState } = makeFsState();
 

@@ -346,6 +346,12 @@ test("page-cache write publishes dirty resident data without updating backing da
   expect(env.tidemark_page_cache_write(2, 32n, 256, source.length)).toBe(BigInt(source.length));
   expect(env.tidemark_page_cache_read(2, 32n, 512, source.length)).toBe(-2n);
   expect(readResidentFileData(sab, 2, 32, source.length)).toEqual(source);
+  const ownerEnv = createKernelEnv(memory, {
+    sabPageCache: sab,
+    readResidentFileDataByInode: (ino, offset, length) => readResidentFileData(sab, ino, offset, length),
+  });
+  expect(ownerEnv.tidemark_page_cache_read(2, 32n, 512, source.length)).toBe(BigInt(source.length));
+  expect(new Uint8Array(memory.buffer, 512, source.length)).toEqual(source);
   expect(backing.slice(32, 32 + source.length)).toEqual(new Uint8Array(source.length));
   expect(evictResidentPage(sab, 2, 0)).toBe("dirty-pinned");
 

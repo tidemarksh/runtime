@@ -16,6 +16,7 @@ export interface KernelEnvImports {
 
 export interface KernelEnvOptions {
   sabPageCache?: SharedArrayBuffer | null;
+  readResidentFileDataByInode?: (ino: number, offset: number, length: number) => Uint8Array | null;
   flushResidentFileDataByInode?: (ino: number) => boolean;
   truncateResidentFileDataByInode?: (ino: number, size: number) => number;
   writeResidentFileDataByInode?: (ino: number, offset: number, data: Uint8Array) => number;
@@ -58,6 +59,7 @@ export function createKernelEnv(
   options: KernelEnvOptions = {},
 ): KernelEnvImports {
   const sabPageCache = options.sabPageCache ?? null;
+  const readResidentFileDataByInode = options.readResidentFileDataByInode;
   const flushResidentFileDataByInode = options.flushResidentFileDataByInode;
   const truncateResidentFileDataByInode = options.truncateResidentFileDataByInode;
   const writeResidentFileDataByInode = options.writeResidentFileDataByInode;
@@ -102,7 +104,9 @@ export function createKernelEnv(
         if (!dstRange) {
           return -14n;
         }
-        const resident = readCleanResidentFileData(sabPageCache, ino, offsetNumber, readLen);
+        const resident = readResidentFileDataByInode
+          ? readResidentFileDataByInode(ino, offsetNumber, readLen)
+          : readCleanResidentFileData(sabPageCache, ino, offsetNumber, readLen);
         if (resident) {
           new Uint8Array(memory.buffer, dstRange.ptr, resident.length).set(resident);
           return BigInt(resident.length);

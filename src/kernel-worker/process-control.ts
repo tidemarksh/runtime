@@ -140,7 +140,12 @@ interface KernelWorkerProcessControlDeps {
   readBackingFileRangeByInode(ino: number, offset: number, length: number): Uint8Array | null;
   flushDirtyResidentFileByInode(ino: number): boolean;
   truncateDirtyResidentFileByInode(ino: number, size: number): number;
-  writeDirtyResidentFileByInode(ino: number, offset: number, data: Uint8Array): number;
+  writeDirtyResidentFileByInode(
+    ino: number,
+    offset: number,
+    data: Uint8Array,
+    sourceExports?: KernelExports,
+  ): number;
   ensureBackingSourceRangeForInode?(
     ino: number,
     offset: number,
@@ -279,8 +284,13 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     deps.fanoutCanonicalMemfs();
   }
 
-  function writeResidentFileRange(ino: number, offset: number, data: Uint8Array): number {
-    return deps.writeDirtyResidentFileByInode(ino, offset, data);
+  function writeResidentFileRange(
+    ino: number,
+    offset: number,
+    data: Uint8Array,
+    sourceExports?: KernelExports,
+  ): number {
+    return deps.writeDirtyResidentFileByInode(ino, offset, data, sourceExports);
   }
 
   function truncateResidentFile(ino: number, size: number): number {
@@ -740,12 +750,16 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       kernelState.heapBase,
       { includeMemfsData: seedMemfsMode === "none" },
     );
+    let processExports: KernelExports | null = null;
     const instance = await WebAssembly.instantiate(wasmModule, {
       env: createKernelEnv(memory, {
         sabPageCache: deps.getSabPageCache(),
+        readResidentFileDataByInode: deps.readBackingFileRangeByInode,
         flushResidentFileDataByInode: deps.flushDirtyResidentFileByInode,
         truncateResidentFileDataByInode: truncateResidentFile,
-        writeResidentFileDataByInode: writeResidentFileRange,
+        writeResidentFileDataByInode: (ino, offset, data) => (
+          writeResidentFileRange(ino, offset, data, processExports ?? undefined)
+        ),
       }),
     });
     // Registering a process must not mutate the caller-owned shared memory.
@@ -753,7 +767,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     // thread/process regions that sit outside the static kernel image instead
     // of snapshotting the entire shared linear memory.
     restoreThreadWorkerPrepareMemory(memory, memorySnapshot);
-    const processExports = instance.exports as unknown as KernelExports;
+    processExports = instance.exports as unknown as KernelExports;
     configureKernelInstanceStack(processExports, KERNEL_WORKER_STACK_SLOT);
     attachKernelRuntimeState(processExports, kernelState);
     deps.processKernels.set(pid, processExports);
