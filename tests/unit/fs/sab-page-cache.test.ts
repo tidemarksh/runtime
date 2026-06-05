@@ -248,6 +248,56 @@ test("resident cache reads a backing file larger than resident capacity at arbit
     .toEqual(data.slice(47, 84));
 });
 
+test("resident cache fills source-backed file pages without whole-file materialization", () => {
+  const pageSize = 16;
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + pageSize);
+  const backing = new MemoryFileBackingStore();
+  const data = Uint8Array.from({ length: 64 }, (_value, index) => 0x20 + index);
+  const calls: Array<[number, number]> = [];
+  const file = backing.createSourceFile({
+    byteLength: data.length,
+    readRange(offset, length) {
+      calls.push([offset, length]);
+      return data.subarray(offset, Math.min(data.length, offset + length));
+    },
+  });
+  const cache = new ResidentSabPageCache(sab, { pageSize });
+
+  expect(file.size).toBe(data.length);
+  expect(cache.readThroughCache(backing, file.fileObjectId, 20, 8))
+    .toEqual(data.slice(20, 28));
+  expect(calls).toEqual([[16, 16]]);
+
+  expect(cache.readThroughCache(backing, file.fileObjectId, 20, 8))
+    .toEqual(data.slice(20, 28));
+  expect(calls).toEqual([[16, 16]]);
+});
+
+test("source-backed file materializes for backing writes and truncates", () => {
+  const backing = new MemoryFileBackingStore();
+  const data = new TextEncoder().encode("abcdef");
+  const calls: Array<[number, number]> = [];
+  const file = backing.createSourceFile({
+    byteLength: data.length,
+    readRange(offset, length) {
+      calls.push([offset, length]);
+      return data.subarray(offset, Math.min(data.length, offset + length));
+    },
+  });
+
+  const written = backing.write(file.fileObjectId, 3, new TextEncoder().encode("XYZ"));
+  expect(written.size).toBe(6);
+  expect(written.generation).toBe(file.generation + 1);
+  expect(backing.read(file.fileObjectId, 0, 16)).toEqual(new TextEncoder().encode("abcXYZ"));
+  expect(calls).toEqual([[0, data.length]]);
+
+  const truncated = backing.truncate(file.fileObjectId, 4);
+  expect(truncated.size).toBe(4);
+  expect(truncated.generation).toBe(written.generation + 1);
+  expect(backing.read(file.fileObjectId, 0, 16)).toEqual(new TextEncoder().encode("abcX"));
+  expect(calls).toEqual([[0, data.length]]);
+});
+
 test("resident cache reports miss then fill then direct clean hit", () => {
   const pageSize = 16;
   const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + pageSize);

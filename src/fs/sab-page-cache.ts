@@ -58,6 +58,11 @@ export interface FileBackingStat {
   generation: number;
 }
 
+export interface FileBackingSource {
+  readonly byteLength: number;
+  readRange(offset: number, length: number): Uint8Array | null;
+}
+
 export interface ResidentPageCacheMiss {
   status: "miss";
   missingPageIndex: number;
@@ -80,7 +85,8 @@ export interface ResidentPageFillResult {
 }
 
 interface MemoryFileObject {
-  data: Uint8Array;
+  data: Uint8Array | null;
+  source: FileBackingSource | null;
   generation: number;
 }
 
@@ -92,6 +98,20 @@ export class MemoryFileBackingStore {
     const fileObjectId = this.nextFileObjectId++;
     this.files.set(fileObjectId, {
       data: new Uint8Array(data),
+      source: null,
+      generation: 1,
+    });
+    return this.stat(fileObjectId)!;
+  }
+
+  createSourceFile(source: FileBackingSource): FileBackingStat {
+    if (!Number.isInteger(source.byteLength) || source.byteLength < 0 || source.byteLength > 0xffffffff) {
+      throw new RangeError(`invalid file source size: ${source.byteLength}`);
+    }
+    const fileObjectId = this.nextFileObjectId++;
+    this.files.set(fileObjectId, {
+      data: null,
+      source,
       generation: 1,
     });
     return this.stat(fileObjectId)!;
@@ -104,17 +124,26 @@ export class MemoryFileBackingStore {
     }
     return {
       fileObjectId,
-      size: file.data.length,
+      size: this.fileSize(file),
       generation: file.generation,
     };
   }
 
   read(fileObjectId: FileObjectId, offset: number, length: number): Uint8Array {
     const file = this.files.get(fileObjectId);
-    if (!file || length <= 0 || offset < 0 || offset >= file.data.length) {
+    const size = file ? this.fileSize(file) : 0;
+    if (!file || length <= 0 || offset < 0 || offset >= size) {
       return new Uint8Array();
     }
-    return file.data.slice(offset, Math.min(file.data.length, offset + length));
+    const readLen = Math.min(length, size - offset);
+    if (file.data) {
+      return file.data.slice(offset, offset + readLen);
+    }
+    const bytes = file.source?.readRange(offset, readLen);
+    if (!bytes) {
+      return new Uint8Array();
+    }
+    return bytes.byteLength <= readLen ? bytes : bytes.slice(0, readLen);
   }
 
   write(fileObjectId: FileObjectId, offset: number, data: Uint8Array): FileBackingStat {
@@ -125,16 +154,17 @@ export class MemoryFileBackingStore {
     if (!file) {
       throw new Error(`file object not found: ${fileObjectId}`);
     }
+    const fileData = this.materializeFile(fileObjectId, file);
     const end = offset + data.length;
     if (!Number.isFinite(end) || end > 0xffffffff) {
       throw new RangeError(`file write exceeds supported size: ${end}`);
     }
-    if (end > file.data.length) {
+    if (end > fileData.length) {
       const next = new Uint8Array(end);
-      next.set(file.data);
+      next.set(fileData);
       file.data = next;
     }
-    file.data.set(data, offset);
+    file.data!.set(data, offset);
     file.generation += 1;
     return this.stat(fileObjectId)!;
   }
@@ -147,13 +177,37 @@ export class MemoryFileBackingStore {
     if (!file) {
       throw new Error(`file object not found: ${fileObjectId}`);
     }
-    if (size !== file.data.length) {
+    const fileData = this.materializeFile(fileObjectId, file);
+    if (size !== fileData.length) {
       const next = new Uint8Array(size);
-      next.set(file.data.subarray(0, Math.min(size, file.data.length)));
+      next.set(fileData.subarray(0, Math.min(size, fileData.length)));
       file.data = next;
       file.generation += 1;
     }
     return this.stat(fileObjectId)!;
+  }
+
+  private fileSize(file: MemoryFileObject): number {
+    return file.data?.byteLength ?? file.source?.byteLength ?? 0;
+  }
+
+  private materializeFile(fileObjectId: FileObjectId, file: MemoryFileObject): Uint8Array {
+    if (file.data) {
+      return file.data;
+    }
+    const size = this.fileSize(file);
+    if (size === 0) {
+      file.data = new Uint8Array();
+      file.source = null;
+      return file.data;
+    }
+    const bytes = file.source?.readRange(0, size);
+    if (!bytes || bytes.byteLength !== size) {
+      throw new Error(`file source unavailable: ${fileObjectId}`);
+    }
+    file.data = new Uint8Array(bytes);
+    file.source = null;
+    return file.data;
   }
 }
 
