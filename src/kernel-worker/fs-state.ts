@@ -1060,27 +1060,19 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       throw new Error(`file not found: ${path}`);
     }
 
+    const mode = targetExports.memfs_inode_mode(ino);
+    if ((mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG) {
+      throw new Error(`path is not a regular file: ${path}`);
+    }
     const size = Number(targetExports.memfs_file_size(ino));
+    if (size === 0) {
+      return new Uint8Array();
+    }
     const backingData = readBackingFileByInode(ino) ?? materializeBackingSourceForInode(ino, size);
     if (backingData && backingData.length === size) {
       return backingData;
     }
-    const bufPtr = scratchBaseFor(targetExports) + 0x4000;
-    ensureMemoryCapacityFor(targetExports.memory, bufPtr + size);
-    const read = Number(targetExports.memfs_read_file_to(ino, 0n, bufPtr, size));
-    if (read < 0) {
-      const seed = deps.seedEntries.get(normalizePath(path));
-      if (
-        seed?.kind === "file"
-        && seed.data
-        && seed.data.length === size
-      ) {
-        return new Uint8Array(seed.data);
-      }
-      throw new Error(`failed to read file: ${path}`);
-    }
-
-    return new Uint8Array(targetExports.memory.buffer.slice(bufPtr, bufPtr + read));
+    throw new Error(`failed to read authoritative regular file data: ${path}`);
   }
 
   async function readFileAsync(path: string): Promise<Uint8Array> {

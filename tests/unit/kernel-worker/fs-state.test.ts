@@ -1256,6 +1256,64 @@ test("kernel-worker readFile uses backing data when memfs and resident page-cach
   expectBytesEqual(fsState.readFile("/usr/bin/sqv"), data);
 });
 
+test("kernel-worker readFile rejects stale canonical memfs bytes without authoritative backing", () => {
+  const { canonicalExports, fsState, sabPageCache } = makeFsState();
+  const stale = encoder.encode("stale-canonical");
+
+  fsState.mkdir("/lib", 0o755, false);
+  const parentIno = canonicalExports.fileIno("/lib");
+  const name = encoder.encode("runtime.bin");
+  const namePtr = canonicalExports.kernel_heap_ptr() + 0x12000;
+  new Uint8Array(canonicalExports.memory.buffer).set(name, namePtr);
+  const ino = canonicalExports.memfs_create_file(parentIno, namePtr, name.length);
+  canonicalExports.overwriteFile("/lib/runtime.bin", stale);
+  publishInode(sabPageCache, ino, {
+    mode: 0o100644,
+    size: stale.length,
+    parentIno,
+    name,
+    nextSibling: 0,
+    fileObjectId: ino,
+    generation: 1,
+  });
+
+  expect(() => fsState.readFile("/lib/runtime.bin"))
+    .toThrow("failed to read authoritative regular file data: /lib/runtime.bin");
+});
+
+test("kernel-worker readFile rejects stale seed data without authoritative backing", () => {
+  const { canonicalExports, fsState, sabPageCache, seedEntries } = makeFsState();
+  const stale = encoder.encode("stale-seed-data");
+
+  fsState.mkdir("/lib", 0o755, false);
+  const parentIno = canonicalExports.fileIno("/lib");
+  const name = encoder.encode("runtime.bin");
+  const namePtr = canonicalExports.kernel_heap_ptr() + 0x12000;
+  new Uint8Array(canonicalExports.memory.buffer).set(name, namePtr);
+  const ino = canonicalExports.memfs_create_file(parentIno, namePtr, name.length);
+  canonicalExports.overwriteFile("/lib/runtime.bin", stale);
+  canonicalExports.memfs_read_file_to = () => -1n;
+  seedEntries.set("/lib/runtime.bin", {
+    kind: "file",
+    path: "/lib/runtime.bin",
+    data: stale,
+    size: stale.length,
+    mode: 0o644,
+  });
+  publishInode(sabPageCache, ino, {
+    mode: 0o100644,
+    size: stale.length,
+    parentIno,
+    name,
+    nextSibling: 0,
+    fileObjectId: ino,
+    generation: 1,
+  });
+
+  expect(() => fsState.readFile("/lib/runtime.bin"))
+    .toThrow("failed to read authoritative regular file data: /lib/runtime.bin");
+});
+
 test("kernel-worker backing range read returns only the requested byte range", () => {
   const { canonicalExports, fsState } = makeFsState();
   const data = new Uint8Array(128 * 1024).map((_, index) => (index * 13) & 0xff);
