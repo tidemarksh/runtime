@@ -653,7 +653,7 @@ export class Runtime {
     path: string;
     ino: number;
     pageIndex: number;
-    status: "evicted" | "not-found";
+    status: "evicted" | "dirty-pinned" | "not-found";
     residentPages?: number;
   } | null> {
     const response = await this.sendKernelRequest<

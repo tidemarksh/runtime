@@ -125,7 +125,7 @@ interface KernelWorkerProcessControlDeps {
   restorePublishedRegularFileDataFromPageCache?(targetExports?: KernelExports): void;
   readBackingFileByInode(ino: number): Uint8Array | null;
   readBackingFileRangeByInode(ino: number, offset: number, length: number): Uint8Array | null;
-  writeBackingFileByInode(ino: number, offset: number, data: Uint8Array): number;
+  writeDirtyResidentFileByInode(ino: number, offset: number, data: Uint8Array): number;
   ensureBackingSourceRangeForInode?(
     ino: number,
     offset: number,
@@ -275,8 +275,8 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     return deps.readBackingFileRangeByInode(ino, offset, length);
   }
 
-  function writeBackingFileRange(ino: number, offset: number, data: Uint8Array): number {
-    return deps.writeBackingFileByInode(ino, offset, data);
+  function writeResidentFileRange(ino: number, offset: number, data: Uint8Array): number {
+    return deps.writeDirtyResidentFileByInode(ino, offset, data);
   }
 
   function readPendingFsMutationContext(
@@ -579,7 +579,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     }, {
       sabPageCache: pageCache,
       readFileDataByInode: readBackingFileRange,
-      writeFileDataByInode: writeBackingFileRange,
+      writeResidentFileDataByInode: writeResidentFileRange,
     });
     const nextExports = instance.exports as unknown as KernelExports;
     configureKernelInstanceStack(nextExports, KERNEL_WORKER_STACK_SLOT);
@@ -636,7 +636,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       env: createKernelEnv(memory, {
         sabPageCache: deps.getSabPageCache(),
         readFileDataByInode: readBackingFileRange,
-        writeFileDataByInode: writeBackingFileRange,
+        writeResidentFileDataByInode: writeResidentFileRange,
       }),
     });
     // Registering a process must not mutate the caller-owned shared memory.

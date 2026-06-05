@@ -276,8 +276,8 @@ test("page-cache zero-length read on kernel-worker backing data returns zero", (
   expect(calls).toBe(0);
 });
 
-test("page-cache write can update backing data when resident capacity is smaller than the file", () => {
-  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 8);
+test("page-cache write publishes dirty resident data without updating backing data", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 8192);
   const memory = new WebAssembly.Memory({ initial: 1 });
   const backing = new Uint8Array(128);
   const source = Uint8Array.from({ length: 64 }, (_value, index) => 0x40 + index);
@@ -294,22 +294,19 @@ test("page-cache write can update backing data when resident capacity is smaller
   const env = createKernelEnv(memory, {
     sabPageCache: sab,
     readFileDataByInode: (_ino, offset, length) => backing.subarray(offset, offset + length),
-    writeFileDataByInode: (ino, offset, data) => {
-      backing.set(data, offset);
-      publishInode(sab, ino, {
-        mode: 0o100644,
-        size: offset + data.length,
-        parentIno: 1,
-        name: new TextEncoder().encode("external"),
-        nextSibling: 0,
-      }, null);
-      return data.length;
-    },
   });
 
   expect(env.tidemark_page_cache_write(2, 32n, 256, source.length)).toBe(BigInt(source.length));
   expect(env.tidemark_page_cache_read(2, 32n, 512, source.length)).toBe(BigInt(source.length));
   expect(new Uint8Array(memory.buffer, 512, source.length)).toEqual(source);
+  expect(backing.slice(32, 32 + source.length)).toEqual(new Uint8Array(source.length));
+  expect(evictResidentPage(sab, 2, 0)).toBe("dirty-pinned");
+
+  expect(env.tidemark_page_cache_truncate(2, 40n)).toBe(0);
+  new Uint8Array(memory.buffer, 512, source.length).fill(0);
+  expect(env.tidemark_page_cache_read(2, 32n, 512, source.length)).toBe(8n);
+  expect(new Uint8Array(memory.buffer, 512, 8)).toEqual(source.subarray(0, 8));
+  expect(env.tidemark_page_cache_read(2, 40n, 512, 1)).toBe(0n);
 });
 
 test("page-cache supports kernel-sized high inode numbers", () => {
@@ -415,7 +412,7 @@ test("source-backed file materializes for backing writes and truncates", () => {
 });
 
 test("live resident records use file object generation and fixed reusable frames", () => {
-  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 4096 + 32);
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 4096 + 40);
   const memory = new WebAssembly.Memory({ initial: 1 });
   const backing = new Uint8Array(8192);
   for (let offset = 0; offset < backing.length; offset += 1) {

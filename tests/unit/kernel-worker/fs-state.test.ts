@@ -633,7 +633,7 @@ test("kernel-worker rejects content-addressed backing sources with mismatched di
   ).rejects.toThrow("backing source digest mismatch");
 });
 
-test("kernel-worker partial write to source-backed snapshot file preserves existing source bytes", () => {
+test("kernel-worker partial write to source-backed snapshot file is dirty resident authoritative", () => {
   const { fsState } = makeFsState();
   const source = encoder.encode("prefix:abcdef:suffix");
   const backingExtent = {
@@ -649,7 +649,7 @@ test("kernel-worker partial write to source-backed snapshot file preserves exist
   fsState.registerBackingSource(backingExtent.sourceIdentity, source);
 
   const ino = fsState.resolvePath("/lib/runtime.bin");
-  expect(fsState.writeBackingFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(3);
+  expect(fsState.writeDirtyResidentFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(3);
   expect(new TextDecoder().decode(fsState.readBackingFileByInode(ino) ?? new Uint8Array())).toBe("abcXYZ");
   expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("abcXYZ");
   const metadataSnapshot = fsState.snapshotCanonicalFs(false).find((entry) => (

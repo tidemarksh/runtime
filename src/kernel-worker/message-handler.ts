@@ -162,7 +162,7 @@ interface KernelWorkerMessageHandlerDeps {
     path: string;
     ino: number;
     pageIndex: number;
-    status: "evicted" | "not-found";
+    status: "evicted" | "dirty-pinned" | "not-found";
     residentPages?: number;
   } | null;
   debugPageCacheStats(): {

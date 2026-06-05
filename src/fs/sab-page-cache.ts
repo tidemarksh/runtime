@@ -29,9 +29,9 @@
  *     Append-only inline file data blocks + name strings.
  *
  *   [Resident frame region: residentPageCount * 4096 bytes]
- *     Fixed reusable clean resident page frames, one per record slot.
+ *     Fixed reusable clean/dirty resident page frames, one per record slot.
  *
- *   [Resident record table: residentPageCount * 32 bytes]
+ *   [Resident record table: residentPageCount * 40 bytes]
  *     File-object/page-index/generation records for the fixed frames.
  */
 
@@ -61,7 +61,7 @@ export const INODE_OFF_FILE_OBJECT_ID = 32;
 export const INODE_OFF_GENERATION = 36;
 
 export const DEFAULT_RESIDENT_PAGE_SIZE = 4096;
-const RESIDENT_PAGE_RECORD_BYTES = 32;
+const RESIDENT_PAGE_RECORD_BYTES = 40;
 const RESIDENT_PAGE_RECORD_VERSION = 0;
 const RESIDENT_PAGE_RECORD_FILE_OBJECT_ID = 4;
 const RESIDENT_PAGE_RECORD_PAGE_INDEX = 8;
@@ -70,7 +70,10 @@ const RESIDENT_PAGE_RECORD_VALID_BYTES = 16;
 const RESIDENT_PAGE_RECORD_GENERATION = 20;
 const RESIDENT_PAGE_RECORD_FLAGS = 24;
 const RESIDENT_PAGE_RECORD_LAST_USED = 28;
+const RESIDENT_PAGE_RECORD_DIRTY_START = 32;
+const RESIDENT_PAGE_RECORD_DIRTY_END = 36;
 const RESIDENT_PAGE_RECORD_FLAG_VALID = 1;
+const RESIDENT_PAGE_RECORD_FLAG_DIRTY = 2;
 
 export type FileObjectId = number;
 
@@ -98,6 +101,8 @@ export interface ResidentPageCacheHit {
 export type ResidentPageCacheReadResult =
   | ResidentPageCacheMiss
   | ResidentPageCacheHit;
+
+export type ResidentBackingRangeReader = (ino: number, offset: number, length: number) => Uint8Array | null;
 
 export interface ResidentPageFillResult {
   status: "filled" | "already-resident" | "dirty-pinned" | "not-found";
@@ -424,6 +429,9 @@ function allocateResidentPageRecordIndex(
     if ((flags & RESIDENT_PAGE_RECORD_FLAG_VALID) === 0) {
       return index;
     }
+    if ((flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) !== 0) {
+      continue;
+    }
     const lastUsed = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_LAST_USED >>> 2));
     if (lastUsed < oldestLastUsed) {
       oldestIndex = index;
@@ -443,6 +451,8 @@ function clearResidentPageRecord(sab: SharedArrayBuffer, recordIndex: number): v
   const oddVersion = (currentVersion | 1) + (currentVersion & 1 ? 1 : 0);
   Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2), oddVersion);
   Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2), 0);
+  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_DIRTY_START >>> 2), 0);
+  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_DIRTY_END >>> 2), 0);
   Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2), oddVersion + 1);
 }
 
@@ -469,7 +479,7 @@ export function evictResidentPage(
   sab: SharedArrayBuffer,
   ino: number,
   pageIndex: number,
-): "evicted" | "not-found" {
+): "evicted" | "dirty-pinned" | "not-found" {
   if (
     !Number.isInteger(ino)
     || ino <= 0
@@ -487,6 +497,12 @@ export function evictResidentPage(
   if (recordIndex < 0) {
     return "not-found";
   }
+  const u32 = new Uint32Array(sab);
+  const base32 = residentPageRecordOffset(sab, recordIndex) >>> 2;
+  const flags = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2));
+  if ((flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) !== 0) {
+    return "dirty-pinned";
+  }
   clearResidentPageRecord(sab, recordIndex);
   return "evicted";
 }
@@ -496,6 +512,11 @@ export function publishResidentPage(
   ino: number,
   pageIndex: number,
   data: Uint8Array,
+  options: {
+    dirty?: boolean;
+    dirtyStart?: number;
+    dirtyEnd?: number;
+  } = {},
 ): boolean {
   if (
     !Number.isInteger(ino)
@@ -520,6 +541,9 @@ export function publishResidentPage(
   const u8 = new Uint8Array(sab);
   u8.fill(0, dataOff, dataOff + DEFAULT_RESIDENT_PAGE_SIZE);
   u8.set(data, dataOff);
+  const dirty = options.dirty === true;
+  const dirtyStart = dirty ? Math.max(0, Math.min(data.length, options.dirtyStart ?? 0)) : 0;
+  const dirtyEnd = dirty ? Math.max(dirtyStart, Math.min(data.length, options.dirtyEnd ?? data.length)) : 0;
 
   const u32 = new Uint32Array(sab);
   const base32 = residentPageRecordOffset(sab, recordIndex) >>> 2;
@@ -531,8 +555,14 @@ export function publishResidentPage(
   Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_DATA_OFF >>> 2), dataOff);
   Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_VALID_BYTES >>> 2), data.length);
   Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_GENERATION >>> 2), meta.generation);
-  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2), RESIDENT_PAGE_RECORD_FLAG_VALID);
+  Atomics.store(
+    u32,
+    base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2),
+    RESIDENT_PAGE_RECORD_FLAG_VALID | (dirty ? RESIDENT_PAGE_RECORD_FLAG_DIRTY : 0),
+  );
   Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_LAST_USED >>> 2), nextResidentClock(sab));
+  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_DIRTY_START >>> 2), dirtyStart);
+  Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_DIRTY_END >>> 2), dirtyEnd);
   Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2), oddVersion + 1);
   return true;
 }
@@ -611,6 +641,311 @@ export function debugResidentPageCountForInode(sab: SharedArrayBuffer, ino: numb
     }
   }
   return residentPages;
+}
+
+interface ResidentPageSnapshot {
+  pageIndex: number;
+  bytes: Uint8Array;
+  dirty: boolean;
+  dirtyStart: number;
+  dirtyEnd: number;
+}
+
+function collectResidentPageSnapshots(
+  sab: SharedArrayBuffer,
+  meta: { fileObjectId: number; generation: number },
+  dirtyOnly: boolean,
+): ResidentPageSnapshot[] {
+  if (meta.fileObjectId === 0) {
+    return [];
+  }
+  const u32 = new Uint32Array(sab);
+  const u8 = new Uint8Array(sab);
+  const count = residentPageRecordCount(sab);
+  const snapshots: ResidentPageSnapshot[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const base32 = residentPageRecordOffset(sab, index) >>> 2;
+    const v1 = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2));
+    if (v1 === 0 || (v1 & 1) !== 0) {
+      continue;
+    }
+    const flags = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2));
+    const dirty = (flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) !== 0;
+    if (
+      (flags & RESIDENT_PAGE_RECORD_FLAG_VALID) === 0
+      || (dirtyOnly && !dirty)
+      || Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FILE_OBJECT_ID >>> 2)) !== meta.fileObjectId
+      || Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_GENERATION >>> 2)) !== meta.generation
+    ) {
+      continue;
+    }
+    const dataOff = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_DATA_OFF >>> 2));
+    const validBytes = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VALID_BYTES >>> 2));
+    const pageIndex = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_PAGE_INDEX >>> 2));
+    const dirtyStart = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_DIRTY_START >>> 2));
+    const dirtyEnd = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_DIRTY_END >>> 2));
+    const v2 = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2));
+    if (
+      v1 !== v2
+      || dataOff < residentPageFrameRegionOffset(sab)
+      || validBytes > DEFAULT_RESIDENT_PAGE_SIZE
+      || dataOff + validBytes > residentPageRecordTableOffset(sab)
+    ) {
+      continue;
+    }
+    snapshots.push({
+      pageIndex,
+      bytes: new Uint8Array(u8.slice(dataOff, dataOff + validBytes)),
+      dirty,
+      dirtyStart,
+      dirtyEnd,
+    });
+  }
+  return snapshots;
+}
+
+function updateInodeForResidentPages(
+  sab: SharedArrayBuffer,
+  ino: number,
+  record: NonNullable<ReturnType<typeof readInodeRecord>>,
+  size: number,
+  fileObjectId: number,
+  generation: number,
+): boolean {
+  const u32 = new Uint32Array(sab);
+  const base = inodeOffset(ino);
+  if (base < INODE_TABLE_OFFSET || base + INODE_ENTRY_SIZE > sab.byteLength) {
+    return false;
+  }
+  const base32 = base >>> 2;
+  const oldNameOff = Atomics.load(u32, base32 + (INODE_OFF_NAME_OFF >>> 2));
+  const oldNameLen = Atomics.load(u32, base32 + (INODE_OFF_NAME_LEN >>> 2));
+  const currentVersion = Atomics.load(u32, base32 + (INODE_OFF_VERSION >>> 2));
+  const oddVersion = (currentVersion | 1) + (currentVersion & 1 ? 1 : 0);
+  invalidateResidentPages(sab, ino);
+  Atomics.store(u32, base32 + (INODE_OFF_VERSION >>> 2), oddVersion);
+  Atomics.store(u32, base32 + (INODE_OFF_DATA_OFF >>> 2), 0);
+  Atomics.store(u32, base32 + (INODE_OFF_DATA_SIZE >>> 2), size);
+  Atomics.store(u32, base32 + (INODE_OFF_MODE >>> 2), record.mode);
+  Atomics.store(u32, base32 + (INODE_OFF_PARENT >>> 2), record.parentIno);
+  Atomics.store(u32, base32 + (INODE_OFF_NAME_OFF >>> 2), oldNameLen > 0 ? oldNameOff : 0);
+  Atomics.store(u32, base32 + (INODE_OFF_NAME_LEN >>> 2), oldNameLen);
+  Atomics.store(u32, base32 + (INODE_OFF_NEXT_SIBLING >>> 2), record.nextSibling);
+  Atomics.store(u32, base32 + (INODE_OFF_FILE_OBJECT_ID >>> 2), fileObjectId);
+  Atomics.store(u32, base32 + (INODE_OFF_GENERATION >>> 2), generation);
+  Atomics.store(u32, base32 + (INODE_OFF_VERSION >>> 2), oddVersion + 1);
+  return true;
+}
+
+function dirtyResidentPageMap(sab: SharedArrayBuffer, ino: number): Map<number, ResidentPageSnapshot> | null {
+  const meta = readInodeMeta(sab, ino);
+  if (!meta || meta.fileObjectId === 0) {
+    return null;
+  }
+  const pages = new Map<number, ResidentPageSnapshot>();
+  for (const page of collectResidentPageSnapshots(sab, meta, false)) {
+    pages.set(page.pageIndex, page);
+  }
+  return pages;
+}
+
+function readExistingPageBytes(
+  sab: SharedArrayBuffer,
+  ino: number,
+  record: NonNullable<ReturnType<typeof readInodeRecord>>,
+  pageIndex: number,
+  nextPageLen: number,
+  readBackingRange: ResidentBackingRangeReader | undefined,
+): Uint8Array | null {
+  const pageStart = pageIndex * DEFAULT_RESIDENT_PAGE_SIZE;
+  const bytes = new Uint8Array(nextPageLen);
+  const existingLen = Math.max(0, Math.min(nextPageLen, record.size - pageStart));
+  if (existingLen === 0) {
+    return bytes;
+  }
+  if (record.dataOff !== 0) {
+    bytes.set(readFileData(sab, record.dataOff, record.size, pageStart, existingLen));
+    return bytes;
+  }
+  const resident = readResidentFileData(sab, ino, pageStart, existingLen);
+  if (resident) {
+    bytes.set(resident);
+    return bytes;
+  }
+  const backing = readBackingRange?.(ino, pageStart, existingLen);
+  if (!backing || backing.length !== existingLen) {
+    return null;
+  }
+  bytes.set(backing);
+  return bytes;
+}
+
+export function hasDirtyResidentPagesForInode(sab: SharedArrayBuffer, ino: number): boolean {
+  const meta = readInodeMeta(sab, ino);
+  return !!(meta && collectResidentPageSnapshots(sab, meta, true).length > 0);
+}
+
+export function writeDirtyResidentFileData(
+  sab: SharedArrayBuffer,
+  ino: number,
+  offset: number,
+  data: Uint8Array,
+  readBackingRange?: ResidentBackingRangeReader,
+): number {
+  if (!Number.isInteger(ino) || ino <= 0 || ino >= MAX_INODES || offset < 0) {
+    return -22;
+  }
+  if (data.length === 0) {
+    return 0;
+  }
+  const record = readInodeRecord(sab, ino);
+  if (!record) {
+    return -2;
+  }
+  const end = offset + data.length;
+  const nextSize = Math.max(record.size, end);
+  if (!Number.isFinite(nextSize) || nextSize > 0xffffffff) {
+    return -28;
+  }
+  const residentPages = dirtyResidentPageMap(sab, ino) ?? new Map<number, ResidentPageSnapshot>();
+  const firstPage = Math.floor(offset / DEFAULT_RESIDENT_PAGE_SIZE);
+  const lastPage = Math.floor((end - 1) / DEFAULT_RESIDENT_PAGE_SIZE);
+  for (let pageIndex = firstPage; pageIndex <= lastPage; pageIndex += 1) {
+    const pageStart = pageIndex * DEFAULT_RESIDENT_PAGE_SIZE;
+    const pageLen = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, nextSize - pageStart);
+    const writeStart = Math.max(offset, pageStart);
+    const writeEnd = Math.min(end, pageStart + pageLen);
+    const pageWriteStart = writeStart - pageStart;
+    const pageWriteEnd = writeEnd - pageStart;
+    const existing = residentPages.get(pageIndex);
+    let pageBytes: Uint8Array;
+    if (pageWriteStart === 0 && pageWriteEnd === pageLen) {
+      pageBytes = new Uint8Array(pageLen);
+    } else if (existing) {
+      pageBytes = existing.bytes.length === pageLen ? new Uint8Array(existing.bytes) : new Uint8Array(pageLen);
+      pageBytes.set(existing.bytes.subarray(0, Math.min(existing.bytes.length, pageLen)));
+    } else {
+      const read = readExistingPageBytes(sab, ino, record, pageIndex, pageLen, readBackingRange);
+      if (!read) {
+        return -5;
+      }
+      pageBytes = read;
+    }
+    pageBytes.set(data.subarray(writeStart - offset, writeEnd - offset), pageWriteStart);
+    residentPages.set(pageIndex, {
+      pageIndex,
+      bytes: pageBytes,
+      dirty: true,
+      dirtyStart: existing?.dirty ? Math.min(existing.dirtyStart, pageWriteStart) : pageWriteStart,
+      dirtyEnd: existing?.dirty ? Math.max(existing.dirtyEnd, pageWriteEnd) : pageWriteEnd,
+    });
+  }
+
+  const fileObjectId = record.fileObjectId || ino;
+  const generation = record.generation + 1;
+  const dirtyPageCount = Array.from(residentPages.values()).filter((page) => page.dirty && page.bytes.length > 0).length;
+  if (dirtyPageCount > residentPageRecordCount(sab)) {
+    return -28;
+  }
+  if (!updateInodeForResidentPages(sab, ino, record, nextSize, fileObjectId, generation)) {
+    return -28;
+  }
+  for (const page of residentPages.values()) {
+    if (!page.dirty || page.bytes.length === 0) {
+      continue;
+    }
+    const published = publishResidentPage(sab, ino, page.pageIndex, page.bytes, {
+      dirty: true,
+      dirtyStart: page.dirtyStart,
+      dirtyEnd: page.dirtyEnd,
+    });
+    if (!published) {
+      return -28;
+    }
+  }
+  return data.length;
+}
+
+export function truncateDirtyResidentFileData(
+  sab: SharedArrayBuffer,
+  ino: number,
+  size: number,
+): number {
+  if (!Number.isInteger(ino) || ino <= 0 || ino >= MAX_INODES || size < 0 || size > 0xffffffff) {
+    return -22;
+  }
+  const record = readInodeRecord(sab, ino);
+  if (!record) {
+    return -2;
+  }
+  const oldMeta = readInodeMeta(sab, ino);
+  const dirtyPages = oldMeta ? collectResidentPageSnapshots(sab, oldMeta, true) : [];
+  const fileObjectId = record.fileObjectId || ino;
+  const generation = record.generation + 1;
+  const retainedDirtyPages = dirtyPages.filter((page) => page.pageIndex * DEFAULT_RESIDENT_PAGE_SIZE < size);
+  if (retainedDirtyPages.length > residentPageRecordCount(sab)) {
+    return -28;
+  }
+  if (!updateInodeForResidentPages(sab, ino, record, size, fileObjectId, generation)) {
+    return -28;
+  }
+  for (const page of retainedDirtyPages) {
+    const pageStart = page.pageIndex * DEFAULT_RESIDENT_PAGE_SIZE;
+    if (pageStart >= size) {
+      continue;
+    }
+    const validBytes = Math.min(page.bytes.length, size - pageStart);
+    if (validBytes <= 0) {
+      continue;
+    }
+    const published = publishResidentPage(sab, ino, page.pageIndex, page.bytes.subarray(0, validBytes), {
+      dirty: true,
+      dirtyStart: Math.min(page.dirtyStart, validBytes),
+      dirtyEnd: Math.min(page.dirtyEnd, validBytes),
+    });
+    if (!published) {
+      return -28;
+    }
+  }
+  return 0;
+}
+
+export function readDirtyResidentFileData(
+  sab: SharedArrayBuffer,
+  ino: number,
+  readBackingRange?: ResidentBackingRangeReader,
+): Uint8Array | null {
+  const record = readInodeRecord(sab, ino);
+  if (!record) {
+    return null;
+  }
+  if (record.size === 0) {
+    return new Uint8Array();
+  }
+  if (record.dataOff !== 0) {
+    return readFileData(sab, record.dataOff, record.size, 0, record.size);
+  }
+  const meta = readInodeMeta(sab, ino);
+  if (!meta || meta.fileObjectId === 0) {
+    return null;
+  }
+  const dirtyPages = collectResidentPageSnapshots(sab, meta, true);
+  const base = readBackingRange?.(ino, 0, record.size) ?? null;
+  if (!base && dirtyPages.length === 0) {
+    return null;
+  }
+  const out = new Uint8Array(record.size);
+  if (base) {
+    out.set(base.subarray(0, Math.min(base.length, out.length)));
+  }
+  for (const page of dirtyPages) {
+    const pageStart = page.pageIndex * DEFAULT_RESIDENT_PAGE_SIZE;
+    if (pageStart >= out.length) {
+      continue;
+    }
+    out.set(page.bytes.subarray(0, Math.min(page.bytes.length, out.length - pageStart)), pageStart);
+  }
+  return out;
 }
 
 export function writeFileData(

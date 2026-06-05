@@ -3,15 +3,18 @@ import type { FileBackingStat } from "../fs/sab-page-cache.js";
 import type { FsSnapshotBackingExtent, FsSnapshotEntry, RuntimeStat } from "../fs/types.js";
 import {
   bumpDirEpoch,
+  hasDirtyResidentPagesForInode,
   MAX_INODES,
   MemoryFileBackingStore,
   publishInode,
+  readDirtyResidentFileData,
   readFileData,
   readInodeRecord,
+  truncateDirtyResidentFileData,
+  writeDirtyResidentFileData,
 } from "../fs/sab-page-cache.js";
 import {
   ensureMemoryCapacityFor,
-  markMaterializedMemfsFile,
   MEMFS_S_IFMT,
   MEMFS_S_IFREG,
   normalizePath,
@@ -321,7 +324,23 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     return stat.fileObjectId;
   }
 
+  function residentPageMapIsNewerThanBacking(ino: number): boolean {
+    if (hasDirtyResidentPagesForInode(deps.getSabPageCache(), ino)) {
+      return true;
+    }
+    const published = readInodeRecord(deps.getSabPageCache(), ino);
+    if (!published || published.fileObjectId === 0) {
+      return false;
+    }
+    const fileObjectId = fileObjectIdsByIno.get(ino);
+    const stat = fileObjectId === undefined ? null : backingStore.stat(fileObjectId);
+    return !!stat && (published.generation !== stat.generation || published.size !== stat.size);
+  }
+
   function readBackingFileByInode(ino: number): Uint8Array | null {
+    if (residentPageMapIsNewerThanBacking(ino)) {
+      return readDirtyResidentFileData(deps.getSabPageCache(), ino, readCleanBackingFileRangeByInode);
+    }
     const fileObjectId = fileObjectIdsByIno.get(ino);
     if (fileObjectId === undefined) {
       return null;
@@ -333,7 +352,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     return backingStore.read(fileObjectId, 0, stat.size);
   }
 
-  function readBackingFileRangeByInode(ino: number, offset: number, length: number): Uint8Array | null {
+  function readCleanBackingFileRangeByInode(ino: number, offset: number, length: number): Uint8Array | null {
     let fileObjectId = fileObjectIdsByIno.get(ino);
     if (fileObjectId === undefined) {
       const size = Number(deps.getCanonicalExports().memfs_file_size(ino));
@@ -355,7 +374,18 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     return backingStore.read(fileObjectId, offset, Math.min(length, stat.size - offset));
   }
 
-  function writeBackingFileByInode(ino: number, offset: number, data: Uint8Array): number {
+  function readBackingFileRangeByInode(ino: number, offset: number, length: number): Uint8Array | null {
+    if (residentPageMapIsNewerThanBacking(ino)) {
+      const data = readDirtyResidentFileData(deps.getSabPageCache(), ino, readCleanBackingFileRangeByInode);
+      if (!data || length <= 0 || offset < 0 || offset >= data.length) {
+        return null;
+      }
+      return data.subarray(offset, Math.min(data.length, offset + length));
+    }
+    return readCleanBackingFileRangeByInode(ino, offset, length);
+  }
+
+  function writeDirtyResidentFileByInode(ino: number, offset: number, data: Uint8Array): number {
     if (!Number.isInteger(ino) || ino <= 0 || ino >= MAX_INODES || offset < 0) {
       return -22;
     }
@@ -363,55 +393,38 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       return 0;
     }
     try {
-      let fileObjectId = fileObjectIdsByIno.get(ino);
+      const fileObjectId = fileObjectIdsByIno.get(ino);
+      const expectedSize = Number(deps.getCanonicalExports().memfs_file_size(ino));
       if (fileObjectId === undefined) {
-        const expectedSize = Number(deps.getCanonicalExports().memfs_file_size(ino));
         const sourceFileObjectId = createSourceBackedFileForInode(ino, expectedSize);
-        if (sourceFileObjectId !== null) {
-          fileObjectId = sourceFileObjectId;
-        } else {
-          const file = backingStore.createFile();
-          fileObjectId = file.fileObjectId;
-          fileObjectIdsByIno.set(ino, fileObjectId);
+        const published = readInodeRecord(deps.getSabPageCache(), ino);
+        if (sourceFileObjectId === null && !published?.dataOff && (published?.size ?? expectedSize) > 0) {
+          return -95;
         }
       }
-      const stat = backingStore.write(fileObjectId, offset, data);
-      backingExtentsByIno.delete(ino);
-      clearSeedBackingExtentForInode(ino);
-      const published = readInodeRecord(deps.getSabPageCache(), ino);
-      publishInode(deps.getSabPageCache(), ino, {
-        mode: published?.mode ?? 0o100644,
-        size: stat.size,
-        parentIno: published?.parentIno ?? 0,
-        name: published?.name ?? new Uint8Array(),
-        nextSibling: published?.nextSibling ?? 0,
-        fileObjectId: stat.fileObjectId,
-        generation: stat.generation,
-      }, null);
-      return data.length;
+      if (!readInodeRecord(deps.getSabPageCache(), ino)) {
+        publishInode(deps.getSabPageCache(), ino, {
+          mode: deps.getCanonicalExports().memfs_inode_mode(ino) || 0o100644,
+          size: expectedSize,
+          parentIno: 0,
+          name: new Uint8Array(),
+          nextSibling: 0,
+          ...backingMetaForInode(ino),
+        }, null);
+      }
+      const written = writeDirtyResidentFileData(deps.getSabPageCache(), ino, offset, data, readBackingFileRangeByInode);
+      if (written >= 0) {
+        backingExtentsByIno.delete(ino);
+        clearSeedBackingExtentForInode(ino);
+      }
+      return written;
     } catch {
-      return -28;
+      return -5;
     }
   }
 
   function hasBackingFile(ino: number): boolean {
     return readBackingFileByInode(ino) !== null;
-  }
-
-  function replaceFileData(targetExports: KernelExports, ino: number, data: Uint8Array): void {
-    const truncateResult = Number(targetExports.memfs_truncate_file(ino, BigInt(data.length)));
-    if (truncateResult < 0) {
-      const mode = targetExports.memfs_inode_mode(ino);
-      throw new Error(`failed to resize inode: ino=${ino} mode=${mode.toString(8)} newSize=${data.length}`);
-    }
-    if (data.length > 0) {
-      const dataPtr = writeScratchFor(targetExports, data);
-      const written = Number(targetExports.memfs_write_file_at(ino, 0n, dataPtr, data.length));
-      if (written < 0 || written !== data.length) {
-        throw new Error(`failed to write inode: ${ino}`);
-      }
-    }
-    markMaterializedMemfsFile(targetExports, ino);
   }
 
   function replaceFileDataExternal(
@@ -713,10 +726,6 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     return new Uint8Array(sourceExports.memory.buffer.slice(bufPtr, bufPtr + read));
   }
 
-  function writeFileByInode(targetExports: KernelExports, ino: number, data: Uint8Array): void {
-    replaceFileData(targetExports, ino, data);
-  }
-
   function syncExternalFileDataIntoTarget(
     targetExports: KernelExports,
     ino: number,
@@ -782,25 +791,35 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       };
 
     try {
-      const data = readFileByInode(sourceExports, ino);
       ensurePublishedInodeInTarget(canonicalExports, ino, published);
       if ((canonicalExports.memfs_inode_mode(ino) & MEMFS_S_IFMT) !== MEMFS_S_IFREG) {
         return false;
       }
-      writeFileByInode(canonicalExports, ino, data);
-      const stat = replaceBackingFile(ino, data);
-      clearSeedBackingExtentForInode(ino);
-      publishInode(deps.getSabPageCache(), ino, {
-        mode,
-        size: data.length,
-        parentIno: published.parentIno,
-        name: published.name,
-        nextSibling: published.nextSibling,
-        fileObjectId: stat.fileObjectId,
-        generation: stat.generation,
-      }, null);
+      const size = Number(sourceExports.memfs_file_size(ino));
+      if (hasDirtyResidentPagesForInode(deps.getSabPageCache(), ino)) {
+        backingExtentsByIno.delete(ino);
+        clearSeedBackingExtentForInode(ino);
+        syncExternalFileDataIntoTarget(canonicalExports, ino, mode, size, published);
+        for (const memberExports of deps.processKernels.values()) {
+          trySyncExternalFileDataIntoTarget(memberExports, ino, mode, size, published);
+        }
+        return true;
+      }
 
+      const data = readFileByInode(sourceExports, ino);
+      const truncated = truncateDirtyResidentFileData(deps.getSabPageCache(), ino, data.length);
+      if (truncated < 0) {
+        return false;
+      }
+      const written = data.length === 0
+        ? 0
+        : writeDirtyResidentFileData(deps.getSabPageCache(), ino, 0, data, readBackingFileRangeByInode);
+      if (written < 0 || written !== data.length) {
+        return false;
+      }
       syncExternalFileDataIntoTarget(canonicalExports, ino, mode, data.length, published);
+      backingExtentsByIno.delete(ino);
+      clearSeedBackingExtentForInode(ino);
       for (const memberExports of deps.processKernels.values()) {
         trySyncExternalFileDataIntoTarget(memberExports, ino, mode, data.length, published);
       }
@@ -832,7 +851,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         !published
         || (published.mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG
         || published.size <= 0
-        || (published.dataOff === 0 && !hasBackingFile(ino))
+        || (published.dataOff === 0 && !hasBackingFile(ino) && !hasDirtyResidentPagesForInode(sab, ino))
       ) {
         continue;
       }
@@ -1104,7 +1123,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     ensureBackingSourceRangeForInode,
     readBackingFileByInode,
     readBackingFileRangeByInode,
-    writeBackingFileByInode,
+    writeDirtyResidentFileByInode,
     rebuildPageCacheFromExports,
     rebuildPageCacheFromCanonical,
     resolvePath,
