@@ -191,29 +191,6 @@ export function computeReferencedMemfsDataUsed(
   return Math.min(dataUsed, layout.dataCap);
 }
 
-export function readMemfsFileDataDirect(targetExports: KernelExports, ino: number): Uint8Array | null {
-  const layout = readMemfsLayout(targetExports.memory, targetExports.kernel_memfs_ptr());
-  const maxInodes = targetExports.kernel_memfs_first_child_bytes() / 4;
-  const inodeBytes = targetExports.kernel_memfs_inodes_bytes() / maxInodes;
-  const inodeBase = layout.inodesPtr + ino * inodeBytes;
-  const inodeView = new DataView(targetExports.memory.buffer);
-  const mode = inodeView.getUint32(inodeBase + MEMFS_INODE_OFF_MODE, true);
-  if ((mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG) {
-    return null;
-  }
-  const size = Number(inodeView.getBigUint64(inodeBase + MEMFS_INODE_OFF_SIZE, true));
-  if (size <= 0) {
-    return new Uint8Array();
-  }
-  const dataOffset = inodeView.getUint32(inodeBase + MEMFS_INODE_OFF_DATA_OFFSET, true);
-  const dataCap = inodeView.getUint32(inodeBase + MEMFS_INODE_OFF_DATA_CAP, true);
-  if (dataCap === 0 || dataOffset + size > layout.dataCap) {
-    return null;
-  }
-  const dataStart = layout.dataPtr + dataOffset;
-  return new Uint8Array(targetExports.memory.buffer.slice(dataStart, dataStart + size));
-}
-
 export function normalizeMetadataOnlyMemfsState(
   targetExports: KernelExports,
   targetState: KernelRuntimeState,
