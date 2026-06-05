@@ -67,6 +67,30 @@ test("page-cache imports accept safe Memory64 BigInt pointers", () => {
   expect(new DataView(memory.buffer).getBigUint64(72, true)).toBe(BigInt(bytes.length));
 });
 
+test("page-cache flush import delegates dirty resident writeback", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 128);
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const calls: number[] = [];
+  const env = createKernelEnv(memory, {
+    sabPageCache: sab,
+    flushResidentFileDataByInode: (ino) => {
+      calls.push(ino);
+      return ino === 2;
+    },
+  });
+
+  expect(env.tidemark_page_cache_flush(2)).toBe(0);
+  expect(env.tidemark_page_cache_flush(3)).toBe(-5);
+  expect(calls).toEqual([2, 3]);
+});
+
+test("page-cache flush import rejects unowned writeback", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const env = createKernelEnv(memory);
+
+  expect(env.tidemark_page_cache_flush(2)).toBe(-95);
+});
+
 test("publishInode exposes file metadata without inline file bytes", () => {
   const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 128);
   const name = new TextEncoder().encode("file");

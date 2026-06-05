@@ -11,6 +11,7 @@ export interface KernelEnvImports {
   tidemark_memory_atomic_notify(ptr: number | bigint, maxWake: number | bigint): number;
   tidemark_page_cache_read(ino: number, offset: bigint, dstPtr: number | bigint, dstLen: number): bigint;
   tidemark_page_cache_stat(ino: number, outPtr: number | bigint): number;
+  tidemark_page_cache_flush(ino: number): number;
   tidemark_page_cache_truncate(ino: number, size: bigint): number;
   tidemark_page_cache_write(ino: number, offset: bigint, srcPtr: number | bigint, srcLen: number): bigint;
 }
@@ -18,6 +19,7 @@ export interface KernelEnvImports {
 export interface KernelEnvOptions {
   sabPageCache?: SharedArrayBuffer | null;
   readFileDataByInode?: (ino: number, offset: number, length: number) => Uint8Array | null;
+  flushResidentFileDataByInode?: (ino: number) => boolean;
   truncateResidentFileDataByInode?: (ino: number, size: number) => number;
   writeResidentFileDataByInode?: (ino: number, offset: number, data: Uint8Array) => number;
 }
@@ -60,6 +62,7 @@ export function createKernelEnv(
 ): KernelEnvImports {
   const sabPageCache = options.sabPageCache ?? null;
   const readFileDataByInode = options.readFileDataByInode;
+  const flushResidentFileDataByInode = options.flushResidentFileDataByInode;
   const truncateResidentFileDataByInode = options.truncateResidentFileDataByInode;
   const writeResidentFileDataByInode = options.writeResidentFileDataByInode;
   return {
@@ -135,6 +138,12 @@ export function createKernelEnv(
       view.setUint32(outRange.ptr, meta.mode, true);
       view.setBigUint64(outRange.ptr + 8, BigInt(meta.size), true);
       return 1;
+    },
+    tidemark_page_cache_flush(ino) {
+      if (!sabPageCache || !flushResidentFileDataByInode) {
+        return -95;
+      }
+      return flushResidentFileDataByInode(ino) ? 0 : -5;
     },
     tidemark_page_cache_truncate(ino, size) {
       if (!sabPageCache) {

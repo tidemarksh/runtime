@@ -138,6 +138,7 @@ interface KernelWorkerProcessControlDeps {
   rebuildPageCacheFromCanonical(): void;
   restorePublishedRegularFileDataFromPageCache?(targetExports?: KernelExports): void;
   readBackingFileRangeByInode(ino: number, offset: number, length: number): Uint8Array | null;
+  flushDirtyResidentFileByInode(ino: number): boolean;
   truncateDirtyResidentFileByInode(ino: number, size: number): number;
   writeDirtyResidentFileByInode(ino: number, offset: number, data: Uint8Array): number;
   ensureBackingSourceRangeForInode?(
@@ -689,6 +690,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     }, {
       sabPageCache: pageCache,
       readFileDataByInode: readBackingFileRange,
+      flushResidentFileDataByInode: deps.flushDirtyResidentFileByInode,
       truncateResidentFileDataByInode: truncateResidentFile,
       writeResidentFileDataByInode: writeResidentFileRange,
     });
@@ -747,6 +749,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       env: createKernelEnv(memory, {
         sabPageCache: deps.getSabPageCache(),
         readFileDataByInode: readBackingFileRange,
+        flushResidentFileDataByInode: deps.flushDirtyResidentFileByInode,
         truncateResidentFileDataByInode: truncateResidentFile,
         writeResidentFileDataByInode: writeResidentFileRange,
       }),

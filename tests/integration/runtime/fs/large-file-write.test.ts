@@ -149,6 +149,68 @@ function buildResidentRewriteProbe(): Uint8Array | null {
   }
 }
 
+function buildResidentFsyncProbe(): Uint8Array | null {
+  const tmp = mkdtempSync(join(tmpdir(), "tidemark-resident-fsync-"));
+  const sourcePath = join(tmp, "resident_fsync.c");
+  const outputPath = join(tmp, "resident-fsync");
+  try {
+    writeFileSync(sourcePath, [
+      "#include <errno.h>",
+      "#include <fcntl.h>",
+      "#include <stdio.h>",
+      "#include <string.h>",
+      "#include <unistd.h>",
+      "",
+      "static int write_exact(int fd, const unsigned char *data, size_t len) {",
+      "  size_t off = 0;",
+      "  while (off < len) {",
+      "    ssize_t n = write(fd, data + off, len - off);",
+      "    if (n < 0) { if (errno == EINTR) continue; perror(\"write\"); return 1; }",
+      "    if (n == 0) { fputs(\"write-zero\\n\", stderr); return 2; }",
+      "    off += (size_t)n;",
+      "  }",
+      "  return 0;",
+      "}",
+      "",
+      "int main(int argc, char **argv) {",
+      "  const char *path = argc > 1 ? argv[1] : \"/work/large-file-write.bin\";",
+      "  static const unsigned char first[] = \"fdatasync-resident-stage\";",
+      "  static const unsigned char second[] = \"fsync-resident-final\";",
+      "  int fd = open(path, O_RDWR);",
+      "  if (fd < 0) { perror(\"open\"); return 20; }",
+      "  unsigned char head[4];",
+      "  ssize_t n = read(fd, head, sizeof(head));",
+      "  if (n != 4 || memcmp(head, \"seed\", 4) != 0) {",
+      "    fprintf(stderr, \"bad-head n=%ld data=%.*s\\n\", (long)n, (int)(n > 0 ? n : 0), head);",
+      "    close(fd);",
+      "    return 21;",
+      "  }",
+      "  if (lseek(fd, 0, SEEK_SET) < 0) { perror(\"lseek-first\"); close(fd); return 22; }",
+      "  if (write_exact(fd, first, sizeof(first) - 1) != 0) { close(fd); return 23; }",
+      "  if (ftruncate(fd, (off_t)(sizeof(first) - 1)) != 0) { perror(\"ftruncate-first\"); close(fd); return 24; }",
+      "  if (fdatasync(fd) != 0) { perror(\"fdatasync\"); close(fd); return 25; }",
+      "  if (lseek(fd, 0, SEEK_SET) < 0) { perror(\"lseek-second\"); close(fd); return 26; }",
+      "  if (write_exact(fd, second, sizeof(second) - 1) != 0) { close(fd); return 27; }",
+      "  if (ftruncate(fd, (off_t)(sizeof(second) - 1)) != 0) { perror(\"ftruncate-second\"); close(fd); return 28; }",
+      "  if (fsync(fd) != 0) { perror(\"fsync\"); close(fd); return 29; }",
+      "  if (close(fd) != 0) { perror(\"close\"); return 30; }",
+      "  printf(\"resident-fsync bytes=%zu\\n\", sizeof(second) - 1);",
+      "  return 0;",
+      "}",
+      "",
+    ].join("\n"));
+    execFileSync(hostRiscvGcc, ["-static", "-O2", "-o", outputPath, sourcePath], {
+      stdio: "pipe",
+    });
+    return new Uint8Array(readFileSync(outputPath));
+  } catch (error) {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    return logSkip(`failed to build resident fsync probe with ${hostRiscvGcc}: ${detail}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 function buildDirtyResidentMmapForkProbe(): Uint8Array | null {
   const tmp = mkdtempSync(join(tmpdir(), "tidemark-dirty-resident-mmap-fork-"));
   const sourcePath = join(tmp, "dirty_resident_mmap_fork.c");
@@ -441,6 +503,52 @@ test("resident write witness: guest rewrite keeps dirty resident pages authorita
     const evictedAfterWrite = await runtime.debugEvictPageCachePath(largeFilePath, 0);
     expect(evictedAfterWrite?.status).toBe("dirty-pinned");
     expect(evictedAfterWrite?.residentPages ?? 0).toBeGreaterThan(0);
+    expect(await runtime.readFile(largeFilePath)).toEqual(expected);
+  } finally {
+    runtime.destroy();
+  }
+}, 90_000);
+
+test("resident fsync witness: guest fsync flushes dirty resident pages clean", async () => {
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return;
+  }
+  const probeBytes = buildResidentFsyncProbe();
+  if (!probeBytes) {
+    return;
+  }
+  const initial = new TextEncoder().encode("seed-original-resident-bytes");
+  const expected = new TextEncoder().encode("fsync-resident-final");
+
+  const runtime = await Runtime.create({
+    wasmBytes,
+    guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
+    maxProcessMemoryPages: 32768,
+  });
+  try {
+    const snapshot = buildSnapshotFromSources([
+      { kind: "inlineFile", guestPath: largeFilePath, data: initial, mode: 0o644 },
+    ]);
+    await runtime.applyFsSnapshot(snapshot.entries ?? []);
+
+    const result = await spawnWithOutputAndStats(
+      runtime,
+      probeBytes,
+      ["/work/resident-fsync", largeFilePath],
+      ["LC_ALL=C", "LANG=C"],
+      60_000,
+      { cwd: "/", stdin: "closed" },
+    );
+    expect(result.exitCode, result.output + (result.debugInfo ? `\n${result.debugInfo}` : "")).toBe(0);
+    expect(result.output).toContain(`resident-fsync bytes=${expected.length}`);
+
+    const after = await runtime.debugPageCachePath(largeFilePath);
+    expect(after?.dataOff).toBe(0);
+    expect(after?.backingBytes).toBe(expected.length);
+    expect(after?.residentPages ?? 0).toBeGreaterThan(0);
+    const evictedAfterFsync = await runtime.debugEvictPageCachePath(largeFilePath, 0);
+    expect(evictedAfterFsync?.status).toBe("evicted");
     expect(await runtime.readFile(largeFilePath)).toEqual(expected);
   } finally {
     runtime.destroy();

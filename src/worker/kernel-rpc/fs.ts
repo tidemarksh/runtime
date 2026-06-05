@@ -34,6 +34,7 @@ import type { SyncCause } from "../contracts/sync.js";
 import {
   FS_OP_CLOSE,
   FS_OP_EXECVE,
+  FS_OP_FSYNC,
   FS_OP_FSTAT,
   FS_OP_GETDENTS,
   FS_OP_LSEEK,
@@ -356,6 +357,8 @@ function fsOpName(opcode: number): string {
       return "MMAP";
     case FS_OP_EXECVE:
       return "EXECVE";
+    case FS_OP_FSYNC:
+      return "FSYNC";
     default:
       return `OP${opcode}`;
   }
