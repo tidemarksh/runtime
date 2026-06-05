@@ -542,6 +542,26 @@ test("kernel-worker reads metadata-only snapshot files from registered backing s
   ) ?? new Uint8Array())).toBe("bytes");
 });
 
+test("kernel-worker source-backed range read does not materialize the whole file", () => {
+  const { fsState } = makeFsState();
+  const source = encoder.encode("prefix:artifact-bytes:suffix");
+  const backingExtent = {
+    sourceIdentity: "artifact:runtime.bin",
+    offset: "prefix:".length,
+    length: "artifact-bytes".length,
+  };
+
+  fsState.loadFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "file", path: "/lib/runtime.bin", size: backingExtent.length, mode: 0o644, backingExtent },
+  ]);
+  fsState.registerBackingSource(backingExtent.sourceIdentity, source);
+
+  const ino = fsState.resolvePath("/lib/runtime.bin");
+  expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 9, 5) ?? new Uint8Array())).toBe("bytes");
+  expect(fsState.readBackingFileByInode(ino)).toBeNull();
+});
+
 test("kernel-worker snapshot export preserves source backing identity", () => {
   const { fsState } = makeFsState();
   const backingExtent = {

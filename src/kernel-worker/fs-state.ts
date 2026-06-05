@@ -80,26 +80,48 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   }
 
   function materializeBackingSourceForInode(ino: number, expectedSize: number): Uint8Array | null {
+    const data = readBackingSourceRangeForInode(ino, 0, expectedSize, expectedSize);
+    if (!data) {
+      return null;
+    }
+    replaceBackingFile(ino, data);
+    return readBackingFileByInode(ino);
+  }
+
+  function readBackingSourceRangeForInode(
+    ino: number,
+    fileOffset: number,
+    length: number,
+    expectedSize: number,
+  ): Uint8Array | null {
     const extent = backingExtentsByIno.get(ino);
-    if (!extent || expectedSize < 0) {
+    if (
+      !extent
+      || expectedSize < 0
+      || !Number.isInteger(fileOffset)
+      || !Number.isInteger(length)
+      || fileOffset < 0
+      || length <= 0
+      || fileOffset >= expectedSize
+    ) {
       return null;
     }
     const source = backingSourcesByIdentity.get(extent.sourceIdentity);
     if (!source) {
       return null;
     }
-    const offset = Math.floor(extent.offset ?? 0);
-    const length = Math.floor(extent.length ?? expectedSize);
+    const sourceOffset = Math.floor(extent.offset ?? 0);
+    const extentLength = Math.floor(extent.length ?? expectedSize);
     if (
-      offset < 0
-      || length < 0
-      || length !== expectedSize
-      || offset + length > source.byteLength
+      sourceOffset < 0
+      || extentLength < 0
+      || extentLength !== expectedSize
+      || sourceOffset + extentLength > source.byteLength
     ) {
       return null;
     }
-    replaceBackingFile(ino, source.slice(offset, offset + length));
-    return readBackingFileByInode(ino);
+    const readLength = Math.min(length, expectedSize - fileOffset);
+    return source.slice(sourceOffset + fileOffset, sourceOffset + fileOffset + readLength);
   }
 
   function readBackingFileByInode(ino: number): Uint8Array | null {
@@ -118,11 +140,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     let fileObjectId = fileObjectIdsByIno.get(ino);
     if (fileObjectId === undefined) {
       const size = Number(deps.getCanonicalExports().memfs_file_size(ino));
-      const materialized = materializeBackingSourceForInode(ino, size);
-      if (!materialized) {
-        return null;
-      }
-      fileObjectId = fileObjectIdsByIno.get(ino);
+      return readBackingSourceRangeForInode(ino, offset, length, size);
     }
     if (
       fileObjectId === undefined
