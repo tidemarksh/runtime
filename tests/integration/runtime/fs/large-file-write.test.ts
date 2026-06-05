@@ -149,8 +149,151 @@ function buildResidentRewriteProbe(): Uint8Array | null {
   }
 }
 
+function buildDirtyResidentMmapForkProbe(): Uint8Array | null {
+  const tmp = mkdtempSync(join(tmpdir(), "tidemark-dirty-resident-mmap-fork-"));
+  const sourcePath = join(tmp, "dirty_resident_mmap_fork.c");
+  const outputPath = join(tmp, "dirty-resident-mmap-fork");
+  try {
+    writeFileSync(sourcePath, [
+      "#include <errno.h>",
+      "#include <fcntl.h>",
+      "#include <stdio.h>",
+      "#include <stdlib.h>",
+      "#include <string.h>",
+      "#include <sys/mman.h>",
+      "#include <sys/wait.h>",
+      "#include <unistd.h>",
+      "",
+      "#define PAGE_SIZE 4096",
+      "",
+      "static unsigned char source_byte(unsigned long long offset) {",
+      "  return (unsigned char)((offset * 13ull + 7ull) & 0xffu);",
+      "}",
+      "",
+      "static unsigned char dirty_byte(unsigned long long offset) {",
+      "  return (unsigned char)((offset * 17ull + 23ull) & 0xffu);",
+      "}",
+      "",
+      "static void fill_dirty(unsigned char *buf, unsigned long long base) {",
+      "  for (unsigned long long i = 0; i < PAGE_SIZE; i++) buf[i] = dirty_byte(base + i);",
+      "}",
+      "",
+      "static int write_page(int fd, unsigned long long offset) {",
+      "  static unsigned char buf[PAGE_SIZE];",
+      "  fill_dirty(buf, offset);",
+      "  if (lseek(fd, (off_t)offset, SEEK_SET) < 0) { perror(\"lseek-write\"); return 10; }",
+      "  size_t written = 0;",
+      "  while (written < PAGE_SIZE) {",
+      "    ssize_t n = write(fd, buf + written, PAGE_SIZE - written);",
+      "    if (n < 0) { if (errno == EINTR) continue; perror(\"write-page\"); return 11; }",
+      "    if (n == 0) return 12;",
+      "    written += (size_t)n;",
+      "  }",
+      "  return 0;",
+      "}",
+      "",
+      "static int check_page_bytes(const unsigned char *bytes, unsigned long long base) {",
+      "  for (unsigned long long i = 0; i < PAGE_SIZE; i++) {",
+      "    if (bytes[i] != dirty_byte(base + i)) return 20;",
+      "  }",
+      "  return 0;",
+      "}",
+      "",
+      "static int check_file_samples(const char *path, unsigned long long total) {",
+      "  int fd = open(path, O_RDONLY);",
+      "  if (fd < 0) { perror(\"open-check\"); return 30; }",
+      "  unsigned char buf[PAGE_SIZE];",
+      "  unsigned long long last = total - PAGE_SIZE;",
+      "  if (pread(fd, buf, PAGE_SIZE, 0) != PAGE_SIZE) { perror(\"pread-head\"); close(fd); return 31; }",
+      "  if (check_page_bytes(buf, 0) != 0) { close(fd); return 32; }",
+      "  if (pread(fd, buf, PAGE_SIZE, (off_t)last) != PAGE_SIZE) { perror(\"pread-tail\"); close(fd); return 33; }",
+      "  if (check_page_bytes(buf, last) != 0) { close(fd); return 34; }",
+      "  unsigned long long middle = (total / 2ull) & ~4095ull;",
+      "  if (pread(fd, buf, 16, (off_t)middle) != 16) { perror(\"pread-middle\"); close(fd); return 35; }",
+      "  for (unsigned long long i = 0; i < 16; i++) {",
+      "    unsigned char expected = source_byte(middle + i);",
+      "    if (buf[i] != expected) {",
+      "      fprintf(stderr, \"file-middle mismatch off=%llu index=%llu got=%u expected=%u\\n\", middle, i, buf[i], expected);",
+      "      close(fd);",
+      "      return 36;",
+      "    }",
+      "  }",
+      "  if (close(fd) != 0) { perror(\"close-check\"); return 37; }",
+      "  return 0;",
+      "}",
+      "",
+      "static int check_mmap(const char *path, unsigned long long total) {",
+      "  int fd = open(path, O_RDONLY);",
+      "  if (fd < 0) { perror(\"open-mmap\"); return 40; }",
+      "  void *head = mmap(NULL, PAGE_SIZE, PROT_READ, MAP_PRIVATE, fd, 0);",
+      "  if (head == MAP_FAILED) { perror(\"mmap-head\"); close(fd); return 41; }",
+      "  int rc = check_page_bytes((const unsigned char *)head, 0);",
+      "  if (munmap(head, PAGE_SIZE) != 0) { perror(\"munmap-head\"); rc = 43; }",
+      "  unsigned long long last = total - PAGE_SIZE;",
+      "  void *tail = mmap(NULL, PAGE_SIZE, PROT_READ, MAP_PRIVATE, fd, (off_t)last);",
+      "  if (tail == MAP_FAILED) { perror(\"mmap-tail\"); close(fd); return 44; }",
+      "  if (rc == 0) rc = check_page_bytes((const unsigned char *)tail, last);",
+      "  if (munmap(tail, PAGE_SIZE) != 0) { perror(\"munmap-tail\"); rc = 45; }",
+      "  unsigned long long middle = (total / 2ull) & ~4095ull;",
+      "  unsigned char middle_buf[16];",
+      "  if (pread(fd, middle_buf, sizeof(middle_buf), (off_t)middle) != (ssize_t)sizeof(middle_buf)) {",
+      "    perror(\"pread-mmap-middle\");",
+      "    rc = 46;",
+      "  }",
+      "  for (unsigned long long i = 0; rc == 0 && i < sizeof(middle_buf); i++) {",
+      "    unsigned char expected = source_byte(middle + i);",
+      "    if (middle_buf[i] != expected) {",
+      "      fprintf(stderr, \"mmap-middle mismatch off=%llu index=%llu got=%u expected=%u\\n\", middle, i, middle_buf[i], expected);",
+      "      rc = 42;",
+      "    }",
+      "  }",
+      "  if (close(fd) != 0) { perror(\"close-mmap\"); return 47; }",
+      "  return rc;",
+      "}",
+      "",
+      "int main(int argc, char **argv) {",
+      "  const char *path = argc > 1 ? argv[1] : \"/work/large-file-write.bin\";",
+      "  unsigned long long total = argc > 2 ? strtoull(argv[2], NULL, 10) : 16785408ull;",
+      "  if (total < PAGE_SIZE * 3ull) return 50;",
+      "  int fd = open(path, O_RDWR);",
+      "  if (fd < 0) { perror(\"open-write\"); return 51; }",
+      "  int rc = write_page(fd, 0);",
+      "  if (rc == 0) rc = write_page(fd, total - PAGE_SIZE);",
+      "  if (close(fd) != 0 && rc == 0) { perror(\"close-write\"); rc = 52; }",
+      "  if (rc != 0) return rc;",
+      "  rc = check_mmap(path, total);",
+      "  if (rc != 0) return rc;",
+      "  pid_t child = fork();",
+      "  if (child < 0) { perror(\"fork\"); return 60; }",
+      "  if (child == 0) _exit(check_file_samples(path, total));",
+      "  int status = 0;",
+      "  if (waitpid(child, &status, 0) < 0) { perror(\"waitpid\"); return 61; }",
+      "  if (!WIFEXITED(status)) return 62;",
+      "  rc = WEXITSTATUS(status);",
+      "  if (rc != 0) return rc;",
+      "  printf(\"dirty-resident-mmap-fork bytes=%llu\\n\", total);",
+      "  return 0;",
+      "}",
+      "",
+    ].join("\n"));
+    execFileSync(hostRiscvGcc, ["-static", "-O2", "-o", outputPath, sourcePath], {
+      stdio: "pipe",
+    });
+    return new Uint8Array(readFileSync(outputPath));
+  } catch (error) {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    return logSkip(`failed to build dirty resident mmap/fork probe with ${hostRiscvGcc}: ${detail}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 function expectedByte(offset: number): number {
   return (offset * 17 + 23) & 0xff;
+}
+
+function sourceByte(offset: number): number {
+  return (offset * 13 + 7) & 0xff;
 }
 
 function checksum(bytes: Uint8Array): bigint {
@@ -377,6 +520,77 @@ test("source-backed guest rewrite export witness: snapshot clears stale backing 
     runtime.destroy();
   }
 }, 90_000);
+
+test("source-backed dirty resident mmap/fork witness survives capacity pressure", async () => {
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return;
+  }
+  const probeBytes = buildDirtyResidentMmapForkProbe();
+  if (!probeBytes) {
+    return;
+  }
+  const bytes = Number(process.env.TIDEMARK_TEST_DIRTY_RESIDENT_MMAP_FORK_BYTES ?? 16 * 1024 * 1024 + 8192);
+  const source = new Uint8Array(bytes);
+  for (let offset = 0; offset < source.length; offset += 1) {
+    source[offset] = sourceByte(offset);
+  }
+  const sourceIdentity = "remote:runtime-dirty-resident-mmap-fork.bin";
+  const sourceUrl = `data:application/octet-stream;base64,${Buffer.from(source).toString("base64")}`;
+
+  const runtime = await Runtime.create({
+    wasmBytes,
+    guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
+    maxProcessMemoryPages: 32768,
+    pageCacheDataCapacityBytes: 16 * 1024 * 1024,
+  });
+  try {
+    await runtime.applyFsSnapshot([
+      { kind: "dir", path: "/", mode: 0o755 },
+      { kind: "dir", path: "/work", mode: 0o755 },
+      {
+        kind: "file",
+        path: largeFilePath,
+        size: source.length,
+        mode: 0o644,
+        backingExtent: {
+          sourceIdentity,
+          offset: 0,
+          length: source.length,
+        },
+      },
+    ]);
+    await runtime.registerFsRemoteBackingSource(sourceIdentity, source.length, sourceUrl);
+    const before = await runtime.debugPageCachePath(largeFilePath);
+    expect(before?.dataOff).toBe(0);
+    expect(before?.residentPages ?? 0).toBe(0);
+
+    const result = await spawnWithOutputAndStats(
+      runtime,
+      probeBytes,
+      ["/work/dirty-resident-mmap-fork", largeFilePath, String(source.length)],
+      ["LC_ALL=C", "LANG=C"],
+      180_000,
+      { cwd: "/", stdin: "closed" },
+    );
+    expect(result.exitCode, result.output + (result.debugInfo ? `\n${result.debugInfo}` : "")).toBe(0);
+    expect(result.output).toContain(`dirty-resident-mmap-fork bytes=${source.length}`);
+
+    const after = await runtime.debugPageCachePath(largeFilePath);
+    expect(after?.dataOff).toBe(0);
+    expect(after?.residentPages ?? 0).toBeGreaterThan(0);
+    expect(after?.backingBytes).toBeUndefined();
+    const headEvict = await runtime.debugEvictPageCachePath(largeFilePath, 0);
+    expect(headEvict?.status).toBe("dirty-pinned");
+    const tailEvict = await runtime.debugEvictPageCachePath(
+      largeFilePath,
+      Math.floor((source.length - 1) / 4096),
+    );
+    expect(tailEvict?.status).toBe("dirty-pinned");
+  } finally {
+    runtime.destroy();
+  }
+}, 210_000);
 
 test("large regular file write local gate: guest sequential writes publish byte-for-byte", async () => {
   const wasmBytes = readKernelWasm();

@@ -665,6 +665,7 @@ test("kernel-worker partial write to source-backed snapshot file is dirty reside
 
   const ino = fsState.resolvePath("/lib/runtime.bin");
   expect(fsState.writeDirtyResidentFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(3);
+  expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 0, 3) ?? new Uint8Array())).toBe("abc");
   expect(new TextDecoder().decode(fsState.readBackingFileByInode(ino) ?? new Uint8Array())).toBe("abcXYZ");
   expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("abcXYZ");
   const metadataSnapshot = fsState.snapshotCanonicalFs(false).find((entry) => (
@@ -676,6 +677,47 @@ test("kernel-worker partial write to source-backed snapshot file is dirty reside
   ));
   expect(dataSnapshot?.kind === "file" ? dataSnapshot.data : undefined).toEqual(encoder.encode("abcXYZ"));
   expect(dataSnapshot?.kind === "file" ? dataSnapshot.backingExtent : undefined).toBeUndefined();
+});
+
+test("kernel-worker dirty resident source-backed range reads fetch missing clean pages", () => {
+  const { fsState } = makeFsState();
+  const pageSize = 4096;
+  const source = new Uint8Array(pageSize * 3);
+  for (let offset = 0; offset < source.length; offset += 1) {
+    source[offset] = (offset * 13 + 7) & 0xff;
+  }
+  const dirty = new Uint8Array(pageSize);
+  dirty.fill(0xa5);
+  const backingExtent = {
+    sourceIdentity: "artifact:large.bin",
+    offset: 0,
+    length: source.length,
+  };
+
+  fsState.loadFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "file", path: "/lib/large.bin", size: backingExtent.length, mode: 0o644, backingExtent },
+  ]);
+  fsState.registerBackingSourceRange(backingExtent.sourceIdentity, source.length, 0, source.subarray(0, pageSize));
+  fsState.registerBackingSourceRange(
+    backingExtent.sourceIdentity,
+    source.length,
+    pageSize * 2,
+    source.subarray(pageSize * 2),
+  );
+
+  const ino = fsState.resolvePath("/lib/large.bin");
+  expect(fsState.writeDirtyResidentFileByInode(ino, 0, dirty)).toBe(pageSize);
+  expect(fsState.writeDirtyResidentFileByInode(ino, pageSize * 2, dirty)).toBe(pageSize);
+  expect(fsState.readBackingFileRangeByInode(ino, pageSize, 16)).toBeNull();
+
+  fsState.registerBackingSourceRange(
+    backingExtent.sourceIdentity,
+    source.length,
+    pageSize,
+    source.subarray(pageSize, pageSize + 16),
+  );
+  expect(fsState.readBackingFileRangeByInode(ino, pageSize, 16)).toEqual(source.subarray(pageSize, pageSize + 16));
 });
 
 test("kernel-worker flushes dirty resident pages to backing and leaves clean resident pages", () => {

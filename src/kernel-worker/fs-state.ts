@@ -9,6 +9,7 @@ import {
   MemoryFileBackingStore,
   publishInode,
   readDirtyResidentFileData,
+  readDirtyResidentFileRangeData,
   readFileData,
   readInodeRecord,
   truncateDirtyResidentFileData,
@@ -364,16 +365,20 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (!stat || offset >= stat.size) {
       return null;
     }
-    return backingStore.read(fileObjectId, offset, Math.min(length, stat.size - offset));
+    const readLen = Math.min(length, stat.size - offset);
+    const data = backingStore.read(fileObjectId, offset, readLen);
+    return data.length === readLen ? data : null;
   }
 
   function readBackingFileRangeByInode(ino: number, offset: number, length: number): Uint8Array | null {
     if (residentPageMapIsNewerThanBacking(ino)) {
-      const data = readDirtyResidentFileData(deps.getSabPageCache(), ino, readCleanBackingFileRangeByInode);
-      if (!data || length <= 0 || offset < 0 || offset >= data.length) {
-        return null;
-      }
-      return data.subarray(offset, Math.min(data.length, offset + length));
+      return readDirtyResidentFileRangeData(
+        deps.getSabPageCache(),
+        ino,
+        offset,
+        length,
+        readCleanBackingFileRangeByInode,
+      );
     }
     return readCleanBackingFileRangeByInode(ino, offset, length);
   }
@@ -407,7 +412,6 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       }
       const written = writeDirtyResidentFileData(deps.getSabPageCache(), ino, offset, data, readBackingFileRangeByInode);
       if (written >= 0) {
-        backingExtentsByIno.delete(ino);
         clearSeedBackingExtentForInode(ino);
       }
       return written;
@@ -463,7 +467,6 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         readCleanBackingFileRangeByInode,
       );
       if (truncated >= 0) {
-        backingExtentsByIno.delete(ino);
         clearSeedBackingExtentForInode(ino);
       }
       return truncated;
@@ -830,7 +833,6 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       }
       const size = Number(sourceExports.memfs_file_size(ino));
       if (residentPageMapIsNewerThanBacking(ino)) {
-        backingExtentsByIno.delete(ino);
         clearSeedBackingExtentForInode(ino);
         syncExternalFileDataIntoTarget(canonicalExports, ino, mode, size, published);
         for (const memberExports of deps.processKernels.values()) {

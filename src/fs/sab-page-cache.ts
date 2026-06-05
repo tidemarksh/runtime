@@ -935,28 +935,64 @@ export function readDirtyResidentFileData(
   if (record.size === 0) {
     return new Uint8Array();
   }
+  return readDirtyResidentFileRangeData(sab, ino, 0, record.size, readBackingRange);
+}
+
+export function readDirtyResidentFileRangeData(
+  sab: SharedArrayBuffer,
+  ino: number,
+  offset: number,
+  length: number,
+  readBackingRange?: ResidentBackingRangeReader,
+): Uint8Array | null {
+  const record = readInodeRecord(sab, ino);
+  if (
+    !record
+    || !Number.isInteger(offset)
+    || !Number.isInteger(length)
+    || offset < 0
+    || length <= 0
+    || offset >= record.size
+  ) {
+    return length === 0 ? new Uint8Array() : null;
+  }
+  const readLen = Math.min(length, record.size - offset);
   if (record.dataOff !== 0) {
-    return readFileData(sab, record.dataOff, record.size, 0, record.size);
+    return readFileData(sab, record.dataOff, record.size, offset, readLen);
   }
   const meta = readInodeMeta(sab, ino);
   if (!meta || meta.fileObjectId === 0) {
     return null;
   }
   const dirtyPages = collectResidentPageSnapshots(sab, meta, true);
-  const base = readBackingRange?.(ino, 0, record.size) ?? null;
-  if (!base && dirtyPages.length === 0) {
+  const out = new Uint8Array(readLen);
+  const base = readBackingRange?.(ino, offset, readLen) ?? null;
+  if (base && base.length >= readLen) {
+    out.set(base.subarray(0, readLen));
+  } else if (dirtyPages.length === 0) {
     return null;
   }
-  const out = new Uint8Array(record.size);
-  if (base) {
-    out.set(base.subarray(0, Math.min(base.length, out.length)));
-  }
+  const covered = new Uint8Array(readLen);
   for (const page of dirtyPages) {
     const pageStart = page.pageIndex * DEFAULT_RESIDENT_PAGE_SIZE;
-    if (pageStart >= out.length) {
+    const pageEnd = pageStart + page.bytes.length;
+    const copyStart = Math.max(offset, pageStart);
+    const copyEnd = Math.min(offset + readLen, pageEnd);
+    if (copyEnd <= copyStart) {
       continue;
     }
-    out.set(page.bytes.subarray(0, Math.min(page.bytes.length, out.length - pageStart)), pageStart);
+    const outStart = copyStart - offset;
+    const pageOffset = copyStart - pageStart;
+    const copyLen = copyEnd - copyStart;
+    out.set(page.bytes.subarray(pageOffset, pageOffset + copyLen), outStart);
+    covered.fill(1, outStart, outStart + copyLen);
+  }
+  if (!base || base.length < readLen) {
+    for (let index = 0; index < covered.length; index += 1) {
+      if (covered[index] === 0) {
+        return null;
+      }
+    }
   }
   return out;
 }
