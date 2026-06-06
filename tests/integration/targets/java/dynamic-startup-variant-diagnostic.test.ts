@@ -32,6 +32,20 @@ const javaInterpretedHeadroomEntry: DynamicStartupEntry = {
   ],
 };
 
+const javaInterpretedNoErrorFileEntry: DynamicStartupEntry = {
+  ...javaMemory64HeadroomEntry,
+  id: "java-version-memory64-headroom-xint-no-error-file",
+  argv: [
+    "/jdk/bin/java",
+    "-Xint",
+    "-Xshare:off",
+    "-XX:-CreateCoredumpOnCrash",
+    "-XX:ErrorFile=/dev/null",
+    "-XX:CompressedClassSpaceSize=64m",
+    "-version",
+  ],
+};
+
 test("java dynamic startup diagnostic: interpreted variant preserves fatal JVM signal", async () => {
   const prepared = await prepareDynamicStartupRuntime(javaInterpretedHeadroomEntry);
   if (!prepared) {
@@ -66,3 +80,44 @@ test("java dynamic startup diagnostic: interpreted variant preserves fatal JVM s
     runtime.destroy();
   }
 }, 90_000);
+
+test("java dynamic startup diagnostic: error-file-disabled interpreted variant preserves fatal JVM signal", async () => {
+  const prepared = await prepareDynamicStartupRuntime(javaInterpretedNoErrorFileEntry);
+  if (!prepared) {
+    return;
+  }
+
+  const { runtime, elfBytes } = prepared;
+  try {
+    let detail = "";
+    try {
+      const result = await runDynamicStartupEntry(
+        runtime,
+        javaInterpretedNoErrorFileEntry,
+        elfBytes,
+      );
+      detail = [
+        `unexpected exit=${result.exitCode}`,
+        `output=${JSON.stringify(result.output)}`,
+        `debug=${result.debugInfo ?? ""}`,
+      ].join("\n");
+    } catch (error) {
+      detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    }
+    detail = appendRuntimeFailureEvidence(detail, runtime);
+
+    expect(detail).not.toContain("Unsupported satp mode");
+    expect(detail).not.toContain("RuntimeError: memory access out of bounds");
+    expect(detail).not.toContain("hs_err_pid1.log");
+    expect(detail).not.toContain("rv=-95");
+    expect(detail).toContain("unexpected exit=134");
+    expect(detail).toContain("A fatal error has been detected by the Java Runtime Environment");
+    expect(detail).toContain("SIGSEGV");
+    expect(detail).toContain("CreateCoredumpOnCrash turned off, no core file dumped");
+    expect(detail).toContain("/dev/null");
+    expect(detail).toContain("term_signal=6");
+    expect(detail).toContain("libjvm.so");
+  } finally {
+    runtime.destroy();
+  }
+}, 120_000);
