@@ -56,6 +56,18 @@ test("dynamic startup bucket: startup timeout stays conservative", () => {
   ).toBe("unclassified");
 });
 
+test("dynamic startup bucket: FS progress timeout stays in runtime ownership", () => {
+  const error = new Error(
+    [
+      "timeout after 5000ms",
+      "threads=[0:tid=0 pc=0x4fe06 status=6]",
+      "fs_lifecycle_tail=[fs-start:1:0x5821670:op=1/READ/fd=3, fs-done:1:0x5821670:rv=832, fs-start:1:0x5821670:op=12/MMAP/fd=3]",
+    ].join("\n"),
+  );
+  expect(bucketDynamicStartupFailure({ error })).toBe("runtime-ownership");
+  expect(classifyDynamicStartupFailureStatus({ error })).toBe("runtime-ownership-suspected");
+});
+
 test("dynamic startup bucket: guest signal and debug-collection traps stay conservative", () => {
   expect(
     bucketDynamicStartupFailure({

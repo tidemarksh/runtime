@@ -177,6 +177,16 @@ export function bucketDynamicStartupFailure(input: {
   ) {
     return "consumer-runtime";
   }
+  if (
+    /timeout after \d+ms/i.test(text)
+    && (
+      /\bstatus=6\b|\bSTATUS_FS\b/i.test(text)
+      || /fs_lifecycle_tail=.*op=\d+\/(?:READ|MMAP)/is.test(text)
+      || /fs-start:.*op=\d+\/(?:READ|MMAP)/is.test(text)
+    )
+  ) {
+    return "runtime-ownership";
+  }
   if (/Illegal instruction|SIGILL|Segmentation fault|sig=4|sig=6|sig=11|sig_deliver=11|:\d+:11\b|debug_collect_error=|timeout after \d+ms/i.test(text)) {
     return "unknown";
   }
