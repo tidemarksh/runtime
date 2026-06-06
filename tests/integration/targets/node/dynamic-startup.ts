@@ -21,7 +21,7 @@ export const nodeDynamicStartupEntry: DynamicStartupEntry = {
   guestExecutablePath: "/bin/node",
   argv: ["/bin/node", "--version"],
   env: [],
-  timeoutMs: 5_000,
+  timeoutMs: 60_000,
   guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
   snapshotSources: [
     ...NODE_RUNTIME_LIBS.map((name) => ({
