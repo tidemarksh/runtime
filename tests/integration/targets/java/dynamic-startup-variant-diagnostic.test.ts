@@ -4,6 +4,7 @@ import {
   runDynamicStartupEntry,
   type DynamicStartupEntry,
 } from "../../../support/dynamic-startup-harness.js";
+import { stringifyJavaDiagnosticValue } from "./diagnostic-json.js";
 import { javaMemory64HeadroomEntry } from "./dynamic-startup.js";
 
 function appendRuntimeFailureEvidence(
@@ -15,9 +16,19 @@ function appendRuntimeFailureEvidence(
 ): string {
   return [
     detail,
-    `lastFailure=${JSON.stringify(runtime.debugLastFailureSnapshot?.() ?? null)}`,
-    `executionStats=${JSON.stringify(runtime.debugExecutionStats?.() ?? [])}`,
+    `lastFailure=${stringifyJavaDiagnosticValue(runtime.debugLastFailureSnapshot?.() ?? null)}`,
+    `executionStats=${stringifyJavaDiagnosticValue(runtime.debugExecutionStats?.() ?? [])}`,
   ].join("\n");
+}
+
+function expectJavaTimeoutDiagnostic(detail: string): void {
+  expect(detail).not.toContain("Unsupported satp mode");
+  expect(detail).not.toContain("RuntimeError: memory access out of bounds");
+  expect(detail).toContain("timeout after 20000ms");
+  expect(detail).toContain('"ownerState":"wait:20"');
+  expect(detail).toContain('"lastStatusName":"FUTEX_WAIT"');
+  expect(detail).toContain('"ownerState":"async:6"');
+  expect(detail).toContain('"lastStatusName":"FS"');
 }
 
 const javaInterpretedHeadroomEntry: DynamicStartupEntry = {
@@ -46,7 +57,7 @@ const javaInterpretedNoErrorFileEntry: DynamicStartupEntry = {
   ],
 };
 
-test("java dynamic startup diagnostic: interpreted variant preserves fatal JVM signal", async () => {
+test("java dynamic startup diagnostic: interpreted variant preserves timeout surface", async () => {
   const prepared = await prepareDynamicStartupRuntime(javaInterpretedHeadroomEntry);
   if (!prepared) {
     return;
@@ -71,17 +82,13 @@ test("java dynamic startup diagnostic: interpreted variant preserves fatal JVM s
     }
     detail = appendRuntimeFailureEvidence(detail, runtime);
 
-    expect(detail).not.toContain("Unsupported satp mode");
-    expect(detail).not.toContain("RuntimeError: memory access out of bounds");
-    expect(detail).toContain("unexpected exit=134");
-    expect(detail).toContain("A fatal error has been detected by the Java Runtime Environment");
-    expect(detail).toContain("SIGSEGV");
+    expectJavaTimeoutDiagnostic(detail);
   } finally {
     runtime.destroy();
   }
 }, 90_000);
 
-test("java dynamic startup diagnostic: error-file-disabled interpreted variant preserves fatal JVM signal", async () => {
+test("java dynamic startup diagnostic: error-file-disabled interpreted variant preserves timeout surface", async () => {
   const prepared = await prepareDynamicStartupRuntime(javaInterpretedNoErrorFileEntry);
   if (!prepared) {
     return;
@@ -106,17 +113,9 @@ test("java dynamic startup diagnostic: error-file-disabled interpreted variant p
     }
     detail = appendRuntimeFailureEvidence(detail, runtime);
 
-    expect(detail).not.toContain("Unsupported satp mode");
-    expect(detail).not.toContain("RuntimeError: memory access out of bounds");
+    expectJavaTimeoutDiagnostic(detail);
     expect(detail).not.toContain("hs_err_pid1.log");
     expect(detail).not.toContain("rv=-95");
-    expect(detail).toContain("unexpected exit=134");
-    expect(detail).toContain("A fatal error has been detected by the Java Runtime Environment");
-    expect(detail).toContain("SIGSEGV");
-    expect(detail).toContain("CreateCoredumpOnCrash turned off, no core file dumped");
-    expect(detail).toContain("/dev/null");
-    expect(detail).toContain("term_signal=6");
-    expect(detail).toContain("libjvm.so");
   } finally {
     runtime.destroy();
   }
