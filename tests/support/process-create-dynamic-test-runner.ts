@@ -7,6 +7,7 @@ import {
   buildDynamicStartupSnapshot,
   type DynamicStartupEntry,
 } from "./dynamic-startup-harness.js";
+import { createDiagnosticKernelPageCache } from "./kernel-page-cache-env.js";
 import { readKernelWasm } from "./runtime-workload.js";
 
 async function loadKernel() {
@@ -15,10 +16,11 @@ async function loadKernel() {
     return null;
   }
   const module = await WebAssembly.compile(wasmBytes);
+  const pageCache = createDiagnosticKernelPageCache();
   const { instance, memory } = await instantiateKernelWithSharedMemory(module, {
     initialPages: 1024,
     maximumPages: 32768,
-  });
+  }, pageCache.envOptions);
   const exports = instance.exports as unknown as KernelExports;
   const heapBase = (exports as { __heap_base?: { value: number | bigint } }).__heap_base?.value ?? 0x200000;
   exports.kernel_init(Number(heapBase));
