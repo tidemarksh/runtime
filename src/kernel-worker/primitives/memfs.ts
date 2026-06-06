@@ -18,11 +18,12 @@ import {
 const MEMFS_S_IFLNK = 0o120000;
 
 export function createKernelWorkerMemfsPrimitives() {
-  function preserveMetadataOnlySymlinkData(
+  function preserveCopiedInlineData(
     sourceExports: KernelExports,
     targetExports: KernelExports,
     sourceLayout: ReturnType<typeof readMemfsLayout>,
     targetLayout: ReturnType<typeof readMemfsLayout>,
+    preserveRegularData: boolean,
   ): number {
     const maxInodes = targetExports.kernel_memfs_first_child_bytes() / 4;
     if (maxInodes <= 0) {
@@ -44,11 +45,12 @@ export function createKernelWorkerMemfsPrimitives() {
       const mode = targetInodeView.getUint32(inodeBase + MEMFS_INODE_OFF_MODE, true);
       const fileType = mode & MEMFS_S_IFMT;
       if (fileType === MEMFS_S_IFREG) {
-        targetInodeView.setUint32(inodeBase + MEMFS_INODE_OFF_DATA_OFFSET, 0, true);
-        targetInodeView.setUint32(inodeBase + MEMFS_INODE_OFF_DATA_CAP, 0, true);
-        continue;
-      }
-      if (fileType !== MEMFS_S_IFLNK) {
+        if (!preserveRegularData) {
+          targetInodeView.setUint32(inodeBase + MEMFS_INODE_OFF_DATA_OFFSET, 0, true);
+          targetInodeView.setUint32(inodeBase + MEMFS_INODE_OFF_DATA_CAP, 0, true);
+          continue;
+        }
+      } else if (fileType !== MEMFS_S_IFLNK) {
         continue;
       }
 
@@ -87,7 +89,7 @@ export function createKernelWorkerMemfsPrimitives() {
     sourceState: KernelRuntimeState,
     targetExports: KernelExports,
     targetState: KernelRuntimeState,
-    _options: { includeData?: boolean } = {},
+    options: { includeData?: boolean } = {},
   ): void {
     const sourceLayout = readMemfsLayout(sourceExports.memory, sourceState.memfsPtr);
     const targetLayout = readMemfsLayout(targetExports.memory, targetState.memfsPtr);
@@ -133,8 +135,22 @@ export function createKernelWorkerMemfsPrimitives() {
     targetHeader.setUint32(20, targetLayout.firstChildPtr, true);
     targetHeader.setUint32(24, targetLayout.dirEntriesPtr, true);
     targetHeader.setUint32(28, targetLayout.dataPtr, true);
-    const dataUsed = preserveMetadataOnlySymlinkData(sourceExports, targetExports, sourceLayout, targetLayout);
-    normalizeMetadataOnlyMemfsState(targetExports, targetState, sourceLayout, targetLayout, dataUsed);
+    const preserveRegularData = options.includeData === true;
+    const dataUsed = preserveCopiedInlineData(
+      sourceExports,
+      targetExports,
+      sourceLayout,
+      targetLayout,
+      preserveRegularData,
+    );
+    normalizeMetadataOnlyMemfsState(
+      targetExports,
+      targetState,
+      sourceLayout,
+      targetLayout,
+      dataUsed,
+      { clearRegularData: !preserveRegularData },
+    );
   }
 
   function clearMemfsState(

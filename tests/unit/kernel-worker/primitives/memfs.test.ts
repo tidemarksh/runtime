@@ -380,4 +380,109 @@ describe("createKernelWorkerMemfsPrimitives", () => {
     expect(new TextDecoder().decode(new Uint8Array(targetMemory.buffer, 0x500 + symlinkDataOffset, symlinkTarget.length))).toBe("usr/lib");
     expect(readMemfsLayout(targetMemory, targetState.memfsPtr).dataUsed).toBe(8 + symlinkTarget.length);
   });
+
+  it("includeData copy preserves inline regular file data", () => {
+    const memoryPages = { initial: 1, maximum: 4, shared: true } as const;
+    const sourceMemory = new WebAssembly.Memory(memoryPages);
+    const targetMemory = new WebAssembly.Memory(memoryPages);
+    const primitives = createKernelWorkerMemfsPrimitives();
+
+    const sourceState: KernelRuntimeState = {
+      heapBase: 0,
+      heapPtr: 0,
+      ofdTablePtr: 0,
+      memfsPtr: 0x80,
+      memStatePtr: 0,
+      epollTablePtr: 0,
+      socketTablePtr: 0,
+      socketUsed: 0,
+      pipeBase: 0,
+      pipeUsed: 0n,
+      netBufBase: 0,
+      netBufUsed: 0n,
+      sigSlotsPtr: 0,
+      processPendingPtr: 0,
+      processRuntimeStatePtr: 0,
+      timeStatePtr: 0,
+    };
+    const targetState: KernelRuntimeState = {
+      ...sourceState,
+      memfsPtr: 0x180,
+    };
+
+    writeMemfsHeader(sourceMemory, sourceState.memfsPtr, {
+      inodeCount: 3,
+      dataUsed: 48,
+      dataCap: 64,
+      inodesPtr: 0x200,
+      firstChildPtr: 0x280,
+      dirEntriesPtr: 0x2a0,
+      dataPtr: 0x300,
+    });
+    writeMemfsHeader(targetMemory, targetState.memfsPtr, {
+      inodeCount: 3,
+      dataUsed: 0,
+      dataCap: 64,
+      inodesPtr: 0x400,
+      firstChildPtr: 0x480,
+      dirEntriesPtr: 0x4a0,
+      dataPtr: 0x500,
+    });
+
+    const sourceInodeView = new DataView(sourceMemory.buffer);
+    const procCpuinfo = new TextEncoder().encode("processor\t: 0\nmmu\t\t: sv48\n");
+    const cpuinfoInodeBase = 0x200 + 32;
+    sourceInodeView.setUint32(cpuinfoInodeBase + 0, 0o100444, true);
+    sourceInodeView.setBigUint64(cpuinfoInodeBase + 16, BigInt(procCpuinfo.length), true);
+    sourceInodeView.setUint32(cpuinfoInodeBase + 24, 16, true);
+    sourceInodeView.setUint32(cpuinfoInodeBase + 28, procCpuinfo.length, true);
+
+    const symlinkTarget = new TextEncoder().encode("/bin/java");
+    const symlinkInodeBase = 0x200 + 64;
+    sourceInodeView.setUint32(symlinkInodeBase + 0, 0o120777, true);
+    sourceInodeView.setBigUint64(symlinkInodeBase + 16, BigInt(symlinkTarget.length), true);
+    sourceInodeView.setUint32(symlinkInodeBase + 24, 48, true);
+    sourceInodeView.setUint32(symlinkInodeBase + 28, symlinkTarget.length, true);
+
+    new Uint8Array(sourceMemory.buffer).set(procCpuinfo, 0x300 + 16);
+    new Uint8Array(sourceMemory.buffer).set(symlinkTarget, 0x300 + 48);
+
+    const sourceExports = createFakeExports(sourceMemory, {
+      inodesBytes: 96,
+      firstChildBytes: 12,
+      dirEntriesBytes: 32,
+      dataBytes: 64,
+      dataPtr: 0x300,
+    });
+    const targetExports = createFakeExports(targetMemory, {
+      inodesBytes: 96,
+      firstChildBytes: 12,
+      dirEntriesBytes: 32,
+      dataBytes: 64,
+      dataPtr: 0x500,
+    });
+
+    primitives.copyMemfsState(sourceExports, sourceState, targetExports, targetState, {
+      includeData: true,
+    });
+
+    const targetInodeView = new DataView(targetMemory.buffer);
+    const targetCpuinfoInodeBase = 0x400 + 32;
+    const targetSymlinkInodeBase = 0x400 + 64;
+    const cpuinfoDataOffset = targetInodeView.getUint32(targetCpuinfoInodeBase + 24, true);
+    const cpuinfoDataCap = targetInodeView.getUint32(targetCpuinfoInodeBase + 28, true);
+    const symlinkDataOffset = targetInodeView.getUint32(targetSymlinkInodeBase + 24, true);
+    const symlinkDataCap = targetInodeView.getUint32(targetSymlinkInodeBase + 28, true);
+
+    expect(cpuinfoDataOffset).toBe(8);
+    expect(cpuinfoDataCap).toBe(procCpuinfo.length);
+    expect(new TextDecoder().decode(new Uint8Array(targetMemory.buffer, 0x500 + cpuinfoDataOffset, procCpuinfo.length)))
+      .toBe("processor\t: 0\nmmu\t\t: sv48\n");
+    expect(symlinkDataOffset).toBe(8 + procCpuinfo.length);
+    expect(symlinkDataCap).toBe(symlinkTarget.length);
+    expect(new TextDecoder().decode(new Uint8Array(targetMemory.buffer, 0x500 + symlinkDataOffset, symlinkTarget.length)))
+      .toBe("/bin/java");
+    expect(readMemfsLayout(targetMemory, targetState.memfsPtr).dataUsed)
+      .toBe(8 + procCpuinfo.length + symlinkTarget.length);
+  });
 });

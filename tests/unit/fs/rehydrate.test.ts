@@ -236,7 +236,12 @@ function makeMemfsExports(): FakeMemfsExports {
       ensurePath("/proc/self", "dir", 0o040555);
       ensurePath("/proc/self/exe", "symlink", 0o120777, target);
       ensurePath("/proc/stat", "file", 0o100444, new TextEncoder().encode("cpu  1 1 1 1 0 0 0 0 0 0\n"));
-      ensurePath("/proc/cpuinfo", "file", 0o100444, new TextEncoder().encode("processor\t: 0\n"));
+      ensurePath(
+        "/proc/cpuinfo",
+        "file",
+        0o100444,
+        new TextEncoder().encode("processor\t: 0\nmodel name\t: tidemark-riscv64\nmmu\t\t: sv48\n\n"),
+      );
     },
     ensurePath,
     linkTarget: (path: string) => {
@@ -293,8 +298,8 @@ test("copyCanonicalMemfsToProcess rehydrates /proc/self/exe after canonical memf
 
   expect(childExports.linkTarget("/proc/self/exe")).toBe("/bin/child-a");
   expect(childExports.fileContents("/proc/stat")).not.toBeNull();
-  expect(childExports.fileContents("/proc/cpuinfo")).not.toBeNull();
-  expect(childExports.procfsInstallTargets).toEqual([]);
+  expect(childExports.fileContents("/proc/cpuinfo")).toContain("mmu\t\t: sv48\n");
+  expect(childExports.procfsInstallTargets).toEqual(["/bin/child-a"]);
 });
 
 test("fanoutCanonicalMemfs preserves each process /proc/self/exe target while replacing canonical memfs", () => {
@@ -328,6 +333,10 @@ test("fanoutCanonicalMemfs preserves each process /proc/self/exe target while re
 
   expect(processA.linkTarget("/proc/self/exe")).toBe("/bin/a");
   expect(processB.linkTarget("/proc/self/exe")).toBe("/bin/b");
+  expect(processA.fileContents("/proc/cpuinfo")).toContain("mmu\t\t: sv48\n");
+  expect(processB.fileContents("/proc/cpuinfo")).toContain("mmu\t\t: sv48\n");
+  expect(processA.procfsInstallTargets).toEqual(["/bin/a"]);
+  expect(processB.procfsInstallTargets).toEqual(["/bin/b"]);
 });
 
 test("restoreProcSelfExe replaces copied proc/self/exe with the target process symlink", () => {

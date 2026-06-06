@@ -182,6 +182,7 @@ export function normalizeMetadataOnlyMemfsState(
   sourceLayout: MemfsLayout,
   targetLayout: MemfsLayout,
   dataUsed = 8,
+  options: { clearRegularData?: boolean } = {},
 ): void {
   const header = new DataView(targetExports.memory.buffer, targetState.memfsPtr, 32);
   header.setUint32(MEMFS_HEADER_OFF_INODE_COUNT, sourceLayout.inodeCount, true);
@@ -196,6 +197,10 @@ export function normalizeMetadataOnlyMemfsState(
   const maxInodes = targetExports.kernel_memfs_first_child_bytes() / 4;
   const inodeBytes = targetExports.kernel_memfs_inodes_bytes() / maxInodes;
   const inodeView = new DataView(targetExports.memory.buffer);
+  if (options.clearRegularData === false) {
+    return;
+  }
+
   for (let ino = 1; ino < sourceLayout.inodeCount; ino++) {
     const inodeBase = targetLayout.inodesPtr + ino * inodeBytes;
     const mode = inodeView.getUint32(inodeBase + MEMFS_INODE_OFF_MODE, true);
