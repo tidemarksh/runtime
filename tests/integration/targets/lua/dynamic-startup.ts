@@ -11,7 +11,7 @@ export const luaDynamicStartupEntry: DynamicStartupEntry = {
   guestExecutablePath: "/usr/bin/lua5.4",
   argv: ["/usr/bin/lua5.4", "-v"],
   env: [],
-  timeoutMs: 5_000,
+  timeoutMs: 20_000,
   guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
   snapshotSources: [
     { kind: "tree", hostPath: resolve(runtimeDir, "usr/bin"), guestPath: "/usr/bin" },
