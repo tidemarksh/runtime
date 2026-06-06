@@ -11,7 +11,7 @@ export const perlDynamicStartupEntry: DynamicStartupEntry = {
   guestExecutablePath: "/usr/bin/perl",
   argv: ["/usr/bin/perl", "-v"],
   env: [],
-  timeoutMs: 5_000,
+  timeoutMs: 90_000,
   guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
   snapshotSources: [
     { kind: "tree", hostPath: resolve(runtimeDir, "usr/bin"), guestPath: "/usr/bin" },

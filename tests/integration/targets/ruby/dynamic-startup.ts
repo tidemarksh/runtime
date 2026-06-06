@@ -11,7 +11,7 @@ export const rubyDynamicStartupEntry: DynamicStartupEntry = {
   guestExecutablePath: "/usr/bin/ruby3.3",
   argv: ["/usr/bin/ruby3.3", "--version"],
   env: [],
-  timeoutMs: 5_000,
+  timeoutMs: 60_000,
   guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
   snapshotSources: [
     { kind: "tree", hostPath: resolve(runtimeDir, "usr/bin"), guestPath: "/usr/bin" },

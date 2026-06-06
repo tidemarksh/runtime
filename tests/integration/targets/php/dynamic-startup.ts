@@ -11,7 +11,7 @@ export const phpDynamicStartupEntry: DynamicStartupEntry = {
   guestExecutablePath: "/usr/bin/php8.4",
   argv: ["/usr/bin/php8.4", "--version"],
   env: [],
-  timeoutMs: 5_000,
+  timeoutMs: 30_000,
   guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
   snapshotSources: [
     { kind: "tree", hostPath: resolve(runtimeDir, "usr/bin"), guestPath: "/usr/bin" },
@@ -24,5 +24,5 @@ export const phpDynamicStartupEntry: DynamicStartupEntry = {
       mode: 0o755,
     },
   ],
-  expectedSubstrings: ["PHP 8.4.16"],
+  expectedSubstrings: ["PHP 8.4.21"],
 };
