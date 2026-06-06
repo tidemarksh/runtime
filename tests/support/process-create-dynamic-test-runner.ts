@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { expect, test } from "vite-plus/test";
 import type { KernelExports } from "../../src/abi.js";
-import { createKernelEnv } from "../../src/wasm/env.js";
+import { instantiateKernelWithSharedMemory } from "../../src/wasm/kernel-memory.js";
 import { preloadSnapshotEntries } from "../../src/worker/process-fs.js";
 import {
   buildDynamicStartupSnapshot,
@@ -15,17 +15,13 @@ async function loadKernel() {
     return null;
   }
   const module = await WebAssembly.compile(wasmBytes);
-  const memory = new WebAssembly.Memory({
-    initial: 1024,
-    maximum: 32768,
-    shared: true,
-  });
-  const instance = await WebAssembly.instantiate(module, {
-    env: createKernelEnv(memory),
+  const { instance, memory } = await instantiateKernelWithSharedMemory(module, {
+    initialPages: 1024,
+    maximumPages: 32768,
   });
   const exports = instance.exports as unknown as KernelExports;
-  const heapBase = (exports as { __heap_base?: { value: number } }).__heap_base?.value ?? 0x200000;
-  exports.kernel_init(heapBase);
+  const heapBase = (exports as { __heap_base?: { value: number | bigint } }).__heap_base?.value ?? 0x200000;
+  exports.kernel_init(Number(heapBase));
   const now = Date.now();
   exports.set_base_time(
     BigInt(Math.floor(now / 1000)),
