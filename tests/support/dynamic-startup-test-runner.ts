@@ -4,7 +4,7 @@ import {
   classifyDynamicStartupFailureStatus,
   type DynamicStartupEntry,
   prepareDynamicStartupRuntime,
-  resolveDynamicStartupTimeoutMs,
+  resolveDynamicStartupTestTimeoutMs,
   runDynamicStartupEntry,
   validateDynamicStartupOutput,
 } from "./dynamic-startup-harness.js";
@@ -69,5 +69,5 @@ export function registerDynamicStartupGate(entry: DynamicStartupEntry): void {
     } finally {
       runtime.destroy();
     }
-  }, Math.max(20_000, resolveDynamicStartupTimeoutMs(entry) + 15_000));
+  }, resolveDynamicStartupTestTimeoutMs(entry));
 }

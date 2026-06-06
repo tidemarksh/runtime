@@ -1,6 +1,7 @@
 import { expect, test } from "vite-plus/test";
 import {
   prepareDynamicStartupRuntime,
+  resolveDynamicStartupTestTimeoutMs,
   runDynamicStartupEntry,
 } from "../../../support/dynamic-startup-harness.js";
 import { rubyDynamicStartupEntry } from "./dynamic-startup.js";
@@ -28,4 +29,4 @@ test("ruby dynamic startup contract: ruby-version-exit-0", async () => {
   } finally {
     runtime.destroy();
   }
-}, 20_000);
+}, resolveDynamicStartupTestTimeoutMs(rubyDynamicStartupEntry));

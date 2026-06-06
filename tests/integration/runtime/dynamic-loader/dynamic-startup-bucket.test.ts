@@ -2,6 +2,7 @@ import { expect, test } from "vite-plus/test";
 import {
   bucketDynamicStartupFailure,
   classifyDynamicStartupFailureStatus,
+  resolveDynamicStartupTestTimeoutMs,
   resolveDynamicStartupTimeoutMs,
   type DynamicStartupEntry,
 } from "../../../support/dynamic-startup-harness.js";
@@ -112,10 +113,13 @@ test("dynamic startup timeout override is opt-in", () => {
   try {
     delete process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TIMEOUT_MS;
     expect(resolveDynamicStartupTimeoutMs(minimalEntry)).toBe(5_000);
+    expect(resolveDynamicStartupTestTimeoutMs(minimalEntry)).toBe(20_000);
     process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TIMEOUT_MS = "20000";
     expect(resolveDynamicStartupTimeoutMs(minimalEntry)).toBe(20_000);
+    expect(resolveDynamicStartupTestTimeoutMs(minimalEntry)).toBe(200_000);
     process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TIMEOUT_MS = "0";
     expect(resolveDynamicStartupTimeoutMs(minimalEntry)).toBe(5_000);
+    expect(resolveDynamicStartupTestTimeoutMs(minimalEntry)).toBe(20_000);
   } finally {
     if (original === undefined) {
       delete process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TIMEOUT_MS;

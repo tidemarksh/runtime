@@ -79,6 +79,12 @@ export function resolveDynamicStartupTimeoutMs(entry: DynamicStartupEntry): numb
   return entry.timeoutMs;
 }
 
+export function resolveDynamicStartupTestTimeoutMs(entry: DynamicStartupEntry): number {
+  const timeoutMs = resolveDynamicStartupTimeoutMs(entry);
+  const marginMs = timeoutMs === entry.timeoutMs ? 15_000 : 180_000;
+  return Math.max(20_000, timeoutMs + marginMs);
+}
+
 export async function prepareDynamicStartupRuntime(
   entry: DynamicStartupEntry,
 ): Promise<{ runtime: RuntimeInstance; elfBytes: Uint8Array } | null> {
