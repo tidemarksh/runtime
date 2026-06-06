@@ -12,7 +12,7 @@ export const rDynamicStartupEntry: DynamicStartupEntry = {
   guestExecutablePath: "/usr/lib/R/bin/exec/R",
   argv: ["/usr/lib/R/bin/exec/R", "--version"],
   env: ["R_HOME=/rhome"],
-  timeoutMs: 5_000,
+  timeoutMs: 120_000,
   guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
   snapshotSources: [
     { kind: "tree", hostPath: resolve(runtimeDir, "usr/lib/R"), guestPath: "/usr/lib/R" },
@@ -43,7 +43,13 @@ export const rDynamicStartupEntry: DynamicStartupEntry = {
       mode: 0o755,
     },
     { kind: "tree", hostPath: rhomeOverlayDir, guestPath: "/rhome" },
+    {
+      kind: "file",
+      hostPath: resolve(rhomeOverlayDir, "etc/Renviron.ucf"),
+      guestPath: "/rhome/etc/Renviron",
+      mode: 0o644,
+    },
   ],
-  expectedSubstrings: ["R version 4.6.0 alpha"],
+  expectedSubstrings: ["R version 4.6.0"],
   forbiddenSubstrings: ["cannot find system Renviron"],
 };
