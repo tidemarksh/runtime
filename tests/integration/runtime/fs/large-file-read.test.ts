@@ -16,6 +16,18 @@ const hostRiscvGcc = process.env.TIDEMARK_TEST_HOST_RISCV_GCC ?? "riscv64-linux-
 const largeFileReadBytes = Number(process.env.TIDEMARK_TEST_LARGE_FILE_READ_BYTES ?? 16 * 1024 * 1024 + 17);
 const largeFileReadInput = process.env.TIDEMARK_TEST_LARGE_FILE_READ_INPUT ?? "";
 const largeFilePath = "/work/large-file-read.bin";
+const defaultLargeFileReadTimeoutMs = 180_000;
+
+function resolveLargeFileReadTimeoutMs(): number {
+  const parsed = Number(process.env.TIDEMARK_TEST_LARGE_FILE_READ_TIMEOUT_MS ?? defaultLargeFileReadTimeoutMs);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return defaultLargeFileReadTimeoutMs;
+  }
+  return Math.trunc(parsed);
+}
+
+const largeFileReadTimeoutMs = resolveLargeFileReadTimeoutMs();
+const largeFileReadTestTimeoutMs = Math.max(210_000, largeFileReadTimeoutMs + 30_000);
 
 function buildLargeFileReadProbe(): Uint8Array | null {
   const tmp = mkdtempSync(join(tmpdir(), "tidemark-large-file-read-"));
@@ -548,7 +560,7 @@ test("large regular file read local gate: guest sequentially reads package-index
       probeBytes,
       ["/work/large-file-read", largeFilePath],
       ["LC_ALL=C", "LANG=C"],
-      180_000,
+      largeFileReadTimeoutMs,
       { cwd: "/", stdin: "closed" },
     );
     const spawnDurationMs = Date.now() - spawnStartedMs;
@@ -560,12 +572,13 @@ test("large regular file read local gate: guest sequentially reads package-index
       `spawnDurationMs=${spawnDurationMs}`,
       `bytes=${input.length}`,
       `input=${largeFileReadInput || "synthetic"}`,
+      `timeoutMs=${largeFileReadTimeoutMs}`,
       `execution=${result.execution}`,
     ].join(" "));
   } finally {
     runtime.destroy();
   }
-}, 210_000);
+}, largeFileReadTestTimeoutMs);
 
 test("large regular file read local gate: fork child reads backing-store backed input", async () => {
   const wasmBytes = readKernelWasm();
@@ -595,7 +608,7 @@ test("large regular file read local gate: fork child reads backing-store backed 
       probeBytes,
       ["/work/large-file-read", largeFilePath, "fork"],
       ["LC_ALL=C", "LANG=C"],
-      180_000,
+      largeFileReadTimeoutMs,
       { cwd: "/", stdin: "closed" },
     );
     expect(result.exitCode, result.output + (result.debugInfo ? `\n${result.debugInfo}` : "")).toBe(0);
@@ -605,12 +618,13 @@ test("large regular file read local gate: fork child reads backing-store backed 
       `large regular file fork read gate durationMs=${Date.now() - startedMs}`,
       `bytes=${input.length}`,
       `input=${largeFileReadInput || "synthetic"}`,
+      `timeoutMs=${largeFileReadTimeoutMs}`,
       `execution=${result.execution}`,
     ].join(" "));
   } finally {
     runtime.destroy();
   }
-}, 210_000);
+}, largeFileReadTestTimeoutMs);
 
 test("large regular file read local gate: mmap reads backing-store backed input", async () => {
   const wasmBytes = readKernelWasm();
@@ -640,7 +654,7 @@ test("large regular file read local gate: mmap reads backing-store backed input"
       probeBytes,
       ["/work/large-file-read", largeFilePath, "mmap"],
       ["LC_ALL=C", "LANG=C"],
-      180_000,
+      largeFileReadTimeoutMs,
       { cwd: "/", stdin: "closed" },
     );
     expect(result.exitCode, result.output + (result.debugInfo ? `\n${result.debugInfo}` : "")).toBe(0);
@@ -650,12 +664,13 @@ test("large regular file read local gate: mmap reads backing-store backed input"
       `large regular file mmap read gate durationMs=${Date.now() - startedMs}`,
       `bytes=${input.length}`,
       `input=${largeFileReadInput || "synthetic"}`,
+      `timeoutMs=${largeFileReadTimeoutMs}`,
       `execution=${result.execution}`,
     ].join(" "));
   } finally {
     runtime.destroy();
   }
-}, 210_000);
+}, largeFileReadTestTimeoutMs);
 
 test("large regular file read local gate: mmap samples backing-store backed input", async () => {
   const wasmBytes = readKernelWasm();
@@ -685,7 +700,7 @@ test("large regular file read local gate: mmap samples backing-store backed inpu
       probeBytes,
       ["/work/large-file-read", largeFilePath, "mmap-sample"],
       ["LC_ALL=C", "LANG=C"],
-      180_000,
+      largeFileReadTimeoutMs,
       { cwd: "/", stdin: "closed" },
     );
     expect(result.exitCode, result.output + (result.debugInfo ? `\n${result.debugInfo}` : "")).toBe(0);
@@ -696,9 +711,10 @@ test("large regular file read local gate: mmap samples backing-store backed inpu
       `large regular file mmap sample gate durationMs=${Date.now() - startedMs}`,
       `bytes=${input.length}`,
       `input=${largeFileReadInput || "synthetic"}`,
+      `timeoutMs=${largeFileReadTimeoutMs}`,
       `execution=${result.execution}`,
     ].join(" "));
   } finally {
     runtime.destroy();
   }
-}, 210_000);
+}, largeFileReadTestTimeoutMs);
