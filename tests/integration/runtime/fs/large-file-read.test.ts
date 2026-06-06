@@ -73,11 +73,46 @@ function buildLargeFileReadProbe(): Uint8Array | null {
       "  return 0;",
       "}",
       "",
+      "static int checksum_sample_by_mmap(const char *path, unsigned long long *total, unsigned long long *samples, unsigned long long *checksum) {",
+      "  int fd = open(path, O_RDONLY);",
+      "  if (fd < 0) { perror(\"open-mmap-sample-input\"); return 50; }",
+      "  off_t size = lseek(fd, 0, SEEK_END);",
+      "  if (size < 0) { perror(\"lseek-mmap-sample-input\"); close(fd); return 51; }",
+      "  if (size == 0) { close(fd); *total = 0; *samples = 0; *checksum = 0; return 0; }",
+      "  void *mapped = mmap(NULL, (size_t)size, PROT_READ, MAP_PRIVATE, fd, 0);",
+      "  if (mapped == MAP_FAILED) { perror(\"mmap-sample-input\"); close(fd); return 52; }",
+      "  const unsigned char *bytes = (const unsigned char *)mapped;",
+      "  off_t offsets[] = {",
+      "    0,",
+      "    1,",
+      "    4095,",
+      "    4096,",
+      "    size / 2,",
+      "    size > 4097 ? size - 4097 : 0,",
+      "    size > 4096 ? size - 4096 : 0,",
+      "    size > 2 ? size - 2 : 0,",
+      "    size - 1,",
+      "  };",
+      "  *total = (unsigned long long)size;",
+      "  *samples = 0;",
+      "  *checksum = 0;",
+      "  for (size_t i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {",
+      "    if (offsets[i] >= 0 && offsets[i] < size) {",
+      "      *checksum += (unsigned long long)bytes[offsets[i]];",
+      "      *samples += 1;",
+      "    }",
+      "  }",
+      "  if (munmap(mapped, (size_t)size) != 0) { perror(\"munmap-sample-input\"); close(fd); return 53; }",
+      "  if (close(fd) != 0) { perror(\"close-mmap-sample-input\"); return 54; }",
+      "  return 0;",
+      "}",
+      "",
       "int main(int argc, char **argv) {",
       "  const char *path = argc > 1 ? argv[1] : \"/work/large-file-read.bin\";",
       "  const char *mode = argc > 2 ? argv[2] : \"read\";",
       "  unsigned long long total = 0;",
       "  unsigned long long checksum = 0;",
+      "  unsigned long long samples = 0;",
       "  if (strcmp(mode, \"fork\") == 0) {",
       "    pid_t child = fork();",
       "    if (child < 0) { perror(\"fork\"); return 40; }",
@@ -95,6 +130,11 @@ function buildLargeFileReadProbe(): Uint8Array | null {
       "  if (strcmp(mode, \"mmap\") == 0) {",
       "    int rc = checksum_by_mmap(path, &total, &checksum);",
       "    if (rc == 0) printf(\"large-file-mmap-read bytes=%llu checksum=%llu\\n\", total, checksum);",
+      "    return rc;",
+      "  }",
+      "  if (strcmp(mode, \"mmap-sample\") == 0) {",
+      "    int rc = checksum_sample_by_mmap(path, &total, &samples, &checksum);",
+      "    if (rc == 0) printf(\"large-file-mmap-sample-read bytes=%llu samples=%llu checksum=%llu\\n\", total, samples, checksum);",
       "    return rc;",
       "  }",
       "  int rc = checksum_by_read(path, &total, &checksum);",
@@ -132,6 +172,33 @@ function checksum(bytes: Uint8Array): bigint {
     sum += BigInt(byte);
   }
   return sum;
+}
+
+function mmapSampleOffsets(length: number): number[] {
+  const size = Math.max(0, Math.trunc(length));
+  if (size === 0) {
+    return [];
+  }
+  return [
+    0,
+    1,
+    4095,
+    4096,
+    Math.trunc(size / 2),
+    size > 4097 ? size - 4097 : 0,
+    size > 4096 ? size - 4096 : 0,
+    size > 2 ? size - 2 : 0,
+    size - 1,
+  ].filter((offset) => offset >= 0 && offset < size);
+}
+
+function mmapSampleChecksum(bytes: Uint8Array): { samples: number; checksum: bigint } {
+  let sum = 0n;
+  const offsets = mmapSampleOffsets(bytes.length);
+  for (const offset of offsets) {
+    sum += BigInt(bytes[offset]);
+  }
+  return { samples: offsets.length, checksum: sum };
 }
 
 function buildResidentWitnessInput(length = 4096): Uint8Array {
@@ -581,6 +648,52 @@ test("large regular file read local gate: mmap reads backing-store backed input"
     expect(result.output).toContain(`checksum=${expected.toString()}`);
     console.log([
       `large regular file mmap read gate durationMs=${Date.now() - startedMs}`,
+      `bytes=${input.length}`,
+      `input=${largeFileReadInput || "synthetic"}`,
+      `execution=${result.execution}`,
+    ].join(" "));
+  } finally {
+    runtime.destroy();
+  }
+}, 210_000);
+
+test("large regular file read local gate: mmap samples backing-store backed input", async () => {
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) {
+    return;
+  }
+  const probeBytes = buildLargeFileReadProbe();
+  if (!probeBytes) {
+    return;
+  }
+  const input = buildInput();
+  const expected = mmapSampleChecksum(input);
+
+  const runtime = await Runtime.create({
+    wasmBytes,
+    guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
+    maxProcessMemoryPages: 32768,
+  });
+  const startedMs = Date.now();
+  try {
+    const snapshot = buildSnapshotFromSources([
+      { kind: "inlineFile", guestPath: largeFilePath, data: input, mode: 0o644 },
+    ]);
+    await runtime.applyFsSnapshot(snapshot.entries ?? []);
+    const result = await spawnWithOutputAndStats(
+      runtime,
+      probeBytes,
+      ["/work/large-file-read", largeFilePath, "mmap-sample"],
+      ["LC_ALL=C", "LANG=C"],
+      180_000,
+      { cwd: "/", stdin: "closed" },
+    );
+    expect(result.exitCode, result.output + (result.debugInfo ? `\n${result.debugInfo}` : "")).toBe(0);
+    expect(result.output).toContain(`large-file-mmap-sample-read bytes=${input.length}`);
+    expect(result.output).toContain(`samples=${expected.samples}`);
+    expect(result.output).toContain(`checksum=${expected.checksum.toString()}`);
+    console.log([
+      `large regular file mmap sample gate durationMs=${Date.now() - startedMs}`,
       `bytes=${input.length}`,
       `input=${largeFileReadInput || "synthetic"}`,
       `execution=${result.execution}`,
