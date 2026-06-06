@@ -12,7 +12,7 @@ export const pythonDynamicStartupEntry: DynamicStartupEntry = {
   guestExecutablePath: "/python/bin/python3.12",
   argv: ["/python/bin/python3.12", "--version"],
   env: [],
-  timeoutMs: 5_000,
+  timeoutMs: 180_000,
   guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
   snapshotSources: [
     { kind: "tree", hostPath: resolve(runtimeDir, "bin"), guestPath: "/python/bin" },
