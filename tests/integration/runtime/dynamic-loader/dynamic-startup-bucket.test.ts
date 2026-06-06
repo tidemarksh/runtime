@@ -2,7 +2,23 @@ import { expect, test } from "vite-plus/test";
 import {
   bucketDynamicStartupFailure,
   classifyDynamicStartupFailureStatus,
+  resolveDynamicStartupTimeoutMs,
+  type DynamicStartupEntry,
 } from "../../../support/dynamic-startup-harness.js";
+
+const minimalEntry: DynamicStartupEntry = {
+  id: "timeout-test",
+  targetClass: "diagnostic",
+  runnerKind: "direct-exec",
+  hostExecutablePath: "/host/bin/app",
+  guestExecutablePath: "/bin/app",
+  argv: ["/bin/app"],
+  env: [],
+  timeoutMs: 5_000,
+  guestMemoryPolicyLimitBytes: 1024,
+  snapshotSources: [],
+  expectedSubstrings: [],
+};
 
 test("dynamic startup bucket: loader faults stay in foundation", () => {
   expect(
@@ -89,4 +105,22 @@ test("dynamic startup bucket: guest signal and debug-collection traps stay conse
       },
     }),
   ).toBe("unclassified");
+});
+
+test("dynamic startup timeout override is opt-in", () => {
+  const original = process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TIMEOUT_MS;
+  try {
+    delete process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TIMEOUT_MS;
+    expect(resolveDynamicStartupTimeoutMs(minimalEntry)).toBe(5_000);
+    process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TIMEOUT_MS = "20000";
+    expect(resolveDynamicStartupTimeoutMs(minimalEntry)).toBe(20_000);
+    process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TIMEOUT_MS = "0";
+    expect(resolveDynamicStartupTimeoutMs(minimalEntry)).toBe(5_000);
+  } finally {
+    if (original === undefined) {
+      delete process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TIMEOUT_MS;
+    } else {
+      process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TIMEOUT_MS = original;
+    }
+  }
 });

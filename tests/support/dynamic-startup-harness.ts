@@ -68,6 +68,17 @@ export function buildDynamicStartupSnapshot(entry: DynamicStartupEntry) {
   return result.entries ?? null;
 }
 
+export function resolveDynamicStartupTimeoutMs(entry: DynamicStartupEntry): number {
+  const raw = (globalThis as typeof globalThis & {
+    process?: { env?: Record<string, string | undefined> };
+  }).process?.env?.TIDEMARK_TEST_DYNAMIC_STARTUP_TIMEOUT_MS;
+  const parsed = raw === undefined ? NaN : Number.parseInt(raw, 10);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed;
+  }
+  return entry.timeoutMs;
+}
+
 export async function prepareDynamicStartupRuntime(
   entry: DynamicStartupEntry,
 ): Promise<{ runtime: RuntimeInstance; elfBytes: Uint8Array } | null> {
@@ -111,6 +122,7 @@ export async function runDynamicStartupEntry(
   const proc = await runtime.spawn(new Uint8Array(elfBytes), [...entry.argv], [...entry.env]);
   let output = "";
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const timeoutMs = resolveDynamicStartupTimeoutMs(entry);
   proc.onStdout((data) => {
     output += decoder.decode(data);
   });
@@ -119,7 +131,7 @@ export async function runDynamicStartupEntry(
     const exitCode = await Promise.race([
       proc.waitForExit(),
       new Promise<never>((_resolve, reject) => {
-        timeoutId = setTimeout(() => reject(new Error(`timeout after ${entry.timeoutMs}ms`)), entry.timeoutMs);
+        timeoutId = setTimeout(() => reject(new Error(`timeout after ${timeoutMs}ms`)), timeoutMs);
         if (typeof timeoutId === "object" && timeoutId !== null && "unref" in timeoutId) {
           timeoutId.unref();
         }
