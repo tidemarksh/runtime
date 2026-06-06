@@ -89,6 +89,14 @@ interface ExecveBackingRetryStats {
   lastMiss: PendingBackingFillRequest | null;
 }
 
+interface ProcessFsProgress {
+  phase: string;
+  elapsedMs: number;
+  detail?: string;
+}
+
+type ProcessFsDebug = (phase: string, detail?: string) => void;
+
 interface PendingFsMutationContext {
   effects: number;
   pendingPath: string | null;
@@ -520,6 +528,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
   async function processFsWithExecveBackingRetry(
     processExports: KernelExports,
     vmPtr: number,
+    debug?: ProcessFsDebug,
   ): Promise<ExecveBackingRetryStats> {
     const stats: ExecveBackingRetryStats = {
       attempts: 0,
@@ -531,14 +540,19 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     };
     for (let attempt = 0; attempt < 256; attempt += 1) {
       stats.attempts += 1;
+      debug?.("thread_process_fs-start", `attempt=${attempt}`);
       processExports.thread_process_fs(vmPtr);
+      debug?.("thread_process_fs-done", `attempt=${attempt}:status=${processExports.thread_status?.(vmPtr) ?? "n/a"}`);
       const miss = readPendingExecveBackingMissSnapshot(processExports, vmPtr);
       if (!miss) {
         return stats;
       }
       stats.misses += 1;
       stats.lastMiss = miss;
+      debug?.("execve-backing-miss", formatBackingFillDebug(miss));
+      debug?.("execve-backing-publish-start", formatBackingFillDebug(miss));
       const published = await publishBackingRange(miss);
+      debug?.("execve-backing-publish-done", `published=${published ? 1 : 0}`);
       processExports.thread_clear_execve_backing_miss?.(vmPtr);
       if (!published) {
         stats.publishFailed = true;
@@ -548,6 +562,25 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     }
     stats.exhausted = true;
     return stats;
+  }
+
+  function formatBackingFillDebug(request: PendingBackingFillRequest | null): string {
+    if (request === null) {
+      return "backing=none";
+    }
+    return [
+      `ino=${request.ino}`,
+      `off=${request.offset}`,
+      `len=${request.length}`,
+      `expected=${request.expectedSize}`,
+    ].join(":");
+  }
+
+  function formatMmapGuestWriteDebug(request: PendingMmapGuestWriteRequest | null): string {
+    if (request === null) {
+      return "mmap=none";
+    }
+    return `mmap=hint=0x${request.guestPtrHint.toString(16)}:len=${request.length}`;
   }
 
   function snapshotMmapGuestMemoryWrite(
@@ -945,39 +978,83 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     pid: number,
     vmPtr: number,
     kernelState: KernelRuntimeState,
+    postProgress?: (progress: ProcessFsProgress) => void,
   ): Promise<ProcessFsResult> {
+    const startedMs = Date.now();
+    const debug: ProcessFsDebug | undefined = postProgress
+      ? (phase, detail) => {
+        postProgress({
+          phase,
+          elapsedMs: Date.now() - startedMs,
+          ...(detail ? { detail } : {}),
+        });
+      }
+      : undefined;
     const canonicalExports = deps.getCanonicalExports();
     const processExports = requireProcessKernel(pid);
+    debug?.("start");
     attachKernelRuntimeState(processExports, kernelState);
+    debug?.("attached-kernel-state");
     const pendingContext = readPendingFsMutationContext(processExports, vmPtr);
     const pendingMmapGuestWrite = readPendingMmapGuestWriteRequest(processExports, vmPtr);
+    const pendingBackingFill = readPendingBackingFillRequest(processExports, vmPtr);
+    debug?.(
+      "pending-read",
+      [
+        `effects=${pendingContext.effects}`,
+        formatMmapGuestWriteDebug(pendingMmapGuestWrite),
+        formatBackingFillDebug(pendingBackingFill),
+      ].join(":"),
+    );
+    debug?.("ensure-backing-start", formatBackingFillDebug(pendingBackingFill));
     await ensurePendingReadBackingRange(processExports, vmPtr);
+    debug?.("ensure-backing-done");
     if (pendingMmapGuestWrite !== null) {
+      debug?.("restore-page-cache-start", formatMmapGuestWriteDebug(pendingMmapGuestWrite));
       deps.restorePublishedRegularFileDataFromPageCache?.(processExports);
+      debug?.("restore-page-cache-done");
     }
-    const execveRetryStats = await processFsWithExecveBackingRetry(processExports, vmPtr);
+    debug?.("process-fs-kernel-start");
+    const execveRetryStats = await processFsWithExecveBackingRetry(processExports, vmPtr, debug);
+    debug?.("process-fs-kernel-done", `attempts=${execveRetryStats.attempts}:misses=${execveRetryStats.misses}`);
+    debug?.("resume-fs-start");
     const result = BigInt(processExports.thread_resume_fs(vmPtr));
+    debug?.("resume-fs-done", `result=${result.toString()}:status=${processExports.thread_status?.(vmPtr) ?? "n/a"}`);
     const fsSucceeded = Number(BigInt.asIntN(64, result)) >= 0;
+    debug?.("snapshot-mmap-start", formatMmapGuestWriteDebug(pendingMmapGuestWrite));
     const guestMemoryWrites = snapshotMmapGuestMemoryWrite(
       processExports,
       vmPtr,
       pendingMmapGuestWrite,
       result,
     );
+    debug?.("snapshot-mmap-done", `writes=${guestMemoryWrites?.length ?? 0}`);
+    debug?.("read-state-start");
     const completedKernelState = readKernelRuntimeState(processExports);
+    debug?.("read-state-done");
+    debug?.("snapshot-fd-start");
     const fdEntries = fsSucceeded
       ? snapshotProcessFdEntries(processExports, vmPtr)
       : undefined;
+    debug?.("snapshot-fd-done", `entries=${fdEntries?.length ?? 0}`);
+    debug?.("snapshot-ofd-start");
     const ofdSlots = fdEntries
       ? snapshotOfdSlotsForFdEntries(processExports, completedKernelState, fdEntries)
       : undefined;
+    debug?.("snapshot-ofd-done", `slots=${ofdSlots?.length ?? 0}`);
+    debug?.("apply-mutation-start");
     const mutation = applyPendingFsMutation(processExports, pendingContext, fsSucceeded);
+    debug?.("apply-mutation-done", `memfs=${mutation.memfsMutated ? 1 : 0}:ofd=${mutation.ofdStateChanged ? 1 : 0}:full=${mutation.needsFullSync ? 1 : 0}`);
     let fullSyncApplied = false;
     if (mutation.needsFullSync) {
+      debug?.("full-sync-start");
       fallbackToMetadataMemfsSync(processExports, canonicalExports);
       fullSyncApplied = true;
+      debug?.("full-sync-done");
     }
+    debug?.("read-next-state-start");
     const nextKernelState = readKernelRuntimeState(processExports);
+    debug?.("read-next-state-done");
     const fsDebug = shouldEmitProcessFsDebug(pendingContext, mutation, fullSyncApplied, execveRetryStats)
         ? formatProcessFsDebug(
             pid,
@@ -989,6 +1066,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
             execveRetryStats,
           )
         : undefined;
+    debug?.("done", `result=${result.toString()}`);
     return {
       kernelState: nextKernelState,
       result,

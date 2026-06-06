@@ -61,6 +61,28 @@ export interface RuntimeOptions {
 const MIN_PAGE_CACHE_DATA_CAPACITY_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MAX_MEMORY_PAGES = 32768;
 
+function processFsProgressDebugEnabled(): boolean {
+  const proc = (globalThis as {
+    process?: {
+      env?: Record<string, string | undefined>;
+    };
+  }).process;
+  return (proc?.env?.TIDEMARK_FS_PROCESS_DEBUG ?? "") === "1";
+}
+
+function writeProcessFsProgressDebug(line: string): void {
+  if (!processFsProgressDebugEnabled()) {
+    return;
+  }
+  const proc = (globalThis as {
+    process?: {
+      stderr?: { write(chunk: string): void };
+    };
+  }).process;
+  const stderr = proc?.stderr;
+  stderr?.write(`${line}\n`);
+}
+
 interface RuntimeMemoryConfig {
   guestMemoryPolicyLimitBytes: bigint;
   pageCacheDataCapacityBytes: number;
@@ -290,6 +312,13 @@ export class Runtime {
     event: MessageEvent<KernelWorkerOutbound>,
   ): void => {
     const response = event.data;
+    if (response.type === "process-fs-progress") {
+      const suffix = response.detail ? `:${response.detail}` : "";
+      writeProcessFsProgressDebug(
+        `[tidemark-fs-process] pid=${response.pid}:vm=0x${response.vmPtr.toString(16)}:phase=${response.phase}:elapsedMs=${response.elapsedMs}${suffix}`,
+      );
+      return;
+    }
     const pending = this.kernelRequests.get(response.requestId);
     if (!pending) {
       return;
@@ -346,7 +375,11 @@ export class Runtime {
       stdio: options.stdio ?? "pipe",
       stdin: options.stdin ?? "pipe",
       hydrateFsFromKernelWorker: true,
-      kernelWorkerRequest: (msg) => this.sendKernelRequest(msg),
+      kernelWorkerRequest: (msg) => this.sendKernelRequest(
+        msg.type === "process-fs" && processFsProgressDebugEnabled()
+          ? { ...msg, debugProgress: true }
+          : msg,
+      ),
     });
 
     const proc = new Process(pid, handle);

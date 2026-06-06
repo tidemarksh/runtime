@@ -330,6 +330,7 @@ export type KernelWorkerRequest =
       pid: number;
       vmPtr: number;
       kernelState: KernelRuntimeState;
+      debugProgress?: boolean;
     }
   | {
       type: "record-child-exit";
@@ -699,4 +700,14 @@ export type KernelWorkerResponse =
       message: string;
     };
 
-export type KernelWorkerOutbound = KernelWorkerResponse;
+export type KernelWorkerProcessFsProgress = {
+  type: "process-fs-progress";
+  requestId: number;
+  pid: number;
+  vmPtr: number;
+  phase: string;
+  elapsedMs: number;
+  detail?: string;
+};
+
+export type KernelWorkerOutbound = KernelWorkerResponse | KernelWorkerProcessFsProgress;

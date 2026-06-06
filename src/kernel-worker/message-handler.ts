@@ -24,6 +24,12 @@ interface ProcessFsResult {
   fsDebug?: string;
 }
 
+interface ProcessFsProgress {
+  phase: string;
+  elapsedMs: number;
+  detail?: string;
+}
+
 interface KernelWorkerMessageHandlerDeps {
   postResponse(msg: KernelWorkerOutbound): void;
   initKernel(
@@ -69,7 +75,12 @@ interface KernelWorkerMessageHandlerDeps {
     pipeSeedMode?: "canonical" | "process",
   ): Promise<KernelRuntimeState>;
   unregisterProcess(pid: number): void;
-  processFs(pid: number, vmPtr: number, kernelState: KernelRuntimeState): ProcessFsResult | Promise<ProcessFsResult>;
+  processFs(
+    pid: number,
+    vmPtr: number,
+    kernelState: KernelRuntimeState,
+    postProgress?: (progress: ProcessFsProgress) => void,
+  ): ProcessFsResult | Promise<ProcessFsResult>;
   recordChildExit(
     pid: number,
     childPid: number,
@@ -299,7 +310,18 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
           deps.postResponse({ type: "process-unregistered", requestId: msg.requestId });
           break;
         case "process-fs": {
-          const result = await deps.processFs(msg.pid, msg.vmPtr, msg.kernelState);
+          const postProgress = msg.debugProgress
+            ? (progress: ProcessFsProgress) => {
+              deps.postResponse({
+                type: "process-fs-progress",
+                requestId: msg.requestId,
+                pid: msg.pid,
+                vmPtr: msg.vmPtr,
+                ...progress,
+              });
+            }
+            : undefined;
+          const result = await deps.processFs(msg.pid, msg.vmPtr, msg.kernelState, postProgress);
           deps.postResponse({
             type: "fs-processed",
             requestId: msg.requestId,
