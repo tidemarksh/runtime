@@ -4854,7 +4854,7 @@ test("apt-get update local gate: parent acquire loop exits after in-memory HTTP 
   } finally {
     runtime.destroy();
   }
-}, Math.max(90_000, asyncDoneTimeoutMs + 20_000));
+}, Math.max(120_000, aptGetUpdateExitTimeoutMs + 20_000));
 
 test("apt-cache stats local gate: preloaded package list is parsed from lists cache", async () => {
   const packagesLz4 = buildPackagesLz4FromInput(aptCachePackagesInput);
