@@ -1009,8 +1009,16 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     debug?.("ensure-backing-start", formatBackingFillDebug(pendingBackingFill));
     await ensurePendingReadBackingRange(processExports, vmPtr);
     debug?.("ensure-backing-done");
-    if (pendingMmapGuestWrite !== null) {
-      debug?.("restore-page-cache-start", formatMmapGuestWriteDebug(pendingMmapGuestWrite));
+    const shouldRestorePageCacheForFs =
+      pendingMmapGuestWrite !== null
+      || (pendingContext.effects & deps.fsEffectMemfsFileData) !== 0;
+    if (shouldRestorePageCacheForFs) {
+      debug?.(
+        "restore-page-cache-start",
+        pendingMmapGuestWrite !== null
+          ? formatMmapGuestWriteDebug(pendingMmapGuestWrite)
+          : `file-data:ino=${pendingContext.fileDataTargetIno}`,
+      );
       deps.restorePublishedRegularFileDataFromPageCache?.(processExports);
       debug?.("restore-page-cache-done");
     }

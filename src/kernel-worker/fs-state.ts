@@ -448,8 +448,12 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         const sourceFileObjectId = createSourceBackedFileForInode(ino, expectedSize);
         const published = readInodeRecord(deps.getSabPageCache(), ino);
         const sourceTruncatedEmpty = sourceIsRegular && expectedSize === 0;
+        const hasDirtyResidentPages = hasDirtyResidentPagesForInode(deps.getSabPageCache(), ino);
+        const hasPublishedResidentFile = (published?.fileObjectId ?? 0) !== 0;
         if (
           sourceFileObjectId === null
+          && !hasDirtyResidentPages
+          && !hasPublishedResidentFile
           && !published?.dataOff
           && (published?.size ?? expectedSize) > 0
           && !sourceTruncatedEmpty
@@ -908,7 +912,8 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         return false;
       }
       const size = Number(sourceExports.memfs_file_size(ino));
-      if (residentPageMapIsNewerThanBacking(ino)) {
+      const hasPublishedResidentFile = published.fileObjectId !== 0 && published.size === size;
+      if (residentPageMapIsNewerThanBacking(ino) || hasPublishedResidentFile) {
         clearSeedBackingExtentForInode(ino);
         syncExternalFileDataIntoTarget(canonicalExports, ino, mode, size, published);
         for (const memberExports of deps.processKernels.values()) {
@@ -936,11 +941,12 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
 
     for (let ino = 1; ino < MAX_INODES; ino += 1) {
       const published = readInodeRecord(sab, ino);
+      const hasPublishedResidentFile = (published?.fileObjectId ?? 0) !== 0;
       if (
         !published
         || (published.mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG
         || published.size <= 0
-        || (!hasBackingFile(ino) && !hasDirtyResidentPagesForInode(sab, ino))
+        || (!hasBackingFile(ino) && !hasDirtyResidentPagesForInode(sab, ino) && !hasPublishedResidentFile)
       ) {
         continue;
       }

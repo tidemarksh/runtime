@@ -808,6 +808,42 @@ function collectResidentPageSnapshots(
   return snapshots;
 }
 
+function readResidentPageSnapshot(
+  sab: SharedArrayBuffer,
+  meta: { fileObjectId: number; generation: number },
+  pageIndex: number,
+): ResidentPageSnapshot | null {
+  if (meta.fileObjectId === 0) {
+    return null;
+  }
+  const recordIndex = findResidentPageRecordIndex(sab, meta.fileObjectId, meta.generation, pageIndex);
+  if (recordIndex < 0) {
+    return null;
+  }
+  const record = readStableResidentPageRecord(sab, recordIndex);
+  if (
+    !record
+    || (record.flags & RESIDENT_PAGE_RECORD_FLAG_VALID) === 0
+    || record.fileObjectId !== meta.fileObjectId
+    || record.generation !== meta.generation
+    || record.pageIndex !== pageIndex
+    || record.dataOff < residentPageFrameRegionOffset(sab)
+    || record.validBytes > DEFAULT_RESIDENT_PAGE_SIZE
+    || record.dataOff + record.validBytes > residentPageRecordTableOffset(sab)
+  ) {
+    return null;
+  }
+  const u8 = new Uint8Array(sab);
+  const dirty = (record.flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) !== 0;
+  return {
+    pageIndex: record.pageIndex,
+    bytes: new Uint8Array(u8.slice(record.dataOff, record.dataOff + record.validBytes)),
+    dirty,
+    dirtyStart: record.dirtyStart,
+    dirtyEnd: record.dirtyEnd,
+  };
+}
+
 function updateInodeForResidentPages(
   sab: SharedArrayBuffer,
   ino: number,
@@ -826,7 +862,9 @@ function updateInodeForResidentPages(
   const oldNameLen = Atomics.load(u32, base32 + (INODE_OFF_NAME_LEN >>> 2));
   const currentVersion = Atomics.load(u32, base32 + (INODE_OFF_VERSION >>> 2));
   const oddVersion = (currentVersion | 1) + (currentVersion & 1 ? 1 : 0);
-  invalidateResidentPages(sab, ino);
+  if (record.fileObjectId !== fileObjectId || record.generation !== generation) {
+    invalidateResidentPages(sab, ino);
+  }
   Atomics.store(u32, base32 + (INODE_OFF_VERSION >>> 2), oddVersion);
   Atomics.store(u32, base32 + (INODE_OFF_DATA_OFF >>> 2), 0);
   Atomics.store(u32, base32 + (INODE_OFF_DATA_SIZE >>> 2), size);
@@ -841,16 +879,25 @@ function updateInodeForResidentPages(
   return true;
 }
 
-function dirtyResidentPageMap(sab: SharedArrayBuffer, ino: number): Map<number, ResidentPageSnapshot> | null {
-  const meta = readInodeMeta(sab, ino);
-  if (!meta || meta.fileObjectId === 0) {
-    return null;
+function dirtyResidentPageCount(sab: SharedArrayBuffer, meta: { fileObjectId: number; generation: number }): number {
+  if (meta.fileObjectId === 0) {
+    return 0;
   }
-  const pages = new Map<number, ResidentPageSnapshot>();
-  for (const page of collectResidentPageSnapshots(sab, meta, false)) {
-    pages.set(page.pageIndex, page);
+  let dirtyPages = 0;
+  const count = residentPageRecordCount(sab);
+  for (let index = 0; index < count; index += 1) {
+    const record = readStableResidentPageRecord(sab, index);
+    if (
+      record
+      && (record.flags & RESIDENT_PAGE_RECORD_FLAG_VALID) !== 0
+      && (record.flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) !== 0
+      && record.fileObjectId === meta.fileObjectId
+      && record.generation === meta.generation
+    ) {
+      dirtyPages += 1;
+    }
   }
-  return pages;
+  return dirtyPages;
 }
 
 function readExistingPageBytes(
@@ -950,9 +997,12 @@ export function writeDirtyResidentFileData(
   if (!Number.isFinite(nextSize) || nextSize > 0xffffffff) {
     return -28;
   }
-  const residentPages = dirtyResidentPageMap(sab, ino) ?? new Map<number, ResidentPageSnapshot>();
+  const meta = readInodeMeta(sab, ino);
+  const residentPages = new Map<number, ResidentPageSnapshot>();
+  const touchedPages = new Set<number>();
   const firstPage = Math.floor(offset / DEFAULT_RESIDENT_PAGE_SIZE);
   const lastPage = Math.floor((end - 1) / DEFAULT_RESIDENT_PAGE_SIZE);
+  let newDirtyPageCount = 0;
   for (let pageIndex = firstPage; pageIndex <= lastPage; pageIndex += 1) {
     const pageStart = pageIndex * DEFAULT_RESIDENT_PAGE_SIZE;
     const pageLen = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, nextSize - pageStart);
@@ -960,7 +1010,7 @@ export function writeDirtyResidentFileData(
     const writeEnd = Math.min(end, pageStart + pageLen);
     const pageWriteStart = writeStart - pageStart;
     const pageWriteEnd = writeEnd - pageStart;
-    const existing = residentPages.get(pageIndex);
+    const existing = meta ? readResidentPageSnapshot(sab, meta, pageIndex) : null;
     let pageBytes: Uint8Array;
     if (pageWriteStart === 0 && pageWriteEnd === pageLen) {
       pageBytes = new Uint8Array(pageLen);
@@ -974,6 +1024,9 @@ export function writeDirtyResidentFileData(
       }
       pageBytes = read;
     }
+    if (!existing?.dirty) {
+      newDirtyPageCount += 1;
+    }
     pageBytes.set(data.subarray(writeStart - offset, writeEnd - offset), pageWriteStart);
     residentPages.set(pageIndex, {
       pageIndex,
@@ -982,19 +1035,20 @@ export function writeDirtyResidentFileData(
       dirtyStart: existing?.dirty ? Math.min(existing.dirtyStart, pageWriteStart) : pageWriteStart,
       dirtyEnd: existing?.dirty ? Math.max(existing.dirtyEnd, pageWriteEnd) : pageWriteEnd,
     });
+    touchedPages.add(pageIndex);
   }
 
   const fileObjectId = record.fileObjectId || ino;
-  const generation = record.generation + 1;
-  const dirtyPageCount = Array.from(residentPages.values()).filter((page) => page.dirty && page.bytes.length > 0).length;
-  if (dirtyPageCount > residentPageRecordCount(sab)) {
+  const generation = record.fileObjectId === 0 ? record.generation + 1 : record.generation;
+  const existingDirtyPageCount = meta ? dirtyResidentPageCount(sab, meta) : 0;
+  if (existingDirtyPageCount + newDirtyPageCount > residentPageRecordCount(sab)) {
     return -28;
   }
   if (!updateInodeForResidentPages(sab, ino, record, nextSize, fileObjectId, generation)) {
     return -28;
   }
   for (const page of residentPages.values()) {
-    if (!page.dirty || page.bytes.length === 0) {
+    if (!page.dirty || page.bytes.length === 0 || !touchedPages.has(page.pageIndex)) {
       continue;
     }
     const published = publishResidentPage(sab, ino, page.pageIndex, page.bytes, {

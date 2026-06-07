@@ -1121,6 +1121,50 @@ test("kernel-worker dirty write uses process-local truncated inode metadata", ()
   expect(readResidentFileData(sabPageCache, ino, 0, data.length)).toEqual(data);
 });
 
+test("kernel-worker syncFileDataMutation externalizes matching published resident file metadata", () => {
+  const { canonicalExports, memberExports, fsState, sabPageCache } = makeFsState();
+
+  const workName = encoder.encode("work");
+  const workPtr = memberExports.kernel_heap_ptr() + 0x12000;
+  new Uint8Array(memberExports.memory.buffer).set(workName, workPtr);
+  const workIno = memberExports.memfs_ensure_dir(1, workPtr, workName.length, 0o755);
+  expect(workIno).toBeGreaterThan(1);
+  publishInode(sabPageCache, workIno, {
+    mode: 0o040755,
+    size: 0,
+    parentIno: 1,
+    name: workName,
+    nextSibling: 0,
+  });
+
+  const name = encoder.encode("out.txt");
+  const ptr = memberExports.kernel_heap_ptr() + 0x13000;
+  new Uint8Array(memberExports.memory.buffer).set(name, ptr);
+  const ino = memberExports.memfs_create_file(workIno, ptr, name.length);
+  expect(ino).toBeGreaterThan(1);
+
+  const size = 65391;
+  publishInode(sabPageCache, ino, {
+    mode: 0o100644,
+    size,
+    parentIno: workIno,
+    name,
+    nextSibling: 0,
+    fileObjectId: ino,
+    generation: 2,
+  });
+  expect(memberExports.memfs_set_file_size_shallow(ino, BigInt(size))).toBe(BigInt(size));
+  canonicalExports.opLog.length = 0;
+  memberExports.opLog.length = 0;
+
+  expect(fsState.syncFileDataMutation(memberExports, ino)).toBe(true);
+
+  expect(canonicalExports.opLog).toContain(`external:/work/out.txt:${size}`);
+  expect(memberExports.opLog).toContain(`external:/work/out.txt:${size}`);
+  expect(canonicalExports.opLog.some((entry) => entry.startsWith("write:/work/out.txt:"))).toBe(false);
+  expect(memberExports.opLog.some((entry) => entry.startsWith("write:/work/out.txt:"))).toBe(false);
+});
+
 test("kernel-worker metadata sync preserves dirty resident file data", () => {
   const { canonicalExports, memberExports, fsState, sabPageCache } = makeFsState();
 

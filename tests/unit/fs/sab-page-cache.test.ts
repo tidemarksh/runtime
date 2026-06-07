@@ -434,7 +434,7 @@ test("publishInode preserves dirty residents across metadata-only updates", () =
   expect(writeDirtyResidentFileData(sab, 2, 1, dirty)).toBe(dirty.length);
   expect(debugResidentPageCountForInode(sab, 2)).toBe(1);
   const dirtyRecord = readInodeRecord(sab, 2);
-  expect(dirtyRecord?.generation).toBeGreaterThan(1);
+  expect(dirtyRecord?.generation).toBe(1);
 
   publishInode(sab, 2, {
     mode: 0o100600,
