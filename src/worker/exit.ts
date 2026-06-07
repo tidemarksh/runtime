@@ -872,7 +872,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     if (!deps.snapshotProcessFs || !deps.publishRuntimeFsState) {
       return;
     }
-    if (!handle.processMemfsDirty && (!handle.kernelWorkerRequest || handle.pid <= 0)) {
+    if (!handle.processMemfsDirty && !handle.processMemfsPublishPending) {
       return;
     }
     try {

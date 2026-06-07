@@ -197,6 +197,44 @@ test("completeProcessExit preserves published file data during exit MemFS public
   expect(publishRuntimeFsState).toHaveBeenCalledWith(1, []);
 });
 
+test("completeProcessExit skips clean kernel-worker MemFS publication", async () => {
+  const handle = makeHandle({
+    parentPid: null,
+    processMemfsDirty: false,
+    processMemfsPublishPending: false,
+  });
+  const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
+  const publishRuntimeFsState = vi.fn(() => 1);
+  const snapshotProcessFs = vi.fn(() => []);
+
+  const helpers = createWorkerExitHelpers({
+    processHandles: new Map([[3, handle]]),
+    appendRuntimeLifecycleEvent: () => {},
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle: () => {},
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers: () => {},
+    publishRuntimeFsState,
+    recordChildExitViaKernelWorker: async () => {},
+    releaseSharedHostStdio: async () => {},
+    replaceRuntimeFsSnapshot: () => {},
+    requestPipeStateSync: async () => {},
+    snapshotProcessFs,
+    syncForkSharedStateViaKernelWorker,
+    unregisterProcessWithKernelWorker: async () => {},
+  });
+
+  await helpers.completeProcessExit(handle, 0, 0);
+
+  expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
+  expect(snapshotProcessFs).not.toHaveBeenCalled();
+  expect(publishRuntimeFsState).not.toHaveBeenCalled();
+});
+
 test("completeProcessExit drains top-level visible output before releasing stdio", async () => {
   const order: string[] = [];
   const stdoutChunks: string[] = [];
