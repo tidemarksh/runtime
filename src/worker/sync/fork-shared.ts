@@ -60,6 +60,7 @@ import {
   collectRuntimeNetworkSocketOfdIds,
   hasRuntimeNetworkSocketState,
 } from "../ownership/socket-control.js";
+import { clearStaleForkSharedSyncGate } from "../fork-shared-sync-gate.js";
 import type {
   KernelWorkerOfdSlotSnapshot,
   KernelWorkerPidBytesSnapshot,
@@ -533,7 +534,12 @@ export async function syncBlockedForkSharedStateViaKernelWorker(
   }
   const activeSync = handle.kernelShare.forkSharedSyncPromise ?? handle.forkSharedSyncPromise;
   if (activeSync !== null) {
-    await activeSync;
+    const staleGate = clearStaleForkSharedSyncGate(handle, activeSync);
+    if (staleGate === null) {
+      await activeSync;
+    } else {
+      appendSocketSyncDebug(handle, `fork-shared-sync-clear-stale:${handle.pid}:${staleGate}`);
+    }
   }
   const syncTargets = kernelShareOtherMembers(handle)
     .filter((member) => (

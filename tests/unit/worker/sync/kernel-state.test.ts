@@ -1,5 +1,10 @@
 import { expect, test, vi } from "vite-plus/test";
-import { adoptKernelState, syncForkSharedStateViaKernelWorker } from "../../../../src/worker/sync.js";
+import { registerForkSharedSyncPromise } from "../../../../src/worker/fork-shared-sync-debug.js";
+import {
+  adoptKernelState,
+  syncBlockedForkSharedStateViaKernelWorker,
+  syncForkSharedStateViaKernelWorker,
+} from "../../../../src/worker/sync.js";
 import type { KernelRuntimeState } from "../../../../src/abi.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 
@@ -426,4 +431,31 @@ test("fork-shared tracking prunes regular file OFDs without a peer", async () =>
 
   expect(child.kernelShare.sharedOfdIds.has(12)).toBe(false);
   expect(child.kernelWorkerRequest).not.toHaveBeenCalled();
+});
+
+test("blocked fork-shared sync clears a stale active sync before waiting", async () => {
+  const handle = makeHandle(7, new Map());
+  const staleSync = new Promise<void>(() => {});
+  registerForkSharedSyncPromise(staleSync, {
+    ownerPid: handle.pid,
+    sourceVmPtr: 0xdead,
+    reason: "unit-stale-sync",
+    targetPids: [],
+  });
+  handle.kernel.thread_process_ptr = vi.fn((vmPtr: number) => (vmPtr === 0xdead ? 0 : 0x1000));
+  handle.forkSharedSyncPromise = staleSync;
+  handle.kernelShare.forkSharedSyncPromise = staleSync;
+
+  const result = await Promise.race([
+    syncBlockedForkSharedStateViaKernelWorker(
+      handle,
+      handle.vmPtr,
+      { kind: "blocked-rpc", status: 21 },
+    ).then(() => "done"),
+    new Promise<"timed-out">((resolve) => setTimeout(() => resolve("timed-out"), 25)),
+  ]);
+
+  expect(result).toBe("done");
+  expect(handle.forkSharedSyncPromise).toBeNull();
+  expect(handle.kernelShare.forkSharedSyncPromise).toBeNull();
 });

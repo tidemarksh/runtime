@@ -241,9 +241,13 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
       vmPtr,
       pipeChildExitResumeKey,
     );
+    const childWorkStillPending = handle.pendingChildExitRecords > 0
+      || handle.pendingChildSpawnRecords > 0
+      || deps.hasActiveChildProcess(handle.pid);
     return status === handle.kernel.abi_status_pipe_wait()
       && canPark
       && childExitRecordsAlreadyResumed
+      && childWorkStillPending
       && !blockedReadIsReady
       && !blockedPollPipeIsReady
       && !pollLikePipeHasNoWriter
