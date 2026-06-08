@@ -14,7 +14,7 @@ type FakeMemfsExports = KernelExports & {
   ensurePath(path: string, kind: "dir" | "file" | "symlink", mode?: number, target?: Uint8Array): void;
   linkTarget(path: string): string | null;
   fileContents(path: string): string | null;
-  procfsInstallTargets: string[];
+  procfsInstallTargets: Array<{ target: string; guestMemoryPolicyLimit: bigint }>;
 };
 
 function normalizePath(path: string): string {
@@ -48,7 +48,7 @@ function makeMemfsExports(): FakeMemfsExports {
   let runtimeState = makeKernelState();
   const entries = new Map<string, MemfsEntry>();
   const byIno = new Map<number, string>();
-  const procfsInstallTargets: string[] = [];
+  const procfsInstallTargets: Array<{ target: string; guestMemoryPolicyLimit: bigint }> = [];
   let nextIno = 2;
 
   const ensureEntry = (
@@ -229,9 +229,19 @@ function makeMemfsExports(): FakeMemfsExports {
       byIno.delete(entry.ino);
       return 0n;
     },
-    process_install_procfs_snapshot: (targetPtr: number, targetLen: number) => {
+    thread_guest_memory_policy_limit: (vmPtr: number) => (
+      vmPtr === 0x1234 ? 1024n * 1024n * 1024n : 0n
+    ),
+    process_install_procfs_snapshot: (
+      targetPtr: number,
+      targetLen: number,
+      guestMemoryPolicyLimit: bigint,
+    ) => {
       const target = readGuestBytes(targetPtr, targetLen);
-      procfsInstallTargets.push(new TextDecoder().decode(target));
+      procfsInstallTargets.push({
+        target: new TextDecoder().decode(target),
+        guestMemoryPolicyLimit,
+      });
       ensurePath("/proc", "dir", 0o040555);
       ensurePath("/proc/self", "dir", 0o040555);
       ensurePath("/proc/self/exe", "symlink", 0o120777, target);
@@ -294,12 +304,16 @@ test("copyCanonicalMemfsToProcess rehydrates /proc/self/exe after canonical memf
     },
   });
 
-  fsUtils.copyCanonicalMemfsToProcess(makeKernelState(), childExports, makeKernelState());
+  fsUtils.copyCanonicalMemfsToProcess(makeKernelState(), childExports, makeKernelState(), {
+    targetVmPtr: 0x1234,
+  });
 
   expect(childExports.linkTarget("/proc/self/exe")).toBe("/bin/child-a");
   expect(childExports.fileContents("/proc/stat")).not.toBeNull();
   expect(childExports.fileContents("/proc/cpuinfo")).toContain("mmu\t\t: sv48\n");
-  expect(childExports.procfsInstallTargets).toEqual(["/bin/child-a"]);
+  expect(childExports.procfsInstallTargets).toEqual([
+    { target: "/bin/child-a", guestMemoryPolicyLimit: 1024n * 1024n * 1024n },
+  ]);
 });
 
 test("fanoutCanonicalMemfs preserves each process /proc/self/exe target while replacing canonical memfs", () => {
@@ -335,8 +349,12 @@ test("fanoutCanonicalMemfs preserves each process /proc/self/exe target while re
   expect(processB.linkTarget("/proc/self/exe")).toBe("/bin/b");
   expect(processA.fileContents("/proc/cpuinfo")).toContain("mmu\t\t: sv48\n");
   expect(processB.fileContents("/proc/cpuinfo")).toContain("mmu\t\t: sv48\n");
-  expect(processA.procfsInstallTargets).toEqual(["/bin/a"]);
-  expect(processB.procfsInstallTargets).toEqual(["/bin/b"]);
+  expect(processA.procfsInstallTargets).toEqual([
+    { target: "/bin/a", guestMemoryPolicyLimit: 0n },
+  ]);
+  expect(processB.procfsInstallTargets).toEqual([
+    { target: "/bin/b", guestMemoryPolicyLimit: 0n },
+  ]);
 });
 
 test("restoreProcSelfExe replaces copied proc/self/exe with the target process symlink", () => {

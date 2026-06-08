@@ -224,8 +224,10 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
       );
       if (includeMemfs) {
         pushMemfsDebug(`before-canonical-to-target-${targetPid}`);
+        const targetVmPtr = targetVmPtrByPid.get(targetPid);
         deps.copyCanonicalMemfsToProcess(reconciledCanonicalState, targetExports, targetState, {
           includeData: true,
+          ...(targetVmPtr !== undefined ? { targetVmPtr } : {}),
         });
         deps.restorePublishedRegularFileDataFromPageCache?.(targetExports);
         if (FORK_SHARED_MEMFS_DEBUG_ENABLED) {

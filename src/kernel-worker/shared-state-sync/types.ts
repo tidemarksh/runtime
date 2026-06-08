@@ -116,7 +116,7 @@ export interface KernelWorkerSharedStateSyncDeps {
     canonicalState: KernelRuntimeState,
     targetExports: KernelExports,
     targetState: KernelRuntimeState,
-    options?: { includeData?: boolean },
+    options?: { includeData?: boolean; targetVmPtr?: number },
   ): void;
   snapshotProcSelfExe(targetExports: KernelExports): Uint8Array | null;
   restoreProcSelfExe(targetExports: KernelExports, target: Uint8Array | null): void;

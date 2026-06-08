@@ -76,25 +76,37 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
     targetExports.memfs_create_symlink(selfIno, exeNamePtr, exeName.length, targetPtr, target.length);
   }
 
-  function restoreProcfsSnapshot(targetExports: KernelExports, target: Uint8Array | null): void {
+  function restoreProcfsSnapshot(
+    targetExports: KernelExports,
+    target: Uint8Array | null,
+    guestMemoryPolicyLimit: bigint,
+  ): void {
     if (!target || target.length === 0) {
       return;
     }
     if (typeof targetExports.process_install_procfs_snapshot === "function") {
       const targetPtr = writeScratchFor(targetExports, target, 0x300);
-      targetExports.process_install_procfs_snapshot(targetPtr, target.length);
+      targetExports.process_install_procfs_snapshot(targetPtr, target.length, guestMemoryPolicyLimit);
       return;
     }
     restoreProcSelfExe(targetExports, target);
+  }
+
+  function guestMemoryPolicyLimitFor(targetExports: KernelExports, targetVmPtr?: number): bigint {
+    if (targetVmPtr === undefined || targetVmPtr === 0) {
+      return 0n;
+    }
+    return targetExports.thread_guest_memory_policy_limit?.(targetVmPtr) ?? 0n;
   }
 
   function copyCanonicalMemfsToProcess(
     canonicalState: KernelRuntimeState,
     targetExports: KernelExports,
     targetState: KernelRuntimeState,
-    options: { includeData?: boolean } = {},
+    options: { includeData?: boolean; targetVmPtr?: number } = {},
   ): void {
     const procSelfExe = snapshotProcSelfExe(targetExports);
+    const guestMemoryPolicyLimit = guestMemoryPolicyLimitFor(targetExports, options.targetVmPtr);
     deps.copyMemfsState(
       deps.getCanonicalExports(),
       canonicalState,
@@ -102,7 +114,7 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
       targetState,
       options,
     );
-    restoreProcfsSnapshot(targetExports, procSelfExe);
+    restoreProcfsSnapshot(targetExports, procSelfExe, guestMemoryPolicyLimit);
   }
 
   function formatProcessDebug(processExports: KernelExports, vmPtr: number): string {

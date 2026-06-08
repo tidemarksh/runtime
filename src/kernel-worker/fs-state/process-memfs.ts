@@ -7,7 +7,7 @@ interface KernelWorkerProcessMemfsSyncDeps {
     canonicalState: KernelRuntimeState,
     targetExports: KernelExports,
     targetState: KernelRuntimeState,
-    options?: { includeData?: boolean },
+    options?: { includeData?: boolean; targetVmPtr?: number },
   ): void;
   restorePublishedRegularFileDataFromPageCache(targetExports?: KernelExports): void;
 }

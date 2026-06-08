@@ -464,7 +464,11 @@ export interface KernelExports {
   ): void;
   process_cwd_ino(vm_ptr: number): number;
   process_set_cwd_ino(vm_ptr: number, ino: number): void;
-  process_install_procfs_snapshot?(target_ptr: number, target_len: number): void;
+  process_install_procfs_snapshot?(
+    target_ptr: number,
+    target_len: number,
+    guestMemoryPolicyLimit: bigint,
+  ): void;
   process_fd_ofd_id(vm_ptr: number, fd: number): number;
   process_fd_flags(vm_ptr: number, fd: number): number;
   process_set_fd_entry(vm_ptr: number, fd: number, ofdId: number, fdFlags: number): void;

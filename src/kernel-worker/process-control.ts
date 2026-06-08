@@ -175,7 +175,7 @@ interface KernelWorkerProcessControlDeps {
     canonicalState: KernelRuntimeState,
     targetExports: KernelExports,
     targetState: KernelRuntimeState,
-    options?: { includeData?: boolean },
+    options?: { includeData?: boolean; targetVmPtr?: number },
   ): void;
   snapshotProcSelfExe(targetExports: KernelExports): Uint8Array | null;
   restoreProcSelfExe(targetExports: KernelExports, target: Uint8Array | null): void;
@@ -833,6 +833,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
         const updatedCanonicalState = readKernelRuntimeState(canonicalExports);
         deps.copyCanonicalMemfsToProcess(updatedCanonicalState, processExports, memberState, {
           includeData: seedMemfsMode === "full",
+          targetVmPtr: vmPtr,
         });
       }
       return readKernelRuntimeState(processExports) ?? socketState;
@@ -874,6 +875,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     if (seedMemfsMode !== "none") {
       deps.copyCanonicalMemfsToProcess(registeredCanonicalState, processExports, registeredProcessState, {
         includeData: seedMemfsMode === "full",
+        targetVmPtr: vmPtr,
       });
     }
     deps.copySelectedEpollState(
