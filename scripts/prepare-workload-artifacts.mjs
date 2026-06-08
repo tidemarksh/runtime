@@ -444,6 +444,12 @@ function applyKnownEnv(env, artifact, root, adapterRoot) {
   if (id.startsWith("haskell-")) {
     setEnv(env, "TIDEMARK_TEST_HASKELL_TOOLCHAIN_DIR", root);
   }
+  if (id.startsWith("zig-")) {
+    setEnv(env, "TIDEMARK_TEST_ZIG_TOOLCHAIN_DIR", firstExisting(root, [
+      "opt/tidemark/zig",
+      ".",
+    ]));
+  }
 }
 
 async function applySourceManifestEnv(env, artifact, repository, cacheDir) {
