@@ -24,6 +24,9 @@ import {
   maskIncompatibleOfdSlotKernelWrite,
   maskRegularFileFdEntryRollbackGuestWrite,
 } from "../../ownership/ofd-slot.js";
+import {
+  formatGuestMemoryWriteWatchOverlap,
+} from "../../guest-memory-writes.js";
 import type { WorkerMessageHandlerDeps } from "../types.js";
 import {
   deriveNetBufUsedFromSocketSlots,
@@ -64,6 +67,18 @@ export function applyThreadGuestMemoryWrites(
       continue;
     }
     const writeBytes = maskRegularFileFdEntryRollbackGuestWrite(handle, msg, write.guestPtr, write.bytes);
+    const overlap = formatGuestMemoryWriteWatchOverlap(
+      "status-guest-write",
+      handle.guestWriteWatchRegions,
+      write.guestPtr,
+      writeBytes,
+    );
+    if (overlap !== null) {
+      handle.workerDebugLog.push(overlap);
+      if (handle.workerDebugLog.length > 4096) {
+        handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 4096);
+      }
+    }
     memory.set(writeBytes, start);
     if (pipeSlotLifecycleDebugEnabled()) {
       appendRuntimeLifecycleEvent?.(

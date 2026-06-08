@@ -9,7 +9,10 @@ import {
 } from "../ownership/ofd-table.js";
 import { applyThreadFdEntries } from "../ownership/fd-table.js";
 import { applyThreadOfdSlots } from "../ownership/ofd-slot.js";
-import { appendPendingGuestMemoryWrites } from "../guest-memory-writes.js";
+import {
+  appendPendingGuestMemoryWrites,
+  formatGuestMemoryWriteWatchOverlap,
+} from "../guest-memory-writes.js";
 import { ensureKernelMemoryCapacity, kernelScratchBase } from "../kernel-scratch.js";
 import { adoptKernelStateForHandle } from "../kernel-state.js";
 import {
@@ -114,6 +117,10 @@ interface FsRingProgressSnapshot {
 interface PendingRegularFileFsRequest {
   fd: number;
   ofdId: number;
+}
+
+interface FsGuestMemoryWriteOptions {
+  queueThreadWorkerWrites?: boolean;
 }
 
 export interface WorkerKernelRpcFsDeps {
@@ -751,12 +758,14 @@ function applyFsGuestMemoryWrites(
   handle: ProcessHandle,
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>,
   writes: GuestMemoryWriteSnapshot[] | undefined,
+  options?: FsGuestMemoryWriteOptions,
 ): void {
   if (!writes || writes.length === 0) {
     return;
   }
   const memory = new Uint8Array(handle.memory.buffer);
   const pendingWrites: GuestMemoryWriteSnapshot[] = [];
+  const queueThreadWorkerWrites = options?.queueThreadWorkerWrites ?? true;
   for (const write of writes) {
     const start = handle.guestBase + write.guestPtr;
     if (
@@ -767,13 +776,25 @@ function applyFsGuestMemoryWrites(
     ) {
       continue;
     }
+    const overlap = formatGuestMemoryWriteWatchOverlap(
+      "fs-guest-write",
+      handle.guestWriteWatchRegions,
+      write.guestPtr,
+      write.bytes,
+    );
+    if (overlap !== null) {
+      handle.workerDebugLog.push(overlap);
+      if (handle.workerDebugLog.length > 4096) {
+        handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 4096);
+      }
+    }
     memory.set(write.bytes, start);
     pendingWrites.push({
       guestPtr: write.guestPtr,
       bytes: memory.slice(start, start + write.bytes.length),
     });
   }
-  if (pendingWrites.length === 0) {
+  if (!queueThreadWorkerWrites || pendingWrites.length === 0) {
     return;
   }
   for (const worker of handle.workers) {
@@ -966,7 +987,14 @@ async function resumeFsViaKernelWorkerInner(
     if (!failedExecveChildOwner) {
       handle.kernelState = adoptKernelStateForHandle(handle, fsProcessedResponse.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
-      applyFsGuestMemoryWrites(handle, deps.threadWorkerStates, fsProcessedResponse.guestMemoryWrites);
+      applyFsGuestMemoryWrites(
+        handle,
+        deps.threadWorkerStates,
+        fsProcessedResponse.guestMemoryWrites,
+        {
+          queueThreadWorkerWrites: pendingFs.opcode !== FS_OP_MMAP,
+        },
+      );
     } else {
       appendFsLifecycleEvent(
         handle,
