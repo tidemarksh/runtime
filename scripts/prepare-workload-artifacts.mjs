@@ -450,6 +450,9 @@ function applyKnownEnv(env, artifact, root, adapterRoot) {
       ".",
     ]));
   }
+  if (id.startsWith("ocaml-")) {
+    setEnv(env, "TIDEMARK_TEST_OCAML_TOOLCHAIN_DIR", root);
+  }
 }
 
 async function applySourceManifestEnv(env, artifact, repository, cacheDir) {
