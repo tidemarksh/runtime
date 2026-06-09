@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { writePipe } from "../../../../src/bridge/pipe.js";
 import { readPublishedKernelRuntimeState } from "../../../../src/bridge/runtime-state.js";
+import { DATA_REGION_OFFSET, publishInode } from "../../../../src/fs/sab-page-cache.js";
 import type {
   KernelWorkerOutbound,
   KernelWorkerRequest,
@@ -1091,6 +1092,154 @@ test("vfork execve resumes the parent and initializes the child lifecycle throug
       runtimeState: expect.any(SharedArrayBuffer),
     }),
   ]);
+});
+
+test("vfork execve continues backing retry past the initial fixed budget", async () => {
+  const chunkSize = 4096;
+  const chunkCount = 260;
+  const expectedSize = chunkSize * chunkCount;
+  const requests: KernelWorkerRequest[] = [];
+  let instantiateCount = 0;
+  let publishedChunks = 0;
+  let currentMiss: { ino: number; offset: number; length: number; expectedSize: number } | null = null;
+  let completeCalls = 0;
+  let clearMissCalls = 0;
+  const sabPageCache = new SharedArrayBuffer(DATA_REGION_OFFSET + expectedSize + chunkCount * 128);
+  publishInode(sabPageCache, 32, {
+    mode: 0o100755,
+    size: expectedSize,
+    parentIno: 1,
+    name: new TextEncoder().encode("large-exec"),
+    nextSibling: 0,
+    fileObjectId: 32,
+    generation: 1,
+  });
+
+  vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {
+    instantiateCount += 1;
+    const memory = (imports as { env: { memory: WebAssembly.Memory } }).env.memory;
+    const exports = makeKernelExports(memory);
+    if (instantiateCount === 2) {
+      exports.thread_complete_execve_handoff = () => {
+        completeCalls += 1;
+        if (publishedChunks >= chunkCount) {
+          currentMiss = null;
+          return 0n;
+        }
+        currentMiss = {
+          ino: 32,
+          offset: publishedChunks * chunkSize,
+          length: chunkSize,
+          expectedSize,
+        };
+        return -11n;
+      };
+      exports.thread_execve_backing_miss_ino = () => currentMiss?.ino ?? 0;
+      exports.thread_execve_backing_miss_offset = () => BigInt(currentMiss?.offset ?? 0);
+      exports.thread_execve_backing_miss_len = () => currentMiss?.length ?? 0;
+      exports.thread_execve_backing_miss_expected_size = () => currentMiss?.expectedSize ?? 0;
+      exports.thread_clear_execve_backing_miss = () => {
+        clearMissCalls += 1;
+        publishedChunks += 1;
+        currentMiss = null;
+      };
+    }
+    return { exports } as WebAssembly.WebAssemblyInstantiatedSource;
+  });
+
+  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    sabPageCache,
+    kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+      requests.push(msg);
+      switch (msg.type) {
+        case "register-process":
+          return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+        case "initialize-process-lifecycle":
+          return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+        case "canonicalize-child-pid":
+          return {
+            type: "child-pid-canonicalized",
+            requestId: 0,
+            childPid: 156,
+            nextPid: 201,
+            pgid: 33,
+            sid: 44,
+            kernelState: msg.kernelState,
+          };
+        case "resume-vfork-execve-parent":
+          return { type: "vfork-execve-parent-resumed", requestId: 0, kernelState: msg.kernelState };
+        case "sync-process-memfs":
+          return { type: "process-memfs-synced", requestId: 0, kernelState: msg.kernelState };
+        case "sync-fork-shared-state":
+          return { type: "fork-shared-state-synced", requestId: 0, kernelState: msg.kernelState };
+        case "rehydrate-fork-shared-state":
+          return { type: "fork-shared-state-rehydrated", requestId: 0 };
+        case "read-file-range-by-inode":
+          return {
+            type: "file-range-read",
+            requestId: 0,
+            data: Uint8Array.from({ length: msg.length }, (_value, index) => (msg.offset + index) & 0xff),
+          };
+        case "unregister-process":
+          return { type: "process-unregistered", requestId: 0 };
+        default:
+          throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+      }
+    },
+  });
+
+  const parentWorker = createdWorkers[0];
+  const parentKernel = createdKernelExports[0];
+  parentKernel.thread_vfork_child_pid = () => 55;
+  parentKernel.thread_spawn_kind = () => parentKernel.abi_spawn_kind_execve();
+  parentKernel.thread_spawn_child_pid = () => {
+    parentKernel.process_reset_lifecycle(0x1234, 156, 1, 201, 33, 44, 0);
+    return 156;
+  };
+
+  emitReady(parentWorker);
+  parentWorker.clearPostedMessages();
+  parentWorker.emit({
+    type: "status",
+    status: 8,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+  await flushMicrotasks();
+
+  parentWorker.clearPostedMessages();
+  parentWorker.emit({
+    type: "status",
+    status: 9,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+  for (let turn = 0; turn < 20 && clearMissCalls < chunkCount; turn += 1) {
+    await flushMicrotasks(50);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  const backingReads = requests.filter((msg) => msg.type === "read-file-range-by-inode");
+  expect(backingReads).toHaveLength(chunkCount);
+  expect(backingReads[0]).toMatchObject({ ino: 32, offset: 0, length: chunkSize, expectedSize });
+  expect(backingReads.at(-1)).toMatchObject({
+    ino: 32,
+    offset: (chunkCount - 1) * chunkSize,
+    length: chunkSize,
+    expectedSize,
+  });
+  expect(completeCalls).toBe(chunkCount + 1);
+  expect(clearMissCalls).toBe(chunkCount);
+  expect(
+    requests.some((msg) => msg.type === "initialize-process-lifecycle" && msg.pid === 156),
+  ).toBe(true);
 });
 
 test("vfork execve detached child memory does not inherit the parent linear memory size", async () => {

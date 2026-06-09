@@ -54,7 +54,9 @@ const VFORK_EXECVE_HANDOFF_FAILURE_WAIT_STATUS = 127 << 8;
 const HANDOFF_DEBUG_STRING_LIMIT = 128;
 const EXECVE_CHILD_HANDOFF_HEADROOM_BYTES = 0x10000;
 const EXECVE_CHILD_LIVE_STACK_WINDOW_BYTES = 8 * 1024 * 1024;
-const EXECVE_BACKING_RETRY_LIMIT = 256;
+const EXECVE_BACKING_RETRY_MIN_ATTEMPTS = 256;
+const EXECVE_BACKING_RETRY_MAX_ATTEMPTS = 16 * 1024;
+const EXECVE_BACKING_RETRY_FINAL_SCAN_ATTEMPTS = 2;
 const EAGAIN = -11;
 
 interface ExecveBackingMiss {
@@ -217,7 +219,8 @@ async function completeExecveHandoffWithBackingRetry(
   childVmPtr: number,
 ): Promise<number> {
   let lastRet = EAGAIN;
-  for (let attempt = 0; attempt < EXECVE_BACKING_RETRY_LIMIT; attempt += 1) {
+  let maxAttempts = EXECVE_BACKING_RETRY_MIN_ATTEMPTS;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     lastRet = Number(childKernel.thread_complete_execve_handoff(childVmPtr));
     if (lastRet !== EAGAIN) {
       return lastRet;
@@ -226,6 +229,7 @@ async function completeExecveHandoffWithBackingRetry(
     if (!miss) {
       return lastRet;
     }
+    maxAttempts = Math.max(maxAttempts, execveBackingRetryLimitForMiss(miss));
     if (!await publishExecveBackingMissForHandoff(handle, miss)) {
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
@@ -243,9 +247,25 @@ async function completeExecveHandoffWithBackingRetry(
   }
   deps.appendRuntimeLifecycleEvent(
     handle.runtimeId,
-    `vfork-execve:backing-retry-exhausted:${childPid}:attempts=${EXECVE_BACKING_RETRY_LIMIT}`,
+    `vfork-execve:backing-retry-exhausted:${childPid}:attempts=${maxAttempts}`,
   );
   return lastRet;
+}
+
+function execveBackingRetryLimitForMiss(miss: ExecveBackingMiss): number {
+  const alignedOffset = Math.floor(miss.offset / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE;
+  const requestedEnd = miss.offset + miss.length;
+  const alignedEnd = Math.min(
+    miss.expectedSize,
+    Math.ceil(requestedEnd / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE,
+  );
+  const alignedLength = Math.max(DEFAULT_RESIDENT_PAGE_SIZE, alignedEnd - alignedOffset);
+  const sourceChunks = Math.ceil(miss.expectedSize / alignedLength);
+  const attempts = sourceChunks + EXECVE_BACKING_RETRY_FINAL_SCAN_ATTEMPTS;
+  return Math.min(
+    EXECVE_BACKING_RETRY_MAX_ATTEMPTS,
+    Math.max(EXECVE_BACKING_RETRY_MIN_ATTEMPTS, attempts),
+  );
 }
 
 function copyKernelRuntimeRegion(

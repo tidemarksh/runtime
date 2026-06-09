@@ -48,6 +48,9 @@ const FS_PUBLICATION_DEBUG_ENABLED = ((globalThis as {
 }).process?.env?.TIDEMARK_FS_PUBLICATION_DEBUG ?? "") === "1";
 export const KERNEL_WORKER_PROCESS_CONTROL_OWNERSHIP = "transitional-runtime-owner" as const;
 const LARGE_MMAP_DIRECT_BACKING_THRESHOLD_BYTES = 16 * 1024 * 1024;
+const EXECVE_BACKING_RETRY_MIN_ATTEMPTS = 256;
+const EXECVE_BACKING_RETRY_MAX_ATTEMPTS = 16 * 1024;
+const EXECVE_BACKING_RETRY_FINAL_SCAN_ATTEMPTS = 2;
 
 interface CanonicalProcessEntry {
   pid: number;
@@ -569,7 +572,8 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       publishFailed: false,
       lastMiss: null,
     };
-    for (let attempt = 0; attempt < 256; attempt += 1) {
+    let maxAttempts = EXECVE_BACKING_RETRY_MIN_ATTEMPTS;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       stats.attempts += 1;
       debug?.("thread_process_fs-start", `attempt=${attempt}`);
       processExports.thread_process_fs(vmPtr);
@@ -580,6 +584,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       }
       stats.misses += 1;
       stats.lastMiss = miss;
+      maxAttempts = Math.max(maxAttempts, execveBackingRetryLimitForMiss(miss));
       debug?.("execve-backing-miss", formatBackingFillDebug(miss));
       debug?.("execve-backing-publish-start", formatBackingFillDebug(miss));
       const published = await publishBackingRange(miss);
@@ -593,6 +598,22 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     }
     stats.exhausted = true;
     return stats;
+  }
+
+  function execveBackingRetryLimitForMiss(request: PendingBackingFillRequest): number {
+    const alignedOffset = Math.floor(request.offset / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE;
+    const requestedEnd = request.offset + request.length;
+    const alignedEnd = Math.min(
+      request.expectedSize,
+      Math.ceil(requestedEnd / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE,
+    );
+    const alignedLength = Math.max(DEFAULT_RESIDENT_PAGE_SIZE, alignedEnd - alignedOffset);
+    const sourceChunks = Math.ceil(request.expectedSize / alignedLength);
+    const attempts = sourceChunks + EXECVE_BACKING_RETRY_FINAL_SCAN_ATTEMPTS;
+    return Math.min(
+      EXECVE_BACKING_RETRY_MAX_ATTEMPTS,
+      Math.max(EXECVE_BACKING_RETRY_MIN_ATTEMPTS, attempts),
+    );
   }
 
   function formatBackingFillDebug(request: PendingBackingFillRequest | null): string {
