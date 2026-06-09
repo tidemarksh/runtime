@@ -35,9 +35,9 @@ export const haskellCompileToolchainEntry: ToolchainExecEntry = {
   id: "haskell-compile",
   targetClass: "Haskell runtime / toolchain",
   workflowKind: "compiler + linker",
-  hostExecutablePath: resolve(haskellToolchainDir, "usr/bin/ghc"),
-  guestExecutablePath: "/usr/bin/ghc",
-  argv: ["/usr/bin/ghc", "-o", "/work/hello", "/work/Main.hs"],
+  hostExecutablePath: resolve(haskellToolchainDir, "usr/lib/ghc/bin/ghc-9.10.3"),
+  guestExecutablePath: "/usr/lib/ghc/bin/ghc-9.10.3",
+  argv: ["/usr/lib/ghc/bin/ghc-9.10.3", "-B/usr/lib/ghc/lib", "-o", "/work/hello", "/work/Main.hs"],
   env: [
     "PATH=/usr/bin:/bin",
     "HOME=/tmp",
@@ -45,6 +45,7 @@ export const haskellCompileToolchainEntry: ToolchainExecEntry = {
   ],
   timeoutMs: 30_000,
   guestMemoryPolicyLimitBytes: 1024 * 1024 * 1024,
+  hostFileBackingMode: "host-file",
   snapshotSources: haskellSnapshotSources([
     {
       kind: "inlineFile",
