@@ -286,6 +286,75 @@ test("requestSocketStateSync rewrites provisional pid restored by kernel-worker 
   expect(retryBlockedWorker).not.toHaveBeenCalled();
 });
 
+test("requestEpollDependentOfdStateSync uses ABI fd types for eventfd and timerfd", async () => {
+  const retryBlockedWorker = vi.fn();
+  const eventfdType = 41;
+  const timerfdType = 42;
+  const syncedOfdIds: number[][] = [];
+  const handle = makeHandle({
+    pid: 1,
+    vmPtr: 0x1234,
+    workers: new Set(),
+    kernelWorkerRequest: vi.fn(async (msg) => {
+      expect(msg.type).toBe("sync-ofd-state");
+      syncedOfdIds.push([...msg.ofdIds]);
+      return {
+        type: "ofd-state-synced",
+        requestId: 0,
+        kernelState: msg.kernelState,
+      };
+    }),
+  });
+  handle.kernel.abi_max_fds = () => 16;
+  handle.kernel.abi_max_threads = () => 0;
+  handle.kernel.abi_fd_type_eventfd = () => eventfdType;
+  handle.kernel.abi_fd_type_timerfd = () => timerfdType;
+  handle.kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => {
+    if (fd === 7) {
+      return 11;
+    }
+    if (fd === 8) {
+      return 12;
+    }
+    if (fd === 9) {
+      return 13;
+    }
+    return 0;
+  };
+  handle.kernel.process_thread_vm_ptr = (_vmPtr: number, slot: number) => (
+    slot === 0 ? 0x1234 : 0
+  );
+  handle.kernel.thread_blocked_ofd_id = (vmPtr: number) => (
+    vmPtr === 0x1234 ? 12 : 0
+  );
+  handle.kernel.kernel_ofd_fd_type = (ofdId: number) => {
+    if (ofdId === 11) {
+      return eventfdType;
+    }
+    if (ofdId === 12) {
+      return timerfdType;
+    }
+    if (ofdId === 13) {
+      return 9;
+    }
+    return 0;
+  };
+
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent: () => {},
+    drainProcessOutput: vi.fn(() => false),
+    drainHiddenProcessOutput: vi.fn(() => false),
+    threadWorkerStates: new WeakMap(),
+    retryBlockedWorker,
+  });
+
+  await helpers.requestEpollDependentOfdStateSync(handle);
+
+  expect(syncedOfdIds).toEqual([[11, 12]]);
+  expect(handle.kernelWorkerRequest).toHaveBeenCalledTimes(1);
+  expect(retryBlockedWorker).not.toHaveBeenCalled();
+});
+
 test("requestSocketStateSync preserves network recv payload when restoring a stale snapshot with the same tail", async () => {
   const retryBlockedWorker = vi.fn();
   const handle = makeHandle();

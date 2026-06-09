@@ -228,7 +228,12 @@ export function createWorkerSchedulerStateSyncHelpers(
       return Promise.resolve();
     }
 
-    for (const ofdId of collectHeldOfdIdsByType(handle, [9, 10])) {
+    const dependentOfdTypes = [
+      handle.kernel.abi_fd_type_eventfd?.() ?? 9,
+      handle.kernel.abi_fd_type_timerfd?.() ?? 10,
+    ].filter((fdType): fdType is number => typeof fdType === "number");
+
+    for (const ofdId of collectHeldOfdIdsByType(handle, dependentOfdTypes)) {
       handle.ofdSyncQueuedIds.add(ofdId);
     }
     if (handle.ofdSyncQueuedIds.size === 0) {

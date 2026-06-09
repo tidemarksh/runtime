@@ -48,6 +48,8 @@ export interface KernelExports {
   abi_fd_type_pipe(): number;
   abi_fd_type_epoll(): number;
   abi_fd_type_socket(): number;
+  abi_fd_type_eventfd?(): number;
+  abi_fd_type_timerfd?(): number;
   abi_fd_type_pty_master?(): number;
   abi_fd_type_pty_slave?(): number;
 
