@@ -756,6 +756,104 @@ test("processFs demand-fills source-backed mmap ranges before processing fs", as
   expect(processExports.opLog).toEqual(["restore-published-data", "process-fs", "resume-fs"]);
 });
 
+test("processFs skips full resident-page publication for large directly-readable mmap ranges", async () => {
+  const canonicalExports = makeKernelExports();
+  const mappedBytes = Uint8Array.from([0x11, 0x22, 0x33, 0x44]);
+  const largeLength = 16 * 1024 * 1024 + 4096;
+  const processExports = makeKernelExports({
+    fdEntries: [{ fd: 5, ofdId: 7 }],
+    mmapRequest: {
+      fd: 5,
+      offset: 0,
+      length: largeLength,
+      ino: 21,
+      size: largeLength,
+      guestPtrHint: 0,
+      resultGuestPtr: 0x8000,
+      bytes: mappedBytes,
+    },
+  });
+  const processKernels = new Map<number, KernelExports>([[7, processExports]]);
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 8192);
+  const ensureBackingSourceRangeForInode = vi.fn(async () => true);
+  const readBackingFileRangeByInode = vi.fn((_ino: number, _offset: number, length: number) => (
+    new Uint8Array(length)
+  ));
+  publishInode(sab, 21, {
+    mode: 0o100644,
+    size: largeLength,
+    parentIno: 1,
+    name: new TextEncoder().encode("large-mapped"),
+    nextSibling: 0,
+    fileObjectId: 21,
+    generation: 1,
+  });
+
+  const processControl = createKernelWorkerProcessControl({
+    getCanonicalExports: () => canonicalExports,
+    setCanonicalExports: () => {},
+    getWasmModule: () => null,
+    setWasmModule: () => {},
+    getSabPageCache: () => sab,
+    setSabPageCache: () => {},
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    canonicalProcesses: new Map(),
+    seedEntries: new Map(),
+    getCanonicalNextPid: () => 3,
+    setCanonicalNextPid: () => {},
+    publishRootInode: () => {},
+    copyOfdState: () => {},
+    copyMemfsState: () => {},
+    rebuildPageCacheFromExports: () => {},
+    rebuildPageCacheFromCanonical: () => {},
+    syncPipeState: (_pid, kernelState) => kernelState,
+    syncEpollState: (_pid, kernelState) => kernelState,
+    syncSocketState: (_pid, kernelState) => kernelState,
+    copyCanonicalMemfsToProcess: () => {},
+    snapshotProcSelfExe: () => null,
+    restoreProcSelfExe: () => {},
+    composeProcessPipeUsed: () => 0n,
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    mergePipeSlotsFromCanonical: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+    }),
+    applyPipeControlState: () => {},
+    copyEpollState: () => {},
+    copySelectedEpollState: () => {},
+    copySocketState: () => {},
+    syncFileDataMutation: () => false,
+    syncFileDataMutationByPath: () => false,
+    syncMetadataMutation: () => false,
+    readBackingFileRangeByInode,
+    ensureBackingSourceRangeForInode,
+    restorePublishedRegularFileDataFromPageCache: () => {
+      processExports.opLog.push("restore-published-data");
+    },
+    fanoutCanonicalMemfs: () => {},
+    fsEffectMemfsMutation: 1 << 0,
+    fsEffectSharedOfdState: 1 << 1,
+    fsEffectMemfsFileData: 1 << 2,
+    fsOpOpenAt: 3,
+    fsOpMkdir: 6,
+    fsOpUnlink: 7,
+  });
+
+  const result = await processControl.processFs(7, 0x1234, makeKernelState());
+
+  expect(result.result).toBe(0x8000n);
+  expect(ensureBackingSourceRangeForInode).not.toHaveBeenCalled();
+  expect(readBackingFileRangeByInode).toHaveBeenCalledTimes(2);
+  expect(readBackingFileRangeByInode).toHaveBeenNthCalledWith(1, 21, 0, 4096);
+  expect(readBackingFileRangeByInode).toHaveBeenNthCalledWith(2, 21, 16 * 1024 * 1024, 4096);
+  expect(readResidentFileData(sab, 21, 0, 16)).toBeNull();
+  expect(processExports.opLog).toEqual(["restore-published-data", "process-fs", "resume-fs"]);
+});
+
 test("processFs demand-fills source-backed append writes before processing fs", async () => {
   const canonicalExports = makeKernelExports();
   const processExports = makeKernelExports({

@@ -47,6 +47,7 @@ const FS_PUBLICATION_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_FS_PUBLICATION_DEBUG ?? "") === "1";
 export const KERNEL_WORKER_PROCESS_CONTROL_OWNERSHIP = "transitional-runtime-owner" as const;
+const LARGE_MMAP_DIRECT_BACKING_THRESHOLD_BYTES = 16 * 1024 * 1024;
 
 interface CanonicalProcessEntry {
   pid: number;
@@ -78,6 +79,7 @@ interface PendingBackingFillRequest {
   offset: number;
   length: number;
   expectedSize: number;
+  opcode?: number;
 }
 
 interface ExecveBackingRetryStats {
@@ -414,6 +416,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
           offset: survivingLastByte,
           length: 1,
           expectedSize,
+          opcode,
         };
       }
       if (opcode === FS_OP_WRITE) {
@@ -423,6 +426,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
             offset: expectedSize - 1,
             length: 1,
             expectedSize,
+            opcode,
           };
         }
         return {
@@ -430,6 +434,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
           offset,
           length: Math.min(length, expectedSize - offset),
           expectedSize,
+          opcode,
         };
       }
       if (offset >= expectedSize) {
@@ -440,6 +445,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
         offset,
         length: Math.min(length, expectedSize - offset),
         expectedSize,
+        opcode,
       };
     }
     return null;
@@ -475,6 +481,28 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     return { ino, offset, length, expectedSize };
   }
 
+  function backingProbeIsReadable(ino: number, offset: number, length: number): boolean {
+    const range = deps.readBackingFileRangeByInode(ino, offset, length);
+    return range !== null && range.length === length;
+  }
+
+  function hasDirectBackingForLargeMmap(
+    request: PendingBackingFillRequest,
+    alignedOffset: number,
+    alignedEnd: number,
+  ): boolean {
+    const alignedLength = alignedEnd - alignedOffset;
+    if (request.opcode !== FS_OP_MMAP || alignedLength < LARGE_MMAP_DIRECT_BACKING_THRESHOLD_BYTES) {
+      return false;
+    }
+    const probeLength = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, alignedLength);
+    if (!backingProbeIsReadable(request.ino, alignedOffset, probeLength)) {
+      return false;
+    }
+    const tailOffset = alignedEnd - probeLength;
+    return tailOffset === alignedOffset || backingProbeIsReadable(request.ino, tailOffset, probeLength);
+  }
+
   async function publishBackingRange(request: PendingBackingFillRequest): Promise<boolean> {
     const alignedOffset = Math.floor(request.offset / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE;
     const requestedEnd = request.offset + request.length;
@@ -485,6 +513,9 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     const alignedLength = Math.max(0, alignedEnd - alignedOffset);
     if (alignedLength <= 0) {
       return false;
+    }
+    if (hasDirectBackingForLargeMmap(request, alignedOffset, alignedEnd)) {
+      return true;
     }
     let alignedRange = deps.readBackingFileRangeByInode(request.ino, alignedOffset, alignedLength);
     if (alignedRange === null) {
