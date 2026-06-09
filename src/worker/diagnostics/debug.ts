@@ -1113,11 +1113,16 @@ function formatSelectedSyscallProfile(handle: ProcessHandle): string {
     ["renameat", 38],
     ["ftruncate", 46],
     ["pwrite64", 68],
+    ["futex", 98],
     ["clone", 220],
     ["execve", 221],
+    ["epoll_create1", 20],
+    ["epoll_ctl", 21],
+    ["epoll_pwait", 22],
     ["msync", 227],
     ["wait4", 260],
     ["renameat2", 276],
+    ["futex_time64", 422],
     ["clone3", 435],
   ] as const;
   return selected

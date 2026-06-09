@@ -243,9 +243,14 @@ function formatSelectedSyscallProfile(handle: RuntimeDebugHandle): string {
   const error = handle.kernel.debug_syscall_profile_error_count;
   const selected = [
     ["exit_group", 94],
+    ["futex", 98],
     ["clone", 220],
     ["execve", 221],
+    ["epoll_create1", 20],
+    ["epoll_ctl", 21],
+    ["epoll_pwait", 22],
     ["wait4", 260],
+    ["futex_time64", 422],
     ["clone3", 435],
   ] as const;
   return selected
