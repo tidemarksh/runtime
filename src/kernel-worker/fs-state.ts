@@ -937,30 +937,37 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   }
 
   function restorePublishedRegularFileDataFromPageCache(targetExports = deps.getCanonicalExports()): void {
-    const sab = deps.getSabPageCache();
-
     for (let ino = 1; ino < MAX_INODES; ino += 1) {
-      const published = readInodeRecord(sab, ino);
-      const hasPublishedResidentFile = (published?.fileObjectId ?? 0) !== 0;
-      if (
-        !published
-        || (published.mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG
-        || published.size <= 0
-        || (!hasBackingFile(ino) && !hasDirtyResidentPagesForInode(sab, ino) && !hasPublishedResidentFile)
-      ) {
-        continue;
-      }
-
-      const mode = targetExports.memfs_inode_mode(ino);
-      if ((mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG) {
-        continue;
-      }
-      if (Number(targetExports.memfs_file_size(ino)) !== published.size) {
-        continue;
-      }
-
-      syncExternalFileDataIntoTarget(targetExports, ino, mode, published.size, published);
+      restorePublishedRegularFileDataForInode(ino, targetExports);
     }
+  }
+
+  function restorePublishedRegularFileDataForInode(
+    ino: number,
+    targetExports = deps.getCanonicalExports(),
+  ): boolean {
+    const sab = deps.getSabPageCache();
+    const published = readInodeRecord(sab, ino);
+    const hasPublishedResidentFile = (published?.fileObjectId ?? 0) !== 0;
+    if (
+      !published
+      || (published.mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG
+      || published.size <= 0
+      || (!hasBackingFile(ino) && !hasDirtyResidentPagesForInode(sab, ino) && !hasPublishedResidentFile)
+    ) {
+      return false;
+    }
+
+    const mode = targetExports.memfs_inode_mode(ino);
+    if ((mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG) {
+      return false;
+    }
+    if (Number(targetExports.memfs_file_size(ino)) !== published.size) {
+      return false;
+    }
+
+    syncExternalFileDataIntoTarget(targetExports, ino, mode, published.size, published);
+    return true;
   }
 
   function syncMetadataMutation(sourceExports: KernelExports, path: string): boolean {
@@ -1225,6 +1232,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     snapshotCanonicalFs,
     statPath,
     restorePublishedRegularFileDataFromPageCache,
+    restorePublishedRegularFileDataForInode,
     syncFileDataMutation,
     syncFileDataMutationByPath,
     syncMetadataMutation,

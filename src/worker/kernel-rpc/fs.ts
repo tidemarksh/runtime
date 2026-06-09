@@ -3,7 +3,6 @@ import {
   readKernelRuntimeState,
 } from "../../abi.js";
 import {
-  activeKernelShareOfdIds,
   collectProcessHeldOfds,
   hasPlausibleOfdState,
 } from "../ownership/ofd-table.js";
@@ -454,6 +453,42 @@ function pendingFsRequestFd(handle: ProcessHandle, vmPtr: number): number | null
     }
   }
   return null;
+}
+
+function pendingFsSharedOfdIds(handle: ProcessHandle, vmPtr: number): number[] {
+  const fd = pendingFsRequestFd(handle, vmPtr);
+  if (fd === null || fd < 0 || fd >= handle.kernel.abi_max_fds()) {
+    return [];
+  }
+  const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+  if (
+    ofdId > 0
+    && ofdId < handle.kernel.abi_max_fds()
+    && handle.kernelShare.sharedOfdIds.has(ofdId)
+  ) {
+    return [ofdId];
+  }
+  return [];
+}
+
+function hasLiveWorkerState(
+  handle: ProcessHandle,
+  threadWorkerStates: WeakMap<Worker, ThreadWorkerState>,
+): boolean {
+  if (
+    (handle.runningWorker !== null && handle.runningWorker !== undefined)
+    || (handle.readyWorkers?.length ?? 0) > 0
+    || (handle.blockedWorkers?.size ?? 0) > 0
+  ) {
+    return true;
+  }
+  for (const worker of handle.workers ?? []) {
+    const thread = threadWorkerStates.get(worker);
+    if ((thread?.waitingInWorkerStatus ?? null) !== null) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function pendingRegularFileFsRequest(
@@ -920,7 +955,7 @@ async function resumeFsViaKernelWorkerInner(
     deps.appendWorkerDebugLog(handle, `fs-start:0x${vmPtr.toString(16)}${fsDebugSuffix}`);
     appendFsLifecycleEvent(handle, "start", vmPtr, `${fsDebugSuffix}${formatFsRingDebug(handle, vmPtr)}`);
     const heldOfdIds = collectProcessHeldOfds(handle);
-    const missingSharedOfdIds = activeKernelShareOfdIds(handle)
+    const missingSharedOfdIds = pendingFsSharedOfdIds(handle, vmPtr)
       .filter((ofdId) => !heldOfdIds.has(ofdId) || !hasPlausibleOfdState(handle, ofdId));
     if (missingSharedOfdIds.length > 0) {
       await deps.rehydrateForkSharedStateViaKernelWorker([handle], missingSharedOfdIds, {
@@ -931,6 +966,7 @@ async function resumeFsViaKernelWorkerInner(
     const dirtyMemfsPeers = deps.kernelShareOtherMembers(handle)
       .filter((member) => (
         member.processMemfsDirty
+        && hasLiveWorkerState(member, deps.threadWorkerStates)
         && member.runningWorker === null
         && !member.exitInProgress
         && member.kernelWorkerRequest

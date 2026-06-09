@@ -161,7 +161,7 @@ export async function runToolchainExecEntry(
         [...entry.argv],
         [...entry.env],
         scaledToolchainTimeoutMs(entry.timeoutMs),
-        entry.cwd ? { cwd: entry.cwd } : undefined,
+        { ...(entry.cwd ? { cwd: entry.cwd } : {}), stdin: "closed" },
       ),
       markerPromise,
     ]);

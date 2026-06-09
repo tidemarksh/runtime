@@ -230,13 +230,13 @@ export function readCompletedSyncEffects(
   syscallNumbers: SyscallNumbers | null,
   vmPtr = 0,
 ): number {
-  const syscallNr = (() => {
+  const readSyscallNr = (): bigint | null => {
     const traced = exports.debug_syscall_trace_nr?.();
     if (traced !== undefined && traced !== 0n) {
       return traced;
     }
     return readLatestAnyFdTrace(exports)?.syscallNr ?? null;
-  })();
+  };
   const threadCompletedEffects = exports.thread_take_completed_sync_effects?.(vmPtr);
   const hasThreadCompletedEffects = threadCompletedEffects !== undefined;
   const aggregatedEffects = threadCompletedEffects
@@ -246,8 +246,10 @@ export function readCompletedSyncEffects(
   if (status !== statusCodes.OK || syscallNumbers === null) {
     return completedEffects === 0
       ? 0
-      : normalizeForkSharedSyncEffects(completedEffects, syscallNr, syscallNumbers);
+      : normalizeForkSharedSyncEffects(completedEffects, readSyscallNr(), syscallNumbers);
   }
+
+  const syscallNr = readSyscallNr();
 
   if (syscallNr === null) {
     return completedEffects === 0

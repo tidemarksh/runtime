@@ -318,6 +318,7 @@ export async function syncForkSharedStateViaKernelWorker(
     );
     if (deltaOfdIds.length === 0 && !memfsOnly) {
       lastForkSharedActiveOfdIdsByHandle.set(handle, new Set(sourceActiveOfdIds));
+      pruneStaleKernelShareOfdIds(handle, staleOfdIds);
       return;
     }
     syncOfdIds = deltaOfdIds;

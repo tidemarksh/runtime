@@ -412,6 +412,28 @@ test("fork-shared delta skips regular file OFDs held only by a peer", async () =
   expect(child.kernelWorkerRequest).not.toHaveBeenCalled();
 });
 
+test("fork-shared delta prunes stale shared OFDs when no sync is needed", async () => {
+  const child = makeHandle(7, new Map());
+  const parent = makeHandle(3, new Map());
+  child.kernelShare.members.add(parent);
+  parent.kernelShare = child.kernelShare;
+  child.kernelShare.sharedOfdIds.add(12);
+
+  seedOfd(child.memory, child.kernelState, 12, FD_TYPE_PIPE, 4, -1);
+  seedOfd(parent.memory, parent.kernelState, 12, FD_TYPE_PIPE, 4, -1);
+
+  await syncForkSharedStateViaKernelWorker(child, [parent], {
+    cause: { kind: "syscall", nr: -1n, name: "test-fork-shared-stale-prune" },
+    deltaOfdIds: true,
+    includeMemfs: false,
+    trackHeldOfds: true,
+    sourceVmPtr: child.vmPtr,
+  });
+
+  expect(child.kernelShare.sharedOfdIds.has(12)).toBe(false);
+  expect(child.kernelWorkerRequest).not.toHaveBeenCalled();
+});
+
 test("fork-shared tracking prunes regular file OFDs without a peer", async () => {
   const child = makeHandle(7, new Map([[3, 12]]));
   const parent = makeHandle(3, new Map());

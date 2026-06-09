@@ -47,6 +47,7 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
     blockedWorkers: new Map(),
     pendingChildExitRecords: 0,
     pendingChildSpawnRecords: 0,
+    childExitSyncRecords: new Map(),
     pipeSyncPromise: null,
     pipeSyncQueued: false,
     pipeWaiterWakeQueued: false,
@@ -58,6 +59,9 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
     socketSyncPromise: null,
     socketSyncQueued: false,
     socketWaiterWakeQueued: false,
+    forkSharedSyncPromise: null,
+    processMemfsDirty: false,
+    processMemfsPublishPending: false,
     vforkSnapshot: null,
     vforkWorker: null,
     exitInProgress: false,
@@ -74,6 +78,24 @@ test("hasActiveChildProcess ignores children already in exit cleanup", () => {
   ]);
 
   expect(hasActiveChildProcess(processHandles, 1)).toBe(false);
+});
+
+test("hasActiveChildProcess reports exiting children with unpublished MemFS state", () => {
+  const processHandles = new Map<number, ProcessHandle>([
+    [1, makeHandle({ pid: 1 })],
+    [
+      2,
+      makeHandle({
+        pid: 2,
+        parentPid: 1,
+        exitInProgress: true,
+        processMemfsDirty: true,
+        processMemfsPublishPending: true,
+      }),
+    ],
+  ]);
+
+  expect(hasActiveChildProcess(processHandles, 1)).toBe(true);
 });
 
 test("hasActiveChildProcess still reports live children", () => {
@@ -180,4 +202,33 @@ test("pumpActiveChildProcesses pumps live children and skips exit cleanup", () =
 
   expect(result).toBe(true);
   expect(events).toEqual(["kick:3", "pump:3"]);
+});
+
+test("pumpActiveChildProcesses does not pump exiting children with unpublished MemFS state", () => {
+  const exitingChild = makeHandle({
+    pid: 2,
+    parentPid: 1,
+    exitInProgress: true,
+    processMemfsDirty: true,
+    processMemfsPublishPending: true,
+  });
+  const processHandles = new Map<number, ProcessHandle>([
+    [1, makeHandle({ pid: 1 })],
+    [2, exitingChild],
+  ]);
+  const events: string[] = [];
+
+  const result = pumpActiveChildProcesses(
+    processHandles,
+    1,
+    (handle) => {
+      events.push(`pump:${handle.pid}`);
+    },
+    (handle) => {
+      events.push(`kick:${handle.pid}`);
+    },
+  );
+
+  expect(result).toBe(false);
+  expect(events).toEqual([]);
 });

@@ -42,6 +42,19 @@ function childProcessCountsAsActive(
   threadWorkerStates?: WeakMap<Worker, ThreadWorkerState>,
 ): boolean {
   if (handle.exitInProgress) {
+    return handle.processMemfsDirty || handle.processMemfsPublishPending;
+  }
+  if (threadWorkerStates === undefined) {
+    return true;
+  }
+  return hasRunnableWorker(handle, threadWorkerStates);
+}
+
+function childProcessCanBePumped(
+  handle: ProcessHandle,
+  threadWorkerStates?: WeakMap<Worker, ThreadWorkerState>,
+): boolean {
+  if (handle.exitInProgress) {
     return false;
   }
   if (threadWorkerStates === undefined) {
@@ -78,10 +91,7 @@ export function pumpActiveChildProcesses(
     if (candidate.parentPid !== parentPid) {
       continue;
     }
-    if (!childProcessCountsAsActive(candidate, threadWorkerStates)) {
-      continue;
-    }
-    if (!hasRunnableWorker(candidate, threadWorkerStates)) {
+    if (!childProcessCanBePumped(candidate, threadWorkerStates)) {
       continue;
     }
     kickBlockedWorkers?.(candidate);

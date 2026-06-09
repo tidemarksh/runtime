@@ -1038,6 +1038,25 @@ test("kernel-worker restorePublishedRegularFileDataFromPageCache externalizes wi
   expectBytesEqual(fsState.readFile("/lib/runtime.bin"), publishedData);
 });
 
+test("kernel-worker restorePublishedRegularFileDataForInode only externalizes the selected inode", () => {
+  const { canonicalExports, fsState } = makeFsState();
+  const runtimeData = encoder.encode("published-data");
+  const toolData = encoder.encode("tool-data");
+
+  fsState.writeFile("/lib/runtime.bin", runtimeData, 0o755, false);
+  fsState.writeFile("/lib/tool.bin", toolData, 0o755, false);
+  const toolIno = canonicalExports.fileIno("/lib/tool.bin");
+  canonicalExports.overwriteFile("/lib/runtime.bin", encoder.encode("stale-inline!!"));
+  canonicalExports.overwriteFile("/lib/tool.bin", encoder.encode("stale-bin"));
+  canonicalExports.opLog.length = 0;
+
+  expect(fsState.restorePublishedRegularFileDataForInode(toolIno)).toBe(true);
+
+  expect(canonicalExports.opLog).toContain(`external:/lib/tool.bin:${toolData.length}`);
+  expect(canonicalExports.opLog).not.toContain(`external:/lib/runtime.bin:${runtimeData.length}`);
+  expect(fsState.restorePublishedRegularFileDataForInode(9999)).toBe(false);
+});
+
 test("kernel-worker syncMetadataMutation materializes absolute-path file creation without full fanout", () => {
   const { canonicalExports, memberExports, fsState, sabPageCache } = makeFsState();
 

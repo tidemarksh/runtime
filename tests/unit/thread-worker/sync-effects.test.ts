@@ -1,5 +1,5 @@
 // Thread-worker tests in this file validate scheduler/sync effect outcomes.
-import { expect, test } from "vite-plus/test";
+import { expect, test, vi } from "vite-plus/test";
 import {
   loadSyscallNumbers,
   readCompletedSyncEffects,
@@ -62,6 +62,7 @@ function makeKernelExports(
 
 const statusCodes = {
   OK: 0,
+  FS: 6,
 } as const;
 
 test("readCompletedSyncEffects marks openat as a fork-shared OFD mutation without extra state sync", () => {
@@ -221,6 +222,27 @@ test("readCompletedSyncEffects uses explicit thread effects without harness sysc
     loadSyscallNumbers(exports),
     0x1234,
   )).toBe(SYNC_EFFECT_PIPE_STATE | SYNC_EFFECT_EPOLL_STATE | SYNC_EFFECT_FORK_SHARED_OFD_STATE);
+});
+
+test("readCompletedSyncEffects skips trace reads for non-OK statuses with no completed effects", () => {
+  const traceRead = vi.fn(() => {
+    throw new Error("non-OK zero-effect status should not read syscall trace");
+  });
+  const exports = {
+    ...makeKernelExports(null),
+    debug_syscall_trace_nr: traceRead,
+    debug_fd_syscall_trace_len: traceRead,
+    thread_take_completed_sync_effects: () => 0,
+  };
+
+  expect(readCompletedSyncEffects(
+    exports,
+    statusCodes,
+    statusCodes.FS,
+    loadSyscallNumbers(exports),
+    0x1234,
+  )).toBe(0);
+  expect(traceRead).not.toHaveBeenCalled();
 });
 
 test("readCompletedSyncEffects keeps passive socket ops out of fork-shared sync", () => {

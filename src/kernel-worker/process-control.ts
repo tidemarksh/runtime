@@ -150,6 +150,7 @@ interface KernelWorkerProcessControlDeps {
   rebuildPageCacheFromExports(sourceExports: KernelExports): void;
   rebuildPageCacheFromCanonical(): void;
   restorePublishedRegularFileDataFromPageCache?(targetExports?: KernelExports): void;
+  restorePublishedRegularFileDataForInode?(ino: number, targetExports?: KernelExports): boolean;
   readBackingFileRangeByInode(ino: number, offset: number, length: number): Uint8Array | null;
   flushDirtyResidentFileByInode(ino: number): boolean;
   truncateDirtyResidentFileByInode(ino: number, size: number): number;
@@ -635,6 +636,49 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     return `mmap=hint=0x${request.guestPtrHint.toString(16)}:len=${request.length}`;
   }
 
+  function pendingPageCacheRestoreInodes(
+    pendingContext: PendingFsMutationContext,
+    pendingMmapGuestWrite: PendingMmapGuestWriteRequest | null,
+    pendingBackingFill: PendingBackingFillRequest | null,
+  ): number[] | null {
+    const inodes = new Set<number>();
+    if (pendingMmapGuestWrite !== null) {
+      const mmapIno = pendingBackingFill?.ino ?? 0;
+      if (mmapIno <= 0) {
+        return null;
+      }
+      inodes.add(mmapIno);
+    }
+    if ((pendingContext.effects & deps.fsEffectMemfsFileData) !== 0) {
+      if (pendingContext.fileDataTargetIno <= 0) {
+        return null;
+      }
+      inodes.add(pendingContext.fileDataTargetIno);
+    }
+    return [...inodes];
+  }
+
+  function restorePublishedRegularFileDataForPendingFs(
+    processExports: KernelExports,
+    pendingContext: PendingFsMutationContext,
+    pendingMmapGuestWrite: PendingMmapGuestWriteRequest | null,
+    pendingBackingFill: PendingBackingFillRequest | null,
+  ): string {
+    const targetInodes = pendingPageCacheRestoreInodes(
+      pendingContext,
+      pendingMmapGuestWrite,
+      pendingBackingFill,
+    );
+    if (targetInodes !== null && deps.restorePublishedRegularFileDataForInode) {
+      for (const ino of targetInodes) {
+        deps.restorePublishedRegularFileDataForInode(ino, processExports);
+      }
+      return targetInodes.length === 0 ? "targeted:none" : `targeted:${targetInodes.join(",")}`;
+    }
+    deps.restorePublishedRegularFileDataFromPageCache?.(processExports);
+    return "full";
+  }
+
   function snapshotMmapGuestMemoryWrite(
     processExports: KernelExports,
     vmPtr: number,
@@ -1073,8 +1117,13 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
           ? formatMmapGuestWriteDebug(pendingMmapGuestWrite)
           : `file-data:ino=${pendingContext.fileDataTargetIno}`,
       );
-      deps.restorePublishedRegularFileDataFromPageCache?.(processExports);
-      debug?.("restore-page-cache-done");
+      const restored = restorePublishedRegularFileDataForPendingFs(
+        processExports,
+        pendingContext,
+        pendingMmapGuestWrite,
+        pendingBackingFill,
+      );
+      debug?.("restore-page-cache-done", restored);
     }
     debug?.("process-fs-kernel-start");
     const execveRetryStats = await processFsWithExecveBackingRetry(processExports, vmPtr, debug);

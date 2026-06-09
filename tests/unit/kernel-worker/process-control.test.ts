@@ -1374,17 +1374,23 @@ test("processFs returns mmap guest memory populated by kernel-worker fs processi
   const canonicalExports = makeKernelExports();
   const mappedBytes = Uint8Array.from([0x7f, 0x45, 0x4c, 0x46, 0xaa, 0xbb, 0xcc, 0xdd]);
   const processExports = makeKernelExports({
+    fdEntries: [{ fd: 5, ofdId: 7 }],
     mmapRequest: {
       guestPtrHint: 0,
       resultGuestPtr: 0x8000,
       length: mappedBytes.length,
       bytes: mappedBytes,
+      ino: 12,
+      size: mappedBytes.length,
     },
   });
   const processKernels = new Map<number, KernelExports>([[7, processExports]]);
-  const restorePublishedRegularFileDataFromPageCache = vi.fn((targetExports?: KernelExports) => {
+  const restorePublishedRegularFileDataFromPageCache = vi.fn();
+  const restorePublishedRegularFileDataForInode = vi.fn((ino: number, targetExports?: KernelExports) => {
+    expect(ino).toBe(12);
     expect(targetExports).toBe(processExports);
     processExports.opLog.push("restore-published-data");
+    return true;
   });
 
   const processControl = createKernelWorkerProcessControl({
@@ -1406,6 +1412,7 @@ test("processFs returns mmap guest memory populated by kernel-worker fs processi
     rebuildPageCacheFromExports: () => {},
     rebuildPageCacheFromCanonical: () => {},
     restorePublishedRegularFileDataFromPageCache,
+    restorePublishedRegularFileDataForInode,
     syncPipeState: (_pid, kernelState) => kernelState,
     syncEpollState: (_pid, kernelState) => kernelState,
     syncSocketState: (_pid, kernelState) => kernelState,
@@ -1428,6 +1435,7 @@ test("processFs returns mmap guest memory populated by kernel-worker fs processi
     syncFileDataMutation: () => false,
     syncFileDataMutationByPath: () => false,
     syncMetadataMutation: () => false,
+    readBackingFileRangeByInode: () => null,
     fanoutCanonicalMemfs: () => {},
     fsEffectMemfsMutation: 1 << 0,
     fsEffectSharedOfdState: 1 << 1,
@@ -1439,7 +1447,8 @@ test("processFs returns mmap guest memory populated by kernel-worker fs processi
 
   const result = await processControl.processFs(7, 0x1234, makeKernelState());
 
-  expect(restorePublishedRegularFileDataFromPageCache).toHaveBeenCalledTimes(1);
+  expect(restorePublishedRegularFileDataFromPageCache).not.toHaveBeenCalled();
+  expect(restorePublishedRegularFileDataForInode).toHaveBeenCalledTimes(1);
   expect(processExports.opLog.indexOf("restore-published-data")).toBeLessThan(
     processExports.opLog.indexOf("process-fs"),
   );
@@ -1691,6 +1700,7 @@ test("processFs does not full-sync file data when dirty resident sync fails", as
   const copyMemfsCalls: boolean[] = [];
   const fanoutCalls: boolean[] = [];
   const restorePublishedRegularFileDataFromPageCache = vi.fn();
+  const restorePublishedRegularFileDataForInode = vi.fn(() => true);
 
   const processControl = createKernelWorkerProcessControl({
     getCanonicalExports: () => canonicalExports,
@@ -1713,6 +1723,7 @@ test("processFs does not full-sync file data when dirty resident sync fails", as
     rebuildPageCacheFromExports: () => {},
     rebuildPageCacheFromCanonical: () => {},
     restorePublishedRegularFileDataFromPageCache,
+    restorePublishedRegularFileDataForInode,
     syncPipeState: (_pid, kernelState) => kernelState,
     syncEpollState: (_pid, kernelState) => kernelState,
     syncSocketState: (_pid, kernelState) => kernelState,
@@ -1750,6 +1761,7 @@ test("processFs does not full-sync file data when dirty resident sync fails", as
 
   expect(result.memfsMutated).toBe(true);
   expect(copyMemfsCalls).toEqual([]);
+  expect(restorePublishedRegularFileDataForInode).toHaveBeenCalledWith(9, processExports);
   expect(restorePublishedRegularFileDataFromPageCache).not.toHaveBeenCalled();
   expect(fanoutCalls).toEqual([]);
 });
