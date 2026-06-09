@@ -42,6 +42,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
     isRunningWorker: boolean,
   ): void {
     const epollWaitStatus = handle.kernel.abi_status_epoll_wait();
+    const pipeWaitStatus = handle.kernel.abi_status_pipe_wait();
     const workerStillOwnedByHandle = createWorkerOwnershipGuard(
       handle,
       worker,
@@ -142,6 +143,23 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       )
     ) {
       void deps.requestSocketStateSync(handle, false)
+        .then(() => {
+          if (!workerStillOwnedByHandle()) {
+            return;
+          }
+          publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
+          continueWaitInWorker();
+        })
+        .catch((error) => {
+          if (!workerStillOwnedByHandle()) {
+            return;
+          }
+          deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+      });
+      return;
+    }
+    if (isRunningWorker && kernelWorkerOwnsPipeState(handle) && msg.status === pipeWaitStatus) {
+      void deps.requestPipeStateSync(handle, true)
         .then(() => {
           if (!workerStillOwnedByHandle()) {
             return;

@@ -885,6 +885,62 @@ test("STATUS_PIPE_WAIT parked on kernel-worker-owned pipe state preserves thread
 
 });
 
+test("waitInWorker STATUS_PIPE_WAIT syncs pipe state through kernel-worker and wakes bridge waiters", async () => {
+  const requests: KernelWorkerRequest[] = [];
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+      requests.push(msg);
+      switch (msg.type) {
+        case "register-process":
+          return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+        case "initialize-process-lifecycle":
+          return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+        case "sync-pipe-state":
+          return {
+            type: "pipe-state-synced",
+            requestId: 0,
+            kernelState: {
+              ...msg.kernelState,
+              heapPtr: msg.kernelState.heapPtr + 0x34,
+            },
+          };
+        case "unregister-process":
+          return { type: "process-unregistered", requestId: 0 };
+        default:
+          throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+      }
+    },
+  });
+  const worker = createdWorkers[0];
+  const kernel = createdKernelExports[0];
+  const notify = new Int32Array(handle.runtimeBridge.notifySab);
+
+  emitReady(worker);
+  worker.clearPostedMessages();
+  const notifyBefore = Atomics.load(notify, 0);
+  worker.emit({
+    type: "status",
+    status: kernel.abi_status_pipe_wait(),
+    waitInWorker: true,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  });
+
+  await flushMicrotasks();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await flushMicrotasks();
+
+  expect(requests.some((msg) => msg.type === "sync-pipe-state")).toBe(true);
+  expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x34);
+  expect(readPublishedKernelRuntimeState(handle.runtimeBridge).heapPtr).toBe(makeKernelState().heapPtr + 0x34);
+  expect(Atomics.load(notify, 0)).toBeGreaterThan(notifyBefore);
+  expect(worker.postedMessages).toEqual([]);
+});
+
 test("pipe sync wakes waitInWorker epoll waits through runtime bridge", async () => {
   const requests: KernelWorkerRequest[] = [];
   const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
