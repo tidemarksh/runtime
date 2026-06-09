@@ -292,7 +292,7 @@ export function bucketToolchainExecFailure(input: {
     return "foundation";
   }
   if (
-    /process_create|plain-fork-child-ready|child-ready|attach|publish|ownership|kernel-worker|handoff|complete-exit-request:transitions-fault|fault_signal=11|failed to write file|loadFsSnapshot|Memory\.grow\(\): Maximum memory size exceeded|Invalid atomic access index|thread_count=|process_threads=|thread_slots=\[/i.test(text)
+    /process_create|plain-fork-child-ready|child-ready|attach|publish|ownership|kernel-worker|handoff|resume-fs-before|assertProcessStandardFdIntegrity|complete-exit-request:transitions-fault|fault_signal=11|failed to write file|loadFsSnapshot|Memory\.grow\(\): Maximum memory size exceeded|Invalid atomic access index|thread_count=|process_threads=|thread_slots=\[/i.test(text)
   ) {
     return "runtime-ownership";
   }

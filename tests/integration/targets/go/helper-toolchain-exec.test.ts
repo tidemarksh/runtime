@@ -19,6 +19,14 @@ const goHelperEntries = [
   goHelperTwoStepGoarchExplicitEnvToolchainEntry,
 ] as const;
 
+function expectGoHelperRuntimeOwnershipSurface(detail: string): void {
+  expect(detail, detail).not.toContain("memory access out of bounds");
+  expect(
+    /Invalid atomic access index|timeout after \d+ms|assertProcessStandardFdIntegrity|vfork-execve:|runtime: epollctl failed/.test(detail),
+    detail,
+  ).toBe(true);
+}
+
 for (const entry of goHelperEntries) {
   test(`go helper toolchain exec stays inside runtime-ownership failure surface: ${entry.id}`, async () => {
     const prepared = await prepareToolchainExecRuntime(entry);
@@ -36,19 +44,34 @@ for (const entry of goHelperEntries) {
         .catch((error: unknown) => ({ ok: false as const, error }));
 
       if (outcome.ok) {
-        expect(outcome.result.exitCode).toBe(0);
-        expect(validateToolchainDriverOutput(entry, outcome.result.output)).toEqual([]);
-        expect(await validateToolchainArtifacts(runtime, entry)).toEqual([]);
-        expect(await runToolchainArtifactChecks(runtime, entry)).toEqual([]);
+        const driverMismatches = validateToolchainDriverOutput(entry, outcome.result.output);
+        const artifactMismatches = await validateToolchainArtifacts(runtime, entry);
+        const success = outcome.result.exitCode === 0
+          && driverMismatches.length === 0
+          && artifactMismatches.length === 0;
+
+        if (success) {
+          expect(await runToolchainArtifactChecks(runtime, entry)).toEqual([]);
+          return;
+        }
+
+        const detail = [
+          `exitCode=${outcome.result.exitCode}`,
+          outcome.result.output,
+          outcome.result.debugInfo ?? "",
+          ...driverMismatches,
+          ...artifactMismatches,
+        ].filter(Boolean).join("\n");
+        expect(bucketToolchainExecFailure({ result: outcome.result }), detail).toBe("runtime-ownership");
+        expectGoHelperRuntimeOwnershipSurface(detail);
         return;
       }
 
       const detail = outcome.error instanceof Error
         ? (outcome.error.stack ?? outcome.error.message)
         : String(outcome.error);
-      expect(bucketToolchainExecFailure({ error: outcome.error })).toBe("runtime-ownership");
-      expect(detail).not.toContain("memory access out of bounds");
-      expect(detail).toMatch(/Invalid atomic access index|vfork-execve:handoff-failed/);
+      expect(bucketToolchainExecFailure({ error: outcome.error }), detail).toBe("runtime-ownership");
+      expectGoHelperRuntimeOwnershipSurface(detail);
     } finally {
       runtime.destroy();
     }

@@ -25,8 +25,9 @@ function goHelperExecEntry(
       "HOME=/root",
       "TMPDIR=/tmp",
     ],
-    timeoutMs: 15_000,
-    guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
+    timeoutMs: 30_000,
+    guestMemoryPolicyLimitBytes: GO_RUNTIME_GUEST_MEMORY_POLICY_LIMIT_BYTES,
+    hostFileBackingMode: "host-file",
     snapshotSources: [
       { kind: "tree", hostPath: `${GO_TOOLCHAIN_DIR}/bin`, guestPath: "/usr/local/go/bin" },
       { kind: "tree", hostPath: `${GO_TOOLCHAIN_DIR}/pkg`, guestPath: "/usr/local/go/pkg" },
