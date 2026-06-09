@@ -202,6 +202,10 @@ function formatThreadDebug(handle: RuntimeDebugHandle, vmPtr: number): string {
   const result = handle.kernel.debug_syscall_trace_result?.();
   const tid = handle.kernel.thread_tid?.(vmPtr) ?? 0;
   const ra = handle.kernel.thread_ra?.(vmPtr) ?? 0n;
+  const futexWaitAddr = handle.kernel.thread_futex_wait_addr?.(vmPtr) ?? 0n;
+  const futexWaitExpected = handle.kernel.thread_futex_wait_expected?.(vmPtr);
+  const futexWaitTimeout = handle.kernel.thread_futex_wait_timeout?.(vmPtr) ?? 0n;
+  const blockedAddr = handle.kernel.thread_record_blocked_addr?.(vmPtr) ?? 0n;
   return [
     `tid=${tid}`,
     `pc=0x${handle.kernel.thread_pc(vmPtr).toString(16)}`,
@@ -210,6 +214,10 @@ function formatThreadDebug(handle: RuntimeDebugHandle, vmPtr: number): string {
     `a0=${handle.kernel.thread_a0(vmPtr).toString()}`,
     `a1=${handle.kernel.thread_a1(vmPtr).toString()}`,
     `status=${handle.kernel.thread_status(vmPtr)}`,
+    `blocked_addr=0x${blockedAddr.toString(16)}`,
+    `futex_wait_addr=0x${futexWaitAddr.toString(16)}`,
+    futexWaitExpected !== undefined ? `futex_wait_expected=${futexWaitExpected}` : "",
+    `futex_wait_timeout=${futexWaitTimeout.toString()}`,
     syscallNr !== undefined ? `syscall=${syscallNr.toString()}` : "",
     status !== undefined ? `sys_status=${status}` : "",
     result !== undefined ? `sys_result=${result.toString()}` : "",

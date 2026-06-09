@@ -912,6 +912,10 @@ function formatThreadDebug(handle: ProcessHandle, vmPtr: number): string {
   const sigPending = handle.kernel.thread_sig_pending?.(vmPtr) ?? 0n;
   const cloneFlags = handle.kernel.thread_clone_flags?.(vmPtr) ?? 0n;
   const cloneChildTidptr = handle.kernel.thread_clone_child_tidptr?.(vmPtr) ?? 0n;
+  const blockedAddr = handle.kernel.thread_record_blocked_addr?.(vmPtr) ?? 0n;
+  const futexWaitAddr = handle.kernel.thread_futex_wait_addr?.(vmPtr) ?? 0n;
+  const futexWaitExpected = handle.kernel.thread_futex_wait_expected?.(vmPtr);
+  const futexWaitTimeout = handle.kernel.thread_futex_wait_timeout?.(vmPtr) ?? 0n;
   const parts = [
     `tid=${tid}`,
     `pc=0x${pc.toString(16)}`,
@@ -926,6 +930,10 @@ function formatThreadDebug(handle: ProcessHandle, vmPtr: number): string {
     `sig_pending=0x${sigPending.toString(16)}`,
     `clone_flags=0x${cloneFlags.toString(16)}`,
     `clone_child_tidptr=0x${cloneChildTidptr.toString(16)}`,
+    `blocked_addr=0x${blockedAddr.toString(16)}`,
+    `futex_wait_addr=0x${futexWaitAddr.toString(16)}`,
+    futexWaitExpected !== undefined ? `futex_wait_expected=${futexWaitExpected}` : "",
+    `futex_wait_timeout=${futexWaitTimeout.toString()}`,
   ];
   const syscallNr = handle.kernel.debug_syscall_trace_nr?.();
   if (syscallNr !== undefined && syscallNr !== 0n) {
