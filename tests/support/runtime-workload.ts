@@ -268,6 +268,37 @@ function formatSelectedSyscallProfile(handle: RuntimeDebugHandle): string {
     .join(" ");
 }
 
+function formatFutexTrace(handle: RuntimeDebugHandle): string {
+  const len = handle.kernel.debug_futex_trace_len?.() ?? 0;
+  if (len <= 0) {
+    return "";
+  }
+  const entries: string[] = [];
+  for (let index = 0; index < len; index += 1) {
+    const traceVmPtr = handle.kernel.debug_futex_trace_entry_vm_ptr?.(index) ?? 0;
+    const tid = handle.kernel.debug_futex_trace_entry_tid?.(index) ?? 0;
+    const op = handle.kernel.debug_futex_trace_entry_op?.(index) ?? 0;
+    const addr = handle.kernel.debug_futex_trace_entry_addr?.(index) ?? 0n;
+    const addr2 = handle.kernel.debug_futex_trace_entry_addr2?.(index) ?? 0n;
+    const val = handle.kernel.debug_futex_trace_entry_val?.(index) ?? 0n;
+    const val3 = handle.kernel.debug_futex_trace_entry_val3?.(index) ?? 0n;
+    const current = handle.kernel.debug_futex_trace_entry_current?.(index) ?? 0;
+    const local = handle.kernel.debug_futex_trace_entry_local?.(index) ?? 0;
+    const external = handle.kernel.debug_futex_trace_entry_external?.(index) ?? 0;
+    const requeued = handle.kernel.debug_futex_trace_entry_requeued?.(index) ?? 0;
+    const status = handle.kernel.debug_futex_trace_entry_status?.(index) ?? 0;
+    const result = handle.kernel.debug_futex_trace_entry_result?.(index);
+    entries.push(
+      `${index}:vm=0x${traceVmPtr.toString(16)}:tid=${tid}:op=${op}`
+      + `:addr=0x${addr.toString(16)}:addr2=0x${addr2.toString(16)}`
+      + `:val=${val.toString()}:val3=${val3.toString()}:current=${current}`
+      + `:local=${local}:external=${external}:requeued=${requeued}`
+      + `:status=${status}:result=${result?.toString() ?? "n/a"}`,
+    );
+  }
+  return entries.join(" ");
+}
+
 function formatExecveStageTrace(handle: RuntimeDebugHandle): string {
   const len = handle.kernel.debug_execve_stage_trace_len?.() ?? 0;
   if (len <= 0) {
@@ -387,6 +418,7 @@ export async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<str
           `execve_stage_trace=[${formatExecveStageTrace(handle)}]`,
           `syscalls=[${formatSyscallTrace(handle)}]`,
           `syscall_profile=[${formatSelectedSyscallProfile(handle)}]`,
+          `futex_trace=[${formatFutexTrace(handle)}]`,
         ].join(" ");
       })
       .join("\n");
