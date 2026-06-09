@@ -76,8 +76,21 @@ export function registerToolchainExecGate(entry: ToolchainExecEntry): void {
         ].filter((part): part is string => part !== null).join("\n"));
       }
       expect(result.exitCode).toBe(0);
-      expect(outputMismatches).toEqual([]);
       const artifactMismatches = await validateToolchainArtifacts(runtime, entry);
+      if (outputMismatches.length > 0) {
+        const summary = await runtimeDebugSummary(runtime).catch((error) => (
+          `runtimeDebugSummary failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`
+        ));
+        throw new Error([
+          `toolchain exec driver output mismatch: ${entry.id}`,
+          `bucket=${bucketToolchainExecFailure({ result })}`,
+          `outputMismatches=${JSON.stringify(outputMismatches)}`,
+          `artifactMismatches=${JSON.stringify(artifactMismatches)}`,
+          `driverOutput=${JSON.stringify(result.output)}`,
+          result.debugInfo ? `driverDebug:\n${result.debugInfo}` : null,
+          summary ? `runtime:\n${summary}` : null,
+        ].filter((part): part is string => part !== null).join("\n"));
+      }
       expect(artifactMismatches).toEqual([]);
       const runResults = await runToolchainArtifactChecks(runtime, entry).catch(async (error) => {
         const summary = await runtimeDebugSummary(runtime).catch((summaryError) => (
