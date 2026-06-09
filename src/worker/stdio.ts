@@ -354,10 +354,17 @@ export async function settleInheritedChildOutput(
     if (drainedParent && parent.kernelWorkerRequest && parent.pid > 0) {
       await requestPipeStateSync(parent, false);
     }
+    const drainedChild = drainedParent ? false : drainHiddenProcessOutput(child);
+    if (drainedChild && child.kernelWorkerRequest && child.pid > 0) {
+      await requestPipeStateSync(child, false);
+    }
     const settled = slots.every((pipeSlot) => {
       const childCounters = readPipeCounters(child, pipeSlot);
       const parentCounters = readPipeCounters(parent, pipeSlot);
-      return parentCounters.tail === childCounters.tail && parentCounters.head === parentCounters.tail;
+      if (parentCounters.tail === childCounters.tail && parentCounters.head === parentCounters.tail) {
+        return true;
+      }
+      return drainedChild && childCounters.head === childCounters.tail;
     });
     if (settled) {
       stablePasses += 1;

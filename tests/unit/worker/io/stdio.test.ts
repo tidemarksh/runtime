@@ -377,6 +377,38 @@ test("settleInheritedChildOutput keeps syncing until child stdout tail is visibl
   expect(delivered).toEqual(["child-late\n"]);
 });
 
+test("settleInheritedChildOutput drains child local stdout when parent has not merged the pipe tail", async () => {
+  const { handle: owner } = makeHandle();
+  const delivered: string[] = [];
+  owner.onStdout = (data) => {
+    delivered.push(new TextDecoder().decode(data));
+  };
+
+  const { handle: child } = makeHandle({
+    pid: 2,
+    parentPid: owner.pid,
+    hostStdio: owner.hostStdio,
+    stdinPipe: owner.stdinPipe,
+    stdoutPipe: owner.stdoutPipe,
+    stderrPipe: owner.stderrPipe,
+    stdioOwner: owner,
+    onStdout: undefined,
+    kernelWorkerRequest: vi.fn(async () => ({ type: "pipe-state-synced" } as never)),
+  });
+  owner.kernelWorkerRequest = vi.fn(async () => ({ type: "pipe-state-synced" } as never));
+
+  let syncCount = 0;
+  await settleInheritedChildOutput(child, async () => {
+    syncCount += 1;
+    if (syncCount === 2) {
+      seedPipe(child.memory, child.kernelState, child.stdoutPipe, "child-local\n");
+    }
+  });
+
+  expect(syncCount).toBeGreaterThanOrEqual(2);
+  expect(delivered).toEqual(["child-local\n"]);
+});
+
 test("drainProcessOutput drains hidden stdout bytes after stdout was remapped away from the host pipe", () => {
   const { handle } = makeHandle({
     stdoutPipe: 9,
