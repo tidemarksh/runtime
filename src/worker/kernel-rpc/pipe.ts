@@ -1,4 +1,5 @@
 import type { ProcessHandle } from "../types.js";
+import { pipeSlotWriteOpen } from "../ownership/pipe-control.js";
 
 export interface KernelRpcPipeDeps {
   processHandles: Map<number, ProcessHandle>;
@@ -57,6 +58,10 @@ export function activeChildMayHoldBlockedPipeWriter(
   }
   const pipeSlot = handle.kernel.kernel_ofd_ino(blockedOfdId);
   if (pipeSlot <= 0 || pipeSlot >= handle.kernel.abi_max_pipes()) {
+    return false;
+  }
+  const canonicalWriteOpen = pipeSlotWriteOpen(handle, pipeSlot);
+  if (canonicalWriteOpen !== null && canonicalWriteOpen <= 0) {
     return false;
   }
   const processFdTableMayHoldPipeWriter = (candidate: ProcessHandle): boolean => {
