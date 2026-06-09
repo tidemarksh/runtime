@@ -91,6 +91,7 @@ export const goBuildToolchainEntry: ToolchainExecEntry = {
   ],
   timeoutMs: 30_000,
   guestMemoryPolicyLimitBytes: GO_RUNTIME_GUEST_MEMORY_POLICY_LIMIT_BYTES,
+  hostFileBackingMode: "host-file",
   snapshotSources: [
     { kind: "tree", hostPath: `${GO_TOOLCHAIN_DIR}/bin`, guestPath: "/usr/local/go/bin" },
     { kind: "tree", hostPath: `${GO_TOOLCHAIN_DIR}/pkg`, guestPath: "/usr/local/go/pkg" },
