@@ -48,6 +48,7 @@ export const cCompileLinkToolchainEntry: ToolchainExecEntry = {
   ],
   timeoutMs: 20_000,
   guestMemoryPolicyLimitBytes: 768 * 1024 * 1024,
+  hostFileBackingMode: "host-file",
   snapshotSources: cToolchainSnapshotSources([
     {
       kind: "inlineFile",
