@@ -39,6 +39,8 @@ export interface ToolchainExecEntry {
   cwd?: string;
   timeoutMs: number;
   guestMemoryPolicyLimitBytes: number;
+  maxProcessMemoryPages?: number;
+  maxForkMemoryPages?: number;
   pageCacheDataCapacityBytes?: number;
   artifactMaterializationBudgetBytes?: number;
   hostFileBackingMode?: SnapshotBuildOptions["hostFileBackingMode"];
@@ -95,6 +97,8 @@ export async function prepareToolchainExecRuntime(
   const runtime = await Runtime.create({
     wasmBytes,
     guestMemoryPolicyLimitBytes: entry.guestMemoryPolicyLimitBytes,
+    maxProcessMemoryPages: entry.maxProcessMemoryPages,
+    maxForkMemoryPages: entry.maxForkMemoryPages,
     pageCacheDataCapacityBytes: entry.pageCacheDataCapacityBytes,
     artifactMaterializationBudgetBytes: entry.artifactMaterializationBudgetBytes,
   });

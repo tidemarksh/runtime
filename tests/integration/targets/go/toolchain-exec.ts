@@ -58,7 +58,9 @@ export const goCompileVersionToolchainEntry: ToolchainExecEntry = {
     "GOTELEMETRYDIR=/dev/null",
   ],
   timeoutMs: 10_000,
-  guestMemoryPolicyLimitBytes: GO_RUNTIME_GUEST_MEMORY_POLICY_LIMIT_BYTES,
+  guestMemoryPolicyLimitBytes: 2 * GO_RUNTIME_GUEST_MEMORY_POLICY_LIMIT_BYTES,
+  maxProcessMemoryPages: 40960,
+  maxForkMemoryPages: 40960,
   snapshotSources: [
     { kind: "tree", hostPath: `${GO_TOOLCHAIN_DIR}/pkg/tool/linux_riscv64`, guestPath: "/usr/local/go/pkg/tool/linux_riscv64" },
     { kind: "inlineFile", guestPath: "/usr/local/go/go.env", data: "GOTOOLCHAIN=local\n" },
