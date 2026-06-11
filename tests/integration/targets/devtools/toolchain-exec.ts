@@ -72,6 +72,7 @@ export const cmakeScriptToolchainEntry: ToolchainExecEntry = {
   env: ["PATH=/usr/bin:/bin", "HOME=/tmp", "LD_LIBRARY_PATH=/usr/lib/riscv64-linux-gnu:/lib"],
   timeoutMs: 15_000,
   guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
+  hostFileBackingMode: "host-file",
   snapshotSources: devtoolsSnapshotSources([
     { kind: "file", hostPath: resolve(toolsetDir, "usr/bin/cmake"), guestPath: "/usr/bin/cmake", mode: 0o755 },
     { kind: "tree", hostPath: resolve(toolsetDir, "usr/share/cmake"), guestPath: "/usr/share/cmake" },
