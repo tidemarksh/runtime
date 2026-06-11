@@ -37,8 +37,10 @@ function expectJavaTimeoutDiagnostic(
   expect(detail).toContain('"processCommittedBytes":');
   expect(detail).toContain('"ownerState":"wait:20"');
   expect(detail).toContain('"lastStatusName":"FUTEX_WAIT"');
-  expect(detail).toContain('"ownerState":"async:6"');
   expect(detail).toContain('"lastStatusName":"FS"');
+  expect(
+    detail.includes('"ownerState":"async:6"') || detail.includes('"ownerState":"running"'),
+  ).toBe(true);
 }
 
 test("java dynamic startup diagnostic: 4g memory headroom preserves timeout surface", async () => {

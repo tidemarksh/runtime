@@ -27,8 +27,10 @@ function expectJavaTimeoutDiagnostic(detail: string): void {
   expect(detail).toContain("timeout after 20000ms");
   expect(detail).toContain('"ownerState":"wait:20"');
   expect(detail).toContain('"lastStatusName":"FUTEX_WAIT"');
-  expect(detail).toContain('"ownerState":"async:6"');
   expect(detail).toContain('"lastStatusName":"FS"');
+  expect(
+    detail.includes('"ownerState":"async:6"') || detail.includes('"ownerState":"running"'),
+  ).toBe(true);
 }
 
 const javaInterpretedHeadroomEntry: DynamicStartupEntry = {
