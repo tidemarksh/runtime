@@ -136,17 +136,53 @@ function makeKernelState(): KernelRuntimeState {
     memfsDataBytes: 256 * 1024,
     memStatePtr: 0x240000,
     epollTablePtr: 0x250000,
+    epollTableBytes: 256,
     socketTablePtr: 0x260000,
     socketUsed: 0,
     pipeBase: 0x270000,
+    pipeRegionBytes: 64 * MOCK_PIPE_SLOT_BYTES,
     pipeUsed: 0n,
     netBufBase: 0x280000,
+    netBufPoolBytes: 1050624,
     netBufUsed: 0n,
     sigSlotsPtr: 0xc00000,
+    sigSlotsBytes: 256,
     processPendingPtr: 0xc10000,
+    processPendingBytes: 512,
+    signalfdStatePtr: undefined,
+    signalfdStateBytes: undefined,
     processRuntimeStatePtr: 0xc20000,
+    processRuntimeStateBytes: 4096,
     timeStatePtr: 0xc30000,
+    timeStateBytes: 4096,
   };
+}
+
+function withoutRuntimeStateMetadata(state: KernelRuntimeState): KernelRuntimeState {
+  const {
+    epollTableBytes: _epollTableBytes,
+    pipeRegionBytes: _pipeRegionBytes,
+    netBufPoolBytes: _netBufPoolBytes,
+    sigSlotsBytes: _sigSlotsBytes,
+    processPendingBytes: _processPendingBytes,
+    signalfdStatePtr: _signalfdStatePtr,
+    signalfdStateBytes: _signalfdStateBytes,
+    processRuntimeStateBytes: _processRuntimeStateBytes,
+    timeStateBytes: _timeStateBytes,
+    ...baseState
+  } = state;
+  return baseState;
+}
+
+function withoutUndefinedSignalfdState(state: KernelRuntimeState): KernelRuntimeState {
+  const next = { ...state };
+  if (next.signalfdStatePtr === undefined) {
+    delete next.signalfdStatePtr;
+  }
+  if (next.signalfdStateBytes === undefined) {
+    delete next.signalfdStateBytes;
+  }
+  return next;
 }
 
 const SYNC_EFFECT_PIPE_STATE = 1 << 0;
@@ -865,11 +901,15 @@ test("clone child first ready->step uses refreshed canonical kernel state", asyn
     ...refreshedState,
     processRuntimeStatePtr: makeKernelState().processRuntimeStatePtr,
   };
-  expect(readPublishedKernelRuntimeState(handle.runtimeBridge)).toEqual(adoptedRefreshedState);
+  expect(readPublishedKernelRuntimeState(handle.runtimeBridge))
+    .toEqual(withoutRuntimeStateMetadata(adoptedRefreshedState));
 
   const childWorker = createdWorkers[1];
   childWorker.clearPostedMessages();
   emitReady(childWorker, 0x2000);
+  expect(handle.kernelState).toEqual(adoptedRefreshedState);
+  expect(readPublishedKernelRuntimeState(handle.runtimeBridge))
+    .toEqual(withoutRuntimeStateMetadata(adoptedRefreshedState));
 
   parentWorker.clearPostedMessages();
   parentWorker.emit({
@@ -1119,7 +1159,9 @@ test("running worker prunes stale blocked workers after the live thread table sh
     kernelState: makeKernelState(),
   });
 
-  expect((handle as { workers: Set<Worker> }).workers.has(childWorker as unknown as Worker)).toBe(false);
+  expect((handle as { blockedWorkers: Map<Worker, unknown> }).blockedWorkers.has(childWorker as unknown as Worker))
+    .toBe(false);
+  expect((handle as { workers: Set<Worker> }).workers.has(childWorker as unknown as Worker)).toBe(true);
 });
 
 test("fault exits the process when the live thread table is empty despite a stale positive thread count", async () => {
@@ -1228,7 +1270,7 @@ test("createProcess handles STATUS_FS through kernel-worker before publishing re
     type: "register-process",
     pid: 1,
     memory: handle.memory,
-    kernelState: makeKernelState(),
+    kernelState: withoutUndefinedSignalfdState(makeKernelState()),
   });
 
   emitReady(worker);
@@ -1396,7 +1438,7 @@ test("createProcess resumes STATUS_CONNECT through kernel-worker when it owns pr
     type: "register-process",
     pid: 1,
     memory: handle.memory,
-    kernelState: makeKernelState(),
+    kernelState: withoutUndefinedSignalfdState(makeKernelState()),
   });
 
   emitReady(worker);
