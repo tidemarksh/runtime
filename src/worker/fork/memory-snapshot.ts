@@ -18,6 +18,11 @@ export type ForkMemorySnapshot = {
   endOffset: number;
 };
 
+const PROT_NONE = 0;
+const MAP_ANONYMOUS = 0x20;
+const FORK_STACK_BELOW_SP_BYTES = 1024 * 1024;
+export const FORK_STACK_COPY_WINDOW_BYTES = 8 * 1024 * 1024;
+
 export function forkMemoryPreserveRanges(snapshot: ForkMemorySnapshot): ThreadWorkerMemoryPreserveRange[] {
   return snapshot.ranges.map((range) => ({
     start: range.start,
@@ -93,6 +98,16 @@ function coalesceRanges(ranges: MemoryRange[]): MemoryRange[] {
     }
   }
   return coalesced;
+}
+
+function isSparseAnonymousReservation(handle: ProcessHandle, index: number): boolean {
+  const prot = handle.kernel.debug_memory_vma_prot?.(index);
+  const flags = handle.kernel.debug_memory_vma_flags?.(index);
+  const fd = handle.kernel.debug_memory_vma_fd?.(index);
+  if (prot === undefined || flags === undefined || fd === undefined) {
+    return false;
+  }
+  return prot === PROT_NONE && fd < 0 && (flags & MAP_ANONYMOUS) !== 0;
 }
 
 export function captureForkMemorySnapshot(handle: ProcessHandle, stackPointer = 0n): ForkMemorySnapshot {
@@ -216,6 +231,9 @@ export function captureForkMemorySnapshot(handle: ProcessHandle, stackPointer = 
 
   const vmaLen = handle.kernel.debug_memory_vma_len?.() ?? 0;
   for (let index = 0; index < vmaLen; index += 1) {
+    if (isSparseAnonymousReservation(handle, index)) {
+      continue;
+    }
     const start = Number(handle.kernel.debug_memory_vma_start?.(index) ?? 0);
     const end = Number(handle.kernel.debug_memory_vma_end?.(index) ?? 0);
     addForkCopyRange(ranges, handle.guestBase + start, handle.guestBase + end, limit);
@@ -223,13 +241,13 @@ export function captureForkMemorySnapshot(handle: ProcessHandle, stackPointer = 
 
   const stackGuestPtr = Number(stackPointer);
   const guestBackingBytes = Math.max(0, source.byteLength - handle.guestBase);
-  const stackTop = handle.guestBase + guestBackingBytes;
   if (Number.isFinite(stackGuestPtr) && stackGuestPtr > 0 && stackGuestPtr < guestBackingBytes) {
     const stackStartGuest = Math.max(
       0,
-      Math.floor(stackGuestPtr / 65536) * 65536 - 1024 * 1024,
+      Math.floor(stackGuestPtr / 65536) * 65536 - FORK_STACK_BELOW_SP_BYTES,
     );
-    addForkCopyRange(ranges, handle.guestBase + stackStartGuest, stackTop, limit);
+    const stackEndGuest = Math.min(guestBackingBytes, stackStartGuest + FORK_STACK_COPY_WINDOW_BYTES);
+    addForkCopyRange(ranges, handle.guestBase + stackStartGuest, handle.guestBase + stackEndGuest, limit);
   }
 
   const merged = coalesceRanges(ranges);

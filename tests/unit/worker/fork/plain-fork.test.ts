@@ -700,7 +700,7 @@ test("plain fork skips byte-identical captured stack snapshot", async () => {
   expect(memoryLog).toContain("artifactMaterializedBytes=0");
 });
 
-test("fork memory snapshot stack fallback uses committed backing instead of guest policy", async () => {
+test("fork memory snapshot stack fallback is bounded within committed backing", async () => {
   const parent = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
   parent.guestMemoryPolicyLimitBytes = 0x2000n;
   const stackPointer = 0x20_0000n;
@@ -708,7 +708,36 @@ test("fork memory snapshot stack fallback uses committed backing instead of gues
   const snapshot = captureForkMemorySnapshot(parent, stackPointer);
 
   expect(stackPointer).toBeGreaterThan(parent.guestMemoryPolicyLimitBytes);
-  expect(snapshot.endOffset).toBe(parent.memory.buffer.byteLength);
+  expect(snapshot.endOffset).toBe(parent.guestBase + 0x90_0000);
+  expect(snapshot.endOffset).toBeLessThan(parent.memory.buffer.byteLength);
+});
+
+test("fork memory snapshot skips sparse anonymous PROT_NONE reservation ranges", async () => {
+  const parent = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
+  const kernel = createdKernelExports[0];
+  const sparseStart = 0x20_0000;
+  const sparseEnd = 0x21_0000;
+  const materializedStart = 0x22_0000;
+  const materializedEnd = 0x23_0000;
+
+  kernel.debug_memory_brk_current = () => 0x4000n;
+  kernel.debug_memory_vma_len = () => 2;
+  kernel.debug_memory_vma_start = (index: number) => (index === 0 ? BigInt(sparseStart) : BigInt(materializedStart));
+  kernel.debug_memory_vma_end = (index: number) => (index === 0 ? BigInt(sparseEnd) : BigInt(materializedEnd));
+  kernel.debug_memory_vma_prot = (index: number) => (index === 0 ? 0 : 3);
+  kernel.debug_memory_vma_flags = () => 0x22;
+  kernel.debug_memory_vma_fd = () => -1;
+
+  const snapshot = captureForkMemorySnapshot(parent, 0n);
+  const hasSparseReservation = snapshot.ranges.some((range) =>
+    range.start <= parent.guestBase + sparseStart && range.end >= parent.guestBase + sparseEnd
+  );
+  const hasMaterializedVma = snapshot.ranges.some((range) =>
+    range.start <= parent.guestBase + materializedStart && range.end >= parent.guestBase + materializedEnd
+  );
+
+  expect(hasSparseReservation).toBe(false);
+  expect(hasMaterializedVma).toBe(true);
 });
 
 test("plain fork preserves optional zero guest memory policy from child kernel state", async () => {
