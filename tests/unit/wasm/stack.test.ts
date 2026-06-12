@@ -5,6 +5,7 @@ import {
   KERNEL_WORKER_STACK_SLOT,
   kernelHeapBase,
   kernelStackTopForSlot,
+  MAX_KERNEL_STACK_SLOTS,
 } from "../../../src/wasm/stack.js";
 
 test("configureKernelInstanceStack writes i32 stack pointer globals", () => {
@@ -35,4 +36,9 @@ test("kernelHeapBase reads i32 and i64 heap globals as numbers", () => {
   expect(kernelHeapBase({
     __heap_base: new WebAssembly.Global({ value: "i64", mutable: false }, 0x300000n),
   } as unknown as KernelExports, 0x100000)).toBe(0x300000);
+});
+
+test("kernel stack slots cover the kernel thread ABI range", () => {
+  expect(kernelStackTopForSlot(MAX_KERNEL_STACK_SLOTS - 1)).toBeGreaterThan(0);
+  expect(() => kernelStackTopForSlot(MAX_KERNEL_STACK_SLOTS)).toThrow("invalid kernel stack slot");
 });

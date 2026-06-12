@@ -2,7 +2,7 @@ import type { KernelExports } from "../abi.js";
 
 const KERNEL_STACK_WINDOW_BYTES = 1024 * 1024;
 const KERNEL_STACK_TOP_BASE = KERNEL_STACK_WINDOW_BYTES;
-const MAX_KERNEL_STACK_SLOTS = 32;
+export const MAX_KERNEL_STACK_SLOTS = 64;
 
 type KernelExportsWithStackGlobal = KernelExports & {
   __stack_pointer?: WebAssembly.Global;
