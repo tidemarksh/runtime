@@ -1,6 +1,7 @@
 // Thread-worker tests in this file validate read-only debug observations.
-import { expect, test, vi } from "vite-plus/test";
+import { afterEach, expect, test, vi } from "vite-plus/test";
 import {
+  clearSyscallTrace,
   collectDebugParts,
   formatExecTraceEntries,
   formatWorkerError,
@@ -8,12 +9,47 @@ import {
   THREAD_WORKER_SYSCALL_TRACE_CLEAR_MODE,
 } from "../../../src/thread-worker/debug.js";
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 test("debug observations are marked read-only and do not own state repair", () => {
   expect(THREAD_WORKER_DEBUG_OBSERVATION_MODE).toBe("read-only-observation");
 });
 
 test("syscall trace clearing is classified as trace lifecycle cleanup", () => {
   expect(THREAD_WORKER_SYSCALL_TRACE_CLEAR_MODE).toBe("trace-lifecycle-cleanup");
+});
+
+test("clearSyscallTrace clears signal trace by default", () => {
+  const exports = {
+    debug_clear_syscall_trace: vi.fn(),
+    debug_clear_signal_trace: vi.fn(),
+    debug_clear_cpu_trace: vi.fn(),
+  };
+
+  clearSyscallTrace(exports as never);
+
+  expect(exports.debug_clear_syscall_trace).toHaveBeenCalledTimes(1);
+  expect(exports.debug_clear_signal_trace).toHaveBeenCalledTimes(1);
+  expect(exports.debug_clear_cpu_trace).toHaveBeenCalledTimes(1);
+});
+
+test("clearSyscallTrace can preserve signal trace for diagnostics", async () => {
+  vi.stubEnv("TIDEMARK_WORKER_DEBUG_KEEP_SIGNAL_TRACE", "1");
+  vi.resetModules();
+  const debug = await import("../../../src/thread-worker/debug.js");
+  const exports = {
+    debug_clear_syscall_trace: vi.fn(),
+    debug_clear_signal_trace: vi.fn(),
+    debug_clear_cpu_trace: vi.fn(),
+  };
+
+  debug.clearSyscallTrace(exports as never);
+
+  expect(exports.debug_clear_syscall_trace).toHaveBeenCalledTimes(1);
+  expect(exports.debug_clear_signal_trace).not.toHaveBeenCalled();
+  expect(exports.debug_clear_cpu_trace).toHaveBeenCalledTimes(1);
 });
 
 function makeThreadWorkerDebugExports() {

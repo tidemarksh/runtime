@@ -4,6 +4,7 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const FD_TRACE_LOG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_FD_TRACE ?? "") === "1";
 const RESERVATION_DEBUG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_RESERVATION ?? "") === "1";
+const KEEP_SIGNAL_TRACE_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_KEEP_SIGNAL_TRACE ?? "") === "1";
 const loggedFdTraceEntries = new Set<string>();
 export const THREAD_WORKER_DEBUG_OBSERVATION_MODE = "read-only-observation" as const;
 export const THREAD_WORKER_SYSCALL_TRACE_CLEAR_MODE = "trace-lifecycle-cleanup" as const;
@@ -708,7 +709,9 @@ function summarizeReservationSlots(
 
 export function clearSyscallTrace(exports: KernelExports): void {
   exports.debug_clear_syscall_trace?.();
-  exports.debug_clear_signal_trace?.();
+  if (!KEEP_SIGNAL_TRACE_ENABLED) {
+    exports.debug_clear_signal_trace?.();
+  }
   exports.debug_clear_cpu_trace?.();
 }
 
