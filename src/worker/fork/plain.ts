@@ -86,6 +86,33 @@ function forkChildGuestMemoryPolicyLimit(handle: ProcessHandle): bigint {
   return normalizeGuestMemoryPolicyLimitBytes(handle.guestMemoryPolicyLimitBytes);
 }
 
+function formatProcessThreadSlots(handle: ProcessHandle, vmPtr: number): string {
+  const slots: string[] = [];
+  const maxThreads = handle.kernel.abi_max_threads();
+  for (let slot = 0; slot < maxThreads; slot += 1) {
+    const tid = handle.kernel.process_thread_tid(vmPtr, slot);
+    const state = handle.kernel.process_thread_state(vmPtr, slot);
+    const threadVmPtr = handle.kernel.process_thread_vm_ptr(vmPtr, slot);
+    if (tid === 0 && state === 0 && threadVmPtr === 0) {
+      continue;
+    }
+    slots.push(`${slot}:${tid}/${state}/0x${threadVmPtr.toString(16)}`);
+  }
+  return slots.join(",");
+}
+
+function appendPlainForkProcessThreadsDebug(
+  deps: WorkerForkDeps,
+  handle: ProcessHandle,
+  childPid: number,
+  stage: string,
+  vmPtr: number,
+): void {
+  const entry = `plain-fork-memory:process-${stage}:${childPid}:threads=[${formatProcessThreadSlots(handle, vmPtr)}]`;
+  deps.appendWorkerDebugLog(handle, entry);
+  deps.appendRuntimeLifecycleEvent(handle.runtimeId, entry);
+}
+
 export async function handlePlainFork(
   deps: WorkerForkDeps,
   handle: ProcessHandle,
@@ -101,6 +128,7 @@ export async function handlePlainFork(
       `plain-fork-parent:start:${childPid}:vm=0x${parentThread.vmPtr.toString(16)}:handle_vm=0x${handle.vmPtr.toString(16)}`,
     );
     acquireWorkerMemoryFence(handle);
+    appendPlainForkProcessThreadsDebug(deps, handle, childPid, "before-capture", parentThread.vmPtr);
     const parentProcessSnapshot = captureParentProcessSnapshot(handle, parentThread);
     const pendingForkSharedSync = handle.kernelShare.forkSharedSyncPromise ?? handle.forkSharedSyncPromise;
     if (pendingForkSharedSync !== null) {
@@ -167,7 +195,9 @@ export async function handlePlainFork(
       handle.guestBase + parentProcessSnapshot.processPtr,
       parentProcessSnapshot.processState,
     );
+    appendPlainForkProcessThreadsDebug(deps, handle, childPid, "before-restore", parentThread.vmPtr);
     restoreParentProcessSnapshot(handle, parentThread, parentProcessSnapshot);
+    appendPlainForkProcessThreadsDebug(deps, handle, childPid, "after-restore", parentThread.vmPtr);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     const childMemoryBytes = Math.max(
       forkMemorySnapshot.endOffset + FORK_CHILD_EXECVE_HEADROOM_BYTES,
@@ -331,6 +361,7 @@ export async function handlePlainFork(
       vmPtr: parentThread.vmPtr,
       preserveMemoryRanges: forkMemoryPreserveRanges(forkMemorySnapshot),
     });
+    appendPlainForkProcessThreadsDebug(deps, handle, childPid, "after-parent-reattach", parentThread.vmPtr);
     deps.kickBlockedWorkers(handle);
     await waitForForkChildSchedulingPoint(childHandle);
     deps.kickBlockedWorkers(handle);
