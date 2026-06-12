@@ -1,6 +1,7 @@
 // Thread-worker tests in this file validate status outbound assembly ownership.
 import { afterEach, expect, test, vi } from "vite-plus/test";
 import type { KernelExports, StatusCodes } from "../../../src/abi.js";
+import { applyThreadWorkerInboundState } from "../../../src/thread-worker/inbound-state.js";
 import { postThreadWorkerStatus } from "../../../src/thread-worker/status.js";
 
 afterEach(() => {
@@ -133,6 +134,7 @@ test("postThreadWorkerStatus owns status outbound assembly", () => {
     value: postMessage,
   });
   let lastResumeBlockedDebug: string | undefined = "thread-resume-blocked:test";
+  let lastFutexWaitDebug: string | undefined;
 
   postThreadWorkerStatus({
     kernelExports: makeKernelExports(),
@@ -143,8 +145,12 @@ test("postThreadWorkerStatus owns status outbound assembly", () => {
     runtimeBridge: null,
     syscallNumbers: null,
     lastResumeBlockedDebug,
+    lastFutexWaitDebug,
     setLastResumeBlockedDebug(value) {
       lastResumeBlockedDebug = value;
+    },
+    setLastFutexWaitDebug(value) {
+      lastFutexWaitDebug = value;
     },
   }, 0, true, 0);
 
@@ -158,6 +164,7 @@ test("postThreadWorkerStatus owns status outbound assembly", () => {
     syncEffects: 0,
   }));
   expect(lastResumeBlockedDebug).toBeUndefined();
+  expect(lastFutexWaitDebug).toBeUndefined();
 });
 
 test("postThreadWorkerStatus owns sync-effect snapshot payload assembly", () => {
@@ -183,7 +190,9 @@ test("postThreadWorkerStatus owns sync-effect snapshot payload assembly", () => 
     runtimeBridge: null,
     syscallNumbers: null,
     lastResumeBlockedDebug: undefined,
+    lastFutexWaitDebug: undefined,
     setLastResumeBlockedDebug() {},
+    setLastFutexWaitDebug() {},
   }, 0, false, 1);
 
   const msg = postMessage.mock.calls[0]?.[0] as {
@@ -196,4 +205,108 @@ test("postThreadWorkerStatus owns sync-effect snapshot payload assembly", () => 
   expect([...(msg.pipeSlots?.[0]?.slot ?? [])]).toEqual(
     Array.from({ length: 32 }, (_, index) => 0x80 + index),
   );
+});
+
+test("postThreadWorkerStatus bounds fork stack snapshots", () => {
+  const postMessage = vi.fn();
+  Object.defineProperty(globalThis, "postMessage", {
+    configurable: true,
+    value: postMessage,
+  });
+  const kernelExports = makeKernelExports();
+  kernelExports.memory = new WebAssembly.Memory({ initial: 256 });
+  kernelExports.thread_spawn_kind = () => kernelExports.abi_spawn_kind_fork();
+  kernelExports.thread_guest_memory_policy_limit = () => 0x1000000n;
+  kernelExports.thread_sp = () => 0x300000n;
+
+  postThreadWorkerStatus({
+    kernelExports,
+    statusCodes: makeStatusCodes(),
+    vmPtr: 0x1234,
+    guestBase: 0,
+    generation: 9,
+    runtimeBridge: null,
+    syscallNumbers: null,
+    lastResumeBlockedDebug: undefined,
+    lastFutexWaitDebug: undefined,
+    setLastResumeBlockedDebug() {},
+    setLastFutexWaitDebug() {},
+  }, makeStatusCodes().EXECVE_SPAWN, false, 0);
+
+  const msg = postMessage.mock.calls[0]?.[0] as {
+    forkStackSnapshot?: { startGuest: number; bytes: Uint8Array };
+  };
+  expect(msg.forkStackSnapshot?.startGuest).toBe(0x200000);
+  expect(msg.forkStackSnapshot?.bytes.length).toBe(8 * 1024 * 1024);
+});
+
+test("postThreadWorkerStatus includes futex and inbound guest-write diagnostics", () => {
+  const postMessage = vi.fn();
+  Object.defineProperty(globalThis, "postMessage", {
+    configurable: true,
+    value: postMessage,
+  });
+  const kernelExports = makeKernelExports();
+  const statusCodes = makeStatusCodes();
+  kernelExports.thread_futex_wait_addr = () => 0x4010n;
+  kernelExports.thread_record_blocked_addr = () => 0x4020n;
+  applyThreadWorkerInboundState({
+    kernelExports,
+    guestBase: 0,
+  }, {
+    kernelState: {
+      heapBase: 0,
+      heapPtr: 0,
+      ofdTablePtr: 0x1000,
+      memfsPtr: 0,
+      memfsHeaderBytes: 0,
+      memfsInodesBytes: 0,
+      memfsFirstChildBytes: 0,
+      memfsDirEntriesBytes: 0,
+      memfsDataBytes: 0,
+      memStatePtr: 0,
+      epollTablePtr: 0,
+      socketTablePtr: 0,
+      socketUsed: 0,
+      pipeBase: 0x2000,
+      pipeUsed: 0n,
+      netBufBase: 0,
+      netBufUsed: 0n,
+      sigSlotsPtr: 0,
+      processPendingPtr: 0,
+      processRuntimeStatePtr: 0,
+      timeStatePtr: 0,
+    },
+    targetVmPtr: 0x1234,
+    guestMemoryWrites: [{ guestPtr: 0x24, bytes: Uint8Array.from([0xaa, 0xbb, 0xcc]) }],
+    guestWriteWatchRegions: [{ slot: 2, start: 0x25, end: 0x26 }],
+  });
+  let lastFutexWaitDebug: string | undefined = "futex-wait-debug:test";
+
+  postThreadWorkerStatus({
+    kernelExports,
+    statusCodes,
+    vmPtr: 0x1234,
+    guestBase: 0,
+    generation: 10,
+    runtimeBridge: null,
+    syscallNumbers: null,
+    lastResumeBlockedDebug: undefined,
+    lastFutexWaitDebug,
+    setLastResumeBlockedDebug() {},
+    setLastFutexWaitDebug(value) {
+      lastFutexWaitDebug = value;
+    },
+  }, statusCodes.FUTEX_WAIT, false, 0);
+
+  const msg = postMessage.mock.calls[0]?.[0] as {
+    futexWaitAddr?: bigint;
+    futexBlockedAddr?: bigint;
+    debug?: string;
+  };
+  expect(msg.futexWaitAddr).toBe(0x4010n);
+  expect(msg.futexBlockedAddr).toBe(0x4020n);
+  expect(msg.debug).toContain("futex-wait-debug:test");
+  expect(msg.debug).toContain("thread_inbound_guest_writes=[thread-inbound-guest-write:slot=2:ptr=0x24:len=3:overlap=0x25..0x26:sample=bb]");
+  expect(lastFutexWaitDebug).toBeUndefined();
 });

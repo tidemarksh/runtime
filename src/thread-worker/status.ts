@@ -13,6 +13,7 @@ import type {
 import { publishRuntimeBridgeDebugStage, type RuntimeStateBridge } from "../bridge/runtime-state.js";
 import { workerPostMessage } from "../bridge/scope.js";
 import { collectDebugParts, collectFdTraceDebug } from "./debug.js";
+import { consumeThreadWorkerInboundGuestWriteDebug } from "./inbound-state.js";
 import { readCompletedSyncEffects, type SyscallNumbers } from "./sync-effects.js";
 import {
   FS_OP_WRITE,
@@ -32,6 +33,8 @@ const SYNC_EFFECT_PROCESS_MEMFS = 1 << 7;
 const PIPE_SLOT_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_PIPE_SLOT_DEBUG ?? "") === "1";
+const FORK_STACK_BELOW_SP_BYTES = 1024 * 1024;
+const FORK_STACK_SNAPSHOT_WINDOW_BYTES = 8 * 1024 * 1024;
 const THREAD_WORKER_STAGE_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_THREAD_WORKER_STAGE_DEBUG ?? "") === "1";
@@ -44,6 +47,7 @@ let generation = 0;
 let runtimeBridge: RuntimeStateBridge | null = null;
 let syscallNumbers: SyscallNumbers | null = null;
 let lastResumeBlockedDebug: string | undefined;
+let lastFutexWaitDebug: string | undefined;
 
 export interface ThreadWorkerStatusContext {
   kernelExports: KernelExports;
@@ -54,7 +58,9 @@ export interface ThreadWorkerStatusContext {
   runtimeBridge: RuntimeStateBridge | null;
   syscallNumbers: SyscallNumbers | null;
   lastResumeBlockedDebug: string | undefined;
+  lastFutexWaitDebug: string | undefined;
   setLastResumeBlockedDebug(value: string | undefined): void;
+  setLastFutexWaitDebug(value: string | undefined): void;
 }
 
 function requireExports(): KernelExports {
@@ -127,8 +133,8 @@ function snapshotForkStack(kernelExports: KernelExports, status: number): ForkSt
   if (!Number.isFinite(sp) || sp <= 0 || sp >= ramLimit) {
     return undefined;
   }
-  const startGuest = Math.max(0, Math.floor(sp / 65536) * 65536 - 1024 * 1024);
-  const endGuest = ramLimit;
+  const startGuest = Math.max(0, Math.floor(sp / 65536) * 65536 - FORK_STACK_BELOW_SP_BYTES);
+  const endGuest = Math.min(ramLimit, startGuest + FORK_STACK_SNAPSHOT_WINDOW_BYTES);
   const memory = new Uint8Array(kernelExports.memory.buffer);
   return {
     startGuest,
@@ -910,9 +916,17 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
       parts.push(lastResumeBlockedDebug);
       lastResumeBlockedDebug = undefined;
     }
+    if (lastFutexWaitDebug) {
+      parts.push(lastFutexWaitDebug);
+      lastFutexWaitDebug = undefined;
+    }
     const pipeReadDebug = formatLatestPipeReadDebug(kernelExports, status);
     if (pipeReadDebug) {
       parts.push(pipeReadDebug);
+    }
+    const inboundGuestWrites = consumeThreadWorkerInboundGuestWriteDebug();
+    if (inboundGuestWrites.length > 0) {
+      parts.push(`thread_inbound_guest_writes=[${inboundGuestWrites.join(",")}]`);
     }
     publishThreadWorkerStage(121, status);
     return parts.length === 0 ? undefined : parts.join(" ");
@@ -929,6 +943,12 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
     sp: kernelExports.thread_sp?.(vmPtr),
     s11: kernelExports.thread_s11?.(vmPtr),
     syscallNr: kernelExports.thread_a7?.(vmPtr),
+    futexWaitAddr: status === statusCodes.FUTEX_WAIT
+      ? kernelExports.thread_futex_wait_addr(vmPtr)
+      : undefined,
+    futexBlockedAddr: status === statusCodes.FUTEX_WAIT
+      ? kernelExports.thread_record_blocked_addr(vmPtr)
+      : undefined,
     vmPtr,
     kernelState,
     syncEffects,
@@ -976,6 +996,8 @@ export function postThreadWorkerStatus(
   runtimeBridge = context.runtimeBridge;
   syscallNumbers = context.syscallNumbers;
   lastResumeBlockedDebug = context.lastResumeBlockedDebug;
+  lastFutexWaitDebug = context.lastFutexWaitDebug;
   postStatus(status, waitInWorker, completedSyncEffects);
   context.setLastResumeBlockedDebug(lastResumeBlockedDebug);
+  context.setLastFutexWaitDebug(lastFutexWaitDebug);
 }

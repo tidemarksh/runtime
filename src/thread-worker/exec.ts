@@ -72,6 +72,7 @@ interface ThreadWorkerExecContext {
   runtimeBridge: RuntimeStateBridge | null;
   postStatus: ThreadWorkerOutcomePublisher;
   reattachPublishedKernelRuntimeState(): void;
+  recordFutexWaitDebug?(debug: string): void;
 }
 
 function publishStage(ctx: ThreadWorkerExecContext, stage: number, value = 0): void {

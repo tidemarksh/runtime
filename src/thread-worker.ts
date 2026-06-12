@@ -71,6 +71,7 @@ const PIPE_RESUME_DEBUG_ENABLED = PIPE_SLOT_DEBUG_ENABLED
     process?: { env?: Record<string, string | undefined> };
   }).process?.env?.TIDEMARK_PIPE_RESUME_DEBUG ?? "") === "1";
 let lastResumeBlockedDebug: string | undefined;
+let lastFutexWaitDebug: string | undefined;
 let syscallNumbers: SyscallNumbers | null = null;
 
 function acquireSharedMemoryForStep(buffer: ArrayBufferLike): void {
@@ -202,8 +203,12 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
     runtimeBridge,
     syscallNumbers,
     lastResumeBlockedDebug,
+    lastFutexWaitDebug,
     setLastResumeBlockedDebug(value) {
       lastResumeBlockedDebug = value;
+    },
+    setLastFutexWaitDebug(value) {
+      lastFutexWaitDebug = value;
     },
   }, status, waitInWorker, completedSyncEffects);
 }
@@ -239,6 +244,9 @@ function step(budget: number): void {
     runtimeBridge,
     postStatus: postStatusOutcome,
     reattachPublishedKernelRuntimeState,
+    recordFutexWaitDebug(debug) {
+      lastFutexWaitDebug = debug;
+    },
   }, budget);
 }
 
