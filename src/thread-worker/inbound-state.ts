@@ -26,8 +26,52 @@ export interface ThreadWorkerInboundStatePayload {
   guestWriteWatchRegions?: GuestWriteWatchRegion[];
 }
 
+let activeGuestWriteWatchRegions: readonly GuestWriteWatchRegion[] = [];
+const inboundGuestWriteDebug: string[] = [];
+
 function toKernelU64(value: number): bigint {
   return BigInt(Math.trunc(value));
+}
+
+function formatGuestWriteOverlap(
+  source: string,
+  regions: readonly GuestWriteWatchRegion[] | undefined,
+  guestPtr: number,
+  bytes: Uint8Array,
+): string | null {
+  if (!regions || regions.length === 0 || bytes.length === 0 || !Number.isFinite(guestPtr)) {
+    return null;
+  }
+  const writeEnd = guestPtr + bytes.length;
+  for (const region of regions) {
+    const overlapStart = Math.max(guestPtr, region.start);
+    const overlapEnd = Math.min(writeEnd, region.end);
+    if (overlapStart >= overlapEnd) {
+      continue;
+    }
+    const sampleStart = Math.max(0, overlapStart - guestPtr);
+    const sampleEnd = Math.min(bytes.length, sampleStart + 16, overlapEnd - guestPtr);
+    const sample = Array.from(bytes.subarray(sampleStart, sampleEnd))
+      .map((value) => value.toString(16).padStart(2, "0"))
+      .join("");
+    return `${source}:slot=${region.slot}:ptr=0x${guestPtr.toString(16)}`
+      + `:len=${bytes.length}:overlap=0x${overlapStart.toString(16)}`
+      + `..0x${overlapEnd.toString(16)}:sample=${sample}`;
+  }
+  return null;
+}
+
+function recordInboundGuestWriteDebug(entry: string): void {
+  inboundGuestWriteDebug.push(entry);
+  if (inboundGuestWriteDebug.length > 64) {
+    inboundGuestWriteDebug.splice(0, inboundGuestWriteDebug.length - 64);
+  }
+}
+
+export function consumeThreadWorkerInboundGuestWriteDebug(): string[] {
+  const entries = inboundGuestWriteDebug.slice();
+  inboundGuestWriteDebug.length = 0;
+  return entries;
 }
 
 function applyChildExitRecords(
@@ -58,6 +102,7 @@ function applyGuestWriteWatchRegions(
   kernelExports: KernelExports,
   regions?: GuestWriteWatchRegion[],
 ): void {
+  activeGuestWriteWatchRegions = regions ?? [];
   kernelExports.debug_clear_guest_write_watch_trace?.();
   if (!regions || regions.length === 0) {
     return;
@@ -113,6 +158,15 @@ export function applyThreadWorkerGuestMemoryWrites(
       || start + write.bytes.length > memory.byteLength
     ) {
       continue;
+    }
+    const overlap = formatGuestWriteOverlap(
+      "thread-inbound-guest-write",
+      activeGuestWriteWatchRegions,
+      write.guestPtr,
+      write.bytes,
+    );
+    if (overlap !== null) {
+      recordInboundGuestWriteDebug(overlap);
     }
     memory.set(write.bytes, start);
   }
@@ -204,6 +258,9 @@ export function applyThreadWorkerInboundState(
   payload: ThreadWorkerInboundStatePayload,
 ): void {
   const { kernelExports } = context;
+  if (payload.guestWriteWatchRegions !== undefined) {
+    activeGuestWriteWatchRegions = payload.guestWriteWatchRegions;
+  }
   applyOfdSlots(kernelExports, payload.kernelState, payload.ofdSlots);
   applyFdEntries(kernelExports, payload.targetVmPtr, payload.fdEntries);
   applySocketState(kernelExports, payload.kernelState, payload.socketState);

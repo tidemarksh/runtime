@@ -1,7 +1,10 @@
 // Thread-worker tests in this file validate inbound state application ownership.
 import { expect, test, vi } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
-import { applyThreadWorkerInboundState } from "../../../src/thread-worker/inbound-state.js";
+import {
+  applyThreadWorkerInboundState,
+  consumeThreadWorkerInboundGuestWriteDebug,
+} from "../../../src/thread-worker/inbound-state.js";
 
 function makeState(): KernelRuntimeState {
   return {
@@ -96,4 +99,27 @@ test("applyThreadWorkerInboundState applies fd, pipe, socket, child, guest write
   const attachCall = vi.mocked(kernelExports.kernel_attach_runtime_state).mock.calls.at(-1);
   expect(attachCall?.[7]).toBe(5);
   expect(attachCall?.[11]).toBe(3n);
+});
+
+test("applyThreadWorkerInboundState records watched inbound guest write overlap", () => {
+  consumeThreadWorkerInboundGuestWriteDebug();
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const bytes = new Uint8Array(memory.buffer);
+  const kernelExports = makeKernelExports(memory);
+
+  applyThreadWorkerInboundState({
+    kernelExports,
+    guestBase: 0x300,
+  }, {
+    kernelState: makeState(),
+    targetVmPtr: 0x1234,
+    guestMemoryWrites: [{ guestPtr: 0x14, bytes: Uint8Array.from([0xde, 0xad, 0xbe, 0xef]) }],
+    guestWriteWatchRegions: [{ slot: 1, start: 0x15, end: 0x17 }],
+  });
+
+  expect([...bytes.slice(0x314, 0x318)]).toEqual([0xde, 0xad, 0xbe, 0xef]);
+  expect(consumeThreadWorkerInboundGuestWriteDebug()).toEqual([
+    "thread-inbound-guest-write:slot=1:ptr=0x14:len=4:overlap=0x15..0x17:sample=adbe",
+  ]);
+  expect(consumeThreadWorkerInboundGuestWriteDebug()).toEqual([]);
 });
