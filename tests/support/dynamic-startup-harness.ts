@@ -46,6 +46,12 @@ export interface DynamicStartupResult {
   debugInfo?: string;
 }
 
+interface GuestWriteWatchRegion {
+  slot: number;
+  start: number;
+  end: number;
+}
+
 export type DynamicStartupFailureBucket =
   | "foundation"
   | "runtime-ownership"
@@ -83,6 +89,44 @@ export function resolveDynamicStartupTestTimeoutMs(entry: DynamicStartupEntry): 
   const timeoutMs = resolveDynamicStartupTimeoutMs(entry);
   const marginMs = timeoutMs === entry.timeoutMs ? 15_000 : 180_000;
   return Math.max(20_000, timeoutMs + marginMs);
+}
+
+function parseAddress(value: string): number | null {
+  try {
+    const parsed = BigInt(value);
+    if (parsed < 0n || parsed > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return null;
+    }
+    return Number(parsed);
+  } catch {
+    return null;
+  }
+}
+
+export function parseDebugGuestWriteWatchRegions(raw: string | undefined): GuestWriteWatchRegion[] {
+  if (!raw || raw.trim() === "") {
+    return [];
+  }
+  const regions: GuestWriteWatchRegion[] = [];
+  for (const part of raw.split(/[\s,]+/)) {
+    if (part.length === 0) {
+      continue;
+    }
+    const [startRaw, endRaw, extra] = part.split(":");
+    if (!startRaw || !endRaw || extra !== undefined) {
+      continue;
+    }
+    const start = parseAddress(startRaw);
+    const end = parseAddress(endRaw);
+    if (start === null || end === null || end <= start) {
+      continue;
+    }
+    regions.push({ slot: regions.length, start, end });
+    if (regions.length >= 2) {
+      break;
+    }
+  }
+  return regions;
 }
 
 export async function prepareDynamicStartupRuntime(
