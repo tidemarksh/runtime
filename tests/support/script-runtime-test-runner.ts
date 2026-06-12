@@ -7,6 +7,25 @@ import {
   validateScriptRuntimeOutput,
 } from "./script-runtime-harness.js";
 
+const SCRIPT_RUNTIME_PREPARE_HEADROOM_MS = 60_000;
+
+export function scriptRuntimeGateTimeoutMs(entry: ScriptRuntimeEntry): number {
+  return SCRIPT_RUNTIME_PREPARE_HEADROOM_MS + entry.timeoutMs;
+}
+
+export function formatScriptRuntimeGateResultContext(
+  entry: ScriptRuntimeEntry,
+  result: { exitCode: number; output: string; debugInfo?: string },
+): string {
+  return [
+    `script runtime gate result: ${entry.id}`,
+    `bucket=${bucketScriptRuntimeFailure({ result })}`,
+    `exit=${result.exitCode}`,
+    `output=${JSON.stringify(result.output)}`,
+    `debug=${result.debugInfo ?? ""}`,
+  ].join("\n");
+}
+
 export function registerScriptRuntimeGate(entry: ScriptRuntimeEntry): void {
   test(`script runtime local gate: ${entry.id}`, async () => {
     let prepared;
@@ -43,10 +62,17 @@ export function registerScriptRuntimeGate(entry: ScriptRuntimeEntry): void {
       }
 
       const mismatches = validateScriptRuntimeOutput(entry, result.output);
-      expect(result.exitCode).toBe(0);
-      expect(mismatches).toEqual([]);
+      const resultContext = formatScriptRuntimeGateResultContext(entry, result);
+      expect(result.exitCode, resultContext).toBe(0);
+      expect(
+        mismatches,
+        [
+          resultContext,
+          `mismatches=${JSON.stringify(mismatches)}`,
+        ].join("\n"),
+      ).toEqual([]);
     } finally {
       runtime.destroy();
     }
-  }, 20_000);
+  }, scriptRuntimeGateTimeoutMs(entry));
 }
