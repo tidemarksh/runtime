@@ -41,6 +41,25 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
   const exitCompletionPromises = new WeakMap<ProcessHandle, Promise<void>>();
   const parentWaitStatusPrepublishedHandles = new WeakSet<ProcessHandle>();
 
+  function debugGuestByteAddresses(): bigint[] {
+    const raw = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+      .process?.env?.TIDEMARK_DEBUG_GUEST_BYTES ?? "";
+    if (raw.trim() === "") {
+      return [];
+    }
+    return raw
+      .split(/[\s,]+/)
+      .filter((part) => part.length > 0)
+      .slice(0, 8)
+      .flatMap((part) => {
+        try {
+          return [BigInt(part)];
+        } catch {
+          return [];
+        }
+      });
+  }
+
   function readAbsoluteCString(handle: ProcessHandle, ptr: number): string {
     if (ptr <= 0 || ptr >= handle.memory.buffer.byteLength) {
       return "";
@@ -587,6 +606,18 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     ].join("/");
   }
 
+  function formatDebugGuestByteSources(handle: ProcessHandle): string | null {
+    const addresses = debugGuestByteAddresses();
+    if (addresses.length === 0) {
+      return null;
+    }
+    return `debug_guest_bytes=[${
+      addresses.map((address, index) => (
+        formatFaultByteSource(handle, `addr${index}:0x${address.toString(16)}`, address)
+      )).join(",")
+    }]`;
+  }
+
   function formatFaultVmas(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
     const pc = handle.kernel.thread_pc?.(vmPtr) ?? 0n;
     const faultPc = handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n;
@@ -614,19 +645,39 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     if (sig === 0) {
       return "default_signal=[]";
     }
+    const pc = handle.kernel.debug_default_signal_pc?.() ?? 0n;
+    const faultPc = handle.kernel.debug_default_signal_fault_pc?.() ?? 0n;
+    const faultAddr = handle.kernel.debug_default_signal_fault_addr?.() ?? 0n;
     return `default_signal=[${
       [
         `sig=${sig}`,
         `code=${handle.kernel.debug_default_signal_code?.() ?? 0}`,
         `vm=0x${(handle.kernel.debug_default_signal_vm_ptr?.() ?? 0).toString(16)}`,
-        `pc=0x${(handle.kernel.debug_default_signal_pc?.() ?? 0n).toString(16)}`,
+        `pc=0x${pc.toString(16)}`,
         `ra=0x${(handle.kernel.debug_default_signal_ra?.() ?? 0n).toString(16)}`,
         `sp=0x${(handle.kernel.debug_default_signal_sp?.() ?? 0n).toString(16)}`,
         `gp=0x${(handle.kernel.debug_default_signal_gp?.() ?? 0n).toString(16)}`,
         `tp=0x${(handle.kernel.debug_default_signal_tp?.() ?? 0n).toString(16)}`,
         `s11=0x${(handle.kernel.debug_default_signal_s11?.() ?? 0n).toString(16)}`,
-        `fault_pc=0x${(handle.kernel.debug_default_signal_fault_pc?.() ?? 0n).toString(16)}`,
-        `fault_addr=0x${(handle.kernel.debug_default_signal_fault_addr?.() ?? 0n).toString(16)}`,
+        `fault_pc=0x${faultPc.toString(16)}`,
+        `fault_addr=0x${faultAddr.toString(16)}`,
+        `pc_vma=${formatVmaForAddress(handle, pc)}`,
+        `fault_pc_vma=${formatVmaForAddress(handle, faultPc)}`,
+        `fault_addr_vma=${formatVmaForAddress(handle, faultAddr)}`,
+      ].join(":")
+    }]`;
+  }
+
+  function formatIllegalInstructionTrace(handle: ProcessHandle): string {
+    const pc = handle.kernel.debug_illegal_instruction_pc?.() ?? 0n;
+    if (pc === 0n) {
+      return "illegal_instruction=[]";
+    }
+    return `illegal_instruction=[${
+      [
+        `vm=0x${(handle.kernel.debug_illegal_instruction_vm_ptr?.() ?? 0).toString(16)}`,
+        `pc=0x${pc.toString(16)}`,
+        `raw=0x${(handle.kernel.debug_illegal_instruction_raw?.() ?? 0).toString(16)}`,
       ].join(":")
     }]`;
   }
@@ -653,6 +704,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     const execveStage = handle.kernel.debug_execve_stage?.() ?? 0;
     const execveValue0 = handle.kernel.debug_execve_value0?.() ?? 0n;
     const execveValue1 = handle.kernel.debug_execve_value1?.() ?? 0n;
+    const debugGuestByteSources = formatDebugGuestByteSources(handle);
     return [
       `vm=0x${vmPtr.toString(16)}`,
       `fault_state=[${formatFaultState(handle, vmPtr)}]`,
@@ -660,7 +712,9 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       `fault_bounds=[${formatFaultBounds(handle, vmPtr)}]`,
       `fault_vma=[${formatFaultVmas(handle, vmPtr)}]`,
       `fault_bytes=[${formatFaultByteSources(handle, vmPtr)}]`,
+      ...(debugGuestByteSources === null ? [] : [debugGuestByteSources]),
       formatDefaultSignalTrace(handle),
+      formatIllegalInstructionTrace(handle),
       formatSignalState(handle, vmPtr),
       formatFrozenExitTraces(handle, vmPtr),
       `execve_stage=${execveStage}`,

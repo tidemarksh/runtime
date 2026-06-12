@@ -1,7 +1,11 @@
-import { expect, test, vi } from "vite-plus/test";
+import { afterEach, expect, test, vi } from "vite-plus/test";
 import { createWorkerExitHelpers } from "../../../../src/worker/exit.js";
 import { drainProcessOutput } from "../../../../src/worker/stdio.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 function makeHandle(
   overrides: Partial<ProcessHandle> = {},
@@ -751,6 +755,7 @@ test("completeProcessExit classifies high out-of-range fault pc and includes liv
 });
 
 test("recordExitOnParent preserves child fault state in parent debug", async () => {
+  vi.stubEnv("TIDEMARK_DEBUG_GUEST_BYTES", "0x7788");
   const handleVmPtr = 0x581aa20;
   const faultVmPtr = 0x5ce3040;
   const parent = makeHandle({
@@ -809,6 +814,9 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
       debug_default_signal_s11: () => 0xdefn,
       debug_default_signal_fault_pc: () => 0x5566n,
       debug_default_signal_fault_addr: () => 0xdeadbeefn,
+      debug_illegal_instruction_vm_ptr: () => faultVmPtr,
+      debug_illegal_instruction_pc: () => 0x7d00578cn,
+      debug_illegal_instruction_raw: () => 0x0000007f,
       debug_memory_vma_len: () => 2,
       debug_memory_vma_start: (index: number) => index === 0 ? 0x5000n : 0x7000n,
       debug_memory_vma_end: (index: number) => index === 0 ? 0x6000n : 0x8000n,
@@ -858,12 +866,14 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
   expect(parent.lastDebugMessage).toContain(`child-debug:4:exit:4:"rustc":0:11 exit_trace=vm=0x${faultVmPtr.toString(16)}`);
   expect(parent.lastDebugMessage!.indexOf("fault_state=[")).toBeLessThan(parent.lastDebugMessage!.indexOf("fd_syscalls=["));
   expect(parent.lastDebugMessage).toContain("fault_state=[");
+  expect(parent.lastDebugMessage).toContain("illegal_instruction=[vm=0x5ce3040:pc=0x7d00578c:raw=0x7f");
   expect(parent.lastDebugMessage).toContain("term_signal=11");
   expect(parent.lastDebugMessage).toContain("fault_pc=0x5566");
   expect(parent.lastDebugMessage).toContain("fault_addr=0xdeadbeef");
   expect(parent.lastDebugMessage).toContain("fault_insn=[pc_insn=0x13:fault_insn=0x8067]");
   expect(parent.lastDebugMessage).toContain("fault_vma=[pc=1/0x7000-0x8000/prot=5/flags=18/fd=26/off=8192:fault_pc=0/0x5000-0x6000/prot=1/flags=2/fd=25/off=4096:fault_addr=none]");
   expect(parent.lastDebugMessage).toContain("fault_bytes=[pc=vma1/fd=26/src=0x2788/guest=1300000000000000/file=ccdd88eeff112233:fault_pc=vma0/fd=25/src=0x1566/guest=6780000000000000/file=aabb66ddeeff1122:fault_addr=none]");
+  expect(parent.lastDebugMessage).toContain("debug_guest_bytes=[addr0:0x7788=vma1/fd=26/src=0x2788/guest=1300000000000000/file=ccdd88eeff112233]");
   expect(parent.lastDebugMessage).toContain("fault_kind=2");
   expect(parent.lastDebugMessage).toContain("fault_signal=11");
   expect(parent.lastDebugMessage).toContain("fault_code=1");
@@ -871,6 +881,9 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
   expect(parent.lastDebugMessage).toContain("sig=11");
   expect(parent.lastDebugMessage).toContain("vm=0xabc");
   expect(parent.lastDebugMessage).toContain("fault_addr=0xdeadbeef");
+  expect(parent.lastDebugMessage).toContain("pc_vma=1/0x7000-0x8000/prot=5/flags=18/fd=26/off=8192");
+  expect(parent.lastDebugMessage).toContain("fault_pc_vma=0/0x5000-0x6000/prot=1/flags=2/fd=25/off=4096");
+  expect(parent.lastDebugMessage).toContain("fault_addr_vma=none");
   expect(parent.lastDebugMessage).toContain("signal_state=[");
   expect(parent.lastDebugMessage).toContain("mask=0x20");
   expect(parent.lastDebugMessage).toContain("pending=0x400");
