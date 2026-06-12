@@ -223,6 +223,12 @@ export function reconcileKernelSharePipeControl(handle: ProcessHandle): void {
       if (member.kernel.kernel_ofd_fd_type(ofdId) !== member.kernel.abi_fd_type_pipe()) {
         continue;
       }
+      if (
+        typeof member.kernel.kernel_ofd_refcount === "function"
+        && member.kernel.kernel_ofd_refcount(ofdId) <= 0
+      ) {
+        continue;
+      }
       const pipeSlot = member.kernel.kernel_ofd_ino(ofdId);
       if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
         continue;

@@ -1,4 +1,5 @@
 import { expect, test } from "vite-plus/test";
+import { PIPE_SLOT_BYTES, PIPE_WRITE_OPEN_OFFSET } from "../../../../src/layout/pipe.js";
 import { activeChildMayHoldBlockedPipeWriter } from "../../../../src/worker/kernel-rpc/pipe.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 
@@ -11,10 +12,20 @@ function makeHandle(options: {
   stdioOwner?: ProcessHandle | null;
 }): ProcessHandle {
   const ofdId = options.reader ? 1 : options.writer ? 2 : 0;
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  new DataView(memory.buffer).setInt32(
+    options.pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET,
+    options.writer || options.reader ? 1 : 0,
+    true,
+  );
   return {
     pid: options.pid,
     parentPid: options.parentPid ?? null,
     vmPtr: 0x1000,
+    memory,
+    kernelState: {
+      pipeBase: 0,
+    },
     exitInProgress: false,
     workers: new Set([{} as Worker]),
     stdioOwner: options.stdioOwner ?? null,

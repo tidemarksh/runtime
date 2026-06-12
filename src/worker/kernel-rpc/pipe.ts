@@ -1,5 +1,6 @@
 import type { ProcessHandle } from "../types.js";
-import { pipeSlotWriteOpen } from "../ownership/pipe-control.js";
+import { PIPE_WRITE_OPEN_OFFSET } from "../../layout/pipe.js";
+import { pipeSlotWriteOpen as pipeControlSlotWriteOpen } from "../ownership/pipe-control.js";
 
 export interface KernelRpcPipeDeps {
   processHandles: Map<number, ProcessHandle>;
@@ -43,6 +44,34 @@ function blockedPipeReaderOfdId(handle: ProcessHandle, vmPtr: number): number {
   return 0;
 }
 
+function currentPipeSlotWriteOpen(handle: ProcessHandle, pipeSlot: number): number | null {
+  const maxPipes = handle.kernel.abi_max_pipes?.();
+  const pipeRegionBytes = handle.kernel.kernel_pipe_region_bytes?.();
+  const pipeBase = handle.kernel.kernel_pipe_base?.();
+  if (
+    maxPipes === undefined
+    || pipeRegionBytes === undefined
+    || pipeBase === undefined
+  ) {
+    return pipeControlSlotWriteOpen(handle, pipeSlot);
+  }
+  const slotBytes = pipeRegionBytes / maxPipes;
+  if (
+    pipeSlot <= 0
+    || pipeSlot >= maxPipes
+    || !Number.isInteger(slotBytes)
+    || slotBytes <= PIPE_WRITE_OPEN_OFFSET + 4
+  ) {
+    return pipeControlSlotWriteOpen(handle, pipeSlot);
+  }
+  const offset = pipeBase + pipeSlot * slotBytes;
+  const view = new DataView(handle.memory.buffer);
+  if (offset < 0 || offset + PIPE_WRITE_OPEN_OFFSET + 4 > view.byteLength) {
+    return pipeControlSlotWriteOpen(handle, pipeSlot);
+  }
+  return view.getInt32(offset + PIPE_WRITE_OPEN_OFFSET, true);
+}
+
 export function activeChildMayHoldBlockedPipeWriter(
   deps: KernelRpcPipeDeps,
   handle: ProcessHandle,
@@ -60,7 +89,7 @@ export function activeChildMayHoldBlockedPipeWriter(
   if (pipeSlot <= 0 || pipeSlot >= handle.kernel.abi_max_pipes()) {
     return false;
   }
-  const canonicalWriteOpen = pipeSlotWriteOpen(handle, pipeSlot);
+  const canonicalWriteOpen = currentPipeSlotWriteOpen(handle, pipeSlot);
   if (canonicalWriteOpen !== null && canonicalWriteOpen <= 0) {
     return false;
   }
