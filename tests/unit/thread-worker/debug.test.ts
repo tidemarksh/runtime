@@ -369,6 +369,22 @@ test("collectDebugParts prefers per-vm signal delivery trace over global trace",
       debug_signal_delivery_for_vm_gp: (vmPtr: number) => vmPtr === 0x1234 ? 0x0n : 0n,
       debug_signal_delivery_for_vm_tp: (vmPtr: number) => vmPtr === 0x1234 ? 0x0n : 0n,
       debug_signal_delivery_for_vm_s11: (vmPtr: number) => vmPtr === 0x1234 ? 0x0n : 0n,
+      debug_illegal_instruction_vm_ptr: () => 0x1234,
+      debug_illegal_instruction_pc: () => 0x7d00578cn,
+      debug_illegal_instruction_raw: () => 0x0000007f,
+      debug_signal_send_caller_vm_ptr: () => 0x1234,
+      debug_signal_send_kind: () => 2,
+      debug_signal_send_pid: () => 0,
+      debug_signal_send_tid: () => 2,
+      debug_signal_send_sig: () => 4,
+      debug_signal_send_result: () => 0n,
+      debug_signal_send_trace_len: () => 2,
+      debug_signal_send_trace_entry_caller_vm_ptr: (index: number) => [0x1234, 0x6daaa98][index] ?? 0,
+      debug_signal_send_trace_entry_kind: (index: number) => [2, 2][index] ?? 0,
+      debug_signal_send_trace_entry_pid: (index: number) => [0, 0][index] ?? 0,
+      debug_signal_send_trace_entry_tid: (index: number) => [2, 3][index] ?? 0,
+      debug_signal_send_trace_entry_sig: (index: number) => [4, 6][index] ?? 0,
+      debug_signal_send_trace_entry_result: () => 0n,
     } as never,
     0x1234,
     0,
@@ -378,6 +394,8 @@ test("collectDebugParts prefers per-vm signal delivery trace over global trace",
   expect(parts).toContain("sig_pc=0x83258");
   expect(parts).toContain("sig_frame=0x37d61b90");
   expect(parts).toContain("sig_ra=0x37d61ff8");
+  expect(parts).toContain("illegal_instruction=vm:0x1234:pc:0x7d00578c:raw:0x7f");
+  expect(parts).toContain("signal_sends=[0:kind:2:caller:0x1234:pid:0:tid:2:sig:4:result:0,1:kind:2:caller:0x6daaa98:pid:0:tid:3:sig:6:result:0]");
   expect(parts).not.toContain("sig_pc=0x4");
 });
 

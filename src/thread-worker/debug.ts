@@ -563,6 +563,29 @@ export function formatSyncFaultExecTraceEntries(exports: KernelExports, vmPtr: n
   return entries.join(" ");
 }
 
+function formatSignalSendTraceEntries(exports: KernelExports): string | null {
+  const len = exports.debug_signal_send_trace_len?.() ?? 0;
+  if (len <= 0) {
+    return null;
+  }
+  const entries: string[] = [];
+  for (let index = 0; index < len; index += 1) {
+    const sig = exports.debug_signal_send_trace_entry_sig?.(index) ?? 0;
+    if (sig === 0) {
+      continue;
+    }
+    entries.push(
+      `${index}:kind:${exports.debug_signal_send_trace_entry_kind?.(index) ?? 0}`
+      + `:caller:0x${(exports.debug_signal_send_trace_entry_caller_vm_ptr?.(index) ?? 0).toString(16)}`
+      + `:pid:${exports.debug_signal_send_trace_entry_pid?.(index) ?? 0}`
+      + `:tid:${exports.debug_signal_send_trace_entry_tid?.(index) ?? 0}`
+      + `:sig:${sig}`
+      + `:result:${readOptionalTraceI64(exports.debug_signal_send_trace_entry_result?.(index)).toString()}`,
+    );
+  }
+  return entries.length === 0 ? null : entries.join(",");
+}
+
 export function formatBreakExecTraceEntries(exports: KernelExports, vmPtr: number): string | null {
   const len = exports.debug_break_exec_trace_len_for_vm?.(vmPtr) ?? 0;
   if (len <= 0) {
@@ -1160,6 +1183,19 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     debugParts.push(`sig_gp=0x${formatU64(exports.debug_signal_delivery_for_vm_gp?.(vmPtr) ?? exports.debug_signal_delivery_gp?.() ?? 0n)}`);
     debugParts.push(`sig_tp=0x${formatU64(exports.debug_signal_delivery_for_vm_tp?.(vmPtr) ?? exports.debug_signal_delivery_tp?.() ?? 0n)}`);
     debugParts.push(`sig_s11=0x${formatU64(exports.debug_signal_delivery_for_vm_s11?.(vmPtr) ?? exports.debug_signal_delivery_s11?.() ?? 0n)}`);
+  }
+  const illegalInstructionPc = exports.debug_illegal_instruction_pc?.() ?? 0n;
+  if (illegalInstructionPc !== 0n) {
+    debugParts.push(`illegal_instruction=vm:0x${(exports.debug_illegal_instruction_vm_ptr?.() ?? 0).toString(16)}:pc:0x${formatU64(illegalInstructionPc)}:raw:0x${(exports.debug_illegal_instruction_raw?.() ?? 0).toString(16)}`);
+  }
+  const signalSendTrace = formatSignalSendTraceEntries(exports);
+  if (signalSendTrace !== null) {
+    debugParts.push(`signal_sends=[${signalSendTrace}]`);
+  } else {
+    const signalSendSig = exports.debug_signal_send_sig?.() ?? 0;
+    if (signalSendSig !== 0) {
+      debugParts.push(`signal_send=kind:${exports.debug_signal_send_kind?.() ?? 0}:caller:0x${(exports.debug_signal_send_caller_vm_ptr?.() ?? 0).toString(16)}:pid:${exports.debug_signal_send_pid?.() ?? 0}:tid:${exports.debug_signal_send_tid?.() ?? 0}:sig:${signalSendSig}:result:${exports.debug_signal_send_result?.()?.toString() ?? "n/a"}`);
+    }
   }
   const sigreturnPc = exports.debug_sigreturn_pc?.();
   if (sigreturnPc !== undefined && sigreturnPc !== 0n) {
