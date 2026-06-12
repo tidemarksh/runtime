@@ -328,11 +328,6 @@ export function collectRuntimeNetworkSocketOfdIds(handles: Iterable<ProcessHandl
     for (const ofdId of handle.networkConnectionOfds?.values() ?? []) {
       addOfd(ofdId);
     }
-    if (handle.vmPtr !== 0) {
-      for (let fd = 0; fd < maxFds; fd += 1) {
-        addOfd(handle.kernel.process_fd_ofd_id(handle.vmPtr, fd));
-      }
-    }
     const networkFds = runtimeNetworkFds(handle);
     for (const fd of networkFds) {
       if (fd >= 0 && fd < maxFds && handle.vmPtr !== 0) {
