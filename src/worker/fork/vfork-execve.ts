@@ -335,6 +335,14 @@ function copyExecveKernelRuntimeRegions(handle: ProcessHandle, target: WebAssemb
     handle.kernelState.processPendingPtr,
     handle.kernel.kernel_process_pending_bytes(),
   );
+  if (handle.kernelState.signalfdStatePtr !== undefined && handle.kernel.kernel_signalfd_state_bytes) {
+    copyKernelRuntimeRegion(
+      handle.memory,
+      target,
+      handle.kernelState.signalfdStatePtr,
+      handle.kernel.kernel_signalfd_state_bytes(),
+    );
+  }
   copyKernelRuntimeRegion(
     handle.memory,
     target,

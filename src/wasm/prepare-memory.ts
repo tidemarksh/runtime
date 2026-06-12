@@ -289,6 +289,7 @@ export function snapshotThreadWorkerPrepareMemory(
     | "kernel_net_buf_pool_bytes"
     | "kernel_sig_slots_bytes"
     | "kernel_process_pending_bytes"
+    | "kernel_signalfd_state_bytes"
     | "kernel_process_runtime_state_bytes"
     | "kernel_time_state_bytes"
   > | null | undefined,
@@ -378,6 +379,7 @@ export function snapshotThreadWorkerPrepareMemory(
     snapshotKernelRegion(kernelState.netBufBase, exports?.kernel_net_buf_pool_bytes?.() ?? 0);
     snapshotKernelRegion(kernelState.sigSlotsPtr, exports?.kernel_sig_slots_bytes?.() ?? 0);
     snapshotKernelRegion(kernelState.processPendingPtr, exports?.kernel_process_pending_bytes?.() ?? 0);
+    snapshotKernelRegion(kernelState.signalfdStatePtr ?? 0, exports?.kernel_signalfd_state_bytes?.() ?? kernelState.signalfdStateBytes ?? 0);
     snapshotKernelRegion(kernelState.processRuntimeStatePtr, exports?.kernel_process_runtime_state_bytes?.() ?? 0);
     snapshotKernelRegion(kernelState.timeStatePtr, exports?.kernel_time_state_bytes?.() ?? 0);
     const memfsHeaderSnapshot = snapshotOverlayRange(

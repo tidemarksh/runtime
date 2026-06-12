@@ -231,6 +231,12 @@ function copyExecveKernelRuntimeRegions(
   copyKernelRuntimeRegion(
     sourceMemory,
     targetMemory,
+    state.signalfdStatePtr ?? 0,
+    source.kernel_signalfd_state_bytes?.() ?? 0,
+  );
+  copyKernelRuntimeRegion(
+    sourceMemory,
+    targetMemory,
     state.processRuntimeStatePtr,
     source.kernel_process_runtime_state_bytes(),
   );

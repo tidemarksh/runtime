@@ -187,6 +187,14 @@ export function captureForkMemorySnapshot(handle: ProcessHandle, stackPointer = 
     handle.kernelState.processPendingPtr + handle.kernel.kernel_process_pending_bytes(),
     limit,
   );
+  if (handle.kernelState.signalfdStatePtr !== undefined && handle.kernel.kernel_signalfd_state_bytes) {
+    addForkCopyRange(
+      ranges,
+      handle.kernelState.signalfdStatePtr,
+      handle.kernelState.signalfdStatePtr + handle.kernel.kernel_signalfd_state_bytes(),
+      limit,
+    );
+  }
   addForkCopyRange(
     ranges,
     handle.kernelState.processRuntimeStatePtr,

@@ -201,6 +201,8 @@ export interface KernelExports {
   kernel_signal_action_table_bytes(): number;
   kernel_process_pending_ptr(): number;
   kernel_process_pending_bytes(): number;
+  kernel_signalfd_state_ptr?(): number;
+  kernel_signalfd_state_bytes?(): number;
   kernel_process_runtime_state_ptr(): number;
   kernel_process_runtime_state_bytes(): number;
   kernel_time_state_ptr(): number;
@@ -235,6 +237,7 @@ export interface KernelExports {
     processPendingPtr: number,
     processRuntimeStatePtr: number,
     timeStatePtr: number,
+    signalfdStatePtr?: number,
   ): void;
 
   // Process creation
@@ -339,6 +342,7 @@ export interface KernelExports {
   thread_sleep_nanoseconds(vm_ptr: number): bigint;
   thread_sleep_deadline_ticks?(vm_ptr: number): bigint | number;
   thread_record_blocked_addr(vm_ptr: number): bigint;
+  thread_epoll_timerfd_deadline_ticks?(vm_ptr: number): bigint | number;
   thread_resume_wait4(vm_ptr: number): bigint;
   thread_epoll_wait_timeout(vm_ptr: number): bigint;
   thread_poll_wait_timeout?(vm_ptr: number): bigint;
@@ -917,6 +921,8 @@ export interface KernelRuntimeState {
   netBufUsed: bigint;
   sigSlotsPtr: number;
   processPendingPtr: number;
+  signalfdStatePtr?: number;
+  signalfdStateBytes?: number;
   processRuntimeStatePtr: number;
   timeStatePtr: number;
 }
@@ -1140,6 +1146,8 @@ export function readKernelRuntimeState(exports: KernelExports): KernelRuntimeSta
   const ofdOffsetFloorBytes = exports.kernel_ofd_offset_floor_bytes?.();
   const socketStatePtr = exports.kernel_socket_state_ptr?.();
   const socketStateBytes = exports.kernel_socket_state_bytes?.();
+  const signalfdStatePtr = exports.kernel_signalfd_state_ptr?.();
+  const signalfdStateBytes = exports.kernel_signalfd_state_bytes?.();
   if (ofdStatePtr !== undefined && ofdStatePtr > 0) {
     state.ofdStatePtr = ofdStatePtr;
   }
@@ -1157,6 +1165,12 @@ export function readKernelRuntimeState(exports: KernelExports): KernelRuntimeSta
   }
   if (socketStateBytes !== undefined && socketStateBytes > 0) {
     state.socketStateBytes = socketStateBytes;
+  }
+  if (signalfdStatePtr !== undefined && signalfdStatePtr > 0) {
+    state.signalfdStatePtr = signalfdStatePtr;
+  }
+  if (signalfdStateBytes !== undefined && signalfdStateBytes > 0) {
+    state.signalfdStateBytes = signalfdStateBytes;
   }
   return state;
 }
@@ -1182,6 +1196,7 @@ export function attachKernelRuntimeState(
     state.processPendingPtr,
     state.processRuntimeStatePtr,
     state.timeStatePtr,
+    state.signalfdStatePtr ?? 0,
   );
 }
 
