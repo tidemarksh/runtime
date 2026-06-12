@@ -218,6 +218,7 @@ test("ready from a rehydrating process state is accepted when worker debug still
   const handle = {
     pid: 4,
     parentPid: 1,
+    vmPtr: 0x1234,
     exitInProgress: false,
     workerDebugLog: [],
     workerMessageDebugStats: createWorkerMessageDebugStats(),
@@ -271,6 +272,7 @@ test("ready from a rehydrating process state is accepted when worker debug still
       abi_status_fault: () => 31,
       abi_status_vfork_wait: () => 11,
       abi_status_execve_spawn: () => 13,
+      abi_status_clone_spawn: () => 25,
       kernel_attach_runtime_state: () => {},
       process_current_pid: () => 0,
       thread_process_thread_count: () => 0,
@@ -299,6 +301,106 @@ test("ready from a rehydrating process state is accepted when worker debug still
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });
 
+test("clone child ready clears parent clone-spawn hold before resuming parent", () => {
+  const parentWorker = {} as Worker;
+  const childWorker = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  const parentThread = makeThreadState({
+    ownerPid: 4,
+    ownerAsyncStatus: 25,
+  });
+  const childThread = makeThreadState({
+    vmPtr: 0x2000,
+    ownerPid: 4,
+    initialized: false,
+    resumeWorkersOnReady: [parentWorker],
+  });
+  threadWorkerStates.set(parentWorker, parentThread);
+  threadWorkerStates.set(childWorker, childThread);
+  const appendWorkerDebugLog = vi.fn();
+  const failProcess = vi.fn();
+  const deps = makeDeps(threadWorkerStates, appendWorkerDebugLog, failProcess);
+  const enqueueWorker = vi.fn();
+  deps.enqueueWorker = enqueueWorker;
+  const handle = {
+    pid: 4,
+    parentPid: 1,
+    exitInProgress: false,
+    workerDebugLog: [],
+    workerMessageDebugStats: createWorkerMessageDebugStats(),
+    workers: new Set<Worker>([parentWorker, childWorker]),
+    readyWorkers: [],
+    blockedWorkers: new Map(),
+    vforkSnapshot: null,
+    vforkWorker: null,
+    stdinPipe: 0,
+    ttyPtySlot: 0,
+    stdinQueue: [],
+    outputBacklog: [],
+    stdioOwner: null,
+    hostStdio: {
+      stdinPipe: 0,
+      stdoutPipe: 0,
+      stderrPipe: 0,
+    },
+    networkConnections: new Map(),
+    networkPendingConnectFds: new Set(),
+    networkClosedFds: new Set(),
+    networkClosedSocketSlots: new Set(),
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(16),
+      stateSab: new SharedArrayBuffer(512),
+    },
+    memory: new WebAssembly.Memory({ initial: 1 }),
+    kernelState: makeKernelState(),
+    kernel: {
+      abi_status_clone_spawn: () => 25,
+      kernel_attach_runtime_state: () => {},
+      kernel_heap_base: () => 0,
+      kernel_heap_ptr: () => 0,
+      kernel_ofd_table_ptr: () => 0,
+      kernel_memfs_ptr: () => 0,
+      kernel_memfs_header_bytes: () => 0,
+      kernel_memfs_inodes_bytes: () => 0,
+      kernel_memfs_first_child_bytes: () => 0,
+      kernel_memfs_dir_entries_bytes: () => 0,
+      kernel_memfs_data_bytes: () => 0,
+      kernel_mem_state_ptr: () => 0,
+      kernel_epoll_table_ptr: () => 0,
+      kernel_socket_table_ptr: () => 0,
+      kernel_socket_used: () => 0,
+      kernel_pipe_base: () => 0,
+      kernel_pipe_used: () => 0n,
+      kernel_net_buf_base: () => 0,
+      kernel_net_buf_used: () => 0n,
+      kernel_sig_slots_ptr: () => 0,
+      kernel_process_pending_ptr: () => 0,
+      kernel_process_runtime_state_ptr: () => 0,
+      kernel_time_state_ptr: () => 0,
+      process_current_pid: () => 4,
+      thread_process_thread_count: () => 2,
+      thread_process_ptr: () => 0x48000,
+      process_current_ppid: () => 1,
+      process_fd_ofd_id: () => 0,
+    },
+  } as unknown as ProcessHandle;
+  deps.processHandles.set(4, handle);
+  const handleWorkerMessage = createWorkerMessageHandler(deps);
+
+  handleWorkerMessage(handle, childWorker, {
+    type: "ready",
+    generation: 2,
+    vmPtr: 0x2000,
+    kernelState: makeKernelState(),
+    wasmFeatures: { bulkMemory: true },
+  } as ThreadWorkerOutbound);
+
+  expect(parentThread.ownerAsyncStatus).toBeNull();
+  expect(childThread.resumeWorkersOnReady).toEqual([]);
+  expect(enqueueWorker).toHaveBeenNthCalledWith(1, handle, childWorker);
+  expect(enqueueWorker).toHaveBeenNthCalledWith(2, handle, parentWorker);
+});
+
 test("active vfork child fault remains routed through the parent handle", () => {
   const worker = {} as Worker;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
@@ -313,6 +415,7 @@ test("active vfork child fault remains routed through the parent handle", () => 
     abi_status_ok: () => 0,
     abi_status_fault: () => 31,
     abi_status_fs: () => 6,
+    abi_status_sleep: () => 8,
     abi_status_futex_wait: () => 12,
     abi_status_vfork_wait: () => 23,
     abi_status_execve_spawn: () => 24,
