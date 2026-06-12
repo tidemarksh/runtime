@@ -52,6 +52,7 @@ export interface ThreadWorkerState {
   statusCount: number;
   statusCounts: Record<string, number>;
   lastStatus: number | null;
+  recentStatuses?: ThreadWorkerStatusSnapshot[];
   lastStepAtMs: number | null;
   lastStatusAtMs: number | null;
   lastStepProcessPtr: number | null;
@@ -59,21 +60,43 @@ export interface ThreadWorkerState {
   lastStepSp: bigint | null;
   lastStepS11: bigint | null;
   hotStepPcs: Record<string, number>;
+  recentSteps?: ThreadWorkerStepSnapshot[];
   lastStatusPc: bigint | null;
   lastStatusSp: bigint | null;
   lastStatusS11: bigint | null;
+  lastStatusFutexWaitAddr: bigint | null;
+  lastStatusFutexBlockedAddr: bigint | null;
   forkStackSnapshot?: ForkStackSnapshot;
   execveProcessState?: Uint8Array;
   hotStatusPcs: Record<string, number>;
   initialized: boolean;
   waitingInWorkerStatus: number | null;
   waitingInWorkerReconcileDeferred?: boolean;
+  yieldedReady?: boolean;
   ownerAsyncStatus: number | null;
   resumeBlockedOnNextStep: boolean;
   pendingKernelStateForNextStep?: KernelRuntimeState;
   pendingPipeSlotsForNextStep: KernelWorkerPipeSlotSnapshot[];
   pendingGuestMemoryWrites: GuestMemoryWriteSnapshot[];
   resumeWorkersOnReady: Worker[];
+}
+
+export interface ThreadWorkerStepSnapshot {
+  pc: bigint;
+  sp: bigint;
+  s11: bigint;
+  atMs: number;
+}
+
+export interface ThreadWorkerStatusSnapshot {
+  status: number;
+  pc: bigint;
+  syscallNr: bigint | null;
+  fdTraceSyscallNr: bigint | null;
+  fdTraceResult: bigint | null;
+  futexWaitAddr: bigint | null;
+  futexBlockedAddr: bigint | null;
+  atMs: number;
 }
 
 export interface WorkerMessageDebugStats {
@@ -138,6 +161,7 @@ export interface BlockedWorkerState {
   timeoutExpired: boolean;
   timeoutDeadlineMs: number | null;
   sleepDeadlineTicks: bigint | null;
+  epollTimerfdDeadlineTicks?: bigint | null;
   rpcPending: boolean;
   rpcGeneration: number;
   skipNextNetworkPump: boolean;

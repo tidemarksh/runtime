@@ -160,6 +160,8 @@ export interface ThreadWorkerStatusMessage {
   sp?: bigint;
   s11?: bigint;
   syscallNr?: bigint;
+  futexWaitAddr?: bigint;
+  futexBlockedAddr?: bigint;
   vmPtr: number;
   kernelState: KernelRuntimeState;
   fdEntries?: KernelWorkerFdEntrySnapshot[];
