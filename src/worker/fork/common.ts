@@ -52,6 +52,7 @@ export function createForkChildHandle({
     stderrPipe: kernel.process_stderr_pipe(vmPtr),
     ttyPtySlot: kernel.process_tty_pty_slot?.(vmPtr) ?? parent.ttyPtySlot,
     hostStdio: retainSharedHostStdio(parent.hostStdio),
+    stdinClosed: parent.stdinClosed,
     stdioOwner: parent,
     kernelShare: parent.kernelShare,
     stdinQueue: [],

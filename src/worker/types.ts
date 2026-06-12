@@ -269,6 +269,7 @@ export interface ProcessHandle {
   stderrPipe: number;
   ttyPtySlot: number;
   hostStdio: SharedHostStdio;
+  stdinClosed?: boolean;
   stdioOwner: ProcessHandle | null;
   kernelShare: KernelShareGroup;
   stdinQueue: Uint8Array[];

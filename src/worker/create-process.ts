@@ -581,6 +581,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
         ttyPtySlot,
         refCount: 1,
       },
+      stdinClosed: (options.stdin ?? "pipe") === "closed",
       stdioOwner: null,
       kernelShare: createKernelShareGroup(),
       stdinQueue: [],
