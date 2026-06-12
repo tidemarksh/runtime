@@ -35,6 +35,7 @@ import {
   appendPlainForkMemoryDebug,
   applyForkMemorySnapshot,
   captureForkMemorySnapshot,
+  FORK_STACK_COPY_WINDOW_BYTES,
   captureParentProcessSnapshot,
   forkMemoryPreserveRanges,
   forkSnapshotContainsBytes,
@@ -141,16 +142,21 @@ export async function handlePlainFork(
     handle.kernelState = adoptKernelStateForHandle(handle, readKernelRuntimeState(handle.kernel));
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
 
+    const parentStackSnapshot = parentThread.forkStackSnapshot;
     const parentStackPointer = parentThread.lastStepSp ?? handle.kernel.thread_sp(parentThread.vmPtr);
-    const forkMemorySnapshot = captureForkMemorySnapshot(handle, parentStackPointer);
-    if (parentThread.forkStackSnapshot) {
-      const start = handle.guestBase + parentThread.forkStackSnapshot.startGuest;
-      const end = start + parentThread.forkStackSnapshot.bytes.length;
-      if (!forkSnapshotContainsBytes(forkMemorySnapshot, start, parentThread.forkStackSnapshot.bytes)) {
+    const forkMemorySnapshot = captureForkMemorySnapshot(
+      handle,
+      parentStackSnapshot ? 0n : parentStackPointer,
+    );
+    if (parentStackSnapshot) {
+      const start = handle.guestBase + parentStackSnapshot.startGuest;
+      const stackBytes = parentStackSnapshot.bytes.slice(0, FORK_STACK_COPY_WINDOW_BYTES);
+      const end = start + stackBytes.length;
+      if (!forkSnapshotContainsBytes(forkMemorySnapshot, start, stackBytes)) {
         forkMemorySnapshot.ranges.push({
           start,
           end,
-          bytes: parentThread.forkStackSnapshot.bytes,
+          bytes: stackBytes,
         });
         forkMemorySnapshot.endOffset = Math.max(forkMemorySnapshot.endOffset, end);
       }
