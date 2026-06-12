@@ -912,20 +912,27 @@ export interface KernelRuntimeState {
   memfsDataBytes: number;
   memStatePtr: number;
   epollTablePtr: number;
+  epollTableBytes?: number;
   socketTablePtr: number;
   socketStatePtr?: number;
   socketStateBytes?: number;
   socketUsed: number;
   pipeBase: number;
+  pipeRegionBytes?: number;
   pipeUsed: bigint;
   netBufBase: number;
+  netBufPoolBytes?: number;
   netBufUsed: bigint;
   sigSlotsPtr: number;
+  sigSlotsBytes?: number;
   processPendingPtr: number;
+  processPendingBytes?: number;
   signalfdStatePtr?: number;
   signalfdStateBytes?: number;
   processRuntimeStatePtr: number;
+  processRuntimeStateBytes?: number;
   timeStatePtr: number;
+  timeStateBytes?: number;
 }
 
 export function kernelOfdStatePtr(state: KernelRuntimeState): number {
@@ -1149,6 +1156,13 @@ export function readKernelRuntimeState(exports: KernelExports): KernelRuntimeSta
   const socketStateBytes = exports.kernel_socket_state_bytes?.();
   const signalfdStatePtr = exports.kernel_signalfd_state_ptr?.();
   const signalfdStateBytes = exports.kernel_signalfd_state_bytes?.();
+  state.epollTableBytes = exports.kernel_epoll_table_bytes?.();
+  state.pipeRegionBytes = exports.kernel_pipe_region_bytes?.();
+  state.netBufPoolBytes = exports.kernel_net_buf_pool_bytes?.();
+  state.sigSlotsBytes = exports.kernel_sig_slots_bytes?.();
+  state.processPendingBytes = exports.kernel_process_pending_bytes?.();
+  state.processRuntimeStateBytes = exports.kernel_process_runtime_state_bytes?.();
+  state.timeStateBytes = exports.kernel_time_state_bytes?.();
   if (ofdStatePtr !== undefined && ofdStatePtr > 0) {
     state.ofdStatePtr = ofdStatePtr;
   }

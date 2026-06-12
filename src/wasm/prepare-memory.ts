@@ -21,7 +21,6 @@ import {
 import type { ThreadWorkerMemoryPreserveRange } from "../messages.js";
 
 const MEMORY_SNAPSHOT_CHUNK_BYTES = 4 * 1024 * 1024;
-const MAX_HEADER_SNAPSHOT_BYTES = 4096;
 const MEMFS_S_IFMT = 0o170000;
 const MEMFS_S_IFREG = 0o100000;
 
@@ -108,30 +107,6 @@ function restoreMemoryRange(
     }
     bytes.set(chunk.bytes, chunk.start);
   }
-}
-
-function deriveMemStateBytes(state: KernelRuntimeState): number {
-  const nextPointers = [
-    state.processRuntimeStatePtr,
-    state.timeStatePtr,
-    state.sigSlotsPtr,
-    state.processPendingPtr,
-    state.epollTablePtr,
-    state.socketStatePtr ?? 0,
-    state.socketTablePtr,
-    state.pipeBase,
-    state.netBufBase,
-    state.ofdStatePtr ?? 0,
-    state.ofdTablePtr,
-    state.memfsPtr,
-  ]
-    .filter((ptr) => ptr > state.memStatePtr)
-    .sort((left, right) => left - right);
-  const nextPtr = nextPointers[0] ?? 0;
-  if (nextPtr <= state.memStatePtr) {
-    return 0;
-  }
-  return Math.min(MAX_HEADER_SNAPSHOT_BYTES, nextPtr - state.memStatePtr);
 }
 
 function snapshotOverlayRange(
@@ -320,25 +295,7 @@ export function snapshotThreadWorkerPrepareMemory(
         overlays.push(snapshot);
       }
     };
-    const heapUsedSnapshot = snapshotOverlayRange(
-      memory,
-      normalizedPreserveBytes,
-      kernelState.heapBase,
-      Math.max(0, kernelState.heapPtr - kernelState.heapBase),
-    );
-    if (heapUsedSnapshot) {
-      overlays.push(heapUsedSnapshot);
-    }
     const memfsLayout = readMemfsLayoutSnapshot(memory, exports, kernelState);
-    const memStateSnapshot = snapshotOverlayRange(
-      memory,
-      normalizedPreserveBytes,
-      kernelState.memStatePtr,
-      deriveMemStateBytes(kernelState),
-    );
-    if (memStateSnapshot) {
-      overlays.push(memStateSnapshot);
-    }
     const ofdTableBytes = exports?.kernel_ofd_table_bytes?.() ?? 0;
     const ofdStateBytes = exports
       ? kernelOfdStateBytes(exports, kernelState)
@@ -360,7 +317,7 @@ export function snapshotThreadWorkerPrepareMemory(
         exports?.kernel_ofd_offset_floor_bytes?.() ?? kernelState.ofdOffsetFloorBytes ?? 0,
       );
     }
-    snapshotKernelRegion(kernelState.epollTablePtr, exports?.kernel_epoll_table_bytes?.() ?? 0);
+    snapshotKernelRegion(kernelState.epollTablePtr, exports?.kernel_epoll_table_bytes?.() ?? kernelState.epollTableBytes ?? 0);
     const socketTableBytes = exports?.kernel_socket_table_bytes?.() ?? 0;
     const socketStateBytes = exports
       ? kernelSocketStateBytes(exports, kernelState)
@@ -375,13 +332,13 @@ export function snapshotThreadWorkerPrepareMemory(
       hasSocketStateExport ? kernelSocketStatePtr(kernelState) : kernelState.socketTablePtr,
       hasSocketStateExport ? socketStateBytes : socketTableBytes,
     );
-    snapshotKernelRegion(kernelState.pipeBase, exports?.kernel_pipe_region_bytes?.() ?? 0);
-    snapshotKernelRegion(kernelState.netBufBase, exports?.kernel_net_buf_pool_bytes?.() ?? 0);
-    snapshotKernelRegion(kernelState.sigSlotsPtr, exports?.kernel_sig_slots_bytes?.() ?? 0);
-    snapshotKernelRegion(kernelState.processPendingPtr, exports?.kernel_process_pending_bytes?.() ?? 0);
+    snapshotKernelRegion(kernelState.pipeBase, exports?.kernel_pipe_region_bytes?.() ?? kernelState.pipeRegionBytes ?? 0);
+    snapshotKernelRegion(kernelState.netBufBase, exports?.kernel_net_buf_pool_bytes?.() ?? kernelState.netBufPoolBytes ?? 0);
+    snapshotKernelRegion(kernelState.sigSlotsPtr, exports?.kernel_sig_slots_bytes?.() ?? kernelState.sigSlotsBytes ?? 0);
+    snapshotKernelRegion(kernelState.processPendingPtr, exports?.kernel_process_pending_bytes?.() ?? kernelState.processPendingBytes ?? 0);
     snapshotKernelRegion(kernelState.signalfdStatePtr ?? 0, exports?.kernel_signalfd_state_bytes?.() ?? kernelState.signalfdStateBytes ?? 0);
-    snapshotKernelRegion(kernelState.processRuntimeStatePtr, exports?.kernel_process_runtime_state_bytes?.() ?? 0);
-    snapshotKernelRegion(kernelState.timeStatePtr, exports?.kernel_time_state_bytes?.() ?? 0);
+    snapshotKernelRegion(kernelState.processRuntimeStatePtr, exports?.kernel_process_runtime_state_bytes?.() ?? kernelState.processRuntimeStateBytes ?? 0);
+    snapshotKernelRegion(kernelState.timeStatePtr, exports?.kernel_time_state_bytes?.() ?? kernelState.timeStateBytes ?? 0);
     const memfsHeaderSnapshot = snapshotOverlayRange(
       memory,
       normalizedPreserveBytes,

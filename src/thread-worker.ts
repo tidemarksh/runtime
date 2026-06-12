@@ -119,14 +119,11 @@ async function prepare(
   kernelStackSlot: number,
   preserveMemoryRanges?: readonly ThreadWorkerMemoryPreserveRange[],
 ): Promise<void> {
-  // Instantiation replays active data segments into imported memory. When this
-  // worker already has exports, preserve precise runtime overlays. A fresh
-  // worker cannot derive overlay sizes yet, so preserve the allocated kernel
-  // heap prefix to keep inherited fd/OFD state intact across fork/exec attach.
+  // Instantiation replays active data segments into imported memory. Preserve
+  // the static prefix and explicit runtime overlays; mutable heap allocations
+  // such as AddressSpaceState/VMA Vec contents must remain live process state.
   const hasExplicitPreserveRanges = (preserveMemoryRanges?.length ?? 0) > 0;
-  const effectivePreserveBytes = !hasExplicitPreserveRanges && !exports && kernelState
-    ? Math.max(preserveBytes, kernelState.heapPtr)
-    : preserveBytes;
+  const effectivePreserveBytes = hasExplicitPreserveRanges ? 0 : preserveBytes;
   const preservedMemory = snapshotThreadWorkerPrepareMemory(
     inputs.memory,
     exports,

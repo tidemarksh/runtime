@@ -32,7 +32,7 @@ function makeState(): KernelRuntimeState {
   };
 }
 
-test("thread-worker prepare snapshot preserves memState bytes at heapBase and memfs header bytes above heapBase", () => {
+test("thread-worker prepare snapshot preserves static prefix and memfs header without restoring memState", () => {
   const memory = new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true });
   const state = makeState();
   const bytes = new Uint8Array(memory.buffer);
@@ -94,7 +94,7 @@ test("thread-worker prepare snapshot preserves memState bytes at heapBase and me
   expect(bytes[0]).toBe(0);
   expect(bytes[0x3ff]).toBe((0x3ff * 3) & 0xff);
   expect(Array.from(bytes.slice(state.memStatePtr, state.memStatePtr + 0x28))).toEqual(
-    Array.from({ length: 0x28 }, (_value, index) => 0xa0 + index),
+    Array.from({ length: 0x28 }, () => 0),
   );
   expect(Array.from(bytes.slice(state.memfsPtr, state.memfsPtr + 0x20))).toEqual(expectedMemfsHeader);
   expect(bytes[state.memfsPtr + 0x20]).toBe(0x55);
@@ -102,6 +102,43 @@ test("thread-worker prepare snapshot preserves memState bytes at heapBase and me
     Array.from({ length: 0x40 }, (_value, index) => (0xd0 + index) & 0xff),
   );
   expect(bytes[memfsDataPtr + 0x40]).toBe(0x33);
+});
+
+test("thread-worker prepare snapshot does not restore anonymous heap allocations beyond known overlays", () => {
+  const memory = new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true });
+  const state = {
+    ...makeState(),
+    processRuntimeStateBytes: 0x20,
+  };
+  const bytes = new Uint8Array(memory.buffer);
+  const anonymousHeapPtr = state.heapBase + 0x300;
+
+  bytes.fill(0xcc, state.memStatePtr, state.memStatePtr + 0x28);
+  bytes.fill(0xaa, state.processRuntimeStatePtr, state.processRuntimeStatePtr + state.processRuntimeStateBytes);
+  bytes.fill(0xbb, anonymousHeapPtr, anonymousHeapPtr + 0x20);
+
+  const snapshot = snapshotThreadWorkerPrepareMemory(
+    memory,
+    null,
+    state,
+    state.heapBase,
+  );
+
+  bytes.fill(0x33, state.memStatePtr, state.memStatePtr + 0x28);
+  bytes.fill(0x11, state.processRuntimeStatePtr, state.processRuntimeStatePtr + state.processRuntimeStateBytes);
+  bytes.fill(0x22, anonymousHeapPtr, anonymousHeapPtr + 0x20);
+
+  restoreThreadWorkerPrepareMemory(memory, snapshot);
+
+  expect(Array.from(bytes.slice(state.processRuntimeStatePtr, state.processRuntimeStatePtr + state.processRuntimeStateBytes))).toEqual(
+    Array.from({ length: state.processRuntimeStateBytes }, () => 0xaa),
+  );
+  expect(Array.from(bytes.slice(state.memStatePtr, state.memStatePtr + 0x28))).toEqual(
+    Array.from({ length: 0x28 }, () => 0x33),
+  );
+  expect(Array.from(bytes.slice(anonymousHeapPtr, anonymousHeapPtr + 0x20))).toEqual(
+    Array.from({ length: 0x20 }, () => 0x22),
+  );
 });
 
 test("thread-worker prepare snapshot preserves referenced memfs file data beyond data_used without copying the full data cap", () => {
