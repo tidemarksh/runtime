@@ -368,6 +368,7 @@ export async function syncForkSharedStateViaKernelWorker(
       ofdSlots,
       fdEntries: sourceFdEntries,
       includeMemfs: options.includeMemfs ?? true,
+      memfsOnly,
       preserveSourceRefcounts: options.preserveSourceRefcounts,
       kernelState: handle.kernelState,
     });

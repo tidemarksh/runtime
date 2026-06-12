@@ -442,6 +442,7 @@ export type KernelWorkerRequest =
       ofdSlots: KernelWorkerOfdSlotSnapshot[];
       fdEntries: KernelWorkerFdEntrySnapshot[];
       includeMemfs?: boolean;
+      memfsOnly?: boolean;
       preserveSourceRefcounts?: boolean;
       kernelState: KernelRuntimeState;
     }

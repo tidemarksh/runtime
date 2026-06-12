@@ -163,7 +163,7 @@ function makeKernelExports(label = "kernel", regularFiles: ReadonlyMap<number, U
   } as unknown as FakeKernelExports;
 }
 
-test("syncForkSharedState copies memfs data when includeMemfs is enabled", () => {
+test("syncForkSharedState keeps memfsOnly publication metadata-only", () => {
   const canonicalExports = makeKernelExports();
   const sourceExports = makeKernelExports();
   const targetExports = makeKernelExports();
@@ -232,10 +232,23 @@ test("syncForkSharedState copies memfs data when includeMemfs is enabled", () =>
     false,
     makeKernelState(),
   );
+  sync.syncForkSharedState(
+    1,
+    0x1234,
+    [2],
+    [{ pid: 2, vmPtr: 0x5678, kernelState: makeKernelState() }],
+    [7],
+    [] as KernelWorkerOfdSlotSnapshot[],
+    [],
+    true,
+    true,
+    false,
+    makeKernelState(),
+  );
 
-  expect(memfsCopyModes).toEqual([true]);
-  expect(canonicalFanoutModes).toEqual([true]);
-  expect(restoreProcSelfExe).toHaveBeenCalledTimes(1);
+  expect(memfsCopyModes).toEqual([true, false]);
+  expect(canonicalFanoutModes).toEqual([true, false]);
+  expect(restoreProcSelfExe).toHaveBeenCalledTimes(2);
   expect(restoreProcSelfExe).toHaveBeenCalledWith(canonicalExports, null);
 });
 

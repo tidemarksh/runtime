@@ -77,6 +77,7 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
     ofdSlots: KernelWorkerOfdSlotSnapshot[],
     fdEntries: KernelWorkerFdEntrySnapshot[],
     includeMemfs: boolean,
+    memfsOnly: boolean,
     preserveSourceRefcounts: boolean,
     kernelState: KernelRuntimeState,
   ): { kernelState: KernelRuntimeState; forkSharedDebug?: string } {
@@ -146,7 +147,7 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
       pushMemfsDebug("before-source-to-canonical");
       const canonicalProcSelfExe = deps.snapshotProcSelfExe(canonicalExports);
       deps.copyMemfsState(processExports, sourceState, canonicalExports, canonicalState, {
-        includeData: true,
+        includeData: !memfsOnly,
       });
       deps.restoreProcSelfExe(canonicalExports, canonicalProcSelfExe);
       deps.restorePublishedRegularFileDataFromPageCache?.();
@@ -226,7 +227,7 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
         pushMemfsDebug(`before-canonical-to-target-${targetPid}`);
         const targetVmPtr = targetVmPtrByPid.get(targetPid);
         deps.copyCanonicalMemfsToProcess(reconciledCanonicalState, targetExports, targetState, {
-          includeData: true,
+          includeData: !memfsOnly,
           ...(targetVmPtr !== undefined ? { targetVmPtr } : {}),
         });
         deps.restorePublishedRegularFileDataFromPageCache?.(targetExports);

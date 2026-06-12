@@ -149,6 +149,7 @@ interface KernelWorkerMessageHandlerDeps {
     ofdSlots: Array<{ ofdId: number; slot: Uint8Array }>,
     fdEntries: KernelWorkerFdEntrySnapshot[],
     includeMemfs: boolean,
+    memfsOnly: boolean,
     preserveSourceRefcounts: boolean,
     kernelState: KernelRuntimeState,
   ): { kernelState: KernelRuntimeState; forkSharedDebug?: string };
@@ -512,6 +513,7 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
               msg.ofdSlots,
               msg.fdEntries,
               msg.includeMemfs ?? true,
+              msg.memfsOnly ?? false,
               msg.preserveSourceRefcounts ?? false,
               msg.kernelState,
             );
