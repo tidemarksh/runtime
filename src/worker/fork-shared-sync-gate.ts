@@ -20,11 +20,18 @@ function forkSharedSyncSourceIsStale(handle: ProcessHandle, promise: Promise<voi
   }
 }
 
+function forkSharedSyncHasNoTargets(promise: Promise<void>): boolean {
+  const record = getForkSharedSyncDebugRecord(promise);
+  return record !== null && record.targetPids.length === 0;
+}
+
 export function clearStaleForkSharedSyncGate(
   handle: ProcessHandle,
   promise: Promise<void>,
 ): string | null {
-  if (!forkSharedSyncSourceIsStale(handle, promise)) {
+  const sourceIsStale = forkSharedSyncSourceIsStale(handle, promise);
+  const hasNoTargets = forkSharedSyncHasNoTargets(promise);
+  if (!sourceIsStale && !hasNoTargets) {
     return null;
   }
   if (handle.kernelShare.forkSharedSyncPromise === promise) {
@@ -32,6 +39,12 @@ export function clearStaleForkSharedSyncGate(
   }
   if (handle.forkSharedSyncPromise === promise) {
     handle.forkSharedSyncPromise = null;
+  }
+  if (sourceIsStale) {
+    return `fork-shared-sync-stale-source:${describeForkSharedSyncPromise(promise)}`;
+  }
+  if (hasNoTargets) {
+    return `fork-shared-sync-empty-targets:${describeForkSharedSyncPromise(promise)}`;
   }
   return `fork-shared-sync-stale-source:${describeForkSharedSyncPromise(promise)}`;
 }

@@ -415,3 +415,29 @@ test("kernel-share pipe reconcile keeps host stderr reader open for stdio pipes"
     writeOpen: 1,
   });
 });
+
+test("kernel-share pipe reconcile does not resurrect closed normal pipe writers", () => {
+  const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
+  const kernel = makeKernel(memory);
+  const handle = makeHandle(kernel, memory);
+  const pipeSlot = 9;
+  seedOfd(memory, handle.kernelState.ofdTablePtr, 18, FD_TYPE_PIPE, pipeSlot, 0xa8, 6);
+  seedOfd(memory, handle.kernelState.ofdTablePtr, 19, FD_TYPE_PIPE, pipeSlot, 0xa9, -7);
+  seedPipeSlot(memory, handle.kernelState.pipeBase, pipeSlot, 0xb9);
+  kernel.setFdMap(new Map([
+    [3, 18],
+  ]));
+  handle.kernelShare.members.add(handle);
+
+  const view = new DataView(memory.buffer);
+  const slotBase = handle.kernelState.pipeBase + pipeSlot * (32 + 65_536);
+  view.setInt32(slotBase + 8, 1, true);
+  view.setInt32(slotBase + 12, 0, true);
+
+  reconcileKernelSharePipeControl(handle);
+
+  expect(pipeOpenCounts(memory, handle.kernelState.pipeBase, pipeSlot)).toEqual({
+    readOpen: 1,
+    writeOpen: 0,
+  });
+});

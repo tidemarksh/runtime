@@ -2,15 +2,19 @@ import { expect, test, vi } from "vite-plus/test";
 import { registerForkSharedSyncPromise } from "../../../../src/worker/fork-shared-sync-debug.js";
 import {
   adoptKernelState,
+  adoptKernelStateForHandle,
   syncBlockedForkSharedStateViaKernelWorker,
   syncForkSharedStateViaKernelWorker,
 } from "../../../../src/worker/sync.js";
+import { reconcileKernelSharePipeControl } from "../../../../src/worker/kernel-share/pipe.js";
+import { collectRuntimeNetworkSocketOfdIds } from "../../../../src/worker/ownership/socket-control.js";
 import type { KernelRuntimeState } from "../../../../src/abi.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 
 const FD_TYPE_NONE = 0;
 const FD_TYPE_FILE = 1;
 const FD_TYPE_PIPE = 6;
+const FD_TYPE_EPOLL = 7;
 const FD_TYPE_SOCKET = 8;
 const PIPE_SLOT_BYTES = 32 + 65_536;
 const OFD_SLOT_BYTES = 32;
@@ -124,50 +128,40 @@ function makeKernel(
     kernel_attach_runtime_state: (
       heapBase: number,
       heapPtr: number,
-      ofdTablePtr: number,
+      ofdStatePtr: number,
       memfsPtr: number,
-      memfsHeaderBytes: number,
-      memfsInodesBytes: number,
-      memfsFirstChildBytes: number,
-      memfsDirEntriesBytes: number,
-      memfsDataBytes: number,
       memStatePtr: number,
       epollTablePtr: number,
       socketTablePtr: number,
       socketUsed: number,
       pipeBase: number,
-      pipeUsedLow: number,
-      pipeUsedHigh: number,
+      pipeUsed: bigint,
       netBufBase: number,
-      netBufUsedLow: number,
-      netBufUsedHigh: number,
+      netBufUsed: bigint,
       sigSlotsPtr: number,
       processPendingPtr: number,
       processRuntimeStatePtr: number,
       timeStatePtr: number,
+      signalfdStatePtr: number,
     ) => {
       Object.assign(state, {
         heapBase,
         heapPtr,
-        ofdTablePtr,
+        ofdTablePtr: ofdStatePtr,
         memfsPtr,
-        memfsHeaderBytes,
-        memfsInodesBytes,
-        memfsFirstChildBytes,
-        memfsDirEntriesBytes,
-        memfsDataBytes,
         memStatePtr,
         epollTablePtr,
         socketTablePtr,
         socketUsed,
         pipeBase,
-        pipeUsed: BigInt(pipeUsedLow >>> 0) | (BigInt(pipeUsedHigh >>> 0) << 32n),
+        pipeUsed,
         netBufBase,
-        netBufUsed: BigInt(netBufUsedLow >>> 0) | (BigInt(netBufUsedHigh >>> 0) << 32n),
+        netBufUsed,
         sigSlotsPtr,
         processPendingPtr,
         processRuntimeStatePtr,
         timeStatePtr,
+        signalfdStatePtr,
       });
     },
     process_fd_ofd_id: (_vmPtr: number, fd: number) => fdMap.get(fd) ?? 0,
@@ -359,6 +353,24 @@ test("adoptKernelState preserves canonical pointer fields while keeping heapPtr 
   });
 });
 
+test("adoptKernelStateForHandle preserves local epoll table pointer", () => {
+  const handle = makeHandle(7, new Map([[4, 10], [11, 12]]));
+  const incoming = {
+    ...handle.kernelState,
+    heapBase: 0x300000,
+    heapPtr: handle.kernelState.heapPtr + 0x80,
+    epollTablePtr: 0x350000,
+    pipeUsed: 4n,
+  };
+
+  const adopted = adoptKernelStateForHandle(handle, incoming);
+
+  expect(adopted.heapBase).toBe(incoming.heapBase);
+  expect(adopted.heapPtr).toBe(incoming.heapPtr);
+  expect(adopted.epollTablePtr).toBe(handle.kernelState.epollTablePtr);
+  expect(adopted.pipeUsed).toBe(incoming.pipeUsed);
+});
+
 test("fork-shared sync keeps a pipe reader target that also owns runtime network state", async () => {
   const child = makeHandle(7, new Map([[5, 8]]));
   const parent = makeHandle(3, new Map([[4, 7], [9, 19]]));
@@ -389,6 +401,76 @@ test("fork-shared sync keeps a pipe reader target that also owns runtime network
     type: "sync-fork-shared-state",
     targetPids: [3],
   }));
+});
+
+test("fork-shared sync preserves epoll watched fd ownership and local epoll state", async () => {
+  const child = makeHandle(7, new Map([[4, 10], [11, 12]]));
+  const parent = makeHandle(3, new Map([[13, 12]]));
+  child.kernelShare.members.add(parent);
+  parent.kernelShare = child.kernelShare;
+  child.kernelShare.sharedOfdIds.add(12);
+  const originalEpollTablePtr = child.kernelState.epollTablePtr;
+
+  seedOfd(child.memory, child.kernelState, 10, FD_TYPE_EPOLL, 0, -1);
+  seedOfd(child.memory, child.kernelState, 12, FD_TYPE_PIPE, 6, -11);
+  seedOfd(parent.memory, parent.kernelState, 12, FD_TYPE_PIPE, 6, 10);
+  seedPipeSlot(child.memory, child.kernelState, 6, 1, 1);
+  seedPipeSlot(parent.memory, parent.kernelState, 6, 1, 1);
+  child.kernelWorkerRequest = vi.fn(async (msg) => ({
+    type: "fork-shared-state-synced",
+    requestId: msg.requestId,
+    kernelState: {
+      ...msg.kernelState,
+      epollTablePtr: 0x350000,
+      pipeUsed: msg.kernelState.pipeUsed | 2n,
+    },
+  }));
+
+  await syncForkSharedStateViaKernelWorker(child, [parent], {
+    cause: { kind: "syscall", nr: -1n, name: "test-fork-shared-epoll-watched-fd" },
+    deltaOfdIds: true,
+    includeMemfs: false,
+    trackHeldOfds: true,
+    sourceVmPtr: child.vmPtr,
+  });
+
+  expect(child.kernelWorkerRequest).toHaveBeenCalledWith(expect.objectContaining({
+    type: "sync-fork-shared-state",
+  }));
+  expect(child.kernel.process_fd_ofd_id(child.vmPtr, 4)).toBe(10);
+  expect(child.kernel.process_fd_ofd_id(child.vmPtr, 11)).toBe(12);
+  expect(child.kernelState.epollTablePtr).toBe(originalEpollTablePtr);
+});
+
+test("pipe-control reconciliation preserves live writer when slot counters are stale closed", () => {
+  const handle = makeHandle(1, new Map([[12, 12], [13, 13]]));
+  handle.kernelShare.members.add(handle);
+  seedOfd(handle.memory, handle.kernelState, 12, FD_TYPE_PIPE, 6, 10);
+  seedOfd(handle.memory, handle.kernelState, 13, FD_TYPE_PIPE, 6, -11);
+  seedPipeSlot(handle.memory, handle.kernelState, 6, 0, 0);
+
+  reconcileKernelSharePipeControl(handle);
+
+  const view = new DataView(handle.memory.buffer);
+  const slotBase = handle.kernelState.pipeBase + 6 * PIPE_SLOT_BYTES;
+  expect(view.getInt32(slotBase + 8, true)).toBe(1);
+  expect(view.getInt32(slotBase + 12, true)).toBe(1);
+  expect(handle.kernelState.pipeUsed & (1n << 6n)).not.toBe(0n);
+});
+
+test("runtime network OFD collection excludes unrelated local socket OFDs", () => {
+  const handle = makeHandle(3, new Map([[3, 11], [16, 17]]));
+  seedOfd(handle.memory, handle.kernelState, 11, FD_TYPE_SOCKET, 11, 30);
+  seedOfd(handle.memory, handle.kernelState, 17, FD_TYPE_SOCKET, 17, 31);
+  handle.networkConnections.set(3, {
+    close: vi.fn(async () => {}),
+    read: vi.fn(),
+    write: vi.fn(),
+  } as never);
+  handle.networkConnectionOfds?.set(3, 11);
+
+  expect([...collectRuntimeNetworkSocketOfdIds([handle])].sort((left, right) => left - right))
+    .toEqual([11]);
 });
 
 test("fork-shared delta skips regular file OFDs held only by a peer", async () => {
@@ -480,4 +562,54 @@ test("blocked fork-shared sync clears a stale active sync before waiting", async
   expect(result).toBe("done");
   expect(handle.forkSharedSyncPromise).toBeNull();
   expect(handle.kernelShare.forkSharedSyncPromise).toBeNull();
+});
+
+test("blocked fork-shared sync registers its active gate for stale-source clearing", async () => {
+  const handle = makeHandle(7, new Map([[3, 12]]));
+  const peer = makeHandle(3, new Map([[4, 13]]));
+  handle.kernelShare.members.add(peer);
+  peer.kernelShare = handle.kernelShare;
+  seedOfd(handle.memory, handle.kernelState, 12, FD_TYPE_PIPE, 4, 10);
+  seedOfd(peer.memory, peer.kernelState, 13, FD_TYPE_PIPE, 4, -11);
+  handle.kernelShare.sharedOfdIds.add(12);
+  handle.kernelShare.sharedOfdIds.add(13);
+  let syncRequests = 0;
+  handle.kernelWorkerRequest = vi.fn(async (msg) => {
+    if (msg.type !== "sync-fork-shared-state") {
+      return {
+        type: "fork-shared-state-rehydrated",
+        requestId: msg.requestId,
+      };
+    }
+    syncRequests += 1;
+    if (syncRequests === 1) {
+      return new Promise<never>(() => {});
+    }
+    return {
+      type: "fork-shared-state-synced",
+      requestId: msg.requestId,
+      kernelState: msg.kernelState,
+    };
+  });
+
+  void syncBlockedForkSharedStateViaKernelWorker(
+    handle,
+    handle.vmPtr,
+    { kind: "blocked-rpc", status: 21 },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(syncRequests).toBe(1);
+
+  handle.kernel.thread_process_ptr = vi.fn((vmPtr: number) => (vmPtr === handle.vmPtr ? 0 : 0x1000));
+  const result = await Promise.race([
+    syncBlockedForkSharedStateViaKernelWorker(
+      handle,
+      handle.vmPtr,
+      { kind: "blocked-rpc", status: 21 },
+    ).then(() => "done"),
+    new Promise<"timed-out">((resolve) => setTimeout(() => resolve("timed-out"), 25)),
+  ]);
+
+  expect(result).toBe("done");
+  expect(syncRequests).toBe(2);
 });

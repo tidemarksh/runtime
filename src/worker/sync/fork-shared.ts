@@ -61,6 +61,7 @@ import {
   hasRuntimeNetworkSocketState,
 } from "../ownership/socket-control.js";
 import { clearStaleForkSharedSyncGate } from "../fork-shared-sync-gate.js";
+import { registerForkSharedSyncPromise } from "../fork-shared-sync-debug.js";
 import type {
   KernelWorkerOfdSlotSnapshot,
   KernelWorkerPidBytesSnapshot,
@@ -565,6 +566,12 @@ export async function syncBlockedForkSharedStateViaKernelWorker(
     if (handle.kernelShare.forkSharedSyncPromise === syncPromise) {
       handle.kernelShare.forkSharedSyncPromise = null;
     }
+  });
+  registerForkSharedSyncPromise(syncPromise, {
+    ownerPid: handle.pid,
+    sourceVmPtr,
+    reason: "blocked-rpc",
+    targetPids: syncTargets.map((target) => target.pid),
   });
   handle.forkSharedSyncPromise = syncPromise;
   handle.kernelShare.forkSharedSyncPromise = syncPromise;

@@ -38,17 +38,26 @@ export function adoptKernelState(
       : incoming.memfsDirEntriesBytes,
     memfsDataBytes: current.memfsDataBytes > 0 ? current.memfsDataBytes : incoming.memfsDataBytes,
     memStatePtr: current.memStatePtr,
-    epollTablePtr: current.epollTablePtr,
+    epollTablePtr: current.epollTablePtr > 0 ? current.epollTablePtr : incoming.epollTablePtr,
+    epollTableBytes: current.epollTableBytes ?? incoming.epollTableBytes,
     socketTablePtr: current.socketTablePtr,
     socketUsed: incoming.socketUsed,
     pipeBase: current.pipeBase,
+    pipeRegionBytes: current.pipeRegionBytes ?? incoming.pipeRegionBytes,
     pipeUsed: incoming.pipeUsed,
     netBufBase: current.netBufBase,
+    netBufPoolBytes: current.netBufPoolBytes ?? incoming.netBufPoolBytes,
     netBufUsed: incoming.netBufUsed,
     sigSlotsPtr: current.sigSlotsPtr,
+    sigSlotsBytes: current.sigSlotsBytes ?? incoming.sigSlotsBytes,
     processPendingPtr: current.processPendingPtr,
+    processPendingBytes: current.processPendingBytes ?? incoming.processPendingBytes,
+    signalfdStatePtr: current.signalfdStatePtr,
+    signalfdStateBytes: current.signalfdStateBytes ?? incoming.signalfdStateBytes,
     processRuntimeStatePtr: current.processRuntimeStatePtr,
+    processRuntimeStateBytes: current.processRuntimeStateBytes ?? incoming.processRuntimeStateBytes,
     timeStatePtr: current.timeStatePtr,
+    timeStateBytes: current.timeStateBytes ?? incoming.timeStateBytes,
   };
 }
 
@@ -77,4 +86,3 @@ export function adoptKernelStateForHandle(
     netBufUsed: current.netBufUsed | incoming.netBufUsed,
   };
 }
-
