@@ -104,6 +104,13 @@ interface FsFdStateSnapshot {
   ofdTable: Uint8Array | null;
 }
 
+interface FilteredFsFdState {
+  fdEntries?: KernelWorkerFdEntrySnapshot[];
+  ofdSlots?: KernelWorkerOfdSlotSnapshot[];
+  skippedFdEntries: number;
+  skippedOfdSlots: number;
+}
+
 interface FsRingProgressSnapshot {
   vmPtr: number;
   ringBase: number;
@@ -499,6 +506,7 @@ function pendingRegularFileFsRequest(
   if (
     pendingFs.opcode !== FS_OP_READ
     && pendingFs.opcode !== FS_OP_WRITE
+    && pendingFs.opcode !== FS_OP_FSTAT
     && pendingFs.opcode !== FS_OP_LSEEK
     && pendingFs.opcode !== FS_OP_MMAP
   ) {
@@ -538,6 +546,137 @@ function filterFsResponseToRegularFileRequest(
   return {
     fdEntries: requestFdEntries.length > 0 ? requestFdEntries : undefined,
     ofdSlots: requestOfdSlots.length > 0 ? requestOfdSlots : undefined,
+  };
+}
+
+function fdEntryMatches(entry: { ofdId: number; fdFlags: number }, ofdId: number, fdFlags: number): boolean {
+  return entry.ofdId === ofdId && entry.fdFlags === fdFlags;
+}
+
+function byteRangesEqual(
+  left: Uint8Array,
+  right: Uint8Array,
+): boolean {
+  if (left.byteLength !== right.byteLength) {
+    return false;
+  }
+  for (let offset = 0; offset < left.byteLength; offset += 1) {
+    if (left[offset] !== right[offset]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function baselineOfdSlot(
+  baseline: FsFdStateSnapshot,
+  ofdId: number,
+  slotBytes: number,
+): Uint8Array | null {
+  if (baseline.ofdTable === null || ofdId <= 0 || slotBytes <= 0) {
+    return null;
+  }
+  const sourceOffset = ofdId * slotBytes;
+  if (sourceOffset < 0 || sourceOffset + slotBytes > baseline.ofdTable.byteLength) {
+    return null;
+  }
+  return baseline.ofdTable.subarray(sourceOffset, sourceOffset + slotBytes);
+}
+
+function currentOfdSlot(
+  handle: ProcessHandle,
+  ofdId: number,
+  slotBytes: number,
+): Uint8Array | null {
+  const targetOffset = handle.kernelState.ofdTablePtr + ofdId * slotBytes;
+  if (
+    ofdId <= 0
+    || slotBytes <= 0
+    || targetOffset < 0
+    || targetOffset + slotBytes > handle.memory.buffer.byteLength
+  ) {
+    return null;
+  }
+  return new Uint8Array(handle.memory.buffer, targetOffset, slotBytes);
+}
+
+function filterStaleFsResponseFdState(
+  handle: ProcessHandle,
+  vmPtr: number,
+  baseline: FsFdStateSnapshot | null,
+  fdEntries: readonly KernelWorkerFdEntrySnapshot[] | undefined,
+  ofdSlots: readonly KernelWorkerOfdSlotSnapshot[] | undefined,
+): FilteredFsFdState {
+  if (baseline === null || baseline.vmPtr !== vmPtr) {
+    return {
+      fdEntries: fdEntries === undefined ? undefined : [...fdEntries],
+      ofdSlots: ofdSlots === undefined ? undefined : [...ofdSlots],
+      skippedFdEntries: 0,
+      skippedOfdSlots: 0,
+    };
+  }
+
+  const baselineFdEntries = new Map<number, { ofdId: number; fdFlags: number }>();
+  for (const entry of baseline.fdEntries) {
+    baselineFdEntries.set(entry.fd, entry);
+  }
+
+  const keptFdEntries: KernelWorkerFdEntrySnapshot[] = [];
+  let skippedFdEntries = 0;
+  for (const entry of fdEntries ?? []) {
+    const baselineEntry = baselineFdEntries.get(entry.fd);
+    if (
+      baselineEntry === undefined
+      || !handle.kernel.process_fd_ofd_id
+      || !handle.kernel.process_fd_flags
+    ) {
+      keptFdEntries.push(entry);
+      continue;
+    }
+    const currentOfdId = handle.kernel.process_fd_ofd_id(vmPtr, entry.fd);
+    const currentFdFlags = handle.kernel.process_fd_flags(vmPtr, entry.fd);
+    if (
+      fdEntryMatches(baselineEntry, currentOfdId, currentFdFlags)
+      || fdEntryMatches(entry, currentOfdId, currentFdFlags)
+    ) {
+      keptFdEntries.push(entry);
+      continue;
+    }
+    skippedFdEntries += 1;
+  }
+
+  const maxFds = handle.kernel.abi_max_fds?.() ?? baseline.fdEntries.length;
+  const tableBytes = handle.kernel.kernel_ofd_table_bytes?.() ?? 0;
+  const slotBytes = maxFds > 0 ? tableBytes / maxFds : 0;
+  const canFilterOfdSlots = baseline.ofdTable !== null
+    && Number.isInteger(slotBytes)
+    && slotBytes > 0;
+  const keptOfdSlots: KernelWorkerOfdSlotSnapshot[] = [];
+  let skippedOfdSlots = 0;
+  for (const snapshot of ofdSlots ?? []) {
+    if (!canFilterOfdSlots || snapshot.slot.byteLength !== slotBytes) {
+      keptOfdSlots.push(snapshot);
+      continue;
+    }
+    const baselineSlot = baselineOfdSlot(baseline, snapshot.ofdId, slotBytes);
+    const currentSlot = currentOfdSlot(handle, snapshot.ofdId, slotBytes);
+    if (
+      baselineSlot === null
+      || currentSlot === null
+      || byteRangesEqual(currentSlot, baselineSlot)
+      || byteRangesEqual(currentSlot, snapshot.slot)
+    ) {
+      keptOfdSlots.push(snapshot);
+      continue;
+    }
+    skippedOfdSlots += 1;
+  }
+
+  return {
+    fdEntries: keptFdEntries.length > 0 ? keptFdEntries : undefined,
+    ofdSlots: keptOfdSlots.length > 0 ? keptOfdSlots : undefined,
+    skippedFdEntries,
+    skippedOfdSlots,
   };
 }
 
@@ -991,6 +1130,7 @@ async function resumeFsViaKernelWorkerInner(
     }
     deps.assertProcessStandardFdIntegrity(handle, "resume-fs-before");
     handle.kernelState = readKernelRuntimeState(handle.kernel);
+    const requestFsFdState = snapshotFsFdState(handle, vmPtr);
     const processFsResponse = await handle.kernelWorkerRequest({
       type: "process-fs",
       pid: handle.pid,
@@ -1046,17 +1186,37 @@ async function resumeFsViaKernelWorkerInner(
       clearSupersededMemfsDeletedPath(handle, pendingFs, fsSucceeded, fsEffects);
       reapplyLocalMemfsDeletedPathTombstones(handle, vmPtr, "worker-after-adopt");
     }
+    const responseFdState = filterStaleFsResponseFdState(
+      handle,
+      vmPtr,
+      requestFsFdState,
+      fsProcessedResponse.fdEntries,
+      fsProcessedResponse.ofdSlots,
+    );
+    if (responseFdState.skippedFdEntries > 0 || responseFdState.skippedOfdSlots > 0) {
+      appendFsLifecycleEvent(
+        handle,
+        "fd-stale-skipped",
+        vmPtr,
+        `:fds=${responseFdState.skippedFdEntries}:ofds=${responseFdState.skippedOfdSlots}`,
+      );
+    }
     if (
       !failedExecveChildOwner
       && !regularFileOnlyPendingFs
-      && (fsProcessedResponse.ofdSlots || fsProcessedResponse.fdEntries)
+      && (responseFdState.ofdSlots || responseFdState.fdEntries)
     ) {
+      const fsResponseMayClearLiveFds = pendingFs.opcode === FS_OP_CLOSE
+        || pendingFs.opcode === FS_OP_EXECVE;
       applyThreadOfdSlots(handle, {
         vmPtr,
-        fdEntries: fsProcessedResponse.fdEntries,
-        ofdSlots: fsProcessedResponse.ofdSlots,
+        fdEntries: responseFdState.fdEntries,
+        ofdSlots: responseFdState.ofdSlots,
       });
-      applyThreadFdEntries(handle, vmPtr, fsProcessedResponse.fdEntries);
+      applyThreadFdEntries(handle, vmPtr, responseFdState.fdEntries, {
+        preserveLiveEpollDependentDescriptors: !fsResponseMayClearLiveFds,
+        preserveLiveRegularFileDescriptors: !fsResponseMayClearLiveFds,
+      });
       appendFsLifecycleEvent(
         handle,
         "fd-applied",
@@ -1066,8 +1226,8 @@ async function resumeFsViaKernelWorkerInner(
     } else if (!failedExecveChildOwner && regularFilePendingFs) {
       const requestFsState = filterFsResponseToRegularFileRequest(
         regularFilePendingFs,
-        fsProcessedResponse.fdEntries,
-        fsProcessedResponse.ofdSlots,
+        responseFdState.fdEntries,
+        responseFdState.ofdSlots,
       );
       if (requestFsState.fdEntries || requestFsState.ofdSlots) {
         applyThreadOfdSlots(handle, {

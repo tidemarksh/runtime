@@ -153,6 +153,69 @@ export function collectHeldEpollOfdIds(handle: ProcessHandle): number[] {
   return epollOfdIds;
 }
 
+export function collectHeldEpollDependentOfdIdsByType(handle: ProcessHandle, types: number[]): number[] {
+  const epollOfdIds = collectHeldEpollOfdIds(handle);
+  if (epollOfdIds.length === 0) {
+    return [];
+  }
+
+  const maxFds = handle.kernel.abi_max_fds();
+  const tableBytes = handle.kernel.kernel_epoll_table_bytes();
+  const instanceBytes = handle.kernel.kernel_epoll_instance_bytes();
+  const tablePointerBytes = tableBytes % 8 === 0
+    && Math.floor((instanceBytes - 4) / (tableBytes >>> 3)) >= 28
+    ? 8
+    : 4;
+  const tableEntries = Math.floor(tableBytes / tablePointerBytes);
+  const entryStride = tableEntries > 0 ? Math.floor((instanceBytes - 4) / tableEntries) : 0;
+  const countOffset = entryStride * tableEntries;
+  const tablePtr = handle.kernelState.epollTablePtr;
+  const view = new DataView(handle.memory.buffer);
+  if (
+    tableEntries <= 0
+    || entryStride < 8
+    || tablePtr < 0
+    || tablePtr + tableBytes > view.byteLength
+  ) {
+    return [];
+  }
+
+  const dependentOfdIds = new Set<number>();
+  for (const epollOfdId of epollOfdIds) {
+    if (
+      epollOfdId <= 0
+      || epollOfdId >= maxFds
+      || handle.kernel.kernel_ofd_fd_type(epollOfdId) !== handle.kernel.abi_fd_type_epoll()
+    ) {
+      continue;
+    }
+
+    const epollIdx = handle.kernel.kernel_ofd_ino(epollOfdId);
+    if (epollIdx < 0 || epollIdx >= tableEntries) {
+      continue;
+    }
+    const instancePtr = view.getUint32(tablePtr + epollIdx * tablePointerBytes, true);
+    if (instancePtr === 0 || instancePtr + instanceBytes > view.byteLength) {
+      continue;
+    }
+    const rawCount = view.getUint32(instancePtr + countOffset, true);
+    const count = Math.min(rawCount, tableEntries);
+    for (let i = 0; i < count; i += 1) {
+      const entryOffset = instancePtr + i * entryStride;
+      const ofdId = view.getUint32(entryOffset + 4, true);
+      if (
+        ofdId > 0
+        && ofdId < maxFds
+        && types.includes(handle.kernel.kernel_ofd_fd_type(ofdId))
+      ) {
+        dependentOfdIds.add(ofdId);
+      }
+    }
+  }
+
+  return [...dependentOfdIds];
+}
+
 export function snapshotOfdSlotsForThread(
   handle: ProcessHandle,
   fdEntries: readonly KernelWorkerFdEntrySnapshot[] | undefined,
