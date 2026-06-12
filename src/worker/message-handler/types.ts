@@ -36,7 +36,11 @@ export interface WorkerMessageHandlerDeps extends Partial<WorkerMessageHandlerSy
   pumpProcess(handle: ProcessHandle): void;
   pruneDetachedProcessWorkers(handle: ProcessHandle, anchorVmPtr: number, currentWorker: Worker | null): void;
   pumpNetworkConnections(handle: ProcessHandle, vmPtr?: number): Promise<boolean>;
-  requestEpollDependentOfdStateSync(handle: ProcessHandle): Promise<void>;
+  requestEpollDependentOfdStateSync(
+    handle: ProcessHandle,
+    additionalOfdIds?: readonly number[],
+    options?: { mode?: "push" | "pull" },
+  ): Promise<void>;
   requestEpollStateSync(handle: ProcessHandle, retryWaiters?: boolean): Promise<void>;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   requestSocketStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;

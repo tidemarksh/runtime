@@ -74,6 +74,7 @@ export async function syncOfdStateViaKernelWorker(
   handle: ProcessHandle,
   ofdIds: number[],
   cause: SyncCause,
+  options: { mode?: "push" | "pull" } = {},
 ): Promise<void> {
   if (!handle.kernelWorkerRequest || handle.pid <= 0 || ofdIds.length === 0) {
     return;
@@ -90,6 +91,7 @@ export async function syncOfdStateViaKernelWorker(
       type: "sync-ofd-state",
       pid: handle.pid,
       ofdIds,
+      mode: options.mode,
       kernelState: handle.kernelState,
     });
   } finally {

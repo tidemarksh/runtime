@@ -136,7 +136,12 @@ interface KernelWorkerMessageHandlerDeps {
     applyFdEntries?: boolean,
   ): { kernelState: KernelRuntimeState; pipeSlots: KernelWorkerPipeSlotSnapshot[] };
   syncEpollState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
-  syncOfdState(pid: number, ofdIds: number[], kernelState: KernelRuntimeState): KernelRuntimeState;
+  syncOfdState(
+    pid: number,
+    ofdIds: number[],
+    kernelState: KernelRuntimeState,
+    mode?: "push" | "pull",
+  ): KernelRuntimeState;
   syncSocketState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
   applySocketStateSnapshot(pid: number, kernelState: KernelRuntimeState, snapshot: KernelWorkerSocketStateSnapshot): KernelRuntimeState;
   snapshotSocketState(pid: number, kernelState: KernelRuntimeState): KernelWorkerSocketStateSnapshot | undefined;
@@ -485,7 +490,7 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
           deps.postResponse({
             type: "ofd-state-synced",
             requestId: msg.requestId,
-            kernelState: deps.syncOfdState(msg.pid, msg.ofdIds, msg.kernelState),
+            kernelState: deps.syncOfdState(msg.pid, msg.ofdIds, msg.kernelState, msg.mode),
           });
           break;
         case "sync-socket-state":

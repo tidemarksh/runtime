@@ -424,6 +424,7 @@ export type KernelWorkerRequest =
       type: "sync-ofd-state";
       pid: number;
       ofdIds: number[];
+      mode?: "push" | "pull";
       kernelState: KernelRuntimeState;
     }
   | {

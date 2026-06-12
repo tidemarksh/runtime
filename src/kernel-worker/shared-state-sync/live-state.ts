@@ -1,4 +1,5 @@
-import { attachKernelRuntimeState, readKernelRuntimeState } from "../../abi.js";
+import { attachKernelRuntimeState, readKernelRuntimeState, type KernelExports } from "../../abi.js";
+import { copyMemoryRange } from "../common.js";
 import type {
   KernelWorkerFdEntrySnapshot,
   KernelWorkerOfdSlotSnapshot,
@@ -16,6 +17,43 @@ import type { KernelWorkerSharedStateSyncDeps, KernelRuntimeState } from "./type
 const PIPE_BUF_SIZE = PIPE_BUFFER_BYTES;
 
 export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyncDeps) {
+  function copyTimeState(
+    sourceExports: KernelExports,
+    sourceState: KernelRuntimeState,
+    targetExports: KernelExports,
+    targetState: KernelRuntimeState,
+  ): void {
+    const byteLength = sourceExports.kernel_time_state_bytes?.() ?? 0;
+    if (byteLength <= 0) {
+      return;
+    }
+    copyMemoryRange(
+      sourceExports.memory,
+      sourceState.timeStatePtr,
+      targetExports.memory,
+      targetState.timeStatePtr,
+      byteLength,
+    );
+  }
+
+  function ofdIdsIncludeTimerfd(sourceExports: KernelExports, ofdIds: Iterable<number>): boolean {
+    const timerfdType = sourceExports.abi_fd_type_timerfd?.();
+    if (timerfdType === undefined) {
+      return false;
+    }
+    const maxFds = sourceExports.abi_max_fds();
+    for (const ofdId of ofdIds) {
+      if (
+        ofdId > 0
+        && ofdId < maxFds
+        && sourceExports.kernel_ofd_fd_type(ofdId) === timerfdType
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   function snapshotCanonicalPipeSlots(
     kernelState: KernelRuntimeState,
     pipeSlots: Iterable<number>,
@@ -295,7 +333,12 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
     return readKernelRuntimeState(processExports);
   }
 
-  function syncOfdState(pid: number, ofdIds: number[], kernelState: KernelRuntimeState): KernelRuntimeState {
+  function syncOfdState(
+    pid: number,
+    ofdIds: number[],
+    kernelState: KernelRuntimeState,
+    mode: "push" | "pull" = "push",
+  ): KernelRuntimeState {
     const canonicalExports = deps.getCanonicalExports();
     const processExports = deps.processKernels.get(pid);
     if (!processExports || ofdIds.length === 0) {
@@ -305,7 +348,13 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
 
     const sourceState = readKernelRuntimeState(processExports);
     const canonicalState = readKernelRuntimeState(canonicalExports);
-    deps.copySelectedOfdState(processExports, sourceState, canonicalExports, canonicalState, ofdIds);
+    const syncTimerfdState = ofdIdsIncludeTimerfd(processExports, ofdIds);
+    if (mode !== "pull") {
+      deps.copySelectedOfdState(processExports, sourceState, canonicalExports, canonicalState, ofdIds);
+    }
+    if (syncTimerfdState && mode !== "pull") {
+      copyTimeState(processExports, sourceState, canonicalExports, canonicalState);
+    }
 
     for (const [memberPid, memberExports] of deps.processKernels) {
       const memberVmPtr = deps.getCanonicalProcessVmPtr(memberPid);
@@ -319,6 +368,9 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
       }
       const memberState = readKernelRuntimeState(memberExports);
       deps.copySelectedOfdState(canonicalExports, canonicalState, memberExports, memberState, memberOfdIds);
+      if (syncTimerfdState) {
+        copyTimeState(canonicalExports, canonicalState, memberExports, memberState);
+      }
     }
 
     return readKernelRuntimeState(processExports);

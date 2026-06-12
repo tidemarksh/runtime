@@ -5,6 +5,7 @@ import { createKernelWorkerPrimitives } from "../../../src/kernel-worker/primiti
 import { createKernelWorkerSharedStateSync } from "../../../src/kernel-worker/shared-state-sync.js";
 
 const FD_TYPE_EVENTFD = 9;
+const FD_TYPE_TIMERFD = 10;
 
 type TestKernelExports = KernelExports & {
   setFdMap(map: Map<number, number>): void;
@@ -40,6 +41,8 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
     abi_max_fds: () => 256,
     abi_max_threads: () => 64,
     abi_fd_type_file: () => 1,
+    abi_fd_type_eventfd: () => FD_TYPE_EVENTFD,
+    abi_fd_type_timerfd: () => FD_TYPE_TIMERFD,
     kernel_heap_base: () => runtimeState.heapBase,
     kernel_heap_ptr: () => runtimeState.heapPtr,
     kernel_ofd_table_ptr: () => runtimeState.ofdTablePtr,
@@ -62,6 +65,7 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
     kernel_process_pending_ptr: () => runtimeState.processPendingPtr,
     kernel_process_runtime_state_ptr: () => runtimeState.processRuntimeStatePtr,
     kernel_time_state_ptr: () => runtimeState.timeStatePtr,
+    kernel_time_state_bytes: () => 4096,
     kernel_attach_runtime_state: (
       heapBase: number,
       heapPtr: number,
@@ -131,9 +135,28 @@ function seedEventfdOfd(memory: WebAssembly.Memory, ofdId: number, marker: numbe
   view.setBigInt64(base + 16, BigInt(marker), true);
 }
 
+function seedTimerfdOfd(memory: WebAssembly.Memory, ofdId: number, timerfdIdx: number): void {
+  const state = makeKernelState();
+  const view = new DataView(memory.buffer);
+  const base = state.ofdTablePtr + ofdId * 32;
+  view.setInt32(base, FD_TYPE_TIMERFD, true);
+  view.setInt32(base + 12, 1, true);
+  view.setUint32(base + 24, timerfdIdx, true);
+}
+
 function eventfdMarker(memory: WebAssembly.Memory, ofdId: number): number {
   const state = makeKernelState();
   return Number(new DataView(memory.buffer).getBigInt64(state.ofdTablePtr + ofdId * 32 + 16, true));
+}
+
+function seedTimeStateMarker(memory: WebAssembly.Memory, marker: number): void {
+  const state = makeKernelState();
+  new DataView(memory.buffer).setUint32(state.timeStatePtr + 64, marker, true);
+}
+
+function timeStateMarker(memory: WebAssembly.Memory): number {
+  const state = makeKernelState();
+  return new DataView(memory.buffer).getUint32(state.timeStatePtr + 64, true);
 }
 
 function makeSharedStateSync(
@@ -210,4 +233,49 @@ test("kernel-worker eventfd sync propagates shared eventfd OFDs by shared OFD id
 
   expect(eventfdMarker(parentMemory, 7)).toBe(0xcc);
   expect(eventfdMarker(canonicalMemory, 7)).toBe(0xcc);
+});
+
+test("kernel-worker eventfd pull sync preserves canonical eventfd state", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
+
+  seedEventfdOfd(canonicalMemory, 7, 0xcc);
+  seedEventfdOfd(parentMemory, 7, 0xaa);
+  seedEventfdOfd(childMemory, 7, 0);
+  parentExports.setFdMap(new Map([[4, 7]]));
+  childExports.setFdMap(new Map([[4, 7]]));
+
+  sharedStateSync.syncOfdState(2, [7], makeKernelState(), "pull");
+
+  expect(eventfdMarker(canonicalMemory, 7)).toBe(0xcc);
+  expect(eventfdMarker(parentMemory, 7)).toBe(0xcc);
+  expect(eventfdMarker(childMemory, 7)).toBe(0xcc);
+});
+
+test("kernel-worker timerfd OFD sync propagates timer backing time state", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
+
+  seedTimerfdOfd(parentMemory, 7, 1);
+  seedTimerfdOfd(childMemory, 7, 1);
+  seedTimeStateMarker(parentMemory, 0xaa);
+  seedTimeStateMarker(childMemory, 0xcc);
+  seedTimeStateMarker(canonicalMemory, 0x11);
+  parentExports.setFdMap(new Map([[5, 7]]));
+  childExports.setFdMap(new Map([[5, 7]]));
+
+  sharedStateSync.syncOfdState(2, [7], makeKernelState());
+
+  expect(timeStateMarker(canonicalMemory)).toBe(0xcc);
+  expect(timeStateMarker(parentMemory)).toBe(0xcc);
 });
