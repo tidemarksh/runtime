@@ -43,6 +43,7 @@ export interface KernelWorkerFdEntrySnapshot {
   fd: number;
   ofdId: number;
   fdFlags: number;
+  generation?: number;
 }
 
 export interface ForkStackSnapshot {

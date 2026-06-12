@@ -1052,6 +1052,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
         fd,
         ofdId: processExports.process_fd_ofd_id(vmPtr, fd),
         fdFlags: processExports.process_fd_flags(vmPtr, fd),
+        generation: processExports.process_fd_generation?.(vmPtr, fd),
       });
     }
     return fdEntries;

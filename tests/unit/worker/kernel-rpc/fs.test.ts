@@ -1095,6 +1095,101 @@ test("kernel-worker fs outcome rejects fd snapshot entries stale against request
   expect(kernel.process_set_fd_entry).not.toHaveBeenCalledWith(0x1234, 18, 0, 0);
 });
 
+test("kernel-worker fs outcome rejects fd snapshot ABA using generation", async () => {
+  const ringBase = 0x3000;
+  const fdTable = new Map<number, { ofdId: number; fdFlags: number }>([
+    [18, { ofdId: 0, fdFlags: 0 }],
+  ]);
+  const fdGeneration = new Map<number, number>([[18, 1]]);
+  const kernel = {
+    ...makeKernel(),
+    abi_max_fds: () => 32,
+    thread_pending_fs_opcode: () => FS_OP_OPENAT,
+    thread_pending_fs_effects: () => 4,
+    thread_pending_fs_target_ino: () => 42,
+    thread_fs_ring_base: () => ringBase,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fdTable.get(fd)?.ofdId ?? 0,
+    process_fd_flags: (_vmPtr: number, fd: number) => fdTable.get(fd)?.fdFlags ?? 0,
+    process_fd_generation: (_vmPtr: number, fd: number) => fdGeneration.get(fd) ?? 0,
+    process_set_fd_entry: vi.fn((_vmPtr: number, fd: number, ofdId: number, fdFlags: number) => {
+      fdTable.set(fd, { ofdId, fdFlags });
+      fdGeneration.set(fd, (fdGeneration.get(fd) ?? 0) + 1);
+    }),
+    kernel_ofd_fd_type: (ofdId: number) => (ofdId === 6 ? 3 : 0),
+    kernel_ofd_refcount: () => 0,
+  };
+  seedFsRingRequest(kernel.memory, ringBase, 0x1234, FS_OP_OPENAT, -100);
+  const kernelWorkerRequest = vi.fn(async () => {
+    fdTable.set(18, { ofdId: 12, fdFlags: 0 });
+    fdGeneration.set(18, 2);
+    fdTable.set(18, { ofdId: 0, fdFlags: 0 });
+    fdGeneration.set(18, 3);
+    new DataView(kernel.memory.buffer).setUint32(ringBase + FS_RING_SUBMIT_TAIL_OFFSET, 1, true);
+    return {
+      type: "fs-processed",
+      requestId: 1,
+      kernelState: makeKernelState(),
+      result: 5n,
+      memfsMutated: false,
+      ofdStateChanged: true,
+      fdEntries: [
+        { fd: 5, ofdId: 6, fdFlags: 0, generation: 1 },
+        { fd: 18, ofdId: 0, fdFlags: 0, generation: 1 },
+      ],
+    };
+  });
+  const handle = {
+    pid: 1,
+    runtimeId: 1,
+    vmPtr: 0x1234,
+    kernel,
+    kernelState: makeKernelState(),
+    memory: kernel.memory,
+    processMemfsDirty: false,
+    transferDebugStats: createTransferDebugStats(),
+    kernelShare: { members: new Set(), sharedOfdIds: new Set() },
+    workers: new Set(),
+    blockedWorkers: new Map(),
+    kernelWorkerRequest,
+  } as unknown as ProcessHandle;
+  const worker = {} as Worker;
+  handle.workers.add(worker);
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, {});
+  const helpers = createWorkerKernelRpcFsHelpers({
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    appendWorkerDebugLog: vi.fn(),
+    assertProcessStandardFdIntegrity: vi.fn(),
+    blockWorker: vi.fn(),
+    enqueueWorker: vi.fn(),
+    failProcess: vi.fn((_handle, error) => {
+      throw error;
+    }),
+    kickBlockedWorkers: vi.fn(),
+    markRuntimeFsDirty: vi.fn(),
+    kernelShareOtherMembers: () => [],
+    syncForkSharedStateLocallyAfterFs: vi.fn(),
+    syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
+    syncSharedOfdStateAfterFs: vi.fn(async () => {}),
+    publishMemfsAfterFs: vi.fn(async () => {}),
+    rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    publishRuntimeKernelState: vi.fn(),
+  });
+
+  await expect(helpers.resumeFsViaKernelWorkerOutcome(
+    handle,
+    worker,
+    0x1234,
+    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+  )).resolves.toMatchObject({ kind: "completed", status: 0 });
+
+  expect(fdTable.get(5)).toEqual({ ofdId: 6, fdFlags: 0 });
+  expect(fdTable.get(18)).toEqual({ ofdId: 0, fdFlags: 0 });
+  expect(fdGeneration.get(18)).toBe(3);
+  expect(kernel.process_set_fd_entry).not.toHaveBeenCalledWith(0x1234, 18, 0, 0);
+});
+
 test("kernel-worker fs outcome rejects ofd slot snapshots stale against request baseline", async () => {
   const ringBase = 0x3000;
   const ofdTablePtr = 0x4000;

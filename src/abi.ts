@@ -473,6 +473,7 @@ export interface KernelExports {
   ): void;
   process_fd_ofd_id(vm_ptr: number, fd: number): number;
   process_fd_flags(vm_ptr: number, fd: number): number;
+  process_fd_generation?(vm_ptr: number, fd: number): number;
   process_set_fd_entry(vm_ptr: number, fd: number, ofdId: number, fdFlags: number): void;
   kernel_retain_ofd(ofdId: number): void;
   kernel_release_ofd(ofdId: number): void;

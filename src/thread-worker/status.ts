@@ -150,6 +150,7 @@ function snapshotProcessFdEntries(
       fd,
       ofdId: kernelExports.process_fd_ofd_id(processVmPtr, fd),
       fdFlags: kernelExports.process_fd_flags(processVmPtr, fd),
+      generation: kernelExports.process_fd_generation?.(processVmPtr, fd),
     });
   }
   return fdEntries;

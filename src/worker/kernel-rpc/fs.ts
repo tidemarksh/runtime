@@ -99,7 +99,7 @@ interface PendingFsContext {
 
 interface FsFdStateSnapshot {
   vmPtr: number;
-  fdEntries: Array<{ fd: number; ofdId: number; fdFlags: number }>;
+  fdEntries: Array<{ fd: number; ofdId: number; fdFlags: number; generation?: number }>;
   ofdTablePtr: number;
   ofdTable: Uint8Array | null;
 }
@@ -553,6 +553,18 @@ function fdEntryMatches(entry: { ofdId: number; fdFlags: number }, ofdId: number
   return entry.ofdId === ofdId && entry.fdFlags === fdFlags;
 }
 
+function fdGenerationMatches(
+  baselineGeneration: number | undefined,
+  currentGeneration: number | undefined,
+  responseGeneration: number | undefined,
+): boolean {
+  if (baselineGeneration === undefined || currentGeneration === undefined) {
+    return true;
+  }
+  return currentGeneration === baselineGeneration
+    || (responseGeneration !== undefined && currentGeneration === responseGeneration);
+}
+
 function byteRangesEqual(
   left: Uint8Array,
   right: Uint8Array,
@@ -616,12 +628,17 @@ function filterStaleFsResponseFdState(
     };
   }
 
-  const baselineFdEntries = new Map<number, { ofdId: number; fdFlags: number }>();
+  const baselineFdEntries = new Map<number, {
+    ofdId: number;
+    fdFlags: number;
+    generation?: number;
+  }>();
   for (const entry of baseline.fdEntries) {
     baselineFdEntries.set(entry.fd, entry);
   }
 
   const keptFdEntries: KernelWorkerFdEntrySnapshot[] = [];
+  const staleOfdIds = new Set<number>();
   let skippedFdEntries = 0;
   for (const entry of fdEntries ?? []) {
     const baselineEntry = baselineFdEntries.get(entry.fd);
@@ -635,6 +652,14 @@ function filterStaleFsResponseFdState(
     }
     const currentOfdId = handle.kernel.process_fd_ofd_id(vmPtr, entry.fd);
     const currentFdFlags = handle.kernel.process_fd_flags(vmPtr, entry.fd);
+    const currentGeneration = handle.kernel.process_fd_generation?.(vmPtr, entry.fd);
+    if (!fdGenerationMatches(baselineEntry.generation, currentGeneration, entry.generation)) {
+      if (entry.ofdId > 0) {
+        staleOfdIds.add(entry.ofdId);
+      }
+      skippedFdEntries += 1;
+      continue;
+    }
     if (
       fdEntryMatches(baselineEntry, currentOfdId, currentFdFlags)
       || fdEntryMatches(entry, currentOfdId, currentFdFlags)
@@ -643,6 +668,9 @@ function filterStaleFsResponseFdState(
       continue;
     }
     skippedFdEntries += 1;
+    if (entry.ofdId > 0) {
+      staleOfdIds.add(entry.ofdId);
+    }
   }
 
   const maxFds = handle.kernel.abi_max_fds?.() ?? baseline.fdEntries.length;
@@ -654,6 +682,10 @@ function filterStaleFsResponseFdState(
   const keptOfdSlots: KernelWorkerOfdSlotSnapshot[] = [];
   let skippedOfdSlots = 0;
   for (const snapshot of ofdSlots ?? []) {
+    if (staleOfdIds.has(snapshot.ofdId)) {
+      skippedOfdSlots += 1;
+      continue;
+    }
     if (!canFilterOfdSlots || snapshot.slot.byteLength !== slotBytes) {
       keptOfdSlots.push(snapshot);
       continue;
@@ -866,6 +898,7 @@ function snapshotFsFdState(handle: ProcessHandle, vmPtr: number): FsFdStateSnaps
       fd,
       ofdId: handle.kernel.process_fd_ofd_id(vmPtr, fd),
       fdFlags: handle.kernel.process_fd_flags(vmPtr, fd),
+      generation: handle.kernel.process_fd_generation?.(vmPtr, fd),
     });
   }
   const tableBytes = handle.kernel.kernel_ofd_table_bytes?.() ?? 0;

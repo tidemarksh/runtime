@@ -51,6 +51,7 @@ export function snapshotProcessFdEntries(
       fd,
       ofdId: handle.kernel.process_fd_ofd_id(vmPtr, fd),
       fdFlags: handle.kernel.process_fd_flags(vmPtr, fd),
+      generation: handle.kernel.process_fd_generation?.(vmPtr, fd),
     });
   }
   return fdEntries;
@@ -72,6 +73,7 @@ export function snapshotProcessFdEntriesForThread(
       fd,
       ofdId,
       fdFlags: handle.kernel.process_fd_flags?.(sourceVmPtr, fd) ?? 0,
+      generation: handle.kernel.process_fd_generation?.(sourceVmPtr, fd),
     });
   }
   return fdEntries.length > 0 ? fdEntries : undefined;
