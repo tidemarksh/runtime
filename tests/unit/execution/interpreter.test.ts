@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { expect, test, vi } from "vite-plus/test";
+import { beforeEach, expect, test, vi } from "vite-plus/test";
 import {
   classifyExecutionBoundary,
   createInterpreterExecutionEngine,
@@ -28,6 +28,10 @@ const statusCodes: ExecutionBoundaryStatusCodes = {
   FLOCK_WAIT: 15,
 };
 
+beforeEach(() => {
+  vi.unstubAllEnvs();
+});
+
 test("interpreter execution engine wraps thread_step and returns the status boundary", () => {
   const threadStep = vi.fn(() => 17);
   const threadStatus = vi.fn(() => statusCodes.FS);
@@ -50,6 +54,28 @@ test("interpreter execution engine wraps thread_step and returns the status boun
     boundary: "syscall",
     returnedBudget: 17,
   });
+});
+
+test("interpreter execution engine can use diagnostic no-block-cache step", () => {
+  vi.stubEnv("TIDEMARK_DEBUG_DISABLE_BLOCK_CACHE", "1");
+  const threadStep = vi.fn(() => 17);
+  const debugThreadStepNoBlockCache = vi.fn(() => 23);
+  const threadStatus = vi.fn(() => statusCodes.OK);
+
+  const result = executeInterpreterStep({
+    exports: {
+      thread_step: threadStep,
+      debug_thread_step_no_block_cache: debugThreadStepNoBlockCache,
+      thread_status: threadStatus,
+    },
+    statusCodes,
+    vmPtr: 0x1234,
+    budget: 1_000,
+  });
+
+  expect(debugThreadStepNoBlockCache).toHaveBeenCalledWith(0x1234, 1_000);
+  expect(threadStep).not.toHaveBeenCalled();
+  expect(result.returnedBudget).toBe(23);
 });
 
 test("execution boundary classification covers syscall, fault, blocking, and invalidation returns", () => {

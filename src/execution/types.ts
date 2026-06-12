@@ -11,7 +11,7 @@ export type ExecutionControlBoundary =
 
 export type ExecutionKernelExports = Pick<
   KernelExports,
-  "thread_step" | "thread_status"
+  "thread_step" | "debug_thread_step_no_block_cache" | "thread_status"
 >;
 
 export interface ExecutionStepRequest {
@@ -50,4 +50,3 @@ export type ExecutionBoundaryStatusCodes = Pick<
   | "SOCKET_RECV"
   | "FLOCK_WAIT"
 >;
-

@@ -266,6 +266,7 @@ export interface KernelExports {
 
   // Thread execution
   thread_step(vm_ptr: number, budget: number): number;
+  debug_thread_step_no_block_cache?(vm_ptr: number, budget: number): number;
   thread_status(vm_ptr: number): number;
   thread_exit_code(vm_ptr: number): number;
   thread_term_signal(vm_ptr: number): number;

@@ -12,6 +12,12 @@ export interface InterpreterExecutionEngineOptions {
   statusCodes: ExecutionBoundaryStatusCodes;
 }
 
+function debugDisableBlockCacheEnabled(): boolean {
+  return ((globalThis as typeof globalThis & {
+    process?: { env?: Record<string, string | undefined> };
+  }).process?.env?.TIDEMARK_DEBUG_DISABLE_BLOCK_CACHE ?? "") === "1";
+}
+
 export function classifyExecutionBoundary(
   status: number,
   statusCodes: ExecutionBoundaryStatusCodes,
@@ -56,7 +62,10 @@ export function createInterpreterExecutionEngine(
   return {
     kind: "interpreter",
     step(request: ExecutionStepRequest): ExecutionStepResult {
-      const returnedBudget = exports.thread_step(request.vmPtr, request.budget);
+      const stepThread = debugDisableBlockCacheEnabled()
+        ? (exports.debug_thread_step_no_block_cache ?? exports.thread_step)
+        : exports.thread_step;
+      const returnedBudget = stepThread(request.vmPtr, request.budget);
       const status = exports.thread_status(request.vmPtr);
       return {
         engine: "interpreter",
@@ -74,4 +83,3 @@ export function executeInterpreterStep(
   const engine = createInterpreterExecutionEngine(options);
   return engine.step(options);
 }
-
