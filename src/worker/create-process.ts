@@ -20,6 +20,7 @@ import {
   resolveProcessCwdIno,
 } from "./process-fs.js";
 import type { KernelWorkerFileLayerEntry } from "../messages.js";
+import type { GuestWriteWatchRegion } from "../messages.js";
 import { createKernelShareGroup } from "./kernel-share.js";
 import {
   alignUp,
@@ -52,9 +53,70 @@ import { FS_RING_TOTAL_BYTES } from "../layout/fs-ring.js";
 
 const DEFAULT_PROCESS_STACK_SIZE_BYTES = 8 * 1024 * 1024;
 const KERNEL_HEAP_BASE_FALLBACK_BYTES = 12 * 1024 * 1024;
+const DEBUG_GUEST_WRITE_WATCH_ENV = "TIDEMARK_DEBUG_GUEST_WRITE_WATCH";
 
 const encoder = new TextEncoder();
 const WORKER_DEBUG_LOG_ENABLED = false;
+
+function parseDebugAddress(value: string): number | null {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return Math.trunc(parsed);
+}
+
+function parseDebugGuestWriteWatchRegions(raw: string | undefined): GuestWriteWatchRegion[] {
+  if (!raw) {
+    return [];
+  }
+  const regions: GuestWriteWatchRegion[] = [];
+  for (const token of raw.split(/[,\s]+/u)) {
+    if (regions.length >= 2) {
+      break;
+    }
+    const [startRaw, endRaw] = token.split(":");
+    if (startRaw === undefined || endRaw === undefined) {
+      continue;
+    }
+    const start = parseDebugAddress(startRaw);
+    const end = parseDebugAddress(endRaw);
+    if (start === null || end === null || end <= start) {
+      continue;
+    }
+    regions.push({ slot: regions.length, start, end });
+  }
+  return regions;
+}
+
+function readDebugGuestWriteWatchRegions(): GuestWriteWatchRegion[] {
+  const raw = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+    .process?.env?.[DEBUG_GUEST_WRITE_WATCH_ENV];
+  return parseDebugGuestWriteWatchRegions(raw);
+}
+
+function configureInitialGuestWriteWatch(
+  exports: KernelExports,
+  handle: ProcessHandle,
+  regions: readonly GuestWriteWatchRegion[],
+): void {
+  if (regions.length === 0) {
+    return;
+  }
+  handle.guestWriteWatchRegions = regions.map((region) => ({ ...region }));
+  exports.debug_clear_guest_write_watch_trace?.();
+  for (const region of handle.guestWriteWatchRegions) {
+    exports.debug_configure_guest_write_watch?.(
+      region.slot,
+      BigInt(Math.trunc(region.start)),
+      BigInt(Math.trunc(region.end)),
+    );
+  }
+}
 
 function readElfInterpPath(elfData: Uint8Array): string | null {
   if (elfData.length < 64) {
@@ -784,6 +846,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       worker,
       runtimeBridge,
     );
+    configureInitialGuestWriteWatch(exports, handle, readDebugGuestWriteWatchRegions());
     setGuestMemoryPolicyLimit(
       handle.kernel,
       vmPtr,

@@ -55,6 +55,8 @@ type FakeProcessKernel = KernelExports & {
   envPtrs: number[];
   processSetCwdIno: ReturnType<typeof vi.fn>;
   processUsePipeStdio: ReturnType<typeof vi.fn>;
+  debugClearGuestWriteWatchTrace: ReturnType<typeof vi.fn>;
+  debugConfigureGuestWriteWatch: ReturnType<typeof vi.fn>;
   memfsPaths: Map<string, number>;
   callLog: string[];
   externalizedInos: Set<number>;
@@ -67,6 +69,12 @@ function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
   const processSetCwdIno = vi.fn();
   const processUsePipeStdio = vi.fn(() => 0);
   const callLog: string[] = [];
+  const debugClearGuestWriteWatchTrace = vi.fn(() => {
+    callLog.push("debug_clear_guest_write_watch_trace");
+  });
+  const debugConfigureGuestWriteWatch = vi.fn((slot: number, start: bigint, end: bigint) => {
+    callLog.push(`debug_configure_guest_write_watch:${slot}:0x${start.toString(16)}:0x${end.toString(16)}`);
+  });
   const pathToIno = new Map<string, number>([["/", 1]]);
   const inoToPath = new Map<number, string>([[1, "/"]]);
   const inoMode = new Map<number, number>([[1, 0o040755]]);
@@ -180,7 +188,11 @@ function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
     process_guest_base: vi.fn(() => 0x100000),
     process_create_with_memory_policy: vi.fn(() => 0x1234),
     process_create: vi.fn(() => 0x1234),
+    debug_clear_guest_write_watch_trace: debugClearGuestWriteWatchTrace,
+    debug_configure_guest_write_watch: debugConfigureGuestWriteWatch,
     processUsePipeStdio,
+    debugClearGuestWriteWatchTrace,
+    debugConfigureGuestWriteWatch,
     thread_set_guest_memory_policy_limit: vi.fn(),
     process_stdin_pipe: () => 1,
     process_stdout_pipe: () => 2,
@@ -340,6 +352,7 @@ beforeEach(() => {
 afterEach(() => {
   destroyWorkerPool();
   globalThis.Worker = originalWorker;
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
@@ -400,6 +413,54 @@ test("createProcess stages argv/env strings and seeds full memfs for standalone 
     worker: handle.worker,
     vmPtr: 0x1234,
   });
+});
+
+test("createProcess configures debug guest write watch before attaching the worker", async () => {
+  vi.stubEnv("TIDEMARK_DEBUG_GUEST_WRITE_WATCH", "0x1000:0x1020,0x2000:0x2010 0x3000:0x3010");
+  const processHandles = new Map<number, ProcessHandle>();
+  const kernelMemory = new WebAssembly.Memory({ initial: 1024, maximum: 2048, shared: true });
+  const fakeKernel = makeFakeProcessKernel(kernelMemory);
+  vi.spyOn(WebAssembly, "instantiate").mockResolvedValue({
+    exports: fakeKernel,
+  } as unknown as WebAssembly.Instance);
+  const attachThreadWorker = vi.fn(() => {
+    fakeKernel.callLog.push("attachThreadWorker");
+  });
+  const factory = createWorkerProcessFactory({
+    processHandles,
+    attachThreadWorker,
+    assertProcessStandardFdIntegrity: vi.fn(),
+    ensureCompiledModule: async () => ({}) as WebAssembly.Module,
+    getRuntimeFsEntries: () => [],
+    initializeProcessLifecycleViaKernelWorker: vi.fn(async () => {}),
+    registerProcessWithKernelWorker: vi.fn(async () => {}),
+    resolveProcessCwdInoViaKernelWorker: vi.fn(async () => 0),
+    bootstrapMemoryBytes: 64 * 1024 * 1024,
+    wasmPageSize: 65536,
+    wasmMaxPages: 65536,
+  });
+
+  const handle = await factory.createProcess(
+    new Uint8Array([0]),
+    new Uint8Array([0x7f, 0x45, 0x4c, 0x46]),
+    {
+      runtimeId: 7,
+      argv: ["/bin/test"],
+      env: [],
+      preloadEntries: [],
+    },
+  );
+
+  expect(handle.guestWriteWatchRegions).toEqual([
+    { slot: 0, start: 0x1000, end: 0x1020 },
+    { slot: 1, start: 0x2000, end: 0x2010 },
+  ]);
+  expect(fakeKernel.debugClearGuestWriteWatchTrace).toHaveBeenCalledTimes(1);
+  expect(fakeKernel.debugConfigureGuestWriteWatch).toHaveBeenCalledTimes(2);
+  expect(fakeKernel.debugConfigureGuestWriteWatch).toHaveBeenNthCalledWith(1, 0, 0x1000n, 0x1020n);
+  expect(fakeKernel.debugConfigureGuestWriteWatch).toHaveBeenNthCalledWith(2, 1, 0x2000n, 0x2010n);
+  expect(fakeKernel.callLog.indexOf("debug_configure_guest_write_watch:1:0x2000:0x2010"))
+    .toBeLessThan(fakeKernel.callLog.indexOf("attachThreadWorker"));
 });
 
 test("createProcess uses target guest address profile for process memory policy", async () => {
