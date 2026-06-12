@@ -24,6 +24,7 @@ function makeKernelExports(
     abi_fd_type_pipe: () => 2,
     abi_fd_type_epoll: () => 3,
     abi_fd_type_socket: () => 4,
+    abi_fd_type_eventfd: () => 9,
     abi_sys_read: () => 63n,
     abi_sys_openat: () => 56n,
     abi_sys_write: () => 64n,
@@ -100,6 +101,23 @@ test("readCompletedSyncEffects does not treat stream I/O as fork-shared mutation
         | SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE,
     );
   }
+});
+
+test("readCompletedSyncEffects preserves eventfd readiness sync when thread effects are empty", () => {
+  const exports = {
+    ...makeKernelExports(64n, 9),
+    thread_take_completed_sync_effects: vi.fn(() => 0),
+  };
+  const syscallNumbers = loadSyscallNumbers(exports);
+
+  expect(readCompletedSyncEffects(
+    exports,
+    statusCodes,
+    statusCodes.OK,
+    syscallNumbers,
+    0x1234,
+  )).toBe(SYNC_EFFECT_EPOLL_STATE | SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE);
+  expect(exports.thread_take_completed_sync_effects).toHaveBeenCalledWith(0x1234);
 });
 
 test("readCompletedSyncEffects marks mutating fcntl/ioctl as fd-state sync without process MemFS sync", () => {

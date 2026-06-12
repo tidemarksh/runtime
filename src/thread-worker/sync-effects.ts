@@ -118,6 +118,15 @@ function latestFdTraceType(exports: KernelExports, syscallNr: bigint): number {
   return readLatestFdTrace(exports, syscallNr)?.arg0OfdType ?? 0;
 }
 
+function fdTraceTypeMatches(
+  exports: KernelExports,
+  syscallNr: bigint,
+  fdType: (() => number) | undefined,
+): boolean {
+  const expected = fdType?.();
+  return expected !== undefined && latestFdTraceType(exports, syscallNr) === expected;
+}
+
 function latestFdTraceFailed(exports: KernelExports, syscallNr: bigint): boolean {
   const result = readLatestFdTrace(exports, syscallNr)?.result;
   return result !== null && result !== undefined && BigInt.asIntN(64, result) < 0n;
@@ -278,6 +287,11 @@ export function readCompletedSyncEffects(
           return regularFileEffects | SYNC_EFFECT_FORK_SHARED_OFD_STATE | SYNC_EFFECT_PROCESS_MEMFS;
         }
         return regularFileEffects | SYNC_EFFECT_FORK_SHARED_OFD_STATE;
+      }
+      if (fdTraceTypeMatches(exports, syscallNr, exports.abi_fd_type_eventfd)) {
+        return completedEffects
+          | SYNC_EFFECT_EPOLL_STATE
+          | SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE;
       }
       return completedEffects;
     }
