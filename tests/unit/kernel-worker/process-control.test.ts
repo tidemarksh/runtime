@@ -757,6 +757,173 @@ test("processFs demand-fills source-backed mmap ranges before processing fs", as
   expect(processExports.opLog).toEqual(["restore-published-data", "process-fs", "resume-fs"]);
 });
 
+test("processFs rejects mmap backing fills that cannot keep requested pages resident", async () => {
+  const canonicalExports = makeKernelExports();
+  const mappedBytes = Uint8Array.from([0xaa, 0xbb, 0xcc, 0xdd]);
+  const processExports = makeKernelExports({
+    fdEntries: [{ fd: 5, ofdId: 7 }],
+    mmapRequest: {
+      fd: 5,
+      offset: 0,
+      length: 8192,
+      ino: 24,
+      size: 8192,
+      guestPtrHint: 0,
+      resultGuestPtr: 0x8000,
+      bytes: mappedBytes,
+    },
+  });
+  const processKernels = new Map<number, KernelExports>([[7, processExports]]);
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + DEFAULT_RESIDENT_PAGE_SIZE + 40);
+  const backing = Uint8Array.from({ length: 8192 }, (_value, index) => index & 0xff);
+  const restorePublishedRegularFileDataFromPageCache = vi.fn();
+  publishInode(sab, 24, {
+    mode: 0o100644,
+    size: backing.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("mapped-small-cache"),
+    nextSibling: 0,
+    fileObjectId: 24,
+    generation: 1,
+  });
+
+  const processControl = createKernelWorkerProcessControl({
+    getCanonicalExports: () => canonicalExports,
+    setCanonicalExports: () => {},
+    getWasmModule: () => null,
+    setWasmModule: () => {},
+    getSabPageCache: () => sab,
+    setSabPageCache: () => {},
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    canonicalProcesses: new Map(),
+    seedEntries: new Map(),
+    getCanonicalNextPid: () => 3,
+    setCanonicalNextPid: () => {},
+    publishRootInode: () => {},
+    copyOfdState: () => {},
+    copyMemfsState: () => {},
+    rebuildPageCacheFromExports: () => {},
+    rebuildPageCacheFromCanonical: () => {},
+    syncPipeState: (_pid, kernelState) => kernelState,
+    syncEpollState: (_pid, kernelState) => kernelState,
+    syncSocketState: (_pid, kernelState) => kernelState,
+    copyCanonicalMemfsToProcess: () => {},
+    snapshotProcSelfExe: () => null,
+    restoreProcSelfExe: () => {},
+    composeProcessPipeUsed: () => 0n,
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    mergePipeSlotsFromCanonical: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+    }),
+    applyPipeControlState: () => {},
+    copyEpollState: () => {},
+    copySelectedEpollState: () => {},
+    copySocketState: () => {},
+    syncFileDataMutation: () => false,
+    syncFileDataMutationByPath: () => false,
+    syncMetadataMutation: () => false,
+    readBackingFileRangeByInode: (_ino, offset, length) => backing.subarray(offset, offset + length),
+    ensureBackingSourceRangeForInode: async () => true,
+    restorePublishedRegularFileDataFromPageCache,
+    fanoutCanonicalMemfs: () => {},
+    fsEffectMemfsMutation: 1 << 0,
+    fsEffectSharedOfdState: 1 << 1,
+    fsEffectMemfsFileData: 1 << 2,
+    fsOpOpenAt: 3,
+    fsOpMkdir: 6,
+    fsOpUnlink: 7,
+  });
+
+  await expect(processControl.processFs(7, 0x1234, makeKernelState())).rejects.toThrow(
+    "failed to publish backing range: ino=24:off=0:len=8192:expected=8192",
+  );
+  expect(restorePublishedRegularFileDataFromPageCache).not.toHaveBeenCalled();
+  expect(processExports.opLog).toEqual([]);
+});
+
+test("processFs fails explicitly when backing source progress cannot satisfy a read fill", async () => {
+  const canonicalExports = makeKernelExports();
+  const processExports = makeKernelExports({
+    resumeResult: 16,
+    fdEntries: [{ fd: 5, ofdId: 7 }],
+    readRequest: { fd: 5, offset: 32, length: 16, ino: 25, size: 128, pwrite: true },
+  });
+  const processKernels = new Map<number, KernelExports>([[7, processExports]]);
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 8192);
+  const ensureBackingSourceRangeForInode = vi.fn(async () => false);
+  publishInode(sab, 25, {
+    mode: 0o100644,
+    size: 128,
+    parentIno: 1,
+    name: new TextEncoder().encode("missing-source"),
+    nextSibling: 0,
+    fileObjectId: 25,
+    generation: 1,
+  });
+
+  const processControl = createKernelWorkerProcessControl({
+    getCanonicalExports: () => canonicalExports,
+    setCanonicalExports: () => {},
+    getWasmModule: () => null,
+    setWasmModule: () => {},
+    getSabPageCache: () => sab,
+    setSabPageCache: () => {},
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    canonicalProcesses: new Map(),
+    seedEntries: new Map(),
+    getCanonicalNextPid: () => 3,
+    setCanonicalNextPid: () => {},
+    publishRootInode: () => {},
+    copyOfdState: () => {},
+    copyMemfsState: () => {},
+    rebuildPageCacheFromExports: () => {},
+    rebuildPageCacheFromCanonical: () => {},
+    syncPipeState: (_pid, kernelState) => kernelState,
+    syncEpollState: (_pid, kernelState) => kernelState,
+    syncSocketState: (_pid, kernelState) => kernelState,
+    copyCanonicalMemfsToProcess: () => {},
+    snapshotProcSelfExe: () => null,
+    restoreProcSelfExe: () => {},
+    composeProcessPipeUsed: () => 0n,
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    mergePipeSlotsFromCanonical: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+    }),
+    applyPipeControlState: () => {},
+    copyEpollState: () => {},
+    copySelectedEpollState: () => {},
+    copySocketState: () => {},
+    syncFileDataMutation: () => false,
+    syncFileDataMutationByPath: () => false,
+    syncMetadataMutation: () => false,
+    readBackingFileRangeByInode: () => null,
+    ensureBackingSourceRangeForInode,
+    fanoutCanonicalMemfs: () => {},
+    fsEffectMemfsMutation: 1 << 0,
+    fsEffectSharedOfdState: 1 << 1,
+    fsEffectMemfsFileData: 1 << 2,
+    fsOpOpenAt: 3,
+    fsOpMkdir: 6,
+    fsOpUnlink: 7,
+  });
+
+  await expect(processControl.processFs(7, 0x1234, makeKernelState())).rejects.toThrow(
+    "failed to publish backing range: ino=25:off=32:len=16:expected=128",
+  );
+  expect(ensureBackingSourceRangeForInode).toHaveBeenCalledWith(25, 0, 128, 128);
+  expect(processExports.opLog).toEqual([]);
+});
+
 test("processFs skips full resident-page publication for large directly-readable mmap ranges", async () => {
   const canonicalExports = makeKernelExports();
   const mappedBytes = Uint8Array.from([0x11, 0x22, 0x33, 0x44]);
@@ -1240,14 +1407,29 @@ test("processFs materializes source-backed files before processing writes", asyn
     writeRequest: { fd: 5, offset: 32, length: 7, ino: 11, size: 128, pwrite: true },
   });
   const processKernels = new Map<number, KernelExports>([[7, processExports]]);
-  const ensureBackingSourceRangeForInode = vi.fn(async () => true);
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 8192);
+  const backing = Uint8Array.from({ length: 128 }, (_value, index) => 0x30 + index);
+  let backingReady = false;
+  const ensureBackingSourceRangeForInode = vi.fn(async () => {
+    backingReady = true;
+    return true;
+  });
+  publishInode(sab, 11, {
+    mode: 0o100644,
+    size: backing.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("write-source"),
+    nextSibling: 0,
+    fileObjectId: 11,
+    generation: 1,
+  });
 
   const processControl = createKernelWorkerProcessControl({
     getCanonicalExports: () => canonicalExports,
     setCanonicalExports: () => {},
     getWasmModule: () => null,
     setWasmModule: () => {},
-    getSabPageCache: () => new SharedArrayBuffer(65536),
+    getSabPageCache: () => sab,
     setSabPageCache: () => {},
     processKernels,
     lastProcessPipeSlotModes: new Map(),
@@ -1282,7 +1464,9 @@ test("processFs materializes source-backed files before processing writes", asyn
     syncFileDataMutation: () => true,
     syncFileDataMutationByPath: () => false,
     syncMetadataMutation: () => false,
-    readBackingFileRangeByInode: () => null,
+    readBackingFileRangeByInode: (_ino, offset, length) => (
+      backingReady ? backing.subarray(offset, offset + length) : null
+    ),
     ensureBackingSourceRangeForInode,
     fanoutCanonicalMemfs: () => {},
     fsEffectMemfsMutation: 1 << 0,
@@ -1385,6 +1569,8 @@ test("processFs returns mmap guest memory populated by kernel-worker fs processi
     },
   });
   const processKernels = new Map<number, KernelExports>([[7, processExports]]);
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 8192);
+  const backing = Uint8Array.from(mappedBytes);
   const restorePublishedRegularFileDataFromPageCache = vi.fn();
   const restorePublishedRegularFileDataForInode = vi.fn((ino: number, targetExports?: KernelExports) => {
     expect(ino).toBe(12);
@@ -1392,13 +1578,22 @@ test("processFs returns mmap guest memory populated by kernel-worker fs processi
     processExports.opLog.push("restore-published-data");
     return true;
   });
+  publishInode(sab, 12, {
+    mode: 0o100644,
+    size: backing.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("mapped-result"),
+    nextSibling: 0,
+    fileObjectId: 12,
+    generation: 1,
+  });
 
   const processControl = createKernelWorkerProcessControl({
     getCanonicalExports: () => canonicalExports,
     setCanonicalExports: () => {},
     getWasmModule: () => null,
     setWasmModule: () => {},
-    getSabPageCache: () => new SharedArrayBuffer(65536),
+    getSabPageCache: () => sab,
     setSabPageCache: () => {},
     processKernels,
     lastProcessPipeSlotModes: new Map(),
@@ -1435,7 +1630,7 @@ test("processFs returns mmap guest memory populated by kernel-worker fs processi
     syncFileDataMutation: () => false,
     syncFileDataMutationByPath: () => false,
     syncMetadataMutation: () => false,
-    readBackingFileRangeByInode: () => null,
+    readBackingFileRangeByInode: (_ino, offset, length) => backing.subarray(offset, offset + length),
     fanoutCanonicalMemfs: () => {},
     fsEffectMemfsMutation: 1 << 0,
     fsEffectSharedOfdState: 1 << 1,

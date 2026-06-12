@@ -416,6 +416,58 @@ test("page-cache write publishes dirty resident data without updating backing da
   expect(env.tidemark_page_cache_read(2, 40n, 512, 1)).toBe(0n);
 });
 
+test("page-cache capacity pressure preserves dirty resident pages", () => {
+  const sab = new SharedArrayBuffer(
+    DATA_REGION_OFFSET + 2 * (DEFAULT_RESIDENT_PAGE_SIZE + RESIDENT_PAGE_RECORD_BYTES),
+  );
+  const dirty = new TextEncoder().encode("dirty-canonical-page");
+  const clean = new TextEncoder().encode("clean-backed-page");
+  const refill = new TextEncoder().encode("refill-backed-page");
+
+  publishInode(sab, 2, {
+    mode: 0o100644,
+    size: dirty.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("dirty"),
+    nextSibling: 0,
+    fileObjectId: 22,
+    generation: 1,
+  });
+  publishInode(sab, 3, {
+    mode: 0o100644,
+    size: clean.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("clean"),
+    nextSibling: 0,
+    fileObjectId: 33,
+    generation: 1,
+  });
+  publishInode(sab, 4, {
+    mode: 0o100644,
+    size: refill.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("refill"),
+    nextSibling: 0,
+    fileObjectId: 44,
+    generation: 1,
+  });
+
+  expect(publishResidentPage(sab, 2, 0, dirty, { dirty: true })).toBe(true);
+  expect(publishResidentPage(sab, 3, 0, clean)).toBe(true);
+  expect(debugResidentPageCountForInode(sab, 2)).toBe(1);
+  expect(debugResidentPageCountForInode(sab, 3)).toBe(1);
+
+  expect(publishResidentPage(sab, 4, 0, refill)).toBe(true);
+
+  expect(debugResidentPageCountForInode(sab, 2)).toBe(1);
+  expect(readResidentFileData(sab, 2, 0, dirty.length)).toEqual(dirty);
+  expect(evictResidentPage(sab, 2, 0)).toBe("dirty-pinned");
+  expect(debugResidentPageCountForInode(sab, 3)).toBe(0);
+  expect(readResidentFileData(sab, 3, 0, clean.length)).toBeNull();
+  expect(debugResidentPageCountForInode(sab, 4)).toBe(1);
+  expect(readResidentFileData(sab, 4, 0, refill.length)).toEqual(refill);
+});
+
 test("publishInode preserves dirty residents across metadata-only updates", () => {
   const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 8192);
   const initial = new TextEncoder().encode("abcdef");

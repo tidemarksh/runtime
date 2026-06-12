@@ -523,12 +523,15 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     }
     let alignedRange = deps.readBackingFileRangeByInode(request.ino, alignedOffset, alignedLength);
     if (alignedRange === null) {
-      await deps.ensureBackingSourceRangeForInode?.(
+      const ensured = await deps.ensureBackingSourceRangeForInode?.(
         request.ino,
         alignedOffset,
         alignedLength,
         request.expectedSize,
       );
+      if (ensured === false) {
+        return false;
+      }
       alignedRange = deps.readBackingFileRangeByInode(request.ino, alignedOffset, alignedLength);
     }
     if (alignedRange === null) {
@@ -545,7 +548,12 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       if (page.length !== pageLen) {
         return false;
       }
-      publishResidentPage(sab, request.ino, pageStart / DEFAULT_RESIDENT_PAGE_SIZE, page);
+      if (!publishResidentPage(sab, request.ino, pageStart / DEFAULT_RESIDENT_PAGE_SIZE, page)) {
+        return false;
+      }
+    }
+    if (readResidentFileData(sab, request.ino, request.offset, request.length) === null) {
+      return false;
     }
     return true;
   }
@@ -556,7 +564,10 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
   ): Promise<void> {
     const request = readPendingBackingFillRequest(processExports, vmPtr);
     if (request) {
-      await publishBackingRange(request);
+      const published = await publishBackingRange(request);
+      if (!published) {
+        throw new Error(`failed to publish backing range: ${formatBackingFillDebug(request)}`);
+      }
     }
   }
 
