@@ -1006,7 +1006,7 @@ test("plain fork spawn path records child exit and resumes parent replacement wo
       type: "step",
       budget: 20_000,
       kernelState: {
-        ...makeKernelState(),
+        ...parent.kernelState,
         heapPtr: makeKernelState().heapPtr + 0x80,
         pipeUsed: 15n,
       },
