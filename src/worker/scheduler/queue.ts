@@ -5,14 +5,19 @@ import {
 } from "../../bridge/compat.js";
 import { publishRuntimeBridgeEpoch } from "../../bridge/runtime-state.js";
 import { createReadyWorkerFairness } from "./fairness.js";
-import { createFutexReconciliation } from "./futex.js";
+import { clearStaleFutexRecordIfResolved, createFutexReconciliation, threadHasCanonicalFutexBlock } from "./futex.js";
 import { clearStaleForkSharedSyncGate } from "./fork-shared-gate.js";
 import type {
   AttachThreadWorkerRequest,
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
-import type { ThreadWorkerOutbound } from "../../messages.js";
+import type {
+  KernelWorkerFdEntrySnapshot,
+  KernelWorkerOfdSlotSnapshot,
+  ThreadWorkerOutbound,
+} from "../../messages.js";
+import { collectLiveThreadVmPtrs } from "../live-threads.js";
 import { kernelStackSlotForWorker } from "../pool.js";
 import { snapshotProcessFdEntriesForThread } from "../ownership/fd-table.js";
 import {
@@ -31,6 +36,7 @@ import type {
 
 const DEFAULT_NODE_SCHEDULER_STEP_BUDGET = 5_000_000;
 const DEFAULT_BROWSER_SCHEDULER_STEP_BUDGET = 10_000;
+const CONTENDED_SCHEDULER_STEP_BUDGET = 100_000;
 const MIN_SCHEDULER_STEP_BUDGET = 1_000;
 const MAX_SCHEDULER_STEP_BUDGET = 5_000_000;
 const SCHEDULER_STEP_BUDGET = readSchedulerStepBudget();
@@ -81,8 +87,10 @@ function formatChildExitRecords(
 
 interface WorkerSchedulerQueueDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
+  appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
+  completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number, exitVmPtr?: number): Promise<void>;
   failProcess(handle: ProcessHandle, error: Error): void;
   handleWorkerMessage(handle: ProcessHandle, worker: Worker, msg: ThreadWorkerOutbound): void;
 }
@@ -108,11 +116,24 @@ function formatStepDebugSuffix(handle: ProcessHandle, vmPtr: number): string {
   const sp = handle.kernel.thread_sp?.(vmPtr);
   if (sp !== undefined) {
     parts.push(`sp=0x${sp.toString(16)}`);
+    for (const byteOffset of [32, 24, 16, 8]) {
+      const stackWord = handle.kernel.thread_stack_minus?.(vmPtr, byteOffset);
+      if (stackWord !== undefined) {
+        parts.push(`stkm${byteOffset}=0x${stackWord.toString(16)}`);
+      }
+    }
   }
   for (let index = 0; index <= 32; index += 1) {
     const stackWord = handle.kernel.thread_stack_word?.(vmPtr, index);
     if (stackWord !== undefined) {
       parts.push(`stk${index}=0x${stackWord.toString(16)}`);
+    }
+  }
+  for (const byteOffset of [8, 40, 56, 88]) {
+    const wordIndex = byteOffset / 8;
+    const stackWord = handle.kernel.thread_stack_word?.(vmPtr, wordIndex);
+    if (stackWord !== undefined) {
+      parts.push(`slot${byteOffset}=0x${stackWord.toString(16)}`);
     }
   }
   const a0 = handle.kernel.thread_a0?.(vmPtr);
@@ -152,11 +173,114 @@ function formatStepDebugSuffix(handle: ProcessHandle, vmPtr: number): string {
   return parts.length > 0 ? `:${parts.join(":")}` : "";
 }
 
+function tryFormatOfdType(handle: ProcessHandle, ofdId: number): string {
+  try {
+    const fdType = handle.kernel.kernel_ofd_fd_type(ofdId);
+    if (fdType === handle.kernel.abi_fd_type_file?.()) {
+      return "file";
+    }
+    if (fdType === handle.kernel.abi_fd_type_pipe?.()) {
+      return "pipe";
+    }
+    if (fdType === handle.kernel.abi_fd_type_epoll?.()) {
+      return "epoll";
+    }
+    if (fdType === handle.kernel.abi_fd_type_eventfd?.()) {
+      return "eventfd";
+    }
+    if (fdType === handle.kernel.abi_fd_type_socket?.()) {
+      return "socket";
+    }
+    return String(fdType);
+  } catch {
+    return "err";
+  }
+}
+
+function formatStepFdSnapshot(
+  handle: ProcessHandle,
+  vmPtr: number | undefined,
+  fdEntries: readonly KernelWorkerFdEntrySnapshot[] | undefined,
+  ofdSlots: readonly KernelWorkerOfdSlotSnapshot[] | undefined,
+): string {
+  if (vmPtr === undefined || vmPtr === 0 || fdEntries === undefined) {
+    return "fds=none";
+  }
+  const focusFds = new Set([9, 10, 11, 12]);
+  const selectedFdEntries = fdEntries.filter((entry) => entry.ofdId !== 0 || focusFds.has(entry.fd));
+  const fdSummary = selectedFdEntries
+    .slice(0, 24)
+    .map((entry) => {
+      if (entry.ofdId === 0) {
+        return `${entry.fd}=0`;
+      }
+      let ino = "err";
+      let refcount = "err";
+      try {
+        ino = String(handle.kernel.kernel_ofd_ino(entry.ofdId));
+      } catch {
+        // The diagnostic must survive older or partial harness exports.
+      }
+      try {
+        refcount = String(handle.kernel.kernel_ofd_refcount(entry.ofdId));
+      } catch {
+        // The diagnostic must survive older or partial harness exports.
+      }
+      return `${entry.fd}=${entry.ofdId}/${tryFormatOfdType(handle, entry.ofdId)}/ino${ino}/ref${refcount}/fl${entry.fdFlags}`;
+    });
+  if (selectedFdEntries.length > 24) {
+    fdSummary.push(`more=${selectedFdEntries.length - 24}`);
+  }
+  const ofdSlotIds = ofdSlots?.map((slot) => slot.ofdId).sort((left, right) => left - right) ?? [];
+  return `fds=${fdSummary.join(",") || "empty"}:ofdSlots=${ofdSlotIds.join(",") || "none"}`;
+}
+
 function hasBrokenThreadState(handle: ProcessHandle, vmPtr: number): boolean {
   const pc = handle.kernel.thread_pc?.(vmPtr) ?? 0n;
   const sp = handle.kernel.thread_sp?.(vmPtr) ?? 0n;
   const s11 = handle.kernel.thread_s11?.(vmPtr) ?? 0n;
   return pc < 0x1000n || sp === 0n || s11 === 0n;
+}
+
+function futexWordIndex(handle: ProcessHandle, guestAddr: bigint): number | null {
+  const guestBase = handle.guestBase;
+  if (guestBase < 0 || !Number.isSafeInteger(guestBase)) {
+    return null;
+  }
+  const absolute = BigInt(guestBase) + guestAddr;
+  if (absolute < 0n || (absolute & 3n) !== 0n) {
+    return null;
+  }
+  const index = absolute >> 2n;
+  if (index > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return null;
+  }
+  const numericIndex = Number(index);
+  const words = new Int32Array(handle.memory.buffer);
+  return numericIndex >= 0 && numericIndex < words.length ? numericIndex : null;
+}
+
+function recoverBlockedFutexRecordResult(handle: ProcessHandle, vmPtr: number, blockedAddr: bigint): bigint | null {
+  if (blockedAddr === 0n) {
+    return 0n;
+  }
+  const futexWaitAddr = handle.kernel.thread_futex_wait_addr?.(vmPtr) ?? 0n;
+  if (futexWaitAddr === 0n) {
+    return null;
+  }
+  const expected = handle.kernel.thread_futex_wait_expected?.(vmPtr);
+  if (expected === undefined) {
+    return null;
+  }
+  const index = futexWordIndex(handle, futexWaitAddr);
+  if (index === null) {
+    return null;
+  }
+  const current = Atomics.load(new Int32Array(handle.memory.buffer), index);
+  if (current === (expected | 0)) {
+    return null;
+  }
+  return BigInt(handle.kernel.abi_eagain?.() ?? 11);
 }
 
 function appendSchedulerQueueDebugLog(
@@ -206,6 +330,15 @@ function clearBlockedWorker(handle: ProcessHandle, worker: Worker): void {
   handle.blockedWorkers.delete(worker);
 }
 
+function readyWorkerHasBlockedRpcContinuation(thread: ThreadWorkerState | undefined): boolean {
+  return thread !== undefined
+    && (
+      thread.resumeBlockedOnNextStep
+      || thread.pendingPipeSlotsForNextStep.length > 0
+      || thread.pendingGuestMemoryWrites.length > 0
+    );
+}
+
 function statusBlocksInOwnerScheduler(handle: ProcessHandle, status: number): boolean {
   return status === handle.kernel.abi_status_epoll_wait()
     || status === handle.kernel.abi_status_fs()
@@ -213,6 +346,143 @@ function statusBlocksInOwnerScheduler(handle: ProcessHandle, status: number): bo
     || status === handle.kernel.abi_status_pipe_wait()
     || status === handle.kernel.abi_status_wait4()
     || status === handle.kernel.abi_status_flock_wait();
+}
+
+function faultExitVmPriority(handle: ProcessHandle, vmPtr: number): number {
+  if ((handle.kernel.thread_fault_signal?.(vmPtr) ?? 0) !== 0) {
+    return 4;
+  }
+  if ((handle.kernel.thread_fault_kind?.(vmPtr) ?? 0) !== 0) {
+    return 3;
+  }
+  if (
+    (handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n) !== 0n
+    || (handle.kernel.thread_fault_addr?.(vmPtr) ?? 0n) !== 0n
+  ) {
+    return 2;
+  }
+  if ((handle.kernel.thread_term_signal?.(vmPtr) ?? 0) !== 0) {
+    return 1;
+  }
+  return 0;
+}
+
+function selectFaultExitVmPtr(handle: ProcessHandle, liveVmPtrs: number[]): number {
+  let selectedVmPtr = liveVmPtrs[0]!;
+  let selectedPriority = faultExitVmPriority(handle, selectedVmPtr);
+  for (const vmPtr of liveVmPtrs.slice(1)) {
+    const priority = faultExitVmPriority(handle, vmPtr);
+    if (priority > selectedPriority) {
+      selectedVmPtr = vmPtr;
+      selectedPriority = priority;
+    }
+  }
+  return selectedVmPtr;
+}
+
+function blockedRetryPressureStatus(handle: ProcessHandle, status: number): boolean {
+  return status === handle.kernel.abi_status_epoll_wait()
+    || status === handle.kernel.abi_status_fs()
+    || status === handle.kernel.abi_status_pipe_wait()
+    || status === handle.kernel.abi_status_wait4()
+    || status === handle.kernel.abi_status_flock_wait()
+    || status === handle.kernel.abi_status_connect()
+    || status === handle.kernel.abi_status_socket_recv()
+    || status === handle.kernel.abi_status_socket_send();
+}
+
+function blockedRetryNeedsEmptyRunningSlotStatus(handle: ProcessHandle, status: number): boolean {
+  return status === handle.kernel.abi_status_epoll_wait()
+    || status === handle.kernel.abi_status_fs()
+    || status === handle.kernel.abi_status_pipe_wait()
+    || status === handle.kernel.abi_status_flock_wait()
+    || status === handle.kernel.abi_status_connect()
+    || status === handle.kernel.abi_status_socket_recv()
+    || status === handle.kernel.abi_status_socket_send();
+}
+
+function hasImmediateBlockedRetryPressure(handle: ProcessHandle): boolean {
+  for (const blocked of handle.blockedWorkers.values()) {
+    if (
+      blockedRetryNeedsEmptyRunningSlotStatus(handle, blocked.status)
+      && !blocked.rpcPending
+      && blocked.retryTimer === null
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasBlockedRetryThatPrefersNonSleepReady(handle: ProcessHandle): boolean {
+  for (const blocked of handle.blockedWorkers.values()) {
+    if (blockedRetryNeedsEmptyRunningSlotStatus(handle, blocked.status)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function readyWorkerCanRunUnderImmediateBlockedRetryPressure(
+  handle: ProcessHandle,
+  thread: ThreadWorkerState | undefined,
+): boolean {
+  return readyWorkerHasBlockedRpcContinuation(thread)
+    || (
+      thread !== undefined
+      && thread.lastStatus === handle.kernel.abi_status_futex_wait()
+      && thread.waitingInWorkerStatus === null
+    )
+    || (
+      thread !== undefined
+      && thread.lastStatus === handle.kernel.abi_status_clone_spawn()
+      && thread.waitingInWorkerStatus === null
+      && thread.ownerAsyncStatus === null
+      && thread.pendingGuestMemoryWrites.length === 0
+    )
+    || (
+      thread !== undefined
+      && thread.lastStatus === handle.kernel.abi_status_ok()
+      && thread.waitingInWorkerStatus === null
+      && thread.ownerAsyncStatus === null
+      && thread.pendingGuestMemoryWrites.length === 0
+      && thread.stepCount <= thread.statusCount
+    );
+}
+
+function readyWorkerYielded(thread: ThreadWorkerState | undefined): boolean {
+  return thread?.yieldedReady === true;
+}
+
+function readyWorkerCanUseFullBudgetUnderBlockedRetryPressure(
+  handle: ProcessHandle,
+  thread: ThreadWorkerState | undefined,
+): boolean {
+  return thread !== undefined
+    && (
+      thread.lastStatus === handle.kernel.abi_status_ok()
+      || thread.lastStatus === handle.kernel.abi_status_clone_spawn()
+    )
+    && thread.waitingInWorkerStatus === null
+    && thread.ownerAsyncStatus === null
+    && thread.pendingGuestMemoryWrites.length === 0
+    && !thread.resumeBlockedOnNextStep
+    && thread.pendingPipeSlotsForNextStep.length === 0;
+}
+
+function schedulerStepBudgetForNextStep(
+  handle: ProcessHandle,
+  selectedThread: ThreadWorkerState | undefined,
+): number {
+  for (const blocked of handle.blockedWorkers.values()) {
+    if (blockedRetryPressureStatus(handle, blocked.status)) {
+      if (readyWorkerCanUseFullBudgetUnderBlockedRetryPressure(handle, selectedThread)) {
+        return SCHEDULER_STEP_BUDGET;
+      }
+      return Math.min(SCHEDULER_STEP_BUDGET, CONTENDED_SCHEDULER_STEP_BUDGET);
+    }
+  }
+  return SCHEDULER_STEP_BUDGET;
 }
 
 function incrementBoundedCounter(
@@ -281,13 +551,11 @@ export function createWorkerSchedulerQueueHelpers(
       return false;
     }
     const hasUnansweredStep = thread.stepCount > thread.statusCount;
+    if (hasUnansweredStep) {
+      return false;
+    }
     if (lastStatusAtMs !== null) {
-      if (!hasUnansweredStep) {
-        return Date.now() - Math.max(lastStepAtMs, lastStatusAtMs) >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
-      }
-      if (lastStepAtMs <= lastStatusAtMs) {
-        return Date.now() - lastStatusAtMs >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
-      }
+      return Date.now() - Math.max(lastStepAtMs, lastStatusAtMs) >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
     }
     return Date.now() - lastStepAtMs >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
   }
@@ -363,11 +631,14 @@ export function createWorkerSchedulerQueueHelpers(
         return null;
       }
       const status = handle.kernel.thread_status(thread.vmPtr);
-      if (status === handle.kernel.abi_status_futex_wait()) {
+      if (
+        status === handle.kernel.abi_status_futex_wait()
+        || threadHasCanonicalFutexBlock(handle, thread.vmPtr)
+      ) {
         handle.runningWorker = null;
         thread.runningGeneration = null;
-        thread.waitingInWorkerStatus = status;
-        deps.appendWorkerDebugLog(handle, `running-worker-cleared:futex-wait:0x${thread.vmPtr.toString(16)}`);
+        thread.waitingInWorkerStatus = handle.kernel.abi_status_futex_wait();
+        deps.appendWorkerDebugLog(handle, `running-worker-cleared:futex-wait:0x${thread.vmPtr.toString(16)}:status=${status}`);
         return null;
       }
       if (statusBlocksInOwnerScheduler(handle, status)) {
@@ -413,7 +684,7 @@ export function createWorkerSchedulerQueueHelpers(
         && thread.stepCount > thread.statusCount
         && thread.lastStatusAtMs !== null
         && thread.lastStepAtMs !== null
-        && thread.lastStepAtMs > thread.lastStatusAtMs
+        && thread.lastStepAtMs >= thread.lastStatusAtMs
         && thread.pendingGuestMemoryWrites.length === 0
         && runningWorkerStepAppearsIdle(handle, thread)
       ) {
@@ -457,6 +728,39 @@ export function createWorkerSchedulerQueueHelpers(
     return thread?.waitingInWorkerStatus !== null;
   }
 
+  function parkReadyWorkerStillInCanonicalFutexWait(
+    handle: ProcessHandle,
+    thread: ThreadWorkerState | undefined,
+  ): boolean {
+    if (thread === undefined || thread.waitingInWorkerStatus !== null) {
+      return false;
+    }
+    if (handle.kernel.thread_process_ptr(thread.vmPtr) === 0) {
+      return false;
+    }
+    if (clearStaleFutexRecordIfResolved(handle, thread.vmPtr)) {
+      deps.appendWorkerDebugLog(
+        handle,
+        `ready-worker-stale-futex-record-cleared:0x${thread.vmPtr.toString(16)}`,
+      );
+    }
+    const futexWaitStatus = handle.kernel.abi_status_futex_wait();
+    if (
+      handle.kernel.thread_status(thread.vmPtr) !== futexWaitStatus
+      && !threadHasCanonicalFutexBlock(handle, thread.vmPtr)
+    ) {
+      return false;
+    }
+    thread.waitingInWorkerStatus = futexWaitStatus;
+    thread.waitingInWorkerReconcileDeferred = false;
+    thread.runningGeneration = null;
+    deps.appendWorkerDebugLog(
+      handle,
+      `ready-worker-parked:futex-wait:0x${thread.vmPtr.toString(16)}`,
+    );
+    return true;
+  }
+
   function assertThreadOwnershipInvariant(
     handle: ProcessHandle,
     vmPtr: number,
@@ -475,6 +779,7 @@ export function createWorkerSchedulerQueueHelpers(
   }
 
   function detachTransferredWorker(handle: ProcessHandle, worker: Worker): void {
+    const thread = deps.threadWorkerStates.get(worker);
     clearBlockedWorker(handle, worker);
     removeReadyWorker(handle, worker);
     if (handle.runningWorker === worker) {
@@ -483,6 +788,13 @@ export function createWorkerSchedulerQueueHelpers(
     if (handle.vforkWorker === worker) {
       handle.vforkWorker = null;
     }
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `attach-transfer-detach:${handle.pid}`
+        + `:vm=0x${(thread?.vmPtr ?? 0).toString(16)}`
+        + `:owner=${thread?.ownerPid ?? "none"}`
+        + `:workers=${handle.workers.size}`,
+    );
     handle.workers.delete(worker);
   }
 
@@ -552,6 +864,7 @@ export function createWorkerSchedulerQueueHelpers(
       statusCount: 0,
       statusCounts: {},
       lastStatus: null,
+      recentStatuses: [],
       lastStepAtMs: null,
       lastStatusAtMs: null,
       lastStepProcessPtr: null,
@@ -559,9 +872,12 @@ export function createWorkerSchedulerQueueHelpers(
       lastStepSp: null,
       lastStepS11: null,
       hotStepPcs: {},
+      recentSteps: [],
       lastStatusPc: null,
       lastStatusSp: null,
       lastStatusS11: null,
+      lastStatusFutexWaitAddr: null,
+      lastStatusFutexBlockedAddr: null,
       hotStatusPcs: {},
       initialized: false,
       waitingInWorkerStatus: null,
@@ -582,6 +898,11 @@ export function createWorkerSchedulerQueueHelpers(
         event.error instanceof Error ? (event.error.stack ?? event.error.message) : null,
       ].filter((part): part is string => !!part).join(" ");
       deps.appendWorkerDebugLog(handle, `worker-error:0x${vmPtr.toString(16)}:${JSON.stringify(detail || "unknown worker error")}`);
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `clone-child-worker-error:${handle.pid}:vm=0x${vmPtr.toString(16)}`
+          + `:detail=${JSON.stringify(detail || "unknown worker error")}`,
+      );
       deps.failProcess(handle, new Error(
         `thread worker error vm=0x${vmPtr.toString(16)} ${detail || "unknown worker error"}`,
       ));
@@ -589,6 +910,10 @@ export function createWorkerSchedulerQueueHelpers(
     });
     setWorkerMessageErrorHandler(worker, (event) => {
       deps.appendWorkerDebugLog(handle, `worker-messageerror:0x${vmPtr.toString(16)}`);
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `clone-child-messageerror:${handle.pid}:vm=0x${vmPtr.toString(16)}`,
+      );
       deps.failProcess(handle, new Error(
         `thread worker messageerror vm=0x${vmPtr.toString(16)}`,
       ));
@@ -629,6 +954,12 @@ export function createWorkerSchedulerQueueHelpers(
     if (initChildExitRecords.length > 0) {
       initMessage.childExitRecords = initChildExitRecords;
     }
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `clone-child-init-post:${handle.pid}:vm=0x${vmPtr.toString(16)}`
+        + `:generation=${generation}:force=${forcePrepare ? 1 : 0}`
+        + `:workers=${handle.workers.size}:ready=${handle.readyWorkers.length}`,
+    );
     worker.postMessage(initMessage);
   }
 
@@ -684,6 +1015,66 @@ export function createWorkerSchedulerQueueHelpers(
     pumpProcess(handle);
   }
 
+  function hasFutexRecoveryBlockedSibling(handle: ProcessHandle): boolean {
+    const fsStatus = handle.kernel.abi_status_fs();
+    const pipeWaitStatus = handle.kernel.abi_status_pipe_wait();
+    const epollWaitStatus = handle.kernel.abi_status_epoll_wait();
+    for (const blocked of handle.blockedWorkers.values()) {
+      if (
+        blocked.status === fsStatus
+        || blocked.status === pipeWaitStatus
+        || blocked.status === epollWaitStatus
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function recoverQuiescentWorkerLocalFutexWaiter(handle: ProcessHandle): void {
+    if (
+      handle.runningWorker !== null
+      || handle.readyWorkers.length > 0
+      || !hasFutexRecoveryBlockedSibling(handle)
+    ) {
+      return;
+    }
+    const futexWaitStatus = handle.kernel.abi_status_futex_wait();
+    for (const worker of handle.workers) {
+      if (handle.blockedWorkers.has(worker)) {
+        continue;
+      }
+      const thread = deps.threadWorkerStates.get(worker);
+      const blockedAddr = thread === undefined
+        ? 0n
+        : handle.kernel.thread_record_blocked_addr(thread.vmPtr);
+      const resumeResult = thread === undefined
+        ? null
+        : recoverBlockedFutexRecordResult(handle, thread.vmPtr, blockedAddr);
+      if (
+        thread === undefined
+        || thread.waitingInWorkerStatus !== futexWaitStatus
+        || thread.ownerAsyncStatus !== null
+        || thread.pendingGuestMemoryWrites.length > 0
+        || handle.kernel.thread_process_ptr(thread.vmPtr) === 0
+        || handle.kernel.thread_status(thread.vmPtr) !== futexWaitStatus
+        || resumeResult === null
+      ) {
+        continue;
+      }
+      handle.kernel.thread_resume_futex_wait_result(thread.vmPtr, resumeResult);
+      thread.waitingInWorkerStatus = null;
+      thread.waitingInWorkerReconcileDeferred = false;
+      thread.runningGeneration = null;
+      deps.appendWorkerDebugLog(
+        handle,
+        `futex-quiescent-recover:clear:0x${thread.vmPtr.toString(16)}:result=${resumeResult.toString()}`,
+      );
+      handle.readyWorkers.unshift(worker);
+      return;
+    }
+  }
+
   function recoverRunnableIdleWorkers(handle: ProcessHandle): void {
     const exclusiveWorker = handle.vforkSnapshot !== null ? handle.vforkWorker : null;
     for (const worker of handle.workers) {
@@ -705,6 +1096,15 @@ export function createWorkerSchedulerQueueHelpers(
       ) {
         continue;
       }
+      const currentStatus = handle.kernel.thread_status(thread.vmPtr);
+      if (statusBlocksInOwnerScheduler(handle, currentStatus)) {
+        deps.blockWorker(handle, worker, currentStatus, thread.vmPtr);
+        deps.appendWorkerDebugLog(
+          handle,
+          `idle-worker-blocked:status-${currentStatus}:0x${thread.vmPtr.toString(16)}`,
+        );
+        continue;
+      }
       if (thread.stepCount > thread.statusCount) {
         if (handle.readyWorkers.length > 0 || !staleIdleUnansweredThreadCanRun(handle, thread)) {
           continue;
@@ -713,12 +1113,51 @@ export function createWorkerSchedulerQueueHelpers(
         handle.readyWorkers.push(worker);
         continue;
       }
-      if (handle.kernel.thread_status(thread.vmPtr) !== handle.kernel.abi_status_ok()) {
+      if (currentStatus !== handle.kernel.abi_status_ok()) {
         continue;
       }
       deps.appendWorkerDebugLog(handle, `ready_recover:0x${thread.vmPtr.toString(16)}${formatStepDebugSuffix(handle, thread.vmPtr)}`);
       handle.readyWorkers.push(worker);
     }
+  }
+
+  function completeFaultedProcessWithoutWorkers(handle: ProcessHandle): boolean {
+    if (
+      handle.workers.size !== 0
+      || handle.readyWorkers.length !== 0
+      || handle.runningWorker !== null
+      || handle.blockedWorkers.size !== 0
+    ) {
+      return false;
+    }
+    const liveVmPtrs = [...collectLiveThreadVmPtrs(handle.kernel, handle.vmPtr)];
+    if (liveVmPtrs.length === 0) {
+      return false;
+    }
+    const faultStatus = handle.kernel.abi_status_fault();
+    if (!liveVmPtrs.every((vmPtr) => handle.kernel.thread_status(vmPtr) === faultStatus)) {
+      return false;
+    }
+    const exitVmPtr = selectFaultExitVmPtr(handle, liveVmPtrs);
+    const exitCode = handle.kernel.thread_exit_code(exitVmPtr);
+    const termSignal = handle.kernel.thread_term_signal(exitVmPtr);
+    deps.appendWorkerDebugLog(
+      handle,
+      `complete-exit:no-workers-fault:0x${exitVmPtr.toString(16)}`
+        + `:priority=${faultExitVmPriority(handle, exitVmPtr)}`
+        + `:threads=${liveVmPtrs.length}`,
+    );
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `complete-exit-request:no-workers-fault:${handle.pid}:vm=0x${exitVmPtr.toString(16)}`
+        + `:exit=${exitCode}:${termSignal}`
+        + `:priority=${faultExitVmPriority(handle, exitVmPtr)}`
+        + `:threads=${liveVmPtrs.length}`,
+    );
+    void deps.completeProcessExit(handle, exitCode, termSignal, exitVmPtr).catch((error) => {
+      deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+    });
+    return true;
   }
 
   function pumpProcess(handle: ProcessHandle): void {
@@ -753,7 +1192,11 @@ export function createWorkerSchedulerQueueHelpers(
       return;
     }
     futexReconciliation.reconcileResolvedWorkerLocalWaits(handle);
+    recoverQuiescentWorkerLocalFutexWaiter(handle);
     recoverRunnableIdleWorkers(handle);
+    if (completeFaultedProcessWithoutWorkers(handle)) {
+      return;
+    }
     let next: Worker | undefined;
     if (hasExclusiveVforkWorker(handle)) {
       const index = handle.readyWorkers.indexOf(handle.vforkWorker!);
@@ -765,6 +1208,7 @@ export function createWorkerSchedulerQueueHelpers(
       if (
         (candidateThread?.ownerAsyncStatus ?? null) !== null
         || futexReconciliation.hasWorkerLocalWait(candidateThread)
+        || parkReadyWorkerStillInCanonicalFutexWait(handle, candidateThread)
         || (candidateThread !== undefined && handle.kernel.thread_process_ptr(candidateThread.vmPtr) === 0)
       ) {
         appendSchedulerQueueDebugLog(
@@ -780,46 +1224,111 @@ export function createWorkerSchedulerQueueHelpers(
       }
       next = handle.readyWorkers.splice(index, 1)[0];
     } else {
-      let index = handle.readyWorkers.findIndex((candidate) => {
+      const isRunnableReadyWorker = (candidate: Worker): boolean => {
         const candidateThread = deps.threadWorkerStates.get(candidate);
         return (candidateThread?.ownerAsyncStatus ?? null) === null
           && !futexReconciliation.hasWorkerLocalWait(candidateThread)
+          && !parkReadyWorkerStillInCanonicalFutexWait(handle, candidateThread)
           && (
             candidateThread === undefined
             || handle.kernel.thread_process_ptr(candidateThread.vmPtr) !== 0
           );
+      };
+      const continuationIndex = handle.readyWorkers.findIndex((candidate) => {
+        const candidateThread = deps.threadWorkerStates.get(candidate);
+        return readyWorkerHasBlockedRpcContinuation(candidateThread)
+          && isRunnableReadyWorker(candidate);
       });
-      if (index > 0) {
-        handle.readyWorkers.splice(0, index);
-        index = 0;
-      }
-      if (index === -1) {
-        appendSchedulerQueueDebugLog(deps, handle, `pump-no-runnable-ready:ready=${handle.readyWorkers.length}`);
-        const ownerAsyncReadyWorkers = handle.readyWorkers.filter((candidate) => {
-          const candidateThread = deps.threadWorkerStates.get(candidate);
-          return (candidateThread?.ownerAsyncStatus ?? null) !== null;
-        });
-        handle.readyWorkers.length = 0;
-        for (const candidate of ownerAsyncReadyWorkers) {
-          if (!handle.readyWorkers.includes(candidate)) {
-            handle.readyWorkers.push(candidate);
+      if (continuationIndex !== -1) {
+        next = handle.readyWorkers.splice(continuationIndex, 1)[0];
+      } else {
+        const blockedRetryPressure = hasImmediateBlockedRetryPressure(handle);
+        if (blockedRetryPressure) {
+          const pressureIndex = handle.readyWorkers.findIndex((candidate) => {
+            const candidateThread = deps.threadWorkerStates.get(candidate);
+            return isRunnableReadyWorker(candidate)
+              && readyWorkerCanRunUnderImmediateBlockedRetryPressure(handle, candidateThread);
+          });
+          if (pressureIndex !== -1) {
+            next = handle.readyWorkers.splice(pressureIndex, 1)[0];
+          } else if (handle.readyWorkers.some(isRunnableReadyWorker)) {
+            appendSchedulerQueueDebugLog(
+              deps,
+              handle,
+              `pump-defer-ordinary-ready:ready=${handle.readyWorkers.length}:blocked=${handle.blockedWorkers.size}`,
+            );
+            return;
           }
         }
-        return;
+        if (next === undefined && hasBlockedRetryThatPrefersNonSleepReady(handle)) {
+          const nonSleepIndex = handle.readyWorkers.findIndex((candidate) => {
+            const candidateThread = deps.threadWorkerStates.get(candidate);
+            return isRunnableReadyWorker(candidate)
+              && candidateThread?.lastStatus !== handle.kernel.abi_status_sleep();
+          });
+          if (nonSleepIndex !== -1) {
+            next = handle.readyWorkers.splice(nonSleepIndex, 1)[0];
+          }
+        }
+        if (next === undefined) {
+          let nonYieldIndex = -1;
+          for (let candidateIndex = 0; candidateIndex < handle.readyWorkers.length; candidateIndex += 1) {
+            const candidate = handle.readyWorkers[candidateIndex]!;
+            const candidateThread = deps.threadWorkerStates.get(candidate);
+            if (!isRunnableReadyWorker(candidate)) {
+              continue;
+            }
+            if (!readyWorkerYielded(candidateThread)) {
+              nonYieldIndex = candidateIndex;
+              break;
+            }
+          }
+          if (nonYieldIndex !== -1) {
+            next = handle.readyWorkers.splice(nonYieldIndex, 1)[0];
+            for (let candidateIndex = nonYieldIndex - 1; candidateIndex >= 0; candidateIndex -= 1) {
+              const candidate = handle.readyWorkers[candidateIndex];
+              if (candidate !== undefined && !isRunnableReadyWorker(candidate)) {
+                handle.readyWorkers.splice(candidateIndex, 1);
+              }
+            }
+          }
+        }
+        let index = next === undefined ? handle.readyWorkers.findIndex(isRunnableReadyWorker) : -2;
+        if (index > 0) {
+          handle.readyWorkers.splice(0, index);
+          index = 0;
+        }
+        if (index === -1) {
+          appendSchedulerQueueDebugLog(deps, handle, `pump-no-runnable-ready:ready=${handle.readyWorkers.length}`);
+          const ownerAsyncReadyWorkers = handle.readyWorkers.filter((candidate) => {
+            const candidateThread = deps.threadWorkerStates.get(candidate);
+            return (candidateThread?.ownerAsyncStatus ?? null) !== null;
+          });
+          handle.readyWorkers.length = 0;
+          for (const candidate of ownerAsyncReadyWorkers) {
+            if (!handle.readyWorkers.includes(candidate)) {
+              handle.readyWorkers.push(candidate);
+            }
+          }
+          return;
+        }
+        if (index >= 0) {
+          next = handle.readyWorkers.splice(index, 1)[0];
+        }
       }
-      next = handle.readyWorkers.splice(index, 1)[0];
     }
     if (!next) {
       return;
     }
     handle.runningWorker = next;
+    const thread = deps.threadWorkerStates.get(next);
+    const stepBudget = schedulerStepBudgetForNextStep(handle, thread);
     if (handle.readyWorkers.length > 0) {
       readyWorkerFairness.scheduleRunningWorkerRepairRetry(handle);
     } else {
       readyWorkerFairness.scheduleRunningWorkerYieldRetry(handle);
     }
-    const vmPtr = deps.threadWorkerStates.get(next)?.vmPtr;
-    const thread = deps.threadWorkerStates.get(next);
+    const vmPtr = thread?.vmPtr;
     if (thread && vmPtr !== undefined) {
       appendSchedulerQueueDebugLog(
         deps,
@@ -829,14 +1338,25 @@ export function createWorkerSchedulerQueueHelpers(
       restoreRegularFileOffsetsForStep(handle);
       preserveHostStdioPipeControlForStep(handle, vmPtr);
       thread.stepCount += 1;
+      thread.yieldedReady = false;
       thread.runningGeneration = thread.generation;
-      thread.totalStepBudget += SCHEDULER_STEP_BUDGET;
+      thread.totalStepBudget += stepBudget;
       thread.lastStepAtMs = Date.now();
       thread.lastStepProcessPtr = handle.kernel.thread_process_ptr(vmPtr);
       thread.lastStepPc = handle.kernel.thread_pc(vmPtr);
       thread.lastStepSp = handle.kernel.thread_sp(vmPtr);
       thread.lastStepS11 = handle.kernel.thread_s11?.(vmPtr) ?? 0n;
       incrementBoundedCounter(thread.hotStepPcs, `0x${thread.lastStepPc.toString(16)}`);
+      const recentSteps = thread.recentSteps ??= [];
+      recentSteps.push({
+        pc: thread.lastStepPc,
+        sp: thread.lastStepSp,
+        s11: thread.lastStepS11,
+        atMs: thread.lastStepAtMs,
+      });
+      if (recentSteps.length > 16) {
+        recentSteps.splice(0, recentSteps.length - 16);
+      }
       const brokenThreadState = hasBrokenThreadState(handle, vmPtr);
       appendSchedulerQueueDebugLog(deps, handle, `step:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`);
       if (brokenThreadState) {
@@ -854,7 +1374,7 @@ export function createWorkerSchedulerQueueHelpers(
     }
     const stepMessage: ThreadWorkerInbound = {
       type: "step",
-      budget: SCHEDULER_STEP_BUDGET,
+      budget: stepBudget,
       kernelState: pendingKernelState ?? handle.kernelState,
     };
     const stepSocketState = snapshotSocketStateForThread(handle);
@@ -868,6 +1388,11 @@ export function createWorkerSchedulerQueueHelpers(
     if (stepOfdSlots !== undefined) {
       stepMessage.ofdSlots = stepOfdSlots;
     }
+    appendSchedulerQueueDebugLog(
+      deps,
+      handle,
+      `step-fds:0x${(vmPtr ?? 0).toString(16)}:${formatStepFdSnapshot(handle, vmPtr, fdEntries, stepOfdSlots)}`,
+    );
     if (thread?.pendingPipeSlotsForNextStep?.length) {
       stepMessage.pipeSlots = thread.pendingPipeSlotsForNextStep.splice(0);
     }

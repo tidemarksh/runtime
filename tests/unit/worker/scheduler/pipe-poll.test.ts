@@ -7,6 +7,7 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
     pid: 6,
     pendingChildExitRecords: 0,
     pendingChildSpawnRecords: 0,
+    childExitSyncRecords: new Map(),
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     guestBase: 0,
     kernel: {
@@ -30,14 +31,17 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
   } as ProcessHandle;
 }
 
-function makeScheduler(hasActiveChildProcess: (pid: number) => boolean) {
+function makeScheduler(
+  hasActiveChildProcess: (pid: number) => boolean,
+  pipeChildExitRecordsAlreadyResumedForWait = () => true,
+) {
   return createPipePollScheduler({
     threadWorkerStates: new WeakMap(),
     appendRuntimeLifecycleEvent: vi.fn(),
     advanceGuestTimeByMs: vi.fn(),
     handleBlockedRetryResult: vi.fn(),
     scheduleBlockedRetry: vi.fn(),
-    pipeChildExitRecordsAlreadyResumedForWait: vi.fn(() => true),
+    pipeChildExitRecordsAlreadyResumedForWait: vi.fn(pipeChildExitRecordsAlreadyResumedForWait),
     hasActiveChildProcess,
   });
 }
@@ -85,4 +89,98 @@ test("pipe wait stays passive after child-exit resume only while child work rema
     0,
     "child-record",
   )).toBe(true);
+});
+
+test("empty pselect pipe wait stays passive without child work", () => {
+  const scheduler = makeScheduler(() => false);
+  const base = makeHandle();
+  const handle = makeHandle({
+    kernel: {
+      ...base.kernel,
+      abi_sys_pselect6: () => 72n,
+      thread_blocked_syscall_nr: () => 72n,
+      thread_blocked_syscall_arg: () => 0n,
+    } as never,
+  });
+
+  expect(scheduler.pipeWaitShouldRemainPassive(
+    handle,
+    21,
+    0x1234,
+    -1,
+    null,
+    0,
+    "none",
+  )).toBe(true);
+});
+
+test("empty pselect waits for child wake record once before passive parking", () => {
+  const pendingScheduler = makeScheduler(() => false, () => false);
+  const resumedScheduler = makeScheduler(() => false, () => true);
+  const base = makeHandle();
+  const handle = makeHandle({
+    childExitSyncRecords: new Map([[7, 0]]),
+    kernel: {
+      ...base.kernel,
+      abi_sys_pselect6: () => 72n,
+      thread_blocked_syscall_nr: () => 72n,
+      thread_blocked_syscall_arg: () => 0n,
+    } as never,
+  });
+
+  expect(pendingScheduler.pipeWaitShouldRemainPassive(
+    handle,
+    21,
+    0x1234,
+    -1,
+    null,
+    0,
+    "child-record",
+  )).toBe(false);
+
+  expect(resumedScheduler.pipeWaitShouldRemainPassive(
+    handle,
+    21,
+    0x1234,
+    -1,
+    null,
+    0,
+    "child-record",
+  )).toBe(true);
+});
+
+test("pselect with a watched fd does not use empty-set passive parking", () => {
+  const scheduler = makeScheduler(() => false);
+  const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+  const view = new DataView(memory.buffer);
+  view.setUint8(0x20, 1 << 3);
+  const base = makeHandle();
+  const handle = makeHandle({
+    memory,
+    kernel: {
+      ...base.kernel,
+      abi_sys_pselect6: () => 72n,
+      thread_blocked_syscall_nr: () => 72n,
+      thread_blocked_syscall_arg: (_vmPtr: number, index: number) => {
+        switch (index) {
+          case 0:
+            return 8n;
+          case 1:
+            return 0x20n;
+          default:
+            return 0n;
+        }
+      },
+    } as never,
+  });
+
+  expect(scheduler.pipeWaitShouldRemainPassive(
+    handle,
+    21,
+    0x1234,
+    -1,
+    null,
+    0,
+    "none",
+  )).toBe(false);
 });

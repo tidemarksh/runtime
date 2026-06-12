@@ -18,6 +18,20 @@ export interface Wait4Scheduler {
   applyLocalChildExitRecords(handle: ProcessHandle, options?: { force?: boolean }): void;
 }
 
+function formatProcessThreadSlots(handle: ProcessHandle): string {
+  const slots: string[] = [];
+  for (let slot = 0; slot < handle.kernel.abi_max_threads(); slot += 1) {
+    const tid = handle.kernel.process_thread_tid(handle.vmPtr, slot);
+    const state = handle.kernel.process_thread_state(handle.vmPtr, slot);
+    const threadVmPtr = handle.kernel.process_thread_vm_ptr(handle.vmPtr, slot);
+    if (tid === 0 && state === 0 && threadVmPtr === 0) {
+      continue;
+    }
+    slots.push(`${slot}:${tid}/${state}/0x${threadVmPtr.toString(16)}`);
+  }
+  return slots.join(",");
+}
+
 export function createWait4Scheduler(
   deps: Wait4SchedulerDeps,
   appliedChildExitRecordKeys: Map<string, Set<string>>,
@@ -54,6 +68,12 @@ export function createWait4Scheduler(
       handle.runtimeId,
       `wait4-apply-records:${handle.pid}:${recordsKey}`,
     );
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `wait4-apply-records-before:${handle.pid}:${recordsKey}`
+        + `:count=${handle.kernel.thread_process_thread_count(handle.vmPtr)}`
+        + `:threads=[${formatProcessThreadSlots(handle)}]`,
+    );
     for (const [childPid, waitStatus] of handle.childExitSyncRecords) {
       if (handle.kernel.process_record_child_exit_for_parent && handle.pid > 0) {
         handle.kernel.process_record_child_exit_for_parent(handle.pid, childPid, waitStatus);
@@ -61,6 +81,12 @@ export function createWait4Scheduler(
         handle.kernel.process_record_child_exit(childPid, waitStatus);
       }
     }
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `wait4-apply-records-after:${handle.pid}:${recordsKey}`
+        + `:count=${handle.kernel.thread_process_thread_count(handle.vmPtr)}`
+        + `:threads=[${formatProcessThreadSlots(handle)}]`,
+    );
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     markChildExitRecordsApplied(handle, recordsKey);
   }

@@ -124,6 +124,7 @@ function makeHandle(overrides: Record<string, unknown> = {}) {
       abi_status_socket_send: () => 29,
       abi_fd_type_file: () => 1,
       abi_fd_type_pipe: () => 6,
+      abi_fd_type_epoll: () => 7,
       process_current_pid: () => (overrides.pid as number | undefined) ?? 1,
       process_fd_ofd_id: () => 0,
       process_fd_flags: () => 0,
@@ -237,6 +238,121 @@ test("requestSocketStateSync wakes socket-backed poll and epoll waiters", async 
   expect(retryBlockedWorker).toHaveBeenCalledWith(handle, epollWorker);
   expect(retryBlockedWorker).toHaveBeenCalledWith(handle, recvWorker);
   expect(handle.blockedWorkers.get(pipeWorker)?.pipeSyncedBeforePassive).toBe(false);
+});
+
+test("requestSocketStateSync skips rpc-pending epoll waiters during waking sync", async () => {
+  const retryBlockedWorker = vi.fn();
+  const handle = makeHandle({
+    pid: 1,
+    kernelWorkerRequest: vi.fn(async (msg) => {
+      expect(msg.type).toBe("sync-socket-state");
+      return {
+        type: "socket-state-synced",
+        requestId: 0,
+        kernelState: {
+          ...msg.kernelState,
+          socketUsed: 3,
+          netBufUsed: 5n,
+        },
+      };
+    }),
+  });
+  handle.kernelShare.members.add(handle);
+  const epollWorker = {} as Worker;
+  handle.blockedWorkers.set(epollWorker, {
+    status: handle.kernel.abi_status_epoll_wait(),
+    rpcPending: true,
+    rpcGeneration: 7,
+  } as never);
+
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent: () => {},
+    drainProcessOutput: vi.fn(() => false),
+    drainHiddenProcessOutput: vi.fn(() => false),
+    threadWorkerStates: new WeakMap(),
+    retryBlockedWorker,
+  });
+
+  await helpers.requestSocketStateSync(handle, true);
+
+  expect(handle.kernelState.socketUsed).toBe(3);
+  expect(handle.kernelState.netBufUsed).toBe(5n);
+  expect(retryBlockedWorker).not.toHaveBeenCalledWith(handle, epollWorker);
+});
+
+test("requestPipeStateSync skips rpc-pending pipe waiters during waking sync", async () => {
+  const retryBlockedWorker = vi.fn();
+  const handle = makeHandle();
+  handle.kernelShare.members.add(handle);
+  const pipeWorker = {} as Worker;
+  handle.blockedWorkers.set(pipeWorker, {
+    status: handle.kernel.abi_status_pipe_wait(),
+    rpcPending: true,
+    rpcGeneration: 7,
+    pipeSyncedBeforePassive: true,
+  } as never);
+
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent: () => {},
+    drainProcessOutput: vi.fn(() => false),
+    drainHiddenProcessOutput: vi.fn(() => false),
+    threadWorkerStates: new WeakMap(),
+    retryBlockedWorker,
+  });
+
+  await helpers.requestPipeStateSync(handle, true);
+
+  expect(retryBlockedWorker).not.toHaveBeenCalledWith(handle, pipeWorker);
+  expect(handle.blockedWorkers.get(pipeWorker)?.pipeSyncedBeforePassive).toBe(true);
+});
+
+test("requestSocketStateSync applies socket payload state to fork-share members before wake", async () => {
+  const retryBlockedWorker = vi.fn();
+  const socketTable = new Uint8Array(16 * 384);
+  socketTable[4] = 77;
+  const parent = makeHandle({
+    pid: 1,
+    kernelWorkerRequest: vi.fn(async (msg) => {
+      expect(msg.type).toBe("sync-socket-state");
+      return {
+        type: "socket-state-synced",
+        requestId: 0,
+        kernelState: {
+          ...msg.kernelState,
+          socketUsed: 3,
+          netBufUsed: 0n,
+        },
+        socketState: {
+          socketTable,
+          netBufSlots: [],
+          socketUsed: 3,
+          netBufUsed: 0n,
+        },
+      };
+    }),
+  });
+  const child = makeHandle({ pid: 2 });
+  const share = { members: new Set([parent, child]), sharedOfdIds: new Set(), ofdSlotSnapshots: new Map() };
+  parent.kernelShare = share;
+  child.kernelShare = share;
+  const recvWorker = {} as Worker;
+  child.blockedWorkers.set(recvWorker, {
+    status: child.kernel.abi_status_socket_recv(),
+  } as never);
+
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent: () => {},
+    drainProcessOutput: vi.fn(() => false),
+    drainHiddenProcessOutput: vi.fn(() => false),
+    threadWorkerStates: new WeakMap(),
+    retryBlockedWorker,
+  });
+
+  await helpers.requestSocketStateSync(parent, true);
+
+  expect(new Uint8Array(child.memory.buffer)[4]).toBe(77);
+  expect(child.kernelState.socketUsed).toBe(3);
+  expect(retryBlockedWorker).toHaveBeenCalledWith(child, recvWorker);
 });
 
 test("requestSocketStateSync rewrites provisional pid restored by kernel-worker state", async () => {

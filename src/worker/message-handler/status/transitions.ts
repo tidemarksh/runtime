@@ -5,7 +5,7 @@ import {
   releaseWorker,
 } from "../../pool.js";
 import { kernelShareOtherMembers } from "../../kernel-share.js";
-import { processHasLiveThreads } from "../../live-threads.js";
+import { collectLiveThreadVmPtrs, processHasLiveThreads } from "../../live-threads.js";
 import { assertHandleWorkerProcessIdentity } from "../../process-identity.js";
 import { blockedStatusUsesForkSharedStateSync } from "../../sync.js";
 import type {
@@ -27,6 +27,12 @@ import {
 } from "../../ownership/pipe-control.js";
 import { restoreRuntimeNetworkSidecarForHandle } from "../../ownership/socket-control.js";
 import { formatCompactDebugSuffix } from "../../diagnostics/format.js";
+
+const CLONE_SPAWN_DEBUG_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_CLONE_SPAWN_DEBUG ?? "") === "1";
+
+const cloneSpawnAsyncTokens = new WeakMap<ThreadWorkerState, number>();
 
 interface StatusTransitionArgs {
   handle: ProcessHandle;
@@ -70,6 +76,93 @@ const VFORK_CHILD_FAULT_DEBUG_KEYS = [
   "mem_brk_current",
 ] as const;
 
+function formatProcessThreadSlots(handle: ProcessHandle, vmPtr: number): string {
+  const slots: string[] = [];
+  for (let slot = 0; slot < handle.kernel.abi_max_threads(); slot += 1) {
+    const tid = handle.kernel.process_thread_tid?.(vmPtr, slot) ?? 0;
+    const state = handle.kernel.process_thread_state?.(vmPtr, slot) ?? 0;
+    const threadVmPtr = handle.kernel.process_thread_vm_ptr?.(vmPtr, slot) ?? 0;
+    if (tid === 0 && state === 0 && threadVmPtr === 0) {
+      continue;
+    }
+    slots.push(`${slot}:${tid}/${state}/0x${threadVmPtr.toString(16)}`);
+  }
+  return slots.join(",");
+}
+
+function formatFaultThreadSummary(handle: ProcessHandle, label: string, vmPtr: number): string {
+  return `${label}=0x${vmPtr.toString(16)}`
+    + `/status=${handle.kernel.thread_status?.(vmPtr) ?? -1}`
+    + `/exit=${handle.kernel.thread_exit_code?.(vmPtr) ?? 0}:${handle.kernel.thread_term_signal?.(vmPtr) ?? 0}`
+    + `/sig=${handle.kernel.thread_fault_signal?.(vmPtr) ?? 0}`
+    + `/kind=${handle.kernel.thread_fault_kind?.(vmPtr) ?? 0}`
+    + `/pc=0x${(handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n).toString(16)}`
+    + `/addr=0x${(handle.kernel.thread_fault_addr?.(vmPtr) ?? 0n).toString(16)}`;
+}
+
+function faultExitVmPriority(handle: ProcessHandle, vmPtr: number): number {
+  if ((handle.kernel.thread_fault_signal?.(vmPtr) ?? 0) !== 0) {
+    return 4;
+  }
+  if ((handle.kernel.thread_fault_kind?.(vmPtr) ?? 0) !== 0) {
+    return 3;
+  }
+  if (
+    (handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n) !== 0n
+    || (handle.kernel.thread_fault_addr?.(vmPtr) ?? 0n) !== 0n
+  ) {
+    return 2;
+  }
+  if ((handle.kernel.thread_term_signal?.(vmPtr) ?? 0) !== 0) {
+    return 1;
+  }
+  return 0;
+}
+
+function collectFaultExitVmCandidates(
+  handle: ProcessHandle,
+  primaryVmPtr: number,
+  threadWorkerStates: WeakMap<Worker, ThreadWorkerState>,
+): Set<number> {
+  const candidates = new Set<number>();
+  if (primaryVmPtr !== 0) {
+    candidates.add(primaryVmPtr);
+    for (const liveVmPtr of collectLiveThreadVmPtrs(handle.kernel, primaryVmPtr)) {
+      candidates.add(liveVmPtr);
+    }
+  }
+  if (handle.vmPtr !== 0) {
+    candidates.add(handle.vmPtr);
+    for (const liveVmPtr of collectLiveThreadVmPtrs(handle.kernel, handle.vmPtr)) {
+      candidates.add(liveVmPtr);
+    }
+  }
+  for (const worker of handle.workers) {
+    const thread = threadWorkerStates.get(worker);
+    if (thread?.vmPtr) {
+      candidates.add(thread.vmPtr);
+    }
+  }
+  return candidates;
+}
+
+function selectFaultExitVmPtr(
+  handle: ProcessHandle,
+  primaryVmPtr: number,
+  threadWorkerStates: WeakMap<Worker, ThreadWorkerState>,
+): number {
+  let selectedVmPtr = primaryVmPtr;
+  let selectedPriority = faultExitVmPriority(handle, selectedVmPtr);
+  for (const candidate of collectFaultExitVmCandidates(handle, primaryVmPtr, threadWorkerStates)) {
+    const priority = faultExitVmPriority(handle, candidate);
+    if (priority > selectedPriority) {
+      selectedVmPtr = candidate;
+      selectedPriority = priority;
+    }
+  }
+  return selectedVmPtr;
+}
+
 function beginStatusTransitionRpc(blocked: BlockedWorkerState): number {
   blocked.rpcPending = true;
   blocked.rpcGeneration += 1;
@@ -90,6 +183,34 @@ function finishStatusTransitionRpc(
     latestBlocked.rpcPending = false;
   }
   return latestBlocked;
+}
+
+function hasPendingBlockedRpc(handle: ProcessHandle): boolean {
+  for (const blocked of handle.blockedWorkers.values()) {
+    if (blocked.rpcPending) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasBlockedIoPressure(handle: ProcessHandle): boolean {
+  for (const blocked of handle.blockedWorkers.values()) {
+    const status = blocked.status;
+    if (
+      status === handle.kernel.abi_status_epoll_wait()
+      || status === handle.kernel.abi_status_fs()
+      || status === handle.kernel.abi_status_pipe_wait()
+      || status === handle.kernel.abi_status_wait4()
+      || status === handle.kernel.abi_status_flock_wait()
+      || status === handle.kernel.abi_status_connect()
+      || status === handle.kernel.abi_status_socket_recv()
+      || status === handle.kernel.abi_status_socket_send()
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDeps) {
@@ -154,6 +275,16 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     }
 
     const enqueueWorkerAfterOk = (): void => {
+      if (hasPendingBlockedRpc(handle)) {
+        setTimeout(() => {
+          if (!workerStillOwnedByHandle()) {
+            deps.pumpProcess(handle);
+            return;
+          }
+          enqueueWorkerAfterOk();
+        }, 1);
+        return;
+      }
       deps.enqueueWorker(handle, worker);
     };
 
@@ -294,18 +425,41 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         && remainingThreads !== 0
         && processHasLiveThreads(handle.kernel, thread.vmPtr, thread.vmPtr);
       const shouldExitProcess = remainingThreads <= 1 || !hasLiveThreads;
+      const faultProcessPtr = handle.kernel.thread_process_ptr(thread.vmPtr);
+      const ownerPid = handle.kernel.process_current_pid(handle.vmPtr);
+      const ownerProcessPtr = handle.kernel.thread_process_ptr(handle.vmPtr);
+      const ownerThreadCount = handle.kernel.thread_process_thread_count(handle.vmPtr);
+      const processTableDebug = `:fault_pid=${currentPid}:fault_process=0x${faultProcessPtr.toString(16)}`
+        + `:fault_count=${remainingThreads}`
+        + `:owner_pid=${ownerPid}:owner_process=0x${ownerProcessPtr.toString(16)}`
+        + `:owner_count=${ownerThreadCount}:owner_threads=[${formatProcessThreadSlots(handle, handle.vmPtr)}]`;
       deps.appendWorkerDebugLog(handle, `fault:0x${thread.vmPtr.toString(16)} remaining=${remainingThreads}`);
       if (shouldExitProcess) {
+        const exitVmPtr = selectFaultExitVmPtr(handle, thread.vmPtr, deps.threadWorkerStates);
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `complete-exit-request:transitions-fault:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
+            + `:exitVm=0x${exitVmPtr.toString(16)}`
+            + `:priority=${faultExitVmPriority(handle, exitVmPtr)}`
             + `:status=${status}:msg=${msg.status}:exit=${msg.exitCode}:${msg.termSignal}`
-            + `:current=${handle.kernel.thread_status?.(thread.vmPtr) ?? -1}:remaining=${remainingThreads}:live=${hasLiveThreads ? 1 : 0}`,
+            + `:current=${handle.kernel.thread_status?.(thread.vmPtr) ?? -1}:remaining=${remainingThreads}:live=${hasLiveThreads ? 1 : 0}`
+            + processTableDebug
+            + `:${formatFaultThreadSummary(handle, "faultVm", thread.vmPtr)}`
+            + `:${formatFaultThreadSummary(handle, "exitVm", exitVmPtr)}`,
         );
-        void deps.completeProcessExit(handle, msg.exitCode, msg.termSignal, thread.vmPtr).catch((error) => {
+        void deps.completeProcessExit(handle, msg.exitCode, msg.termSignal, exitVmPtr).catch((error) => {
           deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
         });
       } else {
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `fault-worker-delete:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
+            + `:status=${status}:msg=${msg.status}:exit=${msg.exitCode}:${msg.termSignal}`
+            + `:current=${handle.kernel.thread_status?.(thread.vmPtr) ?? -1}`
+            + `:remaining=${remainingThreads}:live=${hasLiveThreads ? 1 : 0}`
+            + processTableDebug
+            + `:threads=[${formatProcessThreadSlots(handle, thread.vmPtr)}]`,
+        );
         if (handle.runningWorker === worker) {
           handle.runningWorker = null;
         }
@@ -372,6 +526,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       const sec = handle.kernel.thread_sleep_seconds(thread.vmPtr);
       const nsec = handle.kernel.thread_sleep_nanoseconds(thread.vmPtr);
       if (sec === 0n && nsec === 0n) {
+        thread.yieldedReady = true;
         deps.appendWorkerDebugLog(handle, `yield:0x${thread.vmPtr.toString(16)}`);
         const resumeZeroDurationSleep = (): void => {
           handle.kernel.thread_resume_sleep?.(thread.vmPtr);
@@ -379,6 +534,23 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
         };
         const enqueueAfterYield = (): void => {
+          if (hasPendingBlockedRpc(handle)) {
+            setTimeout(() => {
+              if (workerStillOwnedByHandle()) {
+                enqueueAfterYield();
+              }
+            }, 1);
+            return;
+          }
+          if (hasBlockedIoPressure(handle)) {
+            setTimeout(() => {
+              if (workerStillOwnedByHandle()) {
+                resumeZeroDurationSleep();
+                deps.enqueueWorker(handle, worker);
+              }
+            }, 1);
+            return;
+          }
           if (handle.readyWorkers.length > 0) {
             deps.pumpProcess(handle);
             setTimeout(() => {
@@ -415,6 +587,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         enqueueAfterYield();
         return;
       }
+      thread.yieldedReady = false;
       deps.appendWorkerDebugLog(handle, `sleep:0x${thread.vmPtr.toString(16)}@${sec.toString()}s+${nsec.toString()}ns`);
       deps.blockWorker(handle, worker, status, thread.vmPtr);
       deps.kickBlockedWorkers(handle);
@@ -573,9 +746,35 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           `clone_spawn_debug:0x${thread.vmPtr.toString(16)}:${JSON.stringify(msg.debug)}`,
         );
       }
-      const childVmPtr = handle.kernel.thread_spawn_from_clone(thread.vmPtr);
-      if (childVmPtr === 0) {
+      if (CLONE_SPAWN_DEBUG_ENABLED) {
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `clone-spawn-enter:${handle.pid}:0x${thread.vmPtr.toString(16)}:status=${status}`,
+        );
+      }
+      let childVmPtr = 0;
+      const spawnCloneChild = (): boolean => {
+        childVmPtr = handle.kernel.thread_spawn_from_clone(thread.vmPtr);
+        if (CLONE_SPAWN_DEBUG_ENABLED) {
+          deps.appendRuntimeLifecycleEvent(
+            handle.runtimeId,
+            `clone-spawn-after-kernel:${handle.pid}:parent=0x${thread.vmPtr.toString(16)}`
+              + `:child=0x${childVmPtr.toString(16)}`
+              + `:threads=[${formatProcessThreadSlots(handle, thread.vmPtr)}]`,
+          );
+        }
+        if (childVmPtr !== 0) {
+          handle.kernelState = readKernelRuntimeState(handle.kernel);
+          return true;
+        }
         const currentStatus = handle.kernel.thread_status?.(thread.vmPtr);
+        if (CLONE_SPAWN_DEBUG_ENABLED) {
+          deps.appendRuntimeLifecycleEvent(
+            handle.runtimeId,
+            `clone-spawn-zero:${handle.pid}:0x${thread.vmPtr.toString(16)}`
+              + `:status=${status}:current=${currentStatus ?? "n/a"}`,
+          );
+        }
         if (currentStatus !== undefined && currentStatus !== status) {
           deps.appendRuntimeLifecycleEvent(
             handle.runtimeId,
@@ -587,11 +786,19 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           );
           deps.kickBlockedWorkers(handle);
           deps.pumpProcess(handle);
-          return;
+          return false;
         }
         throw new Error(`thread_spawn_from_clone failed for pid=${handle.pid}`);
-      }
+      };
       const finishCloneSpawn = (): void => {
+        if (CLONE_SPAWN_DEBUG_ENABLED) {
+          deps.appendRuntimeLifecycleEvent(
+            handle.runtimeId,
+            `clone-spawn-finish:${handle.pid}:parent=0x${thread.vmPtr.toString(16)}`
+              + `:child=0x${childVmPtr.toString(16)}`
+              + `:threads=[${formatProcessThreadSlots(handle, thread.vmPtr)}]`,
+          );
+        }
         handle.kernelState = readKernelRuntimeState(handle.kernel);
         deps.assertProcessStandardFdIntegrity(handle, "clone-spawn");
         publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
@@ -601,23 +808,78 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         if (!childThread) {
           throw new Error(`child thread state missing for pid=${handle.pid} vm=0x${childVmPtr.toString(16)}`);
         }
+        thread.ownerAsyncStatus = status;
         childThread.resumeWorkersOnReady.push(worker);
         deps.kickBlockedWorkers(handle);
+        if (CLONE_SPAWN_DEBUG_ENABLED) {
+          deps.appendRuntimeLifecycleEvent(
+            handle.runtimeId,
+            `clone-spawn-attached:${handle.pid}:parent=0x${thread.vmPtr.toString(16)}`
+              + `:child=0x${childVmPtr.toString(16)}:workers=${handle.workers.size}`
+              + `:threads=[${formatProcessThreadSlots(handle, thread.vmPtr)}]`,
+          );
+        }
       };
 
       if (handle.kernelWorkerRequest && handle.pid > 0) {
         thread.ownerAsyncStatus = status;
+        const cloneSpawnAsyncToken = (cloneSpawnAsyncTokens.get(thread) ?? 0) + 1;
+        cloneSpawnAsyncTokens.set(thread, cloneSpawnAsyncToken);
+        const isCurrentCloneSpawnAsync = (): boolean =>
+          cloneSpawnAsyncTokens.get(thread) === cloneSpawnAsyncToken
+          && (thread.ownerAsyncStatus ?? null) === status;
+        if (CLONE_SPAWN_DEBUG_ENABLED) {
+          deps.appendRuntimeLifecycleEvent(
+            handle.runtimeId,
+            `clone-spawn-sync-start:${handle.pid}:0x${thread.vmPtr.toString(16)}`
+              + `:child=pending`,
+          );
+        }
         void deps.syncProcessLifecycleViaKernelWorker(handle, thread.vmPtr)
           .then(() => {
+            if (CLONE_SPAWN_DEBUG_ENABLED) {
+              deps.appendRuntimeLifecycleEvent(
+                handle.runtimeId,
+                `clone-spawn-sync-done:${handle.pid}:0x${thread.vmPtr.toString(16)}`
+                  + `:owned=${workerStillOwnedByHandle() ? 1 : 0}`
+                  + `:threads=[${formatProcessThreadSlots(handle, thread.vmPtr)}]`,
+              );
+            }
             if (!workerStillOwnedByHandle()) {
               return;
             }
-            thread.ownerAsyncStatus = null;
+            if (!isCurrentCloneSpawnAsync()) {
+              if (CLONE_SPAWN_DEBUG_ENABLED) {
+                deps.appendRuntimeLifecycleEvent(
+                  handle.runtimeId,
+                  `clone-spawn-sync-stale:${handle.pid}:0x${thread.vmPtr.toString(16)}`
+                    + `:token=${cloneSpawnAsyncToken}`,
+                );
+              }
+              return;
+            }
+            if (!spawnCloneChild()) {
+              thread.ownerAsyncStatus = null;
+              return;
+            }
             finishCloneSpawn();
           })
           .catch((error) => {
-            thread.ownerAsyncStatus = null;
+            const currentCloneSpawnAsync = isCurrentCloneSpawnAsync();
+            if (currentCloneSpawnAsync) {
+              thread.ownerAsyncStatus = null;
+            }
+            if (CLONE_SPAWN_DEBUG_ENABLED) {
+              deps.appendRuntimeLifecycleEvent(
+                handle.runtimeId,
+                `clone-spawn-sync-error:${handle.pid}:0x${thread.vmPtr.toString(16)}`
+                  + `:${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
             if (!workerStillOwnedByHandle()) {
+              return;
+            }
+            if (!currentCloneSpawnAsync) {
               return;
             }
             deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
@@ -625,6 +887,9 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         return;
       }
 
+      if (!spawnCloneChild()) {
+        return;
+      }
       finishCloneSpawn();
       return;
     }
@@ -834,7 +1099,13 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         const syncPipeState = status === handle.kernel.abi_status_pipe_wait()
           ? deps.requestPipeStateSync(handle, false)
           : Promise.resolve();
+        const socketWaitStatus = status === handle.kernel.abi_status_socket_recv()
+          || status === handle.kernel.abi_status_socket_send();
+        const syncSocketState = socketWaitStatus
+          ? deps.requestSocketStateSync(handle, true)
+          : Promise.resolve();
         void syncPipeState
+          .then(() => syncSocketState)
           .then(() => {
             deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-start:${handle.pid}:status=${status}`);
             return deps.syncBlockedForkSharedStateViaKernelWorker(
@@ -854,6 +1125,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
               status === handle.kernel.abi_status_pipe_wait()
               && (handle.kernel.thread_poll_wait_ready_count?.(thread.vmPtr) ?? 0) <= 0
             ) {
+              deps.pumpProcess(handle);
               return;
             }
             deps.kickBlockedWorkers(handle);

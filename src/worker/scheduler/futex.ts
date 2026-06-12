@@ -31,6 +31,51 @@ export interface FutexReconciliation {
   hasWorkerLocalWait(thread: ThreadWorkerState | undefined): boolean;
 }
 
+const BLOCKED_ADDR_NOT_FOUND = 0xffff_ffff_ffff_ffffn;
+
+function threadRecordBlockedAddr(
+  handle: ProcessHandle,
+  vmPtr: number,
+): bigint {
+  return handle.kernel.thread_record_blocked_addr?.(vmPtr) ?? 0n;
+}
+
+function isKnownThreadRecordBlock(blockedAddr: bigint): boolean {
+  return blockedAddr !== 0n && blockedAddr !== BLOCKED_ADDR_NOT_FOUND;
+}
+
+export function threadHasCanonicalFutexBlock(
+  handle: ProcessHandle,
+  vmPtr: number,
+): boolean {
+  const blockedAddr = threadRecordBlockedAddr(handle, vmPtr);
+  if (!isKnownThreadRecordBlock(blockedAddr)) {
+    return false;
+  }
+  if (handle.kernel.thread_status(vmPtr) === handle.kernel.abi_status_futex_wait()) {
+    return true;
+  }
+  return (handle.kernel.thread_futex_wait_addr?.(vmPtr) ?? 0n) !== 0n;
+}
+
+export function clearStaleFutexRecordIfResolved(
+  handle: ProcessHandle,
+  vmPtr: number,
+): boolean {
+  const blockedAddr = threadRecordBlockedAddr(handle, vmPtr);
+  if (!isKnownThreadRecordBlock(blockedAddr)) {
+    return false;
+  }
+  if (handle.kernel.thread_status(vmPtr) !== handle.kernel.abi_status_ok()) {
+    return false;
+  }
+  if ((handle.kernel.thread_futex_wait_addr?.(vmPtr) ?? 0n) !== 0n) {
+    return false;
+  }
+  handle.kernel.thread_resume_futex_wait(vmPtr);
+  return true;
+}
+
 export function createFutexReconciliation(deps: FutexReconciliationDeps): FutexReconciliation {
   function reconcileResolvedWorkerLocalWaits(handle: ProcessHandle): Worker[] {
     const reconciledWorkers: Worker[] = [];
@@ -50,12 +95,19 @@ export function createFutexReconciliation(deps: FutexReconciliationDeps): FutexR
       if (waitingStatus !== handle.kernel.abi_status_futex_wait()) {
         continue;
       }
+      const currentStatus = handle.kernel.thread_status(thread.vmPtr);
       if (thread.waitingInWorkerReconcileDeferred) {
         thread.waitingInWorkerReconcileDeferred = false;
-        continue;
+        if (currentStatus !== handle.kernel.abi_status_ok()) {
+          continue;
+        }
       }
-      const currentStatus = handle.kernel.thread_status(thread.vmPtr);
-      if (currentStatus !== handle.kernel.abi_status_ok()) {
+      const staleRecordCleared = currentStatus === handle.kernel.abi_status_ok()
+        && clearStaleFutexRecordIfResolved(handle, thread.vmPtr);
+      if (
+        currentStatus !== handle.kernel.abi_status_ok()
+        || threadHasCanonicalFutexBlock(handle, thread.vmPtr)
+      ) {
         continue;
       }
       thread.waitingInWorkerStatus = null;
@@ -63,7 +115,8 @@ export function createFutexReconciliation(deps: FutexReconciliationDeps): FutexR
       thread.runningGeneration = null;
       deps.appendWorkerDebugLog?.(
         handle,
-        `wait-in-worker-reconciled:0x${thread.vmPtr.toString(16)}:${waitingStatus}->${currentStatus}`,
+        `wait-in-worker-reconciled:0x${thread.vmPtr.toString(16)}:${waitingStatus}->${currentStatus}`
+          + `${staleRecordCleared ? ":stale-record-cleared" : ""}`,
       );
       reconciledWorkers.push(worker);
     }

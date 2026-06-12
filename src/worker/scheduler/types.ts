@@ -63,7 +63,11 @@ export interface WorkerScheduler {
   kickBlockedWorkers(handle: ProcessHandle): void;
   pumpProcess(handle: ProcessHandle): void;
   pruneDetachedProcessWorkers(handle: ProcessHandle, anchorVmPtr: number, currentWorker: Worker | null): void;
-  requestEpollDependentOfdStateSync(handle: ProcessHandle): Promise<void>;
+  requestEpollDependentOfdStateSync(
+    handle: ProcessHandle,
+    additionalOfdIds?: readonly number[],
+    options?: { mode?: "push" | "pull" },
+  ): Promise<void>;
   requestEpollStateSync(handle: ProcessHandle, retryWaiters?: boolean): Promise<void>;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   requestSocketStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
@@ -77,7 +81,11 @@ export interface WorkerSchedulerQueueHelpers {
 }
 
 export interface WorkerSchedulerStateSyncHelpers {
-  requestEpollDependentOfdStateSync(handle: ProcessHandle): Promise<void>;
+  requestEpollDependentOfdStateSync(
+    handle: ProcessHandle,
+    additionalOfdIds?: readonly number[],
+    options?: { mode?: "push" | "pull" },
+  ): Promise<void>;
   requestEpollStateSync(handle: ProcessHandle, retryWaiters?: boolean): Promise<void>;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   requestSocketStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;

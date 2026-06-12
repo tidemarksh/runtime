@@ -31,6 +31,7 @@ import { createWait4Scheduler } from "./wait4.js";
 import type {
   BlockedWorkerState,
   ProcessHandle,
+  ThreadWorkerState,
 } from "../types.js";
 import type {
   WorkerScheduler,
@@ -67,11 +68,145 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       }
     }
   }
+
+  function formatProcessThreadSlots(handle: ProcessHandle, vmPtr: number): string {
+    const slots: string[] = [];
+    for (let slot = 0; slot < handle.kernel.abi_max_threads(); slot += 1) {
+      const tid = handle.kernel.process_thread_tid(vmPtr, slot);
+      const state = handle.kernel.process_thread_state(vmPtr, slot);
+      const threadVmPtr = handle.kernel.process_thread_vm_ptr(vmPtr, slot);
+      if (tid === 0 && state === 0 && threadVmPtr === 0) {
+        continue;
+      }
+      slots.push(`${slot}:${tid}/${state}/0x${threadVmPtr.toString(16)}`);
+    }
+    return slots.join(",");
+  }
+
+  function formatFaultThreadSummary(handle: ProcessHandle, label: string, vmPtr: number): string {
+    return `${label}=0x${vmPtr.toString(16)}`
+      + `/status=${handle.kernel.thread_status?.(vmPtr) ?? -1}`
+      + `/exit=${handle.kernel.thread_exit_code?.(vmPtr) ?? 0}:${handle.kernel.thread_term_signal?.(vmPtr) ?? 0}`
+      + `/sig=${handle.kernel.thread_fault_signal?.(vmPtr) ?? 0}`
+      + `/kind=${handle.kernel.thread_fault_kind?.(vmPtr) ?? 0}`
+      + `/pc=0x${(handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n).toString(16)}`
+      + `/addr=0x${(handle.kernel.thread_fault_addr?.(vmPtr) ?? 0n).toString(16)}`;
+  }
+
+  function formatOfdType(handle: ProcessHandle, ofdId: number): string {
+    try {
+      const fdType = handle.kernel.kernel_ofd_fd_type(ofdId);
+      if (fdType === handle.kernel.abi_fd_type_file?.()) {
+        return "file";
+      }
+      if (fdType === handle.kernel.abi_fd_type_pipe?.()) {
+        return "pipe";
+      }
+      if (fdType === handle.kernel.abi_fd_type_epoll?.()) {
+        return "epoll";
+      }
+      if (fdType === handle.kernel.abi_fd_type_eventfd?.()) {
+        return "eventfd";
+      }
+      if (fdType === handle.kernel.abi_fd_type_socket?.()) {
+        return "socket";
+      }
+      return String(fdType);
+    } catch {
+      return "err";
+    }
+  }
+
+  function formatThreadFdTableSummary(handle: ProcessHandle, vmPtr: number): string {
+    if (vmPtr === 0) {
+      return "fds=none";
+    }
+    const focusFds = new Set([9, 10, 11, 12]);
+    const entries: string[] = [];
+    const maxFds = handle.kernel.abi_max_fds();
+    for (let fd = 0; fd < maxFds; fd += 1) {
+      let ofdId = 0;
+      try {
+        ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+      } catch {
+        entries.push(`${fd}=err`);
+        continue;
+      }
+      if (ofdId === 0 && !focusFds.has(fd)) {
+        continue;
+      }
+      const flags = handle.kernel.process_fd_flags?.(vmPtr, fd) ?? 0;
+      if (ofdId === 0) {
+        entries.push(`${fd}=0/fl${flags}`);
+        continue;
+      }
+      let ino = "err";
+      let refcount = "err";
+      try {
+        ino = String(handle.kernel.kernel_ofd_ino(ofdId));
+      } catch {
+        // keep diagnostic compact when an inherited harness lacks an export
+      }
+      try {
+        refcount = String(handle.kernel.kernel_ofd_refcount(ofdId));
+      } catch {
+        // keep diagnostic compact when an inherited harness lacks an export
+      }
+      entries.push(`${fd}=${ofdId}/${formatOfdType(handle, ofdId)}/ino${ino}/ref${refcount}/fl${flags}`);
+      if (entries.length >= 24) {
+        entries.push("truncated");
+        break;
+      }
+    }
+    return `fds=${entries.join(",") || "empty"}`;
+  }
+
+  function faultExitVmPriority(handle: ProcessHandle, vmPtr: number): number {
+    if ((handle.kernel.thread_fault_signal?.(vmPtr) ?? 0) !== 0) {
+      return 4;
+    }
+    if ((handle.kernel.thread_fault_kind?.(vmPtr) ?? 0) !== 0) {
+      return 3;
+    }
+    if (
+      (handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n) !== 0n
+      || (handle.kernel.thread_fault_addr?.(vmPtr) ?? 0n) !== 0n
+    ) {
+      return 2;
+    }
+    if ((handle.kernel.thread_term_signal?.(vmPtr) ?? 0) !== 0) {
+      return 1;
+    }
+    return 0;
+  }
+
+  function selectFaultExitVmPtr(handle: ProcessHandle, vmPtr: number): number {
+    const candidates = new Set<number>([vmPtr]);
+    if (handle.vmPtr !== 0) {
+      candidates.add(handle.vmPtr);
+      for (const liveVmPtr of collectLiveThreadVmPtrs(handle.kernel, handle.vmPtr)) {
+        candidates.add(liveVmPtr);
+      }
+    }
+    let selectedVmPtr = vmPtr;
+    let selectedPriority = faultExitVmPriority(handle, selectedVmPtr);
+    for (const candidate of candidates) {
+      const priority = faultExitVmPriority(handle, candidate);
+      if (priority > selectedPriority) {
+        selectedVmPtr = candidate;
+        selectedPriority = priority;
+      }
+    }
+    return selectedVmPtr;
+  }
+
   const appliedChildExitRecordKeys = new Map<string, Set<string>>();
   const schedulerQueueHelpers = createWorkerSchedulerQueueHelpers({
     threadWorkerStates,
+    appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
     appendWorkerDebugLog,
     blockWorker,
+    completeProcessExit: deps.completeProcessExit,
     failProcess: deps.failProcess,
     handleWorkerMessage: deps.handleWorkerMessage,
   });
@@ -93,6 +228,62 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     handle.blockedWorkers.delete(worker);
   }
 
+  function epollTimerfdDeadlineTicks(handle: ProcessHandle, vmPtr: number): bigint | null {
+    const rawDeadline = handle.kernel.thread_epoll_timerfd_deadline_ticks?.(vmPtr);
+    if (rawDeadline === undefined) {
+      return null;
+    }
+    const deadline = BigInt(rawDeadline);
+    return deadline === 0n ? null : deadline;
+  }
+
+  function markEpollTimeoutZeroExpired(handle: ProcessHandle, blocked: BlockedWorkerState): void {
+    if (
+      blocked.status === handle.kernel.abi_status_epoll_wait()
+      && Number(handle.kernel.thread_epoll_wait_timeout(blocked.vmPtr)) === 0
+    ) {
+      blocked.timeoutExpired = true;
+      blocked.epollTimerfdDeadlineTicks = null;
+    }
+  }
+
+  function hasPendingCloneChildInitResume(handle: ProcessHandle): boolean {
+    for (const worker of handle.workers) {
+      const thread = threadWorkerStates.get(worker);
+      if (
+        thread !== undefined
+        && !thread.initialized
+        && thread.resumeWorkersOnReady.length > 0
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function formatRunningRetryBlocker(
+    handle: ProcessHandle,
+    runningThread: ThreadWorkerState | undefined,
+  ): string {
+    const runningVmPtr = runningThread?.vmPtr ?? 0;
+    const runningStatus = runningVmPtr === 0 ? -1 : handle.kernel.thread_status(runningVmPtr);
+    const activeStepVmPtr = handle.kernel.debug_thread_step_vm_ptr?.() ?? 0;
+    const now = Date.now();
+    const lastStepAge = runningThread?.lastStepAtMs == null ? "null" : String(now - runningThread.lastStepAtMs);
+    const lastStatusAge = runningThread?.lastStatusAtMs == null ? "null" : String(now - runningThread.lastStatusAtMs);
+    const processPtr = runningVmPtr === 0 ? 0 : handle.kernel.thread_process_ptr(runningVmPtr);
+    return `runningVm=0x${runningVmPtr.toString(16)}:runningStatus=${runningStatus}`
+      + `:runningLast=${runningThread?.lastStatus ?? "null"}:runningWait=${runningThread?.waitingInWorkerStatus ?? "null"}`
+      + `:runningSteps=${runningThread === undefined ? "null" : `${runningThread.stepCount}/${runningThread.statusCount}`}`
+      + `:pendingWrites=${runningThread?.pendingGuestMemoryWrites.length ?? "null"}`
+      + `:lastStepAge=${lastStepAge}:lastStatusAge=${lastStatusAge}`
+      + `:proc=0x${processPtr.toString(16)}`
+      + `:initialized=${runningThread === undefined ? "null" : runningThread.initialized ? 1 : 0}`
+      + `:ownerAsync=${runningThread?.ownerAsyncStatus ?? "null"}`
+      + `:ready=${handle.readyWorkers.length}`
+      + `:active=0x${activeStepVmPtr.toString(16)}`;
+  }
+
   const {
     beginBlockedRpc,
     clearStaleRunningWorker,
@@ -102,6 +293,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   } = createRunLoopScheduler({
     threadWorkerStates,
     appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
+    blockWorker,
     retryBlockedWorker,
   });
   const {
@@ -154,6 +346,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     selectProcessAnchorVmPtr,
   } = createPruningScheduler({
     threadWorkerStates,
+    appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
     appendWorkerDebugLog,
     clearBlockedWorker,
   });
@@ -252,6 +445,230 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       entries.push(`${fd}->${ofdId}/${type}/${ino}/${hostFd}/${offset.toString()}`);
     }
     return entries.join(" ") || "none";
+  }
+
+  function formatPipeSlotSummary(handle: ProcessHandle, pipeSlot: number): string {
+    const maxPipes = handle.kernel.abi_max_pipes();
+    const pipeRegionBytes = handle.kernel.kernel_pipe_region_bytes();
+    const slotBytes = maxPipes > 0 ? Math.floor(pipeRegionBytes / maxPipes) : 0;
+    const dataOffset = 32;
+    if (
+      pipeSlot <= 0
+      || pipeSlot >= maxPipes
+      || slotBytes <= dataOffset
+      || handle.kernelState.pipeBase < 0
+    ) {
+      return "pipe-state=invalid";
+    }
+    const slotBase = handle.kernelState.pipeBase + pipeSlot * slotBytes;
+    const view = new DataView(handle.memory.buffer);
+    if (slotBase < 0 || slotBase + slotBytes > view.byteLength) {
+      return "pipe-state=oob";
+    }
+    const head = view.getUint32(slotBase, true);
+    const tail = view.getUint32(slotBase + 4, true);
+    const readOpen = view.getInt32(slotBase + 8, true);
+    const writeOpen = view.getInt32(slotBase + 12, true);
+    const generation = view.getUint32(slotBase + 20, true);
+    const capacity = slotBytes - dataOffset;
+    const unread = tail >= head ? tail - head : capacity - head + tail;
+    return `pipe-state=h${head}:t${tail}:ro${readOpen}:wo${writeOpen}:u${unread}:gen${generation}`;
+  }
+
+  function formatBlockedEpollEntries(handle: ProcessHandle, vmPtr: number, limit = 8): string {
+    const maxFds = handle.kernel.abi_max_fds();
+    const epollFd = handle.kernel.thread_blocked_fd?.(vmPtr)
+      ?? Number(handle.kernel.thread_a0?.(vmPtr) ?? -1n);
+    const epollOfdId = (handle.kernel.thread_blocked_ofd_id?.(vmPtr) ?? 0) > 0
+      ? handle.kernel.thread_blocked_ofd_id(vmPtr)
+      : handle.kernel.process_fd_ofd_id(vmPtr, epollFd);
+    if (
+      epollFd < 0
+      || epollOfdId <= 0
+      || epollOfdId >= maxFds
+      || handle.kernel.kernel_ofd_fd_type(epollOfdId) !== handle.kernel.abi_fd_type_epoll()
+    ) {
+      return "none";
+    }
+
+    const tableBytes = handle.kernel.kernel_epoll_table_bytes();
+    const instanceBytes = handle.kernel.kernel_epoll_instance_bytes();
+    const epollIdx = handle.kernel.kernel_ofd_ino(epollOfdId);
+    const tablePointerBytes = tableBytes % 8 === 0
+      && Math.floor((instanceBytes - 4) / (tableBytes >>> 3)) >= 28
+      ? 8
+      : 4;
+    const tableEntries = Math.floor(tableBytes / tablePointerBytes);
+    const entryStride = tableEntries > 0 ? Math.floor((instanceBytes - 4) / tableEntries) : 0;
+    const countOffset = entryStride * tableEntries;
+    const tablePtr = handle.kernelState.epollTablePtr;
+    const view = new DataView(handle.memory.buffer);
+    if (
+      tableEntries <= 0
+      || entryStride < 28
+      || epollIdx < 0
+      || epollIdx >= tableEntries
+      || tablePtr < 0
+      || tablePtr + tableBytes > view.byteLength
+    ) {
+      return `invalid:fd=${epollFd}:ofd=${epollOfdId}:idx=${epollIdx}:stride=${entryStride}`;
+    }
+
+    const instancePtr = view.getUint32(tablePtr + epollIdx * tablePointerBytes, true);
+    if (instancePtr === 0 || instancePtr + instanceBytes > view.byteLength) {
+      return `empty:fd=${epollFd}:ofd=${epollOfdId}:idx=${epollIdx}:ptr=0x${instancePtr.toString(16)}`;
+    }
+    const rawCount = view.getUint32(instancePtr + countOffset, true);
+    const count = Math.min(rawCount, tableEntries, limit);
+    const entries: string[] = [];
+    const eventfdType = handle.kernel.abi_fd_type_eventfd?.();
+    const pipeType = handle.kernel.abi_fd_type_pipe();
+    for (let i = 0; i < count; i += 1) {
+      const offset = instancePtr + i * entryStride;
+      const fd = view.getUint32(offset, true);
+      const ofdId = view.getUint32(offset + 4, true);
+      const events = view.getUint32(offset + 8, true);
+      const data = view.getBigUint64(offset + 16, true);
+      const last = view.getUint32(offset + 24, true);
+      const hasValidOfd = ofdId > 0 && ofdId < maxFds;
+      const type = hasValidOfd ? handle.kernel.kernel_ofd_fd_type(ofdId) : -1;
+      const ino = hasValidOfd ? handle.kernel.kernel_ofd_ino(ofdId) : -1;
+      const ofdOffset = hasValidOfd ? handle.kernel.kernel_ofd_offset(ofdId) : -1n;
+      const readiness = type === eventfdType
+        ? `eventfd=${ofdOffset.toString()}`
+        : type === pipeType
+          ? `pipe=${ino}:${formatPipeSlotSummary(handle, ino)}`
+          : "obj=other";
+      entries.push(
+        `${i}:fd=${fd}:ofd=${ofdId}:ty=${type}:ino=${ino}`
+          + `:ev=0x${events.toString(16)}:last=0x${last.toString(16)}`
+          + `:data=0x${data.toString(16)}:${readiness}`,
+      );
+    }
+    return `fd=${epollFd}:ofd=${epollOfdId}:idx=${epollIdx}:count=${rawCount}:entries=${entries.join("|") || "none"}`;
+  }
+
+  function blockedEpollWatchesPipe(handle: ProcessHandle, vmPtr: number): boolean {
+    const maxFds = handle.kernel.abi_max_fds();
+    const epollFd = handle.kernel.thread_blocked_fd?.(vmPtr)
+      ?? Number(handle.kernel.thread_a0?.(vmPtr) ?? -1n);
+    const epollOfdId = (handle.kernel.thread_blocked_ofd_id?.(vmPtr) ?? 0) > 0
+      ? handle.kernel.thread_blocked_ofd_id(vmPtr)
+      : handle.kernel.process_fd_ofd_id(vmPtr, epollFd);
+    if (
+      epollFd < 0
+      || epollOfdId <= 0
+      || epollOfdId >= maxFds
+      || handle.kernel.kernel_ofd_fd_type(epollOfdId) !== handle.kernel.abi_fd_type_epoll()
+    ) {
+      return false;
+    }
+
+    const tableBytes = handle.kernel.kernel_epoll_table_bytes();
+    const instanceBytes = handle.kernel.kernel_epoll_instance_bytes();
+    const epollIdx = handle.kernel.kernel_ofd_ino(epollOfdId);
+    const tablePointerBytes = tableBytes % 8 === 0
+      && Math.floor((instanceBytes - 4) / (tableBytes >>> 3)) >= 28
+      ? 8
+      : 4;
+    const tableEntries = Math.floor(tableBytes / tablePointerBytes);
+    const entryStride = tableEntries > 0 ? Math.floor((instanceBytes - 4) / tableEntries) : 0;
+    const countOffset = entryStride * tableEntries;
+    const tablePtr = handle.kernelState.epollTablePtr;
+    const view = new DataView(handle.memory.buffer);
+    if (
+      tableEntries <= 0
+      || entryStride < 28
+      || epollIdx < 0
+      || epollIdx >= tableEntries
+      || tablePtr < 0
+      || tablePtr + tableBytes > view.byteLength
+    ) {
+      return false;
+    }
+
+    const instancePtr = view.getUint32(tablePtr + epollIdx * tablePointerBytes, true);
+    if (instancePtr === 0 || instancePtr + instanceBytes > view.byteLength) {
+      return false;
+    }
+    const rawCount = view.getUint32(instancePtr + countOffset, true);
+    const count = Math.min(rawCount, tableEntries);
+    for (let i = 0; i < count; i += 1) {
+      const ofdId = view.getUint32(instancePtr + i * entryStride + 4, true);
+      if (
+        ofdId > 0
+        && ofdId < maxFds
+        && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function collectBlockedEpollWatchedOfdIdsByType(
+    handle: ProcessHandle,
+    vmPtr: number,
+    types: readonly number[],
+  ): number[] {
+    const maxFds = handle.kernel.abi_max_fds();
+    const targetTypes = new Set(types);
+    const epollFd = handle.kernel.thread_blocked_fd?.(vmPtr)
+      ?? Number(handle.kernel.thread_a0?.(vmPtr) ?? -1n);
+    const epollOfdId = (handle.kernel.thread_blocked_ofd_id?.(vmPtr) ?? 0) > 0
+      ? handle.kernel.thread_blocked_ofd_id(vmPtr)
+      : handle.kernel.process_fd_ofd_id(vmPtr, epollFd);
+    if (
+      epollFd < 0
+      || epollOfdId <= 0
+      || epollOfdId >= maxFds
+      || handle.kernel.kernel_ofd_fd_type(epollOfdId) !== handle.kernel.abi_fd_type_epoll()
+    ) {
+      return [];
+    }
+
+    const tableBytes = handle.kernel.kernel_epoll_table_bytes();
+    const instanceBytes = handle.kernel.kernel_epoll_instance_bytes();
+    const epollIdx = handle.kernel.kernel_ofd_ino(epollOfdId);
+    const tablePointerBytes = tableBytes % 8 === 0
+      && Math.floor((instanceBytes - 4) / (tableBytes >>> 3)) >= 28
+      ? 8
+      : 4;
+    const tableEntries = Math.floor(tableBytes / tablePointerBytes);
+    const entryStride = tableEntries > 0 ? Math.floor((instanceBytes - 4) / tableEntries) : 0;
+    const countOffset = entryStride * tableEntries;
+    const tablePtr = handle.kernelState.epollTablePtr;
+    const view = new DataView(handle.memory.buffer);
+    if (
+      tableEntries <= 0
+      || entryStride < 28
+      || epollIdx < 0
+      || epollIdx >= tableEntries
+      || tablePtr < 0
+      || tablePtr + tableBytes > view.byteLength
+    ) {
+      return [];
+    }
+
+    const instancePtr = view.getUint32(tablePtr + epollIdx * tablePointerBytes, true);
+    if (instancePtr === 0 || instancePtr + instanceBytes > view.byteLength) {
+      return [];
+    }
+    const rawCount = view.getUint32(instancePtr + countOffset, true);
+    const count = Math.min(rawCount, tableEntries);
+    const ofdIds: number[] = [];
+    for (let i = 0; i < count; i += 1) {
+      const ofdId = view.getUint32(instancePtr + i * entryStride + 4, true);
+      if (
+        ofdId > 0
+        && ofdId < maxFds
+        && targetTypes.has(handle.kernel.kernel_ofd_fd_type(ofdId))
+        && !ofdIds.includes(ofdId)
+      ) {
+        ofdIds.push(ofdId);
+      }
+    }
+    return ofdIds;
   }
 
   function appendBlockedStateLifecycle(handle: ProcessHandle, blocked: BlockedWorkerState): void {
@@ -359,6 +776,10 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   }
 
   function blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void {
+    const previousBlocked = handle.blockedWorkers.get(worker);
+    const sameBlockedThread = previousBlocked !== undefined
+      && previousBlocked.vmPtr === vmPtr
+      && previousBlocked.status === status;
     clearBlockedWorker(handle, worker);
     const blocked: BlockedWorkerState = {
       vmPtr,
@@ -367,14 +788,20 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       timeoutExpired: false,
       timeoutDeadlineMs: null,
       sleepDeadlineTicks: null,
-      rpcPending: false,
-      rpcGeneration: 0,
-      skipNextNetworkPump: false,
-      pipeSyncedBeforePassive: false,
-      pipeChildExitResumeKey: null,
-      pipeEofChildExitDeferrals: 0,
+      epollTimerfdDeadlineTicks: sameBlockedThread ? previousBlocked.epollTimerfdDeadlineTicks : null,
+      rpcPending: sameBlockedThread ? previousBlocked.rpcPending : false,
+      rpcGeneration: sameBlockedThread ? previousBlocked.rpcGeneration : 0,
+      skipNextNetworkPump: sameBlockedThread ? previousBlocked.skipNextNetworkPump : false,
+      pipeSyncedBeforePassive: sameBlockedThread ? previousBlocked.pipeSyncedBeforePassive : false,
+      pipeChildExitResumeKey: sameBlockedThread ? previousBlocked.pipeChildExitResumeKey : null,
+      pipeEofChildExitDeferrals: sameBlockedThread ? previousBlocked.pipeEofChildExitDeferrals : 0,
+      lastPipeRetryLifecycleEvent: sameBlockedThread ? previousBlocked.lastPipeRetryLifecycleEvent : undefined,
+      lastWait4RetryLifecycleEvent: sameBlockedThread ? previousBlocked.lastWait4RetryLifecycleEvent : undefined,
     };
     handle.blockedWorkers.set(worker, blocked);
+    if (sameBlockedThread && blocked.rpcPending) {
+      return;
+    }
     if (status === handle.kernel.abi_status_sleep()) {
       blocked.sleepDeadlineTicks = sleepDeadlineTicks(handle, vmPtr);
       scheduleBlockedRetry(handle, worker, sleepRetryDelayMs(handle, blocked.sleepDeadlineTicks), true);
@@ -383,9 +810,15 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (status === handle.kernel.abi_status_epoll_wait()) {
       const timeoutMs = Number(handle.kernel.thread_epoll_wait_timeout(vmPtr));
       if (timeoutMs >= 0) {
+        blocked.epollTimerfdDeadlineTicks = null;
         scheduleBlockedRetry(handle, worker, Math.max(0, timeoutMs), true);
-      } else if (handle.kernel.thread_process_thread_count(vmPtr) > 1) {
-        scheduleBlockedRetry(handle, worker, 10);
+      } else {
+        blocked.epollTimerfdDeadlineTicks = epollTimerfdDeadlineTicks(handle, vmPtr);
+        if (blocked.epollTimerfdDeadlineTicks !== null) {
+          scheduleBlockedRetry(handle, worker, sleepRetryDelayMs(handle, blocked.epollTimerfdDeadlineTicks), true);
+        } else if (handle.kernel.thread_process_thread_count(vmPtr) > 1) {
+          scheduleBlockedRetry(handle, worker, 10);
+        }
       }
       return;
     }
@@ -424,15 +857,44 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (
       status === handle.kernel.abi_status_pipe_wait()
       && kernelWorkerOwnsPipeState(handle)
+      && (!handle.kernelWorkerRequest || handle.pid <= 0)
+      && blocked.pipeSyncedBeforePassive
       && pollTimeoutMs < 0
       && (pollReadyCount === undefined || pollReadyCount <= 0)
       && handle.kernel.thread_blocked_pipe_read_ready?.(vmPtr) !== 1
       && handle.kernel.thread_blocked_pipe_write_ready?.(vmPtr) !== 1
       && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) !== 1
+      && !directPipeReadHasSynchronizedEof(handle, status, vmPtr)
     ) {
       return;
     }
     scheduleBlockedRetry(handle, worker, status === handle.kernel.abi_status_wait4() ? 10 : 1);
+  }
+
+  function directPipeReadHasSynchronizedEof(
+    handle: ProcessHandle,
+    status: number,
+    vmPtr: number,
+  ): boolean {
+    if (status !== handle.kernel.abi_status_pipe_wait()) {
+      return false;
+    }
+    const syscall = blockedOrCurrentSyscallNr(handle, vmPtr);
+    const read = handle.kernel.abi_sys_read?.();
+    const readv = handle.kernel.abi_sys_readv?.();
+    const isDirectRead = syscall !== null
+      && (
+        (read !== undefined && syscall === BigInt(read))
+        || (readv !== undefined && syscall === BigInt(readv))
+      );
+    if (!isDirectRead || handle.kernel.thread_poll_wait_has_socket?.(vmPtr) === 1) {
+      return false;
+    }
+    const writeOpen = handle.kernel.thread_blocked_pipe_write_open?.(vmPtr);
+    if (writeOpen === undefined || writeOpen > 0) {
+      return false;
+    }
+    return (handle.kernel.thread_blocked_pipe_buffered_len?.(vmPtr) ?? 0) === 0;
   }
 
   function handleBlockedRetryResult(
@@ -447,6 +909,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
 
     if (status === handle.kernel.abi_status_ok()) {
+      if (blocked.status === handle.kernel.abi_status_epoll_wait()) {
+        appendWorkerDebugLog(
+          handle,
+          `blocked-epoll-ready-fds:${handle.pid}:vm=0x${vmPtr.toString(16)}:${formatThreadFdTableSummary(handle, vmPtr)}`,
+        );
+      }
       if (blocked.status === handle.kernel.abi_status_wait4()) {
         const reapedPid = Number(handle.kernel.thread_a0?.(vmPtr) ?? 0n);
         if (reapedPid > 0) {
@@ -470,21 +938,45 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       const hasLiveThreads = !faultStateLooksStale
         && remainingThreads !== 0
         && processHasLiveThreads(handle.kernel, vmPtr, vmPtr);
+      const faultProcessPtr = handle.kernel.thread_process_ptr(vmPtr);
+      const ownerPid = handle.kernel.process_current_pid(handle.vmPtr);
+      const ownerProcessPtr = handle.kernel.thread_process_ptr(handle.vmPtr);
+      const ownerThreadCount = handle.kernel.thread_process_thread_count(handle.vmPtr);
+      const processTableDebug = `:fault_pid=${currentPid}:fault_process=0x${faultProcessPtr.toString(16)}`
+        + `:fault_count=${remainingThreads}`
+        + `:owner_pid=${ownerPid}:owner_process=0x${ownerProcessPtr.toString(16)}`
+        + `:owner_count=${ownerThreadCount}:owner_threads=[${formatProcessThreadSlots(handle, handle.vmPtr)}]`;
       appendWorkerDebugLog(handle, `fault:0x${vmPtr.toString(16)} remaining=${remainingThreads}`);
       if (handle.runningWorker === worker) {
         handle.runningWorker = null;
       }
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `scheduler-fault-worker-delete:${handle.pid}:vm=0x${vmPtr.toString(16)}`
+          + `:status=${status}:exit=${exitCode}:${termSignal}`
+          + `:current=${handle.kernel.thread_status?.(vmPtr) ?? -1}`
+          + `:remaining=${remainingThreads}:live=${hasLiveThreads ? 1 : 0}`
+          + processTableDebug
+          + `:${formatFaultThreadSummary(handle, "faultVm", vmPtr)}`
+          + `:threads=[${formatProcessThreadSlots(handle, vmPtr)}]`,
+      );
       handle.workers.delete(worker);
       threadWorkerStates.delete(worker);
       releaseWorker(worker);
       if (remainingThreads <= 1 || !hasLiveThreads) {
+        const exitVmPtr = selectFaultExitVmPtr(handle, vmPtr);
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `complete-exit-request:scheduler-fault:${handle.pid}:vm=0x${vmPtr.toString(16)}`
+            + `:exitVm=0x${exitVmPtr.toString(16)}`
+            + `:priority=${faultExitVmPriority(handle, exitVmPtr)}`
             + `:status=${status}:exit=${exitCode}:${termSignal}`
-            + `:current=${handle.kernel.thread_status?.(vmPtr) ?? -1}:remaining=${remainingThreads}:live=${hasLiveThreads ? 1 : 0}`,
+            + `:current=${handle.kernel.thread_status?.(vmPtr) ?? -1}:remaining=${remainingThreads}:live=${hasLiveThreads ? 1 : 0}`
+            + processTableDebug
+            + `:${formatFaultThreadSummary(handle, "faultVm", vmPtr)}`
+            + `:${formatFaultThreadSummary(handle, "exitVm", exitVmPtr)}`,
         );
-        void deps.completeProcessExit(handle, exitCode, termSignal, vmPtr).catch((error) => {
+        void deps.completeProcessExit(handle, exitCode, termSignal, exitVmPtr).catch((error) => {
           deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
         });
       } else {
@@ -500,6 +992,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         scheduleBlockedRetry(handle, worker, Math.max(0, timeoutMs), true);
       } else if (handle.kernel.thread_process_thread_count(vmPtr) > 1) {
         scheduleBlockedRetry(handle, worker, 10);
+        pumpProcess(handle);
       }
       return;
     }
@@ -588,6 +1081,19 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       handleBlockedRetryResult(handle, worker, blocked.vmPtr, currentStatus);
       return;
     }
+    if (
+      blocked.status === handle.kernel.abi_status_epoll_wait()
+      && hasPendingCloneChildInitResume(handle)
+    ) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `epoll-retry-skip:${handle.pid}:clone-child-init-pending`,
+      );
+      wakeRuntimeBridge(handle.runtimeBridge);
+      scheduleBlockedRetry(handle, worker, 10, blocked.timeoutExpired);
+      return;
+    }
+    markEpollTimeoutZeroExpired(handle, blocked);
     const blockedPollTimeoutMs = pollWaitTimeoutMs(handle, blocked.status, blocked.vmPtr);
     if (
       blocked.status === handle.kernel.abi_status_pipe_wait()
@@ -643,10 +1149,18 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
     clearStaleRunningWorker(handle, worker);
     if (handle.runningWorker !== null) {
+      if (blocked.status === handle.kernel.abi_status_epoll_wait()) {
+        wakeRuntimeBridge(handle.runtimeBridge);
+      }
       if (wait4HasLocalExitRecord || pipeHasLocalExitRecord) {
         wakeRuntimeBridge(handle.runtimeBridge);
       }
-      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-skip:${handle.pid}:running`);
+      const runningThread = threadWorkerStates.get(handle.runningWorker);
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `wait4-retry-skip:${handle.pid}:running=1`
+          + `:${formatRunningRetryBlocker(handle, runningThread)}`,
+      );
       scheduleBlockedRetry(
         handle,
         worker,
@@ -713,18 +1227,83 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       && handle.pid > 0
     ) {
       const rpcGeneration = beginBlockedRpc(blocked);
-      void requestEpollDependentOfdStateSync(handle)
+      const epollRetryTimeoutMs = Number(handle.kernel.thread_epoll_wait_timeout(blocked.vmPtr));
+      const epollRetryTimerfdDeadline = epollTimerfdDeadlineTicks(handle, blocked.vmPtr);
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `epoll-retry-rpc:${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}`
+          + `:expired=${blocked.timeoutExpired ? 1 : 0}:timeout=${epollRetryTimeoutMs}`
+          + `:timerfdDeadline=${epollRetryTimerfdDeadline?.toString() ?? "none"}`
+          + `:epoll=${formatBlockedEpollEntries(handle, blocked.vmPtr)}`,
+      );
+      void (blockedEpollWatchesPipe(handle, blocked.vmPtr)
+        ? requestPipeStateSync(handle, false)
+        : Promise.resolve())
         .then(() => requestEpollStateSync(handle, false))
+        .then(() => requestEpollDependentOfdStateSync(
+          handle,
+          collectBlockedEpollWatchedOfdIdsByType(
+            handle,
+            blocked.vmPtr,
+            [
+              handle.kernel.abi_fd_type_eventfd?.() ?? 9,
+              handle.kernel.abi_fd_type_timerfd?.() ?? 10,
+            ],
+          ),
+          { mode: "pull" },
+        ))
         .then(() => {
           const latestBlocked = finishBlockedRpc(handle, worker, blocked.vmPtr, rpcGeneration);
           if (!latestBlocked) {
+            deps.appendRuntimeLifecycleEvent(handle.runtimeId, `epoll-retry-stale:${handle.pid}`);
             return;
           }
-          if (handle.runningWorker !== null || !canScheduleWorker(handle, worker)) {
+          markEpollTimeoutZeroExpired(handle, latestBlocked);
+          if (
+            !latestBlocked.timeoutExpired
+            && latestBlocked.epollTimerfdDeadlineTicks == null
+            && Number(handle.kernel.thread_epoll_wait_timeout(latestBlocked.vmPtr)) < 0
+          ) {
+            const deadlineTicks = epollTimerfdDeadlineTicks(handle, latestBlocked.vmPtr);
+            if (deadlineTicks !== null) {
+              latestBlocked.epollTimerfdDeadlineTicks = deadlineTicks;
+              deps.appendRuntimeLifecycleEvent(
+                handle.runtimeId,
+                `epoll-retry-deadline:${handle.pid}:vm=0x${latestBlocked.vmPtr.toString(16)}:ticks=${deadlineTicks.toString()}`,
+              );
+              scheduleBlockedRetry(handle, worker, sleepRetryDelayMs(handle, deadlineTicks), true);
+              return;
+            }
+            deps.appendRuntimeLifecycleEvent(
+              handle.runtimeId,
+              `epoll-retry-no-deadline:${handle.pid}:vm=0x${latestBlocked.vmPtr.toString(16)}`
+                + `:timeout=${Number(handle.kernel.thread_epoll_wait_timeout(latestBlocked.vmPtr))}`,
+            );
+          }
+          clearStaleRunningWorker(handle, worker);
+          const runningWorkerBlocksResume = handle.runningWorker !== null;
+          const canScheduleBlockedWorker = canScheduleWorker(handle, worker);
+          if (runningWorkerBlocksResume || !canScheduleBlockedWorker) {
+            if (runningWorkerBlocksResume) {
+              wakeRuntimeBridge(handle.runtimeBridge);
+            }
+            const runningThread = handle.runningWorker === null
+              ? undefined
+              : threadWorkerStates.get(handle.runningWorker);
+            deps.appendRuntimeLifecycleEvent(
+              handle.runtimeId,
+              `epoll-retry-skip:${handle.pid}:running=${handle.runningWorker !== null ? 1 : 0}:sched=${canScheduleBlockedWorker ? 1 : 0}`
+                + `:${formatRunningRetryBlocker(handle, runningThread)}`,
+            );
             scheduleBlockedRetry(handle, worker, 1, latestBlocked.timeoutExpired);
             return;
           }
           attachKernelRuntimeState(handle.kernel, handle.kernelState);
+          if (latestBlocked.timeoutExpired && latestBlocked.epollTimerfdDeadlineTicks != null) {
+            handle.kernel.sync_monotonic_ticks_floor?.(latestBlocked.epollTimerfdDeadlineTicks);
+            latestBlocked.timeoutExpired = false;
+            latestBlocked.epollTimerfdDeadlineTicks = null;
+          }
           if (latestBlocked.timeoutExpired) {
             handle.kernel.thread_resume_epoll_wait_timeout(latestBlocked.vmPtr);
             latestBlocked.timeoutExpired = false;
@@ -732,6 +1311,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             handle.kernel.thread_resume_blocked_syscall(latestBlocked.vmPtr);
           }
           handle.kernelState = readKernelRuntimeState(handle.kernel);
+          deps.appendRuntimeLifecycleEvent(
+            handle.runtimeId,
+            `epoll-retry-result:${handle.pid}:vm=0x${latestBlocked.vmPtr.toString(16)}`
+              + `:status=${handle.kernel.thread_status(latestBlocked.vmPtr)}`
+              + `:a0=${handle.kernel.thread_a0?.(latestBlocked.vmPtr)?.toString() ?? "n/a"}`,
+          );
           handleBlockedRetryResult(
             handle,
             worker,
@@ -1032,6 +1617,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       ).then((outcome) => {
         if (outcome !== undefined) {
           consumeKernelRpcResumeOutcome(handle, worker, blocked.vmPtr, outcome);
+          if (
+            outcome.kind === "blocked"
+            && outcome.status === handle.kernel.abi_status_pipe_wait()
+          ) {
+            pumpProcess(handle);
+          }
         }
       }).catch((error) => {
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
@@ -1043,7 +1634,16 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-retry-local:${handle.pid}`);
     }
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
-    if (blocked.status === handle.kernel.abi_status_epoll_wait() && blocked.timeoutExpired) {
+    if (
+      blocked.status === handle.kernel.abi_status_epoll_wait()
+      && blocked.timeoutExpired
+      && blocked.epollTimerfdDeadlineTicks != null
+    ) {
+      handle.kernel.sync_monotonic_ticks_floor?.(blocked.epollTimerfdDeadlineTicks);
+      blocked.timeoutExpired = false;
+      blocked.epollTimerfdDeadlineTicks = null;
+      handle.kernel.thread_resume_blocked_syscall(blocked.vmPtr);
+    } else if (blocked.status === handle.kernel.abi_status_epoll_wait() && blocked.timeoutExpired) {
       handle.kernel.thread_resume_epoll_wait_timeout(blocked.vmPtr);
       blocked.timeoutExpired = false;
     } else if (

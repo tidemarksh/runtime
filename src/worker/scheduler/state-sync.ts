@@ -5,7 +5,11 @@ import {
   publishKernelRuntimeState,
   wakeRuntimeBridge,
 } from "../../bridge/runtime-state.js";
-import { collectHeldEpollOfdIds, collectHeldOfdIdsByType } from "../ownership/ofd-table.js";
+import {
+  collectHeldEpollDependentOfdIdsByType,
+  collectHeldEpollOfdIds,
+  collectHeldOfdIdsByType,
+} from "../ownership/ofd-table.js";
 import { kernelWorkerOwnsEpollState } from "../ownership/epoll-control.js";
 import { composeHandlePipeUsed, kernelWorkerOwnsPipeState } from "../ownership/pipe-control.js";
 import { kernelWorkerOwnsSocketState } from "../ownership/socket-control.js";
@@ -15,6 +19,7 @@ import {
   syncOfdStateViaKernelWorker,
   syncPipeStateViaKernelWorker,
   syncSocketStateViaKernelWorker,
+  applySocketStateFromKernelWorker,
 } from "../sync.js";
 import type { SyncCause } from "../sync/effects.js";
 import type {
@@ -114,7 +119,22 @@ export function createWorkerSchedulerStateSyncHelpers(
       for (const [blockedWorker, blocked] of member.blockedWorkers) {
         if (blockedStatuses.has(blocked.status)) {
           if (blocked.status === member.kernel.abi_status_pipe_wait()) {
+            if (blocked.rpcPending) {
+              continue;
+            }
             blocked.pipeSyncedBeforePassive = false;
+          }
+          if (blocked.status === member.kernel.abi_status_epoll_wait()) {
+            if (blocked.rpcPending) {
+              continue;
+            }
+            const vmPtr = typeof blocked.vmPtr === "number"
+              ? `0x${blocked.vmPtr.toString(16)}`
+              : "n/a";
+            deps.appendRuntimeLifecycleEvent(
+              member.runtimeId,
+              `epoll-wake-retry:${member.pid}:vm=${vmPtr}:status=${blocked.status}`,
+            );
           }
           deps.retryBlockedWorker(member, blockedWorker);
         }
@@ -178,12 +198,14 @@ export function createWorkerSchedulerStateSyncHelpers(
     }
     if (!kernelWorkerOwnsEpollState(handle)) {
       if (retryWaiters) {
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `epoll-sync-local-retry:${handle.pid}`);
         retryEpollWaitersInKernelShare(handle);
       }
       return Promise.resolve();
     }
     if (collectHeldEpollOfdIds(handle).length === 0) {
       if (retryWaiters) {
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `epoll-sync-skip-no-ofd:${handle.pid}:retry=1`);
         retryEpollWaitersInKernelShare(handle);
       }
       return Promise.resolve();
@@ -202,6 +224,7 @@ export function createWorkerSchedulerStateSyncHelpers(
         handle.epollSyncQueued = false;
         const shouldRetry = handle.epollWaiterWakeQueued;
         handle.epollWaiterWakeQueued = false;
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `epoll-sync-start:${handle.pid}:retry=${shouldRetry ? 1 : 0}`);
         await syncEpollStateViaKernelWorker(
           handle,
           shouldRetry
@@ -212,6 +235,7 @@ export function createWorkerSchedulerStateSyncHelpers(
         if (shouldRetry) {
           retryEpollWaitersInKernelShare(handle);
         }
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `epoll-sync-done:${handle.pid}:retry=${shouldRetry ? 1 : 0}`);
       }
     })().finally(() => {
       handle.epollSyncPromise = null;
@@ -220,7 +244,11 @@ export function createWorkerSchedulerStateSyncHelpers(
     return handle.epollSyncPromise;
   }
 
-  function requestEpollDependentOfdStateSync(handle: ProcessHandle): Promise<void> {
+  function requestEpollDependentOfdStateSync(
+    handle: ProcessHandle,
+    additionalOfdIds: readonly number[] = [],
+    options: { mode?: "push" | "pull" } = {},
+  ): Promise<void> {
     if (hasActiveVforkChildOwnerMismatch(handle)) {
       return Promise.resolve();
     }
@@ -233,7 +261,30 @@ export function createWorkerSchedulerStateSyncHelpers(
       handle.kernel.abi_fd_type_timerfd?.() ?? 10,
     ].filter((fdType): fdType is number => typeof fdType === "number");
 
-    for (const ofdId of collectHeldOfdIdsByType(handle, dependentOfdTypes)) {
+    const dependentOfdIds = new Set([
+      ...collectHeldOfdIdsByType(handle, dependentOfdTypes),
+      ...collectHeldEpollDependentOfdIdsByType(handle, dependentOfdTypes),
+      ...additionalOfdIds,
+    ]);
+    if (options.mode === "pull") {
+      const ofdIds = [...dependentOfdIds];
+      if (ofdIds.length === 0) {
+        return Promise.resolve();
+      }
+      return (async () => {
+        if (handle.ofdSyncPromise !== null) {
+          await handle.ofdSyncPromise;
+        }
+        await syncOfdStateViaKernelWorker(
+          handle,
+          ofdIds,
+          syscallSyncCause("epoll-dependent-ofd-sync"),
+          { mode: "pull" },
+        );
+        assertProcessIdentity(handle, "requestEpollDependentOfdStateSync");
+      })();
+    }
+    for (const ofdId of dependentOfdIds) {
       handle.ofdSyncQueuedIds.add(ofdId);
     }
     if (handle.ofdSyncQueuedIds.size === 0) {
@@ -380,7 +431,7 @@ export function createWorkerSchedulerStateSyncHelpers(
         const shouldWake = handle.socketWaiterWakeQueued;
         handle.socketWaiterWakeQueued = false;
         handle.transferDebugStats.socketSyncKernelCalls += 1;
-        const { socketUsed, netBufUsed } = await syncSocketStateViaKernelWorker(
+        const { socketUsed, netBufUsed, socketState } = await syncSocketStateViaKernelWorker(
           handle,
           shouldWake
             ? blockedRpcSyncCause(handle.kernel.abi_status_socket_recv())
@@ -388,6 +439,13 @@ export function createWorkerSchedulerStateSyncHelpers(
         );
         assertProcessIdentity(handle, "requestSocketStateSync");
         if (shouldWake) {
+          if (socketState) {
+            for (const member of handle.kernelShare.members) {
+              if (member !== handle && kernelWorkerOwnsSocketState(member)) {
+                applySocketStateFromKernelWorker(member, socketState);
+              }
+            }
+          }
           wakeSocketWaitersInKernelShare(handle, socketUsed, netBufUsed);
         }
       }

@@ -11,6 +11,7 @@ import type {
 
 export interface PruningSchedulerDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
+  appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   clearBlockedWorker(handle: ProcessHandle, worker: Worker): void;
 }
@@ -60,6 +61,22 @@ export function createPruningScheduler(deps: PruningSchedulerDeps): PruningSched
       || status === handle.kernel.abi_status_clone_spawn();
   }
 
+  function shouldPreserveProcessOwnedWorker(handle: ProcessHandle, vmPtr: number): boolean {
+    try {
+      const processPtr = handle.kernel.thread_process_ptr(vmPtr);
+      if (processPtr === 0 || processPtr !== handle.kernel.thread_process_ptr(handle.vmPtr)) {
+        return false;
+      }
+      return handle.kernel.thread_status(vmPtr) !== handle.kernel.abi_status_fault();
+    } catch {
+      return false;
+    }
+  }
+
+  function formatLiveVmPtrs(liveVmPtrs: Set<number>): string {
+    return [...liveVmPtrs].map((vmPtr) => `0x${vmPtr.toString(16)}`).join(",");
+  }
+
   function pruneStaleProcessWorkers(
     handle: ProcessHandle,
     liveVmPtrs: Set<number>,
@@ -84,6 +101,13 @@ export function createPruningScheduler(deps: PruningSchedulerDeps): PruningSched
         );
         continue;
       }
+      if (shouldPreserveProcessOwnedWorker(handle, thread.vmPtr)) {
+        deps.appendWorkerDebugLog(
+          handle,
+          `prune-skip-process-owned:0x${thread.vmPtr.toString(16)}:${handle.kernel.thread_status(thread.vmPtr)}`,
+        );
+        continue;
+      }
       deps.clearBlockedWorker(handle, worker);
       removeReadyWorker(handle, worker);
       if (handle.runningWorker === worker) {
@@ -93,6 +117,12 @@ export function createPruningScheduler(deps: PruningSchedulerDeps): PruningSched
         handle.vforkWorker = null;
       }
       deps.appendWorkerDebugLog(handle, `prune:0x${thread.vmPtr.toString(16)}`);
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `prune-delete:${handle.pid}:0x${thread.vmPtr.toString(16)}`
+          + `:status=${handle.kernel.thread_status?.(thread.vmPtr) ?? "n/a"}`
+          + `:live=[${formatLiveVmPtrs(liveVmPtrs)}]`,
+      );
       handle.workers.delete(worker);
       deps.threadWorkerStates.delete(worker);
       releaseWorker(worker);

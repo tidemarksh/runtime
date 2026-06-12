@@ -47,6 +47,10 @@ import { applyStatusFdEntries } from "./fd-entries.js";
 import { applyStatusOfdSlots } from "./ofd-slots.js";
 import { resolveWorkerMessageHandlerSyncEffects } from "../sync-effects.js";
 
+const CLONE_SPAWN_DEBUG_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_CLONE_SPAWN_DEBUG ?? "") === "1";
+
 interface ThreadRegisterSnapshot {
   vmPtr: number;
   pc: bigint;
@@ -68,6 +72,13 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
   ): void {
     const thread = deps.threadWorkerStates.get(worker);
     if (!thread) {
+      if (CLONE_SPAWN_DEBUG_ENABLED && msg.status === handle.kernel.abi_status_clone_spawn()) {
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `clone-status-no-thread:${handle.pid}:0x${msg.vmPtr.toString(16)}`
+            + `:status=${msg.status}:generation=${msg.generation ?? "n/a"}`,
+        );
+      }
       recordWorkerMessageDebugEvent(
         handle.workerMessageDebugStats,
         "statusHandlerNoThreadDrops",
@@ -85,6 +96,13 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         `status-stale-generation:0x${thread.vmPtr.toString(16)}`
           + `:msg=${msg.generation}:current=${thread.generation}:status=${msg.status}`,
       );
+      if (CLONE_SPAWN_DEBUG_ENABLED && msg.status === handle.kernel.abi_status_clone_spawn()) {
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `clone-status-stale-generation:${handle.pid}:0x${thread.vmPtr.toString(16)}`
+            + `:msg=${msg.generation}:current=${thread.generation}`,
+        );
+      }
       return;
     }
     const status = msg.status;
@@ -106,6 +124,15 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       statusBelongsToHandle: statusStateBelongsToHandle,
       deps,
     })) {
+      if (CLONE_SPAWN_DEBUG_ENABLED && status === handle.kernel.abi_status_clone_spawn()) {
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `clone-status-owner-async:${handle.pid}:0x${thread.vmPtr.toString(16)}`
+            + `:generation=${msg.generation ?? "n/a"}`
+            + `:owner=${thread.ownerAsyncStatus ?? "null"}`
+            + `:belongs=${statusStateBelongsToHandle ? 1 : 0}`,
+        );
+      }
       return;
     }
     const previousWaitingStatus = thread.waitingInWorkerStatus;
@@ -142,8 +169,30 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     recordWorkerMessageDebugEvent(handle.workerMessageDebugStats, "statusHandled");
     thread.statusCounts[String(status)] = (thread.statusCounts[String(status)] ?? 0) + 1;
     thread.lastStatus = status;
+    if (CLONE_SPAWN_DEBUG_ENABLED && status === handle.kernel.abi_status_clone_spawn()) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `clone-status-route:${handle.pid}:0x${thread.vmPtr.toString(16)}`
+          + `:generation=${msg.generation ?? "n/a"}`
+          + `:count=${thread.statusCounts[String(status)] ?? 0}`,
+      );
+    }
     const statusAtMs = Date.now();
     thread.lastStatusAtMs = statusAtMs;
+    const recentStatuses = thread.recentStatuses ??= [];
+    recentStatuses.push({
+      status,
+      pc: msg.pc,
+      syscallNr: msg.syscallNr ?? null,
+      fdTraceSyscallNr: msg.fdTraceSyscallNr ?? null,
+      fdTraceResult: msg.fdTraceResult ?? null,
+      futexWaitAddr: msg.futexWaitAddr ?? null,
+      futexBlockedAddr: msg.futexBlockedAddr ?? null,
+      atMs: statusAtMs,
+    });
+    if (recentStatuses.length > 16) {
+      recentStatuses.splice(0, recentStatuses.length - 16);
+    }
     if (thread.runningGeneration === msg.generation && thread.lastStepAtMs !== null) {
       const stepWallMs = Math.max(0, statusAtMs - thread.lastStepAtMs);
       thread.lastStepDurationMs = stepWallMs;
@@ -153,6 +202,11 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     thread.lastStatusPc = msg.pc;
     thread.lastStatusSp = msg.sp ?? null;
     thread.lastStatusS11 = msg.s11 ?? null;
+    thread.lastStatusFutexWaitAddr = msg.futexWaitAddr ?? null;
+    thread.lastStatusFutexBlockedAddr = msg.futexBlockedAddr ?? null;
+    if (status !== handle.kernel.abi_status_sleep()) {
+      thread.yieldedReady = false;
+    }
     if (msg.forkStackSnapshot) {
       thread.forkStackSnapshot = msg.forkStackSnapshot;
     }

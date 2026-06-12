@@ -54,6 +54,41 @@ function encodeWaitStatus(exitCode: number, termSignal: number): number {
 }
 
 export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
+  function formatExitOwnedStateFdDebug(handle: ProcessHandle): string {
+    const parts: string[] = [];
+    const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
+    for (const fd of [0, 1, 2]) {
+      if (fd >= maxFds) {
+        parts.push(`${fd}->out`);
+        continue;
+      }
+      try {
+        const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+        const fdFlags = handle.kernel.process_fd_flags?.(handle.vmPtr, fd) ?? 0;
+        if (ofdId <= 0 || ofdId >= maxFds) {
+          parts.push(`${fd}->${ofdId}/${fdFlags}`);
+          continue;
+        }
+        parts.push([
+          `${fd}->${ofdId}`,
+          `flags=${fdFlags}`,
+          `type=${handle.kernel.kernel_ofd_fd_type(ofdId)}`,
+          `ino=${handle.kernel.kernel_ofd_ino(ofdId)}`,
+          `host=${handle.kernel.kernel_ofd_host_fd(ofdId)}`,
+        ].join("/"));
+      } catch (error) {
+        parts.push(`${fd}->error:${JSON.stringify(error instanceof Error ? error.message : String(error))}`);
+      }
+    }
+    return [
+      `vm=0x${handle.vmPtr.toString(16)}`,
+      `stdioOwner=${handle.stdioOwner?.pid ?? 0}`,
+      `host=${handle.hostStdio.stdinPipe}.${handle.hostStdio.stdoutPipe}.${handle.hostStdio.stderrPipe}`,
+      `local=${handle.stdinPipe}.${handle.stdoutPipe}.${handle.stderrPipe}`,
+      `fds=${parts.join(",")}`,
+    ].join(":");
+  }
+
   function beginProcessTeardown(handle: ProcessHandle): boolean {
     if (handle.exitInProgress) {
       return false;
@@ -67,6 +102,10 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
 
   async function syncOwnedStateBeforeExit(handle: ProcessHandle): Promise<void> {
     if (handle.kernelWorkerRequest && handle.pid > 0) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `exit-owned-state-sync-before:${handle.pid}:${formatExitOwnedStateFdDebug(handle)}`,
+      );
       await deps.syncForkSharedStateViaKernelWorker(handle, kernelShareOtherMembers(handle), {
         cause: { kind: "syscall", nr: -1n, name: "process-exit-owned-state" },
         includeMemfs: false,
@@ -74,15 +113,35 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
         deltaOfdIds: true,
         sourceVmPtr: handle.vmPtr,
       });
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `exit-owned-state-sync-after:${handle.pid}:${formatExitOwnedStateFdDebug(handle)}`,
+      );
     }
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `exit-owned-state-before-shared-sync:${handle.pid}:${formatExitOwnedStateFdDebug(handle)}`,
+    );
     if (kernelWorkerOwnsPipeState(handle)) {
       await deps.requestPipeStateSync(handle, true);
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `exit-owned-state-after-pipe-sync:${handle.pid}:${formatExitOwnedStateFdDebug(handle)}`,
+      );
     }
     if (kernelWorkerOwnsSocketState(handle)) {
       await deps.requestSocketStateSync(handle, false);
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `exit-owned-state-after-socket-sync:${handle.pid}:${formatExitOwnedStateFdDebug(handle)}`,
+      );
     }
     if (kernelWorkerOwnsEpollState(handle)) {
       await deps.requestEpollStateSync(handle, false);
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `exit-owned-state-after-epoll-sync:${handle.pid}:${formatExitOwnedStateFdDebug(handle)}`,
+      );
     }
   }
 

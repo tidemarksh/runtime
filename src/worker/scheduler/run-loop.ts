@@ -3,14 +3,18 @@ import type {
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
+import { clearStaleFutexRecordIfResolved, threadHasCanonicalFutexBlock } from "./futex.js";
 
 export function logNetworkDebug(_event: string): void {
   // Runtime diagnostics are kept in the per-process worker debug buffer.
 }
 
+const STALE_SLEEP_RUNNING_WORKER_REPAIR_MS = 2_000;
+
 export interface RunLoopSchedulerDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
+  blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
   retryBlockedWorker(handle: ProcessHandle, worker: Worker): void;
 }
 
@@ -38,6 +42,15 @@ export interface RunLoopScheduler {
 
 export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopScheduler {
   const observedForkSharedSyncPromises = new WeakSet<Promise<void>>();
+
+  function statusBlocksInOwnerScheduler(handle: ProcessHandle, status: number): boolean {
+    return status === handle.kernel.abi_status_epoll_wait()
+      || status === handle.kernel.abi_status_fs()
+      || status === handle.kernel.abi_status_sleep()
+      || status === handle.kernel.abi_status_pipe_wait()
+      || status === handle.kernel.abi_status_wait4()
+      || status === handle.kernel.abi_status_flock_wait();
+  }
 
   function beginBlockedRpc(blocked: BlockedWorkerState): number {
     blocked.rpcPending = true;
@@ -78,6 +91,34 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
       blocked.timeoutExpired = timeoutExpired;
       deps.retryBlockedWorker(handle, worker);
     }, delayMs);
+  }
+
+  function runningWorkerStepAppearsIdle(
+    handle: ProcessHandle,
+    thread: ThreadWorkerState,
+    options: { allowUnansweredStep?: boolean } = {},
+  ): boolean {
+    const activeStepVmPtr = handle.kernel.debug_thread_step_vm_ptr?.();
+    if (activeStepVmPtr === thread.vmPtr) {
+      return false;
+    }
+    const lastStepAtMs = thread.lastStepAtMs;
+    const lastStatusAtMs = thread.lastStatusAtMs;
+    if (lastStepAtMs === null) {
+      return false;
+    }
+    const hasUnansweredStep = thread.stepCount > thread.statusCount;
+    if (hasUnansweredStep && options.allowUnansweredStep !== true) {
+      return false;
+    }
+    if (lastStatusAtMs !== null) {
+      return Date.now() - Math.max(lastStepAtMs, lastStatusAtMs) >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
+    }
+    return Date.now() - lastStepAtMs >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
+  }
+
+  function runningWorkerHasNoActiveKernelStep(handle: ProcessHandle): boolean {
+    return handle.kernel.debug_thread_step_vm_ptr?.() === 0;
   }
 
   function observeForkSharedSyncCompletion(
@@ -136,6 +177,135 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
       );
       return true;
     }
+    const runningStatus = handle.kernel.thread_status(runningThread.vmPtr);
+    if (
+      runningThread.pendingGuestMemoryWrites.length === 0
+      && handle.kernel.thread_process_ptr(runningThread.vmPtr) !== 0
+      && clearStaleFutexRecordIfResolved(handle, runningThread.vmPtr)
+    ) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `running-worker-stale-futex-record-cleared:${handle.pid}:0x${runningThread.vmPtr.toString(16)}`,
+      );
+    }
+    if (
+      threadHasCanonicalFutexBlock(handle, runningThread.vmPtr)
+      && runningThread.pendingGuestMemoryWrites.length === 0
+      && runningStatus === handle.kernel.abi_status_ok()
+      && handle.kernel.thread_process_ptr(runningThread.vmPtr) !== 0
+    ) {
+      handle.runningWorker = null;
+      runningThread.runningGeneration = null;
+      runningThread.waitingInWorkerStatus = handle.kernel.abi_status_futex_wait();
+      runningThread.waitingInWorkerReconcileDeferred = false;
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `running-worker-cleared:${handle.pid}:recorded-futex-wait:0x${runningThread.vmPtr.toString(16)}`,
+      );
+      return true;
+    }
+    if (
+      (
+        runningThread.lastStatus === handle.kernel.abi_status_futex_wait()
+        || threadHasCanonicalFutexBlock(handle, runningThread.vmPtr)
+      )
+      && runningThread.pendingGuestMemoryWrites.length === 0
+      && runningStatus === handle.kernel.abi_status_ok()
+      && handle.kernel.thread_process_ptr(runningThread.vmPtr) !== 0
+      && runningThread.stepCount <= runningThread.statusCount
+    ) {
+      handle.runningWorker = null;
+      runningThread.runningGeneration = null;
+      runningThread.waitingInWorkerStatus = handle.kernel.abi_status_futex_wait();
+      runningThread.waitingInWorkerReconcileDeferred = false;
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `running-worker-cleared:${handle.pid}:answered-futex-wait:0x${runningThread.vmPtr.toString(16)}:record=${threadHasCanonicalFutexBlock(handle, runningThread.vmPtr) ? 1 : 0}`,
+      );
+      return true;
+    }
+    if (
+      runningThread.lastStatus === handle.kernel.abi_status_ok()
+      && runningThread.pendingGuestMemoryWrites.length === 0
+      && runningStatus === handle.kernel.abi_status_ok()
+      && handle.kernel.thread_process_ptr(runningThread.vmPtr) !== 0
+      && runningThread.stepCount <= runningThread.statusCount
+    ) {
+      handle.runningWorker = null;
+      runningThread.runningGeneration = null;
+      if (!handle.readyWorkers.includes(runningWorker)) {
+        handle.readyWorkers.push(runningWorker);
+      }
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `running-worker-cleared:${handle.pid}:answered-ok:0x${runningThread.vmPtr.toString(16)}`,
+      );
+      return true;
+    }
+    const okUnansweredSteps = runningThread.stepCount - runningThread.statusCount;
+    if (
+      runningThread.lastStatus === handle.kernel.abi_status_ok()
+      && runningThread.pendingGuestMemoryWrites.length === 0
+      && runningStatus === handle.kernel.abi_status_ok()
+      && handle.kernel.thread_process_ptr(runningThread.vmPtr) !== 0
+      && okUnansweredSteps >= 1
+      && runningWorkerHasNoActiveKernelStep(handle)
+    ) {
+      handle.runningWorker = null;
+      runningThread.runningGeneration = null;
+      if (!handle.readyWorkers.includes(runningWorker)) {
+        handle.readyWorkers.push(runningWorker);
+      }
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `running-worker-cleared:${handle.pid}:${okUnansweredSteps > 1 ? "inactive-surplus" : "inactive"}-unanswered-ok:0x${runningThread.vmPtr.toString(16)}:unanswered=${okUnansweredSteps}`,
+      );
+      return true;
+    }
+    if (
+      runningThread.lastStatus === handle.kernel.abi_status_ok()
+      && runningThread.pendingGuestMemoryWrites.length === 0
+      && runningStatus === handle.kernel.abi_status_ok()
+      && handle.kernel.thread_process_ptr(runningThread.vmPtr) !== 0
+      && okUnansweredSteps >= 1
+      && runningThread.lastStatusAtMs !== null
+      && runningThread.lastStepAtMs !== null
+      && runningWorkerStepAppearsIdle(handle, runningThread, { allowUnansweredStep: true })
+    ) {
+      handle.runningWorker = null;
+      runningThread.runningGeneration = null;
+      if (!handle.readyWorkers.includes(runningWorker)) {
+        handle.readyWorkers.push(runningWorker);
+      }
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `running-worker-cleared:${handle.pid}:${okUnansweredSteps > 1 ? "surplus-" : ""}stale-unanswered-ok:0x${runningThread.vmPtr.toString(16)}:unanswered=${okUnansweredSteps}`,
+      );
+      return true;
+    }
+    const ownerBlockingUnansweredSteps = runningThread.stepCount - runningThread.statusCount;
+    if (
+      runningThread.lastStatus !== null
+      && statusBlocksInOwnerScheduler(handle, runningThread.lastStatus)
+      && runningThread.pendingGuestMemoryWrites.length === 0
+      && runningStatus === handle.kernel.abi_status_ok()
+      && handle.kernel.thread_process_ptr(runningThread.vmPtr) !== 0
+      && ownerBlockingUnansweredSteps <= 0
+    ) {
+      handle.runningWorker = null;
+      runningThread.runningGeneration = null;
+      if (
+        ownerBlockingUnansweredSteps === 1
+        && !handle.readyWorkers.includes(runningWorker)
+      ) {
+        handle.readyWorkers.push(runningWorker);
+      }
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `running-worker-cleared:${handle.pid}:answered-blocking-status=${runningThread.lastStatus}:0x${runningThread.vmPtr.toString(16)}`,
+      );
+      return true;
+    }
     if (handle.kernel.thread_process_ptr(runningThread.vmPtr) === 0) {
       handle.runningWorker = null;
       runningThread.runningGeneration = null;
@@ -145,7 +315,16 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
       );
       return true;
     }
-    const runningStatus = handle.kernel.thread_status(runningThread.vmPtr);
+    if (statusBlocksInOwnerScheduler(handle, runningStatus)) {
+      handle.runningWorker = null;
+      runningThread.runningGeneration = null;
+      deps.blockWorker(handle, runningWorker, runningStatus, runningThread.vmPtr);
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `running-worker-blocked:${handle.pid}:status=${runningStatus}`,
+      );
+      return true;
+    }
     if (runningStatus !== handle.kernel.abi_status_ok()) {
       handle.runningWorker = null;
       runningThread.runningGeneration = null;

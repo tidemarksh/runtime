@@ -41,6 +41,7 @@ interface ThreadWorkerBlockingContext {
   futexWaitSliceMs: number;
   postStatus: ThreadWorkerOutcomePublisher;
   reattachPublishedKernelRuntimeState(): void;
+  recordFutexWaitDebug?(debug: string): void;
   step(budget: number): void;
 }
 
@@ -210,8 +211,10 @@ export function handleFutexWait(
   const i32 = new Int32Array(ctx.exports.memory.buffer);
   let guestAddr = ctx.exports.thread_futex_wait_addr(ctx.vmPtr);
   const expected = ctx.exports.thread_futex_wait_expected(ctx.vmPtr);
+  const initialBlockedAddr = ctx.exports.thread_record_blocked_addr(ctx.vmPtr);
+  recordFutexWaitDebug(ctx, i32, guestAddr, expected, "entry", null, initialBlockedAddr);
 
-  if (ctx.exports.thread_record_blocked_addr(ctx.vmPtr) === 0n) {
+  if (initialBlockedAddr === 0n) {
     ctx.exports.thread_resume_futex_wait(ctx.vmPtr);
     return true;
   }
@@ -236,11 +239,12 @@ export function handleFutexWait(
 
     ctx.reattachPublishedKernelRuntimeState();
     const currentStatus = ctx.exports.thread_status(ctx.vmPtr);
+    const stillBlockedAddr = ctx.exports.thread_record_blocked_addr(ctx.vmPtr);
+    recordFutexWaitDebug(ctx, i32, guestAddr, expected, "wait", result, stillBlockedAddr, currentStatus);
     if (currentStatus !== ctx.statusCodes.FUTEX_WAIT) {
       ctx.postStatus(createThreadWorkerStatusOutcome(currentStatus));
       return false;
     }
-    const stillBlockedAddr = ctx.exports.thread_record_blocked_addr(ctx.vmPtr);
     const hasPendingSignal = ctx.exports.thread_pending_signal_interrupts_blocked_syscall?.(ctx.vmPtr) === 1
       || ctx.exports.thread_sig_pending(ctx.vmPtr) !== 0n;
     if (stillBlockedAddr === BLOCKED_ADDR_NOT_FOUND) {
@@ -267,7 +271,7 @@ export function handleFutexWait(
     }
     if (result === "not-equal") {
       clearSyscallTrace(ctx.exports);
-      ctx.exports.thread_resume_futex_wait_result(ctx.vmPtr, BigInt(ctx.exports.abi_eagain()));
+      ctx.exports.thread_resume_futex_wait(ctx.vmPtr);
       break;
     }
     if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
@@ -280,6 +284,35 @@ export function handleFutexWait(
   const resumedStatus = ctx.exports.thread_status(ctx.vmPtr);
   ctx.postStatus(createThreadWorkerStatusOutcome(resumedStatus));
   return false;
+}
+
+function recordFutexWaitDebug(
+  ctx: ThreadWorkerBlockingContext,
+  i32: Int32Array,
+  guestAddr: bigint,
+  expected: number,
+  stage: string,
+  result: "ok" | "not-equal" | "timed-out" | null,
+  blockedAddr: bigint,
+  status?: number,
+): void {
+  if (ctx.recordFutexWaitDebug === undefined) {
+    return;
+  }
+  const wordIndex = futexWordIndex(ctx.guestBase, guestAddr, i32);
+  const word = wordIndex === null ? "n/a" : Atomics.load(i32, wordIndex).toString();
+  ctx.recordFutexWaitDebug([
+    "thread-futex-wait",
+    `stage=${stage}`,
+    `vm=0x${ctx.vmPtr.toString(16)}`,
+    `addr=0x${guestAddr.toString(16)}`,
+    `index=${wordIndex ?? "n/a"}`,
+    `expected=${expected}`,
+    `word=${word}`,
+    `result=${result ?? "n/a"}`,
+    `blocked=0x${blockedAddr.toString(16)}`,
+    status === undefined ? "" : `status=${status}`,
+  ].filter((part) => part.length > 0).join(":"));
 }
 
 function readTimespecMillis(

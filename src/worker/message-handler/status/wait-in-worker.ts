@@ -56,6 +56,12 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       handle,
       `wait:0x${thread.vmPtr.toString(16)}@${msg.status}${formatCompactDebugSuffix(msg.debug)}`,
     );
+    if (msg.debug?.includes("thread-futex-wait")) {
+      deps.appendWorkerDebugLog(
+        handle,
+        `futex_wait_debug:0x${thread.vmPtr.toString(16)}:${msg.debug}`,
+      );
+    }
     deps.clearBlockedWorker(handle, worker);
     const drainedPipe = kernelWorkerOwnsPipeState(handle) ? false : drainProcessOutput(handle);
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
@@ -87,6 +93,33 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
         handle,
         `wait-vfork-hold:0x${thread.vmPtr.toString(16)}@${msg.status}${formatCompactDebugSuffix(msg.debug)}`,
       );
+      return;
+    }
+
+    const wait4Status = handle.kernel.abi_status_wait4?.() ?? null;
+    if (
+      msg.status === wait4Status
+      && handle.kernelWorkerRequest
+      && handle.pid > 0
+    ) {
+      thread.waitingInWorkerStatus = null;
+      thread.waitingInWorkerReconcileDeferred = false;
+      deps.blockWorker(handle, worker, msg.status, thread.vmPtr);
+      void deps.requestPipeStateSync(handle, true)
+        .then(() => {
+          if (!workerStillOwnedByHandle()) {
+            return;
+          }
+          publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
+          deps.kickBlockedWorkers(handle);
+          deps.pumpProcess(handle);
+        })
+        .catch((error) => {
+          if (!workerStillOwnedByHandle()) {
+            return;
+          }
+          deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+        });
       return;
     }
 

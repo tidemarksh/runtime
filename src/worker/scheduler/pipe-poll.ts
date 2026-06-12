@@ -232,8 +232,15 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
       && handle.kernel.thread_blocked_pipe_read_ready?.(vmPtr) === 1
     );
     const blockedPollPipeIsReady = blockedPollPipeHasBufferedData(handle, vmPtr);
+    const pollPipeSlots = isPollLike
+      ? pollPipeSlotsForThreadStep(handle, vmPtr)
+      : null;
+    const pollLikeHasNoWatchedFds = isPollLike
+      && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) !== 1
+      && pollWaitHasNoWatchedFds(handle, vmPtr, syscall);
     const pollLikePipeHasNoWriter = isPollLike
       && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) !== 1
+      && (pollPipeSlots?.size ?? 0) > 0
       && !blockedPollPipeIsReady
       && pollPipeWriteOpenForThreadStep(handle, vmPtr) <= 0;
     const childExitRecordsAlreadyResumed = deps.pipeChildExitRecordsAlreadyResumedForWait(
@@ -244,10 +251,18 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
     const childWorkStillPending = handle.pendingChildExitRecords > 0
       || handle.pendingChildSpawnRecords > 0
       || deps.hasActiveChildProcess(handle.pid);
+    const childWakeRecordPending = (
+      handle.childExitSyncRecords.size > 0
+      && !childExitRecordsAlreadyResumed
+    )
+      || handle.pendingChildExitRecords > 0
+      || handle.pendingChildSpawnRecords > 0;
     return status === handle.kernel.abi_status_pipe_wait()
       && canPark
-      && childExitRecordsAlreadyResumed
-      && childWorkStillPending
+      && (
+        (childExitRecordsAlreadyResumed && childWorkStillPending)
+        || (pollLikeHasNoWatchedFds && !childWakeRecordPending)
+      )
       && !blockedReadIsReady
       && !blockedPollPipeIsReady
       && !pollLikePipeHasNoWriter
@@ -256,6 +271,76 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
       && (readyCount === undefined || readyCount === 0)
       && handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) !== 1
       && handle.kernel.thread_poll_hup_sync_pending?.(vmPtr) !== 1;
+  }
+
+  function pollWaitHasNoWatchedFds(
+    handle: ProcessHandle,
+    vmPtr: number,
+    syscall: bigint,
+  ): boolean {
+    const ppoll = handle.kernel.abi_sys_ppoll?.();
+    const pselect6 = handle.kernel.abi_sys_pselect6?.();
+    const maxFds = handle.kernel.abi_max_fds?.() ?? 1024;
+    const memory = handle.memory?.buffer;
+    if (!memory) {
+      return false;
+    }
+    const view = new DataView(memory);
+    if (ppoll !== undefined && syscall === BigInt(ppoll)) {
+      const fdsPtr = BigInt(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 0) ?? 0n);
+      const nfds = Number(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 1) ?? 0n);
+      if (!Number.isFinite(nfds) || nfds <= 0) {
+        return true;
+      }
+      const count = Math.min(nfds, maxFds);
+      const absolute = guestAbsoluteRange(handle, fdsPtr, count * POLLFD_BYTES);
+      if (absolute === null) {
+        return false;
+      }
+      for (let index = 0; index < count; index += 1) {
+        const offset = absolute + index * POLLFD_BYTES;
+        const fd = view.getInt32(offset, true);
+        const events = view.getUint16(offset + 4, true);
+        if (fd >= 0 && events !== 0) {
+          return false;
+        }
+      }
+      return true;
+    }
+    if (pselect6 !== undefined && syscall === BigInt(pselect6)) {
+      const nfds = Number(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 0) ?? 0n);
+      if (!Number.isFinite(nfds) || nfds <= 0) {
+        return true;
+      }
+      const count = Math.min(nfds, maxFds);
+      const setBytes = Math.floor((count + 63) / 64) * 8;
+      const readPtr = BigInt(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 1) ?? 0n);
+      const writePtr = BigInt(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 2) ?? 0n);
+      const exceptPtr = BigInt(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 3) ?? 0n);
+      const readBase = readPtr === 0n ? null : guestAbsoluteRange(handle, readPtr, setBytes);
+      const writeBase = writePtr === 0n ? null : guestAbsoluteRange(handle, writePtr, setBytes);
+      const exceptBase = exceptPtr === 0n ? null : guestAbsoluteRange(handle, exceptPtr, setBytes);
+      if (
+        (readPtr !== 0n && readBase === null)
+        || (writePtr !== 0n && writeBase === null)
+        || (exceptPtr !== 0n && exceptBase === null)
+      ) {
+        return false;
+      }
+      const hasBit = (base: number | null, fd: number): boolean => {
+        if (base === null) {
+          return false;
+        }
+        return (view.getUint8(base + Math.floor(fd / 8)) & (1 << (fd % 8))) !== 0;
+      };
+      for (let fd = 0; fd < count; fd += 1) {
+        if (hasBit(readBase, fd) || hasBit(writeBase, fd) || hasBit(exceptBase, fd)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    return false;
   }
 
   function pipeWaitHasImmediateWakeReason(

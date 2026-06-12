@@ -4,12 +4,13 @@ import {
 } from "../../abi.js";
 import { kernelShareOtherMembers, reconcileKernelSharePipeControl } from "../kernel-share.js";
 import { forceNetworkClosedFds } from "../network-socket-close.js";
+import { syncPipeOfdGenerationsForSlot } from "../ownership/ofd-table.js";
 import type {
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
 import type { KernelWorkerPipeSlotSnapshot } from "../../messages.js";
-import { PIPE_HEAD_OFFSET, PIPE_TAIL_OFFSET, PIPE_WRITE_OPEN_OFFSET } from "../../layout/pipe.js";
+import { PIPE_HEAD_OFFSET, PIPE_READ_OPEN_OFFSET, PIPE_TAIL_OFFSET, PIPE_WRITE_OPEN_OFFSET } from "../../layout/pipe.js";
 import { POLLFD_BYTES } from "../../layout/poll.js";
 import { activeChildMayHoldBlockedPipeWriter } from "./pipe.js";
 import type { KernelRpcResumeEffect, KernelRpcResumeOutcome } from "./outcomes.js";
@@ -57,6 +58,15 @@ export function createWorkerKernelRpcBlockedRpcHelpers(deps: WorkerKernelRpcBloc
     const effects = pendingOutcomeEffects.get(worker);
     pendingOutcomeEffects.delete(worker);
     return effects;
+  }
+
+  function outcomeEffectsNeedResumeContinuation(worker: Worker): boolean {
+    const effects = pendingOutcomeEffects.get(worker);
+    return effects !== undefined && effects.some((effect) => (
+      effect.kind === "request-pipe-state-sync"
+      || effect.kind === "sync-blocked-fork-shared-state"
+      || effect.kind === "sync-blocked-socket-state"
+    ));
   }
 
   function emitBlockedRetryResult(
@@ -330,6 +340,94 @@ function pipeSlotWriteOpen(handle: ProcessHandle, pipeSlot: number): number {
   return view.getInt32(offset + PIPE_WRITE_OPEN_OFFSET, true);
 }
 
+function localPipeWriteOpenForSlot(handle: ProcessHandle, vmPtr: number, pipeSlot: number): number {
+  return localPipeOpenCountsForSlot(handle, vmPtr, pipeSlot).writeOpen;
+}
+
+function localPipeOpenCountsForSlot(handle: ProcessHandle, vmPtr: number, pipeSlot: number): {
+  readOpen: number;
+  writeOpen: number;
+} {
+  if (pipeSlot <= 0 || pipeSlot >= handle.kernel.abi_max_pipes()) {
+    return { readOpen: 0, writeOpen: 0 };
+  }
+  const maxFds = handle.kernel.abi_max_fds();
+  let readOpen = 0;
+  let writeOpen = 0;
+  for (let fd = 0; fd < maxFds; fd += 1) {
+    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    if (
+      ofdId <= 0
+      || ofdId >= maxFds
+      || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
+      || handle.kernel.kernel_ofd_ino(ofdId) !== pipeSlot
+    ) {
+      continue;
+    }
+    if (handle.kernel.kernel_ofd_host_fd(ofdId) >= 0) {
+      readOpen += 1;
+    } else {
+      writeOpen += 1;
+    }
+  }
+  return { readOpen, writeOpen };
+}
+
+function setPipeSlotWriteOpen(handle: ProcessHandle, pipeSlot: number, writeOpen: number): boolean {
+  const maxPipes = handle.kernel.abi_max_pipes();
+  const slotBytes = handle.kernel.kernel_pipe_region_bytes() / maxPipes;
+  if (
+    pipeSlot <= 0
+    || pipeSlot >= maxPipes
+    || !Number.isInteger(slotBytes)
+    || slotBytes <= PIPE_WRITE_OPEN_OFFSET + 4
+  ) {
+    return false;
+  }
+  const offset = handle.kernel.kernel_pipe_base() + pipeSlot * slotBytes;
+  const view = new DataView(handle.memory.buffer);
+  if (offset < 0 || offset + PIPE_WRITE_OPEN_OFFSET + 4 > view.byteLength) {
+    return false;
+  }
+  view.setInt32(offset + PIPE_WRITE_OPEN_OFFSET, writeOpen, true);
+  return true;
+}
+
+function preservePipeSlotOpenCounts(
+  handle: ProcessHandle,
+  pipeSlot: number,
+  counts: { readOpen?: number; writeOpen?: number },
+): boolean {
+  const maxPipes = handle.kernel.abi_max_pipes();
+  const slotBytes = handle.kernel.kernel_pipe_region_bytes() / maxPipes;
+  if (
+    pipeSlot <= 0
+    || pipeSlot >= maxPipes
+    || !Number.isInteger(slotBytes)
+    || slotBytes <= PIPE_WRITE_OPEN_OFFSET + 4
+  ) {
+    return false;
+  }
+  const offset = handle.kernel.kernel_pipe_base() + pipeSlot * slotBytes;
+  const view = new DataView(handle.memory.buffer);
+  if (offset < 0 || offset + PIPE_WRITE_OPEN_OFFSET + 4 > view.byteLength) {
+    return false;
+  }
+  if (counts.readOpen !== undefined) {
+    const currentReadOpen = view.getInt32(offset + PIPE_READ_OPEN_OFFSET, true);
+    if (currentReadOpen < counts.readOpen) {
+      view.setInt32(offset + PIPE_READ_OPEN_OFFSET, counts.readOpen, true);
+    }
+  }
+  if (counts.writeOpen !== undefined) {
+    const currentWriteOpen = view.getInt32(offset + PIPE_WRITE_OPEN_OFFSET, true);
+    if (currentWriteOpen < counts.writeOpen) {
+      view.setInt32(offset + PIPE_WRITE_OPEN_OFFSET, counts.writeOpen, true);
+    }
+  }
+  return true;
+}
+
 function pipeSlotBufferedLenForThreadStepFd(
   handle: ProcessHandle,
   vmPtr: number,
@@ -393,6 +491,9 @@ function preserveHostStdinWriterForBlockedRead(handle: ProcessHandle, vmPtr: num
   if (handle.stdioOwner !== null) {
     return;
   }
+  if (handle.stdinClosed === true) {
+    return;
+  }
   const syscallNr = blockedPipeWaitSyscallNr(handle, vmPtr);
   const readSyscall = handle.kernel.abi_sys_read?.();
   const blockedFd = handle.kernel.thread_blocked_fd?.(vmPtr) ?? 0;
@@ -446,10 +547,14 @@ function snapshotBlockedPipeSlotForThreadStep(
 
 function blockedPipeWaitSyscallNr(handle: ProcessHandle, vmPtr: number): bigint | undefined {
   const blockedSyscallNr = handle.kernel.thread_blocked_syscall_nr?.(vmPtr);
-  if (blockedSyscallNr !== undefined && blockedSyscallNr !== 0n) {
-    return blockedSyscallNr;
+  if (blockedSyscallNr !== undefined) {
+    const normalizedBlockedSyscallNr = BigInt(blockedSyscallNr);
+    if (normalizedBlockedSyscallNr !== 0n) {
+      return normalizedBlockedSyscallNr;
+    }
   }
-  return handle.kernel.thread_a7?.(vmPtr);
+  const currentSyscallNr = handle.kernel.thread_a7?.(vmPtr);
+  return currentSyscallNr === undefined ? undefined : BigInt(currentSyscallNr);
 }
 
 function blockedPipeWaitFd(handle: ProcessHandle, vmPtr: number): number {
@@ -473,6 +578,87 @@ function isPollLikePipeWait(handle: ProcessHandle, vmPtr: number): boolean {
   const pselect6 = handle.kernel.abi_sys_pselect6?.();
   return (ppoll !== undefined && syscallNr === BigInt(ppoll))
     || (pselect6 !== undefined && syscallNr === BigInt(pselect6));
+}
+
+function guestAbsoluteRange(handle: ProcessHandle, ptr: bigint, byteLength: number): number | null {
+  const guestPtr = Number(ptr);
+  if (!Number.isFinite(guestPtr) || guestPtr <= 0 || byteLength <= 0) {
+    return null;
+  }
+  const absolute = (handle.guestBase ?? 0) + guestPtr;
+  if (absolute < 0 || absolute + byteLength > handle.memory.buffer.byteLength) {
+    return null;
+  }
+  return absolute;
+}
+
+function pollLikeWaitHasNoWatchedFds(handle: ProcessHandle, vmPtr: number): boolean {
+  const syscallNr = blockedPipeWaitSyscallNr(handle, vmPtr);
+  if (syscallNr === undefined) {
+    return false;
+  }
+  const ppoll = handle.kernel.abi_sys_ppoll?.();
+  const pselect6 = handle.kernel.abi_sys_pselect6?.();
+  const maxFds = handle.kernel.abi_max_fds?.() ?? 1024;
+  const view = new DataView(handle.memory.buffer);
+
+  if (ppoll !== undefined && syscallNr === BigInt(ppoll)) {
+    const fdsPtr = BigInt(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 0) ?? 0n);
+    const nfds = Number(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 1) ?? 0n);
+    if (!Number.isFinite(nfds) || nfds <= 0) {
+      return true;
+    }
+    const count = Math.min(nfds, maxFds);
+    const absolute = guestAbsoluteRange(handle, fdsPtr, count * POLLFD_BYTES);
+    if (absolute === null) {
+      return false;
+    }
+    for (let index = 0; index < count; index += 1) {
+      const offset = absolute + index * POLLFD_BYTES;
+      const fd = view.getInt32(offset, true);
+      const events = view.getUint16(offset + 4, true);
+      if (fd >= 0 && events !== 0) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (pselect6 !== undefined && syscallNr === BigInt(pselect6)) {
+    const nfds = Number(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 0) ?? 0n);
+    if (!Number.isFinite(nfds) || nfds <= 0) {
+      return true;
+    }
+    const count = Math.min(nfds, maxFds);
+    const setBytes = Math.floor((count + 63) / 64) * 8;
+    const readPtr = BigInt(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 1) ?? 0n);
+    const writePtr = BigInt(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 2) ?? 0n);
+    const exceptPtr = BigInt(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 3) ?? 0n);
+    const readBase = readPtr === 0n ? null : guestAbsoluteRange(handle, readPtr, setBytes);
+    const writeBase = writePtr === 0n ? null : guestAbsoluteRange(handle, writePtr, setBytes);
+    const exceptBase = exceptPtr === 0n ? null : guestAbsoluteRange(handle, exceptPtr, setBytes);
+    if (
+      (readPtr !== 0n && readBase === null)
+      || (writePtr !== 0n && writeBase === null)
+      || (exceptPtr !== 0n && exceptBase === null)
+    ) {
+      return false;
+    }
+    const hasBit = (base: number | null, fd: number): boolean => {
+      if (base === null) {
+        return false;
+      }
+      return (view.getUint8(base + Math.floor(fd / 8)) & (1 << (fd % 8))) !== 0;
+    };
+    for (let fd = 0; fd < count; fd += 1) {
+      if (hasBit(readBase, fd) || hasBit(writeBase, fd) || hasBit(exceptBase, fd)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  return false;
 }
 
 function snapshotPollPipeSlotForThreadStep(
@@ -725,6 +911,7 @@ async function resumeBlockedSyscallLocally(
       ? handle.kernel.thread_resume_poll_wait_timeout
       : undefined;
     const resumePollTimeout = resumePollTimeoutFn !== undefined;
+    const canonicalWriteOpenBeforeReconcileByPipeSlot = new Map<number, number>();
     if (blockedStatus === handle.kernel.abi_status_pipe_wait() && !resumePollTimeout) {
       const blockedPipeSlots = pipeSlotsForBlockedPipeWait(handle, vmPtr);
       if (handle.kernelShare.forkSharedSyncPromise !== null) {
@@ -819,7 +1006,68 @@ async function resumeBlockedSyscallLocally(
         }
       }
       deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:reconcile:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
+      const closedBlockedPipeSlotsBeforeReconcile = new Set<number>();
+      const snapshotClosedBlockedPipeSlotsBeforeReconcile = new Set<number>();
+      const localBlockedPipeOpenCountsBeforeReconcile = new Map<number, {
+        canonicalWriteOpen: number;
+        readOpen: number;
+        writeOpen: number;
+      }>();
+      if (blockedPipeSlots !== null) {
+        const blockedSnapshotClosedSinglePipeSlot = blockedPipeSlots.size === 1
+          && blockedStatus === handle.kernel.abi_status_pipe_wait()
+          && (handle.kernel.thread_blocked_pipe_buffered_len?.(vmPtr) ?? 0) === 0
+          && (handle.kernel.thread_blocked_pipe_write_open?.(vmPtr) ?? 0) <= 0;
+        for (const pipeSlot of blockedPipeSlots) {
+          const canonicalWriteOpen = pipeSlotWriteOpen(handle, pipeSlot);
+          const localCounts = localPipeOpenCountsForSlot(handle, vmPtr, pipeSlot);
+          canonicalWriteOpenBeforeReconcileByPipeSlot.set(pipeSlot, canonicalWriteOpen);
+          localBlockedPipeOpenCountsBeforeReconcile.set(pipeSlot, {
+            canonicalWriteOpen,
+            ...localCounts,
+          });
+          if (
+            (
+              pipeSlotBufferedLen(handle, pipeSlot) === 0
+              && canonicalWriteOpen <= 0
+            )
+            || blockedSnapshotClosedSinglePipeSlot
+          ) {
+            closedBlockedPipeSlotsBeforeReconcile.add(pipeSlot);
+            if (blockedSnapshotClosedSinglePipeSlot) {
+              snapshotClosedBlockedPipeSlotsBeforeReconcile.add(pipeSlot);
+            }
+          }
+        }
+      }
       reconcileKernelSharePipeControl(handle);
+      for (const pipeSlot of closedBlockedPipeSlotsBeforeReconcile) {
+        const localCounts = localBlockedPipeOpenCountsBeforeReconcile.get(pipeSlot);
+        if (
+          localCounts !== undefined
+          && localCounts.canonicalWriteOpen <= 0
+          && !snapshotClosedBlockedPipeSlotsBeforeReconcile.has(pipeSlot)
+          && (localCounts.readOpen > 0 || localCounts.writeOpen > 0)
+        ) {
+          preservePipeSlotOpenCounts(handle, pipeSlot, {
+            readOpen: localCounts.readOpen,
+            writeOpen: localCounts.writeOpen,
+          });
+          continue;
+        }
+        if (
+          !snapshotClosedBlockedPipeSlotsBeforeReconcile.has(pipeSlot)
+          && localPipeWriteOpenForSlot(handle, vmPtr, pipeSlot) > 0
+        ) {
+          continue;
+        }
+        if (setPipeSlotWriteOpen(handle, pipeSlot, 0) && PIPE_RESUME_DEBUG_ENABLED) {
+          deps.appendRuntimeLifecycleEvent(
+            handle.runtimeId,
+            `blocked-rpc-preserve-closed-pipe-slot:${handle.pid}:slot=${pipeSlot}`,
+          );
+        }
+      }
       if (handle.kernel.thread_poll_wait_has_socket?.(vmPtr) === 1) {
         deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-socket:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
         if (collectEffects) {
@@ -839,6 +1087,8 @@ async function resumeBlockedSyscallLocally(
     if (blockedStatus === handle.kernel.abi_status_pipe_wait()) {
       preserveHostStdinWriterForBlockedRead(handle, vmPtr);
     }
+    const pipeReadOpenEmpty = blockedStatus === handle.kernel.abi_status_pipe_wait()
+      && handle.kernel.thread_resume_pipe_read_open_empty?.(vmPtr) === 1;
     if (
       blockedStatus === handle.kernel.abi_status_pipe_wait()
       && !resumePollTimeout
@@ -848,7 +1098,7 @@ async function resumeBlockedSyscallLocally(
       const blockedPipeWriteOpen = handle.kernel.thread_blocked_pipe_write_open?.(vmPtr) ?? 0;
       if (
         blockedPipeWriteOpen > 0
-        && handle.kernel.thread_resume_pipe_read_open_empty?.(vmPtr) === 1
+        && pipeReadOpenEmpty
       ) {
         handle.kernelState = readKernelRuntimeState(handle.kernel);
         finishBlockedRpc();
@@ -875,17 +1125,26 @@ async function resumeBlockedSyscallLocally(
     const blockedPollPipeBuffered = blockedStatus === handle.kernel.abi_status_pipe_wait()
       ? blockedPollPipeHasBufferedData(handle, vmPtr)
       : false;
+    const blockedPipeFd = blockedPipeWaitFd(handle, vmPtr);
+    const blockedPipeSlot = pipeSlotForThreadStepFd(handle, vmPtr, blockedPipeFd);
+    const pollLikePipeWait = isPollLikePipeWait(handle, vmPtr);
+    const pollPipeSlots = pollLikePipeWait
+      ? pollPipeSlotsForThreadStep(handle, vmPtr)
+      : null;
+    const pollWaitHasNoWatchedFds = pollLikePipeWait
+      && pollLikeWaitHasNoWatchedFds(handle, vmPtr);
+    const pollLikePipeTargetPresent = (pollPipeSlots?.size ?? 0) > 0
+      || (!pollWaitHasNoWatchedFds && blockedPipeSlot !== null);
     const pollLikePipeWaitNoWriter = blockedStatus === handle.kernel.abi_status_pipe_wait()
       && !resumePollTimeout
-      && isPollLikePipeWait(handle, vmPtr)
-      && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) !== 1
+      && pollLikePipeWait
+      && pollLikePipeTargetPresent
       && pollPipeBufferedLenForThreadStep(handle, vmPtr) === 0
       && pollPipeWriteOpenForThreadStep(handle, vmPtr) <= 0;
     if (
       blockedStatus === handle.kernel.abi_status_pipe_wait()
       && !resumePollTimeout
       && isPollLikePipeWait(handle, vmPtr)
-      && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) !== 1
       && pollPipeBufferedLenForThreadStep(handle, vmPtr) === 0
       && handle.kernel.thread_poll_hup_sync_pending?.(vmPtr) !== 1
       && activeChildMayHoldBlockedPipeWriter(deps, handle, vmPtr)
@@ -896,6 +1155,68 @@ async function resumeBlockedSyscallLocally(
       emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus, collectEffects);
       return;
     }
+    const blockedPipeSyscallNr = blockedPipeWaitSyscallNr(handle, vmPtr) ?? 0n;
+    const blockedPipeBufferedLen = handle.kernel.thread_blocked_pipe_buffered_len?.(vmPtr) ?? 0;
+    const blockedPipeWriteOpen = handle.kernel.thread_blocked_pipe_write_open?.(vmPtr) ?? 0;
+    const syncedPipeBufferedLen = pipeSlotBufferedLenForThreadStepFd(
+      handle,
+      vmPtr,
+      blockedPipeFd,
+    );
+    const syncedPipeWriteOpen = pipeSlotWriteOpenForThreadStepFd(
+      handle,
+      vmPtr,
+      blockedPipeFd,
+    );
+    const blockedPipeCanonicalWriteOpenBeforeReconcile = blockedPipeSlot === null
+      ? undefined
+      : canonicalWriteOpenBeforeReconcileByPipeSlot.get(blockedPipeSlot);
+    const blockedPipeWasCanonicalClosedBeforeReconcile =
+      blockedPipeCanonicalWriteOpenBeforeReconcile !== undefined
+      && blockedPipeCanonicalWriteOpenBeforeReconcile <= 0;
+    const localPipeWriteOpen = blockedPipeSlot === null
+      ? null
+      : localPipeWriteOpenForSlot(handle, vmPtr, blockedPipeSlot);
+    const activeChildMayHoldCanonicalPipeWriter = activeChildMayHoldBlockedPipeWriter(deps, handle, vmPtr);
+    const readPipeCanonicalEofCandidate = blockedStatus === handle.kernel.abi_status_pipe_wait()
+      && !resumePollTimeout
+      && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) !== 1
+      && !isPollLikePipeWait(handle, vmPtr)
+      && blockedPipeResumeWritesGuestBuffer(handle, blockedPipeSyscallNr)
+      && blockedPipeReadReady !== 1
+      && blockedPipeWriteReady !== 1
+      && handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) !== 1
+      && blockedPipeBufferedLen === 0
+      && syncedPipeBufferedLen === 0
+      && (syncedPipeWriteOpen <= 0 || localPipeWriteOpen === 0)
+      && !activeChildMayHoldCanonicalPipeWriter
+      && handle.pendingChildExitRecords <= 0;
+    const readPipeCanonicalEofAfterSync = readPipeCanonicalEofCandidate;
+    if (PIPE_RESUME_DEBUG_ENABLED && blockedStatus === handle.kernel.abi_status_pipe_wait()) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        [
+          `blocked-rpc-pipe-candidate:${handle.pid}`,
+          `fd=${blockedPipeFd}`,
+          `sys=${blockedPipeSyscallNr.toString()}`,
+          `poll=${pollLikePipeWait ? 1 : 0}`,
+          `pollNoWriter=${pollLikePipeWaitNoWriter ? 1 : 0}`,
+          `readReady=${blockedPipeReadReady ?? "n/a"}`,
+          `writeReady=${blockedPipeWriteReady ?? "n/a"}`,
+          `pollReady=${blockedPipePollReadyCount ?? "n/a"}`,
+          `buf=${blockedPipeBufferedLen}`,
+          `wo=${blockedPipeWriteOpen}`,
+          `syncedBuf=${syncedPipeBufferedLen}`,
+          `syncedWo=${syncedPipeWriteOpen}`,
+          `slot=${blockedPipeSlot ?? "n/a"}`,
+          `candidate=${readPipeCanonicalEofAfterSync ? 1 : 0}`,
+          `eofPending=${handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) ?? "n/a"}`,
+          `hupPending=${handle.kernel.thread_poll_hup_sync_pending?.(vmPtr) ?? "n/a"}`,
+          `activeChild=${activeChildMayHoldCanonicalPipeWriter ? 1 : 0}`,
+          `pendingChildExit=${handle.pendingChildExitRecords}`,
+        ].join(":"),
+      );
+    }
     if (
       blockedStatus === handle.kernel.abi_status_pipe_wait()
       && !resumePollTimeout
@@ -904,12 +1225,40 @@ async function resumeBlockedSyscallLocally(
       && (blockedPipePollReadyCount === undefined || blockedPipePollReadyCount <= 0)
       && !blockedPollPipeBuffered
       && !pollLikePipeWaitNoWriter
+      && !readPipeCanonicalEofAfterSync
       && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) !== 1
       && handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) !== 1
       && handle.kernel.thread_poll_hup_sync_pending?.(vmPtr) !== 1
     ) {
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       finishBlockedRpc();
+      if (PIPE_RESUME_DEBUG_ENABLED) {
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          [
+            `blocked-rpc-defer-pipe-not-ready:${handle.pid}`,
+            `fd=${blockedPipeFd}`,
+            `sys=${blockedPipeSyscallNr.toString()}`,
+            `read=${blockedPipeReadReady}`,
+            `write=${blockedPipeWriteReady ?? "n/a"}`,
+            `poll=${blockedPipePollReadyCount ?? "n/a"}`,
+            `pollBuf=${blockedPollPipeBuffered ? 1 : 0}`,
+            `pollNoWriter=${pollLikePipeWaitNoWriter ? 1 : 0}`,
+            `canonical=${readPipeCanonicalEofAfterSync ? 1 : 0}`,
+            `slot=${blockedPipeSlot ?? "n/a"}`,
+            `buf=${blockedPipeBufferedLen}`,
+            `wo=${blockedPipeWriteOpen}`,
+            `syncedBuf=${syncedPipeBufferedLen}`,
+            `syncedWo=${syncedPipeWriteOpen}`,
+            `slotWo=${blockedPipeSlot === null ? "n/a" : pipeSlotWriteOpen(handle, blockedPipeSlot)}`,
+            `localWo=${blockedPipeSlot === null ? "n/a" : localPipeWriteOpenForSlot(handle, vmPtr, blockedPipeSlot)}`,
+            `ofd=${handle.kernel.thread_blocked_ofd_id?.(vmPtr) ?? "n/a"}`,
+            `eofPending=${handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) ?? "n/a"}`,
+            `activeChild=${activeChildMayHoldCanonicalPipeWriter ? 1 : 0}`,
+            `pendingChildExit=${handle.pendingChildExitRecords}`,
+          ].join(":"),
+        );
+      }
       deps.appendWorkerDebugLog(
         handle,
         `blocked-rpc-defer-pipe-not-ready:0x${vmPtr.toString(16)}:read=${blockedPipeReadReady}:write=${blockedPipeWriteReady ?? "n/a"}:poll=${blockedPipePollReadyCount ?? "n/a"}:buffered=${blockedPollPipeBuffered ? 1 : 0}`,
@@ -944,7 +1293,6 @@ async function resumeBlockedSyscallLocally(
       pushOutcomeEffect(worker, { kind: "enqueue-worker" });
       return;
     }
-    const blockedPipeFd = blockedPipeWaitFd(handle, vmPtr);
     const readPipeReachedEofAfterWait = blockedStatus === handle.kernel.abi_status_pipe_wait()
       && !resumePollTimeout
       && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) !== 1
@@ -952,38 +1300,75 @@ async function resumeBlockedSyscallLocally(
       && blockedPipeReadReady === 1
       && blockedPipeWriteReady !== 1
       && handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) !== 1
-      && pipeSlotBufferedLenForThreadStepFd(
-        handle,
-        vmPtr,
-        blockedPipeFd,
-      ) === 0
-      && pipeSlotWriteOpenForThreadStepFd(
-        handle,
-        vmPtr,
-        blockedPipeFd,
-      ) <= 0;
+      && syncedPipeBufferedLen === 0
+      && syncedPipeWriteOpen <= 0;
     const readPipeEofPendingAfterSync = blockedStatus === handle.kernel.abi_status_pipe_wait()
       && !resumePollTimeout
       && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) !== 1
       && !isPollLikePipeWait(handle, vmPtr)
       && handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) === 1
-      && (handle.kernel.thread_blocked_pipe_buffered_len?.(vmPtr) ?? 0) === 0
-      && (handle.kernel.thread_blocked_pipe_write_open?.(vmPtr) ?? 0) <= 0;
-    if (readPipeEofPendingAfterSync) {
+      && blockedPipeBufferedLen === 0
+      && syncedPipeBufferedLen === 0
+      && (syncedPipeWriteOpen <= 0 || !blockedPipeWasCanonicalClosedBeforeReconcile)
+      && !pipeReadOpenEmpty
+      && !activeChildMayHoldCanonicalPipeWriter
+      && handle.pendingChildExitRecords <= 0;
+    if (readPipeEofPendingAfterSync || readPipeCanonicalEofAfterSync) {
+      if (readPipeCanonicalEofAfterSync) {
+        handle.kernelState = readKernelRuntimeState(handle.kernel);
+      }
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
-      const resumeFd = BigInt(blockedPipeFd);
-      const resumeResult = handle.kernel.thread_resume_blocked_syscall(vmPtr);
+      if (readPipeCanonicalEofAfterSync || readPipeEofPendingAfterSync) {
+        const pipeSlot = pipeSlotForThreadStepFd(handle, vmPtr, blockedPipeFd);
+        if (pipeSlot !== null) {
+          syncPipeOfdGenerationsForSlot(handle, pipeSlot);
+          const staleWriteOpen = Math.max(blockedPipeWriteOpen, syncedPipeWriteOpen);
+          if (staleWriteOpen > 0 && setPipeSlotWriteOpen(handle, pipeSlot, 0)) {
+            deps.appendRuntimeLifecycleEvent(
+              handle.runtimeId,
+              `blocked-rpc-clear-stale-pipe-writer:${handle.pid}:slot=${pipeSlot}:was=${staleWriteOpen}`,
+            );
+          }
+        }
+      }
+      const pipeSlotsForResume = snapshotBlockedPipeSlotForThreadStep(handle, vmPtr, { includeEmpty: true });
+      const blocked = handle.blockedWorkers.get(worker);
+      if (!blocked || blocked.vmPtr !== vmPtr) {
+        return;
+      }
+      if (blocked.retryTimer !== null) {
+        clearTimeout(blocked.retryTimer);
+        blocked.retryTimer = null;
+      }
+      const thread = deps.threadWorkerStates.get(worker);
+      if (!thread) {
+        return;
+      }
+      if (pipeSlotsForResume.length === 0) {
+        handle.kernelState = readKernelRuntimeState(handle.kernel);
+        finishBlockedRpc();
+        deps.appendWorkerDebugLog(handle, `blocked-rpc-defer-pipe-eof-empty-resume:0x${vmPtr.toString(16)}`);
+        emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus, collectEffects);
+        return;
+      }
+      thread.pendingPipeSlotsForNextStep.push(...pipeSlotsForResume);
+      thread.resumeBlockedOnNextStep = true;
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       finishBlockedRpc();
+      handle.blockedWorkers.delete(worker);
       deps.appendWorkerDebugLog(
         handle,
-        `blocked-rpc-resume-pipe-eof:0x${vmPtr.toString(16)}:fd=${resumeFd.toString()}:ret=${String(resumeResult)}:status=${handle.kernel.thread_status(vmPtr)}`,
+        `blocked-rpc-resume-pipe-eof-in-worker:0x${vmPtr.toString(16)}:fd=${blockedPipeFd}:slots=${pipeSlotsForResume.length}`,
       );
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
-        `blocked-rpc-resume-pipe-eof:${handle.pid}:fd=${resumeFd.toString()}:ret=${String(resumeResult)}:status=${handle.kernel.thread_status(vmPtr)}`,
+        `blocked-rpc-resume-pipe-eof-in-worker:${handle.pid}:vm=0x${vmPtr.toString(16)}:fd=${blockedPipeFd}:slots=${pipeSlotsForResume.length}`,
       );
-      emitBlockedRetryResult(handle, worker, vmPtr, handle.kernel.thread_status(vmPtr), collectEffects);
+      if (collectEffects) {
+        pushOutcomeEffect(worker, { kind: "enqueue-worker" });
+      } else {
+        deps.enqueueWorker(handle, worker);
+      }
       return;
     }
     if (
@@ -1210,6 +1595,7 @@ async function resumeBlockedSyscallLocally(
       !transientProcessOwnerMismatch
       && blockedStatus === handle.kernel.abi_status_pipe_wait()
       && !resumePollTimeout
+      && !pollLikePipeWaitNoWriter
       && handle.kernel.thread_status(vmPtr) === handle.kernel.abi_status_pipe_wait()
     ) {
       deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-pipe-after:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
@@ -1398,7 +1784,9 @@ async function resumeBlockedSyscallLocally(
       deps.failProcess(handle, new Error(`${detail}\n${debug}`));
     }
   } finally {
-    finishBlockedRpc();
+    if (!collectEffects || !outcomeEffectsNeedResumeContinuation(worker)) {
+      finishBlockedRpc();
+    }
   }
 }
 

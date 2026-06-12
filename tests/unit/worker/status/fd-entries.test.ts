@@ -22,6 +22,53 @@ test("status fd entries restore valid descriptor bindings through the status own
   expect(fdEntries).toEqual(new Map([[3, { ofdId: 5, fdFlags: 1 }]]));
 });
 
+test("status fd entries mirror same-process thread descriptors to the owner fd table", () => {
+  const calls: Array<{ vmPtr: number; fd: number; ofdId: number; fdFlags: number }> = [];
+  const handle = makeHandle({
+    pid: 7,
+    vmPtr: 0x1234,
+    kernel: makeKernel({
+      abi_max_fds: () => 16,
+      process_current_pid: (vmPtr: number) => (vmPtr === 0x1234 || vmPtr === 0x5678 ? 7 : 0),
+      process_set_fd_entry: (vmPtr: number, fd: number, ofdId: number, fdFlags: number) => {
+        calls.push({ vmPtr, fd, ofdId, fdFlags });
+      },
+    }),
+  });
+
+  applyStatusFdEntries(handle as never, makeStatusMessage({
+    vmPtr: 0x5678,
+    fdEntries: [{ fd: 9, ofdId: 10, fdFlags: 0 }],
+  }) as never);
+
+  expect(calls).toEqual([
+    { vmPtr: 0x5678, fd: 9, ofdId: 10, fdFlags: 0 },
+    { vmPtr: 0x1234, fd: 9, ofdId: 10, fdFlags: 0 },
+  ]);
+});
+
+test("status fd entries do not mirror across a different process owner", () => {
+  const calls: Array<{ vmPtr: number; fd: number; ofdId: number }> = [];
+  const handle = makeHandle({
+    pid: 7,
+    vmPtr: 0x1234,
+    kernel: makeKernel({
+      abi_max_fds: () => 16,
+      process_current_pid: (vmPtr: number) => (vmPtr === 0x1234 ? 7 : 8),
+      process_set_fd_entry: (vmPtr: number, fd: number, ofdId: number) => {
+        calls.push({ vmPtr, fd, ofdId });
+      },
+    }),
+  });
+
+  applyStatusFdEntries(handle as never, makeStatusMessage({
+    vmPtr: 0x5678,
+    fdEntries: [{ fd: 9, ofdId: 10, fdFlags: 0 }],
+  }) as never);
+
+  expect(calls).toEqual([{ vmPtr: 0x5678, fd: 9, ofdId: 10 }]);
+});
+
 test("status fd entries preserve authoritative runtime network bindings", () => {
   const fdEntries = new Map<number, number>([[4, 11]]);
   const handle = makeHandle({

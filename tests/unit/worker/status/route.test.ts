@@ -946,6 +946,128 @@ test("status handler leaves blocked fork-shared sync to blocked-status handling"
   expect(pumpProcess).toHaveBeenCalledWith(handle);
 });
 
+test("status handler pumps ready siblings after pipe wait sync parks blocked worker", async () => {
+  const syncBlockedForkSharedStateViaKernelWorker = vi.fn(async () => {});
+  const requestPipeStateSync = vi.fn(async () => {});
+  const blockWorker = vi.fn();
+  const pumpProcess = vi.fn();
+  const worker = {} as Worker;
+  const readyWorker = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, {
+    vmPtr: number;
+    initialized: boolean;
+    waitingInWorkerStatus: number | null;
+    ownerPid: number;
+    generation: number;
+  }>();
+  threadWorkerStates.set(worker, makeThreadState());
+  threadWorkerStates.set(readyWorker, makeThreadState({ vmPtr: 0x5678 }));
+
+  const handle = {
+    pid: 7,
+    stdoutPipe: 0,
+    stderrPipe: 0,
+    stdinPipe: 0,
+    stdinQueue: [],
+    hostStdio: {
+      stdinPipe: 0,
+      stdoutPipe: 0,
+      stderrPipe: 0,
+      refCount: 1,
+    },
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    outputBacklog: [],
+    workers: new Set([worker, readyWorker]),
+    readyWorkers: [readyWorker],
+    blockedWorkers: new Map(),
+    kernelWorkerRequest: vi.fn(async () => ({ type: "noop" })),
+    kernelShare: { members: new Set(), sharedOfdIds: new Set([3]) },
+    forkSharedSyncPromise: null,
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(12),
+      stateSab: new SharedArrayBuffer(176),
+    },
+    kernel: makeKernel(7, {
+      abi_status_clone_spawn: () => 9,
+      thread_poll_wait_ready_count: () => 0,
+      thread_poll_wait_timeout: () => -1,
+    }),
+    kernelState: makeKernelState(),
+    onStdout: null,
+    runningWorker: worker,
+  } as never;
+
+  const handler = createWorkerStatusMessageHandler({
+    threadWorkerStates,
+    appendWorkerDebugLog: () => {},
+    clearBlockedWorker: () => {},
+    enqueueWorker: () => {},
+    pumpProcess,
+    kickBlockedWorkers: () => {},
+    failProcess: () => {},
+    requestPipeStateSync,
+    requestEpollStateSync: async () => {},
+    requestSocketStateSync: async () => {},
+    resumeFsViaKernelWorker: async () => {},
+    resumeConnectViaKernelWorker: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    captureVforkSnapshot: () => {
+      throw new Error("unexpected");
+    },
+    syncForkSharedStateViaKernelWorker: async () => {},
+    syncBlockedForkSharedStateViaKernelWorker,
+    syncProcessLifecycleViaKernelWorker: async () => {},
+    canonicalizeActiveVforkChildViaKernelWorker: async () => {},
+    attachThreadWorker: () => {},
+    completeProcessExit: async () => {},
+    handleExecveSpawn: async () => {},
+    blockWorker,
+    assertProcessStandardFdIntegrity: () => {},
+    requestEpollDependentOfdStateSync: async () => {},
+    statusOkCompletedSyncEffects: 0,
+    syncEffectPipeState: 1,
+    syncEffectSocketState: 2,
+    syncEffectEpollState: 4,
+    syncEffectEpollDependentOfdState: 8,
+    syncEffectProcessLifecycle: 16,
+    syncEffectSignalWaiters: 32,
+    syncEffectForkSharedOfdState: 64,
+    syncEffectProcessMemfs: 128,
+    statusDefersOwnedStateSync: () => false,
+  } as never);
+
+  handler(
+    handle,
+    worker,
+    {
+      type: "status",
+      status: 21,
+      vmPtr: 0x1234,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0x5000n,
+      sp: 0x6000n,
+      s11: 0x7000n,
+      kernelState: makeKernelState(),
+      debug: "pc=0x5000 sp=0x6000 s11=0x7000 process_thread_count=2",
+    },
+  );
+
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(requestPipeStateSync).toHaveBeenCalledWith(handle, false);
+  expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(
+    handle,
+    0x1234,
+    { kind: "blocked-rpc", status: 21 },
+  );
+  expect(blockWorker).toHaveBeenCalledWith(handle, worker, 21, 0x1234);
+  expect(pumpProcess).toHaveBeenCalledWith(handle);
+});
+
 test("status handler skips explicit fork-shared effects when no peer exists", async () => {
   const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const worker = {} as Worker;
@@ -2132,6 +2254,7 @@ test("status handler adopts kernel state for transient pid mismatch while the ac
     handle.kernelState.processPendingPtr,
     handle.kernelState.processRuntimeStatePtr,
     handle.kernelState.timeStatePtr,
+    handle.kernelState.signalfdStatePtr ?? 0,
   );
   expect(kickBlockedWorkers).toHaveBeenCalledWith(handle);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);

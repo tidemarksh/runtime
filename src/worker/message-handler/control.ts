@@ -1,4 +1,4 @@
-import { attachKernelRuntimeState } from "../../abi.js";
+import { attachKernelRuntimeState, readKernelRuntimeState } from "../../abi.js";
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
 import { collectHeldEpollOfdIds } from "../ownership/ofd-table.js";
 import { kernelWorkerOwnsEpollState } from "../ownership/epoll-control.js";
@@ -65,6 +65,11 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
     if (msg.type === "ready") {
       const thread = deps.threadWorkerStates.get(worker);
       if (!thread) {
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `clone-child-ready-no-thread:${handle.pid}:vm=0x${msg.vmPtr.toString(16)}`
+            + `:generation=${msg.generation}`,
+        );
         return true;
       }
       const workerStillOwnedByHandle = createWorkerOwnershipGuard(
@@ -79,6 +84,12 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
           + `:owner_pid=${thread.ownerPid}`
           + `:handle_pid=${handle.pid}`
           + `:generation=${msg.generation}`,
+      );
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `clone-child-ready-route:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
+          + `:owner=${thread.ownerPid}:generation=${msg.generation}`
+          + `:resume=${thread.resumeWorkersOnReady.length}`,
       );
       const readyProcessPidField = readProcessPidField(msg.debug);
       if (readyProcessPidField !== null && readyProcessPidField !== handle.pid) {
@@ -143,7 +154,19 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
         deps.clearVforkSnapshot(handle);
       }
       const resumeWorkersOnReady = thread.resumeWorkersOnReady.splice(0);
-      handle.kernelState = adoptKernelStateForHandle(handle, msg.kernelState);
+      const releaseCloneSpawnResumeWorkers = (): void => {
+        const cloneSpawnStatus = handle.kernel.abi_status_clone_spawn();
+        for (const resumeWorker of resumeWorkersOnReady) {
+          const resumeThread = deps.threadWorkerStates.get(resumeWorker);
+          if (resumeThread?.ownerAsyncStatus === cloneSpawnStatus) {
+            resumeThread.ownerAsyncStatus = null;
+          }
+        }
+      };
+      const readyKernelState = thread.vmPtr === handle.vmPtr
+        ? msg.kernelState
+        : readKernelRuntimeState(handle.kernel);
+      handle.kernelState = adoptKernelStateForHandle(handle, readyKernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
       thread.initialized = true;
@@ -167,6 +190,7 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
             if (!workerStillOwnedByHandle()) {
               return;
             }
+            releaseCloneSpawnResumeWorkers();
             deps.enqueueWorker(handle, worker);
             for (const resumeWorker of resumeWorkersOnReady) {
               if (handle.workers.has(resumeWorker)) {
@@ -179,6 +203,7 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
           });
         return true;
       }
+      releaseCloneSpawnResumeWorkers();
       deps.enqueueWorker(handle, worker);
       for (const resumeWorker of resumeWorkersOnReady) {
         if (handle.workers.has(resumeWorker)) {

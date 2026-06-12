@@ -1,3 +1,5 @@
+import { MAX_KERNEL_STACK_SLOTS } from "../wasm/stack.js";
+
 interface WorkerPoolEntry {
   worker: Worker;
   lastUsed: number;
@@ -24,7 +26,7 @@ function allocateThreadWorkerStackSlot(): number {
   }
   const slot = nextThreadWorkerStackSlot;
   nextThreadWorkerStackSlot += 1;
-  if (slot >= 32) {
+  if (slot >= MAX_KERNEL_STACK_SLOTS) {
     throw new Error("exhausted kernel thread-worker stack slots");
   }
   return slot;

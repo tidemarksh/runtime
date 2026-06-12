@@ -184,6 +184,59 @@ function makeDeps(worker: Worker) {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
+test("STATUS_FAULT selects a worker VM with concrete fault evidence when the process table is stale", () => {
+  const worker = {} as Worker;
+  const faultWorker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  handle.runtimeId = 77;
+  handle.workers.add(faultWorker);
+  handle.kernel.process_current_pid = () => 1;
+  handle.kernel.process_thread_vm_ptr = () => 0;
+  handle.kernel.thread_process_thread_count = () => 0;
+  handle.kernel.thread_status = () => 3;
+  handle.kernel.thread_exit_code = () => 139;
+  handle.kernel.thread_term_signal = () => 11;
+  handle.kernel.thread_fault_pc = (vmPtr: number) => vmPtr === 0x5678 ? 0x72755a8n : 0n;
+  handle.kernel.thread_fault_addr = (vmPtr: number) => vmPtr === 0x5678 ? 0x9n : 0n;
+  const deps = makeDeps(worker);
+  deps.threadWorkerStates.set(faultWorker, {
+    vmPtr: 0x5678,
+    ownerPid: 1,
+    ownerAsyncStatus: null,
+    generation: 1,
+    waitingInWorkerStatus: null,
+    resumeWorkersOnReady: [],
+  });
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: {
+      type: "status",
+      status: 3,
+      exitCode: 139,
+      termSignal: 11,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 3,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  expect(deps.completeProcessExit).toHaveBeenCalledWith(handle, 139, 11, 0x5678);
+  expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
+    77,
+    expect.stringContaining("complete-exit-request:transitions-fault:1:vm=0x1234:exitVm=0x5678:priority=2"),
+  );
 });
 
 test("STATUS_CONNECT restores the runtime network bridge from a related handle", async () => {
@@ -292,6 +345,48 @@ test("STATUS_SOCKET_RECV restores a related runtime network connection before bl
   expect(deps.blockWorker).toHaveBeenCalledWith(handle, worker, 30, 0x1234);
 });
 
+test("STATUS_SOCKET_RECV syncs socket state before fork-shared blocked sync", async () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 5;
+  handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unused" }));
+  const deps = makeDeps(worker);
+  const order: string[] = [];
+  deps.requestSocketStateSync = vi.fn(async () => {
+    order.push("socket");
+  });
+  deps.syncBlockedForkSharedStateViaKernelWorker = vi.fn(async () => {
+    order.push("fork-shared");
+  });
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: {
+      type: "status",
+      status: 30,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 30,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  await vi.waitFor(() => {
+    expect(deps.syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalled();
+  });
+  expect(deps.blockWorker).toHaveBeenCalledWith(handle, worker, 30, 0x1234);
+  expect(deps.requestSocketStateSync).toHaveBeenCalledWith(handle, true);
+  expect(order).toEqual(["socket", "fork-shared"]);
+});
+
 test("STATUS_SLEEP zero-duration yield kicks blocked workers before requeueing", () => {
   const worker = {} as Worker;
   const handle = makeHandle(worker);
@@ -359,7 +454,121 @@ test("STATUS_SLEEP zero-duration yield lets existing ready work run before reque
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
   expect(deps.enqueueWorker).not.toHaveBeenCalled();
 
+  await vi.runOnlyPendingTimersAsync();
+
+  expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
+});
+
+test("STATUS_SLEEP zero-duration yield waits for pending blocked RPC before ready churn", async () => {
+  vi.useFakeTimers();
+  const worker = {} as Worker;
+  const readyWorker = {} as Worker;
+  const blockedWorker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.readyWorkers.push(readyWorker);
+  const blocked = {
+    vmPtr: 0x5678,
+    status: 22,
+    retryTimer: null,
+    timeoutExpired: false,
+    timeoutDeadlineMs: null,
+    sleepDeadlineTicks: null,
+    epollTimerfdDeadlineTicks: null,
+    rpcPending: true,
+    rpcGeneration: 1,
+    skipNextNetworkPump: false,
+    pipeSyncedBeforePassive: false,
+    pipeChildExitResumeKey: null,
+    pipeEofChildExitDeferrals: 0,
+  };
+  handle.blockedWorkers.set(blockedWorker, blocked);
+  const deps = makeDeps(worker);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: {
+      type: "status",
+      status: 26,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 26,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(deps.pumpProcess).not.toHaveBeenCalled();
+  expect(deps.enqueueWorker).not.toHaveBeenCalled();
+
+  blocked.rpcPending = false;
+  await vi.advanceTimersByTimeAsync(1);
+
+  expect(deps.pumpProcess).not.toHaveBeenCalled();
+  expect(deps.enqueueWorker).not.toHaveBeenCalled();
+
+  await vi.advanceTimersByTimeAsync(1);
+
+  expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
+});
+
+test("STATUS_SLEEP zero-duration yield gives blocked I/O retry a real timer turn", async () => {
+  vi.useFakeTimers();
+  const worker = {} as Worker;
+  const readyWorker = {} as Worker;
+  const blockedWorker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.readyWorkers.push(readyWorker);
+  handle.blockedWorkers.set(blockedWorker, {
+    vmPtr: 0x5678,
+    status: 22,
+    retryTimer: null,
+    timeoutExpired: false,
+    timeoutDeadlineMs: null,
+    sleepDeadlineTicks: null,
+    epollTimerfdDeadlineTicks: null,
+    rpcPending: false,
+    rpcGeneration: 0,
+    skipNextNetworkPump: false,
+    pipeSyncedBeforePassive: false,
+    pipeChildExitResumeKey: null,
+    pipeEofChildExitDeferrals: 0,
+  });
+  const deps = makeDeps(worker);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: {
+      type: "status",
+      status: 26,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 26,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  expect(deps.pumpProcess).not.toHaveBeenCalled();
   await vi.advanceTimersByTimeAsync(0);
+
+  expect(deps.enqueueWorker).not.toHaveBeenCalled();
+
+  await vi.advanceTimersByTimeAsync(1);
 
   expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });
@@ -476,6 +685,163 @@ test("STATUS_CLONE_SPAWN still fails when spawn handoff is missing at current cl
 
   expect(handle.kernel.thread_spawn_from_clone).toHaveBeenCalledWith(0x1234);
   expect(deps.appendRuntimeLifecycleEvent).not.toHaveBeenCalled();
+  expect(deps.attachThreadWorker).not.toHaveBeenCalled();
+});
+
+test("STATUS_CLONE_SPAWN holds parent until attached child reports ready", () => {
+  const workerConstructor = vi.fn(function WorkerMock(this: Worker) {
+    Object.assign(this, {
+      postMessage: vi.fn(),
+      terminate: vi.fn(),
+      unref: vi.fn(),
+    });
+  });
+  vi.stubGlobal("Worker", workerConstructor);
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  handle.runtimeId = 77;
+  handle.kernel.thread_status = () => handle.kernel.abi_status_clone_spawn();
+  const deps = makeDeps(worker);
+  const thread = deps.threadWorkerStates.get(worker)!;
+  thread.ownerPid = handle.pid;
+  let childThread:
+    | {
+      vmPtr: number;
+      ownerPid: number;
+      ownerAsyncStatus: number | null;
+      generation: number;
+      waitingInWorkerStatus: number | null;
+      resumeWorkersOnReady: Worker[];
+    }
+    | undefined;
+  deps.attachThreadWorker = vi.fn((_handle, request: { worker: Worker; vmPtr: number }) => {
+    childThread = {
+      vmPtr: request.vmPtr,
+      ownerPid: handle.pid,
+      ownerAsyncStatus: null,
+      generation: 1,
+      waitingInWorkerStatus: null,
+      resumeWorkersOnReady: [],
+    };
+    deps.threadWorkerStates.set(request.worker, childThread);
+    handle.workers.add(request.worker);
+  });
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: {
+      type: "status",
+      status: 25,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 25,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  expect(thread.ownerAsyncStatus).toBe(25);
+  expect(childThread?.resumeWorkersOnReady).toEqual([worker]);
+  expect(deps.enqueueWorker).not.toHaveBeenCalled();
+  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
+});
+
+test("STATUS_CLONE_SPAWN defers child spawn until kernel-worker lifecycle sync completes", () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unused" }));
+  handle.kernel.thread_status = () => handle.kernel.abi_status_clone_spawn();
+  const deps = makeDeps(worker);
+  deps.syncProcessLifecycleViaKernelWorker = vi.fn(() => new Promise<void>(() => {}));
+  const thread = deps.threadWorkerStates.get(worker)!;
+  thread.ownerPid = handle.pid;
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: {
+      type: "status",
+      status: 25,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 25,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  expect(deps.syncProcessLifecycleViaKernelWorker).toHaveBeenCalledWith(handle, 0x1234);
+  expect(thread.ownerAsyncStatus).toBe(25);
+  expect(handle.kernel.thread_spawn_from_clone).not.toHaveBeenCalled();
+  expect(deps.attachThreadWorker).not.toHaveBeenCalled();
+});
+
+test("STATUS_CLONE_SPAWN ignores stale lifecycle sync completions", async () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unused" }));
+  handle.kernel.thread_status = () => handle.kernel.abi_status_clone_spawn();
+  const deps = makeDeps(worker);
+  const syncResolutions: Array<() => void> = [];
+  deps.syncProcessLifecycleViaKernelWorker = vi.fn(() => new Promise<void>((resolve) => {
+    syncResolutions.push(resolve);
+  }));
+  const thread = deps.threadWorkerStates.get(worker)!;
+  thread.ownerPid = handle.pid;
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+  const statusMsg = {
+    type: "status" as const,
+    status: 25,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  };
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: statusMsg,
+    status: 25,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: statusMsg,
+    status: 25,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  syncResolutions[0]?.();
+  await Promise.resolve();
+
+  expect(deps.syncProcessLifecycleViaKernelWorker).toHaveBeenCalledTimes(2);
+  expect(thread.ownerAsyncStatus).toBe(25);
+  expect(handle.kernel.thread_spawn_from_clone).not.toHaveBeenCalled();
   expect(deps.attachThreadWorker).not.toHaveBeenCalled();
 });
 
