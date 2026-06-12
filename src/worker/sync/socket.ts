@@ -15,6 +15,7 @@ import {
   repairHandleVmPidAfterKernelStateAttach,
 } from "../kernel-state.js";
 import type {
+  KernelWorkerSocketStateSnapshot,
   ProcessHandle,
   SyncCause
 } from "./shared.js";
@@ -31,6 +32,7 @@ export async function syncSocketStateViaKernelWorker(
 ): Promise<{
   socketUsed: number;
   netBufUsed: bigint;
+  socketState?: KernelWorkerSocketStateSnapshot;
 }> {
   if (!handle.kernelWorkerRequest || handle.pid <= 0) {
     return {
@@ -82,12 +84,14 @@ export async function syncSocketStateViaKernelWorker(
   return {
     socketUsed: handle.kernelState.socketUsed,
     netBufUsed: handle.kernelState.netBufUsed,
+    socketState: response.socketState,
   };
 }
 
 export function syncSocketStateForWorkerRuntime(handle: ProcessHandle): Promise<{
   socketUsed: number;
   netBufUsed: bigint;
+  socketState?: KernelWorkerSocketStateSnapshot;
 }> {
   return syncSocketStateViaKernelWorker(handle, { kind: "syscall", nr: -1n, name: "socket-state-sync" });
 }
