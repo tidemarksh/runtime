@@ -58,6 +58,7 @@ test("runtime bridge state publication still round-trips with epoch slot present
     netBufUsed: 11n,
     sigSlotsPtr: 0x290000,
     processPendingPtr: 0x2a0000,
+    signalfdStatePtr: 0x2a8000,
     processRuntimeStatePtr: 0x2b0000,
     timeStatePtr: 0x2c0000,
   };

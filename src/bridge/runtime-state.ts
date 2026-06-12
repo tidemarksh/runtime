@@ -60,6 +60,9 @@ function writeState(view: DataView, state: KernelRuntimeState): void {
   view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.processPendingPtr, state.processPendingPtr, true);
   view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.processRuntimeStatePtr, state.processRuntimeStatePtr, true);
   view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.timeStatePtr, state.timeStatePtr, true);
+  if (canAccessField(view, RUNTIME_STATE_FIELD_OFFSETS.signalfdStatePtr)) {
+    view.setUint32(RUNTIME_STATE_FIELD_OFFSETS.signalfdStatePtr, state.signalfdStatePtr ?? 0, true);
+  }
   if (!canAccessField(view, RUNTIME_STATE_FIELD_OFFSETS.socketStateBytes)) {
     return;
   }
@@ -211,6 +214,12 @@ export function readPublishedKernelRuntimeState(bridge: RuntimeStateBridge): Ker
       }
       if (socketStateBytes > 0) {
         state.socketStateBytes = socketStateBytes;
+      }
+    }
+    if (canAccessField(view, RUNTIME_STATE_FIELD_OFFSETS.signalfdStatePtr)) {
+      const signalfdStatePtr = view.getUint32(RUNTIME_STATE_FIELD_OFFSETS.signalfdStatePtr, true);
+      if (signalfdStatePtr > 0) {
+        state.signalfdStatePtr = signalfdStatePtr;
       }
     }
 
