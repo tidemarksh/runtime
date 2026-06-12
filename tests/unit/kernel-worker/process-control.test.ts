@@ -547,8 +547,8 @@ test("processFs treats unlink as metadata-only canonical sync", async () => {
     syncFileDataMutation: () => false,
     syncFileDataMutationByPath: () => false,
     syncMetadataMutation: () => false,
-    fanoutCanonicalMemfs: () => {
-      fanoutCalls.push(true);
+    fanoutCanonicalMemfs: (includeData) => {
+      fanoutCalls.push(includeData ?? true);
     },
     fsEffectMemfsMutation: 1 << 0,
     fsEffectSharedOfdState: 1 << 1,
@@ -562,7 +562,7 @@ test("processFs treats unlink as metadata-only canonical sync", async () => {
 
   expect(result.memfsMutated).toBe(true);
   expect(copyMemfsCalls).toEqual([false]);
-  expect(fanoutCalls).toEqual([true]);
+  expect(fanoutCalls).toEqual([false]);
 });
 
 test("processFs demand-fills page-aligned source-backed read ranges before processing fs", async () => {
@@ -1864,8 +1864,8 @@ test("processFs falls back to metadata-only sync for Memory64 path pointers outs
       syncedPaths.push(path);
       return true;
     },
-    fanoutCanonicalMemfs: () => {
-      fanoutCalls.push(true);
+    fanoutCanonicalMemfs: (includeData) => {
+      fanoutCalls.push(includeData ?? true);
     },
     fsEffectMemfsMutation: 1 << 0,
     fsEffectSharedOfdState: 1 << 1,
@@ -1880,7 +1880,7 @@ test("processFs falls back to metadata-only sync for Memory64 path pointers outs
   expect(result.memfsMutated).toBe(true);
   expect(syncedPaths).toEqual([]);
   expect(copyMemfsCalls).toEqual([false]);
-  expect(fanoutCalls).toEqual([true]);
+  expect(fanoutCalls).toEqual([false]);
 });
 
 test("processFs does not full-sync file data when dirty resident sync fails", async () => {

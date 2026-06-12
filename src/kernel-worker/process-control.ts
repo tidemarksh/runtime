@@ -295,7 +295,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     deps.restoreProcSelfExe(canonicalExports, canonicalProcSelfExe);
     deps.restorePublishedRegularFileDataFromPageCache?.();
     deps.rebuildPageCacheFromCanonical();
-    deps.fanoutCanonicalMemfs();
+    deps.fanoutCanonicalMemfs(false);
   }
 
   function writeResidentFileRange(
