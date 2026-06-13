@@ -20,6 +20,10 @@ function formatU64(value: bigint): string {
   return BigInt.asUintN(64, value).toString(16);
 }
 
+function formatOptionalU64(value: bigint | number | undefined): string {
+  return formatU64(BigInt(value ?? 0));
+}
+
 function formatTraceArg(value: bigint): string {
   return `0x${formatU64(value)}`;
 }
@@ -587,6 +591,33 @@ function formatSignalSendTraceEntries(exports: KernelExports): string | null {
   return entries.length === 0 ? null : entries.join(",");
 }
 
+function formatSignalDeliveryTraceEntries(exports: KernelExports): string | null {
+  const len = exports.debug_signal_delivery_trace_len?.() ?? 0;
+  if (len <= 0) {
+    return null;
+  }
+  const entries: string[] = [];
+  for (let index = 0; index < len; index += 1) {
+    const sig = exports.debug_signal_delivery_trace_entry_sig?.(index) ?? 0;
+    if (sig === 0) {
+      continue;
+    }
+    entries.push(
+      `${index}:vm:0x${(exports.debug_signal_delivery_trace_entry_vm_ptr?.(index) ?? 0).toString(16)}`
+      + `:sig:${sig}`
+      + `:code:${exports.debug_signal_delivery_trace_entry_code?.(index) ?? 0}`
+      + `:frame:0x${formatOptionalU64(exports.debug_signal_delivery_trace_entry_frame_base?.(index))}`
+      + `:pc:0x${formatOptionalU64(exports.debug_signal_delivery_trace_entry_pc?.(index))}`
+      + `:ra:0x${formatOptionalU64(exports.debug_signal_delivery_trace_entry_ra?.(index))}`
+      + `:sp:0x${formatOptionalU64(exports.debug_signal_delivery_trace_entry_sp?.(index))}`
+      + `:s11:0x${formatOptionalU64(exports.debug_signal_delivery_trace_entry_s11?.(index))}`
+      + `:fault_pc:0x${formatOptionalU64(exports.debug_signal_delivery_trace_entry_fault_pc?.(index))}`
+      + `:fault_addr:0x${formatOptionalU64(exports.debug_signal_delivery_trace_entry_fault_addr?.(index))}`,
+    );
+  }
+  return entries.length === 0 ? null : entries.join(",");
+}
+
 export function formatBreakExecTraceEntries(exports: KernelExports, vmPtr: number): string | null {
   const len = exports.debug_break_exec_trace_len_for_vm?.(vmPtr) ?? 0;
   if (len <= 0) {
@@ -979,6 +1010,38 @@ function formatGuestWriteOverlapTrace(exports: KernelExports): string | null {
   return entries.join(" ");
 }
 
+function formatSyncFaultTrace(exports: KernelExports): string | null {
+  const vmPtr = exports.debug_sync_fault_vm_ptr?.() ?? 0;
+  if (vmPtr === 0) {
+    return null;
+  }
+  return [
+    `vm=0x${vmPtr.toString(16)}`,
+    `tid=${exports.debug_sync_fault_tid?.() ?? 0}`,
+    `pc=0x${formatU64(exports.debug_sync_fault_pc?.() ?? 0n)}`,
+    `ra=0x${formatU64(exports.debug_sync_fault_ra?.() ?? 0n)}`,
+    `sp=0x${formatU64(exports.debug_sync_fault_sp?.() ?? 0n)}`,
+    `s11=0x${formatU64(exports.debug_sync_fault_s11?.() ?? 0n)}`,
+    `a0=0x${formatU64(exports.debug_sync_fault_a0?.() ?? 0n)}`,
+    `a1=0x${formatU64(exports.debug_sync_fault_a1?.() ?? 0n)}`,
+    `a2=0x${formatU64(exports.debug_sync_fault_a2?.() ?? 0n)}`,
+    `a3=0x${formatU64(exports.debug_sync_fault_a3?.() ?? 0n)}`,
+    `a4=0x${formatU64(exports.debug_sync_fault_a4?.() ?? 0n)}`,
+    `a5=0x${formatU64(exports.debug_sync_fault_a5?.() ?? 0n)}`,
+    `a6=0x${formatU64(exports.debug_sync_fault_a6?.() ?? 0n)}`,
+    `a7=0x${formatU64(exports.debug_sync_fault_a7?.() ?? 0n)}`,
+    `s1=0x${formatU64(exports.debug_sync_fault_s1?.() ?? 0n)}`,
+    `s2=0x${formatU64(exports.debug_sync_fault_s2?.() ?? 0n)}`,
+    `s3=0x${formatU64(exports.debug_sync_fault_s3?.() ?? 0n)}`,
+    `s4=0x${formatU64(exports.debug_sync_fault_s4?.() ?? 0n)}`,
+    `s5=0x${formatU64(exports.debug_sync_fault_s5?.() ?? 0n)}`,
+    `s6=0x${formatU64(exports.debug_sync_fault_s6?.() ?? 0n)}`,
+    `s7=0x${formatU64(exports.debug_sync_fault_s7?.() ?? 0n)}`,
+    `addr=0x${formatU64(exports.debug_sync_fault_addr?.() ?? 0n)}`,
+    `code=${exports.debug_sync_fault_code?.() ?? 0}`,
+  ].join(":");
+}
+
 export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBase: number): string[] {
   const debugParts: string[] = [];
   try {
@@ -1033,6 +1096,10 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
   debugParts.push(`fault_kind=${exports.thread_fault_kind?.(vmPtr) ?? 0}`);
   debugParts.push(`fault_signal=${exports.thread_fault_signal?.(vmPtr) ?? 0}`);
   debugParts.push(`fault_code=${exports.thread_fault_code?.(vmPtr) ?? 0}`);
+  const syncFaultTrace = formatSyncFaultTrace(exports);
+  if (syncFaultTrace !== null) {
+    debugParts.push(`sync_fault=[${syncFaultTrace}]`);
+  }
   debugParts.push(`pc=0x${currentPc.toString(16)}`);
   const currentInsn = readGuestInsn(exports, guestBase, currentPc);
   if (currentInsn !== null) {
@@ -1213,6 +1280,10 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     debugParts.push(`sig_gp=0x${formatU64(exports.debug_signal_delivery_for_vm_gp?.(vmPtr) ?? exports.debug_signal_delivery_gp?.() ?? 0n)}`);
     debugParts.push(`sig_tp=0x${formatU64(exports.debug_signal_delivery_for_vm_tp?.(vmPtr) ?? exports.debug_signal_delivery_tp?.() ?? 0n)}`);
     debugParts.push(`sig_s11=0x${formatU64(exports.debug_signal_delivery_for_vm_s11?.(vmPtr) ?? exports.debug_signal_delivery_s11?.() ?? 0n)}`);
+  }
+  const signalDeliveryTrace = formatSignalDeliveryTraceEntries(exports);
+  if (signalDeliveryTrace !== null) {
+    debugParts.push(`signal_deliveries=[${signalDeliveryTrace}]`);
   }
   const illegalInstructionPc = exports.debug_illegal_instruction_pc?.() ?? 0n;
   if (illegalInstructionPc !== 0n) {

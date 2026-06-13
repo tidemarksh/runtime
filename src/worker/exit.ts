@@ -678,6 +678,24 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         `vm=0x${(handle.kernel.debug_illegal_instruction_vm_ptr?.() ?? 0).toString(16)}`,
         `pc=0x${pc.toString(16)}`,
         `raw=0x${(handle.kernel.debug_illegal_instruction_raw?.() ?? 0).toString(16)}`,
+        `ra=0x${(handle.kernel.debug_illegal_instruction_ra?.() ?? 0n).toString(16)}`,
+        `sp=0x${(handle.kernel.debug_illegal_instruction_sp?.() ?? 0n).toString(16)}`,
+        `a0=0x${(handle.kernel.debug_illegal_instruction_a0?.() ?? 0n).toString(16)}`,
+        `a4=0x${(handle.kernel.debug_illegal_instruction_a4?.() ?? 0n).toString(16)}`,
+        `s11=0x${(handle.kernel.debug_illegal_instruction_s11?.() ?? 0n).toString(16)}`,
+        `jalr_pc=0x${(handle.kernel.debug_illegal_instruction_jalr_pc?.() ?? 0n).toString(16)}`,
+        `jalr_rs1=${handle.kernel.debug_illegal_instruction_jalr_rs1?.() ?? 0}`,
+        `jalr_rd=${handle.kernel.debug_illegal_instruction_jalr_rd?.() ?? 0}`,
+        `jalr_rs1v=0x${(handle.kernel.debug_illegal_instruction_jalr_rs1_value?.() ?? 0n).toString(16)}`,
+        `jalr_target=0x${(handle.kernel.debug_illegal_instruction_jalr_target?.() ?? 0n).toString(16)}`,
+        `sig_frame=0x${(handle.kernel.debug_illegal_instruction_signal_frame_base?.() ?? 0n).toString(16)}`,
+        `sig_handler=0x${(handle.kernel.debug_illegal_instruction_signal_handler_pc?.() ?? 0n).toString(16)}`,
+        `sig_code=${handle.kernel.debug_illegal_instruction_signal_code?.() ?? 0}`,
+        `sig_addr=0x${(handle.kernel.debug_illegal_instruction_signal_addr?.() ?? 0n).toString(16)}`,
+        `sig_uc_pc=0x${(handle.kernel.debug_illegal_instruction_signal_uc_pc?.() ?? 0n).toString(16)}`,
+        `sig_uc_ra=0x${(handle.kernel.debug_illegal_instruction_signal_uc_ra?.() ?? 0n).toString(16)}`,
+        `sig_uc_sp=0x${(handle.kernel.debug_illegal_instruction_signal_uc_sp?.() ?? 0n).toString(16)}`,
+        `sig_uc_a0=0x${(handle.kernel.debug_illegal_instruction_signal_uc_a0?.() ?? 0n).toString(16)}`,
       ].join(":")
     }]`;
   }
@@ -723,6 +741,92 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       );
     }
     return `guest_write_overlaps=[${entries.join(",")}]`;
+  }
+
+  function formatSignalSendTrace(handle: ProcessHandle): string {
+    const len = handle.kernel.debug_signal_send_trace_len?.() ?? 0;
+    if (len <= 0) {
+      return "signal_sends=[]";
+    }
+    const entries: string[] = [];
+    for (let index = 0; index < len; index += 1) {
+      const sig = handle.kernel.debug_signal_send_trace_entry_sig?.(index) ?? 0;
+      if (sig === 0) {
+        continue;
+      }
+      entries.push(
+        `${index}:kind=${handle.kernel.debug_signal_send_trace_entry_kind?.(index) ?? 0}`
+        + `:caller=0x${(handle.kernel.debug_signal_send_trace_entry_caller_vm_ptr?.(index) ?? 0).toString(16)}`
+        + `:pid=${handle.kernel.debug_signal_send_trace_entry_pid?.(index) ?? 0}`
+        + `:tid=${handle.kernel.debug_signal_send_trace_entry_tid?.(index) ?? 0}`
+        + `:sig=${sig}`
+        + `:result=${handle.kernel.debug_signal_send_trace_entry_result?.(index)?.toString() ?? "n/a"}`,
+      );
+    }
+    return entries.length === 0 ? "signal_sends=[]" : `signal_sends=[${entries.join(",")}]`;
+  }
+
+  function formatSignalDeliveryTrace(handle: ProcessHandle): string {
+    const len = handle.kernel.debug_signal_delivery_trace_len?.() ?? 0;
+    if (len <= 0) {
+      return "signal_deliveries=[]";
+    }
+    const entries: string[] = [];
+    for (let index = 0; index < len; index += 1) {
+      const sig = handle.kernel.debug_signal_delivery_trace_entry_sig?.(index) ?? 0;
+      if (sig === 0) {
+        continue;
+      }
+      entries.push(
+        `${index}:vm=0x${(handle.kernel.debug_signal_delivery_trace_entry_vm_ptr?.(index) ?? 0).toString(16)}`
+        + `:sig=${sig}`
+        + `:code=${handle.kernel.debug_signal_delivery_trace_entry_code?.(index) ?? 0}`
+        + `:frame=0x${formatTraceU64(handle.kernel.debug_signal_delivery_trace_entry_frame_base?.(index))}`
+        + `:pc=0x${formatTraceU64(handle.kernel.debug_signal_delivery_trace_entry_pc?.(index))}`
+        + `:ra=0x${formatTraceU64(handle.kernel.debug_signal_delivery_trace_entry_ra?.(index))}`
+        + `:sp=0x${formatTraceU64(handle.kernel.debug_signal_delivery_trace_entry_sp?.(index))}`
+        + `:s11=0x${formatTraceU64(handle.kernel.debug_signal_delivery_trace_entry_s11?.(index))}`
+        + `:fault_pc=0x${formatTraceU64(handle.kernel.debug_signal_delivery_trace_entry_fault_pc?.(index))}`
+        + `:fault_addr=0x${formatTraceU64(handle.kernel.debug_signal_delivery_trace_entry_fault_addr?.(index))}`,
+      );
+    }
+    return entries.length === 0
+      ? "signal_deliveries=[]"
+      : `signal_deliveries=[${entries.join(",")}]`;
+  }
+
+  function formatSyncFaultTrace(handle: ProcessHandle): string {
+    const vmPtr = handle.kernel.debug_sync_fault_vm_ptr?.() ?? 0;
+    if (vmPtr === 0) {
+      return "sync_fault=[]";
+    }
+    return `sync_fault=[${
+      [
+        `vm=0x${vmPtr.toString(16)}`,
+        `tid=${handle.kernel.debug_sync_fault_tid?.() ?? 0}`,
+        `pc=0x${(handle.kernel.debug_sync_fault_pc?.() ?? 0n).toString(16)}`,
+        `ra=0x${(handle.kernel.debug_sync_fault_ra?.() ?? 0n).toString(16)}`,
+        `sp=0x${(handle.kernel.debug_sync_fault_sp?.() ?? 0n).toString(16)}`,
+        `s11=0x${(handle.kernel.debug_sync_fault_s11?.() ?? 0n).toString(16)}`,
+        `a0=0x${(handle.kernel.debug_sync_fault_a0?.() ?? 0n).toString(16)}`,
+        `a1=0x${(handle.kernel.debug_sync_fault_a1?.() ?? 0n).toString(16)}`,
+        `a2=0x${(handle.kernel.debug_sync_fault_a2?.() ?? 0n).toString(16)}`,
+        `a3=0x${(handle.kernel.debug_sync_fault_a3?.() ?? 0n).toString(16)}`,
+        `a4=0x${(handle.kernel.debug_sync_fault_a4?.() ?? 0n).toString(16)}`,
+        `a5=0x${(handle.kernel.debug_sync_fault_a5?.() ?? 0n).toString(16)}`,
+        `a6=0x${(handle.kernel.debug_sync_fault_a6?.() ?? 0n).toString(16)}`,
+        `a7=0x${(handle.kernel.debug_sync_fault_a7?.() ?? 0n).toString(16)}`,
+        `s1=0x${(handle.kernel.debug_sync_fault_s1?.() ?? 0n).toString(16)}`,
+        `s2=0x${(handle.kernel.debug_sync_fault_s2?.() ?? 0n).toString(16)}`,
+        `s3=0x${(handle.kernel.debug_sync_fault_s3?.() ?? 0n).toString(16)}`,
+        `s4=0x${(handle.kernel.debug_sync_fault_s4?.() ?? 0n).toString(16)}`,
+        `s5=0x${(handle.kernel.debug_sync_fault_s5?.() ?? 0n).toString(16)}`,
+        `s6=0x${(handle.kernel.debug_sync_fault_s6?.() ?? 0n).toString(16)}`,
+        `s7=0x${(handle.kernel.debug_sync_fault_s7?.() ?? 0n).toString(16)}`,
+        `addr=0x${(handle.kernel.debug_sync_fault_addr?.() ?? 0n).toString(16)}`,
+        `code=${handle.kernel.debug_sync_fault_code?.() ?? 0}`,
+      ].join(":")
+    }]`;
   }
 
   function formatGuestRangePermitDeniedTrace(handle: ProcessHandle): string {
@@ -784,8 +888,11 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       `fault_bytes=[${formatFaultByteSources(handle, vmPtr)}]`,
       ...(debugGuestByteSources === null ? [] : [debugGuestByteSources]),
       formatDefaultSignalTrace(handle),
+      formatSyncFaultTrace(handle),
       formatIllegalInstructionTrace(handle),
       formatSignalState(handle, vmPtr),
+      formatSignalSendTrace(handle),
+      formatSignalDeliveryTrace(handle),
       formatGuestWriteOverlapTrace(handle),
       formatGuestRangePermitDeniedTrace(handle),
       formatFrozenExitTraces(handle, vmPtr),
