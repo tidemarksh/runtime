@@ -1140,6 +1140,31 @@ function formatProcessFutexTrace(handle: ProcessHandle): string {
   return entries.join(" ");
 }
 
+function formatProcessGuestWriteOverlapTrace(handle: ProcessHandle): string {
+  const len = handle.kernel.debug_guest_write_overlap_trace_len?.() ?? 0;
+  if (len <= 0) {
+    return "";
+  }
+  const entries: string[] = [];
+  for (let index = 0; index < len; index += 1) {
+    const addr = handle.kernel.debug_guest_write_overlap_trace_entry_addr?.(index) ?? 0n;
+    const pc = handle.kernel.debug_guest_write_overlap_trace_entry_pc?.(index) ?? 0n;
+    const sample = handle.kernel.debug_guest_write_overlap_trace_entry_sample?.(index) ?? 0n;
+    entries.push(
+      `${index}:slot=${handle.kernel.debug_guest_write_overlap_trace_entry_slot?.(index) ?? 0}`
+      + `:op=${handle.kernel.debug_guest_write_overlap_trace_entry_op?.(index) ?? 0}`
+      + `:tid=${handle.kernel.debug_guest_write_overlap_trace_entry_tid?.(index) ?? 0}`
+      + `:pc=0x${BigInt(pc).toString(16)}`
+      + `:addr=0x${BigInt(addr).toString(16)}`
+      + `:len=${handle.kernel.debug_guest_write_overlap_trace_entry_len?.(index) ?? 0}`
+      + `:sample_len=${handle.kernel.debug_guest_write_overlap_trace_entry_sample_len?.(index) ?? 0}`
+      + `:sample=0x${BigInt(sample).toString(16)}`
+      + `:stage=${handle.kernel.debug_guest_write_overlap_trace_entry_execve_stage?.(index) ?? 0}`,
+    );
+  }
+  return entries.join(" ");
+}
+
 function formatSelectedSyscallProfile(handle: ProcessHandle): string {
   const count = handle.kernel.debug_syscall_profile_count;
   if (!count) {
@@ -1456,6 +1481,7 @@ export function debugRuntimeProcessHandles(
           `syscalls=[${formatProcessSyscallTrace(handle)}]`,
           `syscall_errors=[${formatProcessSyscallErrorTrace(handle)}]`,
           `futex_trace=[${formatProcessFutexTrace(handle)}]`,
+          `guest_write_overlaps=[${formatProcessGuestWriteOverlapTrace(handle)}]`,
           `riscv_syscalls=[${formatProcessRiscvSyscallTrace(handle)}]`,
           `syscall_profile=[${formatSelectedSyscallProfile(handle)}]`,
           `fd_syscalls=[${formatProcessFdTrace(handle)}]`,
@@ -1471,6 +1497,7 @@ export function debugRuntimeProcessHandles(
           `execve_error=${formatExecveError(handle)}`,
           `syscalls=[${formatProcessSyscallTrace(handle)}]`,
           `futex_trace=[${formatProcessFutexTrace(handle)}]`,
+          `guest_write_overlaps=[${formatProcessGuestWriteOverlapTrace(handle)}]`,
           `riscv_syscalls=[${formatProcessRiscvSyscallTrace(handle)}]`,
           `syscall_profile=[${formatSelectedSyscallProfile(handle)}]`,
           `path_syscalls=[${formatProcessPathTrace(handle)}]`,
