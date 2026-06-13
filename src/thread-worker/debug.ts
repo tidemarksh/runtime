@@ -5,6 +5,7 @@ const decoder = new TextDecoder();
 const FD_TRACE_LOG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_FD_TRACE ?? "") === "1";
 const RESERVATION_DEBUG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_RESERVATION ?? "") === "1";
 const KEEP_SIGNAL_TRACE_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_KEEP_SIGNAL_TRACE ?? "") === "1";
+const GUEST_WRITE_WATCH_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_DEBUG_GUEST_WRITE_WATCH ?? "") !== "";
 const loggedFdTraceEntries = new Set<string>();
 export const THREAD_WORKER_DEBUG_OBSERVATION_MODE = "read-only-observation" as const;
 export const THREAD_WORKER_SYSCALL_TRACE_CLEAR_MODE = "trace-lifecycle-cleanup" as const;
@@ -953,11 +954,40 @@ function pushRecoveredTraceDebug(debugParts: string[], exports: KernelExports, v
   );
 }
 
+function formatGuestWriteOverlapTrace(exports: KernelExports): string | null {
+  const len = exports.debug_guest_write_overlap_trace_len?.() ?? 0;
+  if (len <= 0) {
+    return null;
+  }
+  const entries: string[] = [];
+  for (let index = 0; index < len; index += 1) {
+    const addr = exports.debug_guest_write_overlap_trace_entry_addr?.(index) ?? 0n;
+    const pc = exports.debug_guest_write_overlap_trace_entry_pc?.(index) ?? 0n;
+    const sample = exports.debug_guest_write_overlap_trace_entry_sample?.(index) ?? 0n;
+    entries.push(
+      `${index}:slot=${exports.debug_guest_write_overlap_trace_entry_slot?.(index) ?? 0}`
+      + `:op=${exports.debug_guest_write_overlap_trace_entry_op?.(index) ?? 0}`
+      + `:tid=${exports.debug_guest_write_overlap_trace_entry_tid?.(index) ?? 0}`
+      + `:pc=0x${BigInt(pc).toString(16)}`
+      + `:addr=0x${BigInt(addr).toString(16)}`
+      + `:len=${exports.debug_guest_write_overlap_trace_entry_len?.(index) ?? 0}`
+      + `:sample_len=${exports.debug_guest_write_overlap_trace_entry_sample_len?.(index) ?? 0}`
+      + `:sample=0x${BigInt(sample).toString(16)}`
+      + `:stage=${exports.debug_guest_write_overlap_trace_entry_execve_stage?.(index) ?? 0}`,
+    );
+  }
+  return entries.join(" ");
+}
+
 export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBase: number): string[] {
   const debugParts: string[] = [];
   try {
   debugParts.push(`mem_bytes=${exports.memory.buffer.byteLength}`);
   debugParts.push(`guest_base=0x${(exports.thread_guest_base?.(vmPtr) ?? guestBase).toString(16)}`);
+  const guestWriteOverlapTrace = formatGuestWriteOverlapTrace(exports);
+  if (guestWriteOverlapTrace !== null || GUEST_WRITE_WATCH_ENABLED) {
+    debugParts.push(`guest_write_overlaps=[${guestWriteOverlapTrace ?? ""}]`);
+  }
   debugParts.push(`guest_memory_policy_limit=${exports.thread_guest_memory_policy_limit?.(vmPtr) ?? 0n}`);
   debugParts.push(`guest_address_profile=${exports.thread_guest_address_profile?.(vmPtr) ?? 0}`);
   debugParts.push(`guest_address_limit=${exports.thread_guest_address_limit?.(vmPtr) ?? 0n}`);
