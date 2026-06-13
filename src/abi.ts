@@ -536,6 +536,16 @@ export interface KernelExports {
   debug_memory_permit_denied_by_prot?(prot: number): bigint | number;
   debug_clear_guest_write_watch_trace?(): void;
   debug_configure_guest_write_watch?(slot: number, start: bigint | number, end: bigint | number): void;
+  debug_guest_write_overlap_trace_len?(): number;
+  debug_guest_write_overlap_trace_entry_slot?(index: number): number;
+  debug_guest_write_overlap_trace_entry_op?(index: number): number;
+  debug_guest_write_overlap_trace_entry_tid?(index: number): number;
+  debug_guest_write_overlap_trace_entry_pc?(index: number): bigint | number;
+  debug_guest_write_overlap_trace_entry_addr?(index: number): bigint | number;
+  debug_guest_write_overlap_trace_entry_len?(index: number): number;
+  debug_guest_write_overlap_trace_entry_sample_len?(index: number): number;
+  debug_guest_write_overlap_trace_entry_sample?(index: number): bigint | number;
+  debug_guest_write_overlap_trace_entry_execve_stage?(index: number): number;
   debug_syscall_trace_nr?(): bigint;
   debug_syscall_trace_result?(): bigint;
   debug_syscall_trace_status?(): number;
