@@ -194,7 +194,224 @@ type RuntimeDebugView = RuntimeInstance & {
     canonicalPids: number[];
   }>;
   debugSnapshot?: () => string;
+  debugWorkerLogFocus?: () => unknown;
 };
+
+function readGuestU64(handle: RuntimeDebugHandle, vmPtr: number, addr: bigint): bigint | null {
+  if (!handle.memory?.buffer) {
+    return null;
+  }
+  const guestBase = handle.kernel.thread_guest_base?.(vmPtr) ?? 0;
+  const ptr = Number(addr);
+  if (!Number.isFinite(ptr) || ptr < 0) {
+    return null;
+  }
+  const absolute = guestBase + ptr;
+  if (absolute < 0 || absolute + 8 > handle.memory.buffer.byteLength) {
+    return null;
+  }
+  return new DataView(handle.memory.buffer).getBigUint64(absolute, true);
+}
+
+function formatGuestU64(handle: RuntimeDebugHandle, vmPtr: number, addr: bigint): string {
+  const value = readGuestU64(handle, vmPtr, addr);
+  return value === null ? "n/a" : `0x${value.toString(16)}`;
+}
+
+function formatStackPreview(handle: RuntimeDebugHandle, vmPtr: number, sp: bigint): string {
+  if (sp === 0n) {
+    return "[]";
+  }
+  const entries: string[] = [];
+  for (let index = 0; index < 16; index += 1) {
+    const offset = BigInt(index * 8);
+    entries.push(`+${offset.toString(16)}=${formatGuestU64(handle, vmPtr, sp + offset)}`);
+  }
+  return `[${entries.join(",")}]`;
+}
+
+function formatFrameChain(handle: RuntimeDebugHandle, vmPtr: number, fp: bigint): string {
+  if (fp === 0n) {
+    return "[]";
+  }
+  const frames: string[] = [];
+  let current = fp;
+  for (let index = 0; index < 8; index += 1) {
+    if (current < 16n) {
+      break;
+    }
+    const previous = readGuestU64(handle, vmPtr, current - 16n);
+    const ra = readGuestU64(handle, vmPtr, current - 8n);
+    frames.push(
+      `${index}:fp=0x${current.toString(16)}`
+      + `:prev=${previous === null ? "n/a" : `0x${previous.toString(16)}`}`
+      + `:ra=${ra === null ? "n/a" : `0x${ra.toString(16)}`}`,
+    );
+    if (previous === null || previous === 0n || previous <= current) {
+      break;
+    }
+    current = previous;
+  }
+  return `[${frames.join(",")}]`;
+}
+
+function readGuestI32(handle: RuntimeDebugHandle, vmPtr: number, addr: bigint): number | null {
+  if (!handle.memory?.buffer) {
+    return null;
+  }
+  const guestBase = handle.kernel.thread_guest_base?.(vmPtr) ?? 0;
+  const ptr = Number(addr);
+  if (!Number.isFinite(ptr) || ptr < 0) {
+    return null;
+  }
+  const absolute = guestBase + ptr;
+  if (absolute < 0 || absolute + 4 > handle.memory.buffer.byteLength) {
+    return null;
+  }
+  return new DataView(handle.memory.buffer).getInt32(absolute, true);
+}
+
+function formatGuestI32(handle: RuntimeDebugHandle, vmPtr: number, addr: bigint): string {
+  const value = readGuestI32(handle, vmPtr, addr);
+  return value === null ? "n/a" : value.toString();
+}
+
+function formatI32Window(
+  handle: RuntimeDebugHandle,
+  vmPtr: number,
+  center: bigint,
+  beforeWords = 4,
+  afterWords = 12,
+): string {
+  if (center === 0n) {
+    return "[]";
+  }
+  const entries: string[] = [];
+  for (let index = -beforeWords; index <= afterWords; index += 1) {
+    const offset = BigInt(index * 4);
+    const label = offset < 0n ? offset.toString() : `+${offset.toString()}`;
+    entries.push(`${label}=${formatGuestI32(handle, vmPtr, center + offset)}`);
+  }
+  return `[${entries.join(",")}]`;
+}
+
+function formatMemoryVma(handle: RuntimeDebugHandle, index: number): string {
+  const start = BigInt(handle.kernel.debug_memory_vma_start?.(index) ?? 0);
+  const end = BigInt(handle.kernel.debug_memory_vma_end?.(index) ?? 0);
+  const prot = handle.kernel.debug_memory_vma_prot?.(index) ?? 0;
+  const flags = handle.kernel.debug_memory_vma_flags?.(index) ?? 0;
+  const fd = handle.kernel.debug_memory_vma_fd?.(index) ?? -1;
+  const offset = BigInt(handle.kernel.debug_memory_vma_offset?.(index) ?? 0);
+  return `0x${start.toString(16)}-0x${end.toString(16)}:${prot}/${flags}/fd=${fd}/off=0x${offset.toString(16)}`;
+}
+
+function findContainingMemoryVmaIndex(handle: RuntimeDebugHandle, addr: bigint): number | null {
+  if (addr === 0n) {
+    return null;
+  }
+  const len = handle.kernel.debug_memory_vma_len?.() ?? 0;
+  for (let index = 0; index < len; index += 1) {
+    const start = BigInt(handle.kernel.debug_memory_vma_start?.(index) ?? 0);
+    const end = BigInt(handle.kernel.debug_memory_vma_end?.(index) ?? 0);
+    if (start <= addr && addr < end) {
+      return index;
+    }
+  }
+  return null;
+}
+
+function findContainingMemoryVma(handle: RuntimeDebugHandle, addr: bigint): string | null {
+  const index = findContainingMemoryVmaIndex(handle, addr);
+  return index === null ? null : formatMemoryVma(handle, index);
+}
+
+function findAdjacentMemoryVmas(handle: RuntimeDebugHandle, addr: bigint): { prev: string | null; next: string | null } {
+  let prev: string | null = null;
+  let next: string | null = null;
+  if (addr === 0n) {
+    return { prev, next };
+  }
+  const len = handle.kernel.debug_memory_vma_len?.() ?? 0;
+  for (let index = 0; index < len; index += 1) {
+    const start = BigInt(handle.kernel.debug_memory_vma_start?.(index) ?? 0);
+    const end = BigInt(handle.kernel.debug_memory_vma_end?.(index) ?? 0);
+    if (end <= addr) {
+      prev = formatMemoryVma(handle, index);
+      continue;
+    }
+    if (addr < start) {
+      next = formatMemoryVma(handle, index);
+      break;
+    }
+  }
+  return { prev, next };
+}
+
+function formatAddressVmaDebug(handle: RuntimeDebugHandle, addr: bigint): string {
+  const current = findContainingMemoryVma(handle, addr);
+  if (current !== null) {
+    return current;
+  }
+  const adjacent = findAdjacentMemoryVmas(handle, addr);
+  return `none:prev=${adjacent.prev ?? "none"}:next=${adjacent.next ?? "none"}`;
+}
+
+function formatStackTextCandidates(handle: RuntimeDebugHandle, vmPtr: number, sp: bigint): string {
+  if (sp === 0n) {
+    return "[]";
+  }
+  const entries: string[] = [];
+  for (let index = 0; index < 256; index += 1) {
+    const stackOffset = BigInt(index * 8);
+    const value = readGuestU64(handle, vmPtr, sp + stackOffset);
+    if (value === null || value === 0n) {
+      continue;
+    }
+    const vmaIndex = findContainingMemoryVmaIndex(handle, value);
+    if (vmaIndex === null) {
+      continue;
+    }
+    const prot = handle.kernel.debug_memory_vma_prot?.(vmaIndex) ?? 0;
+    if ((prot & 4) === 0) {
+      continue;
+    }
+    const start = BigInt(handle.kernel.debug_memory_vma_start?.(vmaIndex) ?? 0);
+    const vmaOffset = BigInt(handle.kernel.debug_memory_vma_offset?.(vmaIndex) ?? 0);
+    const fileOffset = vmaOffset + (value - start);
+    entries.push(
+      `+${stackOffset.toString(16)}=0x${value.toString(16)}`
+      + `:file=0x${fileOffset.toString(16)}`
+      + `:vma=${formatMemoryVma(handle, vmaIndex)}`,
+    );
+    if (entries.length >= 64) {
+      break;
+    }
+  }
+  return `[${entries.join(",")}]`;
+}
+
+function formatPointerWords64(handle: RuntimeDebugHandle, vmPtr: number, addr: bigint): string {
+  if (addr === 0n || findContainingMemoryVmaIndex(handle, addr) === null) {
+    return "[]";
+  }
+  const entries: string[] = [];
+  for (let index = 0; index < 6; index += 1) {
+    const offset = BigInt(index * 8);
+    entries.push(`+${offset.toString(16)}=${formatGuestU64(handle, vmPtr, addr + offset)}`);
+  }
+  return `[${entries.join(",")}]`;
+}
+
+function formatRegisterPointerWindows(
+  handle: RuntimeDebugHandle,
+  vmPtr: number,
+  regs: Array<[string, bigint]>,
+): string {
+  const entries = regs
+    .filter(([, addr]) => addr !== 0n && findContainingMemoryVmaIndex(handle, addr) !== null)
+    .map(([name, addr]) => `${name}=0x${addr.toString(16)}:${formatPointerWords64(handle, vmPtr, addr)}`);
+  return `[${entries.join(",")}]`;
+}
 
 function formatThreadDebug(handle: RuntimeDebugHandle, vmPtr: number): string {
   const syscallNr = handle.kernel.debug_syscall_trace_nr?.();
@@ -202,6 +419,19 @@ function formatThreadDebug(handle: RuntimeDebugHandle, vmPtr: number): string {
   const result = handle.kernel.debug_syscall_trace_result?.();
   const tid = handle.kernel.thread_tid?.(vmPtr) ?? 0;
   const ra = handle.kernel.thread_ra?.(vmPtr) ?? 0n;
+  const sp = handle.kernel.thread_sp(vmPtr);
+  const s0 = handle.kernel.thread_reg?.(vmPtr, 8) ?? 0n;
+  const s1 = handle.kernel.thread_reg?.(vmPtr, 9) ?? 0n;
+  const s2 = handle.kernel.thread_reg?.(vmPtr, 18) ?? 0n;
+  const s3 = handle.kernel.thread_reg?.(vmPtr, 19) ?? 0n;
+  const s4 = handle.kernel.thread_reg?.(vmPtr, 20) ?? 0n;
+  const s5 = handle.kernel.thread_reg?.(vmPtr, 21) ?? 0n;
+  const s6 = handle.kernel.thread_reg?.(vmPtr, 22) ?? 0n;
+  const s7 = handle.kernel.thread_reg?.(vmPtr, 23) ?? 0n;
+  const s8 = handle.kernel.thread_reg?.(vmPtr, 24) ?? 0n;
+  const s9 = handle.kernel.thread_reg?.(vmPtr, 25) ?? 0n;
+  const s10 = handle.kernel.thread_reg?.(vmPtr, 26) ?? 0n;
+  const s11 = handle.kernel.thread_reg?.(vmPtr, 27) ?? 0n;
   const futexWaitAddr = handle.kernel.thread_futex_wait_addr?.(vmPtr) ?? 0n;
   const futexWaitExpected = handle.kernel.thread_futex_wait_expected?.(vmPtr);
   const futexWaitTimeout = handle.kernel.thread_futex_wait_timeout?.(vmPtr) ?? 0n;
@@ -210,7 +440,19 @@ function formatThreadDebug(handle: RuntimeDebugHandle, vmPtr: number): string {
     `tid=${tid}`,
     `pc=0x${handle.kernel.thread_pc(vmPtr).toString(16)}`,
     `ra=0x${ra.toString(16)}`,
-    `sp=0x${handle.kernel.thread_sp(vmPtr).toString(16)}`,
+    `sp=0x${sp.toString(16)}`,
+    `s0=0x${s0.toString(16)}`,
+    `s1=0x${s1.toString(16)}`,
+    `s2=0x${s2.toString(16)}`,
+    `s3=0x${s3.toString(16)}`,
+    `s4=0x${s4.toString(16)}`,
+    `s5=0x${s5.toString(16)}`,
+    `s6=0x${s6.toString(16)}`,
+    `s7=0x${s7.toString(16)}`,
+    `s8=0x${s8.toString(16)}`,
+    `s9=0x${s9.toString(16)}`,
+    `s10=0x${s10.toString(16)}`,
+    `s11=0x${s11.toString(16)}`,
     `a0=${handle.kernel.thread_a0(vmPtr).toString()}`,
     `a1=${handle.kernel.thread_a1(vmPtr).toString()}`,
     `status=${handle.kernel.thread_status(vmPtr)}`,
@@ -218,6 +460,18 @@ function formatThreadDebug(handle: RuntimeDebugHandle, vmPtr: number): string {
     `futex_wait_addr=0x${futexWaitAddr.toString(16)}`,
     futexWaitExpected !== undefined ? `futex_wait_expected=${futexWaitExpected}` : "",
     `futex_wait_timeout=${futexWaitTimeout.toString()}`,
+    `futex_word=${futexWaitAddr === 0n ? "n/a" : formatGuestU64(handle, vmPtr, futexWaitAddr)}`,
+    `futex_words32=${futexWaitAddr === 0n ? "[]" : formatI32Window(handle, vmPtr, futexWaitAddr)}`,
+    `startup_sync_words32=${futexWaitAddr === 0n ? "[]" : formatI32Window(handle, vmPtr, futexWaitAddr - 0x4cn, 0, 24)}`,
+    `futex_vma=${futexWaitAddr === 0n ? "n/a" : formatAddressVmaDebug(handle, futexWaitAddr)}`,
+    `stack64=${formatStackPreview(handle, vmPtr, sp)}`,
+    `stack_text64=${formatStackTextCandidates(handle, vmPtr, sp)}`,
+    `reg_ptr64=${formatRegisterPointerWindows(handle, vmPtr, [
+      ["s0", s0], ["s1", s1], ["s2", s2], ["s3", s3],
+      ["s4", s4], ["s5", s5], ["s6", s6], ["s7", s7],
+      ["s8", s8], ["s9", s9], ["s10", s10], ["s11", s11],
+    ])}`,
+    `frame64=${formatFrameChain(handle, vmPtr, s0)}`,
     syscallNr !== undefined ? `syscall=${syscallNr.toString()}` : "",
     status !== undefined ? `sys_status=${status}` : "",
     result !== undefined ? `sys_result=${result.toString()}` : "",
@@ -455,10 +709,15 @@ export async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<str
   ]).catch(() => "");
 
   const internalSummary = runtimeView.debugSnapshot?.() ?? "";
+  const workerLogFocus = safeDebugValue(() => {
+    const focus = runtimeView.debugWorkerLogFocus?.();
+    return focus === undefined ? "" : JSON.stringify(focus);
+  });
 
   return [
     localSummary ? `local:\n${localSummary}` : "",
     internalSummary ? `internal:\n${internalSummary}` : "",
+    workerLogFocus ? `worker_log_focus:\n${workerLogFocus}` : "",
     kernelSummary,
   ].filter(Boolean).join("\n");
 }
