@@ -385,6 +385,63 @@ test("completeProcessExit waits for stdio-owned child exit before releasing visi
   expect(order.indexOf("destroy:3")).toBeLessThan(order.indexOf("release:1"));
 });
 
+test("completeProcessExit gives up on live inherited child before releasing visible owner stdio", async () => {
+  const events: string[] = [];
+  const parent = makeHandle({
+    pid: 1,
+    parentPid: null,
+    debugCommand: "/bin/parent",
+  });
+  const child = makeHandle({
+    pid: 3,
+    parentPid: 1,
+    stdioOwner: parent,
+    debugCommand: "/bin/child",
+  });
+  const processHandles = new Map<number, ProcessHandle>([
+    [1, parent],
+    [3, child],
+  ]);
+
+  const helpers = createWorkerExitHelpers({
+    processHandles,
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      events.push(event);
+    },
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=1,pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: (handle) => {
+      events.push(`drain:${handle.pid}`);
+      return false;
+    },
+    destroyProcessHandle(handle) {
+      events.push(`destroy:${handle.pid}`);
+      processHandles.delete(handle.pid);
+    },
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers: () => {},
+    recordChildExitViaKernelWorker: async () => {},
+    releaseSharedHostStdio: async (handle) => {
+      events.push(`release:${handle.pid}`);
+    },
+    requestPipeStateSync: async (handle) => {
+      events.push(`pipe-sync:${handle.pid}`);
+    },
+    unregisterProcessWithKernelWorker: async () => {},
+  });
+
+  await helpers.completeProcessExit(parent, 0, 0);
+
+  const giveUpIndex = events.findIndex((event) => (
+    event.startsWith("visible-inherited-child-live-give-up:1:3/")
+  ));
+  expect(giveUpIndex).toBeGreaterThanOrEqual(0);
+  expect(events.indexOf("release:1")).toBeGreaterThan(giveUpIndex);
+  expect(processHandles.has(3)).toBe(true);
+});
+
 test("recordExitOnParent skips child-side drain when stdio is owned by the parent", async () => {
   const order: string[] = [];
   const parent = makeHandle({

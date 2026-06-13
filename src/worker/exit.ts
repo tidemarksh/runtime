@@ -1071,12 +1071,11 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     return parts.join("/");
   }
 
-  async function settleVisibleInheritedChildrenOutput(handle: ProcessHandle): Promise<void> {
+  async function settleVisibleInheritedChildrenOutput(handle: ProcessHandle, maxPasses = 6): Promise<void> {
     if (handle.stdioOwner !== null) {
       return;
     }
-    let pass = 0;
-    for (;;) {
+    for (let pass = 0; pass < maxPasses; pass += 1) {
       const children = visibleInheritedChildren(handle);
       if (children.length === 0) {
         break;
@@ -1112,8 +1111,14 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
           `visible-inherited-child-live-wait:${handle.pid}:${children.map(formatVisibleChildState).join(".")}`,
         );
       }
-      pass += 1;
       await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const remainingChildren = visibleInheritedChildren(handle);
+    if (remainingChildren.length > 0) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `visible-inherited-child-live-give-up:${handle.pid}:${remainingChildren.map(formatVisibleChildState).join(".")}`,
+      );
     }
   }
 
