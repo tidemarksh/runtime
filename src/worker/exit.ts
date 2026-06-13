@@ -725,6 +725,51 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     return `guest_write_overlaps=[${entries.join(",")}]`;
   }
 
+  function formatGuestRangePermitDeniedTrace(handle: ProcessHandle): string {
+    const len = handle.kernel.debug_guest_range_permit_denied_trace_len?.() ?? 0;
+    if (len <= 0) {
+      return "guest_range_permit_denied=[]";
+    }
+    const entries: string[] = [];
+    for (let index = 0; index < len; index += 1) {
+      const pc = handle.kernel.debug_guest_range_permit_denied_trace_entry_pc?.(index) ?? 0n;
+      const start = handle.kernel.debug_guest_range_permit_denied_trace_entry_start?.(index) ?? 0n;
+      const accessLen = handle.kernel.debug_guest_range_permit_denied_trace_entry_len?.(index) ?? 0n;
+      const end = handle.kernel.debug_guest_range_permit_denied_trace_entry_end?.(index) ?? 0n;
+      const guestLimit = handle.kernel.debug_guest_range_permit_denied_trace_entry_guest_limit?.(index) ?? 0n;
+      const coverStart = handle.kernel.debug_guest_range_permit_denied_trace_entry_cover_start?.(index) ?? 0n;
+      const coverEnd = handle.kernel.debug_guest_range_permit_denied_trace_entry_cover_end?.(index) ?? 0n;
+      const a0 = handle.kernel.debug_guest_range_permit_denied_trace_entry_a0?.(index) ?? 0n;
+      const a1 = handle.kernel.debug_guest_range_permit_denied_trace_entry_a1?.(index) ?? 0n;
+      const a2 = handle.kernel.debug_guest_range_permit_denied_trace_entry_a2?.(index) ?? 0n;
+      const a3 = handle.kernel.debug_guest_range_permit_denied_trace_entry_a3?.(index) ?? 0n;
+      const a4 = handle.kernel.debug_guest_range_permit_denied_trace_entry_a4?.(index) ?? 0n;
+      const a5 = handle.kernel.debug_guest_range_permit_denied_trace_entry_a5?.(index) ?? 0n;
+      const s1 = handle.kernel.debug_guest_range_permit_denied_trace_entry_s1?.(index) ?? 0n;
+      const s2 = handle.kernel.debug_guest_range_permit_denied_trace_entry_s2?.(index) ?? 0n;
+      const s3 = handle.kernel.debug_guest_range_permit_denied_trace_entry_s3?.(index) ?? 0n;
+      const s11 = handle.kernel.debug_guest_range_permit_denied_trace_entry_s11?.(index) ?? 0n;
+      entries.push(
+        `${index}:vm=0x${(handle.kernel.debug_guest_range_permit_denied_trace_entry_vm_ptr?.(index) ?? 0).toString(16)}`
+        + `:tid=${handle.kernel.debug_guest_range_permit_denied_trace_entry_tid?.(index) ?? 0}`
+        + `:pc=0x${pc.toString(16)}`
+        + `:regs=a0=0x${a0.toString(16)}/a1=0x${a1.toString(16)}/a2=0x${a2.toString(16)}`
+        + `/a3=0x${a3.toString(16)}/a4=0x${a4.toString(16)}/a5=0x${a5.toString(16)}`
+        + `/s1=0x${s1.toString(16)}/s2=0x${s2.toString(16)}/s3=0x${s3.toString(16)}`
+        + `/s11=0x${s11.toString(16)}`
+        + `:start=0x${start.toString(16)}`
+        + `:len=${accessLen.toString()}`
+        + `:end=0x${end.toString(16)}`
+        + `:limit=0x${guestLimit.toString(16)}`
+        + `:prot=${handle.kernel.debug_guest_range_permit_denied_trace_entry_prot?.(index) ?? 0}`
+        + `:cover=0x${coverStart.toString(16)}-0x${coverEnd.toString(16)}`
+        + `/prot=${handle.kernel.debug_guest_range_permit_denied_trace_entry_cover_prot?.(index) ?? 0}`
+        + `:reason=${handle.kernel.debug_guest_range_permit_denied_trace_entry_reason?.(index) ?? 0}`,
+      );
+    }
+    return `guest_range_permit_denied=[${entries.join(",")}]`;
+  }
+
   function formatExitTrace(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
     const execveStage = handle.kernel.debug_execve_stage?.() ?? 0;
     const execveValue0 = handle.kernel.debug_execve_value0?.() ?? 0n;
@@ -742,6 +787,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       formatIllegalInstructionTrace(handle),
       formatSignalState(handle, vmPtr),
       formatGuestWriteOverlapTrace(handle),
+      formatGuestRangePermitDeniedTrace(handle),
       formatFrozenExitTraces(handle, vmPtr),
       `execve_stage=${execveStage}`,
       `execve_v0=${execveValue0.toString()}`,
