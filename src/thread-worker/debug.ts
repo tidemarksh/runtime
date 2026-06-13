@@ -96,7 +96,7 @@ function formatFdTraceWriteSample(
   arg1: bigint,
   arg2: bigint,
 ): string {
-  if (nr === 64n) {
+  if (nr === 64n || nr === 68n) {
     const bytes = readGuestSlice(exports, guestBase, arg1, arg2, 160);
     return bytes === null ? "" : `:text=${JSON.stringify(decoder.decode(bytes))}`;
   }
@@ -155,6 +155,7 @@ export function collectFdTraceDebug(
     65n, // readv
     66n, // writev
     67n, // pread64
+    68n, // pwrite64
     73n, // ppoll
     198n, // socket
     199n, // socketpair
@@ -1061,6 +1062,11 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
   debugParts.push(`tid=${readOptionalThreadI32(exports.thread_tid, vmPtr)}`);
   debugParts.push(`gp=0x${formatU64(readOptionalThreadU64(exports.thread_gp, vmPtr))}`);
   debugParts.push(`tp=0x${formatU64(readOptionalThreadU64(exports.thread_tp, vmPtr))}`);
+  debugParts.push(`s0=0x${formatU64(readOptionalThreadReg(exports, vmPtr, 8))}`);
+  debugParts.push(`s3=0x${formatU64(readOptionalThreadReg(exports, vmPtr, 19))}`);
+  debugParts.push(`s5=0x${formatU64(readOptionalThreadReg(exports, vmPtr, 21))}`);
+  debugParts.push(`s8=0x${formatU64(readOptionalThreadReg(exports, vmPtr, 24))}`);
+  debugParts.push(`s9=0x${formatU64(readOptionalThreadReg(exports, vmPtr, 25))}`);
   debugParts.push(`s11=0x${formatU64(readOptionalThreadU64(exports.thread_s11, vmPtr))}`);
   debugParts.push(`tls=0x${formatU64(readOptionalThreadU64(exports.thread_tls_base, vmPtr))}`);
   debugParts.push(`sig_mask=0x${formatU64(readOptionalThreadU64(exports.thread_sig_mask, vmPtr))}`);
@@ -1340,11 +1346,9 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
       const cloneStartupEntries: string[] = [];
       for (let index = 0; index < cloneStartupLen; index += 1) {
         const entryVmPtr = exports.debug_clone_startup_trace_entry_vm_ptr?.(index) ?? 0;
-        if (entryVmPtr !== vmPtr) {
-          continue;
-        }
         cloneStartupEntries.push(
-          `${index}:tid=${exports.debug_clone_startup_trace_entry_tid?.(index) ?? 0}`
+          `${index}:vm=0x${entryVmPtr.toString(16)}`
+          + `:tid=${exports.debug_clone_startup_trace_entry_tid?.(index) ?? 0}`
           + `:pc=0x${formatU64(exports.debug_clone_startup_trace_entry_pc?.(index) ?? 0n)}`
           + `:raw=0x${(exports.debug_clone_startup_trace_entry_raw?.(index) ?? 0).toString(16)}`
           + `:a0=0x${formatU64(exports.debug_clone_startup_trace_entry_a0?.(index) ?? 0n)}`
