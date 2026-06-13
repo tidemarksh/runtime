@@ -60,6 +60,24 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       });
   }
 
+  function debugMemfsFilePaths(): string[] {
+    const raw = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+      .process?.env?.TIDEMARK_DEBUG_MEMFS_FILES ?? "";
+    if (raw.trim() === "") {
+      return [];
+    }
+    return raw
+      .split(/[\n,]+/)
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0)
+      .slice(0, 4);
+  }
+
+  function debugExitVmasEnabled(): boolean {
+    return ((globalThis as { process?: { env?: Record<string, string | undefined> } })
+      .process?.env?.TIDEMARK_DEBUG_EXIT_VMAS ?? "") === "1";
+  }
+
   function readAbsoluteCString(handle: ProcessHandle, ptr: number): string {
     if (ptr <= 0 || ptr >= handle.memory.buffer.byteLength) {
       return "";
@@ -273,6 +291,22 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         ),
       ),
       safeFrozenExecTrace(
+        "fault_exec_trace",
+        () => formatFrozenExecTrace(
+          handle,
+          () => handle.kernel.debug_fault_exec_trace_len_for_vm?.(vmPtr) ?? 0,
+          (index) => ({
+            pc: handle.kernel.debug_fault_exec_trace_entry_pc_for_vm?.(vmPtr, index),
+            raw: handle.kernel.debug_fault_exec_trace_entry_raw_for_vm?.(vmPtr, index),
+            step: handle.kernel.debug_fault_exec_trace_entry_step_for_vm?.(vmPtr, index),
+            sp: handle.kernel.debug_fault_exec_trace_entry_sp_for_vm?.(vmPtr, index),
+            ra: handle.kernel.debug_fault_exec_trace_entry_ra_for_vm?.(vmPtr, index),
+            a0: handle.kernel.debug_fault_exec_trace_entry_a0_for_vm?.(vmPtr, index),
+            s11: handle.kernel.debug_fault_exec_trace_entry_s11_for_vm?.(vmPtr, index),
+          }),
+        ),
+      ),
+      safeFrozenExecTrace(
         "sync_fault_exec_trace",
         () => formatFrozenExecTrace(
           handle,
@@ -397,6 +431,167 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       ].join(":"));
     }
     return entries.slice(-96).join(",");
+  }
+
+  const SYS_MUNMAP = 215n;
+  const SYS_MREMAP = 216n;
+  const SYS_MMAP = 222n;
+  const SYS_MPROTECT = 226n;
+  const SYS_MSYNC = 227n;
+  const SYS_MADVISE = 233n;
+  const SYS_RISCV_FLUSH_ICACHE = 259n;
+  const PAGE_MASK = ~4095n;
+
+  function pageAlignUp(value: bigint): bigint {
+    return (value + 4095n) & PAGE_MASK;
+  }
+
+  function overlapsWatchedRegion(
+    handle: ProcessHandle,
+    start: bigint,
+    end: bigint,
+  ): boolean {
+    if (end <= start) {
+      return false;
+    }
+    for (const region of handle.guestWriteWatchRegions) {
+      const regionStart = BigInt(region.start);
+      const regionEnd = BigInt(region.end);
+      if (start < regionEnd && end > regionStart) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function watchedMemorySyscallRange(
+    nr: bigint,
+    arg0: bigint,
+    arg1: bigint,
+    arg2: bigint,
+    arg3: bigint,
+    arg4: bigint,
+    result: bigint,
+  ): Array<{ start: bigint; end: bigint; label: string }> {
+    if (nr === SYS_MMAP) {
+      const signedResult = BigInt.asIntN(64, result);
+      if (signedResult < 0n) {
+        return [];
+      }
+      return [{ start: signedResult, end: signedResult + pageAlignUp(arg1), label: "new" }];
+    }
+    if (nr === SYS_MUNMAP || nr === SYS_MPROTECT || nr === SYS_MSYNC || nr === SYS_MADVISE) {
+      return [{ start: arg0, end: arg0 + pageAlignUp(arg1), label: "range" }];
+    }
+    if (nr === SYS_MREMAP) {
+      const ranges = [{ start: arg0, end: arg0 + pageAlignUp(arg1), label: "old" }];
+      const signedResult = BigInt.asIntN(64, result);
+      if (signedResult >= 0n) {
+        ranges.push({ start: signedResult, end: signedResult + pageAlignUp(arg2), label: "new" });
+      }
+      if ((arg3 & 2n) !== 0n) {
+        ranges.push({ start: arg4, end: arg4 + pageAlignUp(arg2), label: "fixed" });
+      }
+      return ranges;
+    }
+    return [];
+  }
+
+  function formatWatchedMemorySyscalls(handle: ProcessHandle, vmPtr: number): string {
+    if (handle.guestWriteWatchRegions.length === 0) {
+      return "";
+    }
+    const len = handle.kernel.debug_memory_syscall_trace_len?.() ?? 0;
+    if (len <= 0) {
+      return "";
+    }
+    const processPtr = handle.kernel.thread_process_ptr?.(vmPtr) ?? 0;
+    const entries: string[] = [];
+    for (let index = 0; index < len; index += 1) {
+      const entryProcessPtr = handle.kernel.debug_memory_syscall_trace_entry_process_ptr?.(index) ?? 0;
+      if (processPtr !== 0 && entryProcessPtr !== processPtr) {
+        continue;
+      }
+      const nr = handle.kernel.debug_memory_syscall_trace_entry_nr?.(index) ?? 0n;
+      const arg0 = handle.kernel.debug_memory_syscall_trace_entry_arg0?.(index) ?? 0n;
+      const arg1 = handle.kernel.debug_memory_syscall_trace_entry_arg1?.(index) ?? 0n;
+      const arg2 = handle.kernel.debug_memory_syscall_trace_entry_arg2?.(index) ?? 0n;
+      const arg3 = handle.kernel.debug_memory_syscall_trace_entry_arg3?.(index) ?? 0n;
+      const arg4 = handle.kernel.debug_memory_syscall_trace_entry_arg4?.(index) ?? 0n;
+      const arg5 = handle.kernel.debug_memory_syscall_trace_entry_arg5?.(index) ?? 0n;
+      const result = handle.kernel.debug_memory_syscall_trace_entry_result?.(index) ?? 0n;
+      const ranges = watchedMemorySyscallRange(nr, arg0, arg1, arg2, arg3, arg4, result)
+        .filter((range) => overlapsWatchedRegion(handle, range.start, range.end));
+      if (ranges.length === 0) {
+        continue;
+      }
+      entries.push([
+        `${index}:${nr.toString()}`,
+        `pid=${handle.kernel.debug_memory_syscall_trace_entry_pid?.(index) ?? 0}`,
+        `process=0x${entryProcessPtr.toString(16)}`,
+        `a0=${arg0.toString()}`,
+        `a1=${arg1.toString()}`,
+        `a2=${arg2.toString()}`,
+        `a3=${arg3.toString()}`,
+        `a4=${arg4.toString()}`,
+        `a5=${arg5.toString()}`,
+        `ret=${result.toString()}`,
+        `ranges=${ranges.map((range) => (
+          `${range.label}:0x${range.start.toString(16)}..0x${range.end.toString(16)}`
+        )).join("|")}`,
+      ].join(":"));
+    }
+    return entries.join(",");
+  }
+
+  function watchedFlushIcacheRanges(
+    start: bigint,
+    endOrLength: bigint,
+  ): Array<{ start: bigint; end: bigint; label: string }> {
+    if (endOrLength < start) {
+      return [{ start, end: start + endOrLength, label: "start+len" }];
+    }
+    return [{ start, end: endOrLength, label: "start..end" }];
+  }
+
+  function formatWatchedRiscvFlushIcache(handle: ProcessHandle): string {
+    if (handle.guestWriteWatchRegions.length === 0) {
+      return "";
+    }
+    const len = handle.kernel.debug_riscv_syscall_trace_len?.() ?? 0;
+    if (len <= 0) {
+      return "";
+    }
+    const entries: string[] = [];
+    for (let index = 0; index < len; index += 1) {
+      const nr = handle.kernel.debug_riscv_syscall_trace_entry_nr?.(index) ?? 0n;
+      if (nr !== SYS_RISCV_FLUSH_ICACHE) {
+        continue;
+      }
+      const arg0 = BigInt(handle.kernel.debug_riscv_syscall_trace_entry_arg0?.(index) ?? 0n);
+      const arg1 = BigInt(handle.kernel.debug_riscv_syscall_trace_entry_arg1?.(index) ?? 0n);
+      const arg2 = handle.kernel.debug_riscv_syscall_trace_entry_arg2?.(index) ?? 0n;
+      const ranges = watchedFlushIcacheRanges(arg0, arg1)
+        .filter((range) => overlapsWatchedRegion(handle, range.start, range.end));
+      if (ranges.length === 0) {
+        continue;
+      }
+      const vmPtr = handle.kernel.debug_riscv_syscall_trace_entry_vm_ptr?.(index) ?? 0;
+      const result = handle.kernel.debug_riscv_syscall_trace_entry_result?.(index);
+      const status = handle.kernel.debug_riscv_syscall_trace_entry_status?.(index) ?? 0;
+      entries.push([
+        `${index}:vm=0x${vmPtr.toString(16)}`,
+        `a0=${arg0.toString()}`,
+        `a1=${arg1.toString()}`,
+        `a2=${arg2.toString()}`,
+        `status=${status}`,
+        `ret=${result?.toString() ?? "n/a"}`,
+        `ranges=${ranges.map((range) => (
+          `${range.label}:0x${range.start.toString(16)}..0x${range.end.toString(16)}`
+        )).join("|")}`,
+      ].join(":"));
+    }
+    return entries.join(",");
   }
 
   function formatFaultState(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
@@ -535,6 +730,48 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     return "none";
   }
 
+  function readFaultDebugVmas(handle: ProcessHandle): FaultDebugVma[] {
+    const len = handle.kernel.debug_memory_vma_len?.() ?? 0;
+    const out: FaultDebugVma[] = [];
+    for (let index = 0; index < len; index += 1) {
+      const start = BigInt(handle.kernel.debug_memory_vma_start?.(index) ?? 0);
+      const end = BigInt(handle.kernel.debug_memory_vma_end?.(index) ?? 0);
+      const fd = handle.kernel.debug_memory_vma_fd?.(index);
+      out.push({
+        index,
+        start,
+        end,
+        prot: handle.kernel.debug_memory_vma_prot?.(index) ?? 0,
+        flags: handle.kernel.debug_memory_vma_flags?.(index) ?? 0,
+        fd: typeof fd === "number" ? fd : null,
+        offset: BigInt(handle.kernel.debug_memory_vma_offset?.(index) ?? 0),
+      });
+    }
+    return out;
+  }
+
+  function formatExitMemoryVmas(handle: ProcessHandle): string | null {
+    if (!debugExitVmasEnabled()) {
+      return null;
+    }
+    const vmas = readFaultDebugVmas(handle);
+    const entries = vmas.map((vma) => (
+      `${vma.index}/0x${vma.start.toString(16)}-0x${vma.end.toString(16)}`
+      + `/p=${vma.prot}/f=${vma.flags}/fd=${vma.fd ?? "n/a"}/off=${vma.offset.toString()}`
+    ));
+    const overlaps: string[] = [];
+    for (let left = 0; left < vmas.length; left += 1) {
+      for (let right = left + 1; right < vmas.length; right += 1) {
+        const a = vmas[left];
+        const b = vmas[right];
+        if (a.start < b.end && b.start < a.end) {
+          overlaps.push(`${a.index}-${b.index}`);
+        }
+      }
+    }
+    return `memory_vmas=[${entries.join(" ")}] memory_vma_overlaps=[${overlaps.join(" ")}]`;
+  }
+
   function formatHexBytes(bytes: Uint8Array): string {
     return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   }
@@ -553,6 +790,61 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       return "n/a";
     }
     return formatHexBytes(new Uint8Array(handle.memory.buffer, start, len));
+  }
+
+  function guestAbsoluteOffset(handle: ProcessHandle, address: bigint, len: number): number | null {
+    if (address < 0n || address > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return null;
+    }
+    const absolute = BigInt(handle.guestBase) + address;
+    if (absolute < 0n || absolute > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return null;
+    }
+    const start = Number(absolute);
+    if (start < 0 || start + len > handle.memory.buffer.byteLength) {
+      return null;
+    }
+    return start;
+  }
+
+  function readGuestU32(handle: ProcessHandle, address: bigint): number | null {
+    const offset = guestAbsoluteOffset(handle, address, 4);
+    if (offset === null) {
+      return null;
+    }
+    return new DataView(handle.memory.buffer).getUint32(offset, true);
+  }
+
+  function readGuestU64(handle: ProcessHandle, address: bigint): bigint | null {
+    const offset = guestAbsoluteOffset(handle, address, 8);
+    if (offset === null) {
+      return null;
+    }
+    return new DataView(handle.memory.buffer).getBigUint64(offset, true);
+  }
+
+  function formatSignalFrameState(handle: ProcessHandle, frameBase: bigint): string {
+    if (frameBase === 0n) {
+      return "signal_frame=[]";
+    }
+    const siginfoBase = frameBase + 32n;
+    const ucontextBase = siginfoBase + 128n;
+    const regsBase = ucontextBase + 176n;
+    const hex = (value: bigint | null): string => `0x${(value ?? 0n).toString(16)}`;
+    return `signal_frame=[${
+      [
+        `home_signo=${readGuestU64(handle, frameBase + 8n)?.toString() ?? "n/a"}`,
+        `home_info=${hex(readGuestU64(handle, frameBase + 16n))}`,
+        `home_uc=${hex(readGuestU64(handle, frameBase + 24n))}`,
+        `signo=${readGuestU32(handle, siginfoBase)?.toString() ?? "n/a"}`,
+        `code=${readGuestU32(handle, siginfoBase + 8n)?.toString() ?? "n/a"}`,
+        `addr=${hex(readGuestU64(handle, siginfoBase + 16n))}`,
+        `uc_pc=${hex(readGuestU64(handle, regsBase))}`,
+        `uc_ra=${hex(readGuestU64(handle, regsBase + 8n))}`,
+        `uc_sp=${hex(readGuestU64(handle, regsBase + 16n))}`,
+        `uc_a0=${hex(readGuestU64(handle, regsBase + 80n))}`,
+      ].join(":")
+    }]`;
   }
 
   function readVmaFileBytes(handle: ProcessHandle, fd: number, offset: bigint, len: number): string {
@@ -618,6 +910,51 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     }]`;
   }
 
+  function formatDebugMemfsFiles(handle: ProcessHandle): string | null {
+    const paths = debugMemfsFilePaths();
+    if (paths.length === 0) {
+      return null;
+    }
+    if (
+      typeof handle.kernel.memfs_resolve_path !== "function"
+      || typeof handle.kernel.memfs_file_size !== "function"
+      || typeof handle.kernel.memfs_read_file_to !== "function"
+    ) {
+      return "debug_memfs_files=[unavailable]";
+    }
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const entries: string[] = [];
+    for (const path of paths) {
+      try {
+        const bytes = encoder.encode(path);
+        const pathPtr = scratchBaseFor(handle.kernel) + 0x26000;
+        ensureMemoryCapacityFor(handle.memory, pathPtr + bytes.length + 8192);
+        new Uint8Array(handle.memory.buffer, pathPtr, bytes.length).set(bytes);
+        const ino = handle.kernel.memfs_resolve_path(pathPtr, bytes.length);
+        if (ino === 0) {
+          entries.push(`${JSON.stringify(path)}:missing`);
+          continue;
+        }
+        const size = handle.kernel.memfs_file_size(ino);
+        const readLen = Math.min(Number(size), 4096);
+        const outPtr = pathPtr + bytes.length + 16;
+        const read = Number(handle.kernel.memfs_read_file_to(ino, 0n, outPtr, readLen));
+        if (read <= 0) {
+          entries.push(`${JSON.stringify(path)}:ino=${ino}:size=${size.toString()}:read=${read}`);
+          continue;
+        }
+        const text = decoder.decode(new Uint8Array(handle.memory.buffer, outPtr, read));
+        entries.push(
+          `${JSON.stringify(path)}:ino=${ino}:size=${size.toString()}:head=${JSON.stringify(text)}`,
+        );
+      } catch (error) {
+        entries.push(`${JSON.stringify(path)}:error=${JSON.stringify(error instanceof Error ? error.message : String(error))}`);
+      }
+    }
+    return `debug_memfs_files=[${entries.join(",")}]`;
+  }
+
   function formatFaultVmas(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
     const pc = handle.kernel.thread_pc?.(vmPtr) ?? 0n;
     const faultPc = handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n;
@@ -666,81 +1003,6 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         `fault_addr_vma=${formatVmaForAddress(handle, faultAddr)}`,
       ].join(":")
     }]`;
-  }
-
-  function formatIllegalInstructionTrace(handle: ProcessHandle): string {
-    const pc = handle.kernel.debug_illegal_instruction_pc?.() ?? 0n;
-    if (pc === 0n) {
-      return "illegal_instruction=[]";
-    }
-    return `illegal_instruction=[${
-      [
-        `vm=0x${(handle.kernel.debug_illegal_instruction_vm_ptr?.() ?? 0).toString(16)}`,
-        `pc=0x${pc.toString(16)}`,
-        `raw=0x${(handle.kernel.debug_illegal_instruction_raw?.() ?? 0).toString(16)}`,
-        `ra=0x${(handle.kernel.debug_illegal_instruction_ra?.() ?? 0n).toString(16)}`,
-        `sp=0x${(handle.kernel.debug_illegal_instruction_sp?.() ?? 0n).toString(16)}`,
-        `a0=0x${(handle.kernel.debug_illegal_instruction_a0?.() ?? 0n).toString(16)}`,
-        `a4=0x${(handle.kernel.debug_illegal_instruction_a4?.() ?? 0n).toString(16)}`,
-        `s11=0x${(handle.kernel.debug_illegal_instruction_s11?.() ?? 0n).toString(16)}`,
-        `jalr_pc=0x${(handle.kernel.debug_illegal_instruction_jalr_pc?.() ?? 0n).toString(16)}`,
-        `jalr_rs1=${handle.kernel.debug_illegal_instruction_jalr_rs1?.() ?? 0}`,
-        `jalr_rd=${handle.kernel.debug_illegal_instruction_jalr_rd?.() ?? 0}`,
-        `jalr_rs1v=0x${(handle.kernel.debug_illegal_instruction_jalr_rs1_value?.() ?? 0n).toString(16)}`,
-        `jalr_target=0x${(handle.kernel.debug_illegal_instruction_jalr_target?.() ?? 0n).toString(16)}`,
-        `sig_frame=0x${(handle.kernel.debug_illegal_instruction_signal_frame_base?.() ?? 0n).toString(16)}`,
-        `sig_handler=0x${(handle.kernel.debug_illegal_instruction_signal_handler_pc?.() ?? 0n).toString(16)}`,
-        `sig_code=${handle.kernel.debug_illegal_instruction_signal_code?.() ?? 0}`,
-        `sig_addr=0x${(handle.kernel.debug_illegal_instruction_signal_addr?.() ?? 0n).toString(16)}`,
-        `sig_uc_pc=0x${(handle.kernel.debug_illegal_instruction_signal_uc_pc?.() ?? 0n).toString(16)}`,
-        `sig_uc_ra=0x${(handle.kernel.debug_illegal_instruction_signal_uc_ra?.() ?? 0n).toString(16)}`,
-        `sig_uc_sp=0x${(handle.kernel.debug_illegal_instruction_signal_uc_sp?.() ?? 0n).toString(16)}`,
-        `sig_uc_a0=0x${(handle.kernel.debug_illegal_instruction_signal_uc_a0?.() ?? 0n).toString(16)}`,
-      ].join(":")
-    }]`;
-  }
-
-  function formatSignalState(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
-    const deliverySig = handle.kernel.debug_signal_delivery_for_vm_sig?.(vmPtr)
-      ?? handle.kernel.debug_signal_delivery_sig?.()
-      ?? 0;
-    return `signal_state=[${
-      [
-        `mask=0x${(handle.kernel.thread_sig_mask?.(vmPtr) ?? 0n).toString(16)}`,
-        `pending=0x${(handle.kernel.thread_sig_pending?.(vmPtr) ?? 0n).toString(16)}`,
-        `info=${handle.kernel.thread_sig_info_code?.(vmPtr) ?? 0}`,
-        `deliver_sig=${deliverySig}`,
-        `deliver_frame=0x${(handle.kernel.debug_signal_delivery_for_vm_frame_base?.(vmPtr) ?? handle.kernel.debug_signal_delivery_frame_base?.() ?? 0n).toString(16)}`,
-        `deliver_pc=0x${(handle.kernel.debug_signal_delivery_for_vm_pc?.(vmPtr) ?? handle.kernel.debug_signal_delivery_pc?.() ?? 0n).toString(16)}`,
-        `deliver_ra=0x${(handle.kernel.debug_signal_delivery_for_vm_ra?.(vmPtr) ?? handle.kernel.debug_signal_delivery_ra?.() ?? 0n).toString(16)}`,
-        `deliver_sp=0x${(handle.kernel.debug_signal_delivery_for_vm_sp?.(vmPtr) ?? handle.kernel.debug_signal_delivery_sp?.() ?? 0n).toString(16)}`,
-      ].join(":")
-    }]`;
-  }
-
-  function formatGuestWriteOverlapTrace(handle: ProcessHandle): string {
-    const len = handle.kernel.debug_guest_write_overlap_trace_len?.() ?? 0;
-    if (len <= 0) {
-      return "guest_write_overlaps=[]";
-    }
-    const entries: string[] = [];
-    for (let index = 0; index < len; index += 1) {
-      const addr = handle.kernel.debug_guest_write_overlap_trace_entry_addr?.(index) ?? 0n;
-      const pc = handle.kernel.debug_guest_write_overlap_trace_entry_pc?.(index) ?? 0n;
-      const sample = handle.kernel.debug_guest_write_overlap_trace_entry_sample?.(index) ?? 0n;
-      entries.push(
-        `${index}:slot=${handle.kernel.debug_guest_write_overlap_trace_entry_slot?.(index) ?? 0}`
-        + `:op=${handle.kernel.debug_guest_write_overlap_trace_entry_op?.(index) ?? 0}`
-        + `:tid=${handle.kernel.debug_guest_write_overlap_trace_entry_tid?.(index) ?? 0}`
-        + `:pc=0x${BigInt(pc).toString(16)}`
-        + `:addr=0x${addr.toString(16)}`
-        + `:len=${handle.kernel.debug_guest_write_overlap_trace_entry_len?.(index) ?? 0}`
-        + `:sample_len=${handle.kernel.debug_guest_write_overlap_trace_entry_sample_len?.(index) ?? 0}`
-        + `:sample=0x${sample.toString(16)}`
-        + `:stage=${handle.kernel.debug_guest_write_overlap_trace_entry_execve_stage?.(index) ?? 0}`,
-      );
-    }
-    return `guest_write_overlaps=[${entries.join(",")}]`;
   }
 
   function formatSignalSendTrace(handle: ProcessHandle): string {
@@ -829,6 +1091,120 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     }]`;
   }
 
+  function formatSigreturnTrace(handle: ProcessHandle): string {
+    const frameBase = handle.kernel.debug_sigreturn_frame_base?.() ?? 0n;
+    const count = handle.kernel.debug_sigreturn_count?.() ?? 0;
+    const trampolineTid = handle.kernel.debug_signal_trampoline_hit_tid?.() ?? 0;
+    const trampolinePc = handle.kernel.debug_signal_trampoline_hit_pc?.() ?? 0n;
+    if (frameBase === 0n && count === 0 && trampolineTid === 0 && trampolinePc === 0n) {
+      return "sigreturn=[]";
+    }
+    return `sigreturn=[${
+      [
+        `count=${count}`,
+        `frame=0x${frameBase.toString(16)}`,
+        `pc=0x${(handle.kernel.debug_sigreturn_pc?.() ?? 0n).toString(16)}`,
+        `ra=0x${(handle.kernel.debug_sigreturn_ra?.() ?? 0n).toString(16)}`,
+        `sp=0x${(handle.kernel.debug_sigreturn_sp?.() ?? 0n).toString(16)}`,
+        `gp=0x${(handle.kernel.debug_sigreturn_gp?.() ?? 0n).toString(16)}`,
+        `tp=0x${(handle.kernel.debug_sigreturn_tp?.() ?? 0n).toString(16)}`,
+        `s11=0x${(handle.kernel.debug_sigreturn_s11?.() ?? 0n).toString(16)}`,
+        `trampoline_tid=${trampolineTid}`,
+        `trampoline_pc=0x${trampolinePc.toString(16)}`,
+        formatSignalFrameState(handle, frameBase),
+      ].join(":")
+    }]`;
+  }
+
+  function formatIllegalInstructionTrace(handle: ProcessHandle): string {
+    const pc = handle.kernel.debug_illegal_instruction_pc?.() ?? 0n;
+    if (pc === 0n) {
+      return "illegal_instruction=[]";
+    }
+    return `illegal_instruction=[${
+      [
+        `vm=0x${(handle.kernel.debug_illegal_instruction_vm_ptr?.() ?? 0).toString(16)}`,
+        `pc=0x${pc.toString(16)}`,
+        `raw=0x${(handle.kernel.debug_illegal_instruction_raw?.() ?? 0).toString(16)}`,
+        `ra=0x${(handle.kernel.debug_illegal_instruction_ra?.() ?? 0n).toString(16)}`,
+        `sp=0x${(handle.kernel.debug_illegal_instruction_sp?.() ?? 0n).toString(16)}`,
+        `a0=0x${(handle.kernel.debug_illegal_instruction_a0?.() ?? 0n).toString(16)}`,
+        `a4=0x${(handle.kernel.debug_illegal_instruction_a4?.() ?? 0n).toString(16)}`,
+        `s11=0x${(handle.kernel.debug_illegal_instruction_s11?.() ?? 0n).toString(16)}`,
+        `jalr_pc=0x${(handle.kernel.debug_illegal_instruction_jalr_pc?.() ?? 0n).toString(16)}`,
+        `jalr_rs1=${handle.kernel.debug_illegal_instruction_jalr_rs1?.() ?? 0}`,
+        `jalr_rd=${handle.kernel.debug_illegal_instruction_jalr_rd?.() ?? 0}`,
+        `jalr_rs1v=0x${(handle.kernel.debug_illegal_instruction_jalr_rs1_value?.() ?? 0n).toString(16)}`,
+        `jalr_target=0x${(handle.kernel.debug_illegal_instruction_jalr_target?.() ?? 0n).toString(16)}`,
+        `sig_frame=0x${(handle.kernel.debug_illegal_instruction_signal_frame_base?.() ?? 0n).toString(16)}`,
+        `sig_handler=0x${(handle.kernel.debug_illegal_instruction_signal_handler_pc?.() ?? 0n).toString(16)}`,
+        `sig_code=${handle.kernel.debug_illegal_instruction_signal_code?.() ?? 0}`,
+        `sig_addr=0x${(handle.kernel.debug_illegal_instruction_signal_addr?.() ?? 0n).toString(16)}`,
+        `sig_uc_pc=0x${(handle.kernel.debug_illegal_instruction_signal_uc_pc?.() ?? 0n).toString(16)}`,
+        `sig_uc_ra=0x${(handle.kernel.debug_illegal_instruction_signal_uc_ra?.() ?? 0n).toString(16)}`,
+        `sig_uc_sp=0x${(handle.kernel.debug_illegal_instruction_signal_uc_sp?.() ?? 0n).toString(16)}`,
+        `sig_uc_a0=0x${(handle.kernel.debug_illegal_instruction_signal_uc_a0?.() ?? 0n).toString(16)}`,
+      ].join(":")
+    }]`;
+  }
+
+  function formatIllegalInstructionVmTraces(handle: ProcessHandle, currentVmPtr: number): string {
+    const vmPtr = handle.kernel.debug_illegal_instruction_vm_ptr?.() ?? 0;
+    if (vmPtr === 0 || vmPtr === currentVmPtr) {
+      return "illegal_vm_traces=[]";
+    }
+    const frameBase = handle.kernel.debug_signal_delivery_for_vm_frame_base?.(vmPtr)
+      ?? handle.kernel.debug_signal_delivery_frame_base?.()
+      ?? 0n;
+    const signalState = formatSignalState(handle, vmPtr);
+    const signalFrame = formatSignalFrameState(handle, frameBase);
+    const traces = formatFrozenExitTraces(handle, vmPtr);
+    return `illegal_vm_traces=[vm=0x${vmPtr.toString(16)} ${signalState} ${signalFrame}${traces.length > 0 ? ` ${traces}` : ""}]`;
+  }
+
+  function formatSignalState(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
+    const deliverySig = handle.kernel.debug_signal_delivery_for_vm_sig?.(vmPtr)
+      ?? handle.kernel.debug_signal_delivery_sig?.()
+      ?? 0;
+    return `signal_state=[${
+      [
+        `mask=0x${(handle.kernel.thread_sig_mask?.(vmPtr) ?? 0n).toString(16)}`,
+        `pending=0x${(handle.kernel.thread_sig_pending?.(vmPtr) ?? 0n).toString(16)}`,
+        `info=${handle.kernel.thread_sig_info_code?.(vmPtr) ?? 0}`,
+        `deliver_sig=${deliverySig}`,
+        `deliver_frame=0x${(handle.kernel.debug_signal_delivery_for_vm_frame_base?.(vmPtr) ?? handle.kernel.debug_signal_delivery_frame_base?.() ?? 0n).toString(16)}`,
+        `deliver_pc=0x${(handle.kernel.debug_signal_delivery_for_vm_pc?.(vmPtr) ?? handle.kernel.debug_signal_delivery_pc?.() ?? 0n).toString(16)}`,
+        `deliver_ra=0x${(handle.kernel.debug_signal_delivery_for_vm_ra?.(vmPtr) ?? handle.kernel.debug_signal_delivery_ra?.() ?? 0n).toString(16)}`,
+        `deliver_sp=0x${(handle.kernel.debug_signal_delivery_for_vm_sp?.(vmPtr) ?? handle.kernel.debug_signal_delivery_sp?.() ?? 0n).toString(16)}`,
+      ].join(":")
+    }]`;
+  }
+
+  function formatGuestWriteOverlapTrace(handle: ProcessHandle): string {
+    const len = handle.kernel.debug_guest_write_overlap_trace_len?.() ?? 0;
+    if (len <= 0) {
+      return "guest_write_overlaps=[]";
+    }
+    const entries: string[] = [];
+    for (let index = 0; index < len; index += 1) {
+      const addr = handle.kernel.debug_guest_write_overlap_trace_entry_addr?.(index) ?? 0n;
+      const pc = handle.kernel.debug_guest_write_overlap_trace_entry_pc?.(index) ?? 0n;
+      const sample = handle.kernel.debug_guest_write_overlap_trace_entry_sample?.(index) ?? 0n;
+      entries.push(
+        `${index}:slot=${handle.kernel.debug_guest_write_overlap_trace_entry_slot?.(index) ?? 0}`
+        + `:op=${handle.kernel.debug_guest_write_overlap_trace_entry_op?.(index) ?? 0}`
+        + `:tid=${handle.kernel.debug_guest_write_overlap_trace_entry_tid?.(index) ?? 0}`
+        + `:pc=0x${BigInt(pc).toString(16)}`
+        + `:addr=0x${addr.toString(16)}`
+        + `:len=${handle.kernel.debug_guest_write_overlap_trace_entry_len?.(index) ?? 0}`
+        + `:sample_len=${handle.kernel.debug_guest_write_overlap_trace_entry_sample_len?.(index) ?? 0}`
+        + `:sample=0x${sample.toString(16)}`
+        + `:stage=${handle.kernel.debug_guest_write_overlap_trace_entry_execve_stage?.(index) ?? 0}`,
+      );
+    }
+    return `guest_write_overlaps=[${entries.join(",")}]`;
+  }
+
   function formatGuestRangePermitDeniedTrace(handle: ProcessHandle): string {
     const len = handle.kernel.debug_guest_range_permit_denied_trace_len?.() ?? 0;
     if (len <= 0) {
@@ -874,11 +1250,36 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     return `guest_range_permit_denied=[${entries.join(",")}]`;
   }
 
+  function formatFaultDispatchTrace(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
+    const phase = handle.kernel.debug_fault_dispatch_for_vm_phase?.(vmPtr) ?? 0;
+    if (phase === 0) {
+      return "fault_dispatch=[]";
+    }
+    const pc = handle.kernel.debug_fault_dispatch_for_vm_pc?.(vmPtr) ?? 0n;
+    const ra = handle.kernel.debug_fault_dispatch_for_vm_ra?.(vmPtr) ?? 0n;
+    const sp = handle.kernel.debug_fault_dispatch_for_vm_sp?.(vmPtr) ?? 0n;
+    const s11 = handle.kernel.debug_fault_dispatch_for_vm_s11?.(vmPtr) ?? 0n;
+    const faultAddr = handle.kernel.debug_fault_dispatch_for_vm_addr?.(vmPtr) ?? 0n;
+    return [
+      "fault_dispatch=[",
+      `tid=${handle.kernel.debug_fault_dispatch_for_vm_tid?.(vmPtr) ?? 0}`,
+      `:phase=${phase}`,
+      `:pc=0x${pc.toString(16)}`,
+      `:ra=0x${ra.toString(16)}`,
+      `:sp=0x${sp.toString(16)}`,
+      `:s11=0x${s11.toString(16)}`,
+      `:addr=0x${faultAddr.toString(16)}`,
+      "]",
+    ].join("");
+  }
+
   function formatExitTrace(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
     const execveStage = handle.kernel.debug_execve_stage?.() ?? 0;
     const execveValue0 = handle.kernel.debug_execve_value0?.() ?? 0n;
     const execveValue1 = handle.kernel.debug_execve_value1?.() ?? 0n;
     const debugGuestByteSources = formatDebugGuestByteSources(handle);
+    const debugMemfsFiles = formatDebugMemfsFiles(handle);
+    const exitMemoryVmas = formatExitMemoryVmas(handle);
     return [
       `vm=0x${vmPtr.toString(16)}`,
       `fault_state=[${formatFaultState(handle, vmPtr)}]`,
@@ -886,15 +1287,20 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       `fault_bounds=[${formatFaultBounds(handle, vmPtr)}]`,
       `fault_vma=[${formatFaultVmas(handle, vmPtr)}]`,
       `fault_bytes=[${formatFaultByteSources(handle, vmPtr)}]`,
+      ...(exitMemoryVmas === null ? [] : [exitMemoryVmas]),
       ...(debugGuestByteSources === null ? [] : [debugGuestByteSources]),
+      ...(debugMemfsFiles === null ? [] : [debugMemfsFiles]),
       formatDefaultSignalTrace(handle),
       formatSyncFaultTrace(handle),
+      formatSigreturnTrace(handle),
       formatIllegalInstructionTrace(handle),
+      formatIllegalInstructionVmTraces(handle, vmPtr),
       formatSignalState(handle, vmPtr),
       formatSignalSendTrace(handle),
       formatSignalDeliveryTrace(handle),
       formatGuestWriteOverlapTrace(handle),
       formatGuestRangePermitDeniedTrace(handle),
+      formatFaultDispatchTrace(handle, vmPtr),
       formatFrozenExitTraces(handle, vmPtr),
       `execve_stage=${execveStage}`,
       `execve_v0=${execveValue0.toString()}`,
@@ -903,10 +1309,12 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       `exit_fds=[${formatFdSummary(handle)}]`,
       `riscv_syscalls=[${formatRiscvSyscalls(handle)}]`,
       `all_riscv_syscalls=[${formatAllRiscvSyscalls(handle)}]`,
+      `watched_riscv_flush_icache=[${formatWatchedRiscvFlushIcache(handle)}]`,
       `path_syscalls=[${formatPathSyscalls(handle)}]`,
       `all_path_syscalls=[${formatAllPathSyscalls(handle)}]`,
       `fd_syscalls=[${formatFdSyscalls(handle, null, 256, vmPtr)}]`,
       `memory_syscalls=[${formatMemorySyscalls(handle)}]`,
+      `watched_memory_syscalls=[${formatWatchedMemorySyscalls(handle, vmPtr)}]`,
     ].join(" ");
   }
 
