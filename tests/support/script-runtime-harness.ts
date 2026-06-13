@@ -24,6 +24,7 @@ export interface ScriptRuntimeEntry {
   argv: readonly string[];
   env: readonly string[];
   timeoutMs: number;
+  stdin?: "pipe" | "closed";
   guestMemoryPolicyLimitBytes: number;
   hostFileBackingMode?: SnapshotBuildOptions["hostFileBackingMode"];
   snapshotSources: readonly SnapshotSource[];
@@ -92,7 +93,12 @@ export async function runScriptRuntimeEntry(
   entry: ScriptRuntimeEntry,
   elfBytes: Uint8Array,
 ): Promise<ScriptRuntimeResult> {
-  const proc = await runtime.spawn(new Uint8Array(elfBytes), [...entry.argv], [...entry.env]);
+  const proc = await runtime.spawn(
+    new Uint8Array(elfBytes),
+    [...entry.argv],
+    [...entry.env],
+    { stdin: entry.stdin ?? "closed" },
+  );
   let output = "";
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   proc.onStdout((data) => {

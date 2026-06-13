@@ -3,7 +3,11 @@ import {
   formatScriptRuntimeGateResultContext,
   scriptRuntimeGateTimeoutMs,
 } from "../../support/script-runtime-test-runner.js";
-import type { ScriptRuntimeEntry } from "../../support/script-runtime-harness.js";
+import {
+  runScriptRuntimeEntry,
+  type ScriptRuntimeEntry,
+} from "../../support/script-runtime-harness.js";
+import type { RuntimeInstance } from "../../support/runtime-workload.js";
 
 function scriptRuntimeEntry(overrides: Partial<ScriptRuntimeEntry> = {}): ScriptRuntimeEntry {
   return {
@@ -42,4 +46,26 @@ test("script runtime gate result context preserves exit output and debug evidenc
   expect(context).toContain("exit=1");
   expect(context).toContain("runtime stderr line");
   expect(context).toContain("process debug summary");
+});
+
+test("script runtime entry closes stdin unless the entry requests a pipe", async () => {
+  const spawnOptions: unknown[] = [];
+  const runtime = {
+    spawn: async (_elfBytes: Uint8Array, _argv: string[], _env: string[], options: unknown) => {
+      spawnOptions.push(options);
+      return {
+        onStdout: () => {},
+        waitForExit: async () => 0,
+        debugInfo: () => "debug",
+      };
+    },
+  } as unknown as RuntimeInstance;
+
+  await runScriptRuntimeEntry(runtime, scriptRuntimeEntry(), new Uint8Array([1, 2, 3]));
+  await runScriptRuntimeEntry(runtime, scriptRuntimeEntry({ stdin: "pipe" }), new Uint8Array([1, 2, 3]));
+
+  expect(spawnOptions).toEqual([
+    { stdin: "closed" },
+    { stdin: "pipe" },
+  ]);
 });
