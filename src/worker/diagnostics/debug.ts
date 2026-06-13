@@ -76,6 +76,17 @@ export interface WorkerExecutionStats {
   lastStepSp: string | null;
   lastStepS11: string | null;
   hotStepPcs: Array<{ pc: string; count: number }>;
+  recentSteps: Array<{ pc: string; sp: string; s11: string; ageMs: number }>;
+  recentStatuses: Array<{
+    status: number;
+    pc: string;
+    syscallNr: string | null;
+    fdTraceSyscallNr: string | null;
+    fdTraceResult: string | null;
+    futexWaitAddr: string | null;
+    futexBlockedAddr: string | null;
+    ageMs: number;
+  }>;
   lastStatusPc: string | null;
   lastStatusSp: string | null;
   lastStatusS11: string | null;
@@ -208,10 +219,38 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
   const processPtr = handle.kernel.thread_process_ptr?.(state.vmPtr);
   const currentPid = handle.kernel.process_current_pid?.(state.vmPtr);
   const tid = handle.kernel.thread_tid?.(state.vmPtr);
+  const cloneFlags = handle.kernel.thread_clone_flags?.(state.vmPtr);
+  const cloneChildStack = handle.kernel.thread_clone_child_stack?.(state.vmPtr);
+  const cloneChildTidptr = handle.kernel.thread_clone_child_tidptr?.(state.vmPtr);
+  const spawnKind = handle.kernel.thread_spawn_kind?.(state.vmPtr);
+  const spawnChildPid = handle.kernel.thread_spawn_child_pid?.(state.vmPtr);
   const activeStepVmPtr = handle.kernel.debug_thread_step_vm_ptr?.();
+  const stepExecTrace = formatWorkerStepExecTraceSummary(handle, state.vmPtr);
+  const execTrace = formatWorkerExecTrace(handle, state.vmPtr)?.replaceAll(" ", "|") ?? null;
   const nowMs = Date.now();
+  const recentSteps = (state.recentSteps ?? [])
+    .map((entry, index) => {
+      const ageMs = Math.max(0, nowMs - entry.atMs);
+      return `${index}:pc=0x${entry.pc.toString(16)}:sp=0x${entry.sp.toString(16)}:s11=0x${entry.s11.toString(16)}:ageMs=${ageMs}`;
+    })
+    .join("|");
+  const recentStatuses = (state.recentStatuses ?? [])
+    .map((entry, index) => {
+      const ageMs = Math.max(0, nowMs - entry.atMs);
+      const syscallNr = entry.syscallNr === null ? "null" : entry.syscallNr.toString();
+      const fdTraceSyscallNr = entry.fdTraceSyscallNr === null ? "null" : entry.fdTraceSyscallNr.toString();
+      const fdTraceResult = entry.fdTraceResult === null ? "null" : entry.fdTraceResult.toString();
+      const futexWaitAddr = entry.futexWaitAddr === null ? "null" : `0x${entry.futexWaitAddr.toString(16)}`;
+      const futexBlockedAddr = entry.futexBlockedAddr === null ? "null" : `0x${entry.futexBlockedAddr.toString(16)}`;
+      return `${index}:status=${entry.status}:pc=0x${entry.pc.toString(16)}:sys=${syscallNr}:fdSys=${fdTraceSyscallNr}:fdRet=${fdTraceResult}:futex=${futexWaitAddr}:blocked=${futexBlockedAddr}:ageMs=${ageMs}`;
+    })
+    .join("|");
   const lastStepAgeMs = state.lastStepAtMs === null ? "null" : Math.max(0, nowMs - state.lastStepAtMs);
   const lastStatusAgeMs = state.lastStatusAtMs === null ? "null" : Math.max(0, nowMs - state.lastStatusAtMs);
+  const statusCounts = Object.entries(state.statusCounts)
+    .sort(([left], [right]) => Number(left) - Number(right))
+    .map(([status, count]) => `${status}=${count}`)
+    .join(",");
   return [
     `0x${state.vmPtr.toString(16)}`,
     `owner=${ownerState}`,
@@ -224,9 +263,15 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
     `kernelStatus=${threadStatus ?? "n/a"}`,
     `currentPid=${currentPid ?? "n/a"}`,
     `tid=${tid ?? "n/a"}`,
+    `cloneFlags=${cloneFlags === undefined ? "n/a" : `0x${cloneFlags.toString(16)}`}`,
+    `cloneStack=${cloneChildStack === undefined ? "n/a" : `0x${cloneChildStack.toString(16)}`}`,
+    `cloneTidptr=${cloneChildTidptr === undefined ? "n/a" : `0x${cloneChildTidptr.toString(16)}`}`,
+    `spawnKind=${spawnKind ?? "n/a"}`,
+    `spawnChild=${spawnChildPid ?? "n/a"}`,
     `process=0x${(processPtr ?? 0).toString(16)}`,
     `steps=${state.stepCount}`,
     `statuses=${state.statusCount}`,
+    `counts=${statusCounts}`,
     `unansweredStep=${state.stepCount > state.statusCount ? 1 : 0}`,
     `lastStepAgeMs=${lastStepAgeMs}`,
     `lastStatusAgeMs=${lastStatusAgeMs}`,
@@ -238,6 +283,10 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
     `pendingPipeSlots=${state.pendingPipeSlotsForNextStep.length}`,
     `pendingGuestWrites=${state.pendingGuestMemoryWrites.length}`,
     `resumeReady=${state.resumeWorkersOnReady.length}`,
+    ...(recentSteps.length === 0 ? [] : [`recentSteps=${recentSteps}`]),
+    ...(recentStatuses.length === 0 ? [] : [`recentStatuses=${recentStatuses}`]),
+    ...(stepExecTrace === null ? [] : [`stepExecTrace=${stepExecTrace}`]),
+    ...(execTrace === null ? [] : [`execTrace=${execTrace}`]),
   ].join(":");
 }
 
@@ -514,6 +563,26 @@ function readThreadStepPhaseDebug(
     s11: `0x${formatU64(handle.kernel.debug_thread_step_phase_for_vm_s11?.(vmPtr) ?? 0n)}`,
   } satisfies ThreadStepDebugSnapshot;
   return hasThreadStepDebugSignal(snapshot) ? snapshot : null;
+}
+
+function formatWorkerStepExecTraceSummary(
+  handle: Pick<ProcessHandle, "kernel">,
+  vmPtr: number,
+): string | null {
+  const len = handle.kernel.debug_thread_step_exec_trace_len_for_vm?.(vmPtr) ?? 0;
+  if (len <= 0) {
+    return null;
+  }
+  const entries: string[] = [];
+  const start = Math.max(0, len - 8);
+  for (let index = start; index < len; index += 1) {
+    const pc = handle.kernel.debug_thread_step_exec_trace_entry_pc_for_vm?.(vmPtr, index) ?? 0n;
+    const raw = handle.kernel.debug_thread_step_exec_trace_entry_raw_for_vm?.(vmPtr, index) ?? 0;
+    const step = handle.kernel.debug_thread_step_exec_trace_entry_step_for_vm?.(vmPtr, index) ?? 0;
+    const a0 = handle.kernel.debug_thread_step_exec_trace_entry_a0_for_vm?.(vmPtr, index) ?? 0n;
+    entries.push(`${index}:pc=0x${formatU64(pc)}:raw=0x${raw.toString(16)}:step=${step}:a0=0x${formatU64(a0)}`);
+  }
+  return entries.join("|");
 }
 
 function isSuspiciousLowStateWorkerLogEntry(entry: string | null): boolean {
@@ -882,6 +951,22 @@ export function debugRuntimeExecutionStats(
               lastStepSp: formatOptionalBigIntHex(state.lastStepSp),
               lastStepS11: formatOptionalBigIntHex(state.lastStepS11),
               hotStepPcs: formatHotCounters(state.hotStepPcs),
+              recentSteps: (state.recentSteps ?? []).map((entry) => ({
+                pc: formatOptionalBigIntHex(entry.pc) ?? "0x0",
+                sp: formatOptionalBigIntHex(entry.sp) ?? "0x0",
+                s11: formatOptionalBigIntHex(entry.s11) ?? "0x0",
+                ageMs: Math.max(0, Date.now() - entry.atMs),
+              })),
+              recentStatuses: (state.recentStatuses ?? []).map((entry) => ({
+                status: entry.status,
+                pc: formatOptionalBigIntHex(entry.pc) ?? "0x0",
+                syscallNr: entry.syscallNr === null ? null : entry.syscallNr.toString(),
+                fdTraceSyscallNr: entry.fdTraceSyscallNr === null ? null : entry.fdTraceSyscallNr.toString(),
+                fdTraceResult: entry.fdTraceResult === null ? null : entry.fdTraceResult.toString(),
+                futexWaitAddr: formatOptionalBigIntHex(entry.futexWaitAddr),
+                futexBlockedAddr: formatOptionalBigIntHex(entry.futexBlockedAddr),
+                ageMs: Math.max(0, Date.now() - entry.atMs),
+              })),
               lastStatusPc: formatOptionalBigIntHex(state.lastStatusPc),
               lastStatusSp: formatOptionalBigIntHex(state.lastStatusSp),
               lastStatusS11: formatOptionalBigIntHex(state.lastStatusS11),
@@ -903,6 +988,11 @@ function formatThreadDebug(handle: ProcessHandle, vmPtr: number): string {
   const pc = handle.kernel.thread_pc?.(vmPtr) ?? 0n;
   const ra = handle.kernel.thread_ra?.(vmPtr) ?? 0n;
   const sp = handle.kernel.thread_sp?.(vmPtr) ?? 0n;
+  const s0 = handle.kernel.thread_reg?.(vmPtr, 8) ?? 0n;
+  const s3 = handle.kernel.thread_reg?.(vmPtr, 19) ?? 0n;
+  const s5 = handle.kernel.thread_reg?.(vmPtr, 21) ?? 0n;
+  const s8 = handle.kernel.thread_reg?.(vmPtr, 24) ?? 0n;
+  const s9 = handle.kernel.thread_reg?.(vmPtr, 25) ?? 0n;
   const a0 = handle.kernel.thread_a0?.(vmPtr) ?? 0n;
   const a1 = handle.kernel.thread_a1?.(vmPtr) ?? 0n;
   const exitCode = handle.kernel.thread_exit_code?.(vmPtr) ?? 0;
@@ -921,6 +1011,11 @@ function formatThreadDebug(handle: ProcessHandle, vmPtr: number): string {
     `pc=0x${pc.toString(16)}`,
     `ra=0x${ra.toString(16)}`,
     `sp=0x${sp.toString(16)}`,
+    `s0=0x${s0.toString(16)}`,
+    `s3=0x${s3.toString(16)}`,
+    `s5=0x${s5.toString(16)}`,
+    `s8=0x${s8.toString(16)}`,
+    `s9=0x${s9.toString(16)}`,
     `a0=${a0.toString()}`,
     `a1=${a1.toString()}`,
     `exit=${exitCode}`,
@@ -934,6 +1029,8 @@ function formatThreadDebug(handle: ProcessHandle, vmPtr: number): string {
     `futex_wait_addr=0x${futexWaitAddr.toString(16)}`,
     futexWaitExpected !== undefined ? `futex_wait_expected=${futexWaitExpected}` : "",
     `futex_wait_timeout=${futexWaitTimeout.toString()}`,
+    `futex_word=${futexWaitAddr === 0n ? "n/a" : formatGuestU64(handle, futexWaitAddr)}`,
+    `stack64=${formatGuestStackU64Preview(handle, sp)}`,
   ];
   const syscallNr = handle.kernel.debug_syscall_trace_nr?.();
   if (syscallNr !== undefined && syscallNr !== 0n) {
@@ -1014,6 +1111,27 @@ function readGuestU64(handle: ProcessHandle, addr: bigint | number): bigint | nu
     return null;
   }
   return new DataView(handle.memory.buffer).getBigUint64(absolute, true);
+}
+
+function formatGuestU64(handle: ProcessHandle, addr: bigint | number): string {
+  const value = readGuestU64(handle, addr);
+  return value === null ? "n/a" : `0x${formatU64(value)}`;
+}
+
+function formatGuestStackU64Preview(
+  handle: ProcessHandle,
+  sp: bigint,
+  entries = 16,
+): string {
+  if (sp === 0n) {
+    return "[]";
+  }
+  const out: string[] = [];
+  for (let index = 0; index < entries; index += 1) {
+    const offset = BigInt(index * 8);
+    out.push(`+${offset.toString(16)}=${formatGuestU64(handle, sp + offset)}`);
+  }
+  return `[${out.join(",")}]`;
 }
 
 function formatGuestStrvec(handle: ProcessHandle, vecAddr: bigint, maxEntries: number): string {
@@ -1364,10 +1482,12 @@ export function debugRuntimeProcessHandles(
           .join(" ");
         const threadStates = Array.from({ length: handle.kernel.abi_max_threads() }, (_value, slot) => {
           const threadVmPtr = handle.kernel.process_thread_vm_ptr(handle.vmPtr, slot);
-          if (threadVmPtr === 0) {
+          const tid = handle.kernel.process_thread_tid(handle.vmPtr, slot);
+          const state = handle.kernel.process_thread_state(handle.vmPtr, slot);
+          if (threadVmPtr === 0 && tid === 0 && state === 0) {
             return null;
           }
-          return `${slot}:${handle.kernel.process_thread_tid(handle.vmPtr, slot)}/${handle.kernel.process_thread_state(handle.vmPtr, slot)}/0x${threadVmPtr.toString(16)}`;
+          return `${slot}:${tid}/${state}/0x${threadVmPtr.toString(16)}`;
         }).filter(Boolean).join(",");
         const fdSummary = Array.from({ length: handle.kernel.abi_max_fds() }, (_, fd) => {
           const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
