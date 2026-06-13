@@ -700,6 +700,31 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     }]`;
   }
 
+  function formatGuestWriteOverlapTrace(handle: ProcessHandle): string {
+    const len = handle.kernel.debug_guest_write_overlap_trace_len?.() ?? 0;
+    if (len <= 0) {
+      return "guest_write_overlaps=[]";
+    }
+    const entries: string[] = [];
+    for (let index = 0; index < len; index += 1) {
+      const addr = handle.kernel.debug_guest_write_overlap_trace_entry_addr?.(index) ?? 0n;
+      const pc = handle.kernel.debug_guest_write_overlap_trace_entry_pc?.(index) ?? 0n;
+      const sample = handle.kernel.debug_guest_write_overlap_trace_entry_sample?.(index) ?? 0n;
+      entries.push(
+        `${index}:slot=${handle.kernel.debug_guest_write_overlap_trace_entry_slot?.(index) ?? 0}`
+        + `:op=${handle.kernel.debug_guest_write_overlap_trace_entry_op?.(index) ?? 0}`
+        + `:tid=${handle.kernel.debug_guest_write_overlap_trace_entry_tid?.(index) ?? 0}`
+        + `:pc=0x${BigInt(pc).toString(16)}`
+        + `:addr=0x${addr.toString(16)}`
+        + `:len=${handle.kernel.debug_guest_write_overlap_trace_entry_len?.(index) ?? 0}`
+        + `:sample_len=${handle.kernel.debug_guest_write_overlap_trace_entry_sample_len?.(index) ?? 0}`
+        + `:sample=0x${sample.toString(16)}`
+        + `:stage=${handle.kernel.debug_guest_write_overlap_trace_entry_execve_stage?.(index) ?? 0}`,
+      );
+    }
+    return `guest_write_overlaps=[${entries.join(",")}]`;
+  }
+
   function formatExitTrace(handle: ProcessHandle, vmPtr = handle.vmPtr): string {
     const execveStage = handle.kernel.debug_execve_stage?.() ?? 0;
     const execveValue0 = handle.kernel.debug_execve_value0?.() ?? 0n;
@@ -716,6 +741,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       formatDefaultSignalTrace(handle),
       formatIllegalInstructionTrace(handle),
       formatSignalState(handle, vmPtr),
+      formatGuestWriteOverlapTrace(handle),
       formatFrozenExitTraces(handle, vmPtr),
       `execve_stage=${execveStage}`,
       `execve_v0=${execveValue0.toString()}`,
