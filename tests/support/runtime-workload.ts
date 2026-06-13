@@ -277,6 +277,19 @@ function formatFutexTrace(handle: RuntimeDebugHandle): string {
   for (let index = 0; index < len; index += 1) {
     const traceVmPtr = handle.kernel.debug_futex_trace_entry_vm_ptr?.(index) ?? 0;
     const tid = handle.kernel.debug_futex_trace_entry_tid?.(index) ?? 0;
+    const pc = handle.kernel.debug_futex_trace_entry_pc?.(index) ?? 0n;
+    const ra = handle.kernel.debug_futex_trace_entry_ra?.(index) ?? 0n;
+    const sp = handle.kernel.debug_futex_trace_entry_sp?.(index) ?? 0n;
+    const s0 = handle.kernel.debug_futex_trace_entry_s0?.(index) ?? 0n;
+    const s1 = handle.kernel.debug_futex_trace_entry_s1?.(index) ?? 0n;
+    const s2 = handle.kernel.debug_futex_trace_entry_s2?.(index) ?? 0n;
+    const s3 = handle.kernel.debug_futex_trace_entry_s3?.(index) ?? 0n;
+    const a0 = handle.kernel.debug_futex_trace_entry_a0?.(index) ?? 0n;
+    const a1 = handle.kernel.debug_futex_trace_entry_a1?.(index) ?? 0n;
+    const a2 = handle.kernel.debug_futex_trace_entry_a2?.(index) ?? 0n;
+    const a3 = handle.kernel.debug_futex_trace_entry_a3?.(index) ?? 0n;
+    const a4 = handle.kernel.debug_futex_trace_entry_a4?.(index) ?? 0n;
+    const a5 = handle.kernel.debug_futex_trace_entry_a5?.(index) ?? 0n;
     const op = handle.kernel.debug_futex_trace_entry_op?.(index) ?? 0;
     const addr = handle.kernel.debug_futex_trace_entry_addr?.(index) ?? 0n;
     const addr2 = handle.kernel.debug_futex_trace_entry_addr2?.(index) ?? 0n;
@@ -290,6 +303,13 @@ function formatFutexTrace(handle: RuntimeDebugHandle): string {
     const result = handle.kernel.debug_futex_trace_entry_result?.(index);
     entries.push(
       `${index}:vm=0x${traceVmPtr.toString(16)}:tid=${tid}:op=${op}`
+      + `:pc=0x${pc.toString(16)}:ra=0x${ra.toString(16)}`
+      + `:sp=0x${sp.toString(16)}:s0=0x${s0.toString(16)}`
+      + `:s1=0x${s1.toString(16)}:s2=0x${s2.toString(16)}`
+      + `:s3=0x${s3.toString(16)}`
+      + `:a0=0x${a0.toString(16)}:a1=0x${a1.toString(16)}`
+      + `:a2=0x${a2.toString(16)}:a3=0x${a3.toString(16)}`
+      + `:a4=0x${a4.toString(16)}:a5=0x${a5.toString(16)}`
       + `:addr=0x${addr.toString(16)}:addr2=0x${addr2.toString(16)}`
       + `:val=${val.toString()}:val3=${val3.toString()}:current=${current}`
       + `:local=${local}:external=${external}:requeued=${requeued}`
