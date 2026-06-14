@@ -301,6 +301,167 @@ test("ready from a rehydrating process state is accepted when worker debug still
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });
 
+test("ready adopts transferred worker ownership when kernel process identity matches the target handle", () => {
+  const worker = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  const thread = makeThreadState({ ownerPid: 1 });
+  threadWorkerStates.set(worker, thread);
+  const appendWorkerDebugLog = vi.fn();
+  const failProcess = vi.fn();
+  const deps = makeDeps(threadWorkerStates, appendWorkerDebugLog, failProcess);
+  const enqueueWorker = vi.fn();
+  deps.enqueueWorker = enqueueWorker;
+  const handle = {
+    pid: 3,
+    parentPid: 1,
+    vmPtr: 0x1234,
+    exitInProgress: false,
+    workerDebugLog: [],
+    workerMessageDebugStats: createWorkerMessageDebugStats(),
+    workers: new Set<Worker>([worker]),
+    readyWorkers: [],
+    blockedWorkers: new Set<Worker>(),
+    vforkSnapshot: null,
+    stdinPipe: 0,
+    ttyPtySlot: 0,
+    stdinQueue: [],
+    outputBacklog: [],
+    stdioOwner: null,
+    hostStdio: {
+      stdinPipe: 0,
+      stdoutPipe: 0,
+      stderrPipe: 0,
+    },
+    networkConnections: new Map(),
+    networkPendingConnectFds: new Set(),
+    networkClosedFds: new Set(),
+    networkClosedSocketSlots: new Set(),
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(16),
+      stateSab: new SharedArrayBuffer(512),
+    },
+    memory: new WebAssembly.Memory({ initial: 1 }),
+    kernelState: makeKernelState(),
+    kernel: {
+      abi_status_fault: () => 31,
+      abi_status_vfork_wait: () => 11,
+      abi_status_execve_spawn: () => 13,
+      abi_status_clone_spawn: () => 25,
+      kernel_attach_runtime_state: () => {},
+      process_current_pid: () => 3,
+      thread_process_thread_count: () => 1,
+      thread_process_ptr: () => 0x48000,
+      process_current_ppid: () => 1,
+      process_fd_ofd_id: () => 0,
+    },
+  } as unknown as ProcessHandle;
+  deps.processHandles.set(3, handle);
+  const handleWorkerMessage = createWorkerMessageHandler(deps);
+
+  handleWorkerMessage(handle, worker, {
+    type: "ready",
+    generation: 2,
+    vmPtr: 0x1234,
+    kernelState: handle.kernelState,
+    wasmFeatures: { bulkMemory: true },
+  } as ThreadWorkerOutbound);
+
+  expect(thread.ownerPid).toBe(3);
+  expect(failProcess).not.toHaveBeenCalled();
+  expect(appendWorkerDebugLog).toHaveBeenCalledWith(
+    handle,
+    "ready-owner-adopt:0x1234:pid=3:previous=1",
+  );
+  expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+});
+
+test("messages delivered through a stale handle are rerouted to the transferred worker owner", () => {
+  const worker = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  const thread = makeThreadState({ ownerPid: 3 });
+  threadWorkerStates.set(worker, thread);
+  const appendWorkerDebugLog = vi.fn();
+  const failProcess = vi.fn();
+  const deps = makeDeps(threadWorkerStates, appendWorkerDebugLog, failProcess);
+  const enqueueWorker = vi.fn();
+  deps.enqueueWorker = enqueueWorker;
+  const parentHandle = {
+    pid: 1,
+    exitInProgress: false,
+    workerDebugLog: [],
+    workerMessageDebugStats: createWorkerMessageDebugStats(),
+    workers: new Set<Worker>(),
+    vforkSnapshot: null,
+  } as unknown as ProcessHandle;
+  const childHandle = {
+    pid: 3,
+    parentPid: 1,
+    vmPtr: 0x1234,
+    exitInProgress: false,
+    workerDebugLog: [],
+    workerMessageDebugStats: createWorkerMessageDebugStats(),
+    workers: new Set<Worker>([worker]),
+    readyWorkers: [],
+    blockedWorkers: new Set<Worker>(),
+    vforkSnapshot: null,
+    stdinPipe: 0,
+    ttyPtySlot: 0,
+    stdinQueue: [],
+    outputBacklog: [],
+    stdioOwner: null,
+    hostStdio: {
+      stdinPipe: 0,
+      stdoutPipe: 0,
+      stderrPipe: 0,
+    },
+    networkConnections: new Map(),
+    networkPendingConnectFds: new Set(),
+    networkClosedFds: new Set(),
+    networkClosedSocketSlots: new Set(),
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(16),
+      stateSab: new SharedArrayBuffer(512),
+    },
+    memory: new WebAssembly.Memory({ initial: 1 }),
+    kernelState: makeKernelState(),
+    kernel: {
+      abi_status_fault: () => 31,
+      abi_status_vfork_wait: () => 11,
+      abi_status_execve_spawn: () => 13,
+      abi_status_clone_spawn: () => 25,
+      kernel_attach_runtime_state: () => {},
+      process_current_pid: () => 3,
+      thread_process_thread_count: () => 1,
+      thread_process_ptr: () => 0x48000,
+      process_current_ppid: () => 1,
+      process_fd_ofd_id: () => 0,
+    },
+  } as unknown as ProcessHandle;
+  deps.processHandles.set(1, parentHandle);
+  deps.processHandles.set(3, childHandle);
+  const handleWorkerMessage = createWorkerMessageHandler(deps);
+
+  handleWorkerMessage(parentHandle, worker, {
+    type: "ready",
+    generation: 2,
+    vmPtr: 0x1234,
+    kernelState: childHandle.kernelState,
+    wasmFeatures: { bulkMemory: true },
+    debug: "process_ptr=0x48000 process_pid_field=1 process_ppid_field=0",
+  } as ThreadWorkerOutbound);
+
+  expect(failProcess).not.toHaveBeenCalled();
+  expect(appendWorkerDebugLog).toHaveBeenCalledWith(
+    parentHandle,
+    "reroute-owner-message:pid=1->3:type=ready",
+  );
+  expect(appendWorkerDebugLog).toHaveBeenCalledWith(
+    childHandle,
+    "ready-pid-mismatch-stale-debug:0x1234:expected_pid=3:actual_pid=1:threads=1",
+  );
+  expect(enqueueWorker).toHaveBeenCalledWith(childHandle, worker);
+});
+
 test("clone child ready clears parent clone-spawn hold before resuming parent", () => {
   const parentWorker = {} as Worker;
   const childWorker = {} as Worker;

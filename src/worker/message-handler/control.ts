@@ -93,30 +93,46 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
       );
       const readyProcessPidField = readProcessPidField(msg.debug);
       if (readyProcessPidField !== null && readyProcessPidField !== handle.pid) {
-        deps.appendWorkerDebugLog(
-          handle,
-          `ready-pid-mismatch:0x${thread.vmPtr.toString(16)}`
-            + `:expected_pid=${handle.pid}`
-            + `:actual_pid=${readyProcessPidField}`
-            + `:reinit_count=${thread.reinitCount}`,
-        );
-        if (thread.reinitCount < 1) {
-          deps.attachThreadWorker(handle, {
-            worker,
-            vmPtr: thread.vmPtr,
-            forcePrepare: true,
-          });
+        const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
+        const processThreadCount = handle.kernel.thread_process_thread_count(thread.vmPtr);
+        if (
+          thread.ownerPid === handle.pid
+          && currentPid === handle.pid
+          && processThreadCount > 0
+        ) {
+          deps.appendWorkerDebugLog(
+            handle,
+            `ready-pid-mismatch-stale-debug:0x${thread.vmPtr.toString(16)}`
+              + `:expected_pid=${handle.pid}`
+              + `:actual_pid=${readyProcessPidField}`
+              + `:threads=${processThreadCount}`,
+          );
+        } else {
+          deps.appendWorkerDebugLog(
+            handle,
+            `ready-pid-mismatch:0x${thread.vmPtr.toString(16)}`
+              + `:expected_pid=${handle.pid}`
+              + `:actual_pid=${readyProcessPidField}`
+              + `:reinit_count=${thread.reinitCount}`,
+          );
+          if (thread.reinitCount < 1) {
+            deps.attachThreadWorker(handle, {
+              worker,
+              vmPtr: thread.vmPtr,
+              forcePrepare: true,
+            });
+            return true;
+          }
+          deps.failProcess(
+            handle,
+            new Error(
+              `ready pid mismatch persisted vm=0x${thread.vmPtr.toString(16)}`
+                + ` expected_pid=${handle.pid} actual_pid=${readyProcessPidField}`
+                + (msg.debug ? ` ready_debug=${JSON.stringify(msg.debug)}` : ""),
+            ),
+          );
           return true;
         }
-        deps.failProcess(
-          handle,
-          new Error(
-            `ready pid mismatch persisted vm=0x${thread.vmPtr.toString(16)}`
-              + ` expected_pid=${handle.pid} actual_pid=${readyProcessPidField}`
-              + (msg.debug ? ` ready_debug=${JSON.stringify(msg.debug)}` : ""),
-          ),
-        );
-        return true;
       }
       const vforkSnapshot = handle.vforkSnapshot;
       if (

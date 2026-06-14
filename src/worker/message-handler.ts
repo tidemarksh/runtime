@@ -70,13 +70,42 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
       return false;
     }
     if (thread.ownerPid !== handle.pid) {
-      failOwnershipInvariant(
-        handle,
-        worker,
-        msg,
-        `owner_pid=${thread.ownerPid} handle_pid=${handle.pid}`,
-      );
-      return false;
+      const readyVmPtr = msg.type === "ready" && "vmPtr" in msg ? msg.vmPtr : 0;
+      if (readyVmPtr === thread.vmPtr && handle.pid > 0) {
+        const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
+        const processThreadCount = handle.kernel.thread_process_thread_count(thread.vmPtr);
+        if (currentPid === handle.pid && processThreadCount > 0) {
+          const previousOwnerPid = thread.ownerPid;
+          thread.ownerPid = handle.pid;
+          recordWorkerMessageDebugEvent(
+            handle.workerMessageDebugStats,
+            "readyRehydrateAdopts",
+            `ready-owner-adopt:${handle.pid}:0x${thread.vmPtr.toString(16)}`
+              + `:previous=${previousOwnerPid}:current=${currentPid}:threads=${processThreadCount}`,
+          );
+          deps.appendWorkerDebugLog(
+            handle,
+            `ready-owner-adopt:0x${thread.vmPtr.toString(16)}`
+              + `:pid=${handle.pid}:previous=${previousOwnerPid}`,
+          );
+        } else {
+          failOwnershipInvariant(
+            handle,
+            worker,
+            msg,
+            `owner_pid=${thread.ownerPid} handle_pid=${handle.pid}`,
+          );
+          return false;
+        }
+      } else {
+        failOwnershipInvariant(
+          handle,
+          worker,
+          msg,
+          `owner_pid=${thread.ownerPid} handle_pid=${handle.pid}`,
+        );
+        return false;
+      }
     }
     if ("vmPtr" in msg && msg.vmPtr !== thread.vmPtr) {
       failOwnershipInvariant(
@@ -167,8 +196,10 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
     const isActiveVforkWorker = thread !== undefined
       && handle.vforkSnapshot !== null
       && handle.vforkWorker === worker;
+    const workerOwnerMatchesHandle = thread !== undefined && thread.ownerPid === handle.pid;
     if (
       !isActiveVforkWorker
+      && !workerOwnerMatchesHandle
       && handle.pid > 0
       && messageProcessPidField !== null
       && messageProcessPidField > 0
@@ -186,6 +217,28 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
           `reroute-message:pid=${handle.pid}->${messageProcessPidField}:type=${msg.type}`,
         );
         handleWorkerMessage(rerouteHandle, worker, msg);
+        return;
+      }
+    }
+    if (
+      !isActiveVforkWorker
+      && handle.pid > 0
+      && thread !== undefined
+      && thread.ownerPid > 0
+      && thread.ownerPid !== handle.pid
+    ) {
+      const ownerHandle = deps.processHandles.get(thread.ownerPid);
+      if (ownerHandle && ownerHandle !== handle) {
+        recordWorkerMessageDebugEvent(
+          handle.workerMessageDebugStats,
+          "rerouted",
+          `reroute-owner:${handle.pid}->${thread.ownerPid}:${msg.type}`,
+        );
+        deps.appendWorkerDebugLog(
+          handle,
+          `reroute-owner-message:pid=${handle.pid}->${thread.ownerPid}:type=${msg.type}`,
+        );
+        handleWorkerMessage(ownerHandle, worker, msg);
         return;
       }
     }
