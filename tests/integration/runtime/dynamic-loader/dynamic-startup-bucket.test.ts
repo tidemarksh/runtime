@@ -85,6 +85,50 @@ test("dynamic startup bucket: FS progress timeout stays in runtime ownership", (
   expect(classifyDynamicStartupFailureStatus({ error })).toBe("runtime-ownership-suspected");
 });
 
+test("dynamic startup bucket: scheduler ownership timeout stays in runtime ownership", () => {
+  const error = new Error(
+    [
+      "timeout after 20000ms",
+      "local_safe:",
+      "pid=1 vm=0x5823830 running=1 ready=1 blocked=[] threads=[0:status=20 1:status=0]",
+      "worker_log_focus:",
+      "[{\"workers\":[{\"ownerState\":\"wait:20\",\"schedulerState\":\"0x5823830:owner=wait:kernelStatus=20\"},{\"ownerState\":\"running\",\"schedulerState\":\"0x6849f70:owner=running:kernelStatus=0\"},{\"ownerState\":\"ready\",\"schedulerState\":\"0x6d81f48:owner=ready:kernelStatus=0\"}]}]",
+      "executionStats=[{\"workers\":[{\"ownerState\":\"wait:20\",\"lastStatusName\":\"FUTEX_WAIT\"},{\"ownerState\":\"running\",\"lastStatusName\":\"CLONE_SPAWN\"}]}]",
+    ].join("\n"),
+  );
+  expect(bucketDynamicStartupFailure({ error })).toBe("runtime-ownership");
+  expect(classifyDynamicStartupFailureStatus({ error })).toBe("runtime-ownership-suspected");
+});
+
+test("dynamic startup bucket: stale futex wait owner stays in runtime ownership", () => {
+  const error = new Error(
+    [
+      "timeout after 60000ms",
+      "local_safe:",
+      "pid=1 vm=0x5823830 running=1 ready=0 blocked=[] threads=[]",
+      "internal:skipped-active-running-worker",
+      "worker_log_focus:",
+      "[{\"workers\":[{\"ownerState\":\"wait:20\",\"schedulerState\":\"0x5823830:owner=wait:kernelStatus=3:steps=57:statuses=57:last=20\"},{\"ownerState\":\"running\",\"schedulerState\":\"0x6849f70:owner=running:kernelStatus=3:last=6\"},{\"ownerState\":\"idle\",\"schedulerState\":\"0x6d81f48:owner=idle:kernelStatus=3:last=0\"}]}]",
+    ].join("\n"),
+  );
+  expect(bucketDynamicStartupFailure({ error })).toBe("runtime-ownership");
+  expect(classifyDynamicStartupFailureStatus({ error })).toBe("runtime-ownership-suspected");
+});
+
+test("dynamic startup bucket: captured guest fatal signal overrides timeout ownership hints", () => {
+  const error = new Error(
+    [
+      "timeout after 20000ms",
+      'capturedOutput="#\\n# A fatal error has been detected by the Java Runtime Environment:\\n#\\n#  SIGSEGV (0xb) at pc=0x00000000015ec3e2, pid=1, tid=2\\n#\\n# An error report file with more information is saved as:\\n# //hs_err_pid1.log\\n"',
+      "worker_log_focus:",
+      "[{\"workers\":[{\"ownerState\":\"wait:20\",\"schedulerState\":\"0x5823830:owner=wait:kernelStatus=20\"},{\"ownerState\":\"async:6\",\"schedulerState\":\"0x6849f70:owner=async:6:kernelStatus=6\"}]}]",
+      "fs_lifecycle_tail=[fs-start:1:0x6849f70:op=2/WRITE/fd=4, fs-done:1:0x6849f70:rv=67]",
+    ].join("\n"),
+  );
+  expect(bucketDynamicStartupFailure({ error })).toBe("unknown");
+  expect(classifyDynamicStartupFailureStatus({ error })).toBe("unclassified");
+});
+
 test("dynamic startup bucket: guest signal and debug-collection traps stay conservative", () => {
   expect(
     bucketDynamicStartupFailure({
@@ -110,14 +154,23 @@ test("dynamic startup bucket: guest signal and debug-collection traps stay conse
 
 test("dynamic startup timeout override is opt-in", () => {
   const original = process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TIMEOUT_MS;
+  const originalTestTimeout = process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TEST_TIMEOUT_MS;
   try {
     delete process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TIMEOUT_MS;
+    delete process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TEST_TIMEOUT_MS;
     expect(resolveDynamicStartupTimeoutMs(minimalEntry)).toBe(5_000);
     expect(resolveDynamicStartupTestTimeoutMs(minimalEntry)).toBe(20_000);
     process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TIMEOUT_MS = "20000";
     expect(resolveDynamicStartupTimeoutMs(minimalEntry)).toBe(20_000);
     expect(resolveDynamicStartupTestTimeoutMs(minimalEntry)).toBe(200_000);
+    process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TEST_TIMEOUT_MS = "60000";
+    expect(resolveDynamicStartupTimeoutMs(minimalEntry)).toBe(20_000);
+    expect(resolveDynamicStartupTestTimeoutMs(minimalEntry)).toBe(60_000);
+    process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TIMEOUT_MS = "5000";
+    expect(resolveDynamicStartupTimeoutMs(minimalEntry)).toBe(5_000);
+    expect(resolveDynamicStartupTestTimeoutMs(minimalEntry)).toBe(60_000);
     process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TIMEOUT_MS = "0";
+    process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TEST_TIMEOUT_MS = "0";
     expect(resolveDynamicStartupTimeoutMs(minimalEntry)).toBe(5_000);
     expect(resolveDynamicStartupTestTimeoutMs(minimalEntry)).toBe(20_000);
   } finally {
@@ -125,6 +178,11 @@ test("dynamic startup timeout override is opt-in", () => {
       delete process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TIMEOUT_MS;
     } else {
       process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TIMEOUT_MS = original;
+    }
+    if (originalTestTimeout === undefined) {
+      delete process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TEST_TIMEOUT_MS;
+    } else {
+      process.env.TIDEMARK_TEST_DYNAMIC_STARTUP_TEST_TIMEOUT_MS = originalTestTimeout;
     }
   }
 });

@@ -6,6 +6,7 @@ import {
   logSkip,
   readKernelWasm,
   runtimeDebugSummary,
+  testStageDebug,
 } from "./runtime-workload.js";
 import {
   type SnapshotBuildOptions,
@@ -35,6 +36,7 @@ export interface DynamicStartupEntry {
   guestMemoryPolicyLimitBytes: number;
   runtimeOptions?: DynamicStartupRuntimeOptions;
   hostFileBackingMode?: SnapshotBuildOptions["hostFileBackingMode"];
+  diagnosticArtifactPaths?: readonly string[];
   snapshotSources: readonly SnapshotSource[];
   expectedSubstrings: readonly string[];
   forbiddenSubstrings?: readonly string[];
@@ -51,6 +53,10 @@ interface GuestWriteWatchRegion {
   start: number;
   end: number;
 }
+
+const DYNAMIC_STARTUP_TIMEOUT_ENV = "TIDEMARK_TEST_DYNAMIC_STARTUP_TIMEOUT_MS";
+const DYNAMIC_STARTUP_TEST_TIMEOUT_ENV = "TIDEMARK_TEST_DYNAMIC_STARTUP_TEST_TIMEOUT_MS";
+const TIMEOUT_OUTPUT_PREVIEW_BYTES = 4096;
 
 export type DynamicStartupFailureBucket =
   | "foundation"
@@ -74,19 +80,28 @@ export function buildDynamicStartupSnapshot(entry: DynamicStartupEntry) {
   return result.entries ?? null;
 }
 
-export function resolveDynamicStartupTimeoutMs(entry: DynamicStartupEntry): number {
+function readPositiveIntegerEnv(name: string): number | null {
   const raw = (globalThis as typeof globalThis & {
     process?: { env?: Record<string, string | undefined> };
-  }).process?.env?.TIDEMARK_TEST_DYNAMIC_STARTUP_TIMEOUT_MS;
+  }).process?.env?.[name];
   const parsed = raw === undefined ? NaN : Number.parseInt(raw, 10);
-  if (Number.isFinite(parsed) && parsed > 0) {
-    return parsed;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+export function resolveDynamicStartupTimeoutMs(entry: DynamicStartupEntry): number {
+  const overrideMs = readPositiveIntegerEnv(DYNAMIC_STARTUP_TIMEOUT_ENV);
+  if (overrideMs !== null) {
+    return overrideMs;
   }
   return entry.timeoutMs;
 }
 
 export function resolveDynamicStartupTestTimeoutMs(entry: DynamicStartupEntry): number {
   const timeoutMs = resolveDynamicStartupTimeoutMs(entry);
+  const explicitTestTimeoutMs = readPositiveIntegerEnv(DYNAMIC_STARTUP_TEST_TIMEOUT_ENV);
+  if (explicitTestTimeoutMs !== null) {
+    return Math.max(20_000, explicitTestTimeoutMs);
+  }
   const marginMs = timeoutMs === entry.timeoutMs ? 15_000 : 180_000;
   return Math.max(20_000, timeoutMs + marginMs);
 }
@@ -129,35 +144,66 @@ export function parseDebugGuestWriteWatchRegions(raw: string | undefined): Guest
   return regions;
 }
 
+async function logDynamicStartupArtifactDiagnostics(
+  runtime: RuntimeInstance,
+  entry: DynamicStartupEntry,
+): Promise<void> {
+  for (const path of entry.diagnosticArtifactPaths ?? []) {
+    try {
+      const [stat, data] = await Promise.all([
+        runtime.fs.stat(path),
+        runtime.fs.readFile(path),
+      ]);
+      testStageDebug(
+        `dynamic-startup:prepare:artifact path=${path} statSize=${stat.size} readBytes=${data.byteLength}`,
+      );
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      testStageDebug(`dynamic-startup:prepare:artifact path=${path} error=${JSON.stringify(detail)}`);
+    }
+  }
+}
+
 export async function prepareDynamicStartupRuntime(
   entry: DynamicStartupEntry,
 ): Promise<{ runtime: RuntimeInstance; elfBytes: Uint8Array } | null> {
+  testStageDebug(`dynamic-startup:prepare:start id=${entry.id}`);
   const wasmBytes = readKernelWasm();
   if (!wasmBytes) {
+    testStageDebug(`dynamic-startup:prepare:skip-missing-wasm id=${entry.id}`);
     return null;
   }
   if (!existsSync(entry.hostExecutablePath)) {
+    testStageDebug(`dynamic-startup:prepare:skip-missing-executable id=${entry.id}`);
     return logSkip(`missing dynamic startup executable: ${entry.hostExecutablePath}`);
   }
+  testStageDebug(`dynamic-startup:prepare:runtime-create:start id=${entry.id}`);
   const runtime = await Runtime.create({
     wasmBytes,
     guestMemoryPolicyLimitBytes: entry.guestMemoryPolicyLimitBytes,
     ...entry.runtimeOptions,
   });
+  testStageDebug(`dynamic-startup:prepare:runtime-create:done id=${entry.id}`);
   try {
+    testStageDebug(`dynamic-startup:prepare:snapshot:start id=${entry.id}`);
     const applied = await applySnapshotSourcesToRuntime(runtime, entry.snapshotSources, {
       missingLabel: "dynamic startup artifact",
       hostFileBackingMode: entry.hostFileBackingMode,
     });
     if (applied.skipReason) {
       runtime.destroy();
+      testStageDebug(`dynamic-startup:prepare:snapshot:skip id=${entry.id}`);
       return logSkip(applied.skipReason);
     }
+    testStageDebug(`dynamic-startup:prepare:snapshot:done id=${entry.id}`);
+    await logDynamicStartupArtifactDiagnostics(runtime, entry);
   } catch (error) {
     runtime.destroy();
+    testStageDebug(`dynamic-startup:prepare:snapshot:error id=${entry.id}`);
     throw error;
   }
 
+  testStageDebug(`dynamic-startup:prepare:read-elf id=${entry.id}`);
   return {
     runtime,
     elfBytes: new Uint8Array(readFileSync(entry.hostExecutablePath)),
@@ -169,34 +215,51 @@ export async function runDynamicStartupEntry(
   entry: DynamicStartupEntry,
   elfBytes: Uint8Array,
 ): Promise<DynamicStartupResult> {
-  const proc = await runtime.spawn(new Uint8Array(elfBytes), [...entry.argv], [...entry.env]);
+  let proc: Awaited<ReturnType<RuntimeInstance["spawn"]>> | null = null;
   let output = "";
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   const timeoutMs = resolveDynamicStartupTimeoutMs(entry);
-  proc.onStdout((data) => {
-    output += decoder.decode(data);
-  });
 
   try {
-    const exitCode = await Promise.race([
-      proc.waitForExit(),
-      new Promise<never>((_resolve, reject) => {
-        timeoutId = setTimeout(() => reject(new Error(`timeout after ${timeoutMs}ms`)), timeoutMs);
-        if (typeof timeoutId === "object" && timeoutId !== null && "unref" in timeoutId) {
-          timeoutId.unref();
-        }
-      }),
-    ]);
-    const debugParts: string[] = [];
-    const baseDebug = proc.debugInfo?.();
-    if (baseDebug) {
-      debugParts.push(baseDebug);
-    }
-    return { exitCode, output, debugInfo: debugParts.join(" ") || undefined };
+    testStageDebug(`dynamic-startup:timeout-arm timeoutMs=${timeoutMs}`);
+    const timeoutPromise = new Promise<never>((_resolve, reject) => {
+      timeoutId = setTimeout(() => {
+        testStageDebug(`dynamic-startup:timeout outputBytes=${output.length}`);
+        const preview = output.length > TIMEOUT_OUTPUT_PREVIEW_BYTES
+          ? `${output.slice(0, TIMEOUT_OUTPUT_PREVIEW_BYTES)}<truncated ${output.length - TIMEOUT_OUTPUT_PREVIEW_BYTES} chars>`
+          : output;
+        reject(new Error([
+          `timeout after ${timeoutMs}ms`,
+          preview ? `capturedOutput=${JSON.stringify(preview)}` : "",
+        ].filter(Boolean).join("\n")));
+      }, timeoutMs);
+    });
+    const runPromise = (async (): Promise<DynamicStartupResult> => {
+      testStageDebug("dynamic-startup:spawn:start");
+      proc = await runtime.spawn(new Uint8Array(elfBytes), [...entry.argv], [...entry.env], {
+        guestExecutablePath: entry.guestExecutablePath,
+      });
+      testStageDebug(`dynamic-startup:spawn:ready pid=${proc.pid}`);
+      proc.onStdout((data) => {
+        output += decoder.decode(data);
+      });
+      testStageDebug(`dynamic-startup:wait:start pid=${proc.pid}`);
+      const exitCode = await proc.waitForExit();
+      testStageDebug(`dynamic-startup:wait:exit pid=${proc.pid} code=${exitCode}`);
+      const debugParts: string[] = [];
+      const baseDebug = proc.debugInfo?.();
+      if (baseDebug) {
+        debugParts.push(baseDebug);
+      }
+      return { exitCode, output, debugInfo: debugParts.join(" ") || undefined };
+    })();
+    runPromise.catch(() => undefined);
+    return await Promise.race([runPromise, timeoutPromise]);
   } catch (error) {
     const summary = await runtimeDebugSummary(runtime);
+    const procDebug = proc?.debugInfo?.();
     const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
-    throw new Error(`${detail}\n${summary}`);
+    throw new Error([detail, procDebug, summary].filter(Boolean).join("\n"));
   } finally {
     if (timeoutId !== null) {
       clearTimeout(timeoutId);
@@ -240,11 +303,49 @@ export function bucketDynamicStartupFailure(input: {
     return "consumer-runtime";
   }
   if (
+    /A fatal error has been detected by the Java Runtime Environment|Illegal instruction|SIGILL|Segmentation fault|SIGSEGV|sig=4|sig=6|sig=11|sig_deliver=11|:\d+:11\b|debug_collect_error=/i.test(text)
+  ) {
+    return "unknown";
+  }
+  if (
     /timeout after \d+ms/i.test(text)
     && (
       /\bstatus=6\b|\bSTATUS_FS\b/i.test(text)
       || /fs_lifecycle_tail=.*op=\d+\/(?:READ|MMAP)/is.test(text)
       || /fs-start:.*op=\d+\/(?:READ|MMAP)/is.test(text)
+    )
+  ) {
+    return "runtime-ownership";
+  }
+  if (
+    /timeout after \d+ms/i.test(text)
+    && (
+      /\bSTATUS_PIPE_WAIT\b/i.test(text)
+      || /\bstatus=21\b/.test(text)
+      || /\bkernelStatus=21\b/.test(text)
+      || /\blast=21\b/.test(text)
+      || /blocked=\[21@/.test(text)
+    )
+  ) {
+    return "runtime-ownership";
+  }
+  if (
+    /timeout after \d+ms/i.test(text)
+    && (
+      /"ownerState":"wait:20"/.test(text)
+      || /\bowner=wait:kernelStatus=20\b/.test(text)
+      || /"waitingInWorkerStatus":20/.test(text)
+    )
+    && (
+      /FUTEX_WAIT/.test(text)
+      || /\bstatus=20\b/.test(text)
+      || /\bkernelStatus=20\b/.test(text)
+      || /\blast=20\b/.test(text)
+      || /thread-futex-wait:/i.test(text)
+    )
+    && (
+      /"ownerState":"(?:running|ready|blocked|async:\d+)"/.test(text)
+      || /\bowner=(?:running|ready|blocked|async:\d+)\b/.test(text)
     )
   ) {
     return "runtime-ownership";
