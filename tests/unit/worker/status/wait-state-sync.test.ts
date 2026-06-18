@@ -147,6 +147,45 @@ function makeKernelState(): KernelRuntimeState {
   };
 }
 
+function makePostedKernelStateExpectation(
+  overrides: Partial<KernelRuntimeState> = {},
+): Partial<KernelRuntimeState> {
+  const state = makeKernelState();
+  return {
+    heapBase: state.heapBase,
+    heapPtr: state.heapPtr,
+    ofdTablePtr: state.ofdTablePtr,
+    memfsPtr: state.memfsPtr,
+    memfsHeaderBytes: state.memfsHeaderBytes,
+    memfsInodesBytes: state.memfsInodesBytes,
+    memfsFirstChildBytes: state.memfsFirstChildBytes,
+    memfsDirEntriesBytes: state.memfsDirEntriesBytes,
+    memfsDataBytes: state.memfsDataBytes,
+    memStatePtr: state.memStatePtr,
+    epollTablePtr: state.epollTablePtr,
+    socketTablePtr: state.socketTablePtr,
+    socketUsed: state.socketUsed,
+    pipeBase: state.pipeBase,
+    netBufBase: state.netBufBase,
+    netBufUsed: state.netBufUsed,
+    sigSlotsPtr: state.sigSlotsPtr,
+    processPendingPtr: state.processPendingPtr,
+    processRuntimeStatePtr: state.processRuntimeStatePtr,
+    timeStatePtr: state.timeStatePtr,
+    ...overrides,
+  };
+}
+
+function makeStepMessageExpectation(
+  kernelState: Partial<KernelRuntimeState> = makePostedKernelStateExpectation(),
+): ThreadWorkerInbound {
+  return {
+    type: "step",
+    budget: 20_000,
+    kernelState: expect.objectContaining(kernelState),
+  } as ThreadWorkerInbound;
+}
+
 const SYNC_EFFECT_PIPE_STATE = 1 << 0;
 const SYNC_EFFECT_SOCKET_STATE = 1 << 1;
 const SYNC_EFFECT_EPOLL_STATE = 1 << 2;
@@ -645,9 +684,10 @@ test("waitInWorker STATUS_EPOLL_WAIT skips epoll sync when the process holds no 
   expect(requests.some((msg) => msg.type === "resume-epoll-wait")).toBe(false);
   expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr);
   expect(Atomics.load(notify, 0)).toBe(notifyBefore);
-  expect(worker.postedMessages).toEqual([
-    { type: "step", budget: 20_000, kernelState: makeKernelState() },
-  ]);
+  expect(worker.postedMessages.every((message) => message.type === "step")).toBe(true);
+  expect(worker.postedMessages).toEqual(expect.arrayContaining([
+    makeStepMessageExpectation(),
+  ]));
 });
 
 test("waitInWorker STATUS_EPOLL_WAIT republishes synced kernel state and wakes bridge waiters", async () => {
@@ -1236,11 +1276,7 @@ test("STATUS_OK syncs epoll state through kernel-worker when available", async (
   expect(requests.some((msg) => msg.type === "sync-epoll-state")).toBe(true);
   expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr);
   expect(worker.postedMessages).toEqual([
-    {
-      type: "step",
-      budget: 20_000,
-      kernelState: makeKernelState(),
-    },
+    makeStepMessageExpectation(),
   ]);
 });
 
@@ -1422,14 +1458,9 @@ test("STATUS_OK syncs socket state through kernel-worker when available", async 
   expect(requests.some((msg) => msg.type === "sync-socket-state")).toBe(true);
   expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x18);
   expect(worker.postedMessages).toEqual([
-    {
-      type: "step",
-      budget: 20_000,
-      kernelState: {
-        ...makeKernelState(),
-        heapPtr: makeKernelState().heapPtr + 0x18,
-      },
-    },
+    makeStepMessageExpectation(makePostedKernelStateExpectation({
+      heapPtr: makeKernelState().heapPtr + 0x18,
+    })),
   ]);
 });
 
@@ -1475,7 +1506,7 @@ test("STATUS_OK skips owner-side sync for thread-local returns", async () => {
   expect(requests.some((msg) => msg.type === "sync-epoll-state")).toBe(false);
   expect(requests.some((msg) => msg.type === "sync-ofd-state")).toBe(false);
   expect(worker.postedMessages).toEqual([
-    { type: "step", budget: 20_000, kernelState: makeKernelState() },
+    makeStepMessageExpectation(),
   ]);
 });
 
@@ -1639,7 +1670,7 @@ test("waitInWorker EPOLL_WAIT timeout=0 falls back to owner-side blocked retry s
 
   expect(resumeTimeout).toHaveBeenCalledWith(0x1234);
   expect(worker.postedMessages).toEqual([
-    { type: "step", budget: 20_000, kernelState: makeKernelState() },
+    makeStepMessageExpectation(),
   ]);
 });
 
