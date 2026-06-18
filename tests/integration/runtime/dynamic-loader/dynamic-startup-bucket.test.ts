@@ -115,6 +115,23 @@ test("dynamic startup bucket: stale futex wait owner stays in runtime ownership"
   expect(classifyDynamicStartupFailureStatus({ error })).toBe("runtime-ownership-suspected");
 });
 
+test("dynamic startup bucket: stack frame line columns do not override pipe wait ownership", () => {
+  const error = new Error(
+    [
+      "timeout after 30000ms",
+      'proc_self_exe="/usr/lib/erlang/erts-16.2/bin/beam.smp"',
+      "local_safe:",
+      "pid=1 vm=0x5823830 running=1 ready=0 blocked=[21@0x70c1610] threads=[0:status=0 1:status=21 2:status=20 3:status=20]",
+      "worker_log_focus:",
+      "[{\"workers\":[{\"ownerState\":\"running\",\"schedulerState\":\"0x5823830:owner=running:kernelStatus=0\"},{\"ownerState\":\"blocked\",\"schedulerState\":\"0x70c1610:owner=blocked:kernelStatus=21:last=21\"},{\"ownerState\":\"wait:20\",\"schedulerState\":\"0x70c3858:owner=wait:kernelStatus=20:last=20\"}]}]",
+      "    at runDynamicStartupEntry (/home/example/runtime/tests/support/dynamic-startup-harness.ts:262:11)",
+    ].join("\n"),
+  );
+
+  expect(bucketDynamicStartupFailure({ error })).toBe("runtime-ownership");
+  expect(classifyDynamicStartupFailureStatus({ error })).toBe("runtime-ownership-suspected");
+});
+
 test("dynamic startup bucket: captured guest fatal signal overrides timeout ownership hints", () => {
   const error = new Error(
     [

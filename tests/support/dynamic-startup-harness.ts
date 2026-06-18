@@ -285,6 +285,17 @@ export function validateDynamicStartupOutput(
   return mismatches;
 }
 
+function hasGuestFatalSignalEvidence(text: string): boolean {
+  return (
+    /A fatal error has been detected by the Java Runtime Environment|Illegal instruction|SIGILL|Segmentation fault|SIGSEGV|debug_collect_error=/i.test(text)
+    || /\bsig(?:_deliver)?=(?:4|6|11)\b/i.test(text)
+    || /\bterm[_-]?signal=(?:4|6|11)\b/i.test(text)
+    || /\btermSignal["']?\s*[:=]\s*(?:4|6|11)\b/i.test(text)
+    || /\b(?:child-)?exit:\d+:"[^"]*":\d+:(?:4|6|11)\b/.test(text)
+    || /\bexit=\d+:(?:4|6|11)\b/.test(text)
+  );
+}
+
 export function bucketDynamicStartupFailure(input: {
   result?: DynamicStartupResult;
   error?: unknown;
@@ -302,9 +313,7 @@ export function bucketDynamicStartupFailure(input: {
   ) {
     return "consumer-runtime";
   }
-  if (
-    /A fatal error has been detected by the Java Runtime Environment|Illegal instruction|SIGILL|Segmentation fault|SIGSEGV|sig=4|sig=6|sig=11|sig_deliver=11|:\d+:11\b|debug_collect_error=/i.test(text)
-  ) {
+  if (hasGuestFatalSignalEvidence(text)) {
     return "unknown";
   }
   if (
@@ -350,7 +359,7 @@ export function bucketDynamicStartupFailure(input: {
   ) {
     return "runtime-ownership";
   }
-  if (/Illegal instruction|SIGILL|Segmentation fault|sig=4|sig=6|sig=11|sig_deliver=11|:\d+:11\b|debug_collect_error=|timeout after \d+ms/i.test(text)) {
+  if (hasGuestFatalSignalEvidence(text) || /timeout after \d+ms/i.test(text)) {
     return "unknown";
   }
   if (
