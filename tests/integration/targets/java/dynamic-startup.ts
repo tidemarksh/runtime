@@ -3,6 +3,8 @@ import type { DynamicStartupEntry } from "../../../support/dynamic-startup-harne
 import { makeJavaRuntimeSnapshotSources } from "./runtime-snapshot.js";
 
 const jdkDir = process.env.TIDEMARK_TEST_JAVA_RUNTIME_DIR ?? "";
+const oneGiB = 1024 * 1024 * 1024;
+const oneGiBPages = oneGiB / 65536;
 
 export const javaDynamicStartupEntry: DynamicStartupEntry = {
   id: "java-version",
@@ -13,7 +15,11 @@ export const javaDynamicStartupEntry: DynamicStartupEntry = {
   argv: ["/jdk/bin/java", "-Xshare:off", "-XX:CompressedClassSpaceSize=64m", "-version"],
   env: [],
   timeoutMs: 20_000,
-  guestMemoryPolicyLimitBytes: 1024 * 1024 * 1024,
+  guestMemoryPolicyLimitBytes: oneGiB,
+  runtimeOptions: {
+    maxProcessMemoryPages: oneGiBPages,
+    maxForkMemoryPages: oneGiBPages,
+  },
   snapshotSources: makeJavaRuntimeSnapshotSources(),
   expectedSubstrings: ['openjdk version "25.0.2"'],
 };
