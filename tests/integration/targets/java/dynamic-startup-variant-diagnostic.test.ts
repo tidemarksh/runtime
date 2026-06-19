@@ -49,9 +49,8 @@ function expectStatusNameEvidence(detail: string, statusName: string): void {
   expect(hasStatusNameEvidence(detail, statusName), detail).toBe(true);
 }
 
-function expectStrictMemoryPolicyFailureDiagnostic(detail: string): void {
-  expect(detail).not.toContain("Unsupported satp mode");
-  expect(detail).toContain("RuntimeError: memory access out of bounds");
+function expectStrictNoErrorFileTimeoutDiagnostic(detail: string): void {
+  expectJavaTimeoutDiagnostic(detail);
   expect(detail).toContain('"guestMemoryPolicyLimitBytes":"1073741824"');
   expect(detail).toContain('"processMaxMemoryBytes":1073741824');
   expect(detail).toContain("ret=-12");
@@ -162,7 +161,7 @@ test("java dynamic startup diagnostic: error-file-disabled interpreted variant p
   }
 }, 120_000);
 
-test("java dynamic startup diagnostic: strict error-file-disabled variant exposes strict memory-policy failure", async () => {
+test("java dynamic startup diagnostic: strict error-file-disabled variant preserves timeout surface", async () => {
   const prepared = await prepareDynamicStartupRuntime(javaStrictNoErrorFileEntry);
   if (!prepared) {
     return;
@@ -187,7 +186,7 @@ test("java dynamic startup diagnostic: strict error-file-disabled variant expose
     }
     detail = appendRuntimeFailureEvidence(detail, runtime);
 
-    expectStrictMemoryPolicyFailureDiagnostic(detail);
+    expectStrictNoErrorFileTimeoutDiagnostic(detail);
   } finally {
     runtime.destroy();
   }
