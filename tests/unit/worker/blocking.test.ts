@@ -163,6 +163,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     kernel_socket_table_ptr: () => runtimeState.socketTablePtr,
     kernel_socket_used: () => runtimeState.socketUsed,
     kernel_pipe_base: () => runtimeState.pipeBase,
+    kernel_pipe_region_bytes: () => 64 * (32 + 65_536),
     kernel_pipe_used: () => runtimeState.pipeUsed,
     kernel_net_buf_base: () => runtimeState.netBufBase,
     kernel_net_buf_used: () => runtimeState.netBufUsed,

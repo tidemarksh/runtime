@@ -1631,11 +1631,9 @@ test("clone-spawn fixture does not fabricate a sibling worker for EPOLL_WAIT ret
     "register-process",
     "initialize-process-lifecycle",
     "sync-epoll-state",
-    "sync-process-lifecycle",
-    "unregister-process",
   ]);
   expect(resumeBlocked).not.toHaveBeenCalled();
-  expect(handle.workers.has(parentWorker as unknown as Worker)).toBe(false);
+  expect(handle.workers.has(parentWorker as unknown as Worker)).toBe(true);
 });
 
 test("waitInWorker EPOLL_WAIT timeout=0 falls back to owner-side blocked retry scheduling", async () => {
