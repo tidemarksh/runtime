@@ -1786,7 +1786,7 @@ test("waitInWorker STATUS_SOCKET_SEND syncs socket state through kernel-worker w
   expect(worker.postedMessages).toEqual([]);
 });
 
-test("ready and stale non-running status do not regress kernel runtime state", async () => {
+test("stale clone-spawn status does not regress kernel runtime state", async () => {
   const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
   const parentWorker = createdWorkers[0];
 
@@ -1819,19 +1819,8 @@ test("ready and stale non-running status do not regress kernel runtime state", a
     },
   });
 
-  const childWorker = createdWorkers[1];
-  emitReady(childWorker, 0x2000);
   expect(handle.kernelState.heapPtr).toBe(advancedHeapPtr);
-
-  childWorker.emit({
-    type: "status",
-    status: 0,
-    exitCode: 0,
-    termSignal: 0,
-    pc: 0n,
-    vmPtr: 0x2000,
-    kernelState: makeKernelState(),
-  });
+  expect(createdWorkers).toHaveLength(1);
   expect(handle.kernelState.heapPtr).toBe(advancedHeapPtr);
 });
 
