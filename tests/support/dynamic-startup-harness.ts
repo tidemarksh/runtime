@@ -33,6 +33,7 @@ export interface DynamicStartupEntry {
   argv: readonly string[];
   env: readonly string[];
   timeoutMs: number;
+  stdio?: "pipe" | "pty";
   guestMemoryPolicyLimitBytes: number;
   runtimeOptions?: DynamicStartupRuntimeOptions;
   hostFileBackingMode?: SnapshotBuildOptions["hostFileBackingMode"];
@@ -236,9 +237,13 @@ export async function runDynamicStartupEntry(
     });
     const runPromise = (async (): Promise<DynamicStartupResult> => {
       testStageDebug("dynamic-startup:spawn:start");
-      proc = await runtime.spawn(new Uint8Array(elfBytes), [...entry.argv], [...entry.env], {
+      const spawnOptions: Parameters<RuntimeInstance["spawn"]>[3] = {
         guestExecutablePath: entry.guestExecutablePath,
-      });
+      };
+      if (entry.stdio !== undefined) {
+        spawnOptions.stdio = entry.stdio;
+      }
+      proc = await runtime.spawn(new Uint8Array(elfBytes), [...entry.argv], [...entry.env], spawnOptions);
       testStageDebug(`dynamic-startup:spawn:ready pid=${proc.pid}`);
       proc.onStdout((data) => {
         output += decoder.decode(data);
