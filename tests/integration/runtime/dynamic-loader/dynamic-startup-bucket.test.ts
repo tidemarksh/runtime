@@ -132,7 +132,7 @@ test("dynamic startup bucket: stack frame line columns do not override pipe wait
   expect(classifyDynamicStartupFailureStatus({ error })).toBe("runtime-ownership-suspected");
 });
 
-test("dynamic startup bucket: captured guest fatal signal overrides timeout ownership hints", () => {
+test("dynamic startup bucket: timeout ownership evidence can out-rank guest fatal signal text", () => {
   const error = new Error(
     [
       "timeout after 20000ms",
@@ -142,8 +142,8 @@ test("dynamic startup bucket: captured guest fatal signal overrides timeout owne
       "fs_lifecycle_tail=[fs-start:1:0x6849f70:op=2/WRITE/fd=4, fs-done:1:0x6849f70:rv=67]",
     ].join("\n"),
   );
-  expect(bucketDynamicStartupFailure({ error })).toBe("unknown");
-  expect(classifyDynamicStartupFailureStatus({ error })).toBe("unclassified");
+  expect(bucketDynamicStartupFailure({ error })).toBe("runtime-ownership");
+  expect(classifyDynamicStartupFailureStatus({ error })).toBe("runtime-ownership-suspected");
 });
 
 test("dynamic startup bucket: guest signal and debug-collection traps stay conservative", () => {

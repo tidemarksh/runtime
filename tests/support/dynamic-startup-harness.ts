@@ -318,9 +318,6 @@ export function bucketDynamicStartupFailure(input: {
   ) {
     return "consumer-runtime";
   }
-  if (hasGuestFatalSignalEvidence(text)) {
-    return "unknown";
-  }
   if (
     /timeout after \d+ms/i.test(text)
     && (
