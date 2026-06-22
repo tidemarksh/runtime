@@ -11,7 +11,7 @@ export const perlScriptRuntimeEntry: ScriptRuntimeEntry = {
   guestExecutablePath: "/usr/bin/perl",
   argv: ["/usr/bin/perl", "/work/script.pl"],
   env: [],
-  timeoutMs: 10_000,
+  timeoutMs: 60_000,
   guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
   snapshotSources: [
     { kind: "tree", hostPath: resolve(runtimeDir, "usr/bin"), guestPath: "/usr/bin" },
