@@ -2,10 +2,13 @@ import { expect, test } from "vite-plus/test";
 import {
   bucketScriptRuntimeFailure,
   prepareScriptRuntime,
+  resolveScriptRuntimeTestTimeoutMs,
   runScriptRuntimeEntry,
   validateScriptRuntimeOutput,
 } from "../../../support/script-runtime-harness.js";
 import { rubyScriptRuntimeEntry } from "./script-runtime.js";
+
+const SCRIPT_RUNTIME_ISOLATION_PREPARE_HEADROOM_MS = 60_000;
 
 const rubyIsolationEntries = [
   {
@@ -67,5 +70,5 @@ for (const entry of rubyIsolationEntries) {
     } finally {
       runtime.destroy();
     }
-  }, 20_000);
+  }, resolveScriptRuntimeTestTimeoutMs(entry, SCRIPT_RUNTIME_ISOLATION_PREPARE_HEADROOM_MS));
 }
