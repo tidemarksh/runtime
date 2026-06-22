@@ -55,11 +55,15 @@ function makeKernel() {
     kernel_process_runtime_state_ptr: () => state.processRuntimeStatePtr,
     kernel_time_state_ptr: () => state.timeStatePtr,
     abi_status_pipe_wait: () => 31,
+    abi_status_fs: () => 6,
     abi_status_ok: () => 0,
     abi_status_connect: () => 32,
     abi_status_socket_recv: () => 33,
     abi_status_socket_send: () => 34,
     abi_sys_read: () => 63n,
+    abi_sys_write: () => 64n,
+    abi_sys_writev: () => 66n,
+    abi_o_nonblock: () => 0x800,
     abi_max_fds: () => 64,
     abi_max_pipes: () => 64,
     abi_fd_type_pipe: () => 6,
@@ -92,6 +96,7 @@ function makeKernel() {
     kernel_ofd_table_ptr: () => state.ofdTablePtr,
     kernel_ofd_fd_type: () => 0,
     kernel_ofd_host_fd: () => 0,
+    kernel_ofd_refcount: () => 1,
     kernel_ofd_status_flags: () => 0,
     kernel_ofd_ino: () => 0,
     kernel_ofd_offset: () => 0n,
@@ -231,6 +236,283 @@ test("blocked-rpc pipe EOF ignores stale active-child writer when canonical pipe
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });
 
+test("blocked-rpc defers EOF-after-wait while an exiting visible child still holds a pipe writer", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const childWorker = {} as Worker;
+  const vmPtr = 0x1234;
+  const childVmPtr = 0x5678;
+  const pipeSlot = 1;
+  const readOfd = 26;
+  const writeOfd = 27;
+  let status = kernel.abi_status_pipe_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    status = kernel.abi_status_ok();
+    return 0n;
+  });
+  kernel.thread_blocked_syscall_nr = () => kernel.abi_sys_read();
+  kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => index === 0 ? 3n : 0n;
+  kernel.thread_blocked_fd = () => 3;
+  kernel.thread_blocked_ofd_id = () => readOfd;
+  kernel.thread_a0 = () => 3n;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => fd === 3 ? readOfd : 0;
+  kernel.kernel_ofd_fd_type = (ofdId: number) => (
+    ofdId === readOfd || ofdId === writeOfd ? kernel.abi_fd_type_pipe() : 0
+  );
+  kernel.kernel_ofd_host_fd = (ofdId: number) => {
+    if (ofdId === readOfd) {
+      return 6;
+    }
+    if (ofdId === writeOfd) {
+      return -7;
+    }
+    return 0;
+  };
+  kernel.kernel_ofd_ino = (ofdId: number) => (
+    ofdId === readOfd || ofdId === writeOfd ? pipeSlot : 0
+  );
+  kernel.thread_pipe_read_eof_sync_pending = () => 0;
+  kernel.thread_blocked_pipe_read_ready = () => 1;
+  kernel.thread_blocked_pipe_write_ready = () => 0;
+  kernel.thread_blocked_pipe_buffered_len = () => 0;
+  kernel.thread_blocked_pipe_write_open = () => 0;
+  kernel.kernel_pipe_base = () => 0;
+  kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+  const kernelState = {
+    ...makeKernelState(),
+    pipeBase: 0,
+    pipeUsed: 1n << BigInt(pipeSlot),
+  };
+  const view = new DataView(kernel.memory.buffer);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES, 0, true);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES + 4, 0, true);
+  view.setInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, 0, true);
+
+  const handle = {
+    pid: 1,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState,
+    memory: kernel.memory,
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set([readOfd, writeOfd]),
+      forkSharedSyncPromise: null,
+    },
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+
+  const childKernel = {
+    ...kernel,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 1 ? writeOfd : 0,
+  };
+  const child = {
+    pid: 3,
+    parentPid: 1,
+    vmPtr: childVmPtr,
+    kernel: childKernel,
+    kernelState,
+    memory: kernel.memory,
+    workers: new Set([childWorker]),
+    readyWorkers: [childWorker],
+    runningWorker: null,
+    blockedWorkers: new Map(),
+    exitInProgress: true,
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set([writeOfd]),
+      forkSharedSyncPromise: null,
+    },
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+  handle.kernelShare.members.add(child);
+  child.kernelShare.members.add(handle);
+  child.kernelShare.members.add(child);
+
+  const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, threadState);
+  const handleBlockedRetryResult = vi.fn();
+  const enqueueWorker = vi.fn();
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[1, handle], [3, child]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    appendWorkerDebugLog: vi.fn(),
+    enqueueWorker,
+    failProcess: vi.fn(),
+    handleBlockedRetryResult,
+    requestPipeStateSync: vi.fn(async () => {}),
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  await expect(
+    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+  ).resolves.toBeUndefined();
+
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  expect(threadState.resumeBlockedOnNextStep).toBe(false);
+  expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(0);
+  expect(enqueueWorker).not.toHaveBeenCalled();
+});
+
+test("blocked-rpc preserves canonical EOF retry when active-child writer defers resume", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const childWorker = {} as Worker;
+  const vmPtr = 0x1234;
+  const childVmPtr = 0x5678;
+  const pipeSlot = 1;
+  const readOfd = 26;
+  const writeOfd = 27;
+  let status = kernel.abi_status_pipe_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    status = kernel.abi_status_ok();
+    return 0n;
+  });
+  kernel.thread_blocked_syscall_nr = () => kernel.abi_sys_read();
+  kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => index === 0 ? 3n : 0n;
+  kernel.thread_blocked_fd = () => 3;
+  kernel.thread_blocked_ofd_id = () => readOfd;
+  kernel.thread_a0 = () => 3n;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => fd === 3 ? readOfd : 0;
+  kernel.kernel_ofd_fd_type = (ofdId: number) => (
+    ofdId === readOfd || ofdId === writeOfd ? kernel.abi_fd_type_pipe() : 0
+  );
+  kernel.kernel_ofd_host_fd = (ofdId: number) => {
+    if (ofdId === readOfd) {
+      return 6;
+    }
+    if (ofdId === writeOfd) {
+      return -7;
+    }
+    return 0;
+  };
+  kernel.kernel_ofd_ino = (ofdId: number) => (
+    ofdId === readOfd || ofdId === writeOfd ? pipeSlot : 0
+  );
+  kernel.thread_pipe_read_eof_sync_pending = () => 0;
+  kernel.thread_blocked_pipe_read_ready = () => 0;
+  kernel.thread_blocked_pipe_write_ready = () => 0;
+  kernel.thread_blocked_pipe_buffered_len = () => 0;
+  kernel.thread_blocked_pipe_write_open = () => 0;
+  kernel.kernel_pipe_base = () => 0;
+  kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+  const kernelState = {
+    ...makeKernelState(),
+    pipeBase: 0,
+    pipeUsed: 1n << BigInt(pipeSlot),
+  };
+  const view = new DataView(kernel.memory.buffer);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES, 0, true);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES + 4, 0, true);
+  view.setInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, 0, true);
+
+  const blockedState = {
+    vmPtr,
+    status: kernel.abi_status_pipe_wait(),
+    retryTimer: null,
+    timeoutExpired: false,
+    timeoutDeadlineMs: null,
+    sleepDeadlineTicks: null,
+    rpcPending: false,
+    pipeCanonicalEofReady: true,
+  };
+  const handle = {
+    pid: 1,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState,
+    memory: kernel.memory,
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, blockedState]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set([readOfd, writeOfd]),
+      forkSharedSyncPromise: null,
+    },
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+
+  const childKernel = {
+    ...kernel,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 1 ? writeOfd : 0,
+  };
+  const child = {
+    pid: 3,
+    parentPid: 1,
+    vmPtr: childVmPtr,
+    kernel: childKernel,
+    kernelState,
+    memory: kernel.memory,
+    workers: new Set([childWorker]),
+    readyWorkers: [childWorker],
+    runningWorker: null,
+    blockedWorkers: new Map(),
+    exitInProgress: true,
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set([writeOfd]),
+      forkSharedSyncPromise: null,
+    },
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+  handle.kernelShare.members.add(child);
+  child.kernelShare.members.add(handle);
+  child.kernelShare.members.add(child);
+
+  const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, threadState);
+  const handleBlockedRetryResult = vi.fn();
+  const enqueueWorker = vi.fn();
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[1, handle], [3, child]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    appendWorkerDebugLog: vi.fn(),
+    enqueueWorker,
+    failProcess: vi.fn(),
+    handleBlockedRetryResult,
+    requestPipeStateSync: vi.fn(async () => {}),
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  await expect(
+    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+  ).resolves.toBeUndefined();
+
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  expect(handle.blockedWorkers.get(worker)?.pipeCanonicalEofReady).toBe(true);
+  expect(threadState.resumeBlockedOnNextStep).toBe(false);
+  expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(0);
+  expect(enqueueWorker).not.toHaveBeenCalled();
+});
+
 test("blocked-rpc pipe EOF uses current kernel pipe counters before stale shared writer records", async () => {
   const kernel = makeKernel();
   const worker = {} as Worker;
@@ -366,6 +648,1959 @@ test("blocked-rpc pipe EOF uses current kernel pipe counters before stale shared
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });
 
+test("blocked-rpc preserves same-process pipe writer when blocked snapshot looked closed", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const vmPtr = 0x1234;
+  const pipeSlot = 1;
+  const readOfd = 26;
+  const writeOfd = 27;
+  let status = kernel.abi_status_pipe_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    status = kernel.abi_status_ok();
+    return 0n;
+  });
+  kernel.thread_blocked_syscall_nr = () => kernel.abi_sys_read();
+  kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => index === 0 ? 12n : 0n;
+  kernel.thread_blocked_fd = () => 12;
+  kernel.thread_blocked_ofd_id = () => readOfd;
+  kernel.thread_a0 = () => 12n;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => {
+    if (fd === 12) {
+      return readOfd;
+    }
+    if (fd === 13) {
+      return writeOfd;
+    }
+    return 0;
+  };
+  kernel.kernel_ofd_fd_type = (ofdId: number) => (
+    ofdId === readOfd || ofdId === writeOfd ? kernel.abi_fd_type_pipe() : 0
+  );
+  kernel.kernel_ofd_host_fd = (ofdId: number) => {
+    if (ofdId === readOfd) {
+      return 6;
+    }
+    if (ofdId === writeOfd) {
+      return -7;
+    }
+    return 0;
+  };
+  kernel.kernel_ofd_ino = (ofdId: number) => (
+    ofdId === readOfd || ofdId === writeOfd ? pipeSlot : 0
+  );
+  kernel.thread_pipe_read_eof_sync_pending = () => 0;
+  kernel.thread_blocked_pipe_read_ready = () => 0;
+  kernel.thread_blocked_pipe_write_ready = () => 0;
+  kernel.thread_blocked_pipe_buffered_len = () => 0;
+  kernel.thread_blocked_pipe_write_open = () => 0;
+  kernel.kernel_pipe_base = () => 0;
+  kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+  const kernelState = {
+    ...makeKernelState(),
+    pipeBase: 0,
+    pipeUsed: 1n << BigInt(pipeSlot),
+  };
+  const view = new DataView(kernel.memory.buffer);
+  const pipeOffset = pipeSlot * PIPE_SLOT_BYTES;
+  view.setUint32(pipeOffset, 0, true);
+  view.setUint32(pipeOffset + 4, 0, true);
+  view.setInt32(pipeOffset + PIPE_READ_OPEN_OFFSET, 0, true);
+  view.setInt32(pipeOffset + PIPE_WRITE_OPEN_OFFSET, 0, true);
+
+  const handle = {
+    pid: 1,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState,
+    memory: kernel.memory,
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set([readOfd, writeOfd]),
+      forkSharedSyncPromise: null,
+    },
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+
+  const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, threadState);
+  const handleBlockedRetryResult = vi.fn();
+  const enqueueWorker = vi.fn();
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[1, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    appendWorkerDebugLog: vi.fn(),
+    enqueueWorker,
+    failProcess: vi.fn(),
+    handleBlockedRetryResult,
+    requestPipeStateSync: vi.fn(async () => {}),
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  await expect(
+    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+  ).resolves.toBeUndefined();
+
+  expect(view.getInt32(pipeOffset + PIPE_READ_OPEN_OFFSET, true)).toBe(1);
+  expect(view.getInt32(pipeOffset + PIPE_WRITE_OPEN_OFFSET, true)).toBe(1);
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  expect(threadState.resumeBlockedOnNextStep).toBe(false);
+  expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(0);
+  expect(enqueueWorker).not.toHaveBeenCalled();
+});
+
+test("blocked-rpc preserves same-process pipe reader before write EPIPE retry", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const vmPtr = 0x1234;
+  const pipeSlot = 1;
+  const readOfd = 26;
+  const writeOfd = 25;
+  let status = kernel.abi_status_pipe_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_blocked_syscall_nr = () => kernel.abi_sys_write();
+  kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => {
+    switch (index) {
+      case 0:
+        return 11n;
+      case 1:
+        return 0x2000n;
+      case 2:
+        return 1n;
+      default:
+        return 0n;
+    }
+  };
+  kernel.thread_blocked_fd = () => 11;
+  kernel.thread_blocked_ofd_id = () => writeOfd;
+  kernel.thread_a0 = () => 11n;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => {
+    if (fd === 11) {
+      return writeOfd;
+    }
+    if (fd === 12) {
+      return readOfd;
+    }
+    return 0;
+  };
+  kernel.kernel_ofd_fd_type = (ofdId: number) => (
+    ofdId === readOfd || ofdId === writeOfd ? kernel.abi_fd_type_pipe() : 0
+  );
+  kernel.kernel_ofd_host_fd = (ofdId: number) => {
+    if (ofdId === readOfd) {
+      return 6;
+    }
+    if (ofdId === writeOfd) {
+      return -7;
+    }
+    return 0;
+  };
+  kernel.kernel_ofd_ino = (ofdId: number) => (
+    ofdId === readOfd || ofdId === writeOfd ? pipeSlot : 0
+  );
+  kernel.thread_pipe_read_eof_sync_pending = () => 0;
+  kernel.thread_blocked_pipe_read_ready = () => 0;
+  kernel.thread_blocked_pipe_write_ready = () => 1;
+  kernel.thread_blocked_pipe_buffered_len = () => 0;
+  kernel.thread_blocked_pipe_write_open = () => 0;
+  kernel.kernel_pipe_base = () => 0;
+  kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+  const kernelState = {
+    ...makeKernelState(),
+    pipeBase: 0,
+    pipeUsed: 1n << BigInt(pipeSlot),
+  };
+  const view = new DataView(kernel.memory.buffer);
+  const pipeOffset = pipeSlot * PIPE_SLOT_BYTES;
+  view.setUint32(pipeOffset, 0, true);
+  view.setUint32(pipeOffset + 4, 0, true);
+  view.setInt32(pipeOffset + PIPE_READ_OPEN_OFFSET, 0, true);
+  view.setInt32(pipeOffset + PIPE_WRITE_OPEN_OFFSET, 1, true);
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    if (view.getInt32(pipeOffset + PIPE_READ_OPEN_OFFSET, true) > 0) {
+      status = kernel.abi_status_ok();
+      return 1n;
+    }
+    return 0n;
+  });
+
+  const handle = {
+    pid: 1,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState,
+    memory: kernel.memory,
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set([readOfd, writeOfd]),
+      forkSharedSyncPromise: null,
+    },
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, {});
+  const handleBlockedRetryResult = vi.fn();
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[1, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    appendWorkerDebugLog: vi.fn(),
+    enqueueWorker: vi.fn(),
+    failProcess: vi.fn(),
+    handleBlockedRetryResult,
+    requestPipeStateSync: vi.fn(async () => {}),
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  await expect(
+    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+  ).resolves.toBeUndefined();
+
+  expect(view.getInt32(pipeOffset + PIPE_READ_OPEN_OFFSET, true)).toBe(1);
+  expect(view.getInt32(pipeOffset + PIPE_WRITE_OPEN_OFFSET, true)).toBe(1);
+  expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(vmPtr);
+  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_ok());
+});
+
+test("blocked-rpc preserves same-process pipe reader when stale refcount would drop read-open", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const vmPtr = 0x1234;
+  const pipeSlot = 1;
+  const readOfd = 26;
+  const writeOfd = 25;
+  let status = kernel.abi_status_pipe_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_blocked_syscall_nr = () => kernel.abi_sys_write();
+  kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => {
+    switch (index) {
+      case 0:
+        return 11n;
+      case 1:
+        return 0x2000n;
+      case 2:
+        return 1n;
+      default:
+        return 0n;
+    }
+  };
+  kernel.thread_blocked_fd = () => 11;
+  kernel.thread_blocked_ofd_id = () => writeOfd;
+  kernel.thread_a0 = () => 11n;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => {
+    if (fd === 11) {
+      return writeOfd;
+    }
+    if (fd === 12) {
+      return readOfd;
+    }
+    return 0;
+  };
+  kernel.kernel_ofd_fd_type = (ofdId: number) => (
+    ofdId === readOfd || ofdId === writeOfd ? kernel.abi_fd_type_pipe() : 0
+  );
+  kernel.kernel_ofd_host_fd = (ofdId: number) => {
+    if (ofdId === readOfd) {
+      return 6;
+    }
+    if (ofdId === writeOfd) {
+      return -7;
+    }
+    return 0;
+  };
+  kernel.kernel_ofd_ino = (ofdId: number) => (
+    ofdId === readOfd || ofdId === writeOfd ? pipeSlot : 0
+  );
+  kernel.kernel_ofd_refcount = (ofdId: number) => (
+    ofdId === readOfd ? 0 : 1
+  );
+  kernel.thread_pipe_read_eof_sync_pending = () => 0;
+  kernel.thread_blocked_pipe_read_ready = () => 0;
+  kernel.thread_blocked_pipe_write_ready = () => 1;
+  kernel.thread_blocked_pipe_buffered_len = () => 0;
+  kernel.thread_blocked_pipe_write_open = () => 0;
+  kernel.kernel_pipe_base = () => 0;
+  kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+  const kernelState = {
+    ...makeKernelState(),
+    pipeBase: 0,
+    pipeUsed: 1n << BigInt(pipeSlot),
+  };
+  const view = new DataView(kernel.memory.buffer);
+  const pipeOffset = pipeSlot * PIPE_SLOT_BYTES;
+  view.setUint32(pipeOffset, 0, true);
+  view.setUint32(pipeOffset + 4, 0, true);
+  view.setInt32(pipeOffset + PIPE_READ_OPEN_OFFSET, 1, true);
+  view.setInt32(pipeOffset + PIPE_WRITE_OPEN_OFFSET, 1, true);
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    if (view.getInt32(pipeOffset + PIPE_READ_OPEN_OFFSET, true) > 0) {
+      status = kernel.abi_status_ok();
+      return 1n;
+    }
+    return 0n;
+  });
+
+  const handle = {
+    pid: 1,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState,
+    memory: kernel.memory,
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set([readOfd, writeOfd]),
+      forkSharedSyncPromise: null,
+    },
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, {});
+  const handleBlockedRetryResult = vi.fn();
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[1, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    appendWorkerDebugLog: vi.fn(),
+    enqueueWorker: vi.fn(),
+    failProcess: vi.fn(),
+    handleBlockedRetryResult,
+    requestPipeStateSync: vi.fn(async () => {}),
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  await expect(
+    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+  ).resolves.toBeUndefined();
+
+  expect(view.getInt32(pipeOffset + PIPE_READ_OPEN_OFFSET, true)).toBe(1);
+  expect(view.getInt32(pipeOffset + PIPE_WRITE_OPEN_OFFSET, true)).toBe(1);
+  expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(vmPtr);
+  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_ok());
+});
+
+test("blocked-rpc defers pipe resume while self pipe sync is in flight", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const vmPtr = 0x1234;
+  const pipeSlot = 2;
+  const readOfd = 7;
+  let status = kernel.abi_status_pipe_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    status = kernel.abi_status_ok();
+    return 0n;
+  });
+  kernel.thread_blocked_syscall_nr = () => kernel.abi_sys_read();
+  kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => index === 0 ? 3n : 0n;
+  kernel.thread_blocked_fd = () => 3;
+  kernel.thread_blocked_ofd_id = () => readOfd;
+  kernel.thread_a0 = () => 3n;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => fd === 3 ? readOfd : 0;
+  kernel.kernel_ofd_fd_type = (ofdId: number) => ofdId === readOfd ? kernel.abi_fd_type_pipe() : 0;
+  kernel.kernel_ofd_host_fd = (ofdId: number) => ofdId === readOfd ? 6 : 0;
+  kernel.kernel_ofd_ino = (ofdId: number) => ofdId === readOfd ? pipeSlot : 0;
+  kernel.thread_pipe_read_eof_sync_pending = () => 0;
+  kernel.thread_blocked_pipe_read_ready = () => 0;
+  kernel.thread_blocked_pipe_write_ready = () => 0;
+  kernel.thread_blocked_pipe_buffered_len = () => 0;
+  kernel.thread_blocked_pipe_write_open = () => 0;
+  kernel.kernel_pipe_base = () => 0;
+  kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+  const kernelState = {
+    ...makeKernelState(),
+    pipeBase: 0,
+    pipeUsed: 1n << BigInt(pipeSlot),
+  };
+  const view = new DataView(kernel.memory.buffer);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES, 0, true);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES + 4, 0, true);
+  view.setInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, 0, true);
+
+  const inFlightPipeSync = new Promise<void>(() => {});
+  const handle = {
+    pid: 3,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState,
+    memory: kernel.memory,
+    guestBase: 0,
+    kernelWorkerRequest: vi.fn(),
+    pipeSyncPromise: inFlightPipeSync,
+    pipeSyncQueued: false,
+    pipeWaiterWakeQueued: false,
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set([readOfd]),
+      forkSharedSyncPromise: null,
+    },
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+
+  const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, threadState);
+  const handleBlockedRetryResult = vi.fn();
+  const lifecycle: string[] = [];
+  const debugLog: string[] = [];
+  const enqueueWorker = vi.fn();
+  const requestPipeStateSync = vi.fn((target: ProcessHandle, wakeWaiters = false) => {
+    target.pipeSyncQueued = true;
+    if (wakeWaiters) {
+      target.pipeWaiterWakeQueued = true;
+    }
+    return target.pipeSyncPromise ?? Promise.resolve();
+  });
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[3, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn((_runtimeId, event) => lifecycle.push(event)),
+    appendWorkerDebugLog: vi.fn((_handle, event) => debugLog.push(event)),
+    enqueueWorker,
+    failProcess: vi.fn(),
+    handleBlockedRetryResult,
+    requestPipeStateSync,
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  const resume = helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const result = await Promise.race([
+    resume.then(() => "resolved" as const),
+    new Promise<"stalled">((resolve) => {
+      timeout = setTimeout(() => resolve("stalled"), 25);
+    }),
+  ]);
+  if (timeout !== undefined) {
+    clearTimeout(timeout);
+  }
+
+  expect(result, [...lifecycle, ...debugLog].join("\n")).toBe("resolved");
+  expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
+  expect(lifecycle).toContain("blocked-rpc-sync-pipe-before-resume-inflight:3");
+  expect(handle.pipeWaiterWakeQueued).toBe(true);
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  expect(threadState.resumeBlockedOnNextStep).toBe(false);
+  expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(0);
+  expect(enqueueWorker).not.toHaveBeenCalled();
+});
+
+test("blocked-rpc awaits newly queued self pipe sync before pipe resume", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const vmPtr = 0x1234;
+  const pipeSlot = 2;
+  const readOfd = 7;
+  let status = kernel.abi_status_pipe_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    status = kernel.abi_status_ok();
+    return 0n;
+  });
+  kernel.thread_blocked_syscall_nr = () => kernel.abi_sys_read();
+  kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => index === 0 ? 3n : 0n;
+  kernel.thread_blocked_fd = () => 3;
+  kernel.thread_blocked_ofd_id = () => readOfd;
+  kernel.thread_a0 = () => 3n;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => fd === 3 ? readOfd : 0;
+  kernel.kernel_ofd_fd_type = (ofdId: number) => ofdId === readOfd ? kernel.abi_fd_type_pipe() : 0;
+  kernel.kernel_ofd_host_fd = (ofdId: number) => ofdId === readOfd ? 6 : 0;
+  kernel.kernel_ofd_ino = (ofdId: number) => ofdId === readOfd ? pipeSlot : 0;
+  kernel.thread_pipe_read_eof_sync_pending = () => 0;
+  kernel.thread_blocked_pipe_read_ready = () => 0;
+  kernel.thread_blocked_pipe_write_ready = () => 0;
+  kernel.thread_blocked_pipe_buffered_len = () => 0;
+  kernel.thread_blocked_pipe_write_open = () => 0;
+  kernel.kernel_pipe_base = () => 0;
+  kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+  const kernelState = {
+    ...makeKernelState(),
+    pipeBase: 0,
+    pipeUsed: 1n << BigInt(pipeSlot),
+  };
+  const view = new DataView(kernel.memory.buffer);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES, 0, true);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES + 4, 0, true);
+  view.setInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, 0, true);
+
+  const handle = {
+    pid: 3,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState,
+    memory: kernel.memory,
+    guestBase: 0,
+    kernelWorkerRequest: vi.fn(),
+    pipeSyncPromise: null,
+    pipeSyncQueued: false,
+    pipeWaiterWakeQueued: false,
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set([readOfd]),
+      forkSharedSyncPromise: null,
+    },
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+
+  const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, threadState);
+  const handleBlockedRetryResult = vi.fn();
+  const lifecycle: string[] = [];
+  const debugLog: string[] = [];
+  const enqueueWorker = vi.fn();
+  const requestPipeStateSync = vi.fn((target: ProcessHandle, wakeWaiters = false) => {
+    target.pipeSyncQueued = true;
+    if (wakeWaiters) {
+      target.pipeWaiterWakeQueued = true;
+      const queuedWakePipeSync = Promise.resolve().then(() => {
+        target.pipeSyncPromise = null;
+      });
+      target.pipeSyncPromise = queuedWakePipeSync;
+      return queuedWakePipeSync;
+    }
+    return Promise.resolve();
+  });
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[3, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn((_runtimeId, event) => lifecycle.push(event)),
+    appendWorkerDebugLog: vi.fn((_handle, event) => debugLog.push(event)),
+    enqueueWorker,
+    failProcess: vi.fn(),
+    handleBlockedRetryResult,
+    requestPipeStateSync,
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  const resume = helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const result = await Promise.race([
+    resume.then(() => "resolved" as const),
+    new Promise<"stalled">((resolve) => {
+      timeout = setTimeout(() => resolve("stalled"), 25);
+    }),
+  ]);
+  if (timeout !== undefined) {
+    clearTimeout(timeout);
+  }
+
+  expect(result, [...lifecycle, ...debugLog].join("\n")).toBe("resolved");
+  expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
+  expect(lifecycle).toContain("blocked-rpc-sync-pipe-before-resume-done:3");
+  expect(lifecycle).not.toContain("blocked-rpc-sync-pipe-before-resume-inflight:3");
+  expect(handle.pipeWaiterWakeQueued).toBe(true);
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+  expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+  expect(threadState.resumeBlockedOnNextStep).toBe(true);
+  expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
+  expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
+  expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+});
+
+test("blocked-rpc resumes EOF-pending pipe read despite in-flight self pipe sync", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const vmPtr = 0x1234;
+  const pipeSlot = 2;
+  const readOfd = 7;
+  let status = kernel.abi_status_pipe_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    status = kernel.abi_status_ok();
+    return 0n;
+  });
+  kernel.thread_blocked_syscall_nr = () => kernel.abi_sys_read();
+  kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => index === 0 ? 3n : 0n;
+  kernel.thread_blocked_fd = () => 3;
+  kernel.thread_blocked_ofd_id = () => readOfd;
+  kernel.thread_a0 = () => 3n;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => fd === 3 ? readOfd : 0;
+  kernel.kernel_ofd_fd_type = (ofdId: number) => ofdId === readOfd ? kernel.abi_fd_type_pipe() : 0;
+  kernel.kernel_ofd_host_fd = (ofdId: number) => ofdId === readOfd ? 6 : 0;
+  kernel.kernel_ofd_ino = (ofdId: number) => ofdId === readOfd ? pipeSlot : 0;
+  kernel.thread_pipe_read_eof_sync_pending = () => 1;
+  kernel.thread_blocked_pipe_read_ready = () => 0;
+  kernel.thread_blocked_pipe_write_ready = () => 0;
+  kernel.thread_blocked_pipe_buffered_len = () => 0;
+  kernel.thread_blocked_pipe_write_open = () => 0;
+  kernel.kernel_pipe_base = () => 0;
+  kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+  const kernelState = {
+    ...makeKernelState(),
+    pipeBase: 0,
+    pipeUsed: 1n << BigInt(pipeSlot),
+  };
+  const view = new DataView(kernel.memory.buffer);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES, 0, true);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES + 4, 0, true);
+  view.setInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, 0, true);
+
+  const inFlightPipeSync = new Promise<void>(() => {});
+  const handle = {
+    pid: 3,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState,
+    memory: kernel.memory,
+    guestBase: 0,
+    kernelWorkerRequest: vi.fn(),
+    pipeSyncPromise: inFlightPipeSync,
+    pipeSyncQueued: false,
+    pipeWaiterWakeQueued: false,
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set([readOfd]),
+      forkSharedSyncPromise: null,
+    },
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+
+  const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, threadState);
+  const handleBlockedRetryResult = vi.fn();
+  const lifecycle: string[] = [];
+  const enqueueWorker = vi.fn();
+  const requestPipeStateSync = vi.fn((target: ProcessHandle, wakeWaiters = false) => {
+    target.pipeSyncQueued = true;
+    if (wakeWaiters) {
+      target.pipeWaiterWakeQueued = true;
+    }
+    return target.pipeSyncPromise ?? Promise.resolve();
+  });
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[3, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn((_runtimeId, event) => lifecycle.push(event)),
+    appendWorkerDebugLog: vi.fn(),
+    enqueueWorker,
+    failProcess: vi.fn(),
+    handleBlockedRetryResult,
+    requestPipeStateSync,
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  await expect(
+    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+  ).resolves.toBeUndefined();
+
+  expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
+  expect(lifecycle).toContain("blocked-rpc-sync-pipe-before-resume-inflight-read-ready:3:buf=0:eof=1");
+  expect(handle.pipeWaiterWakeQueued).toBe(true);
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+  expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+  expect(threadState.resumeBlockedOnNextStep).toBe(true);
+  expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
+  expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
+  expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+});
+
+test("blocked-rpc resumes buffered pipe read despite in-flight self pipe sync", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const vmPtr = 0x1234;
+  const pipeSlot = 2;
+  const readOfd = 7;
+  let status = kernel.abi_status_pipe_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    status = kernel.abi_status_ok();
+    return 19n;
+  });
+  kernel.thread_blocked_syscall_nr = () => kernel.abi_sys_read();
+  kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => index === 0 ? 3n : 0n;
+  kernel.thread_blocked_fd = () => 3;
+  kernel.thread_blocked_ofd_id = () => readOfd;
+  kernel.thread_a0 = () => 3n;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => fd === 3 ? readOfd : 0;
+  kernel.kernel_ofd_fd_type = (ofdId: number) => ofdId === readOfd ? kernel.abi_fd_type_pipe() : 0;
+  kernel.kernel_ofd_host_fd = (ofdId: number) => ofdId === readOfd ? 6 : 0;
+  kernel.kernel_ofd_ino = (ofdId: number) => ofdId === readOfd ? pipeSlot : 0;
+  kernel.thread_pipe_read_eof_sync_pending = () => 0;
+  kernel.thread_blocked_pipe_read_ready = () => 1;
+  kernel.thread_blocked_pipe_write_ready = () => 0;
+  kernel.thread_blocked_pipe_buffered_len = () => 0;
+  kernel.thread_blocked_pipe_write_open = () => 0;
+  kernel.kernel_pipe_base = () => 0;
+  kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+  const kernelState = {
+    ...makeKernelState(),
+    pipeBase: 0,
+    pipeUsed: 1n << BigInt(pipeSlot),
+  };
+  const view = new DataView(kernel.memory.buffer);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES, 0, true);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES + 4, 19, true);
+  view.setInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, 0, true);
+
+  const inFlightPipeSync = new Promise<void>(() => {});
+  const handle = {
+    pid: 3,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState,
+    memory: kernel.memory,
+    guestBase: 0,
+    kernelWorkerRequest: vi.fn(),
+    pipeSyncPromise: inFlightPipeSync,
+    pipeSyncQueued: false,
+    pipeWaiterWakeQueued: false,
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set([readOfd]),
+      forkSharedSyncPromise: null,
+    },
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+
+  const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, threadState);
+  const handleBlockedRetryResult = vi.fn();
+  const lifecycle: string[] = [];
+  const enqueueWorker = vi.fn();
+  const requestPipeStateSync = vi.fn((target: ProcessHandle, wakeWaiters = false) => {
+    target.pipeSyncQueued = true;
+    if (wakeWaiters) {
+      target.pipeWaiterWakeQueued = true;
+    }
+    return target.pipeSyncPromise ?? Promise.resolve();
+  });
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[3, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn((_runtimeId, event) => lifecycle.push(event)),
+    appendWorkerDebugLog: vi.fn(),
+    enqueueWorker,
+    failProcess: vi.fn(),
+    handleBlockedRetryResult,
+    requestPipeStateSync,
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  await expect(
+    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+  ).resolves.toBeUndefined();
+
+  expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
+  expect(lifecycle).toContain("blocked-rpc-sync-pipe-before-resume-inflight-read-ready:3:buf=1:eof=0");
+  expect(handle.pipeWaiterWakeQueued).toBe(true);
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+  expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+  expect(threadState.resumeBlockedOnNextStep).toBe(true);
+  expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
+  expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
+  expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+});
+
+test("blocked-rpc skips ready self pipe sync before pipe read EOF resume", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const vmPtr = 0x1234;
+  const pipeSlot = 2;
+  const readOfd = 7;
+  let status = kernel.abi_status_pipe_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    status = kernel.abi_status_ok();
+    return 0n;
+  });
+  kernel.thread_blocked_syscall_nr = () => kernel.abi_sys_read();
+  kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => index === 0 ? 3n : 0n;
+  kernel.thread_blocked_fd = () => 3;
+  kernel.thread_blocked_ofd_id = () => readOfd;
+  kernel.thread_a0 = () => 3n;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => fd === 3 ? readOfd : 0;
+  kernel.kernel_ofd_fd_type = (ofdId: number) => ofdId === readOfd ? kernel.abi_fd_type_pipe() : 0;
+  kernel.kernel_ofd_host_fd = (ofdId: number) => ofdId === readOfd ? 6 : 0;
+  kernel.kernel_ofd_ino = (ofdId: number) => ofdId === readOfd ? pipeSlot : 0;
+  kernel.thread_pipe_read_eof_sync_pending = () => 1;
+  kernel.thread_blocked_pipe_read_ready = () => 1;
+  kernel.thread_blocked_pipe_write_ready = () => 0;
+  kernel.thread_blocked_pipe_buffered_len = () => 0;
+  kernel.thread_blocked_pipe_write_open = () => 0;
+  kernel.kernel_pipe_base = () => 0;
+  kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+  const kernelState = {
+    ...makeKernelState(),
+    pipeBase: 0,
+    pipeUsed: 1n << BigInt(pipeSlot),
+  };
+  const view = new DataView(kernel.memory.buffer);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES, 0, true);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES + 4, 0, true);
+  view.setInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, 0, true);
+
+  const handle = {
+    pid: 3,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState,
+    memory: kernel.memory,
+    guestBase: 0,
+    kernelWorkerRequest: vi.fn(),
+    pipeSyncPromise: null,
+    pipeSyncQueued: false,
+    pipeWaiterWakeQueued: false,
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+      pipeCanonicalEofReady: false,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set([readOfd]),
+      forkSharedSyncPromise: null,
+    },
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+
+  const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, threadState);
+  const lifecycle: string[] = [];
+  const debugLog: string[] = [];
+  const requestPipeStateSync = vi.fn((target: ProcessHandle, wakeWaiters = false) => {
+    if (target === handle && !wakeWaiters) {
+      return new Promise<void>(() => {});
+    }
+    if (target === handle && wakeWaiters) {
+      target.pipeWaiterWakeQueued = true;
+    }
+    return Promise.resolve();
+  });
+  const enqueueWorker = vi.fn();
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[3, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn((_runtimeId, event) => lifecycle.push(event)),
+    appendWorkerDebugLog: vi.fn((_handle, event) => debugLog.push(event)),
+    enqueueWorker,
+    failProcess: vi.fn(),
+    handleBlockedRetryResult: vi.fn(),
+    requestPipeStateSync,
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  const resume = helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const result = await Promise.race([
+    resume.then(() => "resolved" as const),
+    new Promise<"stalled">((resolve) => {
+      timeout = setTimeout(() => resolve("stalled"), 25);
+    }),
+  ]);
+  if (timeout !== undefined) {
+    clearTimeout(timeout);
+  }
+
+  expect(result, [...lifecycle, ...debugLog].join("\n")).toBe("resolved");
+  expect(lifecycle).toContain("blocked-rpc-sync-pipe-skip-ready-self:3");
+  expect(requestPipeStateSync.mock.calls.some(([target, wake]) => target === handle && wake === false)).toBe(false);
+  expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+  expect(threadState.resumeBlockedOnNextStep).toBe(true);
+  expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
+  expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
+  expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+});
+
+test("blocked-rpc carries canonical EOF to next block after buffered pipe read with no writers", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const vmPtr = 0x1234;
+  const pipeSlot = 2;
+  const readOfd = 7;
+  let status = kernel.abi_status_pipe_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    status = kernel.abi_status_ok();
+    return 16n;
+  });
+  kernel.thread_blocked_syscall_nr = () => kernel.abi_sys_read();
+  kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => {
+    if (index === 0) {
+      return 3n;
+    }
+    if (index === 1) {
+      return 0x4000n;
+    }
+    return index === 2 ? 128n : 0n;
+  };
+  kernel.thread_blocked_fd = () => 3;
+  kernel.thread_blocked_ofd_id = () => readOfd;
+  kernel.thread_a0 = () => 3n;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => fd === 3 ? readOfd : 0;
+  kernel.kernel_ofd_fd_type = (ofdId: number) => ofdId === readOfd ? kernel.abi_fd_type_pipe() : 0;
+  kernel.kernel_ofd_host_fd = (ofdId: number) => ofdId === readOfd ? 6 : 0;
+  kernel.kernel_ofd_ino = (ofdId: number) => ofdId === readOfd ? pipeSlot : 0;
+  kernel.thread_pipe_read_eof_sync_pending = () => 0;
+  kernel.thread_blocked_pipe_read_ready = () => 1;
+  kernel.thread_blocked_pipe_write_ready = () => 0;
+  kernel.thread_blocked_pipe_buffered_len = () => 16;
+  kernel.thread_blocked_pipe_write_open = () => 0;
+  kernel.kernel_pipe_base = () => 0;
+  kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+  const kernelState = {
+    ...makeKernelState(),
+    pipeBase: 0,
+    pipeUsed: 1n << BigInt(pipeSlot),
+  };
+  const view = new DataView(kernel.memory.buffer);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES, 0, true);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES + 4, 16, true);
+  view.setInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, 0, true);
+
+  const handle = {
+    pid: 3,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState,
+    memory: kernel.memory,
+    guestBase: 0,
+    kernelWorkerRequest: vi.fn(),
+    pipeSyncPromise: null,
+    pipeSyncQueued: false,
+    pipeWaiterWakeQueued: false,
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+      pipeCanonicalEofReady: false,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set([readOfd]),
+      forkSharedSyncPromise: null,
+    },
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+
+  const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, threadState);
+  const lifecycle: string[] = [];
+  const enqueueWorker = vi.fn();
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[3, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn((_runtimeId, event) => lifecycle.push(event)),
+    appendWorkerDebugLog: vi.fn(),
+    enqueueWorker,
+    failProcess: vi.fn(),
+    handleBlockedRetryResult: vi.fn(),
+    requestPipeStateSync: vi.fn(async () => {}),
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  await expect(
+    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+  ).resolves.toBeUndefined();
+
+  expect(lifecycle).toContain("blocked-rpc-resume-in-worker:3");
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+  expect(threadState.resumeBlockedOnNextStep).toBe(true);
+  expect(threadState.pipeCanonicalEofReadyOnNextBlock).toBe(true);
+  expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
+  expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
+  expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+});
+
+test("blocked-rpc skips redundant self pipe sync after canonical EOF retry", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const vmPtr = 0x1234;
+  const pipeSlot = 2;
+  const readOfd = 7;
+  let status = kernel.abi_status_pipe_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    status = kernel.abi_status_ok();
+    return 0n;
+  });
+  kernel.thread_blocked_syscall_nr = () => kernel.abi_sys_read();
+  kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => index === 0 ? 3n : 0n;
+  kernel.thread_blocked_fd = () => 3;
+  kernel.thread_blocked_ofd_id = () => readOfd;
+  kernel.thread_a0 = () => 3n;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => fd === 3 ? readOfd : 0;
+  kernel.kernel_ofd_fd_type = (ofdId: number) => ofdId === readOfd ? kernel.abi_fd_type_pipe() : 0;
+  kernel.kernel_ofd_host_fd = (ofdId: number) => ofdId === readOfd ? 6 : 0;
+  kernel.kernel_ofd_ino = (ofdId: number) => ofdId === readOfd ? pipeSlot : 0;
+  kernel.thread_pipe_read_eof_sync_pending = () => 0;
+  kernel.thread_blocked_pipe_read_ready = () => 0;
+  kernel.thread_blocked_pipe_write_ready = () => 0;
+  kernel.thread_blocked_pipe_buffered_len = () => 0;
+  kernel.thread_blocked_pipe_write_open = () => 0;
+  kernel.kernel_pipe_base = () => 0;
+  kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+  const kernelState = {
+    ...makeKernelState(),
+    pipeBase: 0,
+    pipeUsed: 1n << BigInt(pipeSlot),
+  };
+  const view = new DataView(kernel.memory.buffer);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES, 0, true);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES + 4, 0, true);
+  view.setInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, 0, true);
+
+  const handle = {
+    pid: 3,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState,
+    memory: kernel.memory,
+    guestBase: 0,
+    kernelWorkerRequest: vi.fn(),
+    pipeSyncPromise: null,
+    pipeSyncQueued: false,
+    pipeWaiterWakeQueued: false,
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+      pipeCanonicalEofReady: true,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set([readOfd]),
+      forkSharedSyncPromise: null,
+    },
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+
+  const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, threadState);
+  const lifecycle: string[] = [];
+  const debugLog: string[] = [];
+  const requestPipeStateSync = vi.fn((target: ProcessHandle) => (
+    target === handle ? new Promise<void>(() => {}) : Promise.resolve()
+  ));
+  const enqueueWorker = vi.fn();
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[3, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn((_runtimeId, event) => lifecycle.push(event)),
+    appendWorkerDebugLog: vi.fn((_handle, event) => debugLog.push(event)),
+    enqueueWorker,
+    failProcess: vi.fn(),
+    handleBlockedRetryResult: vi.fn(),
+    requestPipeStateSync,
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  const resume = helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const result = await Promise.race([
+    resume.then(() => "resolved" as const),
+    new Promise<"stalled">((resolve) => {
+      timeout = setTimeout(() => resolve("stalled"), 25);
+    }),
+  ]);
+  if (timeout !== undefined) {
+    clearTimeout(timeout);
+  }
+
+  expect(result, [...lifecycle, ...debugLog].join("\n")).toBe("resolved");
+  expect(requestPipeStateSync).not.toHaveBeenCalledWith(handle, expect.anything());
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+  expect(threadState.resumeBlockedOnNextStep).toBe(true);
+  expect(threadState.pipeCanonicalEofReadyOnNextBlock).toBe(true);
+  expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
+  expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
+  expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+});
+
+test("blocked-rpc skips pending fork-shared sync before canonical EOF retry", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const vmPtr = 0x1234;
+  const pipeSlot = 2;
+  const readOfd = 7;
+  let status = kernel.abi_status_pipe_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    status = kernel.abi_status_ok();
+    return 0n;
+  });
+  kernel.thread_blocked_syscall_nr = () => kernel.abi_sys_read();
+  kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => index === 0 ? 3n : 0n;
+  kernel.thread_blocked_fd = () => 3;
+  kernel.thread_blocked_ofd_id = () => readOfd;
+  kernel.thread_a0 = () => 3n;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => fd === 3 ? readOfd : 0;
+  kernel.kernel_ofd_fd_type = (ofdId: number) => ofdId === readOfd ? kernel.abi_fd_type_pipe() : 0;
+  kernel.kernel_ofd_host_fd = (ofdId: number) => ofdId === readOfd ? 6 : 0;
+  kernel.kernel_ofd_ino = (ofdId: number) => ofdId === readOfd ? pipeSlot : 0;
+  kernel.thread_pipe_read_eof_sync_pending = () => 0;
+  kernel.thread_blocked_pipe_read_ready = () => 0;
+  kernel.thread_blocked_pipe_write_ready = () => 0;
+  kernel.thread_blocked_pipe_buffered_len = () => 0;
+  kernel.thread_blocked_pipe_write_open = () => 0;
+  kernel.kernel_pipe_base = () => 0;
+  kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+  const kernelState = {
+    ...makeKernelState(),
+    pipeBase: 0,
+    pipeUsed: 1n << BigInt(pipeSlot),
+  };
+  const view = new DataView(kernel.memory.buffer);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES, 0, true);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES + 4, 0, true);
+  view.setInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, 0, true);
+
+  const forkSharedSyncPromise = new Promise<void>(() => {});
+  const handle = {
+    pid: 3,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState,
+    memory: kernel.memory,
+    guestBase: 0,
+    kernelWorkerRequest: vi.fn(),
+    pipeSyncPromise: null,
+    pipeSyncQueued: false,
+    pipeWaiterWakeQueued: false,
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+      pipeCanonicalEofReady: true,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set([readOfd]),
+      forkSharedSyncPromise,
+    },
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+
+  const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, threadState);
+  const lifecycle: string[] = [];
+  const debugLog: string[] = [];
+  const requestPipeStateSync = vi.fn(async () => {});
+  const enqueueWorker = vi.fn();
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[3, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn((_runtimeId, event) => lifecycle.push(event)),
+    appendWorkerDebugLog: vi.fn((_handle, event) => debugLog.push(event)),
+    enqueueWorker,
+    failProcess: vi.fn(),
+    handleBlockedRetryResult: vi.fn(),
+    requestPipeStateSync,
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  const resume = helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const result = await Promise.race([
+    resume.then(() => "resolved" as const),
+    new Promise<"stalled">((resolve) => {
+      timeout = setTimeout(() => resolve("stalled"), 25);
+    }),
+  ]);
+  if (timeout !== undefined) {
+    clearTimeout(timeout);
+  }
+
+  expect(result, [...lifecycle, ...debugLog].join("\n")).toBe("resolved");
+  expect(lifecycle).toContain("blocked-rpc-skip-fork-sync-canonical-eof:3");
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+  expect(threadState.resumeBlockedOnNextStep).toBe(true);
+  expect(threadState.pipeCanonicalEofReadyOnNextBlock).toBe(true);
+  expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
+  expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
+  expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+});
+
+test("blocked-rpc skips read-only peer pipe sync after canonical EOF retry", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const peerWorker = {} as Worker;
+  const vmPtr = 0x1234;
+  const peerVmPtr = 0x5678;
+  const pipeSlot = 2;
+  const readOfd = 7;
+  const peerReadOfd = 8;
+  let status = kernel.abi_status_pipe_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    status = kernel.abi_status_ok();
+    return 0n;
+  });
+  kernel.thread_blocked_syscall_nr = () => kernel.abi_sys_read();
+  kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => index === 0 ? 3n : 0n;
+  kernel.thread_blocked_fd = () => 3;
+  kernel.thread_blocked_ofd_id = () => readOfd;
+  kernel.thread_a0 = () => 3n;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => fd === 3 ? readOfd : 0;
+  kernel.kernel_ofd_fd_type = (ofdId: number) => (
+    ofdId === readOfd || ofdId === peerReadOfd ? kernel.abi_fd_type_pipe() : 0
+  );
+  kernel.kernel_ofd_host_fd = (ofdId: number) => (
+    ofdId === readOfd || ofdId === peerReadOfd ? 6 : 0
+  );
+  kernel.kernel_ofd_ino = (ofdId: number) => (
+    ofdId === readOfd || ofdId === peerReadOfd ? pipeSlot : 0
+  );
+  kernel.thread_pipe_read_eof_sync_pending = () => 0;
+  kernel.thread_blocked_pipe_read_ready = () => 0;
+  kernel.thread_blocked_pipe_write_ready = () => 0;
+  kernel.thread_blocked_pipe_buffered_len = () => 0;
+  kernel.thread_blocked_pipe_write_open = () => 0;
+  kernel.kernel_pipe_base = () => 0;
+  kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+  const kernelState = {
+    ...makeKernelState(),
+    pipeBase: 0,
+    pipeUsed: 1n << BigInt(pipeSlot),
+  };
+  const view = new DataView(kernel.memory.buffer);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES, 0, true);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES + 4, 0, true);
+  view.setInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, 0, true);
+
+  const kernelShare = {
+    members: new Set<ProcessHandle>(),
+    sharedOfdIds: new Set([readOfd, peerReadOfd]),
+    forkSharedSyncPromise: null,
+  };
+  const handle = {
+    pid: 3,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState,
+    memory: kernel.memory,
+    guestBase: 0,
+    kernelWorkerRequest: vi.fn(),
+    pipeSyncPromise: null,
+    pipeSyncQueued: false,
+    pipeWaiterWakeQueued: false,
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+      pipeCanonicalEofReady: true,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare,
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+  const peerKernel = {
+    ...kernel,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 0 ? peerReadOfd : 0,
+    thread_blocked_ofd_id: () => 0,
+  };
+  const peer = {
+    pid: 5,
+    runtimeId: 1,
+    vmPtr: peerVmPtr,
+    kernel: peerKernel,
+    kernelState,
+    memory: kernel.memory,
+    guestBase: 0,
+    kernelWorkerRequest: vi.fn(),
+    pipeSyncPromise: null,
+    pipeSyncQueued: false,
+    pipeWaiterWakeQueued: false,
+    workers: new Set([peerWorker]),
+    readyWorkers: [],
+    runningWorker: null,
+    blockedWorkers: new Map(),
+    exitInProgress: false,
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare,
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+  handle.kernelShare.members.add(peer);
+
+  const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, threadState);
+  const lifecycle: string[] = [];
+  const debugLog: string[] = [];
+  const requestPipeStateSync = vi.fn((target: ProcessHandle) => (
+    target === peer ? new Promise<void>(() => {}) : Promise.resolve()
+  ));
+  const enqueueWorker = vi.fn();
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[3, handle], [5, peer]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn((_runtimeId, event) => lifecycle.push(event)),
+    appendWorkerDebugLog: vi.fn((_handle, event) => debugLog.push(event)),
+    enqueueWorker,
+    failProcess: vi.fn(),
+    handleBlockedRetryResult: vi.fn(),
+    requestPipeStateSync,
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  const resume = helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const result = await Promise.race([
+    resume.then(() => "resolved" as const),
+    new Promise<"stalled">((resolve) => {
+      timeout = setTimeout(() => resolve("stalled"), 25);
+    }),
+  ]);
+  if (timeout !== undefined) {
+    clearTimeout(timeout);
+  }
+
+  expect(result, [...lifecycle, ...debugLog].join("\n")).toBe("resolved");
+  expect(lifecycle).toContain("blocked-rpc-sync-pipe-skip-canonical-eof-peer:3->5");
+  expect(requestPipeStateSync).not.toHaveBeenCalledWith(peer, false);
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+  expect(threadState.resumeBlockedOnNextStep).toBe(true);
+  expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
+  expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
+  expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+});
+
+test("blocked-rpc skips owner-async peer pipe sync while peer FS continuation owns pipe slots", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const peerWorker = {} as Worker;
+  const vmPtr = 0x1234;
+  const peerVmPtr = 0x5678;
+  const pipeSlot = 2;
+  const readOfd = 7;
+  const peerWriteOfd = 8;
+  let status = kernel.abi_status_pipe_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    status = kernel.abi_status_ok();
+    return 0n;
+  });
+  kernel.thread_blocked_syscall_nr = () => kernel.abi_sys_read();
+  kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => index === 0 ? 3n : 0n;
+  kernel.thread_blocked_fd = () => 3;
+  kernel.thread_blocked_ofd_id = () => readOfd;
+  kernel.thread_a0 = () => 3n;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => fd === 3 ? readOfd : 0;
+  kernel.kernel_ofd_fd_type = (ofdId: number) => (
+    ofdId === readOfd || ofdId === peerWriteOfd ? kernel.abi_fd_type_pipe() : 0
+  );
+  kernel.kernel_ofd_host_fd = (ofdId: number) => (
+    ofdId === readOfd ? 6 : ofdId === peerWriteOfd ? -7 : 0
+  );
+  kernel.kernel_ofd_ino = (ofdId: number) => (
+    ofdId === readOfd || ofdId === peerWriteOfd ? pipeSlot : 0
+  );
+  kernel.thread_pipe_read_eof_sync_pending = () => 0;
+  kernel.thread_blocked_pipe_read_ready = () => 0;
+  kernel.thread_blocked_pipe_write_ready = () => 0;
+  kernel.thread_blocked_pipe_buffered_len = () => 0;
+  kernel.thread_blocked_pipe_write_open = () => 0;
+  kernel.kernel_pipe_base = () => 0;
+  kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+  const kernelState = {
+    ...makeKernelState(),
+    pipeBase: 0,
+    pipeUsed: 1n << BigInt(pipeSlot),
+  };
+  const view = new DataView(kernel.memory.buffer);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES, 0, true);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES + 4, 0, true);
+  view.setInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, 0, true);
+
+  const kernelShare = {
+    members: new Set<ProcessHandle>(),
+    sharedOfdIds: new Set([readOfd, peerWriteOfd]),
+    forkSharedSyncPromise: null,
+  };
+  const handle = {
+    pid: 3,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState,
+    memory: kernel.memory,
+    guestBase: 0,
+    kernelWorkerRequest: vi.fn(),
+    pipeSyncPromise: null,
+    pipeSyncQueued: false,
+    pipeWaiterWakeQueued: false,
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+      pipeCanonicalEofReady: false,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare,
+    pendingChildExitRecords: 1,
+  } as unknown as ProcessHandle;
+  const peerKernel = {
+    ...kernel,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 13 ? peerWriteOfd : 0,
+    thread_blocked_ofd_id: () => 0,
+  };
+  const peer = {
+    pid: 5,
+    runtimeId: 1,
+    vmPtr: peerVmPtr,
+    kernel: peerKernel,
+    kernelState,
+    memory: kernel.memory,
+    guestBase: 0,
+    kernelWorkerRequest: vi.fn(),
+    pipeSyncPromise: null,
+    pipeSyncQueued: false,
+    pipeWaiterWakeQueued: false,
+    workers: new Set([peerWorker]),
+    readyWorkers: [],
+    runningWorker: null,
+    blockedWorkers: new Map([[peerWorker, {
+      vmPtr: peerVmPtr,
+      status: kernel.abi_status_fs(),
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+    }]]),
+    exitInProgress: false,
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare,
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+  handle.kernelShare.members.add(peer);
+
+  const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
+  const peerThreadState = {
+    vmPtr: peerVmPtr,
+    ownerAsyncStatus: kernel.abi_status_fs(),
+    pendingPipeSlotsForNextStep: [{
+      pipeSlot,
+      slot: new Uint8Array(PIPE_SLOT_BYTES),
+    }],
+    resumeBlockedOnNextStep: false,
+  };
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, threadState);
+  threadWorkerStates.set(peerWorker, peerThreadState);
+  const lifecycle: string[] = [];
+  const debugLog: string[] = [];
+  const handleBlockedRetryResult = vi.fn();
+  const requestPipeStateSync = vi.fn((target: ProcessHandle) => (
+    target === peer ? new Promise<void>(() => {}) : Promise.resolve()
+  ));
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[3, handle], [5, peer]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn((_runtimeId, event) => lifecycle.push(event)),
+    appendWorkerDebugLog: vi.fn((_handle, event) => debugLog.push(event)),
+    enqueueWorker: vi.fn(),
+    failProcess: vi.fn(),
+    handleBlockedRetryResult,
+    requestPipeStateSync,
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  const resume = helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const result = await Promise.race([
+    resume.then(() => "resolved" as const),
+    new Promise<"stalled">((resolve) => {
+      timeout = setTimeout(() => resolve("stalled"), 25);
+    }),
+  ]);
+  if (timeout !== undefined) {
+    clearTimeout(timeout);
+  }
+
+  expect(result, [...lifecycle, ...debugLog].join("\n")).toBe("resolved");
+  expect(lifecycle).toContain("blocked-rpc-sync-pipe-skip-owner-async-peer:3->5");
+  expect(requestPipeStateSync).not.toHaveBeenCalledWith(peer, false);
+  expect(requestPipeStateSync).toHaveBeenCalledWith(handle, false);
+  expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
+  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+});
+
+test("blocked-rpc wakes owner-async OK peer that holds a blocked pipe writer", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const peerWorker = {} as Worker;
+  const vmPtr = 0x1234;
+  const peerVmPtr = 0x5678;
+  const pipeSlot = 2;
+  const readOfd = 7;
+  const peerWriteOfd = 8;
+  let status = kernel.abi_status_pipe_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    status = kernel.abi_status_ok();
+    return 0n;
+  });
+  kernel.thread_blocked_syscall_nr = () => kernel.abi_sys_read();
+  kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => index === 0 ? 3n : 0n;
+  kernel.thread_blocked_fd = () => 3;
+  kernel.thread_blocked_ofd_id = () => readOfd;
+  kernel.thread_a0 = () => 3n;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => fd === 3 ? readOfd : 0;
+  kernel.kernel_ofd_fd_type = (ofdId: number) => (
+    ofdId === readOfd || ofdId === peerWriteOfd ? kernel.abi_fd_type_pipe() : 0
+  );
+  kernel.kernel_ofd_host_fd = (ofdId: number) => (
+    ofdId === readOfd ? 6 : ofdId === peerWriteOfd ? -7 : 0
+  );
+  kernel.kernel_ofd_ino = (ofdId: number) => (
+    ofdId === readOfd || ofdId === peerWriteOfd ? pipeSlot : 0
+  );
+  kernel.thread_pipe_read_eof_sync_pending = () => 0;
+  kernel.thread_blocked_pipe_read_ready = () => 0;
+  kernel.thread_blocked_pipe_write_ready = () => 0;
+  kernel.thread_blocked_pipe_buffered_len = () => 0;
+  kernel.thread_blocked_pipe_write_open = () => 0;
+  kernel.kernel_pipe_base = () => 0;
+  kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+  const kernelState = {
+    ...makeKernelState(),
+    pipeBase: 0,
+    pipeUsed: 1n << BigInt(pipeSlot),
+  };
+  const view = new DataView(kernel.memory.buffer);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES, 0, true);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES + 4, 0, true);
+  view.setInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, 0, true);
+
+  const kernelShare = {
+    members: new Set<ProcessHandle>(),
+    sharedOfdIds: new Set([readOfd, peerWriteOfd]),
+    forkSharedSyncPromise: null,
+  };
+  const handle = {
+    pid: 3,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState,
+    memory: kernel.memory,
+    guestBase: 0,
+    kernelWorkerRequest: vi.fn(),
+    pipeSyncPromise: null,
+    pipeSyncQueued: false,
+    pipeWaiterWakeQueued: false,
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+      pipeCanonicalEofReady: false,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare,
+    pendingChildExitRecords: 1,
+  } as unknown as ProcessHandle;
+  const peerKernel = {
+    ...kernel,
+    thread_status: () => kernel.abi_status_ok(),
+    thread_process_ptr: () => 0x120000,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 13 ? peerWriteOfd : 0,
+    thread_blocked_ofd_id: () => 0,
+  };
+  const peer = {
+    pid: 5,
+    runtimeId: 1,
+    vmPtr: peerVmPtr,
+    kernel: peerKernel,
+    kernelState,
+    memory: kernel.memory,
+    guestBase: 0,
+    kernelWorkerRequest: vi.fn(),
+    pipeSyncPromise: null,
+    pipeSyncQueued: false,
+    pipeWaiterWakeQueued: false,
+    workers: new Set([peerWorker]),
+    readyWorkers: [],
+    runningWorker: null,
+    blockedWorkers: new Map(),
+    exitInProgress: false,
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare,
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+  handle.kernelShare.members.add(peer);
+
+  const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
+  const peerThreadState = {
+    vmPtr: peerVmPtr,
+    initialized: true,
+    waitingInWorkerStatus: null,
+    ownerAsyncStatus: kernel.abi_status_ok(),
+    runningGeneration: 4,
+    pendingGuestMemoryWrites: [],
+    pendingPipeSlotsForNextStep: [],
+    resumeBlockedOnNextStep: false,
+  };
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, threadState);
+  threadWorkerStates.set(peerWorker, peerThreadState);
+  const lifecycle: string[] = [];
+  const debugLog: string[] = [];
+  const handleBlockedRetryResult = vi.fn();
+  const enqueueWorker = vi.fn();
+  const requestPipeStateSync = vi.fn(async () => {});
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[3, handle], [5, peer]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn((_runtimeId, event) => lifecycle.push(event)),
+    appendWorkerDebugLog: vi.fn((_handle, event) => debugLog.push(event)),
+    enqueueWorker,
+    failProcess: vi.fn(),
+    handleBlockedRetryResult,
+    requestPipeStateSync,
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  await helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+
+  expect(lifecycle).toContain("blocked-rpc-recover-owner-async-ok-peer:3->5");
+  expect(peerThreadState.ownerAsyncStatus).toBeNull();
+  expect(peerThreadState.runningGeneration).toBeNull();
+  expect(enqueueWorker).toHaveBeenCalledWith(peer, peerWorker);
+  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  expect(requestPipeStateSync).not.toHaveBeenCalledWith(peer, false);
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+});
+
+test("blocked-rpc canonical EOF retry clears stale writer in resume snapshot", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const vmPtr = 0x1234;
+  const pipeSlot = 2;
+  const readOfd = 7;
+  const staleWriteOfd = 8;
+  let status = kernel.abi_status_pipe_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    status = kernel.abi_status_ok();
+    return 0n;
+  });
+  kernel.thread_blocked_syscall_nr = () => kernel.abi_sys_read();
+  kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => index === 0 ? 3n : 0n;
+  kernel.thread_blocked_fd = () => 3;
+  kernel.thread_blocked_ofd_id = () => readOfd;
+  kernel.thread_a0 = () => 3n;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => fd === 3 ? readOfd : 0;
+  kernel.kernel_ofd_fd_type = (ofdId: number) => (
+    ofdId === readOfd || ofdId === staleWriteOfd ? kernel.abi_fd_type_pipe() : 0
+  );
+  kernel.kernel_ofd_host_fd = (ofdId: number) => {
+    if (ofdId === readOfd) {
+      return 6;
+    }
+    if (ofdId === staleWriteOfd) {
+      return -7;
+    }
+    return 0;
+  };
+  kernel.kernel_ofd_ino = (ofdId: number) => (
+    ofdId === readOfd || ofdId === staleWriteOfd ? pipeSlot : 0
+  );
+  kernel.thread_pipe_read_eof_sync_pending = () => 0;
+  kernel.thread_blocked_pipe_read_ready = () => 0;
+  kernel.thread_blocked_pipe_write_ready = () => 0;
+  kernel.thread_blocked_pipe_buffered_len = () => 0;
+  kernel.thread_blocked_pipe_write_open = () => 1;
+  kernel.kernel_pipe_base = () => 0;
+  kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+  const kernelState = {
+    ...makeKernelState(),
+    pipeBase: 0,
+    pipeUsed: 1n << BigInt(pipeSlot),
+  };
+  const view = new DataView(kernel.memory.buffer);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES, 0, true);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES + 4, 0, true);
+  view.setInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, 1, true);
+
+  const handle = {
+    pid: 3,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState,
+    memory: kernel.memory,
+    guestBase: 0,
+    kernelWorkerRequest: vi.fn(),
+    pipeSyncPromise: null,
+    pipeSyncQueued: false,
+    pipeWaiterWakeQueued: false,
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+      pipeCanonicalEofReady: true,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set([readOfd, staleWriteOfd]),
+      forkSharedSyncPromise: null,
+    },
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+
+  const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, threadState);
+  const lifecycle: string[] = [];
+  const debugLog: string[] = [];
+  const requestPipeStateSync = vi.fn((target: ProcessHandle) => (
+    target === handle ? new Promise<void>(() => {}) : Promise.resolve()
+  ));
+  const enqueueWorker = vi.fn();
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[3, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn((_runtimeId, event) => lifecycle.push(event)),
+    appendWorkerDebugLog: vi.fn((_handle, event) => debugLog.push(event)),
+    enqueueWorker,
+    failProcess: vi.fn(),
+    handleBlockedRetryResult: vi.fn(),
+    requestPipeStateSync,
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  const resume = helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const result = await Promise.race([
+    resume.then(() => "resolved" as const),
+    new Promise<"stalled">((resolve) => {
+      timeout = setTimeout(() => resolve("stalled"), 25);
+    }),
+  ]);
+  if (timeout !== undefined) {
+    clearTimeout(timeout);
+  }
+
+  const resumeSlot = threadState.pendingPipeSlotsForNextStep[0] as
+    | { pipeSlot: number; slot: Uint8Array }
+    | undefined;
+  expect(result, [...lifecycle, ...debugLog].join("\n")).toBe("resolved");
+  expect(requestPipeStateSync).not.toHaveBeenCalledWith(handle, expect.anything());
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+  expect(threadState.resumeBlockedOnNextStep).toBe(true);
+  expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
+  expect(resumeSlot?.pipeSlot).toBe(pipeSlot);
+  expect(view.getInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, true)).toBe(0);
+  expect(new DataView(
+    resumeSlot!.slot.buffer,
+    resumeSlot!.slot.byteOffset,
+    resumeSlot!.slot.byteLength,
+  ).getInt32(PIPE_WRITE_OPEN_OFFSET, true)).toBe(0);
+  expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+});
+
 test("blocked-rpc resumes non-poll pipe read EOF from canonical closed pipe state", async () => {
   const kernel = makeKernel();
   const worker = {} as Worker;
@@ -463,6 +2698,274 @@ test("blocked-rpc resumes non-poll pipe read EOF from canonical closed pipe stat
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+});
+
+test("blocked-rpc resumes blocking open-empty pipe read while shared writer remains visible", async () => {
+  for (const eofPending of [0, 1]) {
+    for (const blockedWriteOpen of [0, 1]) {
+      const kernel = makeKernel();
+      const worker = {} as Worker;
+      const vmPtr = 0x1234;
+      const peerVmPtr = 0x5678;
+      const pipeSlot = 1;
+      const readOfd = 26;
+      const writeOfd = 27;
+      let status = kernel.abi_status_pipe_wait();
+      kernel.thread_status = () => status;
+      kernel.thread_resume_blocked_syscall = vi.fn(() => {
+        status = kernel.abi_status_ok();
+        return 0n;
+      });
+      kernel.thread_blocked_syscall_nr = () => kernel.abi_sys_read();
+      kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => index === 0 ? 12n : 0n;
+      kernel.thread_blocked_fd = () => 12;
+      kernel.thread_blocked_ofd_id = () => readOfd;
+      kernel.thread_a0 = () => 12n;
+      kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => fd === 12 ? readOfd : 0;
+      kernel.kernel_ofd_fd_type = (ofdId: number) => (
+        ofdId === readOfd || ofdId === writeOfd ? kernel.abi_fd_type_pipe() : 0
+      );
+      kernel.kernel_ofd_host_fd = (ofdId: number) => {
+        if (ofdId === readOfd) {
+          return 6;
+        }
+        if (ofdId === writeOfd) {
+          return -7;
+        }
+        return 0;
+      };
+      kernel.kernel_ofd_ino = (ofdId: number) => (
+        ofdId === readOfd || ofdId === writeOfd ? pipeSlot : 0
+      );
+      kernel.thread_pipe_read_eof_sync_pending = () => eofPending;
+      kernel.thread_blocked_pipe_read_ready = () => 0;
+      kernel.thread_blocked_pipe_write_ready = () => 0;
+      kernel.thread_blocked_pipe_buffered_len = () => 0;
+      kernel.thread_blocked_pipe_write_open = () => blockedWriteOpen;
+      kernel.kernel_pipe_base = () => 0;
+      kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+      const kernelState = {
+        ...makeKernelState(),
+        pipeBase: 0,
+        pipeUsed: 1n << BigInt(pipeSlot),
+      };
+      const view = new DataView(kernel.memory.buffer);
+      const pipeOffset = pipeSlot * PIPE_SLOT_BYTES;
+      view.setUint32(pipeOffset, 0, true);
+      view.setUint32(pipeOffset + 4, 0, true);
+      view.setInt32(pipeOffset + PIPE_READ_OPEN_OFFSET, 1, true);
+      view.setInt32(pipeOffset + PIPE_WRITE_OPEN_OFFSET, 1, true);
+
+      const kernelShare = {
+        members: new Set<ProcessHandle>(),
+        sharedOfdIds: new Set([readOfd, writeOfd]),
+        forkSharedSyncPromise: null,
+      };
+      const handle = {
+        pid: 1,
+        runtimeId: 1,
+        vmPtr,
+        kernel,
+        kernelState,
+        memory: kernel.memory,
+        workers: new Set([worker]),
+        blockedWorkers: new Map([[worker, {
+          vmPtr,
+          status: kernel.abi_status_pipe_wait(),
+          retryTimer: null,
+          timeoutExpired: false,
+          timeoutDeadlineMs: null,
+          sleepDeadlineTicks: null,
+          rpcPending: false,
+        }]]),
+        networkClosedFds: new Set(),
+        networkConnections: new Map(),
+        kernelShare,
+        pendingChildExitRecords: 0,
+      } as unknown as ProcessHandle;
+      const peerKernel = {
+        ...kernel,
+        process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 13 ? writeOfd : 0,
+      };
+      const peer = {
+        pid: 2,
+        parentPid: 1,
+        vmPtr: peerVmPtr,
+        kernel: peerKernel,
+        kernelState,
+        memory: kernel.memory,
+        workers: new Set(),
+        exitInProgress: false,
+        kernelShare,
+      } as unknown as ProcessHandle;
+      handle.kernelShare.members.add(handle);
+      handle.kernelShare.members.add(peer);
+
+      const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
+      const threadWorkerStates = new WeakMap<Worker, object>();
+      threadWorkerStates.set(worker, threadState);
+      const handleBlockedRetryResult = vi.fn();
+      const enqueueWorker = vi.fn();
+      const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+        processHandles: new Map([[1, handle], [2, peer]]),
+        threadWorkerStates: threadWorkerStates as never,
+        appendRuntimeLifecycleEvent: vi.fn(),
+        appendWorkerDebugLog: vi.fn(),
+        enqueueWorker,
+        failProcess: vi.fn(),
+        handleBlockedRetryResult,
+        requestPipeStateSync: vi.fn(async () => {}),
+        syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+        syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+      });
+
+      await expect(
+        helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+      ).resolves.toBeUndefined();
+
+      expect(view.getInt32(pipeOffset + PIPE_WRITE_OPEN_OFFSET, true)).toBe(1);
+      expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+      expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+      expect(threadState.resumeBlockedOnNextStep).toBe(true);
+      expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
+      expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
+      expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+    }
+  }
+});
+
+test("blocked-rpc defers blocking open-empty pipe read while active child may still hold writer", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const childWorker = {} as Worker;
+  const vmPtr = 0x1234;
+  const childVmPtr = 0x5678;
+  const pipeSlot = 1;
+  const readOfd = 26;
+  const writeOfd = 27;
+  let status = kernel.abi_status_pipe_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    status = kernel.abi_status_ok();
+    return 0n;
+  });
+  kernel.thread_blocked_syscall_nr = () => kernel.abi_sys_read();
+  kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => index === 0 ? 12n : 0n;
+  kernel.thread_blocked_fd = () => 12;
+  kernel.thread_blocked_ofd_id = () => readOfd;
+  kernel.thread_a0 = () => 12n;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => fd === 12 ? readOfd : 0;
+  kernel.kernel_ofd_fd_type = (ofdId: number) => (
+    ofdId === readOfd || ofdId === writeOfd ? kernel.abi_fd_type_pipe() : 0
+  );
+  kernel.kernel_ofd_host_fd = (ofdId: number) => {
+    if (ofdId === readOfd) {
+      return 6;
+    }
+    if (ofdId === writeOfd) {
+      return -7;
+    }
+    return 0;
+  };
+  kernel.kernel_ofd_ino = (ofdId: number) => (
+    ofdId === readOfd || ofdId === writeOfd ? pipeSlot : 0
+  );
+  kernel.thread_pipe_read_eof_sync_pending = () => 0;
+  kernel.thread_blocked_pipe_read_ready = () => 0;
+  kernel.thread_blocked_pipe_write_ready = () => 0;
+  kernel.thread_blocked_pipe_buffered_len = () => 0;
+  kernel.thread_blocked_pipe_write_open = () => 1;
+  kernel.kernel_pipe_base = () => 0;
+  kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+  const kernelState = {
+    ...makeKernelState(),
+    pipeBase: 0,
+    pipeUsed: 1n << BigInt(pipeSlot),
+  };
+  const view = new DataView(kernel.memory.buffer);
+  const pipeOffset = pipeSlot * PIPE_SLOT_BYTES;
+  view.setUint32(pipeOffset, 0, true);
+  view.setUint32(pipeOffset + 4, 0, true);
+  view.setInt32(pipeOffset + PIPE_READ_OPEN_OFFSET, 1, true);
+  view.setInt32(pipeOffset + PIPE_WRITE_OPEN_OFFSET, 1, true);
+
+  const kernelShare = {
+    members: new Set<ProcessHandle>(),
+    sharedOfdIds: new Set([readOfd, writeOfd]),
+    forkSharedSyncPromise: null,
+  };
+  const handle = {
+    pid: 1,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState,
+    memory: kernel.memory,
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare,
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+  const childKernel = {
+    ...kernel,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 13 ? writeOfd : 0,
+  };
+  const child = {
+    pid: 2,
+    parentPid: 1,
+    vmPtr: childVmPtr,
+    kernel: childKernel,
+    kernelState,
+    memory: kernel.memory,
+    workers: new Set([childWorker]),
+    readyWorkers: [childWorker],
+    runningWorker: null,
+    blockedWorkers: new Map(),
+    exitInProgress: false,
+    kernelShare,
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+  handle.kernelShare.members.add(child);
+
+  const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, threadState);
+  const handleBlockedRetryResult = vi.fn();
+  const enqueueWorker = vi.fn();
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[1, handle], [2, child]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    appendWorkerDebugLog: vi.fn(),
+    enqueueWorker,
+    failProcess: vi.fn(),
+    handleBlockedRetryResult,
+    requestPipeStateSync: vi.fn(async () => {}),
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  await expect(
+    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+  ).resolves.toBeUndefined();
+
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  expect(threadState.resumeBlockedOnNextStep).toBe(false);
+  expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(0);
+  expect(enqueueWorker).not.toHaveBeenCalled();
 });
 
 test("blocked-rpc resumes canonical pipe EOF when blocked syscall export returns numeric zero", async () => {
@@ -673,7 +3176,7 @@ test("blocked-rpc resumes closed stdin EOF through fd-table fallback without pin
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });
 
-test("blocked-rpc clears stale pipe writer count before EOF-pending resume", async () => {
+test("blocked-rpc clears stale pipe writer count before EOF-pending resume when no writer OFD is visible", async () => {
   const kernel = makeKernel();
   const worker = {} as Worker;
   const vmPtr = 0x1234;
@@ -694,9 +3197,6 @@ test("blocked-rpc clears stale pipe writer count before EOF-pending resume", asy
   kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => {
     if (fd === 12) {
       return readOfd;
-    }
-    if (fd === 13) {
-      return writeOfd;
     }
     return 0;
   };
@@ -755,7 +3255,7 @@ test("blocked-rpc clears stale pipe writer count before EOF-pending resume", asy
     networkConnections: new Map(),
     kernelShare: {
       members: new Set(),
-      sharedOfdIds: new Set([readOfd, writeOfd]),
+      sharedOfdIds: new Set([readOfd]),
       forkSharedSyncPromise: null,
     },
     pendingChildExitRecords: 0,
@@ -793,7 +3293,7 @@ test("blocked-rpc clears stale pipe writer count before EOF-pending resume", asy
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });
 
-test("blocked-rpc does not resume pipe EOF while same process still has a write fd", async () => {
+test("blocked-rpc treats EOF-pending nonblocking open-empty pipe read as canonical EOF", async () => {
   const kernel = makeKernel();
   const worker = {} as Worker;
   const vmPtr = 0x1234;
@@ -823,6 +3323,7 @@ test("blocked-rpc does not resume pipe EOF while same process still has a write 
   kernel.kernel_ofd_fd_type = (ofdId: number) => (
     ofdId === readOfd || ofdId === writeOfd ? kernel.abi_fd_type_pipe() : 0
   );
+  kernel.kernel_ofd_status_flags = (ofdId: number) => ofdId === readOfd ? kernel.abi_o_nonblock() : 0;
   kernel.kernel_ofd_host_fd = (ofdId: number) => {
     if (ofdId === readOfd) {
       return 6;
@@ -836,7 +3337,7 @@ test("blocked-rpc does not resume pipe EOF while same process still has a write 
     ofdId === readOfd || ofdId === writeOfd ? pipeSlot : 0
   );
   kernel.thread_pipe_read_eof_sync_pending = () => 1;
-  kernel.thread_resume_pipe_read_open_empty = () => 1;
+  kernel.thread_resume_pipe_read_open_empty = vi.fn(() => 1);
   kernel.thread_blocked_pipe_read_ready = () => 0;
   kernel.thread_blocked_pipe_write_ready = () => 0;
   kernel.thread_blocked_pipe_buffered_len = () => 0;
@@ -903,9 +3404,126 @@ test("blocked-rpc does not resume pipe EOF while same process still has a write 
     helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
-  expect(view.getInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, true)).toBe(1);
+  expect(view.getInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, true)).toBe(0);
+  expect(kernel.thread_resume_pipe_read_open_empty).not.toHaveBeenCalled();
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+  expect(threadState.resumeBlockedOnNextStep).toBe(true);
+  expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
+  expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
+  expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+});
+
+test("blocked-rpc resumes nonblocking open-empty pipe read in thread worker", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const vmPtr = 0x1234;
+  const pipeSlot = 2;
+  const readOfd = 20;
+  const writeOfd = 21;
+  let status = kernel.abi_status_pipe_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    status = kernel.abi_status_ok();
+    return BigInt(-11);
+  });
+  kernel.thread_blocked_syscall_nr = () => kernel.abi_sys_read();
+  kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => index === 0 ? 10n : 0n;
+  kernel.thread_blocked_fd = () => 10;
+  kernel.thread_blocked_ofd_id = () => readOfd;
+  kernel.thread_a0 = () => BigInt(-11);
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => {
+    if (fd === 10) {
+      return readOfd;
+    }
+    if (fd === 11) {
+      return writeOfd;
+    }
+    return 0;
+  };
+  kernel.kernel_ofd_fd_type = (ofdId: number) => (
+    ofdId === readOfd || ofdId === writeOfd ? kernel.abi_fd_type_pipe() : 0
+  );
+  kernel.kernel_ofd_status_flags = (ofdId: number) => ofdId === readOfd ? kernel.abi_o_nonblock() : 0;
+  kernel.kernel_ofd_ino = (ofdId: number) => (
+    ofdId === readOfd || ofdId === writeOfd ? pipeSlot : 0
+  );
+  kernel.thread_pipe_read_eof_sync_pending = () => 1;
+  kernel.thread_resume_pipe_read_open_empty = vi.fn(() => 1);
+  kernel.thread_blocked_pipe_read_ready = () => 0;
+  kernel.thread_blocked_pipe_write_ready = () => 0;
+  kernel.thread_blocked_pipe_buffered_len = () => 0;
+  kernel.thread_blocked_pipe_write_open = () => 1;
+  kernel.kernel_pipe_base = () => 0;
+  kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+  const kernelState = {
+    ...makeKernelState(),
+    pipeBase: 0,
+    pipeUsed: 1n << BigInt(pipeSlot),
+  };
+  const view = new DataView(kernel.memory.buffer);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES, 0, true);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES + 4, 0, true);
+  view.setInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, 1, true);
+
+  const handle = {
+    pid: 1,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState,
+    memory: kernel.memory,
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set([readOfd, writeOfd]),
+      forkSharedSyncPromise: null,
+    },
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+
+  const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, threadState);
+  const handleBlockedRetryResult = vi.fn();
+  const enqueueWorker = vi.fn();
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[1, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    appendWorkerDebugLog: vi.fn(),
+    enqueueWorker,
+    failProcess: vi.fn(),
+    handleBlockedRetryResult,
+    requestPipeStateSync: vi.fn(async () => {}),
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  await expect(
+    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+  ).resolves.toBeUndefined();
+
+  expect(kernel.thread_resume_pipe_read_open_empty).not.toHaveBeenCalled();
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+  expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+  expect(threadState.resumeBlockedOnNextStep).toBe(true);
+  expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
+  expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
+  expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });
 
 test("blocked-rpc restores blocked worker local pipe endpoints when canonical slot was already closed", async () => {
@@ -1608,6 +4226,313 @@ test("blocked-rpc resumes pselect pipe HUP through blocked fd fallback", async (
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(vmPtr);
+  expect(handleBlockedRetryResult).toHaveBeenCalledWith(
+    handle,
+    worker,
+    vmPtr,
+    kernel.abi_status_ok(),
+  );
+});
+
+test("blocked-rpc resumes pselect pipe HUP when a stale local writer remains visible", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const vmPtr = 0x1234;
+  const pselect6 = 72n;
+  const pipeSlot = 3;
+  const socketOfd = 18;
+  const readOfd = 20;
+  const writeOfd = 21;
+  const readfdsPtr = 0x20n;
+  let status = kernel.abi_status_pipe_wait();
+  kernel.abi_sys_pselect6 = () => pselect6;
+  kernel.thread_status = () => status;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    status = kernel.abi_status_ok();
+    return 1n;
+  });
+  kernel.thread_blocked_syscall_nr = () => pselect6;
+  kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => {
+    switch (index) {
+      case 0:
+        return 6n;
+      case 1:
+        return readfdsPtr;
+      default:
+        return 0n;
+    }
+  };
+  kernel.thread_a7 = () => pselect6;
+  kernel.thread_a0 = () => 5n;
+  kernel.thread_blocked_fd = () => 0;
+  kernel.thread_blocked_ofd_id = () => 0;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => {
+    switch (fd) {
+      case 3:
+        return socketOfd;
+      case 4:
+        return readOfd;
+      case 5:
+        return writeOfd;
+      default:
+        return 0;
+    }
+  };
+  kernel.kernel_ofd_fd_type = (ofdId: number) => {
+    if (ofdId === readOfd || ofdId === writeOfd) {
+      return kernel.abi_fd_type_pipe();
+    }
+    return ofdId === socketOfd ? 8 : 0;
+  };
+  kernel.kernel_ofd_host_fd = (ofdId: number) => {
+    if (ofdId === readOfd) {
+      return 8;
+    }
+    if (ofdId === writeOfd) {
+      return -9;
+    }
+    return ofdId === socketOfd ? -1 : 0;
+  };
+  kernel.kernel_ofd_ino = (ofdId: number) => (
+    ofdId === readOfd || ofdId === writeOfd ? pipeSlot : 0
+  );
+  kernel.thread_poll_wait_pipe_slots_mask = () => 0n;
+  kernel.thread_poll_wait_first_pipe_revents = () => 0x104;
+  kernel.thread_poll_wait_ready_count = () => 0;
+  kernel.thread_poll_wait_has_socket = () => 0;
+  kernel.thread_blocked_pipe_buffered_len = () => 0;
+  kernel.thread_blocked_pipe_write_open = () => 0;
+  kernel.thread_blocked_pipe_read_ready = () => 0;
+  kernel.thread_blocked_pipe_write_ready = () => 0;
+  kernel.thread_poll_hup_sync_pending = () => 0;
+  kernel.thread_pipe_read_eof_sync_pending = () => 0;
+  kernel.kernel_pipe_base = () => 0;
+  kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+  const kernelState = {
+    ...makeKernelState(),
+    pipeBase: 0,
+    pipeUsed: 1n << BigInt(pipeSlot),
+  };
+  const view = new DataView(kernel.memory.buffer);
+  view.setBigUint64(Number(readfdsPtr), (1n << 3n) | (1n << 4n), true);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES, 0, true);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES + 4, 0, true);
+  view.setInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_READ_OPEN_OFFSET, 1, true);
+  view.setInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, 1, true);
+
+  const handle = {
+    pid: 5,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState,
+    memory: kernel.memory,
+    guestBase: 0,
+    kernelWorkerRequest: {},
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare: {
+      members: new Set(),
+      forkSharedSyncPromise: null,
+    },
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+
+  const threadState = { pendingGuestMemoryWrites: [] };
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, threadState);
+  const handleBlockedRetryResult = vi.fn();
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[5, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    appendWorkerDebugLog: vi.fn(),
+    enqueueWorker: vi.fn(),
+    failProcess: vi.fn((_handle, error) => {
+      throw error;
+    }),
+    handleBlockedRetryResult,
+    requestPipeStateSync: vi.fn(async () => {}),
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  await expect(
+    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+  ).resolves.toBeUndefined();
+
+  expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(vmPtr);
+  expect(handleBlockedRetryResult).toHaveBeenCalledWith(
+    handle,
+    worker,
+    vmPtr,
+    kernel.abi_status_ok(),
+  );
+});
+
+test("blocked-rpc clears stale local writer before mixed socket pipe pselect retry", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const vmPtr = 0x1234;
+  const pselect6 = 72n;
+  const pipeSlot = 3;
+  const socketOfd = 18;
+  const readOfd = 20;
+  const writeOfd = 21;
+  const readfdsPtr = 0x20n;
+  let status = kernel.abi_status_pipe_wait();
+  kernel.abi_sys_pselect6 = () => pselect6;
+  kernel.thread_status = () => status;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    const writeOpen = new DataView(kernel.memory.buffer).getInt32(
+      pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET,
+      true,
+    );
+    if (writeOpen > 0) {
+      return 0n;
+    }
+    new Uint8Array(kernel.memory.buffer).set([0x10, 0, 0, 0, 0, 0, 0, 0], Number(readfdsPtr));
+    status = kernel.abi_status_ok();
+    return 1n;
+  });
+  kernel.thread_blocked_syscall_nr = () => pselect6;
+  kernel.thread_blocked_syscall_arg = (_vmPtr: number, index: number) => {
+    switch (index) {
+      case 0:
+        return 6n;
+      case 1:
+        return readfdsPtr;
+      default:
+        return 0n;
+    }
+  };
+  kernel.thread_a7 = () => pselect6;
+  kernel.thread_a0 = () => 5n;
+  kernel.thread_blocked_fd = () => 0;
+  kernel.thread_blocked_ofd_id = () => 0;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => {
+    switch (fd) {
+      case 3:
+        return socketOfd;
+      case 4:
+        return readOfd;
+      case 5:
+        return writeOfd;
+      default:
+        return 0;
+    }
+  };
+  kernel.kernel_ofd_fd_type = (ofdId: number) => {
+    if (ofdId === readOfd || ofdId === writeOfd) {
+      return kernel.abi_fd_type_pipe();
+    }
+    return ofdId === socketOfd ? 8 : 0;
+  };
+  kernel.kernel_ofd_host_fd = (ofdId: number) => {
+    if (ofdId === readOfd) {
+      return 8;
+    }
+    if (ofdId === writeOfd) {
+      return -9;
+    }
+    return ofdId === socketOfd ? -1 : 0;
+  };
+  kernel.kernel_ofd_ino = (ofdId: number) => (
+    ofdId === readOfd || ofdId === writeOfd ? pipeSlot : 0
+  );
+  kernel.thread_poll_wait_pipe_slots_mask = () => 0n;
+  kernel.thread_poll_wait_first_pipe_revents = () => 0x104;
+  kernel.thread_poll_wait_ready_count = () => 0;
+  kernel.thread_poll_wait_has_socket = () => 1;
+  kernel.thread_blocked_pipe_buffered_len = () => 0;
+  kernel.thread_blocked_pipe_write_open = () => 0;
+  kernel.thread_blocked_pipe_read_ready = () => 0;
+  kernel.thread_blocked_pipe_write_ready = () => 0;
+  kernel.thread_poll_hup_sync_pending = () => 0;
+  kernel.thread_pipe_read_eof_sync_pending = () => 0;
+  kernel.kernel_pipe_base = () => 0;
+  kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
+
+  const kernelState = {
+    ...makeKernelState(),
+    pipeBase: 0,
+    pipeUsed: 1n << BigInt(pipeSlot),
+  };
+  const view = new DataView(kernel.memory.buffer);
+  view.setBigUint64(Number(readfdsPtr), (1n << 3n) | (1n << 4n), true);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES, 0, true);
+  view.setUint32(pipeSlot * PIPE_SLOT_BYTES + 4, 0, true);
+  view.setInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_READ_OPEN_OFFSET, 1, true);
+  view.setInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, 1, true);
+
+  const handle = {
+    pid: 5,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState,
+    memory: kernel.memory,
+    guestBase: 0,
+    kernelWorkerRequest: {},
+    workers: new Set([worker]),
+    blockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      retryTimer: null,
+      timeoutExpired: false,
+      timeoutDeadlineMs: null,
+      sleepDeadlineTicks: null,
+      rpcPending: false,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare: {
+      members: new Set(),
+      forkSharedSyncPromise: null,
+    },
+    pendingChildExitRecords: 0,
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+
+  const threadState = { pendingGuestMemoryWrites: [] };
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, threadState);
+  const handleBlockedRetryResult = vi.fn();
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[5, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    appendWorkerDebugLog: vi.fn(),
+    enqueueWorker: vi.fn(),
+    failProcess: vi.fn((_handle, error) => {
+      throw error;
+    }),
+    handleBlockedRetryResult,
+    requestPipeStateSync: vi.fn(async () => {}),
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  await expect(
+    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+  ).resolves.toBeUndefined();
+
+  expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(vmPtr);
+  expect(view.getInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, true)).toBe(0);
+  expect(threadState.pendingGuestMemoryWrites.map((write) => write.guestPtr)).toEqual([Number(readfdsPtr)]);
+  expect([...threadState.pendingGuestMemoryWrites[0].bytes]).toEqual([0x10, 0, 0, 0, 0, 0, 0, 0]);
   expect(handleBlockedRetryResult).toHaveBeenCalledWith(
     handle,
     worker,

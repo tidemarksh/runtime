@@ -81,6 +81,12 @@ function makeHandle(
   } as unknown as ProcessHandle;
 }
 
+async function flushMicrotasks(count = 10): Promise<void> {
+  for (let index = 0; index < count; index += 1) {
+    await Promise.resolve();
+  }
+}
+
 test("recordExitOnParent syncs and drains child output before waking the parent", async () => {
   const order: string[] = [];
   const parent = makeHandle({
@@ -137,7 +143,6 @@ test("recordExitOnParent syncs and drains child output before waking the parent"
   await helpers.completeProcessExit(child, 0, 0);
 
   expect(order).toEqual([
-    "kick:1",
     "pipe-sync:1:wake",
     "drain:1",
     "pipe-sync:3:wake",
@@ -148,12 +153,474 @@ test("recordExitOnParent syncs and drains child output before waking the parent"
     "record:1",
     "pipe-sync:1:sync",
     "pipe-sync:1:sync",
+    "kick:1",
     "release:3",
     "destroy:3",
     "pipe-sync:1:wake",
     "drain:1",
     "kick:1",
   ]);
+});
+
+test("completeProcessExit waits for child pipe sync before recording parent exit", async () => {
+  const order: string[] = [];
+  let releaseChildPipeSync!: () => void;
+  const childPipeSync = new Promise<void>((resolve) => {
+    releaseChildPipeSync = resolve;
+  });
+  const parent = makeHandle({
+    pid: 1,
+    parentPid: null,
+    kernelWorkerRequest: vi.fn(async () => ({ type: "pipe-state-synced" } as never)),
+  });
+  const child = makeHandle({
+    pid: 3,
+    parentPid: 1,
+    stdioOwner: parent,
+    kernel: {
+      ...makeHandle().kernel,
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 1 ? 4 : fd === 2 ? 5 : 0,
+      kernel_ofd_fd_type: (ofdId: number) => ofdId === 4 || ofdId === 5 ? 6 : 0,
+      abi_fd_type_pipe: () => 6,
+      kernel_ofd_ino: (ofdId: number) => ofdId === 4 ? 9 : ofdId === 5 ? 10 : 0,
+    } as never,
+  });
+  const processHandles = new Map<number, ProcessHandle>([
+    [1, parent],
+    [3, child],
+  ]);
+
+  const helpers = createWorkerExitHelpers({
+    processHandles,
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      order.push(event);
+    },
+    appendWorkerDebugLog(handle) {
+      order.push(`debug:${handle.pid}`);
+    },
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=1,pid=3",
+    drainHiddenProcessOutput(handle) {
+      order.push(`hidden-drain:${handle.pid}`);
+      return true;
+    },
+    drainProcessOutput(handle) {
+      order.push(`drain:${handle.pid}`);
+      return true;
+    },
+    destroyProcessHandle(handle) {
+      order.push(`destroy:${handle.pid}`);
+      processHandles.delete(handle.pid);
+    },
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers(handle) {
+      order.push(`kick:${handle.pid}`);
+    },
+    publishRuntimeFsState: () => 1,
+    recordChildExitViaKernelWorker: async (parentHandle) => {
+      order.push(`record:${parentHandle.pid}`);
+    },
+    replaceRuntimeFsSnapshot: () => {},
+    releaseSharedHostStdio: async (handle) => {
+      order.push(`release:${handle.pid}`);
+    },
+    requestPipeStateSync: async (handle, wakeWaiters = false) => {
+      order.push(`pipe-sync:${handle.pid}:${wakeWaiters ? "wake" : "sync"}`);
+      if (handle === child && wakeWaiters) {
+        await childPipeSync;
+      }
+    },
+    snapshotProcessFs: () => [],
+    unregisterProcessWithKernelWorker: async (handle) => {
+      order.push(`unregister:${handle.pid}`);
+    },
+  });
+
+  const exitPromise = helpers.completeProcessExit(child, 0, 0);
+
+  await flushMicrotasks(100);
+
+  const beforeRelease = order.join("\n");
+  expect(beforeRelease).not.toContain("exit-parent-prepublish-done:1:3:pending=0:records=3/0");
+  expect(beforeRelease).toContain("pipe-sync:3:wake");
+  expect(beforeRelease).not.toContain("unregister:3");
+  expect(beforeRelease).not.toContain("record:1");
+
+  releaseChildPipeSync();
+  await exitPromise;
+
+  expect(order.indexOf("child-pipe-sync-done:3")).toBeLessThan(order.indexOf("unregister:3"));
+  expect(order.indexOf("unregister:3")).toBeLessThan(order.indexOf("record:1"));
+  expect(order).toContain("kick:1");
+});
+
+test("completeProcessExit prepublishes wait status before blocked parent pipe sync", async () => {
+  const blockedWorker = {} as Worker;
+  const blockedState = {
+    status: 31,
+    rpcPending: true,
+    rpcGeneration: 1,
+    pipeSyncedBeforePassive: true,
+  };
+  const parent = makeHandle({
+    pid: 1,
+    parentPid: null,
+    kernel: {
+      ...makeHandle().kernel,
+      abi_status_pipe_wait: () => 21,
+      abi_status_wait4: () => 31,
+    } as never,
+  });
+  parent.blockedWorkers.set(blockedWorker, blockedState as never);
+  const child = makeHandle({
+    pid: 3,
+    parentPid: 1,
+    stdioOwner: null,
+  });
+  const processHandles = new Map<number, ProcessHandle>([
+    [1, parent],
+    [3, child],
+  ]);
+  const lifecycle: string[] = [];
+  const kicked: string[] = [];
+
+  const helpers = createWorkerExitHelpers({
+    processHandles,
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      lifecycle.push(event);
+    },
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=1,pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle: () => {},
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers(handle) {
+      kicked.push(`${handle.pid}:${blockedState.rpcPending ? "pending" : "clear"}`);
+    },
+    publishRuntimeFsState: () => 1,
+    recordChildExitViaKernelWorker: async () => {},
+    replaceRuntimeFsSnapshot: () => {},
+    releaseSharedHostStdio: async () => {},
+    requestPipeStateSync: async (handle) => {
+      if (handle === parent) {
+        await new Promise<void>(() => {});
+      }
+    },
+    snapshotProcessFs: () => [],
+    unregisterProcessWithKernelWorker: async () => {},
+  });
+
+  void helpers.completeProcessExit(child, 7, 0);
+  await flushMicrotasks(100);
+
+  expect(parent.childExitSyncRecords.get(3)).toBe(7 << 8);
+  expect(parent.pendingChildExitRecords).toBe(0);
+  expect(blockedState.rpcPending).toBe(false);
+  expect(blockedState.rpcGeneration).toBe(2);
+  expect(blockedState.pipeSyncedBeforePassive).toBe(false);
+  expect(lifecycle).toContain("exit-parent-early-prepublish-done:1:3:pending=0:records=3/1792");
+  expect(lifecycle).toContain("exit-parent-clear-blocked-rpc:1:3:status=31");
+  expect(lifecycle).toContain("parent-pipe-sync-before-child-exit-start:1:3");
+  expect(lifecycle).not.toContain("parent-record-start:1:3");
+  expect(kicked).toContain("1:clear");
+});
+
+test("completeProcessExit prepublishes wait status before parent pipe sync for blocked pipe wait", async () => {
+  const blockedWorker = {} as Worker;
+  const blockedState = {
+    status: 21,
+    rpcPending: true,
+    rpcGeneration: 1,
+    pipeSyncedBeforePassive: true,
+  };
+  const parent = makeHandle({
+    pid: 1,
+    parentPid: null,
+    kernel: {
+      ...makeHandle().kernel,
+      abi_status_pipe_wait: () => 21,
+      abi_status_wait4: () => 31,
+    } as never,
+  });
+  parent.blockedWorkers.set(blockedWorker, blockedState as never);
+  const child = makeHandle({
+    pid: 3,
+    parentPid: 1,
+    stdioOwner: null,
+  });
+  const processHandles = new Map<number, ProcessHandle>([
+    [1, parent],
+    [3, child],
+  ]);
+  const lifecycle: string[] = [];
+  const kicked: string[] = [];
+
+  const helpers = createWorkerExitHelpers({
+    processHandles,
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      lifecycle.push(event);
+    },
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=1,pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle: () => {},
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers(handle) {
+      kicked.push(`${handle.pid}:${blockedState.rpcPending ? "pending" : "clear"}`);
+    },
+    publishRuntimeFsState: () => 1,
+    recordChildExitViaKernelWorker: async () => {},
+    replaceRuntimeFsSnapshot: () => {},
+    releaseSharedHostStdio: async () => {},
+    requestPipeStateSync: async (handle) => {
+      if (handle === parent) {
+        await new Promise<void>(() => {});
+      }
+    },
+    snapshotProcessFs: () => [],
+    unregisterProcessWithKernelWorker: async () => {},
+  });
+
+  void helpers.completeProcessExit(child, 11, 0);
+  await flushMicrotasks(100);
+
+  expect(parent.childExitSyncRecords.get(3)).toBe(11 << 8);
+  expect(parent.pendingChildExitRecords).toBe(0);
+  expect(blockedState.rpcPending).toBe(false);
+  expect(blockedState.rpcGeneration).toBe(2);
+  expect(blockedState.pipeSyncedBeforePassive).toBe(false);
+  expect(lifecycle).toContain("exit-parent-early-prepublish-done:1:3:pending=0:records=3/2816");
+  expect(lifecycle).toContain("exit-parent-clear-blocked-rpc:1:3:status=21");
+  expect(lifecycle).toContain("parent-pipe-sync-before-child-exit-start:1:3");
+  expect(lifecycle).not.toContain("parent-record-start:1:3");
+  expect(kicked).toContain("1:clear");
+});
+
+test("completeProcessExit prepublishes wait status before parent pipe sync for blocked wait4", async () => {
+  const blockedWorker = {} as Worker;
+  const blockedState = {
+    status: 31,
+    rpcPending: false,
+    rpcGeneration: 1,
+    pipeSyncedBeforePassive: true,
+  };
+  const parent = makeHandle({
+    pid: 1,
+    parentPid: null,
+    kernel: {
+      ...makeHandle().kernel,
+      abi_status_pipe_wait: () => 21,
+      abi_status_wait4: () => 31,
+    } as never,
+  });
+  parent.blockedWorkers.set(blockedWorker, blockedState as never);
+  const child = makeHandle({
+    pid: 3,
+    parentPid: 1,
+    stdioOwner: null,
+  });
+  const processHandles = new Map<number, ProcessHandle>([
+    [1, parent],
+    [3, child],
+  ]);
+  const lifecycle: string[] = [];
+  const kicked: string[] = [];
+
+  const helpers = createWorkerExitHelpers({
+    processHandles,
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      lifecycle.push(event);
+    },
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=1,pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle: () => {},
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers(handle) {
+      kicked.push(`${handle.pid}:${blockedState.rpcPending ? "pending" : "clear"}`);
+    },
+    publishRuntimeFsState: () => 1,
+    recordChildExitViaKernelWorker: async () => {},
+    replaceRuntimeFsSnapshot: () => {},
+    releaseSharedHostStdio: async () => {},
+    requestPipeStateSync: async (handle) => {
+      if (handle === parent) {
+        await new Promise<void>(() => {});
+      }
+    },
+    snapshotProcessFs: () => [],
+    unregisterProcessWithKernelWorker: async () => {},
+  });
+
+  void helpers.completeProcessExit(child, 9, 0);
+  await flushMicrotasks(100);
+
+  expect(parent.childExitSyncRecords.get(3)).toBe(9 << 8);
+  expect(parent.pendingChildExitRecords).toBe(0);
+  expect(blockedState.rpcPending).toBe(false);
+  expect(blockedState.rpcGeneration).toBe(1);
+  expect(lifecycle).toContain("exit-parent-early-prepublish-done:1:3:pending=0:records=3/2304");
+  expect(lifecycle).toContain("parent-pipe-sync-before-child-exit-start:1:3");
+  expect(lifecycle).not.toContain("child-unregister-before-parent-record:3");
+  expect(lifecycle).not.toContain("parent-record-start:1:3");
+  expect(kicked).toContain("1:clear");
+});
+
+test("completeProcessExit prepublishes wait status before awaiting blocked parent wait4 record", async () => {
+  const blockedWorker = {} as Worker;
+  const blockedState = {
+    status: 31,
+    rpcPending: false,
+    rpcGeneration: 1,
+    pipeSyncedBeforePassive: true,
+  };
+  const parent = makeHandle({
+    pid: 1,
+    parentPid: null,
+    kernel: {
+      ...makeHandle().kernel,
+      abi_status_pipe_wait: () => 21,
+      abi_status_wait4: () => 31,
+    } as never,
+  });
+  parent.blockedWorkers.set(blockedWorker, blockedState as never);
+  const child = makeHandle({
+    pid: 3,
+    parentPid: 1,
+    stdioOwner: null,
+  });
+  const processHandles = new Map<number, ProcessHandle>([
+    [1, parent],
+    [3, child],
+  ]);
+  const lifecycle: string[] = [];
+  const kicked: number[] = [];
+  let recordStarted = false;
+  let settled = false;
+
+  const helpers = createWorkerExitHelpers({
+    processHandles,
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      lifecycle.push(event);
+    },
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=1,pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle: (handle) => {
+      processHandles.delete(handle.pid);
+    },
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers(handle) {
+      kicked.push(handle.pid);
+    },
+    publishRuntimeFsState: () => 1,
+    recordChildExitViaKernelWorker: () => {
+      recordStarted = true;
+      return new Promise<void>(() => {});
+    },
+    replaceRuntimeFsSnapshot: () => {},
+    releaseSharedHostStdio: async () => {},
+    requestPipeStateSync: async () => {},
+    snapshotProcessFs: () => [],
+    unregisterProcessWithKernelWorker: async () => {},
+  });
+
+  void helpers.completeProcessExit(child, 7, 0).then(() => {
+    settled = true;
+  });
+  await flushMicrotasks(100);
+
+  expect(recordStarted).toBe(true);
+  expect(settled).toBe(true);
+  expect(parent.childExitSyncRecords.get(3)).toBe(7 << 8);
+  expect(parent.pendingChildExitRecords).toBe(0);
+  expect(lifecycle).toContain("exit-parent-early-prepublish-done:1:3:pending=0:records=3/1792");
+  expect(lifecycle).toContain("parent-record-start:1:3");
+  expect(lifecycle).not.toContain("parent-record-done:1:3");
+  expect(kicked).toContain(1);
+  expect(processHandles.has(3)).toBe(false);
+});
+
+test("completeProcessExit routes deferred parent record rejection through local failProcess", async () => {
+  const blockedWorker = {} as Worker;
+  const blockedState = {
+    status: 31,
+    rpcPending: false,
+    rpcGeneration: 1,
+    pipeSyncedBeforePassive: true,
+  };
+  const parentError = vi.fn();
+  const parent = makeHandle({
+    pid: 1,
+    parentPid: null,
+    onError: parentError,
+    kernel: {
+      ...makeHandle().kernel,
+      abi_status_pipe_wait: () => 21,
+      abi_status_wait4: () => 31,
+    } as never,
+  });
+  parent.blockedWorkers.set(blockedWorker, blockedState as never);
+  const child = makeHandle({
+    pid: 3,
+    parentPid: 1,
+    stdioOwner: null,
+  });
+  const processHandles = new Map<number, ProcessHandle>([
+    [1, parent],
+    [3, child],
+  ]);
+  const lifecycle: string[] = [];
+  const destroyed: string[] = [];
+  let rejectRecord!: (error: Error) => void;
+  let settled = false;
+
+  const helpers = createWorkerExitHelpers({
+    processHandles,
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      lifecycle.push(event);
+    },
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=1,pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle: (handle, signal, _skipLifecycle) => {
+      destroyed.push(`${handle.pid}:${signal}`);
+      processHandles.delete(handle.pid);
+    },
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers: () => {},
+    publishRuntimeFsState: () => 1,
+    recordChildExitViaKernelWorker: () => new Promise<void>((_resolve, reject) => {
+      rejectRecord = reject;
+    }),
+    replaceRuntimeFsSnapshot: () => {},
+    releaseSharedHostStdio: async () => {},
+    requestPipeStateSync: async () => {},
+    snapshotProcessFs: () => [],
+    unregisterProcessWithKernelWorker: async () => {},
+  });
+
+  void helpers.completeProcessExit(child, 7, 0).then(() => {
+    settled = true;
+  });
+  await flushMicrotasks(100);
+  rejectRecord(new Error("record failed"));
+  await flushMicrotasks(100);
+
+  expect(settled).toBe(true);
+  expect(lifecycle).toContain("parent-record-error:1:3:\"record failed\"");
+  expect(parentError).toHaveBeenCalledWith(expect.objectContaining({ message: "record failed" }));
+  expect(destroyed).toContain("1:15");
 });
 
 test("completeProcessExit preserves published file data during exit MemFS publication", async () => {
@@ -199,6 +666,171 @@ test("completeProcessExit preserves published file data during exit MemFS public
     }),
   );
   expect(publishRuntimeFsState).toHaveBeenCalledWith(1, []);
+});
+
+test("completeProcessExit publishes dirty MemFS locally when no exit threads remain", async () => {
+  const onExit = vi.fn();
+  const baseKernel = makeHandle().kernel;
+  const handle = makeHandle({
+    parentPid: null,
+    processMemfsDirty: true,
+    onExit,
+    kernel: {
+      ...baseKernel,
+      thread_process_thread_count: () => 0,
+    } as never,
+  });
+  const syncForkSharedStateViaKernelWorker = vi.fn(() => new Promise<void>(() => {}));
+  const snapshotProcessFs = vi.fn(() => []);
+  const publishRuntimeFsState = vi.fn(() => 1);
+
+  const helpers = createWorkerExitHelpers({
+    processHandles: new Map([[3, handle]]),
+    appendRuntimeLifecycleEvent: () => {},
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle: () => {},
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers: () => {},
+    publishRuntimeFsState,
+    recordChildExitViaKernelWorker: async () => {},
+    releaseSharedHostStdio: async () => {},
+    replaceRuntimeFsSnapshot: () => {},
+    requestPipeStateSync: async () => {},
+    snapshotProcessFs,
+    syncForkSharedStateViaKernelWorker,
+    unregisterProcessWithKernelWorker: async () => {},
+  });
+
+  const exitPromise = helpers.completeProcessExit(handle, 1, 0);
+  await flushMicrotasks(100);
+
+  expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
+  expect(snapshotProcessFs).toHaveBeenCalledWith(handle);
+  expect(publishRuntimeFsState).toHaveBeenCalledWith(1, []);
+  expect(onExit).toHaveBeenCalledWith(1);
+  await exitPromise;
+});
+
+test("completeProcessExit publishes dirty MemFS locally when exit thread slots are faulted", async () => {
+  const events: string[] = [];
+  const onExit = vi.fn();
+  const baseKernel = makeHandle().kernel;
+  const faultedVmPtrs = new Map<number, number>([
+    [0, 0x1234],
+    [1, 0x5800530],
+  ]);
+  const handle = makeHandle({
+    parentPid: null,
+    processMemfsDirty: true,
+    onExit,
+    kernel: {
+      ...baseKernel,
+      abi_max_threads: () => 3,
+      abi_status_fault: () => 3,
+      process_thread_vm_ptr: (_vmPtr: number, slot: number) => faultedVmPtrs.get(slot) ?? 0,
+      thread_process_thread_count: () => 2,
+      thread_status: () => 3,
+    } as never,
+  });
+  const syncForkSharedStateViaKernelWorker = vi.fn(async () => {
+    throw new Error("kernel-worker MemFS sync should be skipped for terminal exit threads");
+  });
+  const snapshotProcessFs = vi.fn(() => []);
+  const publishRuntimeFsState = vi.fn(() => 1);
+
+  const helpers = createWorkerExitHelpers({
+    processHandles: new Map([[3, handle]]),
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      events.push(event);
+    },
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle: () => {},
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers: () => {},
+    publishRuntimeFsState,
+    recordChildExitViaKernelWorker: async () => {},
+    releaseSharedHostStdio: async () => {},
+    replaceRuntimeFsSnapshot: () => {},
+    requestPipeStateSync: async () => {},
+    snapshotProcessFs,
+    syncForkSharedStateViaKernelWorker,
+    unregisterProcessWithKernelWorker: async () => {},
+  });
+
+  const exitPromise = helpers.completeProcessExit(handle, 1, 0);
+  await flushMicrotasks(100);
+
+  expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
+  expect(snapshotProcessFs).toHaveBeenCalledWith(handle);
+  expect(publishRuntimeFsState).toHaveBeenCalledWith(1, []);
+  expect(events).toContain("exit-fs-publish-local-terminal-threads:3");
+  expect(onExit).toHaveBeenCalledWith(1);
+  await exitPromise;
+});
+
+test("completeProcessExit publishes dirty MemFS locally when no live exit thread slots remain", async () => {
+  const events: string[] = [];
+  const onExit = vi.fn();
+  const baseKernel = makeHandle().kernel;
+  const handle = makeHandle({
+    parentPid: null,
+    processMemfsDirty: true,
+    onExit,
+    kernel: {
+      ...baseKernel,
+      abi_max_threads: () => 3,
+      abi_status_fault: () => 3,
+      process_thread_vm_ptr: () => 0,
+      thread_process_thread_count: () => 2,
+      thread_status: () => 0,
+    } as never,
+  });
+  const syncForkSharedStateViaKernelWorker = vi.fn(async () => {
+    throw new Error("kernel-worker MemFS sync should be skipped when no live thread slots remain");
+  });
+  const snapshotProcessFs = vi.fn(() => []);
+  const publishRuntimeFsState = vi.fn(() => 1);
+
+  const helpers = createWorkerExitHelpers({
+    processHandles: new Map([[3, handle]]),
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      events.push(event);
+    },
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle: () => {},
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers: () => {},
+    publishRuntimeFsState,
+    recordChildExitViaKernelWorker: async () => {},
+    releaseSharedHostStdio: async () => {},
+    replaceRuntimeFsSnapshot: () => {},
+    requestPipeStateSync: async () => {},
+    snapshotProcessFs,
+    syncForkSharedStateViaKernelWorker,
+    unregisterProcessWithKernelWorker: async () => {},
+  });
+
+  const exitPromise = helpers.completeProcessExit(handle, 1, 0);
+  await flushMicrotasks(100);
+
+  expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
+  expect(snapshotProcessFs).toHaveBeenCalledWith(handle);
+  expect(publishRuntimeFsState).toHaveBeenCalledWith(1, []);
+  expect(events).toContain("exit-fs-publish-local-no-live-thread-slots:3");
+  expect(onExit).toHaveBeenCalledWith(1);
+  await exitPromise;
 });
 
 test("completeProcessExit skips clean kernel-worker MemFS publication", async () => {
@@ -312,6 +944,55 @@ test("completeProcessExit drains top-level visible output before releasing stdio
     "destroy:3",
   ]);
   expect(stdoutChunks.join("")).toBe("final stdout\n");
+});
+
+test("completeProcessExit notifies process exit before waiting on final kernel-worker unregister", async () => {
+  const order: string[] = [];
+  const handle = makeHandle({
+    parentPid: null,
+    onExit: (code) => {
+      order.push(`exit:${code}`);
+    },
+  });
+  const processHandles = new Map<number, ProcessHandle>([
+    [3, handle],
+  ]);
+
+  const helpers = createWorkerExitHelpers({
+    processHandles,
+    appendRuntimeLifecycleEvent: () => {},
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle(destroyHandle) {
+      order.push(`destroy:${destroyHandle.pid}`);
+    },
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers: () => {},
+    publishRuntimeFsState: () => 1,
+    recordChildExitViaKernelWorker: async () => {},
+    releaseSharedHostStdio: async () => {
+      order.push("release");
+    },
+    replaceRuntimeFsSnapshot: () => {},
+    requestPipeStateSync: async () => {},
+    snapshotProcessFs: () => [],
+    unregisterProcessWithKernelWorker: () => {
+      order.push("unregister-start");
+      return new Promise<void>(() => {});
+    },
+  });
+
+  void helpers.completeProcessExit(handle, 0, 0);
+  await flushMicrotasks(100);
+
+  expect(order).toContain("release");
+  expect(order).toContain("exit:0");
+  expect(order.indexOf("release")).toBeLessThan(order.indexOf("exit:0"));
+  expect(order.indexOf("exit:0")).toBeLessThan(order.indexOf("unregister-start"));
+  expect(order).not.toContain("destroy:3");
 });
 
 test("completeProcessExit waits for stdio-owned child exit before releasing visible owner stdio", async () => {
@@ -620,6 +1301,74 @@ test("recordExitOnParent re-kicks blocked parent after pending child exit bookke
   expect(observedPendingCounts).toEqual([0]);
   expect(kicked).toEqual([0, 0]);
   expect(parent.pendingChildExitRecords).toBe(0);
+});
+
+test("completeProcessExit clears parent pipe-wait RPC after normal child exit publication", async () => {
+  const blockedWorker = {} as Worker;
+  const parent = makeHandle({
+    pid: 1,
+    parentPid: null,
+    pendingChildExitRecords: 0,
+    kernel: {
+      ...makeHandle().kernel,
+      abi_status_pipe_wait: () => 21,
+      abi_status_wait4: () => 31,
+    } as never,
+  });
+  const blockedState = {
+    status: 21,
+    rpcPending: true,
+    rpcGeneration: 1,
+    pipeSyncedBeforePassive: true,
+    retryTimer: null,
+    timeoutExpired: false,
+    timeoutDeadlineMs: null,
+    sleepDeadlineTicks: null,
+  };
+  parent.blockedWorkers.set(blockedWorker, blockedState as never);
+  const child = makeHandle({
+    pid: 3,
+    parentPid: 1,
+  });
+  const processHandles = new Map<number, ProcessHandle>([
+    [1, parent],
+    [3, child],
+  ]);
+  const lifecycle: string[] = [];
+  const kicked: string[] = [];
+
+  const helpers = createWorkerExitHelpers({
+    processHandles,
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      lifecycle.push(event);
+    },
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=1,pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle: () => {},
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers(handle) {
+      kicked.push(`${handle.pid}:${blockedState.rpcPending ? "pending" : "clear"}`);
+    },
+    publishRuntimeFsState: () => 1,
+    recordChildExitViaKernelWorker: async () => {},
+    replaceRuntimeFsSnapshot: () => {},
+    releaseSharedHostStdio: async () => {},
+    requestPipeStateSync: async () => {},
+    unregisterProcessWithKernelWorker: async () => {},
+    snapshotProcessFs: () => [],
+  });
+
+  await helpers.completeProcessExit(child, 127, 0);
+
+  expect(parent.childExitSyncRecords.get(3)).toBe(127 << 8);
+  expect(blockedState.rpcPending).toBe(false);
+  expect(blockedState.rpcGeneration).toBe(2);
+  expect(blockedState.pipeSyncedBeforePassive).toBe(false);
+  expect(lifecycle).toContain("exit-parent-clear-blocked-rpc:1:3:status=21");
+  expect(kicked).toContain("1:clear");
 });
 
 test("completeProcessExit still destroys the handle when cleanup fails", async () => {

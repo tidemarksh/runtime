@@ -349,7 +349,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     handle: ProcessHandle,
     pidFilter: number | null = null,
     limit = 256,
-    vmPtrFilter = handle.vmPtr,
+    vmPtrFilter: number | null = handle.vmPtr,
   ): string {
     const len = handle.kernel.debug_fd_syscall_trace_len?.() ?? 0;
     if (len <= 0) {
@@ -364,11 +364,11 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     const entries: string[] = [];
     for (let index = 0; index < len; index += 1) {
       const vmPtr = handle.kernel.debug_fd_syscall_trace_vm_ptr?.(index) ?? 0;
-      if (vmPtr !== vmPtrFilter) {
+      if (vmPtrFilter !== null && vmPtr !== vmPtrFilter) {
         continue;
       }
       const nr = Number(handle.kernel.debug_fd_syscall_trace_nr?.(index) ?? -1n);
-      if (![24, 25, 56, 57, 59, 62, 63, 64, 66, 67, 68, 70, 198, 199, 203, 242, 436].includes(nr)) {
+      if (![24, 25, 32, 56, 57, 59, 62, 63, 64, 65, 66, 67, 68, 69, 70, 79, 80, 198, 199, 203, 242, 291, 436].includes(nr)) {
         continue;
       }
       const arg0OfdType = handle.kernel.debug_fd_syscall_trace_arg0_ofd_type?.(index) ?? 0;
@@ -395,6 +395,171 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       ].join(":"));
     }
     return entries.slice(-limit).join(",");
+  }
+
+  function formatFocusedFdSyscalls(handle: ProcessHandle, fds: readonly number[], limit = 160): string {
+    const len = handle.kernel.debug_fd_syscall_trace_len?.() ?? 0;
+    if (len <= 0) {
+      return "";
+    }
+    const sampleToPid = (sample: bigint | number | undefined): number => {
+      if (sample === undefined) {
+        return 0;
+      }
+      return Number(BigInt.asIntN(32, BigInt(sample) & 0xffffffffn));
+    };
+    const focused = new Set(fds);
+    const alwaysIncludeSyscalls = new Set([24, 25, 32, 56, 57, 59, 62, 63, 64, 65, 66, 67, 68, 69, 79, 80, 291, 436]);
+    const entries: string[] = [];
+    for (let index = 0; index < len; index += 1) {
+      const nr = Number(handle.kernel.debug_fd_syscall_trace_nr?.(index) ?? -1n);
+      const arg0 = Number(handle.kernel.debug_fd_syscall_trace_arg0?.(index) ?? -1n);
+      const arg2 = Number(handle.kernel.debug_fd_syscall_trace_arg2?.(index) ?? -1n);
+      const result = handle.kernel.debug_fd_syscall_trace_result?.(index);
+      const signedResult = result === undefined ? null : BigInt.asIntN(64, BigInt(result));
+      if (
+        !focused.has(arg0)
+        && !focused.has(arg2)
+        && signedResult !== -9n
+        && !alwaysIncludeSyscalls.has(nr)
+      ) {
+        continue;
+      }
+      const vmPtr = handle.kernel.debug_fd_syscall_trace_vm_ptr?.(index) ?? 0;
+      entries.push([
+        `${index}:vm=0x${vmPtr.toString(16)}:${nr}`,
+        `pid=${sampleToPid(handle.kernel.debug_fd_syscall_trace_pid_sample0?.(index))}`,
+        `a0=${arg0}`,
+        `a0ofd=${handle.kernel.debug_fd_syscall_trace_arg0_ofd_id?.(index) ?? "n/a"}`,
+        `a0ty=${handle.kernel.debug_fd_syscall_trace_arg0_ofd_type?.(index) ?? "n/a"}`,
+        `a0flags=${handle.kernel.debug_fd_syscall_trace_arg0_ofd_status_flags?.(index) ?? "n/a"}`,
+        `a0ino=${handle.kernel.debug_fd_syscall_trace_arg0_ofd_ino?.(index) ?? "n/a"}`,
+        `a1=${handle.kernel.debug_fd_syscall_trace_arg1?.(index)?.toString() ?? "n/a"}`,
+        `a2=${arg2}`,
+        `a2ofd=${handle.kernel.debug_fd_syscall_trace_arg2_ofd_id?.(index) ?? "n/a"}`,
+        `a2ty=${handle.kernel.debug_fd_syscall_trace_arg2_ofd_type?.(index) ?? "n/a"}`,
+        `ret=${signedResult?.toString() ?? "n/a"}`,
+        `st=${handle.kernel.debug_fd_syscall_trace_status?.(index) ?? "n/a"}`,
+      ].join(":"));
+    }
+    return entries.slice(-limit).join(",");
+  }
+
+  function formatStrictFocusedFdSyscalls(handle: ProcessHandle, fds: readonly number[], limit = 512): string {
+    const len = handle.kernel.debug_fd_syscall_trace_len?.() ?? 0;
+    if (len <= 0) {
+      return "";
+    }
+    const sampleToPid = (sample: bigint | number | undefined): number => {
+      if (sample === undefined) {
+        return 0;
+      }
+      return Number(BigInt.asIntN(32, BigInt(sample) & 0xffffffffn));
+    };
+    const focused = new Set(fds);
+    const closeRange = Number(handle.kernel.abi_sys_close_range?.() ?? 436);
+    const entries: string[] = [];
+    for (let index = 0; index < len; index += 1) {
+      const nr = Number(handle.kernel.debug_fd_syscall_trace_nr?.(index) ?? -1n);
+      const arg0 = Number(handle.kernel.debug_fd_syscall_trace_arg0?.(index) ?? -1n);
+      const arg1 = Number(handle.kernel.debug_fd_syscall_trace_arg1?.(index) ?? -1n);
+      const arg2 = Number(handle.kernel.debug_fd_syscall_trace_arg2?.(index) ?? -1n);
+      const result = handle.kernel.debug_fd_syscall_trace_result?.(index);
+      const signedResult = result === undefined ? null : BigInt.asIntN(64, BigInt(result));
+      const focusCloseRange = nr === closeRange
+        && fds.some((fd) => fd >= arg0 && fd <= arg1);
+      if (!focused.has(arg0) && !focused.has(arg2) && signedResult !== -9n && !focusCloseRange) {
+        continue;
+      }
+      const vmPtr = handle.kernel.debug_fd_syscall_trace_vm_ptr?.(index) ?? 0;
+      entries.push([
+        `${index}:vm=0x${vmPtr.toString(16)}:${nr}`,
+        `pid=${sampleToPid(handle.kernel.debug_fd_syscall_trace_pid_sample0?.(index))}`,
+        `a0=${arg0}`,
+        `a0ofd=${handle.kernel.debug_fd_syscall_trace_arg0_ofd_id?.(index) ?? "n/a"}`,
+        `a0ty=${handle.kernel.debug_fd_syscall_trace_arg0_ofd_type?.(index) ?? "n/a"}`,
+        `a0flags=${handle.kernel.debug_fd_syscall_trace_arg0_ofd_status_flags?.(index) ?? "n/a"}`,
+        `a0ino=${handle.kernel.debug_fd_syscall_trace_arg0_ofd_ino?.(index) ?? "n/a"}`,
+        `a1=${arg1}`,
+        `a2=${arg2}`,
+        `a2ofd=${handle.kernel.debug_fd_syscall_trace_arg2_ofd_id?.(index) ?? "n/a"}`,
+        `a2ty=${handle.kernel.debug_fd_syscall_trace_arg2_ofd_type?.(index) ?? "n/a"}`,
+        `ret=${signedResult?.toString() ?? "n/a"}`,
+        `st=${handle.kernel.debug_fd_syscall_trace_status?.(index) ?? "n/a"}`,
+      ].join(":"));
+    }
+    return entries.slice(-limit).join(",");
+  }
+
+  function collectFdFocusVmPtrs(handle: ProcessHandle, vmPtr: number): number[] {
+    const vmPtrs = new Set<number>();
+    const add = (candidate: number | undefined | null) => {
+      if (candidate !== undefined && candidate !== null && candidate !== 0) {
+        vmPtrs.add(candidate);
+      }
+    };
+    add(handle.vmPtr);
+    add(vmPtr);
+    try {
+      for (let slot = 0; slot < handle.kernel.abi_max_threads(); slot += 1) {
+        add(handle.kernel.process_thread_vm_ptr?.(handle.vmPtr, slot));
+      }
+    } catch {
+      // Best-effort diagnostics only.
+    }
+    for (const blocked of handle.blockedWorkers.values()) {
+      add(blocked.vmPtr);
+    }
+    return [...vmPtrs].slice(0, 24);
+  }
+
+  function formatFdFocusState(handle: ProcessHandle, vmPtr: number, fds: readonly number[]): string {
+    const maxFds = handle.kernel.abi_max_fds();
+    const entries: string[] = [];
+    for (const candidateVmPtr of collectFdFocusVmPtrs(handle, vmPtr)) {
+      const fdParts: string[] = [];
+      for (const fd of fds) {
+        if (fd < 0 || fd >= maxFds) {
+          continue;
+        }
+        try {
+          const ofdId = handle.kernel.process_fd_ofd_id?.(candidateVmPtr, fd) ?? 0;
+          const flags = handle.kernel.process_fd_flags?.(candidateVmPtr, fd) ?? 0;
+          const generation = handle.kernel.process_fd_generation?.(candidateVmPtr, fd) ?? 0;
+          if (ofdId <= 0 || ofdId >= maxFds) {
+            fdParts.push(`${fd}->${ofdId}/fl=${flags}/gen=${generation}`);
+            continue;
+          }
+          fdParts.push(
+            `${fd}->${ofdId}`
+            + `/fl=${flags}`
+            + `/gen=${generation}`
+            + `/ty=${handle.kernel.kernel_ofd_fd_type(ofdId)}`
+            + `/ref=${handle.kernel.kernel_ofd_refcount(ofdId)}`
+            + `/host=${handle.kernel.kernel_ofd_host_fd(ofdId)}`
+            + `/ino=${handle.kernel.kernel_ofd_ino(ofdId)}`
+            + `/st=${handle.kernel.kernel_ofd_status_flags(ofdId)}`,
+          );
+        } catch (error) {
+          fdParts.push(`${fd}->error:${JSON.stringify(error instanceof Error ? error.message : String(error))}`);
+        }
+      }
+      let processState: string;
+      try {
+        processState = [
+          `pid=${handle.kernel.process_current_pid?.(candidateVmPtr) ?? 0}`,
+          `proc=0x${(handle.kernel.thread_process_ptr?.(candidateVmPtr) ?? 0).toString(16)}`,
+        ].join(":");
+      } catch (error) {
+        processState = `state_error=${JSON.stringify(error instanceof Error ? error.message : String(error))}`;
+      }
+      entries.push([
+        `vm=0x${candidateVmPtr.toString(16)}`,
+        processState,
+        `fds=${fdParts.join("|")}`,
+      ].join(":"));
+    }
+    return entries.join(",");
   }
 
   function formatChildExitSyncRecords(handle: ProcessHandle): string {
@@ -1313,6 +1478,10 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       `path_syscalls=[${formatPathSyscalls(handle)}]`,
       `all_path_syscalls=[${formatAllPathSyscalls(handle)}]`,
       `fd_syscalls=[${formatFdSyscalls(handle, null, 256, vmPtr)}]`,
+      `fd_syscalls_all_vm=[${formatFdSyscalls(handle, null, 512, null)}]`,
+      `fd_focus_state=[${formatFdFocusState(handle, vmPtr, [10, 12])}]`,
+      `fd_syscalls_focus_all=[${formatFocusedFdSyscalls(handle, [10, 12])}]`,
+      `fd_syscalls_focus_strict=[${formatStrictFocusedFdSyscalls(handle, [10, 12])}]`,
       `memory_syscalls=[${formatMemorySyscalls(handle)}]`,
       `watched_memory_syscalls=[${formatWatchedMemorySyscalls(handle, vmPtr)}]`,
     ].join(" ");
@@ -1360,6 +1529,24 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         `exit-parent-clear-blocked-rpc:${parent.pid}:${childPid}:status=${blocked.status}`,
       );
     }
+  }
+
+  function parentHasBlockedWait4(parent: ProcessHandle): boolean {
+    for (const blocked of parent.blockedWorkers.values()) {
+      if (blocked.status === parent.kernel.abi_status_wait4()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function parentHasBlockedPipeWait(parent: ProcessHandle): boolean {
+    for (const blocked of parent.blockedWorkers.values()) {
+      if (blocked.status === parent.kernel.abi_status_pipe_wait()) {
+        return true;
+      }
+    }
+    return false;
   }
 
   function prepublishParentWaitStatus(
@@ -1509,6 +1696,122 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     ].join(":");
   }
 
+  function exitProcessThreadsAreGone(handle: ProcessHandle): boolean {
+    try {
+      const threadCount = handle.kernel.thread_process_thread_count?.(handle.vmPtr);
+      return threadCount !== undefined && Number(threadCount) <= 0;
+    } catch {
+      return false;
+    }
+  }
+
+  function exitProcessThreadCount(handle: ProcessHandle): number | null {
+    try {
+      const threadCount = handle.kernel.thread_process_thread_count?.(handle.vmPtr);
+      if (threadCount === undefined) {
+        return null;
+      }
+      const numeric = Number(threadCount);
+      return Number.isFinite(numeric) ? numeric : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function exitProcessHasActiveOwnerWork(handle: ProcessHandle): boolean {
+    return handle.runningWorker !== null
+      || handle.readyWorkers.length > 0
+      || handle.blockedWorkers.size > 0;
+  }
+
+  function exitProcessHasNoLiveThreadSlots(handle: ProcessHandle): boolean {
+    if (exitProcessHasActiveOwnerWork(handle)) {
+      return false;
+    }
+    const threadCount = exitProcessThreadCount(handle);
+    if (threadCount === null || threadCount <= 0) {
+      return false;
+    }
+    let maxThreads = 0;
+    try {
+      maxThreads = Number(handle.kernel.abi_max_threads?.() ?? 0);
+    } catch {
+      return false;
+    }
+    if (!Number.isFinite(maxThreads) || maxThreads <= 0) {
+      return false;
+    }
+    for (let slot = 0; slot < maxThreads; slot += 1) {
+      try {
+        if ((handle.kernel.process_thread_vm_ptr?.(handle.vmPtr, slot) ?? 0) !== 0) {
+          return false;
+        }
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function exitProcessThreadSlotsAreTerminal(handle: ProcessHandle): boolean {
+    if (exitProcessHasActiveOwnerWork(handle)) {
+      return false;
+    }
+
+    let faultStatus: number;
+    try {
+      faultStatus = handle.kernel.abi_status_fault?.() ?? -1;
+    } catch {
+      return false;
+    }
+    if (faultStatus < 0) {
+      return false;
+    }
+
+    let anchorFaulted = false;
+    try {
+      anchorFaulted = handle.kernel.thread_status?.(handle.vmPtr) === faultStatus;
+    } catch {
+      return false;
+    }
+    if (!anchorFaulted) {
+      return false;
+    }
+
+    let maxThreads = 0;
+    try {
+      maxThreads = Number(handle.kernel.abi_max_threads?.() ?? 0);
+    } catch {
+      return false;
+    }
+    if (!Number.isFinite(maxThreads) || maxThreads <= 0) {
+      return false;
+    }
+
+    let sawThreadSlot = false;
+    for (let slot = 0; slot < maxThreads; slot += 1) {
+      let threadVmPtr = 0;
+      try {
+        threadVmPtr = handle.kernel.process_thread_vm_ptr?.(handle.vmPtr, slot) ?? 0;
+      } catch {
+        return false;
+      }
+      if (threadVmPtr === 0) {
+        continue;
+      }
+      sawThreadSlot = true;
+      try {
+        if (handle.kernel.thread_status?.(threadVmPtr) !== faultStatus) {
+          return false;
+        }
+      } catch {
+        return false;
+      }
+    }
+
+    return sawThreadSlot;
+  }
+
   async function publishProcessFsStateOnExit(handle: ProcessHandle, targets: ProcessHandle[] = []): Promise<void> {
     if (!deps.snapshotProcessFs || !deps.publishRuntimeFsState) {
       return;
@@ -1518,13 +1821,30 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     }
     try {
       if (handle.kernelWorkerRequest && handle.pid > 0) {
-        await deps.syncForkSharedStateViaKernelWorker?.(handle, targets, {
-          cause: { kind: "syscall", nr: -1n, name: "process-exit-memfs-publication" },
-          includeMemfs: true,
-          memfsOnly: true,
-          trackHeldOfds: false,
-          sourceVmPtr: handle.vmPtr,
-        });
+        if (exitProcessThreadsAreGone(handle)) {
+          deps.appendRuntimeLifecycleEvent(
+            handle.runtimeId,
+            `exit-fs-publish-local-no-threads:${handle.pid}`,
+          );
+        } else if (exitProcessHasNoLiveThreadSlots(handle)) {
+          deps.appendRuntimeLifecycleEvent(
+            handle.runtimeId,
+            `exit-fs-publish-local-no-live-thread-slots:${handle.pid}`,
+          );
+        } else if (exitProcessThreadSlotsAreTerminal(handle)) {
+          deps.appendRuntimeLifecycleEvent(
+            handle.runtimeId,
+            `exit-fs-publish-local-terminal-threads:${handle.pid}`,
+          );
+        } else {
+          await deps.syncForkSharedStateViaKernelWorker?.(handle, targets, {
+            cause: { kind: "syscall", nr: -1n, name: "process-exit-memfs-publication" },
+            includeMemfs: true,
+            memfsOnly: true,
+            trackHeldOfds: false,
+            sourceVmPtr: handle.vmPtr,
+          });
+        }
       }
       const entries = deps.snapshotProcessFs(handle);
       deps.publishRuntimeFsState(handle.runtimeId, entries);
@@ -1555,19 +1875,28 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
 
     const hasInheritedParentOutput = usesInheritedParentOutput(handle, parent);
     if (!hasInheritedParentOutput && handle.kernelWorkerRequest && handle.pid > 0) {
+      if (parentHasBlockedWait4(parent) || parentHasBlockedPipeWait(parent)) {
+        prepublishParentWaitStatus(handle, exitCode, termSignal);
+      }
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-pipe-sync-before-child-exit-start:${parent.pid}:${handle.pid}`);
       await deps.requestPipeStateSync(parent, true);
       deps.drainProcessOutput(parent);
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-pipe-sync-before-child-exit-done:${parent.pid}:${handle.pid}`);
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `child-pipe-sync-start:${handle.pid}`);
+      const childPipeSyncPromise = deps.requestPipeStateSync(handle, true)
+        .then(() => {
+          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `child-pipe-sync-done:${handle.pid}`);
+        })
+        .catch((error) => {
+          deps.appendRuntimeLifecycleEvent(
+            handle.runtimeId,
+            `child-pipe-sync-error:${handle.pid}:${JSON.stringify(error instanceof Error ? error.message : String(error))}`,
+          );
+        });
       try {
-        await deps.requestPipeStateSync(handle, true);
-        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `child-pipe-sync-done:${handle.pid}`);
-      } catch (error) {
-        deps.appendRuntimeLifecycleEvent(
-          handle.runtimeId,
-          `child-pipe-sync-error:${handle.pid}:${JSON.stringify(error instanceof Error ? error.message : String(error))}`,
-        );
+        await childPipeSyncPromise;
+      } catch {
+        // Errors are recorded by childPipeSyncPromise so exit teardown can continue.
       }
     }
     if (handle.stdioOwner === null) {
@@ -1605,8 +1934,31 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     ].join(" ");
 
     const waitStatus = encodeWaitStatus(exitCode, termSignal);
+    if (!parentWaitStatusPrepublishedHandles.has(handle) && parentHasBlockedWait4(parent)) {
+      prepublishParentWaitStatus(handle, exitCode, termSignal);
+    }
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-record-start:${parent.pid}:${handle.pid}`);
-    await deps.recordChildExitViaKernelWorker(parent, handle.pid, waitStatus);
+    const recordPromise = deps.recordChildExitViaKernelWorker(parent, handle.pid, waitStatus);
+    if (parentWaitStatusPrepublishedHandles.has(handle)) {
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-record-deferred:${parent.pid}:${handle.pid}`);
+      void recordPromise
+        .then(async () => {
+          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-record-done:${parent.pid}:${handle.pid}`);
+          if (!hasInheritedParentOutput) {
+            await settleVisibleProcessOutput(parent, deps.requestPipeStateSync);
+          }
+        })
+        .catch((error) => {
+          const failure = error instanceof Error ? error : new Error(String(error));
+          deps.appendRuntimeLifecycleEvent(
+            handle.runtimeId,
+            `parent-record-error:${parent.pid}:${handle.pid}:${JSON.stringify(failure.message)}`,
+          );
+          failProcess(parent, failure);
+        });
+      return waitStatus;
+    }
+    await recordPromise;
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-record-done:${parent.pid}:${handle.pid}`);
     if (!hasInheritedParentOutput) {
       await settleVisibleProcessOutput(parent, deps.requestPipeStateSync);
@@ -1784,25 +2136,6 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
           handle.runtimeId,
           `exit-parent-prepublish-skip:${parent.pid}:${handle.pid}:dirty-memfs=1:publish-pending=${handle.processMemfsPublishPending ? 1 : 0}`,
         );
-      } else {
-        deps.appendRuntimeLifecycleEvent(
-          handle.runtimeId,
-          `exit-parent-prepublish-start:${parent.pid}:${handle.pid}:pending=${parent.pendingChildExitRecords}:records=${formatChildExitSyncRecords(parent)}`,
-        );
-        parent.pendingChildExitRecords += 1;
-        if (handle.pid > 0) {
-          parent.childExitSyncRecords.set(handle.pid, encodeWaitStatus(exitCode, termSignal));
-          if (parent.pendingChildExitRecords > 0) {
-            parent.pendingChildExitRecords -= 1;
-          }
-          parentWaitStatusPublished = true;
-          deps.appendRuntimeLifecycleEvent(
-            handle.runtimeId,
-            `exit-parent-prepublish-done:${parent.pid}:${handle.pid}:pending=${parent.pendingChildExitRecords}:records=${formatChildExitSyncRecords(parent)}`,
-          );
-          invalidateBlockedParentRpcsForChildExit(parent, handle.pid);
-          deps.kickBlockedWorkers(parent);
-        }
       }
     } else {
       deps.appendRuntimeLifecycleEvent(
@@ -1812,17 +2145,30 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     }
     let cleanupError: Error | null = null;
     let parentWaitStatus: number | null = null;
+    let exitNotified = false;
+    const notifyExit = (): void => {
+      if (exitNotified) {
+        return;
+      }
+      exitNotified = true;
+      const onExit = handle.onExit;
+      handle.onExit = undefined;
+      onExit?.(exitCode);
+    };
 
     try {
       parentWaitStatus = await recordExitOnParent(handle, exitCode, termSignal);
-      if (parent && parentWaitStatus !== null && !parentWaitStatusPublished) {
+      const parentWaitStatusPublishedAfterRecord = parentWaitStatusPublished
+        || parentWaitStatusPrepublishedHandles.has(handle);
+      if (parent && parentWaitStatus !== null && !parentWaitStatusPublishedAfterRecord) {
         parent.childExitSyncRecords.set(handle.pid, parentWaitStatus);
         if (parent.pendingChildExitRecords > 0) {
           parent.pendingChildExitRecords -= 1;
         }
+        invalidateBlockedParentRpcsForChildExit(parent, handle.pid);
         parentWaitStatus = null;
         deps.kickBlockedWorkers(parent);
-      } else if (parentWaitStatusPublished) {
+      } else if (parentWaitStatusPublishedAfterRecord) {
         parentWaitStatus = null;
       }
       if (parent === null && handle.stdioOwner === null) {
@@ -1849,6 +2195,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       }
       await publishProcessFsStateOnExit(handle);
       await deps.releaseSharedHostStdio(handle);
+      notifyExit();
     } catch (error) {
       cleanupError = error instanceof Error ? error : new Error(String(error));
       handle.lastDebugMessage = [
@@ -1859,6 +2206,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         handle.runtimeId,
         `exit-cleanup-error:${handle.pid}:${JSON.stringify(cleanupError.message)}`,
       );
+      notifyExit();
     } finally {
       try {
         await handle.forkSharedSyncPromise;
@@ -1879,6 +2227,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         );
       }
       deps.destroyProcessHandle(handle, termSignal || 15, false);
+      notifyExit();
     }
 
     try {
@@ -1890,6 +2239,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       if (parent) {
         if (parentWaitStatus !== null) {
           parent.childExitSyncRecords.set(handle.pid, parentWaitStatus);
+          invalidateBlockedParentRpcsForChildExit(parent, handle.pid);
         }
         if (parent.pendingChildExitRecords > 0) {
           parent.pendingChildExitRecords -= 1;
@@ -1897,7 +2247,6 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         deps.kickBlockedWorkers(parent);
       }
     }
-    handle.onExit?.(exitCode);
   }
 
   function failProcess(handle: ProcessHandle, error: Error): void {
