@@ -68,6 +68,27 @@ function checksum(bytes: Uint8Array): bigint {
   return sum;
 }
 
+function appendTail(tail: Uint8Array, chunk: Uint8Array, limit: number): Uint8Array {
+  if (chunk.byteLength >= limit) {
+    return chunk.slice(chunk.byteLength - limit);
+  }
+  const combinedLength = tail.byteLength + chunk.byteLength;
+  const combined = new Uint8Array(combinedLength);
+  combined.set(tail);
+  combined.set(chunk, tail.byteLength);
+  return combinedLength <= limit ? combined : combined.slice(combinedLength - limit);
+}
+
+function concatChunks(chunks: Uint8Array[], byteLength: number): Uint8Array {
+  const result = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
+}
+
 function compactExecutionStats(
   stats: ReturnType<Awaited<ReturnType<typeof Runtime.create>>["debugExecutionStats"]>,
 ): string {
@@ -104,16 +125,40 @@ async function spawnWithOutputAndStats(
   env: string[],
   timeoutMs: number,
   options: Parameters<RuntimeInstance["spawn"]>[3],
-): Promise<{ exitCode: number; output: string; debugInfo?: string; execution: string }> {
+): Promise<{
+  exitCode: number;
+  output: string;
+  outputByteLength: number;
+  outputChecksum: bigint;
+  outputPrefix: Uint8Array;
+  outputTail: Uint8Array;
+  debugInfo?: string;
+  execution: string;
+}> {
   const decoder = new TextDecoder();
   const proc = await runtime.spawn(new Uint8Array(elfBytes), argv, env, options);
-  let output = "";
+  const outputPreviewLimit = 4096;
+  const outputPrefixChunks: Uint8Array[] = [];
+  let outputPrefixByteLength = 0;
+  let outputTail = new Uint8Array();
+  let outputByteLength = 0;
+  let outputChecksum = 0n;
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   let sampleId: ReturnType<typeof setInterval> | null = null;
   let execution = compactExecutionStats(runtime.debugExecutionStats());
 
   proc.onStdout((data) => {
-    output += decoder.decode(data);
+    const chunk = new Uint8Array(data);
+    outputByteLength += chunk.byteLength;
+    outputTail = appendTail(outputTail, chunk, outputPreviewLimit);
+    for (const byte of chunk) {
+      outputChecksum += BigInt(byte);
+    }
+    if (outputPrefixByteLength < outputPreviewLimit) {
+      const prefixBytes = Math.min(outputPreviewLimit - outputPrefixByteLength, chunk.byteLength);
+      outputPrefixChunks.push(chunk.slice(0, prefixBytes));
+      outputPrefixByteLength += prefixBytes;
+    }
   });
   sampleId = setInterval(() => {
     const stats = runtime.debugExecutionStats();
@@ -135,7 +180,22 @@ async function spawnWithOutputAndStats(
         }
       }),
     ]);
-    return { exitCode, output, debugInfo: proc.debugInfo?.(), execution };
+    const outputPrefix = concatChunks(outputPrefixChunks, outputPrefixByteLength);
+    const output = [
+      decoder.decode(outputPrefix),
+      outputByteLength > outputPrefixByteLength ? `\n[omitted ${outputByteLength - outputPrefixByteLength} stdout bytes]\n` : "",
+      outputByteLength > outputPrefixByteLength ? decoder.decode(outputTail) : "",
+    ].join("");
+    return {
+      exitCode,
+      output,
+      outputByteLength,
+      outputChecksum,
+      outputPrefix,
+      outputTail,
+      debugInfo: proc.debugInfo?.(),
+      execution,
+    };
   } finally {
     if (timeoutId !== null) {
       clearTimeout(timeoutId);
@@ -194,17 +254,26 @@ test("large xz local gate: guest xz decompresses package-index sized input", asy
     );
     const spawnDurationMs = Date.now() - spawnStartedMs;
     expect(result.exitCode, result.output + (result.debugInfo ? `\n${result.debugInfo}` : "")).toBe(0);
-    const outputBytes = outputMode === "file"
+    const fileOutputBytes = outputMode === "file"
       ? await runtime.readFile(packagesOutputPath)
-      : new TextEncoder().encode(result.output);
+      : null;
+    const outputByteLength = fileOutputBytes?.length ?? result.outputByteLength;
     if (packageXzInput) {
-      expect(new TextDecoder().decode(outputBytes.subarray(0, 128))).toContain("Package:");
+      const outputPrefix = fileOutputBytes
+        ? new TextDecoder().decode(fileOutputBytes.subarray(0, 128))
+        : new TextDecoder().decode(result.outputPrefix);
+      expect(outputPrefix).toContain("Package:");
     } else {
-      expect(outputBytes.length).toBe(corpus.packages.length);
-      expect(checksum(outputBytes)).toBe(checksum(corpus.packages));
-      const output = new TextDecoder().decode(outputBytes);
-      expect(output).toContain("Package: tidemark-local-0\n");
-      expect(output).toContain(`Package: tidemark-local-${Math.max(1, Math.trunc(packageCount)) - 1}\n`);
+      expect(outputByteLength).toBe(corpus.packages.length);
+      expect(fileOutputBytes ? checksum(fileOutputBytes) : result.outputChecksum).toBe(checksum(corpus.packages));
+      const outputPrefix = fileOutputBytes
+        ? new TextDecoder().decode(fileOutputBytes.subarray(0, 4096))
+        : new TextDecoder().decode(result.outputPrefix);
+      const outputTail = fileOutputBytes
+        ? new TextDecoder().decode(fileOutputBytes.subarray(Math.max(0, fileOutputBytes.length - 4096)))
+        : new TextDecoder().decode(result.outputTail);
+      expect(outputPrefix).toContain("Package: tidemark-local-0\n");
+      expect(outputTail).toContain(`Package: tidemark-local-${Math.max(1, Math.trunc(packageCount)) - 1}\n`);
     }
     console.log([
       `large xz gate durationMs=${Date.now() - startedMs}`,
@@ -212,7 +281,7 @@ test("large xz local gate: guest xz decompresses package-index sized input", asy
       `outputMode=${outputMode}`,
       `packageCount=${Math.max(1, Math.trunc(packageCount))}`,
       `packagesBytes=${corpus.packages.length}`,
-      `outputBytes=${outputBytes.length}`,
+      `outputBytes=${outputByteLength}`,
       `packagesXzBytes=${corpus.packagesXz.length}`,
       `input=${packageXzInput || "synthetic"}`,
       `execution=${result.execution}`,
