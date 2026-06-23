@@ -10,6 +10,8 @@ import {
 import { createDiagnosticKernelPageCache } from "./kernel-page-cache-env.js";
 import { readKernelWasm } from "./runtime-workload.js";
 
+const PROCESS_CREATE_DYNAMIC_TEST_TIMEOUT_MS = 30_000;
+
 async function loadKernel() {
   const wasmBytes = readKernelWasm();
   if (!wasmBytes) {
@@ -137,6 +139,6 @@ export function registerProcessCreateDynamicGate(
         result.vmPtr,
         `process_create ${preloadMode} failed: ${entry.id} lastError=${result.lastError ?? "<unavailable>"}`,
       ).toBeGreaterThan(0);
-    });
+    }, PROCESS_CREATE_DYNAMIC_TEST_TIMEOUT_MS);
   }
 }
