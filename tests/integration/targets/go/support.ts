@@ -16,6 +16,7 @@ export const GO_EXEC_CAPTURE_HELPER_PATH = process.env.TIDEMARK_TEST_GO_EXEC_CAP
 export const GO_TOOL_VERSION = process.env.TIDEMARK_TEST_GO_TOOL_VERSION ?? "go1.26.1";
 export const GO_BUILD_EXPERIMENT = process.env.TIDEMARK_ACCEPTANCE_GO_EXPERIMENT ?? "";
 export const GO_RUNTIME_GUEST_MEMORY_POLICY_LIMIT_BYTES = 1024 * 1024 * 1024;
+const GO_RUNTIME_HEADROOM_MEMORY_PAGES = 40960;
 
 const REQUIRED_GO_TOOL_RELATIVE_PATH = "pkg/tool/linux_riscv64/compile";
 
@@ -206,7 +207,9 @@ export async function prepareGoRuntime(options: {
 
   const runtime = await Runtime.create({
     wasmBytes,
-    guestMemoryPolicyLimitBytes: GO_RUNTIME_GUEST_MEMORY_POLICY_LIMIT_BYTES,
+    guestMemoryPolicyLimitBytes: 2 * GO_RUNTIME_GUEST_MEMORY_POLICY_LIMIT_BYTES,
+    maxProcessMemoryPages: GO_RUNTIME_HEADROOM_MEMORY_PAGES,
+    maxForkMemoryPages: GO_RUNTIME_HEADROOM_MEMORY_PAGES,
   });
   await runtime.applyFsSnapshot(buildGoRuntimeSnapshot({
     includeToolchain,

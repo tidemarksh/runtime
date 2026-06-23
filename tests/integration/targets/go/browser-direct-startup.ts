@@ -1,7 +1,11 @@
 import { existsSync } from "node:fs";
 import type { BrowserDirectStartupEntry } from "../../../support/browser-direct-harness.js";
 import { logSkip } from "../../../support/runtime-workload.js";
-import { GO_BINARY_PATH, buildGoRuntimeSnapshot } from "./support.js";
+import {
+  GO_BINARY_PATH,
+  GO_RUNTIME_GUEST_MEMORY_POLICY_LIMIT_BYTES,
+  buildGoRuntimeSnapshot,
+} from "./support.js";
 
 export function prepareGoBrowserDirectStartupEntry(): BrowserDirectStartupEntry | null {
   if (!GO_BINARY_PATH || !existsSync(GO_BINARY_PATH)) {
@@ -25,7 +29,7 @@ export function prepareGoBrowserDirectStartupEntry(): BrowserDirectStartupEntry 
       cwd: "/work",
     },
     runtimeOptions: {
-      guestMemoryPolicyLimitBytes: 192 * 1024 * 1024,
+      guestMemoryPolicyLimitBytes: 2 * GO_RUNTIME_GUEST_MEMORY_POLICY_LIMIT_BYTES,
       kernelWorkerMaxMemoryPages: 7168,
       maxProcessMemoryPages: 40960,
       maxForkMemoryPages: 40960,
