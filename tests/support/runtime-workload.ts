@@ -92,16 +92,62 @@ export function readKernelWasm(): Uint8Array | null {
   return new Uint8Array(readFileSync(wasmPath));
 }
 
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function uniqueExistingDirectories(candidates: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+    const resolved = resolve(candidate);
+    if (seen.has(resolved) || !isDirectory(resolved)) {
+      continue;
+    }
+    seen.add(resolved);
+    result.push(resolved);
+  }
+  return result;
+}
+
+function detectKernelTargetRoots(): string[] {
+  return uniqueExistingDirectories([
+    resolve(process.cwd(), "../kernel/target"),
+    resolve(process.cwd(), "kernel/target"),
+    resolve(__dirname, "../../../kernel/target"),
+  ]);
+}
+
+function detectKernelTargetBuildDirs(targetDir: string): string[] {
+  const candidates = [
+    resolve(targetDir, "release/build"),
+    resolve(targetDir, "debug/build"),
+  ];
+  for (const entry of readdirSync(targetDir)) {
+    const entryPath = resolve(targetDir, entry);
+    if (!isDirectory(entryPath)) {
+      continue;
+    }
+    candidates.push(resolve(entryPath, "release/build"));
+    candidates.push(resolve(entryPath, "debug/build"));
+  }
+  return uniqueExistingDirectories(candidates);
+}
+
 function detectRiscvElfBuildDirs(): string[] {
-  const candidates = (process.env.TIDEMARK_TEST_RISCV_ELF_BUILD_DIR ?? "")
+  const envCandidates = (process.env.TIDEMARK_TEST_RISCV_ELF_BUILD_DIR ?? "")
     .split(delimiter)
     .filter(Boolean);
-  return candidates.filter((candidate, index) => (
-    candidate
-    && existsSync(candidate)
-    && statSync(candidate).isDirectory()
-    && candidates.indexOf(candidate) === index
-  ));
+  const builtArtifactCandidates = detectKernelTargetRoots()
+    .flatMap((targetDir) => detectKernelTargetBuildDirs(targetDir));
+  return uniqueExistingDirectories([...envCandidates, ...builtArtifactCandidates]);
 }
 
 function findRiscvElfPath(buildDir: string, name: string): string | null {
