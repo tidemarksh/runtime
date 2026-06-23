@@ -5,6 +5,7 @@ import {
   runScriptRuntimeEntry,
   validateScriptRuntimeOutput,
 } from "../../../support/script-runtime-harness.js";
+import { scriptRuntimeGateTimeoutMs } from "../../../support/script-runtime-test-runner.js";
 import { perlScriptRuntimeEntry } from "./script-runtime.js";
 
 const perlIsolationEntries = [
@@ -72,5 +73,5 @@ for (const entry of perlIsolationEntries) {
     } finally {
       runtime.destroy();
     }
-  }, 20_000);
+  }, scriptRuntimeGateTimeoutMs(entry));
 }
