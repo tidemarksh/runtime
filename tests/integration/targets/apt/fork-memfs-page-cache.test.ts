@@ -159,7 +159,7 @@ function buildDynamicForkLargeFileProbe(): Uint8Array | null {
       "  buf[0] = '\\0';",
       "  while (off + 1 < sizeof(buf)) {",
       "    ssize_t n = read(fd, buf + off, sizeof(buf) - 1 - off);",
-      "    if (n < 0) { if (errno == EINTR) continue; perror(\"read-child\"); return 20; }",
+      "    if (n < 0) { if (errno == EINTR || errno == EAGAIN) { usleep(1000); continue; } perror(\"read-child\"); return 20; }",
       "    if (n == 0) break;",
       "    off += (size_t)n;",
       "    buf[off] = '\\0';",
