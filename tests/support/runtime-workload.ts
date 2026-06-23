@@ -81,7 +81,11 @@ export function logSkip(reason: string): null {
 }
 
 function detectKernelWasmPath(): string | null {
-  return KERNEL_WASM_PATH && existsSync(KERNEL_WASM_PATH) ? KERNEL_WASM_PATH : null;
+  const candidates = [
+    KERNEL_WASM_PATH,
+    ...detectKernelTargetRoots().flatMap((targetDir) => detectKernelWasmCandidates(targetDir)),
+  ];
+  return uniqueExistingFiles(candidates)[0] ?? null;
 }
 
 export function readKernelWasm(): Uint8Array | null {
@@ -98,6 +102,31 @@ function isDirectory(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function uniqueExistingFiles(candidates: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+    const resolved = resolve(candidate);
+    if (seen.has(resolved) || !isFile(resolved)) {
+      continue;
+    }
+    seen.add(resolved);
+    result.push(resolved);
+  }
+  return result;
 }
 
 function uniqueExistingDirectories(candidates: string[]): string[] {
@@ -123,6 +152,19 @@ function detectKernelTargetRoots(): string[] {
     resolve(process.cwd(), "kernel/target"),
     resolve(__dirname, "../../../kernel/target"),
   ]);
+}
+
+function detectKernelWasmCandidates(targetDir: string): string[] {
+  return [
+    resolve(targetDir, "wasm64-unknown-unknown/release/tidemark_kernel.wasm"),
+    resolve(targetDir, "wasm32-unknown-unknown/release/tidemark_kernel.wasm"),
+    resolve(targetDir, "wasm32-wasip1/release/tidemark_kernel.wasm"),
+    resolve(targetDir, "release/tidemark_kernel.wasm"),
+    resolve(targetDir, "wasm64-unknown-unknown/debug/tidemark_kernel.wasm"),
+    resolve(targetDir, "wasm32-unknown-unknown/debug/tidemark_kernel.wasm"),
+    resolve(targetDir, "wasm32-wasip1/debug/tidemark_kernel.wasm"),
+    resolve(targetDir, "debug/tidemark_kernel.wasm"),
+  ];
 }
 
 function detectKernelTargetBuildDirs(targetDir: string): string[] {
