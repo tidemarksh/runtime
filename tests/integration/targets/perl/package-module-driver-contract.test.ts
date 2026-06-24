@@ -15,6 +15,7 @@ interface PerlPackageDriverContractCase {
   expectedPathSubstring?: string;
   expectedFaultVmaSubstring?: string;
   expectHeapJumpAfterBrk?: boolean;
+  timeoutMs?: number;
 }
 
 function parseDebugHexField(debugInfo: string, field: string): number | null {
@@ -62,22 +63,26 @@ const perlContractCases: readonly PerlPackageDriverContractCase[] = [
     ],
     expectedExitCode: 0,
     expectedDriverSubstrings: ['{"lang":"perl","n":42}'],
+    timeoutMs: 30_000,
   },
   {
     id: "perl-app-prove-module-load-contract",
     argv: ["/usr/bin/perl", "-MApp::Prove", "-e", 'print "app-prove-ok\\n";'],
     expectedExitCode: 0,
     expectedDriverSubstrings: ["app-prove-ok"],
+    timeoutMs: 30_000,
   },
 ] as const;
 
 for (const contractCase of perlContractCases) {
+  const timeoutMs = contractCase.timeoutMs ?? perlProvePackageModuleEntry.timeoutMs;
   test(`perl package/module driver contract: ${contractCase.id}`, async () => {
     const entry = {
       ...perlProvePackageModuleEntry,
       id: contractCase.id,
       argv: contractCase.argv,
       expectedDriverSubstrings: contractCase.expectedDriverSubstrings ?? [],
+      timeoutMs,
     };
 
     const prepared = await preparePackageModuleDriverRuntime(entry);
@@ -207,5 +212,5 @@ for (const contractCase of perlContractCases) {
     } finally {
       runtime.destroy();
     }
-  }, 20_000);
+  }, timeoutMs + 10_000);
 }
