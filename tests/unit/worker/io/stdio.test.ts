@@ -232,6 +232,65 @@ test("drainHiddenProcessOutput flushes child bytes into the visible parent outpu
   expect(delivered).toEqual(["child-out\n"]);
 });
 
+test("drainHiddenProcessOutput flushes child PTY slave output inherited from the parent", () => {
+  const { handle: owner } = makeHandle({
+    stdinPipe: 0,
+    stdoutPipe: 0,
+    stderrPipe: 0,
+    ttyPtySlot: 1,
+    hostStdio: {
+      stdinPipe: 0,
+      stdoutPipe: 0,
+      stderrPipe: 0,
+      ttyPtySlot: 1,
+      refCount: 1,
+    },
+  });
+  const ptyInputPipe = 6;
+  const ptyOutputPipe = 7;
+  const ptyKernel = {
+    ...owner.kernel,
+    abi_fd_type_pty_master: () => 11,
+    abi_fd_type_pty_slave: () => 12,
+    abi_o_rdonly: () => 0,
+    abi_o_wronly: () => 1,
+    abi_o_rdwr: () => 2,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => {
+      if (fd === 1) return 20;
+      if (fd === 2) return 21;
+      return 0;
+    },
+    kernel_ofd_fd_type: (ofdId: number) => (ofdId === 20 || ofdId === 21 ? 12 : 0),
+    kernel_ofd_ino: (ofdId: number) => (ofdId === 20 || ofdId === 21 ? 1 : 0),
+    kernel_ofd_status_flags: () => 0,
+    kernel_pty_input_pipe: () => ptyInputPipe,
+    kernel_pty_output_pipe: () => ptyOutputPipe,
+  } as unknown as KernelExports;
+  owner.kernel = ptyKernel;
+  const delivered: string[] = [];
+  owner.onStdout = (data) => {
+    delivered.push(new TextDecoder().decode(data));
+  };
+
+  const { handle: child } = makeHandle({
+    pid: 2,
+    parentPid: owner.pid,
+    hostStdio: owner.hostStdio,
+    stdinPipe: 0,
+    stdoutPipe: 0,
+    stderrPipe: 0,
+    ttyPtySlot: 1,
+    stdioOwner: owner,
+    kernel: ptyKernel,
+    onStdout: undefined,
+  });
+
+  seedPipe(child.memory, child.kernelState, ptyOutputPipe, "pty-child-out\n");
+
+  expect(drainHiddenProcessOutput(child)).toBe(true);
+  expect(delivered).toEqual(["pty-child-out\n"]);
+});
+
 test("drainHiddenProcessOutput uses hidden child local stdout after host stdio detach", () => {
   const { handle: owner } = makeHandle();
   const delivered: string[] = [];
@@ -254,6 +313,161 @@ test("drainHiddenProcessOutput uses hidden child local stdout after host stdio d
 
   expect(drainHiddenProcessOutput(child)).toBe(true);
   expect(delivered).toEqual(["child-exit-out\n"]);
+});
+
+test("drainHiddenProcessOutput falls back to shared host stdout after child fds detach", () => {
+  const { handle: owner } = makeHandle();
+  const delivered: string[] = [];
+  owner.onStdout = (data) => {
+    delivered.push(new TextDecoder().decode(data));
+  };
+
+  const { handle: child } = makeHandle({
+    pid: 2,
+    parentPid: owner.pid,
+    hostStdio: owner.hostStdio,
+    stdinPipe: owner.stdinPipe,
+    stdoutPipe: owner.stdoutPipe,
+    stderrPipe: owner.stderrPipe,
+    stdioOwner: owner,
+    onStdout: undefined,
+  });
+  child.kernel = {
+    ...child.kernel,
+    process_fd_ofd_id: () => 0,
+  } as unknown as KernelExports;
+
+  seedPipe(child.memory, child.kernelState, child.hostStdio.stdoutPipe, "detached-child-out\n");
+
+  expect(drainHiddenProcessOutput(child)).toBe(true);
+  expect(delivered).toEqual(["detached-child-out\n"]);
+});
+
+test("drainHiddenProcessOutput does not fall back to host stdout while child fd1 is a file", () => {
+  const { handle: owner } = makeHandle();
+  const delivered: string[] = [];
+  owner.onStdout = (data) => {
+    delivered.push(new TextDecoder().decode(data));
+  };
+
+  const { handle: child } = makeHandle({
+    pid: 2,
+    parentPid: owner.pid,
+    hostStdio: owner.hostStdio,
+    stdinPipe: owner.stdinPipe,
+    stdoutPipe: owner.stdoutPipe,
+    stderrPipe: owner.stderrPipe,
+    stdioOwner: owner,
+    onStdout: undefined,
+  });
+  child.kernel = {
+    ...child.kernel,
+    abi_fd_type_file: () => 3,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => {
+      if (fd === 0) return 3;
+      if (fd === 1) return 6;
+      if (fd === 2) return 5;
+      return 0;
+    },
+    kernel_ofd_fd_type: (ofdId: number) => {
+      if (ofdId === 6) return 3;
+      return ofdId >= 3 && ofdId <= 5 ? 2 : 0;
+    },
+    kernel_ofd_ino: (ofdId: number) => {
+      if (ofdId === 3) return 0;
+      if (ofdId === 4) return 4;
+      if (ofdId === 5) return 5;
+      if (ofdId === 6) return 47;
+      return 0;
+    },
+  } as unknown as KernelExports;
+
+  seedPipe(child.memory, child.kernelState, child.hostStdio.stdoutPipe, "redirected-file-output\n");
+  seedPipe(child.memory, child.kernelState, child.hostStdio.stderrPipe, "stderr-tail\n");
+
+  expect(drainHiddenProcessOutput(child)).toBe(true);
+  expect(delivered).toEqual(["stderr-tail\n"]);
+});
+
+test("drainProcessOutput does not fall back to host stdout while fd1 is a file", () => {
+  const { handle } = makeHandle();
+  const delivered: string[] = [];
+  handle.onStdout = (data) => {
+    delivered.push(new TextDecoder().decode(data));
+  };
+  handle.kernel = {
+    ...handle.kernel,
+    abi_fd_type_file: () => 3,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => {
+      if (fd === 0) return 3;
+      if (fd === 1) return 6;
+      if (fd === 2) return 5;
+      return 0;
+    },
+    kernel_ofd_fd_type: (ofdId: number) => {
+      if (ofdId === 6) return 3;
+      return ofdId >= 3 && ofdId <= 5 ? 2 : 0;
+    },
+    kernel_ofd_ino: (ofdId: number) => {
+      if (ofdId === 3) return 0;
+      if (ofdId === 4) return 4;
+      if (ofdId === 5) return 5;
+      if (ofdId === 6) return 47;
+      return 0;
+    },
+  } as unknown as KernelExports;
+
+  seedPipe(handle.memory, handle.kernelState, handle.hostStdio.stdoutPipe, "redirected-file-output\n");
+  seedPipe(handle.memory, handle.kernelState, handle.hostStdio.stderrPipe, "stderr-tail\n");
+
+  expect(drainProcessOutput(handle)).toBe(true);
+  expect(delivered).toEqual(["stderr-tail\n"]);
+});
+
+test("drainProcessOutput drains visible PTY output shared by stdout and stderr once", () => {
+  const ptyInputPipe = 1;
+  const ptyOutputPipe = 2;
+  const { handle } = makeHandle({
+    stdinPipe: 0,
+    stdoutPipe: 0,
+    stderrPipe: 0,
+    ttyPtySlot: 1,
+    hostStdio: {
+      stdinPipe: ptyInputPipe,
+      stdoutPipe: ptyOutputPipe,
+      stderrPipe: ptyOutputPipe,
+      ttyPtySlot: 1,
+      refCount: 1,
+    },
+  });
+  handle.kernel = {
+    ...handle.kernel,
+    abi_fd_type_pty_master: () => 11,
+    abi_fd_type_pty_slave: () => 12,
+    abi_o_rdonly: () => 0,
+    abi_o_wronly: () => 1,
+    abi_o_rdwr: () => 2,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => {
+      if (fd === 0) return 20;
+      if (fd === 1) return 21;
+      if (fd === 2) return 22;
+      return 0;
+    },
+    kernel_ofd_fd_type: (ofdId: number) => (ofdId >= 20 && ofdId <= 22 ? 12 : 0),
+    kernel_ofd_ino: (ofdId: number) => (ofdId >= 20 && ofdId <= 22 ? 1 : 0),
+    kernel_ofd_status_flags: () => 0,
+    kernel_pty_input_pipe: () => ptyInputPipe,
+    kernel_pty_output_pipe: () => ptyOutputPipe,
+  } as unknown as KernelExports;
+  const delivered: string[] = [];
+  handle.onStdout = (data) => {
+    delivered.push(new TextDecoder().decode(data));
+  };
+
+  seedPipe(handle.memory, handle.kernelState, ptyOutputPipe, "prompt$ ");
+
+  expect(drainProcessOutput(handle)).toBe(true);
+  expect(delivered).toEqual(["prompt$ "]);
 });
 
 test("drainProcessOutput queues merged output when no stdout callback is installed", () => {
