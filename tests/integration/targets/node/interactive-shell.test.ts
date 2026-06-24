@@ -15,6 +15,8 @@ const BUSYBOX_BINARY_PATH = process.env.TIDEMARK_TEST_BUSYBOX_BINARY
   ?? "";
 const GO_BINARY_PATH = process.env.TIDEMARK_TEST_GO_BINARY
   ?? "";
+const DEMO_SHELL_GUEST_MEMORY_POLICY_LIMIT_BYTES = 2 * 1024 * 1024 * 1024;
+const DEMO_SHELL_HEADROOM_MEMORY_PAGES = 40960;
 
 function readBytes(path: string, label: string): Uint8Array | null {
   if (!existsSync(path)) {
@@ -123,7 +125,7 @@ async function startShell(runtime: Runtime, busyboxBytes: Uint8Array) {
     busyboxBytes,
     ["/bin/sh", "-i"],
     demoShellEnv(),
-    { cwd: "/work" },
+    { cwd: "/work", stdio: "pty" },
   );
   const outputRef = { value: "" };
   proc.onStdout((data) => {
@@ -144,7 +146,12 @@ test("Runtime interactive shell executes node -v with demo-style PATH lookup fro
     return;
   }
 
-  const runtime = await Runtime.create({ wasmBytes, guestMemoryPolicyLimitBytes: 384 * 1024 * 1024 });
+  const runtime = await Runtime.create({
+    wasmBytes,
+    guestMemoryPolicyLimitBytes: DEMO_SHELL_GUEST_MEMORY_POLICY_LIMIT_BYTES,
+    maxProcessMemoryPages: DEMO_SHELL_HEADROOM_MEMORY_PAGES,
+    maxForkMemoryPages: DEMO_SHELL_HEADROOM_MEMORY_PAGES,
+  });
   try {
     await runtime.applyFsSnapshot(snapshot);
     const { proc, outputRef } = await startShell(runtime, busyboxBytes);
@@ -182,7 +189,12 @@ test("Runtime interactive shell executes go version with demo-style PATH lookup"
     return;
   }
 
-  const runtime = await Runtime.create({ wasmBytes, guestMemoryPolicyLimitBytes: 384 * 1024 * 1024 });
+  const runtime = await Runtime.create({
+    wasmBytes,
+    guestMemoryPolicyLimitBytes: DEMO_SHELL_GUEST_MEMORY_POLICY_LIMIT_BYTES,
+    maxProcessMemoryPages: DEMO_SHELL_HEADROOM_MEMORY_PAGES,
+    maxForkMemoryPages: DEMO_SHELL_HEADROOM_MEMORY_PAGES,
+  });
   try {
     await runtime.applyFsSnapshot(snapshot);
     const { proc, outputRef } = await startShell(runtime, busyboxBytes);
