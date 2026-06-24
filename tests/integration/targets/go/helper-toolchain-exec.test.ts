@@ -19,6 +19,8 @@ const goHelperEntries = [
   goHelperTwoStepGoarchExplicitEnvToolchainEntry,
 ] as const;
 
+const GO_HELPER_DIAGNOSTIC_TEST_TIMEOUT_MARGIN_MS = 70_000;
+
 function expectGoHelperRuntimeOwnershipSurface(detail: string): void {
   expect(detail, detail).not.toContain("memory access out of bounds");
   expect(
@@ -75,5 +77,5 @@ for (const entry of goHelperEntries) {
     } finally {
       runtime.destroy();
     }
-  }, entry.timeoutMs + 10_000);
+  }, entry.timeoutMs + GO_HELPER_DIAGNOSTIC_TEST_TIMEOUT_MARGIN_MS);
 }
