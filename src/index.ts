@@ -190,6 +190,7 @@ export class Runtime {
   private readonly processes = new Map<number, ProcessHandle>();
   private readonly kernelRequests = new Map<number, {
     promise: Promise<unknown>;
+    rejectOnDestroy: boolean;
     resolve: (value: KernelWorkerOutbound) => void;
     reject: (reason?: unknown) => void;
   }>();
@@ -335,6 +336,7 @@ export class Runtime {
   private sendKernelRequest<T extends KernelWorkerOutbound>(
     msg: KernelWorkerRequest,
     transfer: Transferable[] = [],
+    options: { rejectOnDestroy?: boolean } = {},
   ): Promise<T> {
     if (!this.kernelWorker) {
       return Promise.reject(new Error("kernel worker not initialized"));
@@ -349,6 +351,7 @@ export class Runtime {
     });
     this.kernelRequests.set(requestId, {
       promise: request,
+      rejectOnDestroy: options.rejectOnDestroy ?? true,
       resolve: resolveRequest,
       reject: rejectRequest,
     });
@@ -391,6 +394,8 @@ export class Runtime {
         msg.type === "process-fs" && processFsProgressDebugEnabled()
           ? { ...msg, debugProgress: true }
           : msg,
+        [],
+        { rejectOnDestroy: false },
       ),
     });
 
@@ -774,7 +779,9 @@ export class Runtime {
 
     for (const pending of this.kernelRequests.values()) {
       void pending.promise.catch(() => {});
-      pending.reject(new Error("runtime destroyed"));
+      if (pending.rejectOnDestroy) {
+        pending.reject(new Error("runtime destroyed"));
+      }
     }
     this.kernelRequests.clear();
 

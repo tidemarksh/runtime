@@ -455,10 +455,50 @@ test("Runtime.destroy handles pending kernel-worker requests before rejecting th
       sendKernelRequest(message: KernelWorkerRequest): Promise<KernelWorkerOutbound>;
     };
 
-    void requestRuntime.sendKernelRequest({ type: "mkdir", path: "/pending" });
+    const pending = requestRuntime.sendKernelRequest({ type: "mkdir", path: "/pending" });
+    const observed = expect(pending).rejects.toThrow("runtime destroyed");
+    runtime.destroy();
+
+    await observed;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(unhandledReasons).toEqual([]);
+  } finally {
+    process.off("unhandledRejection", onUnhandledRejection);
+  }
+});
+
+test("Runtime.destroy abandons process-scoped kernel-worker requests without unhandled rejection", async () => {
+  const unhandledReasons: unknown[] = [];
+  const onUnhandledRejection = (reason: unknown): void => {
+    unhandledReasons.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandledRejection);
+
+  try {
+    const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
+    const requestRuntime = runtime as unknown as {
+      sendKernelRequest(
+        message: KernelWorkerRequest,
+        transfer?: Transferable[],
+        options?: { rejectOnDestroy?: boolean },
+      ): Promise<KernelWorkerOutbound>;
+    };
+
+    let settled = false;
+    void requestRuntime
+      .sendKernelRequest({ type: "mkdir", path: "/pending-process-rpc" }, [], { rejectOnDestroy: false })
+      .then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
     runtime.destroy();
 
     await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
     expect(unhandledReasons).toEqual([]);
   } finally {
     process.off("unhandledRejection", onUnhandledRejection);
