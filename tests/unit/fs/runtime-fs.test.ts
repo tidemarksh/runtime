@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
 import { Runtime } from "../../../src/index.js";
 import type { FsSnapshotEntry } from "../../../src/fs/types.js";
 import type { RuntimeStat } from "../../../src/fs/types.js";
-import type { KernelWorkerInbound, KernelWorkerOutbound } from "../../../src/messages.js";
+import type { KernelWorkerInbound, KernelWorkerOutbound, KernelWorkerRequest } from "../../../src/messages.js";
 import type { ProcessHandle } from "../../../src/worker.js";
 import * as workerModule from "../../../src/worker.js";
 
@@ -440,6 +440,29 @@ test("Runtime.fs routes kernel-worker RPCs with unique request ids", async () =>
 
   runtime.destroy();
   expect(createdWorkers[0].terminated).toBe(true);
+});
+
+test("Runtime.destroy handles pending kernel-worker requests before rejecting them", async () => {
+  const unhandledReasons: unknown[] = [];
+  const onUnhandledRejection = (reason: unknown): void => {
+    unhandledReasons.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandledRejection);
+
+  try {
+    const runtime = await Runtime.create({ wasmBytes: new Uint8Array([0x00]) });
+    const requestRuntime = runtime as unknown as {
+      sendKernelRequest(message: KernelWorkerRequest): Promise<KernelWorkerOutbound>;
+    };
+
+    void requestRuntime.sendKernelRequest({ type: "mkdir", path: "/pending" });
+    runtime.destroy();
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(unhandledReasons).toEqual([]);
+  } finally {
+    process.off("unhandledRejection", onUnhandledRejection);
+  }
 });
 
 test("Runtime.fs reads only kernel-worker canonical FS state", async () => {

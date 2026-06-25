@@ -189,6 +189,7 @@ export class Runtime {
   private readonly runtimeId: number;
   private readonly processes = new Map<number, ProcessHandle>();
   private readonly kernelRequests = new Map<number, {
+    promise: Promise<unknown>;
     resolve: (value: KernelWorkerOutbound) => void;
     reject: (reason?: unknown) => void;
   }>();
@@ -340,14 +341,25 @@ export class Runtime {
     }
 
     const requestId = this.nextKernelRequestId++;
-    return new Promise<T>((resolve, reject) => {
-      this.kernelRequests.set(requestId, {
-        resolve: (value) => resolve(value as T),
-        reject,
-      });
-      const payload: KernelWorkerInbound = { ...msg, requestId };
-      this.kernelWorker!.postMessage(payload, transfer);
+    let resolveRequest!: (value: KernelWorkerOutbound) => void;
+    let rejectRequest!: (reason?: unknown) => void;
+    const request = new Promise<T>((resolve, reject) => {
+      resolveRequest = (value) => resolve(value as T);
+      rejectRequest = reject;
     });
+    this.kernelRequests.set(requestId, {
+      promise: request,
+      resolve: resolveRequest,
+      reject: rejectRequest,
+    });
+    const payload: KernelWorkerInbound = { ...msg, requestId };
+    try {
+      this.kernelWorker.postMessage(payload, transfer);
+    } catch (error) {
+      this.kernelRequests.delete(requestId);
+      rejectRequest(error);
+    }
+    return request;
   }
 
   async spawn(
@@ -761,6 +773,7 @@ export class Runtime {
     this.processes.clear();
 
     for (const pending of this.kernelRequests.values()) {
+      void pending.promise.catch(() => {});
       pending.reject(new Error("runtime destroyed"));
     }
     this.kernelRequests.clear();
