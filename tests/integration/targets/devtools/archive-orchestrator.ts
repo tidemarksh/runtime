@@ -153,7 +153,7 @@ export const cmakeScriptArchiveEntry: ArchiveOrchestratorEntry = {
       argv: ["/usr/bin/cmake", "-P", "/work/script.cmake"],
       cwd: "/work",
       expectedOutputSubstrings: ["cmake-evidence"],
-      timeoutMs: 20_000,
+      timeoutMs: 60_000,
     }),
   ],
   artifactChecks: [

@@ -950,6 +950,7 @@ test("completeProcessExit notifies process exit before waiting on final kernel-w
   const order: string[] = [];
   const handle = makeHandle({
     parentPid: null,
+    processMemfsPublishPending: true,
     onExit: (code) => {
       order.push(`exit:${code}`);
     },
@@ -990,8 +991,63 @@ test("completeProcessExit notifies process exit before waiting on final kernel-w
 
   expect(order).toContain("release");
   expect(order).toContain("exit:0");
-  expect(order.indexOf("release")).toBeLessThan(order.indexOf("exit:0"));
+  expect(order.indexOf("exit:0")).toBeLessThan(order.indexOf("release"));
   expect(order.indexOf("exit:0")).toBeLessThan(order.indexOf("unregister-start"));
+  expect(order).not.toContain("destroy:3");
+});
+
+test("completeProcessExit notifies process exit before waiting on final host stdio release", async () => {
+  const order: string[] = [];
+  const handle = makeHandle({
+    parentPid: null,
+    processMemfsPublishPending: true,
+    onExit: (code) => {
+      order.push(`exit:${code}`);
+    },
+  });
+  const processHandles = new Map<number, ProcessHandle>([
+    [3, handle],
+  ]);
+
+  const helpers = createWorkerExitHelpers({
+    processHandles,
+    appendRuntimeLifecycleEvent: () => {},
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle(destroyHandle) {
+      order.push(`destroy:${destroyHandle.pid}`);
+    },
+    formatAllLiveThreadDebug: () => "threads",
+    kickBlockedWorkers: () => {},
+    publishRuntimeFsState: () => {
+      order.push("publish-fs");
+      return 1;
+    },
+    recordChildExitViaKernelWorker: async () => {},
+    releaseSharedHostStdio: () => {
+      order.push("release-start");
+      return new Promise<void>(() => {});
+    },
+    replaceRuntimeFsSnapshot: () => {},
+    requestPipeStateSync: async () => {},
+    snapshotProcessFs: () => [],
+    unregisterProcessWithKernelWorker: async () => {
+      order.push("unregister");
+    },
+  });
+
+  void helpers.completeProcessExit(handle, 0, 0);
+  await flushMicrotasks(100);
+
+  expect(order).toContain("publish-fs");
+  expect(order).toContain("exit:0");
+  expect(order).toContain("release-start");
+  expect(order.indexOf("publish-fs")).toBeLessThan(order.indexOf("exit:0"));
+  expect(order.indexOf("exit:0")).toBeLessThan(order.indexOf("release-start"));
+  expect(order).not.toContain("unregister");
   expect(order).not.toContain("destroy:3");
 });
 

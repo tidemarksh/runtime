@@ -2194,8 +2194,8 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `exit-visible-output-after-final-drain:${handle.pid}:drained=${finalDrain ? 1 : 0}:${formatVisibleOutputDebug(handle)}`);
       }
       await publishProcessFsStateOnExit(handle);
-      await deps.releaseSharedHostStdio(handle);
       notifyExit();
+      await deps.releaseSharedHostStdio(handle);
     } catch (error) {
       cleanupError = error instanceof Error ? error : new Error(String(error));
       handle.lastDebugMessage = [
