@@ -26,6 +26,8 @@ export const SUPERVISOR_FD_CONTROL_KIND_EPOLL_CREATED = 5;
 export const SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_ADD = 6;
 export const SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_DEL = 7;
 export const SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_MOD = 8;
+export const SUPERVISOR_FD_CONTROL_KIND_SOCKET_CREATED = 9;
+export const SUPERVISOR_FD_CONTROL_KIND_SOCKETPAIR_CREATED = 10;
 const SUPERVISOR_FD_CONTROL_SCRATCH_OFFSET = 0x31000;
 
 export interface SupervisorShadowKernelExports extends KernelExports {
@@ -304,6 +306,16 @@ function supervisorFdControlKindEpollCtlMod(kernelExports: KernelExports): numbe
     ?? SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_MOD;
 }
 
+function supervisorFdControlKindSocketCreated(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fd_control_kind_socket_created?.()
+    ?? SUPERVISOR_FD_CONTROL_KIND_SOCKET_CREATED;
+}
+
+function supervisorFdControlKindSocketpairCreated(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fd_control_kind_socketpair_created?.()
+    ?? SUPERVISOR_FD_CONTROL_KIND_SOCKETPAIR_CREATED;
+}
+
 export function decodeSupervisorFdControlRecord(
   kernelExports: KernelExports,
   view: DataView,
@@ -334,6 +346,8 @@ export function decodeSupervisorFdControlRecord(
     && kind !== supervisorFdControlKindEpollCtlAdd(kernelExports)
     && kind !== supervisorFdControlKindEpollCtlDel(kernelExports)
     && kind !== supervisorFdControlKindEpollCtlMod(kernelExports)
+    && kind !== supervisorFdControlKindSocketCreated(kernelExports)
+    && kind !== supervisorFdControlKindSocketpairCreated(kernelExports)
   ) {
     throw new Error(`supervisor fd control bad kind: ${kind}`);
   }
