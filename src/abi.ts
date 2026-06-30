@@ -168,6 +168,12 @@ export interface KernelExports {
   supervisor_fd_control_kind_epoll_ctl_mod?(): number;
   supervisor_fd_control_kind_socket_created?(): number;
   supervisor_fd_control_kind_socketpair_created?(): number;
+  supervisor_fd_control_kind_socket_bound?(): number;
+  supervisor_fd_control_kind_socket_listening?(): number;
+  supervisor_fd_control_kind_socket_connect_started?(): number;
+  supervisor_fd_control_kind_socket_connected?(): number;
+  supervisor_fd_control_kind_socket_connect_failed?(): number;
+  supervisor_fd_control_kind_socket_accepted?(): number;
   supervisor_reset_shadow_log?(): void;
   supervisor_shadow_thread_event_count?(): bigint | number;
   supervisor_shadow_host_completion_count?(): bigint | number;

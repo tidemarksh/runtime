@@ -28,6 +28,12 @@ export const SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_DEL = 7;
 export const SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_MOD = 8;
 export const SUPERVISOR_FD_CONTROL_KIND_SOCKET_CREATED = 9;
 export const SUPERVISOR_FD_CONTROL_KIND_SOCKETPAIR_CREATED = 10;
+export const SUPERVISOR_FD_CONTROL_KIND_SOCKET_BOUND = 11;
+export const SUPERVISOR_FD_CONTROL_KIND_SOCKET_LISTENING = 12;
+export const SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECT_STARTED = 13;
+export const SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECTED = 14;
+export const SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECT_FAILED = 15;
+export const SUPERVISOR_FD_CONTROL_KIND_SOCKET_ACCEPTED = 16;
 const SUPERVISOR_FD_CONTROL_SCRATCH_OFFSET = 0x31000;
 
 export interface SupervisorShadowKernelExports extends KernelExports {
@@ -316,6 +322,36 @@ function supervisorFdControlKindSocketpairCreated(kernelExports: KernelExports):
     ?? SUPERVISOR_FD_CONTROL_KIND_SOCKETPAIR_CREATED;
 }
 
+function supervisorFdControlKindSocketBound(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fd_control_kind_socket_bound?.()
+    ?? SUPERVISOR_FD_CONTROL_KIND_SOCKET_BOUND;
+}
+
+function supervisorFdControlKindSocketListening(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fd_control_kind_socket_listening?.()
+    ?? SUPERVISOR_FD_CONTROL_KIND_SOCKET_LISTENING;
+}
+
+function supervisorFdControlKindSocketConnectStarted(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fd_control_kind_socket_connect_started?.()
+    ?? SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECT_STARTED;
+}
+
+function supervisorFdControlKindSocketConnected(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fd_control_kind_socket_connected?.()
+    ?? SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECTED;
+}
+
+function supervisorFdControlKindSocketConnectFailed(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fd_control_kind_socket_connect_failed?.()
+    ?? SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECT_FAILED;
+}
+
+function supervisorFdControlKindSocketAccepted(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fd_control_kind_socket_accepted?.()
+    ?? SUPERVISOR_FD_CONTROL_KIND_SOCKET_ACCEPTED;
+}
+
 export function decodeSupervisorFdControlRecord(
   kernelExports: KernelExports,
   view: DataView,
@@ -348,6 +384,12 @@ export function decodeSupervisorFdControlRecord(
     && kind !== supervisorFdControlKindEpollCtlMod(kernelExports)
     && kind !== supervisorFdControlKindSocketCreated(kernelExports)
     && kind !== supervisorFdControlKindSocketpairCreated(kernelExports)
+    && kind !== supervisorFdControlKindSocketBound(kernelExports)
+    && kind !== supervisorFdControlKindSocketListening(kernelExports)
+    && kind !== supervisorFdControlKindSocketConnectStarted(kernelExports)
+    && kind !== supervisorFdControlKindSocketConnected(kernelExports)
+    && kind !== supervisorFdControlKindSocketConnectFailed(kernelExports)
+    && kind !== supervisorFdControlKindSocketAccepted(kernelExports)
   ) {
     throw new Error(`supervisor fd control bad kind: ${kind}`);
   }
