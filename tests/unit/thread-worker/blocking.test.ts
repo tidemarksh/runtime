@@ -165,6 +165,69 @@ test("handleFutexWait re-waits on the requeued futex address", () => {
   waitSpy.mockRestore();
 });
 
+test("handleFutexWait reports selected wake completion to supervisor when available", () => {
+  const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+  const i32 = new Int32Array(memory.buffer);
+  const waitSpy = vi.spyOn(Atomics, "wait");
+  const resumeWait = vi.fn();
+  const resumeWaitResult = vi.fn();
+  const postStatus = vi.fn();
+  const supervisorComplete = vi.fn((_vmPtr: number, completion: number) => {
+    expect(completion).toBe(41);
+    status = 0;
+    return status;
+  });
+
+  const waitAddr = 0x100;
+  const expected = 3;
+  let status = 20;
+  let blockedAddr = BigInt(waitAddr);
+
+  i32[waitAddr >>> 2] = expected;
+  waitSpy.mockImplementation((view, index, value) => {
+    expect(view.buffer).toBe(memory.buffer);
+    expect(index).toBe(waitAddr >>> 2);
+    expect(value).toBe(expected);
+    blockedAddr = 0n;
+    return "ok";
+  });
+
+  const handled = handleFutexWait({
+    exports: {
+      memory,
+      thread_futex_wait_addr: () => BigInt(waitAddr),
+      thread_futex_wait_timeout: () => 0n,
+      thread_futex_wait_expected: () => expected,
+      thread_record_blocked_addr: () => blockedAddr,
+      thread_sig_pending: () => 0n,
+      thread_resume_futex_wait: resumeWait,
+      thread_resume_futex_wait_result: resumeWaitResult,
+      thread_status: () => status,
+      supervisor_futex_wait_completion_woken: () => 41,
+      supervisor_complete_futex_wait: supervisorComplete,
+    } as never,
+    statusCodes: { FUTEX_WAIT: 20 } as never,
+    vmPtr: 0x1234,
+    guestBase: 0,
+    runtimeBridge: null,
+    threadStepBudget: 1000,
+    eintrErrno: 4,
+    futexWaitSliceMs: 0,
+    postStatus,
+    reattachPublishedKernelRuntimeState: () => {},
+    step: () => {},
+  }, 20);
+
+  expect(handled).toBe(false);
+  expect(supervisorComplete).toHaveBeenCalledWith(0x1234, 41);
+  expect(resumeWait).not.toHaveBeenCalled();
+  expect(resumeWaitResult).not.toHaveBeenCalled();
+  expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
+  expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(0));
+
+  waitSpy.mockRestore();
+});
+
 test("handleFutexWait treats not-equal with a cleared thread record as a wake", () => {
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
   const i32 = new Int32Array(memory.buffer);

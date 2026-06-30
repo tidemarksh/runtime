@@ -13,6 +13,11 @@ import { checkPendingSignalsAtBoundary } from "./signals.js";
 import { formatThreadWorkerGuestBufferPreview } from "./status.js";
 
 const BLOCKED_ADDR_NOT_FOUND = 0xffff_ffff_ffff_ffffn;
+const SUPERVISOR_FUTEX_WAIT_COMPLETION_WOKEN = 1;
+const SUPERVISOR_FUTEX_WAIT_COMPLETION_NOT_EQUAL = 2;
+const SUPERVISOR_FUTEX_WAIT_COMPLETION_TIMED_OUT = 3;
+const SUPERVISOR_FUTEX_WAIT_COMPLETION_INVALID_ADDRESS = 4;
+const SUPERVISOR_FUTEX_WAIT_COMPLETION_SIGNAL_CHECK = 5;
 
 function futexWordIndex(guestBase: number, guestAddr: bigint, words: Int32Array): number | null {
   if (guestBase < 0 || !Number.isSafeInteger(guestBase)) {
@@ -215,7 +220,9 @@ export function handleFutexWait(
   recordFutexWaitDebug(ctx, i32, guestAddr, expected, "entry", null, initialBlockedAddr);
 
   if (initialBlockedAddr === 0n) {
-    ctx.exports.thread_resume_futex_wait(ctx.vmPtr);
+    completeSupervisorFutexWait(ctx, "woken", () => {
+      ctx.exports.thread_resume_futex_wait(ctx.vmPtr);
+    });
     return true;
   }
 
@@ -229,7 +236,9 @@ export function handleFutexWait(
     const wordIndex = futexWordIndex(ctx.guestBase, guestAddr, i32);
     if (wordIndex === null) {
       clearSyscallTrace(ctx.exports);
-      ctx.exports.thread_resume_futex_wait_result(ctx.vmPtr, BigInt(ctx.exports.abi_eagain()));
+      completeSupervisorFutexWait(ctx, "invalid-address", () => {
+        ctx.exports.thread_resume_futex_wait_result(ctx.vmPtr, BigInt(ctx.exports.abi_eagain()));
+      });
       break;
     }
     const waitMs = deadlineMs === undefined
@@ -249,7 +258,9 @@ export function handleFutexWait(
       || ctx.exports.thread_sig_pending(ctx.vmPtr) !== 0n;
     if (stillBlockedAddr === BLOCKED_ADDR_NOT_FOUND) {
       clearSyscallTrace(ctx.exports);
-      ctx.exports.thread_resume_futex_wait_result(ctx.vmPtr, BigInt(ctx.exports.abi_eagain()));
+      completeSupervisorFutexWait(ctx, "invalid-address", () => {
+        ctx.exports.thread_resume_futex_wait_result(ctx.vmPtr, BigInt(ctx.exports.abi_eagain()));
+      });
       break;
     }
     if (stillBlockedAddr !== 0n && stillBlockedAddr !== guestAddr) {
@@ -258,25 +269,36 @@ export function handleFutexWait(
     }
     if (stillBlockedAddr !== 0n && hasPendingSignal) {
       clearSyscallTrace(ctx.exports);
-      ctx.exports.thread_resume_futex_wait_result(
-        ctx.vmPtr,
-        BigInt(ctx.exports.abi_eintr?.() ?? -ctx.eintrErrno),
-      );
+      completeSupervisorFutexWait(ctx, "signal-check", () => {
+        ctx.exports.thread_resume_futex_wait_result(
+          ctx.vmPtr,
+          BigInt(ctx.exports.abi_eintr?.() ?? -ctx.eintrErrno),
+        );
+      });
       break;
     }
     if (stillBlockedAddr === 0n) {
       clearSyscallTrace(ctx.exports);
-      ctx.exports.thread_resume_futex_wait(ctx.vmPtr);
+      completeSupervisorFutexWait(ctx, "woken", () => {
+        ctx.exports.thread_resume_futex_wait(ctx.vmPtr);
+      });
       break;
     }
     if (result === "not-equal") {
       clearSyscallTrace(ctx.exports);
-      ctx.exports.thread_resume_futex_wait(ctx.vmPtr);
+      completeSupervisorFutexWait(ctx, "not-equal", () => {
+        ctx.exports.thread_resume_futex_wait(ctx.vmPtr);
+      });
       break;
     }
     if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
       clearSyscallTrace(ctx.exports);
-      ctx.exports.thread_resume_futex_wait_result(ctx.vmPtr, BigInt(-110));
+      completeSupervisorFutexWait(ctx, "timed-out", () => {
+        ctx.exports.thread_resume_futex_wait_result(
+          ctx.vmPtr,
+          BigInt(ctx.exports.abi_etimedout?.() ?? -110),
+        );
+      });
       break;
     }
   }
@@ -284,6 +306,56 @@ export function handleFutexWait(
   const resumedStatus = ctx.exports.thread_status(ctx.vmPtr);
   ctx.postStatus(createThreadWorkerStatusOutcome(resumedStatus));
   return false;
+}
+
+type SupervisorFutexWaitCompletion =
+  | "woken"
+  | "not-equal"
+  | "timed-out"
+  | "invalid-address"
+  | "signal-check";
+
+function completeSupervisorFutexWait(
+  ctx: ThreadWorkerBlockingContext,
+  completion: SupervisorFutexWaitCompletion,
+  legacyResume: () => void,
+): void {
+  if (ctx.exports.supervisor_complete_futex_wait === undefined) {
+    legacyResume();
+    return;
+  }
+
+  ctx.exports.supervisor_complete_futex_wait(
+    ctx.vmPtr,
+    supervisorFutexWaitCompletionCode(ctx.exports, completion),
+  );
+}
+
+function supervisorFutexWaitCompletionCode(
+  exports: KernelExports,
+  completion: SupervisorFutexWaitCompletion,
+): number {
+  switch (completion) {
+    case "woken":
+      return exports.supervisor_futex_wait_completion_woken?.()
+        ?? SUPERVISOR_FUTEX_WAIT_COMPLETION_WOKEN;
+    case "not-equal":
+      return exports.supervisor_futex_wait_completion_not_equal?.()
+        ?? SUPERVISOR_FUTEX_WAIT_COMPLETION_NOT_EQUAL;
+    case "timed-out":
+      return exports.supervisor_futex_wait_completion_timed_out?.()
+        ?? SUPERVISOR_FUTEX_WAIT_COMPLETION_TIMED_OUT;
+    case "invalid-address":
+      return exports.supervisor_futex_wait_completion_invalid_address?.()
+        ?? SUPERVISOR_FUTEX_WAIT_COMPLETION_INVALID_ADDRESS;
+    case "signal-check":
+      return exports.supervisor_futex_wait_completion_signal_check?.()
+        ?? SUPERVISOR_FUTEX_WAIT_COMPLETION_SIGNAL_CHECK;
+    default: {
+      const exhaustive: never = completion;
+      return exhaustive;
+    }
+  }
 }
 
 function recordFutexWaitDebug(
