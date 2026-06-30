@@ -58,6 +58,9 @@ const SUPERVISOR_RESUME_RECORD_MAGIC = 0x5255_5354;
 const SUPERVISOR_RESUME_KIND_FUTEX_WAKE = 1;
 const SUPERVISOR_RESUME_DRAIN_LIMIT = 64;
 const SUPERVISOR_RESUME_SCRATCH_OFFSET = 0x28000;
+const SUPERVISOR_THREAD_STATE_SNAPSHOT_MAGIC = 0x4854_5354;
+const SUPERVISOR_THREAD_STATE_HEADER_BYTES = 32;
+const SUPERVISOR_THREAD_STATE_RECORD_BYTES = 32;
 
 interface SupervisorResumeRecord {
   kind: number;
@@ -66,6 +69,15 @@ interface SupervisorResumeRecord {
   tid: number;
   status: number;
   detail0: bigint;
+}
+
+interface SupervisorThreadStateRecord {
+  tid: number;
+  state: number;
+  vmPtr: number;
+  status: number;
+  blockedAddr: bigint;
+  pendingSigset: bigint;
 }
 
 function readSchedulerStepBudget(): number {
@@ -563,6 +575,96 @@ function decodeSupervisorResumeRecord(
   };
 }
 
+function supervisorThreadStateSnapshotBytes(handle: ProcessHandle): number {
+  return handle.kernel.supervisor_thread_state_snapshot_bytes?.() ?? 0;
+}
+
+function decodeSupervisorThreadStateRecord(
+  view: DataView,
+  offset: number,
+): SupervisorThreadStateRecord {
+  return {
+    tid: view.getUint32(offset, true),
+    state: view.getUint32(offset + 4, true),
+    vmPtr: view.getUint32(offset + 8, true),
+    status: view.getUint32(offset + 12, true),
+    blockedAddr: view.getBigUint64(offset + 16, true),
+    pendingSigset: view.getBigUint64(offset + 24, true),
+  };
+}
+
+function formatSupervisorThreadStateSnapshot(
+  handle: ProcessHandle,
+  vmPtr: number,
+): string {
+  const snapshotExport = handle.kernel.supervisor_thread_state_snapshot;
+  const snapshotBytes = supervisorThreadStateSnapshotBytes(handle);
+  if (snapshotExport === undefined || snapshotBytes === 0) {
+    return "";
+  }
+  if (!Number.isFinite(snapshotBytes) || snapshotBytes < SUPERVISOR_THREAD_STATE_HEADER_BYTES) {
+    return `:snapshot=invalid-bytes:${snapshotBytes}`;
+  }
+  const memory = handle.kernel.memory ?? handle.memory;
+  const scratch = supervisorResumeScratchBase(handle);
+  ensureMemoryCapacity(memory, scratch + snapshotBytes);
+  try {
+    const result = snapshotExport(vmPtr, scratch, snapshotBytes);
+    if (result <= 0 || result > snapshotBytes || result < SUPERVISOR_THREAD_STATE_HEADER_BYTES) {
+      return `:snapshot=err${result}`;
+    }
+    const view = new DataView(memory.buffer, scratch, result);
+    if (
+      view.getUint32(0, true) !== SUPERVISOR_THREAD_STATE_SNAPSHOT_MAGIC
+      || view.getUint32(4, true) !== 1
+    ) {
+      return ":snapshot=decode-error";
+    }
+    const totalBytes = view.getUint32(8, true);
+    const maxThreads = view.getUint32(12, true);
+    const processPtr = view.getUint32(16, true);
+    const ownerVmPtr = view.getUint32(20, true);
+    const recordBytes = view.getUint32(24, true);
+    if (
+      totalBytes < SUPERVISOR_THREAD_STATE_HEADER_BYTES
+      || totalBytes > result
+      || recordBytes < SUPERVISOR_THREAD_STATE_RECORD_BYTES
+    ) {
+      return ":snapshot=decode-error";
+    }
+    const availableRecords = Math.min(
+      maxThreads,
+      Math.floor((totalBytes - SUPERVISOR_THREAD_STATE_HEADER_BYTES) / recordBytes),
+    );
+    const records: string[] = [];
+    for (let slot = 0; slot < availableRecords; slot += 1) {
+      const offset = SUPERVISOR_THREAD_STATE_HEADER_BYTES + slot * recordBytes;
+      const record = decodeSupervisorThreadStateRecord(view, offset);
+      if (
+        record.tid === 0
+        && record.state === 0
+        && record.vmPtr === 0
+        && record.status === 0
+        && record.blockedAddr === 0n
+        && record.pendingSigset === 0n
+      ) {
+        continue;
+      }
+      let encoded = `${record.tid}/${record.state}/0x${record.vmPtr.toString(16)}`
+        + `/${record.status}/0x${record.blockedAddr.toString(16)}`;
+      if (record.pendingSigset !== 0n) {
+        encoded += `/sig=0x${record.pendingSigset.toString(16)}`;
+      }
+      records.push(encoded);
+    }
+    return `:snapshot=process=0x${processPtr.toString(16)}`
+      + `:owner=0x${ownerVmPtr.toString(16)}`
+      + `:threads=${records.join(",") || "empty"}`;
+  } catch {
+    return ":snapshot=err";
+  }
+}
+
 export function createWorkerSchedulerQueueHelpers(
   deps: WorkerSchedulerQueueDeps,
 ): WorkerSchedulerQueueHelpers {
@@ -613,7 +715,8 @@ export function createWorkerSchedulerQueueHelpers(
       handle,
       `supervisor-resume:futex-wake:ready:0x${thread.vmPtr.toString(16)}`
         + `:tid=${record.tid}:seq=${record.seq.toString()}:addr=0x${record.detail0.toString(16)}`
-        + `:status=${record.status}`,
+        + `:status=${record.status}`
+        + formatSupervisorThreadStateSnapshot(handle, record.vmPtr),
     );
   }
 
@@ -637,7 +740,11 @@ export function createWorkerSchedulerQueueHelpers(
       ) {
         thread.waitingInWorkerStatus = futexWaitStatus;
         thread.waitingInWorkerReconcileDeferred = false;
-        deps.appendWorkerDebugLog(handle, `supervisor-resume:futex-wake:parked:0x${vmPtr.toString(16)}`);
+        deps.appendWorkerDebugLog(
+          handle,
+          `supervisor-resume:futex-wake:parked:0x${vmPtr.toString(16)}`
+            + formatSupervisorThreadStateSnapshot(handle, vmPtr),
+        );
         continue;
       }
       selected.delete(vmPtr);
@@ -682,7 +789,8 @@ export function createWorkerSchedulerQueueHelpers(
       deps.appendWorkerDebugLog(
         handle,
         `supervisor-resume:futex-wake:parked:0x${record.vmPtr.toString(16)}`
-          + `:tid=${record.tid}:seq=${record.seq.toString()}:addr=0x${record.detail0.toString(16)}`,
+          + `:tid=${record.tid}:seq=${record.seq.toString()}:addr=0x${record.detail0.toString(16)}`
+          + formatSupervisorThreadStateSnapshot(handle, record.vmPtr),
       );
       return;
     }

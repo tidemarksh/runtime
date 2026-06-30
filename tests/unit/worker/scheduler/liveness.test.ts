@@ -16,6 +16,7 @@ vi.mock("../../../../src/worker/pool.js", async (importOriginal) => {
 import { createWorkerScheduler } from "../../../../src/worker/scheduler.js";
 import { registerForkSharedSyncPromise } from "../../../../src/worker/fork-shared-sync-debug.js";
 import { createWorkerStatusTransitionHandler } from "../../../../src/worker/message-handler/status/transitions.js";
+import { createWorkerSchedulerQueueHelpers } from "../../../../src/worker/scheduler/queue.js";
 import { createRunLoopScheduler } from "../../../../src/worker/scheduler/run-loop.js";
 import { createTransferDebugStats, createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
@@ -5811,6 +5812,108 @@ test("pumpProcess drains only supervisor-selected futex resumes when supervisor 
     budget: expect.any(Number),
   }));
   expect(unselectedWorker.postMessage).not.toHaveBeenCalled();
+});
+
+test("pumpProcess records supervisor thread-state snapshot diagnostics for selected futex resumes", () => {
+  const selectedWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const unselectedWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const selectedThread = makeThreadState(0x1234);
+  const unselectedThread = makeThreadState(0x5678);
+  selectedThread.waitingInWorkerStatus = 20;
+  unselectedThread.waitingInWorkerStatus = 20;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(selectedWorker, selectedThread);
+  threadWorkerStates.set(unselectedWorker, unselectedThread);
+  const { exports: kernel } = makeKernel();
+  let resumePolled = false;
+  kernel.thread_status = (vmPtr: number) => vmPtr === selectedThread.vmPtr
+    ? kernel.abi_status_ok()
+    : kernel.abi_status_futex_wait();
+  kernel.thread_record_blocked_addr = (vmPtr: number) => vmPtr === unselectedThread.vmPtr ? 0xbeefn : 0n;
+  kernel.thread_futex_wait_addr = (vmPtr: number) => vmPtr === unselectedThread.vmPtr ? 0xbeefn : 0n;
+  kernel.supervisor_resume_record_bytes = () => 48;
+  kernel.supervisor_resume_kind_futex_wake = () => 1;
+  kernel.supervisor_thread_state_snapshot_bytes = () => 2080;
+  kernel.kernel_scratch_base = () => 0;
+  kernel.supervisor_next_resume = vi.fn((outPtr: number, outLen: number) => {
+    if (resumePolled) {
+      return 0;
+    }
+    expect(outPtr).toBe(0);
+    expect(outLen).toBe(48);
+    const view = new DataView(kernel.memory.buffer);
+    view.setUint32(0, 0x5255_5354, true);
+    view.setUint32(4, 1, true);
+    view.setUint32(8, 48, true);
+    view.setUint32(12, 1, true);
+    view.setBigUint64(16, 1n, true);
+    view.setUint32(24, selectedThread.vmPtr, true);
+    view.setUint32(28, 2, true);
+    view.setUint32(32, 0x2000, true);
+    view.setUint32(36, kernel.abi_status_ok(), true);
+    view.setBigUint64(40, 0xfeedn, true);
+    resumePolled = true;
+    return 48;
+  });
+  kernel.supervisor_thread_state_snapshot = vi.fn((vmPtr: number, outPtr: number, outLen: number) => {
+    expect(vmPtr).toBe(selectedThread.vmPtr);
+    expect(outPtr).toBe(0);
+    expect(outLen).toBe(2080);
+    const view = new DataView(kernel.memory.buffer);
+    view.setUint32(0, 0x4854_5354, true);
+    view.setUint32(4, 1, true);
+    view.setUint32(8, 2080, true);
+    view.setUint32(12, 64, true);
+    view.setUint32(16, 0x2000, true);
+    view.setUint32(20, selectedThread.vmPtr, true);
+    view.setUint32(24, 32, true);
+    view.setUint32(28, 0, true);
+    view.setUint32(32, 2, true);
+    view.setUint32(36, 2, true);
+    view.setUint32(40, selectedThread.vmPtr, true);
+    view.setUint32(44, kernel.abi_status_ok(), true);
+    view.setBigUint64(48, 0n, true);
+    view.setBigUint64(56, 0n, true);
+    view.setUint32(64, 3, true);
+    view.setUint32(68, 3, true);
+    view.setUint32(72, unselectedThread.vmPtr, true);
+    view.setUint32(76, kernel.abi_status_futex_wait(), true);
+    view.setBigUint64(80, 0xbeefn, true);
+    view.setBigUint64(88, 0x44n, true);
+    return 2080;
+  });
+  const handle = makeHandle(kernel, selectedWorker);
+  kernel.memory = handle.memory;
+  handle.workers.add(unselectedWorker);
+  const debugEvents: string[] = [];
+  const queue = createWorkerSchedulerQueueHelpers({
+    appendRuntimeLifecycleEvent: () => {},
+    appendWorkerDebugLog: (_handle, event) => {
+      debugEvents.push(event);
+    },
+    blockWorker: () => {},
+    completeProcessExit: async () => {},
+    failProcess: (_handle, error) => {
+      throw error;
+    },
+    handleWorkerMessage: () => {},
+    threadWorkerStates,
+  });
+
+  queue.pumpProcess(handle);
+
+  expect(kernel.supervisor_thread_state_snapshot).toHaveBeenCalledTimes(1);
+  expect(selectedThread.waitingInWorkerStatus).toBeNull();
+  expect(unselectedThread.waitingInWorkerStatus).toBe(kernel.abi_status_futex_wait());
+  expect(debugEvents).toContain(
+    "supervisor-resume:futex-wake:ready:0x1234:tid=2:seq=1:addr=0xfeed:status=0"
+      + ":snapshot=process=0x2000:owner=0x1234"
+      + ":threads=2/2/0x1234/0/0x0,3/3/0x5678/20/0xbeef/sig=0x44",
+  );
 });
 
 test("kickBlockedWorkers applies child exit records for worker-local futex waits once", () => {

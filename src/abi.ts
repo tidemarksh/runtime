@@ -137,6 +137,7 @@ export interface KernelExports {
   // Supervisor shadow protocol (additive during migration)
   supervisor_abi_version?(): number;
   supervisor_debug_snapshot_bytes?(): number;
+  supervisor_thread_state_snapshot_bytes?(): number;
   supervisor_resume_record_bytes?(): number;
   supervisor_resume_kind_futex_wake?(): number;
   supervisor_reset_shadow_log?(): void;
@@ -153,6 +154,7 @@ export interface KernelExports {
   supervisor_next_host_op?(outPtr: number, outLen: number): number;
   supervisor_next_resume?(outPtr: number, outLen: number): number;
   supervisor_debug_snapshot?(outPtr: number, outLen: number): number;
+  supervisor_thread_state_snapshot?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_futex_wait_completion_woken?(): number;
   supervisor_futex_wait_completion_not_equal?(): number;
   supervisor_futex_wait_completion_timed_out?(): number;
