@@ -1660,28 +1660,44 @@ export function createWorkerSchedulerQueueHelpers(
       }
       next = handle.readyWorkers.splice(index, 1)[0];
     } else {
-      const supervisorSelected = selectSupervisorRunnableWorker(handle);
-      if (supervisorSelected !== undefined) {
-        next = supervisorSelected ?? undefined;
-      } else {
-        const isRunnableReadyWorker = (candidate: Worker): boolean => {
-          const candidateThread = deps.threadWorkerStates.get(candidate);
-          return (candidateThread?.ownerAsyncStatus ?? null) === null
-            && !futexReconciliation.hasWorkerLocalWait(candidateThread)
-            && !parkReadyWorkerStillInCanonicalFutexWait(handle, candidateThread)
-            && (
-              candidateThread === undefined
-              || handle.kernel.thread_process_ptr(candidateThread.vmPtr) !== 0
-            );
-        };
+      const isRunnableReadyWorker = (candidate: Worker): boolean => {
+        const candidateThread = deps.threadWorkerStates.get(candidate);
+        return (candidateThread?.ownerAsyncStatus ?? null) === null
+          && !futexReconciliation.hasWorkerLocalWait(candidateThread)
+          && !parkReadyWorkerStillInCanonicalFutexWait(handle, candidateThread)
+          && (
+            candidateThread === undefined
+            || handle.kernel.thread_process_ptr(candidateThread.vmPtr) !== 0
+          );
+      };
+      const takeBlockedRpcContinuationReadyWorker = (): Worker | undefined => {
         const continuationIndex = handle.readyWorkers.findIndex((candidate) => {
           const candidateThread = deps.threadWorkerStates.get(candidate);
           return readyWorkerHasBlockedRpcContinuation(candidateThread)
             && isRunnableReadyWorker(candidate);
         });
         if (continuationIndex !== -1) {
-          next = handle.readyWorkers.splice(continuationIndex, 1)[0];
-        } else {
+          const continuation = handle.readyWorkers.splice(continuationIndex, 1)[0];
+          const continuationThread = continuation
+            ? deps.threadWorkerStates.get(continuation)
+            : undefined;
+          if (continuationThread !== undefined) {
+            deps.appendWorkerDebugLog(
+              handle,
+              `pump-run-blocked-rpc-continuation:vm=0x${continuationThread.vmPtr.toString(16)}`
+                + `:ready=${handle.readyWorkers.length}`,
+            );
+          }
+          return continuation;
+        }
+        return undefined;
+      };
+      const supervisorSelected = selectSupervisorRunnableWorker(handle);
+      if (supervisorSelected !== undefined) {
+        next = supervisorSelected ?? takeBlockedRpcContinuationReadyWorker();
+      } else {
+        next = takeBlockedRpcContinuationReadyWorker();
+        if (next === undefined) {
           const blockedRetryPressure = hasImmediateBlockedRetryPressure(handle);
           if (blockedRetryPressure) {
             const pressureIndex = handle.readyWorkers.findIndex((candidate) => {

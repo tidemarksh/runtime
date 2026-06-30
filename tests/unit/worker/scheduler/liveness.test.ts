@@ -5997,6 +5997,78 @@ test("pumpProcess runs supervisor-selected runnable worker instead of TypeScript
   );
 });
 
+test("pumpProcess runs blocked-RPC continuation when supervisor selects no runnable worker", () => {
+  const ordinaryWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const continuationWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const ordinaryThread = makeThreadState(0x1234);
+  const continuationThread = makeThreadState(0x5678);
+  continuationThread.pendingPipeSlotsForNextStep.push({
+    pipeSlot: 1,
+    slot: new Uint8Array(16),
+  } as never);
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(ordinaryWorker, ordinaryThread);
+  threadWorkerStates.set(continuationWorker, continuationThread);
+  const { exports: kernel } = makeKernel();
+  ordinaryThread.lastStatus = kernel.abi_status_ok();
+  continuationThread.lastStatus = kernel.abi_status_pipe_wait();
+  kernel.kernel_scratch_base = () => 0;
+  kernel.supervisor_runnable_selection_bytes = () => 48;
+  kernel.supervisor_select_runnable = vi.fn((
+    vmPtr: number,
+    candidatesPtr: number,
+    candidateCount: number,
+    outPtr: number,
+    outLen: number,
+  ) => {
+    expect(vmPtr).toBe(0x1234);
+    expect(candidatesPtr).toBe(48);
+    expect(candidateCount).toBe(2);
+    expect(outPtr).toBe(0);
+    expect(outLen).toBe(48);
+    const view = new DataView(kernel.memory.buffer);
+    expect(view.getUint32(candidatesPtr, true)).toBe(ordinaryThread.vmPtr);
+    expect(view.getUint32(candidatesPtr + 4, true)).toBe(continuationThread.vmPtr);
+    return 0;
+  });
+  const handle = makeHandle(kernel, ordinaryWorker);
+  kernel.memory = handle.memory;
+  handle.workers.add(continuationWorker);
+  handle.readyWorkers = [ordinaryWorker, continuationWorker];
+  const debugEvents: string[] = [];
+  const queue = createWorkerSchedulerQueueHelpers({
+    appendRuntimeLifecycleEvent: () => {},
+    appendWorkerDebugLog: (_handle, event) => {
+      debugEvents.push(event);
+    },
+    blockWorker: () => {},
+    completeProcessExit: async () => {},
+    failProcess: (_handle, error) => {
+      throw error;
+    },
+    handleWorkerMessage: () => {},
+    threadWorkerStates,
+  });
+
+  queue.pumpProcess(handle);
+
+  expect(kernel.supervisor_select_runnable).toHaveBeenCalledTimes(1);
+  expect(handle.runningWorker).toBe(continuationWorker);
+  expect(handle.readyWorkers).toEqual([ordinaryWorker]);
+  expect(ordinaryWorker.postMessage).not.toHaveBeenCalled();
+  expect(continuationWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+    pipeSlots: expect.arrayContaining([expect.objectContaining({ pipeSlot: 1 })]),
+  }));
+  expect(debugEvents).toContain("supervisor-runnable:none:ready=2:candidates=2");
+  expect(debugEvents).toContain("pump-run-blocked-rpc-continuation:vm=0x5678:ready=1");
+});
+
 test("kickBlockedWorkers applies child exit records for worker-local futex waits once", () => {
   const waitingWorker = {
     postMessage: vi.fn(),
