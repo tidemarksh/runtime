@@ -1,4 +1,4 @@
-import type { KernelExports } from "../abi.js";
+import type { KernelExports, ProcessSpawnHandoff } from "../abi.js";
 import { ensureMemoryCapacity, kernelScratchBase } from "./kernel-scratch.js";
 import type { ProcessHandle } from "./types.js";
 
@@ -10,6 +10,12 @@ const SUPERVISOR_FAULT_EXIT_DECISION_BYTES = 88;
 const SUPERVISOR_FAULT_EXIT_KIND_THREAD_EXIT = 1;
 const SUPERVISOR_FAULT_EXIT_KIND_PROCESS_EXIT = 2;
 const SUPERVISOR_FAULT_EXIT_SCRATCH_OFFSET = 0x2d000;
+const SUPERVISOR_PROCESS_HOST_OP_COMPLETION_MAGIC = 0x4348_5354;
+const SUPERVISOR_PROCESS_HOST_OP_COMPLETION_BYTES = 64;
+const SUPERVISOR_PROCESS_HOST_OP_COMPLETION_KIND_SPAWN_PROCESS_WORKER = 1;
+const SUPERVISOR_PROCESS_HOST_OP_COMPLETION_OUTCOME_SUCCESS = 1;
+const SUPERVISOR_PROCESS_HOST_OP_COMPLETION_OUTCOME_FAILURE = 2;
+const SUPERVISOR_PROCESS_HOST_OP_COMPLETION_SCRATCH_OFFSET = 0x2f000;
 
 export interface SupervisorShadowKernelExports extends KernelExports {
   supervisor_abi_version(): number;
@@ -44,6 +50,13 @@ export interface SupervisorFaultExitDecision {
   faultKind: number;
   faultPc: bigint;
   faultAddr: bigint;
+}
+
+export interface SupervisorProcessHostOpCompletion {
+  vmPtr: number;
+  handoff: ProcessSpawnHandoff;
+  success: boolean;
+  detail?: number;
 }
 
 export function hasSupervisorShadowProtocol(
@@ -90,6 +103,41 @@ export function submitSupervisorShadowThreadEvent(
     recordPtr,
     SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES,
   );
+}
+
+export function completeSupervisorProcessHostOp(
+  handle: ProcessHandle,
+  completion: SupervisorProcessHostOpCompletion,
+): number | undefined {
+  const completeHostOp = handle.kernel.supervisor_complete_host_op;
+  if (completeHostOp === undefined || completion.handoff.supervisorHostOp !== true) {
+    return undefined;
+  }
+  const memory = handle.kernel.memory ?? handle.memory;
+  const scratch = kernelScratchBase(handle.kernel)
+    + SUPERVISOR_PROCESS_HOST_OP_COMPLETION_SCRATCH_OFFSET;
+  ensureMemoryCapacity(memory, scratch + SUPERVISOR_PROCESS_HOST_OP_COMPLETION_BYTES);
+  const view = new DataView(memory.buffer, scratch, SUPERVISOR_PROCESS_HOST_OP_COMPLETION_BYTES);
+  view.setUint32(0, SUPERVISOR_PROCESS_HOST_OP_COMPLETION_MAGIC, true);
+  view.setUint32(4, handle.kernel.supervisor_abi_version?.() ?? 1, true);
+  view.setUint32(8, SUPERVISOR_PROCESS_HOST_OP_COMPLETION_BYTES, true);
+  view.setUint32(12, SUPERVISOR_PROCESS_HOST_OP_COMPLETION_KIND_SPAWN_PROCESS_WORKER, true);
+  view.setBigUint64(16, 0n, true);
+  view.setUint32(24, completion.vmPtr, true);
+  view.setUint32(28, completion.handoff.kind, true);
+  view.setInt32(32, completion.handoff.childPid, true);
+  view.setUint32(
+    36,
+    completion.success
+      ? SUPERVISOR_PROCESS_HOST_OP_COMPLETION_OUTCOME_SUCCESS
+      : SUPERVISOR_PROCESS_HOST_OP_COMPLETION_OUTCOME_FAILURE,
+    true,
+  );
+  view.setUint32(40, completion.detail ?? 0, true);
+  view.setUint32(44, 0, true);
+  view.setBigUint64(48, completion.handoff.path, true);
+  view.setBigUint64(56, 0n, true);
+  return completeHostOp(scratch, SUPERVISOR_PROCESS_HOST_OP_COMPLETION_BYTES);
 }
 
 function supervisorFaultExitKindThreadExit(kernelExports: KernelExports): number {

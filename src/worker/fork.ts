@@ -1,4 +1,5 @@
 import { readProcessSpawnHandoff } from "../abi.js";
+import { completeSupervisorProcessHostOp } from "./supervisor-shadow.js";
 import { handlePlainFork } from "./fork/plain.js";
 import { handleVforkExecve } from "./fork/vfork-execve.js";
 import type { WorkerForkDeps, ProcessHandle, ThreadWorkerState } from "./fork/types.js";
@@ -20,14 +21,37 @@ export function createWorkerForkHandlers(deps: WorkerForkDeps) {
       handle.runtimeId,
       `spawn-handoff:${handle.pid}:${handoff.kind}:${handoff.childPid}`,
     );
+    const completeHostOp = (success: boolean, detail = 0): void => {
+      const result = completeSupervisorProcessHostOp(handle, {
+        vmPtr: thread.vmPtr,
+        handoff,
+        success,
+        detail,
+      });
+      if (result !== undefined && result !== 0) {
+        throw new Error(`supervisor process HostOp completion failed: ${result}`);
+      }
+    };
 
     if (handoff.kind === spawnKindExecve) {
-      await handleVforkExecve(deps, handle, worker, thread, handoff.childPid);
+      try {
+        await handleVforkExecve(deps, handle, worker, thread, handoff.childPid);
+        completeHostOp(true);
+      } catch (error) {
+        completeHostOp(false, 1);
+        throw error;
+      }
       return;
     }
 
     if (handoff.kind === spawnKindFork) {
-      await handlePlainFork(deps, handle, worker, thread, handoff.childPid);
+      try {
+        await handlePlainFork(deps, handle, worker, thread, handoff.childPid);
+        completeHostOp(true);
+      } catch (error) {
+        completeHostOp(false, 1);
+        throw error;
+      }
       return;
     }
 
@@ -44,6 +68,7 @@ export function createWorkerForkHandlers(deps: WorkerForkDeps) {
       return;
     }
 
+    completeHostOp(false, 2);
     throw new Error(
       `unexpected spawn handoff kind pid=${handle.pid} vm=0x${thread.vmPtr.toString(16)}`
         + ` kind=${handoff.kind} child=${handoff.childPid}`

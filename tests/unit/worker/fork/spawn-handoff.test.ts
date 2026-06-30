@@ -130,10 +130,16 @@ test("handleExecveSpawn routes fork spawn handoffs into the plain-fork ownership
   const deps = makeDeps();
   const handlers = createWorkerForkHandlers(deps);
   const worker = {} as Worker;
+  const handle = makeHandle(2, 92);
+  const completeHostOp = vi.fn();
+  (handle.kernel as typeof handle.kernel & {
+    supervisor_complete_host_op: (completionPtr: number, completionLen: number) => number;
+  }).supervisor_complete_host_op = completeHostOp;
 
-  await handlers.handleExecveSpawn(makeHandle(2, 92), worker, makeThread());
+  await handlers.handleExecveSpawn(handle, worker, makeThread());
 
   expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(1, "spawn-handoff:11:2:92");
+  expect(completeHostOp).not.toHaveBeenCalled();
   expect(plainForkMock).toHaveBeenCalledTimes(1);
   expect(plainForkMock).toHaveBeenCalledWith(deps, expect.anything(), worker, expect.objectContaining({ vmPtr: 0x1234 }), 92);
   expect(vforkExecveMock).not.toHaveBeenCalled();
@@ -155,6 +161,7 @@ test("handleExecveSpawn prefers supervisor process HostOp over legacy spawn hand
     supervisor_process_host_op_record_bytes: () => number;
     supervisor_process_host_op_kind_spawn_process_worker: () => number;
     supervisor_process_host_op: (vmPtr: number, outPtr: number, outLen: number) => number;
+    supervisor_complete_host_op: (completionPtr: number, completionLen: number) => number;
   };
   kernel.memory = memory;
   kernel.kernel_heap_ptr = () => 0;
@@ -167,10 +174,27 @@ test("handleExecveSpawn prefers supervisor process HostOp over legacy spawn hand
     writeProcessHostOpRecord(memory, outPtr, 0x1234, 2, 92);
     return 96;
   });
+  kernel.supervisor_complete_host_op = vi.fn((completionPtr: number, completionLen: number) => {
+    expect(completionLen).toBe(64);
+    const completion = new DataView(memory.buffer, completionPtr, completionLen);
+    expect(completion.getUint32(0, true)).toBe(0x4348_5354);
+    expect(completion.getUint32(4, true)).toBe(1);
+    expect(completion.getUint32(8, true)).toBe(64);
+    expect(completion.getUint32(12, true)).toBe(1);
+    expect(completion.getBigUint64(16, true)).toBe(0n);
+    expect(completion.getUint32(24, true)).toBe(0x1234);
+    expect(completion.getUint32(28, true)).toBe(2);
+    expect(completion.getInt32(32, true)).toBe(92);
+    expect(completion.getUint32(36, true)).toBe(1);
+    expect(completion.getUint32(40, true)).toBe(0);
+    expect(completion.getBigUint64(48, true)).toBe(0x6000n);
+    return 0;
+  });
 
   await handlers.handleExecveSpawn(handle, worker, makeThread());
 
   expect(kernel.supervisor_process_host_op).toHaveBeenCalledWith(0x1234, expect.any(Number), 96);
+  expect(kernel.supervisor_complete_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
   expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(1, "spawn-handoff:11:2:92");
   expect(plainForkMock).toHaveBeenCalledTimes(1);
   expect(plainForkMock).toHaveBeenCalledWith(deps, handle, worker, expect.objectContaining({ vmPtr: 0x1234 }), 92);

@@ -1149,6 +1149,7 @@ export interface ProcessSpawnHandoff {
   addressProfile: number;
   guestMemoryPolicyLimit: bigint;
   processMaxMemoryPages: number;
+  supervisorHostOp?: boolean;
 }
 
 export function guestAddressProfileForProcessCreation(exports: KernelExports): number {
@@ -1448,6 +1449,7 @@ function readSupervisorProcessSpawnHandoff(
     addressProfile: view.getUint32(44, true),
     guestMemoryPolicyLimit: view.getBigUint64(48, true),
     processMaxMemoryPages: view.getUint32(56, true),
+    supervisorHostOp: true,
   };
 }
 
