@@ -12,6 +12,42 @@ vi.mock("../../../../src/worker/fork/vfork-execve.js", () => ({
   handleVforkExecve: vforkExecveMock,
 }));
 
+function writeU32(view: DataView, offset: number, value: number): void {
+  view.setUint32(offset, value, true);
+}
+
+function writeU64(view: DataView, offset: number, value: bigint): void {
+  view.setBigUint64(offset, value, true);
+}
+
+function writeProcessHostOpRecord(
+  memory: WebAssembly.Memory,
+  ptr: number,
+  parentVmPtr: number,
+  spawnKind: number,
+  childPid: number,
+): void {
+  const view = new DataView(memory.buffer, ptr, 96);
+  writeU32(view, 0, 0x4850_5354);
+  writeU32(view, 4, 1);
+  writeU32(view, 8, 96);
+  writeU32(view, 12, 1);
+  writeU64(view, 16, 1n);
+  writeU32(view, 24, parentVmPtr);
+  writeU32(view, 28, spawnKind);
+  writeU32(view, 32, childPid);
+  writeU32(view, 36, 0x5000);
+  writeU32(view, 40, 7);
+  writeU32(view, 44, 2);
+  writeU64(view, 48, 8n * 1024n * 1024n);
+  writeU32(view, 56, 128);
+  writeU32(view, 60, 0);
+  writeU64(view, 64, 0x6000n);
+  writeU64(view, 72, 0x7000n);
+  writeU64(view, 80, 0x8000n);
+  writeU64(view, 88, 0n);
+}
+
 async function loadForkHandlers() {
   return await import("../../../../src/worker/fork.js");
 }
@@ -100,6 +136,44 @@ test("handleExecveSpawn routes fork spawn handoffs into the plain-fork ownership
   expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(1, "spawn-handoff:11:2:92");
   expect(plainForkMock).toHaveBeenCalledTimes(1);
   expect(plainForkMock).toHaveBeenCalledWith(deps, expect.anything(), worker, expect.objectContaining({ vmPtr: 0x1234 }), 92);
+  expect(vforkExecveMock).not.toHaveBeenCalled();
+});
+
+test("handleExecveSpawn prefers supervisor process HostOp over legacy spawn handoff", async () => {
+  plainForkMock.mockClear();
+  vforkExecveMock.mockClear();
+  const { createWorkerForkHandlers } = await loadForkHandlers();
+  const deps = makeDeps();
+  const handlers = createWorkerForkHandlers(deps);
+  const worker = {} as Worker;
+  const handle = makeHandle(1, 91);
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  const kernel = handle.kernel as typeof handle.kernel & {
+    memory: WebAssembly.Memory;
+    kernel_heap_ptr: () => number;
+    supervisor_abi_version: () => number;
+    supervisor_process_host_op_record_bytes: () => number;
+    supervisor_process_host_op_kind_spawn_process_worker: () => number;
+    supervisor_process_host_op: (vmPtr: number, outPtr: number, outLen: number) => number;
+  };
+  kernel.memory = memory;
+  kernel.kernel_heap_ptr = () => 0;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_process_host_op_record_bytes = () => 96;
+  kernel.supervisor_process_host_op_kind_spawn_process_worker = () => 1;
+  kernel.supervisor_process_host_op = vi.fn((vmPtr: number, outPtr: number, outLen: number) => {
+    expect(vmPtr).toBe(0x1234);
+    expect(outLen).toBe(96);
+    writeProcessHostOpRecord(memory, outPtr, 0x1234, 2, 92);
+    return 96;
+  });
+
+  await handlers.handleExecveSpawn(handle, worker, makeThread());
+
+  expect(kernel.supervisor_process_host_op).toHaveBeenCalledWith(0x1234, expect.any(Number), 96);
+  expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(1, "spawn-handoff:11:2:92");
+  expect(plainForkMock).toHaveBeenCalledTimes(1);
+  expect(plainForkMock).toHaveBeenCalledWith(deps, handle, worker, expect.objectContaining({ vmPtr: 0x1234 }), 92);
   expect(vforkExecveMock).not.toHaveBeenCalled();
 });
 

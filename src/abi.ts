@@ -1,7 +1,15 @@
+import { ensureMemoryCapacity, kernelScratchBase } from "./worker/kernel-scratch.js";
+import { normalizeGuestMemoryPolicyLimitBytes } from "./worker/memory-policy.js";
+
 /**
  * WASM exports from the kernel module.
  * All constants are read from the WASM exports — no hand-written values.
  */
+const SUPERVISOR_PROCESS_HOST_OP_RECORD_BYTES = 96;
+const SUPERVISOR_PROCESS_HOST_OP_RECORD_MAGIC = 0x4850_5354;
+const SUPERVISOR_PROCESS_HOST_OP_KIND_SPAWN_PROCESS_WORKER = 1;
+const SUPERVISOR_PROCESS_HOST_OP_SCRATCH_OFFSET = 0x2e000;
+
 export interface KernelExports {
   memory: WebAssembly.Memory;
   __stack_pointer?: WebAssembly.Global;
@@ -140,10 +148,12 @@ export interface KernelExports {
   supervisor_thread_state_snapshot_bytes?(): number;
   supervisor_resume_record_bytes?(): number;
   supervisor_host_op_record_bytes?(): number;
+  supervisor_process_host_op_record_bytes?(): number;
   supervisor_fault_exit_decision_bytes?(): number;
   supervisor_runnable_selection_bytes?(): number;
   supervisor_resume_kind_futex_wake?(): number;
   supervisor_host_op_kind_spawn_thread_worker?(): number;
+  supervisor_process_host_op_kind_spawn_process_worker?(): number;
   supervisor_fault_exit_kind_thread_exit?(): number;
   supervisor_fault_exit_kind_process_exit?(): number;
   supervisor_reset_shadow_log?(): void;
@@ -160,6 +170,7 @@ export interface KernelExports {
   supervisor_submit_thread_event?(eventPtr: number, eventLen: number): number;
   supervisor_complete_host_op?(completionPtr: number, completionLen: number): number;
   supervisor_next_host_op?(outPtr: number, outLen: number): number;
+  supervisor_process_host_op?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_next_resume?(outPtr: number, outLen: number): number;
   supervisor_fault_exit_decision?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_select_runnable?(
@@ -1373,10 +1384,81 @@ export function attachKernelRuntimeState(
   );
 }
 
+function supervisorProcessHostOpKindSpawnProcessWorker(exports: KernelExports): number {
+  return exports.supervisor_process_host_op_kind_spawn_process_worker?.()
+    ?? SUPERVISOR_PROCESS_HOST_OP_KIND_SPAWN_PROCESS_WORKER;
+}
+
+function readSupervisorProcessSpawnHandoff(
+  exports: KernelExports,
+  vmPtr: number,
+): ProcessSpawnHandoff | null | undefined {
+  const readHostOp = exports.supervisor_process_host_op;
+  const recordBytesExport = exports.supervisor_process_host_op_record_bytes;
+  if (readHostOp === undefined || recordBytesExport === undefined) {
+    return undefined;
+  }
+  const recordBytes = recordBytesExport();
+  if (recordBytes < SUPERVISOR_PROCESS_HOST_OP_RECORD_BYTES) {
+    throw new Error(`supervisor process HostOp record bytes too small: ${recordBytes}`);
+  }
+  const scratch = kernelScratchBase(exports) + SUPERVISOR_PROCESS_HOST_OP_SCRATCH_OFFSET;
+  ensureMemoryCapacity(exports.memory, scratch + recordBytes);
+  const result = readHostOp(vmPtr, scratch, recordBytes);
+  if (result === 0) {
+    return null;
+  }
+  if (result < 0 || result > recordBytes) {
+    throw new Error(`supervisor process HostOp poll failed: ${result}`);
+  }
+  if (result < SUPERVISOR_PROCESS_HOST_OP_RECORD_BYTES) {
+    throw new Error(`supervisor process HostOp record too short: ${result}`);
+  }
+  const view = new DataView(exports.memory.buffer, scratch, result);
+  const magic = view.getUint32(0, true);
+  const version = view.getUint32(4, true);
+  const bytes = view.getUint32(8, true);
+  const kind = view.getUint32(12, true);
+  if (magic !== SUPERVISOR_PROCESS_HOST_OP_RECORD_MAGIC) {
+    throw new Error(`supervisor process HostOp bad magic: 0x${magic.toString(16)}`);
+  }
+  const expectedVersion = exports.supervisor_abi_version?.() ?? version;
+  if (version !== expectedVersion) {
+    throw new Error(`supervisor process HostOp bad version: ${version}`);
+  }
+  if (bytes < SUPERVISOR_PROCESS_HOST_OP_RECORD_BYTES || bytes > view.byteLength) {
+    throw new Error(`supervisor process HostOp bad size: ${bytes}`);
+  }
+  if (kind !== supervisorProcessHostOpKindSpawnProcessWorker(exports)) {
+    throw new Error(`supervisor process HostOp bad kind: ${kind}`);
+  }
+  const parentVmPtr = view.getUint32(24, true);
+  if (parentVmPtr !== vmPtr) {
+    throw new Error(
+      `supervisor process HostOp parent mismatch: `
+        + `0x${parentVmPtr.toString(16)} != 0x${vmPtr.toString(16)}`,
+    );
+  }
+  return {
+    kind: view.getUint32(28, true),
+    childPid: view.getInt32(32, true),
+    path: view.getBigUint64(64, true),
+    argv: view.getBigUint64(72, true),
+    envp: view.getBigUint64(80, true),
+    addressProfile: view.getUint32(44, true),
+    guestMemoryPolicyLimit: view.getBigUint64(48, true),
+    processMaxMemoryPages: view.getUint32(56, true),
+  };
+}
+
 export function readProcessSpawnHandoff(
   exports: KernelExports,
   vmPtr: number,
 ): ProcessSpawnHandoff {
+  const supervisorHandoff = readSupervisorProcessSpawnHandoff(exports, vmPtr);
+  if (supervisorHandoff !== undefined && supervisorHandoff !== null) {
+    return supervisorHandoff;
+  }
   return {
     kind: exports.thread_spawn_kind(vmPtr),
     childPid: exports.thread_spawn_child_pid(vmPtr),
@@ -1388,4 +1470,3 @@ export function readProcessSpawnHandoff(
     processMaxMemoryPages: exports.thread_spawn_process_max_memory_pages?.(vmPtr) ?? 0,
   };
 }
-import { normalizeGuestMemoryPolicyLimitBytes } from "./worker/memory-policy.js";
