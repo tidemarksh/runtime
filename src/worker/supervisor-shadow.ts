@@ -22,6 +22,10 @@ export const SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED = 1;
 export const SUPERVISOR_FD_CONTROL_KIND_FD_CLOSED = 2;
 export const SUPERVISOR_FD_CONTROL_KIND_FD_DUPLICATED = 3;
 export const SUPERVISOR_FD_CONTROL_KIND_FD_FLAGS_UPDATED = 4;
+export const SUPERVISOR_FD_CONTROL_KIND_EPOLL_CREATED = 5;
+export const SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_ADD = 6;
+export const SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_DEL = 7;
+export const SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_MOD = 8;
 const SUPERVISOR_FD_CONTROL_SCRATCH_OFFSET = 0x31000;
 
 export interface SupervisorShadowKernelExports extends KernelExports {
@@ -280,6 +284,26 @@ function supervisorFdControlKindFdFlagsUpdated(kernelExports: KernelExports): nu
     ?? SUPERVISOR_FD_CONTROL_KIND_FD_FLAGS_UPDATED;
 }
 
+function supervisorFdControlKindEpollCreated(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fd_control_kind_epoll_created?.()
+    ?? SUPERVISOR_FD_CONTROL_KIND_EPOLL_CREATED;
+}
+
+function supervisorFdControlKindEpollCtlAdd(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fd_control_kind_epoll_ctl_add?.()
+    ?? SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_ADD;
+}
+
+function supervisorFdControlKindEpollCtlDel(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fd_control_kind_epoll_ctl_del?.()
+    ?? SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_DEL;
+}
+
+function supervisorFdControlKindEpollCtlMod(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fd_control_kind_epoll_ctl_mod?.()
+    ?? SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_MOD;
+}
+
 export function decodeSupervisorFdControlRecord(
   kernelExports: KernelExports,
   view: DataView,
@@ -306,6 +330,10 @@ export function decodeSupervisorFdControlRecord(
     && kind !== supervisorFdControlKindFdClosed(kernelExports)
     && kind !== supervisorFdControlKindFdDuplicated(kernelExports)
     && kind !== supervisorFdControlKindFdFlagsUpdated(kernelExports)
+    && kind !== supervisorFdControlKindEpollCreated(kernelExports)
+    && kind !== supervisorFdControlKindEpollCtlAdd(kernelExports)
+    && kind !== supervisorFdControlKindEpollCtlDel(kernelExports)
+    && kind !== supervisorFdControlKindEpollCtlMod(kernelExports)
   ) {
     throw new Error(`supervisor fd control bad kind: ${kind}`);
   }

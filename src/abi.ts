@@ -162,6 +162,10 @@ export interface KernelExports {
   supervisor_fd_control_kind_fd_closed?(): number;
   supervisor_fd_control_kind_fd_duplicated?(): number;
   supervisor_fd_control_kind_fd_flags_updated?(): number;
+  supervisor_fd_control_kind_epoll_created?(): number;
+  supervisor_fd_control_kind_epoll_ctl_add?(): number;
+  supervisor_fd_control_kind_epoll_ctl_del?(): number;
+  supervisor_fd_control_kind_epoll_ctl_mod?(): number;
   supervisor_reset_shadow_log?(): void;
   supervisor_shadow_thread_event_count?(): bigint | number;
   supervisor_shadow_host_completion_count?(): bigint | number;
