@@ -9,6 +9,8 @@ import {
   readSupervisorFdControlRecord,
   submitSupervisorShadowThreadEvent,
   SUPERVISOR_FD_CONTROL_KIND_FD_CLOSED,
+  SUPERVISOR_FD_CONTROL_KIND_FD_DUPLICATED,
+  SUPERVISOR_FD_CONTROL_KIND_FD_FLAGS_UPDATED,
   SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED,
   SUPERVISOR_FD_CONTROL_RECORD_BYTES,
   SUPERVISOR_FD_CONTROL_RECORD_MAGIC,
@@ -114,6 +116,8 @@ test("decodeSupervisorFdControlRecord reads the supervisor fd control layout", (
     supervisor_abi_version: () => 1,
     supervisor_fd_control_kind_pipe_created: () => SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED,
     supervisor_fd_control_kind_fd_closed: () => SUPERVISOR_FD_CONTROL_KIND_FD_CLOSED,
+    supervisor_fd_control_kind_fd_duplicated: () => SUPERVISOR_FD_CONTROL_KIND_FD_DUPLICATED,
+    supervisor_fd_control_kind_fd_flags_updated: () => SUPERVISOR_FD_CONTROL_KIND_FD_FLAGS_UPDATED,
   } as unknown as KernelExports;
 
   const record = decodeSupervisorFdControlRecord(kernelExports, new DataView(bytes.buffer));
@@ -143,6 +147,29 @@ test("decodeSupervisorFdControlRecord reads the supervisor fd control layout", (
   );
 });
 
+test("decodeSupervisorFdControlRecord accepts fd lifecycle control kinds", () => {
+  const kernelExports = {
+    memory: new WebAssembly.Memory({ initial: 1 }),
+    supervisor_abi_version: () => 1,
+    supervisor_fd_control_kind_pipe_created: () => SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED,
+    supervisor_fd_control_kind_fd_closed: () => SUPERVISOR_FD_CONTROL_KIND_FD_CLOSED,
+    supervisor_fd_control_kind_fd_duplicated: () => SUPERVISOR_FD_CONTROL_KIND_FD_DUPLICATED,
+    supervisor_fd_control_kind_fd_flags_updated: () => SUPERVISOR_FD_CONTROL_KIND_FD_FLAGS_UPDATED,
+  } as unknown as KernelExports;
+
+  for (const kind of [
+    SUPERVISOR_FD_CONTROL_KIND_FD_DUPLICATED,
+    SUPERVISOR_FD_CONTROL_KIND_FD_FLAGS_UPDATED,
+  ]) {
+    const bytes = new Uint8Array(SUPERVISOR_FD_CONTROL_RECORD_BYTES);
+    writeFdControlRecord(new DataView(bytes.buffer), kind);
+
+    const record = decodeSupervisorFdControlRecord(kernelExports, new DataView(bytes.buffer));
+
+    expect(record.kind).toBe(kind);
+  }
+});
+
 test("readSupervisorFdControlRecord polls the kernel export", () => {
   const memory = new WebAssembly.Memory({ initial: 8 });
   const kernelExports = {
@@ -152,6 +179,8 @@ test("readSupervisorFdControlRecord polls the kernel export", () => {
     supervisor_fd_control_record_bytes: () => SUPERVISOR_FD_CONTROL_RECORD_BYTES,
     supervisor_fd_control_kind_pipe_created: () => SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED,
     supervisor_fd_control_kind_fd_closed: () => SUPERVISOR_FD_CONTROL_KIND_FD_CLOSED,
+    supervisor_fd_control_kind_fd_duplicated: () => SUPERVISOR_FD_CONTROL_KIND_FD_DUPLICATED,
+    supervisor_fd_control_kind_fd_flags_updated: () => SUPERVISOR_FD_CONTROL_KIND_FD_FLAGS_UPDATED,
     supervisor_fd_control_record: vi.fn((outPtr: number, outLen: number) => {
       expect(outLen).toBe(SUPERVISOR_FD_CONTROL_RECORD_BYTES);
       const view = new DataView(memory.buffer, outPtr, outLen);

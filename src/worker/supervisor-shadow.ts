@@ -20,6 +20,8 @@ export const SUPERVISOR_FD_CONTROL_RECORD_MAGIC = 0x4446_5354;
 export const SUPERVISOR_FD_CONTROL_RECORD_BYTES = 96;
 export const SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED = 1;
 export const SUPERVISOR_FD_CONTROL_KIND_FD_CLOSED = 2;
+export const SUPERVISOR_FD_CONTROL_KIND_FD_DUPLICATED = 3;
+export const SUPERVISOR_FD_CONTROL_KIND_FD_FLAGS_UPDATED = 4;
 const SUPERVISOR_FD_CONTROL_SCRATCH_OFFSET = 0x31000;
 
 export interface SupervisorShadowKernelExports extends KernelExports {
@@ -268,6 +270,16 @@ function supervisorFdControlKindFdClosed(kernelExports: KernelExports): number {
     ?? SUPERVISOR_FD_CONTROL_KIND_FD_CLOSED;
 }
 
+function supervisorFdControlKindFdDuplicated(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fd_control_kind_fd_duplicated?.()
+    ?? SUPERVISOR_FD_CONTROL_KIND_FD_DUPLICATED;
+}
+
+function supervisorFdControlKindFdFlagsUpdated(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fd_control_kind_fd_flags_updated?.()
+    ?? SUPERVISOR_FD_CONTROL_KIND_FD_FLAGS_UPDATED;
+}
+
 export function decodeSupervisorFdControlRecord(
   kernelExports: KernelExports,
   view: DataView,
@@ -292,6 +304,8 @@ export function decodeSupervisorFdControlRecord(
   if (
     kind !== supervisorFdControlKindPipeCreated(kernelExports)
     && kind !== supervisorFdControlKindFdClosed(kernelExports)
+    && kind !== supervisorFdControlKindFdDuplicated(kernelExports)
+    && kind !== supervisorFdControlKindFdFlagsUpdated(kernelExports)
   ) {
     throw new Error(`supervisor fd control bad kind: ${kind}`);
   }
