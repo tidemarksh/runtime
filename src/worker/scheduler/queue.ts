@@ -4,6 +4,7 @@ import {
   setWorkerMessageHandler,
 } from "../../bridge/compat.js";
 import { publishRuntimeBridgeEpoch } from "../../bridge/runtime-state.js";
+import { ensureMemoryCapacity, kernelScratchBase } from "../kernel-scratch.js";
 import { createReadyWorkerFairness } from "./fairness.js";
 import { clearStaleFutexRecordIfResolved, createFutexReconciliation, threadHasCanonicalFutexBlock } from "./futex.js";
 import { clearStaleForkSharedSyncGate } from "./fork-shared-gate.js";
@@ -52,6 +53,20 @@ const SCHEDULER_QUEUE_DEBUG_LOG_PREFIXES = [
 let nextThreadWorkerGeneration = 1;
 const HOT_PC_COUNTER_LIMIT = 32;
 const STALE_SLEEP_RUNNING_WORKER_REPAIR_MS = 2_000;
+const SUPERVISOR_RESUME_RECORD_BYTES = 48;
+const SUPERVISOR_RESUME_RECORD_MAGIC = 0x5255_5354;
+const SUPERVISOR_RESUME_KIND_FUTEX_WAKE = 1;
+const SUPERVISOR_RESUME_DRAIN_LIMIT = 64;
+const SUPERVISOR_RESUME_SCRATCH_OFFSET = 0x28000;
+
+interface SupervisorResumeRecord {
+  kind: number;
+  seq: bigint;
+  vmPtr: number;
+  tid: number;
+  status: number;
+  detail0: bigint;
+}
 
 function readSchedulerStepBudget(): number {
   const hostConfigured = (globalThis as typeof globalThis & {
@@ -510,15 +525,206 @@ function incrementBoundedCounter(
   }
 }
 
+function supervisorResumeRecordBytes(handle: ProcessHandle): number {
+  return handle.kernel.supervisor_resume_record_bytes?.() ?? SUPERVISOR_RESUME_RECORD_BYTES;
+}
+
+function supervisorResumeKindFutexWake(handle: ProcessHandle): number {
+  return handle.kernel.supervisor_resume_kind_futex_wake?.() ?? SUPERVISOR_RESUME_KIND_FUTEX_WAKE;
+}
+
+function supervisorResumeScratchBase(handle: ProcessHandle): number {
+  const exportedScratch = handle.kernel.kernel_scratch_base?.();
+  if (exportedScratch !== undefined) {
+    return exportedScratch;
+  }
+  return kernelScratchBase(handle.kernel) + SUPERVISOR_RESUME_SCRATCH_OFFSET;
+}
+
+function decodeSupervisorResumeRecord(
+  handle: ProcessHandle,
+  view: DataView,
+): SupervisorResumeRecord | null {
+  if (
+    view.byteLength < SUPERVISOR_RESUME_RECORD_BYTES
+    || view.getUint32(0, true) !== SUPERVISOR_RESUME_RECORD_MAGIC
+    || view.getUint32(4, true) !== 1
+    || view.getUint32(8, true) !== supervisorResumeRecordBytes(handle)
+  ) {
+    return null;
+  }
+  return {
+    kind: view.getUint32(12, true),
+    seq: view.getBigUint64(16, true),
+    vmPtr: view.getUint32(24, true),
+    tid: view.getUint32(28, true),
+    status: view.getUint32(36, true),
+    detail0: view.getBigUint64(40, true),
+  };
+}
+
 export function createWorkerSchedulerQueueHelpers(
   deps: WorkerSchedulerQueueDeps,
 ): WorkerSchedulerQueueHelpers {
   const observedForkSharedSyncGates = new WeakMap<ProcessHandle, Promise<void>>();
+  const pendingSupervisorFutexResumes = new WeakMap<ProcessHandle, Set<number>>();
   const readyWorkerFairness = createReadyWorkerFairness(pumpProcess);
   const futexReconciliation = createFutexReconciliation({
     threadWorkerStates: deps.threadWorkerStates,
     appendWorkerDebugLog: deps.appendWorkerDebugLog,
   });
+
+  function findWorkerByVmPtr(handle: ProcessHandle, vmPtr: number): Worker | undefined {
+    for (const worker of handle.workers) {
+      const thread = deps.threadWorkerStates.get(worker);
+      if (thread?.vmPtr === vmPtr) {
+        return worker;
+      }
+    }
+    return undefined;
+  }
+
+  function markSupervisorFutexResumeSelected(handle: ProcessHandle, vmPtr: number): void {
+    let selected = pendingSupervisorFutexResumes.get(handle);
+    if (selected === undefined) {
+      selected = new Set();
+      pendingSupervisorFutexResumes.set(handle, selected);
+    }
+    selected.add(vmPtr);
+  }
+
+  function enqueueSupervisorSelectedWorker(
+    handle: ProcessHandle,
+    worker: Worker,
+    thread: ThreadWorkerState,
+    record: SupervisorResumeRecord,
+  ): void {
+    thread.waitingInWorkerStatus = null;
+    thread.waitingInWorkerReconcileDeferred = false;
+    thread.runningGeneration = null;
+    if (
+      handle.runningWorker !== worker
+      && !handle.blockedWorkers.has(worker)
+      && !handle.readyWorkers.includes(worker)
+    ) {
+      handle.readyWorkers.unshift(worker);
+    }
+    deps.appendWorkerDebugLog(
+      handle,
+      `supervisor-resume:futex-wake:ready:0x${thread.vmPtr.toString(16)}`
+        + `:tid=${record.tid}:seq=${record.seq.toString()}:addr=0x${record.detail0.toString(16)}`
+        + `:status=${record.status}`,
+    );
+  }
+
+  function reconcileSupervisorSelectedFutexResumes(handle: ProcessHandle): void {
+    const selected = pendingSupervisorFutexResumes.get(handle);
+    if (selected === undefined || selected.size === 0) {
+      return;
+    }
+    const futexWaitStatus = handle.kernel.abi_status_futex_wait();
+    for (const vmPtr of [...selected]) {
+      const worker = findWorkerByVmPtr(handle, vmPtr);
+      const thread = worker === undefined ? undefined : deps.threadWorkerStates.get(worker);
+      if (worker === undefined || thread === undefined) {
+        selected.delete(vmPtr);
+        deps.appendWorkerDebugLog(handle, `supervisor-resume:futex-wake:missing:0x${vmPtr.toString(16)}`);
+        continue;
+      }
+      if (
+        handle.kernel.thread_status(vmPtr) === futexWaitStatus
+        || threadHasCanonicalFutexBlock(handle, vmPtr)
+      ) {
+        thread.waitingInWorkerStatus = futexWaitStatus;
+        thread.waitingInWorkerReconcileDeferred = false;
+        deps.appendWorkerDebugLog(handle, `supervisor-resume:futex-wake:parked:0x${vmPtr.toString(16)}`);
+        continue;
+      }
+      selected.delete(vmPtr);
+      enqueueSupervisorSelectedWorker(handle, worker, thread, {
+        kind: supervisorResumeKindFutexWake(handle),
+        seq: 0n,
+        vmPtr,
+        tid: handle.kernel.thread_tid?.(vmPtr) ?? 0,
+        status: handle.kernel.thread_status(vmPtr),
+        detail0: 0n,
+      });
+    }
+    if (selected.size === 0) {
+      pendingSupervisorFutexResumes.delete(handle);
+    }
+  }
+
+  function handleSupervisorResumeRecord(handle: ProcessHandle, record: SupervisorResumeRecord): void {
+    if (record.kind !== supervisorResumeKindFutexWake(handle)) {
+      deps.appendWorkerDebugLog(
+        handle,
+        `supervisor-resume:unknown-kind:${record.kind}:vm=0x${record.vmPtr.toString(16)}:seq=${record.seq.toString()}`,
+      );
+      return;
+    }
+    markSupervisorFutexResumeSelected(handle, record.vmPtr);
+    const worker = findWorkerByVmPtr(handle, record.vmPtr);
+    const thread = worker === undefined ? undefined : deps.threadWorkerStates.get(worker);
+    if (worker === undefined || thread === undefined) {
+      deps.appendWorkerDebugLog(
+        handle,
+        `supervisor-resume:futex-wake:missing:0x${record.vmPtr.toString(16)}:seq=${record.seq.toString()}`,
+      );
+      return;
+    }
+    if (
+      handle.kernel.thread_status(record.vmPtr) === handle.kernel.abi_status_futex_wait()
+      || threadHasCanonicalFutexBlock(handle, record.vmPtr)
+    ) {
+      thread.waitingInWorkerStatus = handle.kernel.abi_status_futex_wait();
+      thread.waitingInWorkerReconcileDeferred = false;
+      deps.appendWorkerDebugLog(
+        handle,
+        `supervisor-resume:futex-wake:parked:0x${record.vmPtr.toString(16)}`
+          + `:tid=${record.tid}:seq=${record.seq.toString()}:addr=0x${record.detail0.toString(16)}`,
+      );
+      return;
+    }
+    const selected = pendingSupervisorFutexResumes.get(handle);
+    selected?.delete(record.vmPtr);
+    enqueueSupervisorSelectedWorker(handle, worker, thread, record);
+    if (selected?.size === 0) {
+      pendingSupervisorFutexResumes.delete(handle);
+    }
+  }
+
+  function drainSupervisorResumeQueue(handle: ProcessHandle): void {
+    const nextResume = handle.kernel.supervisor_next_resume;
+    if (nextResume === undefined) {
+      return;
+    }
+    const recordBytes = supervisorResumeRecordBytes(handle);
+    if (recordBytes < SUPERVISOR_RESUME_RECORD_BYTES) {
+      deps.appendWorkerDebugLog(handle, `supervisor-resume:invalid-record-bytes:${recordBytes}`);
+      return;
+    }
+    const memory = handle.kernel.memory ?? handle.memory;
+    const scratch = supervisorResumeScratchBase(handle);
+    ensureMemoryCapacity(memory, scratch + recordBytes);
+    for (let drained = 0; drained < SUPERVISOR_RESUME_DRAIN_LIMIT; drained += 1) {
+      const result = nextResume(scratch, recordBytes);
+      if (result === 0) {
+        break;
+      }
+      if (result < 0 || result > recordBytes) {
+        deps.appendWorkerDebugLog(handle, `supervisor-resume:poll-error:${result}`);
+        break;
+      }
+      const record = decodeSupervisorResumeRecord(handle, new DataView(memory.buffer, scratch, result));
+      if (record === null) {
+        deps.appendWorkerDebugLog(handle, `supervisor-resume:decode-error:${result}`);
+        continue;
+      }
+      handleSupervisorResumeRecord(handle, record);
+    }
+    reconcileSupervisorSelectedFutexResumes(handle);
+  }
 
   function observeForkSharedSyncGate(handle: ProcessHandle, promise: Promise<void>): void {
     if (observedForkSharedSyncGates.get(handle) === promise) {
@@ -1191,8 +1397,12 @@ export function createWorkerSchedulerQueueHelpers(
       );
       return;
     }
-    futexReconciliation.reconcileResolvedWorkerLocalWaits(handle);
-    recoverQuiescentWorkerLocalFutexWaiter(handle);
+    if (handle.kernel.supervisor_next_resume !== undefined) {
+      drainSupervisorResumeQueue(handle);
+    } else {
+      futexReconciliation.reconcileResolvedWorkerLocalWaits(handle);
+      recoverQuiescentWorkerLocalFutexWaiter(handle);
+    }
     recoverRunnableIdleWorkers(handle);
     if (completeFaultedProcessWithoutWorkers(handle)) {
       return;

@@ -137,11 +137,15 @@ export interface KernelExports {
   // Supervisor shadow protocol (additive during migration)
   supervisor_abi_version?(): number;
   supervisor_debug_snapshot_bytes?(): number;
+  supervisor_resume_record_bytes?(): number;
+  supervisor_resume_kind_futex_wake?(): number;
   supervisor_reset_shadow_log?(): void;
   supervisor_shadow_thread_event_count?(): bigint | number;
   supervisor_shadow_host_completion_count?(): bigint | number;
   supervisor_shadow_host_op_poll_count?(): bigint | number;
   supervisor_shadow_resume_poll_count?(): bigint | number;
+  supervisor_shadow_resume_enqueue_count?(): bigint | number;
+  supervisor_shadow_resume_overflow_count?(): bigint | number;
   supervisor_shadow_thread_event_log_hash?(): bigint | number;
   supervisor_shadow_host_completion_log_hash?(): bigint | number;
   supervisor_submit_thread_event?(eventPtr: number, eventLen: number): number;

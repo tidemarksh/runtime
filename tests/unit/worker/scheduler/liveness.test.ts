@@ -5741,6 +5741,78 @@ test("pumpProcess prioritizes reconciled worker-local futex waits over queued sl
   expect(handle.readyWorkers).toEqual([sleeperWorker]);
 });
 
+test("pumpProcess drains only supervisor-selected futex resumes when supervisor queue is available", () => {
+  const selectedWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const unselectedWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const selectedThread = makeThreadState(0x1234);
+  const unselectedThread = makeThreadState(0x5678);
+  selectedThread.waitingInWorkerStatus = 20;
+  unselectedThread.waitingInWorkerStatus = 20;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(selectedWorker, selectedThread);
+  threadWorkerStates.set(unselectedWorker, unselectedThread);
+  const { exports: kernel } = makeKernel();
+  let resumePolled = false;
+  kernel.thread_status = () => kernel.abi_status_ok();
+  kernel.thread_record_blocked_addr = () => 0n;
+  kernel.thread_futex_wait_addr = () => 0n;
+  kernel.supervisor_resume_record_bytes = () => 48;
+  kernel.supervisor_resume_kind_futex_wake = () => 1;
+  kernel.kernel_scratch_base = () => 0;
+  kernel.supervisor_next_resume = vi.fn((outPtr: number, outLen: number) => {
+    if (resumePolled) {
+      return 0;
+    }
+    expect(outPtr).toBe(0);
+    expect(outLen).toBe(48);
+    const view = new DataView(kernel.memory.buffer);
+    view.setUint32(0, 0x5255_5354, true);
+    view.setUint32(4, 1, true);
+    view.setUint32(8, 48, true);
+    view.setUint32(12, 1, true);
+    view.setBigUint64(16, 1n, true);
+    view.setUint32(24, selectedThread.vmPtr, true);
+    view.setUint32(28, 2, true);
+    view.setUint32(32, 0x2000, true);
+    view.setUint32(36, kernel.abi_status_ok(), true);
+    view.setBigUint64(40, 0xfeedn, true);
+    resumePolled = true;
+    return 48;
+  });
+  const handle = makeHandle(kernel, selectedWorker);
+  kernel.memory = handle.memory;
+  handle.workers.add(unselectedWorker);
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+
+  expect(kernel.supervisor_next_resume).toHaveBeenCalledTimes(2);
+  expect(kernel.thread_resume_futex_wait_result).not.toHaveBeenCalled();
+  expect(selectedThread.waitingInWorkerStatus).toBeNull();
+  expect(unselectedThread.waitingInWorkerStatus).toBe(kernel.abi_status_futex_wait());
+  expect(handle.runningWorker).toBe(selectedWorker);
+  expect(selectedWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+  expect(unselectedWorker.postMessage).not.toHaveBeenCalled();
+});
+
 test("kickBlockedWorkers applies child exit records for worker-local futex waits once", () => {
   const waitingWorker = {
     postMessage: vi.fn(),
