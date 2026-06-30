@@ -29,6 +29,7 @@ import {
 import { restoreRuntimeNetworkSidecarForHandle } from "../../ownership/socket-control.js";
 import { formatCompactDebugSuffix } from "../../diagnostics/format.js";
 import {
+  pollSupervisorFdControlDiagnostic,
   readSupervisorFaultExitDecision,
   supervisorFaultExitKindProcessExit,
 } from "../../supervisor-shadow.js";
@@ -381,6 +382,10 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       && status !== execveSpawnStatus
     ) {
       assertHandleProcessIdentity("handleStatusTransition:start");
+    }
+    const supervisorFdControlDiagnostic = pollSupervisorFdControlDiagnostic(handle);
+    if (supervisorFdControlDiagnostic !== undefined) {
+      deps.appendWorkerDebugLog(handle, supervisorFdControlDiagnostic);
     }
 
     const enqueueWorkerAfterOk = (): void => {

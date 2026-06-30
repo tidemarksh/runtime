@@ -441,6 +441,32 @@ export function readSupervisorFdControlRecord(
   );
 }
 
+export function pollSupervisorFdControlDiagnostic(handle: ProcessHandle): string | undefined {
+  const countExport = handle.kernel.supervisor_shadow_fd_control_count;
+  if (countExport === undefined) {
+    return undefined;
+  }
+  const count = BigInt(countExport());
+  if (count === 0n) {
+    return undefined;
+  }
+  try {
+    const record = readSupervisorFdControlRecord(handle);
+    if (record === undefined) {
+      return undefined;
+    }
+    const lastSeq = handle.lastSupervisorFdControlSeq ?? 0n;
+    if (record.seq <= lastSeq) {
+      return undefined;
+    }
+    handle.lastSupervisorFdControlSeq = record.seq;
+    return formatSupervisorFdControlRecord(record);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `supervisor-fd-control:error=${JSON.stringify(message)}`;
+  }
+}
+
 export function formatSupervisorFdControlRecord(record: SupervisorFdControlRecord): string {
   return [
     "supervisor-fd-control",

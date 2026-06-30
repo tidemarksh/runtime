@@ -6,6 +6,7 @@ import {
   encodeSupervisorShadowThreadEvent,
   formatSupervisorFdControlRecord,
   hasSupervisorShadowProtocol,
+  pollSupervisorFdControlDiagnostic,
   readSupervisorFdControlRecord,
   SUPERVISOR_FD_CONTROL_KIND_EPOLL_CREATED,
   SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_ADD,
@@ -46,12 +47,16 @@ function makeEvent(): SupervisorShadowThreadEvent {
   };
 }
 
-function writeFdControlRecord(view: DataView, kind = SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED): void {
+function writeFdControlRecord(
+  view: DataView,
+  kind = SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED,
+  seq = 7n,
+): void {
   view.setUint32(0, SUPERVISOR_FD_CONTROL_RECORD_MAGIC, true);
   view.setUint32(4, 1, true);
   view.setUint32(8, SUPERVISOR_FD_CONTROL_RECORD_BYTES, true);
   view.setUint32(12, kind, true);
-  view.setBigUint64(16, 7n, true);
+  view.setBigUint64(16, seq, true);
   view.setUint32(24, 0x1234, true);
   view.setUint32(28, 0x2000, true);
   view.setUint32(32, 9, true);
@@ -343,4 +348,41 @@ test("readSupervisorFdControlRecord polls the kernel export", () => {
   expect(record?.kind).toBe(SUPERVISOR_FD_CONTROL_KIND_FD_CLOSED);
   expect(record?.detail0).toBe(1n);
   expect(record?.detail1).toBe(0n);
+});
+
+test("pollSupervisorFdControlDiagnostic formats new records once", () => {
+  const memory = new WebAssembly.Memory({ initial: 8 });
+  let count = 0n;
+  let seq = 7n;
+  const kernelExports = {
+    memory,
+    kernel_heap_ptr: () => 0,
+    supervisor_abi_version: () => 1,
+    supervisor_fd_control_record_bytes: () => SUPERVISOR_FD_CONTROL_RECORD_BYTES,
+    supervisor_fd_control_kind_pipe_created: () => SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED,
+    supervisor_shadow_fd_control_count: () => count,
+    supervisor_fd_control_record: vi.fn((outPtr: number, outLen: number) => {
+      expect(outLen).toBe(SUPERVISOR_FD_CONTROL_RECORD_BYTES);
+      writeFdControlRecord(
+        new DataView(memory.buffer, outPtr, outLen),
+        SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED,
+        seq,
+      );
+      return SUPERVISOR_FD_CONTROL_RECORD_BYTES;
+    }),
+  } as unknown as KernelExports;
+  const handle = {
+    kernel: kernelExports,
+    memory,
+  } as ProcessHandle;
+
+  expect(pollSupervisorFdControlDiagnostic(handle)).toBeUndefined();
+
+  count = 1n;
+  expect(pollSupervisorFdControlDiagnostic(handle)).toContain("supervisor-fd-control:kind=1:seq=7");
+  expect(pollSupervisorFdControlDiagnostic(handle)).toBeUndefined();
+
+  count = 2n;
+  seq = 8n;
+  expect(pollSupervisorFdControlDiagnostic(handle)).toContain("supervisor-fd-control:kind=1:seq=8");
 });

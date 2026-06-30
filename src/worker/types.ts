@@ -332,6 +332,7 @@ export interface ProcessHandle {
   blockedWorkers: Map<Worker, BlockedWorkerState>;
   pendingChildExitRecords: number;
   pendingChildSpawnRecords: number;
+  lastSupervisorFdControlSeq?: bigint;
   childExitSyncRecords: Map<number, number>;
   pipeSyncPromise: Promise<void> | null;
   pipeSyncQueued: boolean;

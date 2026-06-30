@@ -87,6 +87,29 @@ function writeFaultExitDecisionRecord(
   writeU64(view, 80, 0n);
 }
 
+function writeFdControlRecord(memory: WebAssembly.Memory, ptr: number, seq: bigint): void {
+  const view = new DataView(memory.buffer, ptr, 96);
+  writeU32(view, 0, 0x4446_5354);
+  writeU32(view, 4, 1);
+  writeU32(view, 8, 96);
+  writeU32(view, 12, 1);
+  writeU64(view, 16, seq);
+  writeU32(view, 24, 0x1234);
+  writeU32(view, 28, 0x2000);
+  writeU32(view, 32, 9);
+  writeU32(view, 36, 3);
+  writeU32(view, 40, 0);
+  writeU32(view, 44, 11);
+  writeU32(view, 48, 0);
+  writeU32(view, 52, 2);
+  writeU32(view, 56, 5);
+  writeU32(view, 60, 0);
+  writeU64(view, 64, 0n);
+  writeU64(view, 72, 0x800n);
+  writeU64(view, 80, 1n);
+  writeU64(view, 88, 0n);
+}
+
 function makeHandle(worker: Worker) {
   return {
     pid: 0,
@@ -245,6 +268,86 @@ function makeDeps(worker: Worker) {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+test("status transitions append supervisor fd-control diagnostics once per sequence", () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  const memory = new WebAssembly.Memory({ initial: 8, maximum: 8, shared: true });
+  handle.memory = memory;
+  let count = 1n;
+  let seq = 7n;
+  const kernel = handle.kernel as typeof handle.kernel & {
+    memory: WebAssembly.Memory;
+    supervisor_abi_version: () => number;
+    supervisor_fd_control_record_bytes: () => number;
+    supervisor_fd_control_kind_pipe_created: () => number;
+    supervisor_shadow_fd_control_count: () => bigint;
+    supervisor_fd_control_record: (outPtr: number, outLen: number) => number;
+  };
+  kernel.memory = memory;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_fd_control_record_bytes = () => 96;
+  kernel.supervisor_fd_control_kind_pipe_created = () => 1;
+  kernel.supervisor_shadow_fd_control_count = () => count;
+  kernel.supervisor_fd_control_record = vi.fn((outPtr: number, outLen: number) => {
+    expect(outLen).toBe(96);
+    writeFdControlRecord(memory, outPtr, seq);
+    return 96;
+  });
+  const deps = makeDeps(worker);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+  const statusMessage = {
+    type: "status",
+    status: 0,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  };
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: statusMessage,
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: statusMessage,
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+  count = 2n;
+  seq = 8n;
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: statusMessage,
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  const fdControlLogs = deps.appendWorkerDebugLog.mock.calls
+    .map(([, event]) => event)
+    .filter((event) => String(event).startsWith("supervisor-fd-control:"));
+  expect(fdControlLogs).toEqual([
+    expect.stringContaining("supervisor-fd-control:kind=1:seq=7"),
+    expect.stringContaining("supervisor-fd-control:kind=1:seq=8"),
+  ]);
 });
 
 test("STATUS_FAULT selects a worker VM with concrete fault evidence when the process table is stale", () => {
