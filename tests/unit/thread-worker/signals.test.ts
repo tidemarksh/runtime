@@ -1,6 +1,9 @@
 // Thread-worker tests in this file validate signal-boundary behavior.
 import { expect, test, vi } from "vite-plus/test";
-import { checkPendingSignalsAtBoundary } from "../../../src/thread-worker/signals.js";
+import {
+  checkPendingSignalsAtBoundary,
+  hasPendingSignalForBlockedWait,
+} from "../../../src/thread-worker/signals.js";
 
 test("checkPendingSignalsAtBoundary reports delivered when step(0) advances the thread to OK", () => {
   const clearSyscallTrace = vi.fn();
@@ -77,4 +80,35 @@ test("checkPendingSignalsAtBoundary keeps delivered=false when step(0) does not 
   } as never, 0x1234, { OK: 0 } as never);
 
   expect(boundary).toEqual({ status: 0, delivered: false });
+});
+
+test("hasPendingSignalForBlockedWait prefers supervisor decision over direct pending bits", () => {
+  const threadSigPending = vi.fn(() => 1n);
+  const processInterrupts = vi.fn(() => 1);
+  const supervisorDecision = vi.fn(() => 0);
+
+  expect(hasPendingSignalForBlockedWait({
+    supervisor_signal_pending_for_blocked_wait: supervisorDecision,
+    thread_sig_pending: threadSigPending,
+    thread_pending_signal_interrupts_blocked_syscall: processInterrupts,
+  } as never, 0x1234)).toBe(false);
+
+  expect(supervisorDecision).toHaveBeenCalledWith(0x1234);
+  expect(threadSigPending).not.toHaveBeenCalled();
+  expect(processInterrupts).not.toHaveBeenCalled();
+});
+
+test("hasPendingSignalForBlockedWait keeps legacy fallback for older kernels", () => {
+  expect(hasPendingSignalForBlockedWait({
+    thread_sig_pending: () => 0n,
+    thread_pending_signal_interrupts_blocked_syscall: () => 1,
+  } as never, 0x1234)).toBe(true);
+
+  expect(hasPendingSignalForBlockedWait({
+    thread_sig_pending: () => 1n,
+  } as never, 0x1234)).toBe(true);
+
+  expect(hasPendingSignalForBlockedWait({
+    thread_sig_pending: () => 0n,
+  } as never, 0x1234)).toBe(false);
 });

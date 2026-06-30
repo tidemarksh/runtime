@@ -31,6 +31,7 @@ import { formatCompactDebugSuffix } from "../../diagnostics/format.js";
 import {
   pollSupervisorFdControlDiagnostic,
   pollSupervisorFsControlDiagnostic,
+  pollSupervisorSignalControlDiagnostic,
   readSupervisorFaultExitDecision,
   supervisorFaultExitKindProcessExit,
 } from "../../supervisor-shadow.js";
@@ -391,6 +392,10 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     const supervisorFsControlDiagnostic = pollSupervisorFsControlDiagnostic(handle);
     if (supervisorFsControlDiagnostic !== undefined) {
       deps.appendWorkerDebugLog(handle, supervisorFsControlDiagnostic);
+    }
+    const supervisorSignalControlDiagnostic = pollSupervisorSignalControlDiagnostic(handle);
+    if (supervisorSignalControlDiagnostic !== undefined) {
+      deps.appendWorkerDebugLog(handle, supervisorSignalControlDiagnostic);
     }
 
     const enqueueWorkerAfterOk = (): void => {

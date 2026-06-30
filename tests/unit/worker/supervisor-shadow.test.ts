@@ -4,14 +4,18 @@ import type { ProcessHandle } from "../../../src/worker/types.js";
 import {
   decodeSupervisorFdControlRecord,
   decodeSupervisorFsControlRecord,
+  decodeSupervisorSignalControlRecord,
   encodeSupervisorShadowThreadEvent,
   formatSupervisorFdControlRecord,
   formatSupervisorFsControlRecord,
+  formatSupervisorSignalControlRecord,
   hasSupervisorShadowProtocol,
   pollSupervisorFdControlDiagnostic,
   pollSupervisorFsControlDiagnostic,
+  pollSupervisorSignalControlDiagnostic,
   readSupervisorFdControlRecord,
   readSupervisorFsControlRecord,
+  readSupervisorSignalControlRecord,
   SUPERVISOR_FD_CONTROL_KIND_EPOLL_CREATED,
   SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_ADD,
   SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_DEL,
@@ -37,6 +41,11 @@ import {
   SUPERVISOR_FS_CONTROL_KIND_PAGE_CACHE_MISS,
   SUPERVISOR_FS_CONTROL_RECORD_BYTES,
   SUPERVISOR_FS_CONTROL_RECORD_MAGIC,
+  SUPERVISOR_SIGNAL_CONTROL_KIND_BLOCKED_WAIT_INTERRUPTED,
+  SUPERVISOR_SIGNAL_CONTROL_KIND_BOUNDARY_CHECK,
+  SUPERVISOR_SIGNAL_CONTROL_KIND_SIGNAL_DELIVERED,
+  SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES,
+  SUPERVISOR_SIGNAL_CONTROL_RECORD_MAGIC,
   SUPERVISOR_SHADOW_THREAD_EVENT_MAGIC,
   SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES,
   SUPERVISOR_SHADOW_THREAD_EVENT_VERSION,
@@ -107,6 +116,34 @@ function writeFsControlRecord(
   view.setBigUint64(88, 0x1n, true);
   view.setBigUint64(96, 16384n, true);
   view.setBigUint64(104, 0n, true);
+}
+
+function writeSignalControlRecord(
+  view: DataView,
+  kind = SUPERVISOR_SIGNAL_CONTROL_KIND_SIGNAL_DELIVERED,
+  seq = 11n,
+): void {
+  view.setUint32(0, SUPERVISOR_SIGNAL_CONTROL_RECORD_MAGIC, true);
+  view.setUint32(4, 1, true);
+  view.setUint32(8, SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES, true);
+  view.setUint32(12, kind, true);
+  view.setBigUint64(16, seq, true);
+  view.setUint32(24, 0x1234, true);
+  view.setUint32(28, 0x2000, true);
+  view.setUint32(32, 9, true);
+  view.setUint32(36, 3, true);
+  view.setUint32(40, 10, true);
+  view.setUint32(44, 0, true);
+  view.setInt32(48, -6, true);
+  view.setUint32(52, 1, true);
+  view.setBigUint64(56, 0x200n, true);
+  view.setBigUint64(64, 0x400n, true);
+  view.setBigUint64(72, 0x800n, true);
+  view.setBigUint64(80, 0x200n, true);
+  view.setBigUint64(88, 0x10n, true);
+  view.setBigUint64(96, 0x91_000n, true);
+  view.setBigUint64(104, 0x91_000n, true);
+  view.setBigUint64(112, 0x500n, true);
 }
 
 test("hasSupervisorShadowProtocol treats supervisor exports as optional", () => {
@@ -561,4 +598,146 @@ test("pollSupervisorFsControlDiagnostic formats new records once", () => {
   count = 2n;
   seq = 10n;
   expect(pollSupervisorFsControlDiagnostic(handle)).toContain("supervisor-fs-control:kind=1:seq=10");
+});
+
+test("decodeSupervisorSignalControlRecord reads the supervisor signal control layout", () => {
+  const bytes = new Uint8Array(SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES);
+  writeSignalControlRecord(new DataView(bytes.buffer));
+  const kernelExports = {
+    memory: new WebAssembly.Memory({ initial: 1 }),
+    supervisor_abi_version: () => 1,
+    supervisor_signal_control_kind_boundary_check: () =>
+      SUPERVISOR_SIGNAL_CONTROL_KIND_BOUNDARY_CHECK,
+    supervisor_signal_control_kind_signal_delivered: () =>
+      SUPERVISOR_SIGNAL_CONTROL_KIND_SIGNAL_DELIVERED,
+    supervisor_signal_control_kind_blocked_wait_interrupted: () =>
+      SUPERVISOR_SIGNAL_CONTROL_KIND_BLOCKED_WAIT_INTERRUPTED,
+  } as unknown as KernelExports;
+
+  const record = decodeSupervisorSignalControlRecord(kernelExports, new DataView(bytes.buffer));
+
+  expect(record).toEqual({
+    kind: SUPERVISOR_SIGNAL_CONTROL_KIND_SIGNAL_DELIVERED,
+    seq: 11n,
+    vmPtr: 0x1234,
+    processPtr: 0x2000,
+    pid: 9,
+    tid: 3,
+    sig: 10,
+    status: 0,
+    sigInfoCode: -6,
+    boundary: 1,
+    threadPending: 0x200n,
+    processPending: 0x400n,
+    recordPending: 0x800n,
+    deliverable: 0x200n,
+    mask: 0x10n,
+    pc: 0x91_000n,
+    detail0: 0x91_000n,
+    detail1: 0x500n,
+  });
+  expect(formatSupervisorSignalControlRecord(record)).toBe(
+    "supervisor-signal-control:kind=2:seq=11:vm=0x1234:process=0x2000"
+      + ":pid=9:tid=3:sig=10:status=0:code=-6:boundary=1"
+      + ":threadPending=0x200:processPending=0x400:recordPending=0x800"
+      + ":deliverable=0x200:mask=0x10:pc=0x91000:detail0=593920:detail1=1280",
+  );
+});
+
+test("decodeSupervisorSignalControlRecord accepts signal control kinds", () => {
+  const kernelExports = {
+    memory: new WebAssembly.Memory({ initial: 1 }),
+    supervisor_abi_version: () => 1,
+    supervisor_signal_control_kind_boundary_check: () =>
+      SUPERVISOR_SIGNAL_CONTROL_KIND_BOUNDARY_CHECK,
+    supervisor_signal_control_kind_signal_delivered: () =>
+      SUPERVISOR_SIGNAL_CONTROL_KIND_SIGNAL_DELIVERED,
+    supervisor_signal_control_kind_blocked_wait_interrupted: () =>
+      SUPERVISOR_SIGNAL_CONTROL_KIND_BLOCKED_WAIT_INTERRUPTED,
+  } as unknown as KernelExports;
+
+  for (const kind of [
+    SUPERVISOR_SIGNAL_CONTROL_KIND_BOUNDARY_CHECK,
+    SUPERVISOR_SIGNAL_CONTROL_KIND_SIGNAL_DELIVERED,
+    SUPERVISOR_SIGNAL_CONTROL_KIND_BLOCKED_WAIT_INTERRUPTED,
+  ]) {
+    const bytes = new Uint8Array(SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES);
+    writeSignalControlRecord(new DataView(bytes.buffer), kind);
+
+    const record = decodeSupervisorSignalControlRecord(kernelExports, new DataView(bytes.buffer));
+
+    expect(record.kind).toBe(kind);
+  }
+});
+
+test("readSupervisorSignalControlRecord polls the kernel export", () => {
+  const memory = new WebAssembly.Memory({ initial: 8 });
+  const kernelExports = {
+    memory,
+    kernel_heap_ptr: () => 0,
+    supervisor_abi_version: () => 1,
+    supervisor_signal_control_record_bytes: () => SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES,
+    supervisor_signal_control_kind_signal_delivered: () =>
+      SUPERVISOR_SIGNAL_CONTROL_KIND_SIGNAL_DELIVERED,
+    supervisor_signal_control_record: vi.fn((outPtr: number, outLen: number) => {
+      expect(outLen).toBe(SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES);
+      writeSignalControlRecord(new DataView(memory.buffer, outPtr, outLen));
+      return SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES;
+    }),
+  } as unknown as KernelExports;
+  const handle = {
+    kernel: kernelExports,
+    memory,
+  } as ProcessHandle;
+
+  const record = readSupervisorSignalControlRecord(handle);
+
+  expect(kernelExports.supervisor_signal_control_record).toHaveBeenCalledWith(
+    expect.any(Number),
+    SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES,
+  );
+  expect(record?.kind).toBe(SUPERVISOR_SIGNAL_CONTROL_KIND_SIGNAL_DELIVERED);
+  expect(record?.sig).toBe(10);
+});
+
+test("pollSupervisorSignalControlDiagnostic formats new records once", () => {
+  const memory = new WebAssembly.Memory({ initial: 8 });
+  let count = 0n;
+  let seq = 11n;
+  const kernelExports = {
+    memory,
+    kernel_heap_ptr: () => 0,
+    supervisor_abi_version: () => 1,
+    supervisor_signal_control_record_bytes: () => SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES,
+    supervisor_signal_control_kind_signal_delivered: () =>
+      SUPERVISOR_SIGNAL_CONTROL_KIND_SIGNAL_DELIVERED,
+    supervisor_shadow_signal_control_count: () => count,
+    supervisor_signal_control_record: vi.fn((outPtr: number, outLen: number) => {
+      expect(outLen).toBe(SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES);
+      writeSignalControlRecord(
+        new DataView(memory.buffer, outPtr, outLen),
+        SUPERVISOR_SIGNAL_CONTROL_KIND_SIGNAL_DELIVERED,
+        seq,
+      );
+      return SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES;
+    }),
+  } as unknown as KernelExports;
+  const handle = {
+    kernel: kernelExports,
+    memory,
+  } as ProcessHandle;
+
+  expect(pollSupervisorSignalControlDiagnostic(handle)).toBeUndefined();
+
+  count = 1n;
+  expect(pollSupervisorSignalControlDiagnostic(handle)).toContain(
+    "supervisor-signal-control:kind=2:seq=11",
+  );
+  expect(pollSupervisorSignalControlDiagnostic(handle)).toBeUndefined();
+
+  count = 2n;
+  seq = 12n;
+  expect(pollSupervisorSignalControlDiagnostic(handle)).toContain(
+    "supervisor-signal-control:kind=2:seq=12",
+  );
 });

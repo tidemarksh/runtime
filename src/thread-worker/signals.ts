@@ -19,3 +19,15 @@ export function checkPendingSignalsAtBoundary(
       && (afterPc !== beforePc || afterSp !== beforeSp),
   };
 }
+
+export function hasPendingSignalForBlockedWait(
+  exports: KernelExports,
+  vmPtr: number,
+): boolean {
+  const supervisorDecision = exports.supervisor_signal_pending_for_blocked_wait?.(vmPtr);
+  if (supervisorDecision !== undefined) {
+    return supervisorDecision === 1;
+  }
+  return exports.thread_pending_signal_interrupts_blocked_syscall?.(vmPtr) === 1
+    || exports.thread_sig_pending(vmPtr) !== 0n;
+}

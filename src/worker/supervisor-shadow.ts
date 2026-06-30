@@ -42,6 +42,12 @@ export const SUPERVISOR_FS_CONTROL_KIND_PAGE_CACHE_FILL = 2;
 export const SUPERVISOR_FS_CONTROL_KIND_DIRTY_PAGE_PUBLISHED = 3;
 export const SUPERVISOR_FS_CONTROL_KIND_DIRTY_PAGE_FLUSHED = 4;
 const SUPERVISOR_FS_CONTROL_SCRATCH_OFFSET = 0x32000;
+export const SUPERVISOR_SIGNAL_CONTROL_RECORD_MAGIC = 0x4753_5354;
+export const SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES = 120;
+export const SUPERVISOR_SIGNAL_CONTROL_KIND_BOUNDARY_CHECK = 1;
+export const SUPERVISOR_SIGNAL_CONTROL_KIND_SIGNAL_DELIVERED = 2;
+export const SUPERVISOR_SIGNAL_CONTROL_KIND_BLOCKED_WAIT_INTERRUPTED = 3;
+const SUPERVISOR_SIGNAL_CONTROL_SCRATCH_OFFSET = 0x33000;
 
 export interface SupervisorShadowKernelExports extends KernelExports {
   supervisor_abi_version(): number;
@@ -119,6 +125,27 @@ export interface SupervisorFsControlRecord {
   length: bigint;
   result: bigint;
   flags: bigint;
+  detail0: bigint;
+  detail1: bigint;
+}
+
+export interface SupervisorSignalControlRecord {
+  kind: number;
+  seq: bigint;
+  vmPtr: number;
+  processPtr: number;
+  pid: number;
+  tid: number;
+  sig: number;
+  status: number;
+  sigInfoCode: number;
+  boundary: number;
+  threadPending: bigint;
+  processPending: bigint;
+  recordPending: bigint;
+  deliverable: bigint;
+  mask: bigint;
+  pc: bigint;
   detail0: bigint;
   detail1: bigint;
 }
@@ -655,6 +682,151 @@ export function formatSupervisorFsControlRecord(record: SupervisorFsControlRecor
     `length=${record.length.toString()}`,
     `result=${record.result.toString()}`,
     `flags=0x${record.flags.toString(16)}`,
+    `detail0=${record.detail0.toString()}`,
+    `detail1=${record.detail1.toString()}`,
+  ].join(":");
+}
+
+function supervisorSignalControlKindBoundaryCheck(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_signal_control_kind_boundary_check?.()
+    ?? SUPERVISOR_SIGNAL_CONTROL_KIND_BOUNDARY_CHECK;
+}
+
+function supervisorSignalControlKindSignalDelivered(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_signal_control_kind_signal_delivered?.()
+    ?? SUPERVISOR_SIGNAL_CONTROL_KIND_SIGNAL_DELIVERED;
+}
+
+function supervisorSignalControlKindBlockedWaitInterrupted(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_signal_control_kind_blocked_wait_interrupted?.()
+    ?? SUPERVISOR_SIGNAL_CONTROL_KIND_BLOCKED_WAIT_INTERRUPTED;
+}
+
+export function decodeSupervisorSignalControlRecord(
+  kernelExports: KernelExports,
+  view: DataView,
+): SupervisorSignalControlRecord {
+  if (view.byteLength < SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES) {
+    throw new Error(`supervisor signal control record too short: ${view.byteLength}`);
+  }
+  const magic = view.getUint32(0, true);
+  const version = view.getUint32(4, true);
+  const bytes = view.getUint32(8, true);
+  const kind = view.getUint32(12, true);
+  if (magic !== SUPERVISOR_SIGNAL_CONTROL_RECORD_MAGIC) {
+    throw new Error(`supervisor signal control bad magic: 0x${magic.toString(16)}`);
+  }
+  const expectedVersion = kernelExports.supervisor_abi_version?.() ?? version;
+  if (version !== expectedVersion) {
+    throw new Error(`supervisor signal control bad version: ${version}`);
+  }
+  if (bytes < SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES || bytes > view.byteLength) {
+    throw new Error(`supervisor signal control bad size: ${bytes}`);
+  }
+  if (
+    kind !== supervisorSignalControlKindBoundaryCheck(kernelExports)
+    && kind !== supervisorSignalControlKindSignalDelivered(kernelExports)
+    && kind !== supervisorSignalControlKindBlockedWaitInterrupted(kernelExports)
+  ) {
+    throw new Error(`supervisor signal control bad kind: ${kind}`);
+  }
+  return {
+    kind,
+    seq: view.getBigUint64(16, true),
+    vmPtr: view.getUint32(24, true),
+    processPtr: view.getUint32(28, true),
+    pid: view.getUint32(32, true),
+    tid: view.getUint32(36, true),
+    sig: view.getUint32(40, true),
+    status: view.getUint32(44, true),
+    sigInfoCode: view.getInt32(48, true),
+    boundary: view.getUint32(52, true),
+    threadPending: view.getBigUint64(56, true),
+    processPending: view.getBigUint64(64, true),
+    recordPending: view.getBigUint64(72, true),
+    deliverable: view.getBigUint64(80, true),
+    mask: view.getBigUint64(88, true),
+    pc: view.getBigUint64(96, true),
+    detail0: view.getBigUint64(104, true),
+    detail1: view.getBigUint64(112, true),
+  };
+}
+
+export function readSupervisorSignalControlRecord(
+  handle: ProcessHandle,
+): SupervisorSignalControlRecord | undefined {
+  const recordBytesExport = handle.kernel.supervisor_signal_control_record_bytes;
+  const readRecord = handle.kernel.supervisor_signal_control_record;
+  if (recordBytesExport === undefined || readRecord === undefined) {
+    return undefined;
+  }
+  const recordBytes = recordBytesExport();
+  if (recordBytes < SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES) {
+    throw new Error(`supervisor signal control bytes too small: ${recordBytes}`);
+  }
+  const memory = handle.kernel.memory ?? handle.memory;
+  const scratch = kernelScratchBase(handle.kernel) + SUPERVISOR_SIGNAL_CONTROL_SCRATCH_OFFSET;
+  ensureMemoryCapacity(memory, scratch + recordBytes);
+  const result = readRecord(scratch, recordBytes);
+  if (result < 0 || result > recordBytes) {
+    throw new Error(`supervisor signal control read failed: ${result}`);
+  }
+  if (result === 0) {
+    return undefined;
+  }
+  return decodeSupervisorSignalControlRecord(
+    handle.kernel,
+    new DataView(memory.buffer, scratch, result),
+  );
+}
+
+export function pollSupervisorSignalControlDiagnostic(handle: ProcessHandle): string | undefined {
+  const countExport = handle.kernel.supervisor_shadow_signal_control_count;
+  if (countExport === undefined) {
+    return undefined;
+  }
+  const count = BigInt(countExport());
+  if (count === 0n) {
+    return undefined;
+  }
+  try {
+    const record = readSupervisorSignalControlRecord(handle);
+    if (record === undefined) {
+      return undefined;
+    }
+    const lastSeq = handle.lastSupervisorSignalControlSeq ?? 0n;
+    if (record.seq <= lastSeq) {
+      return undefined;
+    }
+    handle.lastSupervisorSignalControlSeq = record.seq;
+    return formatSupervisorSignalControlRecord(record);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `supervisor-signal-control:error=${JSON.stringify(message)}`;
+  }
+}
+
+export function formatSupervisorSignalControlRecord(
+  record: SupervisorSignalControlRecord,
+): string {
+  return [
+    "supervisor-signal-control",
+    `kind=${record.kind}`,
+    `seq=${record.seq.toString()}`,
+    `vm=0x${record.vmPtr.toString(16)}`,
+    `process=0x${record.processPtr.toString(16)}`,
+    `pid=${record.pid}`,
+    `tid=${record.tid}`,
+    `sig=${record.sig}`,
+    `status=${record.status}`,
+    `code=${record.sigInfoCode}`,
+    `boundary=${record.boundary}`,
+    `threadPending=0x${record.threadPending.toString(16)}`,
+    `processPending=0x${record.processPending.toString(16)}`,
+    `recordPending=0x${record.recordPending.toString(16)}`,
+    `deliverable=0x${record.deliverable.toString(16)}`,
+    `mask=0x${record.mask.toString(16)}`,
+    `pc=0x${record.pc.toString(16)}`,
     `detail0=${record.detail0.toString()}`,
     `detail1=${record.detail1.toString()}`,
   ].join(":");

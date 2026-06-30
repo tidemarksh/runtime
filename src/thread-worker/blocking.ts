@@ -9,7 +9,10 @@ import {
   type ThreadWorkerBoundaryOutcome,
   type ThreadWorkerOutcomePublisher,
 } from "./outcomes.js";
-import { checkPendingSignalsAtBoundary } from "./signals.js";
+import {
+  checkPendingSignalsAtBoundary,
+  hasPendingSignalForBlockedWait,
+} from "./signals.js";
 import { formatThreadWorkerGuestBufferPreview } from "./status.js";
 
 const BLOCKED_ADDR_NOT_FOUND = 0xffff_ffff_ffff_ffffn;
@@ -254,8 +257,7 @@ export function handleFutexWait(
       ctx.postStatus(createThreadWorkerStatusOutcome(currentStatus));
       return false;
     }
-    const hasPendingSignal = ctx.exports.thread_pending_signal_interrupts_blocked_syscall?.(ctx.vmPtr) === 1
-      || ctx.exports.thread_sig_pending(ctx.vmPtr) !== 0n;
+    const hasPendingSignal = hasPendingSignalForBlockedWait(ctx.exports, ctx.vmPtr);
     if (stillBlockedAddr === BLOCKED_ADDR_NOT_FOUND) {
       clearSyscallTrace(ctx.exports);
       completeSupervisorFutexWait(ctx, "invalid-address", () => {

@@ -153,6 +153,7 @@ export interface KernelExports {
   supervisor_fault_exit_decision_bytes?(): number;
   supervisor_fd_control_record_bytes?(): number;
   supervisor_fs_control_record_bytes?(): number;
+  supervisor_signal_control_record_bytes?(): number;
   supervisor_runnable_selection_bytes?(): number;
   supervisor_resume_kind_futex_wake?(): number;
   supervisor_host_op_kind_spawn_thread_worker?(): number;
@@ -179,6 +180,9 @@ export interface KernelExports {
   supervisor_fs_control_kind_page_cache_fill?(): number;
   supervisor_fs_control_kind_dirty_page_published?(): number;
   supervisor_fs_control_kind_dirty_page_flushed?(): number;
+  supervisor_signal_control_kind_boundary_check?(): number;
+  supervisor_signal_control_kind_signal_delivered?(): number;
+  supervisor_signal_control_kind_blocked_wait_interrupted?(): number;
   supervisor_reset_shadow_log?(): void;
   supervisor_shadow_thread_event_count?(): bigint | number;
   supervisor_shadow_host_completion_count?(): bigint | number;
@@ -190,6 +194,7 @@ export interface KernelExports {
   supervisor_shadow_resume_overflow_count?(): bigint | number;
   supervisor_shadow_fd_control_count?(): bigint | number;
   supervisor_shadow_fs_control_count?(): bigint | number;
+  supervisor_shadow_signal_control_count?(): bigint | number;
   supervisor_shadow_thread_event_log_hash?(): bigint | number;
   supervisor_shadow_host_completion_log_hash?(): bigint | number;
   supervisor_submit_thread_event?(eventPtr: number, eventLen: number): number;
@@ -200,6 +205,7 @@ export interface KernelExports {
   supervisor_fault_exit_decision?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_fd_control_record?(outPtr: number, outLen: number): number;
   supervisor_fs_control_record?(outPtr: number, outLen: number): number;
+  supervisor_signal_control_record?(outPtr: number, outLen: number): number;
   supervisor_select_runnable?(
     vmPtr: number,
     candidatesPtr: number,
@@ -215,6 +221,7 @@ export interface KernelExports {
   supervisor_futex_wait_completion_invalid_address?(): number;
   supervisor_futex_wait_completion_signal_check?(): number;
   supervisor_complete_futex_wait?(vmPtr: number, completion: number): number;
+  supervisor_signal_pending_for_blocked_wait?(vmPtr: number): number;
 
   // Open flags
   abi_o_rdonly(): number;
