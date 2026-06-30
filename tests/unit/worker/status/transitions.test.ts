@@ -57,6 +57,36 @@ function writeCloneSpawnHostOpRecord(
   writeU64(view, 56, 0x8800n);
 }
 
+function writeFaultExitDecisionRecord(
+  memory: WebAssembly.Memory,
+  ptr: number,
+  kind: number,
+  vmPtr: number,
+  exitVmPtr: number,
+  remainingThreads: number,
+  liveThreads: number,
+): void {
+  const view = new DataView(memory.buffer, ptr, 88);
+  writeU32(view, 0, 0x5846_5354);
+  writeU32(view, 4, 1);
+  writeU32(view, 8, 88);
+  writeU32(view, 12, kind);
+  writeU64(view, 16, 1n);
+  writeU32(view, 24, vmPtr);
+  writeU32(view, 28, exitVmPtr);
+  writeU32(view, 32, 1);
+  writeU32(view, 36, 0x5000);
+  writeU32(view, 40, remainingThreads);
+  writeU32(view, 44, liveThreads);
+  view.setInt32(48, 42, true);
+  view.setInt32(52, 0, true);
+  writeU32(view, 56, 3);
+  writeU32(view, 60, 0);
+  writeU32(view, 64, 0);
+  writeU64(view, 72, 0n);
+  writeU64(view, 80, 0n);
+}
+
 function makeHandle(worker: Worker) {
   return {
     pid: 0,
@@ -266,6 +296,67 @@ test("STATUS_FAULT selects a worker VM with concrete fault evidence when the pro
   expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
     77,
     expect.stringContaining("complete-exit-request:transitions-fault:1:vm=0x1234:exitVm=0x5678:priority=2"),
+  );
+});
+
+test("STATUS_FAULT uses supervisor thread-exit decision instead of runtime remaining-thread heuristic", () => {
+  const worker = { terminate: vi.fn() } as unknown as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  handle.runtimeId = 77;
+  handle.kernel.process_current_pid = () => 1;
+  handle.kernel.thread_process_thread_count = () => 1;
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  handle.memory = memory;
+  const kernel = handle.kernel as typeof handle.kernel & {
+    memory: WebAssembly.Memory;
+    supervisor_abi_version: () => number;
+    supervisor_fault_exit_decision_bytes: () => number;
+    supervisor_fault_exit_kind_thread_exit: () => number;
+    supervisor_fault_exit_kind_process_exit: () => number;
+    supervisor_fault_exit_decision: (vmPtr: number, outPtr: number, outLen: number) => number;
+  };
+  kernel.memory = memory;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_fault_exit_decision_bytes = () => 88;
+  kernel.supervisor_fault_exit_kind_thread_exit = () => 1;
+  kernel.supervisor_fault_exit_kind_process_exit = () => 2;
+  kernel.supervisor_fault_exit_decision = vi.fn((vmPtr: number, outPtr: number, outLen: number) => {
+    expect(vmPtr).toBe(0x1234);
+    expect(outLen).toBe(88);
+    writeFaultExitDecisionRecord(memory, outPtr, 1, 0x1234, 0x1234, 1, 1);
+    return 88;
+  });
+  const deps = makeDeps(worker);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: {
+      type: "status",
+      status: 3,
+      exitCode: 42,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 3,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  expect(kernel.supervisor_fault_exit_decision).toHaveBeenCalledWith(0x1234, expect.any(Number), 88);
+  expect(deps.completeProcessExit).not.toHaveBeenCalled();
+  expect(handle.workers.has(worker)).toBe(false);
+  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
+  expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
+    77,
+    expect.stringContaining("fault-worker-delete:1:vm=0x1234"),
   );
 });
 

@@ -1,8 +1,15 @@
 import type { KernelExports } from "../abi.js";
+import { ensureMemoryCapacity, kernelScratchBase } from "./kernel-scratch.js";
+import type { ProcessHandle } from "./types.js";
 
 export const SUPERVISOR_SHADOW_THREAD_EVENT_MAGIC = 0x5645_5354;
 export const SUPERVISOR_SHADOW_THREAD_EVENT_VERSION = 1;
 export const SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES = 64;
+const SUPERVISOR_FAULT_EXIT_DECISION_MAGIC = 0x5846_5354;
+const SUPERVISOR_FAULT_EXIT_DECISION_BYTES = 88;
+const SUPERVISOR_FAULT_EXIT_KIND_THREAD_EXIT = 1;
+const SUPERVISOR_FAULT_EXIT_KIND_PROCESS_EXIT = 2;
+const SUPERVISOR_FAULT_EXIT_SCRATCH_OFFSET = 0x2d000;
 
 export interface SupervisorShadowKernelExports extends KernelExports {
   supervisor_abi_version(): number;
@@ -19,6 +26,24 @@ export interface SupervisorShadowThreadEvent {
   blockedReason?: number;
   pc?: bigint | number;
   sp?: bigint | number;
+}
+
+export interface SupervisorFaultExitDecision {
+  kind: number;
+  seq: bigint;
+  vmPtr: number;
+  exitVmPtr: number;
+  tid: number;
+  processPtr: number;
+  remainingThreads: number;
+  liveThreads: number;
+  exitCode: number;
+  termSignal: number;
+  status: number;
+  faultSignal: number;
+  faultKind: number;
+  faultPc: bigint;
+  faultAddr: bigint;
 }
 
 export function hasSupervisorShadowProtocol(
@@ -64,5 +89,99 @@ export function submitSupervisorShadowThreadEvent(
   return kernelExports.supervisor_submit_thread_event(
     recordPtr,
     SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES,
+  );
+}
+
+function supervisorFaultExitKindThreadExit(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fault_exit_kind_thread_exit?.()
+    ?? SUPERVISOR_FAULT_EXIT_KIND_THREAD_EXIT;
+}
+
+export function supervisorFaultExitKindProcessExit(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fault_exit_kind_process_exit?.()
+    ?? SUPERVISOR_FAULT_EXIT_KIND_PROCESS_EXIT;
+}
+
+function decodeSupervisorFaultExitDecision(
+  kernelExports: KernelExports,
+  view: DataView,
+  vmPtr: number,
+): SupervisorFaultExitDecision {
+  if (view.byteLength < SUPERVISOR_FAULT_EXIT_DECISION_BYTES) {
+    throw new Error(`supervisor fault exit decision record too short: ${view.byteLength}`);
+  }
+  const magic = view.getUint32(0, true);
+  const version = view.getUint32(4, true);
+  const bytes = view.getUint32(8, true);
+  const kind = view.getUint32(12, true);
+  if (magic !== SUPERVISOR_FAULT_EXIT_DECISION_MAGIC) {
+    throw new Error(`supervisor fault exit decision bad magic: 0x${magic.toString(16)}`);
+  }
+  const expectedVersion = kernelExports.supervisor_abi_version?.() ?? version;
+  if (version !== expectedVersion) {
+    throw new Error(`supervisor fault exit decision bad version: ${version}`);
+  }
+  if (bytes < SUPERVISOR_FAULT_EXIT_DECISION_BYTES || bytes > view.byteLength) {
+    throw new Error(`supervisor fault exit decision bad size: ${bytes}`);
+  }
+  if (
+    kind !== supervisorFaultExitKindThreadExit(kernelExports)
+    && kind !== supervisorFaultExitKindProcessExit(kernelExports)
+  ) {
+    throw new Error(`supervisor fault exit decision bad kind: ${kind}`);
+  }
+  const decision: SupervisorFaultExitDecision = {
+    kind,
+    seq: view.getBigUint64(16, true),
+    vmPtr: view.getUint32(24, true),
+    exitVmPtr: view.getUint32(28, true),
+    tid: view.getUint32(32, true),
+    processPtr: view.getUint32(36, true),
+    remainingThreads: view.getUint32(40, true),
+    liveThreads: view.getUint32(44, true),
+    exitCode: view.getInt32(48, true),
+    termSignal: view.getInt32(52, true),
+    status: view.getUint32(56, true),
+    faultSignal: view.getUint32(60, true),
+    faultKind: view.getUint32(64, true),
+    faultPc: view.getBigUint64(72, true),
+    faultAddr: view.getBigUint64(80, true),
+  };
+  if (decision.vmPtr !== vmPtr) {
+    throw new Error(
+      `supervisor fault exit decision vm mismatch: `
+        + `0x${decision.vmPtr.toString(16)} != 0x${vmPtr.toString(16)}`,
+    );
+  }
+  return decision;
+}
+
+export function readSupervisorFaultExitDecision(
+  handle: ProcessHandle,
+  vmPtr: number,
+): SupervisorFaultExitDecision | undefined {
+  const recordBytesExport = handle.kernel.supervisor_fault_exit_decision_bytes;
+  const readDecision = handle.kernel.supervisor_fault_exit_decision;
+  if (recordBytesExport === undefined || readDecision === undefined) {
+    return undefined;
+  }
+  const recordBytes = recordBytesExport();
+  if (recordBytes < SUPERVISOR_FAULT_EXIT_DECISION_BYTES) {
+    throw new Error(`supervisor fault exit decision bytes too small: ${recordBytes}`);
+  }
+  const memory = handle.kernel.memory ?? handle.memory;
+  const scratch = kernelScratchBase(handle.kernel) + SUPERVISOR_FAULT_EXIT_SCRATCH_OFFSET;
+  ensureMemoryCapacity(memory, scratch + recordBytes);
+  const result = readDecision(vmPtr, scratch, recordBytes);
+  if (result < 0 || result > recordBytes) {
+    throw new Error(`supervisor fault exit decision failed: ${result}`);
+  }
+  if (result === 0) {
+    return undefined;
+  }
+  return decodeSupervisorFaultExitDecision(
+    handle.kernel,
+    new DataView(memory.buffer, scratch, result),
+    vmPtr,
   );
 }

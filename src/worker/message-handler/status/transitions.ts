@@ -28,6 +28,10 @@ import {
 } from "../../ownership/pipe-control.js";
 import { restoreRuntimeNetworkSidecarForHandle } from "../../ownership/socket-control.js";
 import { formatCompactDebugSuffix } from "../../diagnostics/format.js";
+import {
+  readSupervisorFaultExitDecision,
+  supervisorFaultExitKindProcessExit,
+} from "../../supervisor-shadow.js";
 
 const CLONE_SPAWN_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
@@ -523,13 +527,21 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       if (msg.debug) {
         deps.appendWorkerDebugLog(handle, `fault_debug:0x${thread.vmPtr.toString(16)}:${JSON.stringify(msg.debug)}`);
       }
+      const supervisorExitDecision = readSupervisorFaultExitDecision(handle, thread.vmPtr);
       const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
       const faultStateLooksStale = currentPid === 0 || currentPid > 0xffff;
-      const remainingThreads = faultStateLooksStale ? 0 : handle.kernel.thread_process_thread_count(thread.vmPtr);
-      const hasLiveThreads = !faultStateLooksStale
-        && remainingThreads !== 0
-        && processHasLiveThreads(handle.kernel, thread.vmPtr, thread.vmPtr);
-      const shouldExitProcess = remainingThreads <= 1 || !hasLiveThreads;
+      const remainingThreads = supervisorExitDecision?.remainingThreads
+        ?? (faultStateLooksStale ? 0 : handle.kernel.thread_process_thread_count(thread.vmPtr));
+      const hasLiveThreads = supervisorExitDecision !== undefined
+        ? supervisorExitDecision.liveThreads !== 0
+        : !faultStateLooksStale
+          && remainingThreads !== 0
+          && processHasLiveThreads(handle.kernel, thread.vmPtr, thread.vmPtr);
+      const shouldExitProcess = supervisorExitDecision !== undefined
+        ? supervisorExitDecision.kind === supervisorFaultExitKindProcessExit(handle.kernel)
+        : remainingThreads <= 1 || !hasLiveThreads;
+      const exitCode = supervisorExitDecision?.exitCode ?? msg.exitCode;
+      const termSignal = supervisorExitDecision?.termSignal ?? msg.termSignal;
       const faultProcessPtr = handle.kernel.thread_process_ptr(thread.vmPtr);
       const ownerPid = handle.kernel.process_current_pid(handle.vmPtr);
       const ownerProcessPtr = handle.kernel.thread_process_ptr(handle.vmPtr);
@@ -540,19 +552,20 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         + `:owner_count=${ownerThreadCount}:owner_threads=[${formatProcessThreadSlots(handle, handle.vmPtr)}]`;
       deps.appendWorkerDebugLog(handle, `fault:0x${thread.vmPtr.toString(16)} remaining=${remainingThreads}`);
       if (shouldExitProcess) {
-        const exitVmPtr = selectFaultExitVmPtr(handle, thread.vmPtr, deps.threadWorkerStates);
+        const exitVmPtr = supervisorExitDecision?.exitVmPtr
+          ?? selectFaultExitVmPtr(handle, thread.vmPtr, deps.threadWorkerStates);
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `complete-exit-request:transitions-fault:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
             + `:exitVm=0x${exitVmPtr.toString(16)}`
-            + `:priority=${faultExitVmPriority(handle, exitVmPtr)}`
-            + `:status=${status}:msg=${msg.status}:exit=${msg.exitCode}:${msg.termSignal}`
+            + `:priority=${supervisorExitDecision === undefined ? faultExitVmPriority(handle, exitVmPtr) : "supervisor"}`
+            + `:status=${status}:msg=${msg.status}:exit=${exitCode}:${termSignal}`
             + `:current=${handle.kernel.thread_status?.(thread.vmPtr) ?? -1}:remaining=${remainingThreads}:live=${hasLiveThreads ? 1 : 0}`
             + processTableDebug
             + `:${formatFaultThreadSummary(handle, "faultVm", thread.vmPtr)}`
             + `:${formatFaultThreadSummary(handle, "exitVm", exitVmPtr)}`,
         );
-        void deps.completeProcessExit(handle, msg.exitCode, msg.termSignal, exitVmPtr).catch((error) => {
+        void deps.completeProcessExit(handle, exitCode, termSignal, exitVmPtr).catch((error) => {
           deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
         });
       } else {
