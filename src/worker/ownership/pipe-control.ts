@@ -251,6 +251,39 @@ export function pipeSlotWriteOpen(handle: ProcessHandle, pipeSlot: number): numb
   return readPipeSlotCounters(handle, pipeSlot)?.writeOpen ?? null;
 }
 
+export function pipeSlotHasLiveWriter(handle: ProcessHandle, vmPtr: number, pipeSlot: number): boolean {
+  const maxPipes = handle.kernel.abi_max_pipes?.() ?? 0;
+  if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
+    return false;
+  }
+  for (const member of handle.kernelShare.members) {
+    const memberVmPtr = member === handle && vmPtr > 0 ? vmPtr : member.vmPtr;
+    if (memberVmPtr === 0) {
+      continue;
+    }
+    const maxFds = member.kernel.abi_max_fds?.() ?? 0;
+    const pipeType = member.kernel.abi_fd_type_pipe?.();
+    if (maxFds <= 0 || pipeType === undefined) {
+      continue;
+    }
+    for (let fd = 0; fd < maxFds; fd += 1) {
+      const ofdId = member.kernel.process_fd_ofd_id?.(memberVmPtr, fd) ?? 0;
+      if (
+        ofdId <= 0
+        || ofdId >= maxFds
+        || member.kernel.kernel_ofd_fd_type?.(ofdId) !== pipeType
+        || member.kernel.kernel_ofd_ino?.(ofdId) !== pipeSlot
+      ) {
+        continue;
+      }
+      if ((member.kernel.kernel_ofd_host_fd?.(ofdId) ?? 0) < 0) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function formatPipeWaitDataDebug(handle: ProcessHandle, base: number, head: number, tail: number): string {
   if (!pipeDebugPreviewEnabled()) {
     return "";

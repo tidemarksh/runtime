@@ -67,6 +67,7 @@ export interface KernelExports {
   abi_sigchld(): number;
   abi_sigpipe(): number;
   abi_clone_parent(): bigint | number;
+  abi_o_nonblock?(): number;
   abi_sys_read?(): bigint | number;
   abi_sys_openat?(): bigint | number;
   abi_sys_write?(): bigint | number;

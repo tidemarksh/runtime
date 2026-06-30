@@ -75,6 +75,7 @@ export interface ThreadWorkerState {
   yieldedReady?: boolean;
   ownerAsyncStatus: number | null;
   resumeBlockedOnNextStep: boolean;
+  pipeCanonicalEofReadyOnNextBlock?: boolean;
   pendingKernelStateForNextStep?: KernelRuntimeState;
   pendingPipeSlotsForNextStep: KernelWorkerPipeSlotSnapshot[];
   pendingGuestMemoryWrites: GuestMemoryWriteSnapshot[];
@@ -166,6 +167,7 @@ export interface BlockedWorkerState {
   rpcGeneration: number;
   skipNextNetworkPump: boolean;
   pipeSyncedBeforePassive: boolean;
+  pipeCanonicalEofReady?: boolean;
   pipeChildExitResumeKey: string | null;
   pipeEofChildExitDeferrals: number;
   lastPipeRetryLifecycleEvent?: string;

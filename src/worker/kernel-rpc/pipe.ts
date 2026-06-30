@@ -1,9 +1,16 @@
 import type { ProcessHandle } from "../types.js";
 import { PIPE_WRITE_OPEN_OFFSET } from "../../layout/pipe.js";
-import { pipeSlotWriteOpen as pipeControlSlotWriteOpen } from "../ownership/pipe-control.js";
+import {
+  pipeSlotHasBufferedData,
+  pipeSlotWriteOpen as pipeControlSlotWriteOpen,
+} from "../ownership/pipe-control.js";
 
 export interface KernelRpcPipeDeps {
   processHandles: Map<number, ProcessHandle>;
+}
+
+export interface ActiveChildPipeWriterOptions {
+  ignoreExitingWritersWithoutBufferedData?: boolean;
 }
 
 function blockedPipeReaderOfdId(handle: ProcessHandle, vmPtr: number): number {
@@ -76,6 +83,7 @@ export function activeChildMayHoldBlockedPipeWriter(
   deps: KernelRpcPipeDeps,
   handle: ProcessHandle,
   vmPtr: number,
+  options: ActiveChildPipeWriterOptions = {},
 ): boolean {
   const blockedOfdId = blockedPipeReaderOfdId(handle, vmPtr);
   if (
@@ -89,10 +97,14 @@ export function activeChildMayHoldBlockedPipeWriter(
   if (pipeSlot <= 0 || pipeSlot >= handle.kernel.abi_max_pipes()) {
     return false;
   }
+  const ignoreExitingWriter = (candidate: ProcessHandle): boolean => Boolean(
+    candidate.exitInProgress
+    && options.ignoreExitingWritersWithoutBufferedData
+    && !pipeSlotHasBufferedData(handle, pipeSlot),
+  );
   const canonicalWriteOpen = currentPipeSlotWriteOpen(handle, pipeSlot);
-  if (canonicalWriteOpen !== null && canonicalWriteOpen <= 0) {
-    return false;
-  }
+  const candidateWriterCanStillBlockResume = (candidate: ProcessHandle): boolean =>
+    canonicalWriteOpen === null || canonicalWriteOpen > 0 || candidate.exitInProgress === true;
   const processFdTableMayHoldPipeWriter = (candidate: ProcessHandle): boolean => {
     if (candidate.vmPtr === 0) {
       return false;
@@ -116,14 +128,17 @@ export function activeChildMayHoldBlockedPipeWriter(
     const ownsVisibleOutputForHandle = candidate.stdioOwner === handle
       || candidate.stdioOwner?.pid === handle.pid;
     if (
-      candidate.exitInProgress
+      ignoreExitingWriter(candidate)
       || deps.processHandles.get(candidate.pid) !== candidate
       || candidate.workers.size === 0
       || (candidate.parentPid !== handle.pid && !ownsVisibleOutputForHandle)
     ) {
       continue;
     }
-    if (processFdTableMayHoldPipeWriter(candidate)) {
+    if (
+      processFdTableMayHoldPipeWriter(candidate)
+      && candidateWriterCanStillBlockResume(candidate)
+    ) {
       return true;
     }
     for (const ofdId of candidate.kernelShare.sharedOfdIds) {
@@ -133,6 +148,7 @@ export function activeChildMayHoldBlockedPipeWriter(
         && candidate.kernel.kernel_ofd_fd_type(ofdId) === candidate.kernel.abi_fd_type_pipe()
         && candidate.kernel.kernel_ofd_ino(ofdId) === pipeSlot
         && candidate.kernel.kernel_ofd_host_fd(ofdId) < 0
+        && candidateWriterCanStillBlockResume(candidate)
       ) {
         return true;
       }
