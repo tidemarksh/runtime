@@ -139,6 +139,7 @@ export interface KernelExports {
   supervisor_debug_snapshot_bytes?(): number;
   supervisor_thread_state_snapshot_bytes?(): number;
   supervisor_resume_record_bytes?(): number;
+  supervisor_runnable_selection_bytes?(): number;
   supervisor_resume_kind_futex_wake?(): number;
   supervisor_reset_shadow_log?(): void;
   supervisor_shadow_thread_event_count?(): bigint | number;
@@ -153,6 +154,13 @@ export interface KernelExports {
   supervisor_complete_host_op?(completionPtr: number, completionLen: number): number;
   supervisor_next_host_op?(outPtr: number, outLen: number): number;
   supervisor_next_resume?(outPtr: number, outLen: number): number;
+  supervisor_select_runnable?(
+    vmPtr: number,
+    candidatesPtr: number,
+    candidateCount: number,
+    outPtr: number,
+    outLen: number,
+  ): number;
   supervisor_debug_snapshot?(outPtr: number, outLen: number): number;
   supervisor_thread_state_snapshot?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_futex_wait_completion_woken?(): number;

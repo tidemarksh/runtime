@@ -61,6 +61,8 @@ const SUPERVISOR_RESUME_SCRATCH_OFFSET = 0x28000;
 const SUPERVISOR_THREAD_STATE_SNAPSHOT_MAGIC = 0x4854_5354;
 const SUPERVISOR_THREAD_STATE_HEADER_BYTES = 32;
 const SUPERVISOR_THREAD_STATE_RECORD_BYTES = 32;
+const SUPERVISOR_RUNNABLE_SELECTION_BYTES = 48;
+const SUPERVISOR_RUNNABLE_SELECTION_MAGIC = 0x4e52_5354;
 
 interface SupervisorResumeRecord {
   kind: number;
@@ -78,6 +80,16 @@ interface SupervisorThreadStateRecord {
   status: number;
   blockedAddr: bigint;
   pendingSigset: bigint;
+}
+
+interface SupervisorRunnableSelection {
+  seq: bigint;
+  vmPtr: number;
+  tid: number;
+  processPtr: number;
+  state: number;
+  status: number;
+  slot: number;
 }
 
 function readSchedulerStepBudget(): number {
@@ -545,6 +557,10 @@ function supervisorResumeKindFutexWake(handle: ProcessHandle): number {
   return handle.kernel.supervisor_resume_kind_futex_wake?.() ?? SUPERVISOR_RESUME_KIND_FUTEX_WAKE;
 }
 
+function supervisorRunnableSelectionBytes(handle: ProcessHandle): number {
+  return handle.kernel.supervisor_runnable_selection_bytes?.() ?? SUPERVISOR_RUNNABLE_SELECTION_BYTES;
+}
+
 function supervisorResumeScratchBase(handle: ProcessHandle): number {
   const exportedScratch = handle.kernel.kernel_scratch_base?.();
   if (exportedScratch !== undefined) {
@@ -572,6 +588,29 @@ function decodeSupervisorResumeRecord(
     tid: view.getUint32(28, true),
     status: view.getUint32(36, true),
     detail0: view.getBigUint64(40, true),
+  };
+}
+
+function decodeSupervisorRunnableSelection(
+  handle: ProcessHandle,
+  view: DataView,
+): SupervisorRunnableSelection | null {
+  if (
+    view.byteLength < SUPERVISOR_RUNNABLE_SELECTION_BYTES
+    || view.getUint32(0, true) !== SUPERVISOR_RUNNABLE_SELECTION_MAGIC
+    || view.getUint32(4, true) !== 1
+    || view.getUint32(8, true) !== supervisorRunnableSelectionBytes(handle)
+  ) {
+    return null;
+  }
+  return {
+    seq: view.getBigUint64(16, true),
+    vmPtr: view.getUint32(24, true),
+    tid: view.getUint32(28, true),
+    processPtr: view.getUint32(32, true),
+    state: view.getUint32(36, true),
+    status: view.getUint32(40, true),
+    slot: view.getUint32(44, true),
   };
 }
 
@@ -684,6 +723,85 @@ export function createWorkerSchedulerQueueHelpers(
       }
     }
     return undefined;
+  }
+
+  function supervisorRunnableCandidateVmPtr(handle: ProcessHandle, worker: Worker): number | null {
+    const thread = deps.threadWorkerStates.get(worker);
+    if (
+      thread === undefined
+      || (thread.ownerAsyncStatus ?? null) !== null
+      || futexReconciliation.hasWorkerLocalWait(thread)
+      || parkReadyWorkerStillInCanonicalFutexWait(handle, thread)
+      || handle.kernel.thread_process_ptr(thread.vmPtr) === 0
+    ) {
+      return null;
+    }
+    return thread.vmPtr;
+  }
+
+  function selectSupervisorRunnableWorker(handle: ProcessHandle): Worker | null | undefined {
+    const selectRunnable = handle.kernel.supervisor_select_runnable;
+    if (selectRunnable === undefined) {
+      return undefined;
+    }
+    const recordBytes = supervisorRunnableSelectionBytes(handle);
+    if (recordBytes < SUPERVISOR_RUNNABLE_SELECTION_BYTES) {
+      deps.appendWorkerDebugLog(handle, `supervisor-runnable:invalid-record-bytes:${recordBytes}`);
+      return null;
+    }
+    const candidates: Array<{ worker: Worker; vmPtr: number }> = [];
+    for (const worker of handle.readyWorkers) {
+      const vmPtr = supervisorRunnableCandidateVmPtr(handle, worker);
+      if (vmPtr !== null) {
+        candidates.push({ worker, vmPtr });
+      }
+    }
+    if (candidates.length === 0) {
+      appendSchedulerQueueDebugLog(deps, handle, `pump-no-supervisor-candidates:ready=${handle.readyWorkers.length}`);
+      return null;
+    }
+    const memory = handle.kernel.memory ?? handle.memory;
+    const scratch = supervisorResumeScratchBase(handle);
+    const candidatesPtr = scratch + recordBytes;
+    ensureMemoryCapacity(memory, candidatesPtr + candidates.length * 4);
+    const view = new DataView(memory.buffer);
+    for (let index = 0; index < candidates.length; index += 1) {
+      view.setUint32(candidatesPtr + index * 4, candidates[index]!.vmPtr, true);
+    }
+    const result = selectRunnable(handle.vmPtr, candidatesPtr, candidates.length, scratch, recordBytes);
+    if (result === 0) {
+      deps.appendWorkerDebugLog(
+        handle,
+        `supervisor-runnable:none:ready=${handle.readyWorkers.length}:candidates=${candidates.length}`,
+      );
+      return null;
+    }
+    if (result < 0 || result > recordBytes) {
+      deps.appendWorkerDebugLog(handle, `supervisor-runnable:select-error:${result}`);
+      return null;
+    }
+    const selection = decodeSupervisorRunnableSelection(handle, new DataView(memory.buffer, scratch, result));
+    if (selection === null) {
+      deps.appendWorkerDebugLog(handle, `supervisor-runnable:decode-error:${result}`);
+      return null;
+    }
+    const selected = candidates.find((candidate) => candidate.vmPtr === selection.vmPtr);
+    if (selected === undefined) {
+      deps.appendWorkerDebugLog(
+        handle,
+        `supervisor-runnable:missing-selected:0x${selection.vmPtr.toString(16)}`
+          + `:tid=${selection.tid}:seq=${selection.seq.toString()}`,
+      );
+      return null;
+    }
+    removeReadyWorker(handle, selected.worker);
+    deps.appendWorkerDebugLog(
+      handle,
+      `supervisor-runnable:selected:0x${selection.vmPtr.toString(16)}`
+        + `:tid=${selection.tid}:seq=${selection.seq.toString()}`
+        + `:slot=${selection.slot}:state=${selection.state}:status=${selection.status}`,
+    );
+    return selected.worker;
   }
 
   function markSupervisorFutexResumeSelected(handle: ProcessHandle, vmPtr: number): void {
@@ -1542,96 +1660,101 @@ export function createWorkerSchedulerQueueHelpers(
       }
       next = handle.readyWorkers.splice(index, 1)[0];
     } else {
-      const isRunnableReadyWorker = (candidate: Worker): boolean => {
-        const candidateThread = deps.threadWorkerStates.get(candidate);
-        return (candidateThread?.ownerAsyncStatus ?? null) === null
-          && !futexReconciliation.hasWorkerLocalWait(candidateThread)
-          && !parkReadyWorkerStillInCanonicalFutexWait(handle, candidateThread)
-          && (
-            candidateThread === undefined
-            || handle.kernel.thread_process_ptr(candidateThread.vmPtr) !== 0
-          );
-      };
-      const continuationIndex = handle.readyWorkers.findIndex((candidate) => {
-        const candidateThread = deps.threadWorkerStates.get(candidate);
-        return readyWorkerHasBlockedRpcContinuation(candidateThread)
-          && isRunnableReadyWorker(candidate);
-      });
-      if (continuationIndex !== -1) {
-        next = handle.readyWorkers.splice(continuationIndex, 1)[0];
+      const supervisorSelected = selectSupervisorRunnableWorker(handle);
+      if (supervisorSelected !== undefined) {
+        next = supervisorSelected ?? undefined;
       } else {
-        const blockedRetryPressure = hasImmediateBlockedRetryPressure(handle);
-        if (blockedRetryPressure) {
-          const pressureIndex = handle.readyWorkers.findIndex((candidate) => {
-            const candidateThread = deps.threadWorkerStates.get(candidate);
-            return isRunnableReadyWorker(candidate)
-              && readyWorkerCanRunUnderImmediateBlockedRetryPressure(handle, candidateThread);
-          });
-          if (pressureIndex !== -1) {
-            next = handle.readyWorkers.splice(pressureIndex, 1)[0];
-          } else if (handle.readyWorkers.some(isRunnableReadyWorker)) {
-            appendSchedulerQueueDebugLog(
-              deps,
-              handle,
-              `pump-defer-ordinary-ready:ready=${handle.readyWorkers.length}:blocked=${handle.blockedWorkers.size}`,
+        const isRunnableReadyWorker = (candidate: Worker): boolean => {
+          const candidateThread = deps.threadWorkerStates.get(candidate);
+          return (candidateThread?.ownerAsyncStatus ?? null) === null
+            && !futexReconciliation.hasWorkerLocalWait(candidateThread)
+            && !parkReadyWorkerStillInCanonicalFutexWait(handle, candidateThread)
+            && (
+              candidateThread === undefined
+              || handle.kernel.thread_process_ptr(candidateThread.vmPtr) !== 0
             );
-            return;
-          }
-        }
-        if (next === undefined && hasBlockedRetryThatPrefersNonSleepReady(handle)) {
-          const nonSleepIndex = handle.readyWorkers.findIndex((candidate) => {
-            const candidateThread = deps.threadWorkerStates.get(candidate);
-            return isRunnableReadyWorker(candidate)
-              && candidateThread?.lastStatus !== handle.kernel.abi_status_sleep();
-          });
-          if (nonSleepIndex !== -1) {
-            next = handle.readyWorkers.splice(nonSleepIndex, 1)[0];
-          }
-        }
-        if (next === undefined) {
-          let nonYieldIndex = -1;
-          for (let candidateIndex = 0; candidateIndex < handle.readyWorkers.length; candidateIndex += 1) {
-            const candidate = handle.readyWorkers[candidateIndex]!;
-            const candidateThread = deps.threadWorkerStates.get(candidate);
-            if (!isRunnableReadyWorker(candidate)) {
-              continue;
+        };
+        const continuationIndex = handle.readyWorkers.findIndex((candidate) => {
+          const candidateThread = deps.threadWorkerStates.get(candidate);
+          return readyWorkerHasBlockedRpcContinuation(candidateThread)
+            && isRunnableReadyWorker(candidate);
+        });
+        if (continuationIndex !== -1) {
+          next = handle.readyWorkers.splice(continuationIndex, 1)[0];
+        } else {
+          const blockedRetryPressure = hasImmediateBlockedRetryPressure(handle);
+          if (blockedRetryPressure) {
+            const pressureIndex = handle.readyWorkers.findIndex((candidate) => {
+              const candidateThread = deps.threadWorkerStates.get(candidate);
+              return isRunnableReadyWorker(candidate)
+                && readyWorkerCanRunUnderImmediateBlockedRetryPressure(handle, candidateThread);
+            });
+            if (pressureIndex !== -1) {
+              next = handle.readyWorkers.splice(pressureIndex, 1)[0];
+            } else if (handle.readyWorkers.some(isRunnableReadyWorker)) {
+              appendSchedulerQueueDebugLog(
+                deps,
+                handle,
+                `pump-defer-ordinary-ready:ready=${handle.readyWorkers.length}:blocked=${handle.blockedWorkers.size}`,
+              );
+              return;
             }
-            if (!readyWorkerYielded(candidateThread)) {
-              nonYieldIndex = candidateIndex;
-              break;
+          }
+          if (next === undefined && hasBlockedRetryThatPrefersNonSleepReady(handle)) {
+            const nonSleepIndex = handle.readyWorkers.findIndex((candidate) => {
+              const candidateThread = deps.threadWorkerStates.get(candidate);
+              return isRunnableReadyWorker(candidate)
+                && candidateThread?.lastStatus !== handle.kernel.abi_status_sleep();
+            });
+            if (nonSleepIndex !== -1) {
+              next = handle.readyWorkers.splice(nonSleepIndex, 1)[0];
             }
           }
-          if (nonYieldIndex !== -1) {
-            next = handle.readyWorkers.splice(nonYieldIndex, 1)[0];
-            for (let candidateIndex = nonYieldIndex - 1; candidateIndex >= 0; candidateIndex -= 1) {
-              const candidate = handle.readyWorkers[candidateIndex];
-              if (candidate !== undefined && !isRunnableReadyWorker(candidate)) {
-                handle.readyWorkers.splice(candidateIndex, 1);
+          if (next === undefined) {
+            let nonYieldIndex = -1;
+            for (let candidateIndex = 0; candidateIndex < handle.readyWorkers.length; candidateIndex += 1) {
+              const candidate = handle.readyWorkers[candidateIndex]!;
+              const candidateThread = deps.threadWorkerStates.get(candidate);
+              if (!isRunnableReadyWorker(candidate)) {
+                continue;
+              }
+              if (!readyWorkerYielded(candidateThread)) {
+                nonYieldIndex = candidateIndex;
+                break;
+              }
+            }
+            if (nonYieldIndex !== -1) {
+              next = handle.readyWorkers.splice(nonYieldIndex, 1)[0];
+              for (let candidateIndex = nonYieldIndex - 1; candidateIndex >= 0; candidateIndex -= 1) {
+                const candidate = handle.readyWorkers[candidateIndex];
+                if (candidate !== undefined && !isRunnableReadyWorker(candidate)) {
+                  handle.readyWorkers.splice(candidateIndex, 1);
+                }
               }
             }
           }
-        }
-        let index = next === undefined ? handle.readyWorkers.findIndex(isRunnableReadyWorker) : -2;
-        if (index > 0) {
-          handle.readyWorkers.splice(0, index);
-          index = 0;
-        }
-        if (index === -1) {
-          appendSchedulerQueueDebugLog(deps, handle, `pump-no-runnable-ready:ready=${handle.readyWorkers.length}`);
-          const ownerAsyncReadyWorkers = handle.readyWorkers.filter((candidate) => {
-            const candidateThread = deps.threadWorkerStates.get(candidate);
-            return (candidateThread?.ownerAsyncStatus ?? null) !== null;
-          });
-          handle.readyWorkers.length = 0;
-          for (const candidate of ownerAsyncReadyWorkers) {
-            if (!handle.readyWorkers.includes(candidate)) {
-              handle.readyWorkers.push(candidate);
-            }
+          let index = next === undefined ? handle.readyWorkers.findIndex(isRunnableReadyWorker) : -2;
+          if (index > 0) {
+            handle.readyWorkers.splice(0, index);
+            index = 0;
           }
-          return;
-        }
-        if (index >= 0) {
-          next = handle.readyWorkers.splice(index, 1)[0];
+          if (index === -1) {
+            appendSchedulerQueueDebugLog(deps, handle, `pump-no-runnable-ready:ready=${handle.readyWorkers.length}`);
+            const ownerAsyncReadyWorkers = handle.readyWorkers.filter((candidate) => {
+              const candidateThread = deps.threadWorkerStates.get(candidate);
+              return (candidateThread?.ownerAsyncStatus ?? null) !== null;
+            });
+            handle.readyWorkers.length = 0;
+            for (const candidate of ownerAsyncReadyWorkers) {
+              if (!handle.readyWorkers.includes(candidate)) {
+                handle.readyWorkers.push(candidate);
+              }
+            }
+            return;
+          }
+          if (index >= 0) {
+            next = handle.readyWorkers.splice(index, 1)[0];
+          }
         }
       }
     }

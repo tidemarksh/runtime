@@ -5916,6 +5916,87 @@ test("pumpProcess records supervisor thread-state snapshot diagnostics for selec
   );
 });
 
+test("pumpProcess runs supervisor-selected runnable worker instead of TypeScript ready priority", () => {
+  const selectedWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const unselectedWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const selectedThread = makeThreadState(0x1234);
+  const unselectedThread = makeThreadState(0x5678);
+  selectedThread.lastStatus = 26;
+  selectedThread.yieldedReady = true;
+  unselectedThread.lastStatus = 0;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(selectedWorker, selectedThread);
+  threadWorkerStates.set(unselectedWorker, unselectedThread);
+  const { exports: kernel } = makeKernel();
+  kernel.kernel_scratch_base = () => 0;
+  kernel.supervisor_runnable_selection_bytes = () => 48;
+  kernel.supervisor_select_runnable = vi.fn((
+    vmPtr: number,
+    candidatesPtr: number,
+    candidateCount: number,
+    outPtr: number,
+    outLen: number,
+  ) => {
+    expect(vmPtr).toBe(0x1234);
+    expect(candidatesPtr).toBe(48);
+    expect(candidateCount).toBe(2);
+    expect(outPtr).toBe(0);
+    expect(outLen).toBe(48);
+    const view = new DataView(kernel.memory.buffer);
+    expect(view.getUint32(candidatesPtr, true)).toBe(selectedThread.vmPtr);
+    expect(view.getUint32(candidatesPtr + 4, true)).toBe(unselectedThread.vmPtr);
+    view.setUint32(outPtr, 0x4e52_5354, true);
+    view.setUint32(outPtr + 4, 1, true);
+    view.setUint32(outPtr + 8, 48, true);
+    view.setUint32(outPtr + 12, 0, true);
+    view.setBigUint64(outPtr + 16, 1n, true);
+    view.setUint32(outPtr + 24, selectedThread.vmPtr, true);
+    view.setUint32(outPtr + 28, 2, true);
+    view.setUint32(outPtr + 32, 0x2000, true);
+    view.setUint32(outPtr + 36, 2, true);
+    view.setUint32(outPtr + 40, kernel.abi_status_ok(), true);
+    view.setUint32(outPtr + 44, 1, true);
+    return 48;
+  });
+  const handle = makeHandle(kernel, selectedWorker);
+  kernel.memory = handle.memory;
+  handle.workers.add(unselectedWorker);
+  handle.readyWorkers = [selectedWorker, unselectedWorker];
+  const debugEvents: string[] = [];
+  const queue = createWorkerSchedulerQueueHelpers({
+    appendRuntimeLifecycleEvent: () => {},
+    appendWorkerDebugLog: (_handle, event) => {
+      debugEvents.push(event);
+    },
+    blockWorker: () => {},
+    completeProcessExit: async () => {},
+    failProcess: (_handle, error) => {
+      throw error;
+    },
+    handleWorkerMessage: () => {},
+    threadWorkerStates,
+  });
+
+  queue.pumpProcess(handle);
+
+  expect(kernel.supervisor_select_runnable).toHaveBeenCalledTimes(1);
+  expect(handle.runningWorker).toBe(selectedWorker);
+  expect(handle.readyWorkers).toEqual([unselectedWorker]);
+  expect(selectedThread.yieldedReady).toBe(false);
+  expect(selectedWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+  expect(unselectedWorker.postMessage).not.toHaveBeenCalled();
+  expect(debugEvents).toContain(
+    "supervisor-runnable:selected:0x1234:tid=2:seq=1:slot=1:state=2:status=0",
+  );
+});
+
 test("kickBlockedWorkers applies child exit records for worker-local futex waits once", () => {
   const waitingWorker = {
     postMessage: vi.fn(),
