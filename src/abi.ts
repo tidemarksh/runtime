@@ -139,12 +139,16 @@ export interface KernelExports {
   supervisor_debug_snapshot_bytes?(): number;
   supervisor_thread_state_snapshot_bytes?(): number;
   supervisor_resume_record_bytes?(): number;
+  supervisor_host_op_record_bytes?(): number;
   supervisor_runnable_selection_bytes?(): number;
   supervisor_resume_kind_futex_wake?(): number;
+  supervisor_host_op_kind_spawn_thread_worker?(): number;
   supervisor_reset_shadow_log?(): void;
   supervisor_shadow_thread_event_count?(): bigint | number;
   supervisor_shadow_host_completion_count?(): bigint | number;
   supervisor_shadow_host_op_poll_count?(): bigint | number;
+  supervisor_shadow_host_op_emit_count?(): bigint | number;
+  supervisor_shadow_host_op_overflow_count?(): bigint | number;
   supervisor_shadow_resume_poll_count?(): bigint | number;
   supervisor_shadow_resume_enqueue_count?(): bigint | number;
   supervisor_shadow_resume_overflow_count?(): bigint | number;

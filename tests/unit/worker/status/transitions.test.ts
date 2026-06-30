@@ -27,6 +27,36 @@ function makeKernelState() {
   };
 }
 
+function writeU32(view: DataView, offset: number, value: number): void {
+  view.setUint32(offset, value, true);
+}
+
+function writeU64(view: DataView, offset: number, value: bigint): void {
+  view.setBigUint64(offset, value, true);
+}
+
+function writeCloneSpawnHostOpRecord(
+  memory: WebAssembly.Memory,
+  ptr: number,
+  parentVmPtr: number,
+  childVmPtr: number,
+): void {
+  const view = new DataView(memory.buffer, ptr, 64);
+  writeU32(view, 0, 0x4f48_5354);
+  writeU32(view, 4, 1);
+  writeU32(view, 8, 64);
+  writeU32(view, 12, 1);
+  writeU64(view, 16, 1n);
+  writeU32(view, 24, parentVmPtr);
+  writeU32(view, 28, childVmPtr);
+  writeU32(view, 32, 2);
+  writeU32(view, 36, 0x5000);
+  writeU32(view, 40, 0);
+  writeU32(view, 44, 0);
+  writeU64(view, 48, 0x50f00n);
+  writeU64(view, 56, 0x8800n);
+}
+
 function makeHandle(worker: Worker) {
   return {
     pid: 0,
@@ -652,6 +682,102 @@ test("STATUS_CLONE_SPAWN ignores stale duplicate after kernel status moved on", 
   expect(deps.attachThreadWorker).not.toHaveBeenCalled();
   expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
+});
+
+test("STATUS_CLONE_SPAWN attaches child from supervisor HostOp record", () => {
+  const workerConstructor = vi.fn(function WorkerMock(this: Worker) {
+    Object.assign(this, {
+      postMessage: vi.fn(),
+      terminate: vi.fn(),
+      unref: vi.fn(),
+    });
+  });
+  vi.stubGlobal("Worker", workerConstructor);
+
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  handle.runtimeId = 77;
+  handle.kernel.thread_status = () => handle.kernel.abi_status_clone_spawn();
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  handle.memory = memory;
+  const kernel = handle.kernel as typeof handle.kernel & {
+    memory: WebAssembly.Memory;
+    supervisor_abi_version: () => number;
+    supervisor_host_op_record_bytes: () => number;
+    supervisor_host_op_kind_spawn_thread_worker: () => number;
+    supervisor_next_host_op: (outPtr: number, outLen: number) => number;
+  };
+  kernel.memory = memory;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_host_op_record_bytes = () => 64;
+  kernel.supervisor_host_op_kind_spawn_thread_worker = () => 1;
+  kernel.thread_spawn_from_clone = vi.fn(() => {
+    throw new Error("legacy clone spawn should not be called");
+  });
+  kernel.supervisor_next_host_op = vi.fn((outPtr: number, outLen: number) => {
+    expect(outLen).toBe(64);
+    writeCloneSpawnHostOpRecord(memory, outPtr, 0x1234, 0x2000);
+    return 64;
+  });
+  const deps = makeDeps(worker);
+  const thread = deps.threadWorkerStates.get(worker)!;
+  thread.ownerPid = handle.pid;
+  let childThread:
+    | {
+      vmPtr: number;
+      ownerPid: number;
+      ownerAsyncStatus: number | null;
+      generation: number;
+      waitingInWorkerStatus: number | null;
+      resumeWorkersOnReady: Worker[];
+    }
+    | undefined;
+  deps.attachThreadWorker = vi.fn((_handle, request: { worker: Worker; vmPtr: number }) => {
+    childThread = {
+      vmPtr: request.vmPtr,
+      ownerPid: handle.pid,
+      ownerAsyncStatus: null,
+      generation: 1,
+      waitingInWorkerStatus: null,
+      resumeWorkersOnReady: [],
+    };
+    deps.threadWorkerStates.set(request.worker, childThread);
+    handle.workers.add(request.worker);
+  });
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: {
+      type: "status",
+      status: 25,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 25,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  expect(kernel.supervisor_next_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
+  expect(kernel.thread_spawn_from_clone).not.toHaveBeenCalled();
+  expect(deps.attachThreadWorker).toHaveBeenCalledWith(handle, {
+    worker: expect.any(Object),
+    vmPtr: 0x2000,
+  });
+  expect(thread.ownerAsyncStatus).toBe(25);
+  expect(childThread?.resumeWorkersOnReady).toEqual([worker]);
+  expect(deps.appendWorkerDebugLog).toHaveBeenCalledWith(
+    handle,
+    "clone_spawn_hostop:parent=0x1234:child=0x2000:tid=2:seq=1",
+  );
 });
 
 test("STATUS_CLONE_SPAWN still fails when spawn handoff is missing at current clone status", () => {

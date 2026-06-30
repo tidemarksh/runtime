@@ -4,6 +4,7 @@ import {
   acquireWorker,
   releaseWorker,
 } from "../../pool.js";
+import { ensureMemoryCapacity, kernelScratchBase } from "../../kernel-scratch.js";
 import { kernelShareOtherMembers } from "../../kernel-share.js";
 import { collectLiveThreadVmPtrs, processHasLiveThreads } from "../../live-threads.js";
 import { assertHandleWorkerProcessIdentity } from "../../process-identity.js";
@@ -31,8 +32,23 @@ import { formatCompactDebugSuffix } from "../../diagnostics/format.js";
 const CLONE_SPAWN_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_CLONE_SPAWN_DEBUG ?? "") === "1";
+const SUPERVISOR_HOST_OP_RECORD_BYTES = 64;
+const SUPERVISOR_HOST_OP_RECORD_MAGIC = 0x4f48_5354;
+const SUPERVISOR_HOST_OP_KIND_SPAWN_THREAD_WORKER = 1;
+const SUPERVISOR_HOST_OP_SCRATCH_OFFSET = 0x2c000;
 
 const cloneSpawnAsyncTokens = new WeakMap<ThreadWorkerState, number>();
+
+interface SupervisorCloneSpawnHostOp {
+  seq: bigint;
+  parentVmPtr: number;
+  childVmPtr: number;
+  tid: number;
+  processPtr: number;
+  status: number;
+  flags: bigint;
+  childTidPtr: bigint;
+}
 
 interface StatusTransitionArgs {
   handle: ProcessHandle;
@@ -161,6 +177,95 @@ function selectFaultExitVmPtr(
     }
   }
   return selectedVmPtr;
+}
+
+function supervisorHostOpScratchBase(handle: ProcessHandle): number {
+  return kernelScratchBase(handle.kernel) + SUPERVISOR_HOST_OP_SCRATCH_OFFSET;
+}
+
+function supervisorHostOpKindSpawnThreadWorker(handle: ProcessHandle): number {
+  return handle.kernel.supervisor_host_op_kind_spawn_thread_worker?.()
+    ?? SUPERVISOR_HOST_OP_KIND_SPAWN_THREAD_WORKER;
+}
+
+function decodeSupervisorCloneSpawnHostOp(
+  handle: ProcessHandle,
+  view: DataView,
+  parentVmPtr: number,
+): SupervisorCloneSpawnHostOp {
+  if (view.byteLength < SUPERVISOR_HOST_OP_RECORD_BYTES) {
+    throw new Error(`supervisor clone spawn HostOp record too short: ${view.byteLength}`);
+  }
+  const magic = view.getUint32(0, true);
+  const version = view.getUint32(4, true);
+  const bytes = view.getUint32(8, true);
+  const kind = view.getUint32(12, true);
+  if (magic !== SUPERVISOR_HOST_OP_RECORD_MAGIC) {
+    throw new Error(`supervisor clone spawn HostOp bad magic: 0x${magic.toString(16)}`);
+  }
+  const expectedVersion = handle.kernel.supervisor_abi_version?.() ?? version;
+  if (version !== expectedVersion) {
+    throw new Error(`supervisor clone spawn HostOp bad version: ${version}`);
+  }
+  if (bytes < SUPERVISOR_HOST_OP_RECORD_BYTES || bytes > view.byteLength) {
+    throw new Error(`supervisor clone spawn HostOp bad size: ${bytes}`);
+  }
+  if (kind !== supervisorHostOpKindSpawnThreadWorker(handle)) {
+    throw new Error(`supervisor clone spawn HostOp bad kind: ${kind}`);
+  }
+  const record: SupervisorCloneSpawnHostOp = {
+    seq: view.getBigUint64(16, true),
+    parentVmPtr: view.getUint32(24, true),
+    childVmPtr: view.getUint32(28, true),
+    tid: view.getUint32(32, true),
+    processPtr: view.getUint32(36, true),
+    status: view.getUint32(40, true),
+    flags: view.getBigUint64(48, true),
+    childTidPtr: view.getBigUint64(56, true),
+  };
+  if (record.parentVmPtr !== parentVmPtr) {
+    throw new Error(
+      `supervisor clone spawn HostOp parent mismatch: `
+        + `0x${record.parentVmPtr.toString(16)} != 0x${parentVmPtr.toString(16)}`,
+    );
+  }
+  if (record.childVmPtr === 0) {
+    throw new Error(`supervisor clone spawn HostOp missing child for parent=0x${parentVmPtr.toString(16)}`);
+  }
+  if (record.status !== handle.kernel.abi_status_ok()) {
+    throw new Error(`supervisor clone spawn HostOp child status not OK: ${record.status}`);
+  }
+  return record;
+}
+
+function drainSupervisorCloneSpawnHostOp(
+  handle: ProcessHandle,
+  parentVmPtr: number,
+): SupervisorCloneSpawnHostOp | null | undefined {
+  const nextHostOp = handle.kernel.supervisor_next_host_op;
+  const recordBytesExport = handle.kernel.supervisor_host_op_record_bytes;
+  if (nextHostOp === undefined || recordBytesExport === undefined) {
+    return undefined;
+  }
+  const recordBytes = recordBytesExport();
+  if (recordBytes < SUPERVISOR_HOST_OP_RECORD_BYTES) {
+    throw new Error(`supervisor clone spawn HostOp record bytes too small: ${recordBytes}`);
+  }
+  const memory = handle.kernel.memory ?? handle.memory;
+  const scratch = supervisorHostOpScratchBase(handle);
+  ensureMemoryCapacity(memory, scratch + recordBytes);
+  const result = nextHostOp(scratch, recordBytes);
+  if (result === 0) {
+    return null;
+  }
+  if (result < 0 || result > recordBytes) {
+    throw new Error(`supervisor clone spawn HostOp poll failed: ${result}`);
+  }
+  return decodeSupervisorCloneSpawnHostOp(
+    handle,
+    new DataView(memory.buffer, scratch, result),
+    parentVmPtr,
+  );
 }
 
 function beginStatusTransitionRpc(blocked: BlockedWorkerState): number {
@@ -754,7 +859,20 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       }
       let childVmPtr = 0;
       const spawnCloneChild = (): boolean => {
-        childVmPtr = handle.kernel.thread_spawn_from_clone(thread.vmPtr);
+        const hostOp = drainSupervisorCloneSpawnHostOp(handle, thread.vmPtr);
+        if (hostOp === undefined) {
+          childVmPtr = handle.kernel.thread_spawn_from_clone(thread.vmPtr);
+        } else if (hostOp === null) {
+          childVmPtr = 0;
+        } else {
+          childVmPtr = hostOp.childVmPtr;
+          deps.appendWorkerDebugLog(
+            handle,
+            `clone_spawn_hostop:parent=0x${hostOp.parentVmPtr.toString(16)}`
+              + `:child=0x${hostOp.childVmPtr.toString(16)}`
+              + `:tid=${hostOp.tid}:seq=${hostOp.seq.toString()}`,
+          );
+        }
         if (CLONE_SPAWN_DEBUG_ENABLED) {
           deps.appendRuntimeLifecycleEvent(
             handle.runtimeId,
@@ -787,6 +905,9 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           deps.kickBlockedWorkers(handle);
           deps.pumpProcess(handle);
           return false;
+        }
+        if (hostOp !== undefined) {
+          throw new Error(`supervisor clone spawn HostOp missing for pid=${handle.pid}`);
         }
         throw new Error(`thread_spawn_from_clone failed for pid=${handle.pid}`);
       };
