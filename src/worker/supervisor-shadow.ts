@@ -35,6 +35,13 @@ export const SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECTED = 14;
 export const SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECT_FAILED = 15;
 export const SUPERVISOR_FD_CONTROL_KIND_SOCKET_ACCEPTED = 16;
 const SUPERVISOR_FD_CONTROL_SCRATCH_OFFSET = 0x31000;
+export const SUPERVISOR_FS_CONTROL_RECORD_MAGIC = 0x5346_5354;
+export const SUPERVISOR_FS_CONTROL_RECORD_BYTES = 112;
+export const SUPERVISOR_FS_CONTROL_KIND_PAGE_CACHE_MISS = 1;
+export const SUPERVISOR_FS_CONTROL_KIND_PAGE_CACHE_FILL = 2;
+export const SUPERVISOR_FS_CONTROL_KIND_DIRTY_PAGE_PUBLISHED = 3;
+export const SUPERVISOR_FS_CONTROL_KIND_DIRTY_PAGE_FLUSHED = 4;
+const SUPERVISOR_FS_CONTROL_SCRATCH_OFFSET = 0x32000;
 
 export interface SupervisorShadowKernelExports extends KernelExports {
   supervisor_abi_version(): number;
@@ -91,6 +98,25 @@ export interface SupervisorFdControlRecord {
   fdType: number;
   resourceSlot: number;
   resourceGeneration: number;
+  result: bigint;
+  flags: bigint;
+  detail0: bigint;
+  detail1: bigint;
+}
+
+export interface SupervisorFsControlRecord {
+  kind: number;
+  seq: bigint;
+  vmPtr: number;
+  processPtr: number;
+  pid: number;
+  fd: number;
+  ino: number;
+  opcode: number;
+  fileObjectId: bigint;
+  pageIndex: bigint;
+  offset: bigint;
+  length: bigint;
   result: bigint;
   flags: bigint;
   detail0: bigint;
@@ -482,6 +508,151 @@ export function formatSupervisorFdControlRecord(record: SupervisorFdControlRecor
     `type=${record.fdType}`,
     `slot=${record.resourceSlot}`,
     `generation=${record.resourceGeneration}`,
+    `result=${record.result.toString()}`,
+    `flags=0x${record.flags.toString(16)}`,
+    `detail0=${record.detail0.toString()}`,
+    `detail1=${record.detail1.toString()}`,
+  ].join(":");
+}
+
+function supervisorFsControlKindPageCacheMiss(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fs_control_kind_page_cache_miss?.()
+    ?? SUPERVISOR_FS_CONTROL_KIND_PAGE_CACHE_MISS;
+}
+
+function supervisorFsControlKindPageCacheFill(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fs_control_kind_page_cache_fill?.()
+    ?? SUPERVISOR_FS_CONTROL_KIND_PAGE_CACHE_FILL;
+}
+
+function supervisorFsControlKindDirtyPagePublished(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fs_control_kind_dirty_page_published?.()
+    ?? SUPERVISOR_FS_CONTROL_KIND_DIRTY_PAGE_PUBLISHED;
+}
+
+function supervisorFsControlKindDirtyPageFlushed(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fs_control_kind_dirty_page_flushed?.()
+    ?? SUPERVISOR_FS_CONTROL_KIND_DIRTY_PAGE_FLUSHED;
+}
+
+export function decodeSupervisorFsControlRecord(
+  kernelExports: KernelExports,
+  view: DataView,
+): SupervisorFsControlRecord {
+  if (view.byteLength < SUPERVISOR_FS_CONTROL_RECORD_BYTES) {
+    throw new Error(`supervisor fs control record too short: ${view.byteLength}`);
+  }
+  const magic = view.getUint32(0, true);
+  const version = view.getUint32(4, true);
+  const bytes = view.getUint32(8, true);
+  const kind = view.getUint32(12, true);
+  if (magic !== SUPERVISOR_FS_CONTROL_RECORD_MAGIC) {
+    throw new Error(`supervisor fs control bad magic: 0x${magic.toString(16)}`);
+  }
+  const expectedVersion = kernelExports.supervisor_abi_version?.() ?? version;
+  if (version !== expectedVersion) {
+    throw new Error(`supervisor fs control bad version: ${version}`);
+  }
+  if (bytes < SUPERVISOR_FS_CONTROL_RECORD_BYTES || bytes > view.byteLength) {
+    throw new Error(`supervisor fs control bad size: ${bytes}`);
+  }
+  if (
+    kind !== supervisorFsControlKindPageCacheMiss(kernelExports)
+    && kind !== supervisorFsControlKindPageCacheFill(kernelExports)
+    && kind !== supervisorFsControlKindDirtyPagePublished(kernelExports)
+    && kind !== supervisorFsControlKindDirtyPageFlushed(kernelExports)
+  ) {
+    throw new Error(`supervisor fs control bad kind: ${kind}`);
+  }
+  return {
+    kind,
+    seq: view.getBigUint64(16, true),
+    vmPtr: view.getUint32(24, true),
+    processPtr: view.getUint32(28, true),
+    pid: view.getUint32(32, true),
+    fd: view.getUint32(36, true),
+    ino: view.getUint32(40, true),
+    opcode: view.getUint32(44, true),
+    fileObjectId: view.getBigUint64(48, true),
+    pageIndex: view.getBigUint64(56, true),
+    offset: view.getBigUint64(64, true),
+    length: view.getBigUint64(72, true),
+    result: view.getBigInt64(80, true),
+    flags: view.getBigUint64(88, true),
+    detail0: view.getBigUint64(96, true),
+    detail1: view.getBigUint64(104, true),
+  };
+}
+
+export function readSupervisorFsControlRecord(
+  handle: ProcessHandle,
+): SupervisorFsControlRecord | undefined {
+  const recordBytesExport = handle.kernel.supervisor_fs_control_record_bytes;
+  const readRecord = handle.kernel.supervisor_fs_control_record;
+  if (recordBytesExport === undefined || readRecord === undefined) {
+    return undefined;
+  }
+  const recordBytes = recordBytesExport();
+  if (recordBytes < SUPERVISOR_FS_CONTROL_RECORD_BYTES) {
+    throw new Error(`supervisor fs control bytes too small: ${recordBytes}`);
+  }
+  const memory = handle.kernel.memory ?? handle.memory;
+  const scratch = kernelScratchBase(handle.kernel) + SUPERVISOR_FS_CONTROL_SCRATCH_OFFSET;
+  ensureMemoryCapacity(memory, scratch + recordBytes);
+  const result = readRecord(scratch, recordBytes);
+  if (result < 0 || result > recordBytes) {
+    throw new Error(`supervisor fs control read failed: ${result}`);
+  }
+  if (result === 0) {
+    return undefined;
+  }
+  return decodeSupervisorFsControlRecord(
+    handle.kernel,
+    new DataView(memory.buffer, scratch, result),
+  );
+}
+
+export function pollSupervisorFsControlDiagnostic(handle: ProcessHandle): string | undefined {
+  const countExport = handle.kernel.supervisor_shadow_fs_control_count;
+  if (countExport === undefined) {
+    return undefined;
+  }
+  const count = BigInt(countExport());
+  if (count === 0n) {
+    return undefined;
+  }
+  try {
+    const record = readSupervisorFsControlRecord(handle);
+    if (record === undefined) {
+      return undefined;
+    }
+    const lastSeq = handle.lastSupervisorFsControlSeq ?? 0n;
+    if (record.seq <= lastSeq) {
+      return undefined;
+    }
+    handle.lastSupervisorFsControlSeq = record.seq;
+    return formatSupervisorFsControlRecord(record);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `supervisor-fs-control:error=${JSON.stringify(message)}`;
+  }
+}
+
+export function formatSupervisorFsControlRecord(record: SupervisorFsControlRecord): string {
+  return [
+    "supervisor-fs-control",
+    `kind=${record.kind}`,
+    `seq=${record.seq.toString()}`,
+    `vm=0x${record.vmPtr.toString(16)}`,
+    `process=0x${record.processPtr.toString(16)}`,
+    `pid=${record.pid}`,
+    `fd=${record.fd}`,
+    `ino=${record.ino}`,
+    `opcode=${record.opcode}`,
+    `fileObject=${record.fileObjectId.toString()}`,
+    `page=${record.pageIndex.toString()}`,
+    `offset=${record.offset.toString()}`,
+    `length=${record.length.toString()}`,
     `result=${record.result.toString()}`,
     `flags=0x${record.flags.toString(16)}`,
     `detail0=${record.detail0.toString()}`,

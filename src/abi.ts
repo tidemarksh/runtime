@@ -152,6 +152,7 @@ export interface KernelExports {
   supervisor_process_host_op_record_bytes?(): number;
   supervisor_fault_exit_decision_bytes?(): number;
   supervisor_fd_control_record_bytes?(): number;
+  supervisor_fs_control_record_bytes?(): number;
   supervisor_runnable_selection_bytes?(): number;
   supervisor_resume_kind_futex_wake?(): number;
   supervisor_host_op_kind_spawn_thread_worker?(): number;
@@ -174,6 +175,10 @@ export interface KernelExports {
   supervisor_fd_control_kind_socket_connected?(): number;
   supervisor_fd_control_kind_socket_connect_failed?(): number;
   supervisor_fd_control_kind_socket_accepted?(): number;
+  supervisor_fs_control_kind_page_cache_miss?(): number;
+  supervisor_fs_control_kind_page_cache_fill?(): number;
+  supervisor_fs_control_kind_dirty_page_published?(): number;
+  supervisor_fs_control_kind_dirty_page_flushed?(): number;
   supervisor_reset_shadow_log?(): void;
   supervisor_shadow_thread_event_count?(): bigint | number;
   supervisor_shadow_host_completion_count?(): bigint | number;
@@ -184,6 +189,7 @@ export interface KernelExports {
   supervisor_shadow_resume_enqueue_count?(): bigint | number;
   supervisor_shadow_resume_overflow_count?(): bigint | number;
   supervisor_shadow_fd_control_count?(): bigint | number;
+  supervisor_shadow_fs_control_count?(): bigint | number;
   supervisor_shadow_thread_event_log_hash?(): bigint | number;
   supervisor_shadow_host_completion_log_hash?(): bigint | number;
   supervisor_submit_thread_event?(eventPtr: number, eventLen: number): number;
@@ -193,6 +199,7 @@ export interface KernelExports {
   supervisor_next_resume?(outPtr: number, outLen: number): number;
   supervisor_fault_exit_decision?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_fd_control_record?(outPtr: number, outLen: number): number;
+  supervisor_fs_control_record?(outPtr: number, outLen: number): number;
   supervisor_select_runnable?(
     vmPtr: number,
     candidatesPtr: number,

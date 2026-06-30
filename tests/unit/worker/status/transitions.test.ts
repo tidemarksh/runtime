@@ -110,6 +110,29 @@ function writeFdControlRecord(memory: WebAssembly.Memory, ptr: number, seq: bigi
   writeU64(view, 88, 0n);
 }
 
+function writeFsControlRecord(memory: WebAssembly.Memory, ptr: number, seq: bigint): void {
+  const view = new DataView(memory.buffer, ptr, 112);
+  writeU32(view, 0, 0x5346_5354);
+  writeU32(view, 4, 1);
+  writeU32(view, 8, 112);
+  writeU32(view, 12, 1);
+  writeU64(view, 16, seq);
+  writeU32(view, 24, 0x1234);
+  writeU32(view, 28, 0x2000);
+  writeU32(view, 32, 9);
+  writeU32(view, 36, 3);
+  writeU32(view, 40, 55);
+  writeU32(view, 44, 1);
+  writeU64(view, 48, 77n);
+  writeU64(view, 56, 2n);
+  writeU64(view, 64, 8192n);
+  writeU64(view, 72, 4096n);
+  view.setBigInt64(80, -2n, true);
+  writeU64(view, 88, 0n);
+  writeU64(view, 96, 16384n);
+  writeU64(view, 104, 0n);
+}
+
 function makeHandle(worker: Worker) {
   return {
     pid: 0,
@@ -347,6 +370,86 @@ test("status transitions append supervisor fd-control diagnostics once per seque
   expect(fdControlLogs).toEqual([
     expect.stringContaining("supervisor-fd-control:kind=1:seq=7"),
     expect.stringContaining("supervisor-fd-control:kind=1:seq=8"),
+  ]);
+});
+
+test("status transitions append supervisor fs-control diagnostics once per sequence", () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  const memory = new WebAssembly.Memory({ initial: 8, maximum: 8, shared: true });
+  handle.memory = memory;
+  let count = 1n;
+  let seq = 9n;
+  const kernel = handle.kernel as typeof handle.kernel & {
+    memory: WebAssembly.Memory;
+    supervisor_abi_version: () => number;
+    supervisor_fs_control_record_bytes: () => number;
+    supervisor_fs_control_kind_page_cache_miss: () => number;
+    supervisor_shadow_fs_control_count: () => bigint;
+    supervisor_fs_control_record: (outPtr: number, outLen: number) => number;
+  };
+  kernel.memory = memory;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_fs_control_record_bytes = () => 112;
+  kernel.supervisor_fs_control_kind_page_cache_miss = () => 1;
+  kernel.supervisor_shadow_fs_control_count = () => count;
+  kernel.supervisor_fs_control_record = vi.fn((outPtr: number, outLen: number) => {
+    expect(outLen).toBe(112);
+    writeFsControlRecord(memory, outPtr, seq);
+    return 112;
+  });
+  const deps = makeDeps(worker);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+  const statusMessage = {
+    type: "status",
+    status: 0,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  };
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: statusMessage,
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: statusMessage,
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+  count = 2n;
+  seq = 10n;
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: statusMessage,
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  const fsControlLogs = deps.appendWorkerDebugLog.mock.calls
+    .map(([, event]) => event)
+    .filter((event) => String(event).startsWith("supervisor-fs-control:"));
+  expect(fsControlLogs).toEqual([
+    expect.stringContaining("supervisor-fs-control:kind=1:seq=9"),
+    expect.stringContaining("supervisor-fs-control:kind=1:seq=10"),
   ]);
 });
 

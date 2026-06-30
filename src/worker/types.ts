@@ -333,6 +333,7 @@ export interface ProcessHandle {
   pendingChildExitRecords: number;
   pendingChildSpawnRecords: number;
   lastSupervisorFdControlSeq?: bigint;
+  lastSupervisorFsControlSeq?: bigint;
   childExitSyncRecords: Map<number, number>;
   pipeSyncPromise: Promise<void> | null;
   pipeSyncQueued: boolean;
