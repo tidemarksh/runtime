@@ -16,6 +16,11 @@ const SUPERVISOR_PROCESS_HOST_OP_COMPLETION_KIND_SPAWN_PROCESS_WORKER = 1;
 const SUPERVISOR_PROCESS_HOST_OP_COMPLETION_OUTCOME_SUCCESS = 1;
 const SUPERVISOR_PROCESS_HOST_OP_COMPLETION_OUTCOME_FAILURE = 2;
 const SUPERVISOR_PROCESS_HOST_OP_COMPLETION_SCRATCH_OFFSET = 0x2f000;
+export const SUPERVISOR_FD_CONTROL_RECORD_MAGIC = 0x4446_5354;
+export const SUPERVISOR_FD_CONTROL_RECORD_BYTES = 96;
+export const SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED = 1;
+export const SUPERVISOR_FD_CONTROL_KIND_FD_CLOSED = 2;
+const SUPERVISOR_FD_CONTROL_SCRATCH_OFFSET = 0x31000;
 
 export interface SupervisorShadowKernelExports extends KernelExports {
   supervisor_abi_version(): number;
@@ -57,6 +62,25 @@ export interface SupervisorProcessHostOpCompletion {
   handoff: ProcessSpawnHandoff;
   success: boolean;
   detail?: number;
+}
+
+export interface SupervisorFdControlRecord {
+  kind: number;
+  seq: bigint;
+  vmPtr: number;
+  processPtr: number;
+  pid: number;
+  fd: number;
+  fd2: number;
+  ofdId: number;
+  ofd2Id: number;
+  fdType: number;
+  resourceSlot: number;
+  resourceGeneration: number;
+  result: bigint;
+  flags: bigint;
+  detail0: bigint;
+  detail1: bigint;
 }
 
 export function hasSupervisorShadowProtocol(
@@ -232,4 +256,111 @@ export function readSupervisorFaultExitDecision(
     new DataView(memory.buffer, scratch, result),
     vmPtr,
   );
+}
+
+function supervisorFdControlKindPipeCreated(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fd_control_kind_pipe_created?.()
+    ?? SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED;
+}
+
+function supervisorFdControlKindFdClosed(kernelExports: KernelExports): number {
+  return kernelExports.supervisor_fd_control_kind_fd_closed?.()
+    ?? SUPERVISOR_FD_CONTROL_KIND_FD_CLOSED;
+}
+
+export function decodeSupervisorFdControlRecord(
+  kernelExports: KernelExports,
+  view: DataView,
+): SupervisorFdControlRecord {
+  if (view.byteLength < SUPERVISOR_FD_CONTROL_RECORD_BYTES) {
+    throw new Error(`supervisor fd control record too short: ${view.byteLength}`);
+  }
+  const magic = view.getUint32(0, true);
+  const version = view.getUint32(4, true);
+  const bytes = view.getUint32(8, true);
+  const kind = view.getUint32(12, true);
+  if (magic !== SUPERVISOR_FD_CONTROL_RECORD_MAGIC) {
+    throw new Error(`supervisor fd control bad magic: 0x${magic.toString(16)}`);
+  }
+  const expectedVersion = kernelExports.supervisor_abi_version?.() ?? version;
+  if (version !== expectedVersion) {
+    throw new Error(`supervisor fd control bad version: ${version}`);
+  }
+  if (bytes < SUPERVISOR_FD_CONTROL_RECORD_BYTES || bytes > view.byteLength) {
+    throw new Error(`supervisor fd control bad size: ${bytes}`);
+  }
+  if (
+    kind !== supervisorFdControlKindPipeCreated(kernelExports)
+    && kind !== supervisorFdControlKindFdClosed(kernelExports)
+  ) {
+    throw new Error(`supervisor fd control bad kind: ${kind}`);
+  }
+  return {
+    kind,
+    seq: view.getBigUint64(16, true),
+    vmPtr: view.getUint32(24, true),
+    processPtr: view.getUint32(28, true),
+    pid: view.getUint32(32, true),
+    fd: view.getUint32(36, true),
+    fd2: view.getUint32(40, true),
+    ofdId: view.getUint32(44, true),
+    ofd2Id: view.getUint32(48, true),
+    fdType: view.getUint32(52, true),
+    resourceSlot: view.getUint32(56, true),
+    resourceGeneration: view.getUint32(60, true),
+    result: view.getBigInt64(64, true),
+    flags: view.getBigUint64(72, true),
+    detail0: view.getBigUint64(80, true),
+    detail1: view.getBigUint64(88, true),
+  };
+}
+
+export function readSupervisorFdControlRecord(
+  handle: ProcessHandle,
+): SupervisorFdControlRecord | undefined {
+  const recordBytesExport = handle.kernel.supervisor_fd_control_record_bytes;
+  const readRecord = handle.kernel.supervisor_fd_control_record;
+  if (recordBytesExport === undefined || readRecord === undefined) {
+    return undefined;
+  }
+  const recordBytes = recordBytesExport();
+  if (recordBytes < SUPERVISOR_FD_CONTROL_RECORD_BYTES) {
+    throw new Error(`supervisor fd control bytes too small: ${recordBytes}`);
+  }
+  const memory = handle.kernel.memory ?? handle.memory;
+  const scratch = kernelScratchBase(handle.kernel) + SUPERVISOR_FD_CONTROL_SCRATCH_OFFSET;
+  ensureMemoryCapacity(memory, scratch + recordBytes);
+  const result = readRecord(scratch, recordBytes);
+  if (result < 0 || result > recordBytes) {
+    throw new Error(`supervisor fd control read failed: ${result}`);
+  }
+  if (result === 0) {
+    return undefined;
+  }
+  return decodeSupervisorFdControlRecord(
+    handle.kernel,
+    new DataView(memory.buffer, scratch, result),
+  );
+}
+
+export function formatSupervisorFdControlRecord(record: SupervisorFdControlRecord): string {
+  return [
+    "supervisor-fd-control",
+    `kind=${record.kind}`,
+    `seq=${record.seq.toString()}`,
+    `vm=0x${record.vmPtr.toString(16)}`,
+    `process=0x${record.processPtr.toString(16)}`,
+    `pid=${record.pid}`,
+    `fd=${record.fd}`,
+    `fd2=${record.fd2}`,
+    `ofd=${record.ofdId}`,
+    `ofd2=${record.ofd2Id}`,
+    `type=${record.fdType}`,
+    `slot=${record.resourceSlot}`,
+    `generation=${record.resourceGeneration}`,
+    `result=${record.result.toString()}`,
+    `flags=0x${record.flags.toString(16)}`,
+    `detail0=${record.detail0.toString()}`,
+    `detail1=${record.detail1.toString()}`,
+  ].join(":");
 }

@@ -1,9 +1,17 @@
-import { expect, test } from "vite-plus/test";
+import { expect, test, vi } from "vite-plus/test";
 import type { KernelExports } from "../../../src/abi.js";
+import type { ProcessHandle } from "../../../src/worker/types.js";
 import {
+  decodeSupervisorFdControlRecord,
   encodeSupervisorShadowThreadEvent,
+  formatSupervisorFdControlRecord,
   hasSupervisorShadowProtocol,
+  readSupervisorFdControlRecord,
   submitSupervisorShadowThreadEvent,
+  SUPERVISOR_FD_CONTROL_KIND_FD_CLOSED,
+  SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED,
+  SUPERVISOR_FD_CONTROL_RECORD_BYTES,
+  SUPERVISOR_FD_CONTROL_RECORD_MAGIC,
   SUPERVISOR_SHADOW_THREAD_EVENT_MAGIC,
   SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES,
   SUPERVISOR_SHADOW_THREAD_EVENT_VERSION,
@@ -22,6 +30,28 @@ function makeEvent(): SupervisorShadowThreadEvent {
     pc: 0x1234n,
     sp: 0x5678n,
   };
+}
+
+function writeFdControlRecord(view: DataView, kind = SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED): void {
+  view.setUint32(0, SUPERVISOR_FD_CONTROL_RECORD_MAGIC, true);
+  view.setUint32(4, 1, true);
+  view.setUint32(8, SUPERVISOR_FD_CONTROL_RECORD_BYTES, true);
+  view.setUint32(12, kind, true);
+  view.setBigUint64(16, 7n, true);
+  view.setUint32(24, 0x1234, true);
+  view.setUint32(28, 0x2000, true);
+  view.setUint32(32, 9, true);
+  view.setUint32(36, 3, true);
+  view.setUint32(40, 4, true);
+  view.setUint32(44, 11, true);
+  view.setUint32(48, 12, true);
+  view.setUint32(52, 2, true);
+  view.setUint32(56, 5, true);
+  view.setUint32(60, 6, true);
+  view.setBigInt64(64, 0n, true);
+  view.setBigUint64(72, 0x80800n, true);
+  view.setBigUint64(80, 1n, true);
+  view.setBigUint64(88, 1n, true);
 }
 
 test("hasSupervisorShadowProtocol treats supervisor exports as optional", () => {
@@ -74,4 +104,75 @@ test("submitSupervisorShadowThreadEvent writes the record and calls the kernel e
   const view = new DataView(memory.buffer);
   expect(view.getUint32(32, true)).toBe(SUPERVISOR_SHADOW_THREAD_EVENT_MAGIC);
   expect(view.getUint32(44, true)).toBe(20);
+});
+
+test("decodeSupervisorFdControlRecord reads the supervisor fd control layout", () => {
+  const bytes = new Uint8Array(SUPERVISOR_FD_CONTROL_RECORD_BYTES);
+  writeFdControlRecord(new DataView(bytes.buffer));
+  const kernelExports = {
+    memory: new WebAssembly.Memory({ initial: 1 }),
+    supervisor_abi_version: () => 1,
+    supervisor_fd_control_kind_pipe_created: () => SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED,
+    supervisor_fd_control_kind_fd_closed: () => SUPERVISOR_FD_CONTROL_KIND_FD_CLOSED,
+  } as unknown as KernelExports;
+
+  const record = decodeSupervisorFdControlRecord(kernelExports, new DataView(bytes.buffer));
+
+  expect(record).toEqual({
+    kind: SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED,
+    seq: 7n,
+    vmPtr: 0x1234,
+    processPtr: 0x2000,
+    pid: 9,
+    fd: 3,
+    fd2: 4,
+    ofdId: 11,
+    ofd2Id: 12,
+    fdType: 2,
+    resourceSlot: 5,
+    resourceGeneration: 6,
+    result: 0n,
+    flags: 0x80800n,
+    detail0: 1n,
+    detail1: 1n,
+  });
+  expect(formatSupervisorFdControlRecord(record)).toBe(
+    "supervisor-fd-control:kind=1:seq=7:vm=0x1234:process=0x2000:pid=9"
+      + ":fd=3:fd2=4:ofd=11:ofd2=12:type=2:slot=5:generation=6"
+      + ":result=0:flags=0x80800:detail0=1:detail1=1",
+  );
+});
+
+test("readSupervisorFdControlRecord polls the kernel export", () => {
+  const memory = new WebAssembly.Memory({ initial: 8 });
+  const kernelExports = {
+    memory,
+    kernel_heap_ptr: () => 0,
+    supervisor_abi_version: () => 1,
+    supervisor_fd_control_record_bytes: () => SUPERVISOR_FD_CONTROL_RECORD_BYTES,
+    supervisor_fd_control_kind_pipe_created: () => SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED,
+    supervisor_fd_control_kind_fd_closed: () => SUPERVISOR_FD_CONTROL_KIND_FD_CLOSED,
+    supervisor_fd_control_record: vi.fn((outPtr: number, outLen: number) => {
+      expect(outLen).toBe(SUPERVISOR_FD_CONTROL_RECORD_BYTES);
+      const view = new DataView(memory.buffer, outPtr, outLen);
+      writeFdControlRecord(view, SUPERVISOR_FD_CONTROL_KIND_FD_CLOSED);
+      view.setBigUint64(80, 1n, true);
+      view.setBigUint64(88, 0n, true);
+      return SUPERVISOR_FD_CONTROL_RECORD_BYTES;
+    }),
+  } as unknown as KernelExports;
+  const handle = {
+    kernel: kernelExports,
+    memory,
+  } as ProcessHandle;
+
+  const record = readSupervisorFdControlRecord(handle);
+
+  expect(kernelExports.supervisor_fd_control_record).toHaveBeenCalledWith(
+    expect.any(Number),
+    SUPERVISOR_FD_CONTROL_RECORD_BYTES,
+  );
+  expect(record?.kind).toBe(SUPERVISOR_FD_CONTROL_KIND_FD_CLOSED);
+  expect(record?.detail0).toBe(1n);
+  expect(record?.detail1).toBe(0n);
 });
