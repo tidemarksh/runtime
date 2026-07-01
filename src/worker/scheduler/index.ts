@@ -307,16 +307,8 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   } = createVforkExclusiveScheduler(threadWorkerStates);
   const {
     advanceGuestTimeByMs,
-    maybeAdvanceGuestTimeToNextSleep,
-    monotonicTicksCurrent,
-    sleepDeadlineTicks,
     sleepRetryDelayMs,
-    wakeBlockedSleepWorker,
-    wakeDueSleepWorkers,
-  } = createSleepScheduler({
-    clearBlockedWorker,
-    enqueueWorker,
-  });
+  } = createSleepScheduler();
   const {
     blockedOrCurrentSyscallNr,
     formatBlockedPollFdSet,
@@ -975,11 +967,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (status === handle.kernel.abi_status_futex_wait()) {
       return;
     }
-    if (status === handle.kernel.abi_status_sleep()) {
-      blocked.sleepDeadlineTicks = sleepDeadlineTicks(handle, vmPtr);
-      scheduleBlockedRetry(handle, worker, sleepRetryDelayMs(handle, blocked.sleepDeadlineTicks), true);
-      return;
-    }
     if (status === handle.kernel.abi_status_epoll_wait()) {
       const timeoutMs = Number(handle.kernel.thread_epoll_wait_timeout(vmPtr));
       if (timeoutMs >= 0) {
@@ -1215,22 +1202,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   function retryBlockedWorker(handle: ProcessHandle, worker: Worker): void {
     const blocked = handle.blockedWorkers.get(worker);
     if (!blocked) {
-      return;
-    }
-    if (blocked.status === handle.kernel.abi_status_sleep()) {
-      const currentStatus = handle.kernel.thread_status(blocked.vmPtr);
-      if (currentStatus !== blocked.status) {
-        handleBlockedRetryResult(handle, worker, blocked.vmPtr, currentStatus);
-        return;
-      }
-      if (blocked.sleepDeadlineTicks !== null && blocked.sleepDeadlineTicks > monotonicTicksCurrent(handle)) {
-        if (!blocked.timeoutExpired) {
-          scheduleBlockedRetry(handle, worker, sleepRetryDelayMs(handle, blocked.sleepDeadlineTicks), true);
-          return;
-        }
-        handle.kernel.sync_monotonic_ticks_floor?.(blocked.sleepDeadlineTicks);
-      }
-      wakeBlockedSleepWorker(handle, worker, blocked);
       return;
     }
     appendBlockedStateLifecycle(handle, blocked);
@@ -1881,8 +1852,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   } = schedulerStateSyncHelpers;
 
   function kickBlockedWorkers(handle: ProcessHandle): void {
-    wakeDueSleepWorkers(handle);
-    maybeAdvanceGuestTimeToNextSleep(handle);
     for (const worker of [...handle.blockedWorkers.keys()]) {
       retryBlockedWorker(handle, worker);
     }

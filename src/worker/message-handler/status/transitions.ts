@@ -395,11 +395,6 @@ function armSupervisorHostTimer(
     "appendRuntimeLifecycleEvent" | "appendWorkerDebugLog" | "failProcess" | "pumpProcess"
   >,
 ): void {
-  const completeFutexWait = handle.kernel.supervisor_complete_futex_wait;
-  const timedOut = handle.kernel.supervisor_futex_wait_completion_timed_out;
-  if (completeFutexWait === undefined || timedOut === undefined) {
-    throw new Error("kernel supervisor ABI missing futex timeout completion exports");
-  }
   const delayMs = Number(
     record.flags > BigInt(0x7fff_ffff)
       ? 0x7fff_ffffn
@@ -412,13 +407,12 @@ function armSupervisorHostTimer(
   );
   globalThis.setTimeout(() => {
     try {
-      const status = completeFutexWait(record.parentVmPtr, timedOut());
-      submitSupervisorHostOpCompletion(
+      const status = submitSupervisorHostOpCompletion(
         handle,
         record,
         supervisorHostCompletionOutcomeSuccess(handle),
-        status,
-      );
+        0,
+      ) ?? 0;
       deps.appendWorkerDebugLog(
         handle,
         `supervisor-host-timer-fired:vm=0x${record.parentVmPtr.toString(16)}`
@@ -884,7 +878,18 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       }
       thread.yieldedReady = false;
       deps.appendWorkerDebugLog(handle, `sleep:0x${thread.vmPtr.toString(16)}@${sec.toString()}s+${nsec.toString()}ns`);
-      deps.blockWorker(handle, worker, status, thread.vmPtr);
+      const hostTimer = drainSupervisorArmHostTimerHostOp(handle, thread.vmPtr);
+      if (hostTimer === undefined) {
+        throw new Error("kernel supervisor ABI missing arm host timer HostOp exports");
+      }
+      if (handle.runningWorker === worker) {
+        handle.runningWorker = null;
+      }
+      thread.waitingInWorkerStatus = status;
+      thread.waitingInWorkerReconcileDeferred = false;
+      if (hostTimer !== null) {
+        armSupervisorHostTimer(handle, hostTimer, deps);
+      }
       deps.kickBlockedWorkers(handle);
       deps.pumpProcess(handle);
       return;

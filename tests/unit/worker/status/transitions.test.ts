@@ -62,6 +62,7 @@ function writeArmHostTimerHostOpRecord(
   ptr: number,
   vmPtr: number,
   delayMs: bigint,
+  status = 20,
 ): void {
   const view = new DataView(memory.buffer, ptr, 64);
   writeU32(view, 0, 0x4f48_5354);
@@ -73,7 +74,7 @@ function writeArmHostTimerHostOpRecord(
   writeU32(view, 28, 0);
   writeU32(view, 32, 2);
   writeU32(view, 36, 0x5000);
-  writeU32(view, 40, 20);
+  writeU32(view, 40, status);
   writeU32(view, 44, 0);
   writeU64(view, 48, delayMs);
   writeU64(view, 56, delayMs * 100_000n);
@@ -1027,11 +1028,41 @@ test("STATUS_SLEEP zero-duration yield gives blocked I/O retry a real timer turn
   expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });
 
-test("STATUS_SLEEP blocks in the owner scheduler instead of arming a host timer", () => {
+test("STATUS_SLEEP arms supervisor host timer HostOp and reports completion", async () => {
+  vi.useFakeTimers();
   const worker = {} as Worker;
   const handle = makeHandle(worker);
+  handle.pid = 1;
+  handle.runtimeId = 77;
+  handle.runningWorker = worker;
   handle.kernel.thread_sleep_nanoseconds = () => 1_000_000n;
+  const memory = new WebAssembly.Memory({ initial: 6, maximum: 6, shared: true });
+  handle.memory = memory;
+  const kernel = handle.kernel as typeof handle.kernel & {
+    memory: WebAssembly.Memory;
+    supervisor_abi_version: () => number;
+    supervisor_host_op_record_bytes: () => number;
+    supervisor_host_op_kind_arm_host_timer: () => number;
+    supervisor_next_host_op: (outPtr: number, outLen: number) => number;
+    supervisor_complete_host_op: (completionPtr: number, completionLen: number) => number;
+  };
+  kernel.memory = memory;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_host_op_record_bytes = () => 64;
+  kernel.supervisor_host_op_kind_arm_host_timer = () => 12;
+  let completionView: DataView | null = null;
+  kernel.supervisor_complete_host_op = vi.fn((completionPtr: number, completionLen: number) => {
+    completionView = new DataView(memory.buffer, completionPtr, completionLen);
+    return 0;
+  });
+  kernel.supervisor_next_host_op = vi.fn((outPtr: number, outLen: number) => {
+    expect(outLen).toBe(64);
+    writeArmHostTimerHostOpRecord(memory, outPtr, 0x1234, 5n, 26);
+    return 64;
+  });
   const deps = makeDeps(worker);
+  const thread = deps.threadWorkerStates.get(worker)!;
+  thread.ownerPid = handle.pid;
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   transition({
@@ -1053,16 +1084,24 @@ test("STATUS_SLEEP blocks in the owner scheduler instead of arming a host timer"
     completedSyncEffects: 0,
   });
 
-  expect(deps.blockWorker).toHaveBeenCalledWith(handle, worker, 26, 0x1234);
+  expect(deps.blockWorker).not.toHaveBeenCalled();
+  expect(handle.runningWorker).toBeNull();
+  expect(thread.waitingInWorkerStatus).toBe(26);
+  expect(kernel.supervisor_next_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
   expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
   expect(deps.enqueueWorker).not.toHaveBeenCalled();
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
-  expect(
-    deps.blockWorker.mock.invocationCallOrder[0],
-  ).toBeLessThan(deps.kickBlockedWorkers.mock.invocationCallOrder[0]);
-  expect(
-    deps.kickBlockedWorkers.mock.invocationCallOrder[0],
-  ).toBeLessThan(deps.pumpProcess.mock.invocationCallOrder[0]);
+
+  await vi.advanceTimersByTimeAsync(5);
+
+  expect(kernel.supervisor_complete_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
+  expect(completionView?.getUint32(0, true)).toBe(0x4348_5354);
+  expect(completionView?.getUint32(12, true)).toBe(12);
+  expect(completionView?.getBigUint64(16, true)).toBe(9n);
+  expect(completionView?.getUint32(24, true)).toBe(0x1234);
+  expect(completionView?.getUint32(36, true)).toBe(1);
+  expect(completionView?.getUint32(40, true)).toBe(0);
+  expect(deps.pumpProcess).toHaveBeenCalledTimes(2);
 });
 
 test("STATUS_CLONE_SPAWN ignores stale duplicate after kernel status moved on", () => {
@@ -1271,7 +1310,7 @@ test("STATUS_FUTEX_WAIT arms supervisor host timer HostOp and reports completion
 
   await vi.advanceTimersByTimeAsync(5);
 
-  expect(kernel.supervisor_complete_futex_wait).toHaveBeenCalledWith(0x1234, 3);
+  expect(kernel.supervisor_complete_futex_wait).not.toHaveBeenCalled();
   expect(kernel.supervisor_complete_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
   expect(completionView?.getUint32(0, true)).toBe(0x4348_5354);
   expect(completionView?.getUint32(12, true)).toBe(12);
