@@ -972,6 +972,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (sameBlockedThread && blocked.rpcPending) {
       return;
     }
+    if (status === handle.kernel.abi_status_futex_wait()) {
+      return;
+    }
     if (status === handle.kernel.abi_status_sleep()) {
       blocked.sleepDeadlineTicks = sleepDeadlineTicks(handle, vmPtr);
       scheduleBlockedRetry(handle, worker, sleepRetryDelayMs(handle, blocked.sleepDeadlineTicks), true);

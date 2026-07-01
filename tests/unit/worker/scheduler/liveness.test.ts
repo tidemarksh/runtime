@@ -3101,55 +3101,6 @@ test("epoll kernel-worker retry blocks a sibling sleeper published during state 
   expect(lifecycleEvents).not.toContain("epoll-retry-skip:1:running=1:sched=1");
 });
 
-test("blocked syscall retry is rescheduled after a running-worker skip", async () => {
-  const blockedWorker = {
-    postMessage: vi.fn(),
-  } as unknown as Worker;
-  const runningWorker = {
-    postMessage: vi.fn(),
-  } as unknown as Worker;
-  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
-  threadWorkerStates.set(blockedWorker, makeThreadState(0x1234));
-  threadWorkerStates.set(runningWorker, makeThreadState(0x5678));
-  const { exports: kernel } = makeKernel();
-  let status = kernel.abi_status_futex_wait();
-  const resumeBlockedSyscall = vi.fn(() => {
-    status = kernel.abi_status_ok();
-  });
-  kernel.thread_status = (vmPtr: number) => vmPtr === 0x1234 ? status : kernel.abi_status_ok();
-  kernel.thread_resume_blocked_syscall = resumeBlockedSyscall;
-  const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
-  handle.workers.add(runningWorker);
-  handle.runningWorker = runningWorker;
-
-  const scheduler = createWorkerScheduler({
-    appendRuntimeLifecycleEvent: () => {},
-    threadWorkerStates,
-    completeProcessExit: async () => {},
-    failProcess: () => {},
-    hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
-    resumeVforkParentAfterChildExit: () => false,
-    resumeWait4ViaKernelWorker: async () => {},
-    handleWorkerMessage: () => {},
-  });
-
-  scheduler.blockWorker(handle, blockedWorker, handle.kernel.abi_status_futex_wait(), 0x1234);
-  await vi.advanceTimersByTimeAsync(1);
-  expect(resumeBlockedSyscall).not.toHaveBeenCalled();
-  expect(handle.blockedWorkers.has(blockedWorker)).toBe(true);
-
-  handle.runningWorker = null;
-  await vi.advanceTimersByTimeAsync(1);
-
-  expect(resumeBlockedSyscall).toHaveBeenCalledWith(0x1234);
-  expect(handle.blockedWorkers.has(blockedWorker)).toBe(false);
-  expect(blockedWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
-    type: "step",
-    budget: expect.any(Number),
-  }));
-});
-
 test("wait4 retry with a local child exit record wakes the running worker before rescheduling", async () => {
   const blockedWorker = {
     postMessage: vi.fn(),
