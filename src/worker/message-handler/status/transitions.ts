@@ -1355,8 +1355,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     }
 
     if (
-      status === handle.kernel.abi_status_futex_wait()
-      || status === handle.kernel.abi_status_wait4()
+      status === handle.kernel.abi_status_wait4()
       || status === handle.kernel.abi_status_pipe_wait()
       || status === handle.kernel.abi_status_epoll_wait()
       || status === handle.kernel.abi_status_socket_recv()
