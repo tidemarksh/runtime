@@ -143,7 +143,6 @@ test("host boundary consumes process-scoped supervisor runnable resume decisions
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     epollTimerfdDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,

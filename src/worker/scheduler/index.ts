@@ -949,7 +949,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       retryTimer: null,
       timeoutExpired: false,
       timeoutDeadlineMs: null,
-      sleepDeadlineTicks: null,
       epollTimerfdDeadlineTicks: sameBlockedThread ? previousBlocked.epollTimerfdDeadlineTicks : null,
       rpcPending: sameBlockedThread ? previousBlocked.rpcPending : false,
       rpcGeneration: sameBlockedThread ? previousBlocked.rpcGeneration : 0,

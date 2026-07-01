@@ -158,7 +158,6 @@ test("resumeWait4ViaKernelWorker does not re-run local wait4 after kernel-worker
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: true,
   });
 
@@ -253,7 +252,6 @@ test("resumeWait4ViaKernelWorker skips RPC when local wait4 already resolved", a
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: true,
   });
 
@@ -458,7 +456,6 @@ test("resumeBlockedSyscallLocally skips kernel-worker shared-state syncs during 
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: true,
   });
 
@@ -582,7 +579,6 @@ test("resumeBlockedSyscallLocally queues pselect fd_set writes after owner-side 
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -739,7 +735,6 @@ test("resumeBlockedSyscallLocally retries pselect pipe HUP owner-side after tran
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -895,7 +890,6 @@ test("resumeBlockedSyscallLocally resumes pselect pipe HUP before generic after-
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -1052,7 +1046,6 @@ test("resumeBlockedSyscallLocally retries mixed socket pipe pselect HUP owner-si
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -1180,7 +1173,6 @@ test("resumeBlockedSyscallOutcome returns pipe sync effect before ready socket p
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -1309,7 +1301,6 @@ test("resumeBlockedSyscallOutcome returns socket sync effect without running soc
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -1426,7 +1417,6 @@ test("resumeBlockedSyscallOutcome completes epoll timeout through epoll timeout 
     retryTimer: null,
     timeoutExpired: true,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -1541,7 +1531,6 @@ test("resumeBlockedSyscallLocally wakes pipe waiters through requestPipeStateSyn
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: true,
   });
 
@@ -1676,7 +1665,6 @@ test("resumeBlockedSyscallLocally resumes pipe EOF after writers close even with
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: true,
   });
 
@@ -1842,7 +1830,6 @@ test("resumeBlockedSyscallLocally defers poll readiness while an active child st
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: true,
   });
 
@@ -2000,7 +1987,6 @@ test("resumeBlockedSyscallLocally ignores exiting child pipe writers for pselect
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: true,
   });
 
@@ -2161,7 +2147,6 @@ test("resumeBlockedSyscallLocally completes pselect HUP marker despite an active
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: true,
   });
 
@@ -2283,7 +2268,6 @@ test("resumeBlockedSyscallLocally collapses pipe read that becomes ready after p
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: true,
   });
 
@@ -2410,7 +2394,6 @@ test("resumeBlockedSyscallLocally queues the full socket read buffer after owner
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: true,
   });
 

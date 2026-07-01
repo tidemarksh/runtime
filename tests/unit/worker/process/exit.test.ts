@@ -1379,7 +1379,6 @@ test("completeProcessExit clears parent pipe-wait RPC after normal child exit pu
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
   };
   parent.blockedWorkers.set(blockedWorker, blockedState as never);
   const child = makeHandle({

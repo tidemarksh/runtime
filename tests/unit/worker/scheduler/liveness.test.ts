@@ -452,7 +452,6 @@ test("ok status defers re-enqueue while a blocked epoll retry rpc is pending", a
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -603,7 +602,6 @@ test("scheduler caps step budget while owner retry waiters are blocked", () => {
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     epollTimerfdDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
@@ -2515,96 +2513,6 @@ test("wait4 retry reconciles stale blocked state before issuing a kernel-worker 
   }));
 });
 
-test("sleep-blocked worker advances guest time to the earliest deadline and resumes immediately", () => {
-  const worker = {
-    postMessage: vi.fn(),
-  } as unknown as Worker;
-  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
-  threadWorkerStates.set(worker, makeThreadState(0x1234));
-  const { exports: kernel } = makeKernel();
-  let status = kernel.abi_status_sleep();
-  kernel.thread_status = () => status;
-  kernel.thread_resume_sleep = vi.fn(() => {
-    status = kernel.abi_status_ok();
-  });
-  kernel.thread_sleep_deadline_ticks = () => 1_000n;
-  const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
-
-  const scheduler = createWorkerScheduler({
-    appendRuntimeLifecycleEvent: () => {},
-    threadWorkerStates,
-    completeProcessExit: async () => {},
-    failProcess: () => {},
-    hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
-    resumeVforkParentAfterChildExit: () => false,
-    resumeWait4ViaKernelWorker: async () => {},
-    handleWorkerMessage: () => {},
-  });
-
-  scheduler.blockWorker(handle, worker, handle.kernel.abi_status_sleep(), 0x1234);
-  scheduler.kickBlockedWorkers(handle);
-
-  expect(kernel.sync_monotonic_ticks_floor).toHaveBeenCalledWith(1_000n);
-  expect(kernel.thread_resume_sleep).toHaveBeenCalledWith(0x1234);
-  expect(handle.blockedWorkers.has(worker)).toBe(false);
-  expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
-    type: "step",
-    budget: expect.any(Number),
-  }));
-});
-
-test("sleep-blocked worker retries at its deadline when other workers are runnable", async () => {
-  const blockedWorker = {
-    postMessage: vi.fn(),
-  } as unknown as Worker;
-  const readyWorker = {
-    postMessage: vi.fn(),
-  } as unknown as Worker;
-  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
-  threadWorkerStates.set(blockedWorker, makeThreadState(0x1234));
-  threadWorkerStates.set(readyWorker, makeThreadState(0x5678));
-  const { exports: kernel } = makeKernel();
-  kernel.thread_status = (vmPtr: number) => vmPtr === 0x1234
-    ? kernel.abi_status_sleep()
-    : kernel.abi_status_ok();
-  kernel.thread_sleep_deadline_ticks = () => 1_000_001n;
-  const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
-  handle.workers.add(readyWorker);
-  handle.readyWorkers.push(readyWorker);
-
-  const scheduler = createWorkerScheduler({
-    appendRuntimeLifecycleEvent: () => {},
-    threadWorkerStates,
-    completeProcessExit: async () => {},
-    failProcess: () => {},
-    hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
-    resumeVforkParentAfterChildExit: () => false,
-    resumeWait4ViaKernelWorker: async () => {},
-    handleWorkerMessage: () => {},
-  });
-
-  scheduler.blockWorker(handle, blockedWorker, handle.kernel.abi_status_sleep(), 0x1234);
-  scheduler.kickBlockedWorkers(handle);
-
-  expect(kernel.sync_monotonic_ticks_floor).not.toHaveBeenCalled();
-  expect(kernel.thread_resume_sleep).not.toHaveBeenCalled();
-  expect(handle.blockedWorkers.has(blockedWorker)).toBe(true);
-
-  await vi.advanceTimersByTimeAsync(9);
-  expect(kernel.thread_resume_sleep).not.toHaveBeenCalled();
-
-  await vi.advanceTimersByTimeAsync(1);
-
-  expect(kernel.sync_monotonic_ticks_floor).toHaveBeenCalledWith(1_000_001n);
-  expect(kernel.thread_resume_sleep).toHaveBeenCalledWith(0x1234);
-  expect(handle.blockedWorkers.has(blockedWorker)).toBe(false);
-  expect(handle.readyWorkers).toContain(blockedWorker);
-});
-
 test("epoll timerfd wait advances guest time to deadline before retrying epoll", async () => {
   const blockedWorker = {
     postMessage: vi.fn(),
@@ -3143,7 +3051,7 @@ test("wait4 retry with a local child exit record wakes the running worker before
   expect(handle.blockedWorkers.has(blockedWorker)).toBe(true);
 });
 
-test("wait4 retry blocks a stale running sleeper that already published a blocked status", () => {
+test("wait4 retry clears stale running sleeper without re-owning sleep status", () => {
   const blockedWorker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -3187,7 +3095,7 @@ test("wait4 retry blocks a stale running sleeper that already published a blocke
   scheduler.kickBlockedWorkers(handle);
 
   expect(handle.runningWorker).toBeNull();
-  expect(handle.blockedWorkers.get(runningWorker)?.status).toBe(kernel.abi_status_sleep());
+  expect(handle.blockedWorkers.has(runningWorker)).toBe(false);
   expect(threadResumeWait4).toHaveBeenCalledWith(0x1234);
 });
 
@@ -3584,7 +3492,6 @@ test("pumpProcess runs ordinary OK ready workers under blocked I/O pressure", ()
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -3640,7 +3547,6 @@ test("pumpProcess runs clone-spawn ready workers under blocked I/O pressure", ()
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -3696,7 +3602,6 @@ test("pumpProcess runs ordinary OK ready workers while blocked I/O retry timer w
     retryTimer,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -4085,7 +3990,6 @@ test("pumpProcess runs an OK ready worker after an immediate epoll retry attempt
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -4544,7 +4448,6 @@ test("blocked retry cleanup clears a running worker whose kernel process pointer
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -4599,7 +4502,6 @@ test("epoll retry clears inactive answered pipe running worker", () => {
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -4656,7 +4558,6 @@ test("epoll retry clears answered pipe running worker without active-step export
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -4711,7 +4612,6 @@ test("epoll retry keeps unanswered futex running worker when last trace points e
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -4766,7 +4666,6 @@ test("epoll retry clears stale unanswered ok running worker", () => {
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -4830,7 +4729,6 @@ test("epoll retry keeps unanswered futex running worker with a blocked record", 
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -4882,7 +4780,6 @@ test("epoll retry clears answered ok running worker before skip", () => {
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -4941,7 +4838,6 @@ test("epoll retry clears surplus stale unanswered ok running worker before skip"
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -5000,7 +4896,6 @@ test("epoll retry clears inactive surplus unanswered ok running worker before st
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -5059,7 +4954,6 @@ test("epoll retry clears inactive single unanswered ok running worker before sta
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -5117,7 +5011,6 @@ test("epoll retry keeps active unanswered ok running worker", () => {
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -6027,7 +5920,6 @@ test("pumpProcess leaves a quiescent stack-local futex waiter parked with a bloc
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -6096,7 +5988,6 @@ test("pumpProcess leaves a quiescent worker-local futex waiter parked until its 
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -6210,7 +6101,6 @@ test("kickBlockedWorkers clears answered futex-wait running sibling before pipe 
     retryTimer: null,
     timeoutExpired: false,
     timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
