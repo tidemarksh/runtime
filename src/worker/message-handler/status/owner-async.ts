@@ -10,7 +10,10 @@ import {
   applyThreadGuestMemoryWrites,
   applyThreadKernelMemoryWrites,
 } from "./socket-state.js";
-import { processHasLiveThreads } from "../../live-threads.js";
+import {
+  readSupervisorFaultExitDecision,
+  supervisorFaultExitKindProcessExit,
+} from "../../supervisor-shadow.js";
 
 function completeFaultedProcessFromStaleOwnerAsyncOk(args: {
   handle: ProcessHandle;
@@ -42,23 +45,15 @@ function completeFaultedProcessFromStaleOwnerAsyncOk(args: {
     return false;
   }
 
-  const currentPid = handle.kernel.process_current_pid?.(thread.vmPtr) ?? handle.pid;
-  const faultStateLooksStale = currentPid === 0 || currentPid > 0xffff;
-  const remainingThreads = faultStateLooksStale
-    ? 0
-    : Number(handle.kernel.thread_process_thread_count?.(thread.vmPtr) ?? 1);
-  if (!Number.isFinite(remainingThreads)) {
-    return false;
+  const supervisorExitDecision = readSupervisorFaultExitDecision(handle, thread.vmPtr);
+  if (supervisorExitDecision === undefined) {
+    deps.failProcess(
+      handle,
+      new Error(`supervisor fault exit decision required for vm=0x${thread.vmPtr.toString(16)}`),
+    );
+    return true;
   }
-  let hasOtherLiveThreads = false;
-  if (!faultStateLooksStale && remainingThreads > 1) {
-    try {
-      hasOtherLiveThreads = processHasLiveThreads(handle.kernel, thread.vmPtr, thread.vmPtr);
-    } catch {
-      return false;
-    }
-  }
-  if (remainingThreads > 1 && hasOtherLiveThreads) {
+  if (supervisorExitDecision.kind !== supervisorFaultExitKindProcessExit(handle.kernel)) {
     return false;
   }
 
@@ -68,19 +63,25 @@ function completeFaultedProcessFromStaleOwnerAsyncOk(args: {
   thread.ownerAsyncStatus = null;
   thread.runningGeneration = null;
 
-  const exitCode = Number(handle.kernel.thread_exit_code?.(thread.vmPtr) ?? msg.exitCode);
-  const termSignal = Number(handle.kernel.thread_term_signal?.(thread.vmPtr) ?? msg.termSignal);
+  const exitCode = supervisorExitDecision.exitCode;
+  const termSignal = supervisorExitDecision.termSignal;
+  const exitVmPtr = supervisorExitDecision.exitVmPtr;
+  const remainingThreads = supervisorExitDecision.remainingThreads;
   deps.appendWorkerDebugLog(
     handle,
     `status-owner-async-ok-fault-complete:0x${thread.vmPtr.toString(16)}`
+      + `:exitVm=0x${exitVmPtr.toString(16)}`
+      + `:decision=${supervisorExitDecision.seq.toString()}`
       + `:exit=${exitCode}:${termSignal}:threads=${remainingThreads}`,
   );
   deps.appendRuntimeLifecycleEvent(
     handle.runtimeId,
     `complete-exit-request:owner-async-ok-fault:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
+      + `:exitVm=0x${exitVmPtr.toString(16)}`
+      + `:decision=${supervisorExitDecision.seq.toString()}`
       + `:exit=${exitCode}:${termSignal}:threads=${remainingThreads}`,
   );
-  void deps.completeProcessExit(handle, exitCode, termSignal, thread.vmPtr).catch((error) => {
+  void deps.completeProcessExit(handle, exitCode, termSignal, exitVmPtr).catch((error) => {
     deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
   });
   return true;

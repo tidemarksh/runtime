@@ -1,6 +1,7 @@
 import { expect, test, vi } from "vite-plus/test";
 import { handleOwnerAsyncStatusReturn } from "../../../../src/worker/message-handler/status/owner-async.js";
 import { makeHandle, makeKernel, makeStatusMessage, makeThreadState } from "./helpers.js";
+import { writeSupervisorFaultExitDecisionRecord } from "../support/supervisor-abi.js";
 
 test("owner-async status return clears the running generation and records the status", () => {
   const worker = {} as Worker;
@@ -446,23 +447,41 @@ test("owner-async STATUS_OK from an unanswered step routes to transition", () =>
   expect(handle.workerMessageDebugStats.ownerAsyncStatusReturns).toBe(0);
 });
 
-test("owner-async STATUS_OK return completes a local faulted process before preserving stale OK", () => {
+test("owner-async STATUS_OK return completes a supervisor-selected faulted process before preserving stale OK", () => {
   const worker = {} as Worker;
   const appendWorkerDebugLog = vi.fn();
   const lifecycle: string[] = [];
   const completeProcessExit = vi.fn(async () => {});
   const failProcess = vi.fn();
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
   const handle = makeHandle({
     runningWorker: worker,
     kernel: makeKernel({
+      memory,
       abi_status_ok: () => 0,
       abi_status_fault: () => 3,
       abi_status_fs: () => 6,
-      process_current_pid: () => 7,
-      thread_exit_code: () => 13,
-      thread_process_thread_count: () => 1,
+      kernel_heap_ptr: () => 0,
       thread_status: () => 3,
-      thread_term_signal: () => 0,
+      supervisor_abi_version: () => 1,
+      supervisor_fault_exit_decision_bytes: () => 88,
+      supervisor_fault_exit_kind_thread_exit: () => 1,
+      supervisor_fault_exit_kind_process_exit: () => 2,
+      supervisor_fault_exit_decision: vi.fn((vmPtr: number, outPtr: number, outLen: number) => {
+        expect(vmPtr).toBe(0x1234);
+        expect(outLen).toBe(88);
+        writeSupervisorFaultExitDecisionRecord(memory, outPtr, {
+          vmPtr,
+          exitVmPtr: 0x1234,
+          processPtr: 0x5000,
+          remainingThreads: 1,
+          liveThreads: 0,
+          exitCode: 13,
+          termSignal: 0,
+          status: 3,
+        });
+        return 88;
+      }),
     }),
   });
   const thread = makeThreadState({
@@ -501,9 +520,11 @@ test("owner-async STATUS_OK return completes a local faulted process before pres
   expect(failProcess).not.toHaveBeenCalled();
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
     handle,
-    "status-owner-async-ok-fault-complete:0x1234:exit=13:0:threads=1",
+    "status-owner-async-ok-fault-complete:0x1234:exitVm=0x1234:decision=1:exit=13:0:threads=1",
   );
-  expect(lifecycle).toContain("complete-exit-request:owner-async-ok-fault:7:vm=0x1234:exit=13:0:threads=1");
+  expect(lifecycle).toContain(
+    "complete-exit-request:owner-async-ok-fault:7:vm=0x1234:exitVm=0x1234:decision=1:exit=13:0:threads=1",
+  );
   expect(handle.workerMessageDebugStats.ownerAsyncStatusReturns).toBe(0);
 });
 
