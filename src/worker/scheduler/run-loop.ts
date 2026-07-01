@@ -222,9 +222,6 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     ) {
       handle.runningWorker = null;
       runningThread.runningGeneration = null;
-      if (!handle.readyWorkers.includes(runningWorker)) {
-        handle.readyWorkers.push(runningWorker);
-      }
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `running-worker-cleared:${handle.pid}:answered-ok:0x${runningThread.vmPtr.toString(16)}`,
@@ -242,9 +239,6 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     ) {
       handle.runningWorker = null;
       runningThread.runningGeneration = null;
-      if (!handle.readyWorkers.includes(runningWorker)) {
-        handle.readyWorkers.push(runningWorker);
-      }
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `running-worker-cleared:${handle.pid}:${okUnansweredSteps > 1 ? "inactive-surplus" : "inactive"}-unanswered-ok:0x${runningThread.vmPtr.toString(16)}:unanswered=${okUnansweredSteps}`,
@@ -263,9 +257,6 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     ) {
       handle.runningWorker = null;
       runningThread.runningGeneration = null;
-      if (!handle.readyWorkers.includes(runningWorker)) {
-        handle.readyWorkers.push(runningWorker);
-      }
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `running-worker-cleared:${handle.pid}:${okUnansweredSteps > 1 ? "surplus-" : ""}stale-unanswered-ok:0x${runningThread.vmPtr.toString(16)}:unanswered=${okUnansweredSteps}`,
@@ -283,12 +274,6 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     ) {
       handle.runningWorker = null;
       runningThread.runningGeneration = null;
-      if (
-        ownerBlockingUnansweredSteps === 1
-        && !handle.readyWorkers.includes(runningWorker)
-      ) {
-        handle.readyWorkers.push(runningWorker);
-      }
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `running-worker-cleared:${handle.pid}:answered-blocking-status=${runningThread.lastStatus}:0x${runningThread.vmPtr.toString(16)}`,

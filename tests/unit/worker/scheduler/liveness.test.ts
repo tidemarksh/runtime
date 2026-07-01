@@ -201,7 +201,14 @@ function selectTestSupervisorRunnableThread(
   handle: ProcessHandle,
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>,
 ): ThreadWorkerState | undefined {
-  for (const candidate of handle.readyWorkers) {
+  const candidates = [
+    ...handle.readyWorkers,
+    ...[...handle.workers].filter((worker) => !handle.readyWorkers.includes(worker)),
+  ];
+  for (const candidate of candidates) {
+    if (candidate === handle.runningWorker) {
+      continue;
+    }
     const thread = threadWorkerStates.get(candidate);
     if (thread === undefined) {
       continue;
@@ -209,11 +216,15 @@ function selectTestSupervisorRunnableThread(
     if ((thread.ownerAsyncStatus ?? null) !== null || thread.waitingInWorkerStatus !== null) {
       continue;
     }
+    const status = handle.kernel.thread_status(thread.vmPtr);
     if (
-      handle.kernel.thread_status(thread.vmPtr) === handle.kernel.abi_status_futex_wait()
+      status === handle.kernel.abi_status_futex_wait()
       || threadHasTestSupervisorFutexBlock(handle.kernel, thread.vmPtr)
     ) {
       thread.waitingInWorkerStatus = handle.kernel.abi_status_futex_wait();
+      continue;
+    }
+    if (status !== handle.kernel.abi_status_ok()) {
       continue;
     }
     if (handle.kernel.thread_process_ptr(thread.vmPtr) === 0) {
@@ -259,6 +270,20 @@ function installTestSupervisorProcessResume(
     seq += 1n;
     return SUPERVISOR_RESUME_RECORD_BYTES;
   });
+}
+
+function expectTestSupervisorProcessResumeSelects(
+  handle: ProcessHandle,
+  expectedVmPtr: number,
+): void {
+  const recordBytes = handle.kernel.supervisor_resume_record_bytes?.() ?? 0;
+  expect(recordBytes).toBe(SUPERVISOR_RESUME_RECORD_BYTES);
+  const scratch = handle.kernel.kernel_scratch_base?.() ?? 0;
+  const result = handle.kernel.supervisor_process_resume?.(handle.vmPtr, scratch, recordBytes);
+  expect(result).toBe(SUPERVISOR_RESUME_RECORD_BYTES);
+  const view = new DataView(handle.memory.buffer);
+  expect(view.getUint32(scratch + 12, true)).toBe(SUPERVISOR_RESUME_KIND_RUNNABLE_THREAD);
+  expect(view.getUint32(scratch + 24, true)).toBe(expectedVmPtr);
 }
 
 function makeHandle(
@@ -3930,7 +3955,7 @@ test("pumpProcess preserves surplus unanswered running work before recovering id
   expect(idleWorker.postMessage).not.toHaveBeenCalled();
 });
 
-test("blocked retry stale OK clear returns the running worker to ready ownership", () => {
+test("blocked retry stale OK clear releases the running worker to supervisor resume", () => {
   const runningWorker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -3960,7 +3985,7 @@ test("blocked retry stale OK clear returns the running worker to ready ownership
   expect(scheduler.clearStaleRunningWorker(handle, blockedWorker)).toBe(true);
   expect(handle.runningWorker).toBeNull();
   expect(runningThread.runningGeneration).toBeNull();
-  expect(handle.readyWorkers).toEqual([runningWorker]);
+  expectTestSupervisorProcessResumeSelects(handle, runningThread.vmPtr);
 });
 
 test("pumpProcess runs an OK ready worker after an immediate epoll retry attempt", () => {
@@ -4685,7 +4710,7 @@ test("epoll retry clears stale unanswered ok running worker", () => {
 
   expect(handle.runningWorker).toBeNull();
   expect(runningThread.runningGeneration).toBeNull();
-  expect(handle.readyWorkers).toContain(runningWorker);
+  expectTestSupervisorProcessResumeSelects(handle, runningThread.vmPtr);
   expect(appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
     1,
     "running-worker-cleared:1:inactive-unanswered-ok:0x7127a90:unanswered=1",
@@ -4799,7 +4824,7 @@ test("epoll retry clears answered ok running worker before skip", () => {
 
   expect(handle.runningWorker).toBeNull();
   expect(runningThread.runningGeneration).toBeNull();
-  expect(handle.readyWorkers).toContain(runningWorker);
+  expectTestSupervisorProcessResumeSelects(handle, runningThread.vmPtr);
   expect(appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
     1,
     "running-worker-cleared:1:answered-ok:0x70c6578",
@@ -4857,7 +4882,7 @@ test("epoll retry clears surplus stale unanswered ok running worker before skip"
 
   expect(handle.runningWorker).toBeNull();
   expect(runningThread.runningGeneration).toBeNull();
-  expect(handle.readyWorkers).toContain(runningWorker);
+  expectTestSupervisorProcessResumeSelects(handle, runningThread.vmPtr);
   expect(appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
     1,
     "running-worker-cleared:1:surplus-stale-unanswered-ok:0x585f220:unanswered=2",
@@ -4915,7 +4940,7 @@ test("epoll retry clears inactive surplus unanswered ok running worker before st
 
   expect(handle.runningWorker).toBeNull();
   expect(runningThread.runningGeneration).toBeNull();
-  expect(handle.readyWorkers).toContain(runningWorker);
+  expectTestSupervisorProcessResumeSelects(handle, runningThread.vmPtr);
   expect(appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
     1,
     "running-worker-cleared:1:inactive-surplus-unanswered-ok:0x5860320:unanswered=2",
@@ -4973,7 +4998,7 @@ test("epoll retry clears inactive single unanswered ok running worker before sta
 
   expect(handle.runningWorker).toBeNull();
   expect(runningThread.runningGeneration).toBeNull();
-  expect(handle.readyWorkers).toContain(runningWorker);
+  expectTestSupervisorProcessResumeSelects(handle, runningThread.vmPtr);
   expect(appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
     1,
     "running-worker-cleared:1:inactive-unanswered-ok:0x5860320:unanswered=1",
