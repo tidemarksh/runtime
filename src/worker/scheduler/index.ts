@@ -974,6 +974,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       retryTimer: null,
       timeoutExpired: false,
       timeoutDeadlineMs: null,
+      supervisorTimerArmed: sameBlockedThread ? previousBlocked.supervisorTimerArmed : false,
       epollTimerfdDeadlineTicks: sameBlockedThread ? previousBlocked.epollTimerfdDeadlineTicks : null,
       rpcPending: sameBlockedThread ? previousBlocked.rpcPending : false,
       rpcGeneration: sameBlockedThread ? previousBlocked.rpcGeneration : 0,
@@ -986,6 +987,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     };
     handle.blockedWorkers.set(worker, blocked);
     const supervisorTimerArmed = armBlockedSupervisorTimer(handle, vmPtr);
+    blocked.supervisorTimerArmed = blocked.supervisorTimerArmed === true || supervisorTimerArmed;
     if (sameBlockedThread && blocked.rpcPending) {
       return;
     }
