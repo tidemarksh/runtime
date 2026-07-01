@@ -841,36 +841,6 @@ export function createWorkerSchedulerQueueHelpers(
     return Date.now() - lastStepAtMs >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
   }
 
-  function clearStaleOwnerAsyncStatus(
-    handle: ProcessHandle,
-    thread: ThreadWorkerState,
-  ): boolean {
-    if ((thread.ownerAsyncStatus ?? null) === null) {
-      return false;
-    }
-    if (!thread.initialized || thread.waitingInWorkerStatus !== null) {
-      return false;
-    }
-    if (thread.stepCount > thread.statusCount || thread.lastStatusAtMs === null) {
-      return false;
-    }
-    if (Date.now() - thread.lastStatusAtMs < STALE_SLEEP_RUNNING_WORKER_REPAIR_MS) {
-      return false;
-    }
-    if (handle.kernel.thread_process_ptr(thread.vmPtr) === 0) {
-      return false;
-    }
-    if (handle.kernel.thread_status(thread.vmPtr) !== handle.kernel.abi_status_ok()) {
-      return false;
-    }
-    deps.appendWorkerDebugLog(
-      handle,
-      `owner-async-cleared:stale-ok:0x${thread.vmPtr.toString(16)}:async=${thread.ownerAsyncStatus}`,
-    );
-    thread.ownerAsyncStatus = null;
-    return true;
-  }
-
   function sanitizeRunningWorker(handle: ProcessHandle): Worker | null {
     const runningWorker = handle.runningWorker;
     if (runningWorker === null) {
@@ -1270,45 +1240,6 @@ export function createWorkerSchedulerQueueHelpers(
     pumpProcess(handle);
   }
 
-  function recoverRunnableIdleWorkers(handle: ProcessHandle): void {
-    const exclusiveWorker = handle.vforkSnapshot !== null ? handle.vforkWorker : null;
-    for (const worker of handle.workers) {
-      if (handle.runningWorker === worker || handle.readyWorkers.includes(worker) || handle.blockedWorkers.has(worker)) {
-        continue;
-      }
-      if (exclusiveWorker !== null && worker !== exclusiveWorker) {
-        continue;
-      }
-      const thread = deps.threadWorkerStates.get(worker);
-      if (thread && clearStaleOwnerAsyncStatus(handle, thread)) {
-        continue;
-      }
-      if (
-        !thread?.initialized
-        || thread.waitingInWorkerStatus !== null
-        || thread.ownerAsyncStatus !== null
-        || handle.kernel.thread_process_ptr(thread.vmPtr) === 0
-      ) {
-        continue;
-      }
-      const currentStatus = handle.kernel.thread_status(thread.vmPtr);
-      if (statusBlocksInOwnerScheduler(handle, currentStatus)) {
-        deps.blockWorker(handle, worker, currentStatus, thread.vmPtr);
-        deps.appendWorkerDebugLog(
-          handle,
-          `idle-worker-blocked:status-${currentStatus}:0x${thread.vmPtr.toString(16)}`,
-        );
-        continue;
-      }
-      if (thread.stepCount > thread.statusCount) {
-        continue;
-      }
-      if (currentStatus !== handle.kernel.abi_status_ok()) {
-        continue;
-      }
-    }
-  }
-
   function completeFaultedProcessWithoutWorkers(handle: ProcessHandle): boolean {
     if (
       handle.workers.size !== 0
@@ -1381,7 +1312,6 @@ export function createWorkerSchedulerQueueHelpers(
       return;
     }
     drainSupervisorResumeQueue(handle);
-    recoverRunnableIdleWorkers(handle);
     if (completeFaultedProcessWithoutWorkers(handle)) {
       return;
     }

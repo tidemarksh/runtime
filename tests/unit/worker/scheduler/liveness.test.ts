@@ -1055,44 +1055,6 @@ test("pumpProcess reconciles a running FS status through the owner scheduler", a
   }));
 });
 
-test("pumpProcess recovers a stale OK owner-async worker", () => {
-  vi.setSystemTime(new Date(10_000));
-  const worker = {
-    postMessage: vi.fn(),
-  } as unknown as Worker;
-  const thread = makeThreadState(0x1234);
-  thread.ownerAsyncStatus = 6;
-  thread.stepCount = 8;
-  thread.statusCount = 8;
-  thread.lastStatusAtMs = 7_000;
-  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
-  threadWorkerStates.set(worker, thread);
-  const { exports: kernel } = makeKernel();
-  kernel.thread_status = () => kernel.abi_status_ok();
-  const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
-
-  const scheduler = createWorkerScheduler({
-    appendRuntimeLifecycleEvent: () => {},
-    threadWorkerStates,
-    completeProcessExit: async () => {},
-    failProcess: () => {},
-    hasActiveChildProcess: () => false,
-    resumeFsViaKernelWorker: async () => {},
-    resumeVforkParentAfterChildExit: () => false,
-    resumeWait4ViaKernelWorker: async () => ({ kind: "completed" }),
-    handleWorkerMessage: () => {},
-  });
-
-  scheduler.pumpProcess(handle);
-
-  expect(thread.ownerAsyncStatus).toBeNull();
-  expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
-    type: "step",
-    budget: expect.any(Number),
-  }));
-});
-
 test("pumpProcess keeps a fresh owner-async worker parked", () => {
   vi.setSystemTime(new Date(10_000));
   const worker = {
@@ -3386,35 +3348,6 @@ test("pumpProcess clears a running sleeper without re-owning sleep status before
     budget: expect.any(Number),
   }));
   expect(runningWorker.postMessage).not.toHaveBeenCalled();
-});
-
-test("pumpProcess blocks an idle worker that reached canonical pipe wait", () => {
-  const worker = {
-    postMessage: vi.fn(),
-  } as unknown as Worker;
-  const thread = makeThreadState(0x1234);
-  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
-  threadWorkerStates.set(worker, thread);
-  const { exports: kernel } = makeKernel();
-  kernel.thread_status = () => kernel.abi_status_pipe_wait();
-  const handle = makeHandle(kernel, worker, threadWorkerStates);
-
-  const scheduler = createWorkerScheduler({
-    appendRuntimeLifecycleEvent: () => {},
-    threadWorkerStates,
-    completeProcessExit: async () => {},
-    failProcess: () => {},
-    hasActiveChildProcess: () => false,
-    resumeVforkParentAfterChildExit: () => false,
-    resumeWait4ViaKernelWorker: async () => {},
-    handleWorkerMessage: () => {},
-  });
-
-  scheduler.pumpProcess(handle);
-
-  expect(handle.blockedWorkers.get(worker)?.status).toBe(kernel.abi_status_pipe_wait());
-  expect(handle.runningWorker).toBeNull();
-  expect(worker.postMessage).not.toHaveBeenCalled();
 });
 
 test("pumpProcess clears a stale sleep-resumed running worker before dispatching a ready sibling", () => {
