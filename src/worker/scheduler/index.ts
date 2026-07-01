@@ -238,6 +238,32 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     handle.blockedWorkers.delete(worker);
   }
 
+  function parkSupervisorOwnedFutexWait(
+    handle: ProcessHandle,
+    worker: Worker,
+    vmPtr: number,
+    source: string,
+  ): void {
+    clearBlockedWorker(handle, worker);
+    const readyIndex = handle.readyWorkers.indexOf(worker);
+    if (readyIndex >= 0) {
+      handle.readyWorkers.splice(readyIndex, 1);
+    }
+    if (handle.runningWorker === worker) {
+      handle.runningWorker = null;
+    }
+    const thread = threadWorkerStates.get(worker);
+    if (thread !== undefined && thread.vmPtr === vmPtr) {
+      thread.waitingInWorkerStatus = handle.kernel.abi_status_futex_wait();
+      thread.waitingInWorkerReconcileDeferred = false;
+      thread.runningGeneration = null;
+    }
+    appendWorkerDebugLog(
+      handle,
+      `${source}:0x${vmPtr.toString(16)}`,
+    );
+  }
+
   function epollTimerfdDeadlineTicks(handle: ProcessHandle, vmPtr: number): bigint | null {
     const rawDeadline = handle.kernel.thread_epoll_timerfd_deadline_ticks?.(vmPtr);
     if (rawDeadline === undefined) {
@@ -943,24 +969,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
 
   function blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void {
     if (status === handle.kernel.abi_status_futex_wait()) {
-      clearBlockedWorker(handle, worker);
-      const readyIndex = handle.readyWorkers.indexOf(worker);
-      if (readyIndex >= 0) {
-        handle.readyWorkers.splice(readyIndex, 1);
-      }
-      if (handle.runningWorker === worker) {
-        handle.runningWorker = null;
-      }
-      const thread = threadWorkerStates.get(worker);
-      if (thread !== undefined && thread.vmPtr === vmPtr) {
-        thread.waitingInWorkerStatus = status;
-        thread.waitingInWorkerReconcileDeferred = false;
-        thread.runningGeneration = null;
-      }
-      appendWorkerDebugLog(
-        handle,
-        `block-worker-futex-supervisor-owned:0x${vmPtr.toString(16)}`,
-      );
+      parkSupervisorOwnedFutexWait(handle, worker, vmPtr, "block-worker-futex-supervisor-owned");
       return;
     }
     const previousBlocked = handle.blockedWorkers.get(worker);
@@ -1196,6 +1205,11 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       } else {
         pumpProcess(handle);
       }
+      return;
+    }
+
+    if (status === handle.kernel.abi_status_futex_wait()) {
+      parkSupervisorOwnedFutexWait(handle, worker, vmPtr, "blocked-retry-futex-supervisor-owned");
       return;
     }
 
