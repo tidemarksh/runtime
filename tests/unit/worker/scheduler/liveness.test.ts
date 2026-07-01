@@ -616,7 +616,6 @@ test("scheduler uses the Node step budget when Node process globals are present"
       throw error;
     },
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -664,7 +663,6 @@ test("scheduler caps step budget while owner retry waiters are blocked", () => {
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -722,7 +720,6 @@ test("scheduler uses pending worker kernel state for one active vfork child step
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -761,7 +758,6 @@ test("blocked FS retry pumps after clearing owner async status", async () => {
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeFsViaKernelWorker: async () => {},
     resumeFsViaKernelWorkerOutcome,
     resumeVforkParentAfterChildExit: () => false,
@@ -811,7 +807,6 @@ test("blocked FS retry defers owner-async enqueue until async clears", async () 
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeFsViaKernelWorker: async () => {},
     resumeFsViaKernelWorkerOutcome,
     resumeVforkParentAfterChildExit: () => false,
@@ -858,7 +853,6 @@ test("pumpProcess reconciles a running FS status through the owner scheduler", a
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeFsViaKernelWorker: async () => {},
     resumeFsViaKernelWorkerOutcome,
     resumeVforkParentAfterChildExit: () => false,
@@ -906,7 +900,6 @@ test("pumpProcess recovers a stale OK owner-async worker", () => {
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeFsViaKernelWorker: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => ({ kind: "completed" }),
@@ -945,7 +938,6 @@ test("pumpProcess keeps a fresh owner-async worker parked", () => {
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeFsViaKernelWorker: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => ({ kind: "completed" }),
@@ -985,7 +977,6 @@ test("wait4 retry stays blocked while child spawn is still in flight", async () 
       throw error;
     },
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -1029,7 +1020,6 @@ test("wait4 retry stays blocked while a child remains active even with kernel-wo
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => true,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker,
     handleWorkerMessage: () => {},
@@ -1096,7 +1086,6 @@ test("epoll retry wakes a running worker instead of resuming under it", async ()
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => ({ kind: "completed" }),
     handleWorkerMessage: () => {},
@@ -1158,7 +1147,6 @@ test("epoll kernel-worker retry treats timeout zero as expired", async () => {
       throw error;
     },
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => ({ kind: "completed" }),
     handleWorkerMessage: () => {},
@@ -1236,7 +1224,6 @@ test("epoll kernel-worker retry delegates timeout completion to blocked syscall 
       throw error;
     },
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeBlockedSyscallOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => ({ kind: "completed" }),
@@ -1331,7 +1318,6 @@ test("epoll sync timeout zero survives a running-worker retry skip", async () =>
       throw error;
     },
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => ({ kind: "completed" }),
     handleWorkerMessage: () => {},
@@ -1402,7 +1388,6 @@ test("epoll retry defers while clone child init is expected to release parent", 
       throw error;
     },
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -1447,7 +1432,6 @@ test("pipe retry pumps active child processes before remaining blocked", async (
   kernel.thread_a0 = () => 4n;
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   const pumpActiveChildProcesses = vi.fn(() => true);
-  const resumeBlockedSyscallLocally = vi.fn(async () => {});
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
@@ -1456,7 +1440,6 @@ test("pipe retry pumps active child processes before remaining blocked", async (
     failProcess: () => {},
     hasActiveChildProcess: () => true,
     pumpActiveChildProcesses,
-    resumeBlockedSyscallLocally,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -1498,7 +1481,6 @@ test("finite pipe poll with active children waits until timeout while child runs
     failProcess: () => {},
     hasActiveChildProcess: () => true,
     pumpActiveChildProcesses,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -1540,7 +1522,6 @@ test("pipe pselect retry applies child exit records before passive parking", asy
     throw new Error("scheduler retry should delegate blocked resume through outcome helper");
   });
   const lifecycleEvents: string[] = [];
-  const resumeBlockedSyscallLocally = vi.fn(async () => {});
   const resumeBlockedSyscallOutcome = vi.fn(async () => ({
     kind: "blocked" as const,
     status: kernel.abi_status_pipe_wait(),
@@ -1554,7 +1535,6 @@ test("pipe pselect retry applies child exit records before passive parking", asy
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => true,
-    resumeBlockedSyscallLocally,
     resumeBlockedSyscallOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
@@ -1576,7 +1556,6 @@ test("pipe pselect retry applies child exit records before passive parking", asy
     handle.kernel.abi_status_pipe_wait(),
     false,
   );
-  expect(resumeBlockedSyscallLocally).not.toHaveBeenCalled();
   expect(handle.blockedWorkers.get(worker)?.pipeChildExitResumeKey).toContain("7/0:sys=72");
 });
 
@@ -1607,7 +1586,6 @@ test("pipe pselect retry resumes after pipe sync when no writer remains", async 
   handle.kernelWorkerRequest = vi.fn(async () => {
     throw new Error("scheduler retry should delegate blocked resume through outcome helper");
   });
-  const resumeBlockedSyscallLocally = vi.fn(async () => {});
   const resumeBlockedSyscallOutcome = vi.fn(async () => ({
     kind: "blocked" as const,
     status: kernel.abi_status_pipe_wait(),
@@ -1622,7 +1600,6 @@ test("pipe pselect retry resumes after pipe sync when no writer remains", async 
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally,
     resumeBlockedSyscallOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
@@ -1644,7 +1621,6 @@ test("pipe pselect retry resumes after pipe sync when no writer remains", async 
     handle.kernel.abi_status_pipe_wait(),
     false,
   );
-  expect(resumeBlockedSyscallLocally).not.toHaveBeenCalled();
 });
 
 test("kernel-worker blocked syscall retry requires outcome helper", () => {
@@ -1662,7 +1638,6 @@ test("kernel-worker blocked syscall retry requires outcome helper", () => {
   handle.kernelWorkerRequest = vi.fn(async () => {
     throw new Error("direct kernel-worker request should not be issued by scheduler retry");
   });
-  const resumeBlockedSyscallLocally = vi.fn(async () => {});
   const failProcess = vi.fn();
 
   const scheduler = createWorkerScheduler({
@@ -1671,7 +1646,6 @@ test("kernel-worker blocked syscall retry requires outcome helper", () => {
     completeProcessExit: async () => {},
     failProcess,
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -1691,7 +1665,6 @@ test("kernel-worker blocked syscall retry requires outcome helper", () => {
   expect((failProcess.mock.calls[0]?.[1] as Error).message).toBe(
     "kernel-worker blocked syscall resume requires resumeBlockedSyscallOutcome",
   );
-  expect(resumeBlockedSyscallLocally).not.toHaveBeenCalled();
   expect(handle.blockedWorkers.get(worker)?.rpcPending).toBe(false);
   expect(handle.blockedWorkers.get(worker)?.rpcGeneration).toBe(0);
 });
@@ -1724,7 +1697,6 @@ test("does not passively park synced pipe EOF", () => {
       throw error;
     },
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -1759,7 +1731,6 @@ test("reblocking the same pipe wait preserves in-flight blocked rpc ownership", 
   handle.kernelWorkerRequest = vi.fn(async () => {
     throw new Error("same-status reblock must not start a duplicate retry");
   });
-  const resumeBlockedSyscallLocally = vi.fn(async () => {});
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
@@ -1769,7 +1740,6 @@ test("reblocking the same pipe wait preserves in-flight blocked rpc ownership", 
       throw error;
     },
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -1788,7 +1758,6 @@ test("reblocking the same pipe wait preserves in-flight blocked rpc ownership", 
   expect(reblocked?.rpcPending).toBe(true);
   expect(reblocked?.rpcGeneration).toBe(7);
   expect(reblocked?.pipeSyncedBeforePassive).toBe(true);
-  expect(resumeBlockedSyscallLocally).not.toHaveBeenCalled();
 });
 
 test("socket poll is resumed immediately after network pump changes state", async () => {
@@ -1822,7 +1791,6 @@ test("socket poll is resumed immediately after network pump changes state", asyn
     failProcess,
     hasActiveChildProcess: () => false,
     pumpNetworkConnections,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -1884,7 +1852,6 @@ test("socket poll pump resumes through kernel-worker RPC when available", async 
     failProcess,
     hasActiveChildProcess: () => false,
     pumpNetworkConnections,
-    resumeBlockedSyscallLocally: async () => {},
     resumeBlockedSyscallOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => ({ kind: "completed" }),
@@ -1936,7 +1903,6 @@ test("finite pipe poll timeout delegates to kernel-worker blocked syscall outcom
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   handle.pendingChildSpawnRecords = 0;
   handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unexpected" }) as never);
-  const resumeBlockedSyscallLocally = vi.fn(async () => {});
   const resumeBlockedSyscallOutcome = vi.fn(async () => {
     status = kernel.abi_status_ok();
     return { kind: "completed" as const, status };
@@ -1948,7 +1914,6 @@ test("finite pipe poll timeout delegates to kernel-worker blocked syscall outcom
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally,
     resumeBlockedSyscallOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
@@ -1972,7 +1937,6 @@ test("finite pipe poll timeout delegates to kernel-worker blocked syscall outcom
     true,
   );
   expect(resumePollTimeout).not.toHaveBeenCalled();
-  expect(resumeBlockedSyscallLocally).not.toHaveBeenCalled();
   expect(handle.blockedWorkers.has(worker)).toBe(false);
   expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
     type: "step",
@@ -2030,7 +1994,6 @@ test("finite pipe poll timeout uses saved blocked syscall when current a7 moved 
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2117,9 +2080,6 @@ test("expired finite pipe poll syncs pipe state before local timeout resume", as
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {
-      throw new Error("kernel-worker blocked syscall RPC should not run for finite pipe poll timeout");
-    },
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2191,9 +2151,6 @@ test("expired finite pipe poll with active child resumes locally without pipe sy
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => true,
-    resumeBlockedSyscallLocally: async () => {
-      throw new Error("kernel-worker blocked syscall RPC should not run for finite pipe poll timeout");
-    },
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2248,7 +2205,6 @@ test("wait4 retry resumes after a fork-shared sync gate settles", async () => {
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => activeChild,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2312,7 +2268,6 @@ test("wait4 retry clears a stale fork-shared sync source before retrying", async
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2366,7 +2321,6 @@ test("wait4 retry clears an empty-target fork-shared sync gate before retrying",
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2407,7 +2361,6 @@ test("idle ok worker resumes after a fork-shared sync gate settles", async () =>
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2459,7 +2412,6 @@ test("wait4 retry consumes a local child exit record while fork-shared sync is p
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => true,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2502,7 +2454,6 @@ test("wait4 retry reapplies a pending local child exit record until it is reaped
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2541,7 +2492,6 @@ test("wait4 retry reconciles stale blocked state before issuing a kernel-worker 
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker,
     handleWorkerMessage: () => {},
@@ -2590,7 +2540,6 @@ test("epoll timerfd wait advances guest time to deadline before retrying epoll",
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2686,7 +2635,6 @@ test("epoll kernel-worker retry re-queries timerfd deadline after state sync", a
     completeProcessExit: async () => {},
     failProcess,
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2811,7 +2759,6 @@ test("epoll kernel-worker retry syncs watched timerfd OFD after the timer fd is 
     completeProcessExit: async () => {},
     failProcess,
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2952,7 +2899,6 @@ test("epoll kernel-worker retry syncs watched pipe, epoll table, then dependent 
       throw error;
     },
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3034,7 +2980,6 @@ test("epoll kernel-worker retry clears a sibling sleeper without re-owning sleep
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3084,7 +3029,6 @@ test("wait4 retry with a local child exit record wakes the running worker before
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3132,7 +3076,6 @@ test("wait4 retry clears stale running sleeper without re-owning sleep status", 
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3172,7 +3115,6 @@ test("pumpProcess clears a running sleeper without re-owning sleep status before
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3206,7 +3148,6 @@ test("pumpProcess blocks an idle worker that reached canonical pipe wait", () =>
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3250,7 +3191,6 @@ test("pumpProcess clears a stale sleep-resumed running worker before dispatching
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3298,7 +3238,6 @@ test("pumpProcess clears a stale ok running worker after FS before dispatching a
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3348,7 +3287,6 @@ test("pumpProcess clears an answered stale ok running worker without active-step
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3397,7 +3335,6 @@ test("pumpProcess preserves an unanswered ok running worker that has not returne
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3444,7 +3381,6 @@ test("pumpProcess keeps an unanswered running worker after an active step clears
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3491,7 +3427,6 @@ test("pumpProcess preserves a dispatched worker when a sibling remains queued", 
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3552,7 +3487,6 @@ test("pumpProcess runs ordinary OK ready workers under blocked I/O pressure", ()
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3607,7 +3541,6 @@ test("pumpProcess runs clone-spawn ready workers under blocked I/O pressure", ()
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3664,7 +3597,6 @@ test("pumpProcess runs ordinary OK ready workers while blocked I/O retry timer w
       throw error;
     },
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3701,7 +3633,6 @@ test("pumpProcess runs yield-ready workers when no other ready worker exists", (
       throw error;
     },
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3736,7 +3667,6 @@ test("pumpProcess wakes a no-ready running worker to request cooperative yield",
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3783,7 +3713,6 @@ test("pumpProcess redispatches an answered stale ok running worker without ready
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3825,7 +3754,6 @@ test("pumpProcess preserves a stale unanswered ok running worker without active-
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3865,7 +3793,6 @@ test("pumpProcess preserves a stale unanswered ok running worker when last trace
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3909,7 +3836,6 @@ test("pumpProcess preserves a stale unanswered no-ready running worker with pend
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3959,7 +3885,6 @@ test("pumpProcess preserves surplus unanswered running work before recovering id
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -4050,7 +3975,6 @@ test("pumpProcess runs an OK ready worker after an immediate epoll retry attempt
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -4100,7 +4024,6 @@ test("pumpProcess preserves an unanswered running worker when the step shares a 
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -4147,7 +4070,6 @@ test("pumpProcess preserves an unanswered ok running worker when status covers t
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -4194,7 +4116,6 @@ test("pumpProcess preserves an unanswered ok running worker when the step is sta
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -4241,7 +4162,6 @@ test("pumpProcess clears a stale answered ok running worker without active-step 
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -4292,7 +4212,6 @@ test("pumpProcess clears a running worker whose kernel process pointer disappear
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -4352,7 +4271,6 @@ test("pumpProcess clears a stale fork-shared sync source before stale running cl
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -4405,7 +4323,6 @@ test("pumpProcess clears a faulted running worker before dispatching a ready sib
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -4454,7 +4371,6 @@ test("pumpProcess completes exit when all canonical threads fault after workers 
     completeProcessExit,
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -5104,7 +5020,6 @@ test("pumpProcess waits for socket status publication before dispatching a ready
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -5148,7 +5063,6 @@ test("pruning a stale running worker clears the running slot", () => {
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -5194,7 +5108,6 @@ test("pruning preserves a worker whose thread state still belongs to the process
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -5238,7 +5151,6 @@ test("pruning preserves a detached worker in vfork wait", () => {
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -5280,7 +5192,6 @@ test("pruning preserves a detached worker during execve spawn handoff", () => {
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -5321,7 +5232,6 @@ test("pruning is deferred while child spawn records are still pending", () => {
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -5353,7 +5263,6 @@ test("enqueue clears a dangling running worker before stepping the next ready wo
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -5404,7 +5313,6 @@ test("step publishes the full process fd table to the selected worker", () => {
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -5452,7 +5360,6 @@ test("pumpProcess runs supervisor-selected ready worker while preserving a still
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -5495,7 +5402,6 @@ test("pumpProcess skips a ready worker that is still in canonical futex wait", (
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -5541,7 +5447,6 @@ test("pumpProcess skips a ready worker whose thread record is still futex-blocke
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -5610,7 +5515,6 @@ test("pumpProcess drains only supervisor-selected futex resumes when supervisor 
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -5896,7 +5800,6 @@ test("pumpProcess clears a running worker that reached worker-local futex wait",
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -5980,7 +5883,6 @@ test("pumpProcess leaves a quiescent stack-local futex waiter parked with a bloc
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -6048,7 +5950,6 @@ test("pumpProcess leaves a quiescent worker-local futex waiter parked until its 
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -6094,7 +5995,6 @@ test("blockWorker parks futex wait as supervisor-owned worker state", () => {
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -6146,7 +6046,6 @@ test("blocked retry parks futex retry result as supervisor-owned worker state", 
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -6215,7 +6114,6 @@ test("blocked retry result arms supervisor timer instead of scheduling runtime r
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -6291,7 +6189,6 @@ test("blocked wait retry arms supervisor timer before runtime poll retry", () =>
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -6335,7 +6232,6 @@ test("blockWorker schedules initial kernel-worker pipe retry before passive park
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -6401,7 +6297,6 @@ test("kickBlockedWorkers clears answered futex-wait running sibling before pipe 
     pipeSyncedBeforePassive: true,
     pipeEofChildExitDeferrals: 0,
   });
-  const resumeBlockedSyscallLocally = vi.fn(async () => {});
   const resumeBlockedSyscallOutcome = vi.fn(async () => ({
     kind: "blocked" as const,
     status: kernel.abi_status_pipe_wait(),
@@ -6416,7 +6311,6 @@ test("kickBlockedWorkers clears answered futex-wait running sibling before pipe 
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally,
     resumeBlockedSyscallOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
@@ -6435,7 +6329,6 @@ test("kickBlockedWorkers clears answered futex-wait running sibling before pipe 
     kernel.abi_status_pipe_wait(),
     false,
   );
-  expect(resumeBlockedSyscallLocally).not.toHaveBeenCalled();
 });
 
 test("enqueue does not place the current running worker back on the ready queue", () => {
@@ -6454,7 +6347,6 @@ test("enqueue does not place the current running worker back on the ready queue"
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -6490,7 +6382,6 @@ test("enqueue wakes the running worker when another worker publishes runnable", 
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -6529,7 +6420,6 @@ test("enqueue repair retry clears a stale-process running worker before stepping
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -6568,7 +6458,6 @@ test("enqueue does not place a worker-local wait worker on the ready queue", () 
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -6604,7 +6493,6 @@ test("attachThreadWorker fails the process when a browser worker emits an error 
     completeProcessExit: async () => {},
     failProcess,
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -6654,7 +6542,6 @@ test("socket wait timeout resumes with timeout handler after deadline", async ()
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -6701,7 +6588,6 @@ test("kickBlockedWorkers leaves supervisor timer owned socket wait to supervisor
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -6746,7 +6632,6 @@ test("connect timeout delegates to kernel-worker blocked syscall outcome when av
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallLocally: async () => {},
     resumeBlockedSyscallOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},

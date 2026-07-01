@@ -17,13 +17,6 @@ export interface WorkerSchedulerDeps {
   hasActiveChildProcess(parentPid: number): boolean;
   pumpActiveChildProcesses?(parentPid: number): boolean;
   pumpNetworkConnections(handle: ProcessHandle, vmPtr?: number): Promise<boolean>;
-  resumeBlockedSyscallLocally?(
-    handle: ProcessHandle,
-    worker: Worker,
-    vmPtr: number,
-    status: number,
-    timeoutExpired?: boolean,
-  ): Promise<void>;
   resumeBlockedSyscallOutcome?(
     handle: ProcessHandle,
     worker: Worker,
