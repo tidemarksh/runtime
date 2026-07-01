@@ -843,6 +843,56 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     resumePipePollTimeoutLocally(handle, worker, blocked, timeoutMs);
   }
 
+  function isSocketWaitStatus(handle: ProcessHandle, status: number): boolean {
+    return status === handle.kernel.abi_status_connect()
+      || status === handle.kernel.abi_status_socket_recv()
+      || status === handle.kernel.abi_status_socket_send();
+  }
+
+  function resumeSocketWaitTimeout(
+    handle: ProcessHandle,
+    worker: Worker,
+    blocked: BlockedWorkerState,
+  ): void {
+    if (
+      handle.kernelWorkerRequest
+      && handle.pid > 0
+      && deps.resumeBlockedSyscallOutcome !== undefined
+    ) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `socket-retry-timeout-rpc:${handle.pid}:status=${blocked.status}`,
+      );
+      blocked.rpcPending = true;
+      void deps.resumeBlockedSyscallOutcome(
+        handle,
+        worker,
+        blocked.vmPtr,
+        blocked.status,
+        blocked.timeoutExpired,
+      ).then((outcome) => {
+        consumeKernelRpcResumeOutcome(handle, worker, blocked.vmPtr, outcome);
+      }).catch((error) => {
+        const latestBlocked = handle.blockedWorkers.get(worker);
+        if (latestBlocked && latestBlocked.vmPtr === blocked.vmPtr) {
+          latestBlocked.rpcPending = false;
+        }
+        deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+      });
+      return;
+    }
+
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `socket-retry-timeout-local:${handle.pid}:status=${blocked.status}`,
+    );
+    attachKernelRuntimeState(handle.kernel, handle.kernelState);
+    handle.kernel.thread_resume_socket_wait_timeout?.(blocked.vmPtr);
+    blocked.timeoutExpired = false;
+    handle.kernelState = readKernelRuntimeState(handle.kernel);
+    handleBlockedRetryResult(handle, worker, blocked.vmPtr, handle.kernel.thread_status(blocked.vmPtr));
+  }
+
   function blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void {
     const previousBlocked = handle.blockedWorkers.get(worker);
     const sameBlockedThread = previousBlocked !== undefined
@@ -1665,6 +1715,15 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
 
     if (
+      blocked.timeoutExpired
+      && isSocketWaitStatus(handle, blocked.status)
+      && handle.kernel.thread_resume_socket_wait_timeout
+    ) {
+      resumeSocketWaitTimeout(handle, worker, blocked);
+      return;
+    }
+
+    if (
       handle.kernelWorkerRequest
       && handle.pid > 0
       && (
@@ -1751,17 +1810,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     ) {
       resumePipePollTimeout(handle, worker, blocked, blockedPollTimeoutMs);
       return;
-    } else if (
-      blocked.timeoutExpired
-      && (
-        blocked.status === handle.kernel.abi_status_connect()
-        || blocked.status === handle.kernel.abi_status_socket_recv()
-        || blocked.status === handle.kernel.abi_status_socket_send()
-      )
-      && handle.kernel.thread_resume_socket_wait_timeout
-    ) {
-      handle.kernel.thread_resume_socket_wait_timeout(blocked.vmPtr);
-      blocked.timeoutExpired = false;
     } else if (blocked.status === handle.kernel.abi_status_wait4()) {
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,

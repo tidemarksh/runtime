@@ -7186,7 +7186,7 @@ test("socket wait timeout resumes with timeout handler after deadline", async ()
   expect(resumeSocketTimeout).toHaveBeenCalledWith(0x1234);
 });
 
-test("connect timeout resumes with socket timeout handler after deadline", async () => {
+test("connect timeout delegates to kernel-worker blocked syscall outcome when available", async () => {
   const worker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -7202,14 +7202,21 @@ test("connect timeout resumes with socket timeout handler after deadline", async
   kernel.thread_resume_blocked_syscall = vi.fn();
   kernel.thread_status = () => status;
   const handle = makeHandle(kernel, worker);
+  handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unexpected" }) as never);
+  const runtimeEvents: string[] = [];
+  const resumeBlockedSyscallOutcome = vi.fn(async () => {
+    status = 0;
+    return { kind: "completed" as const, status };
+  });
 
   const scheduler = createWorkerScheduler({
-    appendRuntimeLifecycleEvent: () => {},
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => runtimeEvents.push(event),
     threadWorkerStates,
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
     resumeBlockedSyscallLocally: async () => {},
+    resumeBlockedSyscallOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -7217,6 +7224,18 @@ test("connect timeout resumes with socket timeout handler after deadline", async
 
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_connect(), 0x1234);
   await vi.advanceTimersByTimeAsync(30);
+  await Promise.resolve();
+  await Promise.resolve();
 
-  expect(resumeSocketTimeout).toHaveBeenCalledWith(0x1234);
+  expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
+    handle,
+    worker,
+    0x1234,
+    handle.kernel.abi_status_connect(),
+    true,
+  );
+  expect(resumeSocketTimeout).not.toHaveBeenCalled();
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+  expect(runtimeEvents).toContain(`socket-retry-timeout-rpc:${handle.pid}:status=${handle.kernel.abi_status_connect()}`);
+  expect(handle.blockedWorkers.has(worker)).toBe(false);
 });
