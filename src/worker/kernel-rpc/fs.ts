@@ -1322,11 +1322,6 @@ async function resumeFsViaKernelWorkerInner(
       restoreFsRingProgress(handle, postFsRingProgress);
       clearStaleFsStatusAfterResume(handle, vmPtr, fsResult);
       handle.kernelState = readKernelRuntimeState(handle.kernel);
-      effects.push(
-        { kind: "publish-runtime-kernel-state" },
-        { kind: "kick-blocked-workers" },
-        { kind: "handle-execve-spawn", status: execveSpawnStatusAfterFs },
-      );
       deps.appendWorkerDebugLog(handle, `fs-done:0x${vmPtr.toString(16)}:rv=${fsResult.toString()}`);
       appendFsLifecycleEvent(
         handle,
@@ -1334,6 +1329,9 @@ async function resumeFsViaKernelWorkerInner(
         vmPtr,
         `:rv=${fsResult.toString()}:status=${execveSpawnStatusAfterFs}${formatFsRingDebug(handle, vmPtr)}`,
       );
+      deps.publishRuntimeKernelState(handle);
+      deps.kickBlockedWorkers(handle);
+      effects.push({ kind: "handle-execve-spawn", status: execveSpawnStatusAfterFs });
       return completedKernelRpcOutcome(undefined, effects);
     }
     if (!transientProcessOwnerMismatch) {

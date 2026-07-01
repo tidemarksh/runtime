@@ -2800,6 +2800,7 @@ test("resumeFsViaKernelWorker routes execve spawn before parent fd integrity che
     }
   });
   const enqueueWorker = vi.fn();
+  const kickBlockedWorkers = vi.fn();
   const execveSpawnStatus = 9;
   let status = 0;
   let currentPid = 1;
@@ -2887,7 +2888,7 @@ test("resumeFsViaKernelWorker routes execve spawn before parent fd integrity che
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
     handleBlockedRetryResult: () => {},
-    kickBlockedWorkers: () => {},
+    kickBlockedWorkers,
     markRuntimeFsDirty: () => {},
     requestPipeStateSync: async () => {},
     syncBlockedForkSharedStateViaKernelWorker: async () => {},
@@ -2909,6 +2910,7 @@ test("resumeFsViaKernelWorker routes execve spawn before parent fd integrity che
   expect(assertProcessStandardFdIntegrity).toHaveBeenCalledTimes(1);
   expect(assertProcessStandardFdIntegrity).toHaveBeenCalledWith(handle, "resume-fs-before");
   expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
+  expect(kickBlockedWorkers).toHaveBeenCalledWith(handle);
   expect(enqueueWorker).not.toHaveBeenCalled();
   expect(outcome.status).toBeUndefined();
   expect(outcome.effects).toContainEqual({ kind: "handle-execve-spawn", status: execveSpawnStatus });
