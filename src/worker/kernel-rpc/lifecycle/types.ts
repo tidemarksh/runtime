@@ -14,10 +14,7 @@ export interface WorkerKernelRpcLifecycleDeps {
   processHandles: Map<number, ProcessHandle>;
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   drainProcessOutput(handle: ProcessHandle): boolean;
-  enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   failProcess(handle: ProcessHandle, error: Error): void;
-  kickBlockedWorkers(handle: ProcessHandle): void;
-  requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   syncSocketStateViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<{ socketUsed: number; netBufUsed: bigint }>;
   syncProcessMemfsViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<void>;
   snapshotProcessFdOfdStateForKernelWorker(

@@ -11,7 +11,7 @@ import type {
   ProcessHandle,
 } from "../types.js";
 import type { WorkerKernelRpcLifecycleDeps } from "./lifecycle/types.js";
-import { completedKernelRpcOutcome, type KernelRpcResumeOutcome } from "./outcomes.js";
+import { completedKernelRpcOutcome, type KernelRpcResumeEffect, type KernelRpcResumeOutcome } from "./outcomes.js";
 import { expectKernelWorkerResponse } from "./transport.js";
 
 export function createWorkerKernelRpcProcessLifecycleHelpers(
@@ -161,9 +161,11 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
       parent.kernelState = readKernelRuntimeState(parent.kernel);
       attachKernelRuntimeState(parent.kernel, parent.kernelState);
       deps.drainProcessOutput(parent);
-      await deps.requestPipeStateSync(parent, true);
-      deps.kickBlockedWorkers(parent);
-      return completedKernelRpcOutcome();
+      const effects: KernelRpcResumeEffect[] = [
+        { kind: "request-pipe-state-sync", handle: parent, wakeWaiters: true },
+        { kind: "kick-blocked-workers", handle: parent },
+      ];
+      return completedKernelRpcOutcome(undefined, effects);
     } catch (error) {
       if (parent.pid > 0 && deps.processHandles.get(parent.pid) === parent) {
         deps.failProcess(parent, error instanceof Error ? error : new Error(String(error)));

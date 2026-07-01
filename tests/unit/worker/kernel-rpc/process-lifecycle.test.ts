@@ -179,7 +179,7 @@ function makeHandle(
   return handle;
 }
 
-test("recordChildExitViaKernelWorker syncs parent pipe state and drains output before parent wake", async () => {
+test("recordChildExitViaKernelWorker returns parent wake effects after draining output", async () => {
   const order: string[] = [];
   const baseState = makeKernelState();
   const syncedState = {
@@ -222,10 +222,11 @@ test("recordChildExitViaKernelWorker syncs parent pipe state and drains output b
   expect(order).toEqual([
     "drain:1",
     "drain:1",
-    "pipe-sync:1:wake",
-    "kick:1",
   ]);
-  expect(outcome.effects).toBeUndefined();
+  expect(outcome.effects).toMatchObject([
+    { kind: "request-pipe-state-sync", handle, wakeWaiters: true },
+    { kind: "kick-blocked-workers", handle },
+  ]);
   expect(handle.recordedChildExits).toEqual([[7, 0x0300]]);
   expect(handle.kernelState.heapPtr).toBe(syncedState.heapPtr);
   expect(originalKernelState.heapPtr).toBe(baseState.heapPtr);

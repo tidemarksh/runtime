@@ -1,5 +1,6 @@
 import { expect, test } from "vite-plus/test";
 import {
+  applyKernelRpcResumeEffects,
   continueBlockedRpcResumeAfterEffects,
   kernelRpcOutcomeNeedsResumeContinuation,
 } from "../../../../src/worker/kernel-rpc/effects.js";
@@ -32,6 +33,44 @@ test("kernel-rpc effects own blocked resume continuation classification", () => 
     effects: [{ kind: "enqueue-worker" }],
   })).toBe(false);
   expect(kernelRpcOutcomeNeedsResumeContinuation({ kind: "completed" })).toBe(false);
+});
+
+test("applyKernelRpcResumeEffects runs kick-blocked-workers effect before enqueue", async () => {
+  const worker = {} as Worker;
+  const handle = { pid: 1 } as ProcessHandle;
+  const wakeHandle = { pid: 2 } as ProcessHandle;
+  const events: string[] = [];
+
+  const applied = await applyKernelRpcResumeEffects(
+    handle,
+    worker,
+    0x1234,
+    {
+      kind: "completed",
+      effects: [
+        { kind: "kick-blocked-workers", handle: wakeHandle },
+        { kind: "enqueue-worker" },
+      ],
+    },
+    {
+      blockWorker: () => {},
+      enqueueWorker(enqueueHandle) {
+        events.push(`enqueue:${enqueueHandle.pid}`);
+      },
+      handleExecveSpawn: async () => {},
+      kickBlockedWorkers(kickedHandle) {
+        events.push(`kick:${kickedHandle.pid}`);
+      },
+      requestPipeStateSync: async () => {},
+      settleVisibleProcessOutput: async () => {},
+      syncBlockedForkSharedStateViaKernelWorker: async () => {},
+      syncSocketStateViaKernelWorker: async () => ({ socketUsed: 0, netBufUsed: 0n }),
+      threadWorkerStates: new WeakMap(),
+    },
+  );
+
+  expect(events).toEqual(["kick:2", "enqueue:1"]);
+  expect(applied).toEqual({ kind: "completed" });
 });
 
 test("continueBlockedRpcResumeAfterEffects returns status for scheduler retry after sync effects", async () => {

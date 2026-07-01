@@ -78,9 +78,11 @@ export function createWorkerKernelRpcVforkHelpers(
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       deps.clearVforkSnapshot(handle);
       publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
-      deps.kickBlockedWorkers(handle);
-      deps.enqueueWorker(handle, worker);
-      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
+      const effects: KernelRpcResumeEffect[] = [
+        { kind: "kick-blocked-workers", handle },
+        { kind: "enqueue-worker" },
+      ];
+      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr), effects);
     } catch (error) {
       if (handle.workers.has(worker) && deps.threadWorkerStates.has(worker)) {
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
