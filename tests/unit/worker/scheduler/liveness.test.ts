@@ -6017,6 +6017,54 @@ test("pumpProcess leaves a quiescent worker-local futex waiter parked until its 
   expect(blockedWorker.postMessage).not.toHaveBeenCalled();
 });
 
+test("blockWorker parks futex wait as supervisor-owned worker state", () => {
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const thread = makeThreadState(0x70bf0d7);
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, thread);
+  const { exports: kernel } = makeKernel();
+  const handle = makeHandle(kernel, worker, threadWorkerStates);
+  handle.runningWorker = worker;
+  handle.readyWorkers = [worker];
+  handle.blockedWorkers.set(worker, {
+    vmPtr: thread.vmPtr,
+    status: kernel.abi_status_pipe_wait(),
+    retryTimer: null,
+    timeoutExpired: false,
+    timeoutDeadlineMs: null,
+    rpcPending: false,
+    rpcGeneration: 0,
+    skipNextNetworkPump: false,
+    pipeSyncedBeforePassive: false,
+    pipeChildExitResumeKey: null,
+    pipeEofChildExitDeferrals: 0,
+  });
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.blockWorker(handle, worker, kernel.abi_status_futex_wait(), thread.vmPtr);
+
+  expect(handle.blockedWorkers.has(worker)).toBe(false);
+  expect(handle.readyWorkers).toEqual([]);
+  expect(handle.runningWorker).toBeNull();
+  expect(thread.waitingInWorkerStatus).toBe(kernel.abi_status_futex_wait());
+  expect(thread.waitingInWorkerReconcileDeferred).toBe(false);
+  expect(thread.runningGeneration).toBeNull();
+  expect(worker.postMessage).not.toHaveBeenCalled();
+});
+
 test("blockWorker schedules initial kernel-worker pipe retry before passive parking", () => {
   const worker = {
     postMessage: vi.fn(),

@@ -938,6 +938,27 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   }
 
   function blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void {
+    if (status === handle.kernel.abi_status_futex_wait()) {
+      clearBlockedWorker(handle, worker);
+      const readyIndex = handle.readyWorkers.indexOf(worker);
+      if (readyIndex >= 0) {
+        handle.readyWorkers.splice(readyIndex, 1);
+      }
+      if (handle.runningWorker === worker) {
+        handle.runningWorker = null;
+      }
+      const thread = threadWorkerStates.get(worker);
+      if (thread !== undefined && thread.vmPtr === vmPtr) {
+        thread.waitingInWorkerStatus = status;
+        thread.waitingInWorkerReconcileDeferred = false;
+        thread.runningGeneration = null;
+      }
+      appendWorkerDebugLog(
+        handle,
+        `block-worker-futex-supervisor-owned:0x${vmPtr.toString(16)}`,
+      );
+      return;
+    }
     const previousBlocked = handle.blockedWorkers.get(worker);
     const sameBlockedThread = previousBlocked !== undefined
       && previousBlocked.vmPtr === vmPtr
@@ -961,9 +982,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     };
     handle.blockedWorkers.set(worker, blocked);
     if (sameBlockedThread && blocked.rpcPending) {
-      return;
-    }
-    if (status === handle.kernel.abi_status_futex_wait()) {
       return;
     }
     if (status === handle.kernel.abi_status_epoll_wait()) {
