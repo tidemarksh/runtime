@@ -127,7 +127,22 @@ test("host boundary asks supervisor for runnable selection without runtime candi
   });
   const handle = makeHostBoundaryHandle(kernel, selectedWorker);
   handle.workers.add(unselectedWorker);
-  handle.readyWorkers = [selectedWorker, unselectedWorker];
+  handle.readyWorkers = [unselectedWorker];
+  handle.blockedWorkers.set(selectedWorker, {
+    vmPtr: selectedThread.vmPtr,
+    status: kernel.abi_status_futex_wait(),
+    retryTimer: null,
+    timeoutExpired: false,
+    timeoutDeadlineMs: null,
+    sleepDeadlineTicks: null,
+    epollTimerfdDeadlineTicks: null,
+    rpcPending: false,
+    rpcGeneration: 0,
+    skipNextNetworkPump: false,
+    pipeSyncedBeforePassive: false,
+    pipeChildExitResumeKey: null,
+    pipeEofChildExitDeferrals: 0,
+  });
   const debugEvents: string[] = [];
 
   makeQueue(threadWorkerStates, debugEvents).pumpProcess(handle);
@@ -135,6 +150,7 @@ test("host boundary asks supervisor for runnable selection without runtime candi
   expect(kernel.supervisor_select_runnable).toHaveBeenCalledTimes(1);
   expect(handle.runningWorker).toBe(selectedWorker);
   expect(handle.readyWorkers).toEqual([unselectedWorker]);
+  expect(handle.blockedWorkers.has(selectedWorker)).toBe(false);
   expect(selectedWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "step" }));
   expect(unselectedWorker.postMessage).not.toHaveBeenCalled();
   expect(debugEvents).toContain(

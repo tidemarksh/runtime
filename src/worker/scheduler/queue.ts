@@ -686,20 +686,6 @@ export function createWorkerSchedulerQueueHelpers(
     return undefined;
   }
 
-  function supervisorRunnableCandidateVmPtr(handle: ProcessHandle, worker: Worker): number | null {
-    const thread = deps.threadWorkerStates.get(worker);
-    if (
-      thread === undefined
-      || (thread.ownerAsyncStatus ?? null) !== null
-      || hasWorkerLocalWait(thread)
-      || parkReadyWorkerStillInCanonicalFutexWait(handle, thread)
-      || handle.kernel.thread_process_ptr(thread.vmPtr) === 0
-    ) {
-      return null;
-    }
-    return thread.vmPtr;
-  }
-
   function selectSupervisorRunnableWorker(handle: ProcessHandle): Worker | null | undefined {
     const selectRunnable = handle.kernel.supervisor_select_runnable;
     if (selectRunnable === undefined) {
@@ -739,17 +725,7 @@ export function createWorkerSchedulerQueueHelpers(
       );
       return null;
     }
-    if (
-      !handle.readyWorkers.includes(selectedWorker)
-      || supervisorRunnableCandidateVmPtr(handle, selectedWorker) !== selection.vmPtr
-    ) {
-      deps.appendWorkerDebugLog(
-        handle,
-        `supervisor-runnable:selected-unavailable:0x${selection.vmPtr.toString(16)}`
-          + `:tid=${selection.tid}:seq=${selection.seq.toString()}`,
-      );
-      return null;
-    }
+    clearBlockedWorker(handle, selectedWorker);
     removeReadyWorker(handle, selectedWorker);
     deps.appendWorkerDebugLog(
       handle,
