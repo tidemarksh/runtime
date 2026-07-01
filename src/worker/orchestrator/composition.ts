@@ -142,15 +142,6 @@ const workerScheduler = createWorkerScheduler({
   pumpNetworkConnections,
   resumeFsViaKernelWorker,
   resumeFsViaKernelWorkerOutcome,
-  resumeBlockedSyscallLocally: (handle, worker, vmPtr, blockedStatus, timeoutExpired) => (
-    workerKernelRpcHelpers.resumeBlockedSyscallLocally(
-      handle,
-      worker,
-      vmPtr,
-      blockedStatus,
-      timeoutExpired,
-    )
-  ),
   resumeBlockedSyscallOutcome,
   resumeVforkParentAfterChildExit,
   resumeWait4ViaKernelWorker,
