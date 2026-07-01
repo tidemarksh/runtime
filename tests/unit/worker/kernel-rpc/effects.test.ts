@@ -105,7 +105,6 @@ test("publish-memfs-after-fs does not refresh pipe state", async () => {
     {
       blockWorker: vi.fn(),
       enqueueWorker: vi.fn(),
-      handleBlockedRetryResult: vi.fn(),
       handleExecveSpawn: vi.fn(async () => {}),
       kickBlockedWorkers: vi.fn(),
       markRuntimeFsDirty: vi.fn(),

@@ -10,7 +10,6 @@ import type {
 export interface KernelRpcResumeEffectPorts {
   blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
-  handleBlockedRetryResult(handle: ProcessHandle, worker: Worker, vmPtr: number, status: number): void;
   handleExecveSpawn(handle: ProcessHandle, worker: Worker, thread: ThreadWorkerState): Promise<void>;
   kickBlockedWorkers(handle: ProcessHandle): void;
   markRuntimeFsDirty(handle: ProcessHandle): void;
@@ -143,9 +142,6 @@ async function applyKernelRpcResumeEffect(
       return;
     case "enqueue-worker":
       ports.enqueueWorker(handle, worker);
-      return;
-    case "handle-blocked-retry-result":
-      ports.handleBlockedRetryResult(handle, worker, vmPtr, effect.status);
       return;
     case "handle-execve-spawn": {
       const thread = ports.threadWorkerStates.get(worker);

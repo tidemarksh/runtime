@@ -76,12 +76,7 @@ export function createWorkerKernelRpcBlockedRpcHelpers(deps: WorkerKernelRpcBloc
     worker: Worker,
     vmPtr: number,
     status: number,
-    collectEffects: boolean,
   ): void {
-    if (collectEffects) {
-      pushOutcomeEffect(worker, { kind: "handle-blocked-retry-result", status });
-      return;
-    }
     deps.handleBlockedRetryResult(handle, worker, vmPtr, status);
   }
 
@@ -1190,7 +1185,7 @@ async function resumeBlockedSyscallLocally(
         ) {
           preserveCanonicalEofReadyForDeferredRetry();
           finishBlockedRpc();
-          emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus, collectEffects);
+          emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus);
           return;
         }
         if (member !== handle && processHasOwnerAsyncWorker(member)) {
@@ -1289,7 +1284,7 @@ async function resumeBlockedSyscallLocally(
               preserveCanonicalEofReadyForDeferredRetry();
               finishBlockedRpc();
               deps.appendWorkerDebugLog(handle, `blocked-rpc-defer-pipe-sync-inflight:0x${vmPtr.toString(16)}`);
-              emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus, collectEffects);
+              emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus);
               return;
             } else if (selfPipeSyncWasAlreadyInFlight) {
               deps.appendRuntimeLifecycleEvent(
@@ -1458,14 +1453,14 @@ async function resumeBlockedSyscallLocally(
           preserveCanonicalEofReadyForDeferredRetry();
           finishBlockedRpc();
           deps.appendWorkerDebugLog(handle, `blocked-rpc-defer-pipe-eof:0x${vmPtr.toString(16)}`);
-          emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus, collectEffects);
+          emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus);
           return;
         }
         if (handle.pendingChildExitRecords > 0) {
           preserveCanonicalEofReadyForDeferredRetry();
           finishBlockedRpc();
           deps.appendWorkerDebugLog(handle, `blocked-rpc-defer-pipe-eof-child-exit:0x${vmPtr.toString(16)}`);
-          emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus, collectEffects);
+          emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus);
           return;
         }
       }
@@ -1515,7 +1510,7 @@ async function resumeBlockedSyscallLocally(
       preserveCanonicalEofReadyForDeferredRetry();
       finishBlockedRpc();
       deps.appendWorkerDebugLog(handle, `blocked-rpc-defer-poll-hup-active-child:0x${vmPtr.toString(16)}`);
-      emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus, collectEffects);
+      emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus);
       return;
     }
     const blockedPipeSyscallNr = blockedPipeWaitSyscallNr(handle, vmPtr) ?? 0n;
@@ -1643,7 +1638,7 @@ async function resumeBlockedSyscallLocally(
         handle,
         `blocked-rpc-defer-pipe-not-ready:0x${vmPtr.toString(16)}:read=${blockedPipeReadReady}:write=${blockedPipeWriteReady ?? "n/a"}:poll=${blockedPipePollReadyCount ?? "n/a"}:buffered=${blockedPollPipeBuffered ? 1 : 0}`,
       );
-      emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus, collectEffects);
+      emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus);
       return;
     }
     const pollLikePipeWaitWithReadySocket = blockedStatus === handle.kernel.abi_status_pipe_wait()
@@ -1733,7 +1728,7 @@ async function resumeBlockedSyscallLocally(
         preserveCanonicalEofReadyForDeferredRetry();
         finishBlockedRpc();
         deps.appendWorkerDebugLog(handle, `blocked-rpc-defer-pipe-eof-empty-resume:0x${vmPtr.toString(16)}`);
-        emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus, collectEffects);
+        emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus);
         return;
       }
       thread.pendingPipeSlotsForNextStep.push(...pipeSlotsForResume);
@@ -1855,7 +1850,7 @@ async function resumeBlockedSyscallLocally(
           deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);
           deps.appendWorkerDebugLog(handle, event);
         }
-        emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus, collectEffects);
+        emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus);
         return;
       }
       const pipeSlotsForResume = pollLikePipeWait
@@ -1869,7 +1864,7 @@ async function resumeBlockedSyscallLocally(
           handle,
           `blocked-rpc-defer-pipe-thread-resume-not-ready:0x${vmPtr.toString(16)}:ready=${pipeReadReady ? 1 : 0}:eof=${eofReady ? 1 : 0}:buf=${bufferedLen}:wo=${writeOpen}:slots=0`,
         );
-        emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus, collectEffects);
+        emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus);
         return;
       }
       const blocked = handle.blockedWorkers.get(worker);
@@ -1889,7 +1884,7 @@ async function resumeBlockedSyscallLocally(
         preserveCanonicalEofReadyForDeferredRetry();
         finishBlockedRpc();
         deps.appendWorkerDebugLog(handle, `blocked-rpc-defer-pipe-empty-resume:0x${vmPtr.toString(16)}`);
-        emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus, collectEffects);
+        emitBlockedRetryResult(handle, worker, vmPtr, blockedStatus);
         return;
       }
       thread.pendingPipeSlotsForNextStep.push(...pipeSlotsForResume);
@@ -2173,7 +2168,7 @@ async function resumeBlockedSyscallLocally(
         handle.runtimeId,
         `blocked-rpc-resume-poll-hup:${handle.pid}:ret=${resumeResult.toString()}:status=${handle.kernel.thread_status(vmPtr)}`,
       );
-      emitBlockedRetryResult(handle, worker, vmPtr, handle.kernel.thread_status(vmPtr), collectEffects);
+      emitBlockedRetryResult(handle, worker, vmPtr, handle.kernel.thread_status(vmPtr));
       return;
     } else if (
       !transientProcessOwnerMismatch
@@ -2206,7 +2201,7 @@ async function resumeBlockedSyscallLocally(
       return;
     }
 
-    emitBlockedRetryResult(handle, worker, vmPtr, handle.kernel.thread_status(vmPtr), collectEffects);
+    emitBlockedRetryResult(handle, worker, vmPtr, handle.kernel.thread_status(vmPtr));
   } catch (error) {
     finishBlockedRpc();
     if (handle.workers.has(worker) && deps.threadWorkerStates.has(worker)) {

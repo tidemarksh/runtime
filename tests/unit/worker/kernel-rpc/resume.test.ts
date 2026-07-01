@@ -1481,8 +1481,8 @@ test("resumeBlockedSyscallOutcome completes epoll timeout through epoll timeout 
   expect(outcome).toMatchObject({
     kind: "blocked",
     status: 0,
-    effects: [{ kind: "handle-blocked-retry-result", status: 0 }],
   });
+  expect(outcome.effects).toBeUndefined();
 });
 
 test("resumeBlockedSyscallLocally wakes pipe waiters through requestPipeStateSync", async () => {
