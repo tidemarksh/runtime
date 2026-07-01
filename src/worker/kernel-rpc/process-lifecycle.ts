@@ -11,7 +11,7 @@ import type {
   ProcessHandle,
 } from "../types.js";
 import type { WorkerKernelRpcLifecycleDeps } from "./lifecycle/types.js";
-import { completedKernelRpcOutcome, type KernelRpcResumeEffect, type KernelRpcResumeOutcome } from "./outcomes.js";
+import { completedKernelRpcOutcome, type KernelRpcResumeOutcome } from "./outcomes.js";
 import { expectKernelWorkerResponse } from "./transport.js";
 
 export function createWorkerKernelRpcProcessLifecycleHelpers(
@@ -127,7 +127,6 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     childPid: number,
     waitStatus: number,
   ): Promise<KernelRpcResumeOutcome> {
-    const effects: KernelRpcResumeEffect[] = [];
     if (!parent.kernelWorkerRequest || parent.pid <= 0) {
       deps.drainProcessOutput(parent);
       if (parent.kernel.process_record_child_exit_for_parent) {
@@ -136,7 +135,7 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
         parent.kernel.process_record_child_exit(childPid, waitStatus);
       }
       parent.kernelState = readKernelRuntimeState(parent.kernel);
-      return completedKernelRpcOutcome(undefined, effects);
+      return completedKernelRpcOutcome();
     }
 
     try {
@@ -150,7 +149,7 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
         kernelState: parent.kernelState,
       }), "child-exit-recorded", "record-child-exit");
       if (parent.pid <= 0 || deps.processHandles.get(parent.pid) !== parent) {
-        return { kind: "process-gone", effects };
+        return { kind: "process-gone" };
       }
       parent.kernelState = adoptKernelStateForHandle(parent, response.kernelState);
       attachKernelRuntimeState(parent.kernel, parent.kernelState);
@@ -161,17 +160,15 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
       }
       parent.kernelState = readKernelRuntimeState(parent.kernel);
       attachKernelRuntimeState(parent.kernel, parent.kernelState);
-      effects.push(
-        { kind: "request-pipe-state-sync", wakeWaiters: true },
-        { kind: "kick-blocked-workers" },
-      );
       deps.drainProcessOutput(parent);
-      return completedKernelRpcOutcome(undefined, effects);
+      await deps.requestPipeStateSync(parent, true);
+      deps.kickBlockedWorkers(parent);
+      return completedKernelRpcOutcome();
     } catch (error) {
       if (parent.pid > 0 && deps.processHandles.get(parent.pid) === parent) {
         deps.failProcess(parent, error instanceof Error ? error : new Error(String(error)));
       }
-      return { kind: "process-gone", effects };
+      return { kind: "process-gone" };
     }
   }
 

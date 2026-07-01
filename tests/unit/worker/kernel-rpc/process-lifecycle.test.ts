@@ -222,11 +222,10 @@ test("recordChildExitViaKernelWorker syncs parent pipe state and drains output b
   expect(order).toEqual([
     "drain:1",
     "drain:1",
+    "pipe-sync:1:wake",
+    "kick:1",
   ]);
-  expect(outcome.effects).toEqual([
-    { kind: "request-pipe-state-sync", wakeWaiters: true },
-    { kind: "kick-blocked-workers" },
-  ]);
+  expect(outcome.effects).toBeUndefined();
   expect(handle.recordedChildExits).toEqual([[7, 0x0300]]);
   expect(handle.kernelState.heapPtr).toBe(syncedState.heapPtr);
   expect(originalKernelState.heapPtr).toBe(baseState.heapPtr);
