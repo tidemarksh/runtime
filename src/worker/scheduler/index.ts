@@ -1214,6 +1214,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
 
     blocked.status = status;
+    const supervisorTimerArmed = armBlockedSupervisorTimer(handle, vmPtr);
+    blocked.supervisorTimerArmed = blocked.supervisorTimerArmed === true || supervisorTimerArmed;
+    if (supervisorTimerArmed) {
+      return;
+    }
+
     if (status === handle.kernel.abi_status_epoll_wait()) {
       const timeoutMs = Number(handle.kernel.thread_epoll_wait_timeout(vmPtr));
       if (timeoutMs >= 0) {

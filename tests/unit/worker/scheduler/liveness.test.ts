@@ -183,6 +183,28 @@ function makeThreadState(vmPtr: number): ThreadWorkerState {
 const SUPERVISOR_RESUME_RECORD_BYTES = 48;
 const SUPERVISOR_RESUME_KIND_RUNNABLE_THREAD = 2;
 
+function writeArmHostTimerHostOpRecord(
+  memory: WebAssembly.Memory,
+  outPtr: number,
+  vmPtr: number,
+  delayMs: bigint,
+): void {
+  const view = new DataView(memory.buffer, outPtr, 64);
+  view.setUint32(0, 0x4f48_5354, true);
+  view.setUint32(4, 1, true);
+  view.setUint32(8, 64, true);
+  view.setUint32(12, 12, true);
+  view.setBigUint64(16, 7n, true);
+  view.setUint32(24, vmPtr, true);
+  view.setUint32(28, 0, true);
+  view.setUint32(32, 2, true);
+  view.setUint32(36, 0x2000, true);
+  view.setUint32(40, 7, true);
+  view.setUint32(44, 0, true);
+  view.setBigUint64(48, delayMs, true);
+  view.setBigUint64(56, 100n, true);
+}
+
 function threadHasTestSupervisorFutexBlock(
   kernel: ProcessHandle["kernel"],
   vmPtr: number,
@@ -6139,6 +6161,76 @@ test("blocked retry parks futex retry result as supervisor-owned worker state", 
   expect(thread.waitingInWorkerReconcileDeferred).toBe(false);
   expect(thread.runningGeneration).toBeNull();
   expect(worker.postMessage).not.toHaveBeenCalled();
+});
+
+test("blocked retry result arms supervisor timer instead of scheduling runtime retry", () => {
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const thread = makeThreadState(0x70bf0da);
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, thread);
+  const { exports: kernel } = makeKernel();
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 16, shared: true });
+  Object.assign(kernel, {
+    memory,
+    supervisor_abi_version: () => 1,
+    supervisor_host_op_record_bytes: () => 64,
+    supervisor_host_op_kind_arm_host_timer: () => 12,
+    supervisor_host_completion_outcome_success: () => 1,
+    supervisor_host_completion_outcome_failure: () => 2,
+    kernel_heap_ptr: () => -0x3c000,
+    supervisor_next_host_op: vi.fn((outPtr: number, outLen: number) => {
+      expect(outLen).toBe(64);
+      writeArmHostTimerHostOpRecord(memory, outPtr, thread.vmPtr, 25n);
+      return 64;
+    }),
+    supervisor_complete_host_op: vi.fn(() => 0),
+    thread_status: (vmPtr: number) => vmPtr === thread.vmPtr
+      ? kernel.abi_status_epoll_wait()
+      : kernel.abi_status_ok(),
+    thread_epoll_wait_timeout: () => 25n,
+  });
+  const handle = makeHandle(kernel, worker, threadWorkerStates);
+  Object.assign(handle.kernel, { memory });
+  handle.memory = memory;
+  handle.blockedWorkers.set(worker, {
+    vmPtr: thread.vmPtr,
+    status: kernel.abi_status_pipe_wait(),
+    retryTimer: null,
+    timeoutExpired: false,
+    timeoutDeadlineMs: null,
+    rpcPending: false,
+    rpcGeneration: 0,
+    skipNextNetworkPump: false,
+    pipeSyncedBeforePassive: false,
+    pipeChildExitResumeKey: null,
+    pipeEofChildExitDeferrals: 0,
+  });
+  const runtimeEvents: string[] = [];
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => runtimeEvents.push(event),
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.kickBlockedWorkers(handle);
+
+  const blocked = handle.blockedWorkers.get(worker);
+  expect(blocked?.status).toBe(kernel.abi_status_epoll_wait());
+  expect(blocked?.supervisorTimerArmed).toBe(true);
+  expect(blocked?.retryTimer).toBeNull();
+  expect(kernel.supervisor_next_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
+  expect(runtimeEvents).toContain(
+    `supervisor-host-timer-arm:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}:seq=7:delay=25`,
+  );
 });
 
 test("blockWorker schedules initial kernel-worker pipe retry before passive parking", () => {
