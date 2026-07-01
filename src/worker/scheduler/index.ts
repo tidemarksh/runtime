@@ -823,25 +823,20 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             handle.kernelWorkerRequest
             && handle.pid > 0
           ) {
-            const resumeBlockedRpc = requireKernelWorkerBlockedResumeOutcome(handle);
-            if (resumeBlockedRpc === null) {
-              return;
-            }
-            latestBlocked.rpcPending = true;
-            const outcome = await resumeBlockedRpc(
+            resumeBlockedSyscallViaKernelWorker(
               handle,
               worker,
-              latestBlocked.vmPtr,
-              latestBlocked.status,
-              latestBlocked.timeoutExpired,
+              latestBlocked,
+              `pipe-retry-rpc:${handle.pid}`,
+              (outcome) => {
+                if (
+                  outcome.kind === "blocked"
+                  && outcome.status === handle.kernel.abi_status_pipe_wait()
+                ) {
+                  pumpProcess(handle);
+                }
+              },
             );
-            consumeKernelRpcResumeOutcome(handle, worker, latestBlocked.vmPtr, outcome);
-            if (
-              outcome.kind === "blocked"
-              && outcome.status === handle.kernel.abi_status_pipe_wait()
-            ) {
-              pumpProcess(handle);
-            }
             return;
           }
           attachKernelRuntimeState(handle.kernel, handle.kernelState);
