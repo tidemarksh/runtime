@@ -48,7 +48,7 @@ export interface WorkerKernelRpcBlockedRpcDeps {
   syncSocketStateViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<{ socketUsed: number; netBufUsed: bigint }>;
 }
 
-export function createWorkerKernelRpcBlockedRpcHelpers(deps: WorkerKernelRpcBlockedRpcDeps) {
+function createWorkerKernelRpcBlockedRpcHelperInternals(deps: WorkerKernelRpcBlockedRpcDeps) {
   const pendingOutcomeEffects = new WeakMap<Worker, KernelRpcResumeEffect[]>();
 
   function pushOutcomeEffect(worker: Worker, effect: KernelRpcResumeEffect): void {
@@ -2292,4 +2292,13 @@ async function resumeBlockedSyscallLocally(
     resumeBlockedSyscallLocally,
     resumeBlockedSyscallOutcome,
   };
+}
+
+export function createWorkerKernelRpcBlockedRpcHelpers(deps: WorkerKernelRpcBlockedRpcDeps) {
+  const { resumeBlockedSyscallOutcome } = createWorkerKernelRpcBlockedRpcHelperInternals(deps);
+  return { resumeBlockedSyscallOutcome };
+}
+
+export function createWorkerKernelRpcBlockedRpcTestHelpers(deps: WorkerKernelRpcBlockedRpcDeps) {
+  return createWorkerKernelRpcBlockedRpcHelperInternals(deps);
 }

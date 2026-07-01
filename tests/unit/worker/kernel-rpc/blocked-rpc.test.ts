@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vite-plus/test";
-import { createWorkerKernelRpcBlockedRpcHelpers } from "../../../../src/worker/kernel-rpc/blocked-rpc.js";
+import { createWorkerKernelRpcBlockedRpcTestHelpers as createWorkerKernelRpcBlockedRpcHelpers } from "../../../../src/worker/kernel-rpc/blocked-rpc.js";
 import type { KernelRuntimeState } from "../../../../src/abi.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 import { OFD_INO_OFFSET, OFD_OFFSET_OFFSET, OFD_TYPE_OFFSET } from "../../../../src/layout/ofd.js";
