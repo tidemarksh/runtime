@@ -120,8 +120,8 @@ test("recordExitOnParent syncs and drains child output before waking the parent"
       order.push(`destroy:${handle.pid}`);
     },
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers(handle) {
-      order.push(`kick:${handle.pid}`);
+    notifyProcessExitProgress(handle) {
+      order.push(`progress:${handle.pid}`);
     },
     publishRuntimeFsState: () => 1,
     recordChildExitViaKernelWorker: async (parentHandle) => {
@@ -153,12 +153,12 @@ test("recordExitOnParent syncs and drains child output before waking the parent"
     "record:1",
     "pipe-sync:1:sync",
     "pipe-sync:1:sync",
-    "kick:1",
+    "progress:1",
     "release:3",
     "destroy:3",
     "pipe-sync:1:wake",
     "drain:1",
-    "kick:1",
+    "progress:1",
   ]);
 });
 
@@ -213,8 +213,8 @@ test("completeProcessExit waits for child pipe sync before recording parent exit
       processHandles.delete(handle.pid);
     },
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers(handle) {
-      order.push(`kick:${handle.pid}`);
+    notifyProcessExitProgress(handle) {
+      order.push(`progress:${handle.pid}`);
     },
     publishRuntimeFsState: () => 1,
     recordChildExitViaKernelWorker: async (parentHandle) => {
@@ -251,7 +251,7 @@ test("completeProcessExit waits for child pipe sync before recording parent exit
 
   expect(order.indexOf("child-pipe-sync-done:3")).toBeLessThan(order.indexOf("unregister:3"));
   expect(order.indexOf("unregister:3")).toBeLessThan(order.indexOf("record:1"));
-  expect(order).toContain("kick:1");
+  expect(order).toContain("progress:1");
 });
 
 test("completeProcessExit prepublishes wait status before blocked parent pipe sync", async () => {
@@ -282,7 +282,7 @@ test("completeProcessExit prepublishes wait status before blocked parent pipe sy
     [3, child],
   ]);
   const lifecycle: string[] = [];
-  const kicked: string[] = [];
+  const progressNotifications: string[] = [];
 
   const helpers = createWorkerExitHelpers({
     processHandles,
@@ -296,8 +296,8 @@ test("completeProcessExit prepublishes wait status before blocked parent pipe sy
     drainProcessOutput: () => false,
     destroyProcessHandle: () => {},
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers(handle) {
-      kicked.push(`${handle.pid}:${blockedState.rpcPending ? "pending" : "clear"}`);
+    notifyProcessExitProgress(handle) {
+      progressNotifications.push(`${handle.pid}:${blockedState.rpcPending ? "pending" : "clear"}`);
     },
     publishRuntimeFsState: () => 1,
     recordChildExitViaKernelWorker: async () => {},
@@ -324,7 +324,7 @@ test("completeProcessExit prepublishes wait status before blocked parent pipe sy
   expect(lifecycle).toContain("exit-parent-clear-blocked-rpc:1:3:status=31");
   expect(lifecycle).toContain("parent-pipe-sync-before-child-exit-start:1:3");
   expect(lifecycle).not.toContain("parent-record-start:1:3");
-  expect(kicked).toContain("1:clear");
+  expect(progressNotifications).toContain("1:clear");
 });
 
 test("completeProcessExit prepublishes wait status before parent pipe sync for blocked pipe wait", async () => {
@@ -355,7 +355,7 @@ test("completeProcessExit prepublishes wait status before parent pipe sync for b
     [3, child],
   ]);
   const lifecycle: string[] = [];
-  const kicked: string[] = [];
+  const progressNotifications: string[] = [];
 
   const helpers = createWorkerExitHelpers({
     processHandles,
@@ -369,8 +369,8 @@ test("completeProcessExit prepublishes wait status before parent pipe sync for b
     drainProcessOutput: () => false,
     destroyProcessHandle: () => {},
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers(handle) {
-      kicked.push(`${handle.pid}:${blockedState.rpcPending ? "pending" : "clear"}`);
+    notifyProcessExitProgress(handle) {
+      progressNotifications.push(`${handle.pid}:${blockedState.rpcPending ? "pending" : "clear"}`);
     },
     publishRuntimeFsState: () => 1,
     recordChildExitViaKernelWorker: async () => {},
@@ -397,7 +397,7 @@ test("completeProcessExit prepublishes wait status before parent pipe sync for b
   expect(lifecycle).toContain("exit-parent-clear-blocked-rpc:1:3:status=21");
   expect(lifecycle).toContain("parent-pipe-sync-before-child-exit-start:1:3");
   expect(lifecycle).not.toContain("parent-record-start:1:3");
-  expect(kicked).toContain("1:clear");
+  expect(progressNotifications).toContain("1:clear");
 });
 
 test("completeProcessExit prepublishes wait status before parent pipe sync for blocked wait4", async () => {
@@ -428,7 +428,7 @@ test("completeProcessExit prepublishes wait status before parent pipe sync for b
     [3, child],
   ]);
   const lifecycle: string[] = [];
-  const kicked: string[] = [];
+  const progressNotifications: string[] = [];
 
   const helpers = createWorkerExitHelpers({
     processHandles,
@@ -442,8 +442,8 @@ test("completeProcessExit prepublishes wait status before parent pipe sync for b
     drainProcessOutput: () => false,
     destroyProcessHandle: () => {},
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers(handle) {
-      kicked.push(`${handle.pid}:${blockedState.rpcPending ? "pending" : "clear"}`);
+    notifyProcessExitProgress(handle) {
+      progressNotifications.push(`${handle.pid}:${blockedState.rpcPending ? "pending" : "clear"}`);
     },
     publishRuntimeFsState: () => 1,
     recordChildExitViaKernelWorker: async () => {},
@@ -469,7 +469,7 @@ test("completeProcessExit prepublishes wait status before parent pipe sync for b
   expect(lifecycle).toContain("parent-pipe-sync-before-child-exit-start:1:3");
   expect(lifecycle).not.toContain("child-unregister-before-parent-record:3");
   expect(lifecycle).not.toContain("parent-record-start:1:3");
-  expect(kicked).toContain("1:clear");
+  expect(progressNotifications).toContain("1:clear");
 });
 
 test("completeProcessExit prepublishes wait status before awaiting blocked parent wait4 record", async () => {
@@ -500,7 +500,7 @@ test("completeProcessExit prepublishes wait status before awaiting blocked paren
     [3, child],
   ]);
   const lifecycle: string[] = [];
-  const kicked: number[] = [];
+  const progressNotifications: number[] = [];
   let recordStarted = false;
   let settled = false;
 
@@ -518,8 +518,8 @@ test("completeProcessExit prepublishes wait status before awaiting blocked paren
       processHandles.delete(handle.pid);
     },
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers(handle) {
-      kicked.push(handle.pid);
+    notifyProcessExitProgress(handle) {
+      progressNotifications.push(handle.pid);
     },
     publishRuntimeFsState: () => 1,
     recordChildExitViaKernelWorker: () => {
@@ -545,7 +545,7 @@ test("completeProcessExit prepublishes wait status before awaiting blocked paren
   expect(lifecycle).toContain("exit-parent-early-prepublish-done:1:3:pending=0:records=3/1792");
   expect(lifecycle).toContain("parent-record-start:1:3");
   expect(lifecycle).not.toContain("parent-record-done:1:3");
-  expect(kicked).toContain(1);
+  expect(progressNotifications).toContain(1);
   expect(processHandles.has(3)).toBe(false);
 });
 
@@ -598,7 +598,7 @@ test("completeProcessExit routes deferred parent record rejection through local 
       processHandles.delete(handle.pid);
     },
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers: () => {},
+    notifyProcessExitProgress: () => {},
     publishRuntimeFsState: () => 1,
     recordChildExitViaKernelWorker: () => new Promise<void>((_resolve, reject) => {
       rejectRecord = reject;
@@ -641,7 +641,7 @@ test("completeProcessExit preserves published file data during exit MemFS public
     drainProcessOutput: () => false,
     destroyProcessHandle: () => {},
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers: () => {},
+    notifyProcessExitProgress: () => {},
     publishRuntimeFsState,
     recordChildExitViaKernelWorker: async () => {},
     releaseSharedHostStdio: async () => {},
@@ -694,7 +694,7 @@ test("completeProcessExit publishes dirty MemFS locally when no exit threads rem
     drainProcessOutput: () => false,
     destroyProcessHandle: () => {},
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers: () => {},
+    notifyProcessExitProgress: () => {},
     publishRuntimeFsState,
     recordChildExitViaKernelWorker: async () => {},
     releaseSharedHostStdio: async () => {},
@@ -754,7 +754,7 @@ test("completeProcessExit publishes dirty MemFS locally when exit thread slots a
     drainProcessOutput: () => false,
     destroyProcessHandle: () => {},
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers: () => {},
+    notifyProcessExitProgress: () => {},
     publishRuntimeFsState,
     recordChildExitViaKernelWorker: async () => {},
     releaseSharedHostStdio: async () => {},
@@ -811,7 +811,7 @@ test("completeProcessExit publishes dirty MemFS locally when no live exit thread
     drainProcessOutput: () => false,
     destroyProcessHandle: () => {},
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers: () => {},
+    notifyProcessExitProgress: () => {},
     publishRuntimeFsState,
     recordChildExitViaKernelWorker: async () => {},
     releaseSharedHostStdio: async () => {},
@@ -853,7 +853,7 @@ test("completeProcessExit skips clean kernel-worker MemFS publication", async ()
     drainProcessOutput: () => false,
     destroyProcessHandle: () => {},
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers: () => {},
+    notifyProcessExitProgress: () => {},
     publishRuntimeFsState,
     recordChildExitViaKernelWorker: async () => {},
     releaseSharedHostStdio: async () => {},
@@ -918,7 +918,7 @@ test("completeProcessExit drains top-level visible output before releasing stdio
       order.push(`destroy:${destroyHandle.pid}`);
     },
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers: () => {},
+    notifyProcessExitProgress: () => {},
     recordChildExitViaKernelWorker: async () => {},
     releaseSharedHostStdio: async (releaseHandle) => {
       order.push(`release:${releaseHandle.pid}`);
@@ -971,7 +971,7 @@ test("completeProcessExit notifies process exit before waiting on final kernel-w
       order.push(`destroy:${destroyHandle.pid}`);
     },
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers: () => {},
+    notifyProcessExitProgress: () => {},
     publishRuntimeFsState: () => 1,
     recordChildExitViaKernelWorker: async () => {},
     releaseSharedHostStdio: async () => {
@@ -1021,7 +1021,7 @@ test("completeProcessExit notifies process exit before waiting on final host std
       order.push(`destroy:${destroyHandle.pid}`);
     },
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers: () => {},
+    notifyProcessExitProgress: () => {},
     publishRuntimeFsState: () => {
       order.push("publish-fs");
       return 1;
@@ -1095,7 +1095,7 @@ test("completeProcessExit waits for stdio-owned child exit before releasing visi
       processHandles.delete(handle.pid);
     },
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers: () => {},
+    notifyProcessExitProgress: () => {},
     recordChildExitViaKernelWorker: async () => {
       order.push("record-child-start");
       markChildRecordStarted();
@@ -1158,7 +1158,7 @@ test("completeProcessExit gives up on live inherited child before releasing visi
       processHandles.delete(handle.pid);
     },
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers: () => {},
+    notifyProcessExitProgress: () => {},
     recordChildExitViaKernelWorker: async () => {},
     releaseSharedHostStdio: async (handle) => {
       events.push(`release:${handle.pid}`);
@@ -1214,8 +1214,8 @@ test("recordExitOnParent skips child-side drain when stdio is owned by the paren
       order.push(`destroy:${handle.pid}`);
     },
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers(handle) {
-      order.push(`kick:${handle.pid}`);
+    notifyProcessExitProgress(handle) {
+      order.push(`progress:${handle.pid}`);
     },
     publishRuntimeFsState: () => 1,
     recordChildExitViaKernelWorker: async (parentHandle) => {
@@ -1244,7 +1244,7 @@ test("recordExitOnParent skips child-side drain when stdio is owned by the paren
   expect(order).toContain("unregister:3");
   expect(order).toContain("destroy:3");
   expect(order).not.toContain("drain:1");
-  expect(order.at(-1)).toBe("kick:1");
+  expect(order.at(-1)).toBe("progress:1");
 });
 
 test("completeProcessExit treats duped child stdio pipes as internal protocol pipes", async () => {
@@ -1288,8 +1288,8 @@ test("completeProcessExit treats duped child stdio pipes as internal protocol pi
       order.push(`destroy:${handle.pid}`);
     },
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers(handle) {
-      order.push(`kick:${handle.pid}`);
+    notifyProcessExitProgress(handle) {
+      order.push(`progress:${handle.pid}`);
     },
     recordChildExitViaKernelWorker: async (parentHandle) => {
       order.push(`record:${parentHandle.pid}`);
@@ -1314,7 +1314,7 @@ test("completeProcessExit treats duped child stdio pipes as internal protocol pi
   expect(order).toContain("pipe-sync:1:wake");
 });
 
-test("recordExitOnParent re-kicks blocked parent after pending child exit bookkeeping clears", async () => {
+test("recordExitOnParent reports parent progress after pending child exit bookkeeping clears", async () => {
   const parent = makeHandle({
     pid: 1,
     parentPid: null,
@@ -1325,7 +1325,7 @@ test("recordExitOnParent re-kicks blocked parent after pending child exit bookke
     [1, parent],
     [3, child],
   ]);
-  const kicked: number[] = [];
+  const progressNotifications: number[] = [];
   const observedPendingCounts: number[] = [];
 
   const helpers = createWorkerExitHelpers({
@@ -1338,8 +1338,8 @@ test("recordExitOnParent re-kicks blocked parent after pending child exit bookke
     drainProcessOutput: () => false,
     destroyProcessHandle: () => {},
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers(handle) {
-      kicked.push(handle.pendingChildExitRecords);
+    notifyProcessExitProgress(handle) {
+      progressNotifications.push(handle.pendingChildExitRecords);
     },
     publishRuntimeFsState: () => 1,
     recordChildExitViaKernelWorker: async (parentHandle) => {
@@ -1355,7 +1355,7 @@ test("recordExitOnParent re-kicks blocked parent after pending child exit bookke
   await helpers.completeProcessExit(child, 0, 0);
 
   expect(observedPendingCounts).toEqual([0]);
-  expect(kicked).toEqual([0, 0]);
+  expect(progressNotifications).toEqual([0, 0]);
   expect(parent.pendingChildExitRecords).toBe(0);
 });
 
@@ -1390,7 +1390,7 @@ test("completeProcessExit clears parent pipe-wait RPC after normal child exit pu
     [3, child],
   ]);
   const lifecycle: string[] = [];
-  const kicked: string[] = [];
+  const progressNotifications: string[] = [];
 
   const helpers = createWorkerExitHelpers({
     processHandles,
@@ -1404,8 +1404,8 @@ test("completeProcessExit clears parent pipe-wait RPC after normal child exit pu
     drainProcessOutput: () => false,
     destroyProcessHandle: () => {},
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers(handle) {
-      kicked.push(`${handle.pid}:${blockedState.rpcPending ? "pending" : "clear"}`);
+    notifyProcessExitProgress(handle) {
+      progressNotifications.push(`${handle.pid}:${blockedState.rpcPending ? "pending" : "clear"}`);
     },
     publishRuntimeFsState: () => 1,
     recordChildExitViaKernelWorker: async () => {},
@@ -1423,7 +1423,7 @@ test("completeProcessExit clears parent pipe-wait RPC after normal child exit pu
   expect(blockedState.rpcGeneration).toBe(2);
   expect(blockedState.pipeSyncedBeforePassive).toBe(false);
   expect(lifecycle).toContain("exit-parent-clear-blocked-rpc:1:3:status=21");
-  expect(kicked).toContain("1:clear");
+  expect(progressNotifications).toContain("1:clear");
 });
 
 test("completeProcessExit still destroys the handle when cleanup fails", async () => {
@@ -1449,8 +1449,8 @@ test("completeProcessExit still destroys the handle when cleanup fails", async (
       order.push(`destroy:${handle.pid}`);
     },
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers: () => {
-      order.push("kick");
+    notifyProcessExitProgress: () => {
+      order.push("progress");
     },
     publishRuntimeFsState: () => 1,
     recordChildExitViaKernelWorker: async () => {},
@@ -1496,7 +1496,7 @@ test("completeProcessExit keeps execve stage summary without dispatch trace nois
     drainProcessOutput: () => false,
     destroyProcessHandle: () => {},
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers: () => {},
+    notifyProcessExitProgress: () => {},
     recordChildExitViaKernelWorker: async () => {},
     releaseSharedHostStdio: async () => {},
     requestPipeStateSync: async () => {},
@@ -1534,7 +1534,7 @@ test("completeProcessExit includes frozen per-vm exec trace in exit trace", asyn
     drainProcessOutput: () => false,
     destroyProcessHandle: () => {},
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers: () => {},
+    notifyProcessExitProgress: () => {},
     recordChildExitViaKernelWorker: async () => {},
     releaseSharedHostStdio: async () => {},
     requestPipeStateSync: async () => {},
@@ -1596,7 +1596,7 @@ test("completeProcessExit classifies high out-of-range fault pc and includes liv
     drainProcessOutput: () => false,
     destroyProcessHandle: () => {},
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers: () => {},
+    notifyProcessExitProgress: () => {},
     recordChildExitViaKernelWorker: async () => {},
     releaseSharedHostStdio: async () => {},
     requestPipeStateSync: async () => {},
@@ -1714,7 +1714,7 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
     drainProcessOutput: () => false,
     destroyProcessHandle: () => {},
     formatAllLiveThreadDebug: () => "threads",
-    kickBlockedWorkers: () => {},
+    notifyProcessExitProgress: () => {},
     recordChildExitViaKernelWorker: async () => {},
     releaseSharedHostStdio: async () => {},
     requestPipeStateSync: async () => {},

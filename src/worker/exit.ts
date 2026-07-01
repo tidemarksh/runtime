@@ -15,7 +15,7 @@ interface WorkerExitDeps {
   drainHiddenProcessOutput(handle: ProcessHandle): boolean;
   destroyProcessHandle(handle: ProcessHandle, signal: number, notifyExit: boolean): void;
   formatAllLiveThreadDebug(handle: ProcessHandle): string;
-  kickBlockedWorkers(handle: ProcessHandle): void;
+  notifyProcessExitProgress(handle: ProcessHandle): void;
   publishRuntimeFsState?(runtimeId: number, entries: FsSnapshotEntry[]): number;
   recordChildExitViaKernelWorker(parent: ProcessHandle, childPid: number, waitStatus: number): Promise<void>;
   releaseSharedHostStdio(handle: ProcessHandle): Promise<void>;
@@ -1600,7 +1600,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       `exit-parent-early-prepublish-done:${parent.pid}:${handle.pid}:pending=${parent.pendingChildExitRecords}:records=${formatChildExitSyncRecords(parent)}`,
     );
     invalidateBlockedParentRpcsForChildExit(parent, handle.pid);
-    deps.kickBlockedWorkers(parent);
+    deps.notifyProcessExitProgress(parent);
     return true;
   }
 
@@ -1907,7 +1907,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     if (hasInheritedParentOutput) {
       await settleInheritedChildOutput(handle, deps.requestPipeStateSync);
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `child-parent-pipe-refresh:${parent.pid}:${handle.pid}`);
-      deps.kickBlockedWorkers(parent);
+      deps.notifyProcessExitProgress(parent);
     }
     await publishProcessFsStateOnExit(handle, [parent]);
     if (handle.kernelWorkerRequest && handle.pid > 0) {
@@ -2167,7 +2167,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         }
         invalidateBlockedParentRpcsForChildExit(parent, handle.pid);
         parentWaitStatus = null;
-        deps.kickBlockedWorkers(parent);
+        deps.notifyProcessExitProgress(parent);
       } else if (parentWaitStatusPublishedAfterRecord) {
         parentWaitStatus = null;
       }
@@ -2244,7 +2244,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         if (parent.pendingChildExitRecords > 0) {
           parent.pendingChildExitRecords -= 1;
         }
-        deps.kickBlockedWorkers(parent);
+        deps.notifyProcessExitProgress(parent);
       }
     }
   }

@@ -258,7 +258,7 @@ const workerExitHelpers = createWorkerExitHelpers({
   drainProcessOutput,
   destroyProcessHandle,
   formatAllLiveThreadDebug,
-  kickBlockedWorkers,
+  notifyProcessExitProgress: kickBlockedWorkers,
   publishRuntimeFsState: publishRuntimeFsStateCtx,
   recordChildExitViaKernelWorker,
   releaseSharedHostStdio,
