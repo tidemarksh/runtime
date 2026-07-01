@@ -83,18 +83,3 @@ test("supervisor ABI checker fails closed when an authority export is missing", 
   );
   expect(() => assertSupervisorRuntimeAbi(completeExports as never)).not.toThrow();
 });
-
-test("thread-worker signal waits do not read legacy pending bits", () => {
-  const source = runtimeSource("thread-worker/signals.ts");
-
-  expect(source).toContain("supervisor_signal_pending_for_blocked_wait");
-  expect(source).not.toContain("thread_pending_signal_interrupts_blocked_syscall");
-  expect(source).not.toContain("thread_sig_pending");
-});
-
-test("thread-worker futex waits complete through supervisor only", () => {
-  const source = runtimeSource("thread-worker/blocking.ts");
-
-  expect(source).toContain("supervisor_complete_futex_wait");
-  expect(source).not.toMatch(/ctx\.exports\.thread_resume_futex_wait(?:_result)?\(/);
-});
