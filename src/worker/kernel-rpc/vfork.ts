@@ -6,6 +6,7 @@ import {
 import {
   adoptKernelStateForHandle,
 } from "../kernel-state.js";
+import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
 import type {
   CanonicalizedChildLifecycle,
   ProcessHandle,
@@ -46,7 +47,6 @@ export function createWorkerKernelRpcVforkHelpers(
     vmPtr: number,
     waitStatus: number,
   ): Promise<KernelRpcResumeOutcome> {
-    const effects: KernelRpcResumeEffect[] = [];
     if (!handle.kernelWorkerRequest || handle.pid <= 0) {
       return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
     }
@@ -63,7 +63,7 @@ export function createWorkerKernelRpcVforkHelpers(
         throw new Error(`kernel-worker did not report an active vfork child for pid=${handle.pid}`);
       }
       if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
-        return { kind: "process-gone", effects };
+        return { kind: "process-gone" };
       }
 
       handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
@@ -77,17 +77,15 @@ export function createWorkerKernelRpcVforkHelpers(
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       deps.clearVforkSnapshot(handle);
-      effects.push(
-        { kind: "publish-runtime-kernel-state" },
-        { kind: "kick-blocked-workers" },
-        { kind: "enqueue-worker" },
-      );
-      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr), effects);
+      publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
+      deps.kickBlockedWorkers(handle);
+      deps.enqueueWorker(handle, worker);
+      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
     } catch (error) {
       if (handle.workers.has(worker) && deps.threadWorkerStates.has(worker)) {
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
       }
-      return { kind: "process-gone", effects };
+      return { kind: "process-gone" };
     }
   }
 
