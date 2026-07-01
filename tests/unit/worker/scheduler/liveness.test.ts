@@ -2924,7 +2924,7 @@ test("epoll kernel-worker retry syncs watched pipe, epoll table, then dependent 
   expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(0x1234);
 });
 
-test("epoll kernel-worker retry blocks a sibling sleeper published during state sync", async () => {
+test("epoll kernel-worker retry clears a sibling sleeper without re-owning sleep status during state sync", async () => {
   const blockedWorker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -3003,9 +3003,10 @@ test("epoll kernel-worker retry blocks a sibling sleeper published during state 
   await Promise.resolve();
 
   expect(handle.runningWorker).toBe(blockedWorker);
-  expect(handle.blockedWorkers.get(runningWorker)?.status).toBe(kernel.abi_status_sleep());
+  expect(handle.blockedWorkers.has(runningWorker)).toBe(false);
   expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(0x1234);
-  expect(lifecycleEvents).toContain("running-worker-blocked:1:status=26");
+  expect(lifecycleEvents).toContain("running-worker-cleared:1:sleep-supervisor-owned:0x5678");
+  expect(lifecycleEvents).not.toContain("running-worker-blocked:1:status=26");
   expect(lifecycleEvents).not.toContain("epoll-retry-skip:1:running=1:sched=1");
 });
 
@@ -3099,7 +3100,7 @@ test("wait4 retry clears stale running sleeper without re-owning sleep status", 
   expect(threadResumeWait4).toHaveBeenCalledWith(0x1234);
 });
 
-test("pumpProcess blocks a running sleeper before dispatching a ready sibling", () => {
+test("pumpProcess clears a running sleeper without re-owning sleep status before dispatching a ready sibling", () => {
   const runningWorker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -3133,7 +3134,7 @@ test("pumpProcess blocks a running sleeper before dispatching a ready sibling", 
 
   scheduler.pumpProcess(handle);
 
-  expect(handle.blockedWorkers.get(runningWorker)?.status).toBe(kernel.abi_status_sleep());
+  expect(handle.blockedWorkers.has(runningWorker)).toBe(false);
   expect(handle.runningWorker).toBe(readyWorker);
   expect(readyWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
     type: "step",

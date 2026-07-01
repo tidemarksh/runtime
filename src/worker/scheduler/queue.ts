@@ -323,7 +323,6 @@ function clearBlockedWorker(handle: ProcessHandle, worker: Worker): void {
 function statusBlocksInOwnerScheduler(handle: ProcessHandle, status: number): boolean {
   return status === handle.kernel.abi_status_epoll_wait()
     || status === handle.kernel.abi_status_fs()
-    || status === handle.kernel.abi_status_sleep()
     || status === handle.kernel.abi_status_pipe_wait()
     || status === handle.kernel.abi_status_wait4()
     || status === handle.kernel.abi_status_flock_wait();
@@ -949,6 +948,12 @@ export function createWorkerSchedulerQueueHelpers(
         thread.runningGeneration = null;
         thread.waitingInWorkerStatus = handle.kernel.abi_status_futex_wait();
         deps.appendWorkerDebugLog(handle, `running-worker-cleared:futex-wait:0x${thread.vmPtr.toString(16)}:status=${status}`);
+        return null;
+      }
+      if (status === handle.kernel.abi_status_sleep()) {
+        handle.runningWorker = null;
+        thread.runningGeneration = null;
+        deps.appendWorkerDebugLog(handle, `running-worker-cleared:sleep-supervisor-owned:0x${thread.vmPtr.toString(16)}`);
         return null;
       }
       if (statusBlocksInOwnerScheduler(handle, status)) {

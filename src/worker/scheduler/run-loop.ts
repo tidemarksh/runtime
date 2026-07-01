@@ -46,7 +46,6 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
   function statusBlocksInOwnerScheduler(handle: ProcessHandle, status: number): boolean {
     return status === handle.kernel.abi_status_epoll_wait()
       || status === handle.kernel.abi_status_fs()
-      || status === handle.kernel.abi_status_sleep()
       || status === handle.kernel.abi_status_pipe_wait()
       || status === handle.kernel.abi_status_wait4()
       || status === handle.kernel.abi_status_flock_wait();
@@ -302,6 +301,15 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `running-worker-cleared:${handle.pid}:stale-process:0x${runningThread.vmPtr.toString(16)}`,
+      );
+      return true;
+    }
+    if (runningStatus === handle.kernel.abi_status_sleep()) {
+      handle.runningWorker = null;
+      runningThread.runningGeneration = null;
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `running-worker-cleared:${handle.pid}:sleep-supervisor-owned:0x${runningThread.vmPtr.toString(16)}`,
       );
       return true;
     }
