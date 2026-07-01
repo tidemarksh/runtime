@@ -6,7 +6,12 @@ import {
 import { publishRuntimeBridgeEpoch } from "../../bridge/runtime-state.js";
 import { ensureMemoryCapacity, kernelScratchBase } from "../kernel-scratch.js";
 import { createReadyWorkerFairness } from "./fairness.js";
-import { clearStaleFutexRecordIfResolved, createFutexReconciliation, threadHasCanonicalFutexBlock } from "./futex.js";
+import {
+  clearStaleFutexRecordIfResolved,
+  completeSupervisorFutexWait,
+  createFutexReconciliation,
+  threadHasCanonicalFutexBlock,
+} from "./futex.js";
 import { clearStaleForkSharedSyncGate } from "./fork-shared-gate.js";
 import type {
   AttachThreadWorkerRequest,
@@ -299,9 +304,15 @@ function futexWordIndex(handle: ProcessHandle, guestAddr: bigint): number | null
   return numericIndex >= 0 && numericIndex < words.length ? numericIndex : null;
 }
 
-function recoverBlockedFutexRecordResult(handle: ProcessHandle, vmPtr: number, blockedAddr: bigint): bigint | null {
+type SupervisorRecoveredFutexCompletion = "woken" | "invalid-address";
+
+function recoverBlockedFutexRecordCompletion(
+  handle: ProcessHandle,
+  vmPtr: number,
+  blockedAddr: bigint,
+): SupervisorRecoveredFutexCompletion | null {
   if (blockedAddr === 0n) {
-    return 0n;
+    return "woken";
   }
   const futexWaitAddr = handle.kernel.thread_futex_wait_addr?.(vmPtr) ?? 0n;
   if (futexWaitAddr === 0n) {
@@ -319,7 +330,7 @@ function recoverBlockedFutexRecordResult(handle: ProcessHandle, vmPtr: number, b
   if (current === (expected | 0)) {
     return null;
   }
-  return BigInt(handle.kernel.abi_eagain?.() ?? 11);
+  return "invalid-address";
 }
 
 function appendSchedulerQueueDebugLog(
@@ -1480,9 +1491,9 @@ export function createWorkerSchedulerQueueHelpers(
       const blockedAddr = thread === undefined
         ? 0n
         : handle.kernel.thread_record_blocked_addr(thread.vmPtr);
-      const resumeResult = thread === undefined
+      const completion = thread === undefined
         ? null
-        : recoverBlockedFutexRecordResult(handle, thread.vmPtr, blockedAddr);
+        : recoverBlockedFutexRecordCompletion(handle, thread.vmPtr, blockedAddr);
       if (
         thread === undefined
         || thread.waitingInWorkerStatus !== futexWaitStatus
@@ -1490,17 +1501,17 @@ export function createWorkerSchedulerQueueHelpers(
         || thread.pendingGuestMemoryWrites.length > 0
         || handle.kernel.thread_process_ptr(thread.vmPtr) === 0
         || handle.kernel.thread_status(thread.vmPtr) !== futexWaitStatus
-        || resumeResult === null
+        || completion === null
       ) {
         continue;
       }
-      handle.kernel.thread_resume_futex_wait_result(thread.vmPtr, resumeResult);
+      completeSupervisorFutexWait(handle, thread.vmPtr, completion);
       thread.waitingInWorkerStatus = null;
       thread.waitingInWorkerReconcileDeferred = false;
       thread.runningGeneration = null;
       deps.appendWorkerDebugLog(
         handle,
-        `futex-quiescent-recover:clear:0x${thread.vmPtr.toString(16)}:result=${resumeResult.toString()}`,
+        `futex-quiescent-recover:clear:0x${thread.vmPtr.toString(16)}:completion=${completion}`,
       );
       handle.readyWorkers.unshift(worker);
       return;

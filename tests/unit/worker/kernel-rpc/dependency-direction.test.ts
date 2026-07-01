@@ -97,3 +97,14 @@ test("thread-worker futex waits complete through supervisor only", () => {
   expect(source).toContain("supervisor_complete_futex_wait");
   expect(source).not.toMatch(/ctx\.exports\.thread_resume_futex_wait(?:_result)?\(/);
 });
+
+test("scheduler futex recovery completes through supervisor only", () => {
+  const sources = [
+    runtimeSource("worker/scheduler/futex.ts"),
+    runtimeSource("worker/scheduler/queue.ts"),
+    runtimeSource("worker/scheduler/run-loop.ts"),
+  ].join("\n");
+
+  expect(sources).toContain("supervisor_complete_futex_wait");
+  expect(sources).not.toMatch(/handle\.kernel\.thread_resume_futex_wait(?:_result)?\(/);
+});

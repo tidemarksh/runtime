@@ -51,6 +51,12 @@ function makeKernel() {
       thread_resume_socket_wait_timeout: vi.fn(),
       thread_resume_futex_wait: vi.fn(),
       thread_resume_futex_wait_result: vi.fn(),
+      supervisor_complete_futex_wait: vi.fn(() => 0),
+      supervisor_futex_wait_completion_woken: () => 1,
+      supervisor_futex_wait_completion_not_equal: () => 2,
+      supervisor_futex_wait_completion_timed_out: () => 3,
+      supervisor_futex_wait_completion_invalid_address: () => 4,
+      supervisor_futex_wait_completion_signal_check: () => 5,
       thread_futex_wait_addr: () => 0n,
       thread_record_blocked_addr: () => 0n,
       thread_status: () => 0,
@@ -5664,12 +5670,18 @@ test("pumpProcess clears stale futex record when worker-local wait already resol
   threadWorkerStates.set(waitingWorker, waitingThread);
   threadWorkerStates.set(sleeperWorker, sleeperThread);
   const { exports: kernel } = makeKernel();
-  const resumeFutexWait = vi.fn();
-  kernel.thread_resume_futex_wait = resumeFutexWait;
+  let waitingBlockedRecordAddr = 0xa467830n;
+  const completeSupervisorFutexWait = vi.fn((vmPtr: number, completion: number) => {
+    expect(vmPtr).toBe(waitingThread.vmPtr);
+    expect(completion).toBe(kernel.supervisor_futex_wait_completion_woken());
+    waitingBlockedRecordAddr = 0n;
+    return kernel.abi_status_ok();
+  });
+  kernel.supervisor_complete_futex_wait = completeSupervisorFutexWait;
   kernel.thread_status = () => kernel.abi_status_ok();
   kernel.thread_futex_wait_addr = () => 0n;
   kernel.thread_record_blocked_addr = (vmPtr: number) => vmPtr === waitingThread.vmPtr
-    ? 0xa467830n
+    ? waitingBlockedRecordAddr
     : 0n;
   const handle = makeHandle(kernel, sleeperWorker);
   handle.workers.add(waitingWorker);
@@ -5689,7 +5701,7 @@ test("pumpProcess clears stale futex record when worker-local wait already resol
 
   scheduler.pumpProcess(handle);
 
-  expect(resumeFutexWait).toHaveBeenCalledWith(waitingThread.vmPtr);
+  expect(completeSupervisorFutexWait).toHaveBeenCalledOnce();
   expect(waitingThread.waitingInWorkerStatus).toBeNull();
   expect(handle.runningWorker).toBe(waitingWorker);
   expect(waitingWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
@@ -5803,7 +5815,7 @@ test("pumpProcess drains only supervisor-selected futex resumes when supervisor 
   scheduler.pumpProcess(handle);
 
   expect(kernel.supervisor_next_resume).toHaveBeenCalledTimes(2);
-  expect(kernel.thread_resume_futex_wait_result).not.toHaveBeenCalled();
+  expect(kernel.supervisor_complete_futex_wait).not.toHaveBeenCalled();
   expect(selectedThread.waitingInWorkerStatus).toBeNull();
   expect(unselectedThread.waitingInWorkerStatus).toBe(kernel.abi_status_futex_wait());
   expect(handle.runningWorker).toBe(selectedWorker);
@@ -6171,12 +6183,13 @@ test("pumpProcess recovers a quiescent worker-local futex waiter while a sibling
   threadWorkerStates.set(blockedWorker, blockedThread);
   const { exports: kernel } = makeKernel();
   let waitingStatus = kernel.abi_status_futex_wait();
-  const resumeFutexWaitResult = vi.fn((vmPtr: number, result: bigint) => {
+  const completeSupervisorFutexWait = vi.fn((vmPtr: number, completion: number) => {
     expect(vmPtr).toBe(waitingThread.vmPtr);
-    expect(result).toBe(0n);
+    expect(completion).toBe(kernel.supervisor_futex_wait_completion_woken());
     waitingStatus = kernel.abi_status_ok();
+    return waitingStatus;
   });
-  kernel.thread_resume_futex_wait_result = resumeFutexWaitResult;
+  kernel.supervisor_complete_futex_wait = completeSupervisorFutexWait;
   kernel.thread_status = (vmPtr: number) => {
     if (vmPtr === waitingThread.vmPtr) {
       return waitingStatus;
@@ -6216,7 +6229,7 @@ test("pumpProcess recovers a quiescent worker-local futex waiter while a sibling
 
   scheduler.pumpProcess(handle);
 
-  expect(resumeFutexWaitResult).toHaveBeenCalledWith(waitingThread.vmPtr, 0n);
+  expect(completeSupervisorFutexWait).toHaveBeenCalledOnce();
   expect(waitingThread.waitingInWorkerStatus).toBeNull();
   expect(handle.runningWorker).toBe(waitingWorker);
   expect(waitingWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
@@ -6244,12 +6257,13 @@ test("pumpProcess recovers a quiescent worker-local futex waiter while a sibling
   threadWorkerStates.set(blockedWorker, blockedThread);
   const { exports: kernel } = makeKernel();
   let waitingStatus = kernel.abi_status_futex_wait();
-  const resumeFutexWaitResult = vi.fn((vmPtr: number, result: bigint) => {
+  const completeSupervisorFutexWait = vi.fn((vmPtr: number, completion: number) => {
     expect(vmPtr).toBe(waitingThread.vmPtr);
-    expect(result).toBe(0n);
+    expect(completion).toBe(kernel.supervisor_futex_wait_completion_woken());
     waitingStatus = kernel.abi_status_ok();
+    return waitingStatus;
   });
-  kernel.thread_resume_futex_wait_result = resumeFutexWaitResult;
+  kernel.supervisor_complete_futex_wait = completeSupervisorFutexWait;
   kernel.thread_status = (vmPtr: number) => {
     if (vmPtr === waitingThread.vmPtr) {
       return waitingStatus;
@@ -6289,7 +6303,7 @@ test("pumpProcess recovers a quiescent worker-local futex waiter while a sibling
 
   scheduler.pumpProcess(handle);
 
-  expect(resumeFutexWaitResult).toHaveBeenCalledWith(waitingThread.vmPtr, 0n);
+  expect(completeSupervisorFutexWait).toHaveBeenCalledOnce();
   expect(waitingThread.waitingInWorkerStatus).toBeNull();
   expect(handle.runningWorker).toBe(waitingWorker);
   expect(waitingWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
@@ -6325,12 +6339,13 @@ test("pumpProcess recovers a quiescent worker-local futex waiter under fs rpc pr
   threadWorkerStates.set(blockedWorker, blockedThread);
   const { exports: kernel } = makeKernel();
   let waitingStatus = kernel.abi_status_futex_wait();
-  const resumeFutexWaitResult = vi.fn((vmPtr: number, result: bigint) => {
+  const completeSupervisorFutexWait = vi.fn((vmPtr: number, completion: number) => {
     expect(vmPtr).toBe(waitingThread.vmPtr);
-    expect(result).toBe(0n);
+    expect(completion).toBe(kernel.supervisor_futex_wait_completion_woken());
     waitingStatus = kernel.abi_status_ok();
+    return waitingStatus;
   });
-  kernel.thread_resume_futex_wait_result = resumeFutexWaitResult;
+  kernel.supervisor_complete_futex_wait = completeSupervisorFutexWait;
   kernel.thread_status = (vmPtr: number) => {
     if (vmPtr === waitingThread.vmPtr) {
       return waitingStatus;
@@ -6375,7 +6390,7 @@ test("pumpProcess recovers a quiescent worker-local futex waiter under fs rpc pr
 
   scheduler.pumpProcess(handle);
 
-  expect(resumeFutexWaitResult).not.toHaveBeenCalled();
+  expect(completeSupervisorFutexWait).not.toHaveBeenCalled();
   expect(waitingThread.waitingInWorkerStatus).toBe(kernel.abi_status_futex_wait());
   expect(handle.runningWorker).toBe(cloneWorker);
   expect(handle.readyWorkers).toEqual([]);
@@ -6390,7 +6405,7 @@ test("pumpProcess recovers a quiescent worker-local futex waiter under fs rpc pr
   handle.runningWorker = null;
   scheduler.pumpProcess(handle);
 
-  expect(resumeFutexWaitResult).toHaveBeenCalledWith(waitingThread.vmPtr, 0n);
+  expect(completeSupervisorFutexWait).toHaveBeenCalledOnce();
   expect(waitingThread.waitingInWorkerStatus).toBeNull();
   expect(handle.runningWorker).toBe(waitingWorker);
   expect(waitingWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
@@ -6421,12 +6436,13 @@ test("pumpProcess leaves a quiescent stack-local futex waiter parked with a bloc
   threadWorkerStates.set(blockedWorker, blockedThread);
   const { exports: kernel } = makeKernel();
   let waitingStatus = kernel.abi_status_futex_wait();
-  const resumeFutexWaitResult = vi.fn((vmPtr: number, result: bigint) => {
+  const completeSupervisorFutexWait = vi.fn((vmPtr: number, completion: number) => {
     expect(vmPtr).toBe(waitingThread.vmPtr);
-    expect(result).toBe(0n);
+    expect(completion).toBe(kernel.supervisor_futex_wait_completion_woken());
     waitingStatus = kernel.abi_status_ok();
+    return waitingStatus;
   });
-  kernel.thread_resume_futex_wait_result = resumeFutexWaitResult;
+  kernel.supervisor_complete_futex_wait = completeSupervisorFutexWait;
   kernel.thread_status = (vmPtr: number) => {
     if (vmPtr === waitingThread.vmPtr) {
       return waitingStatus;
@@ -6475,7 +6491,7 @@ test("pumpProcess leaves a quiescent stack-local futex waiter parked with a bloc
 
   scheduler.pumpProcess(handle);
 
-  expect(resumeFutexWaitResult).not.toHaveBeenCalled();
+  expect(completeSupervisorFutexWait).not.toHaveBeenCalled();
   expect(waitingThread.waitingInWorkerStatus).toBe(kernel.abi_status_futex_wait());
   expect(handle.runningWorker).toBeNull();
   expect(waitingWorker.postMessage).not.toHaveBeenCalled();
@@ -6492,7 +6508,7 @@ test("pumpProcess resumes a quiescent futex mismatch waiter with EAGAIN", () => 
   const waitingThread = makeThreadState(0x57fe3d0);
   const blockedThread = makeThreadState(0x7759fb0);
   const futexWaitAddr = 0x100n;
-  const blockedRecordAddr = 0x104n;
+  let blockedRecordAddr = 0x104n;
   let currentFutexWaitAddr = futexWaitAddr;
   waitingThread.waitingInWorkerStatus = 20;
   waitingThread.stepCount = 97;
@@ -6503,13 +6519,15 @@ test("pumpProcess resumes a quiescent futex mismatch waiter with EAGAIN", () => 
   threadWorkerStates.set(blockedWorker, blockedThread);
   const { exports: kernel } = makeKernel();
   let waitingStatus = kernel.abi_status_futex_wait();
-  const resumeFutexWaitResult = vi.fn((vmPtr: number, result: bigint) => {
+  const completeSupervisorFutexWait = vi.fn((vmPtr: number, completion: number) => {
     expect(vmPtr).toBe(waitingThread.vmPtr);
-    expect(result).toBe(11n);
+    expect(completion).toBe(kernel.supervisor_futex_wait_completion_invalid_address());
     currentFutexWaitAddr = 0n;
+    blockedRecordAddr = 0n;
     waitingStatus = kernel.abi_status_ok();
+    return waitingStatus;
   });
-  kernel.thread_resume_futex_wait_result = resumeFutexWaitResult;
+  kernel.supervisor_complete_futex_wait = completeSupervisorFutexWait;
   kernel.thread_status = (vmPtr: number) => {
     if (vmPtr === waitingThread.vmPtr) {
       return waitingStatus;
@@ -6559,7 +6577,7 @@ test("pumpProcess resumes a quiescent futex mismatch waiter with EAGAIN", () => 
 
   scheduler.pumpProcess(handle);
 
-  expect(resumeFutexWaitResult).toHaveBeenCalledWith(waitingThread.vmPtr, 11n);
+  expect(completeSupervisorFutexWait).toHaveBeenCalledOnce();
   expect(waitingThread.waitingInWorkerStatus).toBeNull();
   expect(handle.runningWorker).toBe(waitingWorker);
   expect(waitingWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
@@ -6631,7 +6649,7 @@ test("pumpProcess leaves a quiescent worker-local futex waiter parked until its 
 
   scheduler.pumpProcess(handle);
 
-  expect(kernel.thread_resume_futex_wait_result).not.toHaveBeenCalled();
+  expect(kernel.supervisor_complete_futex_wait).not.toHaveBeenCalled();
   expect(waitingThread.waitingInWorkerStatus).toBe(kernel.abi_status_futex_wait());
   expect(handle.runningWorker).toBeNull();
   expect(waitingWorker.postMessage).not.toHaveBeenCalled();
@@ -6778,12 +6796,13 @@ test("pipe rpc blocked outcome pumps quiescent futex waiter", async () => {
   threadWorkerStates.set(blockedWorker, blockedThread);
   const { exports: kernel } = makeKernel();
   let waitingStatus = kernel.abi_status_futex_wait();
-  const resumeFutexWaitResult = vi.fn((vmPtr: number, result: bigint) => {
+  const completeSupervisorFutexWait = vi.fn((vmPtr: number, completion: number) => {
     expect(vmPtr).toBe(waitingThread.vmPtr);
-    expect(result).toBe(0n);
+    expect(completion).toBe(kernel.supervisor_futex_wait_completion_woken());
     waitingStatus = kernel.abi_status_ok();
+    return waitingStatus;
   });
-  kernel.thread_resume_futex_wait_result = resumeFutexWaitResult;
+  kernel.supervisor_complete_futex_wait = completeSupervisorFutexWait;
   kernel.thread_status = (vmPtr: number) => {
     if (vmPtr === waitingThread.vmPtr) {
       return waitingStatus;
@@ -6843,7 +6862,7 @@ test("pipe rpc blocked outcome pumps quiescent futex waiter", async () => {
   await Promise.resolve();
 
   expect(lifecycleEvents.join("\n")).toContain("pipe-retry-rpc:1");
-  expect(resumeFutexWaitResult).toHaveBeenCalledWith(waitingThread.vmPtr, 0n);
+  expect(completeSupervisorFutexWait).toHaveBeenCalledOnce();
   expect(waitingThread.waitingInWorkerStatus).toBeNull();
   expect(handle.runningWorker).toBe(waitingWorker);
   expect(waitingWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
