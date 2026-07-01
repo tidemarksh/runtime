@@ -116,9 +116,6 @@ test("host boundary consumes process-scoped supervisor runnable resume decisions
     view.setBigUint64(40, 1n, true);
     return 48;
   });
-  kernel.supervisor_select_runnable = vi.fn(() => {
-    throw new Error("supervisor_select_runnable must not be used when process resume is available");
-  });
   const handle = makeHostBoundaryHandle(kernel, selectedWorker);
   handle.workers.add(unselectedWorker);
   handle.readyWorkers = [unselectedWorker];
@@ -142,7 +139,6 @@ test("host boundary consumes process-scoped supervisor runnable resume decisions
   makeQueue(threadWorkerStates, debugEvents).pumpProcess(handle);
 
   expect(kernel.supervisor_process_resume).toHaveBeenCalledTimes(1);
-  expect(kernel.supervisor_select_runnable).not.toHaveBeenCalled();
   expect(handle.runningWorker).toBe(selectedWorker);
   expect(handle.readyWorkers).toEqual([unselectedWorker]);
   expect(handle.blockedWorkers.has(selectedWorker)).toBe(false);
@@ -151,77 +147,5 @@ test("host boundary consumes process-scoped supervisor runnable resume decisions
   expect(unselectedWorker.postMessage).not.toHaveBeenCalled();
   expect(debugEvents).toContain(
     "supervisor-resume:runnable:selected:0x1234:tid=2:seq=13:process=0x2000:status=0:detail=0x1",
-  );
-});
-
-test("host boundary asks supervisor for runnable selection without runtime candidates", () => {
-  const selectedWorker = { postMessage: vi.fn() } as unknown as Worker;
-  const unselectedWorker = { postMessage: vi.fn() } as unknown as Worker;
-  const selectedThread = makeHostBoundaryThread(0x1234);
-  const unselectedThread = makeHostBoundaryThread(0x5678);
-  selectedThread.lastStatus = 26;
-  selectedThread.yieldedReady = true;
-  unselectedThread.lastStatus = 0;
-  const threadWorkerStates = new WeakMap<Worker, ReturnType<typeof makeHostBoundaryThread>>();
-  threadWorkerStates.set(selectedWorker, selectedThread);
-  threadWorkerStates.set(unselectedWorker, unselectedThread);
-  const kernel = makeHostBoundaryKernel();
-  kernel.supervisor_runnable_selection_bytes = () => 48;
-  kernel.supervisor_select_runnable = vi.fn((
-    vmPtr: number,
-    candidatesPtr: number,
-    candidateCount: number,
-    outPtr: number,
-    outLen: number,
-  ) => {
-    expect(vmPtr).toBe(0x1234);
-    expect(candidatesPtr).toBe(0);
-    expect(candidateCount).toBe(0);
-    expect(outPtr).toBe(0);
-    expect(outLen).toBe(48);
-    const view = new DataView(kernel.memory.buffer);
-    view.setUint32(0, 0x4e52_5354, true);
-    view.setUint32(4, 1, true);
-    view.setUint32(8, 48, true);
-    view.setUint32(12, 0, true);
-    view.setBigUint64(16, 11n, true);
-    view.setUint32(24, selectedThread.vmPtr, true);
-    view.setUint32(28, 2, true);
-    view.setUint32(32, 0x2000, true);
-    view.setUint32(36, 2, true);
-    view.setUint32(40, kernel.abi_status_ok(), true);
-    view.setUint32(44, 1, true);
-    return 48;
-  });
-  const handle = makeHostBoundaryHandle(kernel, selectedWorker);
-  handle.workers.add(unselectedWorker);
-  handle.readyWorkers = [unselectedWorker];
-  handle.blockedWorkers.set(selectedWorker, {
-    vmPtr: selectedThread.vmPtr,
-    status: kernel.abi_status_futex_wait(),
-    retryTimer: null,
-    timeoutExpired: false,
-    timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
-    epollTimerfdDeadlineTicks: null,
-    rpcPending: false,
-    rpcGeneration: 0,
-    skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: false,
-    pipeChildExitResumeKey: null,
-    pipeEofChildExitDeferrals: 0,
-  });
-  const debugEvents: string[] = [];
-
-  makeQueue(threadWorkerStates, debugEvents).pumpProcess(handle);
-
-  expect(kernel.supervisor_select_runnable).toHaveBeenCalledTimes(1);
-  expect(handle.runningWorker).toBe(selectedWorker);
-  expect(handle.readyWorkers).toEqual([unselectedWorker]);
-  expect(handle.blockedWorkers.has(selectedWorker)).toBe(false);
-  expect(selectedWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "step" }));
-  expect(unselectedWorker.postMessage).not.toHaveBeenCalled();
-  expect(debugEvents).toContain(
-    "supervisor-runnable:selected:0x1234:tid=2:seq=11:slot=1:state=2:status=0",
   );
 });

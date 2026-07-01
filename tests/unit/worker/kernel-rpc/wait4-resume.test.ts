@@ -166,30 +166,29 @@ function addSupervisorRuntimeExportStubs(exports: KernelExports): void {
       target[name] = () => (name === "supervisor_abi_version" ? 1 : 0);
     }
   }
-  target.supervisor_runnable_selection_bytes = () => 48;
-  target.supervisor_select_runnable = (...args: unknown[]) => {
-    const candidatesPtr = Number(args[1]);
-    const candidateCount = Number(args[2]);
-    const outPtr = Number(args[3]);
-    const outLen = Number(args[4]);
-    if (candidateCount <= 0) {
-      return 0;
-    }
+  target.supervisor_resume_record_bytes = () => 48;
+  target.supervisor_resume_kind_runnable_thread = () => 2;
+  target.supervisor_process_resume = (...args: unknown[]) => {
+    const vmPtr = Number(args[0]);
+    const outPtr = Number(args[1]);
+    const outLen = Number(args[2]);
     if (outLen < 48) {
       return -1;
     }
+    if (exports.thread_status?.(vmPtr) !== exports.abi_status_ok()) {
+      return 0;
+    }
     const view = new DataView(exports.memory.buffer);
-    const selectedVmPtr = view.getUint32(candidatesPtr, true);
-    view.setUint32(outPtr, 0x4e52_5354, true);
+    view.setUint32(outPtr, 0x5255_5354, true);
     view.setUint32(outPtr + 4, 1, true);
     view.setUint32(outPtr + 8, 48, true);
+    view.setUint32(outPtr + 12, 2, true);
     view.setBigUint64(outPtr + 16, 1n, true);
-    view.setUint32(outPtr + 24, selectedVmPtr, true);
+    view.setUint32(outPtr + 24, vmPtr, true);
     view.setUint32(outPtr + 28, 1, true);
-    view.setUint32(outPtr + 32, Number(args[0]), true);
-    view.setUint32(outPtr + 36, 1, true);
-    view.setUint32(outPtr + 40, exports.abi_status_ok(), true);
-    view.setUint32(outPtr + 44, 0, true);
+    view.setUint32(outPtr + 32, vmPtr, true);
+    view.setUint32(outPtr + 36, exports.abi_status_ok(), true);
+    view.setBigUint64(outPtr + 40, 1n, true);
     return 48;
   };
 }

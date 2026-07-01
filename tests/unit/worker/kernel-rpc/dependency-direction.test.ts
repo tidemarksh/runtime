@@ -60,7 +60,7 @@ test("process creation requires the supervisor ABI before runtime ownership star
   expect(supervisorAssert).toBeGreaterThan(kernelInit);
   expect(baseTime).toBeGreaterThan(supervisorAssert);
   expect(requiredSupervisorRuntimeExportNames()).toEqual(expect.arrayContaining([
-    "supervisor_select_runnable",
+    "supervisor_process_resume",
     "supervisor_next_resume",
     "supervisor_complete_futex_wait",
     "supervisor_signal_pending_for_blocked_wait",

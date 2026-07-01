@@ -5970,7 +5970,7 @@ test("pumpProcess records supervisor thread-state snapshot diagnostics for selec
   );
 });
 
-test("pumpProcess runs supervisor-selected runnable worker instead of TypeScript ready priority", () => {
+test("pumpProcess runs process-scoped supervisor resume worker instead of TypeScript ready priority", () => {
   const selectedWorker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -5987,31 +5987,27 @@ test("pumpProcess runs supervisor-selected runnable worker instead of TypeScript
   threadWorkerStates.set(unselectedWorker, unselectedThread);
   const { exports: kernel } = makeKernel();
   kernel.kernel_scratch_base = () => 0;
-  kernel.supervisor_runnable_selection_bytes = () => 48;
-  kernel.supervisor_select_runnable = vi.fn((
+  kernel.supervisor_resume_record_bytes = () => 48;
+  kernel.supervisor_resume_kind_runnable_thread = () => 2;
+  kernel.supervisor_process_resume = vi.fn((
     vmPtr: number,
-    candidatesPtr: number,
-    candidateCount: number,
     outPtr: number,
     outLen: number,
   ) => {
     expect(vmPtr).toBe(0x1234);
-    expect(candidatesPtr).toBe(0);
-    expect(candidateCount).toBe(0);
     expect(outPtr).toBe(0);
     expect(outLen).toBe(48);
     const view = new DataView(kernel.memory.buffer);
-    view.setUint32(outPtr, 0x4e52_5354, true);
+    view.setUint32(outPtr, 0x5255_5354, true);
     view.setUint32(outPtr + 4, 1, true);
     view.setUint32(outPtr + 8, 48, true);
-    view.setUint32(outPtr + 12, 0, true);
+    view.setUint32(outPtr + 12, 2, true);
     view.setBigUint64(outPtr + 16, 1n, true);
     view.setUint32(outPtr + 24, selectedThread.vmPtr, true);
     view.setUint32(outPtr + 28, 2, true);
     view.setUint32(outPtr + 32, 0x2000, true);
-    view.setUint32(outPtr + 36, 2, true);
-    view.setUint32(outPtr + 40, kernel.abi_status_ok(), true);
-    view.setUint32(outPtr + 44, 1, true);
+    view.setUint32(outPtr + 36, kernel.abi_status_ok(), true);
+    view.setBigUint64(outPtr + 40, 1n, true);
     return 48;
   });
   const handle = makeHandle(kernel, selectedWorker);
@@ -6035,7 +6031,7 @@ test("pumpProcess runs supervisor-selected runnable worker instead of TypeScript
 
   queue.pumpProcess(handle);
 
-  expect(kernel.supervisor_select_runnable).toHaveBeenCalledTimes(1);
+  expect(kernel.supervisor_process_resume).toHaveBeenCalledTimes(1);
   expect(handle.runningWorker).toBe(selectedWorker);
   expect(handle.readyWorkers).toEqual([unselectedWorker]);
   expect(selectedThread.yieldedReady).toBe(false);
@@ -6045,11 +6041,11 @@ test("pumpProcess runs supervisor-selected runnable worker instead of TypeScript
   }));
   expect(unselectedWorker.postMessage).not.toHaveBeenCalled();
   expect(debugEvents).toContain(
-    "supervisor-runnable:selected:0x1234:tid=2:seq=1:slot=1:state=2:status=0",
+    "supervisor-resume:runnable:selected:0x1234:tid=2:seq=1:process=0x2000:status=0:detail=0x1",
   );
 });
 
-test("pumpProcess does not run TypeScript continuation when supervisor selects no runnable worker", () => {
+test("pumpProcess does not run TypeScript continuation when supervisor process resume selects no runnable worker", () => {
   const ordinaryWorker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -6069,17 +6065,13 @@ test("pumpProcess does not run TypeScript continuation when supervisor selects n
   ordinaryThread.lastStatus = kernel.abi_status_ok();
   continuationThread.lastStatus = kernel.abi_status_pipe_wait();
   kernel.kernel_scratch_base = () => 0;
-  kernel.supervisor_runnable_selection_bytes = () => 48;
-  kernel.supervisor_select_runnable = vi.fn((
+  kernel.supervisor_resume_record_bytes = () => 48;
+  kernel.supervisor_process_resume = vi.fn((
     vmPtr: number,
-    candidatesPtr: number,
-    candidateCount: number,
     outPtr: number,
     outLen: number,
   ) => {
     expect(vmPtr).toBe(0x1234);
-    expect(candidatesPtr).toBe(0);
-    expect(candidateCount).toBe(0);
     expect(outPtr).toBe(0);
     expect(outLen).toBe(48);
     return 0;
@@ -6105,12 +6097,12 @@ test("pumpProcess does not run TypeScript continuation when supervisor selects n
 
   queue.pumpProcess(handle);
 
-  expect(kernel.supervisor_select_runnable).toHaveBeenCalledTimes(1);
+  expect(kernel.supervisor_process_resume).toHaveBeenCalledTimes(1);
   expect(handle.runningWorker).toBeNull();
   expect(handle.readyWorkers).toEqual([ordinaryWorker, continuationWorker]);
   expect(ordinaryWorker.postMessage).not.toHaveBeenCalled();
   expect(continuationWorker.postMessage).not.toHaveBeenCalled();
-  expect(debugEvents).toContain("supervisor-runnable:none:ready=2");
+  expect(debugEvents).toContain("supervisor-resume:runnable:none:ready=2");
   expect(debugEvents).not.toContain("pump-run-blocked-rpc-continuation:vm=0x5678:ready=1");
 });
 

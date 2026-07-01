@@ -64,8 +64,6 @@ const SUPERVISOR_RESUME_SCRATCH_OFFSET = 0x28000;
 const SUPERVISOR_THREAD_STATE_SNAPSHOT_MAGIC = 0x4854_5354;
 const SUPERVISOR_THREAD_STATE_HEADER_BYTES = 32;
 const SUPERVISOR_THREAD_STATE_RECORD_BYTES = 32;
-const SUPERVISOR_RUNNABLE_SELECTION_BYTES = 48;
-const SUPERVISOR_RUNNABLE_SELECTION_MAGIC = 0x4e52_5354;
 
 interface SupervisorResumeRecord {
   kind: number;
@@ -84,16 +82,6 @@ interface SupervisorThreadStateRecord {
   status: number;
   blockedAddr: bigint;
   pendingSigset: bigint;
-}
-
-interface SupervisorRunnableSelection {
-  seq: bigint;
-  vmPtr: number;
-  tid: number;
-  processPtr: number;
-  state: number;
-  status: number;
-  slot: number;
 }
 
 function readSchedulerStepBudget(): number {
@@ -524,10 +512,6 @@ function supervisorResumeKindRunnableThread(handle: ProcessHandle): number {
   return handle.kernel.supervisor_resume_kind_runnable_thread?.() ?? SUPERVISOR_RESUME_KIND_RUNNABLE_THREAD;
 }
 
-function supervisorRunnableSelectionBytes(handle: ProcessHandle): number {
-  return handle.kernel.supervisor_runnable_selection_bytes?.() ?? SUPERVISOR_RUNNABLE_SELECTION_BYTES;
-}
-
 function supervisorResumeScratchBase(handle: ProcessHandle): number {
   const exportedScratch = handle.kernel.kernel_scratch_base?.();
   if (exportedScratch !== undefined) {
@@ -556,29 +540,6 @@ function decodeSupervisorResumeRecord(
     processPtr: view.getUint32(32, true),
     status: view.getUint32(36, true),
     detail0: view.getBigUint64(40, true),
-  };
-}
-
-function decodeSupervisorRunnableSelection(
-  handle: ProcessHandle,
-  view: DataView,
-): SupervisorRunnableSelection | null {
-  if (
-    view.byteLength < SUPERVISOR_RUNNABLE_SELECTION_BYTES
-    || view.getUint32(0, true) !== SUPERVISOR_RUNNABLE_SELECTION_MAGIC
-    || view.getUint32(4, true) !== 1
-    || view.getUint32(8, true) !== supervisorRunnableSelectionBytes(handle)
-  ) {
-    return null;
-  }
-  return {
-    seq: view.getBigUint64(16, true),
-    vmPtr: view.getUint32(24, true),
-    tid: view.getUint32(28, true),
-    processPtr: view.getUint32(32, true),
-    state: view.getUint32(36, true),
-    status: view.getUint32(40, true),
-    slot: view.getUint32(44, true),
   };
 }
 
@@ -778,57 +739,7 @@ export function createWorkerSchedulerQueueHelpers(
   }
 
   function selectSupervisorRunnableWorker(handle: ProcessHandle): Worker | null | undefined {
-    const processResumeSelected = selectSupervisorProcessResumeWorker(handle);
-    if (processResumeSelected !== undefined) {
-      return processResumeSelected;
-    }
-    const selectRunnable = handle.kernel.supervisor_select_runnable;
-    if (selectRunnable === undefined) {
-      return undefined;
-    }
-    const recordBytes = supervisorRunnableSelectionBytes(handle);
-    if (recordBytes < SUPERVISOR_RUNNABLE_SELECTION_BYTES) {
-      deps.appendWorkerDebugLog(handle, `supervisor-runnable:invalid-record-bytes:${recordBytes}`);
-      return null;
-    }
-    const memory = handle.kernel.memory ?? handle.memory;
-    const scratch = supervisorResumeScratchBase(handle);
-    ensureMemoryCapacity(memory, scratch + recordBytes);
-    const result = selectRunnable(handle.vmPtr, 0, 0, scratch, recordBytes);
-    if (result === 0) {
-      deps.appendWorkerDebugLog(
-        handle,
-        `supervisor-runnable:none:ready=${handle.readyWorkers.length}`,
-      );
-      return null;
-    }
-    if (result < 0 || result > recordBytes) {
-      deps.appendWorkerDebugLog(handle, `supervisor-runnable:select-error:${result}`);
-      return null;
-    }
-    const selection = decodeSupervisorRunnableSelection(handle, new DataView(memory.buffer, scratch, result));
-    if (selection === null) {
-      deps.appendWorkerDebugLog(handle, `supervisor-runnable:decode-error:${result}`);
-      return null;
-    }
-    const selectedWorker = findWorkerByVmPtr(handle, selection.vmPtr);
-    if (selectedWorker === undefined) {
-      deps.appendWorkerDebugLog(
-        handle,
-        `supervisor-runnable:missing-selected:0x${selection.vmPtr.toString(16)}`
-          + `:tid=${selection.tid}:seq=${selection.seq.toString()}`,
-      );
-      return null;
-    }
-    clearBlockedWorker(handle, selectedWorker);
-    removeReadyWorker(handle, selectedWorker);
-    deps.appendWorkerDebugLog(
-      handle,
-      `supervisor-runnable:selected:0x${selection.vmPtr.toString(16)}`
-        + `:tid=${selection.tid}:seq=${selection.seq.toString()}`
-        + `:slot=${selection.slot}:state=${selection.state}:status=${selection.status}`,
-    );
-    return selectedWorker;
+    return selectSupervisorProcessResumeWorker(handle);
   }
 
   function markSupervisorFutexResumeSelected(handle: ProcessHandle, vmPtr: number): void {
