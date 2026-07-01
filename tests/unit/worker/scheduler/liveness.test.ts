@@ -1681,6 +1681,53 @@ test("kernel-worker blocked syscall retry requires outcome helper", () => {
   expect(handle.blockedWorkers.get(worker)?.rpcGeneration).toBe(0);
 });
 
+test("kernel-worker unsupported blocked status fails before terminal local resume", () => {
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, makeThreadState(0x1234));
+  const { exports: kernel } = makeKernel();
+  const unsupportedStatus = 0x4d2;
+  kernel.thread_status = () => unsupportedStatus;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    throw new Error("unsupported kernel-worker status must not use terminal local resume");
+  });
+  const handle = makeHandle(kernel, worker, threadWorkerStates);
+  handle.pendingChildSpawnRecords = 0;
+  handle.kernelWorkerRequest = vi.fn(async () => {
+    throw new Error("unsupported blocked status must not issue an ad hoc kernel-worker request");
+  });
+  const failProcess = vi.fn();
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess,
+    hasActiveChildProcess: () => false,
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.blockWorker(handle, worker, unsupportedStatus, 0x1234);
+  const blocked = handle.blockedWorkers.get(worker);
+  expect(blocked).toBeDefined();
+  if (blocked!.retryTimer !== null) {
+    clearTimeout(blocked!.retryTimer);
+    blocked!.retryTimer = null;
+  }
+  scheduler.notifySchedulerProgress(handle);
+
+  expect(failProcess).toHaveBeenCalledWith(handle, expect.any(Error));
+  expect((failProcess.mock.calls[0]?.[1] as Error).message).toBe(
+    "kernel-worker blocked status 1234 requires explicit resume delegation",
+  );
+  expect(handle.kernelWorkerRequest).not.toHaveBeenCalled();
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+});
+
 test("does not passively park synced pipe EOF", () => {
   const worker = {
     postMessage: vi.fn(),

@@ -1910,6 +1910,14 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
 
+    if (handle.kernelWorkerRequest && handle.pid > 0) {
+      deps.failProcess(
+        handle,
+        new Error(`kernel-worker blocked status ${blocked.status} requires explicit resume delegation`),
+      );
+      return;
+    }
+
     if (blocked.status === handle.kernel.abi_status_pipe_wait()) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-retry-local:${handle.pid}`);
     }
