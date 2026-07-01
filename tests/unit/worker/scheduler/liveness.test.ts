@@ -6489,6 +6489,116 @@ test("blocked wait retry arms supervisor timer before runtime poll retry", () =>
   );
 });
 
+test("reblocking an already armed supervisor timer does not enqueue a duplicate host timer", () => {
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const thread = makeThreadState(0x70bf0df);
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, thread);
+  const { exports: kernel } = makeKernel();
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 16, shared: true });
+  Object.assign(kernel, {
+    memory,
+    supervisor_abi_version: () => 1,
+    supervisor_host_op_record_bytes: () => 64,
+    supervisor_host_op_kind_arm_host_timer: () => 12,
+    supervisor_host_completion_outcome_success: () => 1,
+    supervisor_host_completion_outcome_failure: () => 2,
+    kernel_heap_ptr: () => -0x3c000,
+    supervisor_next_host_op: vi.fn((outPtr: number, outLen: number) => {
+      expect(outLen).toBe(64);
+      return writeSupervisorArmHostTimerHostOpRecord(memory, outPtr, {
+        vmPtr: thread.vmPtr,
+        delayMs: 40n,
+        seq: 7n,
+        tid: 2,
+        processPtr: 0x2000,
+        status: kernel.abi_status_pipe_wait(),
+        deadlineTicks: 100n,
+      });
+    }),
+    supervisor_complete_host_op: vi.fn(() => 0),
+    abi_sys_pselect6: () => 72n,
+    thread_status: (vmPtr: number) => vmPtr === thread.vmPtr
+      ? kernel.abi_status_pipe_wait()
+      : kernel.abi_status_ok(),
+    thread_blocked_syscall_nr: (vmPtr: number) => vmPtr === thread.vmPtr ? 72n : 0n,
+    thread_poll_wait_timeout: () => 40n,
+    thread_poll_wait_ready_count: () => 0,
+    thread_poll_wait_has_socket: () => 0,
+    thread_pipe_read_eof_sync_pending: () => 0,
+    thread_poll_hup_sync_pending: () => 0,
+  });
+  const handle = makeHandle(kernel, worker, threadWorkerStates);
+  Object.assign(handle.kernel, { memory });
+  handle.memory = memory;
+  const runtimeEvents: string[] = [];
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => runtimeEvents.push(event),
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.blockWorker(handle, worker, kernel.abi_status_pipe_wait(), thread.vmPtr);
+  scheduler.blockWorker(handle, worker, kernel.abi_status_pipe_wait(), thread.vmPtr);
+
+  expect(handle.blockedWorkers.get(worker)?.supervisorTimerArmed).toBe(true);
+  expect(kernel.supervisor_next_host_op).toHaveBeenCalledTimes(1);
+  expect(runtimeEvents.filter((event) => event.startsWith("supervisor-host-timer-arm"))).toHaveLength(1);
+});
+
+test("finite blocked wait fails closed when supervisor timer enqueue ABI is missing", () => {
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const thread = makeThreadState(0x70bf0e0);
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, thread);
+  const { exports: kernel } = makeKernel();
+  Object.assign(kernel, {
+    supervisor_abi_version: () => 1,
+    supervisor_host_op_record_bytes: () => 64,
+    supervisor_host_op_kind_arm_host_timer: () => 12,
+    supervisor_next_host_op: vi.fn((_outPtr: number, outLen: number) => {
+      expect(outLen).toBe(64);
+      return 0;
+    }),
+    abi_sys_pselect6: () => 72n,
+    thread_status: (vmPtr: number) => vmPtr === thread.vmPtr
+      ? kernel.abi_status_pipe_wait()
+      : kernel.abi_status_ok(),
+    thread_blocked_syscall_nr: (vmPtr: number) => vmPtr === thread.vmPtr ? 72n : 0n,
+    thread_poll_wait_timeout: () => 40n,
+    thread_poll_wait_ready_count: () => 0,
+    thread_poll_wait_has_socket: () => 0,
+    thread_pipe_read_eof_sync_pending: () => 0,
+    thread_poll_hup_sync_pending: () => 0,
+  });
+  const handle = makeHandle(kernel, worker, threadWorkerStates);
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  expect(() => scheduler.blockWorker(handle, worker, kernel.abi_status_pipe_wait(), thread.vmPtr))
+    .toThrow("kernel supervisor ABI missing supervisor_enqueue_blocked_wait_timer");
+  expect(handle.blockedWorkers.get(worker)?.retryTimer).toBeNull();
+});
+
 test("supervisor timer completion resumes the supervisor-selected runnable worker", async () => {
   const worker = {
     postMessage: vi.fn(),

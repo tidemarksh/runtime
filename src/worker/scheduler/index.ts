@@ -1030,12 +1030,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   function armBlockedSupervisorTimer(handle: ProcessHandle, vmPtr: number): boolean {
     let hostTimer = drainSupervisorArmHostTimerHostOp(handle, vmPtr);
     if (hostTimer === undefined) {
-      return false;
+      throw new Error("kernel supervisor ABI missing arm host timer HostOp exports");
     }
     if (hostTimer === null) {
       const enqueueTimer = handle.kernel.supervisor_enqueue_blocked_wait_timer;
       if (enqueueTimer === undefined) {
-        return false;
+        throw new Error("kernel supervisor ABI missing supervisor_enqueue_blocked_wait_timer");
       }
       const enqueueResult = enqueueTimer(vmPtr);
       if (enqueueResult < 0) {
@@ -1074,8 +1074,11 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     handle: ProcessHandle,
     blocked: BlockedWorkerState,
   ): boolean {
+    if (blocked.supervisorTimerArmed === true) {
+      return true;
+    }
     const supervisorTimerArmed = armBlockedSupervisorTimer(handle, blocked.vmPtr);
-    blocked.supervisorTimerArmed = blocked.supervisorTimerArmed === true || supervisorTimerArmed;
+    blocked.supervisorTimerArmed = supervisorTimerArmed;
     return supervisorTimerArmed;
   }
 
