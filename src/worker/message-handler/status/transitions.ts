@@ -1334,18 +1334,19 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
 
     if (status === handle.kernel.abi_status_futex_wait()) {
       const hostTimer = drainSupervisorArmHostTimerHostOp(handle, thread.vmPtr);
-      if (hostTimer !== undefined) {
-        if (handle.runningWorker === worker) {
-          handle.runningWorker = null;
-        }
-        thread.waitingInWorkerStatus = status;
-        thread.waitingInWorkerReconcileDeferred = false;
-        if (hostTimer !== null) {
-          armSupervisorHostTimer(handle, hostTimer, deps);
-        }
-        deps.pumpProcess(handle);
-        return;
+      if (hostTimer === undefined) {
+        throw new Error("kernel supervisor ABI missing arm host timer HostOp exports");
       }
+      if (handle.runningWorker === worker) {
+        handle.runningWorker = null;
+      }
+      thread.waitingInWorkerStatus = status;
+      thread.waitingInWorkerReconcileDeferred = false;
+      if (hostTimer !== null) {
+        armSupervisorHostTimer(handle, hostTimer, deps);
+      }
+      deps.pumpProcess(handle);
+      return;
     }
 
     if (

@@ -1282,6 +1282,56 @@ test("STATUS_FUTEX_WAIT arms supervisor host timer HostOp and reports completion
   expect(deps.pumpProcess).toHaveBeenCalledTimes(2);
 });
 
+test("STATUS_FUTEX_WAIT parks after supervisor HostOp poll returns no timer", () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  handle.runtimeId = 77;
+  handle.runningWorker = worker;
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  handle.memory = memory;
+  const kernel = handle.kernel as typeof handle.kernel & {
+    memory: WebAssembly.Memory;
+    supervisor_host_op_record_bytes: () => number;
+    supervisor_next_host_op: (outPtr: number, outLen: number) => number;
+  };
+  kernel.memory = memory;
+  kernel.supervisor_host_op_record_bytes = () => 64;
+  kernel.supervisor_next_host_op = vi.fn((_outPtr: number, outLen: number) => {
+    expect(outLen).toBe(64);
+    return 0;
+  });
+  const deps = makeDeps(worker);
+  const thread = deps.threadWorkerStates.get(worker)!;
+  thread.ownerPid = handle.pid;
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: {
+      type: "status",
+      status: 20,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 20,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  expect(deps.blockWorker).not.toHaveBeenCalled();
+  expect(handle.runningWorker).toBeNull();
+  expect(thread.waitingInWorkerStatus).toBe(20);
+  expect(kernel.supervisor_next_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
+  expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
+});
+
 test("STATUS_CLONE_SPAWN still fails when spawn handoff is missing at current clone status", () => {
   const worker = {} as Worker;
   const handle = makeHandle(worker);
