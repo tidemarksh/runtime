@@ -1825,17 +1825,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
 
     if (
       blocked.timeoutExpired
-      && blocked.status === handle.kernel.abi_status_pipe_wait()
-      && blockedPollTimeoutMs >= 0
-      && handle.kernel.thread_resume_poll_wait_timeout
-      && !pipeReadinessSyncPending
-    ) {
-      resumePipePollTimeout(handle, worker, blocked, blockedPollTimeoutMs);
-      return;
-    }
-
-    if (
-      blocked.timeoutExpired
       && isSocketWaitStatus(handle, blocked.status)
       && handle.kernel.thread_resume_socket_wait_timeout
     ) {
