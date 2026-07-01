@@ -1106,7 +1106,7 @@ test("epoll retry wakes a running worker instead of resuming under it", async ()
   expect(lifecycleEvents).not.toContain("epoll-retry-result:1:vm=0x1234:status=22:a0=0");
 });
 
-test("epoll kernel-worker retry treats timeout zero as expired", async () => {
+test("host-local epoll retry treats timeout zero as expired", async () => {
   const blockedWorker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -1130,14 +1130,6 @@ test("epoll kernel-worker retry treats timeout zero as expired", async () => {
   });
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
   handle.pendingChildSpawnRecords = 0;
-  handle.kernelWorkerRequest = vi.fn(async (message) => {
-    expect(message.type).toBe("sync-epoll-state");
-    return {
-      type: "epoll-state-synced",
-      requestId: 0,
-      kernelState: message.kernelState,
-    };
-  });
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
@@ -1166,9 +1158,6 @@ test("epoll kernel-worker retry treats timeout zero as expired", async () => {
     expect(kernel.thread_resume_epoll_wait_timeout).toHaveBeenCalledWith(0x1234);
   });
 
-  expect(handle.kernelWorkerRequest).toHaveBeenCalledWith(expect.objectContaining({
-    type: "sync-epoll-state",
-  }));
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handle.blockedWorkers.has(blockedWorker)).toBe(false);
   expect(blockedWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
@@ -1341,6 +1330,11 @@ test("epoll sync timeout zero survives a running-worker retry skip", async () =>
   expect(kernel.thread_resume_epoll_wait_timeout).not.toHaveBeenCalled();
   expect(handle.blockedWorkers.get(blockedWorker)?.timeoutExpired).toBe(true);
   expect(handle.blockedWorkers.has(blockedWorker)).toBe(true);
+  const retryBlocked = handle.blockedWorkers.get(blockedWorker);
+  if (retryBlocked?.retryTimer !== null && retryBlocked?.retryTimer !== undefined) {
+    clearTimeout(retryBlocked.retryTimer);
+    retryBlocked.retryTimer = null;
+  }
 });
 
 test("epoll retry defers while clone child init is expected to release parent", async () => {
@@ -1373,10 +1367,21 @@ test("epoll retry defers while clone child init is expected to release parent", 
   handle.pendingChildSpawnRecords = 0;
   handle.workers.add(parentWorker);
   handle.workers.add(childWorker);
-  handle.kernelWorkerRequest = vi.fn(async () => {
-    throw new Error("local epoll ownership should not require a kernel-worker sync in this fixture");
+  handle.kernelWorkerRequest = vi.fn(async (message) => {
+    if (message.type === "sync-epoll-state") {
+      return {
+        type: "epoll-state-synced",
+        requestId: 0,
+        kernelState: message.kernelState,
+      };
+    }
+    throw new Error(`unexpected kernel worker request: ${message.type}`);
   });
   const lifecycleEvents: string[] = [];
+  const resumeBlockedSyscallOutcome = vi.fn(async () => ({
+    kind: "blocked" as const,
+    status: kernel.abi_status_epoll_wait(),
+  }));
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: (_runtimeId, event) => {
@@ -1388,6 +1393,7 @@ test("epoll retry defers while clone child init is expected to release parent", 
       throw error;
     },
     hasActiveChildProcess: () => false,
+    resumeBlockedSyscallOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -1418,6 +1424,12 @@ test("epoll retry defers while clone child init is expected to release parent", 
 
   expect(lifecycleEvents.some((event) => event.startsWith("epoll-retry-rpc:1:vm=0x1234"))).toBe(true);
   expect(handle.kernelWorkerRequest).not.toHaveBeenCalled();
+  expect(resumeBlockedSyscallOutcome).not.toHaveBeenCalled();
+  const postRpcBlocked = handle.blockedWorkers.get(blockedWorker);
+  if (postRpcBlocked?.retryTimer !== null && postRpcBlocked?.retryTimer !== undefined) {
+    clearTimeout(postRpcBlocked.retryTimer);
+    postRpcBlocked.retryTimer = null;
+  }
 });
 
 test("pipe retry pumps active child processes before remaining blocked", async () => {
@@ -2105,7 +2117,7 @@ test("expired finite pipe poll syncs pipe state before local timeout resume", as
   expect(handle.blockedWorkers.has(worker)).toBe(true);
 });
 
-test("expired finite pipe poll with active child resumes locally without pipe sync", async () => {
+test("expired finite pipe poll with active child delegates outcome without pipe sync", async () => {
   const worker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -2115,8 +2127,7 @@ test("expired finite pipe poll with active child resumes locally without pipe sy
   let status = kernel.abi_status_pipe_wait();
   const order: string[] = [];
   const resumePollTimeout = vi.fn(() => {
-    order.push("resume");
-    status = kernel.abi_status_ok();
+    throw new Error("kernel-worker finite pipe poll timeout must use blocked syscall outcome");
   });
   kernel.abi_sys_ppoll = () => 73;
   kernel.thread_a7 = () => 73n;
@@ -2144,6 +2155,11 @@ test("expired finite pipe poll with active child resumes locally without pipe sy
   handle.kernelWorkerRequest = vi.fn(async () => {
     throw new Error("active child finite pipe poll timeout should not sync pipe state");
   });
+  const resumeBlockedSyscallOutcome = vi.fn(async () => {
+    order.push("resume");
+    status = kernel.abi_status_ok();
+    return { kind: "completed" as const, status };
+  });
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
@@ -2151,6 +2167,7 @@ test("expired finite pipe poll with active child resumes locally without pipe sy
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => true,
+    resumeBlockedSyscallOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2168,7 +2185,14 @@ test("expired finite pipe poll with active child resumes locally without pipe sy
   await Promise.resolve();
 
   expect(order).toEqual(["resume"]);
-  expect(resumePollTimeout).toHaveBeenCalledWith(0x1234);
+  expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
+    handle,
+    worker,
+    0x1234,
+    handle.kernel.abi_status_pipe_wait(),
+    true,
+  );
+  expect(resumePollTimeout).not.toHaveBeenCalled();
   expect(handle.kernelWorkerRequest).not.toHaveBeenCalled();
   expect(handle.blockedWorkers.has(worker)).toBe(false);
 });
@@ -2600,7 +2624,7 @@ test("epoll kernel-worker retry re-queries timerfd deadline after state sync", a
   };
   kernel.thread_epoll_timerfd_deadline_ticks = vi.fn(() => deadlineVisible ? 1_000_001n : 0n);
   kernel.thread_resume_blocked_syscall = vi.fn(() => {
-    status = kernel.abi_status_ok();
+    throw new Error("kernel-worker epoll resume must use blocked syscall outcome");
   });
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
   handle.pendingChildSpawnRecords = 0;
@@ -2626,6 +2650,10 @@ test("epoll kernel-worker retry re-queries timerfd deadline after state sync", a
   });
   const lifecycleEvents: string[] = [];
   const failProcess = vi.fn();
+  const resumeBlockedSyscallOutcome = vi.fn(async () => {
+    status = kernel.abi_status_ok();
+    return { kind: "completed" as const, status };
+  });
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: (_runtimeId, event) => {
@@ -2635,6 +2663,7 @@ test("epoll kernel-worker retry re-queries timerfd deadline after state sync", a
     completeProcessExit: async () => {},
     failProcess,
     hasActiveChildProcess: () => false,
+    resumeBlockedSyscallOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2661,7 +2690,14 @@ test("epoll kernel-worker retry re-queries timerfd deadline after state sync", a
   await vi.advanceTimersByTimeAsync(1);
 
   expect(kernel.sync_monotonic_ticks_floor).toHaveBeenCalledWith(1_000_001n);
-  expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(0x1234);
+  expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
+    handle,
+    blockedWorker,
+    0x1234,
+    handle.kernel.abi_status_epoll_wait(),
+    false,
+  );
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(kernel.thread_resume_epoll_wait_timeout).not.toHaveBeenCalled();
 });
 
@@ -2712,7 +2748,7 @@ test("epoll kernel-worker retry syncs watched timerfd OFD after the timer fd is 
   kernel.kernel_epoll_instance_bytes = () => 64 * 32 + 4;
   kernel.thread_epoll_timerfd_deadline_ticks = vi.fn(() => deadlineVisible ? 1_000_001n : 0n);
   kernel.thread_resume_blocked_syscall = vi.fn(() => {
-    status = kernel.abi_status_ok();
+    throw new Error("kernel-worker epoll resume must use blocked syscall outcome");
   });
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
   handle.pendingChildSpawnRecords = 0;
@@ -2750,6 +2786,10 @@ test("epoll kernel-worker retry syncs watched timerfd OFD after the timer fd is 
   });
   const lifecycleEvents: string[] = [];
   const failProcess = vi.fn();
+  const resumeBlockedSyscallOutcome = vi.fn(async () => {
+    status = kernel.abi_status_ok();
+    return { kind: "completed" as const, status };
+  });
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: (_runtimeId, event) => {
@@ -2759,6 +2799,7 @@ test("epoll kernel-worker retry syncs watched timerfd OFD after the timer fd is 
     completeProcessExit: async () => {},
     failProcess,
     hasActiveChildProcess: () => false,
+    resumeBlockedSyscallOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2781,7 +2822,14 @@ test("epoll kernel-worker retry syncs watched timerfd OFD after the timer fd is 
   await vi.advanceTimersByTimeAsync(10);
 
   expect(kernel.sync_monotonic_ticks_floor).toHaveBeenCalledWith(1_000_001n);
-  expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(0x1234);
+  expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
+    handle,
+    blockedWorker,
+    0x1234,
+    handle.kernel.abi_status_epoll_wait(),
+    false,
+  );
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(kernel.thread_resume_epoll_wait_timeout).not.toHaveBeenCalled();
 });
 
@@ -2836,7 +2884,7 @@ test("epoll kernel-worker retry syncs watched pipe, epoll table, then dependent 
   kernel.kernel_epoll_instance_bytes = () => 64 * 32 + 4;
   kernel.process_state_bytes = () => 0;
   kernel.thread_resume_blocked_syscall = vi.fn(() => {
-    status = kernel.abi_status_ok();
+    throw new Error("kernel-worker epoll resume must use blocked syscall outcome");
   });
 
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
@@ -2890,6 +2938,10 @@ test("epoll kernel-worker retry syncs watched pipe, epoll table, then dependent 
     }
     throw new Error(`unexpected kernel worker request: ${message.type}`);
   });
+  const resumeBlockedSyscallOutcome = vi.fn(async () => {
+    status = kernel.abi_status_ok();
+    return { kind: "completed" as const, status };
+  });
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
@@ -2899,6 +2951,7 @@ test("epoll kernel-worker retry syncs watched pipe, epoll table, then dependent 
       throw error;
     },
     hasActiveChildProcess: () => false,
+    resumeBlockedSyscallOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2913,7 +2966,14 @@ test("epoll kernel-worker retry syncs watched pipe, epoll table, then dependent 
   await Promise.resolve();
 
   expect(requests).toEqual(["sync-pipe-state", "sync-epoll-state", "sync-ofd-state"]);
-  expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(0x1234);
+  expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
+    handle,
+    blockedWorker,
+    0x1234,
+    handle.kernel.abi_status_epoll_wait(),
+    false,
+  );
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
 });
 
 test("epoll kernel-worker retry clears a sibling sleeper without re-owning sleep status during state sync", async () => {
@@ -2946,7 +3006,7 @@ test("epoll kernel-worker retry clears a sibling sleeper without re-owning sleep
   kernel.thread_blocked_ofd_id = (vmPtr: number) => vmPtr === 0x1234 ? 5 : 0;
   kernel.kernel_ofd_fd_type = (ofdId: number) => ofdId === 5 ? 7 : 0;
   kernel.thread_resume_blocked_syscall = vi.fn(() => {
-    blockedStatus = kernel.abi_status_ok();
+    throw new Error("kernel-worker epoll resume must use blocked syscall outcome");
   });
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
   handle.pendingChildSpawnRecords = 0;
@@ -2971,6 +3031,10 @@ test("epoll kernel-worker retry clears a sibling sleeper without re-owning sleep
     throw new Error(`unexpected kernel worker request: ${message.type}`);
   });
   const lifecycleEvents: string[] = [];
+  const resumeBlockedSyscallOutcome = vi.fn(async () => {
+    blockedStatus = kernel.abi_status_ok();
+    return { kind: "completed" as const, status: blockedStatus };
+  });
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: (_runtimeId, event) => {
@@ -2980,6 +3044,7 @@ test("epoll kernel-worker retry clears a sibling sleeper without re-owning sleep
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
+    resumeBlockedSyscallOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2995,7 +3060,14 @@ test("epoll kernel-worker retry clears a sibling sleeper without re-owning sleep
 
   expect(handle.runningWorker).toBe(blockedWorker);
   expect(handle.blockedWorkers.has(runningWorker)).toBe(false);
-  expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(0x1234);
+  expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
+    handle,
+    blockedWorker,
+    0x1234,
+    handle.kernel.abi_status_epoll_wait(),
+    false,
+  );
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(lifecycleEvents).toContain("running-worker-cleared:1:sleep-supervisor-owned:0x5678");
   expect(lifecycleEvents).not.toContain("running-worker-blocked:1:status=26");
   expect(lifecycleEvents).not.toContain("epoll-retry-skip:1:running=1:sched=1");
