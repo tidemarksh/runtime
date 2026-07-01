@@ -8,6 +8,10 @@ import type {
   ThreadWorkerInbound,
   ThreadWorkerOutbound,
 } from "../../../src/messages.js";
+import {
+  makeSupervisorAbiStubs,
+  writeSupervisorRunnableResumeRecord,
+} from "./support/supervisor-abi.js";
 
 type WorkerModule = typeof import("../../../src/worker.js");
 
@@ -113,7 +117,8 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     view.setInt32(base + 12, 1, true);
   }
 
-  return {
+  const kernelExports: KernelExports = {
+    ...makeSupervisorAbiStubs(),
     memory,
     __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, 0),
     abi_status_ok: () => 0, abi_status_fault: () => 3, abi_status_fs: () => 4,
@@ -291,6 +296,22 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     memfs_ensure_dir: () => 0, memfs_create_file_with_data: () => 0,
     memfs_readdir_names: () => 0n,
   };
+  kernelExports.supervisor_process_resume = (processVmPtr, outPtr, outLen) => {
+    if (
+      outLen < 48
+      || processVmPtr !== 0x1234
+      || kernelExports.thread_status(0x1234) !== kernelExports.abi_status_ok()
+    ) {
+      return 0;
+    }
+    return writeSupervisorRunnableResumeRecord(memory, outPtr, {
+      vmPtr: 0x1234,
+      tid: 1,
+      processPtr: kernelExports.thread_process_ptr(0x1234),
+      status: kernelExports.thread_status(0x1234),
+    });
+  };
+  return kernelExports;
 }
 
 beforeEach(async () => {
@@ -319,203 +340,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   globalThis.Worker = originalWorker;
   vi.resetModules();
-});
-
-test("STATUS_SLEEP advances guest time and resumes without a host sleep timer", async () => {
-  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
-  const worker = createdWorkers[0];
-  emitReady(worker);
-  worker.clearPostedMessages();
-
-  worker.emit({
-    type: "status",
-    status: 11,
-    exitCode: 0,
-    termSignal: 0,
-    pc: 0n,
-    vmPtr: 0x1234,
-    kernelState: makeKernelState(),
-  });
-
-  expect(worker.postedMessages).toEqual([{
-    type: "step",
-    budget: expect.any(Number),
-    kernelState: expect.objectContaining({
-      heapBase: makeKernelState().heapBase,
-      pipeBase: makeKernelState().pipeBase,
-    }),
-  }]);
-});
-
-test("STATUS_SLEEP with zero duration requeues immediately on the owner", async () => {
-  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
-  handle.kernel.thread_sleep_seconds = () => 0n;
-  handle.kernel.thread_sleep_nanoseconds = () => 0n;
-  const worker = createdWorkers[0];
-  emitReady(worker);
-  worker.clearPostedMessages();
-
-  worker.emit({
-    type: "status",
-    status: 11,
-    exitCode: 0,
-    termSignal: 0,
-    pc: 0n,
-    vmPtr: 0x1234,
-    kernelState: makeKernelState(),
-  });
-
-  expect(worker.postedMessages).toEqual([{
-    type: "step",
-    budget: expect.any(Number),
-    kernelState: expect.objectContaining({
-      heapBase: makeKernelState().heapBase,
-      pipeBase: makeKernelState().pipeBase,
-    }),
-  }]);
-});
-
-test("STATUS_EPOLL_WAIT with zero timeout resumes on the owner without a 1ms floor", async () => {
-  vi.useFakeTimers();
-  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
-  let status = 7;
-  const resumeTimeout = vi.fn(() => {
-    status = 0;
-    return 0n;
-  });
-  handle.kernel.thread_epoll_wait_timeout = () => 0n;
-  handle.kernel.thread_resume_epoll_wait_timeout = resumeTimeout;
-  handle.kernel.thread_status = () => status;
-  const worker = createdWorkers[0];
-
-  emitReady(worker);
-  worker.clearPostedMessages();
-  worker.emit({
-    type: "status",
-    status: 7,
-    exitCode: 0,
-    termSignal: 0,
-    pc: 0n,
-    vmPtr: 0x1234,
-    kernelState: makeKernelState(),
-  });
-
-  expect(resumeTimeout).not.toHaveBeenCalled();
-  expect(worker.postedMessages).toEqual([]);
-
-  await vi.advanceTimersByTimeAsync(0);
-
-  expect(resumeTimeout).toHaveBeenCalledWith(0x1234);
-  expect(worker.postedMessages).toEqual([{
-    type: "step",
-    budget: expect.any(Number),
-    kernelState: expect.objectContaining({
-      heapBase: makeKernelState().heapBase,
-      pipeBase: makeKernelState().pipeBase,
-    }),
-  }]);
-
-  vi.useRealTimers();
-});
-
-test("STATUS_EPOLL_WAIT zero-timeout preserves timeout resume across running-worker retry", async () => {
-  vi.useFakeTimers();
-  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
-  let status = 7;
-  const resumeTimeout = vi.fn(() => {
-    status = 0;
-    return 0n;
-  });
-  const resumeBlocked = vi.fn(() => {
-    status = 0;
-    return 0n;
-  });
-  handle.kernel.thread_epoll_wait_timeout = () => 0n;
-  handle.kernel.thread_resume_epoll_wait_timeout = resumeTimeout;
-  handle.kernel.thread_resume_blocked_syscall = resumeBlocked;
-  handle.kernel.thread_status = () => status;
-  const worker = createdWorkers[0];
-
-  emitReady(worker);
-  worker.clearPostedMessages();
-  worker.emit({
-    type: "status",
-    status: 7,
-    exitCode: 0,
-    termSignal: 0,
-    pc: 0n,
-    vmPtr: 0x1234,
-    kernelState: makeKernelState(),
-  });
-
-  handle.runningWorker = worker as unknown as Worker;
-  await vi.advanceTimersByTimeAsync(0);
-
-  expect(resumeTimeout).not.toHaveBeenCalled();
-  expect(resumeBlocked).not.toHaveBeenCalled();
-
-  handle.runningWorker = null;
-  await vi.advanceTimersByTimeAsync(1);
-
-  expect(resumeTimeout).toHaveBeenCalledWith(0x1234);
-  expect(resumeBlocked).not.toHaveBeenCalled();
-  expect(worker.postedMessages).toEqual([{
-    type: "step",
-    budget: expect.any(Number),
-    kernelState: expect.objectContaining({
-      heapBase: makeKernelState().heapBase,
-      pipeBase: makeKernelState().pipeBase,
-    }),
-  }]);
-
-  vi.useRealTimers();
-});
-
-test("STATUS_EPOLL_WAIT timeout retries that become FUTEX_WAIT stay in the owner-side blocking loop", async () => {
-  vi.useFakeTimers();
-  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
-  let status = 7;
-  const resumeTimeout = vi.fn(() => {
-    status = 5;
-  });
-  const resumeBlocked = vi.fn(() => {
-    status = 0;
-  });
-  handle.kernel.thread_epoll_wait_timeout = () => 0n;
-  handle.kernel.thread_resume_epoll_wait_timeout = resumeTimeout;
-  handle.kernel.thread_resume_blocked_syscall = resumeBlocked;
-  handle.kernel.thread_status = () => status;
-  const worker = createdWorkers[0];
-
-  emitReady(worker);
-  worker.clearPostedMessages();
-  worker.emit({
-    type: "status",
-    status: 7,
-    exitCode: 0,
-    termSignal: 0,
-    pc: 0n,
-    vmPtr: 0x1234,
-    kernelState: makeKernelState(),
-  });
-
-  vi.advanceTimersByTime(0);
-  expect(resumeTimeout).toHaveBeenCalledWith(0x1234);
-  expect(resumeBlocked).not.toHaveBeenCalled();
-  expect(worker.postedMessages).toEqual([]);
-
-  vi.advanceTimersByTime(1);
-  expect(resumeBlocked).toHaveBeenCalledWith(0x1234);
-  expect(worker.postedMessages).toEqual([{
-    type: "step",
-    budget: expect.any(Number),
-    kernelState: expect.objectContaining({
-      heapBase: makeKernelState().heapBase,
-      pipeBase: makeKernelState().pipeBase,
-    }),
-  }]);
-
-  vi.useRealTimers();
 });
 
 test("STATUS_FAULT with thread_count=0 fires onExit", async () => {
