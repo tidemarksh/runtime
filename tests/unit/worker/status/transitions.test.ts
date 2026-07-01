@@ -57,6 +57,28 @@ function writeCloneSpawnHostOpRecord(
   writeU64(view, 56, 0x8800n);
 }
 
+function writeArmHostTimerHostOpRecord(
+  memory: WebAssembly.Memory,
+  ptr: number,
+  vmPtr: number,
+  delayMs: bigint,
+): void {
+  const view = new DataView(memory.buffer, ptr, 64);
+  writeU32(view, 0, 0x4f48_5354);
+  writeU32(view, 4, 1);
+  writeU32(view, 8, 64);
+  writeU32(view, 12, 12);
+  writeU64(view, 16, 9n);
+  writeU32(view, 24, vmPtr);
+  writeU32(view, 28, 0);
+  writeU32(view, 32, 2);
+  writeU32(view, 36, 0x5000);
+  writeU32(view, 40, 20);
+  writeU32(view, 44, 0);
+  writeU64(view, 48, delayMs);
+  writeU64(view, 56, delayMs * 100_000n);
+}
+
 function writeFaultExitDecisionRecord(
   memory: WebAssembly.Memory,
   ptr: number,
@@ -1180,6 +1202,84 @@ test("STATUS_CLONE_SPAWN attaches child from supervisor HostOp record", () => {
     handle,
     "clone_spawn_hostop:parent=0x1234:child=0x2000:tid=2:seq=1",
   );
+});
+
+test("STATUS_FUTEX_WAIT arms supervisor host timer HostOp and reports completion", async () => {
+  vi.useFakeTimers();
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  handle.runtimeId = 77;
+  handle.runningWorker = worker;
+  const memory = new WebAssembly.Memory({ initial: 6, maximum: 6, shared: true });
+  handle.memory = memory;
+  const kernel = handle.kernel as typeof handle.kernel & {
+    memory: WebAssembly.Memory;
+    supervisor_abi_version: () => number;
+    supervisor_host_op_record_bytes: () => number;
+    supervisor_host_op_kind_arm_host_timer: () => number;
+    supervisor_next_host_op: (outPtr: number, outLen: number) => number;
+    supervisor_complete_futex_wait: (vmPtr: number, completion: number) => number;
+    supervisor_futex_wait_completion_timed_out: () => number;
+    supervisor_complete_host_op: (completionPtr: number, completionLen: number) => number;
+  };
+  kernel.memory = memory;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_host_op_record_bytes = () => 64;
+  kernel.supervisor_host_op_kind_arm_host_timer = () => 12;
+  kernel.supervisor_futex_wait_completion_timed_out = () => 3;
+  kernel.supervisor_complete_futex_wait = vi.fn(() => 0);
+  let completionView: DataView | null = null;
+  kernel.supervisor_complete_host_op = vi.fn((completionPtr: number, completionLen: number) => {
+    completionView = new DataView(memory.buffer, completionPtr, completionLen);
+    return 0;
+  });
+  kernel.supervisor_next_host_op = vi.fn((outPtr: number, outLen: number) => {
+    expect(outLen).toBe(64);
+    writeArmHostTimerHostOpRecord(memory, outPtr, 0x1234, 5n);
+    return 64;
+  });
+  const deps = makeDeps(worker);
+  const thread = deps.threadWorkerStates.get(worker)!;
+  thread.ownerPid = handle.pid;
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: {
+      type: "status",
+      status: 20,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 20,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  expect(deps.blockWorker).not.toHaveBeenCalled();
+  expect(handle.runningWorker).toBeNull();
+  expect(thread.waitingInWorkerStatus).toBe(20);
+  expect(kernel.supervisor_next_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
+  expect(kernel.supervisor_complete_futex_wait).not.toHaveBeenCalled();
+
+  await vi.advanceTimersByTimeAsync(5);
+
+  expect(kernel.supervisor_complete_futex_wait).toHaveBeenCalledWith(0x1234, 3);
+  expect(kernel.supervisor_complete_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
+  expect(completionView?.getUint32(0, true)).toBe(0x4348_5354);
+  expect(completionView?.getUint32(12, true)).toBe(12);
+  expect(completionView?.getBigUint64(16, true)).toBe(9n);
+  expect(completionView?.getUint32(24, true)).toBe(0x1234);
+  expect(completionView?.getUint32(36, true)).toBe(1);
+  expect(completionView?.getUint32(40, true)).toBe(0);
+  expect(deps.pumpProcess).toHaveBeenCalledTimes(2);
 });
 
 test("STATUS_CLONE_SPAWN still fails when spawn handoff is missing at current clone status", () => {

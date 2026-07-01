@@ -42,11 +42,18 @@ const CLONE_SPAWN_DEBUG_ENABLED = ((globalThis as {
 const SUPERVISOR_HOST_OP_RECORD_BYTES = 64;
 const SUPERVISOR_HOST_OP_RECORD_MAGIC = 0x4f48_5354;
 const SUPERVISOR_HOST_OP_KIND_SPAWN_THREAD_WORKER = 1;
+const SUPERVISOR_HOST_OP_KIND_ARM_HOST_TIMER = 12;
 const SUPERVISOR_HOST_OP_SCRATCH_OFFSET = 0x2c000;
+const SUPERVISOR_HOST_COMPLETION_RECORD_BYTES = 64;
+const SUPERVISOR_HOST_COMPLETION_RECORD_MAGIC = 0x4348_5354;
+const SUPERVISOR_HOST_COMPLETION_OUTCOME_SUCCESS = 1;
+const SUPERVISOR_HOST_COMPLETION_OUTCOME_FAILURE = 2;
+const SUPERVISOR_HOST_COMPLETION_SCRATCH_OFFSET = 0x2d000;
 
 const cloneSpawnAsyncTokens = new WeakMap<ThreadWorkerState, number>();
 
-interface SupervisorCloneSpawnHostOp {
+interface SupervisorHostOpRecord {
+  kind: number;
   seq: bigint;
   parentVmPtr: number;
   childVmPtr: number;
@@ -56,6 +63,8 @@ interface SupervisorCloneSpawnHostOp {
   flags: bigint;
   childTidPtr: bigint;
 }
+
+type SupervisorCloneSpawnHostOp = SupervisorHostOpRecord;
 
 interface StatusTransitionArgs {
   handle: ProcessHandle;
@@ -195,32 +204,35 @@ function supervisorHostOpKindSpawnThreadWorker(handle: ProcessHandle): number {
     ?? SUPERVISOR_HOST_OP_KIND_SPAWN_THREAD_WORKER;
 }
 
-function decodeSupervisorCloneSpawnHostOp(
+function supervisorHostOpKindArmHostTimer(handle: ProcessHandle): number {
+  return handle.kernel.supervisor_host_op_kind_arm_host_timer?.()
+    ?? SUPERVISOR_HOST_OP_KIND_ARM_HOST_TIMER;
+}
+
+function decodeSupervisorHostOpRecord(
   handle: ProcessHandle,
   view: DataView,
-  parentVmPtr: number,
-): SupervisorCloneSpawnHostOp {
+  context: string,
+): SupervisorHostOpRecord {
   if (view.byteLength < SUPERVISOR_HOST_OP_RECORD_BYTES) {
-    throw new Error(`supervisor clone spawn HostOp record too short: ${view.byteLength}`);
+    throw new Error(`${context} record too short: ${view.byteLength}`);
   }
   const magic = view.getUint32(0, true);
   const version = view.getUint32(4, true);
   const bytes = view.getUint32(8, true);
   const kind = view.getUint32(12, true);
   if (magic !== SUPERVISOR_HOST_OP_RECORD_MAGIC) {
-    throw new Error(`supervisor clone spawn HostOp bad magic: 0x${magic.toString(16)}`);
+    throw new Error(`${context} bad magic: 0x${magic.toString(16)}`);
   }
   const expectedVersion = handle.kernel.supervisor_abi_version?.() ?? version;
   if (version !== expectedVersion) {
-    throw new Error(`supervisor clone spawn HostOp bad version: ${version}`);
+    throw new Error(`${context} bad version: ${version}`);
   }
   if (bytes < SUPERVISOR_HOST_OP_RECORD_BYTES || bytes > view.byteLength) {
-    throw new Error(`supervisor clone spawn HostOp bad size: ${bytes}`);
-  }
-  if (kind !== supervisorHostOpKindSpawnThreadWorker(handle)) {
-    throw new Error(`supervisor clone spawn HostOp bad kind: ${kind}`);
+    throw new Error(`${context} bad size: ${bytes}`);
   }
   const record: SupervisorCloneSpawnHostOp = {
+    kind,
     seq: view.getBigUint64(16, true),
     parentVmPtr: view.getUint32(24, true),
     childVmPtr: view.getUint32(28, true),
@@ -230,6 +242,18 @@ function decodeSupervisorCloneSpawnHostOp(
     flags: view.getBigUint64(48, true),
     childTidPtr: view.getBigUint64(56, true),
   };
+  return record;
+}
+
+function decodeSupervisorCloneSpawnHostOp(
+  handle: ProcessHandle,
+  view: DataView,
+  parentVmPtr: number,
+): SupervisorCloneSpawnHostOp {
+  const record = decodeSupervisorHostOpRecord(handle, view, "supervisor clone spawn HostOp");
+  if (record.kind !== supervisorHostOpKindSpawnThreadWorker(handle)) {
+    throw new Error(`supervisor clone spawn HostOp bad kind: ${record.kind}`);
+  }
   if (record.parentVmPtr !== parentVmPtr) {
     throw new Error(
       `supervisor clone spawn HostOp parent mismatch: `
@@ -241,6 +265,24 @@ function decodeSupervisorCloneSpawnHostOp(
   }
   if (record.status !== handle.kernel.abi_status_ok()) {
     throw new Error(`supervisor clone spawn HostOp child status not OK: ${record.status}`);
+  }
+  return record;
+}
+
+function decodeSupervisorArmHostTimerOp(
+  handle: ProcessHandle,
+  view: DataView,
+  vmPtr: number,
+): SupervisorHostOpRecord {
+  const record = decodeSupervisorHostOpRecord(handle, view, "supervisor arm host timer HostOp");
+  if (record.kind !== supervisorHostOpKindArmHostTimer(handle)) {
+    throw new Error(`supervisor arm host timer HostOp bad kind: ${record.kind}`);
+  }
+  if (record.parentVmPtr !== vmPtr) {
+    throw new Error(
+      `supervisor arm host timer HostOp vm mismatch: `
+        + `0x${record.parentVmPtr.toString(16)} != 0x${vmPtr.toString(16)}`,
+    );
   }
   return record;
 }
@@ -273,6 +315,126 @@ function drainSupervisorCloneSpawnHostOp(
     new DataView(memory.buffer, scratch, result),
     parentVmPtr,
   );
+}
+
+function drainSupervisorArmHostTimerHostOp(
+  handle: ProcessHandle,
+  vmPtr: number,
+): SupervisorHostOpRecord | null | undefined {
+  const nextHostOp = handle.kernel.supervisor_next_host_op;
+  const recordBytesExport = handle.kernel.supervisor_host_op_record_bytes;
+  if (nextHostOp === undefined || recordBytesExport === undefined) {
+    return undefined;
+  }
+  const recordBytes = recordBytesExport();
+  if (recordBytes < SUPERVISOR_HOST_OP_RECORD_BYTES) {
+    throw new Error(`supervisor arm host timer HostOp record bytes too small: ${recordBytes}`);
+  }
+  const memory = handle.kernel.memory ?? handle.memory;
+  const scratch = supervisorHostOpScratchBase(handle);
+  ensureMemoryCapacity(memory, scratch + recordBytes);
+  const result = nextHostOp(scratch, recordBytes);
+  if (result === 0) {
+    return null;
+  }
+  if (result < 0 || result > recordBytes) {
+    throw new Error(`supervisor arm host timer HostOp poll failed: ${result}`);
+  }
+  return decodeSupervisorArmHostTimerOp(
+    handle,
+    new DataView(memory.buffer, scratch, result),
+    vmPtr,
+  );
+}
+
+function supervisorHostCompletionOutcomeSuccess(handle: ProcessHandle): number {
+  return handle.kernel.supervisor_host_completion_outcome_success?.()
+    ?? SUPERVISOR_HOST_COMPLETION_OUTCOME_SUCCESS;
+}
+
+function supervisorHostCompletionOutcomeFailure(handle: ProcessHandle): number {
+  return handle.kernel.supervisor_host_completion_outcome_failure?.()
+    ?? SUPERVISOR_HOST_COMPLETION_OUTCOME_FAILURE;
+}
+
+function submitSupervisorHostOpCompletion(
+  handle: ProcessHandle,
+  record: SupervisorHostOpRecord,
+  outcome: number,
+  detail: number,
+): number | undefined {
+  const completeHostOp = handle.kernel.supervisor_complete_host_op;
+  if (completeHostOp === undefined) {
+    return undefined;
+  }
+  const memory = handle.kernel.memory ?? handle.memory;
+  const scratch = kernelScratchBase(handle.kernel) + SUPERVISOR_HOST_COMPLETION_SCRATCH_OFFSET;
+  ensureMemoryCapacity(memory, scratch + SUPERVISOR_HOST_COMPLETION_RECORD_BYTES);
+  const view = new DataView(memory.buffer, scratch, SUPERVISOR_HOST_COMPLETION_RECORD_BYTES);
+  view.setUint32(0, SUPERVISOR_HOST_COMPLETION_RECORD_MAGIC, true);
+  view.setUint32(4, handle.kernel.supervisor_abi_version?.() ?? 1, true);
+  view.setUint32(8, SUPERVISOR_HOST_COMPLETION_RECORD_BYTES, true);
+  view.setUint32(12, record.kind, true);
+  view.setBigUint64(16, record.seq, true);
+  view.setUint32(24, record.parentVmPtr, true);
+  view.setUint32(28, record.childVmPtr, true);
+  view.setUint32(32, record.tid, true);
+  view.setUint32(36, outcome, true);
+  view.setUint32(40, detail, true);
+  view.setUint32(44, 0, true);
+  view.setBigUint64(48, record.flags, true);
+  view.setBigUint64(56, record.childTidPtr, true);
+  return completeHostOp(scratch, SUPERVISOR_HOST_COMPLETION_RECORD_BYTES);
+}
+
+function armSupervisorHostTimer(
+  handle: ProcessHandle,
+  record: SupervisorHostOpRecord,
+  deps: Pick<
+    WorkerMessageHandlerDeps,
+    "appendRuntimeLifecycleEvent" | "appendWorkerDebugLog" | "failProcess" | "pumpProcess"
+  >,
+): void {
+  const completeFutexWait = handle.kernel.supervisor_complete_futex_wait;
+  const timedOut = handle.kernel.supervisor_futex_wait_completion_timed_out;
+  if (completeFutexWait === undefined || timedOut === undefined) {
+    throw new Error("kernel supervisor ABI missing futex timeout completion exports");
+  }
+  const delayMs = Number(
+    record.flags > BigInt(0x7fff_ffff)
+      ? 0x7fff_ffffn
+      : record.flags,
+  );
+  deps.appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `supervisor-host-timer-arm:${handle.pid}:vm=0x${record.parentVmPtr.toString(16)}`
+      + `:seq=${record.seq.toString()}:delay=${delayMs}`,
+  );
+  globalThis.setTimeout(() => {
+    try {
+      const status = completeFutexWait(record.parentVmPtr, timedOut());
+      submitSupervisorHostOpCompletion(
+        handle,
+        record,
+        supervisorHostCompletionOutcomeSuccess(handle),
+        status,
+      );
+      deps.appendWorkerDebugLog(
+        handle,
+        `supervisor-host-timer-fired:vm=0x${record.parentVmPtr.toString(16)}`
+          + `:seq=${record.seq.toString()}:status=${status}`,
+      );
+      deps.pumpProcess(handle);
+    } catch (error) {
+      submitSupervisorHostOpCompletion(
+        handle,
+        record,
+        supervisorHostCompletionOutcomeFailure(handle),
+        0,
+      );
+      deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+    }
+  }, delayMs);
 }
 
 function beginStatusTransitionRpc(blocked: BlockedWorkerState): number {
@@ -1168,6 +1330,22 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       }
       deps.enqueueWorker(handle, worker);
       return;
+    }
+
+    if (status === handle.kernel.abi_status_futex_wait()) {
+      const hostTimer = drainSupervisorArmHostTimerHostOp(handle, thread.vmPtr);
+      if (hostTimer !== undefined) {
+        if (handle.runningWorker === worker) {
+          handle.runningWorker = null;
+        }
+        thread.waitingInWorkerStatus = status;
+        thread.waitingInWorkerReconcileDeferred = false;
+        if (hostTimer !== null) {
+          armSupervisorHostTimer(handle, hostTimer, deps);
+        }
+        deps.pumpProcess(handle);
+        return;
+      }
     }
 
     if (
