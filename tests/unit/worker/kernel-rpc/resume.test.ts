@@ -1464,7 +1464,7 @@ test("resumeBlockedSyscallOutcome completes epoll timeout through epoll timeout 
   expect(requestPipeStateSync).not.toHaveBeenCalled();
   expect(syncBlockedForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
   expect(outcome).toMatchObject({
-    kind: "blocked",
+    kind: "completed",
     status: 0,
   });
   expect(outcome.effects).toBeUndefined();
