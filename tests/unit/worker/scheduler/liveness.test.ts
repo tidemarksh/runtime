@@ -21,6 +21,7 @@ import { createRunLoopScheduler } from "../../../../src/worker/scheduler/run-loo
 import { createTransferDebugStats, createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
+import { writeSupervisorArmHostTimerHostOpRecord } from "../support/supervisor-abi.js";
 
 function makeKernel() {
   const threadResumeWait4 = vi.fn();
@@ -188,28 +189,6 @@ const SUPERVISOR_RESUME_KIND_RUNNABLE_THREAD = 2;
 const SUPERVISOR_FAULT_EXIT_DECISION_BYTES = 88;
 const SUPERVISOR_FAULT_EXIT_KIND_PROCESS_EXIT = 2;
 
-function writeArmHostTimerHostOpRecord(
-  memory: WebAssembly.Memory,
-  outPtr: number,
-  vmPtr: number,
-  delayMs: bigint,
-): void {
-  const view = new DataView(memory.buffer, outPtr, 64);
-  view.setUint32(0, 0x4f48_5354, true);
-  view.setUint32(4, 1, true);
-  view.setUint32(8, 64, true);
-  view.setUint32(12, 12, true);
-  view.setBigUint64(16, 7n, true);
-  view.setUint32(24, vmPtr, true);
-  view.setUint32(28, 0, true);
-  view.setUint32(32, 2, true);
-  view.setUint32(36, 0x2000, true);
-  view.setUint32(40, 7, true);
-  view.setUint32(44, 0, true);
-  view.setBigUint64(48, delayMs, true);
-  view.setBigUint64(56, 100n, true);
-}
-
 function writeSupervisorRunnableResumeRecord(
   memory: WebAssembly.Memory,
   outPtr: number,
@@ -376,6 +355,138 @@ function expectTestSupervisorProcessResumeSelects(
   expect(view.getUint32(scratch + 24, true)).toBe(expectedVmPtr);
 }
 
+interface TestSupervisorTimerHostOp {
+  vmPtr: number;
+  status: number;
+  delayMs: bigint;
+  deadlineTicks: bigint;
+  seq: bigint;
+}
+
+function testTimerfdDelayMs(kernel: ProcessHandle["kernel"], deadlineTicks: bigint): bigint {
+  const currentTicks = BigInt(kernel.monotonic_ticks_current?.() ?? 0n);
+  if (deadlineTicks <= currentTicks) {
+    return 0n;
+  }
+  const ticksPerSec = 100_000_000n;
+  return ((deadlineTicks - currentTicks) * 1000n + (ticksPerSec - 1n)) / ticksPerSec;
+}
+
+function selectTestSupervisorBlockedWaitTimer(
+  kernel: ProcessHandle["kernel"],
+  vmPtr: number,
+  seq: bigint,
+): TestSupervisorTimerHostOp | null {
+  const status = kernel.thread_status(vmPtr);
+  if (status === kernel.abi_status_epoll_wait()) {
+    const timeoutMs = BigInt(kernel.thread_epoll_wait_timeout(vmPtr));
+    if (timeoutMs >= 0n) {
+      return { vmPtr, status, delayMs: timeoutMs, deadlineTicks: 0n, seq };
+    }
+    const deadlineTicks = BigInt(kernel.thread_epoll_timerfd_deadline_ticks?.(vmPtr) ?? 0n);
+    return deadlineTicks === 0n
+      ? null
+      : { vmPtr, status, delayMs: testTimerfdDelayMs(kernel, deadlineTicks), deadlineTicks, seq };
+  }
+  if (status === kernel.abi_status_pipe_wait()) {
+    const timeoutMs = BigInt(kernel.thread_poll_wait_timeout?.(vmPtr) ?? -1n);
+    if (timeoutMs < 0n || (kernel.thread_poll_wait_ready_count?.(vmPtr) ?? 0) > 0) {
+      return null;
+    }
+    return { vmPtr, status, delayMs: timeoutMs, deadlineTicks: 0n, seq };
+  }
+  if (
+    status === kernel.abi_status_connect()
+    || status === kernel.abi_status_socket_recv()
+    || status === kernel.abi_status_socket_send()
+  ) {
+    const timeoutMs = BigInt(kernel.thread_socket_wait_timeout?.(vmPtr) ?? -1n);
+    return timeoutMs < 0n ? null : { vmPtr, status, delayMs: timeoutMs, deadlineTicks: 0n, seq };
+  }
+  return null;
+}
+
+function completeTestSupervisorBlockedWaitTimer(
+  kernel: ProcessHandle["kernel"],
+  memory: WebAssembly.Memory,
+  completionPtr: number,
+  completionLen: number,
+): number {
+  if (completionLen < 64) {
+    return -1;
+  }
+  const view = new DataView(memory.buffer, completionPtr, completionLen);
+  const vmPtr = view.getUint32(24, true);
+  const deadlineTicks = view.getBigUint64(56, true);
+  if (deadlineTicks !== 0n) {
+    kernel.sync_monotonic_ticks_floor?.(deadlineTicks);
+  }
+  const status = kernel.thread_status(vmPtr);
+  if (status === kernel.abi_status_epoll_wait()) {
+    if (Number(kernel.thread_epoll_wait_timeout(vmPtr)) >= 0) {
+      kernel.thread_resume_epoll_wait_timeout?.(vmPtr);
+    } else {
+      kernel.thread_resume_blocked_syscall?.(vmPtr);
+    }
+  } else if (status === kernel.abi_status_pipe_wait()) {
+    kernel.thread_resume_poll_wait_timeout?.(vmPtr);
+  } else if (
+    status === kernel.abi_status_connect()
+    || status === kernel.abi_status_socket_recv()
+    || status === kernel.abi_status_socket_send()
+  ) {
+    kernel.thread_resume_socket_wait_timeout?.(vmPtr);
+  }
+  return kernel.thread_status(vmPtr);
+}
+
+function installTestSupervisorBlockedWaitTimers(
+  kernel: ProcessHandle["kernel"],
+  handle: ProcessHandle,
+): void {
+  if (kernel.supervisor_next_host_op !== undefined || kernel.supervisor_enqueue_blocked_wait_timer !== undefined) {
+    return;
+  }
+  kernel.memory = handle.memory;
+  kernel.kernel_heap_ptr = () => -0x3c000;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_host_op_record_bytes = () => 64;
+  kernel.supervisor_host_op_kind_arm_host_timer = () => 12;
+  kernel.supervisor_host_completion_outcome_success = () => 1;
+  kernel.supervisor_host_completion_outcome_failure = () => 2;
+  const pendingTimers: TestSupervisorTimerHostOp[] = [];
+  let seq = 1n;
+  kernel.supervisor_enqueue_blocked_wait_timer = vi.fn((vmPtr: number) => {
+    const timer = selectTestSupervisorBlockedWaitTimer(kernel, vmPtr, seq);
+    if (timer === null) {
+      return 0;
+    }
+    seq += 1n;
+    pendingTimers.push(timer);
+    return 1;
+  });
+  kernel.supervisor_next_host_op = vi.fn((outPtr: number, outLen: number) => {
+    if (outLen < 64) {
+      return -1;
+    }
+    const timer = pendingTimers.shift();
+    if (timer === undefined) {
+      return 0;
+    }
+    return writeSupervisorArmHostTimerHostOpRecord(handle.memory, outPtr, {
+      vmPtr: timer.vmPtr,
+      delayMs: timer.delayMs,
+      deadlineTicks: timer.deadlineTicks,
+      seq: timer.seq,
+      tid: kernel.process_thread_tid?.(timer.vmPtr) ?? 0,
+      processPtr: kernel.thread_process_ptr(timer.vmPtr),
+      status: timer.status,
+    });
+  });
+  kernel.supervisor_complete_host_op = vi.fn((completionPtr: number, completionLen: number) =>
+    completeTestSupervisorBlockedWaitTimer(kernel, handle.memory, completionPtr, completionLen));
+}
+
 function makeHandle(
   kernel: ProcessHandle["kernel"],
   worker: Worker,
@@ -391,7 +502,7 @@ function makeHandle(
     forkMaxMemoryPages: 0,
     guestBase: 0,
     worker,
-    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    memory: new WebAssembly.Memory({ initial: 4, maximum: 16, shared: true }),
     wasmModule: {} as WebAssembly.Module,
     kernel,
     kernelState: {
@@ -483,6 +594,7 @@ function makeHandle(
   };
   if (threadWorkerStates !== undefined) {
     installTestSupervisorProcessResume(kernel, handle, threadWorkerStates);
+    installTestSupervisorBlockedWaitTimers(kernel, handle);
   }
   return handle;
 }
@@ -1233,7 +1345,7 @@ test("host-local epoll retry treats timeout zero as expired", async () => {
   }));
 });
 
-test("epoll kernel-worker retry delegates timeout completion to blocked syscall outcome when available", async () => {
+test("epoll kernel-worker retry completes timeout through supervisor timer HostOp", async () => {
   const blockedWorker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -1253,7 +1365,7 @@ test("epoll kernel-worker retry delegates timeout completion to blocked syscall 
     throw new Error("epoll timeout completion must not re-dispatch the blocked syscall in the scheduler");
   });
   kernel.thread_resume_epoll_wait_timeout = vi.fn(() => {
-    throw new Error("scheduler must delegate epoll timeout completion to the kernel-worker outcome");
+    status = kernel.abi_status_ok();
   });
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
   handle.pendingChildSpawnRecords = 0;
@@ -1298,18 +1410,13 @@ test("epoll kernel-worker retry delegates timeout completion to blocked syscall 
 
   scheduler.notifySchedulerProgress(handle);
   await vi.waitFor(() => {
-    expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
-      handle,
-      blockedWorker,
-      0x1234,
-      handle.kernel.abi_status_epoll_wait(),
-      true,
-    );
+    expect(kernel.supervisor_complete_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
   });
 
-  expect(kernel.thread_resume_epoll_wait_timeout).not.toHaveBeenCalled();
+  expect(resumeBlockedSyscallOutcome).not.toHaveBeenCalled();
+  expect(kernel.thread_resume_epoll_wait_timeout).toHaveBeenCalledWith(0x1234);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(lifecycleEvents).toContain("epoll-retry-resume-rpc:1:vm=0x1234:expired=1");
+  expect(lifecycleEvents).toContain("supervisor-host-timer-arm:1:vm=0x1234:seq=1:delay=0");
   expect(handle.blockedWorkers.has(blockedWorker)).toBe(false);
 });
 
@@ -1330,10 +1437,11 @@ test("epoll sync timeout zero survives a running-worker retry skip", async () =>
   threadWorkerStates.set(runningWorker, runningThread);
   const { exports: kernel } = makeKernel();
   let timeoutMs = -1n;
+  let blockedStatus = kernel.abi_status_epoll_wait();
   kernel.abi_max_threads = () => 4;
   kernel.abi_fd_type_epoll = () => 7;
   kernel.thread_status = (vmPtr: number) =>
-    vmPtr === runningVmPtr ? kernel.abi_status_ok() : kernel.abi_status_epoll_wait();
+    vmPtr === runningVmPtr ? kernel.abi_status_ok() : blockedStatus;
   kernel.thread_epoll_wait_timeout = () => timeoutMs;
   kernel.thread_process_thread_count = () => 2;
   kernel.process_thread_vm_ptr = (_processVmPtr: number, slot: number) => {
@@ -1349,7 +1457,9 @@ test("epoll sync timeout zero survives a running-worker retry skip", async () =>
   kernel.thread_blocked_ofd_id = () => 5;
   kernel.kernel_ofd_fd_type = (ofdId: number) => ofdId === 5 ? 7 : 0;
   kernel.thread_resume_blocked_syscall = vi.fn();
-  kernel.thread_resume_epoll_wait_timeout = vi.fn();
+  kernel.thread_resume_epoll_wait_timeout = vi.fn(() => {
+    blockedStatus = kernel.abi_status_ok();
+  });
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
   handle.pendingChildSpawnRecords = 0;
   handle.workers = new Set([blockedWorker, runningWorker]);
@@ -1395,8 +1505,7 @@ test("epoll sync timeout zero survives a running-worker retry skip", async () =>
   });
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(kernel.thread_resume_epoll_wait_timeout).not.toHaveBeenCalled();
-  expect(handle.blockedWorkers.get(blockedWorker)?.timeoutExpired).toBe(true);
+  expect(kernel.thread_resume_epoll_wait_timeout).toHaveBeenCalledWith(blockedVmPtr);
   expect(handle.blockedWorkers.has(blockedWorker)).toBe(true);
   const retryBlocked = handle.blockedWorkers.get(blockedWorker);
   if (retryBlocked?.retryTimer !== null && retryBlocked?.retryTimer !== undefined) {
@@ -1531,7 +1640,7 @@ test("pipe retry pumps active child processes before remaining blocked", async (
   expect(pumpActiveChildProcesses).toHaveBeenCalledWith(1);
 });
 
-test("finite pipe poll with active children waits until timeout while child runs", async () => {
+test("finite pipe poll with active children completes through supervisor timer", async () => {
   const worker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -1574,8 +1683,9 @@ test("finite pipe poll with active children waits until timeout while child runs
 
   await vi.advanceTimersByTimeAsync(500);
 
-  expect(pumpActiveChildProcesses).toHaveBeenCalled();
+  expect(pumpActiveChildProcesses).not.toHaveBeenCalled();
   expect(resumePollTimeout).toHaveBeenCalledWith(0x1234);
+  expect(kernel.supervisor_complete_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
 });
 
 test("pipe pselect retry applies child exit records before passive parking", async () => {
@@ -2006,7 +2116,7 @@ test("socket poll pump resumes through kernel-worker RPC when available", async 
   expect(failProcess).not.toHaveBeenCalled();
 });
 
-test("finite pipe poll timeout delegates to kernel-worker blocked syscall outcome when available", async () => {
+test("finite pipe poll timeout completes through supervisor timer when kernel-worker exists", async () => {
   const worker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -2050,20 +2160,12 @@ test("finite pipe poll timeout delegates to kernel-worker blocked syscall outcom
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_pipe_wait(), 0x1234);
   const blocked = handle.blockedWorkers.get(worker);
   expect(blocked).toBeDefined();
-  blocked!.timeoutExpired = true;
-  blocked!.pipeSyncedBeforePassive = true;
-  scheduler.notifySchedulerProgress(handle);
-  await Promise.resolve();
-  await Promise.resolve();
+  expect(blocked?.supervisorTimerArmed).toBe(true);
+  await vi.advanceTimersByTimeAsync(100);
 
-  expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
-    handle,
-    worker,
-    0x1234,
-    handle.kernel.abi_status_pipe_wait(),
-    true,
-  );
-  expect(resumePollTimeout).not.toHaveBeenCalled();
+  expect(resumeBlockedSyscallOutcome).not.toHaveBeenCalled();
+  expect(resumePollTimeout).toHaveBeenCalledWith(0x1234);
+  expect(kernel.supervisor_complete_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
   expect(handle.blockedWorkers.has(worker)).toBe(false);
   expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
     type: "step",
@@ -2138,20 +2240,10 @@ test("finite pipe poll timeout uses saved blocked syscall when current a7 moved 
   expect(handle.blockedWorkers.has(worker)).toBe(false);
   expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
     type: "step",
-    guestMemoryWrites: [
-      {
-        guestPtr: 0x20,
-        bytes: new Uint8Array([
-          0x08, 0, 0, 0, 0, 0, 0, 0,
-          0x10, 0, 0, 0, 0, 0, 0, 0,
-          0, 0, 0, 0, 0, 0, 0, 0,
-        ]),
-      },
-    ],
   }));
 });
 
-test("expired finite pipe poll syncs pipe state before local timeout resume", async () => {
+test("supervisor-owned finite pipe poll timer does not run local pipe sync before completion", async () => {
   const worker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -2215,24 +2307,23 @@ test("expired finite pipe poll syncs pipe state before local timeout resume", as
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_pipe_wait(), 0x1234);
   const blocked = handle.blockedWorkers.get(worker);
   expect(blocked).toBeDefined();
-  if (blocked!.retryTimer !== null) {
-    clearTimeout(blocked!.retryTimer);
-    blocked!.retryTimer = null;
-  }
-  blocked!.timeoutExpired = true;
+  expect(blocked?.supervisorTimerArmed).toBe(true);
   scheduler.notifySchedulerProgress(handle);
-  for (let i = 0; i < 10; i += 1) {
-    await Promise.resolve();
-  }
-  await vi.runAllTimersAsync();
+  await Promise.resolve();
 
-  expect(lifecycleEvents.some((event) => event.startsWith("pipe-sync-start:1:wake=0"))).toBe(true);
+  expect(lifecycleEvents.some((event) => event.startsWith("pipe-sync-start:1:wake=0"))).toBe(false);
   expect(order).toEqual([]);
   expect(resumePollTimeout).not.toHaveBeenCalled();
   expect(handle.blockedWorkers.has(worker)).toBe(true);
+
+  await vi.advanceTimersByTimeAsync(100);
+
+  expect(order).toEqual(["resume"]);
+  expect(handle.kernelWorkerRequest).not.toHaveBeenCalled();
+  expect(handle.blockedWorkers.has(worker)).toBe(false);
 });
 
-test("expired finite pipe poll with active child delegates outcome without pipe sync", async () => {
+test("supervisor-owned finite pipe poll with active child completes without pipe sync", async () => {
   const worker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -2242,7 +2333,8 @@ test("expired finite pipe poll with active child delegates outcome without pipe 
   let status = kernel.abi_status_pipe_wait();
   const order: string[] = [];
   const resumePollTimeout = vi.fn(() => {
-    throw new Error("kernel-worker finite pipe poll timeout must use blocked syscall outcome");
+    order.push("resume");
+    status = kernel.abi_status_ok();
   });
   kernel.abi_sys_ppoll = () => 73;
   kernel.thread_a7 = () => 73n;
@@ -2270,11 +2362,7 @@ test("expired finite pipe poll with active child delegates outcome without pipe 
   handle.kernelWorkerRequest = vi.fn(async () => {
     throw new Error("active child finite pipe poll timeout should not sync pipe state");
   });
-  const resumeBlockedSyscallOutcome = vi.fn(async () => {
-    order.push("resume");
-    status = kernel.abi_status_ok();
-    return { kind: "completed" as const, status };
-  });
+  const resumeBlockedSyscallOutcome = vi.fn(async () => ({ kind: "completed" as const, status }));
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
@@ -2291,24 +2379,20 @@ test("expired finite pipe poll with active child delegates outcome without pipe 
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_pipe_wait(), 0x1234);
   const blocked = handle.blockedWorkers.get(worker);
   expect(blocked).toBeDefined();
-  if (blocked!.retryTimer !== null) {
-    clearTimeout(blocked!.retryTimer);
-    blocked!.retryTimer = null;
-  }
-  blocked!.timeoutExpired = true;
+  expect(blocked?.supervisorTimerArmed).toBe(true);
   scheduler.notifySchedulerProgress(handle);
   await Promise.resolve();
 
-  expect(order).toEqual(["resume"]);
-  expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
-    handle,
-    worker,
-    0x1234,
-    handle.kernel.abi_status_pipe_wait(),
-    true,
-  );
+  expect(order).toEqual([]);
+  expect(resumeBlockedSyscallOutcome).not.toHaveBeenCalled();
   expect(resumePollTimeout).not.toHaveBeenCalled();
   expect(handle.kernelWorkerRequest).not.toHaveBeenCalled();
+  expect(handle.blockedWorkers.has(worker)).toBe(true);
+
+  await vi.advanceTimersByTimeAsync(100);
+
+  expect(order).toEqual(["resume"]);
+  expect(resumePollTimeout).toHaveBeenCalledWith(0x1234);
   expect(handle.blockedWorkers.has(worker)).toBe(false);
 });
 
@@ -2739,7 +2823,7 @@ test("epoll kernel-worker retry re-queries timerfd deadline after state sync", a
   };
   kernel.thread_epoll_timerfd_deadline_ticks = vi.fn(() => deadlineVisible ? 1_000_001n : 0n);
   kernel.thread_resume_blocked_syscall = vi.fn(() => {
-    throw new Error("kernel-worker epoll resume must use blocked syscall outcome");
+    status = kernel.abi_status_ok();
   });
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
   handle.pendingChildSpawnRecords = 0;
@@ -2805,14 +2889,8 @@ test("epoll kernel-worker retry re-queries timerfd deadline after state sync", a
   await vi.advanceTimersByTimeAsync(1);
 
   expect(kernel.sync_monotonic_ticks_floor).toHaveBeenCalledWith(1_000_001n);
-  expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
-    handle,
-    blockedWorker,
-    0x1234,
-    handle.kernel.abi_status_epoll_wait(),
-    false,
-  );
-  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+  expect(resumeBlockedSyscallOutcome).not.toHaveBeenCalled();
+  expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(0x1234);
   expect(kernel.thread_resume_epoll_wait_timeout).not.toHaveBeenCalled();
 });
 
@@ -2863,7 +2941,7 @@ test("epoll kernel-worker retry syncs watched timerfd OFD after the timer fd is 
   kernel.kernel_epoll_instance_bytes = () => 64 * 32 + 4;
   kernel.thread_epoll_timerfd_deadline_ticks = vi.fn(() => deadlineVisible ? 1_000_001n : 0n);
   kernel.thread_resume_blocked_syscall = vi.fn(() => {
-    throw new Error("kernel-worker epoll resume must use blocked syscall outcome");
+    status = kernel.abi_status_ok();
   });
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
   handle.pendingChildSpawnRecords = 0;
@@ -2937,14 +3015,8 @@ test("epoll kernel-worker retry syncs watched timerfd OFD after the timer fd is 
   await vi.advanceTimersByTimeAsync(10);
 
   expect(kernel.sync_monotonic_ticks_floor).toHaveBeenCalledWith(1_000_001n);
-  expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
-    handle,
-    blockedWorker,
-    0x1234,
-    handle.kernel.abi_status_epoll_wait(),
-    false,
-  );
-  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+  expect(resumeBlockedSyscallOutcome).not.toHaveBeenCalled();
+  expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(0x1234);
   expect(kernel.thread_resume_epoll_wait_timeout).not.toHaveBeenCalled();
 });
 
@@ -6275,7 +6347,15 @@ test("blocked retry result arms supervisor timer instead of scheduling runtime r
     kernel_heap_ptr: () => -0x3c000,
     supervisor_next_host_op: vi.fn((outPtr: number, outLen: number) => {
       expect(outLen).toBe(64);
-      writeArmHostTimerHostOpRecord(memory, outPtr, thread.vmPtr, 25n);
+      writeSupervisorArmHostTimerHostOpRecord(memory, outPtr, {
+        vmPtr: thread.vmPtr,
+        delayMs: 25n,
+        seq: 7n,
+        tid: 2,
+        processPtr: 0x2000,
+        status: kernel.abi_status_epoll_wait(),
+        deadlineTicks: 100n,
+      });
       return 64;
     }),
     supervisor_complete_host_op: vi.fn(() => 0),
@@ -6344,7 +6424,15 @@ test("blocked wait retry arms supervisor timer before runtime poll retry", () =>
     kernel_heap_ptr: () => -0x3c000,
     supervisor_next_host_op: vi.fn((outPtr: number, outLen: number) => {
       expect(outLen).toBe(64);
-      writeArmHostTimerHostOpRecord(memory, outPtr, thread.vmPtr, 40n);
+      writeSupervisorArmHostTimerHostOpRecord(memory, outPtr, {
+        vmPtr: thread.vmPtr,
+        delayMs: 40n,
+        seq: 7n,
+        tid: 2,
+        processPtr: 0x2000,
+        status: kernel.abi_status_pipe_wait(),
+        deadlineTicks: 100n,
+      });
       return 64;
     }),
     supervisor_complete_host_op: vi.fn(() => 0),
@@ -6425,7 +6513,15 @@ test("supervisor timer completion resumes the supervisor-selected runnable worke
     kernel_heap_ptr: () => -0x3c000,
     supervisor_next_host_op: vi.fn((outPtr: number, outLen: number) => {
       expect(outLen).toBe(64);
-      writeArmHostTimerHostOpRecord(memory, outPtr, thread.vmPtr, 40n);
+      writeSupervisorArmHostTimerHostOpRecord(memory, outPtr, {
+        vmPtr: thread.vmPtr,
+        delayMs: 40n,
+        seq: 7n,
+        tid: 2,
+        processPtr: 0x2000,
+        status: kernel.abi_status_pipe_wait(),
+        deadlineTicks: 100n,
+      });
       return 64;
     }),
     supervisor_complete_host_op: vi.fn((_completionPtr: number, _completionLen: number) => {
@@ -6890,7 +6986,7 @@ test("notifySchedulerProgress leaves supervisor timer owned socket wait to super
   );
 });
 
-test("connect timeout delegates to kernel-worker blocked syscall outcome when available", async () => {
+test("connect timeout completes through supervisor timer when kernel-worker exists", async () => {
   const worker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -6930,15 +7026,10 @@ test("connect timeout delegates to kernel-worker blocked syscall outcome when av
   await Promise.resolve();
   await Promise.resolve();
 
-  expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
-    handle,
-    worker,
-    0x1234,
-    handle.kernel.abi_status_connect(),
-    true,
-  );
-  expect(resumeSocketTimeout).not.toHaveBeenCalled();
+  expect(resumeBlockedSyscallOutcome).not.toHaveBeenCalled();
+  expect(resumeSocketTimeout).toHaveBeenCalledWith(0x1234);
+  expect(kernel.supervisor_complete_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(runtimeEvents).toContain(`socket-retry-timeout-rpc:${handle.pid}:status=${handle.kernel.abi_status_connect()}`);
+  expect(runtimeEvents).toContain(`supervisor-host-timer-arm:${handle.pid}:vm=0x1234:seq=1:delay=25`);
   expect(handle.blockedWorkers.has(worker)).toBe(false);
 });

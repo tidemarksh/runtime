@@ -64,6 +64,7 @@ test("process creation requires the supervisor ABI before runtime ownership star
     "supervisor_next_resume",
     "supervisor_complete_futex_wait",
     "supervisor_signal_pending_for_blocked_wait",
+    "supervisor_enqueue_blocked_wait_timer",
     "supervisor_fd_control_record",
     "supervisor_fs_control_record",
     "supervisor_signal_control_record",

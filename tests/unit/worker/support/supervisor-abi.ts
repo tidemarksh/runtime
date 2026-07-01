@@ -39,6 +39,16 @@ export interface SupervisorRunnableResumeRecordFixture {
   detail0?: bigint;
 }
 
+export interface SupervisorArmHostTimerHostOpFixture {
+  vmPtr: number;
+  delayMs: bigint;
+  seq?: bigint;
+  tid?: number;
+  processPtr?: number;
+  status?: number;
+  deadlineTicks?: bigint;
+}
+
 export interface SupervisorFaultExitDecisionRecordFixture {
   kind?: number;
   seq?: bigint;
@@ -121,4 +131,26 @@ export function writeSupervisorRunnableResumeRecord(
   view.setUint32(outPtr + 36, record.status ?? 0, true);
   view.setBigUint64(outPtr + 40, record.detail0 ?? 0n, true);
   return 48;
+}
+
+export function writeSupervisorArmHostTimerHostOpRecord(
+  memory: WebAssembly.Memory,
+  outPtr: number,
+  record: SupervisorArmHostTimerHostOpFixture,
+): number {
+  const view = new DataView(memory.buffer);
+  view.setUint32(outPtr, 0x4f48_5354, true);
+  view.setUint32(outPtr + 4, DEFAULT_NUMERIC_EXPORTS.supervisor_abi_version, true);
+  view.setUint32(outPtr + 8, DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_bytes, true);
+  view.setUint32(outPtr + 12, DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_kind_arm_host_timer, true);
+  view.setBigUint64(outPtr + 16, record.seq ?? 1n, true);
+  view.setUint32(outPtr + 24, record.vmPtr, true);
+  view.setUint32(outPtr + 28, 0, true);
+  view.setUint32(outPtr + 32, record.tid ?? 1, true);
+  view.setUint32(outPtr + 36, record.processPtr ?? 0, true);
+  view.setUint32(outPtr + 40, record.status ?? 0, true);
+  view.setUint32(outPtr + 44, 0, true);
+  view.setBigUint64(outPtr + 48, record.delayMs, true);
+  view.setBigUint64(outPtr + 56, record.deadlineTicks ?? 0n, true);
+  return DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_bytes;
 }

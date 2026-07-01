@@ -376,6 +376,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     logNetworkDebug,
     scheduleBlockedRetry,
   });
+
   const {
     pruneDetachedProcessWorkers,
     pruneStaleProcessWorkers,
@@ -1027,8 +1028,37 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   }
 
   function armBlockedSupervisorTimer(handle: ProcessHandle, vmPtr: number): boolean {
-    const hostTimer = drainSupervisorArmHostTimerHostOp(handle, vmPtr);
-    if (hostTimer === undefined || hostTimer === null) {
+    let hostTimer = drainSupervisorArmHostTimerHostOp(handle, vmPtr);
+    if (hostTimer === undefined) {
+      return false;
+    }
+    if (hostTimer === null) {
+      const enqueueTimer = handle.kernel.supervisor_enqueue_blocked_wait_timer;
+      if (enqueueTimer === undefined) {
+        return false;
+      }
+      const enqueueResult = enqueueTimer(vmPtr);
+      if (enqueueResult < 0) {
+        throw new Error(
+          `supervisor blocked wait timer enqueue failed: `
+            + `pid=${handle.pid}:vm=0x${vmPtr.toString(16)}:result=${enqueueResult}`,
+        );
+      }
+      if (enqueueResult === 0) {
+        return false;
+      }
+      hostTimer = drainSupervisorArmHostTimerHostOp(handle, vmPtr);
+      if (hostTimer === undefined) {
+        throw new Error("kernel supervisor ABI missing arm host timer HostOp exports");
+      }
+      if (hostTimer === null) {
+        throw new Error(
+          `supervisor blocked wait timer enqueue returned no HostOp: `
+            + `pid=${handle.pid}:vm=0x${vmPtr.toString(16)}`,
+        );
+      }
+    }
+    if (hostTimer === null) {
       return false;
     }
     armSupervisorHostTimer(handle, hostTimer, {
@@ -1291,6 +1321,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     const blockedPollReadyCount = blocked.status === handle.kernel.abi_status_pipe_wait()
       ? handle.kernel.thread_poll_wait_ready_count?.(blocked.vmPtr)
       : undefined;
+    if (armBlockedSupervisorTimerForBlocked(handle, blocked)) {
+      return;
+    }
     if (pipeWaitShouldParkBehindActiveChild(
       handle,
       blocked,

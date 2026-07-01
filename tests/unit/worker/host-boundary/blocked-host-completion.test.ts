@@ -10,28 +10,7 @@ import {
   makeHostBoundaryHandle,
   makeHostBoundaryKernel,
 } from "./helpers.js";
-
-function writeArmHostTimerHostOpRecord(
-  memory: WebAssembly.Memory,
-  outPtr: number,
-  vmPtr: number,
-  delayMs: bigint,
-): void {
-  const view = new DataView(memory.buffer, outPtr, 64);
-  view.setUint32(0, 0x4f48_5354, true);
-  view.setUint32(4, 1, true);
-  view.setUint32(8, 64, true);
-  view.setUint32(12, 12, true);
-  view.setBigUint64(16, 7n, true);
-  view.setUint32(24, vmPtr, true);
-  view.setUint32(28, 0, true);
-  view.setUint32(32, 2, true);
-  view.setUint32(36, 0x2000, true);
-  view.setUint32(40, 22, true);
-  view.setUint32(44, 0, true);
-  view.setBigUint64(48, delayMs, true);
-  view.setBigUint64(56, 0n, true);
-}
+import { writeSupervisorArmHostTimerHostOpRecord } from "../support/supervisor-abi.js";
 
 test("host boundary submits supervisor futex timeout completion through kernel ABI", () => {
   const waitSpy = vi.spyOn(Atomics, "wait");
@@ -105,8 +84,14 @@ test("host boundary executes supervisor arm timer HostOp through completion ABI"
   kernel.supervisor_host_completion_outcome_failure = () => 2;
   kernel.supervisor_next_host_op = vi.fn((outPtr: number, outLen: number) => {
     expect(outLen).toBe(64);
-    writeArmHostTimerHostOpRecord(kernel.memory!, outPtr, 0x1234, 5n);
-    return 64;
+    return writeSupervisorArmHostTimerHostOpRecord(kernel.memory!, outPtr, {
+      vmPtr: 0x1234,
+      delayMs: 5n,
+      seq: 7n,
+      tid: 2,
+      processPtr: 0x2000,
+      status: 22,
+    });
   });
   kernel.supervisor_complete_host_op = vi.fn((completionPtr: number, completionLen: number) => {
     completionViews.push(new DataView(kernel.memory!.buffer, completionPtr, completionLen));

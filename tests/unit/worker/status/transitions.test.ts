@@ -1,6 +1,9 @@
 import { afterEach, expect, test, vi } from "vite-plus/test";
 import { createWorkerStatusTransitionHandler } from "../../../../src/worker/message-handler/transitions.js";
-import { writeSupervisorFaultExitDecisionRecord } from "../support/supervisor-abi.js";
+import {
+  writeSupervisorArmHostTimerHostOpRecord,
+  writeSupervisorFaultExitDecisionRecord,
+} from "../support/supervisor-abi.js";
 
 function makeKernelState() {
   return {
@@ -56,29 +59,6 @@ function writeCloneSpawnHostOpRecord(
   writeU32(view, 44, 0);
   writeU64(view, 48, 0x50f00n);
   writeU64(view, 56, 0x8800n);
-}
-
-function writeArmHostTimerHostOpRecord(
-  memory: WebAssembly.Memory,
-  ptr: number,
-  vmPtr: number,
-  delayMs: bigint,
-  status = 20,
-): void {
-  const view = new DataView(memory.buffer, ptr, 64);
-  writeU32(view, 0, 0x4f48_5354);
-  writeU32(view, 4, 1);
-  writeU32(view, 8, 64);
-  writeU32(view, 12, 12);
-  writeU64(view, 16, 9n);
-  writeU32(view, 24, vmPtr);
-  writeU32(view, 28, 0);
-  writeU32(view, 32, 2);
-  writeU32(view, 36, 0x5000);
-  writeU32(view, 40, status);
-  writeU32(view, 44, 0);
-  writeU64(view, 48, delayMs);
-  writeU64(view, 56, delayMs * 100_000n);
 }
 
 function writeFdControlRecord(memory: WebAssembly.Memory, ptr: number, seq: bigint): void {
@@ -1065,8 +1045,15 @@ test("STATUS_SLEEP arms supervisor host timer HostOp and reports completion", as
   });
   kernel.supervisor_next_host_op = vi.fn((outPtr: number, outLen: number) => {
     expect(outLen).toBe(64);
-    writeArmHostTimerHostOpRecord(memory, outPtr, 0x1234, 5n, 26);
-    return 64;
+    return writeSupervisorArmHostTimerHostOpRecord(memory, outPtr, {
+      vmPtr: 0x1234,
+      delayMs: 5n,
+      seq: 9n,
+      tid: 2,
+      processPtr: 0x5000,
+      status: 26,
+      deadlineTicks: 500_000n,
+    });
   });
   const deps = makeDeps(worker);
   const thread = deps.threadWorkerStates.get(worker)!;
@@ -1283,8 +1270,15 @@ test("STATUS_FUTEX_WAIT arms supervisor host timer HostOp and reports completion
   });
   kernel.supervisor_next_host_op = vi.fn((outPtr: number, outLen: number) => {
     expect(outLen).toBe(64);
-    writeArmHostTimerHostOpRecord(memory, outPtr, 0x1234, 5n);
-    return 64;
+    return writeSupervisorArmHostTimerHostOpRecord(memory, outPtr, {
+      vmPtr: 0x1234,
+      delayMs: 5n,
+      seq: 9n,
+      tid: 2,
+      processPtr: 0x5000,
+      status: 20,
+      deadlineTicks: 500_000n,
+    });
   });
   const deps = makeDeps(worker);
   const thread = deps.threadWorkerStates.get(worker)!;
