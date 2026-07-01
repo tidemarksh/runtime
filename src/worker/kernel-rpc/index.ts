@@ -191,7 +191,6 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     registerProcessWithKernelWorker,
     releaseHostStdioViaKernelWorker,
     resumeBlockedSyscallOutcome: kernelRpcBlockedRpcHelpers.resumeBlockedSyscallOutcome,
-    resumeBlockedSyscallLocally: kernelRpcBlockedRpcHelpers.resumeBlockedSyscallLocally,
     resumeConnectViaKernelWorker,
     resumeFsViaKernelWorkerOutcome: kernelRpcFsHelpers.resumeFsViaKernelWorkerOutcome,
     resumeFsViaKernelWorker: kernelRpcFsHelpers.resumeFsViaKernelWorker,

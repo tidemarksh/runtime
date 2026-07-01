@@ -5,6 +5,7 @@ import {
 } from "../../../../src/bridge/runtime-state.js";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { createWorkerKernelRpcHelpers } from "../../../../src/worker/kernel-rpc.js";
+import { createWorkerKernelRpcBlockedRpcHelpers } from "../../../../src/worker/kernel-rpc/blocked-rpc.js";
 import { createWorkerKernelRpcResumeLifecycleHelpers } from "../../../../src/worker/kernel-rpc/lifecycle/resume.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 
@@ -100,6 +101,23 @@ function makeHandle(
     guestWriteWatchRegions: [],
     ...overrides,
   } as ProcessHandle;
+}
+
+function createWorkerKernelRpcLocalBlockedRpcHelpers(
+  deps: Parameters<typeof createWorkerKernelRpcHelpers>[0],
+) {
+  return createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: deps.processHandles,
+    threadWorkerStates: deps.threadWorkerStates,
+    appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
+    appendWorkerDebugLog: deps.appendWorkerDebugLog,
+    enqueueWorker: deps.enqueueWorker,
+    failProcess: deps.failProcess,
+    handleBlockedRetryResult: deps.handleBlockedRetryResult,
+    requestPipeStateSync: deps.requestPipeStateSync,
+    syncBlockedForkSharedStateViaKernelWorker: deps.syncBlockedForkSharedStateViaKernelWorker,
+    syncSocketStateViaKernelWorker: deps.syncSocketStateViaKernelWorker,
+  });
 }
 
 test("resumeWait4ViaKernelWorker does not re-run local wait4 after kernel-worker resume", async () => {
@@ -470,7 +488,7 @@ test("resumeBlockedSyscallLocally skips kernel-worker shared-state syncs during 
     waitingInWorkerStatus: null,
   });
 
-  const helpers = createWorkerKernelRpcHelpers({
+  const helpers = createWorkerKernelRpcLocalBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: () => {},
@@ -595,7 +613,7 @@ test("resumeBlockedSyscallLocally queues pselect fd_set writes after owner-side 
   const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
   threadWorkerStates.set(worker, threadState);
 
-  const helpers = createWorkerKernelRpcHelpers({
+  const helpers = createWorkerKernelRpcLocalBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: () => {},
@@ -753,7 +771,7 @@ test("resumeBlockedSyscallLocally retries pselect pipe HUP owner-side after tran
   const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
   threadWorkerStates.set(worker, threadState);
 
-  const helpers = createWorkerKernelRpcHelpers({
+  const helpers = createWorkerKernelRpcLocalBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: () => {},
@@ -908,7 +926,7 @@ test("resumeBlockedSyscallLocally resumes pselect pipe HUP before generic after-
   const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
   threadWorkerStates.set(worker, threadState);
 
-  const helpers = createWorkerKernelRpcHelpers({
+  const helpers = createWorkerKernelRpcLocalBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: () => {},
@@ -1064,7 +1082,7 @@ test("resumeBlockedSyscallLocally retries mixed socket pipe pselect HUP owner-si
   const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
   threadWorkerStates.set(worker, threadState);
 
-  const helpers = createWorkerKernelRpcHelpers({
+  const helpers = createWorkerKernelRpcLocalBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: () => {},
@@ -1545,7 +1563,7 @@ test("resumeBlockedSyscallLocally wakes pipe waiters through requestPipeStateSyn
     waitingInWorkerStatus: null,
   });
 
-  const helpers = createWorkerKernelRpcHelpers({
+  const helpers = createWorkerKernelRpcLocalBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: () => {},
@@ -1679,7 +1697,7 @@ test("resumeBlockedSyscallLocally resumes pipe EOF after writers close even with
   const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
   threadWorkerStates.set(worker, threadState);
 
-  const helpers = createWorkerKernelRpcHelpers({
+  const helpers = createWorkerKernelRpcLocalBlockedRpcHelpers({
     processHandles: new Map([[1, handle], [3, childHandle]]),
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: () => {},
@@ -1844,7 +1862,7 @@ test("resumeBlockedSyscallLocally defers poll readiness while an active child st
     waitingInWorkerStatus: null,
   });
 
-  const helpers = createWorkerKernelRpcHelpers({
+  const helpers = createWorkerKernelRpcLocalBlockedRpcHelpers({
     processHandles: new Map([[1, handle], [3, childHandle]]),
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: () => {},
@@ -2001,7 +2019,7 @@ test("resumeBlockedSyscallLocally ignores exiting child pipe writers for pselect
   const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
   threadWorkerStates.set(worker, threadState);
 
-  const helpers = createWorkerKernelRpcHelpers({
+  const helpers = createWorkerKernelRpcLocalBlockedRpcHelpers({
     processHandles: new Map([[1, handle], [3, childHandle]]),
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: () => {},
@@ -2161,7 +2179,7 @@ test("resumeBlockedSyscallLocally completes pselect HUP marker despite an active
   const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
   threadWorkerStates.set(worker, threadState);
 
-  const helpers = createWorkerKernelRpcHelpers({
+  const helpers = createWorkerKernelRpcLocalBlockedRpcHelpers({
     processHandles: new Map([[1, handle], [3, childHandle]]),
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: () => {},
@@ -2282,7 +2300,7 @@ test("resumeBlockedSyscallLocally collapses pipe read that becomes ready after p
     waitingInWorkerStatus: null,
   });
 
-  const helpers = createWorkerKernelRpcHelpers({
+  const helpers = createWorkerKernelRpcLocalBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: () => {},
@@ -2406,7 +2424,7 @@ test("resumeBlockedSyscallLocally queues the full socket read buffer after owner
   const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
   threadWorkerStates.set(worker, threadState);
 
-  const helpers = createWorkerKernelRpcHelpers({
+  const helpers = createWorkerKernelRpcLocalBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: () => {},
