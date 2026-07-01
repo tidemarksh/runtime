@@ -90,6 +90,41 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     return null;
   }
 
+  function resumeBlockedSyscallViaKernelWorker(
+    handle: ProcessHandle,
+    worker: Worker,
+    blocked: BlockedWorkerState,
+    lifecycleEvent: string,
+    afterOutcome?: (outcome: KernelRpcResumeOutcome) => void,
+  ): boolean {
+    if (!handle.kernelWorkerRequest || handle.pid <= 0) {
+      return false;
+    }
+    const resumeBlockedRpc = requireKernelWorkerBlockedResumeOutcome(handle);
+    if (resumeBlockedRpc === null) {
+      return true;
+    }
+    deps.appendRuntimeLifecycleEvent(handle.runtimeId, lifecycleEvent);
+    blocked.rpcPending = true;
+    void resumeBlockedRpc(
+      handle,
+      worker,
+      blocked.vmPtr,
+      blocked.status,
+      blocked.timeoutExpired,
+    ).then((outcome) => {
+      consumeKernelRpcResumeOutcome(handle, worker, blocked.vmPtr, outcome);
+      afterOutcome?.(outcome);
+    }).catch((error) => {
+      const latestBlocked = handle.blockedWorkers.get(worker);
+      if (latestBlocked && latestBlocked.vmPtr === blocked.vmPtr) {
+        latestBlocked.rpcPending = false;
+      }
+      deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+    });
+    return true;
+  }
+
   function formatProcessThreadSlots(handle: ProcessHandle, vmPtr: number): string {
     const slots: string[] = [];
     for (let slot = 0; slot < handle.kernel.abi_max_threads(); slot += 1) {
@@ -835,37 +870,20 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     blocked: BlockedWorkerState,
     timeoutMs: number,
   ): void {
-    if (
-      handle.kernelWorkerRequest
-      && handle.pid > 0
-    ) {
-      const resumeBlockedRpc = requireKernelWorkerBlockedResumeOutcome(handle);
-      if (resumeBlockedRpc === null) {
-        return;
-      }
-      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-retry-timeout-rpc:${handle.pid}`);
-      blocked.rpcPending = true;
-      void resumeBlockedRpc(
-        handle,
-        worker,
-        blocked.vmPtr,
-        blocked.status,
-        blocked.timeoutExpired,
-      ).then((outcome) => {
-        consumeKernelRpcResumeOutcome(handle, worker, blocked.vmPtr, outcome);
+    if (resumeBlockedSyscallViaKernelWorker(
+      handle,
+      worker,
+      blocked,
+      `pipe-retry-timeout-rpc:${handle.pid}`,
+      (outcome) => {
         if (
           outcome.kind === "blocked"
           && outcome.status === handle.kernel.abi_status_pipe_wait()
         ) {
           pumpProcess(handle);
         }
-      }).catch((error) => {
-        const latestBlocked = handle.blockedWorkers.get(worker);
-        if (latestBlocked && latestBlocked.vmPtr === blocked.vmPtr) {
-          latestBlocked.rpcPending = false;
-        }
-        deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-      });
+      },
+    )) {
       return;
     }
     resumePipePollTimeoutLocally(handle, worker, blocked, timeoutMs);
@@ -882,34 +900,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     worker: Worker,
     blocked: BlockedWorkerState,
   ): void {
-    if (
-      handle.kernelWorkerRequest
-      && handle.pid > 0
-    ) {
-      const resumeBlockedRpc = requireKernelWorkerBlockedResumeOutcome(handle);
-      if (resumeBlockedRpc === null) {
-        return;
-      }
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `socket-retry-timeout-rpc:${handle.pid}:status=${blocked.status}`,
-      );
-      blocked.rpcPending = true;
-      void resumeBlockedRpc(
-        handle,
-        worker,
-        blocked.vmPtr,
-        blocked.status,
-        blocked.timeoutExpired,
-      ).then((outcome) => {
-        consumeKernelRpcResumeOutcome(handle, worker, blocked.vmPtr, outcome);
-      }).catch((error) => {
-        const latestBlocked = handle.blockedWorkers.get(worker);
-        if (latestBlocked && latestBlocked.vmPtr === blocked.vmPtr) {
-          latestBlocked.rpcPending = false;
-        }
-        deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-      });
+    if (resumeBlockedSyscallViaKernelWorker(
+      handle,
+      worker,
+      blocked,
+      `socket-retry-timeout-rpc:${handle.pid}:status=${blocked.status}`,
+    )) {
       return;
     }
 
@@ -944,37 +940,17 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       blocked.epollTimerfdDeadlineTicks = null;
     }
 
-    if (
-      handle.kernelWorkerRequest
-      && handle.pid > 0
-    ) {
-      const resumeBlockedRpc = requireKernelWorkerBlockedResumeOutcome(handle);
-      if (resumeBlockedRpc === null) {
-        return;
-      }
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `epoll-retry-resume-rpc:${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}:expired=${blocked.timeoutExpired ? 1 : 0}`,
-      );
-      blocked.rpcPending = true;
-      void resumeBlockedRpc(
-        handle,
-        worker,
-        blocked.vmPtr,
-        blocked.status,
-        blocked.timeoutExpired,
-      ).then((outcome) => {
-        consumeKernelRpcResumeOutcome(handle, worker, blocked.vmPtr, outcome);
+    if (resumeBlockedSyscallViaKernelWorker(
+      handle,
+      worker,
+      blocked,
+      `epoll-retry-resume-rpc:${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}:expired=${blocked.timeoutExpired ? 1 : 0}`,
+      () => {
         if (handle.workers.has(worker) && threadWorkerStates.has(worker)) {
           appendEpollRetryResult(handle, blocked.vmPtr);
         }
-      }).catch((error) => {
-        const latestBlocked = handle.blockedWorkers.get(worker);
-        if (latestBlocked && latestBlocked.vmPtr === blocked.vmPtr) {
-          latestBlocked.rpcPending = false;
-        }
-        deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-      });
+      },
+    )) {
       return;
     }
 
