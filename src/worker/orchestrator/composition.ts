@@ -176,7 +176,6 @@ workerKernelRpcHelpers = createWorkerKernelRpcHelpers({
   appendRuntimeLifecycleEvent,
   appendWorkerDebugLog,
   assertProcessStandardFdIntegrity,
-  blockWorker,
   enqueueWorker,
   failProcess,
   handleBlockedRetryResult,
@@ -464,7 +463,6 @@ function markRuntimeFsDirty(handle: ProcessHandle): void {
 }
 
 const kernelRpcResumeEffectPorts = {
-  blockWorker,
   enqueueWorker,
   handleBlockedRetryResult,
   handleExecveSpawn,

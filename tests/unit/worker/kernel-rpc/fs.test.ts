@@ -128,7 +128,6 @@ test("kernel-rpc fs helper owns local resume and returns a typed outcome", async
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
-    blockWorker: vi.fn(),
     enqueueWorker,
     failProcess: vi.fn(),
     notifyHostEffectProgress: vi.fn(),
@@ -177,13 +176,11 @@ test("kernel-rpc fs outcome reports blocked fs status", async () => {
   handle.workers.add(worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
-  const blockWorker = vi.fn();
   const helpers = createWorkerKernelRpcFsHelpers({
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
-    blockWorker,
     enqueueWorker: vi.fn(),
     failProcess: vi.fn(),
     notifyHostEffectProgress: vi.fn(),
@@ -205,7 +202,6 @@ test("kernel-rpc fs outcome reports blocked fs status", async () => {
     kind: "blocked",
     status: 31,
   });
-  expect(blockWorker).not.toHaveBeenCalled();
 });
 
 test("kernel-worker fs outcome returns wake effect after local publication", async () => {
@@ -250,7 +246,6 @@ test("kernel-worker fs outcome returns wake effect after local publication", asy
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
-    blockWorker: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn((_handle, error) => {
       throw error;
@@ -334,7 +329,6 @@ test("kernel-worker fs outcome applies mmap guest memory writes from fs response
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
-    blockWorker: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn((_handle, error) => {
       throw error;
@@ -413,7 +407,6 @@ test("kernel-worker fs outcome defers file write publication to a later sync poi
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
-    blockWorker: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn((_handle, error) => {
       throw error;
@@ -501,7 +494,6 @@ test("kernel-worker fs outcome applies only request fd after regular file write"
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
-    blockWorker: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn((_handle, error) => {
       throw error;
@@ -599,7 +591,6 @@ test("kernel-worker fs outcome applies only request fd after regular file fstat"
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
-    blockWorker: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn((_handle, error) => {
       throw error;
@@ -696,7 +687,6 @@ test("kernel-worker fs outcome preserves unrelated live fd across openat snapsho
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
-    blockWorker: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn((_handle, error) => {
       throw error;
@@ -776,7 +766,6 @@ test("kernel-worker fs outcome preserves live fd from stale nonzero openat snaps
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
-    blockWorker: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn((_handle, error) => {
       throw error;
@@ -853,7 +842,6 @@ test("kernel-worker fs outcome permits close snapshot to clear live fd", async (
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
-    blockWorker: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn((_handle, error) => {
       throw error;
@@ -949,7 +937,6 @@ test("kernel-worker fs outcome keeps generated file fd closeable after unrelated
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
-    blockWorker: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn((_handle, error) => {
       throw error;
@@ -1053,7 +1040,6 @@ test("kernel-worker fs outcome rejects fd snapshot entries stale against request
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
-    blockWorker: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn((_handle, error) => {
       throw error;
@@ -1146,7 +1132,6 @@ test("kernel-worker fs outcome rejects fd snapshot ABA using generation", async 
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
-    blockWorker: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn((_handle, error) => {
       throw error;
@@ -1254,7 +1239,6 @@ test("kernel-worker fs outcome rejects ofd slot snapshots stale against request 
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
-    blockWorker: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn((_handle, error) => {
       throw error;
@@ -1334,7 +1318,6 @@ test("kernel-worker fs outcome skips shared OFD sync after regular file mmap", a
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
-    blockWorker: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn((_handle, error) => {
       throw error;
@@ -1415,7 +1398,6 @@ test("kernel-worker fs outcome keeps shared OFD sync after pipe write", async ()
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
-    blockWorker: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn((_handle, error) => {
       throw error;
@@ -1498,7 +1480,6 @@ test("kernel-worker fs outcome does not rehydrate unrelated peer shared OFD befo
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
-    blockWorker: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn((_handle, error) => {
       throw error;
@@ -1589,7 +1570,6 @@ test("kernel-worker fs outcome skips stale dirty MemFS peers before dispatch", a
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
-    blockWorker: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn((_handle, error) => {
       throw error;

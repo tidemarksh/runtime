@@ -134,7 +134,6 @@ export interface WorkerKernelRpcFsDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   assertProcessStandardFdIntegrity(handle: ProcessHandle, context: string): void;
-  blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   failProcess(handle: ProcessHandle, error: Error): void;
   markRuntimeFsDirty(handle: ProcessHandle): void;
@@ -1113,7 +1112,6 @@ async function resumeFsViaKernelWorkerInner(
       );
       applyLocalPostFsWake();
       const status = handle.kernel.abi_status_fs?.() ?? -1;
-      effects.push({ kind: "block-worker", status });
       return { kind: "blocked", status, effects };
     }
     const finalStatus = handle.kernel.thread_status?.(vmPtr);
@@ -1405,7 +1403,6 @@ async function resumeFsViaKernelWorkerInner(
       );
       await applyPostFsWake();
       const status = handle.kernel.abi_status_fs();
-      effects.push({ kind: "block-worker", status });
       return { kind: "blocked", status, effects };
     }
     const finalStatus = handle.kernel.thread_status?.(vmPtr);

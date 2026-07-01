@@ -53,7 +53,6 @@ test("applyKernelRpcResumeEffects runs notify-host-effect-progress effect before
       ],
     },
     {
-      blockWorker: () => {},
       enqueueWorker(enqueueHandle) {
         events.push(`enqueue:${enqueueHandle.pid}`);
       },

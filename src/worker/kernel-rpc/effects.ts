@@ -8,7 +8,6 @@ import {
 } from "./outcomes.js";
 
 export interface KernelRpcResumeEffectPorts {
-  blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   handleExecveSpawn(handle: ProcessHandle, worker: Worker, thread: ThreadWorkerState): Promise<void>;
   notifyHostEffectProgress(handle: ProcessHandle): void;
@@ -89,9 +88,6 @@ async function applyKernelRpcResumeEffect(
   ports: KernelRpcResumeEffectPorts,
 ): Promise<void> {
   switch (effect.kind) {
-    case "block-worker":
-      ports.blockWorker(handle, worker, effect.status, vmPtr);
-      return;
     case "enqueue-worker":
       ports.enqueueWorker(handle, worker);
       return;

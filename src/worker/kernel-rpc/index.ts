@@ -24,7 +24,6 @@ interface WorkerKernelRpcDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   assertProcessStandardFdIntegrity(handle: ProcessHandle, context: string): void;
-  blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   failProcess(handle: ProcessHandle, error: Error): void;
   handleBlockedRetryResult(handle: ProcessHandle, worker: Worker, vmPtr: number, status: number): void;
@@ -142,7 +141,6 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
     appendWorkerDebugLog: deps.appendWorkerDebugLog,
     assertProcessStandardFdIntegrity: deps.assertProcessStandardFdIntegrity,
-    blockWorker: deps.blockWorker,
     enqueueWorker: deps.enqueueWorker,
     failProcess: deps.failProcess,
     markRuntimeFsDirty: deps.markRuntimeFsDirty,

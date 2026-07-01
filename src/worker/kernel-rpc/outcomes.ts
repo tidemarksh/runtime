@@ -1,7 +1,6 @@
 import type { ProcessHandle } from "../types.js";
 
 export type KernelRpcResumeEffect =
-  | { kind: "block-worker"; status: number }
   | { kind: "enqueue-worker" }
   | { kind: "handle-execve-spawn"; status: number }
   | { kind: "notify-host-effect-progress"; handle?: ProcessHandle }
