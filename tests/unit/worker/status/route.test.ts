@@ -69,6 +69,9 @@ function installSupervisorFaultExitDecision(
     exitCode: number;
     termSignal: number;
     status: number;
+    kind?: number;
+    remainingThreads?: number;
+    liveThreads?: number;
   },
 ): void {
   const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
@@ -81,7 +84,10 @@ function installSupervisorFaultExitDecision(
   kernel.supervisor_fault_exit_decision = vi.fn((vmPtr: number, outPtr: number, outLen: number) => {
     expect(vmPtr).toBe(options.vmPtr);
     expect(outLen).toBe(88);
-    writeSupervisorFaultExitDecisionRecord(memory, outPtr, options);
+    writeSupervisorFaultExitDecisionRecord(memory, outPtr, {
+      ...options,
+      processPtr: 0x5000,
+    });
     return 88;
   });
 }
@@ -857,6 +863,127 @@ test("status handler keeps faulting worker tracked until completeProcessExit run
   expect(threadWorkerStates.get(worker)?.vmPtr).toBe(0x1234);
   expect(handle.lastDebugMessage).toBe("pc=0x67c5be sp=0x197d120 s11=0x1 process_thread_count=2");
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(handle, "status_debug:0x1234:pc=0x4 process_thread_count=0");
+});
+
+test("status handler uses supervisor thread-exit decision when adopting current status for stale fault", () => {
+  const appendWorkerDebugLog = vi.fn();
+  const appendRuntimeLifecycleEvent = vi.fn();
+  const enqueueWorker = vi.fn();
+  const notifyWorkerStatusProgress = vi.fn();
+  const completeProcessExit = vi.fn(async () => {});
+  const worker = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ReturnType<typeof makeThreadState>>();
+  threadWorkerStates.set(worker, makeThreadState());
+
+  const handle = {
+    pid: 7,
+    runtimeId: 1,
+    stdoutPipe: 0,
+    stderrPipe: 0,
+    stdinPipe: 0,
+    stdinQueue: [],
+    hostStdio: {
+      stdinPipe: 0,
+      stdoutPipe: 0,
+      stderrPipe: 0,
+      refCount: 1,
+    },
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    outputBacklog: [],
+    workers: new Set([worker]),
+    readyWorkers: [],
+    blockedWorkers: new Map(),
+    kernelWorkerRequest: undefined,
+    kernelShare: { members: new Set(), sharedOfdIds: new Set() },
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(12),
+      stateSab: new SharedArrayBuffer(176),
+    },
+    kernel: makeKernel(7, {
+      abi_status_clone_spawn: () => 9,
+      thread_status: () => 0,
+    }),
+    kernelState: makeKernelState(),
+    onStdout: null,
+    runningWorker: worker,
+  } as never;
+  installSupervisorFaultExitDecision((handle as { kernel: Record<string, unknown> }).kernel, {
+    kind: 1,
+    vmPtr: 0x1234,
+    exitVmPtr: 0x1234,
+    exitCode: 0,
+    termSignal: 0,
+    status: 3,
+    remainingThreads: 2,
+    liveThreads: 1,
+  });
+
+  const handler = createWorkerStatusMessageHandler({
+    threadWorkerStates,
+    appendRuntimeLifecycleEvent,
+    appendWorkerDebugLog,
+    clearBlockedWorker: () => {},
+    enqueueWorker,
+    pumpProcess: () => {},
+    notifyWorkerStatusProgress,
+    failProcess: () => {},
+    requestPipeStateSync: async () => {},
+    requestEpollStateSync: async () => {},
+    requestSocketStateSync: async () => {},
+    resumeFsViaKernelWorker: async () => {},
+    resumeConnectViaKernelWorker: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    captureVforkSnapshot: () => {
+      throw new Error("unexpected");
+    },
+    syncForkSharedStateViaKernelWorker: async () => {},
+    syncBlockedForkSharedStateViaKernelWorker: async () => {},
+    syncProcessLifecycleViaKernelWorker: async () => {},
+    canonicalizeActiveVforkChildViaKernelWorker: async () => {},
+    attachThreadWorker: () => {},
+    completeProcessExit,
+    handleExecveSpawn: async () => {},
+    blockWorker: () => {},
+    assertProcessStandardFdIntegrity: () => {},
+    requestEpollDependentOfdStateSync: async () => {},
+    statusOkCompletedSyncEffects: 0,
+    syncEffectPipeState: 1,
+    syncEffectSocketState: 2,
+    syncEffectEpollState: 4,
+    syncEffectEpollDependentOfdState: 8,
+    syncEffectProcessLifecycle: 16,
+    syncEffectSignalWaiters: 32,
+    syncEffectForkSharedOfdState: 64,
+    syncEffectProcessMemfs: 128,
+    statusDefersOwnedStateSync: () => false,
+  } as never);
+
+  handler(
+    handle,
+    worker,
+    {
+      type: "status",
+      status: 3,
+      vmPtr: 0x1234,
+      exitCode: 139,
+      termSignal: 11,
+      pc: 0n,
+      kernelState: makeKernelState(),
+      debug: "pc=0x4 process_thread_count=2",
+    },
+  );
+
+  expect(completeProcessExit).not.toHaveBeenCalled();
+  expect(notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
+  expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+  expect(appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
+    1,
+    "status-stale-fault-current:7:0x1234:3->0",
+  );
+  expect(appendWorkerDebugLog).toHaveBeenCalledWith(
+    handle,
+    "status-stale-fault-current:0x1234:3->0",
+  );
 });
 
 test("status handler leaves blocked fork-shared sync to blocked-status handling", async () => {

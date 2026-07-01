@@ -10,7 +10,6 @@ import {
   applyStatusPipeSlots,
   statusKernelWorkerOwnsPipeState,
 } from "./pipe-slots.js";
-import { processHasLiveThreads } from "../../live-threads.js";
 import { adoptKernelStateForHandle } from "../../sync.js";
 import {
   pruneStatusNetworkConnectionsFromFdEntries,
@@ -46,7 +45,11 @@ import { handleOwnerAsyncStatusReturn } from "./owner-async.js";
 import { applyStatusFdEntries } from "./fd-entries.js";
 import { applyStatusOfdSlots } from "./ofd-slots.js";
 import { resolveWorkerMessageHandlerSyncEffects } from "../sync-effects.js";
-import { submitSupervisorShadowStatusEvent } from "../../supervisor-shadow.js";
+import {
+  readSupervisorFaultExitDecision,
+  submitSupervisorShadowStatusEvent,
+  supervisorFaultExitKindProcessExit,
+} from "../../supervisor-shadow.js";
 
 const CLONE_SPAWN_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
@@ -402,11 +405,21 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     let transitionMsg = msg;
     if (status === faultStatus && handle.kernel.thread_status) {
       const currentStatus = handle.kernel.thread_status(thread.vmPtr);
-      const currentStatusHasLiveThread = processHasLiveThreads(handle.kernel, thread.vmPtr);
+      let supervisorAllowsCurrentStatus = false;
       if (
         currentStatus !== status
         && currentStatus !== handle.kernel.abi_status_fault()
-        && currentStatusHasLiveThread
+        && !activeVforkWorker
+      ) {
+        const supervisorExitDecision = readSupervisorFaultExitDecision(handle, thread.vmPtr);
+        supervisorAllowsCurrentStatus = supervisorExitDecision !== undefined
+          && supervisorExitDecision.kind !== supervisorFaultExitKindProcessExit(handle.kernel)
+          && supervisorExitDecision.liveThreads !== 0;
+      }
+      if (
+        currentStatus !== status
+        && currentStatus !== handle.kernel.abi_status_fault()
+        && supervisorAllowsCurrentStatus
         && !activeVforkWorker
       ) {
         deps.appendRuntimeLifecycleEvent(
