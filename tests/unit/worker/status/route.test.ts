@@ -1,6 +1,10 @@
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../../src/bridge/pipe.js";
 import { createWorkerStatusMessageHandler as createRawWorkerStatusMessageHandler } from "../../../../src/worker/message-handler/status/route.js";
+import {
+  SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES,
+  SUPERVISOR_THREAD_EVENT_KIND_BLOCKED,
+} from "../../../../src/worker/supervisor-shadow.js";
 import { createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 
 const PIPE_BUF_SIZE = 65_536;
@@ -198,7 +202,6 @@ test("status handler logs futex resume with compact debug fields", () => {
         stderrPipe: 0,
         refCount: 1,
       },
-      memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
       outputBacklog: [],
       workers: new Set([worker]),
       readyWorkers: [],
@@ -1177,6 +1180,8 @@ test("status handler skips explicit fork-shared effects when no peer exists", as
 
 test("status handler logs quoted write debug fields before wait handling", () => {
   const appendWorkerDebugLog = vi.fn();
+  const supervisorSubmitThreadEvent = vi.fn(() => 0);
+  const memory = new WebAssembly.Memory({ initial: 8, maximum: 8, shared: true });
   const worker = {} as Worker;
   const threadWorkerStates = new WeakMap<Worker, { vmPtr: number; initialized: boolean; waitingInWorkerStatus: number | null }>();
   threadWorkerStates.set(worker, makeThreadState());
@@ -1233,7 +1238,6 @@ test("status handler logs quoted write debug fields before wait handling", () =>
         stderrPipe: 0,
         refCount: 1,
       },
-      memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
       outputBacklog: [],
       workers: new Set([worker]),
       readyWorkers: [],
@@ -1244,8 +1248,16 @@ test("status handler logs quoted write debug fields before wait handling", () =>
         notifySab: new SharedArrayBuffer(12),
         stateSab: new SharedArrayBuffer(176),
       },
+      memory,
       kernel: makeKernel(7, {
         abi_status_clone_spawn: () => 9,
+        abi_status_jit_ready: () => 27,
+        kernel_heap_ptr: () => 0,
+        memory,
+        supervisor_abi_version: () => 1,
+        supervisor_submit_thread_event: supervisorSubmitThreadEvent,
+        supervisor_thread_event_kind_blocked: () => SUPERVISOR_THREAD_EVENT_KIND_BLOCKED,
+        thread_tid: () => 11,
       }),
       kernelState: makeKernelState(),
       onStdout: null,
@@ -1289,6 +1301,15 @@ test("status handler logs quoted write debug fields before wait handling", () =>
     expect.anything(),
     "write:0x1234:pc=0x4d650:gp=0x11dab8:tp=0x11eff0:write_fd=2:write_count=31:write_result=31:write_data=\"fatal: bad g in signal handler\\\\n\"",
   );
+  expect(supervisorSubmitThreadEvent).toHaveBeenCalledWith(
+    expect.any(Number),
+    SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES,
+  );
+  const [recordPtr, recordLen] = supervisorSubmitThreadEvent.mock.calls[0]!;
+  const view = new DataView(memory.buffer, recordPtr, recordLen);
+  expect(view.getUint32(12, true)).toBe(SUPERVISOR_THREAD_EVENT_KIND_BLOCKED);
+  expect(view.getUint32(36, true)).toBe(11);
+  expect(view.getUint32(40, true)).toBe(20);
 });
 
 test("status handler dispatches execve_spawn into the ownership handoff path", () => {

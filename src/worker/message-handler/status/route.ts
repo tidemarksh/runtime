@@ -46,6 +46,7 @@ import { handleOwnerAsyncStatusReturn } from "./owner-async.js";
 import { applyStatusFdEntries } from "./fd-entries.js";
 import { applyStatusOfdSlots } from "./ofd-slots.js";
 import { resolveWorkerMessageHandlerSyncEffects } from "../sync-effects.js";
+import { submitSupervisorShadowStatusEvent } from "../../supervisor-shadow.js";
 
 const CLONE_SPAWN_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
@@ -342,7 +343,36 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       );
       applyThreadGuestMemoryWrites(handle, msg, deps.appendRuntimeLifecycleEvent);
     }
+    const submitShadowThreadEvent = (
+      shadowMsg: ThreadWorkerStatusMessage,
+      shadowStatus: number,
+      completedSyncEffects: number,
+    ): void => {
+      const shadowThreadEventResult = submitSupervisorShadowStatusEvent(handle, {
+        sequence: thread.statusCount,
+        vmPtr: shadowMsg.vmPtr,
+        pid: handle.pid,
+        tid: handle.kernel.thread_tid?.(shadowMsg.vmPtr) ?? 0,
+        status: shadowStatus,
+        syncEffects: completedSyncEffects,
+        blockedReason: shadowMsg.syscallNr === undefined
+          ? 0
+          : Number(shadowMsg.syscallNr & 0xffff_ffffn),
+        pc: shadowMsg.pc,
+        sp: shadowMsg.sp ?? 0n,
+      });
+      if (shadowThreadEventResult !== undefined && shadowThreadEventResult < 0) {
+        deps.appendWorkerDebugLog(handle, `supervisor-thread-event:submit-error:${shadowThreadEventResult}`);
+      }
+    };
     if (msg.waitInWorker) {
+      const waitInWorkerSyncEffects = (
+        status === handle.kernel.abi_status_ok()
+        && msg.syncEffects === undefined
+      )
+        ? syncEffects.statusOkCompletedSyncEffects
+        : (msg.syncEffects ?? 0);
+      submitShadowThreadEvent(msg, status, waitInWorkerSyncEffects);
       handleWaitInWorkerStatus(handle, worker, thread, msg, isRunningWorker);
       return;
     }
@@ -401,6 +431,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     )
       ? syncEffects.statusOkCompletedSyncEffects
       : (transitionMsg.syncEffects ?? 0);
+    submitShadowThreadEvent(transitionMsg, transitionStatus, completedSyncEffects);
     const continueAfterOwnedStateSync = (): void => {
       handleStatusTransition({
         handle,

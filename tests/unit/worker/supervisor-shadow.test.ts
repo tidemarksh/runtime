@@ -16,6 +16,7 @@ import {
   readSupervisorFdControlRecord,
   readSupervisorFsControlRecord,
   readSupervisorSignalControlRecord,
+  submitSupervisorShadowStatusEvent,
   SUPERVISOR_FD_CONTROL_KIND_EPOLL_CREATED,
   SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_ADD,
   SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_DEL,
@@ -49,11 +50,16 @@ import {
   SUPERVISOR_SHADOW_THREAD_EVENT_MAGIC,
   SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES,
   SUPERVISOR_SHADOW_THREAD_EVENT_VERSION,
+  SUPERVISOR_THREAD_EVENT_KIND_BLOCKED,
+  SUPERVISOR_THREAD_EVENT_KIND_FAULTED,
+  SUPERVISOR_THREAD_EVENT_KIND_READY,
+  supervisorThreadEventKindForStatus,
   type SupervisorShadowThreadEvent,
 } from "../../../src/worker/supervisor-shadow.js";
 
 function makeEvent(): SupervisorShadowThreadEvent {
   return {
+    eventKind: SUPERVISOR_THREAD_EVENT_KIND_BLOCKED,
     sequence: 3n,
     vmPtr: 0x2000n,
     pid: 7,
@@ -166,15 +172,17 @@ test("encodeSupervisorShadowThreadEvent writes a deterministic little-endian rec
   expect(view.getUint32(0, true)).toBe(SUPERVISOR_SHADOW_THREAD_EVENT_MAGIC);
   expect(view.getUint32(4, true)).toBe(SUPERVISOR_SHADOW_THREAD_EVENT_VERSION);
   expect(view.getUint32(8, true)).toBe(SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES);
-  expect(view.getUint32(12, true)).toBe(20);
+  expect(view.getUint32(12, true)).toBe(SUPERVISOR_THREAD_EVENT_KIND_BLOCKED);
   expect(view.getBigUint64(16, true)).toBe(3n);
   expect(view.getBigUint64(24, true)).toBe(0x2000n);
   expect(view.getUint32(32, true)).toBe(7);
   expect(view.getUint32(36, true)).toBe(11);
-  expect(view.getUint32(40, true)).toBe(4);
-  expect(view.getUint32(44, true)).toBe(2);
-  expect(view.getBigUint64(48, true)).toBe(0x1234n);
-  expect(view.getBigUint64(56, true)).toBe(0x5678n);
+  expect(view.getUint32(40, true)).toBe(20);
+  expect(view.getUint32(44, true)).toBe(4);
+  expect(view.getUint32(48, true)).toBe(2);
+  expect(view.getBigUint64(56, true)).toBe(0x1234n);
+  expect(view.getBigUint64(64, true)).toBe(0x5678n);
+  expect(view.getBigUint64(72, true)).toBe(0n);
 });
 
 test("submitSupervisorShadowThreadEvent writes the record and calls the kernel export", () => {
@@ -195,7 +203,72 @@ test("submitSupervisorShadowThreadEvent writes the record and calls the kernel e
   expect(submissions).toEqual([[32, SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES]]);
   const view = new DataView(memory.buffer);
   expect(view.getUint32(32, true)).toBe(SUPERVISOR_SHADOW_THREAD_EVENT_MAGIC);
-  expect(view.getUint32(44, true)).toBe(20);
+  expect(view.getUint32(44, true)).toBe(SUPERVISOR_THREAD_EVENT_KIND_BLOCKED);
+  expect(view.getUint32(72, true)).toBe(20);
+});
+
+test("supervisorThreadEventKindForStatus maps worker statuses to thread event families", () => {
+  const kernelExports = {
+    memory: new WebAssembly.Memory({ initial: 1 }),
+    abi_status_ok: () => 0,
+    abi_status_fault: () => 3,
+    abi_status_jit_ready: () => 27,
+    supervisor_thread_event_kind_ready: () => SUPERVISOR_THREAD_EVENT_KIND_READY,
+    supervisor_thread_event_kind_faulted: () => SUPERVISOR_THREAD_EVENT_KIND_FAULTED,
+    supervisor_thread_event_kind_blocked: () => SUPERVISOR_THREAD_EVENT_KIND_BLOCKED,
+  } as unknown as KernelExports;
+
+  expect(supervisorThreadEventKindForStatus(kernelExports, 0)).toBe(SUPERVISOR_THREAD_EVENT_KIND_READY);
+  expect(supervisorThreadEventKindForStatus(kernelExports, 27)).toBe(SUPERVISOR_THREAD_EVENT_KIND_READY);
+  expect(supervisorThreadEventKindForStatus(kernelExports, 3)).toBe(SUPERVISOR_THREAD_EVENT_KIND_FAULTED);
+  expect(supervisorThreadEventKindForStatus(kernelExports, 20)).toBe(SUPERVISOR_THREAD_EVENT_KIND_BLOCKED);
+});
+
+test("submitSupervisorShadowStatusEvent uses scratch memory and keeps status deterministic", () => {
+  const memory = new WebAssembly.Memory({ initial: 8 });
+  const submissions: Array<[number, number]> = [];
+  const kernelExports = {
+    memory,
+    kernel_heap_ptr: () => 0,
+    abi_status_ok: () => 0,
+    abi_status_fault: () => 3,
+    abi_status_jit_ready: () => 27,
+    supervisor_abi_version: () => 1,
+    supervisor_thread_event_kind_ready: () => SUPERVISOR_THREAD_EVENT_KIND_READY,
+    supervisor_submit_thread_event: (ptr: number, len: number) => {
+      submissions.push([ptr, len]);
+      return 0;
+    },
+  } as unknown as KernelExports;
+  const handle = {
+    kernel: kernelExports,
+    memory,
+    pid: 42,
+  } as ProcessHandle;
+
+  const result = submitSupervisorShadowStatusEvent(handle, {
+    sequence: 9n,
+    vmPtr: 0x7000,
+    pid: 42,
+    tid: 5,
+    status: 0,
+    syncEffects: 6,
+    pc: 0x1000n,
+    sp: 0x2000n,
+  });
+
+  expect(result).toBe(0);
+  expect(submissions).toHaveLength(1);
+  const [ptr, len] = submissions[0]!;
+  expect(len).toBe(SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES);
+  const view = new DataView(memory.buffer, ptr, len);
+  expect(view.getUint32(12, true)).toBe(SUPERVISOR_THREAD_EVENT_KIND_READY);
+  expect(view.getBigUint64(16, true)).toBe(9n);
+  expect(view.getBigUint64(24, true)).toBe(0x7000n);
+  expect(view.getUint32(32, true)).toBe(42);
+  expect(view.getUint32(36, true)).toBe(5);
+  expect(view.getUint32(40, true)).toBe(0);
+  expect(view.getUint32(44, true)).toBe(6);
 });
 
 test("decodeSupervisorFdControlRecord reads the supervisor fd control layout", () => {

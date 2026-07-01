@@ -26,13 +26,14 @@ function writeProcessHostOpRecord(
   parentVmPtr: number,
   spawnKind: number,
   childPid: number,
+  seq = 1n,
 ): void {
   const view = new DataView(memory.buffer, ptr, 96);
   writeU32(view, 0, 0x4850_5354);
   writeU32(view, 4, 1);
   writeU32(view, 8, 96);
   writeU32(view, 12, 1);
-  writeU64(view, 16, 1n);
+  writeU64(view, 16, seq);
   writeU32(view, 24, parentVmPtr);
   writeU32(view, 28, spawnKind);
   writeU32(view, 32, childPid);
@@ -171,7 +172,7 @@ test("handleExecveSpawn prefers supervisor process HostOp over legacy spawn hand
   kernel.supervisor_process_host_op = vi.fn((vmPtr: number, outPtr: number, outLen: number) => {
     expect(vmPtr).toBe(0x1234);
     expect(outLen).toBe(96);
-    writeProcessHostOpRecord(memory, outPtr, 0x1234, 2, 92);
+    writeProcessHostOpRecord(memory, outPtr, 0x1234, 2, 92, 42n);
     return 96;
   });
   kernel.supervisor_complete_host_op = vi.fn((completionPtr: number, completionLen: number) => {
@@ -181,7 +182,7 @@ test("handleExecveSpawn prefers supervisor process HostOp over legacy spawn hand
     expect(completion.getUint32(4, true)).toBe(1);
     expect(completion.getUint32(8, true)).toBe(64);
     expect(completion.getUint32(12, true)).toBe(1);
-    expect(completion.getBigUint64(16, true)).toBe(0n);
+    expect(completion.getBigUint64(16, true)).toBe(42n);
     expect(completion.getUint32(24, true)).toBe(0x1234);
     expect(completion.getUint32(28, true)).toBe(2);
     expect(completion.getInt32(32, true)).toBe(92);

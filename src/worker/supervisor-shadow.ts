@@ -4,7 +4,16 @@ import type { ProcessHandle } from "./types.js";
 
 export const SUPERVISOR_SHADOW_THREAD_EVENT_MAGIC = 0x5645_5354;
 export const SUPERVISOR_SHADOW_THREAD_EVENT_VERSION = 1;
-export const SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES = 64;
+export const SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES = 80;
+export const SUPERVISOR_THREAD_EVENT_KIND_BLOCKED = 1;
+export const SUPERVISOR_THREAD_EVENT_KIND_READY = 2;
+export const SUPERVISOR_THREAD_EVENT_KIND_FAULTED = 3;
+export const SUPERVISOR_THREAD_EVENT_KIND_EXITED = 4;
+export const SUPERVISOR_THREAD_EVENT_KIND_HOST_COMPLETION_ARRIVED = 5;
+export const SUPERVISOR_THREAD_EVENT_KIND_TIMER_FIRED = 6;
+export const SUPERVISOR_THREAD_EVENT_KIND_NETWORK_READABLE = 7;
+export const SUPERVISOR_THREAD_EVENT_KIND_BACKING_STORE_READY = 8;
+const SUPERVISOR_SHADOW_THREAD_EVENT_SCRATCH_OFFSET = 0x2c000;
 const SUPERVISOR_FAULT_EXIT_DECISION_MAGIC = 0x5846_5354;
 const SUPERVISOR_FAULT_EXIT_DECISION_BYTES = 88;
 const SUPERVISOR_FAULT_EXIT_KIND_THREAD_EXIT = 1;
@@ -55,6 +64,7 @@ export interface SupervisorShadowKernelExports extends KernelExports {
 }
 
 export interface SupervisorShadowThreadEvent {
+  eventKind?: number;
   sequence?: bigint | number;
   vmPtr: bigint | number;
   pid: number;
@@ -64,6 +74,7 @@ export interface SupervisorShadowThreadEvent {
   blockedReason?: number;
   pc?: bigint | number;
   sp?: bigint | number;
+  detail?: bigint | number;
 }
 
 export interface SupervisorFaultExitDecision {
@@ -169,15 +180,18 @@ export function encodeSupervisorShadowThreadEvent(
   view.setUint32(offset, SUPERVISOR_SHADOW_THREAD_EVENT_MAGIC, true);
   view.setUint32(offset + 4, SUPERVISOR_SHADOW_THREAD_EVENT_VERSION, true);
   view.setUint32(offset + 8, SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES, true);
-  view.setUint32(offset + 12, event.status, true);
+  view.setUint32(offset + 12, event.eventKind ?? SUPERVISOR_THREAD_EVENT_KIND_BLOCKED, true);
   view.setBigUint64(offset + 16, BigInt(event.sequence ?? 0), true);
   view.setBigUint64(offset + 24, BigInt(event.vmPtr), true);
   view.setUint32(offset + 32, event.pid, true);
   view.setUint32(offset + 36, event.tid, true);
-  view.setUint32(offset + 40, event.syncEffects ?? 0, true);
-  view.setUint32(offset + 44, event.blockedReason ?? 0, true);
-  view.setBigUint64(offset + 48, BigInt(event.pc ?? 0), true);
-  view.setBigUint64(offset + 56, BigInt(event.sp ?? 0), true);
+  view.setUint32(offset + 40, event.status, true);
+  view.setUint32(offset + 44, event.syncEffects ?? 0, true);
+  view.setUint32(offset + 48, event.blockedReason ?? 0, true);
+  view.setUint32(offset + 52, 0, true);
+  view.setBigUint64(offset + 56, BigInt(event.pc ?? 0), true);
+  view.setBigUint64(offset + 64, BigInt(event.sp ?? 0), true);
+  view.setBigUint64(offset + 72, BigInt(event.detail ?? 0), true);
 }
 
 export function submitSupervisorShadowThreadEvent(
@@ -194,6 +208,41 @@ export function submitSupervisorShadowThreadEvent(
     recordPtr,
     SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES,
   );
+}
+
+export function supervisorThreadEventKindForStatus(
+  kernelExports: KernelExports,
+  status: number,
+): number {
+  if (status === kernelExports.abi_status_fault()) {
+    return kernelExports.supervisor_thread_event_kind_faulted?.()
+      ?? SUPERVISOR_THREAD_EVENT_KIND_FAULTED;
+  }
+  if (
+    status === kernelExports.abi_status_ok()
+    || status === kernelExports.abi_status_jit_ready()
+  ) {
+    return kernelExports.supervisor_thread_event_kind_ready?.()
+      ?? SUPERVISOR_THREAD_EVENT_KIND_READY;
+  }
+  return kernelExports.supervisor_thread_event_kind_blocked?.()
+    ?? SUPERVISOR_THREAD_EVENT_KIND_BLOCKED;
+}
+
+export function submitSupervisorShadowStatusEvent(
+  handle: ProcessHandle,
+  event: Omit<SupervisorShadowThreadEvent, "eventKind"> & { eventKind?: number },
+): number | undefined {
+  if (!hasSupervisorShadowProtocol(handle.kernel)) {
+    return undefined;
+  }
+  const memory = handle.kernel.memory ?? handle.memory;
+  const scratch = kernelScratchBase(handle.kernel) + SUPERVISOR_SHADOW_THREAD_EVENT_SCRATCH_OFFSET;
+  ensureMemoryCapacity(memory, scratch + SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES);
+  return submitSupervisorShadowThreadEvent(handle.kernel, scratch, {
+    ...event,
+    eventKind: event.eventKind ?? supervisorThreadEventKindForStatus(handle.kernel, event.status),
+  });
 }
 
 export function completeSupervisorProcessHostOp(
@@ -213,7 +262,7 @@ export function completeSupervisorProcessHostOp(
   view.setUint32(4, handle.kernel.supervisor_abi_version?.() ?? 1, true);
   view.setUint32(8, SUPERVISOR_PROCESS_HOST_OP_COMPLETION_BYTES, true);
   view.setUint32(12, SUPERVISOR_PROCESS_HOST_OP_COMPLETION_KIND_SPAWN_PROCESS_WORKER, true);
-  view.setBigUint64(16, 0n, true);
+  view.setBigUint64(16, completion.handoff.supervisorHostOpId ?? 0n, true);
   view.setUint32(24, completion.vmPtr, true);
   view.setUint32(28, completion.handoff.kind, true);
   view.setInt32(32, completion.handoff.childPid, true);

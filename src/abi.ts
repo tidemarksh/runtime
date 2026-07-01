@@ -146,8 +146,20 @@ export interface KernelExports {
   // Supervisor protocol
   supervisor_abi_version?(): number;
   supervisor_debug_snapshot_bytes?(): number;
+  supervisor_thread_event_record_bytes?(): number;
+  supervisor_thread_event_kind_blocked?(): number;
+  supervisor_thread_event_kind_ready?(): number;
+  supervisor_thread_event_kind_faulted?(): number;
+  supervisor_thread_event_kind_exited?(): number;
+  supervisor_thread_event_kind_host_completion_arrived?(): number;
+  supervisor_thread_event_kind_timer_fired?(): number;
+  supervisor_thread_event_kind_network_readable?(): number;
+  supervisor_thread_event_kind_backing_store_ready?(): number;
   supervisor_thread_state_snapshot_bytes?(): number;
   supervisor_resume_record_bytes?(): number;
+  supervisor_host_completion_record_bytes?(): number;
+  supervisor_host_completion_outcome_success?(): number;
+  supervisor_host_completion_outcome_failure?(): number;
   supervisor_host_op_record_bytes?(): number;
   supervisor_process_host_op_record_bytes?(): number;
   supervisor_fault_exit_decision_bytes?(): number;
@@ -157,6 +169,19 @@ export interface KernelExports {
   supervisor_runnable_selection_bytes?(): number;
   supervisor_resume_kind_futex_wake?(): number;
   supervisor_host_op_kind_spawn_thread_worker?(): number;
+  supervisor_host_op_kind_spawn_process_worker?(): number;
+  supervisor_host_op_kind_create_process_memory?(): number;
+  supervisor_host_op_kind_copy_memory_ranges?(): number;
+  supervisor_host_op_kind_fill_page_from_backing?(): number;
+  supervisor_host_op_kind_flush_dirty_page?(): number;
+  supervisor_host_op_kind_process_fs_request?(): number;
+  supervisor_host_op_kind_host_network_connect?(): number;
+  supervisor_host_op_kind_host_network_read?(): number;
+  supervisor_host_op_kind_host_network_write?(): number;
+  supervisor_host_op_kind_host_network_close?(): number;
+  supervisor_host_op_kind_arm_host_timer?(): number;
+  supervisor_host_op_kind_resume_thread?(): number;
+  supervisor_host_op_kind_terminate_worker?(): number;
   supervisor_process_host_op_kind_spawn_process_worker?(): number;
   supervisor_fault_exit_kind_thread_exit?(): number;
   supervisor_fault_exit_kind_process_exit?(): number;
@@ -189,6 +214,9 @@ export interface KernelExports {
   supervisor_shadow_host_op_poll_count?(): bigint | number;
   supervisor_shadow_host_op_emit_count?(): bigint | number;
   supervisor_shadow_host_op_overflow_count?(): bigint | number;
+  supervisor_shadow_host_op_log_hash?(): bigint | number;
+  supervisor_shadow_host_op_last_hash?(): bigint | number;
+  supervisor_shadow_host_op_last_len?(): number;
   supervisor_shadow_resume_poll_count?(): bigint | number;
   supervisor_shadow_resume_enqueue_count?(): bigint | number;
   supervisor_shadow_resume_overflow_count?(): bigint | number;
@@ -1075,8 +1103,20 @@ export interface KernelExports {
 const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_abi_version",
   "supervisor_debug_snapshot_bytes",
+  "supervisor_thread_event_record_bytes",
+  "supervisor_thread_event_kind_blocked",
+  "supervisor_thread_event_kind_ready",
+  "supervisor_thread_event_kind_faulted",
+  "supervisor_thread_event_kind_exited",
+  "supervisor_thread_event_kind_host_completion_arrived",
+  "supervisor_thread_event_kind_timer_fired",
+  "supervisor_thread_event_kind_network_readable",
+  "supervisor_thread_event_kind_backing_store_ready",
   "supervisor_thread_state_snapshot_bytes",
   "supervisor_resume_record_bytes",
+  "supervisor_host_completion_record_bytes",
+  "supervisor_host_completion_outcome_success",
+  "supervisor_host_completion_outcome_failure",
   "supervisor_host_op_record_bytes",
   "supervisor_process_host_op_record_bytes",
   "supervisor_fault_exit_decision_bytes",
@@ -1086,6 +1126,19 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_runnable_selection_bytes",
   "supervisor_resume_kind_futex_wake",
   "supervisor_host_op_kind_spawn_thread_worker",
+  "supervisor_host_op_kind_spawn_process_worker",
+  "supervisor_host_op_kind_create_process_memory",
+  "supervisor_host_op_kind_copy_memory_ranges",
+  "supervisor_host_op_kind_fill_page_from_backing",
+  "supervisor_host_op_kind_flush_dirty_page",
+  "supervisor_host_op_kind_process_fs_request",
+  "supervisor_host_op_kind_host_network_connect",
+  "supervisor_host_op_kind_host_network_read",
+  "supervisor_host_op_kind_host_network_write",
+  "supervisor_host_op_kind_host_network_close",
+  "supervisor_host_op_kind_arm_host_timer",
+  "supervisor_host_op_kind_resume_thread",
+  "supervisor_host_op_kind_terminate_worker",
   "supervisor_process_host_op_kind_spawn_process_worker",
   "supervisor_fault_exit_kind_thread_exit",
   "supervisor_fault_exit_kind_process_exit",
@@ -1118,6 +1171,9 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_shadow_host_op_poll_count",
   "supervisor_shadow_host_op_emit_count",
   "supervisor_shadow_host_op_overflow_count",
+  "supervisor_shadow_host_op_log_hash",
+  "supervisor_shadow_host_op_last_hash",
+  "supervisor_shadow_host_op_last_len",
   "supervisor_shadow_resume_poll_count",
   "supervisor_shadow_resume_enqueue_count",
   "supervisor_shadow_resume_overflow_count",
@@ -1271,6 +1327,7 @@ export interface ProcessSpawnHandoff {
   guestMemoryPolicyLimit: bigint;
   processMaxMemoryPages: number;
   supervisorHostOp?: boolean;
+  supervisorHostOpId?: bigint;
 }
 
 export function guestAddressProfileForProcessCreation(exports: KernelExports): number {
@@ -1571,6 +1628,7 @@ function readSupervisorProcessSpawnHandoff(
     guestMemoryPolicyLimit: view.getBigUint64(48, true),
     processMaxMemoryPages: view.getUint32(56, true),
     supervisorHostOp: true,
+    supervisorHostOpId: view.getBigUint64(16, true),
   };
 }
 
