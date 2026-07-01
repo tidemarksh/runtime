@@ -995,8 +995,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       lastWait4RetryLifecycleEvent: sameBlockedThread ? previousBlocked.lastWait4RetryLifecycleEvent : undefined,
     };
     handle.blockedWorkers.set(worker, blocked);
-    const supervisorTimerArmed = armBlockedSupervisorTimer(handle, vmPtr);
-    blocked.supervisorTimerArmed = blocked.supervisorTimerArmed === true || supervisorTimerArmed;
+    const supervisorTimerArmed = armBlockedSupervisorTimerForBlocked(handle, blocked);
     if (sameBlockedThread && blocked.rpcPending) {
       return;
     }
@@ -1085,6 +1084,15 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       pumpProcess,
     });
     return true;
+  }
+
+  function armBlockedSupervisorTimerForBlocked(
+    handle: ProcessHandle,
+    blocked: BlockedWorkerState,
+  ): boolean {
+    const supervisorTimerArmed = armBlockedSupervisorTimer(handle, blocked.vmPtr);
+    blocked.supervisorTimerArmed = blocked.supervisorTimerArmed === true || supervisorTimerArmed;
+    return supervisorTimerArmed;
   }
 
   function directPipeReadHasSynchronizedEof(
@@ -1214,8 +1222,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
 
     blocked.status = status;
-    const supervisorTimerArmed = armBlockedSupervisorTimer(handle, vmPtr);
-    blocked.supervisorTimerArmed = blocked.supervisorTimerArmed === true || supervisorTimerArmed;
+    const supervisorTimerArmed = armBlockedSupervisorTimerForBlocked(handle, blocked);
     if (supervisorTimerArmed) {
       return;
     }
@@ -1498,6 +1505,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
                 handle.runtimeId,
                 `epoll-retry-deadline:${handle.pid}:vm=0x${latestBlocked.vmPtr.toString(16)}:ticks=${deadlineTicks.toString()}`,
               );
+              if (armBlockedSupervisorTimerForBlocked(handle, latestBlocked)) {
+                return;
+              }
               scheduleBlockedRetry(handle, worker, sleepRetryDelayMs(handle, deadlineTicks), true);
               return;
             }
@@ -1611,6 +1621,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         return;
       }
       if (handle.kernel.thread_poll_wait_has_socket?.(blocked.vmPtr) !== 1) {
+        if (armBlockedSupervisorTimerForBlocked(handle, blocked)) {
+          return;
+        }
         schedulePipePollTimeoutRetry(
           handle,
           worker,
@@ -1641,6 +1654,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             finishBlockedRpc(handle, worker, blocked.vmPtr, rpcGeneration);
             deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
           });
+        return;
+      }
+      if (armBlockedSupervisorTimerForBlocked(handle, blocked)) {
         return;
       }
       scheduleSocketBlockedRetry(
@@ -1777,6 +1793,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       (blockedSocketTimeoutMs >= 0 || blocked.timeoutDeadlineMs !== null)
       && !blocked.timeoutExpired
     ) {
+      if (armBlockedSupervisorTimerForBlocked(handle, blocked)) {
+        return;
+      }
       scheduleSocketBlockedRetry(handle, worker, blocked, blockedSocketTimeoutMs);
       return;
     }
