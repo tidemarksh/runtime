@@ -390,16 +390,8 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
       deps.scheduleBlockedRetry(handle, worker, 1);
       return;
     }
-    const now = Date.now();
-    if (blocked.timeoutDeadlineMs === null) {
-      blocked.timeoutDeadlineMs = now + timeoutMs;
-    }
-    const remaining = blocked.timeoutDeadlineMs - now;
-    if (remaining <= 0) {
-      deps.scheduleBlockedRetry(handle, worker, 0, true);
-      return;
-    }
-    deps.scheduleBlockedRetry(handle, worker, remaining);
+    blocked.timeoutDeadlineMs = null;
+    throw new Error("kernel supervisor timer HostOp required for finite pipe poll wait");
   }
 
   function blockedPollPipeHasBufferedData(handle: ProcessHandle, vmPtr: number): boolean {

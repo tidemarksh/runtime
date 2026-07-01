@@ -345,7 +345,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   } = createVforkExclusiveScheduler(threadWorkerStates);
   const {
     advanceGuestTimeByMs,
-    sleepRetryDelayMs,
   } = createSleepScheduler();
   const {
     blockedOrCurrentSyscallNr,
@@ -955,20 +954,18 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
     if (status === handle.kernel.abi_status_epoll_wait()) {
-      if (supervisorTimerArmed) {
+      const timeoutMs = Number(handle.kernel.thread_epoll_wait_timeout(vmPtr));
+      const deadlineTicks = timeoutMs < 0 ? epollTimerfdDeadlineTicks(handle, vmPtr) : null;
+      if (timeoutMs >= 0 || deadlineTicks !== null) {
+        blocked.epollTimerfdDeadlineTicks = deadlineTicks;
+        if (!supervisorTimerArmed) {
+          throw new Error("kernel supervisor timer HostOp required for finite epoll wait");
+        }
         return;
       }
-      const timeoutMs = Number(handle.kernel.thread_epoll_wait_timeout(vmPtr));
-      if (timeoutMs >= 0) {
-        blocked.epollTimerfdDeadlineTicks = null;
-        scheduleBlockedRetry(handle, worker, Math.max(0, timeoutMs), true);
-      } else {
-        blocked.epollTimerfdDeadlineTicks = epollTimerfdDeadlineTicks(handle, vmPtr);
-        if (blocked.epollTimerfdDeadlineTicks !== null) {
-          scheduleBlockedRetry(handle, worker, sleepRetryDelayMs(handle, blocked.epollTimerfdDeadlineTicks), true);
-        } else if (handle.kernel.thread_process_thread_count(vmPtr) > 1) {
-          scheduleBlockedRetry(handle, worker, 10);
-        }
+      blocked.epollTimerfdDeadlineTicks = null;
+      if (handle.kernel.thread_process_thread_count(vmPtr) > 1) {
+        scheduleBlockedRetry(handle, worker, 10);
       }
       return;
     }
@@ -1215,8 +1212,10 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
 
     if (status === handle.kernel.abi_status_epoll_wait()) {
       const timeoutMs = Number(handle.kernel.thread_epoll_wait_timeout(vmPtr));
-      if (timeoutMs >= 0) {
-        scheduleBlockedRetry(handle, worker, Math.max(0, timeoutMs), true);
+      const deadlineTicks = timeoutMs < 0 ? epollTimerfdDeadlineTicks(handle, vmPtr) : null;
+      if (timeoutMs >= 0 || deadlineTicks !== null) {
+        blocked.epollTimerfdDeadlineTicks = deadlineTicks;
+        throw new Error("kernel supervisor timer HostOp required for finite epoll wait");
       } else if (handle.kernel.thread_process_thread_count(vmPtr) > 1) {
         scheduleBlockedRetry(handle, worker, 10);
         pumpProcess(handle);
@@ -1494,10 +1493,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
                 handle.runtimeId,
                 `epoll-retry-deadline:${handle.pid}:vm=0x${latestBlocked.vmPtr.toString(16)}:ticks=${deadlineTicks.toString()}`,
               );
-              if (armBlockedSupervisorTimerForBlocked(handle, latestBlocked)) {
-                return;
+              if (!armBlockedSupervisorTimerForBlocked(handle, latestBlocked)) {
+                throw new Error("kernel supervisor timer HostOp required for epoll timerfd wait");
               }
-              scheduleBlockedRetry(handle, worker, sleepRetryDelayMs(handle, deadlineTicks), true);
               return;
             }
             deps.appendRuntimeLifecycleEvent(

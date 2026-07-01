@@ -146,16 +146,8 @@ export function createSocketWaitScheduler(deps: SocketWaitSchedulerDeps): Socket
       deps.scheduleBlockedRetry(handle, worker, 1);
       return;
     }
-    const now = Date.now();
-    if (blocked.timeoutDeadlineMs === null) {
-      blocked.timeoutDeadlineMs = now + timeoutMs;
-    }
-    const remaining = blocked.timeoutDeadlineMs - now;
-    if (remaining <= 0) {
-      deps.scheduleBlockedRetry(handle, worker, 0, true);
-      return;
-    }
-    deps.scheduleBlockedRetry(handle, worker, Math.min(10, remaining));
+    blocked.timeoutDeadlineMs = null;
+    throw new Error("kernel supervisor timer HostOp required for finite socket wait");
   }
 
   return {
