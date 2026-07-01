@@ -75,8 +75,8 @@ export function isRuntimeBridgeBlockedStatus(
   status: number,
   statusCodes: StatusCodes,
 ): boolean {
-  // Keep blocked waits owner-side so the runtime scheduler remains the single
-  // authority over process progress.
+  // Runtime-bridge waits are host parking only; kernel supervisor state remains
+  // the authority for thread progress.
   return epollWaitShouldStayInWorker(exports, vmPtr, status, statusCodes);
 }
 
