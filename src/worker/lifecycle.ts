@@ -17,7 +17,7 @@ interface WorkerLifecycleDeps {
   drainProcessOutput(handle: ProcessHandle): boolean;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   getProcessByPid(pid: number): ProcessHandle | undefined;
-  kickBlockedWorkers(handle: ProcessHandle): void;
+  notifyLifecycleProgress(handle: ProcessHandle): void;
   recordChildExitViaKernelWorker(parent: ProcessHandle, childPid: number, waitStatus: number): Promise<void>;
   releaseSharedHostStdio(handle: ProcessHandle): Promise<void>;
   requestEpollStateSync(handle: ProcessHandle, retryWaiters?: boolean): Promise<void>;
@@ -212,7 +212,7 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
     void deps.recordChildExitViaKernelWorker(handle, childPid, waitStatus);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
-    deps.kickBlockedWorkers(handle);
+    deps.notifyLifecycleProgress(handle);
     deps.enqueueWorker(handle, worker);
     return true;
   }

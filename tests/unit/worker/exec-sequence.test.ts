@@ -79,13 +79,13 @@ function makeHandle(
 ): {
   handle: ProcessHandle;
   enqueueWorker: ReturnType<typeof vi.fn>;
-  kickBlockedWorkers: ReturnType<typeof vi.fn>;
+  notifyLifecycleProgress: ReturnType<typeof vi.fn>;
   recordChildExitViaKernelWorker: ReturnType<typeof vi.fn>;
   resumeVforkParentViaKernelWorker: ReturnType<typeof vi.fn>;
   resumeParent: ReturnType<typeof vi.fn>;
 } {
   const enqueueWorker = vi.fn();
-  const kickBlockedWorkers = vi.fn();
+  const notifyLifecycleProgress = vi.fn();
   const recordChildExitViaKernelWorker = vi.fn(async () => {});
   const resumeVforkParentViaKernelWorker = vi.fn(async () => {});
   const resumeParent = vi.fn();
@@ -152,7 +152,7 @@ function makeHandle(
   return {
     handle,
     enqueueWorker,
-    kickBlockedWorkers,
+    notifyLifecycleProgress,
     recordChildExitViaKernelWorker,
     resumeVforkParentViaKernelWorker,
     resumeParent,
@@ -165,7 +165,7 @@ function makeLifecycleDeps(spies: ReturnType<typeof makeHandle>) {
     drainProcessOutput: () => false,
     enqueueWorker: spies.enqueueWorker,
     getProcessByPid: () => undefined,
-    kickBlockedWorkers: spies.kickBlockedWorkers,
+    notifyLifecycleProgress: spies.notifyLifecycleProgress,
     recordChildExitViaKernelWorker: spies.recordChildExitViaKernelWorker,
     releaseSharedHostStdio: async () => {},
     requestEpollStateSync: async () => {},
@@ -215,7 +215,7 @@ test("resumeVforkParentAfterChildExit records a normal exit wait status and resu
   expect(spies.recordChildExitViaKernelWorker).toHaveBeenCalledWith(spies.handle, 77, 3 << 8);
   expect(spies.resumeParent).toHaveBeenCalledWith(0x1234, 77);
   expect(spies.enqueueWorker).toHaveBeenCalledWith(spies.handle, spies.handle.worker);
-  expect(spies.kickBlockedWorkers).toHaveBeenCalledWith(spies.handle);
+  expect(spies.notifyLifecycleProgress).toHaveBeenCalledWith(spies.handle);
   expect(spies.handle.vforkSnapshot).toBeNull();
   expect(spies.handle.vforkWorker).toBeNull();
   expect(spies.handle.stdinPipe).toBe(1);

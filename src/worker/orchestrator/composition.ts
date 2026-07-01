@@ -265,7 +265,7 @@ workerLifecycleHelpers = createWorkerLifecycleHelpers({
   drainProcessOutput,
   enqueueWorker,
   getProcessByPid: (pid) => processHandles.get(pid),
-  kickBlockedWorkers,
+  notifyLifecycleProgress: kickBlockedWorkers,
   recordChildExitViaKernelWorker,
   releaseSharedHostStdio,
   requestEpollStateSync,

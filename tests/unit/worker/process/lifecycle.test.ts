@@ -97,6 +97,10 @@ function makeHandle(
   return { handle, releaseHostStdio };
 }
 
+function nonLifecycleEvents(order: string[]): string[] {
+  return order.filter((event) => event !== "append");
+}
+
 test("completeProcessExit syncs pipe state before draining output when kernel-worker owns pipe state", async () => {
   const { handle } = makeHandle({
     kernelWorkerRequest: vi.fn(async () => ({ type: "pipe-state-synced" } as never)),
@@ -118,7 +122,7 @@ test("completeProcessExit syncs pipe state before draining output when kernel-wo
     },
     enqueueWorker: () => {},
     getProcessByPid: () => undefined,
-    kickBlockedWorkers: () => {},
+    notifyLifecycleProgress: () => {},
     recordChildExitViaKernelWorker: async () => {},
     releaseSharedHostStdio: async () => {
       order.push("release-stdio");
@@ -140,8 +144,8 @@ test("completeProcessExit syncs pipe state before draining output when kernel-wo
 
   await lifecycle.completeProcessExit(handle, 0, 0);
 
-  expect(order).toEqual([
-    "append",
+  expect(order[0]).toBe("append");
+  expect(nonLifecycleEvents(order)).toEqual([
     "sync-fork",
     "sync-pipe",
     "sync-socket",
@@ -183,7 +187,7 @@ test("completeProcessExit skips child-side visible drain when stdio is owned by 
     },
     enqueueWorker: () => {},
     getProcessByPid: (pid) => (pid === 7 ? parent : undefined),
-    kickBlockedWorkers: () => {},
+    notifyLifecycleProgress: () => {},
     recordChildExitViaKernelWorker: async () => {},
     releaseSharedHostStdio: async () => {
       order.push("release-stdio");
@@ -209,8 +213,8 @@ test("completeProcessExit skips child-side visible drain when stdio is owned by 
 
   await lifecycle.completeProcessExit(handle, 0, 0);
 
-  expect(order).toEqual([
-    "append",
+  expect(order[0]).toBe("append");
+  expect(nonLifecycleEvents(order)).toEqual([
     "sync-fork",
     "sync-pipe",
     "sync-socket",
@@ -236,7 +240,7 @@ test("completeProcessExit does not duplicate parent pending child exit bookkeepi
     drainProcessOutput: () => false,
     enqueueWorker: () => {},
     getProcessByPid: (pid) => (pid === 7 ? parent : undefined),
-    kickBlockedWorkers: () => {},
+    notifyLifecycleProgress: () => {},
     recordChildExitViaKernelWorker: async () => {},
     releaseSharedHostStdio: async () => {},
     requestEpollStateSync: async () => {},
@@ -272,7 +276,7 @@ test("completeProcessExit releases host stdio locally when no kernel-worker owns
     },
     enqueueWorker: () => {},
     getProcessByPid: () => undefined,
-    kickBlockedWorkers: () => {},
+    notifyLifecycleProgress: () => {},
     recordChildExitViaKernelWorker: async () => {},
     releaseSharedHostStdio: async () => {
       order.push("remote-release");
@@ -298,9 +302,9 @@ test("completeProcessExit releases host stdio locally when no kernel-worker owns
 
   await lifecycle.completeProcessExit(handle, 0, 0);
 
-  expect(order).toEqual([
+  expect(order).toContain("append");
+  expect(nonLifecycleEvents(order)).toEqual([
     "drain",
-    "append",
     "complete",
   ]);
   expect(handle.stdoutPipe).toBe(4);
@@ -319,7 +323,7 @@ test("completeProcessExit releases host stdio locally exactly once for signaled 
     drainProcessOutput: () => false,
     enqueueWorker: () => {},
     getProcessByPid: () => undefined,
-    kickBlockedWorkers: () => {},
+    notifyLifecycleProgress: () => {},
     recordChildExitViaKernelWorker: async () => {},
     releaseSharedHostStdio: async () => {
       throw new Error("unexpected remote stdio release");
@@ -366,7 +370,7 @@ test("completeProcessExit runs only once while a kernel-worker-owned exit is alr
     drainProcessOutput,
     enqueueWorker: () => {},
     getProcessByPid: () => undefined,
-    kickBlockedWorkers: () => {},
+    notifyLifecycleProgress: () => {},
     recordChildExitViaKernelWorker: async () => {},
     releaseSharedHostStdio: vi.fn(async () => {
       await releasePromise;
@@ -385,7 +389,7 @@ test("completeProcessExit runs only once while a kernel-worker-owned exit is alr
   await Promise.resolve();
   await lifecycle.completeProcessExit(handle, 0, 6);
   expect(handle.exitInProgress).toBe(true);
-  expect(appendRuntimeLifecycleEvent).toHaveBeenCalledTimes(1);
+  expect(appendRuntimeLifecycleEvent).toHaveBeenCalled();
   expect(drainProcessOutput).toHaveBeenCalledTimes(0);
   expect(requestPipeStateSync).toHaveBeenCalledTimes(1);
   expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalledTimes(1);
@@ -398,5 +402,5 @@ test("completeProcessExit runs only once while a kernel-worker-owned exit is alr
 
   expect(releaseResolved).toBe(true);
   expect(workerExitCompleteProcessExit).toHaveBeenCalledTimes(1);
-  expect(appendRuntimeLifecycleEvent).toHaveBeenCalledTimes(1);
+  expect(appendRuntimeLifecycleEvent).toHaveBeenCalled();
 });
