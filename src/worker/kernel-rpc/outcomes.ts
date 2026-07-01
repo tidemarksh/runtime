@@ -4,7 +4,6 @@ export type KernelRpcResumeEffect =
   | { kind: "block-worker"; status: number }
   | { kind: "enqueue-worker" }
   | { kind: "handle-execve-spawn"; status: number }
-  | { kind: "kick-blocked-workers" }
   | { kind: "mark-runtime-fs-dirty"; handle: ProcessHandle }
   | { kind: "publish-runtime-kernel-state" }
   | { kind: "request-pipe-state-sync"; handle?: ProcessHandle; wakeWaiters?: boolean }

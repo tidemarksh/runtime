@@ -2583,9 +2583,8 @@ test("resumeFsViaKernelWorker skips memfs sync during active vfork child ownersh
   expect(assertProcessStandardFdIntegrity).toHaveBeenCalledTimes(1);
   expect(assertProcessStandardFdIntegrity).toHaveBeenCalledWith(handle, "resume-fs-before");
   expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
-  expect(markRuntimeFsDirty).not.toHaveBeenCalled();
+  expect(markRuntimeFsDirty).toHaveBeenCalledWith(handle);
   expect(enqueueWorker).not.toHaveBeenCalled();
-  expect(outcome.effects).toContainEqual({ kind: "mark-runtime-fs-dirty", handle });
   expect(outcome.effects).toContainEqual({ kind: "enqueue-worker" });
 });
 

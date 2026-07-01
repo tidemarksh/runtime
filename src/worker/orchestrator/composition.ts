@@ -473,7 +473,6 @@ const kernelRpcResumeEffectPorts = {
   enqueueWorker,
   handleBlockedRetryResult,
   handleExecveSpawn,
-  kickBlockedWorkers,
   markRuntimeFsDirty,
   requestPipeStateSync,
   settleVisibleProcessOutput,

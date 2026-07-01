@@ -11,7 +11,6 @@ export interface KernelRpcResumeEffectPorts {
   blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   handleExecveSpawn(handle: ProcessHandle, worker: Worker, thread: ThreadWorkerState): Promise<void>;
-  kickBlockedWorkers(handle: ProcessHandle): void;
   markRuntimeFsDirty(handle: ProcessHandle): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   settleVisibleProcessOutput(
@@ -158,9 +157,6 @@ async function applyKernelRpcResumeEffect(
       }
       return;
     }
-    case "kick-blocked-workers":
-      ports.kickBlockedWorkers(handle);
-      return;
     case "mark-runtime-fs-dirty":
       ports.markRuntimeFsDirty(effect.handle);
       return;

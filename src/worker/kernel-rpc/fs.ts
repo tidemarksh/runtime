@@ -221,6 +221,10 @@ function formatPendingFsDebugSuffix(context: PendingFsContext): string {
   return `:op=${context.opcode}:fx=${context.effects}:ino=${context.targetIno}${pathSuffix}${secondaryPathSuffix}`;
 }
 
+function kernelRpcFsCause(name: string): SyncCause {
+  return { kind: "syscall", nr: -1n, name };
+}
+
 function applyLocalMetadataMutationAfterFs(
   handle: ProcessHandle,
   vmPtr: number,
@@ -1080,21 +1084,25 @@ async function resumeFsViaKernelWorkerInner(
     applyLocalMetadataMutationAfterFs(handle, vmPtr, pendingFs, fsSucceeded, fsEffects);
     clearSupersededMemfsDeletedPath(handle, pendingFs, fsSucceeded, fsEffects);
     reapplyLocalMemfsDeletedPathTombstones(handle, vmPtr, "local-after-fs");
+    let applyLocalFsWakeSync: (() => void) | null = null;
     if (memfsMutated) {
       handle.processMemfsDirty = true;
       handle.processMemfsPublishPending = true;
-      effects.push({ kind: "mark-runtime-fs-dirty", handle });
+      applyLocalFsWakeSync = () => deps.markRuntimeFsDirty(handle);
     } else if (ofdStateChanged && !regularFileOnlyPendingFs) {
-      effects.push({
-        kind: "sync-fork-shared-state-local-after-fs",
-        targets: deps.kernelShareOtherMembers(handle),
-        options: { includeMemfs: false },
+      const targets = deps.kernelShareOtherMembers(handle);
+      applyLocalFsWakeSync = () => deps.syncForkSharedStateLocallyAfterFs(handle, targets, {
+        cause: kernelRpcFsCause("fs-local-fork-shared-sync"),
+        includeMemfs: false,
       });
     }
+    const applyLocalPostFsWake = () => {
+      applyLocalFsWakeSync?.();
+      deps.kickBlockedWorkers(handle);
+    };
     restoreFsRingProgress(handle, postFsRingProgress);
     clearStaleFsStatusAfterResume(handle, vmPtr, fsResult);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
-    effects.push({ kind: "kick-blocked-workers" });
     deps.appendWorkerDebugLog(handle, `fs-done:0x${vmPtr.toString(16)}:local:rv=${fsResult.toString()}`);
     appendFsLifecycleEvent(
       handle,
@@ -1109,6 +1117,7 @@ async function resumeFsViaKernelWorkerInner(
         vmPtr,
         `:local:rv=${fsResult.toString()}${formatFsRingDebug(handle, vmPtr)}`,
       );
+      applyLocalPostFsWake();
       const status = handle.kernel.abi_status_fs?.() ?? -1;
       effects.push({ kind: "block-worker", status });
       return { kind: "blocked", status, effects };
@@ -1116,9 +1125,11 @@ async function resumeFsViaKernelWorkerInner(
     const finalStatus = handle.kernel.thread_status?.(vmPtr);
     const execveSpawnStatus = handle.kernel.abi_status_execve_spawn?.();
     if (execveSpawnStatus !== undefined && finalStatus === execveSpawnStatus) {
+      applyLocalPostFsWake();
       effects.push({ kind: "handle-execve-spawn", status: finalStatus });
       return completedKernelRpcOutcome(undefined, effects);
     }
+    applyLocalPostFsWake();
     effects.push({ kind: "enqueue-worker" });
     return completedKernelRpcOutcome(finalStatus, effects);
   }
@@ -1340,28 +1351,26 @@ async function resumeFsViaKernelWorkerInner(
     const forkShareMembers = deps.kernelShareOtherMembers(handle);
     const syncTargets = forkShareMembers
       .filter((member) => member.runningWorker === null);
-    if (ofdStateChanged && !regularFileOnlyPendingFs && !transientProcessOwnerMismatch && forkShareMembers.length > 0) {
-      effects.push({
-        kind: "sync-shared-ofd-state-after-fs",
-        targets: syncTargets,
-        sourceVmPtr: vmPtr,
-      });
-    }
+    const syncSharedOfdAfterFs = ofdStateChanged
+      && !regularFileOnlyPendingFs
+      && !transientProcessOwnerMismatch
+      && forkShareMembers.length > 0;
     restoreFsFdState(handle, postFsFdState);
     if (!failedExecveChildOwner) {
       handle.kernelState = readKernelRuntimeState(handle.kernel);
     }
+    const dirtyMemfsHandles: ProcessHandle[] = [];
     if (memfsMutated) {
       handle.processMemfsDirty = true;
       handle.processMemfsPublishPending = true;
       if (!transientProcessOwnerMismatch) {
         if (memfsPublishReady && forkShareMembers.length > 0) {
           for (const member of forkShareMembers) {
-            effects.push({ kind: "mark-runtime-fs-dirty", handle: member });
+            dirtyMemfsHandles.push(member);
           }
         }
       }
-      effects.push({ kind: "mark-runtime-fs-dirty", handle });
+      dirtyMemfsHandles.push(handle);
     }
     restoreFsFdState(handle, postFsFdState);
     restoreFsRingProgress(handle, postFsRingProgress);
@@ -1371,10 +1380,21 @@ async function resumeFsViaKernelWorkerInner(
     if (!failedExecveChildOwner) {
       handle.kernelState = readKernelRuntimeState(handle.kernel);
     }
-    effects.push(
-      { kind: "publish-runtime-kernel-state" },
-      { kind: "kick-blocked-workers" },
-    );
+    let postFsWakeApplied = false;
+    const applyPostFsWake = async () => {
+      if (postFsWakeApplied) {
+        return;
+      }
+      postFsWakeApplied = true;
+      if (syncSharedOfdAfterFs) {
+        await deps.syncSharedOfdStateAfterFs(handle, syncTargets, { sourceVmPtr: vmPtr });
+      }
+      for (const dirtyHandle of dirtyMemfsHandles) {
+        deps.markRuntimeFsDirty(dirtyHandle);
+      }
+      deps.publishRuntimeKernelState(handle);
+      deps.kickBlockedWorkers(handle);
+    };
     deps.appendWorkerDebugLog(handle, `fs-done:0x${vmPtr.toString(16)}:rv=${fsResult.toString()}`);
     appendFsLifecycleEvent(
       handle,
@@ -1389,6 +1409,7 @@ async function resumeFsViaKernelWorkerInner(
         vmPtr,
         `:rv=${fsResult.toString()}${formatFsRingDebug(handle, vmPtr)}`,
       );
+      await applyPostFsWake();
       const status = handle.kernel.abi_status_fs();
       effects.push({ kind: "block-worker", status });
       return { kind: "blocked", status, effects };
@@ -1396,9 +1417,11 @@ async function resumeFsViaKernelWorkerInner(
     const finalStatus = handle.kernel.thread_status?.(vmPtr);
     const execveSpawnStatus = handle.kernel.abi_status_execve_spawn?.();
     if (execveSpawnStatus !== undefined && finalStatus === execveSpawnStatus) {
+      await applyPostFsWake();
       effects.push({ kind: "handle-execve-spawn", status: finalStatus });
       return completedKernelRpcOutcome(undefined, effects);
     }
+    await applyPostFsWake();
     effects.push({ kind: "enqueue-worker" });
     return completedKernelRpcOutcome(finalStatus, effects);
   } catch (error) {

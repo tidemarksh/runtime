@@ -245,6 +245,9 @@ test("kernel-worker fs outcome skips memfs publication effect when no fork-share
   } as unknown as ThreadWorkerState;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, threadState);
+  const kickBlockedWorkers = vi.fn();
+  const markRuntimeFsDirty = vi.fn();
+  const publishRuntimeKernelState = vi.fn();
   const helpers = createWorkerKernelRpcFsHelpers({
     threadWorkerStates,
     appendRuntimeLifecycleEvent: vi.fn(),
@@ -255,15 +258,15 @@ test("kernel-worker fs outcome skips memfs publication effect when no fork-share
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    kickBlockedWorkers: vi.fn(),
-    markRuntimeFsDirty: vi.fn(),
+    kickBlockedWorkers,
+    markRuntimeFsDirty,
     kernelShareOtherMembers: () => [],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
     syncSharedOfdStateAfterFs: vi.fn(async () => {}),
     publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
-    publishRuntimeKernelState: vi.fn(),
+    publishRuntimeKernelState,
   });
 
   const outcome = await helpers.resumeFsViaKernelWorkerOutcome(
@@ -280,11 +283,17 @@ test("kernel-worker fs outcome skips memfs publication effect when no fork-share
   }));
   expect(outcome).toMatchObject({ kind: "completed", status: 0 });
   expect(outcome.effects).toEqual(expect.arrayContaining([
-    { kind: "mark-runtime-fs-dirty", handle },
-    { kind: "publish-runtime-kernel-state" },
-    { kind: "kick-blocked-workers" },
     { kind: "enqueue-worker" },
   ]));
+  expect(markRuntimeFsDirty).toHaveBeenCalledWith(handle);
+  expect(publishRuntimeKernelState).toHaveBeenCalledWith(handle);
+  expect(kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(markRuntimeFsDirty.mock.invocationCallOrder[0]).toBeLessThan(
+    publishRuntimeKernelState.mock.invocationCallOrder[0],
+  );
+  expect(publishRuntimeKernelState.mock.invocationCallOrder[0]).toBeLessThan(
+    kickBlockedWorkers.mock.invocationCallOrder[0],
+  );
   expect(outcome.effects).not.toEqual(expect.arrayContaining([
     expect.objectContaining({ kind: "publish-memfs-after-fs" }),
   ]));
@@ -409,6 +418,7 @@ test("kernel-worker fs outcome defers file write publication to a later sync poi
   handle.workers.add(worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
+  const markRuntimeFsDirty = vi.fn();
   const helpers = createWorkerKernelRpcFsHelpers({
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: vi.fn(),
@@ -420,7 +430,7 @@ test("kernel-worker fs outcome defers file write publication to a later sync poi
       throw error;
     }),
     kickBlockedWorkers: vi.fn(),
-    markRuntimeFsDirty: vi.fn(),
+    markRuntimeFsDirty,
     kernelShareOtherMembers: () => [target],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
@@ -437,10 +447,8 @@ test("kernel-worker fs outcome defers file write publication to a later sync poi
     { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
   );
 
-  expect(outcome.effects).toEqual(expect.arrayContaining([
-    { kind: "mark-runtime-fs-dirty", handle },
-    { kind: "mark-runtime-fs-dirty", handle: target },
-  ]));
+  expect(markRuntimeFsDirty).toHaveBeenCalledWith(handle);
+  expect(markRuntimeFsDirty).toHaveBeenCalledWith(target);
   expect(outcome.effects).not.toEqual(expect.arrayContaining([
     expect.objectContaining({ kind: "publish-memfs-after-fs" }),
   ]));
@@ -502,6 +510,7 @@ test("kernel-worker fs outcome applies only request fd after regular file write"
   handle.workers.add(worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
+  const syncSharedOfdStateAfterFs = vi.fn(async () => {});
   const helpers = createWorkerKernelRpcFsHelpers({
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: vi.fn(),
@@ -517,7 +526,7 @@ test("kernel-worker fs outcome applies only request fd after regular file write"
     kernelShareOtherMembers: () => [target],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
-    syncSharedOfdStateAfterFs: vi.fn(async () => {}),
+    syncSharedOfdStateAfterFs,
     publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
@@ -530,9 +539,7 @@ test("kernel-worker fs outcome applies only request fd after regular file write"
     { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
   );
 
-  expect(outcome.effects).not.toEqual(expect.arrayContaining([
-    expect.objectContaining({ kind: "sync-shared-ofd-state-after-fs" }),
-  ]));
+  expect(syncSharedOfdStateAfterFs).not.toHaveBeenCalled();
   expect(kernel.process_set_fd_entry).toHaveBeenCalledTimes(1);
   expect(kernel.process_set_fd_entry).toHaveBeenCalledWith(0x1234, 3, 5, 0);
   expect(kernel.process_set_fd_entry).not.toHaveBeenCalledWith(0x1234, 4, 7, 0);
@@ -602,6 +609,7 @@ test("kernel-worker fs outcome applies only request fd after regular file fstat"
   handle.workers.add(worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
+  const syncSharedOfdStateAfterFs = vi.fn(async () => {});
   const helpers = createWorkerKernelRpcFsHelpers({
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: vi.fn(),
@@ -617,7 +625,7 @@ test("kernel-worker fs outcome applies only request fd after regular file fstat"
     kernelShareOtherMembers: () => [target],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
-    syncSharedOfdStateAfterFs: vi.fn(async () => {}),
+    syncSharedOfdStateAfterFs,
     publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
@@ -630,9 +638,7 @@ test("kernel-worker fs outcome applies only request fd after regular file fstat"
     { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
   );
 
-  expect(outcome.effects).not.toEqual(expect.arrayContaining([
-    expect.objectContaining({ kind: "sync-shared-ofd-state-after-fs" }),
-  ]));
+  expect(syncSharedOfdStateAfterFs).not.toHaveBeenCalled();
   expect(kernel.process_set_fd_entry).toHaveBeenCalledTimes(1);
   expect(kernel.process_set_fd_entry).toHaveBeenCalledWith(0x1234, 3, 5, 0);
   expect(kernel.process_set_fd_entry).not.toHaveBeenCalledWith(0x1234, 17, 0, 0);
@@ -701,6 +707,7 @@ test("kernel-worker fs outcome preserves unrelated live fd across openat snapsho
   handle.workers.add(worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
+  const syncSharedOfdStateAfterFs = vi.fn(async () => {});
   const helpers = createWorkerKernelRpcFsHelpers({
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: vi.fn(),
@@ -716,7 +723,7 @@ test("kernel-worker fs outcome preserves unrelated live fd across openat snapsho
     kernelShareOtherMembers: () => [target],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
-    syncSharedOfdStateAfterFs: vi.fn(async () => {}),
+    syncSharedOfdStateAfterFs,
     publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
@@ -1345,6 +1352,7 @@ test("kernel-worker fs outcome skips shared OFD sync after regular file mmap", a
   handle.workers.add(worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
+  const syncSharedOfdStateAfterFs = vi.fn(async () => {});
   const helpers = createWorkerKernelRpcFsHelpers({
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: vi.fn(),
@@ -1360,7 +1368,7 @@ test("kernel-worker fs outcome skips shared OFD sync after regular file mmap", a
     kernelShareOtherMembers: () => [target],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
-    syncSharedOfdStateAfterFs: vi.fn(async () => {}),
+    syncSharedOfdStateAfterFs,
     publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
@@ -1373,9 +1381,7 @@ test("kernel-worker fs outcome skips shared OFD sync after regular file mmap", a
     { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
   );
 
-  expect(outcome.effects).not.toEqual(expect.arrayContaining([
-    expect.objectContaining({ kind: "sync-shared-ofd-state-after-fs" }),
-  ]));
+  expect(syncSharedOfdStateAfterFs).not.toHaveBeenCalled();
 });
 
 test("kernel-worker fs outcome keeps shared OFD sync after pipe write", async () => {
@@ -1428,6 +1434,7 @@ test("kernel-worker fs outcome keeps shared OFD sync after pipe write", async ()
   handle.workers.add(worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
+  const syncSharedOfdStateAfterFs = vi.fn(async () => {});
   const helpers = createWorkerKernelRpcFsHelpers({
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: vi.fn(),
@@ -1443,7 +1450,7 @@ test("kernel-worker fs outcome keeps shared OFD sync after pipe write", async ()
     kernelShareOtherMembers: () => [target],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
-    syncSharedOfdStateAfterFs: vi.fn(async () => {}),
+    syncSharedOfdStateAfterFs,
     publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
@@ -1456,9 +1463,7 @@ test("kernel-worker fs outcome keeps shared OFD sync after pipe write", async ()
     { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
   );
 
-  expect(outcome.effects).toEqual(expect.arrayContaining([
-    expect.objectContaining({ kind: "sync-shared-ofd-state-after-fs" }),
-  ]));
+  expect(syncSharedOfdStateAfterFs).toHaveBeenCalledWith(handle, [target], { sourceVmPtr: 0x1234 });
   expect(kernel.process_set_fd_entry).toHaveBeenCalledWith(0x1234, 3, 6, 0);
 });
 
