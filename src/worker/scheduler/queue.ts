@@ -760,30 +760,14 @@ export function createWorkerSchedulerQueueHelpers(
       deps.appendWorkerDebugLog(handle, `supervisor-runnable:invalid-record-bytes:${recordBytes}`);
       return null;
     }
-    const candidates: Array<{ worker: Worker; vmPtr: number }> = [];
-    for (const worker of handle.readyWorkers) {
-      const vmPtr = supervisorRunnableCandidateVmPtr(handle, worker);
-      if (vmPtr !== null) {
-        candidates.push({ worker, vmPtr });
-      }
-    }
-    if (candidates.length === 0) {
-      appendSchedulerQueueDebugLog(deps, handle, `pump-no-supervisor-candidates:ready=${handle.readyWorkers.length}`);
-      return null;
-    }
     const memory = handle.kernel.memory ?? handle.memory;
     const scratch = supervisorResumeScratchBase(handle);
-    const candidatesPtr = scratch + recordBytes;
-    ensureMemoryCapacity(memory, candidatesPtr + candidates.length * 4);
-    const view = new DataView(memory.buffer);
-    for (let index = 0; index < candidates.length; index += 1) {
-      view.setUint32(candidatesPtr + index * 4, candidates[index]!.vmPtr, true);
-    }
-    const result = selectRunnable(handle.vmPtr, candidatesPtr, candidates.length, scratch, recordBytes);
+    ensureMemoryCapacity(memory, scratch + recordBytes);
+    const result = selectRunnable(handle.vmPtr, 0, 0, scratch, recordBytes);
     if (result === 0) {
       deps.appendWorkerDebugLog(
         handle,
-        `supervisor-runnable:none:ready=${handle.readyWorkers.length}:candidates=${candidates.length}`,
+        `supervisor-runnable:none:ready=${handle.readyWorkers.length}`,
       );
       return null;
     }
@@ -796,8 +780,8 @@ export function createWorkerSchedulerQueueHelpers(
       deps.appendWorkerDebugLog(handle, `supervisor-runnable:decode-error:${result}`);
       return null;
     }
-    const selected = candidates.find((candidate) => candidate.vmPtr === selection.vmPtr);
-    if (selected === undefined) {
+    const selectedWorker = findWorkerByVmPtr(handle, selection.vmPtr);
+    if (selectedWorker === undefined) {
       deps.appendWorkerDebugLog(
         handle,
         `supervisor-runnable:missing-selected:0x${selection.vmPtr.toString(16)}`
@@ -805,14 +789,25 @@ export function createWorkerSchedulerQueueHelpers(
       );
       return null;
     }
-    removeReadyWorker(handle, selected.worker);
+    if (
+      !handle.readyWorkers.includes(selectedWorker)
+      || supervisorRunnableCandidateVmPtr(handle, selectedWorker) !== selection.vmPtr
+    ) {
+      deps.appendWorkerDebugLog(
+        handle,
+        `supervisor-runnable:selected-unavailable:0x${selection.vmPtr.toString(16)}`
+          + `:tid=${selection.tid}:seq=${selection.seq.toString()}`,
+      );
+      return null;
+    }
+    removeReadyWorker(handle, selectedWorker);
     deps.appendWorkerDebugLog(
       handle,
       `supervisor-runnable:selected:0x${selection.vmPtr.toString(16)}`
         + `:tid=${selection.tid}:seq=${selection.seq.toString()}`
         + `:slot=${selection.slot}:state=${selection.state}:status=${selection.status}`,
     );
-    return selected.worker;
+    return selectedWorker;
   }
 
   function markSupervisorFutexResumeSelected(handle: ProcessHandle, vmPtr: number): void {
@@ -1705,7 +1700,7 @@ export function createWorkerSchedulerQueueHelpers(
       };
       const supervisorSelected = selectSupervisorRunnableWorker(handle);
       if (supervisorSelected !== undefined) {
-        next = supervisorSelected ?? takeBlockedRpcContinuationReadyWorker();
+        next = supervisorSelected ?? undefined;
       } else {
         next = takeBlockedRpcContinuationReadyWorker();
         if (next === undefined) {
