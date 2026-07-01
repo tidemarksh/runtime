@@ -136,9 +136,16 @@ const workerScheduler = createWorkerScheduler({
   completeProcessExit,
   failProcess,
   hasActiveChildProcess: (parentPid) => hasActiveChildProcessImpl(processHandles, parentPid, threadWorkerStates),
-  pumpActiveChildProcesses: (parentPid) => (
-    pumpActiveChildProcessesImpl(processHandles, parentPid, pumpProcess, kickBlockedWorkers, threadWorkerStates)
-  ),
+  pumpActiveChildProcesses: (parentPid) => {
+    const notifyChildProcessProgress = (handle: ProcessHandle): void => kickBlockedWorkers(handle);
+    return pumpActiveChildProcessesImpl(
+      processHandles,
+      parentPid,
+      pumpProcess,
+      notifyChildProcessProgress,
+      threadWorkerStates,
+    );
+  },
   pumpNetworkConnections,
   resumeFsViaKernelWorker,
   resumeFsViaKernelWorkerOutcome,

@@ -83,7 +83,7 @@ export function pumpActiveChildProcesses(
   processHandles: ReadonlyMap<number, ProcessHandle>,
   parentPid: number,
   pumpProcess: (handle: ProcessHandle) => void,
-  kickBlockedWorkers?: (handle: ProcessHandle) => void,
+  notifyChildProcessProgress?: (handle: ProcessHandle) => void,
   threadWorkerStates?: WeakMap<Worker, ThreadWorkerState>,
 ): boolean {
   let pumped = false;
@@ -94,7 +94,7 @@ export function pumpActiveChildProcesses(
     if (!childProcessCanBePumped(candidate, threadWorkerStates)) {
       continue;
     }
-    kickBlockedWorkers?.(candidate);
+    notifyChildProcessProgress?.(candidate);
     pumpProcess(candidate);
     pumped = true;
   }

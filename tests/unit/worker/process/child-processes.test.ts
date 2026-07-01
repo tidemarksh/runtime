@@ -196,12 +196,12 @@ test("pumpActiveChildProcesses pumps live children and skips exit cleanup", () =
       events.push(`pump:${handle.pid}`);
     },
     (handle) => {
-      events.push(`kick:${handle.pid}`);
+      events.push(`progress:${handle.pid}`);
     },
   );
 
   expect(result).toBe(true);
-  expect(events).toEqual(["kick:3", "pump:3"]);
+  expect(events).toEqual(["progress:3", "pump:3"]);
 });
 
 test("pumpActiveChildProcesses does not pump exiting children with unpublished MemFS state", () => {
@@ -225,7 +225,7 @@ test("pumpActiveChildProcesses does not pump exiting children with unpublished M
       events.push(`pump:${handle.pid}`);
     },
     (handle) => {
-      events.push(`kick:${handle.pid}`);
+      events.push(`progress:${handle.pid}`);
     },
   );
 
