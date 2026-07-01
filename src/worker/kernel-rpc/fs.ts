@@ -137,7 +137,6 @@ export interface WorkerKernelRpcFsDeps {
   blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   failProcess(handle: ProcessHandle, error: Error): void;
-  kickBlockedWorkers(handle: ProcessHandle): void;
   markRuntimeFsDirty(handle: ProcessHandle): void;
   kernelShareOtherMembers(handle: ProcessHandle): ProcessHandle[];
   syncForkSharedStateLocallyAfterFs(
@@ -1093,7 +1092,7 @@ async function resumeFsViaKernelWorkerInner(
     }
     const applyLocalPostFsWake = () => {
       applyLocalFsWakeSync?.();
-      deps.kickBlockedWorkers(handle);
+      effects.push({ kind: "kick-blocked-workers", handle });
     };
     restoreFsRingProgress(handle, postFsRingProgress);
     clearStaleFsStatusAfterResume(handle, vmPtr, fsResult);
@@ -1336,7 +1335,7 @@ async function resumeFsViaKernelWorkerInner(
         `:rv=${fsResult.toString()}:status=${execveSpawnStatusAfterFs}${formatFsRingDebug(handle, vmPtr)}`,
       );
       deps.publishRuntimeKernelState(handle);
-      deps.kickBlockedWorkers(handle);
+      effects.push({ kind: "kick-blocked-workers", handle });
       effects.push({ kind: "handle-execve-spawn", status: execveSpawnStatusAfterFs });
       return completedKernelRpcOutcome(undefined, effects);
     }
@@ -1388,7 +1387,7 @@ async function resumeFsViaKernelWorkerInner(
         deps.markRuntimeFsDirty(dirtyHandle);
       }
       deps.publishRuntimeKernelState(handle);
-      deps.kickBlockedWorkers(handle);
+      effects.push({ kind: "kick-blocked-workers", handle });
     };
     deps.appendWorkerDebugLog(handle, `fs-done:0x${vmPtr.toString(16)}:rv=${fsResult.toString()}`);
     appendFsLifecycleEvent(

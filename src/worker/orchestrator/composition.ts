@@ -173,7 +173,6 @@ workerKernelRpcHelpers = createWorkerKernelRpcHelpers({
   enqueueWorker,
   failProcess,
   handleBlockedRetryResult,
-  kickBlockedWorkers,
   markRuntimeFsDirty,
   requestPipeStateSync,
   syncProcessMemfsViaKernelWorker: syncProcessMemfsViaKernelWorkerImpl,

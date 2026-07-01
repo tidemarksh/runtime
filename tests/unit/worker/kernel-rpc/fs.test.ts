@@ -208,7 +208,7 @@ test("kernel-rpc fs outcome reports blocked fs status", async () => {
   expect(blockWorker).not.toHaveBeenCalled();
 });
 
-test("kernel-worker fs outcome skips memfs publication effect when no fork-share targets exist", async () => {
+test("kernel-worker fs outcome returns wake effect after local publication", async () => {
   const kernel = {
     ...makeKernel(),
     thread_pending_fs_opcode: () => 6,
@@ -243,7 +243,6 @@ test("kernel-worker fs outcome skips memfs publication effect when no fork-share
   } as unknown as ThreadWorkerState;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, threadState);
-  const kickBlockedWorkers = vi.fn();
   const markRuntimeFsDirty = vi.fn();
   const publishRuntimeKernelState = vi.fn();
   const helpers = createWorkerKernelRpcFsHelpers({
@@ -256,7 +255,7 @@ test("kernel-worker fs outcome skips memfs publication effect when no fork-share
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    kickBlockedWorkers,
+    kickBlockedWorkers: vi.fn(),
     markRuntimeFsDirty,
     kernelShareOtherMembers: () => [],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
@@ -279,17 +278,14 @@ test("kernel-worker fs outcome skips memfs publication effect when no fork-share
     vmPtr: 0x1234,
   }));
   expect(outcome).toMatchObject({ kind: "completed", status: 0 });
-  expect(outcome.effects).toEqual(expect.arrayContaining([
+  expect(outcome.effects).toEqual([
+    { kind: "kick-blocked-workers", handle },
     { kind: "enqueue-worker" },
-  ]));
+  ]);
   expect(markRuntimeFsDirty).toHaveBeenCalledWith(handle);
   expect(publishRuntimeKernelState).toHaveBeenCalledWith(handle);
-  expect(kickBlockedWorkers).toHaveBeenCalledWith(handle);
   expect(markRuntimeFsDirty.mock.invocationCallOrder[0]).toBeLessThan(
     publishRuntimeKernelState.mock.invocationCallOrder[0],
-  );
-  expect(publishRuntimeKernelState.mock.invocationCallOrder[0]).toBeLessThan(
-    kickBlockedWorkers.mock.invocationCallOrder[0],
   );
 });
 
