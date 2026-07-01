@@ -323,7 +323,7 @@ handleWorkerMessageImpl = createWorkerMessageHandler({
   enqueueWorker,
   failProcess,
   handleExecveSpawn,
-  kickBlockedWorkers,
+  notifyWorkerStatusProgress: kickBlockedWorkers,
   markRuntimeFsDirty,
   pumpNetworkConnections,
   commitNetworkConnect,

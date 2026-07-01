@@ -72,7 +72,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
         handle.runningWorker = null;
       }
       deps.blockWorker(handle, worker, msg.status, thread.vmPtr);
-      deps.kickBlockedWorkers(handle);
+      deps.notifyWorkerStatusProgress(handle);
       deps.pumpProcess(handle);
       return;
     }
@@ -111,7 +111,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
             return;
           }
           publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
-          deps.kickBlockedWorkers(handle);
+          deps.notifyWorkerStatusProgress(handle);
           deps.pumpProcess(handle);
         })
         .catch((error) => {
@@ -129,7 +129,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
           deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
         });
       }
-      deps.kickBlockedWorkers(handle);
+      deps.notifyWorkerStatusProgress(handle);
       deps.pumpProcess(handle);
     };
 

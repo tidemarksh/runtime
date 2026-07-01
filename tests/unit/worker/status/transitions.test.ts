@@ -306,7 +306,7 @@ function makeDeps(worker: Worker) {
     enqueueWorker: vi.fn(),
     failProcess: vi.fn(),
     handleExecveSpawn: vi.fn(async () => {}),
-    kickBlockedWorkers: vi.fn(),
+    notifyWorkerStatusProgress: vi.fn(),
     pumpProcess: vi.fn(),
     pumpNetworkConnections: vi.fn(async () => false),
     pruneDetachedProcessWorkers: vi.fn(),
@@ -686,7 +686,7 @@ test("STATUS_FAULT uses supervisor thread-exit decision instead of runtime remai
   expect(kernel.supervisor_fault_exit_decision).toHaveBeenCalledWith(0x1234, expect.any(Number), 88);
   expect(deps.completeProcessExit).not.toHaveBeenCalled();
   expect(handle.workers.has(worker)).toBe(false);
-  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
   expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
     77,
@@ -842,7 +842,7 @@ test("STATUS_SOCKET_RECV syncs socket state before fork-shared blocked sync", as
   expect(order).toEqual(["socket", "fork-shared"]);
 });
 
-test("STATUS_SLEEP zero-duration yield kicks blocked workers before requeueing", () => {
+test("STATUS_SLEEP zero-duration yield reports progress before requeueing", () => {
   const worker = {} as Worker;
   const handle = makeHandle(worker);
   const deps = makeDeps(worker);
@@ -867,14 +867,14 @@ test("STATUS_SLEEP zero-duration yield kicks blocked workers before requeueing",
     completedSyncEffects: 0,
   });
 
-  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
   expect(handle.kernel.thread_resume_sleep).toHaveBeenCalledWith(0x1234);
   expect(
     handle.kernel.thread_resume_sleep.mock.invocationCallOrder[0],
   ).toBeLessThan(deps.enqueueWorker.mock.invocationCallOrder[0]);
   expect(
-    deps.kickBlockedWorkers.mock.invocationCallOrder[0],
+    deps.notifyWorkerStatusProgress.mock.invocationCallOrder[0],
   ).toBeLessThan(deps.enqueueWorker.mock.invocationCallOrder[0]);
 });
 
@@ -958,7 +958,7 @@ test("STATUS_SLEEP zero-duration yield waits for pending blocked RPC before read
     completedSyncEffects: 0,
   });
 
-  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(deps.pumpProcess).not.toHaveBeenCalled();
   expect(deps.enqueueWorker).not.toHaveBeenCalled();
 
@@ -1086,7 +1086,7 @@ test("STATUS_SLEEP arms supervisor host timer HostOp and reports completion", as
   expect(handle.runningWorker).toBeNull();
   expect(thread.waitingInWorkerStatus).toBe(26);
   expect(kernel.supervisor_next_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
-  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(deps.enqueueWorker).not.toHaveBeenCalled();
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
 
@@ -1141,7 +1141,7 @@ test("STATUS_CLONE_SPAWN ignores stale duplicate after kernel status moved on", 
     "clone_spawn_stale:0x1234:25->0",
   );
   expect(deps.attachThreadWorker).not.toHaveBeenCalled();
-  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
 });
 
@@ -1466,7 +1466,7 @@ test("STATUS_CLONE_SPAWN holds parent until attached child reports ready", () =>
   expect(thread.ownerAsyncStatus).toBe(25);
   expect(childThread?.resumeWorkersOnReady).toEqual([worker]);
   expect(deps.enqueueWorker).not.toHaveBeenCalled();
-  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
 });
 
 test("STATUS_CLONE_SPAWN defers child spawn until kernel-worker lifecycle sync completes", () => {
@@ -1588,7 +1588,7 @@ test("STATUS_FS does not sync pipe state before filesystem resume completes", ()
 
   expect(deps.requestPipeStateSync).not.toHaveBeenCalled();
   expect(deps.resumeFsViaKernelWorker).toHaveBeenCalledWith(handle, worker, 0x1234);
-  expect(deps.kickBlockedWorkers).not.toHaveBeenCalled();
+  expect(deps.notifyWorkerStatusProgress).not.toHaveBeenCalled();
   expect(deps.pumpProcess).not.toHaveBeenCalled();
 });
 
@@ -1689,7 +1689,7 @@ test("STATUS_OK network pump syncs socket state before requeueing", async () => 
     await Promise.resolve();
   }
 
-  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });
 
@@ -1738,6 +1738,6 @@ test("STATUS_OK pipe sync clears owner async state before requeueing", async () 
     expect(thread.ownerAsyncStatus).toBeNull();
   });
 
-  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });

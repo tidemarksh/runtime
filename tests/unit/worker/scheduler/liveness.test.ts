@@ -456,7 +456,7 @@ function makeStatusTransitionDeps(
       throw error;
     }),
     handleExecveSpawn: vi.fn(async () => {}),
-    kickBlockedWorkers: vi.fn(),
+    notifyWorkerStatusProgress: vi.fn(),
     markRuntimeFsDirty: vi.fn(),
     pumpProcess: vi.fn(),
     pruneDetachedProcessWorkers: vi.fn(),
@@ -506,7 +506,7 @@ test("ok status defers re-enqueue while a blocked epoll retry rpc is pending", a
     pipeEofChildExitDeferrals: 0,
   });
   const enqueueWorker = vi.fn();
-  const kickBlockedWorkers = vi.fn(() => {
+  const notifyWorkerStatusProgress = vi.fn(() => {
     const blocked = handle.blockedWorkers.get(blockedWorker);
     if (blocked) {
       blocked.rpcPending = true;
@@ -517,7 +517,7 @@ test("ok status defers re-enqueue while a blocked epoll retry rpc is pending", a
     threadWorkerStates,
     {
       enqueueWorker,
-      kickBlockedWorkers,
+      notifyWorkerStatusProgress,
     },
   ));
 
@@ -541,7 +541,7 @@ test("ok status defers re-enqueue while a blocked epoll retry rpc is pending", a
     completedSyncEffects: 0,
   });
 
-  expect(kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(enqueueWorker).not.toHaveBeenCalled();
 
   await vi.advanceTimersByTimeAsync(1);
@@ -565,13 +565,13 @@ test("ok status re-enqueues immediately when no blocked retry rpc is pending", (
   const { exports: kernel } = makeKernel();
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   const enqueueWorker = vi.fn();
-  const kickBlockedWorkers = vi.fn();
+  const notifyWorkerStatusProgress = vi.fn();
   const handleStatusTransition = createWorkerStatusTransitionHandler(makeStatusTransitionDeps(
     handle,
     threadWorkerStates,
     {
       enqueueWorker,
-      kickBlockedWorkers,
+      notifyWorkerStatusProgress,
     },
   ));
 
@@ -595,7 +595,7 @@ test("ok status re-enqueues immediately when no blocked retry rpc is pending", (
     completedSyncEffects: 0,
   });
 
-  expect(kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });
 

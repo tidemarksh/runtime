@@ -374,10 +374,10 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             if (shouldWakeSignalWaiters) {
               wakeRuntimeBridge(handle.runtimeBridge);
             }
-            deps.kickBlockedWorkers(handle);
+            deps.notifyWorkerStatusProgress(handle);
             if (shouldSyncPipeState) {
               for (const member of kernelShareOtherMembers(handle)) {
-                deps.kickBlockedWorkers(member);
+                deps.notifyWorkerStatusProgress(member);
                 deps.pumpProcess(member);
               }
             }
@@ -408,7 +408,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             if (!workerStillOwnedByHandle()) {
               return;
             }
-            deps.kickBlockedWorkers(handle);
+            deps.notifyWorkerStatusProgress(handle);
             enqueueWorkerAfterOk();
           })
           .catch((error) => {
@@ -416,7 +416,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           });
         return;
       }
-      deps.kickBlockedWorkers(handle);
+      deps.notifyWorkerStatusProgress(handle);
       enqueueWorkerAfterOk();
       return;
     }
@@ -502,7 +502,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         if (wroteToPipe || drainedPipe || (completedSyncEffects & syncEffects.syncEffectPipeState) !== 0) {
           void deps.requestPipeStateSync(handle, true)
             .then(() => {
-              deps.kickBlockedWorkers(handle);
+              deps.notifyWorkerStatusProgress(handle);
               deps.pumpProcess(handle);
             })
             .catch((error) => {
@@ -510,7 +510,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             });
           return;
         }
-        deps.kickBlockedWorkers(handle);
+        deps.notifyWorkerStatusProgress(handle);
         deps.pumpProcess(handle);
       }
       return;
@@ -547,7 +547,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           if (!workerStillOwnedByHandle()) {
             return;
           }
-          deps.kickBlockedWorkers(handle);
+          deps.notifyWorkerStatusProgress(handle);
           deps.pumpProcess(handle);
         })
         .catch((error) => {
@@ -604,7 +604,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
                 return;
               }
               resumeZeroDurationSleep();
-              deps.kickBlockedWorkers(handle);
+              deps.notifyWorkerStatusProgress(handle);
               enqueueAfterYield();
             })
             .catch((error) => {
@@ -616,7 +616,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           return;
         }
         resumeZeroDurationSleep();
-        deps.kickBlockedWorkers(handle);
+        deps.notifyWorkerStatusProgress(handle);
         enqueueAfterYield();
         return;
       }
@@ -634,7 +634,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       if (hostTimer !== null) {
         armSupervisorHostTimer(handle, hostTimer, deps);
       }
-      deps.kickBlockedWorkers(handle);
+      deps.notifyWorkerStatusProgress(handle);
       deps.pumpProcess(handle);
       return;
     }
@@ -736,7 +736,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             await deps.commitNetworkConnect(handle, thread.vmPtr, result);
           })
           .then(() => {
-            deps.kickBlockedWorkers(handle);
+            deps.notifyWorkerStatusProgress(handle);
             deps.enqueueWorker(handle, worker);
           })
           .catch((error) => {
@@ -758,7 +758,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         }).catch((error) => {
           deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
         });
-        deps.kickBlockedWorkers(handle);
+        deps.notifyWorkerStatusProgress(handle);
         deps.enqueueWorker(handle, worker);
         return;
       }
@@ -773,7 +773,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           if (outcome !== undefined) {
             consumeKernelRpcResumeOutcome(handle, worker, thread.vmPtr, outcome);
           }
-          deps.kickBlockedWorkers(handle);
+          deps.notifyWorkerStatusProgress(handle);
           deps.enqueueWorker(handle, worker);
         })
         .catch((error) => {
@@ -841,7 +841,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             handle,
             `clone_spawn_stale:0x${thread.vmPtr.toString(16)}:${status}->${currentStatus}`,
           );
-          deps.kickBlockedWorkers(handle);
+          deps.notifyWorkerStatusProgress(handle);
           deps.pumpProcess(handle);
           return false;
         }
@@ -870,7 +870,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         }
         thread.ownerAsyncStatus = status;
         childThread.resumeWorkersOnReady.push(worker);
-        deps.kickBlockedWorkers(handle);
+        deps.notifyWorkerStatusProgress(handle);
         if (CLONE_SPAWN_DEBUG_ENABLED) {
           deps.appendRuntimeLifecycleEvent(
             handle.runtimeId,
@@ -1124,7 +1124,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         void deps.requestSocketStateSync(handle, true)
           .then(() => {
             finishStatusTransitionRpc(handle, worker, thread.vmPtr, rpcGeneration);
-            deps.kickBlockedWorkers(handle);
+            deps.notifyWorkerStatusProgress(handle);
             deps.pumpProcess(handle);
           })
           .catch((error) => {
@@ -1153,7 +1153,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             if (!latestBlocked) {
               return;
             }
-            deps.kickBlockedWorkers(handle);
+            deps.notifyWorkerStatusProgress(handle);
             deps.pumpProcess(handle);
           })
           .catch((error) => {
@@ -1204,7 +1204,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
               deps.pumpProcess(handle);
               return;
             }
-            deps.kickBlockedWorkers(handle);
+            deps.notifyWorkerStatusProgress(handle);
             deps.pumpProcess(handle);
           })
           .catch((error) => {

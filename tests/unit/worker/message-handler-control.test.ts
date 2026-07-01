@@ -27,7 +27,7 @@ function makeDeps(failProcess: ReturnType<typeof vi.fn>): WorkerMessageHandlerDe
     enqueueWorker: () => {},
     failProcess,
     handleExecveSpawn: async () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     pumpProcess: () => {},
     requestEpollDependentOfdStateSync: async () => {},
     requestEpollStateSync: async () => {},

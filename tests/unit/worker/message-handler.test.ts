@@ -106,7 +106,7 @@ function makeDeps(
     enqueueWorker: () => {},
     failProcess,
     handleExecveSpawn: async () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     pumpProcess: () => {},
     pruneDetachedProcessWorkers: () => {},
     pumpNetworkConnections: async () => false,

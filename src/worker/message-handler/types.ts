@@ -31,7 +31,7 @@ export interface WorkerMessageHandlerDeps extends Partial<WorkerMessageHandlerSy
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   failProcess(handle: ProcessHandle, error: Error): void;
   handleExecveSpawn(handle: ProcessHandle, worker: Worker, thread: ThreadWorkerState): Promise<void>;
-  kickBlockedWorkers(handle: ProcessHandle): void;
+  notifyWorkerStatusProgress(handle: ProcessHandle): void;
   markRuntimeFsDirty(handle: ProcessHandle): void;
   pumpProcess(handle: ProcessHandle): void;
   pruneDetachedProcessWorkers(handle: ProcessHandle, anchorVmPtr: number, currentWorker: Worker | null): void;

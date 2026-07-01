@@ -267,13 +267,13 @@ test("waitInWorker WAIT4 routes to owner-side blocked scheduling with kernel-wor
   threadWorkerStates.set(worker, thread);
   const blockWorker = vi.fn();
   const requestPipeStateSync = vi.fn(async () => {});
-  const kickBlockedWorkers = vi.fn();
+  const notifyWorkerStatusProgress = vi.fn();
   const pumpProcess = vi.fn();
   const handler = createWorkerWaitInWorkerStatusHandler({
     appendWorkerDebugLog: () => {},
     clearBlockedWorker: () => {},
     pumpProcess,
-    kickBlockedWorkers,
+    notifyWorkerStatusProgress,
     blockWorker,
     failProcess: () => {},
     requestEpollStateSync: async () => {},
@@ -358,7 +358,7 @@ test("waitInWorker WAIT4 routes to owner-side blocked scheduling with kernel-wor
 
   await Promise.resolve();
   await Promise.resolve();
-  expect(kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(pumpProcess).toHaveBeenCalledWith(handle);
 });
 
@@ -391,7 +391,7 @@ test("waitInWorker clears a running worker that is already parked in worker-loca
     appendWorkerDebugLog,
     clearBlockedWorker: () => {},
     pumpProcess,
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     blockWorker: () => {},
     failProcess: () => {},
     requestEpollStateSync: async () => {},
