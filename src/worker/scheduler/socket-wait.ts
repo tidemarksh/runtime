@@ -15,7 +15,7 @@ export interface SocketWaitScheduler {
   scheduleSocketBlockedRetry(
     handle: ProcessHandle,
     worker: Worker,
-    blocked: { timeoutDeadlineMs: number | null; supervisorTimerArmed?: boolean },
+    blocked: { supervisorTimerArmed?: boolean },
     timeoutMs: number,
   ): void;
 }
@@ -134,19 +134,16 @@ export function createSocketWaitScheduler(deps: SocketWaitSchedulerDeps): Socket
   function scheduleSocketBlockedRetry(
     handle: ProcessHandle,
     worker: Worker,
-    blocked: { timeoutDeadlineMs: number | null; supervisorTimerArmed?: boolean },
+    blocked: { supervisorTimerArmed?: boolean },
     timeoutMs: number,
   ): void {
     if (blocked.supervisorTimerArmed === true) {
-      blocked.timeoutDeadlineMs = null;
       return;
     }
     if (timeoutMs < 0) {
-      blocked.timeoutDeadlineMs = null;
       deps.scheduleBlockedRetry(handle, worker, 1);
       return;
     }
-    blocked.timeoutDeadlineMs = null;
     throw new Error("kernel supervisor timer HostOp required for finite socket wait");
   }
 

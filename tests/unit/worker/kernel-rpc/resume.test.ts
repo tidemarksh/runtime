@@ -177,7 +177,6 @@ test("resumeWait4ViaKernelWorker does not re-run local wait4 after kernel-worker
     status: 31,
     retryTimer: null,
     timeoutExpired: false,
-    timeoutDeadlineMs: null,
     rpcPending: true,
   });
 
@@ -271,7 +270,6 @@ test("resumeWait4ViaKernelWorker skips RPC when local wait4 already resolved", a
     status: 31,
     retryTimer: null,
     timeoutExpired: false,
-    timeoutDeadlineMs: null,
     rpcPending: true,
   });
 
@@ -475,7 +473,6 @@ test("resumeBlockedSyscallLocally skips kernel-worker shared-state syncs during 
     status: 29,
     retryTimer: null,
     timeoutExpired: false,
-    timeoutDeadlineMs: null,
     rpcPending: true,
   });
 
@@ -598,7 +595,6 @@ test("resumeBlockedSyscallLocally queues pselect fd_set writes after owner-side 
     status: 21,
     retryTimer: null,
     timeoutExpired: false,
-    timeoutDeadlineMs: null,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -754,7 +750,6 @@ test("resumeBlockedSyscallLocally retries pselect pipe HUP owner-side after tran
     status: 21,
     retryTimer: null,
     timeoutExpired: false,
-    timeoutDeadlineMs: null,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -909,7 +904,6 @@ test("resumeBlockedSyscallLocally resumes pselect pipe HUP before generic after-
     status: 21,
     retryTimer: null,
     timeoutExpired: false,
-    timeoutDeadlineMs: null,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -1065,7 +1059,6 @@ test("resumeBlockedSyscallLocally retries mixed socket pipe pselect HUP owner-si
     status: 21,
     retryTimer: null,
     timeoutExpired: false,
-    timeoutDeadlineMs: null,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -1192,7 +1185,6 @@ test("resumeBlockedSyscallOutcome returns pipe sync effect before ready socket p
     status: 21,
     retryTimer: null,
     timeoutExpired: false,
-    timeoutDeadlineMs: null,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -1320,7 +1312,6 @@ test("resumeBlockedSyscallOutcome returns socket sync effect without running soc
     status: 21,
     retryTimer: null,
     timeoutExpired: false,
-    timeoutDeadlineMs: null,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -1436,7 +1427,6 @@ test("resumeBlockedSyscallOutcome completes epoll timeout through epoll timeout 
     status: 7,
     retryTimer: null,
     timeoutExpired: true,
-    timeoutDeadlineMs: null,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -1550,7 +1540,6 @@ test("resumeBlockedSyscallLocally wakes pipe waiters through requestPipeStateSyn
     status: 21,
     retryTimer: null,
     timeoutExpired: false,
-    timeoutDeadlineMs: null,
     rpcPending: true,
   });
 
@@ -1684,7 +1673,6 @@ test("resumeBlockedSyscallLocally resumes pipe EOF after writers close even with
     status: 21,
     retryTimer: null,
     timeoutExpired: false,
-    timeoutDeadlineMs: null,
     rpcPending: true,
   });
 
@@ -1849,7 +1837,6 @@ test("resumeBlockedSyscallLocally defers poll readiness while an active child st
     status: 21,
     retryTimer: null,
     timeoutExpired: false,
-    timeoutDeadlineMs: null,
     rpcPending: true,
   });
 
@@ -2006,7 +1993,6 @@ test("resumeBlockedSyscallLocally ignores exiting child pipe writers for pselect
     status: 21,
     retryTimer: null,
     timeoutExpired: false,
-    timeoutDeadlineMs: null,
     rpcPending: true,
   });
 
@@ -2166,7 +2152,6 @@ test("resumeBlockedSyscallLocally completes pselect HUP marker despite an active
     status: 21,
     retryTimer: null,
     timeoutExpired: false,
-    timeoutDeadlineMs: null,
     rpcPending: true,
   });
 
@@ -2287,7 +2272,6 @@ test("resumeBlockedSyscallLocally collapses pipe read that becomes ready after p
     status: 21,
     retryTimer: null,
     timeoutExpired: false,
-    timeoutDeadlineMs: null,
     rpcPending: true,
   });
 
@@ -2413,7 +2397,6 @@ test("resumeBlockedSyscallLocally queues the full socket read buffer after owner
     status: 29,
     retryTimer: null,
     timeoutExpired: false,
-    timeoutDeadlineMs: null,
     rpcPending: true,
   });
 

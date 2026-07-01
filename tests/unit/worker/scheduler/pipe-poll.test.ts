@@ -55,7 +55,6 @@ test("pipe wait stays passive after child-exit resume only while child work rema
     21,
     0x1234,
     -1,
-    null,
     0,
     "child-record",
   )).toBe(true);
@@ -65,7 +64,6 @@ test("pipe wait stays passive after child-exit resume only while child work rema
     21,
     0x1234,
     -1,
-    null,
     0,
     "child-record",
   )).toBe(false);
@@ -75,7 +73,6 @@ test("pipe wait stays passive after child-exit resume only while child work rema
     21,
     0x1234,
     -1,
-    null,
     0,
     "child-record",
   )).toBe(true);
@@ -85,7 +82,6 @@ test("pipe wait stays passive after child-exit resume only while child work rema
     21,
     0x1234,
     -1,
-    null,
     0,
     "child-record",
   )).toBe(true);
@@ -108,7 +104,6 @@ test("empty pselect pipe wait stays passive without child work", () => {
     21,
     0x1234,
     -1,
-    null,
     0,
     "none",
   )).toBe(true);
@@ -133,7 +128,6 @@ test("empty pselect waits for child wake record once before passive parking", ()
     21,
     0x1234,
     -1,
-    null,
     0,
     "child-record",
   )).toBe(false);
@@ -143,7 +137,6 @@ test("empty pselect waits for child wake record once before passive parking", ()
     21,
     0x1234,
     -1,
-    null,
     0,
     "child-record",
   )).toBe(true);
@@ -179,7 +172,6 @@ test("pselect with a watched fd does not use empty-set passive parking", () => {
     21,
     0x1234,
     -1,
-    null,
     0,
     "none",
   )).toBe(false);

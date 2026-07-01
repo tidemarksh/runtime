@@ -142,7 +142,6 @@ test("host boundary consumes process-scoped supervisor runnable resume decisions
     status: kernel.abi_status_futex_wait(),
     retryTimer: null,
     timeoutExpired: false,
-    timeoutDeadlineMs: null,
     epollTimerfdDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,

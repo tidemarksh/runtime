@@ -56,7 +56,6 @@ export interface PipePollScheduler {
     status: number,
     vmPtr: number,
     pollTimeoutMs: number,
-    timeoutDeadlineMs: number | null,
     readyCount: number | undefined,
     pipeChildExitResumeKey: string | null,
   ): boolean;
@@ -69,7 +68,7 @@ export interface PipePollScheduler {
   schedulePipePollTimeoutRetry(
     handle: ProcessHandle,
     worker: Worker,
-    blocked: { timeoutDeadlineMs: number | null; supervisorTimerArmed?: boolean },
+    blocked: { supervisorTimerArmed?: boolean },
     timeoutMs: number,
   ): void;
   formatFirstPipeWaitDebug(handle: ProcessHandle, vmPtr: number): string;
@@ -209,7 +208,6 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
     status: number,
     vmPtr: number,
     pollTimeoutMs: number,
-    timeoutDeadlineMs: number | null,
     readyCount: number | undefined,
     pipeChildExitResumeKey: string | null,
   ): boolean {
@@ -268,7 +266,6 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
       && !blockedPollPipeIsReady
       && !pollLikePipeHasNoWriter
       && pollTimeoutMs < 0
-      && timeoutDeadlineMs === null
       && (readyCount === undefined || readyCount === 0)
       && handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) !== 1
       && handle.kernel.thread_poll_hup_sync_pending?.(vmPtr) !== 1;
@@ -365,7 +362,6 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
   ): boolean {
     return blocked.status === handle.kernel.abi_status_pipe_wait()
       && pollTimeoutMs < 0
-      && blocked.timeoutDeadlineMs === null
       && !blocked.timeoutExpired
       && deps.pipeChildExitRecordsAlreadyResumedForWait(handle, blocked.vmPtr)
       && handle.pendingChildExitRecords === 0
@@ -378,19 +374,16 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
   function schedulePipePollTimeoutRetry(
     handle: ProcessHandle,
     worker: Worker,
-    blocked: { timeoutDeadlineMs: number | null; supervisorTimerArmed?: boolean },
+    blocked: { supervisorTimerArmed?: boolean },
     timeoutMs: number,
   ): void {
     if (blocked.supervisorTimerArmed === true) {
-      blocked.timeoutDeadlineMs = null;
       return;
     }
     if (timeoutMs < 0) {
-      blocked.timeoutDeadlineMs = null;
       deps.scheduleBlockedRetry(handle, worker, 1);
       return;
     }
-    blocked.timeoutDeadlineMs = null;
     throw new Error("kernel supervisor timer HostOp required for finite pipe poll wait");
   }
 

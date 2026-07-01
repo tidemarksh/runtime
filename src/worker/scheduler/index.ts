@@ -936,7 +936,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       status,
       retryTimer: null,
       timeoutExpired: false,
-      timeoutDeadlineMs: null,
       supervisorTimerArmed: sameBlockedThread ? previousBlocked.supervisorTimerArmed : false,
       epollTimerfdDeadlineTicks: sameBlockedThread ? previousBlocked.epollTimerfdDeadlineTicks : null,
       rpcPending: sameBlockedThread ? previousBlocked.rpcPending : false,
@@ -974,12 +973,11 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       ? handle.kernel.thread_poll_wait_ready_count?.(vmPtr)
       : undefined;
     if (pollReadyCount !== undefined && pollReadyCount > 0) {
-      blocked.timeoutDeadlineMs = null;
       scheduleBlockedRetry(handle, worker, 0);
       return;
     }
     if (
-      (pollTimeoutMs >= 0 || blocked.timeoutDeadlineMs !== null)
+      pollTimeoutMs >= 0
       && (pollReadyCount === undefined || pollReadyCount <= 0)
     ) {
       if (supervisorTimerArmed) {
@@ -1227,12 +1225,11 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       ? handle.kernel.thread_poll_wait_ready_count?.(vmPtr)
       : undefined;
     if (pollReadyCount !== undefined && pollReadyCount > 0) {
-      blocked.timeoutDeadlineMs = null;
       scheduleBlockedRetry(handle, worker, 0);
       return;
     }
     if (
-      (pollTimeoutMs >= 0 || blocked.timeoutDeadlineMs !== null)
+      pollTimeoutMs >= 0
       && (pollReadyCount === undefined || pollReadyCount <= 0)
     ) {
       scheduleSocketBlockedRetry(handle, worker, blocked, pollTimeoutMs);
@@ -1243,7 +1240,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       status,
       vmPtr,
       pollTimeoutMs,
-      blocked.timeoutDeadlineMs,
       pollReadyCount,
       pipeChildExitResumeKeyFor(handle, vmPtr),
     )) {
@@ -1251,7 +1247,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
     const socketTimeoutMs = socketWaitTimeoutMs(handle, status, vmPtr);
-    if (socketTimeoutMs >= 0 || blocked.timeoutDeadlineMs !== null) {
+    if (socketTimeoutMs >= 0) {
       scheduleSocketBlockedRetry(handle, worker, blocked, socketTimeoutMs);
       return;
     }
@@ -1757,24 +1753,15 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       blocked.status,
       blocked.vmPtr,
       blockedPollTimeoutMs,
-      blocked.timeoutDeadlineMs,
       blockedPollReadyCount,
       pipeChildExitResumeKeyFor(handle, blocked.vmPtr),
     )) {
       scheduleBlockedRetry(handle, worker, 25, blocked.timeoutExpired);
       return;
     }
-    if (
-      blocked.status === handle.kernel.abi_status_pipe_wait()
-      && blockedPollReadyCount !== undefined
-      && blockedPollReadyCount > 0
-    ) {
-      blocked.timeoutDeadlineMs = null;
-    }
-
     const blockedSocketTimeoutMs = socketWaitTimeoutMs(handle, blocked.status, blocked.vmPtr);
     if (
-      (blockedSocketTimeoutMs >= 0 || blocked.timeoutDeadlineMs !== null)
+      blockedSocketTimeoutMs >= 0
       && !blocked.timeoutExpired
     ) {
       if (armBlockedSupervisorTimerForBlocked(handle, blocked)) {
