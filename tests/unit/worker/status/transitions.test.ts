@@ -832,16 +832,18 @@ test("STATUS_SOCKET_RECV syncs socket state before fork-shared blocked sync", as
   expect(order).toEqual(["socket", "fork-shared"]);
 });
 
-test("STATUS_SLEEP zero-duration yield reports progress before requeueing", () => {
+test("STATUS_SLEEP zero-duration yield reports progress before supervisor pump", () => {
   const worker = {} as Worker;
   const handle = makeHandle(worker);
+  handle.runningWorker = worker;
   const deps = makeDeps(worker);
+  const thread = deps.threadWorkerStates.get(worker)!;
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   transition({
     handle: handle as never,
     worker,
-    thread: deps.threadWorkerStates.get(worker)! as never,
+    thread: thread as never,
     msg: {
       type: "status",
       status: 26,
@@ -858,29 +860,30 @@ test("STATUS_SLEEP zero-duration yield reports progress before requeueing", () =
   });
 
   expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
-  expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
-  expect(handle.kernel.thread_resume_sleep).toHaveBeenCalledWith(0x1234);
-  expect(
-    handle.kernel.thread_resume_sleep.mock.invocationCallOrder[0],
-  ).toBeLessThan(deps.enqueueWorker.mock.invocationCallOrder[0]);
+  expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
+  expect(handle.runningWorker).toBeNull();
+  expect(thread.waitingInWorkerStatus).toBeNull();
   expect(
     deps.notifyWorkerStatusProgress.mock.invocationCallOrder[0],
-  ).toBeLessThan(deps.enqueueWorker.mock.invocationCallOrder[0]);
+  ).toBeLessThan(deps.pumpProcess.mock.invocationCallOrder[0]);
 });
 
-test("STATUS_SLEEP zero-duration yield lets existing ready work run before requeueing itself", async () => {
-  vi.useFakeTimers();
+test("STATUS_SLEEP zero-duration yield waits for requested pipe sync before supervisor pump", async () => {
   const worker = {} as Worker;
-  const readyWorker = {} as Worker;
   const handle = makeHandle(worker);
-  handle.readyWorkers.push(readyWorker);
+  handle.pid = 1;
+  handle.runningWorker = worker;
+  handle.kernelWorkerRequest = {} as never;
   const deps = makeDeps(worker);
+  deps.syncEffectPipeState = 1;
+  const thread = deps.threadWorkerStates.get(worker)!;
+  thread.ownerPid = handle.pid;
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   transition({
     handle: handle as never,
     worker,
-    thread: deps.threadWorkerStates.get(worker)! as never,
+    thread: thread as never,
     msg: {
       type: "status",
       status: 26,
@@ -893,125 +896,16 @@ test("STATUS_SLEEP zero-duration yield lets existing ready work run before reque
     status: 26,
     wroteToPipe: false,
     drainedPipe: false,
-    completedSyncEffects: 0,
+    completedSyncEffects: 1,
   });
 
-  expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
-  expect(deps.enqueueWorker).not.toHaveBeenCalled();
-
-  await vi.runOnlyPendingTimersAsync();
-
-  expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
-});
-
-test("STATUS_SLEEP zero-duration yield waits for pending blocked RPC before ready churn", async () => {
-  vi.useFakeTimers();
-  const worker = {} as Worker;
-  const readyWorker = {} as Worker;
-  const blockedWorker = {} as Worker;
-  const handle = makeHandle(worker);
-  handle.readyWorkers.push(readyWorker);
-  const blocked = {
-    vmPtr: 0x5678,
-    status: 22,
-    retryTimer: null,
-    timeoutExpired: false,
-    epollTimerfdDeadlineTicks: null,
-    rpcPending: true,
-    rpcGeneration: 1,
-    skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: false,
-    pipeChildExitResumeKey: null,
-    pipeEofChildExitDeferrals: 0,
-  };
-  handle.blockedWorkers.set(blockedWorker, blocked);
-  const deps = makeDeps(worker);
-  const transition = createWorkerStatusTransitionHandler(deps as never);
-
-  transition({
-    handle: handle as never,
-    worker,
-    thread: deps.threadWorkerStates.get(worker)! as never,
-    msg: {
-      type: "status",
-      status: 26,
-      exitCode: 0,
-      termSignal: 0,
-      pc: 0n,
-      vmPtr: 0x1234,
-      kernelState: makeKernelState(),
-    },
-    status: 26,
-    wroteToPipe: false,
-    drainedPipe: false,
-    completedSyncEffects: 0,
-  });
+  expect(deps.requestPipeStateSync).toHaveBeenCalledWith(handle, false);
+  await Promise.resolve();
 
   expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
-  expect(deps.pumpProcess).not.toHaveBeenCalled();
-  expect(deps.enqueueWorker).not.toHaveBeenCalled();
-
-  blocked.rpcPending = false;
-  await vi.advanceTimersByTimeAsync(1);
-
-  expect(deps.pumpProcess).not.toHaveBeenCalled();
-  expect(deps.enqueueWorker).not.toHaveBeenCalled();
-
-  await vi.advanceTimersByTimeAsync(1);
-
-  expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
-});
-
-test("STATUS_SLEEP zero-duration yield gives blocked I/O retry a real timer turn", async () => {
-  vi.useFakeTimers();
-  const worker = {} as Worker;
-  const readyWorker = {} as Worker;
-  const blockedWorker = {} as Worker;
-  const handle = makeHandle(worker);
-  handle.readyWorkers.push(readyWorker);
-  handle.blockedWorkers.set(blockedWorker, {
-    vmPtr: 0x5678,
-    status: 22,
-    retryTimer: null,
-    timeoutExpired: false,
-    epollTimerfdDeadlineTicks: null,
-    rpcPending: false,
-    rpcGeneration: 0,
-    skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: false,
-    pipeChildExitResumeKey: null,
-    pipeEofChildExitDeferrals: 0,
-  });
-  const deps = makeDeps(worker);
-  const transition = createWorkerStatusTransitionHandler(deps as never);
-
-  transition({
-    handle: handle as never,
-    worker,
-    thread: deps.threadWorkerStates.get(worker)! as never,
-    msg: {
-      type: "status",
-      status: 26,
-      exitCode: 0,
-      termSignal: 0,
-      pc: 0n,
-      vmPtr: 0x1234,
-      kernelState: makeKernelState(),
-    },
-    status: 26,
-    wroteToPipe: false,
-    drainedPipe: false,
-    completedSyncEffects: 0,
-  });
-
-  expect(deps.pumpProcess).not.toHaveBeenCalled();
-  await vi.advanceTimersByTimeAsync(0);
-
-  expect(deps.enqueueWorker).not.toHaveBeenCalled();
-
-  await vi.advanceTimersByTimeAsync(1);
-
-  expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
+  expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
+  expect(handle.runningWorker).toBeNull();
+  expect(thread.waitingInWorkerStatus).toBeNull();
 });
 
 test("STATUS_SLEEP arms supervisor host timer HostOp and reports completion", async () => {

@@ -142,25 +142,6 @@ function hasPendingBlockedRpc(handle: ProcessHandle): boolean {
   return false;
 }
 
-function hasBlockedIoPressure(handle: ProcessHandle): boolean {
-  for (const blocked of handle.blockedWorkers.values()) {
-    const status = blocked.status;
-    if (
-      status === handle.kernel.abi_status_epoll_wait()
-      || status === handle.kernel.abi_status_fs()
-      || status === handle.kernel.abi_status_pipe_wait()
-      || status === handle.kernel.abi_status_wait4()
-      || status === handle.kernel.abi_status_flock_wait()
-      || status === handle.kernel.abi_status_connect()
-      || status === handle.kernel.abi_status_socket_recv()
-      || status === handle.kernel.abi_status_socket_send()
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
 export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDeps) {
   const syncEffects = resolveWorkerMessageHandlerSyncEffects(deps);
   function consumeKernelRpcResumeOutcome(
@@ -495,40 +476,12 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       if (sec === 0n && nsec === 0n) {
         thread.yieldedReady = true;
         deps.appendWorkerDebugLog(handle, `yield:0x${thread.vmPtr.toString(16)}`);
-        const resumeZeroDurationSleep = (): void => {
-          handle.kernel.thread_resume_sleep?.(thread.vmPtr);
-          handle.kernelState = readKernelRuntimeState(handle.kernel);
-          publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
-        };
-        const enqueueAfterYield = (): void => {
-          if (hasPendingBlockedRpc(handle)) {
-            setTimeout(() => {
-              if (workerStillOwnedByHandle()) {
-                enqueueAfterYield();
-              }
-            }, 1);
-            return;
+        const clearYieldingWorker = (): void => {
+          if (handle.runningWorker === worker) {
+            handle.runningWorker = null;
           }
-          if (hasBlockedIoPressure(handle)) {
-            setTimeout(() => {
-              if (workerStillOwnedByHandle()) {
-                resumeZeroDurationSleep();
-                deps.enqueueWorker(handle, worker);
-              }
-            }, 1);
-            return;
-          }
-          if (handle.readyWorkers.length > 0) {
-            deps.pumpProcess(handle);
-            setTimeout(() => {
-              if (workerStillOwnedByHandle()) {
-                resumeZeroDurationSleep();
-                deps.enqueueWorker(handle, worker);
-              }
-            }, 0);
-            return;
-          }
-          deps.enqueueWorker(handle, worker);
+          thread.waitingInWorkerStatus = null;
+          thread.waitingInWorkerReconcileDeferred = false;
         };
         const shouldSyncPipeState = (completedSyncEffects & syncEffects.syncEffectPipeState) !== 0;
         if (handle.kernelWorkerRequest && handle.pid > 0 && shouldSyncPipeState) {
@@ -537,9 +490,9 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
               if (!workerStillOwnedByHandle()) {
                 return;
               }
-              resumeZeroDurationSleep();
+              clearYieldingWorker();
               deps.notifyWorkerStatusProgress(handle);
-              enqueueAfterYield();
+              deps.pumpProcess(handle);
             })
             .catch((error) => {
               if (!workerStillOwnedByHandle()) {
@@ -549,9 +502,9 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             });
           return;
         }
-        resumeZeroDurationSleep();
+        clearYieldingWorker();
         deps.notifyWorkerStatusProgress(handle);
-        enqueueAfterYield();
+        deps.pumpProcess(handle);
         return;
       }
       thread.yieldedReady = false;
