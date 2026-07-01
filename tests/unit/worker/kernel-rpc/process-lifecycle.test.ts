@@ -207,7 +207,6 @@ test("recordChildExitViaKernelWorker syncs parent pipe state and drains output b
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult() {},
     kickBlockedWorkers(parent) {
       order.push(`kick:${parent.pid}`);
     },
@@ -280,7 +279,6 @@ test("syncProcessLifecycleViaKernelWorker rewrites provisional child pid after s
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult() {},
     kickBlockedWorkers() {},
     requestPipeStateSync: async () => {},
     clearVforkSnapshot() {},

@@ -118,7 +118,6 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     drainProcessOutput,
     enqueueWorker: deps.enqueueWorker,
     failProcess: deps.failProcess,
-    handleBlockedRetryResult: deps.handleBlockedRetryResult,
     kickBlockedWorkers: deps.kickBlockedWorkers,
     requestPipeStateSync: deps.requestPipeStateSync,
     syncProcessMemfsViaKernelWorker: deps.syncProcessMemfsViaKernelWorker,
