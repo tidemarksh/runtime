@@ -6422,6 +6422,57 @@ test("socket wait timeout resumes with timeout handler after deadline", async ()
   expect(resumeSocketTimeout).toHaveBeenCalledWith(0x1234);
 });
 
+test("kickBlockedWorkers leaves supervisor timer owned socket wait to supervisor completion", () => {
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, makeThreadState(0x1234));
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_socket_recv();
+  const resumeSocketTimeout = vi.fn();
+  kernel.thread_resume_socket_wait_timeout = resumeSocketTimeout;
+  kernel.thread_resume_blocked_syscall = vi.fn();
+  const handle = makeHandle(kernel, worker, threadWorkerStates);
+  handle.blockedWorkers.set(worker, {
+    vmPtr: 0x1234,
+    status: handle.kernel.abi_status_socket_recv(),
+    retryTimer: null,
+    timeoutExpired: false,
+    timeoutDeadlineMs: null,
+    supervisorTimerArmed: true,
+    epollTimerfdDeadlineTicks: null,
+    rpcPending: false,
+    rpcGeneration: 0,
+    skipNextNetworkPump: false,
+    pipeSyncedBeforePassive: false,
+    pipeChildExitResumeKey: null,
+    pipeEofChildExitDeferrals: 0,
+  });
+  const runtimeEvents: string[] = [];
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => runtimeEvents.push(event),
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.kickBlockedWorkers(handle);
+
+  expect(resumeSocketTimeout).not.toHaveBeenCalled();
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+  expect(handle.blockedWorkers.has(worker)).toBe(true);
+  expect(runtimeEvents).toContain(
+    `blocked-retry-skip-supervisor-timer:${handle.pid}:status=${handle.kernel.abi_status_socket_recv()}:vm=0x1234`,
+  );
+});
+
 test("connect timeout delegates to kernel-worker blocked syscall outcome when available", async () => {
   const worker = {
     postMessage: vi.fn(),

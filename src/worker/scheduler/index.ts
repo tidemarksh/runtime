@@ -1251,6 +1251,15 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (!blocked) {
       return;
     }
+    if (blocked.supervisorTimerArmed === true) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `blocked-retry-skip-supervisor-timer:${handle.pid}:status=${blocked.status}:vm=0x${blocked.vmPtr.toString(16)}`,
+      );
+      wakeRuntimeBridge(handle.runtimeBridge);
+      pumpProcess(handle);
+      return;
+    }
     appendBlockedStateLifecycle(handle, blocked);
     if (blocked.rpcPending) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-skip:${handle.pid}:rpc-pending`);
