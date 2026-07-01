@@ -1055,6 +1055,87 @@ test("epoll kernel-worker retry treats timeout zero as expired", async () => {
   }));
 });
 
+test("epoll kernel-worker retry delegates timeout completion to blocked syscall outcome when available", async () => {
+  const blockedWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(blockedWorker, makeThreadState(0x1234));
+  const { exports: kernel } = makeKernel();
+  let status = kernel.abi_status_epoll_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_epoll_wait_timeout = () => 0n;
+  kernel.abi_max_threads = () => 4;
+  kernel.process_thread_vm_ptr = (_processVmPtr: number, slot: number) => slot === 0 ? 0x1234 : 0;
+  kernel.abi_fd_type_epoll = () => 7;
+  kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => fd === 4 ? 5 : 0;
+  kernel.thread_blocked_ofd_id = () => 5;
+  kernel.kernel_ofd_fd_type = (ofdId: number) => ofdId === 5 ? 7 : 0;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    throw new Error("epoll timeout completion must not re-dispatch the blocked syscall in the scheduler");
+  });
+  kernel.thread_resume_epoll_wait_timeout = vi.fn(() => {
+    throw new Error("scheduler must delegate epoll timeout completion to the kernel-worker outcome");
+  });
+  const handle = makeHandle(kernel, blockedWorker);
+  handle.pendingChildSpawnRecords = 0;
+  handle.kernelWorkerRequest = vi.fn(async (message) => {
+    expect(message.type).toBe("sync-epoll-state");
+    return {
+      type: "epoll-state-synced",
+      requestId: 0,
+      kernelState: message.kernelState,
+    };
+  });
+  const lifecycleEvents: string[] = [];
+  const resumeBlockedSyscallOutcome = vi.fn(async () => {
+    status = kernel.abi_status_ok();
+    return { kind: "completed" as const, status };
+  });
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      lifecycleEvents.push(event);
+    },
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: (_handle, error) => {
+      throw error;
+    },
+    hasActiveChildProcess: () => false,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeBlockedSyscallOutcome,
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => ({ kind: "completed" }),
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.blockWorker(handle, blockedWorker, handle.kernel.abi_status_epoll_wait(), 0x1234);
+  const blocked = handle.blockedWorkers.get(blockedWorker);
+  expect(blocked).toBeDefined();
+  if (blocked!.retryTimer !== null) {
+    clearTimeout(blocked!.retryTimer);
+    blocked!.retryTimer = null;
+  }
+  blocked!.timeoutExpired = false;
+
+  scheduler.kickBlockedWorkers(handle);
+  await vi.waitFor(() => {
+    expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
+      handle,
+      blockedWorker,
+      0x1234,
+      handle.kernel.abi_status_epoll_wait(),
+      true,
+    );
+  });
+
+  expect(kernel.thread_resume_epoll_wait_timeout).not.toHaveBeenCalled();
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
+  expect(lifecycleEvents).toContain("epoll-retry-resume-rpc:1:vm=0x1234:expired=1");
+  expect(handle.blockedWorkers.has(blockedWorker)).toBe(false);
+});
+
 test("epoll sync timeout zero survives a running-worker retry skip", async () => {
   const blockedWorker = {
     postMessage: vi.fn(),

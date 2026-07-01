@@ -893,6 +893,69 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     handleBlockedRetryResult(handle, worker, blocked.vmPtr, handle.kernel.thread_status(blocked.vmPtr));
   }
 
+  function appendEpollRetryResult(handle: ProcessHandle, vmPtr: number): void {
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `epoll-retry-result:${handle.pid}:vm=0x${vmPtr.toString(16)}`
+        + `:status=${handle.kernel.thread_status(vmPtr)}`
+        + `:a0=${handle.kernel.thread_a0?.(vmPtr)?.toString() ?? "n/a"}`,
+    );
+  }
+
+  function resumeEpollWait(
+    handle: ProcessHandle,
+    worker: Worker,
+    blocked: BlockedWorkerState,
+  ): void {
+    if (blocked.timeoutExpired && blocked.epollTimerfdDeadlineTicks != null) {
+      handle.kernel.sync_monotonic_ticks_floor?.(blocked.epollTimerfdDeadlineTicks);
+      blocked.timeoutExpired = false;
+      blocked.epollTimerfdDeadlineTicks = null;
+    }
+
+    if (
+      handle.kernelWorkerRequest
+      && handle.pid > 0
+      && deps.resumeBlockedSyscallOutcome !== undefined
+    ) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `epoll-retry-resume-rpc:${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}:expired=${blocked.timeoutExpired ? 1 : 0}`,
+      );
+      blocked.rpcPending = true;
+      void deps.resumeBlockedSyscallOutcome(
+        handle,
+        worker,
+        blocked.vmPtr,
+        blocked.status,
+        blocked.timeoutExpired,
+      ).then((outcome) => {
+        consumeKernelRpcResumeOutcome(handle, worker, blocked.vmPtr, outcome);
+        if (handle.workers.has(worker) && threadWorkerStates.has(worker)) {
+          appendEpollRetryResult(handle, blocked.vmPtr);
+        }
+      }).catch((error) => {
+        const latestBlocked = handle.blockedWorkers.get(worker);
+        if (latestBlocked && latestBlocked.vmPtr === blocked.vmPtr) {
+          latestBlocked.rpcPending = false;
+        }
+        deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+      });
+      return;
+    }
+
+    attachKernelRuntimeState(handle.kernel, handle.kernelState);
+    if (blocked.timeoutExpired) {
+      handle.kernel.thread_resume_epoll_wait_timeout(blocked.vmPtr);
+      blocked.timeoutExpired = false;
+    } else {
+      handle.kernel.thread_resume_blocked_syscall(blocked.vmPtr);
+    }
+    handle.kernelState = readKernelRuntimeState(handle.kernel);
+    appendEpollRetryResult(handle, blocked.vmPtr);
+    handleBlockedRetryResult(handle, worker, blocked.vmPtr, handle.kernel.thread_status(blocked.vmPtr));
+  }
+
   function blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void {
     const previousBlocked = handle.blockedWorkers.get(worker);
     const sameBlockedThread = previousBlocked !== undefined
@@ -1423,31 +1486,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             scheduleBlockedRetry(handle, worker, 1, latestBlocked.timeoutExpired);
             return;
           }
-          attachKernelRuntimeState(handle.kernel, handle.kernelState);
-          if (latestBlocked.timeoutExpired && latestBlocked.epollTimerfdDeadlineTicks != null) {
-            handle.kernel.sync_monotonic_ticks_floor?.(latestBlocked.epollTimerfdDeadlineTicks);
-            latestBlocked.timeoutExpired = false;
-            latestBlocked.epollTimerfdDeadlineTicks = null;
-          }
-          if (latestBlocked.timeoutExpired) {
-            handle.kernel.thread_resume_epoll_wait_timeout(latestBlocked.vmPtr);
-            latestBlocked.timeoutExpired = false;
-          } else {
-            handle.kernel.thread_resume_blocked_syscall(latestBlocked.vmPtr);
-          }
-          handle.kernelState = readKernelRuntimeState(handle.kernel);
-          deps.appendRuntimeLifecycleEvent(
-            handle.runtimeId,
-            `epoll-retry-result:${handle.pid}:vm=0x${latestBlocked.vmPtr.toString(16)}`
-              + `:status=${handle.kernel.thread_status(latestBlocked.vmPtr)}`
-              + `:a0=${handle.kernel.thread_a0?.(latestBlocked.vmPtr)?.toString() ?? "n/a"}`,
-          );
-          handleBlockedRetryResult(
-            handle,
-            worker,
-            latestBlocked.vmPtr,
-            handle.kernel.thread_status(latestBlocked.vmPtr),
-          );
+          resumeEpollWait(handle, worker, latestBlocked);
         })
         .catch((error) => {
           finishBlockedRpc(handle, worker, blocked.vmPtr, rpcGeneration);
@@ -1789,20 +1828,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (blocked.status === handle.kernel.abi_status_pipe_wait()) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-retry-local:${handle.pid}`);
     }
+    if (blocked.status === handle.kernel.abi_status_epoll_wait()) {
+      resumeEpollWait(handle, worker, blocked);
+      return;
+    }
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
     if (
-      blocked.status === handle.kernel.abi_status_epoll_wait()
-      && blocked.timeoutExpired
-      && blocked.epollTimerfdDeadlineTicks != null
-    ) {
-      handle.kernel.sync_monotonic_ticks_floor?.(blocked.epollTimerfdDeadlineTicks);
-      blocked.timeoutExpired = false;
-      blocked.epollTimerfdDeadlineTicks = null;
-      handle.kernel.thread_resume_blocked_syscall(blocked.vmPtr);
-    } else if (blocked.status === handle.kernel.abi_status_epoll_wait() && blocked.timeoutExpired) {
-      handle.kernel.thread_resume_epoll_wait_timeout(blocked.vmPtr);
-      blocked.timeoutExpired = false;
-    } else if (
       blocked.timeoutExpired
       && blocked.status === handle.kernel.abi_status_pipe_wait()
       && handle.kernel.thread_resume_poll_wait_timeout

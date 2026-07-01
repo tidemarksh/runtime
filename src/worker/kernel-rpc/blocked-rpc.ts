@@ -102,6 +102,11 @@ function blockedRpcSyncCause(status: number): SyncCause {
   return { kind: "blocked-rpc", status };
 }
 
+function blockedStatusIsEpollWait(handle: ProcessHandle, status: number): boolean {
+  const epollWaitStatus = handle.kernel.abi_status_epoll_wait?.();
+  return epollWaitStatus !== undefined && status === epollWaitStatus;
+}
+
 function formatGuestBufferPreview(handle: ProcessHandle, ptr: bigint | number, length: bigint | number): string {
   const start = typeof ptr === "bigint" ? Number(ptr) : ptr;
   const requested = typeof length === "bigint" ? Number(length) : length;
@@ -1935,6 +1940,12 @@ async function resumeBlockedSyscallLocally(
       && handle.kernel.thread_resume_socket_wait_timeout
     ) {
       handle.kernel.thread_resume_socket_wait_timeout(vmPtr);
+    } else if (
+      timeoutExpired
+      && blockedStatusIsEpollWait(handle, blockedStatus)
+      && handle.kernel.thread_resume_epoll_wait_timeout
+    ) {
+      handle.kernel.thread_resume_epoll_wait_timeout(vmPtr);
     } else {
       forceNetworkClosedFds(handle, vmPtr);
       const resumeFd = blockedArg0;
@@ -1992,7 +2003,12 @@ async function resumeBlockedSyscallLocally(
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     const currentPid = handle.kernel.process_current_pid?.(vmPtr) ?? handle.pid;
     const transientProcessOwnerMismatch = currentPid > 0 && currentPid !== handle.pid;
-    if (!transientProcessOwnerMismatch && !forkSharedSyncedBeforeResume && !resumePollTimeout) {
+    if (
+      !transientProcessOwnerMismatch
+      && !forkSharedSyncedBeforeResume
+      && !resumePollTimeout
+      && !blockedStatusIsEpollWait(handle, blockedStatus)
+    ) {
       deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-after-resume:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
       if (collectEffects) {
         pushOutcomeEffect(worker, {
