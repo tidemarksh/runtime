@@ -155,6 +155,9 @@ export function recordWorkerMessageDebugEvent(
   }
 }
 
+// Host-executor parking state for non-futex host effects that still need
+// TypeScript I/O/RPC completion. Supervisor-owned futex/sleep waits must not
+// create entries here.
 export interface BlockedWorkerState {
   vmPtr: number;
   status: number;
@@ -326,6 +329,8 @@ export interface ProcessHandle {
     data: Uint8Array;
   }>;
   workers: Set<Worker>;
+  // Worker host queues. Runnable/thread authority comes from the supervisor;
+  // these collections only track host execution, parking, and diagnostics.
   readyWorkers: Worker[];
   runningWorker: Worker | null;
   blockedWorkers: Map<Worker, BlockedWorkerState>;
