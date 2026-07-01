@@ -21,6 +21,18 @@ export type KernelRpcResumeOutcome = KernelRpcResumeOutcomeBase & {
   effects?: KernelRpcResumeEffect[];
 };
 
+export function kernelRpcResumeEffectNeedsContinuation(effect: KernelRpcResumeEffect): boolean {
+  return effect.kind === "request-pipe-state-sync"
+    || effect.kind === "sync-blocked-fork-shared-state"
+    || effect.kind === "sync-blocked-socket-state";
+}
+
+export function kernelRpcResumeEffectsNeedContinuation(
+  effects: KernelRpcResumeEffect[] | undefined,
+): boolean {
+  return effects !== undefined && effects.some(kernelRpcResumeEffectNeedsContinuation);
+}
+
 export function completedKernelRpcOutcome(
   status?: number,
   effects?: KernelRpcResumeEffect[],

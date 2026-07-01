@@ -16,6 +16,7 @@ import { POLLFD_BYTES } from "../../layout/poll.js";
 import { activeChildMayHoldBlockedPipeWriter } from "./pipe.js";
 import {
   completedKernelRpcOutcome,
+  kernelRpcResumeEffectsNeedContinuation,
   type KernelRpcResumeEffect,
   type KernelRpcResumeOutcome,
 } from "./outcomes.js";
@@ -67,12 +68,7 @@ function createWorkerKernelRpcBlockedRpcHelperInternals(deps: WorkerKernelRpcBlo
   }
 
   function outcomeEffectsNeedResumeContinuation(worker: Worker): boolean {
-    const effects = pendingOutcomeEffects.get(worker);
-    return effects !== undefined && effects.some((effect) => (
-      effect.kind === "request-pipe-state-sync"
-      || effect.kind === "sync-blocked-fork-shared-state"
-      || effect.kind === "sync-blocked-socket-state"
-    ));
+    return kernelRpcResumeEffectsNeedContinuation(pendingOutcomeEffects.get(worker));
   }
 
   function emitBlockedRetryResult(

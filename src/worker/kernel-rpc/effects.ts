@@ -1,9 +1,10 @@
 import { readKernelRuntimeState } from "../../abi.js";
 import type { ProcessHandle, ThreadWorkerState } from "../types.js";
 import type { SyncCause } from "../contracts/sync.js";
-import type {
-  KernelRpcResumeEffect,
-  KernelRpcResumeOutcome,
+import {
+  kernelRpcResumeEffectsNeedContinuation,
+  type KernelRpcResumeEffect,
+  type KernelRpcResumeOutcome,
 } from "./outcomes.js";
 
 export interface KernelRpcResumeEffectPorts {
@@ -52,7 +53,7 @@ export async function applyKernelRpcResumeEffects(
 
 export function kernelRpcOutcomeNeedsResumeContinuation(outcome: KernelRpcResumeOutcome): boolean {
   return outcome.kind === "blocked"
-    && (outcome.effects ?? []).some(kernelRpcEffectNeedsResumeContinuation);
+    && kernelRpcResumeEffectsNeedContinuation(outcome.effects);
 }
 
 export async function continueBlockedRpcResumeAfterEffects(
@@ -78,12 +79,6 @@ export async function continueBlockedRpcResumeAfterEffects(
   blocked.rpcPending = false;
   const status = handle.kernel.thread_status?.(vmPtr);
   return status === undefined ? { kind: "stale" } : { kind: "completed", status };
-}
-
-function kernelRpcEffectNeedsResumeContinuation(effect: KernelRpcResumeEffect): boolean {
-  return effect.kind === "request-pipe-state-sync"
-    || effect.kind === "sync-blocked-fork-shared-state"
-    || effect.kind === "sync-blocked-socket-state";
 }
 
 async function applyKernelRpcResumeEffect(
