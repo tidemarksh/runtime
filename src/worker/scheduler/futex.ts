@@ -69,6 +69,10 @@ function isKnownThreadRecordBlock(blockedAddr: bigint): boolean {
   return blockedAddr !== 0n && blockedAddr !== BLOCKED_ADDR_NOT_FOUND;
 }
 
+export function supervisorOwnsFutexWaits(handle: ProcessHandle): boolean {
+  return handle.kernel.supervisor_next_resume !== undefined;
+}
+
 export function threadHasCanonicalFutexBlock(
   handle: ProcessHandle,
   vmPtr: number,
@@ -111,6 +115,9 @@ export function clearStaleFutexRecordIfResolved(
   handle: ProcessHandle,
   vmPtr: number,
 ): boolean {
+  if (supervisorOwnsFutexWaits(handle)) {
+    return false;
+  }
   const blockedAddr = threadRecordBlockedAddr(handle, vmPtr);
   if (!isKnownThreadRecordBlock(blockedAddr)) {
     return false;
@@ -127,6 +134,9 @@ export function clearStaleFutexRecordIfResolved(
 
 export function createFutexReconciliation(deps: FutexReconciliationDeps): FutexReconciliation {
   function reconcileResolvedWorkerLocalWaits(handle: ProcessHandle): Worker[] {
+    if (supervisorOwnsFutexWaits(handle)) {
+      return [];
+    }
     const reconciledWorkers: Worker[] = [];
     for (const worker of handle.workers) {
       if (handle.runningWorker === worker || handle.readyWorkers.includes(worker) || handle.blockedWorkers.has(worker)) {
@@ -203,7 +213,11 @@ export function createFutexScheduler(deps: FutexSchedulerDeps): FutexScheduler {
   }
 
   function applyChildExitRecordsForWorkerLocalWaits(handle: ProcessHandle): void {
-    if (handle.childExitSyncRecords.size === 0 || !hasWorkerLocalFutexWait(handle)) {
+    if (
+      supervisorOwnsFutexWaits(handle)
+      || handle.childExitSyncRecords.size === 0
+      || !hasWorkerLocalFutexWait(handle)
+    ) {
       return;
     }
     const recordsKey = deps.formatChildExitRecords(handle);
