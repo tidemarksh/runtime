@@ -29,13 +29,6 @@ export interface KernelRpcResumeEffectPorts {
 
 export interface KernelRpcResumeContinuationPorts {
   threadWorkerStates: WeakMap<Worker, unknown>;
-  resumeBlockedSyscallLocally(
-    handle: ProcessHandle,
-    worker: Worker,
-    vmPtr: number,
-    blockedStatus: number,
-    timeoutExpired?: boolean,
-  ): Promise<void>;
 }
 
 function kernelRpcBlockedCause(status: number): SyncCause {
@@ -81,21 +74,9 @@ export async function continueBlockedRpcResumeAfterEffects(
   ) {
     return appliedOutcome;
   }
-  await ports.resumeBlockedSyscallLocally(
-    handle,
-    worker,
-    vmPtr,
-    blocked.status,
-    blocked.timeoutExpired,
-  );
-  if (!handle.workers.has(worker) || !ports.threadWorkerStates.has(worker)) {
-    return { kind: "process-gone" };
-  }
-  if (!handle.blockedWorkers.has(worker)) {
-    return { kind: "queued-in-worker" };
-  }
+  blocked.rpcPending = false;
   const status = handle.kernel.thread_status?.(vmPtr);
-  return status === undefined ? { kind: "stale" } : { kind: "blocked", status };
+  return status === undefined ? { kind: "stale" } : { kind: "completed", status };
 }
 
 function kernelRpcEffectNeedsResumeContinuation(effect: KernelRpcResumeEffect): boolean {

@@ -1,4 +1,4 @@
-import { expect, test, vi } from "vite-plus/test";
+import { expect, test } from "vite-plus/test";
 import {
   continueBlockedRpcResumeAfterEffects,
   kernelRpcOutcomeNeedsResumeContinuation,
@@ -34,13 +34,10 @@ test("kernel-rpc effects own blocked resume continuation classification", () => 
   expect(kernelRpcOutcomeNeedsResumeContinuation({ kind: "completed" })).toBe(false);
 });
 
-test("continueBlockedRpcResumeAfterEffects resumes through kernel-rpc ports after sync effects", async () => {
+test("continueBlockedRpcResumeAfterEffects returns status for scheduler retry after sync effects", async () => {
   const worker = {} as Worker;
   const handle = makeBlockedHandle(worker);
   const threadWorkerStates = new WeakMap<Worker, unknown>([[worker, {}]]);
-  const resumeBlockedSyscallLocally = vi.fn(async () => {
-    handle.blockedWorkers.delete(worker);
-  });
   const outcome: KernelRpcResumeOutcome = {
     kind: "blocked",
     status: 21,
@@ -53,17 +50,16 @@ test("continueBlockedRpcResumeAfterEffects resumes through kernel-rpc ports afte
     0x1234,
     outcome,
     { kind: "blocked", status: 21 },
-    { threadWorkerStates, resumeBlockedSyscallLocally },
-  )).resolves.toEqual({ kind: "queued-in-worker" });
+    { threadWorkerStates },
+  )).resolves.toEqual({ kind: "completed", status: 21 });
 
-  expect(resumeBlockedSyscallLocally).toHaveBeenCalledWith(handle, worker, 0x1234, 21, true);
+  expect(handle.blockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
 test("continueBlockedRpcResumeAfterEffects leaves non-continuation outcomes unchanged", async () => {
   const worker = {} as Worker;
   const handle = makeBlockedHandle(worker);
   const appliedOutcome: KernelRpcResumeOutcome = { kind: "completed", status: 0 };
-  const resumeBlockedSyscallLocally = vi.fn(async () => {});
 
   await expect(continueBlockedRpcResumeAfterEffects(
     handle,
@@ -71,7 +67,6 @@ test("continueBlockedRpcResumeAfterEffects leaves non-continuation outcomes unch
     0x1234,
     { kind: "completed" },
     appliedOutcome,
-    { threadWorkerStates: new WeakMap([[worker, {}]]), resumeBlockedSyscallLocally },
+    { threadWorkerStates: new WeakMap([[worker, {}]]) },
   )).resolves.toBe(appliedOutcome);
-  expect(resumeBlockedSyscallLocally).not.toHaveBeenCalled();
 });

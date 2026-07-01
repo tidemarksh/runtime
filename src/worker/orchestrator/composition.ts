@@ -532,7 +532,6 @@ async function resumeBlockedSyscallOutcome(
   const appliedOutcome = await applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
   return continueBlockedRpcResumeAfterEffects(handle, worker, vmPtr, outcome, appliedOutcome, {
     threadWorkerStates,
-    resumeBlockedSyscallLocally: workerKernelRpcHelpers.resumeBlockedSyscallLocally,
   });
 }
 
