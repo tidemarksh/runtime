@@ -762,6 +762,28 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             scheduleBlockedRetry(handle, worker, 1, latestBlocked.timeoutExpired);
             return;
           }
+          if (
+            handle.kernelWorkerRequest
+            && handle.pid > 0
+            && deps.resumeBlockedSyscallOutcome !== undefined
+          ) {
+            latestBlocked.rpcPending = true;
+            const outcome = await deps.resumeBlockedSyscallOutcome(
+              handle,
+              worker,
+              latestBlocked.vmPtr,
+              latestBlocked.status,
+              latestBlocked.timeoutExpired,
+            );
+            consumeKernelRpcResumeOutcome(handle, worker, latestBlocked.vmPtr, outcome);
+            if (
+              outcome.kind === "blocked"
+              && outcome.status === handle.kernel.abi_status_pipe_wait()
+            ) {
+              pumpProcess(handle);
+            }
+            return;
+          }
           attachKernelRuntimeState(handle.kernel, handle.kernelState);
           handle.kernel.thread_resume_blocked_syscall(latestBlocked.vmPtr);
           handle.kernelState = readKernelRuntimeState(handle.kernel);

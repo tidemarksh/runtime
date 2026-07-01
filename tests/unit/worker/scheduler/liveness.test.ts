@@ -101,6 +101,7 @@ function makeKernel() {
       abi_max_fds: () => 64,
       abi_max_pipes: () => 64,
       abi_fd_type_pipe: () => 2,
+      abi_fd_type_socket: () => 4,
       kernel_heap_base: () => 0,
       kernel_heap_ptr: () => 0,
       kernel_ofd_table_ptr: () => 0,
@@ -137,6 +138,7 @@ function makeKernel() {
       kernel_time_state_bytes: () => 0,
       kernel_attach_runtime_state: () => {},
       process_fd_ofd_id: () => 0,
+      process_fd_flags: () => 0,
     } as unknown as ProcessHandle["kernel"],
   };
 }
@@ -1609,6 +1611,80 @@ test("socket poll is resumed immediately after network pump changes state", asyn
 
   expect(pumpNetworkConnections).toHaveBeenCalledWith(handle, 0x1234);
   expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(0x1234);
+  expect(handle.blockedWorkers.has(worker)).toBe(false);
+  expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "step" }));
+  expect(failProcess).not.toHaveBeenCalled();
+});
+
+test("socket poll pump resumes through kernel-worker RPC when available", async () => {
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, makeThreadState(0x1234));
+  const { exports: kernel } = makeKernel();
+  let status = kernel.abi_status_pipe_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_a7 = () => 999n;
+  kernel.thread_a0 = () => 3n;
+  kernel.thread_poll_wait_timeout = () => -1n;
+  kernel.thread_poll_wait_ready_count = () => 0;
+  kernel.thread_poll_wait_has_socket = () => 1;
+  kernel.process_state_bytes = () => 0;
+  kernel.kernel_ofd_table_bytes = () => 64 * 32;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    status = kernel.abi_status_ok();
+  });
+  const handle = makeHandle(kernel, worker);
+  handle.pendingChildSpawnRecords = 0;
+  handle.networkConnections.set(3, {} as never);
+  handle.kernelWorkerRequest = vi.fn(async (msg) => {
+    switch (msg.type) {
+      case "sync-socket-state":
+        return { type: "socket-state-synced", requestId: 0, kernelState: msg.kernelState };
+      case "sync-pipe-state":
+        return { type: "pipe-state-synced", requestId: 0, kernelState: msg.kernelState };
+      default:
+        throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+    }
+  }) as ProcessHandle["kernelWorkerRequest"];
+  const pumpNetworkConnections = vi.fn(async () => true);
+  const resumeBlockedSyscallOutcome = vi.fn(async () => {
+    status = kernel.abi_status_ok();
+    return { kind: "completed" as const, status };
+  });
+  const failProcess = vi.fn();
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess,
+    hasActiveChildProcess: () => false,
+    pumpNetworkConnections,
+    resumeBlockedSyscallLocally: async () => {},
+    resumeBlockedSyscallOutcome,
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => ({ kind: "completed" }),
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.blockWorker(handle, worker, handle.kernel.abi_status_pipe_wait(), 0x1234);
+  await vi.advanceTimersByTimeAsync(2);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  expect(pumpNetworkConnections).toHaveBeenCalledWith(handle, 0x1234);
+  expect(failProcess).not.toHaveBeenCalled();
+  expect(handle.kernelWorkerRequest).toHaveBeenCalled();
+  expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
+    handle,
+    worker,
+    0x1234,
+    handle.kernel.abi_status_pipe_wait(),
+    false,
+  );
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handle.blockedWorkers.has(worker)).toBe(false);
   expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "step" }));
   expect(failProcess).not.toHaveBeenCalled();
