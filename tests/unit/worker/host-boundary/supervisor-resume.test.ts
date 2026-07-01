@@ -68,6 +68,24 @@ test("host boundary consumes only supervisor-selected futex resume records", () 
     resumePolled = true;
     return 48;
   });
+  kernel.supervisor_resume_kind_runnable_thread = () => 2;
+  kernel.supervisor_process_resume = vi.fn((vmPtr: number, outPtr: number, outLen: number) => {
+    expect(vmPtr).toBe(0x1234);
+    expect(outPtr).toBe(0);
+    expect(outLen).toBe(48);
+    const view = new DataView(kernel.memory.buffer);
+    view.setUint32(0, 0x5255_5354, true);
+    view.setUint32(4, 1, true);
+    view.setUint32(8, 48, true);
+    view.setUint32(12, 2, true);
+    view.setBigUint64(16, 8n, true);
+    view.setUint32(24, selectedThread.vmPtr, true);
+    view.setUint32(28, 2, true);
+    view.setUint32(32, 0x2000, true);
+    view.setUint32(36, kernel.abi_status_ok(), true);
+    view.setBigUint64(40, 0xfeedn, true);
+    return 48;
+  });
   const handle = makeHostBoundaryHandle(kernel, selectedWorker);
   handle.workers.add(unselectedWorker);
   const debugEvents: string[] = [];

@@ -320,15 +320,6 @@ function clearBlockedWorker(handle: ProcessHandle, worker: Worker): void {
   handle.blockedWorkers.delete(worker);
 }
 
-function readyWorkerHasBlockedRpcContinuation(thread: ThreadWorkerState | undefined): boolean {
-  return thread !== undefined
-    && (
-      thread.resumeBlockedOnNextStep
-      || thread.pendingPipeSlotsForNextStep.length > 0
-      || thread.pendingGuestMemoryWrites.length > 0
-    );
-}
-
 function statusBlocksInOwnerScheduler(handle: ProcessHandle, status: number): boolean {
   return status === handle.kernel.abi_status_epoll_wait()
     || status === handle.kernel.abi_status_fs()
@@ -379,69 +370,6 @@ function blockedRetryPressureStatus(handle: ProcessHandle, status: number): bool
     || status === handle.kernel.abi_status_connect()
     || status === handle.kernel.abi_status_socket_recv()
     || status === handle.kernel.abi_status_socket_send();
-}
-
-function blockedRetryNeedsEmptyRunningSlotStatus(handle: ProcessHandle, status: number): boolean {
-  return status === handle.kernel.abi_status_epoll_wait()
-    || status === handle.kernel.abi_status_fs()
-    || status === handle.kernel.abi_status_pipe_wait()
-    || status === handle.kernel.abi_status_flock_wait()
-    || status === handle.kernel.abi_status_connect()
-    || status === handle.kernel.abi_status_socket_recv()
-    || status === handle.kernel.abi_status_socket_send();
-}
-
-function hasImmediateBlockedRetryPressure(handle: ProcessHandle): boolean {
-  for (const blocked of handle.blockedWorkers.values()) {
-    if (
-      blockedRetryNeedsEmptyRunningSlotStatus(handle, blocked.status)
-      && !blocked.rpcPending
-      && blocked.retryTimer === null
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function hasBlockedRetryThatPrefersNonSleepReady(handle: ProcessHandle): boolean {
-  for (const blocked of handle.blockedWorkers.values()) {
-    if (blockedRetryNeedsEmptyRunningSlotStatus(handle, blocked.status)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function readyWorkerCanRunUnderImmediateBlockedRetryPressure(
-  handle: ProcessHandle,
-  thread: ThreadWorkerState | undefined,
-): boolean {
-  return readyWorkerHasBlockedRpcContinuation(thread)
-    || (
-      thread !== undefined
-      && thread.lastStatus === handle.kernel.abi_status_futex_wait()
-      && thread.waitingInWorkerStatus === null
-    )
-    || (
-      thread !== undefined
-      && thread.lastStatus === handle.kernel.abi_status_clone_spawn()
-      && thread.waitingInWorkerStatus === null
-      && thread.ownerAsyncStatus === null
-      && thread.pendingGuestMemoryWrites.length === 0
-    )
-    || (
-      thread !== undefined
-      && thread.lastStatus === handle.kernel.abi_status_ok()
-      && thread.waitingInWorkerStatus === null
-      && thread.ownerAsyncStatus === null
-      && thread.pendingGuestMemoryWrites.length === 0
-      && thread.stepCount <= thread.statusCount
-    );
-}
-
-function readyWorkerYielded(thread: ThreadWorkerState | undefined): boolean {
-  return thread?.yieldedReady === true;
 }
 
 function readyWorkerCanUseFullBudgetUnderBlockedRetryPressure(
@@ -1539,118 +1467,15 @@ export function createWorkerSchedulerQueueHelpers(
       }
       next = handle.readyWorkers.splice(index, 1)[0];
     } else {
-      const isRunnableReadyWorker = (candidate: Worker): boolean => {
-        const candidateThread = deps.threadWorkerStates.get(candidate);
-        return (candidateThread?.ownerAsyncStatus ?? null) === null
-          && !hasWorkerLocalWait(candidateThread)
-          && !parkReadyWorkerStillInCanonicalFutexWait(handle, candidateThread)
-          && (
-            candidateThread === undefined
-            || handle.kernel.thread_process_ptr(candidateThread.vmPtr) !== 0
-          );
-      };
-      const takeBlockedRpcContinuationReadyWorker = (): Worker | undefined => {
-        const continuationIndex = handle.readyWorkers.findIndex((candidate) => {
-          const candidateThread = deps.threadWorkerStates.get(candidate);
-          return readyWorkerHasBlockedRpcContinuation(candidateThread)
-            && isRunnableReadyWorker(candidate);
-        });
-        if (continuationIndex !== -1) {
-          const continuation = handle.readyWorkers.splice(continuationIndex, 1)[0];
-          const continuationThread = continuation
-            ? deps.threadWorkerStates.get(continuation)
-            : undefined;
-          if (continuationThread !== undefined) {
-            deps.appendWorkerDebugLog(
-              handle,
-              `pump-run-blocked-rpc-continuation:vm=0x${continuationThread.vmPtr.toString(16)}`
-                + `:ready=${handle.readyWorkers.length}`,
-            );
-          }
-          return continuation;
-        }
-        return undefined;
-      };
       const supervisorSelected = selectSupervisorRunnableWorker(handle);
       if (supervisorSelected !== undefined) {
         next = supervisorSelected ?? undefined;
       } else {
-        next = takeBlockedRpcContinuationReadyWorker();
-        if (next === undefined) {
-          const blockedRetryPressure = hasImmediateBlockedRetryPressure(handle);
-          if (blockedRetryPressure) {
-            const pressureIndex = handle.readyWorkers.findIndex((candidate) => {
-              const candidateThread = deps.threadWorkerStates.get(candidate);
-              return isRunnableReadyWorker(candidate)
-                && readyWorkerCanRunUnderImmediateBlockedRetryPressure(handle, candidateThread);
-            });
-            if (pressureIndex !== -1) {
-              next = handle.readyWorkers.splice(pressureIndex, 1)[0];
-            } else if (handle.readyWorkers.some(isRunnableReadyWorker)) {
-              appendSchedulerQueueDebugLog(
-                deps,
-                handle,
-                `pump-defer-ordinary-ready:ready=${handle.readyWorkers.length}:blocked=${handle.blockedWorkers.size}`,
-              );
-              return;
-            }
-          }
-          if (next === undefined && hasBlockedRetryThatPrefersNonSleepReady(handle)) {
-            const nonSleepIndex = handle.readyWorkers.findIndex((candidate) => {
-              const candidateThread = deps.threadWorkerStates.get(candidate);
-              return isRunnableReadyWorker(candidate)
-                && candidateThread?.lastStatus !== handle.kernel.abi_status_sleep();
-            });
-            if (nonSleepIndex !== -1) {
-              next = handle.readyWorkers.splice(nonSleepIndex, 1)[0];
-            }
-          }
-          if (next === undefined) {
-            let nonYieldIndex = -1;
-            for (let candidateIndex = 0; candidateIndex < handle.readyWorkers.length; candidateIndex += 1) {
-              const candidate = handle.readyWorkers[candidateIndex]!;
-              const candidateThread = deps.threadWorkerStates.get(candidate);
-              if (!isRunnableReadyWorker(candidate)) {
-                continue;
-              }
-              if (!readyWorkerYielded(candidateThread)) {
-                nonYieldIndex = candidateIndex;
-                break;
-              }
-            }
-            if (nonYieldIndex !== -1) {
-              next = handle.readyWorkers.splice(nonYieldIndex, 1)[0];
-              for (let candidateIndex = nonYieldIndex - 1; candidateIndex >= 0; candidateIndex -= 1) {
-                const candidate = handle.readyWorkers[candidateIndex];
-                if (candidate !== undefined && !isRunnableReadyWorker(candidate)) {
-                  handle.readyWorkers.splice(candidateIndex, 1);
-                }
-              }
-            }
-          }
-          let index = next === undefined ? handle.readyWorkers.findIndex(isRunnableReadyWorker) : -2;
-          if (index > 0) {
-            handle.readyWorkers.splice(0, index);
-            index = 0;
-          }
-          if (index === -1) {
-            appendSchedulerQueueDebugLog(deps, handle, `pump-no-runnable-ready:ready=${handle.readyWorkers.length}`);
-            const ownerAsyncReadyWorkers = handle.readyWorkers.filter((candidate) => {
-              const candidateThread = deps.threadWorkerStates.get(candidate);
-              return (candidateThread?.ownerAsyncStatus ?? null) !== null;
-            });
-            handle.readyWorkers.length = 0;
-            for (const candidate of ownerAsyncReadyWorkers) {
-              if (!handle.readyWorkers.includes(candidate)) {
-                handle.readyWorkers.push(candidate);
-              }
-            }
-            return;
-          }
-          if (index >= 0) {
-            next = handle.readyWorkers.splice(index, 1)[0];
-          }
-        }
+        deps.appendWorkerDebugLog(
+          handle,
+          `supervisor-resume:runnable:missing-export:ready=${handle.readyWorkers.length}`,
+        );
+        return;
       }
     }
     if (!next) {
