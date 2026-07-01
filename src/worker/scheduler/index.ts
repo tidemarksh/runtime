@@ -1946,7 +1946,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     wakePipeAndEpollWaitersInKernelShare,
   } = schedulerStateSyncHelpers;
 
-  function kickBlockedWorkers(handle: ProcessHandle): void {
+  function notifySchedulerProgress(handle: ProcessHandle): void {
     for (const worker of [...handle.blockedWorkers.keys()]) {
       retryBlockedWorker(handle, worker);
     }
@@ -1959,7 +1959,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     clearBlockedWorker,
     enqueueWorker,
     handleBlockedRetryResult,
-    kickBlockedWorkers,
+    notifySchedulerProgress,
     pumpProcess,
     pruneDetachedProcessWorkers,
     requestEpollDependentOfdStateSync,

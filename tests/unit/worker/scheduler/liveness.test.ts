@@ -988,7 +988,7 @@ test("wait4 retry stays blocked while child spawn is still in flight", async () 
 
   handle.pendingChildSpawnRecords = 0;
   const epochBeforeKick = readPublishedRuntimeBridgeEpoch(handle.runtimeBridge);
-  scheduler.kickBlockedWorkers(handle);
+  scheduler.notifySchedulerProgress(handle);
   expect(threadResumeWait4).toHaveBeenCalledWith(0x1234);
   expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
     type: "step",
@@ -1095,7 +1095,7 @@ test("epoll retry wakes a running worker instead of resuming under it", async ()
   const notify = new Int32Array(handle.runtimeBridge.notifySab);
   const notifyBefore = Atomics.load(notify, RUNTIME_BRIDGE_NOTIFY_INDEX);
 
-  scheduler.kickBlockedWorkers(handle);
+  scheduler.notifySchedulerProgress(handle);
   await Promise.resolve();
   await Promise.resolve();
 
@@ -1161,7 +1161,7 @@ test("epoll kernel-worker retry treats timeout zero as expired", async () => {
   }
   blocked!.timeoutExpired = false;
 
-  scheduler.kickBlockedWorkers(handle);
+  scheduler.notifySchedulerProgress(handle);
   await vi.waitFor(() => {
     expect(kernel.thread_resume_epoll_wait_timeout).toHaveBeenCalledWith(0x1234);
   });
@@ -1239,7 +1239,7 @@ test("epoll kernel-worker retry delegates timeout completion to blocked syscall 
   }
   blocked!.timeoutExpired = false;
 
-  scheduler.kickBlockedWorkers(handle);
+  scheduler.notifySchedulerProgress(handle);
   await vi.waitFor(() => {
     expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
       handle,
@@ -1332,7 +1332,7 @@ test("epoll sync timeout zero survives a running-worker retry skip", async () =>
   }
   blocked!.timeoutExpired = false;
 
-  scheduler.kickBlockedWorkers(handle);
+  scheduler.notifySchedulerProgress(handle);
   await vi.waitFor(() => {
     expect(lifecycleEvents.some((event) => event.startsWith("epoll-retry-skip:1:running=1:sched=1"))).toBe(true);
   });
@@ -1401,7 +1401,7 @@ test("epoll retry defers while clone child init is expected to release parent", 
     blocked!.retryTimer = null;
   }
 
-  scheduler.kickBlockedWorkers(handle);
+  scheduler.notifySchedulerProgress(handle);
 
   expect(lifecycleEvents).toContain("epoll-retry-skip:1:clone-child-init-pending");
   expect(handle.kernelWorkerRequest).not.toHaveBeenCalled();
@@ -1414,7 +1414,7 @@ test("epoll retry defers while clone child init is expected to release parent", 
     clearTimeout(retryBlocked.retryTimer);
     retryBlocked.retryTimer = null;
   }
-  scheduler.kickBlockedWorkers(handle);
+  scheduler.notifySchedulerProgress(handle);
 
   expect(lifecycleEvents.some((event) => event.startsWith("epoll-retry-rpc:1:vm=0x1234"))).toBe(true);
   expect(handle.kernelWorkerRequest).not.toHaveBeenCalled();
@@ -1542,7 +1542,7 @@ test("pipe pselect retry applies child exit records before passive parking", asy
   });
 
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_pipe_wait(), 0x1234);
-  scheduler.kickBlockedWorkers(handle);
+  scheduler.notifySchedulerProgress(handle);
   await Promise.resolve();
 
   expect(lifecycleEvents).toContain("pipe-retry-apply-child-records:1:7/0");
@@ -1610,7 +1610,7 @@ test("pipe pselect retry resumes after pipe sync when no writer remains", async 
   const blocked = handle.blockedWorkers.get(worker);
   expect(blocked).toBeDefined();
   blocked!.pipeSyncedBeforePassive = true;
-  scheduler.kickBlockedWorkers(handle);
+  scheduler.notifySchedulerProgress(handle);
   await Promise.resolve();
 
   expect(lifecycleEvents.some((event) => event.startsWith("pipe-retry:1:a7=72"))).toBe(true);
@@ -1659,7 +1659,7 @@ test("kernel-worker blocked syscall retry requires outcome helper", () => {
     blocked!.retryTimer = null;
   }
   blocked!.pipeSyncedBeforePassive = true;
-  scheduler.kickBlockedWorkers(handle);
+  scheduler.notifySchedulerProgress(handle);
 
   expect(failProcess).toHaveBeenCalledWith(handle, expect.any(Error));
   expect((failProcess.mock.calls[0]?.[1] as Error).message).toBe(
@@ -1925,7 +1925,7 @@ test("finite pipe poll timeout delegates to kernel-worker blocked syscall outcom
   expect(blocked).toBeDefined();
   blocked!.timeoutExpired = true;
   blocked!.pipeSyncedBeforePassive = true;
-  scheduler.kickBlockedWorkers(handle);
+  scheduler.notifySchedulerProgress(handle);
   await Promise.resolve();
   await Promise.resolve();
 
@@ -2093,7 +2093,7 @@ test("expired finite pipe poll syncs pipe state before local timeout resume", as
     blocked!.retryTimer = null;
   }
   blocked!.timeoutExpired = true;
-  scheduler.kickBlockedWorkers(handle);
+  scheduler.notifySchedulerProgress(handle);
   for (let i = 0; i < 10; i += 1) {
     await Promise.resolve();
   }
@@ -2164,7 +2164,7 @@ test("expired finite pipe poll with active child resumes locally without pipe sy
     blocked!.retryTimer = null;
   }
   blocked!.timeoutExpired = true;
-  scheduler.kickBlockedWorkers(handle);
+  scheduler.notifySchedulerProgress(handle);
   await Promise.resolve();
 
   expect(order).toEqual(["resume"]);
@@ -2498,7 +2498,7 @@ test("wait4 retry reconciles stale blocked state before issuing a kernel-worker 
   });
 
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_wait4(), 0x1234);
-  scheduler.kickBlockedWorkers(handle);
+  scheduler.notifySchedulerProgress(handle);
 
   expect(resumeWait4ViaKernelWorker).not.toHaveBeenCalled();
   expect(threadResumeWait4).not.toHaveBeenCalled();
@@ -3082,7 +3082,7 @@ test("wait4 retry clears stale running sleeper without re-owning sleep status", 
   });
 
   scheduler.blockWorker(handle, blockedWorker, handle.kernel.abi_status_wait4(), 0x1234);
-  scheduler.kickBlockedWorkers(handle);
+  scheduler.notifySchedulerProgress(handle);
 
   expect(handle.runningWorker).toBeNull();
   expect(handle.blockedWorkers.has(runningWorker)).toBe(false);
@@ -6051,7 +6051,7 @@ test("blocked retry parks futex retry result as supervisor-owned worker state", 
     handleWorkerMessage: () => {},
   });
 
-  scheduler.kickBlockedWorkers(handle);
+  scheduler.notifySchedulerProgress(handle);
 
   expect(handle.blockedWorkers.has(worker)).toBe(false);
   expect(handle.readyWorkers).toEqual([]);
@@ -6119,7 +6119,7 @@ test("blocked retry result arms supervisor timer instead of scheduling runtime r
     handleWorkerMessage: () => {},
   });
 
-  scheduler.kickBlockedWorkers(handle);
+  scheduler.notifySchedulerProgress(handle);
 
   const blocked = handle.blockedWorkers.get(worker);
   expect(blocked?.status).toBe(kernel.abi_status_epoll_wait());
@@ -6194,7 +6194,7 @@ test("blocked wait retry arms supervisor timer before runtime poll retry", () =>
     handleWorkerMessage: () => {},
   });
 
-  scheduler.kickBlockedWorkers(handle);
+  scheduler.notifySchedulerProgress(handle);
 
   const blocked = handle.blockedWorkers.get(worker);
   expect(blocked?.status).toBe(kernel.abi_status_pipe_wait());
@@ -6245,7 +6245,7 @@ test("blockWorker schedules initial kernel-worker pipe retry before passive park
   expect(worker.postMessage).not.toHaveBeenCalled();
 });
 
-test("kickBlockedWorkers clears answered futex-wait running sibling before pipe retry", () => {
+test("notifySchedulerProgress clears answered futex-wait running sibling before pipe retry", () => {
   const waitingWorker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -6317,7 +6317,7 @@ test("kickBlockedWorkers clears answered futex-wait running sibling before pipe 
     handleWorkerMessage: () => {},
   });
 
-  scheduler.kickBlockedWorkers(handle);
+  scheduler.notifySchedulerProgress(handle);
 
   expect(handle.runningWorker).toBeNull();
   expect(waitingThread.runningGeneration).toBeNull();
@@ -6553,7 +6553,7 @@ test("socket wait timeout resumes with timeout handler after deadline", async ()
   expect(resumeSocketTimeout).toHaveBeenCalledWith(0x1234);
 });
 
-test("kickBlockedWorkers leaves supervisor timer owned socket wait to supervisor completion", () => {
+test("notifySchedulerProgress leaves supervisor timer owned socket wait to supervisor completion", () => {
   const worker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -6593,7 +6593,7 @@ test("kickBlockedWorkers leaves supervisor timer owned socket wait to supervisor
     handleWorkerMessage: () => {},
   });
 
-  scheduler.kickBlockedWorkers(handle);
+  scheduler.notifySchedulerProgress(handle);
 
   expect(resumeSocketTimeout).not.toHaveBeenCalled();
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();

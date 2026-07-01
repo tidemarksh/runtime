@@ -53,7 +53,7 @@ export interface WorkerScheduler {
     vmPtr: number,
     status: number,
   ): void;
-  kickBlockedWorkers(handle: ProcessHandle): void;
+  notifySchedulerProgress(handle: ProcessHandle): void;
   pumpProcess(handle: ProcessHandle): void;
   pruneDetachedProcessWorkers(handle: ProcessHandle, anchorVmPtr: number, currentWorker: Worker | null): void;
   requestEpollDependentOfdStateSync(
