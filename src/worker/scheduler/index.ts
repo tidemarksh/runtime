@@ -1819,27 +1819,18 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         || blocked.status === handle.kernel.abi_status_flock_wait()
       )
     ) {
-      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-retry-rpc:${handle.pid}`);
       if (
         blocked.status === handle.kernel.abi_status_pipe_wait()
         && handle.childExitSyncRecords.size > 0
       ) {
         markPipeChildExitRecordsResumedForWait(handle, blocked);
       }
-      const resumeBlockedRpc = deps.resumeBlockedSyscallOutcome;
-      if (resumeBlockedRpc === undefined) {
-        deps.failProcess(handle, new Error("kernel-worker blocked syscall resume requires resumeBlockedSyscallOutcome"));
-        return;
-      }
-      void resumeBlockedRpc(
+      resumeBlockedSyscallViaKernelWorker(
         handle,
         worker,
-        blocked.vmPtr,
-        blocked.status,
-        blocked.timeoutExpired,
-      ).then((outcome) => {
-        if (outcome !== undefined) {
-          consumeKernelRpcResumeOutcome(handle, worker, blocked.vmPtr, outcome);
+        blocked,
+        `pipe-retry-rpc:${handle.pid}`,
+        (outcome) => {
           if (
             outcome.kind === "blocked"
             && outcome.status === handle.kernel.abi_status_pipe_wait()
@@ -1847,9 +1838,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             pumpProcess(handle);
           }
         }
-      }).catch((error) => {
-        deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-      });
+      );
       return;
     }
 
