@@ -205,7 +205,7 @@ test("resumeWait4ViaKernelWorker does not re-run local wait4 after kernel-worker
     handleBlockedRetryResult: (_handle, _worker, _vmPtr, nextStatus) => {
       handledStatuses.push(nextStatus);
     },
-    kickBlockedWorkers: () => {},
+    notifyHostEffectProgress: () => {},
     processHandles: new Map([[1, handle]]),
     requestPipeStateSync: async (_handle, wakeWaiters = false) => {
       pipeSyncWakeArgs.push(wakeWaiters);
@@ -298,7 +298,7 @@ test("resumeWait4ViaKernelWorker skips RPC when local wait4 already resolved", a
     handleBlockedRetryResult: (_handle, _worker, _vmPtr, nextStatus) => {
       handledStatuses.push(nextStatus);
     },
-    kickBlockedWorkers: () => {},
+    notifyHostEffectProgress: () => {},
     processHandles: new Map([[1, handle]]),
     requestPipeStateSync: async () => {},
     threadWorkerStates: threadWorkerStates as never,
@@ -395,7 +395,7 @@ test("resumeVforkExecveParentViaKernelWorker restores the parent before clearing
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
     handleBlockedRetryResult: () => {},
-    kickBlockedWorkers: () => {},
+    notifyHostEffectProgress: () => {},
     processHandles: new Map([[1, handle]]),
     requestPipeStateSync: async () => {},
     threadWorkerStates: new WeakMap() as never,
@@ -499,7 +499,7 @@ test("resumeBlockedSyscallLocally skips kernel-worker shared-state syncs during 
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
     handleBlockedRetryResult,
-    kickBlockedWorkers: () => {},
+    notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync: async () => {},
     syncBlockedForkSharedStateViaKernelWorker,
@@ -624,7 +624,7 @@ test("resumeBlockedSyscallLocally queues pselect fd_set writes after owner-side 
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
     handleBlockedRetryResult,
-    kickBlockedWorkers: () => {},
+    notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync: async () => {},
     syncBlockedForkSharedStateViaKernelWorker: async () => {},
@@ -782,7 +782,7 @@ test("resumeBlockedSyscallLocally retries pselect pipe HUP owner-side after tran
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
     handleBlockedRetryResult,
-    kickBlockedWorkers: () => {},
+    notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync: async () => {},
     syncBlockedForkSharedStateViaKernelWorker: async () => {},
@@ -937,7 +937,7 @@ test("resumeBlockedSyscallLocally resumes pselect pipe HUP before generic after-
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
     handleBlockedRetryResult,
-    kickBlockedWorkers: () => {},
+    notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync: async () => {},
     syncBlockedForkSharedStateViaKernelWorker: async () => {},
@@ -1093,7 +1093,7 @@ test("resumeBlockedSyscallLocally retries mixed socket pipe pselect HUP owner-si
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
     handleBlockedRetryResult,
-    kickBlockedWorkers: () => {},
+    notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync: async () => {},
     syncBlockedForkSharedStateViaKernelWorker: async () => {},
@@ -1220,7 +1220,7 @@ test("resumeBlockedSyscallOutcome returns pipe sync effect before ready socket p
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
     handleBlockedRetryResult,
-    kickBlockedWorkers: () => {},
+    notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker,
@@ -1348,7 +1348,7 @@ test("resumeBlockedSyscallOutcome returns socket sync effect without running soc
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
     handleBlockedRetryResult: () => {},
-    kickBlockedWorkers: () => {},
+    notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker: async () => {},
@@ -1464,7 +1464,7 @@ test("resumeBlockedSyscallOutcome completes epoll timeout through epoll timeout 
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
     handleBlockedRetryResult: () => {},
-    kickBlockedWorkers: () => {},
+    notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker,
@@ -1574,7 +1574,7 @@ test("resumeBlockedSyscallLocally wakes pipe waiters through requestPipeStateSyn
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
     handleBlockedRetryResult,
-    kickBlockedWorkers: () => {},
+    notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker,
@@ -1708,7 +1708,7 @@ test("resumeBlockedSyscallLocally resumes pipe EOF after writers close even with
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
     handleBlockedRetryResult,
-    kickBlockedWorkers: () => {},
+    notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker,
@@ -1873,7 +1873,7 @@ test("resumeBlockedSyscallLocally defers poll readiness while an active child st
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
     handleBlockedRetryResult,
-    kickBlockedWorkers: () => {},
+    notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker,
@@ -2030,7 +2030,7 @@ test("resumeBlockedSyscallLocally ignores exiting child pipe writers for pselect
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
     handleBlockedRetryResult,
-    kickBlockedWorkers: () => {},
+    notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker,
@@ -2190,7 +2190,7 @@ test("resumeBlockedSyscallLocally completes pselect HUP marker despite an active
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
     handleBlockedRetryResult,
-    kickBlockedWorkers: () => {},
+    notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker,
@@ -2311,7 +2311,7 @@ test("resumeBlockedSyscallLocally collapses pipe read that becomes ready after p
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
     handleBlockedRetryResult,
-    kickBlockedWorkers: () => {},
+    notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker,
@@ -2435,7 +2435,7 @@ test("resumeBlockedSyscallLocally queues the full socket read buffer after owner
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
     handleBlockedRetryResult,
-    kickBlockedWorkers: () => {},
+    notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync: async () => {},
     syncBlockedForkSharedStateViaKernelWorker: async () => {},
@@ -2550,7 +2550,7 @@ test("resumeFsViaKernelWorker skips memfs sync during active vfork child ownersh
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
     handleBlockedRetryResult: () => {},
-    kickBlockedWorkers: () => {},
+    notifyHostEffectProgress: () => {},
     markRuntimeFsDirty,
     requestPipeStateSync: async () => {},
     syncBlockedForkSharedStateViaKernelWorker: async () => {},
@@ -2729,7 +2729,7 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
     handleBlockedRetryResult: () => {},
-    kickBlockedWorkers: () => {},
+    notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync: async () => {},
     syncBlockedForkSharedStateViaKernelWorker: async () => {},
@@ -2786,7 +2786,6 @@ test("resumeFsViaKernelWorker routes execve spawn before parent fd integrity che
     }
   });
   const enqueueWorker = vi.fn();
-  const kickBlockedWorkers = vi.fn();
   const execveSpawnStatus = 9;
   let status = 0;
   let currentPid = 1;
@@ -2874,7 +2873,7 @@ test("resumeFsViaKernelWorker routes execve spawn before parent fd integrity che
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
     handleBlockedRetryResult: () => {},
-    kickBlockedWorkers,
+    notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync: async () => {},
     syncBlockedForkSharedStateViaKernelWorker: async () => {},
@@ -2895,9 +2894,9 @@ test("resumeFsViaKernelWorker routes execve spawn before parent fd integrity che
   expect(assertProcessStandardFdIntegrity).toHaveBeenCalledTimes(1);
   expect(assertProcessStandardFdIntegrity).toHaveBeenCalledWith(handle, "resume-fs-before");
   expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
-  expect(kickBlockedWorkers).toHaveBeenCalledWith(handle);
   expect(enqueueWorker).not.toHaveBeenCalled();
   expect(outcome.status).toBeUndefined();
+  expect(outcome.effects).toContainEqual({ kind: "notify-host-effect-progress", handle });
   expect(outcome.effects).toContainEqual({ kind: "handle-execve-spawn", status: execveSpawnStatus });
 });
 
@@ -2990,7 +2989,7 @@ test("resumeFsViaKernelWorker applies fd entries returned by kernel-worker fs pr
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
     handleBlockedRetryResult: () => {},
-    kickBlockedWorkers: () => {},
+    notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync: async () => {},
     syncBlockedForkSharedStateViaKernelWorker: async () => {},

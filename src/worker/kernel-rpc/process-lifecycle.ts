@@ -163,7 +163,7 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
       deps.drainProcessOutput(parent);
       const effects: KernelRpcResumeEffect[] = [
         { kind: "request-pipe-state-sync", handle: parent, wakeWaiters: true },
-        { kind: "kick-blocked-workers", handle: parent },
+        { kind: "notify-host-effect-progress", handle: parent },
       ];
       return completedKernelRpcOutcome(undefined, effects);
     } catch (error) {

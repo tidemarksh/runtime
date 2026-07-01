@@ -1092,7 +1092,7 @@ async function resumeFsViaKernelWorkerInner(
     }
     const applyLocalPostFsWake = () => {
       applyLocalFsWakeSync?.();
-      effects.push({ kind: "kick-blocked-workers", handle });
+      effects.push({ kind: "notify-host-effect-progress", handle });
     };
     restoreFsRingProgress(handle, postFsRingProgress);
     clearStaleFsStatusAfterResume(handle, vmPtr, fsResult);
@@ -1335,7 +1335,7 @@ async function resumeFsViaKernelWorkerInner(
         `:rv=${fsResult.toString()}:status=${execveSpawnStatusAfterFs}${formatFsRingDebug(handle, vmPtr)}`,
       );
       deps.publishRuntimeKernelState(handle);
-      effects.push({ kind: "kick-blocked-workers", handle });
+      effects.push({ kind: "notify-host-effect-progress", handle });
       effects.push({ kind: "handle-execve-spawn", status: execveSpawnStatusAfterFs });
       return completedKernelRpcOutcome(undefined, effects);
     }
@@ -1387,7 +1387,7 @@ async function resumeFsViaKernelWorkerInner(
         deps.markRuntimeFsDirty(dirtyHandle);
       }
       deps.publishRuntimeKernelState(handle);
-      effects.push({ kind: "kick-blocked-workers", handle });
+      effects.push({ kind: "notify-host-effect-progress", handle });
     };
     deps.appendWorkerDebugLog(handle, `fs-done:0x${vmPtr.toString(16)}:rv=${fsResult.toString()}`);
     appendFsLifecycleEvent(

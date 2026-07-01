@@ -153,8 +153,8 @@ test("resumeVforkParentViaKernelWorker publishes state before waking and enqueue
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    kickBlockedWorkers(parent) {
-      order.push(`kick:${readPublishedKernelRuntimeState(parent.runtimeBridge).heapPtr}`);
+    notifyHostEffectProgress(parent) {
+      order.push(`progress:${readPublishedKernelRuntimeState(parent.runtimeBridge).heapPtr}`);
     },
     processHandles: new Map([[1, handle]]),
     requestPipeStateSync: async () => {},
@@ -171,7 +171,7 @@ test("resumeVforkParentViaKernelWorker publishes state before waking and enqueue
     kind: "completed",
     status: 0,
     effects: [
-      { kind: "kick-blocked-workers", handle },
+      { kind: "notify-host-effect-progress", handle },
       { kind: "enqueue-worker" },
     ],
   });

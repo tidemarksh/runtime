@@ -10,7 +10,7 @@ export interface KernelRpcResumeEffectPorts {
   blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   handleExecveSpawn(handle: ProcessHandle, worker: Worker, thread: ThreadWorkerState): Promise<void>;
-  kickBlockedWorkers(handle: ProcessHandle): void;
+  notifyHostEffectProgress(handle: ProcessHandle): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   settleVisibleProcessOutput(
     handle: ProcessHandle,
@@ -115,8 +115,8 @@ async function applyKernelRpcResumeEffect(
       }
       return;
     }
-    case "kick-blocked-workers":
-      ports.kickBlockedWorkers(effect.handle ?? handle);
+    case "notify-host-effect-progress":
+      ports.notifyHostEffectProgress(effect.handle ?? handle);
       return;
     case "request-pipe-state-sync":
       await ports.requestPipeStateSync(effect.handle ?? handle, effect.wakeWaiters);

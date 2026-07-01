@@ -79,7 +79,7 @@ export function createWorkerKernelRpcVforkHelpers(
       deps.clearVforkSnapshot(handle);
       publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
       const effects: KernelRpcResumeEffect[] = [
-        { kind: "kick-blocked-workers", handle },
+        { kind: "notify-host-effect-progress", handle },
         { kind: "enqueue-worker" },
       ];
       return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr), effects);

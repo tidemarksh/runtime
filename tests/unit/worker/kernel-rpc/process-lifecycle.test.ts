@@ -207,8 +207,8 @@ test("recordChildExitViaKernelWorker returns parent wake effects after draining 
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    kickBlockedWorkers(parent) {
-      order.push(`kick:${parent.pid}`);
+    notifyHostEffectProgress(parent) {
+      order.push(`progress:${parent.pid}`);
     },
     requestPipeStateSync: async (parent, wakeWaiters = false) => {
       order.push(`pipe-sync:${parent.pid}:${wakeWaiters ? "wake" : "sync"}`);
@@ -225,7 +225,7 @@ test("recordChildExitViaKernelWorker returns parent wake effects after draining 
   ]);
   expect(outcome.effects).toMatchObject([
     { kind: "request-pipe-state-sync", handle, wakeWaiters: true },
-    { kind: "kick-blocked-workers", handle },
+    { kind: "notify-host-effect-progress", handle },
   ]);
   expect(handle.recordedChildExits).toEqual([[7, 0x0300]]);
   expect(handle.kernelState.heapPtr).toBe(syncedState.heapPtr);
@@ -279,7 +279,7 @@ test("syncProcessLifecycleViaKernelWorker rewrites provisional child pid after s
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    kickBlockedWorkers() {},
+    notifyHostEffectProgress() {},
     requestPipeStateSync: async () => {},
     clearVforkSnapshot() {},
   });

@@ -131,7 +131,7 @@ test("kernel-rpc fs helper owns local resume and returns a typed outcome", async
     blockWorker: vi.fn(),
     enqueueWorker,
     failProcess: vi.fn(),
-    kickBlockedWorkers: vi.fn(),
+    notifyHostEffectProgress: vi.fn(),
     markRuntimeFsDirty: vi.fn(),
     kernelShareOtherMembers: () => [],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
@@ -186,7 +186,7 @@ test("kernel-rpc fs outcome reports blocked fs status", async () => {
     blockWorker,
     enqueueWorker: vi.fn(),
     failProcess: vi.fn(),
-    kickBlockedWorkers: vi.fn(),
+    notifyHostEffectProgress: vi.fn(),
     markRuntimeFsDirty: vi.fn(),
     kernelShareOtherMembers: () => [],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
@@ -255,7 +255,7 @@ test("kernel-worker fs outcome returns wake effect after local publication", asy
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    kickBlockedWorkers: vi.fn(),
+    notifyHostEffectProgress: vi.fn(),
     markRuntimeFsDirty,
     kernelShareOtherMembers: () => [],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
@@ -279,7 +279,7 @@ test("kernel-worker fs outcome returns wake effect after local publication", asy
   }));
   expect(outcome).toMatchObject({ kind: "completed", status: 0 });
   expect(outcome.effects).toEqual([
-    { kind: "kick-blocked-workers", handle },
+    { kind: "notify-host-effect-progress", handle },
     { kind: "enqueue-worker" },
   ]);
   expect(markRuntimeFsDirty).toHaveBeenCalledWith(handle);
@@ -339,7 +339,7 @@ test("kernel-worker fs outcome applies mmap guest memory writes from fs response
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    kickBlockedWorkers: vi.fn(),
+    notifyHostEffectProgress: vi.fn(),
     markRuntimeFsDirty: vi.fn(),
     kernelShareOtherMembers: () => [],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
@@ -418,7 +418,7 @@ test("kernel-worker fs outcome defers file write publication to a later sync poi
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    kickBlockedWorkers: vi.fn(),
+    notifyHostEffectProgress: vi.fn(),
     markRuntimeFsDirty,
     kernelShareOtherMembers: () => [target],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
@@ -506,7 +506,7 @@ test("kernel-worker fs outcome applies only request fd after regular file write"
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    kickBlockedWorkers: vi.fn(),
+    notifyHostEffectProgress: vi.fn(),
     markRuntimeFsDirty: vi.fn(),
     kernelShareOtherMembers: () => [target],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
@@ -604,7 +604,7 @@ test("kernel-worker fs outcome applies only request fd after regular file fstat"
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    kickBlockedWorkers: vi.fn(),
+    notifyHostEffectProgress: vi.fn(),
     markRuntimeFsDirty: vi.fn(),
     kernelShareOtherMembers: () => [target],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
@@ -701,7 +701,7 @@ test("kernel-worker fs outcome preserves unrelated live fd across openat snapsho
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    kickBlockedWorkers: vi.fn(),
+    notifyHostEffectProgress: vi.fn(),
     markRuntimeFsDirty: vi.fn(),
     kernelShareOtherMembers: () => [target],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
@@ -781,7 +781,7 @@ test("kernel-worker fs outcome preserves live fd from stale nonzero openat snaps
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    kickBlockedWorkers: vi.fn(),
+    notifyHostEffectProgress: vi.fn(),
     markRuntimeFsDirty: vi.fn(),
     kernelShareOtherMembers: () => [],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
@@ -858,7 +858,7 @@ test("kernel-worker fs outcome permits close snapshot to clear live fd", async (
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    kickBlockedWorkers: vi.fn(),
+    notifyHostEffectProgress: vi.fn(),
     markRuntimeFsDirty: vi.fn(),
     kernelShareOtherMembers: () => [],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
@@ -954,7 +954,7 @@ test("kernel-worker fs outcome keeps generated file fd closeable after unrelated
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    kickBlockedWorkers: vi.fn(),
+    notifyHostEffectProgress: vi.fn(),
     markRuntimeFsDirty: vi.fn(),
     kernelShareOtherMembers: () => [],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
@@ -1058,7 +1058,7 @@ test("kernel-worker fs outcome rejects fd snapshot entries stale against request
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    kickBlockedWorkers: vi.fn(),
+    notifyHostEffectProgress: vi.fn(),
     markRuntimeFsDirty: vi.fn(),
     kernelShareOtherMembers: () => [],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
@@ -1151,7 +1151,7 @@ test("kernel-worker fs outcome rejects fd snapshot ABA using generation", async 
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    kickBlockedWorkers: vi.fn(),
+    notifyHostEffectProgress: vi.fn(),
     markRuntimeFsDirty: vi.fn(),
     kernelShareOtherMembers: () => [],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
@@ -1259,7 +1259,7 @@ test("kernel-worker fs outcome rejects ofd slot snapshots stale against request 
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    kickBlockedWorkers: vi.fn(),
+    notifyHostEffectProgress: vi.fn(),
     markRuntimeFsDirty: vi.fn(),
     kernelShareOtherMembers: () => [],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
@@ -1339,7 +1339,7 @@ test("kernel-worker fs outcome skips shared OFD sync after regular file mmap", a
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    kickBlockedWorkers: vi.fn(),
+    notifyHostEffectProgress: vi.fn(),
     markRuntimeFsDirty: vi.fn(),
     kernelShareOtherMembers: () => [target],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
@@ -1420,7 +1420,7 @@ test("kernel-worker fs outcome keeps shared OFD sync after pipe write", async ()
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    kickBlockedWorkers: vi.fn(),
+    notifyHostEffectProgress: vi.fn(),
     markRuntimeFsDirty: vi.fn(),
     kernelShareOtherMembers: () => [target],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
@@ -1503,7 +1503,7 @@ test("kernel-worker fs outcome does not rehydrate unrelated peer shared OFD befo
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    kickBlockedWorkers: vi.fn(),
+    notifyHostEffectProgress: vi.fn(),
     markRuntimeFsDirty: vi.fn(),
     kernelShareOtherMembers: () => [peer],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
@@ -1594,7 +1594,7 @@ test("kernel-worker fs outcome skips stale dirty MemFS peers before dispatch", a
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    kickBlockedWorkers: vi.fn(),
+    notifyHostEffectProgress: vi.fn(),
     markRuntimeFsDirty: vi.fn(),
     kernelShareOtherMembers: () => [stalePeer],
     syncForkSharedStateLocallyAfterFs: vi.fn(),

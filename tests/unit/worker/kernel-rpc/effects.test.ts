@@ -35,7 +35,7 @@ test("kernel-rpc effects own blocked resume continuation classification", () => 
   expect(kernelRpcOutcomeNeedsResumeContinuation({ kind: "completed" })).toBe(false);
 });
 
-test("applyKernelRpcResumeEffects runs kick-blocked-workers effect before enqueue", async () => {
+test("applyKernelRpcResumeEffects runs notify-host-effect-progress effect before enqueue", async () => {
   const worker = {} as Worker;
   const handle = { pid: 1 } as ProcessHandle;
   const wakeHandle = { pid: 2 } as ProcessHandle;
@@ -48,7 +48,7 @@ test("applyKernelRpcResumeEffects runs kick-blocked-workers effect before enqueu
     {
       kind: "completed",
       effects: [
-        { kind: "kick-blocked-workers", handle: wakeHandle },
+        { kind: "notify-host-effect-progress", handle: wakeHandle },
         { kind: "enqueue-worker" },
       ],
     },
@@ -58,8 +58,8 @@ test("applyKernelRpcResumeEffects runs kick-blocked-workers effect before enqueu
         events.push(`enqueue:${enqueueHandle.pid}`);
       },
       handleExecveSpawn: async () => {},
-      kickBlockedWorkers(kickedHandle) {
-        events.push(`kick:${kickedHandle.pid}`);
+      notifyHostEffectProgress(progressHandle) {
+        events.push(`progress:${progressHandle.pid}`);
       },
       requestPipeStateSync: async () => {},
       settleVisibleProcessOutput: async () => {},
@@ -69,7 +69,7 @@ test("applyKernelRpcResumeEffects runs kick-blocked-workers effect before enqueu
     },
   );
 
-  expect(events).toEqual(["kick:2", "enqueue:1"]);
+  expect(events).toEqual(["progress:2", "enqueue:1"]);
   expect(applied).toEqual({ kind: "completed" });
 });
 
