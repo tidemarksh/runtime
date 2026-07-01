@@ -182,6 +182,8 @@ function makeThreadState(vmPtr: number): ThreadWorkerState {
 
 const SUPERVISOR_RESUME_RECORD_BYTES = 48;
 const SUPERVISOR_RESUME_KIND_RUNNABLE_THREAD = 2;
+const SUPERVISOR_FAULT_EXIT_DECISION_BYTES = 88;
+const SUPERVISOR_FAULT_EXIT_KIND_PROCESS_EXIT = 2;
 
 function writeArmHostTimerHostOpRecord(
   memory: WebAssembly.Memory,
@@ -222,6 +224,50 @@ function writeSupervisorRunnableResumeRecord(
   view.setUint32(outPtr + 32, 0x2000, true);
   view.setUint32(outPtr + 36, 0, true);
   view.setBigUint64(outPtr + 40, 0n, true);
+}
+
+function installTestSupervisorFaultExitDecision(
+  kernel: ProcessHandle["kernel"],
+  handle: ProcessHandle,
+  decision: {
+    exitVmPtr: number;
+    exitCode: number;
+    termSignal: number;
+    remainingThreads: number;
+    liveThreads: number;
+  },
+): void {
+  handle.memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  kernel.memory = handle.memory;
+  kernel.kernel_scratch_base = () => 0;
+  kernel.supervisor_fault_exit_decision_bytes = () => SUPERVISOR_FAULT_EXIT_DECISION_BYTES;
+  kernel.supervisor_fault_exit_kind_process_exit = () => SUPERVISOR_FAULT_EXIT_KIND_PROCESS_EXIT;
+  kernel.supervisor_fault_exit_decision = vi.fn((vmPtr: number, outPtr: number, outLen: number) => {
+    if (outLen < SUPERVISOR_FAULT_EXIT_DECISION_BYTES) {
+      return -1;
+    }
+    const view = new DataView(handle.memory.buffer);
+    view.setUint32(outPtr, 0x5846_5354, true);
+    view.setUint32(outPtr + 4, 1, true);
+    view.setUint32(outPtr + 8, SUPERVISOR_FAULT_EXIT_DECISION_BYTES, true);
+    view.setUint32(outPtr + 12, SUPERVISOR_FAULT_EXIT_KIND_PROCESS_EXIT, true);
+    view.setBigUint64(outPtr + 16, 7n, true);
+    view.setUint32(outPtr + 24, vmPtr, true);
+    view.setUint32(outPtr + 28, decision.exitVmPtr, true);
+    view.setUint32(outPtr + 32, 2, true);
+    view.setUint32(outPtr + 36, 0x2000, true);
+    view.setUint32(outPtr + 40, decision.remainingThreads, true);
+    view.setUint32(outPtr + 44, decision.liveThreads, true);
+    view.setInt32(outPtr + 48, decision.exitCode, true);
+    view.setInt32(outPtr + 52, decision.termSignal, true);
+    view.setUint32(outPtr + 56, kernel.abi_status_fault(), true);
+    view.setUint32(outPtr + 60, 0, true);
+    view.setUint32(outPtr + 64, 0, true);
+    view.setUint32(outPtr + 68, 0, true);
+    view.setBigUint64(outPtr + 72, 0n, true);
+    view.setBigUint64(outPtr + 80, 0n, true);
+    return SUPERVISOR_FAULT_EXIT_DECISION_BYTES;
+  });
 }
 
 function threadHasTestSupervisorFutexBlock(
@@ -4496,6 +4542,13 @@ test("pumpProcess completes exit when all canonical threads fault after workers 
   kernel.thread_exit_code = () => 1;
   kernel.thread_term_signal = () => 0;
   const handle = makeHandle(kernel, worker, threadWorkerStates);
+  installTestSupervisorFaultExitDecision(kernel, handle, {
+    exitVmPtr: 0x581f470,
+    exitCode: 1,
+    termSignal: 0,
+    remainingThreads: 2,
+    liveThreads: 2,
+  });
   handle.workers.clear();
   handle.readyWorkers = [];
   handle.runningWorker = null;
@@ -4519,7 +4572,7 @@ test("pumpProcess completes exit when all canonical threads fault after workers 
   expect(completeProcessExit).toHaveBeenCalledWith(handle, 1, 0, 0x581f470);
   expect(appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
     1,
-    "complete-exit-request:no-workers-fault:1:vm=0x581f470:exit=1:0:priority=0:threads=2",
+    "complete-exit-request:no-workers-fault:1:vm=0x581f470:exit=1:0:seq=7:threads=2/2",
   );
   expect(worker.postMessage).not.toHaveBeenCalled();
 });

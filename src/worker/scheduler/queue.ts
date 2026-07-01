@@ -20,8 +20,11 @@ import type {
   KernelWorkerOfdSlotSnapshot,
   ThreadWorkerOutbound,
 } from "../../messages.js";
-import { collectLiveThreadVmPtrs } from "../live-threads.js";
 import { kernelStackSlotForWorker } from "../pool.js";
+import {
+  readSupervisorFaultExitDecision,
+  supervisorFaultExitKindProcessExit,
+} from "../supervisor-shadow.js";
 import { snapshotProcessFdEntriesForThread } from "../ownership/fd-table.js";
 import {
   restoreRegularFileOffsetsForStep,
@@ -327,38 +330,6 @@ function statusBlocksInOwnerScheduler(handle: ProcessHandle, status: number): bo
     || status === handle.kernel.abi_status_pipe_wait()
     || status === handle.kernel.abi_status_wait4()
     || status === handle.kernel.abi_status_flock_wait();
-}
-
-function faultExitVmPriority(handle: ProcessHandle, vmPtr: number): number {
-  if ((handle.kernel.thread_fault_signal?.(vmPtr) ?? 0) !== 0) {
-    return 4;
-  }
-  if ((handle.kernel.thread_fault_kind?.(vmPtr) ?? 0) !== 0) {
-    return 3;
-  }
-  if (
-    (handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n) !== 0n
-    || (handle.kernel.thread_fault_addr?.(vmPtr) ?? 0n) !== 0n
-  ) {
-    return 2;
-  }
-  if ((handle.kernel.thread_term_signal?.(vmPtr) ?? 0) !== 0) {
-    return 1;
-  }
-  return 0;
-}
-
-function selectFaultExitVmPtr(handle: ProcessHandle, liveVmPtrs: number[]): number {
-  let selectedVmPtr = liveVmPtrs[0]!;
-  let selectedPriority = faultExitVmPriority(handle, selectedVmPtr);
-  for (const vmPtr of liveVmPtrs.slice(1)) {
-    const priority = faultExitVmPriority(handle, vmPtr);
-    if (priority > selectedPriority) {
-      selectedVmPtr = vmPtr;
-      selectedPriority = priority;
-    }
-  }
-  return selectedVmPtr;
 }
 
 function blockedRetryPressureStatus(handle: ProcessHandle, status: number): boolean {
@@ -1347,31 +1318,32 @@ export function createWorkerSchedulerQueueHelpers(
     ) {
       return false;
     }
-    const liveVmPtrs = [...collectLiveThreadVmPtrs(handle.kernel, handle.vmPtr)];
-    if (liveVmPtrs.length === 0) {
+    const decision = readSupervisorFaultExitDecision(handle, handle.vmPtr);
+    if (
+      decision === undefined
+      || decision.kind !== supervisorFaultExitKindProcessExit(handle.kernel)
+    ) {
       return false;
     }
-    const faultStatus = handle.kernel.abi_status_fault();
-    if (!liveVmPtrs.every((vmPtr) => handle.kernel.thread_status(vmPtr) === faultStatus)) {
-      return false;
-    }
-    const exitVmPtr = selectFaultExitVmPtr(handle, liveVmPtrs);
-    const exitCode = handle.kernel.thread_exit_code(exitVmPtr);
-    const termSignal = handle.kernel.thread_term_signal(exitVmPtr);
     deps.appendWorkerDebugLog(
       handle,
-      `complete-exit:no-workers-fault:0x${exitVmPtr.toString(16)}`
-        + `:priority=${faultExitVmPriority(handle, exitVmPtr)}`
-        + `:threads=${liveVmPtrs.length}`,
+      `complete-exit:no-workers-fault:0x${decision.exitVmPtr.toString(16)}`
+        + `:seq=${decision.seq.toString()}`
+        + `:threads=${decision.liveThreads}/${decision.remainingThreads}`,
     );
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
-      `complete-exit-request:no-workers-fault:${handle.pid}:vm=0x${exitVmPtr.toString(16)}`
-        + `:exit=${exitCode}:${termSignal}`
-        + `:priority=${faultExitVmPriority(handle, exitVmPtr)}`
-        + `:threads=${liveVmPtrs.length}`,
+      `complete-exit-request:no-workers-fault:${handle.pid}:vm=0x${decision.exitVmPtr.toString(16)}`
+        + `:exit=${decision.exitCode}:${decision.termSignal}`
+        + `:seq=${decision.seq.toString()}`
+        + `:threads=${decision.liveThreads}/${decision.remainingThreads}`,
     );
-    void deps.completeProcessExit(handle, exitCode, termSignal, exitVmPtr).catch((error) => {
+    void deps.completeProcessExit(
+      handle,
+      decision.exitCode,
+      decision.termSignal,
+      decision.exitVmPtr,
+    ).catch((error) => {
       deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
     });
     return true;
