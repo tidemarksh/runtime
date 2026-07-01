@@ -760,7 +760,7 @@ test("blocked FS retry pumps after clearing owner async status", async () => {
   }));
 });
 
-test("blocked FS retry keeps owner-async enqueue ready until async clears", async () => {
+test("blocked FS retry defers owner-async enqueue until async clears", async () => {
   const worker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -779,7 +779,6 @@ test("blocked FS retry keeps owner-async enqueue ready until async clears", asyn
     expect(thread.ownerAsyncStatus).toBe(kernel.abi_status_fs());
     status = kernel.abi_status_ok();
     scheduler.enqueueWorker(handle, worker);
-    expect(handle.readyWorkers).toContain(worker);
     expect(worker.postMessage).not.toHaveBeenCalled();
     return { kind: "completed" as const };
   });
@@ -2452,7 +2451,7 @@ test("wait4 retry consumes a local child exit record while fork-shared sync is p
   expect(threadResumeWait4).toHaveBeenCalledWith(0x1234);
   expect(handle.childExitSyncRecords.has(7)).toBe(false);
   expect(handle.blockedWorkers.has(worker)).toBe(false);
-  expect(handle.readyWorkers).toContain(worker);
+  expectTestSupervisorProcessResumeSelects(handle, 0x1234);
 });
 
 test("wait4 retry reapplies a pending local child exit record until it is reaped", async () => {
@@ -6247,7 +6246,7 @@ test("enqueue does not place the current running worker back on the ready queue"
   expect(worker.postMessage).not.toHaveBeenCalled();
 });
 
-test("enqueue wakes the running worker when another worker becomes ready", () => {
+test("enqueue wakes the running worker when another worker publishes runnable", () => {
   const runningWorker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -6279,7 +6278,6 @@ test("enqueue wakes the running worker when another worker becomes ready", () =>
   scheduler.enqueueWorker(handle, readyWorker);
 
   expect(handle.runningWorker).toBe(runningWorker);
-  expect(handle.readyWorkers).toContain(readyWorker);
   expect(Atomics.load(notify, 0)).toBe(before + 1);
   expect(readyWorker.postMessage).not.toHaveBeenCalled();
 });

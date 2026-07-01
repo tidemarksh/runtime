@@ -50,6 +50,7 @@ const SCHEDULER_QUEUE_DEBUG_LOG_LIMIT = 256;
 const SCHEDULER_QUEUE_DEBUG_LOG_PREFIXES = [
   "pump-",
   "ready:",
+  "runnable-",
   "step:",
 ] as const;
 let nextThreadWorkerGeneration = 1;
@@ -283,7 +284,7 @@ function appendSchedulerQueueDebugLog(
   }
   const queueDebugCount = handle.workerDebugLog.reduce(
     (count, entry) => count + (
-      entry.startsWith("pump-") || entry.startsWith("step:") || entry.startsWith("ready:")
+      entry.startsWith("pump-") || entry.startsWith("step:") || entry.startsWith("ready:") || entry.startsWith("runnable-")
         ? 1
         : 0
     ),
@@ -1266,34 +1267,34 @@ export function createWorkerSchedulerQueueHelpers(
         thread !== undefined
         && thread.waitingInWorkerStatus === null
         && thread.ownerAsyncStatus !== null
-        && !handle.readyWorkers.includes(worker)
       ) {
-        appendSchedulerQueueDebugLog(deps, handle, `ready-defer-owner-async:0x${thread.vmPtr.toString(16)}:async=${thread.ownerAsyncStatus}`);
-        handle.readyWorkers.push(worker);
+        appendSchedulerQueueDebugLog(deps, handle, `runnable-defer-owner-async:0x${thread.vmPtr.toString(16)}:async=${thread.ownerAsyncStatus}`);
       } else if ((thread?.ownerAsyncStatus ?? null) === null) {
         removeReadyWorker(handle, worker);
       }
       pumpProcess(handle);
       return;
     }
-    if (!handle.readyWorkers.includes(worker)) {
-      const vmPtr = thread?.vmPtr;
-      if (vmPtr !== undefined) {
-        const brokenThreadState = hasBrokenThreadState(handle, vmPtr);
-        appendSchedulerQueueDebugLog(deps, handle, `ready:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`);
-        if (brokenThreadState) {
-          deps.appendWorkerDebugLog(
-            handle,
-            `ready_break:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`,
-          );
-        }
+    const vmPtr = thread?.vmPtr;
+    if (vmPtr !== undefined) {
+      const brokenThreadState = hasBrokenThreadState(handle, vmPtr);
+      appendSchedulerQueueDebugLog(deps, handle, `runnable-published:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`);
+      if (brokenThreadState) {
+        deps.appendWorkerDebugLog(
+          handle,
+          `ready_break:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`,
+        );
       }
+    }
+    if (
+      handle.vforkSnapshot !== null
+      && handle.vforkWorker === worker
+      && !handle.readyWorkers.includes(worker)
+    ) {
       handle.readyWorkers.push(worker);
-      if (handle.runningWorker !== null) {
-        readyWorkerFairness.wakeRunningWorkerForReadyWork(handle);
-      }
-      if (handle.vforkSnapshot !== null && handle.vforkWorker === worker) {
-      }
+    }
+    if (handle.runningWorker !== null) {
+      readyWorkerFairness.wakeRunningWorkerForReadyWork(handle);
     }
     pumpProcess(handle);
   }
