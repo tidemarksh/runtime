@@ -168,6 +168,7 @@ export interface KernelExports {
   supervisor_signal_control_record_bytes?(): number;
   supervisor_runnable_selection_bytes?(): number;
   supervisor_resume_kind_futex_wake?(): number;
+  supervisor_resume_kind_runnable_thread?(): number;
   supervisor_host_op_kind_spawn_thread_worker?(): number;
   supervisor_host_op_kind_spawn_process_worker?(): number;
   supervisor_host_op_kind_create_process_memory?(): number;
@@ -230,6 +231,7 @@ export interface KernelExports {
   supervisor_next_host_op?(outPtr: number, outLen: number): number;
   supervisor_process_host_op?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_next_resume?(outPtr: number, outLen: number): number;
+  supervisor_process_resume?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_fault_exit_decision?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_fd_control_record?(outPtr: number, outLen: number): number;
   supervisor_fs_control_record?(outPtr: number, outLen: number): number;
@@ -1125,6 +1127,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_signal_control_record_bytes",
   "supervisor_runnable_selection_bytes",
   "supervisor_resume_kind_futex_wake",
+  "supervisor_resume_kind_runnable_thread",
   "supervisor_host_op_kind_spawn_thread_worker",
   "supervisor_host_op_kind_spawn_process_worker",
   "supervisor_host_op_kind_create_process_memory",
@@ -1187,6 +1190,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_next_host_op",
   "supervisor_process_host_op",
   "supervisor_next_resume",
+  "supervisor_process_resume",
   "supervisor_fault_exit_decision",
   "supervisor_fd_control_record",
   "supervisor_fs_control_record",

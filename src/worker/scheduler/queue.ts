@@ -58,6 +58,7 @@ const STALE_SLEEP_RUNNING_WORKER_REPAIR_MS = 2_000;
 const SUPERVISOR_RESUME_RECORD_BYTES = 48;
 const SUPERVISOR_RESUME_RECORD_MAGIC = 0x5255_5354;
 const SUPERVISOR_RESUME_KIND_FUTEX_WAKE = 1;
+const SUPERVISOR_RESUME_KIND_RUNNABLE_THREAD = 2;
 const SUPERVISOR_RESUME_DRAIN_LIMIT = 64;
 const SUPERVISOR_RESUME_SCRATCH_OFFSET = 0x28000;
 const SUPERVISOR_THREAD_STATE_SNAPSHOT_MAGIC = 0x4854_5354;
@@ -71,6 +72,7 @@ interface SupervisorResumeRecord {
   seq: bigint;
   vmPtr: number;
   tid: number;
+  processPtr: number;
   status: number;
   detail0: bigint;
 }
@@ -518,6 +520,10 @@ function supervisorResumeKindFutexWake(handle: ProcessHandle): number {
   return handle.kernel.supervisor_resume_kind_futex_wake?.() ?? SUPERVISOR_RESUME_KIND_FUTEX_WAKE;
 }
 
+function supervisorResumeKindRunnableThread(handle: ProcessHandle): number {
+  return handle.kernel.supervisor_resume_kind_runnable_thread?.() ?? SUPERVISOR_RESUME_KIND_RUNNABLE_THREAD;
+}
+
 function supervisorRunnableSelectionBytes(handle: ProcessHandle): number {
   return handle.kernel.supervisor_runnable_selection_bytes?.() ?? SUPERVISOR_RUNNABLE_SELECTION_BYTES;
 }
@@ -547,6 +553,7 @@ function decodeSupervisorResumeRecord(
     seq: view.getBigUint64(16, true),
     vmPtr: view.getUint32(24, true),
     tid: view.getUint32(28, true),
+    processPtr: view.getUint32(32, true),
     status: view.getUint32(36, true),
     detail0: view.getBigUint64(40, true),
   };
@@ -686,7 +693,95 @@ export function createWorkerSchedulerQueueHelpers(
     return undefined;
   }
 
+  function supervisorResumeKindLabel(handle: ProcessHandle, kind: number): string {
+    if (kind === supervisorResumeKindFutexWake(handle)) {
+      return "futex-wake";
+    }
+    if (kind === supervisorResumeKindRunnableThread(handle)) {
+      return "runnable";
+    }
+    return `kind-${kind}`;
+  }
+
+  function selectSupervisorResumeWorker(
+    handle: ProcessHandle,
+    record: SupervisorResumeRecord,
+    source: string,
+  ): Worker | null {
+    const selectedWorker = findWorkerByVmPtr(handle, record.vmPtr);
+    const selectedThread = selectedWorker === undefined
+      ? undefined
+      : deps.threadWorkerStates.get(selectedWorker);
+    if (selectedWorker === undefined || selectedThread === undefined) {
+      deps.appendWorkerDebugLog(
+        handle,
+        `${source}:missing-selected:0x${record.vmPtr.toString(16)}`
+          + `:tid=${record.tid}:seq=${record.seq.toString()}`,
+      );
+      return null;
+    }
+    clearBlockedWorker(handle, selectedWorker);
+    removeReadyWorker(handle, selectedWorker);
+    selectedThread.waitingInWorkerStatus = null;
+    selectedThread.waitingInWorkerReconcileDeferred = false;
+    selectedThread.runningGeneration = null;
+    deps.appendWorkerDebugLog(
+      handle,
+      `${source}:selected:0x${record.vmPtr.toString(16)}`
+        + `:tid=${record.tid}:seq=${record.seq.toString()}`
+        + `:process=0x${record.processPtr.toString(16)}`
+        + `:status=${record.status}:detail=0x${record.detail0.toString(16)}`
+        + formatSupervisorThreadStateSnapshot(handle, record.vmPtr),
+    );
+    return selectedWorker;
+  }
+
+  function selectSupervisorProcessResumeWorker(handle: ProcessHandle): Worker | null | undefined {
+    const processResume = handle.kernel.supervisor_process_resume;
+    if (processResume === undefined) {
+      return undefined;
+    }
+    const recordBytes = supervisorResumeRecordBytes(handle);
+    if (recordBytes < SUPERVISOR_RESUME_RECORD_BYTES) {
+      deps.appendWorkerDebugLog(handle, `supervisor-resume:runnable:invalid-record-bytes:${recordBytes}`);
+      return null;
+    }
+    const memory = handle.kernel.memory ?? handle.memory;
+    const scratch = supervisorResumeScratchBase(handle);
+    ensureMemoryCapacity(memory, scratch + recordBytes);
+    const result = processResume(handle.vmPtr, scratch, recordBytes);
+    if (result === 0) {
+      deps.appendWorkerDebugLog(
+        handle,
+        `supervisor-resume:runnable:none:ready=${handle.readyWorkers.length}`,
+      );
+      return null;
+    }
+    if (result < 0 || result > recordBytes) {
+      deps.appendWorkerDebugLog(handle, `supervisor-resume:runnable:poll-error:${result}`);
+      return null;
+    }
+    const record = decodeSupervisorResumeRecord(handle, new DataView(memory.buffer, scratch, result));
+    if (record === null) {
+      deps.appendWorkerDebugLog(handle, `supervisor-resume:runnable:decode-error:${result}`);
+      return null;
+    }
+    if (record.kind !== supervisorResumeKindRunnableThread(handle)) {
+      deps.appendWorkerDebugLog(
+        handle,
+        `supervisor-resume:runnable:unexpected-kind:${record.kind}`
+          + `:vm=0x${record.vmPtr.toString(16)}:seq=${record.seq.toString()}`,
+      );
+      return null;
+    }
+    return selectSupervisorResumeWorker(handle, record, "supervisor-resume:runnable");
+  }
+
   function selectSupervisorRunnableWorker(handle: ProcessHandle): Worker | null | undefined {
+    const processResumeSelected = selectSupervisorProcessResumeWorker(handle);
+    if (processResumeSelected !== undefined) {
+      return processResumeSelected;
+    }
     const selectRunnable = handle.kernel.supervisor_select_runnable;
     if (selectRunnable === undefined) {
       return undefined;
@@ -751,6 +846,7 @@ export function createWorkerSchedulerQueueHelpers(
     thread: ThreadWorkerState,
     record: SupervisorResumeRecord,
   ): void {
+    const label = supervisorResumeKindLabel(handle, record.kind);
     thread.waitingInWorkerStatus = null;
     thread.waitingInWorkerReconcileDeferred = false;
     thread.runningGeneration = null;
@@ -763,8 +859,10 @@ export function createWorkerSchedulerQueueHelpers(
     }
     deps.appendWorkerDebugLog(
       handle,
-      `supervisor-resume:futex-wake:ready:0x${thread.vmPtr.toString(16)}`
-        + `:tid=${record.tid}:seq=${record.seq.toString()}:addr=0x${record.detail0.toString(16)}`
+      `supervisor-resume:${label}:ready:0x${thread.vmPtr.toString(16)}`
+        + `:tid=${record.tid}:seq=${record.seq.toString()}`
+        + `:process=0x${record.processPtr.toString(16)}`
+        + `:detail=0x${record.detail0.toString(16)}`
         + `:status=${record.status}`
         + formatSupervisorThreadStateSnapshot(handle, record.vmPtr),
     );
@@ -803,6 +901,7 @@ export function createWorkerSchedulerQueueHelpers(
         seq: 0n,
         vmPtr,
         tid: handle.kernel.thread_tid?.(vmPtr) ?? 0,
+        processPtr: handle.kernel.thread_process_ptr?.(vmPtr) ?? 0,
         status: handle.kernel.thread_status(vmPtr),
         detail0: 0n,
       });
@@ -813,6 +912,14 @@ export function createWorkerSchedulerQueueHelpers(
   }
 
   function handleSupervisorResumeRecord(handle: ProcessHandle, record: SupervisorResumeRecord): void {
+    if (record.kind === supervisorResumeKindRunnableThread(handle)) {
+      const worker = selectSupervisorResumeWorker(handle, record, "supervisor-resume:runnable");
+      if (worker === null || handle.runningWorker === worker || handle.readyWorkers.includes(worker)) {
+        return;
+      }
+      handle.readyWorkers.unshift(worker);
+      return;
+    }
     if (record.kind !== supervisorResumeKindFutexWake(handle)) {
       deps.appendWorkerDebugLog(
         handle,

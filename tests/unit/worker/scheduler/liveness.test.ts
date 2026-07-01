@@ -5964,7 +5964,7 @@ test("pumpProcess records supervisor thread-state snapshot diagnostics for selec
   expect(selectedThread.waitingInWorkerStatus).toBeNull();
   expect(unselectedThread.waitingInWorkerStatus).toBe(kernel.abi_status_futex_wait());
   expect(debugEvents).toContain(
-    "supervisor-resume:futex-wake:ready:0x1234:tid=2:seq=1:addr=0xfeed:status=0"
+    "supervisor-resume:futex-wake:ready:0x1234:tid=2:seq=1:process=0x2000:detail=0xfeed:status=0"
       + ":snapshot=process=0x2000:owner=0x1234"
       + ":threads=2/2/0x1234/0/0x0,3/3/0x5678/20/0xbeef/sig=0x44",
   );
