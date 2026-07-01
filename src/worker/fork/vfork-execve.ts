@@ -497,7 +497,7 @@ function reattachRestoredVforkParentWorker(
     worker: parentWorker,
     vmPtr,
   });
-  deps.kickBlockedWorkers(handle);
+  deps.notifyForkProgress(handle);
 }
 
 export async function handleVforkExecve(
@@ -967,11 +967,11 @@ export async function handleVforkExecve(
     worker: childWorker,
     vmPtr: parentThread.vmPtr,
   });
-  deps.kickBlockedWorkers(handle);
+  deps.notifyForkProgress(handle);
   } finally {
     if (handle.pendingChildSpawnRecords > 0) {
       handle.pendingChildSpawnRecords -= 1;
     }
-    deps.kickBlockedWorkers(handle);
+    deps.notifyForkProgress(handle);
   }
 }

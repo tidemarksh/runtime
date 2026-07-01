@@ -216,7 +216,7 @@ const workerForkHandlers = createWorkerForkHandlers({
   enqueueWorker,
   failProcess,
   initializeProcessLifecycleViaKernelWorker,
-  kickBlockedWorkers,
+  notifyForkProgress: kickBlockedWorkers,
   recordChildExitViaKernelWorker,
   requestPipeStateSync,
   rehydrateForkSharedStateViaKernelWorker,

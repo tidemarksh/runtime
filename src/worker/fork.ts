@@ -64,7 +64,7 @@ export function createWorkerForkHandlers(deps: WorkerForkDeps) {
         handle,
         `execve-spawn-stale:vm=0x${thread.vmPtr.toString(16)}:pending=${handle.pendingChildSpawnRecords}`,
       );
-      deps.kickBlockedWorkers(handle);
+      deps.notifyForkProgress(handle);
       return;
     }
 

@@ -362,14 +362,14 @@ export async function handlePlainFork(
       preserveMemoryRanges: forkMemoryPreserveRanges(forkMemorySnapshot),
     });
     appendPlainForkProcessThreadsDebug(deps, handle, childPid, "after-parent-reattach", parentThread.vmPtr);
-    deps.kickBlockedWorkers(handle);
+    deps.notifyForkProgress(handle);
     await waitForForkChildSchedulingPoint(childHandle);
-    deps.kickBlockedWorkers(handle);
+    deps.notifyForkProgress(handle);
     deps.appendWorkerDebugLog(handle, `plain-fork-parent:done:${childPid}`);
   } finally {
     if (handle.pendingChildSpawnRecords > 0) {
       handle.pendingChildSpawnRecords -= 1;
     }
-    deps.kickBlockedWorkers(handle);
+    deps.notifyForkProgress(handle);
   }
 }

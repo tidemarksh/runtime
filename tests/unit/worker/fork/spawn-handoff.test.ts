@@ -56,7 +56,7 @@ async function loadForkHandlers() {
 function makeDeps(): WorkerForkDeps & {
   appendRuntimeLifecycleEvent: ReturnType<typeof vi.fn>;
   enqueueWorker: ReturnType<typeof vi.fn>;
-  kickBlockedWorkers: ReturnType<typeof vi.fn>;
+  notifyForkProgress: ReturnType<typeof vi.fn>;
 } {
   return {
     processHandles: new Map(),
@@ -68,7 +68,7 @@ function makeDeps(): WorkerForkDeps & {
     enqueueWorker: vi.fn(),
     failProcess: vi.fn(),
     initializeProcessLifecycleViaKernelWorker: vi.fn(),
-    kickBlockedWorkers: vi.fn(),
+    notifyForkProgress: vi.fn(),
     recordChildExitViaKernelWorker: vi.fn(),
     requestPipeStateSync: vi.fn(),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(),
@@ -237,7 +237,7 @@ test("handleExecveSpawn ignores a cleared handoff while a child spawn is pending
 
   expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(1, "spawn-handoff:11:0:0");
   expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(1, "spawn-handoff-stale:11:0x1234:1");
-  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(deps.notifyForkProgress).toHaveBeenCalledWith(handle);
   expect(deps.enqueueWorker).not.toHaveBeenCalled();
   expect(plainForkMock).not.toHaveBeenCalled();
   expect(vforkExecveMock).not.toHaveBeenCalled();

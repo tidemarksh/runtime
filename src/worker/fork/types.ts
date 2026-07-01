@@ -21,7 +21,7 @@ export interface WorkerForkDeps {
     sid: number,
     flushSharedMappings: boolean,
   ): Promise<void>;
-  kickBlockedWorkers(handle: ProcessHandle): void;
+  notifyForkProgress(handle: ProcessHandle): void;
   recordChildExitViaKernelWorker(
     parent: ProcessHandle,
     childPid: number,
