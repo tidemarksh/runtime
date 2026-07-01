@@ -6,6 +6,7 @@ import {
   SUPERVISOR_THREAD_EVENT_KIND_BLOCKED,
 } from "../../../../src/worker/supervisor-shadow.js";
 import { createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
+import { writeSupervisorFaultExitDecisionRecord } from "../support/supervisor-abi.js";
 
 const PIPE_BUF_SIZE = 65_536;
 const PIPE_SLOT_SIZE = 32 + PIPE_BUF_SIZE;
@@ -58,6 +59,31 @@ function makeKernelState() {
     processRuntimeStatePtr: 0,
     timeStatePtr: 0,
   };
+}
+
+function installSupervisorFaultExitDecision(
+  kernel: Record<string, unknown>,
+  options: {
+    vmPtr: number;
+    exitVmPtr: number;
+    exitCode: number;
+    termSignal: number;
+    status: number;
+  },
+): void {
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  kernel.memory = memory;
+  kernel.kernel_heap_ptr ??= () => 0;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_fault_exit_decision_bytes = () => 88;
+  kernel.supervisor_fault_exit_kind_thread_exit = () => 1;
+  kernel.supervisor_fault_exit_kind_process_exit = () => 2;
+  kernel.supervisor_fault_exit_decision = vi.fn((vmPtr: number, outPtr: number, outLen: number) => {
+    expect(vmPtr).toBe(options.vmPtr);
+    expect(outLen).toBe(88);
+    writeSupervisorFaultExitDecisionRecord(memory, outPtr, options);
+    return 88;
+  });
 }
 
 function makeThreadState(overrides: Record<string, unknown> = {}) {
@@ -764,6 +790,13 @@ test("status handler keeps faulting worker tracked until completeProcessExit run
     onStdout: null,
     runningWorker: worker,
   } as never;
+  installSupervisorFaultExitDecision((handle as { kernel: Record<string, unknown> }).kernel, {
+    vmPtr: 0x1234,
+    exitVmPtr: 0x1234,
+    exitCode: 139,
+    termSignal: 11,
+    status: 3,
+  });
 
   const handler = createWorkerStatusMessageHandler({
     threadWorkerStates,
@@ -2395,6 +2428,13 @@ test("status handler does not adopt child fault state while resuming an active v
     },
     vforkWorker: worker,
   } as never;
+  installSupervisorFaultExitDecision((handle as { kernel: Record<string, unknown> }).kernel, {
+    vmPtr: 0x1234,
+    exitVmPtr: 0x1234,
+    exitCode: 12,
+    termSignal: 0,
+    status: 3,
+  });
 
   handler(
     handle,

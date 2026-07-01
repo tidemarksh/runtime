@@ -5,7 +5,6 @@ import {
   releaseWorker,
 } from "../../pool.js";
 import { kernelShareOtherMembers } from "../../kernel-share.js";
-import { collectLiveThreadVmPtrs, processHasLiveThreads } from "../../live-threads.js";
 import { assertHandleWorkerProcessIdentity } from "../../process-identity.js";
 import { blockedStatusUsesForkSharedStateSync } from "../../sync.js";
 import type {
@@ -110,69 +109,6 @@ function formatFaultThreadSummary(handle: ProcessHandle, label: string, vmPtr: n
     + `/kind=${handle.kernel.thread_fault_kind?.(vmPtr) ?? 0}`
     + `/pc=0x${(handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n).toString(16)}`
     + `/addr=0x${(handle.kernel.thread_fault_addr?.(vmPtr) ?? 0n).toString(16)}`;
-}
-
-function faultExitVmPriority(handle: ProcessHandle, vmPtr: number): number {
-  if ((handle.kernel.thread_fault_signal?.(vmPtr) ?? 0) !== 0) {
-    return 4;
-  }
-  if ((handle.kernel.thread_fault_kind?.(vmPtr) ?? 0) !== 0) {
-    return 3;
-  }
-  if (
-    (handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n) !== 0n
-    || (handle.kernel.thread_fault_addr?.(vmPtr) ?? 0n) !== 0n
-  ) {
-    return 2;
-  }
-  if ((handle.kernel.thread_term_signal?.(vmPtr) ?? 0) !== 0) {
-    return 1;
-  }
-  return 0;
-}
-
-function collectFaultExitVmCandidates(
-  handle: ProcessHandle,
-  primaryVmPtr: number,
-  threadWorkerStates: WeakMap<Worker, ThreadWorkerState>,
-): Set<number> {
-  const candidates = new Set<number>();
-  if (primaryVmPtr !== 0) {
-    candidates.add(primaryVmPtr);
-    for (const liveVmPtr of collectLiveThreadVmPtrs(handle.kernel, primaryVmPtr)) {
-      candidates.add(liveVmPtr);
-    }
-  }
-  if (handle.vmPtr !== 0) {
-    candidates.add(handle.vmPtr);
-    for (const liveVmPtr of collectLiveThreadVmPtrs(handle.kernel, handle.vmPtr)) {
-      candidates.add(liveVmPtr);
-    }
-  }
-  for (const worker of handle.workers) {
-    const thread = threadWorkerStates.get(worker);
-    if (thread?.vmPtr) {
-      candidates.add(thread.vmPtr);
-    }
-  }
-  return candidates;
-}
-
-function selectFaultExitVmPtr(
-  handle: ProcessHandle,
-  primaryVmPtr: number,
-  threadWorkerStates: WeakMap<Worker, ThreadWorkerState>,
-): number {
-  let selectedVmPtr = primaryVmPtr;
-  let selectedPriority = faultExitVmPriority(handle, selectedVmPtr);
-  for (const candidate of collectFaultExitVmCandidates(handle, primaryVmPtr, threadWorkerStates)) {
-    const priority = faultExitVmPriority(handle, candidate);
-    if (priority > selectedPriority) {
-      selectedVmPtr = candidate;
-      selectedPriority = priority;
-    }
-  }
-  return selectedVmPtr;
 }
 
 function beginStatusTransitionRpc(blocked: BlockedWorkerState): number {
@@ -436,27 +372,26 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             + formatCompactDebugSuffix(msg.debug, VFORK_CHILD_FAULT_DEBUG_KEYS),
         );
       }
-      if (deps.resumeVforkParentAfterChildExit(handle, worker, thread.vmPtr, msg.exitCode, msg.termSignal)) {
-        return;
-      }
       if (msg.debug) {
         deps.appendWorkerDebugLog(handle, `fault_debug:0x${thread.vmPtr.toString(16)}:${JSON.stringify(msg.debug)}`);
       }
       const supervisorExitDecision = readSupervisorFaultExitDecision(handle, thread.vmPtr);
+      if (supervisorExitDecision === undefined) {
+        deps.failProcess(
+          handle,
+          new Error(`supervisor fault exit decision required for vm=0x${thread.vmPtr.toString(16)}`),
+        );
+        return;
+      }
+      const exitCode = supervisorExitDecision.exitCode;
+      const termSignal = supervisorExitDecision.termSignal;
+      if (deps.resumeVforkParentAfterChildExit(handle, worker, thread.vmPtr, exitCode, termSignal)) {
+        return;
+      }
       const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
-      const faultStateLooksStale = currentPid === 0 || currentPid > 0xffff;
-      const remainingThreads = supervisorExitDecision?.remainingThreads
-        ?? (faultStateLooksStale ? 0 : handle.kernel.thread_process_thread_count(thread.vmPtr));
-      const hasLiveThreads = supervisorExitDecision !== undefined
-        ? supervisorExitDecision.liveThreads !== 0
-        : !faultStateLooksStale
-          && remainingThreads !== 0
-          && processHasLiveThreads(handle.kernel, thread.vmPtr, thread.vmPtr);
-      const shouldExitProcess = supervisorExitDecision !== undefined
-        ? supervisorExitDecision.kind === supervisorFaultExitKindProcessExit(handle.kernel)
-        : remainingThreads <= 1 || !hasLiveThreads;
-      const exitCode = supervisorExitDecision?.exitCode ?? msg.exitCode;
-      const termSignal = supervisorExitDecision?.termSignal ?? msg.termSignal;
+      const remainingThreads = supervisorExitDecision.remainingThreads;
+      const hasLiveThreads = supervisorExitDecision.liveThreads !== 0;
+      const shouldExitProcess = supervisorExitDecision.kind === supervisorFaultExitKindProcessExit(handle.kernel);
       const faultProcessPtr = handle.kernel.thread_process_ptr(thread.vmPtr);
       const ownerPid = handle.kernel.process_current_pid(handle.vmPtr);
       const ownerProcessPtr = handle.kernel.thread_process_ptr(handle.vmPtr);
@@ -467,13 +402,12 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         + `:owner_count=${ownerThreadCount}:owner_threads=[${formatProcessThreadSlots(handle, handle.vmPtr)}]`;
       deps.appendWorkerDebugLog(handle, `fault:0x${thread.vmPtr.toString(16)} remaining=${remainingThreads}`);
       if (shouldExitProcess) {
-        const exitVmPtr = supervisorExitDecision?.exitVmPtr
-          ?? selectFaultExitVmPtr(handle, thread.vmPtr, deps.threadWorkerStates);
+        const exitVmPtr = supervisorExitDecision.exitVmPtr;
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `complete-exit-request:transitions-fault:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
             + `:exitVm=0x${exitVmPtr.toString(16)}`
-            + `:priority=${supervisorExitDecision === undefined ? faultExitVmPriority(handle, exitVmPtr) : "supervisor"}`
+            + `:decision=${supervisorExitDecision.seq.toString()}`
             + `:status=${status}:msg=${msg.status}:exit=${exitCode}:${termSignal}`
             + `:current=${handle.kernel.thread_status?.(thread.vmPtr) ?? -1}:remaining=${remainingThreads}:live=${hasLiveThreads ? 1 : 0}`
             + processTableDebug

@@ -4,6 +4,7 @@ import type { ThreadWorkerOutbound } from "../../../src/messages.js";
 import type { WorkerMessageHandlerDeps } from "../../../src/worker/message-handler/types.js";
 import { createWorkerMessageDebugStats } from "../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../src/worker/types.js";
+import { writeSupervisorFaultExitDecisionRecord } from "./support/supervisor-abi.js";
 
 function makeThreadState(overrides: Partial<ThreadWorkerState> = {}): ThreadWorkerState {
   return {
@@ -572,7 +573,9 @@ test("active vfork child fault remains routed through the parent handle", () => 
   const resumeVforkParentAfterChildExit = vi.fn(() => true);
   deps.resumeVforkParentAfterChildExit = resumeVforkParentAfterChildExit;
   const kernelState = makeKernelState();
+  const memory = new WebAssembly.Memory({ initial: 4 });
   const kernel = {
+    memory,
     abi_status_ok: () => 0,
     abi_status_fault: () => 31,
     abi_status_fs: () => 6,
@@ -584,6 +587,7 @@ test("active vfork child fault remains routed through the parent handle", () => 
     abi_max_threads: () => 1,
     abi_max_fds: () => 0,
     kernel_attach_runtime_state: () => {},
+    kernel_heap_ptr: () => 0,
     process_current_pid: () => 3,
     process_current_ppid: () => 1,
     process_thread_vm_ptr: () => 0x1234,
@@ -593,6 +597,22 @@ test("active vfork child fault remains routed through the parent handle", () => 
     thread_sp: () => 0x2000n,
     thread_s11: () => 0x3000n,
     thread_status: () => 31,
+    supervisor_abi_version: () => 1,
+    supervisor_fault_exit_decision_bytes: () => 88,
+    supervisor_fault_exit_kind_thread_exit: () => 1,
+    supervisor_fault_exit_kind_process_exit: () => 2,
+    supervisor_fault_exit_decision: vi.fn((vmPtr: number, outPtr: number, outLen: number) => {
+      expect(vmPtr).toBe(0x1234);
+      expect(outLen).toBe(88);
+      writeSupervisorFaultExitDecisionRecord(memory, outPtr, {
+        vmPtr,
+        processPtr: 0x48000,
+        exitCode: 12,
+        termSignal: 0,
+        status: 31,
+      });
+      return 88;
+    }),
   };
   const parentHandle = {
     runtimeId: 1,
@@ -631,7 +651,7 @@ test("active vfork child fault remains routed through the parent handle", () => 
     kernel,
     kernelState,
     runningWorker: worker,
-    memory: new WebAssembly.Memory({ initial: 1 }),
+    memory,
     vforkSnapshot: {
       vmPtr: 0x1234,
       childPid: 3,

@@ -15,6 +15,8 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_host_op_record_bytes: 64,
   supervisor_process_host_op_record_bytes: 96,
   supervisor_fault_exit_decision_bytes: 88,
+  supervisor_fault_exit_kind_thread_exit: 1,
+  supervisor_fault_exit_kind_process_exit: 2,
   supervisor_fd_control_record_bytes: 96,
   supervisor_fs_control_record_bytes: 112,
   supervisor_signal_control_record_bytes: 120,
@@ -37,6 +39,24 @@ export interface SupervisorRunnableResumeRecordFixture {
   detail0?: bigint;
 }
 
+export interface SupervisorFaultExitDecisionRecordFixture {
+  kind?: number;
+  seq?: bigint;
+  vmPtr: number;
+  exitVmPtr?: number;
+  tid?: number;
+  processPtr?: number;
+  remainingThreads?: number;
+  liveThreads?: number;
+  exitCode?: number;
+  termSignal?: number;
+  status?: number;
+  faultSignal?: number;
+  faultKind?: number;
+  faultPc?: bigint;
+  faultAddr?: bigint;
+}
+
 export function makeSupervisorAbiStubs(
   overrides: Partial<KernelExports> = {},
 ): Partial<KernelExports> {
@@ -50,6 +70,38 @@ export function makeSupervisorAbiStubs(
     ...stubs,
     ...overrides,
   } as Partial<KernelExports>;
+}
+
+export function writeSupervisorFaultExitDecisionRecord(
+  memory: WebAssembly.Memory,
+  outPtr: number,
+  record: SupervisorFaultExitDecisionRecordFixture,
+): number {
+  const view = new DataView(memory.buffer);
+  view.setUint32(outPtr, 0x5846_5354, true);
+  view.setUint32(outPtr + 4, 1, true);
+  view.setUint32(outPtr + 8, DEFAULT_NUMERIC_EXPORTS.supervisor_fault_exit_decision_bytes, true);
+  view.setUint32(
+    outPtr + 12,
+    record.kind ?? DEFAULT_NUMERIC_EXPORTS.supervisor_fault_exit_kind_process_exit,
+    true,
+  );
+  view.setBigUint64(outPtr + 16, record.seq ?? 1n, true);
+  view.setUint32(outPtr + 24, record.vmPtr, true);
+  view.setUint32(outPtr + 28, record.exitVmPtr ?? record.vmPtr, true);
+  view.setUint32(outPtr + 32, record.tid ?? 1, true);
+  view.setUint32(outPtr + 36, record.processPtr ?? 0, true);
+  view.setUint32(outPtr + 40, record.remainingThreads ?? 0, true);
+  view.setUint32(outPtr + 44, record.liveThreads ?? 0, true);
+  view.setInt32(outPtr + 48, record.exitCode ?? 0, true);
+  view.setInt32(outPtr + 52, record.termSignal ?? 0, true);
+  view.setUint32(outPtr + 56, record.status ?? 0, true);
+  view.setUint32(outPtr + 60, record.faultSignal ?? 0, true);
+  view.setUint32(outPtr + 64, record.faultKind ?? 0, true);
+  view.setUint32(outPtr + 68, 0, true);
+  view.setBigUint64(outPtr + 72, record.faultPc ?? 0n, true);
+  view.setBigUint64(outPtr + 80, record.faultAddr ?? 0n, true);
+  return DEFAULT_NUMERIC_EXPORTS.supervisor_fault_exit_decision_bytes;
 }
 
 export function writeSupervisorRunnableResumeRecord(
