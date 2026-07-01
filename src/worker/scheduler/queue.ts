@@ -869,28 +869,8 @@ export function createWorkerSchedulerQueueHelpers(
     return Date.now() - lastStepAtMs >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
   }
 
-  function staleIdleUnansweredThreadCanRun(handle: ProcessHandle, thread: ThreadWorkerState): boolean {
-    if (!thread.initialized || thread.waitingInWorkerStatus !== null || thread.ownerAsyncStatus !== null) {
-      return false;
-    }
-    if (thread.pendingGuestMemoryWrites.length > 0) {
-      return false;
-    }
-    if (thread.stepCount - thread.statusCount !== 1) {
-      return false;
-    }
-    if (handle.kernel.thread_process_ptr(thread.vmPtr) === 0) {
-      return false;
-    }
-    if (handle.kernel.thread_status(thread.vmPtr) !== handle.kernel.abi_status_ok()) {
-      return false;
-    }
-    return runningWorkerStepAppearsIdle(handle, thread);
-  }
-
   function clearStaleOwnerAsyncStatus(
     handle: ProcessHandle,
-    worker: Worker,
     thread: ThreadWorkerState,
   ): boolean {
     if ((thread.ownerAsyncStatus ?? null) === null) {
@@ -916,9 +896,6 @@ export function createWorkerSchedulerQueueHelpers(
       `owner-async-cleared:stale-ok:0x${thread.vmPtr.toString(16)}:async=${thread.ownerAsyncStatus}`,
     );
     thread.ownerAsyncStatus = null;
-    if (!handle.readyWorkers.includes(worker)) {
-      handle.readyWorkers.push(worker);
-    }
     return true;
   }
 
@@ -1006,9 +983,6 @@ export function createWorkerSchedulerQueueHelpers(
         handle.runningWorker = null;
         thread.runningGeneration = null;
         const unansweredSteps = thread.stepCount - thread.statusCount;
-        if (unansweredSteps <= 1 && !handle.readyWorkers.includes(runningWorker)) {
-          handle.readyWorkers.push(runningWorker);
-        }
         deps.appendWorkerDebugLog(
           handle,
           `running-worker-cleared:${unansweredSteps > 1 ? "surplus-" : ""}stale-unanswered-no-ready:0x${thread.vmPtr.toString(16)}:last=${thread.lastStatus ?? "null"}:unanswered=${unansweredSteps}`,
@@ -1334,7 +1308,7 @@ export function createWorkerSchedulerQueueHelpers(
         continue;
       }
       const thread = deps.threadWorkerStates.get(worker);
-      if (thread && clearStaleOwnerAsyncStatus(handle, worker, thread)) {
+      if (thread && clearStaleOwnerAsyncStatus(handle, thread)) {
         continue;
       }
       if (
@@ -1355,18 +1329,11 @@ export function createWorkerSchedulerQueueHelpers(
         continue;
       }
       if (thread.stepCount > thread.statusCount) {
-        if (handle.readyWorkers.length > 0 || !staleIdleUnansweredThreadCanRun(handle, thread)) {
-          continue;
-        }
-        deps.appendWorkerDebugLog(handle, `ready_recover_unanswered:0x${thread.vmPtr.toString(16)}${formatStepDebugSuffix(handle, thread.vmPtr)}`);
-        handle.readyWorkers.push(worker);
         continue;
       }
       if (currentStatus !== handle.kernel.abi_status_ok()) {
         continue;
       }
-      deps.appendWorkerDebugLog(handle, `ready_recover:0x${thread.vmPtr.toString(16)}${formatStepDebugSuffix(handle, thread.vmPtr)}`);
-      handle.readyWorkers.push(worker);
     }
   }
 
