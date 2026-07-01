@@ -10,7 +10,6 @@ export interface KernelRpcResumeEffectPorts {
   blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   handleExecveSpawn(handle: ProcessHandle, worker: Worker, thread: ThreadWorkerState): Promise<void>;
-  markRuntimeFsDirty(handle: ProcessHandle): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   settleVisibleProcessOutput(
     handle: ProcessHandle,
@@ -21,24 +20,6 @@ export interface KernelRpcResumeEffectPorts {
     sourceVmPtr: number | undefined,
     cause: SyncCause,
   ): Promise<void>;
-  syncForkSharedStateLocally(
-    handle: ProcessHandle,
-    targets: ProcessHandle[],
-    options: { cause: SyncCause; includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] },
-  ): void;
-  syncForkSharedStateViaKernelWorker(
-    handle: ProcessHandle,
-    targets: ProcessHandle[],
-    options: {
-      cause: SyncCause;
-      includeMemfs?: boolean;
-      trackHeldOfds?: boolean;
-      deltaOfdIds?: boolean;
-      memfsOnly?: boolean;
-      sourceVmPtr?: number;
-    },
-  ): Promise<void>;
-  syncPipeStateViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<bigint>;
   syncSocketStateViaKernelWorker(
     handle: ProcessHandle,
     cause: SyncCause,
@@ -55,10 +36,6 @@ export interface KernelRpcResumeContinuationPorts {
     blockedStatus: number,
     timeoutExpired?: boolean,
   ): Promise<void>;
-}
-
-function kernelRpcEffectCause(name: string): SyncCause {
-  return { kind: "syscall", nr: -1n, name };
 }
 
 function kernelRpcBlockedCause(status: number): SyncCause {
@@ -156,9 +133,6 @@ async function applyKernelRpcResumeEffect(
       }
       return;
     }
-    case "mark-runtime-fs-dirty":
-      ports.markRuntimeFsDirty(effect.handle);
-      return;
     case "request-pipe-state-sync":
       await ports.requestPipeStateSync(effect.handle ?? handle, effect.wakeWaiters);
       return;
@@ -178,30 +152,6 @@ async function applyKernelRpcResumeEffect(
         return;
       }
       await ports.syncSocketStateViaKernelWorker(handle, kernelRpcBlockedCause(effect.status));
-      return;
-    case "sync-fork-shared-state-local-after-fs":
-      ports.syncForkSharedStateLocally(handle, effect.targets, {
-        ...effect.options,
-        cause: kernelRpcEffectCause("fs-local-fork-shared-sync"),
-      });
-      return;
-    case "sync-shared-ofd-state-after-fs":
-      await ports.syncForkSharedStateViaKernelWorker(handle, effect.targets, {
-        cause: kernelRpcEffectCause("fs-shared-ofd-sync"),
-        includeMemfs: false,
-        trackHeldOfds: false,
-        deltaOfdIds: true,
-        sourceVmPtr: effect.sourceVmPtr,
-      });
-      return;
-    case "publish-memfs-after-fs":
-      await ports.syncForkSharedStateViaKernelWorker(handle, effect.targets, {
-        cause: kernelRpcEffectCause("fs-memfs-publication"),
-        includeMemfs: true,
-        trackHeldOfds: false,
-        memfsOnly: true,
-        sourceVmPtr: effect.sourceVmPtr,
-      });
       return;
     default: {
       const exhaustive: never = effect;

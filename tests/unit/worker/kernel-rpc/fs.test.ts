@@ -294,9 +294,6 @@ test("kernel-worker fs outcome skips memfs publication effect when no fork-share
   expect(publishRuntimeKernelState.mock.invocationCallOrder[0]).toBeLessThan(
     kickBlockedWorkers.mock.invocationCallOrder[0],
   );
-  expect(outcome.effects).not.toEqual(expect.arrayContaining([
-    expect.objectContaining({ kind: "publish-memfs-after-fs" }),
-  ]));
 });
 
 test("kernel-worker fs outcome applies mmap guest memory writes from fs response", async () => {
@@ -449,9 +446,6 @@ test("kernel-worker fs outcome defers file write publication to a later sync poi
 
   expect(markRuntimeFsDirty).toHaveBeenCalledWith(handle);
   expect(markRuntimeFsDirty).toHaveBeenCalledWith(target);
-  expect(outcome.effects).not.toEqual(expect.arrayContaining([
-    expect.objectContaining({ kind: "publish-memfs-after-fs" }),
-  ]));
 });
 
 test("kernel-worker fs outcome applies only request fd after regular file write", async () => {
