@@ -53,6 +53,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     vmPtr: number,
     outcome: KernelRpcResumeOutcome,
   ): void {
+    if (outcome.kind === "completed" && outcome.status !== undefined) {
+      handleBlockedRetryResult(handle, worker, vmPtr, outcome.status);
+    }
     switch (outcome.kind) {
       case "completed":
       case "queued-in-worker":
@@ -1638,6 +1641,28 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       }).catch((error) => {
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
       });
+      return;
+    }
+
+    if (
+      handle.kernelWorkerRequest
+      && handle.pid > 0
+      && blocked.status === handle.kernel.abi_status_wait4()
+    ) {
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-rpc:${handle.pid}`);
+      applyLocalChildExitRecords(handle, { force: true });
+      blocked.rpcPending = true;
+      void deps.resumeWait4ViaKernelWorker(handle, worker, blocked.vmPtr)
+        .then((outcome) => {
+          consumeKernelRpcResumeOutcome(handle, worker, blocked.vmPtr, outcome);
+        })
+        .catch((error) => {
+          const latestBlocked = handle.blockedWorkers.get(worker);
+          if (latestBlocked && latestBlocked.vmPtr === blocked.vmPtr) {
+            latestBlocked.rpcPending = false;
+          }
+          deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+        });
       return;
     }
 

@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
-import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
+import {
+  requiredSupervisorRuntimeExportNames,
+  type KernelExports,
+  type KernelRuntimeState,
+} from "../../../../src/abi.js";
 import { writePipe } from "../../../../src/bridge/pipe.js";
 import { readPublishedKernelRuntimeState } from "../../../../src/bridge/runtime-state.js";
 import type {
@@ -154,6 +158,41 @@ const SYNC_EFFECT_EPOLL_DEPENDENT_OFD_STATE = 1 << 3;
 const SYNC_EFFECT_PROCESS_LIFECYCLE = 1 << 4;
 const SYNC_EFFECT_FORK_SHARED_OFD_STATE = 1 << 6;
 const MOCK_PIPE_SLOT_BYTES = 32 + 65_536;
+
+function addSupervisorRuntimeExportStubs(exports: KernelExports): void {
+  const target = exports as unknown as Record<string, (...args: unknown[]) => number | bigint>;
+  for (const name of requiredSupervisorRuntimeExportNames()) {
+    if (typeof target[name] !== "function") {
+      target[name] = () => (name === "supervisor_abi_version" ? 1 : 0);
+    }
+  }
+  target.supervisor_runnable_selection_bytes = () => 48;
+  target.supervisor_select_runnable = (...args: unknown[]) => {
+    const candidatesPtr = Number(args[1]);
+    const candidateCount = Number(args[2]);
+    const outPtr = Number(args[3]);
+    const outLen = Number(args[4]);
+    if (candidateCount <= 0) {
+      return 0;
+    }
+    if (outLen < 48) {
+      return -1;
+    }
+    const view = new DataView(exports.memory.buffer);
+    const selectedVmPtr = view.getUint32(candidatesPtr, true);
+    view.setUint32(outPtr, 0x4e52_5354, true);
+    view.setUint32(outPtr + 4, 1, true);
+    view.setUint32(outPtr + 8, 48, true);
+    view.setBigUint64(outPtr + 16, 1n, true);
+    view.setUint32(outPtr + 24, selectedVmPtr, true);
+    view.setUint32(outPtr + 28, 1, true);
+    view.setUint32(outPtr + 32, Number(args[0]), true);
+    view.setUint32(outPtr + 36, 1, true);
+    view.setUint32(outPtr + 40, exports.abi_status_ok(), true);
+    view.setUint32(outPtr + 44, 0, true);
+    return 48;
+  };
+}
 
 function emitReady(
   worker: FakeWorker,
@@ -548,6 +587,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     memfsWriteCalls,
     memfsCreateWithDataCalls,
   };
+  addSupervisorRuntimeExportStubs(exports);
   createdKernelExports.push(exports);
   return exports;
 }
@@ -630,7 +670,11 @@ test("STATUS_WAIT4 retries through thread_resume_wait4 instead of generic blocke
   expect(resumeWait4).toHaveBeenCalledWith(0x1234);
   expect(resumeBlocked).not.toHaveBeenCalled();
   expect(worker.postedMessages).toEqual([
-    { type: "step", budget: 20_000, kernelState: makeKernelState() },
+    {
+      type: "step",
+      budget: 20_000,
+      kernelState: expect.objectContaining(makeKernelState()),
+    },
   ]);
 
   vi.useRealTimers();
@@ -640,6 +684,7 @@ test("STATUS_WAIT4 delegates retries through kernel-worker when available", asyn
   vi.useFakeTimers();
 
   const requests: KernelWorkerRequest[] = [];
+  let currentStatus = 31;
   const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
     pid: 1,
     kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
@@ -658,6 +703,7 @@ test("STATUS_WAIT4 delegates retries through kernel-worker when available", asyn
         case "release-host-stdio":
           return { type: "host-stdio-released", requestId: 0, kernelState: msg.kernelState };
         case "resume-wait4":
+          currentStatus = 0;
           return {
             type: "wait4-resumed",
             requestId: 0,
@@ -675,7 +721,6 @@ test("STATUS_WAIT4 delegates retries through kernel-worker when available", asyn
   });
   const worker = createdWorkers[0];
   const kernel = createdKernelExports[0];
-  let currentStatus = kernel.abi_status_wait4();
   const resumeWait4 = vi.fn(() => 0n);
   const resumeBlocked = vi.fn(() => 0n);
 
@@ -704,17 +749,19 @@ test("STATUS_WAIT4 delegates retries through kernel-worker when available", asyn
   vi.advanceTimersByTime(15);
   await flushMicrotasks();
 
-  expect(requests.map((msg) => msg.type)).toEqual(["sync-pipe-state"]);
-  expect(resumeWait4).toHaveBeenCalledWith(0x1234);
+  expect(requests[0]?.type).toBe("resume-wait4");
+  expect(requests.filter((msg) => msg.type === "resume-wait4")).toHaveLength(1);
+  expect(requests.some((msg) => msg.type === "sync-pipe-state")).toBe(true);
+  expect(resumeWait4).not.toHaveBeenCalled();
   expect(resumeBlocked).not.toHaveBeenCalled();
-  expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr);
+  expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x30);
   expect(worker.postedMessages).toEqual([
     {
       type: "step",
       budget: 20_000,
-      kernelState: {
-        ...makeKernelState(),
-      },
+      kernelState: expect.objectContaining({
+        heapPtr: makeKernelState().heapPtr + 0x30,
+      }),
     },
   ]);
 
