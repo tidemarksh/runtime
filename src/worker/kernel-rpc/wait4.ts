@@ -5,6 +5,7 @@ import {
 import {
   adoptKernelStateForHandle,
 } from "../kernel-state.js";
+import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
 import type { ProcessHandle } from "../types.js";
 import type { WorkerKernelRpcLifecycleDeps } from "./lifecycle/types.js";
 import { completedKernelRpcOutcome, type KernelRpcResumeEffect, type KernelRpcResumeOutcome } from "./outcomes.js";
@@ -65,8 +66,8 @@ export function createWorkerKernelRpcWait4Helpers(
       );
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
+      publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
       effects.push(
-        { kind: "publish-runtime-kernel-state" },
         { kind: "request-pipe-state-sync", wakeWaiters: true },
         { kind: "settle-visible-process-output" },
       );

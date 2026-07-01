@@ -115,10 +115,8 @@ export function createWorkerKernelRpcVforkHelpers(
       snapshot.nextPid = lifecycle.nextPid;
       snapshot.pgid = lifecycle.pgid;
       snapshot.sid = lifecycle.sid;
-      effects.push(
-        { kind: "publish-runtime-kernel-state" },
-        { kind: "enqueue-worker" },
-      );
+      publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
+      effects.push({ kind: "enqueue-worker" });
       return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr), effects);
     } catch (error) {
       if (handle.workers.has(worker) && deps.threadWorkerStates.has(worker)) {

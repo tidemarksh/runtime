@@ -1,4 +1,3 @@
-import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
 import { readKernelRuntimeState } from "../../abi.js";
 import type { ProcessHandle, ThreadWorkerState } from "../types.js";
 import type { SyncCause } from "../contracts/sync.js";
@@ -159,9 +158,6 @@ async function applyKernelRpcResumeEffect(
     }
     case "mark-runtime-fs-dirty":
       ports.markRuntimeFsDirty(effect.handle);
-      return;
-    case "publish-runtime-kernel-state":
-      publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
       return;
     case "request-pipe-state-sync":
       await ports.requestPipeStateSync(effect.handle ?? handle, effect.wakeWaiters);

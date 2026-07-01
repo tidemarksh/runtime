@@ -1,5 +1,8 @@
 import { expect, test, vi } from "vite-plus/test";
-import { createRuntimeStateBridge } from "../../../../src/bridge/runtime-state.js";
+import {
+  createRuntimeStateBridge,
+  readPublishedKernelRuntimeState,
+} from "../../../../src/bridge/runtime-state.js";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { createWorkerKernelRpcHelpers } from "../../../../src/worker/kernel-rpc.js";
 import { createWorkerKernelRpcResumeLifecycleHelpers } from "../../../../src/worker/kernel-rpc/lifecycle/resume.js";
@@ -199,12 +202,12 @@ test("resumeWait4ViaKernelWorker does not re-run local wait4 after kernel-worker
   expect(handledStatuses).toEqual([]);
   expect(pipeSyncWakeArgs).toEqual([]);
   expect(outcome.effects).toEqual([
-    { kind: "publish-runtime-kernel-state" },
     { kind: "request-pipe-state-sync", wakeWaiters: true },
     { kind: "settle-visible-process-output" },
   ]);
   expect(outcome.status).toBe(0);
   expect(handle.kernelState.heapPtr).toBe(resumedState.heapPtr);
+  expect(readPublishedKernelRuntimeState(runtimeBridge).heapPtr).toBe(resumedState.heapPtr);
 });
 
 test("resumeWait4ViaKernelWorker skips RPC when local wait4 already resolved", async () => {
