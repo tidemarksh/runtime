@@ -1780,7 +1780,11 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       ) {
         markPipeChildExitRecordsResumedForWait(handle, blocked);
       }
-      const resumeBlockedRpc = deps.resumeBlockedSyscallOutcome ?? deps.resumeBlockedSyscallLocally;
+      const resumeBlockedRpc = deps.resumeBlockedSyscallOutcome;
+      if (resumeBlockedRpc === undefined) {
+        deps.failProcess(handle, new Error("kernel-worker blocked syscall resume requires resumeBlockedSyscallOutcome"));
+        return;
+      }
       void resumeBlockedRpc(
         handle,
         worker,

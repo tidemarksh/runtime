@@ -1404,10 +1404,14 @@ test("pipe pselect retry applies child exit records before passive parking", asy
   handle.pendingChildSpawnRecords = 0;
   handle.childExitSyncRecords.set(7, 0);
   handle.kernelWorkerRequest = vi.fn(async () => {
-    throw new Error("scheduler retry should leave pipe wait resume to local helper");
+    throw new Error("scheduler retry should delegate blocked resume through outcome helper");
   });
   const lifecycleEvents: string[] = [];
   const resumeBlockedSyscallLocally = vi.fn(async () => {});
+  const resumeBlockedSyscallOutcome = vi.fn(async () => ({
+    kind: "blocked" as const,
+    status: kernel.abi_status_pipe_wait(),
+  }));
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: (_runtimeId, event) => {
@@ -1418,6 +1422,7 @@ test("pipe pselect retry applies child exit records before passive parking", asy
     failProcess: () => {},
     hasActiveChildProcess: () => true,
     resumeBlockedSyscallLocally,
+    resumeBlockedSyscallOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -1431,13 +1436,14 @@ test("pipe pselect retry applies child exit records before passive parking", asy
   expect(lifecycleEvents).toContain("wait4-apply-records:1:7/0");
   expect(lifecycleEvents.some((event) => event.startsWith("pipe-retry-skip:1:active-child"))).toBe(false);
   expect(kernel.process_record_child_exit_for_parent).toHaveBeenCalledWith(1, 7, 0);
-  expect(resumeBlockedSyscallLocally).toHaveBeenCalledWith(
+  expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
     handle,
     worker,
     0x1234,
     handle.kernel.abi_status_pipe_wait(),
     false,
   );
+  expect(resumeBlockedSyscallLocally).not.toHaveBeenCalled();
   expect(handle.blockedWorkers.get(worker)?.pipeChildExitResumeKey).toContain("7/0:sys=72");
 });
 
@@ -1466,9 +1472,13 @@ test("pipe pselect retry resumes after pipe sync when no writer remains", async 
   handle.memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
   handle.pendingChildSpawnRecords = 0;
   handle.kernelWorkerRequest = vi.fn(async () => {
-    throw new Error("scheduler retry should leave pipe wait resume to local helper");
+    throw new Error("scheduler retry should delegate blocked resume through outcome helper");
   });
   const resumeBlockedSyscallLocally = vi.fn(async () => {});
+  const resumeBlockedSyscallOutcome = vi.fn(async () => ({
+    kind: "blocked" as const,
+    status: kernel.abi_status_pipe_wait(),
+  }));
   const lifecycleEvents: string[] = [];
 
   const scheduler = createWorkerScheduler({
@@ -1480,6 +1490,7 @@ test("pipe pselect retry resumes after pipe sync when no writer remains", async 
     failProcess: () => {},
     hasActiveChildProcess: () => false,
     resumeBlockedSyscallLocally,
+    resumeBlockedSyscallOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -1493,16 +1504,17 @@ test("pipe pselect retry resumes after pipe sync when no writer remains", async 
   await Promise.resolve();
 
   expect(lifecycleEvents.some((event) => event.startsWith("pipe-retry:1:a7=72"))).toBe(true);
-  expect(resumeBlockedSyscallLocally).toHaveBeenCalledWith(
+  expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
     handle,
     worker,
     0x1234,
     handle.kernel.abi_status_pipe_wait(),
     false,
   );
+  expect(resumeBlockedSyscallLocally).not.toHaveBeenCalled();
 });
 
-test("kernel-worker blocked syscall retry leaves rpc ownership to local resume helper", () => {
+test("kernel-worker blocked syscall retry requires outcome helper", () => {
   const worker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -1518,15 +1530,13 @@ test("kernel-worker blocked syscall retry leaves rpc ownership to local resume h
     throw new Error("direct kernel-worker request should not be issued by scheduler retry");
   });
   const resumeBlockedSyscallLocally = vi.fn(async () => {});
+  const failProcess = vi.fn();
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
     threadWorkerStates,
     completeProcessExit: async () => {},
-    failProcess: (_handle, error) => {
-      lifecycleEvents.push(`fail:${error.message}`);
-      throw error;
-    },
+    failProcess,
     hasActiveChildProcess: () => false,
     resumeBlockedSyscallLocally,
     resumeVforkParentAfterChildExit: () => false,
@@ -1544,13 +1554,11 @@ test("kernel-worker blocked syscall retry leaves rpc ownership to local resume h
   blocked!.pipeSyncedBeforePassive = true;
   scheduler.kickBlockedWorkers(handle);
 
-  expect(resumeBlockedSyscallLocally).toHaveBeenCalledWith(
-    handle,
-    worker,
-    0x1234,
-    handle.kernel.abi_status_pipe_wait(),
-    false,
+  expect(failProcess).toHaveBeenCalledWith(handle, expect.any(Error));
+  expect((failProcess.mock.calls[0]?.[1] as Error).message).toBe(
+    "kernel-worker blocked syscall resume requires resumeBlockedSyscallOutcome",
   );
+  expect(resumeBlockedSyscallLocally).not.toHaveBeenCalled();
   expect(handle.blockedWorkers.get(worker)?.rpcPending).toBe(false);
   expect(handle.blockedWorkers.get(worker)?.rpcGeneration).toBe(0);
 });
@@ -6916,6 +6924,10 @@ test("kickBlockedWorkers clears answered futex-wait running sibling before pipe 
     pipeEofChildExitDeferrals: 0,
   });
   const resumeBlockedSyscallLocally = vi.fn(async () => {});
+  const resumeBlockedSyscallOutcome = vi.fn(async () => ({
+    kind: "blocked" as const,
+    status: kernel.abi_status_pipe_wait(),
+  }));
   const lifecycleEvents: string[] = [];
 
   const scheduler = createWorkerScheduler({
@@ -6927,6 +6939,7 @@ test("kickBlockedWorkers clears answered futex-wait running sibling before pipe 
     failProcess: () => {},
     hasActiveChildProcess: () => false,
     resumeBlockedSyscallLocally,
+    resumeBlockedSyscallOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -6937,13 +6950,14 @@ test("kickBlockedWorkers clears answered futex-wait running sibling before pipe 
   expect(handle.runningWorker).toBeNull();
   expect(waitingThread.runningGeneration).toBeNull();
   expect(lifecycleEvents.join("\n")).toContain("pipe-retry-rpc:1");
-  expect(resumeBlockedSyscallLocally).toHaveBeenCalledWith(
+  expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
     handle,
     blockedWorker,
     blockedThread.vmPtr,
     kernel.abi_status_pipe_wait(),
     false,
   );
+  expect(resumeBlockedSyscallLocally).not.toHaveBeenCalled();
 });
 
 test("pipe rpc blocked outcome pumps quiescent futex waiter", async () => {
