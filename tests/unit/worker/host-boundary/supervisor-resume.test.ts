@@ -167,3 +167,55 @@ test("host boundary consumes process-scoped supervisor runnable resume decisions
     "supervisor-resume:runnable:selected:0x1234:tid=2:seq=13:process=0x2000:status=0:detail=0x1",
   );
 });
+
+test("host boundary includes supervisor thread snapshot in resume diagnostics", () => {
+  const selectedWorker = { postMessage: vi.fn() } as unknown as Worker;
+  const selectedThread = makeHostBoundaryThread(0x1234);
+  const threadWorkerStates = new WeakMap<Worker, ReturnType<typeof makeHostBoundaryThread>>();
+  threadWorkerStates.set(selectedWorker, selectedThread);
+  const kernel = makeHostBoundaryKernel();
+  kernel.supervisor_resume_record_bytes = () => 48;
+  kernel.supervisor_resume_kind_runnable_thread = () => 2;
+  kernel.supervisor_process_resume = vi.fn((_vmPtr: number, _outPtr: number, _outLen: number) => {
+    const view = new DataView(kernel.memory.buffer);
+    view.setUint32(0, 0x5255_5354, true);
+    view.setUint32(4, 1, true);
+    view.setUint32(8, 48, true);
+    view.setUint32(12, 2, true);
+    view.setBigUint64(16, 21n, true);
+    view.setUint32(24, selectedThread.vmPtr, true);
+    view.setUint32(28, 2, true);
+    view.setUint32(32, 0x2000, true);
+    view.setUint32(36, kernel.abi_status_ok(), true);
+    view.setBigUint64(40, 0n, true);
+    return 48;
+  });
+  kernel.supervisor_thread_state_snapshot_bytes = () => 64;
+  kernel.supervisor_thread_state_snapshot = vi.fn((_vmPtr: number, outPtr: number, outLen: number) => {
+    expect(outLen).toBe(64);
+    const view = new DataView(kernel.memory.buffer, outPtr, outLen);
+    view.setUint32(0, 0x4854_5354, true);
+    view.setUint32(4, 1, true);
+    view.setUint32(8, 64, true);
+    view.setUint32(12, 1, true);
+    view.setUint32(16, 0x2000, true);
+    view.setUint32(20, selectedThread.vmPtr, true);
+    view.setUint32(24, 32, true);
+    view.setUint32(32, 2, true);
+    view.setUint32(36, 2, true);
+    view.setUint32(40, selectedThread.vmPtr, true);
+    view.setUint32(44, kernel.abi_status_ok(), true);
+    return 64;
+  });
+  const handle = makeHostBoundaryHandle(kernel, selectedWorker);
+  handle.readyWorkers = [selectedWorker];
+  const debugEvents: string[] = [];
+
+  makeQueue(threadWorkerStates, debugEvents).pumpProcess(handle);
+
+  expect(kernel.supervisor_thread_state_snapshot).toHaveBeenCalledWith(0x1234, 0, 64);
+  expect(debugEvents).toContain(
+    "supervisor-resume:runnable:selected:0x1234:tid=2:seq=21:process=0x2000:status=0:detail=0x0"
+      + ":snapshot=process=0x2000:owner=0x1234:threads=2/2/0x1234/0/0x0",
+  );
+});
