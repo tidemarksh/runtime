@@ -31,6 +31,10 @@ import {
   readSupervisorFaultExitDecision,
   supervisorFaultExitKindProcessExit,
 } from "../supervisor-shadow.js";
+import {
+  armSupervisorHostTimer,
+  drainSupervisorArmHostTimerHostOp,
+} from "../supervisor-host-op.js";
 import type {
   BlockedWorkerState,
   ProcessHandle,
@@ -981,10 +985,14 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       lastWait4RetryLifecycleEvent: sameBlockedThread ? previousBlocked.lastWait4RetryLifecycleEvent : undefined,
     };
     handle.blockedWorkers.set(worker, blocked);
+    const supervisorTimerArmed = armBlockedSupervisorTimer(handle, vmPtr);
     if (sameBlockedThread && blocked.rpcPending) {
       return;
     }
     if (status === handle.kernel.abi_status_epoll_wait()) {
+      if (supervisorTimerArmed) {
+        return;
+      }
       const timeoutMs = Number(handle.kernel.thread_epoll_wait_timeout(vmPtr));
       if (timeoutMs >= 0) {
         blocked.epollTimerfdDeadlineTicks = null;
@@ -1012,6 +1020,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       (pollTimeoutMs >= 0 || blocked.timeoutDeadlineMs !== null)
       && (pollReadyCount === undefined || pollReadyCount <= 0)
     ) {
+      if (supervisorTimerArmed) {
+        return;
+      }
       if (
         status === handle.kernel.abi_status_pipe_wait()
         && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) !== 1
@@ -1024,6 +1035,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
     const socketTimeoutMs = socketWaitTimeoutMs(handle, status, vmPtr);
     if (socketTimeoutMs >= 0) {
+      if (supervisorTimerArmed) {
+        return;
+      }
       scheduleSocketBlockedRetry(handle, worker, blocked, socketTimeoutMs);
       return;
     }
@@ -1046,6 +1060,20 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
     scheduleBlockedRetry(handle, worker, status === handle.kernel.abi_status_wait4() ? 10 : 1);
+  }
+
+  function armBlockedSupervisorTimer(handle: ProcessHandle, vmPtr: number): boolean {
+    const hostTimer = drainSupervisorArmHostTimerHostOp(handle, vmPtr);
+    if (hostTimer === undefined || hostTimer === null) {
+      return false;
+    }
+    armSupervisorHostTimer(handle, hostTimer, {
+      appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
+      appendWorkerDebugLog,
+      failProcess: deps.failProcess,
+      pumpProcess,
+    });
+    return true;
   }
 
   function directPipeReadHasSynchronizedEof(
