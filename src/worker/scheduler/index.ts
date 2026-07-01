@@ -804,6 +804,45 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     return true;
   }
 
+  function resumePipePollTimeout(
+    handle: ProcessHandle,
+    worker: Worker,
+    blocked: BlockedWorkerState,
+    timeoutMs: number,
+  ): void {
+    if (
+      handle.kernelWorkerRequest
+      && handle.pid > 0
+      && deps.resumeBlockedSyscallOutcome !== undefined
+    ) {
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-retry-timeout-rpc:${handle.pid}`);
+      blocked.rpcPending = true;
+      void deps.resumeBlockedSyscallOutcome(
+        handle,
+        worker,
+        blocked.vmPtr,
+        blocked.status,
+        blocked.timeoutExpired,
+      ).then((outcome) => {
+        consumeKernelRpcResumeOutcome(handle, worker, blocked.vmPtr, outcome);
+        if (
+          outcome.kind === "blocked"
+          && outcome.status === handle.kernel.abi_status_pipe_wait()
+        ) {
+          pumpProcess(handle);
+        }
+      }).catch((error) => {
+        const latestBlocked = handle.blockedWorkers.get(worker);
+        if (latestBlocked && latestBlocked.vmPtr === blocked.vmPtr) {
+          latestBlocked.rpcPending = false;
+        }
+        deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+      });
+      return;
+    }
+    resumePipePollTimeoutLocally(handle, worker, blocked, timeoutMs);
+  }
+
   function blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void {
     const previousBlocked = handle.blockedWorkers.get(worker);
     const sameBlockedThread = previousBlocked !== undefined
@@ -1492,7 +1531,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       && handle.kernel.thread_resume_poll_wait_timeout
       && !pipeReadinessSyncPending
     ) {
-      resumePipePollTimeoutLocally(handle, worker, blocked, blockedPollTimeoutMs);
+      resumePipePollTimeout(handle, worker, blocked, blockedPollTimeoutMs);
       return;
     }
     if (
@@ -1514,7 +1553,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             return;
           }
           drainProcessOutput(handle);
-          resumePipePollTimeoutLocally(handle, worker, latestBlocked, blockedPollTimeoutMs);
+          resumePipePollTimeout(handle, worker, latestBlocked, blockedPollTimeoutMs);
         })
         .catch((error) => {
           deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
@@ -1582,7 +1621,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       && handle.kernel.thread_resume_poll_wait_timeout
       && !pipeReadinessSyncPending
     ) {
-      resumePipePollTimeoutLocally(handle, worker, blocked, blockedPollTimeoutMs);
+      resumePipePollTimeout(handle, worker, blocked, blockedPollTimeoutMs);
       return;
     }
     if (pipeWaitShouldRemainPassive(
@@ -1621,7 +1660,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       && handle.kernel.thread_resume_poll_wait_timeout
       && !pipeReadinessSyncPending
     ) {
-      resumePipePollTimeoutLocally(handle, worker, blocked, blockedPollTimeoutMs);
+      resumePipePollTimeout(handle, worker, blocked, blockedPollTimeoutMs);
       return;
     }
 
@@ -1710,7 +1749,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       && handle.kernel.thread_resume_poll_wait_timeout
       && !pipeReadinessSyncPending
     ) {
-      resumePipePollTimeoutLocally(handle, worker, blocked, blockedPollTimeoutMs);
+      resumePipePollTimeout(handle, worker, blocked, blockedPollTimeoutMs);
       return;
     } else if (
       blocked.timeoutExpired

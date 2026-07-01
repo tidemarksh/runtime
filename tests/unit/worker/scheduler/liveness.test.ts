@@ -1690,7 +1690,7 @@ test("socket poll pump resumes through kernel-worker RPC when available", async 
   expect(failProcess).not.toHaveBeenCalled();
 });
 
-test("finite pipe poll timeout resumes locally before kernel-worker blocked syscall RPC", () => {
+test("finite pipe poll timeout delegates to kernel-worker blocked syscall outcome when available", async () => {
   const worker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -1713,10 +1713,12 @@ test("finite pipe poll timeout resumes locally before kernel-worker blocked sysc
   kernel.thread_resume_blocked_syscall = vi.fn();
   const handle = makeHandle(kernel, worker);
   handle.pendingChildSpawnRecords = 0;
-  handle.kernelWorkerRequest = vi.fn(async () => {
-    throw new Error("kernel-worker RPC should not run for an expired finite pipe poll timeout");
-  });
+  handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unexpected" }) as never);
   const resumeBlockedSyscallLocally = vi.fn(async () => {});
+  const resumeBlockedSyscallOutcome = vi.fn(async () => {
+    status = kernel.abi_status_ok();
+    return { kind: "completed" as const, status };
+  });
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
@@ -1725,6 +1727,7 @@ test("finite pipe poll timeout resumes locally before kernel-worker blocked sysc
     failProcess: () => {},
     hasActiveChildProcess: () => false,
     resumeBlockedSyscallLocally,
+    resumeBlockedSyscallOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -1736,11 +1739,18 @@ test("finite pipe poll timeout resumes locally before kernel-worker blocked sysc
   blocked!.timeoutExpired = true;
   blocked!.pipeSyncedBeforePassive = true;
   scheduler.kickBlockedWorkers(handle);
+  await Promise.resolve();
+  await Promise.resolve();
 
-  expect(resumePollTimeout).toHaveBeenCalledWith(0x1234);
-  expect(kernel.sync_monotonic_ticks_floor).toHaveBeenCalled();
+  expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
+    handle,
+    worker,
+    0x1234,
+    handle.kernel.abi_status_pipe_wait(),
+    true,
+  );
+  expect(resumePollTimeout).not.toHaveBeenCalled();
   expect(resumeBlockedSyscallLocally).not.toHaveBeenCalled();
-  expect(handle.kernelWorkerRequest).not.toHaveBeenCalled();
   expect(handle.blockedWorkers.has(worker)).toBe(false);
   expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
     type: "step",
