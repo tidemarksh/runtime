@@ -34,7 +34,6 @@ export function createWorkerKernelRpcWait4Helpers(
           handle,
           `wait4-rpc-skip:0x${vmPtr.toString(16)}:local=${localStatus}`,
         );
-        effects.push({ kind: "handle-blocked-retry-result", status: localStatus });
         return completedKernelRpcOutcome(localStatus, effects);
       }
       deps.appendWorkerDebugLog(
@@ -77,7 +76,6 @@ export function createWorkerKernelRpcWait4Helpers(
       );
 
       const status = handle.kernel.thread_status(vmPtr);
-      effects.push({ kind: "handle-blocked-retry-result", status });
       return completedKernelRpcOutcome(status, effects);
     } catch (error) {
       const blocked = handle.blockedWorkers.get(worker);

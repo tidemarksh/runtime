@@ -202,8 +202,8 @@ test("resumeWait4ViaKernelWorker does not re-run local wait4 after kernel-worker
     { kind: "publish-runtime-kernel-state" },
     { kind: "request-pipe-state-sync", wakeWaiters: true },
     { kind: "settle-visible-process-output" },
-    { kind: "handle-blocked-retry-result", status: 0 },
   ]);
+  expect(outcome.status).toBe(0);
   expect(handle.kernelState.heapPtr).toBe(resumedState.heapPtr);
 });
 
@@ -289,9 +289,8 @@ test("resumeWait4ViaKernelWorker skips RPC when local wait4 already resolved", a
 
   expect(kernelWorkerRequest).not.toHaveBeenCalled();
   expect(handledStatuses).toEqual([]);
-  expect(outcome.effects).toEqual([
-    { kind: "handle-blocked-retry-result", status: 0 },
-  ]);
+  expect(outcome.effects).toEqual([]);
+  expect(outcome.status).toBe(0);
   expect(handle.blockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
