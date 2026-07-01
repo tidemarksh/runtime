@@ -16,11 +16,6 @@ import {
 import { formatThreadWorkerGuestBufferPreview } from "./status.js";
 
 const BLOCKED_ADDR_NOT_FOUND = 0xffff_ffff_ffff_ffffn;
-const SUPERVISOR_FUTEX_WAIT_COMPLETION_WOKEN = 1;
-const SUPERVISOR_FUTEX_WAIT_COMPLETION_NOT_EQUAL = 2;
-const SUPERVISOR_FUTEX_WAIT_COMPLETION_TIMED_OUT = 3;
-const SUPERVISOR_FUTEX_WAIT_COMPLETION_INVALID_ADDRESS = 4;
-const SUPERVISOR_FUTEX_WAIT_COMPLETION_SIGNAL_CHECK = 5;
 
 function futexWordIndex(guestBase: number, guestAddr: bigint, words: Int32Array): number | null {
   if (guestBase < 0 || !Number.isSafeInteger(guestBase)) {
@@ -223,9 +218,7 @@ export function handleFutexWait(
   recordFutexWaitDebug(ctx, i32, guestAddr, expected, "entry", null, initialBlockedAddr);
 
   if (initialBlockedAddr === 0n) {
-    completeSupervisorFutexWait(ctx, "woken", () => {
-      ctx.exports.thread_resume_futex_wait(ctx.vmPtr);
-    });
+    completeSupervisorFutexWait(ctx, "woken");
     return true;
   }
 
@@ -239,9 +232,7 @@ export function handleFutexWait(
     const wordIndex = futexWordIndex(ctx.guestBase, guestAddr, i32);
     if (wordIndex === null) {
       clearSyscallTrace(ctx.exports);
-      completeSupervisorFutexWait(ctx, "invalid-address", () => {
-        ctx.exports.thread_resume_futex_wait_result(ctx.vmPtr, BigInt(ctx.exports.abi_eagain()));
-      });
+      completeSupervisorFutexWait(ctx, "invalid-address");
       break;
     }
     const waitMs = deadlineMs === undefined
@@ -260,9 +251,7 @@ export function handleFutexWait(
     const hasPendingSignal = hasPendingSignalForBlockedWait(ctx.exports, ctx.vmPtr);
     if (stillBlockedAddr === BLOCKED_ADDR_NOT_FOUND) {
       clearSyscallTrace(ctx.exports);
-      completeSupervisorFutexWait(ctx, "invalid-address", () => {
-        ctx.exports.thread_resume_futex_wait_result(ctx.vmPtr, BigInt(ctx.exports.abi_eagain()));
-      });
+      completeSupervisorFutexWait(ctx, "invalid-address");
       break;
     }
     if (stillBlockedAddr !== 0n && stillBlockedAddr !== guestAddr) {
@@ -271,36 +260,22 @@ export function handleFutexWait(
     }
     if (stillBlockedAddr !== 0n && hasPendingSignal) {
       clearSyscallTrace(ctx.exports);
-      completeSupervisorFutexWait(ctx, "signal-check", () => {
-        ctx.exports.thread_resume_futex_wait_result(
-          ctx.vmPtr,
-          BigInt(ctx.exports.abi_eintr?.() ?? -ctx.eintrErrno),
-        );
-      });
+      completeSupervisorFutexWait(ctx, "signal-check");
       break;
     }
     if (stillBlockedAddr === 0n) {
       clearSyscallTrace(ctx.exports);
-      completeSupervisorFutexWait(ctx, "woken", () => {
-        ctx.exports.thread_resume_futex_wait(ctx.vmPtr);
-      });
+      completeSupervisorFutexWait(ctx, "woken");
       break;
     }
     if (result === "not-equal") {
       clearSyscallTrace(ctx.exports);
-      completeSupervisorFutexWait(ctx, "not-equal", () => {
-        ctx.exports.thread_resume_futex_wait(ctx.vmPtr);
-      });
+      completeSupervisorFutexWait(ctx, "not-equal");
       break;
     }
     if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
       clearSyscallTrace(ctx.exports);
-      completeSupervisorFutexWait(ctx, "timed-out", () => {
-        ctx.exports.thread_resume_futex_wait_result(
-          ctx.vmPtr,
-          BigInt(ctx.exports.abi_etimedout?.() ?? -110),
-        );
-      });
+      completeSupervisorFutexWait(ctx, "timed-out");
       break;
     }
   }
@@ -320,17 +295,34 @@ type SupervisorFutexWaitCompletion =
 function completeSupervisorFutexWait(
   ctx: ThreadWorkerBlockingContext,
   completion: SupervisorFutexWaitCompletion,
-  legacyResume: () => void,
 ): void {
-  if (ctx.exports.supervisor_complete_futex_wait === undefined) {
-    legacyResume();
-    return;
+  const complete = ctx.exports.supervisor_complete_futex_wait;
+  if (complete === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_complete_futex_wait");
   }
 
-  ctx.exports.supervisor_complete_futex_wait(
+  complete(
     ctx.vmPtr,
     supervisorFutexWaitCompletionCode(ctx.exports, completion),
   );
+}
+
+function requireSupervisorCompletionCode(
+  exports: KernelExports,
+  name: keyof Pick<
+    KernelExports,
+    | "supervisor_futex_wait_completion_woken"
+    | "supervisor_futex_wait_completion_not_equal"
+    | "supervisor_futex_wait_completion_timed_out"
+    | "supervisor_futex_wait_completion_invalid_address"
+    | "supervisor_futex_wait_completion_signal_check"
+  >,
+): number {
+  const readCode = exports[name];
+  if (readCode === undefined) {
+    throw new Error(`kernel supervisor ABI missing ${name}`);
+  }
+  return readCode();
 }
 
 function supervisorFutexWaitCompletionCode(
@@ -339,20 +331,15 @@ function supervisorFutexWaitCompletionCode(
 ): number {
   switch (completion) {
     case "woken":
-      return exports.supervisor_futex_wait_completion_woken?.()
-        ?? SUPERVISOR_FUTEX_WAIT_COMPLETION_WOKEN;
+      return requireSupervisorCompletionCode(exports, "supervisor_futex_wait_completion_woken");
     case "not-equal":
-      return exports.supervisor_futex_wait_completion_not_equal?.()
-        ?? SUPERVISOR_FUTEX_WAIT_COMPLETION_NOT_EQUAL;
+      return requireSupervisorCompletionCode(exports, "supervisor_futex_wait_completion_not_equal");
     case "timed-out":
-      return exports.supervisor_futex_wait_completion_timed_out?.()
-        ?? SUPERVISOR_FUTEX_WAIT_COMPLETION_TIMED_OUT;
+      return requireSupervisorCompletionCode(exports, "supervisor_futex_wait_completion_timed_out");
     case "invalid-address":
-      return exports.supervisor_futex_wait_completion_invalid_address?.()
-        ?? SUPERVISOR_FUTEX_WAIT_COMPLETION_INVALID_ADDRESS;
+      return requireSupervisorCompletionCode(exports, "supervisor_futex_wait_completion_invalid_address");
     case "signal-check":
-      return exports.supervisor_futex_wait_completion_signal_check?.()
-        ?? SUPERVISOR_FUTEX_WAIT_COMPLETION_SIGNAL_CHECK;
+      return requireSupervisorCompletionCode(exports, "supervisor_futex_wait_completion_signal_check");
     default: {
       const exhaustive: never = completion;
       return exhaustive;

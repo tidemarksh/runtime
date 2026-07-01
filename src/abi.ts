@@ -143,7 +143,7 @@ export interface KernelExports {
   debug_execve_error_value0?(): bigint | number;
   debug_execve_error_value1?(): bigint | number;
 
-  // Supervisor shadow protocol (additive during migration)
+  // Supervisor protocol
   supervisor_abi_version?(): number;
   supervisor_debug_snapshot_bytes?(): number;
   supervisor_thread_state_snapshot_bytes?(): number;
@@ -1070,6 +1070,93 @@ export interface KernelExports {
     data_len: number,
   ): number;
   memfs_readdir_names(dir_ino: number, buf_ptr: number, buf_len: number): bigint;
+}
+
+const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
+  "supervisor_abi_version",
+  "supervisor_debug_snapshot_bytes",
+  "supervisor_thread_state_snapshot_bytes",
+  "supervisor_resume_record_bytes",
+  "supervisor_host_op_record_bytes",
+  "supervisor_process_host_op_record_bytes",
+  "supervisor_fault_exit_decision_bytes",
+  "supervisor_fd_control_record_bytes",
+  "supervisor_fs_control_record_bytes",
+  "supervisor_signal_control_record_bytes",
+  "supervisor_runnable_selection_bytes",
+  "supervisor_resume_kind_futex_wake",
+  "supervisor_host_op_kind_spawn_thread_worker",
+  "supervisor_process_host_op_kind_spawn_process_worker",
+  "supervisor_fault_exit_kind_thread_exit",
+  "supervisor_fault_exit_kind_process_exit",
+  "supervisor_fd_control_kind_pipe_created",
+  "supervisor_fd_control_kind_fd_closed",
+  "supervisor_fd_control_kind_fd_duplicated",
+  "supervisor_fd_control_kind_fd_flags_updated",
+  "supervisor_fd_control_kind_epoll_created",
+  "supervisor_fd_control_kind_epoll_ctl_add",
+  "supervisor_fd_control_kind_epoll_ctl_del",
+  "supervisor_fd_control_kind_epoll_ctl_mod",
+  "supervisor_fd_control_kind_socket_created",
+  "supervisor_fd_control_kind_socketpair_created",
+  "supervisor_fd_control_kind_socket_bound",
+  "supervisor_fd_control_kind_socket_listening",
+  "supervisor_fd_control_kind_socket_connect_started",
+  "supervisor_fd_control_kind_socket_connected",
+  "supervisor_fd_control_kind_socket_connect_failed",
+  "supervisor_fd_control_kind_socket_accepted",
+  "supervisor_fs_control_kind_page_cache_miss",
+  "supervisor_fs_control_kind_page_cache_fill",
+  "supervisor_fs_control_kind_dirty_page_published",
+  "supervisor_fs_control_kind_dirty_page_flushed",
+  "supervisor_signal_control_kind_boundary_check",
+  "supervisor_signal_control_kind_signal_delivered",
+  "supervisor_signal_control_kind_blocked_wait_interrupted",
+  "supervisor_reset_shadow_log",
+  "supervisor_shadow_thread_event_count",
+  "supervisor_shadow_host_completion_count",
+  "supervisor_shadow_host_op_poll_count",
+  "supervisor_shadow_host_op_emit_count",
+  "supervisor_shadow_host_op_overflow_count",
+  "supervisor_shadow_resume_poll_count",
+  "supervisor_shadow_resume_enqueue_count",
+  "supervisor_shadow_resume_overflow_count",
+  "supervisor_shadow_fd_control_count",
+  "supervisor_shadow_fs_control_count",
+  "supervisor_shadow_signal_control_count",
+  "supervisor_shadow_thread_event_log_hash",
+  "supervisor_shadow_host_completion_log_hash",
+  "supervisor_submit_thread_event",
+  "supervisor_complete_host_op",
+  "supervisor_next_host_op",
+  "supervisor_process_host_op",
+  "supervisor_next_resume",
+  "supervisor_fault_exit_decision",
+  "supervisor_fd_control_record",
+  "supervisor_fs_control_record",
+  "supervisor_signal_control_record",
+  "supervisor_select_runnable",
+  "supervisor_debug_snapshot",
+  "supervisor_thread_state_snapshot",
+  "supervisor_futex_wait_completion_woken",
+  "supervisor_futex_wait_completion_not_equal",
+  "supervisor_futex_wait_completion_timed_out",
+  "supervisor_futex_wait_completion_invalid_address",
+  "supervisor_futex_wait_completion_signal_check",
+  "supervisor_complete_futex_wait",
+  "supervisor_signal_pending_for_blocked_wait",
+] as const;
+
+export function requiredSupervisorRuntimeExportNames(): readonly string[] {
+  return REQUIRED_SUPERVISOR_RUNTIME_EXPORTS;
+}
+
+export function assertSupervisorRuntimeAbi(exports: KernelExports): void {
+  const missing = REQUIRED_SUPERVISOR_RUNTIME_EXPORTS.filter((name) =>
+    typeof (exports as unknown as Record<string, unknown>)[name] !== "function");
+  if (missing.length > 0) {
+    throw new Error(`kernel supervisor ABI missing required export(s): ${missing.join(", ")}`);
+  }
 }
 
 /** Cached STATUS constants read from WASM exports. */

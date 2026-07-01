@@ -1,8 +1,13 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { expect, test } from "vite-plus/test";
+import {
+  assertSupervisorRuntimeAbi,
+  requiredSupervisorRuntimeExportNames,
+} from "../../../../src/abi.js";
 
-const RUNTIME_SRC = join(process.cwd(), "src", "worker");
+const RUNTIME_ROOT = join(process.cwd(), "src");
+const RUNTIME_SRC = join(RUNTIME_ROOT, "worker");
 
 function tsFiles(root: string): string[] {
   const entries = readdirSync(root, { withFileTypes: true });
@@ -17,6 +22,10 @@ function tsFiles(root: string): string[] {
 
 function relativeWorkerPath(path: string): string {
   return relative(RUNTIME_SRC, path).split("\\").join("/");
+}
+
+function runtimeSource(path: string): string {
+  return readFileSync(join(RUNTIME_ROOT, path), "utf8");
 }
 
 test("kernel-rpc and sync do not import each other directly", () => {
@@ -41,3 +50,50 @@ test("kernel-rpc and sync do not import each other directly", () => {
   expect([...kernelRpcViolations, ...syncViolations]).toEqual([]);
 });
 
+test("process creation requires the supervisor ABI before runtime ownership starts", () => {
+  const source = runtimeSource("worker/create-process.ts");
+  const kernelInit = source.indexOf("exports.kernel_init(wasmHeapBase);");
+  const supervisorAssert = source.indexOf("assertSupervisorRuntimeAbi(exports);");
+  const baseTime = source.indexOf("exports.set_base_time(");
+
+  expect(kernelInit).toBeGreaterThanOrEqual(0);
+  expect(supervisorAssert).toBeGreaterThan(kernelInit);
+  expect(baseTime).toBeGreaterThan(supervisorAssert);
+  expect(requiredSupervisorRuntimeExportNames()).toEqual(expect.arrayContaining([
+    "supervisor_select_runnable",
+    "supervisor_next_resume",
+    "supervisor_complete_futex_wait",
+    "supervisor_signal_pending_for_blocked_wait",
+    "supervisor_fd_control_record",
+    "supervisor_fs_control_record",
+    "supervisor_signal_control_record",
+    "supervisor_debug_snapshot",
+    "supervisor_thread_state_snapshot",
+  ]));
+});
+
+test("supervisor ABI checker fails closed when an authority export is missing", () => {
+  expect(() => assertSupervisorRuntimeAbi({} as never)).toThrow(
+    "kernel supervisor ABI missing required export(s): supervisor_abi_version",
+  );
+
+  const completeExports = Object.fromEntries(
+    requiredSupervisorRuntimeExportNames().map((name) => [name, () => 0]),
+  );
+  expect(() => assertSupervisorRuntimeAbi(completeExports as never)).not.toThrow();
+});
+
+test("thread-worker signal waits do not read legacy pending bits", () => {
+  const source = runtimeSource("thread-worker/signals.ts");
+
+  expect(source).toContain("supervisor_signal_pending_for_blocked_wait");
+  expect(source).not.toContain("thread_pending_signal_interrupts_blocked_syscall");
+  expect(source).not.toContain("thread_sig_pending");
+});
+
+test("thread-worker futex waits complete through supervisor only", () => {
+  const source = runtimeSource("thread-worker/blocking.ts");
+
+  expect(source).toContain("supervisor_complete_futex_wait");
+  expect(source).not.toMatch(/ctx\.exports\.thread_resume_futex_wait(?:_result)?\(/);
+});

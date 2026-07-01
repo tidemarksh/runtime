@@ -1,4 +1,5 @@
 import {
+  assertSupervisorRuntimeAbi,
   guestAddressProfileForProcessCreation,
   processCreateWithMemoryPolicy,
   processGuestBaseForAddressProfile,
@@ -518,6 +519,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     configureKernelInstanceStack(exports, MAIN_THREAD_KERNEL_STACK_SLOT);
     const wasmHeapBase = kernelHeapBase(exports, KERNEL_HEAP_BASE_FALLBACK_BYTES);
     exports.kernel_init(wasmHeapBase);
+    assertSupervisorRuntimeAbi(exports);
 
     const now = Date.now();
     exports.set_base_time(

@@ -98,17 +98,11 @@ test("hasPendingSignalForBlockedWait prefers supervisor decision over direct pen
   expect(processInterrupts).not.toHaveBeenCalled();
 });
 
-test("hasPendingSignalForBlockedWait keeps legacy fallback for older kernels", () => {
-  expect(hasPendingSignalForBlockedWait({
+test("hasPendingSignalForBlockedWait requires supervisor decision export", () => {
+  expect(() => hasPendingSignalForBlockedWait({
     thread_sig_pending: () => 0n,
     thread_pending_signal_interrupts_blocked_syscall: () => 1,
-  } as never, 0x1234)).toBe(true);
-
-  expect(hasPendingSignalForBlockedWait({
-    thread_sig_pending: () => 1n,
-  } as never, 0x1234)).toBe(true);
-
-  expect(hasPendingSignalForBlockedWait({
-    thread_sig_pending: () => 0n,
-  } as never, 0x1234)).toBe(false);
+  } as never, 0x1234)).toThrow(
+    "kernel supervisor ABI missing supervisor_signal_pending_for_blocked_wait",
+  );
 });

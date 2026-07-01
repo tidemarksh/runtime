@@ -24,10 +24,9 @@ export function hasPendingSignalForBlockedWait(
   exports: KernelExports,
   vmPtr: number,
 ): boolean {
-  const supervisorDecision = exports.supervisor_signal_pending_for_blocked_wait?.(vmPtr);
-  if (supervisorDecision !== undefined) {
-    return supervisorDecision === 1;
+  const supervisorDecision = exports.supervisor_signal_pending_for_blocked_wait;
+  if (supervisorDecision === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_signal_pending_for_blocked_wait");
   }
-  return exports.thread_pending_signal_interrupts_blocked_syscall?.(vmPtr) === 1
-    || exports.thread_sig_pending(vmPtr) !== 0n;
+  return supervisorDecision(vmPtr) === 1;
 }
