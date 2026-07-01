@@ -45,7 +45,6 @@ import {
   syncBlockedForkSharedStateViaKernelWorker as syncBlockedForkSharedStateViaKernelWorkerImpl,
   syncForkSharedStateLocally as syncForkSharedStateLocallyImpl,
   syncForkSharedStateForWorkerRuntime as syncForkSharedStateForWorkerRuntimeImpl,
-  syncPipeStateViaKernelWorker as syncPipeStateViaKernelWorkerImpl,
   syncProcessMemfsViaKernelWorker as syncProcessMemfsViaKernelWorkerImpl,
   syncSocketStateViaKernelWorker as syncSocketStateViaKernelWorkerImpl,
   type SyncCause,
@@ -191,7 +190,6 @@ workerKernelRpcHelpers = createWorkerKernelRpcHelpers({
   syncForkSharedStateLocally,
   syncForkSharedStateViaKernelWorker,
   rehydrateForkSharedStateViaKernelWorker,
-  syncPipeStateViaKernelWorker,
   syncSocketStateViaKernelWorker,
   snapshotProcessFdOfdStateForKernelWorker,
   applySocketStateFromKernelWorker,
@@ -639,10 +637,6 @@ async function syncBlockedForkSharedStateViaKernelWorker(
   cause: SyncCause,
 ): Promise<void> {
   await syncBlockedForkSharedStateViaKernelWorkerImpl(handle, sourceVmPtr, cause);
-}
-
-async function syncPipeStateViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<bigint> {
-  return syncPipeStateViaKernelWorkerImpl(handle, cause);
 }
 
 async function syncSocketStateViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<{

@@ -137,7 +137,6 @@ test("kernel-rpc fs helper owns local resume and returns a typed outcome", async
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
     syncSharedOfdStateAfterFs: vi.fn(async () => {}),
-    publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
   });
@@ -193,7 +192,6 @@ test("kernel-rpc fs outcome reports blocked fs status", async () => {
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
     syncSharedOfdStateAfterFs: vi.fn(async () => {}),
-    publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
   });
@@ -264,7 +262,6 @@ test("kernel-worker fs outcome skips memfs publication effect when no fork-share
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
     syncSharedOfdStateAfterFs: vi.fn(async () => {}),
-    publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState,
   });
@@ -352,7 +349,6 @@ test("kernel-worker fs outcome applies mmap guest memory writes from fs response
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
     syncSharedOfdStateAfterFs: vi.fn(async () => {}),
-    publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
   });
@@ -432,7 +428,6 @@ test("kernel-worker fs outcome defers file write publication to a later sync poi
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
     syncSharedOfdStateAfterFs: vi.fn(async () => {}),
-    publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
   });
@@ -521,7 +516,6 @@ test("kernel-worker fs outcome applies only request fd after regular file write"
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
     syncSharedOfdStateAfterFs,
-    publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
   });
@@ -620,7 +614,6 @@ test("kernel-worker fs outcome applies only request fd after regular file fstat"
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
     syncSharedOfdStateAfterFs,
-    publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
   });
@@ -718,7 +711,6 @@ test("kernel-worker fs outcome preserves unrelated live fd across openat snapsho
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
     syncSharedOfdStateAfterFs,
-    publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
   });
@@ -799,7 +791,6 @@ test("kernel-worker fs outcome preserves live fd from stale nonzero openat snaps
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
     syncSharedOfdStateAfterFs: vi.fn(async () => {}),
-    publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
   });
@@ -877,7 +868,6 @@ test("kernel-worker fs outcome permits close snapshot to clear live fd", async (
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
     syncSharedOfdStateAfterFs: vi.fn(async () => {}),
-    publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
   });
@@ -974,7 +964,6 @@ test("kernel-worker fs outcome keeps generated file fd closeable after unrelated
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
     syncSharedOfdStateAfterFs: vi.fn(async () => {}),
-    publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
   });
@@ -1079,7 +1068,6 @@ test("kernel-worker fs outcome rejects fd snapshot entries stale against request
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
     syncSharedOfdStateAfterFs: vi.fn(async () => {}),
-    publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
   });
@@ -1173,7 +1161,6 @@ test("kernel-worker fs outcome rejects fd snapshot ABA using generation", async 
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
     syncSharedOfdStateAfterFs: vi.fn(async () => {}),
-    publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
   });
@@ -1282,7 +1269,6 @@ test("kernel-worker fs outcome rejects ofd slot snapshots stale against request 
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
     syncSharedOfdStateAfterFs: vi.fn(async () => {}),
-    publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
   });
@@ -1363,7 +1349,6 @@ test("kernel-worker fs outcome skips shared OFD sync after regular file mmap", a
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
     syncSharedOfdStateAfterFs,
-    publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
   });
@@ -1445,7 +1430,6 @@ test("kernel-worker fs outcome keeps shared OFD sync after pipe write", async ()
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
     syncSharedOfdStateAfterFs,
-    publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
   });
@@ -1529,7 +1513,6 @@ test("kernel-worker fs outcome does not rehydrate unrelated peer shared OFD befo
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
     syncSharedOfdStateAfterFs: vi.fn(async () => {}),
-    publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker,
     publishRuntimeKernelState: vi.fn(),
   });
@@ -1621,7 +1604,6 @@ test("kernel-worker fs outcome skips stale dirty MemFS peers before dispatch", a
     syncForkSharedStateLocallyAfterFs: vi.fn(),
     syncDirtyMemfsPeerViaKernelWorker,
     syncSharedOfdStateAfterFs: vi.fn(async () => {}),
-    publishMemfsAfterFs: vi.fn(async () => {}),
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
   });

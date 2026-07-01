@@ -164,11 +164,6 @@ export interface WorkerKernelRpcFsDeps {
     targets: ProcessHandle[],
     options: { sourceVmPtr: number },
   ): Promise<void>;
-  publishMemfsAfterFs(
-    handle: ProcessHandle,
-    targets: ProcessHandle[],
-    options: { sourceVmPtr: number },
-  ): Promise<void>;
   rehydrateForkSharedStateViaKernelWorker(
     targets: ProcessHandle[],
     ofdIds: number[],

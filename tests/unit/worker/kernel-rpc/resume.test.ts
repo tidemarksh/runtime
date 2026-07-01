@@ -491,7 +491,6 @@ test("resumeBlockedSyscallLocally skips kernel-worker shared-state syncs during 
     syncForkSharedStateLocally: () => {},
     syncForkSharedStateViaKernelWorker: async () => {},
     rehydrateForkSharedStateViaKernelWorker: async () => {},
-    syncPipeStateViaKernelWorker: async () => 0n,
     syncSocketStateViaKernelWorker,
     collectTrackableForkSharedOfds: () => new Set(),
   });
@@ -618,7 +617,6 @@ test("resumeBlockedSyscallLocally queues pselect fd_set writes after owner-side 
     syncForkSharedStateLocally: () => {},
     syncForkSharedStateViaKernelWorker: async () => {},
     rehydrateForkSharedStateViaKernelWorker: async () => {},
-    syncPipeStateViaKernelWorker: async () => 0n,
     syncSocketStateViaKernelWorker: async () => ({ socketUsed: 0, netBufUsed: 0n }),
     collectTrackableForkSharedOfds: () => new Set(),
   });
@@ -778,7 +776,6 @@ test("resumeBlockedSyscallLocally retries pselect pipe HUP owner-side after tran
     syncForkSharedStateLocally: () => {},
     syncForkSharedStateViaKernelWorker: async () => {},
     rehydrateForkSharedStateViaKernelWorker: async () => {},
-    syncPipeStateViaKernelWorker: async () => 0n,
     syncSocketStateViaKernelWorker: async () => ({ socketUsed: 0, netBufUsed: 0n }),
     collectTrackableForkSharedOfds: () => new Set(),
   });
@@ -935,7 +932,6 @@ test("resumeBlockedSyscallLocally resumes pselect pipe HUP before generic after-
     syncForkSharedStateLocally: () => {},
     syncForkSharedStateViaKernelWorker: async () => {},
     rehydrateForkSharedStateViaKernelWorker: async () => {},
-    syncPipeStateViaKernelWorker: async () => 0n,
     syncSocketStateViaKernelWorker: async () => ({ socketUsed: 0, netBufUsed: 0n }),
     collectTrackableForkSharedOfds: () => new Set(),
   });
@@ -1093,7 +1089,6 @@ test("resumeBlockedSyscallLocally retries mixed socket pipe pselect HUP owner-si
     syncForkSharedStateLocally: () => {},
     syncForkSharedStateViaKernelWorker: async () => {},
     rehydrateForkSharedStateViaKernelWorker: async () => {},
-    syncPipeStateViaKernelWorker: async () => 0n,
     syncSocketStateViaKernelWorker,
     collectTrackableForkSharedOfds: () => new Set(),
   });
@@ -1222,7 +1217,6 @@ test("resumeBlockedSyscallOutcome returns pipe sync effect before ready socket p
     syncForkSharedStateLocally: () => {},
     syncForkSharedStateViaKernelWorker: async () => {},
     rehydrateForkSharedStateViaKernelWorker: async () => {},
-    syncPipeStateViaKernelWorker: async () => 0n,
     syncSocketStateViaKernelWorker: async () => ({ socketUsed: 0, netBufUsed: 0n }),
     collectTrackableForkSharedOfds: () => new Set(),
   });
@@ -1352,7 +1346,6 @@ test("resumeBlockedSyscallOutcome returns socket sync effect without running soc
     syncForkSharedStateLocally: () => {},
     syncForkSharedStateViaKernelWorker: async () => {},
     rehydrateForkSharedStateViaKernelWorker: async () => {},
-    syncPipeStateViaKernelWorker: async () => 0n,
     syncSocketStateViaKernelWorker,
     collectTrackableForkSharedOfds: () => new Set(),
   });
@@ -1470,7 +1463,6 @@ test("resumeBlockedSyscallOutcome completes epoll timeout through epoll timeout 
     syncForkSharedStateLocally: () => {},
     syncForkSharedStateViaKernelWorker: async () => {},
     rehydrateForkSharedStateViaKernelWorker: async () => {},
-    syncPipeStateViaKernelWorker: async () => 0n,
     syncSocketStateViaKernelWorker: async () => ({ socketUsed: 0, netBufUsed: 0n }),
     collectTrackableForkSharedOfds: () => new Set(),
   });
@@ -1582,7 +1574,6 @@ test("resumeBlockedSyscallLocally wakes pipe waiters through requestPipeStateSyn
     syncForkSharedStateLocally: () => {},
     syncForkSharedStateViaKernelWorker: async () => {},
     rehydrateForkSharedStateViaKernelWorker: async () => {},
-    syncPipeStateViaKernelWorker: async () => 0n,
     syncSocketStateViaKernelWorker: async () => ({ socketUsed: 0, netBufUsed: 0n }),
     collectTrackableForkSharedOfds: () => new Set(),
   });
@@ -1718,7 +1709,6 @@ test("resumeBlockedSyscallLocally resumes pipe EOF after writers close even with
     syncForkSharedStateLocally: () => {},
     syncForkSharedStateViaKernelWorker: async () => {},
     rehydrateForkSharedStateViaKernelWorker: async () => {},
-    syncPipeStateViaKernelWorker: async () => 0n,
     syncSocketStateViaKernelWorker: async () => ({ socketUsed: 0, netBufUsed: 0n }),
     collectTrackableForkSharedOfds: () => new Set(),
   });
@@ -1885,7 +1875,6 @@ test("resumeBlockedSyscallLocally defers poll readiness while an active child st
     syncForkSharedStateLocally: () => {},
     syncForkSharedStateViaKernelWorker: async () => {},
     rehydrateForkSharedStateViaKernelWorker: async () => {},
-    syncPipeStateViaKernelWorker: async () => 0n,
     syncSocketStateViaKernelWorker: async () => ({ socketUsed: 0, netBufUsed: 0n }),
     collectTrackableForkSharedOfds: () => new Set(),
   });
@@ -2044,7 +2033,6 @@ test("resumeBlockedSyscallLocally ignores exiting child pipe writers for pselect
     syncForkSharedStateLocally: () => {},
     syncForkSharedStateViaKernelWorker: async () => {},
     rehydrateForkSharedStateViaKernelWorker: async () => {},
-    syncPipeStateViaKernelWorker: async () => 0n,
     syncSocketStateViaKernelWorker: async () => ({ socketUsed: 0, netBufUsed: 0n }),
     collectTrackableForkSharedOfds: () => new Set(),
   });
@@ -2206,7 +2194,6 @@ test("resumeBlockedSyscallLocally completes pselect HUP marker despite an active
     syncForkSharedStateLocally: () => {},
     syncForkSharedStateViaKernelWorker: async () => {},
     rehydrateForkSharedStateViaKernelWorker: async () => {},
-    syncPipeStateViaKernelWorker: async () => 0n,
     syncSocketStateViaKernelWorker: async () => ({ socketUsed: 0, netBufUsed: 0n }),
     collectTrackableForkSharedOfds: () => new Set(),
   });
@@ -2329,7 +2316,6 @@ test("resumeBlockedSyscallLocally collapses pipe read that becomes ready after p
     syncForkSharedStateLocally: () => {},
     syncForkSharedStateViaKernelWorker: async () => {},
     rehydrateForkSharedStateViaKernelWorker: async () => {},
-    syncPipeStateViaKernelWorker: async () => 0n,
     syncSocketStateViaKernelWorker: async () => ({ socketUsed: 0, netBufUsed: 0n }),
     collectTrackableForkSharedOfds: () => new Set(),
   });
@@ -2455,7 +2441,6 @@ test("resumeBlockedSyscallLocally queues the full socket read buffer after owner
     syncForkSharedStateLocally: () => {},
     syncForkSharedStateViaKernelWorker: async () => {},
     rehydrateForkSharedStateViaKernelWorker: async () => {},
-    syncPipeStateViaKernelWorker: async () => 0n,
     syncSocketStateViaKernelWorker: async () => ({ socketUsed: 0, netBufUsed: 0n }),
     collectTrackableForkSharedOfds: () => new Set(),
   });
@@ -2571,7 +2556,6 @@ test("resumeFsViaKernelWorker skips memfs sync during active vfork child ownersh
     syncForkSharedStateLocally: () => {},
     syncForkSharedStateViaKernelWorker,
     rehydrateForkSharedStateViaKernelWorker: async () => {},
-    syncPipeStateViaKernelWorker: async () => 0n,
     syncSocketStateViaKernelWorker: async () => ({ socketUsed: 0, netBufUsed: 0n }),
     collectTrackableForkSharedOfds: () => new Set(),
   });
@@ -2751,7 +2735,6 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
     syncForkSharedStateLocally: () => {},
     syncForkSharedStateViaKernelWorker: async () => {},
     rehydrateForkSharedStateViaKernelWorker: async () => {},
-    syncPipeStateViaKernelWorker: async () => 0n,
     syncSocketStateViaKernelWorker: async () => ({ socketUsed: 0, netBufUsed: 0n }),
     collectTrackableForkSharedOfds: () => new Set(),
   });
@@ -2897,7 +2880,6 @@ test("resumeFsViaKernelWorker routes execve spawn before parent fd integrity che
     syncForkSharedStateLocally: () => {},
     syncForkSharedStateViaKernelWorker,
     rehydrateForkSharedStateViaKernelWorker: async () => {},
-    syncPipeStateViaKernelWorker: async () => 0n,
     syncSocketStateViaKernelWorker: async () => ({ socketUsed: 0, netBufUsed: 0n }),
     collectTrackableForkSharedOfds: () => new Set(),
   });
@@ -3014,7 +2996,6 @@ test("resumeFsViaKernelWorker applies fd entries returned by kernel-worker fs pr
     syncForkSharedStateLocally: () => {},
     syncForkSharedStateViaKernelWorker: async () => {},
     rehydrateForkSharedStateViaKernelWorker: async () => {},
-    syncPipeStateViaKernelWorker: async () => 0n,
     syncSocketStateViaKernelWorker: async () => ({ socketUsed: 0, netBufUsed: 0n }),
     collectTrackableForkSharedOfds: () => new Set(),
   });

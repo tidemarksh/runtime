@@ -57,7 +57,6 @@ interface WorkerKernelRpcDeps {
     ofdIds: number[],
     options: { cause: SyncCause; procSelfExeTargets?: KernelWorkerPidBytesSnapshot[]; includeMemfs?: boolean },
   ): Promise<void>;
-  syncPipeStateViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<bigint>;
   syncSocketStateViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<{ socketUsed: number; netBufUsed: bigint }>;
   snapshotProcessFdOfdStateForKernelWorker(
     handle: ProcessHandle,
@@ -168,20 +167,6 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
         },
       )
     ),
-    publishMemfsAfterFs: async (handle, targets, options) => {
-      await deps.syncForkSharedStateViaKernelWorker(
-        handle,
-        targets,
-        {
-          cause: kernelRpcSyncCause("fs-memfs-publication"),
-          includeMemfs: true,
-          trackHeldOfds: false,
-          memfsOnly: true,
-          sourceVmPtr: options.sourceVmPtr,
-        },
-      );
-      await deps.syncPipeStateViaKernelWorker(handle, kernelRpcSyncCause("fs-memfs-pipe-refresh"));
-    },
     rehydrateForkSharedStateViaKernelWorker: deps.rehydrateForkSharedStateViaKernelWorker,
     publishRuntimeKernelState: (handle) => publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true),
   });
