@@ -3,7 +3,7 @@ import type {
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
-import { clearStaleFutexRecordIfResolved, threadHasCanonicalFutexBlock } from "./futex.js";
+import { threadHasCanonicalFutexBlock } from "./futex.js";
 
 export function logNetworkDebug(_event: string): void {
   // Runtime diagnostics are kept in the per-process worker debug buffer.
@@ -178,16 +178,6 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
       return true;
     }
     const runningStatus = handle.kernel.thread_status(runningThread.vmPtr);
-    if (
-      runningThread.pendingGuestMemoryWrites.length === 0
-      && handle.kernel.thread_process_ptr(runningThread.vmPtr) !== 0
-      && clearStaleFutexRecordIfResolved(handle, runningThread.vmPtr)
-    ) {
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `running-worker-stale-futex-record-cleared:${handle.pid}:0x${runningThread.vmPtr.toString(16)}`,
-      );
-    }
     if (
       threadHasCanonicalFutexBlock(handle, runningThread.vmPtr)
       && runningThread.pendingGuestMemoryWrites.length === 0

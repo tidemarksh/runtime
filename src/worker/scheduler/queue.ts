@@ -7,9 +7,6 @@ import { publishRuntimeBridgeEpoch } from "../../bridge/runtime-state.js";
 import { ensureMemoryCapacity, kernelScratchBase } from "../kernel-scratch.js";
 import { createReadyWorkerFairness } from "./fairness.js";
 import {
-  clearStaleFutexRecordIfResolved,
-  completeSupervisorFutexWait,
-  createFutexReconciliation,
   threadHasCanonicalFutexBlock,
 } from "./futex.js";
 import { clearStaleForkSharedSyncGate } from "./fork-shared-gate.js";
@@ -284,53 +281,6 @@ function hasBrokenThreadState(handle: ProcessHandle, vmPtr: number): boolean {
   const sp = handle.kernel.thread_sp?.(vmPtr) ?? 0n;
   const s11 = handle.kernel.thread_s11?.(vmPtr) ?? 0n;
   return pc < 0x1000n || sp === 0n || s11 === 0n;
-}
-
-function futexWordIndex(handle: ProcessHandle, guestAddr: bigint): number | null {
-  const guestBase = handle.guestBase;
-  if (guestBase < 0 || !Number.isSafeInteger(guestBase)) {
-    return null;
-  }
-  const absolute = BigInt(guestBase) + guestAddr;
-  if (absolute < 0n || (absolute & 3n) !== 0n) {
-    return null;
-  }
-  const index = absolute >> 2n;
-  if (index > BigInt(Number.MAX_SAFE_INTEGER)) {
-    return null;
-  }
-  const numericIndex = Number(index);
-  const words = new Int32Array(handle.memory.buffer);
-  return numericIndex >= 0 && numericIndex < words.length ? numericIndex : null;
-}
-
-type SupervisorRecoveredFutexCompletion = "woken" | "invalid-address";
-
-function recoverBlockedFutexRecordCompletion(
-  handle: ProcessHandle,
-  vmPtr: number,
-  blockedAddr: bigint,
-): SupervisorRecoveredFutexCompletion | null {
-  if (blockedAddr === 0n) {
-    return "woken";
-  }
-  const futexWaitAddr = handle.kernel.thread_futex_wait_addr?.(vmPtr) ?? 0n;
-  if (futexWaitAddr === 0n) {
-    return null;
-  }
-  const expected = handle.kernel.thread_futex_wait_expected?.(vmPtr);
-  if (expected === undefined) {
-    return null;
-  }
-  const index = futexWordIndex(handle, futexWaitAddr);
-  if (index === null) {
-    return null;
-  }
-  const current = Atomics.load(new Int32Array(handle.memory.buffer), index);
-  if (current === (expected | 0)) {
-    return null;
-  }
-  return "invalid-address";
 }
 
 function appendSchedulerQueueDebugLog(
@@ -721,10 +671,10 @@ export function createWorkerSchedulerQueueHelpers(
   const observedForkSharedSyncGates = new WeakMap<ProcessHandle, Promise<void>>();
   const pendingSupervisorFutexResumes = new WeakMap<ProcessHandle, Set<number>>();
   const readyWorkerFairness = createReadyWorkerFairness(pumpProcess);
-  const futexReconciliation = createFutexReconciliation({
-    threadWorkerStates: deps.threadWorkerStates,
-    appendWorkerDebugLog: deps.appendWorkerDebugLog,
-  });
+
+  function hasWorkerLocalWait(thread: ThreadWorkerState | undefined): boolean {
+    return (thread?.waitingInWorkerStatus ?? null) !== null;
+  }
 
   function findWorkerByVmPtr(handle: ProcessHandle, vmPtr: number): Worker | undefined {
     for (const worker of handle.workers) {
@@ -741,7 +691,7 @@ export function createWorkerSchedulerQueueHelpers(
     if (
       thread === undefined
       || (thread.ownerAsyncStatus ?? null) !== null
-      || futexReconciliation.hasWorkerLocalWait(thread)
+      || hasWorkerLocalWait(thread)
       || parkReadyWorkerStillInCanonicalFutexWait(handle, thread)
       || handle.kernel.thread_process_ptr(thread.vmPtr) === 0
     ) {
@@ -1176,12 +1126,6 @@ export function createWorkerSchedulerQueueHelpers(
     if (handle.kernel.thread_process_ptr(thread.vmPtr) === 0) {
       return false;
     }
-    if (clearStaleFutexRecordIfResolved(handle, thread.vmPtr)) {
-      deps.appendWorkerDebugLog(
-        handle,
-        `ready-worker-stale-futex-record-cleared:0x${thread.vmPtr.toString(16)}`,
-      );
-    }
     const futexWaitStatus = handle.kernel.abi_status_futex_wait();
     if (
       handle.kernel.thread_status(thread.vmPtr) !== futexWaitStatus
@@ -1453,66 +1397,6 @@ export function createWorkerSchedulerQueueHelpers(
     pumpProcess(handle);
   }
 
-  function hasFutexRecoveryBlockedSibling(handle: ProcessHandle): boolean {
-    const fsStatus = handle.kernel.abi_status_fs();
-    const pipeWaitStatus = handle.kernel.abi_status_pipe_wait();
-    const epollWaitStatus = handle.kernel.abi_status_epoll_wait();
-    for (const blocked of handle.blockedWorkers.values()) {
-      if (
-        blocked.status === fsStatus
-        || blocked.status === pipeWaitStatus
-        || blocked.status === epollWaitStatus
-      ) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  function recoverQuiescentWorkerLocalFutexWaiter(handle: ProcessHandle): void {
-    if (
-      handle.runningWorker !== null
-      || handle.readyWorkers.length > 0
-      || !hasFutexRecoveryBlockedSibling(handle)
-    ) {
-      return;
-    }
-    const futexWaitStatus = handle.kernel.abi_status_futex_wait();
-    for (const worker of handle.workers) {
-      if (handle.blockedWorkers.has(worker)) {
-        continue;
-      }
-      const thread = deps.threadWorkerStates.get(worker);
-      const blockedAddr = thread === undefined
-        ? 0n
-        : handle.kernel.thread_record_blocked_addr(thread.vmPtr);
-      const completion = thread === undefined
-        ? null
-        : recoverBlockedFutexRecordCompletion(handle, thread.vmPtr, blockedAddr);
-      if (
-        thread === undefined
-        || thread.waitingInWorkerStatus !== futexWaitStatus
-        || thread.ownerAsyncStatus !== null
-        || thread.pendingGuestMemoryWrites.length > 0
-        || handle.kernel.thread_process_ptr(thread.vmPtr) === 0
-        || handle.kernel.thread_status(thread.vmPtr) !== futexWaitStatus
-        || completion === null
-      ) {
-        continue;
-      }
-      completeSupervisorFutexWait(handle, thread.vmPtr, completion);
-      thread.waitingInWorkerStatus = null;
-      thread.waitingInWorkerReconcileDeferred = false;
-      thread.runningGeneration = null;
-      deps.appendWorkerDebugLog(
-        handle,
-        `futex-quiescent-recover:clear:0x${thread.vmPtr.toString(16)}:completion=${completion}`,
-      );
-      handle.readyWorkers.unshift(worker);
-      return;
-    }
-  }
-
   function recoverRunnableIdleWorkers(handle: ProcessHandle): void {
     const exclusiveWorker = handle.vforkSnapshot !== null ? handle.vforkWorker : null;
     for (const worker of handle.workers) {
@@ -1629,12 +1513,7 @@ export function createWorkerSchedulerQueueHelpers(
       );
       return;
     }
-    if (handle.kernel.supervisor_next_resume !== undefined) {
-      drainSupervisorResumeQueue(handle);
-    } else {
-      futexReconciliation.reconcileResolvedWorkerLocalWaits(handle);
-      recoverQuiescentWorkerLocalFutexWaiter(handle);
-    }
+    drainSupervisorResumeQueue(handle);
     recoverRunnableIdleWorkers(handle);
     if (completeFaultedProcessWithoutWorkers(handle)) {
       return;
@@ -1649,7 +1528,7 @@ export function createWorkerSchedulerQueueHelpers(
       const candidateThread = candidate ? deps.threadWorkerStates.get(candidate) : undefined;
       if (
         (candidateThread?.ownerAsyncStatus ?? null) !== null
-        || futexReconciliation.hasWorkerLocalWait(candidateThread)
+        || hasWorkerLocalWait(candidateThread)
         || parkReadyWorkerStillInCanonicalFutexWait(handle, candidateThread)
         || (candidateThread !== undefined && handle.kernel.thread_process_ptr(candidateThread.vmPtr) === 0)
       ) {
@@ -1669,7 +1548,7 @@ export function createWorkerSchedulerQueueHelpers(
       const isRunnableReadyWorker = (candidate: Worker): boolean => {
         const candidateThread = deps.threadWorkerStates.get(candidate);
         return (candidateThread?.ownerAsyncStatus ?? null) === null
-          && !futexReconciliation.hasWorkerLocalWait(candidateThread)
+          && !hasWorkerLocalWait(candidateThread)
           && !parkReadyWorkerStillInCanonicalFutexWait(handle, candidateThread)
           && (
             candidateThread === undefined

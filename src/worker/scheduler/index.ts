@@ -18,7 +18,6 @@ import { describeForkSharedSyncPromise } from "../fork-shared-sync-debug.js";
 import { collectLiveThreadVmPtrs, processHasLiveThreads } from "../live-threads.js";
 import { appendWorkerDebugLog } from "./fairness.js";
 import { clearStaleForkSharedSyncGate } from "./fork-shared-gate.js";
-import { createFutexScheduler } from "./futex.js";
 import { createPipePollScheduler } from "./pipe-poll.js";
 import { createPruningScheduler } from "./pruning.js";
 import { createWorkerSchedulerQueueHelpers } from "./queue.js";
@@ -366,16 +365,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     threadWorkerStates,
     appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
   }, appliedChildExitRecordKeys);
-  const {
-    applyChildExitRecordsForWorkerLocalWaits,
-  } = createFutexScheduler({
-    threadWorkerStates,
-    appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
-    formatChildExitRecords,
-    childExitRecordsAlreadyApplied,
-    applyLocalChildExitRecords,
-  });
-
   function pipeChildExitRecordsResumeKeyForWait(handle: ProcessHandle, vmPtr: number): string {
     const childExitRecordsKey = formatChildExitRecords(handle);
     return childExitRecordsKey === ""
@@ -1889,7 +1878,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   } = schedulerStateSyncHelpers;
 
   function kickBlockedWorkers(handle: ProcessHandle): void {
-    applyChildExitRecordsForWorkerLocalWaits(handle);
     wakeDueSleepWorkers(handle);
     maybeAdvanceGuestTimeToNextSleep(handle);
     for (const worker of [...handle.blockedWorkers.keys()]) {
