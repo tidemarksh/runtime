@@ -14,6 +14,7 @@ import {
   hasPendingSignalForBlockedWait,
 } from "./signals.js";
 import { formatThreadWorkerGuestBufferPreview } from "./status.js";
+import { resumeBlockedSyscallBySupervisor } from "../supervisor-blocked-resume.js";
 
 const BLOCKED_ADDR_NOT_FOUND = 0xffff_ffff_ffff_ffffn;
 
@@ -121,7 +122,7 @@ export function handleRuntimeBridgeBlockedStatus(
       && boundary.status === ctx.statusCodes.EPOLL_WAIT
     ) {
       clearSyscallTrace(ctx.exports);
-      ctx.exports.thread_resume_epoll_wait_timeout(ctx.vmPtr);
+      resumeBlockedSyscallBySupervisor(ctx.exports, ctx.vmPtr, true);
       blockedStatus = ctx.exports.thread_status(ctx.vmPtr);
       if (blockedStatus === ctx.statusCodes.FUTEX_WAIT) {
         if (handleFutexWait(ctx, blockedStatus)) {
@@ -151,10 +152,10 @@ export function handleRuntimeBridgeBlockedStatus(
     }
     if (blockedStatus === ctx.statusCodes.EPOLL_WAIT && waitResult === "timed-out") {
       clearSyscallTrace(ctx.exports);
-      ctx.exports.thread_resume_epoll_wait_timeout(ctx.vmPtr);
+      resumeBlockedSyscallBySupervisor(ctx.exports, ctx.vmPtr, true);
     } else {
       clearSyscallTrace(ctx.exports);
-      ctx.exports.thread_resume_blocked_syscall(ctx.vmPtr);
+      resumeBlockedSyscallBySupervisor(ctx.exports, ctx.vmPtr);
     }
 
     blockedStatus = ctx.exports.thread_status(ctx.vmPtr);
@@ -186,7 +187,7 @@ export function resumeBlockedSyscallStep(
   const blockedArg0 = ctx.exports.thread_blocked_syscall_arg?.(ctx.vmPtr, 0) ?? 0n;
   const blockedArg1 = ctx.exports.thread_blocked_syscall_arg?.(ctx.vmPtr, 1) ?? 0n;
   const blockedArg2 = ctx.exports.thread_blocked_syscall_arg?.(ctx.vmPtr, 2) ?? 0n;
-  const resumeResult = ctx.exports.thread_resume_blocked_syscall(ctx.vmPtr);
+  const resumeResult = resumeBlockedSyscallBySupervisor(ctx.exports, ctx.vmPtr);
   if (ctx.pipeResumeDebugEnabled) {
     ctx.recordResumeBlockedDebug([
       "thread-resume-blocked",

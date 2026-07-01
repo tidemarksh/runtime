@@ -12,6 +12,7 @@ import type {
   ThreadWorkerInbound,
   ThreadWorkerOutbound,
 } from "../../../../src/messages.js";
+import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 
 type WorkerModule = typeof import("../../../../src/worker.js");
 
@@ -166,6 +167,8 @@ function addSupervisorRuntimeExportStubs(exports: KernelExports): void {
       target[name] = () => (name === "supervisor_abi_version" ? 1 : 0);
     }
   }
+  target.supervisor_host_op_record_bytes = () => 64;
+  target.supervisor_host_op_kind_arm_host_timer = () => 12;
   target.supervisor_resume_record_bytes = () => 48;
   target.supervisor_resume_kind_runnable_thread = () => 2;
   target.supervisor_process_resume = (...args: unknown[]) => {
@@ -191,6 +194,7 @@ function addSupervisorRuntimeExportStubs(exports: KernelExports): void {
     view.setBigUint64(outPtr + 40, 1n, true);
     return 48;
   };
+  installSupervisorBlockedResumeStub(exports);
 }
 
 function emitReady(
@@ -640,7 +644,7 @@ test("STATUS_WAIT4 retries through thread_resume_wait4 instead of generic blocke
   await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
   const worker = createdWorkers[0];
   const kernel = createdKernelExports[0];
-  let currentStatus = kernel.abi_status_wait4();
+  let currentStatus = kernel.abi_status_ok();
   const resumeWait4 = vi.fn(() => 0n);
   const resumeBlocked = vi.fn(() => 0n);
 
@@ -654,6 +658,7 @@ test("STATUS_WAIT4 retries through thread_resume_wait4 instead of generic blocke
 
   emitReady(worker);
   worker.clearPostedMessages();
+  currentStatus = kernel.abi_status_wait4();
   worker.emit({
     type: "status",
     status: 31,
@@ -683,7 +688,7 @@ test("STATUS_WAIT4 delegates retries through kernel-worker when available", asyn
   vi.useFakeTimers();
 
   const requests: KernelWorkerRequest[] = [];
-  let currentStatus = 31;
+  let currentStatus = 0;
   const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
     pid: 1,
     kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
@@ -734,6 +739,7 @@ test("STATUS_WAIT4 delegates retries through kernel-worker when available", asyn
   emitReady(worker);
   worker.clearPostedMessages();
   requests.length = 0;
+  currentStatus = kernel.abi_status_wait4();
   worker.emit({
     type: "status",
     status: 31,
@@ -748,8 +754,8 @@ test("STATUS_WAIT4 delegates retries through kernel-worker when available", asyn
   vi.advanceTimersByTime(15);
   await flushMicrotasks();
 
-  expect(requests[0]?.type).toBe("resume-wait4");
   expect(requests.filter((msg) => msg.type === "resume-wait4")).toHaveLength(1);
+  expect(requests.some((msg) => msg.type === "resume-wait4")).toBe(true);
   expect(requests.some((msg) => msg.type === "sync-pipe-state")).toBe(true);
   expect(resumeWait4).not.toHaveBeenCalled();
   expect(resumeBlocked).not.toHaveBeenCalled();

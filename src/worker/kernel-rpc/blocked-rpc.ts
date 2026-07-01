@@ -2,6 +2,7 @@ import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
 } from "../../abi.js";
+import { resumeBlockedSyscallBySupervisor } from "../../supervisor-blocked-resume.js";
 import { kernelShareOtherMembers, reconcileKernelSharePipeControl } from "../kernel-share.js";
 import { forceNetworkClosedFds } from "../network-socket-close.js";
 import { syncPipeOfdGenerationsForSlot } from "../ownership/ofd-table.js";
@@ -1125,11 +1126,8 @@ async function resumeBlockedSyscallLocally(
     };
     forceNetworkClosedFds(handle, vmPtr);
     let forkSharedSyncedBeforeResume = false;
-    const resumePollTimeoutFn = timeoutExpired
-      && blockedStatus === handle.kernel.abi_status_pipe_wait()
-      ? handle.kernel.thread_resume_poll_wait_timeout
-      : undefined;
-    const resumePollTimeout = resumePollTimeoutFn !== undefined;
+    const resumePollTimeout = timeoutExpired
+      && blockedStatus === handle.kernel.abi_status_pipe_wait();
     const canonicalWriteOpenBeforeReconcileByPipeSlot = new Map<number, number>();
     if (blockedStatus === handle.kernel.abi_status_pipe_wait() && !resumePollTimeout) {
       const blockedPipeSlots = pipeSlotsForBlockedPipeWait(handle, vmPtr);
@@ -1925,7 +1923,7 @@ async function resumeBlockedSyscallLocally(
     const blockedArg3 = handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 3) ?? 0n;
     if (resumePollTimeout) {
       advanceGuestTimeByMs(handle, Number(handle.kernel.thread_poll_wait_timeout?.(vmPtr) ?? 0));
-      resumePollTimeoutFn(vmPtr);
+      resumeBlockedSyscallBySupervisor(handle.kernel, vmPtr, true);
       queueBlockedPollWaitGuestMemoryWrites(
         handle,
         worker,
@@ -1942,21 +1940,19 @@ async function resumeBlockedSyscallLocally(
         || blockedStatus === handle.kernel.abi_status_socket_recv()
         || blockedStatus === handle.kernel.abi_status_socket_send()
       )
-      && handle.kernel.thread_resume_socket_wait_timeout
     ) {
-      handle.kernel.thread_resume_socket_wait_timeout(vmPtr);
+      resumeBlockedSyscallBySupervisor(handle.kernel, vmPtr, true);
     } else if (
       timeoutExpired
       && blockedStatusIsEpollWait(handle, blockedStatus)
-      && handle.kernel.thread_resume_epoll_wait_timeout
     ) {
-      handle.kernel.thread_resume_epoll_wait_timeout(vmPtr);
+      resumeBlockedSyscallBySupervisor(handle.kernel, vmPtr, true);
     } else {
       forceNetworkClosedFds(handle, vmPtr);
       const resumeFd = blockedArg0;
       const resumeBuf = blockedArg1;
       const resumeCount = blockedArg2;
-      const resumeResult = handle.kernel.thread_resume_blocked_syscall(vmPtr);
+      const resumeResult = resumeBlockedSyscallBySupervisor(handle.kernel, vmPtr);
       if (blockedStatus === handle.kernel.abi_status_pipe_wait() && resumeResult > 0n) {
         const queuedPollWrites = queueBlockedPollWaitGuestMemoryWrites(
           handle,
@@ -2070,7 +2066,7 @@ async function resumeBlockedSyscallLocally(
         const resumeFd = blockedArg0;
         const resumeBuf = blockedArg1;
         const resumeCount = blockedArg2;
-        const resumeResult = handle.kernel.thread_resume_blocked_syscall(vmPtr);
+        const resumeResult = resumeBlockedSyscallBySupervisor(handle.kernel, vmPtr);
         if (resumeResult > 0n) {
           const queuedPollWrites = queueBlockedPollWaitGuestMemoryWrites(
             handle,
@@ -2146,7 +2142,7 @@ async function resumeBlockedSyscallLocally(
       const resumeFd = blockedArg0;
       const resumeBuf = blockedArg1;
       const resumeCount = blockedArg2;
-      const resumeResult = handle.kernel.thread_resume_blocked_syscall(vmPtr);
+      const resumeResult = resumeBlockedSyscallBySupervisor(handle.kernel, vmPtr);
       if (resumeResult > 0n) {
         const queuedPollWrites = queueBlockedPollWaitGuestMemoryWrites(
           handle,

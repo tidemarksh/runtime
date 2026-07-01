@@ -1,4 +1,5 @@
 import { attachKernelRuntimeState, readKernelRuntimeState, type KernelExports, type KernelRuntimeState } from "../abi.js";
+import { resumeBlockedSyscallBySupervisor } from "../supervisor-blocked-resume.js";
 
 interface CanonicalProcessEntry {
   pid: number;
@@ -92,7 +93,7 @@ export function createKernelWorkerLifecycle(deps: KernelWorkerLifecycleDeps) {
   ): KernelRuntimeState {
     const processExports = deps.requireProcessKernel(pid);
     attachKernelRuntimeState(processExports, kernelState);
-    processExports.thread_resume_wait4(vmPtr);
+    resumeBlockedSyscallBySupervisor(processExports, vmPtr);
     return readKernelRuntimeState(processExports);
   }
 

@@ -60,7 +60,7 @@ test("resumeBlockedSyscallStep applies guest writes and returns a typed status o
       thread_reg: () => 4n,
       thread_blocked_syscall_nr: () => 63n,
       thread_blocked_syscall_arg: (_vmPtr: number, index: number) => [3n, 0x20n, 4n][index] ?? 0n,
-      thread_resume_blocked_syscall: () => {
+      supervisor_resume_blocked_syscall: () => {
         events.push("resume");
         return 2n;
       },
@@ -981,6 +981,10 @@ test("handleRuntimeBridgeBlockedStatus treats epoll timeout=0 as an immediate ti
       thread_sp: () => 0n,
       thread_step: () => {},
       thread_status: () => status,
+      supervisor_resume_blocked_syscall: () => {
+        resumeTimeout(0x1234);
+        return 0n;
+      },
       thread_resume_epoll_wait_timeout: resumeTimeout,
       thread_resume_blocked_syscall: resumeBlocked,
     } as never,
@@ -1035,6 +1039,10 @@ test("handleRuntimeBridgeBlockedStatus hands off EPOLL_WAIT timeout retries into
       thread_sp: () => 0n,
       thread_step: () => {},
       thread_status: () => status,
+      supervisor_resume_blocked_syscall: () => {
+        resumeTimeout(0x1234);
+        return 0n;
+      },
       thread_resume_epoll_wait_timeout: resumeTimeout,
       thread_resume_blocked_syscall: resumeBlocked,
       thread_futex_wait_addr: () => 0n,

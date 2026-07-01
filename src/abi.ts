@@ -232,6 +232,7 @@ export interface KernelExports {
   supervisor_next_resume?(outPtr: number, outLen: number): number;
   supervisor_process_resume?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_fault_exit_decision?(vmPtr: number, outPtr: number, outLen: number): number;
+  supervisor_resume_blocked_syscall?(vmPtr: number, flags: number): bigint | number;
   supervisor_fd_control_record?(outPtr: number, outLen: number): number;
   supervisor_fs_control_record?(outPtr: number, outLen: number): number;
   supervisor_signal_control_record?(outPtr: number, outLen: number): number;
@@ -1183,6 +1184,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_next_resume",
   "supervisor_process_resume",
   "supervisor_fault_exit_decision",
+  "supervisor_resume_blocked_syscall",
   "supervisor_fd_control_record",
   "supervisor_fs_control_record",
   "supervisor_signal_control_record",

@@ -4,6 +4,7 @@ import type { KernelRuntimeState } from "../../../../src/abi.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 import { OFD_INO_OFFSET, OFD_OFFSET_OFFSET, OFD_TYPE_OFFSET } from "../../../../src/layout/ofd.js";
 import { PIPE_GENERATION_OFFSET, PIPE_READ_OPEN_OFFSET, PIPE_SLOT_BYTES, PIPE_WRITE_OPEN_OFFSET } from "../../../../src/layout/pipe.js";
+import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 
 function makeKernelState(): KernelRuntimeState {
   return {
@@ -34,7 +35,7 @@ function makeKernelState(): KernelRuntimeState {
 function makeKernel() {
   const state = makeKernelState();
   let status = 0;
-  return {
+  const kernel = {
     memory: new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true }),
     kernel_attach_runtime_state: vi.fn(),
     kernel_heap_base: () => state.heapBase,
@@ -102,6 +103,8 @@ function makeKernel() {
     kernel_ofd_offset: () => 0n,
     thread_blocked_ofd_id: () => 0,
   };
+  installSupervisorBlockedResumeStub(kernel);
+  return kernel;
 }
 
 test("blocked-rpc pipe EOF ignores stale active-child writer when canonical pipe has no writers", async () => {

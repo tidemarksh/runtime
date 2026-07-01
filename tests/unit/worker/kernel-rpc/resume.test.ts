@@ -8,6 +8,7 @@ import { createWorkerKernelRpcHelpers } from "../../../../src/worker/kernel-rpc.
 import { createWorkerKernelRpcBlockedRpcTestHelpers as createWorkerKernelRpcBlockedRpcHelpers } from "../../../../src/worker/kernel-rpc/blocked-rpc.js";
 import { createWorkerKernelRpcResumeLifecycleHelpers } from "../../../../src/worker/kernel-rpc/lifecycle/resume.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
+import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 
 function makeKernelState(): KernelRuntimeState {
   return {
@@ -41,6 +42,7 @@ function makeHandle(
   worker: Worker,
   overrides: Partial<ProcessHandle> = {},
 ): ProcessHandle {
+  installSupervisorBlockedResumeStub(kernel);
   return {
     runtimeId: 1,
     pid: 1,

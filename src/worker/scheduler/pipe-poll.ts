@@ -2,6 +2,7 @@ import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
 } from "../../abi.js";
+import { resumeBlockedSyscallBySupervisor } from "../../supervisor-blocked-resume.js";
 import {
   formatPipeSlotControlDebug,
   pipeSlotHasBufferedData,
@@ -154,7 +155,7 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
     const blockedArg2 = handle.kernel.thread_blocked_syscall_arg?.(blocked.vmPtr, 2) ?? 0n;
     const blockedArg3 = handle.kernel.thread_blocked_syscall_arg?.(blocked.vmPtr, 3) ?? 0n;
     deps.advanceGuestTimeByMs(handle, timeoutMs);
-    handle.kernel.thread_resume_poll_wait_timeout?.(blocked.vmPtr);
+    resumeBlockedSyscallBySupervisor(handle.kernel, blocked.vmPtr, true);
     queueBlockedPollWaitGuestMemoryWrites(
       handle,
       worker,

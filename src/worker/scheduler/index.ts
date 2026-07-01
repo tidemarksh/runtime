@@ -2,6 +2,7 @@ import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
 } from "../../abi.js";
+import { resumeBlockedSyscallBySupervisor } from "../../supervisor-blocked-resume.js";
 import {
   wakeRuntimeBridge,
 } from "../../bridge/runtime-state.js";
@@ -801,7 +802,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             return;
           }
           attachKernelRuntimeState(handle.kernel, handle.kernelState);
-          handle.kernel.thread_resume_blocked_syscall(latestBlocked.vmPtr);
+          resumeBlockedSyscallBySupervisor(handle.kernel, latestBlocked.vmPtr);
           handle.kernelState = readKernelRuntimeState(handle.kernel);
           handleBlockedRetryResult(
             handle,
@@ -870,7 +871,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       `socket-retry-timeout-local:${handle.pid}:status=${blocked.status}`,
     );
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
-    handle.kernel.thread_resume_socket_wait_timeout?.(blocked.vmPtr);
+    resumeBlockedSyscallBySupervisor(handle.kernel, blocked.vmPtr, true);
     blocked.timeoutExpired = false;
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     handleBlockedRetryResult(handle, worker, blocked.vmPtr, handle.kernel.thread_status(blocked.vmPtr));
@@ -911,11 +912,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
 
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
+    resumeBlockedSyscallBySupervisor(handle.kernel, blocked.vmPtr, blocked.timeoutExpired);
     if (blocked.timeoutExpired) {
-      handle.kernel.thread_resume_epoll_wait_timeout(blocked.vmPtr);
       blocked.timeoutExpired = false;
-    } else {
-      handle.kernel.thread_resume_blocked_syscall(blocked.vmPtr);
     }
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     appendEpollRetryResult(handle, blocked.vmPtr);
@@ -1626,7 +1625,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       && blocked.timeoutExpired
       && blockedPollTimeoutMs >= 0
       && deps.hasActiveChildProcess(handle.pid)
-      && handle.kernel.thread_resume_poll_wait_timeout
       && !pipeReadinessSyncPending
     ) {
       resumePipePollTimeout(handle, worker, blocked, blockedPollTimeoutMs);
@@ -1640,7 +1638,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       && kernelWorkerOwnsPipeState(handle)
       && handle.kernelWorkerRequest
       && handle.pid > 0
-      && handle.kernel.thread_resume_poll_wait_timeout
       && !pipeReadinessSyncPending
     ) {
       blocked.pipeSyncedBeforePassive = true;
@@ -1716,7 +1713,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       blocked.timeoutExpired
       && blocked.status === handle.kernel.abi_status_pipe_wait()
       && blockedPollTimeoutMs >= 0
-      && handle.kernel.thread_resume_poll_wait_timeout
       && !pipeReadinessSyncPending
     ) {
       resumePipePollTimeout(handle, worker, blocked, blockedPollTimeoutMs);
@@ -1757,7 +1753,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (
       blocked.timeoutExpired
       && isSocketWaitStatus(handle, blocked.status)
-      && handle.kernel.thread_resume_socket_wait_timeout
     ) {
       resumeSocketWaitTimeout(handle, worker, blocked);
       return;
@@ -1838,7 +1833,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (
       blocked.timeoutExpired
       && blocked.status === handle.kernel.abi_status_pipe_wait()
-      && handle.kernel.thread_resume_poll_wait_timeout
       && !pipeReadinessSyncPending
     ) {
       resumePipePollTimeout(handle, worker, blocked, blockedPollTimeoutMs);
@@ -1849,7 +1843,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         `wait4-retry-local:${handle.pid}:0x${blocked.vmPtr.toString(16)}:records=${[...handle.childExitSyncRecords].map(([childPid, waitStatus]) => `${childPid}/${waitStatus}`).join(".") || "none"}`,
       );
       applyLocalChildExitRecords(handle, { force: true });
-      const rawWait4Result = handle.kernel.thread_resume_wait4(blocked.vmPtr);
+      const rawWait4Result = resumeBlockedSyscallBySupervisor(handle.kernel, blocked.vmPtr);
       const wait4Result = rawWait4Result ?? 0n;
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
@@ -1865,7 +1859,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       ) {
         markPipeChildExitRecordsResumedForWait(handle, blocked);
       }
-      handle.kernel.thread_resume_blocked_syscall(blocked.vmPtr);
+      resumeBlockedSyscallBySupervisor(handle.kernel, blocked.vmPtr);
     }
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     handleBlockedRetryResult(handle, worker, blocked.vmPtr, handle.kernel.thread_status(blocked.vmPtr));

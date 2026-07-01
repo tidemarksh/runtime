@@ -20,11 +20,12 @@ import { createWorkerSchedulerQueueHelpers } from "../../../../src/worker/schedu
 import { createRunLoopScheduler } from "../../../../src/worker/scheduler/run-loop.js";
 import { createTransferDebugStats, createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
+import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 
 function makeKernel() {
   const threadResumeWait4 = vi.fn();
   let monotonicTicks = 1n;
-  return {
+  const kernel = {
     threadResumeWait4,
     exports: {
       abi_status_ok: () => 0,
@@ -141,6 +142,8 @@ function makeKernel() {
       process_fd_flags: () => 0,
     } as unknown as ProcessHandle["kernel"],
   };
+  installSupervisorBlockedResumeStub(kernel.exports);
+  return kernel;
 }
 
 function makeThreadState(vmPtr: number): ThreadWorkerState {
