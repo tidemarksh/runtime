@@ -96,22 +96,6 @@ export function createKernelWorkerLifecycle(deps: KernelWorkerLifecycleDeps) {
     return readKernelRuntimeState(processExports);
   }
 
-  function resumeBlockedSyscall(
-    pid: number,
-    vmPtr: number,
-    kernelState: KernelRuntimeState,
-  ): KernelRuntimeState {
-    const processExports = deps.requireProcessKernel(pid);
-    attachKernelRuntimeState(processExports, kernelState);
-    try {
-      processExports.thread_resume_blocked_syscall(vmPtr);
-    } catch (error) {
-      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
-      throw new Error(`${detail}\n${deps.formatProcessDebug(processExports, vmPtr)}`);
-    }
-    return readKernelRuntimeState(processExports);
-  }
-
   function resumeVforkParent(
     pid: number,
     vmPtr: number,
@@ -241,7 +225,6 @@ export function createKernelWorkerLifecycle(deps: KernelWorkerLifecycleDeps) {
     canonicalizeChildPid,
     initializeProcessLifecycle,
     recordChildExit,
-    resumeBlockedSyscall,
     resumeConnect,
     resumeVforkExecveParent,
     resumeVforkParent,

@@ -359,12 +359,6 @@ export type KernelWorkerRequest =
       kernelState: KernelRuntimeState;
     }
   | {
-      type: "resume-blocked-syscall";
-      pid: number;
-      vmPtr: number;
-      kernelState: KernelRuntimeState;
-    }
-  | {
       type: "resume-vfork-parent";
       pid: number;
       vmPtr: number;
@@ -579,11 +573,6 @@ export type KernelWorkerResponse =
     }
   | {
       type: "wait4-resumed";
-      requestId: number;
-      kernelState: KernelRuntimeState;
-    }
-  | {
-      type: "blocked-syscall-resumed";
       requestId: number;
       kernelState: KernelRuntimeState;
     }

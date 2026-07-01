@@ -66,7 +66,6 @@ function makeDeps(posted: KernelWorkerOutbound[]) {
     recordChildExit: vi.fn(() => state),
     resumeConnect: vi.fn(() => state),
     resumeWait4: vi.fn(() => state),
-    resumeBlockedSyscall: vi.fn(() => state),
     resumeVforkParent: vi.fn(() => ({ childPid: 4, kernelState: state })),
     canonicalizeChildPid: vi.fn(() => ({
       childPid: 4,

@@ -95,7 +95,6 @@ interface KernelWorkerMessageHandlerDeps {
     connectFd?: number,
   ): KernelRuntimeState;
   resumeWait4(pid: number, vmPtr: number, kernelState: KernelRuntimeState): KernelRuntimeState;
-  resumeBlockedSyscall(pid: number, vmPtr: number, kernelState: KernelRuntimeState): KernelRuntimeState;
   resumeVforkParent(
     pid: number,
     vmPtr: number,
@@ -381,13 +380,6 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
             type: "wait4-resumed",
             requestId: msg.requestId,
             kernelState: deps.resumeWait4(msg.pid, msg.vmPtr, msg.kernelState),
-          });
-          break;
-        case "resume-blocked-syscall":
-          deps.postResponse({
-            type: "blocked-syscall-resumed",
-            requestId: msg.requestId,
-            kernelState: deps.resumeBlockedSyscall(msg.pid, msg.vmPtr, msg.kernelState),
           });
           break;
         case "resume-vfork-parent": {
