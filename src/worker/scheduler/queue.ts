@@ -650,7 +650,7 @@ export function createWorkerSchedulerQueueHelpers(
     selected.add(vmPtr);
   }
 
-  function enqueueSupervisorSelectedWorker(
+  function recordSupervisorResumeSelection(
     handle: ProcessHandle,
     worker: Worker,
     thread: ThreadWorkerState,
@@ -660,16 +660,9 @@ export function createWorkerSchedulerQueueHelpers(
     thread.waitingInWorkerStatus = null;
     thread.waitingInWorkerReconcileDeferred = false;
     thread.runningGeneration = null;
-    if (
-      handle.runningWorker !== worker
-      && !handle.blockedWorkers.has(worker)
-      && !handle.readyWorkers.includes(worker)
-    ) {
-      handle.readyWorkers.unshift(worker);
-    }
     deps.appendWorkerDebugLog(
       handle,
-      `supervisor-resume:${label}:ready:0x${thread.vmPtr.toString(16)}`
+      `supervisor-resume:${label}:observed:0x${thread.vmPtr.toString(16)}`
         + `:tid=${record.tid}:seq=${record.seq.toString()}`
         + `:process=0x${record.processPtr.toString(16)}`
         + `:detail=0x${record.detail0.toString(16)}`
@@ -706,7 +699,7 @@ export function createWorkerSchedulerQueueHelpers(
         continue;
       }
       selected.delete(vmPtr);
-      enqueueSupervisorSelectedWorker(handle, worker, thread, {
+      recordSupervisorResumeSelection(handle, worker, thread, {
         kind: supervisorResumeKindFutexWake(handle),
         seq: 0n,
         vmPtr,
@@ -723,11 +716,7 @@ export function createWorkerSchedulerQueueHelpers(
 
   function handleSupervisorResumeRecord(handle: ProcessHandle, record: SupervisorResumeRecord): void {
     if (record.kind === supervisorResumeKindRunnableThread(handle)) {
-      const worker = selectSupervisorResumeWorker(handle, record, "supervisor-resume:runnable");
-      if (worker === null || handle.runningWorker === worker || handle.readyWorkers.includes(worker)) {
-        return;
-      }
-      handle.readyWorkers.unshift(worker);
+      selectSupervisorResumeWorker(handle, record, "supervisor-resume:runnable");
       return;
     }
     if (record.kind !== supervisorResumeKindFutexWake(handle)) {
@@ -763,7 +752,7 @@ export function createWorkerSchedulerQueueHelpers(
     }
     const selected = pendingSupervisorFutexResumes.get(handle);
     selected?.delete(record.vmPtr);
-    enqueueSupervisorSelectedWorker(handle, worker, thread, record);
+    recordSupervisorResumeSelection(handle, worker, thread, record);
     if (selected?.size === 0) {
       pendingSupervisorFutexResumes.delete(handle);
     }

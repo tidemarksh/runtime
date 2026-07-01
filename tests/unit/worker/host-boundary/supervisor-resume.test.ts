@@ -100,7 +100,7 @@ test("host boundary consumes only supervisor-selected futex resume records", () 
   expect(selectedWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "step" }));
   expect(unselectedWorker.postMessage).not.toHaveBeenCalled();
   expect(debugEvents).toContain(
-    "supervisor-resume:futex-wake:ready:0x1234:tid=2:seq=7:process=0x2000:detail=0xfeed:status=0",
+    "supervisor-resume:futex-wake:observed:0x1234:tid=2:seq=7:process=0x2000:detail=0xfeed:status=0",
   );
 });
 
