@@ -358,7 +358,7 @@ const workerProcessIoHelpers = createWorkerProcessIoHelpers({
   flushStdin,
   getActiveHandle: (handle) => processHandles.get(handle.pid),
   isActiveHandle: (handle) => handle.pid <= 0 || processHandles.get(handle.pid) === handle,
-  kickBlockedWorkers,
+  notifyHostIoProgress: kickBlockedWorkers,
   pumpProcess,
   requestPipeStateSync,
   requestSocketStateSync,

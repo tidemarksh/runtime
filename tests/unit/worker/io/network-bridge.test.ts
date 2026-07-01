@@ -13,7 +13,7 @@ function createDeps() {
     flushStdin: vi.fn(() => false),
     getActiveHandle: vi.fn((handle: ProcessHandle) => handle),
     isActiveHandle: vi.fn(() => true),
-    kickBlockedWorkers: vi.fn(),
+    notifyHostIoProgress: vi.fn(),
     pumpProcess: vi.fn(),
     requestPipeStateSync: vi.fn(async () => {}),
     requestSocketStateSync: vi.fn(async () => {}),
@@ -507,8 +507,14 @@ test("async inbound read resumes pump with the source thread vm", async () => {
     expect(handle.kernel.thread_socket_inject_inbound).toHaveBeenCalledWith(0x3000, 7, 0x34100, 21);
   });
   expect(deps.requestSocketStateSync).toHaveBeenCalledWith(handle, true);
-  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(deps.notifyHostIoProgress).toHaveBeenCalledWith(handle);
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
+  expect(deps.requestSocketStateSync.mock.invocationCallOrder[0]).toBeLessThan(
+    deps.notifyHostIoProgress.mock.invocationCallOrder[0],
+  );
+  expect(deps.notifyHostIoProgress.mock.invocationCallOrder[0]).toBeLessThan(
+    deps.pumpProcess.mock.invocationCallOrder[0],
+  );
 });
 
 test("async inbound read adopts the current process handle before injecting", async () => {
@@ -573,8 +579,14 @@ test("async inbound read adopts the current process handle before injecting", as
   expect(activeHandle.networkRecvHeadWatermarks.has(7)).toBe(false);
   expect(activeHandle.networkRecvTailWatermarks.has(7)).toBe(false);
   expect(deps.requestSocketStateSync).toHaveBeenCalledWith(activeHandle, true);
-  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(activeHandle);
+  expect(deps.notifyHostIoProgress).toHaveBeenCalledWith(activeHandle);
   expect(deps.pumpProcess).toHaveBeenCalledWith(activeHandle);
+  expect(deps.requestSocketStateSync.mock.invocationCallOrder[0]).toBeLessThan(
+    deps.notifyHostIoProgress.mock.invocationCallOrder[0],
+  );
+  expect(deps.notifyHostIoProgress.mock.invocationCallOrder[0]).toBeLessThan(
+    deps.pumpProcess.mock.invocationCallOrder[0],
+  );
 });
 
 test("pending async empty read does not drop the next inbound response", async () => {

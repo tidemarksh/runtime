@@ -15,7 +15,7 @@ interface WorkerProcessIoDeps {
   flushStdin(handle: ProcessHandle): boolean;
   getActiveHandle?(handle: ProcessHandle): ProcessHandle | undefined;
   isActiveHandle(handle: ProcessHandle): boolean;
-  kickBlockedWorkers(handle: ProcessHandle): void;
+  notifyHostIoProgress(handle: ProcessHandle): void;
   pumpProcess(handle: ProcessHandle): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   requestSocketStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
@@ -833,7 +833,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
               await deps.requestSocketStateSync(syncedHandle, true);
               await deps.requestPipeStateSync(syncedHandle, false);
             }
-            deps.kickBlockedWorkers(syncedHandle);
+            deps.notifyHostIoProgress(syncedHandle);
             deps.pumpProcess(syncedHandle);
           })().catch((error) => {
             const activeHandle = deps.getActiveHandle?.(handle) ?? handle;
@@ -863,7 +863,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
               await deps.requestSocketStateSync(activeHandle, true);
               await deps.requestPipeStateSync(activeHandle, false);
             }
-            deps.kickBlockedWorkers(activeHandle);
+            deps.notifyHostIoProgress(activeHandle);
             deps.pumpProcess(activeHandle);
           })().catch((error) => {
             const activeHandle = deps.getActiveHandle?.(handle) ?? handle;
@@ -1004,7 +1004,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     const deadline = Date.now() + 10_000;
     try {
       for (;;) {
-        deps.kickBlockedWorkers(handle);
+        deps.notifyHostIoProgress(handle);
         deps.drainProcessOutput(handle);
 
         const n = handle.kernel.process_read_http_response(
