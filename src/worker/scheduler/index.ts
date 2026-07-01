@@ -15,7 +15,7 @@ import {
 } from "../stdio.js";
 import { kernelWorkerOwnsPipeState } from "../ownership/pipe-control.js";
 import { describeForkSharedSyncPromise } from "../fork-shared-sync-debug.js";
-import { collectLiveThreadVmPtrs, processHasLiveThreads } from "../live-threads.js";
+import { collectLiveThreadVmPtrs } from "../live-threads.js";
 import { appendWorkerDebugLog } from "./fairness.js";
 import { clearStaleForkSharedSyncGate } from "./fork-shared-gate.js";
 import { createPipePollScheduler } from "./pipe-poll.js";
@@ -215,45 +215,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       }
     }
     return `fds=${entries.join(",") || "empty"}`;
-  }
-
-  function faultExitVmPriority(handle: ProcessHandle, vmPtr: number): number {
-    if ((handle.kernel.thread_fault_signal?.(vmPtr) ?? 0) !== 0) {
-      return 4;
-    }
-    if ((handle.kernel.thread_fault_kind?.(vmPtr) ?? 0) !== 0) {
-      return 3;
-    }
-    if (
-      (handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n) !== 0n
-      || (handle.kernel.thread_fault_addr?.(vmPtr) ?? 0n) !== 0n
-    ) {
-      return 2;
-    }
-    if ((handle.kernel.thread_term_signal?.(vmPtr) ?? 0) !== 0) {
-      return 1;
-    }
-    return 0;
-  }
-
-  function selectFaultExitVmPtr(handle: ProcessHandle, vmPtr: number): number {
-    const candidates = new Set<number>([vmPtr]);
-    if (handle.vmPtr !== 0) {
-      candidates.add(handle.vmPtr);
-      for (const liveVmPtr of collectLiveThreadVmPtrs(handle.kernel, handle.vmPtr)) {
-        candidates.add(liveVmPtr);
-      }
-    }
-    let selectedVmPtr = vmPtr;
-    let selectedPriority = faultExitVmPriority(handle, selectedVmPtr);
-    for (const candidate of candidates) {
-      const priority = faultExitVmPriority(handle, candidate);
-      if (priority > selectedPriority) {
-        selectedVmPtr = candidate;
-        selectedPriority = priority;
-      }
-    }
-    return selectedVmPtr;
   }
 
   const appliedChildExitRecordKeys = new Map<string, Set<string>>();
@@ -1146,20 +1107,21 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (status === handle.kernel.abi_status_fault()) {
       clearBlockedWorker(handle, worker);
       const supervisorExitDecision = readSupervisorFaultExitDecision(handle, vmPtr);
-      const exitCode = supervisorExitDecision?.exitCode ?? handle.kernel.thread_exit_code(vmPtr);
-      const termSignal = supervisorExitDecision?.termSignal ?? handle.kernel.thread_term_signal(vmPtr);
+      if (supervisorExitDecision === undefined) {
+        deps.failProcess(
+          handle,
+          new Error(`supervisor fault exit decision required for vm=0x${vmPtr.toString(16)}`),
+        );
+        return;
+      }
+      const exitCode = supervisorExitDecision.exitCode;
+      const termSignal = supervisorExitDecision.termSignal;
       if (deps.resumeVforkParentAfterChildExit(handle, worker, vmPtr, exitCode, termSignal)) {
         return;
       }
       const currentPid = handle.kernel.process_current_pid(vmPtr);
-      const faultStateLooksStale = currentPid === 0 || currentPid > 0xffff;
-      const remainingThreads = supervisorExitDecision?.remainingThreads
-        ?? (faultStateLooksStale ? 0 : handle.kernel.thread_process_thread_count(vmPtr));
-      const hasLiveThreads = supervisorExitDecision !== undefined
-        ? supervisorExitDecision.liveThreads !== 0
-        : !faultStateLooksStale
-          && remainingThreads !== 0
-          && processHasLiveThreads(handle.kernel, vmPtr, vmPtr);
+      const remainingThreads = supervisorExitDecision.remainingThreads;
+      const hasLiveThreads = supervisorExitDecision.liveThreads !== 0;
       const faultProcessPtr = handle.kernel.thread_process_ptr(vmPtr);
       const ownerPid = handle.kernel.process_current_pid(handle.vmPtr);
       const ownerProcessPtr = handle.kernel.thread_process_ptr(handle.vmPtr);
@@ -1185,16 +1147,14 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       handle.workers.delete(worker);
       threadWorkerStates.delete(worker);
       releaseWorker(worker);
-      const shouldExitProcess = supervisorExitDecision !== undefined
-        ? supervisorExitDecision.kind === supervisorFaultExitKindProcessExit(handle.kernel)
-        : remainingThreads <= 1 || !hasLiveThreads;
+      const shouldExitProcess = supervisorExitDecision.kind === supervisorFaultExitKindProcessExit(handle.kernel);
       if (shouldExitProcess) {
-        const exitVmPtr = supervisorExitDecision?.exitVmPtr ?? selectFaultExitVmPtr(handle, vmPtr);
+        const exitVmPtr = supervisorExitDecision.exitVmPtr;
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `complete-exit-request:scheduler-fault:${handle.pid}:vm=0x${vmPtr.toString(16)}`
             + `:exitVm=0x${exitVmPtr.toString(16)}`
-            + `:priority=${supervisorExitDecision === undefined ? faultExitVmPriority(handle, exitVmPtr) : "supervisor"}`
+            + `:decision=${supervisorExitDecision.seq.toString()}`
             + `:status=${status}:exit=${exitCode}:${termSignal}`
             + `:current=${handle.kernel.thread_status?.(vmPtr) ?? -1}:remaining=${remainingThreads}:live=${hasLiveThreads ? 1 : 0}`
             + processTableDebug
