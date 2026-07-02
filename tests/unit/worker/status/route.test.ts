@@ -3175,7 +3175,7 @@ test("status handler preserves closed network socket recv head when fd no longer
   expect(handle.kernelState.netBufUsed).toBe(0b10n);
 });
 
-test("status handler closes stale network bridge when fd snapshot drops the socket fd", () => {
+test("status handler closes stale network bridge when supervisor reports no active fd", () => {
   const worker = {} as Worker;
   const threadWorkerStates = new WeakMap<Worker, { vmPtr: number; initialized: boolean; waitingInWorkerStatus: number | null }>();
   threadWorkerStates.set(worker, makeThreadState());
@@ -3187,6 +3187,7 @@ test("status handler closes stale network bridge when fd snapshot drops the sock
   ]);
   const close = vi.fn(async () => {});
   const appendWorkerDebugLog = vi.fn();
+  const supervisorSocketBridgeActiveFd = vi.fn(() => -2);
   const handle = {
     pid: 4,
     stdoutPipe: 0,
@@ -3223,6 +3224,7 @@ test("status handler closes stale network bridge when fd snapshot drops the sock
       kernel_ofd_fd_type: (ofdId: number) => ofdId === 11 ? 8 : 0,
       kernel_ofd_ino: () => 0,
       kernel_ofd_host_fd: () => -1,
+      supervisor_socket_bridge_active_fd: supervisorSocketBridgeActiveFd,
     }),
     kernelState: makeKernelState(),
     onStdout: null,
@@ -3303,6 +3305,7 @@ test("status handler closes stale network bridge when fd snapshot drops the sock
   expect(handle.networkRecvHeadWatermarks.has(3)).toBe(false);
   expect(handle.networkRecvTailWatermarks.has(3)).toBe(false);
   expect(close).toHaveBeenCalledTimes(1);
+  expect(supervisorSocketBridgeActiveFd).toHaveBeenCalledWith(0x1234, 3, 11, 0);
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
     handle,
     "net-status-close:4:fd=3:ofd=11->0",

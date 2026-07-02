@@ -159,6 +159,25 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
   }
   const ofds = networkConnectionOfds(handle);
   const maxFds = handle.kernel.abi_max_fds();
+  const supervisorBridgeActiveFd = (
+    preferredFd: number,
+    expectedOfd: number | undefined,
+  ): { fd: number | null; supervisor: boolean } => {
+    const query = handle.kernel.supervisor_socket_bridge_active_fd;
+    if (!query || expectedOfd === undefined || expectedOfd <= 0) {
+      return { fd: null, supervisor: false };
+    }
+    const activeFd = query(
+      vmPtr,
+      preferredFd,
+      expectedOfd,
+      handle.networkPendingConnectFds.has(preferredFd) ? 1 : 0,
+    );
+    return {
+      fd: activeFd >= 0 ? activeFd : null,
+      supervisor: true,
+    };
+  };
   const findFdForOfd = (ofdId: number, preferredFd: number): number | null => {
     if (ofdId <= 0) {
       return null;
@@ -177,15 +196,19 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
     const fdEntry = fdEntries.find((entry) => entry.fd === fd);
     const expectedOfd = ofds.get(fd);
     const currentOfd = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    let supervisorDecidedClose = false;
     if (expectedOfd === undefined) {
       if (currentOfd > 0) {
         ofds.set(fd, currentOfd);
         continue;
       }
-    } else if (currentOfd === expectedOfd) {
-      continue;
     } else {
-      const replacementFd = findFdForOfd(expectedOfd, fd);
+      const supervisorActiveFd = supervisorBridgeActiveFd(fd, expectedOfd);
+      const replacementFd = supervisorActiveFd.supervisor
+        ? supervisorActiveFd.fd
+        : currentOfd === expectedOfd
+          ? fd
+          : findFdForOfd(expectedOfd, fd);
       if (replacementFd !== null) {
         if (replacementFd !== fd) {
           handle.networkConnections.delete(fd);
@@ -197,7 +220,9 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
         }
         continue;
       }
-      if (
+      if (supervisorActiveFd.supervisor) {
+        supervisorDecidedClose = true;
+      } else if (
         currentOfd > 0
         && handle.kernel.kernel_ofd_fd_type(currentOfd) === handle.kernel.abi_fd_type_socket()
         && !handle.networkPendingConnectFds.has(fd)
@@ -208,7 +233,8 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
       }
     }
     if (
-      !handle.networkClosedFds.has(fd)
+      !supervisorDecidedClose
+      && !handle.networkClosedFds.has(fd)
       && !(fdEntry?.ofdId === 0 && currentOfd === 0)
     ) {
       callbacks.appendWorkerDebugLog(handle, `net-status-keep:${handle.pid}:fd=${fd}:ofd=${expectedOfd ?? "unknown"}->${currentOfd}`);
