@@ -38,8 +38,6 @@ function makeScheduler(
   return createPipePollScheduler({
     threadWorkerStates: new WeakMap(),
     appendRuntimeLifecycleEvent: vi.fn(),
-    advanceGuestTimeByMs: vi.fn(),
-    handleBlockedRetryResult: vi.fn(),
     scheduleBlockedRetry: vi.fn(),
     pipeChildExitRecordsAlreadyResumedForWait: vi.fn(pipeChildExitRecordsAlreadyResumedForWait),
     hasActiveChildProcess,

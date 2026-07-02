@@ -23,7 +23,6 @@ import { createPipePollScheduler } from "./pipe-poll.js";
 import { createPruningScheduler } from "./pruning.js";
 import { createWorkerSchedulerQueueHelpers } from "./queue.js";
 import { createRunLoopScheduler, logNetworkDebug } from "./run-loop.js";
-import { createSleepScheduler } from "./sleep.js";
 import { createSocketWaitScheduler } from "./socket-wait.js";
 import { createWorkerSchedulerStateSyncHelpers } from "./state-sync.js";
 import { createVforkExclusiveScheduler } from "./vfork-exclusive.js";
@@ -344,22 +343,16 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     canScheduleWorker,
   } = createVforkExclusiveScheduler(threadWorkerStates);
   const {
-    advanceGuestTimeByMs,
-  } = createSleepScheduler();
-  const {
     blockedOrCurrentSyscallNr,
     formatBlockedPollFdSet,
     formatFirstPipeWaitDebug,
     pollWaitTimeoutMs,
     pipeWaitShouldParkBehindActiveChild,
     pipeWaitShouldRemainPassive,
-    resumePipePollTimeoutLocally,
     schedulePipePollTimeoutRetry,
   } = createPipePollScheduler({
     threadWorkerStates,
     appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
-    advanceGuestTimeByMs,
-    handleBlockedRetryResult,
     scheduleBlockedRetry,
     pipeChildExitRecordsAlreadyResumedForWait,
     hasActiveChildProcess: deps.hasActiveChildProcess,
@@ -843,7 +836,13 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     )) {
       return;
     }
-    resumePipePollTimeoutLocally(handle, worker, blocked, timeoutMs);
+    deps.failProcess(
+      handle,
+      new Error(
+        `kernel supervisor timer completion required for finite pipe poll timeout: `
+          + `pid=${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}:timeout=${timeoutMs}`,
+      ),
+    );
   }
 
   function isSocketWaitStatus(handle: ProcessHandle, status: number): boolean {

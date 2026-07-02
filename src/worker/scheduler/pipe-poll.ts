@@ -1,9 +1,4 @@
 import {
-  attachKernelRuntimeState,
-  readKernelRuntimeState,
-} from "../../abi.js";
-import { resumeBlockedSyscallBySupervisor } from "../../supervisor-blocked-resume.js";
-import {
   formatPipeSlotControlDebug,
   pipeSlotHasBufferedData,
   pipeSlotWriteOpen,
@@ -20,8 +15,6 @@ import type {
 export interface PipePollSchedulerDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
-  advanceGuestTimeByMs(handle: ProcessHandle, timeoutMs: number): void;
-  handleBlockedRetryResult(handle: ProcessHandle, worker: Worker, vmPtr: number, status: number): void;
   scheduleBlockedRetry(handle: ProcessHandle, worker: Worker, delayMs?: number, timeoutExpired?: boolean): void;
   pipeChildExitRecordsAlreadyResumedForWait(
     handle: ProcessHandle,
@@ -40,12 +33,6 @@ export interface PipePollScheduler {
     arg1: bigint,
     arg2: bigint,
     arg3: bigint,
-  ): void;
-  resumePipePollTimeoutLocally(
-    handle: ProcessHandle,
-    worker: Worker,
-    blocked: BlockedWorkerState,
-    timeoutMs: number,
   ): void;
   blockedOrCurrentSyscallNr(handle: ProcessHandle, vmPtr: number): bigint | null;
   pollWaitTimeoutMs(handle: ProcessHandle, status: number, vmPtr: number): number;
@@ -138,40 +125,6 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
       queueGuestBufferWrite(handle, worker, arg2, setBytes);
       queueGuestBufferWrite(handle, worker, arg3, setBytes);
     }
-  }
-
-  function resumePipePollTimeoutLocally(
-    handle: ProcessHandle,
-    worker: Worker,
-    blocked: BlockedWorkerState,
-    timeoutMs: number,
-  ): void {
-    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-retry-timeout-local:${handle.pid}`);
-    attachKernelRuntimeState(handle.kernel, handle.kernelState);
-    const blockedSyscallNr = handle.kernel.thread_blocked_syscall_nr?.(blocked.vmPtr) ?? 0n;
-    const blockedArg0 = handle.kernel.thread_blocked_syscall_arg?.(blocked.vmPtr, 0) ?? 0n;
-    const blockedArg1 = handle.kernel.thread_blocked_syscall_arg?.(blocked.vmPtr, 1) ?? 0n;
-    const blockedArg2 = handle.kernel.thread_blocked_syscall_arg?.(blocked.vmPtr, 2) ?? 0n;
-    const blockedArg3 = handle.kernel.thread_blocked_syscall_arg?.(blocked.vmPtr, 3) ?? 0n;
-    deps.advanceGuestTimeByMs(handle, timeoutMs);
-    resumeBlockedSyscallBySupervisor(handle.kernel, blocked.vmPtr, true);
-    queueBlockedPollWaitGuestMemoryWrites(
-      handle,
-      worker,
-      BigInt(blockedSyscallNr),
-      BigInt(blockedArg0),
-      BigInt(blockedArg1),
-      BigInt(blockedArg2),
-      BigInt(blockedArg3),
-    );
-    blocked.timeoutExpired = false;
-    handle.kernelState = readKernelRuntimeState(handle.kernel);
-    deps.handleBlockedRetryResult(
-      handle,
-      worker,
-      blocked.vmPtr,
-      handle.kernel.thread_status(blocked.vmPtr),
-    );
   }
 
   function blockedOrCurrentSyscallNr(handle: ProcessHandle, vmPtr: number): bigint | null {
@@ -626,7 +579,6 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
 
   return {
     queueBlockedPollWaitGuestMemoryWrites,
-    resumePipePollTimeoutLocally,
     blockedOrCurrentSyscallNr,
     pollWaitTimeoutMs,
     blockedPollPipeHasBufferedData,
