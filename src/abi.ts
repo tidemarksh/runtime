@@ -497,7 +497,6 @@ export interface KernelExports {
   thread_resume_poll_wait_timeout?(vm_ptr: number): void;
   thread_resume_socket_wait_timeout?(vm_ptr: number): void;
   thread_interrupt_epoll_wait?(vm_ptr: number, errno: number): number;
-  thread_resume_blocked_syscall(vm_ptr: number): bigint;
   thread_resume_sleep?(vm_ptr: number): void;
   thread_resume_connect_result(vm_ptr: number, result: bigint): void;
   thread_resume_connect_result_for_fd?(vm_ptr: number, fd: number, result: bigint): void;
