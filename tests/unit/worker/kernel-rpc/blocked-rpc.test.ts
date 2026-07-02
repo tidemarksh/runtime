@@ -169,7 +169,6 @@ test("blocked-rpc pipe EOF ignores stale active-child writer when canonical pipe
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -301,7 +300,6 @@ test("blocked-rpc defers EOF-after-wait while an exiting visible child still hol
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -427,7 +425,6 @@ test("blocked-rpc preserves canonical EOF retry when active-child writer defers 
   const blockedState = {
     vmPtr,
     status: kernel.abi_status_pipe_wait(),
-    retryTimer: null,
     rpcPending: false,
     pipeCanonicalEofReady: true,
   };
@@ -576,7 +573,6 @@ test("blocked-rpc pipe EOF uses current kernel pipe counters before stale shared
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -712,7 +708,6 @@ test("blocked-rpc preserves same-process pipe writer when blocked snapshot looke
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -844,7 +839,6 @@ test("blocked-rpc preserves same-process pipe reader before write EPIPE retry", 
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -973,7 +967,6 @@ test("blocked-rpc preserves same-process pipe reader when stale refcount would d
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -1069,7 +1062,6 @@ test("blocked-rpc defers pipe resume while self pipe sync is in flight", async (
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -1188,7 +1180,6 @@ test("blocked-rpc awaits newly queued self pipe sync before pipe resume", async 
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -1315,7 +1306,6 @@ test("blocked-rpc resumes EOF-pending pipe read despite in-flight self pipe sync
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -1426,7 +1416,6 @@ test("blocked-rpc resumes buffered pipe read despite in-flight self pipe sync", 
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -1536,7 +1525,6 @@ test("blocked-rpc skips ready self pipe sync before pipe read EOF resume", async
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
       pipeCanonicalEofReady: false,
     }]]),
@@ -1665,7 +1653,6 @@ test("blocked-rpc carries canonical EOF to next block after buffered pipe read w
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
       pipeCanonicalEofReady: false,
     }]]),
@@ -1766,7 +1753,6 @@ test("blocked-rpc skips redundant self pipe sync after canonical EOF retry", asy
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
       pipeCanonicalEofReady: true,
     }]]),
@@ -1881,7 +1867,6 @@ test("blocked-rpc skips pending fork-shared sync before canonical EOF retry", as
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
       pipeCanonicalEofReady: true,
     }]]),
@@ -2007,7 +1992,6 @@ test("blocked-rpc skips read-only peer pipe sync after canonical EOF retry", asy
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
       pipeCanonicalEofReady: true,
     }]]),
@@ -2159,7 +2143,6 @@ test("blocked-rpc skips owner-async peer pipe sync while peer FS continuation ow
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
       pipeCanonicalEofReady: false,
     }]]),
@@ -2191,7 +2174,6 @@ test("blocked-rpc skips owner-async peer pipe sync while peer FS continuation ow
     hostBlockedWorkers: new Map([[peerWorker, {
       vmPtr: peerVmPtr,
       status: kernel.abi_status_fs(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     exitInProgress: false,
@@ -2325,7 +2307,6 @@ test("blocked-rpc wakes owner-async OK peer that holds a blocked pipe writer", a
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
       pipeCanonicalEofReady: false,
     }]]),
@@ -2477,7 +2458,6 @@ test("blocked-rpc canonical EOF retry clears stale writer in resume snapshot", a
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
       pipeCanonicalEofReady: true,
     }]]),
@@ -2595,7 +2575,6 @@ test("blocked-rpc resumes non-poll pipe read EOF from canonical closed pipe stat
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -2713,7 +2692,6 @@ test("blocked-rpc resumes blocking open-empty pipe read while shared writer rema
         hostBlockedWorkers: new Map([[worker, {
           vmPtr,
           status: kernel.abi_status_pipe_wait(),
-          retryTimer: null,
           rpcPending: false,
         }]]),
         networkClosedFds: new Set(),
@@ -2844,7 +2822,6 @@ test("blocked-rpc defers blocking open-empty pipe read while active child may st
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -2953,7 +2930,6 @@ test("blocked-rpc resumes canonical pipe EOF when blocked syscall export returns
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -3061,7 +3037,6 @@ test("blocked-rpc resumes closed stdin EOF through fd-table fallback without pin
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -3173,7 +3148,6 @@ test("blocked-rpc clears stale pipe writer count before EOF-pending resume when 
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -3290,7 +3264,6 @@ test("blocked-rpc treats EOF-pending nonblocking open-empty pipe read as canonic
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -3400,7 +3373,6 @@ test("blocked-rpc resumes nonblocking open-empty pipe read in thread worker", as
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -3518,7 +3490,6 @@ test("blocked-rpc restores blocked worker local pipe endpoints when canonical sl
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -3621,7 +3592,6 @@ test("blocked-rpc aligns pipe OFD generation before canonical EOF resume", async
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -3724,7 +3694,6 @@ test("blocked-rpc does not preserve host stdin writer when stdin is explicitly c
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -3784,7 +3753,6 @@ test("kernel-rpc blocked-rpc helper owns local resume and returns a typed outcom
     hostBlockedWorkers: new Map([[worker, {
       vmPtr: 0x1234,
       status: 21,
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -3819,7 +3787,6 @@ test("kernel-rpc blocked-rpc helper owns local resume and returns a typed outcom
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
-    retryTimer: null,
     rpcPending: false,
   });
   await expect(helpers.executeHostBlockedSyscallResumeOutcome(handle, worker, 0x1234, 21)).resolves.toMatchObject({
@@ -3846,7 +3813,6 @@ test("kernel-rpc blocked-rpc outcome reports blocked while the worker remains bl
     hostBlockedWorkers: new Map([[worker, {
       vmPtr: 0x1234,
       status: 21,
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -3895,7 +3861,6 @@ test("kernel-rpc blocked-rpc outcome keeps ownership while continuation effects 
     hostBlockedWorkers: new Map([[worker, {
       vmPtr: 0x1234,
       status: 21,
-      retryTimer: null,
       rpcPending: false,
       rpcGeneration: 4,
     }]]),
@@ -3978,7 +3943,6 @@ test("blocked-rpc does not resume poll hup when pselect watches no pipe slots", 
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -4082,7 +4046,6 @@ test("blocked-rpc resumes pselect pipe HUP through blocked fd fallback", async (
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -4226,7 +4189,6 @@ test("blocked-rpc resumes pselect pipe HUP when a stale local writer remains vis
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -4379,7 +4341,6 @@ test("blocked-rpc clears stale local writer before mixed socket pipe pselect ret
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: kernel.abi_status_pipe_wait(),
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
@@ -4441,7 +4402,6 @@ test("kernel-rpc blocked-rpc outcome reports retry effect without running schedu
     hostBlockedWorkers: new Map([[worker, {
       vmPtr: 0x1234,
       status: 21,
-      retryTimer: null,
       rpcPending: false,
     }]]),
     networkClosedFds: new Set(),

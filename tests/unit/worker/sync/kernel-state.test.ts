@@ -255,7 +255,6 @@ function makeHandle(pid: number, fdMap: Map<number, number>): ProcessHandle {
     hostBlockedWorkers: new Map([[{} as Worker, {
       vmPtr: 0x1234,
       status: 0,
-      retryTimer: null,
       rpcPending: false,
       rpcGeneration: 0,
       skipNextNetworkPump: false,

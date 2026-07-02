@@ -50,6 +50,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   const { threadWorkerStates } = deps;
   const pipeChildExitResumeKeys = new WeakMap<ProcessHandle, Map<number, string>>();
   const supervisorArmedBlockedTimers = new WeakSet<HostBlockedWorkerState>();
+  const hostBlockedRetryTimers = new WeakMap<HostBlockedWorkerState, ReturnType<typeof setTimeout>>();
 
   function consumeKernelRpcResumeOutcome(
     handle: ProcessHandle,
@@ -223,6 +224,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
     appendWorkerDebugLog,
     blockWorker,
+    clearHostBlockedRetryTimer,
     completeProcessExit: deps.completeProcessExit,
     failProcess: deps.failProcess,
     handleWorkerMessage: deps.handleWorkerMessage,
@@ -239,10 +241,39 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (!blocked) {
       return;
     }
-    if (blocked.retryTimer !== null) {
-      clearTimeout(blocked.retryTimer);
-    }
+    clearHostBlockedRetryTimer(handle, worker);
     handle.hostBlockedWorkers.delete(worker);
+  }
+
+  function clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void {
+    const blocked = handle.hostBlockedWorkers.get(worker);
+    if (!blocked) {
+      return;
+    }
+    const timer = hostBlockedRetryTimers.get(blocked);
+    if (timer === undefined) {
+      return;
+    }
+    clearTimeout(timer);
+    hostBlockedRetryTimers.delete(blocked);
+  }
+
+  function scheduleHostBlockedRetry(
+    handle: ProcessHandle,
+    worker: Worker,
+    delayMs = 10,
+  ): void {
+    const blocked = handle.hostBlockedWorkers.get(worker);
+    if (!blocked || hostBlockedRetryTimers.has(blocked)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (hostBlockedRetryTimers.get(blocked) === timer) {
+        hostBlockedRetryTimers.delete(blocked);
+      }
+      retryHostBlockedWorker(handle, worker);
+    }, delayMs);
+    hostBlockedRetryTimers.set(blocked, timer);
   }
 
   function parkSupervisorOwnedFutexWait(
@@ -321,10 +352,11 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     clearStaleRunningWorker,
     finishBlockedRpc,
     observeForkSharedSyncCompletion,
-    scheduleHostBlockedRetry,
   } = createRunLoopScheduler({
     threadWorkerStates,
     retryHostBlockedWorker,
+    clearHostBlockedRetryTimer,
+    scheduleHostBlockedRetry,
   });
   const {
     canScheduleWorker,
@@ -848,7 +880,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     const blocked: HostBlockedWorkerState = {
       vmPtr,
       status,
-      retryTimer: null,
       rpcPending: sameBlockedThread ? previousBlocked.rpcPending : false,
       rpcGeneration: sameBlockedThread ? previousBlocked.rpcGeneration : 0,
       skipNextNetworkPump: sameBlockedThread ? previousBlocked.skipNextNetworkPump : false,
@@ -1747,6 +1778,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     attachThreadWorker,
     blockWorker,
     clearBlockedWorker,
+    clearHostBlockedRetryTimer,
     enqueueWorker,
     handleHostBlockedRetryResult,
     notifySchedulerProgress,

@@ -119,6 +119,7 @@ interface WorkerSchedulerQueueDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
+  clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void;
   completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number, exitVmPtr?: number): Promise<void>;
   failProcess(handle: ProcessHandle, error: Error): void;
   handleWorkerMessage(handle: ProcessHandle, worker: Worker, msg: ThreadWorkerOutbound): void;
@@ -307,14 +308,12 @@ function removeVforkReadyWorker(handle: ProcessHandle, worker: Worker): void {
   }
 }
 
-function clearBlockedWorker(handle: ProcessHandle, worker: Worker): void {
+function clearBlockedWorker(deps: WorkerSchedulerQueueDeps, handle: ProcessHandle, worker: Worker): void {
   const blocked = handle.hostBlockedWorkers.get(worker);
   if (!blocked) {
     return;
   }
-  if (blocked.retryTimer !== null) {
-    clearTimeout(blocked.retryTimer);
-  }
+  deps.clearHostBlockedRetryTimer(handle, worker);
   handle.hostBlockedWorkers.delete(worker);
 }
 
@@ -523,7 +522,7 @@ export function createWorkerSchedulerQueueHelpers(
       );
       return null;
     }
-    clearBlockedWorker(handle, selectedWorker);
+    clearBlockedWorker(deps, handle, selectedWorker);
     removeVforkReadyWorker(handle, selectedWorker);
     selectedThread.waitingInWorkerStatus = null;
     selectedThread.runningGeneration = null;
@@ -801,7 +800,7 @@ export function createWorkerSchedulerQueueHelpers(
 
   function detachTransferredWorker(handle: ProcessHandle, worker: Worker): void {
     const thread = deps.threadWorkerStates.get(worker);
-    clearBlockedWorker(handle, worker);
+    clearBlockedWorker(deps, handle, worker);
     removeVforkReadyWorker(handle, worker);
     if (handle.runningWorker === worker) {
       handle.runningWorker = null;
@@ -828,7 +827,7 @@ export function createWorkerSchedulerQueueHelpers(
       && existingThread.ownerPid === handle.pid;
     if (existingThread) {
       if (reinitWithinHandle) {
-        clearBlockedWorker(handle, worker);
+        clearBlockedWorker(deps, handle, worker);
         removeVforkReadyWorker(handle, worker);
         if (handle.runningWorker === worker) {
           handle.runningWorker = null;

@@ -1076,7 +1076,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-done:${handle.pid}:status=${status}`);
             finishStatusTransitionRpc(handle, worker, thread.vmPtr, rpcGeneration);
             if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
-              handle.hostBlockedWorkers.delete(worker);
+              deps.clearBlockedWorker(handle, worker);
               return;
             }
             if (

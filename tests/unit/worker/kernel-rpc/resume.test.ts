@@ -115,6 +115,7 @@ function createWorkerKernelRpcLocalBlockedRpcHelpers(
     appendWorkerDebugLog: deps.appendWorkerDebugLog,
     enqueueWorker: deps.enqueueWorker,
     failProcess: deps.failProcess,
+    clearHostBlockedRetryTimer: deps.clearHostBlockedRetryTimer,
     handleHostBlockedRetryResult: deps.handleHostBlockedRetryResult,
     requestPipeStateSync: deps.requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker: deps.syncBlockedForkSharedStateViaKernelWorker,
@@ -175,7 +176,6 @@ test("resumeWait4ViaKernelWorker does not re-run local wait4 after kernel-worker
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 31,
-    retryTimer: null,
     rpcPending: true,
   });
 
@@ -267,7 +267,6 @@ test("resumeWait4ViaKernelWorker skips RPC when local wait4 already resolved", a
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 31,
-    retryTimer: null,
     rpcPending: true,
   });
 
@@ -469,7 +468,6 @@ test("executeHostBlockedSyscallResume skips kernel-worker shared-state syncs dur
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 29,
-    retryTimer: null,
     rpcPending: true,
   });
 
@@ -494,6 +492,7 @@ test("executeHostBlockedSyscallResume skips kernel-worker shared-state syncs dur
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
+    clearHostBlockedRetryTimer: () => {},
     handleHostBlockedRetryResult,
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
@@ -590,7 +589,6 @@ test("executeHostBlockedSyscallResume queues pselect fd_set writes after owner-s
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
-    retryTimer: null,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -744,7 +742,6 @@ test("executeHostBlockedSyscallResume retries pselect pipe HUP owner-side after 
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
-    retryTimer: null,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -897,7 +894,6 @@ test("executeHostBlockedSyscallResume resumes pselect pipe HUP before generic af
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
-    retryTimer: null,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -1051,7 +1047,6 @@ test("executeHostBlockedSyscallResume retries mixed socket pipe pselect HUP owne
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
-    retryTimer: null,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -1176,7 +1171,6 @@ test("executeHostBlockedSyscallResumeOutcome returns pipe sync effect before rea
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
-    retryTimer: null,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -1302,7 +1296,6 @@ test("executeHostBlockedSyscallResumeOutcome returns socket sync effect without 
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
-    retryTimer: null,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -1331,6 +1324,7 @@ test("executeHostBlockedSyscallResumeOutcome returns socket sync effect without 
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
+    clearHostBlockedRetryTimer: () => {},
     handleHostBlockedRetryResult: () => {},
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
@@ -1409,7 +1403,6 @@ test("executeHostBlockedSyscallResume wakes pipe waiters through requestPipeStat
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
-    retryTimer: null,
     rpcPending: true,
   });
 
@@ -1541,7 +1534,6 @@ test("executeHostBlockedSyscallResume resumes pipe EOF after writers close even 
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
-    retryTimer: null,
     rpcPending: true,
   });
 
@@ -1704,7 +1696,6 @@ test("executeHostBlockedSyscallResume defers poll readiness while an active chil
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
-    retryTimer: null,
     rpcPending: true,
   });
 
@@ -1859,7 +1850,6 @@ test("executeHostBlockedSyscallResume ignores exiting child pipe writers for pse
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
-    retryTimer: null,
     rpcPending: true,
   });
 
@@ -2017,7 +2007,6 @@ test("executeHostBlockedSyscallResume completes pselect HUP marker despite an ac
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
-    retryTimer: null,
     rpcPending: true,
   });
 
@@ -2136,7 +2125,6 @@ test("executeHostBlockedSyscallResume collapses pipe read that becomes ready aft
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
-    retryTimer: null,
     rpcPending: true,
   });
 
@@ -2260,7 +2248,6 @@ test("executeHostBlockedSyscallResume queues the full socket read buffer after o
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 29,
-    retryTimer: null,
     rpcPending: true,
   });
 
@@ -2398,6 +2385,7 @@ test("resumeFsViaKernelWorker skips memfs sync during active vfork child ownersh
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
+    clearHostBlockedRetryTimer: () => {},
     handleHostBlockedRetryResult: () => {},
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty,
@@ -2577,6 +2565,7 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
+    clearHostBlockedRetryTimer: () => {},
     handleHostBlockedRetryResult: () => {},
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
@@ -2721,6 +2710,7 @@ test("resumeFsViaKernelWorker routes execve spawn before parent fd integrity che
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
+    clearHostBlockedRetryTimer: () => {},
     handleHostBlockedRetryResult: () => {},
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
@@ -2837,6 +2827,7 @@ test("resumeFsViaKernelWorker applies fd entries returned by kernel-worker fs pr
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
+    clearHostBlockedRetryTimer: () => {},
     handleHostBlockedRetryResult: () => {},
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},

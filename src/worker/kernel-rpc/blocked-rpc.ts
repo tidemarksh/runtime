@@ -43,6 +43,7 @@ export interface WorkerKernelRpcBlockedRpcDeps {
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   failProcess(handle: ProcessHandle, error: Error): void;
+  clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void;
   handleHostBlockedRetryResult(handle: ProcessHandle, worker: Worker, vmPtr: number, status: number): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   syncBlockedForkSharedStateViaKernelWorker(handle: ProcessHandle, sourceVmPtr: number | undefined, cause: SyncCause): Promise<void>;
@@ -1632,10 +1633,7 @@ async function executeHostBlockedSyscallResume(
       if (!blocked || blocked.vmPtr !== vmPtr) {
         return;
       }
-      if (blocked.retryTimer !== null) {
-        clearTimeout(blocked.retryTimer);
-        blocked.retryTimer = null;
-      }
+      deps.clearHostBlockedRetryTimer(handle, worker);
       const thread = deps.threadWorkerStates.get(worker);
       if (!thread) {
         return;
@@ -1693,10 +1691,7 @@ async function executeHostBlockedSyscallResume(
       if (!blocked || blocked.vmPtr !== vmPtr) {
         return;
       }
-      if (blocked.retryTimer !== null) {
-        clearTimeout(blocked.retryTimer);
-        blocked.retryTimer = null;
-      }
+      deps.clearHostBlockedRetryTimer(handle, worker);
       const thread = deps.threadWorkerStates.get(worker);
       if (!thread) {
         return;
@@ -1848,10 +1843,7 @@ async function executeHostBlockedSyscallResume(
       if (!blocked || blocked.vmPtr !== vmPtr) {
         return;
       }
-      if (blocked.retryTimer !== null) {
-        clearTimeout(blocked.retryTimer);
-        blocked.retryTimer = null;
-      }
+      deps.clearHostBlockedRetryTimer(handle, worker);
       const thread = deps.threadWorkerStates.get(worker);
       if (!thread) {
         return;
@@ -2228,6 +2220,12 @@ export function createWorkerKernelRpcBlockedRpcHelpers(deps: WorkerKernelRpcBloc
   return { executeHostBlockedSyscallResumeOutcome };
 }
 
-export function createWorkerKernelRpcBlockedRpcTestHelpers(deps: WorkerKernelRpcBlockedRpcDeps) {
-  return createWorkerKernelRpcBlockedRpcHelperInternals(deps);
+export function createWorkerKernelRpcBlockedRpcTestHelpers(
+  deps: Omit<WorkerKernelRpcBlockedRpcDeps, "clearHostBlockedRetryTimer">
+    & Partial<Pick<WorkerKernelRpcBlockedRpcDeps, "clearHostBlockedRetryTimer">>,
+) {
+  return createWorkerKernelRpcBlockedRpcHelperInternals({
+    ...deps,
+    clearHostBlockedRetryTimer: deps.clearHostBlockedRetryTimer ?? (() => {}),
+  });
 }

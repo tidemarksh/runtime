@@ -157,7 +157,6 @@ export function recordWorkerMessageDebugEvent(
 export interface HostBlockedWorkerState {
   vmPtr: number;
   status: number;
-  retryTimer: ReturnType<typeof setTimeout> | null;
   rpcPending: boolean;
   rpcGeneration: number;
   skipNextNetworkPump: boolean;

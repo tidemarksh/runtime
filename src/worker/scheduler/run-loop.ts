@@ -11,6 +11,8 @@ export function logNetworkDebug(_event: string): void {
 export interface RunLoopSchedulerDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   retryHostBlockedWorker(handle: ProcessHandle, worker: Worker): void;
+  clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void;
+  scheduleHostBlockedRetry(handle: ProcessHandle, worker: Worker, delayMs?: number): void;
 }
 
 export interface RunLoopScheduler {
@@ -27,11 +29,6 @@ export interface RunLoopScheduler {
     promise: Promise<void>,
   ): void;
   clearStaleRunningWorker(handle: ProcessHandle, blockedWorker: Worker): boolean;
-  scheduleHostBlockedRetry(
-    handle: ProcessHandle,
-    worker: Worker,
-    delayMs?: number,
-  ): void;
 }
 
 export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopScheduler {
@@ -61,21 +58,6 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     return latestBlocked;
   }
 
-  function scheduleHostBlockedRetry(
-    handle: ProcessHandle,
-    worker: Worker,
-    delayMs = 10,
-  ): void {
-    const blocked = handle.hostBlockedWorkers.get(worker);
-    if (!blocked || blocked.retryTimer !== null) {
-      return;
-    }
-    blocked.retryTimer = setTimeout(() => {
-      blocked.retryTimer = null;
-      deps.retryHostBlockedWorker(handle, worker);
-    }, delayMs);
-  }
-
   function observeForkSharedSyncCompletion(
     handle: ProcessHandle,
     worker: Worker,
@@ -96,11 +78,8 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
       if (!blocked) {
         return;
       }
-      if (blocked.retryTimer !== null) {
-        clearTimeout(blocked.retryTimer);
-        blocked.retryTimer = null;
-      }
-      scheduleHostBlockedRetry(handle, worker, 0);
+      deps.clearHostBlockedRetryTimer(handle, worker);
+      deps.scheduleHostBlockedRetry(handle, worker, 0);
     };
     promise.then(onSettled, onSettled);
   }
@@ -131,6 +110,5 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     finishBlockedRpc,
     observeForkSharedSyncCompletion,
     clearStaleRunningWorker,
-    scheduleHostBlockedRetry,
   };
 }

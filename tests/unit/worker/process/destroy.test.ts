@@ -64,7 +64,6 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
     hostBlockedWorkers: new Map([[extraWorker, {
       vmPtr: 0x2222,
       status: 6,
-      retryTimer: null,
       rpcPending: false,
     }]]),
     pipeSyncPromise: null,

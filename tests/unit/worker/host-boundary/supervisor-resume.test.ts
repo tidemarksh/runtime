@@ -22,6 +22,7 @@ function makeQueue(threadWorkerStates: WeakMap<Worker, ReturnType<typeof makeHos
       debugEvents.push(event);
     },
     blockWorker: () => {},
+    clearHostBlockedRetryTimer: () => {},
     completeProcessExit: async () => {},
     failProcess: (_handle, error) => {
       throw error;
@@ -140,7 +141,6 @@ test("host boundary consumes process-scoped supervisor runnable resume decisions
   handle.hostBlockedWorkers.set(selectedWorker, {
     vmPtr: selectedThread.vmPtr,
     status: kernel.abi_status_futex_wait(),
-    retryTimer: null,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
