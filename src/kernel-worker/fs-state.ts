@@ -1,5 +1,9 @@
 import type { KernelExports } from "../abi.js";
-import type { FileBackingStat } from "../fs/sab-page-cache.js";
+import type {
+  DirtyResidentPageDecision,
+  FileBackingStat,
+  ResidentDirtyPageAuthority,
+} from "../fs/sab-page-cache.js";
 import type { FsSnapshotBackingExtent, FsSnapshotEntry, RuntimeStat } from "../fs/types.js";
 import {
   collectDirtyResidentFileWritebackRanges,
@@ -214,6 +218,112 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       return;
     }
     backingExtentsByIno.set(ino, { ...backingExtent });
+  }
+
+  function supervisorNumber(value: bigint | number | undefined): number {
+    const numeric = typeof value === "bigint" ? Number(value) : value;
+    if (typeof numeric !== "number" || !Number.isSafeInteger(numeric)) {
+      throw new RangeError(`invalid supervisor fs decision value: ${String(value)}`);
+    }
+    return numeric;
+  }
+
+  function readSupervisorDirtyPageDecision(
+    sourceExports: KernelExports,
+    result: bigint | number,
+  ): DirtyResidentPageDecision {
+    const resultNumber = supervisorNumber(result);
+    if (resultNumber < 0) {
+      return {
+        result: resultNumber,
+        nextSize: 0,
+        fileObjectId: 0,
+        generation: 0,
+      };
+    }
+    return {
+      result: resultNumber,
+      nextSize: supervisorNumber(sourceExports.supervisor_fs_dirty_page_decision_next_size?.()),
+      fileObjectId: supervisorNumber(sourceExports.supervisor_fs_dirty_page_decision_file_object_id?.()),
+      generation: supervisorNumber(sourceExports.supervisor_fs_dirty_page_decision_generation?.()),
+    };
+  }
+
+  function supervisorDirtyPageAuthority(sourceExports: KernelExports): ResidentDirtyPageAuthority {
+    const decide = sourceExports.supervisor_fs_dirty_page_decision;
+    if (typeof decide !== "function") {
+      throw new Error("missing supervisor_fs_dirty_page_decision export");
+    }
+    return {
+      decideWrite(input) {
+        return readSupervisorDirtyPageDecision(
+          sourceExports,
+          decide(
+            sourceExports.supervisor_fs_dirty_page_op_write?.() ?? 1,
+            input.ino,
+            BigInt(input.offset),
+            BigInt(input.length),
+            BigInt(input.currentSize),
+            BigInt(input.currentFileObjectId),
+            BigInt(input.currentGeneration),
+            input.existingDirtyPages,
+            input.newDirtyPages,
+            input.residentPageCapacity,
+            0,
+          ),
+        );
+      },
+      decideTruncate(input) {
+        return readSupervisorDirtyPageDecision(
+          sourceExports,
+          decide(
+            sourceExports.supervisor_fs_dirty_page_op_truncate?.() ?? 2,
+            input.ino,
+            0n,
+            BigInt(input.size),
+            BigInt(input.currentSize),
+            BigInt(input.currentFileObjectId),
+            BigInt(input.currentGeneration),
+            0,
+            input.retainedDirtyPages,
+            input.residentPageCapacity,
+            0,
+          ),
+        );
+      },
+    };
+  }
+
+  function supervisorDirtyFlushRequired(
+    sourceExports: KernelExports,
+    ino: number,
+    record: { size: number; fileObjectId: number; generation: number },
+    hasDirtyPages: boolean,
+    pageMapNewer: boolean,
+  ): boolean {
+    const decide = sourceExports.supervisor_fs_dirty_page_decision;
+    if (typeof decide !== "function") {
+      throw new Error("missing supervisor_fs_dirty_page_decision export");
+    }
+    const result = supervisorNumber(decide(
+      sourceExports.supervisor_fs_dirty_page_op_flush?.() ?? 3,
+      ino,
+      0n,
+      0n,
+      BigInt(record.size),
+      BigInt(record.fileObjectId),
+      BigInt(record.generation),
+      0,
+      hasDirtyPages ? 1 : 0,
+      0,
+      pageMapNewer ? 1 : 0,
+    ));
+    if (result < 0) {
+      throw new Error(`supervisor dirty flush decision failed: ${result}`);
+    }
+    const flags = sourceExports.supervisor_fs_dirty_page_decision_flags?.() ?? 0;
+    const writebackRequired = sourceExports.supervisor_fs_dirty_page_flag_writeback_required?.() ?? 4;
+    return (flags & writebackRequired) !== 0;
   }
 
   function clearSeedBackingExtentForInode(ino: number): void {
@@ -481,7 +591,14 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
           ...backingMetaForInode(ino),
         });
       }
-      const written = writeDirtyResidentFileData(deps.getSabPageCache(), ino, offset, data, readBackingFileRangeByInode);
+      const written = writeDirtyResidentFileData(
+        deps.getSabPageCache(),
+        ino,
+        offset,
+        data,
+        readBackingFileRangeByInode,
+        supervisorDirtyPageAuthority(sourceExports),
+      );
       if (written >= 0) {
         clearSeedBackingExtentForInode(ino);
       }
@@ -497,12 +614,30 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     }
     const sab = deps.getSabPageCache();
     const hasDirtyPages = hasDirtyResidentPagesForInode(sab, ino);
-    if (!hasDirtyPages && !residentPageMapIsNewerThanBacking(ino)) {
-      return true;
-    }
+    const pageMapNewer = residentPageMapIsNewerThanBacking(ino);
     const record = readInodeRecord(sab, ino);
-    if (!record) {
+    const supervisorRecord = record ?? {
+      size: Number(deps.getCanonicalExports().memfs_file_size(ino)),
+      fileObjectId: 0,
+      generation: 0,
+    };
+    let shouldFlush = false;
+    try {
+      shouldFlush = supervisorDirtyFlushRequired(
+        deps.getCanonicalExports(),
+        ino,
+        supervisorRecord,
+        hasDirtyPages,
+        pageMapNewer,
+      );
+    } catch {
       return false;
+    }
+    if (!record) {
+      return !shouldFlush;
+    }
+    if (!shouldFlush) {
+      return true;
     }
     const ranges = hasDirtyPages ? collectDirtyResidentFileWritebackRanges(sab, ino) : [];
     if (!ranges) {
@@ -545,6 +680,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         ino,
         size,
         readCleanBackingFileRangeByInode,
+        supervisorDirtyPageAuthority(deps.getCanonicalExports()),
       );
       if (truncated >= 0) {
         clearSeedBackingExtentForInode(ino);

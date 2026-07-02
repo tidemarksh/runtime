@@ -11,6 +11,7 @@ import {
   readInodeMeta,
   readInodeRecord,
   readResidentFileData,
+  type ResidentDirtyPageAuthority,
   truncateDirtyResidentFileData,
   writeDirtyResidentFileData,
 } from "../../../src/fs/sab-page-cache.js";
@@ -21,6 +22,40 @@ const RESIDENT_PAGE_RECORD_VERSION = 0;
 const RESIDENT_PAGE_RECORD_FILE_OBJECT_ID = 4;
 const RESIDENT_PAGE_RECORD_PAGE_INDEX = 8;
 const RESIDENT_PAGE_RECORD_GENERATION = 20;
+
+const fakeSupervisorDirtyPageAuthority: ResidentDirtyPageAuthority = {
+  decideWrite(input) {
+    const end = input.offset + input.length;
+    if (input.ino <= 0 || input.length <= 0 || end > 0xffffffff) {
+      return { result: -22, nextSize: 0, fileObjectId: 0, generation: 0 };
+    }
+    if (input.existingDirtyPages + input.newDirtyPages > input.residentPageCapacity) {
+      return { result: -28, nextSize: 0, fileObjectId: 0, generation: 0 };
+    }
+    return {
+      result: input.length,
+      nextSize: Math.max(input.currentSize, end),
+      fileObjectId: input.currentFileObjectId || input.ino,
+      generation: input.currentFileObjectId === 0
+        ? input.currentGeneration + 1
+        : input.currentGeneration,
+    };
+  },
+  decideTruncate(input) {
+    if (input.ino <= 0 || input.size < 0 || input.size > 0xffffffff) {
+      return { result: -22, nextSize: 0, fileObjectId: 0, generation: 0 };
+    }
+    if (input.retainedDirtyPages > input.residentPageCapacity) {
+      return { result: -28, nextSize: 0, fileObjectId: 0, generation: 0 };
+    }
+    return {
+      result: 0,
+      nextSize: input.size,
+      fileObjectId: input.currentFileObjectId || input.ino,
+      generation: input.currentGeneration + 1,
+    };
+  },
+};
 
 test("memory atomic notify accepts wasm64 BigInt pointers", () => {
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
@@ -390,10 +425,23 @@ test("page-cache write publishes dirty resident data without updating backing da
   const env = createKernelEnv(memory, {
     sabPageCache: sab,
     truncateResidentFileDataByInode: (ino, size) => (
-      truncateDirtyResidentFileData(sab, ino, size, (_ino, offset, length) => backing.subarray(offset, offset + length))
+      truncateDirtyResidentFileData(
+        sab,
+        ino,
+        size,
+        (_ino, offset, length) => backing.subarray(offset, offset + length),
+        fakeSupervisorDirtyPageAuthority,
+      )
     ),
     writeResidentFileDataByInode: (ino, offset, data) => (
-      writeDirtyResidentFileData(sab, ino, offset, data, (_ino, offset, length) => backing.subarray(offset, offset + length))
+      writeDirtyResidentFileData(
+        sab,
+        ino,
+        offset,
+        data,
+        (_ino, offset, length) => backing.subarray(offset, offset + length),
+        fakeSupervisorDirtyPageAuthority,
+      )
     ),
   });
 
@@ -483,7 +531,8 @@ test("publishInode preserves dirty residents across metadata-only updates", () =
     generation: 1,
   });
   expect(publishResidentPage(sab, 2, 0, initial)).toBe(true);
-  expect(writeDirtyResidentFileData(sab, 2, 1, dirty)).toBe(dirty.length);
+  expect(writeDirtyResidentFileData(sab, 2, 1, dirty, undefined, fakeSupervisorDirtyPageAuthority))
+    .toBe(dirty.length);
   expect(debugResidentPageCountForInode(sab, 2)).toBe(1);
   const dirtyRecord = readInodeRecord(sab, 2);
   expect(dirtyRecord?.generation).toBe(1);

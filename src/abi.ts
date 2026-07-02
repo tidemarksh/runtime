@@ -210,6 +210,12 @@ export interface KernelExports {
   supervisor_fs_control_kind_page_cache_fill?(): number;
   supervisor_fs_control_kind_dirty_page_published?(): number;
   supervisor_fs_control_kind_dirty_page_flushed?(): number;
+  supervisor_fs_dirty_page_op_write?(): number;
+  supervisor_fs_dirty_page_op_truncate?(): number;
+  supervisor_fs_dirty_page_op_flush?(): number;
+  supervisor_fs_dirty_page_flag_update_inode?(): number;
+  supervisor_fs_dirty_page_flag_publish_dirty?(): number;
+  supervisor_fs_dirty_page_flag_writeback_required?(): number;
   supervisor_fs_completion_flag_memfs_dirty?(): number;
   supervisor_fs_completion_flag_memfs_publish_ready?(): number;
   supervisor_fs_completion_flag_ofd_state_changed?(): number;
@@ -302,6 +308,23 @@ export interface KernelExports {
   supervisor_fs_pending_backing_fill_opcode?(vmPtr: number): number;
   supervisor_fs_pending_mmap_guest_write_ptr?(vmPtr: number): bigint | number;
   supervisor_fs_pending_mmap_guest_write_len?(vmPtr: number): bigint | number;
+  supervisor_fs_dirty_page_decision?(
+    op: number,
+    ino: number,
+    offset: bigint | number,
+    lengthOrSize: bigint | number,
+    currentSize: bigint | number,
+    currentFileObjectId: bigint | number,
+    currentGeneration: bigint | number,
+    existingDirtyPages: number,
+    deltaDirtyPages: number,
+    residentPageCapacity: number,
+    pageMapNewer: number,
+  ): bigint | number;
+  supervisor_fs_dirty_page_decision_next_size?(): bigint | number;
+  supervisor_fs_dirty_page_decision_file_object_id?(): bigint | number;
+  supervisor_fs_dirty_page_decision_generation?(): bigint | number;
+  supervisor_fs_dirty_page_decision_flags?(): number;
   supervisor_fs_completion_decision?(
     vmPtr: number,
     opcode: number,
@@ -1244,6 +1267,12 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_control_kind_page_cache_fill",
   "supervisor_fs_control_kind_dirty_page_published",
   "supervisor_fs_control_kind_dirty_page_flushed",
+  "supervisor_fs_dirty_page_op_write",
+  "supervisor_fs_dirty_page_op_truncate",
+  "supervisor_fs_dirty_page_op_flush",
+  "supervisor_fs_dirty_page_flag_update_inode",
+  "supervisor_fs_dirty_page_flag_publish_dirty",
+  "supervisor_fs_dirty_page_flag_writeback_required",
   "supervisor_signal_control_kind_boundary_check",
   "supervisor_signal_control_kind_signal_delivered",
   "supervisor_signal_control_kind_blocked_wait_interrupted",
@@ -1331,6 +1360,11 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_pending_backing_fill_opcode",
   "supervisor_fs_pending_mmap_guest_write_ptr",
   "supervisor_fs_pending_mmap_guest_write_len",
+  "supervisor_fs_dirty_page_decision",
+  "supervisor_fs_dirty_page_decision_next_size",
+  "supervisor_fs_dirty_page_decision_file_object_id",
+  "supervisor_fs_dirty_page_decision_generation",
+  "supervisor_fs_dirty_page_decision_flags",
   "supervisor_signal_control_record",
   "supervisor_debug_snapshot",
   "supervisor_thread_state_snapshot",

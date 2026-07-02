@@ -767,6 +767,40 @@ export interface DirtyResidentWritebackRange {
   bytes: Uint8Array;
 }
 
+export interface DirtyResidentWriteDecisionInput {
+  ino: number;
+  offset: number;
+  length: number;
+  currentSize: number;
+  currentFileObjectId: number;
+  currentGeneration: number;
+  existingDirtyPages: number;
+  newDirtyPages: number;
+  residentPageCapacity: number;
+}
+
+export interface DirtyResidentTruncateDecisionInput {
+  ino: number;
+  size: number;
+  currentSize: number;
+  currentFileObjectId: number;
+  currentGeneration: number;
+  retainedDirtyPages: number;
+  residentPageCapacity: number;
+}
+
+export interface DirtyResidentPageDecision {
+  result: number;
+  nextSize: number;
+  fileObjectId: number;
+  generation: number;
+}
+
+export interface ResidentDirtyPageAuthority {
+  decideWrite(input: DirtyResidentWriteDecisionInput): DirtyResidentPageDecision;
+  decideTruncate(input: DirtyResidentTruncateDecisionInput): DirtyResidentPageDecision;
+}
+
 function collectResidentPageSnapshots(
   sab: SharedArrayBuffer,
   meta: { fileObjectId: number; generation: number },
@@ -981,6 +1015,7 @@ export function writeDirtyResidentFileData(
   offset: number,
   data: Uint8Array,
   readBackingRange?: ResidentBackingRangeReader,
+  authority?: ResidentDirtyPageAuthority,
 ): number {
   if (!Number.isInteger(ino) || ino <= 0 || ino >= MAX_INODES || offset < 0) {
     return -22;
@@ -1038,13 +1073,34 @@ export function writeDirtyResidentFileData(
     touchedPages.add(pageIndex);
   }
 
-  const fileObjectId = record.fileObjectId || ino;
-  const generation = record.fileObjectId === 0 ? record.generation + 1 : record.generation;
   const existingDirtyPageCount = meta ? dirtyResidentPageCount(sab, meta) : 0;
-  if (existingDirtyPageCount + newDirtyPageCount > residentPageRecordCount(sab)) {
-    return -28;
+  if (!authority) {
+    return -95;
   }
-  if (!updateInodeForResidentPages(sab, ino, record, nextSize, fileObjectId, generation)) {
+  const decision = authority.decideWrite({
+    ino,
+    offset,
+    length: data.length,
+    currentSize: record.size,
+    currentFileObjectId: record.fileObjectId,
+    currentGeneration: record.generation,
+    existingDirtyPages: existingDirtyPageCount,
+    newDirtyPages: newDirtyPageCount,
+    residentPageCapacity: residentPageRecordCount(sab),
+  });
+  if (decision.result < 0) {
+    return decision.result;
+  }
+  if (
+    !updateInodeForResidentPages(
+      sab,
+      ino,
+      record,
+      decision.nextSize,
+      decision.fileObjectId,
+      decision.generation,
+    )
+  ) {
     return -28;
   }
   for (const page of residentPages.values()) {
@@ -1060,7 +1116,7 @@ export function writeDirtyResidentFileData(
       return -28;
     }
   }
-  return data.length;
+  return decision.result;
 }
 
 export function truncateDirtyResidentFileData(
@@ -1068,6 +1124,7 @@ export function truncateDirtyResidentFileData(
   ino: number,
   size: number,
   readBackingRange?: ResidentBackingRangeReader,
+  authority?: ResidentDirtyPageAuthority,
 ): number {
   if (!Number.isInteger(ino) || ino <= 0 || ino >= MAX_INODES || size < 0 || size > 0xffffffff) {
     return -22;
@@ -1122,13 +1179,32 @@ export function truncateDirtyResidentFileData(
       dirtyEnd: validBytes,
     });
   }
-  const fileObjectId = record.fileObjectId || ino;
-  const generation = record.generation + 1;
   const retainedDirtyPages = [...residentPages.values()].filter((page) => page.pageIndex * DEFAULT_RESIDENT_PAGE_SIZE < size);
-  if (retainedDirtyPages.length > residentPageRecordCount(sab)) {
-    return -28;
+  if (!authority) {
+    return -95;
   }
-  if (!updateInodeForResidentPages(sab, ino, record, size, fileObjectId, generation)) {
+  const decision = authority.decideTruncate({
+    ino,
+    size,
+    currentSize: record.size,
+    currentFileObjectId: record.fileObjectId,
+    currentGeneration: record.generation,
+    retainedDirtyPages: retainedDirtyPages.length,
+    residentPageCapacity: residentPageRecordCount(sab),
+  });
+  if (decision.result < 0) {
+    return decision.result;
+  }
+  if (
+    !updateInodeForResidentPages(
+      sab,
+      ino,
+      record,
+      decision.nextSize,
+      decision.fileObjectId,
+      decision.generation,
+    )
+  ) {
     return -28;
   }
   for (const page of retainedDirtyPages) {
@@ -1149,7 +1225,7 @@ export function truncateDirtyResidentFileData(
       return -28;
     }
   }
-  return 0;
+  return decision.result;
 }
 
 export function readDirtyResidentFileData(

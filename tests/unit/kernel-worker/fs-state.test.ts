@@ -63,6 +63,13 @@ function makeKernelExports(): FakeKernelExports {
   let nextIno = 2;
   let reservedIno: number | null = null;
   let heapPtr = 0x10000;
+  let lastDirtyPageDecision = {
+    result: 0,
+    nextSize: 0,
+    fileObjectId: 0,
+    generation: 0,
+    flags: 0,
+  };
 
   function putRecord(record: InodeRecord): void {
     recordsByPath.set(record.path, record);
@@ -97,6 +104,88 @@ function makeKernelExports(): FakeKernelExports {
   }
 
   resetRoot();
+
+  function supervisorDirtyPageDecision(
+    op: number,
+    ino: number,
+    offset: bigint | number,
+    lengthOrSize: bigint | number,
+    currentSize: bigint | number,
+    currentFileObjectId: bigint | number,
+    currentGeneration: bigint | number,
+    existingDirtyPages: number,
+    deltaDirtyPages: number,
+    residentPageCapacity: number,
+    pageMapNewer: number,
+  ): number {
+    const offsetNumber = Number(offset);
+    const lengthOrSizeNumber = Number(lengthOrSize);
+    const currentSizeNumber = Number(currentSize);
+    const currentFileObjectIdNumber = Number(currentFileObjectId);
+    const currentGenerationNumber = Number(currentGeneration);
+    lastDirtyPageDecision = {
+      result: 0,
+      nextSize: 0,
+      fileObjectId: 0,
+      generation: 0,
+      flags: 0,
+    };
+    if (ino <= 0 || ino >= 65536) {
+      lastDirtyPageDecision.result = -22;
+      return -22;
+    }
+    if (op === 1) {
+      const end = offsetNumber + lengthOrSizeNumber;
+      if (lengthOrSizeNumber <= 0 || !Number.isSafeInteger(end) || end > 0xffffffff) {
+        lastDirtyPageDecision.result = -22;
+        return -22;
+      }
+      if (existingDirtyPages + deltaDirtyPages > residentPageCapacity) {
+        lastDirtyPageDecision.result = -28;
+        return -28;
+      }
+      lastDirtyPageDecision = {
+        result: lengthOrSizeNumber,
+        nextSize: Math.max(currentSizeNumber, end),
+        fileObjectId: currentFileObjectIdNumber || ino,
+        generation: currentFileObjectIdNumber === 0
+          ? currentGenerationNumber + 1
+          : currentGenerationNumber,
+        flags: 1 | 2,
+      };
+      return lengthOrSizeNumber;
+    }
+    if (op === 2) {
+      if (lengthOrSizeNumber < 0 || lengthOrSizeNumber > 0xffffffff) {
+        lastDirtyPageDecision.result = -22;
+        return -22;
+      }
+      if (deltaDirtyPages > residentPageCapacity) {
+        lastDirtyPageDecision.result = -28;
+        return -28;
+      }
+      lastDirtyPageDecision = {
+        result: 0,
+        nextSize: lengthOrSizeNumber,
+        fileObjectId: currentFileObjectIdNumber || ino,
+        generation: currentGenerationNumber + 1,
+        flags: 1 | 2,
+      };
+      return 0;
+    }
+    if (op === 3) {
+      lastDirtyPageDecision = {
+        result: 0,
+        nextSize: currentSizeNumber,
+        fileObjectId: currentFileObjectIdNumber,
+        generation: currentGenerationNumber,
+        flags: deltaDirtyPages !== 0 || pageMapNewer !== 0 ? 4 : 0,
+      };
+      return 0;
+    }
+    lastDirtyPageDecision.result = -22;
+    return -22;
+  }
 
   const exports = {
     memory,
@@ -325,6 +414,17 @@ function makeKernelExports(): FakeKernelExports {
       record.mode = kindMask | mode;
       return 0n;
     },
+    supervisor_fs_dirty_page_op_write: () => 1,
+    supervisor_fs_dirty_page_op_truncate: () => 2,
+    supervisor_fs_dirty_page_op_flush: () => 3,
+    supervisor_fs_dirty_page_flag_update_inode: () => 1,
+    supervisor_fs_dirty_page_flag_publish_dirty: () => 2,
+    supervisor_fs_dirty_page_flag_writeback_required: () => 4,
+    supervisor_fs_dirty_page_decision: supervisorDirtyPageDecision,
+    supervisor_fs_dirty_page_decision_next_size: () => BigInt(lastDirtyPageDecision.nextSize),
+    supervisor_fs_dirty_page_decision_file_object_id: () => BigInt(lastDirtyPageDecision.fileObjectId),
+    supervisor_fs_dirty_page_decision_generation: () => BigInt(lastDirtyPageDecision.generation),
+    supervisor_fs_dirty_page_decision_flags: () => lastDirtyPageDecision.flags,
     opLog,
     fileData: (path: string) => {
       const record = recordsByPath.get(normalizePath(path));
@@ -724,6 +824,53 @@ test("kernel-worker sparse dirty resident writes read source bytes then zero hol
   expect(fsState.readBackingFileRangeByInode(ino, source.length, 16)).toEqual(new Uint8Array(16));
   expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, offset, data.length) ?? new Uint8Array()))
     .toBe("XYZ");
+});
+
+test("kernel-worker applies supervisor dirty write denial without publishing resident pages", () => {
+  const { canonicalExports, fsState, sabPageCache } = makeFsState();
+
+  fsState.writeFile("/lib/runtime.bin", encoder.encode("abcdef"), 0o644, false);
+  const ino = canonicalExports.fileIno("/lib/runtime.bin");
+  canonicalExports.supervisor_fs_dirty_page_decision = () => -28;
+
+  expect(fsState.writeDirtyResidentFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(-28);
+  expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("abcdef");
+  expect(evictResidentPage(sabPageCache, ino, 0)).toBe("not-found");
+});
+
+test("kernel-worker does not write back when supervisor dirty flush says no-op", () => {
+  const { canonicalExports, fsState, sabPageCache } = makeFsState();
+
+  fsState.writeFile("/lib/runtime.bin", encoder.encode("abcdef"), 0o644, false);
+  const ino = canonicalExports.fileIno("/lib/runtime.bin");
+  expect(fsState.writeDirtyResidentFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(3);
+  const decide = canonicalExports.supervisor_fs_dirty_page_decision;
+  canonicalExports.supervisor_fs_dirty_page_decision = (...args) => {
+    if (args[0] === canonicalExports.supervisor_fs_dirty_page_op_flush?.()) {
+      return 0;
+    }
+    return decide?.(...args) ?? -22;
+  };
+  canonicalExports.supervisor_fs_dirty_page_decision_flags = () => 0;
+
+  expect(fsState.flushDirtyResidentFileByInode(ino)).toBe(true);
+  expect(evictResidentPage(sabPageCache, ino, 0)).toBe("dirty-pinned");
+  expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("abcXYZ");
+});
+
+test("kernel-worker routes empty dirty flush through supervisor no-op decision", () => {
+  const { canonicalExports, fsState } = makeFsState();
+  const decide = canonicalExports.supervisor_fs_dirty_page_decision;
+  let flushDecisions = 0;
+  canonicalExports.supervisor_fs_dirty_page_decision = (...args) => {
+    if (args[0] === canonicalExports.supervisor_fs_dirty_page_op_flush?.()) {
+      flushDecisions += 1;
+    }
+    return decide?.(...args) ?? -22;
+  };
+
+  expect(fsState.flushDirtyResidentFileByInode(2)).toBe(true);
+  expect(flushDecisions).toBe(1);
 });
 
 test("kernel-worker flushes dirty resident pages to backing and leaves clean resident pages", () => {
