@@ -210,6 +210,10 @@ export interface KernelExports {
   supervisor_fs_control_kind_page_cache_fill?(): number;
   supervisor_fs_control_kind_dirty_page_published?(): number;
   supervisor_fs_control_kind_dirty_page_flushed?(): number;
+  supervisor_fs_completion_flag_memfs_dirty?(): number;
+  supervisor_fs_completion_flag_memfs_publish_ready?(): number;
+  supervisor_fs_completion_flag_ofd_state_changed?(): number;
+  supervisor_fs_completion_flag_regular_file_request?(): number;
   supervisor_signal_control_kind_boundary_check?(): number;
   supervisor_signal_control_kind_signal_delivered?(): number;
   supervisor_signal_control_kind_blocked_wait_interrupted?(): number;
@@ -288,6 +292,19 @@ export interface KernelExports {
   supervisor_blocked_wait_timer_required?(vmPtr: number): number;
   supervisor_fd_control_record?(outPtr: number, outLen: number): number;
   supervisor_fs_control_record?(outPtr: number, outLen: number): number;
+  supervisor_fs_pending_ring_request?(vmPtr: number): number;
+  supervisor_fs_pending_regular_file_fd?(vmPtr: number): number;
+  supervisor_fs_pending_regular_file_ofd?(vmPtr: number): number;
+  supervisor_fs_completion_decision?(
+    vmPtr: number,
+    opcode: number,
+    effects: number,
+    result: bigint | number,
+    hostMemfsMutated: number,
+    hostOfdStateChanged: number,
+    pendingRingRequest: number,
+    regularFileRequest: number,
+  ): number;
   supervisor_signal_control_record?(outPtr: number, outLen: number): number;
   supervisor_debug_snapshot?(outPtr: number, outLen: number): number;
   supervisor_thread_state_snapshot?(vmPtr: number, outPtr: number, outLen: number): number;

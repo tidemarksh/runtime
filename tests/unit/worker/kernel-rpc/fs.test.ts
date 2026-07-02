@@ -284,6 +284,85 @@ test("kernel-worker fs outcome returns wake effect after local publication", asy
   );
 });
 
+test("kernel-worker fs outcome follows supervisor publication decision", async () => {
+  const supervisorFsCompletionDecision = vi.fn(() => 0);
+  const kernel = {
+    ...makeKernel(),
+    thread_pending_fs_opcode: () => FS_OP_WRITE,
+    thread_pending_fs_effects: () => 4,
+    thread_pending_fs_target_ino: () => 42,
+    supervisor_fs_pending_ring_request: () => 0,
+    supervisor_fs_completion_decision: supervisorFsCompletionDecision,
+  };
+  const kernelWorkerRequest = vi.fn(async () => ({
+    type: "fs-processed",
+    requestId: 1,
+    kernelState: makeKernelState(),
+    result: 4096n,
+    memfsMutated: true,
+    ofdStateChanged: true,
+  }));
+  const handle = {
+    pid: 1,
+    runtimeId: 1,
+    vmPtr: 0x1234,
+    kernel,
+    kernelState: makeKernelState(),
+    memory: kernel.memory,
+    processMemfsDirty: false,
+    transferDebugStats: createTransferDebugStats(),
+    kernelShare: { members: new Set(), sharedOfdIds: new Set() },
+    workers: new Set(),
+    hostBlockedWorkers: new Map(),
+    kernelWorkerRequest,
+  } as unknown as ProcessHandle;
+  const worker = {} as Worker;
+  handle.workers.add(worker);
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, {});
+  const markRuntimeFsDirty = vi.fn();
+  const syncSharedOfdStateAfterFs = vi.fn(async () => {});
+  const helpers = createWorkerKernelRpcFsHelpers({
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    appendWorkerDebugLog: vi.fn(),
+    assertProcessStandardFdIntegrity: vi.fn(),
+    enqueueWorker: vi.fn(),
+    failProcess: vi.fn((_handle, error) => {
+      throw error;
+    }),
+    notifyHostEffectProgress: vi.fn(),
+    markRuntimeFsDirty,
+    kernelShareOtherMembers: () => [],
+    syncForkSharedStateLocallyAfterFs: vi.fn(),
+    syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
+    syncSharedOfdStateAfterFs,
+    rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    publishRuntimeKernelState: vi.fn(),
+  });
+
+  const outcome = await helpers.resumeFsViaKernelWorkerOutcome(
+    handle,
+    worker,
+    0x1234,
+    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+  );
+
+  expect(outcome).toMatchObject({ kind: "completed", status: 0 });
+  expect(supervisorFsCompletionDecision).toHaveBeenCalledWith(
+    0x1234,
+    FS_OP_WRITE,
+    4,
+    4096n,
+    1,
+    1,
+    0,
+    0,
+  );
+  expect(markRuntimeFsDirty).not.toHaveBeenCalled();
+  expect(syncSharedOfdStateAfterFs).not.toHaveBeenCalled();
+});
+
 test("kernel-worker fs outcome applies mmap guest memory writes from fs response", async () => {
   const kernel = makeKernel();
   const mappedBytes = Uint8Array.from([0x7f, 0x45, 0x4c, 0x46]);
@@ -434,12 +513,16 @@ test("kernel-worker fs outcome defers file write publication to a later sync poi
 
 test("kernel-worker fs outcome applies only request fd after regular file write", async () => {
   const ringBase = 0x3000;
+  const supervisorFsPendingRegularFileFd = vi.fn(() => 3);
+  const supervisorFsPendingRegularFileOfd = vi.fn(() => 5);
   const kernel = {
     ...makeKernel(),
     thread_pending_fs_opcode: () => FS_OP_WRITE,
     thread_pending_fs_effects: () => 4,
     thread_pending_fs_target_ino: () => 42,
     thread_fs_ring_base: () => ringBase,
+    supervisor_fs_pending_regular_file_fd: supervisorFsPendingRegularFileFd,
+    supervisor_fs_pending_regular_file_ofd: supervisorFsPendingRegularFileOfd,
     process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 3 ? 5 : 0,
     process_set_fd_entry: vi.fn(),
     kernel_ofd_fd_type: (ofdId: number) => ofdId === 5 ? 3 : 0,
@@ -516,6 +599,8 @@ test("kernel-worker fs outcome applies only request fd after regular file write"
   );
 
   expect(syncSharedOfdStateAfterFs).not.toHaveBeenCalled();
+  expect(supervisorFsPendingRegularFileFd).toHaveBeenCalledWith(0x1234);
+  expect(supervisorFsPendingRegularFileOfd).toHaveBeenCalledWith(0x1234);
   expect(kernel.process_set_fd_entry).toHaveBeenCalledTimes(1);
   expect(kernel.process_set_fd_entry).toHaveBeenCalledWith(0x1234, 3, 5, 0);
   expect(kernel.process_set_fd_entry).not.toHaveBeenCalledWith(0x1234, 4, 7, 0);

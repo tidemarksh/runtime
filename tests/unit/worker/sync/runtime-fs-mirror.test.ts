@@ -8,6 +8,10 @@ import type {
   ThreadWorkerInbound,
   ThreadWorkerOutbound,
 } from "../../../../src/messages.js";
+import {
+  makeSupervisorAbiStubs,
+  writeSupervisorFaultExitDecisionRecord,
+} from "../support/supervisor-abi.js";
 
 type WorkerModule = typeof import("../../../../src/worker.js");
 
@@ -77,6 +81,13 @@ class FakeWorker {
   }
 
   emit(message: ThreadWorkerOutbound): void {
+    if (message.type === "status") {
+      statusExitDecisions.set(message.vmPtr, {
+        exitCode: message.exitCode,
+        termSignal: message.termSignal,
+        status: message.status,
+      });
+    }
     this.onmessage?.({ data: message } as MessageEvent<ThreadWorkerOutbound>);
   }
 
@@ -117,6 +128,10 @@ const threadCountQueue: number[] = [];
 const injectedHttpRequests: Array<{ port: number; request: string }> = [];
 const httpResponseChunks: Uint8Array[] = [];
 const closedHttpConnections: number[] = [];
+const statusExitDecisions = new Map<
+  number,
+  { exitCode: number; termSignal: number; status: number }
+>();
 const originalWorker = globalThis.Worker;
 const originalSchedulerStepBudget = process.env.TIDEMARK_SCHEDULER_STEP_BUDGET;
 let pendingCreatePid: number | null = null;
@@ -247,6 +262,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     memfsWriteCalls: Array<[number, number]>;
     memfsCreateWithDataCalls: Array<[number, number]>;
   } = {
+    ...makeSupervisorAbiStubs({ memory }),
     memory,
     __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, 0),
     abi_status_ok: () => 0,
@@ -376,6 +392,22 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_status: () => 0,
     thread_exit_code: () => 0,
     thread_term_signal: () => 0,
+    supervisor_fault_exit_decision: (vmPtr, outPtr, outLen) => {
+      if (outLen < 88) {
+        return -1;
+      }
+      const decision = statusExitDecisions.get(vmPtr);
+      return writeSupervisorFaultExitDecisionRecord(memory, outPtr, {
+        vmPtr,
+        exitVmPtr: vmPtr,
+        processPtr: 0x5000,
+        remainingThreads: 0,
+        liveThreads: 0,
+        exitCode: decision?.exitCode ?? 0,
+        termSignal: decision?.termSignal ?? 0,
+        status: decision?.status ?? 0,
+      });
+    },
     thread_pc: () => 0n,
     thread_ra: () => 0n,
     thread_sp: () => 0n,
@@ -568,6 +600,7 @@ beforeEach(async () => {
   injectedHttpRequests.length = 0;
   httpResponseChunks.length = 0;
   closedHttpConnections.length = 0;
+  statusExitDecisions.clear();
   pendingExecveChildPid = null;
   globalThis.Worker = class extends FakeWorker {
     constructor(url: URL, options: WorkerOptions) {
