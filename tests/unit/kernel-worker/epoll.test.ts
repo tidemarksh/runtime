@@ -1,4 +1,4 @@
-// Kernel-worker tests in this file validate transitional runtime-owned bridge behavior.
+// Kernel-worker tests in this file validate shared-state bridge behavior during supervisor migration.
 import { expect, test } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
 import { createKernelWorkerPrimitives } from "../../../src/kernel-worker/primitives.js";
@@ -163,6 +163,25 @@ function makeSharedStateSync(parentExports: KernelExports, childExports: KernelE
     restoreProcSelfExe: () => {},
   });
 }
+
+test("kernel-worker epoll primitive uses supervisor held epoll list", () => {
+  const memory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(memory);
+  const processExports = {
+    ...makeKernelExports(memory),
+    supervisor_process_epoll_held_ofd: (_vmPtr: number, index: number) => (
+      index === 0 ? 7 : index === 1 ? 9 : 0
+    ),
+  } as KernelExports;
+  const primitives = createKernelWorkerPrimitives({
+    getCanonicalExports: () => canonicalExports,
+    processKernels: new Map([[1, processExports]]),
+    canonicalProcesses: new Map([[1, { ppid: 0 }]]),
+    getCanonicalProcessVmPtr: () => 0x1234,
+  });
+
+  expect(primitives.collectProcessHeldEpollOfdIds(processExports, 0x1234)).toEqual([7, 9]);
+});
 
 test("kernel-worker epoll sync keeps private epoll instances process-local", () => {
   const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });

@@ -1,10 +1,12 @@
-// Kernel-worker tests in this file validate transitional runtime-owned bridge behavior.
+// Kernel-worker tests in this file validate shared-state bridge behavior during supervisor migration.
 import { expect, test } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
 import { createKernelWorkerPrimitives } from "../../../src/kernel-worker/primitives.js";
 import { createKernelWorkerSharedStateSync } from "../../../src/kernel-worker/shared-state-sync.js";
 
 const FD_TYPE_PIPE = 6;
+const PIPE_SLOT_MODE_READ = 1;
+const PIPE_SLOT_MODE_WRITE = 2;
 const PIPE_BUF_SIZE = 65_536;
 const PIPE_SLOT_BYTES = 32 + PIPE_BUF_SIZE;
 
@@ -312,6 +314,72 @@ function makeSharedStateSync(
     restoreProcSelfExe: () => {},
   });
 }
+
+function installSupervisorPipeAuthority(
+  exports: TestKernelExports,
+  options: {
+    usedMask: bigint;
+    heldMask: bigint;
+    modes: Map<number, number>;
+    readOpen: Map<number, number>;
+    writeOpen: Map<number, number>;
+  },
+): void {
+  exports.supervisor_process_private_pipe_slot_mask = () => 0n;
+  exports.supervisor_process_private_pipe_source_mode = () => 0;
+  exports.supervisor_process_private_pipe_target_mode = () => 0;
+  exports.supervisor_process_pipe_used_mask = () => options.usedMask;
+  exports.supervisor_process_held_pipe_slot_mask = () => options.heldMask;
+  exports.supervisor_process_pipe_slot_mode = (_vmPtr: number, pipeSlot: number) => options.modes.get(pipeSlot) ?? 0;
+  exports.supervisor_process_pipe_read_open_count = (_vmPtr: number, pipeSlot: number) => options.readOpen.get(pipeSlot) ?? 0;
+  exports.supervisor_process_pipe_write_open_count = (_vmPtr: number, pipeSlot: number) => options.writeOpen.get(pipeSlot) ?? 0;
+}
+
+test("kernel-worker pipe control recompute uses supervisor process endpoint counts", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const pipeMask = 1n << 6n;
+
+  installSupervisorPipeAuthority(parentExports, {
+    usedMask: 1n | pipeMask,
+    heldMask: pipeMask,
+    modes: new Map([[6, PIPE_SLOT_MODE_READ]]),
+    readOpen: new Map([[6, 1]]),
+    writeOpen: new Map(),
+  });
+  installSupervisorPipeAuthority(childExports, {
+    usedMask: 1n | pipeMask,
+    heldMask: pipeMask,
+    modes: new Map([[6, PIPE_SLOT_MODE_WRITE]]),
+    readOpen: new Map(),
+    writeOpen: new Map([[6, 1]]),
+  });
+
+  const primitives = createKernelWorkerPrimitives({
+    getCanonicalExports: () => canonicalExports,
+    processKernels: new Map<number, KernelExports>([
+      [1, parentExports],
+      [2, childExports],
+    ]),
+    canonicalProcesses: new Map([
+      [1, { ppid: 0 }],
+      [2, { ppid: 0 }],
+    ]),
+    getCanonicalProcessVmPtr: (pid) => (pid === 1 || pid === 2 ? 0x1234 : 0),
+  });
+
+  const { kernelState, readOpen, writeOpen, managedPipeSlots } =
+    primitives.recomputeCanonicalPipeControlState();
+
+  expect(managedPipeSlots).toContain(6);
+  expect(readOpen[6]).toBe(1);
+  expect(writeOpen[6]).toBe(1);
+  expect((kernelState.pipeUsed & pipeMask) !== 0n).toBe(true);
+});
 
 test("kernel-worker releaseHostStdio keeps sibling private host stdio pipe counts intact", () => {
   const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });

@@ -5,6 +5,20 @@ import { collectProcessHeldOfdRefcounts } from "./ofd.js";
 export function createKernelWorkerEpollPrimitives() {
   function collectProcessHeldEpollOfdIds(processExports: KernelExports, vmPtr: number): number[] {
     const maxFds = processExports.abi_max_fds();
+    const supervisorHeldEpollOfd = processExports.supervisor_process_epoll_held_ofd;
+    if (supervisorHeldEpollOfd) {
+      const epollOfdIds: number[] = [];
+      for (let index = 0; index < maxFds; index += 1) {
+        const ofdId = supervisorHeldEpollOfd(vmPtr, index);
+        if (ofdId === 0) {
+          break;
+        }
+        if (ofdId > 0 && ofdId < maxFds) {
+          epollOfdIds.push(ofdId);
+        }
+      }
+      return epollOfdIds;
+    }
     const epollType = processExports.abi_fd_type_epoll();
     const heldRefcounts = collectProcessHeldOfdRefcounts(processExports, vmPtr);
     const epollOfdIds: number[] = [];

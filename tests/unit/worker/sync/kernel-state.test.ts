@@ -7,7 +7,10 @@ import {
   syncForkSharedStateViaKernelWorker,
 } from "../../../../src/worker/sync.js";
 import { reconcileKernelSharePipeControl } from "../../../../src/worker/kernel-share/pipe.js";
-import { collectRuntimeNetworkSocketOfdIds } from "../../../../src/worker/ownership/socket-control.js";
+import {
+  collectRuntimeNetworkSocketOfdIds,
+  hasKernelSocketFdState,
+} from "../../../../src/worker/ownership/socket-control.js";
 import type { KernelRuntimeState } from "../../../../src/abi.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 
@@ -463,6 +466,14 @@ test("runtime network OFD collection excludes unrelated local socket OFDs", () =
 
   expect([...collectRuntimeNetworkSocketOfdIds([handle])].sort((left, right) => left - right))
     .toEqual([11]);
+});
+
+test("kernel socket fd state detection uses supervisor socket-held authority", () => {
+  const handle = makeHandle(3, new Map([[16, 17]]));
+  seedOfd(handle.memory, handle.kernelState, 17, FD_TYPE_SOCKET, 17, 31);
+  handle.kernel.supervisor_process_socket_held_ofd = (_vmPtr, index) => (index === 0 ? 17 : 0);
+
+  expect(hasKernelSocketFdState(handle)).toBe(true);
 });
 
 test("fork-shared delta skips regular file OFDs held only by a peer", async () => {

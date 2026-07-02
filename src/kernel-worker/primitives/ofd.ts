@@ -116,6 +116,16 @@ function ofdSnapshotCanApply(
 export function collectProcessHeldOfdRefcounts(processExports: KernelExports, vmPtr: number): Int32Array {
   const maxFds = processExports.abi_max_fds();
   const heldOfdRefcounts = new Int32Array(maxFds);
+  const supervisorHeldOfdRefcount = processExports.supervisor_process_held_ofd_refcount;
+  if (supervisorHeldOfdRefcount) {
+    for (let ofdId = 1; ofdId < maxFds; ofdId += 1) {
+      const refcount = supervisorHeldOfdRefcount(vmPtr, ofdId);
+      if (refcount > 0) {
+        heldOfdRefcounts[ofdId] = refcount;
+      }
+    }
+    return heldOfdRefcounts;
+  }
 
   for (let fd = 0; fd < maxFds; fd += 1) {
     const ofdId = processExports.process_fd_ofd_id(vmPtr, fd);

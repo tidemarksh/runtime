@@ -25,6 +25,25 @@ export function socketOfdForFd(handle: ProcessHandle, vmPtr: number, fd: number)
   return handle.kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
 }
 
+function supervisorHeldSocketOfdIds(handle: ProcessHandle, vmPtr: number): number[] {
+  const query = handle.kernel.supervisor_process_socket_held_ofd;
+  if (!query || vmPtr === 0) {
+    return [];
+  }
+  const maxFds = handle.kernel.abi_max_fds();
+  const ofdIds: number[] = [];
+  for (let index = 0; index < maxFds; index += 1) {
+    const ofdId = query(vmPtr, index);
+    if (ofdId === 0) {
+      break;
+    }
+    if (ofdId > 0 && ofdId < maxFds) {
+      ofdIds.push(ofdId);
+    }
+  }
+  return ofdIds;
+}
+
 export function networkConnectionOfds(handle: ProcessHandle): Map<number, number> {
   handle.networkConnectionOfds ??= new Map();
   return handle.networkConnectionOfds;
@@ -350,6 +369,10 @@ export function collectRuntimeNetworkSocketOfdIds(handles: Iterable<ProcessHandl
 export function hasKernelSocketFdState(handle: ProcessHandle): boolean {
   if (handle.vmPtr === 0) {
     return false;
+  }
+  const supervisorSocketOfdIds = supervisorHeldSocketOfdIds(handle, handle.vmPtr);
+  if (supervisorSocketOfdIds.length > 0) {
+    return true;
   }
   const maxFds = handle.kernel.abi_max_fds();
   for (let fd = 0; fd < maxFds; fd += 1) {

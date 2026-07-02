@@ -201,6 +201,9 @@ export interface KernelExports {
   supervisor_fd_control_kind_socket_connected?(): number;
   supervisor_fd_control_kind_socket_connect_failed?(): number;
   supervisor_fd_control_kind_socket_accepted?(): number;
+  supervisor_pipe_slot_mode_read?(): number;
+  supervisor_pipe_slot_mode_write?(): number;
+  supervisor_pipe_slot_mode_control?(): number;
   supervisor_fs_control_kind_page_cache_miss?(): number;
   supervisor_fs_control_kind_page_cache_fill?(): number;
   supervisor_fs_control_kind_dirty_page_published?(): number;
@@ -234,6 +237,17 @@ export interface KernelExports {
   supervisor_next_resume?(outPtr: number, outLen: number): number;
   supervisor_process_resume?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_fault_exit_decision?(vmPtr: number, outPtr: number, outLen: number): number;
+  supervisor_process_held_ofd_refcount?(vmPtr: number, ofdId: number): number;
+  supervisor_process_private_pipe_slot_mask?(vmPtr: number): bigint | number;
+  supervisor_process_private_pipe_source_mode?(vmPtr: number, pipeSlot: number): number;
+  supervisor_process_private_pipe_target_mode?(vmPtr: number, pipeSlot: number): number;
+  supervisor_process_held_pipe_slot_mask?(vmPtr: number): bigint | number;
+  supervisor_process_pipe_used_mask?(vmPtr: number): bigint | number;
+  supervisor_process_pipe_slot_mode?(vmPtr: number, pipeSlot: number): number;
+  supervisor_process_pipe_read_open_count?(vmPtr: number, pipeSlot: number): number;
+  supervisor_process_pipe_write_open_count?(vmPtr: number, pipeSlot: number): number;
+  supervisor_process_epoll_held_ofd?(vmPtr: number, index: number): number;
+  supervisor_process_socket_held_ofd?(vmPtr: number, index: number): number;
   supervisor_resume_blocked_syscall?(vmPtr: number, flags: number): bigint | number;
   supervisor_blocked_resume_delegation?(vmPtr: number, flags: number): number;
   supervisor_blocked_resume_delegation_flag_kernel_worker_available?(): number;
@@ -1183,6 +1197,9 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fd_control_kind_socket_connected",
   "supervisor_fd_control_kind_socket_connect_failed",
   "supervisor_fd_control_kind_socket_accepted",
+  "supervisor_pipe_slot_mode_read",
+  "supervisor_pipe_slot_mode_write",
+  "supervisor_pipe_slot_mode_control",
   "supervisor_fs_control_kind_page_cache_miss",
   "supervisor_fs_control_kind_page_cache_fill",
   "supervisor_fs_control_kind_dirty_page_published",
@@ -1216,6 +1233,17 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_next_resume",
   "supervisor_process_resume",
   "supervisor_fault_exit_decision",
+  "supervisor_process_held_ofd_refcount",
+  "supervisor_process_private_pipe_slot_mask",
+  "supervisor_process_private_pipe_source_mode",
+  "supervisor_process_private_pipe_target_mode",
+  "supervisor_process_held_pipe_slot_mask",
+  "supervisor_process_pipe_used_mask",
+  "supervisor_process_pipe_slot_mode",
+  "supervisor_process_pipe_read_open_count",
+  "supervisor_process_pipe_write_open_count",
+  "supervisor_process_epoll_held_ofd",
+  "supervisor_process_socket_held_ofd",
   "supervisor_resume_blocked_syscall",
   "supervisor_blocked_resume_delegation",
   "supervisor_blocked_resume_delegation_flag_kernel_worker_available",
