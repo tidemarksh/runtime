@@ -786,30 +786,6 @@ export function createWorkerSchedulerQueueHelpers(
     return thread?.waitingInWorkerStatus !== null;
   }
 
-  function parkReadyWorkerStillInFutexWait(
-    handle: ProcessHandle,
-    thread: ThreadWorkerState | undefined,
-  ): boolean {
-    if (thread === undefined || thread.waitingInWorkerStatus !== null) {
-      return false;
-    }
-    if (handle.kernel.thread_process_ptr(thread.vmPtr) === 0) {
-      return false;
-    }
-    const futexWaitStatus = handle.kernel.abi_status_futex_wait();
-    if (handle.kernel.thread_status(thread.vmPtr) !== futexWaitStatus) {
-      return false;
-    }
-    thread.waitingInWorkerStatus = futexWaitStatus;
-    thread.waitingInWorkerReconcileDeferred = false;
-    thread.runningGeneration = null;
-    deps.appendWorkerDebugLog(
-      handle,
-      `ready-worker-parked:futex-wait:0x${thread.vmPtr.toString(16)}`,
-    );
-    return true;
-  }
-
   function assertThreadOwnershipInvariant(
     handle: ProcessHandle,
     vmPtr: number,
@@ -1142,7 +1118,6 @@ export function createWorkerSchedulerQueueHelpers(
       if (
         (candidateThread?.ownerAsyncStatus ?? null) !== null
         || hasWorkerLocalWait(candidateThread)
-        || parkReadyWorkerStillInFutexWait(handle, candidateThread)
         || (candidateThread !== undefined && handle.kernel.thread_process_ptr(candidateThread.vmPtr) === 0)
       ) {
         appendSchedulerQueueDebugLog(
