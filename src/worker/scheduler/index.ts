@@ -1198,15 +1198,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       );
       return;
     }
-    const currentStatus = handle.kernel.thread_status(blocked.vmPtr);
-    if (currentStatus !== blocked.status) {
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `wait4-retry-reconcile:${handle.pid}:0x${blocked.vmPtr.toString(16)}:blocked=${blocked.status}:local=${currentStatus}`,
-      );
-      handleBlockedRetryResult(handle, worker, blocked.vmPtr, currentStatus);
-      return;
-    }
     if (
       blocked.status === handle.kernel.abi_status_epoll_wait()
       && hasPendingCloneChildInitResume(handle)

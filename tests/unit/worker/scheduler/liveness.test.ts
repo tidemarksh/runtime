@@ -2549,44 +2549,6 @@ test("wait4 retry reapplies a pending local child exit record until it is reaped
   expect(lifecycleEvents.filter((event) => event === "wait4-apply-records:1:7/0").length).toBeGreaterThanOrEqual(2);
 });
 
-test("wait4 retry reconciles stale blocked state before issuing a kernel-worker resume", () => {
-  const worker = {
-    postMessage: vi.fn(),
-  } as unknown as Worker;
-  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
-  threadWorkerStates.set(worker, makeThreadState(0x1234));
-  const { exports: kernel, threadResumeWait4 } = makeKernel();
-  let status = kernel.abi_status_ok();
-  kernel.thread_status = () => status;
-  const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.kernelWorkerRequest = vi.fn(async () => {
-    throw new Error("kernel-worker resume should not run when local status is already OK");
-  });
-
-  const resumeWait4ViaKernelWorker = vi.fn(async () => {});
-  const scheduler = createWorkerScheduler({
-    appendRuntimeLifecycleEvent: () => {},
-    threadWorkerStates,
-    completeProcessExit: async () => {},
-    failProcess: () => {},
-    hasActiveChildProcess: () => false,
-    resumeVforkParentAfterChildExit: () => false,
-    resumeWait4ViaKernelWorker,
-    handleWorkerMessage: () => {},
-  });
-
-  scheduler.blockWorker(handle, worker, handle.kernel.abi_status_wait4(), 0x1234);
-  scheduler.notifySchedulerProgress(handle);
-
-  expect(resumeWait4ViaKernelWorker).not.toHaveBeenCalled();
-  expect(threadResumeWait4).not.toHaveBeenCalled();
-  expect(handle.blockedWorkers.has(worker)).toBe(false);
-  expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
-    type: "step",
-    budget: expect.any(Number),
-  }));
-});
-
 test("epoll timerfd wait advances guest time to deadline before retrying epoll", async () => {
   const blockedWorker = {
     postMessage: vi.fn(),
@@ -4921,7 +4883,7 @@ test("blockWorker parks futex wait as supervisor-owned worker state", () => {
   expect(worker.postMessage).not.toHaveBeenCalled();
 });
 
-test("blocked retry parks futex retry result as supervisor-owned worker state", () => {
+test("blocked completion parks futex result as supervisor-owned worker state", () => {
   const worker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -4959,7 +4921,12 @@ test("blocked retry parks futex retry result as supervisor-owned worker state", 
     handleWorkerMessage: () => {},
   });
 
-  scheduler.notifySchedulerProgress(handle);
+  scheduler.handleBlockedRetryResult(
+    handle,
+    worker,
+    thread.vmPtr,
+    kernel.abi_status_futex_wait(),
+  );
 
   expect(handle.blockedWorkers.has(worker)).toBe(false);
   expect(handle.readyWorkers).toEqual([]);
@@ -4969,7 +4936,7 @@ test("blocked retry parks futex retry result as supervisor-owned worker state", 
   expect(worker.postMessage).not.toHaveBeenCalled();
 });
 
-test("blocked retry result arms supervisor timer instead of scheduling runtime retry", () => {
+test("blocked completion arms supervisor timer instead of scheduling runtime retry", () => {
   const worker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -5032,7 +4999,12 @@ test("blocked retry result arms supervisor timer instead of scheduling runtime r
     handleWorkerMessage: () => {},
   });
 
-  scheduler.notifySchedulerProgress(handle);
+  scheduler.handleBlockedRetryResult(
+    handle,
+    worker,
+    thread.vmPtr,
+    kernel.abi_status_epoll_wait(),
+  );
 
   const blocked = handle.blockedWorkers.get(worker);
   expect(blocked?.status).toBe(kernel.abi_status_epoll_wait());
