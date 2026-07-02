@@ -3850,10 +3850,8 @@ test("epoll retry keeps unanswered futex running worker when last trace points e
     pipeSyncedBeforePassive: true,
     pipeEofChildExitDeferrals: 0,
   });
-  const appendRuntimeLifecycleEvent = vi.fn();
   const scheduler = createRunLoopScheduler({
     threadWorkerStates,
-    appendRuntimeLifecycleEvent,
     retryBlockedWorker: vi.fn(),
   });
 
@@ -3862,7 +3860,6 @@ test("epoll retry keeps unanswered futex running worker when last trace points e
   expect(handle.runningWorker).toBe(runningWorker);
   expect(runningThread.runningGeneration).toBe(runningThread.generation);
   expect(handle.readyWorkers).not.toContain(runningWorker);
-  expect(appendRuntimeLifecycleEvent).not.toHaveBeenCalled();
 });
 
 test("epoll retry keeps unanswered futex running worker with a blocked record", () => {
@@ -3907,10 +3904,8 @@ test("epoll retry keeps unanswered futex running worker with a blocked record", 
     pipeSyncedBeforePassive: true,
     pipeEofChildExitDeferrals: 0,
   });
-  const appendRuntimeLifecycleEvent = vi.fn();
   const scheduler = createRunLoopScheduler({
     threadWorkerStates,
-    appendRuntimeLifecycleEvent,
     retryBlockedWorker: vi.fn(),
   });
 
@@ -3920,7 +3915,6 @@ test("epoll retry keeps unanswered futex running worker with a blocked record", 
   expect(runningThread.runningGeneration).toBe(runningThread.generation);
   expect(runningThread.waitingInWorkerStatus).toBeNull();
   expect(handle.readyWorkers).not.toContain(runningWorker);
-  expect(appendRuntimeLifecycleEvent).not.toHaveBeenCalled();
 });
 
 test("epoll retry keeps active unanswered ok running worker", () => {
@@ -3959,10 +3953,8 @@ test("epoll retry keeps active unanswered ok running worker", () => {
     pipeSyncedBeforePassive: true,
     pipeEofChildExitDeferrals: 0,
   });
-  const appendRuntimeLifecycleEvent = vi.fn();
   const scheduler = createRunLoopScheduler({
     threadWorkerStates,
-    appendRuntimeLifecycleEvent,
     retryBlockedWorker: vi.fn(),
   });
 
@@ -3970,7 +3962,6 @@ test("epoll retry keeps active unanswered ok running worker", () => {
 
   expect(handle.runningWorker).toBe(runningWorker);
   expect(runningThread.runningGeneration).toBe(runningThread.generation);
-  expect(appendRuntimeLifecycleEvent).not.toHaveBeenCalled();
 });
 
 test("pumpProcess waits for socket status publication before dispatching a ready sibling", () => {

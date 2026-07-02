@@ -10,7 +10,6 @@ export function logNetworkDebug(_event: string): void {
 
 export interface RunLoopSchedulerDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
-  appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   retryBlockedWorker(handle: ProcessHandle, worker: Worker): void;
 }
 
@@ -122,15 +121,6 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     const runningThread = deps.threadWorkerStates.get(runningWorker);
     if (!runningThread) {
       handle.runningWorker = null;
-      return true;
-    }
-    if (runningThread.waitingInWorkerStatus !== null) {
-      handle.runningWorker = null;
-      runningThread.runningGeneration = null;
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `running-worker-cleared:${handle.pid}:wait=${runningThread.waitingInWorkerStatus}`,
-      );
       return true;
     }
     return false;
