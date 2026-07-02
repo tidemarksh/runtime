@@ -150,6 +150,11 @@ export function liveProcessPipeUsedBits(handle: ProcessHandle): bigint {
   if (handle.vmPtr === 0) {
     return 0n;
   }
+  const supervisorPipeUsedMask = handle.kernel.supervisor_process_pipe_used_mask;
+  if (supervisorPipeUsedMask) {
+    const mask = supervisorPipeUsedMask(handle.vmPtr);
+    return typeof mask === "bigint" ? mask : BigInt(mask);
+  }
   let pipeUsed = 0n;
   const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
   const maxPipes = handle.kernel.abi_max_pipes?.() ?? 64;

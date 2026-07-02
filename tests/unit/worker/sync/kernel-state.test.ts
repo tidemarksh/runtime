@@ -366,6 +366,21 @@ test("adoptKernelStateForHandle preserves local epoll table pointer", () => {
   expect(adopted.pipeUsed).toBe(incoming.pipeUsed);
 });
 
+test("adoptKernelStateForHandle uses supervisor pipe-used authority when available", () => {
+  const handle = makeHandle(7, new Map([[4, 10]]));
+  seedOfd(handle.memory, handle.kernelState, 10, FD_TYPE_PIPE, 6, 3);
+  handle.kernel.supervisor_process_pipe_used_mask = () => 1n | (1n << 9n);
+  const incoming = {
+    ...handle.kernelState,
+    pipeUsed: 1n,
+  };
+
+  const adopted = adoptKernelStateForHandle(handle, incoming);
+
+  expect(adopted.pipeUsed & (1n << 9n)).not.toBe(0n);
+  expect(adopted.pipeUsed & (1n << 6n)).toBe(0n);
+});
+
 test("fork-shared sync keeps a pipe reader target that also owns runtime network state", async () => {
   const child = makeHandle(7, new Map([[5, 8]]));
   const parent = makeHandle(3, new Map([[4, 7], [9, 19]]));
