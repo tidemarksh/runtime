@@ -1087,6 +1087,8 @@ test("wait4 retry stays blocked while child spawn is still in flight", async () 
     threadResumeWait4(vmPtr);
     status = kernel.abi_status_ok();
   });
+  const retryReason = vi.fn(kernel.supervisor_blocked_wait_retry_reason);
+  kernel.supervisor_blocked_wait_retry_reason = retryReason;
   const handle = makeHandle(kernel, worker, threadWorkerStates);
 
   const lifecycleEvents: string[] = [];
@@ -1107,6 +1109,10 @@ test("wait4 retry stays blocked while child spawn is still in flight", async () 
   });
 
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_wait4(), 0x1234);
+  expect(retryReason).toHaveBeenCalledWith(
+    0x1234,
+    kernel.supervisor_blocked_wait_retry_flag_process_gate(),
+  );
   await vi.advanceTimersByTimeAsync(11);
   expect(threadResumeWait4).not.toHaveBeenCalled();
 

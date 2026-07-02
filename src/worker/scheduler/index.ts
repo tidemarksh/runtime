@@ -411,6 +411,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     return false;
   }
 
+  function wait4ProcessGateClosed(handle: ProcessHandle, hasLocalExitRecord: boolean): boolean {
+    return handle.pendingChildExitRecords > 0
+      || handle.pendingChildSpawnRecords > 0
+      || (!hasLocalExitRecord && deps.hasActiveChildProcess(handle.pid));
+  }
+
   function formatRunningRetryBlocker(
     handle: ProcessHandle,
     runningThread: ThreadWorkerState | undefined,
@@ -1019,6 +1025,17 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
     if (status === handle.kernel.abi_status_wait4()) {
+      if (
+        handle.kernelShare.forkSharedSyncPromise === null
+        && wait4ProcessGateClosed(handle, handle.childExitSyncRecords.size > 0)
+      ) {
+        scheduleSupervisorBlockedRetry(
+          handle,
+          worker,
+          SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE,
+        );
+        return;
+      }
       retryHostBlockedWorker(handle, worker);
       return;
     }
@@ -1429,11 +1446,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
     if (
       blocked.status === handle.kernel.abi_status_wait4()
-      && (
-        handle.pendingChildExitRecords > 0
-        || handle.pendingChildSpawnRecords > 0
-        || (handle.childExitSyncRecords.size === 0 && deps.hasActiveChildProcess(handle.pid))
-      )
+      && wait4ProcessGateClosed(handle, wait4HasLocalExitRecord)
     ) {
       const event = `wait4-retry-skip:${handle.pid}:gate:exit=${handle.pendingChildExitRecords}:spawn=${handle.pendingChildSpawnRecords}:active=${deps.hasActiveChildProcess(handle.pid) ? 1 : 0}`;
       if (blocked.lastWait4RetryLifecycleEvent !== event) {
