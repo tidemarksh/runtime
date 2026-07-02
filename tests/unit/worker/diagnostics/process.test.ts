@@ -122,7 +122,7 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
     initialized: true,
     waitingInWorkerStatus: null,
     ownerAsyncStatus: null,
-    resumeBlockedOnNextStep: false,
+    resumeHostBlockedSyscallOnNextStep: false,
     pendingPipeSlotsForNextStep: [],
     pendingGuestMemoryWrites: [],
     resumeWorkersOnReady: [],

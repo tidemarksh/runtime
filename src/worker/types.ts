@@ -70,7 +70,7 @@ export interface ThreadWorkerState {
   initialized: boolean;
   waitingInWorkerStatus: number | null;
   ownerAsyncStatus: number | null;
-  resumeBlockedOnNextStep: boolean;
+  resumeHostBlockedSyscallOnNextStep: boolean;
   pipeCanonicalEofReadyOnNextBlock?: boolean;
   pendingKernelStateForNextStep?: KernelRuntimeState;
   pendingPipeSlotsForNextStep: KernelWorkerPipeSlotSnapshot[];

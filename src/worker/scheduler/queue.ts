@@ -901,7 +901,7 @@ export function createWorkerSchedulerQueueHelpers(
       initialized: false,
       waitingInWorkerStatus: null,
       ownerAsyncStatus: null,
-      resumeBlockedOnNextStep: false,
+      resumeHostBlockedSyscallOnNextStep: false,
       pendingPipeSlotsForNextStep: [],
       pendingGuestMemoryWrites: [],
       resumeWorkersOnReady: [],
@@ -1221,8 +1221,8 @@ export function createWorkerSchedulerQueueHelpers(
     if (thread && (thread.pendingGuestMemoryWrites?.length ?? 0) > 0) {
       stepMessage.guestMemoryWrites = thread.pendingGuestMemoryWrites.splice(0);
     }
-    if (thread?.resumeBlockedOnNextStep) {
-      thread.resumeBlockedOnNextStep = false;
+    if (thread?.resumeHostBlockedSyscallOnNextStep) {
+      thread.resumeHostBlockedSyscallOnNextStep = false;
       stepMessage.resumeBlockedSyscall = true;
     }
     next.postMessage(stepMessage);

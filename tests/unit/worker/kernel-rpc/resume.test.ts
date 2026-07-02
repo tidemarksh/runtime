@@ -758,7 +758,7 @@ test("resumeBlockedSyscallLocally retries pselect pipe HUP owner-side after tran
     waitingInWorkerStatus: null,
     pendingGuestMemoryWrites: [],
     pendingPipeSlotsForNextStep: [],
-    resumeBlockedOnNextStep: false,
+    resumeHostBlockedSyscallOnNextStep: false,
   };
   const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
   threadWorkerStates.set(worker, threadState);
@@ -790,7 +790,7 @@ test("resumeBlockedSyscallLocally retries pselect pipe HUP owner-side after tran
   expect(threadResumeBlockedSyscall).toHaveBeenCalledTimes(2);
   expect(threadState.pendingGuestMemoryWrites.map((write) => write.guestPtr)).toEqual([0x200]);
   expect([...threadState.pendingGuestMemoryWrites[0].bytes]).toEqual([0x01, 0, 0, 0, 0, 0, 0, 0]);
-  expect(threadState.resumeBlockedOnNextStep).toBe(false);
+  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(false);
   expect(enqueueWorker).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
 });
@@ -911,7 +911,7 @@ test("resumeBlockedSyscallLocally resumes pselect pipe HUP before generic after-
     waitingInWorkerStatus: null,
     pendingGuestMemoryWrites: [],
     pendingPipeSlotsForNextStep: [],
-    resumeBlockedOnNextStep: false,
+    resumeHostBlockedSyscallOnNextStep: false,
   };
   const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
   threadWorkerStates.set(worker, threadState);
@@ -1065,7 +1065,7 @@ test("resumeBlockedSyscallLocally retries mixed socket pipe pselect HUP owner-si
     waitingInWorkerStatus: null,
     pendingGuestMemoryWrites: [],
     pendingPipeSlotsForNextStep: [],
-    resumeBlockedOnNextStep: false,
+    resumeHostBlockedSyscallOnNextStep: false,
   };
   const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
   threadWorkerStates.set(worker, threadState);
@@ -1190,7 +1190,7 @@ test("resumeBlockedSyscallOutcome returns pipe sync effect before ready socket p
     waitingInWorkerStatus: null,
     pendingGuestMemoryWrites: [],
     pendingPipeSlotsForNextStep: [],
-    resumeBlockedOnNextStep: false,
+    resumeHostBlockedSyscallOnNextStep: false,
   };
   const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
   threadWorkerStates.set(worker, threadState);
@@ -1220,7 +1220,7 @@ test("resumeBlockedSyscallOutcome returns pipe sync effect before ready socket p
   const outcome = await helpers.resumeBlockedSyscallOutcome(handle, worker, 0x1234, 21);
 
   expect(threadResumeBlockedSyscall).not.toHaveBeenCalled();
-  expect(threadState.resumeBlockedOnNextStep).toBe(false);
+  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(false);
   expect(handle.hostBlockedWorkers.has(worker)).toBe(true);
   expect(enqueueWorker).not.toHaveBeenCalled();
   expect(outcome.effects).toMatchObject([
@@ -1316,7 +1316,7 @@ test("resumeBlockedSyscallOutcome returns socket sync effect without running soc
     waitingInWorkerStatus: null,
     pendingGuestMemoryWrites: [],
     pendingPipeSlotsForNextStep: [],
-    resumeBlockedOnNextStep: false,
+    resumeHostBlockedSyscallOnNextStep: false,
   };
   const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
   threadWorkerStates.set(worker, threadState);
@@ -1551,7 +1551,7 @@ test("resumeBlockedSyscallLocally resumes pipe EOF after writers close even with
     waitingInWorkerStatus: null,
     pendingGuestMemoryWrites: [],
     pendingPipeSlotsForNextStep: [],
-    resumeBlockedOnNextStep: false,
+    resumeHostBlockedSyscallOnNextStep: false,
   };
   const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
   threadWorkerStates.set(worker, threadState);
@@ -1590,7 +1590,7 @@ test("resumeBlockedSyscallLocally resumes pipe EOF after writers close even with
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0].pipeSlot).toBe(pipeSlot);
-  expect(threadState.resumeBlockedOnNextStep).toBe(true);
+  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(true);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
   expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
   expect(handle.hostBlockedWorkers.has(worker)).toBe(false);
@@ -1869,7 +1869,7 @@ test("resumeBlockedSyscallLocally ignores exiting child pipe writers for pselect
     waitingInWorkerStatus: null,
     pendingGuestMemoryWrites: [],
     pendingPipeSlotsForNextStep: [],
-    resumeBlockedOnNextStep: false,
+    resumeHostBlockedSyscallOnNextStep: false,
   };
   const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
   threadWorkerStates.set(worker, threadState);
@@ -2027,7 +2027,7 @@ test("resumeBlockedSyscallLocally completes pselect HUP marker despite an active
     waitingInWorkerStatus: null,
     pendingGuestMemoryWrites: [],
     pendingPipeSlotsForNextStep: [],
-    resumeBlockedOnNextStep: false,
+    resumeHostBlockedSyscallOnNextStep: false,
   };
   const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
   threadWorkerStates.set(worker, threadState);
@@ -2065,7 +2065,7 @@ test("resumeBlockedSyscallLocally completes pselect HUP marker despite an active
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
   expect(threadState.pendingGuestMemoryWrites.map((write) => write.guestPtr)).toEqual([0x200]);
   expect([...threadState.pendingGuestMemoryWrites[0].bytes]).toEqual([0x20, 0, 0, 0, 0, 0, 0, 0]);
-  expect(threadState.resumeBlockedOnNextStep).toBe(false);
+  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(false);
   expect(enqueueWorker).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
   expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);

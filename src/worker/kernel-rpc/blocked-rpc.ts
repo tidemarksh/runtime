@@ -1638,7 +1638,7 @@ async function resumeBlockedSyscallLocally(
       if (!thread) {
         return;
       }
-      thread.resumeBlockedOnNextStep = true;
+      thread.resumeHostBlockedSyscallOnNextStep = true;
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       finishBlockedRpc();
       handle.hostBlockedWorkers.delete(worker);
@@ -1708,7 +1708,7 @@ async function resumeBlockedSyscallLocally(
         return;
       }
       thread.pendingPipeSlotsForNextStep.push(...pipeSlotsForResume);
-      thread.resumeBlockedOnNextStep = true;
+      thread.resumeHostBlockedSyscallOnNextStep = true;
       if (canonicalEofReadyAtStart) {
         thread.pipeCanonicalEofReadyOnNextBlock = true;
       }
@@ -1863,7 +1863,7 @@ async function resumeBlockedSyscallLocally(
         return;
       }
       thread.pendingPipeSlotsForNextStep.push(...pipeSlotsForResume);
-      thread.resumeBlockedOnNextStep = true;
+      thread.resumeHostBlockedSyscallOnNextStep = true;
       if (canonicalEofReadyAtStart || bufferedReadWillReachCanonicalEof) {
         thread.pipeCanonicalEofReadyOnNextBlock = true;
       }
