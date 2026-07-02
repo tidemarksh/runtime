@@ -26,7 +26,7 @@ import {
   restoreRegularFileOffsetsForStep,
   snapshotOfdSlotsForThread,
 } from "../ownership/ofd-table.js";
-import { preserveHostStdioPipeControlForStep } from "../ownership/pipe-control.js";
+import { reconcileKernelSharePipeControl } from "../kernel-share.js";
 import { snapshotSocketStateForThread } from "../ownership/socket-control.js";
 import type {
   ThreadWorkerInbound,
@@ -1075,7 +1075,7 @@ export function createWorkerSchedulerQueueHelpers(
         `pump-run:ready=${handle.vforkReadyWorkers.length}:vm=0x${vmPtr.toString(16)}:status=${handle.kernel.thread_status(vmPtr)}`,
       );
       restoreRegularFileOffsetsForStep(handle);
-      preserveHostStdioPipeControlForStep(handle, vmPtr);
+      reconcileKernelSharePipeControl(handle);
       thread.stepCount += 1;
       thread.runningGeneration = thread.generation;
       thread.totalStepBudget += stepBudget;

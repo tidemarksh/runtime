@@ -13,6 +13,7 @@ import {
 import {
   copyLegacySharedKernelObjectsLocal,
   kernelShareOtherMembers,
+  reconcileKernelSharePipeControl,
   restoreLocalOfdSlots,
 } from "../kernel-share.js";
 import { reapplyMemfsDeletedPaths } from "../memfs-tombstones.js";
@@ -54,7 +55,6 @@ import {
   expandPipePeerOfdIds,
   hasPipePeerInOtherKernelShareMember,
   isProcessHostStdioPipeOfd,
-  preserveHostStdioPipeControlForStep,
 } from "../ownership/pipe-control.js";
 import {
   collectRuntimeNetworkSocketOfdIds,
@@ -396,13 +396,7 @@ export async function syncForkSharedStateViaKernelWorker(
   for (const snapshot of preservedRuntimeNetworkKernelStates) {
     restoreRuntimeNetworkKernelState(snapshot);
   }
-  preserveHostStdioPipeControlForStep(handle, handle.vmPtr);
-  for (const member of kernelShareOtherMembers(handle)) {
-    if (member.runningWorker !== null || member.exitInProgress) {
-      continue;
-    }
-    preserveHostStdioPipeControlForStep(member, member.vmPtr);
-  }
+  reconcileKernelSharePipeControl(handle);
   handle.kernelState = readKernelRuntimeState(handle.kernel);
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
   for (const member of kernelShareOtherMembers(handle)) {

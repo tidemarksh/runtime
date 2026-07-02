@@ -381,6 +381,43 @@ test("kernel-worker pipe control recompute uses supervisor process endpoint coun
   expect((kernelState.pipeUsed & pipeMask) !== 0n).toBe(true);
 });
 
+test("kernel-worker pipe control recompute does not add host stdio over supervisor counts", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const pipeMask = 1n << 4n;
+
+  parentExports.setHostStdioSlots({ stdout: 4 });
+  seedPipeSlot(parentMemory, 4, 0xaa, 1, 1);
+  installSupervisorPipeAuthority(parentExports, {
+    usedMask: 1n | pipeMask,
+    heldMask: pipeMask,
+    modes: new Map(),
+    readOpen: new Map(),
+    writeOpen: new Map(),
+  });
+
+  const primitives = createKernelWorkerPrimitives({
+    getCanonicalExports: () => canonicalExports,
+    processKernels: new Map<number, KernelExports>([
+      [1, parentExports],
+    ]),
+    canonicalProcesses: new Map([
+      [1, { ppid: 0 }],
+    ]),
+    getCanonicalProcessVmPtr: (pid) => (pid === 1 ? 0x1234 : 0),
+  });
+
+  const { kernelState, readOpen, writeOpen, managedPipeSlots } =
+    primitives.recomputeCanonicalPipeControlState();
+
+  expect(managedPipeSlots).toContain(4);
+  expect(readOpen[4]).toBe(0);
+  expect(writeOpen[4]).toBe(0);
+  expect((kernelState.pipeUsed & pipeMask) !== 0n).toBe(false);
+});
+
 test("kernel-worker releaseHostStdio keeps sibling private host stdio pipe counts intact", () => {
   const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
   const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });

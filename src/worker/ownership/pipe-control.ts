@@ -184,6 +184,11 @@ export function liveProcessPipeUsedBits(handle: ProcessHandle): bigint {
 }
 
 export function composeHandlePipeUsed(handle: ProcessHandle, sharedPipeUsed: bigint): bigint {
+  const supervisorPipeUsedMask = handle.kernel.supervisor_process_pipe_used_mask;
+  if (supervisorPipeUsedMask && handle.vmPtr !== 0) {
+    const mask = supervisorPipeUsedMask(handle.vmPtr);
+    return sharedPipeUsed | 1n | (typeof mask === "bigint" ? mask : BigInt(mask));
+  }
   let pipeUsed = sharedPipeUsed | 1n;
   for (const pipeSlot of hostStdioPipeSlots(handle)) {
     if (pipeSlot > 0) {
@@ -317,53 +322,6 @@ export function formatPipeSlotControlDebug(handle: ProcessHandle, pipeSlot: numb
   return `slot${pipeSlot}/h${counters.head}/t${counters.tail}`
     + `/ro${counters.readOpen}/wo${counters.writeOpen}`
     + formatPipeWaitDataDebug(handle, counters.base, counters.head, counters.tail);
-}
-
-export function preserveHostStdioPipeControlForStep(handle: ProcessHandle, vmPtr: number): void {
-  const maxPipes = handle.kernel.abi_max_pipes?.() ?? 0;
-  const pipeRegionBytes = handle.kernel.kernel_pipe_region_bytes?.() ?? 0;
-  const slotBytes = maxPipes > 0 ? pipeRegionBytes / maxPipes : 0;
-  if (!Number.isInteger(slotBytes) || slotBytes <= PIPE_HEADER_BYTES) {
-    return;
-  }
-  const view = new DataView(handle.memory.buffer);
-  const preserve = (pipeSlot: number, readOpenMin: number, writeOpenMin: number): void => {
-    if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
-      return;
-    }
-    const offset = handle.kernelState.pipeBase + pipeSlot * slotBytes;
-    if (readOpenMin > 0) {
-      const readOpen = view.getInt32(offset + PIPE_READ_OPEN_OFFSET, true);
-      if (readOpen < readOpenMin) {
-        view.setInt32(offset + PIPE_READ_OPEN_OFFSET, readOpenMin, true);
-      }
-    }
-    if (writeOpenMin > 0) {
-      const writeOpen = view.getInt32(offset + PIPE_WRITE_OPEN_OFFSET, true);
-      if (writeOpen < writeOpenMin) {
-        view.setInt32(offset + PIPE_WRITE_OPEN_OFFSET, writeOpenMin, true);
-      }
-    }
-  };
-
-  for (const [fd, readOpenMin, writeOpenMin] of [
-    [0, 0, 1],
-    [1, 1, 0],
-    [2, 1, 0],
-  ] as const) {
-    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
-    if (
-      ofdId <= 0
-      || ofdId >= handle.kernel.abi_max_fds()
-      || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
-    ) {
-      continue;
-    }
-    const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-    if (hostStdioPipeSlotsForFd(handle, fd).has(pipeSlot)) {
-      preserve(pipeSlot, readOpenMin, writeOpenMin);
-    }
-  }
 }
 
 export function applyThreadPipeSlots(

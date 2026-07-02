@@ -375,8 +375,6 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
     const readOpen = new Int32Array(maxPipes);
     const writeOpen = new Int32Array(maxPipes);
     const managedPipeSlots = new Set<number>();
-    const hostReadPipeSlots = new Set<number>();
-    const hostWritePipeSlots = new Set<number>();
     const readEndpointKeys = new Set<string>();
     const writeEndpointKeys = new Set<string>();
     const priorPipeUsed = readKernelRuntimeState(canonicalExports).pipeUsed;
@@ -391,25 +389,6 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
       const vmPtr = deps.getCanonicalProcessVmPtr(pid);
       if (vmPtr === 0) {
         continue;
-      }
-
-      const activeHostStdio = collectActiveHostStdioPipeSlots(processExports, vmPtr);
-      const stdinPipeSlot = activeHostStdio.stdin;
-      if (stdinPipeSlot > 0 && stdinPipeSlot < maxPipes) {
-        managedPipeSlots.add(stdinPipeSlot);
-        hostWritePipeSlots.add(stdinPipeSlot);
-      }
-
-      const stdoutPipeSlot = activeHostStdio.stdout;
-      if (stdoutPipeSlot > 0 && stdoutPipeSlot < maxPipes) {
-        managedPipeSlots.add(stdoutPipeSlot);
-        hostReadPipeSlots.add(stdoutPipeSlot);
-      }
-
-      const stderrPipeSlot = activeHostStdio.stderr;
-      if (stderrPipeSlot > 0 && stderrPipeSlot < maxPipes) {
-        managedPipeSlots.add(stderrPipeSlot);
-        hostReadPipeSlots.add(stderrPipeSlot);
       }
 
       const supervisorReadOpen = processExports.supervisor_process_pipe_read_open_count;
@@ -436,6 +415,25 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
           }
         }
         continue;
+      }
+
+      const activeHostStdio = collectActiveHostStdioPipeSlots(processExports, vmPtr);
+      const stdinPipeSlot = activeHostStdio.stdin;
+      if (stdinPipeSlot > 0 && stdinPipeSlot < maxPipes) {
+        managedPipeSlots.add(stdinPipeSlot);
+        writeEndpointKeys.add(`host:${stdinPipeSlot}:${pid}:stdin`);
+      }
+
+      const stdoutPipeSlot = activeHostStdio.stdout;
+      if (stdoutPipeSlot > 0 && stdoutPipeSlot < maxPipes) {
+        managedPipeSlots.add(stdoutPipeSlot);
+        readEndpointKeys.add(`host:${stdoutPipeSlot}:${pid}:stdout`);
+      }
+
+      const stderrPipeSlot = activeHostStdio.stderr;
+      if (stderrPipeSlot > 0 && stderrPipeSlot < maxPipes) {
+        managedPipeSlots.add(stderrPipeSlot);
+        readEndpointKeys.add(`host:${stderrPipeSlot}:${pid}:stderr`);
       }
 
       const heldRefcounts = collectProcessHeldOfdRefcounts(processExports, vmPtr);
@@ -478,12 +476,6 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
     for (const key of writeEndpointKeys) {
       const [, pipeSlot] = key.split(":");
       writeOpen[Number(pipeSlot)] += 1;
-    }
-    for (const pipeSlot of hostReadPipeSlots) {
-      readOpen[pipeSlot] += 1;
-    }
-    for (const pipeSlot of hostWritePipeSlots) {
-      writeOpen[pipeSlot] += 1;
     }
 
     const bytes = new DataView(canonicalExports.memory.buffer);

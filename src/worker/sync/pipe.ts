@@ -42,7 +42,6 @@ import {
   restoreProcessState,
   snapshotProcessState,
 } from "../ownership/process-state.js";
-import { preserveHostStdioPipeControlForStep } from "../ownership/pipe-control.js";
 import { collectRuntimeNetworkSocketOfdIds } from "../ownership/socket-control.js";
 import type {
   ProcessHandle,
@@ -179,14 +178,12 @@ export async function syncPipeStateViaKernelWorker(
   if (hostOutputPipeSlots.length > 0) {
     mergePipeSlotSnapshotsIntoHandle(handle, hostOutputPipeSlots);
   }
-  preserveHostStdioPipeControlForStep(handle, handle.vmPtr);
   if (pipeSlots.length > 0) {
     for (const member of kernelShareOtherMembers(handle)) {
       if (member.runningWorker !== null || member.exitInProgress) {
         continue;
       }
       mergePipeSlotSnapshotsIntoHandle(member, pipeSlots);
-      preserveHostStdioPipeControlForStep(member, member.vmPtr);
     }
   }
   restoreLocalOfdSlots(handle, preservedFdOfdSlots);

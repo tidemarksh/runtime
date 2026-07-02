@@ -176,31 +176,6 @@ export function restoreLocalPipeSlots(
   }
 }
 
-function hostStdioPipeSlotsForFd(handle: ProcessHandle, fd: 0 | 1 | 2): Set<number> {
-  const owner = handle.stdioOwner;
-  const slotsByFd = fd === 0
-    ? [
-        handle.stdinPipe,
-        handle.hostStdio.stdinPipe,
-        owner?.stdinPipe ?? 0,
-        owner?.hostStdio.stdinPipe ?? 0,
-      ]
-    : fd === 1
-      ? [
-          handle.stdoutPipe,
-          handle.hostStdio.stdoutPipe,
-          owner?.stdoutPipe ?? 0,
-          owner?.hostStdio.stdoutPipe ?? 0,
-        ]
-      : [
-          handle.stderrPipe,
-          handle.hostStdio.stderrPipe,
-          owner?.stderrPipe ?? 0,
-          owner?.hostStdio.stderrPipe ?? 0,
-        ];
-  return new Set(slotsByFd.filter((slot) => slot > 0));
-}
-
 function supervisorMaskToBigInt(mask: bigint | number): bigint {
   return typeof mask === "bigint" ? mask : BigInt(mask);
 }
@@ -274,34 +249,6 @@ export function reconcileKernelSharePipeControl(handle: ProcessHandle): void {
           readKeys.add(key);
         } else {
           writeKeys.add(key);
-        }
-      }
-    }
-    if ((member.hostStdio?.refCount ?? 0) > 0) {
-      const owner = member.stdioOwner ?? member;
-      for (const fd of [0, 1, 2] as const) {
-        const ofdId = member.kernel.process_fd_ofd_id(member.vmPtr, fd);
-        if (
-          ofdId <= 0
-          || ofdId >= maxFds
-          || member.kernel.kernel_ofd_fd_type(ofdId) !== member.kernel.abi_fd_type_pipe()
-        ) {
-          continue;
-        }
-        const pipeSlot = member.kernel.kernel_ofd_ino(ofdId);
-        if (
-          pipeSlot <= 0
-          || pipeSlot >= maxPipes
-          || !hostStdioPipeSlotsForFd(member, fd).has(pipeSlot)
-        ) {
-          continue;
-        }
-        pipeUsed |= 1n << BigInt(pipeSlot);
-        const key = `host:${pipeSlot}:${owner.pid}:${fd}`;
-        if (fd === 0) {
-          writeKeys.add(key);
-        } else {
-          readKeys.add(key);
         }
       }
     }

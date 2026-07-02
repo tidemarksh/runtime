@@ -505,31 +505,37 @@ function localPipeWriteOpenForSlot(handle: ProcessHandle, vmPtr: number, pipeSlo
   return localPipeOpenCountsForSlot(handle, vmPtr, pipeSlot).writeOpen;
 }
 
-function pipeSlotHasHostStdinWriter(handle: ProcessHandle, vmPtr: number, pipeSlot: number): boolean {
-  if (handle.stdioOwner !== null || handle.stdinClosed === true || handle.hostStdio.refCount <= 0) {
-    return false;
+function supervisorPipeOpenCountsForSlot(handle: ProcessHandle, vmPtr: number, pipeSlot: number): {
+  readOpen: number;
+  writeOpen: number;
+} | null {
+  const readOpenCount = handle.kernel.supervisor_process_pipe_read_open_count;
+  const writeOpenCount = handle.kernel.supervisor_process_pipe_write_open_count;
+  if (!readOpenCount || !writeOpenCount || pipeSlot <= 0 || pipeSlot >= handle.kernel.abi_max_pipes()) {
+    return null;
   }
-  if (pipeSlot <= 0 || ![handle.hostStdio.stdinPipe, handle.stdinPipe].includes(pipeSlot)) {
-    return false;
-  }
-  const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, 0);
-  return (
-    ofdId > 0
-    && ofdId < handle.kernel.abi_max_fds()
-    && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
-    && handle.kernel.kernel_ofd_ino(ofdId) === pipeSlot
-  );
+  return {
+    readOpen: Math.max(0, readOpenCount(vmPtr, pipeSlot)),
+    writeOpen: Math.max(0, writeOpenCount(vmPtr, pipeSlot)),
+  };
 }
 
 function pipeSlotHasVisibleWriter(handle: ProcessHandle, vmPtr: number, pipeSlot: number): boolean {
-  return pipeSlotHasLiveWriter(handle, vmPtr, pipeSlot)
-    || pipeSlotHasHostStdinWriter(handle, vmPtr, pipeSlot);
+  const supervisorCounts = supervisorPipeOpenCountsForSlot(handle, vmPtr, pipeSlot);
+  if (supervisorCounts !== null) {
+    return supervisorCounts.writeOpen > 0;
+  }
+  return pipeSlotHasLiveWriter(handle, vmPtr, pipeSlot);
 }
 
 function localPipeOpenCountsForSlot(handle: ProcessHandle, vmPtr: number, pipeSlot: number): {
   readOpen: number;
   writeOpen: number;
 } {
+  const supervisorCounts = supervisorPipeOpenCountsForSlot(handle, vmPtr, pipeSlot);
+  if (supervisorCounts !== null) {
+    return supervisorCounts;
+  }
   if (pipeSlot <= 0 || pipeSlot >= handle.kernel.abi_max_pipes()) {
     return { readOpen: 0, writeOpen: 0 };
   }
@@ -667,56 +673,6 @@ function pollPipeSlotsWriteOpenForThreadStep(handle: ProcessHandle, vmPtr: numbe
     writeOpen = Math.max(writeOpen, pipeSlotWriteOpen(handle, pipeSlot));
   }
   return writeOpen;
-}
-
-function preserveHostStdinWriterForBlockedRead(handle: ProcessHandle, vmPtr: number): void {
-  if (handle.stdioOwner !== null) {
-    return;
-  }
-  if (handle.stdinClosed === true) {
-    return;
-  }
-  const syscallNr = blockedPipeWaitSyscallNr(handle, vmPtr);
-  const readSyscall = handle.kernel.abi_sys_read?.();
-  const blockedFd = handle.kernel.thread_blocked_fd?.(vmPtr) ?? 0;
-  const syscallFd = Number(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 0) ?? handle.kernel.thread_a0(vmPtr));
-  if (
-    readSyscall === undefined
-    || syscallNr !== BigInt(readSyscall)
-    || (blockedFd > 0 ? blockedFd : syscallFd) !== 0
-  ) {
-    return;
-  }
-  const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, 0);
-  if (
-    ofdId <= 0
-    || ofdId >= handle.kernel.abi_max_fds()
-    || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
-  ) {
-    return;
-  }
-  const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-  if (![handle.hostStdio.stdinPipe, handle.stdinPipe].includes(pipeSlot)) {
-    return;
-  }
-  const maxPipes = handle.kernel.abi_max_pipes();
-  const slotBytes = handle.kernel.kernel_pipe_region_bytes() / maxPipes;
-  if (
-    pipeSlot <= 0
-    || pipeSlot >= maxPipes
-    || !Number.isInteger(slotBytes)
-    || slotBytes <= PIPE_WRITE_OPEN_OFFSET + 4
-  ) {
-    return;
-  }
-  const offset = handle.kernel.kernel_pipe_base() + pipeSlot * slotBytes;
-  const view = new DataView(handle.memory.buffer);
-  if (offset < 0 || offset + PIPE_WRITE_OPEN_OFFSET + 4 > view.byteLength) {
-    return;
-  }
-  if (view.getInt32(offset + PIPE_WRITE_OPEN_OFFSET, true) <= 0) {
-    view.setInt32(offset + PIPE_WRITE_OPEN_OFFSET, 1, true);
-  }
 }
 
 function snapshotBlockedPipeSlotForThreadStep(
@@ -1556,9 +1512,6 @@ async function executeHostBlockedSyscallResume(
     }
     if (abortIfStaleBlockedRpc()) {
       return;
-    }
-    if (blockedStatus === handle.kernel.abi_status_pipe_wait()) {
-      preserveHostStdinWriterForBlockedRead(handle, vmPtr);
     }
     const pipeReadOpenEmpty = blockedPipeReadOpenEmptyAfterSync(
       handle,
