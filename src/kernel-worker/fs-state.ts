@@ -466,6 +466,134 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     throw new Error(`unknown supervisor dirty prepare publish mode: ${publishMode}`);
   }
 
+  function supervisorDataSyncAction(
+    sourceExports: KernelExports,
+    input: {
+      kind: "export" | "restore";
+      ino: number;
+      sourceMode: number;
+      sourceSize: number;
+      targetMode: number;
+      targetSize: number;
+      published: ReturnType<typeof readInodeRecord>;
+      hasDirtyResidentPages: boolean;
+      pageMapNewer: boolean;
+      hasBackingFile: boolean;
+    },
+  ): "none" | "externalize" {
+    const decide = sourceExports.supervisor_fs_data_sync_decision;
+    if (typeof decide !== "function") {
+      throw new Error("missing supervisor_fs_data_sync_decision export");
+    }
+    const kind = input.kind === "restore"
+      ? supervisorNumber(sourceExports.supervisor_fs_data_sync_kind_restore?.())
+      : supervisorNumber(sourceExports.supervisor_fs_data_sync_kind_export?.());
+    const decision = supervisorNumber(decide(
+      kind,
+      input.ino,
+      input.sourceMode,
+      BigInt(input.sourceSize),
+      input.targetMode,
+      BigInt(input.targetSize),
+      input.published ? 1 : 0,
+      input.published?.mode ?? 0,
+      BigInt(input.published?.size ?? 0),
+      BigInt(input.published?.fileObjectId ?? 0),
+      input.hasDirtyResidentPages ? 1 : 0,
+      input.pageMapNewer ? 1 : 0,
+      input.hasBackingFile ? 1 : 0,
+    ));
+    if (decision < 0) {
+      return "none";
+    }
+    const none = supervisorNumber(sourceExports.supervisor_fs_sync_action_none?.());
+    if (decision === none) {
+      return "none";
+    }
+    const externalize = supervisorNumber(sourceExports.supervisor_fs_sync_action_externalize?.());
+    if (decision === externalize) {
+      return "externalize";
+    }
+    throw new Error(`unknown supervisor fs data sync action: ${decision}`);
+  }
+
+  function supervisorMetadataSync(
+    sourceExports: KernelExports,
+    input: {
+      ino: number;
+      sourcePresent: boolean;
+      sourceMode: number;
+      sourceSize: number;
+      parentPresent: boolean;
+      parentIno: number;
+      published: ReturnType<typeof readInodeRecord>;
+      publishedNameMatches: boolean;
+      hasDirtyResidentPages: boolean;
+      backingPresent: boolean;
+    },
+  ): { action: "none" | "remove" | "ensure" | "publish-ensure"; size: number; backingSource: "none" | "published" | "backing" } {
+    const decide = sourceExports.supervisor_fs_metadata_sync_decision;
+    if (typeof decide !== "function") {
+      throw new Error("missing supervisor_fs_metadata_sync_decision export");
+    }
+    const decision = supervisorNumber(decide(
+      input.ino,
+      input.sourcePresent ? 1 : 0,
+      input.sourceMode,
+      BigInt(input.sourceSize),
+      input.parentPresent ? 1 : 0,
+      input.parentIno,
+      input.published ? 1 : 0,
+      input.published?.mode ?? 0,
+      BigInt(input.published?.size ?? 0),
+      input.published?.parentIno ?? 0,
+      input.publishedNameMatches ? 1 : 0,
+      input.hasDirtyResidentPages ? 1 : 0,
+      input.backingPresent ? 1 : 0,
+    ));
+    if (decision < 0) {
+      return { action: "none", size: 0, backingSource: "none" };
+    }
+
+    const none = supervisorNumber(sourceExports.supervisor_fs_metadata_sync_action_none?.());
+    const remove = supervisorNumber(sourceExports.supervisor_fs_metadata_sync_action_remove?.());
+    const ensure = supervisorNumber(sourceExports.supervisor_fs_metadata_sync_action_ensure?.());
+    const publishEnsure = supervisorNumber(sourceExports.supervisor_fs_metadata_sync_action_publish_ensure?.());
+    let action: "none" | "remove" | "ensure" | "publish-ensure";
+    if (decision === none) {
+      action = "none";
+    } else if (decision === remove) {
+      action = "remove";
+    } else if (decision === ensure) {
+      action = "ensure";
+    } else if (decision === publishEnsure) {
+      action = "publish-ensure";
+    } else {
+      throw new Error(`unknown supervisor fs metadata sync action: ${decision}`);
+    }
+
+    const backing = supervisorNumber(sourceExports.supervisor_fs_metadata_sync_backing_source?.());
+    const backingNone = supervisorNumber(sourceExports.supervisor_fs_metadata_backing_none?.());
+    const backingPublished = supervisorNumber(sourceExports.supervisor_fs_metadata_backing_published?.());
+    const backingBacking = supervisorNumber(sourceExports.supervisor_fs_metadata_backing_backing?.());
+    let backingSource: "none" | "published" | "backing";
+    if (backing === backingNone) {
+      backingSource = "none";
+    } else if (backing === backingPublished) {
+      backingSource = "published";
+    } else if (backing === backingBacking) {
+      backingSource = "backing";
+    } else {
+      throw new Error(`unknown supervisor fs metadata backing source: ${backing}`);
+    }
+
+    return {
+      action,
+      size: supervisorNumber(sourceExports.supervisor_fs_metadata_sync_size?.()),
+      backingSource,
+    };
+  }
+
   function supervisorPageTableUsesResident(
     sourceExports: KernelExports,
     ino: number,
@@ -1207,30 +1335,44 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   function syncFileDataMutation(sourceExports: KernelExports, ino: number): boolean {
     const canonicalExports = deps.getCanonicalExports();
     const mode = sourceExports.memfs_inode_mode(ino);
-    if ((mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG) {
-      return false;
-    }
-
-      const published = readInodeRecord(deps.getSabPageCache(), ino) ?? {
-        dataOff: 0,
-        size: 0,
-        mode,
-        parentIno: 0,
-        name: new Uint8Array(),
-        nextSibling: 0,
-        fileObjectId: 0,
-        generation: 0,
-      };
+    const publishedRecord = readInodeRecord(deps.getSabPageCache(), ino);
+    const published = publishedRecord ?? {
+      dataOff: 0,
+      size: 0,
+      mode,
+      parentIno: 0,
+      name: new Uint8Array(),
+      nextSibling: 0,
+      fileObjectId: 0,
+      generation: 0,
+    };
 
     try {
-      ensurePublishedInodeInTarget(canonicalExports, ino, published);
-      if ((canonicalExports.memfs_inode_mode(ino) & MEMFS_S_IFMT) !== MEMFS_S_IFREG) {
-        return false;
-      }
-      const size = Number(sourceExports.memfs_file_size(ino));
-      const hasPublishedResidentFile = published.fileObjectId !== 0 && published.size === size;
-      if (residentPageMapIsNewerThanBacking(ino) || hasPublishedResidentFile) {
+      const canonicalMode = canonicalExports.memfs_inode_mode(ino);
+      const targetMode = (canonicalMode & MEMFS_S_IFMT) === MEMFS_S_IFREG
+        ? canonicalMode
+        : publishedRecord?.mode ?? canonicalMode;
+      const size = (mode & MEMFS_S_IFMT) === MEMFS_S_IFREG
+        ? Number(sourceExports.memfs_file_size(ino))
+        : 0;
+      const canonicalSize = (canonicalMode & MEMFS_S_IFMT) === MEMFS_S_IFREG
+        ? Number(canonicalExports.memfs_file_size(ino))
+        : publishedRecord?.size ?? 0;
+      const action = supervisorDataSyncAction(sourceExports, {
+        kind: "export",
+        ino,
+        sourceMode: mode,
+        sourceSize: size,
+        targetMode,
+        targetSize: canonicalSize,
+        published: publishedRecord,
+        hasDirtyResidentPages: hasDirtyResidentPagesForInode(deps.getSabPageCache(), ino),
+        pageMapNewer: residentPageMapIsNewerThanBacking(ino),
+        hasBackingFile: hasBackingFile(ino),
+      });
+      if (action === "externalize") {
         clearSeedBackingExtentForInode(ino);
+        ensurePublishedInodeInTarget(canonicalExports, ino, published);
         syncExternalFileDataIntoTarget(canonicalExports, ino, mode, size, published);
         for (const memberExports of deps.processKernels.values()) {
           trySyncExternalFileDataIntoTarget(memberExports, ino, mode, size, published);
@@ -1264,21 +1406,21 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   ): boolean {
     const sab = deps.getSabPageCache();
     const published = readInodeRecord(sab, ino);
-    const hasPublishedResidentFile = (published?.fileObjectId ?? 0) !== 0;
-    if (
-      !published
-      || (published.mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG
-      || published.size <= 0
-      || (!hasBackingFile(ino) && !hasDirtyResidentPagesForInode(sab, ino) && !hasPublishedResidentFile)
-    ) {
-      return false;
-    }
-
     const mode = targetExports.memfs_inode_mode(ino);
-    if ((mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG) {
-      return false;
-    }
-    if (Number(targetExports.memfs_file_size(ino)) !== published.size) {
+    const size = Number(targetExports.memfs_file_size(ino));
+    const action = supervisorDataSyncAction(targetExports, {
+      kind: "restore",
+      ino,
+      sourceMode: 0,
+      sourceSize: 0,
+      targetMode: mode,
+      targetSize: size,
+      published,
+      hasDirtyResidentPages: hasDirtyResidentPagesForInode(sab, ino),
+      pageMapNewer: false,
+      hasBackingFile: hasBackingFile(ino),
+    });
+    if (action !== "externalize" || !published) {
       return false;
     }
 
@@ -1316,6 +1458,21 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     };
 
     if (ino === 0) {
+      const decision = supervisorMetadataSync(sourceExports, {
+        ino,
+        sourcePresent: false,
+        sourceMode: 0,
+        sourceSize: 0,
+        parentPresent: false,
+        parentIno: 0,
+        published: null,
+        publishedNameMatches: false,
+        hasDirtyResidentPages: false,
+        backingPresent: false,
+      });
+      if (decision.action !== "remove") {
+        return false;
+      }
       const removedCanonical = removePathInTarget(deps.getCanonicalExports());
       let removedMembers = true;
       for (const memberExports of deps.processKernels.values()) {
@@ -1339,27 +1496,36 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     let published = readInodeRecord(deps.getSabPageCache(), ino);
     const hasDirtyResidentPages = hasDirtyResidentPagesForInode(deps.getSabPageCache(), ino);
     const sourceSize = fileType === MEMFS_S_IFREG ? Number(sourceExports.memfs_file_size(ino)) : 0;
-    const size = hasDirtyResidentPages && published ? published.size : sourceSize;
-    const publishedMeta = published && (published.size === size || hasDirtyResidentPages)
+    const backingMeta = backingMetaForInode(ino);
+    const decision = supervisorMetadataSync(sourceExports, {
+      ino,
+      sourcePresent: true,
+      sourceMode: mode,
+      sourceSize,
+      parentPresent: true,
+      parentIno,
+      published,
+      publishedNameMatches: published ? deps.decoder.decode(published.name) === name : false,
+      hasDirtyResidentPages,
+      backingPresent: backingMeta !== undefined,
+    });
+    if (decision.action !== "ensure" && decision.action !== "publish-ensure") {
+      return false;
+    }
+    const publishedMeta = published && decision.backingSource === "published"
       ? { fileObjectId: published.fileObjectId, generation: published.generation }
       : undefined;
-    const backingMeta = hasDirtyResidentPages
-      ? publishedMeta
-      : backingMetaForInode(ino) ?? publishedMeta;
-    if (
-      !published
-      || published.mode !== mode
-      || published.size !== size
-      || published.parentIno !== parentIno
-      || deps.decoder.decode(published.name) !== name
-    ) {
+    const selectedBackingMeta = decision.backingSource === "backing"
+      ? backingMeta
+      : publishedMeta;
+    if (decision.action === "publish-ensure") {
       publishInode(deps.getSabPageCache(), ino, {
         mode,
-        size,
+        size: decision.size,
         parentIno,
         name: nameBytes,
         nextSibling: published?.nextSibling ?? 0,
-        ...backingMeta,
+        ...selectedBackingMeta,
       });
       published = readInodeRecord(deps.getSabPageCache(), ino);
       if (!published) {

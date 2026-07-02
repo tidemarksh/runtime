@@ -219,6 +219,17 @@ export interface KernelExports {
   supervisor_fs_dirty_prepare_publish_none?(): number;
   supervisor_fs_dirty_prepare_publish_missing?(): number;
   supervisor_fs_dirty_prepare_publish_size_update?(): number;
+  supervisor_fs_data_sync_kind_export?(): number;
+  supervisor_fs_data_sync_kind_restore?(): number;
+  supervisor_fs_sync_action_none?(): number;
+  supervisor_fs_sync_action_externalize?(): number;
+  supervisor_fs_metadata_sync_action_none?(): number;
+  supervisor_fs_metadata_sync_action_remove?(): number;
+  supervisor_fs_metadata_sync_action_ensure?(): number;
+  supervisor_fs_metadata_sync_action_publish_ensure?(): number;
+  supervisor_fs_metadata_backing_none?(): number;
+  supervisor_fs_metadata_backing_published?(): number;
+  supervisor_fs_metadata_backing_backing?(): number;
   supervisor_fs_backing_fill_mode_resident?(): number;
   supervisor_fs_backing_fill_mode_direct?(): number;
   supervisor_fs_backing_source_range_none?(): number;
@@ -351,6 +362,38 @@ export interface KernelExports {
     hasDirtyResidentPages: number,
   ): number;
   supervisor_fs_dirty_prepare_publish_mode?(): number;
+  supervisor_fs_data_sync_decision?(
+    kind: number,
+    ino: number,
+    sourceMode: number,
+    sourceSize: bigint | number,
+    targetMode: number,
+    targetSize: bigint | number,
+    publishedPresent: number,
+    publishedMode: number,
+    publishedSize: bigint | number,
+    publishedFileObjectId: bigint | number,
+    hasDirtyResidentPages: number,
+    pageMapNewer: number,
+    hasBackingFile: number,
+  ): number;
+  supervisor_fs_metadata_sync_decision?(
+    ino: number,
+    sourcePresent: number,
+    sourceMode: number,
+    sourceSize: bigint | number,
+    parentPresent: number,
+    parentIno: number,
+    publishedPresent: number,
+    publishedMode: number,
+    publishedSize: bigint | number,
+    publishedParentIno: number,
+    publishedNameMatches: number,
+    hasDirtyResidentPages: number,
+    backingPresent: number,
+  ): number;
+  supervisor_fs_metadata_sync_size?(): bigint | number;
+  supervisor_fs_metadata_sync_backing_source?(): number;
   supervisor_fs_page_table_source_decision?(
     ino: number,
     hasDirtyPages: number,
