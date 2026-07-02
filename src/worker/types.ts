@@ -162,7 +162,6 @@ export interface BlockedWorkerState {
   vmPtr: number;
   status: number;
   retryTimer: ReturnType<typeof setTimeout> | null;
-  timeoutExpired: boolean;
   supervisorTimerArmed?: boolean;
   epollTimerfdDeadlineTicks?: bigint | null;
   rpcPending: boolean;

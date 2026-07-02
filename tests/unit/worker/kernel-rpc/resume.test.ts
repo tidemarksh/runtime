@@ -176,7 +176,6 @@ test("resumeWait4ViaKernelWorker does not re-run local wait4 after kernel-worker
     vmPtr: 0x1234,
     status: 31,
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: true,
   });
 
@@ -269,7 +268,6 @@ test("resumeWait4ViaKernelWorker skips RPC when local wait4 already resolved", a
     vmPtr: 0x1234,
     status: 31,
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: true,
   });
 
@@ -472,7 +470,6 @@ test("resumeBlockedSyscallLocally skips kernel-worker shared-state syncs during 
     vmPtr: 0x1234,
     status: 29,
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: true,
   });
 
@@ -594,7 +591,6 @@ test("resumeBlockedSyscallLocally queues pselect fd_set writes after owner-side 
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -749,7 +745,6 @@ test("resumeBlockedSyscallLocally retries pselect pipe HUP owner-side after tran
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -903,7 +898,6 @@ test("resumeBlockedSyscallLocally resumes pselect pipe HUP before generic after-
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -1058,7 +1052,6 @@ test("resumeBlockedSyscallLocally retries mixed socket pipe pselect HUP owner-si
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -1184,7 +1177,6 @@ test("resumeBlockedSyscallOutcome returns pipe sync effect before ready socket p
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -1311,7 +1303,6 @@ test("resumeBlockedSyscallOutcome returns socket sync effect without running soc
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -1419,7 +1410,6 @@ test("resumeBlockedSyscallLocally wakes pipe waiters through requestPipeStateSyn
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: true,
   });
 
@@ -1552,7 +1542,6 @@ test("resumeBlockedSyscallLocally resumes pipe EOF after writers close even with
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: true,
   });
 
@@ -1716,7 +1705,6 @@ test("resumeBlockedSyscallLocally defers poll readiness while an active child st
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: true,
   });
 
@@ -1872,7 +1860,6 @@ test("resumeBlockedSyscallLocally ignores exiting child pipe writers for pselect
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: true,
   });
 
@@ -2031,7 +2018,6 @@ test("resumeBlockedSyscallLocally completes pselect HUP marker despite an active
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: true,
   });
 
@@ -2151,7 +2137,6 @@ test("resumeBlockedSyscallLocally collapses pipe read that becomes ready after p
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: true,
   });
 
@@ -2276,7 +2261,6 @@ test("resumeBlockedSyscallLocally queues the full socket read buffer after owner
     vmPtr: 0x1234,
     status: 29,
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: true,
   });
 

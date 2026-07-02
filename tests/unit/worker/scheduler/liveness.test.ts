@@ -677,7 +677,6 @@ test("ok status defers re-enqueue while a blocked epoll retry rpc is pending", a
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -825,7 +824,6 @@ test("scheduler caps step budget while owner retry waiters are blocked", () => {
     vmPtr: 0x5678,
     status: kernel.abi_status_wait4(),
     retryTimer: null,
-    timeoutExpired: false,
     epollTimerfdDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
@@ -1291,7 +1289,6 @@ test("host-local epoll retry treats timeout zero as expired", async () => {
     clearTimeout(blocked!.retryTimer);
     blocked!.retryTimer = null;
   }
-  blocked!.timeoutExpired = false;
 
   scheduler.notifySchedulerProgress(handle);
   await vi.waitFor(() => {
@@ -1366,7 +1363,6 @@ test("epoll kernel-worker retry completes timeout through supervisor timer HostO
     clearTimeout(blocked!.retryTimer);
     blocked!.retryTimer = null;
   }
-  blocked!.timeoutExpired = false;
 
   scheduler.notifySchedulerProgress(handle);
   await vi.waitFor(() => {
@@ -1457,7 +1453,6 @@ test("epoll sync timeout zero survives a running-worker retry skip", async () =>
     clearTimeout(blocked!.retryTimer);
     blocked!.retryTimer = null;
   }
-  blocked!.timeoutExpired = false;
 
   scheduler.notifySchedulerProgress(handle);
   await vi.waitFor(() => {
@@ -1704,7 +1699,6 @@ test("pipe pselect retry applies child exit records before passive parking", asy
     worker,
     0x1234,
     handle.kernel.abi_status_pipe_wait(),
-    false,
   );
   expect(handle.blockedWorkers.get(worker)?.pipeChildExitResumeKey).toContain("7/0:sys=72");
 });
@@ -1769,7 +1763,6 @@ test("pipe pselect retry resumes after pipe sync when no writer remains", async 
     worker,
     0x1234,
     handle.kernel.abi_status_pipe_wait(),
-    false,
   );
 });
 
@@ -2068,7 +2061,6 @@ test("socket poll pump resumes through kernel-worker RPC when available", async 
     worker,
     0x1234,
     handle.kernel.abi_status_pipe_wait(),
-    false,
   );
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handle.blockedWorkers.has(worker)).toBe(false);
@@ -3118,7 +3110,6 @@ test("epoll kernel-worker retry syncs watched pipe, epoll table, then dependent 
     blockedWorker,
     0x1234,
     handle.kernel.abi_status_epoll_wait(),
-    false,
   );
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
 });
@@ -3212,7 +3203,6 @@ test("epoll kernel-worker retry clears a sibling sleeper without re-owning sleep
     blockedWorker,
     0x1234,
     handle.kernel.abi_status_epoll_wait(),
-    false,
   );
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(lifecycleEvents).toContain("running-worker-cleared:1:sleep-supervisor-owned:0x5678");
@@ -3662,7 +3652,6 @@ test("pumpProcess runs ordinary OK ready workers under blocked I/O pressure", ()
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -3715,7 +3704,6 @@ test("pumpProcess runs clone-spawn ready workers under blocked I/O pressure", ()
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -3768,7 +3756,6 @@ test("pumpProcess runs ordinary OK ready workers while blocked I/O retry timer w
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
     retryTimer,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -4147,7 +4134,6 @@ test("pumpProcess runs an OK ready worker after an immediate epoll retry attempt
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -4602,7 +4588,6 @@ test("blocked retry cleanup clears a running worker whose kernel process pointer
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_wait4(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -4655,7 +4640,6 @@ test("epoll retry clears inactive answered pipe running worker", () => {
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -4710,7 +4694,6 @@ test("epoll retry clears answered pipe running worker without active-step export
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -4763,7 +4746,6 @@ test("epoll retry keeps unanswered futex running worker when last trace points e
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -4816,7 +4798,6 @@ test("epoll retry clears stale unanswered ok running worker", () => {
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -4878,7 +4859,6 @@ test("epoll retry keeps unanswered futex running worker with a blocked record", 
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -4928,7 +4908,6 @@ test("epoll retry clears answered ok running worker before skip", () => {
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -4985,7 +4964,6 @@ test("epoll retry clears surplus stale unanswered ok running worker before skip"
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -5042,7 +5020,6 @@ test("epoll retry clears inactive surplus unanswered ok running worker before st
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -5099,7 +5076,6 @@ test("epoll retry clears inactive single unanswered ok running worker before sta
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -5155,7 +5131,6 @@ test("epoll retry keeps active unanswered ok running worker", () => {
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -6050,7 +6025,6 @@ test("pumpProcess leaves a quiescent stack-local futex waiter parked with a bloc
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -6116,7 +6090,6 @@ test("pumpProcess leaves a quiescent worker-local futex waiter parked until its 
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_pipe_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -6159,7 +6132,6 @@ test("blockWorker parks futex wait as supervisor-owned worker state", () => {
     vmPtr: thread.vmPtr,
     status: kernel.abi_status_pipe_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -6209,7 +6181,6 @@ test("blocked retry parks futex retry result as supervisor-owned worker state", 
     vmPtr: thread.vmPtr,
     status: kernel.abi_status_pipe_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -6283,7 +6254,6 @@ test("blocked retry result arms supervisor timer instead of scheduling runtime r
     vmPtr: thread.vmPtr,
     status: kernel.abi_status_pipe_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -6365,7 +6335,6 @@ test("blocked wait retry arms supervisor timer before runtime poll retry", () =>
     vmPtr: thread.vmPtr,
     status: kernel.abi_status_pipe_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -6573,7 +6542,6 @@ test("supervisor timer completion resumes the supervisor-selected runnable worke
     vmPtr: thread.vmPtr,
     status: kernel.abi_status_pipe_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -6690,7 +6658,6 @@ test("notifySchedulerProgress clears answered futex-wait running sibling before 
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_pipe_wait(),
     retryTimer: null,
-    timeoutExpired: false,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
@@ -6727,7 +6694,6 @@ test("notifySchedulerProgress clears answered futex-wait running sibling before 
     blockedWorker,
     blockedThread.vmPtr,
     kernel.abi_status_pipe_wait(),
-    false,
   );
 });
 
@@ -6969,7 +6935,6 @@ test("notifySchedulerProgress leaves supervisor timer owned socket wait to super
     vmPtr: 0x1234,
     status: handle.kernel.abi_status_socket_recv(),
     retryTimer: null,
-    timeoutExpired: false,
     supervisorTimerArmed: true,
     epollTimerfdDeadlineTicks: null,
     rpcPending: false,

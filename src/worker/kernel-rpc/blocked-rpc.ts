@@ -1030,13 +1030,9 @@ async function resumeBlockedSyscallLocally(
   worker: Worker,
   vmPtr: number,
   blockedStatus: number,
-  timeoutExpired = false,
   collectEffects = false,
   collectedRetryResult?: { status?: number },
 ): Promise<void> {
-  if (timeoutExpired) {
-    throw new Error("supervisor host timer completion must own blocked wait timeout resume");
-  }
   let rpcGeneration: number | null = null;
   let canonicalEofReadyAtStart = false;
   let preserveCanonicalEofReadyOnFinish = false;
@@ -2187,7 +2183,6 @@ async function resumeBlockedSyscallLocally(
     worker: Worker,
     vmPtr: number,
     blockedStatus: number,
-    timeoutExpired = false,
   ): Promise<KernelRpcResumeOutcome> {
     pendingOutcomeEffects.delete(worker);
     const collectedRetryResult: { status?: number } = {};
@@ -2196,7 +2191,6 @@ async function resumeBlockedSyscallLocally(
       worker,
       vmPtr,
       blockedStatus,
-      timeoutExpired,
       true,
       collectedRetryResult,
     );

@@ -3,7 +3,7 @@ import type { ProcessHandle } from "../types.js";
 export interface SocketWaitSchedulerDeps {
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   logNetworkDebug(event: string): void;
-  scheduleBlockedRetry(handle: ProcessHandle, worker: Worker, delayMs?: number, timeoutExpired?: boolean): void;
+  scheduleBlockedRetry(handle: ProcessHandle, worker: Worker, delayMs?: number): void;
 }
 
 export interface SocketWaitScheduler {

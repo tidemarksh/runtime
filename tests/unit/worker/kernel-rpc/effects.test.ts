@@ -13,7 +13,6 @@ function makeBlockedHandle(worker: Worker): ProcessHandle {
     blockedWorkers: new Map([[worker, {
       vmPtr: 0x1234,
       status: 21,
-      timeoutExpired: true,
     }]]),
     kernel: {
       thread_status: () => 21,

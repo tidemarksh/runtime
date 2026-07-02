@@ -516,14 +516,12 @@ async function resumeBlockedSyscallOutcome(
   worker: Worker,
   vmPtr: number,
   blockedStatus: number,
-  timeoutExpired?: boolean,
 ): Promise<KernelRpcResumeOutcome> {
   const outcome = await workerKernelRpcHelpers.resumeBlockedSyscallOutcome(
     handle,
     worker,
     vmPtr,
     blockedStatus,
-    timeoutExpired,
   );
   const appliedOutcome = await applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
   return continueBlockedRpcResumeAfterEffects(handle, worker, vmPtr, outcome, appliedOutcome, {

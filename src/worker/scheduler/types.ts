@@ -22,7 +22,6 @@ export interface WorkerSchedulerDeps {
     worker: Worker,
     vmPtr: number,
     status: number,
-    timeoutExpired?: boolean,
   ): Promise<KernelRpcResumeOutcome>;
   resumeFsViaKernelWorker(handle: ProcessHandle, worker: Worker, vmPtr: number): Promise<void>;
   resumeFsViaKernelWorkerOutcome?(

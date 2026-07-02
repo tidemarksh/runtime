@@ -15,7 +15,7 @@ import type {
 export interface PipePollSchedulerDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
-  scheduleBlockedRetry(handle: ProcessHandle, worker: Worker, delayMs?: number, timeoutExpired?: boolean): void;
+  scheduleBlockedRetry(handle: ProcessHandle, worker: Worker, delayMs?: number): void;
   pipeChildExitRecordsAlreadyResumedForWait(
     handle: ProcessHandle,
     vmPtr: number,
@@ -315,7 +315,6 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
   ): boolean {
     return blocked.status === handle.kernel.abi_status_pipe_wait()
       && pollTimeoutMs < 0
-      && !blocked.timeoutExpired
       && deps.pipeChildExitRecordsAlreadyResumedForWait(handle, blocked.vmPtr)
       && handle.pendingChildExitRecords === 0
       && handle.pendingChildSpawnRecords === 0

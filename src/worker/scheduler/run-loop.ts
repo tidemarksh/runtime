@@ -36,7 +36,6 @@ export interface RunLoopScheduler {
     handle: ProcessHandle,
     worker: Worker,
     delayMs?: number,
-    timeoutExpired?: boolean,
   ): void;
 }
 
@@ -79,7 +78,6 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     handle: ProcessHandle,
     worker: Worker,
     delayMs = 10,
-    timeoutExpired = false,
   ): void {
     const blocked = handle.blockedWorkers.get(worker);
     if (!blocked || blocked.retryTimer !== null) {
@@ -87,7 +85,6 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     }
     blocked.retryTimer = setTimeout(() => {
       blocked.retryTimer = null;
-      blocked.timeoutExpired = timeoutExpired;
       deps.retryBlockedWorker(handle, worker);
     }, delayMs);
   }
@@ -144,7 +141,7 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
         clearTimeout(blocked.retryTimer);
         blocked.retryTimer = null;
       }
-      scheduleBlockedRetry(handle, worker, 0, blocked.timeoutExpired);
+      scheduleBlockedRetry(handle, worker, 0);
     };
     promise.then(onSettled, onSettled);
   }

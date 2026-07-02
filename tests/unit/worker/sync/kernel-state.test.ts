@@ -256,7 +256,6 @@ function makeHandle(pid: number, fdMap: Map<number, number>): ProcessHandle {
       vmPtr: 0x1234,
       status: 0,
       retryTimer: null,
-      timeoutExpired: false,
       rpcPending: false,
       rpcGeneration: 0,
       skipNextNetworkPump: false,
