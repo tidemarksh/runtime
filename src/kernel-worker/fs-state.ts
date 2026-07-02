@@ -326,6 +326,41 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     return (flags & writebackRequired) !== 0;
   }
 
+  function supervisorPageTableUsesResident(
+    sourceExports: KernelExports,
+    ino: number,
+    hasDirtyPages: boolean,
+    published: ReturnType<typeof readInodeRecord>,
+    backingStat: FileBackingStat | null,
+  ): boolean {
+    const decide = sourceExports.supervisor_fs_page_table_source_decision;
+    if (typeof decide !== "function") {
+      throw new Error("missing supervisor_fs_page_table_source_decision export");
+    }
+    const decision = supervisorNumber(decide(
+      ino,
+      hasDirtyPages ? 1 : 0,
+      BigInt(published?.fileObjectId ?? 0),
+      BigInt(published?.generation ?? 0),
+      BigInt(published?.size ?? 0),
+      BigInt(backingStat?.fileObjectId ?? 0),
+      BigInt(backingStat?.generation ?? 0),
+      BigInt(backingStat?.size ?? 0),
+    ));
+    if (decision < 0) {
+      throw new Error(`supervisor page-table source decision failed: ${decision}`);
+    }
+    const backing = supervisorNumber(sourceExports.supervisor_fs_page_table_source_backing?.());
+    const resident = supervisorNumber(sourceExports.supervisor_fs_page_table_source_resident?.());
+    if (decision === resident) {
+      return true;
+    }
+    if (decision === backing) {
+      return false;
+    }
+    throw new Error(`unknown supervisor page-table source decision: ${decision}`);
+  }
+
   function clearSeedBackingExtentForInode(ino: number): void {
     if (!Number.isInteger(ino) || ino <= 0) {
       return;
@@ -451,16 +486,17 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   }
 
   function residentPageMapIsNewerThanBacking(ino: number): boolean {
-    if (hasDirtyResidentPagesForInode(deps.getSabPageCache(), ino)) {
-      return true;
-    }
+    const hasDirtyPages = hasDirtyResidentPagesForInode(deps.getSabPageCache(), ino);
     const published = readInodeRecord(deps.getSabPageCache(), ino);
-    if (!published || published.fileObjectId === 0) {
-      return false;
-    }
     const fileObjectId = fileObjectIdsByIno.get(ino);
-    const stat = fileObjectId === undefined ? null : backingStore.stat(fileObjectId);
-    return !!stat && (published.generation !== stat.generation || published.size !== stat.size);
+    const backingStat = fileObjectId === undefined ? null : backingStore.stat(fileObjectId);
+    return supervisorPageTableUsesResident(
+      deps.getCanonicalExports(),
+      ino,
+      hasDirtyPages,
+      published,
+      backingStat,
+    );
   }
 
   function readBackingFileByInode(ino: number): Uint8Array | null {

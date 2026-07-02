@@ -187,6 +187,40 @@ function makeKernelExports(): FakeKernelExports {
     return -22;
   }
 
+  function supervisorPageTableSourceDecision(
+    ino: number,
+    hasDirtyPages: number,
+    publishedFileObjectId: bigint | number,
+    publishedGeneration: bigint | number,
+    publishedSize: bigint | number,
+    backingFileObjectId: bigint | number,
+    backingGeneration: bigint | number,
+    backingSize: bigint | number,
+  ): number {
+    const publishedFileObjectIdNumber = Number(publishedFileObjectId);
+    const publishedGenerationNumber = Number(publishedGeneration);
+    const publishedSizeNumber = Number(publishedSize);
+    const backingFileObjectIdNumber = Number(backingFileObjectId);
+    const backingGenerationNumber = Number(backingGeneration);
+    const backingSizeNumber = Number(backingSize);
+    if (ino <= 0 || ino >= 65536) {
+      return -22;
+    }
+    if (hasDirtyPages !== 0) {
+      return 1;
+    }
+    if (publishedFileObjectIdNumber === 0 || backingFileObjectIdNumber === 0) {
+      return 0;
+    }
+    return (
+      publishedFileObjectIdNumber !== backingFileObjectIdNumber
+      || publishedGenerationNumber !== backingGenerationNumber
+      || publishedSizeNumber !== backingSizeNumber
+    )
+      ? 1
+      : 0;
+  }
+
   const exports = {
     memory,
     kernel_heap_ptr: () => heapPtr,
@@ -420,6 +454,9 @@ function makeKernelExports(): FakeKernelExports {
     supervisor_fs_dirty_page_flag_update_inode: () => 1,
     supervisor_fs_dirty_page_flag_publish_dirty: () => 2,
     supervisor_fs_dirty_page_flag_writeback_required: () => 4,
+    supervisor_fs_page_table_source_backing: () => 0,
+    supervisor_fs_page_table_source_resident: () => 1,
+    supervisor_fs_page_table_source_decision: supervisorPageTableSourceDecision,
     supervisor_fs_dirty_page_decision: supervisorDirtyPageDecision,
     supervisor_fs_dirty_page_decision_next_size: () => BigInt(lastDirtyPageDecision.nextSize),
     supervisor_fs_dirty_page_decision_file_object_id: () => BigInt(lastDirtyPageDecision.fileObjectId),
@@ -836,6 +873,22 @@ test("kernel-worker applies supervisor dirty write denial without publishing res
   expect(fsState.writeDirtyResidentFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(-28);
   expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("abcdef");
   expect(evictResidentPage(sabPageCache, ino, 0)).toBe("not-found");
+});
+
+test("kernel-worker follows supervisor page-table source selection", () => {
+  const { canonicalExports, fsState } = makeFsState();
+
+  fsState.writeFile("/lib/runtime.bin", encoder.encode("abcdef"), 0o644, false);
+  const ino = canonicalExports.fileIno("/lib/runtime.bin");
+  expect(fsState.writeDirtyResidentFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(3);
+  expect(new TextDecoder().decode(fsState.readBackingFileByInode(ino) ?? new Uint8Array()))
+    .toBe("abcXYZ");
+
+  canonicalExports.supervisor_fs_page_table_source_decision = () => (
+    canonicalExports.supervisor_fs_page_table_source_backing?.() ?? 0
+  );
+  expect(new TextDecoder().decode(fsState.readBackingFileByInode(ino) ?? new Uint8Array()))
+    .toBe("abcdef");
 });
 
 test("kernel-worker does not write back when supervisor dirty flush says no-op", () => {

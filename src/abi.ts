@@ -216,6 +216,8 @@ export interface KernelExports {
   supervisor_fs_dirty_page_flag_update_inode?(): number;
   supervisor_fs_dirty_page_flag_publish_dirty?(): number;
   supervisor_fs_dirty_page_flag_writeback_required?(): number;
+  supervisor_fs_page_table_source_backing?(): number;
+  supervisor_fs_page_table_source_resident?(): number;
   supervisor_fs_completion_flag_memfs_dirty?(): number;
   supervisor_fs_completion_flag_memfs_publish_ready?(): number;
   supervisor_fs_completion_flag_ofd_state_changed?(): number;
@@ -325,6 +327,16 @@ export interface KernelExports {
   supervisor_fs_dirty_page_decision_file_object_id?(): bigint | number;
   supervisor_fs_dirty_page_decision_generation?(): bigint | number;
   supervisor_fs_dirty_page_decision_flags?(): number;
+  supervisor_fs_page_table_source_decision?(
+    ino: number,
+    hasDirtyPages: number,
+    publishedFileObjectId: bigint | number,
+    publishedGeneration: bigint | number,
+    publishedSize: bigint | number,
+    backingFileObjectId: bigint | number,
+    backingGeneration: bigint | number,
+    backingSize: bigint | number,
+  ): number;
   supervisor_fs_completion_decision?(
     vmPtr: number,
     opcode: number,
@@ -1273,6 +1285,8 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_dirty_page_flag_update_inode",
   "supervisor_fs_dirty_page_flag_publish_dirty",
   "supervisor_fs_dirty_page_flag_writeback_required",
+  "supervisor_fs_page_table_source_backing",
+  "supervisor_fs_page_table_source_resident",
   "supervisor_signal_control_kind_boundary_check",
   "supervisor_signal_control_kind_signal_delivered",
   "supervisor_signal_control_kind_blocked_wait_interrupted",
@@ -1365,6 +1379,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_dirty_page_decision_file_object_id",
   "supervisor_fs_dirty_page_decision_generation",
   "supervisor_fs_dirty_page_decision_flags",
+  "supervisor_fs_page_table_source_decision",
   "supervisor_signal_control_record",
   "supervisor_debug_snapshot",
   "supervisor_thread_state_snapshot",
