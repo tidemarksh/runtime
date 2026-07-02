@@ -325,7 +325,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   } = createRunLoopScheduler({
     threadWorkerStates,
     appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
-    blockWorker,
     retryBlockedWorker,
   });
   const {

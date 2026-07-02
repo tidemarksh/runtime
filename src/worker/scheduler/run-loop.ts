@@ -11,7 +11,6 @@ export function logNetworkDebug(_event: string): void {
 export interface RunLoopSchedulerDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
-  blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
   retryBlockedWorker(handle: ProcessHandle, worker: Worker): void;
 }
 
@@ -38,14 +37,6 @@ export interface RunLoopScheduler {
 
 export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopScheduler {
   const observedForkSharedSyncPromises = new WeakSet<Promise<void>>();
-
-  function statusBlocksInOwnerScheduler(handle: ProcessHandle, status: number): boolean {
-    return status === handle.kernel.abi_status_epoll_wait()
-      || status === handle.kernel.abi_status_fs()
-      || status === handle.kernel.abi_status_pipe_wait()
-      || status === handle.kernel.abi_status_wait4()
-      || status === handle.kernel.abi_status_flock_wait();
-  }
 
   function beginBlockedRpc(blocked: BlockedWorkerState): number {
     blocked.rpcPending = true;
@@ -139,93 +130,6 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `running-worker-cleared:${handle.pid}:wait=${runningThread.waitingInWorkerStatus}`,
-      );
-      return true;
-    }
-    const runningStatus = handle.kernel.thread_status(runningThread.vmPtr);
-    if (
-      runningThread.lastStatus === handle.kernel.abi_status_futex_wait()
-      && runningThread.pendingGuestMemoryWrites.length === 0
-      && runningStatus === handle.kernel.abi_status_futex_wait()
-      && handle.kernel.thread_process_ptr(runningThread.vmPtr) !== 0
-      && runningThread.stepCount <= runningThread.statusCount
-    ) {
-      handle.runningWorker = null;
-      runningThread.runningGeneration = null;
-      runningThread.waitingInWorkerStatus = handle.kernel.abi_status_futex_wait();
-      runningThread.waitingInWorkerReconcileDeferred = false;
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `running-worker-cleared:${handle.pid}:answered-futex-wait:0x${runningThread.vmPtr.toString(16)}`,
-      );
-      return true;
-    }
-    if (
-      runningThread.lastStatus === handle.kernel.abi_status_ok()
-      && runningThread.pendingGuestMemoryWrites.length === 0
-      && runningStatus === handle.kernel.abi_status_ok()
-      && handle.kernel.thread_process_ptr(runningThread.vmPtr) !== 0
-      && runningThread.stepCount <= runningThread.statusCount
-    ) {
-      handle.runningWorker = null;
-      runningThread.runningGeneration = null;
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `running-worker-cleared:${handle.pid}:answered-ok:0x${runningThread.vmPtr.toString(16)}`,
-      );
-      return true;
-    }
-    const ownerBlockingUnansweredSteps = runningThread.stepCount - runningThread.statusCount;
-    if (
-      runningThread.lastStatus !== null
-      && statusBlocksInOwnerScheduler(handle, runningThread.lastStatus)
-      && runningThread.pendingGuestMemoryWrites.length === 0
-      && runningStatus === handle.kernel.abi_status_ok()
-      && handle.kernel.thread_process_ptr(runningThread.vmPtr) !== 0
-      && ownerBlockingUnansweredSteps <= 0
-    ) {
-      handle.runningWorker = null;
-      runningThread.runningGeneration = null;
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `running-worker-cleared:${handle.pid}:answered-blocking-status=${runningThread.lastStatus}:0x${runningThread.vmPtr.toString(16)}`,
-      );
-      return true;
-    }
-    if (handle.kernel.thread_process_ptr(runningThread.vmPtr) === 0) {
-      handle.runningWorker = null;
-      runningThread.runningGeneration = null;
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `running-worker-cleared:${handle.pid}:stale-process:0x${runningThread.vmPtr.toString(16)}`,
-      );
-      return true;
-    }
-    if (runningStatus === handle.kernel.abi_status_sleep()) {
-      handle.runningWorker = null;
-      runningThread.runningGeneration = null;
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `running-worker-cleared:${handle.pid}:sleep-supervisor-owned:0x${runningThread.vmPtr.toString(16)}`,
-      );
-      return true;
-    }
-    if (statusBlocksInOwnerScheduler(handle, runningStatus)) {
-      handle.runningWorker = null;
-      runningThread.runningGeneration = null;
-      deps.blockWorker(handle, runningWorker, runningStatus, runningThread.vmPtr);
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `running-worker-blocked:${handle.pid}:status=${runningStatus}`,
-      );
-      return true;
-    }
-    if (runningStatus !== handle.kernel.abi_status_ok()) {
-      handle.runningWorker = null;
-      runningThread.runningGeneration = null;
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `running-worker-cleared:${handle.pid}:status=${runningStatus}`,
       );
       return true;
     }
