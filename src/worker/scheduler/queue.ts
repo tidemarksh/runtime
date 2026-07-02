@@ -122,7 +122,6 @@ interface WorkerSchedulerQueueDeps {
   clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void;
   takeThreadWorkerBlockedResume(handle: ProcessHandle, worker: Worker): boolean;
   isSupervisorFutexWaiter(handle: ProcessHandle, worker: Worker): boolean;
-  parkSupervisorFutexWait(handle: ProcessHandle, worker: Worker, vmPtr: number, source: string): void;
   completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number, exitVmPtr?: number): Promise<void>;
   failProcess(handle: ProcessHandle, error: Error): void;
   handleWorkerMessage(handle: ProcessHandle, worker: Worker, msg: ThreadWorkerOutbound): void;
@@ -627,21 +626,6 @@ export function createWorkerSchedulerQueueHelpers(
       deps.appendWorkerDebugLog(
         handle,
         `supervisor-resume:futex-wake:missing:0x${record.vmPtr.toString(16)}:seq=${record.seq.toString()}`,
-      );
-      return;
-    }
-    if (handle.kernel.thread_status(record.vmPtr) === handle.kernel.abi_status_futex_wait()) {
-      deps.parkSupervisorFutexWait(
-        handle,
-        worker,
-        record.vmPtr,
-        "supervisor-resume-futex-parked",
-      );
-      deps.appendWorkerDebugLog(
-        handle,
-        `supervisor-resume:futex-wake:not-ready:0x${record.vmPtr.toString(16)}`
-          + `:tid=${record.tid}:seq=${record.seq.toString()}:addr=0x${record.detail0.toString(16)}`
-          + formatSupervisorThreadStateSnapshot(handle, record.vmPtr),
       );
       return;
     }

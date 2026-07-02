@@ -29,7 +29,6 @@ function makeQueue(threadWorkerStates: WeakMap<Worker, ReturnType<typeof makeHos
       return thread !== undefined
         && handle.kernel.thread_status(thread.vmPtr) === handle.kernel.abi_status_futex_wait();
     },
-    parkSupervisorFutexWait: () => {},
     completeProcessExit: async () => {},
     failProcess: (_handle, error) => {
       throw error;

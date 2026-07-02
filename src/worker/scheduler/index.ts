@@ -246,7 +246,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     clearHostBlockedRetryTimer,
     takeThreadWorkerBlockedResume,
     isSupervisorFutexWaiter,
-    parkSupervisorFutexWait,
     completeProcessExit: deps.completeProcessExit,
     failProcess: deps.failProcess,
     handleWorkerMessage: deps.handleWorkerMessage,

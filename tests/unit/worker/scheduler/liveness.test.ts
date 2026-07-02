@@ -4547,7 +4547,6 @@ test("pumpProcess records supervisor thread-state snapshot diagnostics for selec
       return thread !== undefined
         && targetHandle.kernel.thread_status(thread.vmPtr) === targetHandle.kernel.abi_status_futex_wait();
     },
-    parkSupervisorFutexWait: () => {},
     completeProcessExit: async () => {},
     failProcess: (_handle, error) => {
       throw error;
@@ -4621,7 +4620,6 @@ test("pumpProcess runs process-scoped supervisor resume worker instead of TypeSc
     clearHostBlockedRetryTimer: () => {},
     takeThreadWorkerBlockedResume: () => false,
     isSupervisorFutexWaiter: () => false,
-    parkSupervisorFutexWait: () => {},
     completeProcessExit: async () => {},
     failProcess: (_handle, error) => {
       throw error;
@@ -4690,7 +4688,6 @@ test("pumpProcess does not run TypeScript continuation when supervisor process r
     clearHostBlockedRetryTimer: () => {},
     takeThreadWorkerBlockedResume: () => false,
     isSupervisorFutexWaiter: () => false,
-    parkSupervisorFutexWait: () => {},
     completeProcessExit: async () => {},
     failProcess: (_handle, error) => {
       throw error;
