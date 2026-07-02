@@ -849,7 +849,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       status,
       retryTimer: null,
       supervisorTimerArmed: sameBlockedThread ? previousBlocked.supervisorTimerArmed : false,
-      epollTimerfdDeadlineTicks: sameBlockedThread ? previousBlocked.epollTimerfdDeadlineTicks : null,
       rpcPending: sameBlockedThread ? previousBlocked.rpcPending : false,
       rpcGeneration: sameBlockedThread ? previousBlocked.rpcGeneration : 0,
       skipNextNetworkPump: sameBlockedThread ? previousBlocked.skipNextNetworkPump : false,
@@ -868,13 +867,11 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       const timeoutMs = Number(handle.kernel.thread_epoll_wait_timeout(vmPtr));
       const deadlineTicks = timeoutMs < 0 ? epollTimerfdDeadlineTicks(handle, vmPtr) : null;
       if (timeoutMs >= 0 || deadlineTicks !== null) {
-        blocked.epollTimerfdDeadlineTicks = deadlineTicks;
         if (!supervisorTimerArmed) {
           throw new Error("kernel supervisor timer HostOp required for finite epoll wait");
         }
         return;
       }
-      blocked.epollTimerfdDeadlineTicks = null;
       if (handle.kernel.thread_process_thread_count(vmPtr) > 1) {
         scheduleHostBlockedRetry(handle, worker, 10);
       }
@@ -1124,7 +1121,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       const timeoutMs = Number(handle.kernel.thread_epoll_wait_timeout(vmPtr));
       const deadlineTicks = timeoutMs < 0 ? epollTimerfdDeadlineTicks(handle, vmPtr) : null;
       if (timeoutMs >= 0 || deadlineTicks !== null) {
-        blocked.epollTimerfdDeadlineTicks = deadlineTicks;
         throw new Error("kernel supervisor timer HostOp required for finite epoll wait");
       } else if (handle.kernel.thread_process_thread_count(vmPtr) > 1) {
         scheduleHostBlockedRetry(handle, worker, 10);
@@ -1374,13 +1370,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             deps.appendRuntimeLifecycleEvent(handle.runtimeId, `epoll-retry-stale:${handle.pid}`);
             return;
           }
-          if (
-            latestBlocked.epollTimerfdDeadlineTicks == null
-            && Number(handle.kernel.thread_epoll_wait_timeout(latestBlocked.vmPtr)) < 0
-          ) {
+          if (Number(handle.kernel.thread_epoll_wait_timeout(latestBlocked.vmPtr)) < 0) {
             const deadlineTicks = epollTimerfdDeadlineTicks(handle, latestBlocked.vmPtr);
             if (deadlineTicks !== null) {
-              latestBlocked.epollTimerfdDeadlineTicks = deadlineTicks;
               deps.appendRuntimeLifecycleEvent(
                 handle.runtimeId,
                 `epoll-retry-deadline:${handle.pid}:vm=0x${latestBlocked.vmPtr.toString(16)}:ticks=${deadlineTicks.toString()}`,

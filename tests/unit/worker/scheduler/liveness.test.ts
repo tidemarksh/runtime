@@ -5502,7 +5502,6 @@ test("notifySchedulerProgress leaves supervisor timer owned socket wait to super
     status: handle.kernel.abi_status_socket_recv(),
     retryTimer: null,
     supervisorTimerArmed: true,
-    epollTimerfdDeadlineTicks: null,
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,

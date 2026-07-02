@@ -159,7 +159,6 @@ export interface HostBlockedWorkerState {
   status: number;
   retryTimer: ReturnType<typeof setTimeout> | null;
   supervisorTimerArmed?: boolean;
-  epollTimerfdDeadlineTicks?: bigint | null;
   rpcPending: boolean;
   rpcGeneration: number;
   skipNextNetworkPump: boolean;
