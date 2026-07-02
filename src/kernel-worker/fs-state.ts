@@ -266,6 +266,61 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     };
   }
 
+  function supervisorCleanBackingRange(
+    sourceExports: KernelExports,
+    ino: number,
+    offset: number,
+    length: number,
+    publishedSize: number,
+    backingSize: number,
+  ): {
+    mode: "read" | "read-zero-tail" | "zero";
+    readOffset: number;
+    readLength: number;
+    outputLength: number;
+  } | null {
+    const decide = sourceExports.supervisor_fs_clean_backing_range_decision;
+    if (typeof decide !== "function") {
+      throw new Error("missing supervisor_fs_clean_backing_range_decision export");
+    }
+    const decision = supervisorNumber(decide(
+      ino,
+      supervisorRangeI64(offset, -1),
+      supervisorRangeI64(length, -1),
+      supervisorRangeI64(publishedSize, -1),
+      supervisorRangeI64(backingSize, -1),
+    ));
+    const none = supervisorNumber(sourceExports.supervisor_fs_clean_backing_range_none?.());
+    if (decision === none) {
+      return null;
+    }
+    const read = supervisorNumber(sourceExports.supervisor_fs_clean_backing_range_read?.());
+    const readZeroTail = supervisorNumber(sourceExports.supervisor_fs_clean_backing_range_read_zero_tail?.());
+    const zero = supervisorNumber(sourceExports.supervisor_fs_clean_backing_range_zero?.());
+    let mode: "read" | "read-zero-tail" | "zero";
+    if (decision === read) {
+      mode = "read";
+    } else if (decision === readZeroTail) {
+      mode = "read-zero-tail";
+    } else if (decision === zero) {
+      mode = "zero";
+    } else {
+      throw new Error(`unknown supervisor clean backing range decision: ${decision}`);
+    }
+    const readOffset = supervisorNumber(sourceExports.supervisor_fs_clean_backing_range_read_offset?.());
+    const readLength = supervisorNumber(sourceExports.supervisor_fs_clean_backing_range_read_length?.());
+    const outputLength = supervisorNumber(sourceExports.supervisor_fs_clean_backing_range_output_length?.());
+    if (readOffset < 0 || readLength < 0 || outputLength < 0) {
+      throw new Error("invalid supervisor clean backing range");
+    }
+    return {
+      mode,
+      readOffset,
+      readLength,
+      outputLength,
+    };
+  }
+
   function readSupervisorDirtyPageDecision(
     sourceExports: KernelExports,
     result: bigint | number,
@@ -550,19 +605,10 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   }
 
   function readCleanBackingFileRangeByInode(ino: number, offset: number, length: number): Uint8Array | null {
-    let fileObjectId = fileObjectIdsByIno.get(ino);
+    const fileObjectId = fileObjectIdsByIno.get(ino);
     if (fileObjectId === undefined) {
       const size = Number(deps.getCanonicalExports().memfs_file_size(ino));
       return readBackingSourceRangeForInode(ino, offset, length, size);
-    }
-    if (
-      fileObjectId === undefined
-      || !Number.isInteger(offset)
-      || !Number.isInteger(length)
-      || offset < 0
-      || length <= 0
-    ) {
-      return null;
     }
     const stat = backingStore.stat(fileObjectId);
     if (!stat) {
@@ -570,27 +616,28 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     }
     const published = readInodeRecord(deps.getSabPageCache(), ino);
     const publishedSize = published?.size ?? stat.size;
-    if (offset >= publishedSize) {
+    const decision = supervisorCleanBackingRange(
+      deps.getCanonicalExports(),
+      ino,
+      offset,
+      length,
+      publishedSize,
+      stat.size,
+    );
+    if (!decision) {
       return null;
     }
-    if (offset >= stat.size) {
-      return publishedSize > stat.size && offset + length <= publishedSize ? new Uint8Array(length) : null;
+    if (decision.mode === "zero") {
+      return new Uint8Array(decision.outputLength);
     }
-    const backingLen = Math.min(length, stat.size - offset);
-    const data = backingStore.read(fileObjectId, offset, backingLen);
-    if (data.length !== backingLen) {
+    const data = backingStore.read(fileObjectId, decision.readOffset, decision.readLength);
+    if (data.length !== decision.readLength) {
       return null;
     }
-    if (backingLen === length) {
+    if (decision.mode === "read") {
       return data;
     }
-    if (publishedSize <= stat.size) {
-      return data;
-    }
-    if (offset + length > publishedSize) {
-      return null;
-    }
-    const out = new Uint8Array(length);
+    const out = new Uint8Array(decision.outputLength);
     out.set(data);
     return out;
   }

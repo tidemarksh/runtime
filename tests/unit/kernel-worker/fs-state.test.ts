@@ -75,6 +75,11 @@ function makeKernelExports(): FakeKernelExports {
     offset: 0,
     length: 0,
   };
+  let lastCleanBackingRangeDecision = {
+    readOffset: 0,
+    readLength: 0,
+    outputLength: 0,
+  };
 
   function putRecord(record: InodeRecord): void {
     recordsByPath.set(record.path, record);
@@ -287,6 +292,71 @@ function makeKernelExports(): FakeKernelExports {
       length: Math.min(lengthNumber, expectedSizeNumber - fileOffsetNumber),
     };
     return 1;
+  }
+
+  function supervisorCleanBackingRangeDecision(
+    ino: number,
+    offset: bigint | number,
+    length: bigint | number,
+    publishedSize: bigint | number,
+    backingSize: bigint | number,
+  ): number {
+    const offsetNumber = Number(offset);
+    const lengthNumber = Number(length);
+    const publishedSizeNumber = Number(publishedSize);
+    const backingSizeNumber = Number(backingSize);
+    lastCleanBackingRangeDecision = {
+      readOffset: 0,
+      readLength: 0,
+      outputLength: 0,
+    };
+    if (
+      ino <= 0
+      || ino >= 65536
+      || !Number.isSafeInteger(offsetNumber)
+      || !Number.isSafeInteger(lengthNumber)
+      || !Number.isSafeInteger(publishedSizeNumber)
+      || !Number.isSafeInteger(backingSizeNumber)
+      || offsetNumber < 0
+      || lengthNumber <= 0
+      || publishedSizeNumber < 0
+      || backingSizeNumber < 0
+    ) {
+      return 0;
+    }
+    const end = offsetNumber + lengthNumber;
+    if (!Number.isSafeInteger(end) || offsetNumber >= publishedSizeNumber) {
+      return 0;
+    }
+    if (offsetNumber >= backingSizeNumber) {
+      if (publishedSizeNumber > backingSizeNumber && end <= publishedSizeNumber) {
+        lastCleanBackingRangeDecision = {
+          readOffset: offsetNumber,
+          readLength: 0,
+          outputLength: lengthNumber,
+        };
+        return 3;
+      }
+      return 0;
+    }
+    const readLength = Math.min(lengthNumber, backingSizeNumber - offsetNumber);
+    if (readLength === lengthNumber || publishedSizeNumber <= backingSizeNumber) {
+      lastCleanBackingRangeDecision = {
+        readOffset: offsetNumber,
+        readLength,
+        outputLength: readLength,
+      };
+      return 1;
+    }
+    if (end > publishedSizeNumber) {
+      return 0;
+    }
+    lastCleanBackingRangeDecision = {
+      readOffset: offsetNumber,
+      readLength,
+      outputLength: lengthNumber,
+    };
+    return 2;
   }
 
   const exports = {
@@ -528,6 +598,14 @@ function makeKernelExports(): FakeKernelExports {
     supervisor_fs_backing_source_range_source_byte_length: () => BigInt(lastBackingSourceRangeDecision.byteLength),
     supervisor_fs_backing_source_range_source_offset: () => BigInt(lastBackingSourceRangeDecision.offset),
     supervisor_fs_backing_source_range_read_length: () => BigInt(lastBackingSourceRangeDecision.length),
+    supervisor_fs_clean_backing_range_none: () => 0,
+    supervisor_fs_clean_backing_range_read: () => 1,
+    supervisor_fs_clean_backing_range_read_zero_tail: () => 2,
+    supervisor_fs_clean_backing_range_zero: () => 3,
+    supervisor_fs_clean_backing_range_decision: supervisorCleanBackingRangeDecision,
+    supervisor_fs_clean_backing_range_read_offset: () => BigInt(lastCleanBackingRangeDecision.readOffset),
+    supervisor_fs_clean_backing_range_read_length: () => BigInt(lastCleanBackingRangeDecision.readLength),
+    supervisor_fs_clean_backing_range_output_length: () => BigInt(lastCleanBackingRangeDecision.outputLength),
     supervisor_fs_page_table_source_backing: () => 0,
     supervisor_fs_page_table_source_resident: () => 1,
     supervisor_fs_page_table_source_decision: supervisorPageTableSourceDecision,
@@ -963,6 +1041,35 @@ test("kernel-worker follows supervisor page-table source selection", () => {
   );
   expect(new TextDecoder().decode(fsState.readBackingFileByInode(ino) ?? new Uint8Array()))
     .toBe("abcdef");
+});
+
+test("kernel-worker clean backing reads follow supervisor range decisions", () => {
+  const { canonicalExports, fsState } = makeFsState();
+
+  fsState.writeFile("/lib/runtime.bin", encoder.encode("abcdef"), 0o644, false);
+  const ino = canonicalExports.fileIno("/lib/runtime.bin");
+  const originalDecision = canonicalExports.supervisor_fs_clean_backing_range_decision;
+  const originalReadOffset = canonicalExports.supervisor_fs_clean_backing_range_read_offset;
+  const originalReadLength = canonicalExports.supervisor_fs_clean_backing_range_read_length;
+  const originalOutputLength = canonicalExports.supervisor_fs_clean_backing_range_output_length;
+
+  canonicalExports.supervisor_fs_clean_backing_range_decision = () => 0;
+  expect(fsState.readBackingFileRangeByInode(ino, 0, 3)).toBeNull();
+
+  canonicalExports.supervisor_fs_clean_backing_range_decision = () => (
+    canonicalExports.supervisor_fs_clean_backing_range_zero?.() ?? 3
+  );
+  canonicalExports.supervisor_fs_clean_backing_range_read_offset = () => 0n;
+  canonicalExports.supervisor_fs_clean_backing_range_read_length = () => 0n;
+  canonicalExports.supervisor_fs_clean_backing_range_output_length = () => 3n;
+  expect(fsState.readBackingFileRangeByInode(ino, 0, 3)).toEqual(new Uint8Array(3));
+
+  canonicalExports.supervisor_fs_clean_backing_range_decision = originalDecision;
+  canonicalExports.supervisor_fs_clean_backing_range_read_offset = originalReadOffset;
+  canonicalExports.supervisor_fs_clean_backing_range_read_length = originalReadLength;
+  canonicalExports.supervisor_fs_clean_backing_range_output_length = originalOutputLength;
+  expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 0, 3) ?? new Uint8Array()))
+    .toBe("abc");
 });
 
 test("kernel-worker does not write back when supervisor dirty flush says no-op", () => {
