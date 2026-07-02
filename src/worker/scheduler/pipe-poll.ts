@@ -55,7 +55,7 @@ export interface PipePollScheduler {
   schedulePipePollTimeoutRetry(
     handle: ProcessHandle,
     worker: Worker,
-    blocked: { supervisorTimerArmed?: boolean },
+    supervisorTimerArmed: boolean,
     timeoutMs: number,
   ): void;
   formatFirstPipeWaitDebug(handle: ProcessHandle, vmPtr: number): string;
@@ -326,10 +326,10 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
   function schedulePipePollTimeoutRetry(
     handle: ProcessHandle,
     worker: Worker,
-    blocked: { supervisorTimerArmed?: boolean },
+    supervisorTimerArmed: boolean,
     timeoutMs: number,
   ): void {
-    if (blocked.supervisorTimerArmed === true) {
+    if (supervisorTimerArmed) {
       return;
     }
     if (timeoutMs < 0) {

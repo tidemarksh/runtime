@@ -15,7 +15,7 @@ export interface SocketWaitScheduler {
   scheduleSocketBlockedRetry(
     handle: ProcessHandle,
     worker: Worker,
-    blocked: { supervisorTimerArmed?: boolean },
+    supervisorTimerArmed: boolean,
     timeoutMs: number,
   ): void;
 }
@@ -134,10 +134,10 @@ export function createSocketWaitScheduler(deps: SocketWaitSchedulerDeps): Socket
   function scheduleSocketBlockedRetry(
     handle: ProcessHandle,
     worker: Worker,
-    blocked: { supervisorTimerArmed?: boolean },
+    supervisorTimerArmed: boolean,
     timeoutMs: number,
   ): void {
-    if (blocked.supervisorTimerArmed === true) {
+    if (supervisorTimerArmed) {
       return;
     }
     if (timeoutMs < 0) {

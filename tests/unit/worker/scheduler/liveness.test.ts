@@ -2015,7 +2015,6 @@ test("finite pipe poll timeout completes through supervisor timer when kernel-wo
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_pipe_wait(), 0x1234);
   const blocked = handle.hostBlockedWorkers.get(worker);
   expect(blocked).toBeDefined();
-  expect(blocked?.supervisorTimerArmed).toBe(true);
   await vi.advanceTimersByTimeAsync(100);
 
   expect(executeHostBlockedSyscallResumeOutcome).not.toHaveBeenCalled();
@@ -2162,7 +2161,6 @@ test("supervisor-owned finite pipe poll timer does not run local pipe sync befor
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_pipe_wait(), 0x1234);
   const blocked = handle.hostBlockedWorkers.get(worker);
   expect(blocked).toBeDefined();
-  expect(blocked?.supervisorTimerArmed).toBe(true);
   scheduler.notifySchedulerProgress(handle);
   await Promise.resolve();
 
@@ -2234,7 +2232,6 @@ test("supervisor-owned finite pipe poll with active child completes without pipe
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_pipe_wait(), 0x1234);
   const blocked = handle.hostBlockedWorkers.get(worker);
   expect(blocked).toBeDefined();
-  expect(blocked?.supervisorTimerArmed).toBe(true);
   scheduler.notifySchedulerProgress(handle);
   await Promise.resolve();
 
@@ -5008,7 +5005,6 @@ test("blocked completion arms supervisor timer instead of scheduling runtime ret
 
   const blocked = handle.hostBlockedWorkers.get(worker);
   expect(blocked?.status).toBe(kernel.abi_status_epoll_wait());
-  expect(blocked?.supervisorTimerArmed).toBe(true);
   expect(blocked?.retryTimer).toBeNull();
   expect(kernel.supervisor_next_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
   expect(runtimeEvents).toContain(
@@ -5089,7 +5085,6 @@ test("blocked wait retry arms supervisor timer before runtime poll retry", () =>
 
   const blocked = handle.hostBlockedWorkers.get(worker);
   expect(blocked?.status).toBe(kernel.abi_status_pipe_wait());
-  expect(blocked?.supervisorTimerArmed).toBe(true);
   expect(blocked?.retryTimer).toBeNull();
   expect(kernel.supervisor_next_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
   expect(runtimeEvents).toContain(
@@ -5157,7 +5152,6 @@ test("reblocking an already armed supervisor timer does not enqueue a duplicate 
   scheduler.blockWorker(handle, worker, kernel.abi_status_pipe_wait(), thread.vmPtr);
   scheduler.blockWorker(handle, worker, kernel.abi_status_pipe_wait(), thread.vmPtr);
 
-  expect(handle.hostBlockedWorkers.get(worker)?.supervisorTimerArmed).toBe(true);
   expect(kernel.supervisor_next_host_op).toHaveBeenCalledTimes(1);
   expect(runtimeEvents.filter((event) => event.startsWith("supervisor-host-timer-arm"))).toHaveLength(1);
 });
@@ -5493,22 +5487,12 @@ test("notifySchedulerProgress leaves supervisor timer owned socket wait to super
   threadWorkerStates.set(worker, makeThreadState(0x1234));
   const { exports: kernel } = makeKernel();
   kernel.thread_status = () => kernel.abi_status_socket_recv();
+  kernel.thread_socket_wait_timeout = () => 25n;
   const resumeSocketTimeout = vi.fn();
   kernel.thread_resume_socket_wait_timeout = resumeSocketTimeout;
   kernel.thread_resume_blocked_syscall = vi.fn();
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.hostBlockedWorkers.set(worker, {
-    vmPtr: 0x1234,
-    status: handle.kernel.abi_status_socket_recv(),
-    retryTimer: null,
-    supervisorTimerArmed: true,
-    rpcPending: false,
-    rpcGeneration: 0,
-    skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: false,
-    pipeChildExitResumeKey: null,
-    pipeEofChildExitDeferrals: 0,
-  });
+  installTestSupervisorBlockedWaitTimers(kernel, handle);
   const runtimeEvents: string[] = [];
 
   const scheduler = createWorkerScheduler({
@@ -5522,6 +5506,7 @@ test("notifySchedulerProgress leaves supervisor timer owned socket wait to super
     handleWorkerMessage: () => {},
   });
 
+  scheduler.blockWorker(handle, worker, handle.kernel.abi_status_socket_recv(), 0x1234);
   scheduler.notifySchedulerProgress(handle);
 
   expect(resumeSocketTimeout).not.toHaveBeenCalled();

@@ -49,6 +49,7 @@ import type { KernelRpcResumeOutcome } from "../kernel-rpc/outcomes.js";
 export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerScheduler {
   const { threadWorkerStates } = deps;
   const pipeChildExitResumeKeys = new WeakMap<ProcessHandle, Map<number, string>>();
+  const supervisorArmedBlockedTimers = new WeakSet<HostBlockedWorkerState>();
 
   function consumeKernelRpcResumeOutcome(
     handle: ProcessHandle,
@@ -848,7 +849,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       vmPtr,
       status,
       retryTimer: null,
-      supervisorTimerArmed: sameBlockedThread ? previousBlocked.supervisorTimerArmed : false,
       rpcPending: sameBlockedThread ? previousBlocked.rpcPending : false,
       rpcGeneration: sameBlockedThread ? previousBlocked.rpcGeneration : 0,
       skipNextNetworkPump: sameBlockedThread ? previousBlocked.skipNextNetworkPump : false,
@@ -858,6 +858,13 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       lastPipeRetryLifecycleEvent: sameBlockedThread ? previousBlocked.lastPipeRetryLifecycleEvent : undefined,
       lastWait4RetryLifecycleEvent: sameBlockedThread ? previousBlocked.lastWait4RetryLifecycleEvent : undefined,
     };
+    if (
+      sameBlockedThread
+      && previousBlocked !== undefined
+      && isSupervisorTimerArmed(previousBlocked)
+    ) {
+      markSupervisorTimerArmed(blocked);
+    }
     handle.hostBlockedWorkers.set(worker, blocked);
     const supervisorTimerArmed = armBlockedSupervisorTimerForBlocked(handle, blocked);
     if (sameBlockedThread && blocked.rpcPending) {
@@ -896,9 +903,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         status === handle.kernel.abi_status_pipe_wait()
         && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) !== 1
       ) {
-        schedulePipePollTimeoutRetry(handle, worker, blocked, pollTimeoutMs);
+        schedulePipePollTimeoutRetry(handle, worker, supervisorTimerArmed, pollTimeoutMs);
       } else {
-        scheduleSocketBlockedRetry(handle, worker, blocked, pollTimeoutMs);
+        scheduleSocketBlockedRetry(handle, worker, supervisorTimerArmed, pollTimeoutMs);
       }
       return;
     }
@@ -907,7 +914,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       if (supervisorTimerArmed) {
         return;
       }
-      scheduleSocketBlockedRetry(handle, worker, blocked, socketTimeoutMs);
+      scheduleSocketBlockedRetry(handle, worker, supervisorTimerArmed, socketTimeoutMs);
       return;
     }
     if (status === handle.kernel.abi_status_wait4()) {
@@ -974,15 +981,25 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     return true;
   }
 
+  function markSupervisorTimerArmed(blocked: HostBlockedWorkerState): void {
+    supervisorArmedBlockedTimers.add(blocked);
+  }
+
+  function isSupervisorTimerArmed(blocked: HostBlockedWorkerState): boolean {
+    return supervisorArmedBlockedTimers.has(blocked);
+  }
+
   function armBlockedSupervisorTimerForBlocked(
     handle: ProcessHandle,
     blocked: HostBlockedWorkerState,
   ): boolean {
-    if (blocked.supervisorTimerArmed === true) {
+    if (isSupervisorTimerArmed(blocked)) {
       return true;
     }
     const supervisorTimerArmed = armBlockedSupervisorTimer(handle, blocked.vmPtr);
-    blocked.supervisorTimerArmed = supervisorTimerArmed;
+    if (supervisorTimerArmed) {
+      markSupervisorTimerArmed(blocked);
+    }
     return supervisorTimerArmed;
   }
 
@@ -1140,7 +1157,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       pollTimeoutMs >= 0
       && (pollReadyCount === undefined || pollReadyCount <= 0)
     ) {
-      scheduleSocketBlockedRetry(handle, worker, blocked, pollTimeoutMs);
+      scheduleSocketBlockedRetry(handle, worker, supervisorTimerArmed, pollTimeoutMs);
       return;
     }
     if (pipeWaitShouldRemainPassive(
@@ -1156,7 +1173,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
     const socketTimeoutMs = socketWaitTimeoutMs(handle, status, vmPtr);
     if (socketTimeoutMs >= 0) {
-      scheduleSocketBlockedRetry(handle, worker, blocked, socketTimeoutMs);
+      scheduleSocketBlockedRetry(handle, worker, supervisorTimerArmed, socketTimeoutMs);
       return;
     }
     scheduleHostBlockedRetry(handle, worker, status === handle.kernel.abi_status_wait4() ? 10 : 1);
@@ -1167,7 +1184,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (!blocked) {
       return;
     }
-    if (blocked.supervisorTimerArmed === true) {
+    if (isSupervisorTimerArmed(blocked)) {
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `blocked-retry-skip-supervisor-timer:${handle.pid}:status=${blocked.status}:vm=0x${blocked.vmPtr.toString(16)}`,
@@ -1485,7 +1502,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         schedulePipePollTimeoutRetry(
           handle,
           worker,
-          blocked,
+          isSupervisorTimerArmed(blocked),
           blockedPollTimeoutMs,
         );
         return;
@@ -1520,7 +1537,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       scheduleSocketBlockedRetry(
         handle,
         worker,
-        blocked,
+        isSupervisorTimerArmed(blocked),
         blockedPollTimeoutMs,
       );
       return;
@@ -1595,7 +1612,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       if (armBlockedSupervisorTimerForBlocked(handle, blocked)) {
         return;
       }
-      scheduleSocketBlockedRetry(handle, worker, blocked, blockedSocketTimeoutMs);
+      scheduleSocketBlockedRetry(
+        handle,
+        worker,
+        isSupervisorTimerArmed(blocked),
+        blockedSocketTimeoutMs,
+      );
       return;
     }
 

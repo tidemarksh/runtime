@@ -158,7 +158,6 @@ export interface HostBlockedWorkerState {
   vmPtr: number;
   status: number;
   retryTimer: ReturnType<typeof setTimeout> | null;
-  supervisorTimerArmed?: boolean;
   rpcPending: boolean;
   rpcGeneration: number;
   skipNextNetworkPump: boolean;
