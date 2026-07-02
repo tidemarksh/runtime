@@ -1139,6 +1139,108 @@ test("STATUS_CLONE_SPAWN attaches child from supervisor HostOp record", () => {
   );
 });
 
+test("STATUS_CLONE_SPAWN drains clone HostOp by kind without consuming pending timer", () => {
+  const workerConstructor = vi.fn(function WorkerMock(this: Worker) {
+    Object.assign(this, {
+      postMessage: vi.fn(),
+      terminate: vi.fn(),
+      unref: vi.fn(),
+    });
+  });
+  vi.stubGlobal("Worker", workerConstructor);
+
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  handle.runtimeId = 77;
+  handle.kernel.thread_status = () => handle.kernel.abi_status_clone_spawn();
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  handle.memory = memory;
+  const pendingKinds = [12, 1];
+  const kernel = handle.kernel as typeof handle.kernel & {
+    memory: WebAssembly.Memory;
+    supervisor_abi_version: () => number;
+    supervisor_host_op_record_bytes: () => number;
+    supervisor_host_op_kind_spawn_thread_worker: () => number;
+    supervisor_next_host_op: (outPtr: number, outLen: number) => number;
+    supervisor_next_host_op_kind: (kind: number, outPtr: number, outLen: number) => number;
+  };
+  kernel.memory = memory;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_host_op_record_bytes = () => 64;
+  kernel.supervisor_host_op_kind_spawn_thread_worker = () => 1;
+  kernel.supervisor_next_host_op = vi.fn(() => {
+    throw new Error("unfiltered HostOp drain should not be used");
+  });
+  kernel.supervisor_next_host_op_kind = vi.fn((kind: number, outPtr: number, outLen: number) => {
+    expect(outLen).toBe(64);
+    const index = pendingKinds.indexOf(kind);
+    if (index < 0) {
+      return 0;
+    }
+    pendingKinds.splice(index, 1);
+    if (kind === 1) {
+      writeCloneSpawnHostOpRecord(memory, outPtr, 0x1234, 0x2000);
+      return 64;
+    }
+    return writeSupervisorArmHostTimerHostOpRecord(memory, outPtr, {
+      vmPtr: 0x1234,
+      delayMs: 5n,
+      seq: 9n,
+      tid: 2,
+      processPtr: 0x5000,
+      status: 20,
+      deadlineTicks: 500_000n,
+    });
+  });
+  kernel.thread_spawn_from_clone = vi.fn(() => {
+    throw new Error("legacy clone spawn should not be called");
+  });
+  const deps = makeDeps(worker);
+  const thread = deps.threadWorkerStates.get(worker)!;
+  thread.ownerPid = handle.pid;
+  deps.attachThreadWorker = vi.fn((_handle, request: { worker: Worker; vmPtr: number }) => {
+    deps.threadWorkerStates.set(request.worker, {
+      vmPtr: request.vmPtr,
+      ownerPid: handle.pid,
+      ownerAsyncStatus: null,
+      generation: 1,
+      waitingInWorkerStatus: null,
+      resumeWorkersOnReady: [],
+    });
+    handle.workers.add(request.worker);
+  });
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: {
+      type: "status",
+      status: 25,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 25,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  expect(kernel.supervisor_next_host_op_kind).toHaveBeenCalledWith(1, expect.any(Number), 64);
+  expect(kernel.supervisor_next_host_op).not.toHaveBeenCalled();
+  expect(pendingKinds).toEqual([12]);
+  expect(kernel.thread_spawn_from_clone).not.toHaveBeenCalled();
+  expect(deps.attachThreadWorker).toHaveBeenCalledWith(handle, {
+    worker: expect.any(Object),
+    vmPtr: 0x2000,
+  });
+});
+
 test("STATUS_FUTEX_WAIT arms supervisor host timer HostOp and reports completion", async () => {
   vi.useFakeTimers();
   const worker = {} as Worker;

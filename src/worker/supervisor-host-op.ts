@@ -119,13 +119,31 @@ function decodeSupervisorArmHostTimerOp(
   return record;
 }
 
+function pollSupervisorHostOpKind(
+  handle: ProcessHandle,
+  kind: number,
+  recordBytes: number,
+  scratch: number,
+): number | undefined {
+  const nextHostOpKind = handle.kernel.supervisor_next_host_op_kind;
+  if (nextHostOpKind !== undefined) {
+    return nextHostOpKind(kind, scratch, recordBytes);
+  }
+  return handle.kernel.supervisor_next_host_op?.(scratch, recordBytes);
+}
+
 export function drainSupervisorCloneSpawnHostOp(
   handle: ProcessHandle,
   parentVmPtr: number,
 ): SupervisorCloneSpawnHostOp | null | undefined {
-  const nextHostOp = handle.kernel.supervisor_next_host_op;
   const recordBytesExport = handle.kernel.supervisor_host_op_record_bytes;
-  if (nextHostOp === undefined || recordBytesExport === undefined) {
+  if (
+    recordBytesExport === undefined
+    || (
+      handle.kernel.supervisor_next_host_op_kind === undefined
+      && handle.kernel.supervisor_next_host_op === undefined
+    )
+  ) {
     return undefined;
   }
   const recordBytes = recordBytesExport();
@@ -135,7 +153,15 @@ export function drainSupervisorCloneSpawnHostOp(
   const memory = handle.kernel.memory ?? handle.memory;
   const scratch = supervisorHostOpScratchBase(handle);
   ensureMemoryCapacity(memory, scratch + recordBytes);
-  const result = nextHostOp(scratch, recordBytes);
+  const result = pollSupervisorHostOpKind(
+    handle,
+    supervisorHostOpKindSpawnThreadWorker(handle),
+    recordBytes,
+    scratch,
+  );
+  if (result === undefined) {
+    return undefined;
+  }
   if (result === 0) {
     return null;
   }
@@ -153,9 +179,14 @@ export function drainSupervisorArmHostTimerHostOp(
   handle: ProcessHandle,
   vmPtr: number,
 ): SupervisorHostOpRecord | null | undefined {
-  const nextHostOp = handle.kernel.supervisor_next_host_op;
   const recordBytesExport = handle.kernel.supervisor_host_op_record_bytes;
-  if (nextHostOp === undefined || recordBytesExport === undefined) {
+  if (
+    recordBytesExport === undefined
+    || (
+      handle.kernel.supervisor_next_host_op_kind === undefined
+      && handle.kernel.supervisor_next_host_op === undefined
+    )
+  ) {
     return undefined;
   }
   const recordBytes = recordBytesExport();
@@ -165,7 +196,15 @@ export function drainSupervisorArmHostTimerHostOp(
   const memory = handle.kernel.memory ?? handle.memory;
   const scratch = supervisorHostOpScratchBase(handle);
   ensureMemoryCapacity(memory, scratch + recordBytes);
-  const result = nextHostOp(scratch, recordBytes);
+  const result = pollSupervisorHostOpKind(
+    handle,
+    supervisorHostOpKindArmHostTimer(handle),
+    recordBytes,
+    scratch,
+  );
+  if (result === undefined) {
+    return undefined;
+  }
   if (result === 0) {
     return null;
   }

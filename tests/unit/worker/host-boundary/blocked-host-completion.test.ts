@@ -145,6 +145,48 @@ test("host boundary executes supervisor arm timer HostOp through completion ABI"
   expect(workerEvents[0]).toContain("supervisor-host-timer-fired");
 });
 
+test("host boundary drains timer HostOp by kind without consuming pending clone", () => {
+  const worker = { postMessage: vi.fn() } as unknown as Worker;
+  const kernel = makeHostBoundaryKernel();
+  const handle = makeHostBoundaryHandle(kernel, worker);
+  const memory = new WebAssembly.Memory({ initial: 6, maximum: 6, shared: true });
+  kernel.memory = memory;
+  handle.memory = memory;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_host_op_record_bytes = () => 64;
+  kernel.supervisor_host_op_kind_arm_host_timer = () => 12;
+  const pendingKinds = [1, 12];
+  kernel.supervisor_next_host_op = vi.fn(() => {
+    throw new Error("unfiltered HostOp drain should not be used");
+  });
+  kernel.supervisor_next_host_op_kind = vi.fn((kind: number, outPtr: number, outLen: number) => {
+    expect(outLen).toBe(64);
+    const index = pendingKinds.indexOf(kind);
+    if (index < 0) {
+      return 0;
+    }
+    pendingKinds.splice(index, 1);
+    if (kind !== 12) {
+      throw new Error(`unexpected HostOp kind request: ${kind}`);
+    }
+    return writeSupervisorArmHostTimerHostOpRecord(kernel.memory!, outPtr, {
+      vmPtr: 0x1234,
+      delayMs: 5n,
+      seq: 7n,
+      tid: 2,
+      processPtr: 0x2000,
+      status: 22,
+    });
+  });
+
+  const hostTimer = drainSupervisorArmHostTimerHostOp(handle, 0x1234);
+
+  expect(hostTimer?.kind).toBe(12);
+  expect(kernel.supervisor_next_host_op_kind).toHaveBeenCalledWith(12, expect.any(Number), 64);
+  expect(kernel.supervisor_next_host_op).not.toHaveBeenCalled();
+  expect(pendingKinds).toEqual([1]);
+});
+
 test("host boundary arms supervisor timer for wait-in-worker futex waits", async () => {
   vi.useFakeTimers();
   const worker = { postMessage: vi.fn() } as unknown as Worker;

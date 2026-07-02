@@ -228,6 +228,7 @@ export interface KernelExports {
   supervisor_submit_thread_event?(eventPtr: number, eventLen: number): number;
   supervisor_complete_host_op?(completionPtr: number, completionLen: number): number;
   supervisor_next_host_op?(outPtr: number, outLen: number): number;
+  supervisor_next_host_op_kind?(kind: number, outPtr: number, outLen: number): number;
   supervisor_process_host_op?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_next_resume?(outPtr: number, outLen: number): number;
   supervisor_process_resume?(vmPtr: number, outPtr: number, outLen: number): number;
@@ -1198,6 +1199,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_submit_thread_event",
   "supervisor_complete_host_op",
   "supervisor_next_host_op",
+  "supervisor_next_host_op_kind",
   "supervisor_process_host_op",
   "supervisor_next_resume",
   "supervisor_process_resume",
