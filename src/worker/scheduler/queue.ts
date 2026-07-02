@@ -121,6 +121,9 @@ interface WorkerSchedulerQueueDeps {
   blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
   clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void;
   takeThreadWorkerBlockedResume(handle: ProcessHandle, worker: Worker): boolean;
+  clearSupervisorFutexWaiter(handle: ProcessHandle, worker: Worker): void;
+  isSupervisorFutexWaiter(handle: ProcessHandle, worker: Worker): boolean;
+  parkSupervisorFutexWait(handle: ProcessHandle, worker: Worker, vmPtr: number, source: string): void;
   completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number, exitVmPtr?: number): Promise<void>;
   failProcess(handle: ProcessHandle, error: Error): void;
   handleWorkerMessage(handle: ProcessHandle, worker: Worker, msg: ThreadWorkerOutbound): void;
@@ -310,6 +313,7 @@ function removeVforkReadyWorker(handle: ProcessHandle, worker: Worker): void {
 }
 
 function clearBlockedWorker(deps: WorkerSchedulerQueueDeps, handle: ProcessHandle, worker: Worker): void {
+  deps.clearSupervisorFutexWaiter(handle, worker);
   const blocked = handle.hostBlockedWorkers.get(worker);
   if (!blocked) {
     return;
@@ -482,8 +486,13 @@ export function createWorkerSchedulerQueueHelpers(
   const observedForkSharedSyncGates = new WeakMap<ProcessHandle, Promise<void>>();
   const pendingSupervisorFutexResumes = new WeakMap<ProcessHandle, Set<number>>();
 
-  function hasWorkerLocalWait(thread: ThreadWorkerState | undefined): boolean {
-    return (thread?.waitingInWorkerStatus ?? null) !== null;
+  function hasWorkerLocalWait(
+    handle: ProcessHandle,
+    worker: Worker,
+    thread: ThreadWorkerState | undefined,
+  ): boolean {
+    return (thread?.waitingInWorkerStatus ?? null) !== null
+      || deps.isSupervisorFutexWaiter(handle, worker);
   }
 
   function findWorkerByVmPtr(handle: ProcessHandle, vmPtr: number): Worker | undefined {
@@ -627,7 +636,12 @@ export function createWorkerSchedulerQueueHelpers(
         continue;
       }
       if (handle.kernel.thread_status(vmPtr) === futexWaitStatus) {
-        thread.waitingInWorkerStatus = futexWaitStatus;
+        deps.parkSupervisorFutexWait(
+          handle,
+          worker,
+          vmPtr,
+          "supervisor-resume-futex-parked",
+        );
         deps.appendWorkerDebugLog(
           handle,
           `supervisor-resume:futex-wake:parked:0x${vmPtr.toString(16)}`
@@ -674,7 +688,12 @@ export function createWorkerSchedulerQueueHelpers(
       return;
     }
     if (handle.kernel.thread_status(record.vmPtr) === handle.kernel.abi_status_futex_wait()) {
-      thread.waitingInWorkerStatus = handle.kernel.abi_status_futex_wait();
+      deps.parkSupervisorFutexWait(
+        handle,
+        worker,
+        record.vmPtr,
+        "supervisor-resume-futex-parked",
+      );
       deps.appendWorkerDebugLog(
         handle,
         `supervisor-resume:futex-wake:parked:0x${record.vmPtr.toString(16)}`
@@ -779,7 +798,8 @@ export function createWorkerSchedulerQueueHelpers(
       return true;
     }
     const thread = deps.threadWorkerStates.get(worker);
-    return thread?.waitingInWorkerStatus !== null;
+    return deps.isSupervisorFutexWaiter(handle, worker)
+      || thread?.waitingInWorkerStatus !== null;
   }
 
   function assertThreadOwnershipInvariant(
@@ -993,7 +1013,8 @@ export function createWorkerSchedulerQueueHelpers(
       return;
     }
     if (
-      (thread?.waitingInWorkerStatus ?? null) !== null
+      deps.isSupervisorFutexWaiter(handle, worker)
+      || (thread?.waitingInWorkerStatus ?? null) !== null
       || (thread?.ownerAsyncStatus ?? null) !== null
     ) {
       if (
@@ -1109,7 +1130,7 @@ export function createWorkerSchedulerQueueHelpers(
       const candidateThread = candidate ? deps.threadWorkerStates.get(candidate) : undefined;
       if (
         (candidateThread?.ownerAsyncStatus ?? null) !== null
-        || hasWorkerLocalWait(candidateThread)
+        || hasWorkerLocalWait(handle, candidate, candidateThread)
         || (candidateThread !== undefined && handle.kernel.thread_process_ptr(candidateThread.vmPtr) === 0)
       ) {
         appendSchedulerQueueDebugLog(

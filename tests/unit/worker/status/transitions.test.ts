@@ -258,6 +258,7 @@ function makeDeps(worker: Worker) {
     failProcess: vi.fn(),
     handleExecveSpawn: vi.fn(async () => {}),
     notifyWorkerStatusProgress: vi.fn(),
+    parkSupervisorFutexWait: vi.fn(),
     pumpProcess: vi.fn(),
     pumpNetworkConnections: vi.fn(async () => false),
     pruneDetachedProcessWorkers: vi.fn(),
@@ -1198,7 +1199,13 @@ test("STATUS_FUTEX_WAIT arms supervisor host timer HostOp and reports completion
 
   expect(deps.blockWorker).not.toHaveBeenCalled();
   expect(handle.runningWorker).toBeNull();
-  expect(thread.waitingInWorkerStatus).toBe(20);
+  expect(thread.waitingInWorkerStatus).toBeNull();
+  expect(deps.parkSupervisorFutexWait).toHaveBeenCalledWith(
+    handle,
+    worker,
+    thread.vmPtr,
+    "status-futex-supervisor-owned",
+  );
   expect(kernel.supervisor_next_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
   expect(kernel.supervisor_complete_futex_wait).not.toHaveBeenCalled();
 
@@ -1260,7 +1267,13 @@ test("STATUS_FUTEX_WAIT parks after supervisor HostOp poll returns no timer", ()
 
   expect(deps.blockWorker).not.toHaveBeenCalled();
   expect(handle.runningWorker).toBeNull();
-  expect(thread.waitingInWorkerStatus).toBe(20);
+  expect(thread.waitingInWorkerStatus).toBeNull();
+  expect(deps.parkSupervisorFutexWait).toHaveBeenCalledWith(
+    handle,
+    worker,
+    thread.vmPtr,
+    "status-futex-supervisor-owned",
+  );
   expect(kernel.supervisor_next_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
 });

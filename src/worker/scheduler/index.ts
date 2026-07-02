@@ -52,6 +52,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   const supervisorArmedBlockedTimers = new WeakSet<HostBlockedWorkerState>();
   const hostBlockedRetryTimers = new WeakMap<HostBlockedWorkerState, ReturnType<typeof setTimeout>>();
   const threadWorkerBlockedResumeRequests = new WeakSet<Worker>();
+  const supervisorFutexWaiters = new WeakSet<Worker>();
 
   function consumeKernelRpcResumeOutcome(
     handle: ProcessHandle,
@@ -227,6 +228,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     blockWorker,
     clearHostBlockedRetryTimer,
     takeThreadWorkerBlockedResume,
+    clearSupervisorFutexWaiter,
+    isSupervisorFutexWaiter,
+    parkSupervisorFutexWait,
     completeProcessExit: deps.completeProcessExit,
     failProcess: deps.failProcess,
     handleWorkerMessage: deps.handleWorkerMessage,
@@ -239,6 +243,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   } = schedulerQueueHelpers;
 
   function clearBlockedWorker(handle: ProcessHandle, worker: Worker): void {
+    clearSupervisorFutexWaiter(handle, worker);
     const blocked = handle.hostBlockedWorkers.get(worker);
     if (!blocked) {
       return;
@@ -290,13 +295,22 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     return true;
   }
 
-  function parkSupervisorOwnedFutexWait(
+  function clearSupervisorFutexWaiter(_handle: ProcessHandle, worker: Worker): void {
+    supervisorFutexWaiters.delete(worker);
+  }
+
+  function isSupervisorFutexWaiter(_handle: ProcessHandle, worker: Worker): boolean {
+    return supervisorFutexWaiters.has(worker);
+  }
+
+  function parkSupervisorFutexWait(
     handle: ProcessHandle,
     worker: Worker,
     vmPtr: number,
     source: string,
   ): void {
     clearBlockedWorker(handle, worker);
+    supervisorFutexWaiters.add(worker);
     const readyIndex = handle.vforkReadyWorkers.indexOf(worker);
     if (readyIndex >= 0) {
       handle.vforkReadyWorkers.splice(readyIndex, 1);
@@ -306,7 +320,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
     const thread = threadWorkerStates.get(worker);
     if (thread !== undefined && thread.vmPtr === vmPtr) {
-      thread.waitingInWorkerStatus = handle.kernel.abi_status_futex_wait();
       thread.runningGeneration = null;
     }
     appendWorkerDebugLog(
@@ -374,7 +387,10 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   });
   const {
     canScheduleWorker,
-  } = createVforkExclusiveScheduler(threadWorkerStates);
+  } = createVforkExclusiveScheduler({
+    threadWorkerStates,
+    isSupervisorFutexWaiter,
+  });
   const {
     blockedOrCurrentSyscallNr,
     formatBlockedPollFdSet,
@@ -883,7 +899,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
 
   function blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void {
     if (status === handle.kernel.abi_status_futex_wait()) {
-      parkSupervisorOwnedFutexWait(handle, worker, vmPtr, "block-worker-futex-supervisor-owned");
+      parkSupervisorFutexWait(handle, worker, vmPtr, "block-worker-futex-supervisor-owned");
       return;
     }
     const previousBlocked = handle.hostBlockedWorkers.get(worker);
@@ -1169,7 +1185,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
 
     if (status === handle.kernel.abi_status_futex_wait()) {
-      parkSupervisorOwnedFutexWait(handle, worker, vmPtr, "blocked-retry-futex-supervisor-owned");
+      parkSupervisorFutexWait(handle, worker, vmPtr, "blocked-retry-futex-supervisor-owned");
       return;
     }
 
@@ -1793,6 +1809,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     blockWorker,
     clearBlockedWorker,
     clearHostBlockedRetryTimer,
+    parkSupervisorFutexWait,
     requestThreadWorkerBlockedResume,
     enqueueWorker,
     handleHostBlockedRetryResult,

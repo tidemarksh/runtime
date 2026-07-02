@@ -287,7 +287,6 @@ function selectTestSupervisorRunnableThread(
       status === handle.kernel.abi_status_futex_wait()
       || threadHasTestSupervisorFutexBlock(handle.kernel, thread.vmPtr)
     ) {
-      thread.waitingInWorkerStatus = handle.kernel.abi_status_futex_wait();
       continue;
     }
     if (status !== handle.kernel.abi_status_ok()) {
@@ -737,6 +736,9 @@ test("ok status re-enqueues immediately when no blocked retry rpc is pending", (
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, thread);
   const { exports: kernel } = makeKernel();
+  kernel.thread_status = (vmPtr: number) => vmPtr === thread.vmPtr
+    ? kernel.abi_status_futex_wait()
+    : kernel.abi_status_ok();
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   const enqueueWorker = vi.fn();
   const notifyWorkerStatusProgress = vi.fn();
@@ -813,6 +815,9 @@ test("scheduler uses pending worker kernel state for one active vfork child step
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, thread);
   const { exports: kernel } = makeKernel();
+  kernel.thread_status = (vmPtr: number) => vmPtr === thread.vmPtr
+    ? kernel.abi_status_futex_wait()
+    : kernel.abi_status_ok();
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   const parentKernelState = {
     ...handle.kernelState,
@@ -4334,7 +4339,7 @@ test("pumpProcess skips a ready worker whose thread record is still futex-blocke
 
   scheduler.pumpProcess(handle);
 
-  expect(waitingThread.waitingInWorkerStatus).toBe(kernel.abi_status_futex_wait());
+  expect(waitingThread.waitingInWorkerStatus).toBeNull();
   expect(handle.runningWorker).toBe(runnableWorker);
   expect(waitingWorker.postMessage).not.toHaveBeenCalled();
   expect(runnableWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
@@ -4499,6 +4504,9 @@ test("pumpProcess records supervisor thread-state snapshot diagnostics for selec
     blockWorker: () => {},
     clearHostBlockedRetryTimer: () => {},
     takeThreadWorkerBlockedResume: () => false,
+    clearSupervisorFutexWaiter: () => {},
+    isSupervisorFutexWaiter: () => false,
+    parkSupervisorFutexWait: () => {},
     completeProcessExit: async () => {},
     failProcess: (_handle, error) => {
       throw error;
@@ -4571,6 +4579,9 @@ test("pumpProcess runs process-scoped supervisor resume worker instead of TypeSc
     blockWorker: () => {},
     clearHostBlockedRetryTimer: () => {},
     takeThreadWorkerBlockedResume: () => false,
+    clearSupervisorFutexWaiter: () => {},
+    isSupervisorFutexWaiter: () => false,
+    parkSupervisorFutexWait: () => {},
     completeProcessExit: async () => {},
     failProcess: (_handle, error) => {
       throw error;
@@ -4638,6 +4649,9 @@ test("pumpProcess does not run TypeScript continuation when supervisor process r
     blockWorker: () => {},
     clearHostBlockedRetryTimer: () => {},
     takeThreadWorkerBlockedResume: () => false,
+    clearSupervisorFutexWaiter: () => {},
+    isSupervisorFutexWaiter: () => false,
+    parkSupervisorFutexWait: () => {},
     completeProcessExit: async () => {},
     failProcess: (_handle, error) => {
       throw error;
@@ -4805,6 +4819,9 @@ test("blockWorker parks futex wait as supervisor-owned worker state", () => {
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, thread);
   const { exports: kernel } = makeKernel();
+  kernel.thread_status = (vmPtr: number) => vmPtr === thread.vmPtr
+    ? kernel.abi_status_futex_wait()
+    : kernel.abi_status_ok();
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   handle.runningWorker = worker;
   handle.vforkReadyWorkers = [worker];
@@ -4835,8 +4852,11 @@ test("blockWorker parks futex wait as supervisor-owned worker state", () => {
   expect(handle.hostBlockedWorkers.has(worker)).toBe(false);
   expect(handle.vforkReadyWorkers).toEqual([]);
   expect(handle.runningWorker).toBeNull();
-  expect(thread.waitingInWorkerStatus).toBe(kernel.abi_status_futex_wait());
+  expect(thread.waitingInWorkerStatus).toBeNull();
   expect(thread.runningGeneration).toBeNull();
+  scheduler.enqueueWorker(handle, worker);
+  expect(handle.vforkReadyWorkers).toEqual([]);
+  expect(handle.runningWorker).toBeNull();
   expect(worker.postMessage).not.toHaveBeenCalled();
 });
 
@@ -4887,8 +4907,11 @@ test("blocked completion parks futex result as supervisor-owned worker state", (
   expect(handle.hostBlockedWorkers.has(worker)).toBe(false);
   expect(handle.vforkReadyWorkers).toEqual([]);
   expect(handle.runningWorker).toBeNull();
-  expect(thread.waitingInWorkerStatus).toBe(kernel.abi_status_futex_wait());
+  expect(thread.waitingInWorkerStatus).toBeNull();
   expect(thread.runningGeneration).toBeNull();
+  scheduler.enqueueWorker(handle, worker);
+  expect(handle.vforkReadyWorkers).toEqual([]);
+  expect(handle.runningWorker).toBeNull();
   expect(worker.postMessage).not.toHaveBeenCalled();
 });
 

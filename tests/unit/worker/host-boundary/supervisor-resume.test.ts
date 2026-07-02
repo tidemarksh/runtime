@@ -24,6 +24,9 @@ function makeQueue(threadWorkerStates: WeakMap<Worker, ReturnType<typeof makeHos
     blockWorker: () => {},
     clearHostBlockedRetryTimer: () => {},
     takeThreadWorkerBlockedResume: () => false,
+    clearSupervisorFutexWaiter: () => {},
+    isSupervisorFutexWaiter: () => false,
+    parkSupervisorFutexWait: () => {},
     completeProcessExit: async () => {},
     failProcess: (_handle, error) => {
       throw error;

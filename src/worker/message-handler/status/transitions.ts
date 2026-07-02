@@ -972,7 +972,12 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       if (handle.runningWorker === worker) {
         handle.runningWorker = null;
       }
-      thread.waitingInWorkerStatus = status;
+      deps.parkSupervisorFutexWait(
+        handle,
+        worker,
+        thread.vmPtr,
+        "status-futex-supervisor-owned",
+      );
       if (hostTimer !== null) {
         armSupervisorHostTimer(handle, hostTimer, deps);
       }

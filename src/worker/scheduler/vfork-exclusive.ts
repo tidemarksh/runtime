@@ -8,8 +8,13 @@ export interface VforkExclusiveScheduler {
   canScheduleWorker(handle: ProcessHandle, worker: Worker): boolean;
 }
 
+export interface VforkExclusiveSchedulerDeps {
+  threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
+  isSupervisorFutexWaiter(handle: ProcessHandle, worker: Worker): boolean;
+}
+
 export function createVforkExclusiveScheduler(
-  threadWorkerStates: WeakMap<Worker, ThreadWorkerState>,
+  deps: VforkExclusiveSchedulerDeps,
 ): VforkExclusiveScheduler {
   function hasActiveExclusiveVforkWorker(handle: ProcessHandle): boolean {
     const worker = handle.vforkWorker;
@@ -25,8 +30,10 @@ export function createVforkExclusiveScheduler(
     if (handle.hostBlockedWorkers.has(worker)) {
       return true;
     }
-    const thread = threadWorkerStates.get(worker);
-    return thread?.waitingInWorkerStatus !== null || thread?.ownerAsyncStatus !== null;
+    const thread = deps.threadWorkerStates.get(worker);
+    return deps.isSupervisorFutexWaiter(handle, worker)
+      || thread?.waitingInWorkerStatus !== null
+      || thread?.ownerAsyncStatus !== null;
   }
 
   function canScheduleWorker(handle: ProcessHandle, worker: Worker): boolean {

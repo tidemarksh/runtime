@@ -33,6 +33,7 @@ export interface WorkerMessageHandlerDeps extends Partial<WorkerMessageHandlerSy
   handleExecveSpawn(handle: ProcessHandle, worker: Worker, thread: ThreadWorkerState): Promise<void>;
   notifyWorkerStatusProgress(handle: ProcessHandle): void;
   markRuntimeFsDirty(handle: ProcessHandle): void;
+  parkSupervisorFutexWait(handle: ProcessHandle, worker: Worker, vmPtr: number, source: string): void;
   pumpProcess(handle: ProcessHandle): void;
   pruneDetachedProcessWorkers(handle: ProcessHandle, anchorVmPtr: number, currentWorker: Worker | null): void;
   pumpNetworkConnections(handle: ProcessHandle, vmPtr?: number): Promise<boolean>;
