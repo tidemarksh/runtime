@@ -7,6 +7,7 @@ test("waitInWorker debug log keeps compact futex fields", () => {
   const notifyWorkerStatusProgress = vi.fn();
   const parkSupervisorFutexWait = vi.fn();
   const pumpProcess = vi.fn();
+  const memory = new WebAssembly.Memory({ initial: 6, maximum: 6, shared: true });
   const thread = { vmPtr: 0x1234, initialized: true, waitingInWorkerStatus: null } as {
     vmPtr: number;
     initialized: boolean;
@@ -35,7 +36,7 @@ test("waitInWorker debug log keeps compact futex fields", () => {
         stderrPipe: 0,
         refCount: 1,
       },
-      memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+      memory,
       outputBacklog: [],
       kernel: {
         abi_status_futex_wait: () => 20,
@@ -43,6 +44,9 @@ test("waitInWorker debug log keeps compact futex fields", () => {
         abi_status_pipe_wait: () => 21,
         abi_status_socket_recv: () => 23,
         abi_status_socket_send: () => 24,
+        kernel_heap_ptr: () => 0,
+        supervisor_host_op_record_bytes: () => 64,
+        supervisor_next_host_op: () => 0,
       },
       kernelState: {
         heapBase: 0,

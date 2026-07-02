@@ -164,7 +164,6 @@ test("host boundary arms supervisor timer for wait-in-worker futex waits", async
   kernel.memory = memory;
   handle.memory = memory;
   handle.runningWorker = worker;
-  kernel.thread_futex_wait_timeout = () => 0x200n;
   kernel.supervisor_abi_version = () => 1;
   kernel.supervisor_host_op_record_bytes = () => 64;
   kernel.supervisor_host_op_kind_arm_host_timer = () => 12;

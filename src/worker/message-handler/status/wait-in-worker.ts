@@ -18,10 +18,6 @@ import {
   drainSupervisorArmHostTimerHostOp,
 } from "../../supervisor-host-op.js";
 
-function futexWaitHasSupervisorTimer(handle: ProcessHandle, vmPtr: number): boolean {
-  return (handle.kernel.thread_futex_wait_timeout?.(vmPtr) ?? 0n) !== 0n;
-}
-
 export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandlerDeps) {
   return function handleWaitInWorkerStatus(
     handle: ProcessHandle,
@@ -68,9 +64,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
 
     if (msg.status === handle.kernel.abi_status_futex_wait()) {
       thread.waitingInWorkerStatus = null;
-      const hostTimer = futexWaitHasSupervisorTimer(handle, thread.vmPtr)
-        ? drainSupervisorArmHostTimerHostOp(handle, thread.vmPtr)
-        : null;
+      const hostTimer = drainSupervisorArmHostTimerHostOp(handle, thread.vmPtr);
       if (hostTimer === undefined) {
         throw new Error("kernel supervisor ABI missing arm host timer HostOp exports");
       }
