@@ -1147,14 +1147,12 @@ test("STATUS_FUTEX_WAIT arms supervisor host timer HostOp and reports completion
     supervisor_host_op_kind_arm_host_timer: () => number;
     supervisor_next_host_op: (outPtr: number, outLen: number) => number;
     supervisor_complete_futex_wait: (vmPtr: number, completion: number) => number;
-    supervisor_futex_wait_completion_timed_out: () => number;
     supervisor_complete_host_op: (completionPtr: number, completionLen: number) => number;
   };
   kernel.memory = memory;
   kernel.supervisor_abi_version = () => 1;
   kernel.supervisor_host_op_record_bytes = () => 64;
   kernel.supervisor_host_op_kind_arm_host_timer = () => 12;
-  kernel.supervisor_futex_wait_completion_timed_out = () => 3;
   kernel.supervisor_complete_futex_wait = vi.fn(() => 0);
   let completionView: DataView | null = null;
   kernel.supervisor_complete_host_op = vi.fn((completionPtr: number, completionLen: number) => {

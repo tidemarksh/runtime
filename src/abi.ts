@@ -241,7 +241,6 @@ export interface KernelExports {
   supervisor_thread_state_snapshot?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_futex_wait_completion_woken?(): number;
   supervisor_futex_wait_completion_not_equal?(): number;
-  supervisor_futex_wait_completion_timed_out?(): number;
   supervisor_futex_wait_completion_invalid_address?(): number;
   supervisor_futex_wait_completion_signal_check?(): number;
   supervisor_complete_futex_wait?(vmPtr: number, completion: number): number;

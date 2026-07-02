@@ -91,7 +91,6 @@ export function makeHostBoundaryKernel() {
     supervisor_complete_futex_wait: vi.fn(() => 0),
     supervisor_futex_wait_completion_woken: () => 1,
     supervisor_futex_wait_completion_not_equal: () => 2,
-    supervisor_futex_wait_completion_timed_out: () => 3,
     supervisor_futex_wait_completion_invalid_address: () => 4,
     supervisor_futex_wait_completion_signal_check: () => 5,
   } as unknown as ProcessHandle["kernel"];
