@@ -2,7 +2,12 @@ import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
 } from "../../abi.js";
-import { resumeBlockedSyscallBySupervisor } from "../../supervisor-blocked-resume.js";
+import {
+  resumeBlockedSyscallBySupervisor,
+  supervisorBlockedPipeResumeAction,
+  SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER,
+  SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT,
+} from "../../supervisor-blocked-resume.js";
 import { kernelShareOtherMembers, reconcileKernelSharePipeControl } from "../kernel-share.js";
 import { forceNetworkClosedFds } from "../network-socket-close.js";
 import { syncPipeOfdGenerationsForSlot } from "../ownership/ofd-table.js";
@@ -1141,6 +1146,114 @@ async function executeHostBlockedSyscallResume(
     };
     forceNetworkClosedFds(handle, vmPtr);
     let forkSharedSyncedBeforeResume = false;
+    const resumeDirectlyBySupervisor = async (stage: string): Promise<void> => {
+      attachKernelRuntimeState(handle.kernel, handle.kernelState);
+      const blockedSyscallNr = handle.kernel.thread_blocked_syscall_nr?.(vmPtr) ?? 0n;
+      const blockedArg0 = handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 0) ?? 0n;
+      const blockedArg1 = handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 1) ?? 0n;
+      const blockedArg2 = handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 2) ?? 0n;
+      const blockedArg3 = handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 3) ?? 0n;
+      forceNetworkClosedFds(handle, vmPtr);
+      const resumeResult = resumeBlockedSyscallBySupervisor(handle.kernel, vmPtr);
+      if (blockedStatus === handle.kernel.abi_status_pipe_wait() && resumeResult > 0n) {
+        const queuedPollWrites = queueBlockedPollWaitGuestMemoryWrites(
+          handle,
+          worker,
+          blockedSyscallNr,
+          blockedArg0,
+          blockedArg1,
+          blockedArg2,
+          blockedArg3,
+        );
+        if (!queuedPollWrites && blockedPipeResumeWritesGuestBuffer(handle, blockedSyscallNr)) {
+          queueGuestBufferWrite(handle, worker, blockedArg1, resumeResult);
+        }
+      }
+      if (
+        blockedStatus === handle.kernel.abi_status_socket_recv()
+        && resumeResult > 0n
+        && blockedSocketResumeWritesGuestBuffer(handle, blockedSyscallNr)
+      ) {
+        queueGuestBufferWrite(handle, worker, blockedArg1, resumeResult);
+      }
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `${stage}:${handle.pid}:ret=${resumeResult.toString()}:status=${handle.kernel.thread_status(vmPtr)}`,
+      );
+      handle.kernelState = readKernelRuntimeState(handle.kernel);
+      const currentPid = handle.kernel.process_current_pid?.(vmPtr) ?? handle.pid;
+      const transientProcessOwnerMismatch = currentPid > 0 && currentPid !== handle.pid;
+      if (
+        !transientProcessOwnerMismatch
+        && !forkSharedSyncedBeforeResume
+        && !blockedStatusIsEpollWait(handle, blockedStatus)
+      ) {
+        deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-after-supervisor-resume:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
+        if (collectEffects) {
+          pushOutcomeEffect(worker, {
+            kind: "sync-blocked-fork-shared-state",
+            sourceVmPtr: vmPtr,
+            status: blockedStatus,
+          });
+          return;
+        }
+        await deps.syncBlockedForkSharedStateViaKernelWorker(handle, vmPtr, blockedRpcSyncCause(blockedStatus));
+        if (abortIfStaleBlockedRpc()) {
+          return;
+        }
+      }
+      finishBlockedRpc();
+      deps.appendWorkerDebugLog(handle, `blocked-rpc-done:${handle.kernel.thread_status(vmPtr)}:0x${vmPtr.toString(16)}:${stage}`);
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-done:${handle.pid}:${handle.kernel.thread_status(vmPtr)}:${stage}`);
+      if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
+        return;
+      }
+      emitBlockedRpcRetryResult(handle.kernel.thread_status(vmPtr));
+    };
+    const applySupervisorPipeAction = async (): Promise<boolean> => {
+      if (blockedStatus !== handle.kernel.abi_status_pipe_wait()) {
+        return false;
+      }
+      const supervisorPipeAction = supervisorBlockedPipeResumeAction(handle.kernel, vmPtr);
+      if (supervisorPipeAction === null) {
+        return false;
+      }
+      if (handle.kernel.thread_poll_wait_has_socket?.(vmPtr) === 1) {
+        deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-socket-supervisor-pipe:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
+        if (collectEffects) {
+          pushOutcomeEffect(worker, { kind: "sync-blocked-socket-state", status: blockedStatus });
+          return true;
+        }
+        await syncSocketStatePreservingNetworkBridge(handle, blockedStatus);
+        if (abortIfStaleBlockedRpc()) {
+          return true;
+        }
+      }
+      const refreshedSupervisorPipeAction = supervisorBlockedPipeResumeAction(handle.kernel, vmPtr);
+      if (refreshedSupervisorPipeAction === null) {
+        return false;
+      }
+      switch (refreshedSupervisorPipeAction) {
+        case SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER:
+          handle.kernelState = readKernelRuntimeState(handle.kernel);
+          preserveCanonicalEofReadyForDeferredRetry();
+          finishBlockedRpc();
+          deps.appendWorkerDebugLog(handle, `blocked-rpc-defer-pipe-supervisor:0x${vmPtr.toString(16)}`);
+          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-defer-pipe-supervisor:${handle.pid}`);
+          emitBlockedRpcRetryResult(blockedStatus);
+          return true;
+        case SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT:
+          await resumeDirectlyBySupervisor("blocked-rpc-supervisor-pipe-resume");
+          return true;
+        default: {
+          const exhaustive: never = refreshedSupervisorPipeAction;
+          throw new Error(`unhandled supervisor blocked pipe resume action: ${exhaustive}`);
+        }
+      }
+    };
+    if (await applySupervisorPipeAction()) {
+      return;
+    }
     const canonicalWriteOpenBeforeReconcileByPipeSlot = new Map<number, number>();
     if (blockedStatus === handle.kernel.abi_status_pipe_wait()) {
       const blockedPipeSlots = pipeSlotsForBlockedPipeWait(handle, vmPtr);

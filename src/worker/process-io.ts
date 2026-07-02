@@ -1088,6 +1088,36 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       addrLen,
     );
 
+    const readPeerAddr = handle.kernel.supervisor_socket_connect_peer_addr
+      ?? handle.kernel.thread_connect_peer_addr;
+    const readConnectFd = handle.kernel.supervisor_socket_connect_fd
+      ?? handle.kernel.thread_connect_fd;
+    if (readPeerAddr && readConnectFd) {
+      const addrLen = readPeerAddr(vmPtr, scratch, 28);
+      const endpoint = endpointFromScratch(readConnectFd(vmPtr), addrLen);
+      if (endpoint) {
+        return endpoint;
+      }
+    }
+
+    const readPeerAddrForFd = handle.kernel.supervisor_socket_connect_peer_addr_for_fd
+      ?? handle.kernel.thread_connect_peer_addr_for_fd;
+    if (readPeerAddrForFd) {
+      const maxFds = handle.kernel.abi_max_fds();
+      const socketFdType = handle.kernel.abi_fd_type_socket();
+      for (let fd = 0; fd < maxFds; fd += 1) {
+        const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+        if (ofdId <= 0 || handle.kernel.kernel_ofd_fd_type(ofdId) !== socketFdType) {
+          continue;
+        }
+        const addrLen = readPeerAddrForFd(vmPtr, fd, scratch, 28);
+        const endpoint = endpointFromScratch(fd, addrLen);
+        if (endpoint) {
+          return endpoint;
+        }
+      }
+    }
+
     const blockedSyscallNr = handle.kernel.thread_blocked_syscall_nr?.(vmPtr);
     const connectSyscallNr = handle.kernel.abi_sys_connect?.();
     if (
@@ -1120,33 +1150,6 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       }
     }
 
-    const readPeerAddr = handle.kernel.thread_connect_peer_addr;
-    const readConnectFd = handle.kernel.thread_connect_fd;
-    if (readPeerAddr && readConnectFd) {
-      const addrLen = readPeerAddr(vmPtr, scratch, 28);
-      const endpoint = endpointFromScratch(readConnectFd(vmPtr), addrLen);
-      if (endpoint) {
-        return endpoint;
-      }
-    }
-
-    const readPeerAddrForFd = handle.kernel.thread_connect_peer_addr_for_fd;
-    if (!readPeerAddrForFd) {
-      return null;
-    }
-    const maxFds = handle.kernel.abi_max_fds();
-    const socketFdType = handle.kernel.abi_fd_type_socket();
-    for (let fd = 0; fd < maxFds; fd += 1) {
-      const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
-      if (ofdId <= 0 || handle.kernel.kernel_ofd_fd_type(ofdId) !== socketFdType) {
-        continue;
-      }
-      const addrLen = readPeerAddrForFd(vmPtr, fd, scratch, 28);
-      const endpoint = endpointFromScratch(fd, addrLen);
-      if (endpoint) {
-        return endpoint;
-      }
-    }
     return null;
   }
 
@@ -1229,21 +1232,33 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     handle.networkPendingConnectFds.delete(connect.fd);
 
     const result = BigInt.asIntN(64, connectResult ?? handle.kernel.thread_a0(vmPtr));
-    const einprogress = BigInt(handle.kernel.abi_einprogress?.() ?? -115);
     const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, connect.fd);
-    let markExternalPeerResult = result === 0n || result === einprogress
-      ? handle.kernel.thread_socket_mark_external_peer?.(vmPtr, connect.fd)
-      : undefined;
+    const supervisorCommitResult = handle.kernel.supervisor_socket_commit_external_connect_result?.(
+      vmPtr,
+      connect.fd,
+      result,
+    );
+    const einprogress = BigInt(handle.kernel.abi_einprogress?.() ?? -115);
+    let markExternalPeerResult = supervisorCommitResult === undefined
+      ? (
+        result === 0n || result === einprogress
+          ? handle.kernel.thread_socket_mark_external_peer?.(vmPtr, connect.fd)
+          : undefined
+      )
+      : supervisorCommitResult === 1 ? 0 : -1;
     if (
-      markExternalPeerResult !== 0
+      supervisorCommitResult === undefined
+      && markExternalPeerResult !== 0
       && (result === 0n || result === einprogress)
       && handle.kernel.thread_socket_commit_external_connect
     ) {
       markExternalPeerResult = handle.kernel.thread_socket_commit_external_connect(vmPtr, connect.fd);
     }
     const status = handle.kernel.thread_status(vmPtr);
-    const shouldCommit = (result === 0n || result === einprogress)
-      && (status === handle.kernel.abi_status_ok() || markExternalPeerResult === 0);
+    const shouldCommit = supervisorCommitResult === undefined
+      ? (result === 0n || result === einprogress)
+        && (status === handle.kernel.abi_status_ok() || markExternalPeerResult === 0)
+      : supervisorCommitResult === 1;
     if (shouldCommit) {
       const existing = handle.networkConnections.get(connect.fd);
       if (existing && existing !== connect.connection) {
@@ -1286,9 +1301,16 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     handle.transferDebugStats.networkPumpCalls += 1;
     const drainOutbound = handle.kernel.thread_socket_drain_outbound;
     const injectInbound = handle.kernel.thread_socket_inject_inbound;
-    const markExternalPeer = handle.kernel.thread_socket_mark_external_peer;
-    const commitExternalConnect = handle.kernel.thread_socket_commit_external_connect;
-    const closeExternalPeer = handle.kernel.thread_socket_close_external_peer;
+    const prepareExternalPeer = handle.kernel.supervisor_socket_prepare_external_peer
+      ?? ((targetVmPtr: number, fd: number): number | undefined => {
+        const markResult = handle.kernel.thread_socket_mark_external_peer?.(targetVmPtr, fd);
+        if (markResult === 0 || !handle.kernel.thread_socket_commit_external_connect) {
+          return markResult;
+        }
+        return handle.kernel.thread_socket_commit_external_connect(targetVmPtr, fd);
+      });
+    const closeExternalPeer = handle.kernel.supervisor_socket_close_external_peer
+      ?? handle.kernel.thread_socket_close_external_peer;
     let changed = false;
     const finishPump = (): boolean => {
       if (changed) {
@@ -1382,17 +1404,32 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     const enotsock = handle.kernel.abi_enotsock?.() ?? -88;
     const enotconn = handle.kernel.abi_enotconn?.() ?? -107;
 
-    const findFdForOfd = (ofdId: number, preferredFd: number): number | null => {
+    const findFdForOfd = (ofdId: number, preferredFd: number): {
+      fd: number | null;
+      supervisor: boolean;
+    } => {
+      const supervisorActiveFd = handle.kernel.supervisor_socket_bridge_active_fd?.(
+        vmPtr,
+        preferredFd,
+        ofdId,
+        hasPendingConnectForFd(preferredFd) ? 1 : 0,
+      );
+      if (supervisorActiveFd !== undefined) {
+        return {
+          fd: supervisorActiveFd >= 0 ? supervisorActiveFd : null,
+          supervisor: true,
+        };
+      }
       const maxFds = handle.kernel.abi_max_fds();
       if (ofdId > 0 && handle.kernel.process_fd_ofd_id(vmPtr, preferredFd) === ofdId) {
-        return preferredFd;
+        return { fd: preferredFd, supervisor: false };
       }
       for (let candidate = 0; candidate < maxFds; candidate += 1) {
         if (candidate !== preferredFd && handle.kernel.process_fd_ofd_id(vmPtr, candidate) === ofdId) {
-          return candidate;
+          return { fd: candidate, supervisor: false };
         }
       }
-      return null;
+      return { fd: null, supervisor: false };
     };
 
     const rekeyNetworkConnection = (
@@ -1519,10 +1556,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         return false;
       }
       const before = formatSocketStateForFd(fd);
-      let markResult = markExternalPeer?.(vmPtr, fd);
-      if (markResult !== undefined && markResult !== 0 && commitExternalConnect) {
-        markResult = commitExternalConnect(vmPtr, fd);
-      }
+      const markResult = prepareExternalPeer?.(vmPtr, fd);
       if (markResult !== 0) {
         return false;
       }
@@ -1600,20 +1634,14 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         const inboundSocketState = inboundSocketIdx !== undefined && inboundSocketIdx >= 0
           ? handle.kernel.thread_socket_state?.(inboundSocketIdx)
           : undefined;
-        let inboundMarkResult = inboundSocketState === SOCKET_STATE_SHUTDOWN
-          ? undefined
-          : markExternalPeer?.(vmPtr, fd);
-        if (inboundMarkResult !== undefined && inboundMarkResult !== 0 && commitExternalConnect) {
-          inboundMarkResult = commitExternalConnect(vmPtr, fd);
+        if (inboundSocketState !== SOCKET_STATE_SHUTDOWN) {
+          prepareExternalPeer?.(vmPtr, fd);
         }
         let written = injectInbound(vmPtr, fd, scratch, injection.length);
         if (
           written === enotconn
           && inboundSocketState !== SOCKET_STATE_SHUTDOWN
-          && (
-            markExternalPeer?.(vmPtr, fd) === 0
-            || commitExternalConnect?.(vmPtr, fd) === 0
-          )
+          && prepareExternalPeer?.(vmPtr, fd) === 0
         ) {
             written = injectInbound(vmPtr, fd, scratch, injection.length);
         }
@@ -1666,12 +1694,15 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       const expectedOfd = networkConnectionOfds(handle).get(fd);
       const currentOfd = handle.kernel.process_fd_ofd_id(vmPtr, fd);
       if (expectedOfd !== undefined && currentOfd !== expectedOfd) {
-        const replacementFd = findFdForOfd(expectedOfd, fd);
-        if (replacementFd === null) {
+        const replacement = findFdForOfd(expectedOfd, fd);
+        if (replacement.fd === null) {
           if (
-            currentOfd > 0
-            && handle.kernel.kernel_ofd_fd_type(currentOfd) === handle.kernel.abi_fd_type_socket()
-            && !hasPendingConnectForFd(fd)
+            !replacement.supervisor
+            && (
+              currentOfd > 0
+              && handle.kernel.kernel_ofd_fd_type(currentOfd) === handle.kernel.abi_fd_type_socket()
+              && !hasPendingConnectForFd(fd)
+            )
           ) {
             rekeyNetworkConnection(fd, fd, currentOfd, connection);
             activeFd = fd;
@@ -1680,9 +1711,9 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
             continue;
           }
         }
-        if (replacementFd !== null) {
-          rekeyNetworkConnection(fd, replacementFd, expectedOfd, connection);
-          activeFd = replacementFd;
+        if (replacement.fd !== null) {
+          rekeyNetworkConnection(fd, replacement.fd, expectedOfd, connection);
+          activeFd = replacement.fd;
         }
       }
       recordGuestSocketReadProgressForFd(handle, vmPtr, activeFd);
@@ -1740,12 +1771,9 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
             ? handle.kernel.thread_socket_recv_available?.(peerIdx)
             : undefined;
           if (drainFd === activeFd) {
-            let markResult = socketState === SOCKET_STATE_SHUTDOWN
+            const markResult = socketState === SOCKET_STATE_SHUTDOWN
               ? undefined
-              : markExternalPeer?.(vmPtr, activeFd);
-            if (markResult !== undefined && markResult !== 0 && commitExternalConnect) {
-              markResult = commitExternalConnect(vmPtr, activeFd);
-            }
+              : prepareExternalPeer?.(vmPtr, activeFd);
             const repairedExternalPeer = markResult === 0
               && (
                 (socketState !== undefined && socketState !== SOCKET_STATE_CONNECTED)
@@ -1764,10 +1792,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
             drainFd === activeFd
             && n === enotconn
             && socketState !== SOCKET_STATE_SHUTDOWN
-            && (
-              markExternalPeer?.(vmPtr, activeFd) === 0
-              || commitExternalConnect?.(vmPtr, activeFd) === 0
-            )
+            && prepareExternalPeer?.(vmPtr, activeFd) === 0
           ) {
             n = drainOutbound(vmPtr, drainFd, scratch, chunkSize);
           }

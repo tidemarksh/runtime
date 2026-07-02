@@ -19,6 +19,8 @@ export const SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_ACTIVE_CHILD = 1 << 1;
 export const SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PASSIVE_WAIT = 1 << 2;
 export const SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE = 1 << 3;
 export const SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_THREAD_INIT_PENDING = 1 << 4;
+export const SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER = 0;
+export const SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT = 1;
 
 export type SupervisorBlockedWaitRetryReason =
   | typeof SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_DEFAULT
@@ -42,6 +44,10 @@ export type SupervisorBlockedResumeDelegation =
   | typeof SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED
   | typeof SUPERVISOR_BLOCKED_RESUME_DELEGATION_EPOLL_DIRECT;
 
+export type SupervisorBlockedPipeResumeAction =
+  | typeof SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER
+  | typeof SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT;
+
 export function resumeBlockedSyscallBySupervisor(
   kernel: KernelExports,
   vmPtr: number,
@@ -52,6 +58,53 @@ export function resumeBlockedSyscallBySupervisor(
     throw new Error("kernel supervisor blocked syscall resume export is missing");
   }
   return BigInt(resume(vmPtr, timeoutExpired ? SUPERVISOR_RESUME_FLAG_TIMEOUT_EXPIRED : 0));
+}
+
+function supervisorBlockedPipeResumeActionValue(
+  kernel: KernelExports,
+  action: SupervisorBlockedPipeResumeAction,
+): number {
+  switch (action) {
+    case SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT:
+      return kernel.supervisor_blocked_pipe_resume_action_direct?.() ?? action;
+    case SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER:
+      return kernel.supervisor_blocked_pipe_resume_action_defer?.() ?? action;
+    default: {
+      const exhaustive: never = action;
+      return exhaustive;
+    }
+  }
+}
+
+function normalizeSupervisorBlockedPipeResumeAction(
+  kernel: KernelExports,
+  result: number,
+): SupervisorBlockedPipeResumeAction {
+  const actions: SupervisorBlockedPipeResumeAction[] = [
+    SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER,
+    SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT,
+  ];
+  for (const action of actions) {
+    if (result === supervisorBlockedPipeResumeActionValue(kernel, action)) {
+      return action;
+    }
+  }
+  throw new Error(`kernel supervisor blocked pipe resume action is unknown: ${result}`);
+}
+
+export function supervisorBlockedPipeResumeAction(
+  kernel: KernelExports,
+  vmPtr: number,
+): SupervisorBlockedPipeResumeAction | null {
+  const readAction = kernel.supervisor_blocked_pipe_resume_action;
+  if (readAction === undefined) {
+    return null;
+  }
+  const result = readAction(vmPtr);
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked pipe resume action failed: ${result}`);
+  }
+  return normalizeSupervisorBlockedPipeResumeAction(kernel, result);
 }
 
 function supervisorRetryReason(

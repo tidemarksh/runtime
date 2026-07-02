@@ -204,6 +204,8 @@ export interface KernelExports {
   supervisor_pipe_slot_mode_read?(): number;
   supervisor_pipe_slot_mode_write?(): number;
   supervisor_pipe_slot_mode_control?(): number;
+  supervisor_blocked_pipe_resume_action_defer?(): number;
+  supervisor_blocked_pipe_resume_action_direct?(): number;
   supervisor_fs_control_kind_page_cache_miss?(): number;
   supervisor_fs_control_kind_page_cache_fill?(): number;
   supervisor_fs_control_kind_dirty_page_published?(): number;
@@ -246,11 +248,20 @@ export interface KernelExports {
   supervisor_process_pipe_slot_mode?(vmPtr: number, pipeSlot: number): number;
   supervisor_process_pipe_read_open_count?(vmPtr: number, pipeSlot: number): number;
   supervisor_process_pipe_write_open_count?(vmPtr: number, pipeSlot: number): number;
+  supervisor_blocked_pipe_resume_action?(vmPtr: number): number;
   supervisor_process_epoll_held_ofd?(vmPtr: number, index: number): number;
   supervisor_process_epoll_dependent_ofd?(vmPtr: number, index: number): number;
   supervisor_blocked_epoll_watched_ofd?(vmPtr: number, index: number): number;
   supervisor_blocked_epoll_watches_pipe?(vmPtr: number): number;
   supervisor_process_socket_held_ofd?(vmPtr: number, index: number): number;
+  supervisor_socket_connect_fd?(vmPtr: number): number;
+  supervisor_socket_connect_peer_addr?(vmPtr: number, dstPtr: number, dstLen: number): number;
+  supervisor_socket_connect_peer_addr_for_fd?(vmPtr: number, fd: number, dstPtr: number, dstLen: number): number;
+  supervisor_socket_prepare_external_peer?(vmPtr: number, fd: number): number;
+  supervisor_socket_commit_external_connect_result?(vmPtr: number, fd: number, result: bigint | number): number;
+  supervisor_socket_close_external_peer?(vmPtr: number, fd: number): number;
+  supervisor_socket_force_shutdown?(vmPtr: number, fd: number): number;
+  supervisor_socket_bridge_active_fd?(vmPtr: number, preferredFd: number, expectedOfd: number, pendingConnect: number): number;
   supervisor_resume_blocked_syscall?(vmPtr: number, flags: number): bigint | number;
   supervisor_blocked_resume_delegation?(vmPtr: number, flags: number): number;
   supervisor_blocked_resume_delegation_flag_kernel_worker_available?(): number;
@@ -1203,6 +1214,8 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_pipe_slot_mode_read",
   "supervisor_pipe_slot_mode_write",
   "supervisor_pipe_slot_mode_control",
+  "supervisor_blocked_pipe_resume_action_defer",
+  "supervisor_blocked_pipe_resume_action_direct",
   "supervisor_fs_control_kind_page_cache_miss",
   "supervisor_fs_control_kind_page_cache_fill",
   "supervisor_fs_control_kind_dirty_page_published",
@@ -1245,11 +1258,20 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_process_pipe_slot_mode",
   "supervisor_process_pipe_read_open_count",
   "supervisor_process_pipe_write_open_count",
+  "supervisor_blocked_pipe_resume_action",
   "supervisor_process_epoll_held_ofd",
   "supervisor_process_epoll_dependent_ofd",
   "supervisor_blocked_epoll_watched_ofd",
   "supervisor_blocked_epoll_watches_pipe",
   "supervisor_process_socket_held_ofd",
+  "supervisor_socket_connect_fd",
+  "supervisor_socket_connect_peer_addr",
+  "supervisor_socket_connect_peer_addr_for_fd",
+  "supervisor_socket_prepare_external_peer",
+  "supervisor_socket_commit_external_connect_result",
+  "supervisor_socket_close_external_peer",
+  "supervisor_socket_force_shutdown",
+  "supervisor_socket_bridge_active_fd",
   "supervisor_resume_blocked_syscall",
   "supervisor_blocked_resume_delegation",
   "supervisor_blocked_resume_delegation_flag_kernel_worker_available",

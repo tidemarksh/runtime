@@ -67,6 +67,57 @@ test("resolveNetworkConnect reports IPv4 connect endpoint to a generic runtime b
   });
 });
 
+test("resolveNetworkConnect reads IPv4 connect endpoint from supervisor socket control", async () => {
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  const view = new Uint8Array(memory.buffer);
+  const bridge = {
+    connect: vi.fn(async () => undefined),
+  };
+  const handle = {
+    pid: 42,
+    memory,
+    networkBridge: bridge,
+    networkConnections: new Map(),
+    networkPendingConnectFds: new Set(),
+    networkClosedFds: new Set(),
+    networkClosedSocketSlots: new Map(),
+    networkRecvHeadWatermarks: new Map(),
+    networkRecvTailWatermarks: new Map(),
+    kernel: {
+      kernel_heap_ptr: () => 0x100,
+      abi_econnrefused: () => 111,
+      supervisor_socket_connect_fd: () => 9,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+        view.set([
+          2, 0,
+          0x23, 0x82,
+          203, 0, 113, 10,
+        ], dstPtr);
+        return 8;
+      },
+      thread_connect_fd: () => 7,
+      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+        view.set([2, 0, 0, 80, 127, 0, 0, 1], dstPtr);
+        return 8;
+      },
+    },
+  } as unknown as ProcessHandle;
+  const helpers = createWorkerProcessIoHelpers(createDeps());
+
+  const result = await helpers.resolveNetworkConnect(handle, 0x2000);
+
+  expect(result).toBe(0n);
+  expect(bridge.connect).toHaveBeenCalledWith({
+    pid: 42,
+    fd: 9,
+    endpoint: {
+      family: "inet",
+      address: "203.0.113.10",
+      port: 9090,
+    },
+  });
+});
+
 test("resolveNetworkConnect does not truncate Memory64 blocked sockaddr pointers", async () => {
   const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
   const view = new Uint8Array(memory.buffer);
@@ -258,6 +309,143 @@ test("commitNetworkConnect adopts a successful bridge connection after the local
   expect(connection.close).not.toHaveBeenCalled();
 });
 
+test("commitNetworkConnect drops bridge connection when supervisor rejects the connect result", async () => {
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  const view = new Uint8Array(memory.buffer);
+  const connection = {
+    close: vi.fn(async () => {}),
+    read: vi.fn(() => undefined),
+    write: vi.fn(),
+  };
+  const handle = {
+    pid: 42,
+    runtimeId: 1,
+    vmPtr: 0x2000,
+    memory,
+    networkBridge: {
+      connect: vi.fn(async () => ({ connection })),
+    },
+    networkConnections: new Map(),
+    networkPendingConnectFds: new Set(),
+    networkClosedFds: new Set(),
+    networkClosedSocketSlots: new Map(),
+    networkRecvHeadWatermarks: new Map(),
+    networkRecvTailWatermarks: new Map(),
+    kernelState: {},
+    kernel: {
+      kernel_heap_ptr: () => 0x100,
+      abi_econnrefused: () => 111,
+      abi_einprogress: () => -115,
+      abi_status_ok: () => 0,
+      thread_connect_fd: () => 3,
+      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+        view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
+        return 8;
+      },
+      thread_a0: () => 0n,
+      thread_status: () => 0,
+      thread_socket_idx_for_fd: vi.fn(() => 0),
+      supervisor_socket_commit_external_connect_result: vi.fn(() => 0),
+      thread_socket_mark_external_peer: vi.fn(() => 0),
+    },
+  } as unknown as ProcessHandle;
+  const helpers = createWorkerProcessIoHelpers(createDeps());
+
+  await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
+  await helpers.commitNetworkConnect(handle, 0x2000, 0n);
+
+  expect(handle.kernel.supervisor_socket_commit_external_connect_result).toHaveBeenCalledWith(
+    0x2000,
+    3,
+    0n,
+  );
+  expect(handle.networkConnections.has(3)).toBe(false);
+  expect(handle.networkPendingConnectFds.has(3)).toBe(false);
+  expect(connection.close).toHaveBeenCalledTimes(1);
+});
+
+test("commitNetworkConnect adopts bridge connection when supervisor accepts the connect result", async () => {
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  const view = new Uint8Array(memory.buffer);
+  const connection = {
+    close: vi.fn(async () => {}),
+    read: vi.fn(() => undefined),
+    write: vi.fn(),
+  };
+  const handle = {
+    pid: 42,
+    runtimeId: 1,
+    vmPtr: 0x2000,
+    memory,
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(8),
+      stateSab: new SharedArrayBuffer(176),
+    },
+    networkBridge: {
+      connect: vi.fn(async () => ({ connection })),
+    },
+    networkConnections: new Map(),
+    networkPendingConnectFds: new Set(),
+    networkClosedFds: new Set(),
+    networkClosedSocketSlots: new Map(),
+    networkRecvHeadWatermarks: new Map(),
+    networkRecvTailWatermarks: new Map(),
+    kernelState: {
+      ofdTablePtr: 0,
+      netBufBase: 0,
+    },
+    kernel: {
+      kernel_heap_base: () => 0,
+      kernel_heap_ptr: () => 0x100,
+      kernel_ofd_table_ptr: () => 0,
+      kernel_ofd_table_bytes: () => 64 * 32,
+      kernel_memfs_ptr: () => 0,
+      kernel_mem_state_ptr: () => 0,
+      kernel_epoll_table_ptr: () => 0,
+      kernel_socket_table_ptr: () => 0,
+      kernel_socket_used: () => 0,
+      kernel_pipe_base: () => 0,
+      kernel_pipe_used: () => 0n,
+      kernel_net_buf_base: () => 0,
+      kernel_net_buf_used: () => 0n,
+      kernel_sig_slots_ptr: () => 0,
+      kernel_process_pending_ptr: () => 0,
+      kernel_process_runtime_state_ptr: () => 0,
+      kernel_time_state_ptr: () => 0,
+      abi_econnrefused: () => 111,
+      abi_einprogress: () => -115,
+      abi_status_ok: () => 0,
+      abi_max_fds: () => 64,
+      abi_fd_type_socket: () => 8,
+      thread_connect_fd: () => 3,
+      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+        view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
+        return 8;
+      },
+      thread_a0: () => 0n,
+      thread_status: () => 30,
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 3 ? 19 : 0,
+      kernel_ofd_fd_type: (ofdId: number) => ofdId === 19 ? 8 : 0,
+      thread_socket_idx_for_fd: vi.fn(() => -1),
+      supervisor_socket_commit_external_connect_result: vi.fn(() => 1),
+      thread_socket_mark_external_peer: vi.fn(() => -107),
+    },
+  } as unknown as ProcessHandle;
+  const helpers = createWorkerProcessIoHelpers(createDeps());
+
+  await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
+  await helpers.commitNetworkConnect(handle, 0x2000, 0n);
+
+  expect(handle.kernel.supervisor_socket_commit_external_connect_result).toHaveBeenCalledWith(
+    0x2000,
+    3,
+    0n,
+  );
+  expect(handle.networkConnections.get(3)).toBe(connection);
+  expect(handle.networkPendingConnectFds.has(3)).toBe(false);
+  expect(connection.close).not.toHaveBeenCalled();
+});
+
 test("resolveNetworkConnect normalizes bridge errno to negative Linux result", async () => {
   const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
   const view = new Uint8Array(memory.buffer);
@@ -324,7 +512,8 @@ test("pumpNetworkConnections drains guest outbound bytes and injects inbound byt
       abi_enotsock: () => -88,
       process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 7 ? 7 : 0,
       kernel_ofd_fd_type: (ofdId: number) => ofdId === 7 ? 8 : 0,
-      thread_socket_mark_external_peer: vi.fn(() => 0),
+      supervisor_socket_prepare_external_peer: vi.fn(() => 0),
+      thread_socket_mark_external_peer: vi.fn(() => -107),
       thread_socket_drain_outbound: vi.fn((_vmPtr: number, _fd: number, dstPtr: number) => {
         if (written.length > 0) {
           return 0;
@@ -341,6 +530,7 @@ test("pumpNetworkConnections drains guest outbound bytes and injects inbound byt
   await expect(helpers.pumpNetworkConnections(handle)).resolves.toBe(true);
 
   expect(written).toEqual(["GET / HTTP/1.1\r\n\r\n"]);
+  expect(handle.kernel.supervisor_socket_prepare_external_peer).toHaveBeenCalledWith(0x2000, 7);
   expect(handle.kernel.thread_socket_inject_inbound).toHaveBeenCalledWith(0x2000, 7, 0x34100, 21);
 });
 
@@ -809,6 +999,7 @@ test("bridge EOF is deferred immediately after inbound injection even when recv 
       thread_socket_recv_available: vi.fn(() => 0),
       thread_socket_peer_idx: vi.fn(() => 1),
       thread_socket_mark_external_peer: vi.fn(() => 0),
+      supervisor_socket_close_external_peer: vi.fn(),
       thread_socket_close_external_peer: vi.fn(),
       thread_socket_drain_outbound: vi.fn(() => 0),
       thread_socket_inject_inbound: vi.fn((_vmPtr: number, _fd: number, _srcPtr: number, srcLen: number) => srcLen),
@@ -855,6 +1046,7 @@ test("bridge EOF marks peer shutdown but preserves the guest socket until fd clo
       thread_socket_recv_available: vi.fn(() => 0),
       thread_socket_peer_idx: vi.fn(() => 1),
       thread_socket_mark_external_peer: vi.fn(() => 0),
+      supervisor_socket_close_external_peer: vi.fn(),
       thread_socket_close_external_peer: vi.fn(),
       thread_socket_drain_outbound: vi.fn(() => 0),
       thread_socket_inject_inbound: vi.fn(),
@@ -864,7 +1056,8 @@ test("bridge EOF marks peer shutdown but preserves the guest socket until fd clo
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
 
-  expect(handle.kernel.thread_socket_close_external_peer).toHaveBeenCalledWith(0x3000, 7);
+  expect(handle.kernel.supervisor_socket_close_external_peer).toHaveBeenCalledWith(0x3000, 7);
+  expect(handle.kernel.thread_socket_close_external_peer).not.toHaveBeenCalled();
   expect(connection.close).toHaveBeenCalledTimes(1);
   expect(handle.networkConnections.get(7)).toBe(connection);
   expect(handle.networkRecvHeadWatermarks.has(7)).toBe(false);
@@ -1034,6 +1227,209 @@ test("stale network OFD rekeys when fork-shared sync renumbers the same socket f
   expect(handle.kernel.thread_socket_force_shutdown).not.toHaveBeenCalled();
   expect(handle.networkClosedFds.has(3)).toBe(false);
   expect(handle.networkConnections.get(3)).toBe(connection);
+});
+
+test("stale network OFD rekeys to supervisor-selected active fd alias", async () => {
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  const view = new Uint8Array(memory.buffer);
+  let fd3Ofd = 19;
+  let fd5Ofd = 0;
+  const connection = {
+    close: vi.fn(async () => {}),
+    read: vi.fn(() => undefined),
+    write: vi.fn(),
+  };
+  const handle = {
+    pid: 42,
+    runtimeId: 1,
+    vmPtr: 0x2000,
+    memory,
+    networkBridge: {
+      connect: vi.fn(async () => ({ connection })),
+    },
+    networkConnections: new Map(),
+    networkPendingConnectFds: new Set(),
+    networkClosedFds: new Set(),
+    networkClosedSocketSlots: new Map(),
+    networkRecvHeadWatermarks: new Map(),
+    networkRecvTailWatermarks: new Map(),
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(8),
+      stateSab: new SharedArrayBuffer(176),
+    },
+    kernelState: {},
+    kernel: {
+      kernel_heap_base: () => 0,
+      kernel_heap_ptr: () => 0x100,
+      kernel_ofd_table_ptr: () => 0,
+      kernel_memfs_ptr: () => 0,
+      kernel_memfs_header_bytes: () => 0,
+      kernel_memfs_inodes_bytes: () => 0,
+      kernel_memfs_first_child_bytes: () => 0,
+      kernel_memfs_dir_entries_bytes: () => 0,
+      kernel_memfs_data_bytes: () => 0,
+      kernel_mem_state_ptr: () => 0,
+      kernel_epoll_table_ptr: () => 0,
+      kernel_socket_table_ptr: () => 0,
+      kernel_socket_used: () => 0,
+      kernel_pipe_base: () => 0,
+      kernel_pipe_used: () => 0n,
+      kernel_net_buf_base: () => 0,
+      kernel_net_buf_used: () => 0n,
+      kernel_sig_slots_ptr: () => 0,
+      kernel_process_pending_ptr: () => 0,
+      kernel_process_runtime_state_ptr: () => 0,
+      kernel_time_state_ptr: () => 0,
+      abi_econnrefused: () => 111,
+      abi_einprogress: () => -115,
+      abi_status_ok: () => 0,
+      abi_max_fds: () => 8,
+      abi_fd_type_socket: () => 8,
+      abi_enotconn: () => -107,
+      abi_enotsock: () => -88,
+      thread_connect_fd: () => 3,
+      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+        view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
+        return 8;
+      },
+      thread_a0: () => 0n,
+      thread_status: () => 0,
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => {
+        if (fd === 3) {
+          return fd3Ofd;
+        }
+        if (fd === 5) {
+          return fd5Ofd;
+        }
+        return 0;
+      },
+      kernel_ofd_fd_type: (ofdId: number) => ofdId === 19 || ofdId === 20 ? 8 : 0,
+      supervisor_socket_bridge_active_fd: vi.fn((_vmPtr: number, _preferredFd: number, expectedOfd: number) => (
+        expectedOfd === 19 ? 5 : -2
+      )),
+      thread_socket_idx_for_fd: vi.fn(() => 0),
+      thread_socket_state: vi.fn(() => 3),
+      thread_socket_recv_buf_idx: vi.fn(() => 0),
+      thread_socket_recv_available: vi.fn(() => 0),
+      thread_socket_peer_idx: vi.fn(() => -1),
+      thread_socket_mark_external_peer: vi.fn(() => 0),
+      thread_socket_force_shutdown: vi.fn(),
+      thread_socket_drain_outbound: vi.fn(() => 0),
+      thread_socket_inject_inbound: vi.fn(),
+    },
+  } as unknown as ProcessHandle;
+  const helpers = createWorkerProcessIoHelpers(createDeps());
+
+  await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
+  await helpers.commitNetworkConnect(handle, 0x2000);
+  expect(handle.networkConnections.get(3)).toBe(connection);
+
+  fd3Ofd = 20;
+  fd5Ofd = 19;
+  handle.networkRecvHeadWatermarks.set(3, 4096);
+  handle.networkRecvTailWatermarks.set(3, 188416);
+  await expect(helpers.pumpNetworkConnections(handle, 0x2000)).resolves.toBe(true);
+
+  expect(handle.kernel.supervisor_socket_bridge_active_fd).toHaveBeenCalledWith(0x2000, 3, 19, 0);
+  expect(connection.close).not.toHaveBeenCalled();
+  expect(handle.networkConnections.has(3)).toBe(false);
+  expect(handle.networkConnections.get(5)).toBe(connection);
+  expect(handle.networkRecvHeadWatermarks.has(3)).toBe(false);
+  expect(handle.networkRecvHeadWatermarks.get(5)).toBe(4096);
+  expect(handle.networkRecvTailWatermarks.has(3)).toBe(false);
+  expect(handle.networkRecvTailWatermarks.get(5)).toBe(188416);
+});
+
+test("stale network OFD closes when supervisor reports no active fd", async () => {
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  const view = new Uint8Array(memory.buffer);
+  let currentOfd = 19;
+  const connection = {
+    close: vi.fn(async () => {}),
+    read: vi.fn(() => undefined),
+    write: vi.fn(),
+  };
+  const handle = {
+    pid: 42,
+    runtimeId: 1,
+    vmPtr: 0x2000,
+    memory,
+    networkBridge: {
+      connect: vi.fn(async () => ({ connection })),
+    },
+    networkConnections: new Map(),
+    networkPendingConnectFds: new Set(),
+    networkClosedFds: new Set(),
+    networkClosedSocketSlots: new Map(),
+    networkRecvHeadWatermarks: new Map(),
+    networkRecvTailWatermarks: new Map(),
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(8),
+      stateSab: new SharedArrayBuffer(176),
+    },
+    kernelState: {},
+    kernel: {
+      kernel_heap_base: () => 0,
+      kernel_heap_ptr: () => 0x100,
+      kernel_ofd_table_ptr: () => 0,
+      kernel_memfs_ptr: () => 0,
+      kernel_memfs_header_bytes: () => 0,
+      kernel_memfs_inodes_bytes: () => 0,
+      kernel_memfs_first_child_bytes: () => 0,
+      kernel_memfs_dir_entries_bytes: () => 0,
+      kernel_memfs_data_bytes: () => 0,
+      kernel_mem_state_ptr: () => 0,
+      kernel_epoll_table_ptr: () => 0,
+      kernel_socket_table_ptr: () => 0,
+      kernel_socket_used: () => 0,
+      kernel_pipe_base: () => 0,
+      kernel_pipe_used: () => 0n,
+      kernel_net_buf_base: () => 0,
+      kernel_net_buf_used: () => 0n,
+      kernel_sig_slots_ptr: () => 0,
+      kernel_process_pending_ptr: () => 0,
+      kernel_process_runtime_state_ptr: () => 0,
+      kernel_time_state_ptr: () => 0,
+      abi_econnrefused: () => 111,
+      abi_einprogress: () => -115,
+      abi_status_ok: () => 0,
+      abi_max_fds: () => 8,
+      abi_fd_type_socket: () => 8,
+      abi_enotconn: () => -107,
+      abi_enotsock: () => -88,
+      thread_connect_fd: () => 3,
+      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+        view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
+        return 8;
+      },
+      thread_a0: () => 0n,
+      thread_status: () => 0,
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 3 ? currentOfd : 0,
+      kernel_ofd_fd_type: (ofdId: number) => ofdId === 19 || ofdId === 20 ? 8 : 0,
+      supervisor_socket_bridge_active_fd: vi.fn(() => -2),
+      thread_socket_idx_for_fd: vi.fn(() => 0),
+      thread_socket_state: vi.fn(() => 3),
+      thread_socket_recv_buf_idx: vi.fn(() => 0),
+      thread_socket_recv_available: vi.fn(() => 0),
+      thread_socket_peer_idx: vi.fn(() => -1),
+      thread_socket_mark_external_peer: vi.fn(() => 0),
+      thread_socket_force_shutdown: vi.fn(),
+      thread_socket_drain_outbound: vi.fn(() => 0),
+      thread_socket_inject_inbound: vi.fn(),
+    },
+  } as unknown as ProcessHandle;
+  const helpers = createWorkerProcessIoHelpers(createDeps());
+
+  await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
+  await helpers.commitNetworkConnect(handle, 0x2000);
+  expect(handle.networkConnections.get(3)).toBe(connection);
+
+  currentOfd = 20;
+  await expect(helpers.pumpNetworkConnections(handle, 0x2000)).resolves.toBe(true);
+
+  expect(handle.kernel.supervisor_socket_bridge_active_fd).toHaveBeenCalledWith(0x2000, 3, 19, 0);
+  expect(handle.networkConnections.has(3)).toBe(false);
+  expect(connection.close).toHaveBeenCalledTimes(1);
 });
 
 test("stale network OFD cleanup does not force-close a fd with a pending reconnect", async () => {

@@ -3962,6 +3962,149 @@ test("blocked-rpc does not resume poll hup when pselect watches no pipe slots", 
   );
 });
 
+test("blocked-rpc applies supervisor pipe defer action", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const vmPtr = 0x1234;
+  kernel.thread_status = () => kernel.abi_status_pipe_wait();
+  kernel.supervisor_blocked_pipe_resume_action_defer = () => 0;
+  kernel.supervisor_blocked_pipe_resume_action_direct = () => 1;
+  kernel.supervisor_blocked_pipe_resume_action = vi.fn(() => 0);
+
+  const handle = {
+    pid: 1,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState: makeKernelState(),
+    memory: kernel.memory,
+    workers: new Set([worker]),
+    hostBlockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      rpcPending: false,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare: {
+      members: new Set(),
+      forkSharedSyncPromise: null,
+    },
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, {});
+  const appendRuntimeLifecycleEvent = vi.fn();
+  const appendWorkerDebugLog = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[1, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent,
+    appendWorkerDebugLog,
+    enqueueWorker: vi.fn(),
+    failProcess: vi.fn(),
+    handleHostBlockedRetryResult,
+    requestPipeStateSync: vi.fn(async () => {}),
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  await expect(
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+  ).resolves.toBeUndefined();
+
+  expect(kernel.supervisor_blocked_pipe_resume_action).toHaveBeenCalledWith(vmPtr);
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(
+    handle,
+    worker,
+    vmPtr,
+    kernel.abi_status_pipe_wait(),
+  );
+  expect(appendWorkerDebugLog.mock.calls.some(([, message]) => (
+    String(message).includes("blocked-rpc-defer-pipe-supervisor")
+  ))).toBe(true);
+  expect(appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
+    1,
+    "blocked-rpc-defer-pipe-supervisor:1",
+  );
+});
+
+test("blocked-rpc applies supervisor pipe direct action before runtime pipe-sync defers", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const vmPtr = 0x1234;
+  const pipeSyncPromise = Promise.resolve();
+  let status = kernel.abi_status_pipe_wait();
+  kernel.thread_status = () => status;
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    status = kernel.abi_status_ok();
+    return 0n;
+  });
+  kernel.supervisor_blocked_pipe_resume_action_defer = () => 0;
+  kernel.supervisor_blocked_pipe_resume_action_direct = () => 1;
+  kernel.supervisor_blocked_pipe_resume_action = vi.fn(() => 1);
+
+  const handle = {
+    pid: 1,
+    runtimeId: 1,
+    vmPtr,
+    kernel,
+    kernelState: makeKernelState(),
+    memory: kernel.memory,
+    kernelWorkerRequest: {},
+    pipeSyncPromise,
+    workers: new Set([worker]),
+    hostBlockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: kernel.abi_status_pipe_wait(),
+      rpcPending: false,
+    }]]),
+    networkClosedFds: new Set(),
+    networkConnections: new Map(),
+    kernelShare: {
+      members: new Set(),
+      forkSharedSyncPromise: null,
+    },
+  } as unknown as ProcessHandle;
+  handle.kernelShare.members.add(handle);
+
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, {});
+  const appendRuntimeLifecycleEvent = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
+  const requestPipeStateSync = vi.fn(() => pipeSyncPromise);
+  const helpers = createWorkerKernelRpcBlockedRpcHelpers({
+    processHandles: new Map([[1, handle]]),
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent,
+    appendWorkerDebugLog: vi.fn(),
+    enqueueWorker: vi.fn(),
+    failProcess: vi.fn(),
+    handleHostBlockedRetryResult,
+    requestPipeStateSync,
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
+    syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
+  });
+
+  await expect(
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+  ).resolves.toBeUndefined();
+
+  expect(kernel.supervisor_blocked_pipe_resume_action).toHaveBeenCalledWith(vmPtr);
+  expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(vmPtr);
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(
+    handle,
+    worker,
+    vmPtr,
+    kernel.abi_status_ok(),
+  );
+  expect(appendRuntimeLifecycleEvent.mock.calls.some(([, event]) => (
+    String(event).includes("blocked-rpc-supervisor-pipe-resume")
+  ))).toBe(true);
+});
+
 test("blocked-rpc resumes pselect pipe HUP through blocked fd fallback", async () => {
   const kernel = makeKernel();
   const worker = {} as Worker;

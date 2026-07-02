@@ -78,7 +78,14 @@ export function forceNetworkClosedSocketSlot(handle: ProcessHandle, vmPtr: numbe
 }
 
 export function forceNetworkClosedFd(handle: ProcessHandle, vmPtr: number, fd: number): void {
-  const closeSocket = handle.kernel.thread_socket_force_shutdown ?? handle.kernel.thread_socket_close_external_peer;
+  const supervisorCloseSocket = handle.kernel.supervisor_socket_force_shutdown
+    ?? handle.kernel.supervisor_socket_close_external_peer;
+  if (supervisorCloseSocket) {
+    supervisorCloseSocket(vmPtr, fd);
+    return;
+  }
+  const closeSocket = handle.kernel.thread_socket_force_shutdown
+    ?? handle.kernel.thread_socket_close_external_peer;
   closeSocket?.(vmPtr, fd);
   forceNetworkClosedSocketSlot(handle, vmPtr, fd);
 }
