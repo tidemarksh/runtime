@@ -9,6 +9,7 @@ import type {
   ThreadWorkerOutbound,
 } from "../../../../src/messages.js";
 import { FS_RING_TOTAL_BYTES } from "../../../../src/layout/fs-ring.js";
+import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 type WorkerModule = typeof import("../../../../src/worker.js");
 
@@ -78,6 +79,10 @@ class FakeWorker {
   }
 
   emit(message: ThreadWorkerOutbound): void {
+    if (message.type === "status") {
+      const kernel = createdKernelExports[createdWorkers.indexOf(this)];
+      kernel?.setThreadExitStatus(message.exitCode, message.termSignal);
+    }
     this.onmessage?.({ data: message } as MessageEvent<ThreadWorkerOutbound>);
   }
 
@@ -103,10 +108,11 @@ const createdWorkers: FakeWorker[] = [];
 const createdKernelExports: Array<
   KernelExports & {
     recordedChildExits: Array<[number, number]>;
-    retainedOfds: number[];
-    liveThreadVmPtrs: number[];
-    fsProcessCalls: number;
-    memfsCreateCalls: Array<[number, number]>;
+	    retainedOfds: number[];
+	    liveThreadVmPtrs: number[];
+	    fsProcessCalls: number;
+	    setThreadExitStatus(exitCode: number, termSignal: number): void;
+	    memfsCreateCalls: Array<[number, number]>;
     memfsTruncateCalls: Array<[number, number]>;
     memfsSetFileExternalCalls: Array<[number, number]>;
     memfsSetFileSizeShallowCalls: Array<[number, number]>;
@@ -230,6 +236,8 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
   const memfsSetFileSizeShallowCalls: Array<[number, number]> = [];
   const memfsWriteCalls: Array<[number, number]> = [];
   const memfsCreateWithDataCalls: Array<[number, number]> = [];
+  let threadExitCode = 0;
+  let threadTermSignal = 0;
   let nextIno = 10;
   interface MockProcessIdentity {
     pid: number;
@@ -412,8 +420,8 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     },
     thread_step: () => 0,
     thread_status: () => 0,
-    thread_exit_code: () => 0,
-    thread_term_signal: () => 0,
+    thread_exit_code: () => threadExitCode,
+    thread_term_signal: () => threadTermSignal,
     thread_pc: () => 0n,
     thread_ra: () => 0n,
     thread_sp: () => 0n,
@@ -493,6 +501,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     process_record_child_exit: (pid, waitStatus) => {
       recordedChildExits.push([pid, waitStatus]);
     },
+    process_has_active_child: () => 0,
     process_current_pid: (vmPtr = 0x1234) => identityForVm(vmPtr).pid,
     process_current_ppid: (vmPtr = 0x1234) => identityForVm(vmPtr).ppid,
     process_current_pgid: (vmPtr = 0x1234) => identityForVm(vmPtr).pgid,
@@ -592,6 +601,10 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     recordedChildExits,
     retainedOfds,
     liveThreadVmPtrs,
+    setThreadExitStatus(exitCode, termSignal) {
+      threadExitCode = exitCode;
+      threadTermSignal = termSignal;
+    },
     get fsProcessCalls() {
       return fsProcessCalls;
     },
@@ -602,6 +615,11 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     memfsWriteCalls,
     memfsCreateWithDataCalls,
   };
+  Object.assign(exports, makeSupervisorAbiStubs({
+    memory,
+    cloneSpawnParentVmPtr: () => 0x1234,
+    currentExports: () => exports,
+  }));
   createdKernelExports.push(exports);
   return exports;
 }
@@ -1502,7 +1520,7 @@ test("createProcess blocks STATUS_CONNECT until socket timeout expires", async (
   expect(resumeSocketTimeout).toHaveBeenCalledWith(0x1234);
 });
 
-test("kernel-worker child exit bookkeeping tears down the child and resumes parent wait4", async () => {
+test("kernel-worker child exit bookkeeping records child exit and delegates parent wait4 resume", async () => {
   const requests: KernelWorkerRequest[] = [];
   threadCountQueue.push(1, 0);
 
@@ -1634,21 +1652,10 @@ test("kernel-worker child exit bookkeeping tears down the child and resumes pare
   vi.advanceTimersByTime(15);
   await flushMicrotasks();
 
-  expect(requests.some((msg) => msg.type === "resume-wait4" && msg.pid === 1)).toBe(false);
-  expect(resumeWait4).toHaveBeenCalledWith(0x1234);
-  expect(parentKernel.kernel_heap_ptr()).toBe(makeKernelState().heapPtr + 0x80);
-  expect(parentWorker.postedMessages).toEqual([
-    {
-      type: "step",
-      budget: 20_000,
-      kernelState: {
-        ...makeKernelState(),
-        heapPtr: makeKernelState().heapPtr + 0x80,
-        pipeUsed: 15n,
-      },
-      childExitRecords: [{ childPid: 2, waitStatus: 7 << 8, parentPid: 1 }],
-    },
-  ]);
+  expect(requests.some((msg) => msg.type === "resume-wait4" && msg.pid === 1)).toBe(true);
+  expect(resumeWait4).not.toHaveBeenCalled();
+  expect(parentKernel.kernel_heap_ptr()).toBe(makeKernelState().heapPtr + 0x100);
+  expect(parentWorker.postedMessages).toEqual([]);
   vi.useRealTimers();
 });
 

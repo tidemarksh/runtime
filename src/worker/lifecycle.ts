@@ -43,7 +43,6 @@ interface WorkerLifecycleDeps {
   ): Promise<void>;
   workerExitCompleteProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number, exitVmPtr?: number): Promise<void>;
   workerExitFailProcess(handle: ProcessHandle, error: Error): void;
-  workerExitPrepublishParentWaitStatus?(handle: ProcessHandle, exitCode: number, termSignal: number): boolean;
 }
 
 function encodeWaitStatus(exitCode: number, termSignal: number): number {
@@ -156,7 +155,6 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
         + `:${handle.kernel.debug_memory_brk_current?.() ?? "n/a"}`
         + `:${handle.kernel.debug_memory_mmap_next?.() ?? "n/a"}`,
     );
-    deps.workerExitPrepublishParentWaitStatus?.(handle, exitCode, termSignal);
     await syncOwnedStateBeforeExit(handle);
     if (kernelWorkerOwnsPipeState(handle)) {
       reconcileKernelSharePipeControl(handle);

@@ -2980,7 +2980,6 @@ function compactAptExecutionStats(
     vforkReadyWorkers: proc.vforkReadyWorkers,
     hostBlockedWorkers: proc.hostBlockedWorkers,
     activeChildren: proc.activeChildren,
-    pendingChildExitRecords: proc.pendingChildExitRecords,
     pendingChildSpawnRecords: proc.pendingChildSpawnRecords,
     runtimeBridgeDebugStage: proc.runtimeBridgeDebugStage,
     workerMessageDebugStats: proc.workerMessageDebugStats,

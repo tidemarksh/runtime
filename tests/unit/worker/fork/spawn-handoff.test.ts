@@ -222,23 +222,3 @@ test("handleExecveSpawn rejects an unknown spawn handoff kind", async () => {
   expect(plainForkMock).not.toHaveBeenCalled();
   expect(vforkExecveMock).not.toHaveBeenCalled();
 });
-
-test("handleExecveSpawn ignores a cleared handoff while a child spawn is pending", async () => {
-  plainForkMock.mockClear();
-  vforkExecveMock.mockClear();
-  const { createWorkerForkHandlers } = await loadForkHandlers();
-  const deps = makeDeps();
-  const handlers = createWorkerForkHandlers(deps);
-  const worker = {} as Worker;
-  const handle = makeHandle(0, 0);
-  handle.pendingChildSpawnRecords = 1;
-
-  await expect(handlers.handleExecveSpawn(handle, worker, makeThread())).resolves.toBeUndefined();
-
-  expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(1, "spawn-handoff:11:0:0");
-  expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(1, "spawn-handoff-stale:11:0x1234:1");
-  expect(deps.notifyForkProgress).toHaveBeenCalledWith(handle);
-  expect(deps.enqueueWorker).not.toHaveBeenCalled();
-  expect(plainForkMock).not.toHaveBeenCalled();
-  expect(vforkExecveMock).not.toHaveBeenCalled();
-});

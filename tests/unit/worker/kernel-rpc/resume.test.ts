@@ -106,7 +106,6 @@ function makeHandle(
     vforkReadyWorkers: [],
     runningWorker: null,
     hostBlockedWorkers: new Map(),
-    pendingChildExitRecords: 0,
     pendingChildSpawnRecords: 0,
     pipeSyncPromise: null,
     pipeSyncQueued: false,
@@ -617,7 +616,6 @@ test("executeHostBlockedSyscallResume queues pselect fd_set writes after owner-s
     rpcGeneration: 0,
     skipNextNetworkPump: false,
     pipeSyncedBeforePassive: false,
-    pipeEofChildExitDeferrals: 0,
   });
 
   const threadState = {
@@ -770,7 +768,6 @@ test("executeHostBlockedSyscallResume retries pselect pipe HUP owner-side after 
     rpcGeneration: 0,
     skipNextNetworkPump: false,
     pipeSyncedBeforePassive: false,
-    pipeEofChildExitDeferrals: 0,
   });
 
   const threadState = {
@@ -921,7 +918,6 @@ test("executeHostBlockedSyscallResume resumes pselect pipe HUP before generic af
     rpcGeneration: 0,
     skipNextNetworkPump: false,
     pipeSyncedBeforePassive: false,
-    pipeEofChildExitDeferrals: 0,
   });
 
   const threadState = {
@@ -1073,7 +1069,6 @@ test("executeHostBlockedSyscallResume retries mixed socket pipe pselect HUP owne
     rpcGeneration: 0,
     skipNextNetworkPump: false,
     pipeSyncedBeforePassive: false,
-    pipeEofChildExitDeferrals: 0,
   });
 
   const threadState = {
@@ -1196,7 +1191,6 @@ test("executeHostBlockedSyscallResumeOutcome returns pipe sync effect before rea
     rpcGeneration: 0,
     skipNextNetworkPump: false,
     pipeSyncedBeforePassive: false,
-    pipeEofChildExitDeferrals: 0,
   });
 
   const threadState = {
@@ -1320,7 +1314,6 @@ test("executeHostBlockedSyscallResumeOutcome returns socket sync effect without 
     rpcGeneration: 0,
     skipNextNetworkPump: false,
     pipeSyncedBeforePassive: false,
-    pipeEofChildExitDeferrals: 0,
   });
 
   const threadState = {

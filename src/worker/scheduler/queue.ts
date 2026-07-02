@@ -26,10 +26,7 @@ import {
   restoreRegularFileOffsetsForStep,
   snapshotOfdSlotsForThread,
 } from "../ownership/ofd-table.js";
-import {
-  composeHandlePipeUsed,
-  preserveHostStdioPipeControlForStep,
-} from "../ownership/pipe-control.js";
+import { preserveHostStdioPipeControlForStep } from "../ownership/pipe-control.js";
 import { snapshotSocketStateForThread } from "../ownership/socket-control.js";
 import type {
   ThreadWorkerInbound,
@@ -102,16 +99,6 @@ function readSchedulerStepBudget(): number {
   return isBrowserRuntime
     ? DEFAULT_BROWSER_SCHEDULER_STEP_BUDGET
     : DEFAULT_NODE_SCHEDULER_STEP_BUDGET;
-}
-
-function formatChildExitRecords(
-  handle: ProcessHandle,
-): Array<{ childPid: number; waitStatus: number; parentPid: number }> {
-  return [...handle.childExitSyncRecords].map(([childPid, waitStatus]) => ({
-    childPid,
-    waitStatus,
-    parentPid: handle.pid,
-  }));
 }
 
 interface WorkerSchedulerQueueDeps {
@@ -908,10 +895,6 @@ export function createWorkerSchedulerQueueHelpers(
     if (initOfdSlots !== undefined) {
       initMessage.ofdSlots = initOfdSlots;
     }
-    const initChildExitRecords = formatChildExitRecords(handle);
-    if (initChildExitRecords.length > 0) {
-      initMessage.childExitRecords = initChildExitRecords;
-    }
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
       `clone-child-init-post:${handle.pid}:vm=0x${vmPtr.toString(16)}`
@@ -1150,14 +1133,6 @@ export function createWorkerSchedulerQueueHelpers(
     );
     if (thread?.pendingPipeSlotsForNextStep?.length) {
       stepMessage.pipeSlots = thread.pendingPipeSlotsForNextStep.splice(0);
-    }
-    const stepChildExitRecords = formatChildExitRecords(handle);
-    if (stepChildExitRecords.length > 0) {
-      stepMessage.childExitRecords = stepChildExitRecords;
-      stepMessage.kernelState = {
-        ...stepMessage.kernelState,
-        pipeUsed: composeHandlePipeUsed(handle, stepMessage.kernelState.pipeUsed),
-      };
     }
     if (thread && (thread.pendingGuestMemoryWrites?.length ?? 0) > 0) {
       stepMessage.guestMemoryWrites = thread.pendingGuestMemoryWrites.splice(0);

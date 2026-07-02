@@ -223,18 +223,16 @@ test("completeProcessExit skips child-side visible drain when stdio is owned by 
   ]);
 });
 
-test("completeProcessExit does not duplicate parent pending child exit bookkeeping", async () => {
+test("completeProcessExit delegates parent child-exit publication once", async () => {
   const parent = makeHandle({
     pid: 7,
     parentPid: null,
-    pendingChildExitRecords: 0,
   }).handle;
   const { handle } = makeHandle({
     pid: 3,
     parentPid: 7,
-    pendingChildExitRecords: 0,
   });
-  const observedParentCounts: number[] = [];
+  const completedParents: number[] = [];
   const lifecycle = createWorkerLifecycleHelpers({
     appendRuntimeLifecycleEvent: () => {},
     drainProcessOutput: () => false,
@@ -249,15 +247,14 @@ test("completeProcessExit does not duplicate parent pending child exit bookkeepi
     resumeVforkParentViaKernelWorker: async () => {},
     syncForkSharedStateViaKernelWorker: async () => {},
     workerExitCompleteProcessExit: async () => {
-      observedParentCounts.push(parent.pendingChildExitRecords);
+      completedParents.push(parent.pid);
     },
     workerExitFailProcess: () => {},
   });
 
   await lifecycle.completeProcessExit(handle, 0, 0);
 
-  expect(observedParentCounts).toEqual([0]);
-  expect(parent.pendingChildExitRecords).toBe(0);
+  expect(completedParents).toEqual([7]);
 });
 
 test("completeProcessExit releases host stdio locally when no kernel-worker owns the pipe state", async () => {

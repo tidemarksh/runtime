@@ -21,12 +21,7 @@ export interface PipePollSchedulerDeps {
     worker: Worker,
     flags?: SupervisorBlockedWaitRetryFlags,
   ): void;
-  pipeChildExitRecordsAlreadyResumedForWait(
-    handle: ProcessHandle,
-    vmPtr: number,
-    pipeChildExitResumeKey?: string | null,
-  ): boolean;
-  hasActiveChildProcess(parentPid: number): boolean;
+  hasActiveChildProcess(handle: ProcessHandle): boolean;
 }
 
 export interface PipePollScheduler {
@@ -49,7 +44,6 @@ export interface PipePollScheduler {
     vmPtr: number,
     pollTimeoutMs: number,
     readyCount: number | undefined,
-    pipeChildExitResumeKey: string | null,
   ): boolean;
   pipeWaitShouldParkBehindActiveChild(
     handle: ProcessHandle,
@@ -161,7 +155,6 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
     vmPtr: number,
     pollTimeoutMs: number,
     readyCount: number | undefined,
-    pipeChildExitResumeKey: string | null,
   ): boolean {
     const syscall = blockedOrCurrentSyscallNr(handle, vmPtr);
     if (syscall === null) {
@@ -194,25 +187,12 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
       && (pollPipeSlots?.size ?? 0) > 0
       && !blockedPollPipeIsReady
       && pollPipeWriteOpenForThreadStep(handle, vmPtr) <= 0;
-    const childExitRecordsAlreadyResumed = deps.pipeChildExitRecordsAlreadyResumedForWait(
-      handle,
-      vmPtr,
-      pipeChildExitResumeKey,
-    );
-    const childWorkStillPending = handle.pendingChildExitRecords > 0
-      || handle.pendingChildSpawnRecords > 0
-      || deps.hasActiveChildProcess(handle.pid);
-    const childWakeRecordPending = (
-      handle.childExitSyncRecords.size > 0
-      && !childExitRecordsAlreadyResumed
-    )
-      || handle.pendingChildExitRecords > 0
-      || handle.pendingChildSpawnRecords > 0;
+    const childWorkStillPending = deps.hasActiveChildProcess(handle);
     return status === handle.kernel.abi_status_pipe_wait()
       && canPark
       && (
-        (childExitRecordsAlreadyResumed && childWorkStillPending)
-        || (pollLikeHasNoWatchedFds && !childWakeRecordPending)
+        childWorkStillPending
+        || pollLikeHasNoWatchedFds
       )
       && !blockedReadIsReady
       && !blockedPollPipeIsReady
@@ -314,11 +294,8 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
   ): boolean {
     return blocked.status === handle.kernel.abi_status_pipe_wait()
       && pollTimeoutMs < 0
-      && deps.pipeChildExitRecordsAlreadyResumedForWait(handle, blocked.vmPtr)
-      && handle.pendingChildExitRecords === 0
-      && handle.pendingChildSpawnRecords === 0
       && handle.kernel.thread_poll_wait_has_socket?.(blocked.vmPtr) !== 1
-      && deps.hasActiveChildProcess(handle.pid)
+      && deps.hasActiveChildProcess(handle)
       && !pipeWaitHasImmediateWakeReason(handle, blocked.vmPtr, readyCount);
   }
 

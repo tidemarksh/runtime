@@ -316,7 +316,6 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
           ofdSlots: msg.ofdSlots,
           fdEntries: msg.fdEntries,
           socketState: msg.socketState,
-          childExitRecords: msg.childExitRecords,
           pipeSlots: msg.pipeSlots,
           guestMemoryWrites: msg.guestMemoryWrites,
           guestWriteWatchRegions: msg.guestWriteWatchRegions,
@@ -339,7 +338,6 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
           ofdSlots: msg.ofdSlots,
           fdEntries: msg.fdEntries,
           socketState: msg.socketState,
-          childExitRecords: msg.childExitRecords,
           pipeSlots: msg.pipeSlots,
         });
         acquireSharedMemoryForStep(kernelExports.memory.buffer);

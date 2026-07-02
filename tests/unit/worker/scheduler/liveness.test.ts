@@ -180,6 +180,7 @@ function makeKernel() {
       process_thread_state: () => 0,
       process_thread_vm_ptr: (_processVmPtr: number, slot: number) => slot === 0 ? 0x1234 : 0,
       process_record_child_exit_for_parent: vi.fn(),
+      process_has_active_child: () => 0,
       abi_max_fds: () => 64,
       abi_max_pipes: () => 64,
       abi_fd_type_pipe: () => 2,
@@ -635,9 +636,7 @@ function makeHandle(
     vforkReadyWorkers: [],
     runningWorker: null,
     hostBlockedWorkers: new Map(),
-    pendingChildExitRecords: 0,
     pendingChildSpawnRecords: 1,
-    childExitSyncRecords: new Map(),
     pipeSyncPromise: null,
     pipeSyncQueued: false,
     pipeWaiterWakeQueued: false,
@@ -758,7 +757,6 @@ test("ok status defers re-enqueue while a blocked epoll retry rpc is pending", a
     rpcGeneration: 0,
     skipNextNetworkPump: false,
     pipeSyncedBeforePassive: true,
-    pipeEofChildExitDeferrals: 0,
   });
   const enqueueWorker = vi.fn();
   const notifyWorkerStatusProgress = vi.fn(() => {
@@ -1074,7 +1072,7 @@ test("pumpProcess keeps a fresh owner-async worker parked", () => {
   expect(worker.postMessage).not.toHaveBeenCalled();
 });
 
-test("wait4 retry stays blocked while child spawn is still in flight", async () => {
+test("wait4 retry does not gate on local child spawn bookkeeping", async () => {
   const worker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -1109,25 +1107,18 @@ test("wait4 retry stays blocked while child spawn is still in flight", async () 
   });
 
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_wait4(), 0x1234);
-  expect(retryReason).toHaveBeenCalledWith(
+  expect(retryReason).not.toHaveBeenCalledWith(
     0x1234,
     kernel.supervisor_blocked_wait_retry_flag_process_gate(),
   );
-  await vi.advanceTimersByTimeAsync(11);
-  expect(threadResumeWait4).not.toHaveBeenCalled();
-
-  handle.pendingChildSpawnRecords = 0;
-  const epochBeforeKick = readPublishedRuntimeBridgeEpoch(handle.runtimeBridge);
-  scheduler.notifySchedulerProgress(handle);
   expect(threadResumeWait4).toHaveBeenCalledWith(0x1234);
   expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
     type: "step",
     budget: expect.any(Number),
   }));
-  expect(readPublishedRuntimeBridgeEpoch(handle.runtimeBridge)).toBeGreaterThan(epochBeforeKick);
 });
 
-test("wait4 retry stays blocked while a child remains active even with kernel-worker support", async () => {
+test("wait4 retry delegates to kernel worker when kernel-worker support is available", async () => {
   const worker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -1143,7 +1134,7 @@ test("wait4 retry stays blocked while a child remains active even with kernel-wo
     kernelState: handle.kernelState,
   }));
 
-  const resumeWait4ViaKernelWorker = vi.fn(async () => {});
+  const resumeWait4ViaKernelWorker = vi.fn(async () => ({ kind: "blocked" as const, status: kernel.abi_status_wait4() }));
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
     threadWorkerStates,
@@ -1158,7 +1149,7 @@ test("wait4 retry stays blocked while a child remains active even with kernel-wo
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_wait4(), 0x1234);
   await vi.advanceTimersByTimeAsync(11);
 
-  expect(resumeWait4ViaKernelWorker).not.toHaveBeenCalled();
+  expect(resumeWait4ViaKernelWorker).toHaveBeenCalledWith(handle, worker, 0x1234);
   expect(threadResumeWait4).not.toHaveBeenCalled();
   expect(handle.hostBlockedWorkers.has(worker)).toBe(true);
 });
@@ -1611,7 +1602,7 @@ test("finite pipe poll with active children completes through supervisor timer",
   expect(kernel.supervisor_complete_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
 });
 
-test("pipe pselect retry applies child exit records before passive parking", async () => {
+test("pipe pselect retry parks behind a supervisor-owned active child", async () => {
   const worker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -1627,10 +1618,9 @@ test("pipe pselect retry applies child exit records before passive parking", asy
   kernel.thread_poll_wait_has_socket = () => 0;
   kernel.thread_pipe_read_eof_sync_pending = () => 0;
   kernel.thread_poll_hup_sync_pending = () => 0;
-  kernel.process_record_child_exit_for_parent = vi.fn();
+  kernel.process_has_active_child = () => 1;
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   handle.pendingChildSpawnRecords = 0;
-  handle.childExitSyncRecords.set(7, 0);
   handle.kernelWorkerRequest = vi.fn(async () => {
     throw new Error("scheduler retry should delegate blocked resume through outcome helper");
   });
@@ -1658,17 +1648,9 @@ test("pipe pselect retry applies child exit records before passive parking", asy
   scheduler.notifySchedulerProgress(handle);
   await Promise.resolve();
 
-  expect(lifecycleEvents).toContain("pipe-retry-apply-child-records:1:7/0");
-  expect(lifecycleEvents).toContain("wait4-apply-records:1:7/0");
-  expect(lifecycleEvents.some((event) => event.startsWith("pipe-retry-skip:1:active-child"))).toBe(false);
-  expect(kernel.process_record_child_exit_for_parent).toHaveBeenCalledWith(1, 7, 0);
-  expect(executeHostBlockedSyscallResumeOutcome).toHaveBeenCalledWith(
-    handle,
-    worker,
-    0x1234,
-    handle.kernel.abi_status_pipe_wait(),
-  );
-  expect(handle.hostBlockedWorkers.get(worker)?.pipeChildExitResumeKey).toContain("7/0:sys=72");
+  expect(lifecycleEvents.some((event) => event.startsWith("pipe-retry-skip:1:active-child"))).toBe(true);
+  expect(executeHostBlockedSyscallResumeOutcome).not.toHaveBeenCalled();
+  expect(handle.hostBlockedWorkers.has(worker)).toBe(true);
 });
 
 test("pipe pselect retry resumes after pipe sync when no writer remains", async () => {
@@ -2512,7 +2494,7 @@ test("idle ok worker resumes after a fork-shared sync gate settles", async () =>
   }));
 });
 
-test("wait4 retry consumes a local child exit record while fork-shared sync is pending", async () => {
+test("wait4 retry stays blocked while fork-shared sync is pending", async () => {
   const worker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -2526,10 +2508,8 @@ test("wait4 retry consumes a local child exit record while fork-shared sync is p
     status = kernel.abi_status_ok();
     return 7n;
   });
-  kernel.process_record_child_exit_for_parent = vi.fn();
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   handle.pendingChildSpawnRecords = 0;
-  handle.childExitSyncRecords.set(7, 0);
   const forkSharedSync = new Promise<void>(() => {});
   handle.forkSharedSyncPromise = forkSharedSync;
   handle.kernelShare.forkSharedSyncPromise = forkSharedSync;
@@ -2551,15 +2531,12 @@ test("wait4 retry consumes a local child exit record while fork-shared sync is p
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_wait4(), 0x1234);
   await vi.advanceTimersByTimeAsync(11);
 
-  expect(lifecycleEvents).not.toContain("wait4-retry-skip:1:fork-shared-sync");
-  expect(kernel.process_record_child_exit_for_parent).toHaveBeenCalledWith(1, 7, 0);
-  expect(threadResumeWait4).toHaveBeenCalledWith(0x1234);
-  expect(handle.childExitSyncRecords.has(7)).toBe(false);
-  expect(handle.hostBlockedWorkers.has(worker)).toBe(false);
-  expectTestSupervisorProcessResumeSelects(handle, 0x1234);
+  expect(lifecycleEvents.some((event) => event.startsWith("wait4-retry-skip:1:fork-shared-sync"))).toBe(true);
+  expect(threadResumeWait4).not.toHaveBeenCalled();
+  expect(handle.hostBlockedWorkers.has(worker)).toBe(true);
 });
 
-test("wait4 retry reapplies a pending local child exit record until it is reaped", async () => {
+test("wait4 retry re-enters supervisor direct resume until wait4 is reaped", async () => {
   const worker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -2571,10 +2548,8 @@ test("wait4 retry reapplies a pending local child exit record until it is reaped
     threadResumeWait4(vmPtr);
     return 0n;
   });
-  kernel.process_record_child_exit_for_parent = vi.fn();
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   handle.pendingChildSpawnRecords = 0;
-  handle.childExitSyncRecords.set(7, 0);
   const lifecycleEvents: string[] = [];
 
   const scheduler = createWorkerScheduler({
@@ -2594,12 +2569,9 @@ test("wait4 retry reapplies a pending local child exit record until it is reaped
   await vi.advanceTimersByTimeAsync(11);
   await vi.advanceTimersByTimeAsync(11);
 
-  expect(kernel.process_record_child_exit_for_parent.mock.calls.length).toBeGreaterThanOrEqual(2);
-  expect(kernel.process_record_child_exit_for_parent).toHaveBeenNthCalledWith(1, 1, 7, 0);
-  expect(kernel.process_record_child_exit_for_parent).toHaveBeenNthCalledWith(2, 1, 7, 0);
   expect(threadResumeWait4.mock.calls.length).toBeGreaterThanOrEqual(2);
-  expect(handle.childExitSyncRecords.has(7)).toBe(true);
-  expect(lifecycleEvents.filter((event) => event === "wait4-apply-records:1:7/0").length).toBeGreaterThanOrEqual(2);
+  expect(lifecycleEvents.filter((event) => event.startsWith("wait4-retry-local:1:0x1234:records=supervisor")).length)
+    .toBeGreaterThanOrEqual(2);
 });
 
 test("epoll timerfd wait advances guest time to deadline before retrying epoll", async () => {
@@ -3032,7 +3004,7 @@ test("epoll kernel-worker retry syncs watched pipe, epoll table, then dependent 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
 });
 
-test("wait4 retry with a local child exit record wakes the running worker before rescheduling", async () => {
+test("wait4 retry stays blocked behind a running worker before rescheduling", async () => {
   const blockedWorker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -3048,7 +3020,6 @@ test("wait4 retry with a local child exit record wakes the running worker before
     : kernel.abi_status_ok();
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
   handle.pendingChildSpawnRecords = 0;
-  handle.childExitSyncRecords.set(7, 0);
   handle.workers.add(runningWorker);
   handle.runningWorker = runningWorker;
   const notify = new Int32Array(handle.runtimeBridge.notifySab);
@@ -3069,7 +3040,7 @@ test("wait4 retry with a local child exit record wakes the running worker before
   await vi.advanceTimersByTimeAsync(11);
 
   expect(threadResumeWait4).not.toHaveBeenCalled();
-  expect(Atomics.load(notify, 0)).toBeGreaterThan(notifyBefore);
+  expect(Atomics.load(notify, 0)).toBe(notifyBefore);
   expect(handle.hostBlockedWorkers.has(blockedWorker)).toBe(true);
 });
 
@@ -3245,7 +3216,6 @@ test("pumpProcess runs ordinary OK ready workers under blocked I/O pressure", ()
     rpcGeneration: 0,
     skipNextNetworkPump: false,
     pipeSyncedBeforePassive: true,
-    pipeEofChildExitDeferrals: 0,
   });
 
   const scheduler = createWorkerScheduler({
@@ -3296,7 +3266,6 @@ test("pumpProcess runs clone-spawn ready workers under blocked I/O pressure", ()
     rpcGeneration: 0,
     skipNextNetworkPump: false,
     pipeSyncedBeforePassive: true,
-    pipeEofChildExitDeferrals: 0,
   });
 
   const scheduler = createWorkerScheduler({
@@ -3346,7 +3315,6 @@ test("pumpProcess runs ordinary OK ready workers while blocked I/O retry timer w
     rpcGeneration: 0,
     skipNextNetworkPump: false,
     pipeSyncedBeforePassive: true,
-    pipeEofChildExitDeferrals: 0,
   });
 
   const scheduler = createWorkerScheduler({
@@ -3608,7 +3576,6 @@ test("pumpProcess runs an OK ready worker after an immediate epoll retry attempt
     rpcGeneration: 0,
     skipNextNetworkPump: false,
     pipeSyncedBeforePassive: true,
-    pipeEofChildExitDeferrals: 0,
   });
 
   const scheduler = createWorkerScheduler({
@@ -3855,7 +3822,6 @@ test("epoll retry keeps unanswered futex running worker when last trace points e
     rpcGeneration: 0,
     skipNextNetworkPump: false,
     pipeSyncedBeforePassive: true,
-    pipeEofChildExitDeferrals: 0,
   });
   const scheduler = createRunLoopScheduler({
     threadWorkerStates,
@@ -3905,7 +3871,6 @@ test("epoll retry keeps unanswered futex running worker with a blocked record", 
     rpcGeneration: 0,
     skipNextNetworkPump: false,
     pipeSyncedBeforePassive: true,
-    pipeEofChildExitDeferrals: 0,
   });
   const scheduler = createRunLoopScheduler({
     threadWorkerStates,
@@ -3953,7 +3918,6 @@ test("epoll retry keeps active unanswered ok running worker", () => {
     rpcGeneration: 0,
     skipNextNetworkPump: false,
     pipeSyncedBeforePassive: true,
-    pipeEofChildExitDeferrals: 0,
   });
   const scheduler = createRunLoopScheduler({
     threadWorkerStates,
@@ -4802,7 +4766,6 @@ test("pumpProcess leaves a quiescent stack-local futex waiter parked with a bloc
     rpcGeneration: 0,
     skipNextNetworkPump: false,
     pipeSyncedBeforePassive: true,
-    pipeEofChildExitDeferrals: 0,
   });
 
   const scheduler = createWorkerScheduler({
@@ -4865,7 +4828,6 @@ test("pumpProcess leaves a quiescent worker-local futex waiter parked until its 
     rpcGeneration: 0,
     skipNextNetworkPump: false,
     pipeSyncedBeforePassive: true,
-    pipeEofChildExitDeferrals: 0,
   });
 
   const scheduler = createWorkerScheduler({
@@ -4909,8 +4871,6 @@ test("blockWorker parks futex wait as supervisor-owned worker state", () => {
     rpcGeneration: 0,
     skipNextNetworkPump: false,
     pipeSyncedBeforePassive: false,
-    pipeChildExitResumeKey: null,
-    pipeEofChildExitDeferrals: 0,
   });
 
   const scheduler = createWorkerScheduler({
@@ -4962,8 +4922,6 @@ test("blocked completion parks futex result as supervisor-owned worker state", a
     rpcGeneration: 0,
     skipNextNetworkPump: false,
     pipeSyncedBeforePassive: true,
-    pipeChildExitResumeKey: null,
-    pipeEofChildExitDeferrals: 0,
   });
 
   const scheduler = createWorkerScheduler({
@@ -5056,8 +5014,6 @@ test("blocked completion arms supervisor timer instead of scheduling runtime ret
     rpcGeneration: 0,
     skipNextNetworkPump: false,
     pipeSyncedBeforePassive: true,
-    pipeChildExitResumeKey: null,
-    pipeEofChildExitDeferrals: 0,
   });
   const runtimeEvents: string[] = [];
   const executeHostBlockedSyscallResumeOutcome = vi.fn(async () => {
@@ -5150,8 +5106,6 @@ test("blocked wait retry arms supervisor timer before runtime poll retry", () =>
     rpcGeneration: 0,
     skipNextNetworkPump: false,
     pipeSyncedBeforePassive: false,
-    pipeChildExitResumeKey: null,
-    pipeEofChildExitDeferrals: 0,
   });
   const runtimeEvents: string[] = [];
 
@@ -5352,8 +5306,6 @@ test("supervisor timer completion resumes the supervisor-selected runnable worke
     rpcGeneration: 0,
     skipNextNetworkPump: false,
     pipeSyncedBeforePassive: false,
-    pipeChildExitResumeKey: null,
-    pipeEofChildExitDeferrals: 0,
   });
 
   const scheduler = createWorkerScheduler({

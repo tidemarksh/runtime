@@ -175,7 +175,6 @@ function makeHandle(worker: Worker) {
     workerDebugLog: [],
     lastDebugMessage: undefined,
     pendingChildSpawnRecords: 0,
-    pendingChildExitRecords: 0,
     vforkSnapshot: null,
     vforkWorker: null,
     runningWorker: null,

@@ -113,7 +113,6 @@ export type ThreadWorkerInbound =
       fdEntries?: KernelWorkerFdEntrySnapshot[];
       ofdSlots?: KernelWorkerOfdSlotSnapshot[];
       guestMemoryWrites?: GuestMemoryWriteSnapshot[];
-      childExitRecords?: Array<{ childPid: number; waitStatus: number; parentPid?: number }>;
       sabPageCache: SharedArrayBuffer | null;
       runtimeNotify: SharedArrayBuffer;
       runtimeState: SharedArrayBuffer;
@@ -128,7 +127,6 @@ export type ThreadWorkerInbound =
       ofdSlots?: KernelWorkerOfdSlotSnapshot[];
       guestMemoryWrites?: GuestMemoryWriteSnapshot[];
       resumeBlockedSyscall?: boolean;
-      childExitRecords?: Array<{ childPid: number; waitStatus: number; parentPid?: number }>;
     };
 
 // ============================================================================

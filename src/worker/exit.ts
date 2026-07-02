@@ -39,7 +39,6 @@ interface WorkerExitDeps {
 export function createWorkerExitHelpers(deps: WorkerExitDeps) {
   const unregisteredKernelWorkerHandles = new WeakSet<ProcessHandle>();
   const exitCompletionPromises = new WeakMap<ProcessHandle, Promise<void>>();
-  const parentWaitStatusPrepublishedHandles = new WeakSet<ProcessHandle>();
 
   function debugGuestByteAddresses(): bigint[] {
     const raw = (globalThis as { process?: { env?: Record<string, string | undefined> } })
@@ -560,12 +559,6 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       ].join(":"));
     }
     return entries.join(",");
-  }
-
-  function formatChildExitSyncRecords(handle: ProcessHandle): string {
-    return [...handle.childExitSyncRecords]
-      .map(([childPid, waitStatus]) => `${childPid}/${waitStatus}`)
-      .join(".") || "none";
   }
 
   function boundedChildDebugMessage(handle: ProcessHandle, limit = 8192): string {
@@ -1531,79 +1524,6 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     }
   }
 
-  function parentHasBlockedWait4(parent: ProcessHandle): boolean {
-    for (const blocked of parent.hostBlockedWorkers.values()) {
-      if (blocked.status === parent.kernel.abi_status_wait4()) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  function parentHasBlockedPipeWait(parent: ProcessHandle): boolean {
-    for (const blocked of parent.hostBlockedWorkers.values()) {
-      if (blocked.status === parent.kernel.abi_status_pipe_wait()) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  function prepublishParentWaitStatus(
-    handle: ProcessHandle,
-    exitCode: number,
-    termSignal: number,
-  ): boolean {
-    if (handle.parentPid === null || handle.pid <= 0) {
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `exit-parent-early-prepublish-skip:${handle.pid}:parent=${handle.parentPid ?? 0}`,
-      );
-      return false;
-    }
-    const parent = deps.processHandles.get(handle.parentPid);
-    if (!parent) {
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `exit-parent-early-prepublish-skip:${handle.pid}:parent=${handle.parentPid}`,
-      );
-      return false;
-    }
-    if (handle.processMemfsDirty || handle.processMemfsPublishPending) {
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `exit-parent-early-prepublish-skip:${handle.pid}:parent=${parent.pid}:dirty-memfs=1:publish-pending=${handle.processMemfsPublishPending ? 1 : 0}`,
-      );
-      return false;
-    }
-    if (parentWaitStatusPrepublishedHandles.has(handle)) {
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `exit-parent-early-prepublish-existing:${parent.pid}:${handle.pid}:pending=${parent.pendingChildExitRecords}:records=${formatChildExitSyncRecords(parent)}`,
-      );
-      return true;
-    }
-    deps.appendRuntimeLifecycleEvent(
-      handle.runtimeId,
-      `exit-parent-early-prepublish-start:${parent.pid}:${handle.pid}:pending=${parent.pendingChildExitRecords}:records=${formatChildExitSyncRecords(parent)}`,
-    );
-    if (!parent.childExitSyncRecords.has(handle.pid)) {
-      parent.pendingChildExitRecords += 1;
-      parent.childExitSyncRecords.set(handle.pid, encodeWaitStatus(exitCode, termSignal));
-      if (parent.pendingChildExitRecords > 0) {
-        parent.pendingChildExitRecords -= 1;
-      }
-    }
-    parentWaitStatusPrepublishedHandles.add(handle);
-    deps.appendRuntimeLifecycleEvent(
-      handle.runtimeId,
-      `exit-parent-early-prepublish-done:${parent.pid}:${handle.pid}:pending=${parent.pendingChildExitRecords}:records=${formatChildExitSyncRecords(parent)}`,
-    );
-    invalidateBlockedParentRpcsForChildExit(parent, handle.pid);
-    deps.notifyProcessExitProgress(parent);
-    return true;
-  }
-
   function fdPipeSlot(handle: ProcessHandle, fd: number): number {
     const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
     if (
@@ -1875,9 +1795,6 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
 
     const hasInheritedParentOutput = usesInheritedParentOutput(handle, parent);
     if (!hasInheritedParentOutput && handle.kernelWorkerRequest && handle.pid > 0) {
-      if (parentHasBlockedWait4(parent) || parentHasBlockedPipeWait(parent)) {
-        prepublishParentWaitStatus(handle, exitCode, termSignal);
-      }
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-pipe-sync-before-child-exit-start:${parent.pid}:${handle.pid}`);
       await deps.requestPipeStateSync(parent, true);
       deps.drainProcessOutput(parent);
@@ -1934,32 +1851,11 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     ].join(" ");
 
     const waitStatus = encodeWaitStatus(exitCode, termSignal);
-    if (!parentWaitStatusPrepublishedHandles.has(handle) && parentHasBlockedWait4(parent)) {
-      prepublishParentWaitStatus(handle, exitCode, termSignal);
-    }
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-record-start:${parent.pid}:${handle.pid}`);
-    const recordPromise = deps.recordChildExitViaKernelWorker(parent, handle.pid, waitStatus);
-    if (parentWaitStatusPrepublishedHandles.has(handle)) {
-      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-record-deferred:${parent.pid}:${handle.pid}`);
-      void recordPromise
-        .then(async () => {
-          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-record-done:${parent.pid}:${handle.pid}`);
-          if (!hasInheritedParentOutput) {
-            await settleVisibleProcessOutput(parent, deps.requestPipeStateSync);
-          }
-        })
-        .catch((error) => {
-          const failure = error instanceof Error ? error : new Error(String(error));
-          deps.appendRuntimeLifecycleEvent(
-            handle.runtimeId,
-            `parent-record-error:${parent.pid}:${handle.pid}:${JSON.stringify(failure.message)}`,
-          );
-          failProcess(parent, failure);
-        });
-      return waitStatus;
-    }
-    await recordPromise;
+    await deps.recordChildExitViaKernelWorker(parent, handle.pid, waitStatus);
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-record-done:${parent.pid}:${handle.pid}`);
+    invalidateBlockedParentRpcsForChildExit(parent, handle.pid);
+    deps.notifyProcessExitProgress(parent);
     if (!hasInheritedParentOutput) {
       await settleVisibleProcessOutput(parent, deps.requestPipeStateSync);
     }
@@ -2116,22 +2012,8 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       handle.runtimeId,
       `exit-output-branch:${handle.pid}:parent=${parent?.pid ?? 0}:owner=${handle.stdioOwner?.pid ?? 0}`,
     );
-    let parentWaitStatusPublished = false;
     if (parent) {
-      if (parentWaitStatusPrepublishedHandles.has(handle)) {
-        parentWaitStatusPublished = true;
-        deps.appendRuntimeLifecycleEvent(
-          handle.runtimeId,
-          `exit-parent-prepublish-already-published:${parent.pid}:${handle.pid}:pending=${parent.pendingChildExitRecords}:records=${formatChildExitSyncRecords(parent)}`,
-        );
-      } else if (handle.pid > 0 && parent.childExitSyncRecords.has(handle.pid)) {
-        parentWaitStatusPrepublishedHandles.add(handle);
-        parentWaitStatusPublished = true;
-        deps.appendRuntimeLifecycleEvent(
-          handle.runtimeId,
-          `exit-parent-prepublish-existing:${parent.pid}:${handle.pid}:pending=${parent.pendingChildExitRecords}:records=${formatChildExitSyncRecords(parent)}`,
-        );
-      } else if (handle.processMemfsDirty || handle.processMemfsPublishPending) {
+      if (handle.processMemfsDirty || handle.processMemfsPublishPending) {
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `exit-parent-prepublish-skip:${parent.pid}:${handle.pid}:dirty-memfs=1:publish-pending=${handle.processMemfsPublishPending ? 1 : 0}`,
@@ -2158,17 +2040,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
 
     try {
       parentWaitStatus = await recordExitOnParent(handle, exitCode, termSignal);
-      const parentWaitStatusPublishedAfterRecord = parentWaitStatusPublished
-        || parentWaitStatusPrepublishedHandles.has(handle);
-      if (parent && parentWaitStatus !== null && !parentWaitStatusPublishedAfterRecord) {
-        parent.childExitSyncRecords.set(handle.pid, parentWaitStatus);
-        if (parent.pendingChildExitRecords > 0) {
-          parent.pendingChildExitRecords -= 1;
-        }
-        invalidateBlockedParentRpcsForChildExit(parent, handle.pid);
-        parentWaitStatus = null;
-        deps.notifyProcessExitProgress(parent);
-      } else if (parentWaitStatusPublishedAfterRecord) {
+      if (parent && parentWaitStatus !== null) {
         parentWaitStatus = null;
       }
       if (parent === null && handle.stdioOwner === null) {
@@ -2238,11 +2110,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     } finally {
       if (parent) {
         if (parentWaitStatus !== null) {
-          parent.childExitSyncRecords.set(handle.pid, parentWaitStatus);
           invalidateBlockedParentRpcsForChildExit(parent, handle.pid);
-        }
-        if (parent.pendingChildExitRecords > 0) {
-          parent.pendingChildExitRecords -= 1;
         }
         deps.notifyProcessExitProgress(parent);
       }
@@ -2266,7 +2134,6 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
   return {
     completeProcessExit,
     failProcess,
-    prepublishParentWaitStatus,
     recordExitOnParent,
   };
 }

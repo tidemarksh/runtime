@@ -118,7 +118,6 @@ export interface ProcessExecutionStats {
   guestBase: number;
   vforkReadyWorkers: number;
   hostBlockedWorkers: number;
-  pendingChildExitRecords: number;
   pendingChildSpawnRecords: number;
   activeChildren: number;
   runtimeBridgeDebugStage: { stage: number; value: number };
@@ -908,7 +907,6 @@ export function debugRuntimeExecutionStats(
         guestBase: handle.guestBase,
         vforkReadyWorkers: handle.vforkReadyWorkers.length,
         hostBlockedWorkers: handle.hostBlockedWorkers.size,
-        pendingChildExitRecords: handle.pendingChildExitRecords,
         pendingChildSpawnRecords: handle.pendingChildSpawnRecords,
         activeChildren: [...processHandles.values()].filter((candidate) => candidate.parentPid === handle.pid).length,
         runtimeBridgeDebugStage: readRuntimeBridgeDebugStage(handle.runtimeBridge),

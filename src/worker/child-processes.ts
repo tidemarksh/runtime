@@ -37,19 +37,6 @@ function hasRunnableWorker(
   return false;
 }
 
-function childProcessCountsAsActive(
-  handle: ProcessHandle,
-  threadWorkerStates?: WeakMap<Worker, ThreadWorkerState>,
-): boolean {
-  if (handle.exitInProgress) {
-    return handle.processMemfsDirty || handle.processMemfsPublishPending;
-  }
-  if (threadWorkerStates === undefined) {
-    return true;
-  }
-  return hasRunnableWorker(handle, threadWorkerStates);
-}
-
 function childProcessCanBePumped(
   handle: ProcessHandle,
   threadWorkerStates?: WeakMap<Worker, ThreadWorkerState>,
@@ -61,22 +48,6 @@ function childProcessCanBePumped(
     return true;
   }
   return hasRunnableWorker(handle, threadWorkerStates);
-}
-
-export function hasActiveChildProcess(
-  processHandles: ReadonlyMap<number, ProcessHandle>,
-  parentPid: number,
-  threadWorkerStates?: WeakMap<Worker, ThreadWorkerState>,
-): boolean {
-  for (const candidate of processHandles.values()) {
-    if (candidate.parentPid !== parentPid) {
-      continue;
-    }
-    if (childProcessCountsAsActive(candidate, threadWorkerStates)) {
-      return true;
-    }
-  }
-  return false;
 }
 
 export function pumpActiveChildProcesses(

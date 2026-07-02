@@ -568,6 +568,7 @@ export interface KernelExports {
   process_thread_vm_ptr(vm_ptr: number, slot: number): number;
   process_record_child_exit(pid: number, wait_status: number): void;
   process_record_child_exit_for_parent?(parent_pid: number, pid: number, wait_status: number): void;
+  process_has_active_child?(parent_pid: number): number;
   process_current_pid(vm_ptr: number): number;
   process_current_ppid(vm_ptr: number): number;
   process_current_pgid(vm_ptr: number): number;

@@ -55,19 +55,6 @@ export function createWorkerForkHandlers(deps: WorkerForkDeps) {
       return;
     }
 
-    if (handoff.kind === 0 && handoff.childPid === 0 && handle.pendingChildSpawnRecords > 0) {
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `spawn-handoff-stale:${handle.pid}:0x${thread.vmPtr.toString(16)}:${handle.pendingChildSpawnRecords}`,
-      );
-      deps.appendWorkerDebugLog(
-        handle,
-        `execve-spawn-stale:vm=0x${thread.vmPtr.toString(16)}:pending=${handle.pendingChildSpawnRecords}`,
-      );
-      deps.notifyForkProgress(handle);
-      return;
-    }
-
     completeHostOp(false, 2);
     throw new Error(
       `unexpected spawn handoff kind pid=${handle.pid} vm=0x${thread.vmPtr.toString(16)}`

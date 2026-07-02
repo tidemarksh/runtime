@@ -1278,8 +1278,7 @@ async function executeHostBlockedSyscallResume(
               && handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) === 1
               && (handle.kernel.thread_blocked_pipe_buffered_len?.(vmPtr) ?? 0) === 0
               && (handle.kernel.thread_blocked_pipe_write_open?.(vmPtr) ?? 0) <= 0
-              && !activeChildMayHoldBlockedPipeWriter(deps, handle, vmPtr)
-              && handle.pendingChildExitRecords <= 0;
+              && !activeChildMayHoldBlockedPipeWriter(deps, handle, vmPtr);
             if (selfPipeSyncWasAlreadyInFlight && !pendingPipeDataIsReady && !pendingPipeEofIsReady) {
               deps.appendRuntimeLifecycleEvent(
                 handle.runtimeId,
@@ -1458,13 +1457,6 @@ async function executeHostBlockedSyscallResume(
           emitBlockedRpcRetryResult(blockedStatus);
           return;
         }
-        if (handle.pendingChildExitRecords > 0) {
-          preserveCanonicalEofReadyForDeferredRetry();
-          finishBlockedRpc();
-          deps.appendWorkerDebugLog(handle, `blocked-rpc-defer-pipe-eof-child-exit:0x${vmPtr.toString(16)}`);
-          emitBlockedRpcRetryResult(blockedStatus);
-          return;
-        }
       }
     }
     const blockedPipeReadReady = handle.kernel.thread_blocked_pipe_read_ready?.(vmPtr);
@@ -1538,8 +1530,7 @@ async function executeHostBlockedSyscallResume(
     const blockedPipeHasVisibleWriter = blockedPipeSlot !== null
       && pipeSlotHasVisibleWriter(handle, vmPtr, blockedPipeSlot);
     const activeChildMayHoldCanonicalPipeWriter = activeChildMayHoldBlockedPipeWriter(deps, handle, vmPtr);
-    const pipeEofMayStillReceiveWriter = activeChildMayHoldCanonicalPipeWriter
-      || handle.pendingChildExitRecords > 0;
+    const pipeEofMayStillReceiveWriter = activeChildMayHoldCanonicalPipeWriter;
     const readPipeCanonicalEofCandidate = blockedStatus === handle.kernel.abi_status_pipe_wait()
       && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) !== 1
       && !isPollLikePipeWait(handle, vmPtr)
@@ -1582,7 +1573,7 @@ async function executeHostBlockedSyscallResume(
         `eofPending=${handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) ?? "n/a"}`,
         `hupPending=${handle.kernel.thread_poll_hup_sync_pending?.(vmPtr) ?? "n/a"}`,
         `activeChild=${activeChildMayHoldCanonicalPipeWriter ? 1 : 0}`,
-        `pendingChildExit=${handle.pendingChildExitRecords}`,
+        "pendingChildExit=supervisor",
       ].join(":");
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);
       deps.appendWorkerDebugLog(handle, event);
@@ -1626,7 +1617,7 @@ async function executeHostBlockedSyscallResume(
           `ofd=${handle.kernel.thread_blocked_ofd_id?.(vmPtr) ?? "n/a"}`,
           `eofPending=${handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) ?? "n/a"}`,
           `activeChild=${activeChildMayHoldCanonicalPipeWriter ? 1 : 0}`,
-          `pendingChildExit=${handle.pendingChildExitRecords}`,
+          "pendingChildExit=supervisor",
         ].join(":");
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);
         deps.appendWorkerDebugLog(handle, event);
@@ -1806,7 +1797,7 @@ async function executeHostBlockedSyscallResume(
           `eofPending=${handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) ?? "n/a"}`,
           `hupPending=${handle.kernel.thread_poll_hup_sync_pending?.(vmPtr) ?? "n/a"}`,
           `activeChild=${activeChildMayHoldCanonicalPipeWriter ? 1 : 0}`,
-          `pendingChildExit=${handle.pendingChildExitRecords}`,
+          "pendingChildExit=supervisor",
           `holders=${formatBlockedPipeSlotHolders(handle, vmPtr)}`,
         ].join(":");
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);
@@ -1832,7 +1823,7 @@ async function executeHostBlockedSyscallResume(
             `syncedBuf=${syncedBufferedLen}`,
             `syncedWo=${syncedWriteOpen}`,
             `activeChild=${activeChildMayHoldCanonicalPipeWriter ? 1 : 0}`,
-            `pendingChildExit=${handle.pendingChildExitRecords}`,
+            "pendingChildExit=supervisor",
           ].join(":");
           deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);
           deps.appendWorkerDebugLog(handle, event);

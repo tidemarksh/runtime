@@ -193,7 +193,6 @@ test("blocked-rpc pipe EOF ignores stale active-child writer when canonical pipe
       sharedOfdIds: new Set([readOfd, writeOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
 
   const childKernel = {
@@ -324,7 +323,6 @@ test("blocked-rpc defers EOF-after-wait while an exiting visible child still hol
       sharedOfdIds: new Set([readOfd, writeOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
 
   const childKernel = {
@@ -459,7 +457,6 @@ test("blocked-rpc preserves canonical EOF retry when active-child writer defers 
       sharedOfdIds: new Set([readOfd, writeOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
 
   const childKernel = {
@@ -597,7 +594,6 @@ test("blocked-rpc pipe EOF uses current kernel pipe counters before stale shared
       sharedOfdIds: new Set([readOfd, writeOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
 
   const childKernel = {
@@ -732,7 +728,6 @@ test("blocked-rpc preserves same-process pipe writer when blocked snapshot looke
       sharedOfdIds: new Set([readOfd, writeOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
@@ -863,7 +858,6 @@ test("blocked-rpc preserves same-process pipe reader before write EPIPE retry", 
       sharedOfdIds: new Set([readOfd, writeOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
 
   const threadWorkerStates = new WeakMap<Worker, object>();
@@ -991,7 +985,6 @@ test("blocked-rpc preserves same-process pipe reader when stale refcount would d
       sharedOfdIds: new Set([readOfd, writeOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
@@ -1086,7 +1079,6 @@ test("blocked-rpc defers pipe resume while self pipe sync is in flight", async (
       sharedOfdIds: new Set([readOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
@@ -1204,7 +1196,6 @@ test("blocked-rpc awaits newly queued self pipe sync before pipe resume", async 
       sharedOfdIds: new Set([readOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
@@ -1330,7 +1321,6 @@ test("blocked-rpc resumes EOF-pending pipe read despite in-flight self pipe sync
       sharedOfdIds: new Set([readOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
@@ -1440,7 +1430,6 @@ test("blocked-rpc resumes buffered pipe read despite in-flight self pipe sync", 
       sharedOfdIds: new Set([readOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
@@ -1550,7 +1539,6 @@ test("blocked-rpc skips ready self pipe sync before pipe read EOF resume", async
       sharedOfdIds: new Set([readOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
@@ -1678,7 +1666,6 @@ test("blocked-rpc carries canonical EOF to next block after buffered pipe read w
       sharedOfdIds: new Set([readOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
@@ -1778,7 +1765,6 @@ test("blocked-rpc skips redundant self pipe sync after canonical EOF retry", asy
       sharedOfdIds: new Set([readOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
@@ -1892,7 +1878,6 @@ test("blocked-rpc skips pending fork-shared sync before canonical EOF retry", as
       sharedOfdIds: new Set([readOfd]),
       forkSharedSyncPromise,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
@@ -2013,7 +1998,6 @@ test("blocked-rpc skips read-only peer pipe sync after canonical EOF retry", asy
     networkClosedFds: new Set(),
     networkConnections: new Map(),
     kernelShare,
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   const peerKernel = {
     ...kernel,
@@ -2040,7 +2024,6 @@ test("blocked-rpc skips read-only peer pipe sync after canonical EOF retry", asy
     networkClosedFds: new Set(),
     networkConnections: new Map(),
     kernelShare,
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
   handle.kernelShare.members.add(peer);
@@ -2164,7 +2147,6 @@ test("blocked-rpc skips owner-async peer pipe sync while peer FS continuation ow
     networkClosedFds: new Set(),
     networkConnections: new Map(),
     kernelShare,
-    pendingChildExitRecords: 1,
   } as unknown as ProcessHandle;
   const peerKernel = {
     ...kernel,
@@ -2195,7 +2177,6 @@ test("blocked-rpc skips owner-async peer pipe sync while peer FS continuation ow
     networkClosedFds: new Set(),
     networkConnections: new Map(),
     kernelShare,
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
   handle.kernelShare.members.add(peer);
@@ -2248,7 +2229,7 @@ test("blocked-rpc skips owner-async peer pipe sync while peer FS continuation ow
   expect(requestPipeStateSync).not.toHaveBeenCalledWith(peer, false);
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, false);
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
-  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
 });
 
@@ -2327,7 +2308,6 @@ test("blocked-rpc wakes owner-async OK peer that holds a blocked pipe writer", a
     networkClosedFds: new Set(),
     networkConnections: new Map(),
     kernelShare,
-    pendingChildExitRecords: 1,
   } as unknown as ProcessHandle;
   const peerKernel = {
     ...kernel,
@@ -2356,7 +2336,6 @@ test("blocked-rpc wakes owner-async OK peer that holds a blocked pipe writer", a
     networkClosedFds: new Set(),
     networkConnections: new Map(),
     kernelShare,
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
   handle.kernelShare.members.add(peer);
@@ -2481,7 +2460,6 @@ test("blocked-rpc canonical EOF retry clears stale writer in resume snapshot", a
       sharedOfdIds: new Set([readOfd, staleWriteOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
@@ -2597,7 +2575,6 @@ test("blocked-rpc resumes non-poll pipe read EOF from canonical closed pipe stat
       sharedOfdIds: new Set([readOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
 
   const threadState = { pendingPipeSlotsForNextStep: [] };
@@ -2710,7 +2687,6 @@ test("blocked-rpc resumes blocking open-empty pipe read while shared writer rema
         networkClosedFds: new Set(),
         networkConnections: new Map(),
         kernelShare,
-        pendingChildExitRecords: 0,
       } as unknown as ProcessHandle;
       const peerKernel = {
         ...kernel,
@@ -2840,7 +2816,6 @@ test("blocked-rpc defers blocking open-empty pipe read while active child may st
     networkClosedFds: new Set(),
     networkConnections: new Map(),
     kernelShare,
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   const childKernel = {
     ...kernel,
@@ -2952,7 +2927,6 @@ test("blocked-rpc resumes canonical pipe EOF when blocked syscall export returns
       sharedOfdIds: new Set([readOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
 
   const threadState = { pendingPipeSlotsForNextStep: [] };
@@ -3059,7 +3033,6 @@ test("blocked-rpc resumes closed stdin EOF through fd-table fallback without pin
       sharedOfdIds: new Set([readOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
 
   const threadState = { pendingPipeSlotsForNextStep: [] };
@@ -3170,7 +3143,6 @@ test("blocked-rpc clears stale pipe writer count before EOF-pending resume when 
       sharedOfdIds: new Set([readOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
@@ -3286,7 +3258,6 @@ test("blocked-rpc treats EOF-pending nonblocking open-empty pipe read as canonic
       sharedOfdIds: new Set([readOfd, writeOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
@@ -3395,7 +3366,6 @@ test("blocked-rpc resumes nonblocking open-empty pipe read in thread worker", as
       sharedOfdIds: new Set([readOfd, writeOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
@@ -3512,7 +3482,6 @@ test("blocked-rpc restores blocked worker local pipe endpoints when canonical sl
       sharedOfdIds: new Set([readOfd, writeOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
@@ -3614,7 +3583,6 @@ test("blocked-rpc aligns pipe OFD generation before canonical EOF resume", async
       sharedOfdIds: new Set([readOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
 
   const threadState = { pendingPipeSlotsForNextStep: [] };
@@ -3716,7 +3684,6 @@ test("blocked-rpc does not preserve host stdin writer when stdin is explicitly c
       sharedOfdIds: new Set([readOfd]),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
 
   const threadState = { pendingPipeSlotsForNextStep: [] };
@@ -3774,7 +3741,6 @@ test("kernel-rpc blocked-rpc helper owns local resume and returns a typed outcom
       members: new Set(),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   const threadState = { pendingGuestMemoryWrites: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
@@ -3834,7 +3800,6 @@ test("kernel-rpc blocked-rpc outcome reports blocked while the worker remains bl
       members: new Set(),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
@@ -3883,7 +3848,6 @@ test("kernel-rpc blocked-rpc outcome keeps ownership while continuation effects 
       members: new Set(),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
@@ -3964,7 +3928,6 @@ test("blocked-rpc does not resume poll hup when pselect watches no pipe slots", 
       members: new Set(),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
 
   const threadWorkerStates = new WeakMap<Worker, object>();
@@ -4067,7 +4030,6 @@ test("blocked-rpc resumes pselect pipe HUP through blocked fd fallback", async (
       members: new Set(),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
 
   const threadState = { pendingGuestMemoryWrites: [] };
@@ -4210,7 +4172,6 @@ test("blocked-rpc resumes pselect pipe HUP when a stale local writer remains vis
       members: new Set(),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
@@ -4362,7 +4323,6 @@ test("blocked-rpc clears stale local writer before mixed socket pipe pselect ret
       members: new Set(),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
@@ -4423,7 +4383,6 @@ test("kernel-rpc blocked-rpc outcome reports retry effect without running schedu
       members: new Set(),
       forkSharedSyncPromise: null,
     },
-    pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});

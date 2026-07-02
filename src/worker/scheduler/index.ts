@@ -16,7 +16,6 @@ import {
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PASSIVE_WAIT,
-  SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE,
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_THREAD_INIT_PENDING,
   type SupervisorBlockedWaitRetryFlags,
   type SupervisorBlockedWaitRetryReason,
@@ -44,7 +43,6 @@ import { createRunLoopScheduler, logNetworkDebug } from "./run-loop.js";
 import { createSocketWaitScheduler } from "./socket-wait.js";
 import { createWorkerSchedulerStateSyncHelpers } from "./state-sync.js";
 import { createVforkExclusiveScheduler } from "./vfork-exclusive.js";
-import { createWait4Scheduler } from "./wait4.js";
 import {
   readSupervisorFaultExitDecision,
   submitSupervisorShadowStatusEvent,
@@ -68,7 +66,6 @@ import type { KernelRpcResumeOutcome } from "../kernel-rpc/outcomes.js";
 
 export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerScheduler {
   const { threadWorkerStates } = deps;
-  const pipeChildExitResumeKeys = new WeakMap<ProcessHandle, Map<number, string>>();
   const supervisorArmedBlockedTimers = new WeakSet<HostBlockedWorkerState>();
   const hostBlockedRetryTimers = new WeakMap<HostBlockedWorkerState, ReturnType<typeof setTimeout>>();
   const threadWorkerBlockedResumeRequests = new WeakSet<Worker>();
@@ -239,7 +236,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     return `fds=${entries.join(",") || "empty"}`;
   }
 
-  const appliedChildExitRecordKeys = new Map<string, Set<string>>();
   const schedulerQueueHelpers = createWorkerSchedulerQueueHelpers({
     threadWorkerStates,
     appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
@@ -411,10 +407,8 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     return false;
   }
 
-  function wait4ProcessGateClosed(handle: ProcessHandle, hasLocalExitRecord: boolean): boolean {
-    return handle.pendingChildExitRecords > 0
-      || handle.pendingChildSpawnRecords > 0
-      || (!hasLocalExitRecord && deps.hasActiveChildProcess(handle.pid));
+  function hasActiveChildProcess(handle: ProcessHandle): boolean {
+    return handle.pid > 0 && handle.kernel.process_has_active_child?.(handle.pid) === 1;
   }
 
   function formatRunningRetryBlocker(
@@ -468,8 +462,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     threadWorkerStates,
     appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
     scheduleSupervisorBlockedRetry,
-    pipeChildExitRecordsAlreadyResumedForWait,
-    hasActiveChildProcess: deps.hasActiveChildProcess,
+    hasActiveChildProcess,
   });
   const {
     formatFirstSocketWaitDebug,
@@ -489,73 +482,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     appendWorkerDebugLog,
     clearBlockedWorker,
   });
-  const {
-    applyLocalChildExitRecords,
-    childExitRecordsAlreadyApplied,
-    formatChildExitRecords,
-    markChildExitRecordsApplied,
-  } = createWait4Scheduler({
-    threadWorkerStates,
-    appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
-  }, appliedChildExitRecordKeys);
-  function pipeChildExitRecordsResumeKeyForWait(handle: ProcessHandle, vmPtr: number): string {
-    const childExitRecordsKey = formatChildExitRecords(handle);
-    return childExitRecordsKey === ""
-      ? ""
-      : formatPipeChildExitResumeKey(handle, vmPtr, childExitRecordsKey);
-  }
-
-  function pipeChildExitRecordsAlreadyResumedForWait(
-    handle: ProcessHandle,
-    vmPtr: number,
-    pipeChildExitResumeKey: string | null = pipeChildExitResumeKeyFor(handle, vmPtr),
-  ): boolean {
-    const childExitResumeKey = pipeChildExitRecordsResumeKeyForWait(handle, vmPtr);
-    return childExitResumeKey === "" || pipeChildExitResumeKey === childExitResumeKey;
-  }
-
-  function formatPipeChildExitResumeKey(
-    handle: ProcessHandle,
-    vmPtr: number,
-    recordsKey = formatChildExitRecords(handle),
-  ): string {
-    const syscall = blockedOrCurrentSyscallNr(handle, vmPtr);
-    const blockedFd = handle.kernel.thread_blocked_fd?.(vmPtr);
-    const blockedOfd = handle.kernel.thread_blocked_ofd_id?.(vmPtr);
-    return [
-      recordsKey,
-      `sys=${syscall?.toString() ?? "n/a"}`,
-      `bfd=${blockedFd ?? "n/a"}`,
-      `ofd=${blockedOfd ?? "n/a"}`,
-    ].join(":");
-  }
-
-  function pipeChildExitResumeKeyFor(handle: ProcessHandle, vmPtr: number): string | null {
-    return pipeChildExitResumeKeys.get(handle)?.get(vmPtr) ?? null;
-  }
-
-  function setPipeChildExitResumeKey(handle: ProcessHandle, vmPtr: number, key: string): void {
-    let keys = pipeChildExitResumeKeys.get(handle);
-    if (keys === undefined) {
-      keys = new Map();
-      pipeChildExitResumeKeys.set(handle, keys);
-    }
-    keys.set(vmPtr, key);
-  }
-
-  function markPipeChildExitRecordsResumedForWait(
-    handle: ProcessHandle,
-    blocked: HostBlockedWorkerState,
-  ): void {
-    const recordsKey = formatChildExitRecords(handle);
-    if (recordsKey === "") {
-      return;
-    }
-    const resumeKey = formatPipeChildExitResumeKey(handle, blocked.vmPtr, recordsKey);
-    blocked.pipeChildExitResumeKey = resumeKey;
-    setPipeChildExitResumeKey(handle, blocked.vmPtr, resumeKey);
-  }
-
   function formatBlockedFdEntries(handle: ProcessHandle, vmPtr: number, limit = 32): string {
     const entries: string[] = [];
     const maxFds = handle.kernel.abi_max_fds();
@@ -811,9 +737,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     const parts = [
       `blocked-state:${handle.pid}:0x${blocked.vmPtr.toString(16)}:status=${status}`,
       `fds=${formatBlockedFdEntries(handle, blocked.vmPtr)}`,
-      `records=${[...handle.childExitSyncRecords].map(([childPid, waitStatus]) => `${childPid}/${waitStatus}`).join(".") || "none"}`,
-      `pending=${handle.pendingChildExitRecords}/${handle.pendingChildSpawnRecords}`,
-      `active=${deps.hasActiveChildProcess(handle.pid) ? 1 : 0}`,
+      "records=supervisor",
+      `pending=0/${handle.pendingChildSpawnRecords}`,
+      `active=${hasActiveChildProcess(handle) ? 1 : 0}`,
     ];
     if (status === handle.kernel.abi_status_pipe_wait()) {
       parts.push(
@@ -982,8 +908,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       rpcGeneration: sameBlockedThread ? previousBlocked.rpcGeneration : 0,
       skipNextNetworkPump: sameBlockedThread ? previousBlocked.skipNextNetworkPump : false,
       pipeSyncedBeforePassive: sameBlockedThread ? previousBlocked.pipeSyncedBeforePassive : false,
-      pipeChildExitResumeKey: sameBlockedThread ? previousBlocked.pipeChildExitResumeKey : null,
-      pipeEofChildExitDeferrals: sameBlockedThread ? previousBlocked.pipeEofChildExitDeferrals : 0,
       lastPipeRetryLifecycleEvent: sameBlockedThread ? previousBlocked.lastPipeRetryLifecycleEvent : undefined,
       lastWait4RetryLifecycleEvent: sameBlockedThread ? previousBlocked.lastWait4RetryLifecycleEvent : undefined,
     };
@@ -1025,17 +949,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
     if (status === handle.kernel.abi_status_wait4()) {
-      if (
-        handle.kernelShare.forkSharedSyncPromise === null
-        && wait4ProcessGateClosed(handle, handle.childExitSyncRecords.size > 0)
-      ) {
-        scheduleSupervisorBlockedRetry(
-          handle,
-          worker,
-          SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE,
-        );
-        return;
-      }
       retryHostBlockedWorker(handle, worker);
       return;
     }
@@ -1176,10 +1089,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         );
       }
       if (blocked.status === handle.kernel.abi_status_wait4()) {
-        const reapedPid = Number(handle.kernel.thread_a0?.(vmPtr) ?? 0n);
-        if (reapedPid > 0) {
-          handle.childExitSyncRecords.delete(reapedPid);
-        }
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-resumed-supervisor:${handle.pid}`);
       }
       clearBlockedWorker(handle, worker);
       enqueueWorker(handle, worker);
@@ -1291,7 +1201,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       vmPtr,
       pollTimeoutMs,
       pollReadyCount,
-      pipeChildExitResumeKeyFor(handle, vmPtr),
     )) {
       scheduleSupervisorBlockedRetry(
         handle,
@@ -1387,15 +1296,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
     const forkSharedSyncPromise = handle.kernelShare.forkSharedSyncPromise;
-    const wait4HasLocalExitRecord = blocked.status === handle.kernel.abi_status_wait4()
-      && handle.childExitSyncRecords.size > 0;
-    const pipeHasLocalExitRecord = blocked.status === handle.kernel.abi_status_pipe_wait()
-      && handle.childExitSyncRecords.size > 0;
     if (
       forkSharedSyncPromise !== null
       && blockedPollTimeoutMs < 0
-      && !wait4HasLocalExitRecord
-      && !pipeHasLocalExitRecord
     ) {
       const staleGate = clearStaleForkSharedSyncGate(handle, forkSharedSyncPromise);
       if (staleGate !== null) {
@@ -1417,9 +1320,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     clearStaleRunningWorker(handle, worker);
     if (handle.runningWorker !== null) {
       if (blocked.status === handle.kernel.abi_status_epoll_wait()) {
-        wakeRuntimeBridge(handle.runtimeBridge);
-      }
-      if (wait4HasLocalExitRecord || pipeHasLocalExitRecord) {
         wakeRuntimeBridge(handle.runtimeBridge);
       }
       const runningThread = threadWorkerStates.get(handle.runningWorker);
@@ -1444,23 +1344,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       );
       return;
     }
-    if (
-      blocked.status === handle.kernel.abi_status_wait4()
-      && wait4ProcessGateClosed(handle, wait4HasLocalExitRecord)
-    ) {
-      const event = `wait4-retry-skip:${handle.pid}:gate:exit=${handle.pendingChildExitRecords}:spawn=${handle.pendingChildSpawnRecords}:active=${deps.hasActiveChildProcess(handle.pid) ? 1 : 0}`;
-      if (blocked.lastWait4RetryLifecycleEvent !== event) {
-        blocked.lastWait4RetryLifecycleEvent = event;
-        deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);
-      }
-      scheduleSupervisorBlockedRetry(
-        handle,
-        worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE,
-      );
-      return;
-    }
-
     if (blocked.skipNextNetworkPump) {
       blocked.skipNextNetworkPump = false;
     } else if (pumpNetworkForBlockedWait(handle, worker, blocked)) {
@@ -1570,24 +1453,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
 
-    const pipeWaitChildExitRecordsKey = formatChildExitRecords(handle);
-    if (
-      blocked.status === handle.kernel.abi_status_pipe_wait()
-      && pipeWaitChildExitRecordsKey !== ""
-      && !childExitRecordsAlreadyApplied(handle, pipeWaitChildExitRecordsKey)
-      && !pipeChildExitRecordsAlreadyResumedForWait(
-        handle,
-        blocked.vmPtr,
-        blocked.pipeChildExitResumeKey,
-      )
-    ) {
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `pipe-retry-apply-child-records:${handle.pid}:${pipeWaitChildExitRecordsKey}`,
-      );
-      applyLocalChildExitRecords(handle);
-      markChildExitRecordsApplied(handle, pipeWaitChildExitRecordsKey);
-    }
     const pipeEofSyncPending = blocked.status === handle.kernel.abi_status_pipe_wait()
       && handle.kernel.thread_pipe_read_eof_sync_pending?.(blocked.vmPtr) === 1;
     const pipePollHupSyncPending = blocked.status === handle.kernel.abi_status_pipe_wait()
@@ -1641,7 +1506,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       }
       if (
         !blocked.pipeSyncedBeforePassive
-        && !deps.hasActiveChildProcess(handle.pid)
+        && !hasActiveChildProcess(handle)
         && kernelWorkerOwnsPipeState(handle)
         && handle.kernelWorkerRequest
         && handle.pid > 0
@@ -1673,7 +1538,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (
       blocked.status === handle.kernel.abi_status_pipe_wait()
       && !blocked.pipeSyncedBeforePassive
-      && !deps.hasActiveChildProcess(handle.pid)
+      && !hasActiveChildProcess(handle)
       && kernelWorkerOwnsPipeState(handle)
       && handle.kernelWorkerRequest
       && handle.pid > 0
@@ -1734,7 +1599,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       blocked.vmPtr,
       blockedPollTimeoutMs,
       blockedPollReadyCount,
-      pipeChildExitResumeKeyFor(handle, blocked.vmPtr),
     )) {
       scheduleSupervisorBlockedRetry(
         handle,
@@ -1749,7 +1613,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       && blocked.status === handle.kernel.abi_status_wait4()
     ) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-rpc:${handle.pid}`);
-      applyLocalChildExitRecords(handle, { force: true });
       blocked.rpcPending = true;
       void deps.resumeWait4ViaKernelWorker(handle, worker, blocked.vmPtr)
         .then((outcome) => {
@@ -1779,12 +1642,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
 
     switch (resumeDelegation) {
       case SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER:
-        if (
-          blocked.status === handle.kernel.abi_status_pipe_wait()
-          && handle.childExitSyncRecords.size > 0
-        ) {
-          markPipeChildExitRecordsResumedForWait(handle, blocked);
-        }
         resumeBlockedSyscallViaKernelWorker(
           handle,
           worker,
@@ -1802,7 +1659,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         return;
       case SUPERVISOR_BLOCKED_RESUME_DELEGATION_WAIT4_KERNEL_WORKER:
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-rpc:${handle.pid}`);
-        applyLocalChildExitRecords(handle, { force: true });
         blocked.rpcPending = true;
         void deps.resumeWait4ViaKernelWorker(handle, worker, blocked.vmPtr)
           .then((outcome) => {
@@ -1840,25 +1696,15 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (blocked.status === handle.kernel.abi_status_wait4()) {
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
-        `wait4-retry-local:${handle.pid}:0x${blocked.vmPtr.toString(16)}:records=${[...handle.childExitSyncRecords].map(([childPid, waitStatus]) => `${childPid}/${waitStatus}`).join(".") || "none"}`,
+        `wait4-retry-local:${handle.pid}:0x${blocked.vmPtr.toString(16)}:records=supervisor`,
       );
-      applyLocalChildExitRecords(handle, { force: true });
       const rawWait4Result = resumeBlockedSyscallBySupervisor(handle.kernel, blocked.vmPtr);
       const wait4Result = rawWait4Result ?? 0n;
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
-        `wait4-retry-result:${handle.pid}:result=${wait4Result.toString()}:status=${handle.kernel.thread_status(blocked.vmPtr)}:a0=${handle.kernel.thread_a0?.(blocked.vmPtr)?.toString() ?? "n/a"}:records=${[...handle.childExitSyncRecords].map(([childPid, waitStatus]) => `${childPid}/${waitStatus}`).join(".") || "none"}`,
+        `wait4-retry-result:${handle.pid}:result=${wait4Result.toString()}:status=${handle.kernel.thread_status(blocked.vmPtr)}:a0=${handle.kernel.thread_a0?.(blocked.vmPtr)?.toString() ?? "n/a"}:records=supervisor`,
       );
-      if (wait4Result > 0n) {
-        handle.childExitSyncRecords.delete(Number(wait4Result));
-      }
     } else {
-      if (
-        blocked.status === handle.kernel.abi_status_pipe_wait()
-        && handle.childExitSyncRecords.size > 0
-      ) {
-        markPipeChildExitRecordsResumedForWait(handle, blocked);
-      }
       resumeBlockedSyscallBySupervisor(handle.kernel, blocked.vmPtr);
     }
     handle.kernelState = readKernelRuntimeState(handle.kernel);

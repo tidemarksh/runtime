@@ -62,7 +62,6 @@ import { createWorkerMessageHandler } from "../message-handler.js";
 import { createWorkerRuntimeContext } from "../runtime-context.js";
 import { createWorkerScheduler } from "../scheduler.js";
 import {
-  hasActiveChildProcess as hasActiveChildProcessImpl,
   pumpActiveChildProcesses as pumpActiveChildProcessesImpl,
 } from "../child-processes.js";
 import { createWorkerOrchestratorFacade } from "./facade.js";
@@ -135,7 +134,6 @@ const workerScheduler = createWorkerScheduler({
   threadWorkerStates,
   completeProcessExit,
   failProcess,
-  hasActiveChildProcess: (parentPid) => hasActiveChildProcessImpl(processHandles, parentPid, threadWorkerStates),
   pumpActiveChildProcesses: (parentPid) => {
     const notifyChildProcessProgress = (handle: ProcessHandle): void => notifySchedulerProgress(handle);
     return pumpActiveChildProcessesImpl(
@@ -284,7 +282,6 @@ workerLifecycleHelpers = createWorkerLifecycleHelpers({
   syncForkSharedStateViaKernelWorker,
   workerExitCompleteProcessExit: workerExitHelpers.completeProcessExit,
   workerExitFailProcess: workerExitHelpers.failProcess,
-  workerExitPrepublishParentWaitStatus: workerExitHelpers.prepublishParentWaitStatus,
 });
 async function ensureCompiledModule(wasmBytes: BufferSource): Promise<WebAssembly.Module> {
   if (!ensureCompiledModuleImpl) {

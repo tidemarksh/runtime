@@ -161,8 +161,6 @@ export interface HostBlockedWorkerState {
   skipNextNetworkPump: boolean;
   pipeSyncedBeforePassive: boolean;
   pipeCanonicalEofReady?: boolean;
-  pipeChildExitResumeKey: string | null;
-  pipeEofChildExitDeferrals: number;
   lastPipeRetryLifecycleEvent?: string;
   lastWait4RetryLifecycleEvent?: string;
 }
@@ -330,12 +328,10 @@ export interface ProcessHandle {
   // hostBlockedWorkers tracks waits whose host-side effect bridge is still live.
   // Futex/runnable/dead-thread decisions remain supervisor-owned.
   hostBlockedWorkers: Map<Worker, HostBlockedWorkerState>;
-  pendingChildExitRecords: number;
   pendingChildSpawnRecords: number;
   lastSupervisorFdControlSeq?: bigint;
   lastSupervisorFsControlSeq?: bigint;
   lastSupervisorSignalControlSeq?: bigint;
-  childExitSyncRecords: Map<number, number>;
   pipeSyncPromise: Promise<void> | null;
   pipeSyncQueued: boolean;
   pipeWaiterWakeQueued: boolean;

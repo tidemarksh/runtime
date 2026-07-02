@@ -1069,7 +1069,6 @@ test("plain fork spawn path records child exit and resumes parent replacement wo
         heapPtr: makeKernelState().heapPtr + 0x80,
         pipeUsed: 15n,
       },
-      childExitRecords: [{ childPid: 177, waitStatus: 7 << 8, parentPid: 1 }],
     },
   ]);
 });

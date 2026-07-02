@@ -5,9 +5,7 @@ import type { ProcessHandle } from "../../../../src/worker/types.js";
 function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
   return {
     pid: 6,
-    pendingChildExitRecords: 0,
     pendingChildSpawnRecords: 0,
-    childExitSyncRecords: new Map(),
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     guestBase: 0,
     kernel: {
@@ -31,20 +29,16 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
   } as ProcessHandle;
 }
 
-function makeScheduler(
-  hasActiveChildProcess: (pid: number) => boolean,
-  pipeChildExitRecordsAlreadyResumedForWait = () => true,
-) {
+function makeScheduler(hasActiveChildProcess: (pid: number) => boolean) {
   return createPipePollScheduler({
     threadWorkerStates: new WeakMap(),
     appendRuntimeLifecycleEvent: vi.fn(),
-    scheduleHostBlockedRetry: vi.fn(),
-    pipeChildExitRecordsAlreadyResumedForWait: vi.fn(pipeChildExitRecordsAlreadyResumedForWait),
-    hasActiveChildProcess,
+    scheduleSupervisorBlockedRetry: vi.fn(),
+    hasActiveChildProcess: (handle) => hasActiveChildProcess(handle.pid),
   });
 }
 
-test("pipe wait stays passive after child-exit resume only while child work remains", () => {
+test("pipe wait stays passive only while kernel reports active child work", () => {
   const activeScheduler = makeScheduler(() => true);
   const idleScheduler = makeScheduler(() => false);
 
@@ -54,7 +48,6 @@ test("pipe wait stays passive after child-exit resume only while child work rema
     0x1234,
     -1,
     0,
-    "child-record",
   )).toBe(true);
 
   expect(idleScheduler.pipeWaitShouldRemainPassive(
@@ -63,17 +56,7 @@ test("pipe wait stays passive after child-exit resume only while child work rema
     0x1234,
     -1,
     0,
-    "child-record",
   )).toBe(false);
-
-  expect(idleScheduler.pipeWaitShouldRemainPassive(
-    makeHandle({ pendingChildExitRecords: 1 }),
-    21,
-    0x1234,
-    -1,
-    0,
-    "child-record",
-  )).toBe(true);
 
   expect(idleScheduler.pipeWaitShouldRemainPassive(
     makeHandle({ pendingChildSpawnRecords: 1 }),
@@ -81,8 +64,7 @@ test("pipe wait stays passive after child-exit resume only while child work rema
     0x1234,
     -1,
     0,
-    "child-record",
-  )).toBe(true);
+  )).toBe(false);
 });
 
 test("empty pselect pipe wait stays passive without child work", () => {
@@ -103,16 +85,13 @@ test("empty pselect pipe wait stays passive without child work", () => {
     0x1234,
     -1,
     0,
-    "none",
   )).toBe(true);
 });
 
-test("empty pselect waits for child wake record once before passive parking", () => {
-  const pendingScheduler = makeScheduler(() => false, () => false);
-  const resumedScheduler = makeScheduler(() => false, () => true);
+test("empty pselect passive parking does not depend on local child state", () => {
+  const scheduler = makeScheduler(() => false);
   const base = makeHandle();
   const handle = makeHandle({
-    childExitSyncRecords: new Map([[7, 0]]),
     kernel: {
       ...base.kernel,
       abi_sys_pselect6: () => 72n,
@@ -121,22 +100,12 @@ test("empty pselect waits for child wake record once before passive parking", ()
     } as never,
   });
 
-  expect(pendingScheduler.pipeWaitShouldRemainPassive(
+  expect(scheduler.pipeWaitShouldRemainPassive(
     handle,
     21,
     0x1234,
     -1,
     0,
-    "child-record",
-  )).toBe(false);
-
-  expect(resumedScheduler.pipeWaitShouldRemainPassive(
-    handle,
-    21,
-    0x1234,
-    -1,
-    0,
-    "child-record",
   )).toBe(true);
 });
 
@@ -171,6 +140,5 @@ test("pselect with a watched fd does not use empty-set passive parking", () => {
     0x1234,
     -1,
     0,
-    "none",
   )).toBe(false);
 });

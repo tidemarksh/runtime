@@ -59,8 +59,6 @@ function makeHandle(
     vforkReadyWorkers: [],
     runningWorker: null,
     hostBlockedWorkers: new Map(),
-    childExitSyncRecords: new Map(),
-    pendingChildExitRecords: 0,
     pipeSyncPromise: null,
     pipeSyncQueued: false,
     pipeWaiterWakeQueued: false,
@@ -151,9 +149,9 @@ test("recordExitOnParent syncs and drains child output before waking the parent"
     "debug:1",
     "debug:1",
     "record:1",
-    "pipe-sync:1:sync",
-    "pipe-sync:1:sync",
     "progress:1",
+    "pipe-sync:1:sync",
+    "pipe-sync:1:sync",
     "release:3",
     "destroy:3",
     "pipe-sync:1:wake",
@@ -254,7 +252,7 @@ test("completeProcessExit waits for child pipe sync before recording parent exit
   expect(order).toContain("progress:1");
 });
 
-test("completeProcessExit prepublishes wait status before blocked parent pipe sync", async () => {
+test("completeProcessExit waits for blocked parent pipe sync before recording wait status", async () => {
   const blockedWorker = {} as Worker;
   const blockedState = {
     status: 31,
@@ -283,6 +281,7 @@ test("completeProcessExit prepublishes wait status before blocked parent pipe sy
   ]);
   const lifecycle: string[] = [];
   const progressNotifications: string[] = [];
+  const recordChildExitViaKernelWorker = vi.fn(async () => {});
 
   const helpers = createWorkerExitHelpers({
     processHandles,
@@ -300,7 +299,7 @@ test("completeProcessExit prepublishes wait status before blocked parent pipe sy
       progressNotifications.push(`${handle.pid}:${blockedState.rpcPending ? "pending" : "clear"}`);
     },
     publishRuntimeFsState: () => 1,
-    recordChildExitViaKernelWorker: async () => {},
+    recordChildExitViaKernelWorker,
     replaceRuntimeFsSnapshot: () => {},
     releaseSharedHostStdio: async () => {},
     requestPipeStateSync: async (handle) => {
@@ -315,19 +314,16 @@ test("completeProcessExit prepublishes wait status before blocked parent pipe sy
   void helpers.completeProcessExit(child, 7, 0);
   await flushMicrotasks(100);
 
-  expect(parent.childExitSyncRecords.get(3)).toBe(7 << 8);
-  expect(parent.pendingChildExitRecords).toBe(0);
-  expect(blockedState.rpcPending).toBe(false);
-  expect(blockedState.rpcGeneration).toBe(2);
-  expect(blockedState.pipeSyncedBeforePassive).toBe(false);
-  expect(lifecycle).toContain("exit-parent-early-prepublish-done:1:3:pending=0:records=3/1792");
-  expect(lifecycle).toContain("exit-parent-clear-blocked-rpc:1:3:status=31");
+  expect(recordChildExitViaKernelWorker).not.toHaveBeenCalled();
+  expect(blockedState.rpcPending).toBe(true);
+  expect(blockedState.rpcGeneration).toBe(1);
+  expect(blockedState.pipeSyncedBeforePassive).toBe(true);
   expect(lifecycle).toContain("parent-pipe-sync-before-child-exit-start:1:3");
   expect(lifecycle).not.toContain("parent-record-start:1:3");
-  expect(progressNotifications).toContain("1:clear");
+  expect(progressNotifications).toEqual([]);
 });
 
-test("completeProcessExit prepublishes wait status before parent pipe sync for blocked pipe wait", async () => {
+test("completeProcessExit waits for parent pipe sync before clearing blocked pipe wait", async () => {
   const blockedWorker = {} as Worker;
   const blockedState = {
     status: 21,
@@ -356,6 +352,7 @@ test("completeProcessExit prepublishes wait status before parent pipe sync for b
   ]);
   const lifecycle: string[] = [];
   const progressNotifications: string[] = [];
+  const recordChildExitViaKernelWorker = vi.fn(async () => {});
 
   const helpers = createWorkerExitHelpers({
     processHandles,
@@ -373,7 +370,7 @@ test("completeProcessExit prepublishes wait status before parent pipe sync for b
       progressNotifications.push(`${handle.pid}:${blockedState.rpcPending ? "pending" : "clear"}`);
     },
     publishRuntimeFsState: () => 1,
-    recordChildExitViaKernelWorker: async () => {},
+    recordChildExitViaKernelWorker,
     replaceRuntimeFsSnapshot: () => {},
     releaseSharedHostStdio: async () => {},
     requestPipeStateSync: async (handle) => {
@@ -388,19 +385,16 @@ test("completeProcessExit prepublishes wait status before parent pipe sync for b
   void helpers.completeProcessExit(child, 11, 0);
   await flushMicrotasks(100);
 
-  expect(parent.childExitSyncRecords.get(3)).toBe(11 << 8);
-  expect(parent.pendingChildExitRecords).toBe(0);
-  expect(blockedState.rpcPending).toBe(false);
-  expect(blockedState.rpcGeneration).toBe(2);
-  expect(blockedState.pipeSyncedBeforePassive).toBe(false);
-  expect(lifecycle).toContain("exit-parent-early-prepublish-done:1:3:pending=0:records=3/2816");
-  expect(lifecycle).toContain("exit-parent-clear-blocked-rpc:1:3:status=21");
+  expect(recordChildExitViaKernelWorker).not.toHaveBeenCalled();
+  expect(blockedState.rpcPending).toBe(true);
+  expect(blockedState.rpcGeneration).toBe(1);
+  expect(blockedState.pipeSyncedBeforePassive).toBe(true);
   expect(lifecycle).toContain("parent-pipe-sync-before-child-exit-start:1:3");
   expect(lifecycle).not.toContain("parent-record-start:1:3");
-  expect(progressNotifications).toContain("1:clear");
+  expect(progressNotifications).toEqual([]);
 });
 
-test("completeProcessExit prepublishes wait status before parent pipe sync for blocked wait4", async () => {
+test("completeProcessExit waits for parent pipe sync before recording blocked wait4 exit", async () => {
   const blockedWorker = {} as Worker;
   const blockedState = {
     status: 31,
@@ -429,6 +423,7 @@ test("completeProcessExit prepublishes wait status before parent pipe sync for b
   ]);
   const lifecycle: string[] = [];
   const progressNotifications: string[] = [];
+  const recordChildExitViaKernelWorker = vi.fn(async () => {});
 
   const helpers = createWorkerExitHelpers({
     processHandles,
@@ -446,7 +441,7 @@ test("completeProcessExit prepublishes wait status before parent pipe sync for b
       progressNotifications.push(`${handle.pid}:${blockedState.rpcPending ? "pending" : "clear"}`);
     },
     publishRuntimeFsState: () => 1,
-    recordChildExitViaKernelWorker: async () => {},
+    recordChildExitViaKernelWorker,
     replaceRuntimeFsSnapshot: () => {},
     releaseSharedHostStdio: async () => {},
     requestPipeStateSync: async (handle) => {
@@ -461,18 +456,16 @@ test("completeProcessExit prepublishes wait status before parent pipe sync for b
   void helpers.completeProcessExit(child, 9, 0);
   await flushMicrotasks(100);
 
-  expect(parent.childExitSyncRecords.get(3)).toBe(9 << 8);
-  expect(parent.pendingChildExitRecords).toBe(0);
+  expect(recordChildExitViaKernelWorker).not.toHaveBeenCalled();
   expect(blockedState.rpcPending).toBe(false);
   expect(blockedState.rpcGeneration).toBe(1);
-  expect(lifecycle).toContain("exit-parent-early-prepublish-done:1:3:pending=0:records=3/2304");
   expect(lifecycle).toContain("parent-pipe-sync-before-child-exit-start:1:3");
   expect(lifecycle).not.toContain("child-unregister-before-parent-record:3");
   expect(lifecycle).not.toContain("parent-record-start:1:3");
-  expect(progressNotifications).toContain("1:clear");
+  expect(progressNotifications).toEqual([]);
 });
 
-test("completeProcessExit prepublishes wait status before awaiting blocked parent wait4 record", async () => {
+test("completeProcessExit waits for parent child-exit record before cleanup", async () => {
   const blockedWorker = {} as Worker;
   const blockedState = {
     status: 31,
@@ -539,14 +532,11 @@ test("completeProcessExit prepublishes wait status before awaiting blocked paren
   await flushMicrotasks(100);
 
   expect(recordStarted).toBe(true);
-  expect(settled).toBe(true);
-  expect(parent.childExitSyncRecords.get(3)).toBe(7 << 8);
-  expect(parent.pendingChildExitRecords).toBe(0);
-  expect(lifecycle).toContain("exit-parent-early-prepublish-done:1:3:pending=0:records=3/1792");
+  expect(settled).toBe(false);
   expect(lifecycle).toContain("parent-record-start:1:3");
   expect(lifecycle).not.toContain("parent-record-done:1:3");
-  expect(progressNotifications).toContain(1);
-  expect(processHandles.has(3)).toBe(false);
+  expect(progressNotifications).toEqual([]);
+  expect(processHandles.has(3)).toBe(true);
 });
 
 test("completeProcessExit routes deferred parent record rejection through local failProcess", async () => {
@@ -618,9 +608,9 @@ test("completeProcessExit routes deferred parent record rejection through local 
   await flushMicrotasks(100);
 
   expect(settled).toBe(true);
-  expect(lifecycle).toContain("parent-record-error:1:3:\"record failed\"");
-  expect(parentError).toHaveBeenCalledWith(expect.objectContaining({ message: "record failed" }));
-  expect(destroyed).toContain("1:15");
+  expect(lifecycle).toContain("exit-cleanup-error:3:\"record failed\"");
+  expect(parentError).not.toHaveBeenCalled();
+  expect(destroyed).toContain("3:15");
 });
 
 test("completeProcessExit preserves published file data during exit MemFS publication", async () => {
@@ -1314,11 +1304,10 @@ test("completeProcessExit treats duped child stdio pipes as internal protocol pi
   expect(order).toContain("pipe-sync:1:wake");
 });
 
-test("recordExitOnParent reports parent progress after pending child exit bookkeeping clears", async () => {
+test("recordExitOnParent reports parent progress after kernel child-exit record completes", async () => {
   const parent = makeHandle({
     pid: 1,
     parentPid: null,
-    pendingChildExitRecords: 0,
   });
   const child = makeHandle();
   const processHandles = new Map<number, ProcessHandle>([
@@ -1326,7 +1315,7 @@ test("recordExitOnParent reports parent progress after pending child exit bookke
     [3, child],
   ]);
   const progressNotifications: number[] = [];
-  const observedPendingCounts: number[] = [];
+  const recordedParentPids: number[] = [];
 
   const helpers = createWorkerExitHelpers({
     processHandles,
@@ -1339,11 +1328,11 @@ test("recordExitOnParent reports parent progress after pending child exit bookke
     destroyProcessHandle: () => {},
     formatAllLiveThreadDebug: () => "threads",
     notifyProcessExitProgress(handle) {
-      progressNotifications.push(handle.pendingChildExitRecords);
+      progressNotifications.push(handle.pid);
     },
     publishRuntimeFsState: () => 1,
     recordChildExitViaKernelWorker: async (parentHandle) => {
-      observedPendingCounts.push(parentHandle.pendingChildExitRecords);
+      recordedParentPids.push(parentHandle.pid);
     },
     replaceRuntimeFsSnapshot: () => {},
     releaseSharedHostStdio: async () => {},
@@ -1354,9 +1343,8 @@ test("recordExitOnParent reports parent progress after pending child exit bookke
 
   await helpers.completeProcessExit(child, 0, 0);
 
-  expect(observedPendingCounts).toEqual([0]);
-  expect(progressNotifications).toEqual([0, 0]);
-  expect(parent.pendingChildExitRecords).toBe(0);
+  expect(recordedParentPids).toEqual([1]);
+  expect(progressNotifications).toEqual([1, 1]);
 });
 
 test("completeProcessExit clears parent pipe-wait RPC after normal child exit publication", async () => {
@@ -1364,7 +1352,6 @@ test("completeProcessExit clears parent pipe-wait RPC after normal child exit pu
   const parent = makeHandle({
     pid: 1,
     parentPid: null,
-    pendingChildExitRecords: 0,
     kernel: {
       ...makeHandle().kernel,
       abi_status_pipe_wait: () => 21,
@@ -1388,6 +1375,7 @@ test("completeProcessExit clears parent pipe-wait RPC after normal child exit pu
   ]);
   const lifecycle: string[] = [];
   const progressNotifications: string[] = [];
+  const recordChildExitViaKernelWorker = vi.fn(async () => {});
 
   const helpers = createWorkerExitHelpers({
     processHandles,
@@ -1405,7 +1393,7 @@ test("completeProcessExit clears parent pipe-wait RPC after normal child exit pu
       progressNotifications.push(`${handle.pid}:${blockedState.rpcPending ? "pending" : "clear"}`);
     },
     publishRuntimeFsState: () => 1,
-    recordChildExitViaKernelWorker: async () => {},
+    recordChildExitViaKernelWorker,
     replaceRuntimeFsSnapshot: () => {},
     releaseSharedHostStdio: async () => {},
     requestPipeStateSync: async () => {},
@@ -1415,7 +1403,7 @@ test("completeProcessExit clears parent pipe-wait RPC after normal child exit pu
 
   await helpers.completeProcessExit(child, 127, 0);
 
-  expect(parent.childExitSyncRecords.get(3)).toBe(127 << 8);
+  expect(recordChildExitViaKernelWorker).toHaveBeenCalledWith(parent, 3, 127 << 8);
   expect(blockedState.rpcPending).toBe(false);
   expect(blockedState.rpcGeneration).toBe(2);
   expect(blockedState.pipeSyncedBeforePassive).toBe(false);
