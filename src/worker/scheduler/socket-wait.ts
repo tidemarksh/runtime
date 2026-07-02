@@ -1,43 +1,18 @@
 import type { ProcessHandle } from "../types.js";
-import type { SupervisorBlockedWaitRetryReason } from "../../supervisor-blocked-resume.js";
 
 export interface SocketWaitSchedulerDeps {
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   logNetworkDebug(event: string): void;
-  scheduleSupervisorBlockedRetry(
-    handle: ProcessHandle,
-    worker: Worker,
-    reason?: SupervisorBlockedWaitRetryReason,
-  ): void;
 }
 
 export interface SocketWaitScheduler {
-  socketWaitTimeoutMs(handle: ProcessHandle, status: number, vmPtr: number): number;
   formatFirstSocketWaitDebug(handle: ProcessHandle, vmPtr: number): string;
   blockedWaitMayDependOnNetwork(handle: ProcessHandle, status: number, vmPtr: number): boolean;
   blockedWaitShouldPumpNetwork(handle: ProcessHandle, status: number, vmPtr: number): boolean;
   networkInboundAvailable(handle: ProcessHandle, vmPtr: number): boolean;
-  scheduleSocketBlockedRetry(
-    handle: ProcessHandle,
-    worker: Worker,
-    supervisorTimerArmed: boolean,
-    timeoutMs: number,
-  ): void;
 }
 
 export function createSocketWaitScheduler(deps: SocketWaitSchedulerDeps): SocketWaitScheduler {
-  function socketWaitTimeoutMs(handle: ProcessHandle, status: number, vmPtr: number): number {
-    if (
-      status !== handle.kernel.abi_status_connect()
-      && status !== handle.kernel.abi_status_socket_recv()
-      && status !== handle.kernel.abi_status_socket_send()
-    ) {
-      return -1;
-    }
-    const timeout = handle.kernel.thread_socket_wait_timeout?.(vmPtr);
-    return timeout === undefined ? -1 : Number(timeout);
-  }
-
   function formatFirstSocketWaitDebug(handle: ProcessHandle, vmPtr: number): string {
     const packed = handle.kernel.thread_poll_wait_first_socket_revents?.(vmPtr);
     if (packed === undefined) {
@@ -136,28 +111,10 @@ export function createSocketWaitScheduler(deps: SocketWaitSchedulerDeps): Socket
     return false;
   }
 
-  function scheduleSocketBlockedRetry(
-    handle: ProcessHandle,
-    worker: Worker,
-    supervisorTimerArmed: boolean,
-    timeoutMs: number,
-  ): void {
-    if (supervisorTimerArmed) {
-      return;
-    }
-    if (timeoutMs < 0) {
-      deps.scheduleSupervisorBlockedRetry(handle, worker);
-      return;
-    }
-    throw new Error("kernel supervisor timer HostOp required for finite socket wait");
-  }
-
   return {
-    socketWaitTimeoutMs,
     formatFirstSocketWaitDebug,
     blockedWaitMayDependOnNetwork,
     blockedWaitShouldPumpNetwork,
     networkInboundAvailable,
-    scheduleSocketBlockedRetry,
   };
 }

@@ -5,6 +5,7 @@ import {
 import {
   resumeBlockedSyscallBySupervisor,
   supervisorBlockedResumeDelegation,
+  supervisorBlockedWaitTimerRequired,
   supervisorBlockedWaitRetryDelayMs,
   SUPERVISOR_BLOCKED_RESUME_DELEGATION_DIRECT,
   SUPERVISOR_BLOCKED_RESUME_DELEGATION_EPOLL_DIRECT,
@@ -459,7 +460,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     pollWaitTimeoutMs,
     pipeWaitShouldParkBehindActiveChild,
     pipeWaitShouldRemainPassive,
-    schedulePipePollTimeoutRetry,
   } = createPipePollScheduler({
     threadWorkerStates,
     appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
@@ -469,13 +469,10 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   });
   const {
     formatFirstSocketWaitDebug,
-    socketWaitTimeoutMs,
     blockedWaitShouldPumpNetwork,
-    scheduleSocketBlockedRetry,
   } = createSocketWaitScheduler({
     appendWorkerDebugLog,
     logNetworkDebug,
-    scheduleSupervisorBlockedRetry,
   });
 
   const {
@@ -995,18 +992,13 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
     handle.hostBlockedWorkers.set(worker, blocked);
     const supervisorTimerArmed = armBlockedSupervisorTimerForBlocked(handle, blocked);
+    if (supervisorTimerArmed) {
+      return;
+    }
     if (sameBlockedThread && blocked.rpcPending) {
       return;
     }
     if (status === handle.kernel.abi_status_epoll_wait()) {
-      const timeoutMs = Number(handle.kernel.thread_epoll_wait_timeout(vmPtr));
-      const deadlineTicks = timeoutMs < 0 ? epollTimerfdDeadlineTicks(handle, vmPtr) : null;
-      if (timeoutMs >= 0 || deadlineTicks !== null) {
-        if (!supervisorTimerArmed) {
-          throw new Error("kernel supervisor timer HostOp required for finite epoll wait");
-        }
-        return;
-      }
       if (handle.kernel.thread_process_thread_count(vmPtr) > 1) {
         scheduleSupervisorBlockedRetry(
           handle,
@@ -1026,31 +1018,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         worker,
         SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_IMMEDIATE,
       );
-      return;
-    }
-    if (
-      pollTimeoutMs >= 0
-      && (pollReadyCount === undefined || pollReadyCount <= 0)
-    ) {
-      if (supervisorTimerArmed) {
-        return;
-      }
-      if (
-        status === handle.kernel.abi_status_pipe_wait()
-        && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) !== 1
-      ) {
-        schedulePipePollTimeoutRetry(handle, worker, supervisorTimerArmed, pollTimeoutMs);
-      } else {
-        scheduleSocketBlockedRetry(handle, worker, supervisorTimerArmed, pollTimeoutMs);
-      }
-      return;
-    }
-    const socketTimeoutMs = socketWaitTimeoutMs(handle, status, vmPtr);
-    if (socketTimeoutMs >= 0) {
-      if (supervisorTimerArmed) {
-        return;
-      }
-      scheduleSocketBlockedRetry(handle, worker, supervisorTimerArmed, socketTimeoutMs);
       return;
     }
     if (status === handle.kernel.abi_status_wait4()) {
@@ -1096,6 +1063,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         );
       }
       if (enqueueResult === 0) {
+        if (supervisorBlockedWaitTimerRequired(handle.kernel, vmPtr)) {
+          throw new Error(
+            `supervisor blocked wait timer required but no HostOp was enqueued: `
+              + `pid=${handle.pid}:vm=0x${vmPtr.toString(16)}`,
+          );
+        }
         return false;
       }
       hostTimer = drainSupervisorArmHostTimerHostOp(handle, vmPtr);
@@ -1275,11 +1248,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
 
     if (status === handle.kernel.abi_status_epoll_wait()) {
-      const timeoutMs = Number(handle.kernel.thread_epoll_wait_timeout(vmPtr));
-      const deadlineTicks = timeoutMs < 0 ? epollTimerfdDeadlineTicks(handle, vmPtr) : null;
-      if (timeoutMs >= 0 || deadlineTicks !== null) {
-        throw new Error("kernel supervisor timer HostOp required for finite epoll wait");
-      } else if (handle.kernel.thread_process_thread_count(vmPtr) > 1) {
+      if (handle.kernel.thread_process_thread_count(vmPtr) > 1) {
         scheduleSupervisorBlockedRetry(
           handle,
           worker,
@@ -1301,13 +1270,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       );
       return;
     }
-    if (
-      pollTimeoutMs >= 0
-      && (pollReadyCount === undefined || pollReadyCount <= 0)
-    ) {
-      scheduleSocketBlockedRetry(handle, worker, supervisorTimerArmed, pollTimeoutMs);
-      return;
-    }
     if (pipeWaitShouldRemainPassive(
       handle,
       status,
@@ -1321,11 +1283,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         worker,
         SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT,
       );
-      return;
-    }
-    const socketTimeoutMs = socketWaitTimeoutMs(handle, status, vmPtr);
-    if (socketTimeoutMs >= 0) {
-      scheduleSocketBlockedRetry(handle, worker, supervisorTimerArmed, socketTimeoutMs);
       return;
     }
     scheduleSupervisorBlockedRetry(
@@ -1668,15 +1625,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         return;
       }
       if (handle.kernel.thread_poll_wait_has_socket?.(blocked.vmPtr) !== 1) {
-        if (armBlockedSupervisorTimerForBlocked(handle, blocked)) {
-          return;
-        }
-        schedulePipePollTimeoutRetry(
-          handle,
-          worker,
-          isSupervisorTimerArmed(blocked),
-          blockedPollTimeoutMs,
-        );
+        scheduleSupervisorBlockedRetry(handle, worker);
         return;
       }
       if (
@@ -1707,15 +1656,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
           });
         return;
       }
-      if (armBlockedSupervisorTimerForBlocked(handle, blocked)) {
-        return;
-      }
-      scheduleSocketBlockedRetry(
-        handle,
-        worker,
-        isSupervisorTimerArmed(blocked),
-        blockedPollTimeoutMs,
-      );
+      scheduleSupervisorBlockedRetry(handle, worker);
       return;
     }
     if (
@@ -1791,20 +1732,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       );
       return;
     }
-    const blockedSocketTimeoutMs = socketWaitTimeoutMs(handle, blocked.status, blocked.vmPtr);
-    if (blockedSocketTimeoutMs >= 0) {
-      if (armBlockedSupervisorTimerForBlocked(handle, blocked)) {
-        return;
-      }
-      scheduleSocketBlockedRetry(
-        handle,
-        worker,
-        isSupervisorTimerArmed(blocked),
-        blockedSocketTimeoutMs,
-      );
-      return;
-    }
-
     if (
       handle.kernelWorkerRequest
       && handle.pid > 0

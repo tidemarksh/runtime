@@ -248,6 +248,7 @@ export interface KernelExports {
   supervisor_blocked_wait_retry_reason_passive_wait?(): number;
   supervisor_blocked_wait_retry_reason_process_gate?(): number;
   supervisor_enqueue_blocked_wait_timer?(vmPtr: number): number;
+  supervisor_blocked_wait_timer_required?(vmPtr: number): number;
   supervisor_fd_control_record?(outPtr: number, outLen: number): number;
   supervisor_fs_control_record?(outPtr: number, outLen: number): number;
   supervisor_signal_control_record?(outPtr: number, outLen: number): number;
@@ -1211,6 +1212,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_wait_retry_reason_passive_wait",
   "supervisor_blocked_wait_retry_reason_process_gate",
   "supervisor_enqueue_blocked_wait_timer",
+  "supervisor_blocked_wait_timer_required",
   "supervisor_fd_control_record",
   "supervisor_fs_control_record",
   "supervisor_signal_control_record",

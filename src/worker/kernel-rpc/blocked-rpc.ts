@@ -45,13 +45,23 @@ export interface WorkerKernelRpcBlockedRpcDeps {
   failProcess(handle: ProcessHandle, error: Error): void;
   clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void;
   requestThreadWorkerBlockedResume(handle: ProcessHandle, worker: Worker): void;
-  handleHostBlockedRetryResult(handle: ProcessHandle, worker: Worker, vmPtr: number, status: number): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   syncBlockedForkSharedStateViaKernelWorker(handle: ProcessHandle, sourceVmPtr: number | undefined, cause: SyncCause): Promise<void>;
   syncSocketStateViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<{ socketUsed: number; netBufUsed: bigint }>;
 }
 
-function createWorkerKernelRpcBlockedRpcHelperInternals(deps: WorkerKernelRpcBlockedRpcDeps) {
+type HostBlockedRetryResultHandler = (
+  handle: ProcessHandle,
+  worker: Worker,
+  vmPtr: number,
+  status: number,
+) => void;
+
+type WorkerKernelRpcBlockedRpcInternalDeps = WorkerKernelRpcBlockedRpcDeps & {
+  handleHostBlockedRetryResult?: HostBlockedRetryResultHandler;
+};
+
+function createWorkerKernelRpcBlockedRpcHelperInternals(deps: WorkerKernelRpcBlockedRpcInternalDeps) {
   const pendingOutcomeEffects = new WeakMap<Worker, KernelRpcResumeEffect[]>();
 
   function pushOutcomeEffect(worker: Worker, effect: KernelRpcResumeEffect): void {
@@ -79,6 +89,9 @@ function createWorkerKernelRpcBlockedRpcHelperInternals(deps: WorkerKernelRpcBlo
     vmPtr: number,
     status: number,
   ): void {
+    if (deps.handleHostBlockedRetryResult === undefined) {
+      throw new Error("blocked-rpc retry callback is not available on the production outcome path");
+    }
     deps.handleHostBlockedRetryResult(handle, worker, vmPtr, status);
   }
 
@@ -2223,7 +2236,8 @@ export function createWorkerKernelRpcBlockedRpcHelpers(deps: WorkerKernelRpcBloc
 
 export function createWorkerKernelRpcBlockedRpcTestHelpers(
   deps: Omit<WorkerKernelRpcBlockedRpcDeps, "clearHostBlockedRetryTimer" | "requestThreadWorkerBlockedResume">
-    & Partial<Pick<WorkerKernelRpcBlockedRpcDeps, "clearHostBlockedRetryTimer" | "requestThreadWorkerBlockedResume">>,
+    & Partial<Pick<WorkerKernelRpcBlockedRpcDeps, "clearHostBlockedRetryTimer" | "requestThreadWorkerBlockedResume">>
+    & { handleHostBlockedRetryResult?: HostBlockedRetryResultHandler },
 ) {
   return createWorkerKernelRpcBlockedRpcHelperInternals({
     ...deps,

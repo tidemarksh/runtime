@@ -295,6 +295,7 @@ test("host boundary reports blocked retry timer expiry to supervisor before retr
       return 0;
     }),
     supervisor_enqueue_blocked_wait_timer: vi.fn(() => 0),
+    supervisor_blocked_wait_timer_required: vi.fn(() => 0),
     supervisor_blocked_wait_retry_delay_ms: () => 1,
     supervisor_blocked_wait_retry_reason_default: () => 0,
     thread_status: (vmPtr: number) => vmPtr === blockedThread.vmPtr

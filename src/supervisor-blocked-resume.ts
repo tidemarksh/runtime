@@ -140,3 +140,18 @@ export function supervisorBlockedWaitRetryDelayMs(
   }
   return result;
 }
+
+export function supervisorBlockedWaitTimerRequired(
+  kernel: KernelExports,
+  vmPtr: number,
+): boolean {
+  const required = kernel.supervisor_blocked_wait_timer_required;
+  if (required === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_blocked_wait_timer_required");
+  }
+  const result = required(vmPtr);
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked wait timer required check failed: ${result}`);
+  }
+  return result !== 0;
+}

@@ -57,12 +57,6 @@ export interface PipePollScheduler {
     pollTimeoutMs: number,
     readyCount: number | undefined,
   ): boolean;
-  schedulePipePollTimeoutRetry(
-    handle: ProcessHandle,
-    worker: Worker,
-    supervisorTimerArmed: boolean,
-    timeoutMs: number,
-  ): void;
   formatFirstPipeWaitDebug(handle: ProcessHandle, vmPtr: number): string;
   formatBlockedPollFdSet(handle: ProcessHandle, vmPtr: number, limit?: number): string;
 }
@@ -328,22 +322,6 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
       && !pipeWaitHasImmediateWakeReason(handle, blocked.vmPtr, readyCount);
   }
 
-  function schedulePipePollTimeoutRetry(
-    handle: ProcessHandle,
-    worker: Worker,
-    supervisorTimerArmed: boolean,
-    timeoutMs: number,
-  ): void {
-    if (supervisorTimerArmed) {
-      return;
-    }
-    if (timeoutMs < 0) {
-      deps.scheduleSupervisorBlockedRetry(handle, worker);
-      return;
-    }
-    throw new Error("kernel supervisor timer HostOp required for finite pipe poll wait");
-  }
-
   function blockedPollPipeHasBufferedData(handle: ProcessHandle, vmPtr: number): boolean {
     const rawMask = handle.kernel.thread_poll_wait_pipe_slots_mask?.(vmPtr);
     const mask = rawMask === undefined
@@ -589,7 +567,6 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
     pollPipeWriteOpenForThreadStep,
     pipeWaitShouldRemainPassive,
     pipeWaitShouldParkBehindActiveChild,
-    schedulePipePollTimeoutRetry,
     formatFirstPipeWaitDebug,
     formatBlockedPollFdSet,
   };

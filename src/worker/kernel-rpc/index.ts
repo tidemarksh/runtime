@@ -28,7 +28,6 @@ interface WorkerKernelRpcDeps {
   failProcess(handle: ProcessHandle, error: Error): void;
   clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void;
   requestThreadWorkerBlockedResume(handle: ProcessHandle, worker: Worker): void;
-  handleHostBlockedRetryResult(handle: ProcessHandle, worker: Worker, vmPtr: number, status: number): void;
   markRuntimeFsDirty(handle: ProcessHandle): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   syncProcessMemfsViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<void>;
@@ -174,7 +173,6 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     failProcess: deps.failProcess,
     clearHostBlockedRetryTimer: deps.clearHostBlockedRetryTimer,
     requestThreadWorkerBlockedResume: deps.requestThreadWorkerBlockedResume,
-    handleHostBlockedRetryResult: deps.handleHostBlockedRetryResult,
     requestPipeStateSync: deps.requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker: deps.syncBlockedForkSharedStateViaKernelWorker,
     syncSocketStateViaKernelWorker: syncSocketStatePreservingNetworkBridge,

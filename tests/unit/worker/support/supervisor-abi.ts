@@ -34,6 +34,7 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_wait_retry_reason_active_child: 3,
   supervisor_blocked_wait_retry_reason_passive_wait: 4,
   supervisor_blocked_wait_retry_reason_process_gate: 5,
+  supervisor_blocked_wait_timer_required: 0,
   supervisor_host_op_kind_arm_host_timer: 12,
   supervisor_futex_wait_completion_woken: 1,
   supervisor_futex_wait_completion_not_equal: 2,

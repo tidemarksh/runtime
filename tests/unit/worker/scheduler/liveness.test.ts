@@ -506,6 +506,8 @@ function installTestSupervisorBlockedWaitTimers(
     pendingTimers.push(timer);
     return 1;
   });
+  kernel.supervisor_blocked_wait_timer_required = vi.fn((vmPtr: number) =>
+    selectTestSupervisorBlockedWaitTimer(kernel, vmPtr, seq) === null ? 0 : 1);
   kernel.supervisor_next_host_op = vi.fn((outPtr: number, outLen: number) => {
     if (outLen < 64) {
       return -1;
