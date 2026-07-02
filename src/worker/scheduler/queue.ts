@@ -5,9 +5,6 @@ import {
 } from "../../bridge/compat.js";
 import { publishRuntimeBridgeEpoch } from "../../bridge/runtime-state.js";
 import { ensureMemoryCapacity, kernelScratchBase } from "../kernel-scratch.js";
-import {
-  threadHasCanonicalFutexBlock,
-} from "./futex.js";
 import { clearStaleForkSharedSyncGate } from "./fork-shared-gate.js";
 import type {
   AttachThreadWorkerRequest,
@@ -682,10 +679,7 @@ export function createWorkerSchedulerQueueHelpers(
         deps.appendWorkerDebugLog(handle, `supervisor-resume:futex-wake:missing:0x${vmPtr.toString(16)}`);
         continue;
       }
-      if (
-        handle.kernel.thread_status(vmPtr) === futexWaitStatus
-        || threadHasCanonicalFutexBlock(handle, vmPtr)
-      ) {
+      if (handle.kernel.thread_status(vmPtr) === futexWaitStatus) {
         thread.waitingInWorkerStatus = futexWaitStatus;
         thread.waitingInWorkerReconcileDeferred = false;
         deps.appendWorkerDebugLog(
@@ -733,10 +727,7 @@ export function createWorkerSchedulerQueueHelpers(
       );
       return;
     }
-    if (
-      handle.kernel.thread_status(record.vmPtr) === handle.kernel.abi_status_futex_wait()
-      || threadHasCanonicalFutexBlock(handle, record.vmPtr)
-    ) {
+    if (handle.kernel.thread_status(record.vmPtr) === handle.kernel.abi_status_futex_wait()) {
       thread.waitingInWorkerStatus = handle.kernel.abi_status_futex_wait();
       thread.waitingInWorkerReconcileDeferred = false;
       deps.appendWorkerDebugLog(
@@ -825,10 +816,7 @@ export function createWorkerSchedulerQueueHelpers(
         return null;
       }
       const status = handle.kernel.thread_status(thread.vmPtr);
-      if (
-        status === handle.kernel.abi_status_futex_wait()
-        || threadHasCanonicalFutexBlock(handle, thread.vmPtr)
-      ) {
+      if (status === handle.kernel.abi_status_futex_wait()) {
         handle.runningWorker = null;
         thread.runningGeneration = null;
         thread.waitingInWorkerStatus = handle.kernel.abi_status_futex_wait();
@@ -882,7 +870,7 @@ export function createWorkerSchedulerQueueHelpers(
     return thread?.waitingInWorkerStatus !== null;
   }
 
-  function parkReadyWorkerStillInCanonicalFutexWait(
+  function parkReadyWorkerStillInFutexWait(
     handle: ProcessHandle,
     thread: ThreadWorkerState | undefined,
   ): boolean {
@@ -893,10 +881,7 @@ export function createWorkerSchedulerQueueHelpers(
       return false;
     }
     const futexWaitStatus = handle.kernel.abi_status_futex_wait();
-    if (
-      handle.kernel.thread_status(thread.vmPtr) !== futexWaitStatus
-      && !threadHasCanonicalFutexBlock(handle, thread.vmPtr)
-    ) {
+    if (handle.kernel.thread_status(thread.vmPtr) !== futexWaitStatus) {
       return false;
     }
     thread.waitingInWorkerStatus = futexWaitStatus;
@@ -1241,7 +1226,7 @@ export function createWorkerSchedulerQueueHelpers(
       if (
         (candidateThread?.ownerAsyncStatus ?? null) !== null
         || hasWorkerLocalWait(candidateThread)
-        || parkReadyWorkerStillInCanonicalFutexWait(handle, candidateThread)
+        || parkReadyWorkerStillInFutexWait(handle, candidateThread)
         || (candidateThread !== undefined && handle.kernel.thread_process_ptr(candidateThread.vmPtr) === 0)
       ) {
         appendSchedulerQueueDebugLog(

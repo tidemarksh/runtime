@@ -3,7 +3,6 @@ import type {
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
-import { threadHasCanonicalFutexBlock } from "./futex.js";
 
 export function logNetworkDebug(_event: string): void {
   // Runtime diagnostics are kept in the per-process worker debug buffer.
@@ -145,28 +144,9 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     }
     const runningStatus = handle.kernel.thread_status(runningThread.vmPtr);
     if (
-      threadHasCanonicalFutexBlock(handle, runningThread.vmPtr)
+      runningThread.lastStatus === handle.kernel.abi_status_futex_wait()
       && runningThread.pendingGuestMemoryWrites.length === 0
-      && runningStatus === handle.kernel.abi_status_ok()
-      && handle.kernel.thread_process_ptr(runningThread.vmPtr) !== 0
-    ) {
-      handle.runningWorker = null;
-      runningThread.runningGeneration = null;
-      runningThread.waitingInWorkerStatus = handle.kernel.abi_status_futex_wait();
-      runningThread.waitingInWorkerReconcileDeferred = false;
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `running-worker-cleared:${handle.pid}:recorded-futex-wait:0x${runningThread.vmPtr.toString(16)}`,
-      );
-      return true;
-    }
-    if (
-      (
-        runningThread.lastStatus === handle.kernel.abi_status_futex_wait()
-        || threadHasCanonicalFutexBlock(handle, runningThread.vmPtr)
-      )
-      && runningThread.pendingGuestMemoryWrites.length === 0
-      && runningStatus === handle.kernel.abi_status_ok()
+      && runningStatus === handle.kernel.abi_status_futex_wait()
       && handle.kernel.thread_process_ptr(runningThread.vmPtr) !== 0
       && runningThread.stepCount <= runningThread.statusCount
     ) {
@@ -176,7 +156,7 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
       runningThread.waitingInWorkerReconcileDeferred = false;
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
-        `running-worker-cleared:${handle.pid}:answered-futex-wait:0x${runningThread.vmPtr.toString(16)}:record=${threadHasCanonicalFutexBlock(handle, runningThread.vmPtr) ? 1 : 0}`,
+        `running-worker-cleared:${handle.pid}:answered-futex-wait:0x${runningThread.vmPtr.toString(16)}`,
       );
       return true;
     }
