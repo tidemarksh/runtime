@@ -299,10 +299,10 @@ function appendSchedulerQueueDebugLog(
   handle.workerDebugLog.push(event);
 }
 
-function removeReadyWorker(handle: ProcessHandle, worker: Worker): void {
-  for (let index = handle.readyWorkers.length - 1; index >= 0; index -= 1) {
-    if (handle.readyWorkers[index] === worker) {
-      handle.readyWorkers.splice(index, 1);
+function removeVforkReadyWorker(handle: ProcessHandle, worker: Worker): void {
+  for (let index = handle.vforkReadyWorkers.length - 1; index >= 0; index -= 1) {
+    if (handle.vforkReadyWorkers[index] === worker) {
+      handle.vforkReadyWorkers.splice(index, 1);
     }
   }
 }
@@ -524,7 +524,7 @@ export function createWorkerSchedulerQueueHelpers(
       return null;
     }
     clearBlockedWorker(handle, selectedWorker);
-    removeReadyWorker(handle, selectedWorker);
+    removeVforkReadyWorker(handle, selectedWorker);
     selectedThread.waitingInWorkerStatus = null;
     selectedThread.runningGeneration = null;
     deps.appendWorkerDebugLog(
@@ -555,7 +555,7 @@ export function createWorkerSchedulerQueueHelpers(
     if (result === 0) {
       deps.appendWorkerDebugLog(
         handle,
-        `supervisor-resume:runnable:none:ready=${handle.readyWorkers.length}`,
+        `supervisor-resume:runnable:none:ready=${handle.vforkReadyWorkers.length}`,
       );
       return null;
     }
@@ -772,7 +772,7 @@ export function createWorkerSchedulerQueueHelpers(
     if (sanitizeRunningWorker(handle) === worker) {
       return true;
     }
-    if (handle.readyWorkers.includes(worker)) {
+    if (handle.vforkReadyWorkers.includes(worker)) {
       return true;
     }
     if (handle.blockedWorkers.has(worker)) {
@@ -802,7 +802,7 @@ export function createWorkerSchedulerQueueHelpers(
   function detachTransferredWorker(handle: ProcessHandle, worker: Worker): void {
     const thread = deps.threadWorkerStates.get(worker);
     clearBlockedWorker(handle, worker);
-    removeReadyWorker(handle, worker);
+    removeVforkReadyWorker(handle, worker);
     if (handle.runningWorker === worker) {
       handle.runningWorker = null;
     }
@@ -829,7 +829,7 @@ export function createWorkerSchedulerQueueHelpers(
     if (existingThread) {
       if (reinitWithinHandle) {
         clearBlockedWorker(handle, worker);
-        removeReadyWorker(handle, worker);
+        removeVforkReadyWorker(handle, worker);
         if (handle.runningWorker === worker) {
           handle.runningWorker = null;
         }
@@ -976,7 +976,7 @@ export function createWorkerSchedulerQueueHelpers(
       handle.runtimeId,
       `clone-child-init-post:${handle.pid}:vm=0x${vmPtr.toString(16)}`
         + `:generation=${generation}:force=${forcePrepare ? 1 : 0}`
-        + `:workers=${handle.workers.size}:ready=${handle.readyWorkers.length}`,
+        + `:workers=${handle.workers.size}:ready=${handle.vforkReadyWorkers.length}`,
     );
     worker.postMessage(initMessage);
   }
@@ -1004,7 +1004,7 @@ export function createWorkerSchedulerQueueHelpers(
       ) {
         appendSchedulerQueueDebugLog(deps, handle, `runnable-defer-owner-async:0x${thread.vmPtr.toString(16)}:async=${thread.ownerAsyncStatus}`);
       } else if ((thread?.ownerAsyncStatus ?? null) === null) {
-        removeReadyWorker(handle, worker);
+        removeVforkReadyWorker(handle, worker);
       }
       pumpProcess(handle);
       return;
@@ -1023,9 +1023,9 @@ export function createWorkerSchedulerQueueHelpers(
     if (
       handle.vforkSnapshot !== null
       && handle.vforkWorker === worker
-      && !handle.readyWorkers.includes(worker)
+      && !handle.vforkReadyWorkers.includes(worker)
     ) {
-      handle.readyWorkers.push(worker);
+      handle.vforkReadyWorkers.push(worker);
     }
     pumpProcess(handle);
   }
@@ -1033,7 +1033,7 @@ export function createWorkerSchedulerQueueHelpers(
   function completeFaultedProcessWithoutWorkers(handle: ProcessHandle): boolean {
     if (
       handle.workers.size !== 0
-      || handle.readyWorkers.length !== 0
+      || handle.vforkReadyWorkers.length !== 0
       || handle.runningWorker !== null
       || handle.blockedWorkers.size !== 0
     ) {
@@ -1080,7 +1080,7 @@ export function createWorkerSchedulerQueueHelpers(
       if (staleGate !== null) {
         appendSchedulerQueueDebugLog(deps, handle, `pump-cleared:${staleGate}`);
       } else {
-        appendSchedulerQueueDebugLog(deps, handle, `pump-held:fork-shared-sync:ready=${handle.readyWorkers.length}`);
+        appendSchedulerQueueDebugLog(deps, handle, `pump-held:fork-shared-sync:ready=${handle.vforkReadyWorkers.length}`);
         observeForkSharedSyncGate(handle, forkSharedSyncPromise);
         return;
       }
@@ -1091,7 +1091,7 @@ export function createWorkerSchedulerQueueHelpers(
       appendSchedulerQueueDebugLog(
         deps,
         handle,
-        `pump-held:running:ready=${handle.readyWorkers.length}`
+        `pump-held:running:ready=${handle.vforkReadyWorkers.length}`
           + (thread ? `:vm=0x${thread.vmPtr.toString(16)}:status=${handle.kernel.thread_status(thread.vmPtr)}` : ""),
       );
       return;
@@ -1102,11 +1102,11 @@ export function createWorkerSchedulerQueueHelpers(
     }
     let next: Worker | undefined;
     if (hasExclusiveVforkWorker(handle)) {
-      const index = handle.readyWorkers.indexOf(handle.vforkWorker!);
+      const index = handle.vforkReadyWorkers.indexOf(handle.vforkWorker!);
       if (index === -1) {
         return;
       }
-      const candidate = handle.readyWorkers[index];
+      const candidate = handle.vforkReadyWorkers[index];
       const candidateThread = candidate ? deps.threadWorkerStates.get(candidate) : undefined;
       if (
         (candidateThread?.ownerAsyncStatus ?? null) !== null
@@ -1116,15 +1116,15 @@ export function createWorkerSchedulerQueueHelpers(
         appendSchedulerQueueDebugLog(
           deps,
           handle,
-          `pump-skip-candidate:vfork:ready=${handle.readyWorkers.length}`
+          `pump-skip-candidate:vfork:ready=${handle.vforkReadyWorkers.length}`
             + (candidateThread ? `:vm=0x${candidateThread.vmPtr.toString(16)}`
               + `:wait=${candidateThread.waitingInWorkerStatus ?? "null"}`
               + `:async=${candidateThread.ownerAsyncStatus ?? "null"}` : ""),
         );
-        handle.readyWorkers.splice(index, 1);
+        handle.vforkReadyWorkers.splice(index, 1);
         return;
       }
-      next = handle.readyWorkers.splice(index, 1)[0];
+      next = handle.vforkReadyWorkers.splice(index, 1)[0];
     } else {
       const supervisorSelected = selectSupervisorRunnableWorker(handle);
       if (supervisorSelected !== undefined) {
@@ -1132,7 +1132,7 @@ export function createWorkerSchedulerQueueHelpers(
       } else {
         deps.appendWorkerDebugLog(
           handle,
-          `supervisor-resume:runnable:missing-export:ready=${handle.readyWorkers.length}`,
+          `supervisor-resume:runnable:missing-export:ready=${handle.vforkReadyWorkers.length}`,
         );
         return;
       }
@@ -1148,7 +1148,7 @@ export function createWorkerSchedulerQueueHelpers(
       appendSchedulerQueueDebugLog(
         deps,
         handle,
-        `pump-run:ready=${handle.readyWorkers.length}:vm=0x${vmPtr.toString(16)}:status=${handle.kernel.thread_status(vmPtr)}`,
+        `pump-run:ready=${handle.vforkReadyWorkers.length}:vm=0x${vmPtr.toString(16)}:status=${handle.kernel.thread_status(vmPtr)}`,
       );
       restoreRegularFileOffsetsForStep(handle);
       preserveHostStdioPipeControlForStep(handle, vmPtr);

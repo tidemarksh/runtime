@@ -27,7 +27,7 @@ export function createWorkerDestroyHelpers(deps: WorkerDestroyDeps) {
     for (const worker of [...handle.blockedWorkers.keys()]) {
       deps.clearBlockedWorker(handle, worker);
     }
-    handle.readyWorkers.length = 0;
+    handle.vforkReadyWorkers.length = 0;
     handle.runningWorker = null;
     deps.clearVforkSnapshot(handle);
 

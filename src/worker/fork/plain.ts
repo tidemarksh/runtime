@@ -70,7 +70,7 @@ async function waitForForkChildSchedulingPoint(childHandle: ProcessHandle): Prom
       || childHandle.workers.size === 0
       || childHandle.blockedWorkers.size > 0
       || childHandle.runningWorker !== null
-      || childHandle.readyWorkers.length > 0
+      || childHandle.vforkReadyWorkers.length > 0
     ) {
       return;
     }

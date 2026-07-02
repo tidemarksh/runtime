@@ -134,7 +134,7 @@ function makeHandle(overrides: Record<string, unknown> = {}) {
     },
     kernelState: runtimeState,
     runningWorker: null,
-    readyWorkers: [],
+    vforkReadyWorkers: [],
     stdioOwner: null,
     pipeSyncPromise: null,
     pipeSyncQueued: false,

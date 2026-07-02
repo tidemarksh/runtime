@@ -119,7 +119,7 @@ export async function syncPipeStateViaKernelWorker(
   const networkSocketSnapshots = snapshotNetworkBridgeSocketState(handle.kernelShare.members);
   let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
   const applyFdEntries = handle.runningWorker === null
-    && handle.readyWorkers.length === 0
+    && handle.vforkReadyWorkers.length === 0
     && handle.workers.size === 0
     && handle.blockedWorkers.size === 0;
   appendSocketSyncDebug(
@@ -130,7 +130,7 @@ export async function syncPipeStateViaKernelWorker(
       `vm=0x${handle.vmPtr.toString(16)}`,
       `applyFd=${applyFdEntries ? 1 : 0}`,
       `running=${handle.runningWorker === null ? 0 : 1}`,
-      `ready=${handle.readyWorkers.length}`,
+      `ready=${handle.vforkReadyWorkers.length}`,
       `workers=${handle.workers.size}`,
       `blocked=${handle.blockedWorkers.size}`,
       `stdioOwner=${handle.stdioOwner?.pid ?? 0}`,

@@ -56,7 +56,7 @@ function makeHandle(
     sabPageCache: null,
     kernelWorkerRequest: vi.fn(async () => ({ type: "pipe-state-synced" } as never)),
     workers: new Set(),
-    readyWorkers: [],
+    vforkReadyWorkers: [],
     runningWorker: null,
     blockedWorkers: new Map(),
     childExitSyncRecords: new Map(),

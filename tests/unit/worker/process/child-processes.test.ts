@@ -42,7 +42,7 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
     runtimeBridge: {} as ProcessHandle["runtimeBridge"],
     sabPageCache: null,
     workers: new Set(),
-    readyWorkers: [],
+    vforkReadyWorkers: [],
     runningWorker: null,
     blockedWorkers: new Map(),
     pendingChildExitRecords: 0,

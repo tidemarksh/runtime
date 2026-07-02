@@ -98,7 +98,7 @@ export function createForkChildHandle({
       }]),
     ),
     workers: new Set(),
-    readyWorkers: [],
+    vforkReadyWorkers: [],
     runningWorker: null,
     blockedWorkers: new Map(),
     pendingChildExitRecords: 0,

@@ -19,7 +19,7 @@ export function createVforkExclusiveScheduler(
     if (handle.runningWorker === worker) {
       return true;
     }
-    if (handle.readyWorkers.includes(worker)) {
+    if (handle.vforkReadyWorkers.includes(worker)) {
       return true;
     }
     if (handle.blockedWorkers.has(worker)) {

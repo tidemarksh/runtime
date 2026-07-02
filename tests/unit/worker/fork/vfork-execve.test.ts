@@ -2405,7 +2405,7 @@ test("vfork execve handoff failure reinitializes the restored parent while a sib
     parentWorker.clearPostedMessages();
 
     handle.runningWorker = siblingWorker as unknown as Worker;
-    handle.readyWorkers.length = 0;
+    handle.vforkReadyWorkers.length = 0;
     parentKernel.thread_vfork_child_pid = () => 55;
     parentKernel.thread_spawn_kind = () => parentKernel.abi_spawn_kind_execve();
     parentKernel.thread_spawn_child_pid = () => {
@@ -2436,7 +2436,7 @@ test("vfork execve handoff failure reinitializes the restored parent while a sib
     await flushMicrotasks(40);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(handle.readyWorkers).toEqual([]);
+    expect(handle.vforkReadyWorkers).toEqual([]);
     expect(handle.runningWorker).toBe(siblingWorker as unknown as Worker);
     expect(parentWorker.postedMessages).toEqual([
       expect.objectContaining({
@@ -2474,7 +2474,7 @@ test("vfork execve handoff failure reinitializes the restored parent while a sib
     await flushMicrotasks();
 
     expect(handle.runningWorker).toBe(null);
-    expect(handle.readyWorkers).toEqual([]);
+    expect(handle.vforkReadyWorkers).toEqual([]);
     expect(parentWorker.postedMessages).toHaveLength(1);
   } finally {
     restoreDefaultInstantiate();

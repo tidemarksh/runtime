@@ -79,7 +79,7 @@ function makeHandle(
     runtimeBridge,
     sabPageCache: null,
     workers: new Set([worker]),
-    readyWorkers: [],
+    vforkReadyWorkers: [],
     runningWorker: null,
     blockedWorkers: new Map(),
     pendingChildExitRecords: 0,

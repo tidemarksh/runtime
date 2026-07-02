@@ -481,7 +481,7 @@ function hasLiveWorkerState(
 ): boolean {
   if (
     (handle.runningWorker !== null && handle.runningWorker !== undefined)
-    || (handle.readyWorkers?.length ?? 0) > 0
+    || (handle.vforkReadyWorkers?.length ?? 0) > 0
     || (handle.blockedWorkers?.size ?? 0) > 0
   ) {
     return true;

@@ -326,7 +326,8 @@ export interface ProcessHandle {
   workers: Set<Worker>;
   // Worker host queues. Runnable/thread authority comes from the supervisor;
   // these collections only track host execution, parking, and diagnostics.
-  readyWorkers: Worker[];
+  // vforkReadyWorkers is the vfork host-hold queue, not the general runnable set.
+  vforkReadyWorkers: Worker[];
   runningWorker: Worker | null;
   blockedWorkers: Map<Worker, HostBlockedWorkerState>;
   pendingChildExitRecords: number;

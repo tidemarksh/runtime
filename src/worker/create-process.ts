@@ -668,7 +668,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       networkRecvTailWatermarks: new Map(),
       networkRecvPayloadWatermarks: new Map(),
       workers: new Set(),
-      readyWorkers: [],
+      vforkReadyWorkers: [],
       runningWorker: null,
       blockedWorkers: new Map(),
       pendingChildExitRecords: 0,

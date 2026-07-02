@@ -13,7 +13,7 @@ function hasRunnableWorker(
   if (handle.runningWorker !== null) {
     workers.add(handle.runningWorker);
   }
-  for (const worker of handle.readyWorkers) {
+  for (const worker of handle.vforkReadyWorkers) {
     workers.add(worker);
   }
   for (const worker of handle.blockedWorkers.keys()) {

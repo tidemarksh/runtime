@@ -229,7 +229,7 @@ function compactExecutionStats(
     cmd: proc.cmd.split(/\s+/).slice(0, 3).join(" ").slice(0, 96),
     running: proc.running,
     memoryBytes: proc.memoryBytes,
-    readyWorkers: proc.readyWorkers,
+    vforkReadyWorkers: proc.vforkReadyWorkers,
     blockedWorkers: proc.blockedWorkers,
     transferDebugStats: proc.transferDebugStats,
     cpuDebugStats: proc.cpuDebugStats,

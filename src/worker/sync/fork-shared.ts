@@ -127,7 +127,7 @@ export function syncForkSharedStateLocallyForWorkerRuntime(
 
 function isQuiescentForkSharedSyncTarget(target: ProcessHandle): boolean {
   return target.runningWorker === null
-    && target.readyWorkers.length === 0
+    && target.vforkReadyWorkers.length === 0
     && target.blockedWorkers.size > 0
     && !hasPendingBlockedRpc(target)
     && !target.exitInProgress;

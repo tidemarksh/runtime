@@ -325,7 +325,7 @@ function makeParentHandle(): ProcessHandle {
     runtimeBridge: {} as ProcessHandle["runtimeBridge"],
     sabPageCache: null,
     workers: new Set(),
-    readyWorkers: [],
+    vforkReadyWorkers: [],
     runningWorker: null,
     blockedWorkers: new Map(),
     pipeSyncPromise: null,

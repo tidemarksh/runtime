@@ -151,7 +151,7 @@ function makeHandle(
     runtimeBridge: createRuntimeStateBridge(),
     sabPageCache: null,
     workers: new Set(),
-    readyWorkers: [],
+    vforkReadyWorkers: [],
     runningWorker: null,
     blockedWorkers: new Map(),
     pipeSyncPromise: null,

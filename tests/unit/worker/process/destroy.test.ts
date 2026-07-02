@@ -59,7 +59,7 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
     },
     sabPageCache: null,
     workers: new Set([extraWorker]),
-    readyWorkers: [extraWorker],
+    vforkReadyWorkers: [extraWorker],
     runningWorker: extraWorker,
     blockedWorkers: new Map([[extraWorker, {
       vmPtr: 0x2222,

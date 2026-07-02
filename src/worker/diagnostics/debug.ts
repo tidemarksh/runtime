@@ -116,7 +116,7 @@ export interface ProcessExecutionStats {
   artifactMaterializedBytes: number | null;
   memoryOwnership?: RuntimeMemoryOwnership;
   guestBase: number;
-  readyWorkers: number;
+  vforkReadyWorkers: number;
   blockedWorkers: number;
   pendingChildExitRecords: number;
   pendingChildSpawnRecords: number;
@@ -188,14 +188,14 @@ function formatU64Decimal(value: bigint | number | undefined): string {
 }
 
 function readWorkerOwnerState(
-  handle: Pick<ProcessHandle, "runningWorker" | "readyWorkers" | "blockedWorkers">,
+  handle: Pick<ProcessHandle, "runningWorker" | "vforkReadyWorkers" | "blockedWorkers">,
   worker: Worker,
   state: ThreadWorkerState,
 ): string {
   if (handle.runningWorker === worker) {
     return "running";
   }
-  if (handle.readyWorkers.includes(worker)) {
+  if (handle.vforkReadyWorkers.includes(worker)) {
     return "ready";
   }
   if (handle.blockedWorkers.has(worker)) {
@@ -730,7 +730,7 @@ export function summarizeProcessWorkerLogFocus(
     ProcessHandle,
     | "workers"
     | "runningWorker"
-    | "readyWorkers"
+    | "vforkReadyWorkers"
     | "blockedWorkers"
     | "workerDebugLog"
     | "kernel"
@@ -906,7 +906,7 @@ export function debugRuntimeExecutionStats(
         artifactMaterializedBytes: ownership?.artifactMaterializedBytes ?? null,
         memoryOwnership: handle.memoryOwnership,
         guestBase: handle.guestBase,
-        readyWorkers: handle.readyWorkers.length,
+        vforkReadyWorkers: handle.vforkReadyWorkers.length,
         blockedWorkers: handle.blockedWorkers.size,
         pendingChildExitRecords: handle.pendingChildExitRecords,
         pendingChildSpawnRecords: handle.pendingChildSpawnRecords,
@@ -1598,7 +1598,7 @@ export function debugRuntimeProcessHandles(
           `worker_details=[${workerDetails}]`,
           `worker_focus=[${workerFocusSummary}]`,
           `thread_states=[${threadStates}]`,
-          `ready=${handle.readyWorkers.length}`,
+          `ready=${handle.vforkReadyWorkers.length}`,
           `running=${handle.runningWorker ? "1" : "0"}`,
           `blocked=[${blocked}]`,
           `pipe_sync=${handle.pipeSyncPromise === null ? 0 : 1}/${handle.pipeSyncQueued ? 1 : 0}`,

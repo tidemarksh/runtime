@@ -1538,7 +1538,7 @@ test("kernel-worker fs outcome skips stale dirty MemFS peers before dispatch", a
     processMemfsDirty: true,
     processMemfsPublishPending: true,
     runningWorker: null,
-    readyWorkers: [],
+    vforkReadyWorkers: [],
     blockedWorkers: new Map(),
     workers: new Set([stalePeerWorker]),
     exitInProgress: false,

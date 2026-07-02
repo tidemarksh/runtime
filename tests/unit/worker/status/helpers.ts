@@ -79,7 +79,7 @@ export function makeHandle(overrides: Record<string, unknown> = {}) {
     stdinQueue: [],
     outputBacklog: [],
     workers: new Set<Worker>(),
-    readyWorkers: [],
+    vforkReadyWorkers: [],
     blockedWorkers: new Map(),
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     networkConnections: new Map(),

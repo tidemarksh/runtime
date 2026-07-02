@@ -198,7 +198,7 @@ export function makeHostBoundaryHandle(
     sabPageCache: null,
     kernelWorkerRequest: undefined,
     workers: new Set([worker]),
-    readyWorkers: [],
+    vforkReadyWorkers: [],
     runningWorker: null,
     blockedWorkers: new Map(),
     pendingChildExitRecords: 0,

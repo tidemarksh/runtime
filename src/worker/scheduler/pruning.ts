@@ -31,7 +31,7 @@ export function createPruningScheduler(deps: PruningSchedulerDeps): PruningSched
     if (handle.runningWorker !== null) {
       candidates.push(handle.runningWorker);
     }
-    candidates.push(...handle.readyWorkers, ...handle.workers);
+    candidates.push(...handle.vforkReadyWorkers, ...handle.workers);
     const seen = new Set<Worker>();
     for (const candidate of candidates) {
       if (candidate === excludedWorker || seen.has(candidate)) {
@@ -46,10 +46,10 @@ export function createPruningScheduler(deps: PruningSchedulerDeps): PruningSched
     return null;
   }
 
-  function removeReadyWorker(handle: ProcessHandle, worker: Worker): void {
-    for (let index = handle.readyWorkers.length - 1; index >= 0; index -= 1) {
-      if (handle.readyWorkers[index] === worker) {
-        handle.readyWorkers.splice(index, 1);
+  function removeVforkReadyWorker(handle: ProcessHandle, worker: Worker): void {
+    for (let index = handle.vforkReadyWorkers.length - 1; index >= 0; index -= 1) {
+      if (handle.vforkReadyWorkers[index] === worker) {
+        handle.vforkReadyWorkers.splice(index, 1);
       }
     }
   }
@@ -109,7 +109,7 @@ export function createPruningScheduler(deps: PruningSchedulerDeps): PruningSched
         continue;
       }
       deps.clearBlockedWorker(handle, worker);
-      removeReadyWorker(handle, worker);
+      removeVforkReadyWorker(handle, worker);
       if (handle.runningWorker === worker) {
         handle.runningWorker = null;
       }

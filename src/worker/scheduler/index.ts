@@ -251,9 +251,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     source: string,
   ): void {
     clearBlockedWorker(handle, worker);
-    const readyIndex = handle.readyWorkers.indexOf(worker);
+    const readyIndex = handle.vforkReadyWorkers.indexOf(worker);
     if (readyIndex >= 0) {
-      handle.readyWorkers.splice(readyIndex, 1);
+      handle.vforkReadyWorkers.splice(readyIndex, 1);
     }
     if (handle.runningWorker === worker) {
       handle.runningWorker = null;
@@ -311,7 +311,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       + `:proc=0x${processPtr.toString(16)}`
       + `:initialized=${runningThread === undefined ? "null" : runningThread.initialized ? 1 : 0}`
       + `:ownerAsync=${runningThread?.ownerAsyncStatus ?? "null"}`
-      + `:ready=${handle.readyWorkers.length}`
+      + `:ready=${handle.vforkReadyWorkers.length}`
       + `:active=0x${activeStepVmPtr.toString(16)}`;
   }
 

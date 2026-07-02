@@ -250,7 +250,7 @@ function makeHandle(pid: number, fdMap: Map<number, number>): ProcessHandle {
     networkRecvTailWatermarks: new Map(),
     networkRecvPayloadWatermarks: new Map(),
     workers: new Set(),
-    readyWorkers: [],
+    vforkReadyWorkers: [],
     runningWorker: null,
     blockedWorkers: new Map([[{} as Worker, {
       vmPtr: 0x1234,

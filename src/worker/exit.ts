@@ -1720,7 +1720,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
 
   function exitProcessHasActiveOwnerWork(handle: ProcessHandle): boolean {
     return handle.runningWorker !== null
-      || handle.readyWorkers.length > 0
+      || handle.vforkReadyWorkers.length > 0
       || handle.blockedWorkers.size > 0;
   }
 
@@ -2004,7 +2004,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       parts.push(`state_error=${JSON.stringify(error instanceof Error ? error.message : String(error))}`);
     }
     parts.push(`running=${child.runningWorker === null ? 0 : 1}`);
-    parts.push(`ready=${child.readyWorkers.length}`);
+    parts.push(`ready=${child.vforkReadyWorkers.length}`);
     parts.push(`blocked=${child.blockedWorkers.size}`);
     parts.push(`exit=${child.exitInProgress ? 1 : 0}`);
     return parts.join("/");
