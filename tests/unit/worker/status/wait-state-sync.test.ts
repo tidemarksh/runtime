@@ -8,6 +8,11 @@ import type {
   ThreadWorkerInbound,
   ThreadWorkerOutbound,
 } from "../../../../src/messages.js";
+import {
+  makeSupervisorAbiStubs,
+  writeSupervisorArmHostTimerHostOpRecord,
+  writeSupervisorRunnableResumeRecord,
+} from "../support/supervisor-abi.js";
 
 type WorkerModule = typeof import("../../../../src/worker.js");
 
@@ -194,6 +199,25 @@ const SYNC_EFFECT_PROCESS_LIFECYCLE = 1 << 4;
 const SYNC_EFFECT_FORK_SHARED_OFD_STATE = 1 << 6;
 const MOCK_PIPE_SLOT_BYTES = 32 + 65_536;
 
+interface TestSupervisorTimerHostOp {
+  vmPtr: number;
+  status: number;
+  delayMs: bigint;
+  deadlineTicks: bigint;
+  seq: bigint;
+}
+
+interface WaitStateSyncKernelExports extends KernelExports {
+  recordedChildExits: Array<[number, number]>;
+  fsProcessCalls: number;
+  memfsCreateCalls: Array<[number, number]>;
+  memfsTruncateCalls: Array<[number, number]>;
+  memfsSetFileSizeShallowCalls: Array<[number, number]>;
+  memfsWriteCalls: Array<[number, number]>;
+  memfsCreateWithDataCalls: Array<[number, number]>;
+  supervisorRunnableVmPtrs: number[];
+}
+
 function emitReady(
   worker: FakeWorker,
   vmPtr = 0x1234,
@@ -230,6 +254,10 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
   const memfsSetFileSizeShallowCalls: Array<[number, number]> = [];
   const memfsWriteCalls: Array<[number, number]> = [];
   const memfsCreateWithDataCalls: Array<[number, number]> = [];
+  const pendingSupervisorTimers: TestSupervisorTimerHostOp[] = [];
+  const supervisorRunnableVmPtrs: number[] = [];
+  let nextSupervisorTimerSeq = 1n;
+  let monotonicTicks = 0n;
   let nextIno = 10;
   interface MockProcessIdentity {
     pid: number;
@@ -274,15 +302,8 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     view.setInt32(base + 8, 1, true);
     view.setInt32(base + 12, 1, true);
   }
-  const exports: KernelExports & {
-    recordedChildExits: Array<[number, number]>;
-    fsProcessCalls: number;
-    memfsCreateCalls: Array<[number, number]>;
-    memfsTruncateCalls: Array<[number, number]>;
-    memfsSetFileSizeShallowCalls: Array<[number, number]>;
-    memfsWriteCalls: Array<[number, number]>;
-    memfsCreateWithDataCalls: Array<[number, number]>;
-  } = {
+  const exports: WaitStateSyncKernelExports = {
+    ...makeSupervisorAbiStubs(),
     memory,
     __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, 0),
     abi_status_ok: () => 0,
@@ -336,6 +357,13 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     abi_epipe: () => 32,
     abi_econnrefused: () => 111,
     set_base_time: () => {},
+    sync_monotonic_ticks_floor: (ticks) => {
+      const nextTicks = BigInt(ticks);
+      if (nextTicks > monotonicTicks) {
+        monotonicTicks = nextTicks;
+      }
+    },
+    monotonic_ticks_current: () => monotonicTicks,
     kernel_init: () => {},
     kernel_heap_base: () => runtimeState.heapBase,
     kernel_heap_ptr: () => runtimeState.heapPtr,
@@ -410,6 +438,10 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     },
     thread_step: () => 0,
     thread_status: () => 0,
+    thread_tid: (vmPtr) => {
+      const slot = liveThreadVmPtrs.indexOf(vmPtr);
+      return slot < 0 ? 0 : slot + 1;
+    },
     thread_exit_code: () => 0,
     thread_term_signal: () => 0,
     thread_pc: () => 0n,
@@ -418,6 +450,13 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_s11: () => 0n,
     thread_tls_base: () => 0n,
     thread_a0: () => 0n,
+    thread_a1: () => 0n,
+    thread_reg: () => 0n,
+    thread_gp: () => 0n,
+    thread_tp: () => 0n,
+    thread_sig_mask: () => 0n,
+    thread_sig_pending: () => 0n,
+    thread_sig_info_code: () => 0,
     thread_pending_fs_effects: () => 0,
     thread_pending_fs_target_ino: () => 0,
     thread_pending_fs_opcode: () => 0,
@@ -435,12 +474,17 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_sleep_nanoseconds: () => 0n,
     thread_record_blocked_addr: () => 0,
     thread_resume_wait4: () => 0n,
-    thread_epoll_wait_timeout: () => 0n,
+    thread_epoll_wait_timeout: () => -1n,
+    thread_epoll_timerfd_deadline_ticks: () => 0n,
+    thread_poll_wait_timeout: () => -1n,
+    thread_poll_wait_ready_count: () => 0,
+    thread_poll_wait_has_socket: () => 0,
     thread_resume_epoll_wait_timeout: () => {},
     thread_resume_blocked_syscall: () => 0n,
     thread_resume_connect_result: () => {},
     thread_vfork_child_pid: () => 0,
     thread_socket_wait_timeout: () => -1n,
+    thread_resume_socket_wait_timeout: () => {},
     thread_blocked_fd: () => 0,
     thread_blocked_ofd_id: () => 0,
     thread_clone_flags: () => 0n,
@@ -575,6 +619,55 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
       return nextIno++;
     },
     memfs_readdir_names: () => 0n,
+    supervisor_process_resume: (processVmPtr, outPtr, outLen) => {
+      if (outLen < 48 || processVmPtr !== 0x1234) {
+        return 0;
+      }
+      const selectedIndex = supervisorRunnableVmPtrs.findIndex((vmPtr) =>
+        vmPtr !== 0
+        && liveThreadVmPtrs.includes(vmPtr)
+        && exports.thread_status(vmPtr) === exports.abi_status_ok()
+        && exports.thread_process_ptr(vmPtr) !== 0);
+      if (selectedIndex < 0) {
+        return 0;
+      }
+      const [selectedVmPtr] = supervisorRunnableVmPtrs.splice(selectedIndex, 1);
+      return writeSupervisorRunnableResumeRecord(memory, outPtr, {
+        vmPtr: selectedVmPtr,
+        tid: exports.thread_tid?.(selectedVmPtr) ?? 0,
+        processPtr: exports.thread_process_ptr(selectedVmPtr),
+        status: exports.thread_status(selectedVmPtr),
+      });
+    },
+    supervisor_enqueue_blocked_wait_timer: (vmPtr) => {
+      const timer = selectTestSupervisorBlockedWaitTimer(exports, vmPtr, nextSupervisorTimerSeq);
+      if (timer === null) {
+        return 0;
+      }
+      nextSupervisorTimerSeq += 1n;
+      pendingSupervisorTimers.push(timer);
+      return 1;
+    },
+    supervisor_next_host_op: (outPtr, outLen) => {
+      if (outLen < 64) {
+        return -1;
+      }
+      const timer = pendingSupervisorTimers.shift();
+      if (timer === undefined) {
+        return 0;
+      }
+      return writeSupervisorArmHostTimerHostOpRecord(memory, outPtr, {
+        vmPtr: timer.vmPtr,
+        delayMs: timer.delayMs,
+        deadlineTicks: timer.deadlineTicks,
+        seq: timer.seq,
+        tid: exports.thread_tid?.(timer.vmPtr) ?? 0,
+        processPtr: exports.thread_process_ptr(timer.vmPtr),
+        status: timer.status,
+      });
+    },
+    supervisor_complete_host_op: (completionPtr, completionLen) =>
+      completeTestSupervisorBlockedWaitTimer(exports, memory, completionPtr, completionLen),
     recordedChildExits,
     retainedOfds,
     liveThreadVmPtrs,
@@ -586,9 +679,91 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     memfsSetFileSizeShallowCalls,
     memfsWriteCalls,
     memfsCreateWithDataCalls,
+    supervisorRunnableVmPtrs,
   };
   createdKernelExports.push(exports);
   return exports;
+}
+
+function enableSupervisorRunnableResume(kernel: KernelExports, vmPtr = 0x1234): void {
+  (kernel as WaitStateSyncKernelExports).supervisorRunnableVmPtrs.push(vmPtr);
+}
+
+function testTimerfdDelayMs(kernel: KernelExports, deadlineTicks: bigint): bigint {
+  const currentTicks = BigInt(kernel.monotonic_ticks_current?.() ?? 0n);
+  if (deadlineTicks <= currentTicks) {
+    return 0n;
+  }
+  const ticksPerSec = 100_000_000n;
+  return ((deadlineTicks - currentTicks) * 1000n + (ticksPerSec - 1n)) / ticksPerSec;
+}
+
+function selectTestSupervisorBlockedWaitTimer(
+  kernel: KernelExports,
+  vmPtr: number,
+  seq: bigint,
+): TestSupervisorTimerHostOp | null {
+  const status = kernel.thread_status(vmPtr);
+  if (status === kernel.abi_status_epoll_wait()) {
+    const timeoutMs = BigInt(kernel.thread_epoll_wait_timeout(vmPtr));
+    if (timeoutMs >= 0n) {
+      return { vmPtr, status, delayMs: timeoutMs, deadlineTicks: 0n, seq };
+    }
+    const deadlineTicks = BigInt(kernel.thread_epoll_timerfd_deadline_ticks?.(vmPtr) ?? 0n);
+    return deadlineTicks === 0n
+      ? null
+      : { vmPtr, status, delayMs: testTimerfdDelayMs(kernel, deadlineTicks), deadlineTicks, seq };
+  }
+  if (status === kernel.abi_status_pipe_wait()) {
+    const timeoutMs = BigInt(kernel.thread_poll_wait_timeout?.(vmPtr) ?? -1n);
+    if (timeoutMs < 0n || (kernel.thread_poll_wait_ready_count?.(vmPtr) ?? 0) > 0) {
+      return null;
+    }
+    return { vmPtr, status, delayMs: timeoutMs, deadlineTicks: 0n, seq };
+  }
+  if (
+    status === kernel.abi_status_connect()
+    || status === kernel.abi_status_socket_recv()
+    || status === kernel.abi_status_socket_send()
+  ) {
+    const timeoutMs = BigInt(kernel.thread_socket_wait_timeout?.(vmPtr) ?? -1n);
+    return timeoutMs < 0n ? null : { vmPtr, status, delayMs: timeoutMs, deadlineTicks: 0n, seq };
+  }
+  return null;
+}
+
+function completeTestSupervisorBlockedWaitTimer(
+  kernel: KernelExports,
+  memory: WebAssembly.Memory,
+  completionPtr: number,
+  completionLen: number,
+): number {
+  if (completionLen < 64) {
+    return -1;
+  }
+  const view = new DataView(memory.buffer, completionPtr, completionLen);
+  const vmPtr = view.getUint32(24, true);
+  const deadlineTicks = view.getBigUint64(56, true);
+  if (deadlineTicks !== 0n) {
+    kernel.sync_monotonic_ticks_floor?.(deadlineTicks);
+  }
+  const status = kernel.thread_status(vmPtr);
+  if (status === kernel.abi_status_epoll_wait()) {
+    if (Number(kernel.thread_epoll_wait_timeout(vmPtr)) >= 0) {
+      kernel.thread_resume_epoll_wait_timeout?.(vmPtr);
+    } else {
+      kernel.thread_resume_blocked_syscall?.(vmPtr);
+    }
+  } else if (status === kernel.abi_status_pipe_wait()) {
+    kernel.thread_resume_poll_wait_timeout?.(vmPtr);
+  } else if (
+    status === kernel.abi_status_connect()
+    || status === kernel.abi_status_socket_recv()
+    || status === kernel.abi_status_socket_send()
+  ) {
+    kernel.thread_resume_socket_wait_timeout?.(vmPtr);
+  }
+  return kernel.thread_status(vmPtr);
 }
 
 beforeEach(async () => {
@@ -662,9 +837,11 @@ test("waitInWorker STATUS_EPOLL_WAIT skips epoll sync when the process holds no 
     },
   });
   const worker = createdWorkers[0];
+  const kernel = createdKernelExports[0];
 
   emitReady(worker);
   worker.clearPostedMessages();
+  enableSupervisorRunnableResume(kernel);
   const notify = new Int32Array(handle.runtimeBridge.notifySab);
   const notifyBefore = Atomics.load(notify, 0);
   worker.emit({
@@ -720,6 +897,7 @@ test("waitInWorker STATUS_EPOLL_WAIT republishes synced kernel state and wakes b
   const notify = new Int32Array(handle.runtimeBridge.notifySab);
 
   kernel.thread_epoll_wait_timeout = () => -1n;
+  enableSupervisorRunnableResume(kernel);
   emitReady(worker);
   worker.clearPostedMessages();
   kernel.process_fd_ofd_id = (_vmPtr, fd) => (fd === 4 ? 7 : 0);
@@ -896,6 +1074,7 @@ test("STATUS_PIPE_WAIT parked on kernel-worker-owned pipe state preserves thread
   });
   kernel.thread_resume_blocked_syscall = resumeBlocked;
 
+  enableSupervisorRunnableResume(kernel);
   emitReady(worker);
   worker.clearPostedMessages();
   worker.emit({
@@ -956,6 +1135,7 @@ test("waitInWorker STATUS_PIPE_WAIT syncs pipe state through kernel-worker and w
   const kernel = createdKernelExports[0];
   const notify = new Int32Array(handle.runtimeBridge.notifySab);
 
+  enableSupervisorRunnableResume(kernel);
   emitReady(worker);
   worker.clearPostedMessages();
   const notifyBefore = Atomics.load(notify, 0);
@@ -1257,8 +1437,10 @@ test("STATUS_OK syncs epoll state through kernel-worker when available", async (
   kernel.process_fd_ofd_id = (_vmPtr, fd) => (fd === 4 ? ofdId : 0);
   const worker = createdWorkers[0];
 
+  enableSupervisorRunnableResume(kernel);
   emitReady(worker);
   worker.clearPostedMessages();
+  enableSupervisorRunnableResume(kernel);
   worker.emit({
     type: "status",
     status: 0,
@@ -1321,6 +1503,7 @@ test("STATUS_OK syncs eventfd-backed OFD state before epoll retries", async () =
   kernel.process_fd_ofd_id = (_vmPtr, fd) => (fd === 3 ? ofdId : 0);
 
   const worker = createdWorkers[0];
+  enableSupervisorRunnableResume(kernel);
   emitReady(worker);
   worker.clearPostedMessages();
   worker.emit({
@@ -1438,9 +1621,12 @@ test("STATUS_OK syncs socket state through kernel-worker when available", async 
     },
   });
   const worker = createdWorkers[0];
+  const kernel = handle.kernel;
 
+  enableSupervisorRunnableResume(kernel);
   emitReady(worker);
   worker.clearPostedMessages();
+  enableSupervisorRunnableResume(kernel);
   worker.emit({
     type: "status",
     status: 0,
@@ -1483,9 +1669,12 @@ test("STATUS_OK skips owner-side sync for thread-local returns", async () => {
     },
   });
   const worker = createdWorkers[0];
+  const kernel = createdKernelExports[0];
 
+  enableSupervisorRunnableResume(kernel);
   emitReady(worker);
   worker.clearPostedMessages();
+  enableSupervisorRunnableResume(kernel);
   worker.emit({
     type: "status",
     status: 0,
@@ -1520,6 +1709,7 @@ test("waitInWorker status skips owner-side blocked retry scheduling", async () =
 
   kernel.thread_resume_blocked_syscall = resumeBlocked;
 
+  enableSupervisorRunnableResume(kernel);
   emitReady(worker);
   worker.clearPostedMessages();
   worker.emit({
@@ -1570,6 +1760,8 @@ test("clone-spawn fixture does not fabricate a sibling worker for EPOLL_WAIT ret
               heapPtr: msg.kernelState.heapPtr + 0x20,
             },
           };
+        case "sync-process-lifecycle":
+          return { type: "process-lifecycle-synced", requestId: 0, kernelState: msg.kernelState };
         case "unregister-process":
           return { type: "process-unregistered", requestId: 0 };
         default:
@@ -1631,12 +1823,13 @@ test("clone-spawn fixture does not fabricate a sibling worker for EPOLL_WAIT ret
     "register-process",
     "initialize-process-lifecycle",
     "sync-epoll-state",
+    "sync-process-lifecycle",
   ]);
   expect(resumeBlocked).not.toHaveBeenCalled();
   expect(handle.workers.has(parentWorker as unknown as Worker)).toBe(true);
 });
 
-test("waitInWorker EPOLL_WAIT timeout=0 falls back to owner-side blocked retry scheduling", async () => {
+test("waitInWorker EPOLL_WAIT timeout=0 completes through supervisor timer HostOp", async () => {
   await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
   const worker = createdWorkers[0];
   const kernel = createdKernelExports[0];
@@ -1651,6 +1844,7 @@ test("waitInWorker EPOLL_WAIT timeout=0 falls back to owner-side blocked retry s
 
   emitReady(worker);
   worker.clearPostedMessages();
+  enableSupervisorRunnableResume(kernel);
   worker.emit({
     type: "status",
     status: kernel.abi_status_epoll_wait(),
@@ -1707,6 +1901,7 @@ test("waitInWorker STATUS_SOCKET_RECV syncs socket state through kernel-worker w
 
   kernel.thread_resume_blocked_syscall = resumeBlocked;
 
+  enableSupervisorRunnableResume(kernel);
   emitReady(worker);
   worker.clearPostedMessages();
   worker.emit({
@@ -1764,6 +1959,7 @@ test("waitInWorker STATUS_SOCKET_SEND syncs socket state through kernel-worker w
 
   kernel.thread_resume_blocked_syscall = resumeBlocked;
 
+  enableSupervisorRunnableResume(kernel);
   emitReady(worker);
   worker.clearPostedMessages();
   worker.emit({
