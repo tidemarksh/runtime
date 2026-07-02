@@ -70,6 +70,7 @@ function makeKernelExports(): FakeKernelExports {
     generation: 0,
     flags: 0,
   };
+  let lastDirtyPreparePublishMode = 0;
   let lastBackingSourceRangeDecision = {
     byteLength: 0,
     offset: 0,
@@ -195,6 +196,54 @@ function makeKernelExports(): FakeKernelExports {
     }
     lastDirtyPageDecision.result = -22;
     return -22;
+  }
+
+  function supervisorDirtyPrepareDecision(
+    ino: number,
+    op: number,
+    expectedSize: bigint | number,
+    publishedPresent: number,
+    publishedSize: bigint | number,
+    publishedFileObjectId: bigint | number,
+    publishedDataOff: bigint | number,
+    sourceIsRegular: number,
+    sourceFileObjectId: bigint | number,
+    hasDirtyResidentPages: number,
+  ): number {
+    const expectedSizeNumber = Number(expectedSize);
+    const publishedSizeNumber = publishedPresent !== 0 ? Number(publishedSize) : expectedSizeNumber;
+    const publishedFileObjectIdNumber = Number(publishedFileObjectId);
+    const publishedDataOffNumber = Number(publishedDataOff);
+    const sourceFileObjectIdNumber = Number(sourceFileObjectId);
+    lastDirtyPreparePublishMode = 0;
+    if (
+      ino <= 0
+      || ino >= 65536
+      || !Number.isSafeInteger(expectedSizeNumber)
+      || !Number.isSafeInteger(publishedSizeNumber)
+      || expectedSizeNumber < 0
+      || publishedSizeNumber < 0
+      || (op !== 1 && op !== 2)
+    ) {
+      return -22;
+    }
+    const sourceTruncatedEmpty = sourceIsRegular !== 0 && expectedSizeNumber === 0;
+    const unsupportedWriteSource = op === 1
+      && sourceFileObjectIdNumber === 0
+      && hasDirtyResidentPages === 0
+      && publishedFileObjectIdNumber === 0
+      && publishedDataOffNumber === 0
+      && publishedSizeNumber > 0
+      && !sourceTruncatedEmpty;
+    if (unsupportedWriteSource) {
+      return -95;
+    }
+    if (publishedPresent === 0) {
+      lastDirtyPreparePublishMode = 1;
+    } else if (op === 1 && sourceIsRegular !== 0 && publishedSizeNumber !== expectedSizeNumber) {
+      lastDirtyPreparePublishMode = 2;
+    }
+    return 0;
   }
 
   function supervisorPageTableSourceDecision(
@@ -592,6 +641,11 @@ function makeKernelExports(): FakeKernelExports {
     supervisor_fs_dirty_page_flag_update_inode: () => 1,
     supervisor_fs_dirty_page_flag_publish_dirty: () => 2,
     supervisor_fs_dirty_page_flag_writeback_required: () => 4,
+    supervisor_fs_dirty_prepare_publish_none: () => 0,
+    supervisor_fs_dirty_prepare_publish_missing: () => 1,
+    supervisor_fs_dirty_prepare_publish_size_update: () => 2,
+    supervisor_fs_dirty_prepare_decision: supervisorDirtyPrepareDecision,
+    supervisor_fs_dirty_prepare_publish_mode: () => lastDirtyPreparePublishMode,
     supervisor_fs_backing_source_range_none: () => 0,
     supervisor_fs_backing_source_range_read: () => 1,
     supervisor_fs_backing_source_range_decision: supervisorBackingSourceRangeDecision,
@@ -1025,6 +1079,23 @@ test("kernel-worker applies supervisor dirty write denial without publishing res
   expect(fsState.writeDirtyResidentFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(-28);
   expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("abcdef");
   expect(evictResidentPage(sabPageCache, ino, 0)).toBe("not-found");
+});
+
+test("kernel-worker dirty writes follow supervisor prepare decisions", () => {
+  const { canonicalExports, fsState, sabPageCache } = makeFsState();
+
+  fsState.writeFile("/lib/runtime.bin", encoder.encode("abcdef"), 0o644, false);
+  const ino = canonicalExports.fileIno("/lib/runtime.bin");
+  const originalPrepareDecision = canonicalExports.supervisor_fs_dirty_prepare_decision;
+  canonicalExports.supervisor_fs_dirty_prepare_decision = () => -95;
+
+  expect(fsState.writeDirtyResidentFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(-95);
+  expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("abcdef");
+  expect(evictResidentPage(sabPageCache, ino, 0)).toBe("not-found");
+
+  canonicalExports.supervisor_fs_dirty_prepare_decision = originalPrepareDecision;
+  expect(fsState.writeDirtyResidentFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(3);
+  expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("abcXYZ");
 });
 
 test("kernel-worker follows supervisor page-table source selection", () => {

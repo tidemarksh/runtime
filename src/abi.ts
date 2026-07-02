@@ -216,6 +216,9 @@ export interface KernelExports {
   supervisor_fs_dirty_page_flag_update_inode?(): number;
   supervisor_fs_dirty_page_flag_publish_dirty?(): number;
   supervisor_fs_dirty_page_flag_writeback_required?(): number;
+  supervisor_fs_dirty_prepare_publish_none?(): number;
+  supervisor_fs_dirty_prepare_publish_missing?(): number;
+  supervisor_fs_dirty_prepare_publish_size_update?(): number;
   supervisor_fs_backing_fill_mode_resident?(): number;
   supervisor_fs_backing_fill_mode_direct?(): number;
   supervisor_fs_backing_source_range_none?(): number;
@@ -335,6 +338,19 @@ export interface KernelExports {
   supervisor_fs_dirty_page_decision_file_object_id?(): bigint | number;
   supervisor_fs_dirty_page_decision_generation?(): bigint | number;
   supervisor_fs_dirty_page_decision_flags?(): number;
+  supervisor_fs_dirty_prepare_decision?(
+    ino: number,
+    op: number,
+    expectedSize: bigint | number,
+    publishedPresent: number,
+    publishedSize: bigint | number,
+    publishedFileObjectId: bigint | number,
+    publishedDataOff: bigint | number,
+    sourceIsRegular: number,
+    sourceFileObjectId: bigint | number,
+    hasDirtyResidentPages: number,
+  ): number;
+  supervisor_fs_dirty_prepare_publish_mode?(): number;
   supervisor_fs_page_table_source_decision?(
     ino: number,
     hasDirtyPages: number,
@@ -1326,6 +1342,9 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_dirty_page_flag_update_inode",
   "supervisor_fs_dirty_page_flag_publish_dirty",
   "supervisor_fs_dirty_page_flag_writeback_required",
+  "supervisor_fs_dirty_prepare_publish_none",
+  "supervisor_fs_dirty_prepare_publish_missing",
+  "supervisor_fs_dirty_prepare_publish_size_update",
   "supervisor_fs_backing_fill_mode_resident",
   "supervisor_fs_backing_fill_mode_direct",
   "supervisor_fs_backing_source_range_none",
@@ -1428,6 +1447,8 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_dirty_page_decision_file_object_id",
   "supervisor_fs_dirty_page_decision_generation",
   "supervisor_fs_dirty_page_decision_flags",
+  "supervisor_fs_dirty_prepare_decision",
+  "supervisor_fs_dirty_prepare_publish_mode",
   "supervisor_fs_page_table_source_decision",
   "supervisor_fs_backing_fill_probe_direct",
   "supervisor_fs_backing_fill_mode_decision",

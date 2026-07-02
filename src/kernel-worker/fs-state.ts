@@ -419,6 +419,53 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     return (flags & writebackRequired) !== 0;
   }
 
+  function supervisorDirtyPrepare(
+    sourceExports: KernelExports,
+    input: {
+      ino: number;
+      op: number;
+      expectedSize: number;
+      published: ReturnType<typeof readInodeRecord>;
+      sourceIsRegular: boolean;
+      sourceFileObjectId: number | null;
+      hasDirtyResidentPages: boolean;
+    },
+  ): { result: number; publishMode: "none" | "missing" | "size-update" } {
+    const decide = sourceExports.supervisor_fs_dirty_prepare_decision;
+    if (typeof decide !== "function") {
+      throw new Error("missing supervisor_fs_dirty_prepare_decision export");
+    }
+    const result = supervisorNumber(decide(
+      input.ino,
+      input.op,
+      BigInt(input.expectedSize),
+      input.published ? 1 : 0,
+      BigInt(input.published?.size ?? 0),
+      BigInt(input.published?.fileObjectId ?? 0),
+      BigInt(input.published?.dataOff ?? 0),
+      input.sourceIsRegular ? 1 : 0,
+      BigInt(input.sourceFileObjectId ?? 0),
+      input.hasDirtyResidentPages ? 1 : 0,
+    ));
+    if (result < 0) {
+      return { result, publishMode: "none" };
+    }
+    const publishMode = supervisorNumber(sourceExports.supervisor_fs_dirty_prepare_publish_mode?.());
+    const none = supervisorNumber(sourceExports.supervisor_fs_dirty_prepare_publish_none?.());
+    const missing = supervisorNumber(sourceExports.supervisor_fs_dirty_prepare_publish_missing?.());
+    const sizeUpdate = supervisorNumber(sourceExports.supervisor_fs_dirty_prepare_publish_size_update?.());
+    if (publishMode === none) {
+      return { result, publishMode: "none" };
+    }
+    if (publishMode === missing) {
+      return { result, publishMode: "missing" };
+    }
+    if (publishMode === sizeUpdate) {
+      return { result, publishMode: "size-update" };
+    }
+    throw new Error(`unknown supervisor dirty prepare publish mode: ${publishMode}`);
+  }
+
   function supervisorPageTableUsesResident(
     sourceExports: KernelExports,
     ino: number,
@@ -672,25 +719,24 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       const expectedSize = Number(sourceExports.memfs_file_size(ino));
       const sourceMode = sourceExports.memfs_inode_mode(ino);
       const sourceIsRegular = (sourceMode & MEMFS_S_IFMT) === MEMFS_S_IFREG;
+      let sourceFileObjectId: number | null = fileObjectId ?? null;
       if (fileObjectId === undefined) {
-        const sourceFileObjectId = createSourceBackedFileForInode(ino, expectedSize);
-        const published = readInodeRecord(deps.getSabPageCache(), ino);
-        const sourceTruncatedEmpty = sourceIsRegular && expectedSize === 0;
-        const hasDirtyResidentPages = hasDirtyResidentPagesForInode(deps.getSabPageCache(), ino);
-        const hasPublishedResidentFile = (published?.fileObjectId ?? 0) !== 0;
-        if (
-          sourceFileObjectId === null
-          && !hasDirtyResidentPages
-          && !hasPublishedResidentFile
-          && !published?.dataOff
-          && (published?.size ?? expectedSize) > 0
-          && !sourceTruncatedEmpty
-        ) {
-          return -95;
-        }
+        sourceFileObjectId = createSourceBackedFileForInode(ino, expectedSize);
       }
       const published = readInodeRecord(deps.getSabPageCache(), ino);
-      if (!published) {
+      const prepare = supervisorDirtyPrepare(sourceExports, {
+        ino,
+        op: sourceExports.supervisor_fs_dirty_page_op_write?.() ?? 1,
+        expectedSize,
+        published,
+        sourceIsRegular,
+        sourceFileObjectId,
+        hasDirtyResidentPages: hasDirtyResidentPagesForInode(deps.getSabPageCache(), ino),
+      });
+      if (prepare.result < 0) {
+        return prepare.result;
+      }
+      if (prepare.publishMode === "missing") {
         publishInode(deps.getSabPageCache(), ino, {
           mode: sourceMode || 0o100644,
           size: expectedSize,
@@ -699,7 +745,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
           nextSibling: 0,
           ...backingMetaForInode(ino),
         });
-      } else if (sourceIsRegular && published.size !== expectedSize) {
+      } else if (prepare.publishMode === "size-update" && published) {
         publishInode(deps.getSabPageCache(), ino, {
           mode: sourceMode || published.mode,
           size: expectedSize,
@@ -780,12 +826,28 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     }
     try {
       const expectedSize = Number(deps.getCanonicalExports().memfs_file_size(ino));
-      if (fileObjectIdsByIno.get(ino) === undefined) {
-        createSourceBackedFileForInode(ino, expectedSize);
+      const sourceMode = deps.getCanonicalExports().memfs_inode_mode(ino);
+      const sourceIsRegular = (sourceMode & MEMFS_S_IFMT) === MEMFS_S_IFREG;
+      let sourceFileObjectId: number | null = fileObjectIdsByIno.get(ino) ?? null;
+      if (sourceFileObjectId === null) {
+        sourceFileObjectId = createSourceBackedFileForInode(ino, expectedSize);
       }
-      if (!readInodeRecord(deps.getSabPageCache(), ino)) {
+      const published = readInodeRecord(deps.getSabPageCache(), ino);
+      const prepare = supervisorDirtyPrepare(deps.getCanonicalExports(), {
+        ino,
+        op: deps.getCanonicalExports().supervisor_fs_dirty_page_op_truncate?.() ?? 2,
+        expectedSize,
+        published,
+        sourceIsRegular,
+        sourceFileObjectId,
+        hasDirtyResidentPages: hasDirtyResidentPagesForInode(deps.getSabPageCache(), ino),
+      });
+      if (prepare.result < 0) {
+        return prepare.result;
+      }
+      if (prepare.publishMode === "missing") {
         publishInode(deps.getSabPageCache(), ino, {
-          mode: deps.getCanonicalExports().memfs_inode_mode(ino) || 0o100644,
+          mode: sourceMode || 0o100644,
           size: expectedSize,
           parentIno: 0,
           name: new Uint8Array(),
