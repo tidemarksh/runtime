@@ -1194,7 +1194,6 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_thread_state_snapshot",
   "supervisor_futex_wait_completion_woken",
   "supervisor_futex_wait_completion_not_equal",
-  "supervisor_futex_wait_completion_timed_out",
   "supervisor_futex_wait_completion_invalid_address",
   "supervisor_futex_wait_completion_signal_check",
   "supervisor_complete_futex_wait",
