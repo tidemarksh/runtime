@@ -225,10 +225,6 @@ export function handleFutexWait(
 
   ctx.postStatus(createThreadWorkerStatusOutcome(status, true));
 
-  const timeoutPtr = Number(ctx.exports.thread_futex_wait_timeout(ctx.vmPtr));
-  const timeoutMs = readTimespecMillis(ctx.exports, ctx.guestBase, timeoutPtr);
-  const deadlineMs = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
-
   for (;;) {
     const wordIndex = futexWordIndex(ctx.guestBase, guestAddr, i32);
     if (wordIndex === null) {
@@ -236,10 +232,7 @@ export function handleFutexWait(
       completeSupervisorFutexWait(ctx, "invalid-address");
       break;
     }
-    const waitMs = deadlineMs === undefined
-      ? ctx.futexWaitSliceMs
-      : Math.max(0, Math.min(ctx.futexWaitSliceMs, deadlineMs - Date.now()));
-    const result = Atomics.wait(i32, wordIndex, expected, waitMs);
+    const result = Atomics.wait(i32, wordIndex, expected, ctx.futexWaitSliceMs);
 
     ctx.reattachPublishedKernelRuntimeState();
     const currentStatus = ctx.exports.thread_status(ctx.vmPtr);
@@ -272,11 +265,6 @@ export function handleFutexWait(
     if (result === "not-equal") {
       clearSyscallTrace(ctx.exports);
       completeSupervisorFutexWait(ctx, "not-equal");
-      break;
-    }
-    if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
-      clearSyscallTrace(ctx.exports);
-      completeSupervisorFutexWait(ctx, "timed-out");
       break;
     }
   }
@@ -375,19 +363,4 @@ function recordFutexWaitDebug(
     `blocked=0x${blockedAddr.toString(16)}`,
     status === undefined ? "" : `status=${status}`,
   ].filter((part) => part.length > 0).join(":"));
-}
-
-function readTimespecMillis(
-  exports: KernelExports,
-  guestBase: number,
-  timespecPtr: number,
-): number | undefined {
-  if (timespecPtr === 0) {
-    return undefined;
-  }
-  const view = new DataView(exports.memory.buffer);
-  const absolute = guestBase + timespecPtr;
-  const sec = Number(view.getBigUint64(absolute, true));
-  const nsec = Number(view.getBigUint64(absolute + 8, true));
-  return Math.max(0, sec * 1000 + Math.floor(nsec / 1_000_000));
 }

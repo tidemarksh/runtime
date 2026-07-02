@@ -13,6 +13,14 @@ import type {
 } from "../types.js";
 import { formatCompactDebugSuffix } from "../../diagnostics/format.js";
 import { createWorkerOwnershipGuard } from "../../ownership/process-state.js";
+import {
+  armSupervisorHostTimer,
+  drainSupervisorArmHostTimerHostOp,
+} from "../../supervisor-host-op.js";
+
+function futexWaitHasSupervisorTimer(handle: ProcessHandle, vmPtr: number): boolean {
+  return (handle.kernel.thread_futex_wait_timeout?.(vmPtr) ?? 0n) !== 0n;
+}
 
 export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandlerDeps) {
   return function handleWaitInWorkerStatus(
@@ -60,12 +68,25 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
 
     if (msg.status === handle.kernel.abi_status_futex_wait()) {
       thread.waitingInWorkerStatus = null;
+      const hostTimer = futexWaitHasSupervisorTimer(handle, thread.vmPtr)
+        ? drainSupervisorArmHostTimerHostOp(handle, thread.vmPtr)
+        : null;
+      if (hostTimer === undefined) {
+        throw new Error("kernel supervisor ABI missing arm host timer HostOp exports");
+      }
+      if (isRunningWorker) {
+        handle.runningWorker = null;
+        thread.runningGeneration = null;
+      }
       deps.parkSupervisorFutexWait(
         handle,
         worker,
         thread.vmPtr,
         "wait-in-worker-futex-supervisor-owned",
       );
+      if (hostTimer !== null) {
+        armSupervisorHostTimer(handle, hostTimer, deps);
+      }
       deps.notifyWorkerStatusProgress(handle);
       deps.pumpProcess(handle);
       return;
