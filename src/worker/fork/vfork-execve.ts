@@ -18,6 +18,12 @@ import {
   publishResidentPage,
   readResidentFileData,
 } from "../../fs/sab-page-cache.js";
+import {
+  clearSupervisorPendingBackingFill,
+  readSupervisorPendingBackingFill,
+  supervisorBackingRetryLimit,
+  type SupervisorPendingBackingFillRequest,
+} from "../../fs/supervisor-backing-fill.js";
 import { captureExecveGuestHandoff, decodeExecveBytes, stageExecveGuestHandoff } from "./execve-handoff.js";
 import { captureVforkSnapshot, snapshotKernelShareOfdSlots } from "../fork-shared.js";
 import { activeKernelShareOfdIds, collectProcessHeldOfds } from "../ownership/ofd-table.js";
@@ -53,17 +59,9 @@ import {
 import type { ProcessHandle, ThreadWorkerState, WorkerForkDeps } from "./types.js";
 
 const HANDOFF_DEBUG_STRING_LIMIT = 128;
-const EXECVE_BACKING_RETRY_MIN_ATTEMPTS = 256;
-const EXECVE_BACKING_RETRY_MAX_ATTEMPTS = 16 * 1024;
-const EXECVE_BACKING_RETRY_FINAL_SCAN_ATTEMPTS = 2;
 const EAGAIN = -11;
 
-interface ExecveBackingMiss {
-  ino: number;
-  offset: number;
-  length: number;
-  expectedSize: number;
-}
+type ExecveBackingMiss = SupervisorPendingBackingFillRequest;
 
 interface KernelChildLifecycle {
   ppid: number;
@@ -158,34 +156,6 @@ function formatThreadSyscallArgsForDebug(
   ].join(":");
 }
 
-function readExecveBackingMiss(kernel: KernelExports, vmPtr: number): ExecveBackingMiss | null {
-  if (
-    typeof kernel.thread_execve_backing_miss_ino !== "function"
-    || typeof kernel.thread_execve_backing_miss_offset !== "function"
-    || typeof kernel.thread_execve_backing_miss_len !== "function"
-    || typeof kernel.thread_execve_backing_miss_expected_size !== "function"
-  ) {
-    return null;
-  }
-  const ino = kernel.thread_execve_backing_miss_ino(vmPtr);
-  const offsetRaw = kernel.thread_execve_backing_miss_offset(vmPtr);
-  const offset = typeof offsetRaw === "bigint" ? Number(offsetRaw) : offsetRaw;
-  const length = kernel.thread_execve_backing_miss_len(vmPtr);
-  const expectedSize = kernel.thread_execve_backing_miss_expected_size(vmPtr);
-  if (
-    ino <= 0
-    || !Number.isSafeInteger(offset)
-    || offset < 0
-    || !Number.isFinite(length)
-    || length <= 0
-    || !Number.isFinite(expectedSize)
-    || expectedSize <= 0
-  ) {
-    return null;
-  }
-  return { ino, offset, length, expectedSize };
-}
-
 async function publishExecveBackingMissForHandoff(
   handle: ProcessHandle,
   miss: ExecveBackingMiss,
@@ -236,17 +206,17 @@ async function completeExecveHandoffWithBackingRetry(
   childVmPtr: number,
 ): Promise<number> {
   let lastRet = EAGAIN;
-  let maxAttempts = EXECVE_BACKING_RETRY_MIN_ATTEMPTS;
+  let maxAttempts = 1;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     lastRet = Number(childKernel.thread_complete_execve_handoff(childVmPtr));
     if (lastRet !== EAGAIN) {
       return lastRet;
     }
-    const miss = readExecveBackingMiss(childKernel, childVmPtr);
+    const miss = readSupervisorPendingBackingFill(childKernel, childVmPtr);
     if (!miss) {
       return lastRet;
     }
-    maxAttempts = Math.max(maxAttempts, execveBackingRetryLimitForMiss(miss));
+    maxAttempts = Math.max(maxAttempts, supervisorBackingRetryLimit(childKernel, miss));
     if (!await publishExecveBackingMissForHandoff(handle, miss)) {
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
@@ -255,7 +225,7 @@ async function completeExecveHandoffWithBackingRetry(
       );
       return lastRet;
     }
-    childKernel.thread_clear_execve_backing_miss?.(childVmPtr);
+    clearSupervisorPendingBackingFill(childKernel, childVmPtr);
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
       `vfork-execve:backing-published:${childPid}`
@@ -267,22 +237,6 @@ async function completeExecveHandoffWithBackingRetry(
     `vfork-execve:backing-retry-exhausted:${childPid}:attempts=${maxAttempts}`,
   );
   return lastRet;
-}
-
-function execveBackingRetryLimitForMiss(miss: ExecveBackingMiss): number {
-  const alignedOffset = Math.floor(miss.offset / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE;
-  const requestedEnd = miss.offset + miss.length;
-  const alignedEnd = Math.min(
-    miss.expectedSize,
-    Math.ceil(requestedEnd / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE,
-  );
-  const alignedLength = Math.max(DEFAULT_RESIDENT_PAGE_SIZE, alignedEnd - alignedOffset);
-  const sourceChunks = Math.ceil(miss.expectedSize / alignedLength);
-  const attempts = sourceChunks + EXECVE_BACKING_RETRY_FINAL_SCAN_ATTEMPTS;
-  return Math.min(
-    EXECVE_BACKING_RETRY_MAX_ATTEMPTS,
-    Math.max(EXECVE_BACKING_RETRY_MIN_ATTEMPTS, attempts),
-  );
 }
 
 function debugVforkVmState(

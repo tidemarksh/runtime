@@ -239,6 +239,9 @@ export interface KernelExports {
   supervisor_fs_backing_fill_mode_direct?(): number;
   supervisor_fs_backing_source_range_none?(): number;
   supervisor_fs_backing_source_range_read?(): number;
+  supervisor_fs_backing_retry_min_attempts?(): number;
+  supervisor_fs_backing_retry_max_attempts?(): number;
+  supervisor_fs_backing_retry_final_scan_attempts?(): number;
   supervisor_fs_clean_backing_range_none?(): number;
   supervisor_fs_clean_backing_range_read?(): number;
   supervisor_fs_clean_backing_range_read_zero_tail?(): number;
@@ -335,6 +338,13 @@ export interface KernelExports {
   supervisor_fs_pending_backing_fill_length?(vmPtr: number): bigint | number;
   supervisor_fs_pending_backing_fill_expected_size?(vmPtr: number): bigint | number;
   supervisor_fs_pending_backing_fill_opcode?(vmPtr: number): number;
+  supervisor_fs_clear_pending_backing_fill?(vmPtr: number): number;
+  supervisor_fs_backing_retry_limit?(
+    opcode: number,
+    offset: bigint | number,
+    length: bigint | number,
+    expectedSize: bigint | number,
+  ): number;
   supervisor_fs_pending_mmap_guest_write_ptr?(vmPtr: number): bigint | number;
   supervisor_fs_pending_mmap_guest_write_len?(vmPtr: number): bigint | number;
   supervisor_fs_dirty_page_decision?(
@@ -654,11 +664,6 @@ export interface KernelExports {
   thread_pending_fs_path_len?(vm_ptr: number): number;
   thread_pending_fs_absolute_path?(vm_ptr: number, buf_ptr: number, buf_len: number): bigint;
   thread_pending_fs_secondary_absolute_path?(vm_ptr: number, buf_ptr: number, buf_len: number): bigint;
-  thread_execve_backing_miss_ino?(vm_ptr: number): number;
-  thread_execve_backing_miss_offset?(vm_ptr: number): bigint | number;
-  thread_execve_backing_miss_len?(vm_ptr: number): number;
-  thread_execve_backing_miss_expected_size?(vm_ptr: number): number;
-  thread_clear_execve_backing_miss?(vm_ptr: number): void;
   thread_fs_ring_base?(vm_ptr: number): number;
   thread_fs_ring_submit_head?(vm_ptr: number): number;
   thread_fs_ring_submit_tail?(vm_ptr: number): number;
@@ -1407,6 +1412,9 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_backing_fill_mode_direct",
   "supervisor_fs_backing_source_range_none",
   "supervisor_fs_backing_source_range_read",
+  "supervisor_fs_backing_retry_min_attempts",
+  "supervisor_fs_backing_retry_max_attempts",
+  "supervisor_fs_backing_retry_final_scan_attempts",
   "supervisor_fs_clean_backing_range_none",
   "supervisor_fs_clean_backing_range_read",
   "supervisor_fs_clean_backing_range_read_zero_tail",
@@ -1498,6 +1506,8 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_pending_backing_fill_length",
   "supervisor_fs_pending_backing_fill_expected_size",
   "supervisor_fs_pending_backing_fill_opcode",
+  "supervisor_fs_clear_pending_backing_fill",
+  "supervisor_fs_backing_retry_limit",
   "supervisor_fs_pending_mmap_guest_write_ptr",
   "supervisor_fs_pending_mmap_guest_write_len",
   "supervisor_fs_dirty_page_decision",

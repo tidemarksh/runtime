@@ -3,6 +3,7 @@ import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { writePipe } from "../../../../src/bridge/pipe.js";
 import { readPublishedKernelRuntimeState } from "../../../../src/bridge/runtime-state.js";
 import { DATA_REGION_OFFSET, publishInode } from "../../../../src/fs/sab-page-cache.js";
+import { FS_OP_EXECVE } from "../../../../src/layout/fs-ring.js";
 import type {
   KernelWorkerOutbound,
   KernelWorkerRequest,
@@ -1187,7 +1188,7 @@ test("vfork execve resumes the parent and initializes the child lifecycle throug
   ]);
 });
 
-test("vfork execve continues backing retry past the initial fixed budget", async () => {
+test("vfork execve follows supervisor backing retry limits", async () => {
   const chunkSize = 4096;
   const chunkCount = 260;
   const expectedSize = chunkSize * chunkCount;
@@ -1227,14 +1228,17 @@ test("vfork execve continues backing retry past the initial fixed budget", async
         };
         return -11n;
       };
-      exports.thread_execve_backing_miss_ino = () => currentMiss?.ino ?? 0;
-      exports.thread_execve_backing_miss_offset = () => BigInt(currentMiss?.offset ?? 0);
-      exports.thread_execve_backing_miss_len = () => currentMiss?.length ?? 0;
-      exports.thread_execve_backing_miss_expected_size = () => currentMiss?.expectedSize ?? 0;
-      exports.thread_clear_execve_backing_miss = () => {
+      exports.supervisor_fs_pending_backing_fill_ino = () => currentMiss?.ino ?? 0;
+      exports.supervisor_fs_pending_backing_fill_offset = () => BigInt(currentMiss?.offset ?? 0);
+      exports.supervisor_fs_pending_backing_fill_length = () => BigInt(currentMiss?.length ?? 0);
+      exports.supervisor_fs_pending_backing_fill_expected_size = () => BigInt(currentMiss?.expectedSize ?? 0);
+      exports.supervisor_fs_pending_backing_fill_opcode = () => currentMiss ? FS_OP_EXECVE : 0;
+      exports.supervisor_fs_backing_retry_limit = () => chunkCount + 2;
+      exports.supervisor_fs_clear_pending_backing_fill = () => {
         clearMissCalls += 1;
         publishedChunks += 1;
         currentMiss = null;
+        return 1;
       };
     }
     return { exports } as WebAssembly.WebAssemblyInstantiatedSource;

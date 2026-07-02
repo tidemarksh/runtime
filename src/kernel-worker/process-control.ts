@@ -12,6 +12,13 @@ import {
   readResidentFileData,
   resetPageCache,
 } from "../fs/sab-page-cache.js";
+import { FS_OP_EXECVE } from "../layout/fs-ring.js";
+import {
+  clearSupervisorPendingBackingFill,
+  readSupervisorPendingBackingFill,
+  supervisorBackingRetryLimit,
+  type SupervisorPendingBackingFillRequest,
+} from "../fs/supervisor-backing-fill.js";
 import {
   restoreThreadWorkerPrepareMemory,
   snapshotThreadWorkerPrepareMemory,
@@ -29,9 +36,6 @@ const FS_PUBLICATION_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_FS_PUBLICATION_DEBUG ?? "") === "1";
 export const KERNEL_WORKER_PROCESS_CONTROL_OWNERSHIP = "transitional-runtime-owner" as const;
-const EXECVE_BACKING_RETRY_MIN_ATTEMPTS = 256;
-const EXECVE_BACKING_RETRY_MAX_ATTEMPTS = 16 * 1024;
-const EXECVE_BACKING_RETRY_FINAL_SCAN_ATTEMPTS = 2;
 
 interface CanonicalProcessEntry {
   pid: number;
@@ -58,13 +62,7 @@ interface PendingMmapGuestWriteRequest {
   length: number;
 }
 
-interface PendingBackingFillRequest {
-  ino: number;
-  offset: number;
-  length: number;
-  expectedSize: number;
-  opcode?: number;
-}
+type PendingBackingFillRequest = SupervisorPendingBackingFillRequest;
 
 interface ExecveBackingRetryStats {
   attempts: number;
@@ -356,73 +354,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     processExports: KernelExports,
     vmPtr: number,
   ): PendingBackingFillRequest | null {
-    if (
-      typeof processExports.supervisor_fs_pending_backing_fill_ino !== "function"
-      || typeof processExports.supervisor_fs_pending_backing_fill_offset !== "function"
-      || typeof processExports.supervisor_fs_pending_backing_fill_length !== "function"
-      || typeof processExports.supervisor_fs_pending_backing_fill_expected_size !== "function"
-      || typeof processExports.supervisor_fs_pending_backing_fill_opcode !== "function"
-    ) {
-      return null;
-    }
-    const ino = processExports.supervisor_fs_pending_backing_fill_ino(vmPtr);
-    const offset = supervisorU64ToSafeNumber(
-      processExports.supervisor_fs_pending_backing_fill_offset(vmPtr),
-    );
-    const length = supervisorU64ToSafeNumber(
-      processExports.supervisor_fs_pending_backing_fill_length(vmPtr),
-    );
-    const expectedSize = supervisorU64ToSafeNumber(
-      processExports.supervisor_fs_pending_backing_fill_expected_size(vmPtr),
-    );
-    const opcode = processExports.supervisor_fs_pending_backing_fill_opcode(vmPtr);
-    if (
-      ino <= 0
-      || offset === null
-      || length === null
-      || expectedSize === null
-      || length <= 0
-      || expectedSize <= 0
-    ) {
-      return null;
-    }
-    return {
-      ino,
-      offset,
-      length,
-      expectedSize,
-      ...(opcode > 0 ? { opcode } : {}),
-    };
-  }
-
-  function readPendingExecveBackingMissSnapshot(
-    processExports: KernelExports,
-    vmPtr: number,
-  ): PendingBackingFillRequest | null {
-    const hasExports = typeof processExports.thread_execve_backing_miss_ino === "function"
-      && typeof processExports.thread_execve_backing_miss_offset === "function"
-      && typeof processExports.thread_execve_backing_miss_len === "function"
-      && typeof processExports.thread_execve_backing_miss_expected_size === "function";
-    if (!hasExports) {
-      return null;
-    }
-    const ino = processExports.thread_execve_backing_miss_ino?.(vmPtr) ?? 0;
-    const offsetRaw = processExports.thread_execve_backing_miss_offset?.(vmPtr) ?? 0;
-    const length = processExports.thread_execve_backing_miss_len?.(vmPtr) ?? 0;
-    const expectedSize = processExports.thread_execve_backing_miss_expected_size?.(vmPtr) ?? 0;
-    const offset = typeof offsetRaw === "bigint" ? Number(offsetRaw) : offsetRaw;
-    if (
-      ino <= 0
-      || !Number.isSafeInteger(offset)
-      || offset < 0
-      || !Number.isFinite(length)
-      || length <= 0
-      || !Number.isFinite(expectedSize)
-      || expectedSize <= 0
-    ) {
-      return null;
-    }
-    return { ino, offset, length, expectedSize };
+    return readSupervisorPendingBackingFill(processExports, vmPtr);
   }
 
   function backingProbeIsReadable(ino: number, offset: number, length: number): boolean {
@@ -594,24 +526,24 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       publishFailed: false,
       lastMiss: null,
     };
-    let maxAttempts = EXECVE_BACKING_RETRY_MIN_ATTEMPTS;
+    let maxAttempts = 1;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       stats.attempts += 1;
       debug?.("thread_process_fs-start", `attempt=${attempt}`);
       processExports.thread_process_fs(vmPtr);
       debug?.("thread_process_fs-done", `attempt=${attempt}:status=${processExports.thread_status?.(vmPtr) ?? "n/a"}`);
-      const miss = readPendingExecveBackingMissSnapshot(processExports, vmPtr);
-      if (!miss) {
+      const miss = readPendingBackingFillRequest(processExports, vmPtr);
+      if (!miss || miss.opcode !== FS_OP_EXECVE) {
         return stats;
       }
       stats.misses += 1;
       stats.lastMiss = miss;
-      maxAttempts = Math.max(maxAttempts, execveBackingRetryLimitForMiss(miss));
+      maxAttempts = Math.max(maxAttempts, supervisorBackingRetryLimit(processExports, miss));
       debug?.("execve-backing-miss", formatBackingFillDebug(miss));
       debug?.("execve-backing-publish-start", formatBackingFillDebug(miss));
       const published = await publishBackingRange(processExports, miss);
       debug?.("execve-backing-publish-done", `published=${published ? 1 : 0}`);
-      processExports.thread_clear_execve_backing_miss?.(vmPtr);
+      clearSupervisorPendingBackingFill(processExports, vmPtr);
       if (!published) {
         stats.publishFailed = true;
         return stats;
@@ -620,22 +552,6 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     }
     stats.exhausted = true;
     return stats;
-  }
-
-  function execveBackingRetryLimitForMiss(request: PendingBackingFillRequest): number {
-    const alignedOffset = Math.floor(request.offset / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE;
-    const requestedEnd = request.offset + request.length;
-    const alignedEnd = Math.min(
-      request.expectedSize,
-      Math.ceil(requestedEnd / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE,
-    );
-    const alignedLength = Math.max(DEFAULT_RESIDENT_PAGE_SIZE, alignedEnd - alignedOffset);
-    const sourceChunks = Math.ceil(request.expectedSize / alignedLength);
-    const attempts = sourceChunks + EXECVE_BACKING_RETRY_FINAL_SCAN_ATTEMPTS;
-    return Math.min(
-      EXECVE_BACKING_RETRY_MAX_ATTEMPTS,
-      Math.max(EXECVE_BACKING_RETRY_MIN_ATTEMPTS, attempts),
-    );
   }
 
   function formatBackingFillDebug(request: PendingBackingFillRequest | null): string {

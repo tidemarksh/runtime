@@ -13,6 +13,7 @@ import {
   FS_OP_WRITE,
   FS_OP_MMAP,
   FS_OP_TRUNCATE,
+  FS_OP_EXECVE,
   FS_REQ_FLAG_PWRITE,
   FS_RING_REQUEST_BUF_PTR_OFFSET,
   FS_RING_REQUEST_FD_OFFSET,
@@ -239,7 +240,7 @@ function makeKernelExports(options: {
     }
     return null;
   };
-  const pendingBackingFill = deriveBackingFillRequest();
+  let pendingBackingFill = deriveBackingFillRequest();
   const pendingMmapGuestWrite = options.supervisorMmapGuestWriteRequest !== undefined
     ? options.supervisorMmapGuestWriteRequest
     : options.mmapRequest
@@ -263,6 +264,28 @@ function makeKernelExports(options: {
       ? 1
       : 0
   );
+  const supervisorBackingRetryLimit = (
+    _opcode: number,
+    offsetRaw: bigint | number,
+    lengthRaw: bigint | number,
+    expectedSizeRaw: bigint | number,
+  ): number => {
+    const offset = Number(offsetRaw);
+    const length = Number(lengthRaw);
+    const expectedSize = Number(expectedSizeRaw);
+    if (length <= 0 || expectedSize <= 0) {
+      return 0;
+    }
+    const alignedOffset = Math.floor(offset / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE;
+    const requestedEnd = offset + length;
+    const alignedEnd = Math.min(
+      expectedSize,
+      Math.ceil(requestedEnd / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE,
+    );
+    const alignedLength = Math.max(DEFAULT_RESIDENT_PAGE_SIZE, alignedEnd - alignedOffset);
+    const sourceChunks = Math.ceil(expectedSize / alignedLength);
+    return Math.min(16 * 1024, Math.max(256, sourceChunks + 2));
+  };
   return {
     memory,
     __stack_pointer: stackPointer,
@@ -386,6 +409,14 @@ function makeKernelExports(options: {
     supervisor_fs_pending_backing_fill_length: () => BigInt(pendingBackingFill?.length ?? 0),
     supervisor_fs_pending_backing_fill_expected_size: () => BigInt(pendingBackingFill?.expectedSize ?? 0),
     supervisor_fs_pending_backing_fill_opcode: () => pendingBackingFill?.opcode ?? 0,
+    supervisor_fs_clear_pending_backing_fill: () => {
+      pendingBackingFill = null;
+      return 1;
+    },
+    supervisor_fs_backing_retry_min_attempts: () => 256,
+    supervisor_fs_backing_retry_max_attempts: () => 16 * 1024,
+    supervisor_fs_backing_retry_final_scan_attempts: () => 2,
+    supervisor_fs_backing_retry_limit: supervisorBackingRetryLimit,
     supervisor_fs_pending_mmap_guest_write_ptr: () => BigInt(pendingMmapGuestWrite?.guestPtrHint ?? 0),
     supervisor_fs_pending_mmap_guest_write_len: () => BigInt(pendingMmapGuestWrite?.length ?? 0),
     supervisor_fs_backing_fill_mode_resident: () => 0,
@@ -1523,13 +1554,16 @@ test("processFs retries execve after publishing kernel-reported backing miss ran
   processExports.thread_process_fs = () => {
     processExports.opLog.push("process-fs");
   };
-  processExports.thread_execve_backing_miss_ino = () => miss?.ino ?? 0;
-  processExports.thread_execve_backing_miss_offset = () => BigInt(miss?.offset ?? 0);
-  processExports.thread_execve_backing_miss_len = () => miss?.length ?? 0;
-  processExports.thread_execve_backing_miss_expected_size = () => miss?.expectedSize ?? 0;
-  processExports.thread_clear_execve_backing_miss = () => {
+  processExports.supervisor_fs_pending_backing_fill_ino = () => miss?.ino ?? 0;
+  processExports.supervisor_fs_pending_backing_fill_offset = () => BigInt(miss?.offset ?? 0);
+  processExports.supervisor_fs_pending_backing_fill_length = () => BigInt(miss?.length ?? 0);
+  processExports.supervisor_fs_pending_backing_fill_expected_size = () => BigInt(miss?.expectedSize ?? 0);
+  processExports.supervisor_fs_pending_backing_fill_opcode = () => miss ? FS_OP_EXECVE : 0;
+  processExports.supervisor_fs_backing_retry_limit = () => 256;
+  processExports.supervisor_fs_clear_pending_backing_fill = () => {
     clearMiss();
     miss = null;
+    return 1;
   };
 
   const processControl = createKernelWorkerProcessControl({
@@ -1591,7 +1625,7 @@ test("processFs retries execve after publishing kernel-reported backing miss ran
   expect(processExports.opLog).toEqual(["process-fs", "process-fs", "resume-fs"]);
 });
 
-test("processFs continues execve backing retry past the initial fixed budget", async () => {
+test("processFs follows supervisor execve backing retry limits", async () => {
   const canonicalExports = makeKernelExports();
   const processExports = makeKernelExports({ resumeResult: 0 });
   const processKernels = new Map<number, KernelExports>([[7, processExports]]);
@@ -1626,14 +1660,17 @@ test("processFs continues execve backing retry past the initial fixed budget", a
       }
       : null;
   };
-  processExports.thread_execve_backing_miss_ino = () => miss?.ino ?? 0;
-  processExports.thread_execve_backing_miss_offset = () => BigInt(miss?.offset ?? 0);
-  processExports.thread_execve_backing_miss_len = () => miss?.length ?? 0;
-  processExports.thread_execve_backing_miss_expected_size = () => miss?.expectedSize ?? 0;
-  processExports.thread_clear_execve_backing_miss = () => {
+  processExports.supervisor_fs_pending_backing_fill_ino = () => miss?.ino ?? 0;
+  processExports.supervisor_fs_pending_backing_fill_offset = () => BigInt(miss?.offset ?? 0);
+  processExports.supervisor_fs_pending_backing_fill_length = () => BigInt(miss?.length ?? 0);
+  processExports.supervisor_fs_pending_backing_fill_expected_size = () => BigInt(miss?.expectedSize ?? 0);
+  processExports.supervisor_fs_pending_backing_fill_opcode = () => miss ? FS_OP_EXECVE : 0;
+  processExports.supervisor_fs_backing_retry_limit = () => largeFilePages + 2;
+  processExports.supervisor_fs_clear_pending_backing_fill = () => {
     clearMiss();
     nextOffset += DEFAULT_RESIDENT_PAGE_SIZE;
     miss = null;
+    return 1;
   };
 
   const processControl = createKernelWorkerProcessControl({
