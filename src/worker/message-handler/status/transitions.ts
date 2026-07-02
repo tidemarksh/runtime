@@ -682,9 +682,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       let childVmPtr = 0;
       const spawnCloneChild = (): boolean => {
         const hostOp = drainSupervisorCloneSpawnHostOp(handle, thread.vmPtr);
-        if (hostOp === undefined) {
-          childVmPtr = handle.kernel.thread_spawn_from_clone(thread.vmPtr);
-        } else if (hostOp === null) {
+        if (hostOp === null || hostOp === undefined) {
           childVmPtr = 0;
         } else {
           childVmPtr = hostOp.childVmPtr;
@@ -731,7 +729,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         if (hostOp !== undefined) {
           throw new Error(`supervisor clone spawn HostOp missing for pid=${handle.pid}`);
         }
-        throw new Error(`thread_spawn_from_clone failed for pid=${handle.pid}`);
+        throw new Error(`kernel supervisor ABI missing clone spawn HostOp exports for pid=${handle.pid}`);
       };
       const finishCloneSpawn = (): void => {
         if (CLONE_SPAWN_DEBUG_ENABLED) {

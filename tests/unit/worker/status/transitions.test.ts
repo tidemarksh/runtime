@@ -61,6 +61,31 @@ function writeCloneSpawnHostOpRecord(
   writeU64(view, 56, 0x8800n);
 }
 
+function installCloneSpawnHostOp(
+  handle: ReturnType<typeof makeHandle>,
+  childVmPtr = 0x2000,
+) {
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  handle.memory = memory;
+  const kernel = handle.kernel as typeof handle.kernel & {
+    memory: WebAssembly.Memory;
+    supervisor_abi_version: () => number;
+    supervisor_host_op_record_bytes: () => number;
+    supervisor_host_op_kind_spawn_thread_worker: () => number;
+    supervisor_next_host_op: (outPtr: number, outLen: number) => number;
+  };
+  kernel.memory = memory;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_host_op_record_bytes = () => 64;
+  kernel.supervisor_host_op_kind_spawn_thread_worker = () => 1;
+  kernel.supervisor_next_host_op = vi.fn((outPtr: number, outLen: number) => {
+    expect(outLen).toBe(64);
+    writeCloneSpawnHostOpRecord(memory, outPtr, 0x1234, childVmPtr);
+    return 64;
+  });
+  return { kernel, memory };
+}
+
 function writeFdControlRecord(memory: WebAssembly.Memory, ptr: number, seq: bigint): void {
   const view = new DataView(memory.buffer, ptr, 96);
   writeU32(view, 0, 0x4446_5354);
@@ -1021,7 +1046,7 @@ test("STATUS_CLONE_SPAWN ignores stale duplicate after kernel status moved on", 
     completedSyncEffects: 0,
   })).not.toThrow();
 
-  expect(handle.kernel.thread_spawn_from_clone).toHaveBeenCalledWith(0x1234);
+  expect(handle.kernel.thread_spawn_from_clone).not.toHaveBeenCalled();
   expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
     77,
     "clone-spawn-stale-current:1:0x1234:25->0",
@@ -1050,26 +1075,9 @@ test("STATUS_CLONE_SPAWN attaches child from supervisor HostOp record", () => {
   handle.pid = 1;
   handle.runtimeId = 77;
   handle.kernel.thread_status = () => handle.kernel.abi_status_clone_spawn();
-  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
-  handle.memory = memory;
-  const kernel = handle.kernel as typeof handle.kernel & {
-    memory: WebAssembly.Memory;
-    supervisor_abi_version: () => number;
-    supervisor_host_op_record_bytes: () => number;
-    supervisor_host_op_kind_spawn_thread_worker: () => number;
-    supervisor_next_host_op: (outPtr: number, outLen: number) => number;
-  };
-  kernel.memory = memory;
-  kernel.supervisor_abi_version = () => 1;
-  kernel.supervisor_host_op_record_bytes = () => 64;
-  kernel.supervisor_host_op_kind_spawn_thread_worker = () => 1;
+  const { kernel } = installCloneSpawnHostOp(handle);
   kernel.thread_spawn_from_clone = vi.fn(() => {
     throw new Error("legacy clone spawn should not be called");
-  });
-  kernel.supervisor_next_host_op = vi.fn((outPtr: number, outLen: number) => {
-    expect(outLen).toBe(64);
-    writeCloneSpawnHostOpRecord(memory, outPtr, 0x1234, 0x2000);
-    return 64;
   });
   const deps = makeDeps(worker);
   const thread = deps.threadWorkerStates.get(worker)!;
@@ -1303,9 +1311,9 @@ test("STATUS_CLONE_SPAWN still fails when spawn handoff is missing at current cl
     wroteToPipe: false,
     drainedPipe: false,
     completedSyncEffects: 0,
-  })).toThrow("thread_spawn_from_clone failed for pid=1");
+  })).toThrow("kernel supervisor ABI missing clone spawn HostOp exports for pid=1");
 
-  expect(handle.kernel.thread_spawn_from_clone).toHaveBeenCalledWith(0x1234);
+  expect(handle.kernel.thread_spawn_from_clone).not.toHaveBeenCalled();
   expect(deps.appendRuntimeLifecycleEvent).not.toHaveBeenCalled();
   expect(deps.attachThreadWorker).not.toHaveBeenCalled();
 });
@@ -1324,6 +1332,7 @@ test("STATUS_CLONE_SPAWN holds parent until attached child reports ready", () =>
   handle.pid = 1;
   handle.runtimeId = 77;
   handle.kernel.thread_status = () => handle.kernel.abi_status_clone_spawn();
+  installCloneSpawnHostOp(handle);
   const deps = makeDeps(worker);
   const thread = deps.threadWorkerStates.get(worker)!;
   thread.ownerPid = handle.pid;
