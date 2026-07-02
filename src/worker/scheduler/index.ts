@@ -1856,6 +1856,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
     drainHiddenProcessOutput,
     drainProcessOutput,
+    pumpProcess,
     threadWorkerStates,
     retryHostBlockedWorker,
   });

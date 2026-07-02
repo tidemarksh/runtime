@@ -324,7 +324,11 @@ export interface ProcessHandle {
   // these collections only track host execution, parking, and diagnostics.
   // vforkReadyWorkers is the vfork host-hold queue, not the general runnable set.
   vforkReadyWorkers: Worker[];
+  // runningWorker is the browser Worker currently executing a guest step.
+  // It is a host execution mutex, not a runnable selection authority.
   runningWorker: Worker | null;
+  // hostBlockedWorkers tracks waits whose host-side effect bridge is still live.
+  // Futex/runnable/dead-thread decisions remain supervisor-owned.
   hostBlockedWorkers: Map<Worker, HostBlockedWorkerState>;
   pendingChildExitRecords: number;
   pendingChildSpawnRecords: number;

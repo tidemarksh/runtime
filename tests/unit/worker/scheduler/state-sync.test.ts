@@ -240,6 +240,38 @@ test("requestSocketStateSync wakes socket-backed poll and epoll waiters", async 
   expect(handle.hostBlockedWorkers.get(pipeWorker)?.pipeSyncedBeforePassive).toBe(false);
 });
 
+test("waking sync drains supervisor resume before runtime host retry", async () => {
+  const retryHostBlockedWorker = vi.fn();
+  const handle = makeHandle();
+  handle.kernelShare.members.add(handle);
+  const pipeWorker = {} as Worker;
+  const pumpProcess = vi.fn((member) => {
+    member.hostBlockedWorkers.delete(pipeWorker);
+    member.runningWorker = pipeWorker;
+  });
+  handle.hostBlockedWorkers.set(pipeWorker, {
+    status: handle.kernel.abi_status_pipe_wait(),
+    rpcPending: false,
+    rpcGeneration: 0,
+    pipeSyncedBeforePassive: true,
+  } as never);
+
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent: () => {},
+    drainProcessOutput: vi.fn(() => false),
+    drainHiddenProcessOutput: vi.fn(() => false),
+    threadWorkerStates: new WeakMap(),
+    pumpProcess,
+    retryHostBlockedWorker,
+  });
+
+  await helpers.requestPipeStateSync(handle, true);
+
+  expect(pumpProcess).toHaveBeenCalledWith(handle);
+  expect(handle.runningWorker).toBe(pipeWorker);
+  expect(retryHostBlockedWorker).not.toHaveBeenCalledWith(handle, pipeWorker);
+});
+
 test("requestSocketStateSync skips rpc-pending epoll waiters during waking sync", async () => {
   const retryHostBlockedWorker = vi.fn();
   const handle = makeHandle({
