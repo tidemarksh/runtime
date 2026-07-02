@@ -201,6 +201,36 @@ function hostStdioPipeSlotsForFd(handle: ProcessHandle, fd: 0 | 1 | 2): Set<numb
   return new Set(slotsByFd.filter((slot) => slot > 0));
 }
 
+function supervisorMaskToBigInt(mask: bigint | number): bigint {
+  return typeof mask === "bigint" ? mask : BigInt(mask);
+}
+
+function addSupervisorPipeControlForMember(
+  member: ProcessHandle,
+  readOpen: Int32Array,
+  writeOpen: Int32Array,
+  maxPipes: number,
+): bigint | null {
+  const usedMask = member.kernel.supervisor_process_pipe_used_mask;
+  const readOpenCount = member.kernel.supervisor_process_pipe_read_open_count;
+  const writeOpenCount = member.kernel.supervisor_process_pipe_write_open_count;
+  if (!usedMask || !readOpenCount || !writeOpenCount) {
+    return null;
+  }
+
+  for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
+    const readCount = readOpenCount(member.vmPtr, pipeSlot);
+    const writeCount = writeOpenCount(member.vmPtr, pipeSlot);
+    if (readCount > 0) {
+      readOpen[pipeSlot] += readCount;
+    }
+    if (writeCount > 0) {
+      writeOpen[pipeSlot] += writeCount;
+    }
+  }
+  return supervisorMaskToBigInt(usedMask(member.vmPtr));
+}
+
 export function reconcileKernelSharePipeControl(handle: ProcessHandle): void {
   const members = [...handle.kernelShare.members].filter((member) => !member.exitInProgress);
   if (members.length === 0) {
@@ -215,31 +245,36 @@ export function reconcileKernelSharePipeControl(handle: ProcessHandle): void {
 
   for (const member of members) {
     const maxFds = member.kernel.abi_max_fds();
-    for (let fd = 0; fd < maxFds; fd += 1) {
-      const ofdId = member.kernel.process_fd_ofd_id(member.vmPtr, fd);
-      if (ofdId <= 0 || ofdId >= maxFds) {
-        continue;
-      }
-      if (member.kernel.kernel_ofd_fd_type(ofdId) !== member.kernel.abi_fd_type_pipe()) {
-        continue;
-      }
-      if (
-        typeof member.kernel.kernel_ofd_refcount === "function"
-        && member.kernel.kernel_ofd_refcount(ofdId) <= 0
-      ) {
-        continue;
-      }
-      const pipeSlot = member.kernel.kernel_ofd_ino(ofdId);
-      if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
-        continue;
-      }
-      pipeUsed |= 1n << BigInt(pipeSlot);
-      const hostFd = member.kernel.kernel_ofd_host_fd(ofdId);
-      const key = `${member.pid}:${pipeSlot}:${ofdId}`;
-      if (hostFd >= 0) {
-        readKeys.add(key);
-      } else {
-        writeKeys.add(key);
+    const supervisorPipeUsed = addSupervisorPipeControlForMember(member, readOpen, writeOpen, maxPipes);
+    if (supervisorPipeUsed !== null) {
+      pipeUsed |= supervisorPipeUsed;
+    } else {
+      for (let fd = 0; fd < maxFds; fd += 1) {
+        const ofdId = member.kernel.process_fd_ofd_id(member.vmPtr, fd);
+        if (ofdId <= 0 || ofdId >= maxFds) {
+          continue;
+        }
+        if (member.kernel.kernel_ofd_fd_type(ofdId) !== member.kernel.abi_fd_type_pipe()) {
+          continue;
+        }
+        if (
+          typeof member.kernel.kernel_ofd_refcount === "function"
+          && member.kernel.kernel_ofd_refcount(ofdId) <= 0
+        ) {
+          continue;
+        }
+        const pipeSlot = member.kernel.kernel_ofd_ino(ofdId);
+        if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
+          continue;
+        }
+        pipeUsed |= 1n << BigInt(pipeSlot);
+        const hostFd = member.kernel.kernel_ofd_host_fd(ofdId);
+        const key = `${member.pid}:${pipeSlot}:${ofdId}`;
+        if (hostFd >= 0) {
+          readKeys.add(key);
+        } else {
+          writeKeys.add(key);
+        }
       }
     }
     if ((member.hostStdio?.refCount ?? 0) > 0) {

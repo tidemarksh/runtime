@@ -2879,6 +2879,10 @@ test("epoll kernel-worker retry syncs watched pipe, epoll table, then dependent 
   kernel.kernel_epoll_table_bytes = () => 64 * 8;
   kernel.kernel_epoll_instance_bytes = () => 64 * 32 + 4;
   kernel.process_state_bytes = () => 0;
+  kernel.supervisor_blocked_epoll_watches_pipe = vi.fn(() => 1);
+  kernel.supervisor_blocked_epoll_watched_ofd = vi.fn((_vmPtr: number, index: number) => (
+    index === 0 ? 7 : 0
+  ));
   kernel.thread_resume_blocked_syscall = vi.fn(() => {
     throw new Error("kernel-worker epoll resume must use blocked syscall outcome");
   });
@@ -2961,6 +2965,8 @@ test("epoll kernel-worker retry syncs watched pipe, epoll table, then dependent 
   await Promise.resolve();
 
   expect(requests).toEqual(["sync-pipe-state", "sync-epoll-state", "sync-ofd-state"]);
+  expect(kernel.supervisor_blocked_epoll_watches_pipe).toHaveBeenCalledWith(0x1234);
+  expect(kernel.supervisor_blocked_epoll_watched_ofd).toHaveBeenCalledWith(0x1234, 0);
   expect(executeHostBlockedSyscallResumeOutcome).toHaveBeenCalledWith(
     handle,
     blockedWorker,

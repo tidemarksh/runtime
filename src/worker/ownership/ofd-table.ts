@@ -37,6 +37,15 @@ export function plausibleThreadVmPtr(handle: ProcessHandle, vmPtr: number): bool
 export function collectProcessHeldOfds(handle: ProcessHandle): Set<number> {
   const maxFds = handle.kernel.abi_max_fds();
   const heldOfds = new Set<number>();
+  const supervisorHeldOfdRefcount = handle.kernel.supervisor_process_held_ofd_refcount;
+  if (supervisorHeldOfdRefcount) {
+    for (let ofdId = 1; ofdId < maxFds; ofdId += 1) {
+      if (supervisorHeldOfdRefcount(handle.vmPtr, ofdId) > 0) {
+        heldOfds.add(ofdId);
+      }
+    }
+    return heldOfds;
+  }
 
   for (let fd = 0; fd < maxFds; fd += 1) {
     const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
@@ -87,6 +96,16 @@ export function collectProcessHeldOfds(handle: ProcessHandle): Set<number> {
 export function collectProcessHeldOfdRefcounts(handle: ProcessHandle): Int32Array {
   const maxFds = handle.kernel.abi_max_fds();
   const heldOfdRefcounts = new Int32Array(maxFds);
+  const supervisorHeldOfdRefcount = handle.kernel.supervisor_process_held_ofd_refcount;
+  if (supervisorHeldOfdRefcount) {
+    for (let ofdId = 1; ofdId < maxFds; ofdId += 1) {
+      const refcount = supervisorHeldOfdRefcount(handle.vmPtr, ofdId);
+      if (refcount > 0) {
+        heldOfdRefcounts[ofdId] = refcount;
+      }
+    }
+    return heldOfdRefcounts;
+  }
 
   for (let fd = 0; fd < maxFds; fd += 1) {
     const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
@@ -143,6 +162,21 @@ export function collectHeldOfdIdsByType(handle: ProcessHandle, types: number[]):
 }
 
 export function collectHeldEpollOfdIds(handle: ProcessHandle): number[] {
+  const supervisorHeldEpollOfd = handle.kernel.supervisor_process_epoll_held_ofd;
+  if (supervisorHeldEpollOfd) {
+    const maxFds = handle.kernel.abi_max_fds();
+    const epollOfdIds: number[] = [];
+    for (let index = 0; index < maxFds; index += 1) {
+      const ofdId = supervisorHeldEpollOfd(handle.vmPtr, index);
+      if (ofdId === 0) {
+        break;
+      }
+      if (ofdId > 0 && ofdId < maxFds) {
+        epollOfdIds.push(ofdId);
+      }
+    }
+    return epollOfdIds;
+  }
   const held = collectProcessHeldOfds(handle);
   const epollOfdIds: number[] = [];
   for (const ofdId of held) {
@@ -154,6 +188,26 @@ export function collectHeldEpollOfdIds(handle: ProcessHandle): number[] {
 }
 
 export function collectHeldEpollDependentOfdIdsByType(handle: ProcessHandle, types: number[]): number[] {
+  const supervisorDependentOfd = handle.kernel.supervisor_process_epoll_dependent_ofd;
+  if (supervisorDependentOfd) {
+    const maxFds = handle.kernel.abi_max_fds();
+    const targetTypes = new Set(types);
+    const ofdIds: number[] = [];
+    for (let index = 0; index < maxFds; index += 1) {
+      const ofdId = supervisorDependentOfd(handle.vmPtr, index);
+      if (ofdId === 0) {
+        break;
+      }
+      if (
+        ofdId > 0
+        && ofdId < maxFds
+        && targetTypes.has(handle.kernel.kernel_ofd_fd_type(ofdId))
+      ) {
+        ofdIds.push(ofdId);
+      }
+    }
+    return ofdIds;
+  }
   const epollOfdIds = collectHeldEpollOfdIds(handle);
   if (epollOfdIds.length === 0) {
     return [];

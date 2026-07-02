@@ -654,6 +654,11 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   }
 
   function blockedEpollWatchesPipe(handle: ProcessHandle, vmPtr: number): boolean {
+    const supervisorWatchesPipe = handle.kernel.supervisor_blocked_epoll_watches_pipe;
+    if (supervisorWatchesPipe) {
+      return supervisorWatchesPipe(vmPtr) !== 0;
+    }
+
     const maxFds = handle.kernel.abi_max_fds();
     const epollFd = handle.kernel.thread_blocked_fd?.(vmPtr)
       ?? Number(handle.kernel.thread_a0?.(vmPtr) ?? -1n);
@@ -716,6 +721,27 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     vmPtr: number,
     types: readonly number[],
   ): number[] {
+    const supervisorWatchedOfd = handle.kernel.supervisor_blocked_epoll_watched_ofd;
+    if (supervisorWatchedOfd) {
+      const maxFds = handle.kernel.abi_max_fds();
+      const targetTypes = new Set(types);
+      const ofdIds: number[] = [];
+      for (let index = 0; index < maxFds; index += 1) {
+        const ofdId = supervisorWatchedOfd(vmPtr, index);
+        if (ofdId === 0) {
+          break;
+        }
+        if (
+          ofdId > 0
+          && ofdId < maxFds
+          && targetTypes.has(handle.kernel.kernel_ofd_fd_type(ofdId))
+        ) {
+          ofdIds.push(ofdId);
+        }
+      }
+      return ofdIds;
+    }
+
     const maxFds = handle.kernel.abi_max_fds();
     const targetTypes = new Set(types);
     const epollFd = handle.kernel.thread_blocked_fd?.(vmPtr)

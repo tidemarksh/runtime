@@ -665,23 +665,38 @@ export function refreshPipeControlFromKernelShare(handle: ProcessHandle): void {
     if (member.vmPtr === 0) {
       continue;
     }
-    for (let fd = 0; fd < maxFds; fd += 1) {
-      const ofdId = member.kernel.process_fd_ofd_id?.(member.vmPtr, fd) ?? 0;
-      if (
-        ofdId <= 0
-        || ofdId >= maxFds
-        || member.kernel.kernel_ofd_fd_type?.(ofdId) !== pipeType
-      ) {
-        continue;
+    const supervisorReadOpen = member.kernel.supervisor_process_pipe_read_open_count;
+    const supervisorWriteOpen = member.kernel.supervisor_process_pipe_write_open_count;
+    if (supervisorReadOpen && supervisorWriteOpen) {
+      for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
+        const readCount = supervisorReadOpen(member.vmPtr, pipeSlot);
+        const writeCount = supervisorWriteOpen(member.vmPtr, pipeSlot);
+        if (readCount > 0) {
+          readOpen[pipeSlot] += readCount;
+        }
+        if (writeCount > 0) {
+          writeOpen[pipeSlot] += writeCount;
+        }
       }
-      const pipeSlot = member.kernel.kernel_ofd_ino?.(ofdId) ?? 0;
-      if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
-        continue;
-      }
-      if ((member.kernel.kernel_ofd_host_fd?.(ofdId) ?? -1) >= 0) {
-        readOpen[pipeSlot] += 1;
-      } else {
-        writeOpen[pipeSlot] += 1;
+    } else {
+      for (let fd = 0; fd < maxFds; fd += 1) {
+        const ofdId = member.kernel.process_fd_ofd_id?.(member.vmPtr, fd) ?? 0;
+        if (
+          ofdId <= 0
+          || ofdId >= maxFds
+          || member.kernel.kernel_ofd_fd_type?.(ofdId) !== pipeType
+        ) {
+          continue;
+        }
+        const pipeSlot = member.kernel.kernel_ofd_ino?.(ofdId) ?? 0;
+        if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
+          continue;
+        }
+        if ((member.kernel.kernel_ofd_host_fd?.(ofdId) ?? -1) >= 0) {
+          readOpen[pipeSlot] += 1;
+        } else {
+          writeOpen[pipeSlot] += 1;
+        }
       }
     }
   }

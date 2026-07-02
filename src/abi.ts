@@ -247,6 +247,9 @@ export interface KernelExports {
   supervisor_process_pipe_read_open_count?(vmPtr: number, pipeSlot: number): number;
   supervisor_process_pipe_write_open_count?(vmPtr: number, pipeSlot: number): number;
   supervisor_process_epoll_held_ofd?(vmPtr: number, index: number): number;
+  supervisor_process_epoll_dependent_ofd?(vmPtr: number, index: number): number;
+  supervisor_blocked_epoll_watched_ofd?(vmPtr: number, index: number): number;
+  supervisor_blocked_epoll_watches_pipe?(vmPtr: number): number;
   supervisor_process_socket_held_ofd?(vmPtr: number, index: number): number;
   supervisor_resume_blocked_syscall?(vmPtr: number, flags: number): bigint | number;
   supervisor_blocked_resume_delegation?(vmPtr: number, flags: number): number;
@@ -1243,6 +1246,9 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_process_pipe_read_open_count",
   "supervisor_process_pipe_write_open_count",
   "supervisor_process_epoll_held_ofd",
+  "supervisor_process_epoll_dependent_ofd",
+  "supervisor_blocked_epoll_watched_ofd",
+  "supervisor_blocked_epoll_watches_pipe",
   "supervisor_process_socket_held_ofd",
   "supervisor_resume_blocked_syscall",
   "supervisor_blocked_resume_delegation",

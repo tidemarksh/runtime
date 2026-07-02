@@ -4,6 +4,9 @@ import {
 } from "../../../src/worker/fork-shared.js";
 import {
   activeKernelShareOfdIds,
+  collectHeldEpollDependentOfdIdsByType,
+  collectHeldEpollOfdIds,
+  collectProcessHeldOfdRefcounts,
   collectProcessHeldOfds,
   trackForkSharedOfds,
 } from "../../../src/worker/ownership/ofd-table.js";
@@ -13,6 +16,7 @@ import {
   restoreLocalOfdSlots,
   snapshotLocalPipeSlots,
 } from "../../../src/worker/kernel-share.js";
+import { refreshPipeControlFromKernelShare } from "../../../src/worker/ownership/pipe-control.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
 
 const FD_TYPE_FILE = 1;
@@ -237,6 +241,27 @@ test("collectProcessHeldOfds deduplicates dup aliases and includes blocked worke
   expect([...collectProcessHeldOfds(handle)].sort((left, right) => left - right)).toEqual([10, 11, 12, 13]);
 });
 
+test("fd ownership helpers use supervisor process authority when available", () => {
+  const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
+  const kernel = makeKernel(memory);
+  const handle = makeHandle(kernel, memory);
+  seedOfd(memory, handle.kernelState.ofdTablePtr, 7, FD_TYPE_FILE, 0, 0x71);
+  seedOfd(memory, handle.kernelState.ofdTablePtr, 9, FD_TYPE_PIPE, 8, 0x91);
+  kernel.setFdMap(new Map([[3, 11]]));
+  kernel.supervisor_process_held_ofd_refcount = (_vmPtr, ofdId) => (
+    ofdId === 7 ? 2 : ofdId === 9 ? 1 : 0
+  );
+  kernel.supervisor_process_epoll_held_ofd = (_vmPtr, index) => (index === 0 ? 7 : 0);
+  kernel.supervisor_process_epoll_dependent_ofd = (_vmPtr, index) => (index === 0 ? 9 : 0);
+
+  expect([...collectProcessHeldOfds(handle)].sort((left, right) => left - right)).toEqual([7, 9]);
+  const heldRefcounts = collectProcessHeldOfdRefcounts(handle);
+  expect(heldRefcounts[7]).toBe(2);
+  expect(heldRefcounts[9]).toBe(1);
+  expect(collectHeldEpollOfdIds(handle)).toEqual([7]);
+  expect(collectHeldEpollDependentOfdIdsByType(handle, [FD_TYPE_PIPE])).toEqual([9]);
+});
+
 test("collectProcessHeldOfds skips implausible or unreadable thread slots from corrupted process state", () => {
   const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
   const kernel = makeKernel(memory);
@@ -413,6 +438,46 @@ test("kernel-share pipe reconcile keeps host stderr reader open for stdio pipes"
   expect(pipeOpenCounts(memory, handle.kernelState.pipeBase, handle.stderrPipe)).toEqual({
     readOpen: 1,
     writeOpen: 1,
+  });
+});
+
+test("kernel-share pipe reconcile uses supervisor endpoint counts when available", () => {
+  const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
+  const kernel = makeKernel(memory);
+  const handle = makeHandle(kernel, memory);
+  const pipeSlot = 12;
+  seedPipeSlot(memory, handle.kernelState.pipeBase, pipeSlot, 0xb7);
+  kernel.setFdMap(new Map([[3, 18]]));
+  kernel.supervisor_process_pipe_used_mask = () => 1n | (1n << BigInt(pipeSlot));
+  kernel.supervisor_process_pipe_read_open_count = (_vmPtr, slot) => (slot === pipeSlot ? 2 : 0);
+  kernel.supervisor_process_pipe_write_open_count = (_vmPtr, slot) => (slot === pipeSlot ? 1 : 0);
+  handle.kernelShare.members.add(handle);
+
+  reconcileKernelSharePipeControl(handle);
+
+  expect(pipeOpenCounts(memory, handle.kernelState.pipeBase, pipeSlot)).toEqual({
+    readOpen: 2,
+    writeOpen: 1,
+  });
+  expect(handle.kernelState.pipeUsed & (1n << BigInt(pipeSlot))).not.toBe(0n);
+});
+
+test("pipe-control refresh uses supervisor endpoint counts when available", () => {
+  const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
+  const kernel = makeKernel(memory);
+  const handle = makeHandle(kernel, memory);
+  const pipeSlot = 13;
+  seedPipeSlot(memory, handle.kernelState.pipeBase, pipeSlot, 0xb8);
+  kernel.setFdMap(new Map([[3, 18]]));
+  kernel.supervisor_process_pipe_read_open_count = (_vmPtr, slot) => (slot === pipeSlot ? 1 : 0);
+  kernel.supervisor_process_pipe_write_open_count = (_vmPtr, slot) => (slot === pipeSlot ? 2 : 0);
+  handle.kernelShare.members.add(handle);
+
+  refreshPipeControlFromKernelShare(handle);
+
+  expect(pipeOpenCounts(memory, handle.kernelState.pipeBase, pipeSlot)).toEqual({
+    readOpen: 1,
+    writeOpen: 2,
   });
 });
 
