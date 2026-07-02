@@ -482,7 +482,6 @@ export function createWorkerSchedulerQueueHelpers(
   deps: WorkerSchedulerQueueDeps,
 ): WorkerSchedulerQueueHelpers {
   const observedForkSharedSyncGates = new WeakMap<ProcessHandle, Promise<void>>();
-  const pendingSupervisorFutexResumes = new WeakMap<ProcessHandle, Set<number>>();
 
   function hasWorkerLocalWait(
     handle: ProcessHandle,
@@ -590,15 +589,6 @@ export function createWorkerSchedulerQueueHelpers(
     return selectSupervisorProcessResumeWorker(handle);
   }
 
-  function markSupervisorFutexResumeSelected(handle: ProcessHandle, vmPtr: number): void {
-    let selected = pendingSupervisorFutexResumes.get(handle);
-    if (selected === undefined) {
-      selected = new Set();
-      pendingSupervisorFutexResumes.set(handle, selected);
-    }
-    selected.add(vmPtr);
-  }
-
   function recordSupervisorResumeSelection(
     handle: ProcessHandle,
     worker: Worker,
@@ -619,50 +609,6 @@ export function createWorkerSchedulerQueueHelpers(
     );
   }
 
-  function reconcileSupervisorSelectedFutexResumes(handle: ProcessHandle): void {
-    const selected = pendingSupervisorFutexResumes.get(handle);
-    if (selected === undefined || selected.size === 0) {
-      return;
-    }
-    const futexWaitStatus = handle.kernel.abi_status_futex_wait();
-    for (const vmPtr of [...selected]) {
-      const worker = findWorkerByVmPtr(handle, vmPtr);
-      const thread = worker === undefined ? undefined : deps.threadWorkerStates.get(worker);
-      if (worker === undefined || thread === undefined) {
-        selected.delete(vmPtr);
-        deps.appendWorkerDebugLog(handle, `supervisor-resume:futex-wake:missing:0x${vmPtr.toString(16)}`);
-        continue;
-      }
-      if (handle.kernel.thread_status(vmPtr) === futexWaitStatus) {
-        deps.parkSupervisorFutexWait(
-          handle,
-          worker,
-          vmPtr,
-          "supervisor-resume-futex-parked",
-        );
-        deps.appendWorkerDebugLog(
-          handle,
-          `supervisor-resume:futex-wake:parked:0x${vmPtr.toString(16)}`
-            + formatSupervisorThreadStateSnapshot(handle, vmPtr),
-        );
-        continue;
-      }
-      selected.delete(vmPtr);
-      recordSupervisorResumeSelection(handle, worker, thread, {
-        kind: supervisorResumeKindFutexWake(handle),
-        seq: 0n,
-        vmPtr,
-        tid: handle.kernel.thread_tid?.(vmPtr) ?? 0,
-        processPtr: handle.kernel.thread_process_ptr?.(vmPtr) ?? 0,
-        status: handle.kernel.thread_status(vmPtr),
-        detail0: 0n,
-      });
-    }
-    if (selected.size === 0) {
-      pendingSupervisorFutexResumes.delete(handle);
-    }
-  }
-
   function handleSupervisorResumeRecord(handle: ProcessHandle, record: SupervisorResumeRecord): void {
     if (record.kind === supervisorResumeKindRunnableThread(handle)) {
       selectSupervisorResumeWorker(handle, record, "supervisor-resume:runnable");
@@ -675,7 +621,6 @@ export function createWorkerSchedulerQueueHelpers(
       );
       return;
     }
-    markSupervisorFutexResumeSelected(handle, record.vmPtr);
     const worker = findWorkerByVmPtr(handle, record.vmPtr);
     const thread = worker === undefined ? undefined : deps.threadWorkerStates.get(worker);
     if (worker === undefined || thread === undefined) {
@@ -694,18 +639,13 @@ export function createWorkerSchedulerQueueHelpers(
       );
       deps.appendWorkerDebugLog(
         handle,
-        `supervisor-resume:futex-wake:parked:0x${record.vmPtr.toString(16)}`
+        `supervisor-resume:futex-wake:not-ready:0x${record.vmPtr.toString(16)}`
           + `:tid=${record.tid}:seq=${record.seq.toString()}:addr=0x${record.detail0.toString(16)}`
           + formatSupervisorThreadStateSnapshot(handle, record.vmPtr),
       );
       return;
     }
-    const selected = pendingSupervisorFutexResumes.get(handle);
-    selected?.delete(record.vmPtr);
     recordSupervisorResumeSelection(handle, worker, thread, record);
-    if (selected?.size === 0) {
-      pendingSupervisorFutexResumes.delete(handle);
-    }
   }
 
   function drainSupervisorResumeQueue(handle: ProcessHandle): void {
@@ -737,7 +677,6 @@ export function createWorkerSchedulerQueueHelpers(
       }
       handleSupervisorResumeRecord(handle, record);
     }
-    reconcileSupervisorSelectedFutexResumes(handle);
   }
 
   function observeForkSharedSyncGate(handle: ProcessHandle, promise: Promise<void>): void {
