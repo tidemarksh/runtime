@@ -225,7 +225,7 @@ test("blocked-rpc pipe EOF ignores stale active-child writer when canonical pipe
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
@@ -360,7 +360,7 @@ test("blocked-rpc defers EOF-after-wait while an exiting visible child still hol
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
@@ -496,7 +496,7 @@ test("blocked-rpc preserves canonical EOF retry when active-child writer defers 
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
@@ -628,7 +628,7 @@ test("blocked-rpc pipe EOF uses current kernel pipe counters before stale shared
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
@@ -745,7 +745,7 @@ test("blocked-rpc preserves same-process pipe writer when blocked snapshot looke
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(view.getInt32(pipeOffset + PIPE_READ_OPEN_OFFSET, true)).toBe(1);
@@ -874,7 +874,7 @@ test("blocked-rpc preserves same-process pipe reader before write EPIPE retry", 
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(view.getInt32(pipeOffset + PIPE_READ_OPEN_OFFSET, true)).toBe(1);
@@ -1004,7 +1004,7 @@ test("blocked-rpc preserves same-process pipe reader when stale refcount would d
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(view.getInt32(pipeOffset + PIPE_READ_OPEN_OFFSET, true)).toBe(1);
@@ -1110,7 +1110,7 @@ test("blocked-rpc defers pipe resume while self pipe sync is in flight", async (
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
   });
 
-  const resume = helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  const resume = helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const result = await Promise.race([
     resume.then(() => "resolved" as const),
@@ -1234,7 +1234,7 @@ test("blocked-rpc awaits newly queued self pipe sync before pipe resume", async 
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
   });
 
-  const resume = helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  const resume = helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const result = await Promise.race([
     resume.then(() => "resolved" as const),
@@ -1356,7 +1356,7 @@ test("blocked-rpc resumes EOF-pending pipe read despite in-flight self pipe sync
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
@@ -1467,7 +1467,7 @@ test("blocked-rpc resumes buffered pipe read despite in-flight self pipe sync", 
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
@@ -1579,7 +1579,7 @@ test("blocked-rpc skips ready self pipe sync before pipe read EOF resume", async
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
   });
 
-  const resume = helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  const resume = helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const result = await Promise.race([
     resume.then(() => "resolved" as const),
@@ -1699,7 +1699,7 @@ test("blocked-rpc carries canonical EOF to next block after buffered pipe read w
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(lifecycle).toContain("blocked-rpc-resume-in-worker:3");
@@ -1803,7 +1803,7 @@ test("blocked-rpc skips redundant self pipe sync after canonical EOF retry", asy
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
   });
 
-  const resume = helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  const resume = helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const result = await Promise.race([
     resume.then(() => "resolved" as const),
@@ -1916,7 +1916,7 @@ test("blocked-rpc skips pending fork-shared sync before canonical EOF retry", as
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
   });
 
-  const resume = helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  const resume = helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const result = await Promise.race([
     resume.then(() => "resolved" as const),
@@ -2068,7 +2068,7 @@ test("blocked-rpc skips read-only peer pipe sync after canonical EOF retry", asy
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
   });
 
-  const resume = helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  const resume = helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const result = await Promise.race([
     resume.then(() => "resolved" as const),
@@ -2235,7 +2235,7 @@ test("blocked-rpc skips owner-async peer pipe sync while peer FS continuation ow
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
   });
 
-  const resume = helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  const resume = helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const result = await Promise.race([
     resume.then(() => "resolved" as const),
@@ -2398,7 +2398,7 @@ test("blocked-rpc wakes owner-async OK peer that holds a blocked pipe writer", a
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
   });
 
-  await helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  await helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
 
   expect(lifecycle).toContain("blocked-rpc-recover-owner-async-ok-peer:3->5");
   expect(peerThreadState.ownerAsyncStatus).toBeNull();
@@ -2514,7 +2514,7 @@ test("blocked-rpc canonical EOF retry clears stale writer in resume snapshot", a
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
   });
 
-  const resume = helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  const resume = helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const result = await Promise.race([
     resume.then(() => "resolved" as const),
@@ -2629,7 +2629,7 @@ test("blocked-rpc resumes non-poll pipe read EOF from canonical closed pipe stat
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
@@ -2758,7 +2758,7 @@ test("blocked-rpc resumes blocking open-empty pipe read while shared writer rema
       });
 
       await expect(
-        helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+        helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
       ).resolves.toBeUndefined();
 
       expect(view.getInt32(pipeOffset + PIPE_WRITE_OPEN_OFFSET, true)).toBe(1);
@@ -2892,7 +2892,7 @@ test("blocked-rpc defers blocking open-empty pipe read while active child may st
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
@@ -2987,7 +2987,7 @@ test("blocked-rpc resumes canonical pipe EOF when blocked syscall export returns
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
@@ -3093,7 +3093,7 @@ test("blocked-rpc resumes closed stdin EOF through fd-table fallback without pin
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
@@ -3206,7 +3206,7 @@ test("blocked-rpc clears stale pipe writer count before EOF-pending resume when 
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(view.getInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, true)).toBe(0);
@@ -3323,7 +3323,7 @@ test("blocked-rpc treats EOF-pending nonblocking open-empty pipe read as canonic
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(view.getInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, true)).toBe(0);
@@ -3433,7 +3433,7 @@ test("blocked-rpc resumes nonblocking open-empty pipe read in thread worker", as
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_pipe_read_open_empty).not.toHaveBeenCalled();
@@ -3550,7 +3550,7 @@ test("blocked-rpc restores blocked worker local pipe endpoints when canonical sl
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(view.getInt32(pipeOffset + PIPE_READ_OPEN_OFFSET, true)).toBe(1);
@@ -3653,7 +3653,7 @@ test("blocked-rpc aligns pipe OFD generation before canonical EOF resume", async
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(view.getBigInt64(ofdOffset + OFD_OFFSET_OFFSET, true)).toBe(BigInt(pipeGeneration));
@@ -3758,7 +3758,7 @@ test("blocked-rpc does not preserve host stdin writer when stdin is explicitly c
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(view.getInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, true)).toBe(0);
@@ -3815,14 +3815,14 @@ test("kernel-rpc blocked-rpc helper owns local resume and returns a typed outcom
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
   });
 
-  await expect(helpers.resumeBlockedSyscallLocally(handle, worker, 0x1234, 21)).resolves.toBeUndefined();
+  await expect(helpers.executeHostBlockedSyscallResume(handle, worker, 0x1234, 21)).resolves.toBeUndefined();
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
     rpcPending: false,
   });
-  await expect(helpers.resumeBlockedSyscallOutcome(handle, worker, 0x1234, 21)).resolves.toMatchObject({
+  await expect(helpers.executeHostBlockedSyscallResumeOutcome(handle, worker, 0x1234, 21)).resolves.toMatchObject({
     kind: "blocked",
     status: 0,
     effects: [{ kind: "sync-blocked-fork-shared-state", sourceVmPtr: 0x1234, status: 21 }],
@@ -3873,7 +3873,7 @@ test("kernel-rpc blocked-rpc outcome reports blocked while the worker remains bl
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
   });
 
-  await expect(helpers.resumeBlockedSyscallOutcome(handle, worker, 0x1234, 21)).resolves.toMatchObject({
+  await expect(helpers.executeHostBlockedSyscallResumeOutcome(handle, worker, 0x1234, 21)).resolves.toMatchObject({
     kind: "blocked",
     status: 0,
     effects: [{ kind: "sync-blocked-fork-shared-state", sourceVmPtr: 0x1234, status: 21 }],
@@ -3922,7 +3922,7 @@ test("kernel-rpc blocked-rpc outcome keeps ownership while continuation effects 
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
   });
 
-  await expect(helpers.resumeBlockedSyscallOutcome(handle, worker, 0x1234, 21)).resolves.toMatchObject({
+  await expect(helpers.executeHostBlockedSyscallResumeOutcome(handle, worker, 0x1234, 21)).resolves.toMatchObject({
     kind: "blocked",
     status: 0,
     effects: [{ kind: "sync-blocked-fork-shared-state", sourceVmPtr: 0x1234, status: 21 }],
@@ -4007,7 +4007,7 @@ test("blocked-rpc does not resume poll hup when pselect watches no pipe slots", 
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
@@ -4114,7 +4114,7 @@ test("blocked-rpc resumes pselect pipe HUP through blocked fd fallback", async (
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(vmPtr);
@@ -4259,7 +4259,7 @@ test("blocked-rpc resumes pselect pipe HUP when a stale local writer remains vis
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(vmPtr);
@@ -4412,7 +4412,7 @@ test("blocked-rpc clears stale local writer before mixed socket pipe pselect ret
   });
 
   await expect(
-    helpers.resumeBlockedSyscallLocally(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(vmPtr);
@@ -4470,7 +4470,7 @@ test("kernel-rpc blocked-rpc outcome reports retry effect without running schedu
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
   });
 
-  await expect(helpers.resumeBlockedSyscallOutcome(handle, worker, 0x1234, 21)).resolves.toMatchObject({
+  await expect(helpers.executeHostBlockedSyscallResumeOutcome(handle, worker, 0x1234, 21)).resolves.toMatchObject({
     kind: "blocked",
     status: 0,
     effects: [{ kind: "sync-blocked-fork-shared-state", sourceVmPtr: 0x1234, status: 21 }],

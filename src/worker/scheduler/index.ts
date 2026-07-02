@@ -81,12 +81,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
 
   function requireKernelWorkerBlockedResumeOutcome(
     handle: ProcessHandle,
-  ): NonNullable<WorkerSchedulerDeps["resumeBlockedSyscallOutcome"]> | null {
-    const resumeBlockedRpc = deps.resumeBlockedSyscallOutcome;
-    if (resumeBlockedRpc !== undefined) {
-      return resumeBlockedRpc;
+  ): NonNullable<WorkerSchedulerDeps["executeHostBlockedSyscallResumeOutcome"]> | null {
+    const hostBlockedResume = deps.executeHostBlockedSyscallResumeOutcome;
+    if (hostBlockedResume !== undefined) {
+      return hostBlockedResume;
     }
-    deps.failProcess(handle, new Error("kernel-worker blocked syscall resume requires resumeBlockedSyscallOutcome"));
+    deps.failProcess(handle, new Error("kernel-worker blocked syscall resume requires executeHostBlockedSyscallResumeOutcome"));
     return null;
   }
 
@@ -100,13 +100,13 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (!handle.kernelWorkerRequest || handle.pid <= 0) {
       return false;
     }
-    const resumeBlockedRpc = requireKernelWorkerBlockedResumeOutcome(handle);
-    if (resumeBlockedRpc === null) {
+    const hostBlockedResume = requireKernelWorkerBlockedResumeOutcome(handle);
+    if (hostBlockedResume === null) {
       return true;
     }
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, lifecycleEvent);
     blocked.rpcPending = true;
-    void resumeBlockedRpc(
+    void hostBlockedResume(
       handle,
       worker,
       blocked.vmPtr,

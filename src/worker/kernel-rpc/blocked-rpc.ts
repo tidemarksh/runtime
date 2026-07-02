@@ -1025,7 +1025,9 @@ async function syncSocketStatePreservingNetworkBridge(handle: ProcessHandle, sta
 
 
 
-async function resumeBlockedSyscallLocally(
+// Executes host-side synchronization and guest-memory writeback around the
+// supervisor-owned blocked-syscall resume decision.
+async function executeHostBlockedSyscallResume(
   handle: ProcessHandle,
   worker: Worker,
   vmPtr: number,
@@ -2178,7 +2180,7 @@ async function resumeBlockedSyscallLocally(
 
 
 
-  async function resumeBlockedSyscallOutcome(
+  async function executeHostBlockedSyscallResumeOutcome(
     handle: ProcessHandle,
     worker: Worker,
     vmPtr: number,
@@ -2186,7 +2188,7 @@ async function resumeBlockedSyscallLocally(
   ): Promise<KernelRpcResumeOutcome> {
     pendingOutcomeEffects.delete(worker);
     const collectedRetryResult: { status?: number } = {};
-    await resumeBlockedSyscallLocally(
+    await executeHostBlockedSyscallResume(
       handle,
       worker,
       vmPtr,
@@ -2216,14 +2218,14 @@ async function resumeBlockedSyscallLocally(
   }
 
   return {
-    resumeBlockedSyscallLocally,
-    resumeBlockedSyscallOutcome,
+    executeHostBlockedSyscallResume,
+    executeHostBlockedSyscallResumeOutcome,
   };
 }
 
 export function createWorkerKernelRpcBlockedRpcHelpers(deps: WorkerKernelRpcBlockedRpcDeps) {
-  const { resumeBlockedSyscallOutcome } = createWorkerKernelRpcBlockedRpcHelperInternals(deps);
-  return { resumeBlockedSyscallOutcome };
+  const { executeHostBlockedSyscallResumeOutcome } = createWorkerKernelRpcBlockedRpcHelperInternals(deps);
+  return { executeHostBlockedSyscallResumeOutcome };
 }
 
 export function createWorkerKernelRpcBlockedRpcTestHelpers(deps: WorkerKernelRpcBlockedRpcDeps) {

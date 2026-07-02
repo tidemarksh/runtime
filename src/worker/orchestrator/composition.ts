@@ -149,7 +149,7 @@ const workerScheduler = createWorkerScheduler({
   pumpNetworkConnections,
   resumeFsViaKernelWorker,
   resumeFsViaKernelWorkerOutcome,
-  resumeBlockedSyscallOutcome,
+  executeHostBlockedSyscallResumeOutcome,
   resumeVforkParentAfterChildExit,
   resumeWait4ViaKernelWorker,
   handleWorkerMessage,
@@ -511,13 +511,13 @@ async function resumeFsViaKernelWorkerOutcome(
   return applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
 }
 
-async function resumeBlockedSyscallOutcome(
+async function executeHostBlockedSyscallResumeOutcome(
   handle: ProcessHandle,
   worker: Worker,
   vmPtr: number,
   blockedStatus: number,
 ): Promise<KernelRpcResumeOutcome> {
-  const outcome = await workerKernelRpcHelpers.resumeBlockedSyscallOutcome(
+  const outcome = await workerKernelRpcHelpers.executeHostBlockedSyscallResumeOutcome(
     handle,
     worker,
     vmPtr,

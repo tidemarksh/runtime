@@ -411,7 +411,7 @@ test("resumeVforkExecveParentViaKernelWorker restores the parent before clearing
   expect(handle.kernelState.heapPtr).toBe(resumedState.heapPtr);
 });
 
-test("resumeBlockedSyscallLocally skips kernel-worker shared-state syncs during active vfork child ownership mismatch", async () => {
+test("executeHostBlockedSyscallResume skips kernel-worker shared-state syncs during active vfork child ownership mismatch", async () => {
   const worker = {} as Worker;
   const runtimeBridge = createRuntimeStateBridge();
   const threadResumeBlockedSyscall = vi.fn();
@@ -506,7 +506,7 @@ test("resumeBlockedSyscallLocally skips kernel-worker shared-state syncs during 
     collectTrackableForkSharedOfds: () => new Set(),
   });
 
-  await helpers.resumeBlockedSyscallLocally(handle, worker, 0x1234, 29);
+  await helpers.executeHostBlockedSyscallResume(handle, worker, 0x1234, 29);
 
   expect(threadResumeBlockedSyscall).toHaveBeenCalledWith(0x1234);
   expect(syncBlockedForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
@@ -515,7 +515,7 @@ test("resumeBlockedSyscallLocally skips kernel-worker shared-state syncs during 
   expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
-test("resumeBlockedSyscallLocally queues pselect fd_set writes after owner-side resume", async () => {
+test("executeHostBlockedSyscallResume queues pselect fd_set writes after owner-side resume", async () => {
   const worker = {} as Worker;
   const runtimeBridge = createRuntimeStateBridge();
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
@@ -629,7 +629,7 @@ test("resumeBlockedSyscallLocally queues pselect fd_set writes after owner-side 
     collectTrackableForkSharedOfds: () => new Set(),
   });
 
-  await helpers.resumeBlockedSyscallLocally(handle, worker, 0x1234, 21);
+  await helpers.executeHostBlockedSyscallResume(handle, worker, 0x1234, 21);
 
   expect(threadResumeBlockedSyscall).toHaveBeenCalledWith(0x1234);
   expect(threadState.pendingGuestMemoryWrites.map((write) => write.guestPtr)).toEqual([
@@ -643,7 +643,7 @@ test("resumeBlockedSyscallLocally queues pselect fd_set writes after owner-side 
   expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
 });
 
-test("resumeBlockedSyscallLocally retries pselect pipe HUP owner-side after transient process mismatch", async () => {
+test("executeHostBlockedSyscallResume retries pselect pipe HUP owner-side after transient process mismatch", async () => {
   const worker = {} as Worker;
   const runtimeBridge = createRuntimeStateBridge();
   const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
@@ -785,7 +785,7 @@ test("resumeBlockedSyscallLocally retries pselect pipe HUP owner-side after tran
     collectTrackableForkSharedOfds: () => new Set(),
   });
 
-  await helpers.resumeBlockedSyscallLocally(handle, worker, 0x1234, 21);
+  await helpers.executeHostBlockedSyscallResume(handle, worker, 0x1234, 21);
 
   expect(threadResumeBlockedSyscall).toHaveBeenCalledTimes(2);
   expect(threadState.pendingGuestMemoryWrites.map((write) => write.guestPtr)).toEqual([0x200]);
@@ -795,7 +795,7 @@ test("resumeBlockedSyscallLocally retries pselect pipe HUP owner-side after tran
   expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
 });
 
-test("resumeBlockedSyscallLocally resumes pselect pipe HUP before generic after-sync when owner matches", async () => {
+test("executeHostBlockedSyscallResume resumes pselect pipe HUP before generic after-sync when owner matches", async () => {
   const worker = {} as Worker;
   const runtimeBridge = createRuntimeStateBridge();
   const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
@@ -938,7 +938,7 @@ test("resumeBlockedSyscallLocally resumes pselect pipe HUP before generic after-
     collectTrackableForkSharedOfds: () => new Set(),
   });
 
-  await helpers.resumeBlockedSyscallLocally(handle, worker, 0x1234, 21);
+  await helpers.executeHostBlockedSyscallResume(handle, worker, 0x1234, 21);
 
   expect(threadResumeBlockedSyscall).toHaveBeenCalledTimes(2);
   expect(threadState.pendingGuestMemoryWrites.map((write) => write.guestPtr)).toEqual([
@@ -950,7 +950,7 @@ test("resumeBlockedSyscallLocally resumes pselect pipe HUP before generic after-
   expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
 });
 
-test("resumeBlockedSyscallLocally retries mixed socket pipe pselect HUP owner-side", async () => {
+test("executeHostBlockedSyscallResume retries mixed socket pipe pselect HUP owner-side", async () => {
   const worker = {} as Worker;
   const runtimeBridge = createRuntimeStateBridge();
   const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
@@ -1092,7 +1092,7 @@ test("resumeBlockedSyscallLocally retries mixed socket pipe pselect HUP owner-si
     collectTrackableForkSharedOfds: () => new Set(),
   });
 
-  await helpers.resumeBlockedSyscallLocally(handle, worker, 0x1234, 21);
+  await helpers.executeHostBlockedSyscallResume(handle, worker, 0x1234, 21);
 
   expect(syncSocketStateViaKernelWorker).toHaveBeenCalledWith(handle, { kind: "blocked-rpc", status: 21 });
   expect(threadResumeBlockedSyscall).toHaveBeenCalledTimes(2);
@@ -1101,7 +1101,7 @@ test("resumeBlockedSyscallLocally retries mixed socket pipe pselect HUP owner-si
   expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
 });
 
-test("resumeBlockedSyscallOutcome returns pipe sync effect before ready socket pselect resume", async () => {
+test("executeHostBlockedSyscallResumeOutcome returns pipe sync effect before ready socket pselect resume", async () => {
   const worker = {} as Worker;
   const runtimeBridge = createRuntimeStateBridge();
   const threadResumeBlockedSyscall = vi.fn(() => 1n);
@@ -1217,7 +1217,7 @@ test("resumeBlockedSyscallOutcome returns pipe sync effect before ready socket p
     collectTrackableForkSharedOfds: () => new Set(),
   });
 
-  const outcome = await helpers.resumeBlockedSyscallOutcome(handle, worker, 0x1234, 21);
+  const outcome = await helpers.executeHostBlockedSyscallResumeOutcome(handle, worker, 0x1234, 21);
 
   expect(threadResumeBlockedSyscall).not.toHaveBeenCalled();
   expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(false);
@@ -1231,7 +1231,7 @@ test("resumeBlockedSyscallOutcome returns pipe sync effect before ready socket p
   expect(syncBlockedForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
 });
 
-test("resumeBlockedSyscallOutcome returns socket sync effect without running socket sync port", async () => {
+test("executeHostBlockedSyscallResumeOutcome returns socket sync effect without running socket sync port", async () => {
   const worker = {} as Worker;
   const runtimeBridge = createRuntimeStateBridge();
   const threadResumeBlockedSyscall = vi.fn(() => 1n);
@@ -1343,7 +1343,7 @@ test("resumeBlockedSyscallOutcome returns socket sync effect without running soc
     collectTrackableForkSharedOfds: () => new Set(),
   });
 
-  const outcome = await helpers.resumeBlockedSyscallOutcome(handle, worker, 0x1234, 21);
+  const outcome = await helpers.executeHostBlockedSyscallResumeOutcome(handle, worker, 0x1234, 21);
 
   expect(outcome.effects).toEqual([{ kind: "sync-blocked-socket-state", status: 21 }]);
   expect(threadResumeBlockedSyscall).not.toHaveBeenCalled();
@@ -1351,7 +1351,7 @@ test("resumeBlockedSyscallOutcome returns socket sync effect without running soc
   expect(syncSocketStateViaKernelWorker).not.toHaveBeenCalled();
 });
 
-test("resumeBlockedSyscallLocally wakes pipe waiters through requestPipeStateSync", async () => {
+test("executeHostBlockedSyscallResume wakes pipe waiters through requestPipeStateSync", async () => {
   const worker = {} as Worker;
   const runtimeBridge = createRuntimeStateBridge();
   const threadResumeBlockedSyscall = vi.fn();
@@ -1446,7 +1446,7 @@ test("resumeBlockedSyscallLocally wakes pipe waiters through requestPipeStateSyn
     collectTrackableForkSharedOfds: () => new Set(),
   });
 
-  await helpers.resumeBlockedSyscallLocally(handle, worker, 0x1234, 21);
+  await helpers.executeHostBlockedSyscallResume(handle, worker, 0x1234, 21);
 
   expect(threadResumeBlockedSyscall).not.toHaveBeenCalled();
   expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(
@@ -1459,7 +1459,7 @@ test("resumeBlockedSyscallLocally wakes pipe waiters through requestPipeStateSyn
   expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
-test("resumeBlockedSyscallLocally resumes pipe EOF after writers close even with active child", async () => {
+test("executeHostBlockedSyscallResume resumes pipe EOF after writers close even with active child", async () => {
   const worker = {} as Worker;
   const childWorker = {} as Worker;
   const runtimeBridge = createRuntimeStateBridge();
@@ -1578,7 +1578,7 @@ test("resumeBlockedSyscallLocally resumes pipe EOF after writers close even with
     collectTrackableForkSharedOfds: () => new Set(),
   });
 
-  await helpers.resumeBlockedSyscallLocally(handle, worker, 0x1234, 21);
+  await helpers.executeHostBlockedSyscallResume(handle, worker, 0x1234, 21);
 
   expect(threadResumeBlockedSyscall).not.toHaveBeenCalled();
   expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(
@@ -1596,7 +1596,7 @@ test("resumeBlockedSyscallLocally resumes pipe EOF after writers close even with
   expect(handle.hostBlockedWorkers.has(worker)).toBe(false);
 });
 
-test("resumeBlockedSyscallLocally defers poll readiness while an active child still owns the pipe writer", async () => {
+test("executeHostBlockedSyscallResume defers poll readiness while an active child still owns the pipe writer", async () => {
   const worker = {} as Worker;
   const childWorker = {} as Worker;
   const runtimeBridge = createRuntimeStateBridge();
@@ -1741,7 +1741,7 @@ test("resumeBlockedSyscallLocally defers poll readiness while an active child st
     collectTrackableForkSharedOfds: () => new Set(),
   });
 
-  await helpers.resumeBlockedSyscallLocally(handle, worker, 0x1234, 21);
+  await helpers.executeHostBlockedSyscallResume(handle, worker, 0x1234, 21);
 
   expect(threadResumeBlockedSyscall).not.toHaveBeenCalled();
   expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(
@@ -1753,7 +1753,7 @@ test("resumeBlockedSyscallLocally defers poll readiness while an active child st
   expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
-test("resumeBlockedSyscallLocally ignores exiting child pipe writers for pselect HUP", async () => {
+test("executeHostBlockedSyscallResume ignores exiting child pipe writers for pselect HUP", async () => {
   const worker = {} as Worker;
   const childWorker = {} as Worker;
   const runtimeBridge = createRuntimeStateBridge();
@@ -1896,7 +1896,7 @@ test("resumeBlockedSyscallLocally ignores exiting child pipe writers for pselect
     collectTrackableForkSharedOfds: () => new Set(),
   });
 
-  await helpers.resumeBlockedSyscallLocally(handle, worker, 0x1234, 21);
+  await helpers.executeHostBlockedSyscallResume(handle, worker, 0x1234, 21);
 
   expect(threadResumeBlockedSyscall).toHaveBeenCalledWith(0x1234);
   expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(
@@ -1909,7 +1909,7 @@ test("resumeBlockedSyscallLocally ignores exiting child pipe writers for pselect
   expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
-test("resumeBlockedSyscallLocally completes pselect HUP marker despite an active child pipe writer", async () => {
+test("executeHostBlockedSyscallResume completes pselect HUP marker despite an active child pipe writer", async () => {
   const worker = {} as Worker;
   const childWorker = {} as Worker;
   const runtimeBridge = createRuntimeStateBridge();
@@ -2054,7 +2054,7 @@ test("resumeBlockedSyscallLocally completes pselect HUP marker despite an active
     collectTrackableForkSharedOfds: () => new Set(),
   });
 
-  await helpers.resumeBlockedSyscallLocally(handle, worker, 0x1234, 21);
+  await helpers.executeHostBlockedSyscallResume(handle, worker, 0x1234, 21);
 
   expect(threadResumeBlockedSyscall).toHaveBeenCalledWith(0x1234);
   expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(
@@ -2071,7 +2071,7 @@ test("resumeBlockedSyscallLocally completes pselect HUP marker despite an active
   expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
-test("resumeBlockedSyscallLocally collapses pipe read that becomes ready after post-sync", async () => {
+test("executeHostBlockedSyscallResume collapses pipe read that becomes ready after post-sync", async () => {
   const worker = {} as Worker;
   const runtimeBridge = createRuntimeStateBridge();
   const threadResumeBlockedSyscall = vi.fn(() => {
@@ -2173,7 +2173,7 @@ test("resumeBlockedSyscallLocally collapses pipe read that becomes ready after p
     collectTrackableForkSharedOfds: () => new Set(),
   });
 
-  await helpers.resumeBlockedSyscallLocally(handle, worker, 0x1234, 21);
+  await helpers.executeHostBlockedSyscallResume(handle, worker, 0x1234, 21);
 
   expect(threadResumeBlockedSyscall).toHaveBeenCalledTimes(2);
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
@@ -2186,7 +2186,7 @@ test("resumeBlockedSyscallLocally collapses pipe read that becomes ready after p
   expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
-test("resumeBlockedSyscallLocally queues the full socket read buffer after owner resume", async () => {
+test("executeHostBlockedSyscallResume queues the full socket read buffer after owner resume", async () => {
   const worker = {} as Worker;
   const runtimeBridge = createRuntimeStateBridge();
   const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
@@ -2295,7 +2295,7 @@ test("resumeBlockedSyscallLocally queues the full socket read buffer after owner
     collectTrackableForkSharedOfds: () => new Set(),
   });
 
-  await helpers.resumeBlockedSyscallLocally(handle, worker, 0x1234, 29);
+  await helpers.executeHostBlockedSyscallResume(handle, worker, 0x1234, 29);
 
   expect(threadResumeBlockedSyscall).toHaveBeenCalledWith(0x1234);
   expect(threadState.pendingGuestMemoryWrites).toHaveLength(1);

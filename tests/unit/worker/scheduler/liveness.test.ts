@@ -1238,7 +1238,7 @@ test("epoll kernel-worker retry completes timeout through supervisor timer HostO
     };
   });
   const lifecycleEvents: string[] = [];
-  const resumeBlockedSyscallOutcome = vi.fn(async () => {
+  const executeHostBlockedSyscallResumeOutcome = vi.fn(async () => {
     status = kernel.abi_status_ok();
     return { kind: "completed" as const, status };
   });
@@ -1253,7 +1253,7 @@ test("epoll kernel-worker retry completes timeout through supervisor timer HostO
       throw error;
     },
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallOutcome,
+    executeHostBlockedSyscallResumeOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => ({ kind: "completed" }),
     handleWorkerMessage: () => {},
@@ -1272,7 +1272,7 @@ test("epoll kernel-worker retry completes timeout through supervisor timer HostO
     expect(kernel.supervisor_complete_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
   });
 
-  expect(resumeBlockedSyscallOutcome).not.toHaveBeenCalled();
+  expect(executeHostBlockedSyscallResumeOutcome).not.toHaveBeenCalled();
   expect(kernel.thread_resume_epoll_wait_timeout).toHaveBeenCalledWith(0x1234);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(lifecycleEvents).toContain("supervisor-host-timer-arm:1:vm=0x1234:seq=1:delay=0");
@@ -1413,7 +1413,7 @@ test("epoll retry defers while clone child init is expected to release parent", 
     throw new Error(`unexpected kernel worker request: ${message.type}`);
   });
   const lifecycleEvents: string[] = [];
-  const resumeBlockedSyscallOutcome = vi.fn(async () => ({
+  const executeHostBlockedSyscallResumeOutcome = vi.fn(async () => ({
     kind: "blocked" as const,
     status: kernel.abi_status_epoll_wait(),
   }));
@@ -1428,7 +1428,7 @@ test("epoll retry defers while clone child init is expected to release parent", 
       throw error;
     },
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallOutcome,
+    executeHostBlockedSyscallResumeOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -1459,7 +1459,7 @@ test("epoll retry defers while clone child init is expected to release parent", 
 
   expect(lifecycleEvents.some((event) => event.startsWith("epoll-retry-rpc:1:vm=0x1234"))).toBe(true);
   expect(handle.kernelWorkerRequest).not.toHaveBeenCalled();
-  expect(resumeBlockedSyscallOutcome).not.toHaveBeenCalled();
+  expect(executeHostBlockedSyscallResumeOutcome).not.toHaveBeenCalled();
   const postRpcBlocked = handle.hostBlockedWorkers.get(blockedWorker);
   if (postRpcBlocked?.retryTimer !== null && postRpcBlocked?.retryTimer !== undefined) {
     clearTimeout(postRpcBlocked.retryTimer);
@@ -1570,7 +1570,7 @@ test("pipe pselect retry applies child exit records before passive parking", asy
     throw new Error("scheduler retry should delegate blocked resume through outcome helper");
   });
   const lifecycleEvents: string[] = [];
-  const resumeBlockedSyscallOutcome = vi.fn(async () => ({
+  const executeHostBlockedSyscallResumeOutcome = vi.fn(async () => ({
     kind: "blocked" as const,
     status: kernel.abi_status_pipe_wait(),
   }));
@@ -1583,7 +1583,7 @@ test("pipe pselect retry applies child exit records before passive parking", asy
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => true,
-    resumeBlockedSyscallOutcome,
+    executeHostBlockedSyscallResumeOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -1597,7 +1597,7 @@ test("pipe pselect retry applies child exit records before passive parking", asy
   expect(lifecycleEvents).toContain("wait4-apply-records:1:7/0");
   expect(lifecycleEvents.some((event) => event.startsWith("pipe-retry-skip:1:active-child"))).toBe(false);
   expect(kernel.process_record_child_exit_for_parent).toHaveBeenCalledWith(1, 7, 0);
-  expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
+  expect(executeHostBlockedSyscallResumeOutcome).toHaveBeenCalledWith(
     handle,
     worker,
     0x1234,
@@ -1633,7 +1633,7 @@ test("pipe pselect retry resumes after pipe sync when no writer remains", async 
   handle.kernelWorkerRequest = vi.fn(async () => {
     throw new Error("scheduler retry should delegate blocked resume through outcome helper");
   });
-  const resumeBlockedSyscallOutcome = vi.fn(async () => ({
+  const executeHostBlockedSyscallResumeOutcome = vi.fn(async () => ({
     kind: "blocked" as const,
     status: kernel.abi_status_pipe_wait(),
   }));
@@ -1647,7 +1647,7 @@ test("pipe pselect retry resumes after pipe sync when no writer remains", async 
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallOutcome,
+    executeHostBlockedSyscallResumeOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -1661,7 +1661,7 @@ test("pipe pselect retry resumes after pipe sync when no writer remains", async 
   await Promise.resolve();
 
   expect(lifecycleEvents.some((event) => event.startsWith("pipe-retry:1:a7=72"))).toBe(true);
-  expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
+  expect(executeHostBlockedSyscallResumeOutcome).toHaveBeenCalledWith(
     handle,
     worker,
     0x1234,
@@ -1709,7 +1709,7 @@ test("kernel-worker blocked syscall retry requires outcome helper", () => {
 
   expect(failProcess).toHaveBeenCalledWith(handle, expect.any(Error));
   expect((failProcess.mock.calls[0]?.[1] as Error).message).toBe(
-    "kernel-worker blocked syscall resume requires resumeBlockedSyscallOutcome",
+    "kernel-worker blocked syscall resume requires executeHostBlockedSyscallResumeOutcome",
   );
   expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
   expect(handle.hostBlockedWorkers.get(worker)?.rpcGeneration).toBe(0);
@@ -1932,7 +1932,7 @@ test("socket poll pump resumes through kernel-worker RPC when available", async 
     }
   }) as ProcessHandle["kernelWorkerRequest"];
   const pumpNetworkConnections = vi.fn(async () => true);
-  const resumeBlockedSyscallOutcome = vi.fn(async () => {
+  const executeHostBlockedSyscallResumeOutcome = vi.fn(async () => {
     status = kernel.abi_status_ok();
     return { kind: "completed" as const, status };
   });
@@ -1945,7 +1945,7 @@ test("socket poll pump resumes through kernel-worker RPC when available", async 
     failProcess,
     hasActiveChildProcess: () => false,
     pumpNetworkConnections,
-    resumeBlockedSyscallOutcome,
+    executeHostBlockedSyscallResumeOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => ({ kind: "completed" }),
     handleWorkerMessage: () => {},
@@ -1959,7 +1959,7 @@ test("socket poll pump resumes through kernel-worker RPC when available", async 
   expect(pumpNetworkConnections).toHaveBeenCalledWith(handle, 0x1234);
   expect(failProcess).not.toHaveBeenCalled();
   expect(handle.kernelWorkerRequest).toHaveBeenCalled();
-  expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
+  expect(executeHostBlockedSyscallResumeOutcome).toHaveBeenCalledWith(
     handle,
     worker,
     0x1234,
@@ -1995,7 +1995,7 @@ test("finite pipe poll timeout completes through supervisor timer when kernel-wo
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   handle.pendingChildSpawnRecords = 0;
   handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unexpected" }) as never);
-  const resumeBlockedSyscallOutcome = vi.fn(async () => {
+  const executeHostBlockedSyscallResumeOutcome = vi.fn(async () => {
     status = kernel.abi_status_ok();
     return { kind: "completed" as const, status };
   });
@@ -2006,7 +2006,7 @@ test("finite pipe poll timeout completes through supervisor timer when kernel-wo
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallOutcome,
+    executeHostBlockedSyscallResumeOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2018,7 +2018,7 @@ test("finite pipe poll timeout completes through supervisor timer when kernel-wo
   expect(blocked?.supervisorTimerArmed).toBe(true);
   await vi.advanceTimersByTimeAsync(100);
 
-  expect(resumeBlockedSyscallOutcome).not.toHaveBeenCalled();
+  expect(executeHostBlockedSyscallResumeOutcome).not.toHaveBeenCalled();
   expect(resumePollTimeout).toHaveBeenCalledWith(0x1234);
   expect(kernel.supervisor_complete_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
   expect(handle.hostBlockedWorkers.has(worker)).toBe(false);
@@ -2217,7 +2217,7 @@ test("supervisor-owned finite pipe poll with active child completes without pipe
   handle.kernelWorkerRequest = vi.fn(async () => {
     throw new Error("active child finite pipe poll timeout should not sync pipe state");
   });
-  const resumeBlockedSyscallOutcome = vi.fn(async () => ({ kind: "completed" as const, status }));
+  const executeHostBlockedSyscallResumeOutcome = vi.fn(async () => ({ kind: "completed" as const, status }));
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
@@ -2225,7 +2225,7 @@ test("supervisor-owned finite pipe poll with active child completes without pipe
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => true,
-    resumeBlockedSyscallOutcome,
+    executeHostBlockedSyscallResumeOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2239,7 +2239,7 @@ test("supervisor-owned finite pipe poll with active child completes without pipe
   await Promise.resolve();
 
   expect(order).toEqual([]);
-  expect(resumeBlockedSyscallOutcome).not.toHaveBeenCalled();
+  expect(executeHostBlockedSyscallResumeOutcome).not.toHaveBeenCalled();
   expect(resumePollTimeout).not.toHaveBeenCalled();
   expect(handle.kernelWorkerRequest).not.toHaveBeenCalled();
   expect(handle.hostBlockedWorkers.has(worker)).toBe(true);
@@ -2666,7 +2666,7 @@ test("epoll kernel-worker retry re-queries timerfd deadline after state sync", a
   });
   const lifecycleEvents: string[] = [];
   const failProcess = vi.fn();
-  const resumeBlockedSyscallOutcome = vi.fn(async () => {
+  const executeHostBlockedSyscallResumeOutcome = vi.fn(async () => {
     status = kernel.abi_status_ok();
     return { kind: "completed" as const, status };
   });
@@ -2679,7 +2679,7 @@ test("epoll kernel-worker retry re-queries timerfd deadline after state sync", a
     completeProcessExit: async () => {},
     failProcess,
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallOutcome,
+    executeHostBlockedSyscallResumeOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2706,7 +2706,7 @@ test("epoll kernel-worker retry re-queries timerfd deadline after state sync", a
   await vi.advanceTimersByTimeAsync(1);
 
   expect(kernel.sync_monotonic_ticks_floor).toHaveBeenCalledWith(1_000_001n);
-  expect(resumeBlockedSyscallOutcome).not.toHaveBeenCalled();
+  expect(executeHostBlockedSyscallResumeOutcome).not.toHaveBeenCalled();
   expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(0x1234);
   expect(kernel.thread_resume_epoll_wait_timeout).not.toHaveBeenCalled();
 });
@@ -2796,7 +2796,7 @@ test("epoll kernel-worker retry syncs watched timerfd OFD after the timer fd is 
   });
   const lifecycleEvents: string[] = [];
   const failProcess = vi.fn();
-  const resumeBlockedSyscallOutcome = vi.fn(async () => {
+  const executeHostBlockedSyscallResumeOutcome = vi.fn(async () => {
     status = kernel.abi_status_ok();
     return { kind: "completed" as const, status };
   });
@@ -2809,7 +2809,7 @@ test("epoll kernel-worker retry syncs watched timerfd OFD after the timer fd is 
     completeProcessExit: async () => {},
     failProcess,
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallOutcome,
+    executeHostBlockedSyscallResumeOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2832,7 +2832,7 @@ test("epoll kernel-worker retry syncs watched timerfd OFD after the timer fd is 
   await vi.advanceTimersByTimeAsync(10);
 
   expect(kernel.sync_monotonic_ticks_floor).toHaveBeenCalledWith(1_000_001n);
-  expect(resumeBlockedSyscallOutcome).not.toHaveBeenCalled();
+  expect(executeHostBlockedSyscallResumeOutcome).not.toHaveBeenCalled();
   expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(0x1234);
   expect(kernel.thread_resume_epoll_wait_timeout).not.toHaveBeenCalled();
 });
@@ -2942,7 +2942,7 @@ test("epoll kernel-worker retry syncs watched pipe, epoll table, then dependent 
     }
     throw new Error(`unexpected kernel worker request: ${message.type}`);
   });
-  const resumeBlockedSyscallOutcome = vi.fn(async () => {
+  const executeHostBlockedSyscallResumeOutcome = vi.fn(async () => {
     status = kernel.abi_status_ok();
     return { kind: "completed" as const, status };
   });
@@ -2955,7 +2955,7 @@ test("epoll kernel-worker retry syncs watched pipe, epoll table, then dependent 
       throw error;
     },
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallOutcome,
+    executeHostBlockedSyscallResumeOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2970,7 +2970,7 @@ test("epoll kernel-worker retry syncs watched pipe, epoll table, then dependent 
   await Promise.resolve();
 
   expect(requests).toEqual(["sync-pipe-state", "sync-epoll-state", "sync-ofd-state"]);
-  expect(resumeBlockedSyscallOutcome).toHaveBeenCalledWith(
+  expect(executeHostBlockedSyscallResumeOutcome).toHaveBeenCalledWith(
     handle,
     blockedWorker,
     0x1234,
@@ -5551,7 +5551,7 @@ test("connect timeout completes through supervisor timer when kernel-worker exis
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unexpected" }) as never);
   const runtimeEvents: string[] = [];
-  const resumeBlockedSyscallOutcome = vi.fn(async () => {
+  const executeHostBlockedSyscallResumeOutcome = vi.fn(async () => {
     status = 0;
     return { kind: "completed" as const, status };
   });
@@ -5562,7 +5562,7 @@ test("connect timeout completes through supervisor timer when kernel-worker exis
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
-    resumeBlockedSyscallOutcome,
+    executeHostBlockedSyscallResumeOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -5573,7 +5573,7 @@ test("connect timeout completes through supervisor timer when kernel-worker exis
   await Promise.resolve();
   await Promise.resolve();
 
-  expect(resumeBlockedSyscallOutcome).not.toHaveBeenCalled();
+  expect(executeHostBlockedSyscallResumeOutcome).not.toHaveBeenCalled();
   expect(resumeSocketTimeout).toHaveBeenCalledWith(0x1234);
   expect(kernel.supervisor_complete_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
