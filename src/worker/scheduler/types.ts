@@ -49,12 +49,6 @@ export interface WorkerScheduler {
   parkSupervisorFutexWait(handle: ProcessHandle, worker: Worker, vmPtr: number, source: string): void;
   requestThreadWorkerBlockedResume(handle: ProcessHandle, worker: Worker): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
-  handleHostBlockedRetryResult(
-    handle: ProcessHandle,
-    worker: Worker,
-    vmPtr: number,
-    status: number,
-  ): void;
   notifySchedulerProgress(handle: ProcessHandle): void;
   pumpProcess(handle: ProcessHandle): void;
   pruneDetachedProcessWorkers(handle: ProcessHandle, anchorVmPtr: number, currentWorker: Worker | null): void;

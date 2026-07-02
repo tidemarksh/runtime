@@ -1884,7 +1884,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     parkSupervisorFutexWait,
     requestThreadWorkerBlockedResume,
     enqueueWorker,
-    handleHostBlockedRetryResult,
     notifySchedulerProgress,
     pumpProcess,
     pruneDetachedProcessWorkers,

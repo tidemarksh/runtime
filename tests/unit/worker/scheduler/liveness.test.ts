@@ -4896,7 +4896,7 @@ test("blockWorker parks futex wait as supervisor-owned worker state", () => {
   expect(worker.postMessage).not.toHaveBeenCalled();
 });
 
-test("blocked completion parks futex result as supervisor-owned worker state", () => {
+test("blocked completion parks futex result as supervisor-owned worker state", async () => {
   const worker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -4905,10 +4905,13 @@ test("blocked completion parks futex result as supervisor-owned worker state", (
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, thread);
   const { exports: kernel } = makeKernel();
+  let currentStatus = kernel.abi_status_pipe_wait();
   kernel.thread_status = (vmPtr: number) => vmPtr === thread.vmPtr
-    ? kernel.abi_status_futex_wait()
+    ? currentStatus
     : kernel.abi_status_ok();
   const handle = makeHandle(kernel, worker, threadWorkerStates);
+  handle.kernelWorkerRequest = vi.fn();
+  handle.pendingChildSpawnRecords = 0;
   handle.runningWorker = worker;
   handle.vforkReadyWorkers = [worker];
   handle.hostBlockedWorkers.set(worker, {
@@ -4917,7 +4920,7 @@ test("blocked completion parks futex result as supervisor-owned worker state", (
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: false,
+    pipeSyncedBeforePassive: true,
     pipeChildExitResumeKey: null,
     pipeEofChildExitDeferrals: 0,
   });
@@ -4928,17 +4931,22 @@ test("blocked completion parks futex result as supervisor-owned worker state", (
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
+    executeHostBlockedSyscallResumeOutcome: async () => {
+      currentStatus = kernel.abi_status_futex_wait();
+      return {
+        kind: "completed",
+        status: currentStatus,
+      };
+    },
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
   });
 
-  scheduler.handleHostBlockedRetryResult(
-    handle,
-    worker,
-    thread.vmPtr,
-    kernel.abi_status_futex_wait(),
-  );
+  handle.runningWorker = null;
+  scheduler.notifySchedulerProgress(handle);
+  await Promise.resolve();
+  await Promise.resolve();
 
   expect(handle.hostBlockedWorkers.has(worker)).toBe(false);
   expect(handle.vforkReadyWorkers).toEqual([]);
@@ -4951,7 +4959,7 @@ test("blocked completion parks futex result as supervisor-owned worker state", (
   expect(worker.postMessage).not.toHaveBeenCalled();
 });
 
-test("blocked completion arms supervisor timer instead of scheduling runtime retry", () => {
+test("blocked completion arms supervisor timer instead of scheduling runtime retry", async () => {
   const worker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -4960,6 +4968,7 @@ test("blocked completion arms supervisor timer instead of scheduling runtime ret
   threadWorkerStates.set(worker, thread);
   const { exports: kernel } = makeKernel();
   const memory = new WebAssembly.Memory({ initial: 4, maximum: 16, shared: true });
+  let currentStatus = kernel.abi_status_pipe_wait();
   Object.assign(kernel, {
     memory,
     supervisor_abi_version: () => 1,
@@ -4969,6 +4978,9 @@ test("blocked completion arms supervisor timer instead of scheduling runtime ret
     supervisor_host_completion_outcome_failure: () => 2,
     kernel_heap_ptr: () => -0x3c000,
     supervisor_next_host_op: vi.fn((outPtr: number, outLen: number) => {
+      if (currentStatus !== kernel.abi_status_epoll_wait()) {
+        return 0;
+      }
       expect(outLen).toBe(64);
       writeSupervisorArmHostTimerHostOpRecord(memory, outPtr, {
         vmPtr: thread.vmPtr,
@@ -4981,13 +4993,19 @@ test("blocked completion arms supervisor timer instead of scheduling runtime ret
       });
       return 64;
     }),
+    supervisor_enqueue_blocked_wait_timer: vi.fn(() =>
+      currentStatus === kernel.abi_status_epoll_wait() ? 1 : 0),
+    supervisor_blocked_wait_timer_required: vi.fn(() =>
+      currentStatus === kernel.abi_status_epoll_wait() ? 1 : 0),
     supervisor_complete_host_op: vi.fn(() => 0),
     thread_status: (vmPtr: number) => vmPtr === thread.vmPtr
-      ? kernel.abi_status_epoll_wait()
+      ? currentStatus
       : kernel.abi_status_ok(),
     thread_epoll_wait_timeout: () => 25n,
   });
   const handle = makeHandle(kernel, worker, threadWorkerStates);
+  handle.kernelWorkerRequest = vi.fn();
+  handle.pendingChildSpawnRecords = 0;
   Object.assign(handle.kernel, { memory });
   handle.memory = memory;
   handle.hostBlockedWorkers.set(worker, {
@@ -4996,11 +5014,18 @@ test("blocked completion arms supervisor timer instead of scheduling runtime ret
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: false,
+    pipeSyncedBeforePassive: true,
     pipeChildExitResumeKey: null,
     pipeEofChildExitDeferrals: 0,
   });
   const runtimeEvents: string[] = [];
+  const executeHostBlockedSyscallResumeOutcome = vi.fn(async () => {
+    currentStatus = kernel.abi_status_epoll_wait();
+    return {
+      kind: "completed" as const,
+      status: currentStatus,
+    };
+  });
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: (_runtimeId, event) => runtimeEvents.push(event),
@@ -5008,18 +5033,22 @@ test("blocked completion arms supervisor timer instead of scheduling runtime ret
     completeProcessExit: async () => {},
     failProcess: () => {},
     hasActiveChildProcess: () => false,
+    executeHostBlockedSyscallResumeOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
   });
 
-  scheduler.handleHostBlockedRetryResult(
+  scheduler.notifySchedulerProgress(handle);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  expect(executeHostBlockedSyscallResumeOutcome).toHaveBeenCalledWith(
     handle,
     worker,
     thread.vmPtr,
-    kernel.abi_status_epoll_wait(),
+    kernel.abi_status_pipe_wait(),
   );
-
   const blocked = handle.hostBlockedWorkers.get(worker);
   expect(blocked?.status).toBe(kernel.abi_status_epoll_wait());
   expect(kernel.supervisor_next_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
