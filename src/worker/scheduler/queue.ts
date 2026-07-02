@@ -5,7 +5,6 @@ import {
 } from "../../bridge/compat.js";
 import { publishRuntimeBridgeEpoch } from "../../bridge/runtime-state.js";
 import { ensureMemoryCapacity, kernelScratchBase } from "../kernel-scratch.js";
-import { createReadyWorkerFairness } from "./fairness.js";
 import {
   threadHasCanonicalFutexBlock,
 } from "./futex.js";
@@ -58,7 +57,6 @@ const SCHEDULER_QUEUE_DEBUG_LOG_PREFIXES = [
 ] as const;
 let nextThreadWorkerGeneration = 1;
 const HOT_PC_COUNTER_LIMIT = 32;
-const STALE_SLEEP_RUNNING_WORKER_REPAIR_MS = 2_000;
 const SUPERVISOR_RESUME_RECORD_BYTES = 48;
 const SUPERVISOR_RESUME_RECORD_MAGIC = 0x5255_5354;
 const SUPERVISOR_RESUME_KIND_FUTEX_WAKE = 1;
@@ -537,7 +535,6 @@ export function createWorkerSchedulerQueueHelpers(
 ): WorkerSchedulerQueueHelpers {
   const observedForkSharedSyncGates = new WeakMap<ProcessHandle, Promise<void>>();
   const pendingSupervisorFutexResumes = new WeakMap<ProcessHandle, Set<number>>();
-  const readyWorkerFairness = createReadyWorkerFairness(pumpProcess);
 
   function hasWorkerLocalWait(thread: ThreadWorkerState | undefined): boolean {
     return (thread?.waitingInWorkerStatus ?? null) !== null;
@@ -810,26 +807,6 @@ export function createWorkerSchedulerQueueHelpers(
     promise.then(onSettled, onSettled);
   }
 
-  function runningWorkerStepAppearsIdle(handle: ProcessHandle, thread: ThreadWorkerState): boolean {
-    const activeStepVmPtr = handle.kernel.debug_thread_step_vm_ptr?.();
-    if (activeStepVmPtr === thread.vmPtr) {
-      return false;
-    }
-    const lastStepAtMs = thread.lastStepAtMs;
-    const lastStatusAtMs = thread.lastStatusAtMs;
-    if (lastStepAtMs === null) {
-      return false;
-    }
-    const hasUnansweredStep = thread.stepCount > thread.statusCount;
-    if (hasUnansweredStep) {
-      return false;
-    }
-    if (lastStatusAtMs !== null) {
-      return Date.now() - Math.max(lastStepAtMs, lastStatusAtMs) >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
-    }
-    return Date.now() - lastStepAtMs >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
-  }
-
   function sanitizeRunningWorker(handle: ProcessHandle): Worker | null {
     const runningWorker = handle.runningWorker;
     if (runningWorker === null) {
@@ -875,49 +852,6 @@ export function createWorkerSchedulerQueueHelpers(
         handle.runningWorker = null;
         thread.runningGeneration = null;
         deps.appendWorkerDebugLog(handle, `running-worker-cleared:status-${status}:0x${thread.vmPtr.toString(16)}`);
-        return null;
-      }
-      if (
-        handle.readyWorkers.length > 0
-        && runningWorkerStepAppearsIdle(handle, thread)
-      ) {
-        handle.runningWorker = null;
-        thread.runningGeneration = null;
-        deps.appendWorkerDebugLog(
-          handle,
-          `running-worker-cleared:stale-ok:0x${thread.vmPtr.toString(16)}:last=${thread.lastStatus ?? "null"}`,
-        );
-        return null;
-      }
-      if (
-        handle.readyWorkers.length === 0
-        && thread.stepCount <= thread.statusCount
-        && runningWorkerStepAppearsIdle(handle, thread)
-      ) {
-        handle.runningWorker = null;
-        thread.runningGeneration = null;
-        deps.appendWorkerDebugLog(
-          handle,
-          `running-worker-cleared:stale-ok-no-ready:0x${thread.vmPtr.toString(16)}:last=${thread.lastStatus ?? "null"}`,
-        );
-        return null;
-      }
-      if (
-        handle.readyWorkers.length === 0
-        && thread.stepCount > thread.statusCount
-        && thread.lastStatusAtMs !== null
-        && thread.lastStepAtMs !== null
-        && thread.lastStepAtMs >= thread.lastStatusAtMs
-        && thread.pendingGuestMemoryWrites.length === 0
-        && runningWorkerStepAppearsIdle(handle, thread)
-      ) {
-        handle.runningWorker = null;
-        thread.runningGeneration = null;
-        const unansweredSteps = thread.stepCount - thread.statusCount;
-        deps.appendWorkerDebugLog(
-          handle,
-          `running-worker-cleared:${unansweredSteps > 1 ? "surplus-" : ""}stale-unanswered-no-ready:0x${thread.vmPtr.toString(16)}:last=${thread.lastStatus ?? "null"}:unanswered=${unansweredSteps}`,
-        );
         return null;
       }
       return runningWorker;
@@ -1223,9 +1157,6 @@ export function createWorkerSchedulerQueueHelpers(
     ) {
       handle.readyWorkers.push(worker);
     }
-    if (handle.runningWorker !== null) {
-      readyWorkerFairness.wakeRunningWorkerForReadyWork(handle);
-    }
     pumpProcess(handle);
   }
 
@@ -1287,11 +1218,6 @@ export function createWorkerSchedulerQueueHelpers(
     const runningWorker = sanitizeRunningWorker(handle);
     if (runningWorker !== null) {
       const thread = deps.threadWorkerStates.get(runningWorker);
-      if (handle.readyWorkers.length > 0) {
-        readyWorkerFairness.scheduleRunningWorkerRepairRetry(handle);
-      } else {
-        readyWorkerFairness.scheduleRunningWorkerYieldRetry(handle);
-      }
       appendSchedulerQueueDebugLog(
         deps,
         handle,
@@ -1348,11 +1274,6 @@ export function createWorkerSchedulerQueueHelpers(
     handle.runningWorker = next;
     const thread = deps.threadWorkerStates.get(next);
     const stepBudget = schedulerStepBudgetForNextStep(handle, thread);
-    if (handle.readyWorkers.length > 0) {
-      readyWorkerFairness.scheduleRunningWorkerRepairRetry(handle);
-    } else {
-      readyWorkerFairness.scheduleRunningWorkerYieldRetry(handle);
-    }
     const vmPtr = thread?.vmPtr;
     if (thread && vmPtr !== undefined) {
       appendSchedulerQueueDebugLog(

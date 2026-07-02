@@ -9,8 +9,6 @@ export function logNetworkDebug(_event: string): void {
   // Runtime diagnostics are kept in the per-process worker debug buffer.
 }
 
-const STALE_SLEEP_RUNNING_WORKER_REPAIR_MS = 2_000;
-
 export interface RunLoopSchedulerDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
@@ -87,34 +85,6 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
       blocked.retryTimer = null;
       deps.retryBlockedWorker(handle, worker);
     }, delayMs);
-  }
-
-  function runningWorkerStepAppearsIdle(
-    handle: ProcessHandle,
-    thread: ThreadWorkerState,
-    options: { allowUnansweredStep?: boolean } = {},
-  ): boolean {
-    const activeStepVmPtr = handle.kernel.debug_thread_step_vm_ptr?.();
-    if (activeStepVmPtr === thread.vmPtr) {
-      return false;
-    }
-    const lastStepAtMs = thread.lastStepAtMs;
-    const lastStatusAtMs = thread.lastStatusAtMs;
-    if (lastStepAtMs === null) {
-      return false;
-    }
-    const hasUnansweredStep = thread.stepCount > thread.statusCount;
-    if (hasUnansweredStep && options.allowUnansweredStep !== true) {
-      return false;
-    }
-    if (lastStatusAtMs !== null) {
-      return Date.now() - Math.max(lastStepAtMs, lastStatusAtMs) >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
-    }
-    return Date.now() - lastStepAtMs >= STALE_SLEEP_RUNNING_WORKER_REPAIR_MS;
-  }
-
-  function runningWorkerHasNoActiveKernelStep(handle: ProcessHandle): boolean {
-    return handle.kernel.debug_thread_step_vm_ptr?.() === 0;
   }
 
   function observeForkSharedSyncCompletion(
@@ -222,41 +192,6 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `running-worker-cleared:${handle.pid}:answered-ok:0x${runningThread.vmPtr.toString(16)}`,
-      );
-      return true;
-    }
-    const okUnansweredSteps = runningThread.stepCount - runningThread.statusCount;
-    if (
-      runningThread.lastStatus === handle.kernel.abi_status_ok()
-      && runningThread.pendingGuestMemoryWrites.length === 0
-      && runningStatus === handle.kernel.abi_status_ok()
-      && handle.kernel.thread_process_ptr(runningThread.vmPtr) !== 0
-      && okUnansweredSteps >= 1
-      && runningWorkerHasNoActiveKernelStep(handle)
-    ) {
-      handle.runningWorker = null;
-      runningThread.runningGeneration = null;
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `running-worker-cleared:${handle.pid}:${okUnansweredSteps > 1 ? "inactive-surplus" : "inactive"}-unanswered-ok:0x${runningThread.vmPtr.toString(16)}:unanswered=${okUnansweredSteps}`,
-      );
-      return true;
-    }
-    if (
-      runningThread.lastStatus === handle.kernel.abi_status_ok()
-      && runningThread.pendingGuestMemoryWrites.length === 0
-      && runningStatus === handle.kernel.abi_status_ok()
-      && handle.kernel.thread_process_ptr(runningThread.vmPtr) !== 0
-      && okUnansweredSteps >= 1
-      && runningThread.lastStatusAtMs !== null
-      && runningThread.lastStepAtMs !== null
-      && runningWorkerStepAppearsIdle(handle, runningThread, { allowUnansweredStep: true })
-    ) {
-      handle.runningWorker = null;
-      runningThread.runningGeneration = null;
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `running-worker-cleared:${handle.pid}:${okUnansweredSteps > 1 ? "surplus-" : ""}stale-unanswered-ok:0x${runningThread.vmPtr.toString(16)}:unanswered=${okUnansweredSteps}`,
       );
       return true;
     }
