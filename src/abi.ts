@@ -233,6 +233,13 @@ export interface KernelExports {
   supervisor_process_resume?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_fault_exit_decision?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_resume_blocked_syscall?(vmPtr: number, flags: number): bigint | number;
+  supervisor_blocked_resume_delegation?(vmPtr: number, flags: number): number;
+  supervisor_blocked_resume_delegation_flag_kernel_worker_available?(): number;
+  supervisor_blocked_resume_delegation_direct?(): number;
+  supervisor_blocked_resume_delegation_kernel_worker?(): number;
+  supervisor_blocked_resume_delegation_wait4_kernel_worker?(): number;
+  supervisor_blocked_resume_delegation_unsupported?(): number;
+  supervisor_blocked_resume_delegation_epoll_direct?(): number;
   supervisor_blocked_wait_retry_delay_ms?(vmPtr: number, reason: number): number;
   supervisor_blocked_wait_retry_reason_default?(): number;
   supervisor_blocked_wait_retry_reason_immediate?(): number;
@@ -1189,6 +1196,13 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_process_resume",
   "supervisor_fault_exit_decision",
   "supervisor_resume_blocked_syscall",
+  "supervisor_blocked_resume_delegation",
+  "supervisor_blocked_resume_delegation_flag_kernel_worker_available",
+  "supervisor_blocked_resume_delegation_direct",
+  "supervisor_blocked_resume_delegation_kernel_worker",
+  "supervisor_blocked_resume_delegation_wait4_kernel_worker",
+  "supervisor_blocked_resume_delegation_unsupported",
+  "supervisor_blocked_resume_delegation_epoll_direct",
   "supervisor_blocked_wait_retry_delay_ms",
   "supervisor_blocked_wait_retry_reason_default",
   "supervisor_blocked_wait_retry_reason_immediate",

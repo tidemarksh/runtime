@@ -52,6 +52,32 @@ function makeKernel() {
       thread_resume_poll_wait_timeout: vi.fn(),
       thread_resume_socket_wait_timeout: vi.fn(),
       supervisor_complete_futex_wait: vi.fn(() => 0),
+      supervisor_blocked_resume_delegation: (vmPtr: number, flags: number) => {
+        const kernelWorkerAvailable = (flags & 1) !== 0;
+        const status = kernel.exports.thread_status(vmPtr);
+        if (kernelWorkerAvailable) {
+          if (status === kernel.exports.abi_status_wait4()) {
+            return 2;
+          }
+          if (
+            status === kernel.exports.abi_status_pipe_wait()
+            || status === kernel.exports.abi_status_connect()
+            || status === kernel.exports.abi_status_socket_recv()
+            || status === kernel.exports.abi_status_socket_send()
+            || status === kernel.exports.abi_status_flock_wait()
+          ) {
+            return 1;
+          }
+          return 3;
+        }
+        return status === kernel.exports.abi_status_epoll_wait() ? 4 : 0;
+      },
+      supervisor_blocked_resume_delegation_flag_kernel_worker_available: () => 1,
+      supervisor_blocked_resume_delegation_direct: () => 0,
+      supervisor_blocked_resume_delegation_kernel_worker: () => 1,
+      supervisor_blocked_resume_delegation_wait4_kernel_worker: () => 2,
+      supervisor_blocked_resume_delegation_unsupported: () => 3,
+      supervisor_blocked_resume_delegation_epoll_direct: () => 4,
       supervisor_blocked_wait_retry_delay_ms: (vmPtr: number, reason: number) => {
         switch (reason) {
           case 1:
@@ -1746,7 +1772,7 @@ test("kernel-worker unsupported blocked status fails before terminal local resum
 
   expect(failProcess).toHaveBeenCalledWith(handle, expect.any(Error));
   expect((failProcess.mock.calls[0]?.[1] as Error).message).toBe(
-    "kernel-worker blocked status 1234 requires explicit resume delegation",
+    "kernel supervisor rejected blocked status 1234 resume delegation",
   );
   expect(handle.kernelWorkerRequest).not.toHaveBeenCalled();
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();

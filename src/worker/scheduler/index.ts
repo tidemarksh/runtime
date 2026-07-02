@@ -4,7 +4,13 @@ import {
 } from "../../abi.js";
 import {
   resumeBlockedSyscallBySupervisor,
+  supervisorBlockedResumeDelegation,
   supervisorBlockedWaitRetryDelayMs,
+  SUPERVISOR_BLOCKED_RESUME_DELEGATION_DIRECT,
+  SUPERVISOR_BLOCKED_RESUME_DELEGATION_EPOLL_DIRECT,
+  SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER,
+  SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED,
+  SUPERVISOR_BLOCKED_RESUME_DELEGATION_WAIT4_KERNEL_WORKER,
   SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_ACTIVE_CHILD,
   SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_DEFAULT,
   SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_IMMEDIATE,
@@ -1772,40 +1778,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (
       handle.kernelWorkerRequest
       && handle.pid > 0
-      && (
-        blocked.status === handle.kernel.abi_status_pipe_wait()
-        || blocked.status === handle.kernel.abi_status_connect()
-        || blocked.status === handle.kernel.abi_status_socket_recv()
-        || blocked.status === handle.kernel.abi_status_socket_send()
-        || blocked.status === handle.kernel.abi_status_flock_wait()
-      )
-    ) {
-      if (
-        blocked.status === handle.kernel.abi_status_pipe_wait()
-        && handle.childExitSyncRecords.size > 0
-      ) {
-        markPipeChildExitRecordsResumedForWait(handle, blocked);
-      }
-      resumeBlockedSyscallViaKernelWorker(
-        handle,
-        worker,
-        blocked,
-        `pipe-retry-rpc:${handle.pid}`,
-        (outcome) => {
-          if (
-            outcome.kind === "blocked"
-            && outcome.status === handle.kernel.abi_status_pipe_wait()
-          ) {
-            pumpProcess(handle);
-          }
-        }
-      );
-      return;
-    }
-
-    if (
-      handle.kernelWorkerRequest
-      && handle.pid > 0
       && blocked.status === handle.kernel.abi_status_wait4()
     ) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-rpc:${handle.pid}`);
@@ -1825,20 +1797,76 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
 
-    if (handle.kernelWorkerRequest && handle.pid > 0) {
-      deps.failProcess(
-        handle,
-        new Error(`kernel-worker blocked status ${blocked.status} requires explicit resume delegation`),
+    let resumeDelegation: ReturnType<typeof supervisorBlockedResumeDelegation>;
+    try {
+      resumeDelegation = supervisorBlockedResumeDelegation(
+        handle.kernel,
+        blocked.vmPtr,
+        !!handle.kernelWorkerRequest && handle.pid > 0,
       );
+    } catch (error) {
+      deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
       return;
+    }
+
+    switch (resumeDelegation) {
+      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER:
+        if (
+          blocked.status === handle.kernel.abi_status_pipe_wait()
+          && handle.childExitSyncRecords.size > 0
+        ) {
+          markPipeChildExitRecordsResumedForWait(handle, blocked);
+        }
+        resumeBlockedSyscallViaKernelWorker(
+          handle,
+          worker,
+          blocked,
+          `pipe-retry-rpc:${handle.pid}`,
+          (outcome) => {
+            if (
+              outcome.kind === "blocked"
+              && outcome.status === handle.kernel.abi_status_pipe_wait()
+            ) {
+              pumpProcess(handle);
+            }
+          }
+        );
+        return;
+      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_WAIT4_KERNEL_WORKER:
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-rpc:${handle.pid}`);
+        applyLocalChildExitRecords(handle, { force: true });
+        blocked.rpcPending = true;
+        void deps.resumeWait4ViaKernelWorker(handle, worker, blocked.vmPtr)
+          .then((outcome) => {
+            consumeKernelRpcResumeOutcome(handle, worker, blocked.vmPtr, outcome);
+          })
+          .catch((error) => {
+            const latestBlocked = handle.hostBlockedWorkers.get(worker);
+            if (latestBlocked && latestBlocked.vmPtr === blocked.vmPtr) {
+              latestBlocked.rpcPending = false;
+            }
+            deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+          });
+        return;
+      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED:
+        deps.failProcess(
+          handle,
+          new Error(`kernel supervisor rejected blocked status ${blocked.status} resume delegation`),
+        );
+        return;
+      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_EPOLL_DIRECT:
+        resumeEpollWait(handle, worker, blocked);
+        return;
+      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_DIRECT:
+        break;
+      default: {
+        const exhaustive: never = resumeDelegation;
+        throw new Error(`unhandled supervisor blocked resume delegation: ${exhaustive}`);
+      }
     }
 
     if (blocked.status === handle.kernel.abi_status_pipe_wait()) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-retry-local:${handle.pid}`);
-    }
-    if (blocked.status === handle.kernel.abi_status_epoll_wait()) {
-      resumeEpollWait(handle, worker, blocked);
-      return;
     }
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
     if (blocked.status === handle.kernel.abi_status_wait4()) {

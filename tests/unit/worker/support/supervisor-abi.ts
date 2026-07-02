@@ -22,6 +22,12 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_signal_control_record_bytes: 120,
   supervisor_resume_kind_futex_wake: 1,
   supervisor_resume_kind_runnable_thread: 2,
+  supervisor_blocked_resume_delegation_direct: 0,
+  supervisor_blocked_resume_delegation_kernel_worker: 1,
+  supervisor_blocked_resume_delegation_wait4_kernel_worker: 2,
+  supervisor_blocked_resume_delegation_unsupported: 3,
+  supervisor_blocked_resume_delegation_epoll_direct: 4,
+  supervisor_blocked_resume_delegation_flag_kernel_worker_available: 1,
   supervisor_blocked_wait_retry_reason_default: 0,
   supervisor_blocked_wait_retry_reason_immediate: 1,
   supervisor_blocked_wait_retry_reason_standard_defer: 2,
@@ -83,6 +89,17 @@ export function makeSupervisorAbiStubs(
   );
   return {
     ...stubs,
+    supervisor_blocked_resume_delegation: (vmPtr: number, flags: number) => {
+      const kernelWorkerAvailable = (flags
+        & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_flag_kernel_worker_available) !== 0;
+      if (!kernelWorkerAvailable) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_direct;
+      }
+      if (vmPtr === 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_unsupported;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_kernel_worker;
+    },
     supervisor_blocked_wait_retry_delay_ms: (_vmPtr: number, reason: number) => {
       switch (reason) {
         case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_immediate:
