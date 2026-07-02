@@ -114,8 +114,6 @@ test("debug collection and error formatting do not invoke repair or resume expor
   const repairExports = {
     thread_step: vi.fn(),
     thread_resume_blocked_syscall: vi.fn(),
-    thread_resume_futex_wait: vi.fn(),
-    thread_resume_futex_wait_result: vi.fn(),
     thread_resume_epoll_wait_timeout: vi.fn(),
     debug_clear_syscall_trace: vi.fn(),
     debug_clear_signal_trace: vi.fn(),

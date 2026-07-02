@@ -449,8 +449,6 @@ export interface KernelExports {
   thread_futex_wait_addr(vm_ptr: number): bigint;
   thread_futex_wait_timeout(vm_ptr: number): bigint;
   thread_futex_wait_expected(vm_ptr: number): number;
-  thread_resume_futex_wait(vm_ptr: number): void;
-  thread_resume_futex_wait_result(vm_ptr: number, result: bigint): void;
   thread_sleep_seconds(vm_ptr: number): bigint;
   thread_sleep_nanoseconds(vm_ptr: number): bigint;
   thread_sleep_deadline_ticks?(vm_ptr: number): bigint | number;

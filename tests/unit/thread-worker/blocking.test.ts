@@ -105,10 +105,6 @@ test("handleFutexWait re-waits on the requeued futex address", () => {
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
   const i32 = new Int32Array(memory.buffer);
   const waitSpy = vi.spyOn(Atomics, "wait");
-  const resumeWait = vi.fn(() => {
-    status = 0;
-  });
-  const resumeWaitResult = vi.fn();
   const postStatus = vi.fn();
   const recordFutexWaitDebug = vi.fn();
 
@@ -149,8 +145,6 @@ test("handleFutexWait re-waits on the requeued futex address", () => {
         },
       }),
       thread_sig_pending: () => 0n,
-      thread_resume_futex_wait: resumeWait,
-      thread_resume_futex_wait_result: resumeWaitResult,
       thread_status: () => status,
     } as never,
     statusCodes: { FUTEX_WAIT: 20 } as never,
@@ -168,8 +162,6 @@ test("handleFutexWait re-waits on the requeued futex address", () => {
 
   expect(handled).toBe(false);
   expect(waitCalls).toBe(2);
-  expect(resumeWait).not.toHaveBeenCalled();
-  expect(resumeWaitResult).not.toHaveBeenCalled();
   expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
   expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(0));
   expect(recordFutexWaitDebug).toHaveBeenCalledWith(expect.stringContaining(
@@ -189,8 +181,6 @@ test("handleFutexWait reports selected wake completion to supervisor when availa
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
   const i32 = new Int32Array(memory.buffer);
   const waitSpy = vi.spyOn(Atomics, "wait");
-  const resumeWait = vi.fn();
-  const resumeWaitResult = vi.fn();
   const postStatus = vi.fn();
   const supervisorComplete = vi.fn((_vmPtr: number, completion: number) => {
     expect(completion).toBe(41);
@@ -226,8 +216,6 @@ test("handleFutexWait reports selected wake completion to supervisor when availa
         },
       }),
       thread_sig_pending: () => 0n,
-      thread_resume_futex_wait: resumeWait,
-      thread_resume_futex_wait_result: resumeWaitResult,
       thread_status: () => status,
       supervisor_futex_wait_completion_woken: () => 41,
       supervisor_complete_futex_wait: supervisorComplete,
@@ -246,8 +234,6 @@ test("handleFutexWait reports selected wake completion to supervisor when availa
 
   expect(handled).toBe(false);
   expect(supervisorComplete).toHaveBeenCalledWith(0x1234, 41);
-  expect(resumeWait).not.toHaveBeenCalled();
-  expect(resumeWaitResult).not.toHaveBeenCalled();
   expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
   expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(0));
 
@@ -258,10 +244,6 @@ test("handleFutexWait treats not-equal with a cleared thread record as a wake", 
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
   const i32 = new Int32Array(memory.buffer);
   const waitSpy = vi.spyOn(Atomics, "wait");
-  const resumeWait = vi.fn(() => {
-    status = 0;
-  });
-  const resumeWaitResult = vi.fn();
   const postStatus = vi.fn();
 
   const waitAddr = 0x100;
@@ -295,8 +277,6 @@ test("handleFutexWait treats not-equal with a cleared thread record as a wake", 
         },
       }),
       thread_sig_pending: () => 0n,
-      thread_resume_futex_wait: resumeWait,
-      thread_resume_futex_wait_result: resumeWaitResult,
       thread_status: () => status,
       abi_eagain: () => -11,
     } as never,
@@ -313,8 +293,6 @@ test("handleFutexWait treats not-equal with a cleared thread record as a wake", 
   }, 20);
 
   expect(handled).toBe(false);
-  expect(resumeWait).not.toHaveBeenCalled();
-  expect(resumeWaitResult).not.toHaveBeenCalled();
   expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
   expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(0));
 
@@ -325,13 +303,6 @@ test("handleFutexWait follows a requeue even when the original futex wait is not
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
   const i32 = new Int32Array(memory.buffer);
   const waitSpy = vi.spyOn(Atomics, "wait");
-  const resumeWait = vi.fn(() => {
-    status = 0;
-  });
-  const resumeWaitResult = vi.fn(() => {
-    status = 0;
-    blockedAddr = 0n;
-  });
   const postStatus = vi.fn();
 
   const initialAddr = 0x100;
@@ -373,10 +344,6 @@ test("handleFutexWait follows a requeue even when the original futex wait is not
         },
       }),
       thread_sig_pending: () => 0n,
-      thread_resume_futex_wait: resumeWait,
-      thread_resume_futex_wait_result: (_vmPtr, result) => {
-        resumeWaitResult(result);
-      },
       thread_status: () => status,
       abi_eagain: () => -11,
     } as never,
@@ -394,8 +361,6 @@ test("handleFutexWait follows a requeue even when the original futex wait is not
 
   expect(handled).toBe(false);
   expect(waitCalls).toBe(2);
-  expect(resumeWait).not.toHaveBeenCalled();
-  expect(resumeWaitResult).not.toHaveBeenCalled();
   expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
   expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(0));
 
@@ -406,11 +371,6 @@ test("handleFutexWait treats not-equal with the same blocked futex as a wake", (
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
   const i32 = new Int32Array(memory.buffer);
   const waitSpy = vi.spyOn(Atomics, "wait");
-  const resumeWait = vi.fn(() => {
-    status = 0;
-    blockedAddr = 0n;
-  });
-  const resumeWaitResult = vi.fn();
   const postStatus = vi.fn();
 
   const waitAddr = 0x100;
@@ -445,8 +405,6 @@ test("handleFutexWait treats not-equal with the same blocked futex as a wake", (
         },
       }),
       thread_sig_pending: () => 0n,
-      thread_resume_futex_wait: resumeWait,
-      thread_resume_futex_wait_result: resumeWaitResult,
       thread_status: () => status,
       abi_eagain: () => -11,
     } as never,
@@ -464,8 +422,6 @@ test("handleFutexWait treats not-equal with the same blocked futex as a wake", (
 
   expect(handled).toBe(false);
   expect(waitCalls).toBe(1);
-  expect(resumeWait).not.toHaveBeenCalled();
-  expect(resumeWaitResult).not.toHaveBeenCalled();
   expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
   expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(0));
 
@@ -475,10 +431,6 @@ test("handleFutexWait treats not-equal with the same blocked futex as a wake", (
 test("handleFutexWait does not wrap a Memory64 blocked futex address to a 32-bit word index", () => {
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
   const waitSpy = vi.spyOn(Atomics, "wait");
-  const resumeWait = vi.fn();
-  const resumeWaitResult = vi.fn(() => {
-    status = 0;
-  });
   const postStatus = vi.fn();
 
   const initialAddr = 0x100n;
@@ -512,11 +464,6 @@ test("handleFutexWait does not wrap a Memory64 blocked futex address to a 32-bit
         },
       }),
       thread_sig_pending: () => 0n,
-      thread_resume_futex_wait: resumeWait,
-      thread_resume_futex_wait_result: (_vmPtr, result) => {
-        blockedAddr = 0n;
-        resumeWaitResult(result);
-      },
       thread_status: () => status,
       abi_eagain: () => -11,
     } as never,
@@ -534,8 +481,6 @@ test("handleFutexWait does not wrap a Memory64 blocked futex address to a 32-bit
 
   expect(handled).toBe(false);
   expect(waitCalls).toBe(1);
-  expect(resumeWait).not.toHaveBeenCalled();
-  expect(resumeWaitResult).not.toHaveBeenCalled();
   expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
   expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(0));
 
@@ -546,10 +491,6 @@ test("handleFutexWait resumes with EINTR when a signal becomes pending", () => {
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
   const i32 = new Int32Array(memory.buffer);
   const waitSpy = vi.spyOn(Atomics, "wait");
-  const resumeWait = vi.fn();
-  const resumeWaitResult = vi.fn(() => {
-    status = 0;
-  });
   const postStatus = vi.fn();
 
   const guestAddr = 0x100;
@@ -584,11 +525,6 @@ test("handleFutexWait resumes with EINTR when a signal becomes pending", () => {
         },
       }),
       thread_sig_pending: () => sigPending,
-      thread_resume_futex_wait: resumeWait,
-      thread_resume_futex_wait_result: (_vmPtr, result) => {
-        blockedAddr = 0n;
-        resumeWaitResult(result);
-      },
       thread_status: () => status,
       abi_eintr: () => -4,
     } as never,
@@ -605,8 +541,6 @@ test("handleFutexWait resumes with EINTR when a signal becomes pending", () => {
   }, 20);
 
   expect(handled).toBe(false);
-  expect(resumeWait).not.toHaveBeenCalled();
-  expect(resumeWaitResult).not.toHaveBeenCalled();
   expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
   expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(0));
 
@@ -617,8 +551,6 @@ test("handleFutexWait asks supervisor before interrupting for pending signals", 
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
   const i32 = new Int32Array(memory.buffer);
   const waitSpy = vi.spyOn(Atomics, "wait");
-  const resumeWait = vi.fn();
-  const resumeWaitResult = vi.fn();
   const supervisorComplete = vi.fn((_vmPtr: number, completion: number) => {
     expect(completion).toBe(5);
     blockedAddr = 0n;
@@ -658,8 +590,6 @@ test("handleFutexWait asks supervisor before interrupting for pending signals", 
       supervisor_signal_pending_for_blocked_wait: () => supervisorPending ? 1 : 0,
       supervisor_futex_wait_completion_signal_check: () => 5,
       supervisor_complete_futex_wait: supervisorComplete,
-      thread_resume_futex_wait: resumeWait,
-      thread_resume_futex_wait_result: resumeWaitResult,
       thread_status: () => status,
       abi_eintr: () => -4,
     } as never,
@@ -677,8 +607,6 @@ test("handleFutexWait asks supervisor before interrupting for pending signals", 
 
   expect(handled).toBe(false);
   expect(supervisorComplete).toHaveBeenCalledWith(0x1234, 5);
-  expect(resumeWait).not.toHaveBeenCalled();
-  expect(resumeWaitResult).not.toHaveBeenCalled();
   expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
   expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(0));
 
@@ -689,10 +617,6 @@ test("handleFutexWait resumes with EINTR when a signal wake notifies the futex",
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
   const i32 = new Int32Array(memory.buffer);
   const waitSpy = vi.spyOn(Atomics, "wait");
-  const resumeWait = vi.fn();
-  const resumeWaitResult = vi.fn(() => {
-    status = 0;
-  });
   const postStatus = vi.fn();
 
   const guestAddr = 0x100;
@@ -727,11 +651,6 @@ test("handleFutexWait resumes with EINTR when a signal wake notifies the futex",
         },
       }),
       thread_sig_pending: () => sigPending,
-      thread_resume_futex_wait: resumeWait,
-      thread_resume_futex_wait_result: (_vmPtr, result) => {
-        blockedAddr = 0n;
-        resumeWaitResult(result);
-      },
       thread_status: () => status,
       abi_eintr: () => -4,
     } as never,
@@ -748,8 +667,6 @@ test("handleFutexWait resumes with EINTR when a signal wake notifies the futex",
   }, 20);
 
   expect(handled).toBe(false);
-  expect(resumeWait).not.toHaveBeenCalled();
-  expect(resumeWaitResult).not.toHaveBeenCalled();
   expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
   expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(0));
 
@@ -760,10 +677,6 @@ test("handleFutexWait uses supervisor decision for process-directed pending sign
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
   const i32 = new Int32Array(memory.buffer);
   const waitSpy = vi.spyOn(Atomics, "wait");
-  const resumeWait = vi.fn();
-  const resumeWaitResult = vi.fn(() => {
-    status = 0;
-  });
   const postStatus = vi.fn();
 
   const guestAddr = 0x100;
@@ -802,11 +715,6 @@ test("handleFutexWait uses supervisor decision for process-directed pending sign
       }),
       thread_sig_pending: () => 0n,
       thread_pending_signal_interrupts_blocked_syscall: directProcessPending,
-      thread_resume_futex_wait: resumeWait,
-      thread_resume_futex_wait_result: (_vmPtr, result) => {
-        blockedAddr = 0n;
-        resumeWaitResult(result);
-      },
       thread_status: () => status,
       abi_eintr: () => -4,
     } as never,
@@ -823,8 +731,6 @@ test("handleFutexWait uses supervisor decision for process-directed pending sign
   }, 20);
 
   expect(handled).toBe(false);
-  expect(resumeWait).not.toHaveBeenCalled();
-  expect(resumeWaitResult).not.toHaveBeenCalled();
   expect(directProcessPending).not.toHaveBeenCalled();
   expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
   expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(0));
@@ -836,10 +742,6 @@ test("handleFutexWait treats missing thread-record sentinel as EAGAIN instead of
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
   const i32 = new Int32Array(memory.buffer);
   const waitSpy = vi.spyOn(Atomics, "wait");
-  const resumeWait = vi.fn();
-  const resumeWaitResult = vi.fn(() => {
-    status = 0;
-  });
   const postStatus = vi.fn();
 
   const guestAddr = 0x100;
@@ -872,11 +774,6 @@ test("handleFutexWait treats missing thread-record sentinel as EAGAIN instead of
         },
       }),
       thread_sig_pending: () => 0n,
-      thread_resume_futex_wait: resumeWait,
-      thread_resume_futex_wait_result: (_vmPtr, result) => {
-        blockedAddr = 0n;
-        resumeWaitResult(result);
-      },
       thread_status: () => status,
       abi_eagain: () => -11,
     } as never,
@@ -893,8 +790,6 @@ test("handleFutexWait treats missing thread-record sentinel as EAGAIN instead of
   }, 20);
 
   expect(handled).toBe(false);
-  expect(resumeWait).not.toHaveBeenCalled();
-  expect(resumeWaitResult).not.toHaveBeenCalled();
   expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
   expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(0));
 
@@ -905,8 +800,6 @@ test("handleFutexWait exits when reattached kernel state changes the thread stat
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
   const i32 = new Int32Array(memory.buffer);
   const waitSpy = vi.spyOn(Atomics, "wait");
-  const resumeWait = vi.fn();
-  const resumeWaitResult = vi.fn();
   const postStatus = vi.fn();
 
   const guestAddr = 0x100;
@@ -932,8 +825,6 @@ test("handleFutexWait exits when reattached kernel state changes the thread stat
       thread_record_blocked_addr: () => BigInt(guestAddr),
       ...supervisorFutexExports(),
       thread_sig_pending: () => 0n,
-      thread_resume_futex_wait: resumeWait,
-      thread_resume_futex_wait_result: resumeWaitResult,
       thread_status: () => status,
     } as never,
     statusCodes: { FUTEX_WAIT: 20 } as never,
@@ -949,8 +840,6 @@ test("handleFutexWait exits when reattached kernel state changes the thread stat
   }, 20);
 
   expect(handled).toBe(false);
-  expect(resumeWait).not.toHaveBeenCalled();
-  expect(resumeWaitResult).not.toHaveBeenCalled();
   expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
   expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(9));
 
@@ -1013,9 +902,6 @@ test("handleRuntimeBridgeBlockedStatus hands off EPOLL_WAIT timeout retries into
   const resumeTimeout = vi.fn(() => {
     status = 20;
   });
-  const resumeFutexWait = vi.fn(() => {
-    status = 0;
-  });
   const resumeBlocked = vi.fn();
   const supervisorComplete = vi.fn(() => {
     status = 0;
@@ -1050,8 +936,6 @@ test("handleRuntimeBridgeBlockedStatus hands off EPOLL_WAIT timeout retries into
       thread_record_blocked_addr: () => 0n,
       ...supervisorFutexExports({ complete: supervisorComplete }),
       thread_sig_pending: () => 0n,
-      thread_resume_futex_wait: resumeFutexWait,
-      thread_resume_futex_wait_result: () => {},
     } as never,
     statusCodes: { OK: 0, FUTEX_WAIT: 20, EPOLL_WAIT: 22 } as never,
     vmPtr: 0x1234,
@@ -1067,7 +951,6 @@ test("handleRuntimeBridgeBlockedStatus hands off EPOLL_WAIT timeout retries into
 
   expect(resumeTimeout).toHaveBeenCalledWith(0x1234);
   expect(supervisorComplete).toHaveBeenCalledWith(0x1234, 1);
-  expect(resumeFutexWait).not.toHaveBeenCalled();
   expect(resumeBlocked).not.toHaveBeenCalled();
   expect(step).toHaveBeenCalledWith(1000);
   expect(postStatus).toHaveBeenCalledWith(createThreadWorkerStatusOutcome(22, true));

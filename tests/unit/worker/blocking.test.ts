@@ -220,8 +220,6 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_futex_wait_addr: () => 0n,
     thread_futex_wait_timeout: () => 0n,
     thread_futex_wait_expected: () => 0,
-    thread_resume_futex_wait: () => {},
-    thread_resume_futex_wait_result: () => {},
     thread_sleep_seconds: () => sleepSec,
     thread_sleep_nanoseconds: () => sleepNsec,
     thread_sleep_deadline_ticks: () => {

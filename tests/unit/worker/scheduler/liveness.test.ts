@@ -51,8 +51,6 @@ function makeKernel() {
       thread_resume_epoll_wait_timeout: vi.fn(),
       thread_resume_poll_wait_timeout: vi.fn(),
       thread_resume_socket_wait_timeout: vi.fn(),
-      thread_resume_futex_wait: vi.fn(),
-      thread_resume_futex_wait_result: vi.fn(),
       supervisor_complete_futex_wait: vi.fn(() => 0),
       supervisor_futex_wait_completion_woken: () => 1,
       supervisor_futex_wait_completion_not_equal: () => 2,

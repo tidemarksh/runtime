@@ -113,7 +113,7 @@ test("stepThread does not reroute OK through the blocked-status handlers", () =>
 test("stepThread resolves FUTEX_WAIT in-worker before reporting completion", () => {
   const clearSyscallTrace = vi.fn();
   const threadStep = vi.fn();
-  const resumeFutexWait = vi.fn(() => {
+  const completeFutexWait = vi.fn(() => {
     status = 0;
   });
   const postStatus = vi.fn();
@@ -131,8 +131,11 @@ test("stepThread resolves FUTEX_WAIT in-worker before reporting completion", () 
       thread_futex_wait_expected: () => 0,
       thread_record_blocked_addr: () => 0n,
       thread_sig_pending: () => 0n,
-      thread_resume_futex_wait: resumeFutexWait,
-      thread_resume_futex_wait_result: () => {},
+      supervisor_futex_wait_completion_woken: () => 1,
+      supervisor_futex_wait_completion_not_equal: () => 2,
+      supervisor_futex_wait_completion_invalid_address: () => 4,
+      supervisor_futex_wait_completion_signal_check: () => 5,
+      supervisor_complete_futex_wait: completeFutexWait,
     } as never,
     statusCodes: {
       OK: 0,
@@ -154,7 +157,8 @@ test("stepThread resolves FUTEX_WAIT in-worker before reporting completion", () 
   expect(threadStep).toHaveBeenCalledTimes(2);
   expect(threadStep).toHaveBeenNthCalledWith(1, 0x1234, 20_000);
   expect(threadStep).toHaveBeenNthCalledWith(2, 0x1234, 20_000);
-  expect(resumeFutexWait).toHaveBeenCalledTimes(1);
+  expect(completeFutexWait).toHaveBeenCalledTimes(1);
+  expect(completeFutexWait).toHaveBeenCalledWith(0x1234, 1);
   expect(postStatus).toHaveBeenCalledTimes(1);
   expect(postStatus).toHaveBeenCalledWith(createThreadWorkerStatusOutcome(0));
 });
