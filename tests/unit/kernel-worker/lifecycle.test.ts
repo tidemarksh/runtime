@@ -1,4 +1,4 @@
-// Kernel-worker tests in this file validate transitional runtime-owned bridge behavior.
+// Kernel-worker tests in this file validate lifecycle host-bridge behavior.
 import { expect, test } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
 import { createKernelWorkerLifecycle } from "../../../src/kernel-worker/lifecycle.js";
@@ -6,6 +6,10 @@ import { createKernelWorkerLifecycle } from "../../../src/kernel-worker/lifecycl
 type FakeKernelExports = KernelExports & {
   opLog: string[];
 };
+
+interface FakeKernelOptions {
+  canonicalizeChildPid?: (vmPtr: number, provisionalChildPid: number, nextPidFloor: number) => number;
+}
 
 function makeKernelState(): KernelRuntimeState {
   return {
@@ -33,7 +37,7 @@ function makeKernelState(): KernelRuntimeState {
   };
 }
 
-function makeKernelExports(): FakeKernelExports {
+function makeKernelExports(options: FakeKernelOptions = {}): FakeKernelExports {
   let runtimeState = makeKernelState();
   const opLog: string[] = [];
   const exports = {
@@ -134,10 +138,74 @@ function makeKernelExports(): FakeKernelExports {
       opLog.push(`resume-vfork:${vmPtr}:${childPid}`);
     },
     opLog,
-  };
+  } as unknown as FakeKernelExports;
 
-  return exports as unknown as FakeKernelExports;
+  if (options.canonicalizeChildPid) {
+    exports.process_canonicalize_child_pid = (vmPtr: number, provisionalChildPid: number, nextPidFloor: number) => {
+      const childPid = options.canonicalizeChildPid!(vmPtr, provisionalChildPid, nextPidFloor);
+      opLog.push(`canonicalize:${vmPtr}:${provisionalChildPid}@${nextPidFloor}->${childPid}`);
+      return childPid;
+    };
+  }
+
+  return exports;
 }
+
+test("canonicalizeChildPid applies supervisor-selected child pid to the process table", () => {
+  const parentKernel = makeKernelExports({
+    canonicalizeChildPid: (_vmPtr, provisionalChildPid, nextPidFloor) => Math.max(provisionalChildPid, nextPidFloor),
+  });
+  const siblingKernel = makeKernelExports();
+  const processKernels = new Map<number, KernelExports>([
+    [1, parentKernel],
+    [7, siblingKernel],
+  ]);
+  const canonicalProcesses = new Map<number, {
+    pid: number;
+    ppid: number;
+    pgid: number;
+    sid: number;
+    didExec: boolean;
+    vmPtr: number;
+  }>([
+    [1, { pid: 1, ppid: 0, pgid: 1, sid: 1, didExec: false, vmPtr: 0x1234 }],
+  ]);
+  let canonicalNextPid = 9;
+
+  const lifecycle = createKernelWorkerLifecycle({
+    processKernels,
+    canonicalProcesses,
+    getCanonicalNextPid: () => canonicalNextPid,
+    setCanonicalNextPid: (nextPid) => {
+      canonicalNextPid = nextPid;
+    },
+    requireProcessKernel: (pid) => {
+      const exports = processKernels.get(pid);
+      if (!exports) {
+        throw new Error(`missing process kernel: ${pid}`);
+      }
+      return exports;
+    },
+    formatProcessDebug: () => "n/a",
+  });
+
+  const child = lifecycle.canonicalizeChildPid(1, 0x1234, 2, makeKernelState());
+
+  expect(child.childPid).toBe(9);
+  expect(child.nextPid).toBe(10);
+  expect(canonicalNextPid).toBe(10);
+  expect(canonicalProcesses.get(9)).toMatchObject({
+    pid: 9,
+    ppid: 1,
+    pgid: 33,
+    sid: 44,
+    didExec: false,
+    vmPtr: 0x1234,
+  });
+  expect(parentKernel.opLog).toContain("canonicalize:4660:2@9->9");
+  expect(parentKernel.opLog).toContain("upsert:9:1:33:44:0");
+  expect(siblingKernel.opLog).toContain("upsert:9:1:33:44:0");
+});
 
 test("resumeVforkExecveParent drops canonical child state without clearing the owner-side vfork snapshot", () => {
   const parentKernel = makeKernelExports();

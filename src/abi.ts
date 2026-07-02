@@ -574,6 +574,7 @@ export interface KernelExports {
   process_current_sid(vm_ptr: number): number;
   process_current_did_exec(vm_ptr: number): number;
   process_rewrite_child_pid(vm_ptr: number, oldPid: number, newPid: number, nextPid: number): void;
+  process_canonicalize_child_pid?(vmPtr: number, provisionalChildPid: number, nextPidFloor: number): number;
   process_reset_lifecycle(
     vm_ptr: number,
     pid: number,

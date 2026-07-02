@@ -131,9 +131,15 @@ export function createKernelWorkerLifecycle(deps: KernelWorkerLifecycleDeps) {
   ): { childPid: number; nextPid: number; pgid: number; sid: number; kernelState: KernelRuntimeState } {
     const processExports = deps.requireProcessKernel(pid);
     attachKernelRuntimeState(processExports, kernelState);
-    const childPid = reserveCanonicalPid(provisionalChildPid);
-    const nextPid = deps.getCanonicalNextPid();
-    processExports.process_rewrite_child_pid(vmPtr, provisionalChildPid, childPid, nextPid);
+    const nextPidFloor = deps.getCanonicalNextPid();
+    const childPid = processExports.process_canonicalize_child_pid
+      ? processExports.process_canonicalize_child_pid(vmPtr, provisionalChildPid, nextPidFloor)
+      : reserveCanonicalPid(provisionalChildPid);
+    const nextPid = Math.max(childPid + 1, nextPidFloor);
+    deps.setCanonicalNextPid(nextPid);
+    if (!processExports.process_canonicalize_child_pid) {
+      processExports.process_rewrite_child_pid(vmPtr, provisionalChildPid, childPid, nextPid);
+    }
     upsertCanonicalProcess({
       pid: childPid,
       ppid: processExports.process_current_ppid(vmPtr),
