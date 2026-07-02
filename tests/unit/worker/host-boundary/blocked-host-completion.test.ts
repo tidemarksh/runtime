@@ -296,8 +296,14 @@ test("host boundary reports blocked retry timer expiry to supervisor before retr
     }),
     supervisor_enqueue_blocked_wait_timer: vi.fn(() => 0),
     supervisor_blocked_wait_timer_required: vi.fn(() => 0),
+    supervisor_blocked_wait_retry_reason: () => 0,
     supervisor_blocked_wait_retry_delay_ms: () => 1,
     supervisor_blocked_wait_retry_reason_default: () => 0,
+    supervisor_blocked_wait_retry_flag_host_progress: () => 1,
+    supervisor_blocked_wait_retry_flag_active_child: () => 2,
+    supervisor_blocked_wait_retry_flag_passive_wait: () => 4,
+    supervisor_blocked_wait_retry_flag_process_gate: () => 8,
+    supervisor_blocked_wait_retry_flag_thread_init_pending: () => 16,
     thread_status: (vmPtr: number) => vmPtr === blockedThread.vmPtr
       ? kernel.abi_status_pipe_wait()
       : kernel.abi_status_ok(),

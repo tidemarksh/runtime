@@ -240,6 +240,7 @@ export interface KernelExports {
   supervisor_blocked_resume_delegation_wait4_kernel_worker?(): number;
   supervisor_blocked_resume_delegation_unsupported?(): number;
   supervisor_blocked_resume_delegation_epoll_direct?(): number;
+  supervisor_blocked_wait_retry_reason?(vmPtr: number, flags: number): number;
   supervisor_blocked_wait_retry_delay_ms?(vmPtr: number, reason: number): number;
   supervisor_blocked_wait_retry_reason_default?(): number;
   supervisor_blocked_wait_retry_reason_immediate?(): number;
@@ -247,6 +248,11 @@ export interface KernelExports {
   supervisor_blocked_wait_retry_reason_active_child?(): number;
   supervisor_blocked_wait_retry_reason_passive_wait?(): number;
   supervisor_blocked_wait_retry_reason_process_gate?(): number;
+  supervisor_blocked_wait_retry_flag_host_progress?(): number;
+  supervisor_blocked_wait_retry_flag_active_child?(): number;
+  supervisor_blocked_wait_retry_flag_passive_wait?(): number;
+  supervisor_blocked_wait_retry_flag_process_gate?(): number;
+  supervisor_blocked_wait_retry_flag_thread_init_pending?(): number;
   supervisor_enqueue_blocked_wait_timer?(vmPtr: number): number;
   supervisor_blocked_wait_timer_required?(vmPtr: number): number;
   supervisor_fd_control_record?(outPtr: number, outLen: number): number;
@@ -1204,6 +1210,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_resume_delegation_wait4_kernel_worker",
   "supervisor_blocked_resume_delegation_unsupported",
   "supervisor_blocked_resume_delegation_epoll_direct",
+  "supervisor_blocked_wait_retry_reason",
   "supervisor_blocked_wait_retry_delay_ms",
   "supervisor_blocked_wait_retry_reason_default",
   "supervisor_blocked_wait_retry_reason_immediate",
@@ -1211,6 +1218,11 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_wait_retry_reason_active_child",
   "supervisor_blocked_wait_retry_reason_passive_wait",
   "supervisor_blocked_wait_retry_reason_process_gate",
+  "supervisor_blocked_wait_retry_flag_host_progress",
+  "supervisor_blocked_wait_retry_flag_active_child",
+  "supervisor_blocked_wait_retry_flag_passive_wait",
+  "supervisor_blocked_wait_retry_flag_process_gate",
+  "supervisor_blocked_wait_retry_flag_thread_init_pending",
   "supervisor_enqueue_blocked_wait_timer",
   "supervisor_blocked_wait_timer_required",
   "supervisor_fd_control_record",

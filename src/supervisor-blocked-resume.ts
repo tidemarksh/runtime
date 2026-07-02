@@ -13,6 +13,12 @@ export const SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_STANDARD_DEFER = 2;
 export const SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_ACTIVE_CHILD = 3;
 export const SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT = 4;
 export const SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PROCESS_GATE = 5;
+export const SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE = 0;
+export const SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS = 1;
+export const SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_ACTIVE_CHILD = 1 << 1;
+export const SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PASSIVE_WAIT = 1 << 2;
+export const SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE = 1 << 3;
+export const SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_THREAD_INIT_PENDING = 1 << 4;
 
 export type SupervisorBlockedWaitRetryReason =
   | typeof SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_DEFAULT
@@ -21,6 +27,13 @@ export type SupervisorBlockedWaitRetryReason =
   | typeof SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_ACTIVE_CHILD
   | typeof SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT
   | typeof SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PROCESS_GATE;
+
+export type SupervisorBlockedWaitRetryFlags = number;
+
+export interface SupervisorBlockedWaitRetryPlan {
+  reason: SupervisorBlockedWaitRetryReason;
+  delayMs: number;
+}
 
 export type SupervisorBlockedResumeDelegation =
   | typeof SUPERVISOR_BLOCKED_RESUME_DELEGATION_DIRECT
@@ -63,6 +76,54 @@ function supervisorRetryReason(
       return exhaustive;
     }
   }
+}
+
+function normalizeSupervisorBlockedWaitRetryReason(
+  kernel: KernelExports,
+  result: number,
+): SupervisorBlockedWaitRetryReason {
+  const reasons: SupervisorBlockedWaitRetryReason[] = [
+    SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_DEFAULT,
+    SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_IMMEDIATE,
+    SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_STANDARD_DEFER,
+    SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_ACTIVE_CHILD,
+    SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT,
+    SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PROCESS_GATE,
+  ];
+  for (const reason of reasons) {
+    if (result === supervisorRetryReason(kernel, reason)) {
+      return reason;
+    }
+  }
+  throw new Error(`kernel supervisor blocked wait retry reason is unknown: ${result}`);
+}
+
+function supervisorRetryFlags(
+  kernel: KernelExports,
+  flags: SupervisorBlockedWaitRetryFlags,
+): number {
+  let result = 0;
+  if ((flags & SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS) !== 0) {
+    result |= kernel.supervisor_blocked_wait_retry_flag_host_progress?.()
+      ?? SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS;
+  }
+  if ((flags & SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_ACTIVE_CHILD) !== 0) {
+    result |= kernel.supervisor_blocked_wait_retry_flag_active_child?.()
+      ?? SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_ACTIVE_CHILD;
+  }
+  if ((flags & SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PASSIVE_WAIT) !== 0) {
+    result |= kernel.supervisor_blocked_wait_retry_flag_passive_wait?.()
+      ?? SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PASSIVE_WAIT;
+  }
+  if ((flags & SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE) !== 0) {
+    result |= kernel.supervisor_blocked_wait_retry_flag_process_gate?.()
+      ?? SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE;
+  }
+  if ((flags & SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_THREAD_INIT_PENDING) !== 0) {
+    result |= kernel.supervisor_blocked_wait_retry_flag_thread_init_pending?.()
+      ?? SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_THREAD_INIT_PENDING;
+  }
+  return result;
 }
 
 function supervisorBlockedResumeDelegationValue(
@@ -139,6 +200,34 @@ export function supervisorBlockedWaitRetryDelayMs(
     throw new Error(`kernel supervisor blocked wait retry delay failed: ${result}`);
   }
   return result;
+}
+
+export function supervisorBlockedWaitRetryReason(
+  kernel: KernelExports,
+  vmPtr: number,
+  flags: SupervisorBlockedWaitRetryFlags = SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
+): SupervisorBlockedWaitRetryReason {
+  const readReason = kernel.supervisor_blocked_wait_retry_reason;
+  if (readReason === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_blocked_wait_retry_reason");
+  }
+  const result = readReason(vmPtr, supervisorRetryFlags(kernel, flags));
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked wait retry reason failed: ${result}`);
+  }
+  return normalizeSupervisorBlockedWaitRetryReason(kernel, result);
+}
+
+export function supervisorBlockedWaitRetryPlan(
+  kernel: KernelExports,
+  vmPtr: number,
+  flags: SupervisorBlockedWaitRetryFlags = SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
+): SupervisorBlockedWaitRetryPlan {
+  const reason = supervisorBlockedWaitRetryReason(kernel, vmPtr, flags);
+  return {
+    reason,
+    delayMs: supervisorBlockedWaitRetryDelayMs(kernel, vmPtr, reason),
+  };
 }
 
 export function supervisorBlockedWaitTimerRequired(

@@ -11,7 +11,7 @@ import type {
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
-import type { SupervisorBlockedWaitRetryReason } from "../../supervisor-blocked-resume.js";
+import type { SupervisorBlockedWaitRetryFlags } from "../../supervisor-blocked-resume.js";
 
 export interface PipePollSchedulerDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
@@ -19,7 +19,7 @@ export interface PipePollSchedulerDeps {
   scheduleSupervisorBlockedRetry(
     handle: ProcessHandle,
     worker: Worker,
-    reason?: SupervisorBlockedWaitRetryReason,
+    flags?: SupervisorBlockedWaitRetryFlags,
   ): void;
   pipeChildExitRecordsAlreadyResumedForWait(
     handle: ProcessHandle,

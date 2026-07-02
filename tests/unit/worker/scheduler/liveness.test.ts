@@ -100,6 +100,41 @@ function makeKernel() {
       supervisor_blocked_wait_retry_reason_active_child: () => 3,
       supervisor_blocked_wait_retry_reason_passive_wait: () => 4,
       supervisor_blocked_wait_retry_reason_process_gate: () => 5,
+      supervisor_blocked_wait_retry_flag_host_progress: () => 1,
+      supervisor_blocked_wait_retry_flag_active_child: () => 2,
+      supervisor_blocked_wait_retry_flag_passive_wait: () => 4,
+      supervisor_blocked_wait_retry_flag_process_gate: () => 8,
+      supervisor_blocked_wait_retry_flag_thread_init_pending: () => 16,
+      supervisor_blocked_wait_retry_reason: (vmPtr: number, flags: number) => {
+        if ((flags & 8) !== 0) {
+          return 5;
+        }
+        if ((flags & 2) !== 0) {
+          return 3;
+        }
+        if ((flags & 4) !== 0) {
+          return 4;
+        }
+        if ((flags & 1) !== 0) {
+          return 1;
+        }
+        if ((flags & 16) !== 0) {
+          return 2;
+        }
+        if (
+          kernel.exports.thread_status(vmPtr) === kernel.exports.abi_status_epoll_wait()
+          && kernel.exports.thread_process_thread_count(vmPtr) > 1
+        ) {
+          return 2;
+        }
+        if (
+          kernel.exports.thread_status(vmPtr) === kernel.exports.abi_status_pipe_wait()
+          && (kernel.exports.thread_poll_wait_ready_count?.(vmPtr) ?? 0) > 0
+        ) {
+          return 1;
+        }
+        return 0;
+      },
       supervisor_futex_wait_completion_woken: () => 1,
       supervisor_futex_wait_completion_not_equal: () => 2,
       supervisor_futex_wait_completion_invalid_address: () => 4,

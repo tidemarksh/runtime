@@ -4,8 +4,8 @@ import type {
   ThreadWorkerState,
 } from "../types.js";
 import {
-  SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_IMMEDIATE,
-  type SupervisorBlockedWaitRetryReason,
+  SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
+  type SupervisorBlockedWaitRetryFlags,
 } from "../../supervisor-blocked-resume.js";
 
 export function logNetworkDebug(_event: string): void {
@@ -19,7 +19,7 @@ export interface RunLoopSchedulerDeps {
   scheduleSupervisorBlockedRetry(
     handle: ProcessHandle,
     worker: Worker,
-    reason?: SupervisorBlockedWaitRetryReason,
+    flags?: SupervisorBlockedWaitRetryFlags,
   ): void;
 }
 
@@ -90,7 +90,7 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
       deps.scheduleSupervisorBlockedRetry(
         handle,
         worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_IMMEDIATE,
+        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
       );
     };
     promise.then(onSettled, onSettled);

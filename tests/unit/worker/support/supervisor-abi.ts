@@ -34,6 +34,11 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_wait_retry_reason_active_child: 3,
   supervisor_blocked_wait_retry_reason_passive_wait: 4,
   supervisor_blocked_wait_retry_reason_process_gate: 5,
+  supervisor_blocked_wait_retry_flag_host_progress: 1,
+  supervisor_blocked_wait_retry_flag_active_child: 2,
+  supervisor_blocked_wait_retry_flag_passive_wait: 4,
+  supervisor_blocked_wait_retry_flag_process_gate: 8,
+  supervisor_blocked_wait_retry_flag_thread_init_pending: 16,
   supervisor_blocked_wait_timer_required: 0,
   supervisor_host_op_kind_arm_host_timer: 12,
   supervisor_futex_wait_completion_woken: 1,
@@ -116,6 +121,24 @@ export function makeSupervisorAbiStubs(
         default:
           return 1;
       }
+    },
+    supervisor_blocked_wait_retry_reason: (_vmPtr: number, flags: number) => {
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_flag_process_gate) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_process_gate;
+      }
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_flag_active_child) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_active_child;
+      }
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_flag_passive_wait) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_passive_wait;
+      }
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_flag_host_progress) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_immediate;
+      }
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_flag_thread_init_pending) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_standard_defer;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_default;
     },
     ...overrides,
   } as Partial<KernelExports>;

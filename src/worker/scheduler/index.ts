@@ -6,18 +6,19 @@ import {
   resumeBlockedSyscallBySupervisor,
   supervisorBlockedResumeDelegation,
   supervisorBlockedWaitTimerRequired,
-  supervisorBlockedWaitRetryDelayMs,
+  supervisorBlockedWaitRetryPlan,
   SUPERVISOR_BLOCKED_RESUME_DELEGATION_DIRECT,
   SUPERVISOR_BLOCKED_RESUME_DELEGATION_EPOLL_DIRECT,
   SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER,
   SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED,
   SUPERVISOR_BLOCKED_RESUME_DELEGATION_WAIT4_KERNEL_WORKER,
-  SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_ACTIVE_CHILD,
-  SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_DEFAULT,
-  SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_IMMEDIATE,
-  SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT,
-  SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PROCESS_GATE,
-  SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_STANDARD_DEFER,
+  SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_ACTIVE_CHILD,
+  SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
+  SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
+  SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PASSIVE_WAIT,
+  SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE,
+  SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_THREAD_INIT_PENDING,
+  type SupervisorBlockedWaitRetryFlags,
   type SupervisorBlockedWaitRetryReason,
 } from "../../supervisor-blocked-resume.js";
 import {
@@ -329,21 +330,18 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   function scheduleSupervisorBlockedRetry(
     handle: ProcessHandle,
     worker: Worker,
-    reason: SupervisorBlockedWaitRetryReason = SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_DEFAULT,
+    flags: SupervisorBlockedWaitRetryFlags = SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
   ): void {
     const blocked = handle.hostBlockedWorkers.get(worker);
     if (!blocked) {
       return;
     }
+    const retryPlan = supervisorBlockedWaitRetryPlan(handle.kernel, blocked.vmPtr, flags);
     scheduleHostBlockedRetry(
       handle,
       worker,
-      supervisorBlockedWaitRetryDelayMs(
-        handle.kernel,
-        blocked.vmPtr,
-        reason,
-      ),
-      reason,
+      retryPlan.delayMs,
+      retryPlan.reason,
     );
   }
 
@@ -915,8 +913,8 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
           handle,
           worker,
           changed
-            ? SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_DEFAULT
-            : SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_IMMEDIATE,
+            ? SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE
+            : SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
         );
       })
       .catch((error) => {
@@ -1003,7 +1001,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         scheduleSupervisorBlockedRetry(
           handle,
           worker,
-          SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_STANDARD_DEFER,
+          SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
         );
       }
       return;
@@ -1016,7 +1014,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       scheduleSupervisorBlockedRetry(
         handle,
         worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_IMMEDIATE,
+        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
       );
       return;
     }
@@ -1041,7 +1039,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     scheduleSupervisorBlockedRetry(
       handle,
       worker,
-      SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_DEFAULT,
+      SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
     );
   }
 
@@ -1252,7 +1250,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         scheduleSupervisorBlockedRetry(
           handle,
           worker,
-          SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_STANDARD_DEFER,
+          SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
         );
         pumpProcess(handle);
       }
@@ -1266,7 +1264,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       scheduleSupervisorBlockedRetry(
         handle,
         worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_IMMEDIATE,
+        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
       );
       return;
     }
@@ -1281,14 +1279,14 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       scheduleSupervisorBlockedRetry(
         handle,
         worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT,
+        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PASSIVE_WAIT,
       );
       return;
     }
     scheduleSupervisorBlockedRetry(
       handle,
       worker,
-      SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_DEFAULT,
+      SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
     );
   }
 
@@ -1320,7 +1318,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       scheduleSupervisorBlockedRetry(
         handle,
         worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_DEFAULT,
+        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
       );
       return;
     }
@@ -1336,7 +1334,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       scheduleSupervisorBlockedRetry(
         handle,
         worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_STANDARD_DEFER,
+        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_THREAD_INIT_PENDING,
       );
       return;
     }
@@ -1367,7 +1365,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       scheduleSupervisorBlockedRetry(
         handle,
         worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_ACTIVE_CHILD,
+        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_ACTIVE_CHILD,
       );
       return;
     }
@@ -1394,7 +1392,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         scheduleSupervisorBlockedRetry(
           handle,
           worker,
-          SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_DEFAULT,
+          SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
         );
         return;
       }
@@ -1416,7 +1414,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       scheduleSupervisorBlockedRetry(
         handle,
         worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_DEFAULT,
+        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
       );
       return;
     }
@@ -1425,7 +1423,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       scheduleSupervisorBlockedRetry(
         handle,
         worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_DEFAULT,
+        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
       );
       return;
     }
@@ -1445,7 +1443,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       scheduleSupervisorBlockedRetry(
         handle,
         worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PROCESS_GATE,
+        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE,
       );
       return;
     }
@@ -1615,7 +1613,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             scheduleSupervisorBlockedRetry(
               handle,
               worker,
-              SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_IMMEDIATE,
+              SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
             );
           })
           .catch((error) => {
@@ -1647,7 +1645,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             scheduleSupervisorBlockedRetry(
               handle,
               worker,
-              SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_IMMEDIATE,
+              SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
             );
           })
           .catch((error) => {
@@ -1679,7 +1677,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
           scheduleSupervisorBlockedRetry(
             handle,
             worker,
-            SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_IMMEDIATE,
+            SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
           );
         })
         .catch((error) => {
@@ -1728,7 +1726,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       scheduleSupervisorBlockedRetry(
         handle,
         worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT,
+        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PASSIVE_WAIT,
       );
       return;
     }
