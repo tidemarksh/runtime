@@ -7,9 +7,6 @@ import type {
   KernelWorkerPipeSlotSnapshot,
 } from "../messages.js";
 import {
-  FS_OP_MMAP,
-} from "../layout/fs-ring.js";
-import {
   DEFAULT_RESIDENT_PAGE_SIZE,
   publishResidentPage,
   readResidentFileData,
@@ -32,7 +29,6 @@ const FS_PUBLICATION_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_FS_PUBLICATION_DEBUG ?? "") === "1";
 export const KERNEL_WORKER_PROCESS_CONTROL_OWNERSHIP = "transitional-runtime-owner" as const;
-const LARGE_MMAP_DIRECT_BACKING_THRESHOLD_BYTES = 16 * 1024 * 1024;
 const EXECVE_BACKING_RETRY_MIN_ATTEMPTS = 256;
 const EXECVE_BACKING_RETRY_MAX_ATTEMPTS = 16 * 1024;
 const EXECVE_BACKING_RETRY_FINAL_SCAN_ATTEMPTS = 2;
@@ -326,6 +322,14 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     return numeric;
   }
 
+  function supervisorNumber(value: bigint | number | undefined, name: string): number {
+    const numeric = typeof value === "bigint" ? Number(value) : value;
+    if (typeof numeric !== "number" || !Number.isSafeInteger(numeric)) {
+      throw new RangeError(`invalid ${name}: ${String(value)}`);
+    }
+    return numeric;
+  }
+
   function readPendingMmapGuestWriteRequest(
     processExports: KernelExports,
     vmPtr: number,
@@ -426,24 +430,94 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     return range !== null && range.length === length;
   }
 
-  function hasDirectBackingForLargeMmap(
+  function supervisorBackingFillShouldProbeDirect(
+    processExports: KernelExports,
+    request: PendingBackingFillRequest,
+    alignedLength: number,
+  ): boolean {
+    const decide = processExports.supervisor_fs_backing_fill_probe_direct;
+    if (typeof decide !== "function") {
+      throw new Error("missing supervisor_fs_backing_fill_probe_direct export");
+    }
+    const result = supervisorNumber(
+      decide(request.opcode ?? 0, BigInt(alignedLength)),
+      "supervisor backing-fill probe decision",
+    );
+    if (result < 0) {
+      throw new Error(`supervisor backing-fill probe decision failed: ${result}`);
+    }
+    return result !== 0;
+  }
+
+  function supervisorBackingFillUsesDirect(
+    processExports: KernelExports,
+    request: PendingBackingFillRequest,
+    alignedLength: number,
+    headProbeReadable: boolean,
+    tailProbeReadable: boolean,
+  ): boolean {
+    const decide = processExports.supervisor_fs_backing_fill_mode_decision;
+    if (typeof decide !== "function") {
+      throw new Error("missing supervisor_fs_backing_fill_mode_decision export");
+    }
+    const mode = supervisorNumber(
+      decide(
+        request.opcode ?? 0,
+        BigInt(alignedLength),
+        headProbeReadable ? 1 : 0,
+        tailProbeReadable ? 1 : 0,
+      ),
+      "supervisor backing-fill mode decision",
+    );
+    if (mode < 0) {
+      throw new Error(`supervisor backing-fill mode decision failed: ${mode}`);
+    }
+    const direct = supervisorNumber(
+      processExports.supervisor_fs_backing_fill_mode_direct?.(),
+      "supervisor backing-fill direct mode",
+    );
+    const resident = supervisorNumber(
+      processExports.supervisor_fs_backing_fill_mode_resident?.(),
+      "supervisor backing-fill resident mode",
+    );
+    if (mode === direct) {
+      return true;
+    }
+    if (mode === resident) {
+      return false;
+    }
+    throw new Error(`unknown supervisor backing-fill mode decision: ${mode}`);
+  }
+
+  function hasDirectBackingForFill(
+    processExports: KernelExports,
     request: PendingBackingFillRequest,
     alignedOffset: number,
     alignedEnd: number,
   ): boolean {
     const alignedLength = alignedEnd - alignedOffset;
-    if (request.opcode !== FS_OP_MMAP || alignedLength < LARGE_MMAP_DIRECT_BACKING_THRESHOLD_BYTES) {
+    if (!supervisorBackingFillShouldProbeDirect(processExports, request, alignedLength)) {
       return false;
     }
     const probeLength = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, alignedLength);
-    if (!backingProbeIsReadable(request.ino, alignedOffset, probeLength)) {
-      return false;
-    }
+    const headProbeReadable = backingProbeIsReadable(request.ino, alignedOffset, probeLength);
     const tailOffset = alignedEnd - probeLength;
-    return tailOffset === alignedOffset || backingProbeIsReadable(request.ino, tailOffset, probeLength);
+    const tailProbeReadable = tailOffset === alignedOffset
+      ? headProbeReadable
+      : backingProbeIsReadable(request.ino, tailOffset, probeLength);
+    return supervisorBackingFillUsesDirect(
+      processExports,
+      request,
+      alignedLength,
+      headProbeReadable,
+      tailProbeReadable,
+    );
   }
 
-  async function publishBackingRange(request: PendingBackingFillRequest): Promise<boolean> {
+  async function publishBackingRange(
+    processExports: KernelExports,
+    request: PendingBackingFillRequest,
+  ): Promise<boolean> {
     const alignedOffset = Math.floor(request.offset / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE;
     const requestedEnd = request.offset + request.length;
     const alignedEnd = Math.min(
@@ -454,7 +528,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     if (alignedLength <= 0) {
       return false;
     }
-    if (hasDirectBackingForLargeMmap(request, alignedOffset, alignedEnd)) {
+    if (hasDirectBackingForFill(processExports, request, alignedOffset, alignedEnd)) {
       return true;
     }
     let alignedRange = deps.readBackingFileRangeByInode(request.ino, alignedOffset, alignedLength);
@@ -500,7 +574,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
   ): Promise<void> {
     const request = readPendingBackingFillRequest(processExports, vmPtr);
     if (request) {
-      const published = await publishBackingRange(request);
+      const published = await publishBackingRange(processExports, request);
       if (!published) {
         throw new Error(`failed to publish backing range: ${formatBackingFillDebug(request)}`);
       }
@@ -535,7 +609,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       maxAttempts = Math.max(maxAttempts, execveBackingRetryLimitForMiss(miss));
       debug?.("execve-backing-miss", formatBackingFillDebug(miss));
       debug?.("execve-backing-publish-start", formatBackingFillDebug(miss));
-      const published = await publishBackingRange(miss);
+      const published = await publishBackingRange(processExports, miss);
       debug?.("execve-backing-publish-done", `published=${published ? 1 : 0}`);
       processExports.thread_clear_execve_backing_miss?.(vmPtr);
       if (!published) {

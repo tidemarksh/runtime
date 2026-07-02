@@ -216,6 +216,8 @@ export interface KernelExports {
   supervisor_fs_dirty_page_flag_update_inode?(): number;
   supervisor_fs_dirty_page_flag_publish_dirty?(): number;
   supervisor_fs_dirty_page_flag_writeback_required?(): number;
+  supervisor_fs_backing_fill_mode_resident?(): number;
+  supervisor_fs_backing_fill_mode_direct?(): number;
   supervisor_fs_page_table_source_backing?(): number;
   supervisor_fs_page_table_source_resident?(): number;
   supervisor_fs_completion_flag_memfs_dirty?(): number;
@@ -336,6 +338,16 @@ export interface KernelExports {
     backingFileObjectId: bigint | number,
     backingGeneration: bigint | number,
     backingSize: bigint | number,
+  ): number;
+  supervisor_fs_backing_fill_probe_direct?(
+    opcode: number,
+    alignedLength: bigint | number,
+  ): number;
+  supervisor_fs_backing_fill_mode_decision?(
+    opcode: number,
+    alignedLength: bigint | number,
+    headProbeReadable: number,
+    tailProbeReadable: number,
   ): number;
   supervisor_fs_completion_decision?(
     vmPtr: number,
@@ -1285,6 +1297,8 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_dirty_page_flag_update_inode",
   "supervisor_fs_dirty_page_flag_publish_dirty",
   "supervisor_fs_dirty_page_flag_writeback_required",
+  "supervisor_fs_backing_fill_mode_resident",
+  "supervisor_fs_backing_fill_mode_direct",
   "supervisor_fs_page_table_source_backing",
   "supervisor_fs_page_table_source_resident",
   "supervisor_signal_control_kind_boundary_check",
@@ -1380,6 +1394,8 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_dirty_page_decision_generation",
   "supervisor_fs_dirty_page_decision_flags",
   "supervisor_fs_page_table_source_decision",
+  "supervisor_fs_backing_fill_probe_direct",
+  "supervisor_fs_backing_fill_mode_decision",
   "supervisor_signal_control_record",
   "supervisor_debug_snapshot",
   "supervisor_thread_state_snapshot",
