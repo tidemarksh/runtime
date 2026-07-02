@@ -295,6 +295,13 @@ export interface KernelExports {
   supervisor_fs_pending_ring_request?(vmPtr: number): number;
   supervisor_fs_pending_regular_file_fd?(vmPtr: number): number;
   supervisor_fs_pending_regular_file_ofd?(vmPtr: number): number;
+  supervisor_fs_pending_backing_fill_ino?(vmPtr: number): number;
+  supervisor_fs_pending_backing_fill_offset?(vmPtr: number): bigint | number;
+  supervisor_fs_pending_backing_fill_length?(vmPtr: number): bigint | number;
+  supervisor_fs_pending_backing_fill_expected_size?(vmPtr: number): bigint | number;
+  supervisor_fs_pending_backing_fill_opcode?(vmPtr: number): number;
+  supervisor_fs_pending_mmap_guest_write_ptr?(vmPtr: number): bigint | number;
+  supervisor_fs_pending_mmap_guest_write_len?(vmPtr: number): bigint | number;
   supervisor_fs_completion_decision?(
     vmPtr: number,
     opcode: number,
@@ -1317,6 +1324,13 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_vfork_execve_rollback",
   "supervisor_fd_control_record",
   "supervisor_fs_control_record",
+  "supervisor_fs_pending_backing_fill_ino",
+  "supervisor_fs_pending_backing_fill_offset",
+  "supervisor_fs_pending_backing_fill_length",
+  "supervisor_fs_pending_backing_fill_expected_size",
+  "supervisor_fs_pending_backing_fill_opcode",
+  "supervisor_fs_pending_mmap_guest_write_ptr",
+  "supervisor_fs_pending_mmap_guest_write_len",
   "supervisor_signal_control_record",
   "supervisor_debug_snapshot",
   "supervisor_thread_state_snapshot",

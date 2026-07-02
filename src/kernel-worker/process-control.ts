@@ -7,22 +7,7 @@ import type {
   KernelWorkerPipeSlotSnapshot,
 } from "../messages.js";
 import {
-  FS_OP_READ,
-  FS_OP_WRITE,
   FS_OP_MMAP,
-  FS_OP_TRUNCATE,
-  FS_REQ_FLAG_PWRITE,
-  FS_RING_REQUEST_FD_OFFSET,
-  FS_RING_REQUEST_BUF_PTR_OFFSET,
-  FS_RING_REQUEST_FLAGS_OFFSET,
-  FS_RING_REQUEST_LEN_OFFSET,
-  FS_RING_REQUEST_OFFSET_OFFSET,
-  FS_RING_REQUEST_OPCODE_OFFSET,
-  FS_RING_REQUEST_VM_PTR_OFFSET,
-  FS_RING_SUBMIT_HEAD_OFFSET,
-  FS_RING_SUBMIT_TAIL_OFFSET,
-  FS_RING_TOTAL_BYTES,
-  fsRingRequestEntryOffset,
 } from "../layout/fs-ring.js";
 import {
   DEFAULT_RESIDENT_PAGE_SIZE,
@@ -330,129 +315,80 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     };
   }
 
+  function supervisorU64ToSafeNumber(value: bigint | number | undefined): number | null {
+    if (value === undefined) {
+      return null;
+    }
+    const numeric = typeof value === "bigint" ? Number(value) : value;
+    if (!Number.isSafeInteger(numeric) || numeric < 0) {
+      return null;
+    }
+    return numeric;
+  }
+
   function readPendingMmapGuestWriteRequest(
     processExports: KernelExports,
     vmPtr: number,
   ): PendingMmapGuestWriteRequest | null {
-    const ringBase = processExports.thread_fs_ring_base?.(vmPtr) ?? 0;
-    if (ringBase <= 0 || ringBase + FS_RING_TOTAL_BYTES > processExports.memory.buffer.byteLength) {
+    if (
+      typeof processExports.supervisor_fs_pending_mmap_guest_write_ptr !== "function"
+      || typeof processExports.supervisor_fs_pending_mmap_guest_write_len !== "function"
+    ) {
       return null;
     }
-    const view = new DataView(processExports.memory.buffer);
-    const submitHead = view.getUint32(ringBase + FS_RING_SUBMIT_HEAD_OFFSET, true);
-    const submitTail = view.getUint32(ringBase + FS_RING_SUBMIT_TAIL_OFFSET, true);
-    if (submitHead === submitTail) {
+    const guestPtrHint = supervisorU64ToSafeNumber(
+      processExports.supervisor_fs_pending_mmap_guest_write_ptr(vmPtr),
+    );
+    const length = supervisorU64ToSafeNumber(
+      processExports.supervisor_fs_pending_mmap_guest_write_len(vmPtr),
+    );
+    if (guestPtrHint === null || length === null || length <= 0) {
       return null;
     }
-    for (let pos = submitTail; pos < submitHead; pos += 1) {
-      const entry = fsRingRequestEntryOffset(ringBase, pos);
-      if (view.getUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, true) !== vmPtr) {
-        continue;
-      }
-      if (view.getUint32(entry + FS_RING_REQUEST_OPCODE_OFFSET, true) !== FS_OP_MMAP) {
-        continue;
-      }
-      const length = Number(view.getBigUint64(entry + FS_RING_REQUEST_LEN_OFFSET, true));
-      const guestPtrHint = Number(view.getBigUint64(entry + FS_RING_REQUEST_BUF_PTR_OFFSET, true));
-      if (!Number.isFinite(length) || length <= 0) {
-        return null;
-      }
-      return { guestPtrHint, length };
-    }
-    return null;
+    return { guestPtrHint, length };
   }
 
   function readPendingBackingFillRequest(
     processExports: KernelExports,
     vmPtr: number,
   ): PendingBackingFillRequest | null {
-    const ringBase = processExports.thread_fs_ring_base?.(vmPtr) ?? 0;
-    if (ringBase <= 0 || ringBase + FS_RING_TOTAL_BYTES > processExports.memory.buffer.byteLength) {
+    if (
+      typeof processExports.supervisor_fs_pending_backing_fill_ino !== "function"
+      || typeof processExports.supervisor_fs_pending_backing_fill_offset !== "function"
+      || typeof processExports.supervisor_fs_pending_backing_fill_length !== "function"
+      || typeof processExports.supervisor_fs_pending_backing_fill_expected_size !== "function"
+      || typeof processExports.supervisor_fs_pending_backing_fill_opcode !== "function"
+    ) {
       return null;
     }
-    const view = new DataView(processExports.memory.buffer);
-    const submitHead = view.getUint32(ringBase + FS_RING_SUBMIT_HEAD_OFFSET, true);
-    const submitTail = view.getUint32(ringBase + FS_RING_SUBMIT_TAIL_OFFSET, true);
-    for (let pos = submitTail; pos !== submitHead; pos = (pos + 1) >>> 0) {
-      const entry = fsRingRequestEntryOffset(ringBase, pos);
-      if (view.getUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, true) !== vmPtr) {
-        continue;
-      }
-      const opcode = view.getUint32(entry + FS_RING_REQUEST_OPCODE_OFFSET, true);
-      if (opcode !== FS_OP_READ && opcode !== FS_OP_WRITE && opcode !== FS_OP_MMAP && opcode !== FS_OP_TRUNCATE) {
-        continue;
-      }
-      const fd = view.getInt32(entry + FS_RING_REQUEST_FD_OFFSET, true);
-      const length = Number(view.getBigUint64(entry + FS_RING_REQUEST_LEN_OFFSET, true));
-      const flags = view.getUint32(entry + FS_RING_REQUEST_FLAGS_OFFSET, true);
-      const ofdId = processExports.process_fd_ofd_id(vmPtr, fd);
-      const ino = ofdId > 0 ? processExports.kernel_ofd_ino(ofdId) : processExports.thread_pending_fs_target_ino(vmPtr);
-      if (ofdId <= 0 && ino <= 0) {
-        return null;
-      }
-      if (opcode !== FS_OP_TRUNCATE && (!Number.isFinite(length) || length <= 0)) {
-        return null;
-      }
-      const expectedSize = Number(processExports.memfs_file_size(ino));
-      const offset = opcode === FS_OP_MMAP || (flags & FS_REQ_FLAG_PWRITE) !== 0
-        ? Number(view.getBigUint64(entry + FS_RING_REQUEST_OFFSET_OFFSET, true))
-        : Number(processExports.kernel_ofd_offset(ofdId));
-      if (
-        ino <= 0
-        || !Number.isFinite(offset)
-        || offset < 0
-        || !Number.isFinite(expectedSize)
-        || expectedSize <= 0
-      ) {
-        return null;
-      }
-      if (opcode === FS_OP_TRUNCATE) {
-        const truncateSize = Number(view.getBigUint64(entry + FS_RING_REQUEST_OFFSET_OFFSET, true));
-        if (!Number.isFinite(truncateSize) || truncateSize <= 0) {
-          return null;
-        }
-        const survivingLastByte = Math.min(truncateSize, expectedSize) - 1;
-        if (survivingLastByte < 0) {
-          return null;
-        }
-        return {
-          ino,
-          offset: survivingLastByte,
-          length: 1,
-          expectedSize,
-          opcode,
-        };
-      }
-      if (opcode === FS_OP_WRITE) {
-        if (offset >= expectedSize) {
-          return {
-            ino,
-            offset: expectedSize - 1,
-            length: 1,
-            expectedSize,
-            opcode,
-          };
-        }
-        return {
-          ino,
-          offset,
-          length: Math.min(length, expectedSize - offset),
-          expectedSize,
-          opcode,
-        };
-      }
-      if (offset >= expectedSize) {
-        return null;
-      }
-      return {
-        ino,
-        offset,
-        length: Math.min(length, expectedSize - offset),
-        expectedSize,
-        opcode,
-      };
+    const ino = processExports.supervisor_fs_pending_backing_fill_ino(vmPtr);
+    const offset = supervisorU64ToSafeNumber(
+      processExports.supervisor_fs_pending_backing_fill_offset(vmPtr),
+    );
+    const length = supervisorU64ToSafeNumber(
+      processExports.supervisor_fs_pending_backing_fill_length(vmPtr),
+    );
+    const expectedSize = supervisorU64ToSafeNumber(
+      processExports.supervisor_fs_pending_backing_fill_expected_size(vmPtr),
+    );
+    const opcode = processExports.supervisor_fs_pending_backing_fill_opcode(vmPtr);
+    if (
+      ino <= 0
+      || offset === null
+      || length === null
+      || expectedSize === null
+      || length <= 0
+      || expectedSize <= 0
+    ) {
+      return null;
     }
-    return null;
+    return {
+      ino,
+      offset,
+      length,
+      expectedSize,
+      ...(opcode > 0 ? { opcode } : {}),
+    };
   }
 
   function readPendingExecveBackingMissSnapshot(
