@@ -277,7 +277,6 @@ export function handleFutexWait(
 type SupervisorFutexWaitCompletion =
   | "woken"
   | "not-equal"
-  | "timed-out"
   | "invalid-address"
   | "signal-check";
 
@@ -302,7 +301,6 @@ function requireSupervisorCompletionCode(
     KernelExports,
     | "supervisor_futex_wait_completion_woken"
     | "supervisor_futex_wait_completion_not_equal"
-    | "supervisor_futex_wait_completion_timed_out"
     | "supervisor_futex_wait_completion_invalid_address"
     | "supervisor_futex_wait_completion_signal_check"
   >,
@@ -323,8 +321,6 @@ function supervisorFutexWaitCompletionCode(
       return requireSupervisorCompletionCode(exports, "supervisor_futex_wait_completion_woken");
     case "not-equal":
       return requireSupervisorCompletionCode(exports, "supervisor_futex_wait_completion_not_equal");
-    case "timed-out":
-      return requireSupervisorCompletionCode(exports, "supervisor_futex_wait_completion_timed_out");
     case "invalid-address":
       return requireSupervisorCompletionCode(exports, "supervisor_futex_wait_completion_invalid_address");
     case "signal-check":
