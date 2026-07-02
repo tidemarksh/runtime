@@ -208,9 +208,6 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     thread.lastStatusS11 = msg.s11 ?? null;
     thread.lastStatusFutexWaitAddr = msg.futexWaitAddr ?? null;
     thread.lastStatusFutexBlockedAddr = msg.futexBlockedAddr ?? null;
-    if (status !== handle.kernel.abi_status_sleep()) {
-      thread.yieldedReady = false;
-    }
     if (msg.forkStackSnapshot) {
       thread.forkStackSnapshot = msg.forkStackSnapshot;
     }

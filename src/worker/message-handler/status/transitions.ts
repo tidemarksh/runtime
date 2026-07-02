@@ -474,7 +474,6 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       const sec = handle.kernel.thread_sleep_seconds(thread.vmPtr);
       const nsec = handle.kernel.thread_sleep_nanoseconds(thread.vmPtr);
       if (sec === 0n && nsec === 0n) {
-        thread.yieldedReady = true;
         deps.appendWorkerDebugLog(handle, `yield:0x${thread.vmPtr.toString(16)}`);
         const clearYieldingWorker = (): void => {
           if (handle.runningWorker === worker) {
@@ -507,7 +506,6 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         deps.pumpProcess(handle);
         return;
       }
-      thread.yieldedReady = false;
       deps.appendWorkerDebugLog(handle, `sleep:0x${thread.vmPtr.toString(16)}@${sec.toString()}s+${nsec.toString()}ns`);
       const hostTimer = drainSupervisorArmHostTimerHostOp(handle, thread.vmPtr);
       if (hostTimer === undefined) {

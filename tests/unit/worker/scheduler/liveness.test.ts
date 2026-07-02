@@ -3649,7 +3649,6 @@ test("pumpProcess runs yield-ready workers when no other ready worker exists", (
   const yieldThread = makeThreadState(0x70c8e98);
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   yieldThread.lastStatus = 26;
-  yieldThread.yieldedReady = true;
   threadWorkerStates.set(yieldWorker, yieldThread);
   const { exports: kernel } = makeKernel();
   kernel.thread_status = () => kernel.abi_status_ok();
@@ -3672,7 +3671,6 @@ test("pumpProcess runs yield-ready workers when no other ready worker exists", (
   scheduler.pumpProcess(handle);
 
   expect(handle.runningWorker).toBe(yieldWorker);
-  expect(yieldThread.yieldedReady).toBe(false);
   expect(yieldWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
     type: "step",
     budget: 5_000_000,
@@ -5309,7 +5307,6 @@ test("pumpProcess runs process-scoped supervisor resume worker instead of TypeSc
   const selectedThread = makeThreadState(0x1234);
   const unselectedThread = makeThreadState(0x5678);
   selectedThread.lastStatus = 26;
-  selectedThread.yieldedReady = true;
   unselectedThread.lastStatus = 0;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(selectedWorker, selectedThread);
@@ -5363,7 +5360,6 @@ test("pumpProcess runs process-scoped supervisor resume worker instead of TypeSc
   expect(kernel.supervisor_process_resume).toHaveBeenCalledTimes(1);
   expect(handle.runningWorker).toBe(selectedWorker);
   expect(handle.readyWorkers).toEqual([unselectedWorker]);
-  expect(selectedThread.yieldedReady).toBe(false);
   expect(selectedWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
     type: "step",
     budget: expect.any(Number),

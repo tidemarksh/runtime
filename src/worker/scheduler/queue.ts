@@ -1269,7 +1269,6 @@ export function createWorkerSchedulerQueueHelpers(
       restoreRegularFileOffsetsForStep(handle);
       preserveHostStdioPipeControlForStep(handle, vmPtr);
       thread.stepCount += 1;
-      thread.yieldedReady = false;
       thread.runningGeneration = thread.generation;
       thread.totalStepBudget += stepBudget;
       thread.lastStepAtMs = Date.now();

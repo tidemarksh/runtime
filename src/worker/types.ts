@@ -72,7 +72,6 @@ export interface ThreadWorkerState {
   initialized: boolean;
   waitingInWorkerStatus: number | null;
   waitingInWorkerReconcileDeferred?: boolean;
-  yieldedReady?: boolean;
   ownerAsyncStatus: number | null;
   resumeBlockedOnNextStep: boolean;
   pipeCanonicalEofReadyOnNextBlock?: boolean;
