@@ -1051,7 +1051,7 @@ async function resumeBlockedSyscallLocally(
     emitBlockedRetryResult(handle, worker, vmPtr, status);
   };
   const finishBlockedRpc = (): void => {
-    const blocked = handle.blockedWorkers.get(worker);
+    const blocked = handle.hostBlockedWorkers.get(worker);
     if (
       blocked
       && blocked.vmPtr === vmPtr
@@ -1067,7 +1067,7 @@ async function resumeBlockedSyscallLocally(
     deps.appendWorkerDebugLog(handle, `blocked-rpc-start:${blockedStatus}:0x${vmPtr.toString(16)}`);
     deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:start:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-start:${handle.pid}:${blockedStatus}`);
-    const blockedAtStart = handle.blockedWorkers.get(worker);
+    const blockedAtStart = handle.hostBlockedWorkers.get(worker);
     if (blockedAtStart && blockedAtStart.vmPtr === vmPtr) {
       blockedAtStart.rpcPending = true;
       blockedAtStart.rpcGeneration = (blockedAtStart.rpcGeneration ?? 0) + 1;
@@ -1077,7 +1077,7 @@ async function resumeBlockedSyscallLocally(
     }
     canonicalEofReadyAtStart = blockedAtStart.pipeCanonicalEofReady === true;
     const isCurrentBlockedRpc = (): boolean => {
-      const blocked = handle.blockedWorkers.get(worker);
+      const blocked = handle.hostBlockedWorkers.get(worker);
       return blocked !== undefined
         && blocked.vmPtr === vmPtr
         && rpcGeneration !== null
@@ -1159,7 +1159,7 @@ async function resumeBlockedSyscallLocally(
         }
         if (
           member !== handle
-          && [...member.blockedWorkers.values()].some((blocked) => blocked.rpcPending)
+          && [...member.hostBlockedWorkers.values()].some((blocked) => blocked.rpcPending)
         ) {
           deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-pipe-skip-rpc-pending:${member.pid}:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
           deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-pipe-skip-rpc-pending:${handle.pid}->${member.pid}`);
@@ -1626,7 +1626,7 @@ async function resumeBlockedSyscallLocally(
       && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) === 1
       && (handle.kernel.thread_poll_wait_ready_count?.(vmPtr) ?? 0) > 0;
     if (pollLikePipeWaitWithReadySocket) {
-      const blocked = handle.blockedWorkers.get(worker);
+      const blocked = handle.hostBlockedWorkers.get(worker);
       if (!blocked || blocked.vmPtr !== vmPtr) {
         return;
       }
@@ -1641,7 +1641,7 @@ async function resumeBlockedSyscallLocally(
       thread.resumeBlockedOnNextStep = true;
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       finishBlockedRpc();
-      handle.blockedWorkers.delete(worker);
+      handle.hostBlockedWorkers.delete(worker);
       deps.appendWorkerDebugLog(handle, `blocked-rpc-resume-socket-poll-in-worker:0x${vmPtr.toString(16)}`);
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-resume-socket-poll-in-worker:${handle.pid}`);
       pushOutcomeEffect(worker, { kind: "enqueue-worker" });
@@ -1687,7 +1687,7 @@ async function resumeBlockedSyscallLocally(
         }
       }
       const pipeSlotsForResume = snapshotBlockedPipeSlotForThreadStep(handle, vmPtr, { includeEmpty: true });
-      const blocked = handle.blockedWorkers.get(worker);
+      const blocked = handle.hostBlockedWorkers.get(worker);
       if (!blocked || blocked.vmPtr !== vmPtr) {
         return;
       }
@@ -1714,7 +1714,7 @@ async function resumeBlockedSyscallLocally(
       }
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       finishBlockedRpc();
-      handle.blockedWorkers.delete(worker);
+      handle.hostBlockedWorkers.delete(worker);
       deps.appendWorkerDebugLog(
         handle,
         `blocked-rpc-resume-pipe-eof-in-worker:0x${vmPtr.toString(16)}:fd=${blockedPipeFd}:slots=${pipeSlotsForResume.length}`,
@@ -1842,7 +1842,7 @@ async function resumeBlockedSyscallLocally(
         emitBlockedRpcRetryResult(blockedStatus);
         return;
       }
-      const blocked = handle.blockedWorkers.get(worker);
+      const blocked = handle.hostBlockedWorkers.get(worker);
       if (!blocked || blocked.vmPtr !== vmPtr) {
         return;
       }
@@ -1869,7 +1869,7 @@ async function resumeBlockedSyscallLocally(
       }
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       finishBlockedRpc();
-      handle.blockedWorkers.delete(worker);
+      handle.hostBlockedWorkers.delete(worker);
       deps.appendWorkerDebugLog(handle, `blocked-rpc-resume-in-worker:0x${vmPtr.toString(16)}`);
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-resume-in-worker:${handle.pid}`);
       if (collectEffects) {
@@ -2132,7 +2132,7 @@ async function resumeBlockedSyscallLocally(
       }
     }
 
-    const blocked = handle.blockedWorkers.get(worker);
+    const blocked = handle.hostBlockedWorkers.get(worker);
     if (!blocked || blocked.vmPtr !== vmPtr) {
       return;
     }
@@ -2199,7 +2199,7 @@ async function resumeBlockedSyscallLocally(
     if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
       return { kind: "process-gone", effects };
     }
-    if (!handle.blockedWorkers.has(worker)) {
+    if (!handle.hostBlockedWorkers.has(worker)) {
       return { kind: "queued-in-worker", effects };
     }
     if (

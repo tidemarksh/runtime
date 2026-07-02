@@ -117,7 +117,7 @@ export interface ProcessExecutionStats {
   memoryOwnership?: RuntimeMemoryOwnership;
   guestBase: number;
   vforkReadyWorkers: number;
-  blockedWorkers: number;
+  hostBlockedWorkers: number;
   pendingChildExitRecords: number;
   pendingChildSpawnRecords: number;
   activeChildren: number;
@@ -188,7 +188,7 @@ function formatU64Decimal(value: bigint | number | undefined): string {
 }
 
 function readWorkerOwnerState(
-  handle: Pick<ProcessHandle, "runningWorker" | "vforkReadyWorkers" | "blockedWorkers">,
+  handle: Pick<ProcessHandle, "runningWorker" | "vforkReadyWorkers" | "hostBlockedWorkers">,
   worker: Worker,
   state: ThreadWorkerState,
 ): string {
@@ -198,7 +198,7 @@ function readWorkerOwnerState(
   if (handle.vforkReadyWorkers.includes(worker)) {
     return "ready";
   }
-  if (handle.blockedWorkers.has(worker)) {
+  if (handle.hostBlockedWorkers.has(worker)) {
     return "blocked";
   }
   if (state.waitingInWorkerStatus !== null) {
@@ -731,7 +731,7 @@ export function summarizeProcessWorkerLogFocus(
     | "workers"
     | "runningWorker"
     | "vforkReadyWorkers"
-    | "blockedWorkers"
+    | "hostBlockedWorkers"
     | "workerDebugLog"
     | "kernel"
   >,
@@ -907,7 +907,7 @@ export function debugRuntimeExecutionStats(
         memoryOwnership: handle.memoryOwnership,
         guestBase: handle.guestBase,
         vforkReadyWorkers: handle.vforkReadyWorkers.length,
-        blockedWorkers: handle.blockedWorkers.size,
+        hostBlockedWorkers: handle.hostBlockedWorkers.size,
         pendingChildExitRecords: handle.pendingChildExitRecords,
         pendingChildSpawnRecords: handle.pendingChildSpawnRecords,
         activeChildren: [...processHandles.values()].filter((candidate) => candidate.parentPid === handle.pid).length,
@@ -1446,7 +1446,7 @@ export function debugRuntimeProcessHandles(
     .map((handle) => {
       try {
         const processPtr = handle.kernel.thread_process_ptr(handle.vmPtr);
-        const blocked = [...handle.blockedWorkers.values()]
+        const blocked = [...handle.hostBlockedWorkers.values()]
           .map((state) => `${state.status}@0x${state.vmPtr.toString(16)}`)
           .join(",");
         const workerStates = [...handle.workers]

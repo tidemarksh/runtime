@@ -252,7 +252,7 @@ function makeHandle(pid: number, fdMap: Map<number, number>): ProcessHandle {
     workers: new Set(),
     vforkReadyWorkers: [],
     runningWorker: null,
-    blockedWorkers: new Map([[{} as Worker, {
+    hostBlockedWorkers: new Map([[{} as Worker, {
       vmPtr: 0x1234,
       status: 0,
       retryTimer: null,

@@ -58,7 +58,7 @@ function makeHandle(
     workers: new Set(),
     vforkReadyWorkers: [],
     runningWorker: null,
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     childExitSyncRecords: new Map(),
     pendingChildExitRecords: 0,
     pipeSyncPromise: null,
@@ -271,7 +271,7 @@ test("completeProcessExit prepublishes wait status before blocked parent pipe sy
       abi_status_wait4: () => 31,
     } as never,
   });
-  parent.blockedWorkers.set(blockedWorker, blockedState as never);
+  parent.hostBlockedWorkers.set(blockedWorker, blockedState as never);
   const child = makeHandle({
     pid: 3,
     parentPid: 1,
@@ -344,7 +344,7 @@ test("completeProcessExit prepublishes wait status before parent pipe sync for b
       abi_status_wait4: () => 31,
     } as never,
   });
-  parent.blockedWorkers.set(blockedWorker, blockedState as never);
+  parent.hostBlockedWorkers.set(blockedWorker, blockedState as never);
   const child = makeHandle({
     pid: 3,
     parentPid: 1,
@@ -417,7 +417,7 @@ test("completeProcessExit prepublishes wait status before parent pipe sync for b
       abi_status_wait4: () => 31,
     } as never,
   });
-  parent.blockedWorkers.set(blockedWorker, blockedState as never);
+  parent.hostBlockedWorkers.set(blockedWorker, blockedState as never);
   const child = makeHandle({
     pid: 3,
     parentPid: 1,
@@ -489,7 +489,7 @@ test("completeProcessExit prepublishes wait status before awaiting blocked paren
       abi_status_wait4: () => 31,
     } as never,
   });
-  parent.blockedWorkers.set(blockedWorker, blockedState as never);
+  parent.hostBlockedWorkers.set(blockedWorker, blockedState as never);
   const child = makeHandle({
     pid: 3,
     parentPid: 1,
@@ -568,7 +568,7 @@ test("completeProcessExit routes deferred parent record rejection through local 
       abi_status_wait4: () => 31,
     } as never,
   });
-  parent.blockedWorkers.set(blockedWorker, blockedState as never);
+  parent.hostBlockedWorkers.set(blockedWorker, blockedState as never);
   const child = makeHandle({
     pid: 3,
     parentPid: 1,
@@ -1378,7 +1378,7 @@ test("completeProcessExit clears parent pipe-wait RPC after normal child exit pu
     pipeSyncedBeforePassive: true,
     retryTimer: null,
   };
-  parent.blockedWorkers.set(blockedWorker, blockedState as never);
+  parent.hostBlockedWorkers.set(blockedWorker, blockedState as never);
   const child = makeHandle({
     pid: 3,
     parentPid: 1,

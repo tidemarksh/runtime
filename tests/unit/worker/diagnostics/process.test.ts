@@ -136,7 +136,7 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
     workers: new Set([worker]),
     runningWorker: worker,
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     workerDebugLog: [],
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(16),

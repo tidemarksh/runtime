@@ -156,7 +156,7 @@ export function handleOwnerAsyncStatusReturn(args: {
     handle.runningWorker = null;
     thread.runningGeneration = null;
   }
-  const blocked = handle.blockedWorkers.get(worker);
+  const blocked = handle.hostBlockedWorkers.get(worker);
   if (
     statusBelongsToHandle
     && blocked

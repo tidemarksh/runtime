@@ -16,7 +16,7 @@ function hasRunnableWorker(
   for (const worker of handle.vforkReadyWorkers) {
     workers.add(worker);
   }
-  for (const worker of handle.blockedWorkers.keys()) {
+  for (const worker of handle.hostBlockedWorkers.keys()) {
     workers.add(worker);
   }
   let sawAttachedThread = false;

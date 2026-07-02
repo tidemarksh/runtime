@@ -61,7 +61,7 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
     workers: new Set([extraWorker]),
     vforkReadyWorkers: [extraWorker],
     runningWorker: extraWorker,
-    blockedWorkers: new Map([[extraWorker, {
+    hostBlockedWorkers: new Map([[extraWorker, {
       vmPtr: 0x2222,
       status: 6,
       retryTimer: null,
@@ -107,7 +107,7 @@ test("destroyProcessHandle tears down workers, clears process maps, and releases
   }
   const appendRuntimeLifecycleEvent = vi.fn();
   const clearBlockedWorker = vi.fn((targetHandle: ProcessHandle, worker: Worker) => {
-    targetHandle.blockedWorkers.delete(worker);
+    targetHandle.hostBlockedWorkers.delete(worker);
   });
   const clearVforkSnapshot = vi.fn((targetHandle: ProcessHandle) => {
     targetHandle.vforkSnapshot = null;

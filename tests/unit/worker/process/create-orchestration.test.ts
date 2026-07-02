@@ -1159,7 +1159,7 @@ test("running worker prunes stale blocked workers after the live thread table sh
     kernelState: makeKernelState(),
   });
 
-  expect((handle as { blockedWorkers: Map<Worker, unknown> }).blockedWorkers.has(childWorker as unknown as Worker))
+  expect((handle as { hostBlockedWorkers: Map<Worker, unknown> }).hostBlockedWorkers.has(childWorker as unknown as Worker))
     .toBe(false);
   expect((handle as { workers: Set<Worker> }).workers.has(childWorker as unknown as Worker)).toBe(true);
 });
@@ -1498,7 +1498,7 @@ test("createProcess blocks STATUS_CONNECT until socket timeout expires", async (
   });
 
   expect(resumeConnect).not.toHaveBeenCalled();
-  expect(handle.blockedWorkers.size).toBe(1);
+  expect(handle.hostBlockedWorkers.size).toBe(1);
   await new Promise((resolve) => setTimeout(resolve, 0));
   await flushMicrotasks();
   expect(resumeSocketTimeout).toHaveBeenCalledWith(0x1234);

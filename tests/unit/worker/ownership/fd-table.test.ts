@@ -112,7 +112,7 @@ test("applyThreadFdEntries preserves epoll watched pipe and eventfd fds on non-c
     vmPtr: 0x1234,
     memory,
     kernelState,
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernel: {
       abi_max_fds: () => 32,
       abi_max_threads: () => 4,

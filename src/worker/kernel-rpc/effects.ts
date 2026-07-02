@@ -66,7 +66,7 @@ export async function continueBlockedRpcResumeAfterEffects(
   if (!kernelRpcOutcomeNeedsResumeContinuation(outcome)) {
     return appliedOutcome;
   }
-  const blocked = handle.blockedWorkers.get(worker);
+  const blocked = handle.hostBlockedWorkers.get(worker);
   if (
     !blocked
     || blocked.vmPtr !== vmPtr

@@ -66,7 +66,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       case "stale":
         return;
       case "blocked": {
-        const blocked = handle.blockedWorkers.get(worker);
+        const blocked = handle.hostBlockedWorkers.get(worker);
         if (blocked && blocked.vmPtr === vmPtr) {
           blocked.status = outcome.status;
         }
@@ -115,7 +115,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       consumeKernelRpcResumeOutcome(handle, worker, blocked.vmPtr, outcome);
       afterOutcome?.(outcome);
     }).catch((error) => {
-      const latestBlocked = handle.blockedWorkers.get(worker);
+      const latestBlocked = handle.hostBlockedWorkers.get(worker);
       if (latestBlocked && latestBlocked.vmPtr === blocked.vmPtr) {
         latestBlocked.rpcPending = false;
       }
@@ -234,14 +234,14 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   } = schedulerQueueHelpers;
 
   function clearBlockedWorker(handle: ProcessHandle, worker: Worker): void {
-    const blocked = handle.blockedWorkers.get(worker);
+    const blocked = handle.hostBlockedWorkers.get(worker);
     if (!blocked) {
       return;
     }
     if (blocked.retryTimer !== null) {
       clearTimeout(blocked.retryTimer);
     }
-    handle.blockedWorkers.delete(worker);
+    handle.hostBlockedWorkers.delete(worker);
   }
 
   function parkSupervisorOwnedFutexWait(
@@ -839,7 +839,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       parkSupervisorOwnedFutexWait(handle, worker, vmPtr, "block-worker-futex-supervisor-owned");
       return;
     }
-    const previousBlocked = handle.blockedWorkers.get(worker);
+    const previousBlocked = handle.hostBlockedWorkers.get(worker);
     const sameBlockedThread = previousBlocked !== undefined
       && previousBlocked.vmPtr === vmPtr
       && previousBlocked.status === status;
@@ -859,7 +859,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       lastPipeRetryLifecycleEvent: sameBlockedThread ? previousBlocked.lastPipeRetryLifecycleEvent : undefined,
       lastWait4RetryLifecycleEvent: sameBlockedThread ? previousBlocked.lastWait4RetryLifecycleEvent : undefined,
     };
-    handle.blockedWorkers.set(worker, blocked);
+    handle.hostBlockedWorkers.set(worker, blocked);
     const supervisorTimerArmed = armBlockedSupervisorTimerForBlocked(handle, blocked);
     if (sameBlockedThread && blocked.rpcPending) {
       return;
@@ -1021,7 +1021,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     vmPtr: number,
     status: number,
   ): void {
-    const blocked = handle.blockedWorkers.get(worker);
+    const blocked = handle.hostBlockedWorkers.get(worker);
     if (!blocked || blocked.vmPtr !== vmPtr) {
       return;
     }
@@ -1167,7 +1167,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   }
 
   function retryBlockedWorker(handle: ProcessHandle, worker: Worker): void {
-    const blocked = handle.blockedWorkers.get(worker);
+    const blocked = handle.hostBlockedWorkers.get(worker);
     if (!blocked) {
       return;
     }
@@ -1654,7 +1654,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
           consumeKernelRpcResumeOutcome(handle, worker, blocked.vmPtr, outcome);
         })
         .catch((error) => {
-          const latestBlocked = handle.blockedWorkers.get(worker);
+          const latestBlocked = handle.hostBlockedWorkers.get(worker);
           if (latestBlocked && latestBlocked.vmPtr === blocked.vmPtr) {
             latestBlocked.rpcPending = false;
           }
@@ -1723,7 +1723,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   } = schedulerStateSyncHelpers;
 
   function notifySchedulerProgress(handle: ProcessHandle): void {
-    for (const worker of [...handle.blockedWorkers.keys()]) {
+    for (const worker of [...handle.hostBlockedWorkers.keys()]) {
       retryBlockedWorker(handle, worker);
     }
   }

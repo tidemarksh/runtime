@@ -24,7 +24,7 @@ export function createWorkerDestroyHelpers(deps: WorkerDestroyDeps) {
 
   function destroyProcessHandle(handle: ProcessHandle, signal: number, notifyExit: boolean): void {
     handle.exitInProgress = true;
-    for (const worker of [...handle.blockedWorkers.keys()]) {
+    for (const worker of [...handle.hostBlockedWorkers.keys()]) {
       deps.clearBlockedWorker(handle, worker);
     }
     handle.vforkReadyWorkers.length = 0;

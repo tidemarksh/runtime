@@ -121,7 +121,7 @@ export async function syncPipeStateViaKernelWorker(
   const applyFdEntries = handle.runningWorker === null
     && handle.vforkReadyWorkers.length === 0
     && handle.workers.size === 0
-    && handle.blockedWorkers.size === 0;
+    && handle.hostBlockedWorkers.size === 0;
   appendSocketSyncDebug(
     handle,
     [
@@ -132,7 +132,7 @@ export async function syncPipeStateViaKernelWorker(
       `running=${handle.runningWorker === null ? 0 : 1}`,
       `ready=${handle.vforkReadyWorkers.length}`,
       `workers=${handle.workers.size}`,
-      `blocked=${handle.blockedWorkers.size}`,
+      `blocked=${handle.hostBlockedWorkers.size}`,
       `stdioOwner=${handle.stdioOwner?.pid ?? 0}`,
       formatFdSnapshotDebug("fds", fdEntries),
       `pipeOfds=${formatOfdIdList(pipeOfdIds)}`,

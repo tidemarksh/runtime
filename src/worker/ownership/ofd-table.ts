@@ -69,7 +69,7 @@ export function collectProcessHeldOfds(handle: ProcessHandle): Set<number> {
     }
   }
 
-  for (const blocked of (handle.blockedWorkers?.values() ?? [])) {
+  for (const blocked of (handle.hostBlockedWorkers?.values() ?? [])) {
     let blockedOfdId = 0;
     try {
       blockedOfdId = handle.kernel.thread_blocked_ofd_id?.(blocked.vmPtr) ?? 0;
@@ -116,7 +116,7 @@ export function collectProcessHeldOfdRefcounts(handle: ProcessHandle): Int32Arra
     }
   }
 
-  for (const blocked of (handle.blockedWorkers?.values() ?? [])) {
+  for (const blocked of (handle.hostBlockedWorkers?.values() ?? [])) {
     let blockedOfdId = 0;
     try {
       blockedOfdId = handle.kernel.thread_blocked_ofd_id?.(blocked.vmPtr) ?? 0;

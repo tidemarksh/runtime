@@ -68,7 +68,7 @@ async function waitForForkChildSchedulingPoint(childHandle: ProcessHandle): Prom
     if (
       childHandle.exitInProgress
       || childHandle.workers.size === 0
-      || childHandle.blockedWorkers.size > 0
+      || childHandle.hostBlockedWorkers.size > 0
       || childHandle.runningWorker !== null
       || childHandle.vforkReadyWorkers.length > 0
     ) {

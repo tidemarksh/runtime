@@ -383,7 +383,7 @@ function compactExecutionStats(
     running: proc.running,
     memoryBytes: proc.memoryBytes,
     vforkReadyWorkers: proc.vforkReadyWorkers,
-    blockedWorkers: proc.blockedWorkers,
+    hostBlockedWorkers: proc.hostBlockedWorkers,
     transferDebugStats: proc.transferDebugStats,
     cpuDebugStats: proc.cpuDebugStats,
     workers: proc.workers.map((worker) => ({

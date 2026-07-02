@@ -159,7 +159,7 @@ test("owner-async STATUS_FS return clears stale blocked wait4 rpc for the same w
   const worker = {} as Worker;
   const pumpProcess = vi.fn();
   const clearBlockedWorker = vi.fn((handleArg: ReturnType<typeof makeHandle>, workerArg: Worker) => {
-    handleArg.blockedWorkers.delete(workerArg);
+    handleArg.hostBlockedWorkers.delete(workerArg);
   });
   const appendWorkerDebugLog = vi.fn();
   const handle = makeHandle({
@@ -168,7 +168,7 @@ test("owner-async STATUS_FS return clears stale blocked wait4 rpc for the same w
       abi_status_fs: () => 6,
     }),
   });
-  handle.blockedWorkers.set(worker, {
+  handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 31,
     rpcPending: true,
@@ -208,7 +208,7 @@ test("owner-async STATUS_FS return clears stale blocked wait4 rpc for the same w
 
   expect(handled).toBe(true);
   expect(clearBlockedWorker).toHaveBeenCalledWith(handle, worker);
-  expect(handle.blockedWorkers.has(worker)).toBe(false);
+  expect(handle.hostBlockedWorkers.has(worker)).toBe(false);
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
     handle,
     "status-owner-async-clear-stale-blocked-rpc:0x1234:blocked=31:status=6",
@@ -238,7 +238,7 @@ test("owner-async STATUS_FS return preserves matching blocked FS rpc", () => {
     pipeChildExitResumeKey: null,
     pipeEofChildExitDeferrals: 0,
   };
-  handle.blockedWorkers.set(worker, blocked);
+  handle.hostBlockedWorkers.set(worker, blocked);
   const thread = makeThreadState({
     ownerAsyncStatus: 6,
     runningGeneration: null,
@@ -267,7 +267,7 @@ test("owner-async STATUS_FS return preserves matching blocked FS rpc", () => {
 
   expect(handled).toBe(true);
   expect(clearBlockedWorker).not.toHaveBeenCalled();
-  expect(handle.blockedWorkers.get(worker)).toBe(blocked);
+  expect(handle.hostBlockedWorkers.get(worker)).toBe(blocked);
   expect(pumpProcess).toHaveBeenCalledWith(handle);
 });
 

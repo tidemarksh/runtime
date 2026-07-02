@@ -308,14 +308,14 @@ function removeVforkReadyWorker(handle: ProcessHandle, worker: Worker): void {
 }
 
 function clearBlockedWorker(handle: ProcessHandle, worker: Worker): void {
-  const blocked = handle.blockedWorkers.get(worker);
+  const blocked = handle.hostBlockedWorkers.get(worker);
   if (!blocked) {
     return;
   }
   if (blocked.retryTimer !== null) {
     clearTimeout(blocked.retryTimer);
   }
-  handle.blockedWorkers.delete(worker);
+  handle.hostBlockedWorkers.delete(worker);
 }
 
 function incrementBoundedCounter(
@@ -775,7 +775,7 @@ export function createWorkerSchedulerQueueHelpers(
     if (handle.vforkReadyWorkers.includes(worker)) {
       return true;
     }
-    if (handle.blockedWorkers.has(worker)) {
+    if (handle.hostBlockedWorkers.has(worker)) {
       return true;
     }
     const thread = deps.threadWorkerStates.get(worker);
@@ -1035,7 +1035,7 @@ export function createWorkerSchedulerQueueHelpers(
       handle.workers.size !== 0
       || handle.vforkReadyWorkers.length !== 0
       || handle.runningWorker !== null
-      || handle.blockedWorkers.size !== 0
+      || handle.hostBlockedWorkers.size !== 0
     ) {
       return false;
     }

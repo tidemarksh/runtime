@@ -128,13 +128,13 @@ export function syncForkSharedStateLocallyForWorkerRuntime(
 function isQuiescentForkSharedSyncTarget(target: ProcessHandle): boolean {
   return target.runningWorker === null
     && target.vforkReadyWorkers.length === 0
-    && target.blockedWorkers.size > 0
+    && target.hostBlockedWorkers.size > 0
     && !hasPendingBlockedRpc(target)
     && !target.exitInProgress;
 }
 
 function hasPendingBlockedRpc(handle: ProcessHandle): boolean {
-  return [...handle.blockedWorkers.values()].some((blocked) => blocked.rpcPending);
+  return [...handle.hostBlockedWorkers.values()].some((blocked) => blocked.rpcPending);
 }
 
 function pruneUnpeeredRegularFileSharedOfds(handle: ProcessHandle): void {

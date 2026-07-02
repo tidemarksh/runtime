@@ -264,7 +264,7 @@ export async function spawnWithOutput(
 }
 
 type RuntimeDebugHandle = {
-  blockedWorkers?: Map<unknown, { vmPtr: number; status: number }>;
+  hostBlockedWorkers?: Map<unknown, { vmPtr: number; status: number }>;
   kernel: KernelExports;
   kernelState?: KernelRuntimeState;
   memory?: WebAssembly.Memory;
@@ -720,8 +720,8 @@ export async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<str
             })
             .join(" ");
         });
-        const blocked = handle.blockedWorkers instanceof Map
-          ? [...handle.blockedWorkers.values()].map((state) => {
+        const blocked = handle.hostBlockedWorkers instanceof Map
+          ? [...handle.hostBlockedWorkers.values()].map((state) => {
               const vmPtr = state.vmPtr;
               const fd = handle.kernel.thread_blocked_fd?.(vmPtr) ?? -1;
               const ofdId = handle.kernel.thread_blocked_ofd_id?.(vmPtr) ?? 0;

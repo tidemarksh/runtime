@@ -237,7 +237,7 @@ test("status handler logs futex resume with compact debug fields", () => {
       outputBacklog: [],
       workers: new Set([worker]),
       vforkReadyWorkers: [],
-      blockedWorkers: new Map(),
+      hostBlockedWorkers: new Map(),
       kernelWorkerRequest: undefined,
       kernelShare: { members: new Set(), sharedOfdIds: new Set() },
       runtimeBridge: {
@@ -382,7 +382,7 @@ test("status handler preserves FS ring snapshots during transient process owner 
     outputBacklog: [],
     workers: new Set([worker]),
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -485,7 +485,7 @@ test("status handler preserves FS ring snapshots while owner async status is pen
     outputBacklog: [],
     workers: new Set([worker]),
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -586,7 +586,7 @@ test("status handler does not roll back dirty memfs from fault snapshots", () =>
     outputBacklog: [],
     workers: new Set([worker]),
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -667,7 +667,7 @@ test("status handler preserves network recv buffers while owner async status is 
     outputBacklog: [],
     workers: new Set([worker]),
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -780,7 +780,7 @@ test("status handler keeps faulting worker tracked until completeProcessExit run
     outputBacklog: [],
     workers: new Set([worker, sibling]),
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -892,7 +892,7 @@ test("status handler uses supervisor thread-exit decision when adopting current 
     outputBacklog: [],
     workers: new Set([worker]),
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -1017,7 +1017,7 @@ test("status handler leaves blocked fork-shared sync to blocked-status handling"
     outputBacklog: [],
     workers: new Set([worker]),
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: vi.fn(async () => ({ type: "noop" })),
     kernelShare: { members: new Set(), sharedOfdIds: new Set([3]) },
     forkSharedSyncPromise: null,
@@ -1142,7 +1142,7 @@ test("status handler pumps ready siblings after pipe wait sync parks blocked wor
     outputBacklog: [],
     workers: new Set([worker, readyWorker]),
     vforkReadyWorkers: [readyWorker],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: vi.fn(async () => ({ type: "noop" })),
     kernelShare: { members: new Set(), sharedOfdIds: new Set([3]) },
     forkSharedSyncPromise: null,
@@ -1259,7 +1259,7 @@ test("status handler skips explicit fork-shared effects when no peer exists", as
     outputBacklog: [],
     workers: new Set([worker]),
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: vi.fn(async () => ({ type: "noop" })),
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     forkSharedSyncPromise: null,
@@ -1401,7 +1401,7 @@ test("status handler logs quoted write debug fields before wait handling", () =>
       outputBacklog: [],
       workers: new Set([worker]),
       vforkReadyWorkers: [],
-      blockedWorkers: new Map(),
+      hostBlockedWorkers: new Map(),
       kernelWorkerRequest: undefined,
       kernelShare: { members: new Set(), sharedOfdIds: new Set() },
       runtimeBridge: {
@@ -1536,7 +1536,7 @@ test("status handler dispatches execve_spawn into the ownership handoff path", (
     outputBacklog: [],
     workers: new Set([worker]),
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -1651,7 +1651,7 @@ test("status handler keeps full debug for zeroed OK state", () => {
       outputBacklog: [],
       workers: new Set([worker]),
       vforkReadyWorkers: [],
-      blockedWorkers: new Map(),
+      hostBlockedWorkers: new Map(),
       kernelWorkerRequest: undefined,
       kernelShare: { members: new Set(), sharedOfdIds: new Set() },
       runtimeBridge: {
@@ -1773,7 +1773,7 @@ test("status handler preserves the browser go ownership failure signature", () =
       outputBacklog: [],
       workers: new Set([worker]),
       vforkReadyWorkers: [],
-      blockedWorkers: new Map(),
+      hostBlockedWorkers: new Map(),
       kernelWorkerRequest: undefined,
       kernelShare: { members: new Set(), sharedOfdIds: new Set() },
       runtimeBridge: {
@@ -1894,7 +1894,7 @@ test("status handler defers local pipe drain when kernel-worker owns pipe state"
       outputBacklog: [],
       workers: new Set([worker]),
       vforkReadyWorkers: [],
-      blockedWorkers: new Map(),
+      hostBlockedWorkers: new Map(),
       kernelWorkerRequest: async () => ({ type: "unexpected" }) as never,
       kernelShare: { members: new Set(), sharedOfdIds: new Set() },
       runtimeBridge: {
@@ -1995,7 +1995,7 @@ test("status handler treats zero OK sync effects as explicit no-op", async () =>
       outputBacklog: [],
       workers: new Set([worker]),
       vforkReadyWorkers: [],
-      blockedWorkers: new Map(),
+      hostBlockedWorkers: new Map(),
       kernelWorkerRequest: async () => ({ type: "unexpected" }) as never,
       kernelShare: { members: new Set(), sharedOfdIds: new Set() },
       runtimeBridge: {
@@ -2092,7 +2092,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
     memory,
     workers: new Set([worker]),
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     stdinQueue: [],
     outputBacklog: [],
     kernelWorkerRequest: undefined,
@@ -2359,7 +2359,7 @@ test("status handler adopts kernel state for transient pid mismatch while the ac
     outputBacklog: [],
     workers: new Set([worker]),
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -2523,7 +2523,7 @@ test("status handler does not adopt child fault state while resuming an active v
     outputBacklog: [],
     workers: new Set([worker]),
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -2625,7 +2625,7 @@ test("status handler preserves host-injected network recv buffer when applying t
     outputBacklog: [],
     workers: new Set([worker]),
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -2770,7 +2770,7 @@ test("status handler keeps newer thread recv payload when producer tail is not a
     outputBacklog: [],
     workers: new Set([worker]),
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -2918,7 +2918,7 @@ test("status handler preserves host recv payload when producer tail wraps", () =
     outputBacklog: [],
     workers: new Set([worker]),
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -3074,7 +3074,7 @@ test("status handler preserves closed network socket recv head when fd no longer
     outputBacklog: [],
     workers: new Set([worker]),
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -3202,7 +3202,7 @@ test("status handler closes stale network bridge when fd snapshot drops the sock
     outputBacklog: [],
     workers: new Set([worker]),
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {

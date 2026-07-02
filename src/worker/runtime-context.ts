@@ -266,7 +266,7 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
         cmd: `unavailable:${error instanceof Error ? error.message : String(error)}`,
         running: false,
         vforkReadyWorkers: 0,
-        blockedWorkers: 0,
+        hostBlockedWorkers: 0,
         workers: [],
       }];
     }

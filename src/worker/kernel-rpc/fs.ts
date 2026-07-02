@@ -482,7 +482,7 @@ function hasLiveWorkerState(
   if (
     (handle.runningWorker !== null && handle.runningWorker !== undefined)
     || (handle.vforkReadyWorkers?.length ?? 0) > 0
-    || (handle.blockedWorkers?.size ?? 0) > 0
+    || (handle.hostBlockedWorkers?.size ?? 0) > 0
   ) {
     return true;
   }

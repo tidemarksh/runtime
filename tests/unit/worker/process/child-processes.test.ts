@@ -44,7 +44,7 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
     workers: new Set(),
     vforkReadyWorkers: [],
     runningWorker: null,
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     pendingChildExitRecords: 0,
     pendingChildSpawnRecords: 0,
     childExitSyncRecords: new Map(),

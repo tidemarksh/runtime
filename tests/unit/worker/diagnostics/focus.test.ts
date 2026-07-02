@@ -18,7 +18,7 @@ test("summarizeProcessWorkerLogFocus keeps the last credible state ahead of low-
     workers: new Set([worker]),
     runningWorker: null,
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     workerDebugLog: [
       "status:0x1234@0:pc=0x67c592:ra=0x67cdc6:sp=0x197d2a0:s11=0x1",
       "ready:0x1234:pc=0x67c592:ra=0x67cdc6:sp=0x197d2a0:s11=0x1",
@@ -59,7 +59,7 @@ test("summarizeProcessWorkerLogFocus finds the last credible state outside the s
     workers: new Set([worker]),
     runningWorker: null,
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     workerDebugLog,
     kernel: {},
   } as never;

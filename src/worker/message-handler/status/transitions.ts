@@ -123,7 +123,7 @@ function finishStatusTransitionRpc(
   vmPtr: number,
   rpcGeneration: number,
 ): HostBlockedWorkerState | null {
-  const latestBlocked = handle.blockedWorkers.get(worker);
+  const latestBlocked = handle.hostBlockedWorkers.get(worker);
   if (!latestBlocked || latestBlocked.vmPtr !== vmPtr) {
     return null;
   }
@@ -134,7 +134,7 @@ function finishStatusTransitionRpc(
 }
 
 function hasPendingBlockedRpc(handle: ProcessHandle): boolean {
-  for (const blocked of handle.blockedWorkers.values()) {
+  for (const blocked of handle.hostBlockedWorkers.values()) {
     if (blocked.rpcPending) {
       return true;
     }
@@ -157,7 +157,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       case "stale":
         return;
       case "blocked": {
-        const blocked = handle.blockedWorkers.get(worker);
+        const blocked = handle.hostBlockedWorkers.get(worker);
         if (blocked && blocked.vmPtr === vmPtr) {
           blocked.status = outcome.status;
         }
@@ -1001,7 +1001,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         && handle.pid > 0
       ) {
         deps.blockWorker(handle, worker, status, thread.vmPtr);
-        const blocked = handle.blockedWorkers.get(worker);
+        const blocked = handle.hostBlockedWorkers.get(worker);
         const rpcGeneration = blocked ? beginStatusTransitionRpc(blocked) : -1;
         void deps.requestSocketStateSync(handle, true)
           .then(() => {
@@ -1027,7 +1027,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         if (handle.runningWorker === worker) {
           handle.runningWorker = null;
         }
-        const blocked = handle.blockedWorkers.get(worker);
+        const blocked = handle.hostBlockedWorkers.get(worker);
         const rpcGeneration = blocked ? beginStatusTransitionRpc(blocked) : -1;
         void deps.requestPipeStateSync(handle, true)
           .then(() => {
@@ -1052,7 +1052,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         && handle.pid > 0
       ) {
         deps.blockWorker(handle, worker, status, thread.vmPtr);
-        const blocked = handle.blockedWorkers.get(worker);
+        const blocked = handle.hostBlockedWorkers.get(worker);
         const rpcGeneration = blocked ? beginStatusTransitionRpc(blocked) : -1;
         const syncPipeState = status === handle.kernel.abi_status_pipe_wait()
           ? deps.requestPipeStateSync(handle, false)
@@ -1076,7 +1076,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-done:${handle.pid}:status=${status}`);
             finishStatusTransitionRpc(handle, worker, thread.vmPtr, rpcGeneration);
             if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
-              handle.blockedWorkers.delete(worker);
+              handle.hostBlockedWorkers.delete(worker);
               return;
             }
             if (

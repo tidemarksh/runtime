@@ -10,7 +10,7 @@ import type { ProcessHandle } from "../../../../src/worker/types.js";
 function makeBlockedHandle(worker: Worker): ProcessHandle {
   return {
     workers: new Set([worker]),
-    blockedWorkers: new Map([[worker, {
+    hostBlockedWorkers: new Map([[worker, {
       vmPtr: 0x1234,
       status: 21,
     }]]),
@@ -90,7 +90,7 @@ test("continueBlockedRpcResumeAfterEffects returns status for scheduler retry af
     { threadWorkerStates },
   )).resolves.toEqual({ kind: "completed", status: 21 });
 
-  expect(handle.blockedWorkers.get(worker)?.rpcPending).toBe(false);
+  expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
 test("continueBlockedRpcResumeAfterEffects leaves non-continuation outcomes unchanged", async () => {

@@ -329,7 +329,7 @@ export interface ProcessHandle {
   // vforkReadyWorkers is the vfork host-hold queue, not the general runnable set.
   vforkReadyWorkers: Worker[];
   runningWorker: Worker | null;
-  blockedWorkers: Map<Worker, HostBlockedWorkerState>;
+  hostBlockedWorkers: Map<Worker, HostBlockedWorkerState>;
   pendingChildExitRecords: number;
   pendingChildSpawnRecords: number;
   lastSupervisorFdControlSeq?: bigint;

@@ -81,7 +81,7 @@ function makeHandle(
     workers: new Set([worker]),
     vforkReadyWorkers: [],
     runningWorker: null,
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     pendingChildExitRecords: 0,
     pendingChildSpawnRecords: 0,
     pipeSyncPromise: null,
@@ -172,7 +172,7 @@ test("resumeWait4ViaKernelWorker does not re-run local wait4 after kernel-worker
       } as const;
     }),
   });
-  handle.blockedWorkers.set(worker, {
+  handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 31,
     retryTimer: null,
@@ -264,7 +264,7 @@ test("resumeWait4ViaKernelWorker skips RPC when local wait4 already resolved", a
   const handle = makeHandle(kernel, runtimeBridge, worker, {
     kernelWorkerRequest,
   });
-  handle.blockedWorkers.set(worker, {
+  handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 31,
     retryTimer: null,
@@ -308,7 +308,7 @@ test("resumeWait4ViaKernelWorker skips RPC when local wait4 already resolved", a
   expect(handledStatuses).toEqual([]);
   expect(outcome.effects).toEqual([]);
   expect(outcome.status).toBe(0);
-  expect(handle.blockedWorkers.get(worker)?.rpcPending).toBe(false);
+  expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
 test("resumeVforkExecveParentViaKernelWorker restores the parent before clearing vfork runtime state", async () => {
@@ -466,7 +466,7 @@ test("resumeBlockedSyscallLocally skips kernel-worker shared-state syncs during 
     pid: 1,
     kernelWorkerRequest: vi.fn(async () => ({ type: "unexpected" }) as never),
   });
-  handle.blockedWorkers.set(worker, {
+  handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 29,
     retryTimer: null,
@@ -512,7 +512,7 @@ test("resumeBlockedSyscallLocally skips kernel-worker shared-state syncs during 
   expect(syncBlockedForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
   expect(syncSocketStateViaKernelWorker).not.toHaveBeenCalled();
   expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
-  expect(handle.blockedWorkers.get(worker)?.rpcPending).toBe(false);
+  expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
 test("resumeBlockedSyscallLocally queues pselect fd_set writes after owner-side resume", async () => {
@@ -587,7 +587,7 @@ test("resumeBlockedSyscallLocally queues pselect fd_set writes after owner-side 
     memory,
     kernelWorkerRequest: vi.fn(async () => ({ type: "unexpected" }) as never),
   });
-  handle.blockedWorkers.set(worker, {
+  handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
@@ -741,7 +741,7 @@ test("resumeBlockedSyscallLocally retries pselect pipe HUP owner-side after tran
     kernelState: { ...makeKernelState(), pipeBase },
     kernelWorkerRequest: vi.fn(async () => ({ type: "unexpected" }) as never),
   });
-  handle.blockedWorkers.set(worker, {
+  handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
@@ -894,7 +894,7 @@ test("resumeBlockedSyscallLocally resumes pselect pipe HUP before generic after-
     kernelState: { ...makeKernelState(), pipeBase },
     kernelWorkerRequest: vi.fn(async () => ({ type: "unexpected" }) as never),
   });
-  handle.blockedWorkers.set(worker, {
+  handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
@@ -1048,7 +1048,7 @@ test("resumeBlockedSyscallLocally retries mixed socket pipe pselect HUP owner-si
     kernelState: { ...makeKernelState(), pipeBase },
     kernelWorkerRequest: vi.fn(async () => ({ type: "unexpected" }) as never),
   });
-  handle.blockedWorkers.set(worker, {
+  handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
@@ -1173,7 +1173,7 @@ test("resumeBlockedSyscallOutcome returns pipe sync effect before ready socket p
   const handle = makeHandle(kernel, runtimeBridge, worker, {
     kernelWorkerRequest: vi.fn(async () => ({ type: "unexpected" }) as never),
   });
-  handle.blockedWorkers.set(worker, {
+  handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
@@ -1221,7 +1221,7 @@ test("resumeBlockedSyscallOutcome returns pipe sync effect before ready socket p
 
   expect(threadResumeBlockedSyscall).not.toHaveBeenCalled();
   expect(threadState.resumeBlockedOnNextStep).toBe(false);
-  expect(handle.blockedWorkers.has(worker)).toBe(true);
+  expect(handle.hostBlockedWorkers.has(worker)).toBe(true);
   expect(enqueueWorker).not.toHaveBeenCalled();
   expect(outcome.effects).toMatchObject([
     { kind: "request-pipe-state-sync", handle, wakeWaiters: false },
@@ -1299,7 +1299,7 @@ test("resumeBlockedSyscallOutcome returns socket sync effect without running soc
   } as unknown as KernelExports;
 
   const handle = makeHandle(kernel, runtimeBridge, worker);
-  handle.blockedWorkers.set(worker, {
+  handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
@@ -1406,7 +1406,7 @@ test("resumeBlockedSyscallLocally wakes pipe waiters through requestPipeStateSyn
     pid: 1,
     kernelWorkerRequest: vi.fn(async () => ({ type: "unexpected" }) as never),
   });
-  handle.blockedWorkers.set(worker, {
+  handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
@@ -1456,7 +1456,7 @@ test("resumeBlockedSyscallLocally wakes pipe waiters through requestPipeStateSyn
   );
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
   expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 21);
-  expect(handle.blockedWorkers.get(worker)?.rpcPending).toBe(false);
+  expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
 test("resumeBlockedSyscallLocally resumes pipe EOF after writers close even with active child", async () => {
@@ -1538,7 +1538,7 @@ test("resumeBlockedSyscallLocally resumes pipe EOF after writers close even with
     pid: 3,
     parentPid: 1,
   });
-  handle.blockedWorkers.set(worker, {
+  handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
@@ -1593,7 +1593,7 @@ test("resumeBlockedSyscallLocally resumes pipe EOF after writers close even with
   expect(threadState.resumeBlockedOnNextStep).toBe(true);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
   expect(handleBlockedRetryResult).not.toHaveBeenCalled();
-  expect(handle.blockedWorkers.has(worker)).toBe(false);
+  expect(handle.hostBlockedWorkers.has(worker)).toBe(false);
 });
 
 test("resumeBlockedSyscallLocally defers poll readiness while an active child still owns the pipe writer", async () => {
@@ -1701,7 +1701,7 @@ test("resumeBlockedSyscallLocally defers poll readiness while an active child st
     memory,
     kernelState: handle.kernelState,
   });
-  handle.blockedWorkers.set(worker, {
+  handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
@@ -1750,7 +1750,7 @@ test("resumeBlockedSyscallLocally defers poll readiness while an active child st
     { kind: "blocked-rpc", status: 21 },
   );
   expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 21);
-  expect(handle.blockedWorkers.get(worker)?.rpcPending).toBe(false);
+  expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
 test("resumeBlockedSyscallLocally ignores exiting child pipe writers for pselect HUP", async () => {
@@ -1856,7 +1856,7 @@ test("resumeBlockedSyscallLocally ignores exiting child pipe writers for pselect
     kernelState: handle.kernelState,
     exitInProgress: true,
   });
-  handle.blockedWorkers.set(worker, {
+  handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
@@ -1906,7 +1906,7 @@ test("resumeBlockedSyscallLocally ignores exiting child pipe writers for pselect
   );
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
   expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
-  expect(handle.blockedWorkers.get(worker)?.rpcPending).toBe(false);
+  expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
 test("resumeBlockedSyscallLocally completes pselect HUP marker despite an active child pipe writer", async () => {
@@ -2014,7 +2014,7 @@ test("resumeBlockedSyscallLocally completes pselect HUP marker despite an active
     memory,
     kernelState: handle.kernelState,
   });
-  handle.blockedWorkers.set(worker, {
+  handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
@@ -2068,7 +2068,7 @@ test("resumeBlockedSyscallLocally completes pselect HUP marker despite an active
   expect(threadState.resumeBlockedOnNextStep).toBe(false);
   expect(enqueueWorker).not.toHaveBeenCalled();
   expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
-  expect(handle.blockedWorkers.get(worker)?.rpcPending).toBe(false);
+  expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
 test("resumeBlockedSyscallLocally collapses pipe read that becomes ready after post-sync", async () => {
@@ -2133,7 +2133,7 @@ test("resumeBlockedSyscallLocally collapses pipe read that becomes ready after p
     pid: 1,
     kernelWorkerRequest: vi.fn(async () => ({ type: "unexpected" }) as never),
   });
-  handle.blockedWorkers.set(worker, {
+  handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 21,
     retryTimer: null,
@@ -2183,7 +2183,7 @@ test("resumeBlockedSyscallLocally collapses pipe read that becomes ready after p
     { kind: "blocked-rpc", status: 21 },
   );
   expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
-  expect(handle.blockedWorkers.get(worker)?.rpcPending).toBe(false);
+  expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
 test("resumeBlockedSyscallLocally queues the full socket read buffer after owner resume", async () => {
@@ -2257,7 +2257,7 @@ test("resumeBlockedSyscallLocally queues the full socket read buffer after owner
     memory,
     kernelWorkerRequest: vi.fn(async () => ({ type: "unexpected" }) as never),
   });
-  handle.blockedWorkers.set(worker, {
+  handle.hostBlockedWorkers.set(worker, {
     vmPtr: 0x1234,
     status: 29,
     retryTimer: null,

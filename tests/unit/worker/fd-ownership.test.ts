@@ -203,7 +203,7 @@ function makeHandle(kernel: FakeKernel, memory: WebAssembly.Memory): ProcessHand
     workers: new Set(),
     vforkReadyWorkers: [],
     runningWorker: null,
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     pipeSyncPromise: null,
     pipeSyncQueued: false,
     pipeWaiterWakeQueued: false,

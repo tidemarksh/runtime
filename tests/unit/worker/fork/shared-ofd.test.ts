@@ -13,7 +13,7 @@ function makeHandle(
   const regularFileOfdIdSet = new Set(regularFileOfdIds);
   return {
     vmPtr: 0x1000,
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelShare: {
       members: new Set<ProcessHandle>(),
       sharedOfdIds: new Set(sharedOfdIds),

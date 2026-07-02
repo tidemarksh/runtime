@@ -507,7 +507,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     } catch {
       // Best-effort diagnostics only.
     }
-    for (const blocked of handle.blockedWorkers.values()) {
+    for (const blocked of handle.hostBlockedWorkers.values()) {
       add(blocked.vmPtr);
     }
     return [...vmPtrs].slice(0, 24);
@@ -1511,7 +1511,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
   }
 
   function invalidateBlockedParentRpcsForChildExit(parent: ProcessHandle, childPid: number): void {
-    for (const blocked of parent.blockedWorkers.values()) {
+    for (const blocked of parent.hostBlockedWorkers.values()) {
       if (!blocked.rpcPending) {
         continue;
       }
@@ -1532,7 +1532,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
   }
 
   function parentHasBlockedWait4(parent: ProcessHandle): boolean {
-    for (const blocked of parent.blockedWorkers.values()) {
+    for (const blocked of parent.hostBlockedWorkers.values()) {
       if (blocked.status === parent.kernel.abi_status_wait4()) {
         return true;
       }
@@ -1541,7 +1541,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
   }
 
   function parentHasBlockedPipeWait(parent: ProcessHandle): boolean {
-    for (const blocked of parent.blockedWorkers.values()) {
+    for (const blocked of parent.hostBlockedWorkers.values()) {
       if (blocked.status === parent.kernel.abi_status_pipe_wait()) {
         return true;
       }
@@ -1721,7 +1721,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
   function exitProcessHasActiveOwnerWork(handle: ProcessHandle): boolean {
     return handle.runningWorker !== null
       || handle.vforkReadyWorkers.length > 0
-      || handle.blockedWorkers.size > 0;
+      || handle.hostBlockedWorkers.size > 0;
   }
 
   function exitProcessHasNoLiveThreadSlots(handle: ProcessHandle): boolean {
@@ -2005,7 +2005,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     }
     parts.push(`running=${child.runningWorker === null ? 0 : 1}`);
     parts.push(`ready=${child.vforkReadyWorkers.length}`);
-    parts.push(`blocked=${child.blockedWorkers.size}`);
+    parts.push(`blocked=${child.hostBlockedWorkers.size}`);
     parts.push(`exit=${child.exitInProgress ? 1 : 0}`);
     return parts.join("/");
   }

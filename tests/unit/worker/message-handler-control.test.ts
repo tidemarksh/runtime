@@ -50,7 +50,7 @@ test("worker control error path degrades gracefully when thread debug access tra
   const handle = {
     pid: 7,
     runningWorker: worker,
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     workers: new Set<Worker>([worker]),
     kernel: {
       abi_max_threads: () => 8,

@@ -229,7 +229,7 @@ test("kernel-worker fs outcome returns wake effect after local publication", asy
     transferDebugStats: createTransferDebugStats(),
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     workers: new Set(),
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
@@ -308,7 +308,7 @@ test("kernel-worker fs outcome applies mmap guest memory writes from fs response
     transferDebugStats: createTransferDebugStats(),
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     workers: new Set(),
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
@@ -380,7 +380,7 @@ test("kernel-worker fs outcome defers file write publication to a later sync poi
     vmPtr: 0x5678,
     kernel: targetKernel,
     memory: targetKernel.memory,
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     runningWorker: null,
   } as unknown as ProcessHandle;
   const handle = {
@@ -394,7 +394,7 @@ test("kernel-worker fs outcome defers file write publication to a later sync poi
     transferDebugStats: createTransferDebugStats(),
     kernelShare: { members: new Set([target]), sharedOfdIds: new Set() },
     workers: new Set(),
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
@@ -467,7 +467,7 @@ test("kernel-worker fs outcome applies only request fd after regular file write"
     kernel: targetKernel,
     kernelState: makeKernelState(),
     memory: targetKernel.memory,
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     runningWorker: null,
   } as unknown as ProcessHandle;
   const handle = {
@@ -481,7 +481,7 @@ test("kernel-worker fs outcome applies only request fd after regular file write"
     transferDebugStats: createTransferDebugStats(),
     kernelShare: { members: new Set([target]), sharedOfdIds: new Set() },
     workers: new Set(),
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
@@ -564,7 +564,7 @@ test("kernel-worker fs outcome applies only request fd after regular file fstat"
     kernel: targetKernel,
     kernelState: makeKernelState(),
     memory: targetKernel.memory,
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     runningWorker: null,
   } as unknown as ProcessHandle;
   const handle = {
@@ -578,7 +578,7 @@ test("kernel-worker fs outcome applies only request fd after regular file fstat"
     transferDebugStats: createTransferDebugStats(),
     kernelShare: { members: new Set([target]), sharedOfdIds: new Set() },
     workers: new Set(),
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
@@ -660,7 +660,7 @@ test("kernel-worker fs outcome preserves unrelated live fd across openat snapsho
     kernel: targetKernel,
     kernelState: makeKernelState(),
     memory: targetKernel.memory,
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     runningWorker: null,
   } as unknown as ProcessHandle;
   const handle = {
@@ -674,7 +674,7 @@ test("kernel-worker fs outcome preserves unrelated live fd across openat snapsho
     transferDebugStats: createTransferDebugStats(),
     kernelShare: { members: new Set([target]), sharedOfdIds: new Set() },
     workers: new Set(),
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
@@ -754,7 +754,7 @@ test("kernel-worker fs outcome preserves live fd from stale nonzero openat snaps
     transferDebugStats: createTransferDebugStats(),
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     workers: new Set(),
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
@@ -830,7 +830,7 @@ test("kernel-worker fs outcome permits close snapshot to clear live fd", async (
     transferDebugStats: createTransferDebugStats(),
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     workers: new Set(),
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
@@ -925,7 +925,7 @@ test("kernel-worker fs outcome keeps generated file fd closeable after unrelated
     transferDebugStats: createTransferDebugStats(),
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     workers: new Set(),
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
@@ -1028,7 +1028,7 @@ test("kernel-worker fs outcome rejects fd snapshot entries stale against request
     transferDebugStats: createTransferDebugStats(),
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     workers: new Set(),
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
@@ -1120,7 +1120,7 @@ test("kernel-worker fs outcome rejects fd snapshot ABA using generation", async 
     transferDebugStats: createTransferDebugStats(),
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     workers: new Set(),
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
@@ -1227,7 +1227,7 @@ test("kernel-worker fs outcome rejects ofd slot snapshots stale against request 
     transferDebugStats: createTransferDebugStats(),
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     workers: new Set(),
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
@@ -1291,7 +1291,7 @@ test("kernel-worker fs outcome skips shared OFD sync after regular file mmap", a
     kernel: targetKernel,
     kernelState: makeKernelState(),
     memory: targetKernel.memory,
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     runningWorker: null,
   } as unknown as ProcessHandle;
   const handle = {
@@ -1305,7 +1305,7 @@ test("kernel-worker fs outcome skips shared OFD sync after regular file mmap", a
     transferDebugStats: createTransferDebugStats(),
     kernelShare: { members: new Set([target]), sharedOfdIds: new Set() },
     workers: new Set(),
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
@@ -1371,7 +1371,7 @@ test("kernel-worker fs outcome keeps shared OFD sync after pipe write", async ()
     kernel: targetKernel,
     kernelState: makeKernelState(),
     memory: targetKernel.memory,
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     runningWorker: null,
   } as unknown as ProcessHandle;
   const handle = {
@@ -1385,7 +1385,7 @@ test("kernel-worker fs outcome keeps shared OFD sync after pipe write", async ()
     transferDebugStats: createTransferDebugStats(),
     kernelShare: { members: new Set([target]), sharedOfdIds: new Set() },
     workers: new Set(),
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
@@ -1453,7 +1453,7 @@ test("kernel-worker fs outcome does not rehydrate unrelated peer shared OFD befo
     kernel: peerKernel,
     kernelState: makeKernelState(),
     memory: peerKernel.memory,
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     runningWorker: null,
   } as unknown as ProcessHandle;
   const handle = {
@@ -1467,7 +1467,7 @@ test("kernel-worker fs outcome does not rehydrate unrelated peer shared OFD befo
     transferDebugStats: createTransferDebugStats(),
     kernelShare: { members: new Set([peer]), sharedOfdIds: new Set([4]) },
     workers: new Set(),
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
@@ -1539,7 +1539,7 @@ test("kernel-worker fs outcome skips stale dirty MemFS peers before dispatch", a
     processMemfsPublishPending: true,
     runningWorker: null,
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     workers: new Set([stalePeerWorker]),
     exitInProgress: false,
     kernelWorkerRequest: vi.fn(async () => new Promise(() => {})),
@@ -1555,7 +1555,7 @@ test("kernel-worker fs outcome skips stale dirty MemFS peers before dispatch", a
     transferDebugStats: createTransferDebugStats(),
     kernelShare: { members: new Set([stalePeer]), sharedOfdIds: new Set() },
     workers: new Set(),
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;

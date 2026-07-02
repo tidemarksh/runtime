@@ -27,7 +27,7 @@ export function createWorkerKernelRpcWait4Helpers(
     try {
       const localStatus = handle.kernel.thread_status(vmPtr);
       if (localStatus !== handle.kernel.abi_status_wait4()) {
-        const blocked = handle.blockedWorkers.get(worker);
+        const blocked = handle.hostBlockedWorkers.get(worker);
         if (blocked && blocked.vmPtr === vmPtr) {
           blocked.rpcPending = false;
         }
@@ -48,7 +48,7 @@ export function createWorkerKernelRpcWait4Helpers(
         kernelState: handle.kernelState,
       }), "wait4-resumed", "resume-wait4");
 
-      const blocked = handle.blockedWorkers.get(worker);
+      const blocked = handle.hostBlockedWorkers.get(worker);
       if (!blocked || blocked.vmPtr !== vmPtr) {
         return { kind: "stale", effects };
       }
@@ -79,7 +79,7 @@ export function createWorkerKernelRpcWait4Helpers(
       const status = handle.kernel.thread_status(vmPtr);
       return completedKernelRpcOutcome(status, effects);
     } catch (error) {
-      const blocked = handle.blockedWorkers.get(worker);
+      const blocked = handle.hostBlockedWorkers.get(worker);
       if (blocked && blocked.vmPtr === vmPtr) {
         blocked.rpcPending = false;
       }

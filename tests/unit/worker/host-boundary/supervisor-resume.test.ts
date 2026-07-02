@@ -137,7 +137,7 @@ test("host boundary consumes process-scoped supervisor runnable resume decisions
   const handle = makeHostBoundaryHandle(kernel, selectedWorker);
   handle.workers.add(unselectedWorker);
   handle.vforkReadyWorkers = [unselectedWorker];
-  handle.blockedWorkers.set(selectedWorker, {
+  handle.hostBlockedWorkers.set(selectedWorker, {
     vmPtr: selectedThread.vmPtr,
     status: kernel.abi_status_futex_wait(),
     retryTimer: null,
@@ -156,7 +156,7 @@ test("host boundary consumes process-scoped supervisor runnable resume decisions
   expect(kernel.supervisor_process_resume).toHaveBeenCalledTimes(1);
   expect(handle.runningWorker).toBe(selectedWorker);
   expect(handle.vforkReadyWorkers).toEqual([unselectedWorker]);
-  expect(handle.blockedWorkers.has(selectedWorker)).toBe(false);
+  expect(handle.hostBlockedWorkers.has(selectedWorker)).toBe(false);
   expect(selectedThread.waitingInWorkerStatus).toBeNull();
   expect(selectedWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "step" }));
   expect(unselectedWorker.postMessage).not.toHaveBeenCalled();

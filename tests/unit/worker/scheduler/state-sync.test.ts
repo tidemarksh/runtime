@@ -147,7 +147,7 @@ function makeHandle(overrides: Record<string, unknown> = {}) {
     socketSyncPromise: null,
     socketSyncQueued: false,
     socketWaiterWakeQueued: false,
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     pendingPipeSlotSnapshots: [],
     kernelShare: { members: new Set(), sharedOfdIds: new Set(), ofdSlotSnapshots: new Map() },
     workers: new Set(),
@@ -211,14 +211,14 @@ test("requestSocketStateSync wakes socket-backed poll and epoll waiters", async 
   const pipeWorker = {} as Worker;
   const epollWorker = {} as Worker;
   const recvWorker = {} as Worker;
-  handle.blockedWorkers.set(pipeWorker, {
+  handle.hostBlockedWorkers.set(pipeWorker, {
     status: handle.kernel.abi_status_pipe_wait(),
     pipeSyncedBeforePassive: true,
   } as never);
-  handle.blockedWorkers.set(epollWorker, {
+  handle.hostBlockedWorkers.set(epollWorker, {
     status: handle.kernel.abi_status_epoll_wait(),
   } as never);
-  handle.blockedWorkers.set(recvWorker, {
+  handle.hostBlockedWorkers.set(recvWorker, {
     status: handle.kernel.abi_status_socket_recv(),
   } as never);
 
@@ -237,7 +237,7 @@ test("requestSocketStateSync wakes socket-backed poll and epoll waiters", async 
   expect(retryBlockedWorker).toHaveBeenCalledWith(handle, pipeWorker);
   expect(retryBlockedWorker).toHaveBeenCalledWith(handle, epollWorker);
   expect(retryBlockedWorker).toHaveBeenCalledWith(handle, recvWorker);
-  expect(handle.blockedWorkers.get(pipeWorker)?.pipeSyncedBeforePassive).toBe(false);
+  expect(handle.hostBlockedWorkers.get(pipeWorker)?.pipeSyncedBeforePassive).toBe(false);
 });
 
 test("requestSocketStateSync skips rpc-pending epoll waiters during waking sync", async () => {
@@ -259,7 +259,7 @@ test("requestSocketStateSync skips rpc-pending epoll waiters during waking sync"
   });
   handle.kernelShare.members.add(handle);
   const epollWorker = {} as Worker;
-  handle.blockedWorkers.set(epollWorker, {
+  handle.hostBlockedWorkers.set(epollWorker, {
     status: handle.kernel.abi_status_epoll_wait(),
     rpcPending: true,
     rpcGeneration: 7,
@@ -285,7 +285,7 @@ test("requestPipeStateSync skips rpc-pending pipe waiters during waking sync", a
   const handle = makeHandle();
   handle.kernelShare.members.add(handle);
   const pipeWorker = {} as Worker;
-  handle.blockedWorkers.set(pipeWorker, {
+  handle.hostBlockedWorkers.set(pipeWorker, {
     status: handle.kernel.abi_status_pipe_wait(),
     rpcPending: true,
     rpcGeneration: 7,
@@ -303,7 +303,7 @@ test("requestPipeStateSync skips rpc-pending pipe waiters during waking sync", a
   await helpers.requestPipeStateSync(handle, true);
 
   expect(retryBlockedWorker).not.toHaveBeenCalledWith(handle, pipeWorker);
-  expect(handle.blockedWorkers.get(pipeWorker)?.pipeSyncedBeforePassive).toBe(true);
+  expect(handle.hostBlockedWorkers.get(pipeWorker)?.pipeSyncedBeforePassive).toBe(true);
 });
 
 test("requestSocketStateSync applies socket payload state to fork-share members before wake", async () => {
@@ -336,7 +336,7 @@ test("requestSocketStateSync applies socket payload state to fork-share members 
   parent.kernelShare = share;
   child.kernelShare = share;
   const recvWorker = {} as Worker;
-  child.blockedWorkers.set(recvWorker, {
+  child.hostBlockedWorkers.set(recvWorker, {
     status: child.kernel.abi_status_socket_recv(),
   } as never);
 

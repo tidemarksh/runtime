@@ -22,7 +22,7 @@ export function createVforkExclusiveScheduler(
     if (handle.vforkReadyWorkers.includes(worker)) {
       return true;
     }
-    if (handle.blockedWorkers.has(worker)) {
+    if (handle.hostBlockedWorkers.has(worker)) {
       return true;
     }
     const thread = threadWorkerStates.get(worker);

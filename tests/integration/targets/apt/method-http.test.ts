@@ -2978,7 +2978,7 @@ function compactAptExecutionStats(
     forkProcessMaxMemoryBytes: proc.forkProcessMaxMemoryBytes,
     guestBase: proc.guestBase,
     vforkReadyWorkers: proc.vforkReadyWorkers,
-    blockedWorkers: proc.blockedWorkers,
+    hostBlockedWorkers: proc.hostBlockedWorkers,
     activeChildren: proc.activeChildren,
     pendingChildExitRecords: proc.pendingChildExitRecords,
     pendingChildSpawnRecords: proc.pendingChildSpawnRecords,
@@ -3054,19 +3054,19 @@ function compactAptProcessCounts(
 ): string {
   let workers = 0;
   let vforkReadyWorkers = 0;
-  let blockedWorkers = 0;
+  let hostBlockedWorkers = 0;
   let activeChildren = 0;
   for (const proc of stats) {
     workers += proc.workers.length;
     vforkReadyWorkers += proc.vforkReadyWorkers;
-    blockedWorkers += proc.blockedWorkers;
+    hostBlockedWorkers += proc.hostBlockedWorkers;
     activeChildren += proc.activeChildren;
   }
   return JSON.stringify({
     processes: stats.length,
     workers,
     vforkReadyWorkers,
-    blockedWorkers,
+    hostBlockedWorkers,
     activeChildren,
   });
 }

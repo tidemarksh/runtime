@@ -116,7 +116,7 @@ export function createWorkerSchedulerStateSyncHelpers(
       if (shouldWake) {
         publishKernelRuntimeState(member.runtimeBridge, member.kernelState, true);
       }
-      for (const [blockedWorker, blocked] of member.blockedWorkers) {
+      for (const [blockedWorker, blocked] of member.hostBlockedWorkers) {
         if (blockedStatuses.has(blocked.status)) {
           if (blocked.status === member.kernel.abi_status_pipe_wait()) {
             if (blocked.rpcPending) {

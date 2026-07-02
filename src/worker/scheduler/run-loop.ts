@@ -49,7 +49,7 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     vmPtr: number,
     rpcGeneration: number,
   ): HostBlockedWorkerState | null {
-    const latestBlocked = handle.blockedWorkers.get(worker);
+    const latestBlocked = handle.hostBlockedWorkers.get(worker);
     if (
       !latestBlocked
       || latestBlocked.vmPtr !== vmPtr
@@ -66,7 +66,7 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     worker: Worker,
     delayMs = 10,
   ): void {
-    const blocked = handle.blockedWorkers.get(worker);
+    const blocked = handle.hostBlockedWorkers.get(worker);
     if (!blocked || blocked.retryTimer !== null) {
       return;
     }
@@ -92,7 +92,7 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
       if (handle.forkSharedSyncPromise === promise) {
         handle.forkSharedSyncPromise = null;
       }
-      const blocked = handle.blockedWorkers.get(worker);
+      const blocked = handle.hostBlockedWorkers.get(worker);
       if (!blocked) {
         return;
       }

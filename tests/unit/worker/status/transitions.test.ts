@@ -139,7 +139,7 @@ function makeHandle(worker: Worker) {
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     workers: new Set([worker]),
     vforkReadyWorkers: [],
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelState: makeKernelState(),
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
