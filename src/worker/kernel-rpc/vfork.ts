@@ -38,6 +38,22 @@ function restoreVforkParentLocally(
   kernel.thread_clear_vfork_runtime_state?.();
 }
 
+function rollbackVforkExecveHandoffLocally(
+  kernel: KernelExports,
+  vmPtr: number,
+  childPid: number,
+): number {
+  const rollback = kernel.supervisor_vfork_execve_rollback;
+  if (!rollback) {
+    throw new Error("kernel supervisor ABI missing supervisor_vfork_execve_rollback");
+  }
+  const waitStatus = rollback(vmPtr, childPid);
+  if (waitStatus < 0) {
+    throw new Error(`kernel supervisor vfork execve rollback failed: ${waitStatus}`);
+  }
+  return waitStatus;
+}
+
 export function createWorkerKernelRpcVforkHelpers(
   deps: WorkerKernelRpcVforkDeps,
 ) {
@@ -156,8 +172,45 @@ export function createWorkerKernelRpcVforkHelpers(
     return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
   }
 
+  async function rollbackVforkExecveHandoffViaKernelWorker(
+    handle: ProcessHandle,
+    vmPtr: number,
+    childPid: number,
+  ): Promise<KernelRpcResumeOutcome> {
+    if (!handle.kernelWorkerRequest || handle.pid <= 0) {
+      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
+    }
+
+    deps.appendWorkerDebugLog(handle, `rollback-vfork-execve-handoff:rpc-start:0x${vmPtr.toString(16)}:${childPid}`);
+    const response = expectKernelWorkerResponse(await handle.kernelWorkerRequest({
+      type: "rollback-vfork-execve-handoff",
+      pid: handle.pid,
+      vmPtr,
+      childPid,
+      kernelState: handle.kernelState,
+    }), "vfork-execve-handoff-rolled-back", "rollback-vfork-execve-handoff");
+    handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
+    attachKernelRuntimeState(handle.kernel, handle.kernelState);
+    deps.appendWorkerDebugLog(handle, `rollback-vfork-execve-handoff:local-start:0x${vmPtr.toString(16)}:${childPid}`);
+    const localWaitStatus = rollbackVforkExecveHandoffLocally(handle.kernel, vmPtr, childPid);
+    if (localWaitStatus !== response.waitStatus) {
+      throw new Error(
+        `kernel supervisor vfork execve rollback wait status mismatch: remote=${response.waitStatus} local=${localWaitStatus}`,
+      );
+    }
+    handle.kernelState = readKernelRuntimeState(handle.kernel);
+    attachKernelRuntimeState(handle.kernel, handle.kernelState);
+    deps.clearVforkSnapshot(handle);
+    deps.appendWorkerDebugLog(
+      handle,
+      `rollback-vfork-execve-handoff:rpc-done:0x${vmPtr.toString(16)}:${childPid}:wait=${response.waitStatus}`,
+    );
+    return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
+  }
+
   return {
     canonicalizeActiveVforkChildViaKernelWorker,
+    rollbackVforkExecveHandoffViaKernelWorker,
     resumeVforkExecveParentViaKernelWorker,
     resumeVforkParentViaKernelWorker,
   };

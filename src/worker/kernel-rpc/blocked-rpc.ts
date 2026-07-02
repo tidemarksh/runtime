@@ -14,7 +14,6 @@ import type {
 import type { KernelWorkerPipeSlotSnapshot } from "../../messages.js";
 import { PIPE_HEAD_OFFSET, PIPE_READ_OPEN_OFFSET, PIPE_TAIL_OFFSET, PIPE_WRITE_OPEN_OFFSET } from "../../layout/pipe.js";
 import { POLLFD_BYTES } from "../../layout/poll.js";
-import { activeChildMayHoldBlockedPipeWriter } from "./pipe.js";
 import {
   completedKernelRpcOutcome,
   kernelRpcResumeEffectsNeedContinuation,
@@ -109,6 +108,23 @@ function blockedRpcSyncCause(status: number): SyncCause {
 function blockedStatusIsEpollWait(handle: ProcessHandle, status: number): boolean {
   const epollWaitStatus = handle.kernel.abi_status_epoll_wait?.();
   return epollWaitStatus !== undefined && status === epollWaitStatus;
+}
+
+function supervisorBlockedWaitActiveChildPid(handle: ProcessHandle, vmPtr: number): number {
+  const readActiveChild = handle.kernel.supervisor_blocked_wait_active_child_pid;
+  if (readActiveChild === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_blocked_wait_active_child_pid");
+  }
+  const childPid = readActiveChild(vmPtr);
+  if (childPid < 0) {
+    throw new Error(`kernel supervisor active child selection failed: ${childPid}`);
+  }
+  return childPid;
+}
+
+function supervisorActiveChildMayDeferPipeResume(handle: ProcessHandle, vmPtr: number): boolean {
+  return handle.kernel.thread_status(vmPtr) === handle.kernel.abi_status_pipe_wait()
+    && supervisorBlockedWaitActiveChildPid(handle, vmPtr) > 0;
 }
 
 function formatGuestBufferPreview(handle: ProcessHandle, ptr: bigint | number, length: bigint | number): string {
@@ -1278,7 +1294,7 @@ async function executeHostBlockedSyscallResume(
               && handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) === 1
               && (handle.kernel.thread_blocked_pipe_buffered_len?.(vmPtr) ?? 0) === 0
               && (handle.kernel.thread_blocked_pipe_write_open?.(vmPtr) ?? 0) <= 0
-              && !activeChildMayHoldBlockedPipeWriter(deps, handle, vmPtr);
+              && !supervisorActiveChildMayDeferPipeResume(handle, vmPtr);
             if (selfPipeSyncWasAlreadyInFlight && !pendingPipeDataIsReady && !pendingPipeEofIsReady) {
               deps.appendRuntimeLifecycleEvent(
                 handle.runtimeId,
@@ -1450,7 +1466,7 @@ async function executeHostBlockedSyscallResume(
         && pipeSlotBufferedLenForThreadStepFd(handle, vmPtr, blockedPipeFd) === 0
         && pipeSlotWriteOpenForThreadStepFd(handle, vmPtr, blockedPipeFd) > 0;
       if (!pipeReadOpenEmpty && !blockedPipeOpenEmptyAfterSync) {
-        if (activeChildMayHoldBlockedPipeWriter(deps, handle, vmPtr)) {
+        if (supervisorActiveChildMayDeferPipeResume(handle, vmPtr)) {
           preserveCanonicalEofReadyForDeferredRetry();
           finishBlockedRpc();
           deps.appendWorkerDebugLog(handle, `blocked-rpc-defer-pipe-eof:0x${vmPtr.toString(16)}`);
@@ -1494,9 +1510,7 @@ async function executeHostBlockedSyscallResume(
       && isPollLikePipeWait(handle, vmPtr)
       && pollPipeBufferedLenForThreadStep(handle, vmPtr) === 0
       && handle.kernel.thread_poll_hup_sync_pending?.(vmPtr) !== 1
-      && activeChildMayHoldBlockedPipeWriter(deps, handle, vmPtr, {
-        ignoreExitingWritersWithoutBufferedData: true,
-      })
+      && supervisorActiveChildMayDeferPipeResume(handle, vmPtr)
     ) {
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       preserveCanonicalEofReadyForDeferredRetry();
@@ -1529,8 +1543,8 @@ async function executeHostBlockedSyscallResume(
       : localPipeWriteOpenForSlot(handle, vmPtr, blockedPipeSlot);
     const blockedPipeHasVisibleWriter = blockedPipeSlot !== null
       && pipeSlotHasVisibleWriter(handle, vmPtr, blockedPipeSlot);
-    const activeChildMayHoldCanonicalPipeWriter = activeChildMayHoldBlockedPipeWriter(deps, handle, vmPtr);
-    const pipeEofMayStillReceiveWriter = activeChildMayHoldCanonicalPipeWriter;
+    const supervisorActiveChildMayDeferPipe = supervisorActiveChildMayDeferPipeResume(handle, vmPtr);
+    const pipeEofMayStillReceiveWriter = supervisorActiveChildMayDeferPipe;
     const readPipeCanonicalEofCandidate = blockedStatus === handle.kernel.abi_status_pipe_wait()
       && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) !== 1
       && !isPollLikePipeWait(handle, vmPtr)
@@ -1572,7 +1586,7 @@ async function executeHostBlockedSyscallResume(
         `candidate=${readPipeCanonicalEofAfterSync ? 1 : 0}`,
         `eofPending=${handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) ?? "n/a"}`,
         `hupPending=${handle.kernel.thread_poll_hup_sync_pending?.(vmPtr) ?? "n/a"}`,
-        `activeChild=${activeChildMayHoldCanonicalPipeWriter ? 1 : 0}`,
+        `activeChild=${supervisorActiveChildMayDeferPipe ? 1 : 0}`,
         "pendingChildExit=supervisor",
       ].join(":");
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);
@@ -1616,7 +1630,7 @@ async function executeHostBlockedSyscallResume(
           `visibleWriter=${blockedPipeHasVisibleWriter ? 1 : 0}`,
           `ofd=${handle.kernel.thread_blocked_ofd_id?.(vmPtr) ?? "n/a"}`,
           `eofPending=${handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) ?? "n/a"}`,
-          `activeChild=${activeChildMayHoldCanonicalPipeWriter ? 1 : 0}`,
+          `activeChild=${supervisorActiveChildMayDeferPipe ? 1 : 0}`,
           "pendingChildExit=supervisor",
         ].join(":");
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);
@@ -1796,7 +1810,7 @@ async function executeHostBlockedSyscallResume(
           `openEmpty=${currentFdOpenEmpty ? 1 : 0}`,
           `eofPending=${handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) ?? "n/a"}`,
           `hupPending=${handle.kernel.thread_poll_hup_sync_pending?.(vmPtr) ?? "n/a"}`,
-          `activeChild=${activeChildMayHoldCanonicalPipeWriter ? 1 : 0}`,
+          `activeChild=${supervisorActiveChildMayDeferPipe ? 1 : 0}`,
           "pendingChildExit=supervisor",
           `holders=${formatBlockedPipeSlotHolders(handle, vmPtr)}`,
         ].join(":");
@@ -1822,7 +1836,7 @@ async function executeHostBlockedSyscallResume(
             `wo=${writeOpen}`,
             `syncedBuf=${syncedBufferedLen}`,
             `syncedWo=${syncedWriteOpen}`,
-            `activeChild=${activeChildMayHoldCanonicalPipeWriter ? 1 : 0}`,
+            `activeChild=${supervisorActiveChildMayDeferPipe ? 1 : 0}`,
             "pendingChildExit=supervisor",
           ].join(":");
           deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);

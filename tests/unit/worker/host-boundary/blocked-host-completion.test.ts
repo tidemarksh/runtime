@@ -369,7 +369,6 @@ test("host boundary reports blocked retry timer expiry to supervisor before retr
     threadWorkerStates,
     completeProcessExit: async () => {},
     failProcess: () => {},
-    hasActiveChildProcess: () => false,
     pumpNetworkConnections: async () => false,
     resumeFsViaKernelWorker: async () => {},
     resumeVforkParentAfterChildExit: () => false,

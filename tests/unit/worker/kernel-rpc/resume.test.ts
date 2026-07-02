@@ -215,6 +215,7 @@ test("resumeWait4ViaKernelWorker does not re-run local wait4 after kernel-worker
     appendWorkerDebugLog: () => {},
     canonicalizeChildLifecycleViaKernelWorker: async () => ({
       childPid: 2,
+      ppid: 1,
       nextPid: 3,
       pgid: 1,
       sid: 1,
@@ -305,6 +306,7 @@ test("resumeWait4ViaKernelWorker skips RPC when local wait4 already resolved", a
     appendWorkerDebugLog: () => {},
     canonicalizeChildLifecycleViaKernelWorker: async () => ({
       childPid: 2,
+      ppid: 1,
       nextPid: 3,
       pgid: 1,
       sid: 1,
@@ -404,6 +406,7 @@ test("resumeVforkExecveParentViaKernelWorker restores the parent before clearing
     appendWorkerDebugLog: () => {},
     canonicalizeChildLifecycleViaKernelWorker: async () => ({
       childPid: 2,
+      ppid: 1,
       nextPid: 3,
       pgid: 1,
       sid: 1,
@@ -1669,6 +1672,7 @@ test("executeHostBlockedSyscallResume defers poll readiness while an active chil
     thread_resume_blocked_syscall: threadResumeBlockedSyscall,
     thread_status: () => 21,
     process_current_pid: () => 1,
+    supervisor_blocked_wait_active_child_pid: () => 3,
     thread_a0: () => 0n,
     thread_a1: () => 0n,
     thread_a7: () => 73n,

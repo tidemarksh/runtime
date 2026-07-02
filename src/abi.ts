@@ -244,6 +244,7 @@ export interface KernelExports {
   supervisor_blocked_resume_delegation_epoll_direct?(): number;
   supervisor_blocked_wait_retry_reason?(vmPtr: number, flags: number): number;
   supervisor_blocked_wait_retry_delay_ms?(vmPtr: number, reason: number): number;
+  supervisor_blocked_wait_active_child_pid?(vmPtr: number): number;
   supervisor_blocked_wait_retry_reason_default?(): number;
   supervisor_blocked_wait_retry_reason_immediate?(): number;
   supervisor_blocked_wait_retry_reason_standard_defer?(): number;
@@ -570,6 +571,11 @@ export interface KernelExports {
   process_record_child_exit(pid: number, wait_status: number): void;
   process_record_child_exit_for_parent?(parent_pid: number, pid: number, wait_status: number): void;
   process_has_active_child?(parent_pid: number): number;
+  process_active_child_pid?(parent_pid: number): number;
+  process_child_ppid?(pid: number): number;
+  process_child_pgid?(pid: number): number;
+  process_child_sid?(pid: number): number;
+  process_next_pid?(): number;
   process_current_pid(vm_ptr: number): number;
   process_current_ppid(vm_ptr: number): number;
   process_current_pgid(vm_ptr: number): number;
@@ -586,6 +592,8 @@ export interface KernelExports {
     sid: number,
     didExec: number,
   ): void;
+  supervisor_vfork_execve_handoff_failure_wait_status?(): number;
+  supervisor_vfork_execve_rollback?(vmPtr: number, childPid: number): number;
   thread_prepare_fork_child?(vm_ptr: number, pid: number): void;
   thread_restore_fork_parent?(vm_ptr: number, processPtr: number, pid: number, ppid: number): void;
   process_upsert_process_entry(pid: number, ppid: number, pgid: number, sid: number, didExec: number): void;
@@ -1218,6 +1226,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_resume_delegation_epoll_direct",
   "supervisor_blocked_wait_retry_reason",
   "supervisor_blocked_wait_retry_delay_ms",
+  "supervisor_blocked_wait_active_child_pid",
   "supervisor_blocked_wait_retry_reason_default",
   "supervisor_blocked_wait_retry_reason_immediate",
   "supervisor_blocked_wait_retry_reason_standard_defer",
@@ -1231,6 +1240,8 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_wait_retry_flag_thread_init_pending",
   "supervisor_enqueue_blocked_wait_timer",
   "supervisor_blocked_wait_timer_required",
+  "supervisor_vfork_execve_handoff_failure_wait_status",
+  "supervisor_vfork_execve_rollback",
   "supervisor_fd_control_record",
   "supervisor_fs_control_record",
   "supervisor_signal_control_record",

@@ -129,6 +129,10 @@ function makeHandle(
       process_record_child_exit(childPid: number, waitStatus: number) {
         recordedChildExits.push([childPid, waitStatus]);
       },
+      process_child_ppid: () => 1,
+      process_child_pgid: () => 1,
+      process_child_sid: () => 1,
+      process_next_pid: () => 8,
     } as unknown as KernelExports,
     kernelState: baseState,
     stdinPipe: 0,

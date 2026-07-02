@@ -52,7 +52,6 @@ import {
 } from "./shared-ofd.js";
 import type { ProcessHandle, ThreadWorkerState, WorkerForkDeps } from "./types.js";
 
-const VFORK_EXECVE_HANDOFF_FAILURE_WAIT_STATUS = 127 << 8;
 const HANDOFF_DEBUG_STRING_LIMIT = 128;
 const EXECVE_BACKING_RETRY_MIN_ATTEMPTS = 256;
 const EXECVE_BACKING_RETRY_MAX_ATTEMPTS = 16 * 1024;
@@ -64,6 +63,24 @@ interface ExecveBackingMiss {
   offset: number;
   length: number;
   expectedSize: number;
+}
+
+interface KernelChildLifecycle {
+  ppid: number;
+  nextPid: number;
+  pgid: number;
+  sid: number;
+}
+
+function readKernelChildLifecycle(kernel: KernelExports, childPid: number): KernelChildLifecycle {
+  const ppid = kernel.process_child_ppid?.(childPid);
+  const pgid = kernel.process_child_pgid?.(childPid);
+  const sid = kernel.process_child_sid?.(childPid);
+  const nextPid = kernel.process_next_pid?.();
+  if (ppid === undefined || pgid === undefined || sid === undefined || nextPid === undefined) {
+    throw new Error("kernel process lifecycle ABI missing child lifecycle export");
+  }
+  return { ppid, nextPid, pgid, sid };
 }
 
 function formatGuestCStringForDebug(
@@ -376,6 +393,22 @@ function restoreVforkParentLocally(
   kernel.thread_clear_vfork_runtime_state?.();
 }
 
+function rollbackVforkExecveHandoffLocally(
+  kernel: KernelExports,
+  vmPtr: number,
+  childPid: number,
+): number {
+  const rollback = kernel.supervisor_vfork_execve_rollback;
+  if (!rollback) {
+    throw new Error("kernel supervisor ABI missing supervisor_vfork_execve_rollback");
+  }
+  const waitStatus = rollback(vmPtr, childPid);
+  if (waitStatus < 0) {
+    throw new Error(`kernel supervisor vfork execve rollback failed: ${waitStatus}`);
+  }
+  return waitStatus;
+}
+
 function reattachRestoredVforkParentWorker(
   deps: WorkerForkDeps,
   handle: ProcessHandle,
@@ -432,6 +465,7 @@ export async function handleVforkExecve(
     deps.appendWorkerDebugLog(handle, `vfork-parent-fds:${childPid}:${formatOpenFdSummary(handle)}`);
     handle.lastDebugMessage = `vfork-execve:start child=${childPid}`;
     const snapshot = handle.vforkSnapshot ?? captureVforkSnapshot(handle, parentThread);
+    const childLifecycle = readKernelChildLifecycle(handle.kernel, childPid);
     const inheritedSharedOfdIds = new Set(snapshot.inheritedSharedOfdIds);
     const handoff = readProcessSpawnHandoff(handle.kernel, parentThread.vmPtr);
     deps.appendRuntimeLifecycleEvent(
@@ -500,15 +534,9 @@ export async function handleVforkExecve(
         + `:${debugVforkVmState(handle, parentThread.vmPtr)}`,
     );
     if (handle.kernelWorkerRequest && handle.pid > 0) {
-      await deps.recordChildExitViaKernelWorker(
-        handle,
-        childPid,
-        VFORK_EXECVE_HANDOFF_FAILURE_WAIT_STATUS,
-      );
-      await deps.resumeVforkExecveParentViaKernelWorker(handle, parentThread.vmPtr, childPid);
+      await deps.rollbackVforkExecveHandoffViaKernelWorker(handle, parentThread.vmPtr, childPid);
     } else {
-      handle.kernel.process_record_child_exit(childPid, VFORK_EXECVE_HANDOFF_FAILURE_WAIT_STATUS);
-      restoreVforkParentLocally(handle.kernel, parentThread.vmPtr, childPid);
+      rollbackVforkExecveHandoffLocally(handle.kernel, parentThread.vmPtr, childPid);
       handle.kernelState = readKernelRuntimeState(handle.kernel);
     }
     deps.appendRuntimeLifecycleEvent(
@@ -797,10 +825,10 @@ export async function handleVforkExecve(
   await deps.initializeProcessLifecycleViaKernelWorker(
     childHandle,
     childVmPtr,
-    handle.pid,
-    snapshot.nextPid ?? Math.max(3, childPid + 1),
-    snapshot.pgid ?? childKernel.process_current_pgid(childVmPtr),
-    snapshot.sid ?? childKernel.process_current_sid(childVmPtr),
+    childLifecycle.ppid,
+    childLifecycle.nextPid,
+    childLifecycle.pgid,
+    childLifecycle.sid,
     true,
   );
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-lifecycle:done:${childPid}`);

@@ -17,6 +17,26 @@ import { expectKernelWorkerResponse } from "./transport.js";
 export function createWorkerKernelRpcProcessLifecycleHelpers(
   deps: WorkerKernelRpcLifecycleDeps,
 ) {
+  function readChildLifecycleFromKernel(
+    handle: ProcessHandle,
+    childPid: number,
+  ): CanonicalizedChildLifecycle {
+    const ppid = handle.kernel.process_child_ppid?.(childPid);
+    const pgid = handle.kernel.process_child_pgid?.(childPid);
+    const sid = handle.kernel.process_child_sid?.(childPid);
+    const nextPid = handle.kernel.process_next_pid?.();
+    if (ppid === undefined || pgid === undefined || sid === undefined || nextPid === undefined) {
+      throw new Error("kernel process lifecycle ABI missing child lifecycle export");
+    }
+    return {
+      childPid,
+      ppid,
+      nextPid,
+      pgid,
+      sid,
+    };
+  }
+
   async function registerProcessWithKernelWorker(
     handle: ProcessHandle,
     options: { seedMemfsMode?: KernelWorkerMemfsSeedMode; pipeSeedMode?: KernelWorkerPipeSeedMode } = {},
@@ -84,12 +104,7 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     provisionalChildPid: number,
   ): Promise<CanonicalizedChildLifecycle> {
     if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-      return {
-        childPid: provisionalChildPid,
-        nextPid: provisionalChildPid + 1,
-        pgid: handle.kernel.process_current_pgid(vmPtr),
-        sid: handle.kernel.process_current_sid(vmPtr),
-      };
+      return readChildLifecycleFromKernel(handle, provisionalChildPid);
     }
 
     const response = expectKernelWorkerResponse(await handle.kernelWorkerRequest({
@@ -104,8 +119,12 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     handle.kernel.process_rewrite_child_pid(vmPtr, provisionalChildPid, response.childPid, response.nextPid);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
+    const kernelLifecycle = response.ppid === undefined
+      ? readChildLifecycleFromKernel(handle, response.childPid)
+      : null;
     return {
       childPid: response.childPid,
+      ppid: response.ppid ?? kernelLifecycle!.ppid,
       nextPid: response.nextPid,
       pgid: response.pgid,
       sid: response.sid,

@@ -14,7 +14,7 @@ export interface WorkerSchedulerDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number, exitVmPtr?: number): Promise<void>;
   failProcess(handle: ProcessHandle, error: Error): void;
-  pumpActiveChildProcesses?(parentPid: number): boolean;
+  pumpSupervisorSelectedChildProcess?(childPid: number): boolean;
   pumpNetworkConnections(handle: ProcessHandle, vmPtr?: number): Promise<boolean>;
   executeHostBlockedSyscallResumeOutcome?(
     handle: ProcessHandle,

@@ -138,6 +138,7 @@ test("resumeVforkParentViaKernelWorker publishes state before waking and enqueue
     appendWorkerDebugLog: () => {},
     canonicalizeChildLifecycleViaKernelWorker: async () => ({
       childPid: 7,
+      ppid: 1,
       nextPid: 8,
       pgid: 1,
       sid: 1,

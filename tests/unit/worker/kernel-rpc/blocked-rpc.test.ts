@@ -117,6 +117,7 @@ function makeKernel() {
     kernel_ofd_ino: () => 0,
     kernel_ofd_offset: () => 0n,
     thread_blocked_ofd_id: () => 0,
+    supervisor_blocked_wait_active_child_pid: () => 0,
   };
   installSupervisorBlockedResumeStub(kernel);
   return kernel;
@@ -249,7 +250,7 @@ test("blocked-rpc pipe EOF ignores stale active-child writer when canonical pipe
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });
 
-test("blocked-rpc defers EOF-after-wait while an exiting visible child still holds a pipe writer", async () => {
+test("blocked-rpc resumes EOF-after-wait without a supervisor-selected active child", async () => {
   const kernel = makeKernel();
   const worker = {} as Worker;
   const childWorker = {} as Worker;
@@ -374,8 +375,8 @@ test("blocked-rpc defers EOF-after-wait while an exiting visible child still hol
     helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
-  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(vmPtr);
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_ok());
   expect(requestThreadWorkerBlockedResume).not.toHaveBeenCalled();
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(0);
   expect(enqueueWorker).not.toHaveBeenCalled();
@@ -422,6 +423,7 @@ test("blocked-rpc preserves canonical EOF retry when active-child writer defers 
   kernel.thread_blocked_pipe_write_ready = () => 0;
   kernel.thread_blocked_pipe_buffered_len = () => 0;
   kernel.thread_blocked_pipe_write_open = () => 0;
+  kernel.supervisor_blocked_wait_active_child_pid = () => 3;
   kernel.kernel_pipe_base = () => 0;
   kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
 
@@ -2780,6 +2782,7 @@ test("blocked-rpc defers blocking open-empty pipe read while active child may st
   kernel.thread_blocked_pipe_write_ready = () => 0;
   kernel.thread_blocked_pipe_buffered_len = () => 0;
   kernel.thread_blocked_pipe_write_open = () => 1;
+  kernel.supervisor_blocked_wait_active_child_pid = () => 2;
   kernel.kernel_pipe_base = () => 0;
   kernel.kernel_pipe_used = () => 1n << BigInt(pipeSlot);
 

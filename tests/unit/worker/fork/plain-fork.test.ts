@@ -514,6 +514,10 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     process_current_pgid: (vmPtr = 0x1234) => identityForVm(vmPtr).pgid,
     process_current_sid: (vmPtr = 0x1234) => identityForVm(vmPtr).sid,
     process_current_did_exec: (vmPtr = 0x1234) => identityForVm(vmPtr).didExec,
+    process_child_ppid: () => currentPpid,
+    process_child_pgid: () => currentPgid,
+    process_child_sid: () => currentSid,
+    process_next_pid: () => Math.max(3, currentPid + 1),
     process_rewrite_child_pid: (vmPtr, oldPid, newPid, _nextPid) => {
       const identity = identityForVm(vmPtr);
       pendingExecveChildPid = newPid;
@@ -767,6 +771,7 @@ test("plain fork canonicalizes child pid and reinitializes child lifecycle throu
             type: "child-pid-canonicalized",
             requestId: 0,
             childPid: 177,
+            ppid: 1,
             nextPid: 178,
             pgid: 1,
             sid: 1,
@@ -853,6 +858,7 @@ test("plain fork spawn path records child exit and resumes parent replacement wo
             type: "child-pid-canonicalized",
             requestId: 0,
             childPid: 177,
+            ppid: 1,
             nextPid: 178,
             pgid: 1,
             sid: 1,
@@ -866,6 +872,12 @@ test("plain fork spawn path records child exit and resumes parent replacement wo
               ...msg.kernelState,
               heapPtr: msg.kernelState.heapPtr + 0x80,
             },
+          };
+        case "resume-wait4":
+          return {
+            type: "wait4-resumed",
+            requestId: 0,
+            kernelState: msg.kernelState,
           };
         case "sync-fork-shared-state":
           return {
@@ -954,7 +966,7 @@ test("plain fork spawn path records child exit and resumes parent replacement wo
   expect(parentKernel.kernel_heap_ptr()).toBe(makeKernelState().heapPtr + 0x80);
 
   parentReplacementWorker.clearPostedMessages();
-  parentStatus = parentKernel.abi_status_ok();
+  parentStatus = parentKernel.abi_status_wait4();
   parentReplacementWorker.emit({
     type: "status",
     status: 31,
@@ -970,17 +982,8 @@ test("plain fork spawn path records child exit and resumes parent replacement wo
 
   expect(resumeWait4).not.toHaveBeenCalled();
   expect(parentKernel.kernel_heap_ptr()).toBe(makeKernelState().heapPtr + 0x80);
-  expect(parentReplacementWorker.postedMessages).toEqual([
-    {
-      type: "step",
-      budget: 20_000,
-      kernelState: {
-        ...parent.kernelState,
-        heapPtr: makeKernelState().heapPtr + 0x80,
-        pipeUsed: 15n,
-      },
-    },
-  ]);
+  expect(requests.some((msg) => msg.type === "resume-wait4" && msg.pid === 1)).toBe(true);
+  expect(parentReplacementWorker.postedMessages).toEqual([]);
 });
 
 test("plain fork rehydrates shared kernel objects after child memory scrub", async () => {

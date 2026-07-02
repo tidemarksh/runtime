@@ -10,11 +10,19 @@ const SUPERVISOR_BLOCKED_RESUME_DELEGATION_EPOLL_DIRECT = 4;
 
 export function installSupervisorBlockedResumeStub<T extends Partial<KernelExports>>(
   kernel: T,
-): T & Pick<KernelExports, "supervisor_resume_blocked_syscall" | "supervisor_blocked_resume_delegation"> {
+): T & Pick<
+  KernelExports,
+  "supervisor_resume_blocked_syscall"
+  | "supervisor_blocked_resume_delegation"
+  | "supervisor_blocked_wait_active_child_pid"
+> {
   const nextKernel = kernel as T & Pick<
     KernelExports,
-    "supervisor_resume_blocked_syscall" | "supervisor_blocked_resume_delegation"
+    "supervisor_resume_blocked_syscall"
+    | "supervisor_blocked_resume_delegation"
+    | "supervisor_blocked_wait_active_child_pid"
   >;
+  nextKernel.supervisor_blocked_wait_active_child_pid ??= () => 0;
   nextKernel.supervisor_blocked_resume_delegation = (vmPtr: number, flags: number) => {
     const kernelWorkerAvailable =
       (flags & SUPERVISOR_BLOCKED_RESUME_FLAG_KERNEL_WORKER_AVAILABLE) !== 0;

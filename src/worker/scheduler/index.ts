@@ -12,11 +12,11 @@ import {
   SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER,
   SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED,
   SUPERVISOR_BLOCKED_RESUME_DELEGATION_WAIT4_KERNEL_WORKER,
-  SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_ACTIVE_CHILD,
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PASSIVE_WAIT,
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_THREAD_INIT_PENDING,
+  SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_ACTIVE_CHILD,
   type SupervisorBlockedWaitRetryFlags,
   type SupervisorBlockedWaitRetryReason,
 } from "../../supervisor-blocked-resume.js";
@@ -341,6 +341,62 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     );
   }
 
+  function supervisorBlockedWaitActiveChildPid(handle: ProcessHandle, vmPtr: number): number {
+    const readActiveChild = handle.kernel.supervisor_blocked_wait_active_child_pid;
+    if (readActiveChild === undefined) {
+      throw new Error("kernel supervisor ABI missing supervisor_blocked_wait_active_child_pid");
+    }
+    const childPid = readActiveChild(vmPtr);
+    if (childPid < 0) {
+      throw new Error(`kernel supervisor active child selection failed: ${childPid}`);
+    }
+    return childPid;
+  }
+
+  function activeChildDebugFlag(handle: ProcessHandle, vmPtr: number): number {
+    try {
+      return supervisorBlockedWaitActiveChildPid(handle, vmPtr) > 0 ? 1 : 0;
+    } catch {
+      return -1;
+    }
+  }
+
+  function parkBehindSupervisorActiveChild(
+    handle: ProcessHandle,
+    worker: Worker,
+    blocked: HostBlockedWorkerState,
+    readyCount: number | undefined,
+  ): boolean {
+    if (
+      blocked.status !== handle.kernel.abi_status_pipe_wait()
+      && blocked.status !== handle.kernel.abi_status_wait4()
+    ) {
+      return false;
+    }
+    const retryPlan = supervisorBlockedWaitRetryPlan(handle.kernel, blocked.vmPtr);
+    if (retryPlan.reason !== SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_ACTIVE_CHILD) {
+      return false;
+    }
+    const childPid = supervisorBlockedWaitActiveChildPid(handle, blocked.vmPtr);
+    if (childPid > 0) {
+      deps.pumpSupervisorSelectedChildProcess?.(childPid);
+    }
+    const event = blocked.status === handle.kernel.abi_status_pipe_wait()
+      ? `pipe-retry-skip:${handle.pid}:active-child:${childPid}:ready=${readyCount ?? "n/a"}:${formatFirstPipeWaitDebug(handle, blocked.vmPtr)}:${formatBlockedPollFdSet(handle, blocked.vmPtr)}`
+      : `wait4-retry-skip:${handle.pid}:active-child:${childPid}`;
+    if (blocked.lastPipeRetryLifecycleEvent !== event) {
+      blocked.lastPipeRetryLifecycleEvent = event;
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);
+    }
+    scheduleHostBlockedRetry(
+      handle,
+      worker,
+      retryPlan.delayMs,
+      retryPlan.reason,
+    );
+    return true;
+  }
+
   function requestThreadWorkerBlockedResume(_handle: ProcessHandle, worker: Worker): void {
     threadWorkerBlockedResumeRequests.add(worker);
   }
@@ -407,10 +463,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     return false;
   }
 
-  function hasActiveChildProcess(handle: ProcessHandle): boolean {
-    return handle.pid > 0 && handle.kernel.process_has_active_child?.(handle.pid) === 1;
-  }
-
   function formatRunningRetryBlocker(
     handle: ProcessHandle,
     runningThread: ThreadWorkerState | undefined,
@@ -456,13 +508,11 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     formatBlockedPollFdSet,
     formatFirstPipeWaitDebug,
     pollWaitTimeoutMs,
-    pipeWaitShouldParkBehindActiveChild,
     pipeWaitShouldRemainPassive,
   } = createPipePollScheduler({
     threadWorkerStates,
     appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
     scheduleSupervisorBlockedRetry,
-    hasActiveChildProcess,
   });
   const {
     formatFirstSocketWaitDebug,
@@ -739,7 +789,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       `fds=${formatBlockedFdEntries(handle, blocked.vmPtr)}`,
       "records=supervisor",
       `pending=0/${handle.pendingChildSpawnRecords}`,
-      `active=${hasActiveChildProcess(handle) ? 1 : 0}`,
+      `active=${activeChildDebugFlag(handle, blocked.vmPtr)}`,
     ];
     if (status === handle.kernel.abi_status_pipe_wait()) {
       parts.push(
@@ -888,6 +938,83 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     resumeBlockedSyscallBySupervisor(handle.kernel, blocked.vmPtr);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     appendEpollRetryResult(handle, blocked.vmPtr);
+    handleHostBlockedRetryResult(handle, worker, blocked.vmPtr, handle.kernel.thread_status(blocked.vmPtr));
+  }
+
+  function resumeWait4BlockedWorker(
+    handle: ProcessHandle,
+    worker: Worker,
+    blocked: HostBlockedWorkerState,
+  ): void {
+    const forkSharedSyncPromise = handle.kernelShare.forkSharedSyncPromise;
+    if (forkSharedSyncPromise !== null) {
+      const staleGate = clearStaleForkSharedSyncGate(handle, forkSharedSyncPromise);
+      if (staleGate !== null) {
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-cleared:${handle.pid}:${staleGate}`);
+      }
+    }
+
+    let resumeDelegation: ReturnType<typeof supervisorBlockedResumeDelegation>;
+    try {
+      resumeDelegation = supervisorBlockedResumeDelegation(
+        handle.kernel,
+        blocked.vmPtr,
+        !!handle.kernelWorkerRequest && handle.pid > 0,
+      );
+    } catch (error) {
+      deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+
+    switch (resumeDelegation) {
+      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_WAIT4_KERNEL_WORKER:
+        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-rpc:${handle.pid}`);
+        blocked.rpcPending = true;
+        void deps.resumeWait4ViaKernelWorker(handle, worker, blocked.vmPtr)
+          .then((outcome) => {
+            consumeKernelRpcResumeOutcome(handle, worker, blocked.vmPtr, outcome);
+          })
+          .catch((error) => {
+            const latestBlocked = handle.hostBlockedWorkers.get(worker);
+            if (latestBlocked && latestBlocked.vmPtr === blocked.vmPtr) {
+              latestBlocked.rpcPending = false;
+            }
+            deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+          });
+        return;
+      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_DIRECT:
+        break;
+      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED:
+        deps.failProcess(
+          handle,
+          new Error(`kernel supervisor rejected wait4 resume delegation for pid ${handle.pid}`),
+        );
+        return;
+      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER:
+      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_EPOLL_DIRECT:
+        deps.failProcess(
+          handle,
+          new Error(`kernel supervisor returned invalid wait4 resume delegation ${resumeDelegation}`),
+        );
+        return;
+      default: {
+        const exhaustive: never = resumeDelegation;
+        throw new Error(`unhandled supervisor wait4 resume delegation: ${exhaustive}`);
+      }
+    }
+
+    attachKernelRuntimeState(handle.kernel, handle.kernelState);
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `wait4-retry-local:${handle.pid}:0x${blocked.vmPtr.toString(16)}:records=supervisor`,
+    );
+    const rawWait4Result = resumeBlockedSyscallBySupervisor(handle.kernel, blocked.vmPtr);
+    const wait4Result = rawWait4Result ?? 0n;
+    handle.kernelState = readKernelRuntimeState(handle.kernel);
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `wait4-retry-result:${handle.pid}:result=${wait4Result.toString()}:status=${handle.kernel.thread_status(blocked.vmPtr)}:a0=${handle.kernel.thread_a0?.(blocked.vmPtr)?.toString() ?? "n/a"}:records=supervisor`,
+    );
     handleHostBlockedRetryResult(handle, worker, blocked.vmPtr, handle.kernel.thread_status(blocked.vmPtr));
   }
 
@@ -1232,7 +1359,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
     appendBlockedStateLifecycle(handle, blocked);
     if (blocked.rpcPending) {
-      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-skip:${handle.pid}:rpc-pending`);
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-retry-skip:${handle.pid}:rpc-pending`);
       return;
     }
     const thread = threadWorkerStates.get(worker);
@@ -1265,34 +1392,22 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
     const blockedPollTimeoutMs = pollWaitTimeoutMs(handle, blocked.status, blocked.vmPtr);
-    if (
-      blocked.status === handle.kernel.abi_status_pipe_wait()
-      || blocked.status === handle.kernel.abi_status_wait4()
-    ) {
-      deps.pumpActiveChildProcesses?.(handle.pid);
-    }
     const blockedPollReadyCount = blocked.status === handle.kernel.abi_status_pipe_wait()
       ? handle.kernel.thread_poll_wait_ready_count?.(blocked.vmPtr)
       : undefined;
     if (armBlockedSupervisorTimerForBlocked(handle, blocked)) {
       return;
     }
-    if (pipeWaitShouldParkBehindActiveChild(
+    if (parkBehindSupervisorActiveChild(
       handle,
+      worker,
       blocked,
-      blockedPollTimeoutMs,
       blockedPollReadyCount,
     )) {
-      const event = `pipe-retry-skip:${handle.pid}:active-child:ready=${blockedPollReadyCount ?? "n/a"}:${formatFirstPipeWaitDebug(handle, blocked.vmPtr)}:${formatBlockedPollFdSet(handle, blocked.vmPtr)}`;
-      if (blocked.lastPipeRetryLifecycleEvent !== event) {
-        blocked.lastPipeRetryLifecycleEvent = event;
-        deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);
-      }
-      scheduleSupervisorBlockedRetry(
-        handle,
-        worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_ACTIVE_CHILD,
-      );
+      return;
+    }
+    if (blocked.status === handle.kernel.abi_status_wait4()) {
+      resumeWait4BlockedWorker(handle, worker, blocked);
       return;
     }
     const forkSharedSyncPromise = handle.kernelShare.forkSharedSyncPromise;
@@ -1307,7 +1422,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         observeForkSharedSyncCompletion(handle, worker, forkSharedSyncPromise);
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
-          `wait4-retry-skip:${handle.pid}:fork-shared-sync:${describeForkSharedSyncPromise(forkSharedSyncPromise)}`,
+          `blocked-retry-skip:${handle.pid}:fork-shared-sync:${describeForkSharedSyncPromise(forkSharedSyncPromise)}`,
         );
         scheduleSupervisorBlockedRetry(
           handle,
@@ -1325,7 +1440,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       const runningThread = threadWorkerStates.get(handle.runningWorker);
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
-        `wait4-retry-skip:${handle.pid}:running=1`
+        `blocked-retry-skip:${handle.pid}:running=1`
           + `:${formatRunningRetryBlocker(handle, runningThread)}`,
       );
       scheduleSupervisorBlockedRetry(
@@ -1336,7 +1451,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
     if (!canScheduleWorker(handle, worker)) {
-      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-skip:${handle.pid}:cannot-schedule`);
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-retry-skip:${handle.pid}:cannot-schedule`);
       scheduleSupervisorBlockedRetry(
         handle,
         worker,
@@ -1506,7 +1621,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       }
       if (
         !blocked.pipeSyncedBeforePassive
-        && !hasActiveChildProcess(handle)
         && kernelWorkerOwnsPipeState(handle)
         && handle.kernelWorkerRequest
         && handle.pid > 0
@@ -1538,7 +1652,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (
       blocked.status === handle.kernel.abi_status_pipe_wait()
       && !blocked.pipeSyncedBeforePassive
-      && !hasActiveChildProcess(handle)
       && kernelWorkerOwnsPipeState(handle)
       && handle.kernelWorkerRequest
       && handle.pid > 0
@@ -1607,27 +1720,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       );
       return;
     }
-    if (
-      handle.kernelWorkerRequest
-      && handle.pid > 0
-      && blocked.status === handle.kernel.abi_status_wait4()
-    ) {
-      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-rpc:${handle.pid}`);
-      blocked.rpcPending = true;
-      void deps.resumeWait4ViaKernelWorker(handle, worker, blocked.vmPtr)
-        .then((outcome) => {
-          consumeKernelRpcResumeOutcome(handle, worker, blocked.vmPtr, outcome);
-        })
-        .catch((error) => {
-          const latestBlocked = handle.hostBlockedWorkers.get(worker);
-          if (latestBlocked && latestBlocked.vmPtr === blocked.vmPtr) {
-            latestBlocked.rpcPending = false;
-          }
-          deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-        });
-      return;
-    }
-
     let resumeDelegation: ReturnType<typeof supervisorBlockedResumeDelegation>;
     try {
       resumeDelegation = supervisorBlockedResumeDelegation(

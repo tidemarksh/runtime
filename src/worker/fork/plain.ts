@@ -155,18 +155,7 @@ export async function handlePlainFork(
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `plain-fork:parent-memfs-clean:${handle.pid}`);
       }
     }
-    const cloneFlags = Number(handle.kernel.thread_clone_flags(parentThread.vmPtr));
-    const childPpid = (cloneFlags & Number(handle.kernel.abi_clone_parent())) !== 0
-      ? (handle.parentPid ?? handle.pid)
-      : handle.pid;
-    const lifecycle = handle.kernelWorkerRequest && handle.pid > 0
-      ? await deps.canonicalizeChildLifecycleViaKernelWorker(handle, parentThread.vmPtr, childPid)
-      : {
-          childPid,
-          nextPid: childPid + 1,
-          pgid: handle.kernel.process_current_pgid(parentThread.vmPtr),
-          sid: handle.kernel.process_current_sid(parentThread.vmPtr),
-        };
+    const lifecycle = await deps.canonicalizeChildLifecycleViaKernelWorker(handle, parentThread.vmPtr, childPid);
     childPid = lifecycle.childPid;
 
     trackForkSharedOfds(handle, parentThread.vmPtr, true);
@@ -214,7 +203,7 @@ export async function handlePlainFork(
       deps,
       parent: handle,
       childPid,
-      childPpid,
+      childPpid: lifecycle.ppid,
       vmPtr: parentThread.vmPtr,
       worker: parentWorker,
       memory: childMemory,
@@ -262,7 +251,7 @@ export async function handlePlainFork(
     await deps.initializeProcessLifecycleViaKernelWorker(
       childHandle,
       childHandle.vmPtr,
-      childPpid,
+      lifecycle.ppid,
       lifecycle.nextPid,
       lifecycle.pgid,
       lifecycle.sid,

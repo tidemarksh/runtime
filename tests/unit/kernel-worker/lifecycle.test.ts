@@ -122,6 +122,14 @@ function makeKernelExports(options: FakeKernelOptions = {}): FakeKernelExports {
     process_current_ppid: () => 1,
     process_current_pgid: () => 33,
     process_current_sid: () => 44,
+    process_child_ppid: () => 1,
+    process_child_pgid: () => 33,
+    process_child_sid: () => 44,
+    process_next_pid: () => 10,
+    supervisor_vfork_execve_rollback: (vmPtr: number, childPid: number) => {
+      opLog.push(`rollback-vfork:${vmPtr}:${childPid}`);
+      return 127 << 8;
+    },
     thread_clear_spawn_handoff: (vmPtr: number) => {
       opLog.push(`clear-spawn:${vmPtr}`);
     },

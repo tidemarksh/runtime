@@ -22,11 +22,6 @@ export interface WorkerForkDeps {
     flushSharedMappings: boolean,
   ): Promise<void>;
   notifyForkProgress(handle: ProcessHandle): void;
-  recordChildExitViaKernelWorker(
-    parent: ProcessHandle,
-    childPid: number,
-    waitStatus: number,
-  ): Promise<void>;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   rehydrateForkSharedStateViaKernelWorker(
     targets: ProcessHandle[],
@@ -38,6 +33,11 @@ export interface WorkerForkDeps {
     options?: { seedMemfsMode?: KernelWorkerMemfsSeedMode; pipeSeedMode?: KernelWorkerPipeSeedMode },
   ): Promise<void>;
   resumeVforkExecveParentViaKernelWorker(
+    handle: ProcessHandle,
+    vmPtr: number,
+    childPid: number,
+  ): Promise<KernelRpcResumeOutcome>;
+  rollbackVforkExecveHandoffViaKernelWorker(
     handle: ProcessHandle,
     vmPtr: number,
     childPid: number,

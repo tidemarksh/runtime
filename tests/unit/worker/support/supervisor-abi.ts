@@ -43,6 +43,7 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_wait_retry_flag_process_gate: 8,
   supervisor_blocked_wait_retry_flag_thread_init_pending: 16,
   supervisor_blocked_wait_timer_required: 0,
+  supervisor_vfork_execve_handoff_failure_wait_status: 127 << 8,
   supervisor_host_op_kind_arm_host_timer: 12,
   supervisor_futex_wait_completion_woken: 1,
   supervisor_futex_wait_completion_not_equal: 2,
@@ -230,7 +231,12 @@ export function makeSupervisorAbiStubs(
       return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_kernel_worker;
     },
     supervisor_blocked_wait_retry_delay_ms: () => 0,
-    supervisor_blocked_wait_retry_reason: (_vmPtr: number, flags: number) => {
+    supervisor_blocked_wait_active_child_pid(this: KernelExports | undefined, vmPtr: number) {
+      const receiver = currentExports(this);
+      const currentPid = Number(receiver?.process_current_pid?.(vmPtr) ?? overrides.process_current_pid?.(vmPtr) ?? 0);
+      return Number(receiver?.process_active_child_pid?.(currentPid) ?? overrides.process_active_child_pid?.(currentPid) ?? 0);
+    },
+    supervisor_blocked_wait_retry_reason(this: KernelExports | undefined, vmPtr: number, flags: number) {
       if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_flag_process_gate) !== 0) {
         return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_process_gate;
       }
@@ -246,7 +252,23 @@ export function makeSupervisorAbiStubs(
       if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_flag_thread_init_pending) !== 0) {
         return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_standard_defer;
       }
+      const activeChildPid = Number(this?.supervisor_blocked_wait_active_child_pid?.(vmPtr) ?? 0);
+      if (activeChildPid > 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_active_child;
+      }
       return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_default;
+    },
+    supervisor_vfork_execve_rollback(this: KernelExports | undefined, vmPtr: number, childPid: number) {
+      const receiver = currentExports(this);
+      const waitStatus = Number(
+        receiver?.supervisor_vfork_execve_handoff_failure_wait_status?.()
+          ?? overrides.supervisor_vfork_execve_handoff_failure_wait_status?.()
+          ?? DEFAULT_NUMERIC_EXPORTS.supervisor_vfork_execve_handoff_failure_wait_status,
+      );
+      receiver?.process_record_child_exit?.(childPid, waitStatus);
+      receiver?.thread_restore_vfork_parent_without_cleanup?.(vmPtr, childPid);
+      receiver?.thread_clear_vfork_runtime_state?.();
+      return waitStatus;
     },
     supervisor_process_resume(this: KernelExports | undefined, vmPtr: number, outPtr: number, outLen: number) {
       const recordBytes = DEFAULT_NUMERIC_EXPORTS.supervisor_resume_record_bytes;

@@ -244,6 +244,7 @@ export function createTransferDebugStats(): TransferDebugStats {
 
 export interface CanonicalizedChildLifecycle {
   childPid: number;
+  ppid: number;
   nextPid: number;
   pgid: number;
   sid: number;

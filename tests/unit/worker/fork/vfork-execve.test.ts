@@ -570,11 +570,25 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     process_record_child_exit: (pid, waitStatus) => {
       recordedChildExits.push([pid, waitStatus]);
     },
+    supervisor_vfork_execve_rollback: (vmPtr, childPid) => {
+      const waitStatus = 127 << 8;
+      recordedChildExits.push([childPid, waitStatus]);
+      threadStatus.status = 0;
+      const identity = identityForVm(vmPtr);
+      if (identity.pid === childPid) {
+        setIdentityForVm(vmPtr, identity.ppid || 1, 0, identity.pgid, identity.sid, 0);
+      }
+      return waitStatus;
+    },
     process_current_pid: (vmPtr = 0x1234) => identityForVm(vmPtr).pid,
     process_current_ppid: (vmPtr = 0x1234) => identityForVm(vmPtr).ppid,
     process_current_pgid: (vmPtr = 0x1234) => identityForVm(vmPtr).pgid,
     process_current_sid: (vmPtr = 0x1234) => identityForVm(vmPtr).sid,
     process_current_did_exec: (vmPtr = 0x1234) => identityForVm(vmPtr).didExec,
+    process_child_ppid: () => currentPpid,
+    process_child_pgid: () => currentPgid,
+    process_child_sid: () => currentSid,
+    process_next_pid: () => Math.max(3, currentPid + 1),
     process_rewrite_child_pid: (vmPtr, oldPid, newPid, _nextPid) => {
       const identity = identityForVm(vmPtr);
       pendingExecveChildPid = newPid;
@@ -817,6 +831,7 @@ test("vfork child fault delegates wait status bookkeeping and parent resume to k
             type: "child-pid-canonicalized",
             requestId: 0,
             childPid: 56,
+            ppid: 1,
             nextPid: 57,
             pgid: 1,
             sid: 1,
@@ -914,6 +929,7 @@ test("STATUS_VFORK_WAIT syncs pre-vfork fork-shared OFD state before child canon
             type: "child-pid-canonicalized",
             requestId: 0,
             childPid: 56,
+            ppid: 1,
             nextPid: 57,
             pgid: 1,
             sid: 1,
@@ -1000,6 +1016,7 @@ test("vfork execve resumes the parent and initializes the child lifecycle throug
             type: "child-pid-canonicalized",
             requestId: 0,
             childPid: 156,
+            ppid: 1,
             nextPid: 201,
             pgid: 33,
             sid: 44,
@@ -1107,7 +1124,7 @@ test("vfork execve resumes the parent and initializes the child lifecycle throug
       (msg) => msg.type === "initialize-process-lifecycle"
         && msg.pid === 156
         && msg.ppid === 1
-        && msg.nextPid === 201
+        && msg.nextPid === 157
         && msg.pgid === 33
         && msg.sid === 44
         && msg.didExec,
@@ -1238,6 +1255,7 @@ test("vfork execve continues backing retry past the initial fixed budget", async
             type: "child-pid-canonicalized",
             requestId: 0,
             childPid: 156,
+            ppid: 1,
             nextPid: 201,
             pgid: 33,
             sid: 44,
@@ -1423,13 +1441,19 @@ test("vfork execve preserves child-private OFDs across kernel-worker scrub", asy
               type: "child-pid-canonicalized",
               requestId: 0,
               childPid: 156,
+              ppid: 1,
               nextPid: 201,
               pgid: 33,
               sid: 44,
               kernelState: msg.kernelState,
             };
-          case "record-child-exit":
-            return { type: "child-exit-recorded", requestId: 0, kernelState: msg.kernelState };
+          case "rollback-vfork-execve-handoff":
+            return {
+              type: "vfork-execve-handoff-rolled-back",
+              requestId: 0,
+              waitStatus: 127 << 8,
+              kernelState: msg.kernelState,
+            };
           case "record-child-exit":
             return { type: "child-exit-recorded", requestId: 0, kernelState: msg.kernelState };
           case "resume-vfork-execve-parent":
@@ -1548,9 +1572,17 @@ test("vfork execve keeps CLOEXEC-style parent-only OFDs out of the child without
               type: "child-pid-canonicalized",
               requestId: 0,
               childPid: 156,
+              ppid: 1,
               nextPid: 201,
               pgid: 33,
               sid: 44,
+              kernelState: msg.kernelState,
+            };
+          case "rollback-vfork-execve-handoff":
+            return {
+              type: "vfork-execve-handoff-rolled-back",
+              requestId: 0,
+              waitStatus: 127 << 8,
               kernelState: msg.kernelState,
             };
           case "record-child-exit":
@@ -1714,9 +1746,17 @@ test("vfork execve preserves dup-style child aliases across fork-shared scrub", 
               type: "child-pid-canonicalized",
               requestId: 0,
               childPid: 156,
+              ppid: 1,
               nextPid: 201,
               pgid: 33,
               sid: 44,
+              kernelState: msg.kernelState,
+            };
+          case "rollback-vfork-execve-handoff":
+            return {
+              type: "vfork-execve-handoff-rolled-back",
+              requestId: 0,
+              waitStatus: 127 << 8,
               kernelState: msg.kernelState,
             };
           case "record-child-exit":
@@ -1838,9 +1878,17 @@ test("vfork execve handoff failure does not publish a partially spawned child", 
               type: "child-pid-canonicalized",
               requestId: 0,
               childPid: 156,
+              ppid: 1,
               nextPid: 201,
               pgid: 33,
               sid: 44,
+              kernelState: msg.kernelState,
+            };
+          case "rollback-vfork-execve-handoff":
+            return {
+              type: "vfork-execve-handoff-rolled-back",
+              requestId: 0,
+              waitStatus: 127 << 8,
               kernelState: msg.kernelState,
             };
           case "record-child-exit":
@@ -1897,7 +1945,7 @@ test("vfork execve handoff failure does not publish a partially spawned child", 
     expect(onError).not.toHaveBeenCalled();
     expect(createdWorkers).toHaveLength(1);
     expect(
-      requests.some((msg) => msg.type === "record-child-exit" && msg.childPid === 156 && msg.waitStatus === (127 << 8)),
+      requests.some((msg) => msg.type === "rollback-vfork-execve-handoff" && msg.childPid === 156),
     ).toBe(true);
     expect(
       requests.some((msg) => msg.type === "register-process" && msg.pid === 156),
@@ -1954,10 +2002,21 @@ test("vfork execve handoff failure restores the parent without surfacing a fatal
               type: "child-pid-canonicalized",
               requestId: 0,
               childPid: 156,
+              ppid: 1,
               nextPid: 201,
               pgid: 33,
               sid: 44,
               kernelState: msg.kernelState,
+            };
+          case "rollback-vfork-execve-handoff":
+            return {
+              type: "vfork-execve-handoff-rolled-back",
+              requestId: 0,
+              waitStatus: 127 << 8,
+              kernelState: {
+                ...resumedState,
+                processPendingPtr: makeKernelState().processPendingPtr,
+              },
             };
           case "record-child-exit":
             return { type: "child-exit-recorded", requestId: 0, kernelState: msg.kernelState };
@@ -2027,7 +2086,7 @@ test("vfork execve handoff failure restores the parent without surfacing a fatal
     expect(createdWorkers).toHaveLength(1);
     expect(onError).not.toHaveBeenCalled();
     expect(
-      requests.some((msg) => msg.type === "record-child-exit" && msg.childPid === 156 && msg.waitStatus === (127 << 8)),
+      requests.some((msg) => msg.type === "rollback-vfork-execve-handoff" && msg.childPid === 156),
     ).toBe(true);
     expect(handle.kernelState.heapPtr).toBe(resumedState.heapPtr);
     expect(handle.kernelState.processPendingPtr).toBe(makeKernelState().processPendingPtr);
@@ -2085,6 +2144,7 @@ test("vfork execve status-style handoff failure restores the parent and surfaces
   });
 
   try {
+    const requests: KernelWorkerRequest[] = [];
     const onError = vi.fn();
     const resumedState = {
       ...makeKernelState(),
@@ -2095,6 +2155,7 @@ test("vfork execve status-style handoff failure restores the parent and surfaces
       pid: 1,
       onError,
       kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+        requests.push(msg);
         switch (msg.type) {
           case "register-process":
             return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
@@ -2105,10 +2166,21 @@ test("vfork execve status-style handoff failure restores the parent and surfaces
               type: "child-pid-canonicalized",
               requestId: 0,
               childPid: 156,
+              ppid: 1,
               nextPid: 201,
               pgid: 33,
               sid: 44,
               kernelState: msg.kernelState,
+            };
+          case "rollback-vfork-execve-handoff":
+            return {
+              type: "vfork-execve-handoff-rolled-back",
+              requestId: 0,
+              waitStatus: 127 << 8,
+              kernelState: {
+                ...resumedState,
+                processPendingPtr: makeKernelState().processPendingPtr,
+              },
             };
           case "record-child-exit":
             return { type: "child-exit-recorded", requestId: 0, kernelState: msg.kernelState };
@@ -2164,8 +2236,8 @@ test("vfork execve status-style handoff failure restores the parent and surfaces
     expect(createdWorkers).toHaveLength(1);
     expect(onError).not.toHaveBeenCalled();
     expect(
-      parentKernel.recordedChildExits,
-    ).toEqual([[156, 127 << 8]]);
+      requests.some((msg) => msg.type === "rollback-vfork-execve-handoff" && msg.childPid === 156),
+    ).toBe(true);
     expect(handle.kernelState.heapPtr).toBe(resumedState.heapPtr);
     expect(handle.kernelState.processPendingPtr).toBe(makeKernelState().processPendingPtr);
     expect(handle.lastDebugMessage).toContain("vfork-execve:handoff-failed child=156 ret=-8");
@@ -2239,10 +2311,21 @@ test("vfork execve handoff failure makes synthetic child exit visible to a later
               type: "child-pid-canonicalized",
               requestId: 0,
               childPid: 156,
+              ppid: 1,
               nextPid: 201,
               pgid: 33,
               sid: 44,
               kernelState: msg.kernelState,
+            };
+          case "rollback-vfork-execve-handoff":
+            return {
+              type: "vfork-execve-handoff-rolled-back",
+              requestId: 0,
+              waitStatus: 127 << 8,
+              kernelState: {
+                ...resumedState,
+                processPendingPtr: makeKernelState().processPendingPtr,
+              },
             };
           case "record-child-exit":
             return { type: "child-exit-recorded", requestId: 0, kernelState: msg.kernelState };
@@ -2305,9 +2388,8 @@ test("vfork execve handoff failure makes synthetic child exit visible to a later
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(
-      requests.some((msg) => msg.type === "record-child-exit" && msg.childPid === 156 && msg.waitStatus === (127 << 8)),
+      requests.some((msg) => msg.type === "rollback-vfork-execve-handoff" && msg.childPid === 156),
     ).toBe(true);
-    expect(parentKernel.recordedChildExits).toEqual([[156, 127 << 8]]);
     expect(parentWorker.postedMessages).toEqual([
       expect.objectContaining({
         type: "init",
@@ -2397,9 +2479,17 @@ test("vfork execve handoff failure reinitializes the restored parent while a sib
               type: "child-pid-canonicalized",
               requestId: 0,
               childPid: 156,
+              ppid: 1,
               nextPid: 201,
               pgid: 33,
               sid: 44,
+              kernelState: msg.kernelState,
+            };
+          case "rollback-vfork-execve-handoff":
+            return {
+              type: "vfork-execve-handoff-rolled-back",
+              requestId: 0,
+              waitStatus: 127 << 8,
               kernelState: msg.kernelState,
             };
           case "record-child-exit":
@@ -2578,6 +2668,7 @@ test("vfork execve keeps post-vfork stdio rewires child-private across kernel-wo
               type: "child-pid-canonicalized",
               requestId: 0,
               childPid: 156,
+              ppid: 1,
               nextPid: 201,
               pgid: 33,
               sid: 44,
@@ -2786,6 +2877,7 @@ test("vfork execve keeps distinct shared stdout and stderr pipe slots across ker
               type: "child-pid-canonicalized",
               requestId: 0,
               childPid: 156,
+              ppid: 1,
               nextPid: 201,
               pgid: 33,
               sid: 44,
@@ -2976,6 +3068,7 @@ test("child runtime errors propagate to the parent process handle", async () => 
             type: "child-pid-canonicalized",
             requestId: 0,
             childPid: 156,
+            ppid: 1,
             nextPid: 201,
             pgid: 33,
             sid: 44,

@@ -61,9 +61,6 @@ import { createWorkerLifecycleHelpers } from "../lifecycle.js";
 import { createWorkerMessageHandler } from "../message-handler.js";
 import { createWorkerRuntimeContext } from "../runtime-context.js";
 import { createWorkerScheduler } from "../scheduler.js";
-import {
-  pumpActiveChildProcesses as pumpActiveChildProcessesImpl,
-} from "../child-processes.js";
 import { createWorkerOrchestratorFacade } from "./facade.js";
 import type {
   WorkerOrchestrator,
@@ -134,15 +131,14 @@ const workerScheduler = createWorkerScheduler({
   threadWorkerStates,
   completeProcessExit,
   failProcess,
-  pumpActiveChildProcesses: (parentPid) => {
-    const notifyChildProcessProgress = (handle: ProcessHandle): void => notifySchedulerProgress(handle);
-    return pumpActiveChildProcessesImpl(
-      processHandles,
-      parentPid,
-      pumpProcess,
-      notifyChildProcessProgress,
-      threadWorkerStates,
-    );
+  pumpSupervisorSelectedChildProcess: (childPid) => {
+    const child = processHandles.get(childPid);
+    if (!child) {
+      return false;
+    }
+    notifySchedulerProgress(child);
+    pumpProcess(child);
+    return true;
   },
   pumpNetworkConnections,
   resumeFsViaKernelWorker,
@@ -200,6 +196,7 @@ const {
   resumeConnectViaKernelWorker: resumeConnectViaKernelWorkerImpl,
   resumeFsViaKernelWorkerOutcome: resumeFsViaKernelWorkerOutcomeImpl,
   resumeFsViaKernelWorker: resumeFsViaKernelWorkerImpl,
+  rollbackVforkExecveHandoffViaKernelWorker: rollbackVforkExecveHandoffViaKernelWorkerImpl,
   resumeVforkExecveParentViaKernelWorker: resumeVforkExecveParentViaKernelWorkerImpl,
   resumeVforkParentViaKernelWorker: resumeVforkParentViaKernelWorkerImpl,
   syncProcessMemfsViaKernelWorker,
@@ -217,10 +214,10 @@ const workerForkHandlers = createWorkerForkHandlers({
   failProcess,
   initializeProcessLifecycleViaKernelWorker,
   notifyForkProgress: notifySchedulerProgress,
-  recordChildExitViaKernelWorker,
   requestPipeStateSync,
   rehydrateForkSharedStateViaKernelWorker,
   registerProcessWithKernelWorker,
+  rollbackVforkExecveHandoffViaKernelWorker,
   resumeVforkExecveParentViaKernelWorker,
   syncForkSharedStateLocally,
   syncForkSharedStateViaKernelWorker,
@@ -579,6 +576,15 @@ async function resumeVforkExecveParentViaKernelWorker(
   childPid: number,
 ): Promise<KernelRpcResumeOutcome> {
   const outcome = await resumeVforkExecveParentViaKernelWorkerImpl(handle, vmPtr, childPid);
+  return applyKernelRpcResumeEffects(handle, {} as Worker, vmPtr, outcome);
+}
+
+async function rollbackVforkExecveHandoffViaKernelWorker(
+  handle: ProcessHandle,
+  vmPtr: number,
+  childPid: number,
+): Promise<KernelRpcResumeOutcome> {
+  const outcome = await rollbackVforkExecveHandoffViaKernelWorkerImpl(handle, vmPtr, childPid);
   return applyKernelRpcResumeEffects(handle, {} as Worker, vmPtr, outcome);
 }
 

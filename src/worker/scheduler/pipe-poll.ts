@@ -7,7 +7,6 @@ import {
 import { POLLFD_BYTES } from "../../layout/poll.js";
 import { appendPendingGuestMemoryWrites } from "../guest-memory-writes.js";
 import type {
-  HostBlockedWorkerState,
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
@@ -21,7 +20,6 @@ export interface PipePollSchedulerDeps {
     worker: Worker,
     flags?: SupervisorBlockedWaitRetryFlags,
   ): void;
-  hasActiveChildProcess(handle: ProcessHandle): boolean;
 }
 
 export interface PipePollScheduler {
@@ -42,12 +40,6 @@ export interface PipePollScheduler {
     handle: ProcessHandle,
     status: number,
     vmPtr: number,
-    pollTimeoutMs: number,
-    readyCount: number | undefined,
-  ): boolean;
-  pipeWaitShouldParkBehindActiveChild(
-    handle: ProcessHandle,
-    blocked: HostBlockedWorkerState,
     pollTimeoutMs: number,
     readyCount: number | undefined,
   ): boolean;
@@ -187,13 +179,9 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
       && (pollPipeSlots?.size ?? 0) > 0
       && !blockedPollPipeIsReady
       && pollPipeWriteOpenForThreadStep(handle, vmPtr) <= 0;
-    const childWorkStillPending = deps.hasActiveChildProcess(handle);
     return status === handle.kernel.abi_status_pipe_wait()
       && canPark
-      && (
-        childWorkStillPending
-        || pollLikeHasNoWatchedFds
-      )
+      && pollLikeHasNoWatchedFds
       && !blockedReadIsReady
       && !blockedPollPipeIsReady
       && !pollLikePipeHasNoWriter
@@ -271,32 +259,6 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
       return true;
     }
     return false;
-  }
-
-  function pipeWaitHasImmediateWakeReason(
-    handle: ProcessHandle,
-    vmPtr: number,
-    readyCount: number | undefined,
-  ): boolean {
-    return (readyCount !== undefined && readyCount !== 0)
-      || handle.kernel.thread_blocked_pipe_read_ready?.(vmPtr) === 1
-      || handle.kernel.thread_blocked_pipe_write_ready?.(vmPtr) === 1
-      || blockedPollPipeHasBufferedData(handle, vmPtr)
-      || handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) === 1
-      || handle.kernel.thread_poll_hup_sync_pending?.(vmPtr) === 1;
-  }
-
-  function pipeWaitShouldParkBehindActiveChild(
-    handle: ProcessHandle,
-    blocked: HostBlockedWorkerState,
-    pollTimeoutMs: number,
-    readyCount: number | undefined,
-  ): boolean {
-    return blocked.status === handle.kernel.abi_status_pipe_wait()
-      && pollTimeoutMs < 0
-      && handle.kernel.thread_poll_wait_has_socket?.(blocked.vmPtr) !== 1
-      && deps.hasActiveChildProcess(handle)
-      && !pipeWaitHasImmediateWakeReason(handle, blocked.vmPtr, readyCount);
   }
 
   function blockedPollPipeHasBufferedData(handle: ProcessHandle, vmPtr: number): boolean {
@@ -543,7 +505,6 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
     blockedPollPipeHasBufferedData,
     pollPipeWriteOpenForThreadStep,
     pipeWaitShouldRemainPassive,
-    pipeWaitShouldParkBehindActiveChild,
     formatFirstPipeWaitDebug,
     formatBlockedPollFdSet,
   };

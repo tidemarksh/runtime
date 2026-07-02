@@ -383,6 +383,13 @@ export type KernelWorkerRequest =
       kernelState: KernelRuntimeState;
     }
   | {
+      type: "rollback-vfork-execve-handoff";
+      pid: number;
+      vmPtr: number;
+      childPid: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
       type: "sync-process-lifecycle";
       pid: number;
       vmPtr: number;
@@ -578,6 +585,7 @@ export type KernelWorkerResponse =
       type: "child-pid-canonicalized";
       requestId: number;
       childPid: number;
+      ppid?: number;
       nextPid: number;
       pgid: number;
       sid: number;
@@ -591,6 +599,12 @@ export type KernelWorkerResponse =
   | {
       type: "vfork-execve-parent-resumed";
       requestId: number;
+      kernelState: KernelRuntimeState;
+    }
+  | {
+      type: "vfork-execve-handoff-rolled-back";
+      requestId: number;
+      waitStatus: number;
       kernelState: KernelRuntimeState;
     }
   | {

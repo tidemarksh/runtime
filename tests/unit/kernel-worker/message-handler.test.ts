@@ -69,6 +69,7 @@ function makeDeps(posted: KernelWorkerOutbound[]) {
     resumeVforkParent: vi.fn(() => ({ childPid: 4, kernelState: state })),
     canonicalizeChildPid: vi.fn(() => ({
       childPid: 4,
+      ppid: 1,
       nextPid: 5,
       pgid: 3,
       sid: 3,
@@ -76,6 +77,7 @@ function makeDeps(posted: KernelWorkerOutbound[]) {
     })),
     initializeProcessLifecycle: vi.fn(() => state),
     resumeVforkExecveParent: vi.fn(() => state),
+    rollbackVforkExecveHandoff: vi.fn(() => ({ waitStatus: 127 << 8, kernelState: state })),
     syncProcessLifecycle: vi.fn(() => state),
     syncProcessMemfs: vi.fn(() => state),
     syncPipeState: vi.fn(() => ({ kernelState: state, pipeSlots: [] })),

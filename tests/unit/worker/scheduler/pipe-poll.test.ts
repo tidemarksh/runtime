@@ -29,46 +29,16 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
   } as ProcessHandle;
 }
 
-function makeScheduler(hasActiveChildProcess: (pid: number) => boolean) {
+function makeScheduler() {
   return createPipePollScheduler({
     threadWorkerStates: new WeakMap(),
     appendRuntimeLifecycleEvent: vi.fn(),
     scheduleSupervisorBlockedRetry: vi.fn(),
-    hasActiveChildProcess: (handle) => hasActiveChildProcess(handle.pid),
   });
 }
 
-test("pipe wait stays passive only while kernel reports active child work", () => {
-  const activeScheduler = makeScheduler(() => true);
-  const idleScheduler = makeScheduler(() => false);
-
-  expect(activeScheduler.pipeWaitShouldRemainPassive(
-    makeHandle(),
-    21,
-    0x1234,
-    -1,
-    0,
-  )).toBe(true);
-
-  expect(idleScheduler.pipeWaitShouldRemainPassive(
-    makeHandle(),
-    21,
-    0x1234,
-    -1,
-    0,
-  )).toBe(false);
-
-  expect(idleScheduler.pipeWaitShouldRemainPassive(
-    makeHandle({ pendingChildSpawnRecords: 1 }),
-    21,
-    0x1234,
-    -1,
-    0,
-  )).toBe(false);
-});
-
 test("empty pselect pipe wait stays passive without child work", () => {
-  const scheduler = makeScheduler(() => false);
+  const scheduler = makeScheduler();
   const base = makeHandle();
   const handle = makeHandle({
     kernel: {
@@ -89,7 +59,7 @@ test("empty pselect pipe wait stays passive without child work", () => {
 });
 
 test("empty pselect passive parking does not depend on local child state", () => {
-  const scheduler = makeScheduler(() => false);
+  const scheduler = makeScheduler();
   const base = makeHandle();
   const handle = makeHandle({
     kernel: {
@@ -110,7 +80,7 @@ test("empty pselect passive parking does not depend on local child state", () =>
 });
 
 test("pselect with a watched fd does not use empty-set passive parking", () => {
-  const scheduler = makeScheduler(() => false);
+  const scheduler = makeScheduler();
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
   const view = new DataView(memory.buffer);
   view.setUint8(0x20, 1 << 3);
