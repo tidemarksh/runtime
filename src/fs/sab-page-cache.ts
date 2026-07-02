@@ -121,33 +121,42 @@ interface MemoryFileObject {
   generation: number;
 }
 
+interface FileBackingObjectOptions {
+  fileObjectId?: FileObjectId;
+  generation?: number;
+}
+
+interface FileBackingMutationOptions {
+  generation?: number;
+}
+
 export class MemoryFileBackingStore {
   private nextFileObjectId = 1;
   private readonly files = new Map<FileObjectId, MemoryFileObject>();
 
-  createFile(data: Uint8Array = new Uint8Array()): FileBackingStat {
-    const fileObjectId = this.nextFileObjectId++;
+  createFile(data: Uint8Array = new Uint8Array(), options: FileBackingObjectOptions = {}): FileBackingStat {
+    const fileObjectId = this.allocateFileObjectId(options.fileObjectId);
     this.files.set(fileObjectId, {
       data: new Uint8Array(data),
       source: null,
       patches: [],
       sizeOverride: null,
-      generation: 1,
+      generation: this.resolveGeneration(options.generation),
     });
     return this.stat(fileObjectId)!;
   }
 
-  createSourceFile(source: FileBackingSource): FileBackingStat {
+  createSourceFile(source: FileBackingSource, options: FileBackingObjectOptions = {}): FileBackingStat {
     if (!Number.isInteger(source.byteLength) || source.byteLength < 0 || source.byteLength > 0xffffffff) {
       throw new RangeError(`invalid file source size: ${source.byteLength}`);
     }
-    const fileObjectId = this.nextFileObjectId++;
+    const fileObjectId = this.allocateFileObjectId(options.fileObjectId);
     this.files.set(fileObjectId, {
       data: null,
       source,
       patches: [],
       sizeOverride: null,
-      generation: 1,
+      generation: this.resolveGeneration(options.generation),
     });
     return this.stat(fileObjectId)!;
   }
@@ -213,7 +222,7 @@ export class MemoryFileBackingStore {
     return out;
   }
 
-  replace(fileObjectId: FileObjectId, data: Uint8Array): FileBackingStat {
+  replace(fileObjectId: FileObjectId, data: Uint8Array, options: FileBackingMutationOptions = {}): FileBackingStat {
     const file = this.files.get(fileObjectId);
     if (!file) {
       throw new Error(`file object not found: ${fileObjectId}`);
@@ -222,11 +231,11 @@ export class MemoryFileBackingStore {
     file.source = null;
     file.patches = [];
     file.sizeOverride = null;
-    file.generation += 1;
+    this.applyMutationGeneration(file, options.generation);
     return this.stat(fileObjectId)!;
   }
 
-  write(fileObjectId: FileObjectId, offset: number, data: Uint8Array): FileBackingStat {
+  write(fileObjectId: FileObjectId, offset: number, data: Uint8Array, options: FileBackingMutationOptions = {}): FileBackingStat {
     const file = this.files.get(fileObjectId);
     if (!file) {
       throw new Error(`file object not found: ${fileObjectId}`);
@@ -245,11 +254,11 @@ export class MemoryFileBackingStore {
     if (file.sizeOverride !== null && end > file.sizeOverride) {
       file.sizeOverride = end;
     }
-    file.generation += 1;
+    this.applyMutationGeneration(file, options.generation);
     return this.stat(fileObjectId)!;
   }
 
-  truncate(fileObjectId: FileObjectId, size: number): FileBackingStat {
+  truncate(fileObjectId: FileObjectId, size: number, options: FileBackingMutationOptions = {}): FileBackingStat {
     const file = this.files.get(fileObjectId);
     if (!file) {
       throw new Error(`file object not found: ${fileObjectId}`);
@@ -279,10 +288,40 @@ export class MemoryFileBackingStore {
     }
     file.patches = nextPatches;
     file.sizeOverride = size;
-    if (previousSize !== size || trimmed) {
-      file.generation += 1;
+    if (previousSize !== size || trimmed || options.generation !== undefined) {
+      this.applyMutationGeneration(file, options.generation);
     }
     return this.stat(fileObjectId)!;
+  }
+
+  private allocateFileObjectId(fileObjectId: FileObjectId | undefined): FileObjectId {
+    if (fileObjectId === undefined) {
+      return this.nextFileObjectId++;
+    }
+    if (!Number.isInteger(fileObjectId) || fileObjectId <= 0 || fileObjectId > 0xffffffff) {
+      throw new RangeError(`invalid file object id: ${fileObjectId}`);
+    }
+    if (this.files.has(fileObjectId)) {
+      throw new Error(`file object already exists: ${fileObjectId}`);
+    }
+    this.nextFileObjectId = Math.max(this.nextFileObjectId, fileObjectId + 1);
+    return fileObjectId;
+  }
+
+  private resolveGeneration(generation: number | undefined): number {
+    if (generation === undefined) {
+      return 1;
+    }
+    if (!Number.isInteger(generation) || generation <= 0 || generation > 0xffffffff) {
+      throw new RangeError(`invalid file object generation: ${generation}`);
+    }
+    return generation;
+  }
+
+  private applyMutationGeneration(file: MemoryFileObject, generation: number | undefined): void {
+    file.generation = generation === undefined
+      ? file.generation + 1
+      : this.resolveGeneration(generation);
   }
 
   private fileSize(file: MemoryFileObject): number {

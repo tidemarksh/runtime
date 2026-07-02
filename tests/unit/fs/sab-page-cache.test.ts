@@ -607,6 +607,27 @@ test("source-backed file replacement does not materialize the previous source", 
   expect(calls).toEqual([]);
 });
 
+test("memory file backing store applies supervisor-selected identity and generation", () => {
+  const backing = new MemoryFileBackingStore();
+  const file = backing.createFile(new TextEncoder().encode("abc"), {
+    fileObjectId: 77,
+    generation: 9,
+  });
+  expect(file.fileObjectId).toBe(77);
+  expect(file.generation).toBe(9);
+
+  const replaced = backing.replace(77, new TextEncoder().encode("def"), { generation: 11 });
+  expect(replaced.generation).toBe(11);
+  expect(backing.read(77, 0, 3)).toEqual(new TextEncoder().encode("def"));
+
+  const patched = backing.write(77, 3, new TextEncoder().encode("ghi"), { generation: 12 });
+  expect(patched.generation).toBe(12);
+
+  const truncated = backing.truncate(77, 6, { generation: 13 });
+  expect(truncated.generation).toBe(13);
+  expect(backing.read(77, 0, 8)).toEqual(new TextEncoder().encode("defghi"));
+});
+
 test("source-backed file range write overlays without materializing the previous source", () => {
   const backing = new MemoryFileBackingStore();
   const data = new TextEncoder().encode("abcdef");

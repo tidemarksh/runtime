@@ -49,6 +49,8 @@ type AsyncBackingSource =
   | { kind: "remote"; byteLength: number; url: string }
   | { kind: "opfs"; byteLength: number; handle: OpfsBackingFileHandle };
 
+type BackingObjectOperation = "source" | "materialize" | "replace" | "flush-write" | "flush-truncate";
+
 interface KernelWorkerFsStateDeps {
   getCanonicalExports(): KernelExports;
   getSabPageCache(): SharedArrayBuffer;
@@ -77,37 +79,45 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   const asyncBackingSourcesByIdentity = new Map<string, AsyncBackingSource>();
   const backingExtentsByIno = new Map<number, FsSnapshotBackingExtent>();
 
-  function replaceBackingFile(ino: number, data: Uint8Array): FileBackingStat {
+  function replaceBackingFile(
+    ino: number,
+    data: Uint8Array,
+    op: Extract<BackingObjectOperation, "materialize" | "replace"> = "replace",
+    sourceExports: KernelExports = deps.getCanonicalExports(),
+  ): FileBackingStat {
     backingExtentsByIno.delete(ino);
-    const fileObjectId = fileObjectIdsByIno.get(ino);
-    if (fileObjectId === undefined) {
-      const stat = backingStore.createFile(data);
-      fileObjectIdsByIno.set(ino, stat.fileObjectId);
-      return stat;
+    const decision = supervisorBackingObject(sourceExports, op, ino);
+    fileObjectIdsByIno.set(ino, decision.fileObjectId);
+    if (backingStore.stat(decision.fileObjectId)) {
+      return backingStore.replace(decision.fileObjectId, data, {
+        generation: decision.generation,
+      });
     }
-    return backingStore.replace(fileObjectId, data);
+    return backingStore.createFile(data, decision);
   }
 
   function writeBackingFileRange(ino: number, offset: number, data: Uint8Array): FileBackingStat {
     backingExtentsByIno.delete(ino);
-    const fileObjectId = fileObjectIdsByIno.get(ino);
-    if (fileObjectId === undefined) {
-      const stat = backingStore.createFile();
-      fileObjectIdsByIno.set(ino, stat.fileObjectId);
-      return backingStore.write(stat.fileObjectId, offset, data);
+    const decision = supervisorBackingObject(deps.getCanonicalExports(), "flush-write", ino);
+    fileObjectIdsByIno.set(ino, decision.fileObjectId);
+    if (!backingStore.stat(decision.fileObjectId)) {
+      backingStore.createFile(new Uint8Array(), decision);
     }
-    return backingStore.write(fileObjectId, offset, data);
+    return backingStore.write(decision.fileObjectId, offset, data, {
+      generation: decision.generation,
+    });
   }
 
   function truncateBackingFile(ino: number, size: number): FileBackingStat {
     backingExtentsByIno.delete(ino);
-    const fileObjectId = fileObjectIdsByIno.get(ino);
-    if (fileObjectId === undefined) {
-      const stat = backingStore.createFile();
-      fileObjectIdsByIno.set(ino, stat.fileObjectId);
-      return backingStore.truncate(stat.fileObjectId, size);
+    const decision = supervisorBackingObject(deps.getCanonicalExports(), "flush-truncate", ino);
+    fileObjectIdsByIno.set(ino, decision.fileObjectId);
+    if (!backingStore.stat(decision.fileObjectId)) {
+      backingStore.createFile(new Uint8Array(), decision);
     }
-    return backingStore.truncate(fileObjectId, size);
+    return backingStore.truncate(decision.fileObjectId, size, {
+      generation: decision.generation,
+    });
   }
 
   function backingMetaForInode(ino: number): Pick<FileBackingStat, "fileObjectId" | "generation"> | undefined {
@@ -218,6 +228,50 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   function supervisorRangeI64(value: number | undefined, fallback: number): bigint {
     const resolved = value ?? fallback;
     return Number.isSafeInteger(resolved) ? BigInt(resolved) : -1n;
+  }
+
+  function supervisorBackingObject(
+    sourceExports: KernelExports,
+    op: BackingObjectOperation,
+    ino: number,
+  ): Pick<FileBackingStat, "fileObjectId" | "generation"> {
+    const decide = sourceExports.supervisor_fs_backing_object_decision;
+    if (typeof decide !== "function") {
+      throw new Error("missing supervisor_fs_backing_object_decision export");
+    }
+    const published = readInodeRecord(deps.getSabPageCache(), ino);
+    const backing = backingMetaForInode(ino);
+    const opNumber = (() => {
+      switch (op) {
+        case "source":
+          return supervisorNumber(sourceExports.supervisor_fs_backing_object_op_source?.());
+        case "materialize":
+          return supervisorNumber(sourceExports.supervisor_fs_backing_object_op_materialize?.());
+        case "replace":
+          return supervisorNumber(sourceExports.supervisor_fs_backing_object_op_replace?.());
+        case "flush-write":
+          return supervisorNumber(sourceExports.supervisor_fs_backing_object_op_flush_write?.());
+        case "flush-truncate":
+          return supervisorNumber(sourceExports.supervisor_fs_backing_object_op_flush_truncate?.());
+      }
+    })();
+    const result = supervisorNumber(decide(
+      opNumber,
+      ino,
+      BigInt(published?.fileObjectId ?? 0),
+      BigInt(published?.generation ?? 0),
+      BigInt(backing?.fileObjectId ?? 0),
+      BigInt(backing?.generation ?? 0),
+    ));
+    if (result < 0) {
+      throw new Error(`supervisor backing object decision failed: ${result}`);
+    }
+    const fileObjectId = supervisorNumber(sourceExports.supervisor_fs_backing_object_file_object_id?.());
+    const generation = supervisorNumber(sourceExports.supervisor_fs_backing_object_generation?.());
+    if (fileObjectId <= 0 || generation <= 0) {
+      throw new Error("invalid supervisor backing object identity");
+    }
+    return { fileObjectId, generation };
   }
 
   function supervisorBackingSourceRange(
@@ -651,7 +705,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (!data) {
       return null;
     }
-    replaceBackingFile(ino, data);
+    replaceBackingFile(ino, data, "materialize");
     return readBackingFileByInode(ino);
   }
 
@@ -731,6 +785,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (!range || range.length !== expectedSize) {
       return null;
     }
+    const decision = supervisorBackingObject(deps.getCanonicalExports(), "source", ino);
     const stat = backingStore.createSourceFile({
       byteLength: expectedSize,
       readRange(offset, length) {
@@ -745,7 +800,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         }
         return source.readRange(range.offset + offset, length);
       },
-    });
+    }, decision);
     fileObjectIdsByIno.set(ino, stat.fileObjectId);
     return stat.fileObjectId;
   }
@@ -1016,7 +1071,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     data: Uint8Array,
   ): void {
     const pageCache = deps.getSabPageCache();
-    const stat = replaceBackingFile(ino, data);
+    const stat = replaceBackingFile(ino, data, "replace", targetExports);
     publishInode(pageCache, ino, {
       ...meta,
       fileObjectId: stat.fileObjectId,

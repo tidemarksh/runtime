@@ -230,6 +230,11 @@ export interface KernelExports {
   supervisor_fs_metadata_backing_none?(): number;
   supervisor_fs_metadata_backing_published?(): number;
   supervisor_fs_metadata_backing_backing?(): number;
+  supervisor_fs_backing_object_op_source?(): number;
+  supervisor_fs_backing_object_op_materialize?(): number;
+  supervisor_fs_backing_object_op_replace?(): number;
+  supervisor_fs_backing_object_op_flush_write?(): number;
+  supervisor_fs_backing_object_op_flush_truncate?(): number;
   supervisor_fs_backing_fill_mode_resident?(): number;
   supervisor_fs_backing_fill_mode_direct?(): number;
   supervisor_fs_backing_source_range_none?(): number;
@@ -394,6 +399,16 @@ export interface KernelExports {
   ): number;
   supervisor_fs_metadata_sync_size?(): bigint | number;
   supervisor_fs_metadata_sync_backing_source?(): number;
+  supervisor_fs_backing_object_decision?(
+    op: number,
+    ino: number,
+    publishedFileObjectId: bigint | number,
+    publishedGeneration: bigint | number,
+    backingFileObjectId: bigint | number,
+    backingGeneration: bigint | number,
+  ): number;
+  supervisor_fs_backing_object_file_object_id?(): bigint | number;
+  supervisor_fs_backing_object_generation?(): bigint | number;
   supervisor_fs_page_table_source_decision?(
     ino: number,
     hasDirtyPages: number,

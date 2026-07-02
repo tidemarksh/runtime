@@ -85,6 +85,10 @@ function makeKernelExports(): FakeKernelExports {
     readLength: 0,
     outputLength: 0,
   };
+  let lastBackingObjectDecision = {
+    fileObjectId: 0,
+    generation: 0,
+  };
 
   function putRecord(record: InodeRecord): void {
     recordsByPath.set(record.path, record);
@@ -248,6 +252,78 @@ function makeKernelExports(): FakeKernelExports {
       lastDirtyPreparePublishMode = 2;
     }
     return 0;
+  }
+
+  function validBackingIdentity(fileObjectId: number, generation: number): boolean {
+    return Number.isSafeInteger(fileObjectId)
+      && fileObjectId > 0
+      && fileObjectId <= 0xffffffff
+      && Number.isSafeInteger(generation)
+      && generation > 0
+      && generation <= 0xffffffff;
+  }
+
+  function supervisorBackingObjectDecision(
+    op: number,
+    ino: number,
+    publishedFileObjectId: bigint | number,
+    publishedGeneration: bigint | number,
+    backingFileObjectId: bigint | number,
+    backingGeneration: bigint | number,
+  ): number {
+    const publishedFileObjectIdNumber = Number(publishedFileObjectId);
+    const publishedGenerationNumber = Number(publishedGeneration);
+    const backingFileObjectIdNumber = Number(backingFileObjectId);
+    const backingGenerationNumber = Number(backingGeneration);
+    lastBackingObjectDecision = { fileObjectId: 0, generation: 0 };
+    if (
+      ino <= 0
+      || ino >= 65536
+      || (publishedFileObjectIdNumber === 0 && publishedGenerationNumber !== 0)
+      || (publishedFileObjectIdNumber !== 0
+        && !validBackingIdentity(publishedFileObjectIdNumber, publishedGenerationNumber))
+      || (backingFileObjectIdNumber === 0 && backingGenerationNumber !== 0)
+      || (backingFileObjectIdNumber !== 0
+        && !validBackingIdentity(backingFileObjectIdNumber, backingGenerationNumber))
+    ) {
+      return -22;
+    }
+    if (op === 1 || op === 2) {
+      if (publishedFileObjectIdNumber !== 0) {
+        lastBackingObjectDecision = {
+          fileObjectId: publishedFileObjectIdNumber,
+          generation: publishedGenerationNumber,
+        };
+      } else if (backingFileObjectIdNumber !== 0) {
+        lastBackingObjectDecision = {
+          fileObjectId: backingFileObjectIdNumber,
+          generation: backingGenerationNumber,
+        };
+      } else {
+        lastBackingObjectDecision = { fileObjectId: ino, generation: 1 };
+      }
+      return 0;
+    }
+    if (op === 3) {
+      const fileObjectId = backingFileObjectIdNumber || publishedFileObjectIdNumber || ino;
+      const baseGeneration = backingGenerationNumber || publishedGenerationNumber;
+      lastBackingObjectDecision = {
+        fileObjectId,
+        generation: baseGeneration === 0 ? 1 : baseGeneration + 1,
+      };
+      return 0;
+    }
+    if (op === 4 || op === 5) {
+      if (!validBackingIdentity(publishedFileObjectIdNumber, publishedGenerationNumber)) {
+        return -22;
+      }
+      lastBackingObjectDecision = {
+        fileObjectId: publishedFileObjectIdNumber,
+        generation: publishedGenerationNumber,
+      };
+      return 0;
+    }
+    return -22;
   }
 
   function supervisorDataSyncDecision(
@@ -766,6 +842,14 @@ function makeKernelExports(): FakeKernelExports {
     supervisor_fs_metadata_sync_decision: supervisorMetadataSyncDecision,
     supervisor_fs_metadata_sync_size: () => BigInt(lastMetadataSyncDecision.size),
     supervisor_fs_metadata_sync_backing_source: () => lastMetadataSyncDecision.backingSource,
+    supervisor_fs_backing_object_op_source: () => 1,
+    supervisor_fs_backing_object_op_materialize: () => 2,
+    supervisor_fs_backing_object_op_replace: () => 3,
+    supervisor_fs_backing_object_op_flush_write: () => 4,
+    supervisor_fs_backing_object_op_flush_truncate: () => 5,
+    supervisor_fs_backing_object_decision: supervisorBackingObjectDecision,
+    supervisor_fs_backing_object_file_object_id: () => BigInt(lastBackingObjectDecision.fileObjectId),
+    supervisor_fs_backing_object_generation: () => BigInt(lastBackingObjectDecision.generation),
     supervisor_fs_backing_source_range_none: () => 0,
     supervisor_fs_backing_source_range_read: () => 1,
     supervisor_fs_backing_source_range_decision: supervisorBackingSourceRangeDecision,
@@ -1828,6 +1912,31 @@ test("kernel-worker syncFileDataMutation externalizes matching published residen
   expect(memberExports.opLog).toContain(`external:/work/out.txt:${size}`);
   expect(canonicalExports.opLog.some((entry) => entry.startsWith("write:/work/out.txt:"))).toBe(false);
   expect(memberExports.opLog.some((entry) => entry.startsWith("write:/work/out.txt:"))).toBe(false);
+});
+
+test("kernel-worker backing publication follows supervisor object identity", () => {
+  const { canonicalExports, fsState, sabPageCache } = makeFsState();
+  const selected = {
+    fileObjectId: 444,
+    generation: 17,
+  };
+  const backingOps: number[] = [];
+  canonicalExports.supervisor_fs_backing_object_decision = (op) => {
+    backingOps.push(op);
+    return 0;
+  };
+  canonicalExports.supervisor_fs_backing_object_file_object_id = () => BigInt(selected.fileObjectId);
+  canonicalExports.supervisor_fs_backing_object_generation = () => BigInt(selected.generation);
+
+  const data = encoder.encode("supervised-backing-object\n");
+  fsState.writeFile("/work/object.txt", data, 0o644, false);
+
+  const ino = canonicalExports.fileIno("/work/object.txt");
+  const record = readInodeRecord(sabPageCache, ino);
+  expect(backingOps).toContain(canonicalExports.supervisor_fs_backing_object_op_replace?.());
+  expect(record?.fileObjectId).toBe(selected.fileObjectId);
+  expect(record?.generation).toBe(selected.generation);
+  expectBytesEqual(fsState.readFile("/work/object.txt"), data);
 });
 
 test("kernel-worker metadata sync preserves dirty resident file data", () => {
