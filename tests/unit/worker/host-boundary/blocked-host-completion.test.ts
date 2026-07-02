@@ -1,8 +1,9 @@
-import { expect, test, vi } from "vite-plus/test";
+import { afterEach, expect, test, vi } from "vite-plus/test";
 import {
   handleFutexWait,
 } from "../../../../src/thread-worker/blocking.js";
 import { createWorkerWaitInWorkerStatusHandler } from "../../../../src/worker/message-handler/wait-in-worker.js";
+import { createWorkerScheduler } from "../../../../src/worker/scheduler.js";
 import {
   armSupervisorHostTimer,
   drainSupervisorArmHostTimerHostOp,
@@ -13,6 +14,10 @@ import {
   makeHostBoundaryThread,
 } from "./helpers.js";
 import { writeSupervisorArmHostTimerHostOpRecord } from "../support/supervisor-abi.js";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 test("host boundary observes supervisor-owned futex timeout completion state", () => {
   const waitSpy = vi.spyOn(Atomics, "wait");
@@ -240,4 +245,104 @@ test("host boundary arms supervisor timer for wait-in-worker futex waits", async
   expect(workerEvents).toEqual(expect.arrayContaining([
     expect.stringContaining("supervisor-host-timer-fired:vm=0x1234"),
   ]));
+});
+
+test("host boundary reports blocked retry timer expiry to supervisor before retrying", async () => {
+  vi.useFakeTimers();
+  const runningWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const blockedWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const runningThread = makeHostBoundaryThread(0x5860320);
+  const blockedThread = makeHostBoundaryThread(0x6286130);
+  const threadWorkerStates = new WeakMap<Worker, ReturnType<typeof makeHostBoundaryThread>>();
+  threadWorkerStates.set(runningWorker, runningThread);
+  threadWorkerStates.set(blockedWorker, blockedThread);
+  const kernel = makeHostBoundaryKernel();
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 16, shared: true });
+  kernel.memory = memory;
+  const handle = makeHostBoundaryHandle(kernel, runningWorker);
+  handle.memory = memory;
+  handle.workers.add(blockedWorker);
+  handle.runningWorker = runningWorker;
+  const submittedEvents: Array<{
+    kind: number;
+    vmPtr: number;
+    tid: number;
+    status: number;
+    blockedReason: number;
+    detail: bigint;
+  }> = [];
+  const supervisorSubmitThreadEvent = vi.fn((eventPtr: number, eventLen: number) => {
+    expect(eventLen).toBe(80);
+    const view = new DataView(kernel.memory!.buffer);
+    submittedEvents.push({
+      kind: view.getUint32(eventPtr + 12, true),
+      vmPtr: view.getUint32(eventPtr + 24, true),
+      tid: view.getUint32(eventPtr + 36, true),
+      status: view.getUint32(eventPtr + 40, true),
+      blockedReason: view.getUint32(eventPtr + 48, true),
+      detail: view.getBigUint64(eventPtr + 72, true),
+    });
+    return 0;
+  });
+  Object.assign(kernel, {
+    supervisor_abi_version: () => 1,
+    supervisor_host_op_record_bytes: () => 64,
+    supervisor_next_host_op: vi.fn((_outPtr: number, outLen: number) => {
+      expect(outLen).toBe(64);
+      return 0;
+    }),
+    supervisor_enqueue_blocked_wait_timer: vi.fn(() => 0),
+    supervisor_blocked_wait_retry_delay_ms: () => 1,
+    supervisor_blocked_wait_retry_reason_default: () => 0,
+    thread_status: (vmPtr: number) => vmPtr === blockedThread.vmPtr
+      ? kernel.abi_status_pipe_wait()
+      : kernel.abi_status_ok(),
+    thread_tid: (vmPtr: number) => vmPtr === blockedThread.vmPtr ? 42 : 1,
+    thread_pc: (vmPtr: number) => vmPtr === blockedThread.vmPtr ? 0x4444n : 0x1000n,
+    thread_sp: (vmPtr: number) => vmPtr === blockedThread.vmPtr ? 0x8888n : 0x8000n,
+    supervisor_thread_event_kind_timer_fired: () => 6,
+    supervisor_submit_thread_event: supervisorSubmitThreadEvent,
+  });
+  handle.hostBlockedWorkers.set(blockedWorker, {
+    vmPtr: blockedThread.vmPtr,
+    status: kernel.abi_status_pipe_wait(),
+    rpcPending: false,
+    rpcGeneration: 3,
+    skipNextNetworkPump: false,
+    pipeSyncedBeforePassive: true,
+    pipeChildExitResumeKey: null,
+    pipeEofChildExitDeferrals: 0,
+  });
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    hasActiveChildProcess: () => false,
+    pumpNetworkConnections: async () => false,
+    resumeFsViaKernelWorker: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => ({ kind: "completed" }),
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.notifySchedulerProgress(handle);
+  expect(supervisorSubmitThreadEvent).not.toHaveBeenCalled();
+
+  await vi.advanceTimersByTimeAsync(1);
+
+  expect(supervisorSubmitThreadEvent).toHaveBeenCalledWith(expect.any(Number), 80);
+  expect(submittedEvents[0]).toEqual({
+    kind: 6,
+    vmPtr: blockedThread.vmPtr,
+    tid: 42,
+    status: kernel.abi_status_pipe_wait(),
+    blockedReason: 0,
+    detail: 1n,
+  });
 });

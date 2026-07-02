@@ -45,7 +45,9 @@ import { createVforkExclusiveScheduler } from "./vfork-exclusive.js";
 import { createWait4Scheduler } from "./wait4.js";
 import {
   readSupervisorFaultExitDecision,
+  submitSupervisorShadowStatusEvent,
   supervisorFaultExitKindProcessExit,
+  SUPERVISOR_THREAD_EVENT_KIND_TIMER_FIRED,
 } from "../supervisor-shadow.js";
 import {
   armSupervisorHostTimer,
@@ -278,10 +280,37 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     hostBlockedRetryTimers.delete(blocked);
   }
 
+  function submitBlockedRetryTimerFiredEvent(
+    handle: ProcessHandle,
+    blocked: HostBlockedWorkerState,
+    delayMs: number,
+    reason: SupervisorBlockedWaitRetryReason,
+  ): void {
+    const vmPtr = blocked.vmPtr;
+    const status = handle.kernel.thread_status?.(vmPtr) ?? blocked.status;
+    const result = submitSupervisorShadowStatusEvent(handle, {
+      eventKind: handle.kernel.supervisor_thread_event_kind_timer_fired?.()
+        ?? SUPERVISOR_THREAD_EVENT_KIND_TIMER_FIRED,
+      sequence: blocked.rpcGeneration,
+      vmPtr,
+      pid: handle.pid,
+      tid: handle.kernel.thread_tid?.(vmPtr) ?? 0,
+      status,
+      blockedReason: reason,
+      pc: handle.kernel.thread_pc?.(vmPtr) ?? 0n,
+      sp: handle.kernel.thread_sp?.(vmPtr) ?? 0n,
+      detail: delayMs,
+    });
+    if (result !== undefined && result < 0) {
+      appendWorkerDebugLog(handle, `supervisor-timer-fired-event:submit-error:${result}`);
+    }
+  }
+
   function scheduleHostBlockedRetry(
     handle: ProcessHandle,
     worker: Worker,
     delayMs: number,
+    reason: SupervisorBlockedWaitRetryReason,
   ): void {
     const blocked = handle.hostBlockedWorkers.get(worker);
     if (!blocked || hostBlockedRetryTimers.has(blocked)) {
@@ -291,6 +320,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       if (hostBlockedRetryTimers.get(blocked) === timer) {
         hostBlockedRetryTimers.delete(blocked);
       }
+      submitBlockedRetryTimerFiredEvent(handle, blocked, delayMs, reason);
       retryHostBlockedWorker(handle, worker);
     }, delayMs);
     hostBlockedRetryTimers.set(blocked, timer);
@@ -313,6 +343,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         blocked.vmPtr,
         reason,
       ),
+      reason,
     );
   }
 
