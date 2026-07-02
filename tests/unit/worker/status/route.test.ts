@@ -1410,6 +1410,7 @@ test("status handler logs quoted write debug fields before wait handling", () =>
       },
       memory,
       kernel: makeKernel(7, {
+        abi_status_futex_wait: () => 28,
         abi_status_clone_spawn: () => 9,
         abi_status_jit_ready: () => 27,
         kernel_heap_ptr: () => 0,

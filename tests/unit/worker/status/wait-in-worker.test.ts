@@ -4,10 +4,20 @@ import { createWorkerWaitInWorkerStatusHandler } from "../../../../src/worker/me
 
 test("waitInWorker debug log keeps compact futex fields", () => {
   const appendWorkerDebugLog = vi.fn();
+  const notifyWorkerStatusProgress = vi.fn();
+  const parkSupervisorFutexWait = vi.fn();
+  const pumpProcess = vi.fn();
+  const thread = { vmPtr: 0x1234, initialized: true, waitingInWorkerStatus: null } as {
+    vmPtr: number;
+    initialized: boolean;
+    waitingInWorkerStatus: number | null;
+  };
   const handler = createWorkerWaitInWorkerStatusHandler({
     appendWorkerDebugLog,
     clearBlockedWorker: () => {},
-    pumpProcess: () => {},
+    notifyWorkerStatusProgress,
+    parkSupervisorFutexWait,
+    pumpProcess,
     blockWorker: () => {},
     failProcess: () => {},
     requestEpollStateSync: async () => {},
@@ -28,6 +38,7 @@ test("waitInWorker debug log keeps compact futex fields", () => {
       memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
       outputBacklog: [],
       kernel: {
+        abi_status_futex_wait: () => 20,
         abi_status_epoll_wait: () => 22,
         abi_status_pipe_wait: () => 21,
         abi_status_socket_recv: () => 23,
@@ -58,7 +69,7 @@ test("waitInWorker debug log keeps compact futex fields", () => {
       onStdout: null,
     } as never,
     {} as Worker,
-    { vmPtr: 0x1234, initialized: true, waitingInWorkerStatus: null } as never,
+    thread as never,
     {
       type: "status",
       status: 20,
@@ -153,6 +164,15 @@ test("waitInWorker debug log keeps compact futex fields", () => {
       "thread-futex-wait:stage=entry:vm=0x1234:addr=0x37d61c40",
     ),
   );
+  expect(thread.waitingInWorkerStatus).toBeNull();
+  expect(parkSupervisorFutexWait).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.anything(),
+    0x1234,
+    "wait-in-worker-futex-supervisor-owned",
+  );
+  expect(notifyWorkerStatusProgress).toHaveBeenCalledWith(expect.anything());
+  expect(pumpProcess).toHaveBeenCalledWith(expect.anything());
 });
 
 test("waitInWorker defers local pipe drain when kernel-worker owns pipe state", async () => {
@@ -217,6 +237,7 @@ test("waitInWorker defers local pipe drain when kernel-worker owns pipe state", 
       outputBacklog: [],
       kernelWorkerRequest: async () => ({ type: "unexpected" }) as never,
       kernel: {
+        abi_status_futex_wait: () => 25,
         abi_status_epoll_wait: () => 22,
         abi_status_pipe_wait: () => 21,
         abi_status_socket_recv: () => 23,
@@ -313,6 +334,7 @@ test("waitInWorker WAIT4 routes to owner-side blocked scheduling with kernel-wor
     workers: new Set([worker]),
     kernelWorkerRequest: async () => ({ type: "unexpected" }) as never,
     kernel: {
+      abi_status_futex_wait: () => 25,
       abi_status_epoll_wait: () => 22,
       abi_status_pipe_wait: () => 21,
       abi_status_socket_recv: () => 23,

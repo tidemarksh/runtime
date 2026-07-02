@@ -58,6 +58,19 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       return;
     }
 
+    if (msg.status === handle.kernel.abi_status_futex_wait()) {
+      thread.waitingInWorkerStatus = null;
+      deps.parkSupervisorFutexWait(
+        handle,
+        worker,
+        thread.vmPtr,
+        "wait-in-worker-futex-supervisor-owned",
+      );
+      deps.notifyWorkerStatusProgress(handle);
+      deps.pumpProcess(handle);
+      return;
+    }
+
     thread.waitingInWorkerStatus = msg.status;
     if (isRunningWorker) {
       handle.runningWorker = null;
