@@ -280,16 +280,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     return deadline === 0n ? null : deadline;
   }
 
-  function markEpollTimeoutZeroExpired(handle: ProcessHandle, blocked: BlockedWorkerState): void {
-    if (
-      blocked.status === handle.kernel.abi_status_epoll_wait()
-      && Number(handle.kernel.thread_epoll_wait_timeout(blocked.vmPtr)) === 0
-    ) {
-      blocked.timeoutExpired = true;
-      blocked.epollTimerfdDeadlineTicks = null;
-    }
-  }
-
   function hasPendingCloneChildInitResume(handle: ProcessHandle): boolean {
     for (const worker of handle.workers) {
       const thread = threadWorkerStates.get(worker);
@@ -359,7 +349,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   });
   const {
     formatFirstSocketWaitDebug,
-    networkInboundAvailable,
     socketWaitTimeoutMs,
     blockedWaitShouldPumpNetwork,
     scheduleSocketBlockedRetry,
@@ -814,68 +803,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     return true;
   }
 
-  function resumePipePollTimeout(
-    handle: ProcessHandle,
-    worker: Worker,
-    blocked: BlockedWorkerState,
-    timeoutMs: number,
-  ): void {
-    if (resumeBlockedSyscallViaKernelWorker(
-      handle,
-      worker,
-      blocked,
-      `pipe-retry-timeout-rpc:${handle.pid}`,
-      (outcome) => {
-        if (
-          outcome.kind === "blocked"
-          && outcome.status === handle.kernel.abi_status_pipe_wait()
-        ) {
-          pumpProcess(handle);
-        }
-      },
-    )) {
-      return;
-    }
-    deps.failProcess(
-      handle,
-      new Error(
-        `kernel supervisor timer completion required for finite pipe poll timeout: `
-          + `pid=${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}:timeout=${timeoutMs}`,
-      ),
-    );
-  }
-
-  function isSocketWaitStatus(handle: ProcessHandle, status: number): boolean {
-    return status === handle.kernel.abi_status_connect()
-      || status === handle.kernel.abi_status_socket_recv()
-      || status === handle.kernel.abi_status_socket_send();
-  }
-
-  function resumeSocketWaitTimeout(
-    handle: ProcessHandle,
-    worker: Worker,
-    blocked: BlockedWorkerState,
-  ): void {
-    if (resumeBlockedSyscallViaKernelWorker(
-      handle,
-      worker,
-      blocked,
-      `socket-retry-timeout-rpc:${handle.pid}:status=${blocked.status}`,
-    )) {
-      return;
-    }
-
-    deps.appendRuntimeLifecycleEvent(
-      handle.runtimeId,
-      `socket-retry-timeout-local:${handle.pid}:status=${blocked.status}`,
-    );
-    attachKernelRuntimeState(handle.kernel, handle.kernelState);
-    resumeBlockedSyscallBySupervisor(handle.kernel, blocked.vmPtr, true);
-    blocked.timeoutExpired = false;
-    handle.kernelState = readKernelRuntimeState(handle.kernel);
-    handleBlockedRetryResult(handle, worker, blocked.vmPtr, handle.kernel.thread_status(blocked.vmPtr));
-  }
-
   function appendEpollRetryResult(handle: ProcessHandle, vmPtr: number): void {
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
@@ -890,17 +817,11 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     worker: Worker,
     blocked: BlockedWorkerState,
   ): void {
-    if (blocked.timeoutExpired && blocked.epollTimerfdDeadlineTicks != null) {
-      handle.kernel.sync_monotonic_ticks_floor?.(blocked.epollTimerfdDeadlineTicks);
-      blocked.timeoutExpired = false;
-      blocked.epollTimerfdDeadlineTicks = null;
-    }
-
     if (resumeBlockedSyscallViaKernelWorker(
       handle,
       worker,
       blocked,
-      `epoll-retry-resume-rpc:${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}:expired=${blocked.timeoutExpired ? 1 : 0}`,
+      `epoll-retry-resume-rpc:${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}`,
       () => {
         if (handle.workers.has(worker) && threadWorkerStates.has(worker)) {
           appendEpollRetryResult(handle, blocked.vmPtr);
@@ -911,10 +832,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
 
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
-    resumeBlockedSyscallBySupervisor(handle.kernel, blocked.vmPtr, blocked.timeoutExpired);
-    if (blocked.timeoutExpired) {
-      blocked.timeoutExpired = false;
-    }
+    resumeBlockedSyscallBySupervisor(handle.kernel, blocked.vmPtr);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     appendEpollRetryResult(handle, blocked.vmPtr);
     handleBlockedRetryResult(handle, worker, blocked.vmPtr, handle.kernel.thread_status(blocked.vmPtr));
@@ -1307,7 +1225,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       scheduleBlockedRetry(handle, worker, 10, blocked.timeoutExpired);
       return;
     }
-    markEpollTimeoutZeroExpired(handle, blocked);
     const blockedPollTimeoutMs = pollWaitTimeoutMs(handle, blocked.status, blocked.vmPtr);
     if (
       blocked.status === handle.kernel.abi_status_pipe_wait()
@@ -1475,7 +1392,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             deps.appendRuntimeLifecycleEvent(handle.runtimeId, `epoll-retry-stale:${handle.pid}`);
             return;
           }
-          markEpollTimeoutZeroExpired(handle, latestBlocked);
           if (
             !latestBlocked.timeoutExpired
             && latestBlocked.epollTimerfdDeadlineTicks == null
@@ -1551,18 +1467,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     const pipePollHupSyncPending = blocked.status === handle.kernel.abi_status_pipe_wait()
       && handle.kernel.thread_poll_hup_sync_pending?.(blocked.vmPtr) === 1;
     const pipeReadinessSyncPending = pipeEofSyncPending || pipePollHupSyncPending;
-    if (
-      blocked.status === handle.kernel.abi_status_pipe_wait()
-      && blockedPollTimeoutMs >= 0
-      && !blocked.timeoutExpired
-      && (blockedPollReadyCount === undefined || blockedPollReadyCount === 0)
-      && !pipeReadinessSyncPending
-      && handle.kernel.thread_poll_wait_has_socket?.(blocked.vmPtr) !== 1
-      && networkInboundAvailable(handle, blocked.vmPtr)
-    ) {
-      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-retry-network-timeout:${handle.pid}`);
-      blocked.timeoutExpired = true;
-    }
     if (blocked.status === handle.kernel.abi_status_pipe_wait()) {
       const event = `pipe-retry:${handle.pid}:a7=${blockedOrCurrentSyscallNr(handle, blocked.vmPtr)?.toString() ?? "n/a"}:a0=${handle.kernel.thread_a0(blocked.vmPtr).toString()}:timeout=${blockedPollTimeoutMs}:expired=${blocked.timeoutExpired ? 1 : 0}:ready=${blockedPollReadyCount ?? "n/a"}:${formatFirstPipeWaitDebug(handle, blocked.vmPtr)}:${formatFirstSocketWaitDebug(handle, blocked.vmPtr)}:${formatBlockedPollFdSet(handle, blocked.vmPtr)}:synced=${blocked.pipeSyncedBeforePassive ? 1 : 0}`;
       if (blocked.lastPipeRetryLifecycleEvent !== event) {
@@ -1651,41 +1555,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
     if (
       blocked.status === handle.kernel.abi_status_pipe_wait()
-      && blocked.timeoutExpired
-      && blockedPollTimeoutMs >= 0
-      && deps.hasActiveChildProcess(handle.pid)
-      && !pipeReadinessSyncPending
-    ) {
-      resumePipePollTimeout(handle, worker, blocked, blockedPollTimeoutMs);
-      return;
-    }
-    if (
-      blocked.status === handle.kernel.abi_status_pipe_wait()
-      && blocked.timeoutExpired
-      && blockedPollTimeoutMs >= 0
-      && !blocked.pipeSyncedBeforePassive
-      && kernelWorkerOwnsPipeState(handle)
-      && handle.kernelWorkerRequest
-      && handle.pid > 0
-      && !pipeReadinessSyncPending
-    ) {
-      blocked.pipeSyncedBeforePassive = true;
-      void requestPipeStateSync(handle, false)
-        .then(() => {
-          const latestBlocked = handle.blockedWorkers.get(worker);
-          if (!latestBlocked || latestBlocked.vmPtr !== blocked.vmPtr) {
-            return;
-          }
-          drainProcessOutput(handle);
-          resumePipePollTimeout(handle, worker, latestBlocked, blockedPollTimeoutMs);
-        })
-        .catch((error) => {
-          deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-        });
-      return;
-    }
-    if (
-      blocked.status === handle.kernel.abi_status_pipe_wait()
       && !blocked.pipeSyncedBeforePassive
       && !deps.hasActiveChildProcess(handle.pid)
       && kernelWorkerOwnsPipeState(handle)
@@ -1738,15 +1607,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         });
       return;
     }
-    if (
-      blocked.timeoutExpired
-      && blocked.status === handle.kernel.abi_status_pipe_wait()
-      && blockedPollTimeoutMs >= 0
-      && !pipeReadinessSyncPending
-    ) {
-      resumePipePollTimeout(handle, worker, blocked, blockedPollTimeoutMs);
-      return;
-    }
     if (pipeWaitShouldRemainPassive(
       handle,
       blocked.status,
@@ -1767,14 +1627,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         return;
       }
       scheduleSocketBlockedRetry(handle, worker, blocked, blockedSocketTimeoutMs);
-      return;
-    }
-
-    if (
-      blocked.timeoutExpired
-      && isSocketWaitStatus(handle, blocked.status)
-    ) {
-      resumeSocketWaitTimeout(handle, worker, blocked);
       return;
     }
 
@@ -1850,14 +1702,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
-    if (
-      blocked.timeoutExpired
-      && blocked.status === handle.kernel.abi_status_pipe_wait()
-      && !pipeReadinessSyncPending
-    ) {
-      resumePipePollTimeout(handle, worker, blocked, blockedPollTimeoutMs);
-      return;
-    } else if (blocked.status === handle.kernel.abi_status_wait4()) {
+    if (blocked.status === handle.kernel.abi_status_wait4()) {
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `wait4-retry-local:${handle.pid}:0x${blocked.vmPtr.toString(16)}:records=${[...handle.childExitSyncRecords].map(([childPid, waitStatus]) => `${childPid}/${waitStatus}`).join(".") || "none"}`,
