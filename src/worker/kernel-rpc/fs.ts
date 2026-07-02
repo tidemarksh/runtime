@@ -563,7 +563,6 @@ function supervisorFsCompletionDecision(
   vmPtr: number,
   pendingFs: PendingFsContext,
   fsResult: bigint | number,
-  fsEffects: KernelRpcFsEffects,
   options: {
     hostMemfsMutated?: boolean;
     hostOfdStateChanged?: boolean;
@@ -572,44 +571,36 @@ function supervisorFsCompletionDecision(
   },
 ): SupervisorFsCompletionDecision {
   const decide = handle.kernel.supervisor_fs_completion_decision;
-  if (typeof decide === "function") {
-    const flags = decide(
-      vmPtr,
-      pendingFs.opcode,
-      pendingFs.effects,
-      fsResult,
-      options.hostMemfsMutated === true ? 1 : 0,
-      options.hostOfdStateChanged === true ? 1 : 0,
-      options.pendingRingRequest ? 1 : 0,
-      options.regularFileRequest ? 1 : 0,
-    );
-    const memfsDirtyFlag = handle.kernel.supervisor_fs_completion_flag_memfs_dirty?.() ?? 1;
-    const memfsPublishReadyFlag = handle.kernel.supervisor_fs_completion_flag_memfs_publish_ready?.() ?? 2;
-    const ofdStateChangedFlag = handle.kernel.supervisor_fs_completion_flag_ofd_state_changed?.() ?? 4;
-    const regularFileRequestFlag = handle.kernel.supervisor_fs_completion_flag_regular_file_request?.() ?? 8;
-    return {
-      memfsMutated: (flags & memfsDirtyFlag) !== 0,
-      memfsPublishReady: (flags & memfsPublishReadyFlag) !== 0,
-      ofdStateChanged: (flags & ofdStateChangedFlag) !== 0,
-      regularFileRequest: (flags & regularFileRequestFlag) !== 0,
-    };
+  if (typeof decide !== "function") {
+    throw new Error("missing supervisor_fs_completion_decision export");
   }
-
-  const fsSucceeded = Number(BigInt.asIntN(64, normalizeFsResult(fsResult))) >= 0;
-  const memfsStateMayChange = (pendingFs.effects & (fsEffects.memfsMutation | fsEffects.memfsFileData)) !== 0;
-  const memfsPublishMayBeReady = (pendingFs.effects & fsEffects.memfsMutation) !== 0
-    || (
-      (pendingFs.effects & fsEffects.memfsFileData) !== 0
-      && pendingFs.opcode === FS_OP_WRITE
-    );
-  const ofdStateMayChange = (pendingFs.effects & fsEffects.sharedOfdState) !== 0;
+  const flags = decide(
+    vmPtr,
+    pendingFs.opcode,
+    pendingFs.effects,
+    fsResult,
+    options.hostMemfsMutated === true ? 1 : 0,
+    options.hostOfdStateChanged === true ? 1 : 0,
+    options.pendingRingRequest ? 1 : 0,
+    options.regularFileRequest ? 1 : 0,
+  );
+  const memfsDirtyFlag = handle.kernel.supervisor_fs_completion_flag_memfs_dirty?.();
+  const memfsPublishReadyFlag = handle.kernel.supervisor_fs_completion_flag_memfs_publish_ready?.();
+  const ofdStateChangedFlag = handle.kernel.supervisor_fs_completion_flag_ofd_state_changed?.();
+  const regularFileRequestFlag = handle.kernel.supervisor_fs_completion_flag_regular_file_request?.();
+  if (
+    memfsDirtyFlag === undefined
+    || memfsPublishReadyFlag === undefined
+    || ofdStateChangedFlag === undefined
+    || regularFileRequestFlag === undefined
+  ) {
+    throw new Error("missing supervisor fs completion flag export");
+  }
   return {
-    memfsMutated: options.hostMemfsMutated === true
-      || (fsSucceeded && (memfsStateMayChange || options.pendingRingRequest)),
-    memfsPublishReady: fsSucceeded && memfsPublishMayBeReady,
-    ofdStateChanged: options.hostOfdStateChanged === true
-      || (fsSucceeded && (ofdStateMayChange || options.pendingRingRequest)),
-    regularFileRequest: options.regularFileRequest,
+    memfsMutated: (flags & memfsDirtyFlag) !== 0,
+    memfsPublishReady: (flags & memfsPublishReadyFlag) !== 0,
+    ofdStateChanged: (flags & ofdStateChangedFlag) !== 0,
+    regularFileRequest: (flags & regularFileRequestFlag) !== 0,
   };
 }
 
@@ -1150,7 +1141,7 @@ async function resumeFsViaKernelWorkerInner(
     handle.kernel.thread_process_fs(vmPtr);
     const fsResult = normalizeFsResult(handle.kernel.thread_resume_fs(vmPtr));
     const fsSucceeded = Number(BigInt.asIntN(64, fsResult)) >= 0;
-    const fsCompletion = supervisorFsCompletionDecision(handle, vmPtr, pendingFs, fsResult, fsEffects, {
+    const fsCompletion = supervisorFsCompletionDecision(handle, vmPtr, pendingFs, fsResult, {
       pendingRingRequest,
       regularFileRequest: regularFileOnlyPendingFs,
     });
@@ -1381,7 +1372,7 @@ async function resumeFsViaKernelWorkerInner(
         `:fds=${formatFdEntrySummary(fsProcessedResponse.fdEntries)}`,
       );
     }
-    const fsCompletion = supervisorFsCompletionDecision(handle, vmPtr, pendingFs, fsResult, fsEffects, {
+    const fsCompletion = supervisorFsCompletionDecision(handle, vmPtr, pendingFs, fsResult, {
       hostMemfsMutated: fsProcessedResponse.memfsMutated,
       hostOfdStateChanged: fsProcessedResponse.ofdStateChanged,
       pendingRingRequest,

@@ -80,6 +80,42 @@ function makeKernel() {
     abi_eagain: () => 11,
     abi_fd_type_file: () => 3,
     abi_status_fs: () => 31,
+    supervisor_fs_completion_flag_memfs_dirty: () => 1,
+    supervisor_fs_completion_flag_memfs_publish_ready: () => 2,
+    supervisor_fs_completion_flag_ofd_state_changed: () => 4,
+    supervisor_fs_completion_flag_regular_file_request: () => 8,
+    supervisor_fs_completion_decision: (
+      _vmPtr: number,
+      opcode: number,
+      effects: number,
+      result: bigint | number,
+      hostMemfsMutated: number,
+      hostOfdStateChanged: number,
+      pendingRingRequest: number,
+      regularFileRequest: number,
+    ) => {
+      const signedResult = Number(
+        BigInt.asIntN(64, typeof result === "bigint" ? result : BigInt(result)),
+      );
+      const fsSucceeded = signedResult >= 0;
+      const memfsStateMayChange = (effects & (1 | 2)) !== 0;
+      const memfsPublishMayBeReady = (effects & 1) !== 0 || ((effects & 2) !== 0 && opcode === FS_OP_WRITE);
+      const ofdStateMayChange = (effects & 4) !== 0;
+      let flags = 0;
+      if (hostMemfsMutated !== 0 || (fsSucceeded && (memfsStateMayChange || pendingRingRequest !== 0))) {
+        flags |= 1;
+      }
+      if (fsSucceeded && memfsPublishMayBeReady) {
+        flags |= 2;
+      }
+      if (hostOfdStateChanged !== 0 || (fsSucceeded && (ofdStateMayChange || pendingRingRequest !== 0))) {
+        flags |= 4;
+      }
+      if (regularFileRequest !== 0) {
+        flags |= 8;
+      }
+      return flags;
+    },
     process_fd_ofd_id: () => 0,
     process_fd_flags: () => 0,
     process_thread_vm_ptr: () => 0,
