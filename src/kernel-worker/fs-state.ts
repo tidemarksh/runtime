@@ -184,32 +184,19 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     expectedSize: number,
   ): { sourceIdentity: string; byteLength: number; offset: number; length: number } | null {
     const extent = backingExtentsByIno.get(ino);
-    if (
-      !extent
-      || expectedSize < 0
-      || !Number.isInteger(fileOffset)
-      || !Number.isInteger(length)
-      || fileOffset < 0
-      || length <= 0
-      || fileOffset >= expectedSize
-    ) {
+    if (!extent) {
       return null;
     }
-    const sourceOffset = Math.floor(extent.offset ?? 0);
-    const extentLength = Math.floor(extent.length ?? expectedSize);
-    if (
-      sourceOffset < 0
-      || extentLength < 0
-      || extentLength !== expectedSize
-    ) {
-      return null;
-    }
-    return {
-      sourceIdentity: extent.sourceIdentity,
-      byteLength: sourceOffset + extentLength,
-      offset: sourceOffset + fileOffset,
-      length: Math.min(length, expectedSize - fileOffset),
-    };
+    return supervisorBackingSourceRange(
+      deps.getCanonicalExports(),
+      ino,
+      fileOffset,
+      length,
+      expectedSize,
+      extent,
+      0,
+      false,
+    );
   }
 
   function registerSnapshotBackingExtent(ino: number, backingExtent: FsSnapshotBackingExtent | undefined): void {
@@ -226,6 +213,57 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       throw new RangeError(`invalid supervisor fs decision value: ${String(value)}`);
     }
     return numeric;
+  }
+
+  function supervisorRangeI64(value: number | undefined, fallback: number): bigint {
+    const resolved = value ?? fallback;
+    return Number.isSafeInteger(resolved) ? BigInt(resolved) : -1n;
+  }
+
+  function supervisorBackingSourceRange(
+    sourceExports: KernelExports,
+    ino: number,
+    fileOffset: number,
+    length: number,
+    expectedSize: number,
+    extent: FsSnapshotBackingExtent,
+    sourceByteLength: number,
+    requireSourceBounds: boolean,
+  ): { sourceIdentity: string; byteLength: number; offset: number; length: number } | null {
+    const decide = sourceExports.supervisor_fs_backing_source_range_decision;
+    if (typeof decide !== "function") {
+      throw new Error("missing supervisor_fs_backing_source_range_decision export");
+    }
+    const decision = supervisorNumber(decide(
+      ino,
+      supervisorRangeI64(fileOffset, -1),
+      supervisorRangeI64(length, -1),
+      supervisorRangeI64(expectedSize, -1),
+      supervisorRangeI64(extent.offset, 0),
+      supervisorRangeI64(extent.length, expectedSize),
+      supervisorRangeI64(sourceByteLength, -1),
+      requireSourceBounds ? 1 : 0,
+    ));
+    const none = supervisorNumber(sourceExports.supervisor_fs_backing_source_range_none?.());
+    if (decision === none) {
+      return null;
+    }
+    const read = supervisorNumber(sourceExports.supervisor_fs_backing_source_range_read?.());
+    if (decision !== read) {
+      throw new Error(`unknown supervisor backing source range decision: ${decision}`);
+    }
+    const byteLength = supervisorNumber(sourceExports.supervisor_fs_backing_source_range_source_byte_length?.());
+    const offset = supervisorNumber(sourceExports.supervisor_fs_backing_source_range_source_offset?.());
+    const rangeLength = supervisorNumber(sourceExports.supervisor_fs_backing_source_range_read_length?.());
+    if (byteLength < 0 || offset < 0 || rangeLength < 0) {
+      throw new Error("invalid supervisor backing source range");
+    }
+    return {
+      sourceIdentity: extent.sourceIdentity,
+      byteLength,
+      offset,
+      length: rangeLength,
+    };
   }
 
   function readSupervisorDirtyPageDecision(
@@ -394,33 +432,27 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     expectedSize: number,
   ): Uint8Array | null {
     const extent = backingExtentsByIno.get(ino);
-    if (
-      !extent
-      || expectedSize < 0
-      || !Number.isInteger(fileOffset)
-      || !Number.isInteger(length)
-      || fileOffset < 0
-      || length <= 0
-      || fileOffset >= expectedSize
-    ) {
+    if (!extent) {
       return null;
     }
     const source = backingSourcesByIdentity.get(extent.sourceIdentity);
     if (!source) {
       return null;
     }
-    const sourceOffset = Math.floor(extent.offset ?? 0);
-    const extentLength = Math.floor(extent.length ?? expectedSize);
-    if (
-      sourceOffset < 0
-      || extentLength < 0
-      || extentLength !== expectedSize
-      || sourceOffset + extentLength > source.byteLength
-    ) {
+    const range = supervisorBackingSourceRange(
+      deps.getCanonicalExports(),
+      ino,
+      fileOffset,
+      length,
+      expectedSize,
+      extent,
+      source.byteLength,
+      true,
+    );
+    if (!range) {
       return null;
     }
-    const readLength = Math.min(length, expectedSize - fileOffset);
-    return source.readRange(sourceOffset + fileOffset, readLength);
+    return source.readRange(range.offset, range.length);
   }
 
   async function ensureBackingSourceRangeForInode(
@@ -449,21 +481,24 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
 
   function createSourceBackedFileForInode(ino: number, expectedSize: number): number | null {
     const extent = backingExtentsByIno.get(ino);
-    if (!extent || expectedSize < 0) {
+    if (!extent) {
       return null;
     }
     const source = backingSourcesByIdentity.get(extent.sourceIdentity);
     if (!source) {
       return null;
     }
-    const sourceOffset = Math.floor(extent.offset ?? 0);
-    const extentLength = Math.floor(extent.length ?? expectedSize);
-    if (
-      sourceOffset < 0
-      || extentLength < 0
-      || extentLength !== expectedSize
-      || sourceOffset + extentLength > source.byteLength
-    ) {
+    const range = supervisorBackingSourceRange(
+      deps.getCanonicalExports(),
+      ino,
+      0,
+      expectedSize,
+      expectedSize,
+      extent,
+      source.byteLength,
+      true,
+    );
+    if (!range || range.length !== expectedSize) {
       return null;
     }
     const stat = backingStore.createSourceFile({
@@ -478,7 +513,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         ) {
           return null;
         }
-        return source.readRange(sourceOffset + offset, length);
+        return source.readRange(range.offset + offset, length);
       },
     });
     fileObjectIdsByIno.set(ino, stat.fileObjectId);

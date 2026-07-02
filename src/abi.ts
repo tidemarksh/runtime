@@ -218,6 +218,8 @@ export interface KernelExports {
   supervisor_fs_dirty_page_flag_writeback_required?(): number;
   supervisor_fs_backing_fill_mode_resident?(): number;
   supervisor_fs_backing_fill_mode_direct?(): number;
+  supervisor_fs_backing_source_range_none?(): number;
+  supervisor_fs_backing_source_range_read?(): number;
   supervisor_fs_page_table_source_backing?(): number;
   supervisor_fs_page_table_source_resident?(): number;
   supervisor_fs_completion_flag_memfs_dirty?(): number;
@@ -349,6 +351,19 @@ export interface KernelExports {
     headProbeReadable: number,
     tailProbeReadable: number,
   ): number;
+  supervisor_fs_backing_source_range_decision?(
+    ino: number,
+    fileOffset: bigint | number,
+    length: bigint | number,
+    expectedSize: bigint | number,
+    extentOffset: bigint | number,
+    extentLength: bigint | number,
+    sourceByteLength: bigint | number,
+    requireSourceBounds: number,
+  ): number;
+  supervisor_fs_backing_source_range_source_byte_length?(): bigint | number;
+  supervisor_fs_backing_source_range_source_offset?(): bigint | number;
+  supervisor_fs_backing_source_range_read_length?(): bigint | number;
   supervisor_fs_completion_decision?(
     vmPtr: number,
     opcode: number,
@@ -1299,6 +1314,8 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_dirty_page_flag_writeback_required",
   "supervisor_fs_backing_fill_mode_resident",
   "supervisor_fs_backing_fill_mode_direct",
+  "supervisor_fs_backing_source_range_none",
+  "supervisor_fs_backing_source_range_read",
   "supervisor_fs_page_table_source_backing",
   "supervisor_fs_page_table_source_resident",
   "supervisor_signal_control_kind_boundary_check",
@@ -1396,6 +1413,10 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_page_table_source_decision",
   "supervisor_fs_backing_fill_probe_direct",
   "supervisor_fs_backing_fill_mode_decision",
+  "supervisor_fs_backing_source_range_decision",
+  "supervisor_fs_backing_source_range_source_byte_length",
+  "supervisor_fs_backing_source_range_source_offset",
+  "supervisor_fs_backing_source_range_read_length",
   "supervisor_signal_control_record",
   "supervisor_debug_snapshot",
   "supervisor_thread_state_snapshot",

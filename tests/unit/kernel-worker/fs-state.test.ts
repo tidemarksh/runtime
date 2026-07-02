@@ -70,6 +70,11 @@ function makeKernelExports(): FakeKernelExports {
     generation: 0,
     flags: 0,
   };
+  let lastBackingSourceRangeDecision = {
+    byteLength: 0,
+    offset: 0,
+    length: 0,
+  };
 
   function putRecord(record: InodeRecord): void {
     recordsByPath.set(record.path, record);
@@ -219,6 +224,69 @@ function makeKernelExports(): FakeKernelExports {
     )
       ? 1
       : 0;
+  }
+
+  function supervisorBackingSourceRangeDecision(
+    ino: number,
+    fileOffset: bigint | number,
+    length: bigint | number,
+    expectedSize: bigint | number,
+    extentOffset: bigint | number,
+    extentLength: bigint | number,
+    sourceByteLength: bigint | number,
+    requireSourceBounds: number,
+  ): number {
+    const fileOffsetNumber = Number(fileOffset);
+    const lengthNumber = Number(length);
+    const expectedSizeNumber = Number(expectedSize);
+    const extentOffsetNumber = Number(extentOffset);
+    const extentLengthNumber = Number(extentLength);
+    const sourceByteLengthNumber = Number(sourceByteLength);
+    lastBackingSourceRangeDecision = {
+      byteLength: 0,
+      offset: 0,
+      length: 0,
+    };
+    if (
+      ino <= 0
+      || ino >= 65536
+      || !Number.isSafeInteger(fileOffsetNumber)
+      || !Number.isSafeInteger(lengthNumber)
+      || !Number.isSafeInteger(expectedSizeNumber)
+      || !Number.isSafeInteger(extentOffsetNumber)
+      || !Number.isSafeInteger(extentLengthNumber)
+      || fileOffsetNumber < 0
+      || lengthNumber <= 0
+      || expectedSizeNumber < 0
+      || extentOffsetNumber < 0
+      || extentLengthNumber < 0
+      || fileOffsetNumber >= expectedSizeNumber
+      || extentLengthNumber !== expectedSizeNumber
+    ) {
+      return 0;
+    }
+    const sourceEnd = extentOffsetNumber + extentLengthNumber;
+    const sourceOffset = extentOffsetNumber + fileOffsetNumber;
+    if (
+      !Number.isSafeInteger(sourceEnd)
+      || !Number.isSafeInteger(sourceOffset)
+      || (
+        requireSourceBounds !== 0
+        && (
+          !Number.isSafeInteger(sourceByteLengthNumber)
+          || sourceByteLengthNumber < 0
+          || sourceEnd > sourceByteLengthNumber
+        )
+      )
+    ) {
+      return 0;
+    }
+    lastBackingSourceRangeDecision = {
+      byteLength: sourceEnd,
+      offset: sourceOffset,
+      length: Math.min(lengthNumber, expectedSizeNumber - fileOffsetNumber),
+    };
+    return 1;
   }
 
   const exports = {
@@ -454,6 +522,12 @@ function makeKernelExports(): FakeKernelExports {
     supervisor_fs_dirty_page_flag_update_inode: () => 1,
     supervisor_fs_dirty_page_flag_publish_dirty: () => 2,
     supervisor_fs_dirty_page_flag_writeback_required: () => 4,
+    supervisor_fs_backing_source_range_none: () => 0,
+    supervisor_fs_backing_source_range_read: () => 1,
+    supervisor_fs_backing_source_range_decision: supervisorBackingSourceRangeDecision,
+    supervisor_fs_backing_source_range_source_byte_length: () => BigInt(lastBackingSourceRangeDecision.byteLength),
+    supervisor_fs_backing_source_range_source_offset: () => BigInt(lastBackingSourceRangeDecision.offset),
+    supervisor_fs_backing_source_range_read_length: () => BigInt(lastBackingSourceRangeDecision.length),
     supervisor_fs_page_table_source_backing: () => 0,
     supervisor_fs_page_table_source_resident: () => 1,
     supervisor_fs_page_table_source_decision: supervisorPageTableSourceDecision,
@@ -1042,6 +1116,39 @@ test("kernel-worker reads registered partial source ranges without full source m
   expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 9, 5) ?? new Uint8Array())).toBe("bytes");
   expect(fsState.readBackingFileRangeByInode(ino, 0, backingExtent.length)).toBeNull();
   expect(fsState.readBackingFileByInode(ino)).toBeNull();
+});
+
+test("kernel-worker source-backed reads follow supervisor range decisions", () => {
+  const { canonicalExports, fsState } = makeFsState();
+  const source = encoder.encode("prefix:artifact-bytes:suffix");
+  const sourceReads: Array<[number, number]> = [];
+  const backingExtent = {
+    sourceIdentity: "artifact:runtime.bin",
+    offset: "prefix:".length,
+    length: "artifact-bytes".length,
+  };
+
+  fsState.loadFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "file", path: "/lib/runtime.bin", size: backingExtent.length, mode: 0o644, backingExtent },
+  ]);
+  fsState.registerBackingSourceObject(backingExtent.sourceIdentity, {
+    byteLength: source.length,
+    readRange(offset, length) {
+      sourceReads.push([offset, length]);
+      return source.subarray(offset, Math.min(source.length, offset + length));
+    },
+  });
+
+  const ino = fsState.resolvePath("/lib/runtime.bin");
+  const originalDecision = canonicalExports.supervisor_fs_backing_source_range_decision;
+  canonicalExports.supervisor_fs_backing_source_range_decision = () => 0;
+  expect(fsState.readBackingFileRangeByInode(ino, 9, 5)).toBeNull();
+  expect(sourceReads).toEqual([]);
+
+  canonicalExports.supervisor_fs_backing_source_range_decision = originalDecision;
+  expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 9, 5) ?? new Uint8Array())).toBe("bytes");
+  expect(sourceReads).toEqual([["prefix:".length + 9, 5]]);
 });
 
 test("kernel-worker demand-fills OPFS source ranges into registered backing source", async () => {
