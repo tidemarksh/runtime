@@ -121,8 +121,6 @@ export function makeHostBoundaryThread(vmPtr: number): ThreadWorkerState {
     lastStatusPc: null,
     lastStatusSp: null,
     lastStatusS11: null,
-    lastStatusFutexWaitAddr: null,
-    lastStatusFutexBlockedAddr: null,
     hotStatusPcs: {},
     initialized: true,
     waitingInWorkerStatus: null,

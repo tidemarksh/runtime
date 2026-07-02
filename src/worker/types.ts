@@ -64,8 +64,6 @@ export interface ThreadWorkerState {
   lastStatusPc: bigint | null;
   lastStatusSp: bigint | null;
   lastStatusS11: bigint | null;
-  lastStatusFutexWaitAddr: bigint | null;
-  lastStatusFutexBlockedAddr: bigint | null;
   forkStackSnapshot?: ForkStackSnapshot;
   execveProcessState?: Uint8Array;
   hotStatusPcs: Record<string, number>;

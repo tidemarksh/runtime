@@ -901,8 +901,6 @@ export function createWorkerSchedulerQueueHelpers(
       lastStatusPc: null,
       lastStatusSp: null,
       lastStatusS11: null,
-      lastStatusFutexWaitAddr: null,
-      lastStatusFutexBlockedAddr: null,
       hotStatusPcs: {},
       initialized: false,
       waitingInWorkerStatus: null,

@@ -206,8 +206,6 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     thread.lastStatusPc = msg.pc;
     thread.lastStatusSp = msg.sp ?? null;
     thread.lastStatusS11 = msg.s11 ?? null;
-    thread.lastStatusFutexWaitAddr = msg.futexWaitAddr ?? null;
-    thread.lastStatusFutexBlockedAddr = msg.futexBlockedAddr ?? null;
     if (msg.forkStackSnapshot) {
       thread.forkStackSnapshot = msg.forkStackSnapshot;
     }

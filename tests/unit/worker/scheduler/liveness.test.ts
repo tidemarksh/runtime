@@ -171,8 +171,6 @@ function makeThreadState(vmPtr: number): ThreadWorkerState {
     lastStatusPc: null,
     lastStatusSp: null,
     lastStatusS11: null,
-    lastStatusFutexWaitAddr: null,
-    lastStatusFutexBlockedAddr: null,
     hotStatusPcs: {},
     initialized: true,
     waitingInWorkerStatus: null,
@@ -3872,12 +3870,9 @@ test("epoll retry keeps unanswered futex running worker with a blocked record", 
   const runningThread = makeThreadState(0x7127a90);
   const blockedThread = makeThreadState(0x7141c68);
   const stackPointer = 0xa467710n;
-  const stackLocalFutexAddr = 0xa467878n;
   runningThread.runningGeneration = runningThread.generation;
   runningThread.stepCount = 2;
   runningThread.statusCount = 1;
-  runningThread.lastStatusFutexWaitAddr = stackLocalFutexAddr;
-  runningThread.lastStatusFutexBlockedAddr = stackLocalFutexAddr;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(runningWorker, runningThread);
   threadWorkerStates.set(blockedWorker, blockedThread);
