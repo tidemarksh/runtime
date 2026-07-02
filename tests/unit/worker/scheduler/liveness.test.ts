@@ -807,51 +807,6 @@ test("scheduler uses the Node step budget when Node process globals are present"
   }));
 });
 
-test("scheduler caps step budget while owner retry waiters are blocked", () => {
-  const worker = {
-    postMessage: vi.fn(),
-  } as unknown as Worker;
-  const blockedWorker = {
-    postMessage: vi.fn(),
-  } as unknown as Worker;
-  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
-  threadWorkerStates.set(worker, makeThreadState(0x1234));
-  threadWorkerStates.set(blockedWorker, makeThreadState(0x5678));
-  const { exports: kernel } = makeKernel();
-  const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.workers.add(blockedWorker);
-  handle.blockedWorkers.set(blockedWorker, {
-    vmPtr: 0x5678,
-    status: kernel.abi_status_wait4(),
-    retryTimer: null,
-    epollTimerfdDeadlineTicks: null,
-    rpcPending: false,
-    rpcGeneration: 0,
-    skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: false,
-    pipeChildExitResumeKey: null,
-    pipeEofChildExitDeferrals: 0,
-  });
-
-  const scheduler = createWorkerScheduler({
-    appendRuntimeLifecycleEvent: () => {},
-    threadWorkerStates,
-    completeProcessExit: async () => {},
-    failProcess: () => {},
-    hasActiveChildProcess: () => false,
-    resumeVforkParentAfterChildExit: () => false,
-    resumeWait4ViaKernelWorker: async () => {},
-    handleWorkerMessage: () => {},
-  });
-
-  scheduler.enqueueWorker(handle, worker);
-
-  expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
-    type: "step",
-    budget: 100_000,
-  }));
-});
-
 test("scheduler uses pending worker kernel state for one active vfork child step", () => {
   const worker = {
     postMessage: vi.fn(),

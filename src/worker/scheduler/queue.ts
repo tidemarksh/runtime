@@ -38,7 +38,6 @@ import type {
 
 const DEFAULT_NODE_SCHEDULER_STEP_BUDGET = 5_000_000;
 const DEFAULT_BROWSER_SCHEDULER_STEP_BUDGET = 10_000;
-const CONTENDED_SCHEDULER_STEP_BUDGET = 100_000;
 const MIN_SCHEDULER_STEP_BUDGET = 1_000;
 const MAX_SCHEDULER_STEP_BUDGET = 5_000_000;
 const SCHEDULER_STEP_BUDGET = readSchedulerStepBudget();
@@ -317,48 +316,6 @@ function clearBlockedWorker(handle: ProcessHandle, worker: Worker): void {
     clearTimeout(blocked.retryTimer);
   }
   handle.blockedWorkers.delete(worker);
-}
-
-function blockedRetryPressureStatus(handle: ProcessHandle, status: number): boolean {
-  return status === handle.kernel.abi_status_epoll_wait()
-    || status === handle.kernel.abi_status_fs()
-    || status === handle.kernel.abi_status_pipe_wait()
-    || status === handle.kernel.abi_status_wait4()
-    || status === handle.kernel.abi_status_flock_wait()
-    || status === handle.kernel.abi_status_connect()
-    || status === handle.kernel.abi_status_socket_recv()
-    || status === handle.kernel.abi_status_socket_send();
-}
-
-function readyWorkerCanUseFullBudgetUnderBlockedRetryPressure(
-  handle: ProcessHandle,
-  thread: ThreadWorkerState | undefined,
-): boolean {
-  return thread !== undefined
-    && (
-      thread.lastStatus === handle.kernel.abi_status_ok()
-      || thread.lastStatus === handle.kernel.abi_status_clone_spawn()
-    )
-    && thread.waitingInWorkerStatus === null
-    && thread.ownerAsyncStatus === null
-    && thread.pendingGuestMemoryWrites.length === 0
-    && !thread.resumeBlockedOnNextStep
-    && thread.pendingPipeSlotsForNextStep.length === 0;
-}
-
-function schedulerStepBudgetForNextStep(
-  handle: ProcessHandle,
-  selectedThread: ThreadWorkerState | undefined,
-): number {
-  for (const blocked of handle.blockedWorkers.values()) {
-    if (blockedRetryPressureStatus(handle, blocked.status)) {
-      if (readyWorkerCanUseFullBudgetUnderBlockedRetryPressure(handle, selectedThread)) {
-        return SCHEDULER_STEP_BUDGET;
-      }
-      return Math.min(SCHEDULER_STEP_BUDGET, CONTENDED_SCHEDULER_STEP_BUDGET);
-    }
-  }
-  return SCHEDULER_STEP_BUDGET;
 }
 
 function incrementBoundedCounter(
@@ -1217,7 +1174,7 @@ export function createWorkerSchedulerQueueHelpers(
     }
     handle.runningWorker = next;
     const thread = deps.threadWorkerStates.get(next);
-    const stepBudget = schedulerStepBudgetForNextStep(handle, thread);
+    const stepBudget = SCHEDULER_STEP_BUDGET;
     const vmPtr = thread?.vmPtr;
     if (thread && vmPtr !== undefined) {
       appendSchedulerQueueDebugLog(
