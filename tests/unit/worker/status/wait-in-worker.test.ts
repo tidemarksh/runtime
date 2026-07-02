@@ -260,7 +260,6 @@ test("waitInWorker WAIT4 routes to owner-side blocked scheduling with kernel-wor
     ownerPid: 17,
     initialized: true,
     waitingInWorkerStatus: null as number | null,
-    waitingInWorkerReconcileDeferred: false,
     runningGeneration: 12 as number | null,
   };
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
@@ -352,7 +351,6 @@ test("waitInWorker WAIT4 routes to owner-side blocked scheduling with kernel-wor
   expect(handle.runningWorker).toBeNull();
   expect(thread.runningGeneration).toBeNull();
   expect(thread.waitingInWorkerStatus).toBeNull();
-  expect(thread.waitingInWorkerReconcileDeferred).toBe(false);
   expect(blockWorker).toHaveBeenCalledWith(handle, worker, 20, 0x4321);
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
 

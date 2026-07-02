@@ -261,7 +261,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     const thread = threadWorkerStates.get(worker);
     if (thread !== undefined && thread.vmPtr === vmPtr) {
       thread.waitingInWorkerStatus = handle.kernel.abi_status_futex_wait();
-      thread.waitingInWorkerReconcileDeferred = false;
       thread.runningGeneration = null;
     }
     appendWorkerDebugLog(

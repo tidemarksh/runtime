@@ -59,7 +59,6 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
     }
 
     thread.waitingInWorkerStatus = msg.status;
-    thread.waitingInWorkerReconcileDeferred = true;
     if (isRunningWorker) {
       handle.runningWorker = null;
       thread.runningGeneration = null;
@@ -83,7 +82,6 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       && handle.pid > 0
     ) {
       thread.waitingInWorkerStatus = null;
-      thread.waitingInWorkerReconcileDeferred = false;
       deps.blockWorker(handle, worker, msg.status, thread.vmPtr);
       void deps.requestPipeStateSync(handle, true)
         .then(() => {

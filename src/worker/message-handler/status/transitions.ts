@@ -480,7 +480,6 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             handle.runningWorker = null;
           }
           thread.waitingInWorkerStatus = null;
-          thread.waitingInWorkerReconcileDeferred = false;
         };
         const shouldSyncPipeState = (completedSyncEffects & syncEffects.syncEffectPipeState) !== 0;
         if (handle.kernelWorkerRequest && handle.pid > 0 && shouldSyncPipeState) {
@@ -515,7 +514,6 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         handle.runningWorker = null;
       }
       thread.waitingInWorkerStatus = status;
-      thread.waitingInWorkerReconcileDeferred = false;
       if (hostTimer !== null) {
         armSupervisorHostTimer(handle, hostTimer, deps);
       }
@@ -975,7 +973,6 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         handle.runningWorker = null;
       }
       thread.waitingInWorkerStatus = status;
-      thread.waitingInWorkerReconcileDeferred = false;
       if (hostTimer !== null) {
         armSupervisorHostTimer(handle, hostTimer, deps);
       }

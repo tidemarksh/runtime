@@ -526,7 +526,6 @@ export function createWorkerSchedulerQueueHelpers(
     clearBlockedWorker(handle, selectedWorker);
     removeReadyWorker(handle, selectedWorker);
     selectedThread.waitingInWorkerStatus = null;
-    selectedThread.waitingInWorkerReconcileDeferred = false;
     selectedThread.runningGeneration = null;
     deps.appendWorkerDebugLog(
       handle,
@@ -601,7 +600,6 @@ export function createWorkerSchedulerQueueHelpers(
   ): void {
     const label = supervisorResumeKindLabel(handle, record.kind);
     thread.waitingInWorkerStatus = null;
-    thread.waitingInWorkerReconcileDeferred = false;
     thread.runningGeneration = null;
     deps.appendWorkerDebugLog(
       handle,
@@ -630,7 +628,6 @@ export function createWorkerSchedulerQueueHelpers(
       }
       if (handle.kernel.thread_status(vmPtr) === futexWaitStatus) {
         thread.waitingInWorkerStatus = futexWaitStatus;
-        thread.waitingInWorkerReconcileDeferred = false;
         deps.appendWorkerDebugLog(
           handle,
           `supervisor-resume:futex-wake:parked:0x${vmPtr.toString(16)}`
@@ -678,7 +675,6 @@ export function createWorkerSchedulerQueueHelpers(
     }
     if (handle.kernel.thread_status(record.vmPtr) === handle.kernel.abi_status_futex_wait()) {
       thread.waitingInWorkerStatus = handle.kernel.abi_status_futex_wait();
-      thread.waitingInWorkerReconcileDeferred = false;
       deps.appendWorkerDebugLog(
         handle,
         `supervisor-resume:futex-wake:parked:0x${record.vmPtr.toString(16)}`
@@ -904,7 +900,6 @@ export function createWorkerSchedulerQueueHelpers(
       hotStatusPcs: {},
       initialized: false,
       waitingInWorkerStatus: null,
-      waitingInWorkerReconcileDeferred: false,
       ownerAsyncStatus: null,
       resumeBlockedOnNextStep: false,
       pendingPipeSlotsForNextStep: [],

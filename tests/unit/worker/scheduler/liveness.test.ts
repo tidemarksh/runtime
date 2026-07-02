@@ -4917,7 +4917,6 @@ test("blockWorker parks futex wait as supervisor-owned worker state", () => {
   expect(handle.readyWorkers).toEqual([]);
   expect(handle.runningWorker).toBeNull();
   expect(thread.waitingInWorkerStatus).toBe(kernel.abi_status_futex_wait());
-  expect(thread.waitingInWorkerReconcileDeferred).toBe(false);
   expect(thread.runningGeneration).toBeNull();
   expect(worker.postMessage).not.toHaveBeenCalled();
 });
@@ -4966,7 +4965,6 @@ test("blocked retry parks futex retry result as supervisor-owned worker state", 
   expect(handle.readyWorkers).toEqual([]);
   expect(handle.runningWorker).toBeNull();
   expect(thread.waitingInWorkerStatus).toBe(kernel.abi_status_futex_wait());
-  expect(thread.waitingInWorkerReconcileDeferred).toBe(false);
   expect(thread.runningGeneration).toBeNull();
   expect(worker.postMessage).not.toHaveBeenCalled();
 });
