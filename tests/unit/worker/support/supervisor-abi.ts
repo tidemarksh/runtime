@@ -14,6 +14,8 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_host_completion_outcome_failure: 2,
   supervisor_host_op_record_bytes: 64,
   supervisor_host_op_kind_spawn_thread_worker: 1,
+  supervisor_host_op_kind_create_process_memory: 3,
+  supervisor_host_op_kind_copy_memory_ranges: 4,
   supervisor_process_host_op_record_bytes: 96,
   supervisor_fault_exit_decision_bytes: 88,
   supervisor_fault_exit_kind_thread_exit: 1,
@@ -96,6 +98,113 @@ export function makeSupervisorAbiStubs(
   const cloneSpawnHostOpChildVmPtrs = new Map<number, number>();
   const currentExports = (receiver: KernelExports | undefined): Partial<KernelExports> =>
     receiver ?? overrides.currentExports?.() ?? overrides;
+  const callNumber = (receiver: Partial<KernelExports>, name: keyof KernelExports, ...args: unknown[]): number => {
+    const fn = (receiver[name] ?? overrides[name]) as ((...params: unknown[]) => unknown) | undefined;
+    const value = fn?.(...args);
+    return typeof value === "bigint" ? Number(value) : Number(value ?? 0);
+  };
+  const addRange = (ranges: Array<{ start: number; end: number }>, start: number, end: number, limit: number): void => {
+    const boundedStart = Math.max(0, Math.min(start, limit));
+    const boundedEnd = Math.max(boundedStart, Math.min(end, limit));
+    if (boundedEnd > boundedStart) {
+      ranges.push({ start: boundedStart, end: boundedEnd });
+    }
+  };
+  const coalesceRanges = (ranges: Array<{ start: number; end: number }>): Array<{ start: number; end: number }> => {
+    const sorted = ranges
+      .filter((range) => range.end > range.start)
+      .sort((left, right) => left.start - right.start || left.end - right.end);
+    const coalesced: Array<{ start: number; end: number }> = [];
+    for (const range of sorted) {
+      const last = coalesced[coalesced.length - 1];
+      if (last && range.start <= last.end) {
+        last.end = Math.max(last.end, range.end);
+      } else {
+        coalesced.push({ ...range });
+      }
+    }
+    return coalesced;
+  };
+  const processGuestBase = (receiver: Partial<KernelExports>): number => {
+    const addressProfile = callNumber(receiver, "thread_spawn_address_profile" as keyof KernelExports, 0)
+      || callNumber(receiver, "abi_guest_address_profile_target" as keyof KernelExports);
+    const base = callNumber(receiver, "process_guest_base_for_address_profile", addressProfile);
+    return base || 0x1000000;
+  };
+  const processMemoryRanges = (
+    receiver: Partial<KernelExports>,
+    memory: WebAssembly.Memory,
+    vmPtr: number,
+  ): Array<{ start: number; end: number }> => {
+    const limit = memory.buffer.byteLength;
+    const ranges: Array<{ start: number; end: number }> = [];
+    const spawnKind = callNumber(receiver, "thread_spawn_kind", vmPtr);
+    const execveKind = callNumber(receiver, "abi_spawn_kind_execve");
+    const fullMemfs = spawnKind === execveKind;
+    const heapPtr = callNumber(receiver, "kernel_heap_ptr");
+    addRange(ranges, 0, heapPtr, limit);
+    addRange(ranges, callNumber(receiver, "kernel_ofd_table_ptr"), callNumber(receiver, "kernel_ofd_table_ptr") + callNumber(receiver, "kernel_ofd_table_bytes"), limit);
+    addRange(
+      ranges,
+      callNumber(receiver, "kernel_memfs_ptr"),
+      callNumber(receiver, "kernel_memfs_ptr")
+        + callNumber(receiver, "kernel_memfs_header_bytes")
+        + callNumber(receiver, "kernel_memfs_inodes_bytes")
+        + callNumber(receiver, "kernel_memfs_first_child_bytes")
+        + callNumber(receiver, "kernel_memfs_dir_entries_bytes")
+        + (fullMemfs ? callNumber(receiver, "kernel_memfs_data_bytes") : 0),
+      limit,
+    );
+    addRange(ranges, callNumber(receiver, "kernel_memfs_data_ptr"), callNumber(receiver, "kernel_memfs_data_ptr") + callNumber(receiver, "kernel_memfs_data_bytes"), limit);
+    addRange(ranges, callNumber(receiver, "kernel_epoll_table_ptr"), callNumber(receiver, "kernel_epoll_table_ptr") + callNumber(receiver, "kernel_epoll_table_bytes"), limit);
+    addRange(ranges, callNumber(receiver, "kernel_socket_table_ptr"), callNumber(receiver, "kernel_socket_table_ptr") + callNumber(receiver, "kernel_socket_table_bytes"), limit);
+    addRange(ranges, callNumber(receiver, "kernel_pipe_base"), callNumber(receiver, "kernel_pipe_base") + callNumber(receiver, "kernel_pipe_region_bytes"), limit);
+    addRange(ranges, callNumber(receiver, "kernel_net_buf_base"), callNumber(receiver, "kernel_net_buf_base") + callNumber(receiver, "kernel_net_buf_pool_bytes"), limit);
+    addRange(ranges, callNumber(receiver, "kernel_sig_slots_ptr"), callNumber(receiver, "kernel_sig_slots_ptr") + callNumber(receiver, "kernel_sig_slots_bytes") + callNumber(receiver, "kernel_signal_action_table_bytes"), limit);
+    addRange(ranges, callNumber(receiver, "kernel_process_pending_ptr"), callNumber(receiver, "kernel_process_pending_ptr") + callNumber(receiver, "kernel_process_pending_bytes"), limit);
+    addRange(ranges, callNumber(receiver, "kernel_process_runtime_state_ptr"), callNumber(receiver, "kernel_process_runtime_state_ptr") + callNumber(receiver, "kernel_process_runtime_state_bytes"), limit);
+    addRange(ranges, callNumber(receiver, "kernel_time_state_ptr"), callNumber(receiver, "kernel_time_state_ptr") + callNumber(receiver, "kernel_time_state_bytes"), limit);
+    if (spawnKind !== execveKind) {
+      const guestBase = processGuestBase(receiver);
+      const processPtr = callNumber(receiver, "thread_process_ptr", vmPtr);
+      const processStateBytes = callNumber(receiver, "process_state_bytes") || 4096;
+      addRange(ranges, guestBase, guestBase + processPtr + processStateBytes, limit);
+      const spRaw = receiver.thread_sp?.(vmPtr) ?? overrides.thread_sp?.(vmPtr) ?? 0n;
+      const sp = typeof spRaw === "bigint" ? Number(spRaw) : Number(spRaw);
+      if (Number.isFinite(sp) && sp > 0) {
+        const stackStartGuest = Math.max(0, Math.floor(sp / 65536) * 65536 - 1024 * 1024);
+        addRange(ranges, guestBase + stackStartGuest, guestBase + stackStartGuest + 8 * 1024 * 1024, limit);
+      }
+    }
+    return coalesceRanges(ranges);
+  };
+  const processMemoryInitialBytes = (
+    receiver: Partial<KernelExports>,
+    ranges: Array<{ start: number; end: number }>,
+    vmPtr: number,
+  ): number => {
+    const spawnKind = callNumber(receiver, "thread_spawn_kind", vmPtr);
+    const execveKind = callNumber(receiver, "abi_spawn_kind_execve");
+    const guestBase = processGuestBase(receiver);
+    if (spawnKind === execveKind) {
+      const spRaw = receiver.thread_sp?.(vmPtr) ?? overrides.thread_sp?.(vmPtr) ?? 0n;
+      const sp = typeof spRaw === "bigint" ? Number(spRaw) : Number(spRaw);
+      const liveStackEnd = Number.isFinite(sp) && sp > 0 ? guestBase + sp + 8 * 1024 * 1024 : 0;
+      return Math.max(64 * 1024 * 1024, callNumber(receiver, "kernel_heap_ptr"), guestBase + 0x10000, liveStackEnd);
+    }
+    const copyEnd = ranges.reduce((end, range) => Math.max(end, range.end), 0);
+    return Math.max(copyEnd + 16 * 1024 * 1024, guestBase);
+  };
+  const processMemoryMaxPages = (
+    receiver: Partial<KernelExports>,
+    initialBytes: number,
+    vmPtr: number,
+  ): number => {
+    return callNumber(receiver, "thread_spawn_process_max_memory_pages", vmPtr)
+      || callNumber(receiver, "thread_process_max_memory_pages", vmPtr)
+      || Math.ceil(initialBytes / 65536)
+      || 1;
+  };
   const stubs = Object.fromEntries(
     requiredSupervisorRuntimeExportNames().map((name) => [
       name,
@@ -160,6 +269,45 @@ export function makeSupervisorAbiStubs(
         processPtr: Number(receiver?.thread_process_ptr?.(vmPtr) ?? overrides.thread_process_ptr?.(vmPtr) ?? 0),
         status,
       });
+    },
+    supervisor_process_memory_host_op(this: KernelExports | undefined, vmPtr: number, index: number, outPtr: number, outLen: number) {
+      const recordBytes = DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_bytes;
+      const receiver = currentExports(this);
+      const memory = receiver?.memory ?? overrides.memory;
+      if (!memory) {
+        return -1;
+      }
+      if (outLen < recordBytes) {
+        return -1;
+      }
+      const ranges = processMemoryRanges(receiver, memory, vmPtr);
+      if (index === 0) {
+        const initialBytes = processMemoryInitialBytes(receiver, ranges, vmPtr);
+        return writeSupervisorSpawnThreadHostOpRecord(memory, outPtr, {
+          vmPtr,
+          childVmPtr: 0,
+          kind: DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_kind_create_process_memory,
+          tid: Number(receiver?.thread_spawn_child_pid?.(vmPtr) ?? overrides.thread_spawn_child_pid?.(vmPtr) ?? 1),
+          processPtr: Number(receiver?.thread_process_ptr?.(vmPtr) ?? overrides.thread_process_ptr?.(vmPtr) ?? 0),
+          status: Number(receiver?.thread_status?.(vmPtr) ?? overrides.thread_status?.(vmPtr) ?? 0),
+          flags: BigInt(initialBytes),
+          childTidPtr: BigInt(processMemoryMaxPages(receiver, initialBytes, vmPtr)),
+        });
+      }
+      const range = ranges[index - 1];
+      if (range !== undefined) {
+        return writeSupervisorSpawnThreadHostOpRecord(memory, outPtr, {
+          vmPtr,
+          childVmPtr: 0,
+          kind: DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_kind_copy_memory_ranges,
+          tid: Number(receiver?.thread_spawn_child_pid?.(vmPtr) ?? overrides.thread_spawn_child_pid?.(vmPtr) ?? 1),
+          processPtr: Number(receiver?.thread_process_ptr?.(vmPtr) ?? overrides.thread_process_ptr?.(vmPtr) ?? 0),
+          status: Number(receiver?.thread_spawn_kind?.(vmPtr) ?? overrides.thread_spawn_kind?.(vmPtr) ?? 0),
+          flags: BigInt(range.start),
+          childTidPtr: BigInt(range.end),
+        });
+      }
+      return 0;
     },
     supervisor_next_host_op_kind(this: KernelExports | undefined, kind: number, outPtr: number, outLen: number) {
       const receiver = currentExports(this);

@@ -207,39 +207,6 @@ test("postThreadWorkerStatus owns sync-effect snapshot payload assembly", () => 
   );
 });
 
-test("postThreadWorkerStatus bounds fork stack snapshots", () => {
-  const postMessage = vi.fn();
-  Object.defineProperty(globalThis, "postMessage", {
-    configurable: true,
-    value: postMessage,
-  });
-  const kernelExports = makeKernelExports();
-  kernelExports.memory = new WebAssembly.Memory({ initial: 256 });
-  kernelExports.thread_spawn_kind = () => kernelExports.abi_spawn_kind_fork();
-  kernelExports.thread_guest_memory_policy_limit = () => 0x1000000n;
-  kernelExports.thread_sp = () => 0x300000n;
-
-  postThreadWorkerStatus({
-    kernelExports,
-    statusCodes: makeStatusCodes(),
-    vmPtr: 0x1234,
-    guestBase: 0,
-    generation: 9,
-    runtimeBridge: null,
-    syscallNumbers: null,
-    lastResumeBlockedDebug: undefined,
-    lastFutexWaitDebug: undefined,
-    setLastResumeBlockedDebug() {},
-    setLastFutexWaitDebug() {},
-  }, makeStatusCodes().EXECVE_SPAWN, false, 0);
-
-  const msg = postMessage.mock.calls[0]?.[0] as {
-    forkStackSnapshot?: { startGuest: number; bytes: Uint8Array };
-  };
-  expect(msg.forkStackSnapshot?.startGuest).toBe(0x200000);
-  expect(msg.forkStackSnapshot?.bytes.length).toBe(8 * 1024 * 1024);
-});
-
 test("postThreadWorkerStatus includes futex and inbound guest-write diagnostics", () => {
   const postMessage = vi.fn();
   Object.defineProperty(globalThis, "postMessage", {

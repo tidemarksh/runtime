@@ -34,12 +34,10 @@ import { normalizeGuestMemoryPolicyLimitBytes } from "./common.js";
 import {
   appendPlainForkMemoryDebug,
   applyForkMemorySnapshot,
-  captureForkMemorySnapshot,
-  FORK_STACK_COPY_WINDOW_BYTES,
+  captureForkMemorySnapshotFromRanges,
   captureParentProcessSnapshot,
   forkMemoryPreserveRanges,
-  forkSnapshotContainsBytes,
-  overwriteForkMemorySnapshot,
+  overwriteForkMemorySnapshotStrict,
   restoreParentProcessSnapshot,
 } from "./memory-snapshot.js";
 import {
@@ -50,9 +48,14 @@ import {
 import {
   assertForkChildReadyOwnership,
 } from "../ownership/invariants.js";
+import {
+  applySupervisorProcessMemoryPlan,
+  readSupervisorProcessMemoryPlan,
+  supervisorProcessMemoryInitialBytes,
+  supervisorProcessMemoryMaxPages,
+} from "../supervisor-host-op.js";
 import type { WorkerForkDeps, ProcessHandle, ThreadWorkerState } from "./types.js";
 
-const FORK_CHILD_EXECVE_HEADROOM_BYTES = 16 * 1024 * 1024;
 const FORK_CHILD_FIRST_SCHEDULING_TURNS = 32;
 
 function nextTurn(): Promise<void> {
@@ -170,48 +173,32 @@ export async function handlePlainFork(
     handle.kernelState = adoptKernelStateForHandle(handle, readKernelRuntimeState(handle.kernel));
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
 
-    const parentStackSnapshot = parentThread.forkStackSnapshot;
-    const parentStackPointer = parentThread.lastStepSp ?? handle.kernel.thread_sp(parentThread.vmPtr);
-    const forkMemorySnapshot = captureForkMemorySnapshot(
+    const processMemoryPlan = readSupervisorProcessMemoryPlan(handle, parentThread.vmPtr);
+    const forkMemorySnapshot = captureForkMemorySnapshotFromRanges(
       handle,
-      parentStackSnapshot ? 0n : parentStackPointer,
+      processMemoryPlan.copyRanges,
     );
-    if (parentStackSnapshot) {
-      const start = handle.guestBase + parentStackSnapshot.startGuest;
-      const stackBytes = parentStackSnapshot.bytes.slice(0, FORK_STACK_COPY_WINDOW_BYTES);
-      const end = start + stackBytes.length;
-      if (!forkSnapshotContainsBytes(forkMemorySnapshot, start, stackBytes)) {
-        forkMemorySnapshot.ranges.push({
-          start,
-          end,
-          bytes: stackBytes,
-        });
-        forkMemorySnapshot.endOffset = Math.max(forkMemorySnapshot.endOffset, end);
-      }
-      parentThread.forkStackSnapshot = undefined;
-    }
-    overwriteForkMemorySnapshot(
+    overwriteForkMemorySnapshotStrict(
       forkMemorySnapshot,
       handle.guestBase + parentProcessSnapshot.processPtr,
       parentProcessSnapshot.processState,
+      "parent process snapshot",
     );
     appendPlainForkProcessThreadsDebug(deps, handle, childPid, "before-restore", parentThread.vmPtr);
     restoreParentProcessSnapshot(handle, parentThread, parentProcessSnapshot);
     appendPlainForkProcessThreadsDebug(deps, handle, childPid, "after-restore", parentThread.vmPtr);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
-    const childMemoryBytes = Math.max(
-      forkMemorySnapshot.endOffset + FORK_CHILD_EXECVE_HEADROOM_BYTES,
-      handle.guestBase,
-    );
+    const childMemoryBytes = supervisorProcessMemoryInitialBytes(processMemoryPlan);
+    const childMaxMemoryPages = supervisorProcessMemoryMaxPages(processMemoryPlan);
     appendPlainForkMemoryDebug(handle, childPid, forkMemorySnapshot, childMemoryBytes);
     const { instance: childInstance, memory: childMemory } = await instantiateKernelWithSharedMemory(
       handle.wasmModule,
       {
         initialPages: Math.ceil(childMemoryBytes / 65536),
-        maximumPages: Math.max(handle.maxMemoryPages, handle.forkMaxMemoryPages),
+        maximumPages: childMaxMemoryPages,
       },
       { sabPageCache: handle.sabPageCache },
-      (memory) => applyForkMemorySnapshot(forkMemorySnapshot, memory),
+      (memory) => applySupervisorProcessMemoryPlan(handle.memory, memory, processMemoryPlan),
     );
     const childKernel = childInstance.exports as unknown as KernelExports;
     configureKernelInstanceStack(childKernel, MAIN_THREAD_KERNEL_STACK_SLOT);

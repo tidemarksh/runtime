@@ -206,9 +206,6 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     thread.lastStatusPc = msg.pc;
     thread.lastStatusSp = msg.sp ?? null;
     thread.lastStatusS11 = msg.s11 ?? null;
-    if (msg.forkStackSnapshot) {
-      thread.forkStackSnapshot = msg.forkStackSnapshot;
-    }
     if (msg.processState) {
       thread.execveProcessState = msg.processState;
     }

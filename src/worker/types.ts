@@ -6,7 +6,6 @@ import type { FsSnapshotEntry } from "../fs/types.js";
 import type { GuestMemoryPolicyLimitInput } from "./memory-policy.js";
 import type {
   KernelWorkerOutbound,
-  ForkStackSnapshot,
   GuestWriteWatchRegion,
   KernelWorkerRequest,
   KernelWorkerPipeSlotSnapshot,
@@ -64,7 +63,6 @@ export interface ThreadWorkerState {
   lastStatusPc: bigint | null;
   lastStatusSp: bigint | null;
   lastStatusS11: bigint | null;
-  forkStackSnapshot?: ForkStackSnapshot;
   execveProcessState?: Uint8Array;
   hotStatusPcs: Record<string, number>;
   initialized: boolean;

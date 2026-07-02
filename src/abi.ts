@@ -230,6 +230,7 @@ export interface KernelExports {
   supervisor_next_host_op?(outPtr: number, outLen: number): number;
   supervisor_next_host_op_kind?(kind: number, outPtr: number, outLen: number): number;
   supervisor_process_host_op?(vmPtr: number, outPtr: number, outLen: number): number;
+  supervisor_process_memory_host_op?(vmPtr: number, index: number, outPtr: number, outLen: number): number;
   supervisor_next_resume?(outPtr: number, outLen: number): number;
   supervisor_process_resume?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_fault_exit_decision?(vmPtr: number, outPtr: number, outLen: number): number;
@@ -1203,6 +1204,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_next_host_op",
   "supervisor_next_host_op_kind",
   "supervisor_process_host_op",
+  "supervisor_process_memory_host_op",
   "supervisor_next_resume",
   "supervisor_process_resume",
   "supervisor_fault_exit_decision",

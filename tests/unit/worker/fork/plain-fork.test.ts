@@ -8,7 +8,6 @@ import type {
   ThreadWorkerInbound,
   ThreadWorkerOutbound,
 } from "../../../../src/messages.js";
-import { captureForkMemorySnapshot } from "../../../../src/worker/fork/memory-snapshot.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 type WorkerModule = typeof import("../../../../src/worker.js");
@@ -708,95 +707,6 @@ test("plain fork retains shared OFDs before spawning the child worker", async ()
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   expect([...new Set(kernel.retainedOfds)].sort((a, b) => a - b)).toEqual([11, 12, 13]);
-});
-
-test("plain fork skips byte-identical captured stack snapshot", async () => {
-  const parent = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
-  const worker = createdWorkers[0];
-  const kernel = createdKernelExports[0];
-  const stackPointer = parent.guestMemoryPolicyLimitBytes - 0x8000n;
-  const stackStartGuest = Math.max(0, Math.floor(Number(stackPointer) / 65536) * 65536 - 1024 * 1024);
-  const stackBytes = 1024 * 1024;
-  const stackStart = parent.guestBase + stackStartGuest;
-  const memory = new Uint8Array(parent.memory.buffer);
-
-  for (let index = 0; index < stackBytes; index += 1) {
-    memory[stackStart + index] = index & 0xff;
-  }
-  kernel.thread_spawn_kind = () => kernel.abi_spawn_kind_fork();
-  kernel.thread_spawn_child_pid = () => 77;
-  kernel.thread_sp = () => BigInt(stackPointer);
-  kernel.debug_memory_brk_current = () => 0x4000n;
-  kernel.debug_memory_vma_len = () => 0;
-
-  emitReady(worker);
-  worker.clearPostedMessages();
-  worker.emit({
-    type: "status",
-    status: 9,
-    exitCode: 0,
-    termSignal: 0,
-    pc: 0n,
-    vmPtr: 0x1234,
-    kernelState: makeKernelState(),
-    forkStackSnapshot: {
-      startGuest: stackStartGuest,
-      bytes: memory.slice(stackStart, stackStart + stackBytes),
-    },
-  });
-  await flushMicrotasks();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-
-  const memoryLog = parent.workerDebugLog.find((entry) => entry.startsWith("plain-fork-memory:"));
-  expect(memoryLog).toBeDefined();
-  expect(memoryLog).not.toContain(`${stackStart}-${stackStart + stackBytes}:${stackBytes},${stackStart}-${stackStart + stackBytes}:${stackBytes}`);
-  expect(memoryLog).toContain("guestAddressProfile=2");
-  expect(memoryLog).toContain("guestAddressLimitBytes=4294967295");
-  expect(memoryLog).toContain("processCommittedBytes=");
-  expect(memoryLog).toContain("processMaxMemoryBytes=");
-  expect(memoryLog).toContain("pageCacheDataCapacityBytes=0");
-  expect(memoryLog).toContain("kernelWorkerPrivateMemoryBytes=null");
-  expect(memoryLog).toContain("artifactMaterializedBytes=0");
-});
-
-test("fork memory snapshot stack fallback is bounded within committed backing", async () => {
-  const parent = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
-  parent.guestMemoryPolicyLimitBytes = 0x2000n;
-  const stackPointer = 0x20_0000n;
-
-  const snapshot = captureForkMemorySnapshot(parent, stackPointer);
-
-  expect(stackPointer).toBeGreaterThan(parent.guestMemoryPolicyLimitBytes);
-  expect(snapshot.endOffset).toBe(parent.guestBase + 0x90_0000);
-  expect(snapshot.endOffset).toBeLessThan(parent.memory.buffer.byteLength);
-});
-
-test("fork memory snapshot skips sparse anonymous PROT_NONE reservation ranges", async () => {
-  const parent = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
-  const kernel = createdKernelExports[0];
-  const sparseStart = 0x20_0000;
-  const sparseEnd = 0x21_0000;
-  const materializedStart = 0x22_0000;
-  const materializedEnd = 0x23_0000;
-
-  kernel.debug_memory_brk_current = () => 0x4000n;
-  kernel.debug_memory_vma_len = () => 2;
-  kernel.debug_memory_vma_start = (index: number) => (index === 0 ? BigInt(sparseStart) : BigInt(materializedStart));
-  kernel.debug_memory_vma_end = (index: number) => (index === 0 ? BigInt(sparseEnd) : BigInt(materializedEnd));
-  kernel.debug_memory_vma_prot = (index: number) => (index === 0 ? 0 : 3);
-  kernel.debug_memory_vma_flags = () => 0x22;
-  kernel.debug_memory_vma_fd = () => -1;
-
-  const snapshot = captureForkMemorySnapshot(parent, 0n);
-  const hasSparseReservation = snapshot.ranges.some((range) =>
-    range.start <= parent.guestBase + sparseStart && range.end >= parent.guestBase + sparseEnd
-  );
-  const hasMaterializedVma = snapshot.ranges.some((range) =>
-    range.start <= parent.guestBase + materializedStart && range.end >= parent.guestBase + materializedEnd
-  );
-
-  expect(hasSparseReservation).toBe(false);
-  expect(hasMaterializedVma).toBe(true);
 });
 
 test("plain fork preserves optional zero guest memory policy from child kernel state", async () => {

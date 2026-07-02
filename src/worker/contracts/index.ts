@@ -1,5 +1,4 @@
 export type {
-  ForkStackSnapshot,
   GuestMemoryWriteSnapshot,
   GuestWriteWatchRegion,
   KernelMemoryWriteSnapshot,

@@ -5,6 +5,8 @@ import type { ProcessHandle } from "./types.js";
 const SUPERVISOR_HOST_OP_RECORD_BYTES = 64;
 const SUPERVISOR_HOST_OP_RECORD_MAGIC = 0x4f48_5354;
 const SUPERVISOR_HOST_OP_KIND_SPAWN_THREAD_WORKER = 1;
+const SUPERVISOR_HOST_OP_KIND_CREATE_PROCESS_MEMORY = 3;
+const SUPERVISOR_HOST_OP_KIND_COPY_MEMORY_RANGES = 4;
 const SUPERVISOR_HOST_OP_KIND_ARM_HOST_TIMER = 12;
 const SUPERVISOR_HOST_OP_SCRATCH_OFFSET = 0x2c000;
 const SUPERVISOR_HOST_COMPLETION_RECORD_BYTES = 64;
@@ -27,6 +29,11 @@ export interface SupervisorHostOpRecord {
 
 export type SupervisorCloneSpawnHostOp = SupervisorHostOpRecord;
 
+export interface SupervisorProcessMemoryPlan {
+  create: SupervisorHostOpRecord;
+  copyRanges: Array<{ start: number; end: number }>;
+}
+
 function supervisorHostOpScratchBase(handle: ProcessHandle): number {
   return kernelScratchBase(handle.kernel) + SUPERVISOR_HOST_OP_SCRATCH_OFFSET;
 }
@@ -39,6 +46,16 @@ function supervisorHostOpKindSpawnThreadWorker(handle: ProcessHandle): number {
 function supervisorHostOpKindArmHostTimer(handle: ProcessHandle): number {
   return handle.kernel.supervisor_host_op_kind_arm_host_timer?.()
     ?? SUPERVISOR_HOST_OP_KIND_ARM_HOST_TIMER;
+}
+
+function supervisorHostOpKindCreateProcessMemory(handle: ProcessHandle): number {
+  return handle.kernel.supervisor_host_op_kind_create_process_memory?.()
+    ?? SUPERVISOR_HOST_OP_KIND_CREATE_PROCESS_MEMORY;
+}
+
+function supervisorHostOpKindCopyMemoryRanges(handle: ProcessHandle): number {
+  return handle.kernel.supervisor_host_op_kind_copy_memory_ranges?.()
+    ?? SUPERVISOR_HOST_OP_KIND_COPY_MEMORY_RANGES;
 }
 
 function decodeSupervisorHostOpRecord(
@@ -75,6 +92,13 @@ function decodeSupervisorHostOpRecord(
     childTidPtr: view.getBigUint64(56, true),
   };
   return record;
+}
+
+function bigintToSafeNumber(value: bigint, context: string): number {
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(`${context} exceeds safe integer range: ${value}`);
+  }
+  return Number(value);
 }
 
 function decodeSupervisorCloneSpawnHostOp(
@@ -216,6 +240,116 @@ export function drainSupervisorArmHostTimerHostOp(
     new DataView(memory.buffer, scratch, result),
     vmPtr,
   );
+}
+
+function readSupervisorProcessMemoryHostOp(
+  handle: ProcessHandle,
+  vmPtr: number,
+  index: number,
+): SupervisorHostOpRecord | null {
+  const readHostOp = handle.kernel.supervisor_process_memory_host_op;
+  const recordBytesExport = handle.kernel.supervisor_host_op_record_bytes;
+  if (readHostOp === undefined || recordBytesExport === undefined) {
+    throw new Error("kernel ABI missing supervisor process memory HostOp");
+  }
+  const recordBytes = recordBytesExport();
+  if (recordBytes < SUPERVISOR_HOST_OP_RECORD_BYTES) {
+    throw new Error(`supervisor process memory HostOp record bytes too small: ${recordBytes}`);
+  }
+  const memory = handle.kernel.memory ?? handle.memory;
+  const scratch = supervisorHostOpScratchBase(handle);
+  ensureMemoryCapacity(memory, scratch + recordBytes);
+  const result = readHostOp(vmPtr, index, scratch, recordBytes);
+  if (result === 0) {
+    return null;
+  }
+  if (result < 0 || result > recordBytes) {
+    throw new Error(`supervisor process memory HostOp poll failed: ${result}`);
+  }
+  return decodeSupervisorHostOpRecord(
+    handle,
+    new DataView(memory.buffer, scratch, result),
+    "supervisor process memory HostOp",
+  );
+}
+
+export function readSupervisorProcessMemoryPlan(
+  handle: ProcessHandle,
+  vmPtr: number,
+): SupervisorProcessMemoryPlan {
+  const create = readSupervisorProcessMemoryHostOp(handle, vmPtr, 0);
+  if (create === null) {
+    throw new Error(`supervisor process memory HostOp missing create record vm=0x${vmPtr.toString(16)}`);
+  }
+  const createKind = supervisorHostOpKindCreateProcessMemory(handle);
+  if (create.kind !== createKind) {
+    throw new Error(`supervisor process memory HostOp create bad kind: ${create.kind}`);
+  }
+  if (create.parentVmPtr !== vmPtr) {
+    throw new Error(
+      `supervisor process memory HostOp parent mismatch: `
+        + `0x${create.parentVmPtr.toString(16)} != 0x${vmPtr.toString(16)}`,
+    );
+  }
+
+  const copyKind = supervisorHostOpKindCopyMemoryRanges(handle);
+  const copyRanges: Array<{ start: number; end: number }> = [];
+  for (let index = 1; ; index += 1) {
+    const record = readSupervisorProcessMemoryHostOp(handle, vmPtr, index);
+    if (record === null) {
+      break;
+    }
+    if (record.kind !== copyKind) {
+      throw new Error(`supervisor process memory HostOp copy bad kind: ${record.kind}`);
+    }
+    if (record.parentVmPtr !== vmPtr) {
+      throw new Error(
+        `supervisor process memory HostOp copy parent mismatch: `
+          + `0x${record.parentVmPtr.toString(16)} != 0x${vmPtr.toString(16)}`,
+      );
+    }
+    const start = bigintToSafeNumber(record.flags, "supervisor process memory HostOp range start");
+    const end = bigintToSafeNumber(record.childTidPtr, "supervisor process memory HostOp range end");
+    if (end <= start) {
+      throw new Error(`supervisor process memory HostOp invalid range: ${start}-${end}`);
+    }
+    copyRanges.push({ start, end });
+  }
+  if (copyRanges.length === 0) {
+    throw new Error(`supervisor process memory HostOp has no copy ranges vm=0x${vmPtr.toString(16)}`);
+  }
+  return { create, copyRanges };
+}
+
+export function supervisorProcessMemoryInitialBytes(plan: SupervisorProcessMemoryPlan): number {
+  return bigintToSafeNumber(plan.create.flags, "supervisor process memory HostOp initial bytes");
+}
+
+export function supervisorProcessMemoryMaxPages(plan: SupervisorProcessMemoryPlan): number {
+  const maxPages = bigintToSafeNumber(plan.create.childTidPtr, "supervisor process memory HostOp max pages");
+  if (!Number.isFinite(maxPages) || maxPages <= 0) {
+    throw new Error(`supervisor process memory HostOp invalid max pages: ${maxPages}`);
+  }
+  return maxPages;
+}
+
+export function applySupervisorProcessMemoryPlan(
+  source: WebAssembly.Memory,
+  target: WebAssembly.Memory,
+  plan: SupervisorProcessMemoryPlan,
+): void {
+  const sourceBytes = new Uint8Array(source.buffer);
+  for (const range of plan.copyRanges) {
+    if (range.end > sourceBytes.byteLength) {
+      throw new Error(
+        `supervisor process memory HostOp range exceeds source memory: `
+          + `${range.start}-${range.end} > ${sourceBytes.byteLength}`,
+      );
+    }
+    ensureMemoryCapacity(target, range.end);
+    const targetBytes = new Uint8Array(target.buffer);
+    targetBytes.set(sourceBytes.subarray(range.start, range.end), range.start);
+  }
 }
 
 function supervisorHostCompletionOutcomeSuccess(handle: ProcessHandle): number {

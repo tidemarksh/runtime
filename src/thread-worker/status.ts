@@ -1,7 +1,6 @@
 import type { KernelExports, KernelRuntimeState, StatusCodes } from "../abi.js";
 import { readKernelRuntimeState } from "../abi.js";
 import type {
-  ForkStackSnapshot,
   GuestMemoryWriteSnapshot,
   KernelMemoryWriteSnapshot,
   KernelWorkerFdEntrySnapshot,
@@ -33,8 +32,6 @@ const SYNC_EFFECT_PROCESS_MEMFS = 1 << 7;
 const PIPE_SLOT_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_PIPE_SLOT_DEBUG ?? "") === "1";
-const FORK_STACK_BELOW_SP_BYTES = 1024 * 1024;
-const FORK_STACK_SNAPSHOT_WINDOW_BYTES = 8 * 1024 * 1024;
 const THREAD_WORKER_STAGE_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_THREAD_WORKER_STAGE_DEBUG ?? "") === "1";
@@ -118,28 +115,6 @@ function formatGuestBufferPreview(
   length: bigint | number,
 ): string {
   return formatGuestBufferPreviewAtBase(kernelExports, guestBase, ptr, length);
-}
-
-function snapshotForkStack(kernelExports: KernelExports, status: number): ForkStackSnapshot | undefined {
-  if (
-    status !== statusCodes.EXECVE_SPAWN
-    || kernelExports.thread_spawn_kind(vmPtr) !== kernelExports.abi_spawn_kind_fork()
-  ) {
-    return undefined;
-  }
-  const sp = Number(kernelExports.thread_sp?.(vmPtr) ?? 0n);
-  const policyLimit = kernelExports.thread_guest_memory_policy_limit?.(vmPtr) ?? 0n;
-  const ramLimit = Number(policyLimit);
-  if (!Number.isFinite(sp) || sp <= 0 || sp >= ramLimit) {
-    return undefined;
-  }
-  const startGuest = Math.max(0, Math.floor(sp / 65536) * 65536 - FORK_STACK_BELOW_SP_BYTES);
-  const endGuest = Math.min(ramLimit, startGuest + FORK_STACK_SNAPSHOT_WINDOW_BYTES);
-  const memory = new Uint8Array(kernelExports.memory.buffer);
-  return {
-    startGuest,
-    bytes: memory.slice(guestBase + startGuest, guestBase + endGuest),
-  };
 }
 
 function snapshotProcessFdEntries(
@@ -967,7 +942,6 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
     fdTraceArg2OfdId: latestFdTrace?.arg2OfdId,
     fdTraceArg2OfdType: latestFdTrace?.arg2OfdType,
     fdTraceResult: latestFdTrace?.result,
-    forkStackSnapshot: snapshotForkStack(kernelExports, status),
     debug,
   };
   if (waitInWorker) {

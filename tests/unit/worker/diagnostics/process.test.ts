@@ -116,7 +116,6 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
     lastStatusPc: 0x5678n,
     lastStatusSp: null,
     lastStatusS11: null,
-    forkStackSnapshot: undefined,
     execveProcessState: undefined,
     hotStatusPcs: {},
     initialized: true,
@@ -193,6 +192,8 @@ test("formatAllLiveThreadDebug keeps execve summary without investigation traces
     worker,
     vmPtr: 0x1234,
     workers: new Set([worker]),
+    guestBase: 0,
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     kernel: {
       thread_tid: () => 11,
       thread_pc: () => 0x2000n,

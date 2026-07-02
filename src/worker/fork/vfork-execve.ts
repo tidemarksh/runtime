@@ -37,9 +37,11 @@ import {
   snapshotLocalPipeSlots,
 } from "../kernel-share.js";
 import {
-  copyKernelPrivateRegion,
-  ensureMemoryCapacity,
-} from "../kernel-scratch.js";
+  applySupervisorProcessMemoryPlan,
+  readSupervisorProcessMemoryPlan,
+  supervisorProcessMemoryInitialBytes,
+  supervisorProcessMemoryMaxPages,
+} from "../supervisor-host-op.js";
 import { acquireWorker, ensureEvictionTimer } from "../pool.js";
 import { createForkChildHandle } from "./common.js";
 import { normalizeGuestMemoryPolicyLimitBytes } from "./common.js";
@@ -52,8 +54,6 @@ import type { ProcessHandle, ThreadWorkerState, WorkerForkDeps } from "./types.j
 
 const VFORK_EXECVE_HANDOFF_FAILURE_WAIT_STATUS = 127 << 8;
 const HANDOFF_DEBUG_STRING_LIMIT = 128;
-const EXECVE_CHILD_HANDOFF_HEADROOM_BYTES = 0x10000;
-const EXECVE_CHILD_LIVE_STACK_WINDOW_BYTES = 8 * 1024 * 1024;
 const EXECVE_BACKING_RETRY_MIN_ATTEMPTS = 256;
 const EXECVE_BACKING_RETRY_MAX_ATTEMPTS = 16 * 1024;
 const EXECVE_BACKING_RETRY_FINAL_SCAN_ATTEMPTS = 2;
@@ -268,117 +268,6 @@ function execveBackingRetryLimitForMiss(miss: ExecveBackingMiss): number {
   );
 }
 
-function copyKernelRuntimeRegion(
-  source: WebAssembly.Memory,
-  target: WebAssembly.Memory,
-  start: number,
-  byteLength: number,
-): void {
-  if (start === 0 || byteLength <= 0) {
-    return;
-  }
-  const end = start + byteLength;
-  ensureMemoryCapacity(target, end);
-  new Uint8Array(target.buffer).set(new Uint8Array(source.buffer, start, byteLength), start);
-}
-
-function copyExecveKernelRuntimeRegions(handle: ProcessHandle, target: WebAssembly.Memory): void {
-  copyKernelRuntimeRegion(
-    handle.memory,
-    target,
-    handle.kernelState.ofdTablePtr,
-    handle.kernel.kernel_ofd_table_bytes(),
-  );
-  copyKernelRuntimeRegion(
-    handle.memory,
-    target,
-    handle.kernelState.memfsPtr,
-    handle.kernelState.memfsHeaderBytes
-      + handle.kernelState.memfsInodesBytes
-      + handle.kernelState.memfsFirstChildBytes
-      + handle.kernelState.memfsDirEntriesBytes
-      + handle.kernelState.memfsDataBytes,
-  );
-  copyKernelRuntimeRegion(
-    handle.memory,
-    target,
-    handle.kernelState.epollTablePtr,
-    handle.kernel.kernel_epoll_table_bytes(),
-  );
-  copyKernelRuntimeRegion(
-    handle.memory,
-    target,
-    handle.kernelState.socketTablePtr,
-    handle.kernel.kernel_socket_table_bytes(),
-  );
-  copyKernelRuntimeRegion(
-    handle.memory,
-    target,
-    handle.kernelState.pipeBase,
-    handle.kernel.kernel_pipe_region_bytes(),
-  );
-  copyKernelRuntimeRegion(
-    handle.memory,
-    target,
-    handle.kernelState.netBufBase,
-    handle.kernel.kernel_net_buf_pool_bytes(),
-  );
-  copyKernelRuntimeRegion(
-    handle.memory,
-    target,
-    handle.kernelState.sigSlotsPtr,
-    handle.kernel.kernel_sig_slots_bytes() + handle.kernel.kernel_signal_action_table_bytes(),
-  );
-  copyKernelRuntimeRegion(
-    handle.memory,
-    target,
-    handle.kernelState.processPendingPtr,
-    handle.kernel.kernel_process_pending_bytes(),
-  );
-  if (handle.kernelState.signalfdStatePtr !== undefined && handle.kernel.kernel_signalfd_state_bytes) {
-    copyKernelRuntimeRegion(
-      handle.memory,
-      target,
-      handle.kernelState.signalfdStatePtr,
-      handle.kernel.kernel_signalfd_state_bytes(),
-    );
-  }
-  copyKernelRuntimeRegion(
-    handle.memory,
-    target,
-    handle.kernelState.processRuntimeStatePtr,
-    handle.kernel.kernel_process_runtime_state_bytes(),
-  );
-  copyKernelRuntimeRegion(
-    handle.memory,
-    target,
-    handle.kernelState.timeStatePtr,
-    handle.kernel.kernel_time_state_bytes(),
-  );
-}
-
-function execveChildInitialMemoryBytes(
-  deps: WorkerForkDeps,
-  handle: ProcessHandle,
-  parentThread: ThreadWorkerState,
-): number {
-  const liveStackPtr = Number(
-    parentThread.lastStatusSp
-      ?? parentThread.lastStepSp
-      ?? handle.kernel.thread_sp(parentThread.vmPtr),
-  );
-  const liveStackEnd = Number.isFinite(liveStackPtr) && liveStackPtr > 0
-    ? handle.guestBase + liveStackPtr + EXECVE_CHILD_LIVE_STACK_WINDOW_BYTES
-    : 0;
-  return Math.max(
-    deps.bootStrapMemoryBytes,
-    handle.kernelState.heapPtr,
-    handle.kernel.kernel_heap_ptr?.() ?? 0,
-    handle.guestBase + EXECVE_CHILD_HANDOFF_HEADROOM_BYTES,
-    liveStackEnd,
-  );
-}
-
 function debugVforkVmState(
   handle: ProcessHandle,
   vmPtr: number,
@@ -571,11 +460,9 @@ export async function handleVforkExecve(
       `vfork-execve:guest:${childPid}:${JSON.stringify(debugPath)}:${JSON.stringify(debugArgv0)}:${JSON.stringify(debugArgv1)}`,
     );
     handle.kernelState = readKernelRuntimeState(handle.kernel);
-  const childProcessMaxMemoryPages = normalizeProcessMaxMemoryPages(
-    handoff.processMaxMemoryPages,
-    handle.maxMemoryPages,
-  );
-  const childInitialMemoryBytes = execveChildInitialMemoryBytes(deps, handle, parentThread);
+  const processMemoryPlan = readSupervisorProcessMemoryPlan(handle, parentThread.vmPtr);
+  const childProcessMaxMemoryPages = supervisorProcessMemoryMaxPages(processMemoryPlan);
+  const childInitialMemoryBytes = supervisorProcessMemoryInitialBytes(processMemoryPlan);
   deps.appendRuntimeLifecycleEvent(
     handle.runtimeId,
     `vfork-execve:child-memory:${childPid}`
@@ -589,15 +476,12 @@ export async function handleVforkExecve(
     handle.wasmModule,
     {
       initialPages: Math.ceil(childInitialMemoryBytes / deps.wasmPageSize),
-      maximumPages: Math.max(childProcessMaxMemoryPages, handle.forkMaxMemoryPages),
+      maximumPages: childProcessMaxMemoryPages,
     },
     {
       sabPageCache: handle.sabPageCache,
     },
-    (memory) => {
-      copyKernelPrivateRegion(handle.memory, memory, handle.kernelState.heapPtr);
-      copyExecveKernelRuntimeRegions(handle, memory);
-    },
+    (memory) => applySupervisorProcessMemoryPlan(handle.memory, memory, processMemoryPlan),
   );
   const childKernel = childInstance.exports as unknown as KernelExports;
   configureKernelInstanceStack(childKernel, MAIN_THREAD_KERNEL_STACK_SLOT);

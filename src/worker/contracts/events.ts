@@ -46,11 +46,6 @@ export interface KernelWorkerFdEntrySnapshot {
   generation?: number;
 }
 
-export interface ForkStackSnapshot {
-  startGuest: number;
-  bytes: Uint8Array;
-}
-
 export interface KernelWorkerPidStateSnapshot {
   pid: number;
   vmPtr: number;
@@ -176,7 +171,6 @@ export interface ThreadWorkerStatusMessage {
   fdTraceArg2OfdId?: number;
   fdTraceArg2OfdType?: number;
   fdTraceResult?: bigint;
-  forkStackSnapshot?: ForkStackSnapshot;
   guestMemoryWrites?: GuestMemoryWriteSnapshot[];
   kernelMemoryWrites?: KernelMemoryWriteSnapshot[];
   syncEffects?: number;
