@@ -57,11 +57,30 @@ type HostBlockedRetryResultHandler = (
   status: number,
 ) => void;
 
-type WorkerKernelRpcBlockedRpcInternalDeps = WorkerKernelRpcBlockedRpcDeps & {
-  handleHostBlockedRetryResult?: HostBlockedRetryResultHandler;
-};
+interface HostBlockedSyscallResumeMode {
+  collectEffects: boolean;
+  emitRetryResult(status: number): void;
+}
 
-function createWorkerKernelRpcBlockedRpcHelperInternals(deps: WorkerKernelRpcBlockedRpcInternalDeps) {
+type ExecuteHostBlockedSyscallResumeForTest = (
+  handle: ProcessHandle,
+  worker: Worker,
+  vmPtr: number,
+  blockedStatus: number,
+  handleHostBlockedRetryResult: HostBlockedRetryResultHandler,
+) => Promise<void>;
+
+interface WorkerKernelRpcBlockedRpcInternals {
+  executeHostBlockedSyscallResumeOutcome(
+    handle: ProcessHandle,
+    worker: Worker,
+    vmPtr: number,
+    blockedStatus: number,
+  ): Promise<KernelRpcResumeOutcome>;
+  executeHostBlockedSyscallResumeForTest: ExecuteHostBlockedSyscallResumeForTest;
+}
+
+function createWorkerKernelRpcBlockedRpcHelperInternals(deps: WorkerKernelRpcBlockedRpcDeps): WorkerKernelRpcBlockedRpcInternals {
   const pendingOutcomeEffects = new WeakMap<Worker, KernelRpcResumeEffect[]>();
 
   function pushOutcomeEffect(worker: Worker, effect: KernelRpcResumeEffect): void {
@@ -81,18 +100,6 @@ function createWorkerKernelRpcBlockedRpcHelperInternals(deps: WorkerKernelRpcBlo
 
   function outcomeEffectsNeedResumeContinuation(worker: Worker): boolean {
     return kernelRpcResumeEffectsNeedContinuation(pendingOutcomeEffects.get(worker));
-  }
-
-  function emitHostBlockedRetryResult(
-    handle: ProcessHandle,
-    worker: Worker,
-    vmPtr: number,
-    status: number,
-  ): void {
-    if (deps.handleHostBlockedRetryResult === undefined) {
-      throw new Error("blocked-rpc retry callback is not available on the production outcome path");
-    }
-    deps.handleHostBlockedRetryResult(handle, worker, vmPtr, status);
   }
 
 function blockedRpcSyncCause(status: number): SyncCause {
@@ -1047,9 +1054,9 @@ async function executeHostBlockedSyscallResume(
   worker: Worker,
   vmPtr: number,
   blockedStatus: number,
-  collectEffects = false,
-  collectedRetryResult?: { status?: number },
+  mode: HostBlockedSyscallResumeMode,
 ): Promise<void> {
+  const collectEffects = mode.collectEffects;
   let rpcGeneration: number | null = null;
   let canonicalEofReadyAtStart = false;
   let preserveCanonicalEofReadyOnFinish = false;
@@ -1059,13 +1066,7 @@ async function executeHostBlockedSyscallResume(
     }
   };
   const emitBlockedRpcRetryResult = (status: number): void => {
-    if (collectEffects) {
-      if (collectedRetryResult !== undefined) {
-        collectedRetryResult.status = status;
-      }
-      return;
-    }
-    emitHostBlockedRetryResult(handle, worker, vmPtr, status);
+    mode.emitRetryResult(status);
   };
   const finishBlockedRpc = (): void => {
     const blocked = handle.hostBlockedWorkers.get(worker);
@@ -2199,8 +2200,12 @@ async function executeHostBlockedSyscallResume(
       worker,
       vmPtr,
       blockedStatus,
-      true,
-      collectedRetryResult,
+      {
+        collectEffects: true,
+        emitRetryResult(status) {
+          collectedRetryResult.status = status;
+        },
+      },
     );
     const needsResumeContinuation = outcomeEffectsNeedResumeContinuation(worker);
     const effects = takeOutcomeEffects(worker);
@@ -2223,8 +2228,29 @@ async function executeHostBlockedSyscallResume(
     return { kind: "blocked", status, effects };
   }
 
+  async function executeHostBlockedSyscallResumeForTest(
+    handle: ProcessHandle,
+    worker: Worker,
+    vmPtr: number,
+    blockedStatus: number,
+    handleHostBlockedRetryResult: HostBlockedRetryResultHandler,
+  ): Promise<void> {
+    await executeHostBlockedSyscallResume(
+      handle,
+      worker,
+      vmPtr,
+      blockedStatus,
+      {
+        collectEffects: false,
+        emitRetryResult(status) {
+          handleHostBlockedRetryResult(handle, worker, vmPtr, status);
+        },
+      },
+    );
+  }
+
   return {
-    executeHostBlockedSyscallResume,
+    executeHostBlockedSyscallResumeForTest,
     executeHostBlockedSyscallResumeOutcome,
   };
 }
@@ -2239,9 +2265,29 @@ export function createWorkerKernelRpcBlockedRpcTestHelpers(
     & Partial<Pick<WorkerKernelRpcBlockedRpcDeps, "clearHostBlockedRetryTimer" | "requestThreadWorkerBlockedResume">>
     & { handleHostBlockedRetryResult?: HostBlockedRetryResultHandler },
 ) {
-  return createWorkerKernelRpcBlockedRpcHelperInternals({
+  const internals = createWorkerKernelRpcBlockedRpcHelperInternals({
     ...deps,
     clearHostBlockedRetryTimer: deps.clearHostBlockedRetryTimer ?? (() => {}),
     requestThreadWorkerBlockedResume: deps.requestThreadWorkerBlockedResume ?? (() => {}),
   });
+  return {
+    executeHostBlockedSyscallResume(
+      handle: ProcessHandle,
+      worker: Worker,
+      vmPtr: number,
+      blockedStatus: number,
+    ): Promise<void> {
+      if (deps.handleHostBlockedRetryResult === undefined) {
+        throw new Error("blocked-rpc retry callback is only available through test helper deps");
+      }
+      return internals.executeHostBlockedSyscallResumeForTest(
+        handle,
+        worker,
+        vmPtr,
+        blockedStatus,
+        deps.handleHostBlockedRetryResult,
+      );
+    },
+    executeHostBlockedSyscallResumeOutcome: internals.executeHostBlockedSyscallResumeOutcome,
+  };
 }
