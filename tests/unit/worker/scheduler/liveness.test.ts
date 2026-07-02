@@ -3812,7 +3812,7 @@ test("epoll retry keeps unanswered futex running worker when last trace points e
   });
   const scheduler = createRunLoopScheduler({
     threadWorkerStates,
-    retryBlockedWorker: vi.fn(),
+    retryHostBlockedWorker: vi.fn(),
   });
 
   expect(scheduler.clearStaleRunningWorker(handle, blockedWorker)).toBe(false);
@@ -3863,7 +3863,7 @@ test("epoll retry keeps unanswered futex running worker with a blocked record", 
   });
   const scheduler = createRunLoopScheduler({
     threadWorkerStates,
-    retryBlockedWorker: vi.fn(),
+    retryHostBlockedWorker: vi.fn(),
   });
 
   expect(scheduler.clearStaleRunningWorker(handle, blockedWorker)).toBe(false);
@@ -3912,7 +3912,7 @@ test("epoll retry keeps active unanswered ok running worker", () => {
   });
   const scheduler = createRunLoopScheduler({
     threadWorkerStates,
-    retryBlockedWorker: vi.fn(),
+    retryHostBlockedWorker: vi.fn(),
   });
 
   expect(scheduler.clearStaleRunningWorker(handle, blockedWorker)).toBe(false);
@@ -4921,7 +4921,7 @@ test("blocked completion parks futex result as supervisor-owned worker state", (
     handleWorkerMessage: () => {},
   });
 
-  scheduler.handleBlockedRetryResult(
+  scheduler.handleHostBlockedRetryResult(
     handle,
     worker,
     thread.vmPtr,
@@ -4999,7 +4999,7 @@ test("blocked completion arms supervisor timer instead of scheduling runtime ret
     handleWorkerMessage: () => {},
   });
 
-  scheduler.handleBlockedRetryResult(
+  scheduler.handleHostBlockedRetryResult(
     handle,
     worker,
     thread.vmPtr,

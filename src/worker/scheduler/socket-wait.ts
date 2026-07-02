@@ -3,7 +3,7 @@ import type { ProcessHandle } from "../types.js";
 export interface SocketWaitSchedulerDeps {
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   logNetworkDebug(event: string): void;
-  scheduleBlockedRetry(handle: ProcessHandle, worker: Worker, delayMs?: number): void;
+  scheduleHostBlockedRetry(handle: ProcessHandle, worker: Worker, delayMs?: number): void;
 }
 
 export interface SocketWaitScheduler {
@@ -141,7 +141,7 @@ export function createSocketWaitScheduler(deps: SocketWaitSchedulerDeps): Socket
       return;
     }
     if (timeoutMs < 0) {
-      deps.scheduleBlockedRetry(handle, worker, 1);
+      deps.scheduleHostBlockedRetry(handle, worker, 1);
       return;
     }
     throw new Error("kernel supervisor timer HostOp required for finite socket wait");

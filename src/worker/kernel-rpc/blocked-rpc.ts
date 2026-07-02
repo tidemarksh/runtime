@@ -43,7 +43,7 @@ export interface WorkerKernelRpcBlockedRpcDeps {
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   failProcess(handle: ProcessHandle, error: Error): void;
-  handleBlockedRetryResult(handle: ProcessHandle, worker: Worker, vmPtr: number, status: number): void;
+  handleHostBlockedRetryResult(handle: ProcessHandle, worker: Worker, vmPtr: number, status: number): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   syncBlockedForkSharedStateViaKernelWorker(handle: ProcessHandle, sourceVmPtr: number | undefined, cause: SyncCause): Promise<void>;
   syncSocketStateViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<{ socketUsed: number; netBufUsed: bigint }>;
@@ -71,13 +71,13 @@ function createWorkerKernelRpcBlockedRpcHelperInternals(deps: WorkerKernelRpcBlo
     return kernelRpcResumeEffectsNeedContinuation(pendingOutcomeEffects.get(worker));
   }
 
-  function emitBlockedRetryResult(
+  function emitHostBlockedRetryResult(
     handle: ProcessHandle,
     worker: Worker,
     vmPtr: number,
     status: number,
   ): void {
-    deps.handleBlockedRetryResult(handle, worker, vmPtr, status);
+    deps.handleHostBlockedRetryResult(handle, worker, vmPtr, status);
   }
 
 function blockedRpcSyncCause(status: number): SyncCause {
@@ -1048,7 +1048,7 @@ async function resumeBlockedSyscallLocally(
       }
       return;
     }
-    emitBlockedRetryResult(handle, worker, vmPtr, status);
+    emitHostBlockedRetryResult(handle, worker, vmPtr, status);
   };
   const finishBlockedRpc = (): void => {
     const blocked = handle.hostBlockedWorkers.get(worker);

@@ -33,7 +33,7 @@ interface WorkerSchedulerStateSyncDeps {
   drainProcessOutput(handle: ProcessHandle): boolean;
   drainHiddenProcessOutput(handle: ProcessHandle): boolean;
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
-  retryBlockedWorker(handle: ProcessHandle, worker: Worker): void;
+  retryHostBlockedWorker(handle: ProcessHandle, worker: Worker): void;
 }
 
 export function createWorkerSchedulerStateSyncHelpers(
@@ -136,7 +136,7 @@ export function createWorkerSchedulerStateSyncHelpers(
               `epoll-wake-retry:${member.pid}:vm=${vmPtr}:status=${blocked.status}`,
             );
           }
-          deps.retryBlockedWorker(member, blockedWorker);
+          deps.retryHostBlockedWorker(member, blockedWorker);
         }
       }
     }

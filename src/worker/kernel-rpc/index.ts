@@ -26,7 +26,7 @@ interface WorkerKernelRpcDeps {
   assertProcessStandardFdIntegrity(handle: ProcessHandle, context: string): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   failProcess(handle: ProcessHandle, error: Error): void;
-  handleBlockedRetryResult(handle: ProcessHandle, worker: Worker, vmPtr: number, status: number): void;
+  handleHostBlockedRetryResult(handle: ProcessHandle, worker: Worker, vmPtr: number, status: number): void;
   markRuntimeFsDirty(handle: ProcessHandle): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   syncProcessMemfsViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<void>;
@@ -170,7 +170,7 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     appendWorkerDebugLog: deps.appendWorkerDebugLog,
     enqueueWorker: deps.enqueueWorker,
     failProcess: deps.failProcess,
-    handleBlockedRetryResult: deps.handleBlockedRetryResult,
+    handleHostBlockedRetryResult: deps.handleHostBlockedRetryResult,
     requestPipeStateSync: deps.requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker: deps.syncBlockedForkSharedStateViaKernelWorker,
     syncSocketStateViaKernelWorker: syncSocketStatePreservingNetworkBridge,

@@ -168,7 +168,7 @@ function makeHandle(overrides: Record<string, unknown> = {}) {
 test("requestPipeStateSync drains the visible stdio owner for hidden-child internal sync", async () => {
   const drainProcessOutput = vi.fn(() => true);
   const drainHiddenProcessOutput = vi.fn(() => true);
-  const retryBlockedWorker = vi.fn();
+  const retryHostBlockedWorker = vi.fn();
   const parent = makeHandle();
   const child = makeHandle({ pid: 2, stdioOwner: parent });
 
@@ -177,7 +177,7 @@ test("requestPipeStateSync drains the visible stdio owner for hidden-child inter
     drainProcessOutput,
     drainHiddenProcessOutput,
     threadWorkerStates: new WeakMap(),
-    retryBlockedWorker,
+    retryHostBlockedWorker,
   });
 
   await helpers.requestPipeStateSync(child, false);
@@ -187,11 +187,11 @@ test("requestPipeStateSync drains the visible stdio owner for hidden-child inter
   expect(drainHiddenProcessOutput).not.toHaveBeenCalled();
   expect(child.kernelWorkerRequest).toHaveBeenCalledTimes(1);
   expect(parent.kernelWorkerRequest).toHaveBeenCalledTimes(1);
-  expect(retryBlockedWorker).not.toHaveBeenCalled();
+  expect(retryHostBlockedWorker).not.toHaveBeenCalled();
 });
 
 test("requestSocketStateSync wakes socket-backed poll and epoll waiters", async () => {
-  const retryBlockedWorker = vi.fn();
+  const retryHostBlockedWorker = vi.fn();
   const handle = makeHandle({
     pid: 1,
     kernelWorkerRequest: vi.fn(async (msg) => {
@@ -227,21 +227,21 @@ test("requestSocketStateSync wakes socket-backed poll and epoll waiters", async 
     drainProcessOutput: vi.fn(() => false),
     drainHiddenProcessOutput: vi.fn(() => false),
     threadWorkerStates: new WeakMap(),
-    retryBlockedWorker,
+    retryHostBlockedWorker,
   });
 
   await helpers.requestSocketStateSync(handle, true);
 
   expect(handle.kernelState.socketUsed).toBe(3);
   expect(handle.kernelState.netBufUsed).toBe(5n);
-  expect(retryBlockedWorker).toHaveBeenCalledWith(handle, pipeWorker);
-  expect(retryBlockedWorker).toHaveBeenCalledWith(handle, epollWorker);
-  expect(retryBlockedWorker).toHaveBeenCalledWith(handle, recvWorker);
+  expect(retryHostBlockedWorker).toHaveBeenCalledWith(handle, pipeWorker);
+  expect(retryHostBlockedWorker).toHaveBeenCalledWith(handle, epollWorker);
+  expect(retryHostBlockedWorker).toHaveBeenCalledWith(handle, recvWorker);
   expect(handle.hostBlockedWorkers.get(pipeWorker)?.pipeSyncedBeforePassive).toBe(false);
 });
 
 test("requestSocketStateSync skips rpc-pending epoll waiters during waking sync", async () => {
-  const retryBlockedWorker = vi.fn();
+  const retryHostBlockedWorker = vi.fn();
   const handle = makeHandle({
     pid: 1,
     kernelWorkerRequest: vi.fn(async (msg) => {
@@ -270,18 +270,18 @@ test("requestSocketStateSync skips rpc-pending epoll waiters during waking sync"
     drainProcessOutput: vi.fn(() => false),
     drainHiddenProcessOutput: vi.fn(() => false),
     threadWorkerStates: new WeakMap(),
-    retryBlockedWorker,
+    retryHostBlockedWorker,
   });
 
   await helpers.requestSocketStateSync(handle, true);
 
   expect(handle.kernelState.socketUsed).toBe(3);
   expect(handle.kernelState.netBufUsed).toBe(5n);
-  expect(retryBlockedWorker).not.toHaveBeenCalledWith(handle, epollWorker);
+  expect(retryHostBlockedWorker).not.toHaveBeenCalledWith(handle, epollWorker);
 });
 
 test("requestPipeStateSync skips rpc-pending pipe waiters during waking sync", async () => {
-  const retryBlockedWorker = vi.fn();
+  const retryHostBlockedWorker = vi.fn();
   const handle = makeHandle();
   handle.kernelShare.members.add(handle);
   const pipeWorker = {} as Worker;
@@ -297,17 +297,17 @@ test("requestPipeStateSync skips rpc-pending pipe waiters during waking sync", a
     drainProcessOutput: vi.fn(() => false),
     drainHiddenProcessOutput: vi.fn(() => false),
     threadWorkerStates: new WeakMap(),
-    retryBlockedWorker,
+    retryHostBlockedWorker,
   });
 
   await helpers.requestPipeStateSync(handle, true);
 
-  expect(retryBlockedWorker).not.toHaveBeenCalledWith(handle, pipeWorker);
+  expect(retryHostBlockedWorker).not.toHaveBeenCalledWith(handle, pipeWorker);
   expect(handle.hostBlockedWorkers.get(pipeWorker)?.pipeSyncedBeforePassive).toBe(true);
 });
 
 test("requestSocketStateSync applies socket payload state to fork-share members before wake", async () => {
-  const retryBlockedWorker = vi.fn();
+  const retryHostBlockedWorker = vi.fn();
   const socketTable = new Uint8Array(16 * 384);
   socketTable[4] = 77;
   const parent = makeHandle({
@@ -345,18 +345,18 @@ test("requestSocketStateSync applies socket payload state to fork-share members 
     drainProcessOutput: vi.fn(() => false),
     drainHiddenProcessOutput: vi.fn(() => false),
     threadWorkerStates: new WeakMap(),
-    retryBlockedWorker,
+    retryHostBlockedWorker,
   });
 
   await helpers.requestSocketStateSync(parent, true);
 
   expect(new Uint8Array(child.memory.buffer)[4]).toBe(77);
   expect(child.kernelState.socketUsed).toBe(3);
-  expect(retryBlockedWorker).toHaveBeenCalledWith(child, recvWorker);
+  expect(retryHostBlockedWorker).toHaveBeenCalledWith(child, recvWorker);
 });
 
 test("requestSocketStateSync rewrites provisional pid restored by kernel-worker state", async () => {
-  const retryBlockedWorker = vi.fn();
+  const retryHostBlockedWorker = vi.fn();
   let currentPid = 3;
   const handle = makeHandle({
     pid: 3,
@@ -392,18 +392,18 @@ test("requestSocketStateSync rewrites provisional pid restored by kernel-worker 
     drainProcessOutput: vi.fn(() => false),
     drainHiddenProcessOutput: vi.fn(() => false),
     threadWorkerStates: new WeakMap(),
-    retryBlockedWorker,
+    retryHostBlockedWorker,
   });
 
   await helpers.requestSocketStateSync(handle, true);
 
   expect(handle.kernel.process_rewrite_child_pid).toHaveBeenCalledWith(0x1234, 87703, 3, 4);
   expect(currentPid).toBe(3);
-  expect(retryBlockedWorker).not.toHaveBeenCalled();
+  expect(retryHostBlockedWorker).not.toHaveBeenCalled();
 });
 
 test("requestEpollDependentOfdStateSync uses ABI fd types for eventfd and timerfd", async () => {
-  const retryBlockedWorker = vi.fn();
+  const retryHostBlockedWorker = vi.fn();
   const eventfdType = 41;
   const timerfdType = 42;
   const syncedOfdIds: number[][] = [];
@@ -461,18 +461,18 @@ test("requestEpollDependentOfdStateSync uses ABI fd types for eventfd and timerf
     drainProcessOutput: vi.fn(() => false),
     drainHiddenProcessOutput: vi.fn(() => false),
     threadWorkerStates: new WeakMap(),
-    retryBlockedWorker,
+    retryHostBlockedWorker,
   });
 
   await helpers.requestEpollDependentOfdStateSync(handle);
 
   expect(syncedOfdIds).toEqual([[11, 12]]);
   expect(handle.kernelWorkerRequest).toHaveBeenCalledTimes(1);
-  expect(retryBlockedWorker).not.toHaveBeenCalled();
+  expect(retryHostBlockedWorker).not.toHaveBeenCalled();
 });
 
 test("requestSocketStateSync preserves network recv payload when restoring a stale snapshot with the same tail", async () => {
-  const retryBlockedWorker = vi.fn();
+  const retryHostBlockedWorker = vi.fn();
   const handle = makeHandle();
   handle.memory = new WebAssembly.Memory({ initial: 32, maximum: 32, shared: true });
   const socketTablePtr = 0x2000;
@@ -552,7 +552,7 @@ test("requestSocketStateSync preserves network recv payload when restoring a sta
     drainProcessOutput: vi.fn(() => false),
     drainHiddenProcessOutput: vi.fn(() => false),
     threadWorkerStates: new WeakMap(),
-    retryBlockedWorker,
+    retryHostBlockedWorker,
   });
 
   await helpers.requestSocketStateSync(handle, false);
@@ -565,7 +565,7 @@ test("requestSocketStateSync preserves network recv payload when restoring a sta
 });
 
 test("requestSocketStateSync keeps newer incoming network recv payload when tail advances", async () => {
-  const retryBlockedWorker = vi.fn();
+  const retryHostBlockedWorker = vi.fn();
   const handle = makeHandle();
   handle.memory = new WebAssembly.Memory({ initial: 32, maximum: 32, shared: true });
   const socketTablePtr = 0x2000;
@@ -645,7 +645,7 @@ test("requestSocketStateSync keeps newer incoming network recv payload when tail
     drainProcessOutput: vi.fn(() => false),
     drainHiddenProcessOutput: vi.fn(() => false),
     threadWorkerStates: new WeakMap(),
-    retryBlockedWorker,
+    retryHostBlockedWorker,
   });
 
   await helpers.requestSocketStateSync(handle, false);
@@ -657,7 +657,7 @@ test("requestSocketStateSync keeps newer incoming network recv payload when tail
 });
 
 test("requestSocketStateSync preserves host recv payload when producer tail wraps", async () => {
-  const retryBlockedWorker = vi.fn();
+  const retryHostBlockedWorker = vi.fn();
   const handle = makeHandle();
   handle.memory = new WebAssembly.Memory({ initial: 32, maximum: 32, shared: true });
   const socketTablePtr = 0x2000;
@@ -755,7 +755,7 @@ test("requestSocketStateSync preserves host recv payload when producer tail wrap
     drainProcessOutput: vi.fn(() => false),
     drainHiddenProcessOutput: vi.fn(() => false),
     threadWorkerStates: new WeakMap(),
-    retryBlockedWorker,
+    retryHostBlockedWorker,
   });
 
   await helpers.requestSocketStateSync(handle, false);
@@ -767,7 +767,7 @@ test("requestSocketStateSync preserves host recv payload when producer tail wrap
 });
 
 test("requestSocketStateSync does not restore stale recv bytes after local socket drain", async () => {
-  const retryBlockedWorker = vi.fn();
+  const retryHostBlockedWorker = vi.fn();
   const handle = makeHandle();
   handle.memory = new WebAssembly.Memory({ initial: 32, maximum: 32, shared: true });
   const socketTablePtr = 0x2000;
@@ -856,7 +856,7 @@ test("requestSocketStateSync does not restore stale recv bytes after local socke
     drainProcessOutput: vi.fn(() => false),
     drainHiddenProcessOutput: vi.fn(() => false),
     threadWorkerStates: new WeakMap(),
-    retryBlockedWorker,
+    retryHostBlockedWorker,
   });
 
   await helpers.requestSocketStateSync(handle, false);
@@ -869,7 +869,7 @@ test("requestSocketStateSync does not restore stale recv bytes after local socke
 test("requestPipeStateSync drains visible stdio owner during kernel-owned waking sync", async () => {
   const drainProcessOutput = vi.fn(() => true);
   const drainHiddenProcessOutput = vi.fn(() => true);
-  const retryBlockedWorker = vi.fn();
+  const retryHostBlockedWorker = vi.fn();
   const parent = makeHandle({ pid: 1 });
   const child = makeHandle({ pid: 2, stdioOwner: parent });
 
@@ -878,7 +878,7 @@ test("requestPipeStateSync drains visible stdio owner during kernel-owned waking
     drainProcessOutput,
     drainHiddenProcessOutput,
     threadWorkerStates: new WeakMap(),
-    retryBlockedWorker,
+    retryHostBlockedWorker,
   });
 
   await helpers.requestPipeStateSync(child, true);
@@ -893,7 +893,7 @@ test("requestPipeStateSync drains visible stdio owner during kernel-owned waking
 test("requestPipeStateSync re-syncs the visible owner after self-drain advances the read head", async () => {
   const drainProcessOutput = vi.fn(() => true);
   const drainHiddenProcessOutput = vi.fn(() => true);
-  const retryBlockedWorker = vi.fn();
+  const retryHostBlockedWorker = vi.fn();
   const handle = makeHandle({ pid: 1, stdioOwner: null });
 
   const helpers = createWorkerSchedulerStateSyncHelpers({
@@ -901,7 +901,7 @@ test("requestPipeStateSync re-syncs the visible owner after self-drain advances 
     drainProcessOutput,
     drainHiddenProcessOutput,
     threadWorkerStates: new WeakMap(),
-    retryBlockedWorker,
+    retryHostBlockedWorker,
   });
 
   await helpers.requestPipeStateSync(handle, false);
@@ -915,7 +915,7 @@ test("requestPipeStateSync re-syncs the visible owner after self-drain advances 
 test("requestPipeStateSync still drains hidden child output when stdout was remapped away from the visible host pipe", async () => {
   const drainProcessOutput = vi.fn(() => true);
   const drainHiddenProcessOutput = vi.fn(() => true);
-  const retryBlockedWorker = vi.fn();
+  const retryHostBlockedWorker = vi.fn();
   const parent = makeHandle();
   const child = makeHandle({
     pid: 2,
@@ -935,7 +935,7 @@ test("requestPipeStateSync still drains hidden child output when stdout was rema
     drainProcessOutput,
     drainHiddenProcessOutput,
     threadWorkerStates: new WeakMap(),
-    retryBlockedWorker,
+    retryHostBlockedWorker,
   });
 
   await helpers.requestPipeStateSync(child, false);
@@ -989,7 +989,7 @@ test("requestPipeStateSync defers while active vfork child owns the worker pid",
     drainProcessOutput,
     drainHiddenProcessOutput: vi.fn(() => true),
     threadWorkerStates,
-    retryBlockedWorker: vi.fn(),
+    retryHostBlockedWorker: vi.fn(),
   });
 
   await helpers.requestPipeStateSync(handle, true);

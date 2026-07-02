@@ -160,7 +160,7 @@ const {
   blockWorker,
   clearBlockedWorker,
   enqueueWorker,
-  handleBlockedRetryResult,
+  handleHostBlockedRetryResult,
   notifySchedulerProgress,
   pumpProcess,
   pruneDetachedProcessWorkers,
@@ -178,7 +178,7 @@ workerKernelRpcHelpers = createWorkerKernelRpcHelpers({
   assertProcessStandardFdIntegrity,
   enqueueWorker,
   failProcess,
-  handleBlockedRetryResult,
+  handleHostBlockedRetryResult,
   markRuntimeFsDirty,
   requestPipeStateSync,
   syncProcessMemfsViaKernelWorker: syncProcessMemfsViaKernelWorkerImpl,
@@ -464,7 +464,7 @@ function markRuntimeFsDirty(handle: ProcessHandle): void {
 
 const kernelRpcResumeEffectPorts = {
   enqueueWorker,
-  handleBlockedRetryResult,
+  handleHostBlockedRetryResult,
   handleExecveSpawn,
   notifyHostEffectProgress: notifySchedulerProgress,
   requestPipeStateSync,

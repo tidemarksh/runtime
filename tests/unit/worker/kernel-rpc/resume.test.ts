@@ -115,7 +115,7 @@ function createWorkerKernelRpcLocalBlockedRpcHelpers(
     appendWorkerDebugLog: deps.appendWorkerDebugLog,
     enqueueWorker: deps.enqueueWorker,
     failProcess: deps.failProcess,
-    handleBlockedRetryResult: deps.handleBlockedRetryResult,
+    handleHostBlockedRetryResult: deps.handleHostBlockedRetryResult,
     requestPipeStateSync: deps.requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker: deps.syncBlockedForkSharedStateViaKernelWorker,
     syncSocketStateViaKernelWorker: deps.syncSocketStateViaKernelWorker,
@@ -202,7 +202,7 @@ test("resumeWait4ViaKernelWorker does not re-run local wait4 after kernel-worker
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult: (_handle, _worker, _vmPtr, nextStatus) => {
+    handleHostBlockedRetryResult: (_handle, _worker, _vmPtr, nextStatus) => {
       handledStatuses.push(nextStatus);
     },
     notifyHostEffectProgress: () => {},
@@ -293,7 +293,7 @@ test("resumeWait4ViaKernelWorker skips RPC when local wait4 already resolved", a
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult: (_handle, _worker, _vmPtr, nextStatus) => {
+    handleHostBlockedRetryResult: (_handle, _worker, _vmPtr, nextStatus) => {
       handledStatuses.push(nextStatus);
     },
     notifyHostEffectProgress: () => {},
@@ -392,7 +392,7 @@ test("resumeVforkExecveParentViaKernelWorker restores the parent before clearing
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult: () => {},
+    handleHostBlockedRetryResult: () => {},
     notifyHostEffectProgress: () => {},
     processHandles: new Map([[1, handle]]),
     requestPipeStateSync: async () => {},
@@ -417,7 +417,7 @@ test("resumeBlockedSyscallLocally skips kernel-worker shared-state syncs during 
   const threadResumeBlockedSyscall = vi.fn();
   const syncBlockedForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const syncSocketStateViaKernelWorker = vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n }));
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const kernel = {
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     kernel_attach_runtime_state: vi.fn(),
@@ -494,7 +494,7 @@ test("resumeBlockedSyscallLocally skips kernel-worker shared-state syncs during 
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync: async () => {},
@@ -511,7 +511,7 @@ test("resumeBlockedSyscallLocally skips kernel-worker shared-state syncs during 
   expect(threadResumeBlockedSyscall).toHaveBeenCalledWith(0x1234);
   expect(syncBlockedForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
   expect(syncSocketStateViaKernelWorker).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
   expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
@@ -526,7 +526,7 @@ test("resumeBlockedSyscallLocally queues pselect fd_set writes after owner-side 
     bytes.set([0, 0, 0, 0, 0, 0, 0, 0], 0x280);
     return 2n;
   });
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const kernel = {
     memory,
     kernel_attach_runtime_state: vi.fn(),
@@ -617,7 +617,7 @@ test("resumeBlockedSyscallLocally queues pselect fd_set writes after owner-side 
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync: async () => {},
@@ -640,7 +640,7 @@ test("resumeBlockedSyscallLocally queues pselect fd_set writes after owner-side 
   expect([...threadState.pendingGuestMemoryWrites[0].bytes]).toEqual([0x08, 0, 0, 0, 0, 0, 0, 0]);
   expect([...threadState.pendingGuestMemoryWrites[1].bytes]).toEqual([0x10, 0, 0, 0, 0, 0, 0, 0]);
   expect([...threadState.pendingGuestMemoryWrites[2].bytes]).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
 });
 
 test("resumeBlockedSyscallLocally retries pselect pipe HUP owner-side after transient process mismatch", async () => {
@@ -667,7 +667,7 @@ test("resumeBlockedSyscallLocally retries pselect pipe HUP owner-side after tran
     status = 0;
     return 1n;
   });
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const enqueueWorker = vi.fn();
   const kernel = {
     memory,
@@ -773,7 +773,7 @@ test("resumeBlockedSyscallLocally retries pselect pipe HUP owner-side after tran
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync: async () => {},
@@ -792,7 +792,7 @@ test("resumeBlockedSyscallLocally retries pselect pipe HUP owner-side after tran
   expect([...threadState.pendingGuestMemoryWrites[0].bytes]).toEqual([0x01, 0, 0, 0, 0, 0, 0, 0]);
   expect(threadState.resumeBlockedOnNextStep).toBe(false);
   expect(enqueueWorker).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
 });
 
 test("resumeBlockedSyscallLocally resumes pselect pipe HUP before generic after-sync when owner matches", async () => {
@@ -819,7 +819,7 @@ test("resumeBlockedSyscallLocally resumes pselect pipe HUP before generic after-
     status = 0;
     return 1n;
   });
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const kernel = {
     memory,
     kernel_attach_runtime_state: vi.fn(),
@@ -926,7 +926,7 @@ test("resumeBlockedSyscallLocally resumes pselect pipe HUP before generic after-
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync: async () => {},
@@ -947,7 +947,7 @@ test("resumeBlockedSyscallLocally resumes pselect pipe HUP before generic after-
     0x280,
   ]);
   expect([...threadState.pendingGuestMemoryWrites[0].bytes]).toEqual([0x10, 0, 0, 0, 0, 0, 0, 0]);
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
 });
 
 test("resumeBlockedSyscallLocally retries mixed socket pipe pselect HUP owner-side", async () => {
@@ -974,7 +974,7 @@ test("resumeBlockedSyscallLocally retries mixed socket pipe pselect HUP owner-si
     status = 0;
     return 1n;
   });
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const syncSocketStateViaKernelWorker = vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n }));
   const kernel = {
     memory,
@@ -1080,7 +1080,7 @@ test("resumeBlockedSyscallLocally retries mixed socket pipe pselect HUP owner-si
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync: async () => {},
@@ -1098,14 +1098,14 @@ test("resumeBlockedSyscallLocally retries mixed socket pipe pselect HUP owner-si
   expect(threadResumeBlockedSyscall).toHaveBeenCalledTimes(2);
   expect(threadState.pendingGuestMemoryWrites.map((write) => write.guestPtr)).toEqual([0x200]);
   expect([...threadState.pendingGuestMemoryWrites[0].bytes]).toEqual([0x01, 0, 0, 0, 0, 0, 0, 0]);
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
 });
 
 test("resumeBlockedSyscallOutcome returns pipe sync effect before ready socket pselect resume", async () => {
   const worker = {} as Worker;
   const runtimeBridge = createRuntimeStateBridge();
   const threadResumeBlockedSyscall = vi.fn(() => 1n);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const enqueueWorker = vi.fn();
   const requestPipeStateSync = vi.fn(async () => {});
   const syncBlockedForkSharedStateViaKernelWorker = vi.fn(async () => {});
@@ -1205,7 +1205,7 @@ test("resumeBlockedSyscallOutcome returns pipe sync effect before ready socket p
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync,
@@ -1226,7 +1226,7 @@ test("resumeBlockedSyscallOutcome returns pipe sync effect before ready socket p
   expect(outcome.effects).toMatchObject([
     { kind: "request-pipe-state-sync", handle, wakeWaiters: false },
   ]);
-  expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+  expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
   expect(requestPipeStateSync).not.toHaveBeenCalled();
   expect(syncBlockedForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
 });
@@ -1331,7 +1331,7 @@ test("resumeBlockedSyscallOutcome returns socket sync effect without running soc
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult: () => {},
+    handleHostBlockedRetryResult: () => {},
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync,
@@ -1357,7 +1357,7 @@ test("resumeBlockedSyscallLocally wakes pipe waiters through requestPipeStateSyn
   const threadResumeBlockedSyscall = vi.fn();
   const syncBlockedForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const requestPipeStateSync = vi.fn(async () => {});
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const kernel = {
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     kernel_attach_runtime_state: vi.fn(),
@@ -1434,7 +1434,7 @@ test("resumeBlockedSyscallLocally wakes pipe waiters through requestPipeStateSyn
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync,
@@ -1455,7 +1455,7 @@ test("resumeBlockedSyscallLocally wakes pipe waiters through requestPipeStateSyn
     { kind: "blocked-rpc", status: 21 },
   );
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 21);
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 21);
   expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
@@ -1466,7 +1466,7 @@ test("resumeBlockedSyscallLocally resumes pipe EOF after writers close even with
   const threadResumeBlockedSyscall = vi.fn(() => 1n);
   const syncBlockedForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const requestPipeStateSync = vi.fn(async () => {});
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const enqueueWorker = vi.fn();
   const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
   const pipeBase = 0x270000;
@@ -1566,7 +1566,7 @@ test("resumeBlockedSyscallLocally resumes pipe EOF after writers close even with
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync,
@@ -1592,7 +1592,7 @@ test("resumeBlockedSyscallLocally resumes pipe EOF after writers close even with
   expect(threadState.pendingPipeSlotsForNextStep[0].pipeSlot).toBe(pipeSlot);
   expect(threadState.resumeBlockedOnNextStep).toBe(true);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
-  expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+  expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
   expect(handle.hostBlockedWorkers.has(worker)).toBe(false);
 });
 
@@ -1603,7 +1603,7 @@ test("resumeBlockedSyscallLocally defers poll readiness while an active child st
   const threadResumeBlockedSyscall = vi.fn(() => 0n);
   const syncBlockedForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const requestPipeStateSync = vi.fn(async () => {});
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
   const pipeBase = 0x270000;
   const pipeSlotBytes = 32 + 65_536;
@@ -1729,7 +1729,7 @@ test("resumeBlockedSyscallLocally defers poll readiness while an active child st
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync,
@@ -1749,7 +1749,7 @@ test("resumeBlockedSyscallLocally defers poll readiness while an active child st
     0x1234,
     { kind: "blocked-rpc", status: 21 },
   );
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 21);
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 21);
   expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
@@ -1764,7 +1764,7 @@ test("resumeBlockedSyscallLocally ignores exiting child pipe writers for pselect
   });
   const syncBlockedForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const requestPipeStateSync = vi.fn(async () => {});
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
   const kernel = {
     memory,
@@ -1884,7 +1884,7 @@ test("resumeBlockedSyscallLocally ignores exiting child pipe writers for pselect
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync,
@@ -1905,7 +1905,7 @@ test("resumeBlockedSyscallLocally ignores exiting child pipe writers for pselect
     { kind: "blocked-rpc", status: 21 },
   );
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
   expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
@@ -1923,7 +1923,7 @@ test("resumeBlockedSyscallLocally completes pselect HUP marker despite an active
   });
   const syncBlockedForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const requestPipeStateSync = vi.fn(async () => {});
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const enqueueWorker = vi.fn();
   const kernel = {
     memory,
@@ -2042,7 +2042,7 @@ test("resumeBlockedSyscallLocally completes pselect HUP marker despite an active
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync,
@@ -2067,7 +2067,7 @@ test("resumeBlockedSyscallLocally completes pselect HUP marker despite an active
   expect([...threadState.pendingGuestMemoryWrites[0].bytes]).toEqual([0x20, 0, 0, 0, 0, 0, 0, 0]);
   expect(threadState.resumeBlockedOnNextStep).toBe(false);
   expect(enqueueWorker).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
   expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
@@ -2080,7 +2080,7 @@ test("resumeBlockedSyscallLocally collapses pipe read that becomes ready after p
   });
   const syncBlockedForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const requestPipeStateSync = vi.fn(async () => {});
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   let status = 21;
   let resumeCount = 0;
   const kernel = {
@@ -2161,7 +2161,7 @@ test("resumeBlockedSyscallLocally collapses pipe read that becomes ready after p
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync,
@@ -2182,7 +2182,7 @@ test("resumeBlockedSyscallLocally collapses pipe read that becomes ready after p
     0x1234,
     { kind: "blocked-rpc", status: 21 },
   );
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
   expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
@@ -2199,7 +2199,7 @@ test("resumeBlockedSyscallLocally queues the full socket read buffer after owner
     }
     return BigInt(readLen);
   });
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const kernel = {
     memory,
     kernel_attach_runtime_state: vi.fn(),
@@ -2283,7 +2283,7 @@ test("resumeBlockedSyscallLocally queues the full socket read buffer after owner
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync: async () => {},
@@ -2304,7 +2304,7 @@ test("resumeBlockedSyscallLocally queues the full socket read buffer after owner
   expect(threadState.pendingGuestMemoryWrites[0].bytes[65_535]).toBe(0xff);
   expect(threadState.pendingGuestMemoryWrites[0].bytes[65_536]).toBe(0x00);
   expect(threadState.pendingGuestMemoryWrites[0].bytes[readLen - 1]).toBe((readLen - 1) & 0xff);
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
 });
 
 test("resumeFsViaKernelWorker skips memfs sync during active vfork child ownership mismatch after fs resume", async () => {
@@ -2398,7 +2398,7 @@ test("resumeFsViaKernelWorker skips memfs sync during active vfork child ownersh
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult: () => {},
+    handleHostBlockedRetryResult: () => {},
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty,
     requestPipeStateSync: async () => {},
@@ -2577,7 +2577,7 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult: () => {},
+    handleHostBlockedRetryResult: () => {},
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync: async () => {},
@@ -2721,7 +2721,7 @@ test("resumeFsViaKernelWorker routes execve spawn before parent fd integrity che
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult: () => {},
+    handleHostBlockedRetryResult: () => {},
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync: async () => {},
@@ -2837,7 +2837,7 @@ test("resumeFsViaKernelWorker applies fd entries returned by kernel-worker fs pr
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult: () => {},
+    handleHostBlockedRetryResult: () => {},
     notifyHostEffectProgress: () => {},
     markRuntimeFsDirty: () => {},
     requestPipeStateSync: async () => {},

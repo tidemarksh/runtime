@@ -57,7 +57,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     outcome: KernelRpcResumeOutcome,
   ): void {
     if (outcome.kind === "completed" && outcome.status !== undefined) {
-      handleBlockedRetryResult(handle, worker, vmPtr, outcome.status);
+      handleHostBlockedRetryResult(handle, worker, vmPtr, outcome.status);
     }
     switch (outcome.kind) {
       case "completed":
@@ -320,10 +320,10 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     clearStaleRunningWorker,
     finishBlockedRpc,
     observeForkSharedSyncCompletion,
-    scheduleBlockedRetry,
+    scheduleHostBlockedRetry,
   } = createRunLoopScheduler({
     threadWorkerStates,
-    retryBlockedWorker,
+    retryHostBlockedWorker,
   });
   const {
     canScheduleWorker,
@@ -339,7 +339,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   } = createPipePollScheduler({
     threadWorkerStates,
     appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
-    scheduleBlockedRetry,
+    scheduleHostBlockedRetry,
     pipeChildExitRecordsAlreadyResumedForWait,
     hasActiveChildProcess: deps.hasActiveChildProcess,
   });
@@ -351,7 +351,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   } = createSocketWaitScheduler({
     appendWorkerDebugLog,
     logNetworkDebug,
-    scheduleBlockedRetry,
+    scheduleHostBlockedRetry,
   });
 
   const {
@@ -756,7 +756,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
           && handle.kernel.thread_poll_wait_has_socket?.(latestBlocked.vmPtr) === 1
         ) {
           if (handle.runningWorker !== null || !canScheduleWorker(handle, worker)) {
-            scheduleBlockedRetry(handle, worker, 1);
+            scheduleHostBlockedRetry(handle, worker, 1);
             return;
           }
           if (
@@ -782,7 +782,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
           attachKernelRuntimeState(handle.kernel, handle.kernelState);
           resumeBlockedSyscallBySupervisor(handle.kernel, latestBlocked.vmPtr);
           handle.kernelState = readKernelRuntimeState(handle.kernel);
-          handleBlockedRetryResult(
+          handleHostBlockedRetryResult(
             handle,
             worker,
             latestBlocked.vmPtr,
@@ -790,7 +790,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
           );
           return;
         }
-        scheduleBlockedRetry(handle, worker, changed ? 1 : 0);
+        scheduleHostBlockedRetry(handle, worker, changed ? 1 : 0);
       })
       .catch((error) => {
         finishBlockedRpc(handle, worker, blocked.vmPtr, rpcGeneration);
@@ -831,7 +831,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     resumeBlockedSyscallBySupervisor(handle.kernel, blocked.vmPtr);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     appendEpollRetryResult(handle, blocked.vmPtr);
-    handleBlockedRetryResult(handle, worker, blocked.vmPtr, handle.kernel.thread_status(blocked.vmPtr));
+    handleHostBlockedRetryResult(handle, worker, blocked.vmPtr, handle.kernel.thread_status(blocked.vmPtr));
   }
 
   function blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void {
@@ -876,7 +876,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       }
       blocked.epollTimerfdDeadlineTicks = null;
       if (handle.kernel.thread_process_thread_count(vmPtr) > 1) {
-        scheduleBlockedRetry(handle, worker, 10);
+        scheduleHostBlockedRetry(handle, worker, 10);
       }
       return;
     }
@@ -885,7 +885,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       ? handle.kernel.thread_poll_wait_ready_count?.(vmPtr)
       : undefined;
     if (pollReadyCount !== undefined && pollReadyCount > 0) {
-      scheduleBlockedRetry(handle, worker, 0);
+      scheduleHostBlockedRetry(handle, worker, 0);
       return;
     }
     if (
@@ -914,7 +914,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
     if (status === handle.kernel.abi_status_wait4()) {
-      retryBlockedWorker(handle, worker);
+      retryHostBlockedWorker(handle, worker);
       return;
     }
     if (
@@ -931,7 +931,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     ) {
       return;
     }
-    scheduleBlockedRetry(handle, worker, status === handle.kernel.abi_status_wait4() ? 10 : 1);
+    scheduleHostBlockedRetry(handle, worker, status === handle.kernel.abi_status_wait4() ? 10 : 1);
   }
 
   function armBlockedSupervisorTimer(handle: ProcessHandle, vmPtr: number): boolean {
@@ -1015,7 +1015,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     return (handle.kernel.thread_blocked_pipe_buffered_len?.(vmPtr) ?? 0) === 0;
   }
 
-  function handleBlockedRetryResult(
+  function handleHostBlockedRetryResult(
     handle: ProcessHandle,
     worker: Worker,
     vmPtr: number,
@@ -1127,7 +1127,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         blocked.epollTimerfdDeadlineTicks = deadlineTicks;
         throw new Error("kernel supervisor timer HostOp required for finite epoll wait");
       } else if (handle.kernel.thread_process_thread_count(vmPtr) > 1) {
-        scheduleBlockedRetry(handle, worker, 10);
+        scheduleHostBlockedRetry(handle, worker, 10);
         pumpProcess(handle);
       }
       return;
@@ -1137,7 +1137,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       ? handle.kernel.thread_poll_wait_ready_count?.(vmPtr)
       : undefined;
     if (pollReadyCount !== undefined && pollReadyCount > 0) {
-      scheduleBlockedRetry(handle, worker, 0);
+      scheduleHostBlockedRetry(handle, worker, 0);
       return;
     }
     if (
@@ -1155,7 +1155,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       pollReadyCount,
       pipeChildExitResumeKeyFor(handle, vmPtr),
     )) {
-      scheduleBlockedRetry(handle, worker, 25);
+      scheduleHostBlockedRetry(handle, worker, 25);
       return;
     }
     const socketTimeoutMs = socketWaitTimeoutMs(handle, status, vmPtr);
@@ -1163,10 +1163,10 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       scheduleSocketBlockedRetry(handle, worker, blocked, socketTimeoutMs);
       return;
     }
-    scheduleBlockedRetry(handle, worker, status === handle.kernel.abi_status_wait4() ? 10 : 1);
+    scheduleHostBlockedRetry(handle, worker, status === handle.kernel.abi_status_wait4() ? 10 : 1);
   }
 
-  function retryBlockedWorker(handle: ProcessHandle, worker: Worker): void {
+  function retryHostBlockedWorker(handle: ProcessHandle, worker: Worker): void {
     const blocked = handle.hostBlockedWorkers.get(worker);
     if (!blocked) {
       return;
@@ -1191,7 +1191,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         handle.runtimeId,
         `blocked-retry-skip:${handle.pid}:owner-async:${thread.ownerAsyncStatus}`,
       );
-      scheduleBlockedRetry(
+      scheduleHostBlockedRetry(
         handle,
         worker,
         blocked.status === handle.kernel.abi_status_wait4() ? 10 : 1,
@@ -1207,7 +1207,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         `epoll-retry-skip:${handle.pid}:clone-child-init-pending`,
       );
       wakeRuntimeBridge(handle.runtimeBridge);
-      scheduleBlockedRetry(handle, worker, 10);
+      scheduleHostBlockedRetry(handle, worker, 10);
       return;
     }
     const blockedPollTimeoutMs = pollWaitTimeoutMs(handle, blocked.status, blocked.vmPtr);
@@ -1234,7 +1234,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         blocked.lastPipeRetryLifecycleEvent = event;
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);
       }
-      scheduleBlockedRetry(handle, worker, 5);
+      scheduleHostBlockedRetry(handle, worker, 5);
       return;
     }
     const forkSharedSyncPromise = handle.kernelShare.forkSharedSyncPromise;
@@ -1257,7 +1257,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
           handle.runtimeId,
           `wait4-retry-skip:${handle.pid}:fork-shared-sync:${describeForkSharedSyncPromise(forkSharedSyncPromise)}`,
         );
-        scheduleBlockedRetry(
+        scheduleHostBlockedRetry(
           handle,
           worker,
           blocked.status === handle.kernel.abi_status_wait4() ? 10 : 1,
@@ -1279,7 +1279,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         `wait4-retry-skip:${handle.pid}:running=1`
           + `:${formatRunningRetryBlocker(handle, runningThread)}`,
       );
-      scheduleBlockedRetry(
+      scheduleHostBlockedRetry(
         handle,
         worker,
         blocked.status === handle.kernel.abi_status_wait4() ? 10 : 1,
@@ -1288,7 +1288,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
     if (!canScheduleWorker(handle, worker)) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-skip:${handle.pid}:cannot-schedule`);
-      scheduleBlockedRetry(
+      scheduleHostBlockedRetry(
         handle,
         worker,
         blocked.status === handle.kernel.abi_status_wait4() ? 10 : 1,
@@ -1308,7 +1308,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         blocked.lastWait4RetryLifecycleEvent = event;
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);
       }
-      scheduleBlockedRetry(handle, worker, 50);
+      scheduleHostBlockedRetry(handle, worker, 50);
       return;
     }
 
@@ -1411,7 +1411,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
               `epoll-retry-skip:${handle.pid}:running=${handle.runningWorker !== null ? 1 : 0}:sched=${canScheduleBlockedWorker ? 1 : 0}`
                 + `:${formatRunningRetryBlocker(handle, runningThread)}`,
             );
-            scheduleBlockedRetry(handle, worker, 1);
+            scheduleHostBlockedRetry(handle, worker, 1);
             return;
           }
           resumeEpollWait(handle, worker, latestBlocked);
@@ -1478,7 +1478,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             if (!kernelWorkerOwnsPipeState(handle)) {
               drainProcessOutput(handle);
             }
-            scheduleBlockedRetry(handle, worker, 0);
+            scheduleHostBlockedRetry(handle, worker, 0);
           })
           .catch((error) => {
             finishBlockedRpc(handle, worker, blocked.vmPtr, rpcGeneration);
@@ -1514,7 +1514,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
               return;
             }
             drainProcessOutput(handle);
-            scheduleBlockedRetry(handle, worker, 0);
+            scheduleHostBlockedRetry(handle, worker, 0);
           })
           .catch((error) => {
             finishBlockedRpc(handle, worker, blocked.vmPtr, rpcGeneration);
@@ -1550,7 +1550,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             return;
           }
           drainProcessOutput(handle);
-          scheduleBlockedRetry(handle, worker, 0);
+          scheduleHostBlockedRetry(handle, worker, 0);
         })
         .catch((error) => {
           finishBlockedRpc(handle, worker, blocked.vmPtr, rpcGeneration);
@@ -1562,7 +1562,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `fs-retry:${handle.pid}`);
       const thread = threadWorkerStates.get(worker);
       if (thread?.ownerAsyncStatus !== null && thread?.ownerAsyncStatus !== undefined) {
-        scheduleBlockedRetry(handle, worker, 1);
+        scheduleHostBlockedRetry(handle, worker, 1);
         return;
       }
       if (thread) {
@@ -1595,7 +1595,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       blockedPollReadyCount,
       pipeChildExitResumeKeyFor(handle, blocked.vmPtr),
     )) {
-      scheduleBlockedRetry(handle, worker, 25);
+      scheduleHostBlockedRetry(handle, worker, 25);
       return;
     }
     const blockedSocketTimeoutMs = socketWaitTimeoutMs(handle, blocked.status, blocked.vmPtr);
@@ -1704,7 +1704,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       resumeBlockedSyscallBySupervisor(handle.kernel, blocked.vmPtr);
     }
     handle.kernelState = readKernelRuntimeState(handle.kernel);
-    handleBlockedRetryResult(handle, worker, blocked.vmPtr, handle.kernel.thread_status(blocked.vmPtr));
+    handleHostBlockedRetryResult(handle, worker, blocked.vmPtr, handle.kernel.thread_status(blocked.vmPtr));
   }
 
   const schedulerStateSyncHelpers = createWorkerSchedulerStateSyncHelpers({
@@ -1712,7 +1712,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     drainHiddenProcessOutput,
     drainProcessOutput,
     threadWorkerStates,
-    retryBlockedWorker,
+    retryHostBlockedWorker,
   });
   const {
     requestEpollDependentOfdStateSync,
@@ -1724,7 +1724,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
 
   function notifySchedulerProgress(handle: ProcessHandle): void {
     for (const worker of [...handle.hostBlockedWorkers.keys()]) {
-      retryBlockedWorker(handle, worker);
+      retryHostBlockedWorker(handle, worker);
     }
   }
 
@@ -1734,7 +1734,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     blockWorker,
     clearBlockedWorker,
     enqueueWorker,
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     notifySchedulerProgress,
     pumpProcess,
     pruneDetachedProcessWorkers,

@@ -10,7 +10,7 @@ export function logNetworkDebug(_event: string): void {
 
 export interface RunLoopSchedulerDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
-  retryBlockedWorker(handle: ProcessHandle, worker: Worker): void;
+  retryHostBlockedWorker(handle: ProcessHandle, worker: Worker): void;
 }
 
 export interface RunLoopScheduler {
@@ -27,7 +27,7 @@ export interface RunLoopScheduler {
     promise: Promise<void>,
   ): void;
   clearStaleRunningWorker(handle: ProcessHandle, blockedWorker: Worker): boolean;
-  scheduleBlockedRetry(
+  scheduleHostBlockedRetry(
     handle: ProcessHandle,
     worker: Worker,
     delayMs?: number,
@@ -61,7 +61,7 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     return latestBlocked;
   }
 
-  function scheduleBlockedRetry(
+  function scheduleHostBlockedRetry(
     handle: ProcessHandle,
     worker: Worker,
     delayMs = 10,
@@ -72,7 +72,7 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     }
     blocked.retryTimer = setTimeout(() => {
       blocked.retryTimer = null;
-      deps.retryBlockedWorker(handle, worker);
+      deps.retryHostBlockedWorker(handle, worker);
     }, delayMs);
   }
 
@@ -100,7 +100,7 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
         clearTimeout(blocked.retryTimer);
         blocked.retryTimer = null;
       }
-      scheduleBlockedRetry(handle, worker, 0);
+      scheduleHostBlockedRetry(handle, worker, 0);
     };
     promise.then(onSettled, onSettled);
   }
@@ -131,6 +131,6 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     finishBlockedRpc,
     observeForkSharedSyncCompletion,
     clearStaleRunningWorker,
-    scheduleBlockedRetry,
+    scheduleHostBlockedRetry,
   };
 }

@@ -209,7 +209,7 @@ test("blocked-rpc pipe EOF ignores stale active-child writer when canonical pipe
   const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const enqueueWorker = vi.fn();
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[1, handle], [2, child]]),
@@ -218,7 +218,7 @@ test("blocked-rpc pipe EOF ignores stale active-child writer when canonical pipe
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -229,7 +229,7 @@ test("blocked-rpc pipe EOF ignores stale active-child writer when canonical pipe
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+  expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
   expect(threadState.resumeBlockedOnNextStep).toBe(true);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
@@ -344,7 +344,7 @@ test("blocked-rpc defers EOF-after-wait while an exiting visible child still hol
   const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const enqueueWorker = vi.fn();
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[1, handle], [3, child]]),
@@ -353,7 +353,7 @@ test("blocked-rpc defers EOF-after-wait while an exiting visible child still hol
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -364,7 +364,7 @@ test("blocked-rpc defers EOF-after-wait while an exiting visible child still hol
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
   expect(threadState.resumeBlockedOnNextStep).toBe(false);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(0);
   expect(enqueueWorker).not.toHaveBeenCalled();
@@ -480,7 +480,7 @@ test("blocked-rpc preserves canonical EOF retry when active-child writer defers 
   const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const enqueueWorker = vi.fn();
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[1, handle], [3, child]]),
@@ -489,7 +489,7 @@ test("blocked-rpc preserves canonical EOF retry when active-child writer defers 
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -500,7 +500,7 @@ test("blocked-rpc preserves canonical EOF retry when active-child writer defers 
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
   expect(handle.hostBlockedWorkers.get(worker)?.pipeCanonicalEofReady).toBe(true);
   expect(threadState.resumeBlockedOnNextStep).toBe(false);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(0);
@@ -612,7 +612,7 @@ test("blocked-rpc pipe EOF uses current kernel pipe counters before stale shared
   const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const enqueueWorker = vi.fn();
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[1, handle], [2, child]]),
@@ -621,7 +621,7 @@ test("blocked-rpc pipe EOF uses current kernel pipe counters before stale shared
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -632,7 +632,7 @@ test("blocked-rpc pipe EOF uses current kernel pipe counters before stale shared
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+  expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
   expect(threadState.resumeBlockedOnNextStep).toBe(true);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
@@ -729,7 +729,7 @@ test("blocked-rpc preserves same-process pipe writer when blocked snapshot looke
   const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const enqueueWorker = vi.fn();
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
@@ -738,7 +738,7 @@ test("blocked-rpc preserves same-process pipe writer when blocked snapshot looke
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -751,7 +751,7 @@ test("blocked-rpc preserves same-process pipe writer when blocked snapshot looke
   expect(view.getInt32(pipeOffset + PIPE_READ_OPEN_OFFSET, true)).toBe(1);
   expect(view.getInt32(pipeOffset + PIPE_WRITE_OPEN_OFFSET, true)).toBe(1);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
   expect(threadState.resumeBlockedOnNextStep).toBe(false);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(0);
   expect(enqueueWorker).not.toHaveBeenCalled();
@@ -859,7 +859,7 @@ test("blocked-rpc preserves same-process pipe reader before write EPIPE retry", 
 
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
     threadWorkerStates: threadWorkerStates as never,
@@ -867,7 +867,7 @@ test("blocked-rpc preserves same-process pipe reader before write EPIPE retry", 
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -880,7 +880,7 @@ test("blocked-rpc preserves same-process pipe reader before write EPIPE retry", 
   expect(view.getInt32(pipeOffset + PIPE_READ_OPEN_OFFSET, true)).toBe(1);
   expect(view.getInt32(pipeOffset + PIPE_WRITE_OPEN_OFFSET, true)).toBe(1);
   expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(vmPtr);
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_ok());
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_ok());
 });
 
 test("blocked-rpc preserves same-process pipe reader when stale refcount would drop read-open", async () => {
@@ -989,7 +989,7 @@ test("blocked-rpc preserves same-process pipe reader when stale refcount would d
 
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
     threadWorkerStates: threadWorkerStates as never,
@@ -997,7 +997,7 @@ test("blocked-rpc preserves same-process pipe reader when stale refcount would d
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -1010,7 +1010,7 @@ test("blocked-rpc preserves same-process pipe reader when stale refcount would d
   expect(view.getInt32(pipeOffset + PIPE_READ_OPEN_OFFSET, true)).toBe(1);
   expect(view.getInt32(pipeOffset + PIPE_WRITE_OPEN_OFFSET, true)).toBe(1);
   expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(vmPtr);
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_ok());
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_ok());
 });
 
 test("blocked-rpc defers pipe resume while self pipe sync is in flight", async () => {
@@ -1086,7 +1086,7 @@ test("blocked-rpc defers pipe resume while self pipe sync is in flight", async (
   const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const lifecycle: string[] = [];
   const debugLog: string[] = [];
   const enqueueWorker = vi.fn();
@@ -1104,7 +1104,7 @@ test("blocked-rpc defers pipe resume while self pipe sync is in flight", async (
     appendWorkerDebugLog: vi.fn((_handle, event) => debugLog.push(event)),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -1127,7 +1127,7 @@ test("blocked-rpc defers pipe resume while self pipe sync is in flight", async (
   expect(lifecycle).toContain("blocked-rpc-sync-pipe-before-resume-inflight:3");
   expect(handle.pipeWaiterWakeQueued).toBe(true);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
   expect(threadState.resumeBlockedOnNextStep).toBe(false);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(0);
   expect(enqueueWorker).not.toHaveBeenCalled();
@@ -1205,7 +1205,7 @@ test("blocked-rpc awaits newly queued self pipe sync before pipe resume", async 
   const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const lifecycle: string[] = [];
   const debugLog: string[] = [];
   const enqueueWorker = vi.fn();
@@ -1228,7 +1228,7 @@ test("blocked-rpc awaits newly queued self pipe sync before pipe resume", async 
     appendWorkerDebugLog: vi.fn((_handle, event) => debugLog.push(event)),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -1252,7 +1252,7 @@ test("blocked-rpc awaits newly queued self pipe sync before pipe resume", async 
   expect(lifecycle).not.toContain("blocked-rpc-sync-pipe-before-resume-inflight:3");
   expect(handle.pipeWaiterWakeQueued).toBe(true);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+  expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
   expect(threadState.resumeBlockedOnNextStep).toBe(true);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
@@ -1332,7 +1332,7 @@ test("blocked-rpc resumes EOF-pending pipe read despite in-flight self pipe sync
   const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const lifecycle: string[] = [];
   const enqueueWorker = vi.fn();
   const requestPipeStateSync = vi.fn((target: ProcessHandle, wakeWaiters = false) => {
@@ -1349,7 +1349,7 @@ test("blocked-rpc resumes EOF-pending pipe read despite in-flight self pipe sync
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -1363,7 +1363,7 @@ test("blocked-rpc resumes EOF-pending pipe read despite in-flight self pipe sync
   expect(lifecycle).toContain("blocked-rpc-sync-pipe-before-resume-inflight-read-ready:3:buf=0:eof=1");
   expect(handle.pipeWaiterWakeQueued).toBe(true);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+  expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
   expect(threadState.resumeBlockedOnNextStep).toBe(true);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
@@ -1443,7 +1443,7 @@ test("blocked-rpc resumes buffered pipe read despite in-flight self pipe sync", 
   const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const lifecycle: string[] = [];
   const enqueueWorker = vi.fn();
   const requestPipeStateSync = vi.fn((target: ProcessHandle, wakeWaiters = false) => {
@@ -1460,7 +1460,7 @@ test("blocked-rpc resumes buffered pipe read despite in-flight self pipe sync", 
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -1474,7 +1474,7 @@ test("blocked-rpc resumes buffered pipe read despite in-flight self pipe sync", 
   expect(lifecycle).toContain("blocked-rpc-sync-pipe-before-resume-inflight-read-ready:3:buf=1:eof=0");
   expect(handle.pipeWaiterWakeQueued).toBe(true);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+  expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
   expect(threadState.resumeBlockedOnNextStep).toBe(true);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
@@ -1573,7 +1573,7 @@ test("blocked-rpc skips ready self pipe sync before pipe read EOF resume", async
     appendWorkerDebugLog: vi.fn((_handle, event) => debugLog.push(event)),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult: vi.fn(),
+    handleHostBlockedRetryResult: vi.fn(),
     requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -1692,7 +1692,7 @@ test("blocked-rpc carries canonical EOF to next block after buffered pipe read w
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult: vi.fn(),
+    handleHostBlockedRetryResult: vi.fn(),
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -1797,7 +1797,7 @@ test("blocked-rpc skips redundant self pipe sync after canonical EOF retry", asy
     appendWorkerDebugLog: vi.fn((_handle, event) => debugLog.push(event)),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult: vi.fn(),
+    handleHostBlockedRetryResult: vi.fn(),
     requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -1910,7 +1910,7 @@ test("blocked-rpc skips pending fork-shared sync before canonical EOF retry", as
     appendWorkerDebugLog: vi.fn((_handle, event) => debugLog.push(event)),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult: vi.fn(),
+    handleHostBlockedRetryResult: vi.fn(),
     requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -2062,7 +2062,7 @@ test("blocked-rpc skips read-only peer pipe sync after canonical EOF retry", asy
     appendWorkerDebugLog: vi.fn((_handle, event) => debugLog.push(event)),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult: vi.fn(),
+    handleHostBlockedRetryResult: vi.fn(),
     requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -2218,7 +2218,7 @@ test("blocked-rpc skips owner-async peer pipe sync while peer FS continuation ow
   threadWorkerStates.set(peerWorker, peerThreadState);
   const lifecycle: string[] = [];
   const debugLog: string[] = [];
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const requestPipeStateSync = vi.fn((target: ProcessHandle) => (
     target === peer ? new Promise<void>(() => {}) : Promise.resolve()
   ));
@@ -2229,7 +2229,7 @@ test("blocked-rpc skips owner-async peer pipe sync while peer FS continuation ow
     appendWorkerDebugLog: vi.fn((_handle, event) => debugLog.push(event)),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -2252,7 +2252,7 @@ test("blocked-rpc skips owner-async peer pipe sync while peer FS continuation ow
   expect(requestPipeStateSync).not.toHaveBeenCalledWith(peer, false);
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, false);
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
 });
 
@@ -2382,7 +2382,7 @@ test("blocked-rpc wakes owner-async OK peer that holds a blocked pipe writer", a
   threadWorkerStates.set(peerWorker, peerThreadState);
   const lifecycle: string[] = [];
   const debugLog: string[] = [];
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const enqueueWorker = vi.fn();
   const requestPipeStateSync = vi.fn(async () => {});
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
@@ -2392,7 +2392,7 @@ test("blocked-rpc wakes owner-async OK peer that holds a blocked pipe writer", a
     appendWorkerDebugLog: vi.fn((_handle, event) => debugLog.push(event)),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -2404,7 +2404,7 @@ test("blocked-rpc wakes owner-async OK peer that holds a blocked pipe writer", a
   expect(peerThreadState.ownerAsyncStatus).toBeNull();
   expect(peerThreadState.runningGeneration).toBeNull();
   expect(enqueueWorker).toHaveBeenCalledWith(peer, peerWorker);
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
   expect(requestPipeStateSync).not.toHaveBeenCalledWith(peer, false);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
 });
@@ -2508,7 +2508,7 @@ test("blocked-rpc canonical EOF retry clears stale writer in resume snapshot", a
     appendWorkerDebugLog: vi.fn((_handle, event) => debugLog.push(event)),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult: vi.fn(),
+    handleHostBlockedRetryResult: vi.fn(),
     requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -2611,7 +2611,7 @@ test("blocked-rpc resumes non-poll pipe read EOF from canonical closed pipe stat
   const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const appendRuntimeLifecycleEvent = vi.fn();
   const appendWorkerDebugLog = vi.fn();
   const enqueueWorker = vi.fn();
@@ -2622,7 +2622,7 @@ test("blocked-rpc resumes non-poll pipe read EOF from canonical closed pipe stat
     appendWorkerDebugLog,
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -2633,7 +2633,7 @@ test("blocked-rpc resumes non-poll pipe read EOF from canonical closed pipe stat
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+  expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
   expect(threadState.resumeBlockedOnNextStep).toBe(true);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
@@ -2742,7 +2742,7 @@ test("blocked-rpc resumes blocking open-empty pipe read while shared writer rema
       const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
       const threadWorkerStates = new WeakMap<Worker, object>();
       threadWorkerStates.set(worker, threadState);
-      const handleBlockedRetryResult = vi.fn();
+      const handleHostBlockedRetryResult = vi.fn();
       const enqueueWorker = vi.fn();
       const helpers = createWorkerKernelRpcBlockedRpcHelpers({
         processHandles: new Map([[1, handle], [2, peer]]),
@@ -2751,7 +2751,7 @@ test("blocked-rpc resumes blocking open-empty pipe read while shared writer rema
         appendWorkerDebugLog: vi.fn(),
         enqueueWorker,
         failProcess: vi.fn(),
-        handleBlockedRetryResult,
+        handleHostBlockedRetryResult,
         requestPipeStateSync: vi.fn(async () => {}),
         syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
         syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -2763,7 +2763,7 @@ test("blocked-rpc resumes blocking open-empty pipe read while shared writer rema
 
       expect(view.getInt32(pipeOffset + PIPE_WRITE_OPEN_OFFSET, true)).toBe(1);
       expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-      expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+      expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
       expect(threadState.resumeBlockedOnNextStep).toBe(true);
       expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
       expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
@@ -2876,7 +2876,7 @@ test("blocked-rpc defers blocking open-empty pipe read while active child may st
   const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const enqueueWorker = vi.fn();
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[1, handle], [2, child]]),
@@ -2885,7 +2885,7 @@ test("blocked-rpc defers blocking open-empty pipe read while active child may st
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -2896,7 +2896,7 @@ test("blocked-rpc defers blocking open-empty pipe read while active child may st
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
   expect(threadState.resumeBlockedOnNextStep).toBe(false);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(0);
   expect(enqueueWorker).not.toHaveBeenCalled();
@@ -2969,7 +2969,7 @@ test("blocked-rpc resumes canonical pipe EOF when blocked syscall export returns
   const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const appendRuntimeLifecycleEvent = vi.fn();
   const appendWorkerDebugLog = vi.fn();
   const enqueueWorker = vi.fn();
@@ -2980,7 +2980,7 @@ test("blocked-rpc resumes canonical pipe EOF when blocked syscall export returns
     appendWorkerDebugLog,
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -2991,7 +2991,7 @@ test("blocked-rpc resumes canonical pipe EOF when blocked syscall export returns
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+  expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
   expect(threadState.resumeBlockedOnNextStep).toBe(true);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
@@ -3077,7 +3077,7 @@ test("blocked-rpc resumes closed stdin EOF through fd-table fallback without pin
   const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const enqueueWorker = vi.fn();
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
@@ -3086,7 +3086,7 @@ test("blocked-rpc resumes closed stdin EOF through fd-table fallback without pin
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -3097,7 +3097,7 @@ test("blocked-rpc resumes closed stdin EOF through fd-table fallback without pin
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+  expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
   expect(threadState.resumeBlockedOnNextStep).toBe(true);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
@@ -3190,7 +3190,7 @@ test("blocked-rpc clears stale pipe writer count before EOF-pending resume when 
   const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const enqueueWorker = vi.fn();
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
@@ -3199,7 +3199,7 @@ test("blocked-rpc clears stale pipe writer count before EOF-pending resume when 
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -3211,7 +3211,7 @@ test("blocked-rpc clears stale pipe writer count before EOF-pending resume when 
 
   expect(view.getInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, true)).toBe(0);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+  expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
   expect(threadState.resumeBlockedOnNextStep).toBe(true);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
@@ -3307,7 +3307,7 @@ test("blocked-rpc treats EOF-pending nonblocking open-empty pipe read as canonic
   const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const enqueueWorker = vi.fn();
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
@@ -3316,7 +3316,7 @@ test("blocked-rpc treats EOF-pending nonblocking open-empty pipe read as canonic
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -3329,7 +3329,7 @@ test("blocked-rpc treats EOF-pending nonblocking open-empty pipe read as canonic
   expect(view.getInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, true)).toBe(0);
   expect(kernel.thread_resume_pipe_read_open_empty).not.toHaveBeenCalled();
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+  expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
   expect(threadState.resumeBlockedOnNextStep).toBe(true);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
@@ -3417,7 +3417,7 @@ test("blocked-rpc resumes nonblocking open-empty pipe read in thread worker", as
   const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const enqueueWorker = vi.fn();
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
@@ -3426,7 +3426,7 @@ test("blocked-rpc resumes nonblocking open-empty pipe read in thread worker", as
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -3438,7 +3438,7 @@ test("blocked-rpc resumes nonblocking open-empty pipe read in thread worker", as
 
   expect(kernel.thread_resume_pipe_read_open_empty).not.toHaveBeenCalled();
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+  expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
   expect(threadState.resumeBlockedOnNextStep).toBe(true);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
@@ -3534,7 +3534,7 @@ test("blocked-rpc restores blocked worker local pipe endpoints when canonical sl
 
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const enqueueWorker = vi.fn();
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
@@ -3543,7 +3543,7 @@ test("blocked-rpc restores blocked worker local pipe endpoints when canonical sl
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -3556,7 +3556,7 @@ test("blocked-rpc restores blocked worker local pipe endpoints when canonical sl
   expect(view.getInt32(pipeOffset + PIPE_READ_OPEN_OFFSET, true)).toBe(1);
   expect(view.getInt32(pipeOffset + PIPE_WRITE_OPEN_OFFSET, true)).toBe(1);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
   expect(enqueueWorker).not.toHaveBeenCalled();
 });
 
@@ -3637,7 +3637,7 @@ test("blocked-rpc aligns pipe OFD generation before canonical EOF resume", async
   const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const enqueueWorker = vi.fn();
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
@@ -3646,7 +3646,7 @@ test("blocked-rpc aligns pipe OFD generation before canonical EOF resume", async
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -3658,7 +3658,7 @@ test("blocked-rpc aligns pipe OFD generation before canonical EOF resume", async
 
   expect(view.getBigInt64(ofdOffset + OFD_OFFSET_OFFSET, true)).toBe(BigInt(pipeGeneration));
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+  expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
   expect(threadState.resumeBlockedOnNextStep).toBe(true);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
@@ -3740,7 +3740,7 @@ test("blocked-rpc does not preserve host stdin writer when stdin is explicitly c
   const threadState = { pendingPipeSlotsForNextStep: [], resumeBlockedOnNextStep: false };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const appendRuntimeLifecycleEvent = vi.fn();
   const appendWorkerDebugLog = vi.fn();
   const enqueueWorker = vi.fn();
@@ -3751,7 +3751,7 @@ test("blocked-rpc does not preserve host stdin writer when stdin is explicitly c
     appendWorkerDebugLog,
     enqueueWorker,
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -3763,7 +3763,7 @@ test("blocked-rpc does not preserve host stdin writer when stdin is explicitly c
 
   expect(view.getInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, true)).toBe(0);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).not.toHaveBeenCalled();
+  expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
   expect(threadState.resumeBlockedOnNextStep).toBe(true);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
@@ -3798,7 +3798,7 @@ test("kernel-rpc blocked-rpc helper owns local resume and returns a typed outcom
   const threadState = { pendingGuestMemoryWrites: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn(() => {
+  const handleHostBlockedRetryResult = vi.fn(() => {
     handle.hostBlockedWorkers.delete(worker);
   });
   const syncBlockedForkSharedStateViaKernelWorker = vi.fn(async () => {});
@@ -3809,7 +3809,7 @@ test("kernel-rpc blocked-rpc helper owns local resume and returns a typed outcom
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker,
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -3828,7 +3828,7 @@ test("kernel-rpc blocked-rpc helper owns local resume and returns a typed outcom
     effects: [{ kind: "sync-blocked-fork-shared-state", sourceVmPtr: 0x1234, status: 21 }],
   });
   expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledTimes(2);
-  expect(handleBlockedRetryResult).toHaveBeenCalledTimes(1);
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledTimes(1);
   expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledTimes(1);
 });
 
@@ -3867,7 +3867,7 @@ test("kernel-rpc blocked-rpc outcome reports blocked while the worker remains bl
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn(),
-    handleBlockedRetryResult: vi.fn(),
+    handleHostBlockedRetryResult: vi.fn(),
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker,
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -3916,7 +3916,7 @@ test("kernel-rpc blocked-rpc outcome keeps ownership while continuation effects 
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn(),
-    handleBlockedRetryResult: vi.fn(),
+    handleHostBlockedRetryResult: vi.fn(),
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -3992,7 +3992,7 @@ test("blocked-rpc does not resume poll hup when pselect watches no pipe slots", 
 
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
     threadWorkerStates: threadWorkerStates as never,
@@ -4000,7 +4000,7 @@ test("blocked-rpc does not resume poll hup when pselect watches no pipe slots", 
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn(),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -4011,7 +4011,7 @@ test("blocked-rpc does not resume poll hup when pselect watches no pipe slots", 
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(
     handle,
     worker,
     vmPtr,
@@ -4097,7 +4097,7 @@ test("blocked-rpc resumes pselect pipe HUP through blocked fd fallback", async (
   const threadState = { pendingGuestMemoryWrites: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[1, handle]]),
     threadWorkerStates: threadWorkerStates as never,
@@ -4107,7 +4107,7 @@ test("blocked-rpc resumes pselect pipe HUP through blocked fd fallback", async (
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -4118,7 +4118,7 @@ test("blocked-rpc resumes pselect pipe HUP through blocked fd fallback", async (
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(vmPtr);
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(
     handle,
     worker,
     vmPtr,
@@ -4242,7 +4242,7 @@ test("blocked-rpc resumes pselect pipe HUP when a stale local writer remains vis
   const threadState = { pendingGuestMemoryWrites: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[5, handle]]),
     threadWorkerStates: threadWorkerStates as never,
@@ -4252,7 +4252,7 @@ test("blocked-rpc resumes pselect pipe HUP when a stale local writer remains vis
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -4263,7 +4263,7 @@ test("blocked-rpc resumes pselect pipe HUP when a stale local writer remains vis
   ).resolves.toBeUndefined();
 
   expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(vmPtr);
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(
     handle,
     worker,
     vmPtr,
@@ -4395,7 +4395,7 @@ test("blocked-rpc clears stale local writer before mixed socket pipe pselect ret
   const threadState = { pendingGuestMemoryWrites: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
-  const handleBlockedRetryResult = vi.fn();
+  const handleHostBlockedRetryResult = vi.fn();
   const helpers = createWorkerKernelRpcBlockedRpcHelpers({
     processHandles: new Map([[5, handle]]),
     threadWorkerStates: threadWorkerStates as never,
@@ -4405,7 +4405,7 @@ test("blocked-rpc clears stale local writer before mixed socket pipe pselect ret
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    handleBlockedRetryResult,
+    handleHostBlockedRetryResult,
     requestPipeStateSync: vi.fn(async () => {}),
     syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     syncSocketStateViaKernelWorker: vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n })),
@@ -4419,7 +4419,7 @@ test("blocked-rpc clears stale local writer before mixed socket pipe pselect ret
   expect(view.getInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, true)).toBe(0);
   expect(threadState.pendingGuestMemoryWrites.map((write) => write.guestPtr)).toEqual([Number(readfdsPtr)]);
   expect([...threadState.pendingGuestMemoryWrites[0].bytes]).toEqual([0x10, 0, 0, 0, 0, 0, 0, 0]);
-  expect(handleBlockedRetryResult).toHaveBeenCalledWith(
+  expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(
     handle,
     worker,
     vmPtr,
@@ -4462,7 +4462,7 @@ test("kernel-rpc blocked-rpc outcome reports retry effect without running schedu
     appendWorkerDebugLog: vi.fn(),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn(),
-    handleBlockedRetryResult: vi.fn(() => {
+    handleHostBlockedRetryResult: vi.fn(() => {
       handle.hostBlockedWorkers.delete(worker);
     }),
     requestPipeStateSync: vi.fn(async () => {}),

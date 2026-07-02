@@ -38,7 +38,7 @@ function makeScheduler(
   return createPipePollScheduler({
     threadWorkerStates: new WeakMap(),
     appendRuntimeLifecycleEvent: vi.fn(),
-    scheduleBlockedRetry: vi.fn(),
+    scheduleHostBlockedRetry: vi.fn(),
     pipeChildExitRecordsAlreadyResumedForWait: vi.fn(pipeChildExitRecordsAlreadyResumedForWait),
     hasActiveChildProcess,
   });
