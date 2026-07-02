@@ -3,6 +3,10 @@ import type {
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
+import {
+  SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_IMMEDIATE,
+  type SupervisorBlockedWaitRetryReason,
+} from "../../supervisor-blocked-resume.js";
 
 export function logNetworkDebug(_event: string): void {
   // Runtime diagnostics are kept in the per-process worker debug buffer.
@@ -12,7 +16,11 @@ export interface RunLoopSchedulerDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   retryHostBlockedWorker(handle: ProcessHandle, worker: Worker): void;
   clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void;
-  scheduleHostBlockedRetry(handle: ProcessHandle, worker: Worker, delayMs?: number): void;
+  scheduleSupervisorBlockedRetry(
+    handle: ProcessHandle,
+    worker: Worker,
+    reason?: SupervisorBlockedWaitRetryReason,
+  ): void;
 }
 
 export interface RunLoopScheduler {
@@ -79,7 +87,11 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
         return;
       }
       deps.clearHostBlockedRetryTimer(handle, worker);
-      deps.scheduleHostBlockedRetry(handle, worker, 0);
+      deps.scheduleSupervisorBlockedRetry(
+        handle,
+        worker,
+        SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_IMMEDIATE,
+      );
     };
     promise.then(onSettled, onSettled);
   }

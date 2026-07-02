@@ -1,9 +1,14 @@
 import type { ProcessHandle } from "../types.js";
+import type { SupervisorBlockedWaitRetryReason } from "../../supervisor-blocked-resume.js";
 
 export interface SocketWaitSchedulerDeps {
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   logNetworkDebug(event: string): void;
-  scheduleHostBlockedRetry(handle: ProcessHandle, worker: Worker, delayMs?: number): void;
+  scheduleSupervisorBlockedRetry(
+    handle: ProcessHandle,
+    worker: Worker,
+    reason?: SupervisorBlockedWaitRetryReason,
+  ): void;
 }
 
 export interface SocketWaitScheduler {
@@ -141,7 +146,7 @@ export function createSocketWaitScheduler(deps: SocketWaitSchedulerDeps): Socket
       return;
     }
     if (timeoutMs < 0) {
-      deps.scheduleHostBlockedRetry(handle, worker, 1);
+      deps.scheduleSupervisorBlockedRetry(handle, worker);
       return;
     }
     throw new Error("kernel supervisor timer HostOp required for finite socket wait");

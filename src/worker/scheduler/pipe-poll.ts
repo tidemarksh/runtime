@@ -11,11 +11,16 @@ import type {
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
+import type { SupervisorBlockedWaitRetryReason } from "../../supervisor-blocked-resume.js";
 
 export interface PipePollSchedulerDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
-  scheduleHostBlockedRetry(handle: ProcessHandle, worker: Worker, delayMs?: number): void;
+  scheduleSupervisorBlockedRetry(
+    handle: ProcessHandle,
+    worker: Worker,
+    reason?: SupervisorBlockedWaitRetryReason,
+  ): void;
   pipeChildExitRecordsAlreadyResumedForWait(
     handle: ProcessHandle,
     vmPtr: number,
@@ -333,7 +338,7 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
       return;
     }
     if (timeoutMs < 0) {
-      deps.scheduleHostBlockedRetry(handle, worker, 1);
+      deps.scheduleSupervisorBlockedRetry(handle, worker);
       return;
     }
     throw new Error("kernel supervisor timer HostOp required for finite pipe poll wait");

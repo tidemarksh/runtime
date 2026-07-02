@@ -22,6 +22,12 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_signal_control_record_bytes: 120,
   supervisor_resume_kind_futex_wake: 1,
   supervisor_resume_kind_runnable_thread: 2,
+  supervisor_blocked_wait_retry_reason_default: 0,
+  supervisor_blocked_wait_retry_reason_immediate: 1,
+  supervisor_blocked_wait_retry_reason_standard_defer: 2,
+  supervisor_blocked_wait_retry_reason_active_child: 3,
+  supervisor_blocked_wait_retry_reason_passive_wait: 4,
+  supervisor_blocked_wait_retry_reason_process_gate: 5,
   supervisor_host_op_kind_arm_host_timer: 12,
   supervisor_futex_wait_completion_woken: 1,
   supervisor_futex_wait_completion_not_equal: 2,
@@ -77,6 +83,22 @@ export function makeSupervisorAbiStubs(
   );
   return {
     ...stubs,
+    supervisor_blocked_wait_retry_delay_ms: (_vmPtr: number, reason: number) => {
+      switch (reason) {
+        case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_immediate:
+          return 0;
+        case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_standard_defer:
+          return 10;
+        case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_active_child:
+          return 5;
+        case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_passive_wait:
+          return 25;
+        case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_process_gate:
+          return 50;
+        default:
+          return 1;
+      }
+    },
     ...overrides,
   } as Partial<KernelExports>;
 }

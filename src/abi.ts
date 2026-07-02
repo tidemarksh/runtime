@@ -233,6 +233,13 @@ export interface KernelExports {
   supervisor_process_resume?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_fault_exit_decision?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_resume_blocked_syscall?(vmPtr: number, flags: number): bigint | number;
+  supervisor_blocked_wait_retry_delay_ms?(vmPtr: number, reason: number): number;
+  supervisor_blocked_wait_retry_reason_default?(): number;
+  supervisor_blocked_wait_retry_reason_immediate?(): number;
+  supervisor_blocked_wait_retry_reason_standard_defer?(): number;
+  supervisor_blocked_wait_retry_reason_active_child?(): number;
+  supervisor_blocked_wait_retry_reason_passive_wait?(): number;
+  supervisor_blocked_wait_retry_reason_process_gate?(): number;
   supervisor_enqueue_blocked_wait_timer?(vmPtr: number): number;
   supervisor_fd_control_record?(outPtr: number, outLen: number): number;
   supervisor_fs_control_record?(outPtr: number, outLen: number): number;
@@ -1182,6 +1189,13 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_process_resume",
   "supervisor_fault_exit_decision",
   "supervisor_resume_blocked_syscall",
+  "supervisor_blocked_wait_retry_delay_ms",
+  "supervisor_blocked_wait_retry_reason_default",
+  "supervisor_blocked_wait_retry_reason_immediate",
+  "supervisor_blocked_wait_retry_reason_standard_defer",
+  "supervisor_blocked_wait_retry_reason_active_child",
+  "supervisor_blocked_wait_retry_reason_passive_wait",
+  "supervisor_blocked_wait_retry_reason_process_gate",
   "supervisor_enqueue_blocked_wait_timer",
   "supervisor_fd_control_record",
   "supervisor_fs_control_record",

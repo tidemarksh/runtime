@@ -52,6 +52,28 @@ function makeKernel() {
       thread_resume_poll_wait_timeout: vi.fn(),
       thread_resume_socket_wait_timeout: vi.fn(),
       supervisor_complete_futex_wait: vi.fn(() => 0),
+      supervisor_blocked_wait_retry_delay_ms: (vmPtr: number, reason: number) => {
+        switch (reason) {
+          case 1:
+            return 0;
+          case 2:
+            return 10;
+          case 3:
+            return 5;
+          case 4:
+            return 25;
+          case 5:
+            return 50;
+          default:
+            return kernel.exports.thread_status(vmPtr) === kernel.exports.abi_status_wait4() ? 10 : 1;
+        }
+      },
+      supervisor_blocked_wait_retry_reason_default: () => 0,
+      supervisor_blocked_wait_retry_reason_immediate: () => 1,
+      supervisor_blocked_wait_retry_reason_standard_defer: () => 2,
+      supervisor_blocked_wait_retry_reason_active_child: () => 3,
+      supervisor_blocked_wait_retry_reason_passive_wait: () => 4,
+      supervisor_blocked_wait_retry_reason_process_gate: () => 5,
       supervisor_futex_wait_completion_woken: () => 1,
       supervisor_futex_wait_completion_not_equal: () => 2,
       supervisor_futex_wait_completion_invalid_address: () => 4,
