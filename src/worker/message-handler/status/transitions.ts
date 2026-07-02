@@ -8,7 +8,7 @@ import { kernelShareOtherMembers } from "../../kernel-share.js";
 import { assertHandleWorkerProcessIdentity } from "../../process-identity.js";
 import { blockedStatusUsesForkSharedStateSync } from "../../sync.js";
 import type {
-  BlockedWorkerState,
+  HostBlockedWorkerState,
   ProcessHandle,
   ThreadWorkerState,
 } from "../../types.js";
@@ -111,7 +111,7 @@ function formatFaultThreadSummary(handle: ProcessHandle, label: string, vmPtr: n
     + `/addr=0x${(handle.kernel.thread_fault_addr?.(vmPtr) ?? 0n).toString(16)}`;
 }
 
-function beginStatusTransitionRpc(blocked: BlockedWorkerState): number {
+function beginStatusTransitionRpc(blocked: HostBlockedWorkerState): number {
   blocked.rpcPending = true;
   blocked.rpcGeneration += 1;
   return blocked.rpcGeneration;
@@ -122,7 +122,7 @@ function finishStatusTransitionRpc(
   worker: Worker,
   vmPtr: number,
   rpcGeneration: number,
-): BlockedWorkerState | null {
+): HostBlockedWorkerState | null {
   const latestBlocked = handle.blockedWorkers.get(worker);
   if (!latestBlocked || latestBlocked.vmPtr !== vmPtr) {
     return null;

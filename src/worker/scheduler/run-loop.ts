@@ -1,5 +1,5 @@
 import type {
-  BlockedWorkerState,
+  HostBlockedWorkerState,
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
@@ -14,13 +14,13 @@ export interface RunLoopSchedulerDeps {
 }
 
 export interface RunLoopScheduler {
-  beginBlockedRpc(blocked: BlockedWorkerState): number;
+  beginBlockedRpc(blocked: HostBlockedWorkerState): number;
   finishBlockedRpc(
     handle: ProcessHandle,
     worker: Worker,
     vmPtr: number,
     rpcGeneration: number,
-  ): BlockedWorkerState | null;
+  ): HostBlockedWorkerState | null;
   observeForkSharedSyncCompletion(
     handle: ProcessHandle,
     worker: Worker,
@@ -37,7 +37,7 @@ export interface RunLoopScheduler {
 export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopScheduler {
   const observedForkSharedSyncPromises = new WeakSet<Promise<void>>();
 
-  function beginBlockedRpc(blocked: BlockedWorkerState): number {
+  function beginBlockedRpc(blocked: HostBlockedWorkerState): number {
     blocked.rpcPending = true;
     blocked.rpcGeneration += 1;
     return blocked.rpcGeneration;
@@ -48,7 +48,7 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     worker: Worker,
     vmPtr: number,
     rpcGeneration: number,
-  ): BlockedWorkerState | null {
+  ): HostBlockedWorkerState | null {
     const latestBlocked = handle.blockedWorkers.get(worker);
     if (
       !latestBlocked

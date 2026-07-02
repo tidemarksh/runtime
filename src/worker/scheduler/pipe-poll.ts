@@ -7,7 +7,7 @@ import {
 import { POLLFD_BYTES } from "../../layout/poll.js";
 import { appendPendingGuestMemoryWrites } from "../guest-memory-writes.js";
 import type {
-  BlockedWorkerState,
+  HostBlockedWorkerState,
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
@@ -48,7 +48,7 @@ export interface PipePollScheduler {
   ): boolean;
   pipeWaitShouldParkBehindActiveChild(
     handle: ProcessHandle,
-    blocked: BlockedWorkerState,
+    blocked: HostBlockedWorkerState,
     pollTimeoutMs: number,
     readyCount: number | undefined,
   ): boolean;
@@ -309,7 +309,7 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
 
   function pipeWaitShouldParkBehindActiveChild(
     handle: ProcessHandle,
-    blocked: BlockedWorkerState,
+    blocked: HostBlockedWorkerState,
     pollTimeoutMs: number,
     readyCount: number | undefined,
   ): boolean {

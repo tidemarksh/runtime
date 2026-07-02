@@ -36,7 +36,7 @@ import {
   drainSupervisorArmHostTimerHostOp,
 } from "../supervisor-host-op.js";
 import type {
-  BlockedWorkerState,
+  HostBlockedWorkerState,
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
@@ -93,7 +93,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   function resumeBlockedSyscallViaKernelWorker(
     handle: ProcessHandle,
     worker: Worker,
-    blocked: BlockedWorkerState,
+    blocked: HostBlockedWorkerState,
     lifecycleEvent: string,
     afterOutcome?: (outcome: KernelRpcResumeOutcome) => void,
   ): boolean {
@@ -420,7 +420,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
 
   function markPipeChildExitRecordsResumedForWait(
     handle: ProcessHandle,
-    blocked: BlockedWorkerState,
+    blocked: HostBlockedWorkerState,
   ): void {
     const recordsKey = formatChildExitRecords(handle);
     if (recordsKey === "") {
@@ -675,7 +675,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     return ofdIds;
   }
 
-  function appendBlockedStateLifecycle(handle: ProcessHandle, blocked: BlockedWorkerState): void {
+  function appendBlockedStateLifecycle(handle: ProcessHandle, blocked: HostBlockedWorkerState): void {
     const status = blocked.status;
     if (status !== handle.kernel.abi_status_pipe_wait() && status !== handle.kernel.abi_status_wait4()) {
       return;
@@ -721,7 +721,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   function pumpNetworkForBlockedWait(
     handle: ProcessHandle,
     worker: Worker,
-    blocked: BlockedWorkerState,
+    blocked: HostBlockedWorkerState,
   ): boolean {
     if (!blockedWaitShouldPumpNetwork(handle, blocked.status, blocked.vmPtr)) {
       appendWorkerDebugLog(
@@ -811,7 +811,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   function resumeEpollWait(
     handle: ProcessHandle,
     worker: Worker,
-    blocked: BlockedWorkerState,
+    blocked: HostBlockedWorkerState,
   ): void {
     if (resumeBlockedSyscallViaKernelWorker(
       handle,
@@ -844,7 +844,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       && previousBlocked.vmPtr === vmPtr
       && previousBlocked.status === status;
     clearBlockedWorker(handle, worker);
-    const blocked: BlockedWorkerState = {
+    const blocked: HostBlockedWorkerState = {
       vmPtr,
       status,
       retryTimer: null,
@@ -979,7 +979,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
 
   function armBlockedSupervisorTimerForBlocked(
     handle: ProcessHandle,
-    blocked: BlockedWorkerState,
+    blocked: HostBlockedWorkerState,
   ): boolean {
     if (blocked.supervisorTimerArmed === true) {
       return true;
