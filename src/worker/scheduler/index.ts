@@ -51,6 +51,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   const pipeChildExitResumeKeys = new WeakMap<ProcessHandle, Map<number, string>>();
   const supervisorArmedBlockedTimers = new WeakSet<HostBlockedWorkerState>();
   const hostBlockedRetryTimers = new WeakMap<HostBlockedWorkerState, ReturnType<typeof setTimeout>>();
+  const threadWorkerBlockedResumeRequests = new WeakSet<Worker>();
 
   function consumeKernelRpcResumeOutcome(
     handle: ProcessHandle,
@@ -225,6 +226,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     appendWorkerDebugLog,
     blockWorker,
     clearHostBlockedRetryTimer,
+    takeThreadWorkerBlockedResume,
     completeProcessExit: deps.completeProcessExit,
     failProcess: deps.failProcess,
     handleWorkerMessage: deps.handleWorkerMessage,
@@ -274,6 +276,18 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       retryHostBlockedWorker(handle, worker);
     }, delayMs);
     hostBlockedRetryTimers.set(blocked, timer);
+  }
+
+  function requestThreadWorkerBlockedResume(_handle: ProcessHandle, worker: Worker): void {
+    threadWorkerBlockedResumeRequests.add(worker);
+  }
+
+  function takeThreadWorkerBlockedResume(_handle: ProcessHandle, worker: Worker): boolean {
+    if (!threadWorkerBlockedResumeRequests.has(worker)) {
+      return false;
+    }
+    threadWorkerBlockedResumeRequests.delete(worker);
+    return true;
   }
 
   function parkSupervisorOwnedFutexWait(
@@ -1779,6 +1793,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     blockWorker,
     clearBlockedWorker,
     clearHostBlockedRetryTimer,
+    requestThreadWorkerBlockedResume,
     enqueueWorker,
     handleHostBlockedRetryResult,
     notifySchedulerProgress,

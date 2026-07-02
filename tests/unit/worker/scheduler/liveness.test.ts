@@ -175,7 +175,6 @@ function makeThreadState(vmPtr: number): ThreadWorkerState {
     initialized: true,
     waitingInWorkerStatus: null,
     ownerAsyncStatus: null,
-    resumeHostBlockedSyscallOnNextStep: false,
     pendingPipeSlotsForNextStep: [],
     pendingGuestMemoryWrites: [],
     resumeWorkersOnReady: [],
@@ -4498,6 +4497,8 @@ test("pumpProcess records supervisor thread-state snapshot diagnostics for selec
       debugEvents.push(event);
     },
     blockWorker: () => {},
+    clearHostBlockedRetryTimer: () => {},
+    takeThreadWorkerBlockedResume: () => false,
     completeProcessExit: async () => {},
     failProcess: (_handle, error) => {
       throw error;
@@ -4568,6 +4569,8 @@ test("pumpProcess runs process-scoped supervisor resume worker instead of TypeSc
       debugEvents.push(event);
     },
     blockWorker: () => {},
+    clearHostBlockedRetryTimer: () => {},
+    takeThreadWorkerBlockedResume: () => false,
     completeProcessExit: async () => {},
     failProcess: (_handle, error) => {
       throw error;
@@ -4633,6 +4636,8 @@ test("pumpProcess does not run TypeScript continuation when supervisor process r
       debugEvents.push(event);
     },
     blockWorker: () => {},
+    clearHostBlockedRetryTimer: () => {},
+    takeThreadWorkerBlockedResume: () => false,
     completeProcessExit: async () => {},
     failProcess: (_handle, error) => {
       throw error;

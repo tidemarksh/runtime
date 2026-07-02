@@ -23,6 +23,7 @@ function makeQueue(threadWorkerStates: WeakMap<Worker, ReturnType<typeof makeHos
     },
     blockWorker: () => {},
     clearHostBlockedRetryTimer: () => {},
+    takeThreadWorkerBlockedResume: () => false,
     completeProcessExit: async () => {},
     failProcess: (_handle, error) => {
       throw error;

@@ -46,6 +46,7 @@ export interface WorkerScheduler {
   blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
   clearBlockedWorker(handle: ProcessHandle, worker: Worker): void;
   clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void;
+  requestThreadWorkerBlockedResume(handle: ProcessHandle, worker: Worker): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   handleHostBlockedRetryResult(
     handle: ProcessHandle,

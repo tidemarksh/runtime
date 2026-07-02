@@ -34,7 +34,6 @@ function makeThreadState(overrides: Partial<ThreadWorkerState> = {}): ThreadWork
     initialized: true,
     waitingInWorkerStatus: null,
     ownerAsyncStatus: null,
-    resumeHostBlockedSyscallOnNextStep: false,
     pendingPipeSlotsForNextStep: [],
     pendingGuestMemoryWrites: [],
     resumeWorkersOnReady: [],

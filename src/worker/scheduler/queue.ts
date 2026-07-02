@@ -120,6 +120,7 @@ interface WorkerSchedulerQueueDeps {
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
   clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void;
+  takeThreadWorkerBlockedResume(handle: ProcessHandle, worker: Worker): boolean;
   completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number, exitVmPtr?: number): Promise<void>;
   failProcess(handle: ProcessHandle, error: Error): void;
   handleWorkerMessage(handle: ProcessHandle, worker: Worker, msg: ThreadWorkerOutbound): void;
@@ -900,7 +901,6 @@ export function createWorkerSchedulerQueueHelpers(
       initialized: false,
       waitingInWorkerStatus: null,
       ownerAsyncStatus: null,
-      resumeHostBlockedSyscallOnNextStep: false,
       pendingPipeSlotsForNextStep: [],
       pendingGuestMemoryWrites: [],
       resumeWorkersOnReady: [],
@@ -1220,8 +1220,7 @@ export function createWorkerSchedulerQueueHelpers(
     if (thread && (thread.pendingGuestMemoryWrites?.length ?? 0) > 0) {
       stepMessage.guestMemoryWrites = thread.pendingGuestMemoryWrites.splice(0);
     }
-    if (thread?.resumeHostBlockedSyscallOnNextStep) {
-      thread.resumeHostBlockedSyscallOnNextStep = false;
+    if (thread && deps.takeThreadWorkerBlockedResume(handle, next)) {
       stepMessage.resumeBlockedSyscall = true;
     }
     next.postMessage(stepMessage);

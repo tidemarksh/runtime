@@ -125,7 +125,6 @@ export function makeHostBoundaryThread(vmPtr: number): ThreadWorkerState {
     initialized: true,
     waitingInWorkerStatus: null,
     ownerAsyncStatus: null,
-    resumeHostBlockedSyscallOnNextStep: false,
     pendingPipeSlotsForNextStep: [],
     pendingGuestMemoryWrites: [],
     resumeWorkersOnReady: [],

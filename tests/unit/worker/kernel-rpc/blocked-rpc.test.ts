@@ -1,10 +1,25 @@
-import { expect, test, vi } from "vite-plus/test";
-import { createWorkerKernelRpcBlockedRpcTestHelpers as createWorkerKernelRpcBlockedRpcHelpers } from "../../../../src/worker/kernel-rpc/blocked-rpc.js";
+import { beforeEach, expect, test, vi } from "vite-plus/test";
+import { createWorkerKernelRpcBlockedRpcTestHelpers as createWorkerKernelRpcBlockedRpcHelpersBase } from "../../../../src/worker/kernel-rpc/blocked-rpc.js";
 import type { KernelRuntimeState } from "../../../../src/abi.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 import { OFD_INO_OFFSET, OFD_OFFSET_OFFSET, OFD_TYPE_OFFSET } from "../../../../src/layout/ofd.js";
 import { PIPE_GENERATION_OFFSET, PIPE_READ_OPEN_OFFSET, PIPE_SLOT_BYTES, PIPE_WRITE_OPEN_OFFSET } from "../../../../src/layout/pipe.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
+
+const requestThreadWorkerBlockedResume = vi.fn();
+
+beforeEach(() => {
+  requestThreadWorkerBlockedResume.mockClear();
+});
+
+function createWorkerKernelRpcBlockedRpcHelpers(
+  deps: Parameters<typeof createWorkerKernelRpcBlockedRpcHelpersBase>[0],
+) {
+  return createWorkerKernelRpcBlockedRpcHelpersBase({
+    ...deps,
+    requestThreadWorkerBlockedResume,
+  });
+}
 
 function makeKernelState(): KernelRuntimeState {
   return {
@@ -205,7 +220,7 @@ test("blocked-rpc pipe EOF ignores stale active-child writer when canonical pipe
   child.kernelShare.members.add(handle);
   child.kernelShare.members.add(child);
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const handleHostBlockedRetryResult = vi.fn();
@@ -229,7 +244,7 @@ test("blocked-rpc pipe EOF ignores stale active-child writer when canonical pipe
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(true);
+  expect(requestThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
@@ -339,7 +354,7 @@ test("blocked-rpc defers EOF-after-wait while an exiting visible child still hol
   child.kernelShare.members.add(handle);
   child.kernelShare.members.add(child);
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const handleHostBlockedRetryResult = vi.fn();
@@ -363,7 +378,7 @@ test("blocked-rpc defers EOF-after-wait while an exiting visible child still hol
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(false);
+  expect(requestThreadWorkerBlockedResume).not.toHaveBeenCalled();
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(0);
   expect(enqueueWorker).not.toHaveBeenCalled();
 });
@@ -474,7 +489,7 @@ test("blocked-rpc preserves canonical EOF retry when active-child writer defers 
   child.kernelShare.members.add(handle);
   child.kernelShare.members.add(child);
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const handleHostBlockedRetryResult = vi.fn();
@@ -499,7 +514,7 @@ test("blocked-rpc preserves canonical EOF retry when active-child writer defers 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
   expect(handle.hostBlockedWorkers.get(worker)?.pipeCanonicalEofReady).toBe(true);
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(false);
+  expect(requestThreadWorkerBlockedResume).not.toHaveBeenCalled();
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(0);
   expect(enqueueWorker).not.toHaveBeenCalled();
 });
@@ -605,7 +620,7 @@ test("blocked-rpc pipe EOF uses current kernel pipe counters before stale shared
     },
   } as unknown as ProcessHandle;
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const handleHostBlockedRetryResult = vi.fn();
@@ -629,7 +644,7 @@ test("blocked-rpc pipe EOF uses current kernel pipe counters before stale shared
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(true);
+  expect(requestThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
@@ -721,7 +736,7 @@ test("blocked-rpc preserves same-process pipe writer when blocked snapshot looke
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const handleHostBlockedRetryResult = vi.fn();
@@ -747,7 +762,7 @@ test("blocked-rpc preserves same-process pipe writer when blocked snapshot looke
   expect(view.getInt32(pipeOffset + PIPE_WRITE_OPEN_OFFSET, true)).toBe(1);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(false);
+  expect(requestThreadWorkerBlockedResume).not.toHaveBeenCalled();
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(0);
   expect(enqueueWorker).not.toHaveBeenCalled();
 });
@@ -1075,7 +1090,7 @@ test("blocked-rpc defers pipe resume while self pipe sync is in flight", async (
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const handleHostBlockedRetryResult = vi.fn();
@@ -1120,7 +1135,7 @@ test("blocked-rpc defers pipe resume while self pipe sync is in flight", async (
   expect(handle.pipeWaiterWakeQueued).toBe(true);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(false);
+  expect(requestThreadWorkerBlockedResume).not.toHaveBeenCalled();
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(0);
   expect(enqueueWorker).not.toHaveBeenCalled();
 });
@@ -1193,7 +1208,7 @@ test("blocked-rpc awaits newly queued self pipe sync before pipe resume", async 
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const handleHostBlockedRetryResult = vi.fn();
@@ -1244,7 +1259,7 @@ test("blocked-rpc awaits newly queued self pipe sync before pipe resume", async 
   expect(handle.pipeWaiterWakeQueued).toBe(true);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(true);
+  expect(requestThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
@@ -1319,7 +1334,7 @@ test("blocked-rpc resumes EOF-pending pipe read despite in-flight self pipe sync
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const handleHostBlockedRetryResult = vi.fn();
@@ -1354,7 +1369,7 @@ test("blocked-rpc resumes EOF-pending pipe read despite in-flight self pipe sync
   expect(handle.pipeWaiterWakeQueued).toBe(true);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(true);
+  expect(requestThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
@@ -1429,7 +1444,7 @@ test("blocked-rpc resumes buffered pipe read despite in-flight self pipe sync", 
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const handleHostBlockedRetryResult = vi.fn();
@@ -1464,7 +1479,7 @@ test("blocked-rpc resumes buffered pipe read despite in-flight self pipe sync", 
   expect(handle.pipeWaiterWakeQueued).toBe(true);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(true);
+  expect(requestThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
@@ -1539,7 +1554,7 @@ test("blocked-rpc skips ready self pipe sync before pipe read EOF resume", async
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const lifecycle: string[] = [];
@@ -1584,7 +1599,7 @@ test("blocked-rpc skips ready self pipe sync before pipe read EOF resume", async
   expect(requestPipeStateSync.mock.calls.some(([target, wake]) => target === handle && wake === false)).toBe(false);
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(true);
+  expect(requestThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
@@ -1667,7 +1682,7 @@ test("blocked-rpc carries canonical EOF to next block after buffered pipe read w
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const lifecycle: string[] = [];
@@ -1691,7 +1706,7 @@ test("blocked-rpc carries canonical EOF to next block after buffered pipe read w
 
   expect(lifecycle).toContain("blocked-rpc-resume-in-worker:3");
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(true);
+  expect(requestThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
   expect(threadState.pipeCanonicalEofReadyOnNextBlock).toBe(true);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
@@ -1767,7 +1782,7 @@ test("blocked-rpc skips redundant self pipe sync after canonical EOF retry", asy
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const lifecycle: string[] = [];
@@ -1804,7 +1819,7 @@ test("blocked-rpc skips redundant self pipe sync after canonical EOF retry", asy
   expect(result, [...lifecycle, ...debugLog].join("\n")).toBe("resolved");
   expect(requestPipeStateSync).not.toHaveBeenCalledWith(handle, expect.anything());
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(true);
+  expect(requestThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
   expect(threadState.pipeCanonicalEofReadyOnNextBlock).toBe(true);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
@@ -1881,7 +1896,7 @@ test("blocked-rpc skips pending fork-shared sync before canonical EOF retry", as
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const lifecycle: string[] = [];
@@ -1916,7 +1931,7 @@ test("blocked-rpc skips pending fork-shared sync before canonical EOF retry", as
   expect(result, [...lifecycle, ...debugLog].join("\n")).toBe("resolved");
   expect(lifecycle).toContain("blocked-rpc-skip-fork-sync-canonical-eof:3");
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(true);
+  expect(requestThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
   expect(threadState.pipeCanonicalEofReadyOnNextBlock).toBe(true);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
@@ -2030,7 +2045,7 @@ test("blocked-rpc skips read-only peer pipe sync after canonical EOF retry", asy
   handle.kernelShare.members.add(handle);
   handle.kernelShare.members.add(peer);
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const lifecycle: string[] = [];
@@ -2068,7 +2083,7 @@ test("blocked-rpc skips read-only peer pipe sync after canonical EOF retry", asy
   expect(lifecycle).toContain("blocked-rpc-sync-pipe-skip-canonical-eof-peer:3->5");
   expect(requestPipeStateSync).not.toHaveBeenCalledWith(peer, false);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(true);
+  expect(requestThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
@@ -2185,7 +2200,7 @@ test("blocked-rpc skips owner-async peer pipe sync while peer FS continuation ow
   handle.kernelShare.members.add(handle);
   handle.kernelShare.members.add(peer);
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const peerThreadState = {
     vmPtr: peerVmPtr,
     ownerAsyncStatus: kernel.abi_status_fs(),
@@ -2193,7 +2208,6 @@ test("blocked-rpc skips owner-async peer pipe sync while peer FS continuation ow
       pipeSlot,
       slot: new Uint8Array(PIPE_SLOT_BYTES),
     }],
-    resumeHostBlockedSyscallOnNextStep: false,
   };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
@@ -2347,7 +2361,7 @@ test("blocked-rpc wakes owner-async OK peer that holds a blocked pipe writer", a
   handle.kernelShare.members.add(handle);
   handle.kernelShare.members.add(peer);
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const peerThreadState = {
     vmPtr: peerVmPtr,
     initialized: true,
@@ -2356,7 +2370,6 @@ test("blocked-rpc wakes owner-async OK peer that holds a blocked pipe writer", a
     runningGeneration: 4,
     pendingGuestMemoryWrites: [],
     pendingPipeSlotsForNextStep: [],
-    resumeHostBlockedSyscallOnNextStep: false,
   };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
@@ -2472,7 +2485,7 @@ test("blocked-rpc canonical EOF retry clears stale writer in resume snapshot", a
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const lifecycle: string[] = [];
@@ -2512,7 +2525,7 @@ test("blocked-rpc canonical EOF retry clears stale writer in resume snapshot", a
   expect(result, [...lifecycle, ...debugLog].join("\n")).toBe("resolved");
   expect(requestPipeStateSync).not.toHaveBeenCalledWith(handle, expect.anything());
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(true);
+  expect(requestThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(resumeSlot?.pipeSlot).toBe(pipeSlot);
   expect(view.getInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, true)).toBe(0);
@@ -2587,7 +2600,7 @@ test("blocked-rpc resumes non-poll pipe read EOF from canonical closed pipe stat
     pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const handleHostBlockedRetryResult = vi.fn();
@@ -2613,7 +2626,7 @@ test("blocked-rpc resumes non-poll pipe read EOF from canonical closed pipe stat
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(true);
+  expect(requestThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
@@ -2717,7 +2730,7 @@ test("blocked-rpc resumes blocking open-empty pipe read while shared writer rema
       handle.kernelShare.members.add(handle);
       handle.kernelShare.members.add(peer);
 
-      const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+      const threadState = { pendingPipeSlotsForNextStep: [] };
       const threadWorkerStates = new WeakMap<Worker, object>();
       threadWorkerStates.set(worker, threadState);
       const handleHostBlockedRetryResult = vi.fn();
@@ -2742,7 +2755,7 @@ test("blocked-rpc resumes blocking open-empty pipe read while shared writer rema
       expect(view.getInt32(pipeOffset + PIPE_WRITE_OPEN_OFFSET, true)).toBe(1);
       expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
       expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
-      expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(true);
+      expect(requestThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
       expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
       expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
       expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
@@ -2850,7 +2863,7 @@ test("blocked-rpc defers blocking open-empty pipe read while active child may st
   handle.kernelShare.members.add(handle);
   handle.kernelShare.members.add(child);
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const handleHostBlockedRetryResult = vi.fn();
@@ -2874,7 +2887,7 @@ test("blocked-rpc defers blocking open-empty pipe read while active child may st
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, vmPtr, kernel.abi_status_pipe_wait());
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(false);
+  expect(requestThreadWorkerBlockedResume).not.toHaveBeenCalled();
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(0);
   expect(enqueueWorker).not.toHaveBeenCalled();
 });
@@ -2942,7 +2955,7 @@ test("blocked-rpc resumes canonical pipe EOF when blocked syscall export returns
     pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const handleHostBlockedRetryResult = vi.fn();
@@ -2968,7 +2981,7 @@ test("blocked-rpc resumes canonical pipe EOF when blocked syscall export returns
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(true);
+  expect(requestThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
@@ -3049,7 +3062,7 @@ test("blocked-rpc resumes closed stdin EOF through fd-table fallback without pin
     pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const handleHostBlockedRetryResult = vi.fn();
@@ -3073,7 +3086,7 @@ test("blocked-rpc resumes closed stdin EOF through fd-table fallback without pin
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(true);
+  expect(requestThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
@@ -3161,7 +3174,7 @@ test("blocked-rpc clears stale pipe writer count before EOF-pending resume when 
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const handleHostBlockedRetryResult = vi.fn();
@@ -3186,7 +3199,7 @@ test("blocked-rpc clears stale pipe writer count before EOF-pending resume when 
   expect(view.getInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, true)).toBe(0);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(true);
+  expect(requestThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
@@ -3277,7 +3290,7 @@ test("blocked-rpc treats EOF-pending nonblocking open-empty pipe read as canonic
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const handleHostBlockedRetryResult = vi.fn();
@@ -3303,7 +3316,7 @@ test("blocked-rpc treats EOF-pending nonblocking open-empty pipe read as canonic
   expect(kernel.thread_resume_pipe_read_open_empty).not.toHaveBeenCalled();
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(true);
+  expect(requestThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
@@ -3386,7 +3399,7 @@ test("blocked-rpc resumes nonblocking open-empty pipe read in thread worker", as
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const handleHostBlockedRetryResult = vi.fn();
@@ -3411,7 +3424,7 @@ test("blocked-rpc resumes nonblocking open-empty pipe read in thread worker", as
   expect(kernel.thread_resume_pipe_read_open_empty).not.toHaveBeenCalled();
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(true);
+  expect(requestThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
@@ -3604,7 +3617,7 @@ test("blocked-rpc aligns pipe OFD generation before canonical EOF resume", async
     pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const handleHostBlockedRetryResult = vi.fn();
@@ -3629,7 +3642,7 @@ test("blocked-rpc aligns pipe OFD generation before canonical EOF resume", async
   expect(view.getBigInt64(ofdOffset + OFD_OFFSET_OFFSET, true)).toBe(BigInt(pipeGeneration));
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(true);
+  expect(requestThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
@@ -3706,7 +3719,7 @@ test("blocked-rpc does not preserve host stdin writer when stdin is explicitly c
     pendingChildExitRecords: 0,
   } as unknown as ProcessHandle;
 
-  const threadState = { pendingPipeSlotsForNextStep: [], resumeHostBlockedSyscallOnNextStep: false };
+  const threadState = { pendingPipeSlotsForNextStep: [] };
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const handleHostBlockedRetryResult = vi.fn();
@@ -3733,7 +3746,7 @@ test("blocked-rpc does not preserve host stdin writer when stdin is explicitly c
   expect(view.getInt32(pipeSlot * PIPE_SLOT_BYTES + PIPE_WRITE_OPEN_OFFSET, true)).toBe(0);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
-  expect(threadState.resumeHostBlockedSyscallOnNextStep).toBe(true);
+  expect(requestThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
   expect(threadState.pendingPipeSlotsForNextStep).toHaveLength(1);
   expect(threadState.pendingPipeSlotsForNextStep[0]?.pipeSlot).toBe(pipeSlot);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);

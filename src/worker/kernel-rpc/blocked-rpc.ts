@@ -44,6 +44,7 @@ export interface WorkerKernelRpcBlockedRpcDeps {
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   failProcess(handle: ProcessHandle, error: Error): void;
   clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void;
+  requestThreadWorkerBlockedResume(handle: ProcessHandle, worker: Worker): void;
   handleHostBlockedRetryResult(handle: ProcessHandle, worker: Worker, vmPtr: number, status: number): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   syncBlockedForkSharedStateViaKernelWorker(handle: ProcessHandle, sourceVmPtr: number | undefined, cause: SyncCause): Promise<void>;
@@ -1638,7 +1639,7 @@ async function executeHostBlockedSyscallResume(
       if (!thread) {
         return;
       }
-      thread.resumeHostBlockedSyscallOnNextStep = true;
+      deps.requestThreadWorkerBlockedResume(handle, worker);
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       finishBlockedRpc();
       handle.hostBlockedWorkers.delete(worker);
@@ -1705,7 +1706,7 @@ async function executeHostBlockedSyscallResume(
         return;
       }
       thread.pendingPipeSlotsForNextStep.push(...pipeSlotsForResume);
-      thread.resumeHostBlockedSyscallOnNextStep = true;
+      deps.requestThreadWorkerBlockedResume(handle, worker);
       if (canonicalEofReadyAtStart) {
         thread.pipeCanonicalEofReadyOnNextBlock = true;
       }
@@ -1857,7 +1858,7 @@ async function executeHostBlockedSyscallResume(
         return;
       }
       thread.pendingPipeSlotsForNextStep.push(...pipeSlotsForResume);
-      thread.resumeHostBlockedSyscallOnNextStep = true;
+      deps.requestThreadWorkerBlockedResume(handle, worker);
       if (canonicalEofReadyAtStart || bufferedReadWillReachCanonicalEof) {
         thread.pipeCanonicalEofReadyOnNextBlock = true;
       }
@@ -2221,11 +2222,12 @@ export function createWorkerKernelRpcBlockedRpcHelpers(deps: WorkerKernelRpcBloc
 }
 
 export function createWorkerKernelRpcBlockedRpcTestHelpers(
-  deps: Omit<WorkerKernelRpcBlockedRpcDeps, "clearHostBlockedRetryTimer">
-    & Partial<Pick<WorkerKernelRpcBlockedRpcDeps, "clearHostBlockedRetryTimer">>,
+  deps: Omit<WorkerKernelRpcBlockedRpcDeps, "clearHostBlockedRetryTimer" | "requestThreadWorkerBlockedResume">
+    & Partial<Pick<WorkerKernelRpcBlockedRpcDeps, "clearHostBlockedRetryTimer" | "requestThreadWorkerBlockedResume">>,
 ) {
   return createWorkerKernelRpcBlockedRpcHelperInternals({
     ...deps,
     clearHostBlockedRetryTimer: deps.clearHostBlockedRetryTimer ?? (() => {}),
+    requestThreadWorkerBlockedResume: deps.requestThreadWorkerBlockedResume ?? (() => {}),
   });
 }
