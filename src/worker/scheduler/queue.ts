@@ -121,7 +121,6 @@ interface WorkerSchedulerQueueDeps {
   blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
   clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void;
   takeThreadWorkerBlockedResume(handle: ProcessHandle, worker: Worker): boolean;
-  clearSupervisorFutexWaiter(handle: ProcessHandle, worker: Worker): void;
   isSupervisorFutexWaiter(handle: ProcessHandle, worker: Worker): boolean;
   parkSupervisorFutexWait(handle: ProcessHandle, worker: Worker, vmPtr: number, source: string): void;
   completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number, exitVmPtr?: number): Promise<void>;
@@ -313,7 +312,6 @@ function removeVforkReadyWorker(handle: ProcessHandle, worker: Worker): void {
 }
 
 function clearBlockedWorker(deps: WorkerSchedulerQueueDeps, handle: ProcessHandle, worker: Worker): void {
-  deps.clearSupervisorFutexWaiter(handle, worker);
   const blocked = handle.hostBlockedWorkers.get(worker);
   if (!blocked) {
     return;

@@ -52,7 +52,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   const supervisorArmedBlockedTimers = new WeakSet<HostBlockedWorkerState>();
   const hostBlockedRetryTimers = new WeakMap<HostBlockedWorkerState, ReturnType<typeof setTimeout>>();
   const threadWorkerBlockedResumeRequests = new WeakSet<Worker>();
-  const supervisorFutexWaiters = new WeakSet<Worker>();
 
   function consumeKernelRpcResumeOutcome(
     handle: ProcessHandle,
@@ -228,7 +227,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     blockWorker,
     clearHostBlockedRetryTimer,
     takeThreadWorkerBlockedResume,
-    clearSupervisorFutexWaiter,
     isSupervisorFutexWaiter,
     parkSupervisorFutexWait,
     completeProcessExit: deps.completeProcessExit,
@@ -243,7 +241,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   } = schedulerQueueHelpers;
 
   function clearBlockedWorker(handle: ProcessHandle, worker: Worker): void {
-    clearSupervisorFutexWaiter(handle, worker);
     const blocked = handle.hostBlockedWorkers.get(worker);
     if (!blocked) {
       return;
@@ -295,12 +292,11 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     return true;
   }
 
-  function clearSupervisorFutexWaiter(_handle: ProcessHandle, worker: Worker): void {
-    supervisorFutexWaiters.delete(worker);
-  }
-
-  function isSupervisorFutexWaiter(_handle: ProcessHandle, worker: Worker): boolean {
-    return supervisorFutexWaiters.has(worker);
+  function isSupervisorFutexWaiter(handle: ProcessHandle, worker: Worker): boolean {
+    const thread = threadWorkerStates.get(worker);
+    return thread !== undefined
+      && handle.workers.has(worker)
+      && handle.kernel.thread_status(thread.vmPtr) === handle.kernel.abi_status_futex_wait();
   }
 
   function parkSupervisorFutexWait(
@@ -310,7 +306,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     source: string,
   ): void {
     clearBlockedWorker(handle, worker);
-    supervisorFutexWaiters.add(worker);
     const readyIndex = handle.vforkReadyWorkers.indexOf(worker);
     if (readyIndex >= 0) {
       handle.vforkReadyWorkers.splice(readyIndex, 1);

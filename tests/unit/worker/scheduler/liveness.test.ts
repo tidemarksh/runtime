@@ -815,9 +815,7 @@ test("scheduler uses pending worker kernel state for one active vfork child step
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, thread);
   const { exports: kernel } = makeKernel();
-  kernel.thread_status = (vmPtr: number) => vmPtr === thread.vmPtr
-    ? kernel.abi_status_futex_wait()
-    : kernel.abi_status_ok();
+  kernel.thread_status = () => kernel.abi_status_ok();
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   const parentKernelState = {
     ...handle.kernelState,
@@ -4237,7 +4235,6 @@ test("pumpProcess runs supervisor-selected ready worker while preserving a still
   const handle = makeHandle(kernel, waitingWorker, threadWorkerStates);
   handle.workers.add(runnableWorker);
   handle.vforkReadyWorkers = [waitingWorker, runnableWorker];
-  waitingThread.waitingInWorkerStatus = kernel.abi_status_futex_wait();
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
@@ -4357,8 +4354,6 @@ test("pumpProcess drains only supervisor-selected futex resumes when supervisor 
   } as unknown as Worker;
   const selectedThread = makeThreadState(0x1234);
   const unselectedThread = makeThreadState(0x5678);
-  selectedThread.waitingInWorkerStatus = 20;
-  unselectedThread.waitingInWorkerStatus = 20;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(selectedWorker, selectedThread);
   threadWorkerStates.set(unselectedWorker, unselectedThread);
@@ -4410,7 +4405,7 @@ test("pumpProcess drains only supervisor-selected futex resumes when supervisor 
   expect(kernel.supervisor_next_resume).toHaveBeenCalledTimes(2);
   expect(kernel.supervisor_complete_futex_wait).not.toHaveBeenCalled();
   expect(selectedThread.waitingInWorkerStatus).toBeNull();
-  expect(unselectedThread.waitingInWorkerStatus).toBe(kernel.abi_status_futex_wait());
+  expect(unselectedThread.waitingInWorkerStatus).toBeNull();
   expect(handle.runningWorker).toBe(selectedWorker);
   expect(selectedWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
     type: "step",
@@ -4428,8 +4423,6 @@ test("pumpProcess records supervisor thread-state snapshot diagnostics for selec
   } as unknown as Worker;
   const selectedThread = makeThreadState(0x1234);
   const unselectedThread = makeThreadState(0x5678);
-  selectedThread.waitingInWorkerStatus = 20;
-  unselectedThread.waitingInWorkerStatus = 20;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(selectedWorker, selectedThread);
   threadWorkerStates.set(unselectedWorker, unselectedThread);
@@ -4504,8 +4497,11 @@ test("pumpProcess records supervisor thread-state snapshot diagnostics for selec
     blockWorker: () => {},
     clearHostBlockedRetryTimer: () => {},
     takeThreadWorkerBlockedResume: () => false,
-    clearSupervisorFutexWaiter: () => {},
-    isSupervisorFutexWaiter: () => false,
+    isSupervisorFutexWaiter: (targetHandle, worker) => {
+      const thread = threadWorkerStates.get(worker);
+      return thread !== undefined
+        && targetHandle.kernel.thread_status(thread.vmPtr) === targetHandle.kernel.abi_status_futex_wait();
+    },
     parkSupervisorFutexWait: () => {},
     completeProcessExit: async () => {},
     failProcess: (_handle, error) => {
@@ -4519,7 +4515,7 @@ test("pumpProcess records supervisor thread-state snapshot diagnostics for selec
 
   expect(kernel.supervisor_thread_state_snapshot).toHaveBeenCalledTimes(1);
   expect(selectedThread.waitingInWorkerStatus).toBeNull();
-  expect(unselectedThread.waitingInWorkerStatus).toBe(kernel.abi_status_futex_wait());
+  expect(unselectedThread.waitingInWorkerStatus).toBeNull();
   expect(debugEvents).toContain(
     "supervisor-resume:futex-wake:observed:0x1234:tid=2:seq=1:process=0x2000:detail=0xfeed:status=0"
       + ":snapshot=process=0x2000:owner=0x1234"
@@ -4579,7 +4575,6 @@ test("pumpProcess runs process-scoped supervisor resume worker instead of TypeSc
     blockWorker: () => {},
     clearHostBlockedRetryTimer: () => {},
     takeThreadWorkerBlockedResume: () => false,
-    clearSupervisorFutexWaiter: () => {},
     isSupervisorFutexWaiter: () => false,
     parkSupervisorFutexWait: () => {},
     completeProcessExit: async () => {},
@@ -4649,7 +4644,6 @@ test("pumpProcess does not run TypeScript continuation when supervisor process r
     blockWorker: () => {},
     clearHostBlockedRetryTimer: () => {},
     takeThreadWorkerBlockedResume: () => false,
-    clearSupervisorFutexWaiter: () => {},
     isSupervisorFutexWaiter: () => false,
     parkSupervisorFutexWait: () => {},
     completeProcessExit: async () => {},
@@ -4681,7 +4675,6 @@ test("pumpProcess leaves a quiescent stack-local futex waiter parked with a bloc
   const blockedThread = makeThreadState(0x7759fb0);
   const stackPointer = 0xa4676f0n;
   const stackLocalFutexAddr = 0xa467858n;
-  waitingThread.waitingInWorkerStatus = 20;
   waitingThread.stepCount = 97;
   waitingThread.statusCount = 97;
   waitingThread.lastStatus = 20;
@@ -4741,7 +4734,7 @@ test("pumpProcess leaves a quiescent stack-local futex waiter parked with a bloc
   scheduler.pumpProcess(handle);
 
   expect(completeSupervisorFutexWait).not.toHaveBeenCalled();
-  expect(waitingThread.waitingInWorkerStatus).toBe(kernel.abi_status_futex_wait());
+  expect(waitingThread.waitingInWorkerStatus).toBeNull();
   expect(handle.runningWorker).toBeNull();
   expect(waitingWorker.postMessage).not.toHaveBeenCalled();
   expect(blockedWorker.postMessage).not.toHaveBeenCalled();
@@ -4756,7 +4749,6 @@ test("pumpProcess leaves a quiescent worker-local futex waiter parked until its 
   } as unknown as Worker;
   const waitingThread = makeThreadState(0x57fe3d0);
   const blockedThread = makeThreadState(0x7759fb0);
-  waitingThread.waitingInWorkerStatus = 20;
   waitingThread.stepCount = 97;
   waitingThread.statusCount = 97;
   waitingThread.lastStatus = 20;
@@ -4805,7 +4797,7 @@ test("pumpProcess leaves a quiescent worker-local futex waiter parked until its 
   scheduler.pumpProcess(handle);
 
   expect(kernel.supervisor_complete_futex_wait).not.toHaveBeenCalled();
-  expect(waitingThread.waitingInWorkerStatus).toBe(kernel.abi_status_futex_wait());
+  expect(waitingThread.waitingInWorkerStatus).toBeNull();
   expect(handle.runningWorker).toBeNull();
   expect(waitingWorker.postMessage).not.toHaveBeenCalled();
   expect(blockedWorker.postMessage).not.toHaveBeenCalled();
@@ -5352,7 +5344,6 @@ test("enqueue does not place a worker-local wait worker on the ready queue", () 
   const { exports: kernel } = makeKernel();
   kernel.thread_status = () => kernel.abi_status_futex_wait();
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  thread.waitingInWorkerStatus = kernel.abi_status_futex_wait();
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},

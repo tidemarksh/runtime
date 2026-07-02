@@ -24,8 +24,11 @@ function makeQueue(threadWorkerStates: WeakMap<Worker, ReturnType<typeof makeHos
     blockWorker: () => {},
     clearHostBlockedRetryTimer: () => {},
     takeThreadWorkerBlockedResume: () => false,
-    clearSupervisorFutexWaiter: () => {},
-    isSupervisorFutexWaiter: () => false,
+    isSupervisorFutexWaiter: (handle, worker) => {
+      const thread = threadWorkerStates.get(worker);
+      return thread !== undefined
+        && handle.kernel.thread_status(thread.vmPtr) === handle.kernel.abi_status_futex_wait();
+    },
     parkSupervisorFutexWait: () => {},
     completeProcessExit: async () => {},
     failProcess: (_handle, error) => {
@@ -41,8 +44,6 @@ test("host boundary consumes only supervisor-selected futex resume records", () 
   const unselectedWorker = { postMessage: vi.fn() } as unknown as Worker;
   const selectedThread = makeHostBoundaryThread(0x1234);
   const unselectedThread = makeHostBoundaryThread(0x5678);
-  selectedThread.waitingInWorkerStatus = 20;
-  unselectedThread.waitingInWorkerStatus = 20;
   const threadWorkerStates = new WeakMap<Worker, ReturnType<typeof makeHostBoundaryThread>>();
   threadWorkerStates.set(selectedWorker, selectedThread);
   threadWorkerStates.set(unselectedWorker, unselectedThread);
@@ -100,7 +101,7 @@ test("host boundary consumes only supervisor-selected futex resume records", () 
   expect(kernel.supervisor_next_resume).toHaveBeenCalledTimes(2);
   expect(kernel.supervisor_complete_futex_wait).not.toHaveBeenCalled();
   expect(selectedThread.waitingInWorkerStatus).toBeNull();
-  expect(unselectedThread.waitingInWorkerStatus).toBe(kernel.abi_status_futex_wait());
+  expect(unselectedThread.waitingInWorkerStatus).toBeNull();
   expect(handle.runningWorker).toBe(selectedWorker);
   expect(selectedWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "step" }));
   expect(unselectedWorker.postMessage).not.toHaveBeenCalled();
@@ -114,7 +115,6 @@ test("host boundary consumes process-scoped supervisor runnable resume decisions
   const unselectedWorker = { postMessage: vi.fn() } as unknown as Worker;
   const selectedThread = makeHostBoundaryThread(0x1234);
   const unselectedThread = makeHostBoundaryThread(0x5678);
-  selectedThread.waitingInWorkerStatus = 20;
   unselectedThread.lastStatus = 0;
   const threadWorkerStates = new WeakMap<Worker, ReturnType<typeof makeHostBoundaryThread>>();
   threadWorkerStates.set(selectedWorker, selectedThread);
