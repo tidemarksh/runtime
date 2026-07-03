@@ -226,20 +226,28 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     return numeric;
   }
 
+  function supervisorNumericExport(sourceExports: KernelExports, name: string): number {
+    const read = (sourceExports as unknown as Record<string, unknown>)[name];
+    if (typeof read !== "function") {
+      throw new Error(`missing ${name} export`);
+    }
+    return supervisorNumber((read as () => bigint | number)());
+  }
+
   function supervisorDirtyPageOpWrite(sourceExports: KernelExports): number {
-    return supervisorNumber(sourceExports.supervisor_fs_dirty_page_op_write?.());
+    return supervisorNumericExport(sourceExports, "supervisor_fs_dirty_page_op_write");
   }
 
   function supervisorDirtyPageOpTruncate(sourceExports: KernelExports): number {
-    return supervisorNumber(sourceExports.supervisor_fs_dirty_page_op_truncate?.());
+    return supervisorNumericExport(sourceExports, "supervisor_fs_dirty_page_op_truncate");
   }
 
   function supervisorDirtyPageOpFlush(sourceExports: KernelExports): number {
-    return supervisorNumber(sourceExports.supervisor_fs_dirty_page_op_flush?.());
+    return supervisorNumericExport(sourceExports, "supervisor_fs_dirty_page_op_flush");
   }
 
   function supervisorDirtyPageWritebackRequiredFlag(sourceExports: KernelExports): number {
-    return supervisorNumber(sourceExports.supervisor_fs_dirty_page_flag_writeback_required?.());
+    return supervisorNumericExport(sourceExports, "supervisor_fs_dirty_page_flag_writeback_required");
   }
 
   function supervisorRangeI64(value: number | undefined, fallback: number): bigint {
@@ -261,15 +269,15 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     const opNumber = (() => {
       switch (op) {
         case "source":
-          return supervisorNumber(sourceExports.supervisor_fs_backing_object_op_source?.());
+          return supervisorNumericExport(sourceExports, "supervisor_fs_backing_object_op_source");
         case "materialize":
-          return supervisorNumber(sourceExports.supervisor_fs_backing_object_op_materialize?.());
+          return supervisorNumericExport(sourceExports, "supervisor_fs_backing_object_op_materialize");
         case "replace":
-          return supervisorNumber(sourceExports.supervisor_fs_backing_object_op_replace?.());
+          return supervisorNumericExport(sourceExports, "supervisor_fs_backing_object_op_replace");
         case "flush-write":
-          return supervisorNumber(sourceExports.supervisor_fs_backing_object_op_flush_write?.());
+          return supervisorNumericExport(sourceExports, "supervisor_fs_backing_object_op_flush_write");
         case "flush-truncate":
-          return supervisorNumber(sourceExports.supervisor_fs_backing_object_op_flush_truncate?.());
+          return supervisorNumericExport(sourceExports, "supervisor_fs_backing_object_op_flush_truncate");
       }
     })();
     const result = supervisorNumber(decide(
@@ -283,8 +291,8 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (result < 0) {
       throw new Error(`supervisor backing object decision failed: ${result}`);
     }
-    const fileObjectId = supervisorNumber(sourceExports.supervisor_fs_backing_object_file_object_id?.());
-    const generation = supervisorNumber(sourceExports.supervisor_fs_backing_object_generation?.());
+    const fileObjectId = supervisorNumericExport(sourceExports, "supervisor_fs_backing_object_file_object_id");
+    const generation = supervisorNumericExport(sourceExports, "supervisor_fs_backing_object_generation");
     if (fileObjectId <= 0 || generation <= 0) {
       throw new Error("invalid supervisor backing object identity");
     }
@@ -315,17 +323,17 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       supervisorRangeI64(sourceByteLength, -1),
       requireSourceBounds ? 1 : 0,
     ));
-    const none = supervisorNumber(sourceExports.supervisor_fs_backing_source_range_none?.());
+    const none = supervisorNumericExport(sourceExports, "supervisor_fs_backing_source_range_none");
     if (decision === none) {
       return null;
     }
-    const read = supervisorNumber(sourceExports.supervisor_fs_backing_source_range_read?.());
+    const read = supervisorNumericExport(sourceExports, "supervisor_fs_backing_source_range_read");
     if (decision !== read) {
       throw new Error(`unknown supervisor backing source range decision: ${decision}`);
     }
-    const byteLength = supervisorNumber(sourceExports.supervisor_fs_backing_source_range_source_byte_length?.());
-    const offset = supervisorNumber(sourceExports.supervisor_fs_backing_source_range_source_offset?.());
-    const rangeLength = supervisorNumber(sourceExports.supervisor_fs_backing_source_range_read_length?.());
+    const byteLength = supervisorNumericExport(sourceExports, "supervisor_fs_backing_source_range_source_byte_length");
+    const offset = supervisorNumericExport(sourceExports, "supervisor_fs_backing_source_range_source_offset");
+    const rangeLength = supervisorNumericExport(sourceExports, "supervisor_fs_backing_source_range_read_length");
     if (byteLength < 0 || offset < 0 || rangeLength < 0) {
       throw new Error("invalid supervisor backing source range");
     }
@@ -361,13 +369,13 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       supervisorRangeI64(publishedSize, -1),
       supervisorRangeI64(backingSize, -1),
     ));
-    const none = supervisorNumber(sourceExports.supervisor_fs_clean_backing_range_none?.());
+    const none = supervisorNumericExport(sourceExports, "supervisor_fs_clean_backing_range_none");
     if (decision === none) {
       return null;
     }
-    const read = supervisorNumber(sourceExports.supervisor_fs_clean_backing_range_read?.());
-    const readZeroTail = supervisorNumber(sourceExports.supervisor_fs_clean_backing_range_read_zero_tail?.());
-    const zero = supervisorNumber(sourceExports.supervisor_fs_clean_backing_range_zero?.());
+    const read = supervisorNumericExport(sourceExports, "supervisor_fs_clean_backing_range_read");
+    const readZeroTail = supervisorNumericExport(sourceExports, "supervisor_fs_clean_backing_range_read_zero_tail");
+    const zero = supervisorNumericExport(sourceExports, "supervisor_fs_clean_backing_range_zero");
     let mode: "read" | "read-zero-tail" | "zero";
     if (decision === read) {
       mode = "read";
@@ -378,9 +386,9 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     } else {
       throw new Error(`unknown supervisor clean backing range decision: ${decision}`);
     }
-    const readOffset = supervisorNumber(sourceExports.supervisor_fs_clean_backing_range_read_offset?.());
-    const readLength = supervisorNumber(sourceExports.supervisor_fs_clean_backing_range_read_length?.());
-    const outputLength = supervisorNumber(sourceExports.supervisor_fs_clean_backing_range_output_length?.());
+    const readOffset = supervisorNumericExport(sourceExports, "supervisor_fs_clean_backing_range_read_offset");
+    const readLength = supervisorNumericExport(sourceExports, "supervisor_fs_clean_backing_range_read_length");
+    const outputLength = supervisorNumericExport(sourceExports, "supervisor_fs_clean_backing_range_output_length");
     if (readOffset < 0 || readLength < 0 || outputLength < 0) {
       throw new Error("invalid supervisor clean backing range");
     }
@@ -407,9 +415,9 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     }
     return {
       result: resultNumber,
-      nextSize: supervisorNumber(sourceExports.supervisor_fs_dirty_page_decision_next_size?.()),
-      fileObjectId: supervisorNumber(sourceExports.supervisor_fs_dirty_page_decision_file_object_id?.()),
-      generation: supervisorNumber(sourceExports.supervisor_fs_dirty_page_decision_generation?.()),
+      nextSize: supervisorNumericExport(sourceExports, "supervisor_fs_dirty_page_decision_next_size"),
+      fileObjectId: supervisorNumericExport(sourceExports, "supervisor_fs_dirty_page_decision_file_object_id"),
+      generation: supervisorNumericExport(sourceExports, "supervisor_fs_dirty_page_decision_generation"),
     };
   }
 
@@ -488,7 +496,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (result < 0) {
       throw new Error(`supervisor dirty flush decision failed: ${result}`);
     }
-    const flags = supervisorNumber(sourceExports.supervisor_fs_dirty_page_decision_flags?.());
+    const flags = supervisorNumericExport(sourceExports, "supervisor_fs_dirty_page_decision_flags");
     const writebackRequired = supervisorDirtyPageWritebackRequiredFlag(sourceExports);
     return (flags & writebackRequired) !== 0;
   }
@@ -524,10 +532,10 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (result < 0) {
       return { result, publishMode: "none" };
     }
-    const publishMode = supervisorNumber(sourceExports.supervisor_fs_dirty_prepare_publish_mode?.());
-    const none = supervisorNumber(sourceExports.supervisor_fs_dirty_prepare_publish_none?.());
-    const missing = supervisorNumber(sourceExports.supervisor_fs_dirty_prepare_publish_missing?.());
-    const sizeUpdate = supervisorNumber(sourceExports.supervisor_fs_dirty_prepare_publish_size_update?.());
+    const publishMode = supervisorNumericExport(sourceExports, "supervisor_fs_dirty_prepare_publish_mode");
+    const none = supervisorNumericExport(sourceExports, "supervisor_fs_dirty_prepare_publish_none");
+    const missing = supervisorNumericExport(sourceExports, "supervisor_fs_dirty_prepare_publish_missing");
+    const sizeUpdate = supervisorNumericExport(sourceExports, "supervisor_fs_dirty_prepare_publish_size_update");
     if (publishMode === none) {
       return { result, publishMode: "none" };
     }
@@ -560,8 +568,8 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       throw new Error("missing supervisor_fs_data_sync_decision export");
     }
     const kind = input.kind === "restore"
-      ? supervisorNumber(sourceExports.supervisor_fs_data_sync_kind_restore?.())
-      : supervisorNumber(sourceExports.supervisor_fs_data_sync_kind_export?.());
+      ? supervisorNumericExport(sourceExports, "supervisor_fs_data_sync_kind_restore")
+      : supervisorNumericExport(sourceExports, "supervisor_fs_data_sync_kind_export");
     const decision = supervisorNumber(decide(
       kind,
       input.ino,
@@ -580,11 +588,11 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (decision < 0) {
       return "none";
     }
-    const none = supervisorNumber(sourceExports.supervisor_fs_sync_action_none?.());
+    const none = supervisorNumericExport(sourceExports, "supervisor_fs_sync_action_none");
     if (decision === none) {
       return "none";
     }
-    const externalize = supervisorNumber(sourceExports.supervisor_fs_sync_action_externalize?.());
+    const externalize = supervisorNumericExport(sourceExports, "supervisor_fs_sync_action_externalize");
     if (decision === externalize) {
       return "externalize";
     }
@@ -629,10 +637,10 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       return { action: "none", size: 0, backingSource: "none" };
     }
 
-    const none = supervisorNumber(sourceExports.supervisor_fs_metadata_sync_action_none?.());
-    const remove = supervisorNumber(sourceExports.supervisor_fs_metadata_sync_action_remove?.());
-    const ensure = supervisorNumber(sourceExports.supervisor_fs_metadata_sync_action_ensure?.());
-    const publishEnsure = supervisorNumber(sourceExports.supervisor_fs_metadata_sync_action_publish_ensure?.());
+    const none = supervisorNumericExport(sourceExports, "supervisor_fs_metadata_sync_action_none");
+    const remove = supervisorNumericExport(sourceExports, "supervisor_fs_metadata_sync_action_remove");
+    const ensure = supervisorNumericExport(sourceExports, "supervisor_fs_metadata_sync_action_ensure");
+    const publishEnsure = supervisorNumericExport(sourceExports, "supervisor_fs_metadata_sync_action_publish_ensure");
     let action: "none" | "remove" | "ensure" | "publish-ensure";
     if (decision === none) {
       action = "none";
@@ -646,10 +654,10 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       throw new Error(`unknown supervisor fs metadata sync action: ${decision}`);
     }
 
-    const backing = supervisorNumber(sourceExports.supervisor_fs_metadata_sync_backing_source?.());
-    const backingNone = supervisorNumber(sourceExports.supervisor_fs_metadata_backing_none?.());
-    const backingPublished = supervisorNumber(sourceExports.supervisor_fs_metadata_backing_published?.());
-    const backingBacking = supervisorNumber(sourceExports.supervisor_fs_metadata_backing_backing?.());
+    const backing = supervisorNumericExport(sourceExports, "supervisor_fs_metadata_sync_backing_source");
+    const backingNone = supervisorNumericExport(sourceExports, "supervisor_fs_metadata_backing_none");
+    const backingPublished = supervisorNumericExport(sourceExports, "supervisor_fs_metadata_backing_published");
+    const backingBacking = supervisorNumericExport(sourceExports, "supervisor_fs_metadata_backing_backing");
     let backingSource: "none" | "published" | "backing";
     if (backing === backingNone) {
       backingSource = "none";
@@ -663,7 +671,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
 
     return {
       action,
-      size: supervisorNumber(sourceExports.supervisor_fs_metadata_sync_size?.()),
+      size: supervisorNumericExport(sourceExports, "supervisor_fs_metadata_sync_size"),
       backingSource,
     };
   }
@@ -692,8 +700,8 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (decision < 0) {
       throw new Error(`supervisor page-table source decision failed: ${decision}`);
     }
-    const backing = supervisorNumber(sourceExports.supervisor_fs_page_table_source_backing?.());
-    const resident = supervisorNumber(sourceExports.supervisor_fs_page_table_source_resident?.());
+    const backing = supervisorNumericExport(sourceExports, "supervisor_fs_page_table_source_backing");
+    const resident = supervisorNumericExport(sourceExports, "supervisor_fs_page_table_source_resident");
     if (decision === resident) {
       return true;
     }
