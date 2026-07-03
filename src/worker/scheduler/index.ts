@@ -328,15 +328,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     );
   }
 
-  function epollTimerfdDeadlineTicks(handle: ProcessHandle, vmPtr: number): bigint | null {
-    const rawDeadline = handle.kernel.thread_epoll_timerfd_deadline_ticks?.(vmPtr);
-    if (rawDeadline === undefined) {
-      return null;
-    }
-    const deadline = BigInt(rawDeadline);
-    return deadline === 0n ? null : deadline;
-  }
-
   function hasPendingCloneChildInitResume(handle: ProcessHandle): boolean {
     for (const worker of handle.workers) {
       const thread = threadWorkerStates.get(worker);
@@ -1044,12 +1035,10 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     ) {
       const rpcGeneration = beginBlockedRpc(blocked);
       const epollRetryTimeoutMs = supervisorBlockedEpollWaitTimeoutMs(handle.kernel, blocked.vmPtr);
-      const epollRetryTimerfdDeadline = epollTimerfdDeadlineTicks(handle, blocked.vmPtr);
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `epoll-retry-rpc:${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}`
           + `:timeout=${epollRetryTimeoutMs}`
-          + `:timerfdDeadline=${epollRetryTimerfdDeadline?.toString() ?? "none"}`
           + `:epoll=${formatBlockedEpollEntries(handle, blocked.vmPtr)}`,
       );
       void (blockedEpollWatchesPipe(handle, blocked.vmPtr)
@@ -1076,15 +1065,11 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
           }
           const latestEpollRetryTimeoutMs = supervisorBlockedEpollWaitTimeoutMs(handle.kernel, latestBlocked.vmPtr);
           if (latestEpollRetryTimeoutMs < 0) {
-            const deadlineTicks = epollTimerfdDeadlineTicks(handle, latestBlocked.vmPtr);
-            if (deadlineTicks !== null) {
+            if (armBlockedSupervisorTimerForBlocked(handle, latestBlocked)) {
               deps.appendRuntimeLifecycleEvent(
                 handle.runtimeId,
-                `epoll-retry-deadline:${handle.pid}:vm=0x${latestBlocked.vmPtr.toString(16)}:ticks=${deadlineTicks.toString()}`,
+                `epoll-retry-timer:${handle.pid}:vm=0x${latestBlocked.vmPtr.toString(16)}`,
               );
-              if (!armBlockedSupervisorTimerForBlocked(handle, latestBlocked)) {
-                throw new Error("kernel supervisor timer HostOp required for epoll timerfd wait");
-              }
               return;
             }
             deps.appendRuntimeLifecycleEvent(

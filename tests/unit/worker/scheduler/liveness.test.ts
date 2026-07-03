@@ -3055,7 +3055,7 @@ test("epoll kernel-worker retry re-queries timerfd deadline after state sync", a
   }));
   expect(failProcess).not.toHaveBeenCalled();
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(lifecycleEvents).toContain("epoll-retry-deadline:1:vm=0x1234:ticks=1000001");
+  expect(lifecycleEvents).toContain("epoll-retry-timer:1:vm=0x1234");
 
   await vi.advanceTimersByTimeAsync(9);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
@@ -3187,7 +3187,7 @@ test("epoll kernel-worker retry syncs watched timerfd OFD after the timer fd is 
   }));
   expect(failProcess).not.toHaveBeenCalled();
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
-  expect(lifecycleEvents).toContain("epoll-retry-deadline:1:vm=0x1234:ticks=1000001");
+  expect(lifecycleEvents).toContain("epoll-retry-timer:1:vm=0x1234");
 
   await vi.advanceTimersByTimeAsync(10);
 
