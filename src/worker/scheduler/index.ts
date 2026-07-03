@@ -8,7 +8,6 @@ import {
   supervisorBlockedPipeSyncBeforeRetryClear,
   supervisorBlockedPipeSyncBeforeRetryRequested,
   supervisorBlockedResumeDelegation,
-  supervisorBlockedWaitTimerRequired,
   supervisorBlockedWaitRetryPlan,
   SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC,
   SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT,
@@ -25,7 +24,6 @@ import {
   SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_ACTIVE_CHILD,
   SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT,
   type SupervisorBlockedWaitRetryFlags,
-  type SupervisorBlockedWaitRetryReason,
 } from "../../supervisor-blocked-resume.js";
 import {
   wakeRuntimeBridge,
@@ -56,20 +54,16 @@ import {
   formatRunningRetryBlocker,
   formatThreadFdTableSummary,
 } from "../host-boundary/blocked-wait-diagnostics.js";
+import {
+  createBlockedWaitTimers,
+  type BlockedWaitTimers,
+} from "../host-boundary/blocked-wait-timers.js";
 import { createWorkerSchedulerStateSyncHelpers } from "../host-boundary/state-sync.js";
 import { createVforkExclusiveScheduler } from "./vfork-exclusive.js";
 import {
   readSupervisorFaultExitDecision,
-  submitSupervisorShadowStatusEvent,
   supervisorFaultExitKindProcessExit,
-  SUPERVISOR_THREAD_EVENT_KIND_TIMER_FIRED,
 } from "../supervisor-shadow.js";
-import {
-  armSupervisorBlockedRetryTimer,
-  armSupervisorHostTimer,
-  drainSupervisorArmHostTimerHostOp,
-  drainSupervisorBlockedRetryHostOp,
-} from "../supervisor-host-op.js";
 import type {
   HostBlockedWorkerState,
   ProcessHandle,
@@ -82,9 +76,8 @@ import type { KernelRpcResumeOutcome } from "../kernel-rpc/outcomes.js";
 
 export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerScheduler {
   const { threadWorkerStates } = deps;
-  const supervisorArmedBlockedTimers = new WeakSet<HostBlockedWorkerState>();
-  const hostBlockedRetryTimers = new WeakMap<HostBlockedWorkerState, ReturnType<typeof setTimeout>>();
   const threadWorkerBlockedResumeRequests = new WeakSet<Worker>();
+  let blockedWaitTimers: BlockedWaitTimers;
 
   function consumeKernelRpcResumeOutcome(
     handle: ProcessHandle,
@@ -178,6 +171,13 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     enqueueWorker,
     pumpProcess,
   } = schedulerQueueHelpers;
+  blockedWaitTimers = createBlockedWaitTimers({
+    appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
+    appendWorkerDebugLog,
+    failProcess: deps.failProcess,
+    retryHostBlockedWorker,
+    pumpProcess,
+  });
 
   function clearBlockedWorker(
     handle: ProcessHandle,
@@ -203,66 +203,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   }
 
   function clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void {
-    const blocked = handle.hostBlockedWorkers.get(worker);
-    if (!blocked) {
-      return;
-    }
-    const timer = hostBlockedRetryTimers.get(blocked);
-    if (timer === undefined) {
-      return;
-    }
-    clearTimeout(timer);
-    hostBlockedRetryTimers.delete(blocked);
-  }
-
-  function submitBlockedRetryTimerFiredEvent(
-    handle: ProcessHandle,
-    blocked: HostBlockedWorkerState,
-    delayMs: number,
-    reason: SupervisorBlockedWaitRetryReason,
-  ): void {
-    const vmPtr = blocked.vmPtr;
-    const status = handle.kernel.thread_status?.(vmPtr) ?? blocked.status;
-    const result = submitSupervisorShadowStatusEvent(handle, {
-      eventKind: handle.kernel.supervisor_thread_event_kind_timer_fired?.()
-        ?? SUPERVISOR_THREAD_EVENT_KIND_TIMER_FIRED,
-      sequence: blocked.rpcGeneration,
-      vmPtr,
-      pid: handle.pid,
-      tid: handle.kernel.thread_tid?.(vmPtr) ?? 0,
-      status,
-      blockedReason: reason,
-      pc: handle.kernel.thread_pc?.(vmPtr) ?? 0n,
-      sp: handle.kernel.thread_sp?.(vmPtr) ?? 0n,
-      detail: delayMs,
-    });
-    if (result !== undefined && result < 0) {
-      appendWorkerDebugLog(handle, `supervisor-timer-fired-event:submit-error:${result}`);
-    }
-  }
-
-  function scheduleHostBlockedRetry(
-    handle: ProcessHandle,
-    worker: Worker,
-    hostOp: NonNullable<ReturnType<typeof drainSupervisorBlockedRetryHostOp>>,
-  ): void {
-    const blocked = handle.hostBlockedWorkers.get(worker);
-    if (!blocked || hostBlockedRetryTimers.has(blocked)) {
-      return;
-    }
-    const timer = armSupervisorBlockedRetryTimer(handle, hostOp, {
-      appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
-      appendWorkerDebugLog,
-      failProcess: deps.failProcess,
-      onTimerFired: (delayMs, reason) => {
-        if (hostBlockedRetryTimers.get(blocked) === timer) {
-          hostBlockedRetryTimers.delete(blocked);
-        }
-        submitBlockedRetryTimerFiredEvent(handle, blocked, delayMs, reason as SupervisorBlockedWaitRetryReason);
-        retryHostBlockedWorker(handle, worker);
-      },
-    });
-    hostBlockedRetryTimers.set(blocked, timer);
+    blockedWaitTimers.clearHostBlockedRetryTimer(handle, worker);
   }
 
   function scheduleSupervisorBlockedRetry(
@@ -270,52 +211,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     worker: Worker,
     flags: SupervisorBlockedWaitRetryFlags = SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
   ): void {
-    const blocked = handle.hostBlockedWorkers.get(worker);
-    if (!blocked) {
-      return;
-    }
-    const enqueueRetryTimer = handle.kernel.supervisor_enqueue_blocked_retry_timer;
-    if (enqueueRetryTimer === undefined) {
-      deps.failProcess(handle, new Error("kernel supervisor ABI missing supervisor_enqueue_blocked_retry_timer"));
-      return;
-    }
-    const enqueueResult = enqueueRetryTimer(blocked.vmPtr, flags);
-    if (enqueueResult < 0) {
-      deps.failProcess(
-        handle,
-        new Error(
-          `supervisor blocked retry timer enqueue failed: `
-            + `pid=${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}:result=${enqueueResult}`,
-        ),
-      );
-      return;
-    }
-    if (enqueueResult === 0) {
-      deps.failProcess(
-        handle,
-        new Error(
-          `supervisor blocked retry timer enqueue returned no HostOp: `
-            + `pid=${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}`,
-        ),
-      );
-      return;
-    }
-    const retryHostOp = drainSupervisorBlockedRetryHostOp(handle, blocked.vmPtr);
-    if (retryHostOp === undefined) {
-      deps.failProcess(handle, new Error("kernel supervisor ABI missing blocked retry HostOp exports"));
-      return;
-    }
-    if (retryHostOp === null) {
-      deps.failProcess(
-        handle,
-        new Error(
-          `supervisor blocked retry timer enqueue returned no drainable HostOp: `
-            + `pid=${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}`,
-        ),
-      );
-      return;
-    }
-    scheduleHostBlockedRetry(handle, worker, retryHostOp);
+    blockedWaitTimers.scheduleSupervisorBlockedRetry(handle, worker, flags);
   }
 
   function supervisorBlockedWaitActiveChildPid(handle: ProcessHandle, vmPtr: number): number {
@@ -841,75 +737,19 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     );
   }
 
-  function armBlockedSupervisorTimer(handle: ProcessHandle, vmPtr: number): boolean {
-    let hostTimer = drainSupervisorArmHostTimerHostOp(handle, vmPtr);
-    if (hostTimer === undefined) {
-      throw new Error("kernel supervisor ABI missing arm host timer HostOp exports");
-    }
-    if (hostTimer === null) {
-      const enqueueTimer = handle.kernel.supervisor_enqueue_blocked_wait_timer;
-      if (enqueueTimer === undefined) {
-        throw new Error("kernel supervisor ABI missing supervisor_enqueue_blocked_wait_timer");
-      }
-      const enqueueResult = enqueueTimer(vmPtr);
-      if (enqueueResult < 0) {
-        throw new Error(
-          `supervisor blocked wait timer enqueue failed: `
-            + `pid=${handle.pid}:vm=0x${vmPtr.toString(16)}:result=${enqueueResult}`,
-        );
-      }
-      if (enqueueResult === 0) {
-        if (supervisorBlockedWaitTimerRequired(handle.kernel, vmPtr)) {
-          throw new Error(
-            `supervisor blocked wait timer required but no HostOp was enqueued: `
-              + `pid=${handle.pid}:vm=0x${vmPtr.toString(16)}`,
-          );
-        }
-        return false;
-      }
-      hostTimer = drainSupervisorArmHostTimerHostOp(handle, vmPtr);
-      if (hostTimer === undefined) {
-        throw new Error("kernel supervisor ABI missing arm host timer HostOp exports");
-      }
-      if (hostTimer === null) {
-        throw new Error(
-          `supervisor blocked wait timer enqueue returned no HostOp: `
-            + `pid=${handle.pid}:vm=0x${vmPtr.toString(16)}`,
-        );
-      }
-    }
-    if (hostTimer === null) {
-      return false;
-    }
-    armSupervisorHostTimer(handle, hostTimer, {
-      appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
-      appendWorkerDebugLog,
-      failProcess: deps.failProcess,
-      pumpProcess,
-    });
-    return true;
-  }
-
   function markSupervisorTimerArmed(blocked: HostBlockedWorkerState): void {
-    supervisorArmedBlockedTimers.add(blocked);
+    blockedWaitTimers.markSupervisorTimerArmed(blocked);
   }
 
   function isSupervisorTimerArmed(blocked: HostBlockedWorkerState): boolean {
-    return supervisorArmedBlockedTimers.has(blocked);
+    return blockedWaitTimers.isSupervisorTimerArmed(blocked);
   }
 
   function armBlockedSupervisorTimerForBlocked(
     handle: ProcessHandle,
     blocked: HostBlockedWorkerState,
   ): boolean {
-    if (isSupervisorTimerArmed(blocked)) {
-      return true;
-    }
-    const supervisorTimerArmed = armBlockedSupervisorTimer(handle, blocked.vmPtr);
-    if (supervisorTimerArmed) {
-      markSupervisorTimerArmed(blocked);
-    }
-    return supervisorTimerArmed;
+    return blockedWaitTimers.armBlockedSupervisorTimerForBlocked(handle, blocked);
   }
 
   function directPipeReadHasSynchronizedEof(
