@@ -4,10 +4,12 @@ import {
 } from "../../abi.js";
 import {
   resumeBlockedSyscallBySupervisor,
+  supervisorBlockedPipeResumeAction,
   supervisorBlockedPipeSyncBeforeRetryAction,
   supervisorBlockedPipeSyncBeforeRetryClear,
   supervisorBlockedPipeSyncBeforeRetryRequested,
   supervisorBlockedResumeDelegation,
+  SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT,
   supervisorBlockedWaitRetryPlan,
   SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC,
   SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT,
@@ -701,17 +703,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
     const pollTimeoutMs = pollWaitTimeoutMs(handle, status, vmPtr);
-    const pollReadyCount = status === handle.kernel.abi_status_pipe_wait()
-      ? handle.kernel.thread_poll_wait_ready_count?.(vmPtr)
-      : undefined;
-    if (pollReadyCount !== undefined && pollReadyCount > 0) {
-      scheduleSupervisorBlockedRetry(
-        handle,
-        worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
-      );
-      return;
-    }
     if (status === handle.kernel.abi_status_wait4()) {
       retryHostBlockedWorker(handle, worker);
       return;
@@ -722,11 +713,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       && (!handle.kernelWorkerRequest || handle.pid <= 0)
       && supervisorBlockedPipeSyncBeforeRetryRequested(handle.kernel, vmPtr)
       && pollTimeoutMs < 0
-      && (pollReadyCount === undefined || pollReadyCount <= 0)
-      && handle.kernel.thread_blocked_pipe_read_ready?.(vmPtr) !== 1
-      && handle.kernel.thread_blocked_pipe_write_ready?.(vmPtr) !== 1
       && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) !== 1
-      && !directPipeReadHasSynchronizedEof(handle, status, vmPtr)
+      && supervisorBlockedPipeResumeAction(handle.kernel, vmPtr)
+        !== SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT
     ) {
       return;
     }
@@ -750,32 +739,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     blocked: HostBlockedWorkerState,
   ): boolean {
     return blockedWaitTimers.armBlockedSupervisorTimerForBlocked(handle, blocked);
-  }
-
-  function directPipeReadHasSynchronizedEof(
-    handle: ProcessHandle,
-    status: number,
-    vmPtr: number,
-  ): boolean {
-    if (status !== handle.kernel.abi_status_pipe_wait()) {
-      return false;
-    }
-    const syscall = blockedOrCurrentSyscallNr(handle, vmPtr);
-    const read = handle.kernel.abi_sys_read?.();
-    const readv = handle.kernel.abi_sys_readv?.();
-    const isDirectRead = syscall !== null
-      && (
-        (read !== undefined && syscall === BigInt(read))
-        || (readv !== undefined && syscall === BigInt(readv))
-      );
-    if (!isDirectRead || handle.kernel.thread_poll_wait_has_socket?.(vmPtr) === 1) {
-      return false;
-    }
-    const writeOpen = handle.kernel.thread_blocked_pipe_write_open?.(vmPtr);
-    if (writeOpen === undefined || writeOpen > 0) {
-      return false;
-    }
-    return (handle.kernel.thread_blocked_pipe_buffered_len?.(vmPtr) ?? 0) === 0;
   }
 
   function handleHostBlockedRetryResult(
@@ -889,17 +852,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         );
         pumpProcess(handle);
       }
-      return;
-    }
-    const pollReadyCount = status === handle.kernel.abi_status_pipe_wait()
-      ? handle.kernel.thread_poll_wait_ready_count?.(vmPtr)
-      : undefined;
-    if (pollReadyCount !== undefined && pollReadyCount > 0) {
-      scheduleSupervisorBlockedRetry(
-        handle,
-        worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
-      );
       return;
     }
     const retryPlan = supervisorBlockedWaitRetryPlan(handle.kernel, vmPtr);

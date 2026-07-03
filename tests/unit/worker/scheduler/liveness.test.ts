@@ -82,6 +82,42 @@ function makeKernel() {
       supervisor_blocked_resume_delegation_wait4_kernel_worker: () => 2,
       supervisor_blocked_resume_delegation_unsupported: () => 3,
       supervisor_blocked_resume_delegation_epoll_direct: () => 4,
+      supervisor_blocked_pipe_resume_action_defer: () => 0,
+      supervisor_blocked_pipe_resume_action_direct: () => 1,
+      supervisor_blocked_pipe_resume_action: (vmPtr: number) => {
+        if (kernel.exports.thread_status(vmPtr) !== kernel.exports.abi_status_pipe_wait()) {
+          return 0;
+        }
+        if (kernel.exports.supervisor_blocked_wait_active_child_pid(vmPtr) > 0) {
+          return 0;
+        }
+        if ((kernel.exports.thread_poll_wait_ready_count?.(vmPtr) ?? 0) > 0) {
+          return 1;
+        }
+        if (
+          kernel.exports.thread_blocked_pipe_read_ready?.(vmPtr) === 1
+          || kernel.exports.thread_blocked_pipe_write_ready?.(vmPtr) === 1
+        ) {
+          return 1;
+        }
+        const syscallNr = kernel.exports.thread_blocked_syscall_nr?.(vmPtr)
+          ?? kernel.exports.thread_a7?.(vmPtr);
+        const readSyscall = kernel.exports.abi_sys_read?.();
+        if (
+          syscallNr === undefined
+          || readSyscall === undefined
+          || BigInt(syscallNr) !== BigInt(readSyscall)
+          || kernel.exports.thread_poll_wait_has_socket?.(vmPtr) === 1
+        ) {
+          return 0;
+        }
+        const bufferedLen = kernel.exports.thread_blocked_pipe_buffered_len?.(vmPtr);
+        const writeOpen = kernel.exports.thread_blocked_pipe_write_open?.(vmPtr);
+        const readReady = bufferedLen !== undefined
+          && writeOpen !== undefined
+          && (bufferedLen > 0 || writeOpen <= 0);
+        return readReady ? 1 : 0;
+      },
       supervisor_blocked_pipe_sync_before_retry_action_none: () => 0,
       supervisor_blocked_pipe_sync_before_retry_action_request_sync: () => 1,
       supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output: () => 2,
