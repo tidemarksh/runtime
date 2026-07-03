@@ -12,6 +12,12 @@ const SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT = 1;
 const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_NONE = 0;
 const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC = 1;
 const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_FLAG_KERNEL_WORKER_AVAILABLE = 1;
+const SUPERVISOR_STATE_SYNC_KIND_PIPE = 1;
+const SUPERVISOR_STATE_SYNC_KIND_EPOLL = 2;
+const SUPERVISOR_STATE_SYNC_KIND_SOCKET = 3;
+const SUPERVISOR_STATE_SYNC_REQUEST_FLAG_WAKE_WAITERS = 1;
+const SUPERVISOR_STATE_SYNC_RUN_FLAG_RUN = 1;
+const SUPERVISOR_STATE_SYNC_RUN_FLAG_WAKE_WAITERS = 2;
 
 export function installSupervisorBlockedResumeStub<T extends Partial<KernelExports>>(
   kernel: T,
@@ -31,8 +37,19 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_blocked_pipe_sync_before_retry_action"
   | "supervisor_blocked_pipe_sync_before_retry_requested"
   | "supervisor_blocked_pipe_sync_before_retry_clear"
+  | "supervisor_state_sync_kind_pipe"
+  | "supervisor_state_sync_kind_epoll"
+  | "supervisor_state_sync_kind_socket"
+  | "supervisor_state_sync_request_flag_wake_waiters"
+  | "supervisor_state_sync_run_flag_run"
+  | "supervisor_state_sync_run_flag_wake_waiters"
+  | "supervisor_state_sync_request"
+  | "supervisor_state_sync_next_run_flags"
+  | "supervisor_state_sync_complete"
+  | "supervisor_state_sync_clear"
 > {
   const pipeSyncBeforeRetryRequested = new Set<number>();
+  const stateSyncRequests = new Map<string, { queuedRunFlags: number; inFlight: boolean }>();
   const nextKernel = kernel as T & Pick<
     KernelExports,
     "supervisor_resume_blocked_syscall"
@@ -49,6 +66,16 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_blocked_pipe_sync_before_retry_action"
     | "supervisor_blocked_pipe_sync_before_retry_requested"
     | "supervisor_blocked_pipe_sync_before_retry_clear"
+    | "supervisor_state_sync_kind_pipe"
+    | "supervisor_state_sync_kind_epoll"
+    | "supervisor_state_sync_kind_socket"
+    | "supervisor_state_sync_request_flag_wake_waiters"
+    | "supervisor_state_sync_run_flag_run"
+    | "supervisor_state_sync_run_flag_wake_waiters"
+    | "supervisor_state_sync_request"
+    | "supervisor_state_sync_next_run_flags"
+    | "supervisor_state_sync_complete"
+    | "supervisor_state_sync_clear"
   >;
   nextKernel.supervisor_blocked_wait_active_child_pid ??= () => 0;
   nextKernel.supervisor_blocked_pipe_resume_action_defer ??= () =>
@@ -80,6 +107,52 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     pipeSyncBeforeRetryRequested.has(vmPtr) ? 1 : 0;
   nextKernel.supervisor_blocked_pipe_sync_before_retry_clear ??= (vmPtr: number) => {
     pipeSyncBeforeRetryRequested.delete(vmPtr);
+    return 0;
+  };
+  nextKernel.supervisor_state_sync_kind_pipe ??= () => SUPERVISOR_STATE_SYNC_KIND_PIPE;
+  nextKernel.supervisor_state_sync_kind_epoll ??= () => SUPERVISOR_STATE_SYNC_KIND_EPOLL;
+  nextKernel.supervisor_state_sync_kind_socket ??= () => SUPERVISOR_STATE_SYNC_KIND_SOCKET;
+  nextKernel.supervisor_state_sync_request_flag_wake_waiters ??= () =>
+    SUPERVISOR_STATE_SYNC_REQUEST_FLAG_WAKE_WAITERS;
+  nextKernel.supervisor_state_sync_run_flag_run ??= () => SUPERVISOR_STATE_SYNC_RUN_FLAG_RUN;
+  nextKernel.supervisor_state_sync_run_flag_wake_waiters ??= () =>
+    SUPERVISOR_STATE_SYNC_RUN_FLAG_WAKE_WAITERS;
+  nextKernel.supervisor_state_sync_request ??= (vmPtr: number, kind: number, flags: number) => {
+    const key = `${vmPtr}:${kind}`;
+    const request = stateSyncRequests.get(key) ?? { queuedRunFlags: 0, inFlight: false };
+    request.queuedRunFlags |= SUPERVISOR_STATE_SYNC_RUN_FLAG_RUN;
+    if ((flags & SUPERVISOR_STATE_SYNC_REQUEST_FLAG_WAKE_WAITERS) !== 0) {
+      request.queuedRunFlags |= SUPERVISOR_STATE_SYNC_RUN_FLAG_WAKE_WAITERS;
+    }
+    const shouldStart = !request.inFlight;
+    request.inFlight = true;
+    stateSyncRequests.set(key, request);
+    return shouldStart ? 1 : 0;
+  };
+  nextKernel.supervisor_state_sync_next_run_flags ??= (vmPtr: number, kind: number) => {
+    const key = `${vmPtr}:${kind}`;
+    const request = stateSyncRequests.get(key);
+    if (!request) {
+      return 0;
+    }
+    const runFlags = request.queuedRunFlags;
+    request.queuedRunFlags = 0;
+    return runFlags;
+  };
+  nextKernel.supervisor_state_sync_complete ??= (vmPtr: number, kind: number) => {
+    const key = `${vmPtr}:${kind}`;
+    const request = stateSyncRequests.get(key);
+    if (!request) {
+      return 0;
+    }
+    if (request.queuedRunFlags !== 0) {
+      return 1;
+    }
+    stateSyncRequests.delete(key);
+    return 0;
+  };
+  nextKernel.supervisor_state_sync_clear ??= (vmPtr: number, kind: number) => {
+    stateSyncRequests.delete(`${vmPtr}:${kind}`);
     return 0;
   };
   nextKernel.supervisor_blocked_resume_delegation = (vmPtr: number, flags: number) => {

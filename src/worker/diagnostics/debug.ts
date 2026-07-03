@@ -1599,7 +1599,7 @@ export function debugRuntimeProcessHandles(
           `ready=${handle.vforkReadyWorkers.length}`,
           `running=${handle.runningWorker ? "1" : "0"}`,
           `blocked=[${blocked}]`,
-          `pipe_sync=${handle.pipeSyncPromise === null ? 0 : 1}/${handle.pipeSyncQueued ? 1 : 0}`,
+          `pipe_sync=${handle.pipeSyncPromise === null ? 0 : 1}`,
           `fork_sync=${handle.forkSharedSyncPromise === null ? 0 : 1}/${handle.kernelShare.forkSharedSyncPromise === null ? 0 : 1}`,
           `vfork=${handle.vforkSnapshot ? "1" : "0"}`,
           `stdio_pipes=${handle.stdinPipe}/${handle.stdoutPipe}/${handle.stderrPipe}`,

@@ -10,9 +10,16 @@ import {
   SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_AND_EPOLL_SYNC,
   SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC,
   SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC,
+  SUPERVISOR_STATE_SYNC_KIND_EPOLL,
+  SUPERVISOR_STATE_SYNC_KIND_PIPE,
+  SUPERVISOR_STATE_SYNC_KIND_SOCKET,
   supervisorBlockedPipeSyncBeforeRetryClear,
   supervisorBlockedWaitWakeMaskForSync,
   supervisorBlockedWaitWakeStatuses,
+  supervisorStateSyncClear,
+  supervisorStateSyncComplete,
+  supervisorStateSyncNextRun,
+  supervisorStateSyncRequest,
 } from "../../supervisor-blocked-resume.js";
 import {
   collectHeldEpollDependentOfdIdsByType,
@@ -240,31 +247,54 @@ export function createWorkerSchedulerStateSyncHelpers(
       return Promise.resolve();
     }
 
-    handle.epollSyncQueued = true;
-    if (retryWaiters) {
-      handle.epollWaiterWakeQueued = true;
-    }
+    const shouldStart = supervisorStateSyncRequest(
+      handle.kernel,
+      handle.vmPtr,
+      SUPERVISOR_STATE_SYNC_KIND_EPOLL,
+      retryWaiters,
+    );
     if (handle.epollSyncPromise !== null) {
       return handle.epollSyncPromise;
     }
+    if (!shouldStart) {
+      return Promise.resolve();
+    }
 
     handle.epollSyncPromise = (async () => {
-      while (handle.epollSyncQueued) {
-        handle.epollSyncQueued = false;
-        const shouldRetry = handle.epollWaiterWakeQueued;
-        handle.epollWaiterWakeQueued = false;
-        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `epoll-sync-start:${handle.pid}:retry=${shouldRetry ? 1 : 0}`);
-        await syncEpollStateViaKernelWorker(
-          handle,
-          shouldRetry
-            ? blockedRpcSyncCause(handle.kernel.abi_status_epoll_wait())
-            : syscallSyncCause("epoll-state-sync"),
-        );
-        assertProcessIdentity(handle, "requestEpollStateSync");
-        if (shouldRetry) {
-          retryEpollWaitersInKernelShare(handle);
+      try {
+        for (;;) {
+          const run = supervisorStateSyncNextRun(
+            handle.kernel,
+            handle.vmPtr,
+            SUPERVISOR_STATE_SYNC_KIND_EPOLL,
+          );
+          if (!run.run) {
+            break;
+          }
+          const shouldRetry = run.wakeWaiters;
+          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `epoll-sync-start:${handle.pid}:retry=${shouldRetry ? 1 : 0}`);
+          await syncEpollStateViaKernelWorker(
+            handle,
+            shouldRetry
+              ? blockedRpcSyncCause(handle.kernel.abi_status_epoll_wait())
+              : syscallSyncCause("epoll-state-sync"),
+          );
+          assertProcessIdentity(handle, "requestEpollStateSync");
+          if (shouldRetry) {
+            retryEpollWaitersInKernelShare(handle);
+          }
+          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `epoll-sync-done:${handle.pid}:retry=${shouldRetry ? 1 : 0}`);
+          if (!supervisorStateSyncComplete(
+            handle.kernel,
+            handle.vmPtr,
+            SUPERVISOR_STATE_SYNC_KIND_EPOLL,
+          )) {
+            break;
+          }
         }
-        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `epoll-sync-done:${handle.pid}:retry=${shouldRetry ? 1 : 0}`);
+      } catch (error) {
+        supervisorStateSyncClear(handle.kernel, handle.vmPtr, SUPERVISOR_STATE_SYNC_KIND_EPOLL);
+        throw error;
       }
     })().finally(() => {
       handle.epollSyncPromise = null;
@@ -349,85 +379,108 @@ export function createWorkerSchedulerStateSyncHelpers(
       return Promise.resolve();
     }
 
-    handle.pipeSyncQueued = true;
-    if (wakeWaiters) {
-      handle.pipeWaiterWakeQueued = true;
-    }
+    const shouldStart = supervisorStateSyncRequest(
+      handle.kernel,
+      handle.vmPtr,
+      SUPERVISOR_STATE_SYNC_KIND_PIPE,
+      wakeWaiters,
+    );
     if (handle.pipeSyncPromise !== null) {
       return handle.pipeSyncPromise;
     }
+    if (!shouldStart) {
+      return Promise.resolve();
+    }
 
     handle.pipeSyncPromise = (async () => {
-      while (handle.pipeSyncQueued) {
-        handle.pipeSyncQueued = false;
-        const shouldWake = handle.pipeWaiterWakeQueued;
-        handle.pipeWaiterWakeQueued = false;
-        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-start:${handle.pid}:wake=${shouldWake ? 1 : 0}`);
-        handle.transferDebugStats.pipeSyncKernelCalls += 1;
-        const pipeUsed = await syncPipeStateViaKernelWorker(
-          handle,
-          shouldWake
-            ? blockedRpcSyncCause(handle.kernel.abi_status_pipe_wait())
-            : syscallSyncCause("pipe-state-sync"),
-        );
-        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-canonical:${handle.pid}:used=${pipeUsed.toString()}`);
-        assertProcessIdentity(handle, "requestPipeStateSync");
-        const visibleHandle = visibleOutputHandle(handle);
-        const drainedHiddenOutput = shouldDrainHiddenInheritedOutput(handle, visibleHandle)
-          ? deps.drainHiddenProcessOutput(handle)
-          : false;
-        const drainedVisibleOutput = drainedHiddenOutput
-          ? false
-          : deps.drainProcessOutput(visibleHandle);
-        if (drainedHiddenOutput) {
-          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-hidden-drain:${handle.pid}`);
+      try {
+        for (;;) {
+          const run = supervisorStateSyncNextRun(
+            handle.kernel,
+            handle.vmPtr,
+            SUPERVISOR_STATE_SYNC_KIND_PIPE,
+          );
+          if (!run.run) {
+            break;
+          }
+          const shouldWake = run.wakeWaiters;
+          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-start:${handle.pid}:wake=${shouldWake ? 1 : 0}`);
           handle.transferDebugStats.pipeSyncKernelCalls += 1;
-          const refreshedPipeUsed = await syncPipeStateViaKernelWorker(
+          const pipeUsed = await syncPipeStateViaKernelWorker(
             handle,
-            syscallSyncCause("pipe-hidden-output-drain"),
+            shouldWake
+              ? blockedRpcSyncCause(handle.kernel.abi_status_pipe_wait())
+              : syscallSyncCause("pipe-state-sync"),
           );
-          assertProcessIdentity(handle, "requestPipeStateSync:after-hidden-drain");
-          handle.kernelState = {
-            ...handle.kernelState,
-            pipeUsed: refreshedPipeUsed,
-          };
-        }
-        if (
-          drainedVisibleOutput
-          && kernelWorkerOwnsPipeState(visibleHandle)
-          && visibleHandle.kernelWorkerRequest
-          && visibleHandle.pid > 0
-        ) {
-          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-visible-drain:${visibleHandle.pid}`);
-          handle.transferDebugStats.pipeSyncVisibleDrainCalls += 1;
-          visibleHandle.transferDebugStats.pipeSyncKernelCalls += 1;
-          const visiblePipeUsed = await syncPipeStateViaKernelWorker(
-            visibleHandle,
-            syscallSyncCause("pipe-visible-output-drain"),
-          );
-          assertProcessIdentity(visibleHandle, "requestPipeStateSync:after-visible-drain");
-          visibleHandle.kernelState = {
-            ...visibleHandle.kernelState,
-            pipeUsed: visiblePipeUsed,
-          };
-        }
-        if (shouldWake) {
-          wakePipeWaitersInKernelShare(handle, pipeUsed);
-          if (kernelWorkerOwnsEpollState(handle)) {
-            await requestEpollDependentOfdStateSync(handle);
-            await requestEpollStateSync(handle, true);
-          } else {
-            wakeBlockedWaitersInKernelShare(
+          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-canonical:${handle.pid}:used=${pipeUsed.toString()}`);
+          assertProcessIdentity(handle, "requestPipeStateSync");
+          const visibleHandle = visibleOutputHandle(handle);
+          const drainedHiddenOutput = shouldDrainHiddenInheritedOutput(handle, visibleHandle)
+            ? deps.drainHiddenProcessOutput(handle)
+            : false;
+          const drainedVisibleOutput = drainedHiddenOutput
+            ? false
+            : deps.drainProcessOutput(visibleHandle);
+          if (drainedHiddenOutput) {
+            deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-hidden-drain:${handle.pid}`);
+            handle.transferDebugStats.pipeSyncKernelCalls += 1;
+            const refreshedPipeUsed = await syncPipeStateViaKernelWorker(
               handle,
-              supervisorBlockedWaitWakeMaskForSync(
-                handle.kernel,
-                SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC,
-              ),
-              pipeUsed,
+              syscallSyncCause("pipe-hidden-output-drain"),
             );
+            assertProcessIdentity(handle, "requestPipeStateSync:after-hidden-drain");
+            handle.kernelState = {
+              ...handle.kernelState,
+              pipeUsed: refreshedPipeUsed,
+            };
+          }
+          if (
+            drainedVisibleOutput
+            && kernelWorkerOwnsPipeState(visibleHandle)
+            && visibleHandle.kernelWorkerRequest
+            && visibleHandle.pid > 0
+          ) {
+            deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-visible-drain:${visibleHandle.pid}`);
+            handle.transferDebugStats.pipeSyncVisibleDrainCalls += 1;
+            visibleHandle.transferDebugStats.pipeSyncKernelCalls += 1;
+            const visiblePipeUsed = await syncPipeStateViaKernelWorker(
+              visibleHandle,
+              syscallSyncCause("pipe-visible-output-drain"),
+            );
+            assertProcessIdentity(visibleHandle, "requestPipeStateSync:after-visible-drain");
+            visibleHandle.kernelState = {
+              ...visibleHandle.kernelState,
+              pipeUsed: visiblePipeUsed,
+            };
+          }
+          if (shouldWake) {
+            wakePipeWaitersInKernelShare(handle, pipeUsed);
+            if (kernelWorkerOwnsEpollState(handle)) {
+              await requestEpollDependentOfdStateSync(handle);
+              await requestEpollStateSync(handle, true);
+            } else {
+              wakeBlockedWaitersInKernelShare(
+                handle,
+                supervisorBlockedWaitWakeMaskForSync(
+                  handle.kernel,
+                  SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC,
+                ),
+                pipeUsed,
+              );
+            }
+          }
+          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-done:${handle.pid}:wake=${shouldWake ? 1 : 0}`);
+          if (!supervisorStateSyncComplete(
+            handle.kernel,
+            handle.vmPtr,
+            SUPERVISOR_STATE_SYNC_KIND_PIPE,
+          )) {
+            break;
           }
         }
-        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-done:${handle.pid}:wake=${shouldWake ? 1 : 0}`);
+      } catch (error) {
+        supervisorStateSyncClear(handle.kernel, handle.vmPtr, SUPERVISOR_STATE_SYNC_KIND_PIPE);
+        throw error;
       }
     })().finally(() => {
       handle.pipeSyncPromise = null;
@@ -449,37 +502,60 @@ export function createWorkerSchedulerStateSyncHelpers(
       return Promise.resolve();
     }
 
-    handle.socketSyncQueued = true;
-    if (wakeWaiters) {
-      handle.socketWaiterWakeQueued = true;
-    }
+    const shouldStart = supervisorStateSyncRequest(
+      handle.kernel,
+      handle.vmPtr,
+      SUPERVISOR_STATE_SYNC_KIND_SOCKET,
+      wakeWaiters,
+    );
     if (handle.socketSyncPromise !== null) {
       return handle.socketSyncPromise;
     }
+    if (!shouldStart) {
+      return Promise.resolve();
+    }
 
     handle.socketSyncPromise = (async () => {
-      while (handle.socketSyncQueued) {
-        handle.socketSyncQueued = false;
-        const shouldWake = handle.socketWaiterWakeQueued;
-        handle.socketWaiterWakeQueued = false;
-        handle.transferDebugStats.socketSyncKernelCalls += 1;
-        const { socketUsed, netBufUsed, socketState } = await syncSocketStateViaKernelWorker(
-          handle,
-          shouldWake
-            ? blockedRpcSyncCause(handle.kernel.abi_status_socket_recv())
-            : syscallSyncCause("socket-state-sync"),
-        );
-        assertProcessIdentity(handle, "requestSocketStateSync");
-        if (shouldWake) {
-          if (socketState) {
-            for (const member of handle.kernelShare.members) {
-              if (member !== handle && kernelWorkerOwnsSocketState(member)) {
-                applySocketStateFromKernelWorker(member, socketState);
+      try {
+        for (;;) {
+          const run = supervisorStateSyncNextRun(
+            handle.kernel,
+            handle.vmPtr,
+            SUPERVISOR_STATE_SYNC_KIND_SOCKET,
+          );
+          if (!run.run) {
+            break;
+          }
+          const shouldWake = run.wakeWaiters;
+          handle.transferDebugStats.socketSyncKernelCalls += 1;
+          const { socketUsed, netBufUsed, socketState } = await syncSocketStateViaKernelWorker(
+            handle,
+            shouldWake
+              ? blockedRpcSyncCause(handle.kernel.abi_status_socket_recv())
+              : syscallSyncCause("socket-state-sync"),
+          );
+          assertProcessIdentity(handle, "requestSocketStateSync");
+          if (shouldWake) {
+            if (socketState) {
+              for (const member of handle.kernelShare.members) {
+                if (member !== handle && kernelWorkerOwnsSocketState(member)) {
+                  applySocketStateFromKernelWorker(member, socketState);
+                }
               }
             }
+            wakeSocketWaitersInKernelShare(handle, socketUsed, netBufUsed);
           }
-          wakeSocketWaitersInKernelShare(handle, socketUsed, netBufUsed);
+          if (!supervisorStateSyncComplete(
+            handle.kernel,
+            handle.vmPtr,
+            SUPERVISOR_STATE_SYNC_KIND_SOCKET,
+          )) {
+            break;
+          }
         }
+      } catch (error) {
+        supervisorStateSyncClear(handle.kernel, handle.vmPtr, SUPERVISOR_STATE_SYNC_KIND_SOCKET);
+        throw error;
       }
     })().finally(() => {
       handle.socketSyncPromise = null;

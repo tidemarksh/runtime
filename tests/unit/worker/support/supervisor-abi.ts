@@ -60,6 +60,12 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output: 2,
   supervisor_blocked_pipe_sync_before_retry_action_schedule_retry: 3,
   supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available: 1,
+  supervisor_state_sync_kind_pipe: 1,
+  supervisor_state_sync_kind_epoll: 2,
+  supervisor_state_sync_kind_socket: 3,
+  supervisor_state_sync_request_flag_wake_waiters: 1,
+  supervisor_state_sync_run_flag_run: 1,
+  supervisor_state_sync_run_flag_wake_waiters: 2,
   supervisor_blocked_wait_retry_reason_default: 0,
   supervisor_blocked_wait_retry_reason_immediate: 1,
   supervisor_blocked_wait_retry_reason_standard_defer: 2,
@@ -154,6 +160,7 @@ export function makeSupervisorAbiStubs(
   overrides: SupervisorAbiStubOverrides = {},
 ): Partial<KernelExports> {
   const cloneSpawnHostOpChildVmPtrs = new Map<number, number>();
+  const stateSyncRequests = new Map<string, { queuedRunFlags: number; inFlight: boolean }>();
   const currentExports = (receiver: KernelExports | undefined): Partial<KernelExports> =>
     receiver ?? overrides.currentExports?.() ?? overrides;
   const callNumber = (receiver: Partial<KernelExports>, name: keyof KernelExports, ...args: unknown[]): number => {
@@ -389,6 +396,44 @@ export function makeSupervisorAbiStubs(
       return 0;
     },
     supervisor_blocked_pipe_sync_before_retry_clear() {
+      return 0;
+    },
+    supervisor_state_sync_request(_vmPtr: number, kind: number, flags: number) {
+      const key = `${_vmPtr}:${kind}`;
+      const request = stateSyncRequests.get(key) ?? { queuedRunFlags: 0, inFlight: false };
+      request.queuedRunFlags |= DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_run_flag_run;
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_request_flag_wake_waiters) !== 0) {
+        request.queuedRunFlags |= DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_run_flag_wake_waiters;
+      }
+      const shouldStart = !request.inFlight;
+      request.inFlight = true;
+      stateSyncRequests.set(key, request);
+      return shouldStart ? 1 : 0;
+    },
+    supervisor_state_sync_next_run_flags(_vmPtr: number, kind: number) {
+      const key = `${_vmPtr}:${kind}`;
+      const request = stateSyncRequests.get(key);
+      if (!request) {
+        return 0;
+      }
+      const flags = request.queuedRunFlags;
+      request.queuedRunFlags = 0;
+      return flags;
+    },
+    supervisor_state_sync_complete(_vmPtr: number, kind: number) {
+      const key = `${_vmPtr}:${kind}`;
+      const request = stateSyncRequests.get(key);
+      if (!request) {
+        return 0;
+      }
+      if (request.queuedRunFlags !== 0) {
+        return 1;
+      }
+      stateSyncRequests.delete(key);
+      return 0;
+    },
+    supervisor_state_sync_clear(_vmPtr: number, kind: number) {
+      stateSyncRequests.delete(`${_vmPtr}:${kind}`);
       return 0;
     },
     supervisor_process_held_ofd_refcount(

@@ -2907,7 +2907,7 @@ function compactAptMethodExecFailureDebug(summary: string): string {
         line.match(/ready=\d+/)?.[0],
         line.match(/running=\d+/)?.[0],
         line.match(/blocked=\[[^\]]*\]/)?.[0],
-        line.match(/pipe_sync=\d+\/\d+/)?.[0],
+        line.match(/pipe_sync=\d+/)?.[0],
         line.match(/fork_sync=\d+\/\d+/)?.[0],
         line.match(/vfork=\d+/)?.[0],
         line.match(/stdio_pipes=\d+\/\d+\/\d+/)?.[0],

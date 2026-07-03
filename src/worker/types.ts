@@ -331,12 +331,8 @@ export interface ProcessHandle {
   lastSupervisorFsControlSeq?: bigint;
   lastSupervisorSignalControlSeq?: bigint;
   pipeSyncPromise: Promise<void> | null;
-  pipeSyncQueued: boolean;
-  pipeWaiterWakeQueued: boolean;
   pendingPipeSlotSnapshots: KernelWorkerPipeSlotSnapshot[];
   epollSyncPromise: Promise<void> | null;
-  epollSyncQueued: boolean;
-  epollWaiterWakeQueued: boolean;
   forkSharedSyncPromise: Promise<void> | null;
   processMemfsDirty: boolean;
   processMemfsPublishPending: boolean;
@@ -345,8 +341,6 @@ export interface ProcessHandle {
   ofdSyncPromise: Promise<void> | null;
   ofdSyncQueuedIds: Set<number>;
   socketSyncPromise: Promise<void> | null;
-  socketSyncQueued: boolean;
-  socketWaiterWakeQueued: boolean;
   vforkSnapshot: VforkSnapshot | null;
   vforkWorker: Worker | null;
   exitInProgress?: boolean;

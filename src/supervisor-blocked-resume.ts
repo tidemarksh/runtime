@@ -34,6 +34,12 @@ export const SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_PIPE_WAIT = 1;
 export const SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_EPOLL_WAIT = 1 << 1;
 export const SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_SOCKET_RECV = 1 << 2;
 export const SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_SOCKET_SEND = 1 << 3;
+export const SUPERVISOR_STATE_SYNC_KIND_PIPE = 1;
+export const SUPERVISOR_STATE_SYNC_KIND_EPOLL = 2;
+export const SUPERVISOR_STATE_SYNC_KIND_SOCKET = 3;
+const SUPERVISOR_STATE_SYNC_REQUEST_FLAG_WAKE_WAITERS = 1;
+const SUPERVISOR_STATE_SYNC_RUN_FLAG_RUN = 1;
+const SUPERVISOR_STATE_SYNC_RUN_FLAG_WAKE_WAITERS = 1 << 1;
 
 export type SupervisorBlockedWaitRetryReason =
   | typeof SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_DEFAULT
@@ -72,6 +78,16 @@ export type SupervisorBlockedWaitWakeSource =
   | typeof SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC
   | typeof SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC
   | typeof SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_AND_EPOLL_SYNC;
+
+export type SupervisorStateSyncKind =
+  | typeof SUPERVISOR_STATE_SYNC_KIND_PIPE
+  | typeof SUPERVISOR_STATE_SYNC_KIND_EPOLL
+  | typeof SUPERVISOR_STATE_SYNC_KIND_SOCKET;
+
+export interface SupervisorStateSyncRun {
+  run: boolean;
+  wakeWaiters: boolean;
+}
 
 export function resumeBlockedSyscallBySupervisor(
   kernel: KernelExports,
@@ -214,6 +230,111 @@ export function supervisorBlockedPipeSyncBeforeRetryClear(
   const result = clear(vmPtr);
   if (result < 0) {
     throw new Error(`kernel supervisor blocked pipe sync-before-retry clear failed: ${result}`);
+  }
+}
+
+function supervisorStateSyncKindValue(
+  kernel: KernelExports,
+  kind: SupervisorStateSyncKind,
+): number {
+  switch (kind) {
+    case SUPERVISOR_STATE_SYNC_KIND_PIPE:
+      return kernel.supervisor_state_sync_kind_pipe?.() ?? kind;
+    case SUPERVISOR_STATE_SYNC_KIND_EPOLL:
+      return kernel.supervisor_state_sync_kind_epoll?.() ?? kind;
+    case SUPERVISOR_STATE_SYNC_KIND_SOCKET:
+      return kernel.supervisor_state_sync_kind_socket?.() ?? kind;
+    default: {
+      const exhaustive: never = kind;
+      return exhaustive;
+    }
+  }
+}
+
+function supervisorStateSyncRequestFlags(kernel: KernelExports, wakeWaiters: boolean): number {
+  return wakeWaiters
+    ? kernel.supervisor_state_sync_request_flag_wake_waiters?.()
+      ?? SUPERVISOR_STATE_SYNC_REQUEST_FLAG_WAKE_WAITERS
+    : 0;
+}
+
+function supervisorStateSyncRunFlagRun(kernel: KernelExports): number {
+  return kernel.supervisor_state_sync_run_flag_run?.() ?? SUPERVISOR_STATE_SYNC_RUN_FLAG_RUN;
+}
+
+function supervisorStateSyncRunFlagWakeWaiters(kernel: KernelExports): number {
+  return kernel.supervisor_state_sync_run_flag_wake_waiters?.()
+    ?? SUPERVISOR_STATE_SYNC_RUN_FLAG_WAKE_WAITERS;
+}
+
+export function supervisorStateSyncRequest(
+  kernel: KernelExports,
+  vmPtr: number,
+  kind: SupervisorStateSyncKind,
+  wakeWaiters: boolean,
+): boolean {
+  const request = kernel.supervisor_state_sync_request;
+  if (request === undefined) {
+    throw new Error("kernel supervisor state-sync request export is missing");
+  }
+  const result = request(
+    vmPtr,
+    supervisorStateSyncKindValue(kernel, kind),
+    supervisorStateSyncRequestFlags(kernel, wakeWaiters),
+  );
+  if (result < 0) {
+    throw new Error(`kernel supervisor state-sync request failed: ${result}`);
+  }
+  return result !== 0;
+}
+
+export function supervisorStateSyncNextRun(
+  kernel: KernelExports,
+  vmPtr: number,
+  kind: SupervisorStateSyncKind,
+): SupervisorStateSyncRun {
+  const nextRun = kernel.supervisor_state_sync_next_run_flags;
+  if (nextRun === undefined) {
+    throw new Error("kernel supervisor state-sync next-run export is missing");
+  }
+  const result = nextRun(vmPtr, supervisorStateSyncKindValue(kernel, kind));
+  if (result < 0) {
+    throw new Error(`kernel supervisor state-sync next-run failed: ${result}`);
+  }
+  return {
+    run: (result & supervisorStateSyncRunFlagRun(kernel)) !== 0,
+    wakeWaiters: (result & supervisorStateSyncRunFlagWakeWaiters(kernel)) !== 0,
+  };
+}
+
+export function supervisorStateSyncComplete(
+  kernel: KernelExports,
+  vmPtr: number,
+  kind: SupervisorStateSyncKind,
+): boolean {
+  const complete = kernel.supervisor_state_sync_complete;
+  if (complete === undefined) {
+    throw new Error("kernel supervisor state-sync complete export is missing");
+  }
+  const result = complete(vmPtr, supervisorStateSyncKindValue(kernel, kind));
+  if (result < 0) {
+    throw new Error(`kernel supervisor state-sync complete failed: ${result}`);
+  }
+  return result !== 0;
+}
+
+export function supervisorStateSyncClear(
+  kernel: KernelExports,
+  vmPtr: number,
+  kind: SupervisorStateSyncKind,
+): void {
+  const clear = kernel.supervisor_state_sync_clear;
+  if (clear === undefined) {
+    throw new Error("kernel supervisor state-sync clear export is missing");
+  }
+  const result = clear(vmPtr, supervisorStateSyncKindValue(kernel, kind));
+  if (result < 0) {
+    throw new Error(`kernel supervisor state-sync clear failed: ${result}`);
   }
 }
 

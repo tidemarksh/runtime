@@ -147,7 +147,6 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
     networkConnections: new Map(),
     networkClosedFds: new Set(),
     pipeSyncPromise: null,
-    pipeSyncQueued: false,
     forkSharedSyncPromise: null,
     vforkSnapshot: null,
     stdinPipe: 0,
