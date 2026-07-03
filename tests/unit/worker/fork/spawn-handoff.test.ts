@@ -160,6 +160,7 @@ test("handleExecveSpawn prefers supervisor process HostOp over legacy spawn hand
     kernel_heap_ptr: () => number;
     supervisor_abi_version: () => number;
     supervisor_process_host_op_record_bytes: () => number;
+    supervisor_process_host_op_record_magic: () => number;
     supervisor_process_host_op_kind_spawn_process_worker: () => number;
     supervisor_process_host_op: (vmPtr: number, outPtr: number, outLen: number) => number;
     supervisor_complete_host_op: (completionPtr: number, completionLen: number) => number;
@@ -168,6 +169,7 @@ test("handleExecveSpawn prefers supervisor process HostOp over legacy spawn hand
   kernel.kernel_heap_ptr = () => 0;
   kernel.supervisor_abi_version = () => 1;
   kernel.supervisor_process_host_op_record_bytes = () => 96;
+  kernel.supervisor_process_host_op_record_magic = () => 0x4850_5354;
   kernel.supervisor_process_host_op_kind_spawn_process_worker = () => 1;
   kernel.supervisor_process_host_op = vi.fn((vmPtr: number, outPtr: number, outLen: number) => {
     expect(vmPtr).toBe(0x1234);

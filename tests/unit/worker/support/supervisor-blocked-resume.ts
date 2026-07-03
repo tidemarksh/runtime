@@ -1,6 +1,27 @@
 import type { KernelExports } from "../../../../src/abi.js";
 
 const SUPERVISOR_RESUME_FLAG_TIMEOUT_EXPIRED = 1;
+const SUPERVISOR_ABI_VERSION = 1;
+const SUPERVISOR_THREAD_STATE_SNAPSHOT_BYTES = 32;
+const SUPERVISOR_THREAD_STATE_SNAPSHOT_MAGIC = 0x4854_5354;
+const SUPERVISOR_RESUME_RECORD_BYTES = 48;
+const SUPERVISOR_RESUME_RECORD_MAGIC = 0x5255_5354;
+const SUPERVISOR_RESUME_KIND_FUTEX_WAKE = 1;
+const SUPERVISOR_RESUME_KIND_RUNNABLE_THREAD = 2;
+const SUPERVISOR_HOST_OP_RECORD_BYTES = 64;
+const SUPERVISOR_HOST_OP_RECORD_MAGIC = 0x4f48_5354;
+const SUPERVISOR_HOST_OP_KIND_SPAWN_THREAD_WORKER = 1;
+const SUPERVISOR_HOST_OP_KIND_CREATE_PROCESS_MEMORY = 3;
+const SUPERVISOR_HOST_OP_KIND_COPY_MEMORY_RANGES = 4;
+const SUPERVISOR_HOST_OP_KIND_ARM_HOST_TIMER = 12;
+const SUPERVISOR_HOST_OP_KIND_RETRY_BLOCKED_WORKER = 15;
+const SUPERVISOR_HOST_COMPLETION_RECORD_BYTES = 64;
+const SUPERVISOR_HOST_COMPLETION_RECORD_MAGIC = 0x4348_5354;
+const SUPERVISOR_HOST_COMPLETION_OUTCOME_SUCCESS = 1;
+const SUPERVISOR_HOST_COMPLETION_OUTCOME_FAILURE = 2;
+const SUPERVISOR_PROCESS_HOST_OP_RECORD_BYTES = 96;
+const SUPERVISOR_PROCESS_HOST_OP_RECORD_MAGIC = 0x4850_5354;
+const SUPERVISOR_PROCESS_HOST_OP_KIND_SPAWN_PROCESS_WORKER = 1;
 const SUPERVISOR_BLOCKED_RESUME_FLAG_KERNEL_WORKER_AVAILABLE = 1;
 const SUPERVISOR_BLOCKED_RESUME_DELEGATION_DIRECT = 0;
 const SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER = 1;
@@ -42,7 +63,28 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   kernel: T,
 ): T & Pick<
   KernelExports,
-  "supervisor_resume_blocked_syscall"
+  "supervisor_abi_version"
+  | "supervisor_thread_state_snapshot_bytes"
+  | "supervisor_thread_state_snapshot_magic"
+  | "supervisor_resume_record_bytes"
+  | "supervisor_resume_record_magic"
+  | "supervisor_resume_kind_futex_wake"
+  | "supervisor_resume_kind_runnable_thread"
+  | "supervisor_host_op_record_bytes"
+  | "supervisor_host_op_record_magic"
+  | "supervisor_host_op_kind_spawn_thread_worker"
+  | "supervisor_host_op_kind_create_process_memory"
+  | "supervisor_host_op_kind_copy_memory_ranges"
+  | "supervisor_host_op_kind_arm_host_timer"
+  | "supervisor_host_op_kind_retry_blocked_worker"
+  | "supervisor_host_completion_record_bytes"
+  | "supervisor_host_completion_record_magic"
+  | "supervisor_host_completion_outcome_success"
+  | "supervisor_host_completion_outcome_failure"
+  | "supervisor_process_host_op_record_bytes"
+  | "supervisor_process_host_op_record_magic"
+  | "supervisor_process_host_op_kind_spawn_process_worker"
+  | "supervisor_resume_blocked_syscall"
   | "supervisor_resume_flag_timeout_expired"
   | "supervisor_blocked_resume_writeback_count"
   | "supervisor_blocked_resume_writeback_ptr"
@@ -326,6 +368,42 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_process_epoll_dependent_sync_ofd"
     | "supervisor_process_epoll_depends_on_ofd"
   >;
+  nextKernel.supervisor_abi_version ??= () => SUPERVISOR_ABI_VERSION;
+  nextKernel.supervisor_thread_state_snapshot_bytes ??= () =>
+    SUPERVISOR_THREAD_STATE_SNAPSHOT_BYTES;
+  nextKernel.supervisor_thread_state_snapshot_magic ??= () =>
+    SUPERVISOR_THREAD_STATE_SNAPSHOT_MAGIC;
+  nextKernel.supervisor_resume_record_bytes ??= () => SUPERVISOR_RESUME_RECORD_BYTES;
+  nextKernel.supervisor_resume_record_magic ??= () => SUPERVISOR_RESUME_RECORD_MAGIC;
+  nextKernel.supervisor_resume_kind_futex_wake ??= () => SUPERVISOR_RESUME_KIND_FUTEX_WAKE;
+  nextKernel.supervisor_resume_kind_runnable_thread ??= () =>
+    SUPERVISOR_RESUME_KIND_RUNNABLE_THREAD;
+  nextKernel.supervisor_host_op_record_bytes ??= () => SUPERVISOR_HOST_OP_RECORD_BYTES;
+  nextKernel.supervisor_host_op_record_magic ??= () => SUPERVISOR_HOST_OP_RECORD_MAGIC;
+  nextKernel.supervisor_host_op_kind_spawn_thread_worker ??= () =>
+    SUPERVISOR_HOST_OP_KIND_SPAWN_THREAD_WORKER;
+  nextKernel.supervisor_host_op_kind_create_process_memory ??= () =>
+    SUPERVISOR_HOST_OP_KIND_CREATE_PROCESS_MEMORY;
+  nextKernel.supervisor_host_op_kind_copy_memory_ranges ??= () =>
+    SUPERVISOR_HOST_OP_KIND_COPY_MEMORY_RANGES;
+  nextKernel.supervisor_host_op_kind_arm_host_timer ??= () =>
+    SUPERVISOR_HOST_OP_KIND_ARM_HOST_TIMER;
+  nextKernel.supervisor_host_op_kind_retry_blocked_worker ??= () =>
+    SUPERVISOR_HOST_OP_KIND_RETRY_BLOCKED_WORKER;
+  nextKernel.supervisor_host_completion_record_bytes ??= () =>
+    SUPERVISOR_HOST_COMPLETION_RECORD_BYTES;
+  nextKernel.supervisor_host_completion_record_magic ??= () =>
+    SUPERVISOR_HOST_COMPLETION_RECORD_MAGIC;
+  nextKernel.supervisor_host_completion_outcome_success ??= () =>
+    SUPERVISOR_HOST_COMPLETION_OUTCOME_SUCCESS;
+  nextKernel.supervisor_host_completion_outcome_failure ??= () =>
+    SUPERVISOR_HOST_COMPLETION_OUTCOME_FAILURE;
+  nextKernel.supervisor_process_host_op_record_bytes ??= () =>
+    SUPERVISOR_PROCESS_HOST_OP_RECORD_BYTES;
+  nextKernel.supervisor_process_host_op_record_magic ??= () =>
+    SUPERVISOR_PROCESS_HOST_OP_RECORD_MAGIC;
+  nextKernel.supervisor_process_host_op_kind_spawn_process_worker ??= () =>
+    SUPERVISOR_PROCESS_HOST_OP_KIND_SPAWN_PROCESS_WORKER;
   const maxPipes = (): number => kernel.abi_max_pipes?.() ?? 64;
   const fdOfdId = (vmPtr: number, fd: number): number => (
     kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0

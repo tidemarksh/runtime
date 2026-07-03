@@ -2,18 +2,7 @@ import { ensureMemoryCapacity, kernelScratchBase } from "./kernel-scratch.js";
 import type { WorkerMessageHandlerDeps } from "./message-handler/types.js";
 import type { ProcessHandle } from "./types.js";
 
-const SUPERVISOR_HOST_OP_RECORD_BYTES = 64;
-const SUPERVISOR_HOST_OP_RECORD_MAGIC = 0x4f48_5354;
-const SUPERVISOR_HOST_OP_KIND_SPAWN_THREAD_WORKER = 1;
-const SUPERVISOR_HOST_OP_KIND_CREATE_PROCESS_MEMORY = 3;
-const SUPERVISOR_HOST_OP_KIND_COPY_MEMORY_RANGES = 4;
-const SUPERVISOR_HOST_OP_KIND_ARM_HOST_TIMER = 12;
-const SUPERVISOR_HOST_OP_KIND_RETRY_BLOCKED_WORKER = 15;
 const SUPERVISOR_HOST_OP_SCRATCH_OFFSET = 0x2c000;
-const SUPERVISOR_HOST_COMPLETION_RECORD_BYTES = 64;
-const SUPERVISOR_HOST_COMPLETION_RECORD_MAGIC = 0x4348_5354;
-const SUPERVISOR_HOST_COMPLETION_OUTCOME_SUCCESS = 1;
-const SUPERVISOR_HOST_COMPLETION_OUTCOME_FAILURE = 2;
 const SUPERVISOR_HOST_COMPLETION_SCRATCH_OFFSET = 0x2d000;
 
 export interface SupervisorHostOpRecord {
@@ -40,28 +29,99 @@ function supervisorHostOpScratchBase(handle: ProcessHandle): number {
 }
 
 function supervisorHostOpKindSpawnThreadWorker(handle: ProcessHandle): number {
-  return handle.kernel.supervisor_host_op_kind_spawn_thread_worker?.()
-    ?? SUPERVISOR_HOST_OP_KIND_SPAWN_THREAD_WORKER;
+  const exportFn = handle.kernel.supervisor_host_op_kind_spawn_thread_worker;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_host_op_kind_spawn_thread_worker");
+  }
+  return exportFn();
 }
 
 function supervisorHostOpKindArmHostTimer(handle: ProcessHandle): number {
-  return handle.kernel.supervisor_host_op_kind_arm_host_timer?.()
-    ?? SUPERVISOR_HOST_OP_KIND_ARM_HOST_TIMER;
+  const exportFn = handle.kernel.supervisor_host_op_kind_arm_host_timer;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_host_op_kind_arm_host_timer");
+  }
+  return exportFn();
 }
 
 function supervisorHostOpKindRetryBlockedWorker(handle: ProcessHandle): number {
-  return handle.kernel.supervisor_host_op_kind_retry_blocked_worker?.()
-    ?? SUPERVISOR_HOST_OP_KIND_RETRY_BLOCKED_WORKER;
+  const exportFn = handle.kernel.supervisor_host_op_kind_retry_blocked_worker;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_host_op_kind_retry_blocked_worker");
+  }
+  return exportFn();
 }
 
 function supervisorHostOpKindCreateProcessMemory(handle: ProcessHandle): number {
-  return handle.kernel.supervisor_host_op_kind_create_process_memory?.()
-    ?? SUPERVISOR_HOST_OP_KIND_CREATE_PROCESS_MEMORY;
+  const exportFn = handle.kernel.supervisor_host_op_kind_create_process_memory;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_host_op_kind_create_process_memory");
+  }
+  return exportFn();
 }
 
 function supervisorHostOpKindCopyMemoryRanges(handle: ProcessHandle): number {
-  return handle.kernel.supervisor_host_op_kind_copy_memory_ranges?.()
-    ?? SUPERVISOR_HOST_OP_KIND_COPY_MEMORY_RANGES;
+  const exportFn = handle.kernel.supervisor_host_op_kind_copy_memory_ranges;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_host_op_kind_copy_memory_ranges");
+  }
+  return exportFn();
+}
+
+function supervisorHostOpRecordBytes(handle: ProcessHandle): number {
+  const exportFn = handle.kernel.supervisor_host_op_record_bytes;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_host_op_record_bytes");
+  }
+  return exportFn();
+}
+
+function supervisorHostOpRecordMagic(handle: ProcessHandle): number {
+  const exportFn = handle.kernel.supervisor_host_op_record_magic;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_host_op_record_magic");
+  }
+  return exportFn();
+}
+
+function supervisorHostCompletionRecordBytes(handle: ProcessHandle): number {
+  const exportFn = handle.kernel.supervisor_host_completion_record_bytes;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_host_completion_record_bytes");
+  }
+  return exportFn();
+}
+
+function supervisorHostCompletionRecordMagic(handle: ProcessHandle): number {
+  const exportFn = handle.kernel.supervisor_host_completion_record_magic;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_host_completion_record_magic");
+  }
+  return exportFn();
+}
+
+function supervisorHostCompletionOutcomeSuccess(handle: ProcessHandle): number {
+  const exportFn = handle.kernel.supervisor_host_completion_outcome_success;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_host_completion_outcome_success");
+  }
+  return exportFn();
+}
+
+function supervisorHostCompletionOutcomeFailure(handle: ProcessHandle): number {
+  const exportFn = handle.kernel.supervisor_host_completion_outcome_failure;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_host_completion_outcome_failure");
+  }
+  return exportFn();
+}
+
+function supervisorAbiVersion(handle: ProcessHandle): number {
+  const exportFn = handle.kernel.supervisor_abi_version;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_abi_version");
+  }
+  return exportFn();
 }
 
 function decodeSupervisorHostOpRecord(
@@ -69,21 +129,22 @@ function decodeSupervisorHostOpRecord(
   view: DataView,
   context: string,
 ): SupervisorHostOpRecord {
-  if (view.byteLength < SUPERVISOR_HOST_OP_RECORD_BYTES) {
+  const recordBytes = supervisorHostOpRecordBytes(handle);
+  if (view.byteLength < recordBytes) {
     throw new Error(`${context} record too short: ${view.byteLength}`);
   }
   const magic = view.getUint32(0, true);
   const version = view.getUint32(4, true);
   const bytes = view.getUint32(8, true);
   const kind = view.getUint32(12, true);
-  if (magic !== SUPERVISOR_HOST_OP_RECORD_MAGIC) {
+  if (magic !== supervisorHostOpRecordMagic(handle)) {
     throw new Error(`${context} bad magic: 0x${magic.toString(16)}`);
   }
-  const expectedVersion = handle.kernel.supervisor_abi_version?.() ?? version;
+  const expectedVersion = supervisorAbiVersion(handle);
   if (version !== expectedVersion) {
     throw new Error(`${context} bad version: ${version}`);
   }
-  if (bytes < SUPERVISOR_HOST_OP_RECORD_BYTES || bytes > view.byteLength) {
+  if (bytes < recordBytes || bytes > view.byteLength) {
     throw new Error(`${context} bad size: ${bytes}`);
   }
   const record: SupervisorCloneSpawnHostOp = {
@@ -184,20 +245,13 @@ export function drainSupervisorCloneSpawnHostOp(
   handle: ProcessHandle,
   parentVmPtr: number,
 ): SupervisorCloneSpawnHostOp | null | undefined {
-  const recordBytesExport = handle.kernel.supervisor_host_op_record_bytes;
   if (
-    recordBytesExport === undefined
-    || (
-      handle.kernel.supervisor_next_host_op_kind === undefined
-      && handle.kernel.supervisor_next_host_op === undefined
-    )
+    handle.kernel.supervisor_next_host_op_kind === undefined
+    && handle.kernel.supervisor_next_host_op === undefined
   ) {
     return undefined;
   }
-  const recordBytes = recordBytesExport();
-  if (recordBytes < SUPERVISOR_HOST_OP_RECORD_BYTES) {
-    throw new Error(`supervisor clone spawn HostOp record bytes too small: ${recordBytes}`);
-  }
+  const recordBytes = supervisorHostOpRecordBytes(handle);
   const memory = handle.kernel.memory ?? handle.memory;
   const scratch = supervisorHostOpScratchBase(handle);
   ensureMemoryCapacity(memory, scratch + recordBytes);
@@ -227,20 +281,13 @@ export function drainSupervisorArmHostTimerHostOp(
   handle: ProcessHandle,
   vmPtr: number,
 ): SupervisorHostOpRecord | null | undefined {
-  const recordBytesExport = handle.kernel.supervisor_host_op_record_bytes;
   if (
-    recordBytesExport === undefined
-    || (
-      handle.kernel.supervisor_next_host_op_kind === undefined
-      && handle.kernel.supervisor_next_host_op === undefined
-    )
+    handle.kernel.supervisor_next_host_op_kind === undefined
+    && handle.kernel.supervisor_next_host_op === undefined
   ) {
     return undefined;
   }
-  const recordBytes = recordBytesExport();
-  if (recordBytes < SUPERVISOR_HOST_OP_RECORD_BYTES) {
-    throw new Error(`supervisor arm host timer HostOp record bytes too small: ${recordBytes}`);
-  }
+  const recordBytes = supervisorHostOpRecordBytes(handle);
   const memory = handle.kernel.memory ?? handle.memory;
   const scratch = supervisorHostOpScratchBase(handle);
   ensureMemoryCapacity(memory, scratch + recordBytes);
@@ -270,20 +317,13 @@ export function drainSupervisorBlockedRetryHostOp(
   handle: ProcessHandle,
   vmPtr: number,
 ): SupervisorHostOpRecord | null | undefined {
-  const recordBytesExport = handle.kernel.supervisor_host_op_record_bytes;
   if (
-    recordBytesExport === undefined
-    || (
-      handle.kernel.supervisor_next_host_op_kind === undefined
-      && handle.kernel.supervisor_next_host_op === undefined
-    )
+    handle.kernel.supervisor_next_host_op_kind === undefined
+    && handle.kernel.supervisor_next_host_op === undefined
   ) {
     return undefined;
   }
-  const recordBytes = recordBytesExport();
-  if (recordBytes < SUPERVISOR_HOST_OP_RECORD_BYTES) {
-    throw new Error(`supervisor blocked retry HostOp record bytes too small: ${recordBytes}`);
-  }
+  const recordBytes = supervisorHostOpRecordBytes(handle);
   const memory = handle.kernel.memory ?? handle.memory;
   const scratch = supervisorHostOpScratchBase(handle);
   ensureMemoryCapacity(memory, scratch + recordBytes);
@@ -315,14 +355,10 @@ function readSupervisorProcessMemoryHostOp(
   index: number,
 ): SupervisorHostOpRecord | null {
   const readHostOp = handle.kernel.supervisor_process_memory_host_op;
-  const recordBytesExport = handle.kernel.supervisor_host_op_record_bytes;
-  if (readHostOp === undefined || recordBytesExport === undefined) {
+  if (readHostOp === undefined) {
     throw new Error("kernel ABI missing supervisor process memory HostOp");
   }
-  const recordBytes = recordBytesExport();
-  if (recordBytes < SUPERVISOR_HOST_OP_RECORD_BYTES) {
-    throw new Error(`supervisor process memory HostOp record bytes too small: ${recordBytes}`);
-  }
+  const recordBytes = supervisorHostOpRecordBytes(handle);
   const memory = handle.kernel.memory ?? handle.memory;
   const scratch = supervisorHostOpScratchBase(handle);
   ensureMemoryCapacity(memory, scratch + recordBytes);
@@ -419,16 +455,6 @@ export function applySupervisorProcessMemoryPlan(
   }
 }
 
-function supervisorHostCompletionOutcomeSuccess(handle: ProcessHandle): number {
-  return handle.kernel.supervisor_host_completion_outcome_success?.()
-    ?? SUPERVISOR_HOST_COMPLETION_OUTCOME_SUCCESS;
-}
-
-function supervisorHostCompletionOutcomeFailure(handle: ProcessHandle): number {
-  return handle.kernel.supervisor_host_completion_outcome_failure?.()
-    ?? SUPERVISOR_HOST_COMPLETION_OUTCOME_FAILURE;
-}
-
 function submitSupervisorHostOpCompletion(
   handle: ProcessHandle,
   record: SupervisorHostOpRecord,
@@ -440,12 +466,13 @@ function submitSupervisorHostOpCompletion(
     return undefined;
   }
   const memory = handle.kernel.memory ?? handle.memory;
+  const recordBytes = supervisorHostCompletionRecordBytes(handle);
   const scratch = kernelScratchBase(handle.kernel) + SUPERVISOR_HOST_COMPLETION_SCRATCH_OFFSET;
-  ensureMemoryCapacity(memory, scratch + SUPERVISOR_HOST_COMPLETION_RECORD_BYTES);
-  const view = new DataView(memory.buffer, scratch, SUPERVISOR_HOST_COMPLETION_RECORD_BYTES);
-  view.setUint32(0, SUPERVISOR_HOST_COMPLETION_RECORD_MAGIC, true);
-  view.setUint32(4, handle.kernel.supervisor_abi_version?.() ?? 1, true);
-  view.setUint32(8, SUPERVISOR_HOST_COMPLETION_RECORD_BYTES, true);
+  ensureMemoryCapacity(memory, scratch + recordBytes);
+  const view = new DataView(memory.buffer, scratch, recordBytes);
+  view.setUint32(0, supervisorHostCompletionRecordMagic(handle), true);
+  view.setUint32(4, supervisorAbiVersion(handle), true);
+  view.setUint32(8, recordBytes, true);
   view.setUint32(12, record.kind, true);
   view.setBigUint64(16, record.seq, true);
   view.setUint32(24, record.parentVmPtr, true);
@@ -456,7 +483,7 @@ function submitSupervisorHostOpCompletion(
   view.setUint32(44, 0, true);
   view.setBigUint64(48, record.flags, true);
   view.setBigUint64(56, record.childTidPtr, true);
-  return completeHostOp(scratch, SUPERVISOR_HOST_COMPLETION_RECORD_BYTES);
+  return completeHostOp(scratch, recordBytes);
 }
 
 export function armSupervisorHostTimer(

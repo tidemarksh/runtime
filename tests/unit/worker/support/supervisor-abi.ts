@@ -18,17 +18,23 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_abi_version: 1,
   supervisor_debug_snapshot_bytes: 112,
   supervisor_thread_event_record_bytes: 64,
+  supervisor_thread_event_record_magic: 0x5645_5354,
   supervisor_thread_state_snapshot_bytes: 32,
+  supervisor_thread_state_snapshot_magic: 0x4854_5354,
   supervisor_resume_record_bytes: 48,
+  supervisor_resume_record_magic: 0x5255_5354,
   supervisor_host_completion_record_bytes: 64,
+  supervisor_host_completion_record_magic: 0x4348_5354,
   supervisor_host_completion_outcome_success: 1,
   supervisor_host_completion_outcome_failure: 2,
   supervisor_host_op_record_bytes: 64,
+  supervisor_host_op_record_magic: 0x4f48_5354,
   supervisor_host_op_kind_spawn_thread_worker: 1,
   supervisor_host_op_kind_create_process_memory: 3,
   supervisor_host_op_kind_copy_memory_ranges: 4,
   supervisor_host_op_kind_retry_blocked_worker: 15,
   supervisor_process_host_op_record_bytes: 96,
+  supervisor_process_host_op_record_magic: 0x4850_5354,
   supervisor_process_status_is_lifecycle_handoff: 0,
   supervisor_process_status_is_execve_spawn: 0,
   supervisor_process_status_is_clone_spawn: 0,
@@ -36,11 +42,15 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_process_status_allows_pid_mismatch: 0,
   supervisor_process_status_defers_kernel_state_adoption: 0,
   supervisor_fault_exit_decision_bytes: 88,
+  supervisor_fault_exit_decision_magic: 0x5846_5354,
   supervisor_fault_exit_kind_thread_exit: 1,
   supervisor_fault_exit_kind_process_exit: 2,
   supervisor_fd_control_record_bytes: 96,
+  supervisor_fd_control_record_magic: 0x4446_5354,
   supervisor_fs_control_record_bytes: 112,
+  supervisor_fs_control_record_magic: 0x5346_5354,
   supervisor_signal_control_record_bytes: 120,
+  supervisor_signal_control_record_magic: 0x4753_5354,
   supervisor_fs_response_flag_adopt_kernel_state: 1,
   supervisor_fs_response_flag_apply_guest_memory_writes: 2,
   supervisor_fs_response_flag_queue_thread_worker_writes: 4,
@@ -1287,7 +1297,7 @@ export function writeSupervisorFaultExitDecisionRecord(
   record: SupervisorFaultExitDecisionRecordFixture,
 ): number {
   const view = new DataView(memory.buffer);
-  view.setUint32(outPtr, 0x5846_5354, true);
+  view.setUint32(outPtr, DEFAULT_NUMERIC_EXPORTS.supervisor_fault_exit_decision_magic, true);
   view.setUint32(outPtr + 4, 1, true);
   view.setUint32(outPtr + 8, DEFAULT_NUMERIC_EXPORTS.supervisor_fault_exit_decision_bytes, true);
   view.setUint32(
@@ -1319,9 +1329,9 @@ export function writeSupervisorRunnableResumeRecord(
   record: SupervisorRunnableResumeRecordFixture,
 ): number {
   const view = new DataView(memory.buffer);
-  view.setUint32(outPtr, 0x5255_5354, true);
-  view.setUint32(outPtr + 4, 1, true);
-  view.setUint32(outPtr + 8, 48, true);
+  view.setUint32(outPtr, DEFAULT_NUMERIC_EXPORTS.supervisor_resume_record_magic, true);
+  view.setUint32(outPtr + 4, DEFAULT_NUMERIC_EXPORTS.supervisor_abi_version, true);
+  view.setUint32(outPtr + 8, DEFAULT_NUMERIC_EXPORTS.supervisor_resume_record_bytes, true);
   view.setUint32(outPtr + 12, DEFAULT_NUMERIC_EXPORTS.supervisor_resume_kind_runnable_thread, true);
   view.setBigUint64(outPtr + 16, record.seq ?? 1n, true);
   view.setUint32(outPtr + 24, record.vmPtr, true);
@@ -1329,7 +1339,7 @@ export function writeSupervisorRunnableResumeRecord(
   view.setUint32(outPtr + 32, record.processPtr ?? 0, true);
   view.setUint32(outPtr + 36, record.status ?? 0, true);
   view.setBigUint64(outPtr + 40, record.detail0 ?? 0n, true);
-  return 48;
+  return DEFAULT_NUMERIC_EXPORTS.supervisor_resume_record_bytes;
 }
 
 export interface SupervisorSpawnThreadHostOpFixture {
@@ -1350,7 +1360,7 @@ export function writeSupervisorSpawnThreadHostOpRecord(
   record: SupervisorSpawnThreadHostOpFixture,
 ): number {
   const view = new DataView(memory.buffer);
-  view.setUint32(outPtr, 0x4f48_5354, true);
+  view.setUint32(outPtr, DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_magic, true);
   view.setUint32(outPtr + 4, DEFAULT_NUMERIC_EXPORTS.supervisor_abi_version, true);
   view.setUint32(outPtr + 8, DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_bytes, true);
   view.setUint32(outPtr + 12, record.kind ?? DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_kind_spawn_thread_worker, true);
@@ -1372,7 +1382,7 @@ export function writeSupervisorArmHostTimerHostOpRecord(
   record: SupervisorArmHostTimerHostOpFixture,
 ): number {
   const view = new DataView(memory.buffer);
-  view.setUint32(outPtr, 0x4f48_5354, true);
+  view.setUint32(outPtr, DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_magic, true);
   view.setUint32(outPtr + 4, DEFAULT_NUMERIC_EXPORTS.supervisor_abi_version, true);
   view.setUint32(outPtr + 8, DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_bytes, true);
   view.setUint32(outPtr + 12, DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_kind_arm_host_timer, true);
@@ -1394,7 +1404,7 @@ export function writeSupervisorBlockedRetryHostOpRecord(
   record: SupervisorBlockedRetryHostOpFixture,
 ): number {
   const view = new DataView(memory.buffer);
-  view.setUint32(outPtr, 0x4f48_5354, true);
+  view.setUint32(outPtr, DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_magic, true);
   view.setUint32(outPtr + 4, DEFAULT_NUMERIC_EXPORTS.supervisor_abi_version, true);
   view.setUint32(outPtr + 8, DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_bytes, true);
   view.setUint32(outPtr + 12, DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_kind_retry_blocked_worker, true);

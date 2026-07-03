@@ -5,9 +5,6 @@ import { normalizeGuestMemoryPolicyLimitBytes } from "./worker/memory-policy.js"
  * WASM exports from the kernel module.
  * All constants are read from the WASM exports — no hand-written values.
  */
-const SUPERVISOR_PROCESS_HOST_OP_RECORD_BYTES = 96;
-const SUPERVISOR_PROCESS_HOST_OP_RECORD_MAGIC = 0x4850_5354;
-const SUPERVISOR_PROCESS_HOST_OP_KIND_SPAWN_PROCESS_WORKER = 1;
 const SUPERVISOR_PROCESS_HOST_OP_SCRATCH_OFFSET = 0x2e000;
 
 export interface KernelExports {
@@ -147,6 +144,7 @@ export interface KernelExports {
   supervisor_abi_version?(): number;
   supervisor_debug_snapshot_bytes?(): number;
   supervisor_thread_event_record_bytes?(): number;
+  supervisor_thread_event_record_magic?(): number;
   supervisor_thread_event_kind_blocked?(): number;
   supervisor_thread_event_kind_ready?(): number;
   supervisor_thread_event_kind_faulted?(): number;
@@ -156,16 +154,25 @@ export interface KernelExports {
   supervisor_thread_event_kind_network_readable?(): number;
   supervisor_thread_event_kind_backing_store_ready?(): number;
   supervisor_thread_state_snapshot_bytes?(): number;
+  supervisor_thread_state_snapshot_magic?(): number;
   supervisor_resume_record_bytes?(): number;
+  supervisor_resume_record_magic?(): number;
   supervisor_host_completion_record_bytes?(): number;
+  supervisor_host_completion_record_magic?(): number;
   supervisor_host_completion_outcome_success?(): number;
   supervisor_host_completion_outcome_failure?(): number;
   supervisor_host_op_record_bytes?(): number;
+  supervisor_host_op_record_magic?(): number;
   supervisor_process_host_op_record_bytes?(): number;
+  supervisor_process_host_op_record_magic?(): number;
   supervisor_fault_exit_decision_bytes?(): number;
+  supervisor_fault_exit_decision_magic?(): number;
   supervisor_fd_control_record_bytes?(): number;
+  supervisor_fd_control_record_magic?(): number;
   supervisor_fs_control_record_bytes?(): number;
+  supervisor_fs_control_record_magic?(): number;
   supervisor_signal_control_record_bytes?(): number;
+  supervisor_signal_control_record_magic?(): number;
   supervisor_resume_kind_futex_wake?(): number;
   supervisor_resume_kind_runnable_thread?(): number;
   supervisor_host_op_kind_spawn_thread_worker?(): number;
@@ -1480,6 +1487,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_abi_version",
   "supervisor_debug_snapshot_bytes",
   "supervisor_thread_event_record_bytes",
+  "supervisor_thread_event_record_magic",
   "supervisor_thread_event_kind_blocked",
   "supervisor_thread_event_kind_ready",
   "supervisor_thread_event_kind_faulted",
@@ -1489,16 +1497,25 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_thread_event_kind_network_readable",
   "supervisor_thread_event_kind_backing_store_ready",
   "supervisor_thread_state_snapshot_bytes",
+  "supervisor_thread_state_snapshot_magic",
   "supervisor_resume_record_bytes",
+  "supervisor_resume_record_magic",
   "supervisor_host_completion_record_bytes",
+  "supervisor_host_completion_record_magic",
   "supervisor_host_completion_outcome_success",
   "supervisor_host_completion_outcome_failure",
   "supervisor_host_op_record_bytes",
+  "supervisor_host_op_record_magic",
   "supervisor_process_host_op_record_bytes",
+  "supervisor_process_host_op_record_magic",
   "supervisor_fault_exit_decision_bytes",
+  "supervisor_fault_exit_decision_magic",
   "supervisor_fd_control_record_bytes",
+  "supervisor_fd_control_record_magic",
   "supervisor_fs_control_record_bytes",
+  "supervisor_fs_control_record_magic",
   "supervisor_signal_control_record_bytes",
+  "supervisor_signal_control_record_magic",
   "supervisor_resume_kind_futex_wake",
   "supervisor_resume_kind_runnable_thread",
   "supervisor_host_op_kind_spawn_thread_worker",
@@ -2154,8 +2171,35 @@ export function attachKernelRuntimeState(
 }
 
 function supervisorProcessHostOpKindSpawnProcessWorker(exports: KernelExports): number {
-  return exports.supervisor_process_host_op_kind_spawn_process_worker?.()
-    ?? SUPERVISOR_PROCESS_HOST_OP_KIND_SPAWN_PROCESS_WORKER;
+  const exportFn = exports.supervisor_process_host_op_kind_spawn_process_worker;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_host_op_kind_spawn_process_worker");
+  }
+  return exportFn();
+}
+
+function supervisorProcessHostOpRecordMagic(exports: KernelExports): number {
+  const exportFn = exports.supervisor_process_host_op_record_magic;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_host_op_record_magic");
+  }
+  return exportFn();
+}
+
+function supervisorProcessHostOpRecordBytes(exports: KernelExports): number {
+  const exportFn = exports.supervisor_process_host_op_record_bytes;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_host_op_record_bytes");
+  }
+  return exportFn();
+}
+
+function supervisorAbiVersion(exports: KernelExports): number {
+  const exportFn = exports.supervisor_abi_version;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_abi_version");
+  }
+  return exportFn();
 }
 
 function readSupervisorProcessSpawnHandoff(
@@ -2163,14 +2207,10 @@ function readSupervisorProcessSpawnHandoff(
   vmPtr: number,
 ): ProcessSpawnHandoff | null | undefined {
   const readHostOp = exports.supervisor_process_host_op;
-  const recordBytesExport = exports.supervisor_process_host_op_record_bytes;
-  if (readHostOp === undefined || recordBytesExport === undefined) {
+  if (readHostOp === undefined) {
     return undefined;
   }
-  const recordBytes = recordBytesExport();
-  if (recordBytes < SUPERVISOR_PROCESS_HOST_OP_RECORD_BYTES) {
-    throw new Error(`supervisor process HostOp record bytes too small: ${recordBytes}`);
-  }
+  const recordBytes = supervisorProcessHostOpRecordBytes(exports);
   const scratch = kernelScratchBase(exports) + SUPERVISOR_PROCESS_HOST_OP_SCRATCH_OFFSET;
   ensureMemoryCapacity(exports.memory, scratch + recordBytes);
   const result = readHostOp(vmPtr, scratch, recordBytes);
@@ -2180,7 +2220,7 @@ function readSupervisorProcessSpawnHandoff(
   if (result < 0 || result > recordBytes) {
     throw new Error(`supervisor process HostOp poll failed: ${result}`);
   }
-  if (result < SUPERVISOR_PROCESS_HOST_OP_RECORD_BYTES) {
+  if (result < recordBytes) {
     throw new Error(`supervisor process HostOp record too short: ${result}`);
   }
   const view = new DataView(exports.memory.buffer, scratch, result);
@@ -2188,14 +2228,14 @@ function readSupervisorProcessSpawnHandoff(
   const version = view.getUint32(4, true);
   const bytes = view.getUint32(8, true);
   const kind = view.getUint32(12, true);
-  if (magic !== SUPERVISOR_PROCESS_HOST_OP_RECORD_MAGIC) {
+  if (magic !== supervisorProcessHostOpRecordMagic(exports)) {
     throw new Error(`supervisor process HostOp bad magic: 0x${magic.toString(16)}`);
   }
-  const expectedVersion = exports.supervisor_abi_version?.() ?? version;
+  const expectedVersion = supervisorAbiVersion(exports);
   if (version !== expectedVersion) {
     throw new Error(`supervisor process HostOp bad version: ${version}`);
   }
-  if (bytes < SUPERVISOR_PROCESS_HOST_OP_RECORD_BYTES || bytes > view.byteLength) {
+  if (bytes < recordBytes || bytes > view.byteLength) {
     throw new Error(`supervisor process HostOp bad size: ${bytes}`);
   }
   if (kind !== supervisorProcessHostOpKindSpawnProcessWorker(exports)) {

@@ -4,13 +4,8 @@ import type {
   ThreadWorkerState,
 } from "../types.js";
 
-const SUPERVISOR_RESUME_RECORD_BYTES = 48;
-const SUPERVISOR_RESUME_RECORD_MAGIC = 0x5255_5354;
-const SUPERVISOR_RESUME_KIND_FUTEX_WAKE = 1;
-const SUPERVISOR_RESUME_KIND_RUNNABLE_THREAD = 2;
 const SUPERVISOR_RESUME_DRAIN_LIMIT = 64;
 const SUPERVISOR_RESUME_SCRATCH_OFFSET = 0x28000;
-const SUPERVISOR_THREAD_STATE_SNAPSHOT_MAGIC = 0x4854_5354;
 const SUPERVISOR_THREAD_STATE_HEADER_BYTES = 32;
 const SUPERVISOR_THREAD_STATE_RECORD_BYTES = 32;
 
@@ -46,15 +41,51 @@ export interface SupervisorResumeHostBoundary {
 }
 
 function supervisorResumeRecordBytes(handle: ProcessHandle): number {
-  return handle.kernel.supervisor_resume_record_bytes?.() ?? SUPERVISOR_RESUME_RECORD_BYTES;
+  const exportFn = handle.kernel.supervisor_resume_record_bytes;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_resume_record_bytes");
+  }
+  return exportFn();
+}
+
+function supervisorResumeRecordMagic(handle: ProcessHandle): number {
+  const exportFn = handle.kernel.supervisor_resume_record_magic;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_resume_record_magic");
+  }
+  return exportFn();
 }
 
 function supervisorResumeKindFutexWake(handle: ProcessHandle): number {
-  return handle.kernel.supervisor_resume_kind_futex_wake?.() ?? SUPERVISOR_RESUME_KIND_FUTEX_WAKE;
+  const exportFn = handle.kernel.supervisor_resume_kind_futex_wake;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_resume_kind_futex_wake");
+  }
+  return exportFn();
 }
 
 function supervisorResumeKindRunnableThread(handle: ProcessHandle): number {
-  return handle.kernel.supervisor_resume_kind_runnable_thread?.() ?? SUPERVISOR_RESUME_KIND_RUNNABLE_THREAD;
+  const exportFn = handle.kernel.supervisor_resume_kind_runnable_thread;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_resume_kind_runnable_thread");
+  }
+  return exportFn();
+}
+
+function supervisorAbiVersion(handle: ProcessHandle): number {
+  const exportFn = handle.kernel.supervisor_abi_version;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_abi_version");
+  }
+  return exportFn();
+}
+
+function supervisorThreadStateSnapshotMagic(handle: ProcessHandle): number {
+  const exportFn = handle.kernel.supervisor_thread_state_snapshot_magic;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_thread_state_snapshot_magic");
+  }
+  return exportFn();
 }
 
 function supervisorResumeScratchBase(handle: ProcessHandle): number {
@@ -70,9 +101,9 @@ function decodeSupervisorResumeRecord(
   view: DataView,
 ): SupervisorResumeRecord | null {
   if (
-    view.byteLength < SUPERVISOR_RESUME_RECORD_BYTES
-    || view.getUint32(0, true) !== SUPERVISOR_RESUME_RECORD_MAGIC
-    || view.getUint32(4, true) !== 1
+    view.byteLength < supervisorResumeRecordBytes(handle)
+    || view.getUint32(0, true) !== supervisorResumeRecordMagic(handle)
+    || view.getUint32(4, true) !== supervisorAbiVersion(handle)
     || view.getUint32(8, true) !== supervisorResumeRecordBytes(handle)
   ) {
     return null;
@@ -128,8 +159,8 @@ function formatSupervisorThreadStateSnapshot(
     }
     const view = new DataView(memory.buffer, scratch, result);
     if (
-      view.getUint32(0, true) !== SUPERVISOR_THREAD_STATE_SNAPSHOT_MAGIC
-      || view.getUint32(4, true) !== 1
+      view.getUint32(0, true) !== supervisorThreadStateSnapshotMagic(handle)
+      || view.getUint32(4, true) !== supervisorAbiVersion(handle)
     ) {
       return ":snapshot=decode-error";
     }
@@ -239,10 +270,6 @@ export function createSupervisorResumeHostBoundary(
       return undefined;
     }
     const recordBytes = supervisorResumeRecordBytes(handle);
-    if (recordBytes < SUPERVISOR_RESUME_RECORD_BYTES) {
-      deps.appendWorkerDebugLog(handle, `supervisor-resume:runnable:invalid-record-bytes:${recordBytes}`);
-      return null;
-    }
     const memory = handle.kernel.memory ?? handle.memory;
     const scratch = supervisorResumeScratchBase(handle);
     ensureMemoryCapacity(memory, scratch + recordBytes);
@@ -328,10 +355,6 @@ export function createSupervisorResumeHostBoundary(
       return;
     }
     const recordBytes = supervisorResumeRecordBytes(handle);
-    if (recordBytes < SUPERVISOR_RESUME_RECORD_BYTES) {
-      deps.appendWorkerDebugLog(handle, `supervisor-resume:invalid-record-bytes:${recordBytes}`);
-      return;
-    }
     const memory = handle.kernel.memory ?? handle.memory;
     const scratch = supervisorResumeScratchBase(handle);
     ensureMemoryCapacity(memory, scratch + recordBytes);
