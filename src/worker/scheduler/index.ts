@@ -13,23 +13,6 @@ import {
   supervisorBlockedWaitRetryPlan,
   supervisorClearBlockedWaitNetworkPump,
   supervisorCompleteBlockedWaitNetworkPump,
-  SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC,
-  SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT,
-  SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_SCHEDULE_RETRY,
-  SUPERVISOR_BLOCKED_RESUME_DELEGATION_DIRECT,
-  SUPERVISOR_BLOCKED_RESUME_DELEGATION_EPOLL_DIRECT,
-  SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER,
-  SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED,
-  SUPERVISOR_BLOCKED_RESUME_DELEGATION_WAIT4_KERNEL_WORKER,
-  SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_PUMP,
-  SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_SKIP,
-  SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_ACTIVE_CHILD,
-  SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
-  SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
-  SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE,
-  SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_THREAD_INIT_PENDING,
-  SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_ACTIVE_CHILD,
-  SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT,
   type SupervisorBlockedWaitRetryFlags,
 } from "../../supervisor-blocked-resume.js";
 import {
@@ -225,7 +208,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   function scheduleSupervisorBlockedRetry(
     handle: ProcessHandle,
     worker: Worker,
-    flags: SupervisorBlockedWaitRetryFlags = SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
+    flags: SupervisorBlockedWaitRetryFlags = [],
   ): void {
     blockedWaitTimers.scheduleSupervisorBlockedRetry(handle, worker, flags);
   }
@@ -263,7 +246,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return false;
     }
     const retryPlan = supervisorBlockedWaitRetryPlan(handle.kernel, blocked.vmPtr);
-    if (retryPlan.reason !== SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_ACTIVE_CHILD) {
+    if (retryPlan.reason !== "active-child") {
       return false;
     }
     const childPid = supervisorBlockedWaitActiveChildPid(handle, blocked.vmPtr);
@@ -280,7 +263,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     scheduleSupervisorBlockedRetry(
       handle,
       worker,
-      SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_ACTIVE_CHILD,
+      ["active-child"],
     );
     return true;
   }
@@ -478,8 +461,8 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
               handle,
               worker,
               canScheduleBlockedWorker
-                ? SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE
-                : SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE,
+                ? []
+                : ["process-gate"],
             );
             return;
           }
@@ -510,8 +493,8 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
           handle,
           worker,
           changed
-            ? SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE
-            : SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
+            ? []
+            : ["host-progress"],
         );
       })
       .catch((error) => {
@@ -625,7 +608,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
 
     switch (resumeDelegation) {
-      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_WAIT4_KERNEL_WORKER:
+      case "wait4-kernel-worker":
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-rpc:${handle.pid}`);
         blocked.rpcPending = true;
         void deps.resumeWait4ViaKernelWorker(handle, worker, blocked.vmPtr)
@@ -640,9 +623,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
           });
         return;
-      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_DIRECT:
+      case "direct":
         break;
-      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED:
+      case "unsupported":
         if (clearStaleWait4BlockedWorker(handle, worker, blocked)) {
           return;
         }
@@ -651,8 +634,8 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
           new Error(`kernel supervisor rejected wait4 resume delegation for pid ${handle.pid}`),
         );
         return;
-      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER:
-      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_EPOLL_DIRECT:
+      case "kernel-worker":
+      case "epoll-direct":
         deps.failProcess(
           handle,
           new Error(`kernel supervisor returned invalid wait4 resume delegation ${resumeDelegation}`),
@@ -719,7 +702,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         scheduleSupervisorBlockedRetry(
           handle,
           worker,
-          SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
+          [],
         );
       }
       return;
@@ -731,7 +714,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     scheduleSupervisorBlockedRetry(
       handle,
       worker,
-      SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
+      [],
     );
   }
 
@@ -857,21 +840,21 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         scheduleSupervisorBlockedRetry(
           handle,
           worker,
-          SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
+          [],
         );
         pumpProcess(handle);
       }
       return;
     }
     const retryPlan = supervisorBlockedWaitRetryPlan(handle.kernel, vmPtr);
-    if (retryPlan.reason === SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT) {
+    if (retryPlan.reason === "passive-wait") {
       scheduleSupervisorBlockedRetry(handle, worker);
       return;
     }
     scheduleSupervisorBlockedRetry(
       handle,
       worker,
-      SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
+      [],
     );
   }
 
@@ -903,7 +886,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       scheduleSupervisorBlockedRetry(
         handle,
         worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
+        [],
       );
       return;
     }
@@ -919,7 +902,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       scheduleSupervisorBlockedRetry(
         handle,
         worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_THREAD_INIT_PENDING,
+        ["thread-init-pending"],
       );
       return;
     }
@@ -959,7 +942,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         scheduleSupervisorBlockedRetry(
           handle,
           worker,
-          SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
+          [],
         );
         return;
       }
@@ -978,7 +961,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       scheduleSupervisorBlockedRetry(
         handle,
         worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
+        [],
       );
       return;
     }
@@ -987,15 +970,15 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       scheduleSupervisorBlockedRetry(
         handle,
         worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE,
+        ["process-gate"],
       );
       return;
     }
     const networkPumpAction = supervisorBlockedWaitNetworkPumpAction(handle.kernel, blocked.vmPtr);
     switch (networkPumpAction) {
-      case SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_SKIP:
+      case "skip":
         break;
-      case SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_PUMP:
+      case "pump":
         if (pumpNetworkForBlockedWait(handle, worker, blocked)) {
           return;
         }
@@ -1087,8 +1070,8 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
               handle,
               worker,
               canScheduleBlockedWorker
-                ? SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE
-                : SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE,
+                ? []
+                : ["process-gate"],
             );
             return;
           }
@@ -1119,12 +1102,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         kernelWorkerOwnsPipeState(handle),
       );
       if (
-        syncBeforeRetryAction === SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC
+        syncBeforeRetryAction === "request-sync"
         || syncBeforeRetryAction
-          === SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT
+          === "request-sync-and-drain-output"
       ) {
         const shouldDrainOutput = syncBeforeRetryAction
-          === SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT;
+          === "request-sync-and-drain-output";
         const rpcGeneration = beginBlockedRpc(blocked);
         void requestPipeStateSync(handle, false)
           .then(() => {
@@ -1138,7 +1121,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             scheduleSupervisorBlockedRetry(
               handle,
               worker,
-              SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
+              ["host-progress"],
             );
           })
           .catch((error) => {
@@ -1149,7 +1132,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       }
       if (
         syncBeforeRetryAction
-          === SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_SCHEDULE_RETRY
+          === "schedule-retry"
       ) {
         scheduleSupervisorBlockedRetry(handle, worker);
         return;
@@ -1185,7 +1168,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
     const retryPlan = supervisorBlockedWaitRetryPlan(handle.kernel, blocked.vmPtr);
-    if (retryPlan.reason === SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT) {
+    if (retryPlan.reason === "passive-wait") {
       scheduleSupervisorBlockedRetry(handle, worker);
       return;
     }
@@ -1202,7 +1185,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
 
     switch (resumeDelegation) {
-      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER:
+      case "kernel-worker":
         resumeBlockedSyscallViaResumeOutcome(
           handle,
           worker,
@@ -1211,7 +1194,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
           (outcome) => pumpProcessIfPipeWaitBlocked(handle, outcome),
         );
         return;
-      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_WAIT4_KERNEL_WORKER:
+      case "wait4-kernel-worker":
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-rpc:${handle.pid}`);
         blocked.rpcPending = true;
         void deps.resumeWait4ViaKernelWorker(handle, worker, blocked.vmPtr)
@@ -1226,16 +1209,16 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
           });
         return;
-      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED:
+      case "unsupported":
         deps.failProcess(
           handle,
           new Error(`kernel supervisor rejected blocked status ${blocked.status} resume delegation`),
         );
         return;
-      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_EPOLL_DIRECT:
+      case "epoll-direct":
         resumeEpollWait(handle, worker, blocked);
         return;
-      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_DIRECT:
+      case "direct":
         break;
       default: {
         const exhaustive: never = resumeDelegation;

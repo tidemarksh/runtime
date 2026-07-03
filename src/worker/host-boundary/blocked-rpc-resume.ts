@@ -10,8 +10,6 @@ import {
   supervisorBlockedStatusIsEpollWait,
   supervisorBlockedStatusIsPipeWait,
   supervisorBlockedStatusSyncsSocketAfterResume,
-  SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER,
-  SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT,
 } from "../../supervisor-blocked-resume.js";
 import { forceNetworkClosedFds } from "../network-socket-close.js";
 import type {
@@ -260,7 +258,7 @@ async function executeHostBlockedSyscallResume(
       }
       const supervisorPipeAction = supervisorBlockedPipeResumeAction(handle.kernel, vmPtr);
       switch (supervisorPipeAction) {
-        case SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER:
+        case "defer":
           handle.kernelState = readKernelRuntimeState(handle.kernel);
           preserveCanonicalEofReadyForDeferredRetry();
           finishBlockedRpc();
@@ -268,7 +266,7 @@ async function executeHostBlockedSyscallResume(
           deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-defer-pipe-supervisor:${handle.pid}`);
           emitBlockedRpcRetryResult(blockedStatus);
           return true;
-        case SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT:
+        case "direct":
           await resumeDirectlyBySupervisor({
             stage: "blocked-rpc-supervisor-pipe-resume",
             syncAfterResumeStage: "sync-after-supervisor-resume",

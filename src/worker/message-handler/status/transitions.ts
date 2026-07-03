@@ -42,12 +42,6 @@ import {
 import {
   supervisorBlockedPipeWaitHasReadyEvents,
   supervisorBlockedStatusTransitionAction,
-  SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_BLOCK,
-  SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_FORK_SHARED,
-  SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE,
-  SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE_AND_FORK_SHARED,
-  SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET,
-  SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET_AND_FORK_SHARED,
   supervisorBlockedStatusIsConnectWait,
   supervisorBlockedStatusIsHostWait,
   supervisorBlockedStatusNeedsNetworkSidecarRestore,
@@ -1005,7 +999,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         },
       );
       switch (transitionAction) {
-        case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET: {
+        case "sync-socket": {
           deps.blockWorker(handle, worker, status, thread.vmPtr);
           const blocked = handle.hostBlockedWorkers.get(worker);
           const rpcGeneration = blocked ? beginStatusTransitionRpc(blocked) : -1;
@@ -1021,7 +1015,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             });
           return;
         }
-        case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE: {
+        case "sync-pipe": {
           if (handle.runningWorker === worker) {
             handle.runningWorker = null;
           }
@@ -1046,7 +1040,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             });
           return;
         }
-        case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_FORK_SHARED: {
+        case "sync-fork-shared": {
           deps.blockWorker(handle, worker, status, thread.vmPtr);
           const blocked = handle.hostBlockedWorkers.get(worker);
           const rpcGeneration = blocked ? beginStatusTransitionRpc(blocked) : -1;
@@ -1072,15 +1066,15 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             });
           return;
         }
-        case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE_AND_FORK_SHARED:
-        case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET_AND_FORK_SHARED: {
+        case "sync-pipe-and-fork-shared":
+        case "sync-socket-and-fork-shared": {
           deps.blockWorker(handle, worker, status, thread.vmPtr);
           const blocked = handle.hostBlockedWorkers.get(worker);
           const rpcGeneration = blocked ? beginStatusTransitionRpc(blocked) : -1;
-          const syncPipeState = transitionAction === SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE_AND_FORK_SHARED
+          const syncPipeState = transitionAction === "sync-pipe-and-fork-shared"
             ? deps.requestPipeStateSync(handle, false)
             : Promise.resolve();
-          const syncSocketState = transitionAction === SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET_AND_FORK_SHARED
+          const syncSocketState = transitionAction === "sync-socket-and-fork-shared"
             ? deps.requestSocketStateSync(handle, true)
             : Promise.resolve();
           void syncPipeState
@@ -1101,7 +1095,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
                 return;
               }
               if (
-                transitionAction === SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE_AND_FORK_SHARED
+                transitionAction === "sync-pipe-and-fork-shared"
                 && !supervisorBlockedPipeWaitHasReadyEvents(handle.kernel, thread.vmPtr)
               ) {
                 deps.pumpProcess(handle);
@@ -1116,7 +1110,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             });
           return;
         }
-        case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_BLOCK:
+        case "block":
           break;
         default: {
           const exhaustive: never = transitionAction;

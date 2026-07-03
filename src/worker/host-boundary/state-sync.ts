@@ -6,13 +6,6 @@ import {
   wakeRuntimeBridge,
 } from "../../bridge/runtime-state.js";
 import {
-  SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC,
-  SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_AND_EPOLL_SYNC,
-  SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC,
-  SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC,
-  SUPERVISOR_STATE_SYNC_KIND_EPOLL,
-  SUPERVISOR_STATE_SYNC_KIND_PIPE,
-  SUPERVISOR_STATE_SYNC_KIND_SOCKET,
   supervisorBlockedPipeSyncBeforeRetryClear,
   supervisorBlockedStatusIsEpollWait,
   supervisorBlockedStatusIsPipeWait,
@@ -175,7 +168,7 @@ export function createWorkerSchedulerStateSyncHelpers(
   function wakePipeAndEpollWaitersInKernelShare(handle: ProcessHandle, pipeUsed: bigint): void {
     wakeBlockedWaitersInKernelShare(
       handle,
-      SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_AND_EPOLL_SYNC,
+      "pipe-and-epoll-sync",
       pipeUsed,
     );
   }
@@ -183,7 +176,7 @@ export function createWorkerSchedulerStateSyncHelpers(
   function wakePipeWaitersInKernelShare(handle: ProcessHandle, pipeUsed: bigint): void {
     wakeBlockedWaitersInKernelShare(
       handle,
-      SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC,
+      "pipe-sync",
       pipeUsed,
     );
   }
@@ -191,7 +184,7 @@ export function createWorkerSchedulerStateSyncHelpers(
   function retryEpollWaitersInKernelShare(handle: ProcessHandle): void {
     wakeBlockedWaitersInKernelShare(
       handle,
-      SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC,
+      "epoll-sync",
     );
   }
 
@@ -217,7 +210,7 @@ export function createWorkerSchedulerStateSyncHelpers(
     }
     wakeBlockedWaitersInKernelShare(
       handle,
-      SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC,
+      "socket-sync",
     );
   }
 
@@ -243,7 +236,7 @@ export function createWorkerSchedulerStateSyncHelpers(
     const shouldStart = supervisorStateSyncRequest(
       handle.kernel,
       handle.vmPtr,
-      SUPERVISOR_STATE_SYNC_KIND_EPOLL,
+      "epoll",
       retryWaiters,
     );
     if (handle.epollSyncPromise !== null) {
@@ -259,7 +252,7 @@ export function createWorkerSchedulerStateSyncHelpers(
           const run = supervisorStateSyncNextRun(
             handle.kernel,
             handle.vmPtr,
-            SUPERVISOR_STATE_SYNC_KIND_EPOLL,
+            "epoll",
           );
           if (!run.run) {
             break;
@@ -280,13 +273,13 @@ export function createWorkerSchedulerStateSyncHelpers(
           if (!supervisorStateSyncComplete(
             handle.kernel,
             handle.vmPtr,
-            SUPERVISOR_STATE_SYNC_KIND_EPOLL,
+            "epoll",
           )) {
             break;
           }
         }
       } catch (error) {
-        supervisorStateSyncClear(handle.kernel, handle.vmPtr, SUPERVISOR_STATE_SYNC_KIND_EPOLL);
+        supervisorStateSyncClear(handle.kernel, handle.vmPtr, "epoll");
         throw error;
       }
     })().finally(() => {
@@ -370,7 +363,7 @@ export function createWorkerSchedulerStateSyncHelpers(
     const shouldStart = supervisorStateSyncRequest(
       handle.kernel,
       handle.vmPtr,
-      SUPERVISOR_STATE_SYNC_KIND_PIPE,
+      "pipe",
       wakeWaiters,
     );
     if (handle.pipeSyncPromise !== null) {
@@ -386,7 +379,7 @@ export function createWorkerSchedulerStateSyncHelpers(
           const run = supervisorStateSyncNextRun(
             handle.kernel,
             handle.vmPtr,
-            SUPERVISOR_STATE_SYNC_KIND_PIPE,
+            "pipe",
           );
           if (!run.run) {
             break;
@@ -449,7 +442,7 @@ export function createWorkerSchedulerStateSyncHelpers(
             } else {
               wakeBlockedWaitersInKernelShare(
                 handle,
-                SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC,
+                "epoll-sync",
                 pipeUsed,
               );
             }
@@ -458,13 +451,13 @@ export function createWorkerSchedulerStateSyncHelpers(
           if (!supervisorStateSyncComplete(
             handle.kernel,
             handle.vmPtr,
-            SUPERVISOR_STATE_SYNC_KIND_PIPE,
+            "pipe",
           )) {
             break;
           }
         }
       } catch (error) {
-        supervisorStateSyncClear(handle.kernel, handle.vmPtr, SUPERVISOR_STATE_SYNC_KIND_PIPE);
+        supervisorStateSyncClear(handle.kernel, handle.vmPtr, "pipe");
         throw error;
       }
     })().finally(() => {
@@ -490,7 +483,7 @@ export function createWorkerSchedulerStateSyncHelpers(
     const shouldStart = supervisorStateSyncRequest(
       handle.kernel,
       handle.vmPtr,
-      SUPERVISOR_STATE_SYNC_KIND_SOCKET,
+      "socket",
       wakeWaiters,
     );
     if (handle.socketSyncPromise !== null) {
@@ -506,7 +499,7 @@ export function createWorkerSchedulerStateSyncHelpers(
           const run = supervisorStateSyncNextRun(
             handle.kernel,
             handle.vmPtr,
-            SUPERVISOR_STATE_SYNC_KIND_SOCKET,
+            "socket",
           );
           if (!run.run) {
             break;
@@ -533,13 +526,13 @@ export function createWorkerSchedulerStateSyncHelpers(
           if (!supervisorStateSyncComplete(
             handle.kernel,
             handle.vmPtr,
-            SUPERVISOR_STATE_SYNC_KIND_SOCKET,
+            "socket",
           )) {
             break;
           }
         }
       } catch (error) {
-        supervisorStateSyncClear(handle.kernel, handle.vmPtr, SUPERVISOR_STATE_SYNC_KIND_SOCKET);
+        supervisorStateSyncClear(handle.kernel, handle.vmPtr, "socket");
         throw error;
       }
     })().finally(() => {

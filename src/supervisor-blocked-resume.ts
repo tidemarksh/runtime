@@ -1,43 +1,61 @@
 import type { KernelExports } from "./abi.js";
 
-export const SUPERVISOR_BLOCKED_RESUME_DELEGATION_DIRECT = 0;
-export const SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER = 1;
-export const SUPERVISOR_BLOCKED_RESUME_DELEGATION_WAIT4_KERNEL_WORKER = 2;
-export const SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED = 3;
-export const SUPERVISOR_BLOCKED_RESUME_DELEGATION_EPOLL_DIRECT = 4;
-export const SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_DEFAULT = 0;
-export const SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_IMMEDIATE = 1;
-export const SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_STANDARD_DEFER = 2;
-export const SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_ACTIVE_CHILD = 3;
-export const SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT = 4;
-export const SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PROCESS_GATE = 5;
-export const SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE = 0;
-export const SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS = 1;
-export const SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_ACTIVE_CHILD = 1 << 1;
-export const SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PASSIVE_WAIT = 1 << 2;
-export const SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE = 1 << 3;
-export const SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_THREAD_INIT_PENDING = 1 << 4;
-export const SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER = 0;
-export const SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT = 1;
-export const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_NONE = 0;
-export const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC = 1;
-export const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT = 2;
-export const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_SCHEDULE_RETRY = 3;
-export const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_BLOCK = 0;
-export const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET = 1;
-export const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE = 2;
-export const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_FORK_SHARED = 3;
-export const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE_AND_FORK_SHARED = 4;
-export const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET_AND_FORK_SHARED = 5;
-export const SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_SKIP = 0;
-export const SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_PUMP = 1;
-export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC = 1;
-export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC = 2;
-export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC = 3;
-export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_AND_EPOLL_SYNC = 4;
-export const SUPERVISOR_STATE_SYNC_KIND_PIPE = 1;
-export const SUPERVISOR_STATE_SYNC_KIND_EPOLL = 2;
-export const SUPERVISOR_STATE_SYNC_KIND_SOCKET = 3;
+export type SupervisorBlockedWaitRetryReason =
+  | "default"
+  | "immediate"
+  | "standard-defer"
+  | "active-child"
+  | "passive-wait"
+  | "process-gate";
+
+export type SupervisorBlockedWaitRetryFlag =
+  | "host-progress"
+  | "active-child"
+  | "passive-wait"
+  | "process-gate"
+  | "thread-init-pending";
+
+export type SupervisorBlockedWaitRetryFlags = readonly SupervisorBlockedWaitRetryFlag[];
+
+export type SupervisorBlockedResumeDelegation =
+  | "direct"
+  | "kernel-worker"
+  | "wait4-kernel-worker"
+  | "unsupported"
+  | "epoll-direct";
+
+export type SupervisorBlockedPipeResumeAction =
+  | "defer"
+  | "direct";
+
+export type SupervisorBlockedPipeSyncBeforeRetryAction =
+  | "none"
+  | "request-sync"
+  | "request-sync-and-drain-output"
+  | "schedule-retry";
+
+export type SupervisorBlockedStatusTransitionAction =
+  | "block"
+  | "sync-socket"
+  | "sync-pipe"
+  | "sync-fork-shared"
+  | "sync-pipe-and-fork-shared"
+  | "sync-socket-and-fork-shared";
+
+export type SupervisorBlockedWaitNetworkPumpAction =
+  | "skip"
+  | "pump";
+
+export type SupervisorBlockedWaitWakeSource =
+  | "pipe-sync"
+  | "epoll-sync"
+  | "socket-sync"
+  | "pipe-and-epoll-sync";
+
+export type SupervisorStateSyncKind =
+  | "pipe"
+  | "epoll"
+  | "socket";
 
 type SupervisorNumberConstExportName =
   | "supervisor_resume_flag_timeout_expired"
@@ -97,60 +115,10 @@ function readSupervisorNumberConst(
   return readConst.call(kernel);
 }
 
-export type SupervisorBlockedWaitRetryReason =
-  | typeof SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_DEFAULT
-  | typeof SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_IMMEDIATE
-  | typeof SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_STANDARD_DEFER
-  | typeof SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_ACTIVE_CHILD
-  | typeof SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT
-  | typeof SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PROCESS_GATE;
-
-export type SupervisorBlockedWaitRetryFlags = number;
-
 export interface SupervisorBlockedWaitRetryPlan {
   reason: SupervisorBlockedWaitRetryReason;
   delayMs: number;
 }
-
-export type SupervisorBlockedResumeDelegation =
-  | typeof SUPERVISOR_BLOCKED_RESUME_DELEGATION_DIRECT
-  | typeof SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER
-  | typeof SUPERVISOR_BLOCKED_RESUME_DELEGATION_WAIT4_KERNEL_WORKER
-  | typeof SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED
-  | typeof SUPERVISOR_BLOCKED_RESUME_DELEGATION_EPOLL_DIRECT;
-
-export type SupervisorBlockedPipeResumeAction =
-  | typeof SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER
-  | typeof SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT;
-
-export type SupervisorBlockedPipeSyncBeforeRetryAction =
-  | typeof SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_NONE
-  | typeof SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC
-  | typeof SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT
-  | typeof SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_SCHEDULE_RETRY;
-
-export type SupervisorBlockedStatusTransitionAction =
-  | typeof SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_BLOCK
-  | typeof SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET
-  | typeof SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE
-  | typeof SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_FORK_SHARED
-  | typeof SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE_AND_FORK_SHARED
-  | typeof SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET_AND_FORK_SHARED;
-
-export type SupervisorBlockedWaitNetworkPumpAction =
-  | typeof SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_SKIP
-  | typeof SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_PUMP;
-
-export type SupervisorBlockedWaitWakeSource =
-  | typeof SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC
-  | typeof SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC
-  | typeof SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC
-  | typeof SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_AND_EPOLL_SYNC;
-
-export type SupervisorStateSyncKind =
-  | typeof SUPERVISOR_STATE_SYNC_KIND_PIPE
-  | typeof SUPERVISOR_STATE_SYNC_KIND_EPOLL
-  | typeof SUPERVISOR_STATE_SYNC_KIND_SOCKET;
 
 export interface SupervisorStateSyncRun {
   run: boolean;
@@ -383,9 +351,9 @@ function supervisorBlockedPipeResumeActionValue(
   action: SupervisorBlockedPipeResumeAction,
 ): number {
   switch (action) {
-    case SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT:
+    case "direct":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_pipe_resume_action_direct");
-    case SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER:
+    case "defer":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_pipe_resume_action_defer");
     default: {
       const exhaustive: never = action;
@@ -399,8 +367,8 @@ function normalizeSupervisorBlockedPipeResumeAction(
   result: number,
 ): SupervisorBlockedPipeResumeAction {
   const actions: SupervisorBlockedPipeResumeAction[] = [
-    SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER,
-    SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT,
+    "defer",
+    "direct",
   ];
   for (const action of actions) {
     if (result === supervisorBlockedPipeResumeActionValue(kernel, action)) {
@@ -430,13 +398,13 @@ function supervisorBlockedPipeSyncBeforeRetryActionValue(
   action: SupervisorBlockedPipeSyncBeforeRetryAction,
 ): number {
   switch (action) {
-    case SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC:
+    case "request-sync":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_pipe_sync_before_retry_action_request_sync");
-    case SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT:
+    case "request-sync-and-drain-output":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output");
-    case SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_SCHEDULE_RETRY:
+    case "schedule-retry":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_pipe_sync_before_retry_action_schedule_retry");
-    case SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_NONE:
+    case "none":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_pipe_sync_before_retry_action_none");
     default: {
       const exhaustive: never = action;
@@ -450,10 +418,10 @@ function normalizeSupervisorBlockedPipeSyncBeforeRetryAction(
   result: number,
 ): SupervisorBlockedPipeSyncBeforeRetryAction {
   const actions: SupervisorBlockedPipeSyncBeforeRetryAction[] = [
-    SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_NONE,
-    SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC,
-    SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT,
-    SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_SCHEDULE_RETRY,
+    "none",
+    "request-sync",
+    "request-sync-and-drain-output",
+    "schedule-retry",
   ];
   for (const action of actions) {
     if (result === supervisorBlockedPipeSyncBeforeRetryActionValue(kernel, action)) {
@@ -517,17 +485,17 @@ function supervisorBlockedStatusTransitionActionValue(
   action: SupervisorBlockedStatusTransitionAction,
 ): number {
   switch (action) {
-    case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET:
+    case "sync-socket":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_status_transition_action_sync_socket");
-    case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE:
+    case "sync-pipe":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_status_transition_action_sync_pipe");
-    case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_FORK_SHARED:
+    case "sync-fork-shared":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_status_transition_action_sync_fork_shared");
-    case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE_AND_FORK_SHARED:
+    case "sync-pipe-and-fork-shared":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_status_transition_action_sync_pipe_and_fork_shared");
-    case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET_AND_FORK_SHARED:
+    case "sync-socket-and-fork-shared":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_status_transition_action_sync_socket_and_fork_shared");
-    case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_BLOCK:
+    case "block":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_status_transition_action_block");
     default: {
       const exhaustive: never = action;
@@ -541,12 +509,12 @@ function normalizeSupervisorBlockedStatusTransitionAction(
   result: number,
 ): SupervisorBlockedStatusTransitionAction {
   const actions: SupervisorBlockedStatusTransitionAction[] = [
-    SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_BLOCK,
-    SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET,
-    SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE,
-    SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_FORK_SHARED,
-    SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE_AND_FORK_SHARED,
-    SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET_AND_FORK_SHARED,
+    "block",
+    "sync-socket",
+    "sync-pipe",
+    "sync-fork-shared",
+    "sync-pipe-and-fork-shared",
+    "sync-socket-and-fork-shared",
   ];
   for (const action of actions) {
     if (result === supervisorBlockedStatusTransitionActionValue(kernel, action)) {
@@ -608,9 +576,9 @@ function supervisorBlockedWaitNetworkPumpActionValue(
   action: SupervisorBlockedWaitNetworkPumpAction,
 ): number {
   switch (action) {
-    case SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_SKIP:
+    case "skip":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_network_pump_action_skip");
-    case SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_PUMP:
+    case "pump":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_network_pump_action_pump");
     default: {
       const exhaustive: never = action;
@@ -624,8 +592,8 @@ function normalizeSupervisorBlockedWaitNetworkPumpAction(
   result: number,
 ): SupervisorBlockedWaitNetworkPumpAction {
   const actions: SupervisorBlockedWaitNetworkPumpAction[] = [
-    SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_SKIP,
-    SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_PUMP,
+    "skip",
+    "pump",
   ];
   for (const action of actions) {
     if (result === supervisorBlockedWaitNetworkPumpActionValue(kernel, action)) {
@@ -684,11 +652,11 @@ function supervisorStateSyncKindValue(
   kind: SupervisorStateSyncKind,
 ): number {
   switch (kind) {
-    case SUPERVISOR_STATE_SYNC_KIND_PIPE:
+    case "pipe":
       return readSupervisorNumberConst(kernel, "supervisor_state_sync_kind_pipe");
-    case SUPERVISOR_STATE_SYNC_KIND_EPOLL:
+    case "epoll":
       return readSupervisorNumberConst(kernel, "supervisor_state_sync_kind_epoll");
-    case SUPERVISOR_STATE_SYNC_KIND_SOCKET:
+    case "socket":
       return readSupervisorNumberConst(kernel, "supervisor_state_sync_kind_socket");
     default: {
       const exhaustive: never = kind;
@@ -787,17 +755,17 @@ function supervisorRetryReason(
   reason: SupervisorBlockedWaitRetryReason,
 ): number {
   switch (reason) {
-    case SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_IMMEDIATE:
+    case "immediate":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_reason_immediate");
-    case SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_STANDARD_DEFER:
+    case "standard-defer":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_reason_standard_defer");
-    case SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_ACTIVE_CHILD:
+    case "active-child":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_reason_active_child");
-    case SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT:
+    case "passive-wait":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_reason_passive_wait");
-    case SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PROCESS_GATE:
+    case "process-gate":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_reason_process_gate");
-    case SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_DEFAULT:
+    case "default":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_reason_default");
     default: {
       const exhaustive: never = reason;
@@ -811,12 +779,12 @@ function normalizeSupervisorBlockedWaitRetryReason(
   result: number,
 ): SupervisorBlockedWaitRetryReason {
   const reasons: SupervisorBlockedWaitRetryReason[] = [
-    SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_DEFAULT,
-    SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_IMMEDIATE,
-    SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_STANDARD_DEFER,
-    SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_ACTIVE_CHILD,
-    SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT,
-    SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PROCESS_GATE,
+    "default",
+    "immediate",
+    "standard-defer",
+    "active-child",
+    "passive-wait",
+    "process-gate",
   ];
   for (const reason of reasons) {
     if (result === supervisorRetryReason(kernel, reason)) {
@@ -831,19 +799,19 @@ function supervisorRetryFlags(
   flags: SupervisorBlockedWaitRetryFlags,
 ): number {
   let result = 0;
-  if ((flags & SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS) !== 0) {
+  if (flags.includes("host-progress")) {
     result |= readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_flag_host_progress");
   }
-  if ((flags & SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_ACTIVE_CHILD) !== 0) {
+  if (flags.includes("active-child")) {
     result |= readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_flag_active_child");
   }
-  if ((flags & SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PASSIVE_WAIT) !== 0) {
+  if (flags.includes("passive-wait")) {
     result |= readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_flag_passive_wait");
   }
-  if ((flags & SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE) !== 0) {
+  if (flags.includes("process-gate")) {
     result |= readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_flag_process_gate");
   }
-  if ((flags & SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_THREAD_INIT_PENDING) !== 0) {
+  if (flags.includes("thread-init-pending")) {
     result |= readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_flag_thread_init_pending");
   }
   return result;
@@ -861,15 +829,15 @@ function supervisorBlockedResumeDelegationValue(
   delegation: SupervisorBlockedResumeDelegation,
 ): number {
   switch (delegation) {
-    case SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER:
+    case "kernel-worker":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_resume_delegation_kernel_worker");
-    case SUPERVISOR_BLOCKED_RESUME_DELEGATION_WAIT4_KERNEL_WORKER:
+    case "wait4-kernel-worker":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_resume_delegation_wait4_kernel_worker");
-    case SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED:
+    case "unsupported":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_resume_delegation_unsupported");
-    case SUPERVISOR_BLOCKED_RESUME_DELEGATION_EPOLL_DIRECT:
+    case "epoll-direct":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_resume_delegation_epoll_direct");
-    case SUPERVISOR_BLOCKED_RESUME_DELEGATION_DIRECT:
+    case "direct":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_resume_delegation_direct");
     default: {
       const exhaustive: never = delegation;
@@ -883,11 +851,11 @@ function normalizeSupervisorBlockedResumeDelegation(
   result: number,
 ): SupervisorBlockedResumeDelegation {
   const delegations: SupervisorBlockedResumeDelegation[] = [
-    SUPERVISOR_BLOCKED_RESUME_DELEGATION_DIRECT,
-    SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER,
-    SUPERVISOR_BLOCKED_RESUME_DELEGATION_WAIT4_KERNEL_WORKER,
-    SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED,
-    SUPERVISOR_BLOCKED_RESUME_DELEGATION_EPOLL_DIRECT,
+    "direct",
+    "kernel-worker",
+    "wait4-kernel-worker",
+    "unsupported",
+    "epoll-direct",
   ];
   for (const delegation of delegations) {
     if (result === supervisorBlockedResumeDelegationValue(kernel, delegation)) {
@@ -937,7 +905,7 @@ export function supervisorBlockedWaitRetryDelayMs(
 export function supervisorBlockedWaitRetryReason(
   kernel: KernelExports,
   vmPtr: number,
-  flags: SupervisorBlockedWaitRetryFlags = SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
+  flags: SupervisorBlockedWaitRetryFlags = [],
 ): SupervisorBlockedWaitRetryReason {
   const readReason = kernel.supervisor_blocked_wait_retry_reason;
   if (readReason === undefined) {
@@ -953,7 +921,7 @@ export function supervisorBlockedWaitRetryReason(
 export function supervisorBlockedWaitRetryPlan(
   kernel: KernelExports,
   vmPtr: number,
-  flags: SupervisorBlockedWaitRetryFlags = SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
+  flags: SupervisorBlockedWaitRetryFlags = [],
 ): SupervisorBlockedWaitRetryPlan {
   const reason = supervisorBlockedWaitRetryReason(kernel, vmPtr, flags);
   return {
@@ -967,13 +935,13 @@ function supervisorBlockedWaitWakeSourceValue(
   source: SupervisorBlockedWaitWakeSource,
 ): number {
   switch (source) {
-    case SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC:
+    case "pipe-sync":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_wake_source_pipe_sync");
-    case SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC:
+    case "epoll-sync":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_wake_source_epoll_sync");
-    case SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC:
+    case "socket-sync":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_wake_source_socket_sync");
-    case SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_AND_EPOLL_SYNC:
+    case "pipe-and-epoll-sync":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_wake_source_pipe_and_epoll_sync");
     default: {
       const exhaustive: never = source;
@@ -1005,7 +973,7 @@ export function supervisorBlockedWaitStatusMatchesPipeWait(
   return supervisorBlockedWaitStatusMatchesWakeSource(
     kernel,
     status,
-    SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC,
+    "pipe-sync",
   );
 }
 
@@ -1016,7 +984,7 @@ export function supervisorBlockedWaitStatusMatchesEpollWait(
   return supervisorBlockedWaitStatusMatchesWakeSource(
     kernel,
     status,
-    SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC,
+    "epoll-sync",
   );
 }
 

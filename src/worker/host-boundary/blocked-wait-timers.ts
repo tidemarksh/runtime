@@ -1,9 +1,7 @@
 import {
   supervisorBlockedWaitRetryFlags,
   supervisorBlockedWaitTimerRequired,
-  SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
   type SupervisorBlockedWaitRetryFlags,
-  type SupervisorBlockedWaitRetryReason,
 } from "../../supervisor-blocked-resume.js";
 import {
   armSupervisorBlockedRetryTimer,
@@ -72,7 +70,7 @@ export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWai
     handle: ProcessHandle,
     blocked: HostBlockedWorkerState,
     delayMs: number,
-    reason: SupervisorBlockedWaitRetryReason,
+    reason: number,
   ): void {
     if (!hasSupervisorShadowProtocol(handle.kernel)) {
       return;
@@ -113,7 +111,7 @@ export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWai
         if (hostBlockedRetryTimers.get(blocked) === timer) {
           hostBlockedRetryTimers.delete(blocked);
         }
-        submitBlockedRetryTimerFiredEvent(handle, blocked, delayMs, reason as SupervisorBlockedWaitRetryReason);
+        submitBlockedRetryTimerFiredEvent(handle, blocked, delayMs, reason);
         deps.retryHostBlockedWorker(handle, worker);
       },
     });
@@ -123,7 +121,7 @@ export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWai
   function scheduleSupervisorBlockedRetry(
     handle: ProcessHandle,
     worker: Worker,
-    flags: SupervisorBlockedWaitRetryFlags = SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
+    flags: SupervisorBlockedWaitRetryFlags = [],
   ): void {
     const blocked = handle.hostBlockedWorkers.get(worker);
     if (!blocked) {

@@ -4,7 +4,6 @@ import type {
   ThreadWorkerState,
 } from "../types.js";
 import {
-  SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
   type SupervisorBlockedWaitRetryFlags,
 } from "../../supervisor-blocked-resume.js";
 
@@ -90,7 +89,7 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
       deps.scheduleSupervisorBlockedRetry(
         handle,
         worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
+        ["host-progress"],
       );
     };
     promise.then(onSettled, onSettled);
