@@ -346,6 +346,10 @@ function makeHandle(worker: Worker) {
       thread_process_thread_count: () => 1,
       process_fd_ofd_id: () => 0,
       kernel_ofd_fd_type: () => 0,
+      supervisor_fs_pipe_refresh_action_none: () => 0,
+      supervisor_fs_pipe_refresh_action_request_sync: () => 1,
+      supervisor_fs_pipe_refresh_flag_kernel_worker_available: () => 1,
+      supervisor_fs_pipe_refresh_before_resume_action: () => 0,
       abi_fd_type_socket: () => 8,
       abi_max_fds: () => 8,
       thread_status: () => 0,
@@ -1716,24 +1720,15 @@ test("STATUS_FS does not sync pipe state before filesystem resume completes", ()
   expect(deps.pumpProcess).not.toHaveBeenCalled();
 });
 
-test("STATUS_FS regular-file pending request skips shared pipe refresh", () => {
+test("STATUS_FS supervisor pipe-refresh NONE action skips shared pipe refresh", () => {
   const worker = {} as Worker;
   const handle = makeHandle(worker);
   handle.pid = 3;
   handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unused" }));
-  handle.kernelShare.members.add(handle as never);
-  handle.kernelShare.members.add({ pid: 1 } as never);
-  handle.kernel.abi_fd_type_pipe = () => 6;
-  handle.kernel.process_fd_ofd_id = (_vmPtr, fd) => fd === 0 ? 1 : fd === 3 ? 4 : 0;
-  handle.kernel.kernel_ofd_fd_type = (ofdId) => ofdId === 1 ? 6 : ofdId === 4 ? 3 : 0;
   const kernel = handle.kernel as typeof handle.kernel & {
-    supervisor_fs_pending_ring_request: (vmPtr: number) => number;
-    supervisor_fs_pending_regular_file_fd: (vmPtr: number) => number;
-    supervisor_fs_pending_regular_file_ofd: (vmPtr: number) => number;
+    supervisor_fs_pipe_refresh_before_resume_action: (vmPtr: number, flags: number) => number;
   };
-  kernel.supervisor_fs_pending_ring_request = () => 1;
-  kernel.supervisor_fs_pending_regular_file_fd = () => 3;
-  kernel.supervisor_fs_pending_regular_file_ofd = () => 4;
+  kernel.supervisor_fs_pipe_refresh_before_resume_action = vi.fn(() => 0);
   const deps = makeDeps(worker);
   const resumeFsViaKernelWorkerOutcome = vi.fn(async () => ({ kind: "completed", status: 0 }));
   (deps as { resumeFsViaKernelWorkerOutcome?: typeof resumeFsViaKernelWorkerOutcome })
@@ -1761,6 +1756,7 @@ test("STATUS_FS regular-file pending request skips shared pipe refresh", () => {
     completedSyncEffects: 0,
   });
 
+  expect(kernel.supervisor_fs_pipe_refresh_before_resume_action).toHaveBeenCalledWith(0x1234, 1);
   expect(deps.requestPipeStateSync).not.toHaveBeenCalled();
   expect(resumeFsViaKernelWorkerOutcome).toHaveBeenCalledWith(handle, worker, 0x1234);
 });
@@ -1770,19 +1766,10 @@ test("STATUS_FS with shared pipe fds resumes filesystem after pipe refresh", asy
   const handle = makeHandle(worker);
   handle.pid = 3;
   handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unused" }));
-  handle.kernelShare.members.add(handle as never);
-  handle.kernelShare.members.add({ pid: 1 } as never);
-  handle.kernel.abi_fd_type_pipe = () => 6;
-  handle.kernel.process_fd_ofd_id = (_vmPtr, fd) => fd === 0 ? 1 : 0;
-  handle.kernel.kernel_ofd_fd_type = (ofdId) => ofdId === 1 ? 6 : 0;
   const kernel = handle.kernel as typeof handle.kernel & {
-    supervisor_fs_pending_ring_request: (vmPtr: number) => number;
-    supervisor_fs_pending_regular_file_fd: (vmPtr: number) => number;
-    supervisor_fs_pending_regular_file_ofd: (vmPtr: number) => number;
+    supervisor_fs_pipe_refresh_before_resume_action: (vmPtr: number, flags: number) => number;
   };
-  kernel.supervisor_fs_pending_ring_request = () => 1;
-  kernel.supervisor_fs_pending_regular_file_fd = () => -1;
-  kernel.supervisor_fs_pending_regular_file_ofd = () => 0;
+  kernel.supervisor_fs_pipe_refresh_before_resume_action = vi.fn(() => 1);
   const deps = makeDeps(worker);
   let resolvePipeSync: (() => void) | undefined;
   deps.requestPipeStateSync = vi.fn(() => new Promise<void>((resolve) => {
@@ -1816,6 +1803,7 @@ test("STATUS_FS with shared pipe fds resumes filesystem after pipe refresh", asy
   });
 
   expect(thread.ownerAsyncStatus).toBe(6);
+  expect(kernel.supervisor_fs_pipe_refresh_before_resume_action).toHaveBeenCalledWith(0x1234, 1);
   expect(deps.requestPipeStateSync).toHaveBeenCalledWith(handle, false);
   expect(resumeFsViaKernelWorkerOutcome).not.toHaveBeenCalled();
 

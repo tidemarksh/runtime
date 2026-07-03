@@ -509,42 +509,6 @@ export function applyThreadPipeSlots(
   handle.pendingPipeSlotSnapshots.push(...appliedSnapshots);
 }
 
-export function processHasPipeFd(handle: ProcessHandle, vmPtr: number): boolean {
-  if (vmPtr === 0) {
-    return false;
-  }
-  const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
-  const pipeType = handle.kernel.abi_fd_type_pipe?.();
-  if (maxFds <= 0 || pipeType === undefined) {
-    return false;
-  }
-  for (let fd = 0; fd < maxFds; fd += 1) {
-    const ofdId = handle.kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
-    if (ofdId <= 0) {
-      continue;
-    }
-    if (handle.kernel.kernel_ofd_fd_type?.(ofdId) === pipeType) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function currentFsWaitNeedsPipeRefresh(handle: ProcessHandle, vmPtr: number): boolean {
-  const pendingRingRequest = handle.kernel.supervisor_fs_pending_ring_request?.(vmPtr);
-  if (pendingRingRequest === undefined || pendingRingRequest === 0) {
-    return false;
-  }
-
-  const pendingRegularFileFd = handle.kernel.supervisor_fs_pending_regular_file_fd?.(vmPtr) ?? -1;
-  const pendingRegularFileOfd = handle.kernel.supervisor_fs_pending_regular_file_ofd?.(vmPtr) ?? 0;
-  if (pendingRegularFileFd >= 0 || pendingRegularFileOfd > 0) {
-    return false;
-  }
-
-  return processHasPipeFd(handle, vmPtr);
-}
-
 export function snapshotProcessPipeSlotsForThreadStep(
   handle: ProcessHandle,
   vmPtr: number,
@@ -659,18 +623,4 @@ export function refreshPipeControlFromKernelShare(handle: ProcessHandle): void {
     view.setInt32(offset + PIPE_READ_OPEN_OFFSET, readOpen[pipeSlot], true);
     view.setInt32(offset + PIPE_WRITE_OPEN_OFFSET, writeOpen[pipeSlot], true);
   }
-}
-
-export function shouldRefreshPipeStateBeforeFsResume(handle: ProcessHandle, vmPtr: number): boolean {
-  let hasOtherKernelShareMember = false;
-  for (const member of handle.kernelShare.members) {
-    if (member !== handle) {
-      hasOtherKernelShareMember = true;
-      break;
-    }
-  }
-  return Boolean(handle.kernelWorkerRequest)
-    && handle.pid > 0
-    && hasOtherKernelShareMember
-    && currentFsWaitNeedsPipeRefresh(handle, vmPtr);
 }

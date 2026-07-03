@@ -433,6 +433,10 @@ export interface KernelExports {
   supervisor_fs_pending_ring_request?(vmPtr: number): number;
   supervisor_fs_pending_regular_file_fd?(vmPtr: number): number;
   supervisor_fs_pending_regular_file_ofd?(vmPtr: number): number;
+  supervisor_fs_pipe_refresh_action_none?(): number;
+  supervisor_fs_pipe_refresh_action_request_sync?(): number;
+  supervisor_fs_pipe_refresh_flag_kernel_worker_available?(): number;
+  supervisor_fs_pipe_refresh_before_resume_action?(vmPtr: number, flags: number): number;
   supervisor_fs_pending_backing_fill_ino?(vmPtr: number): number;
   supervisor_fs_pending_backing_fill_offset?(vmPtr: number): bigint | number;
   supervisor_fs_pending_backing_fill_length?(vmPtr: number): bigint | number;
@@ -1726,6 +1730,10 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_vfork_execve_rollback",
   "supervisor_fd_control_record",
   "supervisor_fs_control_record",
+  "supervisor_fs_pipe_refresh_action_none",
+  "supervisor_fs_pipe_refresh_action_request_sync",
+  "supervisor_fs_pipe_refresh_flag_kernel_worker_available",
+  "supervisor_fs_pipe_refresh_before_resume_action",
   "supervisor_fs_pending_backing_fill_ino",
   "supervisor_fs_pending_backing_fill_offset",
   "supervisor_fs_pending_backing_fill_length",

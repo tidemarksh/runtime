@@ -20,9 +20,12 @@ import type { KernelRpcResumeOutcome } from "../../kernel-rpc/outcomes.js";
 import { createWorkerOwnershipGuard } from "../../ownership/process-state.js";
 import {
   refreshPipeControlFromKernelShare,
-  shouldRefreshPipeStateBeforeFsResume,
   snapshotProcessPipeSlotsForThreadStep,
 } from "../../ownership/pipe-control.js";
+import {
+  SUPERVISOR_FS_PIPE_REFRESH_ACTION_REQUEST_SYNC,
+  supervisorFsPipeRefreshBeforeResumeAction,
+} from "../../../fs/supervisor-pipe-refresh.js";
 import { restoreRuntimeNetworkSidecarForHandle } from "../../ownership/socket-control.js";
 import { formatCompactDebugSuffix } from "../../diagnostics/format.js";
 import {
@@ -533,7 +536,10 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
 
     if (status === handle.kernel.abi_status_fs()) {
       deps.appendWorkerDebugLog(handle, `fs:0x${thread.vmPtr.toString(16)}`);
-      if (shouldRefreshPipeStateBeforeFsResume(handle, thread.vmPtr)) {
+      const pipeRefreshAction = supervisorFsPipeRefreshBeforeResumeAction(handle.kernel, thread.vmPtr, {
+        kernelWorkerAvailable: Boolean(handle.kernelWorkerRequest) && handle.pid > 0,
+      });
+      if (pipeRefreshAction === SUPERVISOR_FS_PIPE_REFRESH_ACTION_REQUEST_SYNC) {
         thread.ownerAsyncStatus = status;
         void deps.requestPipeStateSync(handle, false)
           .then(() => {
