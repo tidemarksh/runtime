@@ -42,6 +42,7 @@ import {
   supervisorBlockedPipeWaitHasReadyEvents,
   supervisorBlockedPollWaitHasSocket,
   supervisorBlockedPollWaitTimeoutMs,
+  supervisorBlockedWaitTimerRequired,
 } from "../../../supervisor-blocked-resume.js";
 
 const CLONE_SPAWN_DEBUG_ENABLED = ((globalThis as {
@@ -602,10 +603,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     }
 
     if (status === handle.kernel.abi_status_connect()) {
-      const socketTimeoutMs = handle.kernel.thread_socket_wait_timeout === undefined
-        ? -1
-        : Number(handle.kernel.thread_socket_wait_timeout(thread.vmPtr));
-      if (socketTimeoutMs >= 0) {
+      if (supervisorBlockedWaitTimerRequired(handle.kernel, thread.vmPtr)) {
         deps.blockWorker(handle, worker, status, thread.vmPtr);
         deps.pumpProcess(handle);
         return;
