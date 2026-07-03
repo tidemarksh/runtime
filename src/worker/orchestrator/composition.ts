@@ -39,7 +39,7 @@ import {
   snapshotProcessFdOfdStateForKernelWorker,
   syncBlockedForkSharedStateViaKernelWorker as syncBlockedForkSharedStateViaKernelWorkerImpl,
   syncForkSharedStateLocally as syncForkSharedStateLocallyImpl,
-  syncForkSharedStateForWorkerRuntime as syncForkSharedStateForWorkerRuntimeImpl,
+  syncForkSharedStateViaKernelWorker as syncForkSharedStateViaKernelWorkerImpl,
   syncProcessMemfsViaKernelWorker as syncProcessMemfsViaKernelWorkerImpl,
   syncSocketStateViaKernelWorker as syncSocketStateViaKernelWorkerImpl,
   type SyncCause,
@@ -577,7 +577,7 @@ async function syncForkSharedStateViaKernelWorker(
     cause: SyncCause;
   },
 ): Promise<void> {
-  await syncForkSharedStateForWorkerRuntimeImpl(handle, targets, options);
+  await syncForkSharedStateViaKernelWorkerImpl(handle, targets, options);
 }
 
 async function rehydrateForkSharedStateViaKernelWorker(

@@ -185,6 +185,52 @@ function makeKernelState(): KernelRuntimeState {
   };
 }
 
+function createPlainForkKernelWorkerRequest(
+  requests: KernelWorkerRequest[],
+  childPid: number,
+): (msg: KernelWorkerRequest) => Promise<KernelWorkerOutbound> {
+  return async (msg): Promise<KernelWorkerOutbound> => {
+    requests.push(msg);
+    switch (msg.type) {
+      case "register-process":
+        return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+      case "initialize-process-lifecycle":
+        return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+      case "sync-process-memfs":
+        return { type: "process-memfs-synced", requestId: 0, kernelState: msg.kernelState };
+      case "sync-pipe-state":
+        return { type: "pipe-state-synced", requestId: 0, kernelState: msg.kernelState };
+      case "sync-socket-state":
+        return { type: "socket-state-synced", requestId: 0, kernelState: msg.kernelState };
+      case "release-host-stdio":
+        return { type: "host-stdio-released", requestId: 0, kernelState: msg.kernelState };
+      case "canonicalize-child-pid":
+        return {
+          type: "child-pid-canonicalized",
+          requestId: 0,
+          childPid,
+          ppid: 1,
+          nextPid: childPid + 1,
+          pgid: 1,
+          sid: 1,
+          kernelState: msg.kernelState,
+        };
+      case "record-child-exit":
+        return { type: "child-exit-recorded", requestId: 0, kernelState: msg.kernelState };
+      case "resume-wait4":
+        return { type: "wait4-resumed", requestId: 0, kernelState: msg.kernelState };
+      case "sync-fork-shared-state":
+        return { type: "fork-shared-state-synced", requestId: 0, kernelState: msg.kernelState };
+      case "rehydrate-fork-shared-state":
+        return { type: "fork-shared-state-rehydrated", requestId: 0 };
+      case "unregister-process":
+        return { type: "process-unregistered", requestId: 0 };
+      default:
+        throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+    }
+  };
+}
+
 const SYNC_EFFECT_PIPE_STATE = 1 << 0;
 const SYNC_EFFECT_SOCKET_STATE = 1 << 1;
 const SYNC_EFFECT_EPOLL_STATE = 1 << 2;
@@ -1260,9 +1306,13 @@ test("plain fork does not keep process lifecycle state synchronized after the in
   ).toEqual([...initialLifecycleState]);
 });
 
-test("plain fork child teardown opens the parent wait4 retry gate", async () => {
+test("plain fork child teardown opens the parent wait4 retry gate through kernel-worker", async () => {
   threadCountQueue.push(1, 0);
-  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
+  const requests: KernelWorkerRequest[] = [];
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: createPlainForkKernelWorkerRequest(requests, 2),
+  });
   const parentWorker = createdWorkers[0];
   const parentKernel = createdKernelExports[0];
   let parentStatus = parentKernel.abi_status_wait4();
@@ -1305,6 +1355,8 @@ test("plain fork child teardown opens the parent wait4 retry gate", async () => 
   await flushMicrotasks(100);
 
   expect(parentKernel.recordedChildExits).toEqual([[2, 7 << 8]]);
+  expect(requests.some((msg) => msg.type === "record-child-exit" && msg.pid === 1 && msg.childPid === 2))
+    .toBe(true);
   expect(createdWorkers).toHaveLength(2);
   const parentReplacementWorker = createdWorkers[1];
   parentStatus = parentKernel.abi_status_wait4();
@@ -1324,15 +1376,18 @@ test("plain fork child teardown opens the parent wait4 retry gate", async () => 
   await new Promise((resolve) => setTimeout(resolve, 20));
   await flushMicrotasks(100);
 
-  expect(resumeWait4).toHaveBeenCalledWith(0x1234);
+  expect(resumeWait4).not.toHaveBeenCalled();
+  expect(requests.some((msg) => msg.type === "resume-wait4" && msg.pid === 1)).toBe(true);
 });
 
-test("plain fork child fault records child exit on the parent state", async () => {
+test("plain fork child fault records child exit on the parent state through kernel-worker", async () => {
   threadCountQueue.push(1, 0);
   const onError = vi.fn();
+  const requests: KernelWorkerRequest[] = [];
   const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
     pid: 1,
     onError,
+    kernelWorkerRequest: createPlainForkKernelWorkerRequest(requests, 2),
   });
   const parentWorker = createdWorkers[0];
   const parentKernel = createdKernelExports[0];
@@ -1371,5 +1426,7 @@ test("plain fork child fault records child exit on the parent state", async () =
 
   expect(onError).not.toHaveBeenCalled();
   expect(parentKernel.recordedChildExits).toEqual([[2, 7 << 8]]);
+  expect(requests.some((msg) => msg.type === "record-child-exit" && msg.pid === 1 && msg.childPid === 2))
+    .toBe(true);
   expect(handle.lastDebugMessage).toContain("child-exit:2");
 });

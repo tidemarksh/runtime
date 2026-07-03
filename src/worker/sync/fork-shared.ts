@@ -113,18 +113,6 @@ export function syncForkSharedStateLocally(
   pruneStaleKernelShareOfdIds(handle, staleOfdIds);
 }
 
-export function syncForkSharedStateLocallyForWorkerRuntime(
-  handle: ProcessHandle,
-  targets: ProcessHandle[],
-  options: { cause?: SyncCause; includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] } = {},
-): void {
-  syncForkSharedStateLocally(
-    handle,
-    targets,
-    { ...options, cause: options.cause ?? { kind: "syscall", nr: -1n, name: "fork-shared-local-sync" } },
-  );
-}
-
 function isQuiescentForkSharedSyncTarget(target: ProcessHandle): boolean {
   return target.runningWorker === null
     && target.vforkReadyWorkers.length === 0
@@ -426,37 +414,6 @@ export async function syncForkSharedStateViaKernelWorker(
   }
 }
 
-export async function syncForkSharedStateForWorkerRuntime(
-  handle: ProcessHandle,
-  targets: ProcessHandle[],
-  options: {
-    cause?: SyncCause;
-    includeMemfs?: boolean;
-    trackHeldOfds?: boolean;
-    deltaOfdIds?: boolean;
-    memfsOnly?: boolean;
-    preserveSourceRefcounts?: boolean;
-    sourceVmPtr?: number;
-    ofdIds?: number[];
-  } = {},
-): Promise<void> {
-  if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-    syncForkSharedStateLocallyForWorkerRuntime(handle, targets, options);
-    return;
-  }
-
-  if (options.trackHeldOfds === true && options.deltaOfdIds !== true) {
-    for (const ofdId of collectTrackableForkSharedOfds(handle)) {
-      handle.kernelShare.sharedOfdIds.add(ofdId);
-    }
-  }
-  await syncForkSharedStateViaKernelWorker(
-    handle,
-    targets,
-    { ...options, cause: options.cause ?? { kind: "syscall", nr: -1n, name: "fork-shared-state-sync" } },
-  );
-}
-
 export async function rehydrateForkSharedStateViaKernelWorker(
   targets: ProcessHandle[],
   ofdIds: number[],
@@ -510,17 +467,6 @@ export async function rehydrateForkSharedStateViaKernelWorker(
   restoreNetworkBridgeSocketState(networkSocketSnapshots);
 }
 
-export async function rehydrateForkSharedStateForWorkerRuntime(
-  targets: ProcessHandle[],
-  ofdIds: number[],
-  options: { procSelfExeTargets?: KernelWorkerPidBytesSnapshot[]; includeMemfs?: boolean } = {},
-): Promise<void> {
-  await rehydrateForkSharedStateViaKernelWorker(targets, ofdIds, {
-    ...options,
-    cause: { kind: "syscall", nr: -1n, name: "fork-shared-rehydrate" },
-  });
-}
-
 export async function syncBlockedForkSharedStateViaKernelWorker(
   handle: ProcessHandle,
   sourceVmPtr = handle.vmPtr,
@@ -571,15 +517,4 @@ export async function syncBlockedForkSharedStateViaKernelWorker(
   handle.forkSharedSyncPromise = syncPromise;
   handle.kernelShare.forkSharedSyncPromise = syncPromise;
   await syncPromise;
-}
-
-export async function syncBlockedForkSharedStateForWorkerRuntime(
-  handle: ProcessHandle,
-  sourceVmPtr?: number,
-): Promise<void> {
-  await syncBlockedForkSharedStateViaKernelWorker(
-    handle,
-    sourceVmPtr,
-    { kind: "blocked-rpc", status: handle.kernel.abi_status_pipe_wait() },
-  );
 }
