@@ -237,7 +237,8 @@ function submitSupervisorFsReadyEvent(
   vmPtr: number,
   status: number | undefined,
 ): void {
-  if (status !== handle.kernel.abi_status_ok()) {
+  const okStatus = handle.kernel.abi_status_ok?.();
+  if (okStatus === undefined || status !== okStatus) {
     return;
   }
   const result = submitSupervisorShadowStatusEvent(handle, {
@@ -1210,6 +1211,55 @@ async function resumeFsViaKernelWorker(
   }
 }
 
+async function completeFsResumeFromSupervisorDecision(
+  handle: ProcessHandle,
+  vmPtr: number,
+  fsResult: bigint,
+  effects: KernelRpcResumeEffect[],
+  options: {
+    source: "local" | "kernel-worker";
+    applyPostFsWake(): void | Promise<void>;
+    finalStatus?: number;
+    forceExecveSpawn?: boolean;
+  },
+): Promise<KernelRpcResumeOutcome> {
+  const sourcePrefix = options.source === "local" ? ":local" : "";
+  const finalStatus = options.finalStatus ?? handle.kernel.thread_status?.(vmPtr);
+  deps.appendWorkerDebugLog(
+    handle,
+    `fs-done:0x${vmPtr.toString(16)}${sourcePrefix}:rv=${fsResult.toString()}`,
+  );
+  appendFsLifecycleEvent(
+    handle,
+    "done",
+    vmPtr,
+    `${sourcePrefix}:rv=${fsResult.toString()}:status=${finalStatus ?? "n/a"}${formatFsRingDebug(handle, vmPtr)}`,
+  );
+  if (fsResultIsPending(handle, vmPtr, fsResult)) {
+    appendFsLifecycleEvent(
+      handle,
+      "pending",
+      vmPtr,
+      `${sourcePrefix}:rv=${fsResult.toString()}${formatFsRingDebug(handle, vmPtr)}`,
+    );
+    await options.applyPostFsWake();
+    const status = handle.kernel.abi_status_fs?.() ?? -1;
+    return { kind: "blocked", status, effects };
+  }
+  const execveSpawnStatus = handle.kernel.abi_status_execve_spawn?.();
+  const resolvedToExecveSpawn = options.forceExecveSpawn === true
+    || (execveSpawnStatus !== undefined && finalStatus === execveSpawnStatus);
+  if (resolvedToExecveSpawn && finalStatus !== undefined) {
+    await options.applyPostFsWake();
+    effects.push({ kind: "handle-execve-spawn", status: finalStatus });
+    return completedKernelRpcOutcome(undefined, effects);
+  }
+  await options.applyPostFsWake();
+  submitSupervisorFsReadyEvent(handle, vmPtr, finalStatus);
+  effects.push({ kind: "enqueue-worker" });
+  return completedKernelRpcOutcome(finalStatus, effects);
+}
+
 async function resumeFsViaKernelWorkerInner(
   handle: ProcessHandle,
   worker: Worker,
@@ -1261,35 +1311,10 @@ async function resumeFsViaKernelWorkerInner(
     restoreFsRingProgress(handle, postFsRingProgress);
     clearStaleFsStatusAfterResume(handle, vmPtr, fsResult);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
-    deps.appendWorkerDebugLog(handle, `fs-done:0x${vmPtr.toString(16)}:local:rv=${fsResult.toString()}`);
-    appendFsLifecycleEvent(
-      handle,
-      "done",
-      vmPtr,
-      `:local:rv=${fsResult.toString()}:status=${handle.kernel.thread_status(vmPtr)}${formatFsRingDebug(handle, vmPtr)}`,
-    );
-    if (fsResultIsPending(handle, vmPtr, fsResult)) {
-      appendFsLifecycleEvent(
-        handle,
-        "pending",
-        vmPtr,
-        `:local:rv=${fsResult.toString()}${formatFsRingDebug(handle, vmPtr)}`,
-      );
-      applyLocalPostFsWake();
-      const status = handle.kernel.abi_status_fs?.() ?? -1;
-      return { kind: "blocked", status, effects };
-    }
-    const finalStatus = handle.kernel.thread_status?.(vmPtr);
-    const execveSpawnStatus = handle.kernel.abi_status_execve_spawn?.();
-    if (execveSpawnStatus !== undefined && finalStatus === execveSpawnStatus) {
-      applyLocalPostFsWake();
-      effects.push({ kind: "handle-execve-spawn", status: finalStatus });
-      return completedKernelRpcOutcome(undefined, effects);
-    }
-    applyLocalPostFsWake();
-    submitSupervisorFsReadyEvent(handle, vmPtr, finalStatus);
-    effects.push({ kind: "enqueue-worker" });
-    return completedKernelRpcOutcome(finalStatus, effects);
+    return completeFsResumeFromSupervisorDecision(handle, vmPtr, fsResult, effects, {
+      source: "local",
+      applyPostFsWake: applyLocalPostFsWake,
+    });
   }
 
   try {
@@ -1494,17 +1519,15 @@ async function resumeFsViaKernelWorkerInner(
       restoreFsRingProgress(handle, postFsRingProgress);
       clearStaleFsStatusAfterResume(handle, vmPtr, fsResult);
       handle.kernelState = readKernelRuntimeState(handle.kernel);
-      deps.appendWorkerDebugLog(handle, `fs-done:0x${vmPtr.toString(16)}:rv=${fsResult.toString()}`);
-      appendFsLifecycleEvent(
-        handle,
-        "done",
-        vmPtr,
-        `:rv=${fsResult.toString()}:status=${execveSpawnStatusAfterFs}${formatFsRingDebug(handle, vmPtr)}`,
-      );
-      deps.publishRuntimeKernelState(handle);
-      effects.push({ kind: "notify-host-effect-progress", handle });
-      effects.push({ kind: "handle-execve-spawn", status: execveSpawnStatusAfterFs });
-      return completedKernelRpcOutcome(undefined, effects);
+      return completeFsResumeFromSupervisorDecision(handle, vmPtr, fsResult, effects, {
+        source: "kernel-worker",
+        finalStatus: execveSpawnStatusAfterFs,
+        forceExecveSpawn: true,
+        applyPostFsWake: () => {
+          deps.publishRuntimeKernelState(handle);
+          effects.push({ kind: "notify-host-effect-progress", handle });
+        },
+      });
     }
     if (fsResponseDisposition.processOwnerMatches) {
       deps.assertProcessStandardFdIntegrity(handle, "resume-fs");
@@ -1556,35 +1579,10 @@ async function resumeFsViaKernelWorkerInner(
       deps.publishRuntimeKernelState(handle);
       effects.push({ kind: "notify-host-effect-progress", handle });
     };
-    deps.appendWorkerDebugLog(handle, `fs-done:0x${vmPtr.toString(16)}:rv=${fsResult.toString()}`);
-    appendFsLifecycleEvent(
-      handle,
-      "done",
-      vmPtr,
-      `:rv=${fsResult.toString()}:status=${handle.kernel.thread_status?.(vmPtr) ?? "n/a"}${formatFsRingDebug(handle, vmPtr)}`,
-    );
-    if (fsResultIsPending(handle, vmPtr, fsResult)) {
-      appendFsLifecycleEvent(
-        handle,
-        "pending",
-        vmPtr,
-        `:rv=${fsResult.toString()}${formatFsRingDebug(handle, vmPtr)}`,
-      );
-      await applyPostFsWake();
-      const status = handle.kernel.abi_status_fs();
-      return { kind: "blocked", status, effects };
-    }
-    const finalStatus = handle.kernel.thread_status?.(vmPtr);
-    const execveSpawnStatus = handle.kernel.abi_status_execve_spawn?.();
-    if (execveSpawnStatus !== undefined && finalStatus === execveSpawnStatus) {
-      await applyPostFsWake();
-      effects.push({ kind: "handle-execve-spawn", status: finalStatus });
-      return completedKernelRpcOutcome(undefined, effects);
-    }
-    await applyPostFsWake();
-    submitSupervisorFsReadyEvent(handle, vmPtr, finalStatus);
-    effects.push({ kind: "enqueue-worker" });
-    return completedKernelRpcOutcome(finalStatus, effects);
+    return completeFsResumeFromSupervisorDecision(handle, vmPtr, fsResult, effects, {
+      source: "kernel-worker",
+      applyPostFsWake,
+    });
   } catch (error) {
     const errorDetail = formatFsErrorDetail(error);
     deps.appendWorkerDebugLog(handle, `fs-err:0x${vmPtr.toString(16)}${errorDetail}`);
@@ -1596,8 +1594,6 @@ async function resumeFsViaKernelWorkerInner(
     return { kind: "process-gone", effects };
   }
 }
-
-
 
   async function resumeFsViaKernelWorkerOutcome(
     handle: ProcessHandle,
