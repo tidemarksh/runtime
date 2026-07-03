@@ -52,7 +52,6 @@ import {
 } from "../supervisor-host-op.js";
 import { acquireWorker, ensureEvictionTimer } from "../pool.js";
 import { createForkChildHandle } from "./common.js";
-import { normalizeGuestMemoryPolicyLimitBytes } from "./common.js";
 import {
   alignPipeOfdGenerationOffsets,
   reconcileInheritedSharedOfdsAfterVforkExecve,
@@ -257,38 +256,37 @@ function debugVforkVmState(
 }
 
 function currentGuestMemoryPolicyLimit(
-  handle: ProcessHandle,
   kernel: KernelExports,
   vmPtr: number,
-  fallbackPolicyLimit?: bigint,
+  spawnHandoffPolicyLimit?: bigint,
 ): bigint {
   const policyLimit = kernel.thread_guest_memory_policy_limit?.(vmPtr);
   if (policyLimit !== undefined) {
     return policyLimit < 0n ? 0n : policyLimit;
   }
-  if (fallbackPolicyLimit !== undefined) {
-    return fallbackPolicyLimit < 0n ? 0n : fallbackPolicyLimit;
+  if (spawnHandoffPolicyLimit !== undefined) {
+    return spawnHandoffPolicyLimit < 0n ? 0n : spawnHandoffPolicyLimit;
   }
-  return normalizeGuestMemoryPolicyLimitBytes(handle.guestMemoryPolicyLimitBytes);
+  throw new Error("kernel ABI missing thread_guest_memory_policy_limit");
 }
 
-function normalizeProcessMaxMemoryPages(processMaxMemoryPages: number, fallbackPages: number): number {
+function normalizeProcessMaxMemoryPages(processMaxMemoryPages: number, source: string): number {
   if (Number.isFinite(processMaxMemoryPages) && processMaxMemoryPages > 0) {
     return Math.trunc(processMaxMemoryPages);
   }
-  return fallbackPages;
+  throw new Error(`${source} invalid process max memory pages: ${processMaxMemoryPages}`);
 }
 
 function currentProcessMaxMemoryPages(
-  handle: ProcessHandle,
   kernel: KernelExports,
   vmPtr: number,
-  fallbackPages = handle.maxMemoryPages,
+  supervisorPlanMaxPages: number,
 ): number {
-  return normalizeProcessMaxMemoryPages(
-    kernel.thread_process_max_memory_pages?.(vmPtr) ?? 0,
-    fallbackPages,
-  );
+  const maxPages = kernel.thread_process_max_memory_pages?.(vmPtr);
+  if (maxPages !== undefined && maxPages > 0) {
+    return normalizeProcessMaxMemoryPages(maxPages, "kernel thread_process_max_memory_pages");
+  }
+  return normalizeProcessMaxMemoryPages(supervisorPlanMaxPages, "supervisor process memory plan");
 }
 
 function assertVforkChildHandoffState(
@@ -521,13 +519,11 @@ export async function handleVforkExecve(
     || threadAddressProfile
     || guestAddressProfileForProcessCreation(childKernel);
   const guestMemoryPolicyLimit = currentGuestMemoryPolicyLimit(
-    handle,
     childKernel,
     childVmPtr,
     handoff.guestMemoryPolicyLimit,
   );
   const processMaxMemoryPages = currentProcessMaxMemoryPages(
-    handle,
     childKernel,
     childVmPtr,
     childProcessMaxMemoryPages,

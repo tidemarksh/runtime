@@ -10,7 +10,10 @@ import type {
   ThreadWorkerInbound,
   ThreadWorkerOutbound,
 } from "../../../../src/messages.js";
-import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
+import {
+  makeSupervisorAbiStubs,
+  writeSupervisorRunnableResumeRecord,
+} from "../support/supervisor-abi.js";
 
 type WorkerModule = typeof import("../../../../src/worker.js");
 
@@ -800,7 +803,14 @@ test("vfork child fault records wait status and resumes parent on the same worke
   expect(handle.vforkSnapshot).toBeNull();
   expect(worker.terminated).toBe(false);
   expect(worker.postedMessages).toEqual([
-    { type: "step", budget: 20_000, kernelState: makeKernelState() },
+    {
+      type: "step",
+      budget: 20_000,
+      kernelState: {
+        ...makeKernelState(),
+        pipeUsed: 1n,
+      },
+    },
   ]);
 });
 
@@ -906,7 +916,7 @@ test("vfork child fault delegates wait status bookkeeping and parent resume to k
       kernelState: {
         ...makeKernelState(),
         heapPtr: makeKernelState().heapPtr + 0x24,
-        pipeUsed: 15n,
+        pipeUsed: 1n,
       },
     },
   ]);
@@ -1180,6 +1190,7 @@ test("vfork execve resumes the parent and initializes the child lifecycle throug
       kernelState: {
         ...makeKernelState(),
         heapPtr: makeKernelState().heapPtr + 0x18,
+        pipeUsed: 1n,
       },
       sabPageCache: null,
       runtimeNotify: expect.any(SharedArrayBuffer),
@@ -2582,7 +2593,7 @@ test("vfork execve handoff failure reinitializes the restored parent while a sib
         guestWriteWatchRegions: [],
         kernelState: {
           ...makeKernelState(),
-          pipeUsed: 15n,
+          pipeUsed: 1n,
         },
         sabPageCache: null,
         runtimeNotify: expect.any(SharedArrayBuffer),
@@ -3142,6 +3153,19 @@ test("child runtime errors propagate to the parent process handle", async () => 
 test("vfork child runs exclusively until the parent thread is resumed", async () => {
   const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
   const parentWorker = createdWorkers[0];
+  const parentKernel = createdKernelExports[0];
+
+  parentKernel.supervisor_process_resume = (_processVmPtr, outPtr, outLen) => {
+    if (outLen < parentKernel.supervisor_resume_record_bytes()) {
+      return 0;
+    }
+    return writeSupervisorRunnableResumeRecord(parentKernel.memory, outPtr, {
+      vmPtr: 0x1234,
+      tid: 1,
+      processPtr: parentKernel.thread_process_ptr(0x1234),
+      status: parentKernel.abi_status_ok(),
+    });
+  };
 
   emitReady(parentWorker);
   parentWorker.clearPostedMessages();
@@ -3169,6 +3193,7 @@ test("vfork child runs exclusively until the parent thread is resumed", async ()
     vmPtr: 0x1234,
     kernelState: makeKernelState(),
   });
+  await flushMicrotasks();
 
   expect(handle.vforkWorker).toBe(parentWorker);
   expect(parentWorker.postedMessages).toEqual([

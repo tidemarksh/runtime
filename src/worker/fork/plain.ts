@@ -30,7 +30,6 @@ import { acquireWorker, ensureEvictionTimer } from "../pool.js";
 import { adoptKernelStateForHandle } from "../sync.js";
 import { createForkChildHandle } from "./common.js";
 import { detachInheritedHostStdioFromChild } from "./common.js";
-import { normalizeGuestMemoryPolicyLimitBytes } from "./common.js";
 import {
   appendPlainForkMemoryDebug,
   applyForkMemorySnapshot,
@@ -82,11 +81,12 @@ async function waitForForkChildSchedulingPoint(childHandle: ProcessHandle): Prom
 }
 
 function forkChildGuestMemoryPolicyLimit(handle: ProcessHandle): bigint {
-  const inheritedLimit = handle.kernel.thread_guest_memory_policy_limit?.(handle.vmPtr);
-  if (inheritedLimit !== undefined) {
-    return inheritedLimit < 0n ? 0n : inheritedLimit;
+  const read = handle.kernel.thread_guest_memory_policy_limit;
+  if (typeof read !== "function") {
+    throw new Error("kernel ABI missing thread_guest_memory_policy_limit");
   }
-  return normalizeGuestMemoryPolicyLimitBytes(handle.guestMemoryPolicyLimitBytes);
+  const inheritedLimit = read(handle.vmPtr);
+  return inheritedLimit < 0n ? 0n : inheritedLimit;
 }
 
 function formatProcessThreadSlots(handle: ProcessHandle, vmPtr: number): string {
@@ -212,6 +212,7 @@ export async function handlePlainFork(
       debugCommand: handle.debugCommand,
       workerDebugLabel: "spawn:plain-fork",
     });
+    childHandle.maxMemoryPages = childMaxMemoryPages;
     childHandle.onError = (error: Error) => {
       if (handle.pid <= 0 || deps.processHandles.get(handle.pid) !== handle) {
         return;
