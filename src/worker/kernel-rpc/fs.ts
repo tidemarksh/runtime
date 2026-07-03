@@ -90,6 +90,22 @@ const KERNEL_RPC_FS_EFFECTS: KernelRpcFsEffects = {
   memfsFileData: 1 << 2,
 };
 
+function supervisorNumber(value: bigint | number | undefined, name: string): number {
+  const numeric = typeof value === "bigint" ? Number(value) : value;
+  if (typeof numeric !== "number" || !Number.isSafeInteger(numeric)) {
+    throw new RangeError(`invalid ${name} supervisor export value: ${String(value)}`);
+  }
+  return numeric;
+}
+
+function supervisorNumericExport(handle: ProcessHandle, exportName: string): number {
+  const read = (handle.kernel as unknown as Record<string, unknown>)[exportName];
+  if (typeof read !== "function") {
+    throw new Error(`missing ${exportName} export`);
+  }
+  return supervisorNumber((read as () => bigint | number)(), exportName);
+}
+
 interface PendingFsContext {
   opcode: number;
   effects: number;
@@ -244,7 +260,7 @@ function submitSupervisorFsReadyEvent(
     return;
   }
   const result = submitSupervisorShadowStatusEvent(handle, {
-    eventKind: handle.kernel.supervisor_thread_event_kind_backing_store_ready?.(),
+    eventKind: supervisorNumericExport(handle, "supervisor_thread_event_kind_backing_store_ready"),
     vmPtr,
     pid: handle.pid,
     tid: handle.kernel.thread_tid?.(vmPtr) ?? 0,
@@ -583,18 +599,10 @@ function supervisorFsCompletionDecision(
     options.pendingRingRequest ? 1 : 0,
     options.regularFileRequest ? 1 : 0,
   );
-  const memfsDirtyFlag = handle.kernel.supervisor_fs_completion_flag_memfs_dirty?.();
-  const memfsPublishReadyFlag = handle.kernel.supervisor_fs_completion_flag_memfs_publish_ready?.();
-  const ofdStateChangedFlag = handle.kernel.supervisor_fs_completion_flag_ofd_state_changed?.();
-  const regularFileRequestFlag = handle.kernel.supervisor_fs_completion_flag_regular_file_request?.();
-  if (
-    memfsDirtyFlag === undefined
-    || memfsPublishReadyFlag === undefined
-    || ofdStateChangedFlag === undefined
-    || regularFileRequestFlag === undefined
-  ) {
-    throw new Error("missing supervisor fs completion flag export");
-  }
+  const memfsDirtyFlag = supervisorNumericExport(handle, "supervisor_fs_completion_flag_memfs_dirty");
+  const memfsPublishReadyFlag = supervisorNumericExport(handle, "supervisor_fs_completion_flag_memfs_publish_ready");
+  const ofdStateChangedFlag = supervisorNumericExport(handle, "supervisor_fs_completion_flag_ofd_state_changed");
+  const regularFileRequestFlag = supervisorNumericExport(handle, "supervisor_fs_completion_flag_regular_file_request");
   return {
     memfsMutated: (flags & memfsDirtyFlag) !== 0,
     memfsPublishReady: (flags & memfsPublishReadyFlag) !== 0,
@@ -604,23 +612,19 @@ function supervisorFsCompletionDecision(
 }
 
 function supervisorFsResponseFlag(handle: ProcessHandle, name: keyof typeof responseFlagAccessors): number {
-  const value = responseFlagAccessors[name](handle);
-  if (value === undefined) {
-    throw new Error(`missing supervisor fs response flag export: ${name}`);
-  }
-  return value;
+  return supervisorNumericExport(handle, responseFlagAccessors[name]);
 }
 
 const responseFlagAccessors = {
-  adoptKernelState: (handle: ProcessHandle) => handle.kernel.supervisor_fs_response_flag_adopt_kernel_state?.(),
-  applyGuestMemoryWrites: (handle: ProcessHandle) => handle.kernel.supervisor_fs_response_flag_apply_guest_memory_writes?.(),
-  queueThreadWorkerWrites: (handle: ProcessHandle) => handle.kernel.supervisor_fs_response_flag_queue_thread_worker_writes?.(),
-  applyLocalMetadata: (handle: ProcessHandle) => handle.kernel.supervisor_fs_response_flag_apply_local_metadata?.(),
-  clearTombstones: (handle: ProcessHandle) => handle.kernel.supervisor_fs_response_flag_clear_tombstones?.(),
-  fdResponseMayClearLiveFds: (handle: ProcessHandle) => handle.kernel.supervisor_fs_response_flag_fd_response_may_clear_live_fds?.(),
-  storePendingKernelState: (handle: ProcessHandle) => handle.kernel.supervisor_fs_response_flag_store_pending_kernel_state?.(),
-  resolvedToExecveSpawn: (handle: ProcessHandle) => handle.kernel.supervisor_fs_response_flag_resolved_to_execve_spawn?.(),
-  processOwnerMatches: (handle: ProcessHandle) => handle.kernel.supervisor_fs_response_flag_process_owner_matches?.(),
+  adoptKernelState: "supervisor_fs_response_flag_adopt_kernel_state",
+  applyGuestMemoryWrites: "supervisor_fs_response_flag_apply_guest_memory_writes",
+  queueThreadWorkerWrites: "supervisor_fs_response_flag_queue_thread_worker_writes",
+  applyLocalMetadata: "supervisor_fs_response_flag_apply_local_metadata",
+  clearTombstones: "supervisor_fs_response_flag_clear_tombstones",
+  fdResponseMayClearLiveFds: "supervisor_fs_response_flag_fd_response_may_clear_live_fds",
+  storePendingKernelState: "supervisor_fs_response_flag_store_pending_kernel_state",
+  resolvedToExecveSpawn: "supervisor_fs_response_flag_resolved_to_execve_spawn",
+  processOwnerMatches: "supervisor_fs_response_flag_process_owner_matches",
 } as const;
 
 function supervisorFsResponseDisposition(
@@ -687,18 +691,10 @@ function supervisorFsLocalMetadataActions(
     pendingFs.path ? 1 : 0,
     pendingFs.secondaryPath ? 1 : 0,
   );
-  const none = handle.kernel.supervisor_fs_local_metadata_action_none?.();
-  const tombstonePrimary = handle.kernel.supervisor_fs_local_metadata_action_tombstone_primary?.();
-  const forgetPrimary = handle.kernel.supervisor_fs_local_metadata_action_forget_primary?.();
-  const forgetSecondary = handle.kernel.supervisor_fs_local_metadata_action_forget_secondary?.();
-  if (
-    none === undefined
-    || tombstonePrimary === undefined
-    || forgetPrimary === undefined
-    || forgetSecondary === undefined
-  ) {
-    throw new Error("missing supervisor fs local metadata action export");
-  }
+  const none = supervisorNumericExport(handle, "supervisor_fs_local_metadata_action_none");
+  const tombstonePrimary = supervisorNumericExport(handle, "supervisor_fs_local_metadata_action_tombstone_primary");
+  const forgetPrimary = supervisorNumericExport(handle, "supervisor_fs_local_metadata_action_forget_primary");
+  const forgetSecondary = supervisorNumericExport(handle, "supervisor_fs_local_metadata_action_forget_secondary");
   const known = none | tombstonePrimary | forgetPrimary | forgetSecondary;
   if ((action & ~known) !== 0) {
     throw new Error(`unknown supervisor fs local metadata action: ${action}`);

@@ -90,6 +90,7 @@ function supervisorFsResponseDispositionTestStubs(
 ): Partial<KernelExports> {
   return {
     abi_status_ok: () => 0,
+    supervisor_thread_event_kind_backing_store_ready: () => 8,
     supervisor_process_status_is_execve_spawn: (status: number) =>
       status === execveSpawnStatus() ? 1 : 0,
     supervisor_process_status_defers_kernel_state_adoption: () => 0,
