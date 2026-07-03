@@ -39,6 +39,45 @@ function writeU64(view: DataView, offset: number, value: bigint): void {
   view.setBigUint64(offset, value, true);
 }
 
+function blockedWaitWakeMaskForSync(source: number): number {
+  switch (source) {
+    case 1:
+      return 1;
+    case 2:
+      return 2;
+    case 3:
+      return 1 | 2 | 4 | 8;
+    case 4:
+      return 1 | 2;
+    default:
+      return -22;
+  }
+}
+
+function blockedWaitWakeTargetForStatus(status: number): number {
+  switch (status) {
+    case 21:
+      return 1;
+    case 22:
+      return 2;
+    case 30:
+      return 4;
+    case 29:
+      return 8;
+    default:
+      return 0;
+  }
+}
+
+function blockedWaitStatusMatchesWakeSource(status: number, source: number): number {
+  const mask = blockedWaitWakeMaskForSync(source);
+  if (mask < 0) {
+    return mask;
+  }
+  const target = blockedWaitWakeTargetForStatus(status);
+  return target !== 0 && (mask & target) !== 0 ? 1 : 0;
+}
+
 function writeCloneSpawnHostOpRecord(
   memory: WebAssembly.Memory,
   ptr: number,
@@ -215,6 +254,8 @@ function makeHandle(worker: Worker) {
         status === 21 ? 1 : 0,
       supervisor_blocked_status_is_wait4: (status: number) =>
         status === 31 ? 1 : 0,
+      supervisor_blocked_status_is_socket_wait: (status: number) =>
+        [29, 30].includes(status) ? 1 : 0,
       supervisor_blocked_status_needs_network_sidecar_restore: (status: number) =>
         [21, 22, 28, 29, 30].includes(status) ? 1 : 0,
       supervisor_blocked_status_syncs_socket_after_resume: (status: number) =>
@@ -229,20 +270,8 @@ function makeHandle(worker: Worker) {
       supervisor_blocked_wait_wake_target_epoll_wait: () => 2,
       supervisor_blocked_wait_wake_target_socket_recv: () => 4,
       supervisor_blocked_wait_wake_target_socket_send: () => 8,
-      supervisor_blocked_wait_wake_mask_for_sync: (source: number) => {
-        switch (source) {
-          case 1:
-            return 1;
-          case 2:
-            return 2;
-          case 3:
-            return 1 | 2 | 4 | 8;
-          case 4:
-            return 1 | 2;
-          default:
-            return -22;
-        }
-      },
+      supervisor_blocked_wait_wake_mask_for_sync: blockedWaitWakeMaskForSync,
+      supervisor_blocked_wait_status_matches_wake_source: blockedWaitStatusMatchesWakeSource,
       supervisor_blocked_wait_timer_required: () => 0,
       abi_eagain: () => -11,
       abi_econnrefused: () => 111,

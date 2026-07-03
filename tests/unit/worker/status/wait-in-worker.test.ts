@@ -47,6 +47,8 @@ test("waitInWorker debug log keeps compact futex fields", () => {
         supervisor_blocked_status_is_epoll_wait: (status: number) => status === 22 ? 1 : 0,
         supervisor_blocked_status_is_pipe_wait: (status: number) => status === 21 ? 1 : 0,
         supervisor_blocked_status_is_wait4: (status: number) => status === 31 ? 1 : 0,
+        supervisor_blocked_status_is_socket_wait: (status: number) =>
+          status === 23 || status === 24 ? 1 : 0,
         kernel_heap_ptr: () => 0,
         supervisor_host_op_record_bytes: () => 64,
         supervisor_next_host_op: () => 0,
@@ -252,6 +254,8 @@ test("waitInWorker defers local pipe drain when kernel-worker owns pipe state", 
         supervisor_blocked_status_is_epoll_wait: (status: number) => status === 22 ? 1 : 0,
         supervisor_blocked_status_is_pipe_wait: (status: number) => status === 21 ? 1 : 0,
         supervisor_blocked_status_is_wait4: (status: number) => status === 31 ? 1 : 0,
+        supervisor_blocked_status_is_socket_wait: (status: number) =>
+          status === 23 || status === 24 ? 1 : 0,
       },
       kernelState,
       runtimeBridge: {
@@ -353,6 +357,8 @@ test("waitInWorker WAIT4 routes to owner-side blocked scheduling with kernel-wor
       supervisor_blocked_status_is_epoll_wait: (status: number) => status === 22 ? 1 : 0,
       supervisor_blocked_status_is_pipe_wait: (status: number) => status === 21 ? 1 : 0,
       supervisor_blocked_status_is_wait4: (status: number) => status === 20 ? 1 : 0,
+      supervisor_blocked_status_is_socket_wait: (status: number) =>
+        status === 23 || status === 24 ? 1 : 0,
     },
     kernelState,
     runtimeBridge: {

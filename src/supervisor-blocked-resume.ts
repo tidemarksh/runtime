@@ -30,10 +30,6 @@ export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC = 1;
 export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC = 2;
 export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC = 3;
 export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_AND_EPOLL_SYNC = 4;
-export const SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_PIPE_WAIT = 1;
-export const SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_EPOLL_WAIT = 1 << 1;
-export const SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_SOCKET_RECV = 1 << 2;
-export const SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_SOCKET_SEND = 1 << 3;
 export const SUPERVISOR_STATE_SYNC_KIND_PIPE = 1;
 export const SUPERVISOR_STATE_SYNC_KIND_EPOLL = 2;
 export const SUPERVISOR_STATE_SYNC_KIND_SOCKET = 3;
@@ -207,6 +203,13 @@ export function supervisorBlockedStatusIsWait4(
   return supervisorBlockedStatusFact(kernel, status, "supervisor_blocked_status_is_wait4");
 }
 
+export function supervisorBlockedStatusIsSocketWait(
+  kernel: KernelExports,
+  status: number,
+): boolean {
+  return supervisorBlockedStatusFact(kernel, status, "supervisor_blocked_status_is_socket_wait");
+}
+
 export function supervisorBlockedStatusNeedsNetworkSidecarRestore(
   kernel: KernelExports,
   status: number,
@@ -236,6 +239,7 @@ function supervisorBlockedStatusFact(
     | "supervisor_blocked_status_is_epoll_wait"
     | "supervisor_blocked_status_is_pipe_wait"
     | "supervisor_blocked_status_is_wait4"
+    | "supervisor_blocked_status_is_socket_wait"
     | "supervisor_blocked_status_needs_network_sidecar_restore"
     | "supervisor_blocked_status_syncs_socket_after_resume"
     | "supervisor_blocked_status_uses_fork_shared_state_sync",
@@ -732,109 +736,49 @@ function supervisorBlockedWaitWakeSourceValue(
   }
 }
 
-function supervisorBlockedWaitWakeTargetPipeWait(kernel: KernelExports): number {
-  return kernel.supervisor_blocked_wait_wake_target_pipe_wait?.()
-    ?? SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_PIPE_WAIT;
-}
-
-function supervisorBlockedWaitWakeTargetEpollWait(kernel: KernelExports): number {
-  return kernel.supervisor_blocked_wait_wake_target_epoll_wait?.()
-    ?? SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_EPOLL_WAIT;
-}
-
-function supervisorBlockedWaitWakeTargetSocketRecv(kernel: KernelExports): number {
-  return kernel.supervisor_blocked_wait_wake_target_socket_recv?.()
-    ?? SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_SOCKET_RECV;
-}
-
-function supervisorBlockedWaitWakeTargetSocketSend(kernel: KernelExports): number {
-  return kernel.supervisor_blocked_wait_wake_target_socket_send?.()
-    ?? SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_SOCKET_SEND;
-}
-
-export function supervisorBlockedWaitWakeMaskForSync(
+export function supervisorBlockedWaitStatusMatchesWakeSource(
   kernel: KernelExports,
+  status: number,
   source: SupervisorBlockedWaitWakeSource,
-): number {
-  const readMask = kernel.supervisor_blocked_wait_wake_mask_for_sync;
-  if (readMask === undefined) {
-    throw new Error("kernel supervisor ABI missing supervisor_blocked_wait_wake_mask_for_sync");
+): boolean {
+  const readMatch = kernel.supervisor_blocked_wait_status_matches_wake_source;
+  if (readMatch === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_blocked_wait_status_matches_wake_source");
   }
-  const result = readMask(supervisorBlockedWaitWakeSourceValue(kernel, source));
+  const result = readMatch.call(kernel, status, supervisorBlockedWaitWakeSourceValue(kernel, source));
   if (result < 0) {
-    throw new Error(`kernel supervisor blocked wait wake mask failed: ${result}`);
+    throw new Error(`kernel supervisor blocked wait status wake match failed: ${result}`);
   }
-  return result;
-}
-
-export function supervisorBlockedWaitWakeStatuses(
-  kernel: KernelExports,
-  mask: number,
-): Set<number> {
-  const statuses = new Set<number>();
-  if ((mask & supervisorBlockedWaitWakeTargetPipeWait(kernel)) !== 0) {
-    statuses.add(kernel.abi_status_pipe_wait());
-  }
-  if ((mask & supervisorBlockedWaitWakeTargetEpollWait(kernel)) !== 0) {
-    statuses.add(kernel.abi_status_epoll_wait());
-  }
-  if ((mask & supervisorBlockedWaitWakeTargetSocketRecv(kernel)) !== 0) {
-    statuses.add(kernel.abi_status_socket_recv());
-  }
-  if ((mask & supervisorBlockedWaitWakeTargetSocketSend(kernel)) !== 0) {
-    statuses.add(kernel.abi_status_socket_send());
-  }
-  return statuses;
+  return result !== 0;
 }
 
 export function supervisorBlockedWaitStatusMatchesPipeWait(
   kernel: KernelExports,
   status: number,
 ): boolean {
-  if (status !== kernel.abi_status_pipe_wait()) {
-    return false;
-  }
-  const mask = supervisorBlockedWaitWakeMaskForSync(
+  return supervisorBlockedWaitStatusMatchesWakeSource(
     kernel,
+    status,
     SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC,
   );
-  return (mask & supervisorBlockedWaitWakeTargetPipeWait(kernel)) !== 0;
 }
 
 export function supervisorBlockedWaitStatusMatchesEpollWait(
   kernel: KernelExports,
   status: number,
 ): boolean {
-  if (status !== kernel.abi_status_epoll_wait()) {
-    return false;
-  }
-  const mask = supervisorBlockedWaitWakeMaskForSync(
+  return supervisorBlockedWaitStatusMatchesWakeSource(
     kernel,
+    status,
     SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC,
   );
-  return (mask & supervisorBlockedWaitWakeTargetEpollWait(kernel)) !== 0;
 }
 
 export function supervisorBlockedWaitStatusMatchesSocketWait(
   kernel: KernelExports,
   status: number,
 ): boolean {
-  const socketRecvStatus = kernel.abi_status_socket_recv();
-  const socketSendStatus = kernel.abi_status_socket_send();
-  if (status !== socketRecvStatus && status !== socketSendStatus) {
-    return false;
-  }
-  const mask = supervisorBlockedWaitWakeMaskForSync(
-    kernel,
-    SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC,
-  );
-  return (
-    status === socketRecvStatus
-    && (mask & supervisorBlockedWaitWakeTargetSocketRecv(kernel)) !== 0
-  ) || (
-    status === socketSendStatus
-    && (mask & supervisorBlockedWaitWakeTargetSocketSend(kernel)) !== 0
-  );
+  return supervisorBlockedStatusIsSocketWait(kernel, status);
 }
 
 export function supervisorBlockedWaitTimerRequired(

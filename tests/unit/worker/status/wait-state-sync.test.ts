@@ -698,6 +698,11 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
       status === exports.abi_status_pipe_wait() ? 1 : 0,
     supervisor_blocked_status_is_wait4: (status) =>
       status === exports.abi_status_wait4() ? 1 : 0,
+    supervisor_blocked_status_is_socket_wait: (status) =>
+      [
+        exports.abi_status_socket_recv(),
+        exports.abi_status_socket_send(),
+      ].includes(status) ? 1 : 0,
     supervisor_blocked_status_needs_network_sidecar_restore: (status) =>
       [
         exports.abi_status_connect(),

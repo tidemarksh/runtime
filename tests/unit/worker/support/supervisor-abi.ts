@@ -60,6 +60,7 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_status_is_epoll_wait: 0,
   supervisor_blocked_status_is_pipe_wait: 0,
   supervisor_blocked_status_is_wait4: 0,
+  supervisor_blocked_status_is_socket_wait: 0,
   supervisor_blocked_status_needs_network_sidecar_restore: 0,
   supervisor_blocked_status_syncs_socket_after_resume: 0,
   supervisor_blocked_status_uses_fork_shared_state_sync: 0,
@@ -244,6 +245,11 @@ export function makeSupervisorAbiStubs(
     statusMatchesAny(receiver, status, ["abi_status_pipe_wait"]);
   const supervisorStatusIsWait4 = (receiver: Partial<KernelExports>, status: number): boolean =>
     statusMatchesAny(receiver, status, ["abi_status_wait4"]);
+  const supervisorStatusIsSocketWait = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, [
+      "abi_status_socket_recv",
+      "abi_status_socket_send",
+    ]);
   const supervisorStatusNeedsNetworkSidecarRestore = (receiver: Partial<KernelExports>, status: number): boolean =>
     statusMatchesAny(receiver, status, [
       "abi_status_connect",
@@ -265,6 +271,54 @@ export function makeSupervisorAbiStubs(
       "abi_status_socket_send",
       "abi_status_flock_wait",
     ]);
+  const supervisorWaitWakeMaskForSync = (source: number): number => {
+    switch (source) {
+      case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_source_pipe_sync:
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_pipe_wait;
+      case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_source_epoll_sync:
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_epoll_wait;
+      case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_source_socket_sync:
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_pipe_wait
+          | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_epoll_wait
+          | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_socket_recv
+          | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_socket_send;
+      case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_source_pipe_and_epoll_sync:
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_pipe_wait
+          | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_epoll_wait;
+      default:
+        return -22;
+    }
+  };
+  const supervisorWaitWakeTargetForStatus = (
+    receiver: Partial<KernelExports>,
+    status: number,
+  ): number => {
+    if (callOptionalNumber(receiver, "abi_status_pipe_wait") === status) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_pipe_wait;
+    }
+    if (callOptionalNumber(receiver, "abi_status_epoll_wait") === status) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_epoll_wait;
+    }
+    if (callOptionalNumber(receiver, "abi_status_socket_recv") === status) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_socket_recv;
+    }
+    if (callOptionalNumber(receiver, "abi_status_socket_send") === status) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_socket_send;
+    }
+    return 0;
+  };
+  const supervisorWaitStatusMatchesWakeSource = (
+    receiver: Partial<KernelExports>,
+    status: number,
+    source: number,
+  ): number => {
+    const mask = supervisorWaitWakeMaskForSync(source);
+    if (mask < 0) {
+      return mask;
+    }
+    const target = supervisorWaitWakeTargetForStatus(receiver, status);
+    return target !== 0 && (mask & target) !== 0 ? 1 : 0;
+  };
   const supervisorPollWaitHasSocket = (receiver: Partial<KernelExports>, vmPtr: number): boolean =>
     vmPtr !== 0
     && statusFor(receiver, vmPtr) === pipeWaitStatusFor(receiver)
@@ -510,6 +564,9 @@ export function makeSupervisorAbiStubs(
     supervisor_blocked_status_is_wait4(this: KernelExports | undefined, status: number) {
       return supervisorStatusIsWait4(currentExports(this), status) ? 1 : 0;
     },
+    supervisor_blocked_status_is_socket_wait(this: KernelExports | undefined, status: number) {
+      return supervisorStatusIsSocketWait(currentExports(this), status) ? 1 : 0;
+    },
     supervisor_blocked_status_needs_network_sidecar_restore(this: KernelExports | undefined, status: number) {
       return supervisorStatusNeedsNetworkSidecarRestore(currentExports(this), status) ? 1 : 0;
     },
@@ -644,22 +701,14 @@ export function makeSupervisorAbiStubs(
       return processEpollDependentOfdIds(currentExports(this), vmPtr)[index] ?? 0;
     },
     supervisor_blocked_wait_wake_mask_for_sync(_source: number) {
-      switch (_source) {
-        case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_source_pipe_sync:
-          return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_pipe_wait;
-        case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_source_epoll_sync:
-          return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_epoll_wait;
-        case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_source_socket_sync:
-          return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_pipe_wait
-            | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_epoll_wait
-            | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_socket_recv
-            | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_socket_send;
-        case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_source_pipe_and_epoll_sync:
-          return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_pipe_wait
-            | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_epoll_wait;
-        default:
-          return -22;
-      }
+      return supervisorWaitWakeMaskForSync(_source);
+    },
+    supervisor_blocked_wait_status_matches_wake_source(
+      this: KernelExports | undefined,
+      status: number,
+      source: number,
+    ) {
+      return supervisorWaitStatusMatchesWakeSource(currentExports(this), status, source);
     },
     supervisor_stdio_output_settle_max_passes(kind: number) {
       switch (kind) {

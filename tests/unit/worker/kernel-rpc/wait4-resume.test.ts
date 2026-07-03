@@ -162,6 +162,7 @@ const MOCK_PIPE_SLOT_BYTES = 32 + 65_536;
 
 function addSupervisorRuntimeExportStubs(exports: KernelExports): void {
   const target = exports as unknown as Record<string, (...args: unknown[]) => number | bigint>;
+  installSupervisorBlockedResumeStub(exports);
   for (const name of requiredSupervisorRuntimeExportNames()) {
     if (typeof target[name] !== "function") {
       target[name] = () => (name === "supervisor_abi_version" ? 1 : 0);
@@ -194,7 +195,6 @@ function addSupervisorRuntimeExportStubs(exports: KernelExports): void {
     view.setBigUint64(outPtr + 40, 1n, true);
     return 48;
   };
-  installSupervisorBlockedResumeStub(exports);
 }
 
 function emitReady(
@@ -668,6 +668,7 @@ test("STATUS_WAIT4 retries through thread_resume_wait4 instead of generic blocke
   });
 
   vi.advanceTimersByTime(15);
+  await flushMicrotasks();
 
   expect(resumeWait4).toHaveBeenCalledWith(0x1234);
   expect(resumeBlocked).not.toHaveBeenCalled();

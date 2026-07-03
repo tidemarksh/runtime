@@ -191,6 +191,23 @@ function makeKernel() {
             return -22;
         }
       },
+      supervisor_blocked_wait_status_matches_wake_source: (status: number, source: number) => {
+        const mask = kernel.exports.supervisor_blocked_wait_wake_mask_for_sync(source);
+        if (mask < 0) {
+          return mask;
+        }
+        let target = 0;
+        if (status === kernel.exports.abi_status_pipe_wait()) {
+          target = kernel.exports.supervisor_blocked_wait_wake_target_pipe_wait();
+        } else if (status === kernel.exports.abi_status_epoll_wait()) {
+          target = kernel.exports.supervisor_blocked_wait_wake_target_epoll_wait();
+        } else if (status === kernel.exports.abi_status_socket_recv()) {
+          target = kernel.exports.supervisor_blocked_wait_wake_target_socket_recv();
+        } else if (status === kernel.exports.abi_status_socket_send()) {
+          target = kernel.exports.supervisor_blocked_wait_wake_target_socket_send();
+        }
+        return target !== 0 && (mask & target) !== 0 ? 1 : 0;
+      },
       supervisor_blocked_epoll_watches_pipe: () => 0,
       supervisor_blocked_epoll_watched_ofd: () => 0,
       supervisor_blocked_wait_active_child_pid: (vmPtr: number) => {

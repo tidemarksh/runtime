@@ -16,12 +16,12 @@ import {
   supervisorBlockedPipeSyncBeforeRetryClear,
   supervisorBlockedStatusIsEpollWait,
   supervisorBlockedStatusIsPipeWait,
-  supervisorBlockedWaitWakeMaskForSync,
-  supervisorBlockedWaitWakeStatuses,
+  supervisorBlockedWaitStatusMatchesWakeSource,
   supervisorStateSyncClear,
   supervisorStateSyncComplete,
   supervisorStateSyncNextRun,
   supervisorStateSyncRequest,
+  type SupervisorBlockedWaitWakeSource,
 } from "../../supervisor-blocked-resume.js";
 import {
   collectHeldEpollDependentOfdIdsByType,
@@ -115,7 +115,7 @@ export function createWorkerSchedulerStateSyncHelpers(
 
   function wakeBlockedWaitersInKernelShare(
     handle: ProcessHandle,
-    wakeMask: number,
+    wakeSource: SupervisorBlockedWaitWakeSource,
     pipeUsed?: bigint,
   ): void {
     for (const member of handle.kernelShare.members) {
@@ -125,18 +125,21 @@ export function createWorkerSchedulerStateSyncHelpers(
           pipeUsed: composeHandlePipeUsed(member, pipeUsed),
         };
       }
-      const blockedStatuses = supervisorBlockedWaitWakeStatuses(member.kernel, wakeMask);
       const shouldWake = [...member.workers].some((candidate) => {
         const state = deps.threadWorkerStates.get(candidate);
         return state !== undefined
           && state.waitingInWorkerStatus !== null
-          && blockedStatuses.has(state.waitingInWorkerStatus);
+          && supervisorBlockedWaitStatusMatchesWakeSource(
+            member.kernel,
+            state.waitingInWorkerStatus,
+            wakeSource,
+          );
       });
       if (shouldWake) {
         publishKernelRuntimeState(member.runtimeBridge, member.kernelState, true);
       }
       for (const [blockedWorker, blocked] of member.hostBlockedWorkers) {
-        if (blockedStatuses.has(blocked.status)) {
+        if (supervisorBlockedWaitStatusMatchesWakeSource(member.kernel, blocked.status, wakeSource)) {
           if (supervisorBlockedStatusIsPipeWait(member.kernel, blocked.status)) {
             if (blocked.rpcPending) {
               continue;
@@ -172,10 +175,7 @@ export function createWorkerSchedulerStateSyncHelpers(
   function wakePipeAndEpollWaitersInKernelShare(handle: ProcessHandle, pipeUsed: bigint): void {
     wakeBlockedWaitersInKernelShare(
       handle,
-      supervisorBlockedWaitWakeMaskForSync(
-        handle.kernel,
-        SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_AND_EPOLL_SYNC,
-      ),
+      SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_AND_EPOLL_SYNC,
       pipeUsed,
     );
   }
@@ -183,10 +183,7 @@ export function createWorkerSchedulerStateSyncHelpers(
   function wakePipeWaitersInKernelShare(handle: ProcessHandle, pipeUsed: bigint): void {
     wakeBlockedWaitersInKernelShare(
       handle,
-      supervisorBlockedWaitWakeMaskForSync(
-        handle.kernel,
-        SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC,
-      ),
+      SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC,
       pipeUsed,
     );
   }
@@ -194,10 +191,7 @@ export function createWorkerSchedulerStateSyncHelpers(
   function retryEpollWaitersInKernelShare(handle: ProcessHandle): void {
     wakeBlockedWaitersInKernelShare(
       handle,
-      supervisorBlockedWaitWakeMaskForSync(
-        handle.kernel,
-        SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC,
-      ),
+      SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC,
     );
   }
 
@@ -223,10 +217,7 @@ export function createWorkerSchedulerStateSyncHelpers(
     }
     wakeBlockedWaitersInKernelShare(
       handle,
-      supervisorBlockedWaitWakeMaskForSync(
-        handle.kernel,
-        SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC,
-      ),
+      SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC,
     );
   }
 
@@ -463,10 +454,7 @@ export function createWorkerSchedulerStateSyncHelpers(
             } else {
               wakeBlockedWaitersInKernelShare(
                 handle,
-                supervisorBlockedWaitWakeMaskForSync(
-                  handle.kernel,
-                  SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC,
-                ),
+                SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC,
                 pipeUsed,
               );
             }
