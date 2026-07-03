@@ -331,6 +331,36 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     return numeric;
   }
 
+  function supervisorMetadataFullSyncRequired(
+    processExports: KernelExports,
+    treeMutated: boolean,
+    handledMetadataMutation: boolean,
+  ): boolean {
+    const decide = processExports.supervisor_fs_metadata_full_sync_decision;
+    if (typeof decide !== "function") {
+      throw new Error("missing supervisor_fs_metadata_full_sync_decision export");
+    }
+    const decision = supervisorNumber(
+      decide(treeMutated ? 1 : 0, handledMetadataMutation ? 1 : 0),
+      "supervisor metadata full-sync decision",
+    );
+    const none = supervisorNumber(
+      processExports.supervisor_fs_metadata_full_sync_action_none?.(),
+      "supervisor metadata full-sync none action",
+    );
+    const required = supervisorNumber(
+      processExports.supervisor_fs_metadata_full_sync_action_required?.(),
+      "supervisor metadata full-sync required action",
+    );
+    if (decision === none) {
+      return false;
+    }
+    if (decision === required) {
+      return true;
+    }
+    throw new Error(`unknown supervisor metadata full-sync decision: ${decision}`);
+  }
+
   function readPendingMmapGuestWriteRequest(
     processExports: KernelExports,
     vmPtr: number,
@@ -677,7 +707,11 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       }
     }
 
-    const needsMetadataFullSync = treeMutated && !handledMetadataMutation;
+    const needsMetadataFullSync = supervisorMetadataFullSyncRequired(
+      processExports,
+      treeMutated,
+      handledMetadataMutation,
+    );
 
     return {
       memfsMutated: treeMutated || fileDataMutated,

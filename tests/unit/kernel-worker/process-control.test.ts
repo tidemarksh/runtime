@@ -467,6 +467,11 @@ function makeKernelExports(options: {
     },
     supervisor_fs_backing_fill_mode_resident: () => 0,
     supervisor_fs_backing_fill_mode_direct: () => 1,
+    supervisor_fs_metadata_full_sync_action_none: () => 0,
+    supervisor_fs_metadata_full_sync_action_required: () => 1,
+    supervisor_fs_metadata_full_sync_decision: (treeMutated, handledMetadataMutation) => (
+      treeMutated !== 0 && handledMetadataMutation === 0 ? 1 : 0
+    ),
     supervisor_fs_backing_fill_probe_direct: supervisorBackingFillProbeDirect,
     supervisor_fs_backing_fill_mode_decision: supervisorBackingFillModeDecision,
     supervisor_fs_resident_page_evict_not_found: () => 0,
@@ -2137,6 +2142,10 @@ test("processFs uses targeted metadata sync for absolute mkdir paths", async () 
     resumeResult: 0,
     path: "/work/cache",
   });
+  const metadataFullSyncDecision = vi.fn((treeMutated: number, handledMetadataMutation: number) => (
+    treeMutated !== 0 && handledMetadataMutation === 0 ? 1 : 0
+  ));
+  processExports.supervisor_fs_metadata_full_sync_decision = metadataFullSyncDecision;
   const processKernels = new Map<number, KernelExports>([[7, processExports]]);
   const copyMemfsCalls: boolean[] = [];
   const syncedPaths: string[] = [];
@@ -2199,6 +2208,7 @@ test("processFs uses targeted metadata sync for absolute mkdir paths", async () 
 
   expect(result.memfsMutated).toBe(true);
   expect(syncedPaths).toEqual(["/work/cache"]);
+  expect(metadataFullSyncDecision).toHaveBeenCalledWith(1, 1);
   expect(copyMemfsCalls).toEqual([]);
 });
 
@@ -2211,6 +2221,10 @@ test("processFs falls back to metadata-only sync for Memory64 path pointers outs
     path: "/work/cache",
     pathPtr: BigInt(Number.MAX_SAFE_INTEGER) + 1n,
   });
+  const metadataFullSyncDecision = vi.fn((treeMutated: number, handledMetadataMutation: number) => (
+    treeMutated !== 0 && handledMetadataMutation === 0 ? 1 : 0
+  ));
+  processExports.supervisor_fs_metadata_full_sync_decision = metadataFullSyncDecision;
   const processKernels = new Map<number, KernelExports>([[7, processExports]]);
   const copyMemfsCalls: boolean[] = [];
   const syncedPaths: string[] = [];
@@ -2276,6 +2290,7 @@ test("processFs falls back to metadata-only sync for Memory64 path pointers outs
 
   expect(result.memfsMutated).toBe(true);
   expect(syncedPaths).toEqual([]);
+  expect(metadataFullSyncDecision).toHaveBeenCalledWith(1, 0);
   expect(copyMemfsCalls).toEqual([false]);
   expect(fanoutCalls).toEqual([false]);
 });

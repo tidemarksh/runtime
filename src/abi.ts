@@ -227,6 +227,8 @@ export interface KernelExports {
   supervisor_fs_metadata_sync_action_remove?(): number;
   supervisor_fs_metadata_sync_action_ensure?(): number;
   supervisor_fs_metadata_sync_action_publish_ensure?(): number;
+  supervisor_fs_metadata_full_sync_action_none?(): number;
+  supervisor_fs_metadata_full_sync_action_required?(): number;
   supervisor_fs_metadata_backing_none?(): number;
   supervisor_fs_metadata_backing_published?(): number;
   supervisor_fs_metadata_backing_backing?(): number;
@@ -431,6 +433,10 @@ export interface KernelExports {
   ): number;
   supervisor_fs_metadata_sync_size?(): bigint | number;
   supervisor_fs_metadata_sync_backing_source?(): number;
+  supervisor_fs_metadata_full_sync_decision?(
+    treeMutated: number,
+    handledMetadataMutation: number,
+  ): number;
   supervisor_fs_backing_object_decision?(
     op: number,
     ino: number,
@@ -1444,6 +1450,9 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_dirty_prepare_publish_none",
   "supervisor_fs_dirty_prepare_publish_missing",
   "supervisor_fs_dirty_prepare_publish_size_update",
+  "supervisor_fs_metadata_full_sync_action_none",
+  "supervisor_fs_metadata_full_sync_action_required",
+  "supervisor_fs_metadata_full_sync_decision",
   "supervisor_fs_backing_fill_mode_resident",
   "supervisor_fs_backing_fill_mode_direct",
   "supervisor_fs_backing_fill_span_offset",

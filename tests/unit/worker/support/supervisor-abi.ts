@@ -68,6 +68,8 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_futex_wait_completion_not_equal: 2,
   supervisor_futex_wait_completion_invalid_address: 4,
   supervisor_futex_wait_completion_signal_check: 5,
+  supervisor_fs_metadata_full_sync_action_none: 0,
+  supervisor_fs_metadata_full_sync_action_required: 1,
 };
 
 export interface SupervisorRunnableResumeRecordFixture {
@@ -342,6 +344,11 @@ export function makeSupervisorAbiStubs(
     },
     supervisor_fs_backing_fill_span_length() {
       return latestBackingFillSpan.length;
+    },
+    supervisor_fs_metadata_full_sync_decision(treeMutated: number, handledMetadataMutation: number) {
+      return treeMutated !== 0 && handledMetadataMutation === 0
+        ? DEFAULT_NUMERIC_EXPORTS.supervisor_fs_metadata_full_sync_action_required
+        : DEFAULT_NUMERIC_EXPORTS.supervisor_fs_metadata_full_sync_action_none;
     },
     supervisor_fs_pending_mmap_guest_write_ptr() {
       return 0;
