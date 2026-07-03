@@ -34,6 +34,8 @@ export const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE_AND_FORK_SHAR
 export const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET_AND_FORK_SHARED = 5;
 const SUPERVISOR_BLOCKED_STATUS_TRANSITION_FLAG_KERNEL_WORKER_AVAILABLE = 1;
 const SUPERVISOR_BLOCKED_STATUS_TRANSITION_FLAG_NETWORK_CONNECTIONS_AVAILABLE = 1 << 1;
+export const SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_SKIP = 0;
+export const SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_PUMP = 1;
 export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC = 1;
 export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC = 2;
 export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC = 3;
@@ -84,6 +86,10 @@ export type SupervisorBlockedStatusTransitionAction =
   | typeof SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_FORK_SHARED
   | typeof SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE_AND_FORK_SHARED
   | typeof SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET_AND_FORK_SHARED;
+
+export type SupervisorBlockedWaitNetworkPumpAction =
+  | typeof SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_SKIP
+  | typeof SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_PUMP;
 
 export type SupervisorBlockedWaitWakeSource =
   | typeof SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC
@@ -528,6 +534,82 @@ export function supervisorBlockedStatusTransitionAction(
     throw new Error(`kernel supervisor blocked status transition action failed: ${result}`);
   }
   return normalizeSupervisorBlockedStatusTransitionAction(kernel, result);
+}
+
+function supervisorBlockedWaitNetworkPumpActionValue(
+  kernel: KernelExports,
+  action: SupervisorBlockedWaitNetworkPumpAction,
+): number {
+  switch (action) {
+    case SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_SKIP:
+      return kernel.supervisor_blocked_wait_network_pump_action_skip?.() ?? action;
+    case SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_PUMP:
+      return kernel.supervisor_blocked_wait_network_pump_action_pump?.() ?? action;
+    default: {
+      const exhaustive: never = action;
+      return exhaustive;
+    }
+  }
+}
+
+function normalizeSupervisorBlockedWaitNetworkPumpAction(
+  kernel: KernelExports,
+  result: number,
+): SupervisorBlockedWaitNetworkPumpAction {
+  const actions: SupervisorBlockedWaitNetworkPumpAction[] = [
+    SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_SKIP,
+    SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_PUMP,
+  ];
+  for (const action of actions) {
+    if (result === supervisorBlockedWaitNetworkPumpActionValue(kernel, action)) {
+      return action;
+    }
+  }
+  throw new Error(`kernel supervisor blocked wait network pump action is unknown: ${result}`);
+}
+
+export function supervisorBlockedWaitNetworkPumpAction(
+  kernel: KernelExports,
+  vmPtr: number,
+): SupervisorBlockedWaitNetworkPumpAction {
+  const readAction = kernel.supervisor_blocked_wait_network_pump_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor blocked wait network pump action export is missing");
+  }
+  const result = readAction(vmPtr);
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked wait network pump action failed: ${result}`);
+  }
+  return normalizeSupervisorBlockedWaitNetworkPumpAction(kernel, result);
+}
+
+export function supervisorCompleteBlockedWaitNetworkPump(
+  kernel: KernelExports,
+  vmPtr: number,
+  changed: boolean,
+): void {
+  const complete = kernel.supervisor_complete_blocked_wait_network_pump;
+  if (complete === undefined) {
+    throw new Error("kernel supervisor blocked wait network pump completion export is missing");
+  }
+  const result = complete(vmPtr, changed ? 1 : 0);
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked wait network pump completion failed: ${result}`);
+  }
+}
+
+export function supervisorClearBlockedWaitNetworkPump(
+  kernel: KernelExports,
+  vmPtr: number,
+): void {
+  const clear = kernel.supervisor_clear_blocked_wait_network_pump;
+  if (clear === undefined) {
+    throw new Error("kernel supervisor blocked wait network pump clear export is missing");
+  }
+  const result = clear(vmPtr);
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked wait network pump clear failed: ${result}`);
+  }
 }
 
 function supervisorStateSyncKindValue(

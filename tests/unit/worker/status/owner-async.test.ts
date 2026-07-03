@@ -173,7 +173,6 @@ test("owner-async STATUS_FS return clears stale blocked wait4 rpc for the same w
     status: 31,
     rpcPending: true,
     rpcGeneration: 3,
-    skipNextNetworkPump: false,
   });
   const thread = makeThreadState({
     ownerAsyncStatus: 6,
@@ -226,7 +225,6 @@ test("owner-async STATUS_FS return preserves matching blocked FS rpc", () => {
     status: 6,
     rpcPending: true,
     rpcGeneration: 3,
-    skipNextNetworkPump: false,
   };
   handle.hostBlockedWorkers.set(worker, blocked);
   const thread = makeThreadState({

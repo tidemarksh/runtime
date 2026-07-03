@@ -388,7 +388,6 @@ test("host boundary reports blocked retry timer expiry to supervisor before retr
     status: kernel.abi_status_pipe_wait(),
     rpcPending: false,
     rpcGeneration: 3,
-    skipNextNetworkPump: false,
   });
 
   const scheduler = createWorkerScheduler({

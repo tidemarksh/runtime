@@ -89,6 +89,8 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_status_transition_action_sync_socket_and_fork_shared: 5,
   supervisor_blocked_status_transition_flag_kernel_worker_available: 1,
   supervisor_blocked_status_transition_flag_network_connections_available: 2,
+  supervisor_blocked_wait_network_pump_action_skip: 0,
+  supervisor_blocked_wait_network_pump_action_pump: 1,
   supervisor_state_sync_kind_pipe: 1,
   supervisor_state_sync_kind_epoll: 2,
   supervisor_state_sync_kind_socket: 3,
@@ -189,6 +191,7 @@ export function makeSupervisorAbiStubs(
   overrides: SupervisorAbiStubOverrides = {},
 ): Partial<KernelExports> {
   const cloneSpawnHostOpChildVmPtrs = new Map<number, number>();
+  const networkPumpBackoffs = new Set<number>();
   const stateSyncRequests = new Map<string, { queuedRunFlags: number; inFlight: boolean }>();
   const currentExports = (receiver: KernelExports | undefined): Partial<KernelExports> =>
     receiver ?? overrides.currentExports?.() ?? overrides;
@@ -734,6 +737,34 @@ export function makeSupervisorAbiStubs(
         return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_status_transition_action_sync_socket_and_fork_shared;
       }
       return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_status_transition_action_sync_fork_shared;
+    },
+    supervisor_blocked_wait_network_pump_action(vmPtr: number) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      if (!networkPumpBackoffs.has(vmPtr)) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_network_pump_action_pump;
+      }
+      networkPumpBackoffs.delete(vmPtr);
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_network_pump_action_skip;
+    },
+    supervisor_complete_blocked_wait_network_pump(vmPtr: number, changed: number) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      if (changed === 0) {
+        networkPumpBackoffs.add(vmPtr);
+      } else {
+        networkPumpBackoffs.delete(vmPtr);
+      }
+      return 0;
+    },
+    supervisor_clear_blocked_wait_network_pump(vmPtr: number) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      networkPumpBackoffs.delete(vmPtr);
+      return 0;
     },
     supervisor_state_sync_request(_vmPtr: number, kind: number, flags: number) {
       const key = `${_vmPtr}:${kind}`;

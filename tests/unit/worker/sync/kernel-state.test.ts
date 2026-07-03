@@ -260,7 +260,6 @@ function makeHandle(pid: number, fdMap: Map<number, number>): ProcessHandle {
       status: 0,
       rpcPending: false,
       rpcGeneration: 0,
-      skipNextNetworkPump: false,
     }]]),
     pendingChildSpawnRecords: 0,
     pipeSyncPromise: null,

@@ -964,7 +964,6 @@ test("ok status defers re-enqueue while a blocked epoll retry rpc is pending", a
     status: kernel.abi_status_epoll_wait(),
     rpcPending: false,
     rpcGeneration: 0,
-    skipNextNetworkPump: false,
   });
   const enqueueWorker = vi.fn();
   const notifyWorkerStatusProgress = vi.fn(() => {
@@ -1369,7 +1368,6 @@ test("blocked retry delegates vfork process gate retry reason to kernel", () => 
     status: kernel.abi_status_pipe_wait(),
     rpcPending: false,
     rpcGeneration: 0,
-    skipNextNetworkPump: false,
   });
 
   const scheduler = createWorkerScheduler({
@@ -3555,7 +3553,6 @@ test("pumpProcess runs ordinary OK ready workers under blocked I/O pressure", ()
     status: kernel.abi_status_epoll_wait(),
     rpcPending: false,
     rpcGeneration: 0,
-    skipNextNetworkPump: false,
   });
 
   const scheduler = createWorkerScheduler({
@@ -3603,7 +3600,6 @@ test("pumpProcess runs clone-spawn ready workers under blocked I/O pressure", ()
     status: kernel.abi_status_epoll_wait(),
     rpcPending: false,
     rpcGeneration: 0,
-    skipNextNetworkPump: false,
   });
 
   const scheduler = createWorkerScheduler({
@@ -3650,7 +3646,6 @@ test("pumpProcess runs ordinary OK ready workers while blocked I/O retry timer w
     status: kernel.abi_status_epoll_wait(),
     rpcPending: false,
     rpcGeneration: 0,
-    skipNextNetworkPump: false,
   });
 
   const scheduler = createWorkerScheduler({
@@ -3904,7 +3899,6 @@ test("pumpProcess runs an OK ready worker after an immediate epoll retry attempt
     status: kernel.abi_status_epoll_wait(),
     rpcPending: false,
     rpcGeneration: 0,
-    skipNextNetworkPump: false,
   });
 
   const scheduler = createWorkerScheduler({
@@ -4144,7 +4138,6 @@ test("epoll retry keeps unanswered futex running worker when last trace points e
     status: kernel.abi_status_epoll_wait(),
     rpcPending: false,
     rpcGeneration: 0,
-    skipNextNetworkPump: false,
   });
   const scheduler = createRunLoopScheduler({
     threadWorkerStates,
@@ -4192,7 +4185,6 @@ test("epoll retry keeps unanswered futex running worker with a blocked record", 
     status: kernel.abi_status_epoll_wait(),
     rpcPending: false,
     rpcGeneration: 0,
-    skipNextNetworkPump: false,
   });
   const scheduler = createRunLoopScheduler({
     threadWorkerStates,
@@ -4238,7 +4230,6 @@ test("epoll retry keeps active unanswered ok running worker", () => {
     status: kernel.abi_status_epoll_wait(),
     rpcPending: false,
     rpcGeneration: 0,
-    skipNextNetworkPump: false,
   });
   const scheduler = createRunLoopScheduler({
     threadWorkerStates,
@@ -5073,7 +5064,6 @@ test("pumpProcess leaves a quiescent stack-local futex waiter parked with a bloc
     status: kernel.abi_status_epoll_wait(),
     rpcPending: false,
     rpcGeneration: 0,
-    skipNextNetworkPump: false,
   });
 
   const scheduler = createWorkerScheduler({
@@ -5133,7 +5123,6 @@ test("pumpProcess leaves a quiescent worker-local futex waiter parked until its 
     status: kernel.abi_status_pipe_wait(),
     rpcPending: false,
     rpcGeneration: 0,
-    skipNextNetworkPump: false,
   });
 
   const scheduler = createWorkerScheduler({
@@ -5174,7 +5163,6 @@ test("blockWorker parks futex wait as supervisor-owned worker state", () => {
     status: kernel.abi_status_pipe_wait(),
     rpcPending: false,
     rpcGeneration: 0,
-    skipNextNetworkPump: false,
   });
   requestPipeSyncBeforeRetry(kernel, thread.vmPtr);
   requestPipeSyncBeforeRetry(kernel, thread.vmPtr);
@@ -5228,7 +5216,6 @@ test("blocked completion parks futex result as supervisor-owned worker state", a
     status: kernel.abi_status_pipe_wait(),
     rpcPending: false,
     rpcGeneration: 0,
-    skipNextNetworkPump: false,
   });
 
   const scheduler = createWorkerScheduler({
@@ -5322,7 +5309,6 @@ test("blocked completion arms supervisor timer instead of scheduling runtime ret
     status: kernel.abi_status_pipe_wait(),
     rpcPending: false,
     rpcGeneration: 0,
-    skipNextNetworkPump: false,
   });
   const runtimeEvents: string[] = [];
   const executeHostBlockedSyscallResumeOutcome = vi.fn(async () => {
@@ -5412,7 +5398,6 @@ test("blocked wait retry arms supervisor timer before runtime poll retry", () =>
     status: kernel.abi_status_pipe_wait(),
     rpcPending: false,
     rpcGeneration: 0,
-    skipNextNetworkPump: false,
   });
   const runtimeEvents: string[] = [];
 
@@ -5608,7 +5593,6 @@ test("supervisor timer completion resumes the supervisor-selected runnable worke
     status: kernel.abi_status_pipe_wait(),
     rpcPending: false,
     rpcGeneration: 0,
-    skipNextNetworkPump: false,
   });
 
   const scheduler = createWorkerScheduler({

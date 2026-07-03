@@ -146,7 +146,6 @@ test("host boundary consumes process-scoped supervisor runnable resume decisions
     status: kernel.abi_status_futex_wait(),
     rpcPending: false,
     rpcGeneration: 0,
-    skipNextNetworkPump: false,
   });
   const debugEvents: string[] = [];
 

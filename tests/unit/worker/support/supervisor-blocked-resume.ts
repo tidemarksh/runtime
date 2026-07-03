@@ -20,6 +20,8 @@ const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE_AND_FORK_SHARED = 4;
 const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET_AND_FORK_SHARED = 5;
 const SUPERVISOR_BLOCKED_STATUS_TRANSITION_FLAG_KERNEL_WORKER_AVAILABLE = 1;
 const SUPERVISOR_BLOCKED_STATUS_TRANSITION_FLAG_NETWORK_CONNECTIONS_AVAILABLE = 2;
+const SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_SKIP = 0;
+const SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_PUMP = 1;
 const SUPERVISOR_STATE_SYNC_KIND_PIPE = 1;
 const SUPERVISOR_STATE_SYNC_KIND_EPOLL = 2;
 const SUPERVISOR_STATE_SYNC_KIND_SOCKET = 3;
@@ -85,6 +87,11 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_blocked_status_transition_flag_kernel_worker_available"
   | "supervisor_blocked_status_transition_flag_network_connections_available"
   | "supervisor_blocked_status_transition_action"
+  | "supervisor_blocked_wait_network_pump_action_skip"
+  | "supervisor_blocked_wait_network_pump_action_pump"
+  | "supervisor_blocked_wait_network_pump_action"
+  | "supervisor_complete_blocked_wait_network_pump"
+  | "supervisor_clear_blocked_wait_network_pump"
   | "supervisor_blocked_wait_wake_source_pipe_sync"
   | "supervisor_blocked_wait_wake_source_epoll_sync"
   | "supervisor_blocked_wait_wake_source_socket_sync"
@@ -107,6 +114,7 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_state_sync_clear"
 > {
   const pipeSyncBeforeRetryRequested = new Set<number>();
+  const networkPumpBackoffs = new Set<number>();
   const stateSyncRequests = new Map<string, { queuedRunFlags: number; inFlight: boolean }>();
   const toNumber = (value: bigint | number | undefined): number => (
     typeof value === "bigint" ? Number(value) : (value ?? 0)
@@ -256,6 +264,11 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_blocked_status_transition_flag_kernel_worker_available"
     | "supervisor_blocked_status_transition_flag_network_connections_available"
     | "supervisor_blocked_status_transition_action"
+    | "supervisor_blocked_wait_network_pump_action_skip"
+    | "supervisor_blocked_wait_network_pump_action_pump"
+    | "supervisor_blocked_wait_network_pump_action"
+    | "supervisor_complete_blocked_wait_network_pump"
+    | "supervisor_clear_blocked_wait_network_pump"
     | "supervisor_blocked_wait_wake_source_pipe_sync"
     | "supervisor_blocked_wait_wake_source_epoll_sync"
     | "supervisor_blocked_wait_wake_source_socket_sync"
@@ -361,6 +374,38 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
       return SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET_AND_FORK_SHARED;
     }
     return SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_FORK_SHARED;
+  };
+  nextKernel.supervisor_blocked_wait_network_pump_action_skip ??= () =>
+    SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_SKIP;
+  nextKernel.supervisor_blocked_wait_network_pump_action_pump ??= () =>
+    SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_PUMP;
+  nextKernel.supervisor_blocked_wait_network_pump_action ??= (vmPtr: number) => {
+    if (vmPtr === 0) {
+      return -14;
+    }
+    if (!networkPumpBackoffs.has(vmPtr)) {
+      return SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_PUMP;
+    }
+    networkPumpBackoffs.delete(vmPtr);
+    return SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_SKIP;
+  };
+  nextKernel.supervisor_complete_blocked_wait_network_pump ??= (vmPtr: number, changed: number) => {
+    if (vmPtr === 0) {
+      return -14;
+    }
+    if (changed === 0) {
+      networkPumpBackoffs.add(vmPtr);
+    } else {
+      networkPumpBackoffs.delete(vmPtr);
+    }
+    return 0;
+  };
+  nextKernel.supervisor_clear_blocked_wait_network_pump ??= (vmPtr: number) => {
+    if (vmPtr === 0) {
+      return -14;
+    }
+    networkPumpBackoffs.delete(vmPtr);
+    return 0;
   };
   nextKernel.supervisor_blocked_wait_wake_source_pipe_sync ??= () =>
     SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC;

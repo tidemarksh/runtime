@@ -8,7 +8,10 @@ import {
   supervisorBlockedStatusIsEpollWait,
   supervisorBlockedStatusIsPipeWait,
   supervisorBlockedStatusIsWait4,
+  supervisorBlockedWaitNetworkPumpAction,
   supervisorBlockedWaitRetryPlan,
+  supervisorClearBlockedWaitNetworkPump,
+  supervisorCompleteBlockedWaitNetworkPump,
   SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC,
   SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT,
   SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_SCHEDULE_RETRY,
@@ -17,6 +20,8 @@ import {
   SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER,
   SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED,
   SUPERVISOR_BLOCKED_RESUME_DELEGATION_WAIT4_KERNEL_WORKER,
+  SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_PUMP,
+  SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_SKIP,
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_ACTIVE_CHILD,
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
@@ -182,7 +187,10 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   function clearBlockedWorker(
     handle: ProcessHandle,
     worker: Worker,
-    options: { clearPipeSyncBeforeRetry?: boolean } = {},
+    options: {
+      clearNetworkPumpBackoff?: boolean;
+      clearPipeSyncBeforeRetry?: boolean;
+    } = {},
   ): void {
     const blocked = handle.hostBlockedWorkers.get(worker);
     if (!blocked) {
@@ -194,6 +202,13 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     ) {
       try {
         supervisorBlockedPipeSyncBeforeRetryClear(handle.kernel, blocked.vmPtr);
+      } catch (error) {
+        deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+    if (options.clearNetworkPumpBackoff ?? true) {
+      try {
+        supervisorClearBlockedWaitNetworkPump(handle.kernel, blocked.vmPtr);
       } catch (error) {
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
       }
@@ -455,7 +470,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         if (!latestBlocked) {
           return;
         }
-        latestBlocked.skipNextNetworkPump = !changed;
+        try {
+          supervisorCompleteBlockedWaitNetworkPump(handle.kernel, latestBlocked.vmPtr, changed);
+        } catch (error) {
+          deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+          return;
+        }
         appendWorkerDebugLog(handle, `net-pump-done:${handle.pid}:status=${blocked.status}`);
         logNetworkDebug(`pump-done pid=${handle.pid} status=${blocked.status}`);
         if (
@@ -678,13 +698,15 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     const sameBlockedThread = previousBlocked !== undefined
       && previousBlocked.vmPtr === vmPtr
       && previousBlocked.status === status;
-    clearBlockedWorker(handle, worker, { clearPipeSyncBeforeRetry: !sameBlockedThread });
+    clearBlockedWorker(handle, worker, {
+      clearNetworkPumpBackoff: !sameBlockedThread,
+      clearPipeSyncBeforeRetry: !sameBlockedThread,
+    });
     const blocked: HostBlockedWorkerState = {
       vmPtr,
       status,
       rpcPending: sameBlockedThread ? previousBlocked.rpcPending : false,
       rpcGeneration: sameBlockedThread ? previousBlocked.rpcGeneration : 0,
-      skipNextNetworkPump: sameBlockedThread ? previousBlocked.skipNextNetworkPump : false,
       lastPipeRetryLifecycleEvent: sameBlockedThread ? previousBlocked.lastPipeRetryLifecycleEvent : undefined,
       lastWait4RetryLifecycleEvent: sameBlockedThread ? previousBlocked.lastWait4RetryLifecycleEvent : undefined,
     };
@@ -980,10 +1002,19 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       );
       return;
     }
-    if (blocked.skipNextNetworkPump) {
-      blocked.skipNextNetworkPump = false;
-    } else if (pumpNetworkForBlockedWait(handle, worker, blocked)) {
-      return;
+    const networkPumpAction = supervisorBlockedWaitNetworkPumpAction(handle.kernel, blocked.vmPtr);
+    switch (networkPumpAction) {
+      case SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_SKIP:
+        break;
+      case SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_PUMP:
+        if (pumpNetworkForBlockedWait(handle, worker, blocked)) {
+          return;
+        }
+        break;
+      default: {
+        const exhaustive: never = networkPumpAction;
+        throw new Error(`unhandled supervisor network pump action: ${exhaustive}`);
+      }
     }
 
     const anchorVmPtr = selectProcessAnchorVmPtr(handle, worker);

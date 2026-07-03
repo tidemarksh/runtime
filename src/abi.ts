@@ -220,6 +220,8 @@ export interface KernelExports {
   supervisor_blocked_status_transition_action_sync_socket_and_fork_shared?(): number;
   supervisor_blocked_status_transition_flag_kernel_worker_available?(): number;
   supervisor_blocked_status_transition_flag_network_connections_available?(): number;
+  supervisor_blocked_wait_network_pump_action_skip?(): number;
+  supervisor_blocked_wait_network_pump_action_pump?(): number;
   supervisor_state_sync_kind_pipe?(): number;
   supervisor_state_sync_kind_epoll?(): number;
   supervisor_state_sync_kind_socket?(): number;
@@ -342,6 +344,9 @@ export interface KernelExports {
   supervisor_blocked_pipe_sync_before_retry_requested?(vmPtr: number): number;
   supervisor_blocked_pipe_sync_before_retry_clear?(vmPtr: number): number;
   supervisor_blocked_status_transition_action?(vmPtr: number, status: number, flags: number): number;
+  supervisor_blocked_wait_network_pump_action?(vmPtr: number): number;
+  supervisor_complete_blocked_wait_network_pump?(vmPtr: number, changed: number): number;
+  supervisor_clear_blocked_wait_network_pump?(vmPtr: number): number;
   supervisor_state_sync_request?(vmPtr: number, kind: number, flags: number): number;
   supervisor_state_sync_next_run_flags?(vmPtr: number, kind: number): number;
   supervisor_state_sync_complete?(vmPtr: number, kind: number): number;
@@ -1537,6 +1542,8 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_status_transition_action_sync_socket_and_fork_shared",
   "supervisor_blocked_status_transition_flag_kernel_worker_available",
   "supervisor_blocked_status_transition_flag_network_connections_available",
+  "supervisor_blocked_wait_network_pump_action_skip",
+  "supervisor_blocked_wait_network_pump_action_pump",
   "supervisor_state_sync_kind_pipe",
   "supervisor_state_sync_kind_epoll",
   "supervisor_state_sync_kind_socket",
@@ -1640,6 +1647,9 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_pipe_sync_before_retry_requested",
   "supervisor_blocked_pipe_sync_before_retry_clear",
   "supervisor_blocked_status_transition_action",
+  "supervisor_blocked_wait_network_pump_action",
+  "supervisor_complete_blocked_wait_network_pump",
+  "supervisor_clear_blocked_wait_network_pump",
   "supervisor_state_sync_request",
   "supervisor_state_sync_next_run_flags",
   "supervisor_state_sync_complete",
