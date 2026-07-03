@@ -261,7 +261,6 @@ function supervisorBlockedBooleanFact(
   exportName:
     | "supervisor_blocked_poll_wait_has_socket"
     | "supervisor_blocked_pipe_wait_has_ready_events"
-    | "supervisor_blocked_wait_may_depend_on_network"
     | "supervisor_blocked_wait_should_pump_network",
 ): boolean {
   const readFact = kernel[exportName];
@@ -287,13 +286,6 @@ export function supervisorBlockedPipeWaitHasReadyEvents(
   vmPtr: number,
 ): boolean {
   return supervisorBlockedBooleanFact(kernel, vmPtr, "supervisor_blocked_pipe_wait_has_ready_events");
-}
-
-export function supervisorBlockedWaitMayDependOnNetwork(
-  kernel: KernelExports,
-  vmPtr: number,
-): boolean {
-  return supervisorBlockedBooleanFact(kernel, vmPtr, "supervisor_blocked_wait_may_depend_on_network");
 }
 
 export function supervisorBlockedWaitShouldPumpNetwork(

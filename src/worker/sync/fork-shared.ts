@@ -60,9 +60,6 @@ import {
   collectRuntimeNetworkSocketOfdIds,
   hasRuntimeNetworkSocketState,
 } from "../ownership/socket-control.js";
-import {
-  supervisorBlockedStatusUsesForkSharedStateSync,
-} from "../../supervisor-blocked-resume.js";
 import { clearStaleForkSharedSyncGate } from "../fork-shared-sync-gate.js";
 import { registerForkSharedSyncPromise } from "../fork-shared-sync-debug.js";
 import type {
@@ -72,10 +69,6 @@ import type {
   ProcessHandle,
   SyncCause
 } from "./shared.js";
-
-export function blockedStatusUsesForkSharedStateSync(handle: ProcessHandle, status: number): boolean {
-  return supervisorBlockedStatusUsesForkSharedStateSync(handle.kernel, status);
-}
 
 export function syncForkSharedStateLocally(
   handle: ProcessHandle,

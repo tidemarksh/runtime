@@ -1,7 +1,6 @@
 export type { SyncCause } from "./effects.js";
 export { describeSyncCause } from "./effects.js";
 export { snapshotProcessFdOfdStateForKernelWorker } from "./fd-ofd.js";
-export { blockedStatusUsesForkSharedStateSync } from "./fork-shared.js";
 export {
   adoptKernelState,
   adoptKernelStateForHandle,

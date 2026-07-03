@@ -6,7 +6,6 @@ import {
 } from "../../pool.js";
 import { kernelShareOtherMembers } from "../../kernel-share.js";
 import { assertHandleWorkerProcessIdentity } from "../../process-identity.js";
-import { blockedStatusUsesForkSharedStateSync } from "../../sync.js";
 import type {
   HostBlockedWorkerState,
   ProcessHandle,
@@ -43,6 +42,7 @@ import {
   supervisorBlockedPollWaitHasSocket,
   supervisorBlockedPollWaitTimeoutMs,
   supervisorBlockedStatusIsConnectWait,
+  supervisorBlockedStatusUsesForkSharedStateSync,
   supervisorBlockedStatusIsHostWait,
   supervisorBlockedStatusIsPipeWait,
   supervisorBlockedStatusIsWait4,
@@ -1041,7 +1041,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         return;
       }
       if (
-        blockedStatusUsesForkSharedStateSync(handle, status)
+        supervisorBlockedStatusUsesForkSharedStateSync(handle.kernel, status)
         && !pipeWaitHasSocket
         && !finitePollTimeout
         && handle.kernelWorkerRequest
