@@ -403,28 +403,25 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     return supervisorWatchesPipe(vmPtr) !== 0;
   }
 
-  function collectBlockedEpollWatchedOfdIdsByType(
+  function collectBlockedEpollDependentSyncOfdIds(
     handle: ProcessHandle,
     vmPtr: number,
-    types: readonly number[],
   ): number[] {
-    const supervisorWatchedOfd = handle.kernel.supervisor_blocked_epoll_watched_ofd;
-    if (supervisorWatchedOfd === undefined) {
-      throw new Error("kernel supervisor ABI missing supervisor_blocked_epoll_watched_ofd");
+    const supervisorDependentOfd = handle.kernel.supervisor_blocked_epoll_dependent_sync_ofd;
+    if (supervisorDependentOfd === undefined) {
+      throw new Error("kernel supervisor ABI missing supervisor_blocked_epoll_dependent_sync_ofd");
     }
 
     const maxFds = handle.kernel.abi_max_fds();
-    const targetTypes = new Set(types);
     const ofdIds: number[] = [];
     for (let index = 0; index < maxFds; index += 1) {
-      const ofdId = supervisorWatchedOfd(vmPtr, index);
+      const ofdId = supervisorDependentOfd(vmPtr, index);
       if (ofdId === 0) {
         break;
       }
       if (
         ofdId > 0
         && ofdId < maxFds
-        && targetTypes.has(handle.kernel.kernel_ofd_fd_type(ofdId))
         && !ofdIds.includes(ofdId)
       ) {
         ofdIds.push(ofdId);
@@ -1047,14 +1044,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         .then(() => requestEpollStateSync(handle, false))
         .then(() => requestEpollDependentOfdStateSync(
           handle,
-          collectBlockedEpollWatchedOfdIdsByType(
-            handle,
-            blocked.vmPtr,
-            [
-              handle.kernel.abi_fd_type_eventfd?.() ?? 9,
-              handle.kernel.abi_fd_type_timerfd?.() ?? 10,
-            ],
-          ),
+          collectBlockedEpollDependentSyncOfdIds(handle, blocked.vmPtr),
           { mode: "pull" },
         ))
         .then(() => {

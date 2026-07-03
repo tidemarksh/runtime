@@ -839,6 +839,20 @@ export function makeSupervisorAbiStubs(
     ) {
       return processEpollDependentOfdIds(currentExports(this), vmPtr)[index] ?? 0;
     },
+    supervisor_blocked_epoll_dependent_sync_ofd(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      index: number,
+    ) {
+      const receiver = currentExports(this);
+      const eventfdType = callNumber(receiver, "abi_fd_type_eventfd");
+      const timerfdType = callNumber(receiver, "abi_fd_type_timerfd");
+      return processEpollDependentOfdIds(receiver, vmPtr)
+        .filter((ofdId) => {
+          const fdType = callNumber(receiver, "kernel_ofd_fd_type", ofdId);
+          return fdType === eventfdType || fdType === timerfdType;
+        })[index] ?? 0;
+    },
     supervisor_blocked_wait_wake_mask_for_sync(_source: number) {
       return supervisorWaitWakeMaskForSync(_source);
     },

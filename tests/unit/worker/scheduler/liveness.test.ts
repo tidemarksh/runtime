@@ -210,6 +210,27 @@ function makeKernel() {
       },
       supervisor_blocked_epoll_watches_pipe: () => 0,
       supervisor_blocked_epoll_watched_ofd: () => 0,
+      supervisor_blocked_epoll_dependent_sync_ofd: (vmPtr: number, index: number) => {
+        let cursor = 0;
+        const maxFds = kernel.exports.abi_max_fds();
+        const eventfdType = kernel.exports.abi_fd_type_eventfd?.() ?? 9;
+        const timerfdType = kernel.exports.abi_fd_type_timerfd?.() ?? 10;
+        for (let watchedIndex = 0; watchedIndex < maxFds; watchedIndex += 1) {
+          const ofdId = kernel.exports.supervisor_blocked_epoll_watched_ofd(vmPtr, watchedIndex);
+          if (ofdId === 0) {
+            return 0;
+          }
+          const fdType = kernel.exports.kernel_ofd_fd_type(ofdId);
+          if (fdType !== eventfdType && fdType !== timerfdType) {
+            continue;
+          }
+          if (cursor === index) {
+            return ofdId;
+          }
+          cursor += 1;
+        }
+        return 0;
+      },
       supervisor_blocked_epoll_wait_retry_required: () => 0,
       supervisor_blocked_wait_active_child_pid: (vmPtr: number) => {
         const status = kernel.exports.thread_status(vmPtr);
