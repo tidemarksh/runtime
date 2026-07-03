@@ -30,6 +30,7 @@ type NetworkBridgeKernelFixture = {
   thread_socket_mark_external_peer?: (vmPtr: number, fd: number) => number | undefined;
   thread_socket_commit_external_connect?: (vmPtr: number, fd: number) => number | undefined;
   thread_socket_close_external_peer?: (vmPtr: number, fd: number) => number | undefined;
+  supervisor_socket_force_shutdown?: (vmPtr: number, fd: number) => number | undefined;
   supervisor_socket_commit_external_connect_result?: (
     vmPtr: number,
     fd: number,
@@ -61,6 +62,7 @@ function withSupervisorSocketDefaults<T extends NetworkBridgeKernelFixture>(kern
   kernel.supervisor_socket_close_external_peer ??= vi.fn((vmPtr, fd) => (
     kernel.thread_socket_close_external_peer?.(vmPtr, fd) ?? 0
   ));
+  kernel.supervisor_socket_force_shutdown ??= vi.fn(() => 0);
   kernel.supervisor_socket_bridge_active_fd ??= vi.fn((vmPtr, preferredFd, expectedOfd, pendingConnect) => {
     if (pendingConnect !== 0 || expectedOfd <= 0) {
       return -1;
