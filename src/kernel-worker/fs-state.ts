@@ -226,6 +226,22 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     return numeric;
   }
 
+  function supervisorDirtyPageOpWrite(sourceExports: KernelExports): number {
+    return supervisorNumber(sourceExports.supervisor_fs_dirty_page_op_write?.());
+  }
+
+  function supervisorDirtyPageOpTruncate(sourceExports: KernelExports): number {
+    return supervisorNumber(sourceExports.supervisor_fs_dirty_page_op_truncate?.());
+  }
+
+  function supervisorDirtyPageOpFlush(sourceExports: KernelExports): number {
+    return supervisorNumber(sourceExports.supervisor_fs_dirty_page_op_flush?.());
+  }
+
+  function supervisorDirtyPageWritebackRequiredFlag(sourceExports: KernelExports): number {
+    return supervisorNumber(sourceExports.supervisor_fs_dirty_page_flag_writeback_required?.());
+  }
+
   function supervisorRangeI64(value: number | undefined, fallback: number): bigint {
     const resolved = value ?? fallback;
     return Number.isSafeInteger(resolved) ? BigInt(resolved) : -1n;
@@ -410,7 +426,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         return readSupervisorDirtyPageDecision(
           sourceExports,
           decide(
-            sourceExports.supervisor_fs_dirty_page_op_write?.() ?? 1,
+            supervisorDirtyPageOpWrite(sourceExports),
             input.ino,
             BigInt(input.offset),
             BigInt(input.length),
@@ -428,7 +444,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         return readSupervisorDirtyPageDecision(
           sourceExports,
           decide(
-            sourceExports.supervisor_fs_dirty_page_op_truncate?.() ?? 2,
+            supervisorDirtyPageOpTruncate(sourceExports),
             input.ino,
             0n,
             BigInt(input.size),
@@ -457,7 +473,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       throw new Error("missing supervisor_fs_dirty_page_decision export");
     }
     const result = supervisorNumber(decide(
-      sourceExports.supervisor_fs_dirty_page_op_flush?.() ?? 3,
+      supervisorDirtyPageOpFlush(sourceExports),
       ino,
       0n,
       0n,
@@ -472,8 +488,8 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (result < 0) {
       throw new Error(`supervisor dirty flush decision failed: ${result}`);
     }
-    const flags = sourceExports.supervisor_fs_dirty_page_decision_flags?.() ?? 0;
-    const writebackRequired = sourceExports.supervisor_fs_dirty_page_flag_writeback_required?.() ?? 4;
+    const flags = supervisorNumber(sourceExports.supervisor_fs_dirty_page_decision_flags?.());
+    const writebackRequired = supervisorDirtyPageWritebackRequiredFlag(sourceExports);
     return (flags & writebackRequired) !== 0;
   }
 
@@ -913,7 +929,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       const published = readInodeRecord(deps.getSabPageCache(), ino);
       const prepare = supervisorDirtyPrepare(sourceExports, {
         ino,
-        op: sourceExports.supervisor_fs_dirty_page_op_write?.() ?? 1,
+        op: supervisorDirtyPageOpWrite(sourceExports),
         expectedSize,
         published,
         sourceIsRegular,
@@ -1026,9 +1042,10 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         sourceFileObjectId = createSourceBackedFileForInode(ino, expectedSize);
       }
       const published = readInodeRecord(deps.getSabPageCache(), ino);
-      const prepare = supervisorDirtyPrepare(deps.getCanonicalExports(), {
+      const canonicalExports = deps.getCanonicalExports();
+      const prepare = supervisorDirtyPrepare(canonicalExports, {
         ino,
-        op: deps.getCanonicalExports().supervisor_fs_dirty_page_op_truncate?.() ?? 2,
+        op: supervisorDirtyPageOpTruncate(canonicalExports),
         expectedSize,
         published,
         sourceIsRegular,
