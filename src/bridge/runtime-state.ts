@@ -144,19 +144,6 @@ export function observeCurrentRuntimeBridgeEpoch(bridge: RuntimeStateBridge): nu
   return epoch;
 }
 
-export function waitForRuntimeBridgeWake(
-  bridge: RuntimeStateBridge,
-  timeoutMs?: number,
-): "ok" | "not-equal" | "timed-out" {
-  const notify = notifyView(bridge);
-  const expected = Atomics.load(notify, RUNTIME_BRIDGE_NOTIFY_INDEX);
-  if (timeoutMs === undefined) {
-    return Atomics.wait(notify, RUNTIME_BRIDGE_NOTIFY_INDEX, expected);
-  } else {
-    return Atomics.wait(notify, RUNTIME_BRIDGE_NOTIFY_INDEX, expected, timeoutMs);
-  }
-}
-
 export function readPublishedKernelRuntimeState(bridge: RuntimeStateBridge): KernelRuntimeState {
   const versionView = stateVersionView(bridge);
   const view = stateView(bridge);

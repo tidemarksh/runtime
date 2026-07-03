@@ -7,8 +7,6 @@ import { executeInterpreterStep } from "../execution/interpreter.js";
 import { clearSyscallTrace } from "./debug.js";
 import {
   handleFutexWait,
-  handleRuntimeBridgeBlockedStatus,
-  isRuntimeBridgeBlockedStatus,
 } from "./blocking.js";
 import {
   createThreadWorkerStatusOutcome,
@@ -79,16 +77,6 @@ export function stepThread(ctx: ThreadWorkerExecContext, budget: number): void {
       }, status)) {
         stepThread(ctx, ctx.threadStepBudget);
       }
-      return;
-    }
-
-    if (isRuntimeBridgeBlockedStatus(ctx.exports, ctx.vmPtr, status, ctx.statusCodes)) {
-      publishStage(ctx, 4, status);
-      handleRuntimeBridgeBlockedStatus({
-        ...ctx,
-        runtimeBridge: ctx.runtimeBridge,
-        step: (nextBudget: number) => stepThread(ctx, nextBudget),
-      }, status);
       return;
     }
 

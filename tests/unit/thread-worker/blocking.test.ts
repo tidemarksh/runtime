@@ -1,10 +1,7 @@
 // Thread-worker tests in this file validate typed blocking outcomes.
 import { expect, test, vi } from "vite-plus/test";
-import { createRuntimeStateBridge } from "../../../src/bridge/runtime-state.js";
 import {
   handleFutexWait,
-  handleRuntimeBridgeBlockedStatus,
-  isRuntimeBridgeBlockedStatus,
   resumeBlockedSyscallStep,
 } from "../../../src/thread-worker/blocking.js";
 import { createThreadWorkerStatusOutcome } from "../../../src/thread-worker/outcomes.js";
@@ -24,26 +21,6 @@ function supervisorFutexExports(options: {
     supervisor_complete_futex_wait: options.complete ?? (() => 0),
   };
 }
-
-test("isRuntimeBridgeBlockedStatus keeps only indefinite EPOLL_WAIT in the thread-worker", () => {
-  const exports = {
-    thread_epoll_wait_timeout: () => -1n,
-    thread_process_thread_count: () => 1,
-  } as never;
-  const statusCodes = { EPOLL_WAIT: 22 } as never;
-
-  expect(isRuntimeBridgeBlockedStatus(exports, 0x1234, 22, statusCodes)).toBe(false);
-
-  exports.thread_epoll_wait_timeout = () => 0n;
-  expect(isRuntimeBridgeBlockedStatus(exports, 0x1234, 22, statusCodes)).toBe(false);
-
-  exports.thread_epoll_wait_timeout = () => 10n;
-  expect(isRuntimeBridgeBlockedStatus(exports, 0x1234, 22, statusCodes)).toBe(false);
-
-  exports.thread_epoll_wait_timeout = () => -1n;
-  exports.thread_process_thread_count = () => 2;
-  expect(isRuntimeBridgeBlockedStatus(exports, 0x1234, 22, statusCodes)).toBe(false);
-});
 
 test("resumeBlockedSyscallStep applies guest writes and returns a typed status outcome", () => {
   const memory = new WebAssembly.Memory({ initial: 1 });
@@ -835,119 +812,6 @@ test("handleFutexWait exits when reattached kernel state changes the thread stat
   expect(handled).toBe(false);
   expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
   expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(9));
-
-  waitSpy.mockRestore();
-});
-
-test("handleRuntimeBridgeBlockedStatus treats epoll timeout=0 as an immediate timeout retry", () => {
-  const bridge = createRuntimeStateBridge();
-  const waitSpy = vi.spyOn(Atomics, "wait");
-  const resumeTimeout = vi.fn(() => {
-    status = 0;
-  });
-  const resumeBlocked = vi.fn();
-  const postStatus = vi.fn();
-  let status = 0;
-
-  waitSpy.mockImplementation((_view, _index, _value, timeout) => {
-    expect(timeout).toBe(0);
-    return "timed-out";
-  });
-
-  handleRuntimeBridgeBlockedStatus({
-    exports: {
-      memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
-      thread_epoll_wait_timeout: () => 0n,
-      thread_pc: () => 0n,
-      thread_sp: () => 0n,
-      thread_step: () => {},
-      thread_status: () => status,
-      supervisor_signal_boundary_check: () => 0,
-      supervisor_resume_blocked_syscall: () => {
-        resumeTimeout(0x1234);
-        return 0n;
-      },
-      thread_resume_epoll_wait_timeout: resumeTimeout,
-      thread_resume_blocked_syscall: resumeBlocked,
-    } as never,
-    statusCodes: { OK: 0, FUTEX_WAIT: 20, EPOLL_WAIT: 22 } as never,
-    vmPtr: 0x1234,
-    guestBase: 0,
-    runtimeBridge: bridge,
-    threadStepBudget: 1000,
-    eintrErrno: 4,
-    futexWaitSliceMs: 0,
-    postStatus,
-    reattachPublishedKernelRuntimeState: () => {},
-    step: () => {},
-  }, 22);
-
-  expect(resumeTimeout).toHaveBeenCalledWith(0x1234);
-  expect(resumeBlocked).not.toHaveBeenCalled();
-  expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(22, true));
-  expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(0));
-
-  waitSpy.mockRestore();
-});
-
-test("handleRuntimeBridgeBlockedStatus hands off EPOLL_WAIT timeout retries into the futex path", () => {
-  const bridge = createRuntimeStateBridge();
-  const waitSpy = vi.spyOn(Atomics, "wait");
-  const resumeTimeout = vi.fn(() => {
-    status = 20;
-  });
-  const resumeBlocked = vi.fn();
-  const supervisorComplete = vi.fn(() => {
-    status = 0;
-    return status;
-  });
-  const postStatus = vi.fn();
-  const step = vi.fn();
-  let status = 22;
-
-  waitSpy.mockImplementation((_view, _index, _value, timeout) => {
-    expect(timeout).toBe(0);
-    return "timed-out";
-  });
-
-  handleRuntimeBridgeBlockedStatus({
-    exports: {
-      memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
-      thread_epoll_wait_timeout: () => 0n,
-      thread_pc: () => 0n,
-      thread_sp: () => 0n,
-      thread_step: () => {},
-      thread_status: () => status,
-      supervisor_resume_blocked_syscall: () => {
-        resumeTimeout(0x1234);
-        return 0n;
-      },
-      thread_resume_epoll_wait_timeout: resumeTimeout,
-      thread_resume_blocked_syscall: resumeBlocked,
-      thread_futex_wait_addr: () => 0n,
-      thread_futex_wait_timeout: () => 0n,
-      thread_futex_wait_expected: () => 0,
-      thread_record_blocked_addr: () => 0n,
-      ...supervisorFutexExports({ complete: supervisorComplete }),
-      thread_sig_pending: () => 0n,
-    } as never,
-    statusCodes: { OK: 0, FUTEX_WAIT: 20, EPOLL_WAIT: 22 } as never,
-    vmPtr: 0x1234,
-    guestBase: 0,
-    runtimeBridge: bridge,
-    threadStepBudget: 1000,
-    eintrErrno: 4,
-    futexWaitSliceMs: 0,
-    postStatus,
-    reattachPublishedKernelRuntimeState: () => {},
-    step,
-  }, 22);
-
-  expect(resumeTimeout).toHaveBeenCalledWith(0x1234);
-  expect(supervisorComplete).toHaveBeenCalledWith(0x1234, 1);
-  expect(resumeBlocked).not.toHaveBeenCalled();
-  expect(step).toHaveBeenCalledWith(1000);
-  expect(postStatus).toHaveBeenCalledWith(createThreadWorkerStatusOutcome(22, true));
 
   waitSpy.mockRestore();
 });

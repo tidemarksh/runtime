@@ -1,6 +1,5 @@
 import type { KernelExports, StatusCodes } from "../abi.js";
 import {
-  waitForRuntimeBridgeWake,
   type RuntimeStateBridge,
 } from "../bridge/runtime-state.js";
 import { clearSyscallTrace } from "./debug.js";
@@ -10,7 +9,6 @@ import {
   type ThreadWorkerOutcomePublisher,
 } from "./outcomes.js";
 import {
-  checkPendingSignalsAtBoundary,
   hasPendingSignalForBlockedWait,
 } from "./signals.js";
 import { formatThreadWorkerGuestBufferPreview } from "./status.js";
@@ -57,119 +55,6 @@ export interface ThreadWorkerResumeBlockedSyscallContext {
   pipeResumeDebugEnabled: boolean;
   applyGuestMemoryWrites(): void;
   recordResumeBlockedDebug(debug: string): void;
-}
-
-function epollWaitShouldStayInWorker(
-  exports: KernelExports,
-  vmPtr: number,
-  status: number,
-  statusCodes: StatusCodes,
-): boolean {
-  void exports;
-  void vmPtr;
-  return status === statusCodes.EPOLL_WAIT && false;
-}
-
-export function isRuntimeBridgeBlockedStatus(
-  exports: KernelExports,
-  vmPtr: number,
-  status: number,
-  statusCodes: StatusCodes,
-): boolean {
-  // Runtime-bridge waits are host parking only; kernel supervisor state remains
-  // the authority for thread progress.
-  return epollWaitShouldStayInWorker(exports, vmPtr, status, statusCodes);
-}
-
-export function handleRuntimeBridgeBlockedStatus(
-  ctx: ThreadWorkerBlockingContext,
-  status: number,
-): void {
-  if (ctx.runtimeBridge === null) {
-    ctx.postStatus(createThreadWorkerStatusOutcome(status));
-    return;
-  }
-
-  let blockedStatus = status;
-  for (;;) {
-    ctx.postStatus(createThreadWorkerStatusOutcome(blockedStatus, true));
-
-    const timeoutMs = Number(ctx.exports.thread_epoll_wait_timeout(ctx.vmPtr));
-    const waitResult = timeoutMs < 0
-      ? waitForRuntimeBridgeWake(ctx.runtimeBridge)
-      : waitForRuntimeBridgeWake(ctx.runtimeBridge, Math.max(0, timeoutMs));
-
-    ctx.reattachPublishedKernelRuntimeState();
-    const boundary = checkPendingSignalsAtBoundary(ctx.exports, ctx.vmPtr, ctx.statusCodes);
-    if (boundary.delivered) {
-      if (blockedStatus === ctx.statusCodes.EPOLL_WAIT) {
-        const interrupted = ctx.exports.thread_interrupt_epoll_wait?.(ctx.vmPtr, -ctx.eintrErrno) ?? 0;
-        if (interrupted === 0) {
-          blockedStatus = ctx.exports.thread_status(ctx.vmPtr);
-          if (!isRuntimeBridgeBlockedStatus(ctx.exports, ctx.vmPtr, blockedStatus, ctx.statusCodes)) {
-            ctx.postStatus(createThreadWorkerStatusOutcome(blockedStatus));
-            return;
-          }
-          continue;
-        }
-      }
-      ctx.postStatus(createThreadWorkerStatusOutcome(ctx.statusCodes.OK));
-      return;
-    }
-    if (
-      blockedStatus === ctx.statusCodes.EPOLL_WAIT
-      && waitResult === "timed-out"
-      && boundary.status === ctx.statusCodes.EPOLL_WAIT
-    ) {
-      clearSyscallTrace(ctx.exports);
-      resumeBlockedSyscallBySupervisor(ctx.exports, ctx.vmPtr, true);
-      blockedStatus = ctx.exports.thread_status(ctx.vmPtr);
-      if (blockedStatus === ctx.statusCodes.FUTEX_WAIT) {
-        if (handleFutexWait(ctx, blockedStatus)) {
-          ctx.step(ctx.threadStepBudget);
-        }
-        return;
-      }
-      if (!isRuntimeBridgeBlockedStatus(ctx.exports, ctx.vmPtr, blockedStatus, ctx.statusCodes)) {
-        ctx.postStatus(createThreadWorkerStatusOutcome(blockedStatus));
-        return;
-      }
-      continue;
-    }
-    if (boundary.status !== ctx.statusCodes.OK) {
-      blockedStatus = boundary.status;
-      if (blockedStatus === ctx.statusCodes.FUTEX_WAIT) {
-        if (handleFutexWait(ctx, blockedStatus)) {
-          ctx.step(ctx.threadStepBudget);
-        }
-        return;
-      }
-      if (!isRuntimeBridgeBlockedStatus(ctx.exports, ctx.vmPtr, blockedStatus, ctx.statusCodes)) {
-        ctx.postStatus(createThreadWorkerStatusOutcome(blockedStatus));
-        return;
-      }
-      continue;
-    }
-    if (blockedStatus === ctx.statusCodes.EPOLL_WAIT && waitResult === "timed-out") {
-      clearSyscallTrace(ctx.exports);
-      resumeBlockedSyscallBySupervisor(ctx.exports, ctx.vmPtr, true);
-    } else {
-      clearSyscallTrace(ctx.exports);
-      resumeBlockedSyscallBySupervisor(ctx.exports, ctx.vmPtr);
-    }
-
-    blockedStatus = ctx.exports.thread_status(ctx.vmPtr);
-    if (blockedStatus === ctx.statusCodes.FUTEX_WAIT) {
-      if (handleFutexWait(ctx, blockedStatus)) {
-        ctx.step(ctx.threadStepBudget);
-      }
-      return;
-    }
-    if (!isRuntimeBridgeBlockedStatus(ctx.exports, ctx.vmPtr, blockedStatus, ctx.statusCodes)) {
-      ctx.postStatus(createThreadWorkerStatusOutcome(blockedStatus));
-      return;
-    }
-  }
 }
 
 export function resumeBlockedSyscallStep(

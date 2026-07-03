@@ -6,6 +6,7 @@ import {
   adoptKernelStateForHandle,
 } from "../kernel-state.js";
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
+import { supervisorBlockedStatusIsWait4 } from "../../supervisor-blocked-resume.js";
 import type { ProcessHandle } from "../types.js";
 import type { WorkerKernelRpcLifecycleDeps } from "./lifecycle/types.js";
 import { completedKernelRpcOutcome, type KernelRpcResumeOutcome } from "./outcomes.js";
@@ -25,7 +26,7 @@ export function createWorkerKernelRpcWait4Helpers(
 
     try {
       const localStatus = handle.kernel.thread_status(vmPtr);
-      if (localStatus !== handle.kernel.abi_status_wait4()) {
+      if (!supervisorBlockedStatusIsWait4(handle.kernel, localStatus)) {
         const blocked = handle.hostBlockedWorkers.get(worker);
         if (blocked && blocked.vmPtr === vmPtr) {
           blocked.rpcPending = false;
