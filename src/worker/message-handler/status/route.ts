@@ -52,6 +52,7 @@ import {
 } from "../../supervisor-shadow.js";
 import {
   supervisorProcessStatusDefersKernelStateAdoption,
+  supervisorProcessStatusIsCloneSpawn,
   supervisorProcessStatusIsExecveSpawn,
 } from "../../supervisor-status.js";
 
@@ -80,7 +81,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
   ): void {
     const thread = deps.threadWorkerStates.get(worker);
     if (!thread) {
-      if (CLONE_SPAWN_DEBUG_ENABLED && msg.status === handle.kernel.abi_status_clone_spawn()) {
+      if (CLONE_SPAWN_DEBUG_ENABLED && supervisorProcessStatusIsCloneSpawn(handle.kernel, msg.status)) {
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `clone-status-no-thread:${handle.pid}:0x${msg.vmPtr.toString(16)}`
@@ -104,7 +105,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         `status-stale-generation:0x${thread.vmPtr.toString(16)}`
           + `:msg=${msg.generation}:current=${thread.generation}:status=${msg.status}`,
       );
-      if (CLONE_SPAWN_DEBUG_ENABLED && msg.status === handle.kernel.abi_status_clone_spawn()) {
+      if (CLONE_SPAWN_DEBUG_ENABLED && supervisorProcessStatusIsCloneSpawn(handle.kernel, msg.status)) {
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `clone-status-stale-generation:${handle.pid}:0x${thread.vmPtr.toString(16)}`
@@ -132,7 +133,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       statusBelongsToHandle: statusStateBelongsToHandle,
       deps,
     })) {
-      if (CLONE_SPAWN_DEBUG_ENABLED && status === handle.kernel.abi_status_clone_spawn()) {
+      if (CLONE_SPAWN_DEBUG_ENABLED && supervisorProcessStatusIsCloneSpawn(handle.kernel, status)) {
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `clone-status-owner-async:${handle.pid}:0x${thread.vmPtr.toString(16)}`
@@ -177,7 +178,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     recordWorkerMessageDebugEvent(handle.workerMessageDebugStats, "statusHandled");
     thread.statusCounts[String(status)] = (thread.statusCounts[String(status)] ?? 0) + 1;
     thread.lastStatus = status;
-    if (CLONE_SPAWN_DEBUG_ENABLED && status === handle.kernel.abi_status_clone_spawn()) {
+    if (CLONE_SPAWN_DEBUG_ENABLED && supervisorProcessStatusIsCloneSpawn(handle.kernel, status)) {
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `clone-status-route:${handle.pid}:0x${thread.vmPtr.toString(16)}`

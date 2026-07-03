@@ -51,7 +51,12 @@ import {
   supervisorBlockedWaitStatusMatchesSocketWait,
   supervisorBlockedWaitTimerRequired,
 } from "../../../supervisor-blocked-resume.js";
-import { supervisorProcessStatusAllowsPidMismatch } from "../../supervisor-status.js";
+import {
+  supervisorProcessStatusAllowsPidMismatch,
+  supervisorProcessStatusIsCloneSpawn,
+  supervisorProcessStatusIsExecveSpawn,
+  supervisorProcessStatusIsVforkWait,
+} from "../../supervisor-status.js";
 
 const CLONE_SPAWN_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
@@ -667,7 +672,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       return;
     }
 
-    if (status === handle.kernel.abi_status_clone_spawn()) {
+    if (supervisorProcessStatusIsCloneSpawn(handle.kernel, status)) {
       if (msg.debug) {
         deps.appendWorkerDebugLog(
           handle,
@@ -836,7 +841,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       return;
     }
 
-    if (status === handle.kernel.abi_status_execve_spawn()) {
+    if (supervisorProcessStatusIsExecveSpawn(handle.kernel, status)) {
       thread.ownerAsyncStatus = status;
       void deps.handleExecveSpawn(handle, worker, thread)
         .finally(() => {
@@ -853,7 +858,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       return;
     }
 
-    if (status === handle.kernel.abi_status_vfork_wait()) {
+    if (supervisorProcessStatusIsVforkWait(handle.kernel, status)) {
       if (handle.vforkSnapshot === null) {
         handle.vforkSnapshot = deps.captureVforkSnapshot(handle, thread);
         handle.vforkWorker = worker;

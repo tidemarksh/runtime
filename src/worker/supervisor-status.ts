@@ -3,6 +3,8 @@ import type { KernelExports } from "../abi.js";
 type SupervisorProcessStatusFact =
   | "supervisor_process_status_is_lifecycle_handoff"
   | "supervisor_process_status_is_execve_spawn"
+  | "supervisor_process_status_is_clone_spawn"
+  | "supervisor_process_status_is_vfork_wait"
   | "supervisor_process_status_allows_pid_mismatch"
   | "supervisor_process_status_defers_kernel_state_adoption";
 
@@ -41,6 +43,20 @@ export function supervisorProcessStatusIsExecveSpawn(
   status: number,
 ): boolean {
   return supervisorProcessStatusFact(kernel, status, "supervisor_process_status_is_execve_spawn");
+}
+
+export function supervisorProcessStatusIsCloneSpawn(
+  kernel: KernelExports,
+  status: number,
+): boolean {
+  return supervisorProcessStatusFact(kernel, status, "supervisor_process_status_is_clone_spawn");
+}
+
+export function supervisorProcessStatusIsVforkWait(
+  kernel: KernelExports,
+  status: number,
+): boolean {
+  return supervisorProcessStatusFact(kernel, status, "supervisor_process_status_is_vfork_wait");
 }
 
 export function supervisorProcessStatusDefersKernelStateAdoption(

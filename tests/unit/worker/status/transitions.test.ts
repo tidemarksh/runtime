@@ -264,6 +264,12 @@ function makeHandle(worker: Worker) {
         [21, 29, 30, 32].includes(status) ? 1 : 0,
       supervisor_process_status_is_lifecycle_handoff: (status: number) =>
         [23, 24, 25].includes(status) ? 1 : 0,
+      supervisor_process_status_is_execve_spawn: (status: number) =>
+        status === 24 ? 1 : 0,
+      supervisor_process_status_is_clone_spawn: (status: number) =>
+        status === 25 ? 1 : 0,
+      supervisor_process_status_is_vfork_wait: (status: number) =>
+        status === 23 ? 1 : 0,
       supervisor_process_status_allows_pid_mismatch: (status: number) =>
         [23, 24].includes(status) ? 1 : 0,
       supervisor_blocked_wait_wake_source_pipe_sync: () => 1,

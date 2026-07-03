@@ -31,6 +31,8 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_process_host_op_record_bytes: 96,
   supervisor_process_status_is_lifecycle_handoff: 0,
   supervisor_process_status_is_execve_spawn: 0,
+  supervisor_process_status_is_clone_spawn: 0,
+  supervisor_process_status_is_vfork_wait: 0,
   supervisor_process_status_allows_pid_mismatch: 0,
   supervisor_process_status_defers_kernel_state_adoption: 0,
   supervisor_fault_exit_decision_bytes: 88,
@@ -284,6 +286,14 @@ export function makeSupervisorAbiStubs(
   const supervisorProcessStatusIsExecveSpawn = (receiver: Partial<KernelExports>, status: number): boolean =>
     statusMatchesAny(receiver, status, [
       "abi_status_execve_spawn",
+    ]);
+  const supervisorProcessStatusIsCloneSpawn = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, [
+      "abi_status_clone_spawn",
+    ]);
+  const supervisorProcessStatusIsVforkWait = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, [
+      "abi_status_vfork_wait",
     ]);
   const supervisorProcessStatusAllowsPidMismatch = (receiver: Partial<KernelExports>, status: number): boolean =>
     statusMatchesAny(receiver, status, [
@@ -604,6 +614,12 @@ export function makeSupervisorAbiStubs(
     },
     supervisor_process_status_is_execve_spawn(this: KernelExports | undefined, status: number) {
       return supervisorProcessStatusIsExecveSpawn(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_process_status_is_clone_spawn(this: KernelExports | undefined, status: number) {
+      return supervisorProcessStatusIsCloneSpawn(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_process_status_is_vfork_wait(this: KernelExports | undefined, status: number) {
+      return supervisorProcessStatusIsVforkWait(currentExports(this), status) ? 1 : 0;
     },
     supervisor_process_status_allows_pid_mismatch(this: KernelExports | undefined, status: number) {
       return supervisorProcessStatusAllowsPidMismatch(currentExports(this), status) ? 1 : 0;

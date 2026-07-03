@@ -14,6 +14,7 @@ import type { WorkerMessageHandlerDeps } from "./types.js";
 import { readProcessPidField } from "../diagnostics/format.js";
 import { createWorkerOwnershipGuard } from "../ownership/process-state.js";
 import { submitSupervisorShadowStatusEvent } from "../supervisor-shadow.js";
+import { supervisorProcessStatusIsCloneSpawn } from "../supervisor-status.js";
 
 function formatDebugError(error: unknown): string {
   return error instanceof Error ? (error.stack ?? error.message) : String(error);
@@ -172,10 +173,13 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
       }
       const resumeWorkersOnReady = thread.resumeWorkersOnReady.splice(0);
       const releaseCloneSpawnResumeWorkers = (): void => {
-        const cloneSpawnStatus = handle.kernel.abi_status_clone_spawn();
         for (const resumeWorker of resumeWorkersOnReady) {
           const resumeThread = deps.threadWorkerStates.get(resumeWorker);
-          if (resumeThread?.ownerAsyncStatus === cloneSpawnStatus) {
+          if (
+            resumeThread?.ownerAsyncStatus !== null
+            && resumeThread?.ownerAsyncStatus !== undefined
+            && supervisorProcessStatusIsCloneSpawn(handle.kernel, resumeThread.ownerAsyncStatus)
+          ) {
             resumeThread.ownerAsyncStatus = null;
           }
         }
