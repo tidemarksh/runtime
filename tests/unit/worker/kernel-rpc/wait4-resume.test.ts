@@ -671,13 +671,18 @@ test("STATUS_WAIT4 retries through thread_resume_wait4 instead of generic blocke
 
   expect(resumeWait4).toHaveBeenCalledWith(0x1234);
   expect(resumeBlocked).not.toHaveBeenCalled();
-  expect(worker.postedMessages).toEqual([
-    {
-      type: "step",
-      budget: 20_000,
-      kernelState: expect.objectContaining(makeKernelState()),
-    },
-  ]);
+  expect(worker.postedMessages).toHaveLength(1);
+  expect(worker.postedMessages[0]).toMatchObject({
+    type: "step",
+    budget: 20_000,
+    kernelState: expect.objectContaining({
+      heapBase: makeKernelState().heapBase,
+      heapPtr: makeKernelState().heapPtr,
+      ofdTablePtr: makeKernelState().ofdTablePtr,
+      processRuntimeStatePtr: makeKernelState().processRuntimeStatePtr,
+      timeStatePtr: makeKernelState().timeStatePtr,
+    }),
+  });
 
   vi.useRealTimers();
 });

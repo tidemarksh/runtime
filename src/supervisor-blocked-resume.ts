@@ -95,10 +95,10 @@ function normalizeSupervisorBlockedPipeResumeAction(
 export function supervisorBlockedPipeResumeAction(
   kernel: KernelExports,
   vmPtr: number,
-): SupervisorBlockedPipeResumeAction | null {
+): SupervisorBlockedPipeResumeAction {
   const readAction = kernel.supervisor_blocked_pipe_resume_action;
   if (readAction === undefined) {
-    return null;
+    throw new Error("kernel supervisor blocked pipe resume action export is missing");
   }
   const result = readAction(vmPtr);
   if (result < 0) {

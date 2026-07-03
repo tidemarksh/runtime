@@ -7,6 +7,8 @@ const SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER = 1;
 const SUPERVISOR_BLOCKED_RESUME_DELEGATION_WAIT4_KERNEL_WORKER = 2;
 const SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED = 3;
 const SUPERVISOR_BLOCKED_RESUME_DELEGATION_EPOLL_DIRECT = 4;
+const SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER = 0;
+const SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT = 1;
 
 export function installSupervisorBlockedResumeStub<T extends Partial<KernelExports>>(
   kernel: T,
@@ -15,14 +17,26 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   "supervisor_resume_blocked_syscall"
   | "supervisor_blocked_resume_delegation"
   | "supervisor_blocked_wait_active_child_pid"
+  | "supervisor_blocked_pipe_resume_action_defer"
+  | "supervisor_blocked_pipe_resume_action_direct"
+  | "supervisor_blocked_pipe_resume_action"
 > {
   const nextKernel = kernel as T & Pick<
     KernelExports,
     "supervisor_resume_blocked_syscall"
     | "supervisor_blocked_resume_delegation"
     | "supervisor_blocked_wait_active_child_pid"
+    | "supervisor_blocked_pipe_resume_action_defer"
+    | "supervisor_blocked_pipe_resume_action_direct"
+    | "supervisor_blocked_pipe_resume_action"
   >;
   nextKernel.supervisor_blocked_wait_active_child_pid ??= () => 0;
+  nextKernel.supervisor_blocked_pipe_resume_action_defer ??= () =>
+    SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER;
+  nextKernel.supervisor_blocked_pipe_resume_action_direct ??= () =>
+    SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT;
+  nextKernel.supervisor_blocked_pipe_resume_action ??= () =>
+    SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT;
   nextKernel.supervisor_blocked_resume_delegation = (vmPtr: number, flags: number) => {
     const kernelWorkerAvailable =
       (flags & SUPERVISOR_BLOCKED_RESUME_FLAG_KERNEL_WORKER_AVAILABLE) !== 0;
