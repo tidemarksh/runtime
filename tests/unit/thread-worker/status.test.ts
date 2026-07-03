@@ -143,7 +143,6 @@ test("postThreadWorkerStatus owns status outbound assembly", () => {
     guestBase: 0,
     generation: 7,
     runtimeBridge: null,
-    syscallNumbers: null,
     lastResumeBlockedDebug,
     lastFutexWaitDebug,
     setLastResumeBlockedDebug(value) {
@@ -188,7 +187,6 @@ test("postThreadWorkerStatus owns sync-effect snapshot payload assembly", () => 
     guestBase: 0,
     generation: 8,
     runtimeBridge: null,
-    syscallNumbers: null,
     lastResumeBlockedDebug: undefined,
     lastFutexWaitDebug: undefined,
     setLastResumeBlockedDebug() {},
@@ -257,7 +255,6 @@ test("postThreadWorkerStatus includes futex and inbound guest-write diagnostics"
     guestBase: 0,
     generation: 10,
     runtimeBridge: null,
-    syscallNumbers: null,
     lastResumeBlockedDebug: undefined,
     lastFutexWaitDebug,
     setLastResumeBlockedDebug() {},

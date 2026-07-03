@@ -12,7 +12,7 @@ import {
   createThreadWorkerStatusOutcome,
   type ThreadWorkerOutcomePublisher,
 } from "./outcomes.js";
-import { readCompletedSyncEffects, type SyscallNumbers } from "./sync-effects.js";
+import { readCompletedSyncEffects } from "./sync-effects.js";
 
 const STAGE_DEBUG_ENABLED = ((globalThis as typeof globalThis & {
   process?: { env?: Record<string, string | undefined> };
@@ -26,7 +26,6 @@ interface ThreadWorkerExecContext {
   threadStepBudget: number;
   eintrErrno: number;
   futexWaitSliceMs: number;
-  syscallNumbers: SyscallNumbers | null;
   runtimeBridge: RuntimeStateBridge | null;
   postStatus: ThreadWorkerOutcomePublisher;
   reattachPublishedKernelRuntimeState(): void;
@@ -82,7 +81,7 @@ export function stepThread(ctx: ThreadWorkerExecContext, budget: number): void {
 
     publishStage(ctx, 5, status);
     const completedSyncEffects = status === ctx.statusCodes.OK
-      ? readCompletedSyncEffects(ctx.exports, ctx.statusCodes, status, ctx.syscallNumbers, ctx.vmPtr)
+      ? readCompletedSyncEffects(ctx.exports, ctx.statusCodes, status, ctx.vmPtr)
       : 0;
     if (
       status === ctx.statusCodes.OK

@@ -37,10 +37,6 @@ import {
   snapshotThreadWorkerPrepareMemory,
 } from "./thread-worker/prepare-memory.js";
 import {
-  loadSyscallNumbers,
-  type SyscallNumbers,
-} from "./thread-worker/sync-effects.js";
-import {
   publishThreadWorkerStatusOutcome,
   type ThreadWorkerBoundaryOutcome,
 } from "./thread-worker/outcomes.js";
@@ -72,7 +68,6 @@ const PIPE_RESUME_DEBUG_ENABLED = PIPE_SLOT_DEBUG_ENABLED
   }).process?.env?.TIDEMARK_PIPE_RESUME_DEBUG ?? "") === "1";
 let lastResumeBlockedDebug: string | undefined;
 let lastFutexWaitDebug: string | undefined;
-let syscallNumbers: SyscallNumbers | null = null;
 
 function acquireSharedMemoryForStep(buffer: ArrayBufferLike): void {
   if (runtimeBridge !== null) {
@@ -159,7 +154,6 @@ function attach(
   vmPtr = threadVmPtr;
   guestBase = threadGuestBase;
   generation = nextGeneration;
-  syscallNumbers = loadSyscallNumbers(kernelExports);
 }
 
 function postPrepared(): void {
@@ -201,7 +195,6 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
     guestBase,
     generation,
     runtimeBridge,
-    syscallNumbers,
     lastResumeBlockedDebug,
     lastFutexWaitDebug,
     setLastResumeBlockedDebug(value) {
@@ -240,7 +233,6 @@ function step(budget: number): void {
     threadStepBudget: THREAD_STEP_BUDGET,
     eintrErrno: EINTR_ERRNO,
     futexWaitSliceMs: FUTEX_WAIT_SLICE_MS,
-    syscallNumbers,
     runtimeBridge,
     postStatus: postStatusOutcome,
     reattachPublishedKernelRuntimeState,

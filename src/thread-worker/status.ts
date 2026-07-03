@@ -13,7 +13,7 @@ import { publishRuntimeBridgeDebugStage, type RuntimeStateBridge } from "../brid
 import { workerPostMessage } from "../bridge/scope.js";
 import { collectDebugParts, collectFdTraceDebug } from "./debug.js";
 import { consumeThreadWorkerInboundGuestWriteDebug } from "./inbound-state.js";
-import { readCompletedSyncEffects, type SyscallNumbers } from "./sync-effects.js";
+import { readCompletedSyncEffects } from "./sync-effects.js";
 import {
   FS_OP_WRITE,
   FS_RING_REQUEST_BUF_PTR_OFFSET,
@@ -42,7 +42,6 @@ let vmPtr = 0;
 let guestBase = 0;
 let generation = 0;
 let runtimeBridge: RuntimeStateBridge | null = null;
-let syscallNumbers: SyscallNumbers | null = null;
 let lastResumeBlockedDebug: string | undefined;
 let lastFutexWaitDebug: string | undefined;
 
@@ -53,7 +52,6 @@ export interface ThreadWorkerStatusContext {
   guestBase: number;
   generation: number;
   runtimeBridge: RuntimeStateBridge | null;
-  syscallNumbers: SyscallNumbers | null;
   lastResumeBlockedDebug: string | undefined;
   lastFutexWaitDebug: string | undefined;
   setLastResumeBlockedDebug(value: string | undefined): void;
@@ -199,11 +197,6 @@ function snapshotCompletedPipeSlots(
   kernelExports: KernelExports,
   kernelState: KernelRuntimeState,
 ): KernelWorkerPipeSlotSnapshot[] {
-  const currentSyscall = readOptionalTraceU64(kernelExports.thread_a7?.(vmPtr));
-  const pipe2Syscall = syscallNumbers?.pipe2;
-  const completedSyscallIsPipe2 = pipe2Syscall !== null
-    && pipe2Syscall !== undefined
-    && currentSyscall === BigInt(pipe2Syscall);
   const completedSlots = kernelExports.thread_take_completed_pipe_sync_slots?.(vmPtr) ?? 0;
   const completedMask = typeof completedSlots === "bigint" ? completedSlots : BigInt(completedSlots);
   const readSlots = kernelExports.thread_take_completed_pipe_sync_read_slots?.(vmPtr);
@@ -233,7 +226,7 @@ function snapshotCompletedPipeSlots(
     const offset = kernelState.pipeBase + pipeSlot * slotBytes;
     const bit = 1n << BigInt(pipeSlot);
     const freshSlot = freshMask === undefined
-      ? completedSyscallIsPipe2
+      ? false
       : (freshMask & bit) !== 0n;
     const mode = freshSlot
       ? 1 | 2
@@ -334,8 +327,6 @@ function snapshotCompletedPipeReadGuestMemory(
   if (
     status !== statusCodes.OK
     || (syncEffects & SYNC_EFFECT_PIPE_STATE) === 0
-    || syscallNumbers?.read === null
-    || syscallNumbers?.read === undefined
   ) {
     return undefined;
   }
@@ -359,45 +350,6 @@ function snapshotCompletedPipeReadGuestMemory(
     ) {
       return [{ guestPtr, bytes: memory.slice(start, start + length) }];
     }
-  }
-  const len = kernelExports.debug_fd_syscall_trace_len?.() ?? 0;
-  if (len <= 0) {
-    return undefined;
-  }
-  const readSyscall = BigInt(syscallNumbers.read);
-  for (let index = len - 1; index >= 0; index -= 1) {
-    const traceVmPtr = kernelExports.debug_fd_syscall_trace_vm_ptr?.(index) ?? vmPtr;
-    if (traceVmPtr !== vmPtr) {
-      continue;
-    }
-    const traceNr = readOptionalTraceU64(kernelExports.debug_fd_syscall_trace_nr?.(index));
-    if (traceNr !== readSyscall) {
-      return undefined;
-    }
-    if ((kernelExports.debug_fd_syscall_trace_arg0_ofd_type?.(index) ?? 0) !== kernelExports.abi_fd_type_pipe()) {
-      return undefined;
-    }
-    const result = readOptionalTraceI64(kernelExports.debug_fd_syscall_trace_result?.(index));
-    if (result === null || result <= 0n) {
-      return undefined;
-    }
-    const guestPtr = Number(readOptionalTraceU64(kernelExports.debug_fd_syscall_trace_arg1?.(index)) ?? 0n);
-    const requested = Number(readOptionalTraceU64(kernelExports.debug_fd_syscall_trace_arg2?.(index)) ?? 0n);
-    const readLen = Number(result);
-    const length = requested > 0 ? Math.min(readLen, requested) : readLen;
-    const start = guestBase + guestPtr;
-    const memory = new Uint8Array(kernelExports.memory.buffer);
-    if (
-      !Number.isFinite(guestPtr)
-      || !Number.isFinite(length)
-      || guestPtr <= 0
-      || length <= 0
-      || start < 0
-      || start + length > memory.byteLength
-    ) {
-      return undefined;
-    }
-    return [{ guestPtr, bytes: memory.slice(start, start + length) }];
   }
   return undefined;
 }
@@ -632,16 +584,18 @@ function formatLatestPipeReadDebug(
   if (
     !PIPE_SLOT_DEBUG_ENABLED
     || status !== statusCodes.OK
-    || syscallNumbers?.read === null
-    || syscallNumbers?.read === undefined
   ) {
+    return undefined;
+  }
+  const readSyscallNr = kernelExports.abi_sys_read?.();
+  if (readSyscallNr === undefined) {
     return undefined;
   }
   const len = kernelExports.debug_fd_syscall_trace_len?.() ?? 0;
   if (len <= 0) {
     return undefined;
   }
-  const readSyscall = BigInt(syscallNumbers.read);
+  const readSyscall = typeof readSyscallNr === "bigint" ? readSyscallNr : BigInt(readSyscallNr);
   for (let index = len - 1; index >= 0; index -= 1) {
     const traceVmPtr = kernelExports.debug_fd_syscall_trace_vm_ptr?.(index) ?? vmPtr;
     if (traceVmPtr !== vmPtr) {
@@ -671,50 +625,6 @@ function formatLatestPipeReadDebug(
     ].join(":");
   }
   return undefined;
-}
-
-function snapshotPipe2FallbackPipeSlots(
-  kernelExports: KernelExports,
-  kernelState: KernelRuntimeState,
-): KernelWorkerPipeSlotSnapshot[] {
-  const pipe2Syscall = syscallNumbers?.pipe2;
-  if (pipe2Syscall === null || pipe2Syscall === undefined) {
-    return [];
-  }
-  const len = kernelExports.debug_fd_syscall_trace_len?.() ?? 0;
-  if (len <= 0 || readOptionalTraceU64(kernelExports.debug_fd_syscall_trace_nr?.(len - 1)) !== BigInt(pipe2Syscall)) {
-    return [];
-  }
-  const snapshots = new Map<number, KernelWorkerPipeSlotSnapshot>();
-  for (let index = len - 1; index >= 0; index -= 1) {
-    const traceNr = readOptionalTraceU64(kernelExports.debug_fd_syscall_trace_nr?.(index));
-    if (traceNr !== BigInt(pipe2Syscall)) {
-      continue;
-    }
-    for (const ofdId of [
-      kernelExports.debug_fd_syscall_trace_arg0_ofd_id?.(index) ?? 0,
-      kernelExports.debug_fd_syscall_trace_arg2_ofd_id?.(index) ?? 0,
-    ]) {
-      if (
-        ofdId <= 0
-        || ofdId >= kernelExports.abi_max_fds()
-        || kernelExports.kernel_ofd_fd_type(ofdId) !== kernelExports.abi_fd_type_pipe()
-      ) {
-        continue;
-      }
-      const pipeSlot = kernelExports.kernel_ofd_ino(ofdId);
-      if (snapshots.has(pipeSlot)) {
-        continue;
-      }
-      const snapshot = snapshotPipeSlot(kernelExports, kernelState, pipeSlot, 1 | 2);
-      if (snapshot) {
-        snapshot.fresh = true;
-        snapshots.set(pipeSlot, snapshot);
-      }
-    }
-    break;
-  }
-  return [...snapshots.values()];
 }
 
 function snapshotNonEmptyProcessPipeSlots(
@@ -837,7 +747,7 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
   const kernelExports = requireExports();
   const includeDebug = status !== statusCodes.FS;
   const syncEffects = completedSyncEffects
-    ?? readCompletedSyncEffects(kernelExports, statusCodes, status, syscallNumbers, vmPtr);
+    ?? readCompletedSyncEffects(kernelExports, statusCodes, status, vmPtr);
   publishThreadWorkerStage(101, status);
   const kernelState = readKernelRuntimeState(kernelExports);
   publishThreadWorkerStage(102, status);
@@ -853,7 +763,6 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
         }
         const processSlots = [
           ...snapshotNonEmptyProcessPipeSlots(kernelExports, kernelState, fdEntries),
-          ...snapshotPipe2FallbackPipeSlots(kernelExports, kernelState),
         ];
         return processSlots;
       })()
@@ -968,7 +877,6 @@ export function postThreadWorkerStatus(
   guestBase = context.guestBase;
   generation = context.generation;
   runtimeBridge = context.runtimeBridge;
-  syscallNumbers = context.syscallNumbers;
   lastResumeBlockedDebug = context.lastResumeBlockedDebug;
   lastFutexWaitDebug = context.lastFutexWaitDebug;
   postStatus(status, waitInWorker, completedSyncEffects);
