@@ -19,8 +19,17 @@ function makeHandle(
     kernel_ofd_refcount: () => 1,
     kernel_ofd_status_flags: () => 0,
     abi_fd_type_pipe: () => 6,
+    abi_max_pipes: () => 16,
+    kernel_pipe_region_bytes: () => 16 * (32 + 65_536),
     kernel_ofd_ino: (ofdId: number) => ofdId === 1 ? 1 : 2,
     supervisor_blocked_pipe_sync_before_retry_clear: vi.fn(() => 0),
+    supervisor_stdio_output_settle_kind_visible: () => 1,
+    supervisor_stdio_output_settle_kind_inherited_child: () => 2,
+    supervisor_stdio_output_settle_max_passes: (kind: number) => kind === 1 ? 4 : kind === 2 ? 6 : -22,
+    supervisor_stdio_output_settle_stable_passes: (kind: number) => kind === 1 || kind === 2 ? 2 : -22,
+    supervisor_stdio_pipe_read_progress_action_none: () => 0,
+    supervisor_stdio_pipe_read_progress_action_snapshot: () => 1,
+    supervisor_stdio_pipe_read_progress_action: (_vmPtr: number, _pipeSlot: number, drained: number) => drained === 0 ? 0 : 1,
     ...(overrides.kernel as Partial<ProcessHandle["kernel"]> | undefined),
   } as ProcessHandle["kernel"];
   return {
