@@ -283,7 +283,8 @@ function supervisorBlockedBooleanFact(
   exportName:
     | "supervisor_blocked_poll_wait_has_socket"
     | "supervisor_blocked_pipe_wait_has_ready_events"
-    | "supervisor_blocked_wait_should_pump_network",
+    | "supervisor_blocked_wait_should_pump_network"
+    | "supervisor_blocked_epoll_wait_retry_required",
 ): boolean {
   const readFact = kernel[exportName];
   if (readFact === undefined) {
@@ -315,6 +316,13 @@ export function supervisorBlockedWaitShouldPumpNetwork(
   vmPtr: number,
 ): boolean {
   return supervisorBlockedBooleanFact(kernel, vmPtr, "supervisor_blocked_wait_should_pump_network");
+}
+
+export function supervisorBlockedEpollWaitRetryRequired(
+  kernel: KernelExports,
+  vmPtr: number,
+): boolean {
+  return supervisorBlockedBooleanFact(kernel, vmPtr, "supervisor_blocked_epoll_wait_retry_required");
 }
 
 function supervisorBlockedPipeResumeActionValue(

@@ -677,6 +677,17 @@ export function makeSupervisorAbiStubs(
         ? 1
         : 0;
     },
+    supervisor_blocked_epoll_wait_retry_required(this: KernelExports | undefined, vmPtr: number) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      const receiver = currentExports(this);
+      const status = statusFor(receiver, vmPtr);
+      return status === callNumber(receiver, "abi_status_epoll_wait")
+        && callNumber(receiver, "thread_process_thread_count", vmPtr) > 1
+        ? 1
+        : 0;
+    },
     supervisor_blocked_resume_delegation(this: KernelExports | undefined, vmPtr: number, flags: number) {
       const kernelWorkerAvailable = (flags
         & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_flag_kernel_worker_available) !== 0;

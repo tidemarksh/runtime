@@ -210,6 +210,7 @@ function makeKernel() {
       },
       supervisor_blocked_epoll_watches_pipe: () => 0,
       supervisor_blocked_epoll_watched_ofd: () => 0,
+      supervisor_blocked_epoll_wait_retry_required: () => 0,
       supervisor_blocked_wait_active_child_pid: (vmPtr: number) => {
         const status = kernel.exports.thread_status(vmPtr);
         if (
@@ -248,7 +249,7 @@ function makeKernel() {
         }
         if (
           kernel.exports.thread_status(vmPtr) === kernel.exports.abi_status_epoll_wait()
-          && kernel.exports.thread_process_thread_count(vmPtr) > 1
+          && kernel.exports.supervisor_blocked_epoll_wait_retry_required(vmPtr) !== 0
         ) {
           return 2;
         }
@@ -1497,6 +1498,7 @@ test("epoll retry wakes a running worker instead of resuming under it", async ()
     vmPtr === runningVmPtr ? kernel.abi_status_ok() : kernel.abi_status_epoll_wait();
   kernel.thread_epoll_wait_timeout = () => -1n;
   kernel.thread_process_thread_count = () => 2;
+  kernel.supervisor_blocked_epoll_wait_retry_required = () => 1;
   kernel.process_thread_vm_ptr = (_processVmPtr: number, slot: number) => {
     if (slot === 0) {
       return blockedVmPtr;
@@ -1694,6 +1696,7 @@ test("epoll sync timeout zero survives a running-worker retry skip", async () =>
     vmPtr === runningVmPtr ? kernel.abi_status_ok() : blockedStatus;
   kernel.thread_epoll_wait_timeout = () => timeoutMs;
   kernel.thread_process_thread_count = () => 2;
+  kernel.supervisor_blocked_epoll_wait_retry_required = () => 1;
   kernel.process_thread_vm_ptr = (_processVmPtr: number, slot: number) => {
     if (slot === 0) {
       return blockedVmPtr;
@@ -1780,6 +1783,7 @@ test("epoll retry defers while clone child init is expected to release parent", 
     ? kernel.abi_status_epoll_wait()
     : kernel.abi_status_ok();
   kernel.thread_epoll_wait_timeout = () => -1n;
+  kernel.supervisor_blocked_epoll_wait_retry_required = () => 1;
   kernel.abi_fd_type_epoll = () => 7;
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
   handle.pendingChildSpawnRecords = 0;
@@ -2966,6 +2970,7 @@ test("epoll kernel-worker retry re-queries timerfd deadline after state sync", a
     : kernel.abi_status_ok();
   kernel.thread_epoll_wait_timeout = () => -1n;
   kernel.thread_process_thread_count = () => 2;
+  kernel.supervisor_blocked_epoll_wait_retry_required = () => 1;
   kernel.process_thread_vm_ptr = (_vmPtr: number, slot: number) => slot === 0 ? 0x1234 : 0;
   kernel.abi_fd_type_epoll = () => 7;
   kernel.abi_fd_type_timerfd = () => 10;
@@ -3081,6 +3086,7 @@ test("epoll kernel-worker retry syncs watched timerfd OFD after the timer fd is 
     : kernel.abi_status_ok();
   kernel.thread_epoll_wait_timeout = () => -1n;
   kernel.thread_process_thread_count = () => 2;
+  kernel.supervisor_blocked_epoll_wait_retry_required = () => 1;
   kernel.process_thread_vm_ptr = (_vmPtr: number, slot: number) => slot === 0 ? 0x1234 : 0;
   kernel.abi_fd_type_epoll = () => 7;
   kernel.abi_fd_type_timerfd = () => 10;
@@ -3202,6 +3208,7 @@ test("epoll kernel-worker retry syncs watched pipe, epoll table, then dependent 
   kernel.thread_status = () => status;
   kernel.thread_epoll_wait_timeout = () => -1n;
   kernel.thread_process_thread_count = () => 2;
+  kernel.supervisor_blocked_epoll_wait_retry_required = () => 1;
   kernel.process_thread_vm_ptr = (_vmPtr: number, slot: number) => slot === 0 ? 0x1234 : 0;
   kernel.abi_fd_type_epoll = () => 7;
   kernel.abi_fd_type_pipe = () => 6;

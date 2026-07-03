@@ -1,4 +1,5 @@
 import {
+  supervisorBlockedEpollWaitRetryRequired,
   supervisorBlockedEpollWaitTimeoutMs,
   supervisorBlockedPipeSyncBeforeRetryAction,
   supervisorBlockedPipeSyncBeforeRetryClear,
@@ -726,7 +727,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
     if (supervisorBlockedStatusIsEpollWait(handle.kernel, status)) {
-      if (handle.kernel.thread_process_thread_count(vmPtr) > 1) {
+      if (supervisorBlockedEpollWaitRetryRequired(handle.kernel, vmPtr)) {
         scheduleSupervisorBlockedRetry(
           handle,
           worker,
@@ -864,7 +865,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
 
     if (supervisorBlockedStatusIsEpollWait(handle.kernel, status)) {
-      if (handle.kernel.thread_process_thread_count(vmPtr) > 1) {
+      if (supervisorBlockedEpollWaitRetryRequired(handle.kernel, vmPtr)) {
         scheduleSupervisorBlockedRetry(
           handle,
           worker,
