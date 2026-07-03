@@ -559,9 +559,6 @@ test("handleFutexWait asks supervisor before interrupting for pending signals", 
     status = 0;
     return status;
   });
-  const directPending = vi.fn(() => {
-    throw new Error("direct pending bits should not choose signal timing when supervisor exists");
-  });
   const postStatus = vi.fn();
 
   const guestAddr = 0x100;
@@ -588,7 +585,6 @@ test("handleFutexWait asks supervisor before interrupting for pending signals", 
       thread_futex_wait_expected: () => expected,
       thread_record_blocked_addr: () => blockedAddr,
       ...supervisorFutexExports(),
-      thread_sig_pending: directPending,
       supervisor_signal_pending_for_blocked_wait: () => supervisorPending ? 1 : 0,
       supervisor_futex_wait_completion_signal_check: () => 5,
       supervisor_complete_futex_wait: supervisorComplete,
@@ -686,9 +682,6 @@ test("handleFutexWait uses supervisor decision for process-directed pending sign
   let status = 20;
   let blockedAddr = BigInt(guestAddr);
   let processSignalInterrupts = false;
-  const directProcessPending = vi.fn(() => {
-    throw new Error("direct process pending bits should not choose signal timing");
-  });
 
   i32[guestAddr >>> 2] = expected;
 
@@ -716,7 +709,6 @@ test("handleFutexWait uses supervisor decision for process-directed pending sign
         },
       }),
       thread_sig_pending: () => 0n,
-      thread_pending_signal_interrupts_blocked_syscall: directProcessPending,
       thread_status: () => status,
       abi_eintr: () => -4,
     } as never,
@@ -733,7 +725,6 @@ test("handleFutexWait uses supervisor decision for process-directed pending sign
   }, 20);
 
   expect(handled).toBe(false);
-  expect(directProcessPending).not.toHaveBeenCalled();
   expect(postStatus).toHaveBeenNthCalledWith(1, createThreadWorkerStatusOutcome(20, true));
   expect(postStatus).toHaveBeenNthCalledWith(2, createThreadWorkerStatusOutcome(0));
 

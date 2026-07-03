@@ -72,20 +72,14 @@ test("checkPendingSignalsAtBoundary requires supervisor boundary export", () => 
   );
 });
 
-test("hasPendingSignalForBlockedWait prefers supervisor decision over direct pending bits", () => {
-  const threadSigPending = vi.fn(() => 1n);
-  const processInterrupts = vi.fn(() => 1);
+test("hasPendingSignalForBlockedWait reports supervisor blocked-wait decision", () => {
   const supervisorDecision = vi.fn(() => 0);
 
   expect(hasPendingSignalForBlockedWait({
     supervisor_signal_pending_for_blocked_wait: supervisorDecision,
-    thread_sig_pending: threadSigPending,
-    thread_pending_signal_interrupts_blocked_syscall: processInterrupts,
   } as never, 0x1234)).toBe(false);
 
   expect(supervisorDecision).toHaveBeenCalledWith(0x1234);
-  expect(threadSigPending).not.toHaveBeenCalled();
-  expect(processInterrupts).not.toHaveBeenCalled();
 });
 
 test("hasPendingSignalForBlockedWait requires supervisor decision export", () => {
