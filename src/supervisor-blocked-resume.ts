@@ -142,6 +142,21 @@ export function supervisorBlockedResumeWritebacks(
   return ranges;
 }
 
+export function supervisorBlockedPollWaitTimeoutMs(
+  kernel: KernelExports,
+  vmPtr: number,
+): number {
+  const readTimeout = kernel.supervisor_blocked_poll_wait_timeout_ms;
+  if (readTimeout === undefined) {
+    throw new Error("kernel supervisor blocked poll wait timeout export is missing");
+  }
+  const result = toNumber(readTimeout(vmPtr));
+  if (result < -1) {
+    throw new Error(`kernel supervisor blocked poll wait timeout failed: ${result}`);
+  }
+  return result;
+}
+
 function supervisorBlockedPipeResumeActionValue(
   kernel: KernelExports,
   action: SupervisorBlockedPipeResumeAction,

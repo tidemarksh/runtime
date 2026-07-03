@@ -1,17 +1,14 @@
-import {
-  formatPipeSlotControlDebug,
-  PIPE_WAIT_GUEST_MEMORY_WRITE_BYTES,
-} from "../ownership/pipe-control.js";
+import { formatPipeSlotControlDebug } from "../ownership/pipe-control.js";
 import { POLLFD_BYTES } from "../../layout/poll.js";
-import { appendPendingGuestMemoryWrites } from "../guest-memory-writes.js";
 import type {
   ProcessHandle,
-  ThreadWorkerState,
 } from "../types.js";
-import type { SupervisorBlockedWaitRetryFlags } from "../../supervisor-blocked-resume.js";
+import {
+  supervisorBlockedPollWaitTimeoutMs,
+  type SupervisorBlockedWaitRetryFlags,
+} from "../../supervisor-blocked-resume.js";
 
 export interface PipePollSchedulerDeps {
-  threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   scheduleSupervisorBlockedRetry(
     handle: ProcessHandle,
@@ -21,86 +18,13 @@ export interface PipePollSchedulerDeps {
 }
 
 export interface PipePollScheduler {
-  queueBlockedPollWaitGuestMemoryWrites(
-    handle: ProcessHandle,
-    worker: Worker,
-    syscallNr: bigint,
-    arg0: bigint,
-    arg1: bigint,
-    arg2: bigint,
-    arg3: bigint,
-  ): void;
   blockedOrCurrentSyscallNr(handle: ProcessHandle, vmPtr: number): bigint | null;
   pollWaitTimeoutMs(handle: ProcessHandle, status: number, vmPtr: number): number;
   formatFirstPipeWaitDebug(handle: ProcessHandle, vmPtr: number): string;
   formatBlockedPollFdSet(handle: ProcessHandle, vmPtr: number, limit?: number): string;
 }
 
-function syscallMatches(
-  syscallNr: bigint,
-  abiSyscall: (() => bigint | number) | undefined,
-): boolean {
-  const value = abiSyscall?.();
-  return value !== undefined && syscallNr === BigInt(value);
-}
-
 export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollScheduler {
-  function queueGuestBufferWrite(
-    handle: ProcessHandle,
-    worker: Worker,
-    ptr: bigint | number,
-    length: bigint | number,
-  ): void {
-    const start = typeof ptr === "bigint" ? Number(ptr) : ptr;
-    const requested = typeof length === "bigint" ? Number(length) : length;
-    if (!Number.isFinite(start) || !Number.isFinite(requested) || start <= 0 || requested <= 0) {
-      return;
-    }
-    const absolute = handle.guestBase + start;
-    const writeLen = Math.min(requested, PIPE_WAIT_GUEST_MEMORY_WRITE_BYTES);
-    const memory = new Uint8Array(handle.memory.buffer);
-    if (absolute < 0 || absolute + writeLen > memory.byteLength) {
-      return;
-    }
-    const thread = deps.threadWorkerStates.get(worker);
-    if (!thread) {
-      return;
-    }
-    appendPendingGuestMemoryWrites(thread, [{
-      guestPtr: start,
-      bytes: memory.slice(absolute, absolute + writeLen),
-    }]);
-  }
-
-  function queueBlockedPollWaitGuestMemoryWrites(
-    handle: ProcessHandle,
-    worker: Worker,
-    syscallNr: bigint,
-    arg0: bigint,
-    arg1: bigint,
-    arg2: bigint,
-    arg3: bigint,
-  ): void {
-    const maxFds = Math.max(0, handle.kernel.abi_max_fds?.() ?? 1024);
-    if (syscallMatches(syscallNr, handle.kernel.abi_sys_ppoll)) {
-      const nfds = Math.min(Number(arg1), maxFds);
-      if (Number.isFinite(nfds) && nfds > 0) {
-        queueGuestBufferWrite(handle, worker, arg0, nfds * POLLFD_BYTES);
-      }
-      return;
-    }
-    if (syscallMatches(syscallNr, handle.kernel.abi_sys_pselect6)) {
-      const nfds = Math.min(Number(arg0), maxFds);
-      if (!Number.isFinite(nfds) || nfds <= 0) {
-        return;
-      }
-      const setBytes = Math.floor((nfds + 63) / 64) * 8;
-      queueGuestBufferWrite(handle, worker, arg1, setBytes);
-      queueGuestBufferWrite(handle, worker, arg2, setBytes);
-      queueGuestBufferWrite(handle, worker, arg3, setBytes);
-    }
-  }
-
   function blockedOrCurrentSyscallNr(handle: ProcessHandle, vmPtr: number): bigint | null {
     const blockedSyscall = handle.kernel.thread_blocked_syscall_nr?.(vmPtr);
     if (blockedSyscall !== undefined && BigInt(blockedSyscall) !== 0n) {
@@ -110,24 +34,8 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
     return currentSyscall === undefined ? null : BigInt(currentSyscall);
   }
 
-  function pollWaitTimeoutMs(handle: ProcessHandle, status: number, vmPtr: number): number {
-    if (status !== handle.kernel.abi_status_pipe_wait()) {
-      return -1;
-    }
-    const syscall = blockedOrCurrentSyscallNr(handle, vmPtr);
-    if (syscall === null) {
-      return -1;
-    }
-    const ppoll = handle.kernel.abi_sys_ppoll?.();
-    const pselect6 = handle.kernel.abi_sys_pselect6?.();
-    if (
-      (ppoll === undefined || syscall !== BigInt(ppoll))
-      && (pselect6 === undefined || syscall !== BigInt(pselect6))
-    ) {
-      return -1;
-    }
-    const timeout = handle.kernel.thread_poll_wait_timeout?.(vmPtr);
-    return timeout === undefined ? -1 : Number(timeout);
+  function pollWaitTimeoutMs(handle: ProcessHandle, _status: number, vmPtr: number): number {
+    return supervisorBlockedPollWaitTimeoutMs(handle.kernel, vmPtr);
   }
 
   function formatPipeSlotHolders(handle: ProcessHandle, pipeSlot: number): string {
@@ -283,7 +191,6 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
   }
 
   return {
-    queueBlockedPollWaitGuestMemoryWrites,
     blockedOrCurrentSyscallNr,
     pollWaitTimeoutMs,
     formatFirstPipeWaitDebug,

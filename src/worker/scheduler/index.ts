@@ -354,7 +354,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     formatFirstPipeWaitDebug,
     pollWaitTimeoutMs,
   } = createPipePollScheduler({
-    threadWorkerStates,
     appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
     scheduleSupervisorBlockedRetry,
   });

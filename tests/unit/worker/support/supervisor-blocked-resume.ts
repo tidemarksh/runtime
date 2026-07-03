@@ -28,6 +28,7 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_blocked_resume_writeback_count"
   | "supervisor_blocked_resume_writeback_ptr"
   | "supervisor_blocked_resume_writeback_len"
+  | "supervisor_blocked_poll_wait_timeout_ms"
   | "supervisor_blocked_resume_delegation"
   | "supervisor_blocked_wait_active_child_pid"
   | "supervisor_blocked_pipe_resume_action_defer"
@@ -132,6 +133,7 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_blocked_resume_writeback_count"
     | "supervisor_blocked_resume_writeback_ptr"
     | "supervisor_blocked_resume_writeback_len"
+    | "supervisor_blocked_poll_wait_timeout_ms"
     | "supervisor_blocked_resume_delegation"
     | "supervisor_blocked_wait_active_child_pid"
     | "supervisor_blocked_pipe_resume_action_defer"
@@ -256,6 +258,23 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     resumeResult: bigint | number,
     index: number,
   ) => compactWritebackRanges(vmPtr, blockedStatus, resumeResult)[index]?.length ?? 0;
+  nextKernel.supervisor_blocked_poll_wait_timeout_ms ??= (vmPtr: number) => {
+    if (vmPtr === 0) {
+      return -14;
+    }
+    if (kernel.thread_status?.(vmPtr) !== kernel.abi_status_pipe_wait?.()) {
+      return -1;
+    }
+    const syscallNr = blockedSyscallNr(vmPtr);
+    if (
+      !syscallMatches(syscallNr, kernel.abi_sys_ppoll)
+      && !syscallMatches(syscallNr, kernel.abi_sys_pselect6)
+    ) {
+      return -1;
+    }
+    const timeout = kernel.thread_poll_wait_timeout?.(vmPtr);
+    return timeout === undefined ? -1 : toNumber(timeout);
+  };
   nextKernel.supervisor_blocked_resume_delegation = (vmPtr: number, flags: number) => {
     const kernelWorkerAvailable =
       (flags & SUPERVISOR_BLOCKED_RESUME_FLAG_KERNEL_WORKER_AVAILABLE) !== 0;

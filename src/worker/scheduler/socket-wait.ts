@@ -1,4 +1,5 @@
 import type { ProcessHandle } from "../types.js";
+import { supervisorBlockedPollWaitTimeoutMs } from "../../supervisor-blocked-resume.js";
 
 export interface SocketWaitSchedulerDeps {
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
@@ -39,28 +40,8 @@ export function createSocketWaitScheduler(deps: SocketWaitSchedulerDeps): Socket
     }
   }
 
-  function pollWaitTimeoutMs(handle: ProcessHandle, status: number, vmPtr: number): number {
-    if (status !== handle.kernel.abi_status_pipe_wait()) {
-      return -1;
-    }
-    const blockedSyscall = handle.kernel.thread_blocked_syscall_nr?.(vmPtr);
-    const currentSyscall = handle.kernel.thread_a7?.(vmPtr);
-    const syscall = blockedSyscall !== undefined && BigInt(blockedSyscall) !== 0n
-      ? BigInt(blockedSyscall)
-      : currentSyscall === undefined ? null : BigInt(currentSyscall);
-    if (syscall === null) {
-      return -1;
-    }
-    const ppoll = handle.kernel.abi_sys_ppoll?.();
-    const pselect6 = handle.kernel.abi_sys_pselect6?.();
-    if (
-      (ppoll === undefined || syscall !== BigInt(ppoll))
-      && (pselect6 === undefined || syscall !== BigInt(pselect6))
-    ) {
-      return -1;
-    }
-    const timeout = handle.kernel.thread_poll_wait_timeout?.(vmPtr);
-    return timeout === undefined ? -1 : Number(timeout);
+  function pollWaitTimeoutMs(handle: ProcessHandle, _status: number, vmPtr: number): number {
+    return supervisorBlockedPollWaitTimeoutMs(handle.kernel, vmPtr);
   }
 
   function blockedWaitMayDependOnNetwork(handle: ProcessHandle, status: number, vmPtr: number): boolean {

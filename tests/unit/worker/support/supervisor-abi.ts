@@ -55,6 +55,7 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_resume_delegation_unsupported: 3,
   supervisor_blocked_resume_delegation_epoll_direct: 4,
   supervisor_blocked_resume_delegation_flag_kernel_worker_available: 1,
+  supervisor_blocked_poll_wait_timeout_ms: -1,
   supervisor_blocked_pipe_sync_before_retry_action_none: 0,
   supervisor_blocked_pipe_sync_before_retry_action_request_sync: 1,
   supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output: 2,
