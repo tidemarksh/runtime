@@ -83,10 +83,7 @@ test("hasPendingSignalForBlockedWait reports supervisor blocked-wait decision", 
 });
 
 test("hasPendingSignalForBlockedWait requires supervisor decision export", () => {
-  expect(() => hasPendingSignalForBlockedWait({
-    thread_sig_pending: () => 0n,
-    thread_pending_signal_interrupts_blocked_syscall: () => 1,
-  } as never, 0x1234)).toThrow(
+  expect(() => hasPendingSignalForBlockedWait({} as never, 0x1234)).toThrow(
     "kernel supervisor ABI missing supervisor_signal_pending_for_blocked_wait",
   );
 });
