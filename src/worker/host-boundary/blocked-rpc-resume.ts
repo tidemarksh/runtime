@@ -259,7 +259,14 @@ async function executeHostBlockedSyscallResume(
       return true;
     };
     forceNetworkClosedFds(handle, vmPtr);
-    const resumeDirectlyBySupervisor = async (stage: string): Promise<void> => {
+    const resumeDirectlyBySupervisor = async (options: {
+      stage: string;
+      syncAfterResumeStage: string;
+      emitResumeLifecycleEvent: boolean;
+      includeStageInDoneEvent: boolean;
+      requireBlockedBeforeDone: boolean;
+      syncSocketAfterResume: boolean;
+    }): Promise<void> => {
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       const blockedSyscallNr = handle.kernel.thread_blocked_syscall_nr?.(vmPtr) ?? 0n;
       const blockedArg0 = handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 0) ?? 0n;
@@ -289,10 +296,12 @@ async function executeHostBlockedSyscallResume(
       ) {
         queueGuestBufferWrite(handle, worker, blockedArg1, resumeResult);
       }
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `${stage}:${handle.pid}:ret=${resumeResult.toString()}:status=${handle.kernel.thread_status(vmPtr)}`,
-      );
+      if (options.emitResumeLifecycleEvent) {
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `${options.stage}:${handle.pid}:ret=${resumeResult.toString()}:status=${handle.kernel.thread_status(vmPtr)}`,
+        );
+      }
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       const currentPid = handle.kernel.process_current_pid?.(vmPtr) ?? handle.pid;
       const transientProcessOwnerMismatch = currentPid > 0 && currentPid !== handle.pid;
@@ -300,19 +309,36 @@ async function executeHostBlockedSyscallResume(
         !transientProcessOwnerMismatch
         && !blockedStatusIsEpollWait(handle, blockedStatus)
       ) {
-        deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-after-supervisor-resume:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
+        deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:${options.syncAfterResumeStage}:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
         await deps.syncBlockedForkSharedStateViaKernelWorker(handle, vmPtr, blockedRpcSyncCause(blockedStatus));
         if (abortIfStaleBlockedRpc()) {
           return;
         }
       }
+      if (
+        !transientProcessOwnerMismatch
+        && options.syncSocketAfterResume
+      ) {
+        await syncSocketStatePreservingNetworkBridge(handle, blockedStatus);
+        if (abortIfStaleBlockedRpc()) {
+          return;
+        }
+      }
+      if (options.requireBlockedBeforeDone) {
+        const blocked = handle.hostBlockedWorkers.get(worker);
+        if (!blocked || blocked.vmPtr !== vmPtr) {
+          return;
+        }
+      }
       finishBlockedRpc();
-      deps.appendWorkerDebugLog(handle, `blocked-rpc-done:${handle.kernel.thread_status(vmPtr)}:0x${vmPtr.toString(16)}:${stage}`);
-      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-done:${handle.pid}:${handle.kernel.thread_status(vmPtr)}:${stage}`);
+      const doneStatus = handle.kernel.thread_status(vmPtr);
+      const doneSuffix = options.includeStageInDoneEvent ? `:${options.stage}` : "";
+      deps.appendWorkerDebugLog(handle, `blocked-rpc-done:${doneStatus}:0x${vmPtr.toString(16)}${doneSuffix}`);
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-done:${handle.pid}:${doneStatus}${doneSuffix}`);
       if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
         return;
       }
-      emitBlockedRpcRetryResult(handle.kernel.thread_status(vmPtr));
+      emitBlockedRpcRetryResult(doneStatus);
     };
     const applySupervisorPipeAction = async (): Promise<boolean> => {
       if (blockedStatus !== handle.kernel.abi_status_pipe_wait()) {
@@ -336,7 +362,14 @@ async function executeHostBlockedSyscallResume(
           emitBlockedRpcRetryResult(blockedStatus);
           return true;
         case SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT:
-          await resumeDirectlyBySupervisor("blocked-rpc-supervisor-pipe-resume");
+          await resumeDirectlyBySupervisor({
+            stage: "blocked-rpc-supervisor-pipe-resume",
+            syncAfterResumeStage: "sync-after-supervisor-resume",
+            emitResumeLifecycleEvent: true,
+            includeStageInDoneEvent: true,
+            requireBlockedBeforeDone: false,
+            syncSocketAfterResume: false,
+          });
           return true;
         default: {
           const exhaustive: never = supervisorPipeAction;
@@ -348,76 +381,17 @@ async function executeHostBlockedSyscallResume(
       return;
     }
 
-    attachKernelRuntimeState(handle.kernel, handle.kernelState);
-    const blockedSyscallNr = handle.kernel.thread_blocked_syscall_nr?.(vmPtr) ?? 0n;
-    const blockedArg0 = handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 0) ?? 0n;
-    const blockedArg1 = handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 1) ?? 0n;
-    const blockedArg2 = handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 2) ?? 0n;
-    const blockedArg3 = handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 3) ?? 0n;
-    forceNetworkClosedFds(handle, vmPtr);
-    const resumeResult = resumeBlockedSyscallBySupervisor(handle.kernel, vmPtr);
-    if (blockedStatus === handle.kernel.abi_status_pipe_wait() && resumeResult > 0n) {
-      const queuedPollWrites = queueBlockedPollWaitGuestMemoryWrites(
-        handle,
-        worker,
-        blockedSyscallNr,
-        blockedArg0,
-        blockedArg1,
-        blockedArg2,
-        blockedArg3,
-      );
-      if (!queuedPollWrites && blockedPipeResumeWritesGuestBuffer(handle, blockedSyscallNr)) {
-        queueGuestBufferWrite(handle, worker, blockedArg1, resumeResult);
-      }
-    }
-    if (
-      blockedStatus === handle.kernel.abi_status_socket_recv()
-      && resumeResult > 0n
-      && blockedSocketResumeWritesGuestBuffer(handle, blockedSyscallNr)
-    ) {
-      queueGuestBufferWrite(handle, worker, blockedArg1, resumeResult);
-    }
-    handle.kernelState = readKernelRuntimeState(handle.kernel);
-    const currentPid = handle.kernel.process_current_pid?.(vmPtr) ?? handle.pid;
-    const transientProcessOwnerMismatch = currentPid > 0 && currentPid !== handle.pid;
-    if (
-      !transientProcessOwnerMismatch
-      && !blockedStatusIsEpollWait(handle, blockedStatus)
-    ) {
-      deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-after-resume:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
-      await deps.syncBlockedForkSharedStateViaKernelWorker(handle, vmPtr, blockedRpcSyncCause(blockedStatus));
-      if (abortIfStaleBlockedRpc()) {
-        return;
-      }
-    }
-
-    if (
-      !transientProcessOwnerMismatch
-      && (
+    await resumeDirectlyBySupervisor({
+      stage: "blocked-rpc-resume",
+      syncAfterResumeStage: "sync-after-resume",
+      emitResumeLifecycleEvent: false,
+      includeStageInDoneEvent: false,
+      requireBlockedBeforeDone: true,
+      syncSocketAfterResume:
         blockedStatus === handle.kernel.abi_status_connect()
         || blockedStatus === handle.kernel.abi_status_socket_recv()
-        || blockedStatus === handle.kernel.abi_status_socket_send()
-      )
-    ) {
-      await syncSocketStatePreservingNetworkBridge(handle, blockedStatus);
-      if (abortIfStaleBlockedRpc()) {
-        return;
-      }
-    }
-
-    const blocked = handle.hostBlockedWorkers.get(worker);
-    if (!blocked || blocked.vmPtr !== vmPtr) {
-      return;
-    }
-    finishBlockedRpc();
-    deps.appendWorkerDebugLog(handle, `blocked-rpc-done:${handle.kernel.thread_status(vmPtr)}:0x${vmPtr.toString(16)}`);
-    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-done:${handle.pid}:${handle.kernel.thread_status(vmPtr)}`);
-
-    if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
-      return;
-    }
-
-    emitBlockedRpcRetryResult(handle.kernel.thread_status(vmPtr));
+        || blockedStatus === handle.kernel.abi_status_socket_send(),
+    });
   } catch (error) {
     finishBlockedRpc();
     if (handle.workers.has(worker) && deps.threadWorkerStates.has(worker)) {
