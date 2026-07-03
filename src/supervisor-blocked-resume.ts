@@ -89,6 +89,11 @@ export interface SupervisorStateSyncRun {
   wakeWaiters: boolean;
 }
 
+export interface SupervisorBlockedResumeWritebackRange {
+  guestPtr: number;
+  length: number;
+}
+
 export function resumeBlockedSyscallBySupervisor(
   kernel: KernelExports,
   vmPtr: number,
@@ -99,6 +104,42 @@ export function resumeBlockedSyscallBySupervisor(
     throw new Error("kernel supervisor blocked syscall resume export is missing");
   }
   return BigInt(resume(vmPtr, timeoutExpired ? SUPERVISOR_RESUME_FLAG_TIMEOUT_EXPIRED : 0));
+}
+
+function toNumber(value: bigint | number): number {
+  return typeof value === "bigint" ? Number(value) : value;
+}
+
+export function supervisorBlockedResumeWritebacks(
+  kernel: KernelExports,
+  vmPtr: number,
+  blockedStatus: number,
+  resumeResult: bigint,
+): SupervisorBlockedResumeWritebackRange[] {
+  const countRanges = kernel.supervisor_blocked_resume_writeback_count;
+  const readPtr = kernel.supervisor_blocked_resume_writeback_ptr;
+  const readLen = kernel.supervisor_blocked_resume_writeback_len;
+  if (countRanges === undefined || readPtr === undefined || readLen === undefined) {
+    throw new Error("kernel supervisor blocked resume writeback exports are missing");
+  }
+  const count = countRanges(vmPtr, blockedStatus, resumeResult);
+  if (count < 0) {
+    throw new Error(`kernel supervisor blocked resume writeback count failed: ${count}`);
+  }
+  const ranges: SupervisorBlockedResumeWritebackRange[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const guestPtr = toNumber(readPtr(vmPtr, blockedStatus, resumeResult, index));
+    const length = toNumber(readLen(vmPtr, blockedStatus, resumeResult, index));
+    if (
+      Number.isFinite(guestPtr)
+      && Number.isFinite(length)
+      && guestPtr > 0
+      && length > 0
+    ) {
+      ranges.push({ guestPtr, length });
+    }
+  }
+  return ranges;
 }
 
 function supervisorBlockedPipeResumeActionValue(

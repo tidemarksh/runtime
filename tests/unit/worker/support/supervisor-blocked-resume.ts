@@ -18,12 +18,16 @@ const SUPERVISOR_STATE_SYNC_KIND_SOCKET = 3;
 const SUPERVISOR_STATE_SYNC_REQUEST_FLAG_WAKE_WAITERS = 1;
 const SUPERVISOR_STATE_SYNC_RUN_FLAG_RUN = 1;
 const SUPERVISOR_STATE_SYNC_RUN_FLAG_WAKE_WAITERS = 2;
+const POLLFD_BYTES = 8;
 
 export function installSupervisorBlockedResumeStub<T extends Partial<KernelExports>>(
   kernel: T,
 ): T & Pick<
   KernelExports,
   "supervisor_resume_blocked_syscall"
+  | "supervisor_blocked_resume_writeback_count"
+  | "supervisor_blocked_resume_writeback_ptr"
+  | "supervisor_blocked_resume_writeback_len"
   | "supervisor_blocked_resume_delegation"
   | "supervisor_blocked_wait_active_child_pid"
   | "supervisor_blocked_pipe_resume_action_defer"
@@ -50,9 +54,84 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
 > {
   const pipeSyncBeforeRetryRequested = new Set<number>();
   const stateSyncRequests = new Map<string, { queuedRunFlags: number; inFlight: boolean }>();
+  const toNumber = (value: bigint | number | undefined): number => (
+    typeof value === "bigint" ? Number(value) : (value ?? 0)
+  );
+  const syscallMatches = (
+    syscallNr: bigint,
+    abiSyscall: (() => bigint | number) | undefined,
+  ): boolean => {
+    const value = abiSyscall?.();
+    return value !== undefined && syscallNr === BigInt(value);
+  };
+  const blockedSyscallNr = (vmPtr: number): bigint =>
+    BigInt(kernel.thread_blocked_syscall_nr?.(vmPtr) ?? 0n);
+  const blockedSyscallArg = (vmPtr: number, index: number): number =>
+    toNumber(kernel.thread_blocked_syscall_arg?.(vmPtr, index));
+  const maxFds = (): number => Math.max(0, toNumber(kernel.abi_max_fds?.()) || 1024);
+  const writebackRange = (
+    vmPtr: number,
+    blockedStatus: number,
+    resumeResult: bigint | number,
+    index: number,
+  ): { guestPtr: number; length: number } | undefined => {
+    const resumeLength = toNumber(resumeResult);
+    if (resumeLength <= 0) {
+      return undefined;
+    }
+    const syscallNr = blockedSyscallNr(vmPtr);
+    if (blockedStatus === kernel.abi_status_pipe_wait?.()) {
+      if (syscallMatches(syscallNr, kernel.abi_sys_ppoll) && index === 0) {
+        const nfds = Math.min(blockedSyscallArg(vmPtr, 1), maxFds());
+        return nfds > 0
+          ? { guestPtr: blockedSyscallArg(vmPtr, 0), length: nfds * POLLFD_BYTES }
+          : undefined;
+      }
+      if (syscallMatches(syscallNr, kernel.abi_sys_pselect6) && index >= 0 && index <= 2) {
+        const nfds = Math.min(blockedSyscallArg(vmPtr, 0), maxFds());
+        return nfds > 0
+          ? {
+              guestPtr: blockedSyscallArg(vmPtr, index + 1),
+              length: Math.floor((nfds + 63) / 64) * 8,
+            }
+          : undefined;
+      }
+      if (syscallMatches(syscallNr, kernel.abi_sys_read) && index === 0) {
+        return { guestPtr: blockedSyscallArg(vmPtr, 1), length: resumeLength };
+      }
+    }
+    if (
+      blockedStatus === kernel.abi_status_socket_recv?.()
+      && index === 0
+      && (
+        syscallMatches(syscallNr, kernel.abi_sys_read)
+        || syscallMatches(syscallNr, kernel.abi_sys_recvfrom)
+      )
+    ) {
+      return { guestPtr: blockedSyscallArg(vmPtr, 1), length: resumeLength };
+    }
+    return undefined;
+  };
+  const compactWritebackRanges = (
+    vmPtr: number,
+    blockedStatus: number,
+    resumeResult: bigint | number,
+  ): Array<{ guestPtr: number; length: number }> => {
+    const ranges: Array<{ guestPtr: number; length: number }> = [];
+    for (let index = 0; index < 3; index += 1) {
+      const range = writebackRange(vmPtr, blockedStatus, resumeResult, index);
+      if (range !== undefined && range.guestPtr > 0 && range.length > 0) {
+        ranges.push(range);
+      }
+    }
+    return ranges;
+  };
   const nextKernel = kernel as T & Pick<
     KernelExports,
     "supervisor_resume_blocked_syscall"
+    | "supervisor_blocked_resume_writeback_count"
+    | "supervisor_blocked_resume_writeback_ptr"
+    | "supervisor_blocked_resume_writeback_len"
     | "supervisor_blocked_resume_delegation"
     | "supervisor_blocked_wait_active_child_pid"
     | "supervisor_blocked_pipe_resume_action_defer"
@@ -155,6 +234,28 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     stateSyncRequests.delete(`${vmPtr}:${kind}`);
     return 0;
   };
+  nextKernel.supervisor_blocked_resume_writeback_count ??= (
+    vmPtr: number,
+    blockedStatus: number,
+    resumeResult: bigint | number,
+  ) => {
+    if (vmPtr === 0) {
+      return -14;
+    }
+    return compactWritebackRanges(vmPtr, blockedStatus, resumeResult).length;
+  };
+  nextKernel.supervisor_blocked_resume_writeback_ptr ??= (
+    vmPtr: number,
+    blockedStatus: number,
+    resumeResult: bigint | number,
+    index: number,
+  ) => compactWritebackRanges(vmPtr, blockedStatus, resumeResult)[index]?.guestPtr ?? 0;
+  nextKernel.supervisor_blocked_resume_writeback_len ??= (
+    vmPtr: number,
+    blockedStatus: number,
+    resumeResult: bigint | number,
+    index: number,
+  ) => compactWritebackRanges(vmPtr, blockedStatus, resumeResult)[index]?.length ?? 0;
   nextKernel.supervisor_blocked_resume_delegation = (vmPtr: number, flags: number) => {
     const kernelWorkerAvailable =
       (flags & SUPERVISOR_BLOCKED_RESUME_FLAG_KERNEL_WORKER_AVAILABLE) !== 0;

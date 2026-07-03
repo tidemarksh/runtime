@@ -4,6 +4,7 @@ import {
 } from "../../abi.js";
 import {
   resumeBlockedSyscallBySupervisor,
+  supervisorBlockedResumeWritebacks,
   supervisorBlockedPipeResumeAction,
   SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER,
   SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT,
@@ -13,7 +14,6 @@ import type {
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
-import { POLLFD_BYTES } from "../../layout/poll.js";
 import {
   completedKernelRpcOutcome,
   type KernelRpcResumeEffect,
@@ -121,54 +121,6 @@ function queueGuestBufferWrite(
   }]);
 }
 
-function syscallMatches(
-  syscallNr: bigint,
-  abiSyscall: (() => bigint | number) | undefined,
-): boolean {
-  const value = abiSyscall?.();
-  return value !== undefined && syscallNr === BigInt(value);
-}
-
-function queueBlockedPollWaitGuestMemoryWrites(
-  handle: ProcessHandle,
-  worker: Worker,
-  syscallNr: bigint,
-  arg0: bigint,
-  arg1: bigint,
-  arg2: bigint,
-  arg3: bigint,
-): boolean {
-  const maxFds = Math.max(0, handle.kernel.abi_max_fds?.() ?? 1024);
-  if (syscallMatches(syscallNr, handle.kernel.abi_sys_ppoll)) {
-    const nfds = Math.min(Number(arg1), maxFds);
-    if (Number.isFinite(nfds) && nfds > 0) {
-      queueGuestBufferWrite(handle, worker, arg0, nfds * POLLFD_BYTES);
-    }
-    return true;
-  }
-  if (syscallMatches(syscallNr, handle.kernel.abi_sys_pselect6)) {
-    const nfds = Math.min(Number(arg0), maxFds);
-    if (!Number.isFinite(nfds) || nfds <= 0) {
-      return true;
-    }
-    const setBytes = Math.floor((nfds + 63) / 64) * 8;
-    queueGuestBufferWrite(handle, worker, arg1, setBytes);
-    queueGuestBufferWrite(handle, worker, arg2, setBytes);
-    queueGuestBufferWrite(handle, worker, arg3, setBytes);
-    return true;
-  }
-  return false;
-}
-
-function blockedPipeResumeWritesGuestBuffer(handle: ProcessHandle, syscallNr: bigint): boolean {
-  return syscallMatches(syscallNr, handle.kernel.abi_sys_read);
-}
-
-function blockedSocketResumeWritesGuestBuffer(handle: ProcessHandle, syscallNr: bigint): boolean {
-  return syscallMatches(syscallNr, handle.kernel.abi_sys_read)
-    || syscallMatches(syscallNr, handle.kernel.abi_sys_recvfrom);
-}
-
 function blockedPipeWaitFd(handle: ProcessHandle, vmPtr: number): number {
   const blockedFd = handle.kernel.thread_blocked_fd?.(vmPtr) ?? -1;
   if (blockedFd >= 0) {
@@ -268,33 +220,10 @@ async function executeHostBlockedSyscallResume(
       syncSocketAfterResume: boolean;
     }): Promise<void> => {
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
-      const blockedSyscallNr = handle.kernel.thread_blocked_syscall_nr?.(vmPtr) ?? 0n;
-      const blockedArg0 = handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 0) ?? 0n;
-      const blockedArg1 = handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 1) ?? 0n;
-      const blockedArg2 = handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 2) ?? 0n;
-      const blockedArg3 = handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 3) ?? 0n;
       forceNetworkClosedFds(handle, vmPtr);
       const resumeResult = resumeBlockedSyscallBySupervisor(handle.kernel, vmPtr);
-      if (blockedStatus === handle.kernel.abi_status_pipe_wait() && resumeResult > 0n) {
-        const queuedPollWrites = queueBlockedPollWaitGuestMemoryWrites(
-          handle,
-          worker,
-          blockedSyscallNr,
-          blockedArg0,
-          blockedArg1,
-          blockedArg2,
-          blockedArg3,
-        );
-        if (!queuedPollWrites && blockedPipeResumeWritesGuestBuffer(handle, blockedSyscallNr)) {
-          queueGuestBufferWrite(handle, worker, blockedArg1, resumeResult);
-        }
-      }
-      if (
-        blockedStatus === handle.kernel.abi_status_socket_recv()
-        && resumeResult > 0n
-        && blockedSocketResumeWritesGuestBuffer(handle, blockedSyscallNr)
-      ) {
-        queueGuestBufferWrite(handle, worker, blockedArg1, resumeResult);
+      for (const writeback of supervisorBlockedResumeWritebacks(handle.kernel, vmPtr, blockedStatus, resumeResult)) {
+        queueGuestBufferWrite(handle, worker, writeback.guestPtr, writeback.length);
       }
       if (options.emitResumeLifecycleEvent) {
         deps.appendRuntimeLifecycleEvent(
