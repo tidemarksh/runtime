@@ -1,4 +1,5 @@
 import {
+  supervisorBlockedEpollWaitTimeoutMs,
   supervisorBlockedPipeResumeAction,
   supervisorBlockedPipeSyncBeforeRetryAction,
   supervisorBlockedPipeSyncBeforeRetryClear,
@@ -1014,7 +1015,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       && handle.pid > 0
     ) {
       const rpcGeneration = beginBlockedRpc(blocked);
-      const epollRetryTimeoutMs = Number(handle.kernel.thread_epoll_wait_timeout(blocked.vmPtr));
+      const epollRetryTimeoutMs = supervisorBlockedEpollWaitTimeoutMs(handle.kernel, blocked.vmPtr);
       const epollRetryTimerfdDeadline = epollTimerfdDeadlineTicks(handle, blocked.vmPtr);
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
@@ -1045,7 +1046,8 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             deps.appendRuntimeLifecycleEvent(handle.runtimeId, `epoll-retry-stale:${handle.pid}`);
             return;
           }
-          if (Number(handle.kernel.thread_epoll_wait_timeout(latestBlocked.vmPtr)) < 0) {
+          const latestEpollRetryTimeoutMs = supervisorBlockedEpollWaitTimeoutMs(handle.kernel, latestBlocked.vmPtr);
+          if (latestEpollRetryTimeoutMs < 0) {
             const deadlineTicks = epollTimerfdDeadlineTicks(handle, latestBlocked.vmPtr);
             if (deadlineTicks !== null) {
               deps.appendRuntimeLifecycleEvent(
@@ -1060,7 +1062,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             deps.appendRuntimeLifecycleEvent(
               handle.runtimeId,
               `epoll-retry-no-deadline:${handle.pid}:vm=0x${latestBlocked.vmPtr.toString(16)}`
-                + `:timeout=${Number(handle.kernel.thread_epoll_wait_timeout(latestBlocked.vmPtr))}`,
+                + `:timeout=${latestEpollRetryTimeoutMs}`,
             );
           }
           clearStaleRunningWorker(handle, worker);

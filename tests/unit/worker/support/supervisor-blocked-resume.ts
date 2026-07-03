@@ -28,6 +28,7 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_blocked_resume_writeback_count"
   | "supervisor_blocked_resume_writeback_ptr"
   | "supervisor_blocked_resume_writeback_len"
+  | "supervisor_blocked_epoll_wait_timeout_ms"
   | "supervisor_blocked_poll_wait_timeout_ms"
   | "supervisor_blocked_poll_wait_has_socket"
   | "supervisor_blocked_pipe_wait_has_ready_events"
@@ -137,6 +138,7 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_blocked_resume_writeback_count"
     | "supervisor_blocked_resume_writeback_ptr"
     | "supervisor_blocked_resume_writeback_len"
+    | "supervisor_blocked_epoll_wait_timeout_ms"
     | "supervisor_blocked_poll_wait_timeout_ms"
     | "supervisor_blocked_poll_wait_has_socket"
     | "supervisor_blocked_pipe_wait_has_ready_events"
@@ -266,6 +268,15 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     resumeResult: bigint | number,
     index: number,
   ) => compactWritebackRanges(vmPtr, blockedStatus, resumeResult)[index]?.length ?? 0;
+  nextKernel.supervisor_blocked_epoll_wait_timeout_ms ??= (vmPtr: number) => {
+    if (vmPtr === 0) {
+      return -14;
+    }
+    if (kernel.thread_status?.(vmPtr) !== kernel.abi_status_epoll_wait?.()) {
+      return -1;
+    }
+    return toNumber(kernel.thread_epoll_wait_timeout?.(vmPtr));
+  };
   nextKernel.supervisor_blocked_poll_wait_timeout_ms ??= (vmPtr: number) => {
     if (vmPtr === 0) {
       return -14;

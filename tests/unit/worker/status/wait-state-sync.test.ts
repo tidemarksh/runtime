@@ -672,6 +672,14 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
       pendingSupervisorTimers.push(timer);
       return 1;
     },
+    supervisor_blocked_epoll_wait_timeout_ms: (vmPtr) => {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      return exports.thread_status(vmPtr) === exports.abi_status_epoll_wait()
+        ? Number(exports.thread_epoll_wait_timeout(vmPtr))
+        : -1;
+    },
     supervisor_next_host_op: (outPtr, outLen) => {
       if (outLen < 64) {
         return -1;

@@ -157,6 +157,21 @@ export function supervisorBlockedPollWaitTimeoutMs(
   return result;
 }
 
+export function supervisorBlockedEpollWaitTimeoutMs(
+  kernel: KernelExports,
+  vmPtr: number,
+): number {
+  const readTimeout = kernel.supervisor_blocked_epoll_wait_timeout_ms;
+  if (readTimeout === undefined) {
+    throw new Error("kernel supervisor blocked epoll wait timeout export is missing");
+  }
+  const result = toNumber(readTimeout(vmPtr));
+  if (result < -1) {
+    throw new Error(`kernel supervisor blocked epoll wait timeout failed: ${result}`);
+  }
+  return result;
+}
+
 function supervisorBlockedBooleanFact(
   kernel: KernelExports,
   vmPtr: number,

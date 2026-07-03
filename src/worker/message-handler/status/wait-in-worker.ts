@@ -18,6 +18,7 @@ import {
   drainSupervisorArmHostTimerHostOp,
 } from "../../supervisor-host-op.js";
 import {
+  supervisorBlockedEpollWaitTimeoutMs,
   supervisorBlockedWaitStatusMatchesEpollWait,
   supervisorBlockedWaitStatusMatchesPipeWait,
   supervisorBlockedWaitStatusMatchesSocketWait,
@@ -39,7 +40,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       deps.threadWorkerStates,
     );
     const epollTimeoutMs = msg.status === epollWaitStatus
-      ? Number(handle.kernel.thread_epoll_wait_timeout(thread.vmPtr))
+      ? supervisorBlockedEpollWaitTimeoutMs(handle.kernel, thread.vmPtr)
       : null;
     deps.appendWorkerDebugLog(
       handle,

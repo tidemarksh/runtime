@@ -55,6 +55,7 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_resume_delegation_unsupported: 3,
   supervisor_blocked_resume_delegation_epoll_direct: 4,
   supervisor_blocked_resume_delegation_flag_kernel_worker_available: 1,
+  supervisor_blocked_epoll_wait_timeout_ms: -1,
   supervisor_blocked_poll_wait_timeout_ms: -1,
   supervisor_blocked_poll_wait_has_socket: 0,
   supervisor_blocked_pipe_wait_has_ready_events: 0,
@@ -201,6 +202,15 @@ export function makeSupervisorAbiStubs(
       return -1;
     }
     return callOptionalNumber(receiver, "thread_poll_wait_timeout", vmPtr) ?? -1;
+  };
+  const supervisorEpollWaitTimeoutMs = (receiver: Partial<KernelExports>, vmPtr: number): number => {
+    if (vmPtr === 0) {
+      return -14;
+    }
+    if (statusFor(receiver, vmPtr) !== callNumber(receiver, "abi_status_epoll_wait")) {
+      return -1;
+    }
+    return callNumber(receiver, "thread_epoll_wait_timeout", vmPtr);
   };
   const supervisorPollWaitHasSocket = (receiver: Partial<KernelExports>, vmPtr: number): boolean =>
     vmPtr !== 0
@@ -428,6 +438,9 @@ export function makeSupervisorAbiStubs(
     ...stubs,
     supervisor_blocked_poll_wait_timeout_ms(this: KernelExports | undefined, vmPtr: number) {
       return supervisorPollWaitTimeoutMs(currentExports(this), vmPtr);
+    },
+    supervisor_blocked_epoll_wait_timeout_ms(this: KernelExports | undefined, vmPtr: number) {
+      return supervisorEpollWaitTimeoutMs(currentExports(this), vmPtr);
     },
     supervisor_blocked_poll_wait_has_socket(this: KernelExports | undefined, vmPtr: number) {
       if (vmPtr === 0) {

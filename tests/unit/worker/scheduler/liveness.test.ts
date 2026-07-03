@@ -714,6 +714,14 @@ function installTestSupervisorBlockedWaitTimers(
   });
   kernel.supervisor_blocked_wait_timer_required = vi.fn((vmPtr: number) =>
     selectTestSupervisorBlockedWaitTimer(kernel, vmPtr, seq) === null ? 0 : 1);
+  kernel.supervisor_blocked_epoll_wait_timeout_ms = vi.fn((vmPtr: number) => {
+    if (vmPtr === 0) {
+      return -14;
+    }
+    return kernel.thread_status(vmPtr) === kernel.abi_status_epoll_wait()
+      ? Number(kernel.thread_epoll_wait_timeout(vmPtr))
+      : -1;
+  });
   const drainHostOp = (kind: number | null, outPtr: number, outLen: number): number => {
     if (outLen < 64) {
       return -1;
@@ -5214,6 +5222,8 @@ test("blocked completion arms supervisor timer instead of scheduling runtime ret
       currentStatus === kernel.abi_status_epoll_wait() ? 1 : 0),
     supervisor_blocked_wait_timer_required: vi.fn(() =>
       currentStatus === kernel.abi_status_epoll_wait() ? 1 : 0),
+    supervisor_blocked_epoll_wait_timeout_ms: vi.fn(() =>
+      currentStatus === kernel.abi_status_epoll_wait() ? 25 : -1),
     supervisor_complete_host_op: vi.fn(() => 0),
     thread_status: (vmPtr: number) => vmPtr === thread.vmPtr
       ? currentStatus
