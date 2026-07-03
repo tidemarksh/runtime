@@ -157,6 +157,54 @@ export function supervisorBlockedPollWaitTimeoutMs(
   return result;
 }
 
+function supervisorBlockedBooleanFact(
+  kernel: KernelExports,
+  vmPtr: number,
+  exportName:
+    | "supervisor_blocked_poll_wait_has_socket"
+    | "supervisor_blocked_pipe_wait_has_ready_events"
+    | "supervisor_blocked_wait_may_depend_on_network"
+    | "supervisor_blocked_wait_should_pump_network",
+): boolean {
+  const readFact = kernel[exportName];
+  if (readFact === undefined) {
+    throw new Error(`kernel supervisor ABI missing ${exportName}`);
+  }
+  const result = readFact(vmPtr);
+  if (result < 0) {
+    throw new Error(`kernel supervisor ${exportName} failed: ${result}`);
+  }
+  return result !== 0;
+}
+
+export function supervisorBlockedPollWaitHasSocket(
+  kernel: KernelExports,
+  vmPtr: number,
+): boolean {
+  return supervisorBlockedBooleanFact(kernel, vmPtr, "supervisor_blocked_poll_wait_has_socket");
+}
+
+export function supervisorBlockedPipeWaitHasReadyEvents(
+  kernel: KernelExports,
+  vmPtr: number,
+): boolean {
+  return supervisorBlockedBooleanFact(kernel, vmPtr, "supervisor_blocked_pipe_wait_has_ready_events");
+}
+
+export function supervisorBlockedWaitMayDependOnNetwork(
+  kernel: KernelExports,
+  vmPtr: number,
+): boolean {
+  return supervisorBlockedBooleanFact(kernel, vmPtr, "supervisor_blocked_wait_may_depend_on_network");
+}
+
+export function supervisorBlockedWaitShouldPumpNetwork(
+  kernel: KernelExports,
+  vmPtr: number,
+): boolean {
+  return supervisorBlockedBooleanFact(kernel, vmPtr, "supervisor_blocked_wait_should_pump_network");
+}
+
 function supervisorBlockedPipeResumeActionValue(
   kernel: KernelExports,
   action: SupervisorBlockedPipeResumeAction,

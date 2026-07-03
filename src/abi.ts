@@ -349,6 +349,10 @@ export interface KernelExports {
   supervisor_blocked_resume_writeback_ptr?(vmPtr: number, blockedStatus: number, resumeResult: bigint | number, index: number): bigint | number;
   supervisor_blocked_resume_writeback_len?(vmPtr: number, blockedStatus: number, resumeResult: bigint | number, index: number): bigint | number;
   supervisor_blocked_poll_wait_timeout_ms?(vmPtr: number): bigint | number;
+  supervisor_blocked_poll_wait_has_socket?(vmPtr: number): number;
+  supervisor_blocked_pipe_wait_has_ready_events?(vmPtr: number): number;
+  supervisor_blocked_wait_may_depend_on_network?(vmPtr: number): number;
+  supervisor_blocked_wait_should_pump_network?(vmPtr: number): number;
   supervisor_blocked_resume_delegation?(vmPtr: number, flags: number): number;
   supervisor_blocked_resume_delegation_flag_kernel_worker_available?(): number;
   supervisor_blocked_resume_delegation_direct?(): number;
@@ -1617,6 +1621,10 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_resume_writeback_ptr",
   "supervisor_blocked_resume_writeback_len",
   "supervisor_blocked_poll_wait_timeout_ms",
+  "supervisor_blocked_poll_wait_has_socket",
+  "supervisor_blocked_pipe_wait_has_ready_events",
+  "supervisor_blocked_wait_may_depend_on_network",
+  "supervisor_blocked_wait_should_pump_network",
   "supervisor_blocked_resume_delegation",
   "supervisor_blocked_resume_delegation_flag_kernel_worker_available",
   "supervisor_blocked_resume_delegation_direct",

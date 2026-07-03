@@ -3,6 +3,7 @@ import {
   supervisorBlockedPipeSyncBeforeRetryAction,
   supervisorBlockedPipeSyncBeforeRetryClear,
   supervisorBlockedPipeSyncBeforeRetryRequested,
+  supervisorBlockedPollWaitHasSocket,
   supervisorBlockedResumeDelegation,
   SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT,
   supervisorBlockedWaitRetryPlan,
@@ -457,7 +458,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         if (
           changed
           && latestBlocked.status === handle.kernel.abi_status_pipe_wait()
-          && handle.kernel.thread_poll_wait_has_socket?.(latestBlocked.vmPtr) === 1
+          && supervisorBlockedPollWaitHasSocket(handle.kernel, latestBlocked.vmPtr)
         ) {
           if (handle.runningWorker !== null || !canScheduleWorker(handle, worker)) {
             scheduleSupervisorBlockedRetry(handle, worker);
@@ -713,7 +714,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       && (!handle.kernelWorkerRequest || handle.pid <= 0)
       && supervisorBlockedPipeSyncBeforeRetryRequested(handle.kernel, vmPtr)
       && pollTimeoutMs < 0
-      && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) !== 1
+      && !supervisorBlockedPollWaitHasSocket(handle.kernel, vmPtr)
       && supervisorBlockedPipeResumeAction(handle.kernel, vmPtr)
         !== SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT
     ) {

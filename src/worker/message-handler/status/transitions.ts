@@ -38,6 +38,11 @@ import {
   drainSupervisorArmHostTimerHostOp,
   drainSupervisorCloneSpawnHostOp,
 } from "../../supervisor-host-op.js";
+import {
+  supervisorBlockedPipeWaitHasReadyEvents,
+  supervisorBlockedPollWaitHasSocket,
+  supervisorBlockedPollWaitTimeoutMs,
+} from "../../../supervisor-blocked-resume.js";
 
 const CLONE_SPAWN_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
@@ -993,11 +998,10 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       || status === handle.kernel.abi_status_connect()
     ) {
       const finitePollTimeout = status === handle.kernel.abi_status_pipe_wait()
-        && handle.kernel.thread_poll_wait_timeout !== undefined
-        && Number(handle.kernel.thread_poll_wait_timeout(thread.vmPtr)) >= 0;
+        && supervisorBlockedPollWaitTimeoutMs(handle.kernel, thread.vmPtr) >= 0;
       const pipeWaitHasSocket = status === handle.kernel.abi_status_pipe_wait()
         && handle.networkConnections.size > 0
-        && handle.kernel.thread_poll_wait_has_socket?.(thread.vmPtr) === 1;
+        && supervisorBlockedPollWaitHasSocket(handle.kernel, thread.vmPtr);
       if (
         pipeWaitHasSocket
         && handle.kernelWorkerRequest
@@ -1084,7 +1088,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             }
             if (
               status === handle.kernel.abi_status_pipe_wait()
-              && (handle.kernel.thread_poll_wait_ready_count?.(thread.vmPtr) ?? 0) <= 0
+              && !supervisorBlockedPipeWaitHasReadyEvents(handle.kernel, thread.vmPtr)
             ) {
               deps.pumpProcess(handle);
               return;

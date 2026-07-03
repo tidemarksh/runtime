@@ -1,5 +1,10 @@
 import type { ProcessHandle } from "../types.js";
-import { supervisorBlockedPollWaitTimeoutMs } from "../../supervisor-blocked-resume.js";
+import {
+  supervisorBlockedPollWaitHasSocket,
+  supervisorBlockedPollWaitTimeoutMs,
+  supervisorBlockedWaitMayDependOnNetwork,
+  supervisorBlockedWaitShouldPumpNetwork,
+} from "../../supervisor-blocked-resume.js";
 
 export interface SocketWaitSchedulerDeps {
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
@@ -45,24 +50,17 @@ export function createSocketWaitScheduler(deps: SocketWaitSchedulerDeps): Socket
   }
 
   function blockedWaitMayDependOnNetwork(handle: ProcessHandle, status: number, vmPtr: number): boolean {
-    const pollWaitHasSocket = pollWaitTimeoutMs(handle, status, vmPtr) >= 0
-      && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) === 1;
+    const pollTimeoutMs = pollWaitTimeoutMs(handle, status, vmPtr);
+    const pollWaitHasSocket = supervisorBlockedPollWaitHasSocket(handle.kernel, vmPtr);
+    const mayDependOnNetwork = supervisorBlockedWaitMayDependOnNetwork(handle.kernel, vmPtr);
     const readyCount = handle.kernel.thread_poll_wait_ready_count?.(vmPtr);
     const socketRevents = handle.kernel.thread_poll_wait_first_socket_revents?.(vmPtr);
     deps.appendWorkerDebugLog(
       handle,
-      `net-wait:${handle.pid}:status=${status}:poll=${pollWaitTimeoutMs(handle, status, vmPtr)}:hasSocket=${pollWaitHasSocket ? 1 : 0}:ready=${readyCount ?? "n/a"}:sock=0x${(socketRevents ?? 0).toString(16)}:conns=${handle.networkConnections.size}`,
+      `net-wait:${handle.pid}:status=${status}:poll=${pollTimeoutMs}:hasSocket=${pollWaitHasSocket ? 1 : 0}:ready=${readyCount ?? "n/a"}:sock=0x${(socketRevents ?? 0).toString(16)}:conns=${handle.networkConnections.size}`,
     );
-    deps.logNetworkDebug(`wait pid=${handle.pid} status=${status} poll=${pollWaitTimeoutMs(handle, status, vmPtr)} hasSocket=${pollWaitHasSocket ? 1 : 0} ready=${readyCount ?? "n/a"} sock=0x${(socketRevents ?? 0).toString(16)} conns=${handle.networkConnections.size}`);
-    if (pollWaitHasSocket) {
-      return true;
-    }
-    if (readyCount !== undefined && readyCount > 0) {
-      return false;
-    }
-    return status === handle.kernel.abi_status_socket_recv()
-      || status === handle.kernel.abi_status_socket_send()
-      || status === handle.kernel.abi_status_connect();
+    deps.logNetworkDebug(`wait pid=${handle.pid} status=${status} poll=${pollTimeoutMs} hasSocket=${pollWaitHasSocket ? 1 : 0} ready=${readyCount ?? "n/a"} sock=0x${(socketRevents ?? 0).toString(16)} conns=${handle.networkConnections.size}`);
+    return mayDependOnNetwork;
   }
 
   function blockedWaitShouldPumpNetwork(handle: ProcessHandle, status: number, vmPtr: number): boolean {
@@ -72,11 +70,7 @@ export function createSocketWaitScheduler(deps: SocketWaitSchedulerDeps): Socket
     if (blockedWaitMayDependOnNetwork(handle, status, vmPtr)) {
       return true;
     }
-    const readyCount = status === handle.kernel.abi_status_pipe_wait()
-      ? handle.kernel.thread_poll_wait_ready_count?.(vmPtr)
-      : undefined;
-    return status === handle.kernel.abi_status_pipe_wait()
-      && (readyCount === undefined || readyCount <= 0);
+    return supervisorBlockedWaitShouldPumpNetwork(handle.kernel, vmPtr);
   }
 
   function networkInboundAvailable(handle: ProcessHandle, vmPtr: number): boolean {

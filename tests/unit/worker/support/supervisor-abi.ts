@@ -56,6 +56,10 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_resume_delegation_epoll_direct: 4,
   supervisor_blocked_resume_delegation_flag_kernel_worker_available: 1,
   supervisor_blocked_poll_wait_timeout_ms: -1,
+  supervisor_blocked_poll_wait_has_socket: 0,
+  supervisor_blocked_pipe_wait_has_ready_events: 0,
+  supervisor_blocked_wait_may_depend_on_network: 0,
+  supervisor_blocked_wait_should_pump_network: 0,
   supervisor_blocked_pipe_sync_before_retry_action_none: 0,
   supervisor_blocked_pipe_sync_before_retry_action_request_sync: 1,
   supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output: 2,
@@ -168,6 +172,58 @@ export function makeSupervisorAbiStubs(
     const fn = (receiver[name] ?? overrides[name]) as ((...params: unknown[]) => unknown) | undefined;
     const value = fn?.(...args);
     return typeof value === "bigint" ? Number(value) : Number(value ?? 0);
+  };
+  const callOptionalNumber = (receiver: Partial<KernelExports>, name: keyof KernelExports, ...args: unknown[]): number | undefined => {
+    const fn = (receiver[name] ?? overrides[name]) as ((...params: unknown[]) => unknown) | undefined;
+    if (fn === undefined) {
+      return undefined;
+    }
+    const value = fn(...args);
+    return typeof value === "bigint" ? Number(value) : Number(value);
+  };
+  const statusFor = (receiver: Partial<KernelExports>, vmPtr: number): number =>
+    callNumber(receiver, "thread_status", vmPtr);
+  const pipeWaitStatusFor = (receiver: Partial<KernelExports>): number =>
+    callNumber(receiver, "abi_status_pipe_wait");
+  const pollWaitIsPollLike = (receiver: Partial<KernelExports>, vmPtr: number): boolean => {
+    const syscallNr = callNumber(receiver, "thread_blocked_syscall_nr", vmPtr);
+    return syscallNr !== 0
+      && (
+        syscallNr === callNumber(receiver, "abi_sys_ppoll")
+        || syscallNr === callNumber(receiver, "abi_sys_pselect6")
+      );
+  };
+  const supervisorPollWaitTimeoutMs = (receiver: Partial<KernelExports>, vmPtr: number): number => {
+    if (vmPtr === 0) {
+      return -14;
+    }
+    if (statusFor(receiver, vmPtr) !== pipeWaitStatusFor(receiver) || !pollWaitIsPollLike(receiver, vmPtr)) {
+      return -1;
+    }
+    return callOptionalNumber(receiver, "thread_poll_wait_timeout", vmPtr) ?? -1;
+  };
+  const supervisorPollWaitHasSocket = (receiver: Partial<KernelExports>, vmPtr: number): boolean =>
+    vmPtr !== 0
+    && statusFor(receiver, vmPtr) === pipeWaitStatusFor(receiver)
+    && callNumber(receiver, "thread_poll_wait_has_socket", vmPtr) === 1;
+  const supervisorPipeWaitHasReadyEvents = (receiver: Partial<KernelExports>, vmPtr: number): boolean =>
+    vmPtr !== 0
+    && statusFor(receiver, vmPtr) === pipeWaitStatusFor(receiver)
+    && callNumber(receiver, "thread_poll_wait_ready_count", vmPtr) > 0;
+  const supervisorWaitMayDependOnNetwork = (receiver: Partial<KernelExports>, vmPtr: number): boolean => {
+    const status = statusFor(receiver, vmPtr);
+    if (status === pipeWaitStatusFor(receiver)) {
+      if (supervisorPollWaitTimeoutMs(receiver, vmPtr) >= 0 && supervisorPollWaitHasSocket(receiver, vmPtr)) {
+        return true;
+      }
+      if (supervisorPipeWaitHasReadyEvents(receiver, vmPtr)) {
+        return false;
+      }
+      return false;
+    }
+    return status === callNumber(receiver, "abi_status_socket_recv")
+      || status === callNumber(receiver, "abi_status_socket_send")
+      || status === callNumber(receiver, "abi_status_connect");
   };
   const addRange = (ranges: Array<{ start: number; end: number }>, start: number, end: number, limit: number): void => {
     const boundedStart = Math.max(0, Math.min(start, limit));
@@ -370,6 +426,45 @@ export function makeSupervisorAbiStubs(
   );
   return {
     ...stubs,
+    supervisor_blocked_poll_wait_timeout_ms(this: KernelExports | undefined, vmPtr: number) {
+      return supervisorPollWaitTimeoutMs(currentExports(this), vmPtr);
+    },
+    supervisor_blocked_poll_wait_has_socket(this: KernelExports | undefined, vmPtr: number) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      return supervisorPollWaitHasSocket(currentExports(this), vmPtr) ? 1 : 0;
+    },
+    supervisor_blocked_pipe_wait_has_ready_events(this: KernelExports | undefined, vmPtr: number) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      return supervisorPipeWaitHasReadyEvents(currentExports(this), vmPtr) ? 1 : 0;
+    },
+    supervisor_blocked_wait_may_depend_on_network(this: KernelExports | undefined, vmPtr: number) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      return supervisorWaitMayDependOnNetwork(currentExports(this), vmPtr) ? 1 : 0;
+    },
+    supervisor_blocked_wait_should_pump_network(this: KernelExports | undefined, vmPtr: number) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      const receiver = currentExports(this);
+      const status = statusFor(receiver, vmPtr);
+      if (status === pipeWaitStatusFor(receiver)) {
+        return supervisorWaitMayDependOnNetwork(receiver, vmPtr)
+          || !supervisorPipeWaitHasReadyEvents(receiver, vmPtr)
+          ? 1
+          : 0;
+      }
+      return status === callNumber(receiver, "abi_status_socket_recv")
+        || status === callNumber(receiver, "abi_status_socket_send")
+        || status === callNumber(receiver, "abi_status_connect")
+        ? 1
+        : 0;
+    },
     supervisor_blocked_resume_delegation(this: KernelExports | undefined, vmPtr: number, flags: number) {
       const kernelWorkerAvailable = (flags
         & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_flag_kernel_worker_available) !== 0;

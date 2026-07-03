@@ -29,6 +29,10 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_blocked_resume_writeback_ptr"
   | "supervisor_blocked_resume_writeback_len"
   | "supervisor_blocked_poll_wait_timeout_ms"
+  | "supervisor_blocked_poll_wait_has_socket"
+  | "supervisor_blocked_pipe_wait_has_ready_events"
+  | "supervisor_blocked_wait_may_depend_on_network"
+  | "supervisor_blocked_wait_should_pump_network"
   | "supervisor_blocked_resume_delegation"
   | "supervisor_blocked_wait_active_child_pid"
   | "supervisor_blocked_pipe_resume_action_defer"
@@ -134,6 +138,10 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_blocked_resume_writeback_ptr"
     | "supervisor_blocked_resume_writeback_len"
     | "supervisor_blocked_poll_wait_timeout_ms"
+    | "supervisor_blocked_poll_wait_has_socket"
+    | "supervisor_blocked_pipe_wait_has_ready_events"
+    | "supervisor_blocked_wait_may_depend_on_network"
+    | "supervisor_blocked_wait_should_pump_network"
     | "supervisor_blocked_resume_delegation"
     | "supervisor_blocked_wait_active_child_pid"
     | "supervisor_blocked_pipe_resume_action_defer"
@@ -274,6 +282,59 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     }
     const timeout = kernel.thread_poll_wait_timeout?.(vmPtr);
     return timeout === undefined ? -1 : toNumber(timeout);
+  };
+  const pollWaitHasSocket = (vmPtr: number): boolean =>
+    kernel.thread_status?.(vmPtr) === kernel.abi_status_pipe_wait?.()
+    && kernel.thread_poll_wait_has_socket?.(vmPtr) === 1;
+  const pipeWaitHasReadyEvents = (vmPtr: number): boolean =>
+    kernel.thread_status?.(vmPtr) === kernel.abi_status_pipe_wait?.()
+    && toNumber(kernel.thread_poll_wait_ready_count?.(vmPtr)) > 0;
+  const waitMayDependOnNetwork = (vmPtr: number): boolean => {
+    const status = kernel.thread_status?.(vmPtr);
+    if (status === kernel.abi_status_pipe_wait?.()) {
+      if (toNumber(nextKernel.supervisor_blocked_poll_wait_timeout_ms(vmPtr)) >= 0 && pollWaitHasSocket(vmPtr)) {
+        return true;
+      }
+      if (pipeWaitHasReadyEvents(vmPtr)) {
+        return false;
+      }
+      return false;
+    }
+    return status === kernel.abi_status_socket_recv?.()
+      || status === kernel.abi_status_socket_send?.()
+      || status === kernel.abi_status_connect?.();
+  };
+  nextKernel.supervisor_blocked_poll_wait_has_socket ??= (vmPtr: number) => {
+    if (vmPtr === 0) {
+      return -14;
+    }
+    return pollWaitHasSocket(vmPtr) ? 1 : 0;
+  };
+  nextKernel.supervisor_blocked_pipe_wait_has_ready_events ??= (vmPtr: number) => {
+    if (vmPtr === 0) {
+      return -14;
+    }
+    return pipeWaitHasReadyEvents(vmPtr) ? 1 : 0;
+  };
+  nextKernel.supervisor_blocked_wait_may_depend_on_network ??= (vmPtr: number) => {
+    if (vmPtr === 0) {
+      return -14;
+    }
+    return waitMayDependOnNetwork(vmPtr) ? 1 : 0;
+  };
+  nextKernel.supervisor_blocked_wait_should_pump_network ??= (vmPtr: number) => {
+    if (vmPtr === 0) {
+      return -14;
+    }
+    const status = kernel.thread_status?.(vmPtr);
+    if (status === kernel.abi_status_pipe_wait?.()) {
+      return waitMayDependOnNetwork(vmPtr) || !pipeWaitHasReadyEvents(vmPtr) ? 1 : 0;
+    }
+    return status === kernel.abi_status_socket_recv?.()
+      || status === kernel.abi_status_socket_send?.()
+      || status === kernel.abi_status_connect?.()
+      ? 1
+      : 0;
   };
   nextKernel.supervisor_blocked_resume_delegation = (vmPtr: number, flags: number) => {
     const kernelWorkerAvailable =

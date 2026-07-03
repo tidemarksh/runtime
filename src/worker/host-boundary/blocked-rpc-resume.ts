@@ -4,6 +4,7 @@ import {
 } from "../../abi.js";
 import {
   resumeBlockedSyscallBySupervisor,
+  supervisorBlockedPollWaitHasSocket,
   supervisorBlockedResumeWritebacks,
   supervisorBlockedPipeResumeAction,
   SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER,
@@ -273,7 +274,7 @@ async function executeHostBlockedSyscallResume(
       if (blockedStatus !== handle.kernel.abi_status_pipe_wait()) {
         return false;
       }
-      if (handle.kernel.thread_poll_wait_has_socket?.(vmPtr) === 1) {
+      if (supervisorBlockedPollWaitHasSocket(handle.kernel, vmPtr)) {
         deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-socket-supervisor-pipe:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
         await syncSocketStatePreservingNetworkBridge(handle, blockedStatus);
         if (abortIfStaleBlockedRpc()) {
