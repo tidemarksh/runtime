@@ -14,7 +14,9 @@ export interface WorkerKernelRpcLifecycleDeps {
   processHandles: Map<number, ProcessHandle>;
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   drainProcessOutput(handle: ProcessHandle): boolean;
+  enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   failProcess(handle: ProcessHandle, error: Error): void;
+  notifyHostEffectProgress(handle: ProcessHandle): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   settleVisibleProcessOutput(
     handle: ProcessHandle,

@@ -26,6 +26,7 @@ interface WorkerKernelRpcDeps {
   assertProcessStandardFdIntegrity(handle: ProcessHandle, context: string): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   failProcess(handle: ProcessHandle, error: Error): void;
+  notifyHostEffectProgress(handle: ProcessHandle): void;
   clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void;
   requestThreadWorkerBlockedResume(handle: ProcessHandle, worker: Worker): void;
   markRuntimeFsDirty(handle: ProcessHandle): void;
@@ -114,7 +115,9 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     processHandles: deps.processHandles,
     threadWorkerStates: deps.threadWorkerStates,
     drainProcessOutput,
+    enqueueWorker: deps.enqueueWorker,
     failProcess: deps.failProcess,
+    notifyHostEffectProgress: deps.notifyHostEffectProgress,
     requestPipeStateSync: deps.requestPipeStateSync,
     settleVisibleProcessOutput,
     syncProcessMemfsViaKernelWorker: deps.syncProcessMemfsViaKernelWorker,

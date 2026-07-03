@@ -12,7 +12,7 @@ import type {
   ProcessHandle,
 } from "../types.js";
 import type { WorkerKernelRpcLifecycleDeps } from "./lifecycle/types.js";
-import { completedKernelRpcOutcome, type KernelRpcResumeEffect, type KernelRpcResumeOutcome } from "./outcomes.js";
+import { completedKernelRpcOutcome, type KernelRpcResumeOutcome } from "./outcomes.js";
 import { expectKernelWorkerResponse } from "./transport.js";
 
 export interface WorkerKernelRpcVforkDeps extends WorkerKernelRpcLifecycleDeps {
@@ -94,11 +94,9 @@ export function createWorkerKernelRpcVforkHelpers(
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       deps.clearVforkSnapshot(handle);
       publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
-      const effects: KernelRpcResumeEffect[] = [
-        { kind: "notify-host-effect-progress", handle },
-        { kind: "enqueue-worker" },
-      ];
-      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr), effects);
+      deps.notifyHostEffectProgress(handle);
+      deps.enqueueWorker(handle, worker);
+      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
     } catch (error) {
       if (handle.workers.has(worker) && deps.threadWorkerStates.has(worker)) {
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
@@ -113,10 +111,9 @@ export function createWorkerKernelRpcVforkHelpers(
     vmPtr: number,
     provisionalChildPid: number,
   ): Promise<KernelRpcResumeOutcome> {
-    const effects: KernelRpcResumeEffect[] = [];
     const snapshot = handle.vforkSnapshot;
     if (!snapshot || snapshot.vmPtr !== vmPtr) {
-      return { kind: "stale", effects };
+      return { kind: "stale" };
     }
 
     try {
@@ -126,7 +123,7 @@ export function createWorkerKernelRpcVforkHelpers(
         provisionalChildPid,
       );
       if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
-        return { kind: "process-gone", effects };
+        return { kind: "process-gone" };
       }
 
       snapshot.childPid = lifecycle.childPid;
@@ -134,13 +131,13 @@ export function createWorkerKernelRpcVforkHelpers(
       snapshot.pgid = lifecycle.pgid;
       snapshot.sid = lifecycle.sid;
       publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
-      effects.push({ kind: "enqueue-worker" });
-      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr), effects);
+      deps.enqueueWorker(handle, worker);
+      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
     } catch (error) {
       if (handle.workers.has(worker) && deps.threadWorkerStates.has(worker)) {
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
       }
-      return { kind: "process-gone", effects };
+      return { kind: "process-gone" };
     }
   }
 

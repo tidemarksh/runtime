@@ -181,9 +181,8 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
       attachKernelRuntimeState(parent.kernel, parent.kernelState);
       deps.drainProcessOutput(parent);
       await deps.requestPipeStateSync(parent, true);
-      return completedKernelRpcOutcome(undefined, [
-        { kind: "notify-host-effect-progress", handle: parent },
-      ]);
+      deps.notifyHostEffectProgress(parent);
+      return completedKernelRpcOutcome();
     } catch (error) {
       if (parent.pid > 0 && deps.processHandles.get(parent.pid) === parent) {
         deps.failProcess(parent, error instanceof Error ? error : new Error(String(error)));

@@ -171,10 +171,6 @@ test("resumeVforkParentViaKernelWorker publishes state before waking and enqueue
   expect(outcome).toEqual({
     kind: "completed",
     status: 0,
-    effects: [
-      { kind: "notify-host-effect-progress", handle },
-      { kind: "enqueue-worker" },
-    ],
   });
   expect(handle.kernelWorkerRequest).toHaveBeenCalledWith(expect.objectContaining({
     type: "resume-vfork-parent",
@@ -186,5 +182,7 @@ test("resumeVforkParentViaKernelWorker publishes state before waking and enqueue
     "resume:4660:7",
     "record:1:7:768",
     "clear-vfork",
+    `progress:${resumedState.heapPtr}`,
+    `enqueue:${resumedState.heapPtr}`,
   ]);
 });

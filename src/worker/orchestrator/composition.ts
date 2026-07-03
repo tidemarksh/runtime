@@ -172,6 +172,7 @@ workerKernelRpcHelpers = createWorkerKernelRpcHelpers({
   assertProcessStandardFdIntegrity,
   enqueueWorker,
   failProcess,
+  notifyHostEffectProgress: notifySchedulerProgress,
   clearHostBlockedRetryTimer,
   requestThreadWorkerBlockedResume,
   markRuntimeFsDirty,
