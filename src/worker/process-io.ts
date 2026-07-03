@@ -199,6 +199,64 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     return activeFd;
   }
 
+  function requireThreadSocketIdxForFd(handle: ProcessHandle) {
+    const socketIdxForFd = handle.kernel.thread_socket_idx_for_fd;
+    if (typeof socketIdxForFd !== "function") {
+      throw new Error("kernel supervisor ABI missing thread_socket_idx_for_fd");
+    }
+    return socketIdxForFd;
+  }
+
+  function requireThreadSocketRecvAvailable(handle: ProcessHandle) {
+    const recvAvailable = handle.kernel.thread_socket_recv_available;
+    if (typeof recvAvailable !== "function") {
+      throw new Error("kernel supervisor ABI missing thread_socket_recv_available");
+    }
+    return recvAvailable;
+  }
+
+  function requireThreadSocketRecvBufIdx(handle: ProcessHandle) {
+    const recvBufIdx = handle.kernel.thread_socket_recv_buf_idx;
+    if (typeof recvBufIdx !== "function") {
+      throw new Error("kernel supervisor ABI missing thread_socket_recv_buf_idx");
+    }
+    return recvBufIdx;
+  }
+
+  function requireThreadSocketReadBytes(handle: ProcessHandle) {
+    const readBytes = handle.kernel.thread_socket_read_bytes;
+    if (typeof readBytes !== "function") {
+      throw new Error("kernel supervisor ABI missing thread_socket_read_bytes");
+    }
+    return readBytes;
+  }
+
+  function requireAbiMaxSockets(handle: ProcessHandle): number {
+    const maxSockets = handle.kernel.abi_max_sockets;
+    if (typeof maxSockets !== "function") {
+      throw new Error("kernel supervisor ABI missing abi_max_sockets");
+    }
+    return maxSockets();
+  }
+
+  function socketIdxForFd(handle: ProcessHandle, vmPtr: number, fd: number): number {
+    return requireThreadSocketIdxForFd(handle)(vmPtr, fd);
+  }
+
+  function socketRecvAvailable(handle: ProcessHandle, socketIdx: number): number {
+    return requireThreadSocketRecvAvailable(handle)(socketIdx);
+  }
+
+  function socketRecvBufIdx(handle: ProcessHandle, socketIdx: number): number {
+    return requireThreadSocketRecvBufIdx(handle)(socketIdx);
+  }
+
+  function socketReadBytesSnapshot(handle: ProcessHandle, socketIdx: number): number | undefined {
+    const raw = requireThreadSocketReadBytes(handle)(socketIdx);
+    const readBytes = typeof raw === "bigint" ? Number(raw) : raw;
+    return Number.isSafeInteger(readBytes) ? readBytes as number : undefined;
+  }
+
   function recordNetworkPendingInbound(handle: ProcessHandle, bytes: Uint8Array<ArrayBuffer> | null): void {
     if (bytes !== null && bytes.length > handle.transferDebugStats.networkPendingInboundBytesMax) {
       handle.transferDebugStats.networkPendingInboundBytesMax = bytes.length;
@@ -477,26 +535,26 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       }
       return false;
     }
-    let socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
+    let socketIdx = socketIdxForFd(handle, vmPtr, fd);
     if (socketIdx < 0) {
       const socketSlot = handle.networkSocketSlotWatermarks.get(fd);
       if (!socketSlot) {
         return false;
       }
       restoreNetworkSocketSlotSnapshot(handle, socketSlot);
-      socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
+      socketIdx = socketIdxForFd(handle, vmPtr, fd);
       if (socketIdx < 0) {
         return false;
       }
     }
-    let recvBufIdx = handle.kernel.thread_socket_recv_buf_idx?.(socketIdx) ?? -1;
+    let recvBufIdx = socketRecvBufIdx(handle, socketIdx);
     if (recvBufIdx !== payload.recvBufIdx) {
       const socketSlot = handle.networkSocketSlotWatermarks.get(fd);
       if (!socketSlot) {
         return false;
       }
       restoreNetworkSocketSlotSnapshot(handle, socketSlot);
-      recvBufIdx = handle.kernel.thread_socket_recv_buf_idx?.(socketIdx) ?? -1;
+      recvBufIdx = socketRecvBufIdx(handle, socketIdx);
       if (recvBufIdx !== payload.recvBufIdx) {
         return false;
       }
@@ -508,13 +566,12 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       payload.readBytes !== undefined
       && payload.availableBytes !== undefined
     ) {
-      const readBytesRaw = handle.kernel.thread_socket_read_bytes?.(socketIdx);
-      const readBytes = typeof readBytesRaw === "bigint" ? Number(readBytesRaw) : readBytesRaw;
+      const readBytes = socketReadBytesSnapshot(handle, socketIdx);
       const deliveredBytes = networkRecvPayloadDeliveredBytes(payload);
       if (
         Number.isSafeInteger(readBytes)
       ) {
-        const availableBytes = handle.kernel.thread_socket_recv_available?.(socketIdx);
+        const availableBytes = socketRecvAvailable(handle, socketIdx);
         const readProgress = (readBytes as number) - payload.readBytes;
         const deliveredRemaining = deliveredBytes === undefined
           ? undefined
@@ -587,11 +644,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         }
       }
     }
-    const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes?.();
-    if (netBufPoolBytes === undefined) {
-      return false;
-    }
-    const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+    const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes();
+    const maxSockets = requireAbiMaxSockets(handle);
     const netBufferCount = maxSockets * 2;
     const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
     if (!Number.isInteger(netBufferBytes) || netBufferBytes <= 16 || payload.data.length !== netBufferBytes - 16) {
@@ -653,13 +707,11 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     if (!payload) {
       return false;
     }
-    const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
+    const socketIdx = socketIdxForFd(handle, vmPtr, fd);
     if (socketIdx < 0) {
-      return handle.networkConnections.has(fd);
+      return false;
     }
-    const readBytesRaw = handle.kernel.thread_socket_read_bytes?.(socketIdx);
-    const readBytes = typeof readBytesRaw === "bigint" ? Number(readBytesRaw) : readBytesRaw;
-    const safeReadBytes = Number.isSafeInteger(readBytes) ? readBytes as number : undefined;
+    const safeReadBytes = socketReadBytesSnapshot(handle, socketIdx);
     if (
       payload.readBytes !== undefined
       && payload.availableBytes !== undefined
@@ -668,10 +720,10 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         if (NETWORK_LIFECYCLE_LOG_ENABLED) {
           deps.appendWorkerDebugLog(
             handle,
-            `net-watermark-unread:${handle.pid}:fd=${fd}:read=unknown:base=${payload.readBytes}:avail=${payload.availableBytes}:unread=1`,
+            `net-watermark-unread:${handle.pid}:fd=${fd}:read=unknown:base=${payload.readBytes}:avail=${payload.availableBytes}:unread=0`,
           );
         }
-        return true;
+        return false;
       }
       const unread = safeReadBytes - payload.readBytes < payload.availableBytes;
       if (NETWORK_LIFECYCLE_LOG_ENABLED) {
@@ -682,19 +734,16 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       }
       return unread;
     }
-    const recvBufIdx = handle.kernel.thread_socket_recv_buf_idx?.(socketIdx) ?? -1;
+    const recvBufIdx = socketRecvBufIdx(handle, socketIdx);
     if (recvBufIdx !== payload.recvBufIdx) {
-      return handle.networkConnections.has(fd);
+      return false;
     }
-    const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes?.();
-    if (netBufPoolBytes === undefined) {
-      return handle.networkConnections.has(fd);
-    }
-    const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+    const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes();
+    const maxSockets = requireAbiMaxSockets(handle);
     const netBufferCount = maxSockets * 2;
     const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
     if (!Number.isInteger(netBufferBytes) || netBufferBytes <= 16) {
-      return handle.networkConnections.has(fd);
+      return false;
     }
     const absolute = handle.kernelState.netBufBase + recvBufIdx * netBufferBytes;
     const view = new DataView(handle.memory.buffer, absolute, 16);
@@ -705,91 +754,84 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
   function hasBufferedNetworkRecv(handle: ProcessHandle, vmPtr: number, fd: number): boolean {
     const payload = handle.networkRecvPayloadWatermarks.get(fd);
     if (payload && handle.networkConnections.has(fd)) {
-      const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
-      const readBytesRaw = socketIdx >= 0 ? handle.kernel.thread_socket_read_bytes?.(socketIdx) : undefined;
-      const readBytes = typeof readBytesRaw === "bigint" ? Number(readBytesRaw) : readBytesRaw;
-      const safeReadBytes = Number.isSafeInteger(readBytes) ? readBytes as number : undefined;
+      const socketIdx = socketIdxForFd(handle, vmPtr, fd);
+      const safeReadBytes = socketIdx >= 0 ? socketReadBytesSnapshot(handle, socketIdx) : undefined;
       if (
-        safeReadBytes === undefined
-        || payload.readBytes === undefined
-        || payload.availableBytes === undefined
-        || safeReadBytes - payload.readBytes < payload.availableBytes
+        safeReadBytes !== undefined
+        && payload.readBytes !== undefined
+        && payload.availableBytes !== undefined
+        && safeReadBytes - payload.readBytes < payload.availableBytes
       ) {
         restoreBufferedNetworkRecvFromWatermark(handle, vmPtr, fd);
         appendNetworkLifecycle(handle, `net-buffered:${handle.pid}:fd=${fd}:payload-watermark`);
         return true;
       }
     }
-    const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
+    const socketIdx = socketIdxForFd(handle, vmPtr, fd);
     if (socketIdx >= 0) {
-      const available = handle.kernel.thread_socket_recv_available?.(socketIdx);
-      if (available !== undefined) {
-        const readBytesRaw = handle.kernel.thread_socket_read_bytes?.(socketIdx);
-        const readBytes = typeof readBytesRaw === "bigint" ? Number(readBytesRaw) : readBytesRaw;
-        const safeReadBytes = Number.isSafeInteger(readBytes) ? readBytes as number : undefined;
-        if (payload && safeReadBytes !== undefined) {
-          const deliveredBytes = networkRecvPayloadDeliveredBytes(payload);
-          if (deliveredBytes !== undefined && safeReadBytes >= deliveredBytes) {
-            restoreBufferedNetworkRecvFromWatermark(handle, vmPtr, fd, { allowPartialReadProgress: true });
-            const restoredAvailable = handle.kernel.thread_socket_recv_available?.(socketIdx);
-            if (restoredAvailable !== undefined && restoredAvailable <= 0) {
-              appendNetworkLifecycle(
-                handle,
-                `net-buffered:${handle.pid}:fd=${fd}:false:socket=${socketIdx}:available=${restoredAvailable}:payload=delivered`,
-              );
-              clearNetworkRecvWatermarks(handle, fd);
-              return false;
-            }
+      const available = socketRecvAvailable(handle, socketIdx);
+      const safeReadBytes = socketReadBytesSnapshot(handle, socketIdx);
+      if (payload && safeReadBytes !== undefined) {
+        const deliveredBytes = networkRecvPayloadDeliveredBytes(payload);
+        if (deliveredBytes !== undefined && safeReadBytes >= deliveredBytes) {
+          restoreBufferedNetworkRecvFromWatermark(handle, vmPtr, fd, { allowPartialReadProgress: true });
+          const restoredAvailable = socketRecvAvailable(handle, socketIdx);
+          if (restoredAvailable <= 0) {
+            appendNetworkLifecycle(
+              handle,
+              `net-buffered:${handle.pid}:fd=${fd}:false:socket=${socketIdx}:available=${restoredAvailable}:payload=delivered`,
+            );
+            clearNetworkRecvWatermarks(handle, fd);
+            return false;
           }
         }
-        if (available > 0) {
-          appendNetworkLifecycle(handle, `net-buffered:${handle.pid}:fd=${fd}:available=${available}`);
-          return true;
-        }
-        if (restoreBufferedNetworkRecvFromWatermark(handle, vmPtr, fd)) {
-          appendNetworkLifecycle(handle, `net-buffered:${handle.pid}:fd=${fd}:restore-watermark`);
-          return true;
-        }
-        if (hasUnreadNetworkRecvWatermark(handle, vmPtr, fd)) {
-          appendNetworkLifecycle(handle, `net-buffered:${handle.pid}:fd=${fd}:unread-watermark`);
-          return true;
-        }
-        appendNetworkLifecycle(
-          handle,
-          `net-buffered:${handle.pid}:fd=${fd}:false:socket=${socketIdx}:available=${available}:payload=${handle.networkRecvPayloadWatermarks.has(fd) ? 1 : 0}`,
-        );
-        clearNetworkRecvWatermarks(handle, fd);
-        return false;
       }
+      if (available > 0) {
+        appendNetworkLifecycle(handle, `net-buffered:${handle.pid}:fd=${fd}:available=${available}`);
+        return true;
+      }
+      if (restoreBufferedNetworkRecvFromWatermark(handle, vmPtr, fd)) {
+        appendNetworkLifecycle(handle, `net-buffered:${handle.pid}:fd=${fd}:restore-watermark`);
+        return true;
+      }
+      if (hasUnreadNetworkRecvWatermark(handle, vmPtr, fd)) {
+        appendNetworkLifecycle(handle, `net-buffered:${handle.pid}:fd=${fd}:unread-watermark`);
+        return true;
+      }
+      appendNetworkLifecycle(
+        handle,
+        `net-buffered:${handle.pid}:fd=${fd}:false:socket=${socketIdx}:available=${available}:payload=${handle.networkRecvPayloadWatermarks.has(fd) ? 1 : 0}`,
+      );
+      clearNetworkRecvWatermarks(handle, fd);
+      return false;
     }
-    const head = handle.networkRecvHeadWatermarks.get(fd) ?? 0;
-    const tail = handle.networkRecvTailWatermarks.get(fd) ?? 0;
-    appendNetworkLifecycle(handle, `net-buffered:${handle.pid}:fd=${fd}:fallback:head=${head}:tail=${tail}`);
-    return tail > head;
+    appendNetworkLifecycle(handle, `net-buffered:${handle.pid}:fd=${fd}:false:socket=${socketIdx}`);
+    clearNetworkRecvWatermarks(handle, fd);
+    return false;
   }
 
   function hasCurrentNetworkRecvAvailable(handle: ProcessHandle, vmPtr: number, fd: number): boolean {
-    const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
+    const socketIdx = socketIdxForFd(handle, vmPtr, fd);
     if (socketIdx < 0) {
       return false;
     }
-    return (handle.kernel.thread_socket_recv_available?.(socketIdx) ?? 0) > 0;
+    return socketRecvAvailable(handle, socketIdx) > 0;
   }
 
   function clearCurrentNetworkRecvBuffer(handle: ProcessHandle, vmPtr: number, fd: number): void {
-    const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
+    const socketIdx = socketIdxForFd(handle, vmPtr, fd);
     if (socketIdx < 0) {
       return;
     }
-    const recvBufIdx = handle.kernel.thread_socket_recv_buf_idx?.(socketIdx) ?? -1;
+    const recvBufIdx = socketRecvBufIdx(handle, socketIdx);
     if (recvBufIdx < 0) {
       return;
     }
     const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes?.();
-    if (netBufPoolBytes === undefined) {
+    const maxSockets = handle.kernel.abi_max_sockets?.();
+    if (netBufPoolBytes === undefined || maxSockets === undefined) {
       return;
     }
-    const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
     const netBufferCount = maxSockets * 2;
     const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
     if (!Number.isInteger(netBufferBytes) || netBufferBytes <= 16 || recvBufIdx >= netBufferCount) {

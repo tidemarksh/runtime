@@ -25,8 +25,13 @@ type NetworkBridgeKernelFixture = {
   abi_einprogress?: () => number;
   abi_fd_type_socket?: () => number;
   abi_max_fds?: () => number;
+  abi_max_sockets?: () => number;
   kernel_ofd_fd_type?: (ofdId: number) => number;
   process_fd_ofd_id?: (vmPtr: number, fd: number) => number;
+  thread_socket_idx_for_fd?: (vmPtr: number, fd: number) => number;
+  thread_socket_recv_available?: (socketIdx: number) => number;
+  thread_socket_recv_buf_idx?: (socketIdx: number) => number;
+  thread_socket_read_bytes?: (socketIdx: number) => bigint | number;
   thread_socket_mark_external_peer?: (vmPtr: number, fd: number) => number | undefined;
   thread_socket_commit_external_connect?: (vmPtr: number, fd: number) => number | undefined;
   thread_socket_close_external_peer?: (vmPtr: number, fd: number) => number | undefined;
@@ -47,6 +52,16 @@ type NetworkBridgeKernelFixture = {
 };
 
 function withSupervisorSocketDefaults<T extends NetworkBridgeKernelFixture>(kernel: T): T {
+  kernel.abi_max_sockets ??= vi.fn(() => 1);
+  kernel.thread_socket_idx_for_fd ??= vi.fn((vmPtr, fd) => {
+    const ofdId = kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
+    return ofdId > 0 && kernel.kernel_ofd_fd_type?.(ofdId) === kernel.abi_fd_type_socket?.()
+      ? 0
+      : -1;
+  });
+  kernel.thread_socket_recv_available ??= vi.fn(() => 0);
+  kernel.thread_socket_recv_buf_idx ??= vi.fn(() => 0);
+  kernel.thread_socket_read_bytes ??= vi.fn(() => 0n);
   kernel.supervisor_socket_commit_external_connect_result ??= vi.fn((_vmPtr, _fd, result) => {
     const signedResult = BigInt.asIntN(64, result);
     const einprogress = BigInt(kernel.abi_einprogress?.() ?? -115);
