@@ -314,15 +314,6 @@ export function createWorkerSchedulerQueueHelpers(
     removeVforkReadyWorker,
   });
 
-  function hasWorkerLocalWait(
-    handle: ProcessHandle,
-    worker: Worker,
-    thread: ThreadWorkerState | undefined,
-  ): boolean {
-    return (thread?.waitingInWorkerStatus ?? null) !== null
-      || deps.isSupervisorFutexWaiter(handle, worker);
-  }
-
   function observeForkSharedSyncGate(handle: ProcessHandle, promise: Promise<void>): void {
     if (observedForkSharedSyncGates.get(handle) === promise) {
       return;
@@ -362,25 +353,6 @@ export function createWorkerSchedulerQueueHelpers(
     }
     deps.appendWorkerDebugLog(handle, "running-worker-cleared:stale");
     return null;
-  }
-
-  function hasExclusiveVforkWorker(handle: ProcessHandle): boolean {
-    const worker = handle.vforkWorker;
-    if (handle.vforkSnapshot === null || worker === null) {
-      return false;
-    }
-    if (sanitizeRunningWorker(handle) === worker) {
-      return true;
-    }
-    if (handle.vforkReadyWorkers.includes(worker)) {
-      return true;
-    }
-    if (handle.hostBlockedWorkers.has(worker)) {
-      return true;
-    }
-    const thread = deps.threadWorkerStates.get(worker);
-    return deps.isSupervisorFutexWaiter(handle, worker)
-      || thread?.waitingInWorkerStatus !== null;
   }
 
   function assertThreadOwnershipInvariant(
@@ -698,41 +670,15 @@ export function createWorkerSchedulerQueueHelpers(
       return;
     }
     let next: Worker | undefined;
-    if (hasExclusiveVforkWorker(handle)) {
-      const index = handle.vforkReadyWorkers.indexOf(handle.vforkWorker!);
-      if (index === -1) {
-        return;
-      }
-      const candidate = handle.vforkReadyWorkers[index];
-      const candidateThread = candidate ? deps.threadWorkerStates.get(candidate) : undefined;
-      if (
-        (candidateThread?.ownerAsyncStatus ?? null) !== null
-        || hasWorkerLocalWait(handle, candidate, candidateThread)
-        || (candidateThread !== undefined && handle.kernel.thread_process_ptr(candidateThread.vmPtr) === 0)
-      ) {
-        appendSchedulerQueueDebugLog(
-          deps,
-          handle,
-          `pump-skip-candidate:vfork:ready=${handle.vforkReadyWorkers.length}`
-            + (candidateThread ? `:vm=0x${candidateThread.vmPtr.toString(16)}`
-              + `:wait=${candidateThread.waitingInWorkerStatus ?? "null"}`
-              + `:async=${candidateThread.ownerAsyncStatus ?? "null"}` : ""),
-        );
-        handle.vforkReadyWorkers.splice(index, 1);
-        return;
-      }
-      next = handle.vforkReadyWorkers.splice(index, 1)[0];
+    const supervisorSelected = supervisorResumeHostBoundary.selectSupervisorRunnableWorker(handle);
+    if (supervisorSelected !== undefined) {
+      next = supervisorSelected ?? undefined;
     } else {
-      const supervisorSelected = supervisorResumeHostBoundary.selectSupervisorRunnableWorker(handle);
-      if (supervisorSelected !== undefined) {
-        next = supervisorSelected ?? undefined;
-      } else {
-        deps.appendWorkerDebugLog(
-          handle,
-          `supervisor-resume:runnable:missing-export:ready=${handle.vforkReadyWorkers.length}`,
-        );
-        return;
-      }
+      deps.appendWorkerDebugLog(
+        handle,
+        `supervisor-resume:runnable:missing-export:ready=${handle.vforkReadyWorkers.length}`,
+      );
+      return;
     }
     if (!next) {
       return;
