@@ -8,6 +8,7 @@ const SUPERVISOR_HOST_OP_KIND_SPAWN_THREAD_WORKER = 1;
 const SUPERVISOR_HOST_OP_KIND_CREATE_PROCESS_MEMORY = 3;
 const SUPERVISOR_HOST_OP_KIND_COPY_MEMORY_RANGES = 4;
 const SUPERVISOR_HOST_OP_KIND_ARM_HOST_TIMER = 12;
+const SUPERVISOR_HOST_OP_KIND_RETRY_BLOCKED_WORKER = 15;
 const SUPERVISOR_HOST_OP_SCRATCH_OFFSET = 0x2c000;
 const SUPERVISOR_HOST_COMPLETION_RECORD_BYTES = 64;
 const SUPERVISOR_HOST_COMPLETION_RECORD_MAGIC = 0x4348_5354;
@@ -46,6 +47,11 @@ function supervisorHostOpKindSpawnThreadWorker(handle: ProcessHandle): number {
 function supervisorHostOpKindArmHostTimer(handle: ProcessHandle): number {
   return handle.kernel.supervisor_host_op_kind_arm_host_timer?.()
     ?? SUPERVISOR_HOST_OP_KIND_ARM_HOST_TIMER;
+}
+
+function supervisorHostOpKindRetryBlockedWorker(handle: ProcessHandle): number {
+  return handle.kernel.supervisor_host_op_kind_retry_blocked_worker?.()
+    ?? SUPERVISOR_HOST_OP_KIND_RETRY_BLOCKED_WORKER;
 }
 
 function supervisorHostOpKindCreateProcessMemory(handle: ProcessHandle): number {
@@ -137,6 +143,24 @@ function decodeSupervisorArmHostTimerOp(
   if (record.parentVmPtr !== vmPtr) {
     throw new Error(
       `supervisor arm host timer HostOp vm mismatch: `
+        + `0x${record.parentVmPtr.toString(16)} != 0x${vmPtr.toString(16)}`,
+    );
+  }
+  return record;
+}
+
+function decodeSupervisorBlockedRetryHostOp(
+  handle: ProcessHandle,
+  view: DataView,
+  vmPtr: number,
+): SupervisorHostOpRecord {
+  const record = decodeSupervisorHostOpRecord(handle, view, "supervisor blocked retry HostOp");
+  if (record.kind !== supervisorHostOpKindRetryBlockedWorker(handle)) {
+    throw new Error(`supervisor blocked retry HostOp bad kind: ${record.kind}`);
+  }
+  if (record.parentVmPtr !== vmPtr) {
+    throw new Error(
+      `supervisor blocked retry HostOp vm mismatch: `
         + `0x${record.parentVmPtr.toString(16)} != 0x${vmPtr.toString(16)}`,
     );
   }
@@ -236,6 +260,49 @@ export function drainSupervisorArmHostTimerHostOp(
     throw new Error(`supervisor arm host timer HostOp poll failed: ${result}`);
   }
   return decodeSupervisorArmHostTimerOp(
+    handle,
+    new DataView(memory.buffer, scratch, result),
+    vmPtr,
+  );
+}
+
+export function drainSupervisorBlockedRetryHostOp(
+  handle: ProcessHandle,
+  vmPtr: number,
+): SupervisorHostOpRecord | null | undefined {
+  const recordBytesExport = handle.kernel.supervisor_host_op_record_bytes;
+  if (
+    recordBytesExport === undefined
+    || (
+      handle.kernel.supervisor_next_host_op_kind === undefined
+      && handle.kernel.supervisor_next_host_op === undefined
+    )
+  ) {
+    return undefined;
+  }
+  const recordBytes = recordBytesExport();
+  if (recordBytes < SUPERVISOR_HOST_OP_RECORD_BYTES) {
+    throw new Error(`supervisor blocked retry HostOp record bytes too small: ${recordBytes}`);
+  }
+  const memory = handle.kernel.memory ?? handle.memory;
+  const scratch = supervisorHostOpScratchBase(handle);
+  ensureMemoryCapacity(memory, scratch + recordBytes);
+  const result = pollSupervisorHostOpKind(
+    handle,
+    supervisorHostOpKindRetryBlockedWorker(handle),
+    recordBytes,
+    scratch,
+  );
+  if (result === undefined) {
+    return undefined;
+  }
+  if (result === 0) {
+    return null;
+  }
+  if (result < 0 || result > recordBytes) {
+    throw new Error(`supervisor blocked retry HostOp poll failed: ${result}`);
+  }
+  return decodeSupervisorBlockedRetryHostOp(
     handle,
     new DataView(memory.buffer, scratch, result),
     vmPtr,
@@ -431,6 +498,35 @@ export function armSupervisorHostTimer(
         supervisorHostCompletionOutcomeFailure(handle),
         0,
       );
+      deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+    }
+  }, delayMs);
+}
+
+export function armSupervisorBlockedRetryTimer(
+  handle: ProcessHandle,
+  record: SupervisorHostOpRecord,
+  deps: Pick<WorkerMessageHandlerDeps, "appendRuntimeLifecycleEvent" | "appendWorkerDebugLog" | "failProcess">
+    & {
+      onTimerFired(delayMs: number, reason: number): void;
+    },
+): ReturnType<typeof setTimeout> {
+  const delayMs = bigintToSafeNumber(record.flags, "supervisor blocked retry delay");
+  const reason = bigintToSafeNumber(record.childTidPtr, "supervisor blocked retry reason");
+  deps.appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `supervisor-blocked-retry-timer-arm:${handle.pid}:vm=0x${record.parentVmPtr.toString(16)}`
+      + `:seq=${record.seq.toString()}:delay=${delayMs}:reason=${reason}`,
+  );
+  return globalThis.setTimeout(() => {
+    try {
+      deps.appendWorkerDebugLog(
+        handle,
+        `supervisor-blocked-retry-timer-fired:vm=0x${record.parentVmPtr.toString(16)}`
+          + `:seq=${record.seq.toString()}:delay=${delayMs}:reason=${reason}`,
+      );
+      deps.onTimerFired(delayMs, reason);
+    } catch (error) {
       deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
     }
   }, delayMs);

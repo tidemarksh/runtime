@@ -27,6 +27,7 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_host_op_kind_spawn_thread_worker: 1,
   supervisor_host_op_kind_create_process_memory: 3,
   supervisor_host_op_kind_copy_memory_ranges: 4,
+  supervisor_host_op_kind_retry_blocked_worker: 15,
   supervisor_process_host_op_record_bytes: 96,
   supervisor_fault_exit_decision_bytes: 88,
   supervisor_fault_exit_kind_thread_exit: 1,
@@ -97,6 +98,16 @@ export interface SupervisorArmHostTimerHostOpFixture {
   processPtr?: number;
   status?: number;
   deadlineTicks?: bigint;
+}
+
+export interface SupervisorBlockedRetryHostOpFixture {
+  vmPtr: number;
+  delayMs: bigint;
+  reason: bigint;
+  seq?: bigint;
+  tid?: number;
+  processPtr?: number;
+  status?: number;
 }
 
 export interface SupervisorFaultExitDecisionRecordFixture {
@@ -714,5 +725,27 @@ export function writeSupervisorArmHostTimerHostOpRecord(
   view.setUint32(outPtr + 44, 0, true);
   view.setBigUint64(outPtr + 48, record.delayMs, true);
   view.setBigUint64(outPtr + 56, record.deadlineTicks ?? 0n, true);
+  return DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_bytes;
+}
+
+export function writeSupervisorBlockedRetryHostOpRecord(
+  memory: WebAssembly.Memory,
+  outPtr: number,
+  record: SupervisorBlockedRetryHostOpFixture,
+): number {
+  const view = new DataView(memory.buffer);
+  view.setUint32(outPtr, 0x4f48_5354, true);
+  view.setUint32(outPtr + 4, DEFAULT_NUMERIC_EXPORTS.supervisor_abi_version, true);
+  view.setUint32(outPtr + 8, DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_bytes, true);
+  view.setUint32(outPtr + 12, DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_kind_retry_blocked_worker, true);
+  view.setBigUint64(outPtr + 16, record.seq ?? 1n, true);
+  view.setUint32(outPtr + 24, record.vmPtr, true);
+  view.setUint32(outPtr + 28, 0, true);
+  view.setUint32(outPtr + 32, record.tid ?? 1, true);
+  view.setUint32(outPtr + 36, record.processPtr ?? 0, true);
+  view.setUint32(outPtr + 40, record.status ?? 0, true);
+  view.setUint32(outPtr + 44, 0, true);
+  view.setBigUint64(outPtr + 48, record.delayMs, true);
+  view.setBigUint64(outPtr + 56, record.reason, true);
   return DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_bytes;
 }

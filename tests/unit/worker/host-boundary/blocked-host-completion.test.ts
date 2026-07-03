@@ -13,7 +13,10 @@ import {
   makeHostBoundaryKernel,
   makeHostBoundaryThread,
 } from "./helpers.js";
-import { writeSupervisorArmHostTimerHostOpRecord } from "../support/supervisor-abi.js";
+import {
+  writeSupervisorArmHostTimerHostOpRecord,
+  writeSupervisorBlockedRetryHostOpRecord,
+} from "../support/supervisor-abi.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -329,14 +332,39 @@ test("host boundary reports blocked retry timer expiry to supervisor before retr
     });
     return 0;
   });
+  const pendingRetryHostOps: Array<{ vmPtr: number; delayMs: bigint; reason: bigint; seq: bigint; status: number }> = [];
   Object.assign(kernel, {
     supervisor_abi_version: () => 1,
     supervisor_host_op_record_bytes: () => 64,
+    supervisor_host_op_kind_retry_blocked_worker: () => 15,
     supervisor_next_host_op: vi.fn((_outPtr: number, outLen: number) => {
       expect(outLen).toBe(64);
       return 0;
     }),
+    supervisor_next_host_op_kind: vi.fn((kind: number, outPtr: number, outLen: number) => {
+      expect(outLen).toBe(64);
+      if (kind !== 15) {
+        return 0;
+      }
+      const hostOp = pendingRetryHostOps.shift();
+      if (hostOp === undefined) {
+        return 0;
+      }
+      return writeSupervisorBlockedRetryHostOpRecord(kernel.memory!, outPtr, hostOp);
+    }),
     supervisor_enqueue_blocked_wait_timer: vi.fn(() => 0),
+    supervisor_enqueue_blocked_retry_timer: vi.fn((vmPtr: number, flags: number) => {
+      const reason = kernel.supervisor_blocked_wait_retry_reason!(vmPtr, flags);
+      const delayMs = kernel.supervisor_blocked_wait_retry_delay_ms!(vmPtr, reason);
+      pendingRetryHostOps.push({
+        vmPtr,
+        delayMs: BigInt(delayMs),
+        reason: BigInt(reason),
+        seq: 17n,
+        status: kernel.thread_status(vmPtr),
+      });
+      return 1;
+    }),
     supervisor_blocked_wait_timer_required: vi.fn(() => 0),
     supervisor_blocked_wait_retry_reason: () => 0,
     supervisor_blocked_wait_retry_delay_ms: () => 1,

@@ -21,7 +21,10 @@ import { createRunLoopScheduler } from "../../../../src/worker/scheduler/run-loo
 import { createTransferDebugStats, createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
-import { writeSupervisorArmHostTimerHostOpRecord } from "../support/supervisor-abi.js";
+import {
+  writeSupervisorArmHostTimerHostOpRecord,
+  writeSupervisorBlockedRetryHostOpRecord,
+} from "../support/supervisor-abi.js";
 
 function makeKernel() {
   const threadResumeWait4 = vi.fn();
@@ -551,9 +554,17 @@ function installTestSupervisorBlockedWaitTimers(
   kernel.supervisor_abi_version = () => 1;
   kernel.supervisor_host_op_record_bytes = () => 64;
   kernel.supervisor_host_op_kind_arm_host_timer = () => 12;
+  kernel.supervisor_host_op_kind_retry_blocked_worker = () => 15;
   kernel.supervisor_host_completion_outcome_success = () => 1;
   kernel.supervisor_host_completion_outcome_failure = () => 2;
   const pendingTimers: TestSupervisorTimerHostOp[] = [];
+  const pendingRetryTimers: Array<{
+    vmPtr: number;
+    delayMs: bigint;
+    reason: bigint;
+    seq: bigint;
+    status: number;
+  }> = [];
   let seq = 1n;
   kernel.supervisor_enqueue_blocked_wait_timer = vi.fn((vmPtr: number) => {
     const timer = selectTestSupervisorBlockedWaitTimer(kernel, vmPtr, seq);
@@ -564,26 +575,62 @@ function installTestSupervisorBlockedWaitTimers(
     pendingTimers.push(timer);
     return 1;
   });
+  kernel.supervisor_enqueue_blocked_retry_timer = vi.fn((vmPtr: number, flags: number) => {
+    const reason = kernel.supervisor_blocked_wait_retry_reason!(vmPtr, flags);
+    const delayMs = kernel.supervisor_blocked_wait_retry_delay_ms!(vmPtr, reason);
+    if (delayMs < 0) {
+      return delayMs;
+    }
+    pendingRetryTimers.push({
+      vmPtr,
+      delayMs: BigInt(delayMs),
+      reason: BigInt(reason),
+      seq,
+      status: kernel.thread_status(vmPtr),
+    });
+    seq += 1n;
+    return 1;
+  });
   kernel.supervisor_blocked_wait_timer_required = vi.fn((vmPtr: number) =>
     selectTestSupervisorBlockedWaitTimer(kernel, vmPtr, seq) === null ? 0 : 1);
-  kernel.supervisor_next_host_op = vi.fn((outPtr: number, outLen: number) => {
+  const drainHostOp = (kind: number | null, outPtr: number, outLen: number): number => {
     if (outLen < 64) {
       return -1;
     }
-    const timer = pendingTimers.shift();
-    if (timer === undefined) {
-      return 0;
+    if (kind === null || kind === kernel.supervisor_host_op_kind_arm_host_timer!()) {
+      const timer = pendingTimers.shift();
+      if (timer !== undefined) {
+        return writeSupervisorArmHostTimerHostOpRecord(handle.memory, outPtr, {
+          vmPtr: timer.vmPtr,
+          delayMs: timer.delayMs,
+          deadlineTicks: timer.deadlineTicks,
+          seq: timer.seq,
+          tid: kernel.process_thread_tid?.(timer.vmPtr) ?? 0,
+          processPtr: kernel.thread_process_ptr(timer.vmPtr),
+          status: timer.status,
+        });
+      }
     }
-    return writeSupervisorArmHostTimerHostOpRecord(handle.memory, outPtr, {
-      vmPtr: timer.vmPtr,
-      delayMs: timer.delayMs,
-      deadlineTicks: timer.deadlineTicks,
-      seq: timer.seq,
-      tid: kernel.process_thread_tid?.(timer.vmPtr) ?? 0,
-      processPtr: kernel.thread_process_ptr(timer.vmPtr),
-      status: timer.status,
-    });
-  });
+    if (kind === null || kind === kernel.supervisor_host_op_kind_retry_blocked_worker!()) {
+      const timer = pendingRetryTimers.shift();
+      if (timer !== undefined) {
+        return writeSupervisorBlockedRetryHostOpRecord(handle.memory, outPtr, {
+          vmPtr: timer.vmPtr,
+          delayMs: timer.delayMs,
+          reason: timer.reason,
+          seq: timer.seq,
+          tid: kernel.thread_tid?.(timer.vmPtr) ?? 0,
+          processPtr: kernel.thread_process_ptr(timer.vmPtr),
+          status: timer.status,
+        });
+      }
+    }
+    return 0;
+  };
+  kernel.supervisor_next_host_op = vi.fn((outPtr: number, outLen: number) =>
+    drainHostOp(null, outPtr, outLen));
+  kernel.supervisor_next_host_op_kind = vi.fn((kind: number, outPtr: number, outLen: number) =>
+    drainHostOp(kind, outPtr, outLen));
   kernel.supervisor_complete_host_op = vi.fn((completionPtr: number, completionLen: number) =>
     completeTestSupervisorBlockedWaitTimer(kernel, handle.memory, completionPtr, completionLen));
 }
@@ -1734,6 +1781,7 @@ test("pipe pselect retry resumes after pipe sync when no writer remains", async 
   kernel.kernel_ofd_ino = (ofdId: number) => ofdId === 10 ? 2 : 0;
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   handle.memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  kernel.memory = handle.memory;
   handle.pendingChildSpawnRecords = 0;
   handle.kernelWorkerRequest = vi.fn(async () => {
     throw new Error("scheduler retry should delegate blocked resume through outcome helper");

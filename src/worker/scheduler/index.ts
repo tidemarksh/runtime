@@ -12,6 +12,7 @@ import {
   SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER,
   SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED,
   SUPERVISOR_BLOCKED_RESUME_DELEGATION_WAIT4_KERNEL_WORKER,
+  SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_ACTIVE_CHILD,
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PASSIVE_WAIT,
@@ -50,8 +51,10 @@ import {
   SUPERVISOR_THREAD_EVENT_KIND_TIMER_FIRED,
 } from "../supervisor-shadow.js";
 import {
+  armSupervisorBlockedRetryTimer,
   armSupervisorHostTimer,
   drainSupervisorArmHostTimerHostOp,
+  drainSupervisorBlockedRetryHostOp,
 } from "../supervisor-host-op.js";
 import type {
   HostBlockedWorkerState,
@@ -306,20 +309,24 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   function scheduleHostBlockedRetry(
     handle: ProcessHandle,
     worker: Worker,
-    delayMs: number,
-    reason: SupervisorBlockedWaitRetryReason,
+    hostOp: NonNullable<ReturnType<typeof drainSupervisorBlockedRetryHostOp>>,
   ): void {
     const blocked = handle.hostBlockedWorkers.get(worker);
     if (!blocked || hostBlockedRetryTimers.has(blocked)) {
       return;
     }
-    const timer = setTimeout(() => {
-      if (hostBlockedRetryTimers.get(blocked) === timer) {
-        hostBlockedRetryTimers.delete(blocked);
-      }
-      submitBlockedRetryTimerFiredEvent(handle, blocked, delayMs, reason);
-      retryHostBlockedWorker(handle, worker);
-    }, delayMs);
+    const timer = armSupervisorBlockedRetryTimer(handle, hostOp, {
+      appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
+      appendWorkerDebugLog,
+      failProcess: deps.failProcess,
+      onTimerFired: (delayMs, reason) => {
+        if (hostBlockedRetryTimers.get(blocked) === timer) {
+          hostBlockedRetryTimers.delete(blocked);
+        }
+        submitBlockedRetryTimerFiredEvent(handle, blocked, delayMs, reason as SupervisorBlockedWaitRetryReason);
+        retryHostBlockedWorker(handle, worker);
+      },
+    });
     hostBlockedRetryTimers.set(blocked, timer);
   }
 
@@ -332,13 +339,48 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (!blocked) {
       return;
     }
-    const retryPlan = supervisorBlockedWaitRetryPlan(handle.kernel, blocked.vmPtr, flags);
-    scheduleHostBlockedRetry(
-      handle,
-      worker,
-      retryPlan.delayMs,
-      retryPlan.reason,
-    );
+    const enqueueRetryTimer = handle.kernel.supervisor_enqueue_blocked_retry_timer;
+    if (enqueueRetryTimer === undefined) {
+      deps.failProcess(handle, new Error("kernel supervisor ABI missing supervisor_enqueue_blocked_retry_timer"));
+      return;
+    }
+    const enqueueResult = enqueueRetryTimer(blocked.vmPtr, flags);
+    if (enqueueResult < 0) {
+      deps.failProcess(
+        handle,
+        new Error(
+          `supervisor blocked retry timer enqueue failed: `
+            + `pid=${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}:result=${enqueueResult}`,
+        ),
+      );
+      return;
+    }
+    if (enqueueResult === 0) {
+      deps.failProcess(
+        handle,
+        new Error(
+          `supervisor blocked retry timer enqueue returned no HostOp: `
+            + `pid=${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}`,
+        ),
+      );
+      return;
+    }
+    const retryHostOp = drainSupervisorBlockedRetryHostOp(handle, blocked.vmPtr);
+    if (retryHostOp === undefined) {
+      deps.failProcess(handle, new Error("kernel supervisor ABI missing blocked retry HostOp exports"));
+      return;
+    }
+    if (retryHostOp === null) {
+      deps.failProcess(
+        handle,
+        new Error(
+          `supervisor blocked retry timer enqueue returned no drainable HostOp: `
+            + `pid=${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}`,
+        ),
+      );
+      return;
+    }
+    scheduleHostBlockedRetry(handle, worker, retryHostOp);
   }
 
   function supervisorBlockedWaitActiveChildPid(handle: ProcessHandle, vmPtr: number): number {
@@ -388,11 +430,10 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       blocked.lastPipeRetryLifecycleEvent = event;
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);
     }
-    scheduleHostBlockedRetry(
+    scheduleSupervisorBlockedRetry(
       handle,
       worker,
-      retryPlan.delayMs,
-      retryPlan.reason,
+      SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_ACTIVE_CHILD,
     );
     return true;
   }

@@ -182,6 +182,7 @@ export interface KernelExports {
   supervisor_host_op_kind_arm_host_timer?(): number;
   supervisor_host_op_kind_resume_thread?(): number;
   supervisor_host_op_kind_terminate_worker?(): number;
+  supervisor_host_op_kind_retry_blocked_worker?(): number;
   supervisor_process_host_op_kind_spawn_process_worker?(): number;
   supervisor_fault_exit_kind_thread_exit?(): number;
   supervisor_fault_exit_kind_process_exit?(): number;
@@ -348,6 +349,7 @@ export interface KernelExports {
   supervisor_blocked_wait_retry_flag_process_gate?(): number;
   supervisor_blocked_wait_retry_flag_thread_init_pending?(): number;
   supervisor_enqueue_blocked_wait_timer?(vmPtr: number): number;
+  supervisor_enqueue_blocked_retry_timer?(vmPtr: number, flags: number): number;
   supervisor_blocked_wait_timer_required?(vmPtr: number): number;
   supervisor_fd_control_record?(outPtr: number, outLen: number): number;
   supervisor_fs_control_record?(outPtr: number, outLen: number): number;
@@ -1425,6 +1427,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_host_op_kind_arm_host_timer",
   "supervisor_host_op_kind_resume_thread",
   "supervisor_host_op_kind_terminate_worker",
+  "supervisor_host_op_kind_retry_blocked_worker",
   "supervisor_process_host_op_kind_spawn_process_worker",
   "supervisor_fault_exit_kind_thread_exit",
   "supervisor_fault_exit_kind_process_exit",
@@ -1572,6 +1575,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_wait_retry_flag_process_gate",
   "supervisor_blocked_wait_retry_flag_thread_init_pending",
   "supervisor_enqueue_blocked_wait_timer",
+  "supervisor_enqueue_blocked_retry_timer",
   "supervisor_blocked_wait_timer_required",
   "supervisor_vfork_execve_handoff_failure_wait_status",
   "supervisor_vfork_execve_rollback",
