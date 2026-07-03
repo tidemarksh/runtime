@@ -199,7 +199,3 @@ export async function syncPipeStateViaKernelWorker(
   restoreProcessState(handle, processStateSnapshot, { preserveCurrentFdTable: true });
   return handle.kernelState.pipeUsed;
 }
-
-export function syncPipeStateForWorkerRuntime(handle: ProcessHandle): Promise<bigint> {
-  return syncPipeStateViaKernelWorker(handle, { kind: "syscall", nr: -1n, name: "pipe-state-sync" });
-}

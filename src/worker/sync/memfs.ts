@@ -49,11 +49,3 @@ export async function syncProcessMemfsViaKernelWorker(
   restoreProcessState(handle, processStateSnapshot);
   handle.processMemfsDirty = false;
 }
-
-export function syncProcessMemfsForWorkerRuntime(handle: ProcessHandle): Promise<void> {
-  return syncProcessMemfsViaKernelWorker(handle, {
-    kind: "syscall",
-    nr: -1n,
-    name: "process-memfs-sync",
-  });
-}

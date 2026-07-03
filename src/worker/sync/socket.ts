@@ -87,11 +87,3 @@ export async function syncSocketStateViaKernelWorker(
     socketState: response.socketState,
   };
 }
-
-export function syncSocketStateForWorkerRuntime(handle: ProcessHandle): Promise<{
-  socketUsed: number;
-  netBufUsed: bigint;
-  socketState?: KernelWorkerSocketStateSnapshot;
-}> {
-  return syncSocketStateViaKernelWorker(handle, { kind: "syscall", nr: -1n, name: "socket-state-sync" });
-}
