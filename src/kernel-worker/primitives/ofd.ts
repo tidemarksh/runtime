@@ -19,28 +19,6 @@ interface KernelWorkerPrimitivesDeps {
   processKernels: Map<number, KernelExports>;
 }
 
-function boundedThreadSlotCount(processExports: KernelExports, vmPtr: number): number {
-  const maxThreads = processExports.abi_max_threads();
-  try {
-    const processThreadCount = processExports.thread_process_thread_count?.(vmPtr) ?? maxThreads;
-    if (!Number.isFinite(processThreadCount) || processThreadCount <= 0) {
-      return 0;
-    }
-    // Kernel thread slots are sparse and keyed by tid-1, so thread_count is a
-    // population count, not a dense slot upper bound.
-    return maxThreads;
-  } catch {
-    return maxThreads;
-  }
-}
-
-function plausibleThreadVmPtr(processExports: KernelExports, vmPtr: number): boolean {
-  if (!Number.isInteger(vmPtr) || vmPtr <= 0) {
-    return false;
-  }
-  return vmPtr < processExports.memory.buffer.byteLength;
-}
-
 function ofdSlotsCanBeShared(
   sourceExports: KernelExports,
   targetExports: KernelExports,
@@ -113,51 +91,26 @@ function ofdSnapshotCanApply(
   return true;
 }
 
+function requireSupervisorProcessHeldOfdRefcount(
+  processExports: KernelExports,
+): (vmPtr: number, ofdId: number) => number {
+  const supervisorHeldOfdRefcount = processExports.supervisor_process_held_ofd_refcount;
+  if (!supervisorHeldOfdRefcount) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_held_ofd_refcount");
+  }
+  return supervisorHeldOfdRefcount;
+}
+
 export function collectProcessHeldOfdRefcounts(processExports: KernelExports, vmPtr: number): Int32Array {
   const maxFds = processExports.abi_max_fds();
   const heldOfdRefcounts = new Int32Array(maxFds);
-  const supervisorHeldOfdRefcount = processExports.supervisor_process_held_ofd_refcount;
-  if (supervisorHeldOfdRefcount) {
-    for (let ofdId = 1; ofdId < maxFds; ofdId += 1) {
-      const refcount = supervisorHeldOfdRefcount(vmPtr, ofdId);
-      if (refcount > 0) {
-        heldOfdRefcounts[ofdId] = refcount;
-      }
-    }
-    return heldOfdRefcounts;
-  }
-
-  for (let fd = 0; fd < maxFds; fd += 1) {
-    const ofdId = processExports.process_fd_ofd_id(vmPtr, fd);
-    if (ofdId !== 0 && ofdId < maxFds) {
-      heldOfdRefcounts[ofdId] += 1;
+  const supervisorHeldOfdRefcount = requireSupervisorProcessHeldOfdRefcount(processExports);
+  for (let ofdId = 1; ofdId < maxFds; ofdId += 1) {
+    const refcount = supervisorHeldOfdRefcount(vmPtr, ofdId);
+    if (refcount > 0) {
+      heldOfdRefcounts[ofdId] = refcount;
     }
   }
-
-  for (let slot = 0; slot < boundedThreadSlotCount(processExports, vmPtr); slot += 1) {
-    let threadVmPtr = 0;
-    try {
-      threadVmPtr = processExports.process_thread_vm_ptr(vmPtr, slot);
-    } catch {
-      continue;
-    }
-    if (threadVmPtr === 0) {
-      continue;
-    }
-    if (!plausibleThreadVmPtr(processExports, threadVmPtr)) {
-      continue;
-    }
-    let blockedOfdId = 0;
-    try {
-      blockedOfdId = processExports.thread_blocked_ofd_id(threadVmPtr);
-    } catch {
-      continue;
-    }
-    if (blockedOfdId !== 0 && blockedOfdId < maxFds) {
-      heldOfdRefcounts[blockedOfdId] += 1;
-    }
-  }
-
   return heldOfdRefcounts;
 }
 

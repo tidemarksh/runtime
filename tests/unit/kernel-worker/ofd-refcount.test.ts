@@ -33,6 +33,20 @@ function makeKernelExports(memory: WebAssembly.Memory) {
     process_fd_ofd_id: (_vmPtr: number, fd: number) => fdMap.get(fd) ?? 0,
     process_thread_vm_ptr: (_vmPtr: number, slot: number) => threadVmPtrs[slot] ?? 0,
     thread_blocked_ofd_id: (vmPtr: number) => blockedOfdMap.get(vmPtr) ?? 0,
+    supervisor_process_held_ofd_refcount: (_vmPtr: number, ofdId: number) => {
+      let refcount = 0;
+      for (const heldOfdId of fdMap.values()) {
+        if (heldOfdId === ofdId) {
+          refcount += 1;
+        }
+      }
+      for (const threadVmPtr of threadVmPtrs) {
+        if ((blockedOfdMap.get(threadVmPtr) ?? 0) === ofdId) {
+          refcount += 1;
+        }
+      }
+      return refcount;
+    },
     kernel_ofd_table_bytes: () => 32 * 32,
     kernel_ofd_refcount: (ofdId: number) => new DataView(memory.buffer).getInt32(0x220000 + ofdId * 32 + 16, true),
     kernel_retain_ofd: retainOfd,
@@ -299,39 +313,4 @@ test("reconcileCanonicalOfdRefcounts treats blocked threads as live OFD holders 
   expect(canonical.releaseOfd).toHaveBeenCalledTimes(1);
   expect(canonical.releaseOfd).toHaveBeenCalledWith(12);
   expect(canonical.kernel_ofd_refcount(12)).toBe(0);
-});
-
-test("collectProcessHeldOfdRefcounts skips implausible or unreadable thread slots from corrupted process state", () => {
-  const canonicalMemory = makeMemory();
-  const parentMemory = makeMemory();
-  const canonical = makeKernelExports(canonicalMemory);
-  const parent = makeKernelExports(parentMemory);
-  parent.setFdMap(new Map([
-    [4, 7],
-    [5, 8],
-  ]));
-  parent.setProcessThreadCount(4);
-  parent.process_thread_vm_ptr = (_vmPtr: number, slot: number) => {
-    if (slot === 0) {
-      return 0x1234;
-    }
-    if (slot === 1) {
-      return -1;
-    }
-    if (slot === 2) {
-      return parentMemory.buffer.byteLength + 0x1000;
-    }
-    throw new RangeError("corrupted thread slot");
-  };
-  parent.thread_blocked_ofd_id = (vmPtr: number) => (vmPtr === 0x1234 ? 9 : 0);
-
-  const primitives = createKernelWorkerOfdPrimitives({
-    getCanonicalExports: () => canonical,
-    processKernels: new Map<number, KernelExports>([[1, parent]]),
-  });
-
-  const held = primitives.collectProcessHeldOfdRefcounts(parent, 0x1234);
-  expect(held[7]).toBe(1);
-  expect(held[8]).toBe(1);
-  expect(held[9]).toBe(1);
 });
