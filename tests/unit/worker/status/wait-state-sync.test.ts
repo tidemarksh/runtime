@@ -191,6 +191,31 @@ function makeStepMessageExpectation(
   } as ThreadWorkerInbound;
 }
 
+function attachKernelStateForTest(
+  handle: { kernel: KernelExports; kernelState: KernelRuntimeState },
+  state: KernelRuntimeState,
+): void {
+  handle.kernelState = state;
+  handle.kernel.kernel_attach_runtime_state(
+    state.heapBase,
+    state.heapPtr,
+    state.ofdTablePtr,
+    state.memfsPtr,
+    state.memStatePtr,
+    state.epollTablePtr,
+    state.socketTablePtr,
+    state.socketUsed,
+    state.pipeBase,
+    state.pipeUsed,
+    state.netBufBase,
+    state.netBufUsed,
+    state.sigSlotsPtr,
+    state.processPendingPtr,
+    state.processRuntimeStatePtr,
+    state.timeStatePtr,
+  );
+}
+
 const SYNC_EFFECT_PIPE_STATE = 1 << 0;
 const SYNC_EFFECT_SOCKET_STATE = 1 << 1;
 const SYNC_EFFECT_EPOLL_STATE = 1 << 2;
@@ -267,7 +292,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     didExec: number;
   }
   const processIdentities = new Map<number, MockProcessIdentity>();
-  let currentPid = pendingExecveChildPid ?? pendingCreatePid ?? 2;
+  let currentPid = pendingExecveChildPid ?? pendingCreatePid ?? 1;
   let currentPpid = 1;
   let currentPgid = 1;
   let currentSid = 1;
@@ -302,8 +327,9 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     view.setInt32(base + 8, 1, true);
     view.setInt32(base + 12, 1, true);
   }
-  const exports: WaitStateSyncKernelExports = {
-    ...makeSupervisorAbiStubs(),
+  let exports: WaitStateSyncKernelExports;
+  exports = {
+    ...makeSupervisorAbiStubs({ currentExports: () => exports }),
     memory,
     __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, 0),
     abi_status_ok: () => 0,
@@ -664,6 +690,12 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
         status: timer.status,
       });
     },
+    supervisor_next_host_op_kind: (kind, outPtr, outLen) => {
+      if (kind !== exports.supervisor_host_op_kind_arm_host_timer()) {
+        return 0;
+      }
+      return exports.supervisor_next_host_op(outPtr, outLen);
+    },
     supervisor_complete_host_op: (completionPtr, completionLen) =>
       completeTestSupervisorBlockedWaitTimer(exports, memory, completionPtr, completionLen),
     recordedChildExits,
@@ -912,9 +944,9 @@ test("waitInWorker STATUS_EPOLL_WAIT republishes synced kernel state and wakes b
     kernelState: makeKernelState(),
   });
 
-  await flushMicrotasks();
+  await flushMicrotasks(100);
   await new Promise((resolve) => setTimeout(resolve, 0));
-  await flushMicrotasks();
+  await flushMicrotasks(100);
 
   expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x40);
   expect(readPublishedKernelRuntimeState(handle.runtimeBridge).heapPtr).toBe(makeKernelState().heapPtr + 0x40);
@@ -1148,9 +1180,9 @@ test("waitInWorker STATUS_PIPE_WAIT syncs pipe state through kernel-worker and w
     kernelState: makeKernelState(),
   });
 
-  await flushMicrotasks();
+  await flushMicrotasks(100);
   await new Promise((resolve) => setTimeout(resolve, 0));
-  await flushMicrotasks();
+  await flushMicrotasks(100);
 
   expect(requests.some((msg) => msg.type === "sync-pipe-state")).toBe(true);
   expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x34);
@@ -1981,22 +2013,16 @@ test("waitInWorker STATUS_SOCKET_SEND syncs socket state through kernel-worker w
 });
 
 test("stale clone-spawn status does not regress kernel runtime state", async () => {
-  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
   const parentWorker = createdWorkers[0];
 
   emitReady(parentWorker);
   parentWorker.clearPostedMessages();
-  parentWorker.emit({
-    type: "status",
-    status: 4,
-    exitCode: 0,
-    termSignal: 0,
-    pc: 0n,
-    vmPtr: 0x1234,
-    kernelState: makeKernelState(),
-  });
-
   const advancedHeapPtr = makeKernelState().heapPtr + 0x10;
+  attachKernelStateForTest(handle, {
+    ...makeKernelState(),
+    heapPtr: advancedHeapPtr,
+  });
   expect(handle.kernelState.heapPtr).toBe(advancedHeapPtr);
 
   parentWorker.clearPostedMessages();
@@ -2007,10 +2033,7 @@ test("stale clone-spawn status does not regress kernel runtime state", async () 
     termSignal: 0,
     pc: 0n,
     vmPtr: 0x1234,
-    kernelState: {
-      ...makeKernelState(),
-      heapPtr: advancedHeapPtr,
-    },
+    kernelState: makeKernelState(),
   });
 
   expect(handle.kernelState.heapPtr).toBe(advancedHeapPtr);
@@ -2019,22 +2042,16 @@ test("stale clone-spawn status does not regress kernel runtime state", async () 
 });
 
 test("stale running-worker kernel state does not move heapPtr backwards", async () => {
-  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
   const worker = createdWorkers[0];
 
   emitReady(worker);
   worker.clearPostedMessages();
-  worker.emit({
-    type: "status",
-    status: 4,
-    exitCode: 0,
-    termSignal: 0,
-    pc: 0n,
-    vmPtr: 0x1234,
-    kernelState: makeKernelState(),
-  });
-
   const advancedHeapPtr = makeKernelState().heapPtr + 0x10;
+  attachKernelStateForTest(handle, {
+    ...makeKernelState(),
+    heapPtr: advancedHeapPtr,
+  });
   expect(handle.kernelState.heapPtr).toBe(advancedHeapPtr);
 
   worker.clearPostedMessages();

@@ -66,6 +66,14 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_wait_retry_flag_passive_wait: 4,
   supervisor_blocked_wait_retry_flag_process_gate: 8,
   supervisor_blocked_wait_retry_flag_thread_init_pending: 16,
+  supervisor_blocked_wait_wake_source_pipe_sync: 1,
+  supervisor_blocked_wait_wake_source_epoll_sync: 2,
+  supervisor_blocked_wait_wake_source_socket_sync: 3,
+  supervisor_blocked_wait_wake_source_pipe_and_epoll_sync: 4,
+  supervisor_blocked_wait_wake_target_pipe_wait: 1,
+  supervisor_blocked_wait_wake_target_epoll_wait: 2,
+  supervisor_blocked_wait_wake_target_socket_recv: 4,
+  supervisor_blocked_wait_wake_target_socket_send: 8,
   supervisor_blocked_wait_timer_required: 0,
   supervisor_vfork_execve_handoff_failure_wait_status: 127 << 8,
   supervisor_host_op_kind_arm_host_timer: 12,
@@ -246,6 +254,96 @@ export function makeSupervisorAbiStubs(
       || Math.ceil(initialBytes / 65536)
       || 1;
   };
+  const processHeldOfdRefcount = (
+    receiver: Partial<KernelExports>,
+    vmPtr: number,
+    targetOfdId: number,
+  ): number => {
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    if (targetOfdId <= 0 || targetOfdId >= maxFds) {
+      return 0;
+    }
+    let count = 0;
+    for (let fd = 0; fd < maxFds; fd += 1) {
+      if (callNumber(receiver, "process_fd_ofd_id", vmPtr, fd) === targetOfdId) {
+        count += 1;
+      }
+    }
+    const maxThreads = callNumber(receiver, "abi_max_threads");
+    for (let slot = 0; slot < maxThreads; slot += 1) {
+      const threadVmPtr = callNumber(receiver, "process_thread_vm_ptr", vmPtr, slot);
+      if (threadVmPtr === 0) {
+        continue;
+      }
+      if (callNumber(receiver, "thread_blocked_ofd_id", threadVmPtr) === targetOfdId) {
+        count += 1;
+      }
+    }
+    return count;
+  };
+  const processHeldOfdIds = (receiver: Partial<KernelExports>, vmPtr: number): number[] => {
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    const ofdIds: number[] = [];
+    for (let ofdId = 1; ofdId < maxFds; ofdId += 1) {
+      if (processHeldOfdRefcount(receiver, vmPtr, ofdId) > 0) {
+        ofdIds.push(ofdId);
+      }
+    }
+    return ofdIds;
+  };
+  const processEpollHeldOfdIds = (receiver: Partial<KernelExports>, vmPtr: number): number[] => {
+    const epollType = callNumber(receiver, "abi_fd_type_epoll");
+    return processHeldOfdIds(receiver, vmPtr)
+      .filter((ofdId) => callNumber(receiver, "kernel_ofd_fd_type", ofdId) === epollType);
+  };
+  const processEpollDependentOfdIds = (
+    receiver: Partial<KernelExports>,
+    vmPtr: number,
+  ): number[] => {
+    const memory = receiver.memory ?? overrides.memory;
+    if (memory === undefined) {
+      return [];
+    }
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    const tableBytes = callNumber(receiver, "kernel_epoll_table_bytes");
+    const instanceBytes = callNumber(receiver, "kernel_epoll_instance_bytes");
+    const tablePtr = callNumber(receiver, "kernel_epoll_table_ptr");
+    const tablePointerBytes = tableBytes % 8 === 0
+      && Math.floor((instanceBytes - 4) / (tableBytes >>> 3)) >= 28
+      ? 8
+      : 4;
+    const tableEntries = Math.floor(tableBytes / tablePointerBytes);
+    const entryStride = tableEntries > 0 ? Math.floor((instanceBytes - 4) / tableEntries) : 0;
+    const countOffset = entryStride * tableEntries;
+    const view = new DataView(memory.buffer);
+    if (
+      tableEntries <= 0
+      || entryStride < 8
+      || tablePtr < 0
+      || tablePtr + tableBytes > view.byteLength
+    ) {
+      return [];
+    }
+    const dependentOfdIds = new Set<number>();
+    for (const epollOfdId of processEpollHeldOfdIds(receiver, vmPtr)) {
+      const epollIdx = callNumber(receiver, "kernel_ofd_ino", epollOfdId);
+      if (epollIdx < 0 || epollIdx >= tableEntries) {
+        continue;
+      }
+      const instancePtr = view.getUint32(tablePtr + epollIdx * tablePointerBytes, true);
+      if (instancePtr === 0 || instancePtr + instanceBytes > view.byteLength) {
+        continue;
+      }
+      const count = Math.min(view.getUint32(instancePtr + countOffset, true), tableEntries);
+      for (let i = 0; i < count; i += 1) {
+        const ofdId = view.getUint32(instancePtr + i * entryStride + 4, true);
+        if (ofdId > 0 && ofdId < maxFds) {
+          dependentOfdIds.add(ofdId);
+        }
+      }
+    }
+    return [...dependentOfdIds];
+  };
   let latestBackingFillSpan = { offset: 0, end: 0, length: 0 };
   const stubs = Object.fromEntries(
     requiredSupervisorRuntimeExportNames().map((name) => [
@@ -270,6 +368,45 @@ export function makeSupervisorAbiStubs(
         return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_wait4_kernel_worker;
       }
       return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_kernel_worker;
+    },
+    supervisor_process_held_ofd_refcount(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      ofdId: number,
+    ) {
+      return processHeldOfdRefcount(currentExports(this), vmPtr, ofdId);
+    },
+    supervisor_process_epoll_held_ofd(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      index: number,
+    ) {
+      return processEpollHeldOfdIds(currentExports(this), vmPtr)[index] ?? 0;
+    },
+    supervisor_process_epoll_dependent_ofd(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      index: number,
+    ) {
+      return processEpollDependentOfdIds(currentExports(this), vmPtr)[index] ?? 0;
+    },
+    supervisor_blocked_wait_wake_mask_for_sync(_source: number) {
+      switch (_source) {
+        case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_source_pipe_sync:
+          return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_pipe_wait;
+        case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_source_epoll_sync:
+          return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_epoll_wait;
+        case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_source_socket_sync:
+          return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_pipe_wait
+            | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_epoll_wait
+            | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_socket_recv
+            | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_socket_send;
+        case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_source_pipe_and_epoll_sync:
+          return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_pipe_wait
+            | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_epoll_wait;
+        default:
+          return -22;
+      }
     },
     supervisor_fs_response_disposition(
       this: KernelExports | undefined,

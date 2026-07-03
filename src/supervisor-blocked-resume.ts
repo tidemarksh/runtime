@@ -21,6 +21,14 @@ export const SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE = 1 << 3;
 export const SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_THREAD_INIT_PENDING = 1 << 4;
 export const SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER = 0;
 export const SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT = 1;
+export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC = 1;
+export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC = 2;
+export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC = 3;
+export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_AND_EPOLL_SYNC = 4;
+export const SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_PIPE_WAIT = 1;
+export const SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_EPOLL_WAIT = 1 << 1;
+export const SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_SOCKET_RECV = 1 << 2;
+export const SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_SOCKET_SEND = 1 << 3;
 
 export type SupervisorBlockedWaitRetryReason =
   | typeof SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_DEFAULT
@@ -47,6 +55,12 @@ export type SupervisorBlockedResumeDelegation =
 export type SupervisorBlockedPipeResumeAction =
   | typeof SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER
   | typeof SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT;
+
+export type SupervisorBlockedWaitWakeSource =
+  | typeof SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC
+  | typeof SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC
+  | typeof SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC
+  | typeof SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_AND_EPOLL_SYNC;
 
 export function resumeBlockedSyscallBySupervisor(
   kernel: KernelExports,
@@ -281,6 +295,81 @@ export function supervisorBlockedWaitRetryPlan(
     reason,
     delayMs: supervisorBlockedWaitRetryDelayMs(kernel, vmPtr, reason),
   };
+}
+
+function supervisorBlockedWaitWakeSourceValue(
+  kernel: KernelExports,
+  source: SupervisorBlockedWaitWakeSource,
+): number {
+  switch (source) {
+    case SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC:
+      return kernel.supervisor_blocked_wait_wake_source_pipe_sync?.() ?? source;
+    case SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC:
+      return kernel.supervisor_blocked_wait_wake_source_epoll_sync?.() ?? source;
+    case SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC:
+      return kernel.supervisor_blocked_wait_wake_source_socket_sync?.() ?? source;
+    case SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_AND_EPOLL_SYNC:
+      return kernel.supervisor_blocked_wait_wake_source_pipe_and_epoll_sync?.() ?? source;
+    default: {
+      const exhaustive: never = source;
+      return exhaustive;
+    }
+  }
+}
+
+function supervisorBlockedWaitWakeTargetPipeWait(kernel: KernelExports): number {
+  return kernel.supervisor_blocked_wait_wake_target_pipe_wait?.()
+    ?? SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_PIPE_WAIT;
+}
+
+function supervisorBlockedWaitWakeTargetEpollWait(kernel: KernelExports): number {
+  return kernel.supervisor_blocked_wait_wake_target_epoll_wait?.()
+    ?? SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_EPOLL_WAIT;
+}
+
+function supervisorBlockedWaitWakeTargetSocketRecv(kernel: KernelExports): number {
+  return kernel.supervisor_blocked_wait_wake_target_socket_recv?.()
+    ?? SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_SOCKET_RECV;
+}
+
+function supervisorBlockedWaitWakeTargetSocketSend(kernel: KernelExports): number {
+  return kernel.supervisor_blocked_wait_wake_target_socket_send?.()
+    ?? SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_SOCKET_SEND;
+}
+
+export function supervisorBlockedWaitWakeMaskForSync(
+  kernel: KernelExports,
+  source: SupervisorBlockedWaitWakeSource,
+): number {
+  const readMask = kernel.supervisor_blocked_wait_wake_mask_for_sync;
+  if (readMask === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_blocked_wait_wake_mask_for_sync");
+  }
+  const result = readMask(supervisorBlockedWaitWakeSourceValue(kernel, source));
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked wait wake mask failed: ${result}`);
+  }
+  return result;
+}
+
+export function supervisorBlockedWaitWakeStatuses(
+  kernel: KernelExports,
+  mask: number,
+): Set<number> {
+  const statuses = new Set<number>();
+  if ((mask & supervisorBlockedWaitWakeTargetPipeWait(kernel)) !== 0) {
+    statuses.add(kernel.abi_status_pipe_wait());
+  }
+  if ((mask & supervisorBlockedWaitWakeTargetEpollWait(kernel)) !== 0) {
+    statuses.add(kernel.abi_status_epoll_wait());
+  }
+  if ((mask & supervisorBlockedWaitWakeTargetSocketRecv(kernel)) !== 0) {
+    statuses.add(kernel.abi_status_socket_recv());
+  }
+  if ((mask & supervisorBlockedWaitWakeTargetSocketSend(kernel)) !== 0) {
+    statuses.add(kernel.abi_status_socket_send());
+  }
+  return statuses;
 }
 
 export function supervisorBlockedWaitTimerRequired(

@@ -348,6 +348,15 @@ export interface KernelExports {
   supervisor_blocked_wait_retry_flag_passive_wait?(): number;
   supervisor_blocked_wait_retry_flag_process_gate?(): number;
   supervisor_blocked_wait_retry_flag_thread_init_pending?(): number;
+  supervisor_blocked_wait_wake_source_pipe_sync?(): number;
+  supervisor_blocked_wait_wake_source_epoll_sync?(): number;
+  supervisor_blocked_wait_wake_source_socket_sync?(): number;
+  supervisor_blocked_wait_wake_source_pipe_and_epoll_sync?(): number;
+  supervisor_blocked_wait_wake_target_pipe_wait?(): number;
+  supervisor_blocked_wait_wake_target_epoll_wait?(): number;
+  supervisor_blocked_wait_wake_target_socket_recv?(): number;
+  supervisor_blocked_wait_wake_target_socket_send?(): number;
+  supervisor_blocked_wait_wake_mask_for_sync?(source: number): number;
   supervisor_enqueue_blocked_wait_timer?(vmPtr: number): number;
   supervisor_enqueue_blocked_retry_timer?(vmPtr: number, flags: number): number;
   supervisor_blocked_wait_timer_required?(vmPtr: number): number;
@@ -1574,6 +1583,15 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_wait_retry_flag_passive_wait",
   "supervisor_blocked_wait_retry_flag_process_gate",
   "supervisor_blocked_wait_retry_flag_thread_init_pending",
+  "supervisor_blocked_wait_wake_source_pipe_sync",
+  "supervisor_blocked_wait_wake_source_epoll_sync",
+  "supervisor_blocked_wait_wake_source_socket_sync",
+  "supervisor_blocked_wait_wake_source_pipe_and_epoll_sync",
+  "supervisor_blocked_wait_wake_target_pipe_wait",
+  "supervisor_blocked_wait_wake_target_epoll_wait",
+  "supervisor_blocked_wait_wake_target_socket_recv",
+  "supervisor_blocked_wait_wake_target_socket_send",
+  "supervisor_blocked_wait_wake_mask_for_sync",
   "supervisor_enqueue_blocked_wait_timer",
   "supervisor_enqueue_blocked_retry_timer",
   "supervisor_blocked_wait_timer_required",

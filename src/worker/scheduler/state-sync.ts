@@ -6,6 +6,14 @@ import {
   wakeRuntimeBridge,
 } from "../../bridge/runtime-state.js";
 import {
+  SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC,
+  SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_AND_EPOLL_SYNC,
+  SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC,
+  SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC,
+  supervisorBlockedWaitWakeMaskForSync,
+  supervisorBlockedWaitWakeStatuses,
+} from "../../supervisor-blocked-resume.js";
+import {
   collectHeldEpollDependentOfdIdsByType,
   collectHeldEpollOfdIds,
   collectHeldOfdIdsByType,
@@ -95,12 +103,11 @@ export function createWorkerSchedulerStateSyncHelpers(
     return hiddenSlots.some((slot) => visibleSlots.has(slot));
   }
 
-  function wakeBlockedStatusesInKernelShare(
+  function wakeBlockedWaitersInKernelShare(
     handle: ProcessHandle,
-    statuses: number[],
+    wakeMask: number,
     pipeUsed?: bigint,
   ): void {
-    const blockedStatuses = new Set(statuses);
     for (const member of handle.kernelShare.members) {
       if (pipeUsed !== undefined) {
         member.kernelState = {
@@ -108,6 +115,7 @@ export function createWorkerSchedulerStateSyncHelpers(
           pipeUsed: composeHandlePipeUsed(member, pipeUsed),
         };
       }
+      const blockedStatuses = supervisorBlockedWaitWakeStatuses(member.kernel, wakeMask);
       const shouldWake = [...member.workers].some((candidate) => {
         const state = deps.threadWorkerStates.get(candidate);
         return state !== undefined
@@ -152,22 +160,35 @@ export function createWorkerSchedulerStateSyncHelpers(
   }
 
   function wakePipeAndEpollWaitersInKernelShare(handle: ProcessHandle, pipeUsed: bigint): void {
-    wakeBlockedStatusesInKernelShare(
+    wakeBlockedWaitersInKernelShare(
       handle,
-      [
-        handle.kernel.abi_status_pipe_wait(),
-        handle.kernel.abi_status_epoll_wait(),
-      ],
+      supervisorBlockedWaitWakeMaskForSync(
+        handle.kernel,
+        SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_AND_EPOLL_SYNC,
+      ),
       pipeUsed,
     );
   }
 
   function wakePipeWaitersInKernelShare(handle: ProcessHandle, pipeUsed: bigint): void {
-    wakeBlockedStatusesInKernelShare(handle, [handle.kernel.abi_status_pipe_wait()], pipeUsed);
+    wakeBlockedWaitersInKernelShare(
+      handle,
+      supervisorBlockedWaitWakeMaskForSync(
+        handle.kernel,
+        SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC,
+      ),
+      pipeUsed,
+    );
   }
 
   function retryEpollWaitersInKernelShare(handle: ProcessHandle): void {
-    wakeBlockedStatusesInKernelShare(handle, [handle.kernel.abi_status_epoll_wait()]);
+    wakeBlockedWaitersInKernelShare(
+      handle,
+      supervisorBlockedWaitWakeMaskForSync(
+        handle.kernel,
+        SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC,
+      ),
+    );
   }
 
   function syscallSyncCause(name: string): SyncCause {
@@ -190,14 +211,12 @@ export function createWorkerSchedulerStateSyncHelpers(
         netBufUsed,
       };
     }
-    wakeBlockedStatusesInKernelShare(
+    wakeBlockedWaitersInKernelShare(
       handle,
-      [
-        handle.kernel.abi_status_pipe_wait(),
-        handle.kernel.abi_status_epoll_wait(),
-        handle.kernel.abi_status_socket_recv(),
-        handle.kernel.abi_status_socket_send(),
-      ],
+      supervisorBlockedWaitWakeMaskForSync(
+        handle.kernel,
+        SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC,
+      ),
     );
   }
 
@@ -397,9 +416,12 @@ export function createWorkerSchedulerStateSyncHelpers(
             await requestEpollDependentOfdStateSync(handle);
             await requestEpollStateSync(handle, true);
           } else {
-            wakeBlockedStatusesInKernelShare(
+            wakeBlockedWaitersInKernelShare(
               handle,
-              [handle.kernel.abi_status_epoll_wait()],
+              supervisorBlockedWaitWakeMaskForSync(
+                handle.kernel,
+                SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC,
+              ),
               pipeUsed,
             );
           }
