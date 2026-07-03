@@ -185,12 +185,12 @@ function addSupervisorPipeControlForMember(
   readOpen: Int32Array,
   writeOpen: Int32Array,
   maxPipes: number,
-): bigint | null {
+): bigint {
   const usedMask = member.kernel.supervisor_process_pipe_used_mask;
   const readOpenCount = member.kernel.supervisor_process_pipe_read_open_count;
   const writeOpenCount = member.kernel.supervisor_process_pipe_write_open_count;
   if (!usedMask || !readOpenCount || !writeOpenCount) {
-    return null;
+    throw new Error("kernel supervisor ABI missing process pipe control exports");
   }
 
   for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
@@ -214,53 +214,10 @@ export function reconcileKernelSharePipeControl(handle: ProcessHandle): void {
   const maxPipes = handle.kernel.abi_max_pipes();
   const readOpen = new Int32Array(maxPipes);
   const writeOpen = new Int32Array(maxPipes);
-  const readKeys = new Set<string>();
-  const writeKeys = new Set<string>();
   let pipeUsed = 1n;
 
   for (const member of members) {
-    const maxFds = member.kernel.abi_max_fds();
-    const supervisorPipeUsed = addSupervisorPipeControlForMember(member, readOpen, writeOpen, maxPipes);
-    if (supervisorPipeUsed !== null) {
-      pipeUsed |= supervisorPipeUsed;
-    } else {
-      for (let fd = 0; fd < maxFds; fd += 1) {
-        const ofdId = member.kernel.process_fd_ofd_id(member.vmPtr, fd);
-        if (ofdId <= 0 || ofdId >= maxFds) {
-          continue;
-        }
-        if (member.kernel.kernel_ofd_fd_type(ofdId) !== member.kernel.abi_fd_type_pipe()) {
-          continue;
-        }
-        if (
-          typeof member.kernel.kernel_ofd_refcount === "function"
-          && member.kernel.kernel_ofd_refcount(ofdId) <= 0
-        ) {
-          continue;
-        }
-        const pipeSlot = member.kernel.kernel_ofd_ino(ofdId);
-        if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
-          continue;
-        }
-        pipeUsed |= 1n << BigInt(pipeSlot);
-        const hostFd = member.kernel.kernel_ofd_host_fd(ofdId);
-        const key = `${member.pid}:${pipeSlot}:${ofdId}`;
-        if (hostFd >= 0) {
-          readKeys.add(key);
-        } else {
-          writeKeys.add(key);
-        }
-      }
-    }
-  }
-
-  for (const key of readKeys) {
-    const [, pipeSlot] = key.split(":");
-    readOpen[Number(pipeSlot)] += 1;
-  }
-  for (const key of writeKeys) {
-    const [, pipeSlot] = key.split(":");
-    writeOpen[Number(pipeSlot)] += 1;
+    pipeUsed |= addSupervisorPipeControlForMember(member, readOpen, writeOpen, maxPipes);
   }
 
   const slotBytes = PIPE_SLOT_BYTES;
