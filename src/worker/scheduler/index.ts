@@ -6,6 +6,9 @@ import {
   supervisorBlockedPipeSyncBeforeRetryRequested,
   supervisorBlockedPollWaitHasSocket,
   supervisorBlockedResumeDelegation,
+  supervisorBlockedStatusIsEpollWait,
+  supervisorBlockedStatusIsPipeWait,
+  supervisorBlockedStatusIsWait4,
   SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT,
   supervisorBlockedWaitRetryPlan,
   SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC,
@@ -164,7 +167,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   } = schedulerQueueHelpers;
 
   function pumpProcessIfPipeWaitBlocked(handle: ProcessHandle, outcome: KernelRpcResumeOutcome): void {
-    if (outcome.kind === "blocked" && outcome.status === handle.kernel.abi_status_pipe_wait()) {
+    if (outcome.kind === "blocked" && supervisorBlockedStatusIsPipeWait(handle.kernel, outcome.status)) {
       pumpProcess(handle);
     }
   }
@@ -188,7 +191,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
     if (
       (options.clearPipeSyncBeforeRetry ?? true)
-      && blocked.status === handle.kernel.abi_status_pipe_wait()
+      && supervisorBlockedStatusIsPipeWait(handle.kernel, blocked.status)
     ) {
       try {
         supervisorBlockedPipeSyncBeforeRetryClear(handle.kernel, blocked.vmPtr);
@@ -239,8 +242,8 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     readyCount: number | undefined,
   ): boolean {
     if (
-      blocked.status !== handle.kernel.abi_status_pipe_wait()
-      && blocked.status !== handle.kernel.abi_status_wait4()
+      !supervisorBlockedStatusIsPipeWait(handle.kernel, blocked.status)
+      && !supervisorBlockedStatusIsWait4(handle.kernel, blocked.status)
     ) {
       return false;
     }
@@ -252,7 +255,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (childPid > 0) {
       deps.pumpSupervisorSelectedChildProcess?.(childPid);
     }
-    const event = blocked.status === handle.kernel.abi_status_pipe_wait()
+    const event = supervisorBlockedStatusIsPipeWait(handle.kernel, blocked.status)
       ? `pipe-retry-skip:${handle.pid}:active-child:${childPid}:ready=${readyCount ?? "n/a"}:${formatFirstPipeWaitDebug(handle, blocked.vmPtr)}:${formatBlockedPollFdSet(handle, blocked.vmPtr)}`
       : `wait4-retry-skip:${handle.pid}:active-child:${childPid}`;
     if (blocked.lastPipeRetryLifecycleEvent !== event) {
@@ -458,7 +461,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         logNetworkDebug(`pump-done pid=${handle.pid} status=${blocked.status}`);
         if (
           changed
-          && latestBlocked.status === handle.kernel.abi_status_pipe_wait()
+          && supervisorBlockedStatusIsPipeWait(handle.kernel, latestBlocked.status)
           && supervisorBlockedPollWaitHasSocket(handle.kernel, latestBlocked.vmPtr)
         ) {
           if (handle.runningWorker !== null || !canScheduleWorker(handle, worker)) {
@@ -560,7 +563,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     blocked: HostBlockedWorkerState,
   ): boolean {
     const currentStatus = handle.kernel.thread_status(blocked.vmPtr);
-    if (currentStatus === handle.kernel.abi_status_wait4()) {
+    if (supervisorBlockedStatusIsWait4(handle.kernel, currentStatus)) {
       return false;
     }
     if (
@@ -694,7 +697,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (sameBlockedThread && blocked.rpcPending) {
       return;
     }
-    if (status === handle.kernel.abi_status_epoll_wait()) {
+    if (supervisorBlockedStatusIsEpollWait(handle.kernel, status)) {
       if (handle.kernel.thread_process_thread_count(vmPtr) > 1) {
         scheduleSupervisorBlockedRetry(
           handle,
@@ -705,12 +708,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
     const pollTimeoutMs = pollWaitTimeoutMs(handle, status, vmPtr);
-    if (status === handle.kernel.abi_status_wait4()) {
+    if (supervisorBlockedStatusIsWait4(handle.kernel, status)) {
       retryHostBlockedWorker(handle, worker);
       return;
     }
     if (
-      status === handle.kernel.abi_status_pipe_wait()
+      supervisorBlockedStatusIsPipeWait(handle.kernel, status)
       && kernelWorkerOwnsPipeState(handle)
       && (!handle.kernelWorkerRequest || handle.pid <= 0)
       && supervisorBlockedPipeSyncBeforeRetryRequested(handle.kernel, vmPtr)
@@ -755,13 +758,13 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
 
     if (status === handle.kernel.abi_status_ok()) {
-      if (blocked.status === handle.kernel.abi_status_epoll_wait()) {
+      if (supervisorBlockedStatusIsEpollWait(handle.kernel, blocked.status)) {
         appendWorkerDebugLog(
           handle,
           `blocked-epoll-ready-fds:${handle.pid}:vm=0x${vmPtr.toString(16)}:${formatThreadFdTableSummary(handle, vmPtr)}`,
         );
       }
-      if (blocked.status === handle.kernel.abi_status_wait4()) {
+      if (supervisorBlockedStatusIsWait4(handle.kernel, blocked.status)) {
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-resumed-supervisor:${handle.pid}`);
       }
       clearBlockedWorker(handle, worker);
@@ -845,7 +848,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
 
-    if (status === handle.kernel.abi_status_epoll_wait()) {
+    if (supervisorBlockedStatusIsEpollWait(handle.kernel, status)) {
       if (handle.kernel.thread_process_thread_count(vmPtr) > 1) {
         scheduleSupervisorBlockedRetry(
           handle,
@@ -901,7 +904,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
     if (
-      blocked.status === handle.kernel.abi_status_epoll_wait()
+      supervisorBlockedStatusIsEpollWait(handle.kernel, blocked.status)
       && hasPendingCloneChildInitResume(handle)
     ) {
       deps.appendRuntimeLifecycleEvent(
@@ -917,7 +920,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
     const blockedPollTimeoutMs = pollWaitTimeoutMs(handle, blocked.status, blocked.vmPtr);
-    const blockedPollReadyCount = blocked.status === handle.kernel.abi_status_pipe_wait()
+    const blockedPollReadyCount = supervisorBlockedStatusIsPipeWait(handle.kernel, blocked.status)
       ? handle.kernel.thread_poll_wait_ready_count?.(blocked.vmPtr)
       : undefined;
     if (armBlockedSupervisorTimerForBlocked(handle, blocked)) {
@@ -931,7 +934,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     )) {
       return;
     }
-    if (blocked.status === handle.kernel.abi_status_wait4()) {
+    if (supervisorBlockedStatusIsWait4(handle.kernel, blocked.status)) {
       resumeWait4BlockedWorker(handle, worker, blocked);
       return;
     }
@@ -959,7 +962,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
     clearStaleRunningWorker(handle, worker);
     if (handle.runningWorker !== null) {
-      if (blocked.status === handle.kernel.abi_status_epoll_wait()) {
+      if (supervisorBlockedStatusIsEpollWait(handle.kernel, blocked.status)) {
         wakeRuntimeBridge(handle.runtimeBridge);
       }
       const runningThread = threadWorkerStates.get(handle.runningWorker);
@@ -1010,7 +1013,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
 
     if (
-      blocked.status === handle.kernel.abi_status_epoll_wait()
+      supervisorBlockedStatusIsEpollWait(handle.kernel, blocked.status)
       && handle.kernelWorkerRequest
       && handle.pid > 0
     ) {
@@ -1094,7 +1097,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
 
-    if (blocked.status === handle.kernel.abi_status_pipe_wait()) {
+    if (supervisorBlockedStatusIsPipeWait(handle.kernel, blocked.status)) {
       const pipeSyncBeforeRetryRequested = supervisorBlockedPipeSyncBeforeRetryRequested(
         handle.kernel,
         blocked.vmPtr,
@@ -1238,7 +1241,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       handle,
       worker,
       blocked,
-      blocked.status === handle.kernel.abi_status_pipe_wait()
+      supervisorBlockedStatusIsPipeWait(handle.kernel, blocked.status)
         ? `pipe-retry-host-boundary:${handle.pid}`
         : `blocked-retry-host-boundary:${handle.pid}:status=${blocked.status}`,
       (outcome) => pumpProcessIfPipeWaitBlocked(handle, outcome),

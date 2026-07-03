@@ -211,6 +211,10 @@ function makeHandle(worker: Worker) {
         status === 28 ? 1 : 0,
       supervisor_blocked_status_is_epoll_wait: (status: number) =>
         status === 22 ? 1 : 0,
+      supervisor_blocked_status_is_pipe_wait: (status: number) =>
+        status === 21 ? 1 : 0,
+      supervisor_blocked_status_is_wait4: (status: number) =>
+        status === 31 ? 1 : 0,
       supervisor_blocked_status_needs_network_sidecar_restore: (status: number) =>
         [21, 22, 28, 29, 30].includes(status) ? 1 : 0,
       supervisor_blocked_status_syncs_socket_after_resume: (status: number) =>

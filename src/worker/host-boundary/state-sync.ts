@@ -14,6 +14,8 @@ import {
   SUPERVISOR_STATE_SYNC_KIND_PIPE,
   SUPERVISOR_STATE_SYNC_KIND_SOCKET,
   supervisorBlockedPipeSyncBeforeRetryClear,
+  supervisorBlockedStatusIsEpollWait,
+  supervisorBlockedStatusIsPipeWait,
   supervisorBlockedWaitWakeMaskForSync,
   supervisorBlockedWaitWakeStatuses,
   supervisorStateSyncClear,
@@ -135,13 +137,13 @@ export function createWorkerSchedulerStateSyncHelpers(
       }
       for (const [blockedWorker, blocked] of member.hostBlockedWorkers) {
         if (blockedStatuses.has(blocked.status)) {
-          if (blocked.status === member.kernel.abi_status_pipe_wait()) {
+          if (supervisorBlockedStatusIsPipeWait(member.kernel, blocked.status)) {
             if (blocked.rpcPending) {
               continue;
             }
             supervisorBlockedPipeSyncBeforeRetryClear(member.kernel, blocked.vmPtr);
           }
-          if (blocked.status === member.kernel.abi_status_epoll_wait()) {
+          if (supervisorBlockedStatusIsEpollWait(member.kernel, blocked.status)) {
             if (blocked.rpcPending) {
               continue;
             }

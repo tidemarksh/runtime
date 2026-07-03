@@ -19,6 +19,8 @@ import {
 } from "../../supervisor-host-op.js";
 import {
   supervisorBlockedEpollWaitTimeoutMs,
+  supervisorBlockedStatusIsEpollWait,
+  supervisorBlockedStatusIsWait4,
   supervisorBlockedWaitStatusMatchesEpollWait,
   supervisorBlockedWaitStatusMatchesPipeWait,
   supervisorBlockedWaitStatusMatchesSocketWait,
@@ -32,14 +34,14 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
     msg: ThreadWorkerStatusMessage,
     isRunningWorker: boolean,
   ): void {
-    const epollWaitStatus = handle.kernel.abi_status_epoll_wait();
     const workerStillOwnedByHandle = createWorkerOwnershipGuard(
       handle,
       worker,
       thread,
       deps.threadWorkerStates,
     );
-    const epollTimeoutMs = msg.status === epollWaitStatus
+    const epollWaitStatus = supervisorBlockedStatusIsEpollWait(handle.kernel, msg.status);
+    const epollTimeoutMs = epollWaitStatus
       ? supervisorBlockedEpollWaitTimeoutMs(handle.kernel, thread.vmPtr)
       : null;
     deps.appendWorkerDebugLog(
@@ -56,7 +58,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
     const drainedPipe = kernelWorkerOwnsPipeState(handle) ? false : drainProcessOutput(handle);
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
 
-    if (msg.status === epollWaitStatus && epollTimeoutMs === 0) {
+    if (epollWaitStatus && epollTimeoutMs === 0) {
       thread.waitingInWorkerStatus = null;
       if (isRunningWorker) {
         handle.runningWorker = null;
@@ -108,9 +110,8 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       return;
     }
 
-    const wait4Status = handle.kernel.abi_status_wait4?.() ?? null;
     if (
-      msg.status === wait4Status
+      supervisorBlockedStatusIsWait4(handle.kernel, msg.status)
       && handle.kernelWorkerRequest
       && handle.pid > 0
     ) {

@@ -31,6 +31,8 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_blocked_status_is_host_wait"
   | "supervisor_blocked_status_is_connect_wait"
   | "supervisor_blocked_status_is_epoll_wait"
+  | "supervisor_blocked_status_is_pipe_wait"
+  | "supervisor_blocked_status_is_wait4"
   | "supervisor_blocked_status_needs_network_sidecar_restore"
   | "supervisor_blocked_status_syncs_socket_after_resume"
   | "supervisor_blocked_status_uses_fork_shared_state_sync"
@@ -147,6 +149,8 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_blocked_status_is_host_wait"
     | "supervisor_blocked_status_is_connect_wait"
     | "supervisor_blocked_status_is_epoll_wait"
+    | "supervisor_blocked_status_is_pipe_wait"
+    | "supervisor_blocked_status_is_wait4"
     | "supervisor_blocked_status_needs_network_sidecar_restore"
     | "supervisor_blocked_status_syncs_socket_after_resume"
     | "supervisor_blocked_status_uses_fork_shared_state_sync"
@@ -294,6 +298,10 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     kernel.abi_status_connect?.() === status ? 1 : 0;
   nextKernel.supervisor_blocked_status_is_epoll_wait ??= (status: number) =>
     kernel.abi_status_epoll_wait?.() === status ? 1 : 0;
+  nextKernel.supervisor_blocked_status_is_pipe_wait ??= (status: number) =>
+    kernel.abi_status_pipe_wait?.() === status ? 1 : 0;
+  nextKernel.supervisor_blocked_status_is_wait4 ??= (status: number) =>
+    kernel.abi_status_wait4?.() === status ? 1 : 0;
   nextKernel.supervisor_blocked_status_needs_network_sidecar_restore ??= (status: number) =>
     [
       kernel.abi_status_connect?.(),

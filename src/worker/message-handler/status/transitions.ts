@@ -44,6 +44,8 @@ import {
   supervisorBlockedPollWaitTimeoutMs,
   supervisorBlockedStatusIsConnectWait,
   supervisorBlockedStatusIsHostWait,
+  supervisorBlockedStatusIsPipeWait,
+  supervisorBlockedStatusIsWait4,
   supervisorBlockedStatusNeedsNetworkSidecarRestore,
   supervisorBlockedWaitStatusMatchesPipeWait,
   supervisorBlockedWaitStatusMatchesSocketWait,
@@ -987,9 +989,10 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     }
 
     if (supervisorBlockedStatusIsHostWait(handle.kernel, status)) {
-      const finitePollTimeout = status === handle.kernel.abi_status_pipe_wait()
+      const pipeWaitStatus = supervisorBlockedStatusIsPipeWait(handle.kernel, status);
+      const finitePollTimeout = pipeWaitStatus
         && supervisorBlockedPollWaitTimeoutMs(handle.kernel, thread.vmPtr) >= 0;
-      const pipeWaitHasSocket = status === handle.kernel.abi_status_pipe_wait()
+      const pipeWaitHasSocket = pipeWaitStatus
         && handle.networkConnections.size > 0
         && supervisorBlockedPollWaitHasSocket(handle.kernel, thread.vmPtr);
       if (
@@ -1013,7 +1016,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         return;
       }
       if (
-        status === handle.kernel.abi_status_wait4()
+        supervisorBlockedStatusIsWait4(handle.kernel, status)
         && handle.kernelWorkerRequest
         && handle.pid > 0
       ) {
@@ -1076,7 +1079,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
               return;
             }
             if (
-              status === handle.kernel.abi_status_pipe_wait()
+              pipeWaitStatus
               && !supervisorBlockedPipeWaitHasReadyEvents(handle.kernel, thread.vmPtr)
             ) {
               deps.pumpProcess(handle);

@@ -58,6 +58,8 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_status_is_host_wait: 0,
   supervisor_blocked_status_is_connect_wait: 0,
   supervisor_blocked_status_is_epoll_wait: 0,
+  supervisor_blocked_status_is_pipe_wait: 0,
+  supervisor_blocked_status_is_wait4: 0,
   supervisor_blocked_status_needs_network_sidecar_restore: 0,
   supervisor_blocked_status_syncs_socket_after_resume: 0,
   supervisor_blocked_status_uses_fork_shared_state_sync: 0,
@@ -238,6 +240,10 @@ export function makeSupervisorAbiStubs(
     statusMatchesAny(receiver, status, ["abi_status_connect"]);
   const supervisorStatusIsEpollWait = (receiver: Partial<KernelExports>, status: number): boolean =>
     statusMatchesAny(receiver, status, ["abi_status_epoll_wait"]);
+  const supervisorStatusIsPipeWait = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, ["abi_status_pipe_wait"]);
+  const supervisorStatusIsWait4 = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, ["abi_status_wait4"]);
   const supervisorStatusNeedsNetworkSidecarRestore = (receiver: Partial<KernelExports>, status: number): boolean =>
     statusMatchesAny(receiver, status, [
       "abi_status_connect",
@@ -497,6 +503,12 @@ export function makeSupervisorAbiStubs(
     },
     supervisor_blocked_status_is_epoll_wait(this: KernelExports | undefined, status: number) {
       return supervisorStatusIsEpollWait(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_blocked_status_is_pipe_wait(this: KernelExports | undefined, status: number) {
+      return supervisorStatusIsPipeWait(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_blocked_status_is_wait4(this: KernelExports | undefined, status: number) {
+      return supervisorStatusIsWait4(currentExports(this), status) ? 1 : 0;
     },
     supervisor_blocked_status_needs_network_sidecar_restore(this: KernelExports | undefined, status: number) {
       return supervisorStatusNeedsNetworkSidecarRestore(currentExports(this), status) ? 1 : 0;

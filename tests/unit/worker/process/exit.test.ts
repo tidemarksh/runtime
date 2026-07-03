@@ -30,6 +30,8 @@ function makeHandle(
     supervisor_stdio_pipe_read_progress_action_none: () => 0,
     supervisor_stdio_pipe_read_progress_action_snapshot: () => 1,
     supervisor_stdio_pipe_read_progress_action: (_vmPtr: number, _pipeSlot: number, drained: number) => drained === 0 ? 0 : 1,
+    supervisor_blocked_status_is_pipe_wait: (status: number) => status === 21 ? 1 : 0,
+    supervisor_blocked_status_is_wait4: (status: number) => status === 31 ? 1 : 0,
     ...(overrides.kernel as Partial<ProcessHandle["kernel"]> | undefined),
   } as ProcessHandle["kernel"];
   return {

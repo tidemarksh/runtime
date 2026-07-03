@@ -351,6 +351,8 @@ export interface KernelExports {
   supervisor_blocked_status_is_host_wait?(status: number): number;
   supervisor_blocked_status_is_connect_wait?(status: number): number;
   supervisor_blocked_status_is_epoll_wait?(status: number): number;
+  supervisor_blocked_status_is_pipe_wait?(status: number): number;
+  supervisor_blocked_status_is_wait4?(status: number): number;
   supervisor_blocked_status_needs_network_sidecar_restore?(status: number): number;
   supervisor_blocked_status_syncs_socket_after_resume?(status: number): number;
   supervisor_blocked_status_uses_fork_shared_state_sync?(status: number): number;
@@ -1630,6 +1632,8 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_status_is_host_wait",
   "supervisor_blocked_status_is_connect_wait",
   "supervisor_blocked_status_is_epoll_wait",
+  "supervisor_blocked_status_is_pipe_wait",
+  "supervisor_blocked_status_is_wait4",
   "supervisor_blocked_status_needs_network_sidecar_restore",
   "supervisor_blocked_status_syncs_socket_after_resume",
   "supervisor_blocked_status_uses_fork_shared_state_sync",

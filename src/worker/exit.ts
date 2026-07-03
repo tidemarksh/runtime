@@ -1,7 +1,11 @@
 import { settleInheritedChildOutput, settleVisibleProcessOutput } from "./stdio.js";
 import { ensureMemoryCapacityFor, scratchBaseFor } from "../kernel-worker/common.js";
 import { readInodeRecord } from "../fs/sab-page-cache.js";
-import { supervisorBlockedPipeSyncBeforeRetryClear } from "../supervisor-blocked-resume.js";
+import {
+  supervisorBlockedPipeSyncBeforeRetryClear,
+  supervisorBlockedStatusIsPipeWait,
+  supervisorBlockedStatusIsWait4,
+} from "../supervisor-blocked-resume.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import type { ProcessHandle } from "./types.js";
 import type { SyncCause } from "./contracts/sync.js";
@@ -1510,14 +1514,14 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         continue;
       }
       if (
-        blocked.status !== parent.kernel.abi_status_wait4()
-        && blocked.status !== parent.kernel.abi_status_pipe_wait()
+        !supervisorBlockedStatusIsWait4(parent.kernel, blocked.status)
+        && !supervisorBlockedStatusIsPipeWait(parent.kernel, blocked.status)
       ) {
         continue;
       }
       blocked.rpcPending = false;
       blocked.rpcGeneration += 1;
-      if (blocked.status === parent.kernel.abi_status_pipe_wait()) {
+      if (supervisorBlockedStatusIsPipeWait(parent.kernel, blocked.status)) {
         supervisorBlockedPipeSyncBeforeRetryClear(parent.kernel, blocked.vmPtr);
       }
       deps.appendRuntimeLifecycleEvent(

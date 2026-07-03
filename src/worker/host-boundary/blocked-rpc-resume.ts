@@ -8,6 +8,7 @@ import {
   supervisorBlockedResumeWritebacks,
   supervisorBlockedPipeResumeAction,
   supervisorBlockedStatusIsEpollWait,
+  supervisorBlockedStatusIsPipeWait,
   supervisorBlockedStatusSyncsSocketAfterResume,
   SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER,
   SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT,
@@ -160,7 +161,7 @@ async function executeHostBlockedSyscallResume(
   let canonicalEofReadyAtStart = false;
   let preserveCanonicalEofReadyOnFinish = false;
   const preserveCanonicalEofReadyForDeferredRetry = (): void => {
-    if (canonicalEofReadyAtStart && blockedStatus === handle.kernel.abi_status_pipe_wait()) {
+    if (canonicalEofReadyAtStart && supervisorBlockedStatusIsPipeWait(handle.kernel, blockedStatus)) {
       preserveCanonicalEofReadyOnFinish = true;
     }
   };
@@ -268,7 +269,7 @@ async function executeHostBlockedSyscallResume(
       emitBlockedRpcRetryResult(doneStatus);
     };
     const applySupervisorPipeAction = async (): Promise<boolean> => {
-      if (blockedStatus !== handle.kernel.abi_status_pipe_wait()) {
+      if (!supervisorBlockedStatusIsPipeWait(handle.kernel, blockedStatus)) {
         return false;
       }
       if (supervisorBlockedPollWaitHasSocket(handle.kernel, vmPtr)) {
