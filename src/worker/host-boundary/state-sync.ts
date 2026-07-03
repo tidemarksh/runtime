@@ -42,7 +42,7 @@ import type {
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
-import type { WorkerSchedulerStateSyncHelpers } from "./types.js";
+import type { WorkerSchedulerStateSyncHelpers } from "../scheduler/types.js";
 
 interface WorkerSchedulerStateSyncDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;

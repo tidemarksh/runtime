@@ -48,7 +48,7 @@ import { createPruningScheduler } from "./pruning.js";
 import { createWorkerSchedulerQueueHelpers } from "./queue.js";
 import { createRunLoopScheduler, logNetworkDebug } from "./run-loop.js";
 import { createSocketWaitScheduler } from "./socket-wait.js";
-import { createWorkerSchedulerStateSyncHelpers } from "./state-sync.js";
+import { createWorkerSchedulerStateSyncHelpers } from "../host-boundary/state-sync.js";
 import { createVforkExclusiveScheduler } from "./vfork-exclusive.js";
 import {
   readSupervisorFaultExitDecision,
