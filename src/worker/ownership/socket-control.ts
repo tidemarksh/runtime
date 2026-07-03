@@ -49,6 +49,14 @@ export function networkConnectionOfds(handle: ProcessHandle): Map<number, number
   return handle.networkConnectionOfds;
 }
 
+function requireSupervisorSocketBridgeActiveFd(handle: ProcessHandle) {
+  const activeFd = handle.kernel.supervisor_socket_bridge_active_fd;
+  if (typeof activeFd !== "function") {
+    throw new Error("kernel supervisor ABI missing supervisor_socket_bridge_active_fd");
+  }
+  return activeFd;
+}
+
 type SocketStatusDebug = (handle: ProcessHandle, event: string) => void;
 
 export interface PreservedNetworkSocketSlot {
@@ -158,16 +166,14 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
     return;
   }
   const ofds = networkConnectionOfds(handle);
-  const maxFds = handle.kernel.abi_max_fds();
   const supervisorBridgeActiveFd = (
     preferredFd: number,
     expectedOfd: number | undefined,
   ): { fd: number | null; supervisor: boolean } => {
-    const query = handle.kernel.supervisor_socket_bridge_active_fd;
-    if (!query || expectedOfd === undefined || expectedOfd <= 0) {
+    if (expectedOfd === undefined || expectedOfd <= 0) {
       return { fd: null, supervisor: false };
     }
-    const activeFd = query(
+    const activeFd = requireSupervisorSocketBridgeActiveFd(handle)(
       vmPtr,
       preferredFd,
       expectedOfd,
@@ -177,20 +183,6 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
       fd: activeFd >= 0 ? activeFd : null,
       supervisor: true,
     };
-  };
-  const findFdForOfd = (ofdId: number, preferredFd: number): number | null => {
-    if (ofdId <= 0) {
-      return null;
-    }
-    if (handle.kernel.process_fd_ofd_id(vmPtr, preferredFd) === ofdId) {
-      return preferredFd;
-    }
-    for (let fd = 0; fd < maxFds; fd += 1) {
-      if (fd !== preferredFd && handle.kernel.process_fd_ofd_id(vmPtr, fd) === ofdId) {
-        return fd;
-      }
-    }
-    return null;
   };
   for (const [fd, connection] of [...handle.networkConnections]) {
     const fdEntry = fdEntries.find((entry) => entry.fd === fd);
@@ -206,9 +198,7 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
       const supervisorActiveFd = supervisorBridgeActiveFd(fd, expectedOfd);
       const replacementFd = supervisorActiveFd.supervisor
         ? supervisorActiveFd.fd
-        : currentOfd === expectedOfd
-          ? fd
-          : findFdForOfd(expectedOfd, fd);
+        : null;
       if (replacementFd !== null) {
         if (replacementFd !== fd) {
           handle.networkConnections.delete(fd);

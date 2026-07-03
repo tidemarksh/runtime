@@ -167,6 +167,38 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     return handle.networkConnectionOfds;
   }
 
+  function requireSupervisorSocketCommitExternalConnectResult(handle: ProcessHandle) {
+    const commit = handle.kernel.supervisor_socket_commit_external_connect_result;
+    if (typeof commit !== "function") {
+      throw new Error("kernel supervisor ABI missing supervisor_socket_commit_external_connect_result");
+    }
+    return commit;
+  }
+
+  function requireSupervisorSocketPrepareExternalPeer(handle: ProcessHandle) {
+    const prepare = handle.kernel.supervisor_socket_prepare_external_peer;
+    if (typeof prepare !== "function") {
+      throw new Error("kernel supervisor ABI missing supervisor_socket_prepare_external_peer");
+    }
+    return prepare;
+  }
+
+  function requireSupervisorSocketCloseExternalPeer(handle: ProcessHandle) {
+    const close = handle.kernel.supervisor_socket_close_external_peer;
+    if (typeof close !== "function") {
+      throw new Error("kernel supervisor ABI missing supervisor_socket_close_external_peer");
+    }
+    return close;
+  }
+
+  function requireSupervisorSocketBridgeActiveFd(handle: ProcessHandle) {
+    const activeFd = handle.kernel.supervisor_socket_bridge_active_fd;
+    if (typeof activeFd !== "function") {
+      throw new Error("kernel supervisor ABI missing supervisor_socket_bridge_active_fd");
+    }
+    return activeFd;
+  }
+
   function recordNetworkPendingInbound(handle: ProcessHandle, bytes: Uint8Array<ArrayBuffer> | null): void {
     if (bytes !== null && bytes.length > handle.transferDebugStats.networkPendingInboundBytesMax) {
       handle.transferDebugStats.networkPendingInboundBytesMax = bytes.length;
@@ -1198,32 +1230,14 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
 
     const result = BigInt.asIntN(64, connectResult ?? handle.kernel.thread_a0(vmPtr));
     const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, connect.fd);
-    const supervisorCommitResult = handle.kernel.supervisor_socket_commit_external_connect_result?.(
+    const supervisorCommitResult = requireSupervisorSocketCommitExternalConnectResult(handle)(
       vmPtr,
       connect.fd,
       result,
     );
-    const einprogress = BigInt(handle.kernel.abi_einprogress?.() ?? -115);
-    let markExternalPeerResult = supervisorCommitResult === undefined
-      ? (
-        result === 0n || result === einprogress
-          ? handle.kernel.thread_socket_mark_external_peer?.(vmPtr, connect.fd)
-          : undefined
-      )
-      : supervisorCommitResult === 1 ? 0 : -1;
-    if (
-      supervisorCommitResult === undefined
-      && markExternalPeerResult !== 0
-      && (result === 0n || result === einprogress)
-      && handle.kernel.thread_socket_commit_external_connect
-    ) {
-      markExternalPeerResult = handle.kernel.thread_socket_commit_external_connect(vmPtr, connect.fd);
-    }
+    const markExternalPeerResult = supervisorCommitResult === 1 ? 0 : -1;
     const status = handle.kernel.thread_status(vmPtr);
-    const shouldCommit = supervisorCommitResult === undefined
-      ? (result === 0n || result === einprogress)
-        && (status === handle.kernel.abi_status_ok() || markExternalPeerResult === 0)
-      : supervisorCommitResult === 1;
+    const shouldCommit = supervisorCommitResult === 1;
     if (shouldCommit) {
       const existing = handle.networkConnections.get(connect.fd);
       if (existing && existing !== connect.connection) {
@@ -1266,16 +1280,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     handle.transferDebugStats.networkPumpCalls += 1;
     const drainOutbound = handle.kernel.thread_socket_drain_outbound;
     const injectInbound = handle.kernel.thread_socket_inject_inbound;
-    const prepareExternalPeer = handle.kernel.supervisor_socket_prepare_external_peer
-      ?? ((targetVmPtr: number, fd: number): number | undefined => {
-        const markResult = handle.kernel.thread_socket_mark_external_peer?.(targetVmPtr, fd);
-        if (markResult === 0 || !handle.kernel.thread_socket_commit_external_connect) {
-          return markResult;
-        }
-        return handle.kernel.thread_socket_commit_external_connect(targetVmPtr, fd);
-      });
-    const closeExternalPeer = handle.kernel.supervisor_socket_close_external_peer
-      ?? handle.kernel.thread_socket_close_external_peer;
+    const prepareExternalPeer = requireSupervisorSocketPrepareExternalPeer(handle);
+    const closeExternalPeer = requireSupervisorSocketCloseExternalPeer(handle);
     let changed = false;
     const finishPump = (): boolean => {
       if (changed) {
@@ -1373,28 +1379,19 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       fd: number | null;
       supervisor: boolean;
     } => {
-      const supervisorActiveFd = handle.kernel.supervisor_socket_bridge_active_fd?.(
+      if (ofdId <= 0) {
+        return { fd: null, supervisor: false };
+      }
+      const supervisorActiveFd = requireSupervisorSocketBridgeActiveFd(handle)(
         vmPtr,
         preferredFd,
         ofdId,
         hasPendingConnectForFd(preferredFd) ? 1 : 0,
       );
-      if (supervisorActiveFd !== undefined) {
-        return {
-          fd: supervisorActiveFd >= 0 ? supervisorActiveFd : null,
-          supervisor: true,
-        };
-      }
-      const maxFds = handle.kernel.abi_max_fds();
-      if (ofdId > 0 && handle.kernel.process_fd_ofd_id(vmPtr, preferredFd) === ofdId) {
-        return { fd: preferredFd, supervisor: false };
-      }
-      for (let candidate = 0; candidate < maxFds; candidate += 1) {
-        if (candidate !== preferredFd && handle.kernel.process_fd_ofd_id(vmPtr, candidate) === ofdId) {
-          return { fd: candidate, supervisor: false };
-        }
-      }
-      return { fd: null, supervisor: false };
+      return {
+        fd: supervisorActiveFd >= 0 ? supervisorActiveFd : null,
+        supervisor: true,
+      };
     };
 
     const rekeyNetworkConnection = (

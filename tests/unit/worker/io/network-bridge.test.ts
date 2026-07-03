@@ -21,6 +21,68 @@ function createDeps() {
   };
 }
 
+type NetworkBridgeKernelFixture = {
+  abi_einprogress?: () => number;
+  abi_fd_type_socket?: () => number;
+  abi_max_fds?: () => number;
+  kernel_ofd_fd_type?: (ofdId: number) => number;
+  process_fd_ofd_id?: (vmPtr: number, fd: number) => number;
+  thread_socket_mark_external_peer?: (vmPtr: number, fd: number) => number | undefined;
+  thread_socket_commit_external_connect?: (vmPtr: number, fd: number) => number | undefined;
+  thread_socket_close_external_peer?: (vmPtr: number, fd: number) => number | undefined;
+  supervisor_socket_commit_external_connect_result?: (
+    vmPtr: number,
+    fd: number,
+    result: bigint,
+  ) => number;
+  supervisor_socket_prepare_external_peer?: (vmPtr: number, fd: number) => number | undefined;
+  supervisor_socket_close_external_peer?: (vmPtr: number, fd: number) => number | undefined;
+  supervisor_socket_bridge_active_fd?: (
+    vmPtr: number,
+    preferredFd: number,
+    expectedOfd: number,
+    pendingConnect: number,
+  ) => number;
+};
+
+function withSupervisorSocketDefaults<T extends NetworkBridgeKernelFixture>(kernel: T): T {
+  kernel.supervisor_socket_commit_external_connect_result ??= vi.fn((_vmPtr, _fd, result) => {
+    const signedResult = BigInt.asIntN(64, result);
+    const einprogress = BigInt(kernel.abi_einprogress?.() ?? -115);
+    return signedResult === 0n || signedResult === einprogress ? 1 : 0;
+  });
+  kernel.supervisor_socket_prepare_external_peer ??= vi.fn((vmPtr, fd) => {
+    const markResult = kernel.thread_socket_mark_external_peer?.(vmPtr, fd);
+    if (markResult === 0 || typeof kernel.thread_socket_commit_external_connect !== "function") {
+      return markResult ?? 0;
+    }
+    return kernel.thread_socket_commit_external_connect(vmPtr, fd);
+  });
+  kernel.supervisor_socket_close_external_peer ??= vi.fn((vmPtr, fd) => (
+    kernel.thread_socket_close_external_peer?.(vmPtr, fd) ?? 0
+  ));
+  kernel.supervisor_socket_bridge_active_fd ??= vi.fn((vmPtr, preferredFd, expectedOfd, pendingConnect) => {
+    if (pendingConnect !== 0 || expectedOfd <= 0) {
+      return -1;
+    }
+    const currentOfd = kernel.process_fd_ofd_id?.(vmPtr, preferredFd) ?? 0;
+    if (
+      currentOfd > 0
+      && kernel.kernel_ofd_fd_type?.(currentOfd) === kernel.abi_fd_type_socket?.()
+    ) {
+      return preferredFd;
+    }
+    const maxFds = kernel.abi_max_fds?.() ?? 0;
+    for (let fd = 0; fd < maxFds; fd += 1) {
+      if (fd !== preferredFd && kernel.process_fd_ofd_id?.(vmPtr, fd) === expectedOfd) {
+        return fd;
+      }
+    }
+    return -1;
+  });
+  return kernel;
+}
+
 test("resolveNetworkConnect reports IPv4 connect endpoint to a generic runtime bridge", async () => {
   const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
   const view = new Uint8Array(memory.buffer);
@@ -51,6 +113,7 @@ test("resolveNetworkConnect reports IPv4 connect endpoint to a generic runtime b
       },
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   const result = await helpers.resolveNetworkConnect(handle, 0x2000);
@@ -102,6 +165,7 @@ test("resolveNetworkConnect reads IPv4 connect endpoint from supervisor socket c
       },
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   const result = await helpers.resolveNetworkConnect(handle, 0x2000);
@@ -159,6 +223,7 @@ test("resolveNetworkConnect does not truncate Memory64 blocked sockaddr pointers
       },
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   const result = await helpers.resolveNetworkConnect(handle, 0x2000);
@@ -203,6 +268,7 @@ test("resolveNetworkConnect tracks pending fd while bridge connect is in flight"
       },
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   const pending = helpers.resolveNetworkConnect(handle, 0x2000);
@@ -293,12 +359,17 @@ test("commitNetworkConnect adopts a successful bridge connection after the local
       thread_socket_mark_external_peer: vi.fn(() => 0),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
   await helpers.commitNetworkConnect(handle, 0x2000, 0n);
 
-  expect(handle.kernel.thread_socket_mark_external_peer).toHaveBeenCalledWith(0x2000, 3);
+  expect(handle.kernel.supervisor_socket_commit_external_connect_result).toHaveBeenCalledWith(
+    0x2000,
+    3,
+    0n,
+  );
   expect(handle.networkConnections.get(3)).toBe(connection);
   expect(handle.networkPendingConnectFds.has(3)).toBe(false);
   expect(handle.networkClosedFds.has(3)).toBe(false);
@@ -349,6 +420,7 @@ test("commitNetworkConnect drops bridge connection when supervisor rejects the c
       thread_socket_mark_external_peer: vi.fn(() => 0),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
@@ -431,6 +503,7 @@ test("commitNetworkConnect adopts bridge connection when supervisor accepts the 
       thread_socket_mark_external_peer: vi.fn(() => -107),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
@@ -471,6 +544,7 @@ test("resolveNetworkConnect normalizes bridge errno to negative Linux result", a
       },
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(-13n);
@@ -525,6 +599,7 @@ test("pumpNetworkConnections drains guest outbound bytes and injects inbound byt
       thread_socket_inject_inbound: vi.fn((_vmPtr: number, _fd: number, srcPtr: number, srcLen: number) => srcLen),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.pumpNetworkConnections(handle)).resolves.toBe(true);
@@ -575,6 +650,7 @@ test("pumpNetworkConnections requests and injects large generic inbound chunks",
       thread_socket_inject_inbound: vi.fn((_vmPtr: number, _fd: number, _srcPtr: number, srcLen: number) => srcLen),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.pumpNetworkConnections(handle)).resolves.toBe(true);
@@ -636,6 +712,7 @@ test("pumpNetworkConnections preserves pending large inbound bytes across partia
       }),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   while (injectedOffset < payload.length) {
@@ -688,6 +765,7 @@ test("async inbound read resumes pump with the source thread vm", async () => {
       thread_socket_inject_inbound: vi.fn((_vmPtr: number, _fd: number, _srcPtr: number, srcLen: number) => srcLen),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(deps);
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(false);
@@ -755,6 +833,8 @@ test("async inbound read adopts the current process handle before injecting", as
   const deps = createDeps();
   deps.isActiveHandle = vi.fn((handle: ProcessHandle) => handle === activeHandle);
   deps.getActiveHandle = vi.fn(() => activeHandle);
+  withSupervisorSocketDefaults(kernel);
+  withSupervisorSocketDefaults(activeHandle.kernel);
   const helpers = createWorkerProcessIoHelpers(deps);
 
   await expect(helpers.pumpNetworkConnections(oldHandle, 0x3000)).resolves.toBe(false);
@@ -830,6 +910,7 @@ test("pending async empty read does not drop the next inbound response", async (
       thread_socket_inject_inbound: vi.fn((_vmPtr: number, _fd: number, _srcPtr: number, srcLen: number) => srcLen),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(deps);
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
@@ -893,6 +974,7 @@ test("post-write pump starts a response read after an async empty pre-read clear
       thread_socket_inject_inbound: vi.fn((_vmPtr: number, _fd: number, _srcPtr: number, srcLen: number) => srcLen),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(deps);
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
@@ -950,6 +1032,7 @@ test("buffered EOF waits for guest recv drain before force-closing the socket", 
       }),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
@@ -1005,6 +1088,7 @@ test("bridge EOF is deferred immediately after inbound injection even when recv 
       thread_socket_inject_inbound: vi.fn((_vmPtr: number, _fd: number, _srcPtr: number, srcLen: number) => srcLen),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
@@ -1052,6 +1136,7 @@ test("bridge EOF marks peer shutdown but preserves the guest socket until fd clo
       thread_socket_inject_inbound: vi.fn(),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
@@ -1111,6 +1196,7 @@ test("partial inbound is drained before bridge EOF closes the socket", async () 
       }),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
@@ -1210,6 +1296,7 @@ test("stale network OFD rekeys when fork-shared sync renumbers the same socket f
       thread_socket_inject_inbound: vi.fn(),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   handle.networkRecvHeadWatermarks.set(3, 4096);
@@ -1318,6 +1405,7 @@ test("stale network OFD rekeys to supervisor-selected active fd alias", async ()
       thread_socket_inject_inbound: vi.fn(),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
@@ -1418,6 +1506,7 @@ test("stale network OFD closes when supervisor reports no active fd", async () =
       thread_socket_inject_inbound: vi.fn(),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
@@ -1517,6 +1606,7 @@ test("stale network OFD cleanup does not force-close a fd with a pending reconne
       thread_socket_inject_inbound: vi.fn(),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
@@ -1614,6 +1704,7 @@ test("stale network OFD cleanup closes bridge immediately when the fd disappeare
       thread_socket_inject_inbound: vi.fn(),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   handle.networkRecvHeadWatermarks.set(3, 4096);
@@ -1717,6 +1808,7 @@ test("not-connected drain during pending reconnect closes only the stale bridge"
       thread_socket_inject_inbound: vi.fn(),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
