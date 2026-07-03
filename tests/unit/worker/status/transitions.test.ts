@@ -262,6 +262,35 @@ function makeHandle(worker: Worker) {
         [28, 29, 30].includes(status) ? 1 : 0,
       supervisor_blocked_status_uses_fork_shared_state_sync: (status: number) =>
         [21, 29, 30, 32].includes(status) ? 1 : 0,
+      supervisor_blocked_status_transition_action_block: () => 0,
+      supervisor_blocked_status_transition_action_sync_socket: () => 1,
+      supervisor_blocked_status_transition_action_sync_pipe: () => 2,
+      supervisor_blocked_status_transition_action_sync_fork_shared: () => 3,
+      supervisor_blocked_status_transition_action_sync_pipe_and_fork_shared: () => 4,
+      supervisor_blocked_status_transition_action_sync_socket_and_fork_shared: () => 5,
+      supervisor_blocked_status_transition_flag_kernel_worker_available: () => 1,
+      supervisor_blocked_status_transition_flag_network_connections_available: () => 2,
+      supervisor_blocked_status_transition_action: (_vmPtr: number, status: number, flags: number) => {
+        if ((flags & 1) === 0) {
+          return 0;
+        }
+        if (status === 21 && (flags & 2) !== 0) {
+          return 1;
+        }
+        if (status === 31) {
+          return 2;
+        }
+        if (status === 21) {
+          return 4;
+        }
+        if ([29, 30].includes(status)) {
+          return 5;
+        }
+        if (status === 32) {
+          return 3;
+        }
+        return 0;
+      },
       supervisor_process_status_is_lifecycle_handoff: (status: number) =>
         [23, 24, 25].includes(status) ? 1 : 0,
       supervisor_process_status_is_execve_spawn: (status: number) =>

@@ -26,6 +26,14 @@ export const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC = 1;
 export const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT = 2;
 export const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_SCHEDULE_RETRY = 3;
 const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_FLAG_KERNEL_WORKER_AVAILABLE = 1;
+export const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_BLOCK = 0;
+export const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET = 1;
+export const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE = 2;
+export const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_FORK_SHARED = 3;
+export const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE_AND_FORK_SHARED = 4;
+export const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET_AND_FORK_SHARED = 5;
+const SUPERVISOR_BLOCKED_STATUS_TRANSITION_FLAG_KERNEL_WORKER_AVAILABLE = 1;
+const SUPERVISOR_BLOCKED_STATUS_TRANSITION_FLAG_NETWORK_CONNECTIONS_AVAILABLE = 1 << 1;
 export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC = 1;
 export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC = 2;
 export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC = 3;
@@ -68,6 +76,14 @@ export type SupervisorBlockedPipeSyncBeforeRetryAction =
   | typeof SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC
   | typeof SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT
   | typeof SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_SCHEDULE_RETRY;
+
+export type SupervisorBlockedStatusTransitionAction =
+  | typeof SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_BLOCK
+  | typeof SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET
+  | typeof SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE
+  | typeof SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_FORK_SHARED
+  | typeof SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE_AND_FORK_SHARED
+  | typeof SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET_AND_FORK_SHARED;
 
 export type SupervisorBlockedWaitWakeSource =
   | typeof SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC
@@ -425,6 +441,93 @@ export function supervisorBlockedPipeSyncBeforeRetryClear(
   if (result < 0) {
     throw new Error(`kernel supervisor blocked pipe sync-before-retry clear failed: ${result}`);
   }
+}
+
+function supervisorBlockedStatusTransitionActionValue(
+  kernel: KernelExports,
+  action: SupervisorBlockedStatusTransitionAction,
+): number {
+  switch (action) {
+    case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET:
+      return kernel.supervisor_blocked_status_transition_action_sync_socket?.() ?? action;
+    case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE:
+      return kernel.supervisor_blocked_status_transition_action_sync_pipe?.() ?? action;
+    case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_FORK_SHARED:
+      return kernel.supervisor_blocked_status_transition_action_sync_fork_shared?.() ?? action;
+    case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE_AND_FORK_SHARED:
+      return kernel.supervisor_blocked_status_transition_action_sync_pipe_and_fork_shared?.() ?? action;
+    case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET_AND_FORK_SHARED:
+      return kernel.supervisor_blocked_status_transition_action_sync_socket_and_fork_shared?.() ?? action;
+    case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_BLOCK:
+      return kernel.supervisor_blocked_status_transition_action_block?.() ?? action;
+    default: {
+      const exhaustive: never = action;
+      return exhaustive;
+    }
+  }
+}
+
+function normalizeSupervisorBlockedStatusTransitionAction(
+  kernel: KernelExports,
+  result: number,
+): SupervisorBlockedStatusTransitionAction {
+  const actions: SupervisorBlockedStatusTransitionAction[] = [
+    SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_BLOCK,
+    SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET,
+    SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE,
+    SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_FORK_SHARED,
+    SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE_AND_FORK_SHARED,
+    SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET_AND_FORK_SHARED,
+  ];
+  for (const action of actions) {
+    if (result === supervisorBlockedStatusTransitionActionValue(kernel, action)) {
+      return action;
+    }
+  }
+  throw new Error(`kernel supervisor blocked status transition action is unknown: ${result}`);
+}
+
+function supervisorBlockedStatusTransitionFlags(
+  kernel: KernelExports,
+  options: {
+    kernelWorkerAvailable: boolean;
+    networkConnectionsAvailable: boolean;
+  },
+): number {
+  let flags = 0;
+  if (options.kernelWorkerAvailable) {
+    flags |= kernel.supervisor_blocked_status_transition_flag_kernel_worker_available?.()
+      ?? SUPERVISOR_BLOCKED_STATUS_TRANSITION_FLAG_KERNEL_WORKER_AVAILABLE;
+  }
+  if (options.networkConnectionsAvailable) {
+    flags |= kernel.supervisor_blocked_status_transition_flag_network_connections_available?.()
+      ?? SUPERVISOR_BLOCKED_STATUS_TRANSITION_FLAG_NETWORK_CONNECTIONS_AVAILABLE;
+  }
+  return flags;
+}
+
+export function supervisorBlockedStatusTransitionAction(
+  kernel: KernelExports,
+  vmPtr: number,
+  status: number,
+  options: {
+    kernelWorkerAvailable: boolean;
+    networkConnectionsAvailable: boolean;
+  },
+): SupervisorBlockedStatusTransitionAction {
+  const readAction = kernel.supervisor_blocked_status_transition_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor blocked status transition action export is missing");
+  }
+  const result = readAction(
+    vmPtr,
+    status,
+    supervisorBlockedStatusTransitionFlags(kernel, options),
+  );
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked status transition action failed: ${result}`);
+  }
+  return normalizeSupervisorBlockedStatusTransitionAction(kernel, result);
 }
 
 function supervisorStateSyncKindValue(

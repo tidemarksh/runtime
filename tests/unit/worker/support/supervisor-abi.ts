@@ -81,6 +81,14 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output: 2,
   supervisor_blocked_pipe_sync_before_retry_action_schedule_retry: 3,
   supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available: 1,
+  supervisor_blocked_status_transition_action_block: 0,
+  supervisor_blocked_status_transition_action_sync_socket: 1,
+  supervisor_blocked_status_transition_action_sync_pipe: 2,
+  supervisor_blocked_status_transition_action_sync_fork_shared: 3,
+  supervisor_blocked_status_transition_action_sync_pipe_and_fork_shared: 4,
+  supervisor_blocked_status_transition_action_sync_socket_and_fork_shared: 5,
+  supervisor_blocked_status_transition_flag_kernel_worker_available: 1,
+  supervisor_blocked_status_transition_flag_network_connections_available: 2,
   supervisor_state_sync_kind_pipe: 1,
   supervisor_state_sync_kind_epoll: 2,
   supervisor_state_sync_kind_socket: 3,
@@ -691,6 +699,41 @@ export function makeSupervisorAbiStubs(
     },
     supervisor_blocked_pipe_sync_before_retry_clear() {
       return 0;
+    },
+    supervisor_blocked_status_transition_action(this: KernelExports | undefined, vmPtr: number, status: number, flags: number) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      const receiver = currentExports(this);
+      const kernelWorkerAvailable = (flags
+        & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_status_transition_flag_kernel_worker_available) !== 0;
+      if (!kernelWorkerAvailable) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_status_transition_action_block;
+      }
+      const pipeWaitStatus = supervisorStatusIsPipeWait(receiver, status);
+      const networkConnectionsAvailable = (flags
+        & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_status_transition_flag_network_connections_available) !== 0;
+      if (
+        pipeWaitStatus
+        && networkConnectionsAvailable
+        && supervisorPollWaitHasSocket(receiver, vmPtr)
+      ) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_status_transition_action_sync_socket;
+      }
+      if (supervisorStatusIsWait4(receiver, status)) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_status_transition_action_sync_pipe;
+      }
+      const finitePollTimeout = pipeWaitStatus && supervisorPollWaitTimeoutMs(receiver, vmPtr) >= 0;
+      if (!supervisorStatusUsesForkSharedStateSync(receiver, status) || finitePollTimeout) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_status_transition_action_block;
+      }
+      if (pipeWaitStatus) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_status_transition_action_sync_pipe_and_fork_shared;
+      }
+      if (supervisorStatusIsSocketWait(receiver, status)) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_status_transition_action_sync_socket_and_fork_shared;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_status_transition_action_sync_fork_shared;
     },
     supervisor_state_sync_request(_vmPtr: number, kind: number, flags: number) {
       const key = `${_vmPtr}:${kind}`;

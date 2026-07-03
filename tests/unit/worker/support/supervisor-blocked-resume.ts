@@ -12,6 +12,14 @@ const SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT = 1;
 const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_NONE = 0;
 const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC = 1;
 const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_FLAG_KERNEL_WORKER_AVAILABLE = 1;
+const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_BLOCK = 0;
+const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET = 1;
+const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE = 2;
+const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_FORK_SHARED = 3;
+const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE_AND_FORK_SHARED = 4;
+const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET_AND_FORK_SHARED = 5;
+const SUPERVISOR_BLOCKED_STATUS_TRANSITION_FLAG_KERNEL_WORKER_AVAILABLE = 1;
+const SUPERVISOR_BLOCKED_STATUS_TRANSITION_FLAG_NETWORK_CONNECTIONS_AVAILABLE = 2;
 const SUPERVISOR_STATE_SYNC_KIND_PIPE = 1;
 const SUPERVISOR_STATE_SYNC_KIND_EPOLL = 2;
 const SUPERVISOR_STATE_SYNC_KIND_SOCKET = 3;
@@ -68,6 +76,15 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_blocked_pipe_sync_before_retry_action"
   | "supervisor_blocked_pipe_sync_before_retry_requested"
   | "supervisor_blocked_pipe_sync_before_retry_clear"
+  | "supervisor_blocked_status_transition_action_block"
+  | "supervisor_blocked_status_transition_action_sync_socket"
+  | "supervisor_blocked_status_transition_action_sync_pipe"
+  | "supervisor_blocked_status_transition_action_sync_fork_shared"
+  | "supervisor_blocked_status_transition_action_sync_pipe_and_fork_shared"
+  | "supervisor_blocked_status_transition_action_sync_socket_and_fork_shared"
+  | "supervisor_blocked_status_transition_flag_kernel_worker_available"
+  | "supervisor_blocked_status_transition_flag_network_connections_available"
+  | "supervisor_blocked_status_transition_action"
   | "supervisor_blocked_wait_wake_source_pipe_sync"
   | "supervisor_blocked_wait_wake_source_epoll_sync"
   | "supervisor_blocked_wait_wake_source_socket_sync"
@@ -230,6 +247,15 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_blocked_pipe_sync_before_retry_action"
     | "supervisor_blocked_pipe_sync_before_retry_requested"
     | "supervisor_blocked_pipe_sync_before_retry_clear"
+    | "supervisor_blocked_status_transition_action_block"
+    | "supervisor_blocked_status_transition_action_sync_socket"
+    | "supervisor_blocked_status_transition_action_sync_pipe"
+    | "supervisor_blocked_status_transition_action_sync_fork_shared"
+    | "supervisor_blocked_status_transition_action_sync_pipe_and_fork_shared"
+    | "supervisor_blocked_status_transition_action_sync_socket_and_fork_shared"
+    | "supervisor_blocked_status_transition_flag_kernel_worker_available"
+    | "supervisor_blocked_status_transition_flag_network_connections_available"
+    | "supervisor_blocked_status_transition_action"
     | "supervisor_blocked_wait_wake_source_pipe_sync"
     | "supervisor_blocked_wait_wake_source_epoll_sync"
     | "supervisor_blocked_wait_wake_source_socket_sync"
@@ -282,6 +308,59 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   nextKernel.supervisor_blocked_pipe_sync_before_retry_clear ??= (vmPtr: number) => {
     pipeSyncBeforeRetryRequested.delete(vmPtr);
     return 0;
+  };
+  nextKernel.supervisor_blocked_status_transition_action_block ??= () =>
+    SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_BLOCK;
+  nextKernel.supervisor_blocked_status_transition_action_sync_socket ??= () =>
+    SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET;
+  nextKernel.supervisor_blocked_status_transition_action_sync_pipe ??= () =>
+    SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE;
+  nextKernel.supervisor_blocked_status_transition_action_sync_fork_shared ??= () =>
+    SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_FORK_SHARED;
+  nextKernel.supervisor_blocked_status_transition_action_sync_pipe_and_fork_shared ??= () =>
+    SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE_AND_FORK_SHARED;
+  nextKernel.supervisor_blocked_status_transition_action_sync_socket_and_fork_shared ??= () =>
+    SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET_AND_FORK_SHARED;
+  nextKernel.supervisor_blocked_status_transition_flag_kernel_worker_available ??= () =>
+    SUPERVISOR_BLOCKED_STATUS_TRANSITION_FLAG_KERNEL_WORKER_AVAILABLE;
+  nextKernel.supervisor_blocked_status_transition_flag_network_connections_available ??= () =>
+    SUPERVISOR_BLOCKED_STATUS_TRANSITION_FLAG_NETWORK_CONNECTIONS_AVAILABLE;
+  nextKernel.supervisor_blocked_status_transition_action ??= (vmPtr: number, status: number, flags: number) => {
+    if (vmPtr === 0) {
+      return -14;
+    }
+    const kernelWorkerAvailable =
+      (flags & SUPERVISOR_BLOCKED_STATUS_TRANSITION_FLAG_KERNEL_WORKER_AVAILABLE) !== 0;
+    if (!kernelWorkerAvailable) {
+      return SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_BLOCK;
+    }
+    const pipeWaitStatus = kernel.abi_status_pipe_wait?.() === status;
+    const networkConnectionsAvailable =
+      (flags & SUPERVISOR_BLOCKED_STATUS_TRANSITION_FLAG_NETWORK_CONNECTIONS_AVAILABLE) !== 0;
+    if (pipeWaitStatus && networkConnectionsAvailable && pollWaitHasSocket(vmPtr)) {
+      return SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET;
+    }
+    if (kernel.abi_status_wait4?.() === status) {
+      return SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE;
+    }
+    const finitePollTimeout = pipeWaitStatus
+      && toNumber(nextKernel.supervisor_blocked_poll_wait_timeout_ms(vmPtr)) >= 0;
+    const forkSharedStatus = [
+      kernel.abi_status_pipe_wait?.(),
+      kernel.abi_status_socket_recv?.(),
+      kernel.abi_status_socket_send?.(),
+      kernel.abi_status_flock_wait?.(),
+    ].includes(status);
+    if (!forkSharedStatus || finitePollTimeout) {
+      return SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_BLOCK;
+    }
+    if (pipeWaitStatus) {
+      return SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE_AND_FORK_SHARED;
+    }
+    if (kernel.abi_status_socket_recv?.() === status || kernel.abi_status_socket_send?.() === status) {
+      return SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET_AND_FORK_SHARED;
+    }
+    return SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_FORK_SHARED;
   };
   nextKernel.supervisor_blocked_wait_wake_source_pipe_sync ??= () =>
     SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC;

@@ -212,6 +212,14 @@ export interface KernelExports {
   supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output?(): number;
   supervisor_blocked_pipe_sync_before_retry_action_schedule_retry?(): number;
   supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available?(): number;
+  supervisor_blocked_status_transition_action_block?(): number;
+  supervisor_blocked_status_transition_action_sync_socket?(): number;
+  supervisor_blocked_status_transition_action_sync_pipe?(): number;
+  supervisor_blocked_status_transition_action_sync_fork_shared?(): number;
+  supervisor_blocked_status_transition_action_sync_pipe_and_fork_shared?(): number;
+  supervisor_blocked_status_transition_action_sync_socket_and_fork_shared?(): number;
+  supervisor_blocked_status_transition_flag_kernel_worker_available?(): number;
+  supervisor_blocked_status_transition_flag_network_connections_available?(): number;
   supervisor_state_sync_kind_pipe?(): number;
   supervisor_state_sync_kind_epoll?(): number;
   supervisor_state_sync_kind_socket?(): number;
@@ -333,6 +341,7 @@ export interface KernelExports {
   supervisor_blocked_pipe_sync_before_retry_action?(vmPtr: number, flags: number): number;
   supervisor_blocked_pipe_sync_before_retry_requested?(vmPtr: number): number;
   supervisor_blocked_pipe_sync_before_retry_clear?(vmPtr: number): number;
+  supervisor_blocked_status_transition_action?(vmPtr: number, status: number, flags: number): number;
   supervisor_state_sync_request?(vmPtr: number, kind: number, flags: number): number;
   supervisor_state_sync_next_run_flags?(vmPtr: number, kind: number): number;
   supervisor_state_sync_complete?(vmPtr: number, kind: number): number;
@@ -1520,6 +1529,14 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output",
   "supervisor_blocked_pipe_sync_before_retry_action_schedule_retry",
   "supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available",
+  "supervisor_blocked_status_transition_action_block",
+  "supervisor_blocked_status_transition_action_sync_socket",
+  "supervisor_blocked_status_transition_action_sync_pipe",
+  "supervisor_blocked_status_transition_action_sync_fork_shared",
+  "supervisor_blocked_status_transition_action_sync_pipe_and_fork_shared",
+  "supervisor_blocked_status_transition_action_sync_socket_and_fork_shared",
+  "supervisor_blocked_status_transition_flag_kernel_worker_available",
+  "supervisor_blocked_status_transition_flag_network_connections_available",
   "supervisor_state_sync_kind_pipe",
   "supervisor_state_sync_kind_epoll",
   "supervisor_state_sync_kind_socket",
@@ -1622,6 +1639,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_pipe_sync_before_retry_action",
   "supervisor_blocked_pipe_sync_before_retry_requested",
   "supervisor_blocked_pipe_sync_before_retry_clear",
+  "supervisor_blocked_status_transition_action",
   "supervisor_state_sync_request",
   "supervisor_state_sync_next_run_flags",
   "supervisor_state_sync_complete",
