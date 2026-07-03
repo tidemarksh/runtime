@@ -9,8 +9,10 @@ import {
 } from "../../kernel-share.js";
 import { kernelWorkerOwnsEpollState } from "../../ownership/epoll-control.js";
 import {
+  fdTraceDataPlaneIoUsesSocketOrPipe,
   explicitForkSharedEffectMayRequireSync,
   latestFdTraceRulesOutForkSharedTopologyChange,
+  regularFileWriteMutatedMemfs,
   sourceHoldsSharedRegularFileOfd,
   sourceSharesRegularFileOfdWithPeer,
   syscallMayChangeForkSharedOfdTopology,
@@ -37,10 +39,6 @@ interface OwnedStateSyncArgs {
   wroteToPipe: boolean;
   drainedPipe: boolean;
   continueAfterOwnedStateSync(): void;
-}
-
-function matchesOptionalSyscall(nr: bigint | null, candidate: bigint | number | undefined): boolean {
-  return nr !== null && candidate !== undefined && nr === BigInt(candidate);
 }
 
 function readOptionalTraceU64(value: bigint | number | undefined): bigint | null {
@@ -72,45 +70,6 @@ function readLatestFdSyscallTrace(handle: ProcessHandle, vmPtr: number): LatestF
     };
   }
   return null;
-}
-
-function regularFileWriteMutatedMemfs(handle: ProcessHandle, trace: LatestFdSyscallTrace | null | undefined): boolean {
-  if (trace == null || trace.nr !== 64n || trace.result === null || BigInt.asIntN(64, trace.result) <= 0n) {
-    return false;
-  }
-  const fileType = (handle.kernel as { abi_fd_type_file?: () => number }).abi_fd_type_file?.();
-  return fileType !== undefined && trace.arg0OfdType === fileType;
-}
-
-function syscallIsFdDataPlaneIo(handle: ProcessHandle, nr: bigint): boolean {
-  return matchesOptionalSyscall(nr, handle.kernel.abi_sys_read?.())
-    || matchesOptionalSyscall(nr, handle.kernel.abi_sys_readv?.())
-    || matchesOptionalSyscall(nr, handle.kernel.abi_sys_write?.())
-    || matchesOptionalSyscall(nr, handle.kernel.abi_sys_writev?.())
-    || matchesOptionalSyscall(nr, handle.kernel.abi_sys_recvfrom?.())
-    || matchesOptionalSyscall(nr, handle.kernel.abi_sys_recvmsg?.())
-    || matchesOptionalSyscall(nr, handle.kernel.abi_sys_sendto?.())
-    || matchesOptionalSyscall(nr, handle.kernel.abi_sys_sendmsg?.());
-}
-
-function fdTraceDataPlaneIoUsesSocketOrPipe(
-  handle: ProcessHandle,
-  trace: LatestFdSyscallTrace | null | undefined,
-): boolean {
-  if (
-    trace == null
-    || trace.result === null
-    || BigInt.asIntN(64, trace.result) <= 0n
-    || !syscallIsFdDataPlaneIo(handle, trace.nr)
-  ) {
-    return false;
-  }
-  let fdType = trace.arg0OfdType;
-  if (fdType <= 0 && trace.arg0OfdId > 0 && trace.arg0OfdId < handle.kernel.abi_max_fds()) {
-    fdType = handle.kernel.kernel_ofd_fd_type(trace.arg0OfdId);
-  }
-  return fdType === handle.kernel.abi_fd_type_socket()
-    || fdType === handle.kernel.abi_fd_type_pipe();
 }
 
 export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps) {
@@ -350,8 +309,8 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
       && !deps.statusDefersOwnedStateSync(handle, status);
     const shouldSyncEpollState = isRunningWorker
       && kernelWorkerOwnsEpollState(handle)
-      && collectHeldEpollOfdIds(handle).length > 0
       && (completedSyncEffects & syncEffects.syncEffectEpollState) !== 0
+      && collectHeldEpollOfdIds(handle).length > 0
       && !activeVforkChildOwnerMismatch
       && !deps.statusDefersOwnedStateSync(handle, status);
     if (

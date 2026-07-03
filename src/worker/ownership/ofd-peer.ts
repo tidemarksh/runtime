@@ -19,6 +19,82 @@ export interface LatestFdSyscallTrace {
   result: bigint | null;
 }
 
+type SupervisorNumberExport = () => bigint | number;
+
+function requireSupervisorNumberExport(
+  handle: ProcessHandle,
+  exportName: "supervisor_fd_syscall_nr_current" | "supervisor_fd_trace_arg_unknown",
+): SupervisorNumberExport {
+  const nextValue = handle.kernel[exportName];
+  if (typeof nextValue !== "function") {
+    throw new Error(`kernel supervisor ABI missing ${exportName}`);
+  }
+  return nextValue.bind(handle.kernel);
+}
+
+function supervisorNumber(value: bigint | number): bigint {
+  return typeof value === "bigint" ? value : BigInt(value);
+}
+
+function supervisorSyscallNr(handle: ProcessHandle, syscallNr: bigint | null): bigint {
+  if (syscallNr !== null) {
+    return syscallNr;
+  }
+  return supervisorNumber(requireSupervisorNumberExport(handle, "supervisor_fd_syscall_nr_current")());
+}
+
+function supervisorTraceArg(handle: ProcessHandle, value: bigint | null): bigint {
+  if (value !== null) {
+    return value;
+  }
+  return supervisorNumber(requireSupervisorNumberExport(handle, "supervisor_fd_trace_arg_unknown")());
+}
+
+function requireSupervisorFdPolicyExport<
+  Name extends
+    | "supervisor_fd_syscall_may_change_fork_shared_ofd_topology"
+    | "supervisor_fd_explicit_fork_shared_effect_may_require_sync"
+    | "supervisor_fd_syscall_only_regular_file_offset_sync_when_peer_shared",
+>(
+  handle: ProcessHandle,
+  exportName: Name,
+): NonNullable<ProcessHandle["kernel"][Name]> {
+  const policy = handle.kernel[exportName];
+  if (typeof policy !== "function") {
+    throw new Error(`kernel supervisor ABI missing ${exportName}`);
+  }
+  return policy.bind(handle.kernel) as NonNullable<ProcessHandle["kernel"][Name]>;
+}
+
+function requireSupervisorTraceExport<
+  Name extends
+    | "supervisor_fd_trace_fork_shared_topology_action"
+    | "supervisor_fd_trace_data_plane_io_uses_socket_or_pipe"
+    | "supervisor_fd_trace_regular_file_write_mutated_memfs",
+>(
+  handle: ProcessHandle,
+  exportName: Name,
+): NonNullable<ProcessHandle["kernel"][Name]> {
+  const classify = handle.kernel[exportName];
+  if (typeof classify !== "function") {
+    throw new Error(`kernel supervisor ABI missing ${exportName}`);
+  }
+  return classify.bind(handle.kernel) as NonNullable<ProcessHandle["kernel"][Name]>;
+}
+
+function requireSupervisorTraceActionCode(
+  handle: ProcessHandle,
+  exportName:
+    | "supervisor_fd_trace_topology_action_rules_out"
+    | "supervisor_fd_trace_topology_action_needs_peer_check",
+): number {
+  const code = handle.kernel[exportName];
+  if (typeof code !== "function") {
+    throw new Error(`kernel supervisor ABI missing ${exportName}`);
+  }
+  return code.call(handle.kernel);
+}
+
 function forkSharedOfdIdentityKey(handle: ProcessHandle, ofdId: number): string | null {
   if (ofdId <= 0 || ofdId >= handle.kernel.abi_max_fds()) {
     return null;
@@ -153,88 +229,16 @@ export function sourceHoldsSharedRegularFileOfd(handle: ProcessHandle, vmPtr: nu
   return false;
 }
 
-function matchesOptionalSyscall(nr: bigint | null, candidate: bigint | number | undefined): boolean {
-  return nr !== null && candidate !== undefined && nr === BigInt(candidate);
-}
-
-function readThreadSyscallNr(handle: ProcessHandle, vmPtr: number, syscallNr: bigint | null): bigint | null {
-  if (syscallNr !== null) {
-    return syscallNr;
-  }
-  const nr = handle.kernel.thread_a7?.(vmPtr);
-  return nr === undefined ? null : nr;
-}
-
-function readOptionalTraceU64(value: bigint | number | undefined): bigint | null {
-  if (value === undefined) {
-    return null;
-  }
-  return typeof value === "bigint" ? value : BigInt(value);
-}
-
-function threadSyscallReturnedError(handle: ProcessHandle, vmPtr: number): boolean {
-  const result = handle.kernel.thread_a0?.(vmPtr);
-  return result !== undefined && BigInt.asIntN(64, BigInt(result)) < 0n;
-}
-
-function fcntlCommandMayChangeForkSharedOfdTopology(cmd: bigint | null): boolean {
-  if (cmd === null) {
-    return true;
-  }
-  switch (cmd) {
-    case 4n: // F_SETFL
-      return true;
-    default:
-      return false;
-  }
-}
-
-function ioctlRequestMayChangeForkSharedOfdTopology(request: bigint | null): boolean {
-  if (request === null) {
-    return true;
-  }
-  return request === 0x5421n; // FIONBIO mutates O_NONBLOCK on the open file description.
-}
-
-function fcntlMayChangeForkSharedOfdTopology(handle: ProcessHandle, vmPtr: number): boolean {
-  return fcntlCommandMayChangeForkSharedOfdTopology(
-    readOptionalTraceU64(handle.kernel.thread_a1?.(vmPtr)),
-  );
-}
-
-function ioctlMayChangeForkSharedOfdTopology(handle: ProcessHandle, vmPtr: number): boolean {
-  return ioctlRequestMayChangeForkSharedOfdTopology(
-    readOptionalTraceU64(handle.kernel.thread_a1?.(vmPtr)),
-  );
-}
-
 export function syscallMayChangeForkSharedOfdTopology(
   handle: ProcessHandle,
   vmPtr: number,
   syscallNr: bigint | null,
 ): boolean {
-  if (threadSyscallReturnedError(handle, vmPtr)) {
-    return false;
-  }
-  const nr = readThreadSyscallNr(handle, vmPtr, syscallNr);
-  if (matchesOptionalSyscall(nr, handle.kernel.abi_sys_fcntl?.())) {
-    return fcntlMayChangeForkSharedOfdTopology(handle, vmPtr);
-  }
-  if (matchesOptionalSyscall(nr, handle.kernel.abi_sys_ioctl?.())) {
-    return ioctlMayChangeForkSharedOfdTopology(handle, vmPtr);
-  }
-  return matchesOptionalSyscall(nr, handle.kernel.abi_sys_openat?.())
-    || matchesOptionalSyscall(nr, handle.kernel.abi_sys_close?.())
-    || matchesOptionalSyscall(nr, handle.kernel.abi_sys_close_range?.())
-    || matchesOptionalSyscall(nr, handle.kernel.abi_sys_pipe2?.())
-    || matchesOptionalSyscall(nr, handle.kernel.abi_sys_socket?.())
-    || matchesOptionalSyscall(nr, handle.kernel.abi_sys_socketpair?.())
-    || matchesOptionalSyscall(nr, handle.kernel.abi_sys_accept4?.())
-    || matchesOptionalSyscall(nr, handle.kernel.abi_sys_eventfd2?.())
-    || matchesOptionalSyscall(nr, handle.kernel.abi_sys_epoll_create1?.())
-    || matchesOptionalSyscall(nr, handle.kernel.abi_sys_dup?.())
-    || matchesOptionalSyscall(nr, handle.kernel.abi_sys_dup3?.())
-    || matchesOptionalSyscall(nr, handle.kernel.abi_sys_execve?.());
+  const policy = requireSupervisorFdPolicyExport(
+    handle,
+    "supervisor_fd_syscall_may_change_fork_shared_ofd_topology",
+  );
+  return policy(vmPtr, supervisorSyscallNr(handle, syscallNr)) !== 0;
 }
 
 export function explicitForkSharedEffectMayRequireSync(
@@ -242,17 +246,11 @@ export function explicitForkSharedEffectMayRequireSync(
   vmPtr: number,
   syscallNr: bigint | null,
 ): boolean {
-  if (threadSyscallReturnedError(handle, vmPtr)) {
-    return false;
-  }
-  const nr = readThreadSyscallNr(handle, vmPtr, syscallNr);
-  if (matchesOptionalSyscall(nr, handle.kernel.abi_sys_fcntl?.())) {
-    return fcntlMayChangeForkSharedOfdTopology(handle, vmPtr);
-  }
-  if (matchesOptionalSyscall(nr, handle.kernel.abi_sys_ioctl?.())) {
-    return ioctlMayChangeForkSharedOfdTopology(handle, vmPtr);
-  }
-  return true;
+  const policy = requireSupervisorFdPolicyExport(
+    handle,
+    "supervisor_fd_explicit_fork_shared_effect_may_require_sync",
+  );
+  return policy(vmPtr, supervisorSyscallNr(handle, syscallNr)) !== 0;
 }
 
 export function latestFdTraceRulesOutForkSharedTopologyChange(
@@ -264,43 +262,22 @@ export function latestFdTraceRulesOutForkSharedTopologyChange(
   if (trace === null) {
     return false;
   }
-  if (trace.result !== null && BigInt.asIntN(64, trace.result) < 0n) {
+  const classify = requireSupervisorTraceExport(
+    handle,
+    "supervisor_fd_trace_fork_shared_topology_action",
+  );
+  const action = classify(
+    vmPtr,
+    trace.nr,
+    supervisorTraceArg(handle, trace.arg1),
+    trace.result ?? 0n,
+    trace.result === null ? 0 : 1,
+  );
+  if (action === requireSupervisorTraceActionCode(handle, "supervisor_fd_trace_topology_action_rules_out")) {
     return true;
   }
-  if (matchesOptionalSyscall(trace.nr, handle.kernel.abi_sys_dup3?.())) {
-    const newFd = trace.arg1 === null ? -1 : Number(trace.arg1);
-    if (Number.isInteger(newFd) && newFd >= 0 && newFd < handle.kernel.abi_max_fds()) {
-      const newOfdId = handle.kernel.process_fd_ofd_id(vmPtr, newFd);
-      if (
-        newOfdId > 0
-        && newOfdId < handle.kernel.abi_max_fds()
-        && handle.kernel.kernel_ofd_fd_type(newOfdId) === handle.kernel.abi_fd_type_file?.()
-      ) {
-        return false;
-      }
-    }
-  }
-  if (
-    matchesOptionalSyscall(trace.nr, handle.kernel.abi_sys_close?.())
-    || matchesOptionalSyscall(trace.nr, handle.kernel.abi_sys_dup?.())
-    || matchesOptionalSyscall(trace.nr, handle.kernel.abi_sys_pipe2?.())
-    || matchesOptionalSyscall(trace.nr, handle.kernel.abi_sys_socket?.())
-    || matchesOptionalSyscall(trace.nr, handle.kernel.abi_sys_socketpair?.())
-    || matchesOptionalSyscall(trace.nr, handle.kernel.abi_sys_accept4?.())
-    || matchesOptionalSyscall(trace.nr, handle.kernel.abi_sys_eventfd2?.())
-    || matchesOptionalSyscall(trace.nr, handle.kernel.abi_sys_epoll_create1?.())
-  ) {
+  if (action === requireSupervisorTraceActionCode(handle, "supervisor_fd_trace_topology_action_needs_peer_check")) {
     return !fdTraceTouchesForkSharedPeer(handle, trace);
-  }
-  if (matchesOptionalSyscall(trace.nr, handle.kernel.abi_sys_fcntl?.())) {
-    return fcntlCommandMayChangeForkSharedOfdTopology(trace.arg1)
-      ? !fdTraceTouchesForkSharedPeer(handle, trace)
-      : true;
-  }
-  if (matchesOptionalSyscall(trace.nr, handle.kernel.abi_sys_ioctl?.())) {
-    return ioctlRequestMayChangeForkSharedOfdTopology(trace.arg1)
-      ? !fdTraceTouchesForkSharedPeer(handle, trace)
-      : true;
   }
   return false;
 }
@@ -338,27 +315,50 @@ export function syscallOnlyNeedsRegularFileOffsetSyncWhenPeerShared(
   vmPtr: number,
   syscallNr: bigint | null,
 ): boolean {
-  const nr = readThreadSyscallNr(handle, vmPtr, syscallNr);
-  if (
-    !matchesOptionalSyscall(nr, handle.kernel.abi_sys_read?.())
-    && !matchesOptionalSyscall(nr, handle.kernel.abi_sys_readv?.())
-    && !matchesOptionalSyscall(nr, handle.kernel.abi_sys_write?.())
-    && !matchesOptionalSyscall(nr, handle.kernel.abi_sys_writev?.())
-    && !matchesOptionalSyscall(nr, handle.kernel.abi_sys_pwrite64?.())
-    && !matchesOptionalSyscall(nr, handle.kernel.abi_sys_lseek?.())
-  ) {
+  const policy = requireSupervisorFdPolicyExport(
+    handle,
+    "supervisor_fd_syscall_only_regular_file_offset_sync_when_peer_shared",
+  );
+  return policy(vmPtr, supervisorSyscallNr(handle, syscallNr)) !== 0;
+}
+
+export function fdTraceDataPlaneIoUsesSocketOrPipe(
+  handle: ProcessHandle,
+  trace: LatestFdSyscallTrace | null | undefined,
+): boolean {
+  if (trace == null) {
     return false;
   }
-  const fd = Number(handle.kernel.thread_a0?.(vmPtr) ?? -1n);
-  if (!Number.isFinite(fd) || fd < 0 || fd >= handle.kernel.abi_max_fds()) {
+  const classify = requireSupervisorTraceExport(
+    handle,
+    "supervisor_fd_trace_data_plane_io_uses_socket_or_pipe",
+  );
+  return classify(
+    trace.nr,
+    trace.arg0OfdId,
+    trace.arg0OfdType,
+    trace.result ?? 0n,
+    trace.result === null ? 0 : 1,
+  ) !== 0;
+}
+
+export function regularFileWriteMutatedMemfs(
+  handle: ProcessHandle,
+  trace: LatestFdSyscallTrace | null | undefined,
+): boolean {
+  if (trace == null) {
     return false;
   }
-  const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
-  const fileType = (handle.kernel as { abi_fd_type_file?: () => number }).abi_fd_type_file?.();
-  return fileType !== undefined
-    && ofdId > 0
-    && ofdId < handle.kernel.abi_max_fds()
-    && handle.kernel.kernel_ofd_fd_type(ofdId) === fileType;
+  const classify = requireSupervisorTraceExport(
+    handle,
+    "supervisor_fd_trace_regular_file_write_mutated_memfs",
+  );
+  return classify(
+    trace.nr,
+    trace.arg0OfdType,
+    trace.result ?? 0n,
+    trace.result === null ? 0 : 1,
+  ) !== 0;
 }
 
 export function sourceSharesRegularFileOfdWithPeer(handle: ProcessHandle, vmPtr: number): boolean {

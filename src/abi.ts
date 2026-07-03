@@ -202,6 +202,11 @@ export interface KernelExports {
   supervisor_fd_control_kind_socket_connected?(): number;
   supervisor_fd_control_kind_socket_connect_failed?(): number;
   supervisor_fd_control_kind_socket_accepted?(): number;
+  supervisor_fd_syscall_nr_current?(): bigint | number;
+  supervisor_fd_trace_arg_unknown?(): bigint | number;
+  supervisor_fd_trace_topology_action_unresolved?(): number;
+  supervisor_fd_trace_topology_action_rules_out?(): number;
+  supervisor_fd_trace_topology_action_needs_peer_check?(): number;
   supervisor_pipe_slot_mode_read?(): number;
   supervisor_pipe_slot_mode_write?(): number;
   supervisor_pipe_slot_mode_control?(): number;
@@ -434,6 +439,38 @@ export interface KernelExports {
   supervisor_enqueue_blocked_retry_timer?(vmPtr: number, flags: number): number;
   supervisor_blocked_wait_timer_required?(vmPtr: number): number;
   supervisor_fd_control_record?(outPtr: number, outLen: number): number;
+  supervisor_fd_syscall_may_change_fork_shared_ofd_topology?(
+    vmPtr: number,
+    syscallNr: bigint | number,
+  ): number;
+  supervisor_fd_explicit_fork_shared_effect_may_require_sync?(
+    vmPtr: number,
+    syscallNr: bigint | number,
+  ): number;
+  supervisor_fd_syscall_only_regular_file_offset_sync_when_peer_shared?(
+    vmPtr: number,
+    syscallNr: bigint | number,
+  ): number;
+  supervisor_fd_trace_fork_shared_topology_action?(
+    vmPtr: number,
+    nr: bigint | number,
+    arg1: bigint | number,
+    result: bigint | number,
+    resultKnown: number,
+  ): number;
+  supervisor_fd_trace_data_plane_io_uses_socket_or_pipe?(
+    nr: bigint | number,
+    arg0OfdId: number,
+    arg0OfdType: number,
+    result: bigint | number,
+    resultKnown: number,
+  ): number;
+  supervisor_fd_trace_regular_file_write_mutated_memfs?(
+    nr: bigint | number,
+    arg0OfdType: number,
+    result: bigint | number,
+    resultKnown: number,
+  ): number;
   supervisor_fs_control_record?(outPtr: number, outLen: number): number;
   supervisor_fs_pending_ring_request?(vmPtr: number): number;
   supervisor_fs_pending_regular_file_fd?(vmPtr: number): number;
@@ -1533,6 +1570,11 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fd_control_kind_socket_connected",
   "supervisor_fd_control_kind_socket_connect_failed",
   "supervisor_fd_control_kind_socket_accepted",
+  "supervisor_fd_syscall_nr_current",
+  "supervisor_fd_trace_arg_unknown",
+  "supervisor_fd_trace_topology_action_unresolved",
+  "supervisor_fd_trace_topology_action_rules_out",
+  "supervisor_fd_trace_topology_action_needs_peer_check",
   "supervisor_pipe_slot_mode_read",
   "supervisor_pipe_slot_mode_write",
   "supervisor_pipe_slot_mode_control",
@@ -1739,6 +1781,12 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_vfork_execve_handoff_failure_wait_status",
   "supervisor_vfork_execve_rollback",
   "supervisor_fd_control_record",
+  "supervisor_fd_syscall_may_change_fork_shared_ofd_topology",
+  "supervisor_fd_explicit_fork_shared_effect_may_require_sync",
+  "supervisor_fd_syscall_only_regular_file_offset_sync_when_peer_shared",
+  "supervisor_fd_trace_fork_shared_topology_action",
+  "supervisor_fd_trace_data_plane_io_uses_socket_or_pipe",
+  "supervisor_fd_trace_regular_file_write_mutated_memfs",
   "supervisor_fs_control_record",
   "supervisor_fs_pipe_refresh_action_none",
   "supervisor_fs_pipe_refresh_action_request_sync",
