@@ -67,7 +67,6 @@ import {
 } from "../../layout/fs-ring.js";
 import {
   completedKernelRpcOutcome,
-  type KernelRpcResumeEffect,
   type KernelRpcResumeOutcome,
 } from "./outcomes.js";
 import { submitSupervisorShadowStatusEvent } from "../supervisor-shadow.js";
@@ -163,7 +162,9 @@ export interface WorkerKernelRpcFsDeps {
   assertProcessStandardFdIntegrity(handle: ProcessHandle, context: string): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   failProcess(handle: ProcessHandle, error: Error): void;
+  handleExecveSpawn?(handle: ProcessHandle, worker: Worker, thread: ThreadWorkerState): Promise<void>;
   markRuntimeFsDirty(handle: ProcessHandle): void;
+  notifyHostEffectProgress(handle: ProcessHandle): void;
   kernelShareOtherMembers(handle: ProcessHandle): ProcessHandle[];
   syncForkSharedStateLocallyAfterFs(
     handle: ProcessHandle,
@@ -1230,9 +1231,9 @@ async function resumeFsViaKernelWorker(
 
 async function completeFsResumeFromSupervisorDecision(
   handle: ProcessHandle,
+  worker: Worker,
   vmPtr: number,
   fsResult: bigint,
-  effects: KernelRpcResumeEffect[],
   options: {
     source: "local" | "kernel-worker";
     applyPostFsWake(): void | Promise<void>;
@@ -1261,19 +1262,42 @@ async function completeFsResumeFromSupervisorDecision(
     );
     await options.applyPostFsWake();
     const status = handle.kernel.abi_status_fs?.() ?? -1;
-    return { kind: "blocked", status, effects };
+    return { kind: "blocked", status };
   }
   const resolvedToExecveSpawn = options.forceExecveSpawn === true
     || (finalStatus !== undefined && supervisorProcessStatusIsExecveSpawn(handle.kernel, finalStatus));
   if (resolvedToExecveSpawn && finalStatus !== undefined) {
     await options.applyPostFsWake();
-    effects.push({ kind: "handle-execve-spawn", status: finalStatus });
-    return completedKernelRpcOutcome(undefined, effects);
+    await handleFsExecveSpawn(handle, worker, vmPtr, finalStatus);
+    return completedKernelRpcOutcome();
   }
   await options.applyPostFsWake();
   submitSupervisorFsReadyEvent(handle, vmPtr, finalStatus);
-  effects.push({ kind: "enqueue-worker" });
-  return completedKernelRpcOutcome(finalStatus, effects);
+  deps.enqueueWorker(handle, worker);
+  return completedKernelRpcOutcome(finalStatus);
+}
+
+async function handleFsExecveSpawn(
+  handle: ProcessHandle,
+  worker: Worker,
+  vmPtr: number,
+  status: number,
+): Promise<void> {
+  const thread = deps.threadWorkerStates.get(worker);
+  if (!thread || thread.vmPtr !== vmPtr) {
+    return;
+  }
+  if (!deps.handleExecveSpawn) {
+    throw new Error("kernel-rpc fs helper missing execve spawn host executor");
+  }
+  thread.ownerAsyncStatus = status;
+  try {
+    await deps.handleExecveSpawn(handle, worker, thread);
+  } finally {
+    if (handle.workers.has(worker) && deps.threadWorkerStates.get(worker) === thread) {
+      thread.ownerAsyncStatus = null;
+    }
+  }
 }
 
 async function resumeFsViaKernelWorkerInner(
@@ -1282,7 +1306,6 @@ async function resumeFsViaKernelWorkerInner(
   vmPtr: number,
   fsEffects: KernelRpcFsEffects,
 ): Promise<KernelRpcResumeOutcome> {
-  const effects: KernelRpcResumeEffect[] = [];
   const pendingFs = readPendingFsContext(handle, vmPtr);
   const fsDebugSuffix = formatPendingFsDebugSuffix(pendingFs);
   const pendingRingRequest = supervisorPendingRingRequest(handle, vmPtr);
@@ -1322,12 +1345,12 @@ async function resumeFsViaKernelWorkerInner(
     }
     const applyLocalPostFsWake = () => {
       applyLocalFsWakeSync?.();
-      effects.push({ kind: "notify-host-effect-progress", handle });
+      deps.notifyHostEffectProgress(handle);
     };
     restoreFsRingProgress(handle, postFsRingProgress);
     clearStaleFsStatusAfterResume(handle, vmPtr, fsResult);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
-    return completeFsResumeFromSupervisorDecision(handle, vmPtr, fsResult, effects, {
+    return completeFsResumeFromSupervisorDecision(handle, worker, vmPtr, fsResult, {
       source: "local",
       applyPostFsWake: applyLocalPostFsWake,
     });
@@ -1524,7 +1547,7 @@ async function resumeFsViaKernelWorkerInner(
       handle.kernelState = readKernelRuntimeState(handle.kernel);
     }
     if (!handle.workers.has(worker) || !threadState) {
-      return { kind: "process-gone", effects };
+      return { kind: "process-gone" };
     }
     if (fsResponseDisposition.storePendingKernelState) {
       threadState.pendingKernelStateForNextStep = fsProcessedResponse.kernelState;
@@ -1542,13 +1565,13 @@ async function resumeFsViaKernelWorkerInner(
       restoreFsRingProgress(handle, postFsRingProgress);
       clearStaleFsStatusAfterResume(handle, vmPtr, fsResult);
       handle.kernelState = readKernelRuntimeState(handle.kernel);
-      return completeFsResumeFromSupervisorDecision(handle, vmPtr, fsResult, effects, {
+      return completeFsResumeFromSupervisorDecision(handle, worker, vmPtr, fsResult, {
         source: "kernel-worker",
         finalStatus: statusAfterFs,
         forceExecveSpawn: true,
         applyPostFsWake: () => {
           deps.publishRuntimeKernelState(handle);
-          effects.push({ kind: "notify-host-effect-progress", handle });
+          deps.notifyHostEffectProgress(handle);
         },
       });
     }
@@ -1600,9 +1623,9 @@ async function resumeFsViaKernelWorkerInner(
         deps.markRuntimeFsDirty(dirtyHandle);
       }
       deps.publishRuntimeKernelState(handle);
-      effects.push({ kind: "notify-host-effect-progress", handle });
+      deps.notifyHostEffectProgress(handle);
     };
-    return completeFsResumeFromSupervisorDecision(handle, vmPtr, fsResult, effects, {
+    return completeFsResumeFromSupervisorDecision(handle, worker, vmPtr, fsResult, {
       source: "kernel-worker",
       applyPostFsWake,
     });
@@ -1611,10 +1634,10 @@ async function resumeFsViaKernelWorkerInner(
     deps.appendWorkerDebugLog(handle, `fs-err:0x${vmPtr.toString(16)}${errorDetail}`);
     appendFsLifecycleEvent(handle, "err", vmPtr, `${formatFsRingDebug(handle, vmPtr)}${errorDetail}`);
     if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
-      return { kind: "process-gone", effects };
+      return { kind: "process-gone" };
     }
     deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-    return { kind: "process-gone", effects };
+    return { kind: "process-gone" };
   }
 }
 

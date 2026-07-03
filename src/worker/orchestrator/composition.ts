@@ -27,9 +27,6 @@ import type {
 import type {
   KernelRpcResumeOutcome,
 } from "../kernel-rpc/outcomes.js";
-import {
-  applyKernelRpcResumeEffects as applyKernelRpcResumeEffectsImpl,
-} from "../kernel-rpc/effects.js";
 import { createWorkerProcessFactory } from "../create-process.js";
 
 const WASM_PAGE_SIZE = 65536;
@@ -172,6 +169,7 @@ workerKernelRpcHelpers = createWorkerKernelRpcHelpers({
   assertProcessStandardFdIntegrity,
   enqueueWorker,
   failProcess,
+  handleExecveSpawn: (handle, worker, thread) => handleExecveSpawn(handle, worker, thread),
   notifyHostEffectProgress: notifySchedulerProgress,
   clearHostBlockedRetryTimer,
   requestThreadWorkerBlockedResume,
@@ -459,39 +457,16 @@ function markRuntimeFsDirty(handle: ProcessHandle): void {
   markRuntimeFsDirtyCtx(handle);
 }
 
-const kernelRpcResumeEffectPorts = {
-  enqueueWorker,
-  handleExecveSpawn,
-  notifyHostEffectProgress: notifySchedulerProgress,
-  threadWorkerStates,
-};
-
 const sharedHostStdioReleasePorts = {
   wakePipeAndEpollWaitersInKernelShare,
 };
-
-function applyKernelRpcResumeEffects(
-  handle: ProcessHandle,
-  worker: Worker,
-  vmPtr: number,
-  outcome: KernelRpcResumeOutcome,
-): Promise<KernelRpcResumeOutcome> {
-  return applyKernelRpcResumeEffectsImpl(
-    handle,
-    worker,
-    vmPtr,
-    outcome,
-    kernelRpcResumeEffectPorts,
-  );
-}
 
 async function resumeFsViaKernelWorker(
   handle: ProcessHandle,
   worker: Worker,
   vmPtr: number,
 ): Promise<void> {
-  const outcome = await resumeFsViaKernelWorkerImpl(handle, worker, vmPtr);
-  await applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
+  await resumeFsViaKernelWorkerImpl(handle, worker, vmPtr);
 }
 
 async function resumeFsViaKernelWorkerOutcome(
@@ -499,8 +474,7 @@ async function resumeFsViaKernelWorkerOutcome(
   worker: Worker,
   vmPtr: number,
 ): Promise<KernelRpcResumeOutcome> {
-  const outcome = await resumeFsViaKernelWorkerOutcomeImpl(handle, worker, vmPtr);
-  return applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
+  return resumeFsViaKernelWorkerOutcomeImpl(handle, worker, vmPtr);
 }
 
 async function executeHostBlockedSyscallResumeOutcome(
@@ -509,13 +483,12 @@ async function executeHostBlockedSyscallResumeOutcome(
   vmPtr: number,
   blockedStatus: number,
 ): Promise<KernelRpcResumeOutcome> {
-  const outcome = await workerKernelRpcHelpers.executeHostBlockedSyscallResumeOutcome(
+  return workerKernelRpcHelpers.executeHostBlockedSyscallResumeOutcome(
     handle,
     worker,
     vmPtr,
     blockedStatus,
   );
-  return applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
 }
 
 async function resumeWait4ViaKernelWorker(
@@ -523,8 +496,7 @@ async function resumeWait4ViaKernelWorker(
   worker: Worker,
   vmPtr: number,
 ): Promise<KernelRpcResumeOutcome> {
-  const outcome = await workerKernelRpcHelpers.resumeWait4ViaKernelWorker(handle, worker, vmPtr);
-  return applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
+  return workerKernelRpcHelpers.resumeWait4ViaKernelWorker(handle, worker, vmPtr);
 }
 
 async function resumeConnectViaKernelWorker(
@@ -533,8 +505,7 @@ async function resumeConnectViaKernelWorker(
   vmPtr: number,
   result: bigint,
 ): Promise<KernelRpcResumeOutcome> {
-  const outcome = await resumeConnectViaKernelWorkerImpl(handle, worker, vmPtr, result);
-  return applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
+  return resumeConnectViaKernelWorkerImpl(handle, worker, vmPtr, result);
 }
 
 async function resumeVforkParentViaKernelWorker(
@@ -543,8 +514,7 @@ async function resumeVforkParentViaKernelWorker(
   vmPtr: number,
   waitStatus: number,
 ): Promise<KernelRpcResumeOutcome> {
-  const outcome = await resumeVforkParentViaKernelWorkerImpl(handle, worker, vmPtr, waitStatus);
-  return applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
+  return resumeVforkParentViaKernelWorkerImpl(handle, worker, vmPtr, waitStatus);
 }
 
 async function canonicalizeActiveVforkChildViaKernelWorker(
@@ -553,13 +523,12 @@ async function canonicalizeActiveVforkChildViaKernelWorker(
   vmPtr: number,
   provisionalChildPid: number,
 ): Promise<KernelRpcResumeOutcome> {
-  const outcome = await canonicalizeActiveVforkChildViaKernelWorkerImpl(
+  return canonicalizeActiveVforkChildViaKernelWorkerImpl(
     handle,
     worker,
     vmPtr,
     provisionalChildPid,
   );
-  return applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
 }
 
 async function resumeVforkExecveParentViaKernelWorker(
@@ -567,8 +536,7 @@ async function resumeVforkExecveParentViaKernelWorker(
   vmPtr: number,
   childPid: number,
 ): Promise<KernelRpcResumeOutcome> {
-  const outcome = await resumeVforkExecveParentViaKernelWorkerImpl(handle, vmPtr, childPid);
-  return applyKernelRpcResumeEffects(handle, {} as Worker, vmPtr, outcome);
+  return resumeVforkExecveParentViaKernelWorkerImpl(handle, vmPtr, childPid);
 }
 
 async function rollbackVforkExecveHandoffViaKernelWorker(
@@ -576,8 +544,7 @@ async function rollbackVforkExecveHandoffViaKernelWorker(
   vmPtr: number,
   childPid: number,
 ): Promise<KernelRpcResumeOutcome> {
-  const outcome = await rollbackVforkExecveHandoffViaKernelWorkerImpl(handle, vmPtr, childPid);
-  return applyKernelRpcResumeEffects(handle, {} as Worker, vmPtr, outcome);
+  return rollbackVforkExecveHandoffViaKernelWorkerImpl(handle, vmPtr, childPid);
 }
 
 async function recordChildExitViaKernelWorker(
@@ -585,8 +552,7 @@ async function recordChildExitViaKernelWorker(
   childPid: number,
   waitStatus: number,
 ): Promise<void> {
-  const outcome = await recordChildExitViaKernelWorkerImpl(parent, childPid, waitStatus);
-  await applyKernelRpcResumeEffects(parent, {} as Worker, parent.vmPtr, outcome);
+  await recordChildExitViaKernelWorkerImpl(parent, childPid, waitStatus);
 }
 
 function syncForkSharedStateLocally(

@@ -9,6 +9,7 @@ import { readKernelRuntimeState } from "../../abi.js";
 import {
   type KernelWorkerRequestFn,
   type ProcessHandle,
+  type ThreadWorkerState,
 } from "../types.js";
 import type { KernelWorkerPidBytesSnapshot } from "../../messages.js";
 import type {
@@ -26,6 +27,7 @@ interface WorkerKernelRpcDeps {
   assertProcessStandardFdIntegrity(handle: ProcessHandle, context: string): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   failProcess(handle: ProcessHandle, error: Error): void;
+  handleExecveSpawn(handle: ProcessHandle, worker: Worker, thread: ThreadWorkerState): Promise<void>;
   notifyHostEffectProgress(handle: ProcessHandle): void;
   clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void;
   requestThreadWorkerBlockedResume(handle: ProcessHandle, worker: Worker): void;
@@ -150,7 +152,9 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     assertProcessStandardFdIntegrity: deps.assertProcessStandardFdIntegrity,
     enqueueWorker: deps.enqueueWorker,
     failProcess: deps.failProcess,
+    handleExecveSpawn: deps.handleExecveSpawn,
     markRuntimeFsDirty: deps.markRuntimeFsDirty,
+    notifyHostEffectProgress: deps.notifyHostEffectProgress,
     kernelShareOtherMembers,
     syncForkSharedStateLocallyAfterFs: deps.syncForkSharedStateLocally,
     syncDirtyMemfsPeerViaKernelWorker: deps.syncForkSharedStateViaKernelWorker,

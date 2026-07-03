@@ -86,7 +86,7 @@ function makeKernelState(): KernelRuntimeState {
 function supervisorFsResponseDispositionTestStubs(
   currentPid: () => number,
   threadStatus: () => number = () => 0,
-  execveSpawnStatus: () => number = () => 0,
+  execveSpawnStatus: () => number = () => 24,
 ): Partial<KernelExports> {
   return {
     abi_status_ok: () => 0,
@@ -1375,8 +1375,8 @@ test("resumeFsViaKernelWorker skips memfs sync during active vfork child ownersh
   expect(assertProcessStandardFdIntegrity).toHaveBeenCalledWith(handle, "resume-fs-before");
   expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
   expect(markRuntimeFsDirty).toHaveBeenCalledWith(handle);
-  expect(enqueueWorker).not.toHaveBeenCalled();
-  expect(outcome.effects).toContainEqual({ kind: "enqueue-worker" });
+  expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+  expect(outcome.effects).toBeUndefined();
 });
 
 test("resumeFsViaKernelWorker does not adopt failed execve child state into the vfork parent", async () => {
@@ -1521,6 +1521,7 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
     initialized: true,
     waitingInWorkerStatus: null,
   });
+  const enqueueWorker = vi.fn();
 
   const helpers = createWorkerKernelRpcHelpers({
     processHandles: new Map([[1, handle]]),
@@ -1528,7 +1529,7 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
     appendRuntimeLifecycleEvent: () => {},
     appendWorkerDebugLog: () => {},
     assertProcessStandardFdIntegrity: () => {},
-    enqueueWorker: () => {},
+    enqueueWorker,
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
@@ -1552,7 +1553,8 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
   });
 
   expect(processFsRequests).toHaveLength(1);
-  expect(outcome.effects).toContainEqual({ kind: "enqueue-worker" });
+  expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+  expect(outcome.effects).toBeUndefined();
   expect(handle.kernelState).toEqual(initialKernelState);
   expect(handle.kernelState).not.toEqual(localChildKernelState);
   expect(threadResumeFs).not.toHaveBeenCalled();
@@ -1591,6 +1593,8 @@ test("resumeFsViaKernelWorker routes execve spawn before parent fd integrity che
     }
   });
   const enqueueWorker = vi.fn();
+  const handleExecveSpawn = vi.fn(async () => {});
+  const notifyHostEffectProgress = vi.fn();
   const execveSpawnStatus = 9;
   let status = 0;
   let currentPid = 1;
@@ -1680,7 +1684,8 @@ test("resumeFsViaKernelWorker routes execve spawn before parent fd integrity che
     },
     clearHostBlockedRetryTimer: () => {},
     handleHostBlockedRetryResult: () => {},
-    notifyHostEffectProgress: () => {},
+    handleExecveSpawn,
+    notifyHostEffectProgress,
     markRuntimeFsDirty: () => {},
     requestPipeStateSync: async () => {},
     syncBlockedForkSharedStateViaKernelWorker: async () => {},
@@ -1703,8 +1708,14 @@ test("resumeFsViaKernelWorker routes execve spawn before parent fd integrity che
   expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
   expect(enqueueWorker).not.toHaveBeenCalled();
   expect(outcome.status).toBeUndefined();
-  expect(outcome.effects).toContainEqual({ kind: "notify-host-effect-progress", handle });
-  expect(outcome.effects).toContainEqual({ kind: "handle-execve-spawn", status: execveSpawnStatus });
+  expect(outcome.effects).toBeUndefined();
+  expect(notifyHostEffectProgress).toHaveBeenCalledWith(handle);
+  expect(handleExecveSpawn).toHaveBeenCalledWith(
+    handle,
+    worker,
+    threadWorkerStates.get(worker),
+  );
+  expect(threadWorkerStates.get(worker)?.ownerAsyncStatus).toBeNull();
 });
 
 test("resumeFsViaKernelWorker applies fd entries returned by kernel-worker fs processing", async () => {

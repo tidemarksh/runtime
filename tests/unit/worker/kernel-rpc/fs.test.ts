@@ -254,6 +254,7 @@ test("kernel-rpc fs helper owns local resume and returns a typed outcome", async
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
   const enqueueWorker = vi.fn();
+  const notifyHostEffectProgress = vi.fn();
   const helpers = createWorkerKernelRpcFsHelpers({
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: vi.fn(),
@@ -261,7 +262,7 @@ test("kernel-rpc fs helper owns local resume and returns a typed outcome", async
     assertProcessStandardFdIntegrity: vi.fn(),
     enqueueWorker,
     failProcess: vi.fn(),
-    notifyHostEffectProgress: vi.fn(),
+    notifyHostEffectProgress,
     markRuntimeFsDirty: vi.fn(),
     kernelShareOtherMembers: () => [],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
@@ -282,7 +283,8 @@ test("kernel-rpc fs helper owns local resume and returns a typed outcome", async
   });
   expect(kernel.thread_process_fs).toHaveBeenCalledTimes(2);
   expect(kernel.thread_resume_fs).toHaveBeenCalledTimes(2);
-  expect(enqueueWorker).not.toHaveBeenCalled();
+  expect(notifyHostEffectProgress).toHaveBeenCalledTimes(2);
+  expect(enqueueWorker).toHaveBeenCalledTimes(2);
 });
 
 test("kernel-rpc fs outcome reports blocked fs status", async () => {
@@ -372,16 +374,18 @@ test("kernel-worker fs outcome returns wake effect after local publication", asy
   threadWorkerStates.set(worker, threadState);
   const markRuntimeFsDirty = vi.fn();
   const publishRuntimeKernelState = vi.fn();
+  const enqueueWorker = vi.fn();
+  const notifyHostEffectProgress = vi.fn();
   const helpers = createWorkerKernelRpcFsHelpers({
     threadWorkerStates,
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
     assertProcessStandardFdIntegrity: vi.fn(),
-    enqueueWorker: vi.fn(),
+    enqueueWorker,
     failProcess: vi.fn((_handle, error) => {
       throw error;
     }),
-    notifyHostEffectProgress: vi.fn(),
+    notifyHostEffectProgress,
     markRuntimeFsDirty,
     kernelShareOtherMembers: () => [],
     syncForkSharedStateLocallyAfterFs: vi.fn(),
@@ -404,14 +408,19 @@ test("kernel-worker fs outcome returns wake effect after local publication", asy
     vmPtr: 0x1234,
   }));
   expect(outcome).toMatchObject({ kind: "completed", status: 0 });
-  expect(outcome.effects).toEqual([
-    { kind: "notify-host-effect-progress", handle },
-    { kind: "enqueue-worker" },
-  ]);
+  expect(outcome.effects).toBeUndefined();
   expect(markRuntimeFsDirty).toHaveBeenCalledWith(handle);
   expect(publishRuntimeKernelState).toHaveBeenCalledWith(handle);
+  expect(notifyHostEffectProgress).toHaveBeenCalledWith(handle);
+  expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
   expect(markRuntimeFsDirty.mock.invocationCallOrder[0]).toBeLessThan(
     publishRuntimeKernelState.mock.invocationCallOrder[0],
+  );
+  expect(publishRuntimeKernelState.mock.invocationCallOrder[0]).toBeLessThan(
+    notifyHostEffectProgress.mock.invocationCallOrder[0],
+  );
+  expect(notifyHostEffectProgress.mock.invocationCallOrder[0]).toBeLessThan(
+    enqueueWorker.mock.invocationCallOrder[0],
   );
 });
 
