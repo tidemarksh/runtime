@@ -1,7 +1,5 @@
 import type { KernelExports } from "./abi.js";
 
-const SUPERVISOR_RESUME_FLAG_TIMEOUT_EXPIRED = 1;
-const SUPERVISOR_BLOCKED_RESUME_FLAG_KERNEL_WORKER_AVAILABLE = 1;
 export const SUPERVISOR_BLOCKED_RESUME_DELEGATION_DIRECT = 0;
 export const SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER = 1;
 export const SUPERVISOR_BLOCKED_RESUME_DELEGATION_WAIT4_KERNEL_WORKER = 2;
@@ -25,15 +23,12 @@ export const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_NONE = 0;
 export const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC = 1;
 export const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT = 2;
 export const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_SCHEDULE_RETRY = 3;
-const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_FLAG_KERNEL_WORKER_AVAILABLE = 1;
 export const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_BLOCK = 0;
 export const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET = 1;
 export const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE = 2;
 export const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_FORK_SHARED = 3;
 export const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE_AND_FORK_SHARED = 4;
 export const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET_AND_FORK_SHARED = 5;
-const SUPERVISOR_BLOCKED_STATUS_TRANSITION_FLAG_KERNEL_WORKER_AVAILABLE = 1;
-const SUPERVISOR_BLOCKED_STATUS_TRANSITION_FLAG_NETWORK_CONNECTIONS_AVAILABLE = 1 << 1;
 export const SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_SKIP = 0;
 export const SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_PUMP = 1;
 export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC = 1;
@@ -43,9 +38,64 @@ export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_AND_EPOLL_SYNC = 4;
 export const SUPERVISOR_STATE_SYNC_KIND_PIPE = 1;
 export const SUPERVISOR_STATE_SYNC_KIND_EPOLL = 2;
 export const SUPERVISOR_STATE_SYNC_KIND_SOCKET = 3;
-const SUPERVISOR_STATE_SYNC_REQUEST_FLAG_WAKE_WAITERS = 1;
-const SUPERVISOR_STATE_SYNC_RUN_FLAG_RUN = 1;
-const SUPERVISOR_STATE_SYNC_RUN_FLAG_WAKE_WAITERS = 1 << 1;
+
+type SupervisorNumberConstExportName =
+  | "supervisor_resume_flag_timeout_expired"
+  | "supervisor_blocked_resume_delegation_flag_kernel_worker_available"
+  | "supervisor_blocked_resume_delegation_direct"
+  | "supervisor_blocked_resume_delegation_kernel_worker"
+  | "supervisor_blocked_resume_delegation_wait4_kernel_worker"
+  | "supervisor_blocked_resume_delegation_unsupported"
+  | "supervisor_blocked_resume_delegation_epoll_direct"
+  | "supervisor_blocked_pipe_resume_action_defer"
+  | "supervisor_blocked_pipe_resume_action_direct"
+  | "supervisor_blocked_pipe_sync_before_retry_action_none"
+  | "supervisor_blocked_pipe_sync_before_retry_action_request_sync"
+  | "supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output"
+  | "supervisor_blocked_pipe_sync_before_retry_action_schedule_retry"
+  | "supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available"
+  | "supervisor_blocked_status_transition_action_block"
+  | "supervisor_blocked_status_transition_action_sync_socket"
+  | "supervisor_blocked_status_transition_action_sync_pipe"
+  | "supervisor_blocked_status_transition_action_sync_fork_shared"
+  | "supervisor_blocked_status_transition_action_sync_pipe_and_fork_shared"
+  | "supervisor_blocked_status_transition_action_sync_socket_and_fork_shared"
+  | "supervisor_blocked_status_transition_flag_kernel_worker_available"
+  | "supervisor_blocked_status_transition_flag_network_connections_available"
+  | "supervisor_blocked_wait_network_pump_action_skip"
+  | "supervisor_blocked_wait_network_pump_action_pump"
+  | "supervisor_state_sync_kind_pipe"
+  | "supervisor_state_sync_kind_epoll"
+  | "supervisor_state_sync_kind_socket"
+  | "supervisor_state_sync_request_flag_wake_waiters"
+  | "supervisor_state_sync_run_flag_run"
+  | "supervisor_state_sync_run_flag_wake_waiters"
+  | "supervisor_blocked_wait_retry_reason_default"
+  | "supervisor_blocked_wait_retry_reason_immediate"
+  | "supervisor_blocked_wait_retry_reason_standard_defer"
+  | "supervisor_blocked_wait_retry_reason_active_child"
+  | "supervisor_blocked_wait_retry_reason_passive_wait"
+  | "supervisor_blocked_wait_retry_reason_process_gate"
+  | "supervisor_blocked_wait_retry_flag_host_progress"
+  | "supervisor_blocked_wait_retry_flag_active_child"
+  | "supervisor_blocked_wait_retry_flag_passive_wait"
+  | "supervisor_blocked_wait_retry_flag_process_gate"
+  | "supervisor_blocked_wait_retry_flag_thread_init_pending"
+  | "supervisor_blocked_wait_wake_source_pipe_sync"
+  | "supervisor_blocked_wait_wake_source_epoll_sync"
+  | "supervisor_blocked_wait_wake_source_socket_sync"
+  | "supervisor_blocked_wait_wake_source_pipe_and_epoll_sync";
+
+function readSupervisorNumberConst(
+  kernel: KernelExports,
+  exportName: SupervisorNumberConstExportName,
+): number {
+  const readConst = kernel[exportName];
+  if (readConst === undefined) {
+    throw new Error(`kernel supervisor ABI missing ${exportName}`);
+  }
+  return readConst.call(kernel);
+}
 
 export type SupervisorBlockedWaitRetryReason =
   | typeof SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_DEFAULT
@@ -121,7 +171,10 @@ export function resumeBlockedSyscallBySupervisor(
   if (resume === undefined) {
     throw new Error("kernel supervisor blocked syscall resume export is missing");
   }
-  return BigInt(resume(vmPtr, timeoutExpired ? SUPERVISOR_RESUME_FLAG_TIMEOUT_EXPIRED : 0));
+  const flags = timeoutExpired
+    ? readSupervisorNumberConst(kernel, "supervisor_resume_flag_timeout_expired")
+    : 0;
+  return BigInt(resume(vmPtr, flags));
 }
 
 function toNumber(value: bigint | number): number {
@@ -331,9 +384,9 @@ function supervisorBlockedPipeResumeActionValue(
 ): number {
   switch (action) {
     case SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT:
-      return kernel.supervisor_blocked_pipe_resume_action_direct?.() ?? action;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_pipe_resume_action_direct");
     case SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER:
-      return kernel.supervisor_blocked_pipe_resume_action_defer?.() ?? action;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_pipe_resume_action_defer");
     default: {
       const exhaustive: never = action;
       return exhaustive;
@@ -378,13 +431,13 @@ function supervisorBlockedPipeSyncBeforeRetryActionValue(
 ): number {
   switch (action) {
     case SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC:
-      return kernel.supervisor_blocked_pipe_sync_before_retry_action_request_sync?.() ?? action;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_pipe_sync_before_retry_action_request_sync");
     case SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT:
-      return kernel.supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output?.() ?? action;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output");
     case SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_SCHEDULE_RETRY:
-      return kernel.supervisor_blocked_pipe_sync_before_retry_action_schedule_retry?.() ?? action;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_pipe_sync_before_retry_action_schedule_retry");
     case SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_NONE:
-      return kernel.supervisor_blocked_pipe_sync_before_retry_action_none?.() ?? action;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_pipe_sync_before_retry_action_none");
     default: {
       const exhaustive: never = action;
       return exhaustive;
@@ -419,8 +472,10 @@ export function supervisorBlockedPipeSyncBeforeRetryAction(
   if (readAction === undefined) {
     throw new Error("kernel supervisor blocked pipe sync-before-retry action export is missing");
   }
-  const kernelWorkerFlag = kernel.supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available?.()
-    ?? SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_FLAG_KERNEL_WORKER_AVAILABLE;
+  const kernelWorkerFlag = readSupervisorNumberConst(
+    kernel,
+    "supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available",
+  );
   const result = readAction(vmPtr, kernelWorkerAvailable ? kernelWorkerFlag : 0);
   if (result < 0) {
     throw new Error(`kernel supervisor blocked pipe sync-before-retry action failed: ${result}`);
@@ -463,17 +518,17 @@ function supervisorBlockedStatusTransitionActionValue(
 ): number {
   switch (action) {
     case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET:
-      return kernel.supervisor_blocked_status_transition_action_sync_socket?.() ?? action;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_status_transition_action_sync_socket");
     case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE:
-      return kernel.supervisor_blocked_status_transition_action_sync_pipe?.() ?? action;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_status_transition_action_sync_pipe");
     case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_FORK_SHARED:
-      return kernel.supervisor_blocked_status_transition_action_sync_fork_shared?.() ?? action;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_status_transition_action_sync_fork_shared");
     case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE_AND_FORK_SHARED:
-      return kernel.supervisor_blocked_status_transition_action_sync_pipe_and_fork_shared?.() ?? action;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_status_transition_action_sync_pipe_and_fork_shared");
     case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET_AND_FORK_SHARED:
-      return kernel.supervisor_blocked_status_transition_action_sync_socket_and_fork_shared?.() ?? action;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_status_transition_action_sync_socket_and_fork_shared");
     case SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_BLOCK:
-      return kernel.supervisor_blocked_status_transition_action_block?.() ?? action;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_status_transition_action_block");
     default: {
       const exhaustive: never = action;
       return exhaustive;
@@ -510,12 +565,16 @@ function supervisorBlockedStatusTransitionFlags(
 ): number {
   let flags = 0;
   if (options.kernelWorkerAvailable) {
-    flags |= kernel.supervisor_blocked_status_transition_flag_kernel_worker_available?.()
-      ?? SUPERVISOR_BLOCKED_STATUS_TRANSITION_FLAG_KERNEL_WORKER_AVAILABLE;
+    flags |= readSupervisorNumberConst(
+      kernel,
+      "supervisor_blocked_status_transition_flag_kernel_worker_available",
+    );
   }
   if (options.networkConnectionsAvailable) {
-    flags |= kernel.supervisor_blocked_status_transition_flag_network_connections_available?.()
-      ?? SUPERVISOR_BLOCKED_STATUS_TRANSITION_FLAG_NETWORK_CONNECTIONS_AVAILABLE;
+    flags |= readSupervisorNumberConst(
+      kernel,
+      "supervisor_blocked_status_transition_flag_network_connections_available",
+    );
   }
   return flags;
 }
@@ -550,9 +609,9 @@ function supervisorBlockedWaitNetworkPumpActionValue(
 ): number {
   switch (action) {
     case SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_SKIP:
-      return kernel.supervisor_blocked_wait_network_pump_action_skip?.() ?? action;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_network_pump_action_skip");
     case SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_PUMP:
-      return kernel.supervisor_blocked_wait_network_pump_action_pump?.() ?? action;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_network_pump_action_pump");
     default: {
       const exhaustive: never = action;
       return exhaustive;
@@ -626,11 +685,11 @@ function supervisorStateSyncKindValue(
 ): number {
   switch (kind) {
     case SUPERVISOR_STATE_SYNC_KIND_PIPE:
-      return kernel.supervisor_state_sync_kind_pipe?.() ?? kind;
+      return readSupervisorNumberConst(kernel, "supervisor_state_sync_kind_pipe");
     case SUPERVISOR_STATE_SYNC_KIND_EPOLL:
-      return kernel.supervisor_state_sync_kind_epoll?.() ?? kind;
+      return readSupervisorNumberConst(kernel, "supervisor_state_sync_kind_epoll");
     case SUPERVISOR_STATE_SYNC_KIND_SOCKET:
-      return kernel.supervisor_state_sync_kind_socket?.() ?? kind;
+      return readSupervisorNumberConst(kernel, "supervisor_state_sync_kind_socket");
     default: {
       const exhaustive: never = kind;
       return exhaustive;
@@ -640,18 +699,16 @@ function supervisorStateSyncKindValue(
 
 function supervisorStateSyncRequestFlags(kernel: KernelExports, wakeWaiters: boolean): number {
   return wakeWaiters
-    ? kernel.supervisor_state_sync_request_flag_wake_waiters?.()
-      ?? SUPERVISOR_STATE_SYNC_REQUEST_FLAG_WAKE_WAITERS
+    ? readSupervisorNumberConst(kernel, "supervisor_state_sync_request_flag_wake_waiters")
     : 0;
 }
 
 function supervisorStateSyncRunFlagRun(kernel: KernelExports): number {
-  return kernel.supervisor_state_sync_run_flag_run?.() ?? SUPERVISOR_STATE_SYNC_RUN_FLAG_RUN;
+  return readSupervisorNumberConst(kernel, "supervisor_state_sync_run_flag_run");
 }
 
 function supervisorStateSyncRunFlagWakeWaiters(kernel: KernelExports): number {
-  return kernel.supervisor_state_sync_run_flag_wake_waiters?.()
-    ?? SUPERVISOR_STATE_SYNC_RUN_FLAG_WAKE_WAITERS;
+  return readSupervisorNumberConst(kernel, "supervisor_state_sync_run_flag_wake_waiters");
 }
 
 export function supervisorStateSyncRequest(
@@ -731,17 +788,17 @@ function supervisorRetryReason(
 ): number {
   switch (reason) {
     case SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_IMMEDIATE:
-      return kernel.supervisor_blocked_wait_retry_reason_immediate?.() ?? reason;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_reason_immediate");
     case SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_STANDARD_DEFER:
-      return kernel.supervisor_blocked_wait_retry_reason_standard_defer?.() ?? reason;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_reason_standard_defer");
     case SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_ACTIVE_CHILD:
-      return kernel.supervisor_blocked_wait_retry_reason_active_child?.() ?? reason;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_reason_active_child");
     case SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT:
-      return kernel.supervisor_blocked_wait_retry_reason_passive_wait?.() ?? reason;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_reason_passive_wait");
     case SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PROCESS_GATE:
-      return kernel.supervisor_blocked_wait_retry_reason_process_gate?.() ?? reason;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_reason_process_gate");
     case SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_DEFAULT:
-      return kernel.supervisor_blocked_wait_retry_reason_default?.() ?? reason;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_reason_default");
     default: {
       const exhaustive: never = reason;
       return exhaustive;
@@ -775,26 +832,28 @@ function supervisorRetryFlags(
 ): number {
   let result = 0;
   if ((flags & SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS) !== 0) {
-    result |= kernel.supervisor_blocked_wait_retry_flag_host_progress?.()
-      ?? SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS;
+    result |= readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_flag_host_progress");
   }
   if ((flags & SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_ACTIVE_CHILD) !== 0) {
-    result |= kernel.supervisor_blocked_wait_retry_flag_active_child?.()
-      ?? SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_ACTIVE_CHILD;
+    result |= readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_flag_active_child");
   }
   if ((flags & SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PASSIVE_WAIT) !== 0) {
-    result |= kernel.supervisor_blocked_wait_retry_flag_passive_wait?.()
-      ?? SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PASSIVE_WAIT;
+    result |= readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_flag_passive_wait");
   }
   if ((flags & SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE) !== 0) {
-    result |= kernel.supervisor_blocked_wait_retry_flag_process_gate?.()
-      ?? SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE;
+    result |= readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_flag_process_gate");
   }
   if ((flags & SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_THREAD_INIT_PENDING) !== 0) {
-    result |= kernel.supervisor_blocked_wait_retry_flag_thread_init_pending?.()
-      ?? SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_THREAD_INIT_PENDING;
+    result |= readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_flag_thread_init_pending");
   }
   return result;
+}
+
+export function supervisorBlockedWaitRetryFlags(
+  kernel: KernelExports,
+  flags: SupervisorBlockedWaitRetryFlags,
+): number {
+  return supervisorRetryFlags(kernel, flags);
 }
 
 function supervisorBlockedResumeDelegationValue(
@@ -803,15 +862,15 @@ function supervisorBlockedResumeDelegationValue(
 ): number {
   switch (delegation) {
     case SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER:
-      return kernel.supervisor_blocked_resume_delegation_kernel_worker?.() ?? delegation;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_resume_delegation_kernel_worker");
     case SUPERVISOR_BLOCKED_RESUME_DELEGATION_WAIT4_KERNEL_WORKER:
-      return kernel.supervisor_blocked_resume_delegation_wait4_kernel_worker?.() ?? delegation;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_resume_delegation_wait4_kernel_worker");
     case SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED:
-      return kernel.supervisor_blocked_resume_delegation_unsupported?.() ?? delegation;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_resume_delegation_unsupported");
     case SUPERVISOR_BLOCKED_RESUME_DELEGATION_EPOLL_DIRECT:
-      return kernel.supervisor_blocked_resume_delegation_epoll_direct?.() ?? delegation;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_resume_delegation_epoll_direct");
     case SUPERVISOR_BLOCKED_RESUME_DELEGATION_DIRECT:
-      return kernel.supervisor_blocked_resume_delegation_direct?.() ?? delegation;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_resume_delegation_direct");
     default: {
       const exhaustive: never = delegation;
       return exhaustive;
@@ -847,8 +906,10 @@ export function supervisorBlockedResumeDelegation(
   if (readDelegation === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_blocked_resume_delegation");
   }
-  const kernelWorkerFlag = kernel.supervisor_blocked_resume_delegation_flag_kernel_worker_available?.()
-    ?? SUPERVISOR_BLOCKED_RESUME_FLAG_KERNEL_WORKER_AVAILABLE;
+  const kernelWorkerFlag = readSupervisorNumberConst(
+    kernel,
+    "supervisor_blocked_resume_delegation_flag_kernel_worker_available",
+  );
   const flags = kernelWorkerAvailable ? kernelWorkerFlag : 0;
   const result = readDelegation(vmPtr, flags);
   if (result < 0) {
@@ -907,13 +968,13 @@ function supervisorBlockedWaitWakeSourceValue(
 ): number {
   switch (source) {
     case SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC:
-      return kernel.supervisor_blocked_wait_wake_source_pipe_sync?.() ?? source;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_wake_source_pipe_sync");
     case SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC:
-      return kernel.supervisor_blocked_wait_wake_source_epoll_sync?.() ?? source;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_wake_source_epoll_sync");
     case SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC:
-      return kernel.supervisor_blocked_wait_wake_source_socket_sync?.() ?? source;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_wake_source_socket_sync");
     case SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_AND_EPOLL_SYNC:
-      return kernel.supervisor_blocked_wait_wake_source_pipe_and_epoll_sync?.() ?? source;
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_wake_source_pipe_and_epoll_sync");
     default: {
       const exhaustive: never = source;
       return exhaustive;

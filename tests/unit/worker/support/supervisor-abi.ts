@@ -58,6 +58,7 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_fs_resident_page_evict_evicted: 2,
   supervisor_resume_kind_futex_wake: 1,
   supervisor_resume_kind_runnable_thread: 2,
+  supervisor_resume_flag_timeout_expired: 1,
   supervisor_blocked_resume_delegation_direct: 0,
   supervisor_blocked_resume_delegation_kernel_worker: 1,
   supervisor_blocked_resume_delegation_wait4_kernel_worker: 2,
@@ -1225,7 +1226,12 @@ export function makeSupervisorAbiStubs(
     supervisor_resume_blocked_syscall(this: KernelExports | undefined, vmPtr: number, flags: number) {
       const receiver = currentExports(this);
       const status = Number(receiver?.thread_status?.(vmPtr) ?? overrides.thread_status?.(vmPtr) ?? 0);
-      const timeoutExpired = (flags & 1) !== 0;
+      const timeoutFlag = Number(
+        receiver?.supervisor_resume_flag_timeout_expired?.()
+          ?? overrides.supervisor_resume_flag_timeout_expired?.()
+          ?? DEFAULT_NUMERIC_EXPORTS.supervisor_resume_flag_timeout_expired,
+      );
+      const timeoutExpired = (flags & timeoutFlag) !== 0;
       if (status === Number(receiver?.abi_status_wait4?.() ?? overrides.abi_status_wait4?.() ?? -1)) {
         return receiver?.thread_resume_wait4?.(vmPtr) ?? overrides.thread_resume_wait4?.(vmPtr) ?? 0n;
       }

@@ -368,6 +368,7 @@ export interface KernelExports {
   supervisor_socket_close_external_peer?(vmPtr: number, fd: number): number;
   supervisor_socket_force_shutdown?(vmPtr: number, fd: number): number;
   supervisor_socket_bridge_active_fd?(vmPtr: number, preferredFd: number, expectedOfd: number, pendingConnect: number): number;
+  supervisor_resume_flag_timeout_expired?(): number;
   supervisor_resume_blocked_syscall?(vmPtr: number, flags: number): bigint | number;
   supervisor_blocked_resume_writeback_count?(vmPtr: number, blockedStatus: number, resumeResult: bigint | number): number;
   supervisor_blocked_resume_writeback_ptr?(vmPtr: number, blockedStatus: number, resumeResult: bigint | number, index: number): bigint | number;
@@ -1681,6 +1682,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_socket_close_external_peer",
   "supervisor_socket_force_shutdown",
   "supervisor_socket_bridge_active_fd",
+  "supervisor_resume_flag_timeout_expired",
   "supervisor_resume_blocked_syscall",
   "supervisor_blocked_resume_writeback_count",
   "supervisor_blocked_resume_writeback_ptr",

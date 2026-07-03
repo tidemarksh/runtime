@@ -43,6 +43,7 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
 ): T & Pick<
   KernelExports,
   "supervisor_resume_blocked_syscall"
+  | "supervisor_resume_flag_timeout_expired"
   | "supervisor_blocked_resume_writeback_count"
   | "supervisor_blocked_resume_writeback_ptr"
   | "supervisor_blocked_resume_writeback_len"
@@ -65,6 +66,9 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_blocked_pipe_wait_has_ready_events"
   | "supervisor_blocked_wait_may_depend_on_network"
   | "supervisor_blocked_wait_should_pump_network"
+  | "supervisor_blocked_epoll_watches_pipe"
+  | "supervisor_blocked_epoll_watched_ofd"
+  | "supervisor_blocked_epoll_dependent_sync_ofd"
   | "supervisor_blocked_resume_delegation"
   | "supervisor_blocked_wait_active_child_pid"
   | "supervisor_blocked_pipe_resume_action_defer"
@@ -112,6 +116,20 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_state_sync_next_run_flags"
   | "supervisor_state_sync_complete"
   | "supervisor_state_sync_clear"
+  | "supervisor_process_held_ofd_refcount"
+  | "supervisor_process_private_pipe_slot_mask"
+  | "supervisor_process_private_pipe_source_mode"
+  | "supervisor_process_private_pipe_target_mode"
+  | "supervisor_process_held_pipe_slot_mask"
+  | "supervisor_process_pipe_used_mask"
+  | "supervisor_process_pipe_slot_mode"
+  | "supervisor_process_pipe_read_open_count"
+  | "supervisor_process_pipe_write_open_count"
+  | "supervisor_process_epoll_held_ofd"
+  | "supervisor_process_epoll_dependent_ofd"
+  | "supervisor_process_sync_dependent_ofd"
+  | "supervisor_process_epoll_dependent_sync_ofd"
+  | "supervisor_process_epoll_depends_on_ofd"
 > {
   const pipeSyncBeforeRetryRequested = new Set<number>();
   const networkPumpBackoffs = new Set<number>();
@@ -224,6 +242,7 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   const nextKernel = kernel as T & Pick<
     KernelExports,
     "supervisor_resume_blocked_syscall"
+    | "supervisor_resume_flag_timeout_expired"
     | "supervisor_blocked_resume_writeback_count"
     | "supervisor_blocked_resume_writeback_ptr"
     | "supervisor_blocked_resume_writeback_len"
@@ -242,6 +261,9 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_blocked_pipe_wait_has_ready_events"
     | "supervisor_blocked_wait_may_depend_on_network"
     | "supervisor_blocked_wait_should_pump_network"
+    | "supervisor_blocked_epoll_watches_pipe"
+    | "supervisor_blocked_epoll_watched_ofd"
+    | "supervisor_blocked_epoll_dependent_sync_ofd"
     | "supervisor_blocked_resume_delegation"
     | "supervisor_blocked_wait_active_child_pid"
     | "supervisor_blocked_pipe_resume_action_defer"
@@ -289,8 +311,143 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_state_sync_next_run_flags"
     | "supervisor_state_sync_complete"
     | "supervisor_state_sync_clear"
+    | "supervisor_process_held_ofd_refcount"
+    | "supervisor_process_private_pipe_slot_mask"
+    | "supervisor_process_private_pipe_source_mode"
+    | "supervisor_process_private_pipe_target_mode"
+    | "supervisor_process_held_pipe_slot_mask"
+    | "supervisor_process_pipe_used_mask"
+    | "supervisor_process_pipe_slot_mode"
+    | "supervisor_process_pipe_read_open_count"
+    | "supervisor_process_pipe_write_open_count"
+    | "supervisor_process_epoll_held_ofd"
+    | "supervisor_process_epoll_dependent_ofd"
+    | "supervisor_process_sync_dependent_ofd"
+    | "supervisor_process_epoll_dependent_sync_ofd"
+    | "supervisor_process_epoll_depends_on_ofd"
   >;
+  const maxPipes = (): number => kernel.abi_max_pipes?.() ?? 64;
+  const fdOfdId = (vmPtr: number, fd: number): number => (
+    kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0
+  );
+  const processHeldOfdRefcount = (vmPtr: number, ofdId: number): number => {
+    let count = 0;
+    for (let fd = 0; fd < maxFds(); fd += 1) {
+      if (fdOfdId(vmPtr, fd) === ofdId) {
+        count += 1;
+      }
+    }
+    return count;
+  };
+  const processOfdByType = (
+    vmPtr: number,
+    index: number,
+    fdType: number | undefined,
+  ): number => {
+    if (fdType === undefined) {
+      return 0;
+    }
+    let seen = 0;
+    for (let fd = 0; fd < maxFds(); fd += 1) {
+      const ofdId = fdOfdId(vmPtr, fd);
+      if (
+        ofdId > 0
+        && (kernel.kernel_ofd_fd_type?.(ofdId) ?? -1) === fdType
+      ) {
+        if (seen === index) {
+          return ofdId;
+        }
+        seen += 1;
+      }
+    }
+    return 0;
+  };
+  const pipeSlotForOfd = (ofdId: number): number => {
+    if (
+      ofdId <= 0
+      || (kernel.kernel_ofd_fd_type?.(ofdId) ?? -1) !== kernel.abi_fd_type_pipe?.()
+    ) {
+      return 0;
+    }
+    const slot = kernel.kernel_ofd_ino?.(ofdId) ?? 0;
+    return slot > 0 && slot < maxPipes() ? slot : 0;
+  };
+  const processHeldPipeSlotMask = (vmPtr: number): bigint => {
+    let mask = 0n;
+    for (let fd = 0; fd < maxFds(); fd += 1) {
+      const slot = pipeSlotForOfd(fdOfdId(vmPtr, fd));
+      if (slot > 0) {
+        mask |= 1n << BigInt(slot);
+      }
+    }
+    return mask;
+  };
+  const pipeOpenCount = (
+    vmPtr: number,
+    pipeSlot: number,
+    wantWriter: boolean,
+  ): number => {
+    let count = 0;
+    for (let fd = 0; fd < maxFds(); fd += 1) {
+      const ofdId = fdOfdId(vmPtr, fd);
+      if (pipeSlotForOfd(ofdId) !== pipeSlot) {
+        continue;
+      }
+      const hostFd = kernel.kernel_ofd_host_fd?.(ofdId) ?? 0;
+      const writer = hostFd < 0;
+      if (writer === wantWriter) {
+        count += 1;
+      }
+    }
+    return count;
+  };
+  const pipeSlotMode = (vmPtr: number, pipeSlot: number): number => {
+    let mode = 0;
+    for (let fd = 0; fd < maxFds(); fd += 1) {
+      const ofdId = fdOfdId(vmPtr, fd);
+      if (pipeSlotForOfd(ofdId) !== pipeSlot) {
+        continue;
+      }
+      mode |= (kernel.kernel_ofd_host_fd?.(ofdId) ?? 0) < 0 ? 2 : 1;
+    }
+    return mode;
+  };
   nextKernel.supervisor_blocked_wait_active_child_pid ??= () => 0;
+  nextKernel.supervisor_process_held_ofd_refcount ??= processHeldOfdRefcount;
+  nextKernel.supervisor_process_epoll_held_ofd ??= (vmPtr: number, index: number) =>
+    processOfdByType(vmPtr, index, kernel.abi_fd_type_epoll?.());
+  nextKernel.supervisor_process_epoll_dependent_ofd ??= () => 0;
+  nextKernel.supervisor_process_sync_dependent_ofd ??= () => 0;
+  nextKernel.supervisor_process_epoll_dependent_sync_ofd ??= () => 0;
+  nextKernel.supervisor_process_epoll_depends_on_ofd ??= () => 0;
+  nextKernel.supervisor_process_private_pipe_slot_mask ??= () => 0n;
+  nextKernel.supervisor_process_private_pipe_source_mode ??= () => 0;
+  nextKernel.supervisor_process_private_pipe_target_mode ??= () => 0;
+  nextKernel.supervisor_process_held_pipe_slot_mask ??= processHeldPipeSlotMask;
+  nextKernel.supervisor_process_pipe_used_mask ??= (vmPtr: number) => {
+    const sharedPipeUsed = BigInt(kernel.kernel_pipe_used?.() ?? 0n);
+    return sharedPipeUsed === 0n ? processHeldPipeSlotMask(vmPtr) | 1n : sharedPipeUsed;
+  };
+  nextKernel.supervisor_process_pipe_slot_mode ??= pipeSlotMode;
+  nextKernel.supervisor_process_pipe_read_open_count ??= (vmPtr: number, pipeSlot: number) =>
+    pipeOpenCount(vmPtr, pipeSlot, false);
+  nextKernel.supervisor_process_pipe_write_open_count ??= (vmPtr: number, pipeSlot: number) =>
+    pipeOpenCount(vmPtr, pipeSlot, true);
+  nextKernel.supervisor_blocked_epoll_watched_ofd ??= () => 0;
+  nextKernel.supervisor_blocked_epoll_dependent_sync_ofd ??= (vmPtr: number, index: number) =>
+    nextKernel.supervisor_blocked_epoll_watched_ofd!(vmPtr, index);
+  nextKernel.supervisor_blocked_epoll_watches_pipe ??= (vmPtr: number) => {
+    for (let index = 0; index < maxFds(); index += 1) {
+      const ofdId = nextKernel.supervisor_blocked_epoll_watched_ofd!(vmPtr, index);
+      if (ofdId === 0) {
+        return 0;
+      }
+      if ((kernel.kernel_ofd_fd_type?.(ofdId) ?? -1) === kernel.abi_fd_type_pipe?.()) {
+        return 1;
+      }
+    }
+    return 0;
+  };
   nextKernel.supervisor_blocked_pipe_resume_action_defer ??= () =>
     SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER;
   nextKernel.supervisor_blocked_pipe_resume_action_direct ??= () =>
@@ -678,6 +835,8 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED;
   nextKernel.supervisor_blocked_resume_delegation_epoll_direct = () =>
     SUPERVISOR_BLOCKED_RESUME_DELEGATION_EPOLL_DIRECT;
+  nextKernel.supervisor_resume_flag_timeout_expired = () =>
+    SUPERVISOR_RESUME_FLAG_TIMEOUT_EXPIRED;
   nextKernel.supervisor_resume_blocked_syscall = (vmPtr: number, flags: number) => {
     const timeoutExpired = (flags & SUPERVISOR_RESUME_FLAG_TIMEOUT_EXPIRED) !== 0;
     const status = kernel.thread_status?.(vmPtr);

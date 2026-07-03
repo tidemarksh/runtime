@@ -1,4 +1,5 @@
 import {
+  supervisorBlockedWaitRetryFlags,
   supervisorBlockedWaitTimerRequired,
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
   type SupervisorBlockedWaitRetryFlags,
@@ -123,7 +124,10 @@ export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWai
       deps.failProcess(handle, new Error("kernel supervisor ABI missing supervisor_enqueue_blocked_retry_timer"));
       return;
     }
-    const enqueueResult = enqueueRetryTimer(blocked.vmPtr, flags);
+    const enqueueResult = enqueueRetryTimer(
+      blocked.vmPtr,
+      supervisorBlockedWaitRetryFlags(handle.kernel, flags),
+    );
     if (enqueueResult < 0) {
       deps.failProcess(
         handle,
