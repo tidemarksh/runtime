@@ -19,6 +19,8 @@ const FD_TYPE_FILE = 1;
 const FD_TYPE_PIPE = 6;
 const FD_TYPE_EPOLL = 7;
 const FD_TYPE_SOCKET = 8;
+const PIPE_SLOT_MODE_READ = 1;
+const PIPE_SLOT_MODE_WRITE = 2;
 const PIPE_SLOT_BYTES = 32 + 65_536;
 const OFD_SLOT_BYTES = 32;
 const PROCESS_FD_ENTRY_BYTES = 8;
@@ -93,6 +95,58 @@ function makeKernel(
     new DataView(memory.buffer).getUint32(state.ofdTablePtr + ofdId * OFD_SLOT_BYTES + offset, true);
   const readOfdBigInt64 = (ofdId: number, offset: number): bigint =>
     new DataView(memory.buffer).getBigInt64(state.ofdTablePtr + ofdId * OFD_SLOT_BYTES + offset, true);
+  const heldOfdRefcount = (ofdId: number): number => {
+    let refcount = 0;
+    for (const heldOfdId of fdMap.values()) {
+      if (heldOfdId === ofdId) {
+        refcount += 1;
+      }
+    }
+    return refcount;
+  };
+  const pipeModeForOfd = (ofdId: number): { pipeSlot: number; mode: number } | null => {
+    if (ofdId <= 0 || ofdId >= 32 || readOfdInt32(ofdId, 0) !== FD_TYPE_PIPE) {
+      return null;
+    }
+    const pipeSlot = readOfdUint32(ofdId, 24);
+    if (pipeSlot <= 0 || pipeSlot >= 32) {
+      return null;
+    }
+    return {
+      pipeSlot,
+      mode: readOfdInt32(ofdId, 4) >= 0 ? PIPE_SLOT_MODE_READ : PIPE_SLOT_MODE_WRITE,
+    };
+  };
+  const heldPipeSlotMask = (): bigint => {
+    let mask = 0n;
+    for (const ofdId of new Set(fdMap.values())) {
+      const pipeMode = pipeModeForOfd(ofdId);
+      if (pipeMode) {
+        mask |= 1n << BigInt(pipeMode.pipeSlot);
+      }
+    }
+    return mask;
+  };
+  const pipeSlotMode = (pipeSlot: number): number => {
+    let mode = 0;
+    for (const ofdId of new Set(fdMap.values())) {
+      const pipeMode = pipeModeForOfd(ofdId);
+      if (pipeMode?.pipeSlot === pipeSlot) {
+        mode |= pipeMode.mode;
+      }
+    }
+    return mode;
+  };
+  const pipeOpenCount = (pipeSlot: number, requestedMode: number): number => {
+    let count = 0;
+    for (const ofdId of new Set(fdMap.values())) {
+      const pipeMode = pipeModeForOfd(ofdId);
+      if (pipeMode?.pipeSlot === pipeSlot && (pipeMode.mode & requestedMode) !== 0) {
+        count += 1;
+      }
+    }
+    return count;
+  };
 
   return {
     memory,
@@ -185,6 +239,19 @@ function makeKernel(
     process_stdout_pipe: () => 0,
     process_stderr_pipe: () => 0,
     thread_blocked_ofd_id: () => 0,
+    supervisor_process_held_ofd_refcount: (_vmPtr: number, ofdId: number) => heldOfdRefcount(ofdId),
+    supervisor_process_private_pipe_slot_mask: () => 0n,
+    supervisor_process_private_pipe_source_mode: () => 0,
+    supervisor_process_private_pipe_target_mode: () => 0,
+    supervisor_process_held_pipe_slot_mask: () => heldPipeSlotMask(),
+    supervisor_process_pipe_used_mask: () => 1n | heldPipeSlotMask(),
+    supervisor_process_pipe_slot_mode: (_vmPtr: number, pipeSlot: number) => pipeSlotMode(pipeSlot),
+    supervisor_process_pipe_read_open_count: (_vmPtr: number, pipeSlot: number) => (
+      pipeOpenCount(pipeSlot, PIPE_SLOT_MODE_READ)
+    ),
+    supervisor_process_pipe_write_open_count: (_vmPtr: number, pipeSlot: number) => (
+      pipeOpenCount(pipeSlot, PIPE_SLOT_MODE_WRITE)
+    ),
     kernel_ofd_fd_type: (ofdId: number) => readOfdInt32(ofdId, 0),
     kernel_ofd_host_fd: (ofdId: number) => readOfdInt32(ofdId, 4),
     kernel_ofd_status_flags: (ofdId: number) => readOfdUint32(ofdId, 8),
@@ -355,7 +422,7 @@ test("adoptKernelStateForHandle preserves local epoll table pointer", () => {
   expect(adopted.heapBase).toBe(incoming.heapBase);
   expect(adopted.heapPtr).toBe(incoming.heapPtr);
   expect(adopted.epollTablePtr).toBe(handle.kernelState.epollTablePtr);
-  expect(adopted.pipeUsed).toBe(incoming.pipeUsed);
+  expect(adopted.pipeUsed).toBe(incoming.pipeUsed | 1n);
 });
 
 test("adoptKernelStateForHandle uses supervisor pipe-used authority when available", () => {

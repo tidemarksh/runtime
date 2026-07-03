@@ -53,6 +53,92 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
   let stderrPipeSlot = 0;
   let fdMap = new Map<number, number>();
 
+  const validPipeSlot = (pipeSlot: number): boolean => pipeSlot > 0 && pipeSlot < 64;
+  const pipeBit = (pipeSlot: number): bigint => validPipeSlot(pipeSlot) ? 1n << BigInt(pipeSlot) : 0n;
+  const privatePipeSlotMask = (): bigint => (
+    pipeBit(stdinPipeSlot) | pipeBit(stdoutPipeSlot) | pipeBit(stderrPipeSlot)
+  );
+  const heldOfdRefcount = (ofdId: number): number => {
+    let refcount = 0;
+    for (const heldOfdId of fdMap.values()) {
+      if (heldOfdId === ofdId) {
+        refcount += 1;
+      }
+    }
+    return refcount;
+  };
+  const pipeModeForOfd = (ofdId: number): { pipeSlot: number; mode: number } | null => {
+    if (ofdId <= 0 || ofdId >= 256) {
+      return null;
+    }
+    const view = new DataView(memory.buffer);
+    const ofdBase = runtimeState.ofdTablePtr + ofdId * 32;
+    if (view.getInt32(ofdBase, true) !== FD_TYPE_PIPE) {
+      return null;
+    }
+    const pipeSlot = view.getUint32(ofdBase + 24, true);
+    if (!validPipeSlot(pipeSlot)) {
+      return null;
+    }
+    return {
+      pipeSlot,
+      mode: view.getInt32(ofdBase + 4, true) >= 0 ? PIPE_SLOT_MODE_READ : PIPE_SLOT_MODE_WRITE,
+    };
+  };
+  const heldPipeSlotMask = (): bigint => {
+    const privateMask = privatePipeSlotMask();
+    let mask = 0n;
+    for (const ofdId of new Set(fdMap.values())) {
+      const mode = pipeModeForOfd(ofdId);
+      if (!mode) {
+        continue;
+      }
+      const bit = pipeBit(mode.pipeSlot);
+      if (bit !== 0n && (privateMask & bit) === 0n) {
+        mask |= bit;
+      }
+    }
+    return mask;
+  };
+  const pipeSlotMode = (pipeSlot: number): number => {
+    if ((privatePipeSlotMask() & pipeBit(pipeSlot)) !== 0n) {
+      return 0;
+    }
+    let mode = 0;
+    for (const ofdId of new Set(fdMap.values())) {
+      const ofdPipeMode = pipeModeForOfd(ofdId);
+      if (ofdPipeMode?.pipeSlot === pipeSlot) {
+        mode |= ofdPipeMode.mode;
+      }
+    }
+    return mode;
+  };
+  const pipeOpenCount = (pipeSlot: number, requestedMode: number): number => {
+    if (!validPipeSlot(pipeSlot)) {
+      return 0;
+    }
+    let count = 0;
+    if (stdinPipeSlot === pipeSlot && (requestedMode & PIPE_SLOT_MODE_WRITE) !== 0) {
+      count += 1;
+    }
+    if (stdoutPipeSlot === pipeSlot && (requestedMode & PIPE_SLOT_MODE_READ) !== 0) {
+      count += 1;
+    }
+    if (stderrPipeSlot === pipeSlot && (requestedMode & PIPE_SLOT_MODE_READ) !== 0) {
+      count += 1;
+    }
+    for (const ofdId of new Set(fdMap.values())) {
+      const ofdPipeMode = pipeModeForOfd(ofdId);
+      if (
+        ofdPipeMode?.pipeSlot === pipeSlot
+        && (ofdPipeMode.mode & requestedMode) !== 0
+      ) {
+        count += 1;
+      }
+    }
+    return count;
+  };
+
   const exports = {
     memory,
     abi_max_fds: () => 256,
@@ -150,6 +236,25 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
       stdoutPipeSlot = 0;
       stderrPipeSlot = 0;
     },
+    supervisor_process_held_ofd_refcount: (_vmPtr: number, ofdId: number) => heldOfdRefcount(ofdId),
+    supervisor_process_private_pipe_slot_mask: () => privatePipeSlotMask(),
+    supervisor_process_private_pipe_source_mode: (_vmPtr: number, pipeSlot: number) => (
+      (privatePipeSlotMask() & pipeBit(pipeSlot)) !== 0n
+        ? PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE
+        : 0
+    ),
+    supervisor_process_private_pipe_target_mode: (_vmPtr: number, pipeSlot: number) => (
+      (privatePipeSlotMask() & pipeBit(pipeSlot)) !== 0n ? PIPE_SLOT_MODE_READ : 0
+    ),
+    supervisor_process_held_pipe_slot_mask: () => heldPipeSlotMask(),
+    supervisor_process_pipe_used_mask: () => 1n | privatePipeSlotMask() | heldPipeSlotMask(),
+    supervisor_process_pipe_slot_mode: (_vmPtr: number, pipeSlot: number) => pipeSlotMode(pipeSlot),
+    supervisor_process_pipe_read_open_count: (_vmPtr: number, pipeSlot: number) => (
+      pipeOpenCount(pipeSlot, PIPE_SLOT_MODE_READ)
+    ),
+    supervisor_process_pipe_write_open_count: (_vmPtr: number, pipeSlot: number) => (
+      pipeOpenCount(pipeSlot, PIPE_SLOT_MODE_WRITE)
+    ),
     kernel_ofd_fd_type: (ofdId: number) => new DataView(memory.buffer)
       .getInt32(runtimeState.ofdTablePtr + ofdId * 32, true),
     kernel_ofd_host_fd: (ofdId: number) => new DataView(memory.buffer)

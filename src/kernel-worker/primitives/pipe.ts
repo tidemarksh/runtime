@@ -18,7 +18,6 @@ import {
   PIPE_WRITE_OPEN_OFFSET,
 } from "../../layout/pipe.js";
 import type { KernelWorkerPipeSlotSnapshot } from "../../messages.js";
-import { collectProcessHeldOfdRefcounts } from "./ofd.js";
 
 const PIPE_OFF_HEAD = PIPE_HEAD_OFFSET;
 const PIPE_OFF_TAIL = PIPE_TAIL_OFFSET;
@@ -88,6 +87,47 @@ function pipeModesFromSupervisor(
   return modes;
 }
 
+function requireSupervisorPipeMask(
+  processExports: KernelExports,
+  exportName:
+    | "supervisor_process_private_pipe_slot_mask"
+    | "supervisor_process_held_pipe_slot_mask"
+    | "supervisor_process_pipe_used_mask",
+): (vmPtr: number) => bigint | number {
+  const readMask = processExports[exportName];
+  if (!readMask) {
+    throw new Error(`kernel supervisor ABI missing ${exportName}`);
+  }
+  return readMask;
+}
+
+function requireSupervisorPipeMode(
+  processExports: KernelExports,
+  exportName:
+    | "supervisor_process_private_pipe_source_mode"
+    | "supervisor_process_private_pipe_target_mode"
+    | "supervisor_process_pipe_slot_mode",
+): (vmPtr: number, pipeSlot: number) => number {
+  const readMode = processExports[exportName];
+  if (!readMode) {
+    throw new Error(`kernel supervisor ABI missing ${exportName}`);
+  }
+  return readMode;
+}
+
+function requireSupervisorPipeCount(
+  processExports: KernelExports,
+  exportName:
+    | "supervisor_process_pipe_read_open_count"
+    | "supervisor_process_pipe_write_open_count",
+): (vmPtr: number, pipeSlot: number) => number {
+  const readCount = processExports[exportName];
+  if (!readCount) {
+    throw new Error(`kernel supervisor ABI missing ${exportName}`);
+  }
+  return readCount;
+}
+
 export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDeps) {
   function syncPipeOfdGenerations(
     targetExports: KernelExports,
@@ -120,24 +160,6 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
         view.setBigInt64(ofdOffset + OFD_OFFSET_OFFSET, BigInt(pipeGeneration), true);
       }
     }
-  }
-
-  function collectActiveHostStdioPipeSlots(processExports: KernelExports, vmPtr: number): {
-    stdin: number;
-    stdout: number;
-    stderr: number;
-  } {
-    const validPipeSlot = (pipeSlot: number): number => (
-      pipeSlot > 0 && pipeSlot < processExports.abi_max_pipes() ? pipeSlot : 0
-    );
-    const stdinPipe = processExports.process_stdin_pipe(vmPtr);
-    const stdoutPipe = processExports.process_stdout_pipe(vmPtr);
-    const stderrPipe = processExports.process_stderr_pipe(vmPtr);
-    return {
-      stdin: validPipeSlot(stdinPipe),
-      stdout: validPipeSlot(stdoutPipe),
-      stderr: validPipeSlot(stderrPipe),
-    };
   }
 
   function collectOfdPipeModes(
@@ -189,38 +211,16 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
     return modes;
   }
 
-  function collectBlockedOfdPipeModes(
-    processExports: KernelExports,
-    vmPtr: number,
-  ): Array<{ ofdId: number; pipeSlot: number; mode: number }> {
-    const ofdId = processExports.thread_blocked_ofd_id?.(vmPtr) ?? 0;
-    if (ofdId <= 0 || ofdId >= processExports.abi_max_fds()) {
-      return [];
-    }
-    return collectOfdPipeModes(processExports, ofdId)
-      .map(({ pipeSlot, mode }) => ({ ofdId, pipeSlot, mode }));
-  }
-
   function collectProcessPrivatePipeSlots(
     processExports: KernelExports,
     vmPtr: number,
   ): Set<number> {
     const maxPipes = processExports.abi_max_pipes();
-    const supervisorMask = processExports.supervisor_process_private_pipe_slot_mask?.(vmPtr);
-    if (supervisorMask !== undefined) {
-      return pipeSlotsFromMask(supervisorMaskToBigInt(supervisorMask), maxPipes);
-    }
-    const privatePipeSlots = new Set<number>();
-    const activeHostStdio = collectActiveHostStdioPipeSlots(processExports, vmPtr);
-    const candidatePipeSlots = [activeHostStdio.stdin, activeHostStdio.stdout, activeHostStdio.stderr];
-
-    for (const pipeSlot of candidatePipeSlots) {
-      if (pipeSlot > 0 && pipeSlot < maxPipes) {
-        privatePipeSlots.add(pipeSlot);
-      }
-    }
-
-    return privatePipeSlots;
+    const supervisorMask = requireSupervisorPipeMask(
+      processExports,
+      "supervisor_process_private_pipe_slot_mask",
+    )(vmPtr);
+    return pipeSlotsFromMask(supervisorMaskToBigInt(supervisorMask), maxPipes);
   }
 
   function collectProcessPrivatePipeSourceModes(
@@ -228,29 +228,11 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
     vmPtr: number,
   ): Map<number, number> {
     const maxPipes = processExports.abi_max_pipes();
-    const supervisorSourceMode = processExports.supervisor_process_private_pipe_source_mode;
-    if (supervisorSourceMode) {
-      return pipeModesFromSupervisor(maxPipes, (pipeSlot) => supervisorSourceMode(vmPtr, pipeSlot));
-    }
-    const privatePipeSlotModes = new Map<number, number>();
-    const activeHostStdio = collectActiveHostStdioPipeSlots(processExports, vmPtr);
-    const privatePipeCandidates = [
-      {
-        pipeSlot: activeHostStdio.stdin,
-        mode: PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE,
-      },
-      { pipeSlot: activeHostStdio.stdout, mode: PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE },
-      { pipeSlot: activeHostStdio.stderr, mode: PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE },
-    ];
-
-    for (const { pipeSlot, mode } of privatePipeCandidates) {
-      if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
-        continue;
-      }
-      privatePipeSlotModes.set(pipeSlot, (privatePipeSlotModes.get(pipeSlot) ?? 0) | mode);
-    }
-
-    return privatePipeSlotModes;
+    const supervisorSourceMode = requireSupervisorPipeMode(
+      processExports,
+      "supervisor_process_private_pipe_source_mode",
+    );
+    return pipeModesFromSupervisor(maxPipes, (pipeSlot) => supervisorSourceMode(vmPtr, pipeSlot));
   }
 
   function collectProcessPrivatePipeTargetModes(
@@ -258,59 +240,20 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
     vmPtr: number,
   ): Map<number, number> {
     const maxPipes = processExports.abi_max_pipes();
-    const supervisorTargetMode = processExports.supervisor_process_private_pipe_target_mode;
-    if (supervisorTargetMode) {
-      return pipeModesFromSupervisor(maxPipes, (pipeSlot) => supervisorTargetMode(vmPtr, pipeSlot));
-    }
-    const privatePipeSlotModes = new Map<number, number>();
-    const activeHostStdio = collectActiveHostStdioPipeSlots(processExports, vmPtr);
-    const privatePipeCandidates = [
-      {
-        pipeSlot: activeHostStdio.stdin,
-        mode: PIPE_SLOT_MODE_READ,
-      },
-      { pipeSlot: activeHostStdio.stdout, mode: PIPE_SLOT_MODE_READ },
-      { pipeSlot: activeHostStdio.stderr, mode: PIPE_SLOT_MODE_READ },
-    ];
-
-    for (const { pipeSlot, mode } of privatePipeCandidates) {
-      if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
-        continue;
-      }
-      privatePipeSlotModes.set(pipeSlot, (privatePipeSlotModes.get(pipeSlot) ?? 0) | mode);
-    }
-
-    return privatePipeSlotModes;
+    const supervisorTargetMode = requireSupervisorPipeMode(
+      processExports,
+      "supervisor_process_private_pipe_target_mode",
+    );
+    return pipeModesFromSupervisor(maxPipes, (pipeSlot) => supervisorTargetMode(vmPtr, pipeSlot));
   }
 
   function collectProcessHeldPipeSlots(processExports: KernelExports, vmPtr: number): Set<number> {
-    const maxFds = processExports.abi_max_fds();
     const maxPipes = processExports.abi_max_pipes();
-    const supervisorMask = processExports.supervisor_process_held_pipe_slot_mask?.(vmPtr);
-    if (supervisorMask !== undefined) {
-      return pipeSlotsFromMask(supervisorMaskToBigInt(supervisorMask), maxPipes);
-    }
-    const heldRefcounts = collectProcessHeldOfdRefcounts(processExports, vmPtr);
-    const privatePipeSlots = collectProcessPrivatePipeSlots(processExports, vmPtr);
-    const pipeSlots = new Set<number>();
-
-    for (let ofdId = 1; ofdId < maxFds; ofdId += 1) {
-      if (heldRefcounts[ofdId] <= 0) {
-        continue;
-      }
-      for (const { pipeSlot } of collectOfdPipeModes(processExports, ofdId)) {
-        if (pipeSlot > 0 && pipeSlot < maxPipes && !privatePipeSlots.has(pipeSlot)) {
-          pipeSlots.add(pipeSlot);
-        }
-      }
-    }
-    for (const { pipeSlot } of collectBlockedOfdPipeModes(processExports, vmPtr)) {
-      if (pipeSlot > 0 && pipeSlot < maxPipes && !privatePipeSlots.has(pipeSlot)) {
-        pipeSlots.add(pipeSlot);
-      }
-    }
-
-    return pipeSlots;
+    const supervisorMask = requireSupervisorPipeMask(
+      processExports,
+      "supervisor_process_held_pipe_slot_mask",
+    )(vmPtr);
+    return pipeSlotsFromMask(supervisorMaskToBigInt(supervisorMask), maxPipes);
   }
 
   function composeProcessPipeUsed(
@@ -318,49 +261,20 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
     vmPtr: number,
     sharedPipeUsed: bigint,
   ): bigint {
-    const supervisorMask = processExports.supervisor_process_pipe_used_mask?.(vmPtr);
-    if (supervisorMask !== undefined) {
-      return sharedPipeUsed | supervisorMaskToBigInt(supervisorMask);
-    }
-    let pipeUsed = sharedPipeUsed | 1n;
-    for (const pipeSlot of collectProcessPrivatePipeSlots(processExports, vmPtr)) {
-      pipeUsed |= 1n << BigInt(pipeSlot);
-    }
-    return pipeUsed;
+    const supervisorMask = requireSupervisorPipeMask(
+      processExports,
+      "supervisor_process_pipe_used_mask",
+    )(vmPtr);
+    return sharedPipeUsed | supervisorMaskToBigInt(supervisorMask);
   }
 
   function collectProcessPipeSlotModes(processExports: KernelExports, vmPtr: number): Map<number, number> {
-    const maxFds = processExports.abi_max_fds();
     const maxPipes = processExports.abi_max_pipes();
-    const supervisorSlotMode = processExports.supervisor_process_pipe_slot_mode;
-    if (supervisorSlotMode) {
-      return pipeModesFromSupervisor(maxPipes, (pipeSlot) => supervisorSlotMode(vmPtr, pipeSlot));
-    }
-    const heldRefcounts = collectProcessHeldOfdRefcounts(processExports, vmPtr);
-    const privatePipeSlots = collectProcessPrivatePipeSlots(processExports, vmPtr);
-    const pipeSlotModes = new Map<number, number>();
-
-    for (let ofdId = 1; ofdId < maxFds; ofdId += 1) {
-      if (heldRefcounts[ofdId] <= 0) {
-        continue;
-      }
-      for (const { pipeSlot, mode } of collectOfdPipeModes(processExports, ofdId)) {
-        if (pipeSlot <= 0 || pipeSlot >= maxPipes || privatePipeSlots.has(pipeSlot)) {
-          continue;
-        }
-        const currentMode = pipeSlotModes.get(pipeSlot) ?? 0;
-        pipeSlotModes.set(pipeSlot, currentMode | mode);
-      }
-    }
-    for (const { pipeSlot, mode } of collectBlockedOfdPipeModes(processExports, vmPtr)) {
-      if (pipeSlot <= 0 || pipeSlot >= maxPipes || privatePipeSlots.has(pipeSlot)) {
-        continue;
-      }
-      const currentMode = pipeSlotModes.get(pipeSlot) ?? 0;
-      pipeSlotModes.set(pipeSlot, currentMode | mode);
-    }
-
-    return pipeSlotModes;
+    const supervisorSlotMode = requireSupervisorPipeMode(
+      processExports,
+      "supervisor_process_pipe_slot_mode",
+    );
+    return pipeModesFromSupervisor(maxPipes, (pipeSlot) => supervisorSlotMode(vmPtr, pipeSlot));
   }
 
   function recomputeCanonicalPipeControlState(): {
@@ -370,13 +284,10 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
     managedPipeSlots: number[];
   } {
     const canonicalExports = deps.getCanonicalExports();
-    const maxFds = canonicalExports.abi_max_fds();
     const maxPipes = canonicalExports.abi_max_pipes();
     const readOpen = new Int32Array(maxPipes);
     const writeOpen = new Int32Array(maxPipes);
     const managedPipeSlots = new Set<number>();
-    const readEndpointKeys = new Set<string>();
-    const writeEndpointKeys = new Set<string>();
     const priorPipeUsed = readKernelRuntimeState(canonicalExports).pipeUsed;
 
     for (let pipeIdx = 1; pipeIdx < maxPipes; pipeIdx += 1) {
@@ -385,97 +296,41 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
       }
     }
 
-    for (const [pid, processExports] of deps.processKernels) {
-      const vmPtr = deps.getCanonicalProcessVmPtr(pid);
+    for (const [processPid, processExports] of deps.processKernels) {
+      const vmPtr = deps.getCanonicalProcessVmPtr(processPid);
       if (vmPtr === 0) {
         continue;
       }
 
-      const supervisorReadOpen = processExports.supervisor_process_pipe_read_open_count;
-      const supervisorWriteOpen = processExports.supervisor_process_pipe_write_open_count;
-      if (supervisorReadOpen && supervisorWriteOpen) {
-        const supervisorUsedMask = processExports.supervisor_process_pipe_used_mask?.(vmPtr)
-          ?? processExports.supervisor_process_held_pipe_slot_mask?.(vmPtr);
-        if (supervisorUsedMask !== undefined) {
-          for (const pipeSlot of pipeSlotsFromMask(supervisorMaskToBigInt(supervisorUsedMask), maxPipes)) {
-            managedPipeSlots.add(pipeSlot);
-          }
-        }
-        for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
-          const processReadOpen = supervisorReadOpen(vmPtr, pipeSlot);
-          const processWriteOpen = supervisorWriteOpen(vmPtr, pipeSlot);
-          if (processReadOpen > 0 || processWriteOpen > 0) {
-            managedPipeSlots.add(pipeSlot);
-          }
-          if (processReadOpen > 0) {
-            readOpen[pipeSlot] += processReadOpen;
-          }
-          if (processWriteOpen > 0) {
-            writeOpen[pipeSlot] += processWriteOpen;
-          }
-        }
-        continue;
-      }
+      const supervisorReadOpen = requireSupervisorPipeCount(
+        processExports,
+        "supervisor_process_pipe_read_open_count",
+      );
+      const supervisorWriteOpen = requireSupervisorPipeCount(
+        processExports,
+        "supervisor_process_pipe_write_open_count",
+      );
 
-      const activeHostStdio = collectActiveHostStdioPipeSlots(processExports, vmPtr);
-      const stdinPipeSlot = activeHostStdio.stdin;
-      if (stdinPipeSlot > 0 && stdinPipeSlot < maxPipes) {
-        managedPipeSlots.add(stdinPipeSlot);
-        writeEndpointKeys.add(`host:${stdinPipeSlot}:${pid}:stdin`);
-      }
-
-      const stdoutPipeSlot = activeHostStdio.stdout;
-      if (stdoutPipeSlot > 0 && stdoutPipeSlot < maxPipes) {
-        managedPipeSlots.add(stdoutPipeSlot);
-        readEndpointKeys.add(`host:${stdoutPipeSlot}:${pid}:stdout`);
-      }
-
-      const stderrPipeSlot = activeHostStdio.stderr;
-      if (stderrPipeSlot > 0 && stderrPipeSlot < maxPipes) {
-        managedPipeSlots.add(stderrPipeSlot);
-        readEndpointKeys.add(`host:${stderrPipeSlot}:${pid}:stderr`);
-      }
-
-      const heldRefcounts = collectProcessHeldOfdRefcounts(processExports, vmPtr);
-      for (let ofdId = 1; ofdId < maxFds; ofdId += 1) {
-        const refcount = heldRefcounts[ofdId] ?? 0;
-        if (refcount <= 0) {
-          continue;
-        }
-        for (const { pipeSlot, mode } of collectOfdPipeModes(processExports, ofdId)) {
-          if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
-            continue;
-          }
-          managedPipeSlots.add(pipeSlot);
-          if ((mode & PIPE_SLOT_MODE_READ) !== 0) {
-            readEndpointKeys.add(`${pid}:${pipeSlot}:${ofdId}`);
-          }
-          if ((mode & PIPE_SLOT_MODE_WRITE) !== 0) {
-            writeEndpointKeys.add(`${pid}:${pipeSlot}:${ofdId}`);
-          }
-        }
-      }
-      for (const { ofdId, pipeSlot, mode } of collectBlockedOfdPipeModes(processExports, vmPtr)) {
-        if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
-          continue;
-        }
+      const supervisorUsedMask = requireSupervisorPipeMask(
+        processExports,
+        "supervisor_process_pipe_used_mask",
+      )(vmPtr);
+      for (const pipeSlot of pipeSlotsFromMask(supervisorMaskToBigInt(supervisorUsedMask), maxPipes)) {
         managedPipeSlots.add(pipeSlot);
-        if ((mode & PIPE_SLOT_MODE_READ) !== 0) {
-          readEndpointKeys.add(`${pid}:${pipeSlot}:${ofdId}`);
+      }
+      for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
+        const processReadOpen = supervisorReadOpen(vmPtr, pipeSlot);
+        const processWriteOpen = supervisorWriteOpen(vmPtr, pipeSlot);
+        if (processReadOpen > 0 || processWriteOpen > 0) {
+          managedPipeSlots.add(pipeSlot);
         }
-        if ((mode & PIPE_SLOT_MODE_WRITE) !== 0) {
-          writeEndpointKeys.add(`${pid}:${pipeSlot}:${ofdId}`);
+        if (processReadOpen > 0) {
+          readOpen[pipeSlot] += processReadOpen;
+        }
+        if (processWriteOpen > 0) {
+          writeOpen[pipeSlot] += processWriteOpen;
         }
       }
-    }
-
-    for (const key of readEndpointKeys) {
-      const [, pipeSlot] = key.split(":");
-      readOpen[Number(pipeSlot)] += 1;
-    }
-    for (const key of writeEndpointKeys) {
-      const [, pipeSlot] = key.split(":");
-      writeOpen[Number(pipeSlot)] += 1;
     }
 
     const bytes = new DataView(canonicalExports.memory.buffer);
