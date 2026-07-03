@@ -35,24 +35,35 @@ function outputTarget(handle: ProcessHandle): ProcessHandle {
   return handle.stdioOwner ?? handle;
 }
 
-const SUPERVISOR_STDIO_OUTPUT_SETTLE_KIND_VISIBLE = 1;
-const SUPERVISOR_STDIO_OUTPUT_SETTLE_KIND_INHERITED_CHILD = 2;
-const SUPERVISOR_STDIO_PIPE_READ_PROGRESS_ACTION_NONE = 0;
-const SUPERVISOR_STDIO_PIPE_READ_PROGRESS_ACTION_SNAPSHOT = 1;
-
 type SupervisorStdioOutputSettleKind =
-  | typeof SUPERVISOR_STDIO_OUTPUT_SETTLE_KIND_VISIBLE
-  | typeof SUPERVISOR_STDIO_OUTPUT_SETTLE_KIND_INHERITED_CHILD;
+  | "visible"
+  | "inherited-child";
+
+function supervisorStdioOutputSettleKindVisible(handle: ProcessHandle): number {
+  const read = handle.kernel.supervisor_stdio_output_settle_kind_visible;
+  if (read === undefined) {
+    throw new Error("kernel supervisor ABI missing stdio visible output settle kind export");
+  }
+  return read();
+}
+
+function supervisorStdioOutputSettleKindInheritedChild(handle: ProcessHandle): number {
+  const read = handle.kernel.supervisor_stdio_output_settle_kind_inherited_child;
+  if (read === undefined) {
+    throw new Error("kernel supervisor ABI missing stdio inherited-child output settle kind export");
+  }
+  return read();
+}
 
 function supervisorStdioOutputSettleKindValue(
   handle: ProcessHandle,
   kind: SupervisorStdioOutputSettleKind,
 ): number {
   switch (kind) {
-    case SUPERVISOR_STDIO_OUTPUT_SETTLE_KIND_VISIBLE:
-      return handle.kernel.supervisor_stdio_output_settle_kind_visible?.() ?? kind;
-    case SUPERVISOR_STDIO_OUTPUT_SETTLE_KIND_INHERITED_CHILD:
-      return handle.kernel.supervisor_stdio_output_settle_kind_inherited_child?.() ?? kind;
+    case "visible":
+      return supervisorStdioOutputSettleKindVisible(handle);
+    case "inherited-child":
+      return supervisorStdioOutputSettleKindInheritedChild(handle);
     default: {
       const exhaustive: never = kind;
       return exhaustive;
@@ -85,10 +96,13 @@ function supervisorStdioPipeReadProgressActionValue(
   handle: ProcessHandle,
   action: number,
 ): "none" | "snapshot" {
-  const none = handle.kernel.supervisor_stdio_pipe_read_progress_action_none?.()
-    ?? SUPERVISOR_STDIO_PIPE_READ_PROGRESS_ACTION_NONE;
-  const snapshot = handle.kernel.supervisor_stdio_pipe_read_progress_action_snapshot?.()
-    ?? SUPERVISOR_STDIO_PIPE_READ_PROGRESS_ACTION_SNAPSHOT;
+  const readNone = handle.kernel.supervisor_stdio_pipe_read_progress_action_none;
+  const readSnapshot = handle.kernel.supervisor_stdio_pipe_read_progress_action_snapshot;
+  if (readNone === undefined || readSnapshot === undefined) {
+    throw new Error("kernel supervisor ABI missing stdio pipe read-progress action kind exports");
+  }
+  const none = readNone();
+  const snapshot = readSnapshot();
   if (action === none) {
     return "none";
   }
@@ -396,7 +410,7 @@ export async function settleVisibleProcessOutput(
 ): Promise<boolean> {
   const settlePlan = supervisorStdioOutputSettlePlan(
     handle,
-    SUPERVISOR_STDIO_OUTPUT_SETTLE_KIND_VISIBLE,
+    "visible",
   );
   const visible = outputTarget(handle);
   let drainedAny = false;
@@ -443,7 +457,7 @@ export async function settleInheritedChildOutput(
   }
   const settlePlan = supervisorStdioOutputSettlePlan(
     child,
-    SUPERVISOR_STDIO_OUTPUT_SETTLE_KIND_INHERITED_CHILD,
+    "inherited-child",
   );
   const inheritedSlots = inheritedOutputPipeSlots(parent);
   const slots = [stdioPipeSlotForFd(child, 1), stdioPipeSlotForFd(child, 2)]

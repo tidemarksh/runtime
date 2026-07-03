@@ -23,7 +23,6 @@ import {
   snapshotProcessPipeSlotsForThreadStep,
 } from "../../ownership/pipe-control.js";
 import {
-  SUPERVISOR_FS_PIPE_REFRESH_ACTION_REQUEST_SYNC,
   supervisorFsPipeRefreshBeforeResumeAction,
 } from "../../../fs/supervisor-pipe-refresh.js";
 import { restoreRuntimeNetworkSidecarForHandle } from "../../ownership/socket-control.js";
@@ -539,7 +538,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       const pipeRefreshAction = supervisorFsPipeRefreshBeforeResumeAction(handle.kernel, thread.vmPtr, {
         kernelWorkerAvailable: Boolean(handle.kernelWorkerRequest) && handle.pid > 0,
       });
-      if (pipeRefreshAction === SUPERVISOR_FS_PIPE_REFRESH_ACTION_REQUEST_SYNC) {
+      if (pipeRefreshAction === "request-sync") {
         thread.ownerAsyncStatus = status;
         void deps.requestPipeStateSync(handle, false)
           .then(() => {

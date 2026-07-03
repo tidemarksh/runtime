@@ -1,23 +1,32 @@
 import type { KernelExports } from "../abi.js";
 
-export const SUPERVISOR_FS_PIPE_REFRESH_ACTION_NONE = 0;
-export const SUPERVISOR_FS_PIPE_REFRESH_ACTION_REQUEST_SYNC = 1;
-
-const SUPERVISOR_FS_PIPE_REFRESH_FLAG_KERNEL_WORKER_AVAILABLE = 1;
-
 export type SupervisorFsPipeRefreshAction =
-  | typeof SUPERVISOR_FS_PIPE_REFRESH_ACTION_NONE
-  | typeof SUPERVISOR_FS_PIPE_REFRESH_ACTION_REQUEST_SYNC;
+  | "none"
+  | "request-sync";
+
+function supervisorFsPipeRefreshNumericExport(
+  kernel: KernelExports,
+  name:
+    | "supervisor_fs_pipe_refresh_action_none"
+    | "supervisor_fs_pipe_refresh_action_request_sync"
+    | "supervisor_fs_pipe_refresh_flag_kernel_worker_available",
+): number {
+  const read = kernel[name];
+  if (typeof read !== "function") {
+    throw new Error(`kernel supervisor FS pipe refresh ${name} export is missing`);
+  }
+  return read();
+}
 
 function supervisorFsPipeRefreshActionValue(
   kernel: KernelExports,
   action: SupervisorFsPipeRefreshAction,
 ): number {
   switch (action) {
-    case SUPERVISOR_FS_PIPE_REFRESH_ACTION_NONE:
-      return kernel.supervisor_fs_pipe_refresh_action_none?.() ?? action;
-    case SUPERVISOR_FS_PIPE_REFRESH_ACTION_REQUEST_SYNC:
-      return kernel.supervisor_fs_pipe_refresh_action_request_sync?.() ?? action;
+    case "none":
+      return supervisorFsPipeRefreshNumericExport(kernel, "supervisor_fs_pipe_refresh_action_none");
+    case "request-sync":
+      return supervisorFsPipeRefreshNumericExport(kernel, "supervisor_fs_pipe_refresh_action_request_sync");
     default: {
       const exhaustive: never = action;
       return exhaustive;
@@ -30,8 +39,8 @@ function normalizeSupervisorFsPipeRefreshAction(
   result: number,
 ): SupervisorFsPipeRefreshAction {
   const actions: SupervisorFsPipeRefreshAction[] = [
-    SUPERVISOR_FS_PIPE_REFRESH_ACTION_NONE,
-    SUPERVISOR_FS_PIPE_REFRESH_ACTION_REQUEST_SYNC,
+    "none",
+    "request-sync",
   ];
   for (const action of actions) {
     if (result === supervisorFsPipeRefreshActionValue(kernel, action)) {
@@ -50,9 +59,10 @@ export function supervisorFsPipeRefreshBeforeResumeAction(
   if (typeof decide !== "function") {
     throw new Error("kernel supervisor FS pipe refresh action export is missing");
   }
-  const kernelWorkerAvailableFlag =
-    kernel.supervisor_fs_pipe_refresh_flag_kernel_worker_available?.()
-    ?? SUPERVISOR_FS_PIPE_REFRESH_FLAG_KERNEL_WORKER_AVAILABLE;
+  const kernelWorkerAvailableFlag = supervisorFsPipeRefreshNumericExport(
+    kernel,
+    "supervisor_fs_pipe_refresh_flag_kernel_worker_available",
+  );
   const flags = options.kernelWorkerAvailable === true ? kernelWorkerAvailableFlag : 0;
   const result = decide(vmPtr, flags);
   if (result < 0) {
