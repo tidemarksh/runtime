@@ -151,51 +151,20 @@ export function liveProcessPipeUsedBits(handle: ProcessHandle): bigint {
     return 0n;
   }
   const supervisorPipeUsedMask = handle.kernel.supervisor_process_pipe_used_mask;
-  if (supervisorPipeUsedMask) {
-    const mask = supervisorPipeUsedMask(handle.vmPtr);
-    return typeof mask === "bigint" ? mask : BigInt(mask);
+  if (!supervisorPipeUsedMask) {
+    return 0n;
   }
-  let pipeUsed = 0n;
-  const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
-  const maxPipes = handle.kernel.abi_max_pipes?.() ?? 64;
-  if (
-    maxFds > 0
-    && typeof handle.kernel.process_fd_ofd_id === "function"
-    && typeof handle.kernel.kernel_ofd_fd_type === "function"
-    && typeof handle.kernel.abi_fd_type_pipe === "function"
-    && typeof handle.kernel.kernel_ofd_ino === "function"
-  ) {
-    for (let fd = 0; fd < maxFds; fd += 1) {
-      const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
-      if (
-        ofdId <= 0
-        || ofdId >= maxFds
-        || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
-      ) {
-        continue;
-      }
-      const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-      if (pipeSlot > 0 && pipeSlot < maxPipes) {
-        pipeUsed |= 1n << BigInt(pipeSlot);
-      }
-    }
-  }
-  return pipeUsed;
+  const mask = supervisorPipeUsedMask(handle.vmPtr);
+  return typeof mask === "bigint" ? mask : BigInt(mask);
 }
 
 export function composeHandlePipeUsed(handle: ProcessHandle, sharedPipeUsed: bigint): bigint {
   const supervisorPipeUsedMask = handle.kernel.supervisor_process_pipe_used_mask;
-  if (supervisorPipeUsedMask && handle.vmPtr !== 0) {
-    const mask = supervisorPipeUsedMask(handle.vmPtr);
-    return sharedPipeUsed | 1n | (typeof mask === "bigint" ? mask : BigInt(mask));
+  if (!supervisorPipeUsedMask || handle.vmPtr === 0) {
+    return sharedPipeUsed | 1n;
   }
-  let pipeUsed = sharedPipeUsed | 1n;
-  for (const pipeSlot of hostStdioPipeSlots(handle)) {
-    if (pipeSlot > 0) {
-      pipeUsed |= 1n << BigInt(pipeSlot);
-    }
-  }
-  return pipeUsed;
+  const mask = supervisorPipeUsedMask(handle.vmPtr);
+  return sharedPipeUsed | 1n | (typeof mask === "bigint" ? mask : BigInt(mask));
 }
 
 export const PIPE_WAIT_GUEST_MEMORY_WRITE_BYTES = PIPE_BUFFER_BYTES;

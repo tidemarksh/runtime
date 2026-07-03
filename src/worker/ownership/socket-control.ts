@@ -396,21 +396,7 @@ export function hasKernelSocketFdState(handle: ProcessHandle): boolean {
   if (handle.vmPtr === 0) {
     return false;
   }
-  const supervisorSocketOfdIds = supervisorHeldSocketOfdIds(handle, handle.vmPtr);
-  if (supervisorSocketOfdIds.length > 0) {
-    return true;
-  }
-  const maxFds = handle.kernel.abi_max_fds();
-  for (let fd = 0; fd < maxFds; fd += 1) {
-    const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
-    if (
-      ofdId > 0
-      && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_socket()
-    ) {
-      return true;
-    }
-  }
-  return false;
+  return supervisorHeldSocketOfdIds(handle, handle.vmPtr).length > 0;
 }
 
 export function hasRuntimeNetworkSocketState(handle: ProcessHandle): boolean {
