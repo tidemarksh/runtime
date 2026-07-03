@@ -1,6 +1,5 @@
 import {
   supervisorBlockedEpollWaitTimeoutMs,
-  supervisorBlockedPipeResumeAction,
   supervisorBlockedPipeSyncBeforeRetryAction,
   supervisorBlockedPipeSyncBeforeRetryClear,
   supervisorBlockedPipeSyncBeforeRetryRequested,
@@ -9,7 +8,6 @@ import {
   supervisorBlockedStatusIsEpollWait,
   supervisorBlockedStatusIsPipeWait,
   supervisorBlockedStatusIsWait4,
-  SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT,
   supervisorBlockedWaitRetryPlan,
   SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC,
   SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT,
@@ -715,21 +713,8 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       }
       return;
     }
-    const pollTimeoutMs = pollWaitTimeoutMs(handle, status, vmPtr);
     if (supervisorBlockedStatusIsWait4(handle.kernel, status)) {
       retryHostBlockedWorker(handle, worker);
-      return;
-    }
-    if (
-      supervisorBlockedStatusIsPipeWait(handle.kernel, status)
-      && kernelWorkerOwnsPipeState(handle)
-      && (!handle.kernelWorkerRequest || handle.pid <= 0)
-      && supervisorBlockedPipeSyncBeforeRetryRequested(handle.kernel, vmPtr)
-      && pollTimeoutMs < 0
-      && !supervisorBlockedPollWaitHasSocket(handle.kernel, vmPtr)
-      && supervisorBlockedPipeResumeAction(handle.kernel, vmPtr)
-        !== SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT
-    ) {
       return;
     }
     scheduleSupervisorBlockedRetry(
@@ -1124,7 +1109,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       const syncBeforeRetryAction = supervisorBlockedPipeSyncBeforeRetryAction(
         handle.kernel,
         blocked.vmPtr,
-        kernelWorkerOwnsPipeState(handle) && !!handle.kernelWorkerRequest && handle.pid > 0,
+        kernelWorkerOwnsPipeState(handle),
       );
       if (
         syncBeforeRetryAction === SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC

@@ -7,9 +7,9 @@ import {
   flushStdin,
 } from "../../stdio.js";
 import {
-  applyStatusPipeSlots,
-  statusKernelWorkerOwnsPipeState,
-} from "./pipe-slots.js";
+  applyThreadPipeSlots,
+  kernelWorkerOwnsPipeState,
+} from "../../ownership/pipe-control.js";
 import { adoptKernelStateForHandle } from "../../sync.js";
 import {
   pruneStatusNetworkConnectionsFromFdEntries,
@@ -279,7 +279,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         `status-not-running:${handle.pid}:0x${thread.vmPtr.toString(16)}:${status}`,
       );
     }
-    const deferLocalPipeDrain = statusKernelWorkerOwnsPipeState(handle);
+    const deferLocalPipeDrain = kernelWorkerOwnsPipeState(handle);
     const adoptPreSnapshots: ThreadRegisterSnapshot[] = [];
     for (const candidate of handle.workers) {
       const candidateThread = deps.threadWorkerStates.get(candidate);
@@ -307,7 +307,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         { skipFsRingWrites: status === handle.kernel.abi_status_fs() },
       );
       applyThreadGuestMemoryWrites(handle, msg, deps.appendRuntimeLifecycleEvent);
-      applyStatusPipeSlots(
+      applyThreadPipeSlots(
         handle,
         msg.pipeSlots,
         pipeSlotLifecycleDebugEnabled() ? deps.appendRuntimeLifecycleEvent : undefined,
@@ -383,7 +383,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     }
     deps.clearBlockedWorker(handle, worker);
     const wroteToPipe = flushStdin(handle);
-    const drainedPipe = deferLocalPipeDrain || statusKernelWorkerOwnsPipeState(handle)
+    const drainedPipe = deferLocalPipeDrain
       ? false
       : drainProcessOutput(handle);
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
