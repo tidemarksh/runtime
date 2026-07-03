@@ -170,6 +170,11 @@ function addSupervisorRuntimeExportStubs(exports: KernelExports): void {
   }
   target.supervisor_host_op_record_bytes = () => 64;
   target.supervisor_host_op_kind_arm_host_timer = () => 12;
+  target.supervisor_thread_event_record_bytes = () => 80;
+  target.supervisor_thread_event_record_magic = () => 0x5645_5354;
+  target.supervisor_thread_event_kind_blocked = () => 1;
+  target.supervisor_thread_event_kind_ready = () => 2;
+  target.supervisor_thread_event_kind_faulted = () => 3;
   target.supervisor_resume_record_bytes = () => 48;
   target.supervisor_resume_kind_runnable_thread = () => 2;
   target.supervisor_process_resume = (...args: unknown[]) => {

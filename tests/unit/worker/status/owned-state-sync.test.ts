@@ -27,6 +27,12 @@ function makeKernelState() {
   };
 }
 
+const supervisorPipeControlKernelStubs = {
+  supervisor_process_pipe_used_mask: () => 1n,
+  supervisor_process_pipe_read_open_count: () => 0,
+  supervisor_process_pipe_write_open_count: () => 0,
+};
+
 test("socket state sync runs before fork-shared OFD sync when both effects are present", async () => {
   const worker = {} as Worker;
   const thread = {
@@ -55,6 +61,7 @@ test("socket state sync runs before fork-shared OFD sync when both effects are p
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
+      ...supervisorPipeControlKernelStubs,
       abi_status_ok: () => 0,
       abi_max_fds: () => 1,
       abi_max_pipes: () => 1,
@@ -75,6 +82,7 @@ test("socket state sync runs before fork-shared OFD sync when both effects are p
     ...handle,
     vmPtr: 0x5678,
     kernel: {
+      ...supervisorPipeControlKernelStubs,
       ...handle.kernel,
       process_fd_ofd_id: (_vmPtr: number, fd: number) => (fd === 0 ? 2 : 0),
     },
@@ -154,6 +162,7 @@ test("fork-shared OFD sync accepts an owned worker status after running slot is 
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
+      ...supervisorPipeControlKernelStubs,
       abi_status_ok: () => 0,
       abi_max_fds: () => 4,
       abi_max_pipes: () => 1,
@@ -174,6 +183,7 @@ test("fork-shared OFD sync accepts an owned worker status after running slot is 
     ...handle,
     vmPtr: 0x5678,
     kernel: {
+      ...supervisorPipeControlKernelStubs,
       ...handle.kernel,
       process_fd_ofd_id: (_vmPtr: number, fd: number) => (fd === 0 ? 2 : 0),
     },
@@ -269,6 +279,7 @@ test("kernel completed fork-shared effect syncs available parent targets", async
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
+      ...supervisorPipeControlKernelStubs,
       abi_status_ok: () => 0,
       abi_max_fds: () => 16,
       abi_max_pipes: () => 16,
@@ -294,6 +305,7 @@ test("kernel completed fork-shared effect syncs available parent targets", async
     workers: new Set(),
     hostStdio: { refCount: 0, stdinPipe: 0, stdoutPipe: 0, stderrPipe: 0 },
     kernel: {
+      ...supervisorPipeControlKernelStubs,
       ...handle.kernel,
       process_fd_ofd_id: (_vmPtr: number, fd: number) => (fd === 4 ? 7 : 0),
       kernel_ofd_fd_type: (ofdId: number) => (ofdId === 7 ? 6 : 0),
@@ -380,6 +392,7 @@ test("fcntl F_SETFL on an unshared OFD does not request fork-shared sync", () =>
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
+      ...supervisorPipeControlKernelStubs,
       abi_status_ok: () => 0,
       abi_max_fds: () => 16,
       abi_max_pipes: () => 16,
@@ -406,6 +419,7 @@ test("fcntl F_SETFL on an unshared OFD does not request fork-shared sync", () =>
     workers: new Set(),
     hostStdio: { refCount: 0, stdinPipe: 0, stdoutPipe: 0, stderrPipe: 0 },
     kernel: {
+      ...supervisorPipeControlKernelStubs,
       ...handle.kernel,
       process_fd_ofd_id: () => 0,
     },
@@ -480,6 +494,7 @@ test("kernel pipe data-plane effect does not request fork-shared sync", () => {
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
+      ...supervisorPipeControlKernelStubs,
       abi_status_ok: () => 0,
       abi_max_fds: () => 16,
       abi_max_pipes: () => 16,
@@ -562,6 +577,7 @@ test("fork-shared OFD sync skips exiting peer targets", async () => {
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
+      ...supervisorPipeControlKernelStubs,
       abi_status_ok: () => 0,
       abi_max_fds: () => 4,
       abi_max_pipes: () => 1,
@@ -662,6 +678,7 @@ test("fork-shared OFD sync keeps a quiescent parent reader target for a method-c
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
+      ...supervisorPipeControlKernelStubs,
       abi_status_ok: () => 0,
       abi_max_fds: () => 16,
       abi_max_pipes: () => 16,
@@ -687,6 +704,7 @@ test("fork-shared OFD sync keeps a quiescent parent reader target for a method-c
     exitInProgress: false,
     workers: new Set(),
     kernel: {
+      ...supervisorPipeControlKernelStubs,
       ...handle.kernel,
       process_fd_ofd_id: (_vmPtr: number, fd: number) => (fd === 4 ? 7 : 0),
       kernel_ofd_fd_type: (ofdId: number) => (ofdId === 7 ? 6 : 0),
@@ -776,6 +794,7 @@ test("queued fork-shared OFD sync clears both handle and share promises", async 
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
+      ...supervisorPipeControlKernelStubs,
       abi_status_ok: () => 0,
       abi_max_fds: () => 4,
       abi_max_pipes: () => 1,
@@ -881,6 +900,7 @@ test("queued no-target fork-shared OFD sync waits without replacing the active s
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
+      ...supervisorPipeControlKernelStubs,
       abi_status_ok: () => 0,
       abi_max_fds: () => 4,
       abi_max_pipes: () => 1,
@@ -993,6 +1013,7 @@ test("fork-shared-only pipe effects sync when the source holds tracked shared st
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
+      ...supervisorPipeControlKernelStubs,
       abi_status_ok: () => 0,
       abi_max_fds: () => 4,
       abi_max_pipes: () => 1,
@@ -1073,6 +1094,7 @@ test("dirty process memfs syncs before publishing a pipe-status boundary", async
     processMemfsDirty: true,
     kernelState: makeKernelState(),
     kernel: {
+      ...supervisorPipeControlKernelStubs,
       abi_status_ok: () => 0,
       abi_max_fds: () => 1,
       abi_max_pipes: () => 1,
@@ -1178,6 +1200,7 @@ test("dirty process memfs is deferred on a successful process-memfs-only effect"
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
+      ...supervisorPipeControlKernelStubs,
       abi_status_ok: () => 0,
       abi_max_fds: () => 1,
       abi_max_pipes: () => 1,
@@ -1270,6 +1293,7 @@ test("active vfork child pid mismatch defers parent-owned state sync", () => {
     vforkWorker: worker,
     kernelState: makeKernelState(),
     kernel: {
+      ...supervisorPipeControlKernelStubs,
       abi_status_ok: () => 0,
       abi_max_fds: () => 1,
       abi_max_pipes: () => 1,
