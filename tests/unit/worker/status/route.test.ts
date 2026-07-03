@@ -166,6 +166,10 @@ function makeKernel(pid: number, overrides: Record<string, unknown> = {}) {
     kernel_attach_runtime_state: () => {},
     kernel_net_buf_used: () => 0n,
     kernel_socket_used: () => 0,
+    supervisor_fs_pipe_refresh_action_none: () => 0,
+    supervisor_fs_pipe_refresh_action_request_sync: () => 1,
+    supervisor_fs_pipe_refresh_flag_kernel_worker_available: () => 1,
+    supervisor_fs_pipe_refresh_before_resume_action: () => 0,
     ...overrides,
   } as Partial<KernelExports> & Record<string, unknown>;
   return installSupervisorBlockedResumeStub(kernel);

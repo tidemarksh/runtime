@@ -459,20 +459,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       worker,
       thread,
       status: transitionStatus,
-      syscallNr: transitionMsg.syscallNr ?? null,
-      rawSyncEffects: transitionMsg.syncEffects,
       completedSyncEffects,
-      latestFdTrace: transitionMsg.fdTraceSyscallNr === undefined
-        ? null
-        : {
-            nr: transitionMsg.fdTraceSyscallNr,
-            arg0OfdId: transitionMsg.fdTraceArg0OfdId ?? 0,
-            arg0OfdType: transitionMsg.fdTraceArg0OfdType ?? 0,
-            arg1: transitionMsg.fdTraceArg1 ?? null,
-            arg2OfdId: transitionMsg.fdTraceArg2OfdId ?? 0,
-            arg2OfdType: transitionMsg.fdTraceArg2OfdType ?? 0,
-            result: transitionMsg.fdTraceResult ?? null,
-          },
       isRunningWorker,
       wroteToPipe,
       drainedPipe,

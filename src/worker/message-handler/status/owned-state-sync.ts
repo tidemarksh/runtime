@@ -9,17 +9,10 @@ import {
 } from "../../kernel-share.js";
 import { kernelWorkerOwnsEpollState } from "../../ownership/epoll-control.js";
 import {
-  fdTraceDataPlaneIoUsesSocketOrPipe,
-  explicitForkSharedEffectMayRequireSync,
-  latestFdTraceRulesOutForkSharedTopologyChange,
-  regularFileWriteMutatedMemfs,
   sourceHoldsSharedRegularFileOfd,
   sourceSharesRegularFileOfdWithPeer,
-  syscallMayChangeForkSharedOfdTopology,
-  syscallOnlyNeedsRegularFileOffsetSyncWhenPeerShared,
   targetHasIncompatibleForkSharedOfd as ownershipTargetHasIncompatibleForkSharedOfd,
 } from "../../ownership/ofd-peer.js";
-import type { LatestFdSyscallTrace } from "../../ownership/ofd-peer.js";
 import { kernelWorkerOwnsSocketState } from "../../ownership/socket-control.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../types.js";
 import type { WorkerMessageHandlerDeps } from "../types.js";
@@ -31,45 +24,11 @@ interface OwnedStateSyncArgs {
   worker: Worker;
   thread: ThreadWorkerState;
   status: number;
-  syscallNr?: bigint | null;
-  rawSyncEffects: number | undefined;
   completedSyncEffects: number;
-  latestFdTrace: LatestFdSyscallTrace | null;
   isRunningWorker: boolean;
   wroteToPipe: boolean;
   drainedPipe: boolean;
   continueAfterOwnedStateSync(): void;
-}
-
-function readOptionalTraceU64(value: bigint | number | undefined): bigint | null {
-  if (value === undefined) {
-    return null;
-  }
-  return typeof value === "bigint" ? value : BigInt(value);
-}
-
-function readLatestFdSyscallTrace(handle: ProcessHandle, vmPtr: number): LatestFdSyscallTrace | null {
-  const len = handle.kernel.debug_fd_syscall_trace_len?.() ?? 0;
-  for (let index = len - 1; index >= 0; index -= 1) {
-    const entryVmPtr = handle.kernel.debug_fd_syscall_trace_vm_ptr?.(index);
-    if (entryVmPtr !== undefined && entryVmPtr !== vmPtr) {
-      continue;
-    }
-    const nr = readOptionalTraceU64(handle.kernel.debug_fd_syscall_trace_nr?.(index));
-    if (nr === null) {
-      continue;
-    }
-    return {
-      nr,
-      arg0OfdId: handle.kernel.debug_fd_syscall_trace_arg0_ofd_id?.(index) ?? 0,
-      arg0OfdType: handle.kernel.debug_fd_syscall_trace_arg0_ofd_type?.(index) ?? 0,
-      arg1: readOptionalTraceU64(handle.kernel.debug_fd_syscall_trace_arg1?.(index)),
-      arg2OfdId: handle.kernel.debug_fd_syscall_trace_arg2_ofd_id?.(index) ?? 0,
-      arg2OfdType: handle.kernel.debug_fd_syscall_trace_arg2_ofd_type?.(index) ?? 0,
-      result: readOptionalTraceU64(handle.kernel.debug_fd_syscall_trace_result?.(index)),
-    };
-  }
-  return null;
 }
 
 export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps) {
@@ -77,7 +36,6 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
   function requestForkSharedStateSync(
     handle: ProcessHandle,
     thread: ThreadWorkerState,
-    latestFdTrace: LatestFdSyscallTrace | null,
   ): Promise<void> {
     const otherMembers = kernelShareOtherMembers(handle);
     const activeSync = handle.kernelShare.forkSharedSyncPromise ?? handle.forkSharedSyncPromise;
@@ -212,10 +170,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
     worker,
     thread,
     status,
-    syscallNr = null,
-    rawSyncEffects,
     completedSyncEffects,
-    latestFdTrace = null,
     isRunningWorker,
     wroteToPipe,
     drainedPipe,
@@ -230,48 +185,18 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
     const workerOwnsAuthoritativeState = isRunningWorker || workerStillOwnedByHandle();
     const shouldWakeSocketWaiters = status === handle.kernel.abi_status_ok()
       && (completedSyncEffects & syncEffects.syncEffectSocketState) !== 0;
-    const hasExplicitForkSharedEffect = rawSyncEffects !== undefined
-      && (rawSyncEffects & syncEffects.syncEffectForkSharedOfdState) !== 0;
-    const latestFdTraceForTopology = latestFdTrace ?? readLatestFdSyscallTrace(handle, thread.vmPtr);
-    const fdTraceRulesOutForkSharedTopologyChange =
-      latestFdTraceRulesOutForkSharedTopologyChange(handle, thread.vmPtr, latestFdTraceForTopology);
-    const explicitForkSharedEffectMaySync = explicitForkSharedEffectMayRequireSync(
-      handle,
-      thread.vmPtr,
-      syscallNr,
-    ) && !fdTraceRulesOutForkSharedTopologyChange;
-    const forkSharedDataPlaneIoUsesSocketOrPipe = fdTraceDataPlaneIoUsesSocketOrPipe(
-      handle,
-      latestFdTraceForTopology,
-    );
-    const forkSharedTopologyMayChange = syscallMayChangeForkSharedOfdTopology(handle, thread.vmPtr, syscallNr)
-      && !fdTraceRulesOutForkSharedTopologyChange;
-    const forkSharedOffsetOnlyRegularFile = syscallOnlyNeedsRegularFileOffsetSyncWhenPeerShared(
-      handle,
-      thread.vmPtr,
-      syscallNr,
-    );
+    const hasForkSharedEffect = (completedSyncEffects & syncEffects.syncEffectForkSharedOfdState) !== 0;
     const forkSharedSourceHoldsRegularFile = sourceHoldsSharedRegularFileOfd(handle, thread.vmPtr);
     const forkSharedRegularFileHasPeer = sourceSharesRegularFileOfdWithPeer(handle, thread.vmPtr);
     const forkSharedHasTrackedState = (handle.kernelShare.sharedOfdIds?.size ?? 0) > 0
       || kernelShareOtherMembers(handle).length > 0;
-    const shouldRequestForkSharedForEffect = forkSharedTopologyMayChange
-      || (
-        hasExplicitForkSharedEffect
-        && explicitForkSharedEffectMaySync
-        && !forkSharedDataPlaneIoUsesSocketOrPipe
-        && forkSharedHasTrackedState
-        && !forkSharedOffsetOnlyRegularFile
-        && (
-          !forkSharedSourceHoldsRegularFile
-          || (
-            forkSharedSourceHoldsRegularFile
-            && forkSharedRegularFileHasPeer
-          )
-        )
+    const shouldRequestForkSharedForEffect = hasForkSharedEffect
+      && forkSharedHasTrackedState
+      && (
+        !forkSharedSourceHoldsRegularFile
+        || forkSharedRegularFileHasPeer
       );
-    const hasProcessMemfsEffect = (completedSyncEffects & syncEffects.syncEffectProcessMemfs) !== 0
-      || regularFileWriteMutatedMemfs(handle, latestFdTrace);
+    const hasProcessMemfsEffect = (completedSyncEffects & syncEffects.syncEffectProcessMemfs) !== 0;
     if (isRunningWorker && hasProcessMemfsEffect) {
       handle.processMemfsDirty = true;
     }
@@ -324,7 +249,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
     }
 
     const syncForkSharedState = (): Promise<void> => shouldSyncForkSharedState
-      ? requestForkSharedStateSync(handle, thread, latestFdTrace).then(() => {
+      ? requestForkSharedStateSync(handle, thread).then(() => {
           reconcileKernelSharePipeControl(handle);
         })
       : Promise.resolve();

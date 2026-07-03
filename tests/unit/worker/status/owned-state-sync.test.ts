@@ -27,206 +27,6 @@ function makeKernelState() {
   };
 }
 
-function readOptionalU64(value: bigint | number | undefined): bigint | null {
-  if (value === undefined) {
-    return null;
-  }
-  return typeof value === "bigint" ? value : BigInt(value);
-}
-
-function syscallMatches(kernel: Record<string, unknown>, nr: bigint | null, exportName: string): boolean {
-  const readSyscall = kernel[exportName];
-  if (nr === null || typeof readSyscall !== "function") {
-    return false;
-  }
-  return nr === BigInt((readSyscall as () => bigint | number)());
-}
-
-function fcntlCommandMayChangeTopology(command: bigint | null): boolean {
-  return command === null || command === 4n;
-}
-
-function ioctlRequestMayChangeTopology(request: bigint | null): boolean {
-  return request === null || request === 0x5421n;
-}
-
-function installSupervisorFdPolicy(kernel: Record<string, unknown>): void {
-  const currentSyscall = -1n;
-  const traceArgUnknown = -1n;
-  const topologyUnresolved = 0;
-  const topologyRulesOut = 1;
-  const topologyNeedsPeerCheck = 2;
-  const syscallNr = (vmPtr: number, syscall: bigint | number): bigint | null => {
-    const nr = BigInt(syscall);
-    if (nr !== currentSyscall) {
-      return nr;
-    }
-    return readOptionalU64((kernel.thread_a7 as ((vmPtr: number) => bigint | number) | undefined)?.(vmPtr));
-  };
-  const syscallResultIsError = (vmPtr: number): boolean => {
-    const result = readOptionalU64((kernel.thread_a0 as ((vmPtr: number) => bigint | number) | undefined)?.(vmPtr));
-    return result !== null && BigInt.asIntN(64, result) < 0n;
-  };
-  const syscallArg1 = (vmPtr: number): bigint | null =>
-    readOptionalU64((kernel.thread_a1 as ((vmPtr: number) => bigint | number) | undefined)?.(vmPtr));
-  const processOfdTypeForFd = (vmPtr: number, fd: number): number => {
-    const maxFds = (kernel.abi_max_fds as (() => number) | undefined)?.() ?? 0;
-    if (!Number.isInteger(fd) || fd < 0 || fd >= maxFds) {
-      return 0;
-    }
-    const ofdId = (kernel.process_fd_ofd_id as ((vmPtr: number, fd: number) => number) | undefined)?.(vmPtr, fd) ?? 0;
-    if (ofdId <= 0 || ofdId >= maxFds) {
-      return 0;
-    }
-    return (kernel.kernel_ofd_fd_type as ((ofdId: number) => number) | undefined)?.(ofdId) ?? 0;
-  };
-
-  Object.assign(kernel, {
-    supervisor_fd_syscall_nr_current: () => currentSyscall,
-    supervisor_fd_trace_arg_unknown: () => traceArgUnknown,
-    supervisor_fd_trace_topology_action_unresolved: () => topologyUnresolved,
-    supervisor_fd_trace_topology_action_rules_out: () => topologyRulesOut,
-    supervisor_fd_trace_topology_action_needs_peer_check: () => topologyNeedsPeerCheck,
-    supervisor_fd_syscall_may_change_fork_shared_ofd_topology: (vmPtr: number, syscall: bigint | number) => {
-      if (syscallResultIsError(vmPtr)) {
-        return 0;
-      }
-      const nr = syscallNr(vmPtr, syscall);
-      if (syscallMatches(kernel, nr, "abi_sys_fcntl")) {
-        return fcntlCommandMayChangeTopology(syscallArg1(vmPtr)) ? 1 : 0;
-      }
-      if (syscallMatches(kernel, nr, "abi_sys_ioctl")) {
-        return ioctlRequestMayChangeTopology(syscallArg1(vmPtr)) ? 1 : 0;
-      }
-      return [
-        "abi_sys_openat",
-        "abi_sys_close",
-        "abi_sys_close_range",
-        "abi_sys_pipe2",
-        "abi_sys_socket",
-        "abi_sys_socketpair",
-        "abi_sys_accept4",
-        "abi_sys_eventfd2",
-        "abi_sys_epoll_create1",
-        "abi_sys_dup",
-        "abi_sys_dup3",
-        "abi_sys_execve",
-      ].some((name) => syscallMatches(kernel, nr, name)) ? 1 : 0;
-    },
-    supervisor_fd_explicit_fork_shared_effect_may_require_sync: (vmPtr: number, syscall: bigint | number) => {
-      if (syscallResultIsError(vmPtr)) {
-        return 0;
-      }
-      const nr = syscallNr(vmPtr, syscall);
-      if (syscallMatches(kernel, nr, "abi_sys_fcntl")) {
-        return fcntlCommandMayChangeTopology(syscallArg1(vmPtr)) ? 1 : 0;
-      }
-      if (syscallMatches(kernel, nr, "abi_sys_ioctl")) {
-        return ioctlRequestMayChangeTopology(syscallArg1(vmPtr)) ? 1 : 0;
-      }
-      return 1;
-    },
-    supervisor_fd_syscall_only_regular_file_offset_sync_when_peer_shared: (vmPtr: number, syscall: bigint | number) => {
-      const nr = syscallNr(vmPtr, syscall);
-      if (![
-        "abi_sys_read",
-        "abi_sys_readv",
-        "abi_sys_write",
-        "abi_sys_writev",
-        "abi_sys_pwrite64",
-        "abi_sys_lseek",
-      ].some((name) => syscallMatches(kernel, nr, name))) {
-        return 0;
-      }
-      const fd = Number(readOptionalU64((kernel.thread_a0 as ((vmPtr: number) => bigint | number) | undefined)?.(vmPtr)) ?? -1n);
-      return processOfdTypeForFd(vmPtr, fd) === (kernel.abi_fd_type_file as (() => number) | undefined)?.() ? 1 : 0;
-    },
-    supervisor_fd_trace_fork_shared_topology_action: (
-      vmPtr: number,
-      nrValue: bigint | number,
-      arg1Value: bigint | number,
-      resultValue: bigint | number,
-      resultKnown: number,
-    ) => {
-      const nr = BigInt(nrValue);
-      const arg1 = BigInt(arg1Value) === traceArgUnknown ? null : BigInt(arg1Value);
-      if (resultKnown !== 0 && BigInt.asIntN(64, BigInt(resultValue)) < 0n) {
-        return topologyRulesOut;
-      }
-      if (syscallMatches(kernel, nr, "abi_sys_dup3")) {
-        const newFd = arg1 === null ? -1 : Number(arg1);
-        if (processOfdTypeForFd(vmPtr, newFd) === (kernel.abi_fd_type_file as (() => number) | undefined)?.()) {
-          return topologyUnresolved;
-        }
-        return topologyUnresolved;
-      }
-      if ([
-        "abi_sys_close",
-        "abi_sys_dup",
-        "abi_sys_pipe2",
-        "abi_sys_socket",
-        "abi_sys_socketpair",
-        "abi_sys_accept4",
-        "abi_sys_eventfd2",
-        "abi_sys_epoll_create1",
-      ].some((name) => syscallMatches(kernel, nr, name))) {
-        return topologyNeedsPeerCheck;
-      }
-      if (syscallMatches(kernel, nr, "abi_sys_fcntl")) {
-        return fcntlCommandMayChangeTopology(arg1) ? topologyNeedsPeerCheck : topologyRulesOut;
-      }
-      if (syscallMatches(kernel, nr, "abi_sys_ioctl")) {
-        return ioctlRequestMayChangeTopology(arg1) ? topologyNeedsPeerCheck : topologyRulesOut;
-      }
-      return topologyUnresolved;
-    },
-    supervisor_fd_trace_data_plane_io_uses_socket_or_pipe: (
-      nrValue: bigint | number,
-      arg0OfdId: number,
-      arg0OfdType: number,
-      resultValue: bigint | number,
-      resultKnown: number,
-    ) => {
-      const nr = BigInt(nrValue);
-      if (resultKnown === 0 || BigInt.asIntN(64, BigInt(resultValue)) <= 0n) {
-        return 0;
-      }
-      if (![
-        "abi_sys_read",
-        "abi_sys_readv",
-        "abi_sys_write",
-        "abi_sys_writev",
-        "abi_sys_recvfrom",
-        "abi_sys_recvmsg",
-        "abi_sys_sendto",
-        "abi_sys_sendmsg",
-      ].some((name) => syscallMatches(kernel, nr, name))) {
-        return 0;
-      }
-      const maxFds = (kernel.abi_max_fds as (() => number) | undefined)?.() ?? 0;
-      const fdType = arg0OfdType > 0 || arg0OfdId <= 0 || arg0OfdId >= maxFds
-        ? arg0OfdType
-        : (kernel.kernel_ofd_fd_type as ((ofdId: number) => number) | undefined)?.(arg0OfdId) ?? 0;
-      return fdType === (kernel.abi_fd_type_socket as (() => number) | undefined)?.()
-        || fdType === (kernel.abi_fd_type_pipe as (() => number) | undefined)?.() ? 1 : 0;
-    },
-    supervisor_fd_trace_regular_file_write_mutated_memfs: (
-      nrValue: bigint | number,
-      arg0OfdType: number,
-      resultValue: bigint | number,
-      resultKnown: number,
-    ) => {
-      const nr = BigInt(nrValue);
-      return resultKnown !== 0
-        && BigInt.asIntN(64, BigInt(resultValue)) > 0n
-        && syscallMatches(kernel, nr, "abi_sys_write")
-        && arg0OfdType === (kernel.abi_fd_type_file as (() => number) | undefined)?.()
-        ? 1
-        : 0;
-    },
-  });
-}
-
 test("socket state sync runs before fork-shared OFD sync when both effects are present", async () => {
   const worker = {} as Worker;
   const thread = {
@@ -307,7 +107,6 @@ test("socket state sync runs before fork-shared OFD sync when both effects are p
       order.push("fork-shared");
     }),
   };
-  installSupervisorFdPolicy(handle.kernel);
   const maybeHandleOwnedStateSync = createWorkerOwnedStateSyncHandler(deps as never);
 
   const handled = maybeHandleOwnedStateSync({
@@ -315,7 +114,6 @@ test("socket state sync runs before fork-shared OFD sync when both effects are p
     worker,
     thread: thread as never,
     status: 0,
-    rawSyncEffects: 66,
     completedSyncEffects: 66,
     isRunningWorker: true,
     wroteToPipe: false,
@@ -403,7 +201,6 @@ test("fork-shared OFD sync accepts an owned worker status after running slot is 
     syncEffectSocketState: 2,
     syncForkSharedStateViaKernelWorker,
   };
-  installSupervisorFdPolicy(handle.kernel);
   const maybeHandleOwnedStateSync = createWorkerOwnedStateSyncHandler(deps as never);
 
   const handled = maybeHandleOwnedStateSync({
@@ -411,7 +208,6 @@ test("fork-shared OFD sync accepts an owned worker status after running slot is 
     worker,
     thread: thread as never,
     status: 0,
-    rawSyncEffects: 64,
     completedSyncEffects: 64,
     isRunningWorker: false,
     wroteToPipe: false,
@@ -445,7 +241,7 @@ test("fork-shared OFD sync accepts an owned worker status after running slot is 
   });
 });
 
-test("dup3 replacement cannot be ruled out by oldfd-only fd trace", async () => {
+test("kernel completed fork-shared effect syncs available parent targets", async () => {
   const worker = {} as Worker;
   const thread = {
     vmPtr: 0x1234,
@@ -529,7 +325,6 @@ test("dup3 replacement cannot be ruled out by oldfd-only fd trace", async () => 
     syncEffectSocketState: 2,
     syncForkSharedStateViaKernelWorker,
   };
-  installSupervisorFdPolicy(handle.kernel);
   const maybeHandleOwnedStateSync = createWorkerOwnedStateSyncHandler(deps as never);
 
   const handled = maybeHandleOwnedStateSync({
@@ -537,17 +332,7 @@ test("dup3 replacement cannot be ruled out by oldfd-only fd trace", async () => 
     worker,
     thread: thread as never,
     status: 0,
-    rawSyncEffects: 64,
     completedSyncEffects: 64,
-    latestFdTrace: {
-      nr: 24n,
-      arg0OfdId: 10,
-      arg0OfdType: 1,
-      arg1: 2n,
-      arg2OfdId: 0,
-      arg2OfdType: 0,
-      result: 2n,
-    },
     isRunningWorker: true,
     wroteToPipe: false,
     drainedPipe: false,
@@ -649,7 +434,6 @@ test("fcntl F_SETFL on an unshared OFD does not request fork-shared sync", () =>
     syncEffectSocketState: 2,
     syncForkSharedStateViaKernelWorker,
   };
-  installSupervisorFdPolicy(handle.kernel);
   const maybeHandleOwnedStateSync = createWorkerOwnedStateSyncHandler(deps as never);
 
   const handled = maybeHandleOwnedStateSync({
@@ -657,17 +441,7 @@ test("fcntl F_SETFL on an unshared OFD does not request fork-shared sync", () =>
     worker,
     thread: thread as never,
     status: 0,
-    rawSyncEffects: 64,
     completedSyncEffects: 64,
-    latestFdTrace: {
-      nr: 25n,
-      arg0OfdId: 8,
-      arg0OfdType: 1,
-      arg1: 4n,
-      arg2OfdId: 0,
-      arg2OfdType: 0,
-      result: 0n,
-    },
     isRunningWorker: true,
     wroteToPipe: false,
     drainedPipe: false,
@@ -678,7 +452,7 @@ test("fcntl F_SETFL on an unshared OFD does not request fork-shared sync", () =>
   expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
 });
 
-test("kernel fd trace pipe write skips fork-shared sync when caller omits latest trace", () => {
+test("kernel pipe data-plane effect does not request fork-shared sync", () => {
   const worker = {} as Worker;
   const thread = {
     vmPtr: 0x1234,
@@ -722,15 +496,6 @@ test("kernel fd trace pipe write skips fork-shared sync when caller omits latest
       kernel_ofd_ino: (ofdId: number) => (ofdId === 3 ? 5 : 0),
       kernel_ofd_host_fd: (ofdId: number) => (ofdId === 3 ? -2 : 0),
       kernel_attach_runtime_state: vi.fn(),
-      debug_fd_syscall_trace_len: () => 1,
-      debug_fd_syscall_trace_vm_ptr: () => 0x1234,
-      debug_fd_syscall_trace_nr: () => 64n,
-      debug_fd_syscall_trace_arg0_ofd_id: () => 3,
-      debug_fd_syscall_trace_arg0_ofd_type: () => 6,
-      debug_fd_syscall_trace_arg1: () => 0x2000n,
-      debug_fd_syscall_trace_arg2_ofd_id: () => 0,
-      debug_fd_syscall_trace_arg2_ofd_type: () => 0,
-      debug_fd_syscall_trace_result: () => 11n,
     },
   };
   handle.kernelShare.members.add(handle);
@@ -753,7 +518,6 @@ test("kernel fd trace pipe write skips fork-shared sync when caller omits latest
     syncEffectSocketState: 2,
     syncForkSharedStateViaKernelWorker,
   };
-  installSupervisorFdPolicy(handle.kernel);
   const maybeHandleOwnedStateSync = createWorkerOwnedStateSyncHandler(deps as never);
 
   const handled = maybeHandleOwnedStateSync({
@@ -761,8 +525,7 @@ test("kernel fd trace pipe write skips fork-shared sync when caller omits latest
     worker,
     thread: thread as never,
     status: 0,
-    rawSyncEffects: 64,
-    completedSyncEffects: 64,
+    completedSyncEffects: 1,
     isRunningWorker: true,
     wroteToPipe: false,
     drainedPipe: false,
@@ -845,7 +608,6 @@ test("fork-shared OFD sync skips exiting peer targets", async () => {
     syncEffectSocketState: 2,
     syncForkSharedStateViaKernelWorker,
   };
-  installSupervisorFdPolicy(handle.kernel);
   const maybeHandleOwnedStateSync = createWorkerOwnedStateSyncHandler(deps as never);
 
   const handled = maybeHandleOwnedStateSync({
@@ -853,7 +615,6 @@ test("fork-shared OFD sync skips exiting peer targets", async () => {
     worker,
     thread: thread as never,
     status: 0,
-    rawSyncEffects: 64,
     completedSyncEffects: 64,
     isRunningWorker: false,
     wroteToPipe: false,
@@ -958,7 +719,6 @@ test("fork-shared OFD sync keeps a quiescent parent reader target for a method-c
     syncEffectSocketState: 2,
     syncForkSharedStateViaKernelWorker,
   };
-  installSupervisorFdPolicy(handle.kernel);
   const maybeHandleOwnedStateSync = createWorkerOwnedStateSyncHandler(deps as never);
 
   const handled = maybeHandleOwnedStateSync({
@@ -966,9 +726,7 @@ test("fork-shared OFD sync keeps a quiescent parent reader target for a method-c
     worker,
     thread: thread as never,
     status: 0,
-    rawSyncEffects: 64,
     completedSyncEffects: 64,
-    latestFdTrace: null,
     isRunningWorker: true,
     wroteToPipe: false,
     drainedPipe: false,
@@ -1061,7 +819,6 @@ test("queued fork-shared OFD sync clears both handle and share promises", async 
     syncEffectSocketState: 2,
     syncForkSharedStateViaKernelWorker,
   };
-  installSupervisorFdPolicy(handle.kernel);
   const maybeHandleOwnedStateSync = createWorkerOwnedStateSyncHandler(deps as never);
 
   const handled = maybeHandleOwnedStateSync({
@@ -1069,7 +826,6 @@ test("queued fork-shared OFD sync clears both handle and share promises", async 
     worker,
     thread: thread as never,
     status: 0,
-    rawSyncEffects: 64,
     completedSyncEffects: 64,
     isRunningWorker: true,
     wroteToPipe: false,
@@ -1168,7 +924,6 @@ test("queued no-target fork-shared OFD sync waits without replacing the active s
     syncEffectSocketState: 2,
     syncForkSharedStateViaKernelWorker,
   };
-  installSupervisorFdPolicy(handle.kernel);
   const maybeHandleOwnedStateSync = createWorkerOwnedStateSyncHandler(deps as never);
 
   const handled = maybeHandleOwnedStateSync({
@@ -1176,8 +931,6 @@ test("queued no-target fork-shared OFD sync waits without replacing the active s
     worker,
     thread: thread as never,
     status: 0,
-    syscallNr: 32n,
-    rawSyncEffects: 64,
     completedSyncEffects: 64,
     isRunningWorker: true,
     wroteToPipe: false,
@@ -1273,7 +1026,6 @@ test("fork-shared-only pipe effects sync when the source holds tracked shared st
     syncEffectSocketState: 2,
     syncForkSharedStateViaKernelWorker: vi.fn(async () => {}),
   };
-  installSupervisorFdPolicy(handle.kernel);
   const maybeHandleOwnedStateSync = createWorkerOwnedStateSyncHandler(deps as never);
 
   const handled = maybeHandleOwnedStateSync({
@@ -1281,7 +1033,6 @@ test("fork-shared-only pipe effects sync when the source holds tracked shared st
     worker,
     thread: thread as never,
     status: 0,
-    rawSyncEffects: 64,
     completedSyncEffects: 64,
     isRunningWorker: true,
     wroteToPipe: false,
@@ -1371,7 +1122,6 @@ test("dirty process memfs syncs before publishing a pipe-status boundary", async
     syncForkSharedStateViaKernelWorker,
     markRuntimeFsDirty,
   };
-  installSupervisorFdPolicy(handle.kernel);
   const maybeHandleOwnedStateSync = createWorkerOwnedStateSyncHandler(deps as never);
 
   const handled = maybeHandleOwnedStateSync({
@@ -1379,7 +1129,6 @@ test("dirty process memfs syncs before publishing a pipe-status boundary", async
     worker,
     thread: thread as never,
     status: 0,
-    rawSyncEffects: 1,
     completedSyncEffects: 1,
     isRunningWorker: true,
     wroteToPipe: false,
@@ -1462,7 +1211,6 @@ test("dirty process memfs is deferred on a successful process-memfs-only effect"
     syncEffectSocketState: 2,
     syncForkSharedStateViaKernelWorker,
   };
-  installSupervisorFdPolicy(handle.kernel);
   const maybeHandleOwnedStateSync = createWorkerOwnedStateSyncHandler(deps as never);
 
   const handled = maybeHandleOwnedStateSync({
@@ -1470,7 +1218,6 @@ test("dirty process memfs is deferred on a successful process-memfs-only effect"
     worker,
     thread: thread as never,
     status: 0,
-    rawSyncEffects: 128,
     completedSyncEffects: 128,
     isRunningWorker: true,
     wroteToPipe: false,
@@ -1556,7 +1303,6 @@ test("active vfork child pid mismatch defers parent-owned state sync", () => {
     syncEffectSocketState: 2,
     syncForkSharedStateViaKernelWorker: vi.fn(async () => {}),
   };
-  installSupervisorFdPolicy(handle.kernel);
   const maybeHandleOwnedStateSync = createWorkerOwnedStateSyncHandler(deps as never);
 
   const handled = maybeHandleOwnedStateSync({
@@ -1564,7 +1310,6 @@ test("active vfork child pid mismatch defers parent-owned state sync", () => {
     worker,
     thread: thread as never,
     status: 0,
-    rawSyncEffects: 66,
     completedSyncEffects: 66,
     isRunningWorker: true,
     wroteToPipe: false,
