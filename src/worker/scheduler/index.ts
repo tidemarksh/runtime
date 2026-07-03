@@ -22,6 +22,7 @@ import {
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_ACTIVE_CHILD,
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
+  SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE,
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_THREAD_INIT_PENDING,
   SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_ACTIVE_CHILD,
   SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT,
@@ -464,8 +465,15 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
           && supervisorBlockedStatusIsPipeWait(handle.kernel, latestBlocked.status)
           && supervisorBlockedPollWaitHasSocket(handle.kernel, latestBlocked.vmPtr)
         ) {
-          if (handle.runningWorker !== null || !canScheduleWorker(handle, worker)) {
-            scheduleSupervisorBlockedRetry(handle, worker);
+          const canScheduleBlockedWorker = canScheduleWorker(handle, worker);
+          if (handle.runningWorker !== null || !canScheduleBlockedWorker) {
+            scheduleSupervisorBlockedRetry(
+              handle,
+              worker,
+              canScheduleBlockedWorker
+                ? SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE
+                : SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE,
+            );
             return;
           }
           if (
@@ -983,7 +991,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       scheduleSupervisorBlockedRetry(
         handle,
         worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
+        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE,
       );
       return;
     }
@@ -1083,7 +1091,13 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
               `epoll-retry-skip:${handle.pid}:running=${handle.runningWorker !== null ? 1 : 0}:sched=${canScheduleBlockedWorker ? 1 : 0}`
                 + `:${formatRunningRetryBlocker(handle, runningThread)}`,
             );
-            scheduleSupervisorBlockedRetry(handle, worker);
+            scheduleSupervisorBlockedRetry(
+              handle,
+              worker,
+              canScheduleBlockedWorker
+                ? SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE
+                : SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE,
+            );
             return;
           }
           resumeEpollWait(handle, worker, latestBlocked);

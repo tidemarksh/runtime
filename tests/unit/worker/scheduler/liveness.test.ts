@@ -1329,6 +1329,71 @@ test("wait4 retry does not gate on local child spawn bookkeeping", async () => {
   }));
 });
 
+test("blocked retry delegates vfork process gate retry reason to kernel", () => {
+  const vforkWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const blockedWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const vforkThread = makeThreadState(0x1234);
+  const blockedThread = makeThreadState(0x5678);
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(vforkWorker, vforkThread);
+  threadWorkerStates.set(blockedWorker, blockedThread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = (vmPtr: number) => vmPtr === blockedThread.vmPtr
+    ? kernel.abi_status_pipe_wait()
+    : kernel.abi_status_ok();
+  const retryReason = vi.fn(kernel.supervisor_blocked_wait_retry_reason);
+  kernel.supervisor_blocked_wait_retry_reason = retryReason;
+  const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
+  handle.workers.add(vforkWorker);
+  handle.vforkWorker = vforkWorker;
+  handle.vforkReadyWorkers = [vforkWorker];
+  handle.vforkSnapshot = {
+    vmPtr: vforkThread.vmPtr,
+    parentPid: 1,
+    parentProcessPtr: 0x2000,
+    parentPc: 0x1000n,
+    parentSp: 0x8000n,
+    parentS11: 0x9000n,
+    childPid: 2,
+    nextPid: 3,
+    pgid: 1,
+    sid: 1,
+    inheritedSharedOfdIds: [],
+  };
+  handle.hostBlockedWorkers.set(blockedWorker, {
+    vmPtr: blockedThread.vmPtr,
+    status: kernel.abi_status_pipe_wait(),
+    rpcPending: false,
+    rpcGeneration: 0,
+    skipNextNetworkPump: false,
+  });
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: (_handle, error) => {
+      throw error;
+    },
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.notifySchedulerProgress(handle);
+
+  expect(retryReason).toHaveBeenCalledWith(
+    blockedThread.vmPtr,
+    kernel.supervisor_blocked_wait_retry_flag_process_gate(),
+  );
+  expect(blockedWorker.postMessage).not.toHaveBeenCalled();
+  expect(vforkWorker.postMessage).not.toHaveBeenCalled();
+});
+
 test("wait4 retry delegates to kernel worker when kernel-worker support is available", async () => {
   const worker = {
     postMessage: vi.fn(),

@@ -7,11 +7,12 @@ import {
   type ProcessHandle,
   type ThreadWorkerState,
 } from "../../../../src/worker/types.js";
+import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 import { vi } from "vite-plus/test";
 
 export function makeHostBoundaryKernel() {
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
-  return {
+  return installSupervisorBlockedResumeStub({
     abi_status_ok: () => 0,
     abi_status_futex_wait: () => 20,
     abi_status_sleep: () => 26,
@@ -108,7 +109,7 @@ export function makeHostBoundaryKernel() {
     },
     supervisor_stdio_pipe_read_progress_action: (_vmPtr: number, _pipeSlot: number, drained: number) =>
       drained === 0 ? 0 : 1,
-  } as unknown as ProcessHandle["kernel"];
+  } as unknown as ProcessHandle["kernel"]);
 }
 
 export function makeHostBoundaryThread(vmPtr: number): ThreadWorkerState {
