@@ -17,7 +17,6 @@ import {
   drainHiddenProcessOutput,
   drainProcessOutput,
   flushStdin,
-  settleVisibleProcessOutput,
   writeProcessStdin as bufferProcessStdin,
 } from "../stdio.js";
 import { createWorkerProcessIoHelpers } from "../process-io.js";
@@ -30,7 +29,6 @@ import type {
 } from "../kernel-rpc/outcomes.js";
 import {
   applyKernelRpcResumeEffects as applyKernelRpcResumeEffectsImpl,
-  continueBlockedRpcResumeAfterEffects,
 } from "../kernel-rpc/effects.js";
 import { createWorkerProcessFactory } from "../create-process.js";
 
@@ -464,10 +462,6 @@ const kernelRpcResumeEffectPorts = {
   enqueueWorker,
   handleExecveSpawn,
   notifyHostEffectProgress: notifySchedulerProgress,
-  requestPipeStateSync,
-  settleVisibleProcessOutput,
-  syncBlockedForkSharedStateViaKernelWorker,
-  syncSocketStateViaKernelWorker,
   threadWorkerStates,
 };
 
@@ -520,10 +514,7 @@ async function executeHostBlockedSyscallResumeOutcome(
     vmPtr,
     blockedStatus,
   );
-  const appliedOutcome = await applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
-  return continueBlockedRpcResumeAfterEffects(handle, worker, vmPtr, outcome, appliedOutcome, {
-    threadWorkerStates,
-  });
+  return applyKernelRpcResumeEffects(handle, worker, vmPtr, outcome);
 }
 
 async function resumeWait4ViaKernelWorker(

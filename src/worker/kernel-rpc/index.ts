@@ -4,7 +4,7 @@ import { createWorkerKernelRpcFsHelpers } from "./fs.js";
 import { expectKernelWorkerResponse } from "./transport.js";
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
 import { kernelShareOtherMembers } from "../kernel-share.js";
-import { drainProcessOutput } from "../stdio.js";
+import { drainProcessOutput, settleVisibleProcessOutput } from "../stdio.js";
 import { readKernelRuntimeState } from "../../abi.js";
 import {
   type KernelWorkerRequestFn,
@@ -115,6 +115,8 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     threadWorkerStates: deps.threadWorkerStates,
     drainProcessOutput,
     failProcess: deps.failProcess,
+    requestPipeStateSync: deps.requestPipeStateSync,
+    settleVisibleProcessOutput,
     syncProcessMemfsViaKernelWorker: deps.syncProcessMemfsViaKernelWorker,
     syncSocketStateViaKernelWorker: syncSocketStatePreservingNetworkBridge,
     snapshotProcessFdOfdStateForKernelWorker: deps.snapshotProcessFdOfdStateForKernelWorker,

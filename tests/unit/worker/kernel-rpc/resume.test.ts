@@ -6,7 +6,7 @@ import {
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { createWorkerKernelRpcHelpers as createWorkerKernelRpcHelpersBase } from "../../../../src/worker/kernel-rpc.js";
 import { createWorkerKernelRpcBlockedRpcTestHelpers as createWorkerKernelRpcBlockedRpcHelpersBase } from "../../../../src/worker/kernel-rpc/blocked-rpc.js";
-import { createWorkerKernelRpcResumeLifecycleHelpers } from "../../../../src/worker/kernel-rpc/lifecycle/resume.js";
+import { createWorkerKernelRpcResumeLifecycleHelpers as createWorkerKernelRpcResumeLifecycleHelpersBase } from "../../../../src/worker/kernel-rpc/lifecycle/resume.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 import {
@@ -30,6 +30,7 @@ function createWorkerKernelRpcHelpers(
   deps: Parameters<typeof createWorkerKernelRpcHelpersBase>[0],
 ) {
   return createWorkerKernelRpcHelpersBase({
+    clearHostBlockedRetryTimer: () => {},
     ...deps,
     requestThreadWorkerBlockedResume,
   });
@@ -41,6 +42,18 @@ function createWorkerKernelRpcBlockedRpcHelpers(
   return createWorkerKernelRpcBlockedRpcHelpersBase({
     ...deps,
     requestThreadWorkerBlockedResume,
+  });
+}
+
+type ResumeLifecycleDeps = Parameters<typeof createWorkerKernelRpcResumeLifecycleHelpersBase>[0];
+
+function createWorkerKernelRpcResumeLifecycleHelpers(
+  deps: Omit<ResumeLifecycleDeps, "settleVisibleProcessOutput">
+    & Partial<Pick<ResumeLifecycleDeps, "settleVisibleProcessOutput">>,
+) {
+  return createWorkerKernelRpcResumeLifecycleHelpersBase({
+    settleVisibleProcessOutput: async () => undefined,
+    ...deps,
   });
 }
 
@@ -76,6 +89,7 @@ function supervisorFsResponseDispositionTestStubs(
   execveSpawnStatus: () => number = () => 0,
 ): Partial<KernelExports> {
   return {
+    abi_status_ok: () => 0,
     supervisor_fs_completion_flag_memfs_dirty: () => 1,
     supervisor_fs_completion_flag_memfs_publish_ready: () => 2,
     supervisor_fs_completion_flag_ofd_state_changed: () => 4,
@@ -360,6 +374,7 @@ test("resumeWait4ViaKernelWorker does not re-run local wait4 after kernel-worker
 
   const handledStatuses: number[] = [];
   const pipeSyncWakeArgs: boolean[] = [];
+  const settledHandles: ProcessHandle[] = [];
   const helpers = createWorkerKernelRpcResumeLifecycleHelpers({
     appendWorkerDebugLog: () => {},
     canonicalizeChildLifecycleViaKernelWorker: async () => ({
@@ -383,6 +398,9 @@ test("resumeWait4ViaKernelWorker does not re-run local wait4 after kernel-worker
     requestPipeStateSync: async (_handle, wakeWaiters = false) => {
       pipeSyncWakeArgs.push(wakeWaiters);
     },
+    settleVisibleProcessOutput: async (settleHandle) => {
+      settledHandles.push(settleHandle);
+    },
     threadWorkerStates: threadWorkerStates as never,
   });
 
@@ -390,11 +408,9 @@ test("resumeWait4ViaKernelWorker does not re-run local wait4 after kernel-worker
 
   expect(threadResumeWait4).not.toHaveBeenCalled();
   expect(handledStatuses).toEqual([]);
-  expect(pipeSyncWakeArgs).toEqual([]);
-  expect(outcome.effects).toEqual([
-    { kind: "request-pipe-state-sync", wakeWaiters: true },
-    { kind: "settle-visible-process-output" },
-  ]);
+  expect(pipeSyncWakeArgs).toEqual([true]);
+  expect(settledHandles).toEqual([handle]);
+  expect(outcome.effects).toBeUndefined();
   expect(outcome.status).toBe(0);
   expect(handle.kernelState.heapPtr).toBe(resumedState.heapPtr);
   expect(readPublishedKernelRuntimeState(runtimeBridge).heapPtr).toBe(resumedState.heapPtr);
@@ -479,7 +495,7 @@ test("resumeWait4ViaKernelWorker skips RPC when local wait4 already resolved", a
 
   expect(kernelWorkerRequest).not.toHaveBeenCalled();
   expect(handledStatuses).toEqual([]);
-  expect(outcome.effects).toEqual([]);
+  expect(outcome.effects).toBeUndefined();
   expect(outcome.status).toBe(0);
   expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
@@ -1264,7 +1280,7 @@ test("executeHostBlockedSyscallResume retries mixed socket pipe pselect HUP owne
   expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
 });
 
-test("executeHostBlockedSyscallResumeOutcome returns pipe sync effect before ready socket pselect resume", async () => {
+test("executeHostBlockedSyscallResumeOutcome syncs pipe state before ready socket pselect resume", async () => {
   const worker = {} as Worker;
   const runtimeBridge = createRuntimeStateBridge();
   const threadResumeBlockedSyscall = vi.fn(() => 1n);
@@ -1380,18 +1396,23 @@ test("executeHostBlockedSyscallResumeOutcome returns pipe sync effect before rea
   const outcome = await helpers.executeHostBlockedSyscallResumeOutcome(handle, worker, 0x1234, 21);
 
   expect(threadResumeBlockedSyscall).not.toHaveBeenCalled();
-  expect(requestThreadWorkerBlockedResume).not.toHaveBeenCalled();
-  expect(handle.hostBlockedWorkers.has(worker)).toBe(true);
+  expect(requestThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
+  expect(handle.hostBlockedWorkers.has(worker)).toBe(false);
   expect(enqueueWorker).not.toHaveBeenCalled();
-  expect(outcome.effects).toMatchObject([
-    { kind: "request-pipe-state-sync", handle, wakeWaiters: false },
-  ]);
+  expect(outcome).toMatchObject({
+    kind: "queued-in-worker",
+    effects: [{ kind: "enqueue-worker" }],
+  });
   expect(handleHostBlockedRetryResult).not.toHaveBeenCalled();
-  expect(requestPipeStateSync).not.toHaveBeenCalled();
-  expect(syncBlockedForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
+  expect(requestPipeStateSync).toHaveBeenCalledWith(handle, false);
+  expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
+  expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(handle, 0x1234, {
+    kind: "blocked-rpc",
+    status: 21,
+  });
 });
 
-test("executeHostBlockedSyscallResumeOutcome returns socket sync effect without running socket sync port", async () => {
+test("executeHostBlockedSyscallResumeOutcome syncs socket state before ready socket pselect resume", async () => {
   const worker = {} as Worker;
   const runtimeBridge = createRuntimeStateBridge();
   const threadResumeBlockedSyscall = vi.fn(() => 1n);
@@ -1503,10 +1524,13 @@ test("executeHostBlockedSyscallResumeOutcome returns socket sync effect without 
 
   const outcome = await helpers.executeHostBlockedSyscallResumeOutcome(handle, worker, 0x1234, 21);
 
-  expect(outcome.effects).toEqual([{ kind: "sync-blocked-socket-state", status: 21 }]);
+  expect(outcome).toMatchObject({
+    kind: "queued-in-worker",
+    effects: [{ kind: "enqueue-worker" }],
+  });
   expect(threadResumeBlockedSyscall).not.toHaveBeenCalled();
   expect(requestPipeStateSync).not.toHaveBeenCalled();
-  expect(syncSocketStateViaKernelWorker).not.toHaveBeenCalled();
+  expect(syncSocketStateViaKernelWorker).toHaveBeenCalledWith(handle, { kind: "blocked-rpc", status: 21 });
 });
 
 test("executeHostBlockedSyscallResume wakes pipe waiters through requestPipeStateSync", async () => {

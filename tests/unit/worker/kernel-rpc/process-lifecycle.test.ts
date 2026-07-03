@@ -226,9 +226,9 @@ test("recordChildExitViaKernelWorker returns parent wake effects after draining 
   expect(order).toEqual([
     "drain:1",
     "drain:1",
+    "pipe-sync:1:wake",
   ]);
   expect(outcome.effects).toMatchObject([
-    { kind: "request-pipe-state-sync", handle, wakeWaiters: true },
     { kind: "notify-host-effect-progress", handle },
   ]);
   expect(handle.recordedChildExits).toEqual([[7, 0x0300]]);

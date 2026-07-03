@@ -3772,16 +3772,15 @@ test("kernel-rpc blocked-rpc helper owns local resume and returns a typed outcom
     rpcPending: false,
   });
   await expect(helpers.executeHostBlockedSyscallResumeOutcome(handle, worker, 0x1234, 21)).resolves.toMatchObject({
-    kind: "blocked",
+    kind: "completed",
     status: 0,
-    effects: [{ kind: "sync-blocked-fork-shared-state", sourceVmPtr: 0x1234, status: 21 }],
   });
   expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledTimes(2);
   expect(handleHostBlockedRetryResult).toHaveBeenCalledTimes(1);
-  expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledTimes(1);
+  expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledTimes(2);
 });
 
-test("kernel-rpc blocked-rpc outcome reports blocked while the worker remains blocked", async () => {
+test("kernel-rpc blocked-rpc outcome reports completed after inline fork-shared sync", async () => {
   const kernel = makeKernel();
   const worker = {} as Worker;
   const handle = {
@@ -3821,14 +3820,16 @@ test("kernel-rpc blocked-rpc outcome reports blocked while the worker remains bl
   });
 
   await expect(helpers.executeHostBlockedSyscallResumeOutcome(handle, worker, 0x1234, 21)).resolves.toMatchObject({
-    kind: "blocked",
+    kind: "completed",
     status: 0,
-    effects: [{ kind: "sync-blocked-fork-shared-state", sourceVmPtr: 0x1234, status: 21 }],
   });
-  expect(syncBlockedForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
+  expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(handle, 0x1234, {
+    kind: "blocked-rpc",
+    status: 21,
+  });
 });
 
-test("kernel-rpc blocked-rpc outcome keeps ownership while continuation effects are pending", async () => {
+test("kernel-rpc blocked-rpc outcome clears pending ownership after inline sync", async () => {
   const kernel = makeKernel();
   const worker = {} as Worker;
   const handle = {
@@ -3868,12 +3869,11 @@ test("kernel-rpc blocked-rpc outcome keeps ownership while continuation effects 
   });
 
   await expect(helpers.executeHostBlockedSyscallResumeOutcome(handle, worker, 0x1234, 21)).resolves.toMatchObject({
-    kind: "blocked",
+    kind: "completed",
     status: 0,
-    effects: [{ kind: "sync-blocked-fork-shared-state", sourceVmPtr: 0x1234, status: 21 }],
   });
 
-  expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(true);
+  expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
 });
 
 test("blocked-rpc does not resume poll hup when pselect watches no pipe slots", async () => {
@@ -4507,7 +4507,7 @@ test("blocked-rpc clears stale local writer before mixed socket pipe pselect ret
   );
 });
 
-test("kernel-rpc blocked-rpc outcome reports retry effect without running scheduler retry", async () => {
+test("kernel-rpc blocked-rpc outcome reports retry status after inline fork-shared sync", async () => {
   const kernel = makeKernel();
   const worker = {} as Worker;
   const handle = {
@@ -4549,10 +4549,12 @@ test("kernel-rpc blocked-rpc outcome reports retry effect without running schedu
   });
 
   await expect(helpers.executeHostBlockedSyscallResumeOutcome(handle, worker, 0x1234, 21)).resolves.toMatchObject({
-    kind: "blocked",
+    kind: "completed",
     status: 0,
-    effects: [{ kind: "sync-blocked-fork-shared-state", sourceVmPtr: 0x1234, status: 21 }],
   });
   expect(handle.hostBlockedWorkers.has(worker)).toBe(true);
-  expect(syncBlockedForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
+  expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(handle, 0x1234, {
+    kind: "blocked-rpc",
+    status: 21,
+  });
 });

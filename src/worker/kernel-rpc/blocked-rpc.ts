@@ -21,7 +21,6 @@ import { PIPE_HEAD_OFFSET, PIPE_READ_OPEN_OFFSET, PIPE_TAIL_OFFSET, PIPE_WRITE_O
 import { POLLFD_BYTES } from "../../layout/poll.js";
 import {
   completedKernelRpcOutcome,
-  kernelRpcResumeEffectsNeedContinuation,
   type KernelRpcResumeEffect,
   type KernelRpcResumeOutcome,
 } from "./outcomes.js";
@@ -62,7 +61,8 @@ type HostBlockedRetryResultHandler = (
 ) => void;
 
 interface HostBlockedSyscallResumeMode {
-  collectEffects: boolean;
+  applyPeerHostEffects: boolean;
+  emitEffect(effect: KernelRpcResumeEffect): void;
   emitRetryResult(status: number): void;
 }
 
@@ -100,10 +100,6 @@ function createWorkerKernelRpcBlockedRpcHelperInternals(deps: WorkerKernelRpcBlo
     const effects = pendingOutcomeEffects.get(worker);
     pendingOutcomeEffects.delete(worker);
     return effects;
-  }
-
-  function outcomeEffectsNeedResumeContinuation(worker: Worker): boolean {
-    return kernelRpcResumeEffectsNeedContinuation(pendingOutcomeEffects.get(worker));
   }
 
 function blockedRpcSyncCause(status: number): SyncCause {
@@ -1033,7 +1029,6 @@ async function executeHostBlockedSyscallResume(
   blockedStatus: number,
   mode: HostBlockedSyscallResumeMode,
 ): Promise<void> {
-  const collectEffects = mode.collectEffects;
   let rpcGeneration: number | null = null;
   let canonicalEofReadyAtStart = false;
   let preserveCanonicalEofReadyOnFinish = false;
@@ -1145,14 +1140,6 @@ async function executeHostBlockedSyscallResume(
         && !blockedStatusIsEpollWait(handle, blockedStatus)
       ) {
         deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-after-supervisor-resume:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
-        if (collectEffects) {
-          pushOutcomeEffect(worker, {
-            kind: "sync-blocked-fork-shared-state",
-            sourceVmPtr: vmPtr,
-            status: blockedStatus,
-          });
-          return;
-        }
         await deps.syncBlockedForkSharedStateViaKernelWorker(handle, vmPtr, blockedRpcSyncCause(blockedStatus));
         if (abortIfStaleBlockedRpc()) {
           return;
@@ -1176,10 +1163,6 @@ async function executeHostBlockedSyscallResume(
       }
       if (handle.kernel.thread_poll_wait_has_socket?.(vmPtr) === 1) {
         deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-socket-supervisor-pipe:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
-        if (collectEffects) {
-          pushOutcomeEffect(worker, { kind: "sync-blocked-socket-state", status: blockedStatus });
-          return true;
-        }
         await syncSocketStatePreservingNetworkBridge(handle, blockedStatus);
         if (abortIfStaleBlockedRpc()) {
           return true;
@@ -1270,7 +1253,7 @@ async function executeHostBlockedSyscallResume(
         }
         if (
           member !== handle
-          && !collectEffects
+          && mode.applyPeerHostEffects
           && recoverOwnerAsyncOkPipePeer(handle, member, blockedPipeSlots)
         ) {
           preserveCanonicalEofReadyForDeferredRetry();
@@ -1299,22 +1282,13 @@ async function executeHostBlockedSyscallResume(
         if (member.kernelWorkerRequest && member.pid > 0) {
           deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-pipe:${member.pid}:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
           deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-pipe-start:${handle.pid}->${member.pid}`);
-          if (collectEffects) {
-            pushOutcomeEffect(worker, {
-              kind: "request-pipe-state-sync",
-              handle: member,
-              wakeWaiters: false,
-            });
+          const skippedSelfAwait = await requestPipeStateSyncForBlockedRpc(
+            member,
+            false,
+            `blocked-rpc-sync-pipe-inflight:${handle.pid}->${member.pid}`,
+          );
+          if (!skippedSelfAwait && abortIfStaleBlockedRpc()) {
             return;
-          } else {
-            const skippedSelfAwait = await requestPipeStateSyncForBlockedRpc(
-              member,
-              false,
-              `blocked-rpc-sync-pipe-inflight:${handle.pid}->${member.pid}`,
-            );
-            if (!skippedSelfAwait && abortIfStaleBlockedRpc()) {
-              return;
-            }
           }
           deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-pipe-done:${handle.pid}->${member.pid}`);
         }
@@ -1322,18 +1296,9 @@ async function executeHostBlockedSyscallResume(
       if (handle.kernelWorkerRequest && handle.pid > 0) {
         deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-blocked:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-blocked-start:${handle.pid}`);
-        if (collectEffects) {
-          pushOutcomeEffect(worker, {
-            kind: "sync-blocked-fork-shared-state",
-            sourceVmPtr: vmPtr,
-            status: blockedStatus,
-          });
+        await deps.syncBlockedForkSharedStateViaKernelWorker(handle, vmPtr, blockedRpcSyncCause(blockedStatus));
+        if (abortIfStaleBlockedRpc()) {
           return;
-        } else {
-          await deps.syncBlockedForkSharedStateViaKernelWorker(handle, vmPtr, blockedRpcSyncCause(blockedStatus));
-          if (abortIfStaleBlockedRpc()) {
-            return;
-          }
         }
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-blocked-done:${handle.pid}`);
         forkSharedSyncedBeforeResume = true;
@@ -1341,9 +1306,6 @@ async function executeHostBlockedSyscallResume(
           deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-pipe-before-resume-start:${handle.pid}`);
           if (canonicalEofReadyAtStart) {
             deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-pipe-before-resume-skip-canonical-eof:${handle.pid}`);
-          } else if (collectEffects) {
-            pushOutcomeEffect(worker, { kind: "request-pipe-state-sync", wakeWaiters: true });
-            return;
           } else {
             const existingSelfPipeSync = handle.pipeSyncPromise;
             const requestedPipeSync = deps.requestPipeStateSync(handle, true);
@@ -1499,14 +1461,9 @@ async function executeHostBlockedSyscallResume(
       }
       if (handle.kernel.thread_poll_wait_has_socket?.(vmPtr) === 1) {
         deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-socket:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
-        if (collectEffects) {
-          pushOutcomeEffect(worker, { kind: "sync-blocked-socket-state", status: blockedStatus });
+        await syncSocketStatePreservingNetworkBridge(handle, blockedStatus);
+        if (abortIfStaleBlockedRpc()) {
           return;
-        } else {
-          await syncSocketStatePreservingNetworkBridge(handle, blockedStatus);
-          if (abortIfStaleBlockedRpc()) {
-            return;
-          }
         }
       }
     }
@@ -1730,7 +1687,7 @@ async function executeHostBlockedSyscallResume(
       handle.hostBlockedWorkers.delete(worker);
       deps.appendWorkerDebugLog(handle, `blocked-rpc-resume-socket-poll-in-worker:0x${vmPtr.toString(16)}`);
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-resume-socket-poll-in-worker:${handle.pid}`);
-      pushOutcomeEffect(worker, { kind: "enqueue-worker" });
+      mode.emitEffect({ kind: "enqueue-worker" });
       return;
     }
     const readPipeReachedEofAfterWait = blockedStatus === handle.kernel.abi_status_pipe_wait()
@@ -1806,11 +1763,7 @@ async function executeHostBlockedSyscallResume(
         handle.runtimeId,
         `blocked-rpc-resume-pipe-eof-in-worker:${handle.pid}:vm=0x${vmPtr.toString(16)}:fd=${blockedPipeFd}:slots=${pipeSlotsForResume.length}`,
       );
-      if (collectEffects) {
-        pushOutcomeEffect(worker, { kind: "enqueue-worker" });
-      } else {
-        deps.enqueueWorker(handle, worker);
-      }
+      mode.emitEffect({ kind: "enqueue-worker" });
       return;
     }
     if (
@@ -1952,11 +1905,7 @@ async function executeHostBlockedSyscallResume(
       handle.hostBlockedWorkers.delete(worker);
       deps.appendWorkerDebugLog(handle, `blocked-rpc-resume-in-worker:0x${vmPtr.toString(16)}`);
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-resume-in-worker:${handle.pid}`);
-      if (collectEffects) {
-        pushOutcomeEffect(worker, { kind: "enqueue-worker" });
-      } else {
-        deps.enqueueWorker(handle, worker);
-      }
+      mode.emitEffect({ kind: "enqueue-worker" });
       return;
     }
     if (readPipeReachedEofAfterWait) {
@@ -2029,18 +1978,9 @@ async function executeHostBlockedSyscallResume(
       && !blockedStatusIsEpollWait(handle, blockedStatus)
     ) {
       deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-after-resume:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
-      if (collectEffects) {
-        pushOutcomeEffect(worker, {
-          kind: "sync-blocked-fork-shared-state",
-          sourceVmPtr: vmPtr,
-          status: blockedStatus,
-        });
+      await deps.syncBlockedForkSharedStateViaKernelWorker(handle, vmPtr, blockedRpcSyncCause(blockedStatus));
+      if (abortIfStaleBlockedRpc()) {
         return;
-      } else {
-        await deps.syncBlockedForkSharedStateViaKernelWorker(handle, vmPtr, blockedRpcSyncCause(blockedStatus));
-        if (abortIfStaleBlockedRpc()) {
-          return;
-        }
       }
     }
 
@@ -2052,14 +1992,9 @@ async function executeHostBlockedSyscallResume(
     ) {
       deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-pipe-after:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-pipe-after-start:${handle.pid}`);
-      if (collectEffects) {
-        pushOutcomeEffect(worker, { kind: "request-pipe-state-sync", wakeWaiters: true });
+      await deps.requestPipeStateSync(handle, true);
+      if (abortIfStaleBlockedRpc()) {
         return;
-      } else {
-        await deps.requestPipeStateSync(handle, true);
-        if (abortIfStaleBlockedRpc()) {
-          return;
-        }
       }
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-pipe-after-done:${handle.pid}`);
       for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -2128,14 +2063,9 @@ async function executeHostBlockedSyscallResume(
         if (handle.kernel.thread_status(vmPtr) !== handle.kernel.abi_status_pipe_wait()) {
           break;
         }
-        if (collectEffects) {
-          pushOutcomeEffect(worker, { kind: "request-pipe-state-sync", wakeWaiters: true });
+        await deps.requestPipeStateSync(handle, true);
+        if (abortIfStaleBlockedRpc()) {
           return;
-        } else {
-          await deps.requestPipeStateSync(handle, true);
-          if (abortIfStaleBlockedRpc()) {
-            return;
-          }
         }
       }
     } else if (
@@ -2201,14 +2131,9 @@ async function executeHostBlockedSyscallResume(
         || blockedStatus === handle.kernel.abi_status_socket_send()
       )
     ) {
-      if (collectEffects) {
-        pushOutcomeEffect(worker, { kind: "sync-blocked-socket-state", status: blockedStatus });
+      await syncSocketStatePreservingNetworkBridge(handle, blockedStatus);
+      if (abortIfStaleBlockedRpc()) {
         return;
-      } else {
-        await syncSocketStatePreservingNetworkBridge(handle, blockedStatus);
-        if (abortIfStaleBlockedRpc()) {
-          return;
-        }
       }
     }
 
@@ -2250,9 +2175,7 @@ async function executeHostBlockedSyscallResume(
       deps.failProcess(handle, new Error(`${detail}\n${debug}`));
     }
   } finally {
-    if (!collectEffects || !outcomeEffectsNeedResumeContinuation(worker)) {
-      finishBlockedRpc();
-    }
+    finishBlockedRpc();
   }
 }
 
@@ -2272,13 +2195,15 @@ async function executeHostBlockedSyscallResume(
       vmPtr,
       blockedStatus,
       {
-        collectEffects: true,
+        applyPeerHostEffects: false,
+        emitEffect(effect) {
+          pushOutcomeEffect(worker, effect);
+        },
         emitRetryResult(status) {
           collectedRetryResult.status = status;
         },
       },
     );
-    const needsResumeContinuation = outcomeEffectsNeedResumeContinuation(worker);
     const effects = takeOutcomeEffects(worker);
     if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
       return { kind: "process-gone", effects };
@@ -2286,10 +2211,7 @@ async function executeHostBlockedSyscallResume(
     if (!handle.hostBlockedWorkers.has(worker)) {
       return { kind: "queued-in-worker", effects };
     }
-    if (
-      collectedRetryResult.status !== undefined
-      && !needsResumeContinuation
-    ) {
+    if (collectedRetryResult.status !== undefined) {
       return completedKernelRpcOutcome(collectedRetryResult.status, effects);
     }
     const status = handle.kernel.thread_status?.(vmPtr);
@@ -2312,7 +2234,16 @@ async function executeHostBlockedSyscallResume(
       vmPtr,
       blockedStatus,
       {
-        collectEffects: false,
+        applyPeerHostEffects: true,
+        emitEffect(effect) {
+          switch (effect.kind) {
+            case "enqueue-worker":
+              deps.enqueueWorker(handle, worker);
+              return;
+            default:
+              throw new Error(`blocked-rpc test helper cannot apply effect: ${effect.kind}`);
+          }
+        },
         emitRetryResult(status) {
           handleHostBlockedRetryResult(handle, worker, vmPtr, status);
         },

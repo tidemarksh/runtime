@@ -1,8 +1,5 @@
-import { readKernelRuntimeState } from "../../abi.js";
 import type { ProcessHandle, ThreadWorkerState } from "../types.js";
-import type { SyncCause } from "../contracts/sync.js";
 import {
-  kernelRpcResumeEffectsNeedContinuation,
   type KernelRpcResumeEffect,
   type KernelRpcResumeOutcome,
 } from "./outcomes.js";
@@ -11,29 +8,7 @@ export interface KernelRpcResumeEffectPorts {
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   handleExecveSpawn(handle: ProcessHandle, worker: Worker, thread: ThreadWorkerState): Promise<void>;
   notifyHostEffectProgress(handle: ProcessHandle): void;
-  requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
-  settleVisibleProcessOutput(
-    handle: ProcessHandle,
-    requestPipeStateSync: (handle: ProcessHandle, wakeWaiters?: boolean) => Promise<void>,
-  ): Promise<unknown>;
-  syncBlockedForkSharedStateViaKernelWorker(
-    handle: ProcessHandle,
-    sourceVmPtr: number | undefined,
-    cause: SyncCause,
-  ): Promise<void>;
-  syncSocketStateViaKernelWorker(
-    handle: ProcessHandle,
-    cause: SyncCause,
-  ): Promise<{ socketUsed: number; netBufUsed: bigint }>;
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
-}
-
-export interface KernelRpcResumeContinuationPorts {
-  threadWorkerStates: WeakMap<Worker, unknown>;
-}
-
-function kernelRpcBlockedCause(status: number): SyncCause {
-  return { kind: "blocked-rpc", status };
 }
 
 export async function applyKernelRpcResumeEffects(
@@ -48,36 +23,6 @@ export async function applyKernelRpcResumeEffects(
   }
   const { effects: _effects, ...withoutEffects } = outcome;
   return withoutEffects;
-}
-
-export function kernelRpcOutcomeNeedsResumeContinuation(outcome: KernelRpcResumeOutcome): boolean {
-  return outcome.kind === "blocked"
-    && kernelRpcResumeEffectsNeedContinuation(outcome.effects);
-}
-
-export async function continueBlockedRpcResumeAfterEffects(
-  handle: ProcessHandle,
-  worker: Worker,
-  vmPtr: number,
-  outcome: KernelRpcResumeOutcome,
-  appliedOutcome: KernelRpcResumeOutcome,
-  ports: KernelRpcResumeContinuationPorts,
-): Promise<KernelRpcResumeOutcome> {
-  if (!kernelRpcOutcomeNeedsResumeContinuation(outcome)) {
-    return appliedOutcome;
-  }
-  const blocked = handle.hostBlockedWorkers.get(worker);
-  if (
-    !blocked
-    || blocked.vmPtr !== vmPtr
-    || !handle.workers.has(worker)
-    || !ports.threadWorkerStates.has(worker)
-  ) {
-    return appliedOutcome;
-  }
-  blocked.rpcPending = false;
-  const status = handle.kernel.thread_status?.(vmPtr);
-  return status === undefined ? { kind: "stale" } : { kind: "completed", status };
 }
 
 async function applyKernelRpcResumeEffect(
@@ -108,26 +53,6 @@ async function applyKernelRpcResumeEffect(
     }
     case "notify-host-effect-progress":
       ports.notifyHostEffectProgress(effect.handle ?? handle);
-      return;
-    case "request-pipe-state-sync":
-      await ports.requestPipeStateSync(effect.handle ?? handle, effect.wakeWaiters);
-      return;
-    case "settle-visible-process-output":
-      await ports.settleVisibleProcessOutput(handle, ports.requestPipeStateSync);
-      return;
-    case "sync-blocked-fork-shared-state":
-      await ports.syncBlockedForkSharedStateViaKernelWorker(
-        handle,
-        effect.sourceVmPtr,
-        kernelRpcBlockedCause(effect.status),
-      );
-      return;
-    case "sync-blocked-socket-state":
-      if (handle.networkConnections.size > 0) {
-        handle.kernelState = readKernelRuntimeState(handle.kernel);
-        return;
-      }
-      await ports.syncSocketStateViaKernelWorker(handle, kernelRpcBlockedCause(effect.status));
       return;
     default: {
       const exhaustive: never = effect;
