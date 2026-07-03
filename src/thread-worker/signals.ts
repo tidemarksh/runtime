@@ -6,17 +6,19 @@ export function checkPendingSignalsAtBoundary(
   vmPtr: number,
   statusCodes: StatusCodes,
 ): { status: number; delivered: boolean } {
-  const beforePc = exports.thread_pc(vmPtr);
-  const beforeSp = exports.thread_sp(vmPtr);
+  const supervisorBoundaryCheck = exports.supervisor_signal_boundary_check;
+  if (supervisorBoundaryCheck === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_signal_boundary_check");
+  }
   clearSyscallTrace(exports);
-  exports.thread_step(vmPtr, 0);
-  const afterPc = exports.thread_pc(vmPtr);
-  const afterSp = exports.thread_sp(vmPtr);
+  const delivered = supervisorBoundaryCheck(vmPtr);
+  if (delivered < 0) {
+    throw new Error(`kernel supervisor signal boundary check failed: ${delivered}`);
+  }
   const status = exports.thread_status(vmPtr);
   return {
     status,
-    delivered: status === statusCodes.OK
-      && (afterPc !== beforePc || afterSp !== beforeSp),
+    delivered: status === statusCodes.OK && delivered === 1,
   };
 }
 

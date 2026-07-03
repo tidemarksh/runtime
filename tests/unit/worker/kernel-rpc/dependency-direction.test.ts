@@ -84,6 +84,7 @@ test("process creation requires the supervisor ABI before runtime ownership star
     "supervisor_blocked_wait_retry_flag_process_gate",
     "supervisor_blocked_wait_retry_flag_thread_init_pending",
     "supervisor_signal_pending_for_blocked_wait",
+    "supervisor_signal_boundary_check",
     "supervisor_enqueue_blocked_wait_timer",
     "supervisor_blocked_wait_timer_required",
     "supervisor_fd_control_record",

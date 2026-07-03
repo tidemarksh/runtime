@@ -11,10 +11,12 @@ import { createThreadWorkerStatusOutcome } from "../../../src/thread-worker/outc
 
 function supervisorFutexExports(options: {
   pendingSignal?: () => number;
+  boundaryCheck?: () => number;
   complete?: (vmPtr: number, completion: number) => number;
 } = {}) {
   return {
     supervisor_signal_pending_for_blocked_wait: options.pendingSignal ?? (() => 0),
+    supervisor_signal_boundary_check: options.boundaryCheck ?? (() => 0),
     supervisor_futex_wait_completion_woken: () => 1,
     supervisor_futex_wait_completion_not_equal: () => 2,
     supervisor_futex_wait_completion_invalid_address: () => 4,
@@ -869,6 +871,7 @@ test("handleRuntimeBridgeBlockedStatus treats epoll timeout=0 as an immediate ti
       thread_sp: () => 0n,
       thread_step: () => {},
       thread_status: () => status,
+      supervisor_signal_boundary_check: () => 0,
       supervisor_resume_blocked_syscall: () => {
         resumeTimeout(0x1234);
         return 0n;
