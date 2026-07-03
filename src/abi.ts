@@ -266,6 +266,10 @@ export interface KernelExports {
   supervisor_fs_response_flag_store_pending_kernel_state?(): number;
   supervisor_fs_response_flag_resolved_to_execve_spawn?(): number;
   supervisor_fs_response_flag_process_owner_matches?(): number;
+  supervisor_fs_local_metadata_action_none?(): number;
+  supervisor_fs_local_metadata_action_tombstone_primary?(): number;
+  supervisor_fs_local_metadata_action_forget_primary?(): number;
+  supervisor_fs_local_metadata_action_forget_secondary?(): number;
   supervisor_fs_resident_page_evict_not_found?(): number;
   supervisor_fs_resident_page_evict_dirty_pinned?(): number;
   supervisor_fs_resident_page_evict_evicted?(): number;
@@ -507,6 +511,13 @@ export interface KernelExports {
     result: bigint | number,
     ownerAsyncStatus: number,
     lastStatus: number,
+  ): number;
+  supervisor_fs_local_metadata_action?(
+    opcode: number,
+    effects: number,
+    result: bigint | number,
+    hasPrimaryPath: number,
+    hasSecondaryPath: number,
   ): number;
   supervisor_fs_resident_page_slot_decision?(
     existingSlot: number,
@@ -1478,6 +1489,10 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_response_flag_store_pending_kernel_state",
   "supervisor_fs_response_flag_resolved_to_execve_spawn",
   "supervisor_fs_response_flag_process_owner_matches",
+  "supervisor_fs_local_metadata_action_none",
+  "supervisor_fs_local_metadata_action_tombstone_primary",
+  "supervisor_fs_local_metadata_action_forget_primary",
+  "supervisor_fs_local_metadata_action_forget_secondary",
   "supervisor_fs_resident_page_evict_not_found",
   "supervisor_fs_resident_page_evict_dirty_pinned",
   "supervisor_fs_resident_page_evict_evicted",
@@ -1591,6 +1606,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_clean_backing_range_read_length",
   "supervisor_fs_clean_backing_range_output_length",
   "supervisor_fs_response_disposition",
+  "supervisor_fs_local_metadata_action",
   "supervisor_fs_resident_page_slot_decision",
   "supervisor_fs_resident_page_evict_status",
   "supervisor_signal_control_record",

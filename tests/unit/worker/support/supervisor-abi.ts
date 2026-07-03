@@ -5,7 +5,11 @@ import {
 import {
   FS_OP_CLOSE,
   FS_OP_EXECVE,
+  FS_OP_MKDIR,
   FS_OP_MMAP,
+  FS_OP_OPENAT,
+  FS_OP_RENAME,
+  FS_OP_UNLINK,
 } from "../../../../src/layout/fs-ring.js";
 
 const DEFAULT_RESIDENT_PAGE_SIZE = 4096;
@@ -70,6 +74,10 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_futex_wait_completion_signal_check: 5,
   supervisor_fs_metadata_full_sync_action_none: 0,
   supervisor_fs_metadata_full_sync_action_required: 1,
+  supervisor_fs_local_metadata_action_none: 0,
+  supervisor_fs_local_metadata_action_tombstone_primary: 1,
+  supervisor_fs_local_metadata_action_forget_primary: 2,
+  supervisor_fs_local_metadata_action_forget_secondary: 4,
 };
 
 export interface SupervisorRunnableResumeRecordFixture {
@@ -349,6 +357,28 @@ export function makeSupervisorAbiStubs(
       return treeMutated !== 0 && handledMetadataMutation === 0
         ? DEFAULT_NUMERIC_EXPORTS.supervisor_fs_metadata_full_sync_action_required
         : DEFAULT_NUMERIC_EXPORTS.supervisor_fs_metadata_full_sync_action_none;
+    },
+    supervisor_fs_local_metadata_action(
+      opcode: number,
+      effects: number,
+      result: bigint | number,
+      hasPrimaryPath: number,
+      hasSecondaryPath: number,
+    ) {
+      const signedResult = Number(BigInt.asIntN(64, typeof result === "bigint" ? result : BigInt(result)));
+      if (signedResult < 0 || hasPrimaryPath === 0 || (effects & 1) === 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fs_local_metadata_action_none;
+      }
+      if (opcode === FS_OP_UNLINK) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fs_local_metadata_action_tombstone_primary;
+      }
+      if (opcode === FS_OP_OPENAT || opcode === FS_OP_MKDIR) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fs_local_metadata_action_forget_primary;
+      }
+      if (opcode === FS_OP_RENAME && hasSecondaryPath !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fs_local_metadata_action_forget_secondary;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fs_local_metadata_action_none;
     },
     supervisor_fs_pending_mmap_guest_write_ptr() {
       return 0;

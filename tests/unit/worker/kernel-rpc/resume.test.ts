@@ -9,7 +9,16 @@ import { createWorkerKernelRpcBlockedRpcTestHelpers as createWorkerKernelRpcBloc
 import { createWorkerKernelRpcResumeLifecycleHelpers } from "../../../../src/worker/kernel-rpc/lifecycle/resume.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
-import { FS_OP_CLOSE, FS_OP_EXECVE, FS_OP_MMAP, FS_OP_WRITE } from "../../../../src/layout/fs-ring.js";
+import {
+  FS_OP_CLOSE,
+  FS_OP_EXECVE,
+  FS_OP_MKDIR,
+  FS_OP_MMAP,
+  FS_OP_OPENAT,
+  FS_OP_RENAME,
+  FS_OP_UNLINK,
+  FS_OP_WRITE,
+} from "../../../../src/layout/fs-ring.js";
 
 const requestThreadWorkerBlockedResume = vi.fn();
 
@@ -110,6 +119,10 @@ function supervisorFsResponseDispositionTestStubs(
     supervisor_fs_response_flag_store_pending_kernel_state: () => 64,
     supervisor_fs_response_flag_resolved_to_execve_spawn: () => 128,
     supervisor_fs_response_flag_process_owner_matches: () => 256,
+    supervisor_fs_local_metadata_action_none: () => 0,
+    supervisor_fs_local_metadata_action_tombstone_primary: () => 1,
+    supervisor_fs_local_metadata_action_forget_primary: () => 2,
+    supervisor_fs_local_metadata_action_forget_secondary: () => 4,
     supervisor_fs_pending_ring_request: () => 0,
     supervisor_fs_pending_regular_file_fd: () => -1,
     supervisor_fs_pending_regular_file_ofd: () => 0,
@@ -170,6 +183,28 @@ function supervisorFsResponseDispositionTestStubs(
         flags |= 128;
       }
       return flags;
+    },
+    supervisor_fs_local_metadata_action: (
+      opcode,
+      effects,
+      result,
+      hasPrimaryPath,
+      hasSecondaryPath,
+    ) => {
+      const signedResult = Number(BigInt.asIntN(64, typeof result === "bigint" ? result : BigInt(result)));
+      if (signedResult < 0 || hasPrimaryPath === 0 || (effects & 1) === 0) {
+        return 0;
+      }
+      if (opcode === FS_OP_UNLINK) {
+        return 1;
+      }
+      if (opcode === FS_OP_OPENAT || opcode === FS_OP_MKDIR) {
+        return 2;
+      }
+      if (opcode === FS_OP_RENAME && hasSecondaryPath !== 0) {
+        return 4;
+      }
+      return 0;
     },
   };
 }

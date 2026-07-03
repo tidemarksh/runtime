@@ -5,8 +5,10 @@ import {
   FS_OP_CLOSE,
   FS_OP_EXECVE,
   FS_OP_GETDENTS,
+  FS_OP_MKDIR,
   FS_OP_MMAP,
   FS_OP_OPENAT,
+  FS_OP_RENAME,
   FS_OP_UNLINK,
   FS_OP_WRITE,
   FS_RING_REQUEST_FD_OFFSET,
@@ -94,6 +96,10 @@ function makeKernel() {
     supervisor_fs_response_flag_store_pending_kernel_state: () => 64,
     supervisor_fs_response_flag_resolved_to_execve_spawn: () => 128,
     supervisor_fs_response_flag_process_owner_matches: () => 256,
+    supervisor_fs_local_metadata_action_none: () => 0,
+    supervisor_fs_local_metadata_action_tombstone_primary: () => 1,
+    supervisor_fs_local_metadata_action_forget_primary: () => 2,
+    supervisor_fs_local_metadata_action_forget_secondary: () => 4,
     supervisor_fs_pending_ring_request: () => 0,
     supervisor_fs_pending_regular_file_fd: () => -1,
     supervisor_fs_pending_regular_file_ofd: () => 0,
@@ -177,6 +183,30 @@ function makeKernel() {
       }
       flags |= 8;
       return flags;
+    },
+    supervisor_fs_local_metadata_action: (
+      opcode: number,
+      effects: number,
+      result: bigint | number,
+      hasPrimaryPath: number,
+      hasSecondaryPath: number,
+    ) => {
+      const signedResult = Number(
+        BigInt.asIntN(64, typeof result === "bigint" ? result : BigInt(result)),
+      );
+      if (signedResult < 0 || hasPrimaryPath === 0 || (effects & 1) === 0) {
+        return 0;
+      }
+      if (opcode === FS_OP_UNLINK) {
+        return 1;
+      }
+      if (opcode === FS_OP_OPENAT || opcode === FS_OP_MKDIR) {
+        return 2;
+      }
+      if (opcode === FS_OP_RENAME && hasSecondaryPath !== 0) {
+        return 4;
+      }
+      return 0;
     },
     process_fd_ofd_id: () => 0,
     process_fd_flags: () => 0,

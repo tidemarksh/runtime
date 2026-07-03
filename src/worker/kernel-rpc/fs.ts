@@ -148,6 +148,12 @@ interface SupervisorFsResponseDisposition {
   processOwnerMatches: boolean;
 }
 
+interface SupervisorFsLocalMetadataActions {
+  tombstonePrimary: boolean;
+  forgetPrimary: boolean;
+  forgetSecondary: boolean;
+}
+
 export interface WorkerKernelRpcFsDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
@@ -241,15 +247,9 @@ function applyLocalMetadataMutationAfterFs(
   handle: ProcessHandle,
   vmPtr: number,
   pendingFs: PendingFsContext,
-  fsSucceeded: boolean,
-  fsEffects: KernelRpcFsEffects,
+  actions: SupervisorFsLocalMetadataActions,
 ): void {
-  if (
-    !fsSucceeded
-    || pendingFs.opcode !== FS_OP_UNLINK
-    || (pendingFs.effects & fsEffects.memfsMutation) === 0
-    || !pendingFs.path
-  ) {
+  if (!actions.tombstonePrimary || !pendingFs.path) {
     return;
   }
   rememberMemfsDeletedPath(handle, pendingFs.path);
@@ -279,17 +279,12 @@ function applyLocalMetadataMutationAfterFs(
 function clearSupersededMemfsDeletedPath(
   handle: ProcessHandle,
   pendingFs: PendingFsContext,
-  fsSucceeded: boolean,
-  fsEffects: KernelRpcFsEffects,
+  actions: SupervisorFsLocalMetadataActions,
 ): void {
-  if (!fsSucceeded || !pendingFs.path || (pendingFs.effects & fsEffects.memfsMutation) === 0) {
-    return;
-  }
-  if (pendingFs.opcode === FS_OP_OPENAT || pendingFs.opcode === FS_OP_MKDIR) {
+  if (actions.forgetPrimary && pendingFs.path) {
     forgetMemfsDeletedPath(handle, pendingFs.path);
-    return;
   }
-  if (pendingFs.opcode === FS_OP_RENAME && pendingFs.secondaryPath) {
+  if (actions.forgetSecondary && pendingFs.secondaryPath) {
     forgetMemfsDeletedPath(handle, pendingFs.secondaryPath);
   }
 }
@@ -629,6 +624,45 @@ function supervisorFsResponseDisposition(
     storePendingKernelState: (flags & supervisorFsResponseFlag(handle, "storePendingKernelState")) !== 0,
     resolvedToExecveSpawn: (flags & supervisorFsResponseFlag(handle, "resolvedToExecveSpawn")) !== 0,
     processOwnerMatches: (flags & supervisorFsResponseFlag(handle, "processOwnerMatches")) !== 0,
+  };
+}
+
+function supervisorFsLocalMetadataActions(
+  handle: ProcessHandle,
+  pendingFs: PendingFsContext,
+  fsResult: bigint | number,
+): SupervisorFsLocalMetadataActions {
+  const decide = handle.kernel.supervisor_fs_local_metadata_action;
+  if (typeof decide !== "function") {
+    throw new Error("missing supervisor_fs_local_metadata_action export");
+  }
+  const action = decide(
+    pendingFs.opcode,
+    pendingFs.effects,
+    fsResult,
+    pendingFs.path ? 1 : 0,
+    pendingFs.secondaryPath ? 1 : 0,
+  );
+  const none = handle.kernel.supervisor_fs_local_metadata_action_none?.();
+  const tombstonePrimary = handle.kernel.supervisor_fs_local_metadata_action_tombstone_primary?.();
+  const forgetPrimary = handle.kernel.supervisor_fs_local_metadata_action_forget_primary?.();
+  const forgetSecondary = handle.kernel.supervisor_fs_local_metadata_action_forget_secondary?.();
+  if (
+    none === undefined
+    || tombstonePrimary === undefined
+    || forgetPrimary === undefined
+    || forgetSecondary === undefined
+  ) {
+    throw new Error("missing supervisor fs local metadata action export");
+  }
+  const known = none | tombstonePrimary | forgetPrimary | forgetSecondary;
+  if ((action & ~known) !== 0) {
+    throw new Error(`unknown supervisor fs local metadata action: ${action}`);
+  }
+  return {
+    tombstonePrimary: (action & tombstonePrimary) !== 0,
+    forgetPrimary: (action & forgetPrimary) !== 0,
+    forgetSecondary: (action & forgetSecondary) !== 0,
   };
 }
 
@@ -1173,14 +1207,15 @@ async function resumeFsViaKernelWorkerInner(
       pendingRingRequest,
       regularFileRequest: regularFileOnlyPendingFs,
     });
+    const localMetadataActions = supervisorFsLocalMetadataActions(handle, pendingFs, fsResult);
     const memfsMutated = fsCompletion.memfsMutated;
     const memfsPublishReady = fsCompletion.memfsPublishReady;
     const ofdStateChanged = fsCompletion.ofdStateChanged;
     recordFsTransferStats(handle, pendingFs, fsResult, fsSucceeded, fsEffects, false, memfsPublishReady);
     const postFsRingProgress = snapshotFsRingProgress(handle, vmPtr);
     handle.kernelState = readKernelRuntimeState(handle.kernel);
-    applyLocalMetadataMutationAfterFs(handle, vmPtr, pendingFs, fsSucceeded, fsEffects);
-    clearSupersededMemfsDeletedPath(handle, pendingFs, fsSucceeded, fsEffects);
+    applyLocalMetadataMutationAfterFs(handle, vmPtr, pendingFs, localMetadataActions);
+    clearSupersededMemfsDeletedPath(handle, pendingFs, localMetadataActions);
     reapplyLocalMemfsDeletedPathTombstones(handle, vmPtr, "local-after-fs");
     let applyLocalFsWakeSync: (() => void) | null = null;
     if (memfsMutated) {
@@ -1304,6 +1339,7 @@ async function resumeFsViaKernelWorkerInner(
       fsResult,
       threadState,
     );
+    const localMetadataActions = supervisorFsLocalMetadataActions(handle, pendingFs, fsResult);
     const responseCurrentPid = handle.kernel.process_current_pid?.(vmPtr) ?? handle.pid;
     if (fsResponseDisposition.adoptKernelState) {
       handle.kernelState = adoptKernelStateForHandle(handle, fsProcessedResponse.kernelState);
@@ -1328,10 +1364,10 @@ async function resumeFsViaKernelWorkerInner(
       );
     }
     if (fsResponseDisposition.applyLocalMetadata) {
-      applyLocalMetadataMutationAfterFs(handle, vmPtr, pendingFs, fsSucceeded, fsEffects);
+      applyLocalMetadataMutationAfterFs(handle, vmPtr, pendingFs, localMetadataActions);
     }
     if (fsResponseDisposition.clearTombstones) {
-      clearSupersededMemfsDeletedPath(handle, pendingFs, fsSucceeded, fsEffects);
+      clearSupersededMemfsDeletedPath(handle, pendingFs, localMetadataActions);
       reapplyLocalMemfsDeletedPathTombstones(handle, vmPtr, "worker-after-adopt");
     }
     const responseFdState = filterStaleFsResponseFdState(
