@@ -70,6 +70,7 @@ test("process creation requires the supervisor ABI before runtime ownership star
     "supervisor_blocked_resume_delegation_wait4_kernel_worker",
     "supervisor_blocked_resume_delegation_unsupported",
     "supervisor_blocked_resume_delegation_epoll_direct",
+    "supervisor_blocked_status_is_host_wait",
     "supervisor_blocked_epoll_wait_timeout_ms",
     "supervisor_blocked_poll_wait_has_socket",
     "supervisor_blocked_pipe_wait_has_ready_events",

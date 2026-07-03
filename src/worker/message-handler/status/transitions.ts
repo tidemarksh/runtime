@@ -42,6 +42,7 @@ import {
   supervisorBlockedPipeWaitHasReadyEvents,
   supervisorBlockedPollWaitHasSocket,
   supervisorBlockedPollWaitTimeoutMs,
+  supervisorBlockedStatusIsHostWait,
   supervisorBlockedWaitStatusMatchesPipeWait,
   supervisorBlockedWaitStatusMatchesSocketWait,
   supervisorBlockedWaitTimerRequired,
@@ -988,15 +989,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       return;
     }
 
-    if (
-      status === handle.kernel.abi_status_wait4()
-      || status === handle.kernel.abi_status_pipe_wait()
-      || status === handle.kernel.abi_status_epoll_wait()
-      || status === handle.kernel.abi_status_socket_recv()
-      || status === handle.kernel.abi_status_socket_send()
-      || status === handle.kernel.abi_status_flock_wait()
-      || status === handle.kernel.abi_status_connect()
-    ) {
+    if (supervisorBlockedStatusIsHostWait(handle.kernel, status)) {
       const finitePollTimeout = status === handle.kernel.abi_status_pipe_wait()
         && supervisorBlockedPollWaitTimeoutMs(handle.kernel, thread.vmPtr) >= 0;
       const pipeWaitHasSocket = status === handle.kernel.abi_status_pipe_wait()

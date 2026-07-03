@@ -205,6 +205,8 @@ function makeHandle(worker: Worker) {
       abi_status_socket_recv: () => 30,
       abi_status_wait4: () => 31,
       abi_status_flock_wait: () => 32,
+      supervisor_blocked_status_is_host_wait: (status: number) =>
+        [21, 22, 28, 29, 30, 31, 32].includes(status) ? 1 : 0,
       supervisor_blocked_wait_wake_source_pipe_sync: () => 1,
       supervisor_blocked_wait_wake_source_epoll_sync: () => 2,
       supervisor_blocked_wait_wake_source_socket_sync: () => 3,

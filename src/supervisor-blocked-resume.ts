@@ -172,6 +172,21 @@ export function supervisorBlockedEpollWaitTimeoutMs(
   return result;
 }
 
+export function supervisorBlockedStatusIsHostWait(
+  kernel: KernelExports,
+  status: number,
+): boolean {
+  const readStatus = kernel.supervisor_blocked_status_is_host_wait;
+  if (readStatus === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_blocked_status_is_host_wait");
+  }
+  const result = readStatus(status);
+  if (result < 0) {
+    throw new Error(`kernel supervisor host wait status check failed: ${result}`);
+  }
+  return result !== 0;
+}
+
 function supervisorBlockedBooleanFact(
   kernel: KernelExports,
   vmPtr: number,

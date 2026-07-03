@@ -680,6 +680,16 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
         ? Number(exports.thread_epoll_wait_timeout(vmPtr))
         : -1;
     },
+    supervisor_blocked_status_is_host_wait: (status) =>
+      [
+        exports.abi_status_wait4(),
+        exports.abi_status_pipe_wait(),
+        exports.abi_status_epoll_wait(),
+        exports.abi_status_socket_recv(),
+        exports.abi_status_socket_send(),
+        exports.abi_status_flock_wait(),
+        exports.abi_status_connect(),
+      ].includes(status) ? 1 : 0,
     supervisor_next_host_op: (outPtr, outLen) => {
       if (outLen < 64) {
         return -1;
