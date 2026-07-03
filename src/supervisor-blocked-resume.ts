@@ -693,6 +693,56 @@ export function supervisorBlockedWaitWakeStatuses(
   return statuses;
 }
 
+export function supervisorBlockedWaitStatusMatchesPipeWait(
+  kernel: KernelExports,
+  status: number,
+): boolean {
+  if (status !== kernel.abi_status_pipe_wait()) {
+    return false;
+  }
+  const mask = supervisorBlockedWaitWakeMaskForSync(
+    kernel,
+    SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC,
+  );
+  return (mask & supervisorBlockedWaitWakeTargetPipeWait(kernel)) !== 0;
+}
+
+export function supervisorBlockedWaitStatusMatchesEpollWait(
+  kernel: KernelExports,
+  status: number,
+): boolean {
+  if (status !== kernel.abi_status_epoll_wait()) {
+    return false;
+  }
+  const mask = supervisorBlockedWaitWakeMaskForSync(
+    kernel,
+    SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC,
+  );
+  return (mask & supervisorBlockedWaitWakeTargetEpollWait(kernel)) !== 0;
+}
+
+export function supervisorBlockedWaitStatusMatchesSocketWait(
+  kernel: KernelExports,
+  status: number,
+): boolean {
+  const socketRecvStatus = kernel.abi_status_socket_recv();
+  const socketSendStatus = kernel.abi_status_socket_send();
+  if (status !== socketRecvStatus && status !== socketSendStatus) {
+    return false;
+  }
+  const mask = supervisorBlockedWaitWakeMaskForSync(
+    kernel,
+    SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC,
+  );
+  return (
+    status === socketRecvStatus
+    && (mask & supervisorBlockedWaitWakeTargetSocketRecv(kernel)) !== 0
+  ) || (
+    status === socketSendStatus
+    && (mask & supervisorBlockedWaitWakeTargetSocketSend(kernel)) !== 0
+  );
+}
+
 export function supervisorBlockedWaitTimerRequired(
   kernel: KernelExports,
   vmPtr: number,

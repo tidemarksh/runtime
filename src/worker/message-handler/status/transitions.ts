@@ -42,6 +42,8 @@ import {
   supervisorBlockedPipeWaitHasReadyEvents,
   supervisorBlockedPollWaitHasSocket,
   supervisorBlockedPollWaitTimeoutMs,
+  supervisorBlockedWaitStatusMatchesPipeWait,
+  supervisorBlockedWaitStatusMatchesSocketWait,
   supervisorBlockedWaitTimerRequired,
 } from "../../../supervisor-blocked-resume.js";
 
@@ -1059,11 +1061,10 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         deps.blockWorker(handle, worker, status, thread.vmPtr);
         const blocked = handle.hostBlockedWorkers.get(worker);
         const rpcGeneration = blocked ? beginStatusTransitionRpc(blocked) : -1;
-        const syncPipeState = status === handle.kernel.abi_status_pipe_wait()
+        const syncPipeState = supervisorBlockedWaitStatusMatchesPipeWait(handle.kernel, status)
           ? deps.requestPipeStateSync(handle, false)
           : Promise.resolve();
-        const socketWaitStatus = status === handle.kernel.abi_status_socket_recv()
-          || status === handle.kernel.abi_status_socket_send();
+        const socketWaitStatus = supervisorBlockedWaitStatusMatchesSocketWait(handle.kernel, status);
         const syncSocketState = socketWaitStatus
           ? deps.requestSocketStateSync(handle, true)
           : Promise.resolve();

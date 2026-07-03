@@ -17,6 +17,11 @@ import {
   armSupervisorHostTimer,
   drainSupervisorArmHostTimerHostOp,
 } from "../../supervisor-host-op.js";
+import {
+  supervisorBlockedWaitStatusMatchesEpollWait,
+  supervisorBlockedWaitStatusMatchesPipeWait,
+  supervisorBlockedWaitStatusMatchesSocketWait,
+} from "../../../supervisor-blocked-resume.js";
 
 export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandlerDeps) {
   return function handleWaitInWorkerStatus(
@@ -27,7 +32,6 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
     isRunningWorker: boolean,
   ): void {
     const epollWaitStatus = handle.kernel.abi_status_epoll_wait();
-    const pipeWaitStatus = handle.kernel.abi_status_pipe_wait();
     const workerStillOwnedByHandle = createWorkerOwnershipGuard(
       handle,
       worker,
@@ -139,21 +143,12 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       deps.pumpProcess(handle);
     };
 
-    const waitInWorkerNeedsEpollSync = msg.status === epollWaitStatus
-      || (
-        kernelWorkerOwnsSocketState(handle)
-        && (
-          msg.status === handle.kernel.abi_status_socket_recv()
-          || msg.status === handle.kernel.abi_status_socket_send()
-        )
-      );
+    const socketWaitStatus = kernelWorkerOwnsSocketState(handle)
+      && supervisorBlockedWaitStatusMatchesSocketWait(handle.kernel, msg.status);
+    const waitInWorkerNeedsEpollSync = supervisorBlockedWaitStatusMatchesEpollWait(handle.kernel, msg.status)
+      || socketWaitStatus;
     if (isRunningWorker && kernelWorkerOwnsEpollState(handle) && waitInWorkerNeedsEpollSync) {
-      const shouldSyncSocket = kernelWorkerOwnsSocketState(handle)
-        && (
-          msg.status === handle.kernel.abi_status_socket_recv()
-          || msg.status === handle.kernel.abi_status_socket_send()
-        );
-      const syncSocketState = shouldSyncSocket
+      const syncSocketState = socketWaitStatus
         ? deps.requestSocketStateSync(handle, false)
         : Promise.resolve();
       void syncSocketState
@@ -175,11 +170,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
     }
     if (
       isRunningWorker
-      && kernelWorkerOwnsSocketState(handle)
-      && (
-        msg.status === handle.kernel.abi_status_socket_recv()
-        || msg.status === handle.kernel.abi_status_socket_send()
-      )
+      && socketWaitStatus
     ) {
       void deps.requestSocketStateSync(handle, false)
         .then(() => {
@@ -197,7 +188,11 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       });
       return;
     }
-    if (isRunningWorker && kernelWorkerOwnsPipeState(handle) && msg.status === pipeWaitStatus) {
+    if (
+      isRunningWorker
+      && kernelWorkerOwnsPipeState(handle)
+      && supervisorBlockedWaitStatusMatchesPipeWait(handle.kernel, msg.status)
+    ) {
       void deps.requestPipeStateSync(handle, true)
         .then(() => {
           if (!workerStillOwnedByHandle()) {

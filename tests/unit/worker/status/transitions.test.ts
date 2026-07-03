@@ -205,6 +205,29 @@ function makeHandle(worker: Worker) {
       abi_status_socket_recv: () => 30,
       abi_status_wait4: () => 31,
       abi_status_flock_wait: () => 32,
+      supervisor_blocked_wait_wake_source_pipe_sync: () => 1,
+      supervisor_blocked_wait_wake_source_epoll_sync: () => 2,
+      supervisor_blocked_wait_wake_source_socket_sync: () => 3,
+      supervisor_blocked_wait_wake_source_pipe_and_epoll_sync: () => 4,
+      supervisor_blocked_wait_wake_target_pipe_wait: () => 1,
+      supervisor_blocked_wait_wake_target_epoll_wait: () => 2,
+      supervisor_blocked_wait_wake_target_socket_recv: () => 4,
+      supervisor_blocked_wait_wake_target_socket_send: () => 8,
+      supervisor_blocked_wait_wake_mask_for_sync: (source: number) => {
+        switch (source) {
+          case 1:
+            return 1;
+          case 2:
+            return 2;
+          case 3:
+            return 1 | 2 | 4 | 8;
+          case 4:
+            return 1 | 2;
+          default:
+            return -22;
+        }
+      },
+      supervisor_blocked_wait_timer_required: () => 0,
       abi_eagain: () => -11,
       abi_econnrefused: () => 111,
       kernel_heap_base: () => 0,
