@@ -33,6 +33,21 @@ function supervisorNumber(value: bigint | number | undefined, name: string): num
   return numeric;
 }
 
+function supervisorNumericExport(
+  kernel: KernelExports,
+  name:
+    | "supervisor_fs_backing_fill_span_offset"
+    | "supervisor_fs_backing_fill_span_end"
+    | "supervisor_fs_backing_fill_span_length",
+  label: string,
+): number {
+  const read = kernel[name];
+  if (typeof read !== "function") {
+    throw new Error(`missing ${name} export`);
+  }
+  return supervisorNumber(read(), label);
+}
+
 export function readSupervisorPendingBackingFill(
   kernel: KernelExports,
   vmPtr: number,
@@ -131,16 +146,19 @@ export function supervisorBackingFillSpan(
   if (result < 0) {
     return null;
   }
-  const offset = supervisorNumber(
-    kernel.supervisor_fs_backing_fill_span_offset?.(),
+  const offset = supervisorNumericExport(
+    kernel,
+    "supervisor_fs_backing_fill_span_offset",
     "supervisor backing-fill span offset",
   );
-  const end = supervisorNumber(
-    kernel.supervisor_fs_backing_fill_span_end?.(),
+  const end = supervisorNumericExport(
+    kernel,
+    "supervisor_fs_backing_fill_span_end",
     "supervisor backing-fill span end",
   );
-  const length = supervisorNumber(
-    kernel.supervisor_fs_backing_fill_span_length?.(),
+  const length = supervisorNumericExport(
+    kernel,
+    "supervisor_fs_backing_fill_span_length",
     "supervisor backing-fill span length",
   );
   if (offset < 0 || end <= offset || length !== end - offset) {

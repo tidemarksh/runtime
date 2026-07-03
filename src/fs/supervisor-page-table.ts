@@ -12,6 +12,21 @@ function supervisorNumber(value: bigint | number | undefined, name: string): num
   return numeric;
 }
 
+function supervisorNumericExport(
+  kernel: KernelExports,
+  name:
+    | "supervisor_fs_resident_page_evict_not_found"
+    | "supervisor_fs_resident_page_evict_dirty_pinned"
+    | "supervisor_fs_resident_page_evict_evicted",
+  label: string,
+): number {
+  const read = kernel[name];
+  if (typeof read !== "function") {
+    throw new Error(`missing ${name} export`);
+  }
+  return supervisorNumber(read(), label);
+}
+
 export function supervisorResidentPageTableAuthority(kernel: KernelExports): ResidentPageTableAuthority {
   const slotDecision = kernel.supervisor_fs_resident_page_slot_decision;
   const evictStatus = kernel.supervisor_fs_resident_page_evict_status;
@@ -21,16 +36,19 @@ export function supervisorResidentPageTableAuthority(kernel: KernelExports): Res
   if (typeof evictStatus !== "function") {
     throw new Error("missing supervisor_fs_resident_page_evict_status export");
   }
-  const notFoundStatus = supervisorNumber(
-    kernel.supervisor_fs_resident_page_evict_not_found?.(),
+  const notFoundStatus = supervisorNumericExport(
+    kernel,
+    "supervisor_fs_resident_page_evict_not_found",
     "resident page evict not-found status",
   );
-  const dirtyPinnedStatus = supervisorNumber(
-    kernel.supervisor_fs_resident_page_evict_dirty_pinned?.(),
+  const dirtyPinnedStatus = supervisorNumericExport(
+    kernel,
+    "supervisor_fs_resident_page_evict_dirty_pinned",
     "resident page evict dirty-pinned status",
   );
-  const evictedStatus = supervisorNumber(
-    kernel.supervisor_fs_resident_page_evict_evicted?.(),
+  const evictedStatus = supervisorNumericExport(
+    kernel,
+    "supervisor_fs_resident_page_evict_evicted",
     "resident page evict evicted status",
   );
 

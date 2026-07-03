@@ -331,6 +331,22 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     return numeric;
   }
 
+  function supervisorNumericExport(
+    processExports: KernelExports,
+    name:
+      | "supervisor_fs_metadata_full_sync_action_none"
+      | "supervisor_fs_metadata_full_sync_action_required"
+      | "supervisor_fs_backing_fill_mode_direct"
+      | "supervisor_fs_backing_fill_mode_resident",
+    label: string,
+  ): number {
+    const read = processExports[name];
+    if (typeof read !== "function") {
+      throw new Error(`missing ${name} export`);
+    }
+    return supervisorNumber(read(), label);
+  }
+
   function supervisorMetadataFullSyncRequired(
     processExports: KernelExports,
     treeMutated: boolean,
@@ -344,12 +360,14 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       decide(treeMutated ? 1 : 0, handledMetadataMutation ? 1 : 0),
       "supervisor metadata full-sync decision",
     );
-    const none = supervisorNumber(
-      processExports.supervisor_fs_metadata_full_sync_action_none?.(),
+    const none = supervisorNumericExport(
+      processExports,
+      "supervisor_fs_metadata_full_sync_action_none",
       "supervisor metadata full-sync none action",
     );
-    const required = supervisorNumber(
-      processExports.supervisor_fs_metadata_full_sync_action_required?.(),
+    const required = supervisorNumericExport(
+      processExports,
+      "supervisor_fs_metadata_full_sync_action_required",
       "supervisor metadata full-sync required action",
     );
     if (decision === none) {
@@ -437,12 +455,14 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     if (mode < 0) {
       throw new Error(`supervisor backing-fill mode decision failed: ${mode}`);
     }
-    const direct = supervisorNumber(
-      processExports.supervisor_fs_backing_fill_mode_direct?.(),
+    const direct = supervisorNumericExport(
+      processExports,
+      "supervisor_fs_backing_fill_mode_direct",
       "supervisor backing-fill direct mode",
     );
-    const resident = supervisorNumber(
-      processExports.supervisor_fs_backing_fill_mode_resident?.(),
+    const resident = supervisorNumericExport(
+      processExports,
+      "supervisor_fs_backing_fill_mode_resident",
       "supervisor backing-fill resident mode",
     );
     if (mode === direct) {

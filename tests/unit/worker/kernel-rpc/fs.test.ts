@@ -82,6 +82,8 @@ function makeKernel() {
     abi_max_threads: () => 4,
     abi_eagain: () => 11,
     abi_fd_type_file: () => 3,
+    abi_fd_type_pipe: () => 6,
+    abi_max_pipes: () => 64,
     abi_status_fs: () => 31,
     abi_status_execve_spawn: () => 24,
     supervisor_process_status_is_execve_spawn: (status: number) => status === 24 ? 1 : 0,
@@ -126,6 +128,11 @@ function makeKernel() {
     supervisor_fs_resident_page_evict_status: (recordFound: number, dirty: number) => (
       recordFound === 0 ? 0 : dirty !== 0 ? 1 : 2
     ),
+    supervisor_process_held_ofd_refcount: () => 0,
+    supervisor_process_private_pipe_slot_mask: () => 0n,
+    supervisor_process_pipe_used_mask: () => 1n,
+    supervisor_process_pipe_read_open_count: () => 0,
+    supervisor_process_pipe_write_open_count: () => 0,
     supervisor_fs_completion_decision: (
       _vmPtr: number,
       opcode: number,
