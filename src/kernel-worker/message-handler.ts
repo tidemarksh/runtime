@@ -35,7 +35,7 @@ interface KernelWorkerMessageHandlerDeps {
   initKernel(
     wasmModule: WebAssembly.Module,
     sabPageCache: SharedArrayBuffer,
-    maxMemoryPages?: number,
+    maxMemoryPages: number,
   ): Promise<KernelRuntimeState>;
   writeFile(path: string, data: Uint8Array, mode?: number, fanout?: boolean): void;
   writeFiles(entries: Array<{ path: string; data: Uint8Array; mode?: number }>): void;

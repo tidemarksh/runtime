@@ -209,7 +209,7 @@ export type KernelWorkerRequest =
       type: "init-kernel";
       wasmModule: WebAssembly.Module;
       sabPageCache: SharedArrayBuffer;
-      maxMemoryPages?: number;
+      maxMemoryPages: number;
     }
   | {
       type: "write-file";

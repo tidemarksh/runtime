@@ -806,11 +806,14 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
   async function initKernel(
     module: WebAssembly.Module,
     pageCache: SharedArrayBuffer,
-    maxMemoryPages = 32768,
+    maxMemoryPages: number,
   ): Promise<KernelRuntimeState> {
     deps.setWasmModule(module);
     deps.setSabPageCache(pageCache);
 
+    if (!Number.isFinite(maxMemoryPages) || maxMemoryPages <= 0) {
+      throw new Error(`kernel worker init invalid max memory pages: ${maxMemoryPages}`);
+    }
     const boundedMaxMemoryPages = Math.max(maxMemoryPages, 1024);
     const { instance } = await instantiateKernelWithSharedMemory(module, {
       initialPages: 1024,
