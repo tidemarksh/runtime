@@ -199,6 +199,7 @@ export async function handlePlainFork(
     attachKernelRuntimeState(childKernel, handle.kernelState);
 
     ensureEvictionTimer();
+    const childGuestMemoryPolicyLimit = forkChildGuestMemoryPolicyLimit(handle);
     const childHandle = createForkChildHandle({
       deps,
       parent: handle,
@@ -209,10 +210,11 @@ export async function handlePlainFork(
       memory: childMemory,
       kernel: childKernel,
       kernelState: readKernelRuntimeState(childKernel),
+      guestMemoryPolicyLimitBytes: childGuestMemoryPolicyLimit,
+      maxMemoryPages: childMaxMemoryPages,
       debugCommand: handle.debugCommand,
       workerDebugLabel: "spawn:plain-fork",
     });
-    childHandle.maxMemoryPages = childMaxMemoryPages;
     childHandle.onError = (error: Error) => {
       if (handle.pid <= 0 || deps.processHandles.get(handle.pid) !== handle) {
         return;
@@ -259,7 +261,6 @@ export async function handlePlainFork(
       false,
     );
     childHandle.kernel.thread_prepare_fork_child?.(childHandle.vmPtr, childPid);
-    const childGuestMemoryPolicyLimit = forkChildGuestMemoryPolicyLimit(childHandle);
     detachInheritedHostStdioFromChild(childHandle);
     setGuestMemoryPolicyLimit(childHandle.kernel, childHandle.vmPtr, childGuestMemoryPolicyLimit);
     childHandle.kernelState = readKernelRuntimeState(childHandle.kernel);

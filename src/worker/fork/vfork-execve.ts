@@ -618,12 +618,13 @@ export async function handleVforkExecve(
     memory: childMemory,
     kernel: childKernel,
     kernelState: readKernelRuntimeState(childKernel),
+    guestMemoryPolicyLimitBytes: guestMemoryPolicyLimit,
+    maxMemoryPages: processMaxMemoryPages,
     debugCommand: execveGuestPayload.argv[0]
       ? decodeExecveBytes(execveGuestPayload.argv[0])
       : decodeExecveBytes(execveGuestPayload.path),
     workerDebugLabel: "spawn:vfork-execve",
   });
-  childHandle.maxMemoryPages = processMaxMemoryPages;
   childHandle.onError = (error: Error) => {
     if (handle.pid <= 0 || deps.processHandles.get(handle.pid) !== handle) {
       return;

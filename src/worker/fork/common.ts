@@ -16,6 +16,8 @@ interface CreateForkChildHandleArgs {
   memory: WebAssembly.Memory;
   kernel: KernelExports;
   kernelState: ProcessHandle["kernelState"];
+  guestMemoryPolicyLimitBytes: bigint;
+  maxMemoryPages: number;
   debugCommand: string;
   workerDebugLabel: string;
 }
@@ -30,6 +32,8 @@ export function createForkChildHandle({
   memory,
   kernel,
   kernelState,
+  guestMemoryPolicyLimitBytes,
+  maxMemoryPages,
   debugCommand,
   workerDebugLabel,
 }: CreateForkChildHandleArgs): ProcessHandle {
@@ -38,8 +42,8 @@ export function createForkChildHandle({
     pid: childPid,
     parentPid: childPpid,
     vmPtr,
-    guestMemoryPolicyLimitBytes: parent.guestMemoryPolicyLimitBytes,
-    maxMemoryPages: parent.maxMemoryPages,
+    guestMemoryPolicyLimitBytes,
+    maxMemoryPages,
     forkMaxMemoryPages: parent.forkMaxMemoryPages,
     guestBase: parent.guestBase,
     worker,
