@@ -20,7 +20,6 @@ import type {
 } from "../types.js";
 import {
   completedKernelRpcOutcome,
-  type KernelRpcResumeEffect,
   type KernelRpcResumeOutcome,
 } from "../kernel-rpc/outcomes.js";
 import type { SyncCause } from "../contracts/sync.js";
@@ -31,7 +30,6 @@ export interface WorkerKernelRpcBlockedRpcDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
-  enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   failProcess(handle: ProcessHandle, error: Error): void;
   clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void;
   requestThreadWorkerBlockedResume(handle: ProcessHandle, worker: Worker): void;
@@ -48,8 +46,6 @@ type HostBlockedRetryResultHandler = (
 ) => void;
 
 interface HostBlockedSyscallResumeMode {
-  applyPeerHostEffects: boolean;
-  emitEffect(effect: KernelRpcResumeEffect): void;
   emitRetryResult(status: number): void;
 }
 
@@ -72,23 +68,6 @@ interface WorkerKernelRpcBlockedRpcInternals {
 }
 
 function createWorkerKernelRpcBlockedRpcHelperInternals(deps: WorkerKernelRpcBlockedRpcDeps): WorkerKernelRpcBlockedRpcInternals {
-  const pendingOutcomeEffects = new WeakMap<Worker, KernelRpcResumeEffect[]>();
-
-  function pushOutcomeEffect(worker: Worker, effect: KernelRpcResumeEffect): void {
-    const effects = pendingOutcomeEffects.get(worker);
-    if (effects) {
-      effects.push(effect);
-      return;
-    }
-    pendingOutcomeEffects.set(worker, [effect]);
-  }
-
-  function takeOutcomeEffects(worker: Worker): KernelRpcResumeEffect[] | undefined {
-    const effects = pendingOutcomeEffects.get(worker);
-    pendingOutcomeEffects.delete(worker);
-    return effects;
-  }
-
 function blockedRpcSyncCause(status: number): SyncCause {
   return { kind: "blocked-rpc", status };
 }
@@ -354,7 +333,6 @@ ${debug}`));
     vmPtr: number,
     blockedStatus: number,
   ): Promise<KernelRpcResumeOutcome> {
-    pendingOutcomeEffects.delete(worker);
     const collectedRetryResult: { status?: number } = {};
     await executeHostBlockedSyscallResume(
       handle,
@@ -362,30 +340,25 @@ ${debug}`));
       vmPtr,
       blockedStatus,
       {
-        applyPeerHostEffects: false,
-        emitEffect(effect) {
-          pushOutcomeEffect(worker, effect);
-        },
         emitRetryResult(status) {
           collectedRetryResult.status = status;
         },
       },
     );
-    const effects = takeOutcomeEffects(worker);
     if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
-      return { kind: "process-gone", effects };
+      return { kind: "process-gone" };
     }
     if (!handle.hostBlockedWorkers.has(worker)) {
-      return { kind: "queued-in-worker", effects };
+      return { kind: "queued-in-worker" };
     }
     if (collectedRetryResult.status !== undefined) {
-      return completedKernelRpcOutcome(collectedRetryResult.status, effects);
+      return completedKernelRpcOutcome(collectedRetryResult.status);
     }
     const status = handle.kernel.thread_status?.(vmPtr);
     if (status === undefined) {
-      return { kind: "stale", effects };
+      return { kind: "stale" };
     }
-    return { kind: "blocked", status, effects };
+    return { kind: "blocked", status };
   }
 
   async function executeHostBlockedSyscallResumeForTest(
@@ -401,16 +374,6 @@ ${debug}`));
       vmPtr,
       blockedStatus,
       {
-        applyPeerHostEffects: true,
-        emitEffect(effect) {
-          switch (effect.kind) {
-            case "enqueue-worker":
-              deps.enqueueWorker(handle, worker);
-              return;
-            default:
-              throw new Error(`blocked-rpc test helper cannot apply effect: ${effect.kind}`);
-          }
-        },
         emitRetryResult(status) {
           handleHostBlockedRetryResult(handle, worker, vmPtr, status);
         },

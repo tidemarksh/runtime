@@ -144,7 +144,6 @@ function makeHelpers(
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
-    enqueueWorker: vi.fn(),
     failProcess: vi.fn((_handle: ProcessHandle, error: Error) => {
       throw error;
     }),

@@ -172,7 +172,6 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     threadWorkerStates: deps.threadWorkerStates,
     appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
     appendWorkerDebugLog: deps.appendWorkerDebugLog,
-    enqueueWorker: deps.enqueueWorker,
     failProcess: deps.failProcess,
     clearHostBlockedRetryTimer: deps.clearHostBlockedRetryTimer,
     requestThreadWorkerBlockedResume: deps.requestThreadWorkerBlockedResume,

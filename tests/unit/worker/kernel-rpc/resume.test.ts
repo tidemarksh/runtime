@@ -296,7 +296,6 @@ function createWorkerKernelRpcLocalBlockedRpcHelpers(
     threadWorkerStates: deps.threadWorkerStates,
     appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
     appendWorkerDebugLog: deps.appendWorkerDebugLog,
-    enqueueWorker: deps.enqueueWorker,
     failProcess: deps.failProcess,
     clearHostBlockedRetryTimer: deps.clearHostBlockedRetryTimer,
     handleHostBlockedRetryResult: deps.handleHostBlockedRetryResult,
@@ -908,7 +907,6 @@ test("executeHostBlockedSyscallResume follows supervisor pipe defer action", asy
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
-    enqueueWorker: vi.fn(),
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
@@ -1019,7 +1017,6 @@ test("executeHostBlockedSyscallResume follows supervisor pipe direct action", as
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
-    enqueueWorker: vi.fn(),
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
@@ -1126,7 +1123,6 @@ test("executeHostBlockedSyscallResume syncs socket before mixed pipe supervisor 
     threadWorkerStates: threadWorkerStates as never,
     appendRuntimeLifecycleEvent: vi.fn(),
     appendWorkerDebugLog: vi.fn(),
-    enqueueWorker: vi.fn(),
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
