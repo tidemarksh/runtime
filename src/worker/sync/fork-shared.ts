@@ -61,8 +61,7 @@ import {
   hasRuntimeNetworkSocketState,
 } from "../ownership/socket-control.js";
 import {
-  supervisorBlockedWaitStatusMatchesPipeWait,
-  supervisorBlockedWaitStatusMatchesSocketWait,
+  supervisorBlockedStatusUsesForkSharedStateSync,
 } from "../../supervisor-blocked-resume.js";
 import { clearStaleForkSharedSyncGate } from "../fork-shared-sync-gate.js";
 import { registerForkSharedSyncPromise } from "../fork-shared-sync-debug.js";
@@ -75,9 +74,7 @@ import type {
 } from "./shared.js";
 
 export function blockedStatusUsesForkSharedStateSync(handle: ProcessHandle, status: number): boolean {
-  return supervisorBlockedWaitStatusMatchesPipeWait(handle.kernel, status)
-    || supervisorBlockedWaitStatusMatchesSocketWait(handle.kernel, status)
-    || status === handle.kernel.abi_status_flock_wait();
+  return supervisorBlockedStatusUsesForkSharedStateSync(handle.kernel, status);
 }
 
 export function syncForkSharedStateLocally(

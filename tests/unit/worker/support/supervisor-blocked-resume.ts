@@ -29,6 +29,11 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_blocked_resume_writeback_ptr"
   | "supervisor_blocked_resume_writeback_len"
   | "supervisor_blocked_status_is_host_wait"
+  | "supervisor_blocked_status_is_connect_wait"
+  | "supervisor_blocked_status_is_epoll_wait"
+  | "supervisor_blocked_status_needs_network_sidecar_restore"
+  | "supervisor_blocked_status_syncs_socket_after_resume"
+  | "supervisor_blocked_status_uses_fork_shared_state_sync"
   | "supervisor_blocked_epoll_wait_timeout_ms"
   | "supervisor_blocked_poll_wait_timeout_ms"
   | "supervisor_blocked_poll_wait_has_socket"
@@ -140,6 +145,11 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_blocked_resume_writeback_ptr"
     | "supervisor_blocked_resume_writeback_len"
     | "supervisor_blocked_status_is_host_wait"
+    | "supervisor_blocked_status_is_connect_wait"
+    | "supervisor_blocked_status_is_epoll_wait"
+    | "supervisor_blocked_status_needs_network_sidecar_restore"
+    | "supervisor_blocked_status_syncs_socket_after_resume"
+    | "supervisor_blocked_status_uses_fork_shared_state_sync"
     | "supervisor_blocked_epoll_wait_timeout_ms"
     | "supervisor_blocked_poll_wait_timeout_ms"
     | "supervisor_blocked_poll_wait_has_socket"
@@ -279,6 +289,31 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
       kernel.abi_status_socket_send?.(),
       kernel.abi_status_flock_wait?.(),
       kernel.abi_status_connect?.(),
+    ].some((candidate) => candidate !== undefined && Number(candidate) === status) ? 1 : 0;
+  nextKernel.supervisor_blocked_status_is_connect_wait ??= (status: number) =>
+    kernel.abi_status_connect?.() === status ? 1 : 0;
+  nextKernel.supervisor_blocked_status_is_epoll_wait ??= (status: number) =>
+    kernel.abi_status_epoll_wait?.() === status ? 1 : 0;
+  nextKernel.supervisor_blocked_status_needs_network_sidecar_restore ??= (status: number) =>
+    [
+      kernel.abi_status_connect?.(),
+      kernel.abi_status_socket_recv?.(),
+      kernel.abi_status_socket_send?.(),
+      kernel.abi_status_pipe_wait?.(),
+      kernel.abi_status_epoll_wait?.(),
+    ].some((candidate) => candidate !== undefined && Number(candidate) === status) ? 1 : 0;
+  nextKernel.supervisor_blocked_status_syncs_socket_after_resume ??= (status: number) =>
+    [
+      kernel.abi_status_connect?.(),
+      kernel.abi_status_socket_recv?.(),
+      kernel.abi_status_socket_send?.(),
+    ].some((candidate) => candidate !== undefined && Number(candidate) === status) ? 1 : 0;
+  nextKernel.supervisor_blocked_status_uses_fork_shared_state_sync ??= (status: number) =>
+    [
+      kernel.abi_status_pipe_wait?.(),
+      kernel.abi_status_socket_recv?.(),
+      kernel.abi_status_socket_send?.(),
+      kernel.abi_status_flock_wait?.(),
     ].some((candidate) => candidate !== undefined && Number(candidate) === status) ? 1 : 0;
   nextKernel.supervisor_blocked_epoll_wait_timeout_ms ??= (vmPtr: number) => {
     if (vmPtr === 0) {

@@ -207,6 +207,16 @@ function makeHandle(worker: Worker) {
       abi_status_flock_wait: () => 32,
       supervisor_blocked_status_is_host_wait: (status: number) =>
         [21, 22, 28, 29, 30, 31, 32].includes(status) ? 1 : 0,
+      supervisor_blocked_status_is_connect_wait: (status: number) =>
+        status === 28 ? 1 : 0,
+      supervisor_blocked_status_is_epoll_wait: (status: number) =>
+        status === 22 ? 1 : 0,
+      supervisor_blocked_status_needs_network_sidecar_restore: (status: number) =>
+        [21, 22, 28, 29, 30].includes(status) ? 1 : 0,
+      supervisor_blocked_status_syncs_socket_after_resume: (status: number) =>
+        [28, 29, 30].includes(status) ? 1 : 0,
+      supervisor_blocked_status_uses_fork_shared_state_sync: (status: number) =>
+        [21, 29, 30, 32].includes(status) ? 1 : 0,
       supervisor_blocked_wait_wake_source_pipe_sync: () => 1,
       supervisor_blocked_wait_wake_source_epoll_sync: () => 2,
       supervisor_blocked_wait_wake_source_socket_sync: () => 3,

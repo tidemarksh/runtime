@@ -56,6 +56,11 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_resume_delegation_epoll_direct: 4,
   supervisor_blocked_resume_delegation_flag_kernel_worker_available: 1,
   supervisor_blocked_status_is_host_wait: 0,
+  supervisor_blocked_status_is_connect_wait: 0,
+  supervisor_blocked_status_is_epoll_wait: 0,
+  supervisor_blocked_status_needs_network_sidecar_restore: 0,
+  supervisor_blocked_status_syncs_socket_after_resume: 0,
+  supervisor_blocked_status_uses_fork_shared_state_sync: 0,
   supervisor_blocked_epoll_wait_timeout_ms: -1,
   supervisor_blocked_poll_wait_timeout_ms: -1,
   supervisor_blocked_poll_wait_has_socket: 0,
@@ -213,8 +218,14 @@ export function makeSupervisorAbiStubs(
     }
     return callNumber(receiver, "thread_epoll_wait_timeout", vmPtr);
   };
+  const statusMatchesAny = (
+    receiver: Partial<KernelExports>,
+    status: number,
+    names: Array<keyof KernelExports>,
+  ): boolean =>
+    names.some((name) => callOptionalNumber(receiver, name) === status);
   const supervisorStatusIsHostWait = (receiver: Partial<KernelExports>, status: number): boolean =>
-    [
+    statusMatchesAny(receiver, status, [
       "abi_status_wait4",
       "abi_status_pipe_wait",
       "abi_status_epoll_wait",
@@ -222,7 +233,32 @@ export function makeSupervisorAbiStubs(
       "abi_status_socket_send",
       "abi_status_flock_wait",
       "abi_status_connect",
-    ].some((name) => callOptionalNumber(receiver, name as keyof KernelExports) === status);
+    ]);
+  const supervisorStatusIsConnectWait = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, ["abi_status_connect"]);
+  const supervisorStatusIsEpollWait = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, ["abi_status_epoll_wait"]);
+  const supervisorStatusNeedsNetworkSidecarRestore = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, [
+      "abi_status_connect",
+      "abi_status_socket_recv",
+      "abi_status_socket_send",
+      "abi_status_pipe_wait",
+      "abi_status_epoll_wait",
+    ]);
+  const supervisorStatusSyncsSocketAfterResume = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, [
+      "abi_status_connect",
+      "abi_status_socket_recv",
+      "abi_status_socket_send",
+    ]);
+  const supervisorStatusUsesForkSharedStateSync = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, [
+      "abi_status_pipe_wait",
+      "abi_status_socket_recv",
+      "abi_status_socket_send",
+      "abi_status_flock_wait",
+    ]);
   const supervisorPollWaitHasSocket = (receiver: Partial<KernelExports>, vmPtr: number): boolean =>
     vmPtr !== 0
     && statusFor(receiver, vmPtr) === pipeWaitStatusFor(receiver)
@@ -455,6 +491,21 @@ export function makeSupervisorAbiStubs(
     },
     supervisor_blocked_status_is_host_wait(this: KernelExports | undefined, status: number) {
       return supervisorStatusIsHostWait(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_blocked_status_is_connect_wait(this: KernelExports | undefined, status: number) {
+      return supervisorStatusIsConnectWait(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_blocked_status_is_epoll_wait(this: KernelExports | undefined, status: number) {
+      return supervisorStatusIsEpollWait(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_blocked_status_needs_network_sidecar_restore(this: KernelExports | undefined, status: number) {
+      return supervisorStatusNeedsNetworkSidecarRestore(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_blocked_status_syncs_socket_after_resume(this: KernelExports | undefined, status: number) {
+      return supervisorStatusSyncsSocketAfterResume(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_blocked_status_uses_fork_shared_state_sync(this: KernelExports | undefined, status: number) {
+      return supervisorStatusUsesForkSharedStateSync(currentExports(this), status) ? 1 : 0;
     },
     supervisor_blocked_poll_wait_has_socket(this: KernelExports | undefined, vmPtr: number) {
       if (vmPtr === 0) {

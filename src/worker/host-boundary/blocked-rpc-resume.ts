@@ -7,6 +7,8 @@ import {
   supervisorBlockedPollWaitHasSocket,
   supervisorBlockedResumeWritebacks,
   supervisorBlockedPipeResumeAction,
+  supervisorBlockedStatusIsEpollWait,
+  supervisorBlockedStatusSyncsSocketAfterResume,
   SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER,
   SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT,
 } from "../../supervisor-blocked-resume.js";
@@ -88,11 +90,6 @@ function createWorkerKernelRpcBlockedRpcHelperInternals(deps: WorkerKernelRpcBlo
 
 function blockedRpcSyncCause(status: number): SyncCause {
   return { kind: "blocked-rpc", status };
-}
-
-function blockedStatusIsEpollWait(handle: ProcessHandle, status: number): boolean {
-  const epollWaitStatus = handle.kernel.abi_status_epoll_wait?.();
-  return epollWaitStatus !== undefined && status === epollWaitStatus;
 }
 
 function queueGuestBufferWrite(
@@ -237,7 +234,7 @@ async function executeHostBlockedSyscallResume(
       const transientProcessOwnerMismatch = currentPid > 0 && currentPid !== handle.pid;
       if (
         !transientProcessOwnerMismatch
-        && !blockedStatusIsEpollWait(handle, blockedStatus)
+        && !supervisorBlockedStatusIsEpollWait(handle.kernel, blockedStatus)
       ) {
         deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:${options.syncAfterResumeStage}:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
         await deps.syncBlockedForkSharedStateViaKernelWorker(handle, vmPtr, blockedRpcSyncCause(blockedStatus));
@@ -317,10 +314,7 @@ async function executeHostBlockedSyscallResume(
       emitResumeLifecycleEvent: false,
       includeStageInDoneEvent: false,
       requireBlockedBeforeDone: true,
-      syncSocketAfterResume:
-        blockedStatus === handle.kernel.abi_status_connect()
-        || blockedStatus === handle.kernel.abi_status_socket_recv()
-        || blockedStatus === handle.kernel.abi_status_socket_send(),
+      syncSocketAfterResume: supervisorBlockedStatusSyncsSocketAfterResume(handle.kernel, blockedStatus),
     });
   } catch (error) {
     finishBlockedRpc();

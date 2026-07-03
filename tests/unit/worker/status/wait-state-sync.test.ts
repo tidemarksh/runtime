@@ -690,6 +690,31 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
         exports.abi_status_flock_wait(),
         exports.abi_status_connect(),
       ].includes(status) ? 1 : 0,
+    supervisor_blocked_status_is_connect_wait: (status) =>
+      status === exports.abi_status_connect() ? 1 : 0,
+    supervisor_blocked_status_is_epoll_wait: (status) =>
+      status === exports.abi_status_epoll_wait() ? 1 : 0,
+    supervisor_blocked_status_needs_network_sidecar_restore: (status) =>
+      [
+        exports.abi_status_connect(),
+        exports.abi_status_socket_recv(),
+        exports.abi_status_socket_send(),
+        exports.abi_status_pipe_wait(),
+        exports.abi_status_epoll_wait(),
+      ].includes(status) ? 1 : 0,
+    supervisor_blocked_status_syncs_socket_after_resume: (status) =>
+      [
+        exports.abi_status_connect(),
+        exports.abi_status_socket_recv(),
+        exports.abi_status_socket_send(),
+      ].includes(status) ? 1 : 0,
+    supervisor_blocked_status_uses_fork_shared_state_sync: (status) =>
+      [
+        exports.abi_status_pipe_wait(),
+        exports.abi_status_socket_recv(),
+        exports.abi_status_socket_send(),
+        exports.abi_status_flock_wait(),
+      ].includes(status) ? 1 : 0,
     supervisor_next_host_op: (outPtr, outLen) => {
       if (outLen < 64) {
         return -1;

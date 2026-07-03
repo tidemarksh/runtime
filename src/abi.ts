@@ -349,6 +349,11 @@ export interface KernelExports {
   supervisor_blocked_resume_writeback_ptr?(vmPtr: number, blockedStatus: number, resumeResult: bigint | number, index: number): bigint | number;
   supervisor_blocked_resume_writeback_len?(vmPtr: number, blockedStatus: number, resumeResult: bigint | number, index: number): bigint | number;
   supervisor_blocked_status_is_host_wait?(status: number): number;
+  supervisor_blocked_status_is_connect_wait?(status: number): number;
+  supervisor_blocked_status_is_epoll_wait?(status: number): number;
+  supervisor_blocked_status_needs_network_sidecar_restore?(status: number): number;
+  supervisor_blocked_status_syncs_socket_after_resume?(status: number): number;
+  supervisor_blocked_status_uses_fork_shared_state_sync?(status: number): number;
   supervisor_blocked_epoll_wait_timeout_ms?(vmPtr: number): bigint | number;
   supervisor_blocked_poll_wait_timeout_ms?(vmPtr: number): bigint | number;
   supervisor_blocked_poll_wait_has_socket?(vmPtr: number): number;
@@ -1623,6 +1628,11 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_resume_writeback_ptr",
   "supervisor_blocked_resume_writeback_len",
   "supervisor_blocked_status_is_host_wait",
+  "supervisor_blocked_status_is_connect_wait",
+  "supervisor_blocked_status_is_epoll_wait",
+  "supervisor_blocked_status_needs_network_sidecar_restore",
+  "supervisor_blocked_status_syncs_socket_after_resume",
+  "supervisor_blocked_status_uses_fork_shared_state_sync",
   "supervisor_blocked_epoll_wait_timeout_ms",
   "supervisor_blocked_poll_wait_timeout_ms",
   "supervisor_blocked_poll_wait_has_socket",

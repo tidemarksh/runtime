@@ -42,7 +42,9 @@ import {
   supervisorBlockedPipeWaitHasReadyEvents,
   supervisorBlockedPollWaitHasSocket,
   supervisorBlockedPollWaitTimeoutMs,
+  supervisorBlockedStatusIsConnectWait,
   supervisorBlockedStatusIsHostWait,
+  supervisorBlockedStatusNeedsNetworkSidecarRestore,
   supervisorBlockedWaitStatusMatchesPipeWait,
   supervisorBlockedWaitStatusMatchesSocketWait,
   supervisorBlockedWaitTimerRequired,
@@ -449,18 +451,13 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
       });
     }
-    const networkRelevantStatus = status === handle.kernel.abi_status_connect()
-      || status === handle.kernel.abi_status_socket_recv()
-      || status === handle.kernel.abi_status_socket_send()
-      || status === handle.kernel.abi_status_pipe_wait()
-      || status === handle.kernel.abi_status_epoll_wait();
-    if (networkRelevantStatus) {
+    if (supervisorBlockedStatusNeedsNetworkSidecarRestore(handle.kernel, status)) {
       restoreRuntimeNetworkSidecarForHandle(handle, deps.processHandles, thread.vmPtr);
     }
 
     if (
       handle.networkConnections.size > 0
-      && status !== handle.kernel.abi_status_connect()
+      && !supervisorBlockedStatusIsConnectWait(handle.kernel, status)
     ) {
       void deps.pumpNetworkConnections(handle, thread.vmPtr)
         .then(async (changed) => {
@@ -605,7 +602,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       return;
     }
 
-    if (status === handle.kernel.abi_status_connect()) {
+    if (supervisorBlockedStatusIsConnectWait(handle.kernel, status)) {
       if (supervisorBlockedWaitTimerRequired(handle.kernel, thread.vmPtr)) {
         deps.blockWorker(handle, worker, status, thread.vmPtr);
         deps.pumpProcess(handle);

@@ -176,13 +176,61 @@ export function supervisorBlockedStatusIsHostWait(
   kernel: KernelExports,
   status: number,
 ): boolean {
-  const readStatus = kernel.supervisor_blocked_status_is_host_wait;
+  return supervisorBlockedStatusFact(kernel, status, "supervisor_blocked_status_is_host_wait");
+}
+
+export function supervisorBlockedStatusIsConnectWait(
+  kernel: KernelExports,
+  status: number,
+): boolean {
+  return supervisorBlockedStatusFact(kernel, status, "supervisor_blocked_status_is_connect_wait");
+}
+
+export function supervisorBlockedStatusIsEpollWait(
+  kernel: KernelExports,
+  status: number,
+): boolean {
+  return supervisorBlockedStatusFact(kernel, status, "supervisor_blocked_status_is_epoll_wait");
+}
+
+export function supervisorBlockedStatusNeedsNetworkSidecarRestore(
+  kernel: KernelExports,
+  status: number,
+): boolean {
+  return supervisorBlockedStatusFact(kernel, status, "supervisor_blocked_status_needs_network_sidecar_restore");
+}
+
+export function supervisorBlockedStatusSyncsSocketAfterResume(
+  kernel: KernelExports,
+  status: number,
+): boolean {
+  return supervisorBlockedStatusFact(kernel, status, "supervisor_blocked_status_syncs_socket_after_resume");
+}
+
+export function supervisorBlockedStatusUsesForkSharedStateSync(
+  kernel: KernelExports,
+  status: number,
+): boolean {
+  return supervisorBlockedStatusFact(kernel, status, "supervisor_blocked_status_uses_fork_shared_state_sync");
+}
+
+function supervisorBlockedStatusFact(
+  kernel: KernelExports,
+  status: number,
+  exportName: "supervisor_blocked_status_is_host_wait"
+    | "supervisor_blocked_status_is_connect_wait"
+    | "supervisor_blocked_status_is_epoll_wait"
+    | "supervisor_blocked_status_needs_network_sidecar_restore"
+    | "supervisor_blocked_status_syncs_socket_after_resume"
+    | "supervisor_blocked_status_uses_fork_shared_state_sync",
+): boolean {
+  const readStatus = kernel[exportName];
   if (readStatus === undefined) {
-    throw new Error("kernel supervisor ABI missing supervisor_blocked_status_is_host_wait");
+    throw new Error(`kernel supervisor ABI missing ${exportName}`);
   }
   const result = readStatus(status);
   if (result < 0) {
-    throw new Error(`kernel supervisor host wait status check failed: ${result}`);
+    throw new Error(`kernel supervisor status fact ${exportName} failed: ${result}`);
   }
   return result !== 0;
 }
