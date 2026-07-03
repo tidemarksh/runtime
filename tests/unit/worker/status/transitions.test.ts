@@ -449,6 +449,7 @@ test("status transitions append supervisor fd-control diagnostics once per seque
     memory: WebAssembly.Memory;
     supervisor_abi_version: () => number;
     supervisor_fd_control_record_bytes: () => number;
+    supervisor_fd_control_record_magic: () => number;
     supervisor_fd_control_kind_pipe_created: () => number;
     supervisor_shadow_fd_control_count: () => bigint;
     supervisor_fd_control_record: (outPtr: number, outLen: number) => number;
@@ -456,6 +457,7 @@ test("status transitions append supervisor fd-control diagnostics once per seque
   kernel.memory = memory;
   kernel.supervisor_abi_version = () => 1;
   kernel.supervisor_fd_control_record_bytes = () => 96;
+  kernel.supervisor_fd_control_record_magic = () => 0x4446_5354;
   kernel.supervisor_fd_control_kind_pipe_created = () => 1;
   kernel.supervisor_shadow_fd_control_count = () => count;
   kernel.supervisor_fd_control_record = vi.fn((outPtr: number, outLen: number) => {
@@ -529,6 +531,7 @@ test("status transitions append supervisor fs-control diagnostics once per seque
     memory: WebAssembly.Memory;
     supervisor_abi_version: () => number;
     supervisor_fs_control_record_bytes: () => number;
+    supervisor_fs_control_record_magic: () => number;
     supervisor_fs_control_kind_page_cache_miss: () => number;
     supervisor_shadow_fs_control_count: () => bigint;
     supervisor_fs_control_record: (outPtr: number, outLen: number) => number;
@@ -536,6 +539,7 @@ test("status transitions append supervisor fs-control diagnostics once per seque
   kernel.memory = memory;
   kernel.supervisor_abi_version = () => 1;
   kernel.supervisor_fs_control_record_bytes = () => 112;
+  kernel.supervisor_fs_control_record_magic = () => 0x5346_5354;
   kernel.supervisor_fs_control_kind_page_cache_miss = () => 1;
   kernel.supervisor_shadow_fs_control_count = () => count;
   kernel.supervisor_fs_control_record = vi.fn((outPtr: number, outLen: number) => {
@@ -609,14 +613,20 @@ test("status transitions append supervisor signal-control diagnostics once per s
     memory: WebAssembly.Memory;
     supervisor_abi_version: () => number;
     supervisor_signal_control_record_bytes: () => number;
+    supervisor_signal_control_record_magic: () => number;
+    supervisor_signal_control_kind_boundary_check: () => number;
     supervisor_signal_control_kind_signal_delivered: () => number;
+    supervisor_signal_control_kind_blocked_wait_interrupted: () => number;
     supervisor_shadow_signal_control_count: () => bigint;
     supervisor_signal_control_record: (outPtr: number, outLen: number) => number;
   };
   kernel.memory = memory;
   kernel.supervisor_abi_version = () => 1;
   kernel.supervisor_signal_control_record_bytes = () => 120;
+  kernel.supervisor_signal_control_record_magic = () => 0x4753_5354;
+  kernel.supervisor_signal_control_kind_boundary_check = () => 1;
   kernel.supervisor_signal_control_kind_signal_delivered = () => 2;
+  kernel.supervisor_signal_control_kind_blocked_wait_interrupted = () => 3;
   kernel.supervisor_shadow_signal_control_count = () => count;
   kernel.supervisor_signal_control_record = vi.fn((outPtr: number, outLen: number) => {
     expect(outLen).toBe(120);
@@ -698,6 +708,7 @@ test("STATUS_FAULT completes supervisor-selected fault exit VM when the process 
     memory: WebAssembly.Memory;
     supervisor_abi_version: () => number;
     supervisor_fault_exit_decision_bytes: () => number;
+    supervisor_fault_exit_decision_magic: () => number;
     supervisor_fault_exit_kind_thread_exit: () => number;
     supervisor_fault_exit_kind_process_exit: () => number;
     supervisor_fault_exit_decision: (vmPtr: number, outPtr: number, outLen: number) => number;
@@ -705,6 +716,7 @@ test("STATUS_FAULT completes supervisor-selected fault exit VM when the process 
   kernel.memory = memory;
   kernel.supervisor_abi_version = () => 1;
   kernel.supervisor_fault_exit_decision_bytes = () => 88;
+  kernel.supervisor_fault_exit_decision_magic = () => 0x5846_5354;
   kernel.supervisor_fault_exit_kind_thread_exit = () => 1;
   kernel.supervisor_fault_exit_kind_process_exit = () => 2;
   kernel.supervisor_fault_exit_decision = vi.fn((vmPtr: number, outPtr: number, outLen: number) => {
@@ -772,6 +784,7 @@ test("STATUS_FAULT uses supervisor thread-exit decision instead of runtime remai
     memory: WebAssembly.Memory;
     supervisor_abi_version: () => number;
     supervisor_fault_exit_decision_bytes: () => number;
+    supervisor_fault_exit_decision_magic: () => number;
     supervisor_fault_exit_kind_thread_exit: () => number;
     supervisor_fault_exit_kind_process_exit: () => number;
     supervisor_fault_exit_decision: (vmPtr: number, outPtr: number, outLen: number) => number;
@@ -779,6 +792,7 @@ test("STATUS_FAULT uses supervisor thread-exit decision instead of runtime remai
   kernel.memory = memory;
   kernel.supervisor_abi_version = () => 1;
   kernel.supervisor_fault_exit_decision_bytes = () => 88;
+  kernel.supervisor_fault_exit_decision_magic = () => 0x5846_5354;
   kernel.supervisor_fault_exit_kind_thread_exit = () => 1;
   kernel.supervisor_fault_exit_kind_process_exit = () => 2;
   kernel.supervisor_fault_exit_decision = vi.fn((vmPtr: number, outPtr: number, outLen: number) => {

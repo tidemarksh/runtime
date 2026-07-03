@@ -450,6 +450,7 @@ function makeThreadState(vmPtr: number): ThreadWorkerState {
 const SUPERVISOR_RESUME_RECORD_BYTES = 48;
 const SUPERVISOR_RESUME_KIND_RUNNABLE_THREAD = 2;
 const SUPERVISOR_FAULT_EXIT_DECISION_BYTES = 88;
+const SUPERVISOR_FAULT_EXIT_KIND_THREAD_EXIT = 1;
 const SUPERVISOR_FAULT_EXIT_KIND_PROCESS_EXIT = 2;
 
 function writeSupervisorRunnableResumeRecord(
@@ -486,6 +487,8 @@ function installTestSupervisorFaultExitDecision(
   kernel.memory = handle.memory;
   kernel.kernel_scratch_base = () => 0;
   kernel.supervisor_fault_exit_decision_bytes = () => SUPERVISOR_FAULT_EXIT_DECISION_BYTES;
+  kernel.supervisor_fault_exit_decision_magic = () => 0x5846_5354;
+  kernel.supervisor_fault_exit_kind_thread_exit = () => SUPERVISOR_FAULT_EXIT_KIND_THREAD_EXIT;
   kernel.supervisor_fault_exit_kind_process_exit = () => SUPERVISOR_FAULT_EXIT_KIND_PROCESS_EXIT;
   kernel.supervisor_fault_exit_decision = vi.fn((vmPtr: number, outPtr: number, outLen: number) => {
     if (outLen < SUPERVISOR_FAULT_EXIT_DECISION_BYTES) {

@@ -380,6 +380,8 @@ test("host boundary reports blocked retry timer expiry to supervisor before retr
     thread_tid: (vmPtr: number) => vmPtr === blockedThread.vmPtr ? 42 : 1,
     thread_pc: (vmPtr: number) => vmPtr === blockedThread.vmPtr ? 0x4444n : 0x1000n,
     thread_sp: (vmPtr: number) => vmPtr === blockedThread.vmPtr ? 0x8888n : 0x8000n,
+    supervisor_thread_event_record_bytes: () => 80,
+    supervisor_thread_event_record_magic: () => 0x5645_5354,
     supervisor_thread_event_kind_timer_fired: () => 6,
     supervisor_submit_thread_event: supervisorSubmitThreadEvent,
   });

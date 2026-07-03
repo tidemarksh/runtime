@@ -2,16 +2,15 @@ import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../../src/bridge/pipe.js";
 import type { KernelExports } from "../../../../src/abi.js";
 import { createWorkerStatusMessageHandler as createRawWorkerStatusMessageHandler } from "../../../../src/worker/message-handler/status/route.js";
-import {
-  SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES,
-  SUPERVISOR_THREAD_EVENT_KIND_BLOCKED,
-} from "../../../../src/worker/supervisor-shadow.js";
 import { createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import { writeSupervisorFaultExitDecisionRecord } from "../support/supervisor-abi.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 
 const PIPE_BUF_SIZE = 65_536;
 const PIPE_SLOT_SIZE = 32 + PIPE_BUF_SIZE;
+const SUPERVISOR_SHADOW_THREAD_EVENT_MAGIC = 0x5645_5354;
+const SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES = 80;
+const SUPERVISOR_THREAD_EVENT_KIND_BLOCKED = 1;
 
 function withHandleDefaults<T extends Record<string, unknown>>(handle: T): T {
   handle.networkConnections ??= new Map();
@@ -81,6 +80,7 @@ function installSupervisorFaultExitDecision(
   kernel.kernel_heap_ptr ??= () => 0;
   kernel.supervisor_abi_version = () => 1;
   kernel.supervisor_fault_exit_decision_bytes = () => 88;
+  kernel.supervisor_fault_exit_decision_magic = () => 0x5846_5354;
   kernel.supervisor_fault_exit_kind_thread_exit = () => 1;
   kernel.supervisor_fault_exit_kind_process_exit = () => 2;
   kernel.supervisor_fault_exit_decision = vi.fn((vmPtr: number, outPtr: number, outLen: number) => {
@@ -1424,6 +1424,8 @@ test("status handler logs quoted write debug fields before wait handling", () =>
         memory,
         supervisor_abi_version: () => 1,
         supervisor_submit_thread_event: supervisorSubmitThreadEvent,
+        supervisor_thread_event_record_bytes: () => SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES,
+        supervisor_thread_event_record_magic: () => SUPERVISOR_SHADOW_THREAD_EVENT_MAGIC,
         supervisor_thread_event_kind_blocked: () => SUPERVISOR_THREAD_EVENT_KIND_BLOCKED,
         thread_tid: () => 11,
       }),

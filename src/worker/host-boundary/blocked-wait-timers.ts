@@ -12,8 +12,8 @@ import {
   drainSupervisorBlockedRetryHostOp,
 } from "../supervisor-host-op.js";
 import {
+  hasSupervisorShadowProtocol,
   submitSupervisorShadowStatusEvent,
-  SUPERVISOR_THREAD_EVENT_KIND_TIMER_FIRED,
 } from "../supervisor-shadow.js";
 import type {
   HostBlockedWorkerState,
@@ -43,6 +43,14 @@ export interface BlockedWaitTimers {
   ): boolean;
 }
 
+function supervisorThreadEventKindTimerFired(handle: ProcessHandle): number {
+  const exportFn = handle.kernel.supervisor_thread_event_kind_timer_fired;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_thread_event_kind_timer_fired");
+  }
+  return exportFn();
+}
+
 export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWaitTimers {
   const supervisorArmedBlockedTimers = new WeakSet<HostBlockedWorkerState>();
   const hostBlockedRetryTimers = new WeakMap<HostBlockedWorkerState, ReturnType<typeof setTimeout>>();
@@ -66,11 +74,13 @@ export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWai
     delayMs: number,
     reason: SupervisorBlockedWaitRetryReason,
   ): void {
+    if (!hasSupervisorShadowProtocol(handle.kernel)) {
+      return;
+    }
     const vmPtr = blocked.vmPtr;
     const status = handle.kernel.thread_status?.(vmPtr) ?? blocked.status;
     const result = submitSupervisorShadowStatusEvent(handle, {
-      eventKind: handle.kernel.supervisor_thread_event_kind_timer_fired?.()
-        ?? SUPERVISOR_THREAD_EVENT_KIND_TIMER_FIRED,
+      eventKind: supervisorThreadEventKindTimerFired(handle),
       sequence: blocked.rpcGeneration,
       vmPtr,
       pid: handle.pid,

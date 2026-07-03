@@ -2,61 +2,14 @@ import type { KernelExports, ProcessSpawnHandoff } from "../abi.js";
 import { ensureMemoryCapacity, kernelScratchBase } from "./kernel-scratch.js";
 import type { ProcessHandle } from "./types.js";
 
-export const SUPERVISOR_SHADOW_THREAD_EVENT_MAGIC = 0x5645_5354;
-export const SUPERVISOR_SHADOW_THREAD_EVENT_VERSION = 1;
-export const SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES = 80;
-export const SUPERVISOR_THREAD_EVENT_KIND_BLOCKED = 1;
-export const SUPERVISOR_THREAD_EVENT_KIND_READY = 2;
-export const SUPERVISOR_THREAD_EVENT_KIND_FAULTED = 3;
-export const SUPERVISOR_THREAD_EVENT_KIND_EXITED = 4;
-export const SUPERVISOR_THREAD_EVENT_KIND_HOST_COMPLETION_ARRIVED = 5;
-export const SUPERVISOR_THREAD_EVENT_KIND_TIMER_FIRED = 6;
-export const SUPERVISOR_THREAD_EVENT_KIND_NETWORK_READABLE = 7;
-export const SUPERVISOR_THREAD_EVENT_KIND_BACKING_STORE_READY = 8;
 const SUPERVISOR_SHADOW_THREAD_EVENT_SCRATCH_OFFSET = 0x2c000;
-const SUPERVISOR_FAULT_EXIT_DECISION_MAGIC = 0x5846_5354;
-const SUPERVISOR_FAULT_EXIT_DECISION_BYTES = 88;
-const SUPERVISOR_FAULT_EXIT_KIND_THREAD_EXIT = 1;
-const SUPERVISOR_FAULT_EXIT_KIND_PROCESS_EXIT = 2;
 const SUPERVISOR_FAULT_EXIT_SCRATCH_OFFSET = 0x2d000;
-const SUPERVISOR_PROCESS_HOST_OP_COMPLETION_MAGIC = 0x4348_5354;
-const SUPERVISOR_PROCESS_HOST_OP_COMPLETION_BYTES = 64;
-const SUPERVISOR_PROCESS_HOST_OP_COMPLETION_KIND_SPAWN_PROCESS_WORKER = 1;
-const SUPERVISOR_PROCESS_HOST_OP_COMPLETION_OUTCOME_SUCCESS = 1;
-const SUPERVISOR_PROCESS_HOST_OP_COMPLETION_OUTCOME_FAILURE = 2;
 const SUPERVISOR_PROCESS_HOST_OP_COMPLETION_SCRATCH_OFFSET = 0x2f000;
-export const SUPERVISOR_FD_CONTROL_RECORD_MAGIC = 0x4446_5354;
-export const SUPERVISOR_FD_CONTROL_RECORD_BYTES = 96;
-export const SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED = 1;
-export const SUPERVISOR_FD_CONTROL_KIND_FD_CLOSED = 2;
-export const SUPERVISOR_FD_CONTROL_KIND_FD_DUPLICATED = 3;
-export const SUPERVISOR_FD_CONTROL_KIND_FD_FLAGS_UPDATED = 4;
-export const SUPERVISOR_FD_CONTROL_KIND_EPOLL_CREATED = 5;
-export const SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_ADD = 6;
-export const SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_DEL = 7;
-export const SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_MOD = 8;
-export const SUPERVISOR_FD_CONTROL_KIND_SOCKET_CREATED = 9;
-export const SUPERVISOR_FD_CONTROL_KIND_SOCKETPAIR_CREATED = 10;
-export const SUPERVISOR_FD_CONTROL_KIND_SOCKET_BOUND = 11;
-export const SUPERVISOR_FD_CONTROL_KIND_SOCKET_LISTENING = 12;
-export const SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECT_STARTED = 13;
-export const SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECTED = 14;
-export const SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECT_FAILED = 15;
-export const SUPERVISOR_FD_CONTROL_KIND_SOCKET_ACCEPTED = 16;
 const SUPERVISOR_FD_CONTROL_SCRATCH_OFFSET = 0x31000;
-export const SUPERVISOR_FS_CONTROL_RECORD_MAGIC = 0x5346_5354;
-export const SUPERVISOR_FS_CONTROL_RECORD_BYTES = 112;
-export const SUPERVISOR_FS_CONTROL_KIND_PAGE_CACHE_MISS = 1;
-export const SUPERVISOR_FS_CONTROL_KIND_PAGE_CACHE_FILL = 2;
-export const SUPERVISOR_FS_CONTROL_KIND_DIRTY_PAGE_PUBLISHED = 3;
-export const SUPERVISOR_FS_CONTROL_KIND_DIRTY_PAGE_FLUSHED = 4;
 const SUPERVISOR_FS_CONTROL_SCRATCH_OFFSET = 0x32000;
-export const SUPERVISOR_SIGNAL_CONTROL_RECORD_MAGIC = 0x4753_5354;
-export const SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES = 120;
-export const SUPERVISOR_SIGNAL_CONTROL_KIND_BOUNDARY_CHECK = 1;
-export const SUPERVISOR_SIGNAL_CONTROL_KIND_SIGNAL_DELIVERED = 2;
-export const SUPERVISOR_SIGNAL_CONTROL_KIND_BLOCKED_WAIT_INTERRUPTED = 3;
 const SUPERVISOR_SIGNAL_CONTROL_SCRATCH_OFFSET = 0x33000;
+
+const SUPERVISOR_THREAD_EVENT_DETAIL_END = 80;
 
 export interface SupervisorShadowKernelExports extends KernelExports {
   supervisor_abi_version(): number;
@@ -168,19 +121,46 @@ export function hasSupervisorShadowProtocol(
     && typeof kernelExports.supervisor_submit_thread_event === "function";
 }
 
+function supervisorNumericExport(kernelExports: KernelExports, name: keyof KernelExports): number {
+  const exportFn = kernelExports[name] as (() => bigint | number) | undefined;
+  if (exportFn === undefined) {
+    throw new Error(`kernel supervisor ABI missing ${String(name)}`);
+  }
+  const value = exportFn();
+  return typeof value === "bigint" ? Number(value) : value;
+}
+
+function supervisorAbiVersion(kernelExports: KernelExports): number {
+  return supervisorNumericExport(kernelExports, "supervisor_abi_version");
+}
+
+function supervisorThreadEventRecordBytes(kernelExports: KernelExports): number {
+  return supervisorNumericExport(kernelExports, "supervisor_thread_event_record_bytes");
+}
+
+function supervisorThreadEventKindBlocked(kernelExports: KernelExports): number {
+  return supervisorNumericExport(kernelExports, "supervisor_thread_event_kind_blocked");
+}
+
 export function encodeSupervisorShadowThreadEvent(
+  kernelExports: KernelExports,
   view: DataView,
   offset: number,
   event: SupervisorShadowThreadEvent,
 ): void {
-  if (offset < 0 || offset + SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES > view.byteLength) {
+  const recordBytes = supervisorThreadEventRecordBytes(kernelExports);
+  if (recordBytes < SUPERVISOR_THREAD_EVENT_DETAIL_END) {
+    throw new Error(`supervisor shadow thread event bytes too small: ${recordBytes}`);
+  }
+  if (offset < 0 || offset + recordBytes > view.byteLength) {
     throw new RangeError("supervisor shadow thread event record does not fit in the target view");
   }
 
-  view.setUint32(offset, SUPERVISOR_SHADOW_THREAD_EVENT_MAGIC, true);
-  view.setUint32(offset + 4, SUPERVISOR_SHADOW_THREAD_EVENT_VERSION, true);
-  view.setUint32(offset + 8, SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES, true);
-  view.setUint32(offset + 12, event.eventKind ?? SUPERVISOR_THREAD_EVENT_KIND_BLOCKED, true);
+  new Uint8Array(view.buffer, view.byteOffset + offset, recordBytes).fill(0);
+  view.setUint32(offset, supervisorNumericExport(kernelExports, "supervisor_thread_event_record_magic"), true);
+  view.setUint32(offset + 4, supervisorAbiVersion(kernelExports), true);
+  view.setUint32(offset + 8, recordBytes, true);
+  view.setUint32(offset + 12, event.eventKind ?? supervisorThreadEventKindBlocked(kernelExports), true);
   view.setBigUint64(offset + 16, BigInt(event.sequence ?? 0), true);
   view.setBigUint64(offset + 24, BigInt(event.vmPtr), true);
   view.setUint32(offset + 32, event.pid, true);
@@ -203,10 +183,11 @@ export function submitSupervisorShadowThreadEvent(
     return undefined;
   }
 
-  encodeSupervisorShadowThreadEvent(new DataView(kernelExports.memory.buffer), recordPtr, event);
+  const recordBytes = supervisorThreadEventRecordBytes(kernelExports);
+  encodeSupervisorShadowThreadEvent(kernelExports, new DataView(kernelExports.memory.buffer), recordPtr, event);
   return kernelExports.supervisor_submit_thread_event(
     recordPtr,
-    SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES,
+    recordBytes,
   );
 }
 
@@ -215,18 +196,15 @@ export function supervisorThreadEventKindForStatus(
   status: number,
 ): number {
   if (status === kernelExports.abi_status_fault()) {
-    return kernelExports.supervisor_thread_event_kind_faulted?.()
-      ?? SUPERVISOR_THREAD_EVENT_KIND_FAULTED;
+    return supervisorNumericExport(kernelExports, "supervisor_thread_event_kind_faulted");
   }
   if (
     status === kernelExports.abi_status_ok()
     || status === kernelExports.abi_status_jit_ready()
   ) {
-    return kernelExports.supervisor_thread_event_kind_ready?.()
-      ?? SUPERVISOR_THREAD_EVENT_KIND_READY;
+    return supervisorNumericExport(kernelExports, "supervisor_thread_event_kind_ready");
   }
-  return kernelExports.supervisor_thread_event_kind_blocked?.()
-    ?? SUPERVISOR_THREAD_EVENT_KIND_BLOCKED;
+  return supervisorThreadEventKindBlocked(kernelExports);
 }
 
 export function submitSupervisorShadowStatusEvent(
@@ -238,7 +216,7 @@ export function submitSupervisorShadowStatusEvent(
   }
   const memory = handle.kernel.memory ?? handle.memory;
   const scratch = kernelScratchBase(handle.kernel) + SUPERVISOR_SHADOW_THREAD_EVENT_SCRATCH_OFFSET;
-  ensureMemoryCapacity(memory, scratch + SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES);
+  ensureMemoryCapacity(memory, scratch + supervisorThreadEventRecordBytes(handle.kernel));
   return submitSupervisorShadowThreadEvent(handle.kernel, scratch, {
     ...event,
     eventKind: event.eventKind ?? supervisorThreadEventKindForStatus(handle.kernel, event.status),
@@ -256,12 +234,14 @@ export function completeSupervisorProcessHostOp(
   const memory = handle.kernel.memory ?? handle.memory;
   const scratch = kernelScratchBase(handle.kernel)
     + SUPERVISOR_PROCESS_HOST_OP_COMPLETION_SCRATCH_OFFSET;
-  ensureMemoryCapacity(memory, scratch + SUPERVISOR_PROCESS_HOST_OP_COMPLETION_BYTES);
-  const view = new DataView(memory.buffer, scratch, SUPERVISOR_PROCESS_HOST_OP_COMPLETION_BYTES);
-  view.setUint32(0, SUPERVISOR_PROCESS_HOST_OP_COMPLETION_MAGIC, true);
-  view.setUint32(4, handle.kernel.supervisor_abi_version?.() ?? 1, true);
-  view.setUint32(8, SUPERVISOR_PROCESS_HOST_OP_COMPLETION_BYTES, true);
-  view.setUint32(12, SUPERVISOR_PROCESS_HOST_OP_COMPLETION_KIND_SPAWN_PROCESS_WORKER, true);
+  const recordBytes = supervisorNumericExport(handle.kernel, "supervisor_host_completion_record_bytes");
+  ensureMemoryCapacity(memory, scratch + recordBytes);
+  const view = new DataView(memory.buffer, scratch, recordBytes);
+  new Uint8Array(memory.buffer, scratch, recordBytes).fill(0);
+  view.setUint32(0, supervisorNumericExport(handle.kernel, "supervisor_host_completion_record_magic"), true);
+  view.setUint32(4, supervisorAbiVersion(handle.kernel), true);
+  view.setUint32(8, recordBytes, true);
+  view.setUint32(12, supervisorNumericExport(handle.kernel, "supervisor_process_host_op_kind_spawn_process_worker"), true);
   view.setBigUint64(16, completion.handoff.supervisorHostOpId ?? 0n, true);
   view.setUint32(24, completion.vmPtr, true);
   view.setUint32(28, completion.handoff.kind, true);
@@ -269,25 +249,23 @@ export function completeSupervisorProcessHostOp(
   view.setUint32(
     36,
     completion.success
-      ? SUPERVISOR_PROCESS_HOST_OP_COMPLETION_OUTCOME_SUCCESS
-      : SUPERVISOR_PROCESS_HOST_OP_COMPLETION_OUTCOME_FAILURE,
+      ? supervisorNumericExport(handle.kernel, "supervisor_host_completion_outcome_success")
+      : supervisorNumericExport(handle.kernel, "supervisor_host_completion_outcome_failure"),
     true,
   );
   view.setUint32(40, completion.detail ?? 0, true);
   view.setUint32(44, 0, true);
   view.setBigUint64(48, completion.handoff.path, true);
   view.setBigUint64(56, 0n, true);
-  return completeHostOp(scratch, SUPERVISOR_PROCESS_HOST_OP_COMPLETION_BYTES);
+  return completeHostOp(scratch, recordBytes);
 }
 
 function supervisorFaultExitKindThreadExit(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fault_exit_kind_thread_exit?.()
-    ?? SUPERVISOR_FAULT_EXIT_KIND_THREAD_EXIT;
+  return supervisorNumericExport(kernelExports, "supervisor_fault_exit_kind_thread_exit");
 }
 
 export function supervisorFaultExitKindProcessExit(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fault_exit_kind_process_exit?.()
-    ?? SUPERVISOR_FAULT_EXIT_KIND_PROCESS_EXIT;
+  return supervisorNumericExport(kernelExports, "supervisor_fault_exit_kind_process_exit");
 }
 
 function decodeSupervisorFaultExitDecision(
@@ -295,21 +273,22 @@ function decodeSupervisorFaultExitDecision(
   view: DataView,
   vmPtr: number,
 ): SupervisorFaultExitDecision {
-  if (view.byteLength < SUPERVISOR_FAULT_EXIT_DECISION_BYTES) {
+  const recordBytes = supervisorNumericExport(kernelExports, "supervisor_fault_exit_decision_bytes");
+  if (view.byteLength < recordBytes) {
     throw new Error(`supervisor fault exit decision record too short: ${view.byteLength}`);
   }
   const magic = view.getUint32(0, true);
   const version = view.getUint32(4, true);
   const bytes = view.getUint32(8, true);
   const kind = view.getUint32(12, true);
-  if (magic !== SUPERVISOR_FAULT_EXIT_DECISION_MAGIC) {
+  if (magic !== supervisorNumericExport(kernelExports, "supervisor_fault_exit_decision_magic")) {
     throw new Error(`supervisor fault exit decision bad magic: 0x${magic.toString(16)}`);
   }
-  const expectedVersion = kernelExports.supervisor_abi_version?.() ?? version;
+  const expectedVersion = supervisorAbiVersion(kernelExports);
   if (version !== expectedVersion) {
     throw new Error(`supervisor fault exit decision bad version: ${version}`);
   }
-  if (bytes < SUPERVISOR_FAULT_EXIT_DECISION_BYTES || bytes > view.byteLength) {
+  if (bytes < recordBytes || bytes > view.byteLength) {
     throw new Error(`supervisor fault exit decision bad size: ${bytes}`);
   }
   if (
@@ -348,15 +327,11 @@ export function readSupervisorFaultExitDecision(
   handle: ProcessHandle,
   vmPtr: number,
 ): SupervisorFaultExitDecision | undefined {
-  const recordBytesExport = handle.kernel.supervisor_fault_exit_decision_bytes;
   const readDecision = handle.kernel.supervisor_fault_exit_decision;
-  if (recordBytesExport === undefined || readDecision === undefined) {
+  if (readDecision === undefined) {
     return undefined;
   }
-  const recordBytes = recordBytesExport();
-  if (recordBytes < SUPERVISOR_FAULT_EXIT_DECISION_BYTES) {
-    throw new Error(`supervisor fault exit decision bytes too small: ${recordBytes}`);
-  }
+  const recordBytes = supervisorNumericExport(handle.kernel, "supervisor_fault_exit_decision_bytes");
   const memory = handle.kernel.memory ?? handle.memory;
   const scratch = kernelScratchBase(handle.kernel) + SUPERVISOR_FAULT_EXIT_SCRATCH_OFFSET;
   ensureMemoryCapacity(memory, scratch + recordBytes);
@@ -375,104 +350,89 @@ export function readSupervisorFaultExitDecision(
 }
 
 function supervisorFdControlKindPipeCreated(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fd_control_kind_pipe_created?.()
-    ?? SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED;
+  return supervisorNumericExport(kernelExports, "supervisor_fd_control_kind_pipe_created");
 }
 
 function supervisorFdControlKindFdClosed(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fd_control_kind_fd_closed?.()
-    ?? SUPERVISOR_FD_CONTROL_KIND_FD_CLOSED;
+  return supervisorNumericExport(kernelExports, "supervisor_fd_control_kind_fd_closed");
 }
 
 function supervisorFdControlKindFdDuplicated(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fd_control_kind_fd_duplicated?.()
-    ?? SUPERVISOR_FD_CONTROL_KIND_FD_DUPLICATED;
+  return supervisorNumericExport(kernelExports, "supervisor_fd_control_kind_fd_duplicated");
 }
 
 function supervisorFdControlKindFdFlagsUpdated(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fd_control_kind_fd_flags_updated?.()
-    ?? SUPERVISOR_FD_CONTROL_KIND_FD_FLAGS_UPDATED;
+  return supervisorNumericExport(kernelExports, "supervisor_fd_control_kind_fd_flags_updated");
 }
 
 function supervisorFdControlKindEpollCreated(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fd_control_kind_epoll_created?.()
-    ?? SUPERVISOR_FD_CONTROL_KIND_EPOLL_CREATED;
+  return supervisorNumericExport(kernelExports, "supervisor_fd_control_kind_epoll_created");
 }
 
 function supervisorFdControlKindEpollCtlAdd(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fd_control_kind_epoll_ctl_add?.()
-    ?? SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_ADD;
+  return supervisorNumericExport(kernelExports, "supervisor_fd_control_kind_epoll_ctl_add");
 }
 
 function supervisorFdControlKindEpollCtlDel(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fd_control_kind_epoll_ctl_del?.()
-    ?? SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_DEL;
+  return supervisorNumericExport(kernelExports, "supervisor_fd_control_kind_epoll_ctl_del");
 }
 
 function supervisorFdControlKindEpollCtlMod(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fd_control_kind_epoll_ctl_mod?.()
-    ?? SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_MOD;
+  return supervisorNumericExport(kernelExports, "supervisor_fd_control_kind_epoll_ctl_mod");
 }
 
 function supervisorFdControlKindSocketCreated(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fd_control_kind_socket_created?.()
-    ?? SUPERVISOR_FD_CONTROL_KIND_SOCKET_CREATED;
+  return supervisorNumericExport(kernelExports, "supervisor_fd_control_kind_socket_created");
 }
 
 function supervisorFdControlKindSocketpairCreated(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fd_control_kind_socketpair_created?.()
-    ?? SUPERVISOR_FD_CONTROL_KIND_SOCKETPAIR_CREATED;
+  return supervisorNumericExport(kernelExports, "supervisor_fd_control_kind_socketpair_created");
 }
 
 function supervisorFdControlKindSocketBound(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fd_control_kind_socket_bound?.()
-    ?? SUPERVISOR_FD_CONTROL_KIND_SOCKET_BOUND;
+  return supervisorNumericExport(kernelExports, "supervisor_fd_control_kind_socket_bound");
 }
 
 function supervisorFdControlKindSocketListening(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fd_control_kind_socket_listening?.()
-    ?? SUPERVISOR_FD_CONTROL_KIND_SOCKET_LISTENING;
+  return supervisorNumericExport(kernelExports, "supervisor_fd_control_kind_socket_listening");
 }
 
 function supervisorFdControlKindSocketConnectStarted(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fd_control_kind_socket_connect_started?.()
-    ?? SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECT_STARTED;
+  return supervisorNumericExport(kernelExports, "supervisor_fd_control_kind_socket_connect_started");
 }
 
 function supervisorFdControlKindSocketConnected(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fd_control_kind_socket_connected?.()
-    ?? SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECTED;
+  return supervisorNumericExport(kernelExports, "supervisor_fd_control_kind_socket_connected");
 }
 
 function supervisorFdControlKindSocketConnectFailed(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fd_control_kind_socket_connect_failed?.()
-    ?? SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECT_FAILED;
+  return supervisorNumericExport(kernelExports, "supervisor_fd_control_kind_socket_connect_failed");
 }
 
 function supervisorFdControlKindSocketAccepted(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fd_control_kind_socket_accepted?.()
-    ?? SUPERVISOR_FD_CONTROL_KIND_SOCKET_ACCEPTED;
+  return supervisorNumericExport(kernelExports, "supervisor_fd_control_kind_socket_accepted");
 }
 
 export function decodeSupervisorFdControlRecord(
   kernelExports: KernelExports,
   view: DataView,
 ): SupervisorFdControlRecord {
-  if (view.byteLength < SUPERVISOR_FD_CONTROL_RECORD_BYTES) {
+  const recordBytes = supervisorNumericExport(kernelExports, "supervisor_fd_control_record_bytes");
+  if (view.byteLength < recordBytes) {
     throw new Error(`supervisor fd control record too short: ${view.byteLength}`);
   }
   const magic = view.getUint32(0, true);
   const version = view.getUint32(4, true);
   const bytes = view.getUint32(8, true);
   const kind = view.getUint32(12, true);
-  if (magic !== SUPERVISOR_FD_CONTROL_RECORD_MAGIC) {
+  if (magic !== supervisorNumericExport(kernelExports, "supervisor_fd_control_record_magic")) {
     throw new Error(`supervisor fd control bad magic: 0x${magic.toString(16)}`);
   }
-  const expectedVersion = kernelExports.supervisor_abi_version?.() ?? version;
+  const expectedVersion = supervisorAbiVersion(kernelExports);
   if (version !== expectedVersion) {
     throw new Error(`supervisor fd control bad version: ${version}`);
   }
-  if (bytes < SUPERVISOR_FD_CONTROL_RECORD_BYTES || bytes > view.byteLength) {
+  if (bytes < recordBytes || bytes > view.byteLength) {
     throw new Error(`supervisor fd control bad size: ${bytes}`);
   }
   if (
@@ -518,15 +478,11 @@ export function decodeSupervisorFdControlRecord(
 export function readSupervisorFdControlRecord(
   handle: ProcessHandle,
 ): SupervisorFdControlRecord | undefined {
-  const recordBytesExport = handle.kernel.supervisor_fd_control_record_bytes;
   const readRecord = handle.kernel.supervisor_fd_control_record;
-  if (recordBytesExport === undefined || readRecord === undefined) {
+  if (readRecord === undefined) {
     return undefined;
   }
-  const recordBytes = recordBytesExport();
-  if (recordBytes < SUPERVISOR_FD_CONTROL_RECORD_BYTES) {
-    throw new Error(`supervisor fd control bytes too small: ${recordBytes}`);
-  }
+  const recordBytes = supervisorNumericExport(handle.kernel, "supervisor_fd_control_record_bytes");
   const memory = handle.kernel.memory ?? handle.memory;
   const scratch = kernelScratchBase(handle.kernel) + SUPERVISOR_FD_CONTROL_SCRATCH_OFFSET;
   ensureMemoryCapacity(memory, scratch + recordBytes);
@@ -592,44 +548,41 @@ export function formatSupervisorFdControlRecord(record: SupervisorFdControlRecor
 }
 
 function supervisorFsControlKindPageCacheMiss(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fs_control_kind_page_cache_miss?.()
-    ?? SUPERVISOR_FS_CONTROL_KIND_PAGE_CACHE_MISS;
+  return supervisorNumericExport(kernelExports, "supervisor_fs_control_kind_page_cache_miss");
 }
 
 function supervisorFsControlKindPageCacheFill(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fs_control_kind_page_cache_fill?.()
-    ?? SUPERVISOR_FS_CONTROL_KIND_PAGE_CACHE_FILL;
+  return supervisorNumericExport(kernelExports, "supervisor_fs_control_kind_page_cache_fill");
 }
 
 function supervisorFsControlKindDirtyPagePublished(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fs_control_kind_dirty_page_published?.()
-    ?? SUPERVISOR_FS_CONTROL_KIND_DIRTY_PAGE_PUBLISHED;
+  return supervisorNumericExport(kernelExports, "supervisor_fs_control_kind_dirty_page_published");
 }
 
 function supervisorFsControlKindDirtyPageFlushed(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_fs_control_kind_dirty_page_flushed?.()
-    ?? SUPERVISOR_FS_CONTROL_KIND_DIRTY_PAGE_FLUSHED;
+  return supervisorNumericExport(kernelExports, "supervisor_fs_control_kind_dirty_page_flushed");
 }
 
 export function decodeSupervisorFsControlRecord(
   kernelExports: KernelExports,
   view: DataView,
 ): SupervisorFsControlRecord {
-  if (view.byteLength < SUPERVISOR_FS_CONTROL_RECORD_BYTES) {
+  const recordBytes = supervisorNumericExport(kernelExports, "supervisor_fs_control_record_bytes");
+  if (view.byteLength < recordBytes) {
     throw new Error(`supervisor fs control record too short: ${view.byteLength}`);
   }
   const magic = view.getUint32(0, true);
   const version = view.getUint32(4, true);
   const bytes = view.getUint32(8, true);
   const kind = view.getUint32(12, true);
-  if (magic !== SUPERVISOR_FS_CONTROL_RECORD_MAGIC) {
+  if (magic !== supervisorNumericExport(kernelExports, "supervisor_fs_control_record_magic")) {
     throw new Error(`supervisor fs control bad magic: 0x${magic.toString(16)}`);
   }
-  const expectedVersion = kernelExports.supervisor_abi_version?.() ?? version;
+  const expectedVersion = supervisorAbiVersion(kernelExports);
   if (version !== expectedVersion) {
     throw new Error(`supervisor fs control bad version: ${version}`);
   }
-  if (bytes < SUPERVISOR_FS_CONTROL_RECORD_BYTES || bytes > view.byteLength) {
+  if (bytes < recordBytes || bytes > view.byteLength) {
     throw new Error(`supervisor fs control bad size: ${bytes}`);
   }
   if (
@@ -663,15 +616,11 @@ export function decodeSupervisorFsControlRecord(
 export function readSupervisorFsControlRecord(
   handle: ProcessHandle,
 ): SupervisorFsControlRecord | undefined {
-  const recordBytesExport = handle.kernel.supervisor_fs_control_record_bytes;
   const readRecord = handle.kernel.supervisor_fs_control_record;
-  if (recordBytesExport === undefined || readRecord === undefined) {
+  if (readRecord === undefined) {
     return undefined;
   }
-  const recordBytes = recordBytesExport();
-  if (recordBytes < SUPERVISOR_FS_CONTROL_RECORD_BYTES) {
-    throw new Error(`supervisor fs control bytes too small: ${recordBytes}`);
-  }
+  const recordBytes = supervisorNumericExport(handle.kernel, "supervisor_fs_control_record_bytes");
   const memory = handle.kernel.memory ?? handle.memory;
   const scratch = kernelScratchBase(handle.kernel) + SUPERVISOR_FS_CONTROL_SCRATCH_OFFSET;
   ensureMemoryCapacity(memory, scratch + recordBytes);
@@ -737,39 +686,37 @@ export function formatSupervisorFsControlRecord(record: SupervisorFsControlRecor
 }
 
 function supervisorSignalControlKindBoundaryCheck(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_signal_control_kind_boundary_check?.()
-    ?? SUPERVISOR_SIGNAL_CONTROL_KIND_BOUNDARY_CHECK;
+  return supervisorNumericExport(kernelExports, "supervisor_signal_control_kind_boundary_check");
 }
 
 function supervisorSignalControlKindSignalDelivered(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_signal_control_kind_signal_delivered?.()
-    ?? SUPERVISOR_SIGNAL_CONTROL_KIND_SIGNAL_DELIVERED;
+  return supervisorNumericExport(kernelExports, "supervisor_signal_control_kind_signal_delivered");
 }
 
 function supervisorSignalControlKindBlockedWaitInterrupted(kernelExports: KernelExports): number {
-  return kernelExports.supervisor_signal_control_kind_blocked_wait_interrupted?.()
-    ?? SUPERVISOR_SIGNAL_CONTROL_KIND_BLOCKED_WAIT_INTERRUPTED;
+  return supervisorNumericExport(kernelExports, "supervisor_signal_control_kind_blocked_wait_interrupted");
 }
 
 export function decodeSupervisorSignalControlRecord(
   kernelExports: KernelExports,
   view: DataView,
 ): SupervisorSignalControlRecord {
-  if (view.byteLength < SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES) {
+  const recordBytes = supervisorNumericExport(kernelExports, "supervisor_signal_control_record_bytes");
+  if (view.byteLength < recordBytes) {
     throw new Error(`supervisor signal control record too short: ${view.byteLength}`);
   }
   const magic = view.getUint32(0, true);
   const version = view.getUint32(4, true);
   const bytes = view.getUint32(8, true);
   const kind = view.getUint32(12, true);
-  if (magic !== SUPERVISOR_SIGNAL_CONTROL_RECORD_MAGIC) {
+  if (magic !== supervisorNumericExport(kernelExports, "supervisor_signal_control_record_magic")) {
     throw new Error(`supervisor signal control bad magic: 0x${magic.toString(16)}`);
   }
-  const expectedVersion = kernelExports.supervisor_abi_version?.() ?? version;
+  const expectedVersion = supervisorAbiVersion(kernelExports);
   if (version !== expectedVersion) {
     throw new Error(`supervisor signal control bad version: ${version}`);
   }
-  if (bytes < SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES || bytes > view.byteLength) {
+  if (bytes < recordBytes || bytes > view.byteLength) {
     throw new Error(`supervisor signal control bad size: ${bytes}`);
   }
   if (
@@ -804,15 +751,11 @@ export function decodeSupervisorSignalControlRecord(
 export function readSupervisorSignalControlRecord(
   handle: ProcessHandle,
 ): SupervisorSignalControlRecord | undefined {
-  const recordBytesExport = handle.kernel.supervisor_signal_control_record_bytes;
   const readRecord = handle.kernel.supervisor_signal_control_record;
-  if (recordBytesExport === undefined || readRecord === undefined) {
+  if (readRecord === undefined) {
     return undefined;
   }
-  const recordBytes = recordBytesExport();
-  if (recordBytes < SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES) {
-    throw new Error(`supervisor signal control bytes too small: ${recordBytes}`);
-  }
+  const recordBytes = supervisorNumericExport(handle.kernel, "supervisor_signal_control_record_bytes");
   const memory = handle.kernel.memory ?? handle.memory;
   const scratch = kernelScratchBase(handle.kernel) + SUPERVISOR_SIGNAL_CONTROL_SCRATCH_OFFSET;
   ensureMemoryCapacity(memory, scratch + recordBytes);

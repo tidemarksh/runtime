@@ -607,6 +607,7 @@ test("active vfork child fault remains routed through the parent handle", () => 
     thread_status: () => 31,
     supervisor_abi_version: () => 1,
     supervisor_fault_exit_decision_bytes: () => 88,
+    supervisor_fault_exit_decision_magic: () => 0x5846_5354,
     supervisor_fault_exit_kind_thread_exit: () => 1,
     supervisor_fault_exit_kind_process_exit: () => 2,
     supervisor_fault_exit_decision: vi.fn((vmPtr: number, outPtr: number, outLen: number) => {

@@ -17,45 +17,97 @@ import {
   readSupervisorFsControlRecord,
   readSupervisorSignalControlRecord,
   submitSupervisorShadowStatusEvent,
-  SUPERVISOR_FD_CONTROL_KIND_EPOLL_CREATED,
-  SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_ADD,
-  SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_DEL,
-  SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_MOD,
   submitSupervisorShadowThreadEvent,
-  SUPERVISOR_FD_CONTROL_KIND_FD_CLOSED,
-  SUPERVISOR_FD_CONTROL_KIND_FD_DUPLICATED,
-  SUPERVISOR_FD_CONTROL_KIND_FD_FLAGS_UPDATED,
-  SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED,
-  SUPERVISOR_FD_CONTROL_KIND_SOCKET_ACCEPTED,
-  SUPERVISOR_FD_CONTROL_KIND_SOCKET_BOUND,
-  SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECT_FAILED,
-  SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECT_STARTED,
-  SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECTED,
-  SUPERVISOR_FD_CONTROL_KIND_SOCKET_CREATED,
-  SUPERVISOR_FD_CONTROL_KIND_SOCKET_LISTENING,
-  SUPERVISOR_FD_CONTROL_KIND_SOCKETPAIR_CREATED,
-  SUPERVISOR_FD_CONTROL_RECORD_BYTES,
-  SUPERVISOR_FD_CONTROL_RECORD_MAGIC,
-  SUPERVISOR_FS_CONTROL_KIND_DIRTY_PAGE_FLUSHED,
-  SUPERVISOR_FS_CONTROL_KIND_DIRTY_PAGE_PUBLISHED,
-  SUPERVISOR_FS_CONTROL_KIND_PAGE_CACHE_FILL,
-  SUPERVISOR_FS_CONTROL_KIND_PAGE_CACHE_MISS,
-  SUPERVISOR_FS_CONTROL_RECORD_BYTES,
-  SUPERVISOR_FS_CONTROL_RECORD_MAGIC,
-  SUPERVISOR_SIGNAL_CONTROL_KIND_BLOCKED_WAIT_INTERRUPTED,
-  SUPERVISOR_SIGNAL_CONTROL_KIND_BOUNDARY_CHECK,
-  SUPERVISOR_SIGNAL_CONTROL_KIND_SIGNAL_DELIVERED,
-  SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES,
-  SUPERVISOR_SIGNAL_CONTROL_RECORD_MAGIC,
-  SUPERVISOR_SHADOW_THREAD_EVENT_MAGIC,
-  SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES,
-  SUPERVISOR_SHADOW_THREAD_EVENT_VERSION,
-  SUPERVISOR_THREAD_EVENT_KIND_BLOCKED,
-  SUPERVISOR_THREAD_EVENT_KIND_FAULTED,
-  SUPERVISOR_THREAD_EVENT_KIND_READY,
   supervisorThreadEventKindForStatus,
   type SupervisorShadowThreadEvent,
 } from "../../../src/worker/supervisor-shadow.js";
+
+const SUPERVISOR_SHADOW_THREAD_EVENT_MAGIC = 0x5645_5354;
+const SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES = 80;
+const SUPERVISOR_SHADOW_THREAD_EVENT_VERSION = 1;
+const SUPERVISOR_THREAD_EVENT_KIND_BLOCKED = 1;
+const SUPERVISOR_THREAD_EVENT_KIND_READY = 2;
+const SUPERVISOR_THREAD_EVENT_KIND_FAULTED = 3;
+const SUPERVISOR_FD_CONTROL_RECORD_MAGIC = 0x4446_5354;
+const SUPERVISOR_FD_CONTROL_RECORD_BYTES = 96;
+const SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED = 1;
+const SUPERVISOR_FD_CONTROL_KIND_FD_CLOSED = 2;
+const SUPERVISOR_FD_CONTROL_KIND_FD_DUPLICATED = 3;
+const SUPERVISOR_FD_CONTROL_KIND_FD_FLAGS_UPDATED = 4;
+const SUPERVISOR_FD_CONTROL_KIND_EPOLL_CREATED = 5;
+const SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_ADD = 6;
+const SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_DEL = 7;
+const SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_MOD = 8;
+const SUPERVISOR_FD_CONTROL_KIND_SOCKET_CREATED = 9;
+const SUPERVISOR_FD_CONTROL_KIND_SOCKETPAIR_CREATED = 10;
+const SUPERVISOR_FD_CONTROL_KIND_SOCKET_BOUND = 11;
+const SUPERVISOR_FD_CONTROL_KIND_SOCKET_LISTENING = 12;
+const SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECT_STARTED = 13;
+const SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECTED = 14;
+const SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECT_FAILED = 15;
+const SUPERVISOR_FD_CONTROL_KIND_SOCKET_ACCEPTED = 16;
+const SUPERVISOR_FS_CONTROL_RECORD_MAGIC = 0x5346_5354;
+const SUPERVISOR_FS_CONTROL_RECORD_BYTES = 112;
+const SUPERVISOR_FS_CONTROL_KIND_PAGE_CACHE_MISS = 1;
+const SUPERVISOR_FS_CONTROL_KIND_PAGE_CACHE_FILL = 2;
+const SUPERVISOR_FS_CONTROL_KIND_DIRTY_PAGE_PUBLISHED = 3;
+const SUPERVISOR_FS_CONTROL_KIND_DIRTY_PAGE_FLUSHED = 4;
+const SUPERVISOR_SIGNAL_CONTROL_RECORD_MAGIC = 0x4753_5354;
+const SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES = 120;
+const SUPERVISOR_SIGNAL_CONTROL_KIND_BOUNDARY_CHECK = 1;
+const SUPERVISOR_SIGNAL_CONTROL_KIND_SIGNAL_DELIVERED = 2;
+const SUPERVISOR_SIGNAL_CONTROL_KIND_BLOCKED_WAIT_INTERRUPTED = 3;
+
+function makeSupervisorShadowKernelExports(
+  overrides: Partial<KernelExports> = {},
+): KernelExports {
+  return {
+    memory: new WebAssembly.Memory({ initial: 1 }),
+    supervisor_abi_version: () => 1,
+    supervisor_thread_event_record_bytes: () => SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES,
+    supervisor_thread_event_record_magic: () => SUPERVISOR_SHADOW_THREAD_EVENT_MAGIC,
+    supervisor_thread_event_kind_blocked: () => SUPERVISOR_THREAD_EVENT_KIND_BLOCKED,
+    supervisor_thread_event_kind_ready: () => SUPERVISOR_THREAD_EVENT_KIND_READY,
+    supervisor_thread_event_kind_faulted: () => SUPERVISOR_THREAD_EVENT_KIND_FAULTED,
+    supervisor_fd_control_record_bytes: () => SUPERVISOR_FD_CONTROL_RECORD_BYTES,
+    supervisor_fd_control_record_magic: () => SUPERVISOR_FD_CONTROL_RECORD_MAGIC,
+    supervisor_fd_control_kind_pipe_created: () => SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED,
+    supervisor_fd_control_kind_fd_closed: () => SUPERVISOR_FD_CONTROL_KIND_FD_CLOSED,
+    supervisor_fd_control_kind_fd_duplicated: () => SUPERVISOR_FD_CONTROL_KIND_FD_DUPLICATED,
+    supervisor_fd_control_kind_fd_flags_updated: () => SUPERVISOR_FD_CONTROL_KIND_FD_FLAGS_UPDATED,
+    supervisor_fd_control_kind_epoll_created: () => SUPERVISOR_FD_CONTROL_KIND_EPOLL_CREATED,
+    supervisor_fd_control_kind_epoll_ctl_add: () => SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_ADD,
+    supervisor_fd_control_kind_epoll_ctl_del: () => SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_DEL,
+    supervisor_fd_control_kind_epoll_ctl_mod: () => SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_MOD,
+    supervisor_fd_control_kind_socket_created: () => SUPERVISOR_FD_CONTROL_KIND_SOCKET_CREATED,
+    supervisor_fd_control_kind_socketpair_created: () => SUPERVISOR_FD_CONTROL_KIND_SOCKETPAIR_CREATED,
+    supervisor_fd_control_kind_socket_bound: () => SUPERVISOR_FD_CONTROL_KIND_SOCKET_BOUND,
+    supervisor_fd_control_kind_socket_listening: () => SUPERVISOR_FD_CONTROL_KIND_SOCKET_LISTENING,
+    supervisor_fd_control_kind_socket_connect_started: () =>
+      SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECT_STARTED,
+    supervisor_fd_control_kind_socket_connected: () => SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECTED,
+    supervisor_fd_control_kind_socket_connect_failed: () =>
+      SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECT_FAILED,
+    supervisor_fd_control_kind_socket_accepted: () => SUPERVISOR_FD_CONTROL_KIND_SOCKET_ACCEPTED,
+    supervisor_fs_control_record_bytes: () => SUPERVISOR_FS_CONTROL_RECORD_BYTES,
+    supervisor_fs_control_record_magic: () => SUPERVISOR_FS_CONTROL_RECORD_MAGIC,
+    supervisor_fs_control_kind_page_cache_miss: () => SUPERVISOR_FS_CONTROL_KIND_PAGE_CACHE_MISS,
+    supervisor_fs_control_kind_page_cache_fill: () => SUPERVISOR_FS_CONTROL_KIND_PAGE_CACHE_FILL,
+    supervisor_fs_control_kind_dirty_page_published: () =>
+      SUPERVISOR_FS_CONTROL_KIND_DIRTY_PAGE_PUBLISHED,
+    supervisor_fs_control_kind_dirty_page_flushed: () =>
+      SUPERVISOR_FS_CONTROL_KIND_DIRTY_PAGE_FLUSHED,
+    supervisor_signal_control_record_bytes: () => SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES,
+    supervisor_signal_control_record_magic: () => SUPERVISOR_SIGNAL_CONTROL_RECORD_MAGIC,
+    supervisor_signal_control_kind_boundary_check: () =>
+      SUPERVISOR_SIGNAL_CONTROL_KIND_BOUNDARY_CHECK,
+    supervisor_signal_control_kind_signal_delivered: () =>
+      SUPERVISOR_SIGNAL_CONTROL_KIND_SIGNAL_DELIVERED,
+    supervisor_signal_control_kind_blocked_wait_interrupted: () =>
+      SUPERVISOR_SIGNAL_CONTROL_KIND_BLOCKED_WAIT_INTERRUPTED,
+    ...overrides,
+  } as KernelExports;
+}
 
 function makeEvent(): SupervisorShadowThreadEvent {
   return {
@@ -153,18 +205,19 @@ function writeSignalControlRecord(
 }
 
 test("hasSupervisorShadowProtocol treats supervisor exports as optional", () => {
-  const kernelExports = {
+  const kernelExports = makeSupervisorShadowKernelExports({
     memory: new WebAssembly.Memory({ initial: 1 }),
-  } as unknown as KernelExports;
+  });
 
   expect(hasSupervisorShadowProtocol(kernelExports)).toBe(false);
 });
 
 test("encodeSupervisorShadowThreadEvent writes a deterministic little-endian record", () => {
+  const kernelExports = makeSupervisorShadowKernelExports();
   const first = new Uint8Array(SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES);
   const second = new Uint8Array(SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES);
-  encodeSupervisorShadowThreadEvent(new DataView(first.buffer), 0, makeEvent());
-  encodeSupervisorShadowThreadEvent(new DataView(second.buffer), 0, makeEvent());
+  encodeSupervisorShadowThreadEvent(kernelExports, new DataView(first.buffer), 0, makeEvent());
+  encodeSupervisorShadowThreadEvent(kernelExports, new DataView(second.buffer), 0, makeEvent());
 
   expect([...first]).toEqual([...second]);
 
@@ -188,14 +241,14 @@ test("encodeSupervisorShadowThreadEvent writes a deterministic little-endian rec
 test("submitSupervisorShadowThreadEvent writes the record and calls the kernel export", () => {
   const memory = new WebAssembly.Memory({ initial: 1 });
   const submissions: Array<[number, number]> = [];
-  const kernelExports = {
+  const kernelExports = makeSupervisorShadowKernelExports({
     memory,
     supervisor_abi_version: () => 1,
     supervisor_submit_thread_event: (ptr: number, len: number) => {
       submissions.push([ptr, len]);
       return 0;
     },
-  } as unknown as KernelExports;
+  });
 
   const result = submitSupervisorShadowThreadEvent(kernelExports, 32, makeEvent());
 
@@ -208,7 +261,7 @@ test("submitSupervisorShadowThreadEvent writes the record and calls the kernel e
 });
 
 test("supervisorThreadEventKindForStatus maps worker statuses to thread event families", () => {
-  const kernelExports = {
+  const kernelExports = makeSupervisorShadowKernelExports({
     memory: new WebAssembly.Memory({ initial: 1 }),
     abi_status_ok: () => 0,
     abi_status_fault: () => 3,
@@ -216,7 +269,7 @@ test("supervisorThreadEventKindForStatus maps worker statuses to thread event fa
     supervisor_thread_event_kind_ready: () => SUPERVISOR_THREAD_EVENT_KIND_READY,
     supervisor_thread_event_kind_faulted: () => SUPERVISOR_THREAD_EVENT_KIND_FAULTED,
     supervisor_thread_event_kind_blocked: () => SUPERVISOR_THREAD_EVENT_KIND_BLOCKED,
-  } as unknown as KernelExports;
+  });
 
   expect(supervisorThreadEventKindForStatus(kernelExports, 0)).toBe(SUPERVISOR_THREAD_EVENT_KIND_READY);
   expect(supervisorThreadEventKindForStatus(kernelExports, 27)).toBe(SUPERVISOR_THREAD_EVENT_KIND_READY);
@@ -227,7 +280,7 @@ test("supervisorThreadEventKindForStatus maps worker statuses to thread event fa
 test("submitSupervisorShadowStatusEvent uses scratch memory and keeps status deterministic", () => {
   const memory = new WebAssembly.Memory({ initial: 8 });
   const submissions: Array<[number, number]> = [];
-  const kernelExports = {
+  const kernelExports = makeSupervisorShadowKernelExports({
     memory,
     kernel_heap_ptr: () => 0,
     abi_status_ok: () => 0,
@@ -239,7 +292,7 @@ test("submitSupervisorShadowStatusEvent uses scratch memory and keeps status det
       submissions.push([ptr, len]);
       return 0;
     },
-  } as unknown as KernelExports;
+  });
   const handle = {
     kernel: kernelExports,
     memory,
@@ -274,7 +327,7 @@ test("submitSupervisorShadowStatusEvent uses scratch memory and keeps status det
 test("decodeSupervisorFdControlRecord reads the supervisor fd control layout", () => {
   const bytes = new Uint8Array(SUPERVISOR_FD_CONTROL_RECORD_BYTES);
   writeFdControlRecord(new DataView(bytes.buffer));
-  const kernelExports = {
+  const kernelExports = makeSupervisorShadowKernelExports({
     memory: new WebAssembly.Memory({ initial: 1 }),
     supervisor_abi_version: () => 1,
     supervisor_fd_control_kind_pipe_created: () => SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED,
@@ -295,7 +348,7 @@ test("decodeSupervisorFdControlRecord reads the supervisor fd control layout", (
     supervisor_fd_control_kind_socket_connect_failed: () =>
       SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECT_FAILED,
     supervisor_fd_control_kind_socket_accepted: () => SUPERVISOR_FD_CONTROL_KIND_SOCKET_ACCEPTED,
-  } as unknown as KernelExports;
+  });
 
   const record = decodeSupervisorFdControlRecord(kernelExports, new DataView(bytes.buffer));
 
@@ -325,14 +378,14 @@ test("decodeSupervisorFdControlRecord reads the supervisor fd control layout", (
 });
 
 test("decodeSupervisorFdControlRecord accepts fd lifecycle control kinds", () => {
-  const kernelExports = {
+  const kernelExports = makeSupervisorShadowKernelExports({
     memory: new WebAssembly.Memory({ initial: 1 }),
     supervisor_abi_version: () => 1,
     supervisor_fd_control_kind_pipe_created: () => SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED,
     supervisor_fd_control_kind_fd_closed: () => SUPERVISOR_FD_CONTROL_KIND_FD_CLOSED,
     supervisor_fd_control_kind_fd_duplicated: () => SUPERVISOR_FD_CONTROL_KIND_FD_DUPLICATED,
     supervisor_fd_control_kind_fd_flags_updated: () => SUPERVISOR_FD_CONTROL_KIND_FD_FLAGS_UPDATED,
-  } as unknown as KernelExports;
+  });
 
   for (const kind of [
     SUPERVISOR_FD_CONTROL_KIND_FD_DUPLICATED,
@@ -348,7 +401,7 @@ test("decodeSupervisorFdControlRecord accepts fd lifecycle control kinds", () =>
 });
 
 test("decodeSupervisorFdControlRecord accepts epoll control kinds", () => {
-  const kernelExports = {
+  const kernelExports = makeSupervisorShadowKernelExports({
     memory: new WebAssembly.Memory({ initial: 1 }),
     supervisor_abi_version: () => 1,
     supervisor_fd_control_kind_pipe_created: () => SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED,
@@ -359,7 +412,7 @@ test("decodeSupervisorFdControlRecord accepts epoll control kinds", () => {
     supervisor_fd_control_kind_epoll_ctl_add: () => SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_ADD,
     supervisor_fd_control_kind_epoll_ctl_del: () => SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_DEL,
     supervisor_fd_control_kind_epoll_ctl_mod: () => SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_MOD,
-  } as unknown as KernelExports;
+  });
 
   for (const kind of [
     SUPERVISOR_FD_CONTROL_KIND_EPOLL_CREATED,
@@ -377,7 +430,7 @@ test("decodeSupervisorFdControlRecord accepts epoll control kinds", () => {
 });
 
 test("decodeSupervisorFdControlRecord accepts socket creation control kinds", () => {
-  const kernelExports = {
+  const kernelExports = makeSupervisorShadowKernelExports({
     memory: new WebAssembly.Memory({ initial: 1 }),
     supervisor_abi_version: () => 1,
     supervisor_fd_control_kind_pipe_created: () => SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED,
@@ -390,7 +443,7 @@ test("decodeSupervisorFdControlRecord accepts socket creation control kinds", ()
     supervisor_fd_control_kind_epoll_ctl_mod: () => SUPERVISOR_FD_CONTROL_KIND_EPOLL_CTL_MOD,
     supervisor_fd_control_kind_socket_created: () => SUPERVISOR_FD_CONTROL_KIND_SOCKET_CREATED,
     supervisor_fd_control_kind_socketpair_created: () => SUPERVISOR_FD_CONTROL_KIND_SOCKETPAIR_CREATED,
-  } as unknown as KernelExports;
+  });
 
   for (const kind of [
     SUPERVISOR_FD_CONTROL_KIND_SOCKET_CREATED,
@@ -406,7 +459,7 @@ test("decodeSupervisorFdControlRecord accepts socket creation control kinds", ()
 });
 
 test("decodeSupervisorFdControlRecord accepts socket lifecycle control kinds", () => {
-  const kernelExports = {
+  const kernelExports = makeSupervisorShadowKernelExports({
     memory: new WebAssembly.Memory({ initial: 1 }),
     supervisor_abi_version: () => 1,
     supervisor_fd_control_kind_pipe_created: () => SUPERVISOR_FD_CONTROL_KIND_PIPE_CREATED,
@@ -427,7 +480,7 @@ test("decodeSupervisorFdControlRecord accepts socket lifecycle control kinds", (
     supervisor_fd_control_kind_socket_connect_failed: () =>
       SUPERVISOR_FD_CONTROL_KIND_SOCKET_CONNECT_FAILED,
     supervisor_fd_control_kind_socket_accepted: () => SUPERVISOR_FD_CONTROL_KIND_SOCKET_ACCEPTED,
-  } as unknown as KernelExports;
+  });
 
   for (const kind of [
     SUPERVISOR_FD_CONTROL_KIND_SOCKET_BOUND,
@@ -448,7 +501,7 @@ test("decodeSupervisorFdControlRecord accepts socket lifecycle control kinds", (
 
 test("readSupervisorFdControlRecord polls the kernel export", () => {
   const memory = new WebAssembly.Memory({ initial: 8 });
-  const kernelExports = {
+  const kernelExports = makeSupervisorShadowKernelExports({
     memory,
     kernel_heap_ptr: () => 0,
     supervisor_abi_version: () => 1,
@@ -479,7 +532,7 @@ test("readSupervisorFdControlRecord polls the kernel export", () => {
       view.setBigUint64(88, 0n, true);
       return SUPERVISOR_FD_CONTROL_RECORD_BYTES;
     }),
-  } as unknown as KernelExports;
+  });
   const handle = {
     kernel: kernelExports,
     memory,
@@ -500,7 +553,7 @@ test("pollSupervisorFdControlDiagnostic formats new records once", () => {
   const memory = new WebAssembly.Memory({ initial: 8 });
   let count = 0n;
   let seq = 7n;
-  const kernelExports = {
+  const kernelExports = makeSupervisorShadowKernelExports({
     memory,
     kernel_heap_ptr: () => 0,
     supervisor_abi_version: () => 1,
@@ -516,7 +569,7 @@ test("pollSupervisorFdControlDiagnostic formats new records once", () => {
       );
       return SUPERVISOR_FD_CONTROL_RECORD_BYTES;
     }),
-  } as unknown as KernelExports;
+  });
   const handle = {
     kernel: kernelExports,
     memory,
@@ -536,7 +589,7 @@ test("pollSupervisorFdControlDiagnostic formats new records once", () => {
 test("decodeSupervisorFsControlRecord reads the supervisor fs control layout", () => {
   const bytes = new Uint8Array(SUPERVISOR_FS_CONTROL_RECORD_BYTES);
   writeFsControlRecord(new DataView(bytes.buffer));
-  const kernelExports = {
+  const kernelExports = makeSupervisorShadowKernelExports({
     memory: new WebAssembly.Memory({ initial: 1 }),
     supervisor_abi_version: () => 1,
     supervisor_fs_control_kind_page_cache_miss: () => SUPERVISOR_FS_CONTROL_KIND_PAGE_CACHE_MISS,
@@ -545,7 +598,7 @@ test("decodeSupervisorFsControlRecord reads the supervisor fs control layout", (
       SUPERVISOR_FS_CONTROL_KIND_DIRTY_PAGE_PUBLISHED,
     supervisor_fs_control_kind_dirty_page_flushed: () =>
       SUPERVISOR_FS_CONTROL_KIND_DIRTY_PAGE_FLUSHED,
-  } as unknown as KernelExports;
+  });
 
   const record = decodeSupervisorFsControlRecord(kernelExports, new DataView(bytes.buffer));
 
@@ -575,7 +628,7 @@ test("decodeSupervisorFsControlRecord reads the supervisor fs control layout", (
 });
 
 test("decodeSupervisorFsControlRecord accepts fs control kinds", () => {
-  const kernelExports = {
+  const kernelExports = makeSupervisorShadowKernelExports({
     memory: new WebAssembly.Memory({ initial: 1 }),
     supervisor_abi_version: () => 1,
     supervisor_fs_control_kind_page_cache_miss: () => SUPERVISOR_FS_CONTROL_KIND_PAGE_CACHE_MISS,
@@ -584,7 +637,7 @@ test("decodeSupervisorFsControlRecord accepts fs control kinds", () => {
       SUPERVISOR_FS_CONTROL_KIND_DIRTY_PAGE_PUBLISHED,
     supervisor_fs_control_kind_dirty_page_flushed: () =>
       SUPERVISOR_FS_CONTROL_KIND_DIRTY_PAGE_FLUSHED,
-  } as unknown as KernelExports;
+  });
 
   for (const kind of [
     SUPERVISOR_FS_CONTROL_KIND_PAGE_CACHE_MISS,
@@ -603,7 +656,7 @@ test("decodeSupervisorFsControlRecord accepts fs control kinds", () => {
 
 test("readSupervisorFsControlRecord polls the kernel export", () => {
   const memory = new WebAssembly.Memory({ initial: 8 });
-  const kernelExports = {
+  const kernelExports = makeSupervisorShadowKernelExports({
     memory,
     kernel_heap_ptr: () => 0,
     supervisor_abi_version: () => 1,
@@ -619,7 +672,7 @@ test("readSupervisorFsControlRecord polls the kernel export", () => {
       writeFsControlRecord(new DataView(memory.buffer, outPtr, outLen));
       return SUPERVISOR_FS_CONTROL_RECORD_BYTES;
     }),
-  } as unknown as KernelExports;
+  });
   const handle = {
     kernel: kernelExports,
     memory,
@@ -640,7 +693,7 @@ test("pollSupervisorFsControlDiagnostic formats new records once", () => {
   const memory = new WebAssembly.Memory({ initial: 8 });
   let count = 0n;
   let seq = 9n;
-  const kernelExports = {
+  const kernelExports = makeSupervisorShadowKernelExports({
     memory,
     kernel_heap_ptr: () => 0,
     supervisor_abi_version: () => 1,
@@ -656,7 +709,7 @@ test("pollSupervisorFsControlDiagnostic formats new records once", () => {
       );
       return SUPERVISOR_FS_CONTROL_RECORD_BYTES;
     }),
-  } as unknown as KernelExports;
+  });
   const handle = {
     kernel: kernelExports,
     memory,
@@ -676,7 +729,7 @@ test("pollSupervisorFsControlDiagnostic formats new records once", () => {
 test("decodeSupervisorSignalControlRecord reads the supervisor signal control layout", () => {
   const bytes = new Uint8Array(SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES);
   writeSignalControlRecord(new DataView(bytes.buffer));
-  const kernelExports = {
+  const kernelExports = makeSupervisorShadowKernelExports({
     memory: new WebAssembly.Memory({ initial: 1 }),
     supervisor_abi_version: () => 1,
     supervisor_signal_control_kind_boundary_check: () =>
@@ -685,7 +738,7 @@ test("decodeSupervisorSignalControlRecord reads the supervisor signal control la
       SUPERVISOR_SIGNAL_CONTROL_KIND_SIGNAL_DELIVERED,
     supervisor_signal_control_kind_blocked_wait_interrupted: () =>
       SUPERVISOR_SIGNAL_CONTROL_KIND_BLOCKED_WAIT_INTERRUPTED,
-  } as unknown as KernelExports;
+  });
 
   const record = decodeSupervisorSignalControlRecord(kernelExports, new DataView(bytes.buffer));
 
@@ -718,7 +771,7 @@ test("decodeSupervisorSignalControlRecord reads the supervisor signal control la
 });
 
 test("decodeSupervisorSignalControlRecord accepts signal control kinds", () => {
-  const kernelExports = {
+  const kernelExports = makeSupervisorShadowKernelExports({
     memory: new WebAssembly.Memory({ initial: 1 }),
     supervisor_abi_version: () => 1,
     supervisor_signal_control_kind_boundary_check: () =>
@@ -727,7 +780,7 @@ test("decodeSupervisorSignalControlRecord accepts signal control kinds", () => {
       SUPERVISOR_SIGNAL_CONTROL_KIND_SIGNAL_DELIVERED,
     supervisor_signal_control_kind_blocked_wait_interrupted: () =>
       SUPERVISOR_SIGNAL_CONTROL_KIND_BLOCKED_WAIT_INTERRUPTED,
-  } as unknown as KernelExports;
+  });
 
   for (const kind of [
     SUPERVISOR_SIGNAL_CONTROL_KIND_BOUNDARY_CHECK,
@@ -745,7 +798,7 @@ test("decodeSupervisorSignalControlRecord accepts signal control kinds", () => {
 
 test("readSupervisorSignalControlRecord polls the kernel export", () => {
   const memory = new WebAssembly.Memory({ initial: 8 });
-  const kernelExports = {
+  const kernelExports = makeSupervisorShadowKernelExports({
     memory,
     kernel_heap_ptr: () => 0,
     supervisor_abi_version: () => 1,
@@ -757,7 +810,7 @@ test("readSupervisorSignalControlRecord polls the kernel export", () => {
       writeSignalControlRecord(new DataView(memory.buffer, outPtr, outLen));
       return SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES;
     }),
-  } as unknown as KernelExports;
+  });
   const handle = {
     kernel: kernelExports,
     memory,
@@ -777,7 +830,7 @@ test("pollSupervisorSignalControlDiagnostic formats new records once", () => {
   const memory = new WebAssembly.Memory({ initial: 8 });
   let count = 0n;
   let seq = 11n;
-  const kernelExports = {
+  const kernelExports = makeSupervisorShadowKernelExports({
     memory,
     kernel_heap_ptr: () => 0,
     supervisor_abi_version: () => 1,
@@ -794,7 +847,7 @@ test("pollSupervisorSignalControlDiagnostic formats new records once", () => {
       );
       return SUPERVISOR_SIGNAL_CONTROL_RECORD_BYTES;
     }),
-  } as unknown as KernelExports;
+  });
   const handle = {
     kernel: kernelExports,
     memory,
