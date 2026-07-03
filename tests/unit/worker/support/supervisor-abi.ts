@@ -30,7 +30,9 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_host_op_kind_retry_blocked_worker: 15,
   supervisor_process_host_op_record_bytes: 96,
   supervisor_process_status_is_lifecycle_handoff: 0,
+  supervisor_process_status_is_execve_spawn: 0,
   supervisor_process_status_allows_pid_mismatch: 0,
+  supervisor_process_status_defers_kernel_state_adoption: 0,
   supervisor_fault_exit_decision_bytes: 88,
   supervisor_fault_exit_kind_thread_exit: 1,
   supervisor_fault_exit_kind_process_exit: 2,
@@ -279,10 +281,18 @@ export function makeSupervisorAbiStubs(
       "abi_status_execve_spawn",
       "abi_status_clone_spawn",
     ]);
+  const supervisorProcessStatusIsExecveSpawn = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, [
+      "abi_status_execve_spawn",
+    ]);
   const supervisorProcessStatusAllowsPidMismatch = (receiver: Partial<KernelExports>, status: number): boolean =>
     statusMatchesAny(receiver, status, [
       "abi_status_vfork_wait",
       "abi_status_execve_spawn",
+    ]);
+  const supervisorProcessStatusDefersKernelStateAdoption = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, [
+      "abi_status_clone_spawn",
     ]);
   const supervisorWaitWakeMaskForSync = (source: number): number => {
     switch (source) {
@@ -592,8 +602,14 @@ export function makeSupervisorAbiStubs(
     supervisor_process_status_is_lifecycle_handoff(this: KernelExports | undefined, status: number) {
       return supervisorProcessStatusIsLifecycleHandoff(currentExports(this), status) ? 1 : 0;
     },
+    supervisor_process_status_is_execve_spawn(this: KernelExports | undefined, status: number) {
+      return supervisorProcessStatusIsExecveSpawn(currentExports(this), status) ? 1 : 0;
+    },
     supervisor_process_status_allows_pid_mismatch(this: KernelExports | undefined, status: number) {
       return supervisorProcessStatusAllowsPidMismatch(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_process_status_defers_kernel_state_adoption(this: KernelExports | undefined, status: number) {
+      return supervisorProcessStatusDefersKernelStateAdoption(currentExports(this), status) ? 1 : 0;
     },
     supervisor_blocked_poll_wait_has_socket(this: KernelExports | undefined, vmPtr: number) {
       if (vmPtr === 0) {

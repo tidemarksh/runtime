@@ -314,7 +314,9 @@ export interface KernelExports {
   supervisor_next_resume?(outPtr: number, outLen: number): number;
   supervisor_process_resume?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_process_status_is_lifecycle_handoff?(status: number): number;
+  supervisor_process_status_is_execve_spawn?(status: number): number;
   supervisor_process_status_allows_pid_mismatch?(status: number): number;
+  supervisor_process_status_defers_kernel_state_adoption?(status: number): number;
   supervisor_fault_exit_decision?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_process_held_ofd_refcount?(vmPtr: number, ofdId: number): number;
   supervisor_process_private_pipe_slot_mask?(vmPtr: number): bigint | number;
@@ -1599,7 +1601,9 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_next_resume",
   "supervisor_process_resume",
   "supervisor_process_status_is_lifecycle_handoff",
+  "supervisor_process_status_is_execve_spawn",
   "supervisor_process_status_allows_pid_mismatch",
+  "supervisor_process_status_defers_kernel_state_adoption",
   "supervisor_fault_exit_decision",
   "supervisor_process_held_ofd_refcount",
   "supervisor_process_private_pipe_slot_mask",

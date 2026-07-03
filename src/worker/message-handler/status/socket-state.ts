@@ -28,6 +28,7 @@ import {
   formatGuestMemoryWriteWatchOverlap,
 } from "../../guest-memory-writes.js";
 import type { WorkerMessageHandlerDeps } from "../types.js";
+import { supervisorProcessStatusIsExecveSpawn } from "../../supervisor-status.js";
 import {
   deriveNetBufUsedFromSocketSlots,
   closedSocketRecvBufferIndices,
@@ -168,8 +169,10 @@ function isDirtyMemfsKernelMemoryWrite(
     return false;
   }
   const faultStatus = handle.kernel.abi_status_fault?.();
-  const execveSpawnStatus = handle.kernel.abi_status_execve_spawn?.();
-  if (msg.status !== faultStatus && msg.status !== execveSpawnStatus) {
+  if (
+    msg.status !== faultStatus
+    && !supervisorProcessStatusIsExecveSpawn(handle.kernel, msg.status)
+  ) {
     return false;
   }
   const regions = [

@@ -2,7 +2,9 @@ import type { KernelExports } from "../abi.js";
 
 type SupervisorProcessStatusFact =
   | "supervisor_process_status_is_lifecycle_handoff"
-  | "supervisor_process_status_allows_pid_mismatch";
+  | "supervisor_process_status_is_execve_spawn"
+  | "supervisor_process_status_allows_pid_mismatch"
+  | "supervisor_process_status_defers_kernel_state_adoption";
 
 function supervisorProcessStatusFact(
   kernel: KernelExports,
@@ -32,4 +34,18 @@ export function supervisorProcessStatusAllowsPidMismatch(
   status: number,
 ): boolean {
   return supervisorProcessStatusFact(kernel, status, "supervisor_process_status_allows_pid_mismatch");
+}
+
+export function supervisorProcessStatusIsExecveSpawn(
+  kernel: KernelExports,
+  status: number,
+): boolean {
+  return supervisorProcessStatusFact(kernel, status, "supervisor_process_status_is_execve_spawn");
+}
+
+export function supervisorProcessStatusDefersKernelStateAdoption(
+  kernel: KernelExports,
+  status: number,
+): boolean {
+  return supervisorProcessStatusFact(kernel, status, "supervisor_process_status_defers_kernel_state_adoption");
 }

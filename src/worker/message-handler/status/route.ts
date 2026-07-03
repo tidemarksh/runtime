@@ -50,6 +50,10 @@ import {
   submitSupervisorShadowStatusEvent,
   supervisorFaultExitKindProcessExit,
 } from "../../supervisor-shadow.js";
+import {
+  supervisorProcessStatusDefersKernelStateAdoption,
+  supervisorProcessStatusIsExecveSpawn,
+} from "../../supervisor-status.js";
 
 const CLONE_SPAWN_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
@@ -141,7 +145,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     }
     const previousWaitingStatus = thread.waitingInWorkerStatus;
     thread.waitingInWorkerStatus = null;
-    if (status === handle.kernel.abi_status_execve_spawn()) {
+    if (supervisorProcessStatusIsExecveSpawn(handle.kernel, status)) {
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `status-execve-spawn-seen:${handle.pid}:0x${msg.vmPtr.toString(16)}`
@@ -290,7 +294,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       });
     }
     const shouldAdoptThreadKernelState = (
-      status !== handle.kernel.abi_status_clone_spawn()
+      !supervisorProcessStatusDefersKernelStateAdoption(handle.kernel, status)
       && statusStateBelongsToHandle
     );
     if (shouldAdoptThreadKernelState) {

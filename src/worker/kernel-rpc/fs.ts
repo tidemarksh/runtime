@@ -71,6 +71,7 @@ import {
   type KernelRpcResumeOutcome,
 } from "./outcomes.js";
 import { submitSupervisorShadowStatusEvent } from "../supervisor-shadow.js";
+import { supervisorProcessStatusIsExecveSpawn } from "../supervisor-status.js";
 import { expectKernelWorkerResponse } from "./transport.js";
 
 const FS_DEBUG_PATH_BUF_LEN = 4096;
@@ -651,6 +652,22 @@ function supervisorFsResponseDisposition(
     resolvedToExecveSpawn: (flags & supervisorFsResponseFlag(handle, "resolvedToExecveSpawn")) !== 0,
     processOwnerMatches: (flags & supervisorFsResponseFlag(handle, "processOwnerMatches")) !== 0,
   };
+}
+
+function findSupervisorExecveSpawnStatus(
+  handle: ProcessHandle,
+  candidates: ReadonlyArray<number | null | undefined>,
+): number | undefined {
+  for (const status of candidates) {
+    if (
+      status !== null
+      && status !== undefined
+      && supervisorProcessStatusIsExecveSpawn(handle.kernel, status)
+    ) {
+      return status;
+    }
+  }
+  return undefined;
 }
 
 function supervisorFsLocalMetadataActions(
@@ -1246,9 +1263,8 @@ async function completeFsResumeFromSupervisorDecision(
     const status = handle.kernel.abi_status_fs?.() ?? -1;
     return { kind: "blocked", status, effects };
   }
-  const execveSpawnStatus = handle.kernel.abi_status_execve_spawn?.();
   const resolvedToExecveSpawn = options.forceExecveSpawn === true
-    || (execveSpawnStatus !== undefined && finalStatus === execveSpawnStatus);
+    || (finalStatus !== undefined && supervisorProcessStatusIsExecveSpawn(handle.kernel, finalStatus));
   if (resolvedToExecveSpawn && finalStatus !== undefined) {
     await options.applyPostFsWake();
     effects.push({ kind: "handle-execve-spawn", status: finalStatus });
@@ -1513,15 +1529,22 @@ async function resumeFsViaKernelWorkerInner(
     if (fsResponseDisposition.storePendingKernelState) {
       threadState.pendingKernelStateForNextStep = fsProcessedResponse.kernelState;
     }
-    const execveSpawnStatusAfterFs = handle.kernel.abi_status_execve_spawn?.();
-    if (fsResponseDisposition.resolvedToExecveSpawn && execveSpawnStatusAfterFs !== undefined) {
+    const statusAfterFs = findSupervisorExecveSpawnStatus(handle, [
+      handle.kernel.thread_status?.(vmPtr),
+      threadState.ownerAsyncStatus,
+      threadState.lastStatus,
+    ]);
+    if (
+      fsResponseDisposition.resolvedToExecveSpawn
+      && statusAfterFs !== undefined
+    ) {
       restoreFsFdState(handle, postFsFdState);
       restoreFsRingProgress(handle, postFsRingProgress);
       clearStaleFsStatusAfterResume(handle, vmPtr, fsResult);
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       return completeFsResumeFromSupervisorDecision(handle, vmPtr, fsResult, effects, {
         source: "kernel-worker",
-        finalStatus: execveSpawnStatusAfterFs,
+        finalStatus: statusAfterFs,
         forceExecveSpawn: true,
         applyPostFsWake: () => {
           deps.publishRuntimeKernelState(handle);

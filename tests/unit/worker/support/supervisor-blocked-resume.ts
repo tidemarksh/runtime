@@ -46,7 +46,9 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_blocked_status_syncs_socket_after_resume"
   | "supervisor_blocked_status_uses_fork_shared_state_sync"
   | "supervisor_process_status_is_lifecycle_handoff"
+  | "supervisor_process_status_is_execve_spawn"
   | "supervisor_process_status_allows_pid_mismatch"
+  | "supervisor_process_status_defers_kernel_state_adoption"
   | "supervisor_blocked_epoll_wait_timeout_ms"
   | "supervisor_blocked_poll_wait_timeout_ms"
   | "supervisor_blocked_poll_wait_has_socket"
@@ -425,11 +427,15 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
       kernel.abi_status_execve_spawn?.(),
       kernel.abi_status_clone_spawn?.(),
     ].some((candidate) => candidate !== undefined && Number(candidate) === status) ? 1 : 0;
+  nextKernel.supervisor_process_status_is_execve_spawn ??= (status: number) =>
+    kernel.abi_status_execve_spawn?.() === status ? 1 : 0;
   nextKernel.supervisor_process_status_allows_pid_mismatch ??= (status: number) =>
     [
       kernel.abi_status_vfork_wait?.(),
       kernel.abi_status_execve_spawn?.(),
     ].some((candidate) => candidate !== undefined && Number(candidate) === status) ? 1 : 0;
+  nextKernel.supervisor_process_status_defers_kernel_state_adoption ??= (status: number) =>
+    kernel.abi_status_clone_spawn?.() === status ? 1 : 0;
   nextKernel.supervisor_blocked_epoll_wait_timeout_ms ??= (vmPtr: number) => {
     if (vmPtr === 0) {
       return -14;
