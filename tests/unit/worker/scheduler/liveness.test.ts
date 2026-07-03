@@ -108,6 +108,30 @@ function makeKernel() {
       supervisor_blocked_wait_retry_flag_passive_wait: () => 4,
       supervisor_blocked_wait_retry_flag_process_gate: () => 8,
       supervisor_blocked_wait_retry_flag_thread_init_pending: () => 16,
+      supervisor_blocked_wait_wake_source_pipe_sync: () => 1,
+      supervisor_blocked_wait_wake_source_epoll_sync: () => 2,
+      supervisor_blocked_wait_wake_source_socket_sync: () => 3,
+      supervisor_blocked_wait_wake_source_pipe_and_epoll_sync: () => 4,
+      supervisor_blocked_wait_wake_target_pipe_wait: () => 1,
+      supervisor_blocked_wait_wake_target_epoll_wait: () => 2,
+      supervisor_blocked_wait_wake_target_socket_recv: () => 4,
+      supervisor_blocked_wait_wake_target_socket_send: () => 8,
+      supervisor_blocked_wait_wake_mask_for_sync: (source: number) => {
+        switch (source) {
+          case 1:
+            return 1;
+          case 2:
+            return 2;
+          case 3:
+            return 1 | 2 | 4 | 8;
+          case 4:
+            return 1 | 2;
+          default:
+            return -22;
+        }
+      },
+      supervisor_blocked_epoll_watches_pipe: () => 0,
+      supervisor_blocked_epoll_watched_ofd: () => 0,
       supervisor_blocked_wait_active_child_pid: (vmPtr: number) => {
         const status = kernel.exports.thread_status(vmPtr);
         if (
@@ -2728,6 +2752,9 @@ test("epoll kernel-worker retry re-queries timerfd deadline after state sync", a
     }
     return 0;
   };
+  kernel.supervisor_blocked_epoll_watched_ofd = vi.fn((_vmPtr: number, index: number) => (
+    index === 0 ? 6 : 0
+  ));
   kernel.thread_epoll_timerfd_deadline_ticks = vi.fn(() => deadlineVisible ? 1_000_001n : 0n);
   kernel.thread_resume_blocked_syscall = vi.fn(() => {
     status = kernel.abi_status_ok();
@@ -2833,6 +2860,9 @@ test("epoll kernel-worker retry syncs watched timerfd OFD after the timer fd is 
     }
     return 0;
   };
+  kernel.supervisor_blocked_epoll_watched_ofd = vi.fn((_vmPtr: number, index: number) => (
+    index === 0 ? 6 : 0
+  ));
   kernel.kernel_ofd_ino = (ofdId: number) => {
     if (ofdId === 5) {
       return 0;

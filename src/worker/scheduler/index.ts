@@ -695,65 +695,10 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
 
   function blockedEpollWatchesPipe(handle: ProcessHandle, vmPtr: number): boolean {
     const supervisorWatchesPipe = handle.kernel.supervisor_blocked_epoll_watches_pipe;
-    if (supervisorWatchesPipe) {
-      return supervisorWatchesPipe(vmPtr) !== 0;
+    if (supervisorWatchesPipe === undefined) {
+      throw new Error("kernel supervisor ABI missing supervisor_blocked_epoll_watches_pipe");
     }
-
-    const maxFds = handle.kernel.abi_max_fds();
-    const epollFd = handle.kernel.thread_blocked_fd?.(vmPtr)
-      ?? Number(handle.kernel.thread_a0?.(vmPtr) ?? -1n);
-    const epollOfdId = (handle.kernel.thread_blocked_ofd_id?.(vmPtr) ?? 0) > 0
-      ? handle.kernel.thread_blocked_ofd_id(vmPtr)
-      : handle.kernel.process_fd_ofd_id(vmPtr, epollFd);
-    if (
-      epollFd < 0
-      || epollOfdId <= 0
-      || epollOfdId >= maxFds
-      || handle.kernel.kernel_ofd_fd_type(epollOfdId) !== handle.kernel.abi_fd_type_epoll()
-    ) {
-      return false;
-    }
-
-    const tableBytes = handle.kernel.kernel_epoll_table_bytes();
-    const instanceBytes = handle.kernel.kernel_epoll_instance_bytes();
-    const epollIdx = handle.kernel.kernel_ofd_ino(epollOfdId);
-    const tablePointerBytes = tableBytes % 8 === 0
-      && Math.floor((instanceBytes - 4) / (tableBytes >>> 3)) >= 28
-      ? 8
-      : 4;
-    const tableEntries = Math.floor(tableBytes / tablePointerBytes);
-    const entryStride = tableEntries > 0 ? Math.floor((instanceBytes - 4) / tableEntries) : 0;
-    const countOffset = entryStride * tableEntries;
-    const tablePtr = handle.kernelState.epollTablePtr;
-    const view = new DataView(handle.memory.buffer);
-    if (
-      tableEntries <= 0
-      || entryStride < 28
-      || epollIdx < 0
-      || epollIdx >= tableEntries
-      || tablePtr < 0
-      || tablePtr + tableBytes > view.byteLength
-    ) {
-      return false;
-    }
-
-    const instancePtr = view.getUint32(tablePtr + epollIdx * tablePointerBytes, true);
-    if (instancePtr === 0 || instancePtr + instanceBytes > view.byteLength) {
-      return false;
-    }
-    const rawCount = view.getUint32(instancePtr + countOffset, true);
-    const count = Math.min(rawCount, tableEntries);
-    for (let i = 0; i < count; i += 1) {
-      const ofdId = view.getUint32(instancePtr + i * entryStride + 4, true);
-      if (
-        ofdId > 0
-        && ofdId < maxFds
-        && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
-      ) {
-        return true;
-      }
-    }
-    return false;
+    return supervisorWatchesPipe(vmPtr) !== 0;
   }
 
   function collectBlockedEpollWatchedOfdIdsByType(
@@ -762,74 +707,18 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     types: readonly number[],
   ): number[] {
     const supervisorWatchedOfd = handle.kernel.supervisor_blocked_epoll_watched_ofd;
-    if (supervisorWatchedOfd) {
-      const maxFds = handle.kernel.abi_max_fds();
-      const targetTypes = new Set(types);
-      const ofdIds: number[] = [];
-      for (let index = 0; index < maxFds; index += 1) {
-        const ofdId = supervisorWatchedOfd(vmPtr, index);
-        if (ofdId === 0) {
-          break;
-        }
-        if (
-          ofdId > 0
-          && ofdId < maxFds
-          && targetTypes.has(handle.kernel.kernel_ofd_fd_type(ofdId))
-        ) {
-          ofdIds.push(ofdId);
-        }
-      }
-      return ofdIds;
+    if (supervisorWatchedOfd === undefined) {
+      throw new Error("kernel supervisor ABI missing supervisor_blocked_epoll_watched_ofd");
     }
 
     const maxFds = handle.kernel.abi_max_fds();
     const targetTypes = new Set(types);
-    const epollFd = handle.kernel.thread_blocked_fd?.(vmPtr)
-      ?? Number(handle.kernel.thread_a0?.(vmPtr) ?? -1n);
-    const epollOfdId = (handle.kernel.thread_blocked_ofd_id?.(vmPtr) ?? 0) > 0
-      ? handle.kernel.thread_blocked_ofd_id(vmPtr)
-      : handle.kernel.process_fd_ofd_id(vmPtr, epollFd);
-    if (
-      epollFd < 0
-      || epollOfdId <= 0
-      || epollOfdId >= maxFds
-      || handle.kernel.kernel_ofd_fd_type(epollOfdId) !== handle.kernel.abi_fd_type_epoll()
-    ) {
-      return [];
-    }
-
-    const tableBytes = handle.kernel.kernel_epoll_table_bytes();
-    const instanceBytes = handle.kernel.kernel_epoll_instance_bytes();
-    const epollIdx = handle.kernel.kernel_ofd_ino(epollOfdId);
-    const tablePointerBytes = tableBytes % 8 === 0
-      && Math.floor((instanceBytes - 4) / (tableBytes >>> 3)) >= 28
-      ? 8
-      : 4;
-    const tableEntries = Math.floor(tableBytes / tablePointerBytes);
-    const entryStride = tableEntries > 0 ? Math.floor((instanceBytes - 4) / tableEntries) : 0;
-    const countOffset = entryStride * tableEntries;
-    const tablePtr = handle.kernelState.epollTablePtr;
-    const view = new DataView(handle.memory.buffer);
-    if (
-      tableEntries <= 0
-      || entryStride < 28
-      || epollIdx < 0
-      || epollIdx >= tableEntries
-      || tablePtr < 0
-      || tablePtr + tableBytes > view.byteLength
-    ) {
-      return [];
-    }
-
-    const instancePtr = view.getUint32(tablePtr + epollIdx * tablePointerBytes, true);
-    if (instancePtr === 0 || instancePtr + instanceBytes > view.byteLength) {
-      return [];
-    }
-    const rawCount = view.getUint32(instancePtr + countOffset, true);
-    const count = Math.min(rawCount, tableEntries);
     const ofdIds: number[] = [];
-    for (let i = 0; i < count; i += 1) {
-      const ofdId = view.getUint32(instancePtr + i * entryStride + 4, true);
+    for (let index = 0; index < maxFds; index += 1) {
+      const ofdId = supervisorWatchedOfd(vmPtr, index);
+      if (ofdId === 0) {
+        break;
+      }
       if (
         ofdId > 0
         && ofdId < maxFds
