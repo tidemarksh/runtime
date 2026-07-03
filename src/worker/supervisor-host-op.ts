@@ -238,7 +238,11 @@ function pollSupervisorHostOpKind(
   if (nextHostOpKind !== undefined) {
     return nextHostOpKind(kind, scratch, recordBytes);
   }
-  return handle.kernel.supervisor_next_host_op?.(scratch, recordBytes);
+  const nextHostOp = handle.kernel.supervisor_next_host_op;
+  if (nextHostOp === undefined) {
+    return undefined;
+  }
+  return nextHostOp(scratch, recordBytes);
 }
 
 export function drainSupervisorCloneSpawnHostOp(

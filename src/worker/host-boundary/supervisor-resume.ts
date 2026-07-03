@@ -120,7 +120,8 @@ function decodeSupervisorResumeRecord(
 }
 
 function supervisorThreadStateSnapshotBytes(handle: ProcessHandle): number {
-  return handle.kernel.supervisor_thread_state_snapshot_bytes?.() ?? 0;
+  const exportFn = handle.kernel.supervisor_thread_state_snapshot_bytes;
+  return exportFn === undefined ? 0 : exportFn();
 }
 
 function decodeSupervisorThreadStateRecord(
