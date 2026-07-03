@@ -15,8 +15,10 @@ import {
 import { FS_OP_EXECVE } from "../layout/fs-ring.js";
 import {
   clearSupervisorPendingBackingFill,
+  supervisorBackingFillSpan,
   readSupervisorPendingBackingFill,
   supervisorBackingRetryLimit,
+  type SupervisorBackingFillSpan,
   type SupervisorPendingBackingFillRequest,
 } from "../fs/supervisor-backing-fill.js";
 import { supervisorResidentPageTableAuthority } from "../fs/supervisor-page-table.js";
@@ -366,14 +368,14 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
   function supervisorBackingFillShouldProbeDirect(
     processExports: KernelExports,
     request: PendingBackingFillRequest,
-    alignedLength: number,
+    spanLength: number,
   ): boolean {
     const decide = processExports.supervisor_fs_backing_fill_probe_direct;
     if (typeof decide !== "function") {
       throw new Error("missing supervisor_fs_backing_fill_probe_direct export");
     }
     const result = supervisorNumber(
-      decide(request.opcode ?? 0, BigInt(alignedLength)),
+      decide(request.opcode ?? 0, BigInt(spanLength)),
       "supervisor backing-fill probe decision",
     );
     if (result < 0) {
@@ -385,7 +387,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
   function supervisorBackingFillUsesDirect(
     processExports: KernelExports,
     request: PendingBackingFillRequest,
-    alignedLength: number,
+    spanLength: number,
     headProbeReadable: boolean,
     tailProbeReadable: boolean,
   ): boolean {
@@ -396,7 +398,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     const mode = supervisorNumber(
       decide(
         request.opcode ?? 0,
-        BigInt(alignedLength),
+        BigInt(spanLength),
         headProbeReadable ? 1 : 0,
         tailProbeReadable ? 1 : 0,
       ),
@@ -425,23 +427,21 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
   function hasDirectBackingForFill(
     processExports: KernelExports,
     request: PendingBackingFillRequest,
-    alignedOffset: number,
-    alignedEnd: number,
+    span: SupervisorBackingFillSpan,
   ): boolean {
-    const alignedLength = alignedEnd - alignedOffset;
-    if (!supervisorBackingFillShouldProbeDirect(processExports, request, alignedLength)) {
+    if (!supervisorBackingFillShouldProbeDirect(processExports, request, span.length)) {
       return false;
     }
-    const probeLength = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, alignedLength);
-    const headProbeReadable = backingProbeIsReadable(request.ino, alignedOffset, probeLength);
-    const tailOffset = alignedEnd - probeLength;
-    const tailProbeReadable = tailOffset === alignedOffset
+    const probeLength = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, span.length);
+    const headProbeReadable = backingProbeIsReadable(request.ino, span.offset, probeLength);
+    const tailOffset = span.end - probeLength;
+    const tailProbeReadable = tailOffset === span.offset
       ? headProbeReadable
       : backingProbeIsReadable(request.ino, tailOffset, probeLength);
     return supervisorBackingFillUsesDirect(
       processExports,
       request,
-      alignedLength,
+      span.length,
       headProbeReadable,
       tailProbeReadable,
     );
@@ -451,42 +451,36 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     processExports: KernelExports,
     request: PendingBackingFillRequest,
   ): Promise<boolean> {
-    const alignedOffset = Math.floor(request.offset / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE;
-    const requestedEnd = request.offset + request.length;
-    const alignedEnd = Math.min(
-      request.expectedSize,
-      Math.ceil(requestedEnd / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE,
-    );
-    const alignedLength = Math.max(0, alignedEnd - alignedOffset);
-    if (alignedLength <= 0) {
+    const span = supervisorBackingFillSpan(processExports, request);
+    if (!span) {
       return false;
     }
-    if (hasDirectBackingForFill(processExports, request, alignedOffset, alignedEnd)) {
+    if (hasDirectBackingForFill(processExports, request, span)) {
       return true;
     }
-    let alignedRange = deps.readBackingFileRangeByInode(request.ino, alignedOffset, alignedLength);
+    let alignedRange = deps.readBackingFileRangeByInode(request.ino, span.offset, span.length);
     if (alignedRange === null) {
       const ensured = await deps.ensureBackingSourceRangeForInode?.(
         request.ino,
-        alignedOffset,
-        alignedLength,
+        span.offset,
+        span.length,
         request.expectedSize,
       );
       if (ensured === false) {
         return false;
       }
-      alignedRange = deps.readBackingFileRangeByInode(request.ino, alignedOffset, alignedLength);
+      alignedRange = deps.readBackingFileRangeByInode(request.ino, span.offset, span.length);
     }
     if (alignedRange === null) {
       return false;
     }
     const sab = deps.getSabPageCache();
-    for (let pageStart = alignedOffset; pageStart < alignedEnd; pageStart += DEFAULT_RESIDENT_PAGE_SIZE) {
+    for (let pageStart = span.offset; pageStart < span.end; pageStart += DEFAULT_RESIDENT_PAGE_SIZE) {
       const pageLen = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, request.expectedSize - pageStart);
       if (pageLen <= 0 || readResidentFileData(sab, request.ino, pageStart, pageLen)) {
         continue;
       }
-      const backingOffset = pageStart - alignedOffset;
+      const backingOffset = pageStart - span.offset;
       const page = alignedRange.subarray(backingOffset, backingOffset + pageLen);
       if (page.length !== pageLen) {
         return false;
@@ -630,13 +624,15 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     }
     const returnedGuestPtr = Number(result);
     const guestPtr = returnedGuestPtr > 0 ? returnedGuestPtr : request.guestPtrHint;
-    const length = Math.ceil(request.length / 4096) * 4096;
+    const length = supervisorU64ToSafeNumber(
+      processExports.supervisor_fs_pending_mmap_guest_write_snapshot_len?.(vmPtr),
+    );
     const guestBase = processExports.thread_guest_base?.(vmPtr) ?? 0;
     const start = guestBase + guestPtr;
-    const end = start + length;
+    const end = length === null ? -1 : start + length;
     if (
       !Number.isFinite(guestPtr)
-      || !Number.isFinite(length)
+      || length === null
       || guestPtr <= 0
       || length <= 0
       || start < 0

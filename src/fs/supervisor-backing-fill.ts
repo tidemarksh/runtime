@@ -8,6 +8,12 @@ export interface SupervisorPendingBackingFillRequest {
   opcode?: number;
 }
 
+export interface SupervisorBackingFillSpan {
+  offset: number;
+  end: number;
+  length: number;
+}
+
 function supervisorU64ToSafeNumber(value: bigint | number | undefined): number | null {
   if (value === undefined) {
     return null;
@@ -103,4 +109,42 @@ export function supervisorBackingRetryLimit(
     throw new Error(`invalid supervisor backing retry limit: ${limit}`);
   }
   return limit;
+}
+
+export function supervisorBackingFillSpan(
+  kernel: KernelExports,
+  request: SupervisorPendingBackingFillRequest,
+): SupervisorBackingFillSpan | null {
+  const decide = kernel.supervisor_fs_backing_fill_span_decision;
+  if (typeof decide !== "function") {
+    throw new Error("missing supervisor_fs_backing_fill_span_decision export");
+  }
+  const result = supervisorNumber(
+    decide(
+      request.opcode ?? 0,
+      BigInt(request.offset),
+      BigInt(request.length),
+      BigInt(request.expectedSize),
+    ),
+    "supervisor backing-fill span decision",
+  );
+  if (result < 0) {
+    return null;
+  }
+  const offset = supervisorNumber(
+    kernel.supervisor_fs_backing_fill_span_offset?.(),
+    "supervisor backing-fill span offset",
+  );
+  const end = supervisorNumber(
+    kernel.supervisor_fs_backing_fill_span_end?.(),
+    "supervisor backing-fill span end",
+  );
+  const length = supervisorNumber(
+    kernel.supervisor_fs_backing_fill_span_length?.(),
+    "supervisor backing-fill span length",
+  );
+  if (offset < 0 || end <= offset || length !== end - offset) {
+    throw new Error(`invalid supervisor backing-fill span: off=${offset}:end=${end}:len=${length}`);
+  }
+  return { offset, end, length };
 }

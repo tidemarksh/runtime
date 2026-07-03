@@ -237,6 +237,9 @@ export interface KernelExports {
   supervisor_fs_backing_object_op_flush_truncate?(): number;
   supervisor_fs_backing_fill_mode_resident?(): number;
   supervisor_fs_backing_fill_mode_direct?(): number;
+  supervisor_fs_backing_fill_span_offset?(): bigint | number;
+  supervisor_fs_backing_fill_span_end?(): bigint | number;
+  supervisor_fs_backing_fill_span_length?(): bigint | number;
   supervisor_fs_backing_source_range_none?(): number;
   supervisor_fs_backing_source_range_read?(): number;
   supervisor_fs_backing_retry_min_attempts?(): number;
@@ -351,14 +354,21 @@ export interface KernelExports {
   supervisor_fs_pending_backing_fill_expected_size?(vmPtr: number): bigint | number;
   supervisor_fs_pending_backing_fill_opcode?(vmPtr: number): number;
   supervisor_fs_clear_pending_backing_fill?(vmPtr: number): number;
+  supervisor_fs_pending_mmap_guest_write_ptr?(vmPtr: number): bigint | number;
+  supervisor_fs_pending_mmap_guest_write_len?(vmPtr: number): bigint | number;
+  supervisor_fs_pending_mmap_guest_write_snapshot_len?(vmPtr: number): bigint | number;
   supervisor_fs_backing_retry_limit?(
     opcode: number,
     offset: bigint | number,
     length: bigint | number,
     expectedSize: bigint | number,
   ): number;
-  supervisor_fs_pending_mmap_guest_write_ptr?(vmPtr: number): bigint | number;
-  supervisor_fs_pending_mmap_guest_write_len?(vmPtr: number): bigint | number;
+  supervisor_fs_backing_fill_span_decision?(
+    opcode: number,
+    offset: bigint | number,
+    length: bigint | number,
+    expectedSize: bigint | number,
+  ): number;
   supervisor_fs_dirty_page_decision?(
     op: number,
     ino: number,
@@ -443,11 +453,11 @@ export interface KernelExports {
   ): number;
   supervisor_fs_backing_fill_probe_direct?(
     opcode: number,
-    alignedLength: bigint | number,
+    spanLength: bigint | number,
   ): number;
   supervisor_fs_backing_fill_mode_decision?(
     opcode: number,
-    alignedLength: bigint | number,
+    spanLength: bigint | number,
     headProbeReadable: number,
     tailProbeReadable: number,
   ): number;
@@ -1436,6 +1446,9 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_dirty_prepare_publish_size_update",
   "supervisor_fs_backing_fill_mode_resident",
   "supervisor_fs_backing_fill_mode_direct",
+  "supervisor_fs_backing_fill_span_offset",
+  "supervisor_fs_backing_fill_span_end",
+  "supervisor_fs_backing_fill_span_length",
   "supervisor_fs_backing_source_range_none",
   "supervisor_fs_backing_source_range_read",
   "supervisor_fs_backing_retry_min_attempts",
@@ -1546,8 +1559,10 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_pending_backing_fill_opcode",
   "supervisor_fs_clear_pending_backing_fill",
   "supervisor_fs_backing_retry_limit",
+  "supervisor_fs_backing_fill_span_decision",
   "supervisor_fs_pending_mmap_guest_write_ptr",
   "supervisor_fs_pending_mmap_guest_write_len",
+  "supervisor_fs_pending_mmap_guest_write_snapshot_len",
   "supervisor_fs_dirty_page_decision",
   "supervisor_fs_dirty_page_decision_next_size",
   "supervisor_fs_dirty_page_decision_file_object_id",

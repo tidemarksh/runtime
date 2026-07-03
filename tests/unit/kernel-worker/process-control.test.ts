@@ -249,21 +249,59 @@ function makeKernelExports(options: {
         length: options.mmapRequest.length,
       }
       : null;
-  const supervisorBackingFillProbeDirect = (opcode: number, alignedLength: bigint | number): number => (
-    opcode === FS_OP_MMAP && Number(alignedLength) >= 16 * 1024 * 1024 ? 1 : 0
+  const supervisorBackingFillProbeDirect = (opcode: number, spanLength: bigint | number): number => (
+    opcode === FS_OP_MMAP && Number(spanLength) >= 16 * 1024 * 1024 ? 1 : 0
   );
   const supervisorBackingFillModeDecision = (
     opcode: number,
-    alignedLength: bigint | number,
+    spanLength: bigint | number,
     headProbeReadable: number,
     tailProbeReadable: number,
   ): number => (
-    supervisorBackingFillProbeDirect(opcode, alignedLength) !== 0
+    supervisorBackingFillProbeDirect(opcode, spanLength) !== 0
     && headProbeReadable !== 0
     && tailProbeReadable !== 0
       ? 1
       : 0
   );
+  let lastBackingFillSpan = { offset: 0, end: 0, length: 0 };
+  const supervisorBackingFillSpanDecision = (
+    _opcode: number,
+    offsetRaw: bigint | number,
+    lengthRaw: bigint | number,
+    expectedSizeRaw: bigint | number,
+  ): number => {
+    const offset = Number(offsetRaw);
+    const length = Number(lengthRaw);
+    const expectedSize = Number(expectedSizeRaw);
+    lastBackingFillSpan = { offset: 0, end: 0, length: 0 };
+    if (
+      !Number.isSafeInteger(offset)
+      || !Number.isSafeInteger(length)
+      || !Number.isSafeInteger(expectedSize)
+      || offset < 0
+      || length <= 0
+      || expectedSize <= 0
+      || offset >= expectedSize
+    ) {
+      return -22;
+    }
+    const alignedOffset = Math.floor(offset / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE;
+    const requestedEnd = offset + length;
+    const alignedEnd = Math.min(
+      expectedSize,
+      Math.ceil(requestedEnd / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE,
+    );
+    if (alignedEnd <= alignedOffset) {
+      return -22;
+    }
+    lastBackingFillSpan = {
+      offset: alignedOffset,
+      end: alignedEnd,
+      length: alignedEnd - alignedOffset,
+    };
+    return 0;
+  };
   const supervisorBackingRetryLimit = (
     _opcode: number,
     offsetRaw: bigint | number,
@@ -417,8 +455,16 @@ function makeKernelExports(options: {
     supervisor_fs_backing_retry_max_attempts: () => 16 * 1024,
     supervisor_fs_backing_retry_final_scan_attempts: () => 2,
     supervisor_fs_backing_retry_limit: supervisorBackingRetryLimit,
+    supervisor_fs_backing_fill_span_decision: supervisorBackingFillSpanDecision,
+    supervisor_fs_backing_fill_span_offset: () => BigInt(lastBackingFillSpan.offset),
+    supervisor_fs_backing_fill_span_end: () => BigInt(lastBackingFillSpan.end),
+    supervisor_fs_backing_fill_span_length: () => BigInt(lastBackingFillSpan.length),
     supervisor_fs_pending_mmap_guest_write_ptr: () => BigInt(pendingMmapGuestWrite?.guestPtrHint ?? 0),
     supervisor_fs_pending_mmap_guest_write_len: () => BigInt(pendingMmapGuestWrite?.length ?? 0),
+    supervisor_fs_pending_mmap_guest_write_snapshot_len: () => {
+      const length = pendingMmapGuestWrite?.length ?? 0;
+      return BigInt(Math.ceil(length / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE);
+    },
     supervisor_fs_backing_fill_mode_resident: () => 0,
     supervisor_fs_backing_fill_mode_direct: () => 1,
     supervisor_fs_backing_fill_probe_direct: supervisorBackingFillProbeDirect,

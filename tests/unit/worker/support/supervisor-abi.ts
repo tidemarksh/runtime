@@ -8,6 +8,8 @@ import {
   FS_OP_MMAP,
 } from "../../../../src/layout/fs-ring.js";
 
+const DEFAULT_RESIDENT_PAGE_SIZE = 4096;
+
 const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_abi_version: 1,
   supervisor_debug_snapshot_bytes: 112,
@@ -223,6 +225,7 @@ export function makeSupervisorAbiStubs(
       || Math.ceil(initialBytes / 65536)
       || 1;
   };
+  let latestBackingFillSpan = { offset: 0, end: 0, length: 0 };
   const stubs = Object.fromEntries(
     requiredSupervisorRuntimeExportNames().map((name) => [
       name,
@@ -293,6 +296,61 @@ export function makeSupervisorAbiStubs(
         disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_resolved_to_execve_spawn;
       }
       return disposition;
+    },
+    supervisor_fs_backing_fill_span_decision(
+      _opcode: number,
+      offsetRaw: bigint | number,
+      lengthRaw: bigint | number,
+      expectedSizeRaw: bigint | number,
+    ) {
+      const offset = Number(offsetRaw);
+      const length = Number(lengthRaw);
+      const expectedSize = Number(expectedSizeRaw);
+      latestBackingFillSpan = { offset: 0, end: 0, length: 0 };
+      if (
+        !Number.isSafeInteger(offset)
+        || !Number.isSafeInteger(length)
+        || !Number.isSafeInteger(expectedSize)
+        || offset < 0
+        || length <= 0
+        || expectedSize <= 0
+        || offset >= expectedSize
+      ) {
+        return -22;
+      }
+      const alignedOffset = Math.floor(offset / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE;
+      const requestedEnd = offset + length;
+      const alignedEnd = Math.min(
+        expectedSize,
+        Math.ceil(requestedEnd / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE,
+      );
+      if (alignedEnd <= alignedOffset) {
+        return -22;
+      }
+      latestBackingFillSpan = {
+        offset: alignedOffset,
+        end: alignedEnd,
+        length: alignedEnd - alignedOffset,
+      };
+      return 0;
+    },
+    supervisor_fs_backing_fill_span_offset() {
+      return latestBackingFillSpan.offset;
+    },
+    supervisor_fs_backing_fill_span_end() {
+      return latestBackingFillSpan.end;
+    },
+    supervisor_fs_backing_fill_span_length() {
+      return latestBackingFillSpan.length;
+    },
+    supervisor_fs_pending_mmap_guest_write_ptr() {
+      return 0;
+    },
+    supervisor_fs_pending_mmap_guest_write_len() {
+      return 0;
+    },
+    supervisor_fs_pending_mmap_guest_write_snapshot_len() {
+      return 0;
     },
     supervisor_fs_resident_page_slot_decision(_existingSlot: number, _emptySlot: number, _cleanEvictSlot: number) {
       if (_existingSlot >= 0) {

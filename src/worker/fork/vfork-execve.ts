@@ -21,6 +21,7 @@ import {
 import {
   clearSupervisorPendingBackingFill,
   readSupervisorPendingBackingFill,
+  supervisorBackingFillSpan,
   supervisorBackingRetryLimit,
   type SupervisorPendingBackingFillRequest,
 } from "../../fs/supervisor-backing-fill.js";
@@ -165,32 +166,26 @@ async function publishExecveBackingMissForHandoff(
   if (!sab || !handle.kernelWorkerRequest) {
     return false;
   }
-  const alignedOffset = Math.floor(miss.offset / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE;
-  const requestedEnd = miss.offset + miss.length;
-  const alignedEnd = Math.min(
-    miss.expectedSize,
-    Math.ceil(requestedEnd / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE,
-  );
-  if (alignedEnd <= alignedOffset) {
+  const span = supervisorBackingFillSpan(handle.kernel, miss);
+  if (!span) {
     return false;
   }
-  const alignedLength = alignedEnd - alignedOffset;
   const response = await handle.kernelWorkerRequest({
     type: "read-file-range-by-inode",
     ino: miss.ino,
-    offset: alignedOffset,
-    length: alignedLength,
+    offset: span.offset,
+    length: span.length,
     expectedSize: miss.expectedSize,
   });
-  if (response.type !== "file-range-read" || response.data.length !== alignedLength) {
+  if (response.type !== "file-range-read" || response.data.length !== span.length) {
     return false;
   }
-  for (let pageStart = alignedOffset; pageStart < alignedEnd; pageStart += DEFAULT_RESIDENT_PAGE_SIZE) {
+  for (let pageStart = span.offset; pageStart < span.end; pageStart += DEFAULT_RESIDENT_PAGE_SIZE) {
     const pageLen = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, miss.expectedSize - pageStart);
     if (pageLen <= 0 || readResidentFileData(sab, miss.ino, pageStart, pageLen)) {
       continue;
     }
-    const backingOffset = pageStart - alignedOffset;
+    const backingOffset = pageStart - span.offset;
     const page = response.data.subarray(backingOffset, backingOffset + pageLen);
     if (
       page.length !== pageLen
