@@ -94,6 +94,9 @@ function makeKernel() {
     supervisor_fs_response_flag_store_pending_kernel_state: () => 64,
     supervisor_fs_response_flag_resolved_to_execve_spawn: () => 128,
     supervisor_fs_response_flag_process_owner_matches: () => 256,
+    supervisor_fs_pending_ring_request: () => 0,
+    supervisor_fs_pending_regular_file_fd: () => -1,
+    supervisor_fs_pending_regular_file_ofd: () => 0,
     supervisor_fs_backing_fill_span_decision: () => 0,
     supervisor_fs_backing_fill_span_offset: () => 0,
     supervisor_fs_backing_fill_span_end: () => 4096,
@@ -709,6 +712,8 @@ test("kernel-worker fs outcome applies only request fd after regular file fstat"
     thread_pending_fs_effects: () => 4,
     thread_pending_fs_target_ino: () => 42,
     thread_fs_ring_base: () => ringBase,
+    supervisor_fs_pending_regular_file_fd: () => 3,
+    supervisor_fs_pending_regular_file_ofd: () => 5,
     process_fd_ofd_id: (_vmPtr: number, fd: number) => {
       if (fd === 3) {
         return 5;
@@ -1060,6 +1065,8 @@ test("kernel-worker fs outcome keeps generated file fd closeable after unrelated
     thread_pending_fs_effects: () => 4,
     thread_pending_fs_target_ino: () => 42,
     thread_fs_ring_base: () => ringBase,
+    supervisor_fs_pending_regular_file_fd: () => pendingOpcode === FS_OP_FSTAT ? 5 : -1,
+    supervisor_fs_pending_regular_file_ofd: () => pendingOpcode === FS_OP_FSTAT ? 6 : 0,
     process_fd_ofd_id: (_vmPtr: number, fd: number) => fdTable.get(fd)?.ofdId ?? 0,
     process_fd_flags: (_vmPtr: number, fd: number) => fdTable.get(fd)?.fdFlags ?? 0,
     process_set_fd_entry: vi.fn((_vmPtr: number, fd: number, ofdId: number, fdFlags: number) => {

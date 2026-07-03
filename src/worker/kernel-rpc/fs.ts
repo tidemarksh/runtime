@@ -439,11 +439,6 @@ function formatFsRingDebug(handle: ProcessHandle, vmPtr: number): string {
   ].join("");
 }
 
-function fsRingHasPendingRequests(handle: ProcessHandle, vmPtr: number): boolean {
-  const progress = snapshotFsRingProgress(handle, vmPtr);
-  return progress !== null && progress.submitHead !== progress.submitTail;
-}
-
 function fsRingHasPendingRequestForVm(handle: ProcessHandle, vmPtr: number): boolean {
   const progress = snapshotFsRingProgress(handle, vmPtr);
   if (progress === null) {
@@ -514,60 +509,29 @@ function hasLiveWorkerState(
   return false;
 }
 
-function pendingRegularFileFsRequest(
-  handle: ProcessHandle,
-  vmPtr: number,
-  pendingFs: PendingFsContext,
-): PendingRegularFileFsRequest | null {
-  if (
-    pendingFs.opcode !== FS_OP_READ
-    && pendingFs.opcode !== FS_OP_WRITE
-    && pendingFs.opcode !== FS_OP_FSTAT
-    && pendingFs.opcode !== FS_OP_LSEEK
-    && pendingFs.opcode !== FS_OP_MMAP
-  ) {
-    return null;
-  }
-  const fd = pendingFsRequestFd(handle, vmPtr);
-  if (fd === null || fd < 0 || fd >= handle.kernel.abi_max_fds()) {
-    return null;
-  }
-  const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
-  if (
-    ofdId > 0
-    && ofdId < handle.kernel.abi_max_fds()
-    && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_file()
-  ) {
-    return { fd, ofdId };
-  }
-  return null;
-}
-
 function supervisorPendingRingRequest(
   handle: ProcessHandle,
   vmPtr: number,
-  pendingFs: PendingFsContext,
 ): boolean {
   const pendingRingRequest = handle.kernel.supervisor_fs_pending_ring_request;
-  if (typeof pendingRingRequest === "function") {
-    return pendingRingRequest(vmPtr) !== 0;
+  if (typeof pendingRingRequest !== "function") {
+    throw new Error("missing supervisor_fs_pending_ring_request export");
   }
-  return pendingFs.opcode === 0 && fsRingHasPendingRequests(handle, vmPtr);
+  return pendingRingRequest(vmPtr) !== 0;
 }
 
 function supervisorPendingRegularFileFsRequest(
   handle: ProcessHandle,
   vmPtr: number,
-  pendingFs: PendingFsContext,
 ): PendingRegularFileFsRequest | null {
   const pendingFd = handle.kernel.supervisor_fs_pending_regular_file_fd;
   const pendingOfd = handle.kernel.supervisor_fs_pending_regular_file_ofd;
-  if (typeof pendingFd === "function" && typeof pendingOfd === "function") {
-    const fd = pendingFd(vmPtr);
-    const ofdId = pendingOfd(vmPtr);
-    return fd >= 0 && ofdId > 0 ? { fd, ofdId } : null;
+  if (typeof pendingFd !== "function" || typeof pendingOfd !== "function") {
+    throw new Error("missing supervisor pending regular-file FS request exports");
   }
-  return pendingRegularFileFsRequest(handle, vmPtr, pendingFs);
+  const fd = pendingFd(vmPtr);
+  const ofdId = pendingOfd(vmPtr);
+  return fd >= 0 && ofdId > 0 ? { fd, ofdId } : null;
 }
 
 function supervisorFsCompletionDecision(
@@ -1196,8 +1160,8 @@ async function resumeFsViaKernelWorkerInner(
   const effects: KernelRpcResumeEffect[] = [];
   const pendingFs = readPendingFsContext(handle, vmPtr);
   const fsDebugSuffix = formatPendingFsDebugSuffix(pendingFs);
-  const pendingRingRequest = supervisorPendingRingRequest(handle, vmPtr, pendingFs);
-  const regularFilePendingFs = supervisorPendingRegularFileFsRequest(handle, vmPtr, pendingFs);
+  const pendingRingRequest = supervisorPendingRingRequest(handle, vmPtr);
+  const regularFilePendingFs = supervisorPendingRegularFileFsRequest(handle, vmPtr);
   const regularFileOnlyPendingFs = regularFilePendingFs !== null;
   if (!handle.kernelWorkerRequest || handle.pid <= 0) {
     deps.appendWorkerDebugLog(handle, `fs-start:0x${vmPtr.toString(16)}:local${fsDebugSuffix}`);

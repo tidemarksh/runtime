@@ -44,7 +44,7 @@ export function readSupervisorPendingBackingFill(
     || typeof kernel.supervisor_fs_pending_backing_fill_expected_size !== "function"
     || typeof kernel.supervisor_fs_pending_backing_fill_opcode !== "function"
   ) {
-    return null;
+    throw new Error("missing supervisor pending backing-fill exports");
   }
   const ino = kernel.supervisor_fs_pending_backing_fill_ino(vmPtr);
   const offset = supervisorU64ToSafeNumber(

@@ -339,7 +339,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       typeof processExports.supervisor_fs_pending_mmap_guest_write_ptr !== "function"
       || typeof processExports.supervisor_fs_pending_mmap_guest_write_len !== "function"
     ) {
-      return null;
+      throw new Error("missing supervisor pending mmap guest-write exports");
     }
     const guestPtrHint = supervisorU64ToSafeNumber(
       processExports.supervisor_fs_pending_mmap_guest_write_ptr(vmPtr),
@@ -624,8 +624,12 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     }
     const returnedGuestPtr = Number(result);
     const guestPtr = returnedGuestPtr > 0 ? returnedGuestPtr : request.guestPtrHint;
+    const snapshotLen = processExports.supervisor_fs_pending_mmap_guest_write_snapshot_len;
+    if (typeof snapshotLen !== "function") {
+      throw new Error("missing supervisor_fs_pending_mmap_guest_write_snapshot_len export");
+    }
     const length = supervisorU64ToSafeNumber(
-      processExports.supervisor_fs_pending_mmap_guest_write_snapshot_len?.(vmPtr),
+      snapshotLen(vmPtr),
     );
     const guestBase = processExports.thread_guest_base?.(vmPtr) ?? 0;
     const start = guestBase + guestPtr;
