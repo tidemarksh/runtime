@@ -15,9 +15,9 @@ import {
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_ACTIVE_CHILD,
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_NONE,
-  SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PASSIVE_WAIT,
   SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_THREAD_INIT_PENDING,
   SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_ACTIVE_CHILD,
+  SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT,
   type SupervisorBlockedWaitRetryFlags,
   type SupervisorBlockedWaitRetryReason,
 } from "../../supervisor-blocked-resume.js";
@@ -549,7 +549,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     formatBlockedPollFdSet,
     formatFirstPipeWaitDebug,
     pollWaitTimeoutMs,
-    pipeWaitShouldRemainPassive,
   } = createPipePollScheduler({
     threadWorkerStates,
     appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
@@ -1407,7 +1406,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       }
       return;
     }
-    const pollTimeoutMs = pollWaitTimeoutMs(handle, status, vmPtr);
     const pollReadyCount = status === handle.kernel.abi_status_pipe_wait()
       ? handle.kernel.thread_poll_wait_ready_count?.(vmPtr)
       : undefined;
@@ -1419,18 +1417,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       );
       return;
     }
-    if (pipeWaitShouldRemainPassive(
-      handle,
-      status,
-      vmPtr,
-      pollTimeoutMs,
-      pollReadyCount,
-    )) {
-      scheduleSupervisorBlockedRetry(
-        handle,
-        worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PASSIVE_WAIT,
-      );
+    const retryPlan = supervisorBlockedWaitRetryPlan(handle.kernel, vmPtr);
+    if (retryPlan.reason === SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT) {
+      scheduleSupervisorBlockedRetry(handle, worker);
       return;
     }
     scheduleSupervisorBlockedRetry(
@@ -1803,18 +1792,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         });
       return;
     }
-    if (pipeWaitShouldRemainPassive(
-      handle,
-      blocked.status,
-      blocked.vmPtr,
-      blockedPollTimeoutMs,
-      blockedPollReadyCount,
-    )) {
-      scheduleSupervisorBlockedRetry(
-        handle,
-        worker,
-        SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PASSIVE_WAIT,
-      );
+    const retryPlan = supervisorBlockedWaitRetryPlan(handle.kernel, blocked.vmPtr);
+    if (retryPlan.reason === SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT) {
+      scheduleSupervisorBlockedRetry(handle, worker);
       return;
     }
     let resumeDelegation: ReturnType<typeof supervisorBlockedResumeDelegation>;

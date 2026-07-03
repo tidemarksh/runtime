@@ -1,7 +1,5 @@
 import {
   formatPipeSlotControlDebug,
-  pipeSlotHasBufferedData,
-  pipeSlotWriteOpen,
   PIPE_WAIT_GUEST_MEMORY_WRITE_BYTES,
 } from "../ownership/pipe-control.js";
 import { POLLFD_BYTES } from "../../layout/poll.js";
@@ -34,15 +32,6 @@ export interface PipePollScheduler {
   ): void;
   blockedOrCurrentSyscallNr(handle: ProcessHandle, vmPtr: number): bigint | null;
   pollWaitTimeoutMs(handle: ProcessHandle, status: number, vmPtr: number): number;
-  blockedPollPipeHasBufferedData(handle: ProcessHandle, vmPtr: number): boolean;
-  pollPipeWriteOpenForThreadStep(handle: ProcessHandle, vmPtr: number): number;
-  pipeWaitShouldRemainPassive(
-    handle: ProcessHandle,
-    status: number,
-    vmPtr: number,
-    pollTimeoutMs: number,
-    readyCount: number | undefined,
-  ): boolean;
   formatFirstPipeWaitDebug(handle: ProcessHandle, vmPtr: number): string;
   formatBlockedPollFdSet(handle: ProcessHandle, vmPtr: number, limit?: number): string;
 }
@@ -139,211 +128,6 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
     }
     const timeout = handle.kernel.thread_poll_wait_timeout?.(vmPtr);
     return timeout === undefined ? -1 : Number(timeout);
-  }
-
-  function pipeWaitShouldRemainPassive(
-    handle: ProcessHandle,
-    status: number,
-    vmPtr: number,
-    pollTimeoutMs: number,
-    readyCount: number | undefined,
-  ): boolean {
-    const syscall = blockedOrCurrentSyscallNr(handle, vmPtr);
-    if (syscall === null) {
-      return false;
-    }
-    const read = handle.kernel.abi_sys_read?.();
-    const readv = handle.kernel.abi_sys_readv?.();
-    const ppoll = handle.kernel.abi_sys_ppoll?.();
-    const pselect6 = handle.kernel.abi_sys_pselect6?.();
-    const isPollLike = (ppoll !== undefined && syscall === BigInt(ppoll))
-      || (pselect6 !== undefined && syscall === BigInt(pselect6));
-    const canPark = (
-      (read !== undefined && syscall === BigInt(read))
-      || (readv !== undefined && syscall === BigInt(readv))
-      || isPollLike
-    );
-    const blockedReadIsReady = (
-      ((read !== undefined && syscall === BigInt(read)) || (readv !== undefined && syscall === BigInt(readv)))
-      && handle.kernel.thread_blocked_pipe_read_ready?.(vmPtr) === 1
-    );
-    const blockedPollPipeIsReady = blockedPollPipeHasBufferedData(handle, vmPtr);
-    const pollPipeSlots = isPollLike
-      ? pollPipeSlotsForThreadStep(handle, vmPtr)
-      : null;
-    const pollLikeHasNoWatchedFds = isPollLike
-      && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) !== 1
-      && pollWaitHasNoWatchedFds(handle, vmPtr, syscall);
-    const pollLikePipeHasNoWriter = isPollLike
-      && handle.kernel.thread_poll_wait_has_socket?.(vmPtr) !== 1
-      && (pollPipeSlots?.size ?? 0) > 0
-      && !blockedPollPipeIsReady
-      && pollPipeWriteOpenForThreadStep(handle, vmPtr) <= 0;
-    return status === handle.kernel.abi_status_pipe_wait()
-      && canPark
-      && pollLikeHasNoWatchedFds
-      && !blockedReadIsReady
-      && !blockedPollPipeIsReady
-      && !pollLikePipeHasNoWriter
-      && pollTimeoutMs < 0
-      && (readyCount === undefined || readyCount === 0)
-      && handle.kernel.thread_pipe_read_eof_sync_pending?.(vmPtr) !== 1
-      && handle.kernel.thread_poll_hup_sync_pending?.(vmPtr) !== 1;
-  }
-
-  function pollWaitHasNoWatchedFds(
-    handle: ProcessHandle,
-    vmPtr: number,
-    syscall: bigint,
-  ): boolean {
-    const ppoll = handle.kernel.abi_sys_ppoll?.();
-    const pselect6 = handle.kernel.abi_sys_pselect6?.();
-    const maxFds = handle.kernel.abi_max_fds?.() ?? 1024;
-    const memory = handle.memory?.buffer;
-    if (!memory) {
-      return false;
-    }
-    const view = new DataView(memory);
-    if (ppoll !== undefined && syscall === BigInt(ppoll)) {
-      const fdsPtr = BigInt(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 0) ?? 0n);
-      const nfds = Number(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 1) ?? 0n);
-      if (!Number.isFinite(nfds) || nfds <= 0) {
-        return true;
-      }
-      const count = Math.min(nfds, maxFds);
-      const absolute = guestAbsoluteRange(handle, fdsPtr, count * POLLFD_BYTES);
-      if (absolute === null) {
-        return false;
-      }
-      for (let index = 0; index < count; index += 1) {
-        const offset = absolute + index * POLLFD_BYTES;
-        const fd = view.getInt32(offset, true);
-        const events = view.getUint16(offset + 4, true);
-        if (fd >= 0 && events !== 0) {
-          return false;
-        }
-      }
-      return true;
-    }
-    if (pselect6 !== undefined && syscall === BigInt(pselect6)) {
-      const nfds = Number(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 0) ?? 0n);
-      if (!Number.isFinite(nfds) || nfds <= 0) {
-        return true;
-      }
-      const count = Math.min(nfds, maxFds);
-      const setBytes = Math.floor((count + 63) / 64) * 8;
-      const readPtr = BigInt(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 1) ?? 0n);
-      const writePtr = BigInt(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 2) ?? 0n);
-      const exceptPtr = BigInt(handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 3) ?? 0n);
-      const readBase = readPtr === 0n ? null : guestAbsoluteRange(handle, readPtr, setBytes);
-      const writeBase = writePtr === 0n ? null : guestAbsoluteRange(handle, writePtr, setBytes);
-      const exceptBase = exceptPtr === 0n ? null : guestAbsoluteRange(handle, exceptPtr, setBytes);
-      if (
-        (readPtr !== 0n && readBase === null)
-        || (writePtr !== 0n && writeBase === null)
-        || (exceptPtr !== 0n && exceptBase === null)
-      ) {
-        return false;
-      }
-      const hasBit = (base: number | null, fd: number): boolean => {
-        if (base === null) {
-          return false;
-        }
-        return (view.getUint8(base + Math.floor(fd / 8)) & (1 << (fd % 8))) !== 0;
-      };
-      for (let fd = 0; fd < count; fd += 1) {
-        if (hasBit(readBase, fd) || hasBit(writeBase, fd) || hasBit(exceptBase, fd)) {
-          return false;
-        }
-      }
-      return true;
-    }
-    return false;
-  }
-
-  function blockedPollPipeHasBufferedData(handle: ProcessHandle, vmPtr: number): boolean {
-    const rawMask = handle.kernel.thread_poll_wait_pipe_slots_mask?.(vmPtr);
-    const mask = rawMask === undefined
-      ? 0n
-      : typeof rawMask === "bigint" ? rawMask : BigInt(rawMask);
-    if (mask !== 0n) {
-      const maxPipes = Math.min(handle.kernel.abi_max_pipes?.() ?? 64, 64);
-      for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
-        if ((mask & (1n << BigInt(pipeSlot))) === 0n) {
-          continue;
-        }
-        if (pipeSlotHasBufferedData(handle, pipeSlot)) {
-          return true;
-        }
-      }
-    }
-    const packed = handle.kernel.thread_poll_wait_first_pipe_revents?.(vmPtr) ?? 0;
-    const fd = packed & 0xff;
-    const interest = (packed >>> 8) & 0xffff;
-    const revents = (packed >>> 24) & 0xff;
-    if (revents !== 0) {
-      return true;
-    }
-    if ((interest & 0x001) === 0) {
-      return false;
-    }
-    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
-    if (
-      ofdId === 0
-      || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
-    ) {
-      return false;
-    }
-    const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-    if (pipeSlot <= 0 || pipeSlot >= handle.kernel.abi_max_pipes()) {
-      return false;
-    }
-    return pipeSlotHasBufferedData(handle, pipeSlot);
-  }
-
-  function pollPipeSlotsForThreadStep(handle: ProcessHandle, vmPtr: number): Set<number> {
-    const rawMask = handle.kernel.thread_poll_wait_pipe_slots_mask?.(vmPtr);
-    const mask = rawMask === undefined
-      ? 0n
-      : typeof rawMask === "bigint" ? rawMask : BigInt(rawMask);
-    const pipeSlots = new Set<number>();
-    const maxPipes = Math.min(handle.kernel.abi_max_pipes?.() ?? 64, 64);
-    for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
-      if ((mask & (1n << BigInt(pipeSlot))) !== 0n) {
-        pipeSlots.add(pipeSlot);
-      }
-    }
-    if (pipeSlots.size > 0) {
-      return pipeSlots;
-    }
-    const packed = handle.kernel.thread_poll_wait_first_pipe_revents?.(vmPtr);
-    if (packed === undefined || packed === 0) {
-      return pipeSlots;
-    }
-    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, packed & 0xff);
-    if (
-      ofdId > 0
-      && ofdId < handle.kernel.abi_max_fds()
-      && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
-    ) {
-      const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-      if (pipeSlot > 0 && pipeSlot < maxPipes) {
-        pipeSlots.add(pipeSlot);
-      }
-    }
-    return pipeSlots;
-  }
-
-  function pollPipeWriteOpenForThreadStep(handle: ProcessHandle, vmPtr: number): number {
-    let writeOpen = 0;
-    for (const pipeSlot of pollPipeSlotsForThreadStep(handle, vmPtr)) {
-      const slotWriteOpen = pipeSlotWriteOpen(handle, pipeSlot);
-      if (slotWriteOpen === null) {
-        continue;
-      }
-      writeOpen = Math.max(writeOpen, slotWriteOpen);
-    }
-    return writeOpen;
   }
 
   function formatPipeSlotHolders(handle: ProcessHandle, pipeSlot: number): string {
@@ -502,9 +286,6 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
     queueBlockedPollWaitGuestMemoryWrites,
     blockedOrCurrentSyscallNr,
     pollWaitTimeoutMs,
-    blockedPollPipeHasBufferedData,
-    pollPipeWriteOpenForThreadStep,
-    pipeWaitShouldRemainPassive,
     formatFirstPipeWaitDebug,
     formatBlockedPollFdSet,
   };
