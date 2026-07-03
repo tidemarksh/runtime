@@ -136,6 +136,18 @@ interface SupervisorFsCompletionDecision {
   regularFileRequest: boolean;
 }
 
+interface SupervisorFsResponseDisposition {
+  adoptKernelState: boolean;
+  applyGuestMemoryWrites: boolean;
+  queueThreadWorkerWrites: boolean;
+  applyLocalMetadata: boolean;
+  clearTombstones: boolean;
+  fdResponseMayClearLiveFds: boolean;
+  storePendingKernelState: boolean;
+  resolvedToExecveSpawn: boolean;
+  processOwnerMatches: boolean;
+}
+
 export interface WorkerKernelRpcFsDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
@@ -601,6 +613,58 @@ function supervisorFsCompletionDecision(
     memfsPublishReady: (flags & memfsPublishReadyFlag) !== 0,
     ofdStateChanged: (flags & ofdStateChangedFlag) !== 0,
     regularFileRequest: (flags & regularFileRequestFlag) !== 0,
+  };
+}
+
+function supervisorFsResponseFlag(handle: ProcessHandle, name: keyof typeof responseFlagAccessors): number {
+  const value = responseFlagAccessors[name](handle);
+  if (value === undefined) {
+    throw new Error(`missing supervisor fs response flag export: ${name}`);
+  }
+  return value;
+}
+
+const responseFlagAccessors = {
+  adoptKernelState: (handle: ProcessHandle) => handle.kernel.supervisor_fs_response_flag_adopt_kernel_state?.(),
+  applyGuestMemoryWrites: (handle: ProcessHandle) => handle.kernel.supervisor_fs_response_flag_apply_guest_memory_writes?.(),
+  queueThreadWorkerWrites: (handle: ProcessHandle) => handle.kernel.supervisor_fs_response_flag_queue_thread_worker_writes?.(),
+  applyLocalMetadata: (handle: ProcessHandle) => handle.kernel.supervisor_fs_response_flag_apply_local_metadata?.(),
+  clearTombstones: (handle: ProcessHandle) => handle.kernel.supervisor_fs_response_flag_clear_tombstones?.(),
+  fdResponseMayClearLiveFds: (handle: ProcessHandle) => handle.kernel.supervisor_fs_response_flag_fd_response_may_clear_live_fds?.(),
+  storePendingKernelState: (handle: ProcessHandle) => handle.kernel.supervisor_fs_response_flag_store_pending_kernel_state?.(),
+  resolvedToExecveSpawn: (handle: ProcessHandle) => handle.kernel.supervisor_fs_response_flag_resolved_to_execve_spawn?.(),
+  processOwnerMatches: (handle: ProcessHandle) => handle.kernel.supervisor_fs_response_flag_process_owner_matches?.(),
+} as const;
+
+function supervisorFsResponseDisposition(
+  handle: ProcessHandle,
+  vmPtr: number,
+  pendingFs: PendingFsContext,
+  fsResult: bigint | number,
+  threadState: ThreadWorkerState | undefined,
+): SupervisorFsResponseDisposition {
+  const decide = handle.kernel.supervisor_fs_response_disposition;
+  if (typeof decide !== "function") {
+    throw new Error("missing supervisor_fs_response_disposition export");
+  }
+  const flags = decide(
+    vmPtr,
+    handle.pid,
+    pendingFs.opcode,
+    fsResult,
+    threadState?.ownerAsyncStatus ?? 0,
+    threadState?.lastStatus ?? 0,
+  );
+  return {
+    adoptKernelState: (flags & supervisorFsResponseFlag(handle, "adoptKernelState")) !== 0,
+    applyGuestMemoryWrites: (flags & supervisorFsResponseFlag(handle, "applyGuestMemoryWrites")) !== 0,
+    queueThreadWorkerWrites: (flags & supervisorFsResponseFlag(handle, "queueThreadWorkerWrites")) !== 0,
+    applyLocalMetadata: (flags & supervisorFsResponseFlag(handle, "applyLocalMetadata")) !== 0,
+    clearTombstones: (flags & supervisorFsResponseFlag(handle, "clearTombstones")) !== 0,
+    fdResponseMayClearLiveFds: (flags & supervisorFsResponseFlag(handle, "fdResponseMayClearLiveFds")) !== 0,
+    storePendingKernelState: (flags & supervisorFsResponseFlag(handle, "storePendingKernelState")) !== 0,
+    resolvedToExecveSpawn: (flags & supervisorFsResponseFlag(handle, "resolvedToExecveSpawn")) !== 0,
+    processOwnerMatches: (flags & supervisorFsResponseFlag(handle, "processOwnerMatches")) !== 0,
   };
 }
 
@@ -1268,23 +1332,30 @@ async function resumeFsViaKernelWorkerInner(
     }
     const fsResult = normalizeFsResult(fsProcessedResponse.result);
     const fsSucceeded = Number(BigInt.asIntN(64, fsResult)) >= 0;
+    const threadState = deps.threadWorkerStates.get(worker);
+    const fsResponseDisposition = supervisorFsResponseDisposition(
+      handle,
+      vmPtr,
+      pendingFs,
+      fsResult,
+      threadState,
+    );
     const responseCurrentPid = handle.kernel.process_current_pid?.(vmPtr) ?? handle.pid;
-    const transientProcessOwnerMismatch = responseCurrentPid > 0 && responseCurrentPid !== handle.pid;
-    const failedExecveChildOwner = pendingFs.opcode === FS_OP_EXECVE
-      && !fsSucceeded
-      && transientProcessOwnerMismatch;
-    if (!failedExecveChildOwner) {
+    if (fsResponseDisposition.adoptKernelState) {
       handle.kernelState = adoptKernelStateForHandle(handle, fsProcessedResponse.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
+    }
+    if (fsResponseDisposition.applyGuestMemoryWrites) {
       applyFsGuestMemoryWrites(
         handle,
         deps.threadWorkerStates,
         fsProcessedResponse.guestMemoryWrites,
         {
-          queueThreadWorkerWrites: pendingFs.opcode !== FS_OP_MMAP,
+          queueThreadWorkerWrites: fsResponseDisposition.queueThreadWorkerWrites,
         },
       );
-    } else {
+    }
+    if (fsResponseDisposition.storePendingKernelState) {
       appendFsLifecycleEvent(
         handle,
         "child-state-skipped",
@@ -1292,10 +1363,10 @@ async function resumeFsViaKernelWorkerInner(
         `:rv=${fsResult.toString()}:pid=${responseCurrentPid}${fsDebugSuffix}`,
       );
     }
-    if (!failedExecveChildOwner && !transientProcessOwnerMismatch) {
+    if (fsResponseDisposition.applyLocalMetadata) {
       applyLocalMetadataMutationAfterFs(handle, vmPtr, pendingFs, fsSucceeded, fsEffects);
     }
-    if (!failedExecveChildOwner) {
+    if (fsResponseDisposition.clearTombstones) {
       clearSupersededMemfsDeletedPath(handle, pendingFs, fsSucceeded, fsEffects);
       reapplyLocalMemfsDeletedPathTombstones(handle, vmPtr, "worker-after-adopt");
     }
@@ -1315,20 +1386,18 @@ async function resumeFsViaKernelWorkerInner(
       );
     }
     if (
-      !failedExecveChildOwner
+      fsResponseDisposition.adoptKernelState
       && !regularFileOnlyPendingFs
       && (responseFdState.ofdSlots || responseFdState.fdEntries)
     ) {
-      const fsResponseMayClearLiveFds = pendingFs.opcode === FS_OP_CLOSE
-        || pendingFs.opcode === FS_OP_EXECVE;
       applyThreadOfdSlots(handle, {
         vmPtr,
         fdEntries: responseFdState.fdEntries,
         ofdSlots: responseFdState.ofdSlots,
       });
       applyThreadFdEntries(handle, vmPtr, responseFdState.fdEntries, {
-        preserveLiveEpollDependentDescriptors: !fsResponseMayClearLiveFds,
-        preserveLiveRegularFileDescriptors: !fsResponseMayClearLiveFds,
+        preserveLiveEpollDependentDescriptors: !fsResponseDisposition.fdResponseMayClearLiveFds,
+        preserveLiveRegularFileDescriptors: !fsResponseDisposition.fdResponseMayClearLiveFds,
       });
       appendFsLifecycleEvent(
         handle,
@@ -1336,7 +1405,7 @@ async function resumeFsViaKernelWorkerInner(
         vmPtr,
         `:fds=${formatRuntimeFdSummary(handle, vmPtr)}`,
       );
-    } else if (!failedExecveChildOwner && regularFilePendingFs) {
+    } else if (fsResponseDisposition.adoptKernelState && regularFilePendingFs) {
       const requestFsState = filterFsResponseToRegularFileRequest(
         regularFilePendingFs,
         responseFdState.fdEntries,
@@ -1384,26 +1453,17 @@ async function resumeFsViaKernelWorkerInner(
     recordFsTransferStats(handle, pendingFs, fsResult, fsSucceeded, fsEffects, true, memfsPublishReady);
     const postFsRingProgress = snapshotFsRingProgress(handle, vmPtr);
     const postFsFdState = snapshotFsFdState(handle, vmPtr);
-    if (!failedExecveChildOwner) {
+    if (fsResponseDisposition.adoptKernelState) {
       handle.kernelState = readKernelRuntimeState(handle.kernel);
     }
-    const threadState = deps.threadWorkerStates.get(worker);
     if (!handle.workers.has(worker) || !threadState) {
       return { kind: "process-gone", effects };
     }
-    if (failedExecveChildOwner) {
+    if (fsResponseDisposition.storePendingKernelState) {
       threadState.pendingKernelStateForNextStep = fsProcessedResponse.kernelState;
     }
-    const finalStatusAfterFs = handle.kernel.thread_status?.(vmPtr);
     const execveSpawnStatusAfterFs = handle.kernel.abi_status_execve_spawn?.();
-    const fsResolvedToExecveSpawn = execveSpawnStatusAfterFs !== undefined
-      && pendingFs.opcode === FS_OP_EXECVE
-      && (
-        finalStatusAfterFs === execveSpawnStatusAfterFs
-        || threadState.ownerAsyncStatus === execveSpawnStatusAfterFs
-        || threadState.lastStatus === execveSpawnStatusAfterFs
-      );
-    if (fsResolvedToExecveSpawn) {
+    if (fsResponseDisposition.resolvedToExecveSpawn && execveSpawnStatusAfterFs !== undefined) {
       restoreFsFdState(handle, postFsFdState);
       restoreFsRingProgress(handle, postFsRingProgress);
       clearStaleFsStatusAfterResume(handle, vmPtr, fsResult);
@@ -1420,7 +1480,7 @@ async function resumeFsViaKernelWorkerInner(
       effects.push({ kind: "handle-execve-spawn", status: execveSpawnStatusAfterFs });
       return completedKernelRpcOutcome(undefined, effects);
     }
-    if (!transientProcessOwnerMismatch) {
+    if (fsResponseDisposition.processOwnerMatches) {
       deps.assertProcessStandardFdIntegrity(handle, "resume-fs");
     }
     const forkShareMembers = deps.kernelShareOtherMembers(handle);
@@ -1428,17 +1488,17 @@ async function resumeFsViaKernelWorkerInner(
       .filter((member) => member.runningWorker === null);
     const syncSharedOfdAfterFs = ofdStateChanged
       && !regularFileOnlyPendingFs
-      && !transientProcessOwnerMismatch
+      && fsResponseDisposition.processOwnerMatches
       && forkShareMembers.length > 0;
     restoreFsFdState(handle, postFsFdState);
-    if (!failedExecveChildOwner) {
+    if (fsResponseDisposition.adoptKernelState) {
       handle.kernelState = readKernelRuntimeState(handle.kernel);
     }
     const dirtyMemfsHandles: ProcessHandle[] = [];
     if (memfsMutated) {
       handle.processMemfsDirty = true;
       handle.processMemfsPublishPending = true;
-      if (!transientProcessOwnerMismatch) {
+      if (fsResponseDisposition.processOwnerMatches) {
         if (memfsPublishReady && forkShareMembers.length > 0) {
           for (const member of forkShareMembers) {
             dirtyMemfsHandles.push(member);
@@ -1449,10 +1509,10 @@ async function resumeFsViaKernelWorkerInner(
     }
     restoreFsFdState(handle, postFsFdState);
     restoreFsRingProgress(handle, postFsRingProgress);
-    if (!failedExecveChildOwner) {
+    if (fsResponseDisposition.adoptKernelState) {
       clearStaleFsStatusAfterResume(handle, vmPtr, fsResult);
     }
-    if (!failedExecveChildOwner) {
+    if (fsResponseDisposition.adoptKernelState) {
       handle.kernelState = readKernelRuntimeState(handle.kernel);
     }
     let postFsWakeApplied = false;

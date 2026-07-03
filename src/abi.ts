@@ -252,6 +252,15 @@ export interface KernelExports {
   supervisor_fs_completion_flag_memfs_publish_ready?(): number;
   supervisor_fs_completion_flag_ofd_state_changed?(): number;
   supervisor_fs_completion_flag_regular_file_request?(): number;
+  supervisor_fs_response_flag_adopt_kernel_state?(): number;
+  supervisor_fs_response_flag_apply_guest_memory_writes?(): number;
+  supervisor_fs_response_flag_queue_thread_worker_writes?(): number;
+  supervisor_fs_response_flag_apply_local_metadata?(): number;
+  supervisor_fs_response_flag_clear_tombstones?(): number;
+  supervisor_fs_response_flag_fd_response_may_clear_live_fds?(): number;
+  supervisor_fs_response_flag_store_pending_kernel_state?(): number;
+  supervisor_fs_response_flag_resolved_to_execve_spawn?(): number;
+  supervisor_fs_response_flag_process_owner_matches?(): number;
   supervisor_signal_control_kind_boundary_check?(): number;
   supervisor_signal_control_kind_signal_delivered?(): number;
   supervisor_signal_control_kind_blocked_wait_interrupted?(): number;
@@ -471,6 +480,14 @@ export interface KernelExports {
     hostOfdStateChanged: number,
     pendingRingRequest: number,
     regularFileRequest: number,
+  ): number;
+  supervisor_fs_response_disposition?(
+    vmPtr: number,
+    runtimePid: number,
+    opcode: number,
+    result: bigint | number,
+    ownerAsyncStatus: number,
+    lastStatus: number,
   ): number;
   supervisor_signal_control_record?(outPtr: number, outLen: number): number;
   supervisor_debug_snapshot?(outPtr: number, outLen: number): number;
@@ -1421,6 +1438,15 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_clean_backing_range_zero",
   "supervisor_fs_page_table_source_backing",
   "supervisor_fs_page_table_source_resident",
+  "supervisor_fs_response_flag_adopt_kernel_state",
+  "supervisor_fs_response_flag_apply_guest_memory_writes",
+  "supervisor_fs_response_flag_queue_thread_worker_writes",
+  "supervisor_fs_response_flag_apply_local_metadata",
+  "supervisor_fs_response_flag_clear_tombstones",
+  "supervisor_fs_response_flag_fd_response_may_clear_live_fds",
+  "supervisor_fs_response_flag_store_pending_kernel_state",
+  "supervisor_fs_response_flag_resolved_to_execve_spawn",
+  "supervisor_fs_response_flag_process_owner_matches",
   "supervisor_signal_control_kind_boundary_check",
   "supervisor_signal_control_kind_signal_delivered",
   "supervisor_signal_control_kind_blocked_wait_interrupted",
@@ -1528,6 +1554,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_clean_backing_range_read_offset",
   "supervisor_fs_clean_backing_range_read_length",
   "supervisor_fs_clean_backing_range_output_length",
+  "supervisor_fs_response_disposition",
   "supervisor_signal_control_record",
   "supervisor_debug_snapshot",
   "supervisor_thread_state_snapshot",

@@ -9,6 +9,7 @@ import { createWorkerKernelRpcBlockedRpcTestHelpers as createWorkerKernelRpcBloc
 import { createWorkerKernelRpcResumeLifecycleHelpers } from "../../../../src/worker/kernel-rpc/lifecycle/resume.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
+import { FS_OP_CLOSE, FS_OP_EXECVE, FS_OP_MMAP, FS_OP_WRITE } from "../../../../src/layout/fs-ring.js";
 
 const requestThreadWorkerBlockedResume = vi.fn();
 
@@ -57,6 +58,96 @@ function makeKernelState(): KernelRuntimeState {
     processPendingPtr: 0xc10000,
     processRuntimeStatePtr: 0xc20000,
     timeStatePtr: 0xc30000,
+  };
+}
+
+function supervisorFsResponseDispositionTestStubs(
+  currentPid: () => number,
+  threadStatus: () => number = () => 0,
+  execveSpawnStatus: () => number = () => 0,
+): Partial<KernelExports> {
+  return {
+    supervisor_fs_completion_flag_memfs_dirty: () => 1,
+    supervisor_fs_completion_flag_memfs_publish_ready: () => 2,
+    supervisor_fs_completion_flag_ofd_state_changed: () => 4,
+    supervisor_fs_completion_flag_regular_file_request: () => 8,
+    supervisor_fs_completion_decision: (
+      _vmPtr,
+      opcode,
+      effects,
+      result,
+      hostMemfsMutated,
+      hostOfdStateChanged,
+      pendingRingRequest,
+      regularFileRequest,
+    ) => {
+      const signedResult = Number(BigInt.asIntN(64, typeof result === "bigint" ? result : BigInt(result)));
+      const fsSucceeded = signedResult >= 0;
+      const memfsStateMayChange = (effects & (1 | 2)) !== 0;
+      const memfsPublishMayBeReady = (effects & 1) !== 0 || ((effects & 2) !== 0 && opcode === FS_OP_WRITE);
+      const ofdStateMayChange = (effects & 4) !== 0;
+      let flags = 0;
+      if (hostMemfsMutated !== 0 || (fsSucceeded && (memfsStateMayChange || pendingRingRequest !== 0))) {
+        flags |= 1;
+      }
+      if (fsSucceeded && memfsPublishMayBeReady) {
+        flags |= 2;
+      }
+      if (hostOfdStateChanged !== 0 || (fsSucceeded && (ofdStateMayChange || pendingRingRequest !== 0))) {
+        flags |= 4;
+      }
+      if (regularFileRequest !== 0) {
+        flags |= 8;
+      }
+      return flags;
+    },
+    supervisor_fs_response_flag_adopt_kernel_state: () => 1,
+    supervisor_fs_response_flag_apply_guest_memory_writes: () => 2,
+    supervisor_fs_response_flag_queue_thread_worker_writes: () => 4,
+    supervisor_fs_response_flag_apply_local_metadata: () => 8,
+    supervisor_fs_response_flag_clear_tombstones: () => 16,
+    supervisor_fs_response_flag_fd_response_may_clear_live_fds: () => 32,
+    supervisor_fs_response_flag_store_pending_kernel_state: () => 64,
+    supervisor_fs_response_flag_resolved_to_execve_spawn: () => 128,
+    supervisor_fs_response_flag_process_owner_matches: () => 256,
+    supervisor_fs_response_disposition: (
+      _vmPtr,
+      runtimePid,
+      opcode,
+      result,
+      ownerAsyncStatus,
+      lastStatus,
+    ) => {
+      const processOwnerMatches = currentPid() <= 0 || runtimePid <= 0 || currentPid() === runtimePid;
+      const signedResult = Number(BigInt.asIntN(64, typeof result === "bigint" ? result : BigInt(result)));
+      const failedExecveChildOwner = opcode === FS_OP_EXECVE && signedResult < 0 && !processOwnerMatches;
+      const spawnStatus = execveSpawnStatus();
+      const resolvedToExecveSpawn = opcode === FS_OP_EXECVE
+        && spawnStatus !== 0
+        && (threadStatus() === spawnStatus || ownerAsyncStatus === spawnStatus || lastStatus === spawnStatus);
+      let flags = 0;
+      if (processOwnerMatches) {
+        flags |= 256;
+      }
+      if (failedExecveChildOwner) {
+        flags |= 64;
+      } else {
+        flags |= 1 | 2 | 16;
+      }
+      if (!failedExecveChildOwner && processOwnerMatches) {
+        flags |= 8;
+      }
+      if (!failedExecveChildOwner && opcode !== FS_OP_MMAP) {
+        flags |= 4;
+      }
+      if (opcode === FS_OP_CLOSE || opcode === FS_OP_EXECVE) {
+        flags |= 32;
+      }
+      if (resolvedToExecveSpawn) {
+        flags |= 128;
+      }
+      return flags;
+    },
   };
 }
 
@@ -2322,6 +2413,7 @@ test("resumeFsViaKernelWorker skips memfs sync during active vfork child ownersh
   let currentPid = 1;
 
   const kernel = {
+    ...supervisorFsResponseDispositionTestStubs(() => currentPid),
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     kernel_attach_runtime_state: vi.fn(),
     kernel_heap_base: () => 0,
@@ -2457,6 +2549,7 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
   ]);
 
   const kernel = {
+    ...supervisorFsResponseDispositionTestStubs(() => currentPid, () => status),
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     kernel_attach_runtime_state: vi.fn((
       heapBase: number,
@@ -2642,6 +2735,7 @@ test("resumeFsViaKernelWorker routes execve spawn before parent fd integrity che
   let currentPid = 1;
 
   const kernel = {
+    ...supervisorFsResponseDispositionTestStubs(() => currentPid, () => status, () => execveSpawnStatus),
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     kernel_attach_runtime_state: vi.fn(),
     kernel_heap_base: () => 0,
@@ -2759,6 +2853,7 @@ test("resumeFsViaKernelWorker applies fd entries returned by kernel-worker fs pr
   const fdEntries = new Map<number, { ofdId: number; fdFlags: number }>();
 
   const kernel = {
+    ...supervisorFsResponseDispositionTestStubs(() => 1),
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     kernel_attach_runtime_state: vi.fn(),
     kernel_heap_base: () => 0,

@@ -3,6 +3,7 @@ import { createWorkerKernelRpcFsHelpers } from "../../../../src/worker/kernel-rp
 import {
   FS_OP_FSTAT,
   FS_OP_CLOSE,
+  FS_OP_EXECVE,
   FS_OP_GETDENTS,
   FS_OP_MMAP,
   FS_OP_OPENAT,
@@ -84,6 +85,15 @@ function makeKernel() {
     supervisor_fs_completion_flag_memfs_publish_ready: () => 2,
     supervisor_fs_completion_flag_ofd_state_changed: () => 4,
     supervisor_fs_completion_flag_regular_file_request: () => 8,
+    supervisor_fs_response_flag_adopt_kernel_state: () => 1,
+    supervisor_fs_response_flag_apply_guest_memory_writes: () => 2,
+    supervisor_fs_response_flag_queue_thread_worker_writes: () => 4,
+    supervisor_fs_response_flag_apply_local_metadata: () => 8,
+    supervisor_fs_response_flag_clear_tombstones: () => 16,
+    supervisor_fs_response_flag_fd_response_may_clear_live_fds: () => 32,
+    supervisor_fs_response_flag_store_pending_kernel_state: () => 64,
+    supervisor_fs_response_flag_resolved_to_execve_spawn: () => 128,
+    supervisor_fs_response_flag_process_owner_matches: () => 256,
     supervisor_fs_completion_decision: (
       _vmPtr: number,
       opcode: number,
@@ -114,6 +124,35 @@ function makeKernel() {
       if (regularFileRequest !== 0) {
         flags |= 8;
       }
+      return flags;
+    },
+    supervisor_fs_response_disposition: (
+      _vmPtr: number,
+      _runtimePid: number,
+      opcode: number,
+      result: bigint | number,
+      ownerAsyncStatus: number,
+      lastStatus: number,
+    ) => {
+      const signedResult = Number(
+        BigInt.asIntN(64, typeof result === "bigint" ? result : BigInt(result)),
+      );
+      const execveSpawnStatus = 24;
+      let flags = 1 | 2 | 16 | 256;
+      if (opcode !== FS_OP_MMAP) {
+        flags |= 4;
+      }
+      if (opcode === FS_OP_CLOSE || opcode === FS_OP_EXECVE) {
+        flags |= 32;
+      }
+      if (
+        signedResult >= 0
+        && opcode === FS_OP_EXECVE
+        && (ownerAsyncStatus === execveSpawnStatus || lastStatus === execveSpawnStatus)
+      ) {
+        flags |= 128;
+      }
+      flags |= 8;
       return flags;
     },
     process_fd_ofd_id: () => 0,

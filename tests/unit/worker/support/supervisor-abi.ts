@@ -2,6 +2,11 @@ import {
   requiredSupervisorRuntimeExportNames,
   type KernelExports,
 } from "../../../../src/abi.js";
+import {
+  FS_OP_CLOSE,
+  FS_OP_EXECVE,
+  FS_OP_MMAP,
+} from "../../../../src/layout/fs-ring.js";
 
 const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_abi_version: 1,
@@ -23,6 +28,15 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_fd_control_record_bytes: 96,
   supervisor_fs_control_record_bytes: 112,
   supervisor_signal_control_record_bytes: 120,
+  supervisor_fs_response_flag_adopt_kernel_state: 1,
+  supervisor_fs_response_flag_apply_guest_memory_writes: 2,
+  supervisor_fs_response_flag_queue_thread_worker_writes: 4,
+  supervisor_fs_response_flag_apply_local_metadata: 8,
+  supervisor_fs_response_flag_clear_tombstones: 16,
+  supervisor_fs_response_flag_fd_response_may_clear_live_fds: 32,
+  supervisor_fs_response_flag_store_pending_kernel_state: 64,
+  supervisor_fs_response_flag_resolved_to_execve_spawn: 128,
+  supervisor_fs_response_flag_process_owner_matches: 256,
   supervisor_resume_kind_futex_wake: 1,
   supervisor_resume_kind_runnable_thread: 2,
   supervisor_blocked_resume_delegation_direct: 0,
@@ -229,6 +243,53 @@ export function makeSupervisorAbiStubs(
         return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_wait4_kernel_worker;
       }
       return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_kernel_worker;
+    },
+    supervisor_fs_response_disposition(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      runtimePid: number,
+      opcode: number,
+      result: bigint | number,
+      ownerAsyncStatus: number,
+      lastStatus: number,
+    ) {
+      const receiver = currentExports(this);
+      const currentPid = callNumber(receiver, "process_current_pid", vmPtr) || runtimePid;
+      const processOwnerMatches = currentPid <= 0 || runtimePid <= 0 || currentPid === runtimePid;
+      const numericResult = Number(BigInt.asIntN(64, typeof result === "bigint" ? result : BigInt(result)));
+      const failedExecveChildOwner = opcode === FS_OP_EXECVE && numericResult < 0 && !processOwnerMatches;
+      const execveSpawn = callNumber(receiver, "abi_status_execve_spawn");
+      const resolvedToExecveSpawn = opcode === FS_OP_EXECVE
+        && execveSpawn !== 0
+        && (
+          callNumber(receiver, "thread_status", vmPtr) === execveSpawn
+          || ownerAsyncStatus === execveSpawn
+          || lastStatus === execveSpawn
+        );
+      let disposition = 0;
+      if (processOwnerMatches) {
+        disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_process_owner_matches;
+      }
+      if (failedExecveChildOwner) {
+        disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_store_pending_kernel_state;
+      } else {
+        disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_adopt_kernel_state;
+        disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_apply_guest_memory_writes;
+        disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_clear_tombstones;
+      }
+      if (!failedExecveChildOwner && processOwnerMatches) {
+        disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_apply_local_metadata;
+      }
+      if (!failedExecveChildOwner && opcode !== FS_OP_MMAP) {
+        disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_queue_thread_worker_writes;
+      }
+      if (opcode === FS_OP_CLOSE || opcode === FS_OP_EXECVE) {
+        disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_fd_response_may_clear_live_fds;
+      }
+      if (resolvedToExecveSpawn) {
+        disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_resolved_to_execve_spawn;
+      }
+      return disposition;
     },
     supervisor_blocked_wait_retry_delay_ms: () => 0,
     supervisor_blocked_wait_active_child_pid(this: KernelExports | undefined, vmPtr: number) {
