@@ -1,5 +1,6 @@
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../../src/bridge/pipe.js";
+import type { KernelExports } from "../../../../src/abi.js";
 import { createWorkerStatusMessageHandler as createRawWorkerStatusMessageHandler } from "../../../../src/worker/message-handler/status/route.js";
 import {
   SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES,
@@ -7,6 +8,7 @@ import {
 } from "../../../../src/worker/supervisor-shadow.js";
 import { createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import { writeSupervisorFaultExitDecisionRecord } from "../support/supervisor-abi.js";
+import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 
 const PIPE_BUF_SIZE = 65_536;
 const PIPE_SLOT_SIZE = 32 + PIPE_BUF_SIZE;
@@ -125,7 +127,7 @@ function makeThreadState(overrides: Record<string, unknown> = {}) {
 }
 
 function makeKernel(pid: number, overrides: Record<string, unknown> = {}) {
-  return {
+  const kernel = {
     abi_max_fds: () => 64,
     abi_max_pipes: () => 64,
     abi_max_threads: () => 4,
@@ -165,7 +167,8 @@ function makeKernel(pid: number, overrides: Record<string, unknown> = {}) {
     kernel_net_buf_used: () => 0n,
     kernel_socket_used: () => 0,
     ...overrides,
-  };
+  } as Partial<KernelExports> & Record<string, unknown>;
+  return installSupervisorBlockedResumeStub(kernel);
 }
 
 test("status handler logs futex resume with compact debug fields", () => {

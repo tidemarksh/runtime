@@ -9,6 +9,7 @@ import { collectProcessHeldOfds } from "./ownership/ofd-table.js";
 import { kernelWorkerOwnsEpollState } from "./ownership/epoll-control.js";
 import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
 import { kernelWorkerOwnsSocketState } from "./ownership/socket-control.js";
+import { supervisorProcessStatusIsLifecycleHandoff } from "./supervisor-status.js";
 import type { ProcessHandle } from "./types.js";
 import type { SyncCause } from "./contracts/sync.js";
 
@@ -216,9 +217,7 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
   }
 
   function statusDefersOwnedStateSync(handle: ProcessHandle, status: number): boolean {
-    return status === handle.kernel.abi_status_vfork_wait()
-      || status === handle.kernel.abi_status_execve_spawn()
-      || status === handle.kernel.abi_status_clone_spawn();
+    return supervisorProcessStatusIsLifecycleHandoff(handle.kernel, status);
   }
 
   return {

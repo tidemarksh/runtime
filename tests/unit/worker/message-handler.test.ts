@@ -1,10 +1,12 @@
 import { expect, test, vi } from "vite-plus/test";
 import { createWorkerMessageHandler } from "../../../src/worker/message-handler.js";
 import type { ThreadWorkerOutbound } from "../../../src/messages.js";
+import type { KernelExports } from "../../../src/abi.js";
 import type { WorkerMessageHandlerDeps } from "../../../src/worker/message-handler/types.js";
 import { createWorkerMessageDebugStats } from "../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../src/worker/types.js";
 import { writeSupervisorFaultExitDecisionRecord } from "./support/supervisor-abi.js";
+import { installSupervisorBlockedResumeStub } from "./support/supervisor-blocked-resume.js";
 
 function makeThreadState(overrides: Partial<ThreadWorkerState> = {}): ThreadWorkerState {
   return {
@@ -65,6 +67,13 @@ function makeKernelState() {
     processRuntimeStatePtr: 0,
     timeStatePtr: 0,
   };
+}
+
+function makeSupervisorKernel<T extends Partial<KernelExports>>(kernel: T): T {
+  kernel.abi_status_ok ??= () => 0;
+  kernel.thread_pc ??= () => 0n;
+  kernel.thread_sp ??= () => 0n;
+  return installSupervisorBlockedResumeStub(kernel);
 }
 
 function makeDeps(
@@ -175,7 +184,7 @@ test("status from a removed process state is dropped as stale", () => {
     workerMessageDebugStats: createWorkerMessageDebugStats(),
     workers: new Set<Worker>(),
     vforkSnapshot: null,
-    kernel: {
+    kernel: makeSupervisorKernel({
       abi_status_fault: () => 31,
       abi_status_vfork_wait: () => 11,
       abi_status_execve_spawn: () => 13,
@@ -183,7 +192,7 @@ test("status from a removed process state is dropped as stale", () => {
       thread_process_thread_count: () => 0,
       thread_process_ptr: () => 0x48000,
       process_current_ppid: () => 0,
-    },
+    }),
   } as unknown as ProcessHandle;
   deps.processHandles.set(4, handle);
   const handleWorkerMessage = createWorkerMessageHandler(deps);
@@ -268,7 +277,7 @@ test("ready from a rehydrating process state is accepted when worker debug still
       processRuntimeStatePtr: 0,
       timeStatePtr: 0,
     },
-    kernel: {
+    kernel: makeSupervisorKernel({
       abi_status_fault: () => 31,
       abi_status_vfork_wait: () => 11,
       abi_status_execve_spawn: () => 13,
@@ -279,7 +288,7 @@ test("ready from a rehydrating process state is accepted when worker debug still
       thread_process_ptr: () => 0,
       process_current_ppid: () => 0,
       process_fd_ofd_id: () => 0,
-    },
+    }),
   } as unknown as ProcessHandle;
   deps.processHandles.set(4, handle);
   const handleWorkerMessage = createWorkerMessageHandler(deps);
@@ -342,7 +351,7 @@ test("ready adopts transferred worker ownership when kernel process identity mat
     },
     memory: new WebAssembly.Memory({ initial: 1 }),
     kernelState: makeKernelState(),
-    kernel: {
+    kernel: makeSupervisorKernel({
       abi_status_fault: () => 31,
       abi_status_vfork_wait: () => 11,
       abi_status_execve_spawn: () => 13,
@@ -353,7 +362,7 @@ test("ready adopts transferred worker ownership when kernel process identity mat
       thread_process_ptr: () => 0x48000,
       process_current_ppid: () => 1,
       process_fd_ofd_id: () => 0,
-    },
+    }),
   } as unknown as ProcessHandle;
   deps.processHandles.set(3, handle);
   const handleWorkerMessage = createWorkerMessageHandler(deps);
@@ -424,7 +433,7 @@ test("messages delivered through a stale handle are rerouted to the transferred 
     },
     memory: new WebAssembly.Memory({ initial: 1 }),
     kernelState: makeKernelState(),
-    kernel: {
+    kernel: makeSupervisorKernel({
       abi_status_fault: () => 31,
       abi_status_vfork_wait: () => 11,
       abi_status_execve_spawn: () => 13,
@@ -435,7 +444,7 @@ test("messages delivered through a stale handle are rerouted to the transferred 
       thread_process_ptr: () => 0x48000,
       process_current_ppid: () => 1,
       process_fd_ofd_id: () => 0,
-    },
+    }),
   } as unknown as ProcessHandle;
   deps.processHandles.set(1, parentHandle);
   deps.processHandles.set(3, childHandle);
@@ -514,7 +523,7 @@ test("clone child ready clears parent clone-spawn hold before resuming parent", 
     },
     memory: new WebAssembly.Memory({ initial: 1 }),
     kernelState: makeKernelState(),
-    kernel: {
+    kernel: makeSupervisorKernel({
       abi_status_clone_spawn: () => 25,
       kernel_attach_runtime_state: () => {},
       kernel_heap_base: () => 0,
@@ -543,7 +552,7 @@ test("clone child ready clears parent clone-spawn hold before resuming parent", 
       thread_process_ptr: () => 0x48000,
       process_current_ppid: () => 1,
       process_fd_ofd_id: () => 0,
-    },
+    }),
   } as unknown as ProcessHandle;
   deps.processHandles.set(4, handle);
   const handleWorkerMessage = createWorkerMessageHandler(deps);
@@ -573,7 +582,7 @@ test("active vfork child fault remains routed through the parent handle", () => 
   deps.resumeVforkParentAfterChildExit = resumeVforkParentAfterChildExit;
   const kernelState = makeKernelState();
   const memory = new WebAssembly.Memory({ initial: 4 });
-  const kernel = {
+  const kernel = makeSupervisorKernel({
     memory,
     abi_status_ok: () => 0,
     abi_status_fault: () => 31,
@@ -612,7 +621,7 @@ test("active vfork child fault remains routed through the parent handle", () => 
       });
       return 88;
     }),
-  };
+  });
   const parentHandle = {
     runtimeId: 1,
     pid: 1,

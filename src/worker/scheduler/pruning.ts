@@ -4,6 +4,7 @@ import {
 import {
   releaseWorker,
 } from "../pool.js";
+import { supervisorProcessStatusIsLifecycleHandoff } from "../supervisor-status.js";
 import type {
   ProcessHandle,
   ThreadWorkerState,
@@ -56,9 +57,7 @@ export function createPruningScheduler(deps: PruningSchedulerDeps): PruningSched
 
   function shouldPreserveTransientWorker(handle: ProcessHandle, vmPtr: number): boolean {
     const status = handle.kernel.thread_status(vmPtr);
-    return status === handle.kernel.abi_status_vfork_wait()
-      || status === handle.kernel.abi_status_execve_spawn()
-      || status === handle.kernel.abi_status_clone_spawn();
+    return supervisorProcessStatusIsLifecycleHandoff(handle.kernel, status);
   }
 
   function shouldPreserveProcessOwnedWorker(handle: ProcessHandle, vmPtr: number): boolean {

@@ -1,6 +1,7 @@
 import { createWorkerControlMessageHandler } from "./message-handler/control.js";
 import { readProcessPidField } from "./diagnostics/format.js";
 import { createWorkerStatusMessageHandler } from "./message-handler/status/route.js";
+import { supervisorProcessStatusAllowsPidMismatch } from "./supervisor-status.js";
 import type { WorkerMessageHandlerDeps } from "./message-handler/types.js";
 import { recordWorkerMessageDebugEvent, type ProcessHandle } from "./types.js";
 import type { ThreadWorkerOutbound } from "../messages.js";
@@ -119,10 +120,7 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
     const isActiveVforkWorker = handle.vforkSnapshot !== null && handle.vforkWorker === worker;
     const messageAllowsTransientKernelPidMismatch = isActiveVforkWorker || (
       msg.type === "status"
-      && (
-        msg.status === handle.kernel.abi_status_vfork_wait()
-        || msg.status === handle.kernel.abi_status_execve_spawn()
-      )
+      && supervisorProcessStatusAllowsPidMismatch(handle.kernel, msg.status)
     );
     if (messageAllowsTransientKernelPidMismatch) {
       return true;
