@@ -262,6 +262,10 @@ function makeHandle(worker: Worker) {
         [28, 29, 30].includes(status) ? 1 : 0,
       supervisor_blocked_status_uses_fork_shared_state_sync: (status: number) =>
         [21, 29, 30, 32].includes(status) ? 1 : 0,
+      supervisor_process_status_is_lifecycle_handoff: (status: number) =>
+        [23, 24, 25].includes(status) ? 1 : 0,
+      supervisor_process_status_allows_pid_mismatch: (status: number) =>
+        [23, 24].includes(status) ? 1 : 0,
       supervisor_blocked_wait_wake_source_pipe_sync: () => 1,
       supervisor_blocked_wait_wake_source_epoll_sync: () => 2,
       supervisor_blocked_wait_wake_source_socket_sync: () => 3,

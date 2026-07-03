@@ -51,6 +51,7 @@ import {
   supervisorBlockedWaitStatusMatchesSocketWait,
   supervisorBlockedWaitTimerRequired,
 } from "../../../supervisor-blocked-resume.js";
+import { supervisorProcessStatusAllowsPidMismatch } from "../../supervisor-status.js";
 
 const CLONE_SPAWN_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
@@ -193,8 +194,6 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     drainedPipe,
     completedSyncEffects,
   }: StatusTransitionArgs): void {
-    const vforkWaitStatus = handle.kernel.abi_status_vfork_wait?.();
-    const execveSpawnStatus = handle.kernel.abi_status_execve_spawn?.();
     const assertHandleProcessIdentity = (context: string): void => {
       assertHandleWorkerProcessIdentity(handle, deps.threadWorkerStates, context, {
         status,
@@ -209,10 +208,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       thread,
       deps.threadWorkerStates,
     );
-    if (
-      status !== vforkWaitStatus
-      && status !== execveSpawnStatus
-    ) {
+    if (!supervisorProcessStatusAllowsPidMismatch(handle.kernel, status)) {
       assertHandleProcessIdentity("handleStatusTransition:start");
     }
     const supervisorFdControlDiagnostic = pollSupervisorFdControlDiagnostic(handle);
