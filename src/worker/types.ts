@@ -157,7 +157,6 @@ export interface HostBlockedWorkerState {
   rpcPending: boolean;
   rpcGeneration: number;
   skipNextNetworkPump: boolean;
-  pipeSyncedBeforePassive: boolean;
   pipeCanonicalEofReady?: boolean;
   lastPipeRetryLifecycleEvent?: string;
   lastWait4RetryLifecycleEvent?: string;

@@ -21,6 +21,11 @@ export const SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_PROCESS_GATE = 1 << 3;
 export const SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_THREAD_INIT_PENDING = 1 << 4;
 export const SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER = 0;
 export const SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT = 1;
+export const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_NONE = 0;
+export const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC = 1;
+export const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT = 2;
+export const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_SCHEDULE_RETRY = 3;
+const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_FLAG_KERNEL_WORKER_AVAILABLE = 1;
 export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC = 1;
 export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_EPOLL_SYNC = 2;
 export const SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC = 3;
@@ -55,6 +60,12 @@ export type SupervisorBlockedResumeDelegation =
 export type SupervisorBlockedPipeResumeAction =
   | typeof SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER
   | typeof SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT;
+
+export type SupervisorBlockedPipeSyncBeforeRetryAction =
+  | typeof SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_NONE
+  | typeof SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC
+  | typeof SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT
+  | typeof SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_SCHEDULE_RETRY;
 
 export type SupervisorBlockedWaitWakeSource =
   | typeof SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC
@@ -119,6 +130,91 @@ export function supervisorBlockedPipeResumeAction(
     throw new Error(`kernel supervisor blocked pipe resume action failed: ${result}`);
   }
   return normalizeSupervisorBlockedPipeResumeAction(kernel, result);
+}
+
+function supervisorBlockedPipeSyncBeforeRetryActionValue(
+  kernel: KernelExports,
+  action: SupervisorBlockedPipeSyncBeforeRetryAction,
+): number {
+  switch (action) {
+    case SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC:
+      return kernel.supervisor_blocked_pipe_sync_before_retry_action_request_sync?.() ?? action;
+    case SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT:
+      return kernel.supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output?.() ?? action;
+    case SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_SCHEDULE_RETRY:
+      return kernel.supervisor_blocked_pipe_sync_before_retry_action_schedule_retry?.() ?? action;
+    case SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_NONE:
+      return kernel.supervisor_blocked_pipe_sync_before_retry_action_none?.() ?? action;
+    default: {
+      const exhaustive: never = action;
+      return exhaustive;
+    }
+  }
+}
+
+function normalizeSupervisorBlockedPipeSyncBeforeRetryAction(
+  kernel: KernelExports,
+  result: number,
+): SupervisorBlockedPipeSyncBeforeRetryAction {
+  const actions: SupervisorBlockedPipeSyncBeforeRetryAction[] = [
+    SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_NONE,
+    SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC,
+    SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT,
+    SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_SCHEDULE_RETRY,
+  ];
+  for (const action of actions) {
+    if (result === supervisorBlockedPipeSyncBeforeRetryActionValue(kernel, action)) {
+      return action;
+    }
+  }
+  throw new Error(`kernel supervisor blocked pipe sync-before-retry action is unknown: ${result}`);
+}
+
+export function supervisorBlockedPipeSyncBeforeRetryAction(
+  kernel: KernelExports,
+  vmPtr: number,
+  kernelWorkerAvailable: boolean,
+): SupervisorBlockedPipeSyncBeforeRetryAction {
+  const readAction = kernel.supervisor_blocked_pipe_sync_before_retry_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor blocked pipe sync-before-retry action export is missing");
+  }
+  const kernelWorkerFlag = kernel.supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available?.()
+    ?? SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_FLAG_KERNEL_WORKER_AVAILABLE;
+  const result = readAction(vmPtr, kernelWorkerAvailable ? kernelWorkerFlag : 0);
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked pipe sync-before-retry action failed: ${result}`);
+  }
+  return normalizeSupervisorBlockedPipeSyncBeforeRetryAction(kernel, result);
+}
+
+export function supervisorBlockedPipeSyncBeforeRetryRequested(
+  kernel: KernelExports,
+  vmPtr: number,
+): boolean {
+  const readRequested = kernel.supervisor_blocked_pipe_sync_before_retry_requested;
+  if (readRequested === undefined) {
+    throw new Error("kernel supervisor blocked pipe sync-before-retry requested export is missing");
+  }
+  const result = readRequested(vmPtr);
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked pipe sync-before-retry requested query failed: ${result}`);
+  }
+  return result !== 0;
+}
+
+export function supervisorBlockedPipeSyncBeforeRetryClear(
+  kernel: KernelExports,
+  vmPtr: number,
+): void {
+  const clear = kernel.supervisor_blocked_pipe_sync_before_retry_clear;
+  if (clear === undefined) {
+    throw new Error("kernel supervisor blocked pipe sync-before-retry clear export is missing");
+  }
+  const result = clear(vmPtr);
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked pipe sync-before-retry clear failed: ${result}`);
+  }
 }
 
 function supervisorRetryReason(

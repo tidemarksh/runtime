@@ -29,6 +29,7 @@ import {
 function makeKernel() {
   const threadResumeWait4 = vi.fn();
   let monotonicTicks = 1n;
+  const pipeSyncBeforeRetryRequested = new Set<number>();
   const kernel = {
     threadResumeWait4,
     exports: {
@@ -81,6 +82,30 @@ function makeKernel() {
       supervisor_blocked_resume_delegation_wait4_kernel_worker: () => 2,
       supervisor_blocked_resume_delegation_unsupported: () => 3,
       supervisor_blocked_resume_delegation_epoll_direct: () => 4,
+      supervisor_blocked_pipe_sync_before_retry_action_none: () => 0,
+      supervisor_blocked_pipe_sync_before_retry_action_request_sync: () => 1,
+      supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output: () => 2,
+      supervisor_blocked_pipe_sync_before_retry_action_schedule_retry: () => 3,
+      supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available: () => 1,
+      supervisor_blocked_pipe_sync_before_retry_action: (vmPtr: number, flags: number) => {
+        const kernelWorkerAvailable = (flags & 1) !== 0;
+        const timeoutMs = Number(kernel.exports.thread_poll_wait_timeout?.(vmPtr) ?? 0n);
+        const readyCount = Number(kernel.exports.thread_poll_wait_ready_count?.(vmPtr) ?? 0);
+        const readinessSyncPending = kernel.exports.thread_pipe_read_eof_sync_pending?.(vmPtr) === 1
+          || kernel.exports.thread_poll_hup_sync_pending?.(vmPtr) === 1;
+        const timedNoReady = timeoutMs >= 0 && readyCount <= 0 && !readinessSyncPending;
+        if (!pipeSyncBeforeRetryRequested.has(vmPtr) && kernelWorkerAvailable) {
+          pipeSyncBeforeRetryRequested.add(vmPtr);
+          return timedNoReady ? 1 : 2;
+        }
+        return timedNoReady ? 3 : 0;
+      },
+      supervisor_blocked_pipe_sync_before_retry_requested: (vmPtr: number) =>
+        pipeSyncBeforeRetryRequested.has(vmPtr) ? 1 : 0,
+      supervisor_blocked_pipe_sync_before_retry_clear: (vmPtr: number) => {
+        pipeSyncBeforeRetryRequested.delete(vmPtr);
+        return 0;
+      },
       supervisor_blocked_wait_retry_delay_ms: (vmPtr: number, reason: number) => {
         switch (reason) {
           case 1:
@@ -275,6 +300,23 @@ function makeKernel() {
   };
   installSupervisorBlockedResumeStub(kernel.exports);
   return kernel;
+}
+
+function requestPipeSyncBeforeRetry(kernel: ReturnType<typeof makeKernel>["exports"], vmPtr: number): void {
+  kernel.supervisor_blocked_pipe_sync_before_retry_action!(
+    vmPtr,
+    kernel.supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available!(),
+  );
+}
+
+function pipeSyncBeforeRetryRequested(kernel: ReturnType<typeof makeKernel>["exports"], vmPtr: number): boolean {
+  return kernel.supervisor_blocked_pipe_sync_before_retry_requested!(vmPtr) === 1;
+}
+
+async function flushMicrotasks(count: number): Promise<void> {
+  for (let index = 0; index < count; index += 1) {
+    await Promise.resolve();
+  }
 }
 
 function makeThreadState(vmPtr: number): ThreadWorkerState {
@@ -849,7 +891,6 @@ test("ok status defers re-enqueue while a blocked epoll retry rpc is pending", a
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: true,
   });
   const enqueueWorker = vi.fn();
   const notifyWorkerStatusProgress = vi.fn(() => {
@@ -1350,8 +1391,7 @@ test("epoll retry wakes a running worker instead of resuming under it", async ()
   const notifyBefore = Atomics.load(notify, RUNTIME_BRIDGE_NOTIFY_INDEX);
 
   scheduler.notifySchedulerProgress(handle);
-  await Promise.resolve();
-  await Promise.resolve();
+  await flushMicrotasks(4);
 
   expect(handle.kernelWorkerRequest).not.toHaveBeenCalled();
   expect(Atomics.load(notify, RUNTIME_BRIDGE_NOTIFY_INDEX)).toBeGreaterThan(notifyBefore);
@@ -1832,7 +1872,7 @@ test("pipe pselect retry resumes after pipe sync when no writer remains", async 
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_pipe_wait(), 0x1234);
   const blocked = handle.hostBlockedWorkers.get(worker);
   expect(blocked).toBeDefined();
-  blocked!.pipeSyncedBeforePassive = true;
+  requestPipeSyncBeforeRetry(kernel, 0x1234);
   scheduler.notifySchedulerProgress(handle);
   await Promise.resolve();
 
@@ -1876,7 +1916,7 @@ test("kernel-worker blocked syscall retry requires outcome helper", () => {
   const blocked = handle.hostBlockedWorkers.get(worker);
   expect(blocked).toBeDefined();
   scheduler.clearHostBlockedRetryTimer(handle, worker);
-  blocked!.pipeSyncedBeforePassive = true;
+  requestPipeSyncBeforeRetry(kernel, 0x1234);
   scheduler.notifySchedulerProgress(handle);
 
   expect(failProcess).toHaveBeenCalledWith(handle, expect.any(Error));
@@ -1966,7 +2006,7 @@ test("does not passively park synced pipe EOF", () => {
   const blocked = handle.hostBlockedWorkers.get(worker);
   expect(blocked).toBeDefined();
   scheduler.clearHostBlockedRetryTimer(handle, worker);
-  blocked!.pipeSyncedBeforePassive = true;
+  requestPipeSyncBeforeRetry(kernel, 0x1234);
 
   scheduler.blockWorker(handle, worker, kernel.abi_status_pipe_wait(), 0x1234);
 
@@ -2006,14 +2046,14 @@ test("reblocking the same pipe wait preserves in-flight blocked rpc ownership", 
   expect(blocked).toBeDefined();
   blocked!.rpcPending = true;
   blocked!.rpcGeneration = 7;
-  blocked!.pipeSyncedBeforePassive = true;
+  requestPipeSyncBeforeRetry(kernel, 0x1234);
 
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_pipe_wait(), 0x1234);
 
   const reblocked = handle.hostBlockedWorkers.get(worker);
   expect(reblocked?.rpcPending).toBe(true);
   expect(reblocked?.rpcGeneration).toBe(7);
-  expect(reblocked?.pipeSyncedBeforePassive).toBe(true);
+  expect(pipeSyncBeforeRetryRequested(kernel, 0x1234)).toBe(true);
 });
 
 test("socket poll is resumed immediately after network pump changes state", async () => {
@@ -3309,7 +3349,6 @@ test("pumpProcess runs ordinary OK ready workers under blocked I/O pressure", ()
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: true,
   });
 
   const scheduler = createWorkerScheduler({
@@ -3358,7 +3397,6 @@ test("pumpProcess runs clone-spawn ready workers under blocked I/O pressure", ()
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: true,
   });
 
   const scheduler = createWorkerScheduler({
@@ -3406,7 +3444,6 @@ test("pumpProcess runs ordinary OK ready workers while blocked I/O retry timer w
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: true,
   });
 
   const scheduler = createWorkerScheduler({
@@ -3661,7 +3698,6 @@ test("pumpProcess runs an OK ready worker after an immediate epoll retry attempt
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: true,
   });
 
   const scheduler = createWorkerScheduler({
@@ -3902,7 +3938,6 @@ test("epoll retry keeps unanswered futex running worker when last trace points e
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: true,
   });
   const scheduler = createRunLoopScheduler({
     threadWorkerStates,
@@ -3951,7 +3986,6 @@ test("epoll retry keeps unanswered futex running worker with a blocked record", 
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: true,
   });
   const scheduler = createRunLoopScheduler({
     threadWorkerStates,
@@ -3998,7 +4032,6 @@ test("epoll retry keeps active unanswered ok running worker", () => {
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: true,
   });
   const scheduler = createRunLoopScheduler({
     threadWorkerStates,
@@ -4834,7 +4867,6 @@ test("pumpProcess leaves a quiescent stack-local futex waiter parked with a bloc
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: true,
   });
 
   const scheduler = createWorkerScheduler({
@@ -4895,7 +4927,6 @@ test("pumpProcess leaves a quiescent worker-local futex waiter parked until its 
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: true,
   });
 
   const scheduler = createWorkerScheduler({
@@ -4937,8 +4968,9 @@ test("blockWorker parks futex wait as supervisor-owned worker state", () => {
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: false,
   });
+  requestPipeSyncBeforeRetry(kernel, thread.vmPtr);
+  requestPipeSyncBeforeRetry(kernel, thread.vmPtr);
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
@@ -4973,6 +5005,9 @@ test("blocked completion parks futex result as supervisor-owned worker state", a
   threadWorkerStates.set(worker, thread);
   const { exports: kernel } = makeKernel();
   let currentStatus = kernel.abi_status_pipe_wait();
+  kernel.supervisor_blocked_pipe_sync_before_retry_requested = () => 1;
+  kernel.supervisor_blocked_pipe_sync_before_retry_action = () =>
+    kernel.supervisor_blocked_pipe_sync_before_retry_action_none!();
   kernel.thread_status = (vmPtr: number) => vmPtr === thread.vmPtr
     ? currentStatus
     : kernel.abi_status_ok();
@@ -4987,7 +5022,6 @@ test("blocked completion parks futex result as supervisor-owned worker state", a
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: true,
   });
 
   const scheduler = createWorkerScheduler({
@@ -5009,8 +5043,7 @@ test("blocked completion parks futex result as supervisor-owned worker state", a
 
   handle.runningWorker = null;
   scheduler.notifySchedulerProgress(handle);
-  await Promise.resolve();
-  await Promise.resolve();
+  await flushMicrotasks(4);
 
   expect(handle.hostBlockedWorkers.has(worker)).toBe(false);
   expect(handle.vforkReadyWorkers).toEqual([]);
@@ -5035,6 +5068,9 @@ test("blocked completion arms supervisor timer instead of scheduling runtime ret
   let currentStatus = kernel.abi_status_pipe_wait();
   Object.assign(kernel, {
     memory,
+    supervisor_blocked_pipe_sync_before_retry_requested: () => 1,
+    supervisor_blocked_pipe_sync_before_retry_action: () =>
+      kernel.supervisor_blocked_pipe_sync_before_retry_action_none!(),
     supervisor_abi_version: () => 1,
     supervisor_host_op_record_bytes: () => 64,
     supervisor_host_op_kind_arm_host_timer: () => 12,
@@ -5078,7 +5114,6 @@ test("blocked completion arms supervisor timer instead of scheduling runtime ret
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: true,
   });
   const runtimeEvents: string[] = [];
   const executeHostBlockedSyscallResumeOutcome = vi.fn(async () => {
@@ -5169,7 +5204,6 @@ test("blocked wait retry arms supervisor timer before runtime poll retry", () =>
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: false,
   });
   const runtimeEvents: string[] = [];
 
@@ -5366,7 +5400,6 @@ test("supervisor timer completion resumes the supervisor-selected runnable worke
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: false,
   });
 
   const scheduler = createWorkerScheduler({
@@ -5425,8 +5458,7 @@ test("blockWorker schedules initial kernel-worker pipe retry before passive park
 
   scheduler.blockWorker(handle, worker, kernel.abi_status_pipe_wait(), thread.vmPtr);
 
-  const blocked = handle.hostBlockedWorkers.get(worker);
-  expect(blocked?.pipeSyncedBeforePassive).toBe(false);
+  expect(pipeSyncBeforeRetryRequested(kernel, thread.vmPtr)).toBe(false);
   expect(vi.getTimerCount()).toBeGreaterThan(0);
   expect(worker.postMessage).not.toHaveBeenCalled();
 });

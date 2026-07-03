@@ -55,6 +55,11 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_resume_delegation_unsupported: 3,
   supervisor_blocked_resume_delegation_epoll_direct: 4,
   supervisor_blocked_resume_delegation_flag_kernel_worker_available: 1,
+  supervisor_blocked_pipe_sync_before_retry_action_none: 0,
+  supervisor_blocked_pipe_sync_before_retry_action_request_sync: 1,
+  supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output: 2,
+  supervisor_blocked_pipe_sync_before_retry_action_schedule_retry: 3,
+  supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available: 1,
   supervisor_blocked_wait_retry_reason_default: 0,
   supervisor_blocked_wait_retry_reason_immediate: 1,
   supervisor_blocked_wait_retry_reason_standard_defer: 2,
@@ -372,6 +377,19 @@ export function makeSupervisorAbiStubs(
         return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_wait4_kernel_worker;
       }
       return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_kernel_worker;
+    },
+    supervisor_blocked_pipe_sync_before_retry_action(_vmPtr: number, flags: number) {
+      if ((flags
+        & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_action_request_sync;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_action_none;
+    },
+    supervisor_blocked_pipe_sync_before_retry_requested() {
+      return 0;
+    },
+    supervisor_blocked_pipe_sync_before_retry_clear() {
+      return 0;
     },
     supervisor_process_held_ofd_refcount(
       this: KernelExports | undefined,

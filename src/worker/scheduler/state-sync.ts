@@ -10,6 +10,7 @@ import {
   SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_AND_EPOLL_SYNC,
   SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC,
   SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_SOCKET_SYNC,
+  supervisorBlockedPipeSyncBeforeRetryClear,
   supervisorBlockedWaitWakeMaskForSync,
   supervisorBlockedWaitWakeStatuses,
 } from "../../supervisor-blocked-resume.js";
@@ -131,7 +132,7 @@ export function createWorkerSchedulerStateSyncHelpers(
             if (blocked.rpcPending) {
               continue;
             }
-            blocked.pipeSyncedBeforePassive = false;
+            supervisorBlockedPipeSyncBeforeRetryClear(member.kernel, blocked.vmPtr);
           }
           if (blocked.status === member.kernel.abi_status_epoll_wait()) {
             if (blocked.rpcPending) {

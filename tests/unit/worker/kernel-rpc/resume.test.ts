@@ -783,7 +783,6 @@ test("executeHostBlockedSyscallResume queues pselect fd_set writes after owner-s
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: false,
   });
 
   const threadState = {
@@ -896,7 +895,6 @@ test("executeHostBlockedSyscallResume follows supervisor pipe defer action", asy
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: false,
     pipeCanonicalEofReady: true,
   });
 
@@ -1009,7 +1007,6 @@ test("executeHostBlockedSyscallResume follows supervisor pipe direct action", as
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: false,
   });
 
   const threadState = {
@@ -1113,7 +1110,6 @@ test("executeHostBlockedSyscallResume syncs socket before mixed pipe supervisor 
     rpcPending: true,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: false,
   });
 
   const threadState = {

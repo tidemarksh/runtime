@@ -207,6 +207,11 @@ export interface KernelExports {
   supervisor_pipe_slot_mode_control?(): number;
   supervisor_blocked_pipe_resume_action_defer?(): number;
   supervisor_blocked_pipe_resume_action_direct?(): number;
+  supervisor_blocked_pipe_sync_before_retry_action_none?(): number;
+  supervisor_blocked_pipe_sync_before_retry_action_request_sync?(): number;
+  supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output?(): number;
+  supervisor_blocked_pipe_sync_before_retry_action_schedule_retry?(): number;
+  supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available?(): number;
   supervisor_fs_control_kind_page_cache_miss?(): number;
   supervisor_fs_control_kind_page_cache_fill?(): number;
   supervisor_fs_control_kind_dirty_page_published?(): number;
@@ -313,6 +318,9 @@ export interface KernelExports {
   supervisor_process_pipe_read_open_count?(vmPtr: number, pipeSlot: number): number;
   supervisor_process_pipe_write_open_count?(vmPtr: number, pipeSlot: number): number;
   supervisor_blocked_pipe_resume_action?(vmPtr: number): number;
+  supervisor_blocked_pipe_sync_before_retry_action?(vmPtr: number, flags: number): number;
+  supervisor_blocked_pipe_sync_before_retry_requested?(vmPtr: number): number;
+  supervisor_blocked_pipe_sync_before_retry_clear?(vmPtr: number): number;
   supervisor_process_epoll_held_ofd?(vmPtr: number, index: number): number;
   supervisor_process_epoll_dependent_ofd?(vmPtr: number, index: number): number;
   supervisor_blocked_epoll_watched_ofd?(vmPtr: number, index: number): number;
@@ -1472,6 +1480,11 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_pipe_slot_mode_control",
   "supervisor_blocked_pipe_resume_action_defer",
   "supervisor_blocked_pipe_resume_action_direct",
+  "supervisor_blocked_pipe_sync_before_retry_action_none",
+  "supervisor_blocked_pipe_sync_before_retry_action_request_sync",
+  "supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output",
+  "supervisor_blocked_pipe_sync_before_retry_action_schedule_retry",
+  "supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available",
   "supervisor_fs_control_kind_page_cache_miss",
   "supervisor_fs_control_kind_page_cache_fill",
   "supervisor_fs_control_kind_dirty_page_published",
@@ -1559,6 +1572,9 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_process_pipe_read_open_count",
   "supervisor_process_pipe_write_open_count",
   "supervisor_blocked_pipe_resume_action",
+  "supervisor_blocked_pipe_sync_before_retry_action",
+  "supervisor_blocked_pipe_sync_before_retry_requested",
+  "supervisor_blocked_pipe_sync_before_retry_clear",
   "supervisor_process_epoll_held_ofd",
   "supervisor_process_epoll_dependent_ofd",
   "supervisor_blocked_epoll_watched_ofd",

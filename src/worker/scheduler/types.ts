@@ -43,7 +43,11 @@ export interface WorkerScheduler {
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   attachThreadWorker(handle: ProcessHandle, request: AttachThreadWorkerRequest): void;
   blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
-  clearBlockedWorker(handle: ProcessHandle, worker: Worker): void;
+  clearBlockedWorker(
+    handle: ProcessHandle,
+    worker: Worker,
+    options?: { clearPipeSyncBeforeRetry?: boolean },
+  ): void;
   clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void;
   parkSupervisorFutexWait(handle: ProcessHandle, worker: Worker, vmPtr: number, source: string): void;
   requestThreadWorkerBlockedResume(handle: ProcessHandle, worker: Worker): void;

@@ -389,7 +389,6 @@ test("host boundary reports blocked retry timer expiry to supervisor before retr
     rpcPending: false,
     rpcGeneration: 3,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: true,
   });
 
   const scheduler = createWorkerScheduler({

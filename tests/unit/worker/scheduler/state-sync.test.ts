@@ -212,12 +212,14 @@ test("requestSocketStateSync wakes socket-backed poll and epoll waiters", async 
     }),
   });
   handle.kernelShare.members.add(handle);
+  const clearPipeSyncBeforeRetry = vi.fn(() => 0);
+  handle.kernel.supervisor_blocked_pipe_sync_before_retry_clear = clearPipeSyncBeforeRetry;
   const pipeWorker = {} as Worker;
   const epollWorker = {} as Worker;
   const recvWorker = {} as Worker;
   handle.hostBlockedWorkers.set(pipeWorker, {
+    vmPtr: 0x1234,
     status: handle.kernel.abi_status_pipe_wait(),
-    pipeSyncedBeforePassive: true,
   } as never);
   handle.hostBlockedWorkers.set(epollWorker, {
     status: handle.kernel.abi_status_epoll_wait(),
@@ -241,7 +243,7 @@ test("requestSocketStateSync wakes socket-backed poll and epoll waiters", async 
   expect(retryHostBlockedWorker).toHaveBeenCalledWith(handle, pipeWorker);
   expect(retryHostBlockedWorker).toHaveBeenCalledWith(handle, epollWorker);
   expect(retryHostBlockedWorker).toHaveBeenCalledWith(handle, recvWorker);
-  expect(handle.hostBlockedWorkers.get(pipeWorker)?.pipeSyncedBeforePassive).toBe(false);
+  expect(clearPipeSyncBeforeRetry).toHaveBeenCalledWith(0x1234);
 });
 
 test("waking sync drains supervisor resume before runtime host retry", async () => {
@@ -257,7 +259,6 @@ test("waking sync drains supervisor resume before runtime host retry", async () 
     status: handle.kernel.abi_status_pipe_wait(),
     rpcPending: false,
     rpcGeneration: 0,
-    pipeSyncedBeforePassive: true,
   } as never);
 
   const helpers = createWorkerSchedulerStateSyncHelpers({
@@ -320,12 +321,14 @@ test("requestPipeStateSync skips rpc-pending pipe waiters during waking sync", a
   const retryHostBlockedWorker = vi.fn();
   const handle = makeHandle();
   handle.kernelShare.members.add(handle);
+  const clearPipeSyncBeforeRetry = vi.fn(() => 0);
+  handle.kernel.supervisor_blocked_pipe_sync_before_retry_clear = clearPipeSyncBeforeRetry;
   const pipeWorker = {} as Worker;
   handle.hostBlockedWorkers.set(pipeWorker, {
+    vmPtr: 0x1234,
     status: handle.kernel.abi_status_pipe_wait(),
     rpcPending: true,
     rpcGeneration: 7,
-    pipeSyncedBeforePassive: true,
   } as never);
 
   const helpers = createWorkerSchedulerStateSyncHelpers({
@@ -339,7 +342,7 @@ test("requestPipeStateSync skips rpc-pending pipe waiters during waking sync", a
   await helpers.requestPipeStateSync(handle, true);
 
   expect(retryHostBlockedWorker).not.toHaveBeenCalledWith(handle, pipeWorker);
-  expect(handle.hostBlockedWorkers.get(pipeWorker)?.pipeSyncedBeforePassive).toBe(true);
+  expect(clearPipeSyncBeforeRetry).not.toHaveBeenCalled();
 });
 
 test("requestSocketStateSync applies socket payload state to fork-share members before wake", async () => {

@@ -20,6 +20,7 @@ function makeHandle(
     kernel_ofd_status_flags: () => 0,
     abi_fd_type_pipe: () => 6,
     kernel_ofd_ino: (ofdId: number) => ofdId === 1 ? 1 : 2,
+    supervisor_blocked_pipe_sync_before_retry_clear: vi.fn(() => 0),
     ...(overrides.kernel as Partial<ProcessHandle["kernel"]> | undefined),
   } as ProcessHandle["kernel"];
   return {
@@ -258,7 +259,6 @@ test("completeProcessExit waits for blocked parent pipe sync before recording wa
     status: 31,
     rpcPending: true,
     rpcGeneration: 1,
-    pipeSyncedBeforePassive: true,
   };
   const parent = makeHandle({
     pid: 1,
@@ -317,7 +317,7 @@ test("completeProcessExit waits for blocked parent pipe sync before recording wa
   expect(recordChildExitViaKernelWorker).not.toHaveBeenCalled();
   expect(blockedState.rpcPending).toBe(true);
   expect(blockedState.rpcGeneration).toBe(1);
-  expect(blockedState.pipeSyncedBeforePassive).toBe(true);
+  expect(parent.kernel.supervisor_blocked_pipe_sync_before_retry_clear).not.toHaveBeenCalled();
   expect(lifecycle).toContain("parent-pipe-sync-before-child-exit-start:1:3");
   expect(lifecycle).not.toContain("parent-record-start:1:3");
   expect(progressNotifications).toEqual([]);
@@ -329,7 +329,6 @@ test("completeProcessExit waits for parent pipe sync before clearing blocked pip
     status: 21,
     rpcPending: true,
     rpcGeneration: 1,
-    pipeSyncedBeforePassive: true,
   };
   const parent = makeHandle({
     pid: 1,
@@ -388,7 +387,7 @@ test("completeProcessExit waits for parent pipe sync before clearing blocked pip
   expect(recordChildExitViaKernelWorker).not.toHaveBeenCalled();
   expect(blockedState.rpcPending).toBe(true);
   expect(blockedState.rpcGeneration).toBe(1);
-  expect(blockedState.pipeSyncedBeforePassive).toBe(true);
+  expect(parent.kernel.supervisor_blocked_pipe_sync_before_retry_clear).not.toHaveBeenCalled();
   expect(lifecycle).toContain("parent-pipe-sync-before-child-exit-start:1:3");
   expect(lifecycle).not.toContain("parent-record-start:1:3");
   expect(progressNotifications).toEqual([]);
@@ -400,7 +399,6 @@ test("completeProcessExit waits for parent pipe sync before recording blocked wa
     status: 31,
     rpcPending: false,
     rpcGeneration: 1,
-    pipeSyncedBeforePassive: true,
   };
   const parent = makeHandle({
     pid: 1,
@@ -471,7 +469,6 @@ test("completeProcessExit waits for parent child-exit record before cleanup", as
     status: 31,
     rpcPending: false,
     rpcGeneration: 1,
-    pipeSyncedBeforePassive: true,
   };
   const parent = makeHandle({
     pid: 1,
@@ -545,7 +542,6 @@ test("completeProcessExit routes deferred parent record rejection through local 
     status: 31,
     rpcPending: false,
     rpcGeneration: 1,
-    pipeSyncedBeforePassive: true,
   };
   const parentError = vi.fn();
   const parent = makeHandle({
@@ -1362,7 +1358,6 @@ test("completeProcessExit clears parent pipe-wait RPC after normal child exit pu
     status: 21,
     rpcPending: true,
     rpcGeneration: 1,
-    pipeSyncedBeforePassive: true,
   };
   parent.hostBlockedWorkers.set(blockedWorker, blockedState as never);
   const child = makeHandle({
@@ -1406,7 +1401,7 @@ test("completeProcessExit clears parent pipe-wait RPC after normal child exit pu
   expect(recordChildExitViaKernelWorker).toHaveBeenCalledWith(parent, 3, 127 << 8);
   expect(blockedState.rpcPending).toBe(false);
   expect(blockedState.rpcGeneration).toBe(2);
-  expect(blockedState.pipeSyncedBeforePassive).toBe(false);
+  expect(parent.kernel.supervisor_blocked_pipe_sync_before_retry_clear).toHaveBeenCalled();
   expect(lifecycle).toContain("exit-parent-clear-blocked-rpc:1:3:status=21");
   expect(progressNotifications).toContain("1:clear");
 });

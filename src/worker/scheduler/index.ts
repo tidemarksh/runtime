@@ -4,9 +4,15 @@ import {
 } from "../../abi.js";
 import {
   resumeBlockedSyscallBySupervisor,
+  supervisorBlockedPipeSyncBeforeRetryAction,
+  supervisorBlockedPipeSyncBeforeRetryClear,
+  supervisorBlockedPipeSyncBeforeRetryRequested,
   supervisorBlockedResumeDelegation,
   supervisorBlockedWaitTimerRequired,
   supervisorBlockedWaitRetryPlan,
+  SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC,
+  SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT,
+  SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_SCHEDULE_RETRY,
   SUPERVISOR_BLOCKED_RESUME_DELEGATION_DIRECT,
   SUPERVISOR_BLOCKED_RESUME_DELEGATION_EPOLL_DIRECT,
   SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER,
@@ -258,10 +264,24 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     pumpProcess,
   } = schedulerQueueHelpers;
 
-  function clearBlockedWorker(handle: ProcessHandle, worker: Worker): void {
+  function clearBlockedWorker(
+    handle: ProcessHandle,
+    worker: Worker,
+    options: { clearPipeSyncBeforeRetry?: boolean } = {},
+  ): void {
     const blocked = handle.hostBlockedWorkers.get(worker);
     if (!blocked) {
       return;
+    }
+    if (
+      (options.clearPipeSyncBeforeRetry ?? true)
+      && blocked.status === handle.kernel.abi_status_pipe_wait()
+    ) {
+      try {
+        supervisorBlockedPipeSyncBeforeRetryClear(handle.kernel, blocked.vmPtr);
+      } catch (error) {
+        deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+      }
     }
     clearHostBlockedRetryTimer(handle, worker);
     handle.hostBlockedWorkers.delete(worker);
@@ -1012,14 +1032,13 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     const sameBlockedThread = previousBlocked !== undefined
       && previousBlocked.vmPtr === vmPtr
       && previousBlocked.status === status;
-    clearBlockedWorker(handle, worker);
+    clearBlockedWorker(handle, worker, { clearPipeSyncBeforeRetry: !sameBlockedThread });
     const blocked: HostBlockedWorkerState = {
       vmPtr,
       status,
       rpcPending: sameBlockedThread ? previousBlocked.rpcPending : false,
       rpcGeneration: sameBlockedThread ? previousBlocked.rpcGeneration : 0,
       skipNextNetworkPump: sameBlockedThread ? previousBlocked.skipNextNetworkPump : false,
-      pipeSyncedBeforePassive: sameBlockedThread ? previousBlocked.pipeSyncedBeforePassive : false,
       lastPipeRetryLifecycleEvent: sameBlockedThread ? previousBlocked.lastPipeRetryLifecycleEvent : undefined,
       lastWait4RetryLifecycleEvent: sameBlockedThread ? previousBlocked.lastWait4RetryLifecycleEvent : undefined,
     };
@@ -1068,7 +1087,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       status === handle.kernel.abi_status_pipe_wait()
       && kernelWorkerOwnsPipeState(handle)
       && (!handle.kernelWorkerRequest || handle.pid <= 0)
-      && blocked.pipeSyncedBeforePassive
+      && supervisorBlockedPipeSyncBeforeRetryRequested(handle.kernel, vmPtr)
       && pollTimeoutMs < 0
       && (pollReadyCount === undefined || pollReadyCount <= 0)
       && handle.kernel.thread_blocked_pipe_read_ready?.(vmPtr) !== 1
@@ -1543,31 +1562,28 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
 
-    const pipeEofSyncPending = blocked.status === handle.kernel.abi_status_pipe_wait()
-      && handle.kernel.thread_pipe_read_eof_sync_pending?.(blocked.vmPtr) === 1;
-    const pipePollHupSyncPending = blocked.status === handle.kernel.abi_status_pipe_wait()
-      && handle.kernel.thread_poll_hup_sync_pending?.(blocked.vmPtr) === 1;
-    const pipeReadinessSyncPending = pipeEofSyncPending || pipePollHupSyncPending;
     if (blocked.status === handle.kernel.abi_status_pipe_wait()) {
-      const event = `pipe-retry:${handle.pid}:a7=${blockedOrCurrentSyscallNr(handle, blocked.vmPtr)?.toString() ?? "n/a"}:a0=${handle.kernel.thread_a0(blocked.vmPtr).toString()}:timeout=${blockedPollTimeoutMs}:ready=${blockedPollReadyCount ?? "n/a"}:${formatFirstPipeWaitDebug(handle, blocked.vmPtr)}:${formatFirstSocketWaitDebug(handle, blocked.vmPtr)}:${formatBlockedPollFdSet(handle, blocked.vmPtr)}:synced=${blocked.pipeSyncedBeforePassive ? 1 : 0}`;
+      const pipeSyncBeforeRetryRequested = supervisorBlockedPipeSyncBeforeRetryRequested(
+        handle.kernel,
+        blocked.vmPtr,
+      );
+      const event = `pipe-retry:${handle.pid}:a7=${blockedOrCurrentSyscallNr(handle, blocked.vmPtr)?.toString() ?? "n/a"}:a0=${handle.kernel.thread_a0(blocked.vmPtr).toString()}:timeout=${blockedPollTimeoutMs}:ready=${blockedPollReadyCount ?? "n/a"}:${formatFirstPipeWaitDebug(handle, blocked.vmPtr)}:${formatFirstSocketWaitDebug(handle, blocked.vmPtr)}:${formatBlockedPollFdSet(handle, blocked.vmPtr)}:syncRequested=${pipeSyncBeforeRetryRequested ? 1 : 0}`;
       if (blocked.lastPipeRetryLifecycleEvent !== event) {
         blocked.lastPipeRetryLifecycleEvent = event;
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);
       }
-    }
-    if (
-      blocked.status === handle.kernel.abi_status_pipe_wait()
-      && blockedPollTimeoutMs >= 0
-      && (blockedPollReadyCount === undefined || blockedPollReadyCount === 0)
-      && !pipeReadinessSyncPending
-    ) {
+      const syncBeforeRetryAction = supervisorBlockedPipeSyncBeforeRetryAction(
+        handle.kernel,
+        blocked.vmPtr,
+        kernelWorkerOwnsPipeState(handle) && !!handle.kernelWorkerRequest && handle.pid > 0,
+      );
       if (
-        !blocked.pipeSyncedBeforePassive
-        && kernelWorkerOwnsPipeState(handle)
-        && handle.kernelWorkerRequest
-        && handle.pid > 0
+        syncBeforeRetryAction === SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC
+        || syncBeforeRetryAction
+          === SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT
       ) {
-        blocked.pipeSyncedBeforePassive = true;
+        const shouldDrainOutput = syncBeforeRetryAction
+          === SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC_AND_DRAIN_OUTPUT;
         const rpcGeneration = beginBlockedRpc(blocked);
         void requestPipeStateSync(handle, false)
           .then(() => {
@@ -1575,7 +1591,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             if (!latestBlocked) {
               return;
             }
-            if (!kernelWorkerOwnsPipeState(handle)) {
+            if (shouldDrainOutput || !kernelWorkerOwnsPipeState(handle)) {
               drainProcessOutput(handle);
             }
             scheduleSupervisorBlockedRetry(
@@ -1590,67 +1606,13 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
           });
         return;
       }
-      if (handle.kernel.thread_poll_wait_has_socket?.(blocked.vmPtr) !== 1) {
+      if (
+        syncBeforeRetryAction
+          === SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_SCHEDULE_RETRY
+      ) {
         scheduleSupervisorBlockedRetry(handle, worker);
         return;
       }
-      if (
-        !blocked.pipeSyncedBeforePassive
-        && kernelWorkerOwnsPipeState(handle)
-        && handle.kernelWorkerRequest
-        && handle.pid > 0
-      ) {
-        blocked.pipeSyncedBeforePassive = true;
-        const rpcGeneration = beginBlockedRpc(blocked);
-        void requestPipeStateSync(handle, false)
-          .then(() => {
-            const latestBlocked = finishBlockedRpc(handle, worker, blocked.vmPtr, rpcGeneration);
-            if (!latestBlocked) {
-              return;
-            }
-            drainProcessOutput(handle);
-            scheduleSupervisorBlockedRetry(
-              handle,
-              worker,
-              SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
-            );
-          })
-          .catch((error) => {
-            finishBlockedRpc(handle, worker, blocked.vmPtr, rpcGeneration);
-            deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-          });
-        return;
-      }
-      scheduleSupervisorBlockedRetry(handle, worker);
-      return;
-    }
-    if (
-      blocked.status === handle.kernel.abi_status_pipe_wait()
-      && !blocked.pipeSyncedBeforePassive
-      && kernelWorkerOwnsPipeState(handle)
-      && handle.kernelWorkerRequest
-      && handle.pid > 0
-    ) {
-      blocked.pipeSyncedBeforePassive = true;
-      const rpcGeneration = beginBlockedRpc(blocked);
-      void requestPipeStateSync(handle, false)
-        .then(() => {
-          const latestBlocked = finishBlockedRpc(handle, worker, blocked.vmPtr, rpcGeneration);
-          if (!latestBlocked) {
-            return;
-          }
-          drainProcessOutput(handle);
-          scheduleSupervisorBlockedRetry(
-            handle,
-            worker,
-            SUPERVISOR_BLOCKED_WAIT_RETRY_FLAG_HOST_PROGRESS,
-          );
-        })
-        .catch((error) => {
-          finishBlockedRpc(handle, worker, blocked.vmPtr, rpcGeneration);
-          deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-        });
-      return;
     }
     if (blocked.status === handle.kernel.abi_status_fs()) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `fs-retry:${handle.pid}`);

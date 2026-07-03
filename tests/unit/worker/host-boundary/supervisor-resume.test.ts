@@ -147,7 +147,6 @@ test("host boundary consumes process-scoped supervisor runnable resume decisions
     rpcPending: false,
     rpcGeneration: 0,
     skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: false,
   });
   const debugEvents: string[] = [];
 

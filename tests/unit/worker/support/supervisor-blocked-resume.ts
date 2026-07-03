@@ -9,6 +9,9 @@ const SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED = 3;
 const SUPERVISOR_BLOCKED_RESUME_DELEGATION_EPOLL_DIRECT = 4;
 const SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER = 0;
 const SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT = 1;
+const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_NONE = 0;
+const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC = 1;
+const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_FLAG_KERNEL_WORKER_AVAILABLE = 1;
 
 export function installSupervisorBlockedResumeStub<T extends Partial<KernelExports>>(
   kernel: T,
@@ -20,7 +23,16 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_blocked_pipe_resume_action_defer"
   | "supervisor_blocked_pipe_resume_action_direct"
   | "supervisor_blocked_pipe_resume_action"
+  | "supervisor_blocked_pipe_sync_before_retry_action_none"
+  | "supervisor_blocked_pipe_sync_before_retry_action_request_sync"
+  | "supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output"
+  | "supervisor_blocked_pipe_sync_before_retry_action_schedule_retry"
+  | "supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available"
+  | "supervisor_blocked_pipe_sync_before_retry_action"
+  | "supervisor_blocked_pipe_sync_before_retry_requested"
+  | "supervisor_blocked_pipe_sync_before_retry_clear"
 > {
+  const pipeSyncBeforeRetryRequested = new Set<number>();
   const nextKernel = kernel as T & Pick<
     KernelExports,
     "supervisor_resume_blocked_syscall"
@@ -29,6 +41,14 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_blocked_pipe_resume_action_defer"
     | "supervisor_blocked_pipe_resume_action_direct"
     | "supervisor_blocked_pipe_resume_action"
+    | "supervisor_blocked_pipe_sync_before_retry_action_none"
+    | "supervisor_blocked_pipe_sync_before_retry_action_request_sync"
+    | "supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output"
+    | "supervisor_blocked_pipe_sync_before_retry_action_schedule_retry"
+    | "supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available"
+    | "supervisor_blocked_pipe_sync_before_retry_action"
+    | "supervisor_blocked_pipe_sync_before_retry_requested"
+    | "supervisor_blocked_pipe_sync_before_retry_clear"
   >;
   nextKernel.supervisor_blocked_wait_active_child_pid ??= () => 0;
   nextKernel.supervisor_blocked_pipe_resume_action_defer ??= () =>
@@ -37,6 +57,31 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT;
   nextKernel.supervisor_blocked_pipe_resume_action ??= () =>
     SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT;
+  nextKernel.supervisor_blocked_pipe_sync_before_retry_action_none ??= () =>
+    SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_NONE;
+  nextKernel.supervisor_blocked_pipe_sync_before_retry_action_request_sync ??= () =>
+    SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC;
+  nextKernel.supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output ??= () =>
+    2;
+  nextKernel.supervisor_blocked_pipe_sync_before_retry_action_schedule_retry ??= () =>
+    3;
+  nextKernel.supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available ??= () =>
+    SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_FLAG_KERNEL_WORKER_AVAILABLE;
+  nextKernel.supervisor_blocked_pipe_sync_before_retry_action ??= (vmPtr: number, flags: number) => {
+    const kernelWorkerAvailable =
+      (flags & SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_FLAG_KERNEL_WORKER_AVAILABLE) !== 0;
+    if (!pipeSyncBeforeRetryRequested.has(vmPtr) && kernelWorkerAvailable) {
+      pipeSyncBeforeRetryRequested.add(vmPtr);
+      return SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC;
+    }
+    return SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_NONE;
+  };
+  nextKernel.supervisor_blocked_pipe_sync_before_retry_requested ??= (vmPtr: number) =>
+    pipeSyncBeforeRetryRequested.has(vmPtr) ? 1 : 0;
+  nextKernel.supervisor_blocked_pipe_sync_before_retry_clear ??= (vmPtr: number) => {
+    pipeSyncBeforeRetryRequested.delete(vmPtr);
+    return 0;
+  };
   nextKernel.supervisor_blocked_resume_delegation = (vmPtr: number, flags: number) => {
     const kernelWorkerAvailable =
       (flags & SUPERVISOR_BLOCKED_RESUME_FLAG_KERNEL_WORKER_AVAILABLE) !== 0;
