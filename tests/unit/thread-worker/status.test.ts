@@ -123,7 +123,7 @@ function makeKernelExports(): KernelExports {
     thread_blocked_ofd_id: () => 0,
     thread_fault_pc: () => 0n,
     thread_fault_addr: () => 0n,
-    thread_take_completed_sync_effects: () => 0,
+    supervisor_thread_take_completed_sync_effects: () => 0,
   } as unknown as KernelExports;
 }
 

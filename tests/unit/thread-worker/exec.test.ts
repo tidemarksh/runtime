@@ -136,6 +136,7 @@ test("stepThread resolves FUTEX_WAIT in-worker before reporting completion", () 
       supervisor_futex_wait_completion_invalid_address: () => 4,
       supervisor_futex_wait_completion_signal_check: () => 5,
       supervisor_complete_futex_wait: completeFutexWait,
+      supervisor_thread_take_completed_sync_effects: () => 0,
     } as never,
     statusCodes: {
       OK: 0,
@@ -174,6 +175,7 @@ test("stepThread consumes the owner budget in worker quanta when no runtime stat
       debug_clear_syscall_trace: clearSyscallTrace,
       thread_step: threadStep,
       thread_status: () => 0,
+      supervisor_thread_take_completed_sync_effects: () => 0,
     } as never,
     statusCodes: {
       OK: 0,
@@ -213,6 +215,7 @@ test("stepThread publishes OK early when another runtime status arrives during a
       debug_clear_syscall_trace: clearSyscallTrace,
       thread_step: threadStep,
       thread_status: () => 0,
+      supervisor_thread_take_completed_sync_effects: () => 0,
     } as never,
     statusCodes: {
       OK: 0,
@@ -248,7 +251,7 @@ test("stepThread forwards consumed sync effects when yielding OK early", () => {
       debug_clear_syscall_trace: clearSyscallTrace,
       thread_step: threadStep,
       thread_status: () => 0,
-      thread_take_completed_sync_effects: takeCompletedSyncEffects,
+      supervisor_thread_take_completed_sync_effects: takeCompletedSyncEffects,
     } as never,
     statusCodes: {
       OK: 0,
@@ -268,7 +271,7 @@ test("stepThread forwards consumed sync effects when yielding OK early", () => {
 
   expect(clearSyscallTrace).toHaveBeenCalledTimes(1);
   expect(threadStep).toHaveBeenCalledWith(0x1234, 1_000);
-  expect(takeCompletedSyncEffects).toHaveBeenCalledWith(0x1234);
+  expect(takeCompletedSyncEffects).toHaveBeenCalledWith(0x1234, 0);
   expect(postStatus).toHaveBeenCalledTimes(1);
   expect(postStatus).toHaveBeenCalledWith(createThreadWorkerStatusOutcome(0, false, 4));
 });

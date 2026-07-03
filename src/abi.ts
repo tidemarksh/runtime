@@ -471,6 +471,7 @@ export interface KernelExports {
     result: bigint | number,
     resultKnown: number,
   ): number;
+  supervisor_thread_take_completed_sync_effects?(vmPtr: number, status: number): number;
   supervisor_fs_control_record?(outPtr: number, outLen: number): number;
   supervisor_fs_pending_ring_request?(vmPtr: number): number;
   supervisor_fs_pending_regular_file_fd?(vmPtr: number): number;
@@ -1787,6 +1788,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fd_trace_fork_shared_topology_action",
   "supervisor_fd_trace_data_plane_io_uses_socket_or_pipe",
   "supervisor_fd_trace_regular_file_write_mutated_memfs",
+  "supervisor_thread_take_completed_sync_effects",
   "supervisor_fs_control_record",
   "supervisor_fs_pipe_refresh_action_none",
   "supervisor_fs_pipe_refresh_action_request_sync",
