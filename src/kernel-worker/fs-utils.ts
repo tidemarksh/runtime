@@ -96,7 +96,12 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
     if (targetVmPtr === undefined || targetVmPtr === 0) {
       return 0n;
     }
-    return targetExports.thread_guest_memory_policy_limit?.(targetVmPtr) ?? 0n;
+    const read = targetExports.thread_guest_memory_policy_limit;
+    if (typeof read !== "function") {
+      throw new Error("kernel ABI missing thread_guest_memory_policy_limit");
+    }
+    const limit = read(targetVmPtr);
+    return limit < 0n ? 0n : limit;
   }
 
   function copyCanonicalMemfsToProcess(
