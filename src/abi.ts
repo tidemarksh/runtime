@@ -357,6 +357,17 @@ export interface KernelExports {
   supervisor_blocked_wait_wake_target_socket_recv?(): number;
   supervisor_blocked_wait_wake_target_socket_send?(): number;
   supervisor_blocked_wait_wake_mask_for_sync?(source: number): number;
+  supervisor_stdio_output_settle_kind_visible?(): number;
+  supervisor_stdio_output_settle_kind_inherited_child?(): number;
+  supervisor_stdio_pipe_read_progress_action_none?(): number;
+  supervisor_stdio_pipe_read_progress_action_snapshot?(): number;
+  supervisor_stdio_output_settle_max_passes?(kind: number): number;
+  supervisor_stdio_output_settle_stable_passes?(kind: number): number;
+  supervisor_stdio_pipe_read_progress_action?(
+    vmPtr: number,
+    pipeSlot: number,
+    drained: number,
+  ): number;
   supervisor_enqueue_blocked_wait_timer?(vmPtr: number): number;
   supervisor_enqueue_blocked_retry_timer?(vmPtr: number, flags: number): number;
   supervisor_blocked_wait_timer_required?(vmPtr: number): number;
@@ -1592,6 +1603,13 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_wait_wake_target_socket_recv",
   "supervisor_blocked_wait_wake_target_socket_send",
   "supervisor_blocked_wait_wake_mask_for_sync",
+  "supervisor_stdio_output_settle_kind_visible",
+  "supervisor_stdio_output_settle_kind_inherited_child",
+  "supervisor_stdio_pipe_read_progress_action_none",
+  "supervisor_stdio_pipe_read_progress_action_snapshot",
+  "supervisor_stdio_output_settle_max_passes",
+  "supervisor_stdio_output_settle_stable_passes",
+  "supervisor_stdio_pipe_read_progress_action",
   "supervisor_enqueue_blocked_wait_timer",
   "supervisor_enqueue_blocked_retry_timer",
   "supervisor_blocked_wait_timer_required",

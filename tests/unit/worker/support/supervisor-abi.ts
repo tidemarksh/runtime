@@ -74,6 +74,10 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_wait_wake_target_epoll_wait: 2,
   supervisor_blocked_wait_wake_target_socket_recv: 4,
   supervisor_blocked_wait_wake_target_socket_send: 8,
+  supervisor_stdio_output_settle_kind_visible: 1,
+  supervisor_stdio_output_settle_kind_inherited_child: 2,
+  supervisor_stdio_pipe_read_progress_action_none: 0,
+  supervisor_stdio_pipe_read_progress_action_snapshot: 1,
   supervisor_blocked_wait_timer_required: 0,
   supervisor_vfork_execve_handoff_failure_wait_status: 127 << 8,
   supervisor_host_op_kind_arm_host_timer: 12,
@@ -407,6 +411,30 @@ export function makeSupervisorAbiStubs(
         default:
           return -22;
       }
+    },
+    supervisor_stdio_output_settle_max_passes(kind: number) {
+      switch (kind) {
+        case DEFAULT_NUMERIC_EXPORTS.supervisor_stdio_output_settle_kind_visible:
+          return 4;
+        case DEFAULT_NUMERIC_EXPORTS.supervisor_stdio_output_settle_kind_inherited_child:
+          return 6;
+        default:
+          return -22;
+      }
+    },
+    supervisor_stdio_output_settle_stable_passes(kind: number) {
+      switch (kind) {
+        case DEFAULT_NUMERIC_EXPORTS.supervisor_stdio_output_settle_kind_visible:
+        case DEFAULT_NUMERIC_EXPORTS.supervisor_stdio_output_settle_kind_inherited_child:
+          return 2;
+        default:
+          return -22;
+      }
+    },
+    supervisor_stdio_pipe_read_progress_action(_vmPtr: number, _pipeSlot: number, drained: number) {
+      return drained === 0
+        ? DEFAULT_NUMERIC_EXPORTS.supervisor_stdio_pipe_read_progress_action_none
+        : DEFAULT_NUMERIC_EXPORTS.supervisor_stdio_pipe_read_progress_action_snapshot;
     },
     supervisor_fs_response_disposition(
       this: KernelExports | undefined,

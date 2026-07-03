@@ -93,6 +93,21 @@ export function makeHostBoundaryKernel() {
     supervisor_futex_wait_completion_not_equal: () => 2,
     supervisor_futex_wait_completion_invalid_address: () => 4,
     supervisor_futex_wait_completion_signal_check: () => 5,
+    supervisor_stdio_output_settle_kind_visible: () => 1,
+    supervisor_stdio_output_settle_kind_inherited_child: () => 2,
+    supervisor_stdio_pipe_read_progress_action_none: () => 0,
+    supervisor_stdio_pipe_read_progress_action_snapshot: () => 1,
+    supervisor_stdio_output_settle_max_passes: (kind: number) => {
+      if (kind === 1) return 4;
+      if (kind === 2) return 6;
+      return -22;
+    },
+    supervisor_stdio_output_settle_stable_passes: (kind: number) => {
+      if (kind === 1 || kind === 2) return 2;
+      return -22;
+    },
+    supervisor_stdio_pipe_read_progress_action: (_vmPtr: number, _pipeSlot: number, drained: number) =>
+      drained === 0 ? 0 : 1,
   } as unknown as ProcessHandle["kernel"];
 }
 

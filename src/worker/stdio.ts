@@ -35,6 +35,85 @@ function outputTarget(handle: ProcessHandle): ProcessHandle {
   return handle.stdioOwner ?? handle;
 }
 
+const SUPERVISOR_STDIO_OUTPUT_SETTLE_KIND_VISIBLE = 1;
+const SUPERVISOR_STDIO_OUTPUT_SETTLE_KIND_INHERITED_CHILD = 2;
+const SUPERVISOR_STDIO_PIPE_READ_PROGRESS_ACTION_NONE = 0;
+const SUPERVISOR_STDIO_PIPE_READ_PROGRESS_ACTION_SNAPSHOT = 1;
+
+type SupervisorStdioOutputSettleKind =
+  | typeof SUPERVISOR_STDIO_OUTPUT_SETTLE_KIND_VISIBLE
+  | typeof SUPERVISOR_STDIO_OUTPUT_SETTLE_KIND_INHERITED_CHILD;
+
+function supervisorStdioOutputSettleKindValue(
+  handle: ProcessHandle,
+  kind: SupervisorStdioOutputSettleKind,
+): number {
+  switch (kind) {
+    case SUPERVISOR_STDIO_OUTPUT_SETTLE_KIND_VISIBLE:
+      return handle.kernel.supervisor_stdio_output_settle_kind_visible?.() ?? kind;
+    case SUPERVISOR_STDIO_OUTPUT_SETTLE_KIND_INHERITED_CHILD:
+      return handle.kernel.supervisor_stdio_output_settle_kind_inherited_child?.() ?? kind;
+    default: {
+      const exhaustive: never = kind;
+      return exhaustive;
+    }
+  }
+}
+
+function supervisorStdioOutputSettlePlan(
+  handle: ProcessHandle,
+  kind: SupervisorStdioOutputSettleKind,
+): { maxPasses: number; stablePasses: number } {
+  const readMaxPasses = handle.kernel.supervisor_stdio_output_settle_max_passes;
+  const readStablePasses = handle.kernel.supervisor_stdio_output_settle_stable_passes;
+  if (readMaxPasses === undefined || readStablePasses === undefined) {
+    throw new Error("kernel supervisor ABI missing stdio output settle plan exports");
+  }
+  const kernelKind = supervisorStdioOutputSettleKindValue(handle, kind);
+  const maxPasses = readMaxPasses(kernelKind);
+  const stablePasses = readStablePasses(kernelKind);
+  if (maxPasses < 0 || stablePasses < 0) {
+    throw new Error(`kernel supervisor stdio output settle plan failed: ${maxPasses}/${stablePasses}`);
+  }
+  if (maxPasses === 0 || stablePasses === 0) {
+    throw new Error(`kernel supervisor stdio output settle plan is empty: ${maxPasses}/${stablePasses}`);
+  }
+  return { maxPasses, stablePasses };
+}
+
+function supervisorStdioPipeReadProgressActionValue(
+  handle: ProcessHandle,
+  action: number,
+): "none" | "snapshot" {
+  const none = handle.kernel.supervisor_stdio_pipe_read_progress_action_none?.()
+    ?? SUPERVISOR_STDIO_PIPE_READ_PROGRESS_ACTION_NONE;
+  const snapshot = handle.kernel.supervisor_stdio_pipe_read_progress_action_snapshot?.()
+    ?? SUPERVISOR_STDIO_PIPE_READ_PROGRESS_ACTION_SNAPSHOT;
+  if (action === none) {
+    return "none";
+  }
+  if (action === snapshot) {
+    return "snapshot";
+  }
+  throw new Error(`kernel supervisor stdio pipe read-progress action is unknown: ${action}`);
+}
+
+function supervisorShouldSnapshotDrainedPipeReadProgress(
+  handle: ProcessHandle,
+  pipeSlot: number,
+  drained: boolean,
+): boolean {
+  const decide = handle.kernel.supervisor_stdio_pipe_read_progress_action;
+  if (decide === undefined) {
+    throw new Error("kernel supervisor ABI missing stdio pipe read-progress action export");
+  }
+  const action = decide(handle.vmPtr, pipeSlot, drained ? 1 : 0);
+  if (action < 0) {
+    throw new Error(`kernel supervisor stdio pipe read-progress action failed: ${action}`);
+  }
+  return supervisorStdioPipeReadProgressActionValue(handle, action) === "snapshot";
+}
+
 function pipeStateSignature(handle: ProcessHandle): string {
   const pipeBase = handle.kernelState.pipeBase;
   const bytes = new DataView(handle.memory.buffer);
@@ -88,6 +167,9 @@ function snapshotPipeSlotReadProgress(
 }
 
 function queueDrainedPipeReadProgress(handle: ProcessHandle, pipeSlot: number): void {
+  if (!supervisorShouldSnapshotDrainedPipeReadProgress(handle, pipeSlot, true)) {
+    return;
+  }
   const snapshot = snapshotPipeSlotReadProgress(handle, pipeSlot);
   if (snapshot === null) {
     return;
@@ -311,13 +393,16 @@ export function drainHiddenProcessOutput(handle: ProcessHandle): boolean {
 export async function settleVisibleProcessOutput(
   handle: ProcessHandle,
   requestPipeStateSync: (handle: ProcessHandle, wakeWaiters?: boolean) => Promise<void>,
-  maxPasses = 4,
 ): Promise<boolean> {
+  const settlePlan = supervisorStdioOutputSettlePlan(
+    handle,
+    SUPERVISOR_STDIO_OUTPUT_SETTLE_KIND_VISIBLE,
+  );
   const visible = outputTarget(handle);
   let drainedAny = false;
   let stablePasses = 0;
 
-  for (let pass = 0; pass < maxPasses; pass += 1) {
+  for (let pass = 0; pass < settlePlan.maxPasses; pass += 1) {
     const preSyncDrained = drainProcessOutput(visible);
     if (preSyncDrained && visible.kernelWorkerRequest && visible.pid > 0) {
       await requestPipeStateSync(visible, false);
@@ -337,7 +422,7 @@ export async function settleVisibleProcessOutput(
     drainedAny ||= preSyncDrained || drained;
     if (!preSyncDrained && !drained && before === after) {
       stablePasses += 1;
-      if (stablePasses >= 2) {
+      if (stablePasses >= settlePlan.stablePasses) {
         break;
       }
       continue;
@@ -351,12 +436,15 @@ export async function settleVisibleProcessOutput(
 export async function settleInheritedChildOutput(
   child: ProcessHandle,
   requestPipeStateSync: (handle: ProcessHandle, wakeWaiters?: boolean) => Promise<void>,
-  maxPasses = 6,
 ): Promise<boolean> {
   const parent = child.stdioOwner;
   if (!parent) {
     return false;
   }
+  const settlePlan = supervisorStdioOutputSettlePlan(
+    child,
+    SUPERVISOR_STDIO_OUTPUT_SETTLE_KIND_INHERITED_CHILD,
+  );
   const inheritedSlots = inheritedOutputPipeSlots(parent);
   const slots = [stdioPipeSlotForFd(child, 1), stdioPipeSlotForFd(child, 2)]
     .filter((slot) => inheritedSlots.has(slot))
@@ -373,7 +461,7 @@ export async function settleInheritedChildOutput(
   }
   let stablePasses = 0;
 
-  for (let pass = 0; pass < maxPasses; pass += 1) {
+  for (let pass = 0; pass < settlePlan.maxPasses; pass += 1) {
     await requestPipeStateSync(child, false);
     const drainedParent = drainProcessOutput(parent);
     if (drainedParent && parent.kernelWorkerRequest && parent.pid > 0) {
@@ -393,7 +481,7 @@ export async function settleInheritedChildOutput(
     });
     if (settled) {
       stablePasses += 1;
-      if (stablePasses >= 2) {
+      if (stablePasses >= settlePlan.stablePasses) {
         break;
       }
       continue;
