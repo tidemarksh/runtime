@@ -261,6 +261,9 @@ export interface KernelExports {
   supervisor_fs_response_flag_store_pending_kernel_state?(): number;
   supervisor_fs_response_flag_resolved_to_execve_spawn?(): number;
   supervisor_fs_response_flag_process_owner_matches?(): number;
+  supervisor_fs_resident_page_evict_not_found?(): number;
+  supervisor_fs_resident_page_evict_dirty_pinned?(): number;
+  supervisor_fs_resident_page_evict_evicted?(): number;
   supervisor_signal_control_kind_boundary_check?(): number;
   supervisor_signal_control_kind_signal_delivered?(): number;
   supervisor_signal_control_kind_blocked_wait_interrupted?(): number;
@@ -489,6 +492,12 @@ export interface KernelExports {
     ownerAsyncStatus: number,
     lastStatus: number,
   ): number;
+  supervisor_fs_resident_page_slot_decision?(
+    existingSlot: number,
+    emptySlot: number,
+    cleanEvictSlot: number,
+  ): number;
+  supervisor_fs_resident_page_evict_status?(recordFound: number, dirty: number): number;
   supervisor_signal_control_record?(outPtr: number, outLen: number): number;
   supervisor_debug_snapshot?(outPtr: number, outLen: number): number;
   supervisor_thread_state_snapshot?(vmPtr: number, outPtr: number, outLen: number): number;
@@ -1447,6 +1456,9 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_response_flag_store_pending_kernel_state",
   "supervisor_fs_response_flag_resolved_to_execve_spawn",
   "supervisor_fs_response_flag_process_owner_matches",
+  "supervisor_fs_resident_page_evict_not_found",
+  "supervisor_fs_resident_page_evict_dirty_pinned",
+  "supervisor_fs_resident_page_evict_evicted",
   "supervisor_signal_control_kind_boundary_check",
   "supervisor_signal_control_kind_signal_delivered",
   "supervisor_signal_control_kind_blocked_wait_interrupted",
@@ -1555,6 +1567,8 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_clean_backing_range_read_length",
   "supervisor_fs_clean_backing_range_output_length",
   "supervisor_fs_response_disposition",
+  "supervisor_fs_resident_page_slot_decision",
+  "supervisor_fs_resident_page_evict_status",
   "supervisor_signal_control_record",
   "supervisor_debug_snapshot",
   "supervisor_thread_state_snapshot",

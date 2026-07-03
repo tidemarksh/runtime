@@ -19,6 +19,7 @@ import {
   supervisorBackingRetryLimit,
   type SupervisorPendingBackingFillRequest,
 } from "../fs/supervisor-backing-fill.js";
+import { supervisorResidentPageTableAuthority } from "../fs/supervisor-page-table.js";
 import {
   restoreThreadWorkerPrepareMemory,
   snapshotThreadWorkerPrepareMemory,
@@ -490,7 +491,9 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       if (page.length !== pageLen) {
         return false;
       }
-      if (!publishResidentPage(sab, request.ino, pageStart / DEFAULT_RESIDENT_PAGE_SIZE, page)) {
+      if (!publishResidentPage(sab, request.ino, pageStart / DEFAULT_RESIDENT_PAGE_SIZE, page, {
+        authority: supervisorResidentPageTableAuthority(processExports),
+      })) {
         return false;
       }
     }

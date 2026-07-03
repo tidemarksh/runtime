@@ -538,39 +538,67 @@ function findResidentPageRecordIndex(
   return -1;
 }
 
+export interface ResidentPagePublishSlotDecisionInput {
+  existingSlot: number;
+  emptySlot: number;
+  cleanEvictSlot: number;
+}
+
+export type ResidentPageEvictStatus = "evicted" | "dirty-pinned" | "not-found";
+
+export interface ResidentPageEvictionDecisionInput {
+  recordFound: boolean;
+  dirty: boolean;
+}
+
+export interface ResidentPageTableAuthority {
+  selectPublishSlot(input: ResidentPagePublishSlotDecisionInput): number;
+  decideEviction(input: ResidentPageEvictionDecisionInput): ResidentPageEvictStatus;
+}
+
 function allocateResidentPageRecordIndex(
   sab: SharedArrayBuffer,
   fileObjectId: number,
   generation: number,
   pageIndex: number,
+  authority: ResidentPageTableAuthority,
 ): number {
   const existing = findResidentPageRecordIndex(sab, fileObjectId, generation, pageIndex);
-  if (existing >= 0) {
-    return existing;
-  }
   const u32 = new Uint32Array(sab);
   const count = residentPageRecordCount(sab);
+  let emptyIndex = -1;
   let oldestIndex = -1;
   let oldestLastUsed = 0xffffffff;
-  for (let index = 0; index < count; index += 1) {
-    const base32 = residentPageRecordOffset(sab, index) >>> 2;
-    const flags = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2));
-    if ((flags & RESIDENT_PAGE_RECORD_FLAG_VALID) === 0) {
-      return index;
-    }
-    if ((flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) !== 0) {
-      continue;
-    }
-    const lastUsed = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_LAST_USED >>> 2));
-    if (lastUsed < oldestLastUsed) {
-      oldestIndex = index;
-      oldestLastUsed = lastUsed;
+  if (existing < 0) {
+    for (let index = 0; index < count; index += 1) {
+      const base32 = residentPageRecordOffset(sab, index) >>> 2;
+      const flags = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2));
+      if ((flags & RESIDENT_PAGE_RECORD_FLAG_VALID) === 0) {
+        emptyIndex = index;
+        break;
+      }
+      if ((flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) !== 0) {
+        continue;
+      }
+      const lastUsed = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_LAST_USED >>> 2));
+      if (lastUsed < oldestLastUsed) {
+        oldestIndex = index;
+        oldestLastUsed = lastUsed;
+      }
     }
   }
-  if (oldestIndex >= 0) {
-    clearResidentPageRecord(sab, oldestIndex);
+  const selected = authority.selectPublishSlot({
+    existingSlot: existing,
+    emptySlot: emptyIndex,
+    cleanEvictSlot: oldestIndex,
+  });
+  if (selected < 0 || selected >= count) {
+    return -1;
   }
-  return oldestIndex;
+  if (selected === oldestIndex && existing < 0 && emptyIndex < 0) {
+    clearResidentPageRecord(sab, selected);
+  }
+  return selected;
 }
 
 function clearResidentPageRecord(sab: SharedArrayBuffer, recordIndex: number): void {
@@ -608,6 +636,7 @@ export function evictResidentPage(
   sab: SharedArrayBuffer,
   ino: number,
   pageIndex: number,
+  authority: ResidentPageTableAuthority,
 ): "evicted" | "dirty-pinned" | "not-found" {
   if (
     !Number.isInteger(ino)
@@ -620,17 +649,21 @@ export function evictResidentPage(
   }
   const meta = readInodeMeta(sab, ino);
   if (!meta || meta.fileObjectId === 0) {
-    return "not-found";
+    return authority.decideEviction({ recordFound: false, dirty: false });
   }
   const recordIndex = findResidentPageRecordIndex(sab, meta.fileObjectId, meta.generation, pageIndex);
   if (recordIndex < 0) {
-    return "not-found";
+    return authority.decideEviction({ recordFound: false, dirty: false });
   }
   const u32 = new Uint32Array(sab);
   const base32 = residentPageRecordOffset(sab, recordIndex) >>> 2;
   const flags = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2));
-  if ((flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) !== 0) {
-    return "dirty-pinned";
+  const status = authority.decideEviction({
+    recordFound: true,
+    dirty: (flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) !== 0,
+  });
+  if (status !== "evicted") {
+    return status;
   }
   clearResidentPageRecord(sab, recordIndex);
   return "evicted";
@@ -645,7 +678,8 @@ export function publishResidentPage(
     dirty?: boolean;
     dirtyStart?: number;
     dirtyEnd?: number;
-  } = {},
+    authority: ResidentPageTableAuthority;
+  },
 ): boolean {
   if (
     !Number.isInteger(ino)
@@ -662,7 +696,13 @@ export function publishResidentPage(
   if (!meta || meta.fileObjectId === 0) {
     return false;
   }
-  const recordIndex = allocateResidentPageRecordIndex(sab, meta.fileObjectId, meta.generation, pageIndex);
+  const recordIndex = allocateResidentPageRecordIndex(
+    sab,
+    meta.fileObjectId,
+    meta.generation,
+    pageIndex,
+    options.authority,
+  );
   if (recordIndex < 0) {
     return false;
   }
@@ -835,7 +875,7 @@ export interface DirtyResidentPageDecision {
   generation: number;
 }
 
-export interface ResidentDirtyPageAuthority {
+export interface ResidentDirtyPageAuthority extends ResidentPageTableAuthority {
   decideWrite(input: DirtyResidentWriteDecisionInput): DirtyResidentPageDecision;
   decideTruncate(input: DirtyResidentTruncateDecisionInput): DirtyResidentPageDecision;
 }
@@ -1010,6 +1050,7 @@ export function markDirtyResidentFileDataClean(
   ino: number,
   fileObjectId: number,
   generation: number,
+  authority: ResidentPageTableAuthority,
 ): boolean {
   if (
     !Number.isInteger(ino)
@@ -1041,7 +1082,7 @@ export function markDirtyResidentFileDataClean(
     if (validBytes <= 0) {
       continue;
     }
-    if (!publishResidentPage(sab, ino, page.pageIndex, page.bytes.subarray(0, validBytes))) {
+    if (!publishResidentPage(sab, ino, page.pageIndex, page.bytes.subarray(0, validBytes), { authority })) {
       return false;
     }
   }
@@ -1150,6 +1191,7 @@ export function writeDirtyResidentFileData(
       dirty: true,
       dirtyStart: page.dirtyStart,
       dirtyEnd: page.dirtyEnd,
+      authority,
     });
     if (!published) {
       return -28;
@@ -1259,6 +1301,7 @@ export function truncateDirtyResidentFileData(
       dirty: true,
       dirtyStart: Math.min(page.dirtyStart, validBytes),
       dirtyEnd: Math.min(page.dirtyEnd, validBytes),
+      authority,
     });
     if (!published) {
       return -28;

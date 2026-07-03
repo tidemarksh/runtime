@@ -10,6 +10,7 @@ import {
   publishInode,
   readInodeRecord,
   readResidentFileData,
+  type ResidentPageTableAuthority,
 } from "../../../src/fs/sab-page-cache.js";
 import { createSha256VerifiedBackingSource } from "../../../src/kernel-worker/backing-source.js";
 import { createKernelWorkerFsState } from "../../../src/kernel-worker/fs-state.js";
@@ -17,6 +18,24 @@ import { createNodeHostFileBackingSource } from "../../../src/kernel-worker/host
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+const fakeSupervisorPageTableAuthority: ResidentPageTableAuthority = {
+  selectPublishSlot(input) {
+    if (input.existingSlot >= 0) {
+      return input.existingSlot;
+    }
+    if (input.emptySlot >= 0) {
+      return input.emptySlot;
+    }
+    return input.cleanEvictSlot >= 0 ? input.cleanEvictSlot : -1;
+  },
+  decideEviction(input) {
+    if (!input.recordFound) {
+      return "not-found";
+    }
+    return input.dirty ? "dirty-pinned" : "evicted";
+  },
+};
 
 type InodeRecord = {
   ino: number;
@@ -872,6 +891,24 @@ function makeKernelExports(): FakeKernelExports {
     supervisor_fs_dirty_page_decision_file_object_id: () => BigInt(lastDirtyPageDecision.fileObjectId),
     supervisor_fs_dirty_page_decision_generation: () => BigInt(lastDirtyPageDecision.generation),
     supervisor_fs_dirty_page_decision_flags: () => lastDirtyPageDecision.flags,
+    supervisor_fs_resident_page_evict_not_found: () => 0,
+    supervisor_fs_resident_page_evict_dirty_pinned: () => 1,
+    supervisor_fs_resident_page_evict_evicted: () => 2,
+    supervisor_fs_resident_page_slot_decision: (existingSlot, emptySlot, cleanEvictSlot) => {
+      if (existingSlot >= 0) {
+        return existingSlot;
+      }
+      if (emptySlot >= 0) {
+        return emptySlot;
+      }
+      return cleanEvictSlot >= 0 ? cleanEvictSlot : -1;
+    },
+    supervisor_fs_resident_page_evict_status: (recordFound, dirty) => {
+      if (recordFound === 0) {
+        return 0;
+      }
+      return dirty !== 0 ? 1 : 2;
+    },
     opLog,
     fileData: (path: string) => {
       const record = recordsByPath.get(normalizePath(path));
@@ -1282,7 +1319,7 @@ test("kernel-worker applies supervisor dirty write denial without publishing res
 
   expect(fsState.writeDirtyResidentFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(-28);
   expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("abcdef");
-  expect(evictResidentPage(sabPageCache, ino, 0)).toBe("not-found");
+  expect(evictResidentPage(sabPageCache, ino, 0, fakeSupervisorPageTableAuthority)).toBe("not-found");
 });
 
 test("kernel-worker dirty writes follow supervisor prepare decisions", () => {
@@ -1295,7 +1332,7 @@ test("kernel-worker dirty writes follow supervisor prepare decisions", () => {
 
   expect(fsState.writeDirtyResidentFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(-95);
   expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("abcdef");
-  expect(evictResidentPage(sabPageCache, ino, 0)).toBe("not-found");
+  expect(evictResidentPage(sabPageCache, ino, 0, fakeSupervisorPageTableAuthority)).toBe("not-found");
 
   canonicalExports.supervisor_fs_dirty_prepare_decision = originalPrepareDecision;
   expect(fsState.writeDirtyResidentFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(3);
@@ -1363,7 +1400,7 @@ test("kernel-worker does not write back when supervisor dirty flush says no-op",
   canonicalExports.supervisor_fs_dirty_page_decision_flags = () => 0;
 
   expect(fsState.flushDirtyResidentFileByInode(ino)).toBe(true);
-  expect(evictResidentPage(sabPageCache, ino, 0)).toBe("dirty-pinned");
+  expect(evictResidentPage(sabPageCache, ino, 0, fakeSupervisorPageTableAuthority)).toBe("dirty-pinned");
   expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("abcXYZ");
 });
 
@@ -1389,12 +1426,12 @@ test("kernel-worker flushes dirty resident pages to backing and leaves clean res
   const ino = canonicalExports.fileIno("/lib/runtime.bin");
   expect(ino).toBeGreaterThan(1);
   expect(fsState.writeDirtyResidentFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(3);
-  expect(evictResidentPage(sabPageCache, ino, 0)).toBe("dirty-pinned");
+  expect(evictResidentPage(sabPageCache, ino, 0, fakeSupervisorPageTableAuthority)).toBe("dirty-pinned");
 
   expect(fsState.flushDirtyResidentFileByInode(ino)).toBe(true);
   expect(new TextDecoder().decode(readResidentFileData(sabPageCache, ino, 0, 6) ?? new Uint8Array()))
     .toBe("abcXYZ");
-  expect(evictResidentPage(sabPageCache, ino, 0)).toBe("evicted");
+  expect(evictResidentPage(sabPageCache, ino, 0, fakeSupervisorPageTableAuthority)).toBe("evicted");
   expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("abcXYZ");
 });
 
@@ -1429,7 +1466,7 @@ test("kernel-worker flushes source-backed dirty resident ranges without full sou
   expect(sourceReads).toEqual([]);
   expect(new TextDecoder().decode(readResidentFileData(sabPageCache, ino, 0, 6) ?? new Uint8Array()))
     .toBe("abcXYZ");
-  expect(evictResidentPage(sabPageCache, ino, 0)).toBe("evicted");
+  expect(evictResidentPage(sabPageCache, ino, 0, fakeSupervisorPageTableAuthority)).toBe("evicted");
 
   expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 0, 6) ?? new Uint8Array()))
     .toBe("abcXYZ");
@@ -1467,7 +1504,7 @@ test("kernel-worker flush truncates source-backed dirty resident files to inode 
   expect(sourceReads).toEqual([]);
   expect(new TextDecoder().decode(readResidentFileData(sabPageCache, ino, 0, 3) ?? new Uint8Array()))
     .toBe("abc");
-  expect(evictResidentPage(sabPageCache, ino, 0)).toBe("evicted");
+  expect(evictResidentPage(sabPageCache, ino, 0, fakeSupervisorPageTableAuthority)).toBe("evicted");
 
   expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 0, 6) ?? new Uint8Array()))
     .toBe("abc");

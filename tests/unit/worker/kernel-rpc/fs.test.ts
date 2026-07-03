@@ -94,6 +94,21 @@ function makeKernel() {
     supervisor_fs_response_flag_store_pending_kernel_state: () => 64,
     supervisor_fs_response_flag_resolved_to_execve_spawn: () => 128,
     supervisor_fs_response_flag_process_owner_matches: () => 256,
+    supervisor_fs_resident_page_evict_not_found: () => 0,
+    supervisor_fs_resident_page_evict_dirty_pinned: () => 1,
+    supervisor_fs_resident_page_evict_evicted: () => 2,
+    supervisor_fs_resident_page_slot_decision: (existingSlot: number, emptySlot: number, cleanEvictSlot: number) => {
+      if (existingSlot >= 0) {
+        return existingSlot;
+      }
+      if (emptySlot >= 0) {
+        return emptySlot;
+      }
+      return cleanEvictSlot >= 0 ? cleanEvictSlot : -1;
+    },
+    supervisor_fs_resident_page_evict_status: (recordFound: number, dirty: number) => (
+      recordFound === 0 ? 0 : dirty !== 0 ? 1 : 2
+    ),
     supervisor_fs_completion_decision: (
       _vmPtr: number,
       opcode: number,

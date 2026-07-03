@@ -24,6 +24,7 @@ import {
   supervisorBackingRetryLimit,
   type SupervisorPendingBackingFillRequest,
 } from "../../fs/supervisor-backing-fill.js";
+import { supervisorResidentPageTableAuthority } from "../../fs/supervisor-page-table.js";
 import { captureExecveGuestHandoff, decodeExecveBytes, stageExecveGuestHandoff } from "./execve-handoff.js";
 import { captureVforkSnapshot, snapshotKernelShareOfdSlots } from "../fork-shared.js";
 import { activeKernelShareOfdIds, collectProcessHeldOfds } from "../ownership/ofd-table.js";
@@ -191,7 +192,12 @@ async function publishExecveBackingMissForHandoff(
     }
     const backingOffset = pageStart - alignedOffset;
     const page = response.data.subarray(backingOffset, backingOffset + pageLen);
-    if (page.length !== pageLen || !publishResidentPage(sab, miss.ino, pageStart / DEFAULT_RESIDENT_PAGE_SIZE, page)) {
+    if (
+      page.length !== pageLen
+      || !publishResidentPage(sab, miss.ino, pageStart / DEFAULT_RESIDENT_PAGE_SIZE, page, {
+        authority: supervisorResidentPageTableAuthority(handle.kernel),
+      })
+    ) {
       return false;
     }
   }

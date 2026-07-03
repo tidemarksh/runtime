@@ -37,6 +37,9 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_fs_response_flag_store_pending_kernel_state: 64,
   supervisor_fs_response_flag_resolved_to_execve_spawn: 128,
   supervisor_fs_response_flag_process_owner_matches: 256,
+  supervisor_fs_resident_page_evict_not_found: 0,
+  supervisor_fs_resident_page_evict_dirty_pinned: 1,
+  supervisor_fs_resident_page_evict_evicted: 2,
   supervisor_resume_kind_futex_wake: 1,
   supervisor_resume_kind_runnable_thread: 2,
   supervisor_blocked_resume_delegation_direct: 0,
@@ -290,6 +293,27 @@ export function makeSupervisorAbiStubs(
         disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_resolved_to_execve_spawn;
       }
       return disposition;
+    },
+    supervisor_fs_resident_page_slot_decision(_existingSlot: number, _emptySlot: number, _cleanEvictSlot: number) {
+      if (_existingSlot >= 0) {
+        return _existingSlot;
+      }
+      if (_emptySlot >= 0) {
+        return _emptySlot;
+      }
+      if (_cleanEvictSlot >= 0) {
+        return _cleanEvictSlot;
+      }
+      return -1;
+    },
+    supervisor_fs_resident_page_evict_status(_recordFound: number, _dirty: number) {
+      if (_recordFound === 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fs_resident_page_evict_not_found;
+      }
+      if (_dirty !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fs_resident_page_evict_dirty_pinned;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fs_resident_page_evict_evicted;
     },
     supervisor_blocked_wait_retry_delay_ms: () => 0,
     supervisor_blocked_wait_active_child_pid(this: KernelExports | undefined, vmPtr: number) {

@@ -423,6 +423,24 @@ function makeKernelExports(options: {
     supervisor_fs_backing_fill_mode_direct: () => 1,
     supervisor_fs_backing_fill_probe_direct: supervisorBackingFillProbeDirect,
     supervisor_fs_backing_fill_mode_decision: supervisorBackingFillModeDecision,
+    supervisor_fs_resident_page_evict_not_found: () => 0,
+    supervisor_fs_resident_page_evict_dirty_pinned: () => 1,
+    supervisor_fs_resident_page_evict_evicted: () => 2,
+    supervisor_fs_resident_page_slot_decision: (existingSlot, emptySlot, cleanEvictSlot) => {
+      if (existingSlot >= 0) {
+        return existingSlot;
+      }
+      if (emptySlot >= 0) {
+        return emptySlot;
+      }
+      return cleanEvictSlot >= 0 ? cleanEvictSlot : -1;
+    },
+    supervisor_fs_resident_page_evict_status: (recordFound, dirty) => {
+      if (recordFound === 0) {
+        return 0;
+      }
+      return dirty !== 0 ? 1 : 2;
+    },
     opLog,
   } as unknown as FakeKernelExports;
 }

@@ -16,6 +16,7 @@ import {
   publishResidentPage,
   readResidentFileData,
 } from "../fs/sab-page-cache.js";
+import { supervisorResidentPageTableAuthority } from "../fs/supervisor-page-table.js";
 import {
   preloadSnapshotEntries,
   resolveProcessCwdIno,
@@ -366,8 +367,9 @@ async function publishInterpResidentPages(
   interpPath: string | null,
   sabPageCache: SharedArrayBuffer | null | undefined,
   kernelWorkerRequest: NonNullable<CreateProcessOptions["kernelWorkerRequest"]> | undefined,
+  kernelExports: KernelExports | undefined,
 ): Promise<void> {
-  if (!interpPath || !sabPageCache || !kernelWorkerRequest) {
+  if (!interpPath || !sabPageCache || !kernelWorkerRequest || !kernelExports) {
     return;
   }
   const resolvedPath = resolveSnapshotPathFollowingSymlinks(entries, interpPath) ?? normalizeGuestPath(interpPath);
@@ -401,7 +403,9 @@ async function publishInterpResidentPages(
         `short PT_INTERP backing range: path=${resolvedPath} offset=${offset} length=${length} actual=${response.data.length}`,
       );
     }
-    if (!publishResidentPage(sabPageCache, ino, offset / DEFAULT_RESIDENT_PAGE_SIZE, response.data)) {
+    if (!publishResidentPage(sabPageCache, ino, offset / DEFAULT_RESIDENT_PAGE_SIZE, response.data, {
+      authority: supervisorResidentPageTableAuthority(kernelExports),
+    })) {
       throw new Error(`failed to publish PT_INTERP resident page: path=${resolvedPath} offset=${offset}`);
     }
   }
@@ -755,6 +759,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
         interpPath,
         options.sabPageCache,
         options.kernelWorkerRequest,
+        exports,
       );
     }
     const bootstrapEntriesRequireMaterializedData = entriesRequireMaterializedData(bootstrapEntries);

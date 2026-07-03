@@ -19,6 +19,7 @@ import {
   truncateDirtyResidentFileData,
   writeDirtyResidentFileData,
 } from "../fs/sab-page-cache.js";
+import { supervisorResidentPageTableAuthority } from "../fs/supervisor-page-table.js";
 import {
   ensureMemoryCapacityFor,
   MEMFS_S_IFMT,
@@ -401,7 +402,10 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (typeof decide !== "function") {
       throw new Error("missing supervisor_fs_dirty_page_decision export");
     }
+    const pageTableAuthority = supervisorResidentPageTableAuthority(sourceExports);
     return {
+      selectPublishSlot: pageTableAuthority.selectPublishSlot,
+      decideEviction: pageTableAuthority.decideEviction,
       decideWrite(input) {
         return readSupervisorDirtyPageDecision(
           sourceExports,
@@ -995,7 +999,13 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       stat = writeBackingFileRange(ino, range.offset, range.bytes);
     }
     stat = truncateBackingFile(ino, record.size);
-    const cleaned = markDirtyResidentFileDataClean(sab, ino, stat.fileObjectId, stat.generation);
+    const cleaned = markDirtyResidentFileDataClean(
+      sab,
+      ino,
+      stat.fileObjectId,
+      stat.generation,
+      supervisorResidentPageTableAuthority(deps.getCanonicalExports()),
+    );
     if (cleaned) {
       backingExtentsByIno.delete(ino);
       clearSeedBackingExtentForInode(ino);

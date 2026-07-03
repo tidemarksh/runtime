@@ -24,6 +24,21 @@ const RESIDENT_PAGE_RECORD_PAGE_INDEX = 8;
 const RESIDENT_PAGE_RECORD_GENERATION = 20;
 
 const fakeSupervisorDirtyPageAuthority: ResidentDirtyPageAuthority = {
+  selectPublishSlot(input) {
+    if (input.existingSlot >= 0) {
+      return input.existingSlot;
+    }
+    if (input.emptySlot >= 0) {
+      return input.emptySlot;
+    }
+    return input.cleanEvictSlot >= 0 ? input.cleanEvictSlot : -1;
+  },
+  decideEviction(input) {
+    if (!input.recordFound) {
+      return "not-found";
+    }
+    return input.dirty ? "dirty-pinned" : "evicted";
+  },
   decideWrite(input) {
     const end = input.offset + input.length;
     if (input.ino <= 0 || input.length <= 0 || end > 0xffffffff) {
@@ -83,7 +98,7 @@ test("page-cache imports reject unsafe Memory64 pointers without truncation", ()
     fileObjectId: 2,
     generation: 1,
   });
-  expect(publishResidentPage(sab, 2, 0, bytes)).toBe(true);
+  expect(publishResidentPage(sab, 2, 0, bytes, { authority: fakeSupervisorDirtyPageAuthority })).toBe(true);
 
   const unsafePtr = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
   expect(env.tidemark_page_cache_read(2, 0n, unsafePtr, bytes.length)).toBe(-14n);
@@ -107,7 +122,7 @@ test("page-cache imports accept safe Memory64 BigInt pointers", () => {
     fileObjectId: 2,
     generation: 1,
   });
-  expect(publishResidentPage(sab, 2, 0, bytes)).toBe(true);
+  expect(publishResidentPage(sab, 2, 0, bytes, { authority: fakeSupervisorDirtyPageAuthority })).toBe(true);
 
   expect(env.tidemark_page_cache_read(2, 0n, 32n, bytes.length)).toBe(BigInt(bytes.length));
   expect(Array.from(new Uint8Array(memory.buffer, 32, bytes.length))).toEqual(Array.from(bytes));
@@ -242,7 +257,7 @@ test("page-cache read uses resident pages filled by the status path", () => {
     generation: 1,
   });
 
-  expect(publishResidentPage(sab, 2, 0, backing)).toBe(true);
+  expect(publishResidentPage(sab, 2, 0, backing, { authority: fakeSupervisorDirtyPageAuthority })).toBe(true);
 
   const directEnv = createKernelEnv(memory, { sabPageCache: sab });
   expect(directEnv.tidemark_page_cache_read(2, 2n, 32, 3)).toBe(3n);
@@ -281,7 +296,7 @@ test("page-cache read rejects resident record identity changes inside the seqloc
     fileObjectId: 44,
     generation: 7,
   });
-  expect(publishResidentPage(sab, 2, 0, initial)).toBe(true);
+  expect(publishResidentPage(sab, 2, 0, initial, { authority: fakeSupervisorDirtyPageAuthority })).toBe(true);
 
   const u32 = new Uint32Array(sab);
   const u8 = new Uint8Array(sab);
@@ -329,14 +344,14 @@ test("page-cache clean resident eviction returns miss until status path refills"
     generation: 1,
   });
 
-  expect(publishResidentPage(sab, 2, 0, backing)).toBe(true);
+  expect(publishResidentPage(sab, 2, 0, backing, { authority: fakeSupervisorDirtyPageAuthority })).toBe(true);
   const directEnv = createKernelEnv(memory, { sabPageCache: sab });
 
   expect(directEnv.tidemark_page_cache_read(2, 1n, 32, 4)).toBe(4n);
   expect(Array.from(new Uint8Array(memory.buffer, 32, 4))).toEqual(Array.from(backing.subarray(1, 5)));
   expect(debugResidentPageCountForInode(sab, 2)).toBe(1);
 
-  expect(evictResidentPage(sab, 2, 0)).toBe("evicted");
+  expect(evictResidentPage(sab, 2, 0, fakeSupervisorDirtyPageAuthority)).toBe("evicted");
   expect(debugResidentPageCountForInode(sab, 2)).toBe(0);
 
   new Uint8Array(memory.buffer, 32, 4).fill(0);
@@ -344,7 +359,7 @@ test("page-cache clean resident eviction returns miss until status path refills"
 
   expect(directMissEnv.tidemark_page_cache_read(2, 1n, 32, 4)).toBe(-2n);
 
-  expect(publishResidentPage(sab, 2, 0, backing)).toBe(true);
+  expect(publishResidentPage(sab, 2, 0, backing, { authority: fakeSupervisorDirtyPageAuthority })).toBe(true);
 
   expect(directEnv.tidemark_page_cache_read(2, 1n, 32, 4)).toBe(4n);
   expect(Array.from(new Uint8Array(memory.buffer, 32, 4))).toEqual(Array.from(backing.subarray(1, 5)));
@@ -375,8 +390,8 @@ test("page-cache read can span resident pages filled by the status path", () => 
     generation: 1,
   });
 
-  expect(publishResidentPage(sab, 2, 0, backing.subarray(0, 4096))).toBe(true);
-  expect(publishResidentPage(sab, 2, 1, backing.subarray(4096))).toBe(true);
+  expect(publishResidentPage(sab, 2, 0, backing.subarray(0, 4096), { authority: fakeSupervisorDirtyPageAuthority })).toBe(true);
+  expect(publishResidentPage(sab, 2, 1, backing.subarray(4096), { authority: fakeSupervisorDirtyPageAuthority })).toBe(true);
 
   const directEnv = createKernelEnv(memory, { sabPageCache: sab });
   expect(directEnv.tidemark_page_cache_read(2, 512n, 64, 5000)).toBe(5000n);
@@ -455,7 +470,7 @@ test("page-cache write publishes dirty resident data without updating backing da
   expect(ownerEnv.tidemark_page_cache_read(2, 32n, 512, source.length)).toBe(BigInt(source.length));
   expect(new Uint8Array(memory.buffer, 512, source.length)).toEqual(source);
   expect(backing.slice(32, 32 + source.length)).toEqual(new Uint8Array(source.length));
-  expect(evictResidentPage(sab, 2, 0)).toBe("dirty-pinned");
+  expect(evictResidentPage(sab, 2, 0, fakeSupervisorDirtyPageAuthority)).toBe("dirty-pinned");
 
   expect(env.tidemark_page_cache_truncate(2, 40n)).toBe(0);
   new Uint8Array(memory.buffer, 512, source.length).fill(0);
@@ -500,16 +515,16 @@ test("page-cache capacity pressure preserves dirty resident pages", () => {
     generation: 1,
   });
 
-  expect(publishResidentPage(sab, 2, 0, dirty, { dirty: true })).toBe(true);
-  expect(publishResidentPage(sab, 3, 0, clean)).toBe(true);
+  expect(publishResidentPage(sab, 2, 0, dirty, { dirty: true, authority: fakeSupervisorDirtyPageAuthority })).toBe(true);
+  expect(publishResidentPage(sab, 3, 0, clean, { authority: fakeSupervisorDirtyPageAuthority })).toBe(true);
   expect(debugResidentPageCountForInode(sab, 2)).toBe(1);
   expect(debugResidentPageCountForInode(sab, 3)).toBe(1);
 
-  expect(publishResidentPage(sab, 4, 0, refill)).toBe(true);
+  expect(publishResidentPage(sab, 4, 0, refill, { authority: fakeSupervisorDirtyPageAuthority })).toBe(true);
 
   expect(debugResidentPageCountForInode(sab, 2)).toBe(1);
   expect(readResidentFileData(sab, 2, 0, dirty.length)).toEqual(dirty);
-  expect(evictResidentPage(sab, 2, 0)).toBe("dirty-pinned");
+  expect(evictResidentPage(sab, 2, 0, fakeSupervisorDirtyPageAuthority)).toBe("dirty-pinned");
   expect(debugResidentPageCountForInode(sab, 3)).toBe(0);
   expect(readResidentFileData(sab, 3, 0, clean.length)).toBeNull();
   expect(debugResidentPageCountForInode(sab, 4)).toBe(1);
@@ -530,7 +545,7 @@ test("publishInode preserves dirty residents across metadata-only updates", () =
     fileObjectId: 2,
     generation: 1,
   });
-  expect(publishResidentPage(sab, 2, 0, initial)).toBe(true);
+  expect(publishResidentPage(sab, 2, 0, initial, { authority: fakeSupervisorDirtyPageAuthority })).toBe(true);
   expect(writeDirtyResidentFileData(sab, 2, 1, dirty, undefined, fakeSupervisorDirtyPageAuthority))
     .toBe(dirty.length);
   expect(debugResidentPageCountForInode(sab, 2)).toBe(1);
@@ -690,14 +705,14 @@ test("live resident records use file object generation and fixed reusable frames
     generation: 7,
   });
 
-  expect(publishResidentPage(sab, 2, 0, backing.subarray(0, 4096))).toBe(true);
+  expect(publishResidentPage(sab, 2, 0, backing.subarray(0, 4096), { authority: fakeSupervisorDirtyPageAuthority })).toBe(true);
 
   const env = createKernelEnv(memory, { sabPageCache: sab });
   expect(env.tidemark_page_cache_read(2, 128n, 64, 16)).toBe(16n);
   expect(debugResidentPageCountForInode(sab, 2)).toBe(1);
   expect(new Uint8Array(memory.buffer, 64, 16)).toEqual(backing.slice(128, 144));
 
-  expect(publishResidentPage(sab, 2, 1, backing.subarray(4096))).toBe(true);
+  expect(publishResidentPage(sab, 2, 1, backing.subarray(4096), { authority: fakeSupervisorDirtyPageAuthority })).toBe(true);
   new Uint8Array(memory.buffer, 64, 16).fill(0);
   expect(env.tidemark_page_cache_read(2, 4096n, 64, 16)).toBe(16n);
   expect(debugResidentPageCountForInode(sab, 2)).toBe(1);
@@ -742,6 +757,6 @@ test("large page-cache SAB reserves metadata name space alongside resident frame
 
   expect(readInodeRecord(sab, 2)?.name).toEqual(encoder.encode(names[0]));
   expect(readInodeRecord(sab, 5001)?.name).toEqual(encoder.encode(names.at(-1)!));
-  expect(publishResidentPage(sab, 2, 0, new Uint8Array([1]))).toBe(true);
+  expect(publishResidentPage(sab, 2, 0, new Uint8Array([1]), { authority: fakeSupervisorDirtyPageAuthority })).toBe(true);
   expect(debugResidentPageCountForInode(sab, 2)).toBe(1);
 });
