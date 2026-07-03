@@ -110,29 +110,21 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
   }
 
-  function requireKernelWorkerBlockedResumeOutcome(
-    handle: ProcessHandle,
-  ): NonNullable<WorkerSchedulerDeps["executeHostBlockedSyscallResumeOutcome"]> | null {
-    const hostBlockedResume = deps.executeHostBlockedSyscallResumeOutcome;
-    if (hostBlockedResume !== undefined) {
-      return hostBlockedResume;
-    }
-    deps.failProcess(handle, new Error("kernel-worker blocked syscall resume requires executeHostBlockedSyscallResumeOutcome"));
-    return null;
-  }
-
-  function resumeBlockedSyscallViaKernelWorker(
+  function resumeBlockedSyscallViaResumeOutcome(
     handle: ProcessHandle,
     worker: Worker,
     blocked: HostBlockedWorkerState,
     lifecycleEvent: string,
     afterOutcome?: (outcome: KernelRpcResumeOutcome) => void,
+    requireKernelWorker = true,
   ): boolean {
-    if (!handle.kernelWorkerRequest || handle.pid <= 0) {
+    if (requireKernelWorker && (!handle.kernelWorkerRequest || handle.pid <= 0)) {
       return false;
     }
-    const hostBlockedResume = requireKernelWorkerBlockedResumeOutcome(handle);
-    if (hostBlockedResume === null) {
+    const hostBlockedResume = deps.executeHostBlockedSyscallResumeOutcome;
+    if (hostBlockedResume === undefined) {
+      const resumeSurface = requireKernelWorker ? "kernel-worker" : "host-boundary";
+      deps.failProcess(handle, new Error(`${resumeSurface} blocked syscall resume requires executeHostBlockedSyscallResumeOutcome`));
       return true;
     }
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, lifecycleEvent);
@@ -173,6 +165,13 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     enqueueWorker,
     pumpProcess,
   } = schedulerQueueHelpers;
+
+  function pumpProcessIfPipeWaitBlocked(handle: ProcessHandle, outcome: KernelRpcResumeOutcome): void {
+    if (outcome.kind === "blocked" && outcome.status === handle.kernel.abi_status_pipe_wait()) {
+      pumpProcess(handle);
+    }
+  }
+
   blockedWaitTimers = createBlockedWaitTimers({
     appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
     appendWorkerDebugLog,
@@ -474,30 +473,22 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
             handle.kernelWorkerRequest
             && handle.pid > 0
           ) {
-            resumeBlockedSyscallViaKernelWorker(
+            resumeBlockedSyscallViaResumeOutcome(
               handle,
               worker,
               latestBlocked,
               `pipe-retry-rpc:${handle.pid}`,
-              (outcome) => {
-                if (
-                  outcome.kind === "blocked"
-                  && outcome.status === handle.kernel.abi_status_pipe_wait()
-                ) {
-                  pumpProcess(handle);
-                }
-              },
+              (outcome) => pumpProcessIfPipeWaitBlocked(handle, outcome),
             );
             return;
           }
-          attachKernelRuntimeState(handle.kernel, handle.kernelState);
-          resumeBlockedSyscallBySupervisor(handle.kernel, latestBlocked.vmPtr);
-          handle.kernelState = readKernelRuntimeState(handle.kernel);
-          handleHostBlockedRetryResult(
+          resumeBlockedSyscallViaResumeOutcome(
             handle,
             worker,
-            latestBlocked.vmPtr,
-            handle.kernel.thread_status(latestBlocked.vmPtr),
+            latestBlocked,
+            `pipe-retry-host-boundary:${handle.pid}`,
+            (outcome) => pumpProcessIfPipeWaitBlocked(handle, outcome),
+            false,
           );
           return;
         }
@@ -530,7 +521,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     worker: Worker,
     blocked: HostBlockedWorkerState,
   ): void {
-    if (resumeBlockedSyscallViaKernelWorker(
+    if (resumeBlockedSyscallViaResumeOutcome(
       handle,
       worker,
       blocked,
@@ -544,11 +535,18 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return;
     }
 
-    attachKernelRuntimeState(handle.kernel, handle.kernelState);
-    resumeBlockedSyscallBySupervisor(handle.kernel, blocked.vmPtr);
-    handle.kernelState = readKernelRuntimeState(handle.kernel);
-    appendEpollRetryResult(handle, blocked.vmPtr);
-    handleHostBlockedRetryResult(handle, worker, blocked.vmPtr, handle.kernel.thread_status(blocked.vmPtr));
+    resumeBlockedSyscallViaResumeOutcome(
+      handle,
+      worker,
+      blocked,
+      `epoll-retry-resume-host-boundary:${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}`,
+      () => {
+        if (handle.workers.has(worker) && threadWorkerStates.has(worker)) {
+          appendEpollRetryResult(handle, blocked.vmPtr);
+        }
+      },
+      false,
+    );
   }
 
   function clearStaleWait4BlockedWorker(
@@ -1191,19 +1189,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
 
     switch (resumeDelegation) {
       case SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER:
-        resumeBlockedSyscallViaKernelWorker(
+        resumeBlockedSyscallViaResumeOutcome(
           handle,
           worker,
           blocked,
           `pipe-retry-rpc:${handle.pid}`,
-          (outcome) => {
-            if (
-              outcome.kind === "blocked"
-              && outcome.status === handle.kernel.abi_status_pipe_wait()
-            ) {
-              pumpProcess(handle);
-            }
-          }
+          (outcome) => pumpProcessIfPipeWaitBlocked(handle, outcome),
         );
         return;
       case SUPERVISOR_BLOCKED_RESUME_DELEGATION_WAIT4_KERNEL_WORKER:
@@ -1238,11 +1229,8 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       }
     }
 
-    if (blocked.status === handle.kernel.abi_status_pipe_wait()) {
-      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-retry-local:${handle.pid}`);
-    }
-    attachKernelRuntimeState(handle.kernel, handle.kernelState);
     if (blocked.status === handle.kernel.abi_status_wait4()) {
+      attachKernelRuntimeState(handle.kernel, handle.kernelState);
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `wait4-retry-local:${handle.pid}:0x${blocked.vmPtr.toString(16)}:records=supervisor`,
@@ -1253,11 +1241,20 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         handle.runtimeId,
         `wait4-retry-result:${handle.pid}:result=${wait4Result.toString()}:status=${handle.kernel.thread_status(blocked.vmPtr)}:a0=${handle.kernel.thread_a0?.(blocked.vmPtr)?.toString() ?? "n/a"}:records=supervisor`,
       );
-    } else {
-      resumeBlockedSyscallBySupervisor(handle.kernel, blocked.vmPtr);
+      handle.kernelState = readKernelRuntimeState(handle.kernel);
+      handleHostBlockedRetryResult(handle, worker, blocked.vmPtr, handle.kernel.thread_status(blocked.vmPtr));
+      return;
     }
-    handle.kernelState = readKernelRuntimeState(handle.kernel);
-    handleHostBlockedRetryResult(handle, worker, blocked.vmPtr, handle.kernel.thread_status(blocked.vmPtr));
+    resumeBlockedSyscallViaResumeOutcome(
+      handle,
+      worker,
+      blocked,
+      blocked.status === handle.kernel.abi_status_pipe_wait()
+        ? `pipe-retry-host-boundary:${handle.pid}`
+        : `blocked-retry-host-boundary:${handle.pid}:status=${blocked.status}`,
+      (outcome) => pumpProcessIfPipeWaitBlocked(handle, outcome),
+      false,
+    );
   }
 
   const schedulerStateSyncHelpers = createWorkerSchedulerStateSyncHelpers({

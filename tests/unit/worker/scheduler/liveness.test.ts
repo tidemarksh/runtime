@@ -2100,14 +2100,17 @@ test("socket poll is resumed immediately after network pump changes state", asyn
   kernel.thread_poll_wait_timeout = () => -1n;
   kernel.thread_poll_wait_ready_count = () => 0;
   kernel.thread_poll_wait_has_socket = () => 1;
-  kernel.thread_resume_blocked_syscall = vi.fn((vmPtr: number) => {
-    expect(vmPtr).toBe(0x1234);
-    status = kernel.abi_status_ok();
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    throw new Error("socket poll resume must be delegated through host-boundary outcome helper");
   });
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   handle.pendingChildSpawnRecords = 0;
   handle.networkConnections.set(3, {} as never);
   const pumpNetworkConnections = vi.fn(async () => true);
+  const executeHostBlockedSyscallResumeOutcome = vi.fn(async () => {
+    status = kernel.abi_status_ok();
+    return { kind: "completed" as const, status };
+  });
   const failProcess = vi.fn();
 
   const scheduler = createWorkerScheduler({
@@ -2116,6 +2119,7 @@ test("socket poll is resumed immediately after network pump changes state", asyn
     completeProcessExit: async () => {},
     failProcess,
     pumpNetworkConnections,
+    executeHostBlockedSyscallResumeOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2125,7 +2129,13 @@ test("socket poll is resumed immediately after network pump changes state", asyn
   await vi.advanceTimersByTimeAsync(2);
 
   expect(pumpNetworkConnections).toHaveBeenCalledWith(handle, 0x1234);
-  expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(0x1234);
+  expect(executeHostBlockedSyscallResumeOutcome).toHaveBeenCalledWith(
+    handle,
+    worker,
+    0x1234,
+    handle.kernel.abi_status_pipe_wait(),
+  );
+  expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handle.hostBlockedWorkers.has(worker)).toBe(false);
   expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "step" }));
   expect(failProcess).not.toHaveBeenCalled();
