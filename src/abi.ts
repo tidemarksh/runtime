@@ -353,6 +353,9 @@ export interface KernelExports {
   supervisor_state_sync_clear?(vmPtr: number, kind: number): number;
   supervisor_process_epoll_held_ofd?(vmPtr: number, index: number): number;
   supervisor_process_epoll_dependent_ofd?(vmPtr: number, index: number): number;
+  supervisor_process_sync_dependent_ofd?(vmPtr: number, index: number): number;
+  supervisor_process_epoll_dependent_sync_ofd?(vmPtr: number, index: number): number;
+  supervisor_process_epoll_depends_on_ofd?(vmPtr: number, ofdId: number): number;
   supervisor_blocked_epoll_watched_ofd?(vmPtr: number, index: number): number;
   supervisor_blocked_epoll_dependent_sync_ofd?(vmPtr: number, index: number): number;
   supervisor_blocked_epoll_watches_pipe?(vmPtr: number): number;
@@ -1662,6 +1665,9 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_state_sync_clear",
   "supervisor_process_epoll_held_ofd",
   "supervisor_process_epoll_dependent_ofd",
+  "supervisor_process_sync_dependent_ofd",
+  "supervisor_process_epoll_dependent_sync_ofd",
+  "supervisor_process_epoll_depends_on_ofd",
   "supervisor_blocked_epoll_watched_ofd",
   "supervisor_blocked_epoll_dependent_sync_ofd",
   "supervisor_blocked_epoll_watches_pipe",

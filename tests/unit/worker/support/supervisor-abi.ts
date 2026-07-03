@@ -581,6 +581,30 @@ export function makeSupervisorAbiStubs(
     }
     return [...dependentOfdIds];
   };
+  const processSyncDependentOfdIds = (
+    receiver: Partial<KernelExports>,
+    vmPtr: number,
+  ): number[] => {
+    const eventfdType = callNumber(receiver, "abi_fd_type_eventfd");
+    const timerfdType = callNumber(receiver, "abi_fd_type_timerfd");
+    return processHeldOfdIds(receiver, vmPtr)
+      .filter((ofdId) => {
+        const fdType = callNumber(receiver, "kernel_ofd_fd_type", ofdId);
+        return fdType === eventfdType || fdType === timerfdType;
+      });
+  };
+  const processEpollDependentSyncOfdIds = (
+    receiver: Partial<KernelExports>,
+    vmPtr: number,
+  ): number[] => {
+    const eventfdType = callNumber(receiver, "abi_fd_type_eventfd");
+    const timerfdType = callNumber(receiver, "abi_fd_type_timerfd");
+    return processEpollDependentOfdIds(receiver, vmPtr)
+      .filter((ofdId) => {
+        const fdType = callNumber(receiver, "kernel_ofd_fd_type", ofdId);
+        return fdType === eventfdType || fdType === timerfdType;
+      });
+  };
   let latestBackingFillSpan = { offset: 0, end: 0, length: 0 };
   const stubs = Object.fromEntries(
     requiredSupervisorRuntimeExportNames().map((name) => [
@@ -839,19 +863,33 @@ export function makeSupervisorAbiStubs(
     ) {
       return processEpollDependentOfdIds(currentExports(this), vmPtr)[index] ?? 0;
     },
+    supervisor_process_sync_dependent_ofd(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      index: number,
+    ) {
+      return processSyncDependentOfdIds(currentExports(this), vmPtr)[index] ?? 0;
+    },
+    supervisor_process_epoll_dependent_sync_ofd(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      index: number,
+    ) {
+      return processEpollDependentSyncOfdIds(currentExports(this), vmPtr)[index] ?? 0;
+    },
+    supervisor_process_epoll_depends_on_ofd(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      ofdId: number,
+    ) {
+      return processEpollDependentOfdIds(currentExports(this), vmPtr).includes(ofdId) ? 1 : 0;
+    },
     supervisor_blocked_epoll_dependent_sync_ofd(
       this: KernelExports | undefined,
       vmPtr: number,
       index: number,
     ) {
-      const receiver = currentExports(this);
-      const eventfdType = callNumber(receiver, "abi_fd_type_eventfd");
-      const timerfdType = callNumber(receiver, "abi_fd_type_timerfd");
-      return processEpollDependentOfdIds(receiver, vmPtr)
-        .filter((ofdId) => {
-          const fdType = callNumber(receiver, "kernel_ofd_fd_type", ofdId);
-          return fdType === eventfdType || fdType === timerfdType;
-        })[index] ?? 0;
+      return processEpollDependentSyncOfdIds(currentExports(this), vmPtr)[index] ?? 0;
     },
     supervisor_blocked_wait_wake_mask_for_sync(_source: number) {
       return supervisorWaitWakeMaskForSync(_source);

@@ -1,6 +1,6 @@
 import type { KernelWorkerFdEntrySnapshot } from "../../messages.js";
 import type { ProcessHandle } from "../types.js";
-import { collectHeldEpollDependentOfdIdsByType } from "./ofd-table.js";
+import { processEpollDependsOnOfd } from "./ofd-table.js";
 import {
   networkConnectionOfds,
   restoreNetworkOfdSlotWatermarks,
@@ -138,17 +138,8 @@ function fdEntryWouldClobberEpollDependentOfd(
   if (currentOfdId <= 0 || currentOfdId >= maxFds || currentOfdId === entry.ofdId) {
     return false;
   }
-  let currentType = 0;
   try {
-    currentType = handle.kernel.kernel_ofd_fd_type(currentOfdId);
-  } catch {
-    return false;
-  }
-  if (currentType === 0) {
-    return false;
-  }
-  try {
-    return collectHeldEpollDependentOfdIdsByType(handle, [currentType]).includes(currentOfdId);
+    return processEpollDependsOnOfd(handle, currentOfdId);
   } catch {
     return false;
   }

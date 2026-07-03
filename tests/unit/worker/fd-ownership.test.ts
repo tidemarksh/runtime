@@ -4,10 +4,12 @@ import {
 } from "../../../src/worker/fork-shared.js";
 import {
   activeKernelShareOfdIds,
-  collectHeldEpollDependentOfdIdsByType,
+  collectHeldEpollDependentSyncOfdIds,
   collectHeldEpollOfdIds,
   collectProcessHeldOfdRefcounts,
   collectProcessHeldOfds,
+  collectProcessSyncDependentOfdIds,
+  processEpollDependsOnOfd,
   trackForkSharedOfds,
 } from "../../../src/worker/ownership/ofd-table.js";
 import {
@@ -21,6 +23,8 @@ import type { ProcessHandle } from "../../../src/worker/types.js";
 
 const FD_TYPE_FILE = 1;
 const FD_TYPE_PIPE = 6;
+const FD_TYPE_EVENTFD = 9;
+const FD_TYPE_TIMERFD = 10;
 const FD_TYPE_PTY_MASTER = 11;
 const FD_TYPE_PTY_SLAVE = 12;
 
@@ -241,19 +245,29 @@ test("fd ownership helpers use supervisor process authority when available", () 
   const handle = makeHandle(kernel, memory);
   seedOfd(memory, handle.kernelState.ofdTablePtr, 7, FD_TYPE_FILE, 0, 0x71);
   seedOfd(memory, handle.kernelState.ofdTablePtr, 9, FD_TYPE_PIPE, 8, 0x91);
+  seedOfd(memory, handle.kernelState.ofdTablePtr, 10, FD_TYPE_EVENTFD, 0, 0xa1);
+  seedOfd(memory, handle.kernelState.ofdTablePtr, 12, FD_TYPE_TIMERFD, 0, 0xc1);
   kernel.setFdMap(new Map([[3, 11]]));
   kernel.supervisor_process_held_ofd_refcount = (_vmPtr, ofdId) => (
     ofdId === 7 ? 2 : ofdId === 9 ? 1 : 0
   );
   kernel.supervisor_process_epoll_held_ofd = (_vmPtr, index) => (index === 0 ? 7 : 0);
   kernel.supervisor_process_epoll_dependent_ofd = (_vmPtr, index) => (index === 0 ? 9 : 0);
+  kernel.supervisor_process_sync_dependent_ofd = (_vmPtr, index) => (
+    index === 0 ? 10 : index === 1 ? 12 : 0
+  );
+  kernel.supervisor_process_epoll_dependent_sync_ofd = (_vmPtr, index) => (index === 0 ? 9 : 0);
+  kernel.supervisor_process_epoll_depends_on_ofd = (_vmPtr, ofdId) => (ofdId === 9 ? 1 : 0);
 
   expect([...collectProcessHeldOfds(handle)].sort((left, right) => left - right)).toEqual([7, 9]);
   const heldRefcounts = collectProcessHeldOfdRefcounts(handle);
   expect(heldRefcounts[7]).toBe(2);
   expect(heldRefcounts[9]).toBe(1);
   expect(collectHeldEpollOfdIds(handle)).toEqual([7]);
-  expect(collectHeldEpollDependentOfdIdsByType(handle, [FD_TYPE_PIPE])).toEqual([9]);
+  expect(collectProcessSyncDependentOfdIds(handle)).toEqual([10, 12]);
+  expect(collectHeldEpollDependentSyncOfdIds(handle)).toEqual([9]);
+  expect(processEpollDependsOnOfd(handle, 9)).toBe(true);
+  expect(processEpollDependsOnOfd(handle, 10)).toBe(false);
 });
 
 test("collectProcessHeldOfds skips implausible or unreadable thread slots from corrupted process state", () => {

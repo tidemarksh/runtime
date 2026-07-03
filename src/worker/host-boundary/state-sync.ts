@@ -24,9 +24,9 @@ import {
   type SupervisorBlockedWaitWakeSource,
 } from "../../supervisor-blocked-resume.js";
 import {
-  collectHeldEpollDependentOfdIdsByType,
+  collectHeldEpollDependentSyncOfdIds,
   collectHeldEpollOfdIds,
-  collectHeldOfdIdsByType,
+  collectProcessSyncDependentOfdIds,
 } from "../ownership/ofd-table.js";
 import { kernelWorkerOwnsEpollState } from "../ownership/epoll-control.js";
 import { composeHandlePipeUsed, kernelWorkerOwnsPipeState } from "../ownership/pipe-control.js";
@@ -308,14 +308,9 @@ export function createWorkerSchedulerStateSyncHelpers(
       return Promise.resolve();
     }
 
-    const dependentOfdTypes = [
-      handle.kernel.abi_fd_type_eventfd?.() ?? 9,
-      handle.kernel.abi_fd_type_timerfd?.() ?? 10,
-    ].filter((fdType): fdType is number => typeof fdType === "number");
-
     const dependentOfdIds = new Set([
-      ...collectHeldOfdIdsByType(handle, dependentOfdTypes),
-      ...collectHeldEpollDependentOfdIdsByType(handle, dependentOfdTypes),
+      ...collectProcessSyncDependentOfdIds(handle),
+      ...collectHeldEpollDependentSyncOfdIds(handle),
       ...additionalOfdIds,
     ]);
     if (options.mode === "pull") {
