@@ -1,9 +1,4 @@
 import {
-  attachKernelRuntimeState,
-  readKernelRuntimeState,
-} from "../../abi.js";
-import {
-  resumeBlockedSyscallBySupervisor,
   supervisorBlockedPipeResumeAction,
   supervisorBlockedPipeSyncBeforeRetryAction,
   supervisorBlockedPipeSyncBeforeRetryClear,
@@ -516,6 +511,15 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     );
   }
 
+  function appendWait4RetryResult(handle: ProcessHandle, vmPtr: number): void {
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `wait4-retry-result:${handle.pid}:result=${handle.kernel.thread_a0?.(vmPtr)?.toString() ?? "n/a"}`
+        + `:status=${handle.kernel.thread_status(vmPtr)}`
+        + `:a0=${handle.kernel.thread_a0?.(vmPtr)?.toString() ?? "n/a"}:records=supervisor`,
+    );
+  }
+
   function resumeEpollWait(
     handle: ProcessHandle,
     worker: Worker,
@@ -641,19 +645,18 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       }
     }
 
-    attachKernelRuntimeState(handle.kernel, handle.kernelState);
-    deps.appendRuntimeLifecycleEvent(
-      handle.runtimeId,
-      `wait4-retry-local:${handle.pid}:0x${blocked.vmPtr.toString(16)}:records=supervisor`,
+    resumeBlockedSyscallViaResumeOutcome(
+      handle,
+      worker,
+      blocked,
+      `wait4-retry-host-boundary:${handle.pid}:0x${blocked.vmPtr.toString(16)}:records=supervisor`,
+      () => {
+        if (handle.workers.has(worker) && threadWorkerStates.has(worker)) {
+          appendWait4RetryResult(handle, blocked.vmPtr);
+        }
+      },
+      false,
     );
-    const rawWait4Result = resumeBlockedSyscallBySupervisor(handle.kernel, blocked.vmPtr);
-    const wait4Result = rawWait4Result ?? 0n;
-    handle.kernelState = readKernelRuntimeState(handle.kernel);
-    deps.appendRuntimeLifecycleEvent(
-      handle.runtimeId,
-      `wait4-retry-result:${handle.pid}:result=${wait4Result.toString()}:status=${handle.kernel.thread_status(blocked.vmPtr)}:a0=${handle.kernel.thread_a0?.(blocked.vmPtr)?.toString() ?? "n/a"}:records=supervisor`,
-    );
-    handleHostBlockedRetryResult(handle, worker, blocked.vmPtr, handle.kernel.thread_status(blocked.vmPtr));
   }
 
   function blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void {
@@ -1229,22 +1232,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       }
     }
 
-    if (blocked.status === handle.kernel.abi_status_wait4()) {
-      attachKernelRuntimeState(handle.kernel, handle.kernelState);
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `wait4-retry-local:${handle.pid}:0x${blocked.vmPtr.toString(16)}:records=supervisor`,
-      );
-      const rawWait4Result = resumeBlockedSyscallBySupervisor(handle.kernel, blocked.vmPtr);
-      const wait4Result = rawWait4Result ?? 0n;
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `wait4-retry-result:${handle.pid}:result=${wait4Result.toString()}:status=${handle.kernel.thread_status(blocked.vmPtr)}:a0=${handle.kernel.thread_a0?.(blocked.vmPtr)?.toString() ?? "n/a"}:records=supervisor`,
-      );
-      handle.kernelState = readKernelRuntimeState(handle.kernel);
-      handleHostBlockedRetryResult(handle, worker, blocked.vmPtr, handle.kernel.thread_status(blocked.vmPtr));
-      return;
-    }
     resumeBlockedSyscallViaResumeOutcome(
       handle,
       worker,

@@ -355,6 +355,25 @@ async function flushMicrotasks(count: number): Promise<void> {
   }
 }
 
+function makeHostBoundaryWait4ResumeOutcome() {
+  return vi.fn(async (
+    handle: ProcessHandle,
+    worker: Worker,
+    vmPtr: number,
+    _status: number,
+  ) => {
+    handle.kernel.supervisor_resume_blocked_syscall?.(vmPtr, 0);
+    const blocked = handle.hostBlockedWorkers.get(worker);
+    if (blocked && blocked.vmPtr === vmPtr) {
+      blocked.rpcPending = false;
+    }
+    return {
+      kind: "completed" as const,
+      status: handle.kernel.thread_status(vmPtr),
+    };
+  });
+}
+
 function makeThreadState(vmPtr: number): ThreadWorkerState {
   return {
     vmPtr,
@@ -1247,6 +1266,7 @@ test("wait4 retry does not gate on local child spawn bookkeeping", async () => {
   const retryReason = vi.fn(kernel.supervisor_blocked_wait_retry_reason);
   kernel.supervisor_blocked_wait_retry_reason = retryReason;
   const handle = makeHandle(kernel, worker, threadWorkerStates);
+  const executeHostBlockedSyscallResumeOutcome = makeHostBoundaryWait4ResumeOutcome();
 
   const lifecycleEvents: string[] = [];
   const scheduler = createWorkerScheduler({
@@ -1259,15 +1279,23 @@ test("wait4 retry does not gate on local child spawn bookkeeping", async () => {
       lifecycleEvents.push(`fail:${error.message}`);
       throw error;
     },
+    executeHostBlockedSyscallResumeOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
   });
 
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_wait4(), 0x1234);
+  await flushMicrotasks(2);
   expect(retryReason).not.toHaveBeenCalledWith(
     0x1234,
     kernel.supervisor_blocked_wait_retry_flag_process_gate(),
+  );
+  expect(executeHostBlockedSyscallResumeOutcome).toHaveBeenCalledWith(
+    handle,
+    worker,
+    0x1234,
+    handle.kernel.abi_status_wait4(),
   );
   expect(threadResumeWait4).toHaveBeenCalledWith(0x1234);
   expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
@@ -2504,6 +2532,7 @@ test("wait4 retry resumes without waiting for a fork-shared sync gate", async ()
   handle.forkSharedSyncPromise = forkSharedSync;
   handle.kernelShare.forkSharedSyncPromise = forkSharedSync;
   const lifecycleEvents: string[] = [];
+  const executeHostBlockedSyscallResumeOutcome = makeHostBoundaryWait4ResumeOutcome();
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: (_runtimeId, event) => {
@@ -2512,6 +2541,7 @@ test("wait4 retry resumes without waiting for a fork-shared sync gate", async ()
     threadWorkerStates,
     completeProcessExit: async () => {},
     failProcess: () => {},
+    executeHostBlockedSyscallResumeOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2519,7 +2549,14 @@ test("wait4 retry resumes without waiting for a fork-shared sync gate", async ()
 
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_wait4(), 0x1234);
   await vi.advanceTimersByTimeAsync(11);
+  await flushMicrotasks(2);
 
+  expect(executeHostBlockedSyscallResumeOutcome).toHaveBeenCalledWith(
+    handle,
+    worker,
+    0x1234,
+    handle.kernel.abi_status_wait4(),
+  );
   expect(threadResumeWait4).toHaveBeenCalledWith(0x1234);
   expect(handle.hostBlockedWorkers.has(worker)).toBe(false);
 });
@@ -2551,6 +2588,7 @@ test("wait4 retry clears a stale fork-shared sync source before retrying", async
   handle.forkSharedSyncPromise = forkSharedSync;
   handle.kernelShare.forkSharedSyncPromise = forkSharedSync;
   const lifecycleEvents: string[] = [];
+  const executeHostBlockedSyscallResumeOutcome = makeHostBoundaryWait4ResumeOutcome();
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: (_runtimeId, event) => {
@@ -2559,6 +2597,7 @@ test("wait4 retry clears a stale fork-shared sync source before retrying", async
     threadWorkerStates,
     completeProcessExit: async () => {},
     failProcess: () => {},
+    executeHostBlockedSyscallResumeOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2566,6 +2605,7 @@ test("wait4 retry clears a stale fork-shared sync source before retrying", async
 
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_wait4(), 0x1234);
   await vi.advanceTimersByTimeAsync(11);
+  await flushMicrotasks(2);
 
   expect(handle.forkSharedSyncPromise).toBeNull();
   expect(handle.kernelShare.forkSharedSyncPromise).toBeNull();
@@ -2573,6 +2613,12 @@ test("wait4 retry clears a stale fork-shared sync source before retrying", async
     event.startsWith("wait4-retry-cleared:1:fork-shared-sync-stale-source:")
     && event.includes(":owner=1:src=0x9999:reason=owned-ofd:targets=5"),
   )).toBe(true);
+  expect(executeHostBlockedSyscallResumeOutcome).toHaveBeenCalledWith(
+    handle,
+    worker,
+    0x1234,
+    handle.kernel.abi_status_wait4(),
+  );
   expect(threadResumeWait4).toHaveBeenCalledWith(0x1234);
 });
 
@@ -2603,6 +2649,7 @@ test("wait4 retry clears an empty-target fork-shared sync gate before retrying",
   handle.forkSharedSyncPromise = forkSharedSync;
   handle.kernelShare.forkSharedSyncPromise = forkSharedSync;
   const lifecycleEvents: string[] = [];
+  const executeHostBlockedSyscallResumeOutcome = makeHostBoundaryWait4ResumeOutcome();
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: (_runtimeId, event) => {
@@ -2611,6 +2658,7 @@ test("wait4 retry clears an empty-target fork-shared sync gate before retrying",
     threadWorkerStates,
     completeProcessExit: async () => {},
     failProcess: () => {},
+    executeHostBlockedSyscallResumeOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2618,6 +2666,7 @@ test("wait4 retry clears an empty-target fork-shared sync gate before retrying",
 
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_wait4(), 0x1234);
   await vi.advanceTimersByTimeAsync(11);
+  await flushMicrotasks(2);
 
   expect(handle.forkSharedSyncPromise).toBeNull();
   expect(handle.kernelShare.forkSharedSyncPromise).toBeNull();
@@ -2625,6 +2674,12 @@ test("wait4 retry clears an empty-target fork-shared sync gate before retrying",
     event.startsWith("wait4-retry-cleared:1:fork-shared-sync-empty-targets:")
     && event.includes(":owner=1:src=0x9999:reason=blocked-rpc:targets=none"),
   )).toBe(true);
+  expect(executeHostBlockedSyscallResumeOutcome).toHaveBeenCalledWith(
+    handle,
+    worker,
+    0x1234,
+    handle.kernel.abi_status_wait4(),
+  );
   expect(threadResumeWait4).toHaveBeenCalledWith(0x1234);
 });
 
@@ -2689,12 +2744,14 @@ test("wait4 retry does not park behind a pending fork-shared sync gate", async (
   const forkSharedSync = new Promise<void>(() => {});
   handle.forkSharedSyncPromise = forkSharedSync;
   handle.kernelShare.forkSharedSyncPromise = forkSharedSync;
+  const executeHostBlockedSyscallResumeOutcome = makeHostBoundaryWait4ResumeOutcome();
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
     threadWorkerStates,
     completeProcessExit: async () => {},
     failProcess: () => {},
+    executeHostBlockedSyscallResumeOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2702,7 +2759,14 @@ test("wait4 retry does not park behind a pending fork-shared sync gate", async (
 
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_wait4(), 0x1234);
   await vi.advanceTimersByTimeAsync(11);
+  await flushMicrotasks(2);
 
+  expect(executeHostBlockedSyscallResumeOutcome).toHaveBeenCalledWith(
+    handle,
+    worker,
+    0x1234,
+    handle.kernel.abi_status_wait4(),
+  );
   expect(threadResumeWait4).toHaveBeenCalledWith(0x1234);
   expect(handle.hostBlockedWorkers.has(worker)).toBe(false);
 });
@@ -2722,6 +2786,7 @@ test("wait4 retry re-enters supervisor direct resume until wait4 is reaped", asy
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   handle.pendingChildSpawnRecords = 0;
   const lifecycleEvents: string[] = [];
+  const executeHostBlockedSyscallResumeOutcome = makeHostBoundaryWait4ResumeOutcome();
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: (_runtimeId, event) => {
@@ -2730,6 +2795,7 @@ test("wait4 retry re-enters supervisor direct resume until wait4 is reaped", asy
     threadWorkerStates,
     completeProcessExit: async () => {},
     failProcess: () => {},
+    executeHostBlockedSyscallResumeOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -2737,10 +2803,12 @@ test("wait4 retry re-enters supervisor direct resume until wait4 is reaped", asy
 
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_wait4(), 0x1234);
   await vi.advanceTimersByTimeAsync(11);
+  await flushMicrotasks(2);
   await vi.advanceTimersByTimeAsync(11);
+  await flushMicrotasks(2);
 
   expect(threadResumeWait4.mock.calls.length).toBeGreaterThanOrEqual(2);
-  expect(lifecycleEvents.filter((event) => event.startsWith("wait4-retry-local:1:0x1234:records=supervisor")).length)
+  expect(lifecycleEvents.filter((event) => event.startsWith("wait4-retry-host-boundary:1:0x1234:records=supervisor")).length)
     .toBeGreaterThanOrEqual(2);
 });
 
@@ -3202,12 +3270,14 @@ test("wait4 retry reaches supervisor even while another worker is marked running
   handle.runningWorker = runningWorker;
   const notify = new Int32Array(handle.runtimeBridge.notifySab);
   const notifyBefore = Atomics.load(notify, 0);
+  const executeHostBlockedSyscallResumeOutcome = makeHostBoundaryWait4ResumeOutcome();
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
     threadWorkerStates,
     completeProcessExit: async () => {},
     failProcess: () => {},
+    executeHostBlockedSyscallResumeOutcome,
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -3215,7 +3285,14 @@ test("wait4 retry reaches supervisor even while another worker is marked running
 
   scheduler.blockWorker(handle, blockedWorker, handle.kernel.abi_status_wait4(), 0x1234);
   await vi.advanceTimersByTimeAsync(11);
+  await flushMicrotasks(2);
 
+  expect(executeHostBlockedSyscallResumeOutcome).toHaveBeenCalledWith(
+    handle,
+    blockedWorker,
+    0x1234,
+    handle.kernel.abi_status_wait4(),
+  );
   expect(threadResumeWait4).toHaveBeenCalledWith(0x1234);
   expect(Atomics.load(notify, 0)).toBe(notifyBefore);
   expect(handle.hostBlockedWorkers.has(blockedWorker)).toBe(true);
