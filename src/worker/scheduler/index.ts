@@ -967,6 +967,29 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     handleHostBlockedRetryResult(handle, worker, blocked.vmPtr, handle.kernel.thread_status(blocked.vmPtr));
   }
 
+  function clearStaleWait4BlockedWorker(
+    handle: ProcessHandle,
+    worker: Worker,
+    blocked: HostBlockedWorkerState,
+  ): boolean {
+    const currentStatus = handle.kernel.thread_status(blocked.vmPtr);
+    if (currentStatus === handle.kernel.abi_status_wait4()) {
+      return false;
+    }
+    if (
+      currentStatus !== handle.kernel.abi_status_ok()
+      && currentStatus !== handle.kernel.abi_status_fault()
+    ) {
+      return false;
+    }
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `wait4-retry-stale:${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}:status=${currentStatus}`,
+    );
+    handleHostBlockedRetryResult(handle, worker, blocked.vmPtr, currentStatus);
+    return true;
+  }
+
   function resumeWait4BlockedWorker(
     handle: ProcessHandle,
     worker: Worker,
@@ -978,6 +1001,10 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       if (staleGate !== null) {
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-cleared:${handle.pid}:${staleGate}`);
       }
+    }
+
+    if (clearStaleWait4BlockedWorker(handle, worker, blocked)) {
+      return;
     }
 
     let resumeDelegation: ReturnType<typeof supervisorBlockedResumeDelegation>;
@@ -1011,6 +1038,9 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       case SUPERVISOR_BLOCKED_RESUME_DELEGATION_DIRECT:
         break;
       case SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED:
+        if (clearStaleWait4BlockedWorker(handle, worker, blocked)) {
+          return;
+        }
         deps.failProcess(
           handle,
           new Error(`kernel supervisor rejected wait4 resume delegation for pid ${handle.pid}`),

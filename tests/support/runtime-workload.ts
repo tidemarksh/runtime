@@ -245,9 +245,11 @@ export async function spawnWithOutput(
           const preview = output.length > TIMEOUT_OUTPUT_PREVIEW_BYTES
             ? `${output.slice(0, TIMEOUT_OUTPUT_PREVIEW_BYTES)}<truncated ${output.length - TIMEOUT_OUTPUT_PREVIEW_BYTES} chars>`
             : output;
+          const debugInfo = proc.debugInfo?.();
           reject(new Error([
             `timeout after ${timeoutMs}ms`,
             preview ? `capturedOutput=${JSON.stringify(preview)}` : "",
+            debugInfo ? `debugInfo=${debugInfo}` : "",
           ].filter(Boolean).join("\n")));
         }, timeoutMs);
         if (typeof timeoutId === "object" && timeoutId !== null && "unref" in timeoutId) {

@@ -70,6 +70,7 @@ import {
   type KernelRpcResumeEffect,
   type KernelRpcResumeOutcome,
 } from "./outcomes.js";
+import { submitSupervisorShadowStatusEvent } from "../supervisor-shadow.js";
 import { expectKernelWorkerResponse } from "./transport.js";
 
 const FS_DEBUG_PATH_BUF_LEN = 4096;
@@ -229,6 +230,30 @@ function readPendingFsContext(handle: ProcessHandle, vmPtr: number): PendingFsCo
     path: readPendingFsPath(handle, vmPtr),
     secondaryPath: readPendingFsPath(handle, vmPtr, true),
   };
+}
+
+function submitSupervisorFsReadyEvent(
+  handle: ProcessHandle,
+  vmPtr: number,
+  status: number | undefined,
+): void {
+  if (status !== handle.kernel.abi_status_ok()) {
+    return;
+  }
+  const result = submitSupervisorShadowStatusEvent(handle, {
+    eventKind: handle.kernel.supervisor_thread_event_kind_backing_store_ready?.(),
+    vmPtr,
+    pid: handle.pid,
+    tid: handle.kernel.thread_tid?.(vmPtr) ?? 0,
+    status,
+    syncEffects: 0,
+    blockedReason: 0,
+    pc: handle.kernel.thread_pc?.(vmPtr) ?? 0n,
+    sp: handle.kernel.thread_sp?.(vmPtr) ?? 0n,
+  });
+  if (result !== undefined && result < 0) {
+    deps.appendWorkerDebugLog(handle, `supervisor-fs-ready-event:submit-error:${result}`);
+  }
 }
 
 function formatPendingFsDebugSuffix(context: PendingFsContext): string {
@@ -1262,6 +1287,7 @@ async function resumeFsViaKernelWorkerInner(
       return completedKernelRpcOutcome(undefined, effects);
     }
     applyLocalPostFsWake();
+    submitSupervisorFsReadyEvent(handle, vmPtr, finalStatus);
     effects.push({ kind: "enqueue-worker" });
     return completedKernelRpcOutcome(finalStatus, effects);
   }
@@ -1556,6 +1582,7 @@ async function resumeFsViaKernelWorkerInner(
       return completedKernelRpcOutcome(undefined, effects);
     }
     await applyPostFsWake();
+    submitSupervisorFsReadyEvent(handle, vmPtr, finalStatus);
     effects.push({ kind: "enqueue-worker" });
     return completedKernelRpcOutcome(finalStatus, effects);
   } catch (error) {

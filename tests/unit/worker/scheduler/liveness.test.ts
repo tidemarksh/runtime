@@ -1169,6 +1169,54 @@ test("wait4 retry delegates to kernel worker when kernel-worker support is avail
   expect(handle.hostBlockedWorkers.has(worker)).toBe(true);
 });
 
+test("wait4 retry clears stale blocked state when kernel status is already ok", async () => {
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, makeThreadState(0x1234));
+  const { exports: kernel, threadResumeWait4 } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_ok();
+  const resumeDelegation = vi.fn(kernel.supervisor_blocked_resume_delegation);
+  kernel.supervisor_blocked_resume_delegation = resumeDelegation;
+  const handle = makeHandle(kernel, worker, threadWorkerStates);
+  handle.pendingChildSpawnRecords = 0;
+  handle.kernelWorkerRequest = vi.fn(async () => {
+    throw new Error("stale wait4 must not delegate to the kernel worker");
+  });
+  const lifecycleEvents: string[] = [];
+  const failProcess = vi.fn((_handle: ProcessHandle, error: Error) => {
+    throw error;
+  });
+  const resumeWait4ViaKernelWorker = vi.fn(async () => ({ kind: "completed" as const }));
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      lifecycleEvents.push(event);
+    },
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess,
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker,
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.blockWorker(handle, worker, handle.kernel.abi_status_wait4(), 0x1234);
+
+  expect(handle.hostBlockedWorkers.has(worker)).toBe(false);
+  expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+  expect(lifecycleEvents).toContain("wait4-retry-stale:1:vm=0x1234:status=0");
+  expect(lifecycleEvents).toContain("wait4-resumed-supervisor:1");
+  expect(resumeDelegation).not.toHaveBeenCalled();
+  expect(resumeWait4ViaKernelWorker).not.toHaveBeenCalled();
+  expect(threadResumeWait4).not.toHaveBeenCalled();
+  expect(failProcess).not.toHaveBeenCalled();
+});
+
 test("epoll retry wakes a running worker instead of resuming under it", async () => {
   const blockedWorker = {
     postMessage: vi.fn(),

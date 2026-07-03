@@ -13,6 +13,7 @@ import type { ThreadWorkerOutbound } from "../../messages.js";
 import type { WorkerMessageHandlerDeps } from "./types.js";
 import { readProcessPidField } from "../diagnostics/format.js";
 import { createWorkerOwnershipGuard } from "../ownership/process-state.js";
+import { submitSupervisorShadowStatusEvent } from "../supervisor-shadow.js";
 
 function formatDebugError(error: unknown): string {
   return error instanceof Error ? (error.stack ?? error.message) : String(error);
@@ -188,6 +189,20 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
       thread.initialized = true;
       thread.waitingInWorkerStatus = null;
       deps.clearBlockedWorker(handle, worker);
+      const readyThreadEventResult = submitSupervisorShadowStatusEvent(handle, {
+        sequence: thread.statusCount,
+        vmPtr: thread.vmPtr,
+        pid: handle.pid,
+        tid: handle.kernel.thread_tid?.(thread.vmPtr) ?? 0,
+        status: handle.kernel.abi_status_ok(),
+        syncEffects: 0,
+        blockedReason: 0,
+        pc: handle.kernel.thread_pc(thread.vmPtr),
+        sp: handle.kernel.thread_sp(thread.vmPtr),
+      });
+      if (readyThreadEventResult !== undefined && readyThreadEventResult < 0) {
+        deps.appendWorkerDebugLog(handle, `supervisor-ready-event:submit-error:${readyThreadEventResult}`);
+      }
       const wroteToPipe = flushStdin(handle);
       const drainedPipe = kernelWorkerOwnsPipeState(handle) ? false : drainProcessOutput(handle);
       const readySyncs: Promise<void>[] = [];

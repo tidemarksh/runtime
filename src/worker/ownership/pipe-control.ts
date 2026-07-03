@@ -561,6 +561,21 @@ export function processHasPipeFd(handle: ProcessHandle, vmPtr: number): boolean 
   return false;
 }
 
+function currentFsWaitNeedsPipeRefresh(handle: ProcessHandle, vmPtr: number): boolean {
+  const pendingRingRequest = handle.kernel.supervisor_fs_pending_ring_request?.(vmPtr);
+  if (pendingRingRequest === undefined || pendingRingRequest === 0) {
+    return false;
+  }
+
+  const pendingRegularFileFd = handle.kernel.supervisor_fs_pending_regular_file_fd?.(vmPtr) ?? -1;
+  const pendingRegularFileOfd = handle.kernel.supervisor_fs_pending_regular_file_ofd?.(vmPtr) ?? 0;
+  if (pendingRegularFileFd >= 0 || pendingRegularFileOfd > 0) {
+    return false;
+  }
+
+  return processHasPipeFd(handle, vmPtr);
+}
+
 export function snapshotProcessPipeSlotsForThreadStep(
   handle: ProcessHandle,
   vmPtr: number,
@@ -688,5 +703,5 @@ export function shouldRefreshPipeStateBeforeFsResume(handle: ProcessHandle, vmPt
   return Boolean(handle.kernelWorkerRequest)
     && handle.pid > 0
     && hasOtherKernelShareMember
-    && processHasPipeFd(handle, vmPtr);
+    && currentFsWaitNeedsPipeRefresh(handle, vmPtr);
 }

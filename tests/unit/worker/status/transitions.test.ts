@@ -1609,6 +1609,55 @@ test("STATUS_FS does not sync pipe state before filesystem resume completes", ()
   expect(deps.pumpProcess).not.toHaveBeenCalled();
 });
 
+test("STATUS_FS regular-file pending request skips shared pipe refresh", () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 3;
+  handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unused" }));
+  handle.kernelShare.members.add(handle as never);
+  handle.kernelShare.members.add({ pid: 1 } as never);
+  handle.kernel.abi_fd_type_pipe = () => 6;
+  handle.kernel.process_fd_ofd_id = (_vmPtr, fd) => fd === 0 ? 1 : fd === 3 ? 4 : 0;
+  handle.kernel.kernel_ofd_fd_type = (ofdId) => ofdId === 1 ? 6 : ofdId === 4 ? 3 : 0;
+  const kernel = handle.kernel as typeof handle.kernel & {
+    supervisor_fs_pending_ring_request: (vmPtr: number) => number;
+    supervisor_fs_pending_regular_file_fd: (vmPtr: number) => number;
+    supervisor_fs_pending_regular_file_ofd: (vmPtr: number) => number;
+  };
+  kernel.supervisor_fs_pending_ring_request = () => 1;
+  kernel.supervisor_fs_pending_regular_file_fd = () => 3;
+  kernel.supervisor_fs_pending_regular_file_ofd = () => 4;
+  const deps = makeDeps(worker);
+  const resumeFsViaKernelWorkerOutcome = vi.fn(async () => ({ kind: "completed", status: 0 }));
+  (deps as { resumeFsViaKernelWorkerOutcome?: typeof resumeFsViaKernelWorkerOutcome })
+    .resumeFsViaKernelWorkerOutcome = resumeFsViaKernelWorkerOutcome;
+  const thread = deps.threadWorkerStates.get(worker)!;
+  thread.ownerPid = handle.pid;
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: {
+      type: "status",
+      status: 6,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 6,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  expect(deps.requestPipeStateSync).not.toHaveBeenCalled();
+  expect(resumeFsViaKernelWorkerOutcome).toHaveBeenCalledWith(handle, worker, 0x1234);
+});
+
 test("STATUS_FS with shared pipe fds resumes filesystem after pipe refresh", async () => {
   const worker = {} as Worker;
   const handle = makeHandle(worker);
@@ -1619,6 +1668,14 @@ test("STATUS_FS with shared pipe fds resumes filesystem after pipe refresh", asy
   handle.kernel.abi_fd_type_pipe = () => 6;
   handle.kernel.process_fd_ofd_id = (_vmPtr, fd) => fd === 0 ? 1 : 0;
   handle.kernel.kernel_ofd_fd_type = (ofdId) => ofdId === 1 ? 6 : 0;
+  const kernel = handle.kernel as typeof handle.kernel & {
+    supervisor_fs_pending_ring_request: (vmPtr: number) => number;
+    supervisor_fs_pending_regular_file_fd: (vmPtr: number) => number;
+    supervisor_fs_pending_regular_file_ofd: (vmPtr: number) => number;
+  };
+  kernel.supervisor_fs_pending_ring_request = () => 1;
+  kernel.supervisor_fs_pending_regular_file_fd = () => -1;
+  kernel.supervisor_fs_pending_regular_file_ofd = () => 0;
   const deps = makeDeps(worker);
   let resolvePipeSync: (() => void) | undefined;
   deps.requestPipeStateSync = vi.fn(() => new Promise<void>((resolve) => {
