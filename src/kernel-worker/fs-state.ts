@@ -44,8 +44,6 @@ import {
 } from "./opfs-backing-source.js";
 import { createKernelWorkerFsSnapshotHelpers } from "./fs-state/snapshot.js";
 
-export const KERNEL_WORKER_FS_STATE_OWNERSHIP = "transitional-runtime-owner" as const;
-
 type AsyncBackingSource =
   | { kind: "remote"; byteLength: number; url: string }
   | { kind: "opfs"; byteLength: number; handle: OpfsBackingFileHandle };
