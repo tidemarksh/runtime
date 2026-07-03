@@ -40,8 +40,8 @@ test("resolveNetworkConnect reports IPv4 connect endpoint to a generic runtime b
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_econnrefused: () => 111,
-      thread_connect_fd: () => 7,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 7,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([
           2, 0,
           0x01, 0xbb,
@@ -152,8 +152,8 @@ test("resolveNetworkConnect does not truncate Memory64 blocked sockaddr pointers
         }
         return 8n;
       },
-      thread_connect_fd: () => 7,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 7,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([2, 0, 0x01, 0xbb, 93, 184, 216, 34], dstPtr);
         return 8;
       },
@@ -196,8 +196,8 @@ test("resolveNetworkConnect tracks pending fd while bridge connect is in flight"
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_econnrefused: () => 111,
-      thread_connect_fd: () => 7,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 7,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([2, 0, 0, 80, 127, 0, 0, 1], dstPtr);
         return 8;
       },
@@ -276,8 +276,8 @@ test("commitNetworkConnect adopts a successful bridge connection after the local
       abi_econnrefused: () => 111,
       abi_einprogress: () => -115,
       abi_status_ok: () => 0,
-      thread_connect_fd: () => 3,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 3,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
         return 8;
       },
@@ -337,8 +337,8 @@ test("commitNetworkConnect drops bridge connection when supervisor rejects the c
       abi_econnrefused: () => 111,
       abi_einprogress: () => -115,
       abi_status_ok: () => 0,
-      thread_connect_fd: () => 3,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 3,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
         return 8;
       },
@@ -417,8 +417,8 @@ test("commitNetworkConnect adopts bridge connection when supervisor accepts the 
       abi_status_ok: () => 0,
       abi_max_fds: () => 64,
       abi_fd_type_socket: () => 8,
-      thread_connect_fd: () => 3,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 3,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
         return 8;
       },
@@ -464,8 +464,8 @@ test("resolveNetworkConnect normalizes bridge errno to negative Linux result", a
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_econnrefused: () => 111,
-      thread_connect_fd: () => 7,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 7,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([2, 0, 0, 80, 127, 0, 0, 1], dstPtr);
         return 8;
       },
@@ -1190,8 +1190,8 @@ test("stale network OFD rekeys when fork-shared sync renumbers the same socket f
       abi_fd_type_socket: () => 8,
       abi_enotconn: () => -107,
       abi_enotsock: () => -88,
-      thread_connect_fd: () => 3,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 3,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
         return 8;
       },
@@ -1287,8 +1287,8 @@ test("stale network OFD rekeys to supervisor-selected active fd alias", async ()
       abi_fd_type_socket: () => 8,
       abi_enotconn: () => -107,
       abi_enotsock: () => -88,
-      thread_connect_fd: () => 3,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 3,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
         return 8;
       },
@@ -1397,8 +1397,8 @@ test("stale network OFD closes when supervisor reports no active fd", async () =
       abi_fd_type_socket: () => 8,
       abi_enotconn: () => -107,
       abi_enotsock: () => -88,
-      thread_connect_fd: () => 3,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 3,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
         return 8;
       },
@@ -1497,8 +1497,8 @@ test("stale network OFD cleanup does not force-close a fd with a pending reconne
       abi_fd_type_socket: () => 8,
       abi_enotconn: () => -107,
       abi_enotsock: () => -88,
-      thread_connect_fd: () => 3,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 3,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
         return 8;
       },
@@ -1594,8 +1594,8 @@ test("stale network OFD cleanup closes bridge immediately when the fd disappeare
       abi_fd_type_socket: () => 8,
       abi_enotconn: () => -107,
       abi_enotsock: () => -88,
-      thread_connect_fd: () => 3,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 3,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
         return 8;
       },
@@ -1697,8 +1697,8 @@ test("not-connected drain during pending reconnect closes only the stale bridge"
       abi_fd_type_socket: () => 8,
       abi_enotconn: () => -107,
       abi_enotsock: () => -88,
-      thread_connect_fd: () => 3,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 3,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
         return 8;
       },

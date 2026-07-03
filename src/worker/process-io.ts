@@ -1088,10 +1088,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       addrLen,
     );
 
-    const readPeerAddr = handle.kernel.supervisor_socket_connect_peer_addr
-      ?? handle.kernel.thread_connect_peer_addr;
-    const readConnectFd = handle.kernel.supervisor_socket_connect_fd
-      ?? handle.kernel.thread_connect_fd;
+    const readPeerAddr = handle.kernel.supervisor_socket_connect_peer_addr;
+    const readConnectFd = handle.kernel.supervisor_socket_connect_fd;
     if (readPeerAddr && readConnectFd) {
       const addrLen = readPeerAddr(vmPtr, scratch, 28);
       const endpoint = endpointFromScratch(readConnectFd(vmPtr), addrLen);
@@ -1100,8 +1098,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       }
     }
 
-    const readPeerAddrForFd = handle.kernel.supervisor_socket_connect_peer_addr_for_fd
-      ?? handle.kernel.thread_connect_peer_addr_for_fd;
+    const readPeerAddrForFd = handle.kernel.supervisor_socket_connect_peer_addr_for_fd;
     if (readPeerAddrForFd) {
       const maxFds = handle.kernel.abi_max_fds();
       const socketFdType = handle.kernel.abi_fd_type_socket();
@@ -1112,38 +1109,6 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         }
         const addrLen = readPeerAddrForFd(vmPtr, fd, scratch, 28);
         const endpoint = endpointFromScratch(fd, addrLen);
-        if (endpoint) {
-          return endpoint;
-        }
-      }
-    }
-
-    const blockedSyscallNr = handle.kernel.thread_blocked_syscall_nr?.(vmPtr);
-    const connectSyscallNr = handle.kernel.abi_sys_connect?.();
-    if (
-      blockedSyscallNr !== undefined
-      && connectSyscallNr !== undefined
-      && BigInt(blockedSyscallNr) === BigInt(connectSyscallNr)
-      && handle.kernel.thread_blocked_syscall_arg
-    ) {
-      const fd = Number(BigInt.asUintN(32, handle.kernel.thread_blocked_syscall_arg(vmPtr, 0)));
-      const addr = BigInt(handle.kernel.thread_blocked_syscall_arg(vmPtr, 1));
-      const addrLen = Number(BigInt.asUintN(32, handle.kernel.thread_blocked_syscall_arg(vmPtr, 2)));
-      const startBig = BigInt(handle.guestBase) + addr;
-      const endBig = startBig + BigInt(addrLen);
-      if (
-        fd >= 0
-        && addrLen > 0
-        && addr >= 0n
-        && startBig <= BigInt(Number.MAX_SAFE_INTEGER)
-        && endBig <= BigInt(handle.memory.buffer.byteLength)
-      ) {
-        const start = Number(startBig);
-        const endpoint = endpointFromBytes(
-          fd,
-          new Uint8Array(handle.memory.buffer, start, addrLen),
-          addrLen,
-        );
         if (endpoint) {
           return endpoint;
         }
