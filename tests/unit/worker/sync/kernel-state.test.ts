@@ -303,6 +303,9 @@ function makeKernel(
     process_stderr_pipe: () => 0,
     thread_blocked_ofd_id: () => 0,
     supervisor_process_held_ofd_refcount: (_vmPtr: number, ofdId: number) => heldOfdRefcount(ofdId),
+    supervisor_process_holds_regular_file_ofd: (_vmPtr: number, ofdId: number) => (
+      heldOfdRefcount(ofdId) > 0 && readOfdInt32(ofdId, 0) === FD_TYPE_FILE ? 1 : 0
+    ),
     supervisor_fork_shared_peer_flag_compatible: () => forkSharedPeerFlagCompatible,
     supervisor_fork_shared_peer_flag_incompatible: () => forkSharedPeerFlagIncompatible,
     supervisor_fork_shared_peer_flag_pipe_peer: () => forkSharedPeerFlagPipePeer,

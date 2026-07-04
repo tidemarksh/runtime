@@ -103,12 +103,12 @@ export function targetHoldsSyncedRegularFileOfd(target: ProcessHandle, ofdIds: R
   if (target.vmPtr === 0 || ofdIds.size === 0) {
     return false;
   }
-  const fileType = target.kernel.abi_fd_type_file();
-  for (const ofdId of collectProcessHeldOfds(target)) {
-    if (
-      ofdIds.has(ofdId)
-      && target.kernel.kernel_ofd_fd_type(ofdId) === fileType
-    ) {
+  const holdsRegularFileOfd = target.kernel.supervisor_process_holds_regular_file_ofd;
+  if (!holdsRegularFileOfd) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_holds_regular_file_ofd");
+  }
+  for (const ofdId of ofdIds) {
+    if (holdsRegularFileOfd.call(target.kernel, target.vmPtr, ofdId) !== 0) {
       return true;
     }
   }

@@ -367,6 +367,7 @@ export interface KernelExports {
     sourceHoldsRegularFile: number,
     regularFileHasPeer: number,
   ): number;
+  supervisor_process_holds_regular_file_ofd?(vmPtr: number, ofdId: number): number;
   supervisor_process_private_pipe_slot_mask?(vmPtr: number): bigint | number;
   supervisor_process_private_pipe_source_mode?(vmPtr: number, pipeSlot: number): number;
   supervisor_process_private_pipe_target_mode?(vmPtr: number, pipeSlot: number): number;
@@ -1742,6 +1743,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fork_shared_ofd_identity_key",
   "supervisor_fork_shared_ofd_publish_action",
   "supervisor_fork_shared_effect_sync_action",
+  "supervisor_process_holds_regular_file_ofd",
   "supervisor_process_private_pipe_slot_mask",
   "supervisor_process_private_pipe_source_mode",
   "supervisor_process_private_pipe_target_mode",

@@ -1040,6 +1040,17 @@ export function makeSupervisorAbiStubs(
     ) {
       return processHeldOfdRefcount(currentExports(this), vmPtr, ofdId);
     },
+    supervisor_process_holds_regular_file_ofd(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      ofdId: number,
+    ) {
+      const receiver = currentExports(this);
+      return processHeldOfdRefcount(receiver, vmPtr, ofdId) > 0
+        && callNumber(receiver, "kernel_ofd_fd_type", ofdId) === callNumber(receiver, "abi_fd_type_file")
+        ? 1
+        : 0;
+    },
     supervisor_fork_shared_ofd_identity_key(this: KernelExports | undefined, ofdId: number) {
       return forkSharedOfdIdentityKey(currentExports(this), ofdId);
     },
