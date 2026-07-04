@@ -2,7 +2,7 @@ import { readKernelRuntimeState } from "../abi.js";
 import { publishKernelRuntimeState } from "../bridge/runtime-state.js";
 import { SOCKET_STATE_CONNECTED, SOCKET_STATE_SHUTDOWN } from "../layout/socket.js";
 import type { RuntimeNetworkConnection, RuntimeNetworkEndpoint } from "../bridge/network.js";
-import { kernelSocketCount, requireKernelSocketCount } from "../kernel-socket-layout.js";
+import { requireKernelSocketCount } from "../kernel-socket-layout.js";
 import { ensureMemoryCapacity, ensureKernelMemoryCapacity, kernelScratchBase, writeKernelScratch } from "./kernel-scratch.js";
 import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
 import { kernelSocketOutboundAvailable } from "./ownership/socket-control.js";
@@ -426,23 +426,17 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
   }
 
   function rememberNetworkRecvPayload(handle: ProcessHandle, vmPtr: number, fd: number, writtenBytes?: number): void {
-    const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
+    const socketIdx = socketIdxForFd(handle, vmPtr, fd);
     handle.networkRecvPayloadWatermarks ??= new Map();
     if (socketIdx < 0) {
       return;
     }
-    const recvBufIdx = handle.kernel.thread_socket_recv_buf_idx?.(socketIdx) ?? -1;
+    const recvBufIdx = socketRecvBufIdx(handle, socketIdx);
     if (recvBufIdx < 0) {
       return;
     }
-    const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes?.();
-    if (netBufPoolBytes === undefined) {
-      return;
-    }
-    const maxSockets = kernelSocketCount(handle.kernel);
-    if (maxSockets === undefined) {
-      return;
-    }
+    const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes();
+    const maxSockets = requireKernelSocketCount(handle.kernel);
     const netBufferCount = maxSockets * 2;
     const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
     if (!Number.isInteger(netBufferBytes) || netBufferBytes <= 16) {
@@ -454,9 +448,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     const head = view.getUint32(0, true);
     const tail = view.getUint32(4, true);
     const capacity = netBufferBytes - 16;
-    const readBytesRaw = handle.kernel.thread_socket_read_bytes?.(socketIdx);
-    const readBytes = typeof readBytesRaw === "bigint" ? Number(readBytesRaw) : readBytesRaw;
-    const availableBytes = handle.kernel.thread_socket_recv_available?.(socketIdx);
+    const readBytes = socketReadBytesSnapshot(handle, socketIdx);
+    const availableBytes = socketRecvAvailable(handle, socketIdx);
     const safeReadBytes = Number.isSafeInteger(readBytes) ? readBytes as number : undefined;
     const safeAvailableBytes = Number.isSafeInteger(availableBytes) && availableBytes !== undefined && availableBytes >= 0
       ? availableBytes
@@ -824,11 +817,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     if (recvBufIdx < 0) {
       return;
     }
-    const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes?.();
-    const maxSockets = kernelSocketCount(handle.kernel);
-    if (netBufPoolBytes === undefined || maxSockets === undefined) {
-      return;
-    }
+    const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes();
+    const maxSockets = requireKernelSocketCount(handle.kernel);
     const netBufferCount = maxSockets * 2;
     const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
     if (!Number.isInteger(netBufferBytes) || netBufferBytes <= 16 || recvBufIdx >= netBufferCount) {
