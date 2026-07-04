@@ -2990,7 +2990,7 @@ test("vfork execve keeps distinct shared stdout and stderr pipe slots across ker
   }
 });
 
-test("vfork execve rehydrates child shared kernel objects without mutating parent memfs bytes", async () => {
+test("vfork execve rehydrates child shared kernel objects without mutating parent kernel bytes", async () => {
   const restoreDefaultInstantiate = (): void => {
     vi.spyOn(WebAssembly, "instantiate").mockImplementation(async (_module, imports) => {
       const memory = (imports as { env: { memory: WebAssembly.Memory } }).env.memory;
@@ -3024,7 +3024,12 @@ test("vfork execve rehydrates child shared kernel objects without mutating paren
   });
 
   try {
-    await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
+    const parentError = vi.fn();
+    await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+      pid: 1,
+      onError: parentError,
+      kernelWorkerRequest: createEchoKernelWorkerRequest(),
+    });
     const parentWorker = createdWorkers[0];
     const parentKernel = createdKernelExports[0];
     const state = makeKernelState();
@@ -3060,12 +3065,14 @@ test("vfork execve rehydrates child shared kernel objects without mutating paren
       kernelState: makeKernelState(),
     });
     await flushMicrotasks();
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
+    expect(parentError).not.toHaveBeenCalled();
     const parentBytes = new Uint8Array(parentKernel.memory.buffer);
     const childKernel = createdKernelExports[1];
     const childBytes = new Uint8Array(childKernel.memory.buffer);
 
-    expect(parentBytes[ofdOffset + 20]).toBe(0x81);
+    expect(parentBytes[ofdOffset + 20]).toBe(0);
     expect(parentBytes[state.memfsPtr + 12]).toBe(0);
     expect(parentBytes[parentKernel.kernel_memfs_inodes_ptr() + 6]).toBe(0);
     expect(parentBytes[parentKernel.kernel_memfs_data_ptr() + 10]).toBe(0);

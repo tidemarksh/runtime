@@ -340,37 +340,6 @@ function assertVforkParentState(
   }
 }
 
-function restoreVforkParentLocally(
-  kernel: KernelExports,
-  vmPtr: number,
-  childPid: number,
-): void {
-  kernel.thread_clear_spawn_handoff(vmPtr);
-  if (kernel.thread_restore_vfork_parent_without_cleanup) {
-    kernel.thread_restore_vfork_parent_without_cleanup(vmPtr, childPid);
-    kernel.thread_clear_vfork_runtime_state?.();
-    return;
-  }
-  kernel.thread_resume_vfork_parent(vmPtr, childPid);
-  kernel.thread_clear_vfork_runtime_state?.();
-}
-
-function rollbackVforkExecveHandoffLocally(
-  kernel: KernelExports,
-  vmPtr: number,
-  childPid: number,
-): number {
-  const rollback = kernel.supervisor_vfork_execve_rollback;
-  if (!rollback) {
-    throw new Error("kernel supervisor ABI missing supervisor_vfork_execve_rollback");
-  }
-  const waitStatus = rollback.call(kernel, vmPtr, childPid);
-  if (waitStatus < 0) {
-    throw new Error(`kernel supervisor vfork execve rollback failed: ${waitStatus}`);
-  }
-  return waitStatus;
-}
-
 function reattachRestoredVforkParentWorker(
   deps: WorkerForkDeps,
   handle: ProcessHandle,
@@ -495,12 +464,7 @@ export async function handleVforkExecve(
         + `:vfork_child=${handle.kernel.thread_vfork_child_pid?.() ?? "n/a"}`
         + `:${debugVforkVmState(handle, parentThread.vmPtr)}`,
     );
-    if (handle.kernelWorkerRequest && handle.pid > 0) {
-      await deps.rollbackVforkExecveHandoffViaKernelWorker(handle, parentThread.vmPtr, childPid);
-    } else {
-      rollbackVforkExecveHandoffLocally(handle.kernel, parentThread.vmPtr, childPid);
-      handle.kernelState = readKernelRuntimeState(handle.kernel);
-    }
+    await deps.rollbackVforkExecveHandoffViaKernelWorker(handle, parentThread.vmPtr, childPid);
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
       `vfork-execve:rollback:restored:${childPid}`
@@ -658,32 +622,21 @@ export async function handleVforkExecve(
   );
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-kernel-ready:${childPid}`);
   handle.lastDebugMessage = `vfork-execve:child-kernel-ready child=${childPid}`;
-  if (handle.kernelWorkerRequest && handle.pid > 0) {
-    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:resume-parent:start:${childPid}`);
-    await deps.resumeVforkExecveParentViaKernelWorker(handle, parentThread.vmPtr, childPid);
-    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:resume-parent:done:${childPid}`);
-    assertVforkParentState(handle, parentThread.vmPtr, "parent-post-resume");
-    deps.appendRuntimeLifecycleEvent(
-      handle.runtimeId,
-      `vfork-parent-restored-fds:${childPid}:${formatOpenFdSummary(handle)}`,
-    );
-    deps.appendWorkerDebugLog(handle, `vfork-parent-restored-fds:${childPid}:${formatOpenFdSummary(handle)}`);
-    assertVforkParentResumeOwnership(
-      deps,
-      handle,
-      parentThread.vmPtr,
-      "vfork-parent-restored",
-    );
-  } else {
-    restoreVforkParentLocally(handle.kernel, parentThread.vmPtr, childPid);
-    handle.kernelState = readKernelRuntimeState(handle.kernel);
-    assertVforkParentResumeOwnership(
-      deps,
-      handle,
-      parentThread.vmPtr,
-      "vfork-parent-restored-local",
-    );
-  }
+  deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:resume-parent:start:${childPid}`);
+  await deps.resumeVforkExecveParentViaKernelWorker(handle, parentThread.vmPtr, childPid);
+  deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:resume-parent:done:${childPid}`);
+  assertVforkParentState(handle, parentThread.vmPtr, "parent-post-resume");
+  deps.appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `vfork-parent-restored-fds:${childPid}:${formatOpenFdSummary(handle)}`,
+  );
+  deps.appendWorkerDebugLog(handle, `vfork-parent-restored-fds:${childPid}:${formatOpenFdSummary(handle)}`);
+  assertVforkParentResumeOwnership(
+    deps,
+    handle,
+    parentThread.vmPtr,
+    "vfork-parent-restored",
+  );
   publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
 
   reconcileInheritedSharedOfdsAfterVforkExecve(handle, inheritedSharedOfdIds);
