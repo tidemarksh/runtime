@@ -3,7 +3,9 @@ import {
 } from "../../bridge/runtime-state.js";
 import {
   supervisorBlockedEpollWaitTimeoutMs,
-  supervisorBlockedWaitRetryPlan,
+  supervisorBlockedRetryAction,
+  type SupervisorBlockedRetryAction,
+  type SupervisorBlockedRetryActionFlag,
 } from "../../supervisor-blocked-resume.js";
 import type {
   HostBlockedWorkerState,
@@ -72,6 +74,56 @@ function collectBlockedEpollDependentSyncOfdIds(
   return ofdIds;
 }
 
+function postSyncRetryActionFlags(
+  handle: ProcessHandle,
+): readonly SupervisorBlockedRetryActionFlag[] {
+  const flags: SupervisorBlockedRetryActionFlag[] = ["wait-timer-already-checked"];
+  if (handle.runningWorker !== null) {
+    flags.push("running-worker");
+  }
+  return flags;
+}
+
+function readPostSyncRetryAction(
+  deps: BlockedEpollRetryDeps,
+  handle: ProcessHandle,
+  latestBlocked: HostBlockedWorkerState,
+): SupervisorBlockedRetryAction | null {
+  try {
+    return supervisorBlockedRetryAction(
+      handle.kernel,
+      latestBlocked.vmPtr,
+      postSyncRetryActionFlags(handle),
+    );
+  } catch (error) {
+    deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+    return null;
+  }
+}
+
+function deferPostSyncRetry(
+  deps: BlockedEpollRetryDeps,
+  handle: ProcessHandle,
+  worker: Worker,
+  reason: string,
+): void {
+  if (handle.runningWorker !== null) {
+    wakeRuntimeBridge(handle.runtimeBridge);
+  }
+  const runningThread = handle.runningWorker === null
+    ? undefined
+    : deps.threadWorkerStates.get(handle.runningWorker);
+  deps.appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `epoll-retry-skip:${handle.pid}:running=${handle.runningWorker !== null ? 1 : 0}:reason=${reason}`
+      + `:${deps.formatRunningRetryBlocker(handle, runningThread)}`,
+  );
+  deps.scheduleSupervisorBlockedRetry(
+    handle,
+    worker,
+  );
+}
+
 export function executeKernelWorkerBlockedEpollRetry(
   deps: BlockedEpollRetryDeps,
   handle: ProcessHandle,
@@ -117,25 +169,38 @@ export function executeKernelWorkerBlockedEpollRetry(
         );
       }
       deps.clearStaleRunningWorker(handle, worker);
-      const runningWorkerBlocksResume = handle.runningWorker !== null;
-      const retryPlan = supervisorBlockedWaitRetryPlan(handle.kernel, latestBlocked.vmPtr);
-      if (runningWorkerBlocksResume || retryPlan.reason === "process-gate") {
-        if (runningWorkerBlocksResume) {
-          wakeRuntimeBridge(handle.runtimeBridge);
+      const action = readPostSyncRetryAction(deps, handle, latestBlocked);
+      switch (action) {
+        case null:
+          return;
+        case "defer-running-worker":
+          deferPostSyncRetry(deps, handle, worker, "running-worker");
+          return;
+        case "defer-process-gate":
+          deferPostSyncRetry(deps, handle, worker, "process-gate");
+          return;
+        case "arm-wait-timer":
+          if (deps.armBlockedSupervisorTimerForBlocked(handle, latestBlocked)) {
+            deps.appendRuntimeLifecycleEvent(
+              handle.runtimeId,
+              `epoll-retry-timer:${handle.pid}:vm=0x${latestBlocked.vmPtr.toString(16)}`,
+            );
+            return;
+          }
+          break;
+        case "resume-epoll-direct":
+        case "resume-direct":
+          break;
+        case "defer-passive-wait":
+          deps.scheduleSupervisorBlockedRetry(handle, worker);
+          return;
+        default: {
+          deps.failProcess(
+            handle,
+            new Error(`kernel supervisor returned invalid post-sync epoll retry action: ${action}`),
+          );
+          return;
         }
-        const runningThread = handle.runningWorker === null
-          ? undefined
-          : deps.threadWorkerStates.get(handle.runningWorker);
-        deps.appendRuntimeLifecycleEvent(
-          handle.runtimeId,
-          `epoll-retry-skip:${handle.pid}:running=${handle.runningWorker !== null ? 1 : 0}:reason=${retryPlan.reason}`
-            + `:${deps.formatRunningRetryBlocker(handle, runningThread)}`,
-        );
-        deps.scheduleSupervisorBlockedRetry(
-          handle,
-          worker,
-        );
-        return;
       }
       deps.resumeEpollWait(handle, worker, latestBlocked);
     })

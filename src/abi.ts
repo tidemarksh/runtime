@@ -445,6 +445,7 @@ export interface KernelExports {
   supervisor_blocked_retry_action_flag_kernel_worker_available?(): number;
   supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns?(): number;
   supervisor_blocked_retry_action_flag_network_connections_available?(): number;
+  supervisor_blocked_retry_action_flag_wait_timer_already_checked?(): number;
   supervisor_blocked_retry_action_defer_supervisor_timer?(): number;
   supervisor_blocked_retry_action_defer_rpc_pending?(): number;
   supervisor_blocked_retry_action_defer_owner_async?(): number;
@@ -1813,6 +1814,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_retry_action_flag_kernel_worker_available",
   "supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns",
   "supervisor_blocked_retry_action_flag_network_connections_available",
+  "supervisor_blocked_retry_action_flag_wait_timer_already_checked",
   "supervisor_blocked_retry_action_defer_supervisor_timer",
   "supervisor_blocked_retry_action_defer_rpc_pending",
   "supervisor_blocked_retry_action_defer_owner_async",

@@ -69,7 +69,8 @@ export type SupervisorBlockedRetryActionFlag =
   | "running-worker"
   | "kernel-worker-available"
   | "pipe-state-kernel-worker-owns"
-  | "network-connections-available";
+  | "network-connections-available"
+  | "wait-timer-already-checked";
 
 export type SupervisorBlockedRetryActionFlags = readonly SupervisorBlockedRetryActionFlag[];
 
@@ -128,6 +129,7 @@ type SupervisorNumberConstExportName =
   | "supervisor_blocked_retry_action_flag_kernel_worker_available"
   | "supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns"
   | "supervisor_blocked_retry_action_flag_network_connections_available"
+  | "supervisor_blocked_retry_action_flag_wait_timer_already_checked"
   | "supervisor_blocked_retry_action_defer_supervisor_timer"
   | "supervisor_blocked_retry_action_defer_rpc_pending"
   | "supervisor_blocked_retry_action_defer_owner_async"
@@ -795,6 +797,8 @@ function supervisorBlockedRetryActionFlagValue(
       return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns");
     case "network-connections-available":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_flag_network_connections_available");
+    case "wait-timer-already-checked":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_flag_wait_timer_already_checked");
     default: {
       const exhaustive: never = flag;
       return exhaustive;

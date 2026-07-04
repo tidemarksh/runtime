@@ -54,6 +54,7 @@ const SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_RUNNING_WORKER = 32;
 const SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_KERNEL_WORKER_AVAILABLE = 64;
 const SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_PIPE_STATE_KERNEL_WORKER_OWNS = 128;
 const SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_NETWORK_CONNECTIONS_AVAILABLE = 256;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_WAIT_TIMER_ALREADY_CHECKED = 512;
 const SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_SUPERVISOR_TIMER = 0;
 const SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_RPC_PENDING = 1;
 const SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_OWNER_ASYNC = 2;
@@ -188,6 +189,7 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_blocked_retry_action_flag_kernel_worker_available"
   | "supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns"
   | "supervisor_blocked_retry_action_flag_network_connections_available"
+  | "supervisor_blocked_retry_action_flag_wait_timer_already_checked"
   | "supervisor_blocked_retry_action_defer_supervisor_timer"
   | "supervisor_blocked_retry_action_defer_rpc_pending"
   | "supervisor_blocked_retry_action_defer_owner_async"
@@ -415,6 +417,7 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_blocked_retry_action_flag_kernel_worker_available"
     | "supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns"
     | "supervisor_blocked_retry_action_flag_network_connections_available"
+    | "supervisor_blocked_retry_action_flag_wait_timer_already_checked"
     | "supervisor_blocked_retry_action_defer_supervisor_timer"
     | "supervisor_blocked_retry_action_defer_rpc_pending"
     | "supervisor_blocked_retry_action_defer_owner_async"
@@ -764,6 +767,8 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_PIPE_STATE_KERNEL_WORKER_OWNS;
   nextKernel.supervisor_blocked_retry_action_flag_network_connections_available ??= () =>
     SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_NETWORK_CONNECTIONS_AVAILABLE;
+  nextKernel.supervisor_blocked_retry_action_flag_wait_timer_already_checked ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_WAIT_TIMER_ALREADY_CHECKED;
   nextKernel.supervisor_blocked_retry_action_defer_supervisor_timer ??= () =>
     SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_SUPERVISOR_TIMER;
   nextKernel.supervisor_blocked_retry_action_defer_rpc_pending ??= () =>
@@ -829,7 +834,10 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     ) {
       return SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_THREAD_INIT_PENDING;
     }
-    if (toNumber(kernel.supervisor_blocked_wait_timer_required?.(vmPtr)) !== 0) {
+    if (
+      (flags & SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_WAIT_TIMER_ALREADY_CHECKED) === 0
+      && toNumber(kernel.supervisor_blocked_wait_timer_required?.(vmPtr)) !== 0
+    ) {
       return SUPERVISOR_BLOCKED_RETRY_ACTION_ARM_WAIT_TIMER;
     }
     if (toNumber(nextKernel.supervisor_blocked_wait_active_child_pid?.(vmPtr)) > 0) {

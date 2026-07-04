@@ -150,6 +150,7 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_retry_action_flag_kernel_worker_available: 64,
   supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns: 128,
   supervisor_blocked_retry_action_flag_network_connections_available: 256,
+  supervisor_blocked_retry_action_flag_wait_timer_already_checked: 512,
   supervisor_blocked_retry_action_defer_supervisor_timer: 0,
   supervisor_blocked_retry_action_defer_rpc_pending: 1,
   supervisor_blocked_retry_action_defer_owner_async: 2,
@@ -1277,7 +1278,10 @@ export function makeSupervisorAbiStubs(
       ) {
         return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_defer_thread_init_pending;
       }
-      if (Number(receiver?.supervisor_blocked_wait_timer_required?.(vmPtr) ?? 0) !== 0) {
+      if (
+        (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_wait_timer_already_checked) === 0
+        && Number(receiver?.supervisor_blocked_wait_timer_required?.(vmPtr) ?? 0) !== 0
+      ) {
         return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_arm_wait_timer;
       }
       if (Number(receiver?.supervisor_blocked_wait_active_child_pid?.(vmPtr) ?? 0) > 0) {

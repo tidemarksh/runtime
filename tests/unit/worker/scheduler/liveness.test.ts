@@ -1788,7 +1788,7 @@ test("epoll sync timeout zero survives a running-worker retry skip", async () =>
 
   scheduler.notifySchedulerProgress(handle);
   await vi.waitFor(() => {
-    expect(lifecycleEvents.some((event) => event.startsWith("epoll-retry-skip:1:running=1:reason=standard-defer"))).toBe(true);
+    expect(lifecycleEvents.some((event) => event.startsWith("epoll-retry-skip:1:running=1:reason=running-worker"))).toBe(true);
   });
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
