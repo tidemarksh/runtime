@@ -10,6 +10,11 @@ import {
 } from "../../layout/ofd.js";
 import { PIPE_GENERATION_OFFSET } from "../../layout/pipe.js";
 import type { KernelSyncHandle, ProcessHandle } from "../types.js";
+import { supervisorProcessOfdForFd } from "./fd-table.js";
+import {
+  supervisorProcessPipeOfdForFd,
+  supervisorProcessPipeSlotForFd,
+} from "./pipe-slot.js";
 
 function requireSupervisorProcessHeldOfdRefcount(
   handle: ProcessHandle,
@@ -267,19 +272,18 @@ export function trackForkSharedOfds(
     [2, handle.stderrPipe],
   ]);
   for (const [fd, stdioPipeSlot] of stdioPipeSlotByFd) {
-    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    const ofdId = supervisorProcessPipeOfdForFd(handle, vmPtr, fd);
     if (
       ofdId !== 0
       && stdioPipeSlot > 0
-      && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
-      && handle.kernel.kernel_ofd_ino(ofdId) === stdioPipeSlot
+      && supervisorProcessPipeSlotForFd(handle, vmPtr, fd) === stdioPipeSlot
     ) {
       stdioOfdIds.add(ofdId);
     }
   }
   const retained = new Set<number>();
   for (let fd = 0; fd < handle.kernel.abi_max_fds(); fd++) {
-    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    const ofdId = supervisorProcessOfdForFd(handle, vmPtr, fd);
     if (ofdId === 0) {
       continue;
     }

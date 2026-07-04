@@ -84,6 +84,7 @@ function makeHandle(
       if (fd === 2) return 5;
       return 0;
     },
+    process_fd_flags: () => 0,
     kernel_ofd_fd_type: (ofdId: number) => (ofdId >= 3 && ofdId <= 5 ? 2 : 0),
     kernel_ofd_ino: (ofdId: number) => {
       if (ofdId === 3) return 0;
@@ -151,6 +152,13 @@ function makeHandle(
     supervisor_process_fd_is_open(this: KernelExports, vmPtr: number, fd: number) {
       const ofdId = this.process_fd_ofd_id(vmPtr, fd);
       return ofdId > 0 && ofdId < this.abi_max_fds() ? 1 : 0;
+    },
+    supervisor_process_ofd_for_fd(this: KernelExports, vmPtr: number, fd: number) {
+      const ofdId = this.process_fd_ofd_id(vmPtr, fd);
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? ofdId : 0;
+    },
+    supervisor_process_fd_flags_for_fd(this: KernelExports, vmPtr: number, fd: number) {
+      return fd >= 0 && fd < this.abi_max_fds() ? this.process_fd_flags(vmPtr, fd) : 0;
     },
   } as unknown as KernelExports;
   const handle = {

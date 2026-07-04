@@ -4,11 +4,16 @@ import {
   forkSharedHeldOfdTrackAction,
   trackForkSharedOfds,
 } from "./ofd-table.js";
+import { supervisorProcessOfdForFd } from "./fd-table.js";
 import {
   hasPipePeerInOtherKernelShareMember,
   isProcessHostStdioOfd,
   isProcessHostStdioPipeOfd,
 } from "./pipe-control.js";
+import {
+  supervisorProcessPipeOfdForFd,
+  supervisorProcessPipeSlotForFd,
+} from "./pipe-slot.js";
 
 function forkSharedOfdIdentityKey(handle: ProcessHandle, ofdId: number): string | null {
   const readIdentityKey = handle.kernel.supervisor_fork_shared_ofd_identity_key;
@@ -82,7 +87,7 @@ export function targetHasIncompatibleForkSharedOfd(
   }
   const maxFds = target.kernel.abi_max_fds();
   for (let fd = 0; fd < maxFds; fd += 1) {
-    const ofdId = target.kernel.process_fd_ofd_id(target.vmPtr, fd);
+    const ofdId = supervisorProcessOfdForFd(target, target.vmPtr, fd);
     if (
       ofdId <= 0
       || ofdId >= maxFds
@@ -129,7 +134,7 @@ function processFdEntriesIncludeOfd(handle: ProcessHandle, vmPtr: number, ofdId:
   }
   const maxFds = handle.kernel.abi_max_fds();
   for (let fd = 0; fd < maxFds; fd += 1) {
-    if (handle.kernel.process_fd_ofd_id(vmPtr, fd) === ofdId) {
+    if (supervisorProcessOfdForFd(handle, vmPtr, fd) === ofdId) {
       return true;
     }
   }
@@ -195,15 +200,15 @@ export function collectTrackableForkSharedOfds(handle: ProcessHandle): Set<numbe
     [1, handle.stdoutPipe],
     [2, handle.stderrPipe],
   ] as const) {
-    const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+    const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
     if (ofdId !== 0) {
       stdioFdOfdIds.add(ofdId);
     }
     if (
       ofdId !== 0
       && stdioPipeSlot > 0
-      && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
-      && handle.kernel.kernel_ofd_ino(ofdId) === stdioPipeSlot
+      && supervisorProcessPipeOfdForFd(handle, handle.vmPtr, fd) === ofdId
+      && supervisorProcessPipeSlotForFd(handle, handle.vmPtr, fd) === stdioPipeSlot
     ) {
       stdioOfdIds.add(ofdId);
     }

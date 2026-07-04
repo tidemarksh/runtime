@@ -85,6 +85,26 @@ const supervisorPipeControlKernelStubs = {
     }
     return 0;
   },
+  supervisor_process_ofd_for_fd(this: {
+    abi_max_fds?: () => number;
+    process_fd_ofd_id?: (vmPtr: number, fd: number) => number;
+  }, vmPtr: number, fd: number) {
+    const maxFds = this.abi_max_fds?.() ?? 0;
+    if (vmPtr === 0 || fd < 0 || fd >= maxFds) {
+      return 0;
+    }
+    const ofdId = this.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
+    return ofdId > 0 && ofdId < maxFds ? ofdId : 0;
+  },
+  supervisor_process_fd_flags_for_fd(this: {
+    abi_max_fds?: () => number;
+    process_fd_flags?: (vmPtr: number, fd: number) => number;
+  }, vmPtr: number, fd: number) {
+    const maxFds = this.abi_max_fds?.() ?? 0;
+    return vmPtr !== 0 && fd >= 0 && fd < maxFds
+      ? this.process_fd_flags?.(vmPtr, fd) ?? 0
+      : 0;
+  },
   supervisor_ofd_is_regular_file(this: {
     abi_max_fds?: () => number;
     abi_fd_type_file?: () => number;
@@ -117,6 +137,42 @@ const supervisorPipeControlKernelStubs = {
       )
       ? 1
       : 0;
+  },
+  supervisor_process_pipe_slot_for_fd(this: {
+    abi_max_fds?: () => number;
+    abi_max_pipes?: () => number;
+    abi_fd_type_pipe?: () => number;
+    process_fd_ofd_id?: (vmPtr: number, fd: number) => number;
+    kernel_ofd_fd_type?: (ofdId: number) => number;
+    kernel_ofd_ino?: (ofdId: number) => number;
+  }, vmPtr: number, fd: number) {
+    const maxFds = this.abi_max_fds?.() ?? 0;
+    const ofdId = this.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
+    if (ofdId <= 0 || ofdId >= maxFds) {
+      return 0;
+    }
+    if (this.kernel_ofd_fd_type?.(ofdId) !== this.abi_fd_type_pipe?.()) {
+      return 0;
+    }
+    const pipeSlot = this.kernel_ofd_ino?.(ofdId) ?? 0;
+    return pipeSlot > 0 && pipeSlot < (this.abi_max_pipes?.() ?? 0) ? pipeSlot : 0;
+  },
+  supervisor_process_pipe_ofd_for_fd(this: {
+    process_fd_ofd_id?: (vmPtr: number, fd: number) => number;
+    supervisor_process_pipe_slot_for_fd?: (vmPtr: number, fd: number) => number;
+  }, vmPtr: number, fd: number) {
+    const ofdId = this.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
+    return ofdId > 0 && this.supervisor_process_pipe_slot_for_fd?.(vmPtr, fd) !== 0 ? ofdId : 0;
+  },
+  supervisor_process_pipe_host_fd_for_fd(this: {
+    process_fd_ofd_id?: (vmPtr: number, fd: number) => number;
+    supervisor_process_pipe_slot_for_fd?: (vmPtr: number, fd: number) => number;
+    kernel_ofd_host_fd?: (ofdId: number) => number;
+  }, vmPtr: number, fd: number) {
+    const ofdId = this.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
+    return ofdId > 0 && this.supervisor_process_pipe_slot_for_fd?.(vmPtr, fd) !== 0
+      ? this.kernel_ofd_host_fd?.(ofdId) ?? -1
+      : -1;
   },
   supervisor_process_pipe_used_mask: () => 1n,
   supervisor_process_pipe_read_open_count: () => 0,

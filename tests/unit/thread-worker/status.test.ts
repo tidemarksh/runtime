@@ -95,6 +95,8 @@ function makeKernelExports(): KernelExports {
     kernel_time_state_ptr: () => 0,
     process_fd_ofd_id: () => 0,
     process_fd_flags: () => 0,
+    supervisor_process_ofd_for_fd: () => 0,
+    supervisor_process_fd_flags_for_fd: () => 0,
     process_set_fd_entry: () => {},
     process_create: () => 0,
     process_destroy: () => {},

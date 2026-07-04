@@ -408,6 +408,8 @@ export interface KernelExports {
     regularFileHasPeer: number,
   ): number;
   supervisor_process_holds_regular_file_ofd?(vmPtr: number, ofdId: number): number;
+  supervisor_process_ofd_for_fd?(vmPtr: number, fd: number): number;
+  supervisor_process_fd_flags_for_fd?(vmPtr: number, fd: number): number;
   supervisor_process_fd_is_open?(vmPtr: number, fd: number): number;
   supervisor_process_private_pipe_slot_mask?(vmPtr: number): bigint | number;
   supervisor_process_private_pipe_source_mode?(vmPtr: number, pipeSlot: number): number;
@@ -1807,6 +1809,8 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fork_shared_ofd_publish_action",
   "supervisor_fork_shared_effect_sync_action",
   "supervisor_process_holds_regular_file_ofd",
+  "supervisor_process_ofd_for_fd",
+  "supervisor_process_fd_flags_for_fd",
   "supervisor_process_fd_is_open",
   "supervisor_process_private_pipe_slot_mask",
   "supervisor_process_private_pipe_source_mode",
@@ -2236,6 +2240,46 @@ export function readSpawnKindCodes(exports: KernelExports): SpawnKindCodes {
     EXECVE: exports.abi_spawn_kind_execve(),
     FORK: exports.abi_spawn_kind_fork(),
   };
+}
+
+function requireSupervisorProcessOfdForFd(exports: KernelExports): (vmPtr: number, fd: number) => number {
+  const read = exports.supervisor_process_ofd_for_fd;
+  if (!read) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_ofd_for_fd");
+  }
+  return read.bind(exports);
+}
+
+function requireSupervisorProcessFdFlagsForFd(exports: KernelExports): (vmPtr: number, fd: number) => number {
+  const read = exports.supervisor_process_fd_flags_for_fd;
+  if (!read) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_fd_flags_for_fd");
+  }
+  return read.bind(exports);
+}
+
+export function supervisorProcessOfdForFd(
+  exports: KernelExports,
+  vmPtr: number,
+  fd: number,
+): number {
+  const maxFds = exports.abi_max_fds();
+  if (vmPtr === 0 || fd < 0 || fd >= maxFds) {
+    return 0;
+  }
+  const ofdId = requireSupervisorProcessOfdForFd(exports)(vmPtr, fd);
+  return ofdId > 0 && ofdId < maxFds ? ofdId : 0;
+}
+
+export function supervisorProcessFdFlagsForFd(
+  exports: KernelExports,
+  vmPtr: number,
+  fd: number,
+): number {
+  if (vmPtr === 0 || fd < 0 || fd >= exports.abi_max_fds()) {
+    return 0;
+  }
+  return requireSupervisorProcessFdFlagsForFd(exports)(vmPtr, fd);
 }
 
 export function readKernelRuntimeState(exports: KernelExports): KernelRuntimeState {

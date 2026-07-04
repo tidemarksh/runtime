@@ -1,4 +1,8 @@
-import { attachKernelRuntimeState, readKernelRuntimeState } from "../../abi.js";
+import {
+  attachKernelRuntimeState,
+  readKernelRuntimeState,
+  supervisorProcessOfdForFd,
+} from "../../abi.js";
 import type {
   KernelWorkerFdEntrySnapshot,
   KernelWorkerOfdSlotSnapshot,
@@ -34,7 +38,7 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
       if (entry.fd < 0 || entry.fd >= maxFds || entry.ofdId < 0 || entry.ofdId >= maxFds) {
         continue;
       }
-      const previousOfdId = processExports.process_fd_ofd_id(vmPtr, entry.fd);
+      const previousOfdId = supervisorProcessOfdForFd(processExports, vmPtr, entry.fd);
       if (entry.ofdId !== 0 && trackedOfdIds.has(entry.ofdId)) {
         processExports.process_set_fd_entry(vmPtr, entry.fd, entry.ofdId, entry.fdFlags);
       } else if (previousOfdId !== 0 && trackedOfdIds.has(previousOfdId)) {

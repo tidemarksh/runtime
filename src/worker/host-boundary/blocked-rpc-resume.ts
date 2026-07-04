@@ -24,6 +24,7 @@ import {
 import type { SyncCause } from "../contracts/sync.js";
 import { appendPendingGuestMemoryWrites } from "../guest-memory-writes.js";
 import { syncSocketStatePreservingNetworkBridge } from "../sync/socket.js";
+import { supervisorProcessOfdForFd } from "../ownership/fd-table.js";
 
 export interface WorkerKernelRpcBlockedRpcDeps {
   processHandles: Map<number, ProcessHandle>;
@@ -293,7 +294,7 @@ async function executeHostBlockedSyscallResume(
     finishBlockedRpc();
     if (handle.workers.has(worker) && deps.threadWorkerStates.has(worker)) {
       const fd = blockedPipeWaitFd(handle, vmPtr);
-      const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+      const ofdId = supervisorProcessOfdForFd(handle, vmPtr, fd);
       const buf = handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 1) ?? handle.kernel.thread_a1(vmPtr);
       const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
       const debug = [

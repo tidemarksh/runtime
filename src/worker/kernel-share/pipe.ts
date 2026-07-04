@@ -12,6 +12,10 @@ import {
   supervisorOfdPipeSlotModeMap,
   supervisorOfdPipeSlots,
 } from "../ownership/pipe-slot.js";
+import {
+  supervisorProcessFdFlagsForFd,
+  supervisorProcessOfdForFd,
+} from "../ownership/fd-table.js";
 
 const PIPE_CONTROL_START = PIPE_READ_OPEN_OFFSET;
 const PIPE_DATA_START = PIPE_DATA_OFFSET;
@@ -224,7 +228,7 @@ export function reconcileKernelSharePipeControl(handle: ProcessHandle): void {
 }
 
 export function formatPipeCounterDebug(handle: ProcessHandle, fd: number): string {
-  const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+  const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
   if (ofdId === 0) {
     return `${fd}:ofd=0`;
   }
@@ -255,10 +259,10 @@ export function formatPipeCounterDebug(handle: ProcessHandle, fd: number): strin
 
 export function formatOpenFdSummary(handle: ProcessHandle, limit = 16): string {
   return Array.from({ length: limit }, (_value, fd) => {
-    const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+    const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
     if (ofdId === 0) {
       return null;
     }
-    return `${fd}->${ofdId}/${handle.kernel.process_fd_flags(handle.vmPtr, fd)}/${handle.kernel.kernel_ofd_fd_type(ofdId)}/${handle.kernel.kernel_ofd_ino(ofdId)}/${handle.kernel.kernel_ofd_host_fd(ofdId)}`;
+    return `${fd}->${ofdId}/${supervisorProcessFdFlagsForFd(handle, handle.vmPtr, fd)}/${handle.kernel.kernel_ofd_fd_type(ofdId)}/${handle.kernel.kernel_ofd_ino(ofdId)}/${handle.kernel.kernel_ofd_host_fd(ofdId)}`;
   }).filter(Boolean).join(" ");
 }

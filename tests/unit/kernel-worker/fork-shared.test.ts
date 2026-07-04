@@ -118,6 +118,13 @@ function makeKernelExports(label = "kernel", regularFiles: ReadonlyMap<number, U
     },
     process_fd_ofd_id: (_vmPtr: number, fd: number) => fdOfdIds.get(fd) ?? 0,
     process_fd_flags: (_vmPtr: number, fd: number) => fdFlags.get(fd) ?? 0,
+    supervisor_process_ofd_for_fd: (_vmPtr: number, fd: number) => {
+      const ofdId = fdOfdIds.get(fd) ?? 0;
+      return ofdId > 0 && ofdId < 32 ? ofdId : 0;
+    },
+    supervisor_process_fd_flags_for_fd: (_vmPtr: number, fd: number) => {
+      return fd >= 0 && fd < 32 ? fdFlags.get(fd) ?? 0 : 0;
+    },
     process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number, flags: number) => {
       if (ofdId === 0) {
         fdOfdIds.delete(fd);

@@ -40,6 +40,37 @@ function requireSupervisorProcessFdIsOpen(handle: ProcessHandle): (vmPtr: number
   return processFdIsOpen.bind(handle.kernel);
 }
 
+function requireSupervisorProcessOfdForFd(handle: ProcessHandle): (vmPtr: number, fd: number) => number {
+  const processOfdForFd = handle.kernel.supervisor_process_ofd_for_fd;
+  if (!processOfdForFd) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_ofd_for_fd");
+  }
+  return processOfdForFd.bind(handle.kernel);
+}
+
+function requireSupervisorProcessFdFlagsForFd(handle: ProcessHandle): (vmPtr: number, fd: number) => number {
+  const processFdFlagsForFd = handle.kernel.supervisor_process_fd_flags_for_fd;
+  if (!processFdFlagsForFd) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_fd_flags_for_fd");
+  }
+  return processFdFlagsForFd.bind(handle.kernel);
+}
+
+export function supervisorProcessOfdForFd(handle: ProcessHandle, vmPtr: number, fd: number): number {
+  if (vmPtr === 0 || fd < 0 || fd >= handle.kernel.abi_max_fds()) {
+    return 0;
+  }
+  const ofdId = requireSupervisorProcessOfdForFd(handle)(vmPtr, fd);
+  return ofdId > 0 && ofdId < handle.kernel.abi_max_fds() ? ofdId : 0;
+}
+
+export function supervisorProcessFdFlagsForFd(handle: ProcessHandle, vmPtr: number, fd: number): number {
+  if (vmPtr === 0 || fd < 0 || fd >= handle.kernel.abi_max_fds()) {
+    return 0;
+  }
+  return requireSupervisorProcessFdFlagsForFd(handle)(vmPtr, fd);
+}
+
 export function supervisorProcessFdIsOpen(handle: ProcessHandle, vmPtr: number, fd: number): boolean {
   if (vmPtr === 0 || fd < 0 || fd >= handle.kernel.abi_max_fds()) {
     return false;
@@ -102,8 +133,8 @@ export function snapshotProcessFdEntries(
   for (let fd = 0; fd < handle.kernel.abi_max_fds(); fd += 1) {
     fdEntries.push({
       fd,
-      ofdId: handle.kernel.process_fd_ofd_id(vmPtr, fd),
-      fdFlags: handle.kernel.process_fd_flags(vmPtr, fd),
+      ofdId: supervisorProcessOfdForFd(handle, vmPtr, fd),
+      fdFlags: supervisorProcessFdFlagsForFd(handle, vmPtr, fd),
       generation: handle.kernel.process_fd_generation?.(vmPtr, fd),
     });
   }
@@ -121,11 +152,11 @@ export function snapshotProcessFdEntriesForThread(
   const maxFds = handle.kernel.abi_max_fds();
   const fdEntries: KernelWorkerFdEntrySnapshot[] = [];
   for (let fd = 0; fd < maxFds; fd += 1) {
-    const ofdId = handle.kernel.process_fd_ofd_id(sourceVmPtr, fd);
+    const ofdId = supervisorProcessOfdForFd(handle, sourceVmPtr, fd);
     fdEntries.push({
       fd,
       ofdId,
-      fdFlags: handle.kernel.process_fd_flags?.(sourceVmPtr, fd) ?? 0,
+      fdFlags: supervisorProcessFdFlagsForFd(handle, sourceVmPtr, fd),
       generation: handle.kernel.process_fd_generation?.(sourceVmPtr, fd),
     });
   }

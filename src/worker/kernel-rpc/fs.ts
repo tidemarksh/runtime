@@ -6,7 +6,11 @@ import {
   collectProcessHeldOfds,
   hasPlausibleOfdState,
 } from "../ownership/ofd-table.js";
-import { applyThreadFdEntries } from "../ownership/fd-table.js";
+import {
+  applyThreadFdEntries,
+  supervisorProcessFdFlagsForFd,
+  supervisorProcessOfdForFd,
+} from "../ownership/fd-table.js";
 import { applyThreadOfdSlots } from "../ownership/ofd-slot.js";
 import {
   appendPendingGuestMemoryWrites,
@@ -374,16 +378,16 @@ function formatFdEntrySummary(
 
 function formatRuntimeFdSummary(handle: ProcessHandle, vmPtr: number): string {
   const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
-  if (vmPtr === 0 || maxFds <= 0 || !handle.kernel.process_fd_ofd_id || !handle.kernel.process_fd_flags) {
+  if (vmPtr === 0 || maxFds <= 0) {
     return "none";
   }
   const entries: string[] = [];
   for (let fd = 0; fd < maxFds && entries.length < 16; fd += 1) {
-    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    const ofdId = supervisorProcessOfdForFd(handle, vmPtr, fd);
     if (ofdId === 0) {
       continue;
     }
-    entries.push(`${fd}->${ofdId}/${handle.kernel.process_fd_flags(vmPtr, fd)}`);
+    entries.push(`${fd}->${ofdId}/${supervisorProcessFdFlagsForFd(handle, vmPtr, fd)}`);
   }
   return entries.length > 0 ? entries.join(",") : "none";
 }
@@ -509,7 +513,7 @@ function pendingFsSharedOfdIds(handle: ProcessHandle, vmPtr: number): number[] {
   if (fd === null || fd < 0 || fd >= handle.kernel.abi_max_fds()) {
     return [];
   }
-  const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+  const ofdId = supervisorProcessOfdForFd(handle, vmPtr, fd);
   if (
     ofdId > 0
     && ofdId < handle.kernel.abi_max_fds()
@@ -816,16 +820,12 @@ function filterStaleFsResponseFdState(
   let skippedFdEntries = 0;
   for (const entry of fdEntries ?? []) {
     const baselineEntry = baselineFdEntries.get(entry.fd);
-    if (
-      baselineEntry === undefined
-      || !handle.kernel.process_fd_ofd_id
-      || !handle.kernel.process_fd_flags
-    ) {
+    if (baselineEntry === undefined) {
       keptFdEntries.push(entry);
       continue;
     }
-    const currentOfdId = handle.kernel.process_fd_ofd_id(vmPtr, entry.fd);
-    const currentFdFlags = handle.kernel.process_fd_flags(vmPtr, entry.fd);
+    const currentOfdId = supervisorProcessOfdForFd(handle, vmPtr, entry.fd);
+    const currentFdFlags = supervisorProcessFdFlagsForFd(handle, vmPtr, entry.fd);
     const currentGeneration = handle.kernel.process_fd_generation?.(vmPtr, entry.fd);
     if (!fdGenerationMatches(baselineEntry.generation, currentGeneration, entry.generation)) {
       if (entry.ofdId > 0) {
@@ -1063,15 +1063,15 @@ function clearStaleFsStatusAfterResume(handle: ProcessHandle, vmPtr: number, fsR
 
 function snapshotFsFdState(handle: ProcessHandle, vmPtr: number): FsFdStateSnapshot | null {
   const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
-  if (vmPtr === 0 || maxFds <= 0 || !handle.kernel.process_fd_ofd_id || !handle.kernel.process_fd_flags) {
+  if (vmPtr === 0 || maxFds <= 0) {
     return null;
   }
   const fdEntries: FsFdStateSnapshot["fdEntries"] = [];
   for (let fd = 0; fd < maxFds; fd += 1) {
     fdEntries.push({
       fd,
-      ofdId: handle.kernel.process_fd_ofd_id(vmPtr, fd),
-      fdFlags: handle.kernel.process_fd_flags(vmPtr, fd),
+      ofdId: supervisorProcessOfdForFd(handle, vmPtr, fd),
+      fdFlags: supervisorProcessFdFlagsForFd(handle, vmPtr, fd),
       generation: handle.kernel.process_fd_generation?.(vmPtr, fd),
     });
   }
@@ -1103,8 +1103,8 @@ function restoreFsFdState(handle: ProcessHandle, snapshot: FsFdStateSnapshot | n
     if (entry.fd < 0 || entry.fd >= maxFds) {
       continue;
     }
-    const currentOfdId = handle.kernel.process_fd_ofd_id?.(snapshot.vmPtr, entry.fd) ?? entry.ofdId;
-    const currentFdFlags = handle.kernel.process_fd_flags?.(snapshot.vmPtr, entry.fd) ?? entry.fdFlags;
+    const currentOfdId = supervisorProcessOfdForFd(handle, snapshot.vmPtr, entry.fd);
+    const currentFdFlags = supervisorProcessFdFlagsForFd(handle, snapshot.vmPtr, entry.fd);
     if (currentOfdId === entry.ofdId && currentFdFlags === entry.fdFlags) {
       continue;
     }

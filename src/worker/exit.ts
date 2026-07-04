@@ -9,6 +9,11 @@ import {
 import type { FsSnapshotEntry } from "../fs/types.js";
 import type { ProcessHandle } from "./types.js";
 import type { SyncCause } from "./contracts/sync.js";
+import {
+  supervisorProcessFdFlagsForFd,
+  supervisorProcessOfdForFd,
+} from "./ownership/fd-table.js";
+import { supervisorProcessPipeSlotForFd } from "./ownership/pipe-slot.js";
 
 interface WorkerExitDeps {
   processHandles: Map<number, ProcessHandle>;
@@ -527,8 +532,8 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
           continue;
         }
         try {
-          const ofdId = handle.kernel.process_fd_ofd_id?.(candidateVmPtr, fd) ?? 0;
-          const flags = handle.kernel.process_fd_flags?.(candidateVmPtr, fd) ?? 0;
+          const ofdId = supervisorProcessOfdForFd(handle, candidateVmPtr, fd);
+          const flags = supervisorProcessFdFlagsForFd(handle, candidateVmPtr, fd);
           const generation = handle.kernel.process_fd_generation?.(candidateVmPtr, fd) ?? 0;
           if (ofdId <= 0 || ofdId >= maxFds) {
             fdParts.push(`${fd}->${ofdId}/fl=${flags}/gen=${generation}`);
@@ -1532,26 +1537,19 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
   }
 
   function fdPipeSlot(handle: ProcessHandle, fd: number): number {
-    const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
-    if (
-      ofdId === 0
-      || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
-    ) {
-      return 0;
-    }
-    return handle.kernel.kernel_ofd_ino(ofdId);
+    return supervisorProcessPipeSlotForFd(handle, handle.vmPtr, fd);
   }
 
   function formatFdSummary(handle: ProcessHandle, limit = 16): string {
     const entries: string[] = [];
     for (let fd = 0; fd < limit; fd += 1) {
-      const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+      const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
       if (ofdId === 0) {
         continue;
       }
       entries.push([
         `${fd}->${ofdId}`,
-        `flags=${handle.kernel.process_fd_flags(handle.vmPtr, fd)}`,
+        `flags=${supervisorProcessFdFlagsForFd(handle, handle.vmPtr, fd)}`,
         `type=${handle.kernel.kernel_ofd_fd_type(ofdId)}`,
         `host=${handle.kernel.kernel_ofd_host_fd(ofdId)}`,
         `ino=${handle.kernel.kernel_ofd_ino(ofdId)}`,
@@ -1893,7 +1891,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       const fdParts: string[] = [];
       const maxFds = child.kernel.abi_max_fds();
       for (let fd = 0; fd < Math.min(maxFds, 6); fd += 1) {
-        const ofdId = child.kernel.process_fd_ofd_id(child.vmPtr, fd);
+        const ofdId = supervisorProcessOfdForFd(child, child.vmPtr, fd);
         if (ofdId === 0) {
           continue;
         }

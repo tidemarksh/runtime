@@ -6,6 +6,7 @@ import type {
 } from "../../messages.js";
 import { OFD_TYPE_OFFSET } from "../../layout/ofd.js";
 import type { KernelOwnershipHandle, ProcessHandle } from "../types.js";
+import { supervisorProcessOfdForFd } from "./fd-table.js";
 
 export function kernelWorkerOwnsSocketState(handle: KernelOwnershipHandle): boolean {
   return !!handle.kernelWorkerRequest && handle.pid > 0;
@@ -87,7 +88,7 @@ export function kernelSocketReadBytes(handle: ProcessHandle, socketIdx: number):
 }
 
 export function socketOfdForFd(handle: ProcessHandle, vmPtr: number, fd: number): number {
-  return handle.kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
+  return supervisorProcessOfdForFd(handle, vmPtr, fd);
 }
 
 function supervisorHeldSocketOfdIds(handle: ProcessHandle, vmPtr: number): number[] {

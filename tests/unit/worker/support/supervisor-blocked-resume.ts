@@ -233,6 +233,8 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_state_sync_complete"
   | "supervisor_state_sync_clear"
   | "supervisor_process_held_ofd_refcount"
+  | "supervisor_process_ofd_for_fd"
+  | "supervisor_process_fd_flags_for_fd"
   | "supervisor_process_private_pipe_slot_mask"
   | "supervisor_process_private_pipe_source_mode"
   | "supervisor_process_private_pipe_target_mode"
@@ -461,6 +463,8 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_state_sync_complete"
     | "supervisor_state_sync_clear"
     | "supervisor_process_held_ofd_refcount"
+    | "supervisor_process_ofd_for_fd"
+    | "supervisor_process_fd_flags_for_fd"
     | "supervisor_process_private_pipe_slot_mask"
     | "supervisor_process_private_pipe_source_mode"
     | "supervisor_process_private_pipe_target_mode"
@@ -514,6 +518,13 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   const maxPipes = (): number => kernel.abi_max_pipes?.() ?? 64;
   const fdOfdId = (vmPtr: number, fd: number): number => (
     kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0
+  );
+  const supervisorProcessOfdForFd = (vmPtr: number, fd: number): number => {
+    const ofdId = fdOfdId(vmPtr, fd);
+    return ofdId > 0 && ofdId < maxFds() ? ofdId : 0;
+  };
+  const supervisorProcessFdFlagsForFd = (vmPtr: number, fd: number): number => (
+    fd >= 0 && fd < maxFds() ? kernel.process_fd_flags?.(vmPtr, fd) ?? 0 : 0
   );
   const processHeldOfdRefcount = (vmPtr: number, ofdId: number): number => {
     let count = 0;
@@ -599,6 +610,8 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   };
   nextKernel.supervisor_blocked_wait_active_child_pid ??= () => 0;
   nextKernel.supervisor_process_held_ofd_refcount ??= processHeldOfdRefcount;
+  nextKernel.supervisor_process_ofd_for_fd ??= supervisorProcessOfdForFd;
+  nextKernel.supervisor_process_fd_flags_for_fd ??= supervisorProcessFdFlagsForFd;
   nextKernel.supervisor_process_epoll_held_ofd ??= (vmPtr: number, index: number) =>
     processOfdByType(vmPtr, index, kernel.abi_fd_type_epoll?.());
   nextKernel.supervisor_process_epoll_dependent_ofd ??= () => 0;

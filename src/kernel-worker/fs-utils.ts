@@ -1,4 +1,9 @@
-import { readKernelRuntimeState, type KernelExports, type KernelRuntimeState } from "../abi.js";
+import {
+  readKernelRuntimeState,
+  supervisorProcessOfdForFd,
+  type KernelExports,
+  type KernelRuntimeState,
+} from "../abi.js";
 import { publishInode } from "../fs/sab-page-cache.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import {
@@ -136,7 +141,7 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
       parts.push(`process_ptr=0x${processExports.thread_process_ptr(vmPtr).toString(16)}`);
       parts.push(`ofd_table_ptr=0x${processExports.kernel_ofd_table_ptr().toString(16)}`);
       if (fd >= 0) {
-        const ofdId = processExports.process_fd_ofd_id(vmPtr, fd);
+        const ofdId = supervisorProcessOfdForFd(processExports, vmPtr, fd);
         parts.push(`ofd_id=${ofdId}`);
         if (ofdId > 0) {
           parts.push(`ofd_type=${processExports.kernel_ofd_fd_type(ofdId)}`);

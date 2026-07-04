@@ -1,4 +1,5 @@
 import type { ProcessHandle } from "../types.js";
+import { supervisorProcessOfdForFd } from "../ownership/fd-table.js";
 
 export interface SocketWaitSchedulerDeps {}
 
@@ -16,7 +17,7 @@ export function createSocketWaitScheduler(_deps: SocketWaitSchedulerDeps): Socke
     const interest = (packed >>> 8) & 0xffff;
     const revents = (packed >>> 24) & 0xff;
     try {
-      const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+      const ofdId = supervisorProcessOfdForFd(handle, vmPtr, fd);
       if (
         ofdId <= 0
         || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_socket()

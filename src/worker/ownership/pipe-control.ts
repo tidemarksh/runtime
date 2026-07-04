@@ -479,7 +479,7 @@ export function snapshotProcessPipeSlotsForThreadStep(
   const memory = new Uint8Array(handle.memory.buffer);
   const snapshots = new Map<number, KernelWorkerPipeSlotSnapshot>();
   for (let fd = 0; fd < maxFds; fd += 1) {
-    const ofdId = handle.kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
+    const ofdId = supervisorProcessPipeOfdForFd(handle, vmPtr, fd);
     for (const pipeSlot of supervisorOfdPipeSlots(handle, ofdId)) {
       if (pipeSlot <= 0 || pipeSlot >= maxPipes || snapshots.has(pipeSlot)) {
         continue;

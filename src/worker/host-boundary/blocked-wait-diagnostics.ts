@@ -3,6 +3,10 @@ import type {
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
+import {
+  supervisorProcessFdFlagsForFd,
+  supervisorProcessOfdForFd,
+} from "../ownership/fd-table.js";
 
 export interface BlockedWaitDiagnosticsDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
@@ -73,7 +77,7 @@ export function formatThreadFdTableSummary(handle: ProcessHandle, vmPtr: number)
   for (let fd = 0; fd < maxFds; fd += 1) {
     let ofdId = 0;
     try {
-      ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+      ofdId = supervisorProcessOfdForFd(handle, vmPtr, fd);
     } catch {
       entries.push(`${fd}=err`);
       continue;
@@ -81,7 +85,7 @@ export function formatThreadFdTableSummary(handle: ProcessHandle, vmPtr: number)
     if (ofdId === 0 && !focusFds.has(fd)) {
       continue;
     }
-    const flags = handle.kernel.process_fd_flags?.(vmPtr, fd) ?? 0;
+    const flags = supervisorProcessFdFlagsForFd(handle, vmPtr, fd);
     if (ofdId === 0) {
       entries.push(`${fd}=0/fl${flags}`);
       continue;
@@ -134,7 +138,7 @@ function formatBlockedFdEntries(handle: ProcessHandle, vmPtr: number, limit = 32
   const entries: string[] = [];
   const maxFds = handle.kernel.abi_max_fds();
   for (let fd = 0; fd < Math.min(limit, maxFds); fd += 1) {
-    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    const ofdId = supervisorProcessOfdForFd(handle, vmPtr, fd);
     if (ofdId === 0) {
       continue;
     }
@@ -184,7 +188,7 @@ export function formatBlockedEpollEntries(handle: ProcessHandle, vmPtr: number, 
     ?? Number(handle.kernel.thread_a0?.(vmPtr) ?? -1n);
   const epollOfdId = (handle.kernel.thread_blocked_ofd_id?.(vmPtr) ?? 0) > 0
     ? handle.kernel.thread_blocked_ofd_id(vmPtr)
-    : handle.kernel.process_fd_ofd_id(vmPtr, epollFd);
+    : supervisorProcessOfdForFd(handle, vmPtr, epollFd);
   if (
     epollFd < 0
     || epollOfdId <= 0

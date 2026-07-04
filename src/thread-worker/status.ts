@@ -1,5 +1,9 @@
 import type { KernelExports, KernelRuntimeState, StatusCodes } from "../abi.js";
-import { readKernelRuntimeState } from "../abi.js";
+import {
+  readKernelRuntimeState,
+  supervisorProcessFdFlagsForFd,
+  supervisorProcessOfdForFd,
+} from "../abi.js";
 import { kernelNetBufferCount } from "../kernel-socket-layout.js";
 import type {
   GuestMemoryWriteSnapshot,
@@ -128,8 +132,8 @@ function snapshotProcessFdEntries(
   for (let fd = 0; fd < maxFds; fd += 1) {
     fdEntries.push({
       fd,
-      ofdId: kernelExports.process_fd_ofd_id(processVmPtr, fd),
-      fdFlags: kernelExports.process_fd_flags(processVmPtr, fd),
+      ofdId: supervisorProcessOfdForFd(kernelExports, processVmPtr, fd),
+      fdFlags: supervisorProcessFdFlagsForFd(kernelExports, processVmPtr, fd),
       generation: kernelExports.process_fd_generation?.(processVmPtr, fd),
     });
   }

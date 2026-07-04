@@ -1,5 +1,9 @@
 import type { ProcessHandle } from "../types.js";
 import { supervisorProcessOwnerMatches } from "../process-identity.js";
+import {
+  supervisorProcessFdFlagsForFd,
+  supervisorProcessOfdForFd,
+} from "./fd-table.js";
 
 type StandardFdIntegrityCheck = (handle: ProcessHandle, context: string) => void;
 
@@ -35,7 +39,7 @@ function assertOpenFdOfdsAreValid(
 ): void {
   const maxFds = handle.kernel.abi_max_fds();
   for (let fd = 0; fd < maxFds; fd += 1) {
-    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    const ofdId = supervisorProcessOfdForFd(handle, vmPtr, fd);
     if (ofdId === 0) {
       continue;
     }
@@ -60,11 +64,11 @@ function assertNoCloexecDescriptors(
   }
   const maxFds = handle.kernel.abi_max_fds();
   for (let fd = 0; fd < maxFds; fd += 1) {
-    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    const ofdId = supervisorProcessOfdForFd(handle, vmPtr, fd);
     if (ofdId === 0) {
       continue;
     }
-    const fdFlags = handle.kernel.process_fd_flags(vmPtr, fd);
+    const fdFlags = supervisorProcessFdFlagsForFd(handle, vmPtr, fd);
     if ((fdFlags & cloexecFlag) !== 0) {
       throw new Error(`${context}: exec child retained CLOEXEC fd=${fd} ofd=${ofdId}`);
     }

@@ -257,6 +257,49 @@ function makeKernel(memory: WebAssembly.Memory): FakeKernel {
     kernel_memfs_data_ptr: () => state.memfsPtr + 0x900000,
     kernel_memfs_data_bytes: () => 256 * 1024,
     process_fd_ofd_id: (_vmPtr: number, fd: number) => fdMap.get(fd) ?? 0,
+    process_fd_flags: () => 0,
+    supervisor_process_ofd_for_fd(this: ProcessHandle["kernel"], vmPtr: number, fd: number) {
+      const ofdId = this.process_fd_ofd_id(vmPtr, fd);
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? ofdId : 0;
+    },
+    supervisor_process_fd_flags_for_fd(this: ProcessHandle["kernel"], vmPtr: number, fd: number) {
+      return fd >= 0 && fd < this.abi_max_fds() ? this.process_fd_flags(vmPtr, fd) : 0;
+    },
+    supervisor_process_pipe_slot_for_fd(this: ProcessHandle["kernel"], vmPtr: number, fd: number) {
+      const ofdId = this.supervisor_process_ofd_for_fd?.(vmPtr, fd) ?? 0;
+      if (ofdId <= 0 || ofdId >= this.abi_max_fds()) {
+        return 0;
+      }
+      const fdType = this.kernel_ofd_fd_type(ofdId);
+      if (fdType === this.abi_fd_type_pipe()) {
+        const pipeSlot = this.kernel_ofd_ino(ofdId);
+        return pipeSlot > 0 && pipeSlot < this.abi_max_pipes() ? pipeSlot : 0;
+      }
+      const ptySlaveType = this.abi_fd_type_pty_slave?.();
+      const ptyMasterType = this.abi_fd_type_pty_master?.();
+      if (fdType !== ptySlaveType && fdType !== ptyMasterType) {
+        return 0;
+      }
+      const ptyIdx = this.kernel_ofd_ino(ofdId);
+      const accessMode = (this.kernel_ofd_status_flags?.(ofdId) ?? 0) & 0x3;
+      const fdWritesToStdioOutput = fd === 1 || fd === 2 || accessMode === 1 || accessMode === 2;
+      const pipeSlot = fdType === ptySlaveType
+        ? fdWritesToStdioOutput
+          ? (this.kernel_pty_output_pipe?.(ptyIdx) ?? 0)
+          : (this.kernel_pty_input_pipe?.(ptyIdx) ?? 0)
+        : fdWritesToStdioOutput
+          ? (this.kernel_pty_input_pipe?.(ptyIdx) ?? 0)
+          : (this.kernel_pty_output_pipe?.(ptyIdx) ?? 0);
+      return pipeSlot > 0 && pipeSlot < this.abi_max_pipes() ? pipeSlot : 0;
+    },
+    supervisor_process_pipe_ofd_for_fd(this: ProcessHandle["kernel"], vmPtr: number, fd: number) {
+      const ofdId = this.supervisor_process_ofd_for_fd?.(vmPtr, fd) ?? 0;
+      return ofdId > 0 && this.supervisor_process_pipe_slot_for_fd?.(vmPtr, fd) !== 0 ? ofdId : 0;
+    },
+    supervisor_process_pipe_host_fd_for_fd(this: ProcessHandle["kernel"], vmPtr: number, fd: number) {
+      const ofdId = this.supervisor_process_pipe_ofd_for_fd?.(vmPtr, fd) ?? 0;
+      return ofdId > 0 ? this.kernel_ofd_host_fd(ofdId) : -1;
+    },
     process_thread_vm_ptr: (_vmPtr: number, slot: number) => threadVmPtrs[slot] ?? 0,
     thread_blocked_ofd_id: (vmPtr: number) => blockedOfdMap.get(vmPtr) ?? 0,
     supervisor_process_held_ofd_refcount: (_vmPtr: number, ofdId: number) => {

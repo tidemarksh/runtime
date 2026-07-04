@@ -16,6 +16,10 @@ import {
   PIPE_SLOT_BYTES,
   PIPE_WRITE_OPEN_OFFSET,
 } from "../../layout/pipe.js";
+import {
+  supervisorProcessFdFlagsForFd,
+  supervisorProcessOfdForFd,
+} from "../ownership/fd-table.js";
 
 export interface WorkerLogFocus {
   vmPtr: number;
@@ -1492,13 +1496,13 @@ export function debugRuntimeProcessHandles(
           return `${slot}:${tid}/${state}/0x${threadVmPtr.toString(16)}`;
         }).filter(Boolean).join(",");
         const fdSummary = Array.from({ length: handle.kernel.abi_max_fds() }, (_, fd) => {
-          const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+          const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
           if (ofdId === 0) {
             return null;
           }
           return [
             `${fd}->${ofdId}`,
-            `flags=${handle.kernel.process_fd_flags(handle.vmPtr, fd)}`,
+            `flags=${supervisorProcessFdFlagsForFd(handle, handle.vmPtr, fd)}`,
             `type=${handle.kernel.kernel_ofd_fd_type(ofdId)}`,
             `ino=${handle.kernel.kernel_ofd_ino(ofdId)}`,
             `host=${handle.kernel.kernel_ofd_host_fd(ofdId)}`,
@@ -1553,7 +1557,7 @@ export function debugRuntimeProcessHandles(
           })
           .join(" ");
         const socketFdSummary = Array.from({ length: handle.kernel.abi_max_fds() }, (_, fd) => {
-          const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+          const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
           if (
             ofdId === 0
             || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_socket()
@@ -1700,17 +1704,17 @@ export function assertProcessStandardFdIntegrity(
   formatPipeCounterDebug: (handle: ProcessHandle, fd: number) => string,
 ): void {
   const selfFdSummary = (): string => Array.from({ length: 16 }, (_value, fd) => {
-    const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+    const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
     if (ofdId === 0) {
       return null;
     }
-    return `${fd}->${ofdId}/${handle.kernel.process_fd_flags(handle.vmPtr, fd)}/${handle.kernel.kernel_ofd_fd_type(ofdId)}/${handle.kernel.kernel_ofd_ino(ofdId)}`;
+    return `${fd}->${ofdId}/${supervisorProcessFdFlagsForFd(handle, handle.vmPtr, fd)}/${handle.kernel.kernel_ofd_fd_type(ofdId)}/${handle.kernel.kernel_ofd_ino(ofdId)}`;
   }).filter(Boolean).join(" ");
   if (handle.pid <= 0) {
     return;
   }
   for (const fd of [0, 1, 2]) {
-    const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+    const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
     if (ofdId === 0) {
       continue;
     }

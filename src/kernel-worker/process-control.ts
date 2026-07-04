@@ -1,4 +1,11 @@
-import { attachKernelRuntimeState, readKernelRuntimeState, type KernelExports, type KernelRuntimeState } from "../abi.js";
+import {
+  attachKernelRuntimeState,
+  readKernelRuntimeState,
+  supervisorProcessFdFlagsForFd,
+  supervisorProcessOfdForFd,
+  type KernelExports,
+  type KernelRuntimeState,
+} from "../abi.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import type {
   GuestMemoryWriteSnapshot,
@@ -1036,8 +1043,8 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     for (let fd = 0; fd < maxFds; fd += 1) {
       fdEntries.push({
         fd,
-        ofdId: processExports.process_fd_ofd_id(vmPtr, fd),
-        fdFlags: processExports.process_fd_flags(vmPtr, fd),
+        ofdId: supervisorProcessOfdForFd(processExports, vmPtr, fd),
+        fdFlags: supervisorProcessFdFlagsForFd(processExports, vmPtr, fd),
         generation: processExports.process_fd_generation?.(vmPtr, fd),
       });
     }

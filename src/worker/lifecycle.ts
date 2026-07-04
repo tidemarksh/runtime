@@ -4,6 +4,10 @@ import {
 } from "./kernel-share.js";
 import type { KernelRpcResumeOutcome } from "./kernel-rpc/outcomes.js";
 import { collectProcessHeldOfds } from "./ownership/ofd-table.js";
+import {
+  supervisorProcessFdFlagsForFd,
+  supervisorProcessOfdForFd,
+} from "./ownership/fd-table.js";
 import { kernelWorkerOwnsEpollState } from "./ownership/epoll-control.js";
 import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
 import { kernelWorkerOwnsSocketState } from "./ownership/socket-control.js";
@@ -61,8 +65,8 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
         continue;
       }
       try {
-        const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
-        const fdFlags = handle.kernel.process_fd_flags?.(handle.vmPtr, fd) ?? 0;
+        const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
+        const fdFlags = supervisorProcessFdFlagsForFd(handle, handle.vmPtr, fd);
         if (ofdId <= 0 || ofdId >= maxFds) {
           parts.push(`${fd}->${ofdId}/${fdFlags}`);
           continue;

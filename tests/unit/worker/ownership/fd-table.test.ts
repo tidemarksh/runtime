@@ -34,6 +34,13 @@ function makeHandle(options: {
         return vmPtr === 0x1234 ? options.ownerFd9Ofd : options.threadFd9Ofd;
       },
       process_fd_flags: (_vmPtr: number, fd: number) => (fd === 9 ? 1 : 0),
+      supervisor_process_ofd_for_fd(this: KernelExports, vmPtr: number, fd: number) {
+        const ofdId = this.process_fd_ofd_id(vmPtr, fd);
+        return ofdId > 0 && ofdId < this.abi_max_fds() ? ofdId : 0;
+      },
+      supervisor_process_fd_flags_for_fd(this: KernelExports, vmPtr: number, fd: number) {
+        return fd >= 0 && fd < this.abi_max_fds() ? this.process_fd_flags(vmPtr, fd) : 0;
+      },
     },
   } as unknown as ProcessHandle;
 }

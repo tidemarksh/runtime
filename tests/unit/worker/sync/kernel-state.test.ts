@@ -328,6 +328,23 @@ function makeKernel(
     },
     process_fd_ofd_id: (_vmPtr: number, fd: number) => fdMap.get(fd) ?? 0,
     process_fd_flags: () => 0,
+    supervisor_process_ofd_for_fd: (_vmPtr: number, fd: number) => {
+      const ofdId = fdMap.get(fd) ?? 0;
+      return ofdId > 0 && ofdId < 32 ? ofdId : 0;
+    },
+    supervisor_process_fd_flags_for_fd: () => 0,
+    supervisor_process_pipe_slot_for_fd: (_vmPtr: number, fd: number) => {
+      const pipeMode = pipeModeForOfd(fdMap.get(fd) ?? 0);
+      return pipeMode?.pipeSlot ?? 0;
+    },
+    supervisor_process_pipe_ofd_for_fd: (_vmPtr: number, fd: number) => {
+      const ofdId = fdMap.get(fd) ?? 0;
+      return pipeModeForOfd(ofdId) ? ofdId : 0;
+    },
+    supervisor_process_pipe_host_fd_for_fd: (_vmPtr: number, fd: number) => {
+      const ofdId = fdMap.get(fd) ?? 0;
+      return pipeModeForOfd(ofdId) ? readOfdInt32(ofdId, 4) : -1;
+    },
     process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number) => {
       if (ofdId > 0) {
         fdMap.set(fd, ofdId);

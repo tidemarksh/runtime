@@ -34,6 +34,13 @@ function makeHandle(
       const ofdId = this.process_fd_ofd_id(vmPtr, fd);
       return ofdId > 0 && ofdId < this.abi_max_fds() ? 1 : 0;
     },
+    supervisor_process_ofd_for_fd(this: ProcessHandle["kernel"], vmPtr: number, fd: number) {
+      const ofdId = this.process_fd_ofd_id(vmPtr, fd);
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? ofdId : 0;
+    },
+    supervisor_process_fd_flags_for_fd(this: ProcessHandle["kernel"], vmPtr: number, fd: number) {
+      return fd >= 0 && fd < this.abi_max_fds() ? this.process_fd_flags(vmPtr, fd) : 0;
+    },
     supervisor_process_pipe_slot_for_fd(this: ProcessHandle["kernel"], vmPtr: number, fd: number) {
       const ofdId = this.process_fd_ofd_id(vmPtr, fd);
       if (ofdId <= 0 || ofdId >= this.abi_max_fds()) {

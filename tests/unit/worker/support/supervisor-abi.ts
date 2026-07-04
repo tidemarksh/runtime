@@ -1283,6 +1283,23 @@ export function makeSupervisorAbiStubs(
       const ofdId = callNumber(receiver, "process_fd_ofd_id", vmPtr, fd);
       return ofdId > 0 && ofdId < maxFds ? 1 : 0;
     },
+    supervisor_process_ofd_for_fd(this: KernelExports | undefined, vmPtr: number, fd: number) {
+      const receiver = currentExports(this);
+      const maxFds = callNumber(receiver, "abi_max_fds");
+      if (fd < 0 || fd >= maxFds) {
+        return 0;
+      }
+      const ofdId = callNumber(receiver, "process_fd_ofd_id", vmPtr, fd);
+      return ofdId > 0 && ofdId < maxFds ? ofdId : 0;
+    },
+    supervisor_process_fd_flags_for_fd(this: KernelExports | undefined, vmPtr: number, fd: number) {
+      const receiver = currentExports(this);
+      const maxFds = callNumber(receiver, "abi_max_fds");
+      if (fd < 0 || fd >= maxFds) {
+        return 0;
+      }
+      return callNumber(receiver, "process_fd_flags", vmPtr, fd);
+    },
     supervisor_ofd_is_regular_file(this: KernelExports | undefined, ofdId: number) {
       const receiver = currentExports(this);
       return ofdId > 0
