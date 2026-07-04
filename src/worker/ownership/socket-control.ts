@@ -130,6 +130,11 @@ export interface PreservedNetworkSocketSlot {
   socketMask: number;
 }
 
+export interface PreserveNetworkSocketSlotOptions {
+  pruneMissingClosedFds?: boolean;
+  preserveWatermarkedSlots?: "all" | "recv-payload";
+}
+
 export function socketTablePtrs(handle: ProcessHandle): number[] {
   const ptrs = [handle.kernelState.socketTablePtr];
   const activePtr = handle.kernel.kernel_socket_table_ptr?.();
@@ -467,9 +472,12 @@ export function hasRuntimeNetworkSocketState(handle: ProcessHandle): boolean {
 
 export function preserveNetworkSocketSlots(
   handle: ProcessHandle,
-  vmPtr: number,
-  socketTableBytes: number,
+  vmPtr = handle.vmPtr,
+  socketTableBytes = handle.kernel.kernel_socket_table_bytes(),
+  options: PreserveNetworkSocketSlotOptions = {},
 ): PreservedNetworkSocketSlot[] {
+  const pruneMissingClosedFds = options.pruneMissingClosedFds ?? true;
+  const preserveWatermarkedSlots = options.preserveWatermarkedSlots ?? "all";
   const maxSockets = requireKernelSocketCount(handle.kernel);
   const socketSlotBytes = maxSockets > 0 ? socketTableBytes / maxSockets : 0;
   if (!Number.isInteger(socketSlotBytes) || socketSlotBytes <= 0) {
@@ -509,7 +517,9 @@ export function preserveNetworkSocketSlots(
     }
     handle.networkSocketSlotWatermarks ??= new Map();
     const watermarkedSlot = handle.networkSocketSlotWatermarks.get(fd);
-    if (watermarkedSlot && !preservedOffsets.has(watermarkedSlot.offset)) {
+    const shouldPreserveWatermarkedSlot = preserveWatermarkedSlots === "all"
+      || (handle.networkRecvPayloadWatermarks?.has(fd) ?? false);
+    if (shouldPreserveWatermarkedSlot && watermarkedSlot && !preservedOffsets.has(watermarkedSlot.offset)) {
       preservedOffsets.add(watermarkedSlot.offset);
       preserved.push({
         offset: watermarkedSlot.offset,
@@ -519,7 +529,9 @@ export function preserveNetworkSocketSlots(
     }
     const socketIdx = kernelSocketIndexForFd(handle, vmPtr, fd);
     if (socketIdx < 0 || socketIdx >= maxSockets) {
-      handle.networkClosedFds.delete(fd);
+      if (pruneMissingClosedFds) {
+        handle.networkClosedFds.delete(fd);
+      }
       continue;
     }
     preserveSocketIdx(socketIdx);
@@ -538,4 +550,15 @@ export function restoreNetworkSocketSlots(
       memory.set(slot.data, socketTablePtr + slot.offset);
     }
   }
+}
+
+export function restoreNetworkSocketSlotsForHandle(
+  handle: ProcessHandle,
+  preserved: PreservedNetworkSocketSlot[],
+): void {
+  restoreNetworkSocketSlots(
+    new Uint8Array(handle.memory.buffer),
+    socketTablePtrs(handle),
+    preserved,
+  );
 }

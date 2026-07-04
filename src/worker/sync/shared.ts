@@ -1,5 +1,5 @@
 import { attachKernelRuntimeState, readKernelRuntimeState } from "../../abi.js";
-import { kernelNetBufferCount, requireKernelSocketCount } from "../../kernel-socket-layout.js";
+import { kernelNetBufferCount } from "../../kernel-socket-layout.js";
 import {
   NET_BUFFER_HEAD_OFFSET,
   NET_BUFFER_HEADER_BYTES,
@@ -55,9 +55,9 @@ import {
 } from "../ownership/fd-table.js";
 import {
   collectRuntimeNetworkSocketOfdIds,
-  kernelSocketIndexForFd,
   kernelSocketOutboundAvailable,
-  kernelSocketPeerIndex,
+  preserveNetworkSocketSlots,
+  restoreNetworkSocketSlotsForHandle,
   runtimeNetworkFds,
 } from "../ownership/socket-control.js";
 import type { ProcessHandle } from "../types.js";
@@ -65,7 +65,6 @@ import {
   forceNetworkClosedFds,
   networkSocketSlotRecvBufferIndex,
   restoreNetworkSocketSlotSnapshot,
-  snapshotNetworkSocketSlot,
 } from "../network-socket-close.js";
 import {
   netBufUsedMaskFromBufferIndices,
@@ -179,12 +178,6 @@ export interface NetworkBridgeSocketStateSnapshot {
   }>;
   socketUsed: number;
   netBufUsed: bigint;
-}
-
-export interface PreservedNetworkSocketSlot {
-  offset: number;
-  data: Uint8Array;
-  socketMask: number;
 }
 
 export interface PreservedRuntimeNetworkKernelState {
@@ -745,85 +738,6 @@ export function restoreClosedNetworkSocketSlots(handle: ProcessHandle): void {
   }
 }
 
-export function preserveNetworkSocketSlots(handle: ProcessHandle): PreservedNetworkSocketSlot[] {
-  const fds = [...runtimeNetworkFds(handle)];
-  if (fds.length === 0) {
-    return [];
-  }
-  const maxSockets = requireKernelSocketCount(handle.kernel);
-  const socketTableBytes = handle.kernel.kernel_socket_table_bytes();
-  const socketSlotBytes = maxSockets > 0 ? socketTableBytes / maxSockets : 0;
-  if (!Number.isInteger(socketSlotBytes) || socketSlotBytes <= 0) {
-    return [];
-  }
-  const preserved: PreservedNetworkSocketSlot[] = [];
-  const preservedOffsets = new Set<number>();
-  const memory = new Uint8Array(handle.memory.buffer);
-  const socketTablePtr = handle.kernel.kernel_socket_table_ptr?.() ?? handle.kernelState.socketTablePtr;
-  const preserveSocketIdx = (socketIdx: number): void => {
-    if (socketIdx < 0 || socketIdx >= maxSockets) {
-      return;
-    }
-    const offset = socketIdx * socketSlotBytes;
-    if (preservedOffsets.has(offset)) {
-      return;
-    }
-    preservedOffsets.add(offset);
-    preserved.push({
-      offset,
-      data: memory.slice(socketTablePtr + offset, socketTablePtr + offset + socketSlotBytes),
-      socketMask: 1 << socketIdx,
-    });
-  };
-  for (const fd of fds) {
-    const closedSlot = handle.networkClosedSocketSlots?.get(fd);
-    if (closedSlot) {
-      if (!preservedOffsets.has(closedSlot.offset)) {
-        preservedOffsets.add(closedSlot.offset);
-        preserved.push({
-          ...closedSlot,
-          socketMask: 1 << Math.floor(closedSlot.offset / socketSlotBytes),
-        });
-      }
-      continue;
-    }
-    const socketIdx = kernelSocketIndexForFd(handle, handle.vmPtr, fd);
-    if (socketIdx >= 0) {
-      preserveSocketIdx(socketIdx);
-      preserveSocketIdx(kernelSocketPeerIndex(handle, socketIdx));
-      continue;
-    }
-    const watermarkedSlot = handle.networkSocketSlotWatermarks?.get(fd);
-    if (
-      (handle.networkRecvPayloadWatermarks?.has(fd) ?? false)
-      && watermarkedSlot
-      && !preservedOffsets.has(watermarkedSlot.offset)
-    ) {
-      preservedOffsets.add(watermarkedSlot.offset);
-      preserved.push({
-        ...watermarkedSlot,
-        socketMask: 1 << Math.floor(watermarkedSlot.offset / socketSlotBytes),
-      });
-      continue;
-    }
-    const slot = snapshotNetworkSocketSlot(handle, handle.vmPtr, fd);
-    if (slot && !preservedOffsets.has(slot.offset)) {
-      preservedOffsets.add(slot.offset);
-      preserved.push({
-        ...slot,
-        socketMask: 1 << Math.floor(slot.offset / socketSlotBytes),
-      });
-    }
-  }
-  return preserved;
-}
-
-export function restoreNetworkSocketSlots(handle: ProcessHandle, preserved: PreservedNetworkSocketSlot[]): void {
-  for (const slot of preserved) {
-    restoreNetworkSocketSlotSnapshot(handle, slot);
-  }
-}
-
 export function currentNetBufUsed(handle: ProcessHandle): bigint {
   return handle.kernelState.netBufUsed | handle.kernel.kernel_net_buf_used();
 }
@@ -1051,7 +965,12 @@ export function applySocketStateFromKernelWorker(
   const memory = new Uint8Array(handle.memory.buffer);
   const netBufUsed = currentNetBufUsed(handle) | snapshot.netBufUsed;
   const socketUsed = currentSocketUsed(handle) | snapshot.socketUsed;
-  const preservedSocketSlots = preserveNetworkSocketSlots(handle);
+  const preservedSocketSlots = preserveNetworkSocketSlots(
+    handle,
+    handle.vmPtr,
+    handle.kernel.kernel_socket_table_bytes(),
+    { pruneMissingClosedFds: false, preserveWatermarkedSlots: "recv-payload" },
+  );
   const preservedSocketUsed = preservedSocketSlots.reduce((mask, slot) => mask | slot.socketMask, 0);
   const preservedSocketRecvBuffers = preservedSocketRecvBufferIndices(preservedSocketSlots);
   const preservedSocketNetBufUsed = netBufUsedMaskFromBufferIndices(preservedSocketRecvBuffers);
@@ -1067,7 +986,7 @@ export function applySocketStateFromKernelWorker(
   ];
   memory.set(snapshot.socketTable, handle.kernelState.socketTablePtr);
   applyKernelWorkerNetBuffers(handle, memory, snapshot);
-  restoreNetworkSocketSlots(handle, preservedSocketSlots);
+  restoreNetworkSocketSlotsForHandle(handle, preservedSocketSlots);
   restoreMergedNetBufferHeads(memory, handle.kernelState.netBufBase, preservedNetBufferHeads);
   restoreClosedNetworkSocketSlots(handle);
   closeNetworkClosedFdPeers(handle);
@@ -1118,7 +1037,12 @@ export function restoreNetworkBridgeSocketState(
     const ofdSlotBytes = Math.floor(handle.kernel.kernel_ofd_table_bytes() / handle.kernel.abi_max_fds());
     const netBufUsed = currentNetBufUsed(handle) | snapshot.netBufUsed;
     const socketUsed = currentSocketUsed(handle) | snapshot.socketUsed;
-    const preservedSocketSlots = preserveNetworkSocketSlots(handle);
+    const preservedSocketSlots = preserveNetworkSocketSlots(
+      handle,
+      handle.vmPtr,
+      handle.kernel.kernel_socket_table_bytes(),
+      { pruneMissingClosedFds: false, preserveWatermarkedSlots: "recv-payload" },
+    );
     const preservedSocketUsed = preservedSocketSlots.reduce((mask, slot) => mask | slot.socketMask, 0);
     const preservedSocketRecvBuffers = preservedSocketRecvBufferIndices(preservedSocketSlots);
     const preservedSocketNetBufUsed = netBufUsedMaskFromBufferIndices(preservedSocketRecvBuffers);
@@ -1140,7 +1064,7 @@ export function restoreNetworkBridgeSocketState(
       kernelNetBufferCount(handle.kernel),
       snapshot.netBufSlots,
     );
-    restoreNetworkSocketSlots(handle, preservedSocketSlots);
+    restoreNetworkSocketSlotsForHandle(handle, preservedSocketSlots);
     restoreMergedNetBufferHeads(memory, handle.kernelState.netBufBase, preservedNetBufferHeads);
     restoreClosedNetworkSocketSlots(handle);
     closeNetworkClosedFdPeers(handle);
@@ -1260,7 +1184,6 @@ export {
   forceNetworkClosedFds,
   networkSocketSlotRecvBufferIndex,
   restoreNetworkSocketSlotSnapshot,
-  snapshotNetworkSocketSlot,
   adoptKernelState,
   adoptKernelStateForHandle,
   repairHandleVmPidAfterKernelStateAttach,
