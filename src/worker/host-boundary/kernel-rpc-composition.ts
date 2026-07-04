@@ -5,7 +5,7 @@ import { expectKernelWorkerResponse } from "../kernel-rpc/transport.js";
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
 import { kernelShareOtherMembers } from "../kernel-share.js";
 import { drainProcessOutput, settleVisibleProcessOutput } from "../stdio.js";
-import { readKernelRuntimeState } from "../../abi.js";
+import { syncSocketStatePreservingNetworkBridge } from "../sync/socket.js";
 import {
   type KernelWorkerRequestFn,
   type ProcessHandle,
@@ -93,18 +93,11 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     return { kind: "syscall", nr: -1n, name };
   }
 
-  async function syncSocketStatePreservingNetworkBridge(handle: ProcessHandle, cause: SyncCause): Promise<{
+  async function syncSocketStateForKernelRpc(handle: ProcessHandle, cause: SyncCause): Promise<{
     socketUsed: number;
     netBufUsed: bigint;
   }> {
-    if (handle.networkConnections.size > 0) {
-      handle.kernelState = readKernelRuntimeState(handle.kernel);
-      return {
-        socketUsed: handle.kernelState.socketUsed,
-        netBufUsed: handle.kernelState.netBufUsed,
-      };
-    }
-    return deps.syncSocketStateViaKernelWorker(handle, cause);
+    return syncSocketStatePreservingNetworkBridge(handle, cause, deps.syncSocketStateViaKernelWorker);
   }
 
   const kernelRpcLifecycleHelpers = createWorkerKernelRpcLifecycleHelpers({
@@ -118,7 +111,7 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     requestPipeStateSync: deps.requestPipeStateSync,
     settleVisibleProcessOutput,
     syncProcessMemfsViaKernelWorker: deps.syncProcessMemfsViaKernelWorker,
-    syncSocketStateViaKernelWorker: syncSocketStatePreservingNetworkBridge,
+    syncSocketStateViaKernelWorker: syncSocketStateForKernelRpc,
     snapshotProcessFdOfdStateForKernelWorker: deps.snapshotProcessFdOfdStateForKernelWorker,
     applySocketStateFromKernelWorker: deps.applySocketStateFromKernelWorker,
     clearVforkSnapshot,
@@ -177,7 +170,7 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     requestThreadWorkerBlockedResume: deps.requestThreadWorkerBlockedResume,
     requestPipeStateSync: deps.requestPipeStateSync,
     syncBlockedForkSharedStateViaKernelWorker: deps.syncBlockedForkSharedStateViaKernelWorker,
-    syncSocketStateViaKernelWorker: syncSocketStatePreservingNetworkBridge,
+    syncSocketStateViaKernelWorker: syncSocketStateForKernelRpc,
   });
 
   return {

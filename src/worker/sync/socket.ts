@@ -1,5 +1,6 @@
 import {
   attachKernelRuntimeState,
+  readKernelRuntimeState,
   appendSocketSyncDebug,
   formatSyncCause,
   formatNetworkSocketDebug,
@@ -21,11 +22,39 @@ import type {
   SyncCause
 } from "./shared.js";
 
+type SyncSocketStateViaKernelWorker = (
+  handle: ProcessHandle,
+  cause: SyncCause,
+) => Promise<{
+  socketUsed: number;
+  netBufUsed: bigint;
+  socketState?: KernelWorkerSocketStateSnapshot;
+}>;
+
 export {
   appendSocketSyncDebug,
   applySocketStateFromKernelWorker,
   socketSyncDebugLogEnabled,
 } from "./shared.js";
+
+export async function syncSocketStatePreservingNetworkBridge(
+  handle: ProcessHandle,
+  cause: SyncCause,
+  syncSocketState: SyncSocketStateViaKernelWorker = syncSocketStateViaKernelWorker,
+): Promise<{
+  socketUsed: number;
+  netBufUsed: bigint;
+  socketState?: KernelWorkerSocketStateSnapshot;
+}> {
+  if (handle.networkConnections.size > 0) {
+    handle.kernelState = readKernelRuntimeState(handle.kernel);
+    return {
+      socketUsed: handle.kernelState.socketUsed,
+      netBufUsed: handle.kernelState.netBufUsed,
+    };
+  }
+  return syncSocketState(handle, cause);
+}
 
 export async function syncSocketStateViaKernelWorker(
   handle: ProcessHandle,

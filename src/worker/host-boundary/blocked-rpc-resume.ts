@@ -23,6 +23,7 @@ import {
 } from "../kernel-rpc/outcomes.js";
 import type { SyncCause } from "../contracts/sync.js";
 import { appendPendingGuestMemoryWrites } from "../guest-memory-writes.js";
+import { syncSocketStatePreservingNetworkBridge } from "../sync/socket.js";
 
 export interface WorkerKernelRpcBlockedRpcDeps {
   processHandles: Map<number, ProcessHandle>;
@@ -109,22 +110,6 @@ function blockedPipeWaitFd(handle: ProcessHandle, vmPtr: number): number {
   }
   return Number(handle.kernel.thread_a0(vmPtr));
 }
-
-async function syncSocketStatePreservingNetworkBridge(handle: ProcessHandle, status: number): Promise<{
-  socketUsed: number;
-  netBufUsed: bigint;
-}> {
-  if (handle.networkConnections.size > 0) {
-    handle.kernelState = readKernelRuntimeState(handle.kernel);
-    return {
-      socketUsed: handle.kernelState.socketUsed,
-      netBufUsed: handle.kernelState.netBufUsed,
-    };
-  }
-  return deps.syncSocketStateViaKernelWorker(handle, blockedRpcSyncCause(status));
-}
-
-
 
 // Executes host-side synchronization and guest-memory writeback around the
 // supervisor-owned blocked-syscall resume decision.
@@ -226,7 +211,11 @@ async function executeHostBlockedSyscallResume(
         !transientProcessOwnerMismatch
         && options.syncSocketAfterResume
       ) {
-        await syncSocketStatePreservingNetworkBridge(handle, blockedStatus);
+        await syncSocketStatePreservingNetworkBridge(
+          handle,
+          blockedRpcSyncCause(blockedStatus),
+          deps.syncSocketStateViaKernelWorker,
+        );
         if (abortIfStaleBlockedRpc()) {
           return;
         }
@@ -253,7 +242,11 @@ async function executeHostBlockedSyscallResume(
       }
       if (supervisorBlockedPollWaitHasSocket(handle.kernel, vmPtr)) {
         deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-socket-supervisor-pipe:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
-        await syncSocketStatePreservingNetworkBridge(handle, blockedStatus);
+        await syncSocketStatePreservingNetworkBridge(
+          handle,
+          blockedRpcSyncCause(blockedStatus),
+          deps.syncSocketStateViaKernelWorker,
+        );
         if (abortIfStaleBlockedRpc()) {
           return true;
         }
