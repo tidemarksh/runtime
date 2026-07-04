@@ -4,7 +4,7 @@ import {
   setWorkerMessageHandler,
 } from "../../bridge/compat.js";
 import { publishRuntimeBridgeEpoch } from "../../bridge/runtime-state.js";
-import { createSupervisorResumeHostBoundary } from "../host-boundary/supervisor-resume.js";
+import { createSupervisorResumeHostBoundary } from "./supervisor-resume.js";
 import { clearStaleForkSharedSyncGate } from "../fork-shared-sync-gate.js";
 import type {
   AttachThreadWorkerRequest,
@@ -35,7 +35,7 @@ import {
 import type {
   ThreadWorkerInbound,
   WorkerSchedulerQueueHelpers,
-} from "./types.js";
+} from "../scheduler/types.js";
 
 const DEFAULT_NODE_SCHEDULER_STEP_BUDGET = 5_000_000;
 const DEFAULT_BROWSER_SCHEDULER_STEP_BUDGET = 10_000;

@@ -12,11 +12,11 @@ import {
   drainProcessOutput,
 } from "../stdio.js";
 import { appendWorkerDebugLog } from "./debug-log.js";
-import { createPipePollScheduler } from "./pipe-poll.js";
-import { createPruningScheduler } from "./pruning.js";
-import { createWorkerSchedulerQueueHelpers } from "./queue.js";
+import { createPipePollScheduler } from "../host-boundary/blocked-poll.js";
+import { createPruningScheduler } from "../host-boundary/worker-pruning.js";
+import { createWorkerSchedulerQueueHelpers } from "../host-boundary/thread-worker-queue.js";
 import { createRunLoopScheduler, logNetworkDebug } from "./run-loop.js";
-import { createSocketWaitScheduler } from "./socket-wait.js";
+import { createSocketWaitScheduler } from "../diagnostics/socket-wait.js";
 import {
   createBlockedWaitDiagnostics,
 } from "../host-boundary/blocked-wait-diagnostics.js";

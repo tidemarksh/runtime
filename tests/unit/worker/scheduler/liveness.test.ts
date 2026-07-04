@@ -16,7 +16,7 @@ vi.mock("../../../../src/worker/pool.js", async (importOriginal) => {
 import { createWorkerScheduler } from "../../../../src/worker/scheduler.js";
 import { registerForkSharedSyncPromise } from "../../../../src/worker/fork-shared-sync-debug.js";
 import { createWorkerStatusTransitionHandler } from "../../../../src/worker/message-handler/status/transitions.js";
-import { createWorkerSchedulerQueueHelpers } from "../../../../src/worker/scheduler/queue.js";
+import { createWorkerSchedulerQueueHelpers } from "../../../../src/worker/host-boundary/thread-worker-queue.js";
 import { createRunLoopScheduler } from "../../../../src/worker/scheduler/run-loop.js";
 import { createTransferDebugStats, createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";

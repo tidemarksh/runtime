@@ -8,7 +8,7 @@ vi.mock("../../../../src/worker/pool.js", async (importOriginal) => {
   };
 });
 
-import { createWorkerSchedulerQueueHelpers } from "../../../../src/worker/scheduler/queue.js";
+import { createWorkerSchedulerQueueHelpers } from "../../../../src/worker/host-boundary/thread-worker-queue.js";
 import {
   makeHostBoundaryHandle,
   makeHostBoundaryKernel,
