@@ -11,11 +11,7 @@ import type {
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
-import type {
-  KernelWorkerFdEntrySnapshot,
-  KernelWorkerOfdSlotSnapshot,
-  ThreadWorkerOutbound,
-} from "../../messages.js";
+import type { ThreadWorkerOutbound } from "../../messages.js";
 import { kernelStackSlotForWorker } from "../pool.js";
 import {
   readSupervisorFaultExitDecision,
@@ -29,6 +25,13 @@ import {
 import { reconcileKernelSharePipeControl } from "../kernel-share.js";
 import { snapshotSocketStateForThread } from "../ownership/socket-control.js";
 import { supervisorProcessOwnerMatches } from "../process-identity.js";
+import {
+  appendSchedulerQueueDebugLog,
+  formatSchedulerStepDebugSuffix,
+  formatSchedulerStepFdSnapshot,
+  hasBrokenSchedulerThreadState,
+  incrementBoundedSchedulerCounter,
+} from "../diagnostics/scheduler-queue.js";
 import type {
   ThreadWorkerInbound,
   WorkerSchedulerQueueHelpers,
@@ -39,18 +42,7 @@ const DEFAULT_BROWSER_SCHEDULER_STEP_BUDGET = 10_000;
 const MIN_SCHEDULER_STEP_BUDGET = 1_000;
 const MAX_SCHEDULER_STEP_BUDGET = 5_000_000;
 const SCHEDULER_STEP_BUDGET = readSchedulerStepBudget();
-const SCHEDULER_QUEUE_DEBUG_LOG_ENABLED = ((globalThis as {
-  process?: { env?: Record<string, string | undefined> };
-}).process?.env?.TIDEMARK_SCHEDULER_QUEUE_DEBUG_LOG ?? "") === "1";
-const SCHEDULER_QUEUE_DEBUG_LOG_LIMIT = 256;
-const SCHEDULER_QUEUE_DEBUG_LOG_PREFIXES = [
-  "pump-",
-  "ready:",
-  "runnable-",
-  "step:",
-] as const;
 let nextThreadWorkerGeneration = 1;
-const HOT_PC_COUNTER_LIMIT = 32;
 
 function readSchedulerStepBudget(): number {
   const hostConfigured = (globalThis as typeof globalThis & {
@@ -87,181 +79,6 @@ interface WorkerSchedulerQueueDeps {
   handleWorkerMessage(handle: ProcessHandle, worker: Worker, msg: ThreadWorkerOutbound): void;
 }
 
-function formatStepDebugSuffix(handle: ProcessHandle, vmPtr: number): string {
-  const parts: string[] = [];
-  const pid = handle.kernel.process_current_pid?.(vmPtr);
-  if (pid !== undefined) {
-    parts.push(`pid=${pid}`);
-  }
-  const tid = handle.kernel.thread_tid?.(vmPtr);
-  if (tid !== undefined) {
-    parts.push(`tid=${tid}`);
-  }
-  const pc = handle.kernel.thread_pc?.(vmPtr);
-  if (pc !== undefined) {
-    parts.push(`pc=0x${pc.toString(16)}`);
-  }
-  const ra = handle.kernel.thread_ra?.(vmPtr);
-  if (ra !== undefined) {
-    parts.push(`ra=0x${ra.toString(16)}`);
-  }
-  const sp = handle.kernel.thread_sp?.(vmPtr);
-  if (sp !== undefined) {
-    parts.push(`sp=0x${sp.toString(16)}`);
-    for (const byteOffset of [32, 24, 16, 8]) {
-      const stackWord = handle.kernel.thread_stack_minus?.(vmPtr, byteOffset);
-      if (stackWord !== undefined) {
-        parts.push(`stkm${byteOffset}=0x${stackWord.toString(16)}`);
-      }
-    }
-  }
-  for (let index = 0; index <= 32; index += 1) {
-    const stackWord = handle.kernel.thread_stack_word?.(vmPtr, index);
-    if (stackWord !== undefined) {
-      parts.push(`stk${index}=0x${stackWord.toString(16)}`);
-    }
-  }
-  for (const byteOffset of [8, 40, 56, 88]) {
-    const wordIndex = byteOffset / 8;
-    const stackWord = handle.kernel.thread_stack_word?.(vmPtr, wordIndex);
-    if (stackWord !== undefined) {
-      parts.push(`slot${byteOffset}=0x${stackWord.toString(16)}`);
-    }
-  }
-  const a0 = handle.kernel.thread_a0?.(vmPtr);
-  if (a0 !== undefined) {
-    parts.push(`a0=${a0.toString()}`);
-  }
-  const a1 = handle.kernel.thread_a1?.(vmPtr);
-  if (a1 !== undefined) {
-    parts.push(`a1=${a1.toString()}`);
-  }
-  const a2 = handle.kernel.thread_reg?.(vmPtr, 12);
-  if (a2 !== undefined) {
-    parts.push(`a2=${a2.toString()}`);
-  }
-  const a3 = handle.kernel.thread_reg?.(vmPtr, 13);
-  if (a3 !== undefined) {
-    parts.push(`a3=${a3.toString()}`);
-  }
-  const gp = handle.kernel.thread_gp?.(vmPtr);
-  if (gp !== undefined) {
-    parts.push(`gp=0x${gp.toString(16)}`);
-  }
-  const tp = handle.kernel.thread_tp?.(vmPtr);
-  if (tp !== undefined) {
-    parts.push(`tp=0x${tp.toString(16)}`);
-  }
-  for (const [label, reg] of [["s0", 8], ["s1", 9], ["s2", 18], ["s3", 19], ["s4", 20], ["s5", 21], ["s6", 22]] as const) {
-    const value = handle.kernel.thread_reg?.(vmPtr, reg);
-    if (value !== undefined) {
-      parts.push(`${label}=0x${value.toString(16)}`);
-    }
-  }
-  const s11 = handle.kernel.thread_s11?.(vmPtr);
-  if (s11 !== undefined) {
-    parts.push(`s11=0x${s11.toString(16)}`);
-  }
-  return parts.length > 0 ? `:${parts.join(":")}` : "";
-}
-
-function tryFormatOfdType(handle: ProcessHandle, ofdId: number): string {
-  try {
-    const fdType = handle.kernel.kernel_ofd_fd_type(ofdId);
-    if (fdType === handle.kernel.abi_fd_type_file?.()) {
-      return "file";
-    }
-    if (fdType === handle.kernel.abi_fd_type_pipe?.()) {
-      return "pipe";
-    }
-    if (fdType === handle.kernel.abi_fd_type_epoll?.()) {
-      return "epoll";
-    }
-    if (fdType === handle.kernel.abi_fd_type_eventfd?.()) {
-      return "eventfd";
-    }
-    if (fdType === handle.kernel.abi_fd_type_socket?.()) {
-      return "socket";
-    }
-    return String(fdType);
-  } catch {
-    return "err";
-  }
-}
-
-function formatStepFdSnapshot(
-  handle: ProcessHandle,
-  vmPtr: number | undefined,
-  fdEntries: readonly KernelWorkerFdEntrySnapshot[] | undefined,
-  ofdSlots: readonly KernelWorkerOfdSlotSnapshot[] | undefined,
-): string {
-  if (vmPtr === undefined || vmPtr === 0 || fdEntries === undefined) {
-    return "fds=none";
-  }
-  const focusFds = new Set([9, 10, 11, 12]);
-  const selectedFdEntries = fdEntries.filter((entry) => entry.ofdId !== 0 || focusFds.has(entry.fd));
-  const fdSummary = selectedFdEntries
-    .slice(0, 24)
-    .map((entry) => {
-      if (entry.ofdId === 0) {
-        return `${entry.fd}=0`;
-      }
-      let ino = "err";
-      let refcount = "err";
-      try {
-        ino = String(handle.kernel.kernel_ofd_ino(entry.ofdId));
-      } catch {
-        // The diagnostic must survive older or partial harness exports.
-      }
-      try {
-        refcount = String(handle.kernel.kernel_ofd_refcount(entry.ofdId));
-      } catch {
-        // The diagnostic must survive older or partial harness exports.
-      }
-      return `${entry.fd}=${entry.ofdId}/${tryFormatOfdType(handle, entry.ofdId)}/ino${ino}/ref${refcount}/fl${entry.fdFlags}`;
-    });
-  if (selectedFdEntries.length > 24) {
-    fdSummary.push(`more=${selectedFdEntries.length - 24}`);
-  }
-  const ofdSlotIds = ofdSlots?.map((slot) => slot.ofdId).sort((left, right) => left - right) ?? [];
-  return `fds=${fdSummary.join(",") || "empty"}:ofdSlots=${ofdSlotIds.join(",") || "none"}`;
-}
-
-function hasBrokenThreadState(handle: ProcessHandle, vmPtr: number): boolean {
-  const pc = handle.kernel.thread_pc?.(vmPtr) ?? 0n;
-  const sp = handle.kernel.thread_sp?.(vmPtr) ?? 0n;
-  const s11 = handle.kernel.thread_s11?.(vmPtr) ?? 0n;
-  return pc < 0x1000n || sp === 0n || s11 === 0n;
-}
-
-function appendSchedulerQueueDebugLog(
-  deps: WorkerSchedulerQueueDeps,
-  handle: ProcessHandle,
-  event: string,
-): void {
-  if (!SCHEDULER_QUEUE_DEBUG_LOG_ENABLED) {
-    return;
-  }
-  const queueDebugCount = handle.workerDebugLog.reduce(
-    (count, entry) => count + (
-      entry.startsWith("pump-") || entry.startsWith("step:") || entry.startsWith("ready:") || entry.startsWith("runnable-")
-        ? 1
-        : 0
-    ),
-    0,
-  );
-  if (queueDebugCount >= SCHEDULER_QUEUE_DEBUG_LOG_LIMIT) {
-    const oldestQueueDebugIndex = handle.workerDebugLog.findIndex((entry) =>
-      SCHEDULER_QUEUE_DEBUG_LOG_PREFIXES.some((prefix) => entry.startsWith(prefix)));
-    if (oldestQueueDebugIndex !== -1) {
-      handle.workerDebugLog.splice(oldestQueueDebugIndex, 1);
-    } else {
-      handle.workerDebugLog.shift();
-    }
-  }
-  handle.workerDebugLog.push(event);
-}
-
 function removeVforkReadyWorker(handle: ProcessHandle, worker: Worker): void {
   for (let index = handle.vforkReadyWorkers.length - 1; index >= 0; index -= 1) {
     if (handle.vforkReadyWorkers[index] === worker) {
@@ -277,31 +94,6 @@ function clearBlockedWorker(deps: WorkerSchedulerQueueDeps, handle: ProcessHandl
   }
   deps.clearHostBlockedRetryTimer(handle, worker);
   handle.hostBlockedWorkers.delete(worker);
-}
-
-function incrementBoundedCounter(
-  counters: Record<string, number>,
-  key: string,
-  maxEntries = HOT_PC_COUNTER_LIMIT,
-): void {
-  const existing = counters[key];
-  if (existing !== undefined) {
-    counters[key] = existing + 1;
-    return;
-  }
-  const entries = Object.keys(counters);
-  if (entries.length < maxEntries) {
-    counters[key] = 1;
-    return;
-  }
-  for (const entry of entries) {
-    const next = (counters[entry] ?? 0) - 1;
-    if (next <= 0) {
-      delete counters[entry];
-      continue;
-    }
-    counters[entry] = next;
-  }
 }
 
 export function createWorkerSchedulerQueueHelpers(
@@ -443,7 +235,7 @@ export function createWorkerSchedulerQueueHelpers(
     handle.workers.add(worker);
     deps.appendWorkerDebugLog(
       handle,
-      `${reinitWithinHandle ? "reinit" : "attach"}:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`,
+      `${reinitWithinHandle ? "reinit" : "attach"}:0x${vmPtr.toString(16)}${formatSchedulerStepDebugSuffix(handle, vmPtr)}`,
     );
     deps.threadWorkerStates.set(worker, {
       vmPtr,
@@ -572,7 +364,7 @@ export function createWorkerSchedulerQueueHelpers(
         && thread.waitingInWorkerStatus === null
         && thread.ownerAsyncStatus !== null
       ) {
-        appendSchedulerQueueDebugLog(deps, handle, `runnable-defer-owner-async:0x${thread.vmPtr.toString(16)}:async=${thread.ownerAsyncStatus}`);
+        appendSchedulerQueueDebugLog(handle, `runnable-defer-owner-async:0x${thread.vmPtr.toString(16)}:async=${thread.ownerAsyncStatus}`);
       } else if ((thread?.ownerAsyncStatus ?? null) === null) {
         removeVforkReadyWorker(handle, worker);
       }
@@ -581,12 +373,12 @@ export function createWorkerSchedulerQueueHelpers(
     }
     const vmPtr = thread?.vmPtr;
     if (vmPtr !== undefined) {
-      const brokenThreadState = hasBrokenThreadState(handle, vmPtr);
-      appendSchedulerQueueDebugLog(deps, handle, `runnable-published:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`);
+      const brokenThreadState = hasBrokenSchedulerThreadState(handle, vmPtr);
+      appendSchedulerQueueDebugLog(handle, `runnable-published:0x${vmPtr.toString(16)}${formatSchedulerStepDebugSuffix(handle, vmPtr)}`);
       if (brokenThreadState) {
         deps.appendWorkerDebugLog(
           handle,
-          `ready_break:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`,
+          `ready_break:0x${vmPtr.toString(16)}${formatSchedulerStepDebugSuffix(handle, vmPtr)}`,
         );
       }
     }
@@ -648,9 +440,9 @@ export function createWorkerSchedulerQueueHelpers(
     if (forkSharedSyncPromise !== null) {
       const staleGate = clearStaleForkSharedSyncGate(handle, forkSharedSyncPromise);
       if (staleGate !== null) {
-        appendSchedulerQueueDebugLog(deps, handle, `pump-cleared:${staleGate}`);
+        appendSchedulerQueueDebugLog(handle, `pump-cleared:${staleGate}`);
       } else {
-        appendSchedulerQueueDebugLog(deps, handle, `pump-held:fork-shared-sync:ready=${handle.vforkReadyWorkers.length}`);
+        appendSchedulerQueueDebugLog(handle, `pump-held:fork-shared-sync:ready=${handle.vforkReadyWorkers.length}`);
         observeForkSharedSyncGate(handle, forkSharedSyncPromise);
         return;
       }
@@ -659,7 +451,6 @@ export function createWorkerSchedulerQueueHelpers(
     if (runningWorker !== null) {
       const thread = deps.threadWorkerStates.get(runningWorker);
       appendSchedulerQueueDebugLog(
-        deps,
         handle,
         `pump-held:running:ready=${handle.vforkReadyWorkers.length}`
           + (thread ? `:vm=0x${thread.vmPtr.toString(16)}:status=${handle.kernel.thread_status(thread.vmPtr)}` : ""),
@@ -690,7 +481,6 @@ export function createWorkerSchedulerQueueHelpers(
     const vmPtr = thread?.vmPtr;
     if (thread && vmPtr !== undefined) {
       appendSchedulerQueueDebugLog(
-        deps,
         handle,
         `pump-run:ready=${handle.vforkReadyWorkers.length}:vm=0x${vmPtr.toString(16)}:status=${handle.kernel.thread_status(vmPtr)}`,
       );
@@ -704,7 +494,7 @@ export function createWorkerSchedulerQueueHelpers(
       thread.lastStepPc = handle.kernel.thread_pc(vmPtr);
       thread.lastStepSp = handle.kernel.thread_sp(vmPtr);
       thread.lastStepS11 = handle.kernel.thread_s11?.(vmPtr) ?? 0n;
-      incrementBoundedCounter(thread.hotStepPcs, `0x${thread.lastStepPc.toString(16)}`);
+      incrementBoundedSchedulerCounter(thread.hotStepPcs, `0x${thread.lastStepPc.toString(16)}`);
       const recentSteps = thread.recentSteps ??= [];
       recentSteps.push({
         pc: thread.lastStepPc,
@@ -715,12 +505,12 @@ export function createWorkerSchedulerQueueHelpers(
       if (recentSteps.length > 16) {
         recentSteps.splice(0, recentSteps.length - 16);
       }
-      const brokenThreadState = hasBrokenThreadState(handle, vmPtr);
-      appendSchedulerQueueDebugLog(deps, handle, `step:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`);
+      const brokenThreadState = hasBrokenSchedulerThreadState(handle, vmPtr);
+      appendSchedulerQueueDebugLog(handle, `step:0x${vmPtr.toString(16)}${formatSchedulerStepDebugSuffix(handle, vmPtr)}`);
       if (brokenThreadState) {
         deps.appendWorkerDebugLog(
           handle,
-          `step_break:0x${vmPtr.toString(16)}${formatStepDebugSuffix(handle, vmPtr)}`,
+          `step_break:0x${vmPtr.toString(16)}${formatSchedulerStepDebugSuffix(handle, vmPtr)}`,
         );
       }
     }
@@ -747,9 +537,8 @@ export function createWorkerSchedulerQueueHelpers(
       stepMessage.ofdSlots = stepOfdSlots;
     }
     appendSchedulerQueueDebugLog(
-      deps,
       handle,
-      `step-fds:0x${(vmPtr ?? 0).toString(16)}:${formatStepFdSnapshot(handle, vmPtr, fdEntries, stepOfdSlots)}`,
+      `step-fds:0x${(vmPtr ?? 0).toString(16)}:${formatSchedulerStepFdSnapshot(handle, vmPtr, fdEntries, stepOfdSlots)}`,
     );
     if (thread?.pendingPipeSlotsForNextStep?.length) {
       stepMessage.pipeSlots = thread.pendingPipeSlotsForNextStep.splice(0);
