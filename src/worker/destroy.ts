@@ -1,7 +1,6 @@
 import { clearWorkerMessageHandler } from "../bridge/compat.js";
 import { detachKernelShare } from "./kernel-share.js";
 import { removeWorkerFromPool } from "./pool.js";
-import { releaseSharedHostStdioLocal } from "./stdio.js";
 import type { ProcessHandle, ThreadWorkerState } from "./types.js";
 
 interface WorkerDestroyDeps {
@@ -11,6 +10,7 @@ interface WorkerDestroyDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   clearBlockedWorker(handle: ProcessHandle, worker: Worker): void;
   clearVforkSnapshot(handle: ProcessHandle): void;
+  releaseSharedHostStdio(handle: ProcessHandle): Promise<void>;
   unregisterProcessWithKernelWorker(handle: ProcessHandle): Promise<void>;
 }
 
@@ -38,8 +38,19 @@ export function createWorkerDestroyHelpers(deps: WorkerDestroyDeps) {
     }
     handle.workers.clear();
 
-    void deps.unregisterProcessWithKernelWorker(handle).catch(() => {});
-    releaseSharedHostStdioLocal(handle);
+    const hadLocalHostStdio = handle.stdinPipe !== 0 || handle.stdoutPipe !== 0 || handle.stderrPipe !== 0;
+    void (async () => {
+      try {
+        if (hadLocalHostStdio) {
+          await deps.releaseSharedHostStdio(handle);
+        }
+      } finally {
+        await deps.unregisterProcessWithKernelWorker(handle);
+      }
+    })().catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `destroy-kernel-worker-cleanup-error:${handle.pid}:${JSON.stringify(message)}`);
+    });
     detachKernelShare(handle);
     if (handle.pid > 0 && deps.processHandles.get(handle.pid) === handle) {
       deps.processHandles.delete(handle.pid);

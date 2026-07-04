@@ -6,6 +6,7 @@ import {
   restoreNetworkBridgeSocketState,
 } from "./shared.js";
 import { adoptKernelStateForHandle } from "../kernel-state.js";
+import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 import { kernelWorkerOwnsPipeState } from "../ownership/pipe-control.js";
 import type {
   ProcessHandle,
@@ -24,15 +25,12 @@ export async function releaseHostStdioViaKernelWorker(
   handle: ProcessHandle,
   cause: SyncCause,
 ): Promise<bigint> {
-  if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-    handle.kernel.process_release_host_stdio(handle.vmPtr);
-    return handle.kernelState.pipeUsed;
-  }
+  const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "releaseHostStdioViaKernelWorker");
 
   const networkSocketSnapshots = snapshotNetworkBridgeSocketState([handle]);
-  let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
+  let response: Awaited<ReturnType<typeof kernelWorkerRequest>>;
   try {
-    response = await handle.kernelWorkerRequest({
+    response = await kernelWorkerRequest({
       type: "release-host-stdio",
       pid: handle.pid,
       vmPtr: handle.vmPtr,

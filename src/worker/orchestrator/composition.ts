@@ -235,6 +235,7 @@ const workerDestroyHelpers = createWorkerDestroyHelpers({
   appendRuntimeLifecycleEvent,
   clearBlockedWorker,
   clearVforkSnapshot,
+  releaseSharedHostStdio,
   unregisterProcessWithKernelWorker,
 });
 const {

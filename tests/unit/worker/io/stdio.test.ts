@@ -5,10 +5,14 @@ import {
   drainHiddenProcessOutput,
   drainProcessOutput,
   flushStdin,
-  releaseSharedHostStdioLocal,
   settleInheritedChildOutput,
   settleVisibleProcessOutput,
 } from "../../../../src/worker/stdio.js";
+import { releaseSharedHostStdioViaKernelWorker } from "../../../../src/worker/sync.js";
+import type {
+  KernelWorkerOutbound,
+  KernelWorkerRequest,
+} from "../../../../src/messages.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 
 function makeKernelState(): KernelRuntimeState {
@@ -90,6 +94,8 @@ function makeHandle(
     abi_max_pipes: () => 64,
     kernel_pipe_region_bytes: () => 64 * (32 + 65_536),
     kernel_heap_ptr: () => 0x2000,
+    kernel_attach_runtime_state: () => {},
+    supervisor_process_pipe_used_mask: () => 0n,
     supervisor_stdio_output_settle_kind_visible: () => 1,
     supervisor_stdio_output_settle_kind_inherited_child: () => 2,
     supervisor_stdio_pipe_read_progress_action_none: () => 0,
@@ -757,8 +763,8 @@ test("flushStdin routes controlling-tty input through process_host_write_stdin",
   expect(handle.stdinQueue).toHaveLength(0);
 });
 
-test("releaseSharedHostStdioLocal clears local pipe slots without releasing the shared backend while other references remain", () => {
-  const { handle, releaseHostStdio } = makeHandle({
+test("releaseSharedHostStdioViaKernelWorker clears local pipe slots while other shared references remain", async () => {
+  const { handle } = makeHandle({
     hostStdio: {
       stdinPipe: 3,
       stdoutPipe: 4,
@@ -768,16 +774,17 @@ test("releaseSharedHostStdioLocal clears local pipe slots without releasing the 
     stdinPipe: 3,
   });
 
-  releaseSharedHostStdioLocal(handle);
+  await releaseSharedHostStdioViaKernelWorker(handle, {
+    wakePipeAndEpollWaitersInKernelShare: vi.fn(),
+  });
 
   expect(handle.stdinPipe).toBe(0);
   expect(handle.stdoutPipe).toBe(0);
   expect(handle.stderrPipe).toBe(0);
   expect(handle.hostStdio.refCount).toBe(1);
-  expect(releaseHostStdio).not.toHaveBeenCalled();
 });
 
-test("releaseSharedHostStdioLocal does not release a live stdio owner's backend from a child", () => {
+test("releaseSharedHostStdioViaKernelWorker detaches a child from a live stdio owner", async () => {
   const { handle: owner } = makeHandle({
     hostStdio: {
       stdinPipe: 3,
@@ -786,7 +793,7 @@ test("releaseSharedHostStdioLocal does not release a live stdio owner's backend 
       refCount: 1,
     },
   });
-  const { handle: child, releaseHostStdio } = makeHandle({
+  const { handle: child } = makeHandle({
     hostStdio: owner.hostStdio,
     stdinPipe: 3,
     stdoutPipe: 4,
@@ -794,16 +801,17 @@ test("releaseSharedHostStdioLocal does not release a live stdio owner's backend 
     stdioOwner: owner,
   });
 
-  releaseSharedHostStdioLocal(child);
+  await releaseSharedHostStdioViaKernelWorker(child, {
+    wakePipeAndEpollWaitersInKernelShare: vi.fn(),
+  });
 
   expect(child.stdoutPipe).toBe(0);
   expect(child.stderrPipe).toBe(0);
   expect(child.hostStdio.refCount).toBe(0);
-  expect(releaseHostStdio).not.toHaveBeenCalled();
 });
 
-test("releaseSharedHostStdioLocal is idempotent and releases the kernel host stdio once on the last reference", () => {
-  const { handle, releaseHostStdio } = makeHandle({
+test("releaseSharedHostStdioViaKernelWorker releases the shared backend through kernel-worker once on the last reference", async () => {
+  const { handle } = makeHandle({
     hostStdio: {
       stdinPipe: 0,
       stdoutPipe: 4,
@@ -811,12 +819,24 @@ test("releaseSharedHostStdioLocal is idempotent and releases the kernel host std
       refCount: 1,
     },
   });
+  const requests: KernelWorkerRequest[] = [];
+  handle.kernelWorkerRequest = vi.fn(async (msg): Promise<KernelWorkerOutbound> => {
+    requests.push(msg);
+    if (msg.type !== "release-host-stdio") {
+      throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+    }
+    return { type: "host-stdio-released", requestId: 0, kernelState: msg.kernelState };
+  });
+  const ports = {
+    wakePipeAndEpollWaitersInKernelShare: vi.fn(),
+  };
 
-  releaseSharedHostStdioLocal(handle);
-  releaseSharedHostStdioLocal(handle);
+  await releaseSharedHostStdioViaKernelWorker(handle, ports);
+  await releaseSharedHostStdioViaKernelWorker(handle, ports);
 
   expect(handle.stdoutPipe).toBe(0);
   expect(handle.stderrPipe).toBe(0);
   expect(handle.hostStdio.refCount).toBe(0);
-  expect(releaseHostStdio).toHaveBeenCalledTimes(1);
+  expect(requests.map((msg) => msg.type)).toEqual(["release-host-stdio"]);
+  expect(ports.wakePipeAndEpollWaitersInKernelShare).toHaveBeenCalledTimes(1);
 });

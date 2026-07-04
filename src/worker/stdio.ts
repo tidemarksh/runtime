@@ -524,28 +524,3 @@ export function retainSharedHostStdio(shared: SharedHostStdio): SharedHostStdio 
   shared.refCount += 1;
   return shared;
 }
-
-export function releaseSharedHostStdioLocal(handle: ProcessHandle): void {
-  const hadLocalHostStdio = handle.stdinPipe !== 0 || handle.stdoutPipe !== 0 || handle.stderrPipe !== 0;
-  if (!hadLocalHostStdio) {
-    return;
-  }
-  const shared = handle.hostStdio;
-  if (shared.refCount > 0) {
-    shared.refCount -= 1;
-  }
-  handle.stdinPipe = 0;
-  handle.stdoutPipe = 0;
-  handle.stderrPipe = 0;
-  if (shared.refCount > 0) {
-    return;
-  }
-  if (handle.stdioOwner && !handle.stdioOwner.exitInProgress) {
-    return;
-  }
-  try {
-    handle.kernel.process_release_host_stdio(handle.vmPtr);
-  } catch {
-    // Worker-error teardown can race with corrupted or already-released process state.
-  }
-}
