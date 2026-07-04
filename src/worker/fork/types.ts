@@ -42,11 +42,6 @@ export interface WorkerForkDeps {
     vmPtr: number,
     childPid: number,
   ): Promise<KernelRpcResumeOutcome>;
-  syncForkSharedStateLocally(
-    handle: ProcessHandle,
-    targets: ProcessHandle[],
-    options: { cause: SyncCause; includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] },
-  ): void;
   syncForkSharedStateViaKernelWorker(
     handle: ProcessHandle,
     targets: ProcessHandle[],

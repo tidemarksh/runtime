@@ -35,11 +35,6 @@ interface WorkerKernelRpcDeps {
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   syncProcessMemfsViaKernelWorker(handle: ProcessHandle, cause: SyncCause): Promise<void>;
   syncBlockedForkSharedStateViaKernelWorker(handle: ProcessHandle, sourceVmPtr: number | undefined, cause: SyncCause): Promise<void>;
-  syncForkSharedStateLocally(
-    handle: ProcessHandle,
-    targets: ProcessHandle[],
-    options: { cause: SyncCause; includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] },
-  ): void;
   syncForkSharedStateViaKernelWorker(
     handle: ProcessHandle,
     targets: ProcessHandle[],
@@ -155,7 +150,6 @@ export function createWorkerKernelRpcHelpers(deps: WorkerKernelRpcDeps) {
     markRuntimeFsDirty: deps.markRuntimeFsDirty,
     notifyHostEffectProgress: deps.notifyHostEffectProgress,
     kernelShareOtherMembers,
-    syncForkSharedStateLocallyAfterFs: deps.syncForkSharedStateLocally,
     syncDirtyMemfsPeerViaKernelWorker: deps.syncForkSharedStateViaKernelWorker,
     syncSharedOfdStateAfterFs: (handle, targets, options) => (
       deps.syncForkSharedStateViaKernelWorker(

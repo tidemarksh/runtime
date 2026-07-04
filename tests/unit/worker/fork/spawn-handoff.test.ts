@@ -74,7 +74,6 @@ function makeDeps(): WorkerForkDeps & {
     registerProcessWithKernelWorker: vi.fn(),
     rollbackVforkExecveHandoffViaKernelWorker: vi.fn(),
     resumeVforkExecveParentViaKernelWorker: vi.fn(),
-    syncForkSharedStateLocally: vi.fn(),
     syncForkSharedStateViaKernelWorker: vi.fn(),
     canonicalizeChildLifecycleViaKernelWorker: vi.fn(),
     bootStrapMemoryBytes: 64 * 1024 * 1024,
@@ -162,6 +161,10 @@ test("handleExecveSpawn prefers supervisor process HostOp over legacy spawn hand
     supervisor_process_host_op_record_bytes: () => number;
     supervisor_process_host_op_record_magic: () => number;
     supervisor_process_host_op_kind_spawn_process_worker: () => number;
+    supervisor_host_completion_record_bytes: () => number;
+    supervisor_host_completion_record_magic: () => number;
+    supervisor_host_completion_outcome_success: () => number;
+    supervisor_host_completion_outcome_failure: () => number;
     supervisor_process_host_op: (vmPtr: number, outPtr: number, outLen: number) => number;
     supervisor_complete_host_op: (completionPtr: number, completionLen: number) => number;
   };
@@ -171,6 +174,10 @@ test("handleExecveSpawn prefers supervisor process HostOp over legacy spawn hand
   kernel.supervisor_process_host_op_record_bytes = () => 96;
   kernel.supervisor_process_host_op_record_magic = () => 0x4850_5354;
   kernel.supervisor_process_host_op_kind_spawn_process_worker = () => 1;
+  kernel.supervisor_host_completion_record_bytes = () => 64;
+  kernel.supervisor_host_completion_record_magic = () => 0x4348_5354;
+  kernel.supervisor_host_completion_outcome_success = () => 1;
+  kernel.supervisor_host_completion_outcome_failure = () => 2;
   kernel.supervisor_process_host_op = vi.fn((vmPtr: number, outPtr: number, outLen: number) => {
     expect(vmPtr).toBe(0x1234);
     expect(outLen).toBe(96);

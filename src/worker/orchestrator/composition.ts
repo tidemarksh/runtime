@@ -38,7 +38,6 @@ import {
   rehydrateForkSharedStateViaKernelWorker as rehydrateForkSharedStateViaKernelWorkerImpl,
   snapshotProcessFdOfdStateForKernelWorker,
   syncBlockedForkSharedStateViaKernelWorker as syncBlockedForkSharedStateViaKernelWorkerImpl,
-  syncForkSharedStateLocally as syncForkSharedStateLocallyImpl,
   syncForkSharedStateViaKernelWorker as syncForkSharedStateViaKernelWorkerImpl,
   syncProcessMemfsViaKernelWorker as syncProcessMemfsViaKernelWorkerImpl,
   syncSocketStateViaKernelWorker as syncSocketStateViaKernelWorkerImpl,
@@ -177,7 +176,6 @@ workerKernelRpcHelpers = createWorkerKernelRpcHelpers({
   requestPipeStateSync,
   syncProcessMemfsViaKernelWorker: syncProcessMemfsViaKernelWorkerImpl,
   syncBlockedForkSharedStateViaKernelWorker,
-  syncForkSharedStateLocally,
   syncForkSharedStateViaKernelWorker,
   rehydrateForkSharedStateViaKernelWorker,
   syncSocketStateViaKernelWorker,
@@ -216,7 +214,6 @@ const workerForkHandlers = createWorkerForkHandlers({
   registerProcessWithKernelWorker,
   rollbackVforkExecveHandoffViaKernelWorker,
   resumeVforkExecveParentViaKernelWorker,
-  syncForkSharedStateLocally,
   syncForkSharedStateViaKernelWorker,
   syncProcessMemfsViaKernelWorker,
   canonicalizeChildLifecycleViaKernelWorker,
@@ -554,14 +551,6 @@ async function recordChildExitViaKernelWorker(
   waitStatus: number,
 ): Promise<void> {
   await recordChildExitViaKernelWorkerImpl(parent, childPid, waitStatus);
-}
-
-function syncForkSharedStateLocally(
-  handle: ProcessHandle,
-  targets: ProcessHandle[],
-  options: { cause: SyncCause; includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] },
-): void {
-  syncForkSharedStateLocallyImpl(handle, targets, options);
 }
 
 async function syncForkSharedStateViaKernelWorker(

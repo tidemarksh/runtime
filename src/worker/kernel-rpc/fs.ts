@@ -183,11 +183,6 @@ export interface WorkerKernelRpcFsDeps {
   markRuntimeFsDirty(handle: ProcessHandle): void;
   notifyHostEffectProgress(handle: ProcessHandle): void;
   kernelShareOtherMembers(handle: ProcessHandle): ProcessHandle[];
-  syncForkSharedStateLocallyAfterFs(
-    handle: ProcessHandle,
-    targets: ProcessHandle[],
-    options: { cause: SyncCause; includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] },
-  ): void;
   syncDirtyMemfsPeerViaKernelWorker(
     handle: ProcessHandle,
     targets: ProcessHandle[],

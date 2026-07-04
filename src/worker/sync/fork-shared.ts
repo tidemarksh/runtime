@@ -11,7 +11,6 @@ import {
   restoreRuntimeNetworkKernelState
 } from "./shared.js";
 import {
-  copyLegacySharedKernelObjectsLocal,
   kernelShareOtherMembers,
   reconcileKernelSharePipeControl,
   restoreLocalOfdSlots,
@@ -20,7 +19,6 @@ import { reapplyMemfsDeletedPaths } from "../memfs-tombstones.js";
 import {
   mergeKernelShareOfdStateInto,
   pruneStaleKernelShareOfdIds,
-  reconcileForkSharedOfdRefcounts,
   snapshotKernelShareOfdSlots,
   syncKernelShareOfdReservations,
 } from "../fork-shared.js";
@@ -33,7 +31,6 @@ import {
   staleKernelShareOfdIds,
 } from "../ownership/ofd-table.js";
 import {
-  collectTrackableForkSharedOfds,
   collectTracedForkSharedOfdIds,
   isRegularFileOfd,
   sourceForkSharedOfdPeerState,
@@ -70,42 +67,6 @@ import type {
   ProcessHandle,
   SyncCause
 } from "./shared.js";
-
-export function syncForkSharedStateLocally(
-  handle: ProcessHandle,
-  targets: ProcessHandle[],
-  options: { cause: SyncCause; includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] },
-  collectTrackableOfds: (handle: ProcessHandle) => Set<number> = collectTrackableForkSharedOfds,
-): void {
-  if (options.trackHeldOfds === true) {
-    for (const ofdId of collectTrackableOfds(handle)) {
-      handle.kernelShare.sharedOfdIds.add(ofdId);
-    }
-  }
-  const activeOfdIds = activeKernelShareOfdIds(handle);
-  const allowedOfdIdSet = options.ofdIds === undefined ? null : new Set(options.ofdIds);
-  const staleOfdIds = staleKernelShareOfdIds(handle);
-  syncKernelShareOfdReservations(handle);
-  const syncOfdIds = [...new Set(
-    allowedOfdIdSet === null
-      ? activeOfdIds
-      : activeOfdIds.filter((ofdId) => allowedOfdIdSet.has(ofdId)),
-  )].sort((left, right) => left - right);
-  mergeKernelShareOfdStateInto(handle, syncOfdIds);
-  reconcileForkSharedOfdRefcounts(handle, syncOfdIds);
-  const networkSocketSnapshots = snapshotNetworkBridgeSocketState(handle.kernelShare.members);
-  const processStateSnapshots = snapshotProcessStates(targets);
-  try {
-    for (const target of targets) {
-      copyLegacySharedKernelObjectsLocal(handle, target, syncOfdIds, options);
-      attachKernelRuntimeState(target.kernel, target.kernelState);
-    }
-  } finally {
-    restoreNetworkBridgeSocketState(networkSocketSnapshots);
-    restoreProcessStates(processStateSnapshots);
-  }
-  pruneStaleKernelShareOfdIds(handle, staleOfdIds);
-}
 
 function isQuiescentForkSharedSyncTarget(target: ProcessHandle): boolean {
   return target.runningWorker === null
