@@ -27,6 +27,8 @@ function makeHandle(options: {
     vmPtr,
     kernel: {
       process_current_pid: (candidateVmPtr: number) => candidateVmPtr === vmPtr ? ownerPid : 0,
+      supervisor_process_owner_matches: (candidateVmPtr: number, runtimePid: number) =>
+        candidateVmPtr === vmPtr && ownerPid === runtimePid ? 1 : 0,
       thread_process_ptr: (candidateVmPtr: number) => candidateVmPtr === vmPtr ? processPtr : 0,
       abi_max_fds: () => 8,
       abi_o_cloexec: () => 0x80000,

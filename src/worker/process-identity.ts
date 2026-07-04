@@ -27,6 +27,25 @@ export function supervisorVforkChildOwnerMismatch(
   return result !== 0;
 }
 
+export function supervisorProcessOwnerMatches(
+  kernel: ProcessHandle["kernel"],
+  vmPtr: number,
+  runtimePid: number,
+): boolean {
+  if (vmPtr === 0 || runtimePid <= 0) {
+    return false;
+  }
+  const readMatch = kernel.supervisor_process_owner_matches;
+  if (typeof readMatch !== "function") {
+    throw new Error("kernel supervisor ABI missing supervisor_process_owner_matches");
+  }
+  const result = readMatch(vmPtr, runtimePid);
+  if (result < 0) {
+    throw new Error(`kernel supervisor process owner match failed: ${result}`);
+  }
+  return result !== 0;
+}
+
 export function assertHandleWorkerProcessIdentity(
   handle: ProcessHandle,
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>,
@@ -51,7 +70,7 @@ export function assertHandleWorkerProcessIdentity(
     ownedWorkerVmPtrs.add(threadState.vmPtr);
     if (
       anchorVmPtr === null
-      && handle.kernel.process_current_pid(threadState.vmPtr) === handle.pid
+      && supervisorProcessOwnerMatches(handle.kernel, threadState.vmPtr, handle.pid)
     ) {
       anchorVmPtr = threadState.vmPtr;
     }
@@ -65,7 +84,7 @@ export function assertHandleWorkerProcessIdentity(
     if (includeHandleVmPtr) {
       if (
         anchorVmPtr === null
-        && handle.kernel.process_current_pid(handle.vmPtr) === handle.pid
+        && supervisorProcessOwnerMatches(handle.kernel, handle.vmPtr, handle.pid)
       ) {
         anchorVmPtr = handle.vmPtr;
       }
@@ -91,10 +110,10 @@ export function assertHandleWorkerProcessIdentity(
     if (processPtr === 0) {
       continue;
     }
-    const actualPid = handle.kernel.process_current_pid(vmPtr);
-    if (actualPid === handle.pid) {
+    if (supervisorProcessOwnerMatches(handle.kernel, vmPtr, handle.pid)) {
       continue;
     }
+    const actualPid = handle.kernel.process_current_pid(vmPtr);
     const workerLogTail = options.workerLogTail ?? [];
     throw new Error(
       `${context} process identity drift expected_pid=${handle.pid} actual_pid=${actualPid}`

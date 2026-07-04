@@ -28,6 +28,7 @@ import {
 } from "../ownership/ofd-table.js";
 import { reconcileKernelSharePipeControl } from "../kernel-share.js";
 import { snapshotSocketStateForThread } from "../ownership/socket-control.js";
+import { supervisorProcessOwnerMatches } from "../process-identity.js";
 import type {
   ThreadWorkerInbound,
   WorkerSchedulerQueueHelpers,
@@ -363,8 +364,8 @@ export function createWorkerSchedulerQueueHelpers(
     if (vmPtr === 0 || handle.pid <= 0) {
       return;
     }
-    const currentPid = handle.kernel.process_current_pid(vmPtr);
-    if (currentPid !== handle.pid) {
+    if (!supervisorProcessOwnerMatches(handle.kernel, vmPtr, handle.pid)) {
+      const currentPid = handle.kernel.process_current_pid(vmPtr);
       throw new Error(
         `${context} worker/process ownership mismatch vm=0x${vmPtr.toString(16)}`
           + ` expected_pid=${handle.pid} actual_pid=${currentPid}`,

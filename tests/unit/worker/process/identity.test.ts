@@ -50,6 +50,8 @@ function makeHandle(options: {
       abi_max_threads: () => options.liveVmPtrs.length,
       process_thread_vm_ptr: (_vmPtr: number, slot: number) => options.liveVmPtrs[slot] ?? 0,
       process_current_pid: (vmPtr: number) => options.actualPidByVm.get(vmPtr) ?? 0,
+      supervisor_process_owner_matches: (vmPtr: number, runtimePid: number) =>
+        options.actualPidByVm.get(vmPtr) === runtimePid ? 1 : 0,
       thread_process_ptr: (vmPtr: number) => options.processPtrByVm.get(vmPtr) ?? 0,
     },
     lastDebugMessage: "unit",

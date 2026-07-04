@@ -1,4 +1,5 @@
 import type { ProcessHandle } from "../types.js";
+import { supervisorProcessOwnerMatches } from "../process-identity.js";
 
 type StandardFdIntegrityCheck = (handle: ProcessHandle, context: string) => void;
 
@@ -14,8 +15,8 @@ function assertThreadBelongsToHandle(
   if (vmPtr === 0) {
     throw new Error(`${context}: missing vmPtr for pid=${handle.pid}`);
   }
-  const currentPid = handle.kernel.process_current_pid(vmPtr);
-  if (currentPid !== handle.pid) {
+  if (!supervisorProcessOwnerMatches(handle.kernel, vmPtr, handle.pid)) {
+    const currentPid = handle.kernel.process_current_pid(vmPtr);
     throw new Error(
       `${context}: thread owner pid drift expected=${handle.pid} actual=${currentPid}`
         + ` vm=0x${vmPtr.toString(16)}`,
