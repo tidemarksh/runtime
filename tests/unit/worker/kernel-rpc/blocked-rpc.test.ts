@@ -330,6 +330,7 @@ test("blocked-rpc generic resume returns a typed completed outcome", async () =>
     return 0n;
   });
   const handle = makeHandle(kernel, worker, {
+    kernelWorkerRequest: vi.fn(async () => ({ type: "noop" } as never)),
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: 21,

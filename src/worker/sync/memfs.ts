@@ -4,6 +4,7 @@ import {
 } from "../../abi.js";
 import { adoptKernelStateForHandle } from "../kernel-state.js";
 import { describeSyncCause, type SyncCause } from "../contracts/sync.js";
+import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 import {
   restoreProcessState,
   snapshotProcessState,
@@ -28,15 +29,13 @@ export async function syncProcessMemfsViaKernelWorker(
   handle: ProcessHandle,
   cause: SyncCause,
 ): Promise<void> {
-  if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-    return;
-  }
+  const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "syncProcessMemfsViaKernelWorker");
   const processStateSnapshot = snapshotProcessState(handle);
   handle.kernelState = readKernelRuntimeState(handle.kernel);
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
   appendForkSharedMemfsDebug(handle, `process-memfs-sync:${handle.pid}:cause=${describeSyncCause(cause)}`);
 
-  const response = await handle.kernelWorkerRequest({
+  const response = await kernelWorkerRequest({
     type: "sync-process-memfs",
     pid: handle.pid,
     kernelState: handle.kernelState,

@@ -50,6 +50,7 @@ import {
   restoreProcessStates,
   snapshotProcessStates,
 } from "../ownership/process-state.js";
+import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 import {
   composeHandlePipeUsed,
   expandPipePeerOfdIds,
@@ -148,9 +149,7 @@ export async function syncForkSharedStateViaKernelWorker(
     ofdIds?: number[];
   },
 ): Promise<void> {
-  if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-    throw new Error("syncForkSharedStateViaKernelWorker requires kernel-worker ownership");
-  }
+  const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "syncForkSharedStateViaKernelWorker");
   const quiescentTargets = targets.filter(isQuiescentForkSharedSyncTarget);
   let syncTargets = options.includeMemfs === true
     ? quiescentTargets.filter((target) => !hasRuntimeNetworkSocketState(target))
@@ -339,7 +338,7 @@ export async function syncForkSharedStateViaKernelWorker(
   const networkSocketSnapshots = snapshotNetworkBridgeSocketState(handle.kernelShare.members);
   let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
   try {
-    response = await handle.kernelWorkerRequest({
+    response = await kernelWorkerRequest({
       type: "sync-fork-shared-state",
       pid: handle.pid,
       vmPtr: options.sourceVmPtr ?? handle.vmPtr,
@@ -416,9 +415,10 @@ export async function rehydrateForkSharedStateViaKernelWorker(
     return;
   }
   const owner = targets.find((target) => target.kernelWorkerRequest && target.pid > 0);
-  if (!owner?.kernelWorkerRequest) {
-    return;
+  if (!owner) {
+    throw new Error("rehydrateForkSharedStateViaKernelWorker requires a kernel-worker-owned target");
   }
+  const kernelWorkerRequest = requireKernelWorkerOwnership(owner, "rehydrateForkSharedStateViaKernelWorker");
   const targetPids = [...new Set(targets.map((target) => target.pid).filter((pid) => pid > 0))];
   const targetKernelStates: KernelWorkerPidStateSnapshot[] = targets
     .filter((target) => target.pid > 0)
@@ -431,9 +431,6 @@ export async function rehydrateForkSharedStateViaKernelWorker(
         kernelState: target.kernelState,
       };
     });
-  if (targetPids.length === 0) {
-    return;
-  }
   const networkSocketSnapshots = snapshotNetworkBridgeSocketState(targets);
   appendSocketSyncDebug(
     owner,
@@ -441,7 +438,7 @@ export async function rehydrateForkSharedStateViaKernelWorker(
   );
   let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
   try {
-    response = await owner.kernelWorkerRequest({
+    response = await kernelWorkerRequest({
       type: "rehydrate-fork-shared-state",
       targetPids,
       targetKernelStates,
@@ -465,9 +462,7 @@ export async function syncBlockedForkSharedStateViaKernelWorker(
   sourceVmPtr = handle.vmPtr,
   cause: SyncCause,
 ): Promise<void> {
-  if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-    return;
-  }
+  void requireKernelWorkerOwnership(handle, "syncBlockedForkSharedStateViaKernelWorker");
   const activeSync = handle.kernelShare.forkSharedSyncPromise ?? handle.forkSharedSyncPromise;
   if (activeSync !== null) {
     const staleGate = clearStaleForkSharedSyncGate(handle, activeSync);

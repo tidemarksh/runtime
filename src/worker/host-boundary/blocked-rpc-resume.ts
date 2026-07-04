@@ -212,6 +212,8 @@ async function executeHostBlockedSyscallResume(
       const transientProcessOwnerMismatch = supervisorProcessOwnerMismatch(handle.kernel, vmPtr, handle.pid);
       if (
         !transientProcessOwnerMismatch
+        && !!handle.kernelWorkerRequest
+        && handle.pid > 0
         && !supervisorBlockedStatusIsEpollWait(handle.kernel, blockedStatus)
       ) {
         deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:${options.syncAfterResumeStage}:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
