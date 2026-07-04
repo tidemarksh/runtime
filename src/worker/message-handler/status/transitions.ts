@@ -593,23 +593,6 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         deps.pumpProcess(handle);
         return;
       }
-      if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-        void deps.resumeConnectViaKernelWorker(
-          handle,
-          worker,
-          thread.vmPtr,
-          BigInt(-handle.kernel.abi_econnrefused()),
-        ).then((outcome) => {
-          if (outcome !== undefined) {
-            consumeKernelRpcResumeOutcome(handle, worker, thread.vmPtr, outcome);
-          }
-        }).catch((error) => {
-          deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-        });
-        deps.notifyWorkerStatusProgress(handle);
-        deps.enqueueWorker(handle, worker);
-        return;
-      }
       void deps.requestSocketStateSync(handle, false)
         .then(() => deps.resumeConnectViaKernelWorker(
           handle,
