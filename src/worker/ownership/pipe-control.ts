@@ -21,6 +21,7 @@ import {
 import {
   supervisorOfdPipeSlotMask,
   supervisorOfdPipeSlots,
+  supervisorProcessPipeOfdForFd,
 } from "./pipe-slot.js";
 
 function supervisorMaskToBigInt(mask: bigint | number): bigint {
@@ -76,7 +77,7 @@ export function isProcessHostStdioOfd(handle: ProcessHandle, vmPtr: number, ofdI
     return false;
   }
   for (const fd of [0, 1, 2] as const) {
-    const fdOfdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    const fdOfdId = supervisorProcessPipeOfdForFd(handle, vmPtr, fd);
     if (fdOfdId === ofdId) {
       return true;
     }

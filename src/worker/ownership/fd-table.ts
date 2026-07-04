@@ -32,6 +32,21 @@ function requireSupervisorFdEntryRestoreActionSkip(handle: ProcessHandle): numbe
   return restoreActionSkip.call(handle.kernel);
 }
 
+function requireSupervisorProcessFdIsOpen(handle: ProcessHandle): (vmPtr: number, fd: number) => number {
+  const processFdIsOpen = handle.kernel.supervisor_process_fd_is_open;
+  if (!processFdIsOpen) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_fd_is_open");
+  }
+  return processFdIsOpen.bind(handle.kernel);
+}
+
+export function supervisorProcessFdIsOpen(handle: ProcessHandle, vmPtr: number, fd: number): boolean {
+  if (vmPtr === 0 || fd < 0 || fd >= handle.kernel.abi_max_fds()) {
+    return false;
+  }
+  return requireSupervisorProcessFdIsOpen(handle)(vmPtr, fd) === 1;
+}
+
 function supervisorFdEntryRestoreFlags(handle: ProcessHandle, options: ApplyThreadFdEntriesOptions): number {
   let flags = 0;
   if (options.preserveLiveRegularFileDescriptors === true) {

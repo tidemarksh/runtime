@@ -10,6 +10,11 @@ import {
   PIPE_WRITE_OPEN_OFFSET,
 } from "../../layout/pipe.js";
 import type { KernelWorkerPipeSlotSnapshot } from "../../messages.js";
+import {
+  supervisorProcessPipeOfdForFd,
+  supervisorProcessPipeSlotForFd,
+} from "../ownership/pipe-slot.js";
+import { supervisorProcessFdIsOpen } from "../ownership/fd-table.js";
 import type { ProcessHandle, SharedHostStdio } from "../types.js";
 
 function flushOutputBacklog(handle: ProcessHandle): void {
@@ -199,52 +204,11 @@ function queueDrainedPipeReadProgress(handle: ProcessHandle, pipeSlot: number): 
 }
 
 export function stdioPipeSlotForFd(handle: ProcessHandle, fd: number): number {
-  const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
-  if (ofdId === 0) {
-    return 0;
-  }
-  const fdType = handle.kernel.kernel_ofd_fd_type(ofdId);
-  if (fdType === handle.kernel.abi_fd_type_pipe()) {
-    return handle.kernel.kernel_ofd_ino(ofdId);
-  }
-
-  const ptySlaveType = handle.kernel.abi_fd_type_pty_slave?.();
-  const ptyMasterType = handle.kernel.abi_fd_type_pty_master?.();
-  if (fdType !== ptySlaveType && fdType !== ptyMasterType) {
-    return 0;
-  }
-
-  const ptyIdx = handle.kernel.kernel_ofd_ino(ofdId);
-  const statusFlags = handle.kernel.kernel_ofd_status_flags?.(ofdId) ?? 0;
-  const accessMode = statusFlags & (
-    handle.kernel.abi_o_rdonly()
-    | handle.kernel.abi_o_wronly()
-    | handle.kernel.abi_o_rdwr()
-  );
-  const fdWritesToStdioOutput = fd === 1 || fd === 2
-    || accessMode === handle.kernel.abi_o_wronly()
-    || accessMode === handle.kernel.abi_o_rdwr();
-
-  if (fdType === ptySlaveType) {
-    return fdWritesToStdioOutput
-      ? (handle.kernel.kernel_pty_output_pipe?.(ptyIdx) ?? 0)
-      : (handle.kernel.kernel_pty_input_pipe?.(ptyIdx) ?? 0);
-  }
-
-  return fdWritesToStdioOutput
-    ? (handle.kernel.kernel_pty_input_pipe?.(ptyIdx) ?? 0)
-    : (handle.kernel.kernel_pty_output_pipe?.(ptyIdx) ?? 0);
+  return supervisorProcessPipeSlotForFd(handle, handle.vmPtr, fd);
 }
 
 function fdPipeOfdId(handle: ProcessHandle, fd: number): number {
-  const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
-  if (
-    ofdId === 0
-    || stdioPipeSlotForFd(handle, fd) === 0
-  ) {
-    return 0;
-  }
-  return ofdId;
+  return supervisorProcessPipeOfdForFd(handle, handle.vmPtr, fd);
 }
 
 function stdioFdUsesPipeSlot(handle: ProcessHandle, fd: number, pipeSlot: number): boolean {
@@ -252,7 +216,7 @@ function stdioFdUsesPipeSlot(handle: ProcessHandle, fd: number, pipeSlot: number
 }
 
 function stdioFdIsDetached(handle: ProcessHandle, fd: number): boolean {
-  return handle.kernel.process_fd_ofd_id(handle.vmPtr, fd) === 0;
+  return !supervisorProcessFdIsOpen(handle, handle.vmPtr, fd);
 }
 
 function inheritedOutputPipeSlots(parent: ProcessHandle): Set<number> {

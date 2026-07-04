@@ -408,12 +408,16 @@ export interface KernelExports {
     regularFileHasPeer: number,
   ): number;
   supervisor_process_holds_regular_file_ofd?(vmPtr: number, ofdId: number): number;
+  supervisor_process_fd_is_open?(vmPtr: number, fd: number): number;
   supervisor_process_private_pipe_slot_mask?(vmPtr: number): bigint | number;
   supervisor_process_private_pipe_source_mode?(vmPtr: number, pipeSlot: number): number;
   supervisor_process_private_pipe_target_mode?(vmPtr: number, pipeSlot: number): number;
   supervisor_process_held_pipe_slot_mask?(vmPtr: number): bigint | number;
   supervisor_process_pipe_used_mask?(vmPtr: number): bigint | number;
   supervisor_process_pipe_slot_mode?(vmPtr: number, pipeSlot: number): number;
+  supervisor_process_pipe_slot_for_fd?(vmPtr: number, fd: number): number;
+  supervisor_process_pipe_ofd_for_fd?(vmPtr: number, fd: number): number;
+  supervisor_process_pipe_host_fd_for_fd?(vmPtr: number, fd: number): number;
   supervisor_process_pipe_read_open_count?(vmPtr: number, pipeSlot: number): number;
   supervisor_process_pipe_write_open_count?(vmPtr: number, pipeSlot: number): number;
   supervisor_blocked_pipe_resume_action?(vmPtr: number): number;
@@ -1803,12 +1807,16 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fork_shared_ofd_publish_action",
   "supervisor_fork_shared_effect_sync_action",
   "supervisor_process_holds_regular_file_ofd",
+  "supervisor_process_fd_is_open",
   "supervisor_process_private_pipe_slot_mask",
   "supervisor_process_private_pipe_source_mode",
   "supervisor_process_private_pipe_target_mode",
   "supervisor_process_held_pipe_slot_mask",
   "supervisor_process_pipe_used_mask",
   "supervisor_process_pipe_slot_mode",
+  "supervisor_process_pipe_slot_for_fd",
+  "supervisor_process_pipe_ofd_for_fd",
+  "supervisor_process_pipe_host_fd_for_fd",
   "supervisor_process_pipe_read_open_count",
   "supervisor_process_pipe_write_open_count",
   "supervisor_blocked_pipe_resume_action",

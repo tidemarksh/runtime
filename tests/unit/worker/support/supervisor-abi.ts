@@ -677,6 +677,55 @@ export function makeSupervisorAbiStubs(
     fdType === callNumber(receiver, "abi_fd_type_pipe")
     || fdType === callOptionalNumber(receiver, "abi_fd_type_pty_master")
     || fdType === callOptionalNumber(receiver, "abi_fd_type_pty_slave");
+  const processPipeSlotForFd = (
+    receiver: Partial<KernelExports>,
+    vmPtr: number,
+    fd: number,
+  ): number => {
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    if (fd < 0 || fd >= maxFds) {
+      return 0;
+    }
+    const ofdId = callNumber(receiver, "process_fd_ofd_id", vmPtr, fd);
+    if (ofdId <= 0 || ofdId >= maxFds) {
+      return 0;
+    }
+    const fdType = callNumber(receiver, "kernel_ofd_fd_type", ofdId);
+    if (fdType === callNumber(receiver, "abi_fd_type_pipe")) {
+      return callNumber(receiver, "kernel_ofd_ino", ofdId);
+    }
+    const ptySlaveType = callOptionalNumber(receiver, "abi_fd_type_pty_slave");
+    const ptyMasterType = callOptionalNumber(receiver, "abi_fd_type_pty_master");
+    if (fdType !== ptySlaveType && fdType !== ptyMasterType) {
+      return 0;
+    }
+    const ptyIdx = callNumber(receiver, "kernel_ofd_ino", ofdId);
+    const statusFlags = callOptionalNumber(receiver, "kernel_ofd_status_flags", ofdId) ?? 0;
+    const oWronly = callOptionalNumber(receiver, "abi_o_wronly") ?? 1;
+    const oRdwr = callOptionalNumber(receiver, "abi_o_rdwr") ?? 2;
+    const fdWritesToStdioOutput = fd === 1 || fd === 2 || statusFlags === oWronly || statusFlags === oRdwr;
+    if (fdType === ptySlaveType) {
+      return fdWritesToStdioOutput
+        ? (callOptionalNumber(receiver, "kernel_pty_output_pipe", ptyIdx) ?? 0)
+        : (callOptionalNumber(receiver, "kernel_pty_input_pipe", ptyIdx) ?? 0);
+    }
+    return fdWritesToStdioOutput
+      ? (callOptionalNumber(receiver, "kernel_pty_input_pipe", ptyIdx) ?? 0)
+      : (callOptionalNumber(receiver, "kernel_pty_output_pipe", ptyIdx) ?? 0);
+  };
+  const processPipeOfdForFd = (
+    receiver: Partial<KernelExports>,
+    vmPtr: number,
+    fd: number,
+  ): number => {
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    const ofdId = fd >= 0 && fd < maxFds
+      ? callNumber(receiver, "process_fd_ofd_id", vmPtr, fd)
+      : 0;
+    return ofdId > 0 && ofdId < maxFds && processPipeSlotForFd(receiver, vmPtr, fd) !== 0
+      ? ofdId
+      : 0;
+  };
   const regularFileOfdsShareIdentity = (
     receiver: Partial<KernelExports>,
     currentOfdId: number,
@@ -1225,6 +1274,15 @@ export function makeSupervisorAbiStubs(
         ? 1
         : 0;
     },
+    supervisor_process_fd_is_open(this: KernelExports | undefined, vmPtr: number, fd: number) {
+      const receiver = currentExports(this);
+      const maxFds = callNumber(receiver, "abi_max_fds");
+      if (fd < 0 || fd >= maxFds) {
+        return 0;
+      }
+      const ofdId = callNumber(receiver, "process_fd_ofd_id", vmPtr, fd);
+      return ofdId > 0 && ofdId < maxFds ? 1 : 0;
+    },
     supervisor_ofd_is_regular_file(this: KernelExports | undefined, ofdId: number) {
       const receiver = currentExports(this);
       return ofdId > 0
@@ -1239,6 +1297,29 @@ export function makeSupervisorAbiStubs(
         return 0;
       }
       return fdTypeIsPipeLike(receiver, callNumber(receiver, "kernel_ofd_fd_type", ofdId)) ? 1 : 0;
+    },
+    supervisor_process_pipe_slot_for_fd(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      fd: number,
+    ) {
+      return processPipeSlotForFd(currentExports(this), vmPtr, fd);
+    },
+    supervisor_process_pipe_ofd_for_fd(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      fd: number,
+    ) {
+      return processPipeOfdForFd(currentExports(this), vmPtr, fd);
+    },
+    supervisor_process_pipe_host_fd_for_fd(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      fd: number,
+    ) {
+      const receiver = currentExports(this);
+      const ofdId = processPipeOfdForFd(receiver, vmPtr, fd);
+      return ofdId > 0 ? callNumber(receiver, "kernel_ofd_host_fd", ofdId) : -1;
     },
     supervisor_fork_shared_held_ofd_track_flag_shared() {
       return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_shared;

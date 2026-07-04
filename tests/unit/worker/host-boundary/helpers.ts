@@ -109,6 +109,27 @@ export function makeHostBoundaryKernel() {
     },
     supervisor_stdio_pipe_read_progress_action: (_vmPtr: number, _pipeSlot: number, drained: number) =>
       drained === 0 ? 0 : 1,
+    supervisor_process_pipe_slot_for_fd(this: ProcessHandle["kernel"], vmPtr: number, fd: number) {
+      const ofdId = this.process_fd_ofd_id(vmPtr, fd);
+      if (ofdId <= 0 || ofdId >= this.abi_max_fds()) {
+        return 0;
+      }
+      return this.kernel_ofd_fd_type(ofdId) === this.abi_fd_type_pipe()
+        ? this.kernel_ofd_ino(ofdId)
+        : 0;
+    },
+    supervisor_process_pipe_ofd_for_fd(this: ProcessHandle["kernel"], vmPtr: number, fd: number) {
+      const ofdId = this.process_fd_ofd_id(vmPtr, fd);
+      return ofdId > 0 && this.supervisor_process_pipe_slot_for_fd?.(vmPtr, fd) !== 0 ? ofdId : 0;
+    },
+    supervisor_process_pipe_host_fd_for_fd(this: ProcessHandle["kernel"], vmPtr: number, fd: number) {
+      const ofdId = this.supervisor_process_pipe_ofd_for_fd?.(vmPtr, fd) ?? 0;
+      return ofdId > 0 ? this.kernel_ofd_host_fd(ofdId) : -1;
+    },
+    supervisor_process_fd_is_open(this: ProcessHandle["kernel"], vmPtr: number, fd: number) {
+      const ofdId = this.process_fd_ofd_id(vmPtr, fd);
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? 1 : 0;
+    },
   } as unknown as ProcessHandle["kernel"]);
 }
 

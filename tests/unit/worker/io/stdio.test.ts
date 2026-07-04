@@ -91,6 +91,7 @@ function makeHandle(
       if (ofdId === 5) return 5;
       return 0;
     },
+    kernel_ofd_host_fd: (ofdId: number) => (ofdId === 5 ? -6 : ofdId),
     abi_max_pipes: () => 64,
     kernel_pipe_region_bytes: () => 64 * (32 + 65_536),
     kernel_heap_ptr: () => 0x2000,
@@ -111,6 +112,46 @@ function makeHandle(
     },
     supervisor_stdio_pipe_read_progress_action: (_vmPtr: number, _pipeSlot: number, drained: number) =>
       drained === 0 ? 0 : 1,
+    supervisor_process_pipe_slot_for_fd(this: KernelExports, vmPtr: number, fd: number) {
+      const ofdId = this.process_fd_ofd_id(vmPtr, fd);
+      if (ofdId <= 0 || ofdId >= this.abi_max_fds()) {
+        return 0;
+      }
+      const fdType = this.kernel_ofd_fd_type(ofdId);
+      if (fdType === this.abi_fd_type_pipe()) {
+        return this.kernel_ofd_ino(ofdId);
+      }
+      const ptySlaveType = this.abi_fd_type_pty_slave?.();
+      const ptyMasterType = this.abi_fd_type_pty_master?.();
+      if (fdType !== ptySlaveType && fdType !== ptyMasterType) {
+        return 0;
+      }
+      const ptyIdx = this.kernel_ofd_ino(ofdId);
+      const statusFlags = this.kernel_ofd_status_flags?.(ofdId) ?? 0;
+      const fdWritesToStdioOutput = fd === 1 || fd === 2
+        || statusFlags === this.abi_o_wronly?.()
+        || statusFlags === this.abi_o_rdwr?.();
+      if (fdType === ptySlaveType) {
+        return fdWritesToStdioOutput
+          ? (this.kernel_pty_output_pipe?.(ptyIdx) ?? 0)
+          : (this.kernel_pty_input_pipe?.(ptyIdx) ?? 0);
+      }
+      return fdWritesToStdioOutput
+        ? (this.kernel_pty_input_pipe?.(ptyIdx) ?? 0)
+        : (this.kernel_pty_output_pipe?.(ptyIdx) ?? 0);
+    },
+    supervisor_process_pipe_ofd_for_fd(this: KernelExports, vmPtr: number, fd: number) {
+      const ofdId = this.process_fd_ofd_id(vmPtr, fd);
+      return ofdId > 0 && this.supervisor_process_pipe_slot_for_fd?.(vmPtr, fd) !== 0 ? ofdId : 0;
+    },
+    supervisor_process_pipe_host_fd_for_fd(this: KernelExports, vmPtr: number, fd: number) {
+      const ofdId = this.supervisor_process_pipe_ofd_for_fd?.(vmPtr, fd) ?? 0;
+      return ofdId > 0 ? this.kernel_ofd_host_fd(ofdId) : -1;
+    },
+    supervisor_process_fd_is_open(this: KernelExports, vmPtr: number, fd: number) {
+      const ofdId = this.process_fd_ofd_id(vmPtr, fd);
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? 1 : 0;
+    },
   } as unknown as KernelExports;
   const handle = {
     runtimeId: 1,
@@ -280,6 +321,17 @@ test("drainHiddenProcessOutput flushes child PTY slave output inherited from the
     kernel_ofd_status_flags: () => 0,
     kernel_pty_input_pipe: () => ptyInputPipe,
     kernel_pty_output_pipe: () => ptyOutputPipe,
+    supervisor_process_pipe_slot_for_fd: (_vmPtr: number, fd: number) => (
+      fd === 1 || fd === 2 ? ptyOutputPipe : 0
+    ),
+    supervisor_process_pipe_ofd_for_fd: (_vmPtr: number, fd: number) => {
+      if (fd === 1) return 20;
+      if (fd === 2) return 21;
+      return 0;
+    },
+    supervisor_process_fd_is_open: (_vmPtr: number, fd: number) => (
+      fd === 1 || fd === 2 ? 1 : 0
+    ),
   } as unknown as KernelExports;
   owner.kernel = ptyKernel;
   const delivered: string[] = [];

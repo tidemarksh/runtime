@@ -105,6 +105,8 @@ function makeHandle(overrides: Record<string, unknown> = {}) {
     abi_fd_type_pipe: () => 6,
     abi_fd_type_epoll: () => 7,
     process_current_pid: () => (overrides.pid as number | undefined) ?? 1,
+    thread_process_ptr: () => 0,
+    process_state_bytes: () => 0,
     process_fd_ofd_id: () => 0,
     process_fd_flags: () => 0,
     kernel_ofd_fd_type: () => 0,
@@ -959,6 +961,7 @@ test("requestPipeStateSync still drains hidden child output when stdout was rema
   const parent = makeHandle();
   const child = makeHandle({
     pid: 2,
+    vmPtr: 0x1234,
     stdioOwner: parent,
     stdoutPipe: 9,
     stderrPipe: parent.stderrPipe,

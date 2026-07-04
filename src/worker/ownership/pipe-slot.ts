@@ -35,6 +35,36 @@ function requireSupervisorOfdPipeGenerationSlot(
   return readGenerationSlot.bind(kernel);
 }
 
+function requireSupervisorProcessPipeSlotForFd(
+  kernel: KernelExports,
+): (vmPtr: number, fd: number) => number {
+  const readSlot = kernel.supervisor_process_pipe_slot_for_fd;
+  if (!readSlot) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_pipe_slot_for_fd");
+  }
+  return readSlot.bind(kernel);
+}
+
+function requireSupervisorProcessPipeOfdForFd(
+  kernel: KernelExports,
+): (vmPtr: number, fd: number) => number {
+  const readOfd = kernel.supervisor_process_pipe_ofd_for_fd;
+  if (!readOfd) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_pipe_ofd_for_fd");
+  }
+  return readOfd.bind(kernel);
+}
+
+function requireSupervisorProcessPipeHostFdForFd(
+  kernel: KernelExports,
+): (vmPtr: number, fd: number) => number {
+  const readHostFd = kernel.supervisor_process_pipe_host_fd_for_fd;
+  if (!readHostFd) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_pipe_host_fd_for_fd");
+  }
+  return readHostFd.bind(kernel);
+}
+
 export function supervisorOfdPipeSlotMask(handle: ProcessHandle, ofdId: number): bigint {
   if (ofdId <= 0 || ofdId >= handle.kernel.abi_max_fds()) {
     return 0n;
@@ -87,6 +117,41 @@ export function supervisorOfdUsesPipeSlot(
     return false;
   }
   return (supervisorOfdPipeSlotMask(handle, ofdId) & (1n << BigInt(pipeSlot))) !== 0n;
+}
+
+export function supervisorProcessPipeSlotForFd(
+  handle: ProcessHandle,
+  vmPtr: number,
+  fd: number,
+): number {
+  if (vmPtr === 0 || fd < 0 || fd >= handle.kernel.abi_max_fds()) {
+    return 0;
+  }
+  const pipeSlot = requireSupervisorProcessPipeSlotForFd(handle.kernel)(vmPtr, fd);
+  return pipeSlot > 0 && pipeSlot < handle.kernel.abi_max_pipes() ? pipeSlot : 0;
+}
+
+export function supervisorProcessPipeOfdForFd(
+  handle: ProcessHandle,
+  vmPtr: number,
+  fd: number,
+): number {
+  if (vmPtr === 0 || fd < 0 || fd >= handle.kernel.abi_max_fds()) {
+    return 0;
+  }
+  const ofdId = requireSupervisorProcessPipeOfdForFd(handle.kernel)(vmPtr, fd);
+  return ofdId > 0 && ofdId < handle.kernel.abi_max_fds() ? ofdId : 0;
+}
+
+export function supervisorProcessPipeHostFdForFd(
+  handle: ProcessHandle,
+  vmPtr: number,
+  fd: number,
+): number {
+  if (vmPtr === 0 || fd < 0 || fd >= handle.kernel.abi_max_fds()) {
+    return -1;
+  }
+  return requireSupervisorProcessPipeHostFdForFd(handle.kernel)(vmPtr, fd);
 }
 
 export function supervisorOfdPipeSlotModeMap(

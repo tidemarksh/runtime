@@ -19,6 +19,7 @@ import {
 } from "../ownership/ofd-table.js";
 import { kernelWorkerOwnsEpollState } from "../ownership/epoll-control.js";
 import { composeHandlePipeUsed, kernelWorkerOwnsPipeState } from "../ownership/pipe-control.js";
+import { supervisorProcessPipeSlotForFd } from "../ownership/pipe-slot.js";
 import { kernelWorkerOwnsSocketState } from "../ownership/socket-control.js";
 import {
   assertHandleWorkerProcessIdentity,
@@ -82,16 +83,7 @@ export function createWorkerSchedulerStateSyncHelpers(
         visibleHandle.hostStdio.stderrPipe,
       ].filter((slot) => slot > 0),
     );
-    const fdPipeSlot = (fd: number): number => {
-      const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
-      if (
-        ofdId === 0
-        || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
-      ) {
-        return 0;
-      }
-      return handle.kernel.kernel_ofd_ino(ofdId);
-    };
+    const fdPipeSlot = (fd: number): number => supervisorProcessPipeSlotForFd(handle, handle.vmPtr, fd);
     const hiddenSlots = [fdPipeSlot(1), fdPipeSlot(2)]
       .filter((slot, index, slots) => slot > 0 && slots.indexOf(slot) === index);
     if (hiddenSlots.length === 0) {

@@ -7,6 +7,11 @@ import {
   supervisorBlockedPollWaitTimeoutMs,
   type SupervisorBlockedWaitRetryFlags,
 } from "../../supervisor-blocked-resume.js";
+import {
+  supervisorProcessPipeHostFdForFd,
+  supervisorProcessPipeOfdForFd,
+  supervisorProcessPipeSlotForFd,
+} from "../ownership/pipe-slot.js";
 
 export interface PipePollSchedulerDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
@@ -49,16 +54,11 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
       }
       const maxFds = member.kernel.abi_max_fds();
       for (let fd = 0; fd < maxFds; fd += 1) {
-        const ofdId = member.kernel.process_fd_ofd_id(member.vmPtr, fd);
-        if (
-          ofdId <= 0
-          || ofdId >= maxFds
-          || member.kernel.kernel_ofd_fd_type(ofdId) !== member.kernel.abi_fd_type_pipe()
-          || member.kernel.kernel_ofd_ino(ofdId) !== pipeSlot
-        ) {
+        const ofdId = supervisorProcessPipeOfdForFd(member, member.vmPtr, fd);
+        if (ofdId === 0 || supervisorProcessPipeSlotForFd(member, member.vmPtr, fd) !== pipeSlot) {
           continue;
         }
-        const hostFd = member.kernel.kernel_ofd_host_fd(ofdId);
+        const hostFd = supervisorProcessPipeHostFdForFd(member, member.vmPtr, fd);
         holders.push(`${member.pid}/${fd}/${ofdId}/${hostFd >= 0 ? "r" : "w"}/h${hostFd}`);
       }
     }
@@ -74,14 +74,11 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
     const interest = (packed >>> 8) & 0xffff;
     const revents = (packed >>> 24) & 0xff;
     try {
-      const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
-      if (
-        ofdId <= 0
-        || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
-      ) {
+      const ofdId = supervisorProcessPipeOfdForFd(handle, vmPtr, fd);
+      if (ofdId === 0) {
         return `pipe=fd${fd}/i0x${interest.toString(16)}/r0x${revents.toString(16)}/ofd${ofdId}`;
       }
-      const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
+      const pipeSlot = supervisorProcessPipeSlotForFd(handle, vmPtr, fd);
       if (pipeSlot <= 0 || pipeSlot >= handle.kernel.abi_max_pipes()) {
         return `pipe=fd${fd}/i0x${interest.toString(16)}/r0x${revents.toString(16)}/ofd${ofdId}/slot${pipeSlot}`;
       }
@@ -92,21 +89,16 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
   }
 
   function formatPollFdTarget(handle: ProcessHandle, vmPtr: number, fd: number): string {
-    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
-    const maxFds = handle.kernel.abi_max_fds();
-    if (ofdId <= 0 || ofdId >= maxFds) {
-      return `ofd${ofdId}`;
+    const ofdId = supervisorProcessPipeOfdForFd(handle, vmPtr, fd);
+    if (ofdId === 0) {
+      return "pipe=none";
     }
-    const type = handle.kernel.kernel_ofd_fd_type(ofdId);
-    const ino = handle.kernel.kernel_ofd_ino(ofdId);
-    const hostFd = handle.kernel.kernel_ofd_host_fd(ofdId);
-    if (type !== handle.kernel.abi_fd_type_pipe()) {
-      return `ofd${ofdId}/ty${type}/ino${ino}/host${hostFd}`;
+    const pipeSlot = supervisorProcessPipeSlotForFd(handle, vmPtr, fd);
+    const hostFd = supervisorProcessPipeHostFdForFd(handle, vmPtr, fd);
+    if (pipeSlot <= 0 || pipeSlot >= handle.kernel.abi_max_pipes()) {
+      return `ofd${ofdId}/slot${pipeSlot}/host${hostFd}`;
     }
-    if (ino <= 0 || ino >= handle.kernel.abi_max_pipes()) {
-      return `ofd${ofdId}/ty${type}/slot${ino}/host${hostFd}`;
-    }
-    return `ofd${ofdId}/ty${type}/${formatPipeSlotControlDebug(handle, ino)}/host${hostFd}/holders=${formatPipeSlotHolders(handle, ino)}`;
+    return `ofd${ofdId}/${formatPipeSlotControlDebug(handle, pipeSlot)}/host${hostFd}/holders=${formatPipeSlotHolders(handle, pipeSlot)}`;
   }
 
   function guestAbsoluteRange(handle: ProcessHandle, ptr: bigint, byteLength: number): number | null {
