@@ -67,11 +67,8 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
       status: 6,
       rpcPending: false,
     }]]),
-    pipeSyncPromise: null,
-    epollSyncPromise: null,
     ofdSyncPromise: null,
     ofdSyncQueuedIds: new Set(),
-    socketSyncPromise: null,
     vforkSnapshot: {
       vmPtr: 0x1234,
       childPid: 77,

@@ -26,6 +26,11 @@ import {
   supervisorVforkChildOwnerMismatch,
 } from "../process-identity.js";
 import {
+  clearRuntimeStateSyncPromise,
+  getRuntimeStateSyncPromise,
+  setRuntimeStateSyncPromise,
+} from "../state-sync-inflight.js";
+import {
   syncEpollStateViaKernelWorker,
   syncOfdStateViaKernelWorker,
   syncPipeStateViaKernelWorker,
@@ -204,6 +209,9 @@ export function createWorkerSchedulerStateSyncHelpers(
     if (hasActiveVforkChildOwnerMismatch(handle)) {
       return Promise.resolve();
     }
+    if (!kernelWorkerOwnsEpollState(handle)) {
+      return Promise.resolve();
+    }
     if (collectHeldEpollOfdIds(handle).length === 0) {
       if (retryWaiters) {
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `epoll-sync-skip-no-ofd:${handle.pid}:retry=1`);
@@ -218,14 +226,15 @@ export function createWorkerSchedulerStateSyncHelpers(
       "epoll",
       retryWaiters,
     );
-    if (handle.epollSyncPromise !== null) {
-      return handle.epollSyncPromise;
+    const activeSync = getRuntimeStateSyncPromise(handle, "epoll");
+    if (activeSync !== null) {
+      return activeSync;
     }
     if (!shouldStart) {
       return Promise.resolve();
     }
 
-    handle.epollSyncPromise = (async () => {
+    const syncPromise = (async () => {
       try {
         for (;;) {
           const run = supervisorStateSyncNextRun(
@@ -262,10 +271,11 @@ export function createWorkerSchedulerStateSyncHelpers(
         throw error;
       }
     })().finally(() => {
-      handle.epollSyncPromise = null;
+      clearRuntimeStateSyncPromise(handle, "epoll");
     });
+    setRuntimeStateSyncPromise(handle, "epoll", syncPromise);
 
-    return handle.epollSyncPromise;
+    return syncPromise;
   }
 
   function requestEpollDependentOfdStateSync(
@@ -332,6 +342,9 @@ export function createWorkerSchedulerStateSyncHelpers(
     if (hasActiveVforkChildOwnerMismatch(handle)) {
       return Promise.resolve();
     }
+    if (!kernelWorkerOwnsPipeState(handle)) {
+      return Promise.resolve();
+    }
 
     const shouldStart = supervisorStateSyncRequest(
       handle.kernel,
@@ -339,14 +352,15 @@ export function createWorkerSchedulerStateSyncHelpers(
       "pipe",
       wakeWaiters,
     );
-    if (handle.pipeSyncPromise !== null) {
-      return handle.pipeSyncPromise;
+    const activeSync = getRuntimeStateSyncPromise(handle, "pipe");
+    if (activeSync !== null) {
+      return activeSync;
     }
     if (!shouldStart) {
       return Promise.resolve();
     }
 
-    handle.pipeSyncPromise = (async () => {
+    const syncPromise = (async () => {
       try {
         for (;;) {
           const run = supervisorStateSyncNextRun(
@@ -432,15 +446,19 @@ export function createWorkerSchedulerStateSyncHelpers(
         throw error;
       }
     })().finally(() => {
-      handle.pipeSyncPromise = null;
+      clearRuntimeStateSyncPromise(handle, "pipe");
     });
+    setRuntimeStateSyncPromise(handle, "pipe", syncPromise);
 
-    return handle.pipeSyncPromise;
+    return syncPromise;
   }
 
   function requestSocketStateSync(handle: ProcessHandle, wakeWaiters = false): Promise<void> {
     handle.transferDebugStats.socketSyncRequests += 1;
     if (hasActiveVforkChildOwnerMismatch(handle)) {
+      return Promise.resolve();
+    }
+    if (!kernelWorkerOwnsSocketState(handle)) {
       return Promise.resolve();
     }
 
@@ -450,14 +468,15 @@ export function createWorkerSchedulerStateSyncHelpers(
       "socket",
       wakeWaiters,
     );
-    if (handle.socketSyncPromise !== null) {
-      return handle.socketSyncPromise;
+    const activeSync = getRuntimeStateSyncPromise(handle, "socket");
+    if (activeSync !== null) {
+      return activeSync;
     }
     if (!shouldStart) {
       return Promise.resolve();
     }
 
-    handle.socketSyncPromise = (async () => {
+    const syncPromise = (async () => {
       try {
         for (;;) {
           const run = supervisorStateSyncNextRun(
@@ -500,10 +519,11 @@ export function createWorkerSchedulerStateSyncHelpers(
         throw error;
       }
     })().finally(() => {
-      handle.socketSyncPromise = null;
+      clearRuntimeStateSyncPromise(handle, "socket");
     });
+    setRuntimeStateSyncPromise(handle, "socket", syncPromise);
 
-    return handle.socketSyncPromise;
+    return syncPromise;
   }
 
   return {

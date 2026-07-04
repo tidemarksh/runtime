@@ -2182,12 +2182,18 @@ export function makeSupervisorAbiStubs(
       if (!memory) {
         return -1;
       }
+      const remainingThreads = Number(receiver?.thread_process_thread_count?.(vmPtr) ?? 0);
+      const liveThreads = remainingThreads;
+      const kind = remainingThreads === 0 || liveThreads === 0
+        ? DEFAULT_NUMERIC_EXPORTS.supervisor_fault_exit_kind_process_exit
+        : DEFAULT_NUMERIC_EXPORTS.supervisor_fault_exit_kind_thread_exit;
       return writeSupervisorFaultExitDecisionRecord(memory, outPtr, {
+        kind,
         vmPtr,
         exitVmPtr: vmPtr,
         processPtr: Number(receiver?.thread_process_ptr?.(vmPtr) ?? overrides.thread_process_ptr?.(vmPtr) ?? 0),
-        remainingThreads: 0,
-        liveThreads: 0,
+        remainingThreads,
+        liveThreads,
         exitCode: Number(receiver?.thread_exit_code?.(vmPtr) ?? overrides.thread_exit_code?.(vmPtr) ?? 0),
         termSignal: Number(receiver?.thread_term_signal?.(vmPtr) ?? overrides.thread_term_signal?.(vmPtr) ?? 0),
         status: Number(receiver?.thread_status?.(vmPtr) ?? overrides.thread_status?.(vmPtr) ?? 0),

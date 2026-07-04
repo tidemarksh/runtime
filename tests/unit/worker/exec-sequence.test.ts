@@ -124,11 +124,8 @@ function makeHandle(
     vforkReadyWorkers: [],
     runningWorker: null,
     hostBlockedWorkers: new Map(),
-    pipeSyncPromise: null,
-    epollSyncPromise: null,
     ofdSyncPromise: null,
     ofdSyncQueuedIds: new Set(),
-    socketSyncPromise: null,
     vforkSnapshot: {
       vmPtr: 0x1234,
       childPid: null,

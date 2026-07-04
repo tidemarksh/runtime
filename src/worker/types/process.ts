@@ -149,9 +149,7 @@ export interface ProcessHandle {
   lastSupervisorFdControlSeq?: bigint;
   lastSupervisorFsControlSeq?: bigint;
   lastSupervisorSignalControlSeq?: bigint;
-  pipeSyncPromise: Promise<void> | null;
   pendingPipeSlotSnapshots: KernelWorkerPipeSlotSnapshot[];
-  epollSyncPromise: Promise<void> | null;
   forkSharedSyncPromise: Promise<void> | null;
   processMemfsDirty: boolean;
   processMemfsPublishPending: boolean;
@@ -159,7 +157,6 @@ export interface ProcessHandle {
   regularFileOfdOffsets?: Map<number, { ino: number; hostFd: number; offset: bigint }>;
   ofdSyncPromise: Promise<void> | null;
   ofdSyncQueuedIds: Set<number>;
-  socketSyncPromise: Promise<void> | null;
   vforkSnapshot: VforkSnapshot | null;
   vforkWorker: Worker | null;
   exitInProgress?: boolean;

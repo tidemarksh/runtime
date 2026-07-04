@@ -12,6 +12,7 @@ import {
   supervisorSocketOfdIsSocket,
 } from "./ownership/socket-control.js";
 import { forceNetworkClosedFd, restoreNetworkSocketSlotSnapshot, snapshotNetworkSocketSlot } from "./network-socket-close.js";
+import { getRuntimeStateSyncPromise, runtimeStateSyncInFlight } from "./state-sync-inflight.js";
 import { createTransferDebugStats, type ProcessHandle } from "./types.js";
 
 interface WorkerProcessIoDeps {
@@ -885,7 +886,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
             if (!activeHandle) {
               return;
             }
-            const pendingSocketSync = activeHandle.socketSyncPromise;
+            const pendingSocketSync = getRuntimeStateSyncPromise(activeHandle, "socket");
             if (pendingSocketSync != null) {
               deps.appendWorkerDebugLog(activeHandle, `net-read-await-socket-sync:${activeHandle.pid}:vm=0x${vmPtr.toString(16)}`);
               await pendingSocketSync;
@@ -996,7 +997,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       return;
     }
     handle.stdinFlushPromise = (async () => {
-      const pendingPipeSync = handle.pipeSyncPromise;
+      const pendingPipeSync = getRuntimeStateSyncPromise(handle, "pipe");
       if (pendingPipeSync !== null) {
         await pendingPipeSync;
       }
@@ -1022,7 +1023,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
 
   function writeProcessStdin(handle: ProcessHandle, data: Uint8Array): void {
     deps.writeProcessStdin(handle, data);
-    if (handle.pipeSyncPromise !== null) {
+    if (runtimeStateSyncInFlight(handle, "pipe")) {
       scheduleQueuedStdinFlush(handle);
       return;
     }

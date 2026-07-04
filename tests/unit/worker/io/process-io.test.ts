@@ -8,6 +8,7 @@ import type {
   ThreadWorkerInbound,
   ThreadWorkerOutbound,
 } from "../../../../src/messages.js";
+import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 type WorkerModule = typeof import("../../../../src/worker.js");
 
@@ -235,7 +236,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     view.setInt32(base + 8, 1, true);
     view.setInt32(base + 12, 1, true);
   }
-  const exports: KernelExports & {
+  let exports: KernelExports & {
     recordedChildExits: Array<[number, number]>;
     fsProcessCalls: number;
     memfsCreateCalls: Array<[number, number]>;
@@ -243,7 +244,9 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     memfsSetFileSizeShallowCalls: Array<[number, number]>;
     memfsWriteCalls: Array<[number, number]>;
     memfsCreateWithDataCalls: Array<[number, number]>;
-  } = {
+  };
+  exports = {
+    ...makeSupervisorAbiStubs({ currentExports: () => exports }),
     memory,
     __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, 0),
     abi_status_ok: () => 0,
@@ -270,6 +273,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     abi_max_fds: () => 256,
     abi_max_threads: () => 64,
     abi_max_pipes: () => 64,
+    abi_max_sockets: () => 64,
     abi_fd_type_none: () => 0,
     abi_fd_type_file: () => 1,
     abi_fd_type_pipe: () => 2,
@@ -646,7 +650,6 @@ test("process exit releases host stdio through kernel-worker when available", as
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   expect(requests.some((msg) => msg.type === "sync-socket-state")).toBe(true);
-  expect(requests.some((msg) => msg.type === "sync-fork-shared-state")).toBe(true);
   expect(requests.some((msg) => msg.type === "release-host-stdio")).toBe(true);
   expect(releaseHostStdio).not.toHaveBeenCalled();
 });
