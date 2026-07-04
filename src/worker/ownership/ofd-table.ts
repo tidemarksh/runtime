@@ -226,6 +226,35 @@ export function staleKernelShareOfdIds(handle: ProcessHandle): number[] {
   return stale.sort((left, right) => left - right);
 }
 
+export function forkSharedHeldOfdTrackAction(
+  handle: ProcessHandle,
+  ofdId: number,
+  facts: { shared: boolean; hostStdioPipe: boolean; stdioFd: boolean; fdEntrySource?: boolean },
+): boolean {
+  const decide = handle.kernel.supervisor_fork_shared_held_ofd_track_action;
+  const sharedFlag = handle.kernel.supervisor_fork_shared_held_ofd_track_flag_shared;
+  const hostStdioPipeFlag = handle.kernel.supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe;
+  const stdioFdFlag = handle.kernel.supervisor_fork_shared_held_ofd_track_flag_stdio_fd;
+  const fdEntrySourceFlag = handle.kernel.supervisor_fork_shared_held_ofd_track_flag_fd_entry_source;
+  if (!decide || !sharedFlag || !hostStdioPipeFlag || !stdioFdFlag || !fdEntrySourceFlag) {
+    throw new Error("kernel supervisor ABI missing fork-shared held OFD track action exports");
+  }
+  let flags = 0;
+  if (facts.shared) {
+    flags |= sharedFlag.call(handle.kernel);
+  }
+  if (facts.hostStdioPipe) {
+    flags |= hostStdioPipeFlag.call(handle.kernel);
+  }
+  if (facts.stdioFd) {
+    flags |= stdioFdFlag.call(handle.kernel);
+  }
+  if (facts.fdEntrySource) {
+    flags |= fdEntrySourceFlag.call(handle.kernel);
+  }
+  return decide.call(handle.kernel, ofdId, flags) !== 0;
+}
+
 export function trackForkSharedOfds(
   handle: ProcessHandle,
   vmPtr: number,
@@ -254,7 +283,12 @@ export function trackForkSharedOfds(
     if (ofdId === 0) {
       continue;
     }
-    if (stdioOfdIds.has(ofdId)) {
+    if (!forkSharedHeldOfdTrackAction(handle, ofdId, {
+      shared: handle.kernelShare.sharedOfdIds.has(ofdId),
+      hostStdioPipe: stdioOfdIds.has(ofdId),
+      stdioFd: fd >= 0 && fd <= 2,
+      fdEntrySource: true,
+    })) {
       continue;
     }
     retained.add(ofdId);

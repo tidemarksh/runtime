@@ -211,6 +211,7 @@ function makeKernel(memory: WebAssembly.Memory): FakeKernel {
     abi_max_fds: () => 32,
     abi_max_threads: () => 4,
     abi_max_pipes: () => 64,
+    abi_fd_type_file: () => FD_TYPE_FILE,
     abi_fd_type_pipe: () => FD_TYPE_PIPE,
     abi_fd_type_pty_master: () => FD_TYPE_PTY_MASTER,
     abi_fd_type_pty_slave: () => FD_TYPE_PTY_SLAVE,
@@ -246,6 +247,23 @@ function makeKernel(memory: WebAssembly.Memory): FakeKernel {
     },
     supervisor_fd_entry_restore_action_apply: () => 1,
     supervisor_fd_entry_restore_action_skip: () => 2,
+    supervisor_fork_shared_held_ofd_track_flag_shared: () => 1,
+    supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe: () => 1 << 1,
+    supervisor_fork_shared_held_ofd_track_flag_stdio_fd: () => 1 << 2,
+    supervisor_fork_shared_held_ofd_track_flag_fd_entry_source: () => 1 << 3,
+    supervisor_fork_shared_held_ofd_track_action: (ofdId: number, flags: number) => {
+      if (ofdId <= 0 || ofdId >= 32) {
+        return 0;
+      }
+      if ((flags & (1 << 1)) !== 0) {
+        return 0;
+      }
+      if ((flags & (1 | (1 << 2) | (1 << 3))) !== 0) {
+        return 1;
+      }
+      const type = new DataView(memory.buffer).getInt32(state.ofdTablePtr + ofdId * 32, true);
+      return type === FD_TYPE_FILE ? 0 : 1;
+    },
     supervisor_ofd_slot_write_action: (
       ofdId: number,
       candidateType: number,

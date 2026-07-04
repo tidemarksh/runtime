@@ -74,6 +74,7 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_fork_shared_held_ofd_track_flag_shared: 1,
   supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe: 1 << 1,
   supervisor_fork_shared_held_ofd_track_flag_stdio_fd: 1 << 2,
+  supervisor_fork_shared_held_ofd_track_flag_fd_entry_source: 1 << 3,
   supervisor_fork_shared_held_ofd_track_action: 0,
   supervisor_fork_shared_effect_sync_action: 0,
   supervisor_fs_control_record_bytes: 112,
@@ -1233,6 +1234,9 @@ export function makeSupervisorAbiStubs(
     supervisor_fork_shared_held_ofd_track_flag_stdio_fd() {
       return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_stdio_fd;
     },
+    supervisor_fork_shared_held_ofd_track_flag_fd_entry_source() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_fd_entry_source;
+    },
     supervisor_fork_shared_held_ofd_track_action(
       this: KernelExports | undefined,
       ofdId: number,
@@ -1249,6 +1253,7 @@ export function makeSupervisorAbiStubs(
         (flags & (
           DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_shared
           | DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_stdio_fd
+          | DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_fd_entry_source
         )) !== 0
       ) {
         return 1;

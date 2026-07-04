@@ -153,6 +153,7 @@ function makeKernel(
   const forkSharedHeldOfdTrackFlagShared = 1;
   const forkSharedHeldOfdTrackFlagHostStdioPipe = 1 << 1;
   const forkSharedHeldOfdTrackFlagStdioFd = 1 << 2;
+  const forkSharedHeldOfdTrackFlagFdEntrySource = 1 << 3;
   const forkSharedOfdIdentityKey = (ofdId: number): bigint => {
     if (ofdId <= 0 || ofdId >= 32) {
       return 0n;
@@ -348,6 +349,9 @@ function makeKernel(
       forkSharedHeldOfdTrackFlagHostStdioPipe
     ),
     supervisor_fork_shared_held_ofd_track_flag_stdio_fd: () => forkSharedHeldOfdTrackFlagStdioFd,
+    supervisor_fork_shared_held_ofd_track_flag_fd_entry_source: () => (
+      forkSharedHeldOfdTrackFlagFdEntrySource
+    ),
     supervisor_fork_shared_held_ofd_track_action: (ofdId: number, flags: number) => {
       if (ofdId <= 0 || ofdId >= 32) {
         return 0;
@@ -355,7 +359,12 @@ function makeKernel(
       if ((flags & forkSharedHeldOfdTrackFlagHostStdioPipe) !== 0) {
         return 0;
       }
-      if ((flags & (forkSharedHeldOfdTrackFlagShared | forkSharedHeldOfdTrackFlagStdioFd)) !== 0) {
+      if (
+        (flags
+          & (forkSharedHeldOfdTrackFlagShared
+            | forkSharedHeldOfdTrackFlagStdioFd
+            | forkSharedHeldOfdTrackFlagFdEntrySource)) !== 0
+      ) {
         return 1;
       }
       return readOfdInt32(ofdId, 0) === FD_TYPE_FILE ? 0 : 1;
