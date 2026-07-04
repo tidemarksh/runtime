@@ -49,7 +49,6 @@ import {
   type BlockedWaitTimers,
 } from "../host-boundary/blocked-wait-timers.js";
 import { createWorkerSchedulerStateSyncHelpers } from "../host-boundary/state-sync.js";
-import { createVforkExclusiveScheduler } from "./vfork-exclusive.js";
 import {
   readSupervisorFaultExitDecision,
   supervisorFaultExitKindProcessExit,
@@ -337,12 +336,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     scheduleSupervisorBlockedRetry,
   });
   const {
-    canScheduleWorker,
-  } = createVforkExclusiveScheduler({
-    threadWorkerStates,
-    isSupervisorFutexWaiter,
-  });
-  const {
     blockedOrCurrentSyscallNr,
     formatBlockedPollFdSet,
     formatFirstPipeWaitDebug,
@@ -455,14 +448,11 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
           && supervisorBlockedStatusIsPipeWait(handle.kernel, latestBlocked.status)
           && supervisorBlockedPollWaitHasSocket(handle.kernel, latestBlocked.vmPtr)
         ) {
-          const canScheduleBlockedWorker = canScheduleWorker(handle, worker);
-          if (handle.runningWorker !== null || !canScheduleBlockedWorker) {
+          const retryPlan = supervisorBlockedWaitRetryPlan(handle.kernel, latestBlocked.vmPtr);
+          if (handle.runningWorker !== null || retryPlan.reason === "process-gate") {
             scheduleSupervisorBlockedRetry(
               handle,
               worker,
-              canScheduleBlockedWorker
-                ? []
-                : ["process-gate"],
             );
             return;
           }
@@ -965,12 +955,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       );
       return;
     }
-    if (!canScheduleWorker(handle, worker)) {
-      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-retry-skip:${handle.pid}:cannot-schedule`);
+    let retryPlan = supervisorBlockedWaitRetryPlan(handle.kernel, blocked.vmPtr);
+    if (retryPlan.reason === "process-gate") {
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-retry-skip:${handle.pid}:process-gate`);
       scheduleSupervisorBlockedRetry(
         handle,
         worker,
-        ["process-gate"],
       );
       return;
     }
@@ -1053,8 +1043,8 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
           }
           clearStaleRunningWorker(handle, worker);
           const runningWorkerBlocksResume = handle.runningWorker !== null;
-          const canScheduleBlockedWorker = canScheduleWorker(handle, worker);
-          if (runningWorkerBlocksResume || !canScheduleBlockedWorker) {
+          const retryPlan = supervisorBlockedWaitRetryPlan(handle.kernel, latestBlocked.vmPtr);
+          if (runningWorkerBlocksResume || retryPlan.reason === "process-gate") {
             if (runningWorkerBlocksResume) {
               wakeRuntimeBridge(handle.runtimeBridge);
             }
@@ -1063,15 +1053,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
               : threadWorkerStates.get(handle.runningWorker);
             deps.appendRuntimeLifecycleEvent(
               handle.runtimeId,
-              `epoll-retry-skip:${handle.pid}:running=${handle.runningWorker !== null ? 1 : 0}:sched=${canScheduleBlockedWorker ? 1 : 0}`
+              `epoll-retry-skip:${handle.pid}:running=${handle.runningWorker !== null ? 1 : 0}:reason=${retryPlan.reason}`
                 + `:${formatRunningRetryBlocker(handle, runningThread)}`,
             );
             scheduleSupervisorBlockedRetry(
               handle,
               worker,
-              canScheduleBlockedWorker
-                ? []
-                : ["process-gate"],
             );
             return;
           }
@@ -1167,7 +1154,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         });
       return;
     }
-    const retryPlan = supervisorBlockedWaitRetryPlan(handle.kernel, blocked.vmPtr);
+    retryPlan = supervisorBlockedWaitRetryPlan(handle.kernel, blocked.vmPtr);
     if (retryPlan.reason === "passive-wait") {
       scheduleSupervisorBlockedRetry(handle, worker);
       return;

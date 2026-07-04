@@ -49,6 +49,7 @@ function makeKernel() {
       abi_status_flock_wait: () => 32,
       abi_status_fs: () => 33,
       abi_max_threads: () => 64,
+      abi_max_sockets: () => 1,
       thread_resume_wait4: threadResumeWait4,
       thread_resume_blocked_syscall: vi.fn(),
       thread_resume_sleep: vi.fn(),
@@ -319,6 +320,14 @@ function makeKernel() {
       thread_pipe_read_eof_sync_pending: () => 0,
       thread_poll_hup_sync_pending: () => 0,
       thread_socket_wait_timeout: () => -1n,
+      thread_socket_idx_for_fd: () => -1,
+      thread_socket_peer_idx: () => -1,
+      thread_socket_state: () => 0,
+      thread_socket_external_peer: () => 0,
+      thread_socket_recv_available: () => 0,
+      thread_socket_recv_buf_idx: () => -1,
+      thread_socket_read_bytes: () => 0n,
+      thread_socket_outbound_available: () => 0,
       thread_process_thread_count: () => 1,
       thread_process_ptr: () => 0x2000,
       thread_pc: () => 0x1000n,
@@ -351,13 +360,13 @@ function makeKernel() {
       kernel_epoll_table_bytes: () => 0,
       kernel_epoll_instance_bytes: () => 0,
       kernel_socket_table_ptr: () => 0,
-      kernel_socket_table_bytes: () => 0,
+      kernel_socket_table_bytes: () => 32,
       kernel_socket_used: () => 0,
       kernel_pipe_base: () => 0,
       kernel_pipe_region_bytes: () => 0,
       kernel_pipe_used: () => 0n,
       kernel_net_buf_base: () => 0,
-      kernel_net_buf_pool_bytes: () => 0,
+      kernel_net_buf_pool_bytes: () => 64,
       kernel_net_buf_used: () => 0n,
       kernel_sig_slots_ptr: () => 0,
       kernel_sig_slots_bytes: () => 0,
@@ -1369,7 +1378,11 @@ test("blocked retry delegates vfork process gate retry reason to kernel", () => 
   kernel.thread_status = (vmPtr: number) => vmPtr === blockedThread.vmPtr
     ? kernel.abi_status_pipe_wait()
     : kernel.abi_status_ok();
-  const retryReason = vi.fn(kernel.supervisor_blocked_wait_retry_reason);
+  const retryReason = vi.fn((vmPtr: number, flags: number) => {
+    expect(vmPtr).toBe(blockedThread.vmPtr);
+    expect(flags).toBe(0);
+    return kernel.supervisor_blocked_wait_retry_reason_process_gate();
+  });
   kernel.supervisor_blocked_wait_retry_reason = retryReason;
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
   handle.workers.add(vforkWorker);
@@ -1409,10 +1422,7 @@ test("blocked retry delegates vfork process gate retry reason to kernel", () => 
 
   scheduler.notifySchedulerProgress(handle);
 
-  expect(retryReason).toHaveBeenCalledWith(
-    blockedThread.vmPtr,
-    kernel.supervisor_blocked_wait_retry_flag_process_gate(),
-  );
+  expect(retryReason).toHaveBeenCalledWith(blockedThread.vmPtr, 0);
   expect(blockedWorker.postMessage).not.toHaveBeenCalled();
   expect(vforkWorker.postMessage).not.toHaveBeenCalled();
 });
@@ -1773,7 +1783,7 @@ test("epoll sync timeout zero survives a running-worker retry skip", async () =>
 
   scheduler.notifySchedulerProgress(handle);
   await vi.waitFor(() => {
-    expect(lifecycleEvents.some((event) => event.startsWith("epoll-retry-skip:1:running=1:sched=1"))).toBe(true);
+    expect(lifecycleEvents.some((event) => event.startsWith("epoll-retry-skip:1:running=1:reason=standard-defer"))).toBe(true);
   });
 
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
