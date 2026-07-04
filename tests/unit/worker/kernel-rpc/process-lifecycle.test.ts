@@ -3,6 +3,7 @@ import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { createRuntimeStateBridge } from "../../../../src/bridge/runtime-state.js";
 import { createWorkerKernelRpcProcessLifecycleHelpers } from "../../../../src/worker/kernel-rpc/process-lifecycle.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
+import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 function makeKernelState(): KernelRuntimeState {
   return {
@@ -50,6 +51,7 @@ function makeHandle(
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     wasmModule: {} as WebAssembly.Module,
     kernel: {
+      ...makeSupervisorAbiStubs(),
       memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
       kernel_attach_runtime_state(
         heapBase: number,

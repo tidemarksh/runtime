@@ -2,6 +2,7 @@ import { expect, test, vi } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { createWorkerLifecycleHelpers } from "../../../../src/worker/lifecycle.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
+import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 function makeKernelState(): KernelRuntimeState {
   return {
@@ -26,6 +27,7 @@ function makeKernelState(): KernelRuntimeState {
 
 function makeKernel(releaseHostStdio: () => void): KernelExports {
   return {
+    ...makeSupervisorAbiStubs(),
     abi_max_fds: () => 16,
     abi_max_threads: () => 4,
     abi_status_vfork_wait: () => 8,

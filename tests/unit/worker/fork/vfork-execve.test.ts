@@ -10,6 +10,7 @@ import type {
   ThreadWorkerInbound,
   ThreadWorkerOutbound,
 } from "../../../../src/messages.js";
+import { createEchoKernelWorkerRequest } from "../support/kernel-worker-request.js";
 import {
   makeSupervisorAbiStubs,
   writeSupervisorRunnableResumeRecord,
@@ -32,6 +33,10 @@ function clearRuntimeFsState(runtimeId: number): void {
 function clearModuleCache(): void {
   workerModule?.clearModuleCache();
 }
+
+const defaultKernelWorkerRequest = createEchoKernelWorkerRequest({
+  getVforkChildPid: () => createdKernelExports[0]?.thread_vfork_child_pid?.() ?? 2,
+});
 
 function createProcess(...args: Parameters<WorkerModule["createProcess"]>) {
   pendingCreatePid = args[2]?.pid ?? null;
@@ -765,7 +770,10 @@ afterEach(() => {
 
 
 test("vfork child fault records wait status and resumes parent on the same worker", async () => {
-  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: defaultKernelWorkerRequest,
+  });
   const worker = createdWorkers[0];
   const kernel = createdKernelExports[0];
   const resumeVforkParent = vi.fn(kernel.thread_resume_vfork_parent.bind(kernel));
@@ -798,6 +806,8 @@ test("vfork child fault records wait status and resumes parent on the same worke
     vmPtr: 0x1234,
     kernelState: makeKernelState(),
   });
+  await flushMicrotasks();
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   expect(kernel.recordedChildExits).toEqual([[55, 253 << 8]]);
   expect(resumeVforkParent).toHaveBeenCalledWith(0x1234, 55);

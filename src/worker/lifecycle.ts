@@ -1,5 +1,3 @@
-import { readKernelRuntimeState } from "../abi.js";
-import { publishKernelRuntimeState } from "../bridge/runtime-state.js";
 import {
   kernelShareOtherMembers,
   reconcileKernelSharePipeControl,
@@ -196,23 +194,17 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
         + `:exit=${exitCode}:${termSignal}:wait=${waitStatus}`,
     );
 
-    if (handle.kernelWorkerRequest && handle.pid > 0) {
-      void deps.resumeVforkParentViaKernelWorker(handle, worker, vmPtr, waitStatus);
+    if (!handle.kernelWorkerRequest || handle.pid <= 0) {
+      deps.workerExitFailProcess(
+        handle,
+        new Error("resumeVforkParentAfterChildExit requires kernel-worker ownership"),
+      );
       return true;
     }
 
-    if (childPid <= 0) {
-      return false;
-    }
-
-    handle.vforkSnapshot = null;
-    handle.vforkWorker = null;
-    handle.kernel.thread_resume_vfork_parent(vmPtr, childPid);
-    void deps.recordChildExitViaKernelWorker(handle, childPid, waitStatus);
-    handle.kernelState = readKernelRuntimeState(handle.kernel);
-    publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
-    deps.notifyLifecycleProgress(handle);
-    deps.enqueueWorker(handle, worker);
+    void deps.resumeVforkParentViaKernelWorker(handle, worker, vmPtr, waitStatus).catch((error) => {
+      deps.workerExitFailProcess(handle, error instanceof Error ? error : new Error(String(error)));
+    });
     return true;
   }
 

@@ -7,6 +7,7 @@ import {
   adoptKernelStateForHandle,
 } from "../kernel-state.js";
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
+import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 import type {
   CanonicalizedChildLifecycle,
   ProcessHandle,
@@ -63,12 +64,10 @@ export function createWorkerKernelRpcVforkHelpers(
     vmPtr: number,
     waitStatus: number,
   ): Promise<KernelRpcResumeOutcome> {
-    if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
-    }
+    const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "resumeVforkParentViaKernelWorker");
 
     try {
-      const response = expectKernelWorkerResponse(await handle.kernelWorkerRequest({
+      const response = expectKernelWorkerResponse(await kernelWorkerRequest({
         type: "resume-vfork-parent",
         pid: handle.pid,
         vmPtr,
@@ -146,12 +145,10 @@ export function createWorkerKernelRpcVforkHelpers(
     vmPtr: number,
     childPid: number,
   ): Promise<KernelRpcResumeOutcome> {
-    if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
-    }
+    const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "resumeVforkExecveParentViaKernelWorker");
 
     deps.appendWorkerDebugLog(handle, `resume-vfork-execve-parent:rpc-start:0x${vmPtr.toString(16)}:${childPid}`);
-    const response = expectKernelWorkerResponse(await handle.kernelWorkerRequest({
+    const response = expectKernelWorkerResponse(await kernelWorkerRequest({
       type: "resume-vfork-execve-parent",
       pid: handle.pid,
       vmPtr,
@@ -174,12 +171,10 @@ export function createWorkerKernelRpcVforkHelpers(
     vmPtr: number,
     childPid: number,
   ): Promise<KernelRpcResumeOutcome> {
-    if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
-    }
+    const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "rollbackVforkExecveHandoffViaKernelWorker");
 
     deps.appendWorkerDebugLog(handle, `rollback-vfork-execve-handoff:rpc-start:0x${vmPtr.toString(16)}:${childPid}`);
-    const response = expectKernelWorkerResponse(await handle.kernelWorkerRequest({
+    const response = expectKernelWorkerResponse(await kernelWorkerRequest({
       type: "rollback-vfork-execve-handoff",
       pid: handle.pid,
       vmPtr,

@@ -10,6 +10,7 @@ import type {
   KernelWorkerPipeSeedMode,
   ProcessHandle,
 } from "../types.js";
+import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 import type { WorkerKernelRpcLifecycleDeps } from "./lifecycle/types.js";
 import { completedKernelRpcOutcome, type KernelRpcResumeOutcome } from "./outcomes.js";
 import { expectKernelWorkerResponse } from "./transport.js";
@@ -41,10 +42,11 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     handle: ProcessHandle,
     options: { seedMemfsMode?: KernelWorkerMemfsSeedMode; pipeSeedMode?: KernelWorkerPipeSeedMode } = {},
   ): Promise<void> {
-    if (!handle.kernelWorkerRequest || handle.pid <= 0) {
+    const kernelWorkerRequest = handle.kernelWorkerRequest;
+    if (!kernelWorkerRequest || handle.pid <= 0) {
       return;
     }
-    const response = expectKernelWorkerResponse(await handle.kernelWorkerRequest({
+    const response = expectKernelWorkerResponse(await kernelWorkerRequest({
       type: "register-process",
       pid: handle.pid,
       vmPtr: handle.vmPtr,
@@ -68,11 +70,12 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     sid: number,
     didExec: boolean,
   ): Promise<void> {
-    if (!handle.kernelWorkerRequest || handle.pid <= 0) {
+    const kernelWorkerRequest = handle.kernelWorkerRequest;
+    if (!kernelWorkerRequest || handle.pid <= 0) {
       return;
     }
 
-    const response = expectKernelWorkerResponse(await handle.kernelWorkerRequest({
+    const response = expectKernelWorkerResponse(await kernelWorkerRequest({
       type: "initialize-process-lifecycle",
       pid: handle.pid,
       vmPtr,
@@ -132,10 +135,11 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
   }
 
   async function unregisterProcessWithKernelWorker(handle: ProcessHandle): Promise<void> {
-    if (!handle.kernelWorkerRequest || handle.pid <= 0) {
+    const kernelWorkerRequest = handle.kernelWorkerRequest;
+    if (!kernelWorkerRequest || handle.pid <= 0) {
       return;
     }
-    expectKernelWorkerResponse(await handle.kernelWorkerRequest({
+    expectKernelWorkerResponse(await kernelWorkerRequest({
       type: "unregister-process",
       pid: handle.pid,
     }), "process-unregistered", "unregister-process");
@@ -146,21 +150,12 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     childPid: number,
     waitStatus: number,
   ): Promise<KernelRpcResumeOutcome> {
-    if (!parent.kernelWorkerRequest || parent.pid <= 0) {
-      deps.drainProcessOutput(parent);
-      if (parent.kernel.process_record_child_exit_for_parent) {
-        parent.kernel.process_record_child_exit_for_parent(parent.pid, childPid, waitStatus);
-      } else {
-        parent.kernel.process_record_child_exit(childPid, waitStatus);
-      }
-      parent.kernelState = readKernelRuntimeState(parent.kernel);
-      return completedKernelRpcOutcome();
-    }
+    const kernelWorkerRequest = requireKernelWorkerOwnership(parent, "recordChildExitViaKernelWorker");
 
     try {
       deps.drainProcessOutput(parent);
 
-      const response = expectKernelWorkerResponse(await parent.kernelWorkerRequest({
+      const response = expectKernelWorkerResponse(await kernelWorkerRequest({
         type: "record-child-exit",
         pid: parent.pid,
         childPid,

@@ -7,6 +7,7 @@ import {
 } from "../kernel-state.js";
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
 import { supervisorBlockedStatusIsWait4 } from "../../supervisor-blocked-resume.js";
+import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 import type { ProcessHandle } from "../types.js";
 import type { WorkerKernelRpcLifecycleDeps } from "./lifecycle/types.js";
 import { completedKernelRpcOutcome, type KernelRpcResumeOutcome } from "./outcomes.js";
@@ -20,9 +21,7 @@ export function createWorkerKernelRpcWait4Helpers(
     worker: Worker,
     vmPtr: number,
   ): Promise<KernelRpcResumeOutcome> {
-    if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
-    }
+    const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "resumeWait4ViaKernelWorker");
 
     try {
       const localStatus = handle.kernel.thread_status(vmPtr);
@@ -41,7 +40,7 @@ export function createWorkerKernelRpcWait4Helpers(
         handle,
         `wait4-rpc-start:0x${vmPtr.toString(16)}:local=${localStatus}`,
       );
-      const response = expectKernelWorkerResponse(await handle.kernelWorkerRequest({
+      const response = expectKernelWorkerResponse(await kernelWorkerRequest({
         type: "resume-wait4",
         pid: handle.pid,
         vmPtr,
