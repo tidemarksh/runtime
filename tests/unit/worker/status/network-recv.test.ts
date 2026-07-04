@@ -1,9 +1,9 @@
 import { expect, test, vi } from "vite-plus/test";
 import {
   deriveNetBufUsedFromSocketSlots,
-  networkAuthoritativeFds,
   pruneStatusNetworkConnectionsFromFdEntries,
 } from "../../../../src/worker/message-handler/status/network-recv.js";
+import { runtimeNetworkFds } from "../../../../src/worker/ownership/socket-control.js";
 import { makeHandle, makeKernel, makeStatusMessage } from "./helpers.js";
 
 test("status network recv derives used net buffers from live socket slots", () => {
@@ -17,7 +17,7 @@ test("status network recv derives used net buffers from live socket slots", () =
   expect(deriveNetBufUsedFromSocketSlots(handle as never, 0b11)).toBe(0b1010n);
 });
 
-test("status network recv lists runtime-authoritative network fds", () => {
+test("status network recv lists runtime network fds", () => {
   const handle = makeHandle({
     networkConnections: new Map([[3, {}]]),
     networkPendingConnectFds: new Set([4]),
@@ -31,7 +31,7 @@ test("status network recv lists runtime-authoritative network fds", () => {
     }]]),
   });
 
-  expect(networkAuthoritativeFds(handle as never)).toEqual(new Set([3, 4, 5, 6, 7]));
+  expect(runtimeNetworkFds(handle as never)).toEqual(new Set([3, 4, 5, 6, 7]));
 });
 
 test("status network recv closes stale runtime network bridges when supervisor reports no active fd", async () => {

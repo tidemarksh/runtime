@@ -7,6 +7,7 @@ import {
 import {
   preserveNetworkSocketSlots,
   restoreNetworkSocketSlots,
+  runtimeNetworkFds,
   socketTablePtrs,
 } from "../../ownership/socket-control.js";
 import type { ProcessHandle } from "../../types.js";
@@ -34,7 +35,6 @@ import {
   deriveNetBufUsedFromSocketSlots,
   closedSocketRecvBufferIndices,
   netBufUsedMaskFromBufferIndices,
-  networkAuthoritativeFds,
   preserveClosedNetworkRecvBuffers,
   preserveNetworkRecvBuffers,
   preserveNetworkRecvForKernelMemoryWrite,
@@ -199,7 +199,7 @@ export function applyThreadSocketState(handle: ProcessHandle, msg: ThreadWorkerS
   const currentNetBufUsed = handle.kernelState.netBufUsed
     | handle.kernel.kernel_net_buf_used()
     | deriveNetBufUsedFromSocketSlots(handle, currentSocketUsed);
-  const debugFds = networkAuthoritativeFds(handle);
+  const debugFds = runtimeNetworkFds(handle);
   const socketDebugEntry = (fd: number, source: string) => {
     const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(msg.vmPtr, fd) ?? -1;
     const state = socketIdx >= 0 ? handle.kernel.thread_socket_state?.(socketIdx) ?? -1 : -1;

@@ -6,7 +6,10 @@ import {
 import { SOCKET_STATE_SHUTDOWN } from "../../../layout/socket.js";
 import { kernelSocketCount } from "../../../kernel-socket-layout.js";
 import { networkSocketSlotRecvBufferIndex } from "../../network-socket-close.js";
-import { pruneStaleNetworkConnectionsFromFdEntries } from "../../ownership/socket-control.js";
+import {
+  pruneStaleNetworkConnectionsFromFdEntries,
+  runtimeNetworkFds,
+} from "../../ownership/socket-control.js";
 import type { ProcessHandle } from "../../types.js";
 import type { ThreadWorkerStatusMessage, WorkerMessageHandlerDeps } from "../types.js";
 import {
@@ -22,7 +25,7 @@ interface PreservedNetworkRecvBuffer {
   data: Uint8Array;
   capacity: number;
   preserveProducer: boolean;
-  authoritativeData: boolean;
+  payloadData: boolean;
   forceHead?: boolean;
   forceTail?: boolean;
 }
@@ -88,7 +91,7 @@ export function preserveNetworkRecvForKernelMemoryWrite(
   ptr: number,
   length: number,
 ): (() => void) | null {
-  if (networkAuthoritativeFds(handle).size === 0) {
+  if (runtimeNetworkFds(handle).size === 0) {
     return null;
   }
   const netBufBase = handle.kernelState.netBufBase;
@@ -133,17 +136,6 @@ export function deriveNetBufUsedFromSocketSlots(handle: ProcessHandle, socketUse
     }
   }
   return netBufUsed;
-}
-
-export function networkAuthoritativeFds(handle: ProcessHandle): Set<number> {
-  return new Set([
-    ...(handle.networkConnections?.keys() ?? []),
-    ...(handle.networkPendingConnectFds ?? []),
-    ...(handle.networkClosedFds ?? []),
-    ...(handle.networkClosedSocketSlots?.keys() ?? []),
-    ...(handle.networkSocketSlotWatermarks?.keys() ?? []),
-    ...(handle.networkRecvPayloadWatermarks?.keys() ?? []),
-  ]);
 }
 
 function counterAhead(sourceValue: number, targetValue: number, capacity: number): boolean {
@@ -293,8 +285,8 @@ export function preserveNetworkRecvBuffers(
   vmPtr: number,
   netBufPoolBytes: number,
 ): PreservedNetworkRecvBuffer[] {
-  const authoritativeFds = networkAuthoritativeFds(handle);
-  if (authoritativeFds.size === 0) {
+  const runtimeFds = runtimeNetworkFds(handle);
+  if (runtimeFds.size === 0) {
     return [];
   }
   const maxSockets = kernelSocketCount(handle.kernel);
@@ -331,7 +323,7 @@ export function preserveNetworkRecvBuffers(
       data: payload.data,
       capacity: payload.capacity,
       preserveProducer: true,
-      authoritativeData: true,
+      payloadData: true,
       forceHead: true,
       forceTail: true,
     });
@@ -395,12 +387,12 @@ export function preserveNetworkRecvBuffers(
       data: payload?.data ?? bytes.slice(NET_BUFFER_HEADER_BYTES),
       capacity,
       preserveProducer: fd !== null,
-      authoritativeData: payload !== null,
+      payloadData: payload !== null,
       forceHead: fd !== null,
       forceTail: payload !== null || terminalRecv,
     });
   };
-  for (const fd of authoritativeFds) {
+  for (const fd of runtimeFds) {
     const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd);
     if (socketIdx === undefined || socketIdx < 0) {
       if (!preserveWatermarkedRecvBuffer(fd)) {
@@ -586,12 +578,12 @@ export function restoreNetworkRecvBufferProducers(
     ) % buffer.capacity;
     const preservedTailAhead = buffer.forceTail === true
       ? true
-      : buffer.authoritativeData
+      : buffer.payloadData
       ? tailDistanceFromHead(buffer.tail) > tailDistanceFromHead(incomingTail)
       : counterAhead(buffer.tail, incomingTail, buffer.capacity);
     if (
       preservedTailAhead
-      || (buffer.authoritativeData && buffer.tail === incomingTail)
+      || (buffer.payloadData && buffer.tail === incomingTail)
       || (buffer.forceHead === true && incomingHead !== buffer.head)
     ) {
       memory.set(buffer.data, absolute + NET_BUFFER_HEADER_BYTES);
