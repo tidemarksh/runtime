@@ -65,6 +65,78 @@ export function supervisorProcessOwnerMismatch(
   return result !== 0;
 }
 
+export function supervisorProcessOwnerAbsent(
+  kernel: ProcessHandle["kernel"],
+  vmPtr: number,
+): boolean {
+  if (vmPtr === 0) {
+    return false;
+  }
+  const readAbsent = kernel.supervisor_process_owner_absent;
+  if (typeof readAbsent !== "function") {
+    throw new Error("kernel supervisor ABI missing supervisor_process_owner_absent");
+  }
+  const result = readAbsent(vmPtr);
+  if (result < 0) {
+    throw new Error(`kernel supervisor process owner absent check failed: ${result}`);
+  }
+  return result !== 0;
+}
+
+export function supervisorProcessOwnerLiveMatches(
+  kernel: ProcessHandle["kernel"],
+  vmPtr: number,
+  runtimePid: number,
+): boolean {
+  if (vmPtr === 0 || runtimePid <= 0) {
+    return false;
+  }
+  const readMatch = kernel.supervisor_process_owner_live_matches;
+  if (typeof readMatch !== "function") {
+    throw new Error("kernel supervisor ABI missing supervisor_process_owner_live_matches");
+  }
+  const result = readMatch(vmPtr, runtimePid);
+  if (result < 0) {
+    throw new Error(`kernel supervisor live process owner match failed: ${result}`);
+  }
+  return result !== 0;
+}
+
+export function supervisorProcessOwnerMissingOrInvalid(
+  kernel: ProcessHandle["kernel"],
+  vmPtr: number,
+): boolean {
+  const readInvalid = kernel.supervisor_process_owner_missing_or_invalid;
+  if (typeof readInvalid !== "function") {
+    throw new Error("kernel supervisor ABI missing supervisor_process_owner_missing_or_invalid");
+  }
+  const result = readInvalid(vmPtr);
+  if (result < 0) {
+    throw new Error(`kernel supervisor process owner validity check failed: ${result}`);
+  }
+  return result !== 0;
+}
+
+export function supervisorProcessIdentityMatches(
+  kernel: ProcessHandle["kernel"],
+  vmPtr: number,
+  runtimePid: number,
+  processPtr: number,
+): boolean {
+  if (vmPtr === 0 || runtimePid <= 0 || processPtr === 0) {
+    return false;
+  }
+  const readMatch = kernel.supervisor_process_identity_matches;
+  if (typeof readMatch !== "function") {
+    throw new Error("kernel supervisor ABI missing supervisor_process_identity_matches");
+  }
+  const result = readMatch(vmPtr, runtimePid, processPtr);
+  if (result < 0) {
+    throw new Error(`kernel supervisor process identity match failed: ${result}`);
+  }
+  return result !== 0;
+}
+
 export function assertHandleWorkerProcessIdentity(
   handle: ProcessHandle,
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>,

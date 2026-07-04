@@ -177,6 +177,7 @@ test("status from a removed process state is dropped as stale", () => {
   const appendWorkerDebugLog = vi.fn();
   const failProcess = vi.fn();
   const deps = makeDeps(threadWorkerStates, appendWorkerDebugLog, failProcess);
+  const supervisorProcessOwnerAbsent = vi.fn(() => 1);
   const handle = {
     pid: 4,
     exitInProgress: false,
@@ -188,6 +189,7 @@ test("status from a removed process state is dropped as stale", () => {
       abi_status_fault: () => 31,
       abi_status_vfork_wait: () => 11,
       abi_status_execve_spawn: () => 13,
+      supervisor_process_owner_absent: supervisorProcessOwnerAbsent,
       process_current_pid: () => 0,
       thread_process_thread_count: () => 0,
       thread_process_ptr: () => 0x48000,
@@ -213,6 +215,7 @@ test("status from a removed process state is dropped as stale", () => {
     handle,
     "stale-process-status:0x1234:0:pid=4",
   );
+  expect(supervisorProcessOwnerAbsent).toHaveBeenCalledWith(0x1234);
 });
 
 test("ready from a rehydrating process state is accepted when worker debug still identifies the owner", () => {
@@ -224,6 +227,7 @@ test("ready from a rehydrating process state is accepted when worker debug still
   const deps = makeDeps(threadWorkerStates, appendWorkerDebugLog, failProcess);
   const enqueueWorker = vi.fn();
   deps.enqueueWorker = enqueueWorker;
+  const supervisorProcessOwnerAbsent = vi.fn(() => 1);
   const handle = {
     pid: 4,
     parentPid: 1,
@@ -282,6 +286,7 @@ test("ready from a rehydrating process state is accepted when worker debug still
       abi_status_vfork_wait: () => 11,
       abi_status_execve_spawn: () => 13,
       abi_status_clone_spawn: () => 25,
+      supervisor_process_owner_absent: supervisorProcessOwnerAbsent,
       kernel_attach_runtime_state: () => {},
       process_current_pid: () => 0,
       thread_process_thread_count: () => 0,
@@ -307,6 +312,7 @@ test("ready from a rehydrating process state is accepted when worker debug still
     handle,
     "ready-rehydrate:0x1234:pid=4",
   );
+  expect(supervisorProcessOwnerAbsent).toHaveBeenCalledWith(0x1234);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });
 
@@ -320,6 +326,7 @@ test("ready adopts transferred worker ownership when kernel process identity mat
   const deps = makeDeps(threadWorkerStates, appendWorkerDebugLog, failProcess);
   const enqueueWorker = vi.fn();
   deps.enqueueWorker = enqueueWorker;
+  const supervisorProcessOwnerLiveMatches = vi.fn(() => 1);
   const handle = {
     pid: 3,
     parentPid: 1,
@@ -356,6 +363,7 @@ test("ready adopts transferred worker ownership when kernel process identity mat
       abi_status_vfork_wait: () => 11,
       abi_status_execve_spawn: () => 13,
       abi_status_clone_spawn: () => 25,
+      supervisor_process_owner_live_matches: supervisorProcessOwnerLiveMatches,
       kernel_attach_runtime_state: () => {},
       process_current_pid: () => 3,
       thread_process_thread_count: () => 1,
@@ -381,6 +389,7 @@ test("ready adopts transferred worker ownership when kernel process identity mat
     handle,
     "ready-owner-adopt:0x1234:pid=3:previous=1",
   );
+  expect(supervisorProcessOwnerLiveMatches).toHaveBeenCalledWith(0x1234, 3);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });
 
@@ -394,6 +403,7 @@ test("messages delivered through a stale handle are rerouted to the transferred 
   const deps = makeDeps(threadWorkerStates, appendWorkerDebugLog, failProcess);
   const enqueueWorker = vi.fn();
   deps.enqueueWorker = enqueueWorker;
+  const supervisorProcessOwnerLiveMatches = vi.fn(() => 1);
   const parentHandle = {
     pid: 1,
     exitInProgress: false,
@@ -438,6 +448,7 @@ test("messages delivered through a stale handle are rerouted to the transferred 
       abi_status_vfork_wait: () => 11,
       abi_status_execve_spawn: () => 13,
       abi_status_clone_spawn: () => 25,
+      supervisor_process_owner_live_matches: supervisorProcessOwnerLiveMatches,
       kernel_attach_runtime_state: () => {},
       process_current_pid: () => 3,
       thread_process_thread_count: () => 1,
@@ -468,6 +479,7 @@ test("messages delivered through a stale handle are rerouted to the transferred 
     childHandle,
     "ready-pid-mismatch-stale-debug:0x1234:expected_pid=3:actual_pid=1:threads=1",
   );
+  expect(supervisorProcessOwnerLiveMatches).toHaveBeenCalledWith(0x1234, 3);
   expect(enqueueWorker).toHaveBeenCalledWith(childHandle, worker);
 });
 

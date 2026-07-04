@@ -339,6 +339,10 @@ export interface KernelExports {
   supervisor_vfork_child_owner_mismatch?(vmPtr: number, runtimePid: number): number;
   supervisor_process_owner_matches?(vmPtr: number, runtimePid: number): number;
   supervisor_process_owner_mismatch?(vmPtr: number, runtimePid: number): number;
+  supervisor_process_owner_absent?(vmPtr: number): number;
+  supervisor_process_owner_live_matches?(vmPtr: number, runtimePid: number): number;
+  supervisor_process_owner_missing_or_invalid?(vmPtr: number): number;
+  supervisor_process_identity_matches?(vmPtr: number, runtimePid: number, processPtr: number): number;
   supervisor_fault_exit_decision?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_process_held_ofd_refcount?(vmPtr: number, ofdId: number): number;
   supervisor_process_private_pipe_slot_mask?(vmPtr: number): bigint | number;
@@ -1666,6 +1670,10 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_vfork_child_owner_mismatch",
   "supervisor_process_owner_matches",
   "supervisor_process_owner_mismatch",
+  "supervisor_process_owner_absent",
+  "supervisor_process_owner_live_matches",
+  "supervisor_process_owner_missing_or_invalid",
+  "supervisor_process_identity_matches",
   "supervisor_fault_exit_decision",
   "supervisor_process_held_ofd_refcount",
   "supervisor_process_private_pipe_slot_mask",

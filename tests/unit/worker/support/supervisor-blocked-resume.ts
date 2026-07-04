@@ -105,6 +105,10 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_vfork_child_owner_mismatch"
   | "supervisor_process_owner_matches"
   | "supervisor_process_owner_mismatch"
+  | "supervisor_process_owner_absent"
+  | "supervisor_process_owner_live_matches"
+  | "supervisor_process_owner_missing_or_invalid"
+  | "supervisor_process_identity_matches"
   | "supervisor_blocked_epoll_wait_timeout_ms"
   | "supervisor_blocked_poll_wait_timeout_ms"
   | "supervisor_blocked_poll_wait_has_socket"
@@ -808,6 +812,29 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   nextKernel.supervisor_process_owner_mismatch ??= (vmPtr: number, runtimePid: number) => {
     const currentPid = kernel.process_current_pid?.(vmPtr) ?? 0;
     return currentPid > 0 && currentPid !== runtimePid ? 1 : 0;
+  };
+  nextKernel.supervisor_process_owner_absent ??= (vmPtr: number) => {
+    const currentPid = kernel.process_current_pid?.(vmPtr) ?? 0;
+    const threadCount = kernel.thread_process_thread_count?.(vmPtr) ?? 0;
+    return currentPid === 0 && threadCount === 0 ? 1 : 0;
+  };
+  nextKernel.supervisor_process_owner_live_matches ??= (vmPtr: number, runtimePid: number) => {
+    const currentPid = kernel.process_current_pid?.(vmPtr) ?? 0;
+    const threadCount = kernel.thread_process_thread_count?.(vmPtr) ?? 0;
+    return currentPid === runtimePid && threadCount > 0 ? 1 : 0;
+  };
+  nextKernel.supervisor_process_owner_missing_or_invalid ??= (vmPtr: number) => {
+    const currentPid = kernel.process_current_pid?.(vmPtr) ?? 0;
+    return currentPid === 0 || currentPid > 0xffff ? 1 : 0;
+  };
+  nextKernel.supervisor_process_identity_matches ??= (
+    vmPtr: number,
+    runtimePid: number,
+    processPtr: number,
+  ) => {
+    const currentPid = kernel.process_current_pid?.(vmPtr) ?? 0;
+    const currentProcessPtr = kernel.thread_process_ptr?.(vmPtr) ?? 0;
+    return currentPid === runtimePid && currentProcessPtr === processPtr ? 1 : 0;
   };
   nextKernel.supervisor_blocked_epoll_wait_timeout_ms ??= (vmPtr: number) => {
     if (vmPtr === 0) {

@@ -1,6 +1,12 @@
 import { createWorkerControlMessageHandler } from "./message-handler/control.js";
 import { readProcessPidField } from "./diagnostics/format.js";
 import { createWorkerStatusMessageHandler } from "./message-handler/status/route.js";
+import {
+  supervisorProcessOwnerAbsent,
+  supervisorProcessOwnerLiveMatches,
+  supervisorProcessOwnerMatches,
+  supervisorProcessOwnerMissingOrInvalid,
+} from "./process-identity.js";
 import { supervisorProcessStatusAllowsPidMismatch } from "./supervisor-status.js";
 import type { WorkerMessageHandlerDeps } from "./message-handler/types.js";
 import { recordWorkerMessageDebugEvent, type ProcessHandle } from "./types.js";
@@ -73,9 +79,9 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
     if (thread.ownerPid !== handle.pid) {
       const readyVmPtr = msg.type === "ready" && "vmPtr" in msg ? msg.vmPtr : 0;
       if (readyVmPtr === thread.vmPtr && handle.pid > 0) {
-        const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
-        const processThreadCount = handle.kernel.thread_process_thread_count(thread.vmPtr);
-        if (currentPid === handle.pid && processThreadCount > 0) {
+        if (supervisorProcessOwnerLiveMatches(handle.kernel, thread.vmPtr, handle.pid)) {
+          const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
+          const processThreadCount = handle.kernel.thread_process_thread_count(thread.vmPtr);
           const previousOwnerPid = thread.ownerPid;
           thread.ownerPid = handle.pid;
           recordWorkerMessageDebugEvent(
@@ -126,24 +132,27 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
       return true;
     }
     if (handle.pid > 0) {
-      const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
       const messageProcessPidField = "debug" in msg
         ? readProcessPidField(msg.debug)
         : null;
       if (
         msg.type === "status"
         && msg.status === handle.kernel.abi_status_fault()
-        && (currentPid === 0 || currentPid > 0xffff || messageProcessPidField === handle.pid)
+        && (
+          supervisorProcessOwnerMissingOrInvalid(handle.kernel, thread.vmPtr)
+          || messageProcessPidField === handle.pid
+        )
       ) {
         return true;
       }
-      const processThreadCount = handle.kernel.thread_process_thread_count(thread.vmPtr);
+      const processOwnerAbsent = supervisorProcessOwnerAbsent(handle.kernel, thread.vmPtr);
       if (
         msg.type === "ready"
-        && currentPid === 0
-        && processThreadCount === 0
+        && processOwnerAbsent
         && messageProcessPidField === handle.pid
       ) {
+        const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
+        const processThreadCount = handle.kernel.thread_process_thread_count(thread.vmPtr);
         recordWorkerMessageDebugEvent(
           handle.workerMessageDebugStats,
           "readyRehydrateAdopts",
@@ -156,7 +165,9 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
         );
         return true;
       }
-      if (msg.type === "status" && currentPid === 0 && processThreadCount === 0) {
+      if (msg.type === "status" && processOwnerAbsent) {
+        const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
+        const processThreadCount = handle.kernel.thread_process_thread_count(thread.vmPtr);
         recordWorkerMessageDebugEvent(
           handle.workerMessageDebugStats,
           "staleProcessStatusDrops",
@@ -170,7 +181,8 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
         );
         return false;
       }
-      if (currentPid !== handle.pid) {
+      if (!supervisorProcessOwnerMatches(handle.kernel, thread.vmPtr, handle.pid)) {
+        const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
         failOwnershipInvariant(handle, worker, msg, `kernel_pid=${currentPid} expected_pid=${handle.pid}`);
         return false;
       }

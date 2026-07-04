@@ -13,6 +13,10 @@ import type { ThreadWorkerOutbound } from "../../messages.js";
 import type { WorkerMessageHandlerDeps } from "./types.js";
 import { readProcessPidField } from "../diagnostics/format.js";
 import { createWorkerOwnershipGuard } from "../ownership/process-state.js";
+import {
+  supervisorProcessIdentityMatches,
+  supervisorProcessOwnerLiveMatches,
+} from "../process-identity.js";
 import { submitSupervisorShadowStatusEvent } from "../supervisor-shadow.js";
 import { supervisorProcessStatusIsCloneSpawn } from "../supervisor-status.js";
 
@@ -95,13 +99,11 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
       );
       const readyProcessPidField = readProcessPidField(msg.debug);
       if (readyProcessPidField !== null && readyProcessPidField !== handle.pid) {
-        const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
-        const processThreadCount = handle.kernel.thread_process_thread_count(thread.vmPtr);
         if (
           thread.ownerPid === handle.pid
-          && currentPid === handle.pid
-          && processThreadCount > 0
+          && supervisorProcessOwnerLiveMatches(handle.kernel, thread.vmPtr, handle.pid)
         ) {
+          const processThreadCount = handle.kernel.thread_process_thread_count(thread.vmPtr);
           deps.appendWorkerDebugLog(
             handle,
             `ready-pid-mismatch-stale-debug:0x${thread.vmPtr.toString(16)}`
@@ -153,10 +155,12 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
             + `:actual_process_ptr=0x${currentProcessPtr.toString(16)}`
             + (msg.debug ? `:${msg.debug}` : ""),
         );
-        if (
-          currentPid !== vforkSnapshot.parentPid
-          || currentProcessPtr !== vforkSnapshot.parentProcessPtr
-        ) {
+        if (!supervisorProcessIdentityMatches(
+          handle.kernel,
+          thread.vmPtr,
+          vforkSnapshot.parentPid,
+          vforkSnapshot.parentProcessPtr,
+        )) {
           deps.failProcess(
             handle,
             new Error(

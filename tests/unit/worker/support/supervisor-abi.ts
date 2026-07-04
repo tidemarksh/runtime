@@ -52,6 +52,10 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_vfork_child_owner_mismatch: 0,
   supervisor_process_owner_matches: 0,
   supervisor_process_owner_mismatch: 0,
+  supervisor_process_owner_absent: 0,
+  supervisor_process_owner_live_matches: 0,
+  supervisor_process_owner_missing_or_invalid: 0,
+  supervisor_process_identity_matches: 0,
   supervisor_fault_exit_decision_bytes: 88,
   supervisor_fault_exit_decision_magic: 0x5846_5354,
   supervisor_fault_exit_kind_thread_exit: 1,
@@ -700,6 +704,41 @@ export function makeSupervisorAbiStubs(
       const currentPid = callOptionalNumber(currentExports(this), "process_current_pid", vmPtr) ?? 0;
       const result = overrides.supervisor_process_owner_mismatch?.(vmPtr, runtimePid)
         ?? (currentPid > 0 && currentPid !== runtimePid ? 1 : 0);
+      return typeof result === "bigint" ? Number(result) : result;
+    },
+    supervisor_process_owner_absent(this: KernelExports | undefined, vmPtr: number) {
+      const receiver = currentExports(this);
+      const currentPid = callOptionalNumber(receiver, "process_current_pid", vmPtr) ?? 0;
+      const threadCount = callOptionalNumber(receiver, "thread_process_thread_count", vmPtr) ?? 0;
+      const result = overrides.supervisor_process_owner_absent?.(vmPtr)
+        ?? (currentPid === 0 && threadCount === 0 ? 1 : 0);
+      return typeof result === "bigint" ? Number(result) : result;
+    },
+    supervisor_process_owner_live_matches(this: KernelExports | undefined, vmPtr: number, runtimePid: number) {
+      const receiver = currentExports(this);
+      const currentPid = callOptionalNumber(receiver, "process_current_pid", vmPtr) ?? 0;
+      const threadCount = callOptionalNumber(receiver, "thread_process_thread_count", vmPtr) ?? 0;
+      const result = overrides.supervisor_process_owner_live_matches?.(vmPtr, runtimePid)
+        ?? (currentPid === runtimePid && threadCount > 0 ? 1 : 0);
+      return typeof result === "bigint" ? Number(result) : result;
+    },
+    supervisor_process_owner_missing_or_invalid(this: KernelExports | undefined, vmPtr: number) {
+      const currentPid = callOptionalNumber(currentExports(this), "process_current_pid", vmPtr) ?? 0;
+      const result = overrides.supervisor_process_owner_missing_or_invalid?.(vmPtr)
+        ?? (currentPid === 0 || currentPid > 0xffff ? 1 : 0);
+      return typeof result === "bigint" ? Number(result) : result;
+    },
+    supervisor_process_identity_matches(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      runtimePid: number,
+      processPtr: number,
+    ) {
+      const receiver = currentExports(this);
+      const currentPid = callOptionalNumber(receiver, "process_current_pid", vmPtr) ?? 0;
+      const currentProcessPtr = callOptionalNumber(receiver, "thread_process_ptr", vmPtr) ?? 0;
+      const result = overrides.supervisor_process_identity_matches?.(vmPtr, runtimePid, processPtr)
+        ?? (currentPid === runtimePid && currentProcessPtr === processPtr ? 1 : 0);
       return typeof result === "bigint" ? Number(result) : result;
     },
     supervisor_blocked_poll_wait_has_socket(this: KernelExports | undefined, vmPtr: number) {
