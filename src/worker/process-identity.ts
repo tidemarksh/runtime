@@ -20,7 +20,7 @@ export function supervisorVforkChildOwnerMismatch(
   if (typeof readMismatch !== "function") {
     throw new Error("kernel supervisor ABI missing supervisor_vfork_child_owner_mismatch");
   }
-  const result = readMismatch(vmPtr, runtimePid);
+  const result = readMismatch.call(kernel, vmPtr, runtimePid);
   if (result < 0) {
     throw new Error(`kernel supervisor vfork child owner mismatch failed: ${result}`);
   }
@@ -39,7 +39,7 @@ export function supervisorProcessOwnerMatches(
   if (typeof readMatch !== "function") {
     throw new Error("kernel supervisor ABI missing supervisor_process_owner_matches");
   }
-  const result = readMatch(vmPtr, runtimePid);
+  const result = readMatch.call(kernel, vmPtr, runtimePid);
   if (result < 0) {
     throw new Error(`kernel supervisor process owner match failed: ${result}`);
   }
@@ -58,7 +58,7 @@ export function supervisorProcessOwnerMismatch(
   if (typeof readMismatch !== "function") {
     throw new Error("kernel supervisor ABI missing supervisor_process_owner_mismatch");
   }
-  const result = readMismatch(vmPtr, runtimePid);
+  const result = readMismatch.call(kernel, vmPtr, runtimePid);
   if (result < 0) {
     throw new Error(`kernel supervisor process owner mismatch failed: ${result}`);
   }
@@ -76,7 +76,7 @@ export function supervisorProcessOwnerAbsent(
   if (typeof readAbsent !== "function") {
     throw new Error("kernel supervisor ABI missing supervisor_process_owner_absent");
   }
-  const result = readAbsent(vmPtr);
+  const result = readAbsent.call(kernel, vmPtr);
   if (result < 0) {
     throw new Error(`kernel supervisor process owner absent check failed: ${result}`);
   }
@@ -95,7 +95,7 @@ export function supervisorProcessOwnerLiveMatches(
   if (typeof readMatch !== "function") {
     throw new Error("kernel supervisor ABI missing supervisor_process_owner_live_matches");
   }
-  const result = readMatch(vmPtr, runtimePid);
+  const result = readMatch.call(kernel, vmPtr, runtimePid);
   if (result < 0) {
     throw new Error(`kernel supervisor live process owner match failed: ${result}`);
   }
@@ -110,7 +110,7 @@ export function supervisorProcessOwnerMissingOrInvalid(
   if (typeof readInvalid !== "function") {
     throw new Error("kernel supervisor ABI missing supervisor_process_owner_missing_or_invalid");
   }
-  const result = readInvalid(vmPtr);
+  const result = readInvalid.call(kernel, vmPtr);
   if (result < 0) {
     throw new Error(`kernel supervisor process owner validity check failed: ${result}`);
   }
@@ -130,7 +130,7 @@ export function supervisorProcessIdentityMatches(
   if (typeof readMatch !== "function") {
     throw new Error("kernel supervisor ABI missing supervisor_process_identity_matches");
   }
-  const result = readMatch(vmPtr, runtimePid, processPtr);
+  const result = readMatch.call(kernel, vmPtr, runtimePid, processPtr);
   if (result < 0) {
     throw new Error(`kernel supervisor process identity match failed: ${result}`);
   }

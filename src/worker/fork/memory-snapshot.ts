@@ -1,4 +1,5 @@
 import type { ThreadWorkerMemoryPreserveRange } from "../../messages.js";
+import { supervisorProcessIdentityMatches } from "../process-identity.js";
 import type { ProcessHandle, ThreadWorkerState } from "./types.js";
 
 export type ParentProcessSnapshot = {
@@ -59,9 +60,9 @@ export function restoreParentProcessSnapshot(
     snapshot.pid,
     snapshot.ppid,
   );
-  const currentPid = handle.kernel.process_current_pid(parentThread.vmPtr);
-  const currentProcessPtr = handle.kernel.thread_process_ptr(parentThread.vmPtr);
-  if (currentPid !== snapshot.pid || currentProcessPtr !== snapshot.processPtr) {
+  if (!supervisorProcessIdentityMatches(handle.kernel, parentThread.vmPtr, snapshot.pid, snapshot.processPtr)) {
+    const currentPid = handle.kernel.process_current_pid(parentThread.vmPtr);
+    const currentProcessPtr = handle.kernel.thread_process_ptr(parentThread.vmPtr);
     throw new Error(
       `plain-fork parent restore drift vm=0x${parentThread.vmPtr.toString(16)}`
         + ` expected_pid=${snapshot.pid} actual_pid=${currentPid}`

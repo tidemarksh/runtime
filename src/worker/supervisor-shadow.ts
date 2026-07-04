@@ -126,7 +126,7 @@ function supervisorNumericExport(kernelExports: KernelExports, name: keyof Kerne
   if (exportFn === undefined) {
     throw new Error(`kernel supervisor ABI missing ${String(name)}`);
   }
-  const value = exportFn();
+  const value = exportFn.call(kernelExports);
   return typeof value === "bigint" ? Number(value) : value;
 }
 
@@ -335,7 +335,7 @@ export function readSupervisorFaultExitDecision(
   const memory = handle.kernel.memory ?? handle.memory;
   const scratch = kernelScratchBase(handle.kernel) + SUPERVISOR_FAULT_EXIT_SCRATCH_OFFSET;
   ensureMemoryCapacity(memory, scratch + recordBytes);
-  const result = readDecision(vmPtr, scratch, recordBytes);
+  const result = readDecision.call(handle.kernel, vmPtr, scratch, recordBytes);
   if (result < 0 || result > recordBytes) {
     throw new Error(`supervisor fault exit decision failed: ${result}`);
   }
