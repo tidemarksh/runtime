@@ -1,13 +1,5 @@
 import type { KernelExports } from "./abi.js";
 
-export type SupervisorBlockedWaitRetryReason =
-  | "default"
-  | "immediate"
-  | "standard-defer"
-  | "active-child"
-  | "passive-wait"
-  | "process-gate";
-
 export type SupervisorBlockedWaitRetryFlag =
   | "host-progress"
   | "active-child"
@@ -109,12 +101,6 @@ type SupervisorNumberConstExportName =
   | "supervisor_state_sync_request_flag_wake_waiters"
   | "supervisor_state_sync_run_flag_run"
   | "supervisor_state_sync_run_flag_wake_waiters"
-  | "supervisor_blocked_wait_retry_reason_default"
-  | "supervisor_blocked_wait_retry_reason_immediate"
-  | "supervisor_blocked_wait_retry_reason_standard_defer"
-  | "supervisor_blocked_wait_retry_reason_active_child"
-  | "supervisor_blocked_wait_retry_reason_passive_wait"
-  | "supervisor_blocked_wait_retry_reason_process_gate"
   | "supervisor_blocked_wait_retry_flag_host_progress"
   | "supervisor_blocked_wait_retry_flag_active_child"
   | "supervisor_blocked_wait_retry_flag_passive_wait"
@@ -166,11 +152,6 @@ function readSupervisorNumberConst(
     throw new Error(`kernel supervisor ABI missing ${exportName}`);
   }
   return readConst.call(kernel);
-}
-
-export interface SupervisorBlockedWaitRetryPlan {
-  reason: SupervisorBlockedWaitRetryReason;
-  delayMs: number;
 }
 
 export interface SupervisorStateSyncRun {
@@ -700,50 +681,6 @@ export function supervisorStateSyncClear(
   }
 }
 
-function supervisorRetryReason(
-  kernel: KernelExports,
-  reason: SupervisorBlockedWaitRetryReason,
-): number {
-  switch (reason) {
-    case "immediate":
-      return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_reason_immediate");
-    case "standard-defer":
-      return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_reason_standard_defer");
-    case "active-child":
-      return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_reason_active_child");
-    case "passive-wait":
-      return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_reason_passive_wait");
-    case "process-gate":
-      return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_reason_process_gate");
-    case "default":
-      return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_retry_reason_default");
-    default: {
-      const exhaustive: never = reason;
-      return exhaustive;
-    }
-  }
-}
-
-function normalizeSupervisorBlockedWaitRetryReason(
-  kernel: KernelExports,
-  result: number,
-): SupervisorBlockedWaitRetryReason {
-  const reasons: SupervisorBlockedWaitRetryReason[] = [
-    "default",
-    "immediate",
-    "standard-defer",
-    "active-child",
-    "passive-wait",
-    "process-gate",
-  ];
-  for (const reason of reasons) {
-    if (result === supervisorRetryReason(kernel, reason)) {
-      return reason;
-    }
-  }
-  throw new Error(`kernel supervisor blocked wait retry reason is unknown: ${result}`);
-}
-
 function supervisorRetryFlags(
   kernel: KernelExports,
   flags: SupervisorBlockedWaitRetryFlags,
@@ -985,50 +922,6 @@ export function supervisorBlockedResumeDelegation(
     throw new Error(`kernel supervisor blocked resume delegation failed: ${result}`);
   }
   return normalizeSupervisorBlockedResumeDelegation(kernel, result);
-}
-
-export function supervisorBlockedWaitRetryDelayMs(
-  kernel: KernelExports,
-  vmPtr: number,
-  reason: SupervisorBlockedWaitRetryReason,
-): number {
-  const readDelay = kernel.supervisor_blocked_wait_retry_delay_ms;
-  if (readDelay === undefined) {
-    throw new Error("kernel supervisor ABI missing supervisor_blocked_wait_retry_delay_ms");
-  }
-  const result = readDelay.call(kernel, vmPtr, supervisorRetryReason(kernel, reason));
-  if (result < 0) {
-    throw new Error(`kernel supervisor blocked wait retry delay failed: ${result}`);
-  }
-  return result;
-}
-
-export function supervisorBlockedWaitRetryReason(
-  kernel: KernelExports,
-  vmPtr: number,
-  flags: SupervisorBlockedWaitRetryFlags = [],
-): SupervisorBlockedWaitRetryReason {
-  const readReason = kernel.supervisor_blocked_wait_retry_reason;
-  if (readReason === undefined) {
-    throw new Error("kernel supervisor ABI missing supervisor_blocked_wait_retry_reason");
-  }
-  const result = readReason.call(kernel, vmPtr, supervisorRetryFlags(kernel, flags));
-  if (result < 0) {
-    throw new Error(`kernel supervisor blocked wait retry reason failed: ${result}`);
-  }
-  return normalizeSupervisorBlockedWaitRetryReason(kernel, result);
-}
-
-export function supervisorBlockedWaitRetryPlan(
-  kernel: KernelExports,
-  vmPtr: number,
-  flags: SupervisorBlockedWaitRetryFlags = [],
-): SupervisorBlockedWaitRetryPlan {
-  const reason = supervisorBlockedWaitRetryReason(kernel, vmPtr, flags);
-  return {
-    reason,
-    delayMs: supervisorBlockedWaitRetryDelayMs(kernel, vmPtr, reason),
-  };
 }
 
 function supervisorBlockedWaitWakeSourceValue(
