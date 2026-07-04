@@ -29,7 +29,7 @@ import { kernelWorkerOwnsPipeState } from "../ownership/pipe-control.js";
 import { describeForkSharedSyncPromise } from "../fork-shared-sync-debug.js";
 import { collectLiveThreadVmPtrs } from "../live-threads.js";
 import { appendWorkerDebugLog } from "./debug-log.js";
-import { clearStaleForkSharedSyncGate } from "./fork-shared-gate.js";
+import { clearStaleForkSharedSyncGate } from "../fork-shared-sync-gate.js";
 import { createPipePollScheduler } from "./pipe-poll.js";
 import { createPruningScheduler } from "./pruning.js";
 import { createWorkerSchedulerQueueHelpers } from "./queue.js";

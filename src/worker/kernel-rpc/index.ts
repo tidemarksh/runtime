@@ -1,5 +1,5 @@
 import { createWorkerKernelRpcLifecycleHelpers } from "./lifecycle.js";
-import { createWorkerKernelRpcBlockedRpcHelpers } from "./blocked-rpc.js";
+import { createWorkerKernelRpcBlockedRpcHelpers } from "../host-boundary/blocked-rpc-resume.js";
 import { createWorkerKernelRpcFsHelpers } from "./fs.js";
 import { expectKernelWorkerResponse } from "./transport.js";
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";

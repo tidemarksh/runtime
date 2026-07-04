@@ -5,7 +5,7 @@ import {
 } from "../../bridge/compat.js";
 import { publishRuntimeBridgeEpoch } from "../../bridge/runtime-state.js";
 import { createSupervisorResumeHostBoundary } from "../host-boundary/supervisor-resume.js";
-import { clearStaleForkSharedSyncGate } from "./fork-shared-gate.js";
+import { clearStaleForkSharedSyncGate } from "../fork-shared-sync-gate.js";
 import type {
   AttachThreadWorkerRequest,
   ProcessHandle,

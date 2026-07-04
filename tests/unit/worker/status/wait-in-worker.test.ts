@@ -1,6 +1,6 @@
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../../src/bridge/pipe.js";
-import { createWorkerWaitInWorkerStatusHandler } from "../../../../src/worker/message-handler/wait-in-worker.js";
+import { createWorkerWaitInWorkerStatusHandler } from "../../../../src/worker/message-handler/status/wait-in-worker.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 test("waitInWorker debug log keeps compact futex fields", () => {

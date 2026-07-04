@@ -35,7 +35,7 @@ import {
   syncSocketStateViaKernelWorker,
   applySocketStateFromKernelWorker,
 } from "../sync.js";
-import type { SyncCause } from "../sync/effects.js";
+import type { SyncCause } from "../contracts/sync.js";
 import type {
   ProcessHandle,
   ThreadWorkerState,

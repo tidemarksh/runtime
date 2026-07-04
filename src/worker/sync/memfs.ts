@@ -2,8 +2,8 @@ import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
 } from "../../abi.js";
-import { adoptKernelStateForHandle } from "./kernel-state.js";
-import { describeSyncCause, type SyncCause } from "./effects.js";
+import { adoptKernelStateForHandle } from "../kernel-state.js";
+import { describeSyncCause, type SyncCause } from "../contracts/sync.js";
 import {
   restoreProcessState,
   snapshotProcessState,

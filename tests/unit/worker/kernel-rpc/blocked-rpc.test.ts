@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vite-plus/test";
-import { createWorkerKernelRpcBlockedRpcTestHelpers as createWorkerKernelRpcBlockedRpcHelpersBase } from "../../../../src/worker/kernel-rpc/blocked-rpc.js";
+import { createWorkerKernelRpcBlockedRpcTestHelpers as createWorkerKernelRpcBlockedRpcHelpersBase } from "../../../../src/worker/host-boundary/blocked-rpc-resume.js";
 import type { KernelRuntimeState } from "../../../../src/abi.js";
 import { POLLFD_BYTES } from "../../../../src/layout/poll.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";

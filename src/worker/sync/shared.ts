@@ -82,7 +82,7 @@ import {
   repairHandleVmPidAfterKernelStateAttach,
 } from "../kernel-state.js";
 import { appendForkSharedMemfsDebug } from "./memfs.js";
-import { describeSyncCause, type SyncCause } from "./effects.js";
+import { describeSyncCause, type SyncCause } from "../contracts/sync.js";
 
 export const lastForkSharedActiveOfdIdsByHandle = new WeakMap<ProcessHandle, Set<number>>();
 export const SOCK_STATE_SHUTDOWN = SOCKET_STATE_SHUTDOWN;

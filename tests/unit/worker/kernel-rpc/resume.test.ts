@@ -5,7 +5,7 @@ import {
 } from "../../../../src/bridge/runtime-state.js";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { createWorkerKernelRpcHelpers as createWorkerKernelRpcHelpersBase } from "../../../../src/worker/kernel-rpc.js";
-import { createWorkerKernelRpcBlockedRpcTestHelpers as createWorkerKernelRpcBlockedRpcHelpersBase } from "../../../../src/worker/kernel-rpc/blocked-rpc.js";
+import { createWorkerKernelRpcBlockedRpcTestHelpers as createWorkerKernelRpcBlockedRpcHelpersBase } from "../../../../src/worker/host-boundary/blocked-rpc-resume.js";
 import { createWorkerKernelRpcResumeLifecycleHelpers as createWorkerKernelRpcResumeLifecycleHelpersBase } from "../../../../src/worker/kernel-rpc/lifecycle/resume.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
@@ -1757,6 +1757,11 @@ test("resumeFsViaKernelWorker applies fd entries returned by kernel-worker fs pr
     process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number, fdFlags: number) => {
       fdEntries.set(fd, { ofdId, fdFlags });
     },
+    supervisor_fd_entry_restore_action_apply: () => 1,
+    supervisor_fd_entry_restore_action_skip: () => 2,
+    supervisor_fd_entry_restore_flag_preserve_live_regular_file: () => 1,
+    supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent: () => 2,
+    supervisor_fd_entry_restore_action: () => 1,
     process_thread_vm_ptr: () => 0,
     thread_status: () => 0,
     thread_pending_fs_opcode: () => 3,

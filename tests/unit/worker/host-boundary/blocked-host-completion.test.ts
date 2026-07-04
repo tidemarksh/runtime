@@ -2,7 +2,7 @@ import { afterEach, expect, test, vi } from "vite-plus/test";
 import {
   handleFutexWait,
 } from "../../../../src/thread-worker/blocking.js";
-import { createWorkerWaitInWorkerStatusHandler } from "../../../../src/worker/message-handler/wait-in-worker.js";
+import { createWorkerWaitInWorkerStatusHandler } from "../../../../src/worker/message-handler/status/wait-in-worker.js";
 import { createWorkerScheduler } from "../../../../src/worker/scheduler.js";
 import {
   armSupervisorHostTimer,
