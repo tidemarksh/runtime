@@ -361,6 +361,12 @@ export interface KernelExports {
   supervisor_fork_shared_peer_flag_pipe_peer?(): number;
   supervisor_fork_shared_ofd_identity_key?(ofdId: number): bigint | number;
   supervisor_fork_shared_ofd_publish_action?(ofdId: number, peerFlags: number): number;
+  supervisor_fork_shared_effect_sync_action?(
+    hasEffect: number,
+    hasTrackedState: number,
+    sourceHoldsRegularFile: number,
+    regularFileHasPeer: number,
+  ): number;
   supervisor_process_private_pipe_slot_mask?(vmPtr: number): bigint | number;
   supervisor_process_private_pipe_source_mode?(vmPtr: number, pipeSlot: number): number;
   supervisor_process_private_pipe_target_mode?(vmPtr: number, pipeSlot: number): number;
@@ -1735,6 +1741,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fork_shared_peer_flag_pipe_peer",
   "supervisor_fork_shared_ofd_identity_key",
   "supervisor_fork_shared_ofd_publish_action",
+  "supervisor_fork_shared_effect_sync_action",
   "supervisor_process_private_pipe_slot_mask",
   "supervisor_process_private_pipe_source_mode",
   "supervisor_process_private_pipe_target_mode",

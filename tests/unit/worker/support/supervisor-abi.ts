@@ -69,6 +69,7 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_fork_shared_peer_flag_compatible: 1,
   supervisor_fork_shared_peer_flag_incompatible: 1 << 1,
   supervisor_fork_shared_peer_flag_pipe_peer: 1 << 2,
+  supervisor_fork_shared_effect_sync_action: 0,
   supervisor_fs_control_record_bytes: 112,
   supervisor_fs_control_record_magic: 0x5346_5354,
   supervisor_signal_control_record_bytes: 120,
@@ -648,6 +649,17 @@ export function makeSupervisorAbiStubs(
     }
     return 1;
   };
+  const forkSharedEffectSyncAction = (
+    hasEffect: number,
+    hasTrackedState: number,
+    sourceHoldsRegularFile: number,
+    regularFileHasPeer: number,
+  ): number => {
+    if (hasEffect === 0 || hasTrackedState === 0) {
+      return 0;
+    }
+    return sourceHoldsRegularFile !== 0 && regularFileHasPeer === 0 ? 0 : 1;
+  };
   const processEpollHeldOfdIds = (receiver: Partial<KernelExports>, vmPtr: number): number[] => {
     const epollType = callNumber(receiver, "abi_fd_type_epoll");
     return processHeldOfdIds(receiver, vmPtr)
@@ -1037,6 +1049,19 @@ export function makeSupervisorAbiStubs(
       peerFlags: number,
     ) {
       return forkSharedOfdPublishAction(currentExports(this), ofdId, peerFlags);
+    },
+    supervisor_fork_shared_effect_sync_action(
+      _hasEffect: number,
+      _hasTrackedState: number,
+      _sourceHoldsRegularFile: number,
+      _regularFileHasPeer: number,
+    ) {
+      return forkSharedEffectSyncAction(
+        _hasEffect,
+        _hasTrackedState,
+        _sourceHoldsRegularFile,
+        _regularFileHasPeer,
+      );
     },
     supervisor_fd_entry_restore_action(
       this: KernelExports | undefined,

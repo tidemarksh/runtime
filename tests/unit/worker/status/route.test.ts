@@ -183,6 +183,18 @@ function makeKernel(pid: number, overrides: Record<string, unknown> = {}) {
     supervisor_fd_entry_restore_flag_preserve_live_regular_file: () => 1,
     supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent: () => 2,
     supervisor_fd_entry_restore_action: () => 1,
+    supervisor_fork_shared_effect_sync_action: (
+      hasEffect: number,
+      hasTrackedState: number,
+      sourceHoldsRegularFile: number,
+      regularFileHasPeer: number,
+    ) => (
+      hasEffect !== 0
+        && hasTrackedState !== 0
+        && (sourceHoldsRegularFile === 0 || regularFileHasPeer !== 0)
+        ? 1
+        : 0
+    ),
     ...overrides,
   } as Partial<KernelExports> & Record<string, unknown>;
   return installSupervisorBlockedResumeStub(kernel);

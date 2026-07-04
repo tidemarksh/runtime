@@ -35,6 +35,18 @@ const supervisorPipeControlKernelStubs = {
   supervisor_fork_shared_ofd_publish_action: (ofdId: number, peerFlags: number) => (
     ofdId > 0 && (peerFlags & (1 << 1)) === 0 ? 1 : 0
   ),
+  supervisor_fork_shared_effect_sync_action: (
+    hasEffect: number,
+    hasTrackedState: number,
+    sourceHoldsRegularFile: number,
+    regularFileHasPeer: number,
+  ) => (
+    hasEffect !== 0
+      && hasTrackedState !== 0
+      && (sourceHoldsRegularFile === 0 || regularFileHasPeer !== 0)
+      ? 1
+      : 0
+  ),
   supervisor_process_pipe_used_mask: () => 1n,
   supervisor_process_pipe_read_open_count: () => 0,
   supervisor_process_pipe_write_open_count: () => 0,

@@ -4,10 +4,7 @@ import {
   reconcileKernelSharePipeControl,
 } from "../../kernel-share.js";
 import { kernelWorkerOwnsEpollState } from "../../ownership/epoll-control.js";
-import {
-  sourceHoldsSharedRegularFileOfd,
-  sourceSharesRegularFileOfdWithPeer,
-} from "../../ownership/ofd-peer.js";
+import { shouldRequestForkSharedStateForEffect } from "../../ownership/ofd-peer.js";
 import { kernelWorkerOwnsSocketState } from "../../ownership/socket-control.js";
 import { supervisorVforkChildOwnerMismatch } from "../../process-identity.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../types.js";
@@ -51,16 +48,14 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
     const shouldWakeSocketWaiters = status === handle.kernel.abi_status_ok()
       && (completedSyncEffects & syncEffects.syncEffectSocketState) !== 0;
     const hasForkSharedEffect = (completedSyncEffects & syncEffects.syncEffectForkSharedOfdState) !== 0;
-    const forkSharedSourceHoldsRegularFile = sourceHoldsSharedRegularFileOfd(handle, thread.vmPtr);
-    const forkSharedRegularFileHasPeer = sourceSharesRegularFileOfdWithPeer(handle, thread.vmPtr);
     const forkSharedHasTrackedState = (handle.kernelShare.sharedOfdIds?.size ?? 0) > 0
       || kernelShareOtherMembers(handle).length > 0;
-    const shouldRequestForkSharedForEffect = hasForkSharedEffect
-      && forkSharedHasTrackedState
-      && (
-        !forkSharedSourceHoldsRegularFile
-        || forkSharedRegularFileHasPeer
-      );
+    const shouldRequestForkSharedForEffect = shouldRequestForkSharedStateForEffect(
+      handle,
+      thread.vmPtr,
+      hasForkSharedEffect,
+      forkSharedHasTrackedState,
+    );
     const hasProcessMemfsEffect = (completedSyncEffects & syncEffects.syncEffectProcessMemfs) !== 0;
     if (isRunningWorker && hasProcessMemfsEffect) {
       handle.processMemfsDirty = true;

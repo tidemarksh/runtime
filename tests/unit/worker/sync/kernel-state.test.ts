@@ -190,6 +190,17 @@ function makeKernel(
     }
     return 1;
   };
+  const forkSharedEffectSyncAction = (
+    hasEffect: number,
+    hasTrackedState: number,
+    sourceHoldsRegularFile: number,
+    regularFileHasPeer: number,
+  ): number => {
+    if (hasEffect === 0 || hasTrackedState === 0) {
+      return 0;
+    }
+    return sourceHoldsRegularFile !== 0 && regularFileHasPeer === 0 ? 0 : 1;
+  };
 
   return {
     memory,
@@ -298,6 +309,17 @@ function makeKernel(
     supervisor_fork_shared_ofd_identity_key: (ofdId: number) => forkSharedOfdIdentityKey(ofdId),
     supervisor_fork_shared_ofd_publish_action: (ofdId: number, peerFlags: number) => (
       forkSharedOfdPublishAction(ofdId, peerFlags)
+    ),
+    supervisor_fork_shared_effect_sync_action: (
+      hasEffect: number,
+      hasTrackedState: number,
+      sourceHoldsRegularFile: number,
+      regularFileHasPeer: number,
+    ) => forkSharedEffectSyncAction(
+      hasEffect,
+      hasTrackedState,
+      sourceHoldsRegularFile,
+      regularFileHasPeer,
     ),
     supervisor_process_private_pipe_slot_mask: () => 0n,
     supervisor_process_private_pipe_source_mode: () => 0,
