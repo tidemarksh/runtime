@@ -1,6 +1,5 @@
 import type { KernelWorkerFdEntrySnapshot } from "../../messages.js";
 import type { ProcessHandle } from "../types.js";
-import { processEpollDependsOnOfd } from "./ofd-table.js";
 import {
   networkConnectionOfds,
   restoreNetworkOfdSlotWatermarks,
@@ -11,6 +10,45 @@ interface ApplyThreadFdEntriesOptions {
   preserveLiveEpollDependentDescriptors?: boolean;
   preserveLiveRegularFileDescriptors?: boolean;
   syscallNr?: bigint;
+}
+
+const SUPERVISOR_FD_ENTRY_RESTORE_SYSCALL_NONE = 0xffffffffffffffffn;
+
+function requireSupervisorFdEntryRestoreAction(
+  handle: ProcessHandle,
+): (vmPtr: number, fd: number, snapshotOfdId: number, syscallNr: bigint | number, flags: number) => number {
+  const restoreAction = handle.kernel.supervisor_fd_entry_restore_action;
+  if (!restoreAction) {
+    throw new Error("kernel supervisor ABI missing supervisor_fd_entry_restore_action");
+  }
+  return restoreAction.bind(handle.kernel);
+}
+
+function requireSupervisorFdEntryRestoreActionSkip(handle: ProcessHandle): number {
+  const restoreActionSkip = handle.kernel.supervisor_fd_entry_restore_action_skip;
+  if (!restoreActionSkip) {
+    throw new Error("kernel supervisor ABI missing supervisor_fd_entry_restore_action_skip");
+  }
+  return restoreActionSkip.call(handle.kernel);
+}
+
+function supervisorFdEntryRestoreFlags(handle: ProcessHandle, options: ApplyThreadFdEntriesOptions): number {
+  let flags = 0;
+  if (options.preserveLiveRegularFileDescriptors === true) {
+    const flag = handle.kernel.supervisor_fd_entry_restore_flag_preserve_live_regular_file;
+    if (!flag) {
+      throw new Error("kernel supervisor ABI missing supervisor_fd_entry_restore_flag_preserve_live_regular_file");
+    }
+    flags |= flag.call(handle.kernel);
+  }
+  if (options.preserveLiveEpollDependentDescriptors === true) {
+    const flag = handle.kernel.supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent;
+    if (!flag) {
+      throw new Error("kernel supervisor ABI missing supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent");
+    }
+    flags |= flag.call(handle.kernel);
+  }
+  return flags;
 }
 
 function processPidForVm(handle: ProcessHandle, vmPtr: number): number | null {
@@ -96,55 +134,6 @@ export function restoreProcessFdEntries(
   }
 }
 
-function matchesOptionalSyscall(syscallNr: bigint | undefined, candidate: (() => bigint | number) | undefined): boolean {
-  return syscallNr !== undefined && candidate !== undefined && syscallNr === BigInt(candidate());
-}
-
-function syscallMayClearFdEntries(handle: ProcessHandle, syscallNr: bigint | undefined): boolean {
-  return matchesOptionalSyscall(syscallNr, handle.kernel.abi_sys_close)
-    || matchesOptionalSyscall(syscallNr, handle.kernel.abi_sys_close_range)
-    || matchesOptionalSyscall(syscallNr, handle.kernel.abi_sys_execve);
-}
-
-function fdEntryWouldClobberLiveRegularFile(
-  handle: ProcessHandle,
-  vmPtr: number,
-  entry: KernelWorkerFdEntrySnapshot,
-  syscallNr: bigint | undefined,
-): boolean {
-  if (syscallMayClearFdEntries(handle, syscallNr)) {
-    return false;
-  }
-  const maxFds = handle.kernel.abi_max_fds();
-  const currentOfdId = handle.kernel.process_fd_ofd_id?.(vmPtr, entry.fd) ?? 0;
-  if (currentOfdId <= 0 || currentOfdId >= maxFds || currentOfdId === entry.ofdId) {
-    return false;
-  }
-  return handle.kernel.kernel_ofd_fd_type(currentOfdId) === handle.kernel.abi_fd_type_file?.()
-    && handle.kernel.kernel_ofd_refcount(currentOfdId) > 0;
-}
-
-function fdEntryWouldClobberEpollDependentOfd(
-  handle: ProcessHandle,
-  vmPtr: number,
-  entry: KernelWorkerFdEntrySnapshot,
-  syscallNr: bigint | undefined,
-): boolean {
-  if (syscallMayClearFdEntries(handle, syscallNr)) {
-    return false;
-  }
-  const maxFds = handle.kernel.abi_max_fds();
-  const currentOfdId = handle.kernel.process_fd_ofd_id?.(vmPtr, entry.fd) ?? 0;
-  if (currentOfdId <= 0 || currentOfdId >= maxFds || currentOfdId === entry.ofdId) {
-    return false;
-  }
-  try {
-    return processEpollDependsOnOfd(handle, currentOfdId);
-  } catch {
-    return false;
-  }
-}
-
 export function applyThreadFdEntries(
   handle: ProcessHandle,
   vmPtr: number,
@@ -157,6 +146,10 @@ export function applyThreadFdEntries(
   restoreNetworkOfdSlotWatermarks(handle, options.appendStatusSocketDebug);
   const maxFds = handle.kernel.abi_max_fds();
   const networkOfds = networkConnectionOfds(handle);
+  const restoreFlags = supervisorFdEntryRestoreFlags(handle, options);
+  const restoreAction = restoreFlags !== 0 ? requireSupervisorFdEntryRestoreAction(handle) : undefined;
+  const restoreActionSkip = restoreFlags !== 0 ? requireSupervisorFdEntryRestoreActionSkip(handle) : 0;
+  const restoreSyscallNr = options.syscallNr ?? SUPERVISOR_FD_ENTRY_RESTORE_SYSCALL_NONE;
   for (const entry of fdEntries) {
     if (entry.fd < 0 || entry.fd >= maxFds) {
       continue;
@@ -171,14 +164,8 @@ export function applyThreadFdEntries(
       continue;
     }
     if (
-      options.preserveLiveRegularFileDescriptors === true
-      && fdEntryWouldClobberLiveRegularFile(handle, vmPtr, entry, options.syscallNr)
-    ) {
-      continue;
-    }
-    if (
-      options.preserveLiveEpollDependentDescriptors === true
-      && fdEntryWouldClobberEpollDependentOfd(handle, vmPtr, entry, options.syscallNr)
+      restoreAction
+      && restoreAction(vmPtr, entry.fd, entry.ofdId, restoreSyscallNr, restoreFlags) === restoreActionSkip
     ) {
       continue;
     }

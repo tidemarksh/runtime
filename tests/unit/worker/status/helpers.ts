@@ -1,4 +1,6 @@
+import type { KernelExports } from "../../../../src/abi.js";
 import { createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
+import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 export function makeKernelState(overrides: Record<string, unknown> = {}) {
   return {
@@ -23,7 +25,11 @@ export function makeKernelState(overrides: Record<string, unknown> = {}) {
 }
 
 export function makeKernel(overrides: Record<string, unknown> = {}) {
-  return {
+  let kernel: Partial<KernelExports>;
+  kernel = {
+    ...makeSupervisorAbiStubs({
+      currentExports: () => kernel,
+    }),
     abi_max_fds: () => 8,
     abi_max_pipes: () => 4,
     abi_max_sockets: () => 1,
@@ -58,6 +64,7 @@ export function makeKernel(overrides: Record<string, unknown> = {}) {
     thread_socket_outbound_available: () => 0,
     ...overrides,
   };
+  return kernel;
 }
 
 export function makeHandle(overrides: Record<string, unknown> = {}) {

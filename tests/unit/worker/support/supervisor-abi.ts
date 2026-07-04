@@ -62,6 +62,10 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_fault_exit_kind_process_exit: 2,
   supervisor_fd_control_record_bytes: 96,
   supervisor_fd_control_record_magic: 0x4446_5354,
+  supervisor_fd_entry_restore_action_apply: 1,
+  supervisor_fd_entry_restore_action_skip: 2,
+  supervisor_fd_entry_restore_flag_preserve_live_regular_file: 1,
+  supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent: 2,
   supervisor_fs_control_record_bytes: 112,
   supervisor_fs_control_record_magic: 0x5346_5354,
   supervisor_signal_control_record_bytes: 120,
@@ -631,6 +635,15 @@ export function makeSupervisorAbiStubs(
         return fdType === eventfdType || fdType === timerfdType;
       });
   };
+  const syscallMayClearFdEntries = (
+    receiver: Partial<KernelExports>,
+    syscallNr: bigint | number,
+  ): boolean => {
+    const value = typeof syscallNr === "bigint" ? syscallNr : BigInt(Math.trunc(syscallNr));
+    return value === BigInt(callNumber(receiver, "abi_sys_close"))
+      || value === BigInt(callNumber(receiver, "abi_sys_close_range"))
+      || value === BigInt(callNumber(receiver, "abi_sys_execve"));
+  };
   let latestBackingFillSpan = { offset: 0, end: 0, length: 0 };
   const stubs = Object.fromEntries(
     requiredSupervisorRuntimeExportNames().map((name) => [
@@ -924,6 +937,41 @@ export function makeSupervisorAbiStubs(
       ofdId: number,
     ) {
       return processHeldOfdRefcount(currentExports(this), vmPtr, ofdId);
+    },
+    supervisor_fd_entry_restore_action(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      fd: number,
+      snapshotOfdId: number,
+      syscallNr: bigint | number,
+      flags: number,
+    ) {
+      const receiver = currentExports(this);
+      const maxFds = callNumber(receiver, "abi_max_fds");
+      if (fd < 0 || fd >= maxFds) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+      }
+      if (syscallMayClearFdEntries(receiver, syscallNr)) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+      }
+      const currentOfdId = callNumber(receiver, "process_fd_ofd_id", vmPtr, fd);
+      if (currentOfdId <= 0 || currentOfdId >= maxFds || currentOfdId === snapshotOfdId) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+      }
+      if (
+        (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_flag_preserve_live_regular_file) !== 0
+        && callNumber(receiver, "kernel_ofd_fd_type", currentOfdId) === callNumber(receiver, "abi_fd_type_file")
+        && callNumber(receiver, "kernel_ofd_refcount", currentOfdId) > 0
+      ) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+      }
+      if (
+        (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent) !== 0
+        && processEpollDependentOfdIds(receiver, vmPtr).includes(currentOfdId)
+      ) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
     },
     supervisor_process_epoll_held_ofd(
       this: KernelExports | undefined,

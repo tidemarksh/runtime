@@ -18,9 +18,10 @@ import {
   FS_RING_SUBMIT_TAIL_OFFSET,
   fsRingRequestEntryOffset,
 } from "../../../../src/layout/fs-ring.js";
-import type { KernelRuntimeState } from "../../../../src/abi.js";
+import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { createTransferDebugStats } from "../../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
+import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 function makeKernelState(): KernelRuntimeState {
   return {
@@ -50,8 +51,14 @@ function makeKernelState(): KernelRuntimeState {
 
 function makeKernel() {
   const state = makeKernelState();
-  return {
-    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+  const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+  let kernel: Partial<KernelExports>;
+  kernel = {
+    ...makeSupervisorAbiStubs({
+      memory,
+      currentExports: () => kernel,
+    }),
+    memory,
     kernel_heap_base: () => state.heapBase,
     kernel_heap_ptr: () => state.heapPtr,
     kernel_ofd_table_ptr: () => state.ofdTablePtr,
@@ -224,6 +231,7 @@ function makeKernel() {
     kernel_ofd_fd_type: () => 0,
     kernel_ofd_table_bytes: () => 0,
   };
+  return kernel;
 }
 
 function seedFsRingRequest(

@@ -295,6 +295,17 @@ export interface KernelExports {
   supervisor_fs_response_flag_store_pending_kernel_state?(): number;
   supervisor_fs_response_flag_resolved_to_execve_spawn?(): number;
   supervisor_fs_response_flag_process_owner_matches?(): number;
+  supervisor_fd_entry_restore_action_apply?(): number;
+  supervisor_fd_entry_restore_action_skip?(): number;
+  supervisor_fd_entry_restore_flag_preserve_live_regular_file?(): number;
+  supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent?(): number;
+  supervisor_fd_entry_restore_action?(
+    vmPtr: number,
+    fd: number,
+    snapshotOfdId: number,
+    syscallNr: bigint | number,
+    flags: number,
+  ): number;
   supervisor_fs_local_metadata_action_none?(): number;
   supervisor_fs_local_metadata_action_tombstone_primary?(): number;
   supervisor_fs_local_metadata_action_forget_primary?(): number;
@@ -1626,6 +1637,11 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fs_response_flag_store_pending_kernel_state",
   "supervisor_fs_response_flag_resolved_to_execve_spawn",
   "supervisor_fs_response_flag_process_owner_matches",
+  "supervisor_fd_entry_restore_action_apply",
+  "supervisor_fd_entry_restore_action_skip",
+  "supervisor_fd_entry_restore_flag_preserve_live_regular_file",
+  "supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent",
+  "supervisor_fd_entry_restore_action",
   "supervisor_fs_local_metadata_action_none",
   "supervisor_fs_local_metadata_action_tombstone_primary",
   "supervisor_fs_local_metadata_action_forget_primary",
