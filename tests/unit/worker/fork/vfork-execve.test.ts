@@ -632,6 +632,15 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
       .getInt32(runtimeState.ofdTablePtr + ofdId * 32 + 8, true),
     kernel_ofd_ino: (ofdId) => new DataView(memory.buffer)
       .getUint32(runtimeState.ofdTablePtr + ofdId * 32 + 24, true),
+    supervisor_ofd_pipe_generation_slot: (ofdId) => {
+      const view = new DataView(memory.buffer);
+      const ofdBase = runtimeState.ofdTablePtr + ofdId * 32;
+      if (ofdId <= 0 || ofdId >= 256 || view.getInt32(ofdBase, true) !== 2) {
+        return 0;
+      }
+      const pipeSlot = view.getUint32(ofdBase + 24, true);
+      return pipeSlot > 0 && pipeSlot < 64 ? pipeSlot : 0;
+    },
     supervisor_ofd_pipe_slot_mask: (ofdId) => {
       const view = new DataView(memory.buffer);
       const ofdBase = runtimeState.ofdTablePtr + ofdId * 32;

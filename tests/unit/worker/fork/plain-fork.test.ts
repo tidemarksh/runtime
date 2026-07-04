@@ -603,6 +603,34 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
       .getInt32(runtimeState.ofdTablePtr + ofdId * 32 + 8, true),
     kernel_ofd_ino: (ofdId) => new DataView(memory.buffer)
       .getUint32(runtimeState.ofdTablePtr + ofdId * 32 + 24, true),
+    supervisor_ofd_pipe_generation_slot: (ofdId) => {
+      const view = new DataView(memory.buffer);
+      const ofdBase = runtimeState.ofdTablePtr + ofdId * 32;
+      if (ofdId <= 0 || ofdId >= 256 || view.getInt32(ofdBase, true) !== 2) {
+        return 0;
+      }
+      const pipeSlot = view.getUint32(ofdBase + 24, true);
+      return pipeSlot > 0 && pipeSlot < 64 ? pipeSlot : 0;
+    },
+    supervisor_ofd_pipe_slot_mask: (ofdId) => {
+      const pipeSlot = exports.supervisor_ofd_pipe_generation_slot?.(ofdId) ?? 0;
+      return pipeSlot > 0 ? 1n << BigInt(pipeSlot) : 0n;
+    },
+    supervisor_ofd_pipe_slot_mode: (ofdId, pipeSlot) => {
+      const view = new DataView(memory.buffer);
+      const ofdBase = runtimeState.ofdTablePtr + ofdId * 32;
+      if (
+        ofdId <= 0
+        || ofdId >= 256
+        || pipeSlot <= 0
+        || pipeSlot >= 64
+        || view.getInt32(ofdBase, true) !== 2
+        || view.getUint32(ofdBase + 24, true) !== pipeSlot
+      ) {
+        return 0;
+      }
+      return view.getInt32(ofdBase + 4, true) >= 0 ? 1 : 2;
+    },
     kernel_ofd_refcount: () => 0,
     kernel_ofd_offset: () => 0n,
     process_release_host_stdio: () => {},

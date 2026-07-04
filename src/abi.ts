@@ -388,6 +388,7 @@ export interface KernelExports {
   supervisor_process_held_ofd_refcount?(vmPtr: number, ofdId: number): number;
   supervisor_ofd_is_regular_file?(ofdId: number): number;
   supervisor_pipe_sync_ofd_candidate?(ofdId: number): number;
+  supervisor_ofd_pipe_generation_slot?(ofdId: number): number;
   supervisor_ofd_pipe_slot_mask?(ofdId: number): bigint | number;
   supervisor_ofd_pipe_slot_mode?(ofdId: number, pipeSlot: number): number;
   supervisor_fork_shared_peer_flag_compatible?(): number;
@@ -1784,6 +1785,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_process_held_ofd_refcount",
   "supervisor_ofd_is_regular_file",
   "supervisor_pipe_sync_ofd_candidate",
+  "supervisor_ofd_pipe_generation_slot",
   "supervisor_ofd_pipe_slot_mask",
   "supervisor_ofd_pipe_slot_mode",
   "supervisor_fork_shared_peer_flag_compatible",

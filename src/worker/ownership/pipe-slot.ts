@@ -25,6 +25,16 @@ function requireSupervisorOfdPipeMode(
   return readMode.bind(kernel);
 }
 
+function requireSupervisorOfdPipeGenerationSlot(
+  kernel: KernelExports,
+): (ofdId: number) => number {
+  const readGenerationSlot = kernel.supervisor_ofd_pipe_generation_slot;
+  if (!readGenerationSlot) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_pipe_generation_slot");
+  }
+  return readGenerationSlot.bind(kernel);
+}
+
 export function supervisorOfdPipeSlotMask(handle: ProcessHandle, ofdId: number): bigint {
   if (ofdId <= 0 || ofdId >= handle.kernel.abi_max_fds()) {
     return 0n;
@@ -58,6 +68,14 @@ export function supervisorOfdPipeSlotMode(
     return 0;
   }
   return requireSupervisorOfdPipeMode(handle.kernel)(ofdId, pipeSlot);
+}
+
+export function supervisorOfdPipeGenerationSlot(handle: ProcessHandle, ofdId: number): number {
+  if (ofdId <= 0 || ofdId >= handle.kernel.abi_max_fds()) {
+    return 0;
+  }
+  const pipeSlot = requireSupervisorOfdPipeGenerationSlot(handle.kernel)(ofdId);
+  return pipeSlot > 0 && pipeSlot < handle.kernel.abi_max_pipes() ? pipeSlot : 0;
 }
 
 export function supervisorOfdUsesPipeSlot(

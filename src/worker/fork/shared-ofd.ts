@@ -4,6 +4,7 @@ import { PIPE_GENERATION_OFFSET } from "../../layout/pipe.js";
 import {
   collectProcessHeldOfds,
 } from "../ownership/ofd-table.js";
+import { supervisorOfdPipeGenerationSlot } from "../ownership/pipe-slot.js";
 import type { ProcessHandle } from "./types.js";
 
 function currentPipeGeneration(handle: ProcessHandle, pipeSlot: number): number | null {
@@ -23,10 +24,11 @@ function currentPipeGeneration(handle: ProcessHandle, pipeSlot: number): number 
 }
 
 function pipeOfdGenerationDiffers(handle: ProcessHandle, ofdId: number): boolean {
-  if (handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()) {
+  const pipeSlot = supervisorOfdPipeGenerationSlot(handle, ofdId);
+  if (pipeSlot === 0) {
     return false;
   }
-  const pipeGeneration = currentPipeGeneration(handle, handle.kernel.kernel_ofd_ino(ofdId));
+  const pipeGeneration = currentPipeGeneration(handle, pipeSlot);
   return pipeGeneration !== null && handle.kernel.kernel_ofd_offset(ofdId) !== BigInt(pipeGeneration);
 }
 
@@ -96,10 +98,9 @@ export function restoreIncompatibleLocalOfdSlots(
     }
     const ofdSlotOffset = handle.kernelState.ofdTablePtr + ofdId * slotBytes;
     bytes.set(slot, ofdSlotOffset);
-    if (
-      handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
-    ) {
-      const pipeGeneration = currentPipeGeneration(handle, handle.kernel.kernel_ofd_ino(ofdId));
+    const pipeSlot = supervisorOfdPipeGenerationSlot(handle, ofdId);
+    if (pipeSlot !== 0) {
+      const pipeGeneration = currentPipeGeneration(handle, pipeSlot);
       if (pipeGeneration !== null) {
         view.setBigInt64(ofdSlotOffset + OFD_OFFSET_OFFSET, BigInt(pipeGeneration), true);
       }
@@ -148,14 +149,14 @@ export function alignPipeOfdGenerationOffsets(
 
   const view = new DataView(handle.memory.buffer);
   for (const ofdId of ofdIds) {
-    if (
-      ofdId <= 0
-      || ofdId >= maxFds
-      || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
-    ) {
+    if (ofdId <= 0 || ofdId >= maxFds) {
       continue;
     }
-    const pipeGeneration = currentPipeGeneration(handle, handle.kernel.kernel_ofd_ino(ofdId));
+    const pipeSlot = supervisorOfdPipeGenerationSlot(handle, ofdId);
+    if (pipeSlot === 0) {
+      continue;
+    }
+    const pipeGeneration = currentPipeGeneration(handle, pipeSlot);
     if (pipeGeneration === null || handle.kernel.kernel_ofd_offset(ofdId) === BigInt(pipeGeneration)) {
       continue;
     }

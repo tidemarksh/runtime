@@ -222,6 +222,10 @@ function makeKernel(
     supervisor_pipe_sync_ofd_candidate: (ofdId: number) => (
       ofdId > 0 && ofdId < 32 && readOfdInt32(ofdId, 0) === FD_TYPE_PIPE ? 1 : 0
     ),
+    supervisor_ofd_pipe_generation_slot: (ofdId: number) => {
+      const pipeMode = pipeModeForOfd(ofdId);
+      return pipeMode ? pipeMode.pipeSlot : 0;
+    },
     supervisor_ofd_pipe_slot_mask: (ofdId: number) => {
       const pipeMode = pipeModeForOfd(ofdId);
       return pipeMode ? 1n << BigInt(pipeMode.pipeSlot) : 0n;

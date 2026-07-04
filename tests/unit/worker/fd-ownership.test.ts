@@ -336,6 +336,17 @@ function makeKernel(memory: WebAssembly.Memory): FakeKernel {
     supervisor_process_held_pipe_slot_mask: () => heldPipeSlotMask(),
     supervisor_process_pipe_used_mask: () => 1n | privatePipeMask | heldPipeSlotMask(),
     supervisor_process_pipe_slot_mode: (_vmPtr: number, pipeSlot: number) => pipeSlotMode(pipeSlot),
+    supervisor_ofd_pipe_generation_slot: (ofdId: number) => {
+      if (ofdId <= 0 || ofdId >= 32) {
+        return 0;
+      }
+      const fdType = new DataView(memory.buffer).getInt32(state.ofdTablePtr + ofdId * 32, true);
+      if (fdType !== FD_TYPE_PIPE) {
+        return 0;
+      }
+      const pipeMode = pipeModeForOfd(ofdId);
+      return pipeMode === null ? 0 : pipeMode.pipeSlot;
+    },
     supervisor_ofd_pipe_slot_mask: (ofdId: number) => (
       pipeModesForOfd(ofdId).reduce((mask, { pipeSlot }) => mask | pipeBit(pipeSlot), 0n)
     ),
