@@ -47,6 +47,24 @@ const supervisorPipeControlKernelStubs = {
       ? 1
       : 0
   ),
+  supervisor_process_holds_regular_file_ofd(this: {
+    abi_max_fds?: () => number;
+    abi_fd_type_file?: () => number;
+    process_fd_ofd_id?: (vmPtr: number, fd: number) => number;
+    kernel_ofd_fd_type?: (ofdId: number) => number;
+  }, vmPtr: number, ofdId: number) {
+    const fileType = this.abi_fd_type_file?.();
+    if (vmPtr === 0 || ofdId === 0 || fileType === undefined) {
+      return 0;
+    }
+    const maxFds = this.abi_max_fds?.() ?? 0;
+    for (let fd = 0; fd < maxFds; fd += 1) {
+      if (this.process_fd_ofd_id?.(vmPtr, fd) === ofdId) {
+        return this.kernel_ofd_fd_type?.(ofdId) === fileType ? 1 : 0;
+      }
+    }
+    return 0;
+  },
   supervisor_process_pipe_used_mask: () => 1n,
   supervisor_process_pipe_read_open_count: () => 0,
   supervisor_process_pipe_write_open_count: () => 0,
@@ -175,6 +193,7 @@ test("fork-shared OFD sync accepts an owned worker status after running slot is 
     kernelWorkerRequest: vi.fn(),
     kernelShare: {
       members: new Set(),
+      sharedOfdIds: new Set(),
       forkSharedSyncPromise: null,
     },
     forkSharedSyncPromise: null,
@@ -590,6 +609,7 @@ test("fork-shared OFD sync skips exiting peer targets", async () => {
     runningWorker: null,
     kernelShare: {
       members: new Set(),
+      sharedOfdIds: new Set(),
       forkSharedSyncPromise: null,
     },
     forkSharedSyncPromise: null,
@@ -1107,6 +1127,7 @@ test("dirty process memfs syncs before publishing a pipe-status boundary", async
     kernelWorkerRequest: vi.fn(),
     kernelShare: {
       members: new Set(),
+      sharedOfdIds: new Set(),
       forkSharedSyncPromise: null,
     },
     forkSharedSyncPromise: null,
@@ -1213,6 +1234,7 @@ test("dirty process memfs is deferred on a successful process-memfs-only effect"
     kernelWorkerRequest: vi.fn(),
     kernelShare: {
       members: new Set(),
+      sharedOfdIds: new Set(),
       forkSharedSyncPromise: null,
     },
     forkSharedSyncPromise: null,
@@ -1293,6 +1315,7 @@ test("active vfork child pid mismatch defers parent-owned state sync", () => {
     kernelWorkerRequest: vi.fn(),
     kernelShare: {
       members: new Set(),
+      sharedOfdIds: new Set(),
       forkSharedSyncPromise: null,
     },
     forkSharedSyncPromise: null,

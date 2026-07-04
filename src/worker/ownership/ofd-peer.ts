@@ -103,12 +103,32 @@ export function targetHoldsSyncedRegularFileOfd(target: ProcessHandle, ofdIds: R
   if (target.vmPtr === 0 || ofdIds.size === 0) {
     return false;
   }
-  const holdsRegularFileOfd = target.kernel.supervisor_process_holds_regular_file_ofd;
+  for (const ofdId of ofdIds) {
+    if (processHoldsRegularFileOfd(target, target.vmPtr, ofdId)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function processHoldsRegularFileOfd(handle: ProcessHandle, vmPtr: number, ofdId: number): boolean {
+  if (vmPtr === 0 || ofdId === 0) {
+    return false;
+  }
+  const holdsRegularFileOfd = handle.kernel.supervisor_process_holds_regular_file_ofd;
   if (!holdsRegularFileOfd) {
     throw new Error("kernel supervisor ABI missing supervisor_process_holds_regular_file_ofd");
   }
-  for (const ofdId of ofdIds) {
-    if (holdsRegularFileOfd.call(target.kernel, target.vmPtr, ofdId) !== 0) {
+  return holdsRegularFileOfd.call(handle.kernel, vmPtr, ofdId) !== 0;
+}
+
+function processFdEntriesIncludeOfd(handle: ProcessHandle, vmPtr: number, ofdId: number): boolean {
+  if (vmPtr === 0 || ofdId === 0) {
+    return false;
+  }
+  const maxFds = handle.kernel.abi_max_fds();
+  for (let fd = 0; fd < maxFds; fd += 1) {
+    if (handle.kernel.process_fd_ofd_id(vmPtr, fd) === ofdId) {
       return true;
     }
   }
@@ -122,44 +142,28 @@ function sourceRegularFileForkSharedPeerFacts(
   if (vmPtr === 0) {
     return { sourceHoldsRegularFile: false, regularFileHasPeer: false };
   }
-  const maxFds = handle.kernel.abi_max_fds();
-  const fileType = (handle.kernel as { abi_fd_type_file?: () => number }).abi_fd_type_file?.();
-  if (fileType === undefined) {
-    return { sourceHoldsRegularFile: false, regularFileHasPeer: false };
-  }
-  const sourceRegularOfds = new Set<number>();
-  const sourceRegularInoByOfd = new Map<number, number>();
-  for (let fd = 0; fd < maxFds; fd += 1) {
-    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+  let sourceHoldsRegularFile = false;
+  for (const ofdId of handle.kernelShare.sharedOfdIds) {
     if (
-      ofdId > 0
-      && ofdId < maxFds
-      && handle.kernelShare.sharedOfdIds.has(ofdId)
-      && handle.kernel.kernel_ofd_fd_type(ofdId) === fileType
+      !processFdEntriesIncludeOfd(handle, vmPtr, ofdId)
+      || !processHoldsRegularFileOfd(handle, vmPtr, ofdId)
     ) {
-      sourceRegularOfds.add(ofdId);
-      sourceRegularInoByOfd.set(ofdId, handle.kernel.kernel_ofd_ino(ofdId));
-    }
-  }
-  if (sourceRegularOfds.size === 0) {
-    return { sourceHoldsRegularFile: false, regularFileHasPeer: false };
-  }
-  for (const peer of handle.kernelShare.members) {
-    if (peer === handle || peer.vmPtr === 0) {
       continue;
     }
-    for (let fd = 0; fd < maxFds; fd += 1) {
-      const ofdId = peer.kernel.process_fd_ofd_id(peer.vmPtr, fd);
+    sourceHoldsRegularFile = true;
+    for (const peer of handle.kernelShare.members) {
+      if (peer === handle || peer.vmPtr === 0) {
+        continue;
+      }
       if (
-        sourceRegularOfds.has(ofdId)
-        && peer.kernel.kernel_ofd_fd_type(ofdId) === fileType
-        && peer.kernel.kernel_ofd_ino(ofdId) === sourceRegularInoByOfd.get(ofdId)
+        processFdEntriesIncludeOfd(peer, peer.vmPtr, ofdId)
+        && processHoldsRegularFileOfd(peer, peer.vmPtr, ofdId)
       ) {
         return { sourceHoldsRegularFile: true, regularFileHasPeer: true };
       }
     }
   }
-  return { sourceHoldsRegularFile: true, regularFileHasPeer: false };
+  return { sourceHoldsRegularFile, regularFileHasPeer: false };
 }
 
 export function shouldRequestForkSharedStateForEffect(
