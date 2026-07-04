@@ -1,9 +1,5 @@
 import {
-  readKernelRuntimeState,
-} from "../../abi.js";
-import {
   publishKernelRuntimeState,
-  wakeRuntimeBridge,
 } from "../../bridge/runtime-state.js";
 import {
   supervisorBlockedPipeSyncBeforeRetryClear,
@@ -216,13 +212,6 @@ export function createWorkerSchedulerStateSyncHelpers(
     if (hasActiveVforkChildOwnerMismatch(handle)) {
       return Promise.resolve();
     }
-    if (!kernelWorkerOwnsEpollState(handle)) {
-      if (retryWaiters) {
-        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `epoll-sync-local-retry:${handle.pid}`);
-        retryEpollWaitersInKernelShare(handle);
-      }
-      return Promise.resolve();
-    }
     if (collectHeldEpollOfdIds(handle).length === 0) {
       if (retryWaiters) {
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `epoll-sync-skip-no-ofd:${handle.pid}:retry=1`);
@@ -351,12 +340,6 @@ export function createWorkerSchedulerStateSyncHelpers(
     if (hasActiveVforkChildOwnerMismatch(handle)) {
       return Promise.resolve();
     }
-    if (!kernelWorkerOwnsPipeState(handle)) {
-      if (wakeWaiters) {
-        wakeRuntimeBridge(handle.runtimeBridge);
-      }
-      return Promise.resolve();
-    }
 
     const shouldStart = supervisorStateSyncRequest(
       handle.kernel,
@@ -466,13 +449,6 @@ export function createWorkerSchedulerStateSyncHelpers(
   function requestSocketStateSync(handle: ProcessHandle, wakeWaiters = false): Promise<void> {
     handle.transferDebugStats.socketSyncRequests += 1;
     if (hasActiveVforkChildOwnerMismatch(handle)) {
-      return Promise.resolve();
-    }
-    if (!kernelWorkerOwnsSocketState(handle)) {
-      handle.kernelState = readKernelRuntimeState(handle.kernel);
-      if (wakeWaiters) {
-        wakeSocketWaitersInKernelShare(handle, handle.kernelState.socketUsed, handle.kernelState.netBufUsed);
-      }
       return Promise.resolve();
     }
 
