@@ -10,6 +10,7 @@ import { createWorkerProcessFactory } from "../../../../src/worker/create-proces
 import { destroyWorkerPool } from "../../../../src/worker/pool.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 import { AutoPreparedFakeWorker } from "../../../support/fake-worker.js";
+import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
@@ -102,6 +103,7 @@ function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
     return ino;
   };
   return {
+    ...makeSupervisorAbiStubs(),
     memory,
     __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, 0),
     abi_max_fds: () => 64,
@@ -389,7 +391,7 @@ test("createProcess stages argv/env strings and seeds full memfs for standalone 
   expect(fakeKernel.envPtrs.map((ptr) => readCString(kernelMemory, ptr))).toEqual(["KEY=VALUE", "LANG=C"]);
   expect(fakeKernel.processUsePipeStdio).toHaveBeenCalledWith(0x1234);
   expect(fakeKernel.processSetCwdIno).toHaveBeenCalledWith(0x1234, 1);
-  expect(registerProcessWithKernelWorker).toHaveBeenCalledWith(handle, { seedMemfsMode: "full" });
+  expect(registerProcessWithKernelWorker).not.toHaveBeenCalled();
   expect(assertProcessStandardFdIntegrity).toHaveBeenCalledWith(handle, "create-process");
   expect(handle.stdinPipe).toBe(1);
   expect(handle.stdoutPipe).toBe(2);

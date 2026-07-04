@@ -242,24 +242,29 @@ export async function handlePlainFork(
     discardCopiedSharedKernelObjects(childHandle, preservedOfdSlots, {
       clearMemfs: false,
     });
-    await deps.registerProcessWithKernelWorker(childHandle, {
-      seedMemfsMode: "none",
-      pipeSeedMode: "process",
-    });
-    // Kernel-worker registration also instantiates over the shared child memory,
-    // so restore the copied parent image again before rebuilding canonical shared
-    // state for the child.
+    const childHasKernelWorkerOwnership = !!childHandle.kernelWorkerRequest && childHandle.pid > 0;
+    if (childHasKernelWorkerOwnership) {
+      await deps.registerProcessWithKernelWorker(childHandle, {
+        seedMemfsMode: "none",
+        pipeSeedMode: "process",
+      });
+    }
+    // Kernel-worker registration can instantiate over the shared child memory;
+    // the local path also relies on this second restore after discarding copied
+    // shared objects.
     applyForkMemorySnapshot(forkMemorySnapshot, childMemory);
     attachKernelRuntimeState(childHandle.kernel, childHandle.kernelState);
-    await deps.initializeProcessLifecycleViaKernelWorker(
-      childHandle,
-      childHandle.vmPtr,
-      lifecycle.ppid,
-      lifecycle.nextPid,
-      lifecycle.pgid,
-      lifecycle.sid,
-      false,
-    );
+    if (childHasKernelWorkerOwnership) {
+      await deps.initializeProcessLifecycleViaKernelWorker(
+        childHandle,
+        childHandle.vmPtr,
+        lifecycle.ppid,
+        lifecycle.nextPid,
+        lifecycle.pgid,
+        lifecycle.sid,
+        false,
+      );
+    }
     childHandle.kernel.thread_prepare_fork_child?.(childHandle.vmPtr, childPid);
     detachInheritedHostStdioFromChild(childHandle);
     setGuestMemoryPolicyLimit(childHandle.kernel, childHandle.vmPtr, childGuestMemoryPolicyLimit);
@@ -270,15 +275,17 @@ export async function handlePlainFork(
       includeMemfs: false,
       ofdIds: childSharedOfdIds,
     });
-    await deps.syncForkSharedStateViaKernelWorker(handle, [childHandle], {
-      cause: { kind: "fork-child-ready", childPid },
-      includeMemfs: false,
-      ofdIds: childSharedOfdIds,
-    });
-    await deps.rehydrateForkSharedStateViaKernelWorker([childHandle], childSharedOfdIds, {
-      cause: { kind: "fork-child-ready", childPid },
-      includeMemfs: false,
-    });
+    if (childHasKernelWorkerOwnership) {
+      await deps.syncForkSharedStateViaKernelWorker(handle, [childHandle], {
+        cause: { kind: "fork-child-ready", childPid },
+        includeMemfs: false,
+        ofdIds: childSharedOfdIds,
+      });
+      await deps.rehydrateForkSharedStateViaKernelWorker([childHandle], childSharedOfdIds, {
+        cause: { kind: "fork-child-ready", childPid },
+        includeMemfs: false,
+      });
+    }
     restoreLocalOfdSlots(childHandle, preservedOfdSlots);
     restoreIncompatibleLocalOfdSlots(childHandle, preservedOfdSlots);
     restoreIncompatibleLocalOfdSlots(childHandle, preservedChildHeldOfdSlots);

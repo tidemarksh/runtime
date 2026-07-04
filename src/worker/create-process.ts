@@ -856,12 +856,15 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     const memfsSeedMode: KernelWorkerMemfsSeedMode = delegateFsHydrationToKernelWorker
       ? bootstrapEntriesRequireMaterializedData ? "metadata" : "none"
       : "full";
-    await deps.registerProcessWithKernelWorker(handle, { seedMemfsMode: memfsSeedMode });
-    appendMemoryStateDebug(handle, "register");
+    const hasKernelWorkerOwnership = !!handle.kernelWorkerRequest && handle.pid > 0;
+    if (hasKernelWorkerOwnership) {
+      await deps.registerProcessWithKernelWorker(handle, { seedMemfsMode: memfsSeedMode });
+      appendMemoryStateDebug(handle, "register");
+    }
     if (delegateFsHydrationToKernelWorker) {
       handle.kernel.process_set_cwd_ino(vmPtr, cwdIno);
     }
-    if (handle.kernelWorkerRequest && handle.pid > 0) {
+    if (hasKernelWorkerOwnership) {
       const parent = handle.parentPid !== null ? deps.processHandles.get(handle.parentPid) : undefined;
       const inheritedPgid = parent ? parent.kernel.process_current_pgid(parent.vmPtr) : handle.pid;
       const inheritedSid = parent ? parent.kernel.process_current_sid(parent.vmPtr) : handle.pid;

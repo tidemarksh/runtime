@@ -735,17 +735,19 @@ export async function handleVforkExecve(
       `vfork-execve:child-fds-restored:${childPid}:${formatOpenFdSummary(childHandle)}`,
     );
   }
-  deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-lifecycle:start:${childPid}`);
-  await deps.initializeProcessLifecycleViaKernelWorker(
-    childHandle,
-    childVmPtr,
-    childLifecycle.ppid,
-    childLifecycle.nextPid,
-    childLifecycle.pgid,
-    childLifecycle.sid,
-    true,
-  );
-  deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-lifecycle:done:${childPid}`);
+  if (childHandle.kernelWorkerRequest && childHandle.pid > 0) {
+    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-lifecycle:start:${childPid}`);
+    await deps.initializeProcessLifecycleViaKernelWorker(
+      childHandle,
+      childVmPtr,
+      childLifecycle.ppid,
+      childLifecycle.nextPid,
+      childLifecycle.pgid,
+      childLifecycle.sid,
+      true,
+    );
+    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-lifecycle:done:${childPid}`);
+  }
   restoreProcessFdEntries(childHandle, childVmPtr, childExecFdEntries);
   alignPipeOfdGenerationOffsets(childHandle, collectProcessHeldOfds(childHandle));
   trackVforkExecveChildSharedOfds(childHandle, childExecFdEntries);

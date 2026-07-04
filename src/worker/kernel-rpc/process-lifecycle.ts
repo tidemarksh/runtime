@@ -42,10 +42,7 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     handle: ProcessHandle,
     options: { seedMemfsMode?: KernelWorkerMemfsSeedMode; pipeSeedMode?: KernelWorkerPipeSeedMode } = {},
   ): Promise<void> {
-    const kernelWorkerRequest = handle.kernelWorkerRequest;
-    if (!kernelWorkerRequest || handle.pid <= 0) {
-      return;
-    }
+    const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "registerProcessWithKernelWorker");
     const response = expectKernelWorkerResponse(await kernelWorkerRequest({
       type: "register-process",
       pid: handle.pid,
@@ -70,10 +67,7 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     sid: number,
     didExec: boolean,
   ): Promise<void> {
-    const kernelWorkerRequest = handle.kernelWorkerRequest;
-    if (!kernelWorkerRequest || handle.pid <= 0) {
-      return;
-    }
+    const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "initializeProcessLifecycleViaKernelWorker");
 
     const response = expectKernelWorkerResponse(await kernelWorkerRequest({
       type: "initialize-process-lifecycle",
