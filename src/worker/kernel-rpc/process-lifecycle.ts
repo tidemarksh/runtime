@@ -135,10 +135,7 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
   }
 
   async function unregisterProcessWithKernelWorker(handle: ProcessHandle): Promise<void> {
-    const kernelWorkerRequest = handle.kernelWorkerRequest;
-    if (!kernelWorkerRequest || handle.pid <= 0) {
-      return;
-    }
+    const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "unregisterProcessWithKernelWorker");
     expectKernelWorkerResponse(await kernelWorkerRequest({
       type: "unregister-process",
       pid: handle.pid,
@@ -190,12 +187,10 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     handle: ProcessHandle,
     vmPtr: number,
   ): Promise<void> {
-    if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-      return;
-    }
+    const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "syncProcessLifecycleViaKernelWorker");
 
     const pidBeforeSync = handle.kernel.process_current_pid(vmPtr);
-    const response = expectKernelWorkerResponse(await handle.kernelWorkerRequest({
+    const response = expectKernelWorkerResponse(await kernelWorkerRequest({
       type: "sync-process-lifecycle",
       pid: handle.pid,
       vmPtr,

@@ -19,6 +19,7 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
     kernel: {
       process_release_host_stdio: vi.fn(),
     } as unknown as ProcessHandle["kernel"],
+    kernelWorkerRequest: vi.fn(async () => ({ type: "process-unregistered", requestId: 0 } as never)),
     kernelState: {
       heapBase: 0x200000,
       heapPtr: 0x210000,

@@ -45,7 +45,9 @@ export function createWorkerDestroyHelpers(deps: WorkerDestroyDeps) {
           await deps.releaseSharedHostStdio(handle);
         }
       } finally {
-        await deps.unregisterProcessWithKernelWorker(handle);
+        if (handle.kernelWorkerRequest && handle.pid > 0) {
+          await deps.unregisterProcessWithKernelWorker(handle);
+        }
       }
     })().catch((error) => {
       const message = error instanceof Error ? error.message : String(error);

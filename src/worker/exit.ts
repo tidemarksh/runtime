@@ -2096,7 +2096,11 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         );
       }
       try {
-        if (!unregisteredKernelWorkerHandles.has(handle)) {
+        if (
+          !unregisteredKernelWorkerHandles.has(handle)
+          && handle.kernelWorkerRequest
+          && handle.pid > 0
+        ) {
           await deps.unregisterProcessWithKernelWorker(handle);
         }
       } catch (error) {
