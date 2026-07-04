@@ -1801,7 +1801,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     }
 
     const hasInheritedParentOutput = usesInheritedParentOutput(handle, parent);
-    if (!hasInheritedParentOutput && handle.kernelWorkerRequest && handle.pid > 0) {
+    if (!hasInheritedParentOutput) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-pipe-sync-before-child-exit-start:${parent.pid}:${handle.pid}`);
       await deps.requestPipeStateSync(parent, true);
       deps.drainProcessOutput(parent);
@@ -2061,9 +2061,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `exit-visible-output-after-fork-sync:${handle.pid}:${formatVisibleOutputDebug(handle)}`);
         await settleVisibleInheritedChildrenOutput(handle);
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `exit-visible-output-after-inherited:${handle.pid}:${formatVisibleOutputDebug(handle)}`);
-        if (handle.kernelWorkerRequest && handle.pid > 0) {
-          await deps.requestPipeStateSync(handle, true);
-        }
+        await deps.requestPipeStateSync(handle, true);
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `exit-visible-output-after-pipe-sync:${handle.pid}:${formatVisibleOutputDebug(handle)}`);
         const firstDrain = deps.drainProcessOutput(handle);
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `exit-visible-output-after-first-drain:${handle.pid}:drained=${firstDrain ? 1 : 0}:${formatVisibleOutputDebug(handle)}`);

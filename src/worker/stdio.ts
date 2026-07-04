@@ -418,18 +418,16 @@ export async function settleVisibleProcessOutput(
 
   for (let pass = 0; pass < settlePlan.maxPasses; pass += 1) {
     const preSyncDrained = drainProcessOutput(visible);
-    if (preSyncDrained && visible.kernelWorkerRequest && visible.pid > 0) {
+    if (preSyncDrained) {
       await requestPipeStateSync(visible, false);
     }
-    if (handle.kernelWorkerRequest && handle.pid > 0) {
-      await requestPipeStateSync(handle, false);
-    }
-    if (visible !== handle && visible.kernelWorkerRequest && visible.pid > 0) {
+    await requestPipeStateSync(handle, false);
+    if (visible !== handle) {
       await requestPipeStateSync(visible, false);
     }
     const before = pipeStateSignature(visible);
     const drained = drainProcessOutput(visible);
-    if (drained && visible.kernelWorkerRequest && visible.pid > 0) {
+    if (drained) {
       await requestPipeStateSync(visible, false);
     }
     const after = pipeStateSignature(visible);
@@ -478,11 +476,11 @@ export async function settleInheritedChildOutput(
   for (let pass = 0; pass < settlePlan.maxPasses; pass += 1) {
     await requestPipeStateSync(child, false);
     const drainedParent = drainProcessOutput(parent);
-    if (drainedParent && parent.kernelWorkerRequest && parent.pid > 0) {
+    if (drainedParent) {
       await requestPipeStateSync(parent, false);
     }
     const drainedChild = drainedParent ? false : drainHiddenProcessOutput(child);
-    if (drainedChild && child.kernelWorkerRequest && child.pid > 0) {
+    if (drainedChild) {
       await requestPipeStateSync(child, false);
     }
     const settled = slots.every((pipeSlot) => {
