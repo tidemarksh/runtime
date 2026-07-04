@@ -1,6 +1,5 @@
 import {
   supervisorBlockedEpollWaitRetryRequired,
-  supervisorBlockedEpollWaitTimeoutMs,
   supervisorBlockedPipeSyncBeforeRetryAction,
   supervisorBlockedPipeSyncBeforeRetryClear,
   supervisorBlockedPipeSyncBeforeRetryRequested,
@@ -48,6 +47,7 @@ import {
   createBlockedWaitTimers,
   type BlockedWaitTimers,
 } from "../host-boundary/blocked-wait-timers.js";
+import { executeKernelWorkerBlockedEpollRetry } from "../host-boundary/blocked-epoll-retry.js";
 import { createWorkerSchedulerStateSyncHelpers } from "../host-boundary/state-sync.js";
 import {
   readSupervisorFaultExitDecision,
@@ -370,41 +370,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     appendWorkerDebugLog,
     clearBlockedWorker,
   });
-
-  function blockedEpollWatchesPipe(handle: ProcessHandle, vmPtr: number): boolean {
-    const supervisorWatchesPipe = handle.kernel.supervisor_blocked_epoll_watches_pipe;
-    if (supervisorWatchesPipe === undefined) {
-      throw new Error("kernel supervisor ABI missing supervisor_blocked_epoll_watches_pipe");
-    }
-    return supervisorWatchesPipe.call(handle.kernel, vmPtr) !== 0;
-  }
-
-  function collectBlockedEpollDependentSyncOfdIds(
-    handle: ProcessHandle,
-    vmPtr: number,
-  ): number[] {
-    const supervisorDependentOfd = handle.kernel.supervisor_blocked_epoll_dependent_sync_ofd;
-    if (supervisorDependentOfd === undefined) {
-      throw new Error("kernel supervisor ABI missing supervisor_blocked_epoll_dependent_sync_ofd");
-    }
-
-    const maxFds = handle.kernel.abi_max_fds();
-    const ofdIds: number[] = [];
-    for (let index = 0; index < maxFds; index += 1) {
-      const ofdId = supervisorDependentOfd.call(handle.kernel, vmPtr, index);
-      if (ofdId === 0) {
-        break;
-      }
-      if (
-        ofdId > 0
-        && ofdId < maxFds
-        && !ofdIds.includes(ofdId)
-      ) {
-        ofdIds.push(ofdId);
-      }
-    }
-    return ofdIds;
-  }
 
   function pumpNetworkForBlockedWait(
     handle: ProcessHandle,
@@ -1003,73 +968,27 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       && handle.kernelWorkerRequest
       && handle.pid > 0
     ) {
-      const rpcGeneration = beginBlockedRpc(blocked);
-      const epollRetryTimeoutMs = supervisorBlockedEpollWaitTimeoutMs(handle.kernel, blocked.vmPtr);
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `epoll-retry-rpc:${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}`
-          + `:timeout=${epollRetryTimeoutMs}`
-          + `:epoll=${formatBlockedEpollEntries(handle, blocked.vmPtr)}`,
+      executeKernelWorkerBlockedEpollRetry(
+        {
+          threadWorkerStates,
+          appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
+          failProcess: deps.failProcess,
+          beginBlockedRpc,
+          finishBlockedRpc,
+          requestPipeStateSync,
+          requestEpollStateSync,
+          requestEpollDependentOfdStateSync,
+          armBlockedSupervisorTimerForBlocked,
+          clearStaleRunningWorker,
+          scheduleSupervisorBlockedRetry,
+          resumeEpollWait,
+          formatBlockedEpollEntries,
+          formatRunningRetryBlocker,
+        },
+        handle,
+        worker,
+        blocked,
       );
-      void (blockedEpollWatchesPipe(handle, blocked.vmPtr)
-        ? requestPipeStateSync(handle, false)
-        : Promise.resolve())
-        .then(() => requestEpollStateSync(handle, false))
-        .then(() => requestEpollDependentOfdStateSync(
-          handle,
-          collectBlockedEpollDependentSyncOfdIds(handle, blocked.vmPtr),
-          { mode: "pull" },
-        ))
-        .then(() => {
-          const latestBlocked = finishBlockedRpc(handle, worker, blocked.vmPtr, rpcGeneration);
-          if (!latestBlocked) {
-            deps.appendRuntimeLifecycleEvent(handle.runtimeId, `epoll-retry-stale:${handle.pid}`);
-            return;
-          }
-          const latestEpollRetryTimeoutMs = supervisorBlockedEpollWaitTimeoutMs(handle.kernel, latestBlocked.vmPtr);
-          if (latestEpollRetryTimeoutMs < 0) {
-            if (armBlockedSupervisorTimerForBlocked(handle, latestBlocked)) {
-              deps.appendRuntimeLifecycleEvent(
-                handle.runtimeId,
-                `epoll-retry-timer:${handle.pid}:vm=0x${latestBlocked.vmPtr.toString(16)}`,
-              );
-              return;
-            }
-            deps.appendRuntimeLifecycleEvent(
-              handle.runtimeId,
-              `epoll-retry-no-deadline:${handle.pid}:vm=0x${latestBlocked.vmPtr.toString(16)}`
-                + `:timeout=${latestEpollRetryTimeoutMs}`,
-            );
-          }
-          clearStaleRunningWorker(handle, worker);
-          const runningWorkerBlocksResume = handle.runningWorker !== null;
-          const retryPlan = supervisorBlockedWaitRetryPlan(handle.kernel, latestBlocked.vmPtr);
-          if (runningWorkerBlocksResume || retryPlan.reason === "process-gate") {
-            if (runningWorkerBlocksResume) {
-              wakeRuntimeBridge(handle.runtimeBridge);
-            }
-            const runningThread = handle.runningWorker === null
-              ? undefined
-              : threadWorkerStates.get(handle.runningWorker);
-            deps.appendRuntimeLifecycleEvent(
-              handle.runtimeId,
-              `epoll-retry-skip:${handle.pid}:running=${handle.runningWorker !== null ? 1 : 0}:reason=${retryPlan.reason}`
-                + `:${formatRunningRetryBlocker(handle, runningThread)}`,
-            );
-            scheduleSupervisorBlockedRetry(
-              handle,
-              worker,
-            );
-            return;
-          }
-          resumeEpollWait(handle, worker, latestBlocked);
-        })
-        .catch((error) => {
-          finishBlockedRpc(handle, worker, blocked.vmPtr, rpcGeneration);
-          if (handle.workers.has(worker) && threadWorkerStates.has(worker)) {
-            deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-          }
-        });
       return;
     }
 
