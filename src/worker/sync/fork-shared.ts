@@ -59,7 +59,10 @@ import {
   hasRuntimeNetworkSocketState,
 } from "../ownership/socket-control.js";
 import { clearStaleForkSharedSyncGate } from "../fork-shared-sync-gate.js";
-import { registerForkSharedSyncPromise } from "../fork-shared-sync-debug.js";
+import {
+  describeForkSharedSyncPromise,
+  registerForkSharedSyncPromise,
+} from "../fork-shared-sync-debug.js";
 import type {
   KernelWorkerOfdSlotSnapshot,
   KernelWorkerPidBytesSnapshot,
@@ -94,6 +97,148 @@ function pruneUnpeeredRegularFileSharedOfds(handle: ProcessHandle): void {
     handle.kernelShare.sharedOfdIds.delete(ofdId);
     handle.kernelShare.ofdSlotSnapshots.delete(ofdId);
   }
+}
+
+interface OwnedForkSharedStateSyncDeps {
+  processHandles?: ReadonlyMap<number, ProcessHandle>;
+  appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
+  syncForkSharedStateViaKernelWorker?: typeof syncForkSharedStateViaKernelWorker;
+}
+
+export function requestOwnedForkSharedStateSync(
+  handle: ProcessHandle,
+  sourceVmPtr: number,
+  deps: OwnedForkSharedStateSyncDeps,
+): Promise<void> {
+  const otherMembers = kernelShareOtherMembers(handle);
+  const activeSync = handle.kernelShare.forkSharedSyncPromise ?? handle.forkSharedSyncPromise;
+  const syncForkSharedState = deps.syncForkSharedStateViaKernelWorker ?? syncForkSharedStateViaKernelWorker;
+  const syncTargetIsUsable = (member: ProcessHandle): boolean => {
+    if (!Number.isFinite(member.pid) || member.pid <= 0) {
+      return false;
+    }
+    const registered = deps.processHandles?.get(member.pid);
+    if (
+      member.runningWorker !== null
+      || member.exitInProgress
+      || registered?.exitInProgress
+      || targetHasIncompatibleForkSharedOfd(handle, member, handle.kernelShare.sharedOfdIds)
+    ) {
+      return false;
+    }
+    return registered === undefined || registered === member;
+  };
+  const syncTargetCanBecomeUsable = (member: ProcessHandle): boolean => {
+    if (!Number.isFinite(member.pid) || member.pid <= 0) {
+      return false;
+    }
+    const registered = deps.processHandles?.get(member.pid);
+    if (
+      member.exitInProgress
+      || registered?.exitInProgress
+      || targetHasIncompatibleForkSharedOfd(handle, member, handle.kernelShare.sharedOfdIds)
+    ) {
+      return false;
+    }
+    return registered === undefined || registered === member;
+  };
+  const hasSyncTargetCandidate = otherMembers.some(syncTargetCanBecomeUsable);
+  const startForkSharedStateSync = (
+    targets = otherMembers.filter(syncTargetIsUsable),
+  ): Promise<void> => {
+    if (targets.length === 0) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `fork-shared-sync-local:${handle.pid}:src=0x${sourceVmPtr.toString(16)}:targets=none`,
+      );
+      return syncForkSharedState(
+        handle,
+        targets,
+        {
+          cause: { kind: "syscall", nr: -1n, name: "owned-state-empty-fork-shared-sync" },
+          deltaOfdIds: true,
+          includeMemfs: false,
+          trackHeldOfds: true,
+          sourceVmPtr,
+        },
+      );
+    }
+    const promise = syncForkSharedState(
+      handle,
+      targets,
+      {
+        cause: { kind: "syscall", nr: -1n, name: "owned-state-fork-shared-sync" },
+        deltaOfdIds: true,
+        includeMemfs: false,
+        trackHeldOfds: true,
+        sourceVmPtr,
+      },
+    ).finally(() => {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `fork-shared-sync-settled:${describeForkSharedSyncPromise(promise)}`,
+      );
+      if (handle.forkSharedSyncPromise === promise) {
+        handle.forkSharedSyncPromise = null;
+      }
+      if (handle.kernelShare.forkSharedSyncPromise === promise) {
+        handle.kernelShare.forkSharedSyncPromise = null;
+      }
+    });
+    const syncId = registerForkSharedSyncPromise(promise, {
+      ownerPid: handle.pid,
+      sourceVmPtr,
+      reason: "owned-ofd",
+      targetPids: targets.map((target) => target.pid),
+    });
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `fork-shared-sync-start:id=${syncId}:owner=${handle.pid}:src=0x${sourceVmPtr.toString(16)}`
+        + `:targets=${targets.map((target) => target.pid).join(".") || "none"}`,
+    );
+    handle.forkSharedSyncPromise = promise;
+    handle.kernelShare.forkSharedSyncPromise = promise;
+    return promise;
+  };
+
+  if (activeSync !== null) {
+    if (!hasSyncTargetCandidate) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `fork-shared-sync-local-queue:${describeForkSharedSyncPromise(activeSync)}:owner=${handle.pid}:src=0x${sourceVmPtr.toString(16)}`,
+      );
+      return activeSync.then(() => startForkSharedStateSync([]));
+    }
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `fork-shared-sync-queue:${describeForkSharedSyncPromise(activeSync)}:owner=${handle.pid}:src=0x${sourceVmPtr.toString(16)}`,
+    );
+    const queuedSync = activeSync
+      .then(() => startForkSharedStateSync())
+      .finally(() => {
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `fork-shared-sync-queue-settled:${describeForkSharedSyncPromise(queuedSync)}`,
+        );
+        if (handle.forkSharedSyncPromise === queuedSync) {
+          handle.forkSharedSyncPromise = null;
+        }
+        if (handle.kernelShare.forkSharedSyncPromise === queuedSync) {
+          handle.kernelShare.forkSharedSyncPromise = null;
+        }
+      });
+    registerForkSharedSyncPromise(queuedSync, {
+      ownerPid: handle.pid,
+      sourceVmPtr,
+      reason: "queued-owned-ofd",
+      targetPids: otherMembers.map((target) => target.pid),
+    });
+    handle.forkSharedSyncPromise = queuedSync;
+    handle.kernelShare.forkSharedSyncPromise = queuedSync;
+    return queuedSync;
+  }
+
+  return startForkSharedStateSync();
 }
 
 export async function syncForkSharedStateViaKernelWorker(
