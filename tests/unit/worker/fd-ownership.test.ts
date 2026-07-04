@@ -431,6 +431,25 @@ function makeKernel(memory: WebAssembly.Memory): FakeKernel {
     supervisor_ofd_refcount(this: ProcessHandle["kernel"], ofdId: number) {
       return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_refcount(ofdId) : 0;
     },
+    supervisor_ofd_reconcile_refcount(this: ProcessHandle["kernel"], ofdId: number, expectedRefcount: number) {
+      if (ofdId <= 0 || ofdId >= this.abi_max_fds()) {
+        return 0;
+      }
+      let currentRefcount = this.kernel_ofd_refcount(ofdId);
+      const expected = Math.trunc(expectedRefcount);
+      if (expected < 0) {
+        return currentRefcount;
+      }
+      while (currentRefcount < expected) {
+        retainOfd(ofdId);
+        currentRefcount += 1;
+      }
+      while (currentRefcount > expected) {
+        releaseOfd(ofdId);
+        currentRefcount -= 1;
+      }
+      return this.kernel_ofd_refcount(ofdId);
+    },
     supervisor_ofd_offset(this: ProcessHandle["kernel"], ofdId: number) {
       return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_offset(ofdId) : 0n;
     },

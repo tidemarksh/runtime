@@ -16,6 +16,8 @@ import {
   supervisorOfdHostFd,
   supervisorOfdIno,
   supervisorOfdOffset,
+  supervisorOfdReconcileRefcount,
+  supervisorOfdRefcount,
 } from "./ofd-metadata.js";
 import {
   supervisorProcessPipeOfdForFd,
@@ -304,7 +306,7 @@ export function trackForkSharedOfds(
     retained.add(ofdId);
     handle.kernelShare.sharedOfdIds.add(ofdId);
     if (retainRefcounts) {
-      handle.kernel.kernel_retain_ofd(ofdId);
+      supervisorOfdReconcileRefcount(handle, ofdId, supervisorOfdRefcount(handle, ofdId) + 1);
     }
   }
   return [...retained].sort((left, right) => left - right);

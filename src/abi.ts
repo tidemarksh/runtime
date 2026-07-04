@@ -416,6 +416,7 @@ export interface KernelExports {
   supervisor_ofd_status_flags?(ofdId: number): number;
   supervisor_ofd_ino?(ofdId: number): number;
   supervisor_ofd_refcount?(ofdId: number): number;
+  supervisor_ofd_reconcile_refcount?(ofdId: number, expectedRefcount: number): number;
   supervisor_ofd_offset?(ofdId: number): bigint | number;
   supervisor_process_private_pipe_slot_mask?(vmPtr: number): bigint | number;
   supervisor_process_private_pipe_source_mode?(vmPtr: number, pipeSlot: number): number;
@@ -1823,6 +1824,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_ofd_status_flags",
   "supervisor_ofd_ino",
   "supervisor_ofd_refcount",
+  "supervisor_ofd_reconcile_refcount",
   "supervisor_ofd_offset",
   "supervisor_process_private_pipe_slot_mask",
   "supervisor_process_private_pipe_source_mode",
@@ -2310,6 +2312,16 @@ function requireSupervisorOfdRefcount(exports: KernelExports): (ofdId: number) =
   return read.bind(exports);
 }
 
+function requireSupervisorOfdReconcileRefcount(
+  exports: KernelExports,
+): (ofdId: number, expectedRefcount: number) => number {
+  const reconcile = exports.supervisor_ofd_reconcile_refcount;
+  if (!reconcile) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_reconcile_refcount");
+  }
+  return reconcile.bind(exports);
+}
+
 function requireSupervisorOfdOffset(exports: KernelExports): (ofdId: number) => bigint | number {
   const read = exports.supervisor_ofd_offset;
   if (!read) {
@@ -2340,6 +2352,16 @@ export function supervisorOfdIno(exports: KernelExports, ofdId: number): number 
 
 export function supervisorOfdRefcount(exports: KernelExports, ofdId: number): number {
   return validOfdId(exports, ofdId) ? requireSupervisorOfdRefcount(exports)(ofdId) : 0;
+}
+
+export function supervisorOfdReconcileRefcount(
+  exports: KernelExports,
+  ofdId: number,
+  expectedRefcount: number,
+): number {
+  return validOfdId(exports, ofdId)
+    ? requireSupervisorOfdReconcileRefcount(exports)(ofdId, Math.trunc(expectedRefcount))
+    : 0;
 }
 
 export function supervisorOfdOffset(exports: KernelExports, ofdId: number): bigint {

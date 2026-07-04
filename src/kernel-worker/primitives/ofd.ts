@@ -5,6 +5,7 @@ import {
   supervisorOfdHostFd,
   supervisorOfdIno,
   supervisorOfdOffset,
+  supervisorOfdReconcileRefcount,
   supervisorOfdRefcount,
   type KernelExports,
   type KernelRuntimeState,
@@ -250,16 +251,8 @@ export function createKernelWorkerOfdPrimitives(deps: KernelWorkerPrimitivesDeps
     }
 
     for (const ofdId of trackedOfdIds) {
-      let currentRefcount = supervisorOfdRefcount(canonicalExports, ofdId);
       const expectedRefcount = expectedRefcounts[ofdId] ?? 0;
-      while (currentRefcount < expectedRefcount) {
-        canonicalExports.kernel_retain_ofd(ofdId);
-        currentRefcount += 1;
-      }
-      while (currentRefcount > expectedRefcount) {
-        canonicalExports.kernel_release_ofd(ofdId);
-        currentRefcount -= 1;
-      }
+      supervisorOfdReconcileRefcount(canonicalExports, ofdId, expectedRefcount);
     }
   }
 

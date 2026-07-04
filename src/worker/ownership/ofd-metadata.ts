@@ -3,6 +3,7 @@ import {
   supervisorOfdHostFd as supervisorOfdHostFdForExports,
   supervisorOfdIno as supervisorOfdInoForExports,
   supervisorOfdOffset as supervisorOfdOffsetForExports,
+  supervisorOfdReconcileRefcount as supervisorOfdReconcileRefcountForExports,
   supervisorOfdRefcount as supervisorOfdRefcountForExports,
   supervisorOfdStatusFlags as supervisorOfdStatusFlagsForExports,
 } from "../../abi.js";
@@ -28,6 +29,14 @@ export function supervisorOfdIno(handle: KernelHandle, ofdId: number): number {
 
 export function supervisorOfdRefcount(handle: KernelHandle, ofdId: number): number {
   return supervisorOfdRefcountForExports(handle.kernel, ofdId);
+}
+
+export function supervisorOfdReconcileRefcount(
+  handle: KernelHandle,
+  ofdId: number,
+  expectedRefcount: number,
+): number {
+  return supervisorOfdReconcileRefcountForExports(handle.kernel, ofdId, expectedRefcount);
 }
 
 export function supervisorOfdOffset(handle: KernelHandle, ofdId: number): bigint {

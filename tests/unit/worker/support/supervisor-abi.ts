@@ -1347,6 +1347,36 @@ export function makeSupervisorAbiStubs(
       }
       return callOptionalNumber(receiver, "kernel_ofd_refcount", ofdId) ?? 0;
     },
+    supervisor_ofd_reconcile_refcount(
+      this: KernelExports | undefined,
+      ofdId: number,
+      expectedRefcount: number,
+    ) {
+      const receiver = currentExports(this);
+      if (ofdId <= 0 || ofdId >= callNumber(receiver, "abi_max_fds")) {
+        return 0;
+      }
+      let currentRefcount = callOptionalNumber(receiver, "kernel_ofd_refcount", ofdId) ?? 0;
+      const expected = Math.trunc(expectedRefcount);
+      if (expected < 0) {
+        return currentRefcount;
+      }
+      const retain = (receiver.kernel_retain_ofd ?? overrides.kernel_retain_ofd) as
+        | ((targetOfdId: number) => void)
+        | undefined;
+      const release = (receiver.kernel_release_ofd ?? overrides.kernel_release_ofd) as
+        | ((targetOfdId: number) => void)
+        | undefined;
+      while (currentRefcount < expected) {
+        retain?.(ofdId);
+        currentRefcount += 1;
+      }
+      while (currentRefcount > expected) {
+        release?.(ofdId);
+        currentRefcount -= 1;
+      }
+      return callOptionalNumber(receiver, "kernel_ofd_refcount", ofdId) ?? currentRefcount;
+    },
     supervisor_ofd_offset(this: KernelExports | undefined, ofdId: number) {
       const receiver = currentExports(this);
       if (ofdId <= 0 || ofdId >= callNumber(receiver, "abi_max_fds")) {

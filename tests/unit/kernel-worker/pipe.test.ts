@@ -277,6 +277,22 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
     supervisor_ofd_refcount(this: KernelExports, ofdId: number) {
       return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_refcount(ofdId) : 0;
     },
+    supervisor_ofd_reconcile_refcount(this: KernelExports, ofdId: number, expectedRefcount: number) {
+      if (ofdId <= 0 || ofdId >= this.abi_max_fds()) {
+        return 0;
+      }
+      const currentRefcount = this.kernel_ofd_refcount(ofdId);
+      const expected = Math.trunc(expectedRefcount);
+      if (expected < 0) {
+        return currentRefcount;
+      }
+      new DataView(memory.buffer).setInt32(
+        runtimeState.ofdTablePtr + ofdId * 32 + 16,
+        expected,
+        true,
+      );
+      return expected;
+    },
     kernel_ofd_fd_type: (ofdId: number) => new DataView(memory.buffer)
       .getInt32(runtimeState.ofdTablePtr + ofdId * 32, true),
     kernel_ofd_host_fd: (ofdId: number) => new DataView(memory.buffer)

@@ -541,6 +541,25 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   const supervisorOfdRefcount = (ofdId: number): number => (
     ofdId > 0 && ofdId < maxFds() ? kernel.kernel_ofd_refcount?.(ofdId) ?? 0 : 0
   );
+  const supervisorOfdReconcileRefcount = (ofdId: number, expectedRefcount: number): number => {
+    if (ofdId <= 0 || ofdId >= maxFds()) {
+      return 0;
+    }
+    let currentRefcount = kernel.kernel_ofd_refcount?.(ofdId) ?? 0;
+    const expected = Math.trunc(expectedRefcount);
+    if (expected < 0) {
+      return currentRefcount;
+    }
+    while (currentRefcount < expected) {
+      kernel.kernel_retain_ofd?.(ofdId);
+      currentRefcount += 1;
+    }
+    while (currentRefcount > expected) {
+      kernel.kernel_release_ofd?.(ofdId);
+      currentRefcount -= 1;
+    }
+    return kernel.kernel_ofd_refcount?.(ofdId) ?? currentRefcount;
+  };
   const supervisorOfdOffset = (ofdId: number): bigint => {
     if (ofdId <= 0 || ofdId >= maxFds()) {
       return 0n;
@@ -639,6 +658,7 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   nextKernel.supervisor_ofd_status_flags ??= supervisorOfdStatusFlags;
   nextKernel.supervisor_ofd_ino ??= supervisorOfdIno;
   nextKernel.supervisor_ofd_refcount ??= supervisorOfdRefcount;
+  nextKernel.supervisor_ofd_reconcile_refcount ??= supervisorOfdReconcileRefcount;
   nextKernel.supervisor_ofd_offset ??= supervisorOfdOffset;
   nextKernel.supervisor_process_epoll_held_ofd ??= (vmPtr: number, index: number) =>
     processOfdByType(vmPtr, index, kernel.abi_fd_type_epoll?.());
