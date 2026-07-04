@@ -2,6 +2,7 @@ import { readKernelRuntimeState } from "../abi.js";
 import { publishKernelRuntimeState } from "../bridge/runtime-state.js";
 import { SOCKET_STATE_CONNECTED, SOCKET_STATE_SHUTDOWN } from "../layout/socket.js";
 import type { RuntimeNetworkConnection, RuntimeNetworkEndpoint } from "../bridge/network.js";
+import { kernelSocketCount, requireKernelSocketCount } from "../kernel-socket-layout.js";
 import { ensureMemoryCapacity, ensureKernelMemoryCapacity, kernelScratchBase, writeKernelScratch } from "./kernel-scratch.js";
 import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
 import { forceNetworkClosedFd, restoreNetworkSocketSlotSnapshot, snapshotNetworkSocketSlot } from "./network-socket-close.js";
@@ -231,14 +232,6 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     return readBytes;
   }
 
-  function requireAbiMaxSockets(handle: ProcessHandle): number {
-    const maxSockets = handle.kernel.abi_max_sockets;
-    if (typeof maxSockets !== "function") {
-      throw new Error("kernel supervisor ABI missing abi_max_sockets");
-    }
-    return maxSockets();
-  }
-
   function socketIdxForFd(handle: ProcessHandle, vmPtr: number, fd: number): number {
     return requireThreadSocketIdxForFd(handle)(vmPtr, fd);
   }
@@ -445,7 +438,10 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     if (netBufPoolBytes === undefined) {
       return;
     }
-    const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+    const maxSockets = kernelSocketCount(handle.kernel);
+    if (maxSockets === undefined) {
+      return;
+    }
     const netBufferCount = maxSockets * 2;
     const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
     if (!Number.isInteger(netBufferBytes) || netBufferBytes <= 16) {
@@ -645,7 +641,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       }
     }
     const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes();
-    const maxSockets = requireAbiMaxSockets(handle);
+    const maxSockets = requireKernelSocketCount(handle.kernel);
     const netBufferCount = maxSockets * 2;
     const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
     if (!Number.isInteger(netBufferBytes) || netBufferBytes <= 16 || payload.data.length !== netBufferBytes - 16) {
@@ -739,7 +735,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       return false;
     }
     const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes();
-    const maxSockets = requireAbiMaxSockets(handle);
+    const maxSockets = requireKernelSocketCount(handle.kernel);
     const netBufferCount = maxSockets * 2;
     const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
     if (!Number.isInteger(netBufferBytes) || netBufferBytes <= 16) {
@@ -828,7 +824,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       return;
     }
     const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes?.();
-    const maxSockets = handle.kernel.abi_max_sockets?.();
+    const maxSockets = kernelSocketCount(handle.kernel);
     if (netBufPoolBytes === undefined || maxSockets === undefined) {
       return;
     }

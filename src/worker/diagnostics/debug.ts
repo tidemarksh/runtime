@@ -5,6 +5,7 @@ import type {
   TransferDebugStats,
 } from "../types.js";
 import { readRuntimeBridgeDebugStage } from "../../bridge/runtime-state.js";
+import { kernelSocketCount } from "../../kernel-socket-layout.js";
 import {
   NET_BUFFER_HEAD_OFFSET,
   NET_BUFFER_HEADER_BYTES,
@@ -1419,7 +1420,10 @@ function formatSocketRecvBufferHeadTail(handle: ProcessHandle, socketIdx: number
   if (recvBufIdx < 0) {
     return "-1/-1";
   }
-  const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+  const maxSockets = kernelSocketCount(handle.kernel);
+  if (maxSockets === undefined) {
+    return "-1/-1";
+  }
   const netBufferCount = maxSockets * 2;
   const netBufferBytes = netBufferCount > 0 ? handle.kernel.kernel_net_buf_pool_bytes() / netBufferCount : 0;
   if (!Number.isInteger(netBufferBytes) || netBufferBytes <= NET_BUFFER_HEADER_BYTES) {

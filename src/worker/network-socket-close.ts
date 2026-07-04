@@ -1,11 +1,15 @@
 import type { ProcessHandle } from "./types.js";
+import { kernelSocketCount } from "../kernel-socket-layout.js";
 import {
   SOCKET_SLOT_RECV_BUF_IDX_OFFSET,
   SOCKET_SLOT_SHUTDOWN_MASK_OFFSET,
 } from "../layout/socket.js";
 
 function socketSlotBytes(handle: ProcessHandle): number {
-  const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+  const maxSockets = kernelSocketCount(handle.kernel);
+  if (maxSockets === undefined) {
+    return 0;
+  }
   const socketTableBytes = handle.kernel.kernel_socket_table_bytes?.() ?? 0;
   const bytes = maxSockets > 0 ? socketTableBytes / maxSockets : 0;
   return Number.isInteger(bytes) && bytes > SOCKET_SLOT_SHUTDOWN_MASK_OFFSET + 4 ? bytes : 0;
@@ -46,7 +50,10 @@ export function snapshotNetworkSocketSlot(
   vmPtr: number,
   fd: number,
 ): { offset: number; data: Uint8Array } | null {
-  const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+  const maxSockets = kernelSocketCount(handle.kernel);
+  if (maxSockets === undefined) {
+    return null;
+  }
   const bytes = socketSlotBytes(handle);
   const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
   if (socketIdx < 0 || socketIdx >= maxSockets || bytes <= 0) {

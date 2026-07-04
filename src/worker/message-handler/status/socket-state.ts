@@ -1,5 +1,6 @@
 import { attachKernelRuntimeState } from "../../../abi.js";
 import { FS_RING_TOTAL_BYTES } from "../../../layout/fs-ring.js";
+import { kernelNetBufferCount } from "../../../kernel-socket-layout.js";
 import {
   forceNetworkClosedFds,
 } from "../../network-socket-close.js";
@@ -234,7 +235,7 @@ export function applyThreadSocketState(handle: ProcessHandle, msg: ThreadWorkerS
   }
   const socketTableBytes = handle.kernel.kernel_socket_table_bytes();
   const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes();
-  const maxNetBuffers = Math.max(1, Number(handle.kernel.abi_max_sockets?.() ?? 32) * 2);
+  const maxNetBuffers = kernelNetBufferCount(handle.kernel);
   const netBufSlotBytes = Math.floor(netBufPoolBytes / maxNetBuffers);
   const netBufPoolSizeValid = msg.socketState.netBufPool === undefined
     || msg.socketState.netBufPool.length === netBufPoolBytes;

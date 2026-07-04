@@ -1,5 +1,6 @@
 import type { KernelExports, KernelRuntimeState } from "../abi.js";
 import { attachKernelRuntimeState } from "../abi.js";
+import { kernelNetBufferCount } from "../kernel-socket-layout.js";
 import type {
   GuestMemoryWriteSnapshot,
   GuestWriteWatchRegion,
@@ -158,7 +159,7 @@ function applySocketState(
   const memory = new Uint8Array(kernelExports.memory.buffer);
   const socketTableBytes = kernelExports.kernel_socket_table_bytes();
   const netBufPoolBytes = kernelExports.kernel_net_buf_pool_bytes();
-  const maxBuffers = Math.max(1, Number(kernelExports.abi_max_sockets?.() ?? 32) * 2);
+  const maxBuffers = kernelNetBufferCount(kernelExports);
   const netBufSlotBytes = Math.floor(netBufPoolBytes / maxBuffers);
   if (
     socketState.socketTable.length !== socketTableBytes

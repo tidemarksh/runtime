@@ -1,4 +1,5 @@
 import type { RuntimeNetworkBridge } from "../../bridge/network.js";
+import { kernelSocketCount } from "../../kernel-socket-layout.js";
 import type {
   KernelWorkerFdEntrySnapshot,
   KernelWorkerSocketStateSnapshot,
@@ -404,7 +405,10 @@ export function preserveNetworkSocketSlots(
   vmPtr: number,
   socketTableBytes: number,
 ): PreservedNetworkSocketSlot[] {
-  const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+  const maxSockets = kernelSocketCount(handle.kernel);
+  if (maxSockets === undefined) {
+    return [];
+  }
   const socketSlotBytes = maxSockets > 0 ? socketTableBytes / maxSockets : 0;
   if (!Number.isInteger(socketSlotBytes) || socketSlotBytes <= 0) {
     return [];

@@ -153,6 +153,7 @@ function makeKernel(
     abi_max_fds: () => 32,
     abi_max_threads: () => 4,
     abi_max_pipes: () => 32,
+    abi_max_sockets: () => 32,
     abi_fd_type_none: () => FD_TYPE_NONE,
     abi_fd_type_file: () => FD_TYPE_FILE,
     abi_fd_type_pipe: () => FD_TYPE_PIPE,

@@ -4,6 +4,7 @@ import {
   NET_BUFFER_TAIL_OFFSET,
 } from "../../../layout/net-buffer.js";
 import { SOCKET_STATE_SHUTDOWN } from "../../../layout/socket.js";
+import { kernelSocketCount } from "../../../kernel-socket-layout.js";
 import { networkSocketSlotRecvBufferIndex } from "../../network-socket-close.js";
 import { pruneStaleNetworkConnectionsFromFdEntries } from "../../ownership/socket-control.js";
 import type { ProcessHandle } from "../../types.js";
@@ -67,7 +68,10 @@ export function readNetworkRecvBufferDebug(
   if (recvBufIdx < 0) {
     return "-1/-1";
   }
-  const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+  const maxSockets = kernelSocketCount(handle.kernel);
+  if (maxSockets === undefined) {
+    return "-1/-1";
+  }
   const netBufferCount = maxSockets * 2;
   const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
   if (!Number.isInteger(netBufferBytes) || netBufferBytes <= NET_BUFFER_HEADER_BYTES) {
@@ -113,7 +117,10 @@ export function preserveNetworkRecvForKernelMemoryWrite(
 }
 
 export function deriveNetBufUsedFromSocketSlots(handle: ProcessHandle, socketUsed: number): bigint {
-  const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+  const maxSockets = kernelSocketCount(handle.kernel);
+  if (maxSockets === undefined) {
+    return 0n;
+  }
   const netBufferCount = maxSockets * 2;
   let netBufUsed = 0n;
   for (let socketIdx = 0; socketIdx < maxSockets; socketIdx += 1) {
@@ -290,7 +297,10 @@ export function preserveNetworkRecvBuffers(
   if (authoritativeFds.size === 0) {
     return [];
   }
-  const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+  const maxSockets = kernelSocketCount(handle.kernel);
+  if (maxSockets === undefined) {
+    return [];
+  }
   const netBufferCount = maxSockets * 2;
   const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
   if (!Number.isInteger(netBufferBytes) || netBufferBytes <= NET_BUFFER_HEADER_BYTES) {
@@ -413,7 +423,10 @@ export function preserveUsedNetBufferHeads(
   netBufUsed: bigint,
   extraBufferIndices: Iterable<number> = [],
 ): PreservedNetBufferHead[] {
-  const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+  const maxSockets = kernelSocketCount(handle.kernel);
+  if (maxSockets === undefined) {
+    return [];
+  }
   const netBufferCount = maxSockets * 2;
   const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
   if (!Number.isInteger(netBufferBytes) || netBufferBytes <= NET_BUFFER_HEADER_BYTES) {
@@ -458,10 +471,13 @@ function socketReadHeadFloorsByBuffer(
   handle: ProcessHandle,
   netBufPoolBytes: number,
 ): Map<number, number> {
-  const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+  const floors = new Map<number, number>();
+  const maxSockets = kernelSocketCount(handle.kernel);
+  if (maxSockets === undefined) {
+    return floors;
+  }
   const netBufferCount = maxSockets * 2;
   const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
-  const floors = new Map<number, number>();
   if (!Number.isInteger(netBufferBytes) || netBufferBytes <= NET_BUFFER_HEADER_BYTES) {
     return floors;
   }
@@ -509,7 +525,10 @@ export function preserveClosedNetworkRecvBuffers(
   handle: ProcessHandle,
   netBufPoolBytes: number,
 ): PreservedNetBufferHead[] {
-  const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+  const maxSockets = kernelSocketCount(handle.kernel);
+  if (maxSockets === undefined) {
+    return [];
+  }
   const netBufferCount = maxSockets * 2;
   const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
   if (!Number.isInteger(netBufferBytes) || netBufferBytes <= NET_BUFFER_HEADER_BYTES) {
