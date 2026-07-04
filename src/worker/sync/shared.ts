@@ -1,5 +1,5 @@
 import { attachKernelRuntimeState, readKernelRuntimeState } from "../../abi.js";
-import { kernelNetBufferCount, kernelSocketCount, requireKernelSocketCount } from "../../kernel-socket-layout.js";
+import { kernelNetBufferCount, requireKernelSocketCount } from "../../kernel-socket-layout.js";
 import {
   NET_BUFFER_HEAD_OFFSET,
   NET_BUFFER_HEADER_BYTES,
@@ -55,14 +55,9 @@ import {
 } from "../ownership/fd-table.js";
 import {
   collectRuntimeNetworkSocketOfdIds,
-  kernelSocketExternalPeer,
   kernelSocketIndexForFd,
   kernelSocketOutboundAvailable,
   kernelSocketPeerIndex,
-  kernelSocketReadBytes,
-  kernelSocketRecvAvailable,
-  kernelSocketRecvBufferIndex,
-  kernelSocketState,
   runtimeNetworkFds,
 } from "../ownership/socket-control.js";
 import type { ProcessHandle } from "../types.js";
@@ -72,6 +67,15 @@ import {
   restoreNetworkSocketSlotSnapshot,
   snapshotNetworkSocketSlot,
 } from "../network-socket-close.js";
+import {
+  netBufUsedMaskFromBufferIndices,
+  preserveNetworkRecvHeadWatermarks as preserveNetworkRecvHeadWatermarksCommon,
+  preserveUsedNetBufferHeads,
+  preservedSocketRecvBufferIndices,
+  readNetworkRecvBufferDebug,
+  restoreMergedNetBufferHeads as restoreMergedNetBufferHeadsCommon,
+  type PreservedNetBufferHead,
+} from "../network-recv-buffer.js";
 import {
   adoptKernelState,
   adoptKernelStateForHandle,
@@ -177,17 +181,6 @@ export interface NetworkBridgeSocketStateSnapshot {
   netBufUsed: bigint;
 }
 
-export interface PreservedNetBufferHead {
-  offset: number;
-  head: number;
-  tail?: number;
-  data?: Uint8Array;
-  restoreData?: boolean;
-  capacity: number;
-  forceHead?: boolean;
-  forceTail?: boolean;
-}
-
 export interface PreservedNetworkSocketSlot {
   offset: number;
   data: Uint8Array;
@@ -270,28 +263,6 @@ export function formatOfdSnapshotDebug(
 
 export function formatOfdIdList(ofdIds: readonly number[]): string {
   return ofdIds.length > 0 ? ofdIds.join(".") : "none";
-}
-
-export function readNetworkRecvBufferDebug(handle: ProcessHandle, socketIdx: number): string {
-  if (socketIdx < 0) {
-    return "-1/-1";
-  }
-  const recvBufIdx = handle.kernel.thread_socket_recv_buf_idx?.(socketIdx) ?? -1;
-  if (recvBufIdx < 0) {
-    return "-1/-1";
-  }
-  const maxSockets = kernelSocketCount(handle.kernel);
-  if (maxSockets === undefined) {
-    return "-1/-1";
-  }
-  const netBufferCount = maxSockets * 2;
-  const netBufferBytes = netBufferCount > 0 ? handle.kernel.kernel_net_buf_pool_bytes() / netBufferCount : 0;
-  if (!Number.isInteger(netBufferBytes) || netBufferBytes <= NET_BUFFER_HEADER_BYTES) {
-    return "-1/-1";
-  }
-  const absolute = handle.kernelState.netBufBase + recvBufIdx * netBufferBytes;
-  const view = new DataView(handle.memory.buffer, absolute, NET_BUFFER_HEADER_BYTES);
-  return `${view.getUint32(NET_BUFFER_HEAD_OFFSET, true)}/${view.getUint32(NET_BUFFER_TAIL_OFFSET, true)}`;
 }
 
 export function mergePipeSlotSnapshotsIntoHandle(
@@ -940,302 +911,16 @@ export function networkBridgeOutboundAvailable(handle: ProcessHandle): boolean {
   return fds.some((fd) => kernelSocketOutboundAvailable(handle, handle.vmPtr, fd) > 0);
 }
 
-export function counterAhead(sourceValue: number, targetValue: number, capacity: number): boolean {
-  if (sourceValue === targetValue) {
-    return false;
-  }
-  if (!Number.isFinite(capacity) || capacity <= 0) {
-    return sourceValue > targetValue;
-  }
-  return sourceValue > targetValue
-    || (
-      sourceValue < targetValue
-      && targetValue > capacity / 2
-      && sourceValue < capacity / 2
-    );
-}
-
-export function rememberNetworkRecvTail(handle: ProcessHandle, fd: number, tail: number, capacity: number): number {
-  const previous = handle.networkRecvTailWatermarks.get(fd) ?? 0;
-  const next = counterAhead(tail, previous, capacity) ? tail : previous;
-  handle.networkRecvTailWatermarks.set(fd, next);
-  return next;
-}
-
-export function socketReadHeadFloor(
-  handle: ProcessHandle,
-  socketIdx: number,
-  tail: number,
-  capacity?: number,
-): number {
-  const readBytes = kernelSocketReadBytes(handle, socketIdx);
-  const numeric = typeof readBytes === "bigint" ? Number(readBytes) : readBytes;
-  if (!Number.isSafeInteger(numeric) || numeric <= 0) {
-    return 0;
-  }
-  if (capacity !== undefined && Number.isFinite(capacity) && capacity > 0) {
-    return numeric % capacity;
-  }
-  return Math.min(numeric, tail);
-}
-
-export function networkRecvPayloadWatermark(
-  handle: ProcessHandle,
-  fd: number,
-  socketIdx: number,
-  currentTail: number,
-  capacity: number,
-): { head: number; tail: number; data: Uint8Array } | null {
-  handle.networkRecvPayloadWatermarks ??= new Map();
-  const payload = handle.networkRecvPayloadWatermarks.get(fd);
-  if (payload === undefined || payload.capacity !== capacity) {
-    return null;
-  }
-  if (payload.readBytes !== undefined && payload.availableBytes !== undefined && socketIdx >= 0) {
-    const readBytesRaw = kernelSocketReadBytes(handle, socketIdx);
-    const readBytes = typeof readBytesRaw === "bigint" ? Number(readBytesRaw) : readBytesRaw;
-    const availableBytes = kernelSocketRecvAvailable(handle, socketIdx);
-    if (
-      Number.isSafeInteger(readBytes)
-      && Number.isSafeInteger(availableBytes)
-      && availableBytes !== undefined
-      && availableBytes >= 0
-    ) {
-      const payloadProgress = payload.deliveredBytes ?? (payload.readBytes + payload.availableBytes);
-      const currentProgress = (readBytes as number) + availableBytes;
-      const readProgress = (readBytes as number) - payload.readBytes;
-      const deliveredRemaining = payload.deliveredBytes === undefined
-        ? undefined
-        : payload.deliveredBytes - (readBytes as number);
-      const payloadCoversReadProgress = deliveredRemaining === undefined
-        ? readProgress >= 0 && readProgress < payload.availableBytes
-        : readProgress >= 0
-          && readProgress <= payload.availableBytes
-          && deliveredRemaining >= 0
-          && deliveredRemaining <= payload.availableBytes - readProgress;
-      if (payloadCoversReadProgress) {
-        const restoredHead = readProgress > 0
-          ? (payload.head + readProgress) % payload.capacity
-          : payload.head;
-        const restoredTail = deliveredRemaining === undefined
-          ? payload.tail
-          : (restoredHead + deliveredRemaining) % payload.capacity;
-        appendSocketSyncDebug(
-          handle,
-          `net-payload-watermark-use-progress:${handle.pid}:fd=${fd}:source=sync:payload=${payloadProgress}:current=${currentProgress}:phead=${payload.head}:rhead=${restoredHead}:ptail=${payload.tail}:rtail=${restoredTail}:ctail=${currentTail}`,
-        );
-        return {
-          head: restoredHead,
-          tail: restoredTail,
-          data: payload.data,
-        };
-      }
-      if (currentProgress > payloadProgress) {
-        appendSocketSyncDebug(
-          handle,
-          `net-payload-watermark-skip-progress:${handle.pid}:fd=${fd}:source=sync:payload=${payloadProgress}:current=${currentProgress}:ptail=${payload.tail}:ctail=${currentTail}`,
-        );
-        return null;
-      }
-      return null;
-    }
-  }
-  const payloadTailAhead = (() => {
-    if (payload.tail === currentTail) {
-      return true;
-    }
-    if (!Number.isFinite(capacity) || capacity <= 0) {
-      return payload.tail > currentTail;
-    }
-    const distance = (payload.tail - currentTail + capacity) % capacity;
-    return distance > 0 && distance < capacity / 2;
-  })();
-  if (payloadTailAhead) {
-    appendSocketSyncDebug(
-      handle,
-      `net-payload-watermark-use:${handle.pid}:fd=${fd}:source=sync:ptail=${payload.tail}:ctail=${currentTail}:cap=${capacity}`,
-    );
-    return {
-      head: payload.head,
-      tail: payload.tail,
-      data: payload.data,
-    };
-  }
-  return null;
-}
-
-export function preserveUsedNetBufferHeads(
-  handle: ProcessHandle,
-  netBufPoolBytes: number,
-  netBufUsed: bigint,
-  extraBufferIndices: Iterable<number> = [],
-): PreservedNetBufferHead[] {
-  const maxSockets = requireKernelSocketCount(handle.kernel);
-  const netBufferCount = maxSockets * 2;
-  const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
-  if (!Number.isInteger(netBufferBytes) || netBufferBytes <= NET_BUFFER_HEADER_BYTES) {
-    return [];
-  }
-  const preserved: PreservedNetBufferHead[] = [];
-  const memory = new Uint8Array(handle.memory.buffer);
-  const bufferIndices = new Set<number>();
-  const socketReadFloors = socketReadHeadFloorsByBuffer(handle, netBufPoolBytes);
-  for (let bufferIndex = 0; bufferIndex < netBufferCount; bufferIndex += 1) {
-    if ((netBufUsed & (1n << BigInt(bufferIndex))) === 0n) {
-      continue;
-    }
-    bufferIndices.add(bufferIndex);
-  }
-  for (const bufferIndex of extraBufferIndices) {
-    if (bufferIndex >= 0 && bufferIndex < netBufferCount) {
-      bufferIndices.add(bufferIndex);
-    }
-  }
-  for (const bufferIndex of bufferIndices) {
-    const offset = bufferIndex * netBufferBytes;
-    const absolute = handle.kernelState.netBufBase + offset;
-    const view = new DataView(memory.buffer, absolute, NET_BUFFER_HEADER_BYTES);
-    const currentHead = view.getUint32(NET_BUFFER_HEAD_OFFSET, true);
-    const currentTail = view.getUint32(NET_BUFFER_TAIL_OFFSET, true);
-    const socketReadFloor = socketReadFloors.get(bufferIndex) ?? 0;
-    preserved.push({
-      offset,
-      head: counterAhead(socketReadFloor, currentHead, netBufferBytes - NET_BUFFER_HEADER_BYTES)
-        ? socketReadFloor
-        : currentHead,
-      tail: currentTail,
-      data: memory.slice(absolute + NET_BUFFER_HEADER_BYTES, absolute + netBufferBytes),
-      capacity: netBufferBytes - NET_BUFFER_HEADER_BYTES,
-    });
-  }
-  return preserved;
-}
-
-export function socketReadHeadFloorsByBuffer(
-  handle: ProcessHandle,
-  netBufPoolBytes: number,
-): Map<number, number> {
-  const floors = new Map<number, number>();
-  const maxSockets = requireKernelSocketCount(handle.kernel);
-  const netBufferCount = maxSockets * 2;
-  const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
-  if (!Number.isInteger(netBufferBytes) || netBufferBytes <= NET_BUFFER_HEADER_BYTES) {
-    return floors;
-  }
-  const memory = new Uint8Array(handle.memory.buffer);
-  for (let socketIdx = 0; socketIdx < maxSockets; socketIdx += 1) {
-    const recvBufIdx = kernelSocketRecvBufferIndex(handle, socketIdx);
-    if (recvBufIdx < 0 || recvBufIdx >= netBufferCount) {
-      continue;
-    }
-    const absolute = handle.kernelState.netBufBase + recvBufIdx * netBufferBytes;
-    const view = new DataView(memory.buffer, absolute, NET_BUFFER_HEADER_BYTES);
-    const tail = view.getUint32(NET_BUFFER_TAIL_OFFSET, true);
-    const floor = socketReadHeadFloor(handle, socketIdx, tail, netBufferBytes - NET_BUFFER_HEADER_BYTES);
-    const previous = floors.get(recvBufIdx) ?? 0;
-    if (counterAhead(floor, previous, netBufferBytes - NET_BUFFER_HEADER_BYTES)) {
-      floors.set(recvBufIdx, floor);
-    }
-  }
-  return floors;
-}
-
-export function preservedSocketRecvBufferIndices(preserved: PreservedNetworkSocketSlot[]): number[] {
-  const indices: number[] = [];
-  for (const slot of preserved) {
-    const recvBufIdx = networkSocketSlotRecvBufferIndex(slot);
-    if (recvBufIdx >= 0) {
-      indices.push(recvBufIdx);
-    }
-  }
-  return indices;
-}
-
-export function netBufUsedMaskFromBufferIndices(indices: Iterable<number>): bigint {
-  let mask = 0n;
-  for (const index of indices) {
-    if (index >= 0) {
-      mask |= 1n << BigInt(index);
-    }
-  }
-  return mask;
-}
+const syncNetworkRecvDebug = {
+  source: "sync",
+  append: appendSocketSyncDebug,
+} as const;
 
 export function preserveNetworkRecvHeadWatermarks(
   handle: ProcessHandle,
   netBufPoolBytes: number,
 ): PreservedNetBufferHead[] {
-  const fds = [...runtimeNetworkFds(handle)];
-  if (fds.length === 0) {
-    return [];
-  }
-  const maxSockets = requireKernelSocketCount(handle.kernel);
-  const netBufferCount = maxSockets * 2;
-  const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
-  if (!Number.isInteger(netBufferBytes) || netBufferBytes <= NET_BUFFER_HEADER_BYTES) {
-    return [];
-  }
-  const preserved: PreservedNetBufferHead[] = [];
-  const memory = new Uint8Array(handle.memory.buffer);
-  for (const fd of fds) {
-    const socketIdx = kernelSocketIndexForFd(handle, handle.vmPtr, fd);
-    if (socketIdx < 0) {
-      handle.networkClosedFds?.delete(fd);
-      continue;
-    }
-    const recvBufIdx = kernelSocketRecvBufferIndex(handle, socketIdx);
-    if (recvBufIdx < 0 || recvBufIdx >= netBufferCount) {
-      continue;
-    }
-    const offset = recvBufIdx * netBufferBytes;
-    const absolute = handle.kernelState.netBufBase + offset;
-    const view = new DataView(memory.buffer, absolute, NET_BUFFER_HEADER_BYTES);
-    const currentHead = view.getUint32(NET_BUFFER_HEAD_OFFSET, true);
-    const currentTail = view.getUint32(NET_BUFFER_TAIL_OFFSET, true);
-    const capacity = netBufferBytes - NET_BUFFER_HEADER_BYTES;
-    const payload = networkRecvPayloadWatermark(handle, fd, socketIdx, currentTail, capacity);
-    const terminalRecv = kernelSocketState(handle, socketIdx) === SOCK_STATE_SHUTDOWN
-      && kernelSocketExternalPeer(handle, socketIdx) === 0;
-    const preservedTail = payload?.tail ?? currentTail;
-    const mergedHead = (() => {
-      if (terminalRecv) {
-        return currentHead;
-      }
-      if (payload !== null) {
-        return payload.head;
-      }
-      const available = kernelSocketRecvAvailable(handle, socketIdx);
-      if (available === 0 && currentHead === currentTail) {
-        return currentHead;
-      }
-      const floor = socketReadHeadFloor(handle, socketIdx, currentTail, capacity);
-      return counterAhead(floor, currentHead, capacity)
-        ? floor
-        : currentHead;
-    })();
-    preserved.push({
-      offset,
-      head: mergedHead,
-      tail: (() => {
-        if (payload !== null) {
-          handle.networkRecvTailWatermarks.set(fd, preservedTail);
-          return preservedTail;
-        }
-        if (terminalRecv) {
-          handle.networkRecvTailWatermarks.set(fd, mergedHead);
-          return mergedHead;
-        }
-        return rememberNetworkRecvTail(handle, fd, preservedTail, capacity);
-      })(),
-      data: payload?.data ?? memory.slice(absolute + NET_BUFFER_HEADER_BYTES, absolute + netBufferBytes),
-      restoreData: payload !== null,
-      capacity,
-      forceHead: true,
-      forceTail: payload !== null || terminalRecv,
-    });
-    handle.networkRecvHeadWatermarks.set(fd, mergedHead);
-  }
-  return preserved;
+  return preserveNetworkRecvHeadWatermarksCommon(handle, netBufPoolBytes, syncNetworkRecvDebug);
 }
 
 export function restoreMergedNetBufferHeads(
@@ -1243,51 +928,12 @@ export function restoreMergedNetBufferHeads(
   netBufBase: number,
   preserved: PreservedNetBufferHead[],
 ): void {
-  for (const buffer of preserved) {
-    const absolute = netBufBase + buffer.offset;
-    const view = new DataView(memory.buffer, absolute, NET_BUFFER_HEADER_BYTES);
-    const incomingHead = view.getUint32(NET_BUFFER_HEAD_OFFSET, true);
-    if (buffer.forceHead === true) {
-      if (incomingHead !== buffer.head && buffer.data !== undefined) {
-        memory.set(buffer.data, absolute + NET_BUFFER_HEADER_BYTES);
-      }
-      view.setUint32(NET_BUFFER_HEAD_OFFSET, buffer.head, true);
-    } else if (counterAhead(buffer.head, incomingHead, buffer.capacity)) {
-      view.setUint32(NET_BUFFER_HEAD_OFFSET, buffer.head, true);
-    }
-    if (buffer.tail !== undefined) {
-      const incomingTail = view.getUint32(NET_BUFFER_TAIL_OFFSET, true);
-      const incomingTailPlausible = incomingTail < buffer.capacity
-        && buffer.head < buffer.capacity;
-      if (!incomingTailPlausible) {
-        if (buffer.data !== undefined) {
-          memory.set(buffer.data, absolute + NET_BUFFER_HEADER_BYTES);
-        }
-        view.setUint32(NET_BUFFER_HEAD_OFFSET, buffer.head, true);
-        view.setUint32(NET_BUFFER_TAIL_OFFSET, buffer.tail, true);
-        continue;
-      }
-      const tailDistanceFromHead = (tail: number): number => (
-        tail - buffer.head + buffer.capacity
-      ) % buffer.capacity;
-      const preservedTailAhead = buffer.forceTail === true
-        ? true
-        : buffer.restoreData
-        ? tailDistanceFromHead(buffer.tail) > tailDistanceFromHead(incomingTail)
-        : counterAhead(buffer.tail, incomingTail, buffer.capacity);
-      const preservedTailCoversIncoming = buffer.tail === incomingTail
-        || preservedTailAhead;
-      if (buffer.restoreData && buffer.data !== undefined && preservedTailCoversIncoming) {
-        memory.set(buffer.data, absolute + NET_BUFFER_HEADER_BYTES);
-      }
-      if (buffer.forceTail === true || preservedTailAhead) {
-        if (!buffer.restoreData && buffer.data !== undefined) {
-          memory.set(buffer.data, absolute + NET_BUFFER_HEADER_BYTES);
-        }
-        view.setUint32(NET_BUFFER_TAIL_OFFSET, buffer.tail, true);
-      }
-    }
-  }
+  restoreMergedNetBufferHeadsCommon(
+    memory,
+    netBufBase,
+    preserved,
+    { restoreDataOnEqualTail: true, restorePlainDataOnTail: true },
+  );
 }
 
 export function snapshotNetworkBridgeSocketState(
