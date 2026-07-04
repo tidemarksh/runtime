@@ -14,6 +14,7 @@ import {
   adoptKernelStateForHandle,
   repairHandleVmPidAfterKernelStateAttach,
 } from "../kernel-state.js";
+import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 import type {
   KernelWorkerSocketStateSnapshot,
   ProcessHandle,
@@ -34,12 +35,7 @@ export async function syncSocketStateViaKernelWorker(
   netBufUsed: bigint;
   socketState?: KernelWorkerSocketStateSnapshot;
 }> {
-  if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-    return {
-      socketUsed: handle.kernelState.socketUsed,
-      netBufUsed: handle.kernelState.netBufUsed,
-    };
-  }
+  const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "syncSocketStateViaKernelWorker");
 
   const pidBeforeSync = handle.vmPtr === 0
     ? 0
@@ -51,7 +47,7 @@ export async function syncSocketStateViaKernelWorker(
   );
   let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
   try {
-    response = await handle.kernelWorkerRequest({
+    response = await kernelWorkerRequest({
       type: "sync-socket-state",
       pid: handle.pid,
       kernelState: handle.kernelState,

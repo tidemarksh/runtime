@@ -43,6 +43,7 @@ import {
   snapshotProcessState,
 } from "../ownership/process-state.js";
 import { collectRuntimeNetworkSocketOfdIds } from "../ownership/socket-control.js";
+import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 import type {
   ProcessHandle,
   SyncCause
@@ -59,9 +60,7 @@ export async function syncPipeStateViaKernelWorker(
   handle: ProcessHandle,
   cause: SyncCause,
 ): Promise<bigint> {
-  if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-    return handle.kernelState.pipeUsed;
-  }
+  const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "syncPipeStateViaKernelWorker");
   const processStateSnapshot = snapshotProcessState(handle);
   const fdEntries = snapshotProcessFdEntries(handle, handle.vmPtr);
   const fdEntryOfdIds = ofdIdsFromFdEntries(handle, fdEntries);
@@ -140,7 +139,7 @@ export async function syncPipeStateViaKernelWorker(
     ].join(":"),
   );
   try {
-    response = await handle.kernelWorkerRequest({
+    response = await kernelWorkerRequest({
       type: "sync-pipe-state",
       pid: handle.pid,
       vmPtr: handle.vmPtr,

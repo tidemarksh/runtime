@@ -15,6 +15,7 @@ import {
   snapshotProcessFdEntries,
 } from "../ownership/fd-table.js";
 import { snapshotKernelShareOfdSlots } from "../fork-shared.js";
+import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 import type {
   KernelWorkerFdEntrySnapshot,
   KernelWorkerOfdSlotSnapshot,
@@ -43,18 +44,16 @@ export async function syncEpollStateViaKernelWorker(
   handle: ProcessHandle,
   cause: SyncCause,
 ): Promise<void> {
-  if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-    return;
-  }
   if (collectHeldEpollOfdIds(handle).length === 0) {
     return;
   }
+  const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "syncEpollStateViaKernelWorker");
 
   const networkSocketSnapshots = snapshotNetworkBridgeSocketState([handle]);
   appendSocketSyncDebug(handle, `epoll-sync-request:${handle.pid}:${formatSyncCause(cause)}`);
   let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
   try {
-    response = await handle.kernelWorkerRequest({
+    response = await kernelWorkerRequest({
       type: "sync-epoll-state",
       pid: handle.pid,
       kernelState: handle.kernelState,
@@ -76,9 +75,10 @@ export async function syncOfdStateViaKernelWorker(
   cause: SyncCause,
   options: { mode?: "push" | "pull" } = {},
 ): Promise<void> {
-  if (!handle.kernelWorkerRequest || handle.pid <= 0 || ofdIds.length === 0) {
+  if (ofdIds.length === 0) {
     return;
   }
+  const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "syncOfdStateViaKernelWorker");
 
   const networkSocketSnapshots = snapshotNetworkBridgeSocketState([handle]);
   appendSocketSyncDebug(
@@ -87,7 +87,7 @@ export async function syncOfdStateViaKernelWorker(
   );
   let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
   try {
-    response = await handle.kernelWorkerRequest({
+    response = await kernelWorkerRequest({
       type: "sync-ofd-state",
       pid: handle.pid,
       ofdIds,
