@@ -50,6 +50,10 @@ import {
   syncPipeOfdGenerationsForSlot,
 } from "../ownership/ofd-table.js";
 import {
+  supervisorOfdPipeSlotModeMap,
+  supervisorOfdPipeSlots,
+} from "../ownership/pipe-slot.js";
+import {
   restoreProcessFdEntries,
   snapshotProcessFdEntries,
 } from "../ownership/fd-table.js";
@@ -474,15 +478,10 @@ export function collectFreshPipe2Slots(
   );
   const freshPipeSlots = new Set<number>();
   for (const ofdId of freshOfdIds) {
-    if (
-      !liveOfdIds.has(ofdId)
-      || ofdId >= handle.kernel.abi_max_fds()
-      || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
-    ) {
+    if (!liveOfdIds.has(ofdId) || ofdId >= handle.kernel.abi_max_fds()) {
       continue;
     }
-    const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-    if (pipeSlot > 0 && pipeSlot < handle.kernel.abi_max_pipes()) {
+    for (const pipeSlot of supervisorOfdPipeSlots(handle, ofdId)) {
       freshPipeSlots.add(pipeSlot);
     }
   }
@@ -517,25 +516,16 @@ export function snapshotFreshDuplexPipeSlots(
   const slotModes = new Map<number, number>();
   for (const entry of fdEntries) {
     const ofdId = entry.ofdId;
-    if (
-      ofdId <= 0
-      || ofdId >= handle.kernel.abi_max_fds()
-      || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
-    ) {
-      continue;
+    for (const [pipeSlot, mode] of supervisorOfdPipeSlotModeMap(handle, ofdId)) {
+      if (
+        pipeSlot <= 0
+        || pipeSlot >= maxPipes
+        || (pendingNonEmptyFullSlots.has(pipeSlot) && !freshPipe2Slots.has(pipeSlot))
+      ) {
+        continue;
+      }
+      slotModes.set(pipeSlot, (slotModes.get(pipeSlot) ?? 0) | mode);
     }
-    const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-    if (
-      pipeSlot <= 0
-      || pipeSlot >= maxPipes
-      || (pendingNonEmptyFullSlots.has(pipeSlot) && !freshPipe2Slots.has(pipeSlot))
-    ) {
-      continue;
-    }
-    const mode = handle.kernel.kernel_ofd_host_fd(ofdId) >= 0
-      ? PIPE_SLOT_MODE_READ
-      : PIPE_SLOT_MODE_WRITE;
-    slotModes.set(pipeSlot, (slotModes.get(pipeSlot) ?? 0) | mode);
   }
   const memory = new Uint8Array(handle.memory.buffer);
   const view = new DataView(handle.memory.buffer);
@@ -584,19 +574,10 @@ export function snapshotNonEmptyPipeSlotsForOfds(
   const pendingSlots = new Set(pendingSnapshots.map((snapshot) => snapshot.pipeSlot));
   const pipeSlotModes = new Map<number, number>();
   for (const ofdId of ofdIds) {
-    if (
-      ofdId <= 0
-      || ofdId >= handle.kernel.abi_max_fds()
-      || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
-    ) {
-      continue;
-    }
-    const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-    if (pipeSlot > 0 && pipeSlot < maxPipes && !pendingSlots.has(pipeSlot)) {
-      const mode = handle.kernel.kernel_ofd_host_fd(ofdId) >= 0
-        ? PIPE_SLOT_MODE_READ
-        : PIPE_SLOT_MODE_WRITE;
-      pipeSlotModes.set(pipeSlot, (pipeSlotModes.get(pipeSlot) ?? 0) | mode);
+    for (const [pipeSlot, mode] of supervisorOfdPipeSlotModeMap(handle, ofdId)) {
+      if (pipeSlot > 0 && pipeSlot < maxPipes && !pendingSlots.has(pipeSlot)) {
+        pipeSlotModes.set(pipeSlot, (pipeSlotModes.get(pipeSlot) ?? 0) | mode);
+      }
     }
   }
   const memory = new Uint8Array(handle.memory.buffer);

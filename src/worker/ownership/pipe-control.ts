@@ -18,6 +18,10 @@ import {
   collectProcessHeldOfds,
   syncPipeOfdGenerationsForSlot,
 } from "./ofd-table.js";
+import {
+  supervisorOfdPipeSlotMask,
+  supervisorOfdPipeSlots,
+} from "./pipe-slot.js";
 
 function supervisorMaskToBigInt(mask: bigint | number): bigint {
   return typeof mask === "bigint" ? mask : BigInt(mask);
@@ -62,21 +66,18 @@ function processPrivatePipeSlotMask(handle: ProcessHandle, vmPtr: number): bigin
   );
 }
 
-function processPrivatePipeSlotContains(handle: ProcessHandle, vmPtr: number, pipeSlot: number): boolean {
-  if (pipeSlot <= 0 || pipeSlot >= handle.kernel.abi_max_pipes()) {
+export function isProcessHostStdioOfd(handle: ProcessHandle, vmPtr: number, ofdId: number): boolean {
+  const privatePipeMask = processPrivatePipeSlotMask(handle, vmPtr);
+  if (privatePipeMask === 0n) {
     return false;
   }
-  return (processPrivatePipeSlotMask(handle, vmPtr) & (1n << BigInt(pipeSlot))) !== 0n;
-}
-
-export function isProcessHostStdioOfd(handle: ProcessHandle, vmPtr: number, ofdId: number): boolean {
+  const ofdPipeMask = supervisorOfdPipeSlotMask(handle, ofdId);
+  if ((ofdPipeMask & privatePipeMask) === 0n) {
+    return false;
+  }
   for (const fd of [0, 1, 2] as const) {
     const fdOfdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
-    if (
-      fdOfdId === ofdId
-      && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
-      && processPrivatePipeSlotContains(handle, vmPtr, handle.kernel.kernel_ofd_ino(ofdId))
-    ) {
+    if (fdOfdId === ofdId) {
       return true;
     }
   }
@@ -84,41 +85,22 @@ export function isProcessHostStdioOfd(handle: ProcessHandle, vmPtr: number, ofdI
 }
 
 export function isProcessHostStdioPipeOfd(handle: ProcessHandle, ofdId: number): boolean {
-  if (
-    ofdId <= 0
-    || ofdId >= handle.kernel.abi_max_fds()
-    || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
-  ) {
-    return false;
-  }
-  const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-  return processPrivatePipeSlotContains(handle, handle.vmPtr, pipeSlot);
+  return (supervisorOfdPipeSlotMask(handle, ofdId) & processPrivatePipeSlotMask(handle, handle.vmPtr)) !== 0n;
 }
 
 export function expandPipePeerOfdIds(handle: ProcessHandle, ofdIds: Iterable<number>): number[] {
-  const pipeSlots = new Set<number>();
+  let pipeSlotMask = 0n;
   for (const ofdId of ofdIds) {
-    if (ofdId <= 0 || ofdId >= handle.kernel.abi_max_fds()) {
-      continue;
-    }
-    if (handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()) {
-      const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-      if (pipeSlot > 0) {
-        pipeSlots.add(pipeSlot);
-      }
-    }
+    pipeSlotMask |= supervisorOfdPipeSlotMask(handle, ofdId);
   }
-  if (pipeSlots.size === 0) {
+  if (pipeSlotMask === 0n) {
     return [];
   }
 
   const peers = new Set<number>();
   for (const member of handle.kernelShare.members) {
     for (const ofdId of collectProcessHeldOfds(member)) {
-      if (
-        member.kernel.kernel_ofd_fd_type(ofdId) === member.kernel.abi_fd_type_pipe()
-        && pipeSlots.has(member.kernel.kernel_ofd_ino(ofdId))
-      ) {
+      if ((supervisorOfdPipeSlotMask(member, ofdId) & pipeSlotMask) !== 0n) {
         peers.add(ofdId);
       }
     }
@@ -127,18 +109,12 @@ export function expandPipePeerOfdIds(handle: ProcessHandle, ofdIds: Iterable<num
 }
 
 export function pipeSlotForOfd(handle: ProcessHandle, ofdId: number): number {
-  if (ofdId <= 0 || ofdId >= handle.kernel.abi_max_fds()) {
-    return 0;
-  }
-  if (handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()) {
-    return 0;
-  }
-  return handle.kernel.kernel_ofd_ino(ofdId);
+  return supervisorOfdPipeSlots(handle, ofdId)[0] ?? 0;
 }
 
 export function hasPipePeerInOtherKernelShareMember(handle: ProcessHandle, ofdId: number): boolean {
-  const pipeSlot = pipeSlotForOfd(handle, ofdId);
-  if (pipeSlot <= 0) {
+  const pipeSlotMask = supervisorOfdPipeSlotMask(handle, ofdId);
+  if (pipeSlotMask === 0n) {
     return false;
   }
   for (const member of handle.kernelShare.members) {
@@ -146,10 +122,7 @@ export function hasPipePeerInOtherKernelShareMember(handle: ProcessHandle, ofdId
       continue;
     }
     for (const peerOfdId of collectProcessHeldOfds(member)) {
-      if (
-        member.kernel.kernel_ofd_fd_type(peerOfdId) === member.kernel.abi_fd_type_pipe()
-        && member.kernel.kernel_ofd_ino(peerOfdId) === pipeSlot
-      ) {
+      if ((supervisorOfdPipeSlotMask(member, peerOfdId) & pipeSlotMask) !== 0n) {
         return true;
       }
     }
@@ -493,12 +466,10 @@ export function snapshotProcessPipeSlotsForThreadStep(
   }
   const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
   const maxPipes = handle.kernel.abi_max_pipes?.() ?? 0;
-  const pipeType = handle.kernel.abi_fd_type_pipe?.();
   const slotBytes = maxPipes > 0 ? handle.kernel.kernel_pipe_region_bytes() / maxPipes : 0;
   if (
     maxFds <= 0
     || maxPipes <= 0
-    || pipeType === undefined
     || !Number.isInteger(slotBytes)
     || slotBytes <= 0
   ) {
@@ -508,25 +479,19 @@ export function snapshotProcessPipeSlotsForThreadStep(
   const snapshots = new Map<number, KernelWorkerPipeSlotSnapshot>();
   for (let fd = 0; fd < maxFds; fd += 1) {
     const ofdId = handle.kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
-    if (
-      ofdId <= 0
-      || ofdId >= maxFds
-      || handle.kernel.kernel_ofd_fd_type?.(ofdId) !== pipeType
-    ) {
-      continue;
+    for (const pipeSlot of supervisorOfdPipeSlots(handle, ofdId)) {
+      if (pipeSlot <= 0 || pipeSlot >= maxPipes || snapshots.has(pipeSlot)) {
+        continue;
+      }
+      const offset = handle.kernelState.pipeBase + pipeSlot * slotBytes;
+      if (offset < 0 || offset + slotBytes > memory.byteLength) {
+        continue;
+      }
+      snapshots.set(pipeSlot, {
+        pipeSlot,
+        slot: memory.slice(offset, offset + slotBytes),
+      });
     }
-    const pipeSlot = handle.kernel.kernel_ofd_ino?.(ofdId) ?? 0;
-    if (pipeSlot <= 0 || pipeSlot >= maxPipes || snapshots.has(pipeSlot)) {
-      continue;
-    }
-    const offset = handle.kernelState.pipeBase + pipeSlot * slotBytes;
-    if (offset < 0 || offset + slotBytes > memory.byteLength) {
-      continue;
-    }
-    snapshots.set(pipeSlot, {
-      pipeSlot,
-      slot: memory.slice(offset, offset + slotBytes),
-    });
   }
   return [...snapshots.values()];
 }

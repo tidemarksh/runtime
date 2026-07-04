@@ -120,34 +120,59 @@ function makeKernel(memory: WebAssembly.Memory): FakeKernel {
   const pipeBit = (pipeSlot: number): bigint => (
     pipeSlot > 0 && pipeSlot < 64 ? 1n << BigInt(pipeSlot) : 0n
   );
-  const pipeModeForOfd = (ofdId: number): { pipeSlot: number; mode: number } | null => {
+  const pipeModesForOfd = (ofdId: number): Array<{ pipeSlot: number; mode: number }> => {
     if (ofdId <= 0 || ofdId >= 32) {
-      return null;
+      return [];
     }
     const view = new DataView(memory.buffer);
     const ofdBase = state.ofdTablePtr + ofdId * 32;
-    if (view.getInt32(ofdBase, true) !== FD_TYPE_PIPE) {
-      return null;
+    const fdType = view.getInt32(ofdBase, true);
+    const ino = view.getUint32(ofdBase + 24, true);
+    const accessMode = view.getInt32(ofdBase + 8, true) & 0x3;
+    if (fdType === FD_TYPE_PIPE) {
+      const pipeSlot = ino;
+      if (pipeSlot <= 0 || pipeSlot >= 64) {
+        return [];
+      }
+      return [{
+        pipeSlot,
+        mode: view.getInt32(ofdBase + 4, true) >= 0 ? PIPE_SLOT_MODE_READ : PIPE_SLOT_MODE_WRITE,
+      }];
     }
-    const pipeSlot = view.getUint32(ofdBase + 24, true);
-    if (pipeSlot <= 0 || pipeSlot >= 64) {
-      return null;
+    if (fdType !== FD_TYPE_PTY_SLAVE && fdType !== FD_TYPE_PTY_MASTER) {
+      return [];
     }
-    return {
-      pipeSlot,
-      mode: view.getInt32(ofdBase + 4, true) >= 0 ? PIPE_SLOT_MODE_READ : PIPE_SLOT_MODE_WRITE,
-    };
+    const inputPipe = ino * 2 + 1;
+    const outputPipe = ino * 2 + 2;
+    const modes: Array<{ pipeSlot: number; mode: number }> = [];
+    if (fdType === FD_TYPE_PTY_SLAVE) {
+      if (accessMode !== 1) {
+        modes.push({ pipeSlot: inputPipe, mode: PIPE_SLOT_MODE_READ });
+      }
+      if (accessMode !== 0) {
+        modes.push({ pipeSlot: outputPipe, mode: PIPE_SLOT_MODE_WRITE });
+      }
+    } else {
+      if (accessMode !== 1) {
+        modes.push({ pipeSlot: outputPipe, mode: PIPE_SLOT_MODE_READ });
+      }
+      if (accessMode !== 0) {
+        modes.push({ pipeSlot: inputPipe, mode: PIPE_SLOT_MODE_WRITE });
+      }
+    }
+    return modes.filter(({ pipeSlot }) => pipeSlot > 0 && pipeSlot < 64);
+  };
+  const pipeModeForOfd = (ofdId: number): { pipeSlot: number; mode: number } | null => {
+    return pipeModesForOfd(ofdId)[0] ?? null;
   };
   const heldPipeSlotMask = (): bigint => {
     let mask = 0n;
     for (let ofdId = 1; ofdId < 32; ofdId += 1) {
-      const pipeMode = pipeModeForOfd(ofdId);
-      if (!pipeMode) {
-        continue;
-      }
-      const bit = pipeBit(pipeMode.pipeSlot);
-      if (bit !== 0n && (privatePipeMask & bit) === 0n && (fdMapHasOfd(ofdId) || blockedMapHasOfd(ofdId))) {
-        mask |= bit;
+      for (const pipeMode of pipeModesForOfd(ofdId)) {
+        const bit = pipeBit(pipeMode.pipeSlot);
+        if (bit !== 0n && (privatePipeMask & bit) === 0n && (fdMapHasOfd(ofdId) || blockedMapHasOfd(ofdId))) {
+          mask |= bit;
+        }
       }
     }
     return mask;
@@ -161,9 +186,10 @@ function makeKernel(memory: WebAssembly.Memory): FakeKernel {
       if (!fdMapHasOfd(ofdId) && !blockedMapHasOfd(ofdId)) {
         continue;
       }
-      const pipeMode = pipeModeForOfd(ofdId);
-      if (pipeMode?.pipeSlot === pipeSlot) {
-        mode |= pipeMode.mode;
+      for (const pipeMode of pipeModesForOfd(ofdId)) {
+        if (pipeMode.pipeSlot === pipeSlot) {
+          mode |= pipeMode.mode;
+        }
       }
     }
     return mode;
@@ -174,9 +200,11 @@ function makeKernel(memory: WebAssembly.Memory): FakeKernel {
       if (!fdMapHasOfd(ofdId) && !blockedMapHasOfd(ofdId)) {
         continue;
       }
-      const pipeMode = pipeModeForOfd(ofdId);
-      if (pipeMode?.pipeSlot === pipeSlot && (pipeMode.mode & requestedMode) !== 0) {
-        count += 1;
+      for (const pipeMode of pipeModesForOfd(ofdId)) {
+        if (pipeMode.pipeSlot === pipeSlot && (pipeMode.mode & requestedMode) !== 0) {
+          count += 1;
+          break;
+        }
       }
     }
     return count;
@@ -308,6 +336,15 @@ function makeKernel(memory: WebAssembly.Memory): FakeKernel {
     supervisor_process_held_pipe_slot_mask: () => heldPipeSlotMask(),
     supervisor_process_pipe_used_mask: () => 1n | privatePipeMask | heldPipeSlotMask(),
     supervisor_process_pipe_slot_mode: (_vmPtr: number, pipeSlot: number) => pipeSlotMode(pipeSlot),
+    supervisor_ofd_pipe_slot_mask: (ofdId: number) => (
+      pipeModesForOfd(ofdId).reduce((mask, { pipeSlot }) => mask | pipeBit(pipeSlot), 0n)
+    ),
+    supervisor_ofd_pipe_slot_mode: (ofdId: number, pipeSlot: number) => (
+      pipeModesForOfd(ofdId).reduce(
+        (mode, candidate) => candidate.pipeSlot === pipeSlot ? mode | candidate.mode : mode,
+        0,
+      )
+    ),
     supervisor_process_pipe_read_open_count: (_vmPtr: number, pipeSlot: number) => (
       pipeOpenCount(pipeSlot, PIPE_SLOT_MODE_READ)
     ),
@@ -555,6 +592,7 @@ test("local pipe snapshots preserve PTY-backed stdio pipe slots across scrubbed 
   };
   seedOfd(memory, handle.kernelState.ofdTablePtr, 20, FD_TYPE_PTY_SLAVE, 10, 0xf1);
   seedOfd(memory, handle.kernelState.ofdTablePtr, 21, FD_TYPE_PTY_SLAVE, 10, 0xf2);
+  new DataView(memory.buffer).setInt32(handle.kernelState.ofdTablePtr + 21 * 32 + 8, 1, true);
   seedPipeSlot(memory, handle.kernelState.pipeBase, 21, 0xa1);
   seedPipeSlot(memory, handle.kernelState.pipeBase, 22, 0xb2);
   kernelWithPty.kernel_ofd_status_flags = (ofdId: number) => {

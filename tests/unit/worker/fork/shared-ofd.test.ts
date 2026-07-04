@@ -24,6 +24,9 @@ function makeHandle(
       abi_fd_type_file: () => 1,
       process_fd_ofd_id: (_vmPtr: number, fd: number) => heldOfdIds[fd] ?? 0,
       process_thread_vm_ptr: () => 0,
+      supervisor_process_held_ofd_refcount: (_vmPtr: number, ofdId: number) => (
+        heldOfdIds.filter((heldOfdId) => heldOfdId === ofdId).length
+      ),
       kernel_ofd_fd_type: (ofdId: number) => regularFileOfdIdSet.has(ofdId) ? 1 : 6,
     },
   } as unknown as ProcessHandle;
