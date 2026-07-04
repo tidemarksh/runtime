@@ -381,13 +381,11 @@ export async function handleVforkExecve(
       handoffBeforePreflight.envp,
       parentThread.execveProcessState,
     );
-    if (handle.kernelWorkerRequest && handle.pid > 0) {
-      deps.appendRuntimeLifecycleEvent(
-        handle.runtimeId,
-        `vfork-execve:memfs-preflight-skipped:${childPid}`,
-      );
-      assertVforkChildHandoffState(handle, parentThread.vmPtr, childPid, "child-handoff-no-preflight");
-    }
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `vfork-execve:memfs-preflight-skipped:${childPid}`,
+    );
+    assertVforkChildHandoffState(handle, parentThread.vmPtr, childPid, "child-handoff-no-preflight");
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:start:${childPid}`);
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,

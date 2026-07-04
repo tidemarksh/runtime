@@ -99,7 +99,7 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
   }
 
   async function syncOwnedStateBeforeExit(handle: ProcessHandle): Promise<void> {
-    if (handle.kernelWorkerRequest && handle.pid > 0) {
+    if (handle.pid > 0) {
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `exit-owned-state-sync-before:${handle.pid}:${formatExitOwnedStateFdDebug(handle)}`,
@@ -193,14 +193,6 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
         + `:snapshot_child=${snapshot.childPid ?? "none"}`
         + `:exit=${exitCode}:${termSignal}:wait=${waitStatus}`,
     );
-
-    if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-      deps.workerExitFailProcess(
-        handle,
-        new Error("resumeVforkParentAfterChildExit requires kernel-worker ownership"),
-      );
-      return true;
-    }
 
     void deps.resumeVforkParentViaKernelWorker(handle, worker, vmPtr, waitStatus).catch((error) => {
       deps.workerExitFailProcess(handle, error instanceof Error ? error : new Error(String(error)));
