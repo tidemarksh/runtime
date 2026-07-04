@@ -306,6 +306,30 @@ export interface KernelExports {
     syscallNr: bigint | number,
     flags: number,
   ): number;
+  supervisor_fd_entry_guest_write_action?(
+    vmPtr: number,
+    fd: number,
+    candidateOfdId: number,
+    explicitOfdId: number,
+  ): number;
+  supervisor_ofd_slot_write_action?(
+    ofdId: number,
+    candidateType: number,
+    candidateHostFd: number,
+    candidateIno: number,
+    candidateOffset: bigint | number,
+  ): number;
+  supervisor_ofd_slot_restore_flag_referenced_by_fd_entry?(): number;
+  supervisor_ofd_slot_restore_flag_trust_regular_file_offset?(): number;
+  supervisor_ofd_slot_restore_action?(
+    ofdId: number,
+    candidateType: number,
+    candidateHostFd: number,
+    candidateIno: number,
+    candidateOffset: bigint | number,
+    syscallNr: bigint | number,
+    flags: number,
+  ): number;
   supervisor_fs_local_metadata_action_none?(): number;
   supervisor_fs_local_metadata_action_tombstone_primary?(): number;
   supervisor_fs_local_metadata_action_forget_primary?(): number;
@@ -1691,6 +1715,11 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fd_entry_restore_flag_preserve_live_regular_file",
   "supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent",
   "supervisor_fd_entry_restore_action",
+  "supervisor_fd_entry_guest_write_action",
+  "supervisor_ofd_slot_write_action",
+  "supervisor_ofd_slot_restore_flag_referenced_by_fd_entry",
+  "supervisor_ofd_slot_restore_flag_trust_regular_file_offset",
+  "supervisor_ofd_slot_restore_action",
   "supervisor_fs_local_metadata_action_none",
   "supervisor_fs_local_metadata_action_tombstone_primary",
   "supervisor_fs_local_metadata_action_forget_primary",

@@ -66,6 +66,8 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_fd_entry_restore_action_skip: 2,
   supervisor_fd_entry_restore_flag_preserve_live_regular_file: 1,
   supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent: 2,
+  supervisor_ofd_slot_restore_flag_referenced_by_fd_entry: 1,
+  supervisor_ofd_slot_restore_flag_trust_regular_file_offset: 2,
   supervisor_fork_shared_peer_flag_compatible: 1,
   supervisor_fork_shared_peer_flag_incompatible: 1 << 1,
   supervisor_fork_shared_peer_flag_pipe_peer: 1 << 2,
@@ -266,6 +268,7 @@ export function makeSupervisorAbiStubs(
   const cloneSpawnHostOpChildVmPtrs = new Map<number, number>();
   const networkPumpBackoffs = new Set<number>();
   const stateSyncRequests = new Map<string, { queuedRunFlags: number; inFlight: boolean }>();
+  const ofdRestoreOffsetFloors = new Map<number, { hostFd: number; ino: number; offset: bigint }>();
   const currentExports = (receiver: KernelExports | undefined): Partial<KernelExports> =>
     receiver ?? overrides.currentExports?.() ?? overrides;
   const callNumber = (receiver: Partial<KernelExports>, name: keyof KernelExports, ...args: unknown[]): number => {
@@ -280,6 +283,11 @@ export function makeSupervisorAbiStubs(
     }
     const value = fn(...args);
     return typeof value === "bigint" ? Number(value) : Number(value);
+  };
+  const callBigInt = (receiver: Partial<KernelExports>, name: keyof KernelExports, ...args: unknown[]): bigint => {
+    const fn = (receiver[name] ?? overrides[name]) as ((...params: unknown[]) => unknown) | undefined;
+    const value = fn?.(...args);
+    return typeof value === "bigint" ? value : BigInt(Math.trunc(Number(value ?? 0)));
   };
   const statusFor = (receiver: Partial<KernelExports>, vmPtr: number): number =>
     callNumber(receiver, "thread_status", vmPtr);
@@ -663,6 +671,144 @@ export function makeSupervisorAbiStubs(
       return 0;
     }
     return sourceHoldsRegularFile !== 0 && regularFileHasPeer === 0 ? 0 : 1;
+  };
+  const fdTypeIsPipeLike = (receiver: Partial<KernelExports>, fdType: number): boolean =>
+    fdType === callNumber(receiver, "abi_fd_type_pipe")
+    || fdType === callOptionalNumber(receiver, "abi_fd_type_pty_master")
+    || fdType === callOptionalNumber(receiver, "abi_fd_type_pty_slave");
+  const regularFileOfdsShareIdentity = (
+    receiver: Partial<KernelExports>,
+    currentOfdId: number,
+    candidateOfdId: number,
+  ): boolean =>
+    callNumber(receiver, "kernel_ofd_fd_type", currentOfdId) === callNumber(receiver, "abi_fd_type_file")
+    && callNumber(receiver, "kernel_ofd_fd_type", candidateOfdId) === callNumber(receiver, "abi_fd_type_file")
+    && callNumber(receiver, "kernel_ofd_host_fd", currentOfdId) === callNumber(receiver, "kernel_ofd_host_fd", candidateOfdId)
+    && callNumber(receiver, "kernel_ofd_ino", currentOfdId) === callNumber(receiver, "kernel_ofd_ino", candidateOfdId);
+  const supervisorFdEntryGuestWriteAction = (
+    receiver: Partial<KernelExports>,
+    vmPtr: number,
+    fd: number,
+    candidateOfdId: number,
+    explicitOfdId: number,
+  ): number => {
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    if (fd < 0 || fd >= maxFds || candidateOfdId < 0 || candidateOfdId >= maxFds) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+    }
+    const currentOfdId = callNumber(receiver, "process_fd_ofd_id", vmPtr, fd);
+    if (currentOfdId <= 0 || currentOfdId >= maxFds || currentOfdId === candidateOfdId) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+    }
+    const currentType = callNumber(receiver, "kernel_ofd_fd_type", currentOfdId);
+    if (explicitOfdId === currentOfdId && fdTypeIsPipeLike(receiver, currentType)) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
+    if (
+      candidateOfdId > 0
+      && candidateOfdId < maxFds
+      && callNumber(receiver, "kernel_ofd_refcount", currentOfdId) > 0
+      && regularFileOfdsShareIdentity(receiver, currentOfdId, candidateOfdId)
+      && callBigInt(receiver, "kernel_ofd_offset", candidateOfdId) < callBigInt(receiver, "kernel_ofd_offset", currentOfdId)
+    ) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+  };
+  const supervisorOfdSlotWriteAction = (
+    receiver: Partial<KernelExports>,
+    ofdId: number,
+    candidateType: number,
+    candidateHostFd: number,
+    candidateIno: number,
+    candidateOffset: bigint | number,
+  ): number => {
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    if (ofdId <= 0 || ofdId >= maxFds) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
+    const currentType = callNumber(receiver, "kernel_ofd_fd_type", ofdId);
+    if (currentType === 0 || callNumber(receiver, "kernel_ofd_refcount", ofdId) <= 0) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+    }
+    if (candidateType === 0 || candidateType !== currentType) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
+    if (
+      candidateHostFd !== callNumber(receiver, "kernel_ofd_host_fd", ofdId)
+      || candidateIno !== callNumber(receiver, "kernel_ofd_ino", ofdId)
+    ) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
+    const candidate = typeof candidateOffset === "bigint" ? candidateOffset : BigInt(Math.trunc(candidateOffset));
+    if (
+      currentType === callNumber(receiver, "abi_fd_type_file")
+      && candidate < callBigInt(receiver, "kernel_ofd_offset", ofdId)
+    ) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+  };
+  const supervisorOfdSlotRestoreAction = (
+    receiver: Partial<KernelExports>,
+    ofdId: number,
+    candidateType: number,
+    candidateHostFd: number,
+    candidateIno: number,
+    candidateOffset: bigint | number,
+    syscallNr: bigint | number,
+    flags: number,
+  ): number => {
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    if (ofdId <= 0 || ofdId >= maxFds) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
+    const currentType = callNumber(receiver, "kernel_ofd_fd_type", ofdId);
+    if (currentType === 0 || callNumber(receiver, "kernel_ofd_refcount", ofdId) <= 0) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+    }
+    const referencedByFdEntry = (flags
+      & DEFAULT_NUMERIC_EXPORTS.supervisor_ofd_slot_restore_flag_referenced_by_fd_entry) !== 0;
+    if (!referencedByFdEntry) {
+      if (candidateType === 0 || candidateType !== currentType) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+      }
+      if (
+        candidateHostFd !== callNumber(receiver, "kernel_ofd_host_fd", ofdId)
+        || candidateIno !== callNumber(receiver, "kernel_ofd_ino", ofdId)
+      ) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+      }
+    }
+    if (
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_ofd_slot_restore_flag_trust_regular_file_offset) !== 0
+      || currentType !== callNumber(receiver, "abi_fd_type_file")
+      || candidateType !== callNumber(receiver, "abi_fd_type_file")
+      || candidateHostFd !== callNumber(receiver, "kernel_ofd_host_fd", ofdId)
+      || candidateIno !== callNumber(receiver, "kernel_ofd_ino", ofdId)
+    ) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+    }
+    const currentOffset = callBigInt(receiver, "kernel_ofd_offset", ofdId);
+    const candidate = typeof candidateOffset === "bigint" ? candidateOffset : BigInt(Math.trunc(candidateOffset));
+    const floor = ofdRestoreOffsetFloors.get(ofdId);
+    const maxSeen = floor?.hostFd === candidateHostFd && floor.ino === candidateIno
+      ? floor.offset
+      : currentOffset;
+    const nextMax = candidate > currentOffset ? candidate : currentOffset;
+    if (nextMax > maxSeen) {
+      ofdRestoreOffsetFloors.set(ofdId, { hostFd: candidateHostFd, ino: candidateIno, offset: nextMax });
+    }
+    if (candidate < maxSeen) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
+    if (candidate >= currentOffset) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+    }
+    const syscall = typeof syscallNr === "bigint" ? syscallNr : BigInt(Math.trunc(syscallNr));
+    return syscall === BigInt(callNumber(receiver, "abi_sys_lseek"))
+      ? DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply
+      : DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
   };
   const processEpollHeldOfdIds = (receiver: Partial<KernelExports>, vmPtr: number): number[] => {
     const epollType = callNumber(receiver, "abi_fd_type_epoll");
@@ -1145,6 +1291,65 @@ export function makeSupervisorAbiStubs(
         return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
       }
       return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+    },
+    supervisor_fd_entry_guest_write_action(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      fd: number,
+      candidateOfdId: number,
+      explicitOfdId: number,
+    ) {
+      return supervisorFdEntryGuestWriteAction(
+        currentExports(this),
+        vmPtr,
+        fd,
+        candidateOfdId,
+        explicitOfdId,
+      );
+    },
+    supervisor_ofd_slot_write_action(
+      this: KernelExports | undefined,
+      ofdId: number,
+      candidateType: number,
+      candidateHostFd: number,
+      candidateIno: number,
+      candidateOffset: bigint | number,
+    ) {
+      return supervisorOfdSlotWriteAction(
+        currentExports(this),
+        ofdId,
+        candidateType,
+        candidateHostFd,
+        candidateIno,
+        candidateOffset,
+      );
+    },
+    supervisor_ofd_slot_restore_flag_referenced_by_fd_entry() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_ofd_slot_restore_flag_referenced_by_fd_entry;
+    },
+    supervisor_ofd_slot_restore_flag_trust_regular_file_offset() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_ofd_slot_restore_flag_trust_regular_file_offset;
+    },
+    supervisor_ofd_slot_restore_action(
+      this: KernelExports | undefined,
+      ofdId: number,
+      candidateType: number,
+      candidateHostFd: number,
+      candidateIno: number,
+      candidateOffset: bigint | number,
+      syscallNr: bigint | number,
+      flags: number,
+    ) {
+      return supervisorOfdSlotRestoreAction(
+        currentExports(this),
+        ofdId,
+        candidateType,
+        candidateHostFd,
+        candidateIno,
+        candidateOffset,
+        syscallNr,
+        flags,
+      );
     },
     supervisor_process_epoll_held_ofd(
       this: KernelExports | undefined,
