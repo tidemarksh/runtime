@@ -1,19 +1,14 @@
 import type { ProcessHandle } from "./types.js";
-import { kernelSocketCount } from "../kernel-socket-layout.js";
+import { requireKernelSocketCount } from "../kernel-socket-layout.js";
 import {
   SOCKET_SLOT_RECV_BUF_IDX_OFFSET,
   SOCKET_SLOT_SHUTDOWN_MASK_OFFSET,
 } from "../layout/socket.js";
+import { kernelSocketIndexForFd } from "./ownership/socket-control.js";
 
 function socketSlotBytes(handle: ProcessHandle): number {
-  const maxSockets = kernelSocketCount(handle.kernel);
-  if (maxSockets === undefined) {
-    return 0;
-  }
-  const socketTableBytes = handle.kernel.kernel_socket_table_bytes?.();
-  if (socketTableBytes === undefined) {
-    return 0;
-  }
+  const maxSockets = requireKernelSocketCount(handle.kernel);
+  const socketTableBytes = handle.kernel.kernel_socket_table_bytes();
   const bytes = maxSockets > 0 ? socketTableBytes / maxSockets : 0;
   return Number.isInteger(bytes) && bytes > SOCKET_SLOT_SHUTDOWN_MASK_OFFSET + 4 ? bytes : 0;
 }
@@ -53,12 +48,9 @@ export function snapshotNetworkSocketSlot(
   vmPtr: number,
   fd: number,
 ): { offset: number; data: Uint8Array } | null {
-  const maxSockets = kernelSocketCount(handle.kernel);
-  if (maxSockets === undefined) {
-    return null;
-  }
+  const maxSockets = requireKernelSocketCount(handle.kernel);
   const bytes = socketSlotBytes(handle);
-  const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
+  const socketIdx = kernelSocketIndexForFd(handle, vmPtr, fd);
   if (socketIdx < 0 || socketIdx >= maxSockets || bytes <= 0) {
     return null;
   }

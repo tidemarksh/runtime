@@ -27,6 +27,7 @@ type NetworkBridgeKernelFixture = {
   abi_max_fds?: () => number;
   abi_max_sockets?: () => number;
   kernel_net_buf_pool_bytes?: () => number;
+  kernel_socket_table_bytes?: () => number;
   kernel_ofd_fd_type?: (ofdId: number) => number;
   process_fd_ofd_id?: (vmPtr: number, fd: number) => number;
   thread_socket_idx_for_fd?: (vmPtr: number, fd: number) => number;
@@ -59,6 +60,7 @@ type NetworkBridgeKernelFixture = {
 function withSupervisorSocketDefaults<T extends NetworkBridgeKernelFixture>(kernel: T): T {
   kernel.abi_max_sockets ??= vi.fn(() => 1);
   kernel.kernel_net_buf_pool_bytes ??= vi.fn(() => 0);
+  kernel.kernel_socket_table_bytes ??= vi.fn(() => 0);
   kernel.thread_socket_idx_for_fd ??= vi.fn((vmPtr, fd) => {
     const ofdId = kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
     return ofdId > 0 && kernel.kernel_ofd_fd_type?.(ofdId) === kernel.abi_fd_type_socket?.()
