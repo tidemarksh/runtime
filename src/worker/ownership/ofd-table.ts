@@ -249,10 +249,6 @@ export function trackForkSharedOfds(
   return [...retained].sort((left, right) => left - right);
 }
 
-export function retainForkSharedOfds(handle: ProcessHandle): void {
-  trackForkSharedOfds(handle, handle.vmPtr, true);
-}
-
 export function snapshotLocalOfdSlots(
   handle: ProcessHandle,
   ofdIds: Iterable<number>,

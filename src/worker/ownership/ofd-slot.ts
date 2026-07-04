@@ -39,7 +39,7 @@ const maxRegularFileOffsetByHandle = new WeakMap<ProcessHandle, Map<number, {
   offset: bigint;
 }>>();
 
-export function explicitPipeFdEntryWouldRollBack(
+function explicitPipeFdEntryWouldRollBack(
   handle: ProcessHandle,
   explicitOfdId: number | undefined,
   currentOfdId: number,
@@ -61,7 +61,7 @@ export function explicitPipeFdEntryWouldRollBack(
     || currentType === handle.kernel.abi_fd_type_pty_slave?.();
 }
 
-export function regularFileFdEntryWouldRollBack(
+function regularFileFdEntryWouldRollBack(
   handle: ProcessHandle,
   fileType: number,
   currentOfdId: number,
@@ -85,7 +85,7 @@ export function regularFileFdEntryWouldRollBack(
     && handle.kernel.kernel_ofd_offset(candidateOfdId) < handle.kernel.kernel_ofd_offset(currentOfdId);
 }
 
-export function ofdSlotWriteWouldClobberIdentityOrRollBack(
+function ofdSlotWriteWouldClobberIdentityOrRollBack(
   handle: ProcessHandle,
   currentSlot: Uint8Array,
   candidateSlot: Uint8Array,
@@ -113,7 +113,7 @@ export function ofdSlotWriteWouldClobberIdentityOrRollBack(
     && candidateView.getBigInt64(OFD_OFFSET_OFFSET, true) < currentView.getBigInt64(OFD_OFFSET_OFFSET, true);
 }
 
-export function ofdSnapshotWouldClobberExistingSlot(
+function ofdSnapshotWouldClobberExistingSlot(
   handle: ProcessHandle,
   fdEntries: readonly FdEntryLike[] | undefined,
   snapshot: OfdSlotSnapshotLike,
@@ -265,7 +265,7 @@ export function maskIncompatibleOfdSlotKernelWrite(
   return masked ?? bytes;
 }
 
-export function ofdSnapshotWouldRollBackRegularFileOffset(
+function ofdSnapshotWouldRollBackRegularFileOffset(
   handle: ProcessHandle,
   msg: StatusMessageLike,
   snapshot: OfdSlotSnapshotLike,
@@ -330,7 +330,7 @@ export function ofdSnapshotWouldRollBackRegularFileOffset(
   return syscallNr === undefined || syscallNr !== BigInt(lseekNr ?? 62);
 }
 
-export function recordRegularFileOfdOffsets(
+function recordRegularFileOfdOffsets(
   handle: ProcessHandle,
   msg: StatusMessageLike,
   slotBytes: number,

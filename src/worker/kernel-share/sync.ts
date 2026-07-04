@@ -107,7 +107,7 @@ function ofdSlotSnapshotCanApply(
   return true;
 }
 
-export function clearEpollState(target: KernelSyncHandle): void {
+function clearEpollState(target: KernelSyncHandle): void {
   const tableBytes = target.kernel.kernel_epoll_table_bytes();
   const instanceBytes = target.kernel.kernel_epoll_instance_bytes();
   const tableEntries = tableBytes >>> 2;
