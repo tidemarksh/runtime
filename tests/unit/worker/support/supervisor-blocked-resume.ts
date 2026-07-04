@@ -828,6 +828,8 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     }
 
     const status = toNumber(kernel.thread_status?.(vmPtr));
+    const kernelWorkerAvailable =
+      (flags & SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_KERNEL_WORKER_AVAILABLE) !== 0;
     if (
       status === kernel.abi_status_epoll_wait?.()
       && (flags & SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_THREAD_INIT_PENDING) !== 0
@@ -844,7 +846,9 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
       return SUPERVISOR_BLOCKED_RETRY_ACTION_PARK_ACTIVE_CHILD;
     }
     if (status === kernel.abi_status_wait4?.()) {
-      return SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_WAIT4;
+      return kernelWorkerAvailable
+        ? SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_WAIT4_KERNEL_WORKER
+        : SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_WAIT4;
     }
     if (
       (flags & SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_FORK_SHARED_SYNC_PENDING) !== 0
@@ -869,8 +873,6 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
       return SUPERVISOR_BLOCKED_RETRY_ACTION_PUMP_NETWORK;
     }
 
-    const kernelWorkerAvailable =
-      (flags & SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_KERNEL_WORKER_AVAILABLE) !== 0;
     if (status === kernel.abi_status_epoll_wait?.() && kernelWorkerAvailable) {
       return SUPERVISOR_BLOCKED_RETRY_ACTION_EPOLL_KERNEL_WORKER;
     }

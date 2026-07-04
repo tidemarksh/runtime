@@ -1272,6 +1272,8 @@ export function makeSupervisorAbiStubs(
       }
 
       const status = Number(receiver?.thread_status?.(vmPtr) ?? overrides.thread_status?.(vmPtr) ?? 0);
+      const kernelWorkerAvailable =
+        (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_kernel_worker_available) !== 0;
       if (
         status === Number(receiver?.abi_status_epoll_wait?.() ?? overrides.abi_status_epoll_wait?.() ?? -1)
         && (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_thread_init_pending) !== 0
@@ -1288,7 +1290,9 @@ export function makeSupervisorAbiStubs(
         return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_park_active_child;
       }
       if (status === Number(receiver?.abi_status_wait4?.() ?? overrides.abi_status_wait4?.() ?? -1)) {
-        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_resume_wait4;
+        return kernelWorkerAvailable
+          ? DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_resume_wait4_kernel_worker
+          : DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_resume_wait4;
       }
       if (
         (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_fork_shared_sync_pending) !== 0
@@ -1312,8 +1316,6 @@ export function makeSupervisorAbiStubs(
       ) {
         return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_pump_network;
       }
-      const kernelWorkerAvailable =
-        (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_kernel_worker_available) !== 0;
       if (
         status === Number(receiver?.abi_status_epoll_wait?.() ?? overrides.abi_status_epoll_wait?.() ?? -1)
         && kernelWorkerAvailable

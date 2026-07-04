@@ -1475,8 +1475,8 @@ test("wait4 retry clears stale blocked state when kernel status is already ok", 
   threadWorkerStates.set(worker, makeThreadState(0x1234));
   const { exports: kernel, threadResumeWait4 } = makeKernel();
   kernel.thread_status = () => kernel.abi_status_ok();
-  const resumeDelegation = vi.fn(kernel.supervisor_blocked_resume_delegation);
-  kernel.supervisor_blocked_resume_delegation = resumeDelegation;
+  const retryAction = vi.fn(kernel.supervisor_blocked_retry_action);
+  kernel.supervisor_blocked_retry_action = retryAction;
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   handle.pendingChildSpawnRecords = 0;
   handle.kernelWorkerRequest = vi.fn(async () => {
@@ -1509,7 +1509,7 @@ test("wait4 retry clears stale blocked state when kernel status is already ok", 
   }));
   expect(lifecycleEvents).toContain("wait4-retry-stale:1:vm=0x1234:status=0");
   expect(lifecycleEvents).toContain("wait4-resumed-supervisor:1");
-  expect(resumeDelegation).not.toHaveBeenCalled();
+  expect(retryAction).not.toHaveBeenCalled();
   expect(resumeWait4ViaKernelWorker).not.toHaveBeenCalled();
   expect(threadResumeWait4).not.toHaveBeenCalled();
   expect(failProcess).not.toHaveBeenCalled();

@@ -4,7 +4,6 @@ import {
   supervisorBlockedPipeSyncBeforeRetryRequested,
   supervisorBlockedPollWaitHasSocket,
   supervisorBlockedRetryAction,
-  supervisorBlockedResumeDelegation,
   supervisorBlockedStatusIsEpollWait,
   supervisorBlockedStatusIsPipeWait,
   supervisorBlockedStatusIsWait4,
@@ -610,58 +609,6 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
 
     if (clearStaleHostBlockedWorker(handle, worker, blocked)) {
       return;
-    }
-
-    let resumeDelegation: ReturnType<typeof supervisorBlockedResumeDelegation>;
-    try {
-      resumeDelegation = supervisorBlockedResumeDelegation(
-        handle.kernel,
-        blocked.vmPtr,
-        !!handle.kernelWorkerRequest && handle.pid > 0,
-      );
-    } catch (error) {
-      deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-      return;
-    }
-
-    switch (resumeDelegation) {
-      case "wait4-kernel-worker":
-        deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-rpc:${handle.pid}`);
-        blocked.rpcPending = true;
-        void deps.resumeWait4ViaKernelWorker(handle, worker, blocked.vmPtr)
-          .then((outcome) => {
-            consumeKernelRpcResumeOutcome(handle, worker, blocked.vmPtr, outcome);
-          })
-          .catch((error) => {
-            const latestBlocked = handle.hostBlockedWorkers.get(worker);
-            if (latestBlocked && latestBlocked.vmPtr === blocked.vmPtr) {
-              latestBlocked.rpcPending = false;
-            }
-            deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-          });
-        return;
-      case "direct":
-        break;
-      case "unsupported":
-        if (clearStaleHostBlockedWorker(handle, worker, blocked)) {
-          return;
-        }
-        deps.failProcess(
-          handle,
-          new Error(`kernel supervisor rejected wait4 resume delegation for pid ${handle.pid}`),
-        );
-        return;
-      case "kernel-worker":
-      case "epoll-direct":
-        deps.failProcess(
-          handle,
-          new Error(`kernel supervisor returned invalid wait4 resume delegation ${resumeDelegation}`),
-        );
-        return;
-      default: {
-        const exhaustive: never = resumeDelegation;
-        throw new Error(`unhandled supervisor wait4 resume delegation: ${exhaustive}`);
-      }
     }
 
     resumeBlockedSyscallViaResumeOutcome(

@@ -9,13 +9,6 @@ export type SupervisorBlockedWaitRetryFlag =
 
 export type SupervisorBlockedWaitRetryFlags = readonly SupervisorBlockedWaitRetryFlag[];
 
-export type SupervisorBlockedResumeDelegation =
-  | "direct"
-  | "kernel-worker"
-  | "wait4-kernel-worker"
-  | "unsupported"
-  | "epoll-direct";
-
 export type SupervisorBlockedPipeResumeAction =
   | "defer"
   | "direct";
@@ -79,12 +72,6 @@ export type SupervisorStateSyncKind =
 
 type SupervisorNumberConstExportName =
   | "supervisor_resume_flag_timeout_expired"
-  | "supervisor_blocked_resume_delegation_flag_kernel_worker_available"
-  | "supervisor_blocked_resume_delegation_direct"
-  | "supervisor_blocked_resume_delegation_kernel_worker"
-  | "supervisor_blocked_resume_delegation_wait4_kernel_worker"
-  | "supervisor_blocked_resume_delegation_unsupported"
-  | "supervisor_blocked_resume_delegation_epoll_direct"
   | "supervisor_blocked_pipe_resume_action_defer"
   | "supervisor_blocked_pipe_resume_action_direct"
   | "supervisor_blocked_status_transition_action_block"
@@ -860,68 +847,6 @@ export function supervisorBlockedRetryAction(
     throw new Error(`kernel supervisor blocked retry action failed: ${result}`);
   }
   return normalizeSupervisorBlockedRetryAction(kernel, result);
-}
-
-function supervisorBlockedResumeDelegationValue(
-  kernel: KernelExports,
-  delegation: SupervisorBlockedResumeDelegation,
-): number {
-  switch (delegation) {
-    case "kernel-worker":
-      return readSupervisorNumberConst(kernel, "supervisor_blocked_resume_delegation_kernel_worker");
-    case "wait4-kernel-worker":
-      return readSupervisorNumberConst(kernel, "supervisor_blocked_resume_delegation_wait4_kernel_worker");
-    case "unsupported":
-      return readSupervisorNumberConst(kernel, "supervisor_blocked_resume_delegation_unsupported");
-    case "epoll-direct":
-      return readSupervisorNumberConst(kernel, "supervisor_blocked_resume_delegation_epoll_direct");
-    case "direct":
-      return readSupervisorNumberConst(kernel, "supervisor_blocked_resume_delegation_direct");
-    default: {
-      const exhaustive: never = delegation;
-      return exhaustive;
-    }
-  }
-}
-
-function normalizeSupervisorBlockedResumeDelegation(
-  kernel: KernelExports,
-  result: number,
-): SupervisorBlockedResumeDelegation {
-  const delegations: SupervisorBlockedResumeDelegation[] = [
-    "direct",
-    "kernel-worker",
-    "wait4-kernel-worker",
-    "unsupported",
-    "epoll-direct",
-  ];
-  for (const delegation of delegations) {
-    if (result === supervisorBlockedResumeDelegationValue(kernel, delegation)) {
-      return delegation;
-    }
-  }
-  throw new Error(`kernel supervisor blocked resume delegation is unknown: ${result}`);
-}
-
-export function supervisorBlockedResumeDelegation(
-  kernel: KernelExports,
-  vmPtr: number,
-  kernelWorkerAvailable: boolean,
-): SupervisorBlockedResumeDelegation {
-  const readDelegation = kernel.supervisor_blocked_resume_delegation;
-  if (readDelegation === undefined) {
-    throw new Error("kernel supervisor ABI missing supervisor_blocked_resume_delegation");
-  }
-  const kernelWorkerFlag = readSupervisorNumberConst(
-    kernel,
-    "supervisor_blocked_resume_delegation_flag_kernel_worker_available",
-  );
-  const flags = kernelWorkerAvailable ? kernelWorkerFlag : 0;
-  const result = readDelegation.call(kernel, vmPtr, flags);
-  if (result < 0) {
-    throw new Error(`kernel supervisor blocked resume delegation failed: ${result}`);
-  }
-  return normalizeSupervisorBlockedResumeDelegation(kernel, result);
 }
 
 function supervisorBlockedWaitWakeSourceValue(
