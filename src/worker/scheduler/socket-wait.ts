@@ -1,21 +1,12 @@
 import type { ProcessHandle } from "../types.js";
-import {
-  supervisorBlockedPollWaitHasSocket,
-  supervisorBlockedPollWaitTimeoutMs,
-  supervisorBlockedWaitShouldPumpNetwork,
-} from "../../supervisor-blocked-resume.js";
 
-export interface SocketWaitSchedulerDeps {
-  appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
-  logNetworkDebug(event: string): void;
-}
+export interface SocketWaitSchedulerDeps {}
 
 export interface SocketWaitScheduler {
   formatFirstSocketWaitDebug(handle: ProcessHandle, vmPtr: number): string;
-  blockedWaitShouldPumpNetwork(handle: ProcessHandle, status: number, vmPtr: number): boolean;
 }
 
-export function createSocketWaitScheduler(deps: SocketWaitSchedulerDeps): SocketWaitScheduler {
+export function createSocketWaitScheduler(_deps: SocketWaitSchedulerDeps): SocketWaitScheduler {
   function formatFirstSocketWaitDebug(handle: ProcessHandle, vmPtr: number): string {
     const packed = handle.kernel.thread_poll_wait_first_socket_revents?.(vmPtr);
     if (packed === undefined) {
@@ -42,29 +33,7 @@ export function createSocketWaitScheduler(deps: SocketWaitSchedulerDeps): Socket
     }
   }
 
-  function pollWaitTimeoutMs(handle: ProcessHandle, _status: number, vmPtr: number): number {
-    return supervisorBlockedPollWaitTimeoutMs(handle.kernel, vmPtr);
-  }
-
-  function blockedWaitShouldPumpNetwork(handle: ProcessHandle, status: number, vmPtr: number): boolean {
-    if (handle.networkConnections.size === 0) {
-      return false;
-    }
-    const pollTimeoutMs = pollWaitTimeoutMs(handle, status, vmPtr);
-    const pollWaitHasSocket = supervisorBlockedPollWaitHasSocket(handle.kernel, vmPtr);
-    const shouldPump = supervisorBlockedWaitShouldPumpNetwork(handle.kernel, vmPtr);
-    const readyCount = handle.kernel.thread_poll_wait_ready_count?.(vmPtr);
-    const socketRevents = handle.kernel.thread_poll_wait_first_socket_revents?.(vmPtr);
-    deps.appendWorkerDebugLog(
-      handle,
-      `net-wait:${handle.pid}:status=${status}:poll=${pollTimeoutMs}:hasSocket=${pollWaitHasSocket ? 1 : 0}:ready=${readyCount ?? "n/a"}:sock=0x${(socketRevents ?? 0).toString(16)}:conns=${handle.networkConnections.size}:pump=${shouldPump ? 1 : 0}`,
-    );
-    deps.logNetworkDebug(`wait pid=${handle.pid} status=${status} poll=${pollTimeoutMs} hasSocket=${pollWaitHasSocket ? 1 : 0} ready=${readyCount ?? "n/a"} sock=0x${(socketRevents ?? 0).toString(16)} conns=${handle.networkConnections.size} pump=${shouldPump ? 1 : 0}`);
-    return shouldPump;
-  }
-
   return {
     formatFirstSocketWaitDebug,
-    blockedWaitShouldPumpNetwork,
   };
 }

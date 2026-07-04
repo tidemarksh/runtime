@@ -141,6 +141,37 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_wait_retry_flag_passive_wait: 4,
   supervisor_blocked_wait_retry_flag_process_gate: 8,
   supervisor_blocked_wait_retry_flag_thread_init_pending: 16,
+  supervisor_blocked_retry_action_flag_supervisor_timer_armed: 1,
+  supervisor_blocked_retry_action_flag_rpc_pending: 2,
+  supervisor_blocked_retry_action_flag_owner_async: 4,
+  supervisor_blocked_retry_action_flag_thread_init_pending: 8,
+  supervisor_blocked_retry_action_flag_fork_shared_sync_pending: 16,
+  supervisor_blocked_retry_action_flag_running_worker: 32,
+  supervisor_blocked_retry_action_flag_kernel_worker_available: 64,
+  supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns: 128,
+  supervisor_blocked_retry_action_flag_network_connections_available: 256,
+  supervisor_blocked_retry_action_defer_supervisor_timer: 0,
+  supervisor_blocked_retry_action_defer_rpc_pending: 1,
+  supervisor_blocked_retry_action_defer_owner_async: 2,
+  supervisor_blocked_retry_action_defer_thread_init_pending: 3,
+  supervisor_blocked_retry_action_arm_wait_timer: 4,
+  supervisor_blocked_retry_action_park_active_child: 5,
+  supervisor_blocked_retry_action_resume_wait4: 6,
+  supervisor_blocked_retry_action_defer_fork_shared_sync: 7,
+  supervisor_blocked_retry_action_defer_running_worker: 8,
+  supervisor_blocked_retry_action_defer_process_gate: 9,
+  supervisor_blocked_retry_action_pump_network: 10,
+  supervisor_blocked_retry_action_epoll_kernel_worker: 11,
+  supervisor_blocked_retry_action_request_pipe_sync: 12,
+  supervisor_blocked_retry_action_request_pipe_sync_and_drain_output: 13,
+  supervisor_blocked_retry_action_schedule_pipe_sync_retry: 14,
+  supervisor_blocked_retry_action_resume_fs: 15,
+  supervisor_blocked_retry_action_defer_passive_wait: 16,
+  supervisor_blocked_retry_action_resume_kernel_worker: 17,
+  supervisor_blocked_retry_action_resume_wait4_kernel_worker: 18,
+  supervisor_blocked_retry_action_resume_epoll_direct: 19,
+  supervisor_blocked_retry_action_resume_direct: 20,
+  supervisor_blocked_retry_action_unsupported: 21,
   supervisor_blocked_wait_wake_source_pipe_sync: 1,
   supervisor_blocked_wait_wake_source_epoll_sync: 2,
   supervisor_blocked_wait_wake_source_socket_sync: 3,
@@ -1226,6 +1257,108 @@ export function makeSupervisorAbiStubs(
         return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_active_child;
       }
       return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_default;
+    },
+    supervisor_blocked_retry_action(this: KernelExports | undefined, vmPtr: number, flags: number) {
+      const receiver = currentExports(this);
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_supervisor_timer_armed) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_defer_supervisor_timer;
+      }
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_rpc_pending) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_defer_rpc_pending;
+      }
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_owner_async) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_defer_owner_async;
+      }
+
+      const status = Number(receiver?.thread_status?.(vmPtr) ?? overrides.thread_status?.(vmPtr) ?? 0);
+      if (
+        status === Number(receiver?.abi_status_epoll_wait?.() ?? overrides.abi_status_epoll_wait?.() ?? -1)
+        && (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_thread_init_pending) !== 0
+      ) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_defer_thread_init_pending;
+      }
+      if (Number(receiver?.supervisor_blocked_wait_timer_required?.(vmPtr) ?? 0) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_arm_wait_timer;
+      }
+      if (Number(receiver?.supervisor_blocked_wait_active_child_pid?.(vmPtr) ?? 0) > 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_park_active_child;
+      }
+      if (status === Number(receiver?.abi_status_wait4?.() ?? overrides.abi_status_wait4?.() ?? -1)) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_resume_wait4;
+      }
+      if (
+        (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_fork_shared_sync_pending) !== 0
+        && Number(receiver?.supervisor_blocked_poll_wait_timeout_ms?.(vmPtr) ?? -1) < 0
+      ) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_defer_fork_shared_sync;
+      }
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_running_worker) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_defer_running_worker;
+      }
+
+      const retryReason = Number(receiver?.supervisor_blocked_wait_retry_reason?.(vmPtr, 0) ?? 0);
+      if (retryReason === DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_process_gate) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_defer_process_gate;
+      }
+      if (
+        (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_network_connections_available) !== 0
+        && Number(receiver?.supervisor_blocked_wait_should_pump_network?.(vmPtr) ?? 0) !== 0
+        && Number(receiver?.supervisor_blocked_wait_network_pump_action?.(vmPtr) ?? 0)
+          === DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_network_pump_action_pump
+      ) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_pump_network;
+      }
+      const kernelWorkerAvailable =
+        (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_kernel_worker_available) !== 0;
+      if (
+        status === Number(receiver?.abi_status_epoll_wait?.() ?? overrides.abi_status_epoll_wait?.() ?? -1)
+        && kernelWorkerAvailable
+      ) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_epoll_kernel_worker;
+      }
+      if (status === Number(receiver?.abi_status_pipe_wait?.() ?? overrides.abi_status_pipe_wait?.() ?? -1)) {
+        const pipeFlags =
+          (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns) !== 0
+            ? DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available
+            : 0;
+        const pipeAction = Number(receiver?.supervisor_blocked_pipe_sync_before_retry_action?.(vmPtr, pipeFlags) ?? 0);
+        if (pipeAction === DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_action_request_sync) {
+          return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_request_pipe_sync;
+        }
+        if (
+          pipeAction
+            === DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output
+        ) {
+          return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_request_pipe_sync_and_drain_output;
+        }
+        if (pipeAction === DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_action_schedule_retry) {
+          return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_schedule_pipe_sync_retry;
+        }
+      }
+      if (status === Number(receiver?.abi_status_fs?.() ?? overrides.abi_status_fs?.() ?? -1)) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_resume_fs;
+      }
+      if (retryReason === DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_passive_wait) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_defer_passive_wait;
+      }
+
+      const delegationFlags = kernelWorkerAvailable
+        ? DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_flag_kernel_worker_available
+        : 0;
+      const delegation = Number(receiver?.supervisor_blocked_resume_delegation?.(vmPtr, delegationFlags) ?? 0);
+      if (delegation === DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_kernel_worker) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_resume_kernel_worker;
+      }
+      if (delegation === DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_wait4_kernel_worker) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_resume_wait4_kernel_worker;
+      }
+      if (delegation === DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_epoll_direct) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_resume_epoll_direct;
+      }
+      if (delegation === DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_unsupported) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_unsupported;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_resume_direct;
     },
     supervisor_vfork_execve_rollback(this: KernelExports | undefined, vmPtr: number, childPid: number) {
       const receiver = currentExports(this);

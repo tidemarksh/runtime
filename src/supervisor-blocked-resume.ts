@@ -28,12 +28,6 @@ export type SupervisorBlockedPipeResumeAction =
   | "defer"
   | "direct";
 
-export type SupervisorBlockedPipeSyncBeforeRetryAction =
-  | "none"
-  | "request-sync"
-  | "request-sync-and-drain-output"
-  | "schedule-retry";
-
 export type SupervisorBlockedStatusTransitionAction =
   | "block"
   | "sync-socket"
@@ -42,9 +36,42 @@ export type SupervisorBlockedStatusTransitionAction =
   | "sync-pipe-and-fork-shared"
   | "sync-socket-and-fork-shared";
 
-export type SupervisorBlockedWaitNetworkPumpAction =
-  | "skip"
-  | "pump";
+export type SupervisorBlockedRetryAction =
+  | "defer-supervisor-timer"
+  | "defer-rpc-pending"
+  | "defer-owner-async"
+  | "defer-thread-init-pending"
+  | "arm-wait-timer"
+  | "park-active-child"
+  | "resume-wait4"
+  | "defer-fork-shared-sync"
+  | "defer-running-worker"
+  | "defer-process-gate"
+  | "pump-network"
+  | "epoll-kernel-worker"
+  | "request-pipe-sync"
+  | "request-pipe-sync-and-drain-output"
+  | "schedule-pipe-sync-retry"
+  | "resume-fs"
+  | "defer-passive-wait"
+  | "resume-kernel-worker"
+  | "resume-wait4-kernel-worker"
+  | "resume-epoll-direct"
+  | "resume-direct"
+  | "unsupported";
+
+export type SupervisorBlockedRetryActionFlag =
+  | "supervisor-timer-armed"
+  | "rpc-pending"
+  | "owner-async"
+  | "thread-init-pending"
+  | "fork-shared-sync-pending"
+  | "running-worker"
+  | "kernel-worker-available"
+  | "pipe-state-kernel-worker-owns"
+  | "network-connections-available";
+
+export type SupervisorBlockedRetryActionFlags = readonly SupervisorBlockedRetryActionFlag[];
 
 export type SupervisorBlockedWaitWakeSource =
   | "pipe-sync"
@@ -67,11 +94,6 @@ type SupervisorNumberConstExportName =
   | "supervisor_blocked_resume_delegation_epoll_direct"
   | "supervisor_blocked_pipe_resume_action_defer"
   | "supervisor_blocked_pipe_resume_action_direct"
-  | "supervisor_blocked_pipe_sync_before_retry_action_none"
-  | "supervisor_blocked_pipe_sync_before_retry_action_request_sync"
-  | "supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output"
-  | "supervisor_blocked_pipe_sync_before_retry_action_schedule_retry"
-  | "supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available"
   | "supervisor_blocked_status_transition_action_block"
   | "supervisor_blocked_status_transition_action_sync_socket"
   | "supervisor_blocked_status_transition_action_sync_pipe"
@@ -80,8 +102,6 @@ type SupervisorNumberConstExportName =
   | "supervisor_blocked_status_transition_action_sync_socket_and_fork_shared"
   | "supervisor_blocked_status_transition_flag_kernel_worker_available"
   | "supervisor_blocked_status_transition_flag_network_connections_available"
-  | "supervisor_blocked_wait_network_pump_action_skip"
-  | "supervisor_blocked_wait_network_pump_action_pump"
   | "supervisor_state_sync_kind_pipe"
   | "supervisor_state_sync_kind_epoll"
   | "supervisor_state_sync_kind_socket"
@@ -99,6 +119,37 @@ type SupervisorNumberConstExportName =
   | "supervisor_blocked_wait_retry_flag_passive_wait"
   | "supervisor_blocked_wait_retry_flag_process_gate"
   | "supervisor_blocked_wait_retry_flag_thread_init_pending"
+  | "supervisor_blocked_retry_action_flag_supervisor_timer_armed"
+  | "supervisor_blocked_retry_action_flag_rpc_pending"
+  | "supervisor_blocked_retry_action_flag_owner_async"
+  | "supervisor_blocked_retry_action_flag_thread_init_pending"
+  | "supervisor_blocked_retry_action_flag_fork_shared_sync_pending"
+  | "supervisor_blocked_retry_action_flag_running_worker"
+  | "supervisor_blocked_retry_action_flag_kernel_worker_available"
+  | "supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns"
+  | "supervisor_blocked_retry_action_flag_network_connections_available"
+  | "supervisor_blocked_retry_action_defer_supervisor_timer"
+  | "supervisor_blocked_retry_action_defer_rpc_pending"
+  | "supervisor_blocked_retry_action_defer_owner_async"
+  | "supervisor_blocked_retry_action_defer_thread_init_pending"
+  | "supervisor_blocked_retry_action_arm_wait_timer"
+  | "supervisor_blocked_retry_action_park_active_child"
+  | "supervisor_blocked_retry_action_resume_wait4"
+  | "supervisor_blocked_retry_action_defer_fork_shared_sync"
+  | "supervisor_blocked_retry_action_defer_running_worker"
+  | "supervisor_blocked_retry_action_defer_process_gate"
+  | "supervisor_blocked_retry_action_pump_network"
+  | "supervisor_blocked_retry_action_epoll_kernel_worker"
+  | "supervisor_blocked_retry_action_request_pipe_sync"
+  | "supervisor_blocked_retry_action_request_pipe_sync_and_drain_output"
+  | "supervisor_blocked_retry_action_schedule_pipe_sync_retry"
+  | "supervisor_blocked_retry_action_resume_fs"
+  | "supervisor_blocked_retry_action_defer_passive_wait"
+  | "supervisor_blocked_retry_action_resume_kernel_worker"
+  | "supervisor_blocked_retry_action_resume_wait4_kernel_worker"
+  | "supervisor_blocked_retry_action_resume_epoll_direct"
+  | "supervisor_blocked_retry_action_resume_direct"
+  | "supervisor_blocked_retry_action_unsupported"
   | "supervisor_blocked_wait_wake_source_pipe_sync"
   | "supervisor_blocked_wait_wake_source_epoll_sync"
   | "supervisor_blocked_wait_wake_source_socket_sync"
@@ -393,64 +444,6 @@ export function supervisorBlockedPipeResumeAction(
   return normalizeSupervisorBlockedPipeResumeAction(kernel, result);
 }
 
-function supervisorBlockedPipeSyncBeforeRetryActionValue(
-  kernel: KernelExports,
-  action: SupervisorBlockedPipeSyncBeforeRetryAction,
-): number {
-  switch (action) {
-    case "request-sync":
-      return readSupervisorNumberConst(kernel, "supervisor_blocked_pipe_sync_before_retry_action_request_sync");
-    case "request-sync-and-drain-output":
-      return readSupervisorNumberConst(kernel, "supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output");
-    case "schedule-retry":
-      return readSupervisorNumberConst(kernel, "supervisor_blocked_pipe_sync_before_retry_action_schedule_retry");
-    case "none":
-      return readSupervisorNumberConst(kernel, "supervisor_blocked_pipe_sync_before_retry_action_none");
-    default: {
-      const exhaustive: never = action;
-      return exhaustive;
-    }
-  }
-}
-
-function normalizeSupervisorBlockedPipeSyncBeforeRetryAction(
-  kernel: KernelExports,
-  result: number,
-): SupervisorBlockedPipeSyncBeforeRetryAction {
-  const actions: SupervisorBlockedPipeSyncBeforeRetryAction[] = [
-    "none",
-    "request-sync",
-    "request-sync-and-drain-output",
-    "schedule-retry",
-  ];
-  for (const action of actions) {
-    if (result === supervisorBlockedPipeSyncBeforeRetryActionValue(kernel, action)) {
-      return action;
-    }
-  }
-  throw new Error(`kernel supervisor blocked pipe sync-before-retry action is unknown: ${result}`);
-}
-
-export function supervisorBlockedPipeSyncBeforeRetryAction(
-  kernel: KernelExports,
-  vmPtr: number,
-  kernelWorkerAvailable: boolean,
-): SupervisorBlockedPipeSyncBeforeRetryAction {
-  const readAction = kernel.supervisor_blocked_pipe_sync_before_retry_action;
-  if (readAction === undefined) {
-    throw new Error("kernel supervisor blocked pipe sync-before-retry action export is missing");
-  }
-  const kernelWorkerFlag = readSupervisorNumberConst(
-    kernel,
-    "supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available",
-  );
-  const result = readAction.call(kernel, vmPtr, kernelWorkerAvailable ? kernelWorkerFlag : 0);
-  if (result < 0) {
-    throw new Error(`kernel supervisor blocked pipe sync-before-retry action failed: ${result}`);
-  }
-  return normalizeSupervisorBlockedPipeSyncBeforeRetryAction(kernel, result);
-}
-
 export function supervisorBlockedPipeSyncBeforeRetryRequested(
   kernel: KernelExports,
   vmPtr: number,
@@ -570,53 +563,6 @@ export function supervisorBlockedStatusTransitionAction(
     throw new Error(`kernel supervisor blocked status transition action failed: ${result}`);
   }
   return normalizeSupervisorBlockedStatusTransitionAction(kernel, result);
-}
-
-function supervisorBlockedWaitNetworkPumpActionValue(
-  kernel: KernelExports,
-  action: SupervisorBlockedWaitNetworkPumpAction,
-): number {
-  switch (action) {
-    case "skip":
-      return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_network_pump_action_skip");
-    case "pump":
-      return readSupervisorNumberConst(kernel, "supervisor_blocked_wait_network_pump_action_pump");
-    default: {
-      const exhaustive: never = action;
-      return exhaustive;
-    }
-  }
-}
-
-function normalizeSupervisorBlockedWaitNetworkPumpAction(
-  kernel: KernelExports,
-  result: number,
-): SupervisorBlockedWaitNetworkPumpAction {
-  const actions: SupervisorBlockedWaitNetworkPumpAction[] = [
-    "skip",
-    "pump",
-  ];
-  for (const action of actions) {
-    if (result === supervisorBlockedWaitNetworkPumpActionValue(kernel, action)) {
-      return action;
-    }
-  }
-  throw new Error(`kernel supervisor blocked wait network pump action is unknown: ${result}`);
-}
-
-export function supervisorBlockedWaitNetworkPumpAction(
-  kernel: KernelExports,
-  vmPtr: number,
-): SupervisorBlockedWaitNetworkPumpAction {
-  const readAction = kernel.supervisor_blocked_wait_network_pump_action;
-  if (readAction === undefined) {
-    throw new Error("kernel supervisor blocked wait network pump action export is missing");
-  }
-  const result = readAction.call(kernel, vmPtr);
-  if (result < 0) {
-    throw new Error(`kernel supervisor blocked wait network pump action failed: ${result}`);
-  }
-  return normalizeSupervisorBlockedWaitNetworkPumpAction(kernel, result);
 }
 
 export function supervisorCompleteBlockedWaitNetworkPump(
@@ -824,6 +770,155 @@ export function supervisorBlockedWaitRetryFlags(
   flags: SupervisorBlockedWaitRetryFlags,
 ): number {
   return supervisorRetryFlags(kernel, flags);
+}
+
+function supervisorBlockedRetryActionFlagValue(
+  kernel: KernelExports,
+  flag: SupervisorBlockedRetryActionFlag,
+): number {
+  switch (flag) {
+    case "supervisor-timer-armed":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_flag_supervisor_timer_armed");
+    case "rpc-pending":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_flag_rpc_pending");
+    case "owner-async":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_flag_owner_async");
+    case "thread-init-pending":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_flag_thread_init_pending");
+    case "fork-shared-sync-pending":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_flag_fork_shared_sync_pending");
+    case "running-worker":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_flag_running_worker");
+    case "kernel-worker-available":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_flag_kernel_worker_available");
+    case "pipe-state-kernel-worker-owns":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns");
+    case "network-connections-available":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_flag_network_connections_available");
+    default: {
+      const exhaustive: never = flag;
+      return exhaustive;
+    }
+  }
+}
+
+function supervisorBlockedRetryActionFlagsValue(
+  kernel: KernelExports,
+  flags: SupervisorBlockedRetryActionFlags,
+): number {
+  let result = 0;
+  for (const flag of flags) {
+    result |= supervisorBlockedRetryActionFlagValue(kernel, flag);
+  }
+  return result;
+}
+
+function supervisorBlockedRetryActionValue(
+  kernel: KernelExports,
+  action: SupervisorBlockedRetryAction,
+): number {
+  switch (action) {
+    case "defer-supervisor-timer":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_defer_supervisor_timer");
+    case "defer-rpc-pending":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_defer_rpc_pending");
+    case "defer-owner-async":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_defer_owner_async");
+    case "defer-thread-init-pending":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_defer_thread_init_pending");
+    case "arm-wait-timer":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_arm_wait_timer");
+    case "park-active-child":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_park_active_child");
+    case "resume-wait4":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_resume_wait4");
+    case "defer-fork-shared-sync":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_defer_fork_shared_sync");
+    case "defer-running-worker":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_defer_running_worker");
+    case "defer-process-gate":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_defer_process_gate");
+    case "pump-network":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_pump_network");
+    case "epoll-kernel-worker":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_epoll_kernel_worker");
+    case "request-pipe-sync":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_request_pipe_sync");
+    case "request-pipe-sync-and-drain-output":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_request_pipe_sync_and_drain_output");
+    case "schedule-pipe-sync-retry":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_schedule_pipe_sync_retry");
+    case "resume-fs":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_resume_fs");
+    case "defer-passive-wait":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_defer_passive_wait");
+    case "resume-kernel-worker":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_resume_kernel_worker");
+    case "resume-wait4-kernel-worker":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_resume_wait4_kernel_worker");
+    case "resume-epoll-direct":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_resume_epoll_direct");
+    case "resume-direct":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_resume_direct");
+    case "unsupported":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_action_unsupported");
+    default: {
+      const exhaustive: never = action;
+      return exhaustive;
+    }
+  }
+}
+
+function normalizeSupervisorBlockedRetryAction(
+  kernel: KernelExports,
+  result: number,
+): SupervisorBlockedRetryAction {
+  const actions: SupervisorBlockedRetryAction[] = [
+    "defer-supervisor-timer",
+    "defer-rpc-pending",
+    "defer-owner-async",
+    "defer-thread-init-pending",
+    "arm-wait-timer",
+    "park-active-child",
+    "resume-wait4",
+    "defer-fork-shared-sync",
+    "defer-running-worker",
+    "defer-process-gate",
+    "pump-network",
+    "epoll-kernel-worker",
+    "request-pipe-sync",
+    "request-pipe-sync-and-drain-output",
+    "schedule-pipe-sync-retry",
+    "resume-fs",
+    "defer-passive-wait",
+    "resume-kernel-worker",
+    "resume-wait4-kernel-worker",
+    "resume-epoll-direct",
+    "resume-direct",
+    "unsupported",
+  ];
+  for (const action of actions) {
+    if (result === supervisorBlockedRetryActionValue(kernel, action)) {
+      return action;
+    }
+  }
+  throw new Error(`kernel supervisor blocked retry action is unknown: ${result}`);
+}
+
+export function supervisorBlockedRetryAction(
+  kernel: KernelExports,
+  vmPtr: number,
+  flags: SupervisorBlockedRetryActionFlags = [],
+): SupervisorBlockedRetryAction {
+  const readAction = kernel.supervisor_blocked_retry_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_blocked_retry_action");
+  }
+  const result = readAction.call(kernel, vmPtr, supervisorBlockedRetryActionFlagsValue(kernel, flags));
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked retry action failed: ${result}`);
+  }
+  return normalizeSupervisorBlockedRetryAction(kernel, result);
 }
 
 function supervisorBlockedResumeDelegationValue(

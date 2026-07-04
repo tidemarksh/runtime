@@ -435,6 +435,38 @@ export interface KernelExports {
   supervisor_blocked_wait_retry_flag_passive_wait?(): number;
   supervisor_blocked_wait_retry_flag_process_gate?(): number;
   supervisor_blocked_wait_retry_flag_thread_init_pending?(): number;
+  supervisor_blocked_retry_action?(vmPtr: number, flags: number): number;
+  supervisor_blocked_retry_action_flag_supervisor_timer_armed?(): number;
+  supervisor_blocked_retry_action_flag_rpc_pending?(): number;
+  supervisor_blocked_retry_action_flag_owner_async?(): number;
+  supervisor_blocked_retry_action_flag_thread_init_pending?(): number;
+  supervisor_blocked_retry_action_flag_fork_shared_sync_pending?(): number;
+  supervisor_blocked_retry_action_flag_running_worker?(): number;
+  supervisor_blocked_retry_action_flag_kernel_worker_available?(): number;
+  supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns?(): number;
+  supervisor_blocked_retry_action_flag_network_connections_available?(): number;
+  supervisor_blocked_retry_action_defer_supervisor_timer?(): number;
+  supervisor_blocked_retry_action_defer_rpc_pending?(): number;
+  supervisor_blocked_retry_action_defer_owner_async?(): number;
+  supervisor_blocked_retry_action_defer_thread_init_pending?(): number;
+  supervisor_blocked_retry_action_arm_wait_timer?(): number;
+  supervisor_blocked_retry_action_park_active_child?(): number;
+  supervisor_blocked_retry_action_resume_wait4?(): number;
+  supervisor_blocked_retry_action_defer_fork_shared_sync?(): number;
+  supervisor_blocked_retry_action_defer_running_worker?(): number;
+  supervisor_blocked_retry_action_defer_process_gate?(): number;
+  supervisor_blocked_retry_action_pump_network?(): number;
+  supervisor_blocked_retry_action_epoll_kernel_worker?(): number;
+  supervisor_blocked_retry_action_request_pipe_sync?(): number;
+  supervisor_blocked_retry_action_request_pipe_sync_and_drain_output?(): number;
+  supervisor_blocked_retry_action_schedule_pipe_sync_retry?(): number;
+  supervisor_blocked_retry_action_resume_fs?(): number;
+  supervisor_blocked_retry_action_defer_passive_wait?(): number;
+  supervisor_blocked_retry_action_resume_kernel_worker?(): number;
+  supervisor_blocked_retry_action_resume_wait4_kernel_worker?(): number;
+  supervisor_blocked_retry_action_resume_epoll_direct?(): number;
+  supervisor_blocked_retry_action_resume_direct?(): number;
+  supervisor_blocked_retry_action_unsupported?(): number;
   supervisor_blocked_wait_wake_source_pipe_sync?(): number;
   supervisor_blocked_wait_wake_source_epoll_sync?(): number;
   supervisor_blocked_wait_wake_source_socket_sync?(): number;
@@ -1771,6 +1803,38 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_wait_retry_flag_passive_wait",
   "supervisor_blocked_wait_retry_flag_process_gate",
   "supervisor_blocked_wait_retry_flag_thread_init_pending",
+  "supervisor_blocked_retry_action",
+  "supervisor_blocked_retry_action_flag_supervisor_timer_armed",
+  "supervisor_blocked_retry_action_flag_rpc_pending",
+  "supervisor_blocked_retry_action_flag_owner_async",
+  "supervisor_blocked_retry_action_flag_thread_init_pending",
+  "supervisor_blocked_retry_action_flag_fork_shared_sync_pending",
+  "supervisor_blocked_retry_action_flag_running_worker",
+  "supervisor_blocked_retry_action_flag_kernel_worker_available",
+  "supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns",
+  "supervisor_blocked_retry_action_flag_network_connections_available",
+  "supervisor_blocked_retry_action_defer_supervisor_timer",
+  "supervisor_blocked_retry_action_defer_rpc_pending",
+  "supervisor_blocked_retry_action_defer_owner_async",
+  "supervisor_blocked_retry_action_defer_thread_init_pending",
+  "supervisor_blocked_retry_action_arm_wait_timer",
+  "supervisor_blocked_retry_action_park_active_child",
+  "supervisor_blocked_retry_action_resume_wait4",
+  "supervisor_blocked_retry_action_defer_fork_shared_sync",
+  "supervisor_blocked_retry_action_defer_running_worker",
+  "supervisor_blocked_retry_action_defer_process_gate",
+  "supervisor_blocked_retry_action_pump_network",
+  "supervisor_blocked_retry_action_epoll_kernel_worker",
+  "supervisor_blocked_retry_action_request_pipe_sync",
+  "supervisor_blocked_retry_action_request_pipe_sync_and_drain_output",
+  "supervisor_blocked_retry_action_schedule_pipe_sync_retry",
+  "supervisor_blocked_retry_action_resume_fs",
+  "supervisor_blocked_retry_action_defer_passive_wait",
+  "supervisor_blocked_retry_action_resume_kernel_worker",
+  "supervisor_blocked_retry_action_resume_wait4_kernel_worker",
+  "supervisor_blocked_retry_action_resume_epoll_direct",
+  "supervisor_blocked_retry_action_resume_direct",
+  "supervisor_blocked_retry_action_unsupported",
   "supervisor_blocked_wait_wake_source_pipe_sync",
   "supervisor_blocked_wait_wake_source_epoll_sync",
   "supervisor_blocked_wait_wake_source_socket_sync",

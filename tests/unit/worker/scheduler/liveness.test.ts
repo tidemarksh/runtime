@@ -5425,6 +5425,7 @@ test("blocked wait retry arms supervisor timer before runtime poll retry", () =>
       return 64;
     }),
     supervisor_complete_host_op: vi.fn(() => 0),
+    supervisor_blocked_wait_timer_required: () => 1,
     abi_sys_pselect6: () => 72n,
     thread_status: (vmPtr: number) => vmPtr === thread.vmPtr
       ? kernel.abi_status_pipe_wait()
@@ -5613,6 +5614,7 @@ test("supervisor timer completion resumes the supervisor-selected runnable worke
       resumeReady = true;
       return 0;
     }),
+    supervisor_blocked_wait_timer_required: () => 1,
     supervisor_next_resume: vi.fn((outPtr: number, outLen: number) => {
       expect(outLen).toBe(SUPERVISOR_RESUME_RECORD_BYTES);
       if (!resumeReady || resumeDrained) {

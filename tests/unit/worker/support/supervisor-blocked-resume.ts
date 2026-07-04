@@ -43,6 +43,39 @@ const SUPERVISOR_BLOCKED_STATUS_TRANSITION_FLAG_KERNEL_WORKER_AVAILABLE = 1;
 const SUPERVISOR_BLOCKED_STATUS_TRANSITION_FLAG_NETWORK_CONNECTIONS_AVAILABLE = 2;
 const SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_SKIP = 0;
 const SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_PUMP = 1;
+const SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT = 4;
+const SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PROCESS_GATE = 5;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_SUPERVISOR_TIMER_ARMED = 1;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_RPC_PENDING = 2;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_OWNER_ASYNC = 4;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_THREAD_INIT_PENDING = 8;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_FORK_SHARED_SYNC_PENDING = 16;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_RUNNING_WORKER = 32;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_KERNEL_WORKER_AVAILABLE = 64;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_PIPE_STATE_KERNEL_WORKER_OWNS = 128;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_NETWORK_CONNECTIONS_AVAILABLE = 256;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_SUPERVISOR_TIMER = 0;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_RPC_PENDING = 1;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_OWNER_ASYNC = 2;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_THREAD_INIT_PENDING = 3;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_ARM_WAIT_TIMER = 4;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_PARK_ACTIVE_CHILD = 5;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_WAIT4 = 6;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_FORK_SHARED_SYNC = 7;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_RUNNING_WORKER = 8;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_PROCESS_GATE = 9;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_PUMP_NETWORK = 10;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_EPOLL_KERNEL_WORKER = 11;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_REQUEST_PIPE_SYNC = 12;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_REQUEST_PIPE_SYNC_AND_DRAIN_OUTPUT = 13;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_SCHEDULE_PIPE_SYNC_RETRY = 14;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_FS = 15;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_PASSIVE_WAIT = 16;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_KERNEL_WORKER = 17;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_WAIT4_KERNEL_WORKER = 18;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_EPOLL_DIRECT = 19;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_DIRECT = 20;
+const SUPERVISOR_BLOCKED_RETRY_ACTION_UNSUPPORTED = 21;
 const SUPERVISOR_STATE_SYNC_KIND_PIPE = 1;
 const SUPERVISOR_STATE_SYNC_KIND_EPOLL = 2;
 const SUPERVISOR_STATE_SYNC_KIND_SOCKET = 3;
@@ -145,6 +178,38 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_blocked_wait_network_pump_action"
   | "supervisor_complete_blocked_wait_network_pump"
   | "supervisor_clear_blocked_wait_network_pump"
+  | "supervisor_blocked_retry_action"
+  | "supervisor_blocked_retry_action_flag_supervisor_timer_armed"
+  | "supervisor_blocked_retry_action_flag_rpc_pending"
+  | "supervisor_blocked_retry_action_flag_owner_async"
+  | "supervisor_blocked_retry_action_flag_thread_init_pending"
+  | "supervisor_blocked_retry_action_flag_fork_shared_sync_pending"
+  | "supervisor_blocked_retry_action_flag_running_worker"
+  | "supervisor_blocked_retry_action_flag_kernel_worker_available"
+  | "supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns"
+  | "supervisor_blocked_retry_action_flag_network_connections_available"
+  | "supervisor_blocked_retry_action_defer_supervisor_timer"
+  | "supervisor_blocked_retry_action_defer_rpc_pending"
+  | "supervisor_blocked_retry_action_defer_owner_async"
+  | "supervisor_blocked_retry_action_defer_thread_init_pending"
+  | "supervisor_blocked_retry_action_arm_wait_timer"
+  | "supervisor_blocked_retry_action_park_active_child"
+  | "supervisor_blocked_retry_action_resume_wait4"
+  | "supervisor_blocked_retry_action_defer_fork_shared_sync"
+  | "supervisor_blocked_retry_action_defer_running_worker"
+  | "supervisor_blocked_retry_action_defer_process_gate"
+  | "supervisor_blocked_retry_action_pump_network"
+  | "supervisor_blocked_retry_action_epoll_kernel_worker"
+  | "supervisor_blocked_retry_action_request_pipe_sync"
+  | "supervisor_blocked_retry_action_request_pipe_sync_and_drain_output"
+  | "supervisor_blocked_retry_action_schedule_pipe_sync_retry"
+  | "supervisor_blocked_retry_action_resume_fs"
+  | "supervisor_blocked_retry_action_defer_passive_wait"
+  | "supervisor_blocked_retry_action_resume_kernel_worker"
+  | "supervisor_blocked_retry_action_resume_wait4_kernel_worker"
+  | "supervisor_blocked_retry_action_resume_epoll_direct"
+  | "supervisor_blocked_retry_action_resume_direct"
+  | "supervisor_blocked_retry_action_unsupported"
   | "supervisor_blocked_wait_wake_source_pipe_sync"
   | "supervisor_blocked_wait_wake_source_epoll_sync"
   | "supervisor_blocked_wait_wake_source_socket_sync"
@@ -340,6 +405,38 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_blocked_wait_network_pump_action"
     | "supervisor_complete_blocked_wait_network_pump"
     | "supervisor_clear_blocked_wait_network_pump"
+    | "supervisor_blocked_retry_action"
+    | "supervisor_blocked_retry_action_flag_supervisor_timer_armed"
+    | "supervisor_blocked_retry_action_flag_rpc_pending"
+    | "supervisor_blocked_retry_action_flag_owner_async"
+    | "supervisor_blocked_retry_action_flag_thread_init_pending"
+    | "supervisor_blocked_retry_action_flag_fork_shared_sync_pending"
+    | "supervisor_blocked_retry_action_flag_running_worker"
+    | "supervisor_blocked_retry_action_flag_kernel_worker_available"
+    | "supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns"
+    | "supervisor_blocked_retry_action_flag_network_connections_available"
+    | "supervisor_blocked_retry_action_defer_supervisor_timer"
+    | "supervisor_blocked_retry_action_defer_rpc_pending"
+    | "supervisor_blocked_retry_action_defer_owner_async"
+    | "supervisor_blocked_retry_action_defer_thread_init_pending"
+    | "supervisor_blocked_retry_action_arm_wait_timer"
+    | "supervisor_blocked_retry_action_park_active_child"
+    | "supervisor_blocked_retry_action_resume_wait4"
+    | "supervisor_blocked_retry_action_defer_fork_shared_sync"
+    | "supervisor_blocked_retry_action_defer_running_worker"
+    | "supervisor_blocked_retry_action_defer_process_gate"
+    | "supervisor_blocked_retry_action_pump_network"
+    | "supervisor_blocked_retry_action_epoll_kernel_worker"
+    | "supervisor_blocked_retry_action_request_pipe_sync"
+    | "supervisor_blocked_retry_action_request_pipe_sync_and_drain_output"
+    | "supervisor_blocked_retry_action_schedule_pipe_sync_retry"
+    | "supervisor_blocked_retry_action_resume_fs"
+    | "supervisor_blocked_retry_action_defer_passive_wait"
+    | "supervisor_blocked_retry_action_resume_kernel_worker"
+    | "supervisor_blocked_retry_action_resume_wait4_kernel_worker"
+    | "supervisor_blocked_retry_action_resume_epoll_direct"
+    | "supervisor_blocked_retry_action_resume_direct"
+    | "supervisor_blocked_retry_action_unsupported"
     | "supervisor_blocked_wait_wake_source_pipe_sync"
     | "supervisor_blocked_wait_wake_source_epoll_sync"
     | "supervisor_blocked_wait_wake_source_socket_sync"
@@ -648,6 +745,166 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     }
     networkPumpBackoffs.delete(vmPtr);
     return 0;
+  };
+  nextKernel.supervisor_blocked_retry_action_flag_supervisor_timer_armed ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_SUPERVISOR_TIMER_ARMED;
+  nextKernel.supervisor_blocked_retry_action_flag_rpc_pending ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_RPC_PENDING;
+  nextKernel.supervisor_blocked_retry_action_flag_owner_async ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_OWNER_ASYNC;
+  nextKernel.supervisor_blocked_retry_action_flag_thread_init_pending ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_THREAD_INIT_PENDING;
+  nextKernel.supervisor_blocked_retry_action_flag_fork_shared_sync_pending ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_FORK_SHARED_SYNC_PENDING;
+  nextKernel.supervisor_blocked_retry_action_flag_running_worker ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_RUNNING_WORKER;
+  nextKernel.supervisor_blocked_retry_action_flag_kernel_worker_available ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_KERNEL_WORKER_AVAILABLE;
+  nextKernel.supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_PIPE_STATE_KERNEL_WORKER_OWNS;
+  nextKernel.supervisor_blocked_retry_action_flag_network_connections_available ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_NETWORK_CONNECTIONS_AVAILABLE;
+  nextKernel.supervisor_blocked_retry_action_defer_supervisor_timer ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_SUPERVISOR_TIMER;
+  nextKernel.supervisor_blocked_retry_action_defer_rpc_pending ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_RPC_PENDING;
+  nextKernel.supervisor_blocked_retry_action_defer_owner_async ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_OWNER_ASYNC;
+  nextKernel.supervisor_blocked_retry_action_defer_thread_init_pending ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_THREAD_INIT_PENDING;
+  nextKernel.supervisor_blocked_retry_action_arm_wait_timer ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_ARM_WAIT_TIMER;
+  nextKernel.supervisor_blocked_retry_action_park_active_child ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_PARK_ACTIVE_CHILD;
+  nextKernel.supervisor_blocked_retry_action_resume_wait4 ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_WAIT4;
+  nextKernel.supervisor_blocked_retry_action_defer_fork_shared_sync ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_FORK_SHARED_SYNC;
+  nextKernel.supervisor_blocked_retry_action_defer_running_worker ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_RUNNING_WORKER;
+  nextKernel.supervisor_blocked_retry_action_defer_process_gate ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_PROCESS_GATE;
+  nextKernel.supervisor_blocked_retry_action_pump_network ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_PUMP_NETWORK;
+  nextKernel.supervisor_blocked_retry_action_epoll_kernel_worker ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_EPOLL_KERNEL_WORKER;
+  nextKernel.supervisor_blocked_retry_action_request_pipe_sync ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_REQUEST_PIPE_SYNC;
+  nextKernel.supervisor_blocked_retry_action_request_pipe_sync_and_drain_output ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_REQUEST_PIPE_SYNC_AND_DRAIN_OUTPUT;
+  nextKernel.supervisor_blocked_retry_action_schedule_pipe_sync_retry ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_SCHEDULE_PIPE_SYNC_RETRY;
+  nextKernel.supervisor_blocked_retry_action_resume_fs ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_FS;
+  nextKernel.supervisor_blocked_retry_action_defer_passive_wait ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_PASSIVE_WAIT;
+  nextKernel.supervisor_blocked_retry_action_resume_kernel_worker ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_KERNEL_WORKER;
+  nextKernel.supervisor_blocked_retry_action_resume_wait4_kernel_worker ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_WAIT4_KERNEL_WORKER;
+  nextKernel.supervisor_blocked_retry_action_resume_epoll_direct ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_EPOLL_DIRECT;
+  nextKernel.supervisor_blocked_retry_action_resume_direct ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_DIRECT;
+  nextKernel.supervisor_blocked_retry_action_unsupported ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_ACTION_UNSUPPORTED;
+  nextKernel.supervisor_blocked_retry_action ??= (vmPtr: number, flags: number) => {
+    if (vmPtr === 0) {
+      return -14;
+    }
+    if ((flags & SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_SUPERVISOR_TIMER_ARMED) !== 0) {
+      return SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_SUPERVISOR_TIMER;
+    }
+    if ((flags & SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_RPC_PENDING) !== 0) {
+      return SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_RPC_PENDING;
+    }
+    if ((flags & SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_OWNER_ASYNC) !== 0) {
+      return SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_OWNER_ASYNC;
+    }
+
+    const status = toNumber(kernel.thread_status?.(vmPtr));
+    if (
+      status === kernel.abi_status_epoll_wait?.()
+      && (flags & SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_THREAD_INIT_PENDING) !== 0
+    ) {
+      return SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_THREAD_INIT_PENDING;
+    }
+    if (toNumber(kernel.supervisor_blocked_wait_timer_required?.(vmPtr)) !== 0) {
+      return SUPERVISOR_BLOCKED_RETRY_ACTION_ARM_WAIT_TIMER;
+    }
+    if (toNumber(nextKernel.supervisor_blocked_wait_active_child_pid?.(vmPtr)) > 0) {
+      return SUPERVISOR_BLOCKED_RETRY_ACTION_PARK_ACTIVE_CHILD;
+    }
+    if (status === kernel.abi_status_wait4?.()) {
+      return SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_WAIT4;
+    }
+    if (
+      (flags & SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_FORK_SHARED_SYNC_PENDING) !== 0
+      && toNumber(nextKernel.supervisor_blocked_poll_wait_timeout_ms?.(vmPtr)) < 0
+    ) {
+      return SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_FORK_SHARED_SYNC;
+    }
+    if ((flags & SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_RUNNING_WORKER) !== 0) {
+      return SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_RUNNING_WORKER;
+    }
+
+    const retryReason = toNumber(nextKernel.supervisor_blocked_wait_retry_reason?.(vmPtr, 0));
+    if (retryReason === SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PROCESS_GATE) {
+      return SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_PROCESS_GATE;
+    }
+    if (
+      (flags & SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_NETWORK_CONNECTIONS_AVAILABLE) !== 0
+      && toNumber(nextKernel.supervisor_blocked_wait_should_pump_network?.(vmPtr)) !== 0
+      && toNumber(nextKernel.supervisor_blocked_wait_network_pump_action?.(vmPtr))
+        === SUPERVISOR_BLOCKED_WAIT_NETWORK_PUMP_ACTION_PUMP
+    ) {
+      return SUPERVISOR_BLOCKED_RETRY_ACTION_PUMP_NETWORK;
+    }
+
+    const kernelWorkerAvailable =
+      (flags & SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_KERNEL_WORKER_AVAILABLE) !== 0;
+    if (status === kernel.abi_status_epoll_wait?.() && kernelWorkerAvailable) {
+      return SUPERVISOR_BLOCKED_RETRY_ACTION_EPOLL_KERNEL_WORKER;
+    }
+    if (status === kernel.abi_status_pipe_wait?.()) {
+      const pipeFlags =
+        (flags & SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_PIPE_STATE_KERNEL_WORKER_OWNS) !== 0
+          ? SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_FLAG_KERNEL_WORKER_AVAILABLE
+          : 0;
+      const pipeAction = toNumber(nextKernel.supervisor_blocked_pipe_sync_before_retry_action?.(vmPtr, pipeFlags));
+      if (pipeAction === SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC) {
+        return SUPERVISOR_BLOCKED_RETRY_ACTION_REQUEST_PIPE_SYNC;
+      }
+      if (pipeAction === 2) {
+        return SUPERVISOR_BLOCKED_RETRY_ACTION_REQUEST_PIPE_SYNC_AND_DRAIN_OUTPUT;
+      }
+      if (pipeAction === 3) {
+        return SUPERVISOR_BLOCKED_RETRY_ACTION_SCHEDULE_PIPE_SYNC_RETRY;
+      }
+    }
+    if (status === kernel.abi_status_fs?.()) {
+      return SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_FS;
+    }
+    if (retryReason === SUPERVISOR_BLOCKED_WAIT_RETRY_REASON_PASSIVE_WAIT) {
+      return SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_PASSIVE_WAIT;
+    }
+
+    const delegationFlags = kernelWorkerAvailable
+      ? SUPERVISOR_BLOCKED_RESUME_FLAG_KERNEL_WORKER_AVAILABLE
+      : 0;
+    const delegation = toNumber(nextKernel.supervisor_blocked_resume_delegation?.(vmPtr, delegationFlags));
+    switch (delegation) {
+      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER:
+        return SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_KERNEL_WORKER;
+      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_WAIT4_KERNEL_WORKER:
+        return SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_WAIT4_KERNEL_WORKER;
+      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_EPOLL_DIRECT:
+        return SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_EPOLL_DIRECT;
+      case SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED:
+        return SUPERVISOR_BLOCKED_RETRY_ACTION_UNSUPPORTED;
+      default:
+        return SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_DIRECT;
+    }
   };
   nextKernel.supervisor_blocked_wait_wake_source_pipe_sync ??= () =>
     SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC;
