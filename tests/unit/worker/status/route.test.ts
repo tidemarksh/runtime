@@ -178,6 +178,11 @@ function makeKernel(pid: number, overrides: Record<string, unknown> = {}) {
     supervisor_fs_pipe_refresh_action_request_sync: () => 1,
     supervisor_fs_pipe_refresh_flag_kernel_worker_available: () => 1,
     supervisor_fs_pipe_refresh_before_resume_action: () => 0,
+    supervisor_fd_entry_restore_action_apply: () => 1,
+    supervisor_fd_entry_restore_action_skip: () => 2,
+    supervisor_fd_entry_restore_flag_preserve_live_regular_file: () => 1,
+    supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent: () => 2,
+    supervisor_fd_entry_restore_action: () => 1,
     ...overrides,
   } as Partial<KernelExports> & Record<string, unknown>;
   return installSupervisorBlockedResumeStub(kernel);

@@ -543,22 +543,6 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           });
         return;
       }
-      if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-        const resumeFs = deps.resumeFsViaKernelWorkerOutcome ?? deps.resumeFsViaKernelWorker;
-        void resumeFs(handle, worker, thread.vmPtr)
-          .then((outcome) => {
-            if (outcome !== undefined) {
-              consumeKernelRpcResumeOutcome(handle, worker, thread.vmPtr, outcome);
-            }
-          })
-          .catch((error) => {
-            if (!workerStillOwnedByHandle()) {
-              return;
-            }
-            deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-          });
-        return;
-      }
       thread.ownerAsyncStatus = status;
       const resumeFs = deps.resumeFsViaKernelWorkerOutcome ?? deps.resumeFsViaKernelWorker;
       void resumeFs(handle, worker, thread.vmPtr)

@@ -250,8 +250,16 @@ function seedFsRingRequest(
   view.setUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, vmPtr, true);
 }
 
-test("kernel-rpc fs helper owns local resume and returns a typed outcome", async () => {
+test("kernel-rpc fs helper uses kernel-worker resume and returns a typed outcome", async () => {
   const kernel = makeKernel();
+  const kernelWorkerRequest = vi.fn(async () => ({
+    type: "fs-processed",
+    requestId: 1,
+    kernelState: makeKernelState(),
+    result: 0n,
+    memfsMutated: false,
+    ofdStateChanged: false,
+  }));
   const handle = {
     pid: 1,
     runtimeId: 1,
@@ -260,9 +268,11 @@ test("kernel-rpc fs helper owns local resume and returns a typed outcome", async
     kernelState: makeKernelState(),
     memory: kernel.memory,
     processMemfsDirty: false,
-    transferDebugStats: undefined,
-    kernelShare: { members: new Set() },
+    transferDebugStats: createTransferDebugStats(),
+    kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     workers: new Set(),
+    hostBlockedWorkers: new Map(),
+    kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
   handle.workers.add(worker);
@@ -296,8 +306,9 @@ test("kernel-rpc fs helper owns local resume and returns a typed outcome", async
     kind: "completed",
     status: 0,
   });
-  expect(kernel.thread_process_fs).toHaveBeenCalledTimes(2);
-  expect(kernel.thread_resume_fs).toHaveBeenCalledTimes(2);
+  expect(kernelWorkerRequest).toHaveBeenCalledTimes(2);
+  expect(kernel.thread_process_fs).not.toHaveBeenCalled();
+  expect(kernel.thread_resume_fs).not.toHaveBeenCalled();
   expect(notifyHostEffectProgress).toHaveBeenCalledTimes(2);
   expect(enqueueWorker).toHaveBeenCalledTimes(2);
 });
@@ -305,9 +316,16 @@ test("kernel-rpc fs helper owns local resume and returns a typed outcome", async
 test("kernel-rpc fs outcome reports blocked fs status", async () => {
   const kernel = {
     ...makeKernel(),
-    thread_resume_fs: vi.fn(() => 11n),
     thread_status: () => 31,
   };
+  const kernelWorkerRequest = vi.fn(async () => ({
+    type: "fs-processed",
+    requestId: 1,
+    kernelState: makeKernelState(),
+    result: 11n,
+    memfsMutated: false,
+    ofdStateChanged: false,
+  }));
   const handle = {
     pid: 1,
     runtimeId: 1,
@@ -316,9 +334,11 @@ test("kernel-rpc fs outcome reports blocked fs status", async () => {
     kernelState: makeKernelState(),
     memory: kernel.memory,
     processMemfsDirty: false,
-    transferDebugStats: undefined,
-    kernelShare: { members: new Set() },
+    transferDebugStats: createTransferDebugStats(),
+    kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     workers: new Set(),
+    hostBlockedWorkers: new Map(),
+    kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
   handle.workers.add(worker);

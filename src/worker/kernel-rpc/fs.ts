@@ -283,10 +283,6 @@ function formatPendingFsDebugSuffix(context: PendingFsContext): string {
   return `:op=${context.opcode}:fx=${context.effects}:ino=${context.targetIno}${pathSuffix}${secondaryPathSuffix}`;
 }
 
-function kernelRpcFsCause(name: string): SyncCause {
-  return { kind: "syscall", nr: -1n, name };
-}
-
 function applyLocalMetadataMutationAfterFs(
   handle: ProcessHandle,
   vmPtr: number,
@@ -1311,48 +1307,7 @@ async function resumeFsViaKernelWorkerInner(
   const regularFilePendingFs = supervisorPendingRegularFileFsRequest(handle, vmPtr);
   const regularFileOnlyPendingFs = regularFilePendingFs !== null;
   if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-    deps.appendWorkerDebugLog(handle, `fs-start:0x${vmPtr.toString(16)}:local${fsDebugSuffix}`);
-    appendFsLifecycleEvent(handle, "start", vmPtr, `:local${fsDebugSuffix}${formatFsRingDebug(handle, vmPtr)}`);
-    handle.kernel.thread_process_fs(vmPtr);
-    const fsResult = normalizeFsResult(handle.kernel.thread_resume_fs(vmPtr));
-    const fsSucceeded = Number(BigInt.asIntN(64, fsResult)) >= 0;
-    const fsCompletion = supervisorFsCompletionDecision(handle, vmPtr, pendingFs, fsResult, {
-      pendingRingRequest,
-      regularFileRequest: regularFileOnlyPendingFs,
-    });
-    const localMetadataActions = supervisorFsLocalMetadataActions(handle, pendingFs, fsResult);
-    const memfsMutated = fsCompletion.memfsMutated;
-    const memfsPublishReady = fsCompletion.memfsPublishReady;
-    const ofdStateChanged = fsCompletion.ofdStateChanged;
-    recordFsTransferStats(handle, pendingFs, fsResult, fsSucceeded, fsEffects, false, memfsPublishReady);
-    const postFsRingProgress = snapshotFsRingProgress(handle, vmPtr);
-    handle.kernelState = readKernelRuntimeState(handle.kernel);
-    applyLocalMetadataMutationAfterFs(handle, vmPtr, pendingFs, localMetadataActions);
-    clearSupersededMemfsDeletedPath(handle, pendingFs, localMetadataActions);
-    reapplyLocalMemfsDeletedPathTombstones(handle, vmPtr, "local-after-fs");
-    let applyLocalFsWakeSync: (() => void) | null = null;
-    if (memfsMutated) {
-      handle.processMemfsDirty = true;
-      handle.processMemfsPublishPending = true;
-      applyLocalFsWakeSync = () => deps.markRuntimeFsDirty(handle);
-    } else if (ofdStateChanged && !regularFileOnlyPendingFs) {
-      const targets = deps.kernelShareOtherMembers(handle);
-      applyLocalFsWakeSync = () => deps.syncForkSharedStateLocallyAfterFs(handle, targets, {
-        cause: kernelRpcFsCause("fs-local-fork-shared-sync"),
-        includeMemfs: false,
-      });
-    }
-    const applyLocalPostFsWake = () => {
-      applyLocalFsWakeSync?.();
-      deps.notifyHostEffectProgress(handle);
-    };
-    restoreFsRingProgress(handle, postFsRingProgress);
-    clearStaleFsStatusAfterResume(handle, vmPtr, fsResult);
-    handle.kernelState = readKernelRuntimeState(handle.kernel);
-    return completeFsResumeFromSupervisorDecision(handle, worker, vmPtr, fsResult, {
-      source: "local",
-      applyPostFsWake: applyLocalPostFsWake,
-    });
+    throw new Error("resumeFsViaKernelWorker requires kernel-worker ownership");
   }
 
   try {
