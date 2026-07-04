@@ -1,3 +1,4 @@
+import { supervisorPipeReconcileControl } from "../../abi.js";
 import type { KernelWorkerPipeSlotSnapshot } from "../../messages.js";
 import {
   PIPE_BUFFER_BYTES,
@@ -23,6 +24,8 @@ import {
   supervisorOfdPipeSlots,
   supervisorProcessPipeOfdForFd,
 } from "./pipe-slot.js";
+
+const PIPE_CONTROL_END_OFFSET = PIPE_WRITE_OPEN_OFFSET + 4;
 
 function supervisorMaskToBigInt(mask: bigint | number): bigint {
   return typeof mask === "bigint" ? mask : BigInt(mask);
@@ -52,6 +55,45 @@ function requireSupervisorPipeCount(
     throw new Error(`kernel supervisor ABI missing ${exportName}`);
   }
   return readCount.bind(handle.kernel);
+}
+
+function applySupervisorPipeControl(
+  handle: ProcessHandle,
+  pipeSlot: number,
+  readOpen: number,
+  writeOpen: number,
+): void {
+  const applied = supervisorPipeReconcileControl(handle.kernel, pipeSlot, readOpen, writeOpen);
+  if (applied === 0) {
+    throw new Error(`kernel supervisor rejected pipe control reconciliation for slot ${pipeSlot}`);
+  }
+}
+
+function copyPipeSlotDataPlane(
+  memory: Uint8Array,
+  sourceSlot: Uint8Array,
+  targetOffset: number,
+  slotBytes: number,
+): void {
+  memory.set(sourceSlot.subarray(0, PIPE_READ_OPEN_OFFSET), targetOffset);
+  memory.set(
+    sourceSlot.subarray(PIPE_CONTROL_END_OFFSET, slotBytes),
+    targetOffset + PIPE_CONTROL_END_OFFSET,
+  );
+}
+
+function applyPipeSlotSnapshot(
+  handle: ProcessHandle,
+  memory: Uint8Array,
+  sourceSlot: Uint8Array,
+  targetOffset: number,
+  slotBytes: number,
+  pipeSlot: number,
+  readOpen: number,
+  writeOpen: number,
+): void {
+  copyPipeSlotDataPlane(memory, sourceSlot, targetOffset, slotBytes);
+  applySupervisorPipeControl(handle, pipeSlot, readOpen, writeOpen);
 }
 
 export function kernelWorkerOwnsPipeState(handle: KernelOwnershipHandle): boolean {
@@ -350,7 +392,16 @@ export function applyThreadPipeSlots(
         || generationAhead(sourceGeneration, targetGeneration)
         || (targetReadOpen <= 0 && targetWriteOpen <= 0)
       ) {
-        memory.set(snapshot.slot, targetOffset);
+        applyPipeSlotSnapshot(
+          handle,
+          memory,
+          snapshot.slot,
+          targetOffset,
+          slotBytes,
+          snapshot.pipeSlot,
+          sourceReadOpen,
+          sourceWriteOpen,
+        );
         appliedSnapshots.push({
           pipeSlot: snapshot.pipeSlot,
           slot: memory.slice(targetOffset, targetOffset + slotBytes),
@@ -370,7 +421,16 @@ export function applyThreadPipeSlots(
       && sourceWriteOpen > 0
       && (mode & (PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE)) === (PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE)
     ) {
-      memory.set(snapshot.slot, targetOffset);
+      applyPipeSlotSnapshot(
+        handle,
+        memory,
+        snapshot.slot,
+        targetOffset,
+        slotBytes,
+        snapshot.pipeSlot,
+        sourceReadOpen,
+        sourceWriteOpen,
+      );
       appliedSnapshots.push({
         pipeSlot: snapshot.pipeSlot,
         slot: memory.slice(targetOffset, targetOffset + slotBytes),
@@ -387,7 +447,16 @@ export function applyThreadPipeSlots(
       && (sourceReadOpen > 0 || sourceWriteOpen > 0)
       && ((mode & (PIPE_SLOT_MODE_WRITE | PIPE_SLOT_MODE_CONTROL)) !== 0)
     ) {
-      memory.set(snapshot.slot, targetOffset);
+      applyPipeSlotSnapshot(
+        handle,
+        memory,
+        snapshot.slot,
+        targetOffset,
+        slotBytes,
+        snapshot.pipeSlot,
+        sourceReadOpen,
+        sourceWriteOpen,
+      );
       appliedSnapshots.push({
         pipeSlot: snapshot.pipeSlot,
         slot: memory.slice(targetOffset, targetOffset + slotBytes),
@@ -398,8 +467,7 @@ export function applyThreadPipeSlots(
       continue;
     }
     if ((mode & PIPE_SLOT_MODE_CONTROL) !== 0) {
-      view.setInt32(targetOffset + PIPE_READ_OPEN_OFFSET, sourceReadOpen, true);
-      view.setInt32(targetOffset + PIPE_WRITE_OPEN_OFFSET, sourceWriteOpen, true);
+      applySupervisorPipeControl(handle, snapshot.pipeSlot, sourceReadOpen, sourceWriteOpen);
     }
     if (
       (mode & PIPE_SLOT_MODE_READ) !== 0
@@ -532,7 +600,6 @@ export function refreshPipeControlFromKernelShare(handle: ProcessHandle): void {
       }
     }
   }
-  const view = new DataView(handle.memory.buffer);
   for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
     if (readOpen[pipeSlot] <= 0 && writeOpen[pipeSlot] <= 0) {
       continue;
@@ -541,7 +608,6 @@ export function refreshPipeControlFromKernelShare(handle: ProcessHandle): void {
     if (offset < 0 || offset + 16 > handle.memory.buffer.byteLength) {
       continue;
     }
-    view.setInt32(offset + PIPE_READ_OPEN_OFFSET, readOpen[pipeSlot], true);
-    view.setInt32(offset + PIPE_WRITE_OPEN_OFFSET, writeOpen[pipeSlot], true);
+    applySupervisorPipeControl(handle, pipeSlot, readOpen[pipeSlot], writeOpen[pipeSlot]);
   }
 }

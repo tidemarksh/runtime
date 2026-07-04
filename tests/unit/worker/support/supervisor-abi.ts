@@ -738,6 +738,52 @@ export function makeSupervisorAbiStubs(
       ? ofdId
       : 0;
   };
+  const processPipeOpenCount = (
+    receiver: Partial<KernelExports>,
+    vmPtr: number,
+    pipeSlot: number,
+    write: boolean,
+  ): number => {
+    if (vmPtr === 0 || pipeSlot <= 0) {
+      return 0;
+    }
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    let count = 0;
+    for (let fd = 0; fd < maxFds; fd += 1) {
+      if (processPipeSlotForFd(receiver, vmPtr, fd) !== pipeSlot) {
+        continue;
+      }
+      const ofdId = processPipeOfdForFd(receiver, vmPtr, fd);
+      if (ofdId === 0) {
+        continue;
+      }
+      const hostFd = callNumber(receiver, "kernel_ofd_host_fd", ofdId);
+      if ((write && hostFd < 0) || (!write && hostFd >= 0)) {
+        count += 1;
+      }
+    }
+    return count;
+  };
+  const reconcilePipeControl = (
+    receiver: Partial<KernelExports>,
+    pipeSlot: number,
+    readOpen: number,
+    writeOpen: number,
+  ): number => {
+    const maxPipes = callNumber(receiver, "abi_max_pipes");
+    if (pipeSlot <= 0 || pipeSlot >= maxPipes || readOpen < 0 || writeOpen < 0) {
+      return 0;
+    }
+    const slotBytes = callNumber(receiver, "kernel_pipe_region_bytes") / maxPipes;
+    if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
+      return 0;
+    }
+    const slotOffset = callNumber(receiver, "kernel_pipe_base") + pipeSlot * slotBytes;
+    const view = new DataView(receiver.memory!.buffer);
+    view.setInt32(slotOffset + 8, Math.trunc(readOpen), true);
+    view.setInt32(slotOffset + 12, Math.trunc(writeOpen), true);
+    return 1;
+  };
   const regularFileOfdsShareIdentity = (
     receiver: Partial<KernelExports>,
     currentOfdId: number,
@@ -1421,6 +1467,28 @@ export function makeSupervisorAbiStubs(
       const receiver = currentExports(this);
       const ofdId = processPipeOfdForFd(receiver, vmPtr, fd);
       return ofdId > 0 ? callNumber(receiver, "kernel_ofd_host_fd", ofdId) : -1;
+    },
+    supervisor_process_pipe_read_open_count(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      pipeSlot: number,
+    ) {
+      return processPipeOpenCount(currentExports(this), vmPtr, pipeSlot, false);
+    },
+    supervisor_process_pipe_write_open_count(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      pipeSlot: number,
+    ) {
+      return processPipeOpenCount(currentExports(this), vmPtr, pipeSlot, true);
+    },
+    supervisor_pipe_reconcile_control(
+      this: KernelExports | undefined,
+      pipeSlot: number,
+      readOpen: number,
+      writeOpen: number,
+    ) {
+      return reconcilePipeControl(currentExports(this), pipeSlot, readOpen, writeOpen);
     },
     supervisor_fork_shared_held_ofd_track_flag_shared() {
       return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_shared;

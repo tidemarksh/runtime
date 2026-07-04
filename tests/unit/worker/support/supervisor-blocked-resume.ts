@@ -243,6 +243,7 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_process_pipe_slot_mode"
   | "supervisor_process_pipe_read_open_count"
   | "supervisor_process_pipe_write_open_count"
+  | "supervisor_pipe_reconcile_control"
   | "supervisor_process_epoll_held_ofd"
   | "supervisor_process_epoll_dependent_ofd"
   | "supervisor_process_sync_dependent_ofd"
@@ -473,6 +474,7 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_process_pipe_slot_mode"
     | "supervisor_process_pipe_read_open_count"
     | "supervisor_process_pipe_write_open_count"
+    | "supervisor_pipe_reconcile_control"
     | "supervisor_process_epoll_held_ofd"
     | "supervisor_process_epoll_dependent_ofd"
     | "supervisor_process_sync_dependent_ofd"
@@ -638,6 +640,26 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     }
     return count;
   };
+  const supervisorPipeReconcileControl = (
+    pipeSlot: number,
+    readOpen: number,
+    writeOpen: number,
+  ): number => {
+    const maxPipeCount = maxPipes();
+    if (pipeSlot <= 0 || pipeSlot >= maxPipeCount || readOpen < 0 || writeOpen < 0) {
+      return 0;
+    }
+    const pipeRegionBytes = kernel.kernel_pipe_region_bytes?.() ?? 0;
+    const slotBytes = pipeRegionBytes / maxPipeCount;
+    if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
+      return 0;
+    }
+    const slotOffset = (kernel.kernel_pipe_base?.() ?? 0) + pipeSlot * slotBytes;
+    const view = new DataView(kernel.memory.buffer);
+    view.setInt32(slotOffset + 8, Math.trunc(readOpen), true);
+    view.setInt32(slotOffset + 12, Math.trunc(writeOpen), true);
+    return 1;
+  };
   const pipeSlotMode = (vmPtr: number, pipeSlot: number): number => {
     let mode = 0;
     for (let fd = 0; fd < maxFds(); fd += 1) {
@@ -679,6 +701,7 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     pipeOpenCount(vmPtr, pipeSlot, false);
   nextKernel.supervisor_process_pipe_write_open_count ??= (vmPtr: number, pipeSlot: number) =>
     pipeOpenCount(vmPtr, pipeSlot, true);
+  nextKernel.supervisor_pipe_reconcile_control ??= supervisorPipeReconcileControl;
   nextKernel.supervisor_blocked_epoll_watched_ofd ??= () => 0;
   nextKernel.supervisor_blocked_epoll_dependent_sync_ofd ??= (vmPtr: number, index: number) =>
     nextKernel.supervisor_blocked_epoll_watched_ofd!(vmPtr, index);

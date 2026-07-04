@@ -405,6 +405,16 @@ function makeKernel(memory: WebAssembly.Memory): FakeKernel {
     supervisor_process_pipe_write_open_count: (_vmPtr: number, pipeSlot: number) => (
       pipeOpenCount(pipeSlot, PIPE_SLOT_MODE_WRITE)
     ),
+    supervisor_pipe_reconcile_control: (pipeSlot: number, readOpen: number, writeOpen: number) => {
+      if (pipeSlot <= 0 || pipeSlot >= 64 || readOpen < 0 || writeOpen < 0) {
+        return 0;
+      }
+      const slotBase = state.pipeBase + pipeSlot * (32 + 65_536);
+      const view = new DataView(memory.buffer);
+      view.setInt32(slotBase + 8, Math.trunc(readOpen), true);
+      view.setInt32(slotBase + 12, Math.trunc(writeOpen), true);
+      return 1;
+    },
     kernel_ofd_fd_type: (ofdId: number) => new DataView(memory.buffer)
       .getInt32(state.ofdTablePtr + ofdId * 32, true),
     kernel_ofd_host_fd: (ofdId: number) => new DataView(memory.buffer)

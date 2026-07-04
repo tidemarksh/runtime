@@ -451,6 +451,16 @@ function makeKernel(
     supervisor_process_pipe_write_open_count: (_vmPtr: number, pipeSlot: number) => (
       pipeOpenCount(pipeSlot, PIPE_SLOT_MODE_WRITE)
     ),
+    supervisor_pipe_reconcile_control: (pipeSlot: number, readOpen: number, writeOpen: number) => {
+      if (pipeSlot <= 0 || pipeSlot >= 32 || readOpen < 0 || writeOpen < 0) {
+        return 0;
+      }
+      const slotBase = state.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
+      const view = new DataView(memory.buffer);
+      view.setInt32(slotBase + 8, Math.trunc(readOpen), true);
+      view.setInt32(slotBase + 12, Math.trunc(writeOpen), true);
+      return 1;
+    },
     supervisor_ofd_fd_type(this: KernelExports, ofdId: number) {
       return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_fd_type(ofdId) : 0;
     },

@@ -48,6 +48,7 @@ export function makeKernel(overrides: Record<string, unknown> = {}) {
     kernel_ofd_ino: () => 0,
     kernel_ofd_refcount: () => 0,
     kernel_ofd_offset: () => 0n,
+    kernel_pipe_base: () => makeKernelState().pipeBase,
     kernel_pipe_region_bytes: () => 256,
     kernel_socket_table_bytes: () => 32,
     kernel_socket_table_ptr: () => undefined,
@@ -68,14 +69,18 @@ export function makeKernel(overrides: Record<string, unknown> = {}) {
 }
 
 export function makeHandle(overrides: Record<string, unknown> = {}) {
-  const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+  const { kernel: overrideKernel, memory: overrideMemory, ...rest } = overrides;
+  const memory = (overrideMemory as WebAssembly.Memory | undefined)
+    ?? new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+  const kernel = (overrideKernel as Partial<KernelExports> | undefined) ?? makeKernel();
+  kernel.memory ??= memory;
   return {
     pid: 7,
     runtimeId: 1,
     vmPtr: 0x1234,
     guestBase: 0,
     memory,
-    kernel: makeKernel(),
+    kernel,
     kernelState: makeKernelState(),
     kernelWorkerRequest: undefined,
     stdoutPipe: 0,
@@ -111,7 +116,7 @@ export function makeHandle(overrides: Record<string, unknown> = {}) {
     workerMessageDebugStats: createWorkerMessageDebugStats(),
     runningWorker: null,
     onStdout: null,
-    ...overrides,
+    ...rest,
   };
 }
 

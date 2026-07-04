@@ -1,4 +1,8 @@
-import { attachKernelRuntimeState, readKernelRuntimeState } from "../../abi.js";
+import {
+  attachKernelRuntimeState,
+  readKernelRuntimeState,
+  supervisorPipeReconcileControl,
+} from "../../abi.js";
 import { kernelNetBufferCount } from "../../kernel-socket-layout.js";
 import {
   NET_BUFFER_HEAD_OFFSET,
@@ -87,8 +91,49 @@ import {
 import { appendForkSharedMemfsDebug } from "./memfs.js";
 import { describeSyncCause, type SyncCause } from "../contracts/sync.js";
 
+const PIPE_DEBUG_CONTROL_END_OFFSET = PIPE_DEBUG_WRITE_OPEN_OFFSET + 4;
+
 export const lastForkSharedActiveOfdIdsByHandle = new WeakMap<ProcessHandle, Set<number>>();
 export const SOCK_STATE_SHUTDOWN = SOCKET_STATE_SHUTDOWN;
+
+function applySupervisorPipeControl(
+  handle: ProcessHandle,
+  pipeSlot: number,
+  readOpen: number,
+  writeOpen: number,
+): void {
+  const applied = supervisorPipeReconcileControl(handle.kernel, pipeSlot, readOpen, writeOpen);
+  if (applied === 0) {
+    throw new Error(`kernel supervisor rejected pipe control reconciliation for slot ${pipeSlot}`);
+  }
+}
+
+function copyPipeSlotDataPlane(
+  memory: Uint8Array,
+  sourceSlot: Uint8Array,
+  targetOffset: number,
+  slotBytes: number,
+): void {
+  memory.set(sourceSlot.subarray(0, PIPE_DEBUG_READ_OPEN_OFFSET), targetOffset);
+  memory.set(
+    sourceSlot.subarray(PIPE_DEBUG_CONTROL_END_OFFSET, slotBytes),
+    targetOffset + PIPE_DEBUG_CONTROL_END_OFFSET,
+  );
+}
+
+function applyPipeSlotSnapshot(
+  handle: ProcessHandle,
+  memory: Uint8Array,
+  sourceSlot: Uint8Array,
+  targetOffset: number,
+  slotBytes: number,
+  pipeSlot: number,
+  readOpen: number,
+  writeOpen: number,
+): void {
+  copyPipeSlotDataPlane(memory, sourceSlot, targetOffset, slotBytes);
+  applySupervisorPipeControl(handle, pipeSlot, readOpen, writeOpen);
+}
 
 export function formatSyncCause(cause: SyncCause): string {
   return `cause=${describeSyncCause(cause)}`;
@@ -332,7 +377,16 @@ export function mergePipeSlotSnapshotsIntoHandle(
         || generationAhead(sourceGeneration, targetGeneration)
         || (targetReadOpen <= 0 && targetWriteOpen <= 0)
       ) {
-        memory.set(snapshot.slot, targetOffset);
+        applyPipeSlotSnapshot(
+          target,
+          memory,
+          snapshot.slot,
+          targetOffset,
+          slotBytes,
+          snapshot.pipeSlot,
+          sourceReadOpen,
+          sourceWriteOpen,
+        );
       }
       syncPipeOfdGenerationsForSlot(target, snapshot.pipeSlot);
       continue;
@@ -346,21 +400,21 @@ export function mergePipeSlotSnapshotsIntoHandle(
       && sourceWriteOpen > 0
       && (mode & (PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE)) === (PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE)
     ) {
-      memory.set(snapshot.slot, targetOffset);
+      applyPipeSlotSnapshot(
+        target,
+        memory,
+        snapshot.slot,
+        targetOffset,
+        slotBytes,
+        snapshot.pipeSlot,
+        sourceReadOpen,
+        sourceWriteOpen,
+      );
       syncPipeOfdGenerationsForSlot(target, snapshot.pipeSlot);
       continue;
     }
     if ((mode & PIPE_SLOT_MODE_CONTROL) !== 0) {
-      view.setInt32(
-        targetOffset + PIPE_DEBUG_READ_OPEN_OFFSET,
-        sourceReadOpen,
-        true,
-      );
-      view.setInt32(
-        targetOffset + PIPE_DEBUG_WRITE_OPEN_OFFSET,
-        sourceWriteOpen,
-        true,
-      );
+      applySupervisorPipeControl(target, snapshot.pipeSlot, sourceReadOpen, sourceWriteOpen);
     }
     if (
       (mode & PIPE_SLOT_MODE_READ) !== 0
@@ -549,7 +603,8 @@ export function snapshotFreshDuplexPipeSlots(
     slotView.setInt32(PIPE_DEBUG_READ_OPEN_OFFSET, readOpen, true);
     slotView.setInt32(PIPE_DEBUG_WRITE_OPEN_OFFSET, writeOpen, true);
     slotView.setUint32(PIPE_DEBUG_GENERATION_OFFSET, generation, true);
-    memory.set(slot, offset);
+    copyPipeSlotDataPlane(memory, slot, offset, slotBytes);
+    applySupervisorPipeControl(handle, pipeSlot, readOpen, writeOpen);
     snapshots.push({
       pipeSlot,
       slot,

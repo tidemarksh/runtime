@@ -429,6 +429,7 @@ export interface KernelExports {
   supervisor_process_pipe_host_fd_for_fd?(vmPtr: number, fd: number): number;
   supervisor_process_pipe_read_open_count?(vmPtr: number, pipeSlot: number): number;
   supervisor_process_pipe_write_open_count?(vmPtr: number, pipeSlot: number): number;
+  supervisor_pipe_reconcile_control?(pipeSlot: number, readOpen: number, writeOpen: number): number;
   supervisor_blocked_pipe_resume_action?(vmPtr: number): number;
   supervisor_blocked_pipe_sync_before_retry_action?(vmPtr: number, flags: number): number;
   supervisor_blocked_pipe_sync_before_retry_requested?(vmPtr: number): number;
@@ -1837,6 +1838,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_process_pipe_host_fd_for_fd",
   "supervisor_process_pipe_read_open_count",
   "supervisor_process_pipe_write_open_count",
+  "supervisor_pipe_reconcile_control",
   "supervisor_blocked_pipe_resume_action",
   "supervisor_blocked_pipe_sync_before_retry_action",
   "supervisor_blocked_pipe_sync_before_retry_requested",
@@ -2330,6 +2332,16 @@ function requireSupervisorOfdOffset(exports: KernelExports): (ofdId: number) => 
   return read.bind(exports);
 }
 
+function requireSupervisorPipeReconcileControl(
+  exports: KernelExports,
+): (pipeSlot: number, readOpen: number, writeOpen: number) => number {
+  const reconcile = exports.supervisor_pipe_reconcile_control;
+  if (!reconcile) {
+    throw new Error("kernel supervisor ABI missing supervisor_pipe_reconcile_control");
+  }
+  return reconcile.bind(exports);
+}
+
 function validOfdId(exports: KernelExports, ofdId: number): boolean {
   return ofdId > 0 && ofdId < exports.abi_max_fds();
 }
@@ -2394,6 +2406,23 @@ export function supervisorProcessFdFlagsForFd(
     return 0;
   }
   return requireSupervisorProcessFdFlagsForFd(exports)(vmPtr, fd);
+}
+
+export function supervisorPipeReconcileControl(
+  exports: KernelExports,
+  pipeSlot: number,
+  readOpen: number,
+  writeOpen: number,
+): number {
+  const slot = Math.trunc(pipeSlot);
+  if (slot <= 0 || slot >= exports.abi_max_pipes()) {
+    return 0;
+  }
+  return requireSupervisorPipeReconcileControl(exports)(
+    slot,
+    Math.trunc(readOpen),
+    Math.trunc(writeOpen),
+  );
 }
 
 export function readKernelRuntimeState(exports: KernelExports): KernelRuntimeState {

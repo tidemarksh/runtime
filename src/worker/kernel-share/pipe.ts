@@ -1,4 +1,4 @@
-import { attachKernelRuntimeState } from "../../abi.js";
+import { attachKernelRuntimeState, supervisorPipeReconcileControl } from "../../abi.js";
 import {
   PIPE_BUFFER_BYTES,
   PIPE_DATA_OFFSET,
@@ -27,6 +27,7 @@ const PIPE_DATA_START = PIPE_DATA_OFFSET;
 const PIPE_OFF_READ_OPEN = PIPE_READ_OPEN_OFFSET;
 const PIPE_OFF_TAIL = PIPE_TAIL_OFFSET;
 const PIPE_OFF_WRITE_OPEN = PIPE_WRITE_OPEN_OFFSET;
+const PIPE_CONTROL_END = PIPE_OFF_WRITE_OPEN + 4;
 const PIPE_BUF_SIZE = PIPE_BUFFER_BYTES;
 
 function pipeDebugPreviewEnabled(): boolean {
@@ -115,6 +116,11 @@ function collectLocalPipeSlotsForOfd(handle: ProcessHandle, ofdId: number): numb
   return supervisorOfdPipeSlots(handle, ofdId);
 }
 
+function copyPipeSlotWithoutOpenCounts(bytes: Uint8Array, slot: Uint8Array, slotOffset: number): void {
+  bytes.set(slot.subarray(0, PIPE_CONTROL_START), slotOffset);
+  bytes.set(slot.subarray(PIPE_CONTROL_END), slotOffset + PIPE_CONTROL_END);
+}
+
 export function snapshotLocalPipeSlots(
   handle: ProcessHandle,
   ofdIds: Iterable<number>,
@@ -157,7 +163,14 @@ export function restoreLocalPipeSlots(
   for (const [pipeSlot, slot] of preservedPipeSlots) {
     const slotOffset = handle.kernelState.pipeBase + pipeSlot * slotBytes;
     if (options.includeControl === true) {
-      bytes.set(slot, slotOffset);
+      const slotView = new DataView(slot.buffer, slot.byteOffset, slot.byteLength);
+      const readOpen = slotView.getInt32(PIPE_OFF_READ_OPEN, true);
+      const writeOpen = slotView.getInt32(PIPE_OFF_WRITE_OPEN, true);
+      copyPipeSlotWithoutOpenCounts(bytes, slot, slotOffset);
+      const applied = supervisorPipeReconcileControl(handle.kernel, pipeSlot, readOpen, writeOpen);
+      if (applied === 0) {
+        throw new Error(`kernel supervisor rejected pipe control reconciliation for slot ${pipeSlot}`);
+      }
       continue;
     }
     bytes.set(slot.subarray(0, PIPE_CONTROL_START), slotOffset);
@@ -209,20 +222,20 @@ export function reconcileKernelSharePipeControl(handle: ProcessHandle): void {
     pipeUsed |= addSupervisorPipeControlForMember(member, readOpen, writeOpen, maxPipes);
   }
 
-  const slotBytes = PIPE_SLOT_BYTES;
   for (const member of members) {
-    if (typeof member.kernel.kernel_pipe_base !== "function") {
-      continue;
-    }
-    const view = new DataView(member.memory.buffer);
-    const pipeBase = member.kernel.kernel_pipe_base();
     for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
       if ((pipeUsed & (1n << BigInt(pipeSlot))) === 0n) {
         continue;
       }
-      const slotOffset = pipeBase + pipeSlot * slotBytes;
-      view.setInt32(slotOffset + PIPE_OFF_READ_OPEN, readOpen[pipeSlot] ?? 0, true);
-      view.setInt32(slotOffset + PIPE_OFF_WRITE_OPEN, writeOpen[pipeSlot] ?? 0, true);
+      const applied = supervisorPipeReconcileControl(
+        member.kernel,
+        pipeSlot,
+        readOpen[pipeSlot] ?? 0,
+        writeOpen[pipeSlot] ?? 0,
+      );
+      if (applied === 0) {
+        throw new Error(`kernel supervisor rejected pipe control reconciliation for slot ${pipeSlot}`);
+      }
     }
     member.kernelState = {
       ...member.kernelState,

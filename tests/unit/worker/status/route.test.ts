@@ -2168,7 +2168,9 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: { notifySab: new SharedArrayBuffer(12), stateSab: new SharedArrayBuffer(176) },
     kernel: makeKernel(7, {
+      memory,
       abi_max_pipes: () => 64,
+      kernel_pipe_base: () => kernelState.pipeBase,
       kernel_pipe_region_bytes: () => 64 * PIPE_SLOT_SIZE,
       kernel_attach_runtime_state: vi.fn(),
     }),
