@@ -32,7 +32,10 @@ import {
   snapshotLocalOfdSlots,
   snapshotRuntimeNetworkOfdSlots,
 } from "../ownership/ofd-table.js";
-import { isRegularFileOfd } from "../ownership/ofd-peer.js";
+import {
+  isPipeSyncOfdCandidate,
+  isRegularFileOfd,
+} from "../ownership/ofd-peer.js";
 import {
   ofdIdsFromFdEntries,
   restoreProcessFdEntries,
@@ -89,13 +92,7 @@ export async function syncPipeStateViaKernelWorker(
     ...collectProcessHeldOfds(handle),
     ...fdEntryOfdIds,
     ...activeKernelShareOfdIds(handle),
-  ])]
-    .filter((ofdId) => {
-      const fdType = handle.kernel.kernel_ofd_fd_type(ofdId);
-      return fdType === handle.kernel.abi_fd_type_pipe()
-        || fdType === handle.kernel.abi_fd_type_pty_master?.()
-        || fdType === handle.kernel.abi_fd_type_pty_slave?.();
-    });
+  ])].filter((ofdId) => isPipeSyncOfdCandidate(handle, ofdId));
   const preservedLocalPipeOfdSlots = snapshotLocalOfdSlots(handle, pipeOfdIds.filter((ofdId) => (
     fdEntryOfdIds.includes(ofdId)
   )));

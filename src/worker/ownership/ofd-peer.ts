@@ -280,7 +280,17 @@ export function trackHeldForkSharedOfds(handle: ProcessHandle, vmPtr: number): v
 }
 
 export function isRegularFileOfd(handle: ProcessHandle, ofdId: number): boolean {
-  return ofdId > 0
-    && ofdId < handle.kernel.abi_max_fds()
-    && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_file();
+  const isRegularFile = handle.kernel.supervisor_ofd_is_regular_file;
+  if (!isRegularFile) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_is_regular_file");
+  }
+  return isRegularFile.call(handle.kernel, ofdId) !== 0;
+}
+
+export function isPipeSyncOfdCandidate(handle: ProcessHandle, ofdId: number): boolean {
+  const isCandidate = handle.kernel.supervisor_pipe_sync_ofd_candidate;
+  if (!isCandidate) {
+    throw new Error("kernel supervisor ABI missing supervisor_pipe_sync_ofd_candidate");
+  }
+  return isCandidate.call(handle.kernel, ofdId) !== 0;
 }

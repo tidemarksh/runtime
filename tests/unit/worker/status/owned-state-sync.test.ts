@@ -85,6 +85,39 @@ const supervisorPipeControlKernelStubs = {
     }
     return 0;
   },
+  supervisor_ofd_is_regular_file(this: {
+    abi_max_fds?: () => number;
+    abi_fd_type_file?: () => number;
+    kernel_ofd_fd_type?: (ofdId: number) => number;
+  }, ofdId: number) {
+    const fileType = this.abi_fd_type_file?.();
+    return ofdId > 0
+      && ofdId < (this.abi_max_fds?.() ?? 0)
+      && fileType !== undefined
+      && this.kernel_ofd_fd_type?.(ofdId) === fileType
+      ? 1
+      : 0;
+  },
+  supervisor_pipe_sync_ofd_candidate(this: {
+    abi_max_fds?: () => number;
+    abi_fd_type_pipe?: () => number;
+    abi_fd_type_pty_master?: () => number;
+    abi_fd_type_pty_slave?: () => number;
+    kernel_ofd_fd_type?: (ofdId: number) => number;
+  }, ofdId: number) {
+    if (ofdId <= 0 || ofdId >= (this.abi_max_fds?.() ?? 0)) {
+      return 0;
+    }
+    const fdType = this.kernel_ofd_fd_type?.(ofdId);
+    return fdType !== undefined
+      && (
+        fdType === this.abi_fd_type_pipe?.()
+        || fdType === this.abi_fd_type_pty_master?.()
+        || fdType === this.abi_fd_type_pty_slave?.()
+      )
+      ? 1
+      : 0;
+  },
   supervisor_process_pipe_used_mask: () => 1n,
   supervisor_process_pipe_read_open_count: () => 0,
   supervisor_process_pipe_write_open_count: () => 0,

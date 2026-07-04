@@ -1225,6 +1225,21 @@ export function makeSupervisorAbiStubs(
         ? 1
         : 0;
     },
+    supervisor_ofd_is_regular_file(this: KernelExports | undefined, ofdId: number) {
+      const receiver = currentExports(this);
+      return ofdId > 0
+        && ofdId < callNumber(receiver, "abi_max_fds")
+        && callNumber(receiver, "kernel_ofd_fd_type", ofdId) === callNumber(receiver, "abi_fd_type_file")
+        ? 1
+        : 0;
+    },
+    supervisor_pipe_sync_ofd_candidate(this: KernelExports | undefined, ofdId: number) {
+      const receiver = currentExports(this);
+      if (ofdId <= 0 || ofdId >= callNumber(receiver, "abi_max_fds")) {
+        return 0;
+      }
+      return fdTypeIsPipeLike(receiver, callNumber(receiver, "kernel_ofd_fd_type", ofdId)) ? 1 : 0;
+    },
     supervisor_fork_shared_held_ofd_track_flag_shared() {
       return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_shared;
     },

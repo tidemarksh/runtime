@@ -216,6 +216,12 @@ function makeKernel(
     abi_fd_type_file: () => FD_TYPE_FILE,
     abi_fd_type_pipe: () => FD_TYPE_PIPE,
     abi_fd_type_socket: () => FD_TYPE_SOCKET,
+    supervisor_ofd_is_regular_file: (ofdId: number) => (
+      ofdId > 0 && ofdId < 32 && readOfdInt32(ofdId, 0) === FD_TYPE_FILE ? 1 : 0
+    ),
+    supervisor_pipe_sync_ofd_candidate: (ofdId: number) => (
+      ofdId > 0 && ofdId < 32 && readOfdInt32(ofdId, 0) === FD_TYPE_PIPE ? 1 : 0
+    ),
     kernel_heap_base: () => state.heapBase,
     kernel_heap_ptr: () => state.heapPtr,
     kernel_ofd_table_ptr: () => state.ofdTablePtr,

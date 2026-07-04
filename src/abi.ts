@@ -386,6 +386,8 @@ export interface KernelExports {
   supervisor_process_identity_matches?(vmPtr: number, runtimePid: number, processPtr: number): number;
   supervisor_fault_exit_decision?(vmPtr: number, outPtr: number, outLen: number): number;
   supervisor_process_held_ofd_refcount?(vmPtr: number, ofdId: number): number;
+  supervisor_ofd_is_regular_file?(ofdId: number): number;
+  supervisor_pipe_sync_ofd_candidate?(ofdId: number): number;
   supervisor_fork_shared_peer_flag_compatible?(): number;
   supervisor_fork_shared_peer_flag_incompatible?(): number;
   supervisor_fork_shared_peer_flag_pipe_peer?(): number;
@@ -1778,6 +1780,8 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_process_identity_matches",
   "supervisor_fault_exit_decision",
   "supervisor_process_held_ofd_refcount",
+  "supervisor_ofd_is_regular_file",
+  "supervisor_pipe_sync_ofd_candidate",
   "supervisor_fork_shared_peer_flag_compatible",
   "supervisor_fork_shared_peer_flag_incompatible",
   "supervisor_fork_shared_peer_flag_pipe_peer",
