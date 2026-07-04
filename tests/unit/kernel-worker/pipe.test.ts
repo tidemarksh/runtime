@@ -219,6 +219,13 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
     },
     process_fd_ofd_id: (_vmPtr: number, fd: number) => fdMap.get(fd) ?? 0,
     process_fd_flags: () => 0,
+    supervisor_process_ofd_for_fd(this: KernelExports, vmPtr: number, fd: number) {
+      const ofdId = this.process_fd_ofd_id(vmPtr, fd);
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? ofdId : 0;
+    },
+    supervisor_process_fd_flags_for_fd(this: KernelExports, vmPtr: number, fd: number) {
+      return fd >= 0 && fd < this.abi_max_fds() ? this.process_fd_flags(vmPtr, fd) : 0;
+    },
     process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number, _fdFlags: number) => {
       if (ofdId === 0) {
         fdMap.delete(fd);
@@ -255,6 +262,21 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
     supervisor_process_pipe_write_open_count: (_vmPtr: number, pipeSlot: number) => (
       pipeOpenCount(pipeSlot, PIPE_SLOT_MODE_WRITE)
     ),
+    supervisor_ofd_fd_type(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_fd_type(ofdId) : 0;
+    },
+    supervisor_ofd_host_fd(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_host_fd(ofdId) : -1;
+    },
+    supervisor_ofd_status_flags(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_status_flags(ofdId) : 0;
+    },
+    supervisor_ofd_ino(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_ino(ofdId) : 0;
+    },
+    supervisor_ofd_refcount(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_refcount(ofdId) : 0;
+    },
     kernel_ofd_fd_type: (ofdId: number) => new DataView(memory.buffer)
       .getInt32(runtimeState.ofdTablePtr + ofdId * 32, true),
     kernel_ofd_host_fd: (ofdId: number) => new DataView(memory.buffer)

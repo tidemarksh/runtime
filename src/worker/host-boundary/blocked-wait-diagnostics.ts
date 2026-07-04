@@ -7,6 +7,13 @@ import {
   supervisorProcessFdFlagsForFd,
   supervisorProcessOfdForFd,
 } from "../ownership/fd-table.js";
+import {
+  supervisorOfdFdType,
+  supervisorOfdHostFd,
+  supervisorOfdIno,
+  supervisorOfdOffset,
+  supervisorOfdRefcount,
+} from "../ownership/ofd-metadata.js";
 
 export interface BlockedWaitDiagnosticsDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
@@ -45,7 +52,7 @@ export function formatFaultThreadSummary(handle: ProcessHandle, label: string, v
 
 function formatOfdType(handle: ProcessHandle, ofdId: number): string {
   try {
-    const fdType = handle.kernel.kernel_ofd_fd_type(ofdId);
+    const fdType = supervisorOfdFdType(handle, ofdId);
     if (fdType === handle.kernel.abi_fd_type_file?.()) {
       return "file";
     }
@@ -93,12 +100,12 @@ export function formatThreadFdTableSummary(handle: ProcessHandle, vmPtr: number)
     let ino = "err";
     let refcount = "err";
     try {
-      ino = String(handle.kernel.kernel_ofd_ino(ofdId));
+      ino = String(supervisorOfdIno(handle, ofdId));
     } catch {
       // keep diagnostic compact when an inherited harness lacks an export
     }
     try {
-      refcount = String(handle.kernel.kernel_ofd_refcount(ofdId));
+      refcount = String(supervisorOfdRefcount(handle, ofdId));
     } catch {
       // keep diagnostic compact when an inherited harness lacks an export
     }
@@ -143,12 +150,10 @@ function formatBlockedFdEntries(handle: ProcessHandle, vmPtr: number, limit = 32
       continue;
     }
     const hasValidOfd = ofdId > 0 && ofdId < maxFds;
-    const type = hasValidOfd ? handle.kernel.kernel_ofd_fd_type(ofdId) : -1;
-    const ino = hasValidOfd ? handle.kernel.kernel_ofd_ino(ofdId) : -1;
-    const hostFd = hasValidOfd ? handle.kernel.kernel_ofd_host_fd(ofdId) : -1;
-    const offset = hasValidOfd && handle.kernel.kernel_ofd_offset
-      ? handle.kernel.kernel_ofd_offset(ofdId)
-      : -1n;
+    const type = hasValidOfd ? supervisorOfdFdType(handle, ofdId) : -1;
+    const ino = hasValidOfd ? supervisorOfdIno(handle, ofdId) : -1;
+    const hostFd = hasValidOfd ? supervisorOfdHostFd(handle, ofdId) : -1;
+    const offset = hasValidOfd ? supervisorOfdOffset(handle, ofdId) : -1n;
     entries.push(`${fd}->${ofdId}/${type}/${ino}/${hostFd}/${offset.toString()}`);
   }
   return entries.join(" ") || "none";
@@ -193,14 +198,14 @@ export function formatBlockedEpollEntries(handle: ProcessHandle, vmPtr: number, 
     epollFd < 0
     || epollOfdId <= 0
     || epollOfdId >= maxFds
-    || handle.kernel.kernel_ofd_fd_type(epollOfdId) !== handle.kernel.abi_fd_type_epoll()
+    || supervisorOfdFdType(handle, epollOfdId) !== handle.kernel.abi_fd_type_epoll()
   ) {
     return "none";
   }
 
   const tableBytes = handle.kernel.kernel_epoll_table_bytes();
   const instanceBytes = handle.kernel.kernel_epoll_instance_bytes();
-  const epollIdx = handle.kernel.kernel_ofd_ino(epollOfdId);
+  const epollIdx = supervisorOfdIno(handle, epollOfdId);
   const tablePointerBytes = tableBytes % 8 === 0
     && Math.floor((instanceBytes - 4) / (tableBytes >>> 3)) >= 28
     ? 8
@@ -238,9 +243,9 @@ export function formatBlockedEpollEntries(handle: ProcessHandle, vmPtr: number, 
     const data = view.getBigUint64(offset + 16, true);
     const last = view.getUint32(offset + 24, true);
     const hasValidOfd = ofdId > 0 && ofdId < maxFds;
-    const type = hasValidOfd ? handle.kernel.kernel_ofd_fd_type(ofdId) : -1;
-    const ino = hasValidOfd ? handle.kernel.kernel_ofd_ino(ofdId) : -1;
-    const ofdOffset = hasValidOfd ? handle.kernel.kernel_ofd_offset(ofdId) : -1n;
+    const type = hasValidOfd ? supervisorOfdFdType(handle, ofdId) : -1;
+    const ino = hasValidOfd ? supervisorOfdIno(handle, ofdId) : -1;
+    const ofdOffset = hasValidOfd ? supervisorOfdOffset(handle, ofdId) : -1n;
     const readiness = type === eventfdType
       ? `eventfd=${ofdOffset.toString()}`
       : type === pipeType

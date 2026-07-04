@@ -92,6 +92,30 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     process_fd_ofd_id: (_vmPtr: number, _fd: number) => 0,
     process_thread_vm_ptr: (_vmPtr: number, slot: number) => (slot === 0 ? 0x1234 : 0),
     thread_blocked_ofd_id: (_vmPtr: number) => 0,
+    supervisor_process_held_ofd_refcount(this: KernelExports, vmPtr: number, ofdId: number) {
+      let refcount = 0;
+      for (let fd = 0; fd < this.abi_max_fds(); fd += 1) {
+        if (this.process_fd_ofd_id(vmPtr, fd) === ofdId) {
+          refcount += 1;
+        }
+      }
+      return refcount;
+    },
+    supervisor_ofd_fd_type(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_fd_type(ofdId) : 0;
+    },
+    supervisor_ofd_ino(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_ino(ofdId) : 0;
+    },
+    supervisor_ofd_host_fd(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_host_fd(ofdId) : -1;
+    },
+    supervisor_ofd_refcount(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_refcount(ofdId) : 0;
+    },
+    supervisor_ofd_offset(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_offset(ofdId) : 0n;
+    },
     kernel_ofd_fd_type: (ofdId: number) => new DataView(memory.buffer)
       .getInt32(runtimeState.ofdTablePtr + ofdId * 32, true),
     kernel_ofd_ino: (ofdId: number) => new DataView(memory.buffer)

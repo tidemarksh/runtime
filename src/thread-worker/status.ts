@@ -1,6 +1,9 @@
 import type { KernelExports, KernelRuntimeState, StatusCodes } from "../abi.js";
 import {
   readKernelRuntimeState,
+  supervisorOfdFdType,
+  supervisorOfdHostFd,
+  supervisorOfdIno,
   supervisorProcessFdFlagsForFd,
   supervisorProcessOfdForFd,
 } from "../abi.js";
@@ -643,15 +646,15 @@ function snapshotNonEmptyProcessPipeSlots(
     if (
       ofdId <= 0
       || ofdId >= kernelExports.abi_max_fds()
-      || kernelExports.kernel_ofd_fd_type(ofdId) !== kernelExports.abi_fd_type_pipe()
+      || supervisorOfdFdType(kernelExports, ofdId) !== kernelExports.abi_fd_type_pipe()
     ) {
       continue;
     }
-    const pipeSlot = kernelExports.kernel_ofd_ino(ofdId);
+    const pipeSlot = supervisorOfdIno(kernelExports, ofdId);
     if (pipeSlot <= 0 || pipeSlot >= kernelExports.abi_max_pipes()) {
       continue;
     }
-    const mode = kernelExports.kernel_ofd_host_fd(ofdId) >= 0 ? 1 : 2;
+    const mode = supervisorOfdHostFd(kernelExports, ofdId) >= 0 ? 1 : 2;
     pipeSlotModes.set(pipeSlot, (pipeSlotModes.get(pipeSlot) ?? 0) | mode);
   }
 

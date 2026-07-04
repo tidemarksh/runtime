@@ -411,6 +411,12 @@ export interface KernelExports {
   supervisor_process_ofd_for_fd?(vmPtr: number, fd: number): number;
   supervisor_process_fd_flags_for_fd?(vmPtr: number, fd: number): number;
   supervisor_process_fd_is_open?(vmPtr: number, fd: number): number;
+  supervisor_ofd_fd_type?(ofdId: number): number;
+  supervisor_ofd_host_fd?(ofdId: number): number;
+  supervisor_ofd_status_flags?(ofdId: number): number;
+  supervisor_ofd_ino?(ofdId: number): number;
+  supervisor_ofd_refcount?(ofdId: number): number;
+  supervisor_ofd_offset?(ofdId: number): bigint | number;
   supervisor_process_private_pipe_slot_mask?(vmPtr: number): bigint | number;
   supervisor_process_private_pipe_source_mode?(vmPtr: number, pipeSlot: number): number;
   supervisor_process_private_pipe_target_mode?(vmPtr: number, pipeSlot: number): number;
@@ -1812,6 +1818,12 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_process_ofd_for_fd",
   "supervisor_process_fd_flags_for_fd",
   "supervisor_process_fd_is_open",
+  "supervisor_ofd_fd_type",
+  "supervisor_ofd_host_fd",
+  "supervisor_ofd_status_flags",
+  "supervisor_ofd_ino",
+  "supervisor_ofd_refcount",
+  "supervisor_ofd_offset",
   "supervisor_process_private_pipe_slot_mask",
   "supervisor_process_private_pipe_source_mode",
   "supervisor_process_private_pipe_target_mode",
@@ -2256,6 +2268,86 @@ function requireSupervisorProcessFdFlagsForFd(exports: KernelExports): (vmPtr: n
     throw new Error("kernel supervisor ABI missing supervisor_process_fd_flags_for_fd");
   }
   return read.bind(exports);
+}
+
+function requireSupervisorOfdFdType(exports: KernelExports): (ofdId: number) => number {
+  const read = exports.supervisor_ofd_fd_type;
+  if (!read) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_fd_type");
+  }
+  return read.bind(exports);
+}
+
+function requireSupervisorOfdHostFd(exports: KernelExports): (ofdId: number) => number {
+  const read = exports.supervisor_ofd_host_fd;
+  if (!read) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_host_fd");
+  }
+  return read.bind(exports);
+}
+
+function requireSupervisorOfdStatusFlags(exports: KernelExports): (ofdId: number) => number {
+  const read = exports.supervisor_ofd_status_flags;
+  if (!read) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_status_flags");
+  }
+  return read.bind(exports);
+}
+
+function requireSupervisorOfdIno(exports: KernelExports): (ofdId: number) => number {
+  const read = exports.supervisor_ofd_ino;
+  if (!read) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_ino");
+  }
+  return read.bind(exports);
+}
+
+function requireSupervisorOfdRefcount(exports: KernelExports): (ofdId: number) => number {
+  const read = exports.supervisor_ofd_refcount;
+  if (!read) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_refcount");
+  }
+  return read.bind(exports);
+}
+
+function requireSupervisorOfdOffset(exports: KernelExports): (ofdId: number) => bigint | number {
+  const read = exports.supervisor_ofd_offset;
+  if (!read) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_offset");
+  }
+  return read.bind(exports);
+}
+
+function validOfdId(exports: KernelExports, ofdId: number): boolean {
+  return ofdId > 0 && ofdId < exports.abi_max_fds();
+}
+
+export function supervisorOfdFdType(exports: KernelExports, ofdId: number): number {
+  return validOfdId(exports, ofdId) ? requireSupervisorOfdFdType(exports)(ofdId) : 0;
+}
+
+export function supervisorOfdHostFd(exports: KernelExports, ofdId: number): number {
+  return validOfdId(exports, ofdId) ? requireSupervisorOfdHostFd(exports)(ofdId) : -1;
+}
+
+export function supervisorOfdStatusFlags(exports: KernelExports, ofdId: number): number {
+  return validOfdId(exports, ofdId) ? requireSupervisorOfdStatusFlags(exports)(ofdId) : 0;
+}
+
+export function supervisorOfdIno(exports: KernelExports, ofdId: number): number {
+  return validOfdId(exports, ofdId) ? requireSupervisorOfdIno(exports)(ofdId) : 0;
+}
+
+export function supervisorOfdRefcount(exports: KernelExports, ofdId: number): number {
+  return validOfdId(exports, ofdId) ? requireSupervisorOfdRefcount(exports)(ofdId) : 0;
+}
+
+export function supervisorOfdOffset(exports: KernelExports, ofdId: number): bigint {
+  if (!validOfdId(exports, ofdId)) {
+    return 0n;
+  }
+  const offset = requireSupervisorOfdOffset(exports)(ofdId);
+  return typeof offset === "bigint" ? offset : BigInt(offset);
 }
 
 export function supervisorProcessOfdForFd(

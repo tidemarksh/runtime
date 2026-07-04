@@ -1,6 +1,7 @@
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
+  supervisorOfdFdType,
   supervisorProcessOfdForFd,
 } from "../../abi.js";
 import type {
@@ -183,7 +184,7 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
     } = deps.recomputeCanonicalPipeControlState();
     attachKernelRuntimeState(processExports, sourceState);
     const sourceRehydrateOfdIds = ofdIds.filter(
-      (ofdId) => processExports.kernel_ofd_fd_type(ofdId) !== processExports.abi_fd_type_file(),
+      (ofdId) => supervisorOfdFdType(processExports, ofdId) !== processExports.abi_fd_type_file(),
     );
     deps.copySelectedOfdState(canonicalExports, reconciledCanonicalState, processExports, sourceState, sourceRehydrateOfdIds);
     deps.applyPipeControlState(

@@ -16,6 +16,11 @@ import {
   supervisorProcessFdFlagsForFd,
   supervisorProcessOfdForFd,
 } from "../ownership/fd-table.js";
+import {
+  supervisorOfdFdType,
+  supervisorOfdHostFd,
+  supervisorOfdIno,
+} from "../ownership/ofd-metadata.js";
 
 const PIPE_CONTROL_START = PIPE_READ_OPEN_OFFSET;
 const PIPE_DATA_START = PIPE_DATA_OFFSET;
@@ -232,7 +237,7 @@ export function formatPipeCounterDebug(handle: ProcessHandle, fd: number): strin
   if (ofdId === 0) {
     return `${fd}:ofd=0`;
   }
-  const fdType = handle.kernel.kernel_ofd_fd_type(ofdId);
+  const fdType = supervisorOfdFdType(handle, ofdId);
   const firstPipeSlotMode = supervisorOfdPipeSlotModeMap(handle, ofdId).entries().next().value;
   const pipeSlot = firstPipeSlotMode?.[0] ?? 0;
   const mode = firstPipeSlotMode?.[1] ?? 0;
@@ -263,6 +268,6 @@ export function formatOpenFdSummary(handle: ProcessHandle, limit = 16): string {
     if (ofdId === 0) {
       return null;
     }
-    return `${fd}->${ofdId}/${supervisorProcessFdFlagsForFd(handle, handle.vmPtr, fd)}/${handle.kernel.kernel_ofd_fd_type(ofdId)}/${handle.kernel.kernel_ofd_ino(ofdId)}/${handle.kernel.kernel_ofd_host_fd(ofdId)}`;
+    return `${fd}->${ofdId}/${supervisorProcessFdFlagsForFd(handle, handle.vmPtr, fd)}/${supervisorOfdFdType(handle, ofdId)}/${supervisorOfdIno(handle, ofdId)}/${supervisorOfdHostFd(handle, ofdId)}`;
   }).filter(Boolean).join(" ");
 }

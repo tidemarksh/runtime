@@ -13,6 +13,13 @@ import {
   supervisorProcessFdFlagsForFd,
   supervisorProcessOfdForFd,
 } from "./ownership/fd-table.js";
+import {
+  supervisorOfdFdType,
+  supervisorOfdHostFd,
+  supervisorOfdIno,
+  supervisorOfdRefcount,
+  supervisorOfdStatusFlags,
+} from "./ownership/ofd-metadata.js";
 import { supervisorProcessPipeSlotForFd } from "./ownership/pipe-slot.js";
 
 interface WorkerExitDeps {
@@ -543,11 +550,11 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
             `${fd}->${ofdId}`
             + `/fl=${flags}`
             + `/gen=${generation}`
-            + `/ty=${handle.kernel.kernel_ofd_fd_type(ofdId)}`
-            + `/ref=${handle.kernel.kernel_ofd_refcount(ofdId)}`
-            + `/host=${handle.kernel.kernel_ofd_host_fd(ofdId)}`
-            + `/ino=${handle.kernel.kernel_ofd_ino(ofdId)}`
-            + `/st=${handle.kernel.kernel_ofd_status_flags(ofdId)}`,
+            + `/ty=${supervisorOfdFdType(handle, ofdId)}`
+            + `/ref=${supervisorOfdRefcount(handle, ofdId)}`
+            + `/host=${supervisorOfdHostFd(handle, ofdId)}`
+            + `/ino=${supervisorOfdIno(handle, ofdId)}`
+            + `/st=${supervisorOfdStatusFlags(handle, ofdId)}`,
           );
         } catch (error) {
           fdParts.push(`${fd}->error:${JSON.stringify(error instanceof Error ? error.message : String(error))}`);
@@ -1550,10 +1557,10 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       entries.push([
         `${fd}->${ofdId}`,
         `flags=${supervisorProcessFdFlagsForFd(handle, handle.vmPtr, fd)}`,
-        `type=${handle.kernel.kernel_ofd_fd_type(ofdId)}`,
-        `host=${handle.kernel.kernel_ofd_host_fd(ofdId)}`,
-        `ino=${handle.kernel.kernel_ofd_ino(ofdId)}`,
-        `status=${handle.kernel.kernel_ofd_status_flags(ofdId)}`,
+        `type=${supervisorOfdFdType(handle, ofdId)}`,
+        `host=${supervisorOfdHostFd(handle, ofdId)}`,
+        `ino=${supervisorOfdIno(handle, ofdId)}`,
+        `status=${supervisorOfdStatusFlags(handle, ofdId)}`,
       ].join(":"));
     }
     return entries.join(" ");
@@ -1895,9 +1902,9 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         if (ofdId === 0) {
           continue;
         }
-        const type = ofdId > 0 && ofdId < maxFds ? child.kernel.kernel_ofd_fd_type(ofdId) : -1;
-        const ino = ofdId > 0 && ofdId < maxFds ? child.kernel.kernel_ofd_ino(ofdId) : -1;
-        const hostFd = ofdId > 0 && ofdId < maxFds ? child.kernel.kernel_ofd_host_fd(ofdId) : -1;
+        const type = ofdId > 0 && ofdId < maxFds ? supervisorOfdFdType(child, ofdId) : -1;
+        const ino = ofdId > 0 && ofdId < maxFds ? supervisorOfdIno(child, ofdId) : -1;
+        const hostFd = ofdId > 0 && ofdId < maxFds ? supervisorOfdHostFd(child, ofdId) : -1;
         fdParts.push(`${fd}->${ofdId}/${type}/${ino}/${hostFd}`);
       }
       parts.push(`fds=${fdParts.join("_") || "none"}`);

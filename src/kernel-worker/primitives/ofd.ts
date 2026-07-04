@@ -1,6 +1,11 @@
 import {
   kernelOfdStateBytes,
   kernelOfdStatePtr,
+  supervisorOfdFdType,
+  supervisorOfdHostFd,
+  supervisorOfdIno,
+  supervisorOfdOffset,
+  supervisorOfdRefcount,
   type KernelExports,
   type KernelRuntimeState,
 } from "../../abi.js";
@@ -24,8 +29,8 @@ function ofdSlotsCanBeShared(
   targetExports: KernelExports,
   ofdId: number,
 ): boolean {
-  const sourceType = sourceExports.kernel_ofd_fd_type(ofdId);
-  const targetType = targetExports.kernel_ofd_fd_type(ofdId);
+  const sourceType = supervisorOfdFdType(sourceExports, ofdId);
+  const targetType = supervisorOfdFdType(targetExports, ofdId);
   if (sourceType === 0) {
     return targetType === 0;
   }
@@ -36,15 +41,15 @@ function ofdSlotsCanBeShared(
     return false;
   }
   if (
-    sourceExports.kernel_ofd_ino(ofdId) !== targetExports.kernel_ofd_ino(ofdId)
-    || sourceExports.kernel_ofd_host_fd(ofdId) !== targetExports.kernel_ofd_host_fd(ofdId)
+    supervisorOfdIno(sourceExports, ofdId) !== supervisorOfdIno(targetExports, ofdId)
+    || supervisorOfdHostFd(sourceExports, ofdId) !== supervisorOfdHostFd(targetExports, ofdId)
   ) {
     return false;
   }
   if (
     sourceType === sourceExports.abi_fd_type_file()
-    && targetExports.kernel_ofd_refcount(ofdId) > 0
-    && sourceExports.kernel_ofd_offset(ofdId) < targetExports.kernel_ofd_offset(ofdId)
+    && supervisorOfdRefcount(targetExports, ofdId) > 0
+    && supervisorOfdOffset(sourceExports, ofdId) < supervisorOfdOffset(targetExports, ofdId)
   ) {
     return false;
   }
@@ -57,7 +62,7 @@ function ofdSnapshotCanApply(
   snapshot: KernelWorkerOfdSlotSnapshot,
   slotBytes: number,
 ): boolean {
-  const targetType = targetExports.kernel_ofd_fd_type(snapshot.ofdId);
+  const targetType = supervisorOfdFdType(targetExports, snapshot.ofdId);
   if (targetType === 0) {
     return true;
   }
@@ -245,7 +250,7 @@ export function createKernelWorkerOfdPrimitives(deps: KernelWorkerPrimitivesDeps
     }
 
     for (const ofdId of trackedOfdIds) {
-      let currentRefcount = canonicalExports.kernel_ofd_refcount(ofdId);
+      let currentRefcount = supervisorOfdRefcount(canonicalExports, ofdId);
       const expectedRefcount = expectedRefcounts[ofdId] ?? 0;
       while (currentRefcount < expectedRefcount) {
         canonicalExports.kernel_retain_ofd(ofdId);

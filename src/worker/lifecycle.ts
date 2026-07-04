@@ -8,6 +8,11 @@ import {
   supervisorProcessFdFlagsForFd,
   supervisorProcessOfdForFd,
 } from "./ownership/fd-table.js";
+import {
+  supervisorOfdFdType,
+  supervisorOfdHostFd,
+  supervisorOfdIno,
+} from "./ownership/ofd-metadata.js";
 import { kernelWorkerOwnsEpollState } from "./ownership/epoll-control.js";
 import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
 import { kernelWorkerOwnsSocketState } from "./ownership/socket-control.js";
@@ -74,9 +79,9 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
         parts.push([
           `${fd}->${ofdId}`,
           `flags=${fdFlags}`,
-          `type=${handle.kernel.kernel_ofd_fd_type(ofdId)}`,
-          `ino=${handle.kernel.kernel_ofd_ino(ofdId)}`,
-          `host=${handle.kernel.kernel_ofd_host_fd(ofdId)}`,
+          `type=${supervisorOfdFdType(handle, ofdId)}`,
+          `ino=${supervisorOfdIno(handle, ofdId)}`,
+          `host=${supervisorOfdHostFd(handle, ofdId)}`,
         ].join("/"));
       } catch (error) {
         parts.push(`${fd}->error:${JSON.stringify(error instanceof Error ? error.message : String(error))}`);

@@ -1,4 +1,14 @@
-import { attachKernelRuntimeState, readKernelRuntimeState, type KernelExports, type KernelRuntimeState } from "../../abi.js";
+import {
+  attachKernelRuntimeState,
+  readKernelRuntimeState,
+  supervisorOfdFdType,
+  supervisorOfdHostFd,
+  supervisorOfdIno,
+  supervisorOfdRefcount,
+  supervisorOfdStatusFlags,
+  type KernelExports,
+  type KernelRuntimeState,
+} from "../../abi.js";
 import {
   OFD_INO_OFFSET,
   OFD_OFFSET_OFFSET,
@@ -166,20 +176,20 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
     processExports: KernelExports,
     ofdId: number,
   ): Array<{ pipeSlot: number; mode: number }> {
-    const fdType = processExports.kernel_ofd_fd_type(ofdId);
-    const statusFlags = processExports.kernel_ofd_status_flags(ofdId);
+    const fdType = supervisorOfdFdType(processExports, ofdId);
+    const statusFlags = supervisorOfdStatusFlags(processExports, ofdId);
     const oRdonly = processExports.abi_o_rdonly();
     const oWronly = processExports.abi_o_wronly();
     const accessModeMask = oRdonly | oWronly | processExports.abi_o_rdwr();
     const accessMode = statusFlags & accessModeMask;
     if (fdType === processExports.abi_fd_type_pipe()) {
-      const pipeSlot = processExports.kernel_ofd_ino(ofdId);
+      const pipeSlot = supervisorOfdIno(processExports, ofdId);
       if (pipeSlot <= 0 || pipeSlot >= processExports.abi_max_pipes()) {
         return [];
       }
       return [{
         pipeSlot,
-        mode: processExports.kernel_ofd_host_fd(ofdId) >= 0
+        mode: supervisorOfdHostFd(processExports, ofdId) >= 0
           ? PIPE_SLOT_MODE_READ
           : PIPE_SLOT_MODE_WRITE,
       }];
@@ -189,7 +199,7 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
     if (fdType !== ptySlaveType && fdType !== ptyMasterType) {
       return [];
     }
-    const ptyIdx = processExports.kernel_ofd_ino(ofdId);
+    const ptyIdx = supervisorOfdIno(processExports, ofdId);
     const inputPipe = processExports.kernel_pty_input_pipe?.(ptyIdx) ?? 0;
     const outputPipe = processExports.kernel_pty_output_pipe?.(ptyIdx) ?? 0;
     const modes: Array<{ pipeSlot: number; mode: number }> = [];
@@ -902,7 +912,7 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
     }
 
     for (let ofdId = 1; ofdId < canonicalExports.abi_max_fds(); ofdId += 1) {
-      if (canonicalExports.kernel_ofd_refcount(ofdId) <= 0) {
+      if (supervisorOfdRefcount(canonicalExports, ofdId) <= 0) {
         continue;
       }
       for (const { pipeSlot } of collectOfdPipeModes(canonicalExports, ofdId)) {

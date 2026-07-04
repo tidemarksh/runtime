@@ -290,6 +290,18 @@ export function makeSupervisorAbiStubs(
     const value = fn?.(...args);
     return typeof value === "bigint" ? value : BigInt(Math.trunc(Number(value ?? 0)));
   };
+  const callOptionalBigInt = (
+    receiver: Partial<KernelExports>,
+    name: keyof KernelExports,
+    ...args: unknown[]
+  ): bigint | undefined => {
+    const fn = (receiver[name] ?? overrides[name]) as ((...params: unknown[]) => unknown) | undefined;
+    if (fn === undefined) {
+      return undefined;
+    }
+    const value = fn(...args);
+    return typeof value === "bigint" ? value : BigInt(Math.trunc(Number(value)));
+  };
   const statusFor = (receiver: Partial<KernelExports>, vmPtr: number): number =>
     callNumber(receiver, "thread_status", vmPtr);
   const pipeWaitStatusFor = (receiver: Partial<KernelExports>): number =>
@@ -1299,6 +1311,48 @@ export function makeSupervisorAbiStubs(
         return 0;
       }
       return callNumber(receiver, "process_fd_flags", vmPtr, fd);
+    },
+    supervisor_ofd_fd_type(this: KernelExports | undefined, ofdId: number) {
+      const receiver = currentExports(this);
+      if (ofdId <= 0 || ofdId >= callNumber(receiver, "abi_max_fds")) {
+        return 0;
+      }
+      return callOptionalNumber(receiver, "kernel_ofd_fd_type", ofdId) ?? 0;
+    },
+    supervisor_ofd_host_fd(this: KernelExports | undefined, ofdId: number) {
+      const receiver = currentExports(this);
+      if (ofdId <= 0 || ofdId >= callNumber(receiver, "abi_max_fds")) {
+        return -1;
+      }
+      return callOptionalNumber(receiver, "kernel_ofd_host_fd", ofdId) ?? -1;
+    },
+    supervisor_ofd_status_flags(this: KernelExports | undefined, ofdId: number) {
+      const receiver = currentExports(this);
+      if (ofdId <= 0 || ofdId >= callNumber(receiver, "abi_max_fds")) {
+        return 0;
+      }
+      return callOptionalNumber(receiver, "kernel_ofd_status_flags", ofdId) ?? 0;
+    },
+    supervisor_ofd_ino(this: KernelExports | undefined, ofdId: number) {
+      const receiver = currentExports(this);
+      if (ofdId <= 0 || ofdId >= callNumber(receiver, "abi_max_fds")) {
+        return 0;
+      }
+      return callOptionalNumber(receiver, "kernel_ofd_ino", ofdId) ?? 0;
+    },
+    supervisor_ofd_refcount(this: KernelExports | undefined, ofdId: number) {
+      const receiver = currentExports(this);
+      if (ofdId <= 0 || ofdId >= callNumber(receiver, "abi_max_fds")) {
+        return 0;
+      }
+      return callOptionalNumber(receiver, "kernel_ofd_refcount", ofdId) ?? 0;
+    },
+    supervisor_ofd_offset(this: KernelExports | undefined, ofdId: number) {
+      const receiver = currentExports(this);
+      if (ofdId <= 0 || ofdId >= callNumber(receiver, "abi_max_fds")) {
+        return 0n;
+      }
+      return callOptionalBigInt(receiver, "kernel_ofd_offset", ofdId) ?? 0n;
     },
     supervisor_ofd_is_regular_file(this: KernelExports | undefined, ofdId: number) {
       const receiver = currentExports(this);

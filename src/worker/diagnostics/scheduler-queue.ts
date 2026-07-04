@@ -3,6 +3,11 @@ import type {
   KernelWorkerOfdSlotSnapshot,
 } from "../../messages.js";
 import type { ProcessHandle } from "../types.js";
+import {
+  supervisorOfdFdType,
+  supervisorOfdIno,
+  supervisorOfdRefcount,
+} from "../ownership/ofd-metadata.js";
 
 const SCHEDULER_QUEUE_DEBUG_LOG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
@@ -96,7 +101,7 @@ export function formatSchedulerStepDebugSuffix(handle: ProcessHandle, vmPtr: num
 
 function tryFormatOfdType(handle: ProcessHandle, ofdId: number): string {
   try {
-    const fdType = handle.kernel.kernel_ofd_fd_type(ofdId);
+    const fdType = supervisorOfdFdType(handle, ofdId);
     if (fdType === handle.kernel.abi_fd_type_file?.()) {
       return "file";
     }
@@ -138,12 +143,12 @@ export function formatSchedulerStepFdSnapshot(
       let ino = "err";
       let refcount = "err";
       try {
-        ino = String(handle.kernel.kernel_ofd_ino(entry.ofdId));
+        ino = String(supervisorOfdIno(handle, entry.ofdId));
       } catch {
         // The diagnostic must survive older or partial harness exports.
       }
       try {
-        refcount = String(handle.kernel.kernel_ofd_refcount(entry.ofdId));
+        refcount = String(supervisorOfdRefcount(handle, entry.ofdId));
       } catch {
         // The diagnostic must survive older or partial harness exports.
       }

@@ -52,6 +52,14 @@ function makeKernelExports(label = "kernel", regularFiles: ReadonlyMap<number, U
     kernel_ofd_table_ptr: () => runtimeState.ofdTablePtr,
     kernel_ofd_table_bytes: () => 32 * 32,
     kernel_ofd_fd_type: () => 0,
+    supervisor_ofd_fd_type(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_fd_type(ofdId) : 0;
+    },
+    supervisor_ofd_host_fd: () => -1,
+    supervisor_ofd_status_flags: () => 0,
+    supervisor_ofd_ino: () => 0,
+    supervisor_ofd_refcount: () => 0,
+    supervisor_ofd_offset: () => 0n,
     kernel_memfs_ptr: () => runtimeState.memfsPtr,
     kernel_memfs_header_bytes: () => runtimeState.memfsHeaderBytes,
     kernel_memfs_inodes_bytes: () => runtimeState.memfsInodesBytes,

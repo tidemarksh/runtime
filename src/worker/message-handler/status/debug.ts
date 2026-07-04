@@ -1,5 +1,11 @@
 import type { ProcessHandle } from "../../types.js";
 import type { ThreadWorkerStatusMessage } from "../types.js";
+import {
+  supervisorOfdFdType,
+  supervisorOfdHostFd,
+  supervisorOfdIno,
+  supervisorOfdOffset,
+} from "../../ownership/ofd-metadata.js";
 
 export const STATUS_SOCKET_DEBUG_LOG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_LOG ?? "") === "1"
   || ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_NETWORK ?? "") === "1";
@@ -57,12 +63,10 @@ export function formatStatusFdEntries(
     .filter((entry) => entry.fd >= 0 && entry.fd < limit && entry.ofdId !== 0)
     .map((entry) => {
       const hasValidOfd = entry.ofdId > 0 && entry.ofdId < maxFds;
-      const type = hasValidOfd ? handle.kernel.kernel_ofd_fd_type(entry.ofdId) : -1;
-      const ino = hasValidOfd ? handle.kernel.kernel_ofd_ino(entry.ofdId) : -1;
-      const hostFd = hasValidOfd ? handle.kernel.kernel_ofd_host_fd(entry.ofdId) : -1;
-      const offset = hasValidOfd && handle.kernel.kernel_ofd_offset
-        ? handle.kernel.kernel_ofd_offset(entry.ofdId)
-        : -1n;
+      const type = hasValidOfd ? supervisorOfdFdType(handle, entry.ofdId) : -1;
+      const ino = hasValidOfd ? supervisorOfdIno(handle, entry.ofdId) : -1;
+      const hostFd = hasValidOfd ? supervisorOfdHostFd(handle, entry.ofdId) : -1;
+      const offset = hasValidOfd ? supervisorOfdOffset(handle, entry.ofdId) : -1n;
       return `${entry.fd}->${entry.ofdId}/${entry.fdFlags}/${type}/${ino}/${hostFd}/${offset.toString()}`;
     })
     .join(" ");

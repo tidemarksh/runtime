@@ -12,6 +12,12 @@ import { PIPE_GENERATION_OFFSET } from "../../layout/pipe.js";
 import type { KernelSyncHandle, ProcessHandle } from "../types.js";
 import { supervisorProcessOfdForFd } from "./fd-table.js";
 import {
+  supervisorOfdFdType,
+  supervisorOfdHostFd,
+  supervisorOfdIno,
+  supervisorOfdOffset,
+} from "./ofd-metadata.js";
+import {
   supervisorProcessPipeOfdForFd,
   supervisorProcessPipeSlotForFd,
 } from "./pipe-slot.js";
@@ -193,7 +199,7 @@ export function hasPlausibleOfdState(handle: KernelSyncHandle, ofdId: number): b
   if (ofdId <= 0 || ofdId >= handle.kernel.abi_max_fds()) {
     return false;
   }
-  const type = handle.kernel.kernel_ofd_fd_type(ofdId);
+  const type = supervisorOfdFdType(handle, ofdId);
   return type > 0 && type <= 64;
 }
 
@@ -319,7 +325,7 @@ export function snapshotLocalOfdSlots(
     if (ofdId <= 0 || ofdId >= maxFds || snapshots.has(ofdId)) {
       continue;
     }
-    const fdType = handle.kernel.kernel_ofd_fd_type(ofdId);
+    const fdType = supervisorOfdFdType(handle, ofdId);
     if (fdType <= 0 || fdType > 64) {
       continue;
     }
@@ -348,7 +354,7 @@ export function snapshotRuntimeNetworkOfdSlots(
     if (ofdId <= 0 || ofdId >= maxFds || snapshots.has(ofdId)) {
       continue;
     }
-    if (handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_socket()) {
+    if (supervisorOfdFdType(handle, ofdId) === handle.kernel.abi_fd_type_socket()) {
       const slotOffset = handle.kernelState.ofdTablePtr + ofdId * slotBytes;
       snapshots.set(ofdId, memory.slice(slotOffset, slotOffset + slotBytes));
       continue;
@@ -427,11 +433,11 @@ export function syncPipeOfdGenerationsForSlot(handle: ProcessHandle, pipeSlot: n
 }
 
 export function pipeOfdGenerationDiffers(handle: ProcessHandle, ofdId: number): boolean {
-  if (handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()) {
+  if (supervisorOfdFdType(handle, ofdId) !== handle.kernel.abi_fd_type_pipe()) {
     return false;
   }
-  const pipeGeneration = currentPipeGeneration(handle, handle.kernel.kernel_ofd_ino(ofdId));
-  return pipeGeneration !== null && handle.kernel.kernel_ofd_offset(ofdId) !== BigInt(pipeGeneration);
+  const pipeGeneration = currentPipeGeneration(handle, supervisorOfdIno(handle, ofdId));
+  return pipeGeneration !== null && supervisorOfdOffset(handle, ofdId) !== BigInt(pipeGeneration);
 }
 
 export function localOfdSlotDiffersFromHandle(handle: ProcessHandle, ofdId: number, slot: Uint8Array): boolean {
@@ -443,15 +449,15 @@ export function localOfdSlotDiffersFromHandle(handle: ProcessHandle, ofdId: numb
   if (sourceType === 0) {
     return false;
   }
-  const targetType = handle.kernel.kernel_ofd_fd_type(ofdId);
+  const targetType = supervisorOfdFdType(handle, ofdId);
   if (targetType === 0 || targetType !== sourceType) {
     return true;
   }
   if (pipeOfdGenerationDiffers(handle, ofdId)) {
     return true;
   }
-  return handle.kernel.kernel_ofd_host_fd(ofdId) !== view.getInt32(OFD_HOST_FD_OFFSET, true)
-    || handle.kernel.kernel_ofd_ino(ofdId) !== view.getUint32(OFD_INO_OFFSET, true);
+  return supervisorOfdHostFd(handle, ofdId) !== view.getInt32(OFD_HOST_FD_OFFSET, true)
+    || supervisorOfdIno(handle, ofdId) !== view.getUint32(OFD_INO_OFFSET, true);
 }
 
 export function restoreIncompatibleLocalOfdSlots(
@@ -476,9 +482,9 @@ export function restoreIncompatibleLocalOfdSlots(
     const ofdSlotOffset = handle.kernelState.ofdTablePtr + ofdId * slotBytes;
     bytes.set(slot, ofdSlotOffset);
     if (
-      handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
+      supervisorOfdFdType(handle, ofdId) === handle.kernel.abi_fd_type_pipe()
     ) {
-      const pipeGeneration = currentPipeGeneration(handle, handle.kernel.kernel_ofd_ino(ofdId));
+      const pipeGeneration = currentPipeGeneration(handle, supervisorOfdIno(handle, ofdId));
       if (pipeGeneration !== null) {
         view.setBigInt64(ofdSlotOffset + OFD_OFFSET_OFFSET, BigInt(pipeGeneration), true);
       }

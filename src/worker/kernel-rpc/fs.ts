@@ -11,6 +11,7 @@ import {
   supervisorProcessFdFlagsForFd,
   supervisorProcessOfdForFd,
 } from "../ownership/fd-table.js";
+import { supervisorOfdFdType } from "../ownership/ofd-metadata.js";
 import { applyThreadOfdSlots } from "../ownership/ofd-slot.js";
 import {
   appendPendingGuestMemoryWrites,
@@ -1110,7 +1111,7 @@ function restoreFsFdState(handle: ProcessHandle, snapshot: FsFdStateSnapshot | n
     }
     handle.kernel.process_set_fd_entry(snapshot.vmPtr, entry.fd, entry.ofdId, entry.fdFlags);
     const currentOfdType = entry.ofdId > 0
-      ? handle.kernel.kernel_ofd_fd_type?.(entry.ofdId) ?? 0
+      ? supervisorOfdFdType(handle, entry.ofdId)
       : 0;
     if (
       canRestoreOfdSlot

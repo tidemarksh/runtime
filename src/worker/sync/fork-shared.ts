@@ -30,6 +30,7 @@ import {
   snapshotLocalOfdSlots,
   staleKernelShareOfdIds,
 } from "../ownership/ofd-table.js";
+import { supervisorOfdFdType } from "../ownership/ofd-metadata.js";
 import {
   collectTracedForkSharedOfdIds,
   isRegularFileOfd,
@@ -330,7 +331,7 @@ export async function syncForkSharedStateViaKernelWorker(
         .filter((ofdId) =>
           (handle.kernelShare.sharedOfdIds.has(ofdId) || sourceFdOfdIdSet.has(ofdId))
           && canSyncForkSharedOfd(ofdId)
-          && handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_none()
+          && supervisorOfdFdType(handle, ofdId) !== handle.kernel.abi_fd_type_none()
           && (sourceFdOfdIdSet.has(ofdId) || !sourceForkSharedOfdPeerState(handle, ofdId).incompatiblePeer)
         )
     : [];

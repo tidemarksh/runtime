@@ -49,6 +49,9 @@ function makeKernelExports(memory: WebAssembly.Memory) {
     },
     kernel_ofd_table_bytes: () => 32 * 32,
     kernel_ofd_refcount: (ofdId: number) => new DataView(memory.buffer).getInt32(0x220000 + ofdId * 32 + 16, true),
+    supervisor_ofd_refcount(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_refcount(ofdId) : 0;
+    },
     kernel_retain_ofd: retainOfd,
     kernel_release_ofd: releaseOfd,
     setFdMap(map: Map<number, number>) {

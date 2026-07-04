@@ -20,6 +20,13 @@ import {
   supervisorProcessFdFlagsForFd,
   supervisorProcessOfdForFd,
 } from "../ownership/fd-table.js";
+import {
+  supervisorOfdFdType,
+  supervisorOfdHostFd,
+  supervisorOfdIno,
+  supervisorOfdOffset,
+  supervisorOfdStatusFlags,
+} from "../ownership/ofd-metadata.js";
 
 export interface WorkerLogFocus {
   vmPtr: number;
@@ -1503,11 +1510,11 @@ export function debugRuntimeProcessHandles(
           return [
             `${fd}->${ofdId}`,
             `flags=${supervisorProcessFdFlagsForFd(handle, handle.vmPtr, fd)}`,
-            `type=${handle.kernel.kernel_ofd_fd_type(ofdId)}`,
-            `ino=${handle.kernel.kernel_ofd_ino(ofdId)}`,
-            `host=${handle.kernel.kernel_ofd_host_fd(ofdId)}`,
-            `status=${handle.kernel.kernel_ofd_status_flags(ofdId)}`,
-            `offset=${handle.kernel.kernel_ofd_offset(ofdId).toString()}`,
+            `type=${supervisorOfdFdType(handle, ofdId)}`,
+            `ino=${supervisorOfdIno(handle, ofdId)}`,
+            `host=${supervisorOfdHostFd(handle, ofdId)}`,
+            `status=${supervisorOfdStatusFlags(handle, ofdId)}`,
+            `offset=${supervisorOfdOffset(handle, ofdId).toString()}`,
           ].join("/");
         }).filter(Boolean).join(" ");
         const networkLogSummary = [
@@ -1560,7 +1567,7 @@ export function debugRuntimeProcessHandles(
           const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
           if (
             ofdId === 0
-            || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_socket()
+            || supervisorOfdFdType(handle, ofdId) !== handle.kernel.abi_fd_type_socket()
           ) {
             return null;
           }
@@ -1708,7 +1715,7 @@ export function assertProcessStandardFdIntegrity(
     if (ofdId === 0) {
       return null;
     }
-    return `${fd}->${ofdId}/${supervisorProcessFdFlagsForFd(handle, handle.vmPtr, fd)}/${handle.kernel.kernel_ofd_fd_type(ofdId)}/${handle.kernel.kernel_ofd_ino(ofdId)}`;
+    return `${fd}->${ofdId}/${supervisorProcessFdFlagsForFd(handle, handle.vmPtr, fd)}/${supervisorOfdFdType(handle, ofdId)}/${supervisorOfdIno(handle, ofdId)}`;
   }).filter(Boolean).join(" ");
   if (handle.pid <= 0) {
     return;
@@ -1718,7 +1725,7 @@ export function assertProcessStandardFdIntegrity(
     if (ofdId === 0) {
       continue;
     }
-    const type = handle.kernel.kernel_ofd_fd_type(ofdId);
+    const type = supervisorOfdFdType(handle, ofdId);
     if (type <= 0 || type > 64) {
       throw new Error(
         `${context}: pid=${handle.pid} fd=${fd} ofd=${ofdId} type=${type}`
@@ -1730,7 +1737,7 @@ export function assertProcessStandardFdIntegrity(
     if (type !== handle.kernel.abi_fd_type_pipe()) {
       continue;
     }
-    const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
+    const pipeSlot = supervisorOfdIno(handle, ofdId);
     const base = handle.kernelState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
     const i32 = new Int32Array(handle.memory.buffer);
     const readOpen = Atomics.load(i32, (base + PIPE_READ_OPEN_OFFSET) >>> 2);

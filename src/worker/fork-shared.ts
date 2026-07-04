@@ -6,6 +6,7 @@ import {
   hasPlausibleOfdState,
   trackForkSharedOfds,
 } from "./ownership/ofd-table.js";
+import { supervisorOfdRefcount } from "./ownership/ofd-metadata.js";
 import {
   OFD_HOST_FD_OFFSET,
   OFD_INO_OFFSET,
@@ -171,7 +172,7 @@ export function reconcileForkSharedOfdRefcounts(handle: ProcessHandle, sharedOfd
     if (ofdId <= 0 || ofdId >= maxFds) {
       continue;
     }
-    let currentRefcount = handle.kernel.kernel_ofd_refcount(ofdId);
+    let currentRefcount = supervisorOfdRefcount(handle, ofdId);
     const expectedRefcount = expectedRefcounts[ofdId] ?? 0;
     while (currentRefcount < expectedRefcount) {
       handle.kernel.kernel_retain_ofd(ofdId);

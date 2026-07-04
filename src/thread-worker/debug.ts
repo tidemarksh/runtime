@@ -1,4 +1,7 @@
-import type { KernelExports } from "../abi.js";
+import {
+  supervisorOfdOffset,
+  type KernelExports,
+} from "../abi.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -210,7 +213,7 @@ export function collectFdTraceDebug(
       `sampleIno=${arg0Ino ?? "n/a"}`,
       `sampleMode=${arg0InodeMode ?? "n/a"}`,
       `pipeGen=${arg0PipeGeneration ?? "n/a"}`,
-      `off=${arg0Ofd > 0 && exports.kernel_ofd_offset ? exports.kernel_ofd_offset(arg0Ofd).toString() : "-1"}`,
+      `off=${arg0Ofd > 0 ? supervisorOfdOffset(exports, arg0Ofd).toString() : "-1"}`,
       `a1=${arg1.toString()}`,
       `a2=${arg2.toString()}`,
       `a2ofd=${arg2Ofd}`,

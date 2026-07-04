@@ -4,6 +4,7 @@ import {
   supervisorProcessFdFlagsForFd,
   supervisorProcessOfdForFd,
 } from "./fd-table.js";
+import { supervisorOfdFdType } from "./ofd-metadata.js";
 
 type StandardFdIntegrityCheck = (handle: ProcessHandle, context: string) => void;
 
@@ -46,7 +47,7 @@ function assertOpenFdOfdsAreValid(
     if (ofdId < 0 || ofdId >= maxFds) {
       throw new Error(`${context}: fd=${fd} invalid ofd=${ofdId} max=${maxFds}`);
     }
-    const type = handle.kernel.kernel_ofd_fd_type(ofdId);
+    const type = supervisorOfdFdType(handle, ofdId);
     if (type <= 0 || type > 64) {
       throw new Error(`${context}: fd=${fd} ofd=${ofdId} invalid type=${type}`);
     }

@@ -416,6 +416,24 @@ function makeKernel(memory: WebAssembly.Memory): FakeKernel {
       .getInt32(state.ofdTablePtr + ofdId * 32 + 16, true),
     kernel_ofd_offset: (ofdId: number) => new DataView(memory.buffer)
       .getBigInt64(state.ofdTablePtr + ofdId * 32 + 8, true),
+    supervisor_ofd_fd_type(this: ProcessHandle["kernel"], ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_fd_type(ofdId) : 0;
+    },
+    supervisor_ofd_host_fd(this: ProcessHandle["kernel"], ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_host_fd(ofdId) : -1;
+    },
+    supervisor_ofd_status_flags(this: ProcessHandle["kernel"], ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_status_flags?.(ofdId) ?? 0 : 0;
+    },
+    supervisor_ofd_ino(this: ProcessHandle["kernel"], ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_ino(ofdId) : 0;
+    },
+    supervisor_ofd_refcount(this: ProcessHandle["kernel"], ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_refcount(ofdId) : 0;
+    },
+    supervisor_ofd_offset(this: ProcessHandle["kernel"], ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_offset(ofdId) : 0n;
+    },
     kernel_pty_input_pipe: (ptyIdx: number) => ptyIdx * 2 + 1,
     kernel_pty_output_pipe: (ptyIdx: number) => ptyIdx * 2 + 2,
     kernel_pipe_region_bytes: () => 64 * (32 + 65_536),

@@ -25,6 +25,13 @@ import type { SyncCause } from "../contracts/sync.js";
 import { appendPendingGuestMemoryWrites } from "../guest-memory-writes.js";
 import { syncSocketStatePreservingNetworkBridge } from "../sync/socket.js";
 import { supervisorProcessOfdForFd } from "../ownership/fd-table.js";
+import {
+  supervisorOfdFdType,
+  supervisorOfdHostFd,
+  supervisorOfdIno,
+  supervisorOfdOffset,
+  supervisorOfdStatusFlags,
+} from "../ownership/ofd-metadata.js";
 
 export interface WorkerKernelRpcBlockedRpcDeps {
   processHandles: Map<number, ProcessHandle>;
@@ -304,11 +311,11 @@ async function executeHostBlockedSyscallResume(
         `process_ptr=0x${handle.kernel.thread_process_ptr(vmPtr).toString(16)}`,
         `ofd_table_ptr=0x${handle.kernel.kernel_ofd_table_ptr().toString(16)}`,
         `ofd_id=${ofdId}`,
-        `ofd_type=${handle.kernel.kernel_ofd_fd_type(ofdId)}`,
-        `ofd_host_fd=${handle.kernel.kernel_ofd_host_fd(ofdId)}`,
-        `ofd_flags=${handle.kernel.kernel_ofd_status_flags(ofdId)}`,
-        `ofd_ino=${handle.kernel.kernel_ofd_ino(ofdId)}`,
-        `ofd_offset=${handle.kernel.kernel_ofd_offset(ofdId).toString()}`,
+        `ofd_type=${supervisorOfdFdType(handle, ofdId)}`,
+        `ofd_host_fd=${supervisorOfdHostFd(handle, ofdId)}`,
+        `ofd_flags=${supervisorOfdStatusFlags(handle, ofdId)}`,
+        `ofd_ino=${supervisorOfdIno(handle, ofdId)}`,
+        `ofd_offset=${supervisorOfdOffset(handle, ofdId).toString()}`,
         `blocked_fd=${handle.kernel.thread_blocked_fd(vmPtr)}`,
         `blocked_ofd_id=${handle.kernel.thread_blocked_ofd_id(vmPtr)}`,
       ].join(" ");

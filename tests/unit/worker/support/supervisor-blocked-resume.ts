@@ -526,6 +526,28 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   const supervisorProcessFdFlagsForFd = (vmPtr: number, fd: number): number => (
     fd >= 0 && fd < maxFds() ? kernel.process_fd_flags?.(vmPtr, fd) ?? 0 : 0
   );
+  const supervisorOfdFdType = (ofdId: number): number => (
+    ofdId > 0 && ofdId < maxFds() ? kernel.kernel_ofd_fd_type?.(ofdId) ?? 0 : 0
+  );
+  const supervisorOfdHostFd = (ofdId: number): number => (
+    ofdId > 0 && ofdId < maxFds() ? kernel.kernel_ofd_host_fd?.(ofdId) ?? -1 : -1
+  );
+  const supervisorOfdStatusFlags = (ofdId: number): number => (
+    ofdId > 0 && ofdId < maxFds() ? kernel.kernel_ofd_status_flags?.(ofdId) ?? 0 : 0
+  );
+  const supervisorOfdIno = (ofdId: number): number => (
+    ofdId > 0 && ofdId < maxFds() ? kernel.kernel_ofd_ino?.(ofdId) ?? 0 : 0
+  );
+  const supervisorOfdRefcount = (ofdId: number): number => (
+    ofdId > 0 && ofdId < maxFds() ? kernel.kernel_ofd_refcount?.(ofdId) ?? 0 : 0
+  );
+  const supervisorOfdOffset = (ofdId: number): bigint => {
+    if (ofdId <= 0 || ofdId >= maxFds()) {
+      return 0n;
+    }
+    const offset = kernel.kernel_ofd_offset?.(ofdId) ?? 0n;
+    return typeof offset === "bigint" ? offset : BigInt(offset);
+  };
   const processHeldOfdRefcount = (vmPtr: number, ofdId: number): number => {
     let count = 0;
     for (let fd = 0; fd < maxFds(); fd += 1) {
@@ -612,6 +634,12 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   nextKernel.supervisor_process_held_ofd_refcount ??= processHeldOfdRefcount;
   nextKernel.supervisor_process_ofd_for_fd ??= supervisorProcessOfdForFd;
   nextKernel.supervisor_process_fd_flags_for_fd ??= supervisorProcessFdFlagsForFd;
+  nextKernel.supervisor_ofd_fd_type ??= supervisorOfdFdType;
+  nextKernel.supervisor_ofd_host_fd ??= supervisorOfdHostFd;
+  nextKernel.supervisor_ofd_status_flags ??= supervisorOfdStatusFlags;
+  nextKernel.supervisor_ofd_ino ??= supervisorOfdIno;
+  nextKernel.supervisor_ofd_refcount ??= supervisorOfdRefcount;
+  nextKernel.supervisor_ofd_offset ??= supervisorOfdOffset;
   nextKernel.supervisor_process_epoll_held_ofd ??= (vmPtr: number, index: number) =>
     processOfdByType(vmPtr, index, kernel.abi_fd_type_epoll?.());
   nextKernel.supervisor_process_epoll_dependent_ofd ??= () => 0;

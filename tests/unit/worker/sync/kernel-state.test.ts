@@ -451,6 +451,24 @@ function makeKernel(
     supervisor_process_pipe_write_open_count: (_vmPtr: number, pipeSlot: number) => (
       pipeOpenCount(pipeSlot, PIPE_SLOT_MODE_WRITE)
     ),
+    supervisor_ofd_fd_type(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_fd_type(ofdId) : 0;
+    },
+    supervisor_ofd_host_fd(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_host_fd(ofdId) : -1;
+    },
+    supervisor_ofd_status_flags(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_status_flags(ofdId) : 0;
+    },
+    supervisor_ofd_refcount(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_refcount(ofdId) : 0;
+    },
+    supervisor_ofd_offset(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_offset(ofdId) : 0n;
+    },
+    supervisor_ofd_ino(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_ino(ofdId) : 0;
+    },
     kernel_ofd_fd_type: (ofdId: number) => readOfdInt32(ofdId, 0),
     kernel_ofd_host_fd: (ofdId: number) => readOfdInt32(ofdId, 4),
     kernel_ofd_status_flags: (ofdId: number) => readOfdUint32(ofdId, 8),
