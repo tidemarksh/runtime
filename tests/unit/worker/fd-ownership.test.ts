@@ -244,6 +244,40 @@ function makeKernel(memory: WebAssembly.Memory): FakeKernel {
       }
       return refcount;
     },
+    supervisor_fd_entry_restore_action_apply: () => 1,
+    supervisor_fd_entry_restore_action_skip: () => 2,
+    supervisor_ofd_slot_write_action: (
+      ofdId: number,
+      candidateType: number,
+      candidateHostFd: number,
+      candidateIno: number,
+      candidateOffset: bigint | number,
+    ) => {
+      if (ofdId <= 0 || ofdId >= 32) {
+        return 2;
+      }
+      const view = new DataView(memory.buffer);
+      const base = state.ofdTablePtr + ofdId * 32;
+      const currentType = view.getInt32(base, true);
+      const currentRefcount = view.getInt32(base + 16, true);
+      if (currentType === 0 || currentRefcount <= 0) {
+        return 1;
+      }
+      if (candidateType === 0 || candidateType !== currentType) {
+        return 2;
+      }
+      if (
+        candidateHostFd !== view.getInt32(base + 4, true)
+        || candidateIno !== view.getUint32(base + 24, true)
+      ) {
+        return 2;
+      }
+      const candidate = typeof candidateOffset === "bigint" ? candidateOffset : BigInt(Math.trunc(candidateOffset));
+      if (currentType === FD_TYPE_FILE && candidate < view.getBigInt64(base + 8, true)) {
+        return 2;
+      }
+      return 1;
+    },
     supervisor_process_private_pipe_slot_mask: () => privatePipeMask,
     supervisor_process_private_pipe_source_mode: (_vmPtr: number, pipeSlot: number) => (
       (privatePipeMask & pipeBit(pipeSlot)) !== 0n
@@ -271,6 +305,8 @@ function makeKernel(memory: WebAssembly.Memory): FakeKernel {
     kernel_ofd_status_flags: () => 0,
     kernel_ofd_refcount: (ofdId: number) => new DataView(memory.buffer)
       .getInt32(state.ofdTablePtr + ofdId * 32 + 16, true),
+    kernel_ofd_offset: (ofdId: number) => new DataView(memory.buffer)
+      .getBigInt64(state.ofdTablePtr + ofdId * 32 + 8, true),
     kernel_pty_input_pipe: (ptyIdx: number) => ptyIdx * 2 + 1,
     kernel_pty_output_pipe: (ptyIdx: number) => ptyIdx * 2 + 2,
     kernel_pipe_region_bytes: () => 64 * (32 + 65_536),

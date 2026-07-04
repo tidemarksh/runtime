@@ -309,6 +309,37 @@ function makeKernel(
     supervisor_process_holds_regular_file_ofd: (_vmPtr: number, ofdId: number) => (
       heldOfdRefcount(ofdId) > 0 && readOfdInt32(ofdId, 0) === FD_TYPE_FILE ? 1 : 0
     ),
+    supervisor_fd_entry_restore_action_apply: () => 1,
+    supervisor_fd_entry_restore_action_skip: () => 2,
+    supervisor_ofd_slot_write_action: (
+      ofdId: number,
+      candidateType: number,
+      candidateHostFd: number,
+      candidateIno: number,
+      candidateOffset: bigint | number,
+    ) => {
+      if (ofdId <= 0 || ofdId >= 32) {
+        return 2;
+      }
+      const currentType = readOfdInt32(ofdId, 0);
+      if (currentType === 0 || readOfdUint32(ofdId, 12) <= 0) {
+        return 1;
+      }
+      if (candidateType === 0 || candidateType !== currentType) {
+        return 2;
+      }
+      if (
+        candidateHostFd !== readOfdInt32(ofdId, 4)
+        || candidateIno !== readOfdUint32(ofdId, 24)
+      ) {
+        return 2;
+      }
+      const candidate = typeof candidateOffset === "bigint" ? candidateOffset : BigInt(Math.trunc(candidateOffset));
+      if (currentType === FD_TYPE_FILE && candidate < readOfdBigInt64(ofdId, 16)) {
+        return 2;
+      }
+      return 1;
+    },
     supervisor_fork_shared_peer_flag_compatible: () => forkSharedPeerFlagCompatible,
     supervisor_fork_shared_peer_flag_incompatible: () => forkSharedPeerFlagIncompatible,
     supervisor_fork_shared_peer_flag_pipe_peer: () => forkSharedPeerFlagPipePeer,

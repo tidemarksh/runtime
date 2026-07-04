@@ -14,6 +14,45 @@ import {
   OFD_TYPE_OFFSET,
 } from "../../layout/ofd.js";
 
+function requireSupervisorRestoreActionSkip(handle: KernelSyncHandle): number {
+  const skip = handle.kernel.supervisor_fd_entry_restore_action_skip;
+  if (!skip) {
+    throw new Error("kernel supervisor ABI missing supervisor_fd_entry_restore_action_skip");
+  }
+  return skip.call(handle.kernel);
+}
+
+function requireSupervisorOfdSlotWriteAction(
+  handle: KernelSyncHandle,
+): (
+  ofdId: number,
+  candidateType: number,
+  candidateHostFd: number,
+  candidateIno: number,
+  candidateOffset: bigint | number,
+) => number {
+  const decide = handle.kernel.supervisor_ofd_slot_write_action;
+  if (!decide) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_slot_write_action");
+  }
+  return decide.bind(handle.kernel);
+}
+
+function ofdSlotWriteShouldBeSkipped(
+  ofdId: number,
+  slotView: DataView,
+  decide: ReturnType<typeof requireSupervisorOfdSlotWriteAction>,
+  skipAction: number,
+): boolean {
+  return decide(
+    ofdId,
+    slotView.getInt32(OFD_TYPE_OFFSET, true),
+    slotView.getInt32(OFD_HOST_FD_OFFSET, true),
+    slotView.getUint32(OFD_INO_OFFSET, true),
+    slotView.getBigInt64(OFD_OFFSET_OFFSET, true),
+  ) === skipAction;
+}
+
 export function copySelectedOfdState(
   source: KernelSyncHandle,
   target: KernelSyncHandle,
@@ -25,49 +64,20 @@ export function copySelectedOfdState(
   if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
     throw new Error(`invalid OFD table layout: bytes=${tableBytes} maxFds=${maxFds}`);
   }
+  const decideSlotWrite = requireSupervisorOfdSlotWriteAction(target);
+  const skipAction = requireSupervisorRestoreActionSkip(target);
 
   for (const ofdId of ofdIds) {
     if (ofdId <= 0 || ofdId >= maxFds) {
       continue;
     }
-    if (!ofdSlotsCanBeShared(source, target, ofdId)) {
+    const slotOffset = source.kernelState.ofdTablePtr + ofdId * slotBytes;
+    const slotView = new DataView(source.memory.buffer, slotOffset, slotBytes);
+    if (ofdSlotWriteShouldBeSkipped(ofdId, slotView, decideSlotWrite, skipAction)) {
       continue;
     }
-    const slotOffset = source.kernelState.ofdTablePtr + ofdId * slotBytes;
     copyKernelRegion(source, slotOffset, target, target.kernelState.ofdTablePtr + ofdId * slotBytes, slotBytes);
   }
-}
-
-function ofdSlotsCanBeShared(
-  source: KernelSyncHandle,
-  target: KernelSyncHandle,
-  ofdId: number,
-): boolean {
-  const sourceType = source.kernel.kernel_ofd_fd_type(ofdId);
-  const targetType = target.kernel.kernel_ofd_fd_type(ofdId);
-  if (sourceType === 0) {
-    return targetType === 0;
-  }
-  if (targetType === 0) {
-    return true;
-  }
-  if (sourceType !== targetType) {
-    return false;
-  }
-  if (
-    source.kernel.kernel_ofd_ino(ofdId) !== target.kernel.kernel_ofd_ino(ofdId)
-    || source.kernel.kernel_ofd_host_fd(ofdId) !== target.kernel.kernel_ofd_host_fd(ofdId)
-  ) {
-    return false;
-  }
-  if (
-    sourceType === source.kernel.abi_fd_type_file()
-    && target.kernel.kernel_ofd_refcount(ofdId) > 0
-    && source.kernel.kernel_ofd_offset(ofdId) < target.kernel.kernel_ofd_offset(ofdId)
-  ) {
-    return false;
-  }
-  return true;
 }
 
 function ofdSlotSnapshotCanApply(
@@ -75,36 +85,14 @@ function ofdSlotSnapshotCanApply(
   ofdId: number,
   slot: Uint8Array,
   slotBytes: number,
+  decideSlotWrite: ReturnType<typeof requireSupervisorOfdSlotWriteAction>,
+  skipAction: number,
 ): boolean {
   if (slot.length !== slotBytes) {
     return false;
   }
-  const targetType = handle.kernel.kernel_ofd_fd_type(ofdId);
-  if (targetType === 0) {
-    return true;
-  }
   const sourceView = new DataView(slot.buffer, slot.byteOffset, slot.byteLength);
-  const sourceType = sourceView.getInt32(OFD_TYPE_OFFSET, true);
-  if (sourceType === 0) {
-    return targetType === 0;
-  }
-  if (sourceType !== targetType) {
-    return false;
-  }
-  if (
-    sourceView.getUint32(OFD_INO_OFFSET, true) !== handle.kernel.kernel_ofd_ino(ofdId)
-    || sourceView.getInt32(OFD_HOST_FD_OFFSET, true) !== handle.kernel.kernel_ofd_host_fd(ofdId)
-  ) {
-    return false;
-  }
-  if (
-    sourceType === handle.kernel.abi_fd_type_file()
-    && handle.kernel.kernel_ofd_refcount(ofdId) > 0
-    && sourceView.getBigInt64(OFD_OFFSET_OFFSET, true) < handle.kernel.kernel_ofd_offset(ofdId)
-  ) {
-    return false;
-  }
-  return true;
+  return !ofdSlotWriteShouldBeSkipped(ofdId, sourceView, decideSlotWrite, skipAction);
 }
 
 function clearEpollState(target: KernelSyncHandle): void {
@@ -171,9 +159,11 @@ export function discardCopiedSharedKernelObjects(
   const slotBytes = tableBytes / maxFds;
   clearKernelRegion(handle, handle.kernelState.ofdTablePtr, tableBytes);
   if (preservedOfdSlots && preservedOfdSlots.size > 0 && Number.isInteger(slotBytes) && slotBytes > 0) {
+    const decideSlotWrite = requireSupervisorOfdSlotWriteAction(handle);
+    const skipAction = requireSupervisorRestoreActionSkip(handle);
     const bytes = new Uint8Array(handle.memory.buffer);
     for (const [ofdId, slot] of preservedOfdSlots) {
-      if (!ofdSlotSnapshotCanApply(handle, ofdId, slot, slotBytes)) {
+      if (!ofdSlotSnapshotCanApply(handle, ofdId, slot, slotBytes, decideSlotWrite, skipAction)) {
         continue;
       }
       bytes.set(slot, handle.kernelState.ofdTablePtr + ofdId * slotBytes);
@@ -213,9 +203,11 @@ export function restoreLocalOfdSlots(
   if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
     throw new Error(`invalid OFD table layout: bytes=${tableBytes} maxFds=${maxFds}`);
   }
+  const decideSlotWrite = requireSupervisorOfdSlotWriteAction(handle);
+  const skipAction = requireSupervisorRestoreActionSkip(handle);
   const bytes = new Uint8Array(handle.memory.buffer);
   for (const [ofdId, slot] of preservedOfdSlots) {
-    if (!ofdSlotSnapshotCanApply(handle, ofdId, slot, slotBytes)) {
+    if (!ofdSlotSnapshotCanApply(handle, ofdId, slot, slotBytes, decideSlotWrite, skipAction)) {
       continue;
     }
     bytes.set(slot, handle.kernelState.ofdTablePtr + ofdId * slotBytes);
