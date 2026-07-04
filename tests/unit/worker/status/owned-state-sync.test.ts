@@ -28,6 +28,13 @@ function makeKernelState() {
 }
 
 const supervisorPipeControlKernelStubs = {
+  supervisor_fork_shared_peer_flag_compatible: () => 1,
+  supervisor_fork_shared_peer_flag_incompatible: () => 1 << 1,
+  supervisor_fork_shared_peer_flag_pipe_peer: () => 1 << 2,
+  supervisor_fork_shared_ofd_identity_key: (ofdId: number) => (ofdId > 0 ? BigInt(ofdId) : 0n),
+  supervisor_fork_shared_ofd_publish_action: (ofdId: number, peerFlags: number) => (
+    ofdId > 0 && (peerFlags & (1 << 1)) === 0 ? 1 : 0
+  ),
   supervisor_process_pipe_used_mask: () => 1n,
   supervisor_process_pipe_read_open_count: () => 0,
   supervisor_process_pipe_write_open_count: () => 0,

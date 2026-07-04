@@ -147,6 +147,49 @@ function makeKernel(
     }
     return count;
   };
+  const forkSharedPeerFlagCompatible = 1;
+  const forkSharedPeerFlagIncompatible = 1 << 1;
+  const forkSharedPeerFlagPipePeer = 1 << 2;
+  const forkSharedOfdIdentityKey = (ofdId: number): bigint => {
+    if (ofdId <= 0 || ofdId >= 32) {
+      return 0n;
+    }
+    const type = readOfdInt32(ofdId, 0);
+    if (type <= 0) {
+      return 0n;
+    }
+    const ino = readOfdUint32(ofdId, 24);
+    const hostFd = readOfdInt32(ofdId, 4);
+    const endpointToken = type === FD_TYPE_PIPE
+      ? (hostFd >= 0 ? 1n : 2n)
+      : type === FD_TYPE_SOCKET
+        ? BigInt.asUintN(64, BigInt(hostFd))
+        : 0n;
+    let hash = 0xcbf29ce484222325n;
+    for (const value of [BigInt(type), BigInt(ino), endpointToken]) {
+      hash ^= BigInt.asUintN(64, value);
+      hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+    }
+    return hash === 0n ? 0xcbf29ce484222325n : hash;
+  };
+  const forkSharedOfdPublishAction = (ofdId: number, peerFlags: number): number => {
+    if (ofdId <= 0 || ofdId >= 32) {
+      return 0;
+    }
+    const type = readOfdInt32(ofdId, 0);
+    if (type <= 0 || (peerFlags & forkSharedPeerFlagIncompatible) !== 0) {
+      return 0;
+    }
+    const hasCompatiblePeer = (peerFlags & forkSharedPeerFlagCompatible) !== 0;
+    const hasPipePeer = (peerFlags & forkSharedPeerFlagPipePeer) !== 0;
+    if (type === FD_TYPE_FILE) {
+      return hasCompatiblePeer ? 1 : 0;
+    }
+    if (type === FD_TYPE_PIPE) {
+      return hasCompatiblePeer || hasPipePeer ? 1 : 0;
+    }
+    return 1;
+  };
 
   return {
     memory,
@@ -249,6 +292,13 @@ function makeKernel(
     process_stderr_pipe: () => 0,
     thread_blocked_ofd_id: () => 0,
     supervisor_process_held_ofd_refcount: (_vmPtr: number, ofdId: number) => heldOfdRefcount(ofdId),
+    supervisor_fork_shared_peer_flag_compatible: () => forkSharedPeerFlagCompatible,
+    supervisor_fork_shared_peer_flag_incompatible: () => forkSharedPeerFlagIncompatible,
+    supervisor_fork_shared_peer_flag_pipe_peer: () => forkSharedPeerFlagPipePeer,
+    supervisor_fork_shared_ofd_identity_key: (ofdId: number) => forkSharedOfdIdentityKey(ofdId),
+    supervisor_fork_shared_ofd_publish_action: (ofdId: number, peerFlags: number) => (
+      forkSharedOfdPublishAction(ofdId, peerFlags)
+    ),
     supervisor_process_private_pipe_slot_mask: () => 0n,
     supervisor_process_private_pipe_source_mode: () => 0,
     supervisor_process_private_pipe_target_mode: () => 0,

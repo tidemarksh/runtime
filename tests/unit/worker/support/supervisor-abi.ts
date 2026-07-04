@@ -66,6 +66,9 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_fd_entry_restore_action_skip: 2,
   supervisor_fd_entry_restore_flag_preserve_live_regular_file: 1,
   supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent: 2,
+  supervisor_fork_shared_peer_flag_compatible: 1,
+  supervisor_fork_shared_peer_flag_incompatible: 1 << 1,
+  supervisor_fork_shared_peer_flag_pipe_peer: 1 << 2,
   supervisor_fs_control_record_bytes: 112,
   supervisor_fs_control_record_magic: 0x5346_5354,
   supervisor_signal_control_record_bytes: 120,
@@ -590,6 +593,61 @@ export function makeSupervisorAbiStubs(
     }
     return ofdIds;
   };
+  const forkSharedOfdIdentityKey = (
+    receiver: Partial<KernelExports>,
+    ofdId: number,
+  ): bigint => {
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    if (ofdId <= 0 || ofdId >= maxFds) {
+      return 0n;
+    }
+    const fdType = callNumber(receiver, "kernel_ofd_fd_type", ofdId);
+    if (fdType <= 0) {
+      return 0n;
+    }
+    const ino = callNumber(receiver, "kernel_ofd_ino", ofdId);
+    const hostFd = callNumber(receiver, "kernel_ofd_host_fd", ofdId);
+    const pipeType = callNumber(receiver, "abi_fd_type_pipe");
+    const socketType = callOptionalNumber(receiver, "abi_fd_type_socket");
+    const endpointToken = fdType === pipeType
+      ? (hostFd >= 0 ? 1n : 2n)
+      : socketType !== undefined && fdType === socketType
+        ? BigInt.asUintN(64, BigInt(hostFd))
+        : 0n;
+    let hash = 0xcbf29ce484222325n;
+    for (const value of [BigInt(fdType), BigInt(ino), endpointToken]) {
+      hash ^= BigInt.asUintN(64, value);
+      hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+    }
+    return hash === 0n ? 0xcbf29ce484222325n : hash;
+  };
+  const forkSharedOfdPublishAction = (
+    receiver: Partial<KernelExports>,
+    ofdId: number,
+    peerFlags: number,
+  ): number => {
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    if (ofdId <= 0 || ofdId >= maxFds) {
+      return 0;
+    }
+    const fdType = callNumber(receiver, "kernel_ofd_fd_type", ofdId);
+    if (
+      fdType <= 0
+      || (peerFlags & DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_peer_flag_incompatible) !== 0
+    ) {
+      return 0;
+    }
+    const compatiblePeer = (peerFlags
+      & DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_peer_flag_compatible) !== 0;
+    const pipePeer = (peerFlags & DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_peer_flag_pipe_peer) !== 0;
+    if (fdType === callNumber(receiver, "abi_fd_type_file")) {
+      return compatiblePeer ? 1 : 0;
+    }
+    if (fdType === callNumber(receiver, "abi_fd_type_pipe")) {
+      return compatiblePeer || pipePeer ? 1 : 0;
+    }
+    return 1;
+  };
   const processEpollHeldOfdIds = (receiver: Partial<KernelExports>, vmPtr: number): number[] => {
     const epollType = callNumber(receiver, "abi_fd_type_epoll");
     return processHeldOfdIds(receiver, vmPtr)
@@ -969,6 +1027,16 @@ export function makeSupervisorAbiStubs(
       ofdId: number,
     ) {
       return processHeldOfdRefcount(currentExports(this), vmPtr, ofdId);
+    },
+    supervisor_fork_shared_ofd_identity_key(this: KernelExports | undefined, ofdId: number) {
+      return forkSharedOfdIdentityKey(currentExports(this), ofdId);
+    },
+    supervisor_fork_shared_ofd_publish_action(
+      this: KernelExports | undefined,
+      ofdId: number,
+      peerFlags: number,
+    ) {
+      return forkSharedOfdPublishAction(currentExports(this), ofdId, peerFlags);
     },
     supervisor_fd_entry_restore_action(
       this: KernelExports | undefined,

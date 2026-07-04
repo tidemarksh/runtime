@@ -10,23 +10,12 @@ import {
 } from "./pipe-control.js";
 
 function forkSharedOfdIdentityKey(handle: ProcessHandle, ofdId: number): string | null {
-  if (ofdId <= 0 || ofdId >= handle.kernel.abi_max_fds()) {
-    return null;
+  const readIdentityKey = handle.kernel.supervisor_fork_shared_ofd_identity_key;
+  if (!readIdentityKey) {
+    throw new Error("kernel supervisor ABI missing supervisor_fork_shared_ofd_identity_key");
   }
-  const type = handle.kernel.kernel_ofd_fd_type(ofdId);
-  if (type <= 0) {
-    return null;
-  }
-  const ino = handle.kernel.kernel_ofd_ino(ofdId);
-  const hostFd = handle.kernel.kernel_ofd_host_fd(ofdId);
-  if (type === handle.kernel.abi_fd_type_pipe()) {
-    const endpoint = hostFd >= 0 ? "read" : "write";
-    return `${type}:${ino}:${endpoint}`;
-  }
-  if (type === handle.kernel.abi_fd_type_socket?.()) {
-    return `${type}:${ino}:${hostFd}`;
-  }
-  return `${type}:${ino}`;
+  const key = BigInt(readIdentityKey.call(handle.kernel, ofdId));
+  return key === 0n ? null : key.toString();
 }
 
 export function sourceForkSharedOfdPeerState(
@@ -58,18 +47,24 @@ export function sourceOfdCanPublishForkSharedState(handle: ProcessHandle, ofdId:
     return false;
   }
   const { compatiblePeer, incompatiblePeer } = sourceForkSharedOfdPeerState(handle, ofdId);
+  const publishAction = handle.kernel.supervisor_fork_shared_ofd_publish_action;
+  const compatibleFlag = handle.kernel.supervisor_fork_shared_peer_flag_compatible;
+  const incompatibleFlag = handle.kernel.supervisor_fork_shared_peer_flag_incompatible;
+  const pipePeerFlag = handle.kernel.supervisor_fork_shared_peer_flag_pipe_peer;
+  if (!publishAction || !compatibleFlag || !incompatibleFlag || !pipePeerFlag) {
+    throw new Error("kernel supervisor ABI missing fork-shared OFD publish policy exports");
+  }
+  let peerFlags = 0;
+  if (compatiblePeer) {
+    peerFlags |= compatibleFlag.call(handle.kernel);
+  }
   if (incompatiblePeer) {
-    return false;
+    peerFlags |= incompatibleFlag.call(handle.kernel);
   }
-  const fdType = handle.kernel.kernel_ofd_fd_type(ofdId);
-  const fileType = handle.kernel.abi_fd_type_file?.();
-  if (fileType !== undefined && fdType === fileType) {
-    return compatiblePeer;
+  if (hasPipePeerInOtherKernelShareMember(handle, ofdId)) {
+    peerFlags |= pipePeerFlag.call(handle.kernel);
   }
-  if (fdType === handle.kernel.abi_fd_type_pipe()) {
-    return compatiblePeer || hasPipePeerInOtherKernelShareMember(handle, ofdId);
-  }
-  return true;
+  return publishAction.call(handle.kernel, ofdId, peerFlags) !== 0;
 }
 
 export function targetHasIncompatibleForkSharedOfd(
