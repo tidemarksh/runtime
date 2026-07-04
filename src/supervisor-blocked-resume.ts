@@ -288,13 +288,6 @@ export function supervisorBlockedStatusSyncsSocketAfterResume(
   return supervisorBlockedStatusFact(kernel, status, "supervisor_blocked_status_syncs_socket_after_resume");
 }
 
-export function supervisorBlockedStatusUsesForkSharedStateSync(
-  kernel: KernelExports,
-  status: number,
-): boolean {
-  return supervisorBlockedStatusFact(kernel, status, "supervisor_blocked_status_uses_fork_shared_state_sync");
-}
-
 function supervisorBlockedStatusFact(
   kernel: KernelExports,
   status: number,
@@ -305,8 +298,7 @@ function supervisorBlockedStatusFact(
     | "supervisor_blocked_status_is_wait4"
     | "supervisor_blocked_status_is_socket_wait"
     | "supervisor_blocked_status_needs_network_sidecar_restore"
-    | "supervisor_blocked_status_syncs_socket_after_resume"
-    | "supervisor_blocked_status_uses_fork_shared_state_sync",
+    | "supervisor_blocked_status_syncs_socket_after_resume",
 ): boolean {
   const readStatus = kernel[exportName];
   if (readStatus === undefined) {
@@ -325,7 +317,6 @@ function supervisorBlockedBooleanFact(
   exportName:
     | "supervisor_blocked_poll_wait_has_socket"
     | "supervisor_blocked_pipe_wait_has_ready_events"
-    | "supervisor_blocked_wait_should_pump_network"
     | "supervisor_blocked_epoll_wait_retry_required",
 ): boolean {
   const readFact = kernel[exportName];
@@ -351,13 +342,6 @@ export function supervisorBlockedPipeWaitHasReadyEvents(
   vmPtr: number,
 ): boolean {
   return supervisorBlockedBooleanFact(kernel, vmPtr, "supervisor_blocked_pipe_wait_has_ready_events");
-}
-
-export function supervisorBlockedWaitShouldPumpNetwork(
-  kernel: KernelExports,
-  vmPtr: number,
-): boolean {
-  return supervisorBlockedBooleanFact(kernel, vmPtr, "supervisor_blocked_wait_should_pump_network");
 }
 
 export function supervisorBlockedEpollWaitRetryRequired(
