@@ -7,10 +7,10 @@ import {
 import { kernelShareOtherMembers } from "../../kernel-share.js";
 import { assertHandleWorkerProcessIdentity } from "../../process-identity.js";
 import type {
-  HostBlockedWorkerState,
   ProcessHandle,
   ThreadWorkerState,
 } from "../../types.js";
+import { executeHostBlockedStatusTransition } from "../../host-boundary/blocked-status-transition.js";
 import type {
   ThreadWorkerStatusMessage,
   WorkerMessageHandlerDeps,
@@ -40,8 +40,6 @@ import {
   drainSupervisorCloneSpawnHostOp,
 } from "../../supervisor-host-op.js";
 import {
-  supervisorBlockedPipeWaitHasReadyEvents,
-  supervisorBlockedStatusTransitionAction,
   supervisorBlockedStatusIsConnectWait,
   supervisorBlockedStatusIsHostWait,
   supervisorBlockedStatusNeedsNetworkSidecarRestore,
@@ -124,28 +122,6 @@ function formatFaultThreadSummary(handle: ProcessHandle, label: string, vmPtr: n
     + `/kind=${handle.kernel.thread_fault_kind?.(vmPtr) ?? 0}`
     + `/pc=0x${(handle.kernel.thread_fault_pc?.(vmPtr) ?? 0n).toString(16)}`
     + `/addr=0x${(handle.kernel.thread_fault_addr?.(vmPtr) ?? 0n).toString(16)}`;
-}
-
-function beginStatusTransitionRpc(blocked: HostBlockedWorkerState): number {
-  blocked.rpcPending = true;
-  blocked.rpcGeneration += 1;
-  return blocked.rpcGeneration;
-}
-
-function finishStatusTransitionRpc(
-  handle: ProcessHandle,
-  worker: Worker,
-  vmPtr: number,
-  rpcGeneration: number,
-): HostBlockedWorkerState | null {
-  const latestBlocked = handle.hostBlockedWorkers.get(worker);
-  if (!latestBlocked || latestBlocked.vmPtr !== vmPtr) {
-    return null;
-  }
-  if (latestBlocked.rpcGeneration === rpcGeneration) {
-    latestBlocked.rpcPending = false;
-  }
-  return latestBlocked;
 }
 
 function hasPendingBlockedRpc(handle: ProcessHandle): boolean {
@@ -989,136 +965,13 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     }
 
     if (supervisorBlockedStatusIsHostWait(handle.kernel, status)) {
-      const transitionAction = supervisorBlockedStatusTransitionAction(
-        handle.kernel,
-        thread.vmPtr,
-        status,
-        {
-          kernelWorkerAvailable: !!handle.kernelWorkerRequest && handle.pid > 0,
-          networkConnectionsAvailable: handle.networkConnections.size > 0,
-        },
-      );
-      switch (transitionAction) {
-        case "sync-socket": {
-          deps.blockWorker(handle, worker, status, thread.vmPtr);
-          const blocked = handle.hostBlockedWorkers.get(worker);
-          const rpcGeneration = blocked ? beginStatusTransitionRpc(blocked) : -1;
-          void deps.requestSocketStateSync(handle, true)
-            .then(() => {
-              finishStatusTransitionRpc(handle, worker, thread.vmPtr, rpcGeneration);
-              deps.notifyWorkerStatusProgress(handle);
-              deps.pumpProcess(handle);
-            })
-            .catch((error) => {
-              finishStatusTransitionRpc(handle, worker, thread.vmPtr, rpcGeneration);
-              deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-            });
-          return;
-        }
-        case "sync-pipe": {
-          if (handle.runningWorker === worker) {
-            handle.runningWorker = null;
-          }
-          deps.blockWorker(handle, worker, status, thread.vmPtr);
-          if (handle.runningWorker === worker) {
-            handle.runningWorker = null;
-          }
-          const blocked = handle.hostBlockedWorkers.get(worker);
-          const rpcGeneration = blocked ? beginStatusTransitionRpc(blocked) : -1;
-          void deps.requestPipeStateSync(handle, true)
-            .then(() => {
-              const latestBlocked = finishStatusTransitionRpc(handle, worker, thread.vmPtr, rpcGeneration);
-              if (!latestBlocked) {
-                return;
-              }
-              deps.notifyWorkerStatusProgress(handle);
-              deps.pumpProcess(handle);
-            })
-            .catch((error) => {
-              finishStatusTransitionRpc(handle, worker, thread.vmPtr, rpcGeneration);
-              deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-            });
-          return;
-        }
-        case "sync-fork-shared": {
-          deps.blockWorker(handle, worker, status, thread.vmPtr);
-          const blocked = handle.hostBlockedWorkers.get(worker);
-          const rpcGeneration = blocked ? beginStatusTransitionRpc(blocked) : -1;
-          deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-start:${handle.pid}:status=${status}`);
-          void deps.syncBlockedForkSharedStateViaKernelWorker(
-            handle,
-            thread.vmPtr,
-            { kind: "blocked-rpc", status },
-          )
-            .then(() => {
-              deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-done:${handle.pid}:status=${status}`);
-              finishStatusTransitionRpc(handle, worker, thread.vmPtr, rpcGeneration);
-              if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
-                deps.clearBlockedWorker(handle, worker);
-                return;
-              }
-              deps.notifyWorkerStatusProgress(handle);
-              deps.pumpProcess(handle);
-            })
-            .catch((error) => {
-              finishStatusTransitionRpc(handle, worker, thread.vmPtr, rpcGeneration);
-              deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-            });
-          return;
-        }
-        case "sync-pipe-and-fork-shared":
-        case "sync-socket-and-fork-shared": {
-          deps.blockWorker(handle, worker, status, thread.vmPtr);
-          const blocked = handle.hostBlockedWorkers.get(worker);
-          const rpcGeneration = blocked ? beginStatusTransitionRpc(blocked) : -1;
-          const syncPipeState = transitionAction === "sync-pipe-and-fork-shared"
-            ? deps.requestPipeStateSync(handle, false)
-            : Promise.resolve();
-          const syncSocketState = transitionAction === "sync-socket-and-fork-shared"
-            ? deps.requestSocketStateSync(handle, true)
-            : Promise.resolve();
-          void syncPipeState
-            .then(() => syncSocketState)
-            .then(() => {
-              deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-start:${handle.pid}:status=${status}`);
-              return deps.syncBlockedForkSharedStateViaKernelWorker(
-                handle,
-                thread.vmPtr,
-                { kind: "blocked-rpc", status },
-              );
-            })
-            .then(() => {
-              deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-done:${handle.pid}:status=${status}`);
-              finishStatusTransitionRpc(handle, worker, thread.vmPtr, rpcGeneration);
-              if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
-                deps.clearBlockedWorker(handle, worker);
-                return;
-              }
-              if (
-                transitionAction === "sync-pipe-and-fork-shared"
-                && !supervisorBlockedPipeWaitHasReadyEvents(handle.kernel, thread.vmPtr)
-              ) {
-                deps.pumpProcess(handle);
-                return;
-              }
-              deps.notifyWorkerStatusProgress(handle);
-              deps.pumpProcess(handle);
-            })
-            .catch((error) => {
-              finishStatusTransitionRpc(handle, worker, thread.vmPtr, rpcGeneration);
-              deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-            });
-          return;
-        }
-        case "block":
-          break;
-        default: {
-          const exhaustive: never = transitionAction;
-          throw new Error(`unhandled supervisor blocked status transition action: ${exhaustive}`);
-        }
-      }
-      deps.blockWorker(handle, worker, status, thread.vmPtr);
-      deps.pumpProcess(handle);
+      void executeHostBlockedStatusTransition(deps, handle, worker, thread.vmPtr, status)
+        .then((outcome) => {
+          consumeKernelRpcResumeOutcome(handle, worker, thread.vmPtr, outcome);
+        })
+        .catch((error) => {
+          deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+        });
       return;
     }
 
