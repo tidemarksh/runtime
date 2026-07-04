@@ -291,6 +291,11 @@ function makeKernel() {
       thread_record_blocked_addr: () => 0n,
       thread_status: () => 0,
       process_current_pid: () => 1,
+      supervisor_process_identity_matches: (vmPtr: number, runtimePid: number, processPtr: number) =>
+        kernel.exports.process_current_pid(vmPtr) === runtimePid
+        && kernel.exports.thread_process_ptr(vmPtr) === processPtr
+          ? 1
+          : 0,
       process_active_child_pid: () => 0,
       thread_exit_code: () => 0,
       thread_term_signal: () => 0,

@@ -4,6 +4,7 @@ import {
 import {
   releaseWorker,
 } from "../pool.js";
+import { supervisorProcessIdentityMatches } from "../process-identity.js";
 import { supervisorProcessStatusIsLifecycleHandoff } from "../supervisor-status.js";
 import type {
   ProcessHandle,
@@ -62,8 +63,8 @@ export function createPruningScheduler(deps: PruningSchedulerDeps): PruningSched
 
   function shouldPreserveProcessOwnedWorker(handle: ProcessHandle, vmPtr: number): boolean {
     try {
-      const processPtr = handle.kernel.thread_process_ptr(vmPtr);
-      if (processPtr === 0 || processPtr !== handle.kernel.thread_process_ptr(handle.vmPtr)) {
+      const processPtr = handle.kernel.thread_process_ptr(handle.vmPtr);
+      if (processPtr === 0 || !supervisorProcessIdentityMatches(handle.kernel, vmPtr, handle.pid, processPtr)) {
         return false;
       }
       return handle.kernel.thread_status(vmPtr) !== handle.kernel.abi_status_fault();
