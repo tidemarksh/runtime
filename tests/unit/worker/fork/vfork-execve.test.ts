@@ -1369,7 +1369,10 @@ test("vfork execve detached child memory does not inherit the parent linear memo
     } as WebAssembly.WebAssemblyInstantiatedSource;
   });
 
-  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
+  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: defaultKernelWorkerRequest,
+  });
   const parentWorker = createdWorkers[0];
   const parentKernel = createdKernelExports[0];
 
@@ -3169,7 +3172,10 @@ test("child runtime errors propagate to the parent process handle", async () => 
 });
 
 test("vfork child runs exclusively until the parent thread is resumed", async () => {
-  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: defaultKernelWorkerRequest,
+  });
   const parentWorker = createdWorkers[0];
   const parentKernel = createdKernelExports[0];
 
@@ -3196,6 +3202,8 @@ test("vfork child runs exclusively until the parent thread is resumed", async ()
     vmPtr: 0x1234,
     kernelState: makeKernelState(),
   });
+  await flushMicrotasks(40);
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   const siblingWorker = createdWorkers[1];
   emitReady(siblingWorker, 0x2000);

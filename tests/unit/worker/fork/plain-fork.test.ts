@@ -187,7 +187,7 @@ function makeKernelState(): KernelRuntimeState {
 
 function createPlainForkKernelWorkerRequest(
   requests: KernelWorkerRequest[],
-  childPid: number,
+  childPid: number | null = null,
 ): (msg: KernelWorkerRequest) => Promise<KernelWorkerOutbound> {
   return async (msg): Promise<KernelWorkerOutbound> => {
     requests.push(msg);
@@ -200,17 +200,22 @@ function createPlainForkKernelWorkerRequest(
         return { type: "process-memfs-synced", requestId: 0, kernelState: msg.kernelState };
       case "sync-pipe-state":
         return { type: "pipe-state-synced", requestId: 0, kernelState: msg.kernelState };
+      case "sync-epoll-state":
+        return { type: "epoll-state-synced", requestId: 0, kernelState: msg.kernelState };
+      case "sync-ofd-state":
+        return { type: "ofd-state-synced", requestId: 0, kernelState: msg.kernelState };
       case "sync-socket-state":
         return { type: "socket-state-synced", requestId: 0, kernelState: msg.kernelState };
       case "release-host-stdio":
         return { type: "host-stdio-released", requestId: 0, kernelState: msg.kernelState };
       case "canonicalize-child-pid":
+        const canonicalChildPid = childPid ?? msg.provisionalChildPid;
         return {
           type: "child-pid-canonicalized",
           requestId: 0,
-          childPid,
+          childPid: canonicalChildPid,
           ppid: 1,
-          nextPid: childPid + 1,
+          nextPid: canonicalChildPid + 1,
           pgid: 1,
           sid: 1,
           kernelState: msg.kernelState,
@@ -717,7 +722,10 @@ afterEach(() => {
 
 
 test("plain fork retains shared OFDs before spawning the child worker", async () => {
-  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
+  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: createPlainForkKernelWorkerRequest([]),
+  });
   const worker = createdWorkers[0];
   const kernel = createdKernelExports[0];
 
@@ -764,6 +772,7 @@ test("plain fork preserves optional zero guest memory policy from child kernel s
   const parent = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
     pid: 1,
     guestMemoryPolicyLimitBytes: 64 * 1024 * 1024,
+    kernelWorkerRequest: createPlainForkKernelWorkerRequest([]),
   });
   const worker = createdWorkers[0];
   const kernel = createdKernelExports[0];
@@ -1085,7 +1094,10 @@ test("plain fork rehydrates shared kernel objects after child memory scrub", asy
   });
 
   try {
-    await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
+    await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+      pid: 1,
+      kernelWorkerRequest: createPlainForkKernelWorkerRequest([]),
+    });
     const parentWorker = createdWorkers[0];
     const parentKernel = createdKernelExports[0];
     const state = makeKernelState();
@@ -1139,7 +1151,10 @@ test("plain fork rehydrates shared kernel objects after child memory scrub", asy
 });
 
 test("plain fork does not keep signal disposition state synchronized after the initial copy", async () => {
-  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
+  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: createPlainForkKernelWorkerRequest([]),
+  });
   const parentWorker = createdWorkers[0];
   const parentKernel = createdKernelExports[0];
   const signalSlotsPtr = makeKernelState().sigSlotsPtr;
@@ -1167,7 +1182,8 @@ test("plain fork does not keep signal disposition state synchronized after the i
     vmPtr: 0x1234,
     kernelState: makeKernelState(),
   });
-  await Promise.resolve();
+  await flushMicrotasks(40);
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   const childWorker = parentWorker;
   const childKernel = createdKernelExports[1];
@@ -1206,7 +1222,10 @@ test("plain fork does not keep signal disposition state synchronized after the i
 });
 
 test("plain fork does not keep time state synchronized after the initial copy", async () => {
-  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
+  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: createPlainForkKernelWorkerRequest([]),
+  });
   const parentWorker = createdWorkers[0];
   const parentKernel = createdKernelExports[0];
   const timeStatePtr = makeKernelState().timeStatePtr;
@@ -1227,7 +1246,8 @@ test("plain fork does not keep time state synchronized after the initial copy", 
     vmPtr: 0x1234,
     kernelState: makeKernelState(),
   });
-  await Promise.resolve();
+  await flushMicrotasks(40);
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   const childWorker = parentWorker;
   const childKernel = createdKernelExports[1];
@@ -1257,7 +1277,10 @@ test("plain fork does not keep time state synchronized after the initial copy", 
 });
 
 test("plain fork does not keep process lifecycle state synchronized after the initial copy", async () => {
-  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
+  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: createPlainForkKernelWorkerRequest([]),
+  });
   const parentWorker = createdWorkers[0];
   const parentKernel = createdKernelExports[0];
   const processRuntimeStatePtr = makeKernelState().processRuntimeStatePtr;
@@ -1278,7 +1301,8 @@ test("plain fork does not keep process lifecycle state synchronized after the in
     vmPtr: 0x1234,
     kernelState: makeKernelState(),
   });
-  await Promise.resolve();
+  await flushMicrotasks(40);
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   const childWorker = parentWorker;
   const childKernel = createdKernelExports[1];

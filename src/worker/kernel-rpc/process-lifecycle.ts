@@ -100,11 +100,9 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     vmPtr: number,
     provisionalChildPid: number,
   ): Promise<CanonicalizedChildLifecycle> {
-    if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-      return readChildLifecycleFromKernel(handle, provisionalChildPid);
-    }
+    const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "canonicalizeChildLifecycleViaKernelWorker");
 
-    const response = expectKernelWorkerResponse(await handle.kernelWorkerRequest({
+    const response = expectKernelWorkerResponse(await kernelWorkerRequest({
       type: "canonicalize-child-pid",
       pid: handle.pid,
       vmPtr,
