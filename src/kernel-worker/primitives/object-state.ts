@@ -166,7 +166,7 @@ export function createKernelWorkerObjectStatePrimitives() {
       socketUsed: sourceState.socketUsed,
       netBufUsed: sourceState.netBufUsed,
     });
-    const tableBytes = sourceExports.kernel_socket_table_bytes?.() ?? 0;
+    const tableBytes = sourceExports.kernel_socket_table_bytes();
     const stateBytes = kernelSocketStateBytes(sourceExports, sourceState);
     const hasFullState = Boolean(
       sourceExports.kernel_socket_state_ptr

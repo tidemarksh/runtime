@@ -10,7 +10,10 @@ function socketSlotBytes(handle: ProcessHandle): number {
   if (maxSockets === undefined) {
     return 0;
   }
-  const socketTableBytes = handle.kernel.kernel_socket_table_bytes?.() ?? 0;
+  const socketTableBytes = handle.kernel.kernel_socket_table_bytes?.();
+  if (socketTableBytes === undefined) {
+    return 0;
+  }
   const bytes = maxSockets > 0 ? socketTableBytes / maxSockets : 0;
   return Number.isInteger(bytes) && bytes > SOCKET_SLOT_SHUTDOWN_MASK_OFFSET + 4 ? bytes : 0;
 }

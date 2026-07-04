@@ -328,8 +328,8 @@ export function snapshotSocketStateForThread(handle: ProcessHandle): KernelWorke
   ) {
     return undefined;
   }
-  const socketTableBytes = handle.kernel.kernel_socket_table_bytes?.() ?? 0;
-  const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes?.() ?? 0;
+  const socketTableBytes = handle.kernel.kernel_socket_table_bytes();
+  const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes();
   if (socketTableBytes <= 0 || netBufPoolBytes <= 0) {
     return undefined;
   }

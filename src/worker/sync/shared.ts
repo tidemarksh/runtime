@@ -775,7 +775,7 @@ export function preserveNetworkSocketSlots(handle: ProcessHandle): PreservedNetw
   if (maxSockets === undefined) {
     return [];
   }
-  const socketTableBytes = handle.kernel.kernel_socket_table_bytes?.() ?? 0;
+  const socketTableBytes = handle.kernel.kernel_socket_table_bytes();
   const socketSlotBytes = maxSockets > 0 ? socketTableBytes / maxSockets : 0;
   if (!Number.isInteger(socketSlotBytes) || socketSlotBytes <= 0) {
     return [];

@@ -95,7 +95,7 @@ export function preserveNetworkRecvForKernelMemoryWrite(
     return null;
   }
   const netBufBase = handle.kernelState.netBufBase;
-  const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes?.() ?? 0;
+  const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes();
   const netBufEnd = netBufBase + netBufPoolBytes;
   if (netBufBase <= 0 || netBufPoolBytes <= 0 || ptr >= netBufEnd || ptr + length <= netBufBase) {
     return null;
