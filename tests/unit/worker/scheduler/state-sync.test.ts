@@ -110,6 +110,13 @@ function makeHandle(overrides: Record<string, unknown> = {}) {
     kernel_ofd_fd_type: () => 0,
     kernel_ofd_ino: () => 0,
     kernel_ofd_host_fd: () => -1,
+    thread_socket_idx_for_fd: () => -1,
+    thread_socket_peer_idx: () => -1,
+    thread_socket_state: () => 3,
+    thread_socket_external_peer: () => 1,
+    thread_socket_recv_buf_idx: () => -1,
+    thread_socket_recv_available: () => 0,
+    thread_socket_read_bytes: () => 0n,
   };
   return {
     pid: 1,

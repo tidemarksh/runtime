@@ -1,5 +1,5 @@
 import { attachKernelRuntimeState, readKernelRuntimeState } from "../../abi.js";
-import { kernelNetBufferCount, kernelSocketCount } from "../../kernel-socket-layout.js";
+import { kernelNetBufferCount, kernelSocketCount, requireKernelSocketCount } from "../../kernel-socket-layout.js";
 import {
   NET_BUFFER_HEAD_OFFSET,
   NET_BUFFER_HEADER_BYTES,
@@ -55,7 +55,14 @@ import {
 } from "../ownership/fd-table.js";
 import {
   collectRuntimeNetworkSocketOfdIds,
+  kernelSocketExternalPeer,
+  kernelSocketIndexForFd,
   kernelSocketOutboundAvailable,
+  kernelSocketPeerIndex,
+  kernelSocketReadBytes,
+  kernelSocketRecvAvailable,
+  kernelSocketRecvBufferIndex,
+  kernelSocketState,
   runtimeNetworkFds,
 } from "../ownership/socket-control.js";
 import type { ProcessHandle } from "../types.js";
@@ -772,10 +779,7 @@ export function preserveNetworkSocketSlots(handle: ProcessHandle): PreservedNetw
   if (fds.length === 0) {
     return [];
   }
-  const maxSockets = kernelSocketCount(handle.kernel);
-  if (maxSockets === undefined) {
-    return [];
-  }
+  const maxSockets = requireKernelSocketCount(handle.kernel);
   const socketTableBytes = handle.kernel.kernel_socket_table_bytes();
   const socketSlotBytes = maxSockets > 0 ? socketTableBytes / maxSockets : 0;
   if (!Number.isInteger(socketSlotBytes) || socketSlotBytes <= 0) {
@@ -812,10 +816,10 @@ export function preserveNetworkSocketSlots(handle: ProcessHandle): PreservedNetw
       }
       continue;
     }
-    const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(handle.vmPtr, fd) ?? -1;
+    const socketIdx = kernelSocketIndexForFd(handle, handle.vmPtr, fd);
     if (socketIdx >= 0) {
       preserveSocketIdx(socketIdx);
-      preserveSocketIdx(handle.kernel.thread_socket_peer_idx?.(socketIdx) ?? -1);
+      preserveSocketIdx(kernelSocketPeerIndex(handle, socketIdx));
       continue;
     }
     const watermarkedSlot = handle.networkSocketSlotWatermarks?.get(fd);
@@ -964,10 +968,7 @@ export function socketReadHeadFloor(
   tail: number,
   capacity?: number,
 ): number {
-  const readBytes = handle.kernel.thread_socket_read_bytes?.(socketIdx);
-  if (readBytes === undefined) {
-    return 0;
-  }
+  const readBytes = kernelSocketReadBytes(handle, socketIdx);
   const numeric = typeof readBytes === "bigint" ? Number(readBytes) : readBytes;
   if (!Number.isSafeInteger(numeric) || numeric <= 0) {
     return 0;
@@ -991,9 +992,9 @@ export function networkRecvPayloadWatermark(
     return null;
   }
   if (payload.readBytes !== undefined && payload.availableBytes !== undefined && socketIdx >= 0) {
-    const readBytesRaw = handle.kernel.thread_socket_read_bytes?.(socketIdx);
+    const readBytesRaw = kernelSocketReadBytes(handle, socketIdx);
     const readBytes = typeof readBytesRaw === "bigint" ? Number(readBytesRaw) : readBytesRaw;
-    const availableBytes = handle.kernel.thread_socket_recv_available?.(socketIdx);
+    const availableBytes = kernelSocketRecvAvailable(handle, socketIdx);
     if (
       Number.isSafeInteger(readBytes)
       && Number.isSafeInteger(availableBytes)
@@ -1069,10 +1070,7 @@ export function preserveUsedNetBufferHeads(
   netBufUsed: bigint,
   extraBufferIndices: Iterable<number> = [],
 ): PreservedNetBufferHead[] {
-  const maxSockets = kernelSocketCount(handle.kernel);
-  if (maxSockets === undefined) {
-    return [];
-  }
+  const maxSockets = requireKernelSocketCount(handle.kernel);
   const netBufferCount = maxSockets * 2;
   const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
   if (!Number.isInteger(netBufferBytes) || netBufferBytes <= NET_BUFFER_HEADER_BYTES) {
@@ -1118,10 +1116,7 @@ export function socketReadHeadFloorsByBuffer(
   netBufPoolBytes: number,
 ): Map<number, number> {
   const floors = new Map<number, number>();
-  const maxSockets = kernelSocketCount(handle.kernel);
-  if (maxSockets === undefined) {
-    return floors;
-  }
+  const maxSockets = requireKernelSocketCount(handle.kernel);
   const netBufferCount = maxSockets * 2;
   const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
   if (!Number.isInteger(netBufferBytes) || netBufferBytes <= NET_BUFFER_HEADER_BYTES) {
@@ -1129,7 +1124,7 @@ export function socketReadHeadFloorsByBuffer(
   }
   const memory = new Uint8Array(handle.memory.buffer);
   for (let socketIdx = 0; socketIdx < maxSockets; socketIdx += 1) {
-    const recvBufIdx = handle.kernel.thread_socket_recv_buf_idx?.(socketIdx) ?? -1;
+    const recvBufIdx = kernelSocketRecvBufferIndex(handle, socketIdx);
     if (recvBufIdx < 0 || recvBufIdx >= netBufferCount) {
       continue;
     }
@@ -1174,10 +1169,7 @@ export function preserveNetworkRecvHeadWatermarks(
   if (fds.length === 0) {
     return [];
   }
-  const maxSockets = kernelSocketCount(handle.kernel);
-  if (maxSockets === undefined) {
-    return [];
-  }
+  const maxSockets = requireKernelSocketCount(handle.kernel);
   const netBufferCount = maxSockets * 2;
   const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
   if (!Number.isInteger(netBufferBytes) || netBufferBytes <= NET_BUFFER_HEADER_BYTES) {
@@ -1186,12 +1178,12 @@ export function preserveNetworkRecvHeadWatermarks(
   const preserved: PreservedNetBufferHead[] = [];
   const memory = new Uint8Array(handle.memory.buffer);
   for (const fd of fds) {
-    const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(handle.vmPtr, fd) ?? -1;
+    const socketIdx = kernelSocketIndexForFd(handle, handle.vmPtr, fd);
     if (socketIdx < 0) {
       handle.networkClosedFds?.delete(fd);
       continue;
     }
-    const recvBufIdx = handle.kernel.thread_socket_recv_buf_idx?.(socketIdx) ?? -1;
+    const recvBufIdx = kernelSocketRecvBufferIndex(handle, socketIdx);
     if (recvBufIdx < 0 || recvBufIdx >= netBufferCount) {
       continue;
     }
@@ -1202,8 +1194,8 @@ export function preserveNetworkRecvHeadWatermarks(
     const currentTail = view.getUint32(NET_BUFFER_TAIL_OFFSET, true);
     const capacity = netBufferBytes - NET_BUFFER_HEADER_BYTES;
     const payload = networkRecvPayloadWatermark(handle, fd, socketIdx, currentTail, capacity);
-    const terminalRecv = handle.kernel.thread_socket_state?.(socketIdx) === SOCK_STATE_SHUTDOWN
-      && (handle.kernel.thread_socket_external_peer?.(socketIdx) ?? 0) === 0;
+    const terminalRecv = kernelSocketState(handle, socketIdx) === SOCK_STATE_SHUTDOWN
+      && kernelSocketExternalPeer(handle, socketIdx) === 0;
     const preservedTail = payload?.tail ?? currentTail;
     const mergedHead = (() => {
       if (terminalRecv) {
@@ -1212,7 +1204,7 @@ export function preserveNetworkRecvHeadWatermarks(
       if (payload !== null) {
         return payload.head;
       }
-      const available = handle.kernel.thread_socket_recv_available?.(socketIdx);
+      const available = kernelSocketRecvAvailable(handle, socketIdx);
       if (available === 0 && currentHead === currentTail) {
         return currentHead;
       }

@@ -29,6 +29,9 @@ type NetworkBridgeKernelFixture = {
   kernel_ofd_fd_type?: (ofdId: number) => number;
   process_fd_ofd_id?: (vmPtr: number, fd: number) => number;
   thread_socket_idx_for_fd?: (vmPtr: number, fd: number) => number;
+  thread_socket_peer_idx?: (socketIdx: number) => number;
+  thread_socket_state?: (socketIdx: number) => number;
+  thread_socket_external_peer?: (socketIdx: number) => number;
   thread_socket_recv_available?: (socketIdx: number) => number;
   thread_socket_recv_buf_idx?: (socketIdx: number) => number;
   thread_socket_read_bytes?: (socketIdx: number) => bigint | number;
@@ -60,6 +63,9 @@ function withSupervisorSocketDefaults<T extends NetworkBridgeKernelFixture>(kern
       ? 0
       : -1;
   });
+  kernel.thread_socket_peer_idx ??= vi.fn(() => -1);
+  kernel.thread_socket_state ??= vi.fn(() => 3);
+  kernel.thread_socket_external_peer ??= vi.fn(() => 1);
   kernel.thread_socket_recv_available ??= vi.fn(() => 0);
   kernel.thread_socket_recv_buf_idx ??= vi.fn(() => 0);
   kernel.thread_socket_read_bytes ??= vi.fn(() => 0n);

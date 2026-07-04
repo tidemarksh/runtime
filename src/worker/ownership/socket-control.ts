@@ -1,5 +1,5 @@
 import type { RuntimeNetworkBridge } from "../../bridge/network.js";
-import { kernelSocketCount } from "../../kernel-socket-layout.js";
+import { requireKernelSocketCount } from "../../kernel-socket-layout.js";
 import type {
   KernelWorkerFdEntrySnapshot,
   KernelWorkerSocketStateSnapshot,
@@ -28,6 +28,62 @@ export function kernelSocketOutboundAvailable(handle: ProcessHandle, vmPtr: numb
     throw new Error("kernel supervisor ABI missing thread_socket_outbound_available");
   }
   return readOutboundAvailable(vmPtr, fd);
+}
+
+export function kernelSocketIndexForFd(handle: ProcessHandle, vmPtr: number, fd: number): number {
+  const readSocketIndex = handle.kernel.thread_socket_idx_for_fd;
+  if (typeof readSocketIndex !== "function") {
+    throw new Error("kernel supervisor ABI missing thread_socket_idx_for_fd");
+  }
+  return readSocketIndex(vmPtr, fd);
+}
+
+export function kernelSocketPeerIndex(handle: ProcessHandle, socketIdx: number): number {
+  const readPeerIndex = handle.kernel.thread_socket_peer_idx;
+  if (typeof readPeerIndex !== "function") {
+    throw new Error("kernel supervisor ABI missing thread_socket_peer_idx");
+  }
+  return readPeerIndex(socketIdx);
+}
+
+export function kernelSocketState(handle: ProcessHandle, socketIdx: number): number {
+  const readState = handle.kernel.thread_socket_state;
+  if (typeof readState !== "function") {
+    throw new Error("kernel supervisor ABI missing thread_socket_state");
+  }
+  return readState(socketIdx);
+}
+
+export function kernelSocketExternalPeer(handle: ProcessHandle, socketIdx: number): number {
+  const readExternalPeer = handle.kernel.thread_socket_external_peer;
+  if (typeof readExternalPeer !== "function") {
+    throw new Error("kernel supervisor ABI missing thread_socket_external_peer");
+  }
+  return readExternalPeer(socketIdx);
+}
+
+export function kernelSocketRecvBufferIndex(handle: ProcessHandle, socketIdx: number): number {
+  const readRecvBufferIndex = handle.kernel.thread_socket_recv_buf_idx;
+  if (typeof readRecvBufferIndex !== "function") {
+    throw new Error("kernel supervisor ABI missing thread_socket_recv_buf_idx");
+  }
+  return readRecvBufferIndex(socketIdx);
+}
+
+export function kernelSocketRecvAvailable(handle: ProcessHandle, socketIdx: number): number {
+  const readRecvAvailable = handle.kernel.thread_socket_recv_available;
+  if (typeof readRecvAvailable !== "function") {
+    throw new Error("kernel supervisor ABI missing thread_socket_recv_available");
+  }
+  return readRecvAvailable(socketIdx);
+}
+
+export function kernelSocketReadBytes(handle: ProcessHandle, socketIdx: number): bigint | number {
+  const readBytes = handle.kernel.thread_socket_read_bytes;
+  if (typeof readBytes !== "function") {
+    throw new Error("kernel supervisor ABI missing thread_socket_read_bytes");
+  }
+  return readBytes(socketIdx);
 }
 
 export function socketOfdForFd(handle: ProcessHandle, vmPtr: number, fd: number): number {
@@ -413,10 +469,7 @@ export function preserveNetworkSocketSlots(
   vmPtr: number,
   socketTableBytes: number,
 ): PreservedNetworkSocketSlot[] {
-  const maxSockets = kernelSocketCount(handle.kernel);
-  if (maxSockets === undefined) {
-    return [];
-  }
+  const maxSockets = requireKernelSocketCount(handle.kernel);
   const socketSlotBytes = maxSockets > 0 ? socketTableBytes / maxSockets : 0;
   if (!Number.isInteger(socketSlotBytes) || socketSlotBytes <= 0) {
     return [];
@@ -463,13 +516,13 @@ export function preserveNetworkSocketSlots(
         socketMask: 1 << Math.floor(watermarkedSlot.offset / socketSlotBytes),
       });
     }
-    const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd);
-    if (socketIdx === undefined || socketIdx < 0 || socketIdx >= maxSockets) {
+    const socketIdx = kernelSocketIndexForFd(handle, vmPtr, fd);
+    if (socketIdx < 0 || socketIdx >= maxSockets) {
       handle.networkClosedFds.delete(fd);
       continue;
     }
     preserveSocketIdx(socketIdx);
-    preserveSocketIdx(handle.kernel.thread_socket_peer_idx?.(socketIdx) ?? -1);
+    preserveSocketIdx(kernelSocketPeerIndex(handle, socketIdx));
   }
   return preserved;
 }
