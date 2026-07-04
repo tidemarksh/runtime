@@ -188,6 +188,7 @@ function makeKernel(pid: number, overrides: Record<string, unknown> = {}) {
     supervisor_ofd_slot_restore_flag_referenced_by_fd_entry: () => 1,
     supervisor_ofd_slot_restore_flag_trust_regular_file_offset: () => 2,
     supervisor_ofd_slot_restore_action: () => 1,
+    supervisor_regular_file_offset_restore_action: () => 1,
     supervisor_fork_shared_effect_sync_action: (
       hasEffect: number,
       hasTrackedState: number,

@@ -330,6 +330,12 @@ export interface KernelExports {
     syscallNr: bigint | number,
     flags: number,
   ): number;
+  supervisor_regular_file_offset_restore_action?(
+    ofdId: number,
+    snapshotHostFd: number,
+    snapshotIno: number,
+    snapshotOffset: bigint | number,
+  ): number;
   supervisor_fs_local_metadata_action_none?(): number;
   supervisor_fs_local_metadata_action_tombstone_primary?(): number;
   supervisor_fs_local_metadata_action_forget_primary?(): number;
@@ -1720,6 +1726,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_ofd_slot_restore_flag_referenced_by_fd_entry",
   "supervisor_ofd_slot_restore_flag_trust_regular_file_offset",
   "supervisor_ofd_slot_restore_action",
+  "supervisor_regular_file_offset_restore_action",
   "supervisor_fs_local_metadata_action_none",
   "supervisor_fs_local_metadata_action_tombstone_primary",
   "supervisor_fs_local_metadata_action_forget_primary",

@@ -21,6 +21,29 @@ function requireSupervisorProcessHeldOfdRefcount(
   return readSupervisorHeldOfdRefcount.bind(handle.kernel);
 }
 
+function requireSupervisorRestoreActionApply(handle: ProcessHandle): number {
+  const apply = handle.kernel.supervisor_fd_entry_restore_action_apply;
+  if (!apply) {
+    throw new Error("kernel supervisor ABI missing supervisor_fd_entry_restore_action_apply");
+  }
+  return apply.call(handle.kernel);
+}
+
+function requireSupervisorRegularFileOffsetRestoreAction(
+  handle: ProcessHandle,
+): (
+  ofdId: number,
+  snapshotHostFd: number,
+  snapshotIno: number,
+  snapshotOffset: bigint | number,
+) => number {
+  const decide = handle.kernel.supervisor_regular_file_offset_restore_action;
+  if (!decide) {
+    throw new Error("kernel supervisor ABI missing supervisor_regular_file_offset_restore_action");
+  }
+  return decide.bind(handle.kernel);
+}
+
 export function collectProcessHeldOfds(handle: ProcessHandle): Set<number> {
   const maxFds = handle.kernel.abi_max_fds();
   const heldOfds = new Set<number>();
@@ -141,26 +164,20 @@ export function restoreRegularFileOffsetsForStep(handle: ProcessHandle): void {
   if (!offsets || offsets.size === 0) {
     return;
   }
+  const restoreAction = requireSupervisorRegularFileOffsetRestoreAction(handle);
+  const applyAction = requireSupervisorRestoreActionApply(handle);
   const maxFds = handle.kernel.abi_max_fds();
-  const fileType = handle.kernel.abi_fd_type_file?.();
   const tableBytes = handle.kernel.kernel_ofd_table_bytes();
   const slotBytes = tableBytes / maxFds;
-  if (fileType === undefined || !Number.isInteger(slotBytes) || slotBytes <= 0) {
+  if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
     return;
   }
   const view = new DataView(handle.memory.buffer);
   for (const [ofdId, snapshot] of offsets) {
-    if (
-      ofdId <= 0
-      || ofdId >= maxFds
-      || handle.kernel.kernel_ofd_fd_type(ofdId) !== fileType
-      || handle.kernel.kernel_ofd_refcount(ofdId) <= 0
-      || handle.kernel.kernel_ofd_ino(ofdId) !== snapshot.ino
-      || handle.kernel.kernel_ofd_host_fd(ofdId) !== snapshot.hostFd
-    ) {
+    if (ofdId <= 0 || ofdId >= maxFds) {
       continue;
     }
-    if (handle.kernel.kernel_ofd_offset(ofdId) >= snapshot.offset) {
+    if (restoreAction(ofdId, snapshot.hostFd, snapshot.ino, snapshot.offset) !== applyAction) {
       continue;
     }
     view.setBigInt64(handle.kernelState.ofdTablePtr + ofdId * slotBytes + OFD_OFFSET_OFFSET, snapshot.offset, true);

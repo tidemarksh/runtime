@@ -810,6 +810,29 @@ export function makeSupervisorAbiStubs(
       ? DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply
       : DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
   };
+  const supervisorRegularFileOffsetRestoreAction = (
+    receiver: Partial<KernelExports>,
+    ofdId: number,
+    snapshotHostFd: number,
+    snapshotIno: number,
+    snapshotOffset: bigint | number,
+  ): number => {
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    if (ofdId <= 0 || ofdId >= maxFds) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
+    const snapshot = typeof snapshotOffset === "bigint" ? snapshotOffset : BigInt(Math.trunc(snapshotOffset));
+    if (
+      callNumber(receiver, "kernel_ofd_fd_type", ofdId) !== callNumber(receiver, "abi_fd_type_file")
+      || callNumber(receiver, "kernel_ofd_refcount", ofdId) <= 0
+      || callNumber(receiver, "kernel_ofd_host_fd", ofdId) !== snapshotHostFd
+      || callNumber(receiver, "kernel_ofd_ino", ofdId) !== snapshotIno
+      || callBigInt(receiver, "kernel_ofd_offset", ofdId) >= snapshot
+    ) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+  };
   const processEpollHeldOfdIds = (receiver: Partial<KernelExports>, vmPtr: number): number[] => {
     const epollType = callNumber(receiver, "abi_fd_type_epoll");
     return processHeldOfdIds(receiver, vmPtr)
@@ -1349,6 +1372,21 @@ export function makeSupervisorAbiStubs(
         candidateOffset,
         syscallNr,
         flags,
+      );
+    },
+    supervisor_regular_file_offset_restore_action(
+      this: KernelExports | undefined,
+      ofdId: number,
+      snapshotHostFd: number,
+      snapshotIno: number,
+      snapshotOffset: bigint | number,
+    ) {
+      return supervisorRegularFileOffsetRestoreAction(
+        currentExports(this),
+        ofdId,
+        snapshotHostFd,
+        snapshotIno,
+        snapshotOffset,
       );
     },
     supervisor_process_epoll_held_ofd(
