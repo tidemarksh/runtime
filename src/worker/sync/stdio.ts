@@ -7,7 +7,6 @@ import {
 } from "./shared.js";
 import { adoptKernelStateForHandle } from "../kernel-state.js";
 import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
-import { kernelWorkerOwnsPipeState } from "../ownership/pipe-control.js";
 import type {
   ProcessHandle,
   SyncCause,
@@ -71,7 +70,5 @@ export async function releaseSharedHostStdioViaKernelWorker(
     return;
   }
   const pipeUsed = await releaseHostStdioViaKernelWorker(handle, hostStdioReleaseCause());
-  if (kernelWorkerOwnsPipeState(handle)) {
-    ports.wakePipeAndEpollWaitersInKernelShare(handle, pipeUsed);
-  }
+  ports.wakePipeAndEpollWaitersInKernelShare(handle, pipeUsed);
 }
