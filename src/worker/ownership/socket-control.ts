@@ -98,7 +98,7 @@ function supervisorHeldSocketOfdIds(handle: ProcessHandle, vmPtr: number): numbe
   const maxFds = handle.kernel.abi_max_fds();
   const ofdIds: number[] = [];
   for (let index = 0; index < maxFds; index += 1) {
-    const ofdId = query(vmPtr, index);
+    const ofdId = query.call(handle.kernel, vmPtr, index);
     if (ofdId === 0) {
       break;
     }
@@ -238,7 +238,8 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
     if (expectedOfd === undefined || expectedOfd <= 0) {
       return { fd: null, supervisor: false };
     }
-    const activeFd = requireSupervisorSocketBridgeActiveFd(handle)(
+    const activeFd = requireSupervisorSocketBridgeActiveFd(handle).call(
+      handle.kernel,
       vmPtr,
       preferredFd,
       expectedOfd,

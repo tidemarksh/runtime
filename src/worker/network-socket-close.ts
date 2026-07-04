@@ -27,7 +27,7 @@ function requireSupervisorSocketForceShutdown(handle: ProcessHandle) {
   if (typeof forceShutdown !== "function") {
     throw new Error("kernel supervisor ABI missing supervisor_socket_force_shutdown");
   }
-  return forceShutdown;
+  return forceShutdown.bind(handle.kernel);
 }
 
 export function forceNetworkClosedFd(handle: ProcessHandle, vmPtr: number, fd: number): void {

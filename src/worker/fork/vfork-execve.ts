@@ -364,7 +364,7 @@ function rollbackVforkExecveHandoffLocally(
   if (!rollback) {
     throw new Error("kernel supervisor ABI missing supervisor_vfork_execve_rollback");
   }
-  const waitStatus = rollback(vmPtr, childPid);
+  const waitStatus = rollback.call(kernel, vmPtr, childPid);
   if (waitStatus < 0) {
     throw new Error(`kernel supervisor vfork execve rollback failed: ${waitStatus}`);
   }

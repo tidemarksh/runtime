@@ -46,7 +46,7 @@ function supervisorThreadEventKindTimerFired(handle: ProcessHandle): number {
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_thread_event_kind_timer_fired");
   }
-  return exportFn();
+  return exportFn.call(handle.kernel);
 }
 
 export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWaitTimers {
@@ -132,7 +132,8 @@ export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWai
       deps.failProcess(handle, new Error("kernel supervisor ABI missing supervisor_enqueue_blocked_retry_timer"));
       return;
     }
-    const enqueueResult = enqueueRetryTimer(
+    const enqueueResult = enqueueRetryTimer.call(
+      handle.kernel,
       blocked.vmPtr,
       supervisorBlockedWaitRetryFlags(handle.kernel, flags),
     );
@@ -184,7 +185,7 @@ export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWai
       if (enqueueTimer === undefined) {
         throw new Error("kernel supervisor ABI missing supervisor_enqueue_blocked_wait_timer");
       }
-      const enqueueResult = enqueueTimer(vmPtr);
+      const enqueueResult = enqueueTimer.call(handle.kernel, vmPtr);
       if (enqueueResult < 0) {
         throw new Error(
           `supervisor blocked wait timer enqueue failed: `

@@ -9,7 +9,7 @@ export function createKernelWorkerEpollPrimitives() {
     if (supervisorHeldEpollOfd) {
       const epollOfdIds: number[] = [];
       for (let index = 0; index < maxFds; index += 1) {
-        const ofdId = supervisorHeldEpollOfd(vmPtr, index);
+        const ofdId = supervisorHeldEpollOfd.call(processExports, vmPtr, index);
         if (ofdId === 0) {
           break;
         }

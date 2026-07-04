@@ -6,6 +6,7 @@ import {
 } from "../../../../src/bridge/runtime-state.js";
 import { createWorkerKernelRpcVforkHelpers } from "../../../../src/worker/kernel-rpc/vfork.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
+import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 function makeKernelState(): KernelRuntimeState {
   return {
@@ -36,6 +37,7 @@ function makeKernelState(): KernelRuntimeState {
 function makeKernel(state: KernelRuntimeState, order: string[]): KernelExports {
   let attachedState = state;
   return {
+    ...makeSupervisorAbiStubs(),
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     kernel_attach_runtime_state(
       heapBase: number,

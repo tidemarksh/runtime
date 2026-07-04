@@ -2189,7 +2189,7 @@ function supervisorProcessHostOpKindSpawnProcessWorker(exports: KernelExports): 
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_process_host_op_kind_spawn_process_worker");
   }
-  return exportFn();
+  return exportFn.call(exports);
 }
 
 function supervisorProcessHostOpRecordMagic(exports: KernelExports): number {
@@ -2197,7 +2197,7 @@ function supervisorProcessHostOpRecordMagic(exports: KernelExports): number {
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_process_host_op_record_magic");
   }
-  return exportFn();
+  return exportFn.call(exports);
 }
 
 function supervisorProcessHostOpRecordBytes(exports: KernelExports): number {
@@ -2205,7 +2205,7 @@ function supervisorProcessHostOpRecordBytes(exports: KernelExports): number {
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_process_host_op_record_bytes");
   }
-  return exportFn();
+  return exportFn.call(exports);
 }
 
 function supervisorAbiVersion(exports: KernelExports): number {
@@ -2213,7 +2213,7 @@ function supervisorAbiVersion(exports: KernelExports): number {
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_abi_version");
   }
-  return exportFn();
+  return exportFn.call(exports);
 }
 
 function readSupervisorProcessSpawnHandoff(
@@ -2227,7 +2227,7 @@ function readSupervisorProcessSpawnHandoff(
   const recordBytes = supervisorProcessHostOpRecordBytes(exports);
   const scratch = kernelScratchBase(exports) + SUPERVISOR_PROCESS_HOST_OP_SCRATCH_OFFSET;
   ensureMemoryCapacity(exports.memory, scratch + recordBytes);
-  const result = readHostOp(vmPtr, scratch, recordBytes);
+  const result = readHostOp.call(exports, vmPtr, scratch, recordBytes);
   if (result === 0) {
     return null;
   }

@@ -24,7 +24,7 @@ function supervisorNumericExport(
   if (typeof read !== "function") {
     throw new Error(`missing ${name} export`);
   }
-  return supervisorNumber(read(), label);
+  return supervisorNumber(read.call(kernel), label);
 }
 
 export function supervisorResidentPageTableAuthority(kernel: KernelExports): ResidentPageTableAuthority {
@@ -55,13 +55,13 @@ export function supervisorResidentPageTableAuthority(kernel: KernelExports): Res
   return {
     selectPublishSlot(input) {
       return supervisorNumber(
-        slotDecision(input.existingSlot, input.emptySlot, input.cleanEvictSlot),
+        slotDecision.call(kernel, input.existingSlot, input.emptySlot, input.cleanEvictSlot),
         "supervisor resident page slot decision",
       );
     },
     decideEviction(input): ResidentPageEvictStatus {
       const status = supervisorNumber(
-        evictStatus(input.recordFound ? 1 : 0, input.dirty ? 1 : 0),
+        evictStatus.call(kernel, input.recordFound ? 1 : 0, input.dirty ? 1 : 0),
         "supervisor resident page evict status",
       );
       if (status === notFoundStatus) {

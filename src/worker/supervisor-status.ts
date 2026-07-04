@@ -17,7 +17,7 @@ function supervisorProcessStatusFact(
   if (readStatus === undefined) {
     throw new Error(`kernel supervisor ABI missing ${exportName}`);
   }
-  const result = readStatus(status);
+  const result = readStatus.call(kernel, status);
   if (result < 0) {
     throw new Error(`kernel supervisor process status fact ${exportName} failed: ${result}`);
   }

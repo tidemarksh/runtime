@@ -45,7 +45,7 @@ function supervisorNumericExport(
   if (typeof read !== "function") {
     throw new Error(`missing ${name} export`);
   }
-  return supervisorNumber(read(), label);
+  return supervisorNumber(read.call(kernel), label);
 }
 
 export function readSupervisorPendingBackingFill(
@@ -96,7 +96,7 @@ export function clearSupervisorPendingBackingFill(kernel: KernelExports, vmPtr: 
   if (typeof clear !== "function") {
     throw new Error("missing supervisor_fs_clear_pending_backing_fill export");
   }
-  const result = supervisorNumber(clear(vmPtr), "supervisor clear pending backing fill result");
+  const result = supervisorNumber(clear.call(kernel, vmPtr), "supervisor clear pending backing fill result");
   if (result < 0) {
     throw new Error(`supervisor clear pending backing fill failed: ${result}`);
   }
@@ -112,7 +112,8 @@ export function supervisorBackingRetryLimit(
     throw new Error("missing supervisor_fs_backing_retry_limit export");
   }
   const limit = supervisorNumber(
-    decide(
+    decide.call(
+      kernel,
       request.opcode ?? 0,
       BigInt(request.offset),
       BigInt(request.length),
@@ -135,7 +136,8 @@ export function supervisorBackingFillSpan(
     throw new Error("missing supervisor_fs_backing_fill_span_decision export");
   }
   const result = supervisorNumber(
-    decide(
+    decide.call(
+      kernel,
       request.opcode ?? 0,
       BigInt(request.offset),
       BigInt(request.length),

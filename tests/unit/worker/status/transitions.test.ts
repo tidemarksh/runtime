@@ -1,6 +1,7 @@
 import { afterEach, expect, test, vi } from "vite-plus/test";
 import { createWorkerStatusTransitionHandler } from "../../../../src/worker/message-handler/transitions.js";
 import {
+  makeSupervisorAbiStubs,
   writeSupervisorArmHostTimerHostOpRecord,
   writeSupervisorFaultExitDecisionRecord,
 } from "../support/supervisor-abi.js";
@@ -229,6 +230,7 @@ function makeHandle(worker: Worker) {
     networkRecvHeadWatermarks: new Map(),
     networkRecvTailWatermarks: new Map(),
     kernel: {
+      ...makeSupervisorAbiStubs(),
       abi_status_ok: () => 0,
       abi_status_fault: () => 3,
       abi_status_fs: () => 6,
@@ -306,6 +308,8 @@ function makeHandle(worker: Worker) {
       supervisor_host_op_record_magic: () => 0x4f48_5354,
       supervisor_host_op_kind_spawn_thread_worker: () => 1,
       supervisor_host_op_kind_arm_host_timer: () => 12,
+      supervisor_next_host_op: undefined,
+      supervisor_next_host_op_kind: undefined,
       supervisor_host_completion_record_bytes: () => 64,
       supervisor_host_completion_record_magic: () => 0x4348_5354,
       supervisor_host_completion_outcome_success: () => 1,

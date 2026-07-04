@@ -1,6 +1,7 @@
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../../src/bridge/pipe.js";
 import { createWorkerWaitInWorkerStatusHandler } from "../../../../src/worker/message-handler/wait-in-worker.js";
+import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 test("waitInWorker debug log keeps compact futex fields", () => {
   const appendWorkerDebugLog = vi.fn();
@@ -39,6 +40,7 @@ test("waitInWorker debug log keeps compact futex fields", () => {
       memory,
       outputBacklog: [],
       kernel: {
+        ...makeSupervisorAbiStubs(),
         abi_status_futex_wait: () => 20,
         abi_status_epoll_wait: () => 22,
         abi_status_pipe_wait: () => 21,

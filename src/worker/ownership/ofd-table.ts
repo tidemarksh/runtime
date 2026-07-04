@@ -14,11 +14,11 @@ import type { KernelSyncHandle, ProcessHandle } from "../types.js";
 function requireSupervisorProcessHeldOfdRefcount(
   handle: ProcessHandle,
 ): (vmPtr: number, ofdId: number) => number {
-  const supervisorHeldOfdRefcount = handle.kernel.supervisor_process_held_ofd_refcount;
-  if (!supervisorHeldOfdRefcount) {
+  const readSupervisorHeldOfdRefcount = handle.kernel.supervisor_process_held_ofd_refcount;
+  if (!readSupervisorHeldOfdRefcount) {
     throw new Error("kernel supervisor ABI missing supervisor_process_held_ofd_refcount");
   }
-  return supervisorHeldOfdRefcount;
+  return readSupervisorHeldOfdRefcount.bind(handle.kernel);
 }
 
 export function collectProcessHeldOfds(handle: ProcessHandle): Set<number> {
@@ -57,7 +57,7 @@ function collectSupervisorProcessOfdIds(
   const maxFds = handle.kernel.abi_max_fds();
   const ofdIds: number[] = [];
   for (let index = 0; index < maxFds; index += 1) {
-    const ofdId = nextOfd(handle.vmPtr, index);
+    const ofdId = nextOfd.call(handle.kernel, handle.vmPtr, index);
     if (ofdId === 0) {
       break;
     }
@@ -97,7 +97,7 @@ export function processEpollDependsOnOfd(handle: ProcessHandle, ofdId: number): 
   if (!dependsOnOfd) {
     throw new Error("kernel supervisor ABI missing supervisor_process_epoll_depends_on_ofd");
   }
-  return dependsOnOfd(handle.vmPtr, ofdId) !== 0;
+  return dependsOnOfd.call(handle.kernel, handle.vmPtr, ofdId) !== 0;
 }
 
 export function snapshotOfdSlotsForThread(

@@ -194,8 +194,8 @@ function addSupervisorPipeControlForMember(
   }
 
   for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
-    const readCount = readOpenCount(member.vmPtr, pipeSlot);
-    const writeCount = writeOpenCount(member.vmPtr, pipeSlot);
+    const readCount = readOpenCount.call(member.kernel, member.vmPtr, pipeSlot);
+    const writeCount = writeOpenCount.call(member.kernel, member.vmPtr, pipeSlot);
     if (readCount > 0) {
       readOpen[pipeSlot] += readCount;
     }
@@ -203,7 +203,7 @@ function addSupervisorPipeControlForMember(
       writeOpen[pipeSlot] += writeCount;
     }
   }
-  return supervisorMaskToBigInt(usedMask(member.vmPtr));
+  return supervisorMaskToBigInt(usedMask.call(member.kernel, member.vmPtr));
 }
 
 export function reconcileKernelSharePipeControl(handle: ProcessHandle): void {

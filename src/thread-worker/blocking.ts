@@ -174,7 +174,8 @@ function completeSupervisorFutexWait(
     throw new Error("kernel supervisor ABI missing supervisor_complete_futex_wait");
   }
 
-  complete(
+  complete.call(
+    ctx.exports,
     ctx.vmPtr,
     supervisorFutexWaitCompletionCode(ctx.exports, completion),
   );

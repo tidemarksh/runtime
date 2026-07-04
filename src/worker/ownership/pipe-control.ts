@@ -33,7 +33,7 @@ function requireSupervisorPipeMask(
   if (!readMask) {
     throw new Error(`kernel supervisor ABI missing ${exportName}`);
   }
-  return readMask;
+  return readMask.bind(handle.kernel);
 }
 
 function requireSupervisorPipeCount(
@@ -46,7 +46,7 @@ function requireSupervisorPipeCount(
   if (!readCount) {
     throw new Error(`kernel supervisor ABI missing ${exportName}`);
   }
-  return readCount;
+  return readCount.bind(handle.kernel);
 }
 
 export function kernelWorkerOwnsPipeState(handle: KernelOwnershipHandle): boolean {

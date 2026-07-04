@@ -44,7 +44,7 @@ function supervisorStdioOutputSettleKindVisible(handle: ProcessHandle): number {
   if (read === undefined) {
     throw new Error("kernel supervisor ABI missing stdio visible output settle kind export");
   }
-  return read();
+  return read.call(handle.kernel);
 }
 
 function supervisorStdioOutputSettleKindInheritedChild(handle: ProcessHandle): number {
@@ -52,7 +52,7 @@ function supervisorStdioOutputSettleKindInheritedChild(handle: ProcessHandle): n
   if (read === undefined) {
     throw new Error("kernel supervisor ABI missing stdio inherited-child output settle kind export");
   }
-  return read();
+  return read.call(handle.kernel);
 }
 
 function supervisorStdioOutputSettleKindValue(
@@ -81,8 +81,8 @@ function supervisorStdioOutputSettlePlan(
     throw new Error("kernel supervisor ABI missing stdio output settle plan exports");
   }
   const kernelKind = supervisorStdioOutputSettleKindValue(handle, kind);
-  const maxPasses = readMaxPasses(kernelKind);
-  const stablePasses = readStablePasses(kernelKind);
+  const maxPasses = readMaxPasses.call(handle.kernel, kernelKind);
+  const stablePasses = readStablePasses.call(handle.kernel, kernelKind);
   if (maxPasses < 0 || stablePasses < 0) {
     throw new Error(`kernel supervisor stdio output settle plan failed: ${maxPasses}/${stablePasses}`);
   }
@@ -101,8 +101,8 @@ function supervisorStdioPipeReadProgressActionValue(
   if (readNone === undefined || readSnapshot === undefined) {
     throw new Error("kernel supervisor ABI missing stdio pipe read-progress action kind exports");
   }
-  const none = readNone();
-  const snapshot = readSnapshot();
+  const none = readNone.call(handle.kernel);
+  const snapshot = readSnapshot.call(handle.kernel);
   if (action === none) {
     return "none";
   }
@@ -121,7 +121,7 @@ function supervisorShouldSnapshotDrainedPipeReadProgress(
   if (decide === undefined) {
     throw new Error("kernel supervisor ABI missing stdio pipe read-progress action export");
   }
-  const action = decide(handle.vmPtr, pipeSlot, drained ? 1 : 0);
+  const action = decide.call(handle.kernel, handle.vmPtr, pipeSlot, drained ? 1 : 0);
   if (action < 0) {
     throw new Error(`kernel supervisor stdio pipe read-progress action failed: ${action}`);
   }

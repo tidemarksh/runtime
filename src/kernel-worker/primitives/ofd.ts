@@ -94,11 +94,11 @@ function ofdSnapshotCanApply(
 function requireSupervisorProcessHeldOfdRefcount(
   processExports: KernelExports,
 ): (vmPtr: number, ofdId: number) => number {
-  const supervisorHeldOfdRefcount = processExports.supervisor_process_held_ofd_refcount;
-  if (!supervisorHeldOfdRefcount) {
+  const readSupervisorHeldOfdRefcount = processExports.supervisor_process_held_ofd_refcount;
+  if (!readSupervisorHeldOfdRefcount) {
     throw new Error("kernel supervisor ABI missing supervisor_process_held_ofd_refcount");
   }
-  return supervisorHeldOfdRefcount;
+  return readSupervisorHeldOfdRefcount.bind(processExports);
 }
 
 export function collectProcessHeldOfdRefcounts(processExports: KernelExports, vmPtr: number): Int32Array {

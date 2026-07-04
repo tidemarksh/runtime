@@ -217,7 +217,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (readActiveChild === undefined) {
       throw new Error("kernel supervisor ABI missing supervisor_blocked_wait_active_child_pid");
     }
-    const childPid = readActiveChild(vmPtr);
+    const childPid = readActiveChild.call(handle.kernel, vmPtr);
     if (childPid < 0) {
       throw new Error(`kernel supervisor active child selection failed: ${childPid}`);
     }
@@ -376,7 +376,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (supervisorWatchesPipe === undefined) {
       throw new Error("kernel supervisor ABI missing supervisor_blocked_epoll_watches_pipe");
     }
-    return supervisorWatchesPipe(vmPtr) !== 0;
+    return supervisorWatchesPipe.call(handle.kernel, vmPtr) !== 0;
   }
 
   function collectBlockedEpollDependentSyncOfdIds(
@@ -391,7 +391,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     const maxFds = handle.kernel.abi_max_fds();
     const ofdIds: number[] = [];
     for (let index = 0; index < maxFds; index += 1) {
-      const ofdId = supervisorDependentOfd(vmPtr, index);
+      const ofdId = supervisorDependentOfd.call(handle.kernel, vmPtr, index);
       if (ofdId === 0) {
         break;
       }

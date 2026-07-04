@@ -103,7 +103,7 @@ function supervisorNumericExport(handle: ProcessHandle, exportName: string): num
   if (typeof read !== "function") {
     throw new Error(`missing ${exportName} export`);
   }
-  return supervisorNumber((read as () => bigint | number)(), exportName);
+  return supervisorNumber((read as () => bigint | number).call(handle.kernel), exportName);
 }
 
 interface PendingFsContext {
@@ -556,7 +556,7 @@ function supervisorPendingRingRequest(
   if (typeof pendingRingRequest !== "function") {
     throw new Error("missing supervisor_fs_pending_ring_request export");
   }
-  return pendingRingRequest(vmPtr) !== 0;
+  return pendingRingRequest.call(handle.kernel, vmPtr) !== 0;
 }
 
 function supervisorPendingRegularFileFsRequest(
@@ -568,8 +568,8 @@ function supervisorPendingRegularFileFsRequest(
   if (typeof pendingFd !== "function" || typeof pendingOfd !== "function") {
     throw new Error("missing supervisor pending regular-file FS request exports");
   }
-  const fd = pendingFd(vmPtr);
-  const ofdId = pendingOfd(vmPtr);
+  const fd = pendingFd.call(handle.kernel, vmPtr);
+  const ofdId = pendingOfd.call(handle.kernel, vmPtr);
   return fd >= 0 && ofdId > 0 ? { fd, ofdId } : null;
 }
 
@@ -589,7 +589,8 @@ function supervisorFsCompletionDecision(
   if (typeof decide !== "function") {
     throw new Error("missing supervisor_fs_completion_decision export");
   }
-  const flags = decide(
+  const flags = decide.call(
+    handle.kernel,
     vmPtr,
     pendingFs.opcode,
     pendingFs.effects,
@@ -638,7 +639,8 @@ function supervisorFsResponseDisposition(
   if (typeof decide !== "function") {
     throw new Error("missing supervisor_fs_response_disposition export");
   }
-  const flags = decide(
+  const flags = decide.call(
+    handle.kernel,
     vmPtr,
     handle.pid,
     pendingFs.opcode,
@@ -684,7 +686,8 @@ function supervisorFsLocalMetadataActions(
   if (typeof decide !== "function") {
     throw new Error("missing supervisor_fs_local_metadata_action export");
   }
-  const action = decide(
+  const action = decide.call(
+    handle.kernel,
     pendingFs.opcode,
     pendingFs.effects,
     fsResult,

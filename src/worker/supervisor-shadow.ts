@@ -257,7 +257,7 @@ export function completeSupervisorProcessHostOp(
   view.setUint32(44, 0, true);
   view.setBigUint64(48, completion.handoff.path, true);
   view.setBigUint64(56, 0n, true);
-  return completeHostOp(scratch, recordBytes);
+  return completeHostOp.call(handle.kernel, scratch, recordBytes);
 }
 
 function supervisorFaultExitKindThreadExit(kernelExports: KernelExports): number {
@@ -486,7 +486,7 @@ export function readSupervisorFdControlRecord(
   const memory = handle.kernel.memory ?? handle.memory;
   const scratch = kernelScratchBase(handle.kernel) + SUPERVISOR_FD_CONTROL_SCRATCH_OFFSET;
   ensureMemoryCapacity(memory, scratch + recordBytes);
-  const result = readRecord(scratch, recordBytes);
+  const result = readRecord.call(handle.kernel, scratch, recordBytes);
   if (result < 0 || result > recordBytes) {
     throw new Error(`supervisor fd control read failed: ${result}`);
   }
@@ -504,7 +504,7 @@ export function pollSupervisorFdControlDiagnostic(handle: ProcessHandle): string
   if (countExport === undefined) {
     return undefined;
   }
-  const count = BigInt(countExport());
+  const count = BigInt(countExport.call(handle.kernel));
   if (count === 0n) {
     return undefined;
   }
@@ -624,7 +624,7 @@ export function readSupervisorFsControlRecord(
   const memory = handle.kernel.memory ?? handle.memory;
   const scratch = kernelScratchBase(handle.kernel) + SUPERVISOR_FS_CONTROL_SCRATCH_OFFSET;
   ensureMemoryCapacity(memory, scratch + recordBytes);
-  const result = readRecord(scratch, recordBytes);
+  const result = readRecord.call(handle.kernel, scratch, recordBytes);
   if (result < 0 || result > recordBytes) {
     throw new Error(`supervisor fs control read failed: ${result}`);
   }
@@ -642,7 +642,7 @@ export function pollSupervisorFsControlDiagnostic(handle: ProcessHandle): string
   if (countExport === undefined) {
     return undefined;
   }
-  const count = BigInt(countExport());
+  const count = BigInt(countExport.call(handle.kernel));
   if (count === 0n) {
     return undefined;
   }
@@ -759,7 +759,7 @@ export function readSupervisorSignalControlRecord(
   const memory = handle.kernel.memory ?? handle.memory;
   const scratch = kernelScratchBase(handle.kernel) + SUPERVISOR_SIGNAL_CONTROL_SCRATCH_OFFSET;
   ensureMemoryCapacity(memory, scratch + recordBytes);
-  const result = readRecord(scratch, recordBytes);
+  const result = readRecord.call(handle.kernel, scratch, recordBytes);
   if (result < 0 || result > recordBytes) {
     throw new Error(`supervisor signal control read failed: ${result}`);
   }
@@ -777,7 +777,7 @@ export function pollSupervisorSignalControlDiagnostic(handle: ProcessHandle): st
   if (countExport === undefined) {
     return undefined;
   }
-  const count = BigInt(countExport());
+  const count = BigInt(countExport.call(handle.kernel));
   if (count === 0n) {
     return undefined;
   }

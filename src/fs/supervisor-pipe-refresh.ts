@@ -15,7 +15,7 @@ function supervisorFsPipeRefreshNumericExport(
   if (typeof read !== "function") {
     throw new Error(`kernel supervisor FS pipe refresh ${name} export is missing`);
   }
-  return read();
+  return read.call(kernel);
 }
 
 function supervisorFsPipeRefreshActionValue(
@@ -64,7 +64,7 @@ export function supervisorFsPipeRefreshBeforeResumeAction(
     "supervisor_fs_pipe_refresh_flag_kernel_worker_available",
   );
   const flags = options.kernelWorkerAvailable === true ? kernelWorkerAvailableFlag : 0;
-  const result = decide(vmPtr, flags);
+  const result = decide.call(kernel, vmPtr, flags);
   if (result < 0) {
     throw new Error(`kernel supervisor FS pipe refresh action failed: ${result}`);
   }

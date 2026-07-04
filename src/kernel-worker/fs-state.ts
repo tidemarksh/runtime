@@ -229,7 +229,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (typeof read !== "function") {
       throw new Error(`missing ${name} export`);
     }
-    return supervisorNumber((read as () => bigint | number)());
+    return supervisorNumber((read as () => bigint | number).call(sourceExports));
   }
 
   function supervisorDirtyPageOpWrite(sourceExports: KernelExports): number {
@@ -278,7 +278,8 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
           return supervisorNumericExport(sourceExports, "supervisor_fs_backing_object_op_flush_truncate");
       }
     })();
-    const result = supervisorNumber(decide(
+    const result = supervisorNumber(decide.call(
+      sourceExports,
       opNumber,
       ino,
       BigInt(published?.fileObjectId ?? 0),
@@ -311,7 +312,8 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (typeof decide !== "function") {
       throw new Error("missing supervisor_fs_backing_source_range_decision export");
     }
-    const decision = supervisorNumber(decide(
+    const decision = supervisorNumber(decide.call(
+      sourceExports,
       ino,
       supervisorRangeI64(fileOffset, -1),
       supervisorRangeI64(length, -1),
@@ -360,7 +362,8 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (typeof decide !== "function") {
       throw new Error("missing supervisor_fs_clean_backing_range_decision export");
     }
-    const decision = supervisorNumber(decide(
+    const decision = supervisorNumber(decide.call(
+      sourceExports,
       ino,
       supervisorRangeI64(offset, -1),
       supervisorRangeI64(length, -1),
@@ -431,7 +434,8 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       decideWrite(input) {
         return readSupervisorDirtyPageDecision(
           sourceExports,
-          decide(
+          decide.call(
+            sourceExports,
             supervisorDirtyPageOpWrite(sourceExports),
             input.ino,
             BigInt(input.offset),
@@ -449,7 +453,8 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       decideTruncate(input) {
         return readSupervisorDirtyPageDecision(
           sourceExports,
-          decide(
+          decide.call(
+            sourceExports,
             supervisorDirtyPageOpTruncate(sourceExports),
             input.ino,
             0n,
@@ -478,7 +483,8 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (typeof decide !== "function") {
       throw new Error("missing supervisor_fs_dirty_page_decision export");
     }
-    const result = supervisorNumber(decide(
+    const result = supervisorNumber(decide.call(
+      sourceExports,
       supervisorDirtyPageOpFlush(sourceExports),
       ino,
       0n,
@@ -515,7 +521,8 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (typeof decide !== "function") {
       throw new Error("missing supervisor_fs_dirty_prepare_decision export");
     }
-    const result = supervisorNumber(decide(
+    const result = supervisorNumber(decide.call(
+      sourceExports,
       input.ino,
       input.op,
       BigInt(input.expectedSize),
@@ -568,7 +575,8 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     const kind = input.kind === "restore"
       ? supervisorNumericExport(sourceExports, "supervisor_fs_data_sync_kind_restore")
       : supervisorNumericExport(sourceExports, "supervisor_fs_data_sync_kind_export");
-    const decision = supervisorNumber(decide(
+    const decision = supervisorNumber(decide.call(
+      sourceExports,
       kind,
       input.ino,
       input.sourceMode,
@@ -616,7 +624,8 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (typeof decide !== "function") {
       throw new Error("missing supervisor_fs_metadata_sync_decision export");
     }
-    const decision = supervisorNumber(decide(
+    const decision = supervisorNumber(decide.call(
+      sourceExports,
       input.ino,
       input.sourcePresent ? 1 : 0,
       input.sourceMode,
@@ -685,7 +694,8 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (typeof decide !== "function") {
       throw new Error("missing supervisor_fs_page_table_source_decision export");
     }
-    const decision = supervisorNumber(decide(
+    const decision = supervisorNumber(decide.call(
+      sourceExports,
       ino,
       hasDirtyPages ? 1 : 0,
       BigInt(published?.fileObjectId ?? 0),

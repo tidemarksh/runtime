@@ -45,7 +45,7 @@ function supervisorResumeRecordBytes(handle: ProcessHandle): number {
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_resume_record_bytes");
   }
-  return exportFn();
+  return exportFn.call(handle.kernel);
 }
 
 function supervisorResumeRecordMagic(handle: ProcessHandle): number {
@@ -53,7 +53,7 @@ function supervisorResumeRecordMagic(handle: ProcessHandle): number {
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_resume_record_magic");
   }
-  return exportFn();
+  return exportFn.call(handle.kernel);
 }
 
 function supervisorResumeKindFutexWake(handle: ProcessHandle): number {
@@ -61,7 +61,7 @@ function supervisorResumeKindFutexWake(handle: ProcessHandle): number {
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_resume_kind_futex_wake");
   }
-  return exportFn();
+  return exportFn.call(handle.kernel);
 }
 
 function supervisorResumeKindRunnableThread(handle: ProcessHandle): number {
@@ -69,7 +69,7 @@ function supervisorResumeKindRunnableThread(handle: ProcessHandle): number {
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_resume_kind_runnable_thread");
   }
-  return exportFn();
+  return exportFn.call(handle.kernel);
 }
 
 function supervisorAbiVersion(handle: ProcessHandle): number {
@@ -77,7 +77,7 @@ function supervisorAbiVersion(handle: ProcessHandle): number {
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_abi_version");
   }
-  return exportFn();
+  return exportFn.call(handle.kernel);
 }
 
 function supervisorThreadStateSnapshotMagic(handle: ProcessHandle): number {
@@ -85,7 +85,7 @@ function supervisorThreadStateSnapshotMagic(handle: ProcessHandle): number {
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_thread_state_snapshot_magic");
   }
-  return exportFn();
+  return exportFn.call(handle.kernel);
 }
 
 function supervisorResumeScratchBase(handle: ProcessHandle): number {
@@ -121,7 +121,7 @@ function decodeSupervisorResumeRecord(
 
 function supervisorThreadStateSnapshotBytes(handle: ProcessHandle): number {
   const exportFn = handle.kernel.supervisor_thread_state_snapshot_bytes;
-  return exportFn === undefined ? 0 : exportFn();
+  return exportFn === undefined ? 0 : exportFn.call(handle.kernel);
 }
 
 function decodeSupervisorThreadStateRecord(
@@ -154,7 +154,7 @@ function formatSupervisorThreadStateSnapshot(
   const scratch = supervisorResumeScratchBase(handle);
   ensureMemoryCapacity(memory, scratch + snapshotBytes);
   try {
-    const result = snapshotExport(vmPtr, scratch, snapshotBytes);
+    const result = snapshotExport.call(handle.kernel, vmPtr, scratch, snapshotBytes);
     if (result <= 0 || result > snapshotBytes || result < SUPERVISOR_THREAD_STATE_HEADER_BYTES) {
       return `:snapshot=err${result}`;
     }
@@ -274,7 +274,7 @@ export function createSupervisorResumeHostBoundary(
     const memory = handle.kernel.memory ?? handle.memory;
     const scratch = supervisorResumeScratchBase(handle);
     ensureMemoryCapacity(memory, scratch + recordBytes);
-    const result = processResume(handle.vmPtr, scratch, recordBytes);
+    const result = processResume.call(handle.kernel, handle.vmPtr, scratch, recordBytes);
     if (result === 0) {
       deps.appendWorkerDebugLog(
         handle,
@@ -360,7 +360,7 @@ export function createSupervisorResumeHostBoundary(
     const scratch = supervisorResumeScratchBase(handle);
     ensureMemoryCapacity(memory, scratch + recordBytes);
     for (let drained = 0; drained < SUPERVISOR_RESUME_DRAIN_LIMIT; drained += 1) {
-      const result = nextResume(scratch, recordBytes);
+      const result = nextResume.call(handle.kernel, scratch, recordBytes);
       if (result === 0) {
         break;
       }

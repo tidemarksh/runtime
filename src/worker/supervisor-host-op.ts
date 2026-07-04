@@ -33,7 +33,7 @@ function supervisorHostOpKindSpawnThreadWorker(handle: ProcessHandle): number {
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_host_op_kind_spawn_thread_worker");
   }
-  return exportFn();
+  return exportFn.call(handle.kernel);
 }
 
 function supervisorHostOpKindArmHostTimer(handle: ProcessHandle): number {
@@ -41,7 +41,7 @@ function supervisorHostOpKindArmHostTimer(handle: ProcessHandle): number {
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_host_op_kind_arm_host_timer");
   }
-  return exportFn();
+  return exportFn.call(handle.kernel);
 }
 
 function supervisorHostOpKindRetryBlockedWorker(handle: ProcessHandle): number {
@@ -49,7 +49,7 @@ function supervisorHostOpKindRetryBlockedWorker(handle: ProcessHandle): number {
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_host_op_kind_retry_blocked_worker");
   }
-  return exportFn();
+  return exportFn.call(handle.kernel);
 }
 
 function supervisorHostOpKindCreateProcessMemory(handle: ProcessHandle): number {
@@ -57,7 +57,7 @@ function supervisorHostOpKindCreateProcessMemory(handle: ProcessHandle): number 
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_host_op_kind_create_process_memory");
   }
-  return exportFn();
+  return exportFn.call(handle.kernel);
 }
 
 function supervisorHostOpKindCopyMemoryRanges(handle: ProcessHandle): number {
@@ -65,7 +65,7 @@ function supervisorHostOpKindCopyMemoryRanges(handle: ProcessHandle): number {
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_host_op_kind_copy_memory_ranges");
   }
-  return exportFn();
+  return exportFn.call(handle.kernel);
 }
 
 function supervisorHostOpRecordBytes(handle: ProcessHandle): number {
@@ -73,7 +73,7 @@ function supervisorHostOpRecordBytes(handle: ProcessHandle): number {
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_host_op_record_bytes");
   }
-  return exportFn();
+  return exportFn.call(handle.kernel);
 }
 
 function supervisorHostOpRecordMagic(handle: ProcessHandle): number {
@@ -81,7 +81,7 @@ function supervisorHostOpRecordMagic(handle: ProcessHandle): number {
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_host_op_record_magic");
   }
-  return exportFn();
+  return exportFn.call(handle.kernel);
 }
 
 function supervisorHostCompletionRecordBytes(handle: ProcessHandle): number {
@@ -89,7 +89,7 @@ function supervisorHostCompletionRecordBytes(handle: ProcessHandle): number {
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_host_completion_record_bytes");
   }
-  return exportFn();
+  return exportFn.call(handle.kernel);
 }
 
 function supervisorHostCompletionRecordMagic(handle: ProcessHandle): number {
@@ -97,7 +97,7 @@ function supervisorHostCompletionRecordMagic(handle: ProcessHandle): number {
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_host_completion_record_magic");
   }
-  return exportFn();
+  return exportFn.call(handle.kernel);
 }
 
 function supervisorHostCompletionOutcomeSuccess(handle: ProcessHandle): number {
@@ -105,7 +105,7 @@ function supervisorHostCompletionOutcomeSuccess(handle: ProcessHandle): number {
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_host_completion_outcome_success");
   }
-  return exportFn();
+  return exportFn.call(handle.kernel);
 }
 
 function supervisorHostCompletionOutcomeFailure(handle: ProcessHandle): number {
@@ -113,7 +113,7 @@ function supervisorHostCompletionOutcomeFailure(handle: ProcessHandle): number {
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_host_completion_outcome_failure");
   }
-  return exportFn();
+  return exportFn.call(handle.kernel);
 }
 
 function supervisorAbiVersion(handle: ProcessHandle): number {
@@ -121,7 +121,7 @@ function supervisorAbiVersion(handle: ProcessHandle): number {
   if (exportFn === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_abi_version");
   }
-  return exportFn();
+  return exportFn.call(handle.kernel);
 }
 
 function decodeSupervisorHostOpRecord(
@@ -236,13 +236,13 @@ function pollSupervisorHostOpKind(
 ): number | undefined {
   const nextHostOpKind = handle.kernel.supervisor_next_host_op_kind;
   if (nextHostOpKind !== undefined) {
-    return nextHostOpKind(kind, scratch, recordBytes);
+    return nextHostOpKind.call(handle.kernel, kind, scratch, recordBytes);
   }
   const nextHostOp = handle.kernel.supervisor_next_host_op;
   if (nextHostOp === undefined) {
     return undefined;
   }
-  return nextHostOp(scratch, recordBytes);
+  return nextHostOp.call(handle.kernel, scratch, recordBytes);
 }
 
 export function drainSupervisorCloneSpawnHostOp(
@@ -366,7 +366,7 @@ function readSupervisorProcessMemoryHostOp(
   const memory = handle.kernel.memory ?? handle.memory;
   const scratch = supervisorHostOpScratchBase(handle);
   ensureMemoryCapacity(memory, scratch + recordBytes);
-  const result = readHostOp(vmPtr, index, scratch, recordBytes);
+  const result = readHostOp.call(handle.kernel, vmPtr, index, scratch, recordBytes);
   if (result === 0) {
     return null;
   }
@@ -487,7 +487,7 @@ function submitSupervisorHostOpCompletion(
   view.setUint32(44, 0, true);
   view.setBigUint64(48, record.flags, true);
   view.setBigUint64(56, record.childTidPtr, true);
-  return completeHostOp(scratch, recordBytes);
+  return completeHostOp.call(handle.kernel, scratch, recordBytes);
 }
 
 export function armSupervisorHostTimer(

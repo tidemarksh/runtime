@@ -174,7 +174,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     if (typeof commit !== "function") {
       throw new Error("kernel supervisor ABI missing supervisor_socket_commit_external_connect_result");
     }
-    return commit;
+    return commit.bind(handle.kernel);
   }
 
   function requireSupervisorSocketPrepareExternalPeer(handle: ProcessHandle) {
@@ -182,7 +182,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     if (typeof prepare !== "function") {
       throw new Error("kernel supervisor ABI missing supervisor_socket_prepare_external_peer");
     }
-    return prepare;
+    return prepare.bind(handle.kernel);
   }
 
   function requireSupervisorSocketCloseExternalPeer(handle: ProcessHandle) {
@@ -190,7 +190,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     if (typeof close !== "function") {
       throw new Error("kernel supervisor ABI missing supervisor_socket_close_external_peer");
     }
-    return close;
+    return close.bind(handle.kernel);
   }
 
   function requireSupervisorSocketBridgeActiveFd(handle: ProcessHandle) {
@@ -198,7 +198,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     if (typeof activeFd !== "function") {
       throw new Error("kernel supervisor ABI missing supervisor_socket_bridge_active_fd");
     }
-    return activeFd;
+    return activeFd.bind(handle.kernel);
   }
 
   function requireThreadSocketIdxForFd(handle: ProcessHandle) {
@@ -1152,8 +1152,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     const readPeerAddr = handle.kernel.supervisor_socket_connect_peer_addr;
     const readConnectFd = handle.kernel.supervisor_socket_connect_fd;
     if (readPeerAddr && readConnectFd) {
-      const addrLen = readPeerAddr(vmPtr, scratch, 28);
-      const endpoint = endpointFromScratch(readConnectFd(vmPtr), addrLen);
+      const addrLen = readPeerAddr.call(handle.kernel, vmPtr, scratch, 28);
+      const endpoint = endpointFromScratch(readConnectFd.call(handle.kernel, vmPtr), addrLen);
       if (endpoint) {
         return endpoint;
       }
@@ -1168,7 +1168,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         if (ofdId <= 0 || handle.kernel.kernel_ofd_fd_type(ofdId) !== socketFdType) {
           continue;
         }
-        const addrLen = readPeerAddrForFd(vmPtr, fd, scratch, 28);
+        const addrLen = readPeerAddrForFd.call(handle.kernel, vmPtr, fd, scratch, 28);
         const endpoint = endpointFromScratch(fd, addrLen);
         if (endpoint) {
           return endpoint;

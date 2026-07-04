@@ -343,7 +343,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     if (typeof read !== "function") {
       throw new Error(`missing ${name} export`);
     }
-    return supervisorNumber(read(), label);
+    return supervisorNumber(read.call(processExports), label);
   }
 
   function supervisorMetadataFullSyncRequired(
@@ -356,7 +356,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       throw new Error("missing supervisor_fs_metadata_full_sync_decision export");
     }
     const decision = supervisorNumber(
-      decide(treeMutated ? 1 : 0, handledMetadataMutation ? 1 : 0),
+      decide.call(processExports, treeMutated ? 1 : 0, handledMetadataMutation ? 1 : 0),
       "supervisor metadata full-sync decision",
     );
     const none = supervisorNumericExport(
@@ -422,7 +422,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       throw new Error("missing supervisor_fs_backing_fill_probe_direct export");
     }
     const result = supervisorNumber(
-      decide(request.opcode ?? 0, BigInt(spanLength)),
+      decide.call(processExports, request.opcode ?? 0, BigInt(spanLength)),
       "supervisor backing-fill probe decision",
     );
     if (result < 0) {
@@ -443,7 +443,8 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       throw new Error("missing supervisor_fs_backing_fill_mode_decision export");
     }
     const mode = supervisorNumber(
-      decide(
+      decide.call(
+        processExports,
         request.opcode ?? 0,
         BigInt(spanLength),
         headProbeReadable ? 1 : 0,
@@ -678,7 +679,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       throw new Error("missing supervisor_fs_pending_mmap_guest_write_snapshot_len export");
     }
     const length = supervisorU64ToSafeNumber(
-      snapshotLen(vmPtr),
+      snapshotLen.call(processExports, vmPtr),
     );
     const guestBase = processExports.thread_guest_base?.(vmPtr) ?? 0;
     const start = guestBase + guestPtr;

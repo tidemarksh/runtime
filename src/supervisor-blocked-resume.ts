@@ -142,7 +142,7 @@ export function resumeBlockedSyscallBySupervisor(
   const flags = timeoutExpired
     ? readSupervisorNumberConst(kernel, "supervisor_resume_flag_timeout_expired")
     : 0;
-  return BigInt(resume(vmPtr, flags));
+  return BigInt(resume.call(kernel, vmPtr, flags));
 }
 
 function toNumber(value: bigint | number): number {
@@ -161,14 +161,14 @@ export function supervisorBlockedResumeWritebacks(
   if (countRanges === undefined || readPtr === undefined || readLen === undefined) {
     throw new Error("kernel supervisor blocked resume writeback exports are missing");
   }
-  const count = countRanges(vmPtr, blockedStatus, resumeResult);
+  const count = countRanges.call(kernel, vmPtr, blockedStatus, resumeResult);
   if (count < 0) {
     throw new Error(`kernel supervisor blocked resume writeback count failed: ${count}`);
   }
   const ranges: SupervisorBlockedResumeWritebackRange[] = [];
   for (let index = 0; index < count; index += 1) {
-    const guestPtr = toNumber(readPtr(vmPtr, blockedStatus, resumeResult, index));
-    const length = toNumber(readLen(vmPtr, blockedStatus, resumeResult, index));
+    const guestPtr = toNumber(readPtr.call(kernel, vmPtr, blockedStatus, resumeResult, index));
+    const length = toNumber(readLen.call(kernel, vmPtr, blockedStatus, resumeResult, index));
     if (
       Number.isFinite(guestPtr)
       && Number.isFinite(length)
@@ -189,7 +189,7 @@ export function supervisorBlockedPollWaitTimeoutMs(
   if (readTimeout === undefined) {
     throw new Error("kernel supervisor blocked poll wait timeout export is missing");
   }
-  const result = toNumber(readTimeout(vmPtr));
+  const result = toNumber(readTimeout.call(kernel, vmPtr));
   if (result < -1) {
     throw new Error(`kernel supervisor blocked poll wait timeout failed: ${result}`);
   }
@@ -204,7 +204,7 @@ export function supervisorBlockedEpollWaitTimeoutMs(
   if (readTimeout === undefined) {
     throw new Error("kernel supervisor blocked epoll wait timeout export is missing");
   }
-  const result = toNumber(readTimeout(vmPtr));
+  const result = toNumber(readTimeout.call(kernel, vmPtr));
   if (result < -1) {
     throw new Error(`kernel supervisor blocked epoll wait timeout failed: ${result}`);
   }
@@ -291,7 +291,7 @@ function supervisorBlockedStatusFact(
   if (readStatus === undefined) {
     throw new Error(`kernel supervisor ABI missing ${exportName}`);
   }
-  const result = readStatus(status);
+  const result = readStatus.call(kernel, status);
   if (result < 0) {
     throw new Error(`kernel supervisor status fact ${exportName} failed: ${result}`);
   }
@@ -311,7 +311,7 @@ function supervisorBlockedBooleanFact(
   if (readFact === undefined) {
     throw new Error(`kernel supervisor ABI missing ${exportName}`);
   }
-  const result = readFact(vmPtr);
+  const result = readFact.call(kernel, vmPtr);
   if (result < 0) {
     throw new Error(`kernel supervisor ${exportName} failed: ${result}`);
   }
@@ -386,7 +386,7 @@ export function supervisorBlockedPipeResumeAction(
   if (readAction === undefined) {
     throw new Error("kernel supervisor blocked pipe resume action export is missing");
   }
-  const result = readAction(vmPtr);
+  const result = readAction.call(kernel, vmPtr);
   if (result < 0) {
     throw new Error(`kernel supervisor blocked pipe resume action failed: ${result}`);
   }
@@ -444,7 +444,7 @@ export function supervisorBlockedPipeSyncBeforeRetryAction(
     kernel,
     "supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available",
   );
-  const result = readAction(vmPtr, kernelWorkerAvailable ? kernelWorkerFlag : 0);
+  const result = readAction.call(kernel, vmPtr, kernelWorkerAvailable ? kernelWorkerFlag : 0);
   if (result < 0) {
     throw new Error(`kernel supervisor blocked pipe sync-before-retry action failed: ${result}`);
   }
@@ -459,7 +459,7 @@ export function supervisorBlockedPipeSyncBeforeRetryRequested(
   if (readRequested === undefined) {
     throw new Error("kernel supervisor blocked pipe sync-before-retry requested export is missing");
   }
-  const result = readRequested(vmPtr);
+  const result = readRequested.call(kernel, vmPtr);
   if (result < 0) {
     throw new Error(`kernel supervisor blocked pipe sync-before-retry requested query failed: ${result}`);
   }
@@ -474,7 +474,7 @@ export function supervisorBlockedPipeSyncBeforeRetryClear(
   if (clear === undefined) {
     throw new Error("kernel supervisor blocked pipe sync-before-retry clear export is missing");
   }
-  const result = clear(vmPtr);
+  const result = clear.call(kernel, vmPtr);
   if (result < 0) {
     throw new Error(`kernel supervisor blocked pipe sync-before-retry clear failed: ${result}`);
   }
@@ -560,7 +560,8 @@ export function supervisorBlockedStatusTransitionAction(
   if (readAction === undefined) {
     throw new Error("kernel supervisor blocked status transition action export is missing");
   }
-  const result = readAction(
+  const result = readAction.call(
+    kernel,
     vmPtr,
     status,
     supervisorBlockedStatusTransitionFlags(kernel, options),
@@ -611,7 +612,7 @@ export function supervisorBlockedWaitNetworkPumpAction(
   if (readAction === undefined) {
     throw new Error("kernel supervisor blocked wait network pump action export is missing");
   }
-  const result = readAction(vmPtr);
+  const result = readAction.call(kernel, vmPtr);
   if (result < 0) {
     throw new Error(`kernel supervisor blocked wait network pump action failed: ${result}`);
   }
@@ -627,7 +628,7 @@ export function supervisorCompleteBlockedWaitNetworkPump(
   if (complete === undefined) {
     throw new Error("kernel supervisor blocked wait network pump completion export is missing");
   }
-  const result = complete(vmPtr, changed ? 1 : 0);
+  const result = complete.call(kernel, vmPtr, changed ? 1 : 0);
   if (result < 0) {
     throw new Error(`kernel supervisor blocked wait network pump completion failed: ${result}`);
   }
@@ -641,7 +642,7 @@ export function supervisorClearBlockedWaitNetworkPump(
   if (clear === undefined) {
     throw new Error("kernel supervisor blocked wait network pump clear export is missing");
   }
-  const result = clear(vmPtr);
+  const result = clear.call(kernel, vmPtr);
   if (result < 0) {
     throw new Error(`kernel supervisor blocked wait network pump clear failed: ${result}`);
   }
@@ -689,7 +690,8 @@ export function supervisorStateSyncRequest(
   if (request === undefined) {
     throw new Error("kernel supervisor state-sync request export is missing");
   }
-  const result = request(
+  const result = request.call(
+    kernel,
     vmPtr,
     supervisorStateSyncKindValue(kernel, kind),
     supervisorStateSyncRequestFlags(kernel, wakeWaiters),
@@ -709,7 +711,7 @@ export function supervisorStateSyncNextRun(
   if (nextRun === undefined) {
     throw new Error("kernel supervisor state-sync next-run export is missing");
   }
-  const result = nextRun(vmPtr, supervisorStateSyncKindValue(kernel, kind));
+  const result = nextRun.call(kernel, vmPtr, supervisorStateSyncKindValue(kernel, kind));
   if (result < 0) {
     throw new Error(`kernel supervisor state-sync next-run failed: ${result}`);
   }
@@ -728,7 +730,7 @@ export function supervisorStateSyncComplete(
   if (complete === undefined) {
     throw new Error("kernel supervisor state-sync complete export is missing");
   }
-  const result = complete(vmPtr, supervisorStateSyncKindValue(kernel, kind));
+  const result = complete.call(kernel, vmPtr, supervisorStateSyncKindValue(kernel, kind));
   if (result < 0) {
     throw new Error(`kernel supervisor state-sync complete failed: ${result}`);
   }
@@ -744,7 +746,7 @@ export function supervisorStateSyncClear(
   if (clear === undefined) {
     throw new Error("kernel supervisor state-sync clear export is missing");
   }
-  const result = clear(vmPtr, supervisorStateSyncKindValue(kernel, kind));
+  const result = clear.call(kernel, vmPtr, supervisorStateSyncKindValue(kernel, kind));
   if (result < 0) {
     throw new Error(`kernel supervisor state-sync clear failed: ${result}`);
   }
@@ -879,7 +881,7 @@ export function supervisorBlockedResumeDelegation(
     "supervisor_blocked_resume_delegation_flag_kernel_worker_available",
   );
   const flags = kernelWorkerAvailable ? kernelWorkerFlag : 0;
-  const result = readDelegation(vmPtr, flags);
+  const result = readDelegation.call(kernel, vmPtr, flags);
   if (result < 0) {
     throw new Error(`kernel supervisor blocked resume delegation failed: ${result}`);
   }
@@ -895,7 +897,7 @@ export function supervisorBlockedWaitRetryDelayMs(
   if (readDelay === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_blocked_wait_retry_delay_ms");
   }
-  const result = readDelay(vmPtr, supervisorRetryReason(kernel, reason));
+  const result = readDelay.call(kernel, vmPtr, supervisorRetryReason(kernel, reason));
   if (result < 0) {
     throw new Error(`kernel supervisor blocked wait retry delay failed: ${result}`);
   }
@@ -911,7 +913,7 @@ export function supervisorBlockedWaitRetryReason(
   if (readReason === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_blocked_wait_retry_reason");
   }
-  const result = readReason(vmPtr, supervisorRetryFlags(kernel, flags));
+  const result = readReason.call(kernel, vmPtr, supervisorRetryFlags(kernel, flags));
   if (result < 0) {
     throw new Error(`kernel supervisor blocked wait retry reason failed: ${result}`);
   }
@@ -1003,7 +1005,7 @@ export function supervisorBlockedWaitTimerRequired(
   if (required === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_blocked_wait_timer_required");
   }
-  const result = required(vmPtr);
+  const result = required.call(kernel, vmPtr);
   if (result < 0) {
     throw new Error(`kernel supervisor blocked wait timer required check failed: ${result}`);
   }

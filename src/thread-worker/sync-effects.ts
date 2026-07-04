@@ -11,5 +11,5 @@ export function readCompletedSyncEffects(
   if (typeof takeCompletedSyncEffects !== "function") {
     throw new Error("kernel supervisor ABI missing supervisor_thread_take_completed_sync_effects");
   }
-  return takeCompletedSyncEffects(vmPtr, status);
+  return takeCompletedSyncEffects.call(exports, vmPtr, status);
 }

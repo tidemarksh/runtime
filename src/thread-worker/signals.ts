@@ -11,7 +11,7 @@ export function checkPendingSignalsAtBoundary(
     throw new Error("kernel supervisor ABI missing supervisor_signal_boundary_check");
   }
   clearSyscallTrace(exports);
-  const delivered = supervisorBoundaryCheck(vmPtr);
+  const delivered = supervisorBoundaryCheck.call(exports, vmPtr);
   if (delivered < 0) {
     throw new Error(`kernel supervisor signal boundary check failed: ${delivered}`);
   }
@@ -30,5 +30,5 @@ export function hasPendingSignalForBlockedWait(
   if (supervisorDecision === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_signal_pending_for_blocked_wait");
   }
-  return supervisorDecision(vmPtr) === 1;
+  return supervisorDecision.call(exports, vmPtr) === 1;
 }
