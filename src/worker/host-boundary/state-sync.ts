@@ -295,7 +295,7 @@ export function createWorkerSchedulerStateSyncHelpers(
     if (hasActiveVforkChildOwnerMismatch(handle)) {
       return Promise.resolve();
     }
-    if (!handle.kernelWorkerRequest || handle.pid <= 0) {
+    if (handle.pid <= 0) {
       return Promise.resolve();
     }
 
@@ -416,8 +416,6 @@ export function createWorkerSchedulerStateSyncHelpers(
           if (
             drainedVisibleOutput
             && kernelWorkerOwnsPipeState(visibleHandle)
-            && visibleHandle.kernelWorkerRequest
-            && visibleHandle.pid > 0
           ) {
             deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-visible-drain:${visibleHandle.pid}`);
             handle.transferDebugStats.pipeSyncVisibleDrainCalls += 1;
