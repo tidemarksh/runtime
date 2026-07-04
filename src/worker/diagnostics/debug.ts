@@ -28,6 +28,10 @@ import {
   supervisorOfdStatusFlags,
 } from "../ownership/ofd-metadata.js";
 import { runtimeStateSyncInFlight } from "../state-sync-inflight.js";
+import {
+  getThreadOwnerAsyncStatus,
+  getThreadWaitingInWorkerStatus,
+} from "../thread-host-state.js";
 
 export interface WorkerLogFocus {
   vmPtr: number;
@@ -213,11 +217,13 @@ function readWorkerOwnerState(
   if (handle.hostBlockedWorkers.has(worker)) {
     return "blocked";
   }
-  if (state.waitingInWorkerStatus !== null) {
-    return `wait:${state.waitingInWorkerStatus}`;
+  const waitingInWorkerStatus = getThreadWaitingInWorkerStatus(state);
+  if (waitingInWorkerStatus !== null) {
+    return `wait:${waitingInWorkerStatus}`;
   }
-  if (state.ownerAsyncStatus !== null) {
-    return `async:${state.ownerAsyncStatus}`;
+  const ownerAsyncStatus = getThreadOwnerAsyncStatus(state);
+  if (ownerAsyncStatus !== null) {
+    return `async:${ownerAsyncStatus}`;
   }
   if (!state.initialized) {
     return "init";
@@ -263,6 +269,8 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
     .sort(([left], [right]) => Number(left) - Number(right))
     .map(([status, count]) => `${status}=${count}`)
     .join(",");
+  const waitingInWorkerStatus = getThreadWaitingInWorkerStatus(state);
+  const ownerAsyncStatus = getThreadOwnerAsyncStatus(state);
   return [
     `0x${state.vmPtr.toString(16)}`,
     `owner=${ownerState}`,
@@ -270,8 +278,8 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
     `gen=${state.generation}`,
     `runGen=${state.runningGeneration ?? "null"}`,
     `init=${state.initialized ? 1 : 0}`,
-    `wait=${state.waitingInWorkerStatus ?? "null"}`,
-    `async=${state.ownerAsyncStatus ?? "null"}`,
+    `wait=${waitingInWorkerStatus ?? "null"}`,
+    `async=${ownerAsyncStatus ?? "null"}`,
     `kernelStatus=${threadStatus ?? "n/a"}`,
     `currentPid=${currentPid ?? "n/a"}`,
     `tid=${tid ?? "n/a"}`,
@@ -758,7 +766,7 @@ export function summarizeProcessWorkerLogFocus(
       return {
         vmPtr: state.vmPtr,
         ownerState: readWorkerOwnerState(handle, worker, state),
-        waitingInWorkerStatus: state.waitingInWorkerStatus,
+        waitingInWorkerStatus: getThreadWaitingInWorkerStatus(state),
       };
     })
     .filter((entry): entry is {
@@ -982,7 +990,7 @@ export function debugRuntimeExecutionStats(
               lastStatusSp: formatOptionalBigIntHex(state.lastStatusSp),
               lastStatusS11: formatOptionalBigIntHex(state.lastStatusS11),
               hotStatusPcs: formatHotCounters(state.hotStatusPcs),
-              waitingInWorkerStatus: state.waitingInWorkerStatus,
+              waitingInWorkerStatus: getThreadWaitingInWorkerStatus(state),
               threadStepEntry: readThreadStepEntryDebug(handle, state.vmPtr),
               threadStepStatus: readThreadStepStatusDebug(handle, state.vmPtr),
               threadStepPhase: readThreadStepPhaseDebug(handle, state.vmPtr),

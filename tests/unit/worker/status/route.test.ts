@@ -2,6 +2,10 @@ import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../../src/bridge/pipe.js";
 import type { KernelExports } from "../../../../src/abi.js";
 import { createWorkerStatusMessageHandler as createRawWorkerStatusMessageHandler } from "../../../../src/worker/message-handler/status/route.js";
+import {
+  setThreadOwnerAsyncStatus,
+  setThreadWaitingInWorkerStatus,
+} from "../../../../src/worker/thread-host-state.js";
 import { createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import { writeSupervisorFaultExitDecisionRecord } from "../support/supervisor-abi.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
@@ -95,7 +99,12 @@ function installSupervisorFaultExitDecision(
 }
 
 function makeThreadState(overrides: Record<string, unknown> = {}) {
-  return {
+  const {
+    ownerAsyncStatus,
+    waitingInWorkerStatus,
+    ...rest
+  } = overrides;
+  const thread = {
     vmPtr: 0x1234,
     reinitCount: 0,
     stepCount: 0,
@@ -118,12 +127,18 @@ function makeThreadState(overrides: Record<string, unknown> = {}) {
     lastStatusS11: null,
     hotStatusPcs: {},
     initialized: true,
-    waitingInWorkerStatus: null,
     ownerPid: 7,
     generation: 1,
     resumeWorkersOnReady: [],
-    ...overrides,
+    ...rest,
   };
+  if (typeof ownerAsyncStatus === "number") {
+    setThreadOwnerAsyncStatus(thread as never, ownerAsyncStatus);
+  }
+  if (typeof waitingInWorkerStatus === "number") {
+    setThreadWaitingInWorkerStatus(thread as never, waitingInWorkerStatus);
+  }
+  return thread;
 }
 
 function makeKernel(pid: number, overrides: Record<string, unknown> = {}) {

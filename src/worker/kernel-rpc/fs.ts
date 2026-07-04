@@ -31,6 +31,12 @@ import {
   type ProcessHandle,
   type ThreadWorkerState,
 } from "../types.js";
+import {
+  clearThreadOwnerAsyncStatus,
+  getThreadOwnerAsyncStatus,
+  getThreadWaitingInWorkerStatus,
+  setThreadOwnerAsyncStatus,
+} from "../thread-host-state.js";
 import type {
   GuestMemoryWriteSnapshot,
   KernelWorkerFdEntrySnapshot,
@@ -538,7 +544,7 @@ function hasLiveWorkerState(
   }
   for (const worker of handle.workers ?? []) {
     const thread = threadWorkerStates.get(worker);
-    if ((thread?.waitingInWorkerStatus ?? null) !== null) {
+    if (getThreadWaitingInWorkerStatus(thread) !== null) {
       return true;
     }
   }
@@ -642,7 +648,7 @@ function supervisorFsResponseDisposition(
     handle.pid,
     pendingFs.opcode,
     fsResult,
-    threadState?.ownerAsyncStatus ?? 0,
+    getThreadOwnerAsyncStatus(threadState) ?? 0,
     threadState?.lastStatus ?? 0,
   );
   return {
@@ -1282,12 +1288,12 @@ async function handleFsExecveSpawn(
   if (!deps.handleExecveSpawn) {
     throw new Error("kernel-rpc fs helper missing execve spawn host executor");
   }
-  thread.ownerAsyncStatus = status;
+  setThreadOwnerAsyncStatus(thread, status);
   try {
     await deps.handleExecveSpawn(handle, worker, thread);
   } finally {
     if (handle.workers.has(worker) && deps.threadWorkerStates.get(worker) === thread) {
-      thread.ownerAsyncStatus = null;
+      clearThreadOwnerAsyncStatus(thread);
     }
   }
 }
@@ -1503,7 +1509,7 @@ async function resumeFsViaKernelWorkerInner(
     }
     const statusAfterFs = findSupervisorExecveSpawnStatus(handle, [
       handle.kernel.thread_status?.(vmPtr),
-      threadState.ownerAsyncStatus,
+      getThreadOwnerAsyncStatus(threadState),
       threadState.lastStatus,
     ]);
     if (

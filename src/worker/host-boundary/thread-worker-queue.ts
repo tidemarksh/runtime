@@ -26,6 +26,10 @@ import { reconcileKernelSharePipeControl } from "../kernel-share.js";
 import { snapshotSocketStateForThread } from "../ownership/socket-control.js";
 import { supervisorProcessOwnerMatches } from "../process-identity.js";
 import {
+  getThreadOwnerAsyncStatus,
+  getThreadWaitingInWorkerStatus,
+} from "../thread-host-state.js";
+import {
   appendSchedulerQueueDebugLog,
   formatSchedulerStepDebugSuffix,
   formatSchedulerStepFdSnapshot,
@@ -265,8 +269,6 @@ export function createWorkerSchedulerQueueHelpers(
       lastStatusS11: null,
       hotStatusPcs: {},
       initialized: false,
-      waitingInWorkerStatus: null,
-      ownerAsyncStatus: null,
       pendingPipeSlotsForNextStep: [],
       pendingGuestMemoryWrites: [],
       resumeWorkersOnReady: [],
@@ -356,16 +358,17 @@ export function createWorkerSchedulerQueueHelpers(
     }
     if (
       deps.isSupervisorFutexWaiter(handle, worker)
-      || (thread?.waitingInWorkerStatus ?? null) !== null
-      || (thread?.ownerAsyncStatus ?? null) !== null
+      || getThreadWaitingInWorkerStatus(thread) !== null
+      || getThreadOwnerAsyncStatus(thread) !== null
     ) {
+      const ownerAsyncStatus = getThreadOwnerAsyncStatus(thread);
       if (
         thread !== undefined
-        && thread.waitingInWorkerStatus === null
-        && thread.ownerAsyncStatus !== null
+        && getThreadWaitingInWorkerStatus(thread) === null
+        && ownerAsyncStatus !== null
       ) {
-        appendSchedulerQueueDebugLog(handle, `runnable-defer-owner-async:0x${thread.vmPtr.toString(16)}:async=${thread.ownerAsyncStatus}`);
-      } else if ((thread?.ownerAsyncStatus ?? null) === null) {
+        appendSchedulerQueueDebugLog(handle, `runnable-defer-owner-async:0x${thread.vmPtr.toString(16)}:async=${ownerAsyncStatus}`);
+      } else if (ownerAsyncStatus === null) {
         removeVforkReadyWorker(handle, worker);
       }
       pumpProcess(handle);

@@ -14,6 +14,10 @@ import {
   supervisorOfdOffset,
   supervisorOfdRefcount,
 } from "../ownership/ofd-metadata.js";
+import {
+  getThreadOwnerAsyncStatus,
+  getThreadWaitingInWorkerStatus,
+} from "../thread-host-state.js";
 
 export interface BlockedWaitDiagnosticsDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
@@ -129,14 +133,16 @@ export function formatRunningRetryBlocker(
   const lastStepAge = runningThread?.lastStepAtMs == null ? "null" : String(now - runningThread.lastStepAtMs);
   const lastStatusAge = runningThread?.lastStatusAtMs == null ? "null" : String(now - runningThread.lastStatusAtMs);
   const processPtr = runningVmPtr === 0 ? 0 : handle.kernel.thread_process_ptr(runningVmPtr);
+  const waitingInWorkerStatus = getThreadWaitingInWorkerStatus(runningThread);
+  const ownerAsyncStatus = getThreadOwnerAsyncStatus(runningThread);
   return `runningVm=0x${runningVmPtr.toString(16)}:runningStatus=${runningStatus}`
-    + `:runningLast=${runningThread?.lastStatus ?? "null"}:runningWait=${runningThread?.waitingInWorkerStatus ?? "null"}`
+    + `:runningLast=${runningThread?.lastStatus ?? "null"}:runningWait=${waitingInWorkerStatus ?? "null"}`
     + `:runningSteps=${runningThread === undefined ? "null" : `${runningThread.stepCount}/${runningThread.statusCount}`}`
     + `:pendingWrites=${runningThread?.pendingGuestMemoryWrites.length ?? "null"}`
     + `:lastStepAge=${lastStepAge}:lastStatusAge=${lastStatusAge}`
     + `:proc=0x${processPtr.toString(16)}`
     + `:initialized=${runningThread === undefined ? "null" : runningThread.initialized ? 1 : 0}`
-    + `:ownerAsync=${runningThread?.ownerAsyncStatus ?? "null"}`
+    + `:ownerAsync=${ownerAsyncStatus ?? "null"}`
     + `:ready=${handle.vforkReadyWorkers.length}`
     + `:active=0x${activeStepVmPtr.toString(16)}`;
 }

@@ -3,13 +3,26 @@ import { createWorkerMessageHandler } from "../../../src/worker/message-handler.
 import type { ThreadWorkerOutbound } from "../../../src/messages.js";
 import type { KernelExports } from "../../../src/abi.js";
 import type { WorkerMessageHandlerDeps } from "../../../src/worker/message-handler/types.js";
+import {
+  getThreadOwnerAsyncStatus,
+  setThreadOwnerAsyncStatus,
+  setThreadWaitingInWorkerStatus,
+} from "../../../src/worker/thread-host-state.js";
 import { createWorkerMessageDebugStats } from "../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../src/worker/types.js";
 import { writeSupervisorFaultExitDecisionRecord } from "./support/supervisor-abi.js";
 import { installSupervisorBlockedResumeStub } from "./support/supervisor-blocked-resume.js";
 
-function makeThreadState(overrides: Partial<ThreadWorkerState> = {}): ThreadWorkerState {
-  return {
+function makeThreadState(overrides: Partial<ThreadWorkerState> & {
+  ownerAsyncStatus?: number | null;
+  waitingInWorkerStatus?: number | null;
+} = {}): ThreadWorkerState {
+  const {
+    ownerAsyncStatus,
+    waitingInWorkerStatus,
+    ...rest
+  } = overrides;
+  const thread = {
     vmPtr: 0x1234,
     ownerPid: 3,
     generation: 2,
@@ -34,13 +47,18 @@ function makeThreadState(overrides: Partial<ThreadWorkerState> = {}): ThreadWork
     lastStatusS11: null,
     hotStatusPcs: {},
     initialized: true,
-    waitingInWorkerStatus: null,
-    ownerAsyncStatus: null,
     pendingPipeSlotsForNextStep: [],
     pendingGuestMemoryWrites: [],
     resumeWorkersOnReady: [],
-    ...overrides,
-  };
+    ...rest,
+  } as ThreadWorkerState;
+  if (typeof ownerAsyncStatus === "number") {
+    setThreadOwnerAsyncStatus(thread, ownerAsyncStatus);
+  }
+  if (typeof waitingInWorkerStatus === "number") {
+    setThreadWaitingInWorkerStatus(thread, waitingInWorkerStatus);
+  }
+  return thread;
 }
 
 function makeKernelState() {
@@ -73,6 +91,9 @@ function makeSupervisorKernel<T extends Partial<KernelExports>>(kernel: T): T {
   kernel.abi_status_ok ??= () => 0;
   kernel.thread_pc ??= () => 0n;
   kernel.thread_sp ??= () => 0n;
+  kernel.supervisor_fork_shared_effect_sync_action_none ??= () => 0;
+  kernel.supervisor_fork_shared_effect_sync_action_request ??= () => 1;
+  kernel.supervisor_fork_shared_effect_sync_action ??= () => 0;
   return installSupervisorBlockedResumeStub(kernel);
 }
 
@@ -577,7 +598,7 @@ test("clone child ready clears parent clone-spawn hold before resuming parent", 
     wasmFeatures: { bulkMemory: true },
   } as ThreadWorkerOutbound);
 
-  expect(parentThread.ownerAsyncStatus).toBeNull();
+  expect(getThreadOwnerAsyncStatus(parentThread as never)).toBeNull();
   expect(childThread.resumeWorkersOnReady).toEqual([]);
   expect(enqueueWorker).toHaveBeenNthCalledWith(1, handle, childWorker);
   expect(enqueueWorker).toHaveBeenNthCalledWith(2, handle, parentWorker);

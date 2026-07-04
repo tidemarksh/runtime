@@ -1,6 +1,12 @@
 import { afterEach, expect, test, vi } from "vite-plus/test";
 import { createWorkerStatusTransitionHandler } from "../../../../src/worker/message-handler/status/transitions.js";
 import {
+  clearThreadOwnerAsyncStatus,
+  getThreadOwnerAsyncStatus,
+  getThreadWaitingInWorkerStatus,
+  setThreadOwnerAsyncStatus,
+} from "../../../../src/worker/thread-host-state.js";
+import {
   makeSupervisorAbiStubs,
   writeSupervisorArmHostTimerHostOpRecord,
   writeSupervisorFaultExitDecisionRecord,
@@ -1053,7 +1059,7 @@ test("STATUS_SLEEP zero-duration yield reports progress before supervisor pump",
   expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
   expect(handle.runningWorker).toBeNull();
-  expect(thread.waitingInWorkerStatus).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
   expect(
     deps.notifyWorkerStatusProgress.mock.invocationCallOrder[0],
   ).toBeLessThan(deps.pumpProcess.mock.invocationCallOrder[0]);
@@ -1096,7 +1102,7 @@ test("STATUS_SLEEP zero-duration yield waits for requested pipe sync before supe
   expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
   expect(handle.runningWorker).toBeNull();
-  expect(thread.waitingInWorkerStatus).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
 });
 
 test("STATUS_SLEEP arms supervisor host timer HostOp and reports completion", async () => {
@@ -1164,7 +1170,7 @@ test("STATUS_SLEEP arms supervisor host timer HostOp and reports completion", as
 
   expect(deps.blockWorker).not.toHaveBeenCalled();
   expect(handle.runningWorker).toBeNull();
-  expect(thread.waitingInWorkerStatus).toBe(26);
+  expect(getThreadWaitingInWorkerStatus(thread as never)).toBe(26);
   expect(kernel.supervisor_next_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
   expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(deps.enqueueWorker).not.toHaveBeenCalled();
@@ -1302,7 +1308,7 @@ test("STATUS_CLONE_SPAWN attaches child from supervisor HostOp record", async ()
     worker: expect.any(Object),
     vmPtr: 0x2000,
   });
-  expect(thread.ownerAsyncStatus).toBe(25);
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBe(25);
   expect(childThread?.resumeWorkersOnReady).toEqual([worker]);
   expect(deps.appendWorkerDebugLog).toHaveBeenCalledWith(
     handle,
@@ -1480,7 +1486,7 @@ test("STATUS_FUTEX_WAIT arms supervisor host timer HostOp and reports completion
 
   expect(deps.blockWorker).not.toHaveBeenCalled();
   expect(handle.runningWorker).toBeNull();
-  expect(thread.waitingInWorkerStatus).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
   expect(deps.parkSupervisorFutexWait).toHaveBeenCalledWith(
     handle,
     worker,
@@ -1548,7 +1554,7 @@ test("STATUS_FUTEX_WAIT parks after supervisor HostOp poll returns no timer", ()
 
   expect(deps.blockWorker).not.toHaveBeenCalled();
   expect(handle.runningWorker).toBeNull();
-  expect(thread.waitingInWorkerStatus).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
   expect(deps.parkSupervisorFutexWait).toHaveBeenCalledWith(
     handle,
     worker,
@@ -1665,7 +1671,7 @@ test("STATUS_CLONE_SPAWN holds parent until attached child reports ready", async
 
   await Promise.resolve();
 
-  expect(thread.ownerAsyncStatus).toBe(25);
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBe(25);
   expect(childThread?.resumeWorkersOnReady).toEqual([worker]);
   expect(deps.enqueueWorker).not.toHaveBeenCalled();
   expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
@@ -1703,7 +1709,7 @@ test("STATUS_CLONE_SPAWN defers child spawn until kernel-worker lifecycle sync c
   });
 
   expect(deps.syncProcessLifecycleViaKernelWorker).toHaveBeenCalledWith(handle, 0x1234);
-  expect(thread.ownerAsyncStatus).toBe(25);
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBe(25);
   expect(handle.kernel.thread_spawn_from_clone).not.toHaveBeenCalled();
   expect(deps.attachThreadWorker).not.toHaveBeenCalled();
 });
@@ -1757,7 +1763,7 @@ test("STATUS_CLONE_SPAWN ignores stale lifecycle sync completions", async () => 
   await Promise.resolve();
 
   expect(deps.syncProcessLifecycleViaKernelWorker).toHaveBeenCalledTimes(2);
-  expect(thread.ownerAsyncStatus).toBe(25);
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBe(25);
   expect(handle.kernel.thread_spawn_from_clone).not.toHaveBeenCalled();
   expect(deps.attachThreadWorker).not.toHaveBeenCalled();
 });
@@ -1854,7 +1860,7 @@ test("STATUS_FS with shared pipe fds resumes filesystem after pipe refresh", asy
     .resumeFsViaKernelWorkerOutcome = resumeFsViaKernelWorkerOutcome;
   const thread = deps.threadWorkerStates.get(worker)!;
   thread.ownerPid = handle.pid;
-  thread.ownerAsyncStatus = null;
+  clearThreadOwnerAsyncStatus(thread as never);
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   transition({
@@ -1876,7 +1882,7 @@ test("STATUS_FS with shared pipe fds resumes filesystem after pipe refresh", asy
     completedSyncEffects: 0,
   });
 
-  expect(thread.ownerAsyncStatus).toBe(6);
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBe(6);
   expect(kernel.supervisor_fs_pipe_refresh_before_resume_action).toHaveBeenCalledWith(0x1234, 1);
   expect(deps.requestPipeStateSync).toHaveBeenCalledWith(handle, false);
   expect(resumeFsViaKernelWorkerOutcome).not.toHaveBeenCalled();
@@ -1886,7 +1892,7 @@ test("STATUS_FS with shared pipe fds resumes filesystem after pipe refresh", asy
     expect(resumeFsViaKernelWorkerOutcome).toHaveBeenCalledWith(handle, worker, 0x1234);
   });
 
-  expect(thread.ownerAsyncStatus).toBeNull();
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
 });
 
@@ -1972,13 +1978,13 @@ test("STATUS_OK pipe sync clears owner async state before requeueing", async () 
 
   await Promise.resolve();
 
-  expect(thread.ownerAsyncStatus).toBe(0);
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBe(0);
   expect(deps.requestPipeStateSync).toHaveBeenCalledWith(handle, true);
   expect(deps.enqueueWorker).not.toHaveBeenCalled();
 
   resolvePipeSync?.();
   await vi.waitFor(() => {
-    expect(thread.ownerAsyncStatus).toBeNull();
+    expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
   });
 
   expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);

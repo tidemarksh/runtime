@@ -7,6 +7,10 @@ import {
   type ProcessHandle,
   type ThreadWorkerState,
 } from "../../../../src/worker/types.js";
+import {
+  clearThreadOwnerAsyncStatus,
+  clearThreadWaitingInWorkerStatus,
+} from "../../../../src/worker/thread-host-state.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 import { vi } from "vite-plus/test";
 
@@ -134,7 +138,7 @@ export function makeHostBoundaryKernel() {
 }
 
 export function makeHostBoundaryThread(vmPtr: number): ThreadWorkerState {
-  return {
+  const thread = {
     vmPtr,
     ownerPid: 1,
     generation: 0,
@@ -159,12 +163,13 @@ export function makeHostBoundaryThread(vmPtr: number): ThreadWorkerState {
     lastStatusS11: null,
     hotStatusPcs: {},
     initialized: true,
-    waitingInWorkerStatus: null,
-    ownerAsyncStatus: null,
     pendingPipeSlotsForNextStep: [],
     pendingGuestMemoryWrites: [],
     resumeWorkersOnReady: [],
   };
+  clearThreadWaitingInWorkerStatus(thread);
+  clearThreadOwnerAsyncStatus(thread);
+  return thread;
 }
 
 export function makeHostBoundaryHandle(

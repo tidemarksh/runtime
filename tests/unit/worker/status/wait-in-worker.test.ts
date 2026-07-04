@@ -1,6 +1,7 @@
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../../src/bridge/pipe.js";
 import { createWorkerWaitInWorkerStatusHandler } from "../../../../src/worker/message-handler/status/wait-in-worker.js";
+import { getThreadWaitingInWorkerStatus } from "../../../../src/worker/thread-host-state.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 test("waitInWorker debug log keeps compact futex fields", () => {
@@ -175,7 +176,7 @@ test("waitInWorker debug log keeps compact futex fields", () => {
       "thread-futex-wait:stage=entry:vm=0x1234:addr=0x37d61c40",
     ),
   );
-  expect(thread.waitingInWorkerStatus).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
   expect(parkSupervisorFutexWait).toHaveBeenCalledWith(
     expect.anything(),
     expect.anything(),
@@ -393,7 +394,7 @@ test("waitInWorker WAIT4 routes to owner-side blocked scheduling with kernel-wor
 
   expect(handle.runningWorker).toBeNull();
   expect(thread.runningGeneration).toBeNull();
-  expect(thread.waitingInWorkerStatus).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
   expect(blockWorker).toHaveBeenCalledWith(handle, worker, 20, 0x4321);
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
 

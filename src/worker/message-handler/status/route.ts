@@ -43,6 +43,11 @@ import {
 } from "./socket-state.js";
 import { handleOwnerAsyncStatusReturn } from "./owner-async.js";
 import { applyStatusFdEntries } from "./fd-entries.js";
+import {
+  clearThreadWaitingInWorkerStatus,
+  getThreadOwnerAsyncStatus,
+  getThreadWaitingInWorkerStatus,
+} from "../../thread-host-state.js";
 import { applyStatusOfdSlots } from "./ofd-slots.js";
 import { resolveWorkerMessageHandlerSyncEffects } from "../sync-effects.js";
 import {
@@ -138,14 +143,14 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
           handle.runtimeId,
           `clone-status-owner-async:${handle.pid}:0x${thread.vmPtr.toString(16)}`
             + `:generation=${msg.generation ?? "n/a"}`
-            + `:owner=${thread.ownerAsyncStatus ?? "null"}`
+            + `:owner=${getThreadOwnerAsyncStatus(thread) ?? "null"}`
             + `:belongs=${statusStateBelongsToHandle ? 1 : 0}`,
         );
       }
       return;
     }
-    const previousWaitingStatus = thread.waitingInWorkerStatus;
-    thread.waitingInWorkerStatus = null;
+    const previousWaitingStatus = getThreadWaitingInWorkerStatus(thread);
+    clearThreadWaitingInWorkerStatus(thread);
     if (supervisorProcessStatusIsExecveSpawn(handle.kernel, status)) {
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,

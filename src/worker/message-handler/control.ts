@@ -19,6 +19,11 @@ import {
 } from "../process-identity.js";
 import { submitSupervisorShadowStatusEvent } from "../supervisor-shadow.js";
 import { supervisorProcessStatusIsCloneSpawn } from "../supervisor-status.js";
+import {
+  clearThreadOwnerAsyncStatus,
+  clearThreadWaitingInWorkerStatus,
+  getThreadOwnerAsyncStatus,
+} from "../thread-host-state.js";
 
 function formatDebugError(error: unknown): string {
   return error instanceof Error ? (error.stack ?? error.message) : String(error);
@@ -179,12 +184,13 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
       const releaseCloneSpawnResumeWorkers = (): void => {
         for (const resumeWorker of resumeWorkersOnReady) {
           const resumeThread = deps.threadWorkerStates.get(resumeWorker);
+          const ownerAsyncStatus = getThreadOwnerAsyncStatus(resumeThread);
           if (
-            resumeThread?.ownerAsyncStatus !== null
-            && resumeThread?.ownerAsyncStatus !== undefined
-            && supervisorProcessStatusIsCloneSpawn(handle.kernel, resumeThread.ownerAsyncStatus)
+            resumeThread !== undefined
+            && ownerAsyncStatus !== null
+            && supervisorProcessStatusIsCloneSpawn(handle.kernel, ownerAsyncStatus)
           ) {
-            resumeThread.ownerAsyncStatus = null;
+            clearThreadOwnerAsyncStatus(resumeThread);
           }
         }
       };
@@ -195,7 +201,7 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
       thread.initialized = true;
-      thread.waitingInWorkerStatus = null;
+      clearThreadWaitingInWorkerStatus(thread);
       deps.clearBlockedWorker(handle, worker);
       const readyThreadEventResult = submitSupervisorShadowStatusEvent(handle, {
         sequence: thread.statusCount,

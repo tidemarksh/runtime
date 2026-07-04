@@ -9,6 +9,7 @@ vi.mock("../../../../src/worker/pool.js", async (importOriginal) => {
 });
 
 import { createWorkerSchedulerQueueHelpers } from "../../../../src/worker/host-boundary/thread-worker-queue.js";
+import { getThreadWaitingInWorkerStatus } from "../../../../src/worker/thread-host-state.js";
 import {
   makeHostBoundaryHandle,
   makeHostBoundaryKernel,
@@ -99,8 +100,8 @@ test("host boundary consumes only supervisor-selected futex resume records", () 
 
   expect(kernel.supervisor_next_resume).toHaveBeenCalledTimes(2);
   expect(kernel.supervisor_complete_futex_wait).not.toHaveBeenCalled();
-  expect(selectedThread.waitingInWorkerStatus).toBeNull();
-  expect(unselectedThread.waitingInWorkerStatus).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(selectedThread as never)).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(unselectedThread as never)).toBeNull();
   expect(handle.runningWorker).toBe(selectedWorker);
   expect(selectedWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "step" }));
   expect(unselectedWorker.postMessage).not.toHaveBeenCalled();
@@ -155,7 +156,7 @@ test("host boundary consumes process-scoped supervisor runnable resume decisions
   expect(handle.runningWorker).toBe(selectedWorker);
   expect(handle.vforkReadyWorkers).toEqual([unselectedWorker]);
   expect(handle.hostBlockedWorkers.has(selectedWorker)).toBe(false);
-  expect(selectedThread.waitingInWorkerStatus).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(selectedThread as never)).toBeNull();
   expect(selectedWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "step" }));
   expect(unselectedWorker.postMessage).not.toHaveBeenCalled();
   expect(debugEvents).toContain(

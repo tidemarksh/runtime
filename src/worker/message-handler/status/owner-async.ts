@@ -14,6 +14,10 @@ import {
   readSupervisorFaultExitDecision,
   supervisorFaultExitKindProcessExit,
 } from "../../supervisor-shadow.js";
+import {
+  clearThreadOwnerAsyncStatus,
+  getThreadOwnerAsyncStatus,
+} from "../../thread-host-state.js";
 
 function completeFaultedProcessFromStaleOwnerAsyncOk(args: {
   handle: ProcessHandle;
@@ -60,7 +64,7 @@ function completeFaultedProcessFromStaleOwnerAsyncOk(args: {
   if (handle.runningWorker === worker) {
     handle.runningWorker = null;
   }
-  thread.ownerAsyncStatus = null;
+  clearThreadOwnerAsyncStatus(thread);
   thread.runningGeneration = null;
 
   const exitCode = supervisorExitDecision.exitCode;
@@ -103,7 +107,7 @@ export function handleOwnerAsyncStatusReturn(args: {
     statusBelongsToHandle,
     deps,
   } = args;
-  const ownerAsyncStatus = thread.ownerAsyncStatus ?? null;
+  const ownerAsyncStatus = getThreadOwnerAsyncStatus(thread);
   if (ownerAsyncStatus === null) {
     return false;
   }
@@ -119,7 +123,7 @@ export function handleOwnerAsyncStatusReturn(args: {
     && generationMatches
     && thread.stepCount > thread.statusCount
   ) {
-    thread.ownerAsyncStatus = null;
+    clearThreadOwnerAsyncStatus(thread);
     deps.appendWorkerDebugLog(
       handle,
       `status-owner-async-stale-unanswered-fs:0x${thread.vmPtr.toString(16)}:status=${msg.status}`,
@@ -136,7 +140,7 @@ export function handleOwnerAsyncStatusReturn(args: {
     && generationMatches
     && thread.stepCount > thread.statusCount
   ) {
-    thread.ownerAsyncStatus = null;
+    clearThreadOwnerAsyncStatus(thread);
     deps.appendWorkerDebugLog(
       handle,
       `status-owner-async-stale-unanswered-ok:0x${thread.vmPtr.toString(16)}:status=${msg.status}`,
@@ -145,7 +149,7 @@ export function handleOwnerAsyncStatusReturn(args: {
   }
   const sleepStatus = handle.kernel.abi_status_sleep?.();
   if (sleepStatus !== undefined && msg.status === sleepStatus) {
-    thread.ownerAsyncStatus = null;
+    clearThreadOwnerAsyncStatus(thread);
     deps.appendWorkerDebugLog(
       handle,
       `status-owner-async-stale-sleep:0x${thread.vmPtr.toString(16)}:status=${msg.status}`,
@@ -186,7 +190,7 @@ export function handleOwnerAsyncStatusReturn(args: {
   deps.appendWorkerDebugLog(
     handle,
     `status-owner-async:0x${thread.vmPtr.toString(16)}`
-      + `:owner=${thread.ownerAsyncStatus}:status=${msg.status}`
+      + `:owner=${ownerAsyncStatus}:status=${msg.status}`
       + `:ownerMatch=${statusBelongsToHandle ? 1 : 0}`,
   );
   recordWorkerMessageDebugEvent(

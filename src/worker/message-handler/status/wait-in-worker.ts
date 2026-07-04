@@ -25,6 +25,10 @@ import {
   supervisorBlockedWaitStatusMatchesPipeWait,
   supervisorBlockedWaitStatusMatchesSocketWait,
 } from "../../../supervisor-blocked-resume.js";
+import {
+  clearThreadWaitingInWorkerStatus,
+  setThreadWaitingInWorkerStatus,
+} from "../../thread-host-state.js";
 
 export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandlerDeps) {
   return function handleWaitInWorkerStatus(
@@ -59,7 +63,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
 
     if (epollWaitStatus && epollTimeoutMs === 0) {
-      thread.waitingInWorkerStatus = null;
+      clearThreadWaitingInWorkerStatus(thread);
       if (isRunningWorker) {
         handle.runningWorker = null;
       }
@@ -70,7 +74,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
     }
 
     if (msg.status === handle.kernel.abi_status_futex_wait()) {
-      thread.waitingInWorkerStatus = null;
+      clearThreadWaitingInWorkerStatus(thread);
       const hostTimer = drainSupervisorArmHostTimerHostOp(handle, thread.vmPtr);
       if (hostTimer === undefined) {
         throw new Error("kernel supervisor ABI missing arm host timer HostOp exports");
@@ -93,7 +97,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       return;
     }
 
-    thread.waitingInWorkerStatus = msg.status;
+    setThreadWaitingInWorkerStatus(thread, msg.status);
     if (isRunningWorker) {
       handle.runningWorker = null;
       thread.runningGeneration = null;
@@ -115,7 +119,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       && handle.kernelWorkerRequest
       && handle.pid > 0
     ) {
-      thread.waitingInWorkerStatus = null;
+      clearThreadWaitingInWorkerStatus(thread);
       deps.blockWorker(handle, worker, msg.status, thread.vmPtr);
       void deps.requestPipeStateSync(handle, true)
         .then(() => {

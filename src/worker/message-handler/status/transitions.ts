@@ -51,6 +51,13 @@ import {
   supervisorProcessStatusIsExecveSpawn,
   supervisorProcessStatusIsVforkWait,
 } from "../../supervisor-status.js";
+import {
+  clearThreadOwnerAsyncStatus,
+  clearThreadWaitingInWorkerStatus,
+  getThreadOwnerAsyncStatus,
+  setThreadOwnerAsyncStatus,
+  setThreadWaitingInWorkerStatus,
+} from "../../thread-host-state.js";
 
 const CLONE_SPAWN_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
@@ -231,7 +238,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       const shouldWakeSignalWaiters = (completedSyncEffects & syncEffects.syncEffectSignalWaiters) !== 0;
       if (shouldSyncPipeState || shouldSyncSocketState || shouldSyncLifecycle) {
         deps.appendWorkerDebugLog(handle, `ok-sync-start:0x${thread.vmPtr.toString(16)}`);
-        thread.ownerAsyncStatus = status;
+        setThreadOwnerAsyncStatus(thread, status);
         const syncPipeState = shouldSyncPipeState
           ? deps.requestPipeStateSync(handle, true)
           : Promise.resolve();
@@ -265,7 +272,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           })
           .then((networkChanged) => syncSocketAfterNetworkPump(networkChanged ?? false))
           .then(() => {
-            thread.ownerAsyncStatus = null;
+            clearThreadOwnerAsyncStatus(thread);
             if (!workerStillOwnedByHandle()) {
               deps.pumpProcess(handle);
               return;
@@ -284,7 +291,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             enqueueWorkerAfterOk();
           })
           .catch((error) => {
-            thread.ownerAsyncStatus = null;
+            clearThreadOwnerAsyncStatus(thread);
             if (!workerStillOwnedByHandle()) {
               deps.pumpProcess(handle);
               return;
@@ -456,7 +463,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           if (handle.runningWorker === worker) {
             handle.runningWorker = null;
           }
-          thread.waitingInWorkerStatus = null;
+          clearThreadWaitingInWorkerStatus(thread);
         };
         const shouldSyncPipeState = (completedSyncEffects & syncEffects.syncEffectPipeState) !== 0;
         if (shouldSyncPipeState) {
@@ -490,7 +497,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       if (handle.runningWorker === worker) {
         handle.runningWorker = null;
       }
-      thread.waitingInWorkerStatus = status;
+      setThreadWaitingInWorkerStatus(thread, status);
       if (hostTimer !== null) {
         armSupervisorHostTimer(handle, hostTimer, deps);
       }
@@ -505,7 +512,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         kernelWorkerAvailable: Boolean(handle.kernelWorkerRequest) && handle.pid > 0,
       });
       if (pipeRefreshAction === "request-sync") {
-        thread.ownerAsyncStatus = status;
+        setThreadOwnerAsyncStatus(thread, status);
         void deps.requestPipeStateSync(handle, false)
           .then(() => {
             refreshPipeControlFromKernelShare(handle);
@@ -514,7 +521,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
               thread.pendingPipeSlotsForNextStep.push(...pipeSlotsForNextStep);
             }
             if (!workerStillOwnedByHandle()) {
-              thread.ownerAsyncStatus = null;
+              clearThreadOwnerAsyncStatus(thread);
               return;
             }
             const resumeFs = deps.resumeFsViaKernelWorkerOutcome ?? deps.resumeFsViaKernelWorker;
@@ -526,12 +533,12 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
               })
               .then(() => undefined)
               .finally(() => {
-                thread.ownerAsyncStatus = null;
+                clearThreadOwnerAsyncStatus(thread);
                 deps.pumpProcess(handle);
               });
           })
           .catch((error) => {
-            thread.ownerAsyncStatus = null;
+            clearThreadOwnerAsyncStatus(thread);
             if (!workerStillOwnedByHandle()) {
               return;
             }
@@ -539,7 +546,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           });
         return;
       }
-      thread.ownerAsyncStatus = status;
+      setThreadOwnerAsyncStatus(thread, status);
       const resumeFs = deps.resumeFsViaKernelWorkerOutcome ?? deps.resumeFsViaKernelWorker;
       void resumeFs(handle, worker, thread.vmPtr)
         .then((outcome) => {
@@ -548,7 +555,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           }
         })
         .finally(() => {
-          thread.ownerAsyncStatus = null;
+          clearThreadOwnerAsyncStatus(thread);
           deps.pumpProcess(handle);
         })
         .catch((error) => {
@@ -693,7 +700,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         if (!childThread) {
           throw new Error(`child thread state missing for pid=${handle.pid} vm=0x${childVmPtr.toString(16)}`);
         }
-        thread.ownerAsyncStatus = status;
+        setThreadOwnerAsyncStatus(thread, status);
         childThread.resumeWorkersOnReady.push(worker);
         deps.notifyWorkerStatusProgress(handle);
         if (CLONE_SPAWN_DEBUG_ENABLED) {
@@ -706,12 +713,12 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         }
       };
 
-      thread.ownerAsyncStatus = status;
+      setThreadOwnerAsyncStatus(thread, status);
       const cloneSpawnAsyncToken = (cloneSpawnAsyncTokens.get(thread) ?? 0) + 1;
       cloneSpawnAsyncTokens.set(thread, cloneSpawnAsyncToken);
       const isCurrentCloneSpawnAsync = (): boolean =>
         cloneSpawnAsyncTokens.get(thread) === cloneSpawnAsyncToken
-        && (thread.ownerAsyncStatus ?? null) === status;
+        && getThreadOwnerAsyncStatus(thread) === status;
       if (CLONE_SPAWN_DEBUG_ENABLED) {
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
@@ -743,7 +750,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             return;
           }
           if (!spawnCloneChild()) {
-            thread.ownerAsyncStatus = null;
+            clearThreadOwnerAsyncStatus(thread);
             return;
           }
           finishCloneSpawn();
@@ -751,7 +758,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         .catch((error) => {
           const currentCloneSpawnAsync = isCurrentCloneSpawnAsync();
           if (currentCloneSpawnAsync) {
-            thread.ownerAsyncStatus = null;
+            clearThreadOwnerAsyncStatus(thread);
           }
           if (CLONE_SPAWN_DEBUG_ENABLED) {
             deps.appendRuntimeLifecycleEvent(
@@ -772,11 +779,11 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     }
 
     if (supervisorProcessStatusIsExecveSpawn(handle.kernel, status)) {
-      thread.ownerAsyncStatus = status;
+      setThreadOwnerAsyncStatus(thread, status);
       void deps.handleExecveSpawn(handle, worker, thread)
         .finally(() => {
           if (workerStillOwnedByHandle()) {
-            thread.ownerAsyncStatus = null;
+            clearThreadOwnerAsyncStatus(thread);
           }
         })
         .catch((error) => {

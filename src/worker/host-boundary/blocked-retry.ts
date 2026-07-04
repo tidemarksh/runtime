@@ -46,6 +46,11 @@ import type {
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
+import {
+  clearThreadOwnerAsyncStatus,
+  getThreadOwnerAsyncStatus,
+  setThreadOwnerAsyncStatus,
+} from "../thread-host-state.js";
 
 export interface BlockedRetryCoordinator {
   retryHostBlockedWorker(handle: ProcessHandle, worker: Worker): void;
@@ -634,7 +639,7 @@ export function createBlockedRetryCoordinator(
     if (blocked.rpcPending) {
       flags.push("rpc-pending");
     }
-    if (thread?.ownerAsyncStatus !== null && thread?.ownerAsyncStatus !== undefined) {
+    if (getThreadOwnerAsyncStatus(thread) !== null) {
       flags.push("owner-async");
     }
     if (hasPendingCloneChildInitResume(handle)) {
@@ -770,12 +775,12 @@ export function createBlockedRetryCoordinator(
   ): void {
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, `fs-retry:${handle.pid}`);
     const thread = deps.threadWorkerStates.get(worker);
-    if (thread?.ownerAsyncStatus !== null && thread?.ownerAsyncStatus !== undefined) {
+    if (getThreadOwnerAsyncStatus(thread) !== null) {
       deps.scheduleSupervisorBlockedRetry(handle, worker);
       return;
     }
     if (thread) {
-      thread.ownerAsyncStatus = blocked.status;
+      setThreadOwnerAsyncStatus(thread, blocked.status);
     }
     deps.clearBlockedWorker(handle, worker);
     const resumeFs = deps.resumeFsViaKernelWorkerOutcome ?? deps.resumeFsViaKernelWorker;
@@ -787,7 +792,7 @@ export function createBlockedRetryCoordinator(
       })
       .finally(() => {
         if (thread) {
-          thread.ownerAsyncStatus = null;
+          clearThreadOwnerAsyncStatus(thread);
         }
         deps.pumpProcess(handle);
       })
@@ -851,7 +856,7 @@ export function createBlockedRetryCoordinator(
         const thread = deps.threadWorkerStates.get(worker);
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
-          `blocked-retry-skip:${handle.pid}:owner-async:${thread?.ownerAsyncStatus ?? "unknown"}`,
+          `blocked-retry-skip:${handle.pid}:owner-async:${getThreadOwnerAsyncStatus(thread) ?? "unknown"}`,
         );
         deps.scheduleSupervisorBlockedRetry(
           handle,

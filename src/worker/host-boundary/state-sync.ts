@@ -30,6 +30,7 @@ import {
   getRuntimeStateSyncPromise,
   setRuntimeStateSyncPromise,
 } from "../state-sync-inflight.js";
+import { getThreadWaitingInWorkerStatus } from "../thread-host-state.js";
 import {
   syncEpollStateViaKernelWorker,
   syncOfdStateViaKernelWorker,
@@ -111,11 +112,12 @@ export function createWorkerSchedulerStateSyncHelpers(
       }
       const shouldWake = [...member.workers].some((candidate) => {
         const state = deps.threadWorkerStates.get(candidate);
+        const waitingInWorkerStatus = getThreadWaitingInWorkerStatus(state);
         return state !== undefined
-          && state.waitingInWorkerStatus !== null
+          && waitingInWorkerStatus !== null
           && supervisorBlockedWaitStatusMatchesWakeSource(
             member.kernel,
-            state.waitingInWorkerStatus,
+            waitingInWorkerStatus,
             wakeSource,
           );
       });

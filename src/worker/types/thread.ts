@@ -33,8 +33,6 @@ export interface ThreadWorkerState {
   execveProcessState?: Uint8Array;
   hotStatusPcs: Record<string, number>;
   initialized: boolean;
-  waitingInWorkerStatus: number | null;
-  ownerAsyncStatus: number | null;
   pipeCanonicalEofReadyOnNextBlock?: boolean;
   pendingKernelStateForNextStep?: KernelRuntimeState;
   pendingPipeSlotsForNextStep: KernelWorkerPipeSlotSnapshot[];

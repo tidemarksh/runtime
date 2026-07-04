@@ -12,6 +12,10 @@ import type { WorkerMessageHandlerDeps } from "../types.js";
 import { createWorkerOwnershipGuard } from "../../ownership/process-state.js";
 import { resolveWorkerMessageHandlerSyncEffects } from "../sync-effects.js";
 import { requestOwnedForkSharedStateSync } from "../../sync/fork-shared.js";
+import {
+  clearThreadOwnerAsyncStatus,
+  setThreadOwnerAsyncStatus,
+} from "../../thread-host-state.js";
 
 interface OwnedStateSyncArgs {
   handle: ProcessHandle;
@@ -139,7 +143,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
           handle.processMemfsDirty = false;
         })
       : Promise.resolve();
-    thread.ownerAsyncStatus = status;
+    setThreadOwnerAsyncStatus(thread, status);
     void syncSocketState()
       .then(() => syncForkSharedState())
       .then(() => syncOfdState())
@@ -148,7 +152,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
         ? deps.requestEpollStateSync(handle, !(wroteToPipe || drainedPipe))
         : Promise.resolve()))
       .then(() => {
-        thread.ownerAsyncStatus = null;
+        clearThreadOwnerAsyncStatus(thread);
         if (!workerStillOwnedByHandle()) {
           return;
         }
@@ -158,7 +162,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
         }
       })
       .catch((error) => {
-        thread.ownerAsyncStatus = null;
+        clearThreadOwnerAsyncStatus(thread);
         if (!workerStillOwnedByHandle()) {
           return;
         }

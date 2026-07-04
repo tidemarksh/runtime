@@ -1,5 +1,6 @@
 import { expect, test, vi } from "vite-plus/test";
 import { createWorkerOwnedStateSyncHandler } from "../../../../src/worker/message-handler/status/owned-state-sync.js";
+import { getThreadOwnerAsyncStatus } from "../../../../src/worker/thread-host-state.js";
 
 function makeKernelState() {
   return {
@@ -376,7 +377,7 @@ test("fork-shared OFD sync accepts an owned worker status after running slot is 
   await vi.waitFor(() => {
     expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalled();
   });
-  expect(thread.ownerAsyncStatus).toBe(0);
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBe(0);
   expect(handle.forkSharedSyncPromise).toBeNull();
   expect(handle.kernelShare.forkSharedSyncPromise).toBeNull();
   expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
@@ -388,7 +389,7 @@ test("fork-shared OFD sync accepts an owned worker status after running slot is 
   await vi.waitFor(() => {
     expect(continueAfterOwnedStateSync).toHaveBeenCalled();
   });
-  expect(thread.ownerAsyncStatus).toBeNull();
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
   expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalledWith(handle, [], {
     cause: { kind: "syscall", nr: -1n, name: "owned-state-empty-fork-shared-sync" },
     deltaOfdIds: true,

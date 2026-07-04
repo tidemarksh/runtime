@@ -7,6 +7,10 @@ import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { createWorkerKernelRpcHelpers as createWorkerKernelRpcHelpersBase } from "../../../../src/worker/kernel-rpc.js";
 import { createWorkerKernelRpcBlockedRpcTestHelpers as createWorkerKernelRpcBlockedRpcHelpersBase } from "../../../../src/worker/host-boundary/blocked-rpc-resume.js";
 import { createWorkerKernelRpcResumeLifecycleHelpers as createWorkerKernelRpcResumeLifecycleHelpersBase } from "../../../../src/worker/kernel-rpc/lifecycle/resume.js";
+import {
+  getThreadOwnerAsyncStatus,
+  setThreadOwnerAsyncStatus,
+} from "../../../../src/worker/thread-host-state.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 import {
@@ -1653,16 +1657,16 @@ test("resumeFsViaKernelWorker routes execve spawn before parent fd integrity che
     vmPtr: number;
     initialized: boolean;
     waitingInWorkerStatus: number | null;
-    ownerAsyncStatus: number | null;
     lastStatus: number | null;
   }>();
-  threadWorkerStates.set(worker, {
+  const threadState = {
     vmPtr: 0x1234,
     initialized: true,
     waitingInWorkerStatus: null,
-    ownerAsyncStatus: execveSpawnStatus,
     lastStatus: null,
-  });
+  };
+  setThreadOwnerAsyncStatus(threadState as never, execveSpawnStatus);
+  threadWorkerStates.set(worker, threadState);
 
   const helpers = createWorkerKernelRpcHelpers({
     processHandles: new Map([[1, handle]]),
@@ -1706,7 +1710,7 @@ test("resumeFsViaKernelWorker routes execve spawn before parent fd integrity che
     worker,
     threadWorkerStates.get(worker),
   );
-  expect(threadWorkerStates.get(worker)?.ownerAsyncStatus).toBeNull();
+  expect(getThreadOwnerAsyncStatus(threadWorkerStates.get(worker))).toBeNull();
 });
 
 test("resumeFsViaKernelWorker applies fd entries returned by kernel-worker fs processing", async () => {

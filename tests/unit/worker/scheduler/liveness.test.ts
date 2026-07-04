@@ -18,6 +18,13 @@ import { registerForkSharedSyncPromise } from "../../../../src/worker/fork-share
 import { createWorkerStatusTransitionHandler } from "../../../../src/worker/message-handler/status/transitions.js";
 import { createWorkerSchedulerQueueHelpers } from "../../../../src/worker/host-boundary/thread-worker-queue.js";
 import { createRunLoopScheduler } from "../../../../src/worker/scheduler/run-loop.js";
+import {
+  clearThreadOwnerAsyncStatus,
+  clearThreadWaitingInWorkerStatus,
+  getThreadOwnerAsyncStatus,
+  getThreadWaitingInWorkerStatus,
+  setThreadOwnerAsyncStatus,
+} from "../../../../src/worker/thread-host-state.js";
 import { createTransferDebugStats, createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
@@ -385,6 +392,18 @@ function makeKernel() {
       kernel_attach_runtime_state: () => {},
       process_fd_ofd_id: () => 0,
       process_fd_flags: () => 0,
+      supervisor_process_ofd_for_fd: (vmPtr: number, fd: number) =>
+        kernel.exports.process_fd_ofd_id?.(vmPtr, fd) ?? 0,
+      supervisor_process_fd_flags_for_fd: (vmPtr: number, fd: number) =>
+        kernel.exports.process_fd_flags?.(vmPtr, fd) ?? 0,
+      supervisor_process_fd_is_open: (vmPtr: number, fd: number) =>
+        (kernel.exports.process_fd_ofd_id?.(vmPtr, fd) ?? 0) !== 0 ? 1 : 0,
+      supervisor_process_socket_ofd_for_fd: () => -1,
+      supervisor_ofd_is_regular_file: () => 0,
+      supervisor_pipe_sync_ofd_candidate: () => 0,
+      supervisor_ofd_pipe_slot_mask: () => 0n,
+      supervisor_fd_entry_restore_action_skip: () => 0,
+      supervisor_ofd_slot_write_action: () => 1,
     } as unknown as ProcessHandle["kernel"],
   };
   installSupervisorBlockedResumeStub(kernel.exports);
@@ -428,7 +447,7 @@ function makeHostBoundaryWait4ResumeOutcome() {
 }
 
 function makeThreadState(vmPtr: number): ThreadWorkerState {
-  return {
+  const thread = {
     vmPtr,
     ownerPid: 1,
     generation: 0,
@@ -453,12 +472,13 @@ function makeThreadState(vmPtr: number): ThreadWorkerState {
     lastStatusS11: null,
     hotStatusPcs: {},
     initialized: true,
-    waitingInWorkerStatus: null,
-    ownerAsyncStatus: null,
     pendingPipeSlotsForNextStep: [],
     pendingGuestMemoryWrites: [],
     resumeWorkersOnReady: [],
   };
+  clearThreadWaitingInWorkerStatus(thread);
+  clearThreadOwnerAsyncStatus(thread);
+  return thread;
 }
 
 const SUPERVISOR_RESUME_RECORD_BYTES = 48;
@@ -562,7 +582,7 @@ function selectTestSupervisorRunnableThread(
     if (thread === undefined) {
       continue;
     }
-    if ((thread.ownerAsyncStatus ?? null) !== null || thread.waitingInWorkerStatus !== null) {
+    if (getThreadOwnerAsyncStatus(thread) !== null || getThreadWaitingInWorkerStatus(thread) !== null) {
       continue;
     }
     const status = handle.kernel.thread_status(thread.vmPtr);
@@ -723,9 +743,13 @@ function installTestSupervisorBlockedWaitTimers(
   kernel: ProcessHandle["kernel"],
   handle: ProcessHandle,
 ): void {
-  if (kernel.supervisor_next_host_op !== undefined || kernel.supervisor_enqueue_blocked_wait_timer !== undefined) {
+  if (
+    kernel.supervisor_enqueue_blocked_wait_timer !== undefined
+    && kernel.supervisor_enqueue_blocked_retry_timer !== undefined
+  ) {
     return;
   }
+  const shouldInstallHostOpDrain = kernel.supervisor_next_host_op === undefined;
   kernel.memory = handle.memory;
   kernel.kernel_heap_ptr = () => -0x3c000;
   kernel.supervisor_abi_version = () => 1;
@@ -812,12 +836,14 @@ function installTestSupervisorBlockedWaitTimers(
     }
     return 0;
   };
-  kernel.supervisor_next_host_op = vi.fn((outPtr: number, outLen: number) =>
-    drainHostOp(null, outPtr, outLen));
-  kernel.supervisor_next_host_op_kind = vi.fn((kind: number, outPtr: number, outLen: number) =>
-    drainHostOp(kind, outPtr, outLen));
-  kernel.supervisor_complete_host_op = vi.fn((completionPtr: number, completionLen: number) =>
-    completeTestSupervisorBlockedWaitTimer(kernel, handle.memory, completionPtr, completionLen));
+  if (shouldInstallHostOpDrain) {
+    kernel.supervisor_next_host_op = vi.fn((outPtr: number, outLen: number) =>
+      drainHostOp(null, outPtr, outLen));
+    kernel.supervisor_next_host_op_kind = vi.fn((kind: number, outPtr: number, outLen: number) =>
+      drainHostOp(kind, outPtr, outLen));
+    kernel.supervisor_complete_host_op = vi.fn((completionPtr: number, completionLen: number) =>
+      completeTestSupervisorBlockedWaitTimer(kernel, handle.memory, completionPtr, completionLen));
+  }
 }
 
 function makeHandle(
@@ -1170,7 +1196,7 @@ test("scheduler uses pending worker kernel state for one active vfork child step
     appendRuntimeLifecycleEvent: () => {},
     threadWorkerStates,
     completeProcessExit: async () => {},
-    failProcess: () => {},
+    failProcess: (_handle, error) => { throw error; },
     resumeVforkParentAfterChildExit: () => false,
     resumeWait4ViaKernelWorker: async () => {},
     handleWorkerMessage: () => {},
@@ -1198,7 +1224,7 @@ test("blocked FS retry pumps after clearing owner async status", async () => {
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   handle.pendingChildSpawnRecords = 0;
   const resumeFsViaKernelWorkerOutcome = vi.fn(async () => {
-    expect(thread.ownerAsyncStatus).toBe(kernel.abi_status_fs());
+    expect(getThreadOwnerAsyncStatus(thread as never)).toBe(kernel.abi_status_fs());
     status = kernel.abi_status_ok();
     return { kind: "completed" as const };
   });
@@ -1207,7 +1233,7 @@ test("blocked FS retry pumps after clearing owner async status", async () => {
     appendRuntimeLifecycleEvent: () => {},
     threadWorkerStates,
     completeProcessExit: async () => {},
-    failProcess: () => {},
+    failProcess: (_handle, error) => { throw error; },
     resumeFsViaKernelWorker: async () => {},
     resumeFsViaKernelWorkerOutcome,
     resumeVforkParentAfterChildExit: () => false,
@@ -1220,7 +1246,7 @@ test("blocked FS retry pumps after clearing owner async status", async () => {
   await Promise.resolve();
 
   expect(resumeFsViaKernelWorkerOutcome).toHaveBeenCalledWith(handle, worker, 0x1234);
-  expect(thread.ownerAsyncStatus).toBeNull();
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
   expect(handle.hostBlockedWorkers.has(worker)).toBe(false);
   expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
     type: "step",
@@ -1244,7 +1270,7 @@ test("blocked FS retry defers owner-async enqueue until async clears", async () 
   handle.pendingChildSpawnRecords = 0;
   let scheduler: ReturnType<typeof createWorkerScheduler>;
   const resumeFsViaKernelWorkerOutcome = vi.fn(async () => {
-    expect(thread.ownerAsyncStatus).toBe(kernel.abi_status_fs());
+    expect(getThreadOwnerAsyncStatus(thread as never)).toBe(kernel.abi_status_fs());
     status = kernel.abi_status_ok();
     scheduler.enqueueWorker(handle, worker);
     expect(worker.postMessage).not.toHaveBeenCalled();
@@ -1268,7 +1294,7 @@ test("blocked FS retry defers owner-async enqueue until async clears", async () 
   await Promise.resolve();
 
   expect(resumeFsViaKernelWorkerOutcome).toHaveBeenCalledWith(handle, worker, 0x1234);
-  expect(thread.ownerAsyncStatus).toBeNull();
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
   expect(handle.hostBlockedWorkers.has(worker)).toBe(false);
   expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
     type: "step",
@@ -1282,7 +1308,7 @@ test("pumpProcess keeps a fresh owner-async worker parked", () => {
     postMessage: vi.fn(),
   } as unknown as Worker;
   const thread = makeThreadState(0x1234);
-  thread.ownerAsyncStatus = 6;
+  setThreadOwnerAsyncStatus(thread as never, 6);
   thread.stepCount = 8;
   thread.statusCount = 8;
   thread.lastStatusAtMs = 9_000;
@@ -1306,7 +1332,7 @@ test("pumpProcess keeps a fresh owner-async worker parked", () => {
 
   scheduler.pumpProcess(handle);
 
-  expect(thread.ownerAsyncStatus).toBe(6);
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBe(6);
   expect(worker.postMessage).not.toHaveBeenCalled();
 });
 
@@ -1807,7 +1833,7 @@ test("epoll retry defers while clone child init is expected to release parent", 
   const blockedThread = makeThreadState(0x1234);
   const parentThread = makeThreadState(0x5678);
   const childThread = makeThreadState(0x9abc);
-  parentThread.ownerAsyncStatus = 10;
+  setThreadOwnerAsyncStatus(parentThread as never, 10);
   childThread.initialized = false;
   childThread.resumeWorkersOnReady = [parentWorker];
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
@@ -4238,7 +4264,7 @@ test("epoll retry keeps unanswered futex running worker with a blocked record", 
 
   expect(handle.runningWorker).toBe(runningWorker);
   expect(runningThread.runningGeneration).toBe(runningThread.generation);
-  expect(runningThread.waitingInWorkerStatus).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(runningThread as never)).toBeNull();
   expect(handle.vforkReadyWorkers).not.toContain(runningWorker);
 });
 
@@ -4571,7 +4597,7 @@ test("step publishes the full process fd table to the selected worker", () => {
   kernel.abi_max_fds = () => 6;
   kernel.process_fd_ofd_id = (vmPtr: number, fd: number) => {
     if (vmPtr !== 0x5678) {
-      return fd === 4 ? 99 : 0;
+      return fd === 4 ? 5 : 0;
     }
     if (fd === 4) {
       return 7;
@@ -4609,7 +4635,7 @@ test("step publishes the full process fd table to the selected worker", () => {
       { fd: 1, ofdId: 0, fdFlags: 0 },
       { fd: 2, ofdId: 0, fdFlags: 0 },
       { fd: 3, ofdId: 0, fdFlags: 0 },
-      { fd: 4, ofdId: 99, fdFlags: 2 },
+      { fd: 4, ofdId: 5, fdFlags: 2 },
       { fd: 5, ofdId: 0, fdFlags: 0 },
     ],
   }));
@@ -4732,7 +4758,7 @@ test("pumpProcess skips a ready worker whose thread record is still futex-blocke
 
   scheduler.pumpProcess(handle);
 
-  expect(waitingThread.waitingInWorkerStatus).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(waitingThread as never)).toBeNull();
   expect(handle.runningWorker).toBe(runnableWorker);
   expect(waitingWorker.postMessage).not.toHaveBeenCalled();
   expect(runnableWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
@@ -4799,8 +4825,8 @@ test("pumpProcess drains only supervisor-selected futex resumes when supervisor 
 
   expect(kernel.supervisor_next_resume).toHaveBeenCalledTimes(2);
   expect(kernel.supervisor_complete_futex_wait).not.toHaveBeenCalled();
-  expect(selectedThread.waitingInWorkerStatus).toBeNull();
-  expect(unselectedThread.waitingInWorkerStatus).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(selectedThread as never)).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(unselectedThread as never)).toBeNull();
   expect(handle.runningWorker).toBe(selectedWorker);
   expect(selectedWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
     type: "step",
@@ -4908,8 +4934,8 @@ test("pumpProcess records supervisor thread-state snapshot diagnostics for selec
   queue.pumpProcess(handle);
 
   expect(kernel.supervisor_thread_state_snapshot).toHaveBeenCalledTimes(1);
-  expect(selectedThread.waitingInWorkerStatus).toBeNull();
-  expect(unselectedThread.waitingInWorkerStatus).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(selectedThread as never)).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(unselectedThread as never)).toBeNull();
   expect(debugEvents).toContain(
     "supervisor-resume:futex-wake:observed:0x1234:tid=2:seq=1:process=0x2000:detail=0xfeed:status=0"
       + ":snapshot=process=0x2000:owner=0x1234"
@@ -5122,7 +5148,7 @@ test("pumpProcess leaves a quiescent stack-local futex waiter parked with a bloc
   scheduler.pumpProcess(handle);
 
   expect(completeSupervisorFutexWait).not.toHaveBeenCalled();
-  expect(waitingThread.waitingInWorkerStatus).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(waitingThread as never)).toBeNull();
   expect(handle.runningWorker).toBeNull();
   expect(waitingWorker.postMessage).not.toHaveBeenCalled();
   expect(blockedWorker.postMessage).not.toHaveBeenCalled();
@@ -5181,7 +5207,7 @@ test("pumpProcess leaves a quiescent worker-local futex waiter parked until its 
   scheduler.pumpProcess(handle);
 
   expect(kernel.supervisor_complete_futex_wait).not.toHaveBeenCalled();
-  expect(waitingThread.waitingInWorkerStatus).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(waitingThread as never)).toBeNull();
   expect(handle.runningWorker).toBeNull();
   expect(waitingWorker.postMessage).not.toHaveBeenCalled();
   expect(blockedWorker.postMessage).not.toHaveBeenCalled();
@@ -5225,7 +5251,7 @@ test("blockWorker parks futex wait as supervisor-owned worker state", () => {
   expect(handle.hostBlockedWorkers.has(worker)).toBe(false);
   expect(handle.vforkReadyWorkers).toEqual([]);
   expect(handle.runningWorker).toBeNull();
-  expect(thread.waitingInWorkerStatus).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
   expect(thread.runningGeneration).toBeNull();
   scheduler.enqueueWorker(handle, worker);
   expect(handle.vforkReadyWorkers).toEqual([]);
@@ -5285,7 +5311,7 @@ test("blocked completion parks futex result as supervisor-owned worker state", a
   expect(handle.hostBlockedWorkers.has(worker)).toBe(false);
   expect(handle.vforkReadyWorkers).toEqual([]);
   expect(handle.runningWorker).toBeNull();
-  expect(thread.waitingInWorkerStatus).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
   expect(thread.runningGeneration).toBeNull();
   scheduler.enqueueWorker(handle, worker);
   expect(handle.vforkReadyWorkers).toEqual([]);
@@ -5556,6 +5582,7 @@ test("finite blocked wait fails closed when supervisor timer enqueue ABI is miss
     thread_poll_hup_sync_pending: () => 0,
   });
   const handle = makeHandle(kernel, worker, threadWorkerStates);
+  delete kernel.supervisor_enqueue_blocked_wait_timer;
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},

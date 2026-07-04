@@ -1,4 +1,8 @@
 import type { KernelExports } from "../../../../src/abi.js";
+import {
+  setThreadOwnerAsyncStatus,
+  setThreadWaitingInWorkerStatus,
+} from "../../../../src/worker/thread-host-state.js";
 import { createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
@@ -137,7 +141,12 @@ export function makeStatusMessage(overrides: Record<string, unknown> = {}) {
 }
 
 export function makeThreadState(overrides: Record<string, unknown> = {}) {
-  return {
+  const {
+    ownerAsyncStatus,
+    waitingInWorkerStatus,
+    ...rest
+  } = overrides;
+  const thread = {
     vmPtr: 0x1234,
     ownerPid: 7,
     generation: 1,
@@ -145,8 +154,14 @@ export function makeThreadState(overrides: Record<string, unknown> = {}) {
     initialized: true,
     statusCount: 0,
     statusCounts: {},
-    waitingInWorkerStatus: null,
     resumeWorkersOnReady: [],
-    ...overrides,
+    ...rest,
   };
+  if (typeof ownerAsyncStatus === "number") {
+    setThreadOwnerAsyncStatus(thread as never, ownerAsyncStatus);
+  }
+  if (typeof waitingInWorkerStatus === "number") {
+    setThreadWaitingInWorkerStatus(thread as never, waitingInWorkerStatus);
+  }
+  return thread;
 }

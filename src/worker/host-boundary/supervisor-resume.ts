@@ -3,6 +3,7 @@ import type {
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
+import { clearThreadWaitingInWorkerStatus } from "../thread-host-state.js";
 
 const SUPERVISOR_RESUME_DRAIN_LIMIT = 64;
 const SUPERVISOR_RESUME_SCRATCH_OFFSET = 0x28000;
@@ -252,7 +253,7 @@ export function createSupervisorResumeHostBoundary(
     }
     deps.clearBlockedWorker(handle, selectedWorker);
     deps.removeVforkReadyWorker(handle, selectedWorker);
-    selectedThread.waitingInWorkerStatus = null;
+    clearThreadWaitingInWorkerStatus(selectedThread);
     selectedThread.runningGeneration = null;
     deps.appendWorkerDebugLog(
       handle,
@@ -313,7 +314,7 @@ export function createSupervisorResumeHostBoundary(
     record: SupervisorResumeRecord,
   ): void {
     const label = supervisorResumeKindLabel(handle, record.kind);
-    thread.waitingInWorkerStatus = null;
+    clearThreadWaitingInWorkerStatus(thread);
     thread.runningGeneration = null;
     deps.appendWorkerDebugLog(
       handle,
