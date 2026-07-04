@@ -50,6 +50,10 @@ import {
   supervisorProcessMemoryInitialBytes,
   supervisorProcessMemoryMaxPages,
 } from "../supervisor-host-op.js";
+import {
+  supervisorProcessIdentityMatches,
+  supervisorProcessOwnerMatches,
+} from "../process-identity.js";
 import { acquireWorker, ensureEvictionTimer } from "../pool.js";
 import { createForkChildHandle } from "./common.js";
 import {
@@ -295,8 +299,8 @@ function assertVforkChildHandoffState(
   childPid: number,
   stage: string,
 ): void {
-  const currentPid = handle.kernel.process_current_pid(vmPtr);
-  if (currentPid !== childPid) {
+  if (!supervisorProcessOwnerMatches(handle.kernel, vmPtr, childPid)) {
+    const currentPid = handle.kernel.process_current_pid(vmPtr);
     throw new Error(
       `vfork-execve child handoff pid drift at ${stage}: expected=${childPid} actual=${currentPid}`
         + ` vm=0x${vmPtr.toString(16)}:${debugVforkVmState(handle, vmPtr)}`,
@@ -310,8 +314,8 @@ function assertVforkParentState(
   stage: string,
 ): void {
   const snapshot = handle.vforkSnapshot;
-  const currentPid = handle.kernel.process_current_pid(vmPtr);
-  if (currentPid !== handle.pid || (snapshot && currentPid !== snapshot.parentPid)) {
+  if (!supervisorProcessOwnerMatches(handle.kernel, vmPtr, handle.pid)) {
+    const currentPid = handle.kernel.process_current_pid(vmPtr);
     throw new Error(
         `vfork-execve parent pid drift at ${stage}: expected=${handle.pid}`
         + `${snapshot ? ` snapshot=${snapshot.parentPid}` : ""} actual=${currentPid}`
@@ -319,8 +323,13 @@ function assertVforkParentState(
     );
   }
   if (snapshot) {
-    const currentProcessPtr = handle.kernel.thread_process_ptr(vmPtr);
-    if (currentProcessPtr !== snapshot.parentProcessPtr) {
+    if (!supervisorProcessIdentityMatches(
+      handle.kernel,
+      vmPtr,
+      snapshot.parentPid,
+      snapshot.parentProcessPtr,
+    )) {
+      const currentProcessPtr = handle.kernel.thread_process_ptr(vmPtr);
       throw new Error(
         `vfork-execve parent process drift at ${stage}`
           + ` expected_process_ptr=0x${snapshot.parentProcessPtr.toString(16)}`
