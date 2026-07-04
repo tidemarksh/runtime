@@ -104,6 +104,7 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_process_status_defers_kernel_state_adoption"
   | "supervisor_vfork_child_owner_mismatch"
   | "supervisor_process_owner_matches"
+  | "supervisor_process_owner_mismatch"
   | "supervisor_blocked_epoll_wait_timeout_ms"
   | "supervisor_blocked_poll_wait_timeout_ms"
   | "supervisor_blocked_poll_wait_has_socket"
@@ -804,6 +805,10 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   nextKernel.supervisor_vfork_child_owner_mismatch ??= () => 0;
   nextKernel.supervisor_process_owner_matches ??= (vmPtr: number, runtimePid: number) =>
     kernel.process_current_pid?.(vmPtr) === runtimePid ? 1 : 0;
+  nextKernel.supervisor_process_owner_mismatch ??= (vmPtr: number, runtimePid: number) => {
+    const currentPid = kernel.process_current_pid?.(vmPtr) ?? 0;
+    return currentPid > 0 && currentPid !== runtimePid ? 1 : 0;
+  };
   nextKernel.supervisor_blocked_epoll_wait_timeout_ms ??= (vmPtr: number) => {
     if (vmPtr === 0) {
       return -14;

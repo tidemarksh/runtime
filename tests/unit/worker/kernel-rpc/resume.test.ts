@@ -605,6 +605,7 @@ test("executeHostBlockedSyscallResume skips kernel-worker shared-state syncs dur
   const syncBlockedForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const syncSocketStateViaKernelWorker = vi.fn(async () => ({ socketUsed: 0, netBufUsed: 0n }));
   const handleHostBlockedRetryResult = vi.fn();
+  const supervisorProcessOwnerMismatch = vi.fn(() => 1);
   const kernel = {
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     kernel_attach_runtime_state: vi.fn(),
@@ -636,6 +637,7 @@ test("executeHostBlockedSyscallResume skips kernel-worker shared-state syncs dur
     thread_resume_blocked_syscall: threadResumeBlockedSyscall,
     thread_status: () => 0,
     process_current_pid: () => 4,
+    supervisor_process_owner_mismatch: supervisorProcessOwnerMismatch,
     thread_a0: () => 0n,
     thread_a1: () => 0n,
     thread_process_ptr: () => 0x5000,
@@ -695,6 +697,7 @@ test("executeHostBlockedSyscallResume skips kernel-worker shared-state syncs dur
 
   await helpers.executeHostBlockedSyscallResume(handle, worker, 0x1234, 29);
 
+  expect(supervisorProcessOwnerMismatch).toHaveBeenCalledWith(0x1234, 1);
   expect(threadResumeBlockedSyscall).toHaveBeenCalledWith(0x1234);
   expect(syncBlockedForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
   expect(syncSocketStateViaKernelWorker).not.toHaveBeenCalled();

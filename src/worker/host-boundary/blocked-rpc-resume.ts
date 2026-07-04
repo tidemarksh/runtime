@@ -12,6 +12,7 @@ import {
   supervisorBlockedStatusSyncsSocketAfterResume,
 } from "../../supervisor-blocked-resume.js";
 import { forceNetworkClosedFds } from "../network-socket-close.js";
+import { supervisorProcessOwnerMismatch } from "../process-identity.js";
 import type {
   ProcessHandle,
   ThreadWorkerState,
@@ -208,8 +209,7 @@ async function executeHostBlockedSyscallResume(
         );
       }
       handle.kernelState = readKernelRuntimeState(handle.kernel);
-      const currentPid = handle.kernel.process_current_pid?.(vmPtr) ?? handle.pid;
-      const transientProcessOwnerMismatch = currentPid > 0 && currentPid !== handle.pid;
+      const transientProcessOwnerMismatch = supervisorProcessOwnerMismatch(handle.kernel, vmPtr, handle.pid);
       if (
         !transientProcessOwnerMismatch
         && !supervisorBlockedStatusIsEpollWait(handle.kernel, blockedStatus)
