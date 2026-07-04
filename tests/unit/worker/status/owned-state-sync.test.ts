@@ -1265,6 +1265,7 @@ test("active vfork child pid mismatch defers parent-owned state sync", () => {
   };
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
+  const supervisorVforkChildOwnerMismatch = vi.fn(() => 1);
   const handle = {
     pid: 1,
     vmPtr: 0x1234,
@@ -1300,7 +1301,7 @@ test("active vfork child pid mismatch defers parent-owned state sync", () => {
       abi_max_threads: () => 1,
       abi_fd_type_epoll: () => 7,
       abi_fd_type_pipe: () => 6,
-      process_current_pid: () => 3,
+      supervisor_vfork_child_owner_mismatch: supervisorVforkChildOwnerMismatch,
       process_thread_vm_ptr: () => 0,
       process_fd_ofd_id: () => 0,
       kernel_ofd_fd_type: () => 0,
@@ -1342,6 +1343,7 @@ test("active vfork child pid mismatch defers parent-owned state sync", () => {
   });
 
   expect(handled).toBe(false);
+  expect(supervisorVforkChildOwnerMismatch).toHaveBeenCalledWith(0x1234, 1);
   expect(deps.requestSocketStateSync).not.toHaveBeenCalled();
   expect(deps.syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
   expect(continueAfterOwnedStateSync).not.toHaveBeenCalled();

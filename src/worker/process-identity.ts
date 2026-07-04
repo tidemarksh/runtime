@@ -8,6 +8,25 @@ interface ProcessIdentityAssertionOptions {
   skipVmPtrs?: Iterable<number>;
 }
 
+export function supervisorVforkChildOwnerMismatch(
+  kernel: ProcessHandle["kernel"],
+  vmPtr: number,
+  runtimePid: number,
+): boolean {
+  if (vmPtr === 0 || runtimePid <= 0) {
+    return false;
+  }
+  const readMismatch = kernel.supervisor_vfork_child_owner_mismatch;
+  if (typeof readMismatch !== "function") {
+    throw new Error("kernel supervisor ABI missing supervisor_vfork_child_owner_mismatch");
+  }
+  const result = readMismatch(vmPtr, runtimePid);
+  if (result < 0) {
+    throw new Error(`kernel supervisor vfork child owner mismatch failed: ${result}`);
+  }
+  return result !== 0;
+}
+
 export function assertHandleWorkerProcessIdentity(
   handle: ProcessHandle,
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>,

@@ -14,6 +14,7 @@ import {
   targetHasIncompatibleForkSharedOfd as ownershipTargetHasIncompatibleForkSharedOfd,
 } from "../../ownership/ofd-peer.js";
 import { kernelWorkerOwnsSocketState } from "../../ownership/socket-control.js";
+import { supervisorVforkChildOwnerMismatch } from "../../process-identity.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../types.js";
 import type { WorkerMessageHandlerDeps } from "../types.js";
 import { createWorkerOwnershipGuard } from "../../ownership/process-state.js";
@@ -200,11 +201,8 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
     if (isRunningWorker && hasProcessMemfsEffect) {
       handle.processMemfsDirty = true;
     }
-    const activeVforkChildOwnerMismatch = handle.vforkSnapshot !== null
-      && handle.vforkWorker === worker
-      && handle.pid > 0
-      && typeof handle.kernel.process_current_pid === "function"
-      && handle.kernel.process_current_pid(thread.vmPtr) !== handle.pid;
+    const activeVforkChildOwnerMismatch = handle.vforkWorker === worker
+      && supervisorVforkChildOwnerMismatch(handle.kernel, thread.vmPtr, handle.pid);
     const shouldSyncForkSharedState = workerOwnsAuthoritativeState
       && handle.kernelWorkerRequest !== null
       && handle.pid > 0

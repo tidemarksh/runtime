@@ -1000,6 +1000,7 @@ test("requestPipeStateSync defers while active vfork child owns the worker pid",
     waitingInWorkerStatus: null,
     resumeWorkersOnReady: [],
   });
+  const supervisorVforkChildOwnerMismatch = vi.fn(() => 1);
   const handle = makeHandle({
     pid: 1,
     vmPtr: 0x1234,
@@ -1020,7 +1021,7 @@ test("requestPipeStateSync defers while active vfork child owns the worker pid",
     },
     kernel: {
       ...makeHandle().kernel,
-      process_current_pid: () => 3,
+      supervisor_vfork_child_owner_mismatch: supervisorVforkChildOwnerMismatch,
     },
   });
   const drainProcessOutput = vi.fn(() => true);
@@ -1034,6 +1035,7 @@ test("requestPipeStateSync defers while active vfork child owns the worker pid",
 
   await helpers.requestPipeStateSync(handle, true);
 
+  expect(supervisorVforkChildOwnerMismatch).toHaveBeenCalledWith(0x1234, 1);
   expect(handle.kernelWorkerRequest).not.toHaveBeenCalled();
   expect(drainProcessOutput).not.toHaveBeenCalled();
 });

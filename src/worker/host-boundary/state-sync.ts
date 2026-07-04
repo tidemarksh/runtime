@@ -24,7 +24,10 @@ import {
 import { kernelWorkerOwnsEpollState } from "../ownership/epoll-control.js";
 import { composeHandlePipeUsed, kernelWorkerOwnsPipeState } from "../ownership/pipe-control.js";
 import { kernelWorkerOwnsSocketState } from "../ownership/socket-control.js";
-import { assertHandleWorkerProcessIdentity } from "../process-identity.js";
+import {
+  assertHandleWorkerProcessIdentity,
+  supervisorVforkChildOwnerMismatch,
+} from "../process-identity.js";
 import {
   syncEpollStateViaKernelWorker,
   syncOfdStateViaKernelWorker,
@@ -60,19 +63,14 @@ export function createWorkerSchedulerStateSyncHelpers(
   }
 
   function hasActiveVforkChildOwnerMismatch(handle: ProcessHandle): boolean {
-    if (handle.vforkSnapshot == null || handle.vforkWorker == null || handle.pid <= 0) {
+    if (handle.vforkWorker == null || handle.pid <= 0) {
       return false;
     }
     const thread = deps.threadWorkerStates.get(handle.vforkWorker);
     if (!thread || thread.vmPtr === 0) {
       return false;
     }
-    try {
-      const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
-      return currentPid > 0 && currentPid !== handle.pid;
-    } catch {
-      return false;
-    }
+    return supervisorVforkChildOwnerMismatch(handle.kernel, thread.vmPtr, handle.pid);
   }
 
   function shouldDrainHiddenInheritedOutput(

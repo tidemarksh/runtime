@@ -49,6 +49,7 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_process_status_is_vfork_wait: 0,
   supervisor_process_status_allows_pid_mismatch: 0,
   supervisor_process_status_defers_kernel_state_adoption: 0,
+  supervisor_vfork_child_owner_mismatch: 0,
   supervisor_fault_exit_decision_bytes: 88,
   supervisor_fault_exit_decision_magic: 0x5846_5354,
   supervisor_fault_exit_kind_thread_exit: 1,
@@ -683,6 +684,10 @@ export function makeSupervisorAbiStubs(
     },
     supervisor_process_status_defers_kernel_state_adoption(this: KernelExports | undefined, status: number) {
       return supervisorProcessStatusDefersKernelStateAdoption(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_vfork_child_owner_mismatch(vmPtr: number, runtimePid: number) {
+      const result = overrides.supervisor_vfork_child_owner_mismatch?.(vmPtr, runtimePid) ?? 0;
+      return typeof result === "bigint" ? Number(result) : result;
     },
     supervisor_blocked_poll_wait_has_socket(this: KernelExports | undefined, vmPtr: number) {
       if (vmPtr === 0) {
