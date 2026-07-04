@@ -871,11 +871,8 @@ export function snapshotNetworkBridgeSocketState(
       ...watermarkedRecvFds,
     ])]
       .map((fd) => networkSocketFdStats(handle, fd));
-    for (let ofdId = 1; ofdId < handle.kernel.abi_max_fds(); ofdId += 1) {
-      if (
-        ofdSlotBytes <= 0
-        || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_socket()
-      ) {
+    for (const ofdId of collectRuntimeNetworkSocketOfdIds([handle])) {
+      if (ofdSlotBytes <= 0 || ofdId <= 0) {
         continue;
       }
       const offset = handle.kernelState.ofdTablePtr + ofdId * ofdSlotBytes;

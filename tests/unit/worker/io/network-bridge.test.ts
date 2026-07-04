@@ -55,6 +55,9 @@ type NetworkBridgeKernelFixture = {
     expectedOfd: number,
     pendingConnect: number,
   ) => number;
+  supervisor_socket_ofd_is_socket?: (ofdId: number) => number;
+  supervisor_process_socket_ofd_for_fd?: (vmPtr: number, fd: number) => number;
+  supervisor_process_socket_drain_fd?: (vmPtr: number, connectedFd: number, index: number) => number;
 };
 
 function withSupervisorSocketDefaults<T extends NetworkBridgeKernelFixture>(kernel: T): T {
@@ -90,6 +93,27 @@ function withSupervisorSocketDefaults<T extends NetworkBridgeKernelFixture>(kern
     kernel.thread_socket_close_external_peer?.(vmPtr, fd) ?? 0
   ));
   kernel.supervisor_socket_force_shutdown ??= vi.fn(() => 0);
+  kernel.supervisor_socket_ofd_is_socket ??= vi.fn((ofdId) => (
+    ofdId > 0 && kernel.kernel_ofd_fd_type?.(ofdId) === kernel.abi_fd_type_socket?.() ? 1 : 0
+  ));
+  kernel.supervisor_process_socket_ofd_for_fd ??= vi.fn((vmPtr, fd) => {
+    const ofdId = kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
+    return kernel.supervisor_socket_ofd_is_socket?.(ofdId) === 1 ? ofdId : 0;
+  });
+  kernel.supervisor_process_socket_drain_fd ??= vi.fn((vmPtr, connectedFd, index) => {
+    const connectedOfd = kernel.supervisor_process_socket_ofd_for_fd?.(vmPtr, connectedFd) ?? 0;
+    if (connectedOfd <= 0) {
+      return -1;
+    }
+    const candidates = [connectedFd];
+    const maxFds = kernel.abi_max_fds?.() ?? 0;
+    for (let fd = 0; fd < maxFds; fd += 1) {
+      if (fd !== connectedFd && kernel.supervisor_process_socket_ofd_for_fd?.(vmPtr, fd) === connectedOfd) {
+        candidates.push(fd);
+      }
+    }
+    return candidates[index] ?? -1;
+  });
   kernel.supervisor_socket_bridge_active_fd ??= vi.fn((vmPtr, preferredFd, expectedOfd, pendingConnect) => {
     if (pendingConnect !== 0 || expectedOfd <= 0) {
       return -1;

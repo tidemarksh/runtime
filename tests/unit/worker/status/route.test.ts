@@ -174,6 +174,34 @@ function makeKernel(pid: number, overrides: Record<string, unknown> = {}) {
     thread_socket_recv_available: () => 0,
     thread_socket_read_bytes: () => 0n,
     thread_socket_outbound_available: () => 0,
+    supervisor_socket_ofd_is_socket(this: Record<string, unknown>, ofdId: number) {
+      const readType = this.kernel_ofd_fd_type as ((ofdId: number) => number) | undefined;
+      const socketType = this.abi_fd_type_socket as (() => number) | undefined;
+      return ofdId > 0 && readType?.(ofdId) === socketType?.() ? 1 : 0;
+    },
+    supervisor_process_socket_ofd_for_fd(this: Record<string, unknown>, vmPtr: number, fd: number) {
+      const readOfd = this.process_fd_ofd_id as ((vmPtr: number, fd: number) => number) | undefined;
+      const isSocket = this.supervisor_socket_ofd_is_socket as ((ofdId: number) => number) | undefined;
+      const ofdId = readOfd?.(vmPtr, fd) ?? 0;
+      return isSocket?.call(this, ofdId) === 1 ? ofdId : 0;
+    },
+    supervisor_process_socket_drain_fd(this: Record<string, unknown>, vmPtr: number, connectedFd: number, index: number) {
+      const maxFds = (this.abi_max_fds as (() => number) | undefined)?.() ?? 0;
+      const socketOfdForFd = this.supervisor_process_socket_ofd_for_fd as (
+        (vmPtr: number, fd: number) => number
+      ) | undefined;
+      const connectedOfd = socketOfdForFd?.call(this, vmPtr, connectedFd) ?? 0;
+      if (connectedOfd <= 0) {
+        return -1;
+      }
+      const candidates = [connectedFd];
+      for (let fd = 0; fd < maxFds; fd += 1) {
+        if (fd !== connectedFd && socketOfdForFd?.call(this, vmPtr, fd) === connectedOfd) {
+          candidates.push(fd);
+        }
+      }
+      return candidates[index] ?? -1;
+    },
     supervisor_fs_pipe_refresh_action_none: () => 0,
     supervisor_fs_pipe_refresh_action_request_sync: () => 1,
     supervisor_fs_pipe_refresh_flag_kernel_worker_available: () => 1,

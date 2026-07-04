@@ -5,7 +5,12 @@ import type { RuntimeNetworkConnection, RuntimeNetworkEndpoint } from "../bridge
 import { requireKernelSocketCount } from "../kernel-socket-layout.js";
 import { ensureMemoryCapacity, ensureKernelMemoryCapacity, kernelScratchBase, writeKernelScratch } from "./kernel-scratch.js";
 import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
-import { kernelSocketOutboundAvailable } from "./ownership/socket-control.js";
+import {
+  kernelSocketOutboundAvailable,
+  supervisorSocketDrainFds,
+  supervisorSocketOfdForFd,
+  supervisorSocketOfdIsSocket,
+} from "./ownership/socket-control.js";
 import { forceNetworkClosedFd, restoreNetworkSocketSlotSnapshot, snapshotNetworkSocketSlot } from "./network-socket-close.js";
 import { createTransferDebugStats, type ProcessHandle } from "./types.js";
 
@@ -328,7 +333,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
       return;
     }
-    if (handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_socket?.()) {
+    if (!supervisorSocketOfdIsSocket(handle, ofdId)) {
       return;
     }
     const offset = handle.kernelState.ofdTablePtr + ofdId * slotBytes;
@@ -979,7 +984,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     if (activeHandle.networkConnections.get(fd) !== connection) {
       activeHandle.networkConnections.set(fd, connection);
     }
-    const ofdId = activeHandle.kernel.process_fd_ofd_id(vmPtr, fd);
+    const ofdId = supervisorSocketOfdForFd(activeHandle, vmPtr, fd);
     networkConnectionOfds(activeHandle).set(fd, ofdId);
     rememberNetworkOfdSlot(activeHandle, ofdId);
     deps.appendWorkerDebugLog(activeHandle, `net-read-adopt-active:${activeHandle.pid}:fd=${fd}:vm=0x${vmPtr.toString(16)}`);
@@ -1162,10 +1167,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     const readPeerAddrForFd = handle.kernel.supervisor_socket_connect_peer_addr_for_fd;
     if (readPeerAddrForFd) {
       const maxFds = handle.kernel.abi_max_fds();
-      const socketFdType = handle.kernel.abi_fd_type_socket();
       for (let fd = 0; fd < maxFds; fd += 1) {
-        const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
-        if (ofdId <= 0 || handle.kernel.kernel_ofd_fd_type(ofdId) !== socketFdType) {
+        if (supervisorSocketOfdForFd(handle, vmPtr, fd) <= 0) {
           continue;
         }
         const addrLen = readPeerAddrForFd.call(handle.kernel, vmPtr, fd, scratch, 28);
@@ -1279,7 +1282,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       clearCurrentNetworkRecvBuffer(handle, vmPtr, connect.fd);
       clearNetworkRecvWatermarks(handle, connect.fd);
       handle.networkConnections.set(connect.fd, connect.connection);
-      const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, connect.fd);
+      const ofdId = supervisorSocketOfdForFd(handle, vmPtr, connect.fd);
       networkConnectionOfds(handle).set(connect.fd, ofdId);
       rememberNetworkOfdSlot(handle, ofdId);
       handle.kernelState = readKernelRuntimeState(handle.kernel);
@@ -1459,26 +1462,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     };
 
     const socketDrainCandidates = (connectedFd: number): number[] => {
-      const candidates = [connectedFd];
-      const connectedOfd = handle.kernel.process_fd_ofd_id(vmPtr, connectedFd);
-      if (connectedOfd <= 0) {
-        return candidates;
-      }
-      const maxFds = handle.kernel.abi_max_fds();
-      for (let fd = 0; fd < maxFds; fd += 1) {
-        if (fd === connectedFd) {
-          continue;
-        }
-        const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
-        if (
-          ofdId > 0
-          && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_socket()
-          && ofdId === connectedOfd
-        ) {
-          candidates.push(fd);
-        }
-      }
-      return candidates;
+      return supervisorSocketDrainFds(handle, vmPtr, connectedFd);
     };
 
     const pendingOutboundAvailable = (connectedFd: number): number => {
@@ -1641,7 +1625,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         if (written > 0) {
           handle.transferDebugStats.networkInboundInjectCalls += 1;
           handle.transferDebugStats.networkInboundInjectedBytes += written;
-          rememberNetworkOfdSlot(handle, handle.kernel.process_fd_ofd_id(vmPtr, fd));
+          rememberNetworkOfdSlot(handle, supervisorSocketOfdForFd(handle, vmPtr, fd));
           rememberNetworkRecvPayload(handle, vmPtr, fd, written);
           networkDrainMisses.delete(connection);
           networkEofDeferrals.delete(connection);
@@ -1683,7 +1667,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     for (const [fd, connection] of [...handle.networkConnections]) {
       let activeFd = fd;
       const expectedOfd = networkConnectionOfds(handle).get(fd);
-      const currentOfd = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+      const currentOfd = supervisorSocketOfdForFd(handle, vmPtr, fd);
       if (expectedOfd !== undefined && currentOfd !== expectedOfd) {
         const replacement = findFdForOfd(expectedOfd, fd);
         if (replacement.fd === null) {
@@ -1691,7 +1675,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
             !replacement.supervisor
             && (
               currentOfd > 0
-              && handle.kernel.kernel_ofd_fd_type(currentOfd) === handle.kernel.abi_fd_type_socket()
+              && supervisorSocketOfdIsSocket(handle, currentOfd)
               && !hasPendingConnectForFd(fd)
             )
           ) {

@@ -437,6 +437,9 @@ export interface KernelExports {
   supervisor_blocked_epoll_dependent_sync_ofd?(vmPtr: number, index: number): number;
   supervisor_blocked_epoll_watches_pipe?(vmPtr: number): number;
   supervisor_process_socket_held_ofd?(vmPtr: number, index: number): number;
+  supervisor_socket_ofd_is_socket?(ofdId: number): number;
+  supervisor_process_socket_ofd_for_fd?(vmPtr: number, fd: number): number;
+  supervisor_process_socket_drain_fd?(vmPtr: number, connectedFd: number, index: number): number;
   supervisor_socket_connect_fd?(vmPtr: number): number;
   supervisor_socket_connect_peer_addr?(vmPtr: number, dstPtr: number, dstLen: number): number;
   supervisor_socket_connect_peer_addr_for_fd?(vmPtr: number, fd: number, dstPtr: number, dstLen: number): number;
@@ -1829,6 +1832,9 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_epoll_dependent_sync_ofd",
   "supervisor_blocked_epoll_watches_pipe",
   "supervisor_process_socket_held_ofd",
+  "supervisor_socket_ofd_is_socket",
+  "supervisor_process_socket_ofd_for_fd",
+  "supervisor_process_socket_drain_fd",
   "supervisor_socket_connect_fd",
   "supervisor_socket_connect_peer_addr",
   "supervisor_socket_connect_peer_addr_for_fd",

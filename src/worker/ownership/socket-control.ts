@@ -122,6 +122,58 @@ function requireSupervisorSocketBridgeActiveFd(handle: ProcessHandle) {
   return activeFd;
 }
 
+function requireSupervisorSocketOfdIsSocket(handle: ProcessHandle) {
+  const isSocket = handle.kernel.supervisor_socket_ofd_is_socket;
+  if (typeof isSocket !== "function") {
+    throw new Error("kernel supervisor ABI missing supervisor_socket_ofd_is_socket");
+  }
+  return isSocket;
+}
+
+function requireSupervisorSocketOfdForFd(handle: ProcessHandle) {
+  const ofdForFd = handle.kernel.supervisor_process_socket_ofd_for_fd;
+  if (typeof ofdForFd !== "function") {
+    throw new Error("kernel supervisor ABI missing supervisor_process_socket_ofd_for_fd");
+  }
+  return ofdForFd;
+}
+
+function requireSupervisorSocketDrainFd(handle: ProcessHandle) {
+  const drainFd = handle.kernel.supervisor_process_socket_drain_fd;
+  if (typeof drainFd !== "function") {
+    throw new Error("kernel supervisor ABI missing supervisor_process_socket_drain_fd");
+  }
+  return drainFd;
+}
+
+export function supervisorSocketOfdIsSocket(handle: ProcessHandle, ofdId: number): boolean {
+  return ofdId > 0 && requireSupervisorSocketOfdIsSocket(handle).call(handle.kernel, ofdId) === 1;
+}
+
+export function supervisorSocketOfdForFd(handle: ProcessHandle, vmPtr: number, fd: number): number {
+  if (vmPtr === 0 || fd < 0) {
+    return 0;
+  }
+  return requireSupervisorSocketOfdForFd(handle).call(handle.kernel, vmPtr, fd);
+}
+
+export function supervisorSocketDrainFds(handle: ProcessHandle, vmPtr: number, connectedFd: number): number[] {
+  if (vmPtr === 0 || connectedFd < 0) {
+    return [];
+  }
+  const readDrainFd = requireSupervisorSocketDrainFd(handle);
+  const maxFds = handle.kernel.abi_max_fds();
+  const fds: number[] = [];
+  for (let index = 0; index < maxFds; index += 1) {
+    const fd = readDrainFd.call(handle.kernel, vmPtr, connectedFd, index);
+    if (fd < 0) {
+      break;
+    }
+    fds.push(fd);
+  }
+  return fds;
+}
+
 type SocketStatusDebug = (handle: ProcessHandle, event: string) => void;
 
 export interface PreservedNetworkSocketSlot {
@@ -168,7 +220,7 @@ export function restoreNetworkOfdSlotWatermarks(
     if (!slot || slot.length !== slotBytes || ofdId <= 0 || ofdId >= maxFds) {
       continue;
     }
-    if (handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_socket()) {
+    if (supervisorSocketOfdIsSocket(handle, ofdId)) {
       continue;
     }
     memory.set(slot, handle.kernelState.ofdTablePtr + ofdId * slotBytes);
@@ -258,7 +310,7 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
   for (const [fd, connection] of [...handle.networkConnections]) {
     const fdEntry = fdEntries.find((entry) => entry.fd === fd);
     const expectedOfd = ofds.get(fd);
-    const currentOfd = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    const currentOfd = supervisorSocketOfdForFd(handle, vmPtr, fd);
     let supervisorDecidedClose = false;
     if (expectedOfd === undefined) {
       if (currentOfd > 0) {
@@ -285,7 +337,7 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
         supervisorDecidedClose = true;
       } else if (
         currentOfd > 0
-        && handle.kernel.kernel_ofd_fd_type(currentOfd) === handle.kernel.abi_fd_type_socket()
+        && supervisorSocketOfdIsSocket(handle, currentOfd)
         && !handle.networkPendingConnectFds.has(fd)
       ) {
         ofds.set(fd, currentOfd);
@@ -313,12 +365,7 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
 }
 
 export function isSocketOfd(handle: ProcessHandle, ofdId: number): boolean {
-  if (ofdId <= 0) {
-    return false;
-  }
-  const fdType = handle.kernel.kernel_ofd_fd_type?.(ofdId);
-  const socketType = handle.kernel.abi_fd_type_socket?.();
-  return fdType === undefined || socketType === undefined || fdType === socketType;
+  return supervisorSocketOfdIsSocket(handle, ofdId);
 }
 
 export function findSocketFdForOfd(
@@ -327,12 +374,12 @@ export function findSocketFdForOfd(
   ofdId: number,
   preferredFd: number,
 ): number | null {
-  if (isSocketOfd(handle, ofdId) && socketOfdForFd(handle, vmPtr, preferredFd) === ofdId) {
+  if (isSocketOfd(handle, ofdId) && supervisorSocketOfdForFd(handle, vmPtr, preferredFd) === ofdId) {
     return preferredFd;
   }
   const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
   for (let fd = 0; fd < maxFds; fd += 1) {
-    if (fd !== preferredFd && socketOfdForFd(handle, vmPtr, fd) === ofdId && isSocketOfd(handle, ofdId)) {
+    if (fd !== preferredFd && supervisorSocketOfdForFd(handle, vmPtr, fd) === ofdId && isSocketOfd(handle, ofdId)) {
       return fd;
     }
   }
@@ -363,7 +410,7 @@ export function restoreRuntimeNetworkSidecarForHandle(
   if (handle.networkBridge) {
     for (const member of relatedHandles) {
       for (const [sourceFd, connection] of member.networkConnections) {
-        const sourceOfd = socketOfdForFd(member, member.vmPtr, sourceFd);
+        const sourceOfd = supervisorSocketOfdForFd(member, member.vmPtr, sourceFd);
         if (!isSocketOfd(member, sourceOfd)) {
           continue;
         }
@@ -426,7 +473,7 @@ export function collectRuntimeNetworkSocketOfdIds(handles: Iterable<ProcessHandl
       if (
         ofdId > 0
         && ofdId < maxFds
-        && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_socket()
+        && supervisorSocketOfdIsSocket(handle, ofdId)
       ) {
         ofdIds.add(ofdId);
       }
@@ -437,15 +484,14 @@ export function collectRuntimeNetworkSocketOfdIds(handles: Iterable<ProcessHandl
     const networkFds = runtimeNetworkFds(handle);
     for (const fd of networkFds) {
       if (fd >= 0 && fd < maxFds && handle.vmPtr !== 0) {
-        addOfd(handle.kernel.process_fd_ofd_id(handle.vmPtr, fd));
+        addOfd(supervisorSocketOfdForFd(handle, handle.vmPtr, fd));
       }
     }
     for (const [ofdId, slot] of handle.networkOfdSlotWatermarks ?? []) {
       if (ofdId <= 0 || ofdId >= maxFds) {
         continue;
       }
-      const view = new DataView(slot.buffer, slot.byteOffset, slot.byteLength);
-      if (view.getInt32(OFD_TYPE_OFFSET, true) === handle.kernel.abi_fd_type_socket()) {
+      if (slot.byteLength >= OFD_TYPE_OFFSET + 4 && supervisorSocketOfdIsSocket(handle, ofdId)) {
         ofdIds.add(ofdId);
       }
     }

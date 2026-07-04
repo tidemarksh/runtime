@@ -234,6 +234,26 @@ function makeKernel(
       const pipeMode = pipeModeForOfd(ofdId);
       return pipeMode?.pipeSlot === pipeSlot ? pipeMode.mode : 0;
     },
+    supervisor_socket_ofd_is_socket: (ofdId: number) => (
+      ofdId > 0 && ofdId < 32 && readOfdInt32(ofdId, 0) === FD_TYPE_SOCKET ? 1 : 0
+    ),
+    supervisor_process_socket_ofd_for_fd: (_vmPtr: number, fd: number) => {
+      const ofdId = fdMap.get(fd) ?? 0;
+      return ofdId > 0 && readOfdInt32(ofdId, 0) === FD_TYPE_SOCKET ? ofdId : 0;
+    },
+    supervisor_process_socket_drain_fd: (_vmPtr: number, connectedFd: number, index: number) => {
+      const connectedOfd = fdMap.get(connectedFd) ?? 0;
+      if (connectedOfd <= 0 || readOfdInt32(connectedOfd, 0) !== FD_TYPE_SOCKET) {
+        return -1;
+      }
+      const candidates = [connectedFd];
+      for (const [fd, ofdId] of fdMap) {
+        if (fd !== connectedFd && ofdId === connectedOfd) {
+          candidates.push(fd);
+        }
+      }
+      return candidates[index] ?? -1;
+    },
     kernel_heap_base: () => state.heapBase,
     kernel_heap_ptr: () => state.heapPtr,
     kernel_ofd_table_ptr: () => state.ofdTablePtr,
