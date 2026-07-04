@@ -5,6 +5,7 @@ import {
   forceNetworkClosedFds,
 } from "../../network-socket-close.js";
 import {
+  kernelSocketOutboundAvailable,
   preserveNetworkSocketSlots,
   restoreNetworkSocketSlots,
   runtimeNetworkFds,
@@ -217,14 +218,14 @@ export function applyThreadSocketState(handle: ProcessHandle, msg: ThreadWorkerS
       buf,
       recv,
       ht: readNetworkRecvBufferDebug(handle, socketIdx),
-      avail: handle.kernel.thread_socket_outbound_available?.(msg.vmPtr, fd) ?? -1,
+      avail: kernelSocketOutboundAvailable(handle, msg.vmPtr, fd),
     };
   };
   const before = STATUS_SOCKET_DEBUG_LOG_ENABLED && debugFds.size > 0
     ? [...debugFds].map((fd) => socketDebugEntry(fd, "status-before"))
     : [];
   const pendingOutboundFds = [...debugFds].filter((fd) =>
-    (handle.kernel.thread_socket_outbound_available?.(msg.vmPtr, fd) ?? 0) > 0
+    kernelSocketOutboundAvailable(handle, msg.vmPtr, fd) > 0
   );
   if (pendingOutboundFds.length > 0) {
     appendStatusSocketDebug(

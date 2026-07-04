@@ -32,6 +32,7 @@ type NetworkBridgeKernelFixture = {
   thread_socket_recv_available?: (socketIdx: number) => number;
   thread_socket_recv_buf_idx?: (socketIdx: number) => number;
   thread_socket_read_bytes?: (socketIdx: number) => bigint | number;
+  thread_socket_outbound_available?: (vmPtr: number, fd: number) => number;
   thread_socket_mark_external_peer?: (vmPtr: number, fd: number) => number | undefined;
   thread_socket_commit_external_connect?: (vmPtr: number, fd: number) => number | undefined;
   thread_socket_close_external_peer?: (vmPtr: number, fd: number) => number | undefined;
@@ -62,6 +63,7 @@ function withSupervisorSocketDefaults<T extends NetworkBridgeKernelFixture>(kern
   kernel.thread_socket_recv_available ??= vi.fn(() => 0);
   kernel.thread_socket_recv_buf_idx ??= vi.fn(() => 0);
   kernel.thread_socket_read_bytes ??= vi.fn(() => 0n);
+  kernel.thread_socket_outbound_available ??= vi.fn(() => 0);
   kernel.supervisor_socket_commit_external_connect_result ??= vi.fn((_vmPtr, _fd, result) => {
     const signedResult = BigInt.asIntN(64, result);
     const einprogress = BigInt(kernel.abi_einprogress?.() ?? -115);

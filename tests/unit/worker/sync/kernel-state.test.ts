@@ -179,6 +179,7 @@ function makeKernel(
     kernel_net_buf_base: () => state.netBufBase,
     kernel_net_buf_pool_bytes: () => 32 * (16 + 8192),
     kernel_net_buf_used: () => state.netBufUsed,
+    thread_socket_outbound_available: () => 0,
     kernel_sig_slots_ptr: () => state.sigSlotsPtr,
     kernel_process_pending_ptr: () => state.processPendingPtr,
     kernel_process_runtime_state_ptr: () => state.processRuntimeStatePtr,

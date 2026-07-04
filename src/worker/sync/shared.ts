@@ -55,6 +55,7 @@ import {
 } from "../ownership/fd-table.js";
 import {
   collectRuntimeNetworkSocketOfdIds,
+  kernelSocketOutboundAvailable,
   runtimeNetworkFds,
 } from "../ownership/socket-control.js";
 import type { ProcessHandle } from "../types.js";
@@ -932,7 +933,7 @@ export function networkBridgeOutboundAvailable(handle: ProcessHandle): boolean {
     ...(handle.networkConnections?.keys() ?? []),
     ...(handle.networkPendingConnectFds ?? []),
   ])];
-  return fds.some((fd) => (handle.kernel.thread_socket_outbound_available?.(handle.vmPtr, fd) ?? 0) > 0);
+  return fds.some((fd) => kernelSocketOutboundAvailable(handle, handle.vmPtr, fd) > 0);
 }
 
 export function counterAhead(sourceValue: number, targetValue: number, capacity: number): boolean {

@@ -5,6 +5,7 @@ import type { RuntimeNetworkConnection, RuntimeNetworkEndpoint } from "../bridge
 import { kernelSocketCount, requireKernelSocketCount } from "../kernel-socket-layout.js";
 import { ensureMemoryCapacity, ensureKernelMemoryCapacity, kernelScratchBase, writeKernelScratch } from "./kernel-scratch.js";
 import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
+import { kernelSocketOutboundAvailable } from "./ownership/socket-control.js";
 import { forceNetworkClosedFd, restoreNetworkSocketSlotSnapshot, snapshotNetworkSocketSlot } from "./network-socket-close.js";
 import { createTransferDebugStats, type ProcessHandle } from "./types.js";
 
@@ -1493,8 +1494,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     const pendingOutboundAvailable = (connectedFd: number): number => {
       let total = 0;
       for (const fd of socketDrainCandidates(connectedFd)) {
-        const available = handle.kernel.thread_socket_outbound_available?.(vmPtr, fd);
-        if (available !== undefined && available > 0) {
+        const available = kernelSocketOutboundAvailable(handle, vmPtr, fd);
+        if (available > 0) {
           total += available;
         }
       }

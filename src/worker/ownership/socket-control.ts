@@ -22,6 +22,14 @@ export function runtimeNetworkFds(handle: ProcessHandle): Set<number> {
   ]);
 }
 
+export function kernelSocketOutboundAvailable(handle: ProcessHandle, vmPtr: number, fd: number): number {
+  const readOutboundAvailable = handle.kernel.thread_socket_outbound_available;
+  if (typeof readOutboundAvailable !== "function") {
+    throw new Error("kernel supervisor ABI missing thread_socket_outbound_available");
+  }
+  return readOutboundAvailable(vmPtr, fd);
+}
+
 export function socketOfdForFd(handle: ProcessHandle, vmPtr: number, fd: number): number {
   return handle.kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
 }
