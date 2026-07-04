@@ -229,11 +229,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       const shouldSyncSocketState = (completedSyncEffects & syncEffects.syncEffectSocketState) !== 0;
       const shouldSyncLifecycle = (completedSyncEffects & syncEffects.syncEffectProcessLifecycle) !== 0;
       const shouldWakeSignalWaiters = (completedSyncEffects & syncEffects.syncEffectSignalWaiters) !== 0;
-      if (
-        handle.kernelWorkerRequest
-        && handle.pid > 0
-        && (shouldSyncPipeState || shouldSyncSocketState || shouldSyncLifecycle)
-      ) {
+      if (shouldSyncPipeState || shouldSyncSocketState || shouldSyncLifecycle) {
         deps.appendWorkerDebugLog(handle, `ok-sync-start:0x${thread.vmPtr.toString(16)}`);
         thread.ownerAsyncStatus = status;
         const syncPipeState = shouldSyncPipeState
@@ -463,7 +459,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           thread.waitingInWorkerStatus = null;
         };
         const shouldSyncPipeState = (completedSyncEffects & syncEffects.syncEffectPipeState) !== 0;
-        if (handle.kernelWorkerRequest && handle.pid > 0 && shouldSyncPipeState) {
+        if (shouldSyncPipeState) {
           void deps.requestPipeStateSync(handle, false)
             .then(() => {
               if (!workerStillOwnedByHandle()) {
@@ -710,76 +706,68 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         }
       };
 
-      if (handle.kernelWorkerRequest && handle.pid > 0) {
-        thread.ownerAsyncStatus = status;
-        const cloneSpawnAsyncToken = (cloneSpawnAsyncTokens.get(thread) ?? 0) + 1;
-        cloneSpawnAsyncTokens.set(thread, cloneSpawnAsyncToken);
-        const isCurrentCloneSpawnAsync = (): boolean =>
-          cloneSpawnAsyncTokens.get(thread) === cloneSpawnAsyncToken
-          && (thread.ownerAsyncStatus ?? null) === status;
-        if (CLONE_SPAWN_DEBUG_ENABLED) {
-          deps.appendRuntimeLifecycleEvent(
-            handle.runtimeId,
-            `clone-spawn-sync-start:${handle.pid}:0x${thread.vmPtr.toString(16)}`
-              + `:child=pending`,
-          );
-        }
-        void deps.syncProcessLifecycleViaKernelWorker(handle, thread.vmPtr)
-          .then(() => {
+      thread.ownerAsyncStatus = status;
+      const cloneSpawnAsyncToken = (cloneSpawnAsyncTokens.get(thread) ?? 0) + 1;
+      cloneSpawnAsyncTokens.set(thread, cloneSpawnAsyncToken);
+      const isCurrentCloneSpawnAsync = (): boolean =>
+        cloneSpawnAsyncTokens.get(thread) === cloneSpawnAsyncToken
+        && (thread.ownerAsyncStatus ?? null) === status;
+      if (CLONE_SPAWN_DEBUG_ENABLED) {
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `clone-spawn-sync-start:${handle.pid}:0x${thread.vmPtr.toString(16)}`
+            + `:child=pending`,
+        );
+      }
+      void deps.syncProcessLifecycleViaKernelWorker(handle, thread.vmPtr)
+        .then(() => {
+          if (CLONE_SPAWN_DEBUG_ENABLED) {
+            deps.appendRuntimeLifecycleEvent(
+              handle.runtimeId,
+              `clone-spawn-sync-done:${handle.pid}:0x${thread.vmPtr.toString(16)}`
+                + `:owned=${workerStillOwnedByHandle() ? 1 : 0}`
+                + `:threads=[${formatProcessThreadSlots(handle, thread.vmPtr)}]`,
+            );
+          }
+          if (!workerStillOwnedByHandle()) {
+            return;
+          }
+          if (!isCurrentCloneSpawnAsync()) {
             if (CLONE_SPAWN_DEBUG_ENABLED) {
               deps.appendRuntimeLifecycleEvent(
                 handle.runtimeId,
-                `clone-spawn-sync-done:${handle.pid}:0x${thread.vmPtr.toString(16)}`
-                  + `:owned=${workerStillOwnedByHandle() ? 1 : 0}`
-                  + `:threads=[${formatProcessThreadSlots(handle, thread.vmPtr)}]`,
+                `clone-spawn-sync-stale:${handle.pid}:0x${thread.vmPtr.toString(16)}`
+                  + `:token=${cloneSpawnAsyncToken}`,
               );
             }
-            if (!workerStillOwnedByHandle()) {
-              return;
-            }
-            if (!isCurrentCloneSpawnAsync()) {
-              if (CLONE_SPAWN_DEBUG_ENABLED) {
-                deps.appendRuntimeLifecycleEvent(
-                  handle.runtimeId,
-                  `clone-spawn-sync-stale:${handle.pid}:0x${thread.vmPtr.toString(16)}`
-                    + `:token=${cloneSpawnAsyncToken}`,
-                );
-              }
-              return;
-            }
-            if (!spawnCloneChild()) {
-              thread.ownerAsyncStatus = null;
-              return;
-            }
-            finishCloneSpawn();
-          })
-          .catch((error) => {
-            const currentCloneSpawnAsync = isCurrentCloneSpawnAsync();
-            if (currentCloneSpawnAsync) {
-              thread.ownerAsyncStatus = null;
-            }
-            if (CLONE_SPAWN_DEBUG_ENABLED) {
-              deps.appendRuntimeLifecycleEvent(
-                handle.runtimeId,
-                `clone-spawn-sync-error:${handle.pid}:0x${thread.vmPtr.toString(16)}`
-                  + `:${error instanceof Error ? error.message : String(error)}`,
-              );
-            }
-            if (!workerStillOwnedByHandle()) {
-              return;
-            }
-            if (!currentCloneSpawnAsync) {
-              return;
-            }
-            deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-          });
-        return;
-      }
-
-      if (!spawnCloneChild()) {
-        return;
-      }
-      finishCloneSpawn();
+            return;
+          }
+          if (!spawnCloneChild()) {
+            thread.ownerAsyncStatus = null;
+            return;
+          }
+          finishCloneSpawn();
+        })
+        .catch((error) => {
+          const currentCloneSpawnAsync = isCurrentCloneSpawnAsync();
+          if (currentCloneSpawnAsync) {
+            thread.ownerAsyncStatus = null;
+          }
+          if (CLONE_SPAWN_DEBUG_ENABLED) {
+            deps.appendRuntimeLifecycleEvent(
+              handle.runtimeId,
+              `clone-spawn-sync-error:${handle.pid}:0x${thread.vmPtr.toString(16)}`
+                + `:${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+          if (!workerStillOwnedByHandle()) {
+            return;
+          }
+          if (!currentCloneSpawnAsync) {
+            return;
+          }
+          deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+        });
       return;
     }
 
@@ -820,11 +808,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             + `:kernel_child=${handle.kernel.thread_vfork_child_pid()}`,
         );
       }
-      if (
-        handle.kernelWorkerRequest
-        && handle.pid > 0
-        && handle.vforkSnapshot.childPid === null
-      ) {
+      if (handle.vforkSnapshot.childPid === null) {
         deps.pumpProcess(handle);
         void deps.syncForkSharedStateViaKernelWorker(
           handle,
@@ -875,36 +859,6 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
           });
         return;
-      }
-      if (
-        handle.kernelWorkerRequest
-        && handle.pid > 0
-        && handle.vforkSnapshot.childPid === null
-      ) {
-        const provisionalChildPid = handle.kernel.thread_vfork_child_pid();
-        if (provisionalChildPid > 0) {
-          deps.appendRuntimeLifecycleEvent(
-            handle.runtimeId,
-            `vfork-wait-canonicalize:start:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
-              + `:child=${provisionalChildPid}`,
-          );
-          void deps.canonicalizeActiveVforkChildViaKernelWorker(
-            handle,
-            worker,
-            thread.vmPtr,
-            provisionalChildPid,
-          ).then((outcome) => {
-            deps.appendRuntimeLifecycleEvent(
-              handle.runtimeId,
-              `vfork-wait-canonicalize:done:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
-                + `:child=${provisionalChildPid}:outcome=${outcome?.kind ?? "none"}`,
-            );
-            if (outcome !== undefined) {
-              consumeKernelRpcResumeOutcome(handle, worker, thread.vmPtr, outcome);
-            }
-          });
-          return;
-        }
       }
       deps.enqueueWorker(handle, worker);
       return;

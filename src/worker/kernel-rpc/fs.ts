@@ -71,6 +71,7 @@ import {
 } from "./outcomes.js";
 import { submitSupervisorShadowStatusEvent } from "../supervisor-shadow.js";
 import { supervisorProcessStatusIsExecveSpawn } from "../supervisor-status.js";
+import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 import { expectKernelWorkerResponse } from "./transport.js";
 
 const FS_DEBUG_PATH_BUF_LEN = 4096;
@@ -1306,9 +1307,7 @@ async function resumeFsViaKernelWorkerInner(
   const pendingRingRequest = supervisorPendingRingRequest(handle, vmPtr);
   const regularFilePendingFs = supervisorPendingRegularFileFsRequest(handle, vmPtr);
   const regularFileOnlyPendingFs = regularFilePendingFs !== null;
-  if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-    throw new Error("resumeFsViaKernelWorker requires kernel-worker ownership");
-  }
+  const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "resumeFsViaKernelWorker");
 
   try {
     deps.appendWorkerDebugLog(handle, `fs-start:0x${vmPtr.toString(16)}${fsDebugSuffix}`);
@@ -1351,7 +1350,7 @@ async function resumeFsViaKernelWorkerInner(
     deps.assertProcessStandardFdIntegrity(handle, "resume-fs-before");
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     const requestFsFdState = snapshotFsFdState(handle, vmPtr);
-    const processFsResponse = await handle.kernelWorkerRequest({
+    const processFsResponse = await kernelWorkerRequest({
       type: "process-fs",
       pid: handle.pid,
       vmPtr,

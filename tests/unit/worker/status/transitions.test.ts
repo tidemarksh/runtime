@@ -1154,7 +1154,7 @@ test("STATUS_SLEEP arms supervisor host timer HostOp and reports completion", as
   expect(deps.pumpProcess).toHaveBeenCalledTimes(2);
 });
 
-test("STATUS_CLONE_SPAWN ignores stale duplicate after kernel status moved on", () => {
+test("STATUS_CLONE_SPAWN ignores stale duplicate after kernel status moved on", async () => {
   const worker = {} as Worker;
   const handle = makeHandle(worker);
   handle.pid = 1;
@@ -1162,6 +1162,7 @@ test("STATUS_CLONE_SPAWN ignores stale duplicate after kernel status moved on", 
   handle.kernel.thread_status = () => handle.kernel.abi_status_ok();
   handle.kernel.thread_spawn_from_clone = vi.fn(() => 0);
   const deps = makeDeps(worker);
+  deps.threadWorkerStates.get(worker)!.ownerPid = handle.pid;
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   expect(() => transition({
@@ -1183,6 +1184,9 @@ test("STATUS_CLONE_SPAWN ignores stale duplicate after kernel status moved on", 
     completedSyncEffects: 0,
   })).not.toThrow();
 
+  await Promise.resolve();
+  await Promise.resolve();
+
   expect(handle.kernel.thread_spawn_from_clone).not.toHaveBeenCalled();
   expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
     77,
@@ -1197,7 +1201,7 @@ test("STATUS_CLONE_SPAWN ignores stale duplicate after kernel status moved on", 
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
 });
 
-test("STATUS_CLONE_SPAWN attaches child from supervisor HostOp record", () => {
+test("STATUS_CLONE_SPAWN attaches child from supervisor HostOp record", async () => {
   const workerConstructor = vi.fn(function WorkerMock(this: Worker) {
     Object.assign(this, {
       postMessage: vi.fn(),
@@ -1262,6 +1266,8 @@ test("STATUS_CLONE_SPAWN attaches child from supervisor HostOp record", () => {
     completedSyncEffects: 0,
   });
 
+  await Promise.resolve();
+
   expect(kernel.supervisor_next_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
   expect(kernel.thread_spawn_from_clone).not.toHaveBeenCalled();
   expect(deps.attachThreadWorker).toHaveBeenCalledWith(handle, {
@@ -1276,7 +1282,7 @@ test("STATUS_CLONE_SPAWN attaches child from supervisor HostOp record", () => {
   );
 });
 
-test("STATUS_CLONE_SPAWN drains clone HostOp by kind without consuming pending timer", () => {
+test("STATUS_CLONE_SPAWN drains clone HostOp by kind without consuming pending timer", async () => {
   const workerConstructor = vi.fn(function WorkerMock(this: Worker) {
     Object.assign(this, {
       postMessage: vi.fn(),
@@ -1367,6 +1373,8 @@ test("STATUS_CLONE_SPAWN drains clone HostOp by kind without consuming pending t
     drainedPipe: false,
     completedSyncEffects: 0,
   });
+
+  await Promise.resolve();
 
   expect(kernel.supervisor_next_host_op_kind).toHaveBeenCalledWith(1, expect.any(Number), 64);
   expect(kernel.supervisor_next_host_op).not.toHaveBeenCalled();
@@ -1523,7 +1531,7 @@ test("STATUS_FUTEX_WAIT parks after supervisor HostOp poll returns no timer", ()
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
 });
 
-test("STATUS_CLONE_SPAWN still fails when spawn handoff is missing at current clone status", () => {
+test("STATUS_CLONE_SPAWN still fails when spawn handoff is missing at current clone status", async () => {
   const worker = {} as Worker;
   const handle = makeHandle(worker);
   handle.pid = 1;
@@ -1531,9 +1539,10 @@ test("STATUS_CLONE_SPAWN still fails when spawn handoff is missing at current cl
   handle.kernel.thread_status = () => handle.kernel.abi_status_clone_spawn();
   handle.kernel.thread_spawn_from_clone = vi.fn(() => 0);
   const deps = makeDeps(worker);
+  deps.threadWorkerStates.get(worker)!.ownerPid = handle.pid;
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
-  expect(() => transition({
+  transition({
     handle: handle as never,
     worker,
     thread: deps.threadWorkerStates.get(worker)! as never,
@@ -1550,14 +1559,22 @@ test("STATUS_CLONE_SPAWN still fails when spawn handoff is missing at current cl
     wroteToPipe: false,
     drainedPipe: false,
     completedSyncEffects: 0,
-  })).toThrow("kernel supervisor ABI missing clone spawn HostOp exports for pid=1");
+  });
+
+  await Promise.resolve();
+  await Promise.resolve();
 
   expect(handle.kernel.thread_spawn_from_clone).not.toHaveBeenCalled();
-  expect(deps.appendRuntimeLifecycleEvent).not.toHaveBeenCalled();
+  expect(deps.failProcess).toHaveBeenCalledWith(
+    handle,
+    expect.objectContaining({
+      message: "kernel supervisor ABI missing clone spawn HostOp exports for pid=1",
+    }),
+  );
   expect(deps.attachThreadWorker).not.toHaveBeenCalled();
 });
 
-test("STATUS_CLONE_SPAWN holds parent until attached child reports ready", () => {
+test("STATUS_CLONE_SPAWN holds parent until attached child reports ready", async () => {
   const workerConstructor = vi.fn(function WorkerMock(this: Worker) {
     Object.assign(this, {
       postMessage: vi.fn(),
@@ -1617,6 +1634,8 @@ test("STATUS_CLONE_SPAWN holds parent until attached child reports ready", () =>
     drainedPipe: false,
     completedSyncEffects: 0,
   });
+
+  await Promise.resolve();
 
   expect(thread.ownerAsyncStatus).toBe(25);
   expect(childThread?.resumeWorkersOnReady).toEqual([worker]);

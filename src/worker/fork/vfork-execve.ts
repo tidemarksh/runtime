@@ -642,112 +642,84 @@ export async function handleVforkExecve(
   reconcileInheritedSharedOfdsAfterVforkExecve(handle, inheritedSharedOfdIds);
   adoptKernelShare(handle, childHandle);
   trackVforkExecveChildSharedOfds(childHandle, childExecFdEntries);
-  if (handle.kernelWorkerRequest && handle.pid > 0) {
-    const sharedOfdIds = activeKernelShareOfdIds(handle);
-    const childHeldOfdIds = collectProcessHeldOfds(childHandle);
-    const rehydratedSharedOfdIds = sharedOfdIds.filter((ofdId) => !childHeldOfdIds.has(ofdId));
-    const procSelfExeTarget = execveGuestPayload.path.length > 0
-      && execveGuestPayload.path[execveGuestPayload.path.length - 1] === 0
-      ? execveGuestPayload.path.slice(0, -1)
-      : execveGuestPayload.path;
-    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-register:start:${childPid}`);
-    await deps.registerProcessWithKernelWorker(childHandle, {
-      seedMemfsMode: "none",
-      pipeSeedMode: "process",
-    });
-    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-register:done:${childPid}`);
-    assertVforkParentState(handle, parentThread.vmPtr, "parent-post-child-register");
-    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-registered:${childPid}`);
-    handle.lastDebugMessage = `vfork-execve:child-registered child=${childPid}`;
-    deps.assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-register");
-    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-sync:start:${childPid}`);
-    trackVforkExecveChildSharedOfds(childHandle, childExecFdEntries);
-    await deps.syncForkSharedStateViaKernelWorker(childHandle, kernelShareOtherMembers(childHandle), {
-      cause: { kind: "fork-child-ready", childPid },
-      includeMemfs: false,
-      trackHeldOfds: false,
-    });
-    trackVforkExecveChildSharedOfds(childHandle, childExecFdEntries);
-    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-sync:done:${childPid}`);
-    assertVforkParentState(handle, parentThread.vmPtr, "parent-post-child-sync");
-    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-synced:${childPid}`);
-    handle.lastDebugMessage = `vfork-execve:child-synced child=${childPid}`;
-    deps.assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-sync-fork-shared-state");
-    const preservedOfdSlots = snapshotKernelShareOfdSlots(childHandle, childHeldOfdIds);
-    const preservedPipeSlots = snapshotLocalPipeSlots(childHandle, childHeldOfdIds);
-    // Keep the execve-completed MemFS image intact. Unlike the plain fork path,
-    // vfork+execve has already rebuilt the child process in-place, so clearing
-    // MemFS here drops executable file bodies and makes later execve
-    // lookups fail with ENOENT.
-    discardCopiedSharedKernelObjects(childHandle, preservedOfdSlots, {
-      clearMemfs: false,
-    });
-    deps.assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-discard");
-    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-rehydrate:start:${childPid}`);
-    await deps.rehydrateForkSharedStateViaKernelWorker([childHandle], rehydratedSharedOfdIds, {
-      cause: { kind: "fork-child-ready", childPid },
-      procSelfExeTargets: procSelfExeTarget.length > 0
-        ? [{ pid: childHandle.pid, bytes: procSelfExeTarget }]
-        : undefined,
-      includeMemfs: false,
-    });
-    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-rehydrate:done:${childPid}`);
-    assertVforkParentState(handle, parentThread.vmPtr, "parent-post-child-rehydrate");
-    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-rehydrated:${childPid}`);
-    deps.appendRuntimeLifecycleEvent(
-      handle.runtimeId,
-      `vfork-execve:child-fds:${childPid}:${formatPipeCounterDebug(childHandle, 1)}:${formatPipeCounterDebug(childHandle, 2)}`,
-    );
-    deps.appendWorkerDebugLog(childHandle, `vfork-child-fds:${childPid}:${formatOpenFdSummary(childHandle)}`);
-    handle.lastDebugMessage = `vfork-execve:child-rehydrated child=${childPid}`;
-    restoreLocalOfdSlots(childHandle, preservedOfdSlots);
-    restoreLocalPipeSlots(childHandle, preservedPipeSlots);
-    restoreProcessFdEntries(childHandle, childVmPtr, childExecFdEntries);
-    alignPipeOfdGenerationOffsets(childHandle, collectProcessHeldOfds(childHandle));
-    trackVforkExecveChildSharedOfds(childHandle, childExecFdEntries);
-    deps.appendRuntimeLifecycleEvent(
-      handle.runtimeId,
-      `vfork-execve:child-fds-restored:${childPid}:${formatOpenFdSummary(childHandle)}`,
-    );
-    deps.assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-rehydrate");
-  } else {
-    const childHeldOfdIds = collectProcessHeldOfds(childHandle);
-    const preservedOfdSlots = snapshotKernelShareOfdSlots(childHandle, childHeldOfdIds);
-    const preservedPipeSlots = snapshotLocalPipeSlots(childHandle, childHeldOfdIds);
-    deps.syncForkSharedStateLocally(childHandle, kernelShareOtherMembers(childHandle), {
-      cause: { kind: "fork-child-ready", childPid },
-      includeMemfs: false,
-      trackHeldOfds: false,
-    });
-    discardCopiedSharedKernelObjects(childHandle, null, {
-      clearMemfs: false,
-    });
-    deps.syncForkSharedStateLocally(handle, [childHandle], {
-      cause: { kind: "fork-child-ready", childPid },
-      includeMemfs: false,
-    });
-    restoreLocalOfdSlots(childHandle, preservedOfdSlots);
-    restoreLocalPipeSlots(childHandle, preservedPipeSlots);
-    restoreProcessFdEntries(childHandle, childVmPtr, childExecFdEntries);
-    alignPipeOfdGenerationOffsets(childHandle, collectProcessHeldOfds(childHandle));
-    deps.appendRuntimeLifecycleEvent(
-      handle.runtimeId,
-      `vfork-execve:child-fds-restored:${childPid}:${formatOpenFdSummary(childHandle)}`,
-    );
-  }
-  if (childHandle.kernelWorkerRequest && childHandle.pid > 0) {
-    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-lifecycle:start:${childPid}`);
-    await deps.initializeProcessLifecycleViaKernelWorker(
-      childHandle,
-      childVmPtr,
-      childLifecycle.ppid,
-      childLifecycle.nextPid,
-      childLifecycle.pgid,
-      childLifecycle.sid,
-      true,
-    );
-    deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-lifecycle:done:${childPid}`);
-  }
+  const sharedOfdIds = activeKernelShareOfdIds(handle);
+  const childHeldOfdIds = collectProcessHeldOfds(childHandle);
+  const rehydratedSharedOfdIds = sharedOfdIds.filter((ofdId) => !childHeldOfdIds.has(ofdId));
+  const procSelfExeTarget = execveGuestPayload.path.length > 0
+    && execveGuestPayload.path[execveGuestPayload.path.length - 1] === 0
+    ? execveGuestPayload.path.slice(0, -1)
+    : execveGuestPayload.path;
+  deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-register:start:${childPid}`);
+  await deps.registerProcessWithKernelWorker(childHandle, {
+    seedMemfsMode: "none",
+    pipeSeedMode: "process",
+  });
+  deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-register:done:${childPid}`);
+  assertVforkParentState(handle, parentThread.vmPtr, "parent-post-child-register");
+  deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-registered:${childPid}`);
+  handle.lastDebugMessage = `vfork-execve:child-registered child=${childPid}`;
+  deps.assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-register");
+  deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-sync:start:${childPid}`);
+  trackVforkExecveChildSharedOfds(childHandle, childExecFdEntries);
+  await deps.syncForkSharedStateViaKernelWorker(childHandle, kernelShareOtherMembers(childHandle), {
+    cause: { kind: "fork-child-ready", childPid },
+    includeMemfs: false,
+    trackHeldOfds: false,
+  });
+  trackVforkExecveChildSharedOfds(childHandle, childExecFdEntries);
+  deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-sync:done:${childPid}`);
+  assertVforkParentState(handle, parentThread.vmPtr, "parent-post-child-sync");
+  deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-synced:${childPid}`);
+  handle.lastDebugMessage = `vfork-execve:child-synced child=${childPid}`;
+  deps.assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-sync-fork-shared-state");
+  const preservedOfdSlots = snapshotKernelShareOfdSlots(childHandle, childHeldOfdIds);
+  const preservedPipeSlots = snapshotLocalPipeSlots(childHandle, childHeldOfdIds);
+  // Keep the execve-completed MemFS image intact. Unlike the plain fork path,
+  // vfork+execve has already rebuilt the child process in-place, so clearing
+  // MemFS here drops executable file bodies and makes later execve
+  // lookups fail with ENOENT.
+  discardCopiedSharedKernelObjects(childHandle, preservedOfdSlots, {
+    clearMemfs: false,
+  });
+  deps.assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-discard");
+  deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-rehydrate:start:${childPid}`);
+  await deps.rehydrateForkSharedStateViaKernelWorker([childHandle], rehydratedSharedOfdIds, {
+    cause: { kind: "fork-child-ready", childPid },
+    procSelfExeTargets: procSelfExeTarget.length > 0
+      ? [{ pid: childHandle.pid, bytes: procSelfExeTarget }]
+      : undefined,
+    includeMemfs: false,
+  });
+  deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-rehydrate:done:${childPid}`);
+  assertVforkParentState(handle, parentThread.vmPtr, "parent-post-child-rehydrate");
+  deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-rehydrated:${childPid}`);
+  deps.appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `vfork-execve:child-fds:${childPid}:${formatPipeCounterDebug(childHandle, 1)}:${formatPipeCounterDebug(childHandle, 2)}`,
+  );
+  deps.appendWorkerDebugLog(childHandle, `vfork-child-fds:${childPid}:${formatOpenFdSummary(childHandle)}`);
+  handle.lastDebugMessage = `vfork-execve:child-rehydrated child=${childPid}`;
+  restoreLocalOfdSlots(childHandle, preservedOfdSlots);
+  restoreLocalPipeSlots(childHandle, preservedPipeSlots);
+  restoreProcessFdEntries(childHandle, childVmPtr, childExecFdEntries);
+  alignPipeOfdGenerationOffsets(childHandle, collectProcessHeldOfds(childHandle));
+  trackVforkExecveChildSharedOfds(childHandle, childExecFdEntries);
+  deps.appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `vfork-execve:child-fds-restored:${childPid}:${formatOpenFdSummary(childHandle)}`,
+  );
+  deps.assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-rehydrate");
+  deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-lifecycle:start:${childPid}`);
+  await deps.initializeProcessLifecycleViaKernelWorker(
+    childHandle,
+    childVmPtr,
+    childLifecycle.ppid,
+    childLifecycle.nextPid,
+    childLifecycle.pgid,
+    childLifecycle.sid,
+    true,
+  );
+  deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-lifecycle:done:${childPid}`);
   restoreProcessFdEntries(childHandle, childVmPtr, childExecFdEntries);
   alignPipeOfdGenerationOffsets(childHandle, collectProcessHeldOfds(childHandle));
   trackVforkExecveChildSharedOfds(childHandle, childExecFdEntries);
