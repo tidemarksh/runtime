@@ -135,6 +135,31 @@ function processFdEntriesIncludeOfd(handle: ProcessHandle, vmPtr: number, ofdId:
   return false;
 }
 
+function forkSharedHeldOfdTrackAction(
+  handle: ProcessHandle,
+  ofdId: number,
+  facts: { shared: boolean; hostStdioPipe: boolean; stdioFd: boolean },
+): boolean {
+  const decide = handle.kernel.supervisor_fork_shared_held_ofd_track_action;
+  const sharedFlag = handle.kernel.supervisor_fork_shared_held_ofd_track_flag_shared;
+  const hostStdioPipeFlag = handle.kernel.supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe;
+  const stdioFdFlag = handle.kernel.supervisor_fork_shared_held_ofd_track_flag_stdio_fd;
+  if (!decide || !sharedFlag || !hostStdioPipeFlag || !stdioFdFlag) {
+    throw new Error("kernel supervisor ABI missing fork-shared held OFD track action exports");
+  }
+  let flags = 0;
+  if (facts.shared) {
+    flags |= sharedFlag.call(handle.kernel);
+  }
+  if (facts.hostStdioPipe) {
+    flags |= hostStdioPipeFlag.call(handle.kernel);
+  }
+  if (facts.stdioFd) {
+    flags |= stdioFdFlag.call(handle.kernel);
+  }
+  return decide.call(handle.kernel, ofdId, flags) !== 0;
+}
+
 function sourceRegularFileForkSharedPeerFacts(
   handle: ProcessHandle,
   vmPtr: number,
@@ -217,17 +242,13 @@ export function collectTrackableForkSharedOfds(handle: ProcessHandle): Set<numbe
     }
   }
   for (const ofdId of collectProcessHeldOfds(handle)) {
-    if (stdioOfdIds.has(ofdId)) {
-      continue;
+    if (forkSharedHeldOfdTrackAction(handle, ofdId, {
+      shared: handle.kernelShare.sharedOfdIds.has(ofdId),
+      hostStdioPipe: stdioOfdIds.has(ofdId),
+      stdioFd: stdioFdOfdIds.has(ofdId),
+    })) {
+      tracked.add(ofdId);
     }
-    if (
-      !handle.kernelShare.sharedOfdIds.has(ofdId)
-      && !stdioFdOfdIds.has(ofdId)
-      && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_file()
-    ) {
-      continue;
-    }
-    tracked.add(ofdId);
   }
   return tracked;
 }
@@ -271,16 +292,14 @@ export function collectTracedForkSharedOfdIds(
 export function trackHeldForkSharedOfds(handle: ProcessHandle, vmPtr: number): void {
   trackForkSharedOfds(handle, vmPtr, false);
   for (const ofdId of collectProcessHeldOfds(handle)) {
-    if (isProcessHostStdioOfd(handle, vmPtr, ofdId) || isProcessHostStdioPipeOfd(handle, ofdId)) {
-      continue;
+    if (forkSharedHeldOfdTrackAction(handle, ofdId, {
+      shared: handle.kernelShare.sharedOfdIds.has(ofdId),
+      hostStdioPipe: isProcessHostStdioOfd(handle, vmPtr, ofdId)
+        || isProcessHostStdioPipeOfd(handle, ofdId),
+      stdioFd: false,
+    })) {
+      handle.kernelShare.sharedOfdIds.add(ofdId);
     }
-    if (
-      !handle.kernelShare.sharedOfdIds.has(ofdId)
-      && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_file()
-    ) {
-      continue;
-    }
-    handle.kernelShare.sharedOfdIds.add(ofdId);
   }
 }
 

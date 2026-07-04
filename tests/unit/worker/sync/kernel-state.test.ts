@@ -150,6 +150,9 @@ function makeKernel(
   const forkSharedPeerFlagCompatible = 1;
   const forkSharedPeerFlagIncompatible = 1 << 1;
   const forkSharedPeerFlagPipePeer = 1 << 2;
+  const forkSharedHeldOfdTrackFlagShared = 1;
+  const forkSharedHeldOfdTrackFlagHostStdioPipe = 1 << 1;
+  const forkSharedHeldOfdTrackFlagStdioFd = 1 << 2;
   const forkSharedOfdIdentityKey = (ofdId: number): bigint => {
     if (ofdId <= 0 || ofdId >= 32) {
       return 0n;
@@ -309,6 +312,23 @@ function makeKernel(
     supervisor_fork_shared_peer_flag_compatible: () => forkSharedPeerFlagCompatible,
     supervisor_fork_shared_peer_flag_incompatible: () => forkSharedPeerFlagIncompatible,
     supervisor_fork_shared_peer_flag_pipe_peer: () => forkSharedPeerFlagPipePeer,
+    supervisor_fork_shared_held_ofd_track_flag_shared: () => forkSharedHeldOfdTrackFlagShared,
+    supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe: () => (
+      forkSharedHeldOfdTrackFlagHostStdioPipe
+    ),
+    supervisor_fork_shared_held_ofd_track_flag_stdio_fd: () => forkSharedHeldOfdTrackFlagStdioFd,
+    supervisor_fork_shared_held_ofd_track_action: (ofdId: number, flags: number) => {
+      if (ofdId <= 0 || ofdId >= 32) {
+        return 0;
+      }
+      if ((flags & forkSharedHeldOfdTrackFlagHostStdioPipe) !== 0) {
+        return 0;
+      }
+      if ((flags & (forkSharedHeldOfdTrackFlagShared | forkSharedHeldOfdTrackFlagStdioFd)) !== 0) {
+        return 1;
+      }
+      return readOfdInt32(ofdId, 0) === FD_TYPE_FILE ? 0 : 1;
+    },
     supervisor_fork_shared_ofd_identity_key: (ofdId: number) => forkSharedOfdIdentityKey(ofdId),
     supervisor_fork_shared_ofd_publish_action: (ofdId: number, peerFlags: number) => (
       forkSharedOfdPublishAction(ofdId, peerFlags)

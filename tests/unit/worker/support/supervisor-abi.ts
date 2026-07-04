@@ -69,6 +69,10 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_fork_shared_peer_flag_compatible: 1,
   supervisor_fork_shared_peer_flag_incompatible: 1 << 1,
   supervisor_fork_shared_peer_flag_pipe_peer: 1 << 2,
+  supervisor_fork_shared_held_ofd_track_flag_shared: 1,
+  supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe: 1 << 1,
+  supervisor_fork_shared_held_ofd_track_flag_stdio_fd: 1 << 2,
+  supervisor_fork_shared_held_ofd_track_action: 0,
   supervisor_fork_shared_effect_sync_action: 0,
   supervisor_fs_control_record_bytes: 112,
   supervisor_fs_control_record_magic: 0x5346_5354,
@@ -1050,6 +1054,39 @@ export function makeSupervisorAbiStubs(
         && callNumber(receiver, "kernel_ofd_fd_type", ofdId) === callNumber(receiver, "abi_fd_type_file")
         ? 1
         : 0;
+    },
+    supervisor_fork_shared_held_ofd_track_flag_shared() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_shared;
+    },
+    supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe;
+    },
+    supervisor_fork_shared_held_ofd_track_flag_stdio_fd() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_stdio_fd;
+    },
+    supervisor_fork_shared_held_ofd_track_action(
+      this: KernelExports | undefined,
+      ofdId: number,
+      flags: number,
+    ) {
+      const receiver = currentExports(this);
+      if (ofdId <= 0 || ofdId >= callNumber(receiver, "abi_max_fds")) {
+        return 0;
+      }
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe) !== 0) {
+        return 0;
+      }
+      if (
+        (flags & (
+          DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_shared
+          | DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_stdio_fd
+        )) !== 0
+      ) {
+        return 1;
+      }
+      return callNumber(receiver, "kernel_ofd_fd_type", ofdId) === callNumber(receiver, "abi_fd_type_file")
+        ? 0
+        : 1;
     },
     supervisor_fork_shared_ofd_identity_key(this: KernelExports | undefined, ofdId: number) {
       return forkSharedOfdIdentityKey(currentExports(this), ofdId);

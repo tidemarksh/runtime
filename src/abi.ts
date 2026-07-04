@@ -359,6 +359,10 @@ export interface KernelExports {
   supervisor_fork_shared_peer_flag_compatible?(): number;
   supervisor_fork_shared_peer_flag_incompatible?(): number;
   supervisor_fork_shared_peer_flag_pipe_peer?(): number;
+  supervisor_fork_shared_held_ofd_track_flag_shared?(): number;
+  supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe?(): number;
+  supervisor_fork_shared_held_ofd_track_flag_stdio_fd?(): number;
+  supervisor_fork_shared_held_ofd_track_action?(ofdId: number, flags: number): number;
   supervisor_fork_shared_ofd_identity_key?(ofdId: number): bigint | number;
   supervisor_fork_shared_ofd_publish_action?(ofdId: number, peerFlags: number): number;
   supervisor_fork_shared_effect_sync_action?(
@@ -1740,6 +1744,10 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fork_shared_peer_flag_compatible",
   "supervisor_fork_shared_peer_flag_incompatible",
   "supervisor_fork_shared_peer_flag_pipe_peer",
+  "supervisor_fork_shared_held_ofd_track_flag_shared",
+  "supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe",
+  "supervisor_fork_shared_held_ofd_track_flag_stdio_fd",
+  "supervisor_fork_shared_held_ofd_track_action",
   "supervisor_fork_shared_ofd_identity_key",
   "supervisor_fork_shared_ofd_publish_action",
   "supervisor_fork_shared_effect_sync_action",

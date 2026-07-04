@@ -31,6 +31,25 @@ const supervisorPipeControlKernelStubs = {
   supervisor_fork_shared_peer_flag_compatible: () => 1,
   supervisor_fork_shared_peer_flag_incompatible: () => 1 << 1,
   supervisor_fork_shared_peer_flag_pipe_peer: () => 1 << 2,
+  supervisor_fork_shared_held_ofd_track_flag_shared: () => 1,
+  supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe: () => 1 << 1,
+  supervisor_fork_shared_held_ofd_track_flag_stdio_fd: () => 1 << 2,
+  supervisor_fork_shared_held_ofd_track_action(this: {
+    abi_max_fds?: () => number;
+    abi_fd_type_file?: () => number;
+    kernel_ofd_fd_type?: (ofdId: number) => number;
+  }, ofdId: number, flags: number) {
+    if (ofdId <= 0 || ofdId >= (this.abi_max_fds?.() ?? 0)) {
+      return 0;
+    }
+    if ((flags & (1 << 1)) !== 0) {
+      return 0;
+    }
+    if ((flags & (1 | (1 << 2))) !== 0) {
+      return 1;
+    }
+    return this.kernel_ofd_fd_type?.(ofdId) === this.abi_fd_type_file?.() ? 0 : 1;
+  },
   supervisor_fork_shared_ofd_identity_key: (ofdId: number) => (ofdId > 0 ? BigInt(ofdId) : 0n),
   supervisor_fork_shared_ofd_publish_action: (ofdId: number, peerFlags: number) => (
     ofdId > 0 && (peerFlags & (1 << 1)) === 0 ? 1 : 0
