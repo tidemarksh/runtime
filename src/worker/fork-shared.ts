@@ -13,6 +13,47 @@ import {
   OFD_TYPE_OFFSET,
 } from "../layout/ofd.js";
 
+function requireSupervisorRestoreActionSkip(handle: ProcessHandle): number {
+  const skip = handle.kernel.supervisor_fd_entry_restore_action_skip;
+  if (!skip) {
+    throw new Error("kernel supervisor ABI missing supervisor_fd_entry_restore_action_skip");
+  }
+  return skip.call(handle.kernel);
+}
+
+function requireSupervisorOfdSlotWriteAction(
+  handle: ProcessHandle,
+): (
+  ofdId: number,
+  candidateType: number,
+  candidateHostFd: number,
+  candidateIno: number,
+  candidateOffset: bigint | number,
+) => number {
+  const decide = handle.kernel.supervisor_ofd_slot_write_action;
+  if (!decide) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_slot_write_action");
+  }
+  return decide.bind(handle.kernel);
+}
+
+function ofdSlotWriteShouldBeSkipped(
+  handle: ProcessHandle,
+  ofdId: number,
+  slot: Uint8Array,
+  decide: ReturnType<typeof requireSupervisorOfdSlotWriteAction>,
+  skipAction: number,
+): boolean {
+  const view = new DataView(slot.buffer, slot.byteOffset, slot.byteLength);
+  return decide(
+    ofdId,
+    view.getInt32(OFD_TYPE_OFFSET, true),
+    view.getInt32(OFD_HOST_FD_OFFSET, true),
+    view.getUint32(OFD_INO_OFFSET, true),
+    view.getBigInt64(OFD_OFFSET_OFFSET, true),
+  ) === skipAction;
+}
+
 export function snapshotKernelShareOfdSlots(
   handle: ProcessHandle,
   ofdIds: Iterable<number>,
@@ -100,30 +141,15 @@ export function mergeKernelShareOfdStateInto(handle: ProcessHandle, sharedOfdIds
   }
 
   const targetTable = new Uint8Array(handle.memory.buffer);
+  const decideSlotWrite = requireSupervisorOfdSlotWriteAction(handle);
+  const skipAction = requireSupervisorRestoreActionSkip(handle);
   for (const [ofdId, slotBytesView] of slotCopies) {
-    if (slotWouldRollBackRegularFileOffset(handle, ofdId, slotBytesView)) {
+    if (ofdSlotWriteShouldBeSkipped(handle, ofdId, slotBytesView, decideSlotWrite, skipAction)) {
       continue;
     }
     const slotOffset = handle.kernelState.ofdTablePtr + ofdId * slotBytes;
     targetTable.set(slotBytesView, slotOffset);
   }
-}
-
-function slotWouldRollBackRegularFileOffset(
-  handle: ProcessHandle,
-  ofdId: number,
-  slot: Uint8Array,
-): boolean {
-  const targetType = handle.kernel.kernel_ofd_fd_type(ofdId);
-  if (targetType !== handle.kernel.abi_fd_type_file()) {
-    return false;
-  }
-  const view = new DataView(slot.buffer, slot.byteOffset, slot.byteLength);
-  return view.getInt32(OFD_TYPE_OFFSET, true) === targetType
-    && view.getUint32(OFD_INO_OFFSET, true) === handle.kernel.kernel_ofd_ino(ofdId)
-    && view.getInt32(OFD_HOST_FD_OFFSET, true) === handle.kernel.kernel_ofd_host_fd(ofdId)
-    && handle.kernel.kernel_ofd_refcount(ofdId) > 0
-    && view.getBigInt64(OFD_OFFSET_OFFSET, true) < handle.kernel.kernel_ofd_offset(ofdId);
 }
 
 export function reconcileForkSharedOfdRefcounts(handle: ProcessHandle, sharedOfdIds: Iterable<number>): void {
