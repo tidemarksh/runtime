@@ -14,6 +14,7 @@ import {
   isProcessMemfsDirty,
   setProcessMemfsDirty,
 } from "../../../../src/worker/process-memfs-state.js";
+import { setProcessExitInProgress } from "../../../../src/worker/process-lifecycle-state.js";
 
 function makeKernelState() {
   return {
@@ -930,9 +931,9 @@ test("fork-shared OFD sync skips exiting peer targets", async () => {
   const exitingPeer = {
     pid: 8,
     runningWorker: null,
-    exitInProgress: true,
     workers: new Set(),
   };
+  setProcessExitInProgress(exitingPeer as never, true);
   addKernelShareMember(handle);
   addKernelShareMember(handle, exitingPeer);
   const continueAfterOwnedStateSync = vi.fn();

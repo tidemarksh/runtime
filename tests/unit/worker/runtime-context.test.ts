@@ -5,10 +5,24 @@ import {
   setProcessDebugCommand,
   setProcessLastDebugMessage,
 } from "../../../src/worker/process-debug-state.js";
+import { setProcessMemoryOwnership } from "../../../src/worker/memory-ownership-state.js";
 import { setProcessMemfsDirty } from "../../../src/worker/process-memfs-state.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
 
 function makeHandle(runtimeId: number, pid: number): ProcessHandle {
+  const memoryOwnership = {
+    guestAddressProfile: 2,
+    guestAddressLimitBytes: "9223372036489871359",
+    guestMemoryPolicyLimitBytes: 64n * 1024n * 1024n,
+    processMaxMemoryBytes: 2048 * 65536,
+    forkProcessMaxMemoryBytes: 4096 * 65536,
+    pageCacheDataCapacityBytes: 8 * 1024 * 1024,
+    publishedMetadataCapacityBytes: 1024,
+    fsRpcRingCapacityBytes: 4096,
+    kernelWorkerPrivateMemoryBytes: 512 * 1024 * 1024,
+    artifactMaterializationBudgetBytes: 16 * 1024 * 1024,
+    artifactMaterializedBytes: 4 * 1024 * 1024,
+  };
   const handle = {
     runtimeId,
     pid,
@@ -56,20 +70,8 @@ function makeHandle(runtimeId: number, pid: number): ProcessHandle {
     vforkSnapshot: null,
     vforkWorker: null,
     workerDebugLog: [],
-    memoryOwnership: {
-      guestAddressProfile: 2,
-      guestAddressLimitBytes: "9223372036489871359",
-      guestMemoryPolicyLimitBytes: 64n * 1024n * 1024n,
-      processMaxMemoryBytes: 2048 * 65536,
-      forkProcessMaxMemoryBytes: 4096 * 65536,
-      pageCacheDataCapacityBytes: 8 * 1024 * 1024,
-      publishedMetadataCapacityBytes: 1024,
-      fsRpcRingCapacityBytes: 4096,
-      kernelWorkerPrivateMemoryBytes: 512 * 1024 * 1024,
-      artifactMaterializationBudgetBytes: 16 * 1024 * 1024,
-      artifactMaterializedBytes: 4 * 1024 * 1024,
-    },
   } as unknown as ProcessHandle;
+  setProcessMemoryOwnership(handle, memoryOwnership);
   setProcessDebugCommand(handle, "runtime-context");
   addKernelShareMember(handle);
   return handle;

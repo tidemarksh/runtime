@@ -9,20 +9,11 @@ import {
 const workerMessageDebugStatsByHandle = new WeakMap<ProcessHandle, WorkerMessageDebugStats>();
 const transferDebugStatsByHandle = new WeakMap<ProcessHandle, TransferDebugStats>();
 
-type LegacyWorkerDebugStatsSeed = {
-  workerMessageDebugStats?: WorkerMessageDebugStats;
-  transferDebugStats?: TransferDebugStats;
-};
-
 export function workerMessageDebugStats(handle: ProcessHandle): WorkerMessageDebugStats {
   let stats = workerMessageDebugStatsByHandle.get(handle);
   if (!stats) {
-    const legacyStats = (handle as LegacyWorkerDebugStatsSeed).workerMessageDebugStats;
-    stats = legacyStats ?? createWorkerMessageDebugStats();
+    stats = createWorkerMessageDebugStats();
     workerMessageDebugStatsByHandle.set(handle, stats);
-    if (legacyStats !== undefined) {
-      delete (handle as LegacyWorkerDebugStatsSeed).workerMessageDebugStats;
-    }
   }
   return stats;
 }
@@ -30,12 +21,8 @@ export function workerMessageDebugStats(handle: ProcessHandle): WorkerMessageDeb
 export function transferDebugStats(handle: ProcessHandle): TransferDebugStats {
   let stats = transferDebugStatsByHandle.get(handle);
   if (!stats) {
-    const legacyStats = (handle as LegacyWorkerDebugStatsSeed).transferDebugStats;
-    stats = legacyStats ?? createTransferDebugStats();
+    stats = createTransferDebugStats();
     transferDebugStatsByHandle.set(handle, stats);
-    if (legacyStats !== undefined) {
-      delete (handle as LegacyWorkerDebugStatsSeed).transferDebugStats;
-    }
   }
   return stats;
 }
