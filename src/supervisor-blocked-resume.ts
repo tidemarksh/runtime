@@ -64,6 +64,16 @@ export type SupervisorBlockedPostNetworkPumpAction =
   | "schedule-retry"
   | "schedule-retry-with-host-progress";
 
+export interface SupervisorBlockedRetryStatusActions {
+  pipeRetryDiagnostics: boolean;
+  pumpBlockedOutcome: boolean;
+  activeChildPipe: boolean;
+  activeChildWait4: boolean;
+  successLogEpollReady: boolean;
+  successLogWait4Resumed: boolean;
+  wakeRuntimeBridgeWhileRunning: boolean;
+}
+
 export type SupervisorBlockedStaleRetryResultAction =
   | "none"
   | "handle-current-result"
@@ -143,6 +153,14 @@ type SupervisorNumberConstExportName =
   | "supervisor_blocked_retry_result_action_arm_wait_timer"
   | "supervisor_blocked_retry_result_action_schedule_retry"
   | "supervisor_blocked_retry_result_action_schedule_retry_and_pump"
+  | "supervisor_blocked_retry_status_action_none"
+  | "supervisor_blocked_retry_status_action_pipe_retry_diagnostics"
+  | "supervisor_blocked_retry_status_action_pump_blocked_outcome"
+  | "supervisor_blocked_retry_status_action_active_child_pipe"
+  | "supervisor_blocked_retry_status_action_active_child_wait4"
+  | "supervisor_blocked_retry_status_action_success_log_epoll_ready"
+  | "supervisor_blocked_retry_status_action_success_log_wait4_resumed"
+  | "supervisor_blocked_retry_status_action_wake_runtime_bridge_while_running"
   | "supervisor_blocked_post_network_pump_action_schedule_retry"
   | "supervisor_blocked_post_network_pump_action_schedule_retry_with_host_progress"
   | "supervisor_blocked_stale_retry_result_action_none"
@@ -1003,6 +1021,68 @@ export function supervisorBlockedRetryResultAction(
     throw new Error(`kernel supervisor blocked retry result action failed: ${result}`);
   }
   return normalizeSupervisorBlockedRetryResultAction(kernel, result);
+}
+
+export function supervisorBlockedRetryStatusActions(
+  kernel: KernelExports,
+  status: number,
+): SupervisorBlockedRetryStatusActions {
+  const readAction = kernel.supervisor_blocked_retry_status_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_blocked_retry_status_action");
+  }
+  const result = readAction.call(kernel, status);
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked retry status action failed: ${result}`);
+  }
+  const pipeRetryDiagnostics = readSupervisorNumberConst(
+    kernel,
+    "supervisor_blocked_retry_status_action_pipe_retry_diagnostics",
+  );
+  const pumpBlockedOutcome = readSupervisorNumberConst(
+    kernel,
+    "supervisor_blocked_retry_status_action_pump_blocked_outcome",
+  );
+  const activeChildPipe = readSupervisorNumberConst(
+    kernel,
+    "supervisor_blocked_retry_status_action_active_child_pipe",
+  );
+  const activeChildWait4 = readSupervisorNumberConst(
+    kernel,
+    "supervisor_blocked_retry_status_action_active_child_wait4",
+  );
+  const successLogEpollReady = readSupervisorNumberConst(
+    kernel,
+    "supervisor_blocked_retry_status_action_success_log_epoll_ready",
+  );
+  const successLogWait4Resumed = readSupervisorNumberConst(
+    kernel,
+    "supervisor_blocked_retry_status_action_success_log_wait4_resumed",
+  );
+  const wakeRuntimeBridgeWhileRunning = readSupervisorNumberConst(
+    kernel,
+    "supervisor_blocked_retry_status_action_wake_runtime_bridge_while_running",
+  );
+  const known = readSupervisorNumberConst(kernel, "supervisor_blocked_retry_status_action_none")
+    | pipeRetryDiagnostics
+    | pumpBlockedOutcome
+    | activeChildPipe
+    | activeChildWait4
+    | successLogEpollReady
+    | successLogWait4Resumed
+    | wakeRuntimeBridgeWhileRunning;
+  if ((result & ~known) !== 0) {
+    throw new Error(`kernel supervisor blocked retry status action is unknown: ${result}`);
+  }
+  return {
+    pipeRetryDiagnostics: (result & pipeRetryDiagnostics) !== 0,
+    pumpBlockedOutcome: (result & pumpBlockedOutcome) !== 0,
+    activeChildPipe: (result & activeChildPipe) !== 0,
+    activeChildWait4: (result & activeChildWait4) !== 0,
+    successLogEpollReady: (result & successLogEpollReady) !== 0,
+    successLogWait4Resumed: (result & successLogWait4Resumed) !== 0,
+    wakeRuntimeBridgeWhileRunning: (result & wakeRuntimeBridgeWhileRunning) !== 0,
+  };
 }
 
 function supervisorBlockedPostNetworkPumpActionValue(

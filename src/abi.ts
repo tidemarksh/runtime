@@ -593,6 +593,15 @@ export interface KernelExports {
   supervisor_blocked_retry_result_action_arm_wait_timer?(): number;
   supervisor_blocked_retry_result_action_schedule_retry?(): number;
   supervisor_blocked_retry_result_action_schedule_retry_and_pump?(): number;
+  supervisor_blocked_retry_status_action?(status: number): number;
+  supervisor_blocked_retry_status_action_none?(): number;
+  supervisor_blocked_retry_status_action_pipe_retry_diagnostics?(): number;
+  supervisor_blocked_retry_status_action_pump_blocked_outcome?(): number;
+  supervisor_blocked_retry_status_action_active_child_pipe?(): number;
+  supervisor_blocked_retry_status_action_active_child_wait4?(): number;
+  supervisor_blocked_retry_status_action_success_log_epoll_ready?(): number;
+  supervisor_blocked_retry_status_action_success_log_wait4_resumed?(): number;
+  supervisor_blocked_retry_status_action_wake_runtime_bridge_while_running?(): number;
   supervisor_blocked_post_network_pump_action?(vmPtr: number, changed: number, flags: number): number;
   supervisor_blocked_post_network_pump_action_schedule_retry?(): number;
   supervisor_blocked_post_network_pump_action_schedule_retry_with_host_progress?(): number;
@@ -2048,6 +2057,15 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_retry_result_action_arm_wait_timer",
   "supervisor_blocked_retry_result_action_schedule_retry",
   "supervisor_blocked_retry_result_action_schedule_retry_and_pump",
+  "supervisor_blocked_retry_status_action",
+  "supervisor_blocked_retry_status_action_none",
+  "supervisor_blocked_retry_status_action_pipe_retry_diagnostics",
+  "supervisor_blocked_retry_status_action_pump_blocked_outcome",
+  "supervisor_blocked_retry_status_action_active_child_pipe",
+  "supervisor_blocked_retry_status_action_active_child_wait4",
+  "supervisor_blocked_retry_status_action_success_log_epoll_ready",
+  "supervisor_blocked_retry_status_action_success_log_wait4_resumed",
+  "supervisor_blocked_retry_status_action_wake_runtime_bridge_while_running",
   "supervisor_blocked_post_network_pump_action",
   "supervisor_blocked_post_network_pump_action_schedule_retry",
   "supervisor_blocked_post_network_pump_action_schedule_retry_with_host_progress",

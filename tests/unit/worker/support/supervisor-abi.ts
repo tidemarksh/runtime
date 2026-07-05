@@ -218,6 +218,14 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_retry_result_action_arm_wait_timer: 1,
   supervisor_blocked_retry_result_action_schedule_retry: 2,
   supervisor_blocked_retry_result_action_schedule_retry_and_pump: 3,
+  supervisor_blocked_retry_status_action_none: 0,
+  supervisor_blocked_retry_status_action_pipe_retry_diagnostics: 1,
+  supervisor_blocked_retry_status_action_pump_blocked_outcome: 2,
+  supervisor_blocked_retry_status_action_active_child_pipe: 4,
+  supervisor_blocked_retry_status_action_active_child_wait4: 8,
+  supervisor_blocked_retry_status_action_success_log_epoll_ready: 16,
+  supervisor_blocked_retry_status_action_success_log_wait4_resumed: 32,
+  supervisor_blocked_retry_status_action_wake_runtime_bridge_while_running: 64,
   supervisor_blocked_post_network_pump_action_schedule_retry: 22,
   supervisor_blocked_post_network_pump_action_schedule_retry_with_host_progress: 23,
   supervisor_blocked_stale_retry_result_action_none: 0,
@@ -537,6 +545,25 @@ export function makeSupervisorAbiStubs(
     }
     const target = supervisorWaitWakeTargetForStatus(receiver, status);
     return target !== 0 && (mask & target) !== 0 ? 1 : 0;
+  };
+  const supervisorBlockedRetryStatusAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+  ): number => {
+    if (callOptionalNumber(receiver, "abi_status_pipe_wait") === status) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_status_action_pipe_retry_diagnostics
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_status_action_pump_blocked_outcome
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_status_action_active_child_pipe;
+    }
+    if (callOptionalNumber(receiver, "abi_status_epoll_wait") === status) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_status_action_success_log_epoll_ready
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_status_action_wake_runtime_bridge_while_running;
+    }
+    if (callOptionalNumber(receiver, "abi_status_wait4") === status) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_status_action_active_child_wait4
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_status_action_success_log_wait4_resumed;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_status_action_none;
   };
   const supervisorWaitWakeAction = (
     receiver: Partial<KernelExports>,
@@ -2426,6 +2453,9 @@ export function makeSupervisorAbiStubs(
       source: number,
     ) {
       return supervisorWaitStatusMatchesWakeSource(currentExports(this), status, source);
+    },
+    supervisor_blocked_retry_status_action(this: KernelExports | undefined, status: number) {
+      return supervisorBlockedRetryStatusAction(currentExports(this), status);
     },
     supervisor_blocked_wait_wake_action(
       this: KernelExports | undefined,
