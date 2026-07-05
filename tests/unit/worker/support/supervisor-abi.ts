@@ -75,6 +75,12 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe: 1 << 1,
   supervisor_fork_shared_held_ofd_track_flag_stdio_fd: 1 << 2,
   supervisor_fork_shared_held_ofd_track_flag_fd_entry_source: 1 << 3,
+  supervisor_fork_shared_sync_target_action_reject: 0,
+  supervisor_fork_shared_sync_target_action_defer: 1,
+  supervisor_fork_shared_sync_target_action_use: 2,
+  supervisor_fork_shared_ofd_action_include: 1,
+  supervisor_fork_shared_ofd_action_add_shared: 1 << 1,
+  supervisor_fork_shared_ofd_action_rehydrate: 1 << 2,
   supervisor_fork_shared_held_ofd_track_action: 0,
   supervisor_fork_shared_effect_sync_action: 0,
   supervisor_fs_control_record_bytes: 112,
@@ -685,6 +691,108 @@ export function makeSupervisorAbiStubs(
     }
     return sourceHoldsRegularFile !== 0 && regularFileHasPeer === 0 ? 0 : 1;
   };
+  const forkSharedSyncTargetAction = (
+    invalidPid: number,
+    runningWorker: number,
+    vforkReadyWorker: number,
+    hasHostBlockedWorker: number,
+    rpcPending: number,
+    processExit: number,
+    registeredProcessExit: number,
+    registeredMismatch: number,
+    incompatibleOfd: number,
+    requireHostBlocked: number,
+    includeMemfs: number,
+    runtimeNetworkState: number,
+  ): number => {
+    if (
+      invalidPid !== 0
+      || processExit !== 0
+      || registeredProcessExit !== 0
+      || registeredMismatch !== 0
+      || incompatibleOfd !== 0
+    ) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_sync_target_action_reject;
+    }
+    if (includeMemfs !== 0 && runtimeNetworkState !== 0) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_sync_target_action_reject;
+    }
+    if (runningWorker !== 0 || vforkReadyWorker !== 0 || rpcPending !== 0) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_sync_target_action_defer;
+    }
+    if (requireHostBlocked !== 0 && hasHostBlockedWorker === 0) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_sync_target_action_defer;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_sync_target_action_use;
+  };
+  const forkSharedSyncableOfdAction = (
+    syncable: number,
+    sourceConflicting: number,
+    allowed: number,
+    regularFile: number,
+    sourcePublished: number,
+    runtimeNetworkSocket: number,
+  ): number => {
+    if (
+      syncable === 0
+      || sourceConflicting !== 0
+      || allowed === 0
+      || runtimeNetworkSocket !== 0
+    ) {
+      return 0;
+    }
+    if (regularFile !== 0 && sourcePublished === 0) {
+      return 0;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_include;
+  };
+  const forkSharedDeltaSourceOfdAction = (
+    allowed: number,
+    sourcePublished: number,
+    sourceHeld: number,
+    pipePeer: number,
+  ): number => {
+    if (allowed === 0) {
+      return 0;
+    }
+    if (sourcePublished !== 0) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_include;
+    }
+    if (sourceHeld !== 0 && pipePeer !== 0) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_include
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_add_shared;
+    }
+    return 0;
+  };
+  const forkSharedTrackedSourceOfdAction = (
+    kernelShared: number,
+    sourceFdEntry: number,
+    syncable: number,
+    typeNone: number,
+    incompatiblePeer: number,
+  ): number => {
+    if (syncable === 0 || typeNone !== 0) {
+      return 0;
+    }
+    if (kernelShared === 0 && sourceFdEntry === 0) {
+      return 0;
+    }
+    if (sourceFdEntry === 0 && incompatiblePeer !== 0) {
+      return 0;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_include;
+  };
+  const forkSharedPipePeerOfdAction = (stale: number, syncable: number): number => (
+    stale !== 0 || syncable === 0
+      ? 0
+      : DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_include
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_add_shared
+  );
+  const forkSharedRehydrateOfdAction = (active: number, sourceHeld: number, allowed: number): number => (
+    active !== 0 && sourceHeld === 0 && allowed !== 0
+      ? DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_rehydrate
+      : 0
+  );
   const fdTypeIsPipeLike = (receiver: Partial<KernelExports>, fdType: number): boolean =>
     fdType === callNumber(receiver, "abi_fd_type_pipe")
     || fdType === callOptionalNumber(receiver, "abi_fd_type_pty_master")
@@ -1502,6 +1610,24 @@ export function makeSupervisorAbiStubs(
     supervisor_fork_shared_held_ofd_track_flag_fd_entry_source() {
       return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_fd_entry_source;
     },
+    supervisor_fork_shared_sync_target_action_reject() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_sync_target_action_reject;
+    },
+    supervisor_fork_shared_sync_target_action_defer() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_sync_target_action_defer;
+    },
+    supervisor_fork_shared_sync_target_action_use() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_sync_target_action_use;
+    },
+    supervisor_fork_shared_ofd_action_include() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_include;
+    },
+    supervisor_fork_shared_ofd_action_add_shared() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_add_shared;
+    },
+    supervisor_fork_shared_ofd_action_rehydrate() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_rehydrate;
+    },
     supervisor_fork_shared_held_ofd_track_action(
       this: KernelExports | undefined,
       ofdId: number,
@@ -1549,6 +1675,85 @@ export function makeSupervisorAbiStubs(
         _sourceHoldsRegularFile,
         _regularFileHasPeer,
       );
+    },
+    supervisor_fork_shared_sync_target_action(
+      invalidPid: number,
+      runningWorker: number,
+      vforkReadyWorker: number,
+      hasHostBlockedWorker: number,
+      rpcPending: number,
+      processExit: number,
+      registeredProcessExit: number,
+      registeredMismatch: number,
+      incompatibleOfd: number,
+      requireHostBlocked: number,
+      includeMemfs: number,
+      runtimeNetworkState: number,
+    ) {
+      return forkSharedSyncTargetAction(
+        invalidPid,
+        runningWorker,
+        vforkReadyWorker,
+        hasHostBlockedWorker,
+        rpcPending,
+        processExit,
+        registeredProcessExit,
+        registeredMismatch,
+        incompatibleOfd,
+        requireHostBlocked,
+        includeMemfs,
+        runtimeNetworkState,
+      );
+    },
+    supervisor_fork_shared_syncable_ofd_action(
+      syncable: number,
+      sourceConflicting: number,
+      allowed: number,
+      regularFile: number,
+      sourcePublished: number,
+      runtimeNetworkSocket: number,
+    ) {
+      return forkSharedSyncableOfdAction(
+        syncable,
+        sourceConflicting,
+        allowed,
+        regularFile,
+        sourcePublished,
+        runtimeNetworkSocket,
+      );
+    },
+    supervisor_fork_shared_delta_source_ofd_action(
+      allowed: number,
+      sourcePublished: number,
+      sourceHeld: number,
+      pipePeer: number,
+    ) {
+      return forkSharedDeltaSourceOfdAction(allowed, sourcePublished, sourceHeld, pipePeer);
+    },
+    supervisor_fork_shared_tracked_source_ofd_action(
+      kernelShared: number,
+      sourceFdEntry: number,
+      syncable: number,
+      typeNone: number,
+      incompatiblePeer: number,
+    ) {
+      return forkSharedTrackedSourceOfdAction(
+        kernelShared,
+        sourceFdEntry,
+        syncable,
+        typeNone,
+        incompatiblePeer,
+      );
+    },
+    supervisor_fork_shared_pipe_peer_ofd_action(stale: number, syncable: number) {
+      return forkSharedPipePeerOfdAction(stale, syncable);
+    },
+    supervisor_fork_shared_rehydrate_ofd_action(
+      active: number,
+      sourceHeld: number,
+      allowed: number,
+    ) {
+      return forkSharedRehydrateOfdAction(active, sourceHeld, allowed);
     },
     supervisor_fd_entry_restore_action(
       this: KernelExports | undefined,

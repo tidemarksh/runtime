@@ -49,6 +49,12 @@ const supervisorPipeControlKernelStubs = {
   supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe: () => 1 << 1,
   supervisor_fork_shared_held_ofd_track_flag_stdio_fd: () => 1 << 2,
   supervisor_fork_shared_held_ofd_track_flag_fd_entry_source: () => 1 << 3,
+  supervisor_fork_shared_sync_target_action_reject: () => 0,
+  supervisor_fork_shared_sync_target_action_defer: () => 1,
+  supervisor_fork_shared_sync_target_action_use: () => 2,
+  supervisor_fork_shared_ofd_action_include: () => 1,
+  supervisor_fork_shared_ofd_action_add_shared: () => 1 << 1,
+  supervisor_fork_shared_ofd_action_rehydrate: () => 1 << 2,
   supervisor_fork_shared_held_ofd_track_action(this: {
     abi_max_fds?: () => number;
     abi_fd_type_file?: () => number;
@@ -80,6 +86,94 @@ const supervisorPipeControlKernelStubs = {
       && (sourceHoldsRegularFile === 0 || regularFileHasPeer !== 0)
       ? 1
       : 0
+  ),
+  supervisor_fork_shared_sync_target_action: (
+    invalidPid: number,
+    runningWorker: number,
+    vforkReadyWorker: number,
+    hasHostBlockedWorker: number,
+    rpcPending: number,
+    processExit: number,
+    registeredProcessExit: number,
+    registeredMismatch: number,
+    incompatibleOfd: number,
+    requireHostBlocked: number,
+    includeMemfs: number,
+    runtimeNetworkState: number,
+  ) => {
+    if (
+      invalidPid !== 0
+      || processExit !== 0
+      || registeredProcessExit !== 0
+      || registeredMismatch !== 0
+      || incompatibleOfd !== 0
+      || (includeMemfs !== 0 && runtimeNetworkState !== 0)
+    ) {
+      return 0;
+    }
+    if (
+      runningWorker !== 0
+      || vforkReadyWorker !== 0
+      || rpcPending !== 0
+      || (requireHostBlocked !== 0 && hasHostBlockedWorker === 0)
+    ) {
+      return 1;
+    }
+    return 2;
+  },
+  supervisor_fork_shared_syncable_ofd_action: (
+    syncable: number,
+    sourceConflicting: number,
+    allowed: number,
+    regularFile: number,
+    sourcePublished: number,
+    runtimeNetworkSocket: number,
+  ) => (
+    syncable !== 0
+      && sourceConflicting === 0
+      && allowed !== 0
+      && runtimeNetworkSocket === 0
+      && (regularFile === 0 || sourcePublished !== 0)
+      ? 1
+      : 0
+  ),
+  supervisor_fork_shared_delta_source_ofd_action: (
+    allowed: number,
+    sourcePublished: number,
+    sourceHeld: number,
+    pipePeer: number,
+  ) => (
+    allowed === 0
+      ? 0
+      : sourcePublished !== 0
+        ? 1
+        : sourceHeld !== 0 && pipePeer !== 0
+          ? 1 | (1 << 1)
+          : 0
+  ),
+  supervisor_fork_shared_tracked_source_ofd_action: (
+    kernelShared: number,
+    sourceFdEntry: number,
+    syncable: number,
+    typeNone: number,
+    incompatiblePeer: number,
+  ) => (
+    syncable !== 0
+      && typeNone === 0
+      && (kernelShared !== 0 || sourceFdEntry !== 0)
+      && (sourceFdEntry !== 0 || incompatiblePeer === 0)
+      ? 1
+      : 0
+  ),
+  supervisor_fork_shared_pipe_peer_ofd_action: (stale: number, syncable: number) => (
+    stale === 0 && syncable !== 0 ? 1 | (1 << 1) : 0
+  ),
+  supervisor_fork_shared_rehydrate_ofd_action: (
+    active: number,
+    sourceHeld: number,
+    allowed: number,
+  ) => (
+    active !== 0 && sourceHeld === 0 && allowed !== 0 ? 1 << 2 : 0
   ),
   supervisor_process_holds_regular_file_ofd(this: {
     abi_max_fds?: () => number;

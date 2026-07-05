@@ -398,6 +398,12 @@ export interface KernelExports {
   supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe?(): number;
   supervisor_fork_shared_held_ofd_track_flag_stdio_fd?(): number;
   supervisor_fork_shared_held_ofd_track_flag_fd_entry_source?(): number;
+  supervisor_fork_shared_sync_target_action_reject?(): number;
+  supervisor_fork_shared_sync_target_action_defer?(): number;
+  supervisor_fork_shared_sync_target_action_use?(): number;
+  supervisor_fork_shared_ofd_action_include?(): number;
+  supervisor_fork_shared_ofd_action_add_shared?(): number;
+  supervisor_fork_shared_ofd_action_rehydrate?(): number;
   supervisor_fork_shared_held_ofd_track_action?(ofdId: number, flags: number): number;
   supervisor_fork_shared_ofd_identity_key?(ofdId: number): bigint | number;
   supervisor_fork_shared_ofd_publish_action?(ofdId: number, peerFlags: number): number;
@@ -406,6 +412,47 @@ export interface KernelExports {
     hasTrackedState: number,
     sourceHoldsRegularFile: number,
     regularFileHasPeer: number,
+  ): number;
+  supervisor_fork_shared_sync_target_action?(
+    invalidPid: number,
+    runningWorker: number,
+    vforkReadyWorker: number,
+    hasHostBlockedWorker: number,
+    rpcPending: number,
+    processExit: number,
+    registeredProcessExit: number,
+    registeredMismatch: number,
+    incompatibleOfd: number,
+    requireHostBlocked: number,
+    includeMemfs: number,
+    runtimeNetworkState: number,
+  ): number;
+  supervisor_fork_shared_syncable_ofd_action?(
+    syncable: number,
+    sourceConflicting: number,
+    allowed: number,
+    regularFile: number,
+    sourcePublished: number,
+    runtimeNetworkSocket: number,
+  ): number;
+  supervisor_fork_shared_delta_source_ofd_action?(
+    allowed: number,
+    sourcePublished: number,
+    sourceHeld: number,
+    pipePeer: number,
+  ): number;
+  supervisor_fork_shared_tracked_source_ofd_action?(
+    kernelShared: number,
+    sourceFdEntry: number,
+    syncable: number,
+    typeNone: number,
+    incompatiblePeer: number,
+  ): number;
+  supervisor_fork_shared_pipe_peer_ofd_action?(stale: number, syncable: number): number;
+  supervisor_fork_shared_rehydrate_ofd_action?(
+    active: number,
+    sourceHeld: number,
+    allowed: number,
   ): number;
   supervisor_process_holds_regular_file_ofd?(vmPtr: number, ofdId: number): number;
   supervisor_process_ofd_for_fd?(vmPtr: number, fd: number): number;
@@ -1812,10 +1859,22 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe",
   "supervisor_fork_shared_held_ofd_track_flag_stdio_fd",
   "supervisor_fork_shared_held_ofd_track_flag_fd_entry_source",
+  "supervisor_fork_shared_sync_target_action_reject",
+  "supervisor_fork_shared_sync_target_action_defer",
+  "supervisor_fork_shared_sync_target_action_use",
+  "supervisor_fork_shared_ofd_action_include",
+  "supervisor_fork_shared_ofd_action_add_shared",
+  "supervisor_fork_shared_ofd_action_rehydrate",
   "supervisor_fork_shared_held_ofd_track_action",
   "supervisor_fork_shared_ofd_identity_key",
   "supervisor_fork_shared_ofd_publish_action",
   "supervisor_fork_shared_effect_sync_action",
+  "supervisor_fork_shared_sync_target_action",
+  "supervisor_fork_shared_syncable_ofd_action",
+  "supervisor_fork_shared_delta_source_ofd_action",
+  "supervisor_fork_shared_tracked_source_ofd_action",
+  "supervisor_fork_shared_pipe_peer_ofd_action",
+  "supervisor_fork_shared_rehydrate_ofd_action",
   "supervisor_process_holds_regular_file_ofd",
   "supervisor_process_ofd_for_fd",
   "supervisor_process_fd_flags_for_fd",

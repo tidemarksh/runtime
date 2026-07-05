@@ -166,6 +166,12 @@ function makeKernel(
   const forkSharedHeldOfdTrackFlagHostStdioPipe = 1 << 1;
   const forkSharedHeldOfdTrackFlagStdioFd = 1 << 2;
   const forkSharedHeldOfdTrackFlagFdEntrySource = 1 << 3;
+  const forkSharedSyncTargetActionReject = 0;
+  const forkSharedSyncTargetActionDefer = 1;
+  const forkSharedSyncTargetActionUse = 2;
+  const forkSharedOfdActionInclude = 1;
+  const forkSharedOfdActionAddShared = 1 << 1;
+  const forkSharedOfdActionRehydrate = 1 << 2;
   const forkSharedOfdIdentityKey = (ofdId: number): bigint => {
     if (ofdId <= 0 || ofdId >= 32) {
       return 0n;
@@ -217,6 +223,87 @@ function makeKernel(
     }
     return sourceHoldsRegularFile !== 0 && regularFileHasPeer === 0 ? 0 : 1;
   };
+  const forkSharedSyncTargetAction = (
+    invalidPid: number,
+    runningWorker: number,
+    vforkReadyWorker: number,
+    hasHostBlockedWorker: number,
+    rpcPending: number,
+    processExit: number,
+    registeredProcessExit: number,
+    registeredMismatch: number,
+    incompatibleOfd: number,
+    requireHostBlocked: number,
+    includeMemfs: number,
+    runtimeNetworkState: number,
+  ): number => {
+    if (
+      invalidPid !== 0
+      || processExit !== 0
+      || registeredProcessExit !== 0
+      || registeredMismatch !== 0
+      || incompatibleOfd !== 0
+    ) {
+      return forkSharedSyncTargetActionReject;
+    }
+    if (includeMemfs !== 0 && runtimeNetworkState !== 0) {
+      return forkSharedSyncTargetActionReject;
+    }
+    if (runningWorker !== 0 || vforkReadyWorker !== 0 || rpcPending !== 0) {
+      return forkSharedSyncTargetActionDefer;
+    }
+    if (requireHostBlocked !== 0 && hasHostBlockedWorker === 0) {
+      return forkSharedSyncTargetActionDefer;
+    }
+    return forkSharedSyncTargetActionUse;
+  };
+  const forkSharedSyncableOfdAction = (
+    syncable: number,
+    sourceConflicting: number,
+    allowed: number,
+    regularFile: number,
+    sourcePublished: number,
+    runtimeNetworkSocket: number,
+  ): number => {
+    if (syncable === 0 || sourceConflicting !== 0 || allowed === 0 || runtimeNetworkSocket !== 0) {
+      return 0;
+    }
+    return regularFile !== 0 && sourcePublished === 0 ? 0 : forkSharedOfdActionInclude;
+  };
+  const forkSharedDeltaSourceOfdAction = (
+    allowed: number,
+    sourcePublished: number,
+    sourceHeld: number,
+    pipePeer: number,
+  ): number => {
+    if (allowed === 0) {
+      return 0;
+    }
+    if (sourcePublished !== 0) {
+      return forkSharedOfdActionInclude;
+    }
+    return sourceHeld !== 0 && pipePeer !== 0
+      ? forkSharedOfdActionInclude | forkSharedOfdActionAddShared
+      : 0;
+  };
+  const forkSharedTrackedSourceOfdAction = (
+    kernelShared: number,
+    sourceFdEntry: number,
+    syncable: number,
+    typeNone: number,
+    incompatiblePeer: number,
+  ): number => {
+    if (syncable === 0 || typeNone !== 0 || (kernelShared === 0 && sourceFdEntry === 0)) {
+      return 0;
+    }
+    return sourceFdEntry === 0 && incompatiblePeer !== 0 ? 0 : forkSharedOfdActionInclude;
+  };
+  const forkSharedPipePeerOfdAction = (stale: number, syncable: number): number => (
+    stale !== 0 || syncable === 0 ? 0 : forkSharedOfdActionInclude | forkSharedOfdActionAddShared
+  );
+  const forkSharedRehydrateOfdAction = (active: number, sourceHeld: number, allowed: number): number => (
+    active !== 0 && sourceHeld === 0 && allowed !== 0 ? forkSharedOfdActionRehydrate : 0
+  );
 
   return {
     memory,
@@ -419,6 +506,12 @@ function makeKernel(
     supervisor_fork_shared_held_ofd_track_flag_fd_entry_source: () => (
       forkSharedHeldOfdTrackFlagFdEntrySource
     ),
+    supervisor_fork_shared_sync_target_action_reject: () => forkSharedSyncTargetActionReject,
+    supervisor_fork_shared_sync_target_action_defer: () => forkSharedSyncTargetActionDefer,
+    supervisor_fork_shared_sync_target_action_use: () => forkSharedSyncTargetActionUse,
+    supervisor_fork_shared_ofd_action_include: () => forkSharedOfdActionInclude,
+    supervisor_fork_shared_ofd_action_add_shared: () => forkSharedOfdActionAddShared,
+    supervisor_fork_shared_ofd_action_rehydrate: () => forkSharedOfdActionRehydrate,
     supervisor_fork_shared_held_ofd_track_action: (ofdId: number, flags: number) => {
       if (ofdId <= 0 || ofdId >= 32) {
         return 0;
@@ -451,6 +544,75 @@ function makeKernel(
       sourceHoldsRegularFile,
       regularFileHasPeer,
     ),
+    supervisor_fork_shared_sync_target_action: (
+      invalidPid: number,
+      runningWorker: number,
+      vforkReadyWorker: number,
+      hasHostBlockedWorker: number,
+      rpcPending: number,
+      processExit: number,
+      registeredProcessExit: number,
+      registeredMismatch: number,
+      incompatibleOfd: number,
+      requireHostBlocked: number,
+      includeMemfs: number,
+      runtimeNetworkState: number,
+    ) => forkSharedSyncTargetAction(
+      invalidPid,
+      runningWorker,
+      vforkReadyWorker,
+      hasHostBlockedWorker,
+      rpcPending,
+      processExit,
+      registeredProcessExit,
+      registeredMismatch,
+      incompatibleOfd,
+      requireHostBlocked,
+      includeMemfs,
+      runtimeNetworkState,
+    ),
+    supervisor_fork_shared_syncable_ofd_action: (
+      syncable: number,
+      sourceConflicting: number,
+      allowed: number,
+      regularFile: number,
+      sourcePublished: number,
+      runtimeNetworkSocket: number,
+    ) => forkSharedSyncableOfdAction(
+      syncable,
+      sourceConflicting,
+      allowed,
+      regularFile,
+      sourcePublished,
+      runtimeNetworkSocket,
+    ),
+    supervisor_fork_shared_delta_source_ofd_action: (
+      allowed: number,
+      sourcePublished: number,
+      sourceHeld: number,
+      pipePeer: number,
+    ) => forkSharedDeltaSourceOfdAction(allowed, sourcePublished, sourceHeld, pipePeer),
+    supervisor_fork_shared_tracked_source_ofd_action: (
+      kernelShared: number,
+      sourceFdEntry: number,
+      syncable: number,
+      typeNone: number,
+      incompatiblePeer: number,
+    ) => forkSharedTrackedSourceOfdAction(
+      kernelShared,
+      sourceFdEntry,
+      syncable,
+      typeNone,
+      incompatiblePeer,
+    ),
+    supervisor_fork_shared_pipe_peer_ofd_action: (stale: number, syncable: number) => (
+      forkSharedPipePeerOfdAction(stale, syncable)
+    ),
+    supervisor_fork_shared_rehydrate_ofd_action: (
+      active: number,
+      sourceHeld: number,
+      allowed: number,
+    ) => forkSharedRehydrateOfdAction(active, sourceHeld, allowed),
     supervisor_process_private_pipe_slot_mask: () => 0n,
     supervisor_process_private_pipe_source_mode: () => 0,
     supervisor_process_private_pipe_target_mode: () => 0,
