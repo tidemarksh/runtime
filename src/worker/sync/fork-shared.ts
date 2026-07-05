@@ -30,7 +30,7 @@ import {
   snapshotKernelShareOfdSlots,
   syncKernelShareOfdReservations,
 } from "../fork-shared.js";
-import { appendForkSharedMemfsDebug } from "./memfs.js";
+import { appendForkSharedMemfsDebug } from "../host-boundary/memfs-state-sync.js";
 import { adoptKernelStateForHandle } from "../kernel-state.js";
 import {
   activeKernelShareOfdIds,

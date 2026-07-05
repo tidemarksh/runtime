@@ -4,5 +4,5 @@ export { snapshotProcessFdOfdStateForKernelWorker, syncEpollStateViaKernelWorker
 export { syncForkSharedStateViaKernelWorker, rehydrateForkSharedStateViaKernelWorker, syncBlockedForkSharedStateViaKernelWorker } from "./sync/fork-shared.js";
 export { syncPipeStateViaKernelWorker } from "./host-boundary/pipe-state-sync.js";
 export { applySocketStateFromKernelWorker, syncSocketStateViaKernelWorker } from "./host-boundary/socket-state-sync.js";
-export { releaseHostStdioViaKernelWorker, releaseSharedHostStdioViaKernelWorker } from "./sync/stdio.js";
-export { syncProcessMemfsViaKernelWorker } from "./sync/memfs.js";
+export { releaseHostStdioViaKernelWorker, releaseSharedHostStdioViaKernelWorker } from "./host-boundary/stdio-state-sync.js";
+export { syncProcessMemfsViaKernelWorker } from "./host-boundary/memfs-state-sync.js";

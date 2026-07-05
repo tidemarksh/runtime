@@ -106,7 +106,7 @@ import {
   adoptKernelStateForHandle,
   repairHandleVmPidAfterKernelStateAttach,
 } from "../kernel-state.js";
-import { appendForkSharedMemfsDebug } from "./memfs.js";
+import { appendForkSharedMemfsDebug } from "../host-boundary/memfs-state-sync.js";
 import { describeSyncCause, type SyncCause } from "../contracts/sync.js";
 
 export const lastForkSharedActiveOfdIdsByHandle = new WeakMap<ProcessHandle, Set<number>>();

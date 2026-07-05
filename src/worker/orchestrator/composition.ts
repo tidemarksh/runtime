@@ -33,18 +33,18 @@ const WASM_PAGE_SIZE = 65536;
 const WASM_MAX_PAGES = 131072;
 const BOOTSTRAP_MEMORY_BYTES = 64 * 1024 * 1024;
 import {
-  releaseSharedHostStdioViaKernelWorker as releaseSharedHostStdioImpl,
   rehydrateForkSharedStateViaKernelWorker as rehydrateForkSharedStateViaKernelWorkerImpl,
   syncBlockedForkSharedStateViaKernelWorker as syncBlockedForkSharedStateViaKernelWorkerImpl,
   syncForkSharedStateViaKernelWorker as syncForkSharedStateViaKernelWorkerImpl,
-  syncProcessMemfsViaKernelWorker as syncProcessMemfsViaKernelWorkerImpl,
   type SyncCause,
 } from "../sync.js";
 import { snapshotProcessFdOfdStateForKernelWorker } from "../host-boundary/fd-ofd-state-sync.js";
+import { syncProcessMemfsViaKernelWorker as syncProcessMemfsViaKernelWorkerImpl } from "../host-boundary/memfs-state-sync.js";
 import {
   applySocketStateFromKernelWorker,
   syncSocketStateViaKernelWorker as syncSocketStateViaKernelWorkerImpl,
 } from "../host-boundary/socket-state-sync.js";
+import { releaseSharedHostStdioViaKernelWorker as releaseSharedHostStdioImpl } from "../host-boundary/stdio-state-sync.js";
 import { createWorkerDestroyHelpers } from "../destroy.js";
 import { createWorkerExitHelpers } from "../exit.js";
 import { createWorkerForkHandlers } from "../fork.js";
