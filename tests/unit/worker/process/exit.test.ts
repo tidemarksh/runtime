@@ -123,6 +123,18 @@ function makeHandle(
     supervisor_blocked_status_is_wait4: (status: number) => status === 31 ? 1 : 0,
     supervisor_blocked_status_is_socket_wait: (status: number) =>
       status === 29 || status === 30 ? 1 : 0,
+    supervisor_wait4_child_exit_blocked_parent_action_none: () => 0,
+    supervisor_wait4_child_exit_blocked_parent_action_invalidate_rpc: () => 1,
+    supervisor_wait4_child_exit_blocked_parent_action_clear_pipe_sync_before_retry: () => 2,
+    supervisor_wait4_child_exit_blocked_parent_action(status: number) {
+      if (status === 31) {
+        return 1;
+      }
+      if (status === 21) {
+        return 3;
+      }
+      return 0;
+    },
     ...(handleOverrides.kernel as Partial<ProcessHandle["kernel"]> | undefined),
   } as ProcessHandle["kernel"];
   const handle = {

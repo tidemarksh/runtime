@@ -262,6 +262,11 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_wait_in_worker_status_action_flag_running_worker: 1,
   supervisor_wait_in_worker_status_action_flag_kernel_worker_available: 2,
   supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns: 4,
+  supervisor_wait4_child_exit_blocked_parent_action_none: 0,
+  supervisor_wait4_child_exit_blocked_parent_action_invalidate_rpc: 1,
+  supervisor_wait4_child_exit_blocked_parent_action_clear_pipe_sync_before_retry: 2,
+  supervisor_wait4_rpc_local_status_action_skip: 0,
+  supervisor_wait4_rpc_local_status_action_start: 1,
   supervisor_stdio_output_settle_kind_visible: 1,
   supervisor_stdio_output_settle_kind_inherited_child: 2,
   supervisor_stdio_pipe_read_progress_action_none: 0,
@@ -662,6 +667,26 @@ export function makeSupervisorAbiStubs(
     }
     return actions;
   };
+  const supervisorWait4ChildExitBlockedParentAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+  ): number => {
+    if (status === callOptionalNumber(receiver, "abi_status_wait4")) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_wait4_child_exit_blocked_parent_action_invalidate_rpc;
+    }
+    if (status === callOptionalNumber(receiver, "abi_status_pipe_wait")) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_wait4_child_exit_blocked_parent_action_invalidate_rpc
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_wait4_child_exit_blocked_parent_action_clear_pipe_sync_before_retry;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_wait4_child_exit_blocked_parent_action_none;
+  };
+  const supervisorWait4RpcLocalStatusAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+  ): number =>
+    status === callOptionalNumber(receiver, "abi_status_wait4")
+      ? DEFAULT_NUMERIC_EXPORTS.supervisor_wait4_rpc_local_status_action_start
+      : DEFAULT_NUMERIC_EXPORTS.supervisor_wait4_rpc_local_status_action_skip;
   const supervisorPollWaitHasSocket = (receiver: Partial<KernelExports>, vmPtr: number): boolean =>
     vmPtr !== 0
     && statusFor(receiver, vmPtr) === pipeWaitStatusFor(receiver)
@@ -2542,6 +2567,12 @@ export function makeSupervisorAbiStubs(
       flags: number,
     ) {
       return supervisorWaitInWorkerStatusAction(currentExports(this), vmPtr, status, flags);
+    },
+    supervisor_wait4_child_exit_blocked_parent_action(this: KernelExports | undefined, status: number) {
+      return supervisorWait4ChildExitBlockedParentAction(currentExports(this), status);
+    },
+    supervisor_wait4_rpc_local_status_action(this: KernelExports | undefined, status: number) {
+      return supervisorWait4RpcLocalStatusAction(currentExports(this), status);
     },
     supervisor_stdio_output_settle_max_passes(kind: number) {
       switch (kind) {

@@ -155,6 +155,11 @@ const SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_SYNC_PIPE = 32;
 const SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_FLAG_RUNNING_WORKER = 1;
 const SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_FLAG_KERNEL_WORKER_AVAILABLE = 2;
 const SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_FLAG_EPOLL_STATE_KERNEL_OWNS = 4;
+const SUPERVISOR_WAIT4_CHILD_EXIT_BLOCKED_PARENT_ACTION_NONE = 0;
+const SUPERVISOR_WAIT4_CHILD_EXIT_BLOCKED_PARENT_ACTION_INVALIDATE_RPC = 1;
+const SUPERVISOR_WAIT4_CHILD_EXIT_BLOCKED_PARENT_ACTION_CLEAR_PIPE_SYNC_BEFORE_RETRY = 2;
+const SUPERVISOR_WAIT4_RPC_LOCAL_STATUS_ACTION_SKIP = 0;
+const SUPERVISOR_WAIT4_RPC_LOCAL_STATUS_ACTION_START = 1;
 const POLLFD_BYTES = 8;
 
 export function installSupervisorBlockedResumeStub<T extends Partial<KernelExports>>(
@@ -342,6 +347,13 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_wait_in_worker_status_action_flag_running_worker"
   | "supervisor_wait_in_worker_status_action_flag_kernel_worker_available"
   | "supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns"
+  | "supervisor_wait4_child_exit_blocked_parent_action"
+  | "supervisor_wait4_child_exit_blocked_parent_action_none"
+  | "supervisor_wait4_child_exit_blocked_parent_action_invalidate_rpc"
+  | "supervisor_wait4_child_exit_blocked_parent_action_clear_pipe_sync_before_retry"
+  | "supervisor_wait4_rpc_local_status_action"
+  | "supervisor_wait4_rpc_local_status_action_skip"
+  | "supervisor_wait4_rpc_local_status_action_start"
   | "supervisor_state_sync_kind_pipe"
   | "supervisor_state_sync_kind_epoll"
   | "supervisor_state_sync_kind_socket"
@@ -537,6 +549,20 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     }
     return actions;
   };
+  const wait4ChildExitBlockedParentAction = (status: number): number => {
+    if (kernel.abi_status_wait4?.() === status) {
+      return SUPERVISOR_WAIT4_CHILD_EXIT_BLOCKED_PARENT_ACTION_INVALIDATE_RPC;
+    }
+    if (kernel.abi_status_pipe_wait?.() === status) {
+      return SUPERVISOR_WAIT4_CHILD_EXIT_BLOCKED_PARENT_ACTION_INVALIDATE_RPC
+        | SUPERVISOR_WAIT4_CHILD_EXIT_BLOCKED_PARENT_ACTION_CLEAR_PIPE_SYNC_BEFORE_RETRY;
+    }
+    return SUPERVISOR_WAIT4_CHILD_EXIT_BLOCKED_PARENT_ACTION_NONE;
+  };
+  const wait4RpcLocalStatusAction = (status: number): number =>
+    kernel.abi_status_wait4?.() === status
+      ? SUPERVISOR_WAIT4_RPC_LOCAL_STATUS_ACTION_START
+      : SUPERVISOR_WAIT4_RPC_LOCAL_STATUS_ACTION_SKIP;
   const retryStatusAction = (status: number): number => {
     if (kernel.abi_status_pipe_wait?.() === status) {
       return SUPERVISOR_BLOCKED_RETRY_STATUS_ACTION_PIPE_RETRY_DIAGNOSTICS
@@ -754,6 +780,13 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_wait_in_worker_status_action_flag_running_worker"
     | "supervisor_wait_in_worker_status_action_flag_kernel_worker_available"
     | "supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns"
+    | "supervisor_wait4_child_exit_blocked_parent_action"
+    | "supervisor_wait4_child_exit_blocked_parent_action_none"
+    | "supervisor_wait4_child_exit_blocked_parent_action_invalidate_rpc"
+    | "supervisor_wait4_child_exit_blocked_parent_action_clear_pipe_sync_before_retry"
+    | "supervisor_wait4_rpc_local_status_action"
+    | "supervisor_wait4_rpc_local_status_action_skip"
+    | "supervisor_wait4_rpc_local_status_action_start"
     | "supervisor_state_sync_kind_pipe"
     | "supervisor_state_sync_kind_epoll"
     | "supervisor_state_sync_kind_socket"
@@ -1800,6 +1833,20 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     status: number,
     flags: number,
   ) => waitInWorkerStatusAction(vmPtr, status, flags);
+  nextKernel.supervisor_wait4_child_exit_blocked_parent_action_none ??= () =>
+    SUPERVISOR_WAIT4_CHILD_EXIT_BLOCKED_PARENT_ACTION_NONE;
+  nextKernel.supervisor_wait4_child_exit_blocked_parent_action_invalidate_rpc ??= () =>
+    SUPERVISOR_WAIT4_CHILD_EXIT_BLOCKED_PARENT_ACTION_INVALIDATE_RPC;
+  nextKernel.supervisor_wait4_child_exit_blocked_parent_action_clear_pipe_sync_before_retry ??= () =>
+    SUPERVISOR_WAIT4_CHILD_EXIT_BLOCKED_PARENT_ACTION_CLEAR_PIPE_SYNC_BEFORE_RETRY;
+  nextKernel.supervisor_wait4_child_exit_blocked_parent_action ??= (status: number) =>
+    wait4ChildExitBlockedParentAction(status);
+  nextKernel.supervisor_wait4_rpc_local_status_action_skip ??= () =>
+    SUPERVISOR_WAIT4_RPC_LOCAL_STATUS_ACTION_SKIP;
+  nextKernel.supervisor_wait4_rpc_local_status_action_start ??= () =>
+    SUPERVISOR_WAIT4_RPC_LOCAL_STATUS_ACTION_START;
+  nextKernel.supervisor_wait4_rpc_local_status_action ??= (status: number) =>
+    wait4RpcLocalStatusAction(status);
   nextKernel.supervisor_state_sync_kind_pipe ??= () => SUPERVISOR_STATE_SYNC_KIND_PIPE;
   nextKernel.supervisor_state_sync_kind_epoll ??= () => SUPERVISOR_STATE_SYNC_KIND_EPOLL;
   nextKernel.supervisor_state_sync_kind_socket ??= () => SUPERVISOR_STATE_SYNC_KIND_SOCKET;

@@ -24,8 +24,7 @@ import { ensureMemoryCapacityFor, scratchBaseFor } from "../kernel-worker/common
 import { readInodeRecord } from "../fs/sab-page-cache.js";
 import {
   supervisorBlockedPipeSyncBeforeRetryClear,
-  supervisorBlockedStatusIsPipeWait,
-  supervisorBlockedStatusIsWait4,
+  supervisorWait4ChildExitBlockedParentActions,
 } from "../supervisor-blocked-resume.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import type { ProcessHandle } from "./types.js";
@@ -1557,14 +1556,12 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       if (!isBlockedRpcPending(blocked)) {
         continue;
       }
-      if (
-        !supervisorBlockedStatusIsWait4(parent.kernel, blocked.status)
-        && !supervisorBlockedStatusIsPipeWait(parent.kernel, blocked.status)
-      ) {
+      const actions = supervisorWait4ChildExitBlockedParentActions(parent.kernel, blocked.status);
+      if (!actions.invalidateRpc) {
         continue;
       }
       invalidateBlockedRpc(blocked);
-      if (supervisorBlockedStatusIsPipeWait(parent.kernel, blocked.status)) {
+      if (actions.clearPipeSyncBeforeRetry) {
         supervisorBlockedPipeSyncBeforeRetryClear(parent.kernel, blocked.vmPtr);
       }
       deps.appendRuntimeLifecycleEvent(

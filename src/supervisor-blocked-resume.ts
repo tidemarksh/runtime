@@ -83,6 +83,15 @@ export interface SupervisorWaitInWorkerStatusActions {
   syncPipe: boolean;
 }
 
+export interface SupervisorWait4ChildExitBlockedParentActions {
+  invalidateRpc: boolean;
+  clearPipeSyncBeforeRetry: boolean;
+}
+
+export type SupervisorWait4RpcLocalStatusAction =
+  | "skip"
+  | "start";
+
 export type SupervisorBlockedStaleRetryResultAction =
   | "none"
   | "handle-current-result"
@@ -233,7 +242,12 @@ type SupervisorNumberConstExportName =
   | "supervisor_wait_in_worker_status_action_sync_pipe"
   | "supervisor_wait_in_worker_status_action_flag_running_worker"
   | "supervisor_wait_in_worker_status_action_flag_kernel_worker_available"
-  | "supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns";
+  | "supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns"
+  | "supervisor_wait4_child_exit_blocked_parent_action_none"
+  | "supervisor_wait4_child_exit_blocked_parent_action_invalidate_rpc"
+  | "supervisor_wait4_child_exit_blocked_parent_action_clear_pipe_sync_before_retry"
+  | "supervisor_wait4_rpc_local_status_action_skip"
+  | "supervisor_wait4_rpc_local_status_action_start";
 
 function readSupervisorNumberConst(
   kernel: KernelExports,
@@ -1199,6 +1213,75 @@ export function supervisorWaitInWorkerStatusActions(
     syncEpoll: (result & syncEpoll) !== 0,
     syncPipe: (result & syncPipe) !== 0,
   };
+}
+
+export function supervisorWait4ChildExitBlockedParentActions(
+  kernel: KernelExports,
+  status: number,
+): SupervisorWait4ChildExitBlockedParentActions {
+  const readAction = kernel.supervisor_wait4_child_exit_blocked_parent_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_wait4_child_exit_blocked_parent_action");
+  }
+  const result = readAction.call(kernel, status);
+  if (result < 0) {
+    throw new Error(`kernel supervisor wait4 child-exit blocked parent action failed: ${result}`);
+  }
+  const invalidateRpc = readSupervisorNumberConst(
+    kernel,
+    "supervisor_wait4_child_exit_blocked_parent_action_invalidate_rpc",
+  );
+  const clearPipeSyncBeforeRetry = readSupervisorNumberConst(
+    kernel,
+    "supervisor_wait4_child_exit_blocked_parent_action_clear_pipe_sync_before_retry",
+  );
+  const known = readSupervisorNumberConst(
+    kernel,
+    "supervisor_wait4_child_exit_blocked_parent_action_none",
+  ) | invalidateRpc | clearPipeSyncBeforeRetry;
+  if ((result & ~known) !== 0) {
+    throw new Error(`kernel supervisor wait4 child-exit blocked parent action is unknown: ${result}`);
+  }
+  return {
+    invalidateRpc: (result & invalidateRpc) !== 0,
+    clearPipeSyncBeforeRetry: (result & clearPipeSyncBeforeRetry) !== 0,
+  };
+}
+
+function supervisorWait4RpcLocalStatusActionValue(
+  kernel: KernelExports,
+  action: SupervisorWait4RpcLocalStatusAction,
+): number {
+  switch (action) {
+    case "skip":
+      return readSupervisorNumberConst(kernel, "supervisor_wait4_rpc_local_status_action_skip");
+    case "start":
+      return readSupervisorNumberConst(kernel, "supervisor_wait4_rpc_local_status_action_start");
+    default: {
+      const exhaustive: never = action;
+      return exhaustive;
+    }
+  }
+}
+
+export function supervisorWait4RpcLocalStatusAction(
+  kernel: KernelExports,
+  status: number,
+): SupervisorWait4RpcLocalStatusAction {
+  const readAction = kernel.supervisor_wait4_rpc_local_status_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_wait4_rpc_local_status_action");
+  }
+  const result = readAction.call(kernel, status);
+  if (result < 0) {
+    throw new Error(`kernel supervisor wait4 RPC local status action failed: ${result}`);
+  }
+  for (const action of ["skip", "start"] as const) {
+    if (result === supervisorWait4RpcLocalStatusActionValue(kernel, action)) {
+      return action;
+    }
+  }
+  throw new Error(`kernel supervisor wait4 RPC local status action is unknown: ${result}`);
 }
 
 function supervisorBlockedPostNetworkPumpActionValue(

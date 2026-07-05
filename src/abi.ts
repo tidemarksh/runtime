@@ -680,6 +680,13 @@ export interface KernelExports {
   supervisor_wait_in_worker_status_action_flag_running_worker?(): number;
   supervisor_wait_in_worker_status_action_flag_kernel_worker_available?(): number;
   supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns?(): number;
+  supervisor_wait4_child_exit_blocked_parent_action?(status: number): number;
+  supervisor_wait4_child_exit_blocked_parent_action_none?(): number;
+  supervisor_wait4_child_exit_blocked_parent_action_invalidate_rpc?(): number;
+  supervisor_wait4_child_exit_blocked_parent_action_clear_pipe_sync_before_retry?(): number;
+  supervisor_wait4_rpc_local_status_action?(status: number): number;
+  supervisor_wait4_rpc_local_status_action_skip?(): number;
+  supervisor_wait4_rpc_local_status_action_start?(): number;
   supervisor_stdio_output_settle_kind_visible?(): number;
   supervisor_stdio_output_settle_kind_inherited_child?(): number;
   supervisor_stdio_pipe_read_progress_action_none?(): number;
@@ -2150,6 +2157,13 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_wait_in_worker_status_action_flag_running_worker",
   "supervisor_wait_in_worker_status_action_flag_kernel_worker_available",
   "supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns",
+  "supervisor_wait4_child_exit_blocked_parent_action",
+  "supervisor_wait4_child_exit_blocked_parent_action_none",
+  "supervisor_wait4_child_exit_blocked_parent_action_invalidate_rpc",
+  "supervisor_wait4_child_exit_blocked_parent_action_clear_pipe_sync_before_retry",
+  "supervisor_wait4_rpc_local_status_action",
+  "supervisor_wait4_rpc_local_status_action_skip",
+  "supervisor_wait4_rpc_local_status_action_start",
   "supervisor_stdio_output_settle_kind_visible",
   "supervisor_stdio_output_settle_kind_inherited_child",
   "supervisor_stdio_pipe_read_progress_action_none",
