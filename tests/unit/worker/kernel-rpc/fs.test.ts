@@ -302,13 +302,12 @@ test("kernel-rpc fs helper uses kernel-worker resume and returns a typed outcome
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
   });
-  const effects = { memfsMutation: 1, memfsFileData: 2 };
 
-  await expect(helpers.resumeFsViaKernelWorker(handle, worker, 0x1234, effects)).resolves.toMatchObject({
+  await expect(helpers.resumeFsViaKernelWorker(handle, worker, 0x1234)).resolves.toMatchObject({
     kind: "completed",
     status: 0,
   });
-  await expect(helpers.resumeFsViaKernelWorkerOutcome(handle, worker, 0x1234, effects)).resolves.toMatchObject({
+  await expect(helpers.resumeFsViaKernelWorkerOutcome(handle, worker, 0x1234)).resolves.toMatchObject({
     kind: "completed",
     status: 0,
   });
@@ -368,8 +367,7 @@ test("kernel-rpc fs outcome reports blocked fs status", async () => {
   await expect(helpers.resumeFsViaKernelWorkerOutcome(
     handle,
     worker,
-    0x1234,
-    { memfsMutation: 1, memfsFileData: 2 },
+    0x1234
   )).resolves.toMatchObject({
     kind: "blocked",
     status: 31,
@@ -433,8 +431,7 @@ test("kernel-worker fs outcome returns wake effect after local publication", asy
   const outcome = await helpers.resumeFsViaKernelWorkerOutcome(
     handle,
     worker,
-    0x1234,
-    { memfsMutation: 1, memfsFileData: 2 },
+    0x1234
   );
 
   expect(kernelWorkerRequest).toHaveBeenCalledWith(expect.objectContaining({
@@ -517,8 +514,7 @@ test("kernel-worker fs outcome follows supervisor publication decision", async (
   const outcome = await helpers.resumeFsViaKernelWorkerOutcome(
     handle,
     worker,
-    0x1234,
-    { memfsMutation: 1, memfsFileData: 2 },
+    0x1234
   );
 
   expect(outcome).toMatchObject({ kind: "completed", status: 0 });
@@ -592,8 +588,7 @@ test("kernel-worker fs outcome applies mmap guest memory writes from fs response
   const outcome = await helpers.resumeFsViaKernelWorkerOutcome(
     handle,
     worker,
-    0x1234,
-    { memfsMutation: 1, memfsFileData: 2 },
+    0x1234
   );
 
   expect(outcome).toMatchObject({ kind: "completed", status: 0 });
@@ -670,8 +665,7 @@ test("kernel-worker fs outcome defers file write publication to a later sync poi
   const outcome = await helpers.resumeFsViaKernelWorkerOutcome(
     handle,
     worker,
-    0x1234,
-    { memfsMutation: 1, memfsFileData: 2 },
+    0x1234
   );
 
   expect(markRuntimeFsDirty).toHaveBeenCalledWith(handle);
@@ -759,8 +753,7 @@ test("kernel-worker fs outcome applies only request fd after regular file write"
   const outcome = await helpers.resumeFsViaKernelWorkerOutcome(
     handle,
     worker,
-    0x1234,
-    { memfsMutation: 1, memfsFileData: 2 },
+    0x1234
   );
 
   expect(syncSharedOfdStateAfterFs).not.toHaveBeenCalled();
@@ -858,8 +851,7 @@ test("kernel-worker fs outcome applies only request fd after regular file fstat"
   const outcome = await helpers.resumeFsViaKernelWorkerOutcome(
     handle,
     worker,
-    0x1234,
-    { memfsMutation: 1, memfsFileData: 2 },
+    0x1234
   );
 
   expect(syncSharedOfdStateAfterFs).not.toHaveBeenCalled();
@@ -952,8 +944,7 @@ test("kernel-worker fs outcome preserves unrelated live fd across openat snapsho
   const outcome = await helpers.resumeFsViaKernelWorkerOutcome(
     handle,
     worker,
-    0x1234,
-    { memfsMutation: 1, memfsFileData: 2 },
+    0x1234
   );
 
   expect(outcome).toMatchObject({ kind: "completed", status: 0 });
@@ -1029,8 +1020,7 @@ test("kernel-worker fs outcome preserves live fd from stale nonzero openat snaps
   const outcome = await helpers.resumeFsViaKernelWorkerOutcome(
     handle,
     worker,
-    0x1234,
-    { memfsMutation: 1, memfsFileData: 2 },
+    0x1234
   );
 
   expect(outcome).toMatchObject({ kind: "completed", status: 0 });
@@ -1103,8 +1093,7 @@ test("kernel-worker fs outcome permits close snapshot to clear live fd", async (
   const outcome = await helpers.resumeFsViaKernelWorkerOutcome(
     handle,
     worker,
-    0x1234,
-    { memfsMutation: 1, memfsFileData: 2 },
+    0x1234
   );
 
   expect(outcome).toMatchObject({ kind: "completed", status: 0 });
@@ -1206,8 +1195,7 @@ test("kernel-worker fs outcome keeps generated file fd closeable after unrelated
     await expect(helpers.resumeFsViaKernelWorkerOutcome(
       handle,
       worker,
-      0x1234,
-      { memfsMutation: 1, memfsFileData: 2 },
+      0x1234
     )).resolves.toMatchObject({ kind: "completed", status: 0 });
 
     expect(fdTable.get(5)).toEqual({ ofdId: 6, fdFlags: 0 });
@@ -1219,8 +1207,7 @@ test("kernel-worker fs outcome keeps generated file fd closeable after unrelated
   await expect(helpers.resumeFsViaKernelWorkerOutcome(
     handle,
     worker,
-    0x1234,
-    { memfsMutation: 1, memfsFileData: 2 },
+    0x1234
   )).resolves.toMatchObject({ kind: "completed", status: 0 });
 
   expect(fdTable.get(17)).toEqual({ ofdId: 0, fdFlags: 0 });
@@ -1299,8 +1286,7 @@ test("kernel-worker fs outcome rejects fd snapshot entries stale against request
   await expect(helpers.resumeFsViaKernelWorkerOutcome(
     handle,
     worker,
-    0x1234,
-    { memfsMutation: 1, memfsFileData: 2 },
+    0x1234
   )).resolves.toMatchObject({ kind: "completed", status: 0 });
 
   expect(fdTable.get(5)).toEqual({ ofdId: 6, fdFlags: 0 });
@@ -1389,8 +1375,7 @@ test("kernel-worker fs outcome rejects fd snapshot ABA using generation", async 
   await expect(helpers.resumeFsViaKernelWorkerOutcome(
     handle,
     worker,
-    0x1234,
-    { memfsMutation: 1, memfsFileData: 2 },
+    0x1234
   )).resolves.toMatchObject({ kind: "completed", status: 0 });
 
   expect(fdTable.get(5)).toEqual({ ofdId: 6, fdFlags: 0 });
@@ -1494,8 +1479,7 @@ test("kernel-worker fs outcome rejects ofd slot snapshots stale against request 
   await expect(helpers.resumeFsViaKernelWorkerOutcome(
     handle,
     worker,
-    0x1234,
-    { memfsMutation: 1, memfsFileData: 2 },
+    0x1234
   )).resolves.toMatchObject({ kind: "completed", status: 0 });
 
   expect(memory[slotOffset]).toBe(9);
@@ -1571,8 +1555,7 @@ test("kernel-worker fs outcome skips shared OFD sync after regular file mmap", a
   const outcome = await helpers.resumeFsViaKernelWorkerOutcome(
     handle,
     worker,
-    0x1234,
-    { memfsMutation: 1, memfsFileData: 2 },
+    0x1234
   );
 
   expect(syncSharedOfdStateAfterFs).not.toHaveBeenCalled();
@@ -1649,8 +1632,7 @@ test("kernel-worker fs outcome keeps shared OFD sync after pipe write", async ()
   const outcome = await helpers.resumeFsViaKernelWorkerOutcome(
     handle,
     worker,
-    0x1234,
-    { memfsMutation: 1, memfsFileData: 2 },
+    0x1234
   );
 
   expect(syncSharedOfdStateAfterFs).toHaveBeenCalledWith(handle, [target], { sourceVmPtr: 0x1234 });
@@ -1729,8 +1711,7 @@ test("kernel-worker fs outcome does not rehydrate unrelated peer shared OFD befo
   const outcome = await helpers.resumeFsViaKernelWorkerOutcome(
     handle,
     worker,
-    0x1234,
-    { memfsMutation: 1, memfsFileData: 2 },
+    0x1234
   );
 
   expect(rehydrateForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
@@ -1817,8 +1798,7 @@ test("kernel-worker fs outcome skips stale dirty MemFS peers before dispatch", a
   const outcome = await helpers.resumeFsViaKernelWorkerOutcome(
     handle,
     worker,
-    0x1234,
-    { memfsMutation: 1, memfsFileData: 2 },
+    0x1234
   );
 
   expect(syncDirtyMemfsPeerViaKernelWorker).not.toHaveBeenCalled();

@@ -62,7 +62,6 @@ export interface TransferDebugStats {
   fsWriteCalls: number;
   fsWriteBytes: number;
   memfsMutationOps: number;
-  memfsFileDataOps: number;
   pageCachePublishCandidates: number;
   pageCachePublishCalls: number;
   forkSharedMemfsSyncCalls: number;
@@ -97,7 +96,6 @@ export function createTransferDebugStats(): TransferDebugStats {
     fsWriteCalls: 0,
     fsWriteBytes: 0,
     memfsMutationOps: 0,
-    memfsFileDataOps: 0,
     pageCachePublishCandidates: 0,
     pageCachePublishCalls: 0,
     forkSharedMemfsSyncCalls: 0,

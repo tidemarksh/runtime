@@ -1353,10 +1353,7 @@ test("resumeFsViaKernelWorker skips memfs sync during active vfork child ownersh
     collectTrackableForkSharedOfds: () => new Set(),
   });
 
-  const outcome = await helpers.resumeFsViaKernelWorker(handle, worker, 0x1234, {
-    memfsMutation: 1,
-    memfsFileData: 4,
-  });
+  const outcome = await helpers.resumeFsViaKernelWorker(handle, worker, 0x1234);
 
   expect(processFsRequests).toHaveLength(1);
   expect(assertProcessStandardFdIntegrity).toHaveBeenCalledTimes(1);
@@ -1533,10 +1530,7 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
     collectTrackableForkSharedOfds: () => new Set(),
   });
 
-  const outcome = await helpers.resumeFsViaKernelWorker(handle, worker, 0x1234, {
-    memfsMutation: 1,
-    memfsFileData: 4,
-  });
+  const outcome = await helpers.resumeFsViaKernelWorker(handle, worker, 0x1234);
 
   expect(processFsRequests).toHaveLength(1);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
@@ -1679,10 +1673,7 @@ test("resumeFsViaKernelWorker routes execve spawn before parent fd integrity che
     collectTrackableForkSharedOfds: () => new Set(),
   });
 
-  const outcome = await helpers.resumeFsViaKernelWorker(handle, worker, 0x1234, {
-    memfsMutation: 1,
-    memfsFileData: 4,
-  });
+  const outcome = await helpers.resumeFsViaKernelWorker(handle, worker, 0x1234);
 
   expect(processFsRequests).toHaveLength(1);
   expect(assertProcessStandardFdIntegrity).toHaveBeenCalledTimes(1);
@@ -1806,10 +1797,7 @@ test("resumeFsViaKernelWorker applies fd entries returned by kernel-worker fs pr
     collectTrackableForkSharedOfds: () => new Set(),
   });
 
-  await helpers.resumeFsViaKernelWorker(handle, worker, 0x1234, {
-    memfsMutation: 1,
-    memfsFileData: 4,
-  });
+  await helpers.resumeFsViaKernelWorker(handle, worker, 0x1234);
 
   expect(processFsRequests).toHaveLength(1);
   expect(fdEntries.get(5)).toEqual({ ofdId: 7, fdFlags: 0 });
