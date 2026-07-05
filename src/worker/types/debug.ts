@@ -61,8 +61,6 @@ export interface TransferDebugStats {
   fsReadBytes: number;
   fsWriteCalls: number;
   fsWriteBytes: number;
-  packagePathWriteCalls: number;
-  packagePathWriteBytes: number;
   memfsMutationOps: number;
   memfsFileDataOps: number;
   pageCachePublishCandidates: number;
@@ -98,8 +96,6 @@ export function createTransferDebugStats(): TransferDebugStats {
     fsReadBytes: 0,
     fsWriteCalls: 0,
     fsWriteBytes: 0,
-    packagePathWriteCalls: 0,
-    packagePathWriteBytes: 0,
     memfsMutationOps: 0,
     memfsFileDataOps: 0,
     pageCachePublishCandidates: 0,

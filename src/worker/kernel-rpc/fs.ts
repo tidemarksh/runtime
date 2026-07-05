@@ -1000,10 +1000,6 @@ function formatFsErrorDetail(error: unknown): string {
   return `:err=${JSON.stringify(detail.slice(0, 1000))}`;
 }
 
-function isPackageIndexTransferPath(path: string | null): boolean {
-  return path?.includes("_Packages.xz") === true || path?.endsWith("/Packages") === true;
-}
-
 function recordFsTransferStats(
   handle: ProcessHandle,
   pendingFs: PendingFsContext,
@@ -1044,10 +1040,6 @@ function recordFsTransferStats(
   } else if (pendingFs.opcode === FS_OP_WRITE) {
     stats.fsWriteCalls += 1;
     stats.fsWriteBytes += byteCount;
-    if (isPackageIndexTransferPath(pendingFs.path)) {
-      stats.packagePathWriteCalls += 1;
-      stats.packagePathWriteBytes += byteCount;
-    }
   }
 }
 
