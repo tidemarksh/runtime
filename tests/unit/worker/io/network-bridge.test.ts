@@ -143,6 +143,15 @@ function withSupervisorSocketDefaults<T extends NetworkBridgeKernelFixture>(kern
   return kernel;
 }
 
+function seedNetworkConnections(
+  handle: ProcessHandle,
+  entries: Iterable<readonly [number, unknown]>,
+): void {
+  for (const [fd, connection] of entries) {
+    networkConnections(handle).set(fd, connection as never);
+  }
+}
+
 test("resolveNetworkConnect reports IPv4 connect endpoint to a generic runtime bridge", async () => {
   const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
   const view = new Uint8Array(memory.buffer);
@@ -153,7 +162,6 @@ test("resolveNetworkConnect reports IPv4 connect endpoint to a generic runtime b
     pid: 42,
     memory,
     networkBridge: bridge,
-    networkConnections: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_econnrefused: () => 111,
@@ -195,7 +203,6 @@ test("resolveNetworkConnect reads IPv4 connect endpoint from supervisor socket c
     pid: 42,
     memory,
     networkBridge: bridge,
-    networkConnections: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_econnrefused: () => 111,
@@ -246,7 +253,6 @@ test("resolveNetworkConnect does not truncate Memory64 blocked sockaddr pointers
     guestBase,
     memory,
     networkBridge: bridge,
-    networkConnections: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_econnrefused: () => 111,
@@ -292,7 +298,6 @@ test("resolveNetworkConnect tracks pending fd while bridge connect is in flight"
   const handle = {
     pid: 42,
     memory,
-    networkConnections: new Map(),
     networkBridge: {
       connect: vi.fn(() => new Promise((resolve) => {
         finishConnect = resolve;
@@ -342,7 +347,6 @@ test("commitNetworkConnect adopts a successful bridge connection after the local
     networkBridge: {
       connect: vi.fn(async () => ({ connection })),
     },
-    networkConnections: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(176),
@@ -434,7 +438,6 @@ test("commitNetworkConnect drops bridge connection when supervisor rejects the c
     networkBridge: {
       connect: vi.fn(async () => ({ connection })),
     },
-    networkConnections: new Map(),
     kernelState: {},
     kernel: {
       kernel_heap_ptr: () => 0x100,
@@ -489,7 +492,6 @@ test("commitNetworkConnect adopts bridge connection when supervisor accepts the 
     networkBridge: {
       connect: vi.fn(async () => ({ connection })),
     },
-    networkConnections: new Map(),
     kernelState: {
       ofdTablePtr: 0,
       netBufBase: 0,
@@ -553,7 +555,6 @@ test("resolveNetworkConnect normalizes bridge errno to negative Linux result", a
   const handle = {
     pid: 42,
     memory,
-    networkConnections: new Map(),
     networkBridge: {
       connect: vi.fn(async () => ({ errno: 13 })),
     },
@@ -578,24 +579,22 @@ test("pumpNetworkConnections drains guest outbound bytes and injects inbound byt
   const view = new Uint8Array(memory.buffer);
   const written: string[] = [];
   let inboundRead = false;
+  const connection = {
+    write: vi.fn((data: Uint8Array) => {
+      written.push(new TextDecoder().decode(data));
+    }),
+    read: vi.fn(() => {
+      if (inboundRead) {
+        return undefined;
+      }
+      inboundRead = true;
+      return new TextEncoder().encode("HTTP/1.1 200 OK\r\n\r\nok");
+    }),
+  };
   const handle = {
     pid: 42,
     vmPtr: 0x2000,
     memory,
-    networkConnections: new Map([
-      [7, {
-        write: vi.fn((data: Uint8Array) => {
-          written.push(new TextDecoder().decode(data));
-        }),
-        read: vi.fn(() => {
-          if (inboundRead) {
-            return undefined;
-          }
-          inboundRead = true;
-          return new TextEncoder().encode("HTTP/1.1 200 OK\r\n\r\nok");
-        }),
-      }],
-    ]),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -618,6 +617,7 @@ test("pumpNetworkConnections drains guest outbound bytes and injects inbound byt
     },
   } as unknown as ProcessHandle;
   withSupervisorSocketDefaults(handle.kernel);
+  seedNetworkConnections(handle, [[7, connection]]);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.pumpNetworkConnections(handle)).resolves.toBe(true);
@@ -633,23 +633,21 @@ test("pumpNetworkConnections requests and injects large generic inbound chunks",
   payload.fill(0x61);
   let inboundRead = false;
   const readMaxBytes: number[] = [];
+  const connection = {
+    write: vi.fn(),
+    read: vi.fn((maxBytes: number) => {
+      readMaxBytes.push(maxBytes);
+      if (inboundRead) {
+        return undefined;
+      }
+      inboundRead = true;
+      return payload;
+    }),
+  };
   const handle = {
     pid: 42,
     vmPtr: 0x2000,
     memory,
-    networkConnections: new Map([
-      [7, {
-        write: vi.fn(),
-        read: vi.fn((maxBytes: number) => {
-          readMaxBytes.push(maxBytes);
-          if (inboundRead) {
-            return undefined;
-          }
-          inboundRead = true;
-          return payload;
-        }),
-      }],
-    ]),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -664,6 +662,7 @@ test("pumpNetworkConnections requests and injects large generic inbound chunks",
     },
   } as unknown as ProcessHandle;
   withSupervisorSocketDefaults(handle.kernel);
+  seedNetworkConnections(handle, [[7, connection]]);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.pumpNetworkConnections(handle)).resolves.toBe(true);
@@ -683,25 +682,23 @@ test("pumpNetworkConnections preserves pending large inbound bytes across partia
   let readOffset = 0;
   let injectedOffset = 0;
   const maxSocketWrite = 48 * 1024;
+  const connection = {
+    write: vi.fn(),
+    read: vi.fn((maxBytes: number) => {
+      readMaxBytes.push(maxBytes);
+      if (readOffset >= payload.length) {
+        return undefined;
+      }
+      const end = Math.min(payload.length, readOffset + maxBytes);
+      const chunk = payload.subarray(readOffset, end);
+      readOffset = end;
+      return chunk;
+    }),
+  };
   const handle = {
     pid: 42,
     vmPtr: 0x2000,
     memory,
-    networkConnections: new Map([
-      [7, {
-        write: vi.fn(),
-        read: vi.fn((maxBytes: number) => {
-          readMaxBytes.push(maxBytes);
-          if (readOffset >= payload.length) {
-            return undefined;
-          }
-          const end = Math.min(payload.length, readOffset + maxBytes);
-          const chunk = payload.subarray(readOffset, end);
-          readOffset = end;
-          return chunk;
-        }),
-      }],
-    ]),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -721,6 +718,7 @@ test("pumpNetworkConnections preserves pending large inbound bytes across partia
     },
   } as unknown as ProcessHandle;
   withSupervisorSocketDefaults(handle.kernel);
+  seedNetworkConnections(handle, [[7, connection]]);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   while (injectedOffset < payload.length) {
@@ -737,24 +735,22 @@ test("async inbound read resumes pump with the source thread vm", async () => {
   let resolveRead: ((data: Uint8Array) => void) | null = null;
   let readStarted = false;
   const deps = createDeps();
+  const connection = {
+    write: vi.fn(),
+    read: vi.fn(() => {
+      if (readStarted) {
+        return undefined;
+      }
+      readStarted = true;
+      return new Promise<Uint8Array>((resolve) => {
+        resolveRead = resolve;
+      });
+    }),
+  };
   const handle = {
     pid: 42,
     vmPtr: 0x2000,
     memory,
-    networkConnections: new Map([
-      [7, {
-        write: vi.fn(),
-        read: vi.fn(() => {
-          if (readStarted) {
-            return undefined;
-          }
-          readStarted = true;
-          return new Promise<Uint8Array>((resolve) => {
-            resolveRead = resolve;
-          });
-        }),
-      }],
-    ]),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -769,6 +765,7 @@ test("async inbound read resumes pump with the source thread vm", async () => {
     },
   } as unknown as ProcessHandle;
   withSupervisorSocketDefaults(handle.kernel);
+  seedNetworkConnections(handle, [[7, connection]]);
   const helpers = createWorkerProcessIoHelpers(deps);
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(false);
@@ -813,12 +810,10 @@ test("async inbound read adopts the current process handle before injecting", as
     pid: 42,
     vmPtr: 0x2000,
     memory,
-    networkConnections: new Map([[7, connection]]),
     kernel,
   } as unknown as ProcessHandle;
   const activeHandle = {
     ...oldHandle,
-    networkConnections: new Map(),
     kernel: {
       ...kernel,
       thread_socket_inject_inbound: vi.fn((_vmPtr: number, _fd: number, _srcPtr: number, srcLen: number) => srcLen),
@@ -829,6 +824,7 @@ test("async inbound read adopts the current process handle before injecting", as
   deps.getActiveHandle = vi.fn(() => activeHandle);
   withSupervisorSocketDefaults(kernel);
   withSupervisorSocketDefaults(activeHandle.kernel);
+  seedNetworkConnections(oldHandle, [[7, connection]]);
   networkClosedFds(activeHandle).add(7);
   networkRecvHeadWatermarks(activeHandle).set(7, 4096);
   networkRecvTailWatermarks(activeHandle).set(7, 8192);
@@ -863,28 +859,26 @@ test("pending async empty read does not drop the next inbound response", async (
   let readCalls = 0;
   let responseQueued = false;
   const deps = createDeps();
+  const connection = {
+    write: vi.fn(),
+    read: vi.fn(() => {
+      readCalls += 1;
+      if (readCalls === 1) {
+        return new Promise<undefined>((resolve) => {
+          resolveEmptyRead = resolve;
+        });
+      }
+      if (responseQueued) {
+        return undefined;
+      }
+      responseQueued = true;
+      return Promise.resolve(new TextEncoder().encode("HTTP/1.1 200 OK\r\n\r\nok"));
+    }),
+  };
   const handle = {
     pid: 42,
     vmPtr: 0x2000,
     memory,
-    networkConnections: new Map([
-      [7, {
-        write: vi.fn(),
-        read: vi.fn(() => {
-          readCalls += 1;
-          if (readCalls === 1) {
-            return new Promise<undefined>((resolve) => {
-              resolveEmptyRead = resolve;
-            });
-          }
-          if (responseQueued) {
-            return undefined;
-          }
-          responseQueued = true;
-          return Promise.resolve(new TextEncoder().encode("HTTP/1.1 200 OK\r\n\r\nok"));
-        }),
-      }],
-    ]),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -903,6 +897,7 @@ test("pending async empty read does not drop the next inbound response", async (
     },
   } as unknown as ProcessHandle;
   withSupervisorSocketDefaults(handle.kernel);
+  seedNetworkConnections(handle, [[7, connection]]);
   const helpers = createWorkerProcessIoHelpers(deps);
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
@@ -923,24 +918,22 @@ test("post-write pump starts a response read after an async empty pre-read clear
   let readCalls = 0;
   let wroteRequest = false;
   const deps = createDeps();
+  const connection = {
+    write: vi.fn(() => {
+      wroteRequest = true;
+    }),
+    read: vi.fn(() => {
+      readCalls += 1;
+      if (!wroteRequest) {
+        return Promise.resolve(undefined);
+      }
+      return Promise.resolve(new TextEncoder().encode("HTTP/1.1 200 OK\r\n\r\nok"));
+    }),
+  };
   const handle = {
     pid: 42,
     vmPtr: 0x2000,
     memory,
-    networkConnections: new Map([
-      [7, {
-        write: vi.fn(() => {
-          wroteRequest = true;
-        }),
-        read: vi.fn(() => {
-          readCalls += 1;
-          if (!wroteRequest) {
-            return Promise.resolve(undefined);
-          }
-          return Promise.resolve(new TextEncoder().encode("HTTP/1.1 200 OK\r\n\r\nok"));
-        }),
-      }],
-    ]),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -962,6 +955,7 @@ test("post-write pump starts a response read after an async empty pre-read clear
     },
   } as unknown as ProcessHandle;
   withSupervisorSocketDefaults(handle.kernel);
+  seedNetworkConnections(handle, [[7, connection]]);
   const helpers = createWorkerProcessIoHelpers(deps);
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
@@ -991,7 +985,6 @@ test("buffered EOF waits for guest recv drain before force-closing the socket", 
     pid: 42,
     vmPtr: 0x3000,
     memory,
-    networkConnections: new Map([[7, connection]]),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -1015,6 +1008,7 @@ test("buffered EOF waits for guest recv drain before force-closing the socket", 
     },
   } as unknown as ProcessHandle;
   withSupervisorSocketDefaults(handle.kernel);
+  seedNetworkConnections(handle, [[7, connection]]);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
@@ -1044,7 +1038,6 @@ test("bridge EOF is deferred immediately after inbound injection even when recv 
     pid: 42,
     vmPtr: 0x3000,
     memory,
-    networkConnections: new Map([[7, connection]]),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -1066,6 +1059,7 @@ test("bridge EOF is deferred immediately after inbound injection even when recv 
     },
   } as unknown as ProcessHandle;
   withSupervisorSocketDefaults(handle.kernel);
+  seedNetworkConnections(handle, [[7, connection]]);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
@@ -1087,7 +1081,6 @@ test("bridge EOF marks peer shutdown but preserves the guest socket until fd clo
     pid: 42,
     vmPtr: 0x3000,
     memory,
-    networkConnections: new Map([[7, connection]]),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -1109,6 +1102,7 @@ test("bridge EOF marks peer shutdown but preserves the guest socket until fd clo
     },
   } as unknown as ProcessHandle;
   withSupervisorSocketDefaults(handle.kernel);
+  seedNetworkConnections(handle, [[7, connection]]);
   networkRecvHeadWatermarks(handle).set(7, 0);
   networkRecvTailWatermarks(handle).set(7, 4096);
   const helpers = createWorkerProcessIoHelpers(createDeps());
@@ -1141,7 +1135,6 @@ test("partial inbound is drained before bridge EOF closes the socket", async () 
     pid: 42,
     vmPtr: 0x3000,
     memory,
-    networkConnections: new Map([[7, connection]]),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -1166,6 +1159,7 @@ test("partial inbound is drained before bridge EOF closes the socket", async () 
     },
   } as unknown as ProcessHandle;
   withSupervisorSocketDefaults(handle.kernel);
+  seedNetworkConnections(handle, [[7, connection]]);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
@@ -1205,7 +1199,6 @@ test("stale network OFD rekeys when fork-shared sync renumbers the same socket f
     networkBridge: {
       connect: vi.fn(async () => ({ connection })),
     },
-    networkConnections: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(176),
@@ -1298,7 +1291,6 @@ test("stale network OFD rekeys to supervisor-selected active fd alias", async ()
     networkBridge: {
       connect: vi.fn(async () => ({ connection })),
     },
-    networkConnections: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(176),
@@ -1404,7 +1396,6 @@ test("stale network OFD closes when supervisor reports no active fd", async () =
     networkBridge: {
       connect: vi.fn(async () => ({ connection })),
     },
-    networkConnections: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(176),
@@ -1500,7 +1491,6 @@ test("stale network OFD cleanup does not force-close a fd with a pending reconne
         connection: connectCount++ === 0 ? oldConnection : nextConnection,
       })),
     },
-    networkConnections: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(176),
@@ -1593,7 +1583,6 @@ test("stale network OFD cleanup closes bridge immediately when the fd disappeare
     networkBridge: {
       connect: vi.fn(async () => ({ connection })),
     },
-    networkConnections: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(176),
@@ -1692,7 +1681,6 @@ test("not-connected drain during pending reconnect closes only the stale bridge"
         connection: connectCount++ === 0 ? oldConnection : nextConnection,
       })),
     },
-    networkConnections: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(176),

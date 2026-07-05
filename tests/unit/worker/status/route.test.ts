@@ -805,11 +805,13 @@ test("status handler preserves network recv buffers while owner async status is 
     },
     onStdout: null,
     runningWorker: worker,
-    networkConnections: new Map([[7, {
+  } as never;
+  seedNetworkSocketState(handle, {
+    connections: [[7, {
       read: () => undefined,
       write: () => {},
-    }]]),
-  } as never;
+    }]],
+  });
 
   const handler = createWorkerStatusMessageHandler({
     threadWorkerStates,
@@ -2219,7 +2221,6 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
     }),
     kernelState,
     runningWorker: worker,
-    networkConnections: new Map(),
   };
 
   setThreadGeneration(thread as never, 1);
@@ -2761,11 +2762,13 @@ test("status handler preserves host-injected network recv buffer when applying t
     },
     onStdout: null,
     runningWorker: worker,
-    networkConnections: new Map([[7, {
+  } as never;
+  seedNetworkSocketState(handle, {
+    connections: [[7, {
       read: () => undefined,
       write: () => {},
-    }]]),
-  } as never;
+    }]],
+  });
 
   const handler = createWorkerStatusMessageHandler({
     threadWorkerStates,
@@ -2901,11 +2904,13 @@ test("status handler keeps newer thread recv payload when producer tail is not a
     },
     onStdout: null,
     runningWorker: worker,
-    networkConnections: new Map([[7, {
+  } as never;
+  seedNetworkSocketState(handle, {
+    connections: [[7, {
       read: () => undefined,
       write: () => {},
-    }]]),
-  } as never;
+    }]],
+  });
 
   const handler = createWorkerStatusMessageHandler({
     threadWorkerStates,
@@ -3045,12 +3050,12 @@ test("status handler preserves host recv payload when producer tail wraps", () =
     },
     onStdout: null,
     runningWorker: worker,
-    networkConnections: new Map([[7, {
-      read: () => undefined,
-      write: () => {},
-    }]]),
   } as never;
   seedNetworkSocketState(handle, {
+    connections: [[7, {
+      read: () => undefined,
+      write: () => {},
+    }]],
     recvPayloadWatermarks: [[7, {
       recvBufIdx,
       head: staleTail,
@@ -3197,7 +3202,6 @@ test("status handler preserves closed network socket recv head when fd no longer
     },
     onStdout: null,
     runningWorker: worker,
-    networkConnections: new Map(),
   } as never;
   seedNetworkSocketState(handle, {
     closedSocketSlots: [[7, { offset: 0, data: closedSlot }]],
@@ -3325,9 +3329,9 @@ test("status handler closes stale network bridge when supervisor reports no acti
     kernelState: makeKernelState(),
     onStdout: null,
     runningWorker: worker,
-    networkConnections: new Map([[3, { close, read: () => undefined, write: () => {} }]]),
   } as never;
   seedNetworkSocketState(handle, {
+    connections: [[3, { close, read: () => undefined, write: () => {} }]],
     connectionOfds: [[3, 11]],
     recvHeadWatermarks: [[3, 4096]],
     recvTailWatermarks: [[3, 8192]],

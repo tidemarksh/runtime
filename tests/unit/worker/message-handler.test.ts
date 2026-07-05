@@ -281,7 +281,6 @@ test("ready from a rehydrating process state is accepted when worker debug still
       stdoutPipe: 0,
       stderrPipe: 0,
     },
-    networkConnections: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(16),
       stateSab: new SharedArrayBuffer(512),
@@ -377,7 +376,6 @@ test("ready adopts transferred worker ownership when kernel process identity mat
       stdoutPipe: 0,
       stderrPipe: 0,
     },
-    networkConnections: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(16),
       stateSab: new SharedArrayBuffer(512),
@@ -459,7 +457,6 @@ test("messages delivered through a stale handle are rerouted to the transferred 
       stdoutPipe: 0,
       stderrPipe: 0,
     },
-    networkConnections: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(16),
       stateSab: new SharedArrayBuffer(512),
@@ -548,7 +545,6 @@ test("clone child ready clears parent clone-spawn hold before resuming parent", 
       stdoutPipe: 0,
       stderrPipe: 0,
     },
-    networkConnections: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(16),
       stateSab: new SharedArrayBuffer(512),
@@ -677,7 +673,6 @@ test("active vfork child fault remains routed through the parent handle", () => 
       stderrPipe: 0,
       refCount: 1,
     },
-    networkConnections: new Map(),
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(16),

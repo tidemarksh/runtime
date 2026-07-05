@@ -24,10 +24,9 @@ test("status network recv derives used net buffers from live socket slots", () =
 });
 
 test("status network recv lists runtime network fds", () => {
-  const handle = makeHandle({
-    networkConnections: new Map([[3, {}]]),
-  });
+  const handle = makeHandle();
   seedNetworkSocketState(handle, {
+    connections: [[3, {}]],
     pendingConnectFds: [4],
     closedFds: [5],
     socketSlotWatermarks: [[6, { offset: 0, data: new Uint8Array(1) }]],
@@ -48,7 +47,6 @@ test("status network recv closes stale runtime network bridges when supervisor r
   const appendWorkerDebugLog = vi.fn();
   const supervisorSocketBridgeActiveFd = vi.fn(() => -2);
   const handle = makeHandle({
-    networkConnections: new Map([[4, { close }]]),
     kernel: makeKernel({
       process_fd_ofd_id: (_vmPtr: number, fd: number) => fdMap.get(fd) ?? 0,
       kernel_ofd_fd_type: () => 8,
@@ -56,6 +54,7 @@ test("status network recv closes stale runtime network bridges when supervisor r
     }),
   });
   seedNetworkSocketState(handle, {
+    connections: [[4, { close }]],
     connectionOfds: [[4, 11]],
     closedFds: [4],
   });
@@ -91,7 +90,6 @@ test("status network recv rekeys stale runtime network bridges from supervisor a
   const appendWorkerDebugLog = vi.fn();
   const supervisorSocketBridgeActiveFd = vi.fn(() => 6);
   const handle = makeHandle({
-    networkConnections: new Map([[4, connection]]),
     kernel: makeKernel({
       process_fd_ofd_id: (_vmPtr: number, fd: number) => fdMap.get(fd) ?? 0,
       kernel_ofd_fd_type: (ofdId: number) => ofdId === 11 || ofdId === 12 ? 8 : 0,
@@ -99,6 +97,7 @@ test("status network recv rekeys stale runtime network bridges from supervisor a
     }),
   });
   seedNetworkSocketState(handle, {
+    connections: [[4, connection]],
     connectionOfds: [[4, 11]],
     recvHeadWatermarks: [[4, 4096]],
     recvTailWatermarks: [[4, 8192]],
@@ -140,7 +139,6 @@ test("status network recv keeps runtime network bridges from supervisor active f
   const appendWorkerDebugLog = vi.fn();
   const supervisorSocketBridgeActiveFd = vi.fn(() => 4);
   const handle = makeHandle({
-    networkConnections: new Map([[4, connection]]),
     kernel: makeKernel({
       process_fd_ofd_id: (_vmPtr: number, fd: number) => fdMap.get(fd) ?? 0,
       kernel_ofd_fd_type: (ofdId: number) => ofdId === 11 ? 8 : 0,
@@ -148,6 +146,7 @@ test("status network recv keeps runtime network bridges from supervisor active f
     }),
   });
   seedNetworkSocketState(handle, {
+    connections: [[4, connection]],
     connectionOfds: [[4, 11]],
   });
 

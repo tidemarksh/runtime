@@ -242,7 +242,6 @@ function makeHandle(worker: Worker) {
     stdinPipe: 0,
     stdoutPipe: 0,
     stderrPipe: 0,
-    networkConnections: new Map(),
     kernel: {
       ...makeSupervisorAbiStubs(),
       abi_status_ok: () => 0,

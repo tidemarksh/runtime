@@ -120,7 +120,6 @@ function makeHandle(
       vmPtr: 0x1234,
       status: kernel.thread_status(0x1234),
     }]]),
-    networkConnections: new Map(),
     workerDebugLog: [],
     kernelShare: {
       members: new Set(),

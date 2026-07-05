@@ -166,7 +166,6 @@ function makeHandle(overrides: Record<string, unknown> = {}) {
     hostBlockedWorkers: new Map(),
     kernelShare: { members: new Set(), sharedOfdIds: new Set(), ofdSlotSnapshots: new Map() },
     workers: new Set(),
-    networkConnections: new Map(),
     transferDebugStats: createTransferDebugStats(),
     vforkSnapshot: null,
     vforkWorker: null,

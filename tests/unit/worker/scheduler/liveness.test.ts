@@ -963,7 +963,6 @@ function makeHandle(
     vforkReadyWorkers: [],
     runningWorker: null,
     hostBlockedWorkers: new Map(),
-    networkConnections: new Map(),
     transferDebugStats: createTransferDebugStats(),
     workerMessageDebugStats: createWorkerMessageDebugStats(),
     vforkSnapshot: null,

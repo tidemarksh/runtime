@@ -32,16 +32,11 @@ interface NetworkSocketState {
 
 const networkSocketStates = new WeakMap<ProcessHandle, NetworkSocketState>();
 
-type LegacyNetworkConnectionSeed = {
-  networkConnections?: Map<number, RuntimeNetworkConnection>;
-};
-
 function networkSocketState(handle: ProcessHandle): NetworkSocketState {
   let state = networkSocketStates.get(handle);
   if (!state) {
-    const legacyConnections = (handle as LegacyNetworkConnectionSeed).networkConnections;
     state = {
-      connections: legacyConnections instanceof Map ? new Map(legacyConnections) : new Map(),
+      connections: new Map(),
       connectionOfds: new Map(),
       ofdSlotWatermarks: new Map(),
       pendingConnectFds: new Set(),
@@ -53,9 +48,6 @@ function networkSocketState(handle: ProcessHandle): NetworkSocketState {
       recvPayloadWatermarks: new Map(),
     };
     networkSocketStates.set(handle, state);
-    if (legacyConnections !== undefined) {
-      delete (handle as LegacyNetworkConnectionSeed).networkConnections;
-    }
   }
   return state;
 }

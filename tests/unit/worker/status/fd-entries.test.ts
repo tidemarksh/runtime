@@ -72,7 +72,6 @@ test("status fd entries do not mirror across a different process owner", () => {
 test("status fd entries preserve authoritative runtime network bindings", () => {
   const fdEntries = new Map<number, number>([[4, 11]]);
   const handle = makeHandle({
-    networkConnections: new Map([[4, { close: () => undefined }]]),
     kernel: makeKernel({
       process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number) => {
         fdEntries.set(fd, ofdId);
@@ -80,6 +79,7 @@ test("status fd entries preserve authoritative runtime network bindings", () => 
     }),
   });
   seedNetworkSocketState(handle, {
+    connections: [[4, { close: () => undefined }]],
     connectionOfds: [[4, 11]],
   });
 

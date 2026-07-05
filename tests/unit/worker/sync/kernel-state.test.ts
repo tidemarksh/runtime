@@ -708,7 +708,6 @@ function makeHandle(pid: number, fdMap: Map<number, number>): ProcessHandle {
         kernelState: msg.kernelState,
       };
     }),
-    networkConnections: new Map(),
     workers: new Set(),
     vforkReadyWorkers: [],
     runningWorker: null,
