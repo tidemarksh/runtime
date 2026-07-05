@@ -50,6 +50,7 @@ import {
   clearThreadOwnerAsyncStatus,
   getThreadOwnerAsyncStatus,
   setThreadOwnerAsyncStatus,
+  threadResumeWorkersOnReadyCount,
 } from "../thread-host-state.js";
 
 export interface BlockedRetryCoordinator {
@@ -669,7 +670,7 @@ export function createBlockedRetryCoordinator(
       if (
         thread !== undefined
         && !thread.initialized
-        && thread.resumeWorkersOnReady.length > 0
+        && threadResumeWorkersOnReadyCount(thread) > 0
       ) {
         return true;
       }

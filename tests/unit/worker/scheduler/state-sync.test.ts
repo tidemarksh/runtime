@@ -991,14 +991,12 @@ test("requestPipeStateSync defers while active vfork child owns the worker pid",
     ownerPid: number;
     generation: number;
     waitingInWorkerStatus: number | null;
-    resumeWorkersOnReady: Worker[];
   }>();
   threadWorkerStates.set(worker, {
     vmPtr: 0x1234,
     ownerPid: 1,
     generation: 1,
     waitingInWorkerStatus: null,
-    resumeWorkersOnReady: [],
   });
   const supervisorVforkChildOwnerMismatch = vi.fn(() => 1);
   const handle = makeHandle({

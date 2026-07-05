@@ -23,6 +23,8 @@ import {
   clearThreadOwnerAsyncStatus,
   clearThreadWaitingInWorkerStatus,
   getThreadOwnerAsyncStatus,
+  takeThreadResumeWorkersOnReady,
+  threadResumeWorkersOnReadyCount,
 } from "../thread-host-state.js";
 
 function formatDebugError(error: unknown): string {
@@ -100,7 +102,7 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
         handle.runtimeId,
         `clone-child-ready-route:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
           + `:owner=${thread.ownerPid}:generation=${msg.generation}`
-          + `:resume=${thread.resumeWorkersOnReady.length}`,
+          + `:resume=${threadResumeWorkersOnReadyCount(thread)}`,
       );
       const readyProcessPidField = readProcessPidField(msg.debug);
       if (readyProcessPidField !== null && readyProcessPidField !== handle.pid) {
@@ -180,7 +182,7 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
         }
         deps.clearVforkSnapshot(handle);
       }
-      const resumeWorkersOnReady = thread.resumeWorkersOnReady.splice(0);
+      const resumeWorkersOnReady = takeThreadResumeWorkersOnReady(thread);
       const releaseCloneSpawnResumeWorkers = (): void => {
         for (const resumeWorker of resumeWorkersOnReady) {
           const resumeThread = deps.threadWorkerStates.get(resumeWorker);

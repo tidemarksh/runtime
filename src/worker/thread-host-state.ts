@@ -3,6 +3,7 @@ import type { ThreadWorkerState } from "./types.js";
 interface ThreadHostGateState {
   ownerAsyncStatus: number | null;
   waitingInWorkerStatus: number | null;
+  resumeWorkersOnReady: Worker[];
 }
 
 const threadHostGateStates = new WeakMap<ThreadWorkerState, ThreadHostGateState>();
@@ -13,6 +14,7 @@ function hostGateState(thread: ThreadWorkerState): ThreadHostGateState {
     state = {
       ownerAsyncStatus: null,
       waitingInWorkerStatus: null,
+      resumeWorkersOnReady: [],
     };
     threadHostGateStates.set(thread, state);
   }
@@ -20,7 +22,11 @@ function hostGateState(thread: ThreadWorkerState): ThreadHostGateState {
 }
 
 function clearIfIdle(thread: ThreadWorkerState, state: ThreadHostGateState): void {
-  if (state.ownerAsyncStatus === null && state.waitingInWorkerStatus === null) {
+  if (
+    state.ownerAsyncStatus === null
+    && state.waitingInWorkerStatus === null
+    && state.resumeWorkersOnReady.length === 0
+  ) {
     threadHostGateStates.delete(thread);
   }
 }
@@ -71,6 +77,53 @@ export function clearThreadWaitingInWorkerStatus(thread: ThreadWorkerState): voi
   }
   state.waitingInWorkerStatus = null;
   clearIfIdle(thread, state);
+}
+
+export function appendThreadResumeWorkerOnReady(
+  thread: ThreadWorkerState,
+  worker: Worker,
+): void {
+  hostGateState(thread).resumeWorkersOnReady.push(worker);
+}
+
+export function setThreadResumeWorkersOnReady(
+  thread: ThreadWorkerState,
+  workers: readonly Worker[],
+): void {
+  const state = hostGateState(thread);
+  state.resumeWorkersOnReady = workers.slice();
+  clearIfIdle(thread, state);
+}
+
+export function takeThreadResumeWorkersOnReady(
+  thread: ThreadWorkerState | null | undefined,
+): Worker[] {
+  if (thread === null || thread === undefined) {
+    return [];
+  }
+  const state = threadHostGateStates.get(thread);
+  if (!state || state.resumeWorkersOnReady.length === 0) {
+    return [];
+  }
+  const workers = state.resumeWorkersOnReady.splice(0);
+  clearIfIdle(thread, state);
+  return workers;
+}
+
+export function threadResumeWorkersOnReadyCount(
+  thread: ThreadWorkerState | null | undefined,
+): number {
+  return thread === null || thread === undefined
+    ? 0
+    : threadHostGateStates.get(thread)?.resumeWorkersOnReady.length ?? 0;
+}
+
+export function snapshotThreadResumeWorkersOnReady(
+  thread: ThreadWorkerState | null | undefined,
+): Worker[] {
+  return thread === null || thread === undefined
+    ? []
+    : threadHostGateStates.get(thread)?.resumeWorkersOnReady.slice() ?? [];
 }
 
 export function clearThreadHostGateState(thread: ThreadWorkerState): void {

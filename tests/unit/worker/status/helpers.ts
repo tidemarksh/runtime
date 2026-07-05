@@ -154,7 +154,6 @@ export function makeThreadState(overrides: Record<string, unknown> = {}) {
     initialized: true,
     statusCount: 0,
     statusCounts: {},
-    resumeWorkersOnReady: [],
     ...rest,
   };
   if (typeof ownerAsyncStatus === "number") {

@@ -6,7 +6,9 @@ import type { WorkerMessageHandlerDeps } from "../../../src/worker/message-handl
 import {
   getThreadOwnerAsyncStatus,
   setThreadOwnerAsyncStatus,
+  setThreadResumeWorkersOnReady,
   setThreadWaitingInWorkerStatus,
+  snapshotThreadResumeWorkersOnReady,
 } from "../../../src/worker/thread-host-state.js";
 import { createWorkerMessageDebugStats } from "../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../src/worker/types.js";
@@ -47,7 +49,6 @@ function makeThreadState(overrides: Partial<ThreadWorkerState> & {
     lastStatusS11: null,
     hotStatusPcs: {},
     initialized: true,
-    resumeWorkersOnReady: [],
     ...rest,
   } as ThreadWorkerState;
   if (typeof ownerAsyncStatus === "number") {
@@ -514,8 +515,8 @@ test("clone child ready clears parent clone-spawn hold before resuming parent", 
     vmPtr: 0x2000,
     ownerPid: 4,
     initialized: false,
-    resumeWorkersOnReady: [parentWorker],
   });
+  setThreadResumeWorkersOnReady(childThread, [parentWorker]);
   threadWorkerStates.set(parentWorker, parentThread);
   threadWorkerStates.set(childWorker, childThread);
   const appendWorkerDebugLog = vi.fn();
@@ -597,7 +598,7 @@ test("clone child ready clears parent clone-spawn hold before resuming parent", 
   } as ThreadWorkerOutbound);
 
   expect(getThreadOwnerAsyncStatus(parentThread as never)).toBeNull();
-  expect(childThread.resumeWorkersOnReady).toEqual([]);
+  expect(snapshotThreadResumeWorkersOnReady(childThread)).toEqual([]);
   expect(enqueueWorker).toHaveBeenNthCalledWith(1, handle, childWorker);
   expect(enqueueWorker).toHaveBeenNthCalledWith(2, handle, parentWorker);
 });

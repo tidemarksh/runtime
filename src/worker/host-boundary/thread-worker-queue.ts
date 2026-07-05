@@ -274,7 +274,6 @@ export function createWorkerSchedulerQueueHelpers(
       lastStatusS11: null,
       hotStatusPcs: {},
       initialized: false,
-      resumeWorkersOnReady: [],
     });
     setWorkerMessageHandler(worker, (event: MessageEvent<ThreadWorkerOutbound>) => {
       deps.handleWorkerMessage(handle, worker, event.data);

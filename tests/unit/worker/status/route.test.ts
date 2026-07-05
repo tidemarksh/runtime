@@ -129,7 +129,6 @@ function makeThreadState(overrides: Record<string, unknown> = {}) {
     initialized: true,
     ownerPid: 7,
     generation: 1,
-    resumeWorkersOnReady: [],
     ...rest,
   };
   if (typeof ownerAsyncStatus === "number") {

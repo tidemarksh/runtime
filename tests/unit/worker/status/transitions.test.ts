@@ -5,6 +5,7 @@ import {
   getThreadOwnerAsyncStatus,
   getThreadWaitingInWorkerStatus,
   setThreadOwnerAsyncStatus,
+  snapshotThreadResumeWorkersOnReady,
 } from "../../../../src/worker/thread-host-state.js";
 import {
   makeSupervisorAbiStubs,
@@ -412,7 +413,6 @@ function makeDeps(worker: Worker) {
     ownerAsyncStatus: number | null;
     generation: number;
     waitingInWorkerStatus: number | null;
-    resumeWorkersOnReady: Worker[];
   }>();
   threadWorkerStates.set(worker, {
     vmPtr: 0x1234,
@@ -420,7 +420,6 @@ function makeDeps(worker: Worker) {
     ownerAsyncStatus: null,
     generation: 1,
     waitingInWorkerStatus: null,
-    resumeWorkersOnReady: [],
   });
 
   return {
@@ -778,7 +777,6 @@ test("STATUS_FAULT completes supervisor-selected fault exit VM when the process 
     ownerAsyncStatus: null,
     generation: 1,
     waitingInWorkerStatus: null,
-    resumeWorkersOnReady: [],
   });
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
@@ -1264,7 +1262,6 @@ test("STATUS_CLONE_SPAWN attaches child from supervisor HostOp record", async ()
       ownerAsyncStatus: number | null;
       generation: number;
       waitingInWorkerStatus: number | null;
-      resumeWorkersOnReady: Worker[];
     }
     | undefined;
   deps.attachThreadWorker = vi.fn((_handle, request: { worker: Worker; vmPtr: number }) => {
@@ -1274,7 +1271,6 @@ test("STATUS_CLONE_SPAWN attaches child from supervisor HostOp record", async ()
       ownerAsyncStatus: null,
       generation: 1,
       waitingInWorkerStatus: null,
-      resumeWorkersOnReady: [],
     };
     deps.threadWorkerStates.set(request.worker, childThread);
     handle.workers.add(request.worker);
@@ -1309,7 +1305,7 @@ test("STATUS_CLONE_SPAWN attaches child from supervisor HostOp record", async ()
     vmPtr: 0x2000,
   });
   expect(getThreadOwnerAsyncStatus(thread as never)).toBe(25);
-  expect(childThread?.resumeWorkersOnReady).toEqual([worker]);
+  expect(snapshotThreadResumeWorkersOnReady(childThread as never)).toEqual([worker]);
   expect(deps.appendWorkerDebugLog).toHaveBeenCalledWith(
     handle,
     "clone_spawn_hostop:parent=0x1234:child=0x2000:tid=2:seq=1",
@@ -1383,7 +1379,6 @@ test("STATUS_CLONE_SPAWN drains clone HostOp by kind without consuming pending t
       ownerAsyncStatus: null,
       generation: 1,
       waitingInWorkerStatus: null,
-      resumeWorkersOnReady: [],
     });
     handle.workers.add(request.worker);
   });
@@ -1633,7 +1628,6 @@ test("STATUS_CLONE_SPAWN holds parent until attached child reports ready", async
       ownerAsyncStatus: number | null;
       generation: number;
       waitingInWorkerStatus: number | null;
-      resumeWorkersOnReady: Worker[];
     }
     | undefined;
   deps.attachThreadWorker = vi.fn((_handle, request: { worker: Worker; vmPtr: number }) => {
@@ -1643,7 +1637,6 @@ test("STATUS_CLONE_SPAWN holds parent until attached child reports ready", async
       ownerAsyncStatus: null,
       generation: 1,
       waitingInWorkerStatus: null,
-      resumeWorkersOnReady: [],
     };
     deps.threadWorkerStates.set(request.worker, childThread);
     handle.workers.add(request.worker);
@@ -1672,7 +1665,7 @@ test("STATUS_CLONE_SPAWN holds parent until attached child reports ready", async
   await Promise.resolve();
 
   expect(getThreadOwnerAsyncStatus(thread as never)).toBe(25);
-  expect(childThread?.resumeWorkersOnReady).toEqual([worker]);
+  expect(snapshotThreadResumeWorkersOnReady(childThread as never)).toEqual([worker]);
   expect(deps.enqueueWorker).not.toHaveBeenCalled();
   expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
 });

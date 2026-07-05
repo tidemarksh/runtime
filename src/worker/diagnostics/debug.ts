@@ -31,6 +31,7 @@ import { runtimeStateSyncInFlight } from "../state-sync-inflight.js";
 import {
   getThreadOwnerAsyncStatus,
   getThreadWaitingInWorkerStatus,
+  threadResumeWorkersOnReadyCount,
 } from "../thread-host-state.js";
 import {
   pendingGuestMemoryWritesForNextStepCount,
@@ -306,7 +307,7 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
     `lastStepPc=${state.lastStepPc === null ? "null" : `0x${state.lastStepPc.toString(16)}`}`,
     `pendingPipeSlots=${pendingPipeSlotsForNextStepCount(state)}`,
     `pendingGuestWrites=${pendingGuestMemoryWritesForNextStepCount(state)}`,
-    `resumeReady=${state.resumeWorkersOnReady.length}`,
+    `resumeReady=${threadResumeWorkersOnReadyCount(state)}`,
     ...(recentSteps.length === 0 ? [] : [`recentSteps=${recentSteps}`]),
     ...(recentStatuses.length === 0 ? [] : [`recentStatuses=${recentStatuses}`]),
     ...(stepExecTrace === null ? [] : [`stepExecTrace=${stepExecTrace}`]),

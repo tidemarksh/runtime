@@ -27,8 +27,6 @@ export interface ThreadWorkerState {
   execveProcessState?: Uint8Array;
   hotStatusPcs: Record<string, number>;
   initialized: boolean;
-  pipeCanonicalEofReadyOnNextBlock?: boolean;
-  resumeWorkersOnReady: Worker[];
 }
 
 export interface ThreadWorkerStepSnapshot {

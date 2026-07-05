@@ -121,7 +121,6 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
     initialized: true,
     waitingInWorkerStatus: null,
     ownerAsyncStatus: null,
-    resumeWorkersOnReady: [],
   };
   const handle = {
     pid: 1,

@@ -52,6 +52,7 @@ import {
   supervisorProcessStatusIsVforkWait,
 } from "../../supervisor-status.js";
 import {
+  appendThreadResumeWorkerOnReady,
   clearThreadOwnerAsyncStatus,
   clearThreadWaitingInWorkerStatus,
   getThreadOwnerAsyncStatus,
@@ -702,7 +703,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           throw new Error(`child thread state missing for pid=${handle.pid} vm=0x${childVmPtr.toString(16)}`);
         }
         setThreadOwnerAsyncStatus(thread, status);
-        childThread.resumeWorkersOnReady.push(worker);
+        appendThreadResumeWorkerOnReady(childThread, worker);
         deps.notifyWorkerStatusProgress(handle);
         if (CLONE_SPAWN_DEBUG_ENABLED) {
           deps.appendRuntimeLifecycleEvent(

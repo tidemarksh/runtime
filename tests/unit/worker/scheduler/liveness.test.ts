@@ -24,6 +24,7 @@ import {
   getThreadOwnerAsyncStatus,
   getThreadWaitingInWorkerStatus,
   setThreadOwnerAsyncStatus,
+  setThreadResumeWorkersOnReady,
 } from "../../../../src/worker/thread-host-state.js";
 import {
   appendPendingGuestMemoryWrites,
@@ -478,7 +479,6 @@ function makeThreadState(vmPtr: number): ThreadWorkerState {
     lastStatusS11: null,
     hotStatusPcs: {},
     initialized: true,
-    resumeWorkersOnReady: [],
   };
   clearThreadWaitingInWorkerStatus(thread);
   clearThreadOwnerAsyncStatus(thread);
@@ -1837,7 +1837,7 @@ test("epoll retry defers while clone child init is expected to release parent", 
   const childThread = makeThreadState(0x9abc);
   setThreadOwnerAsyncStatus(parentThread as never, 10);
   childThread.initialized = false;
-  childThread.resumeWorkersOnReady = [parentWorker];
+  setThreadResumeWorkersOnReady(childThread, [parentWorker]);
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(blockedWorker, blockedThread);
   threadWorkerStates.set(parentWorker, parentThread);
@@ -1896,7 +1896,7 @@ test("epoll retry defers while clone child init is expected to release parent", 
   expect(vi.getTimerCount()).toBeGreaterThan(0);
 
   childThread.initialized = true;
-  childThread.resumeWorkersOnReady = [];
+  setThreadResumeWorkersOnReady(childThread, []);
   scheduler.clearHostBlockedRetryTimer(handle, blockedWorker);
   scheduler.notifySchedulerProgress(handle);
 

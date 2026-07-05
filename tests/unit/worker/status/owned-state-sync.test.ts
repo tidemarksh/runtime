@@ -188,7 +188,6 @@ test("socket state sync runs before fork-shared OFD sync when both effects are p
     generation: 1,
     waitingInWorkerStatus: null,
     ownerAsyncStatus: null,
-    resumeWorkersOnReady: [],
   };
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
@@ -290,7 +289,6 @@ test("fork-shared OFD sync accepts an owned worker status after running slot is 
     ownerPid: 7,
     generation: 1,
     waitingInWorkerStatus: null,
-    resumeWorkersOnReady: [],
   };
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
@@ -406,7 +404,6 @@ test("kernel completed fork-shared effect syncs available parent targets", async
     ownerPid: 7,
     generation: 1,
     waitingInWorkerStatus: null,
-    resumeWorkersOnReady: [],
   };
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
@@ -519,7 +516,6 @@ test("fcntl F_SETFL on an unshared OFD does not request fork-shared sync", () =>
     ownerPid: 7,
     generation: 1,
     waitingInWorkerStatus: null,
-    resumeWorkersOnReady: [],
   };
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
@@ -621,7 +617,6 @@ test("kernel pipe data-plane effect does not request fork-shared sync", () => {
     ownerPid: 7,
     generation: 1,
     waitingInWorkerStatus: null,
-    resumeWorkersOnReady: [],
   };
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
@@ -706,7 +701,6 @@ test("fork-shared OFD sync skips exiting peer targets", async () => {
     ownerPid: 7,
     generation: 1,
     waitingInWorkerStatus: null,
-    resumeWorkersOnReady: [],
   };
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
@@ -807,7 +801,6 @@ test("fork-shared OFD sync keeps a quiescent parent reader target for a method-c
     ownerPid: 7,
     generation: 1,
     waitingInWorkerStatus: null,
-    resumeWorkersOnReady: [],
   };
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
@@ -920,7 +913,6 @@ test("queued fork-shared OFD sync clears both handle and share promises", async 
     ownerPid: 7,
     generation: 1,
     waitingInWorkerStatus: null,
-    resumeWorkersOnReady: [],
   };
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
@@ -1025,7 +1017,6 @@ test("queued no-target fork-shared OFD sync waits without replacing the active s
     ownerPid: 7,
     generation: 1,
     waitingInWorkerStatus: null,
-    resumeWorkersOnReady: [],
   };
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
@@ -1143,7 +1134,6 @@ test("fork-shared-only pipe effects sync when the source holds tracked shared st
     ownerPid: 7,
     generation: 1,
     waitingInWorkerStatus: null,
-    resumeWorkersOnReady: [],
   };
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
@@ -1224,7 +1214,6 @@ test("dirty process memfs syncs before publishing a pipe-status boundary", async
     ownerPid: 7,
     generation: 1,
     waitingInWorkerStatus: null,
-    resumeWorkersOnReady: [],
   };
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
@@ -1332,7 +1321,6 @@ test("dirty process memfs is deferred on a successful process-memfs-only effect"
     ownerPid: 7,
     generation: 1,
     waitingInWorkerStatus: null,
-    resumeWorkersOnReady: [],
   };
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
@@ -1412,7 +1400,6 @@ test("active vfork child pid mismatch defers parent-owned state sync", () => {
     ownerPid: 1,
     generation: 1,
     waitingInWorkerStatus: null,
-    resumeWorkersOnReady: [],
   };
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
