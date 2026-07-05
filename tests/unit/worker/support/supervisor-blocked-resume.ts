@@ -59,6 +59,15 @@ const SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_STOP = 512;
 const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_NONE = 0;
 const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC = 1;
 const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_FLAG_KERNEL_WORKER_AVAILABLE = 1;
+const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_COMPLETION_ACTION_NONE = 0;
+const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_COMPLETION_ACTION_DRAIN_LOCAL_PIPE = 1;
+const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_COMPLETION_ACTION_SCHEDULE_RETRY = 2;
+const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_COMPLETION_FLAG_REQUESTED_DRAIN_OUTPUT = 1;
+const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_COMPLETION_FLAG_KERNEL_WORKER_AVAILABLE = 2;
+const SUPERVISOR_BLOCKED_RETRY_HOST_CLEANUP_FLAG_KERNEL_WORKER_AVAILABLE = 1;
+const SUPERVISOR_BLOCKED_RETRY_HOST_CLEANUP_ACTION_NONE = 0;
+const SUPERVISOR_BLOCKED_RETRY_HOST_CLEANUP_ACTION_FLUSH_STDIN = 1;
+const SUPERVISOR_BLOCKED_RETRY_HOST_CLEANUP_ACTION_DRAIN_LOCAL_PIPE = 2;
 const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_BLOCK = 0;
 const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_SOCKET = 1;
 const SUPERVISOR_BLOCKED_STATUS_TRANSITION_ACTION_SYNC_PIPE = 2;
@@ -1031,9 +1040,15 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output"
     | "supervisor_blocked_pipe_sync_before_retry_action_schedule_retry"
     | "supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available"
+    | "supervisor_blocked_pipe_sync_before_retry_completion_action_none"
+    | "supervisor_blocked_pipe_sync_before_retry_completion_action_drain_local_pipe"
+    | "supervisor_blocked_pipe_sync_before_retry_completion_action_schedule_retry"
+    | "supervisor_blocked_pipe_sync_before_retry_completion_flag_requested_drain_output"
+    | "supervisor_blocked_pipe_sync_before_retry_completion_flag_kernel_worker_available"
     | "supervisor_blocked_pipe_sync_before_retry_action"
     | "supervisor_blocked_pipe_sync_before_retry_requested"
     | "supervisor_blocked_pipe_sync_before_retry_clear"
+    | "supervisor_blocked_pipe_sync_before_retry_completion_action"
     | "supervisor_blocked_status_transition_action_block"
     | "supervisor_blocked_status_transition_action_sync_socket"
     | "supervisor_blocked_status_transition_action_sync_pipe"
@@ -1070,6 +1085,11 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns"
     | "supervisor_blocked_retry_action_flag_network_connections_available"
     | "supervisor_blocked_retry_action_flag_wait_timer_already_checked"
+    | "supervisor_blocked_retry_host_cleanup_flag_kernel_worker_available"
+    | "supervisor_blocked_retry_host_cleanup_action_none"
+    | "supervisor_blocked_retry_host_cleanup_action_flush_stdin"
+    | "supervisor_blocked_retry_host_cleanup_action_drain_local_pipe"
+    | "supervisor_blocked_retry_host_cleanup_action"
     | "supervisor_blocked_retry_action_defer_supervisor_timer"
     | "supervisor_blocked_retry_action_defer_rpc_pending"
     | "supervisor_blocked_retry_action_defer_owner_async"
@@ -1739,6 +1759,27 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     3;
   nextKernel.supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available ??= () =>
     SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_FLAG_KERNEL_WORKER_AVAILABLE;
+  nextKernel.supervisor_blocked_pipe_sync_before_retry_completion_action_none ??= () =>
+    SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_COMPLETION_ACTION_NONE;
+  nextKernel.supervisor_blocked_pipe_sync_before_retry_completion_action_drain_local_pipe ??= () =>
+    SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_COMPLETION_ACTION_DRAIN_LOCAL_PIPE;
+  nextKernel.supervisor_blocked_pipe_sync_before_retry_completion_action_schedule_retry ??= () =>
+    SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_COMPLETION_ACTION_SCHEDULE_RETRY;
+  nextKernel.supervisor_blocked_pipe_sync_before_retry_completion_flag_requested_drain_output ??= () =>
+    SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_COMPLETION_FLAG_REQUESTED_DRAIN_OUTPUT;
+  nextKernel.supervisor_blocked_pipe_sync_before_retry_completion_flag_kernel_worker_available ??= () =>
+    SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_COMPLETION_FLAG_KERNEL_WORKER_AVAILABLE;
+  nextKernel.supervisor_blocked_pipe_sync_before_retry_completion_action ??= (flags: number) => {
+    const requestedDrain =
+      (flags & SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_COMPLETION_FLAG_REQUESTED_DRAIN_OUTPUT) !== 0;
+    const kernelWorkerAvailable =
+      (flags & SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_COMPLETION_FLAG_KERNEL_WORKER_AVAILABLE) !== 0;
+    let action = SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_COMPLETION_ACTION_SCHEDULE_RETRY;
+    if (requestedDrain || !kernelWorkerAvailable) {
+      action |= SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_COMPLETION_ACTION_DRAIN_LOCAL_PIPE;
+    }
+    return action;
+  };
   nextKernel.supervisor_blocked_pipe_sync_before_retry_action ??= (vmPtr: number, flags: number) => {
     const kernelWorkerAvailable =
       (flags & SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_FLAG_KERNEL_WORKER_AVAILABLE) !== 0;
@@ -1859,6 +1900,21 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_NETWORK_CONNECTIONS_AVAILABLE;
   nextKernel.supervisor_blocked_retry_action_flag_wait_timer_already_checked ??= () =>
     SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_WAIT_TIMER_ALREADY_CHECKED;
+  nextKernel.supervisor_blocked_retry_host_cleanup_flag_kernel_worker_available ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_HOST_CLEANUP_FLAG_KERNEL_WORKER_AVAILABLE;
+  nextKernel.supervisor_blocked_retry_host_cleanup_action_none ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_HOST_CLEANUP_ACTION_NONE;
+  nextKernel.supervisor_blocked_retry_host_cleanup_action_flush_stdin ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_HOST_CLEANUP_ACTION_FLUSH_STDIN;
+  nextKernel.supervisor_blocked_retry_host_cleanup_action_drain_local_pipe ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_HOST_CLEANUP_ACTION_DRAIN_LOCAL_PIPE;
+  nextKernel.supervisor_blocked_retry_host_cleanup_action ??= (flags: number) => {
+    let action = SUPERVISOR_BLOCKED_RETRY_HOST_CLEANUP_ACTION_FLUSH_STDIN;
+    if ((flags & SUPERVISOR_BLOCKED_RETRY_HOST_CLEANUP_FLAG_KERNEL_WORKER_AVAILABLE) === 0) {
+      action |= SUPERVISOR_BLOCKED_RETRY_HOST_CLEANUP_ACTION_DRAIN_LOCAL_PIPE;
+    }
+    return action;
+  };
   nextKernel.supervisor_blocked_retry_action_defer_supervisor_timer ??= () =>
     SUPERVISOR_BLOCKED_RETRY_ACTION_DEFER_SUPERVISOR_TIMER;
   nextKernel.supervisor_blocked_retry_action_defer_rpc_pending ??= () =>

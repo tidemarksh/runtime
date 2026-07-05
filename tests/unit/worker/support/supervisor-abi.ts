@@ -157,6 +157,11 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output: 2,
   supervisor_blocked_pipe_sync_before_retry_action_schedule_retry: 3,
   supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available: 1,
+  supervisor_blocked_pipe_sync_before_retry_completion_action_none: 0,
+  supervisor_blocked_pipe_sync_before_retry_completion_action_drain_local_pipe: 1,
+  supervisor_blocked_pipe_sync_before_retry_completion_action_schedule_retry: 2,
+  supervisor_blocked_pipe_sync_before_retry_completion_flag_requested_drain_output: 1,
+  supervisor_blocked_pipe_sync_before_retry_completion_flag_kernel_worker_available: 2,
   supervisor_blocked_status_transition_action_block: 0,
   supervisor_blocked_status_transition_action_sync_socket: 1,
   supervisor_blocked_status_transition_action_sync_pipe: 2,
@@ -220,6 +225,10 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns: 128,
   supervisor_blocked_retry_action_flag_network_connections_available: 256,
   supervisor_blocked_retry_action_flag_wait_timer_already_checked: 512,
+  supervisor_blocked_retry_host_cleanup_flag_kernel_worker_available: 1,
+  supervisor_blocked_retry_host_cleanup_action_none: 0,
+  supervisor_blocked_retry_host_cleanup_action_flush_stdin: 1,
+  supervisor_blocked_retry_host_cleanup_action_drain_local_pipe: 2,
   supervisor_blocked_retry_action_defer_supervisor_timer: 0,
   supervisor_blocked_retry_action_defer_rpc_pending: 1,
   supervisor_blocked_retry_action_defer_owner_async: 2,
@@ -2099,6 +2108,24 @@ export function makeSupervisorAbiStubs(
     supervisor_blocked_pipe_sync_before_retry_clear() {
       return 0;
     },
+    supervisor_blocked_pipe_sync_before_retry_completion_action(_flags: number) {
+      const flags = Number(_flags);
+      const requestedDrain =
+        (flags
+          & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_completion_flag_requested_drain_output)
+        !== 0;
+      const kernelWorkerAvailable =
+        (flags
+          & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_completion_flag_kernel_worker_available)
+        !== 0;
+      let action =
+        DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_completion_action_schedule_retry;
+      if (requestedDrain || !kernelWorkerAvailable) {
+        action |=
+          DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_completion_action_drain_local_pipe;
+      }
+      return action;
+    },
     supervisor_blocked_initial_action(this: KernelExports | undefined, vmPtr: number, blockedStatus: number, flags: number) {
       if (vmPtr === 0) {
         return -14;
@@ -2122,6 +2149,14 @@ export function makeSupervisorAbiStubs(
         return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_initial_action_retry_now;
       }
       return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_initial_action_schedule_retry;
+    },
+    supervisor_blocked_retry_host_cleanup_action(_flags: number) {
+      const flags = Number(_flags);
+      let action = DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_host_cleanup_action_flush_stdin;
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_host_cleanup_flag_kernel_worker_available) === 0) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_host_cleanup_action_drain_local_pipe;
+      }
+      return action;
     },
     supervisor_blocked_retry_result_action(this: KernelExports | undefined, vmPtr: number, resultStatus: number) {
       const receiver = currentExports(this);

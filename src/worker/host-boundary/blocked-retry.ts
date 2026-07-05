@@ -9,9 +9,11 @@ import {
   wakeRuntimeBridge,
 } from "../../bridge/runtime-state.js";
 import {
+  supervisorBlockedPipeSyncBeforeRetryCompletionActions,
   supervisorBlockedPipeSyncBeforeRetryRequested,
   supervisorBlockedPostNetworkPumpAction,
   supervisorBlockedRetryAction,
+  supervisorBlockedRetryHostCleanupActions,
   supervisorBlockedRetryResultAction,
   supervisorBlockedRetryStatusActions,
   supervisorBlockedStaleRetryResultAction,
@@ -759,8 +761,13 @@ export function createBlockedRetryCoordinator(
       }
     }
 
-    flushStdin(handle);
-    if (!processHasKernelWorkerOwnership(handle)) {
+    const cleanupActions = supervisorBlockedRetryHostCleanupActions(handle.kernel, {
+      kernelWorkerAvailable: processHasKernelWorkerOwnership(handle),
+    });
+    if (cleanupActions.flushStdin) {
+      flushStdin(handle);
+    }
+    if (cleanupActions.drainLocalPipe) {
       drainProcessOutput(handle);
     }
     return true;
@@ -798,14 +805,20 @@ export function createBlockedRetryCoordinator(
         if (!latestBlocked) {
           return;
         }
-        if (shouldDrainOutput || !processHasKernelWorkerOwnership(handle)) {
+        const completionActions = supervisorBlockedPipeSyncBeforeRetryCompletionActions(handle.kernel, {
+          requestedDrainOutput: shouldDrainOutput,
+          kernelWorkerAvailable: processHasKernelWorkerOwnership(handle),
+        });
+        if (completionActions.drainLocalPipe) {
           drainProcessOutput(handle);
         }
-        deps.scheduleSupervisorBlockedRetry(
-          handle,
-          worker,
-          ["host-progress"],
-        );
+        if (completionActions.scheduleRetryWithHostProgress) {
+          deps.scheduleSupervisorBlockedRetry(
+            handle,
+            worker,
+            ["host-progress"],
+          );
+        }
       })
       .catch((error) => {
         deps.finishBlockedRpc(handle, worker, blocked.vmPtr, rpcGeneration);

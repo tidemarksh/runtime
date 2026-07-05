@@ -14,7 +14,13 @@ import {
   createRuntimeStateBridge,
   readPublishedRuntimeBridgeEpoch,
 } from "../../../../src/bridge/runtime-state.js";
+import { writePipe } from "../../../../src/bridge/pipe.js";
 import { RUNTIME_BRIDGE_NOTIFY_INDEX } from "../../../../src/layout/runtime-state.js";
+import {
+  PIPE_READ_OPEN_OFFSET,
+  PIPE_SLOT_BYTES,
+  PIPE_WRITE_OPEN_OFFSET,
+} from "../../../../src/layout/pipe.js";
 import { networkConnections } from "../../../../src/worker/network-socket-state.js";
 
 vi.mock("../../../../src/worker/pool.js", async (importOriginal) => {
@@ -977,6 +983,25 @@ function makeHandle(
     installTestSupervisorBlockedWaitTimers(kernel, handle);
   }
   return handle;
+}
+
+function seedHostStdoutPipe(handle: ProcessHandle, text: string): void {
+  const pipeSlot = 2;
+  const view = new DataView(handle.memory.buffer);
+  const base = handle.kernelState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
+  view.setInt32(base + PIPE_READ_OPEN_OFFSET, 1, true);
+  view.setInt32(base + PIPE_WRITE_OPEN_OFFSET, 1, true);
+  const result = writePipe(
+    handle.memory,
+    handle.kernelState.pipeBase,
+    pipeSlot,
+    new TextEncoder().encode(text),
+  );
+  if (result.written !== text.length || result.broken) {
+    throw new Error("failed to seed host stdout pipe");
+  }
+  view.setInt32(base + PIPE_WRITE_OPEN_OFFSET, 0, true);
+  handle.hostStdio.stdoutPipe = pipeSlot;
 }
 
 beforeEach(() => {
@@ -2163,6 +2188,50 @@ test("kernel-worker blocked syscall retry requires outcome helper", () => {
   );
   expect(isBlockedRpcPending(hostExecutionState(handle).hostBlockedWorkers.get(worker))).toBe(false);
   expect(getBlockedRpcGeneration(hostExecutionState(handle).hostBlockedWorkers.get(worker))).toBe(0);
+});
+
+test("blocked retry host cleanup follows supervisor-selected local pipe drain action", async () => {
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const thread = makeThreadState(0x1234);
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, thread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = (vmPtr: number) => vmPtr === thread.vmPtr
+    ? kernel.abi_status_fs()
+    : kernel.abi_status_ok();
+  const cleanupAction = vi.fn(() =>
+    kernel.supervisor_blocked_retry_host_cleanup_action_flush_stdin!());
+  kernel.supervisor_blocked_retry_host_cleanup_action = cleanupAction;
+  const handle = makeHandle(kernel, worker, threadWorkerStates);
+  const drainedChunks: string[] = [];
+  handle.onStdout = (chunk) => {
+    drainedChunks.push(new TextDecoder().decode(chunk));
+  };
+  seedHostStdoutPipe(handle, "supervisor-owned-tail\n");
+  setPendingChildSpawnRecords(handle, 0);
+  const resumeFsViaKernelWorker = vi.fn(async () => {});
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    resumeFsViaKernelWorker,
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.blockWorker(handle, worker, handle.kernel.abi_status_fs(), thread.vmPtr);
+  scheduler.clearHostBlockedRetryTimer(handle, worker);
+  scheduler.notifySchedulerProgress(handle);
+  await flushMicrotasks(4);
+
+  expect(cleanupAction).toHaveBeenCalled();
+  expect(resumeFsViaKernelWorker).toHaveBeenCalledWith(handle, worker, thread.vmPtr);
+  expect(drainedChunks).toEqual([]);
 });
 
 test("kernel-worker unsupported blocked status fails before terminal local resume", () => {

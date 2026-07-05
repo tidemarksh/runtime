@@ -75,6 +75,16 @@ export interface SupervisorBlockedRetryStatusActions {
   wakeRuntimeBridgeWhileRunning: boolean;
 }
 
+export interface SupervisorBlockedRetryHostCleanupActions {
+  flushStdin: boolean;
+  drainLocalPipe: boolean;
+}
+
+export interface SupervisorBlockedPipeSyncBeforeRetryCompletionActions {
+  drainLocalPipe: boolean;
+  scheduleRetryWithHostProgress: boolean;
+}
+
 export interface SupervisorWaitInWorkerStatusActions {
   blockEpollTimeout: boolean;
   parkFutex: boolean;
@@ -191,6 +201,16 @@ type SupervisorNumberConstExportName =
   | "supervisor_resume_flag_timeout_expired"
   | "supervisor_blocked_pipe_resume_action_defer"
   | "supervisor_blocked_pipe_resume_action_direct"
+  | "supervisor_blocked_pipe_sync_before_retry_action_none"
+  | "supervisor_blocked_pipe_sync_before_retry_action_request_sync"
+  | "supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output"
+  | "supervisor_blocked_pipe_sync_before_retry_action_schedule_retry"
+  | "supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available"
+  | "supervisor_blocked_pipe_sync_before_retry_completion_action_none"
+  | "supervisor_blocked_pipe_sync_before_retry_completion_action_drain_local_pipe"
+  | "supervisor_blocked_pipe_sync_before_retry_completion_action_schedule_retry"
+  | "supervisor_blocked_pipe_sync_before_retry_completion_flag_requested_drain_output"
+  | "supervisor_blocked_pipe_sync_before_retry_completion_flag_kernel_worker_available"
   | "supervisor_blocked_status_transition_action_block"
   | "supervisor_blocked_status_transition_action_sync_socket"
   | "supervisor_blocked_status_transition_action_sync_pipe"
@@ -278,6 +298,10 @@ type SupervisorNumberConstExportName =
   | "supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns"
   | "supervisor_blocked_retry_action_flag_network_connections_available"
   | "supervisor_blocked_retry_action_flag_wait_timer_already_checked"
+  | "supervisor_blocked_retry_host_cleanup_flag_kernel_worker_available"
+  | "supervisor_blocked_retry_host_cleanup_action_none"
+  | "supervisor_blocked_retry_host_cleanup_action_flush_stdin"
+  | "supervisor_blocked_retry_host_cleanup_action_drain_local_pipe"
   | "supervisor_blocked_retry_action_defer_supervisor_timer"
   | "supervisor_blocked_retry_action_defer_rpc_pending"
   | "supervisor_blocked_retry_action_defer_owner_async"
@@ -1466,6 +1490,123 @@ export function supervisorBlockedRetryStatusActions(
     successLogEpollReady: (result & successLogEpollReady) !== 0,
     successLogWait4Resumed: (result & successLogWait4Resumed) !== 0,
     wakeRuntimeBridgeWhileRunning: (result & wakeRuntimeBridgeWhileRunning) !== 0,
+  };
+}
+
+function supervisorBlockedRetryHostCleanupFlags(
+  kernel: KernelExports,
+  options: {
+    kernelWorkerAvailable: boolean;
+  },
+): number {
+  let flags = 0;
+  if (options.kernelWorkerAvailable) {
+    flags |= readSupervisorNumberConst(
+      kernel,
+      "supervisor_blocked_retry_host_cleanup_flag_kernel_worker_available",
+    );
+  }
+  return flags;
+}
+
+export function supervisorBlockedRetryHostCleanupActions(
+  kernel: KernelExports,
+  options: {
+    kernelWorkerAvailable: boolean;
+  },
+): SupervisorBlockedRetryHostCleanupActions {
+  const readAction = kernel.supervisor_blocked_retry_host_cleanup_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_blocked_retry_host_cleanup_action");
+  }
+  const result = readAction.call(
+    kernel,
+    supervisorBlockedRetryHostCleanupFlags(kernel, options),
+  );
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked retry host cleanup action failed: ${result}`);
+  }
+  const none = readSupervisorNumberConst(kernel, "supervisor_blocked_retry_host_cleanup_action_none");
+  const flushStdin = readSupervisorNumberConst(
+    kernel,
+    "supervisor_blocked_retry_host_cleanup_action_flush_stdin",
+  );
+  const drainLocalPipe = readSupervisorNumberConst(
+    kernel,
+    "supervisor_blocked_retry_host_cleanup_action_drain_local_pipe",
+  );
+  const known = none | flushStdin | drainLocalPipe;
+  if ((result & ~known) !== 0) {
+    throw new Error(`kernel supervisor blocked retry host cleanup action is unknown: ${result}`);
+  }
+  return {
+    flushStdin: (result & flushStdin) !== 0,
+    drainLocalPipe: (result & drainLocalPipe) !== 0,
+  };
+}
+
+function supervisorBlockedPipeSyncBeforeRetryCompletionFlags(
+  kernel: KernelExports,
+  options: {
+    requestedDrainOutput: boolean;
+    kernelWorkerAvailable: boolean;
+  },
+): number {
+  let flags = 0;
+  if (options.requestedDrainOutput) {
+    flags |= readSupervisorNumberConst(
+      kernel,
+      "supervisor_blocked_pipe_sync_before_retry_completion_flag_requested_drain_output",
+    );
+  }
+  if (options.kernelWorkerAvailable) {
+    flags |= readSupervisorNumberConst(
+      kernel,
+      "supervisor_blocked_pipe_sync_before_retry_completion_flag_kernel_worker_available",
+    );
+  }
+  return flags;
+}
+
+export function supervisorBlockedPipeSyncBeforeRetryCompletionActions(
+  kernel: KernelExports,
+  options: {
+    requestedDrainOutput: boolean;
+    kernelWorkerAvailable: boolean;
+  },
+): SupervisorBlockedPipeSyncBeforeRetryCompletionActions {
+  const readAction = kernel.supervisor_blocked_pipe_sync_before_retry_completion_action;
+  if (readAction === undefined) {
+    throw new Error(
+      "kernel supervisor ABI missing supervisor_blocked_pipe_sync_before_retry_completion_action",
+    );
+  }
+  const result = readAction.call(
+    kernel,
+    supervisorBlockedPipeSyncBeforeRetryCompletionFlags(kernel, options),
+  );
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked pipe sync completion action failed: ${result}`);
+  }
+  const none = readSupervisorNumberConst(
+    kernel,
+    "supervisor_blocked_pipe_sync_before_retry_completion_action_none",
+  );
+  const drainLocalPipe = readSupervisorNumberConst(
+    kernel,
+    "supervisor_blocked_pipe_sync_before_retry_completion_action_drain_local_pipe",
+  );
+  const scheduleRetryWithHostProgress = readSupervisorNumberConst(
+    kernel,
+    "supervisor_blocked_pipe_sync_before_retry_completion_action_schedule_retry",
+  );
+  const known = none | drainLocalPipe | scheduleRetryWithHostProgress;
+  if ((result & ~known) !== 0) {
+    throw new Error(`kernel supervisor blocked pipe sync completion action is unknown: ${result}`);
+  }
+  return {
+    drainLocalPipe: (result & drainLocalPipe) !== 0,
+    scheduleRetryWithHostProgress: (result & scheduleRetryWithHostProgress) !== 0,
   };
 }
 

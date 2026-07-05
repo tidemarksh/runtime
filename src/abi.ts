@@ -234,6 +234,11 @@ export interface KernelExports {
   supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output?(): number;
   supervisor_blocked_pipe_sync_before_retry_action_schedule_retry?(): number;
   supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available?(): number;
+  supervisor_blocked_pipe_sync_before_retry_completion_action_none?(): number;
+  supervisor_blocked_pipe_sync_before_retry_completion_action_drain_local_pipe?(): number;
+  supervisor_blocked_pipe_sync_before_retry_completion_action_schedule_retry?(): number;
+  supervisor_blocked_pipe_sync_before_retry_completion_flag_requested_drain_output?(): number;
+  supervisor_blocked_pipe_sync_before_retry_completion_flag_kernel_worker_available?(): number;
   supervisor_blocked_status_transition_action_block?(): number;
   supervisor_blocked_status_transition_action_sync_socket?(): number;
   supervisor_blocked_status_transition_action_sync_pipe?(): number;
@@ -547,6 +552,7 @@ export interface KernelExports {
   supervisor_blocked_pipe_sync_before_retry_action?(vmPtr: number, flags: number): number;
   supervisor_blocked_pipe_sync_before_retry_requested?(vmPtr: number): number;
   supervisor_blocked_pipe_sync_before_retry_clear?(vmPtr: number): number;
+  supervisor_blocked_pipe_sync_before_retry_completion_action?(flags: number): number;
   supervisor_blocked_status_transition_action?(vmPtr: number, status: number, flags: number): number;
   supervisor_blocked_wait_network_pump_action?(vmPtr: number): number;
   supervisor_complete_blocked_wait_network_pump?(vmPtr: number, changed: number): number;
@@ -669,6 +675,10 @@ export interface KernelExports {
   supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns?(): number;
   supervisor_blocked_retry_action_flag_network_connections_available?(): number;
   supervisor_blocked_retry_action_flag_wait_timer_already_checked?(): number;
+  supervisor_blocked_retry_host_cleanup_flag_kernel_worker_available?(): number;
+  supervisor_blocked_retry_host_cleanup_action_none?(): number;
+  supervisor_blocked_retry_host_cleanup_action_flush_stdin?(): number;
+  supervisor_blocked_retry_host_cleanup_action_drain_local_pipe?(): number;
   supervisor_blocked_retry_action_defer_supervisor_timer?(): number;
   supervisor_blocked_retry_action_defer_rpc_pending?(): number;
   supervisor_blocked_retry_action_defer_owner_async?(): number;
@@ -691,6 +701,7 @@ export interface KernelExports {
   supervisor_blocked_retry_action_resume_epoll_direct?(): number;
   supervisor_blocked_retry_action_resume_direct?(): number;
   supervisor_blocked_retry_action_unsupported?(): number;
+  supervisor_blocked_retry_host_cleanup_action?(flags: number): number;
   supervisor_blocked_wait_wake_source_pipe_sync?(): number;
   supervisor_blocked_wait_wake_source_epoll_sync?(): number;
   supervisor_blocked_wait_wake_source_socket_sync?(): number;
@@ -1903,6 +1914,11 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output",
   "supervisor_blocked_pipe_sync_before_retry_action_schedule_retry",
   "supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available",
+  "supervisor_blocked_pipe_sync_before_retry_completion_action_none",
+  "supervisor_blocked_pipe_sync_before_retry_completion_action_drain_local_pipe",
+  "supervisor_blocked_pipe_sync_before_retry_completion_action_schedule_retry",
+  "supervisor_blocked_pipe_sync_before_retry_completion_flag_requested_drain_output",
+  "supervisor_blocked_pipe_sync_before_retry_completion_flag_kernel_worker_available",
   "supervisor_blocked_status_transition_action_block",
   "supervisor_blocked_status_transition_action_sync_socket",
   "supervisor_blocked_status_transition_action_sync_pipe",
@@ -2113,6 +2129,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_pipe_sync_before_retry_action",
   "supervisor_blocked_pipe_sync_before_retry_requested",
   "supervisor_blocked_pipe_sync_before_retry_clear",
+  "supervisor_blocked_pipe_sync_before_retry_completion_action",
   "supervisor_blocked_status_transition_action",
   "supervisor_blocked_wait_network_pump_action",
   "supervisor_complete_blocked_wait_network_pump",
@@ -2217,6 +2234,10 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns",
   "supervisor_blocked_retry_action_flag_network_connections_available",
   "supervisor_blocked_retry_action_flag_wait_timer_already_checked",
+  "supervisor_blocked_retry_host_cleanup_flag_kernel_worker_available",
+  "supervisor_blocked_retry_host_cleanup_action_none",
+  "supervisor_blocked_retry_host_cleanup_action_flush_stdin",
+  "supervisor_blocked_retry_host_cleanup_action_drain_local_pipe",
   "supervisor_blocked_retry_action_defer_supervisor_timer",
   "supervisor_blocked_retry_action_defer_rpc_pending",
   "supervisor_blocked_retry_action_defer_owner_async",
@@ -2239,6 +2260,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_retry_action_resume_epoll_direct",
   "supervisor_blocked_retry_action_resume_direct",
   "supervisor_blocked_retry_action_unsupported",
+  "supervisor_blocked_retry_host_cleanup_action",
   "supervisor_blocked_wait_wake_source_pipe_sync",
   "supervisor_blocked_wait_wake_source_epoll_sync",
   "supervisor_blocked_wait_wake_source_socket_sync",
