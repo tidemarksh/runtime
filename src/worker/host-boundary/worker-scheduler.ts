@@ -1,12 +1,11 @@
 import { hostExecutionState } from "../host-execution-state.js";
 import { processHasWorker } from "../process-worker-state.js";
 import {
-  supervisorBlockedEpollWaitRetryRequired,
+  supervisorBlockedInitialAction,
   supervisorBlockedPipeSyncBeforeRetryClear,
-  supervisorBlockedStatusIsEpollWait,
   supervisorBlockedStatusIsPipeWait,
-  supervisorBlockedStatusIsWait4,
   supervisorClearBlockedWaitNetworkPump,
+  type SupervisorBlockedRetryActionFlag,
   type SupervisorBlockedWaitRetryFlags,
 } from "../../supervisor-blocked-resume.js";
 import {
@@ -267,32 +266,46 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       markSupervisorTimerArmed(blocked);
     }
     hostExecutionState(handle).hostBlockedWorkers.set(worker, blocked);
-    const supervisorTimerArmed = armBlockedSupervisorTimerForBlocked(handle, blocked);
-    if (supervisorTimerArmed) {
-      return;
+    const flags: SupervisorBlockedRetryActionFlag[] = [];
+    if (isSupervisorTimerArmed(blocked)) {
+      flags.push("supervisor-timer-armed");
     }
     if (sameBlockedThread && isBlockedRpcPending(blocked)) {
+      flags.push("rpc-pending");
+    }
+    let initialAction;
+    try {
+      initialAction = supervisorBlockedInitialAction(handle.kernel, vmPtr, status, flags);
+    } catch (error) {
+      deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
       return;
     }
-    if (supervisorBlockedStatusIsEpollWait(handle.kernel, status)) {
-      if (supervisorBlockedEpollWaitRetryRequired(handle.kernel, vmPtr)) {
+    switch (initialAction) {
+      case "none":
+      case "defer-supervisor-timer":
+      case "defer-rpc-pending":
+        return;
+      case "arm-wait-timer":
+        if (armBlockedSupervisorTimerForBlocked(handle, blocked)) {
+          return;
+        }
+        retryHostBlockedWorker(handle, worker);
+        return;
+      case "retry-now":
+        retryHostBlockedWorker(handle, worker);
+        return;
+      case "schedule-retry":
         scheduleSupervisorBlockedRetry(
           handle,
           worker,
           [],
         );
+        return;
+      default: {
+        const exhaustive: never = initialAction;
+        throw new Error(`unhandled supervisor blocked initial action: ${exhaustive}`);
       }
-      return;
     }
-    if (supervisorBlockedStatusIsWait4(handle.kernel, status)) {
-      retryHostBlockedWorker(handle, worker);
-      return;
-    }
-    scheduleSupervisorBlockedRetry(
-      handle,
-      worker,
-      [],
-    );
   }
 
   function markSupervisorTimerArmed(blocked: HostBlockedWorkerState): void {

@@ -95,6 +95,12 @@ const SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_WAIT4_KERNEL_WORKER = 18;
 const SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_EPOLL_DIRECT = 19;
 const SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_DIRECT = 20;
 const SUPERVISOR_BLOCKED_RETRY_ACTION_UNSUPPORTED = 21;
+const SUPERVISOR_BLOCKED_INITIAL_ACTION_NONE = 0;
+const SUPERVISOR_BLOCKED_INITIAL_ACTION_DEFER_SUPERVISOR_TIMER = 1;
+const SUPERVISOR_BLOCKED_INITIAL_ACTION_DEFER_RPC_PENDING = 2;
+const SUPERVISOR_BLOCKED_INITIAL_ACTION_ARM_WAIT_TIMER = 3;
+const SUPERVISOR_BLOCKED_INITIAL_ACTION_RETRY_NOW = 4;
+const SUPERVISOR_BLOCKED_INITIAL_ACTION_SCHEDULE_RETRY = 5;
 const SUPERVISOR_STATE_SYNC_KIND_PIPE = 1;
 const SUPERVISOR_STATE_SYNC_KIND_EPOLL = 2;
 const SUPERVISOR_STATE_SYNC_KIND_SOCKET = 3;
@@ -230,6 +236,13 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_blocked_retry_action_resume_epoll_direct"
   | "supervisor_blocked_retry_action_resume_direct"
   | "supervisor_blocked_retry_action_unsupported"
+  | "supervisor_blocked_initial_action"
+  | "supervisor_blocked_initial_action_none"
+  | "supervisor_blocked_initial_action_defer_supervisor_timer"
+  | "supervisor_blocked_initial_action_defer_rpc_pending"
+  | "supervisor_blocked_initial_action_arm_wait_timer"
+  | "supervisor_blocked_initial_action_retry_now"
+  | "supervisor_blocked_initial_action_schedule_retry"
   | "supervisor_blocked_wait_wake_source_pipe_sync"
   | "supervisor_blocked_wait_wake_source_epoll_sync"
   | "supervisor_blocked_wait_wake_source_socket_sync"
@@ -1202,6 +1215,41 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_DIRECT;
   nextKernel.supervisor_blocked_retry_action_unsupported ??= () =>
     SUPERVISOR_BLOCKED_RETRY_ACTION_UNSUPPORTED;
+  nextKernel.supervisor_blocked_initial_action_none ??= () =>
+    SUPERVISOR_BLOCKED_INITIAL_ACTION_NONE;
+  nextKernel.supervisor_blocked_initial_action_defer_supervisor_timer ??= () =>
+    SUPERVISOR_BLOCKED_INITIAL_ACTION_DEFER_SUPERVISOR_TIMER;
+  nextKernel.supervisor_blocked_initial_action_defer_rpc_pending ??= () =>
+    SUPERVISOR_BLOCKED_INITIAL_ACTION_DEFER_RPC_PENDING;
+  nextKernel.supervisor_blocked_initial_action_arm_wait_timer ??= () =>
+    SUPERVISOR_BLOCKED_INITIAL_ACTION_ARM_WAIT_TIMER;
+  nextKernel.supervisor_blocked_initial_action_retry_now ??= () =>
+    SUPERVISOR_BLOCKED_INITIAL_ACTION_RETRY_NOW;
+  nextKernel.supervisor_blocked_initial_action_schedule_retry ??= () =>
+    SUPERVISOR_BLOCKED_INITIAL_ACTION_SCHEDULE_RETRY;
+  nextKernel.supervisor_blocked_initial_action ??= (vmPtr: number, blockedStatus: number, flags: number) => {
+    if (vmPtr === 0) {
+      return -14;
+    }
+    if ((flags & SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_SUPERVISOR_TIMER_ARMED) !== 0) {
+      return SUPERVISOR_BLOCKED_INITIAL_ACTION_DEFER_SUPERVISOR_TIMER;
+    }
+    if ((flags & SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_RPC_PENDING) !== 0) {
+      return SUPERVISOR_BLOCKED_INITIAL_ACTION_DEFER_RPC_PENDING;
+    }
+    if (toNumber(kernel.supervisor_blocked_wait_timer_required?.(vmPtr)) !== 0) {
+      return SUPERVISOR_BLOCKED_INITIAL_ACTION_ARM_WAIT_TIMER;
+    }
+    if (blockedStatus === kernel.abi_status_epoll_wait?.()) {
+      return toNumber(nextKernel.supervisor_blocked_epoll_wait_retry_required?.(vmPtr)) !== 0
+        ? SUPERVISOR_BLOCKED_INITIAL_ACTION_SCHEDULE_RETRY
+        : SUPERVISOR_BLOCKED_INITIAL_ACTION_NONE;
+    }
+    if (blockedStatus === kernel.abi_status_wait4?.()) {
+      return SUPERVISOR_BLOCKED_INITIAL_ACTION_RETRY_NOW;
+    }
+    return SUPERVISOR_BLOCKED_INITIAL_ACTION_SCHEDULE_RETRY;
+  };
   nextKernel.supervisor_blocked_retry_action ??= (vmPtr: number, flags: number) => {
     if (vmPtr === 0) {
       return -14;

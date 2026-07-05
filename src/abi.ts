@@ -581,6 +581,13 @@ export interface KernelExports {
   supervisor_blocked_wait_retry_flag_passive_wait?(): number;
   supervisor_blocked_wait_retry_flag_process_gate?(): number;
   supervisor_blocked_wait_retry_flag_thread_init_pending?(): number;
+  supervisor_blocked_initial_action?(vmPtr: number, blockedStatus: number, flags: number): number;
+  supervisor_blocked_initial_action_none?(): number;
+  supervisor_blocked_initial_action_defer_supervisor_timer?(): number;
+  supervisor_blocked_initial_action_defer_rpc_pending?(): number;
+  supervisor_blocked_initial_action_arm_wait_timer?(): number;
+  supervisor_blocked_initial_action_retry_now?(): number;
+  supervisor_blocked_initial_action_schedule_retry?(): number;
   supervisor_blocked_retry_action?(vmPtr: number, flags: number): number;
   supervisor_blocked_retry_action_flag_supervisor_timer_armed?(): number;
   supervisor_blocked_retry_action_flag_rpc_pending?(): number;
@@ -2000,6 +2007,13 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_wait_retry_flag_passive_wait",
   "supervisor_blocked_wait_retry_flag_process_gate",
   "supervisor_blocked_wait_retry_flag_thread_init_pending",
+  "supervisor_blocked_initial_action",
+  "supervisor_blocked_initial_action_none",
+  "supervisor_blocked_initial_action_defer_supervisor_timer",
+  "supervisor_blocked_initial_action_defer_rpc_pending",
+  "supervisor_blocked_initial_action_arm_wait_timer",
+  "supervisor_blocked_initial_action_retry_now",
+  "supervisor_blocked_initial_action_schedule_retry",
   "supervisor_blocked_retry_action",
   "supervisor_blocked_retry_action_flag_supervisor_timer_armed",
   "supervisor_blocked_retry_action_flag_rpc_pending",

@@ -208,6 +208,12 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_retry_action_resume_epoll_direct: 19,
   supervisor_blocked_retry_action_resume_direct: 20,
   supervisor_blocked_retry_action_unsupported: 21,
+  supervisor_blocked_initial_action_none: 0,
+  supervisor_blocked_initial_action_defer_supervisor_timer: 1,
+  supervisor_blocked_initial_action_defer_rpc_pending: 2,
+  supervisor_blocked_initial_action_arm_wait_timer: 3,
+  supervisor_blocked_initial_action_retry_now: 4,
+  supervisor_blocked_initial_action_schedule_retry: 5,
   supervisor_blocked_wait_wake_source_pipe_sync: 1,
   supervisor_blocked_wait_wake_source_epoll_sync: 2,
   supervisor_blocked_wait_wake_source_socket_sync: 3,
@@ -1587,6 +1593,30 @@ export function makeSupervisorAbiStubs(
     },
     supervisor_blocked_pipe_sync_before_retry_clear() {
       return 0;
+    },
+    supervisor_blocked_initial_action(this: KernelExports | undefined, vmPtr: number, blockedStatus: number, flags: number) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      const receiver = currentExports(this);
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_supervisor_timer_armed) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_initial_action_defer_supervisor_timer;
+      }
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_rpc_pending) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_initial_action_defer_rpc_pending;
+      }
+      if (callOptionalNumber(receiver, "supervisor_blocked_wait_timer_required", vmPtr) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_initial_action_arm_wait_timer;
+      }
+      if (blockedStatus === callNumber(receiver, "abi_status_epoll_wait")) {
+        return callNumber(receiver, "thread_process_thread_count", vmPtr) > 1
+          ? DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_initial_action_schedule_retry
+          : DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_initial_action_none;
+      }
+      if (blockedStatus === callNumber(receiver, "abi_status_wait4")) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_initial_action_retry_now;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_initial_action_schedule_retry;
     },
     supervisor_blocked_status_transition_action(this: KernelExports | undefined, vmPtr: number, status: number, flags: number) {
       if (vmPtr === 0) {
