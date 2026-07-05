@@ -132,6 +132,11 @@ const SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_PIPE_WAIT = 1;
 const SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_EPOLL_WAIT = 2;
 const SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_SOCKET_RECV = 4;
 const SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_SOCKET_SEND = 8;
+const SUPERVISOR_BLOCKED_WAIT_WAKE_FLAG_RPC_PENDING = 1;
+const SUPERVISOR_BLOCKED_WAIT_WAKE_ACTION_SKIP = 0;
+const SUPERVISOR_BLOCKED_WAIT_WAKE_ACTION_RETRY = 1;
+const SUPERVISOR_BLOCKED_WAIT_WAKE_ACTION_CLEAR_PIPE_SYNC_AND_RETRY = 2;
+const SUPERVISOR_BLOCKED_WAIT_WAKE_ACTION_LOG_EPOLL_AND_RETRY = 3;
 const POLLFD_BYTES = 8;
 
 export function installSupervisorBlockedResumeStub<T extends Partial<KernelExports>>(
@@ -291,8 +296,14 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_blocked_wait_wake_target_epoll_wait"
   | "supervisor_blocked_wait_wake_target_socket_recv"
   | "supervisor_blocked_wait_wake_target_socket_send"
+  | "supervisor_blocked_wait_wake_flag_rpc_pending"
+  | "supervisor_blocked_wait_wake_action_skip"
+  | "supervisor_blocked_wait_wake_action_retry"
+  | "supervisor_blocked_wait_wake_action_clear_pipe_sync_and_retry"
+  | "supervisor_blocked_wait_wake_action_log_epoll_and_retry"
   | "supervisor_blocked_wait_wake_mask_for_sync"
   | "supervisor_blocked_wait_status_matches_wake_source"
+  | "supervisor_blocked_wait_wake_action"
   | "supervisor_state_sync_kind_pipe"
   | "supervisor_state_sync_kind_epoll"
   | "supervisor_state_sync_kind_socket"
@@ -407,6 +418,28 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
       return SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_SOCKET_SEND;
     }
     return 0;
+  };
+  const wakeActionForStatus = (status: number, source: number, flags: number): number => {
+    const mask = wakeMaskForSync(source);
+    if (mask < 0) {
+      return mask;
+    }
+    const target = wakeTargetForStatus(status);
+    if (target === 0 || (mask & target) === 0) {
+      return SUPERVISOR_BLOCKED_WAIT_WAKE_ACTION_SKIP;
+    }
+    const rpcPending = (flags & SUPERVISOR_BLOCKED_WAIT_WAKE_FLAG_RPC_PENDING) !== 0;
+    if (kernel.abi_status_pipe_wait?.() === status) {
+      return rpcPending
+        ? SUPERVISOR_BLOCKED_WAIT_WAKE_ACTION_SKIP
+        : SUPERVISOR_BLOCKED_WAIT_WAKE_ACTION_CLEAR_PIPE_SYNC_AND_RETRY;
+    }
+    if (kernel.abi_status_epoll_wait?.() === status) {
+      return rpcPending
+        ? SUPERVISOR_BLOCKED_WAIT_WAKE_ACTION_SKIP
+        : SUPERVISOR_BLOCKED_WAIT_WAKE_ACTION_LOG_EPOLL_AND_RETRY;
+    }
+    return SUPERVISOR_BLOCKED_WAIT_WAKE_ACTION_RETRY;
   };
   const syscallMatches = (
     syscallNr: bigint,
@@ -581,8 +614,14 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_blocked_wait_wake_target_epoll_wait"
     | "supervisor_blocked_wait_wake_target_socket_recv"
     | "supervisor_blocked_wait_wake_target_socket_send"
+    | "supervisor_blocked_wait_wake_flag_rpc_pending"
+    | "supervisor_blocked_wait_wake_action_skip"
+    | "supervisor_blocked_wait_wake_action_retry"
+    | "supervisor_blocked_wait_wake_action_clear_pipe_sync_and_retry"
+    | "supervisor_blocked_wait_wake_action_log_epoll_and_retry"
     | "supervisor_blocked_wait_wake_mask_for_sync"
     | "supervisor_blocked_wait_status_matches_wake_source"
+    | "supervisor_blocked_wait_wake_action"
     | "supervisor_state_sync_kind_pipe"
     | "supervisor_state_sync_kind_epoll"
     | "supervisor_state_sync_kind_socket"
@@ -1561,6 +1600,16 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_SOCKET_RECV;
   nextKernel.supervisor_blocked_wait_wake_target_socket_send ??= () =>
     SUPERVISOR_BLOCKED_WAIT_WAKE_TARGET_SOCKET_SEND;
+  nextKernel.supervisor_blocked_wait_wake_flag_rpc_pending ??= () =>
+    SUPERVISOR_BLOCKED_WAIT_WAKE_FLAG_RPC_PENDING;
+  nextKernel.supervisor_blocked_wait_wake_action_skip ??= () =>
+    SUPERVISOR_BLOCKED_WAIT_WAKE_ACTION_SKIP;
+  nextKernel.supervisor_blocked_wait_wake_action_retry ??= () =>
+    SUPERVISOR_BLOCKED_WAIT_WAKE_ACTION_RETRY;
+  nextKernel.supervisor_blocked_wait_wake_action_clear_pipe_sync_and_retry ??= () =>
+    SUPERVISOR_BLOCKED_WAIT_WAKE_ACTION_CLEAR_PIPE_SYNC_AND_RETRY;
+  nextKernel.supervisor_blocked_wait_wake_action_log_epoll_and_retry ??= () =>
+    SUPERVISOR_BLOCKED_WAIT_WAKE_ACTION_LOG_EPOLL_AND_RETRY;
   nextKernel.supervisor_blocked_wait_wake_mask_for_sync ??= (source: number) =>
     wakeMaskForSync(source);
   nextKernel.supervisor_blocked_wait_status_matches_wake_source ??= (status: number, source: number) => {
@@ -1571,6 +1620,11 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     const target = wakeTargetForStatus(status);
     return target !== 0 && (mask & target) !== 0 ? 1 : 0;
   };
+  nextKernel.supervisor_blocked_wait_wake_action ??= (
+    status: number,
+    source: number,
+    flags: number,
+  ) => wakeActionForStatus(status, source, flags);
   nextKernel.supervisor_state_sync_kind_pipe ??= () => SUPERVISOR_STATE_SYNC_KIND_PIPE;
   nextKernel.supervisor_state_sync_kind_epoll ??= () => SUPERVISOR_STATE_SYNC_KIND_EPOLL;
   nextKernel.supervisor_state_sync_kind_socket ??= () => SUPERVISOR_STATE_SYNC_KIND_SOCKET;

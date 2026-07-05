@@ -9,8 +9,7 @@ import {
 } from "../../bridge/runtime-state.js";
 import {
   supervisorBlockedPipeSyncBeforeRetryClear,
-  supervisorBlockedStatusIsEpollWait,
-  supervisorBlockedStatusIsPipeWait,
+  supervisorBlockedWaitWakeAction,
   supervisorBlockedWaitStatusMatchesWakeSource,
   supervisorStateSyncClear,
   supervisorStateSyncComplete,
@@ -146,17 +145,21 @@ export function createWorkerSchedulerStateSyncHelpers(
         publishKernelRuntimeState(member.runtimeBridge, member.kernelState, true);
       }
       for (const [blockedWorker, blocked] of hostExecutionState(member).hostBlockedWorkers) {
-        if (supervisorBlockedWaitStatusMatchesWakeSource(member.kernel, blocked.status, wakeSource)) {
-          if (supervisorBlockedStatusIsPipeWait(member.kernel, blocked.status)) {
-            if (isBlockedRpcPending(blocked)) {
-              continue;
-            }
+        const action = supervisorBlockedWaitWakeAction(
+          member.kernel,
+          blocked.status,
+          wakeSource,
+          { rpcPending: isBlockedRpcPending(blocked) },
+        );
+        switch (action) {
+          case "skip":
+            continue;
+          case "retry":
+            break;
+          case "clear-pipe-sync-and-retry":
             supervisorBlockedPipeSyncBeforeRetryClear(member.kernel, blocked.vmPtr);
-          }
-          if (supervisorBlockedStatusIsEpollWait(member.kernel, blocked.status)) {
-            if (isBlockedRpcPending(blocked)) {
-              continue;
-            }
+            break;
+          case "log-epoll-and-retry": {
             const vmPtr = typeof blocked.vmPtr === "number"
               ? `0x${blocked.vmPtr.toString(16)}`
               : "n/a";
@@ -164,17 +167,22 @@ export function createWorkerSchedulerStateSyncHelpers(
               member.runtimeId,
               `epoll-wake-retry:${member.pid}:vm=${vmPtr}:status=${blocked.status}`,
             );
+            break;
           }
-          const runningBeforePump = hostExecutionState(member).runningWorker;
-          deps.pumpProcess?.(member);
-          if (!hostExecutionState(member).hostBlockedWorkers.has(blockedWorker)) {
-            continue;
+          default: {
+            const exhaustive: never = action;
+            throw new Error(`unknown supervisor blocked wait wake action: ${exhaustive}`);
           }
-          if (runningBeforePump === null && hostExecutionState(member).runningWorker !== null) {
-            continue;
-          }
-          deps.retryHostBlockedWorker(member, blockedWorker);
         }
+        const runningBeforePump = hostExecutionState(member).runningWorker;
+        deps.pumpProcess?.(member);
+        if (!hostExecutionState(member).hostBlockedWorkers.has(blockedWorker)) {
+          continue;
+        }
+        if (runningBeforePump === null && hostExecutionState(member).runningWorker !== null) {
+          continue;
+        }
+        deps.retryHostBlockedWorker(member, blockedWorker);
       }
     }
   }

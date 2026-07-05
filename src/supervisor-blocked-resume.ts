@@ -99,6 +99,12 @@ export type SupervisorBlockedWaitWakeSource =
   | "socket-sync"
   | "pipe-and-epoll-sync";
 
+export type SupervisorBlockedWaitWakeAction =
+  | "skip"
+  | "retry"
+  | "clear-pipe-sync-and-retry"
+  | "log-epoll-and-retry";
+
 export type SupervisorStateSyncKind =
   | "pipe"
   | "epoll"
@@ -185,7 +191,12 @@ type SupervisorNumberConstExportName =
   | "supervisor_blocked_wait_wake_source_pipe_sync"
   | "supervisor_blocked_wait_wake_source_epoll_sync"
   | "supervisor_blocked_wait_wake_source_socket_sync"
-  | "supervisor_blocked_wait_wake_source_pipe_and_epoll_sync";
+  | "supervisor_blocked_wait_wake_source_pipe_and_epoll_sync"
+  | "supervisor_blocked_wait_wake_flag_rpc_pending"
+  | "supervisor_blocked_wait_wake_action_skip"
+  | "supervisor_blocked_wait_wake_action_retry"
+  | "supervisor_blocked_wait_wake_action_clear_pipe_sync_and_retry"
+  | "supervisor_blocked_wait_wake_action_log_epoll_and_retry";
 
 function readSupervisorNumberConst(
   kernel: KernelExports,
@@ -1287,6 +1298,61 @@ export function supervisorBlockedWaitStatusMatchesWakeSource(
     throw new Error(`kernel supervisor blocked wait status wake match failed: ${result}`);
   }
   return result !== 0;
+}
+
+function supervisorBlockedWaitWakeFlags(
+  kernel: KernelExports,
+  options: { rpcPending: boolean },
+): number {
+  let flags = 0;
+  if (options.rpcPending) {
+    flags |= readSupervisorNumberConst(kernel, "supervisor_blocked_wait_wake_flag_rpc_pending");
+  }
+  return flags;
+}
+
+export function supervisorBlockedWaitWakeAction(
+  kernel: KernelExports,
+  status: number,
+  source: SupervisorBlockedWaitWakeSource,
+  options: { rpcPending: boolean },
+): SupervisorBlockedWaitWakeAction {
+  const readAction = kernel.supervisor_blocked_wait_wake_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_blocked_wait_wake_action");
+  }
+  const result = readAction.call(
+    kernel,
+    status,
+    supervisorBlockedWaitWakeSourceValue(kernel, source),
+    supervisorBlockedWaitWakeFlags(kernel, options),
+  );
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked wait wake action failed: ${result}`);
+  }
+  if (result === readSupervisorNumberConst(kernel, "supervisor_blocked_wait_wake_action_skip")) {
+    return "skip";
+  }
+  if (result === readSupervisorNumberConst(kernel, "supervisor_blocked_wait_wake_action_retry")) {
+    return "retry";
+  }
+  if (
+    result === readSupervisorNumberConst(
+      kernel,
+      "supervisor_blocked_wait_wake_action_clear_pipe_sync_and_retry",
+    )
+  ) {
+    return "clear-pipe-sync-and-retry";
+  }
+  if (
+    result === readSupervisorNumberConst(
+      kernel,
+      "supervisor_blocked_wait_wake_action_log_epoll_and_retry",
+    )
+  ) {
+    return "log-epoll-and-retry";
+  }
+  throw new Error(`kernel supervisor blocked wait wake action is unknown: ${result}`);
 }
 
 export function supervisorBlockedWaitStatusMatchesPipeWait(

@@ -652,8 +652,14 @@ export interface KernelExports {
   supervisor_blocked_wait_wake_target_epoll_wait?(): number;
   supervisor_blocked_wait_wake_target_socket_recv?(): number;
   supervisor_blocked_wait_wake_target_socket_send?(): number;
+  supervisor_blocked_wait_wake_flag_rpc_pending?(): number;
+  supervisor_blocked_wait_wake_action_skip?(): number;
+  supervisor_blocked_wait_wake_action_retry?(): number;
+  supervisor_blocked_wait_wake_action_clear_pipe_sync_and_retry?(): number;
+  supervisor_blocked_wait_wake_action_log_epoll_and_retry?(): number;
   supervisor_blocked_wait_wake_mask_for_sync?(source: number): number;
   supervisor_blocked_wait_status_matches_wake_source?(status: number, source: number): number;
+  supervisor_blocked_wait_wake_action?(status: number, source: number, flags: number): number;
   supervisor_stdio_output_settle_kind_visible?(): number;
   supervisor_stdio_output_settle_kind_inherited_child?(): number;
   supervisor_stdio_pipe_read_progress_action_none?(): number;
@@ -2097,7 +2103,13 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_wait_wake_source_epoll_sync",
   "supervisor_blocked_wait_wake_source_socket_sync",
   "supervisor_blocked_wait_wake_source_pipe_and_epoll_sync",
+  "supervisor_blocked_wait_wake_flag_rpc_pending",
+  "supervisor_blocked_wait_wake_action_skip",
+  "supervisor_blocked_wait_wake_action_retry",
+  "supervisor_blocked_wait_wake_action_clear_pipe_sync_and_retry",
+  "supervisor_blocked_wait_wake_action_log_epoll_and_retry",
   "supervisor_blocked_wait_status_matches_wake_source",
+  "supervisor_blocked_wait_wake_action",
   "supervisor_stdio_output_settle_kind_visible",
   "supervisor_stdio_output_settle_kind_inherited_child",
   "supervisor_stdio_pipe_read_progress_action_none",

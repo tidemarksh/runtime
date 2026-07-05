@@ -239,6 +239,11 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_wait_wake_target_epoll_wait: 2,
   supervisor_blocked_wait_wake_target_socket_recv: 4,
   supervisor_blocked_wait_wake_target_socket_send: 8,
+  supervisor_blocked_wait_wake_flag_rpc_pending: 1,
+  supervisor_blocked_wait_wake_action_skip: 0,
+  supervisor_blocked_wait_wake_action_retry: 1,
+  supervisor_blocked_wait_wake_action_clear_pipe_sync_and_retry: 2,
+  supervisor_blocked_wait_wake_action_log_epoll_and_retry: 3,
   supervisor_stdio_output_settle_kind_visible: 1,
   supervisor_stdio_output_settle_kind_inherited_child: 2,
   supervisor_stdio_pipe_read_progress_action_none: 0,
@@ -532,6 +537,33 @@ export function makeSupervisorAbiStubs(
     }
     const target = supervisorWaitWakeTargetForStatus(receiver, status);
     return target !== 0 && (mask & target) !== 0 ? 1 : 0;
+  };
+  const supervisorWaitWakeAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+    source: number,
+    flags: number,
+  ): number => {
+    const matches = supervisorWaitStatusMatchesWakeSource(receiver, status, source);
+    if (matches < 0) {
+      return matches;
+    }
+    if (matches === 0) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_action_skip;
+    }
+    const rpcPending =
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_flag_rpc_pending) !== 0;
+    if (status === callOptionalNumber(receiver, "abi_status_pipe_wait")) {
+      return rpcPending
+        ? DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_action_skip
+        : DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_action_clear_pipe_sync_and_retry;
+    }
+    if (status === callOptionalNumber(receiver, "abi_status_epoll_wait")) {
+      return rpcPending
+        ? DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_action_skip
+        : DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_action_log_epoll_and_retry;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_action_retry;
   };
   const supervisorPollWaitHasSocket = (receiver: Partial<KernelExports>, vmPtr: number): boolean =>
     vmPtr !== 0
@@ -2394,6 +2426,14 @@ export function makeSupervisorAbiStubs(
       source: number,
     ) {
       return supervisorWaitStatusMatchesWakeSource(currentExports(this), status, source);
+    },
+    supervisor_blocked_wait_wake_action(
+      this: KernelExports | undefined,
+      status: number,
+      source: number,
+      flags: number,
+    ) {
+      return supervisorWaitWakeAction(currentExports(this), status, source, flags);
     },
     supervisor_stdio_output_settle_max_passes(kind: number) {
       switch (kind) {
