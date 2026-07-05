@@ -20,6 +20,7 @@ import {
   networkConnectionOfds,
   networkConnections,
 } from "../../../../src/worker/network-socket-state.js";
+import { setProcessDebugCommand } from "../../../../src/worker/process-debug-state.js";
 import type { KernelRuntimeState } from "../../../../src/abi.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 
@@ -528,7 +529,6 @@ function makeHandle(pid: number, fdMap: Map<number, number>): ProcessHandle {
     stdinQueue: [],
     stdinFlushPromise: null,
     outputBacklog: [],
-    debugCommand: "",
     runtimeBridge: {} as never,
     sabPageCache: null,
     kernelWorkerRequest: vi.fn(async (msg) => {
@@ -558,6 +558,7 @@ function makeHandle(pid: number, fdMap: Map<number, number>): ProcessHandle {
     workerDebugLog: [],
     guestWriteWatchRegions: [],
   } as ProcessHandle;
+  setProcessDebugCommand(handle, "");
   handle.kernelShare.members.add(handle);
   return handle;
 }

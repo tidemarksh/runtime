@@ -17,6 +17,7 @@ import type {
   KernelWorkerOutbound,
   KernelWorkerRequest,
 } from "../../../../src/messages.js";
+import { setProcessDebugCommand } from "../../../../src/worker/process-debug-state.js";
 import { outputBacklog, stdinQueue } from "../../../../src/worker/stdio-buffer-state.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 
@@ -196,7 +197,6 @@ function makeHandle(
     },
     stdinQueue: [],
     outputBacklog: [],
-    debugCommand: "test",
     runtimeBridge: {} as ProcessHandle["runtimeBridge"],
     sabPageCache: null,
     workers: new Set(),
@@ -208,6 +208,7 @@ function makeHandle(
     workerDebugLog: [],
     ...overrides,
   } as unknown as ProcessHandle;
+  setProcessDebugCommand(handle, "test");
   handle.kernelShare.members.add(handle);
   return { handle, releaseHostStdio };
 }

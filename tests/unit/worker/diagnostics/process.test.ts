@@ -2,6 +2,10 @@ import { expect, test, vi } from "vite-plus/test";
 import type { KernelExports } from "../../../../src/abi.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { debugRuntimeProcessHandles, formatAllLiveThreadDebug } from "../../../../src/worker/diagnostics/debug.js";
+import {
+  setProcessDebugCommand,
+  setProcessLastDebugMessage,
+} from "../../../../src/worker/process-debug-state.js";
 import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
 import {
   setThreadHostIdentity,
@@ -58,7 +62,6 @@ test("debugRuntimeProcessHandles keeps riscv syscall trace when process formatti
   const handle = {
     pid: 1,
     runtimeId: 7,
-    debugCommand: "/jdk/bin/java -version",
     vmPtr: 0x1234,
     workerDebugLog: [],
     kernel: {
@@ -81,6 +84,7 @@ test("debugRuntimeProcessHandles keeps riscv syscall trace when process formatti
       debug_riscv_syscall_trace_entry_status: (index: number) => [0, 3][index] ?? 0,
     },
   } as never;
+  setProcessDebugCommand(handle, "/jdk/bin/java -version");
 
   const snapshot = debugRuntimeProcessHandles(
     7,
@@ -139,7 +143,6 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
   const handle = {
     pid: 1,
     runtimeId: 7,
-    debugCommand: "/usr/bin/rustc",
     parentPid: null,
     vmPtr: 0x2000,
     workers: new Set([worker]),
@@ -159,7 +162,6 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
     stdinPipe: 0,
     stdoutPipe: 1,
     stderrPipe: 2,
-    lastDebugMessage: null,
     kernelState: {
       netBufBase: 0,
     },
@@ -175,6 +177,8 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
       process_stderr_pipe: () => 2,
     }),
   } as ProcessHandle;
+  setProcessDebugCommand(handle, "/usr/bin/rustc");
+  setProcessLastDebugMessage(handle, null);
 
   const snapshot = debugRuntimeProcessHandles(
     7,

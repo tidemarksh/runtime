@@ -36,6 +36,10 @@ import {
   hasSuspiciousLowStateDebug,
   readLocalProcessPid,
 } from "./route-state.js";
+import {
+  processLastDebugMessage,
+  setProcessLastDebugMessage,
+} from "../../process-debug-state.js";
 import { workerMessageDebugStats } from "../../worker-debug-stats.js";
 import { setThreadExecveProcessState } from "../../thread-execve-state.js";
 import {
@@ -238,8 +242,8 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         + `:generation=${msg.generation}`
         + `:status=${status}`,
     );
-    if (!(status === faultStatus && suspiciousLowStateDebug && handle.lastDebugMessage)) {
-      handle.lastDebugMessage = msg.debug;
+    if (!(status === faultStatus && suspiciousLowStateDebug && processLastDebugMessage(handle))) {
+      setProcessLastDebugMessage(handle, msg.debug);
     }
     deps.appendWorkerDebugLog(
       handle,

@@ -16,6 +16,7 @@ import {
   getPendingKernelStateForNextStep,
   snapshotPendingGuestMemoryWritesForNextStep,
 } from "../../../../src/worker/thread-step-payload.js";
+import { setProcessDebugCommand } from "../../../../src/worker/process-debug-state.js";
 import {
   isBlockedRpcPending,
   isPipeCanonicalEofReady,
@@ -268,7 +269,7 @@ function makeHandle(
   overrides: Partial<ProcessHandle> = {},
 ): ProcessHandle {
   installSupervisorBlockedResumeStub(kernel);
-  return {
+  const handle = {
     runtimeId: 1,
     pid: 1,
     parentPid: null,
@@ -300,7 +301,6 @@ function makeHandle(
     stdinQueue: [],
     stdinFlushPromise: null,
     outputBacklog: [],
-    debugCommand: "test",
     runtimeBridge,
     sabPageCache: null,
     workers: new Set([worker]),
@@ -314,6 +314,8 @@ function makeHandle(
     guestWriteWatchRegions: [],
     ...overrides,
   } as ProcessHandle;
+  setProcessDebugCommand(handle, "test");
+  return handle;
 }
 
 function createWorkerKernelRpcLocalBlockedRpcHelpers(

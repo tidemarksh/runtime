@@ -1,5 +1,9 @@
 import { hostExecutionState } from "../host-execution-state.js";
 import { processExitInProgress } from "../process-lifecycle-state.js";
+import {
+  processDebugCommand,
+  processLastDebugMessage,
+} from "../process-debug-state.js";
 import { workerDebugLog } from "../worker-debug-log.js";
 import {
   attachKernelRuntimeState,
@@ -222,7 +226,7 @@ export async function handlePlainFork(
       kernelState: readKernelRuntimeState(childKernel),
       guestMemoryPolicyLimitBytes: childGuestMemoryPolicyLimit,
       maxMemoryPages: childMaxMemoryPages,
-      debugCommand: handle.debugCommand,
+      debugCommand: processDebugCommand(handle),
       workerDebugLabel: "spawn:plain-fork",
     });
     childHandle.onError = (error: Error) => {
@@ -231,7 +235,7 @@ export async function handlePlainFork(
       }
       const childLogTail = workerDebugLog(childHandle).slice(-12).join(", ");
       deps.failProcess(handle, new Error(
-        `child-debug:${childPid}:${childHandle.lastDebugMessage ?? "last-debug-unavailable"}`
+        `child-debug:${childPid}:${processLastDebugMessage(childHandle) ?? "last-debug-unavailable"}`
         + ` worker_log=[${childLogTail}]`
         + ` cause=${error.message}`,
       ));

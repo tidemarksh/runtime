@@ -1,5 +1,6 @@
 import { expect, test } from "vite-plus/test";
 import { assertHandleWorkerProcessIdentity } from "../../../../src/worker/process-identity.js";
+import { setProcessLastDebugMessage } from "../../../../src/worker/process-debug-state.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import {
   setThreadHostIdentity,
@@ -43,7 +44,7 @@ function makeHandle(options: {
   processPtrByVm: Map<number, number>;
   liveVmPtrs: number[];
 }): ProcessHandle {
-  return {
+  const handle = {
     pid: 3,
     vmPtr: 0,
     workers: new Set<Worker>(),
@@ -55,8 +56,9 @@ function makeHandle(options: {
         options.actualPidByVm.get(vmPtr) === runtimePid ? 1 : 0,
       thread_process_ptr: (vmPtr: number) => options.processPtrByVm.get(vmPtr) ?? 0,
     },
-    lastDebugMessage: "unit",
   } as unknown as ProcessHandle;
+  setProcessLastDebugMessage(handle, "unit");
+  return handle;
 }
 
 test("process identity ignores detached live-thread slots with no process pointer", () => {

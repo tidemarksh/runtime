@@ -4,6 +4,10 @@ import type { KernelExports } from "../../abi.js";
 import { copyGuestWriteWatchRegions } from "../guest-write-watch-state.js";
 import { copyProcessMemoryOwnership } from "../memory-ownership-state.js";
 import { copyNetworkSocketState } from "../network-socket-state.js";
+import {
+  setProcessDebugCommand,
+  setProcessLastDebugMessage,
+} from "../process-debug-state.js";
 import type { ProcessHandle } from "../types.js";
 import type { WorkerForkDeps } from "./types.js";
 export { normalizeGuestMemoryPolicyLimitBytes } from "../memory-policy.js";
@@ -61,8 +65,6 @@ export function createForkChildHandle({
     stdinClosed: parent.stdinClosed,
     stdioOwner: parent,
     kernelShare: parent.kernelShare,
-    debugCommand,
-    lastDebugMessage: undefined,
     runtimeBridge: createRuntimeStateBridge(),
     sabPageCache: parent.sabPageCache,
     kernelWorkerRequest: parent.kernelWorkerRequest,
@@ -75,6 +77,8 @@ export function createForkChildHandle({
       deps.failProcess,
     ),
   };
+  setProcessDebugCommand(childHandle, debugCommand);
+  setProcessLastDebugMessage(childHandle, undefined);
   copyGuestWriteWatchRegions(childHandle, parent);
   copyProcessMemoryOwnership(childHandle, parent);
   copyNetworkSocketState(childHandle, parent);

@@ -50,6 +50,7 @@ import {
   guestWriteWatchRegions,
   setGuestWriteWatchRegions,
 } from "./worker/guest-write-watch-state.js";
+import { processLastDebugMessage } from "./worker/process-debug-state.js";
 import { outputBacklog } from "./worker/stdio-buffer-state.js";
 
 export interface RuntimeOptions {
@@ -850,7 +851,7 @@ export class Process {
   }
 
   debugInfo(): string | undefined {
-    return this.handle.lastDebugMessage;
+    return processLastDebugMessage(this.handle);
   }
 
   configureGuestWriteWatch(regions: GuestWriteWatchRegion[]): void {

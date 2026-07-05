@@ -35,6 +35,10 @@ import { workerDebugLog } from "../worker-debug-log.js";
 import { transferDebugStats, workerMessageDebugStats } from "../worker-debug-stats.js";
 import { processMemoryOwnership } from "../memory-ownership-state.js";
 import {
+  processDebugCommand,
+  processLastDebugMessage,
+} from "../process-debug-state.js";
+import {
   getHandleForkSharedSync,
   getKernelShareForkSharedSync,
 } from "../fork-shared-sync-state.js";
@@ -838,7 +842,7 @@ export function debugRuntimeWorkerLogFocus(
     .sort((left, right) => left.pid - right.pid)
     .map((handle) => ({
       pid: handle.pid,
-      cmd: handle.debugCommand,
+      cmd: processDebugCommand(handle),
       workers: summarizeProcessWorkerLogFocus(handle, threadWorkerStates),
     }));
 }
@@ -924,7 +928,7 @@ export function debugRuntimeExecutionStats(
       const forkProcessMaxMemoryBytes = handle.forkMaxMemoryPages * 65536;
       return {
         pid: handle.pid,
-        cmd: handle.debugCommand,
+        cmd: processDebugCommand(handle),
         running: hostExecutionState(handle).runningWorker !== null,
         memoryBytes: handle.memory.buffer.byteLength,
         guestMemoryPolicyLimitBytes: handle.guestMemoryPolicyLimitBytes.toString(),
@@ -1623,7 +1627,7 @@ export function debugRuntimeProcessHandles(
 
         return [
           `pid=${handle.pid}`,
-          `cmd=${JSON.stringify(handle.debugCommand)}`,
+          `cmd=${JSON.stringify(processDebugCommand(handle))}`,
           `ppid=${handle.parentPid ?? 0}`,
           `vm=0x${handle.vmPtr.toString(16)}`,
           `process=0x${processPtr.toString(16)}`,
@@ -1654,7 +1658,7 @@ export function debugRuntimeProcessHandles(
           `network_closed_fds=[${[...networkClosedFds(handle)].sort((left, right) => left - right).join(",")}]`,
           `socket_fds=[${socketFdSummary}]`,
           `worker_log=[${workerDebugLog(handle).slice(-48).join(", ")}]`,
-          `debug=${handle.lastDebugMessage ?? "n/a"}`,
+          `debug=${processLastDebugMessage(handle) ?? "n/a"}`,
           `execve_error=${formatExecveError(handle)}`,
           `syscalls=[${formatProcessSyscallTrace(handle)}]`,
           `syscall_errors=[${formatProcessSyscallErrorTrace(handle)}]`,
@@ -1669,7 +1673,7 @@ export function debugRuntimeProcessHandles(
         const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
         return [
           `pid=${handle.pid}`,
-          `cmd=${JSON.stringify(handle.debugCommand)}`,
+          `cmd=${JSON.stringify(processDebugCommand(handle))}`,
           `vm=0x${handle.vmPtr.toString(16)}`,
           `debug_error=${JSON.stringify(detail)}`,
           `execve_error=${formatExecveError(handle)}`,

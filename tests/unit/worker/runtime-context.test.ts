@@ -1,5 +1,9 @@
 import { expect, test } from "vite-plus/test";
 import { createWorkerRuntimeContext } from "../../../src/worker/runtime-context.js";
+import {
+  setProcessDebugCommand,
+  setProcessLastDebugMessage,
+} from "../../../src/worker/process-debug-state.js";
 import { setProcessMemfsDirty } from "../../../src/worker/process-memfs-state.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
 
@@ -42,7 +46,6 @@ function makeHandle(runtimeId: number, pid: number): ProcessHandle {
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     stdinQueue: [],
     outputBacklog: [],
-    debugCommand: "runtime-context",
     runtimeBridge: {} as ProcessHandle["runtimeBridge"],
     sabPageCache: null,
     workers: new Set(),
@@ -66,6 +69,7 @@ function makeHandle(runtimeId: number, pid: number): ProcessHandle {
       artifactMaterializedBytes: 4 * 1024 * 1024,
     },
   } as unknown as ProcessHandle;
+  setProcessDebugCommand(handle, "runtime-context");
   handle.kernelShare.members.add(handle);
   return handle;
 }
@@ -158,8 +162,8 @@ test("captureRuntimeFailureSnapshot stores and clears the last runtime failure",
     formatPipeCounterDebug: () => "fd-debug",
   });
   const handle = makeHandle(9, 91);
-  handle.debugCommand = "go version";
-  handle.lastDebugMessage = "child-debug";
+  setProcessDebugCommand(handle, "go version");
+  setProcessLastDebugMessage(handle, "child-debug");
   context.processHandles.set(handle.pid, handle);
 
   context.captureRuntimeFailureSnapshot(handle, 2, 11);

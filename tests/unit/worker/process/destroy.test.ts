@@ -1,13 +1,14 @@
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import { expect, test, vi } from "vite-plus/test";
 import { createWorkerDestroyHelpers } from "../../../../src/worker/destroy.js";
+import { setProcessDebugCommand } from "../../../../src/worker/process-debug-state.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { FakeWorker } from "../../../support/fake-worker.js";
 
 function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
   const primaryWorker = new FakeWorker() as unknown as Worker;
   const extraWorker = new FakeWorker() as unknown as Worker;
-  return {
+  const handle = {
     runtimeId: 1,
     pid: 11,
     parentPid: null,
@@ -54,7 +55,6 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
     },
     stdinQueue: [],
     outputBacklog: [],
-    debugCommand: "destroy-test",
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(128),
@@ -80,6 +80,8 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
     workerDebugLog: [],
     ...overrides,
   } as unknown as ProcessHandle;
+  setProcessDebugCommand(handle, "destroy-test");
+  return handle;
 }
 
 test("destroyProcessHandle tears down workers, clears process maps, and releases host stdio once", async () => {

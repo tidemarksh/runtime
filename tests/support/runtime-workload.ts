@@ -5,6 +5,8 @@ import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import type { KernelExports, KernelRuntimeState } from "../../src/abi.js";
 import type { Runtime as RuntimeClass } from "../../src/index.js";
+import { processLastDebugMessage } from "../../src/worker/process-debug-state.js";
+import type { ProcessHandle } from "../../src/worker/types.js";
 
 export type RuntimeInstance = RuntimeClass;
 export type RuntimeProcess = Awaited<ReturnType<RuntimeInstance["spawn"]>>;
@@ -274,7 +276,6 @@ type RuntimeDebugHandle = {
   stdoutPipe?: number;
   stderrPipe?: number;
   vmPtr?: number;
-  lastDebugMessage?: string;
 };
 
 type RuntimeDebugView = RuntimeInstance & {
@@ -732,7 +733,7 @@ export async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<str
               return `${state.status}:vm=0x${vmPtr.toString(16)}:fd=${fd}:ofd=${ofdId}:type=${ofdType}:ino=${ofdIno}`;
             }).join(",")
           : "";
-        const debug = handle.lastDebugMessage ?? "n/a";
+        const debug = processLastDebugMessage(handle as ProcessHandle) ?? "n/a";
         const vmPtr = handle.vmPtr ?? 0;
         const threadSummary = vmPtr !== 0
           ? safeDebugValue(() => Array.from({ length: handle.kernel.abi_max_threads() }, (_value, slot) => {

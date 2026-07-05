@@ -1,5 +1,10 @@
 import { hostExecutionState } from "./host-execution-state.js";
 import { processExitInProgress } from "./process-lifecycle-state.js";
+import {
+  processDebugCommand,
+  processLastDebugMessage,
+  setProcessLastDebugMessage,
+} from "./process-debug-state.js";
 import { guestWriteWatchRegions } from "./guest-write-watch-state.js";
 import { workerDebugLog } from "./worker-debug-log.js";
 import { outputBacklog } from "./stdio-buffer-state.js";
@@ -595,7 +600,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
   }
 
   function boundedChildDebugMessage(handle: ProcessHandle, limit = 8192): string {
-    const message = handle.lastDebugMessage ?? "debug=n/a";
+    const message = processLastDebugMessage(handle) ?? "debug=n/a";
     return message.length <= limit ? message : `${message.slice(0, limit)}...<truncated:${message.length}>`;
   }
 
@@ -1863,7 +1868,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
 
     deps.appendWorkerDebugLog(
       parent,
-      `child-exit:${handle.pid}:${JSON.stringify(handle.debugCommand)}:${exitCode}:${termSignal}`,
+      `child-exit:${handle.pid}:${JSON.stringify(processDebugCommand(handle))}:${exitCode}:${termSignal}`,
     );
     const childDebug = boundedChildDebugMessage(handle);
     deps.appendWorkerDebugLog(parent, `child-debug:${handle.pid}:${childDebug}`);
@@ -1871,11 +1876,11 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       handle.runtimeId,
       `child-debug:${handle.pid}:${childDebug.slice(0, 4096)}`,
     );
-    parent.lastDebugMessage = [
-      `child-exit:${handle.pid}:${JSON.stringify(handle.debugCommand)}:${exitCode}:${termSignal}`,
+    setProcessLastDebugMessage(parent, [
+      `child-exit:${handle.pid}:${JSON.stringify(processDebugCommand(handle))}:${exitCode}:${termSignal}`,
       `child-debug:${handle.pid}:${childDebug}`,
-      parent.lastDebugMessage ?? "debug=n/a",
-    ].join(" ");
+      processLastDebugMessage(parent) ?? "debug=n/a",
+    ].join(" "));
 
     const waitStatus = encodeWaitStatus(exitCode, termSignal);
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-record-start:${parent.pid}:${handle.pid}`);
@@ -2008,18 +2013,18 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     termSignal: number,
     exitVmPtr: number,
   ): Promise<void> {
-    handle.lastDebugMessage = [
-      `exit:${handle.pid}:${JSON.stringify(handle.debugCommand)}:${exitCode}:${termSignal}`,
+    setProcessLastDebugMessage(handle, [
+      `exit:${handle.pid}:${JSON.stringify(processDebugCommand(handle))}:${exitCode}:${termSignal}`,
       `exit_trace=${formatExitTrace(handle, exitVmPtr)}`,
       `live_processes=${safeDebugRuntimeProcessHandles(handle.runtimeId)}`,
-      `cmd=${JSON.stringify(handle.debugCommand)}`,
+      `cmd=${JSON.stringify(processDebugCommand(handle))}`,
       `worker_log=[${workerDebugLog(handle).join(", ")}]`,
       `thread_debugs=[${safeFormatAllLiveThreadDebug(handle)}]`,
-      handle.lastDebugMessage ?? "debug=n/a",
-    ].join(" ");
+      processLastDebugMessage(handle) ?? "debug=n/a",
+    ].join(" "));
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
-      `exit:${handle.pid}:${JSON.stringify(handle.debugCommand)}:${exitCode}:${termSignal}`,
+      `exit:${handle.pid}:${JSON.stringify(processDebugCommand(handle))}:${exitCode}:${termSignal}`,
     );
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
@@ -2096,10 +2101,10 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       await deps.releaseSharedHostStdio(handle);
     } catch (error) {
       cleanupError = error instanceof Error ? error : new Error(String(error));
-      handle.lastDebugMessage = [
+      setProcessLastDebugMessage(handle, [
         `exit_cleanup_error=${cleanupError.message}`,
-        handle.lastDebugMessage,
-      ].join(" ");
+        processLastDebugMessage(handle),
+      ].join(" "));
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `exit-cleanup-error:${handle.pid}:${JSON.stringify(cleanupError.message)}`,
@@ -2148,15 +2153,15 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
   }
 
   function failProcess(handle: ProcessHandle, error: Error): void {
-    handle.lastDebugMessage = [
+    setProcessLastDebugMessage(handle, [
       error.message,
       `exit_trace=${formatExitTrace(handle)}`,
       `live_processes=${safeDebugRuntimeProcessHandles(handle.runtimeId)}`,
-      `cmd=${JSON.stringify(handle.debugCommand)}`,
+      `cmd=${JSON.stringify(processDebugCommand(handle))}`,
       `worker_log=[${workerDebugLog(handle).join(", ")}]`,
       `thread_debugs=[${safeFormatAllLiveThreadDebug(handle)}]`,
-      handle.lastDebugMessage ?? "debug=n/a",
-    ].join(" ");
+      processLastDebugMessage(handle) ?? "debug=n/a",
+    ].join(" "));
     deps.destroyProcessHandle(handle, 15, false);
     handle.onError?.(error);
   }

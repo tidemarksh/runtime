@@ -8,6 +8,10 @@ import {
   type ThreadWorkerState,
 } from "../../../../src/worker/types.js";
 import {
+  setProcessDebugCommand,
+  setProcessLastDebugMessage,
+} from "../../../../src/worker/process-debug-state.js";
+import {
   clearThreadOwnerAsyncStatus,
   clearThreadWaitingInWorkerStatus,
   setThreadHostIdentity,
@@ -175,7 +179,7 @@ export function makeHostBoundaryHandle(
   kernel: ProcessHandle["kernel"],
   worker: Worker,
 ): ProcessHandle {
-  return {
+  const handle = {
     runtimeId: 1,
     pid: 1,
     parentPid: null,
@@ -230,8 +234,6 @@ export function makeHostBoundaryHandle(
     stdinQueue: [],
     stdinFlushPromise: null,
     outputBacklog: [],
-    debugCommand: "/bin/sh",
-    lastDebugMessage: undefined,
     runtimeBridge: createRuntimeStateBridge(),
     sabPageCache: null,
     kernelWorkerRequest: undefined,
@@ -244,4 +246,7 @@ export function makeHostBoundaryHandle(
     onStdout: undefined,
     workerDebugLog: [],
   };
+  setProcessDebugCommand(handle, "/bin/sh");
+  setProcessLastDebugMessage(handle, undefined);
+  return handle;
 }

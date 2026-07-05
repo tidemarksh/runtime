@@ -11,12 +11,20 @@ import {
   setProcessMemfsDirty,
   setProcessMemfsPublishPending,
 } from "../../../../src/worker/process-memfs-state.js";
+import {
+  processLastDebugMessage,
+  setProcessDebugCommand,
+} from "../../../../src/worker/process-debug-state.js";
 import { drainProcessOutput } from "../../../../src/worker/stdio.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 
 afterEach(() => {
   vi.unstubAllEnvs();
 });
+
+function lastDebug(handle: ProcessHandle): string {
+  return processLastDebugMessage(handle) ?? "";
+}
 
 function seedBlockedRpcState(
   blockedState: object,
@@ -28,6 +36,7 @@ function seedBlockedRpcState(
 }
 
 type ProcessExitHandleOverrides = Partial<ProcessHandle> & {
+  debugCommandSeed?: string;
   memfsDirty?: boolean;
   memfsPublishPending?: boolean;
 };
@@ -36,6 +45,7 @@ function makeHandle(
   overrides: ProcessExitHandleOverrides = {},
 ): ProcessHandle {
   const {
+    debugCommandSeed = "/bin/sh",
     memfsDirty,
     memfsPublishPending,
     ...handleOverrides
@@ -141,7 +151,6 @@ function makeHandle(
     },
     stdinQueue: [],
     outputBacklog: [],
-    debugCommand: "/bin/sh",
     runtimeBridge: {} as ProcessHandle["runtimeBridge"],
     sabPageCache: null,
     kernelWorkerRequest: vi.fn(async () => ({ type: "pipe-state-synced" } as never)),
@@ -156,6 +165,7 @@ function makeHandle(
     ...handleOverrides,
     kernel,
   } as unknown as ProcessHandle;
+  setProcessDebugCommand(handle, debugCommandSeed);
   if (memfsDirty !== undefined) {
     setProcessMemfsDirty(handle, memfsDirty);
   }
@@ -1130,13 +1140,13 @@ test("completeProcessExit waits for stdio-owned child exit before releasing visi
   const parent = makeHandle({
     pid: 1,
     parentPid: null,
-    debugCommand: "/bin/parent",
+    debugCommandSeed: "/bin/parent",
   });
   const child = makeHandle({
     pid: 3,
     parentPid: 1,
     stdioOwner: parent,
-    debugCommand: "/bin/child",
+    debugCommandSeed: "/bin/child",
   });
   const processHandles = new Map<number, ProcessHandle>([
     [1, parent],
@@ -1193,13 +1203,13 @@ test("completeProcessExit gives up on live inherited child before releasing visi
   const parent = makeHandle({
     pid: 1,
     parentPid: null,
-    debugCommand: "/bin/parent",
+    debugCommandSeed: "/bin/parent",
   });
   const child = makeHandle({
     pid: 3,
     parentPid: 1,
     stdioOwner: parent,
-    debugCommand: "/bin/child",
+    debugCommandSeed: "/bin/child",
   });
   const processHandles = new Map<number, ProcessHandle>([
     [1, parent],
@@ -1564,9 +1574,9 @@ test("completeProcessExit keeps execve stage summary without dispatch trace nois
 
   await helpers.completeProcessExit(child, 1, 0);
 
-  expect(child.lastDebugMessage).toContain("execve_stage=9");
-  expect(child.lastDebugMessage).toContain("execve_stage_trace=[10:100:200,11:300:400]");
-  expect(child.lastDebugMessage).not.toContain("execve_dispatch=[");
+  expect(lastDebug(child)).toContain("execve_stage=9");
+  expect(lastDebug(child)).toContain("execve_stage_trace=[10:100:200,11:300:400]");
+  expect(lastDebug(child)).not.toContain("execve_dispatch=[");
 });
 
 test("completeProcessExit includes frozen per-vm exec trace in exit trace", async () => {
@@ -1602,8 +1612,8 @@ test("completeProcessExit includes frozen per-vm exec trace in exit trace", asyn
 
   await helpers.completeProcessExit(child, 1, 0);
 
-  expect(child.lastDebugMessage).toContain("thread_step_exec_trace=[0:pc=0x83336:raw=0xa00563");
-  expect(child.lastDebugMessage).toContain("1:pc=0x83340:raw=0xfe013283");
+  expect(lastDebug(child)).toContain("thread_step_exec_trace=[0:pc=0x83336:raw=0xa00563");
+  expect(lastDebug(child)).toContain("1:pc=0x83340:raw=0xfe013283");
 });
 
 test("completeProcessExit classifies high out-of-range fault pc and includes live exec trace", async () => {
@@ -1614,7 +1624,7 @@ test("completeProcessExit classifies high out-of-range fault pc and includes liv
     parentPid: null,
     vmPtr: faultVmPtr,
     guestBase: 0x1000,
-    debugCommand: "/usr/bin/riscv64-linux-gnu-gcc-16",
+    debugCommandSeed: "/usr/bin/riscv64-linux-gnu-gcc-16",
     kernel: {
       thread_pc: (vmPtr: number) => vmPtr === faultVmPtr ? highPc : 0n,
       thread_sp: (vmPtr: number) => vmPtr === faultVmPtr ? 0x4b4ff90n : 0n,
@@ -1664,14 +1674,14 @@ test("completeProcessExit classifies high out-of-range fault pc and includes liv
 
   await helpers.completeProcessExit(child, 139, 11, faultVmPtr);
 
-  expect(child.lastDebugMessage).toContain("fault_bounds=[");
-  expect(child.lastDebugMessage).toContain("fault_vma=[pc=none:fault_pc=none:fault_addr=none]");
-  expect(child.lastDebugMessage).toContain("pc=outside_guest_limit");
-  expect(child.lastDebugMessage).toContain("fault_pc=outside_guest_limit");
-  expect(child.lastDebugMessage).toContain("fault_addr=outside_guest_limit");
-  expect(child.lastDebugMessage).toContain("pc_ascii_le=\"hNS_5ARM\"");
-  expect(child.lastDebugMessage).toContain("exec_trace=[0:pc=0x1020b1cc:raw=0x13");
-  expect(child.lastDebugMessage).toContain("1:pc=0x4d5241355f534e68:raw=0x8067");
+  expect(lastDebug(child)).toContain("fault_bounds=[");
+  expect(lastDebug(child)).toContain("fault_vma=[pc=none:fault_pc=none:fault_addr=none]");
+  expect(lastDebug(child)).toContain("pc=outside_guest_limit");
+  expect(lastDebug(child)).toContain("fault_pc=outside_guest_limit");
+  expect(lastDebug(child)).toContain("fault_addr=outside_guest_limit");
+  expect(lastDebug(child)).toContain("pc_ascii_le=\"hNS_5ARM\"");
+  expect(lastDebug(child)).toContain("exec_trace=[0:pc=0x1020b1cc:raw=0x13");
+  expect(lastDebug(child)).toContain("1:pc=0x4d5241355f534e68:raw=0x8067");
 });
 
 test("recordExitOnParent preserves child fault state in parent debug", async () => {
@@ -1681,13 +1691,13 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
   const parent = makeHandle({
     pid: 1,
     parentPid: null,
-    debugCommand: "/bin/parent",
+    debugCommandSeed: "/bin/parent",
   });
   const child = makeHandle({
     pid: 4,
     parentPid: 1,
     vmPtr: handleVmPtr,
-    debugCommand: "rustc",
+    debugCommandSeed: "rustc",
     kernel: {
       thread_pc: (vmPtr: number) => vmPtr === faultVmPtr ? 0x7788n : 0n,
       thread_sp: (vmPtr: number) => vmPtr === faultVmPtr ? 0x12340000n : 0n,
@@ -1782,33 +1792,33 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
 
   await helpers.completeProcessExit(child, 0, 11, faultVmPtr);
 
-  expect(parent.lastDebugMessage).toContain("child-debug:4:");
-  expect(parent.lastDebugMessage).toContain(`child-debug:4:exit:4:"rustc":0:11 exit_trace=vm=0x${faultVmPtr.toString(16)}`);
-  expect(parent.lastDebugMessage!.indexOf("fault_state=[")).toBeLessThan(parent.lastDebugMessage!.indexOf("fd_syscalls=["));
-  expect(parent.lastDebugMessage).toContain("fault_state=[");
-  expect(parent.lastDebugMessage).toContain("illegal_instruction=[vm=0x5ce3040:pc=0x7d00578c:raw=0x7f");
-  expect(parent.lastDebugMessage).toContain("term_signal=11");
-  expect(parent.lastDebugMessage).toContain("fault_pc=0x5566");
-  expect(parent.lastDebugMessage).toContain("fault_addr=0xdeadbeef");
-  expect(parent.lastDebugMessage).toContain("fault_insn=[pc_insn=0x13:fault_insn=0x8067]");
-  expect(parent.lastDebugMessage).toContain("fault_vma=[pc=1/0x7000-0x8000/prot=5/flags=18/fd=26/off=8192:fault_pc=0/0x5000-0x6000/prot=1/flags=2/fd=25/off=4096:fault_addr=none]");
-  expect(parent.lastDebugMessage).toContain("fault_bytes=[pc=vma1/fd=26/src=0x2788/guest=1300000000000000/file=ccdd88eeff112233:fault_pc=vma0/fd=25/src=0x1566/guest=6780000000000000/file=aabb66ddeeff1122:fault_addr=none]");
-  expect(parent.lastDebugMessage).toContain("debug_guest_bytes=[addr0:0x7788=vma1/fd=26/src=0x2788/guest=1300000000000000/file=ccdd88eeff112233]");
-  expect(parent.lastDebugMessage).toContain("fault_kind=2");
-  expect(parent.lastDebugMessage).toContain("fault_signal=11");
-  expect(parent.lastDebugMessage).toContain("fault_code=1");
-  expect(parent.lastDebugMessage).toContain("default_signal=[");
-  expect(parent.lastDebugMessage).toContain("sig=11");
-  expect(parent.lastDebugMessage).toContain("vm=0xabc");
-  expect(parent.lastDebugMessage).toContain("fault_addr=0xdeadbeef");
-  expect(parent.lastDebugMessage).toContain("pc_vma=1/0x7000-0x8000/prot=5/flags=18/fd=26/off=8192");
-  expect(parent.lastDebugMessage).toContain("fault_pc_vma=0/0x5000-0x6000/prot=1/flags=2/fd=25/off=4096");
-  expect(parent.lastDebugMessage).toContain("fault_addr_vma=none");
-  expect(parent.lastDebugMessage).toContain("signal_state=[");
-  expect(parent.lastDebugMessage).toContain("mask=0x20");
-  expect(parent.lastDebugMessage).toContain("pending=0x400");
-  expect(parent.lastDebugMessage).toContain("info=1");
-  expect(parent.lastDebugMessage).toContain("deliver_sig=11");
-  expect(parent.lastDebugMessage).toContain("deliver_frame=0x12000");
-  expect(parent.lastDebugMessage).toContain("deliver_pc=0x7788");
+  expect(lastDebug(parent)).toContain("child-debug:4:");
+  expect(lastDebug(parent)).toContain(`child-debug:4:exit:4:"rustc":0:11 exit_trace=vm=0x${faultVmPtr.toString(16)}`);
+  expect(lastDebug(parent)!.indexOf("fault_state=[")).toBeLessThan(lastDebug(parent)!.indexOf("fd_syscalls=["));
+  expect(lastDebug(parent)).toContain("fault_state=[");
+  expect(lastDebug(parent)).toContain("illegal_instruction=[vm=0x5ce3040:pc=0x7d00578c:raw=0x7f");
+  expect(lastDebug(parent)).toContain("term_signal=11");
+  expect(lastDebug(parent)).toContain("fault_pc=0x5566");
+  expect(lastDebug(parent)).toContain("fault_addr=0xdeadbeef");
+  expect(lastDebug(parent)).toContain("fault_insn=[pc_insn=0x13:fault_insn=0x8067]");
+  expect(lastDebug(parent)).toContain("fault_vma=[pc=1/0x7000-0x8000/prot=5/flags=18/fd=26/off=8192:fault_pc=0/0x5000-0x6000/prot=1/flags=2/fd=25/off=4096:fault_addr=none]");
+  expect(lastDebug(parent)).toContain("fault_bytes=[pc=vma1/fd=26/src=0x2788/guest=1300000000000000/file=ccdd88eeff112233:fault_pc=vma0/fd=25/src=0x1566/guest=6780000000000000/file=aabb66ddeeff1122:fault_addr=none]");
+  expect(lastDebug(parent)).toContain("debug_guest_bytes=[addr0:0x7788=vma1/fd=26/src=0x2788/guest=1300000000000000/file=ccdd88eeff112233]");
+  expect(lastDebug(parent)).toContain("fault_kind=2");
+  expect(lastDebug(parent)).toContain("fault_signal=11");
+  expect(lastDebug(parent)).toContain("fault_code=1");
+  expect(lastDebug(parent)).toContain("default_signal=[");
+  expect(lastDebug(parent)).toContain("sig=11");
+  expect(lastDebug(parent)).toContain("vm=0xabc");
+  expect(lastDebug(parent)).toContain("fault_addr=0xdeadbeef");
+  expect(lastDebug(parent)).toContain("pc_vma=1/0x7000-0x8000/prot=5/flags=18/fd=26/off=8192");
+  expect(lastDebug(parent)).toContain("fault_pc_vma=0/0x5000-0x6000/prot=1/flags=2/fd=25/off=4096");
+  expect(lastDebug(parent)).toContain("fault_addr_vma=none");
+  expect(lastDebug(parent)).toContain("signal_state=[");
+  expect(lastDebug(parent)).toContain("mask=0x20");
+  expect(lastDebug(parent)).toContain("pending=0x400");
+  expect(lastDebug(parent)).toContain("info=1");
+  expect(lastDebug(parent)).toContain("deliver_sig=11");
+  expect(lastDebug(parent)).toContain("deliver_frame=0x12000");
+  expect(lastDebug(parent)).toContain("deliver_pc=0x7788");
 });

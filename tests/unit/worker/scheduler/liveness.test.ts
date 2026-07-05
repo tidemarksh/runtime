@@ -56,6 +56,10 @@ import {
 import { setPendingChildSpawnRecords } from "../../../../src/worker/pending-child-spawn-state.js";
 import { createTransferDebugStats, createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState, VforkSnapshot } from "../../../../src/worker/types.js";
+import {
+  setProcessDebugCommand,
+  setProcessLastDebugMessage,
+} from "../../../../src/worker/process-debug-state.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 import {
   writeSupervisorArmHostTimerHostOpRecord,
@@ -931,8 +935,6 @@ function makeHandle(
     stdinQueue: [],
     stdinFlushPromise: null,
     outputBacklog: [],
-    debugCommand: "/bin/sh",
-    lastDebugMessage: undefined,
     runtimeBridge: createRuntimeStateBridge(),
     sabPageCache: null,
     kernelWorkerRequest: undefined,
@@ -952,6 +954,8 @@ function makeHandle(
     workerDebugLog: [],
     guestWriteWatchRegions: [],
   };
+  setProcessDebugCommand(handle, "/bin/sh");
+  setProcessLastDebugMessage(handle, undefined);
   setPendingChildSpawnRecords(handle, 1);
   if (threadWorkerStates !== undefined) {
     installTestSupervisorProcessResume(kernel, handle, threadWorkerStates);

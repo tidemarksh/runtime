@@ -2,6 +2,7 @@ import { hostExecutionState } from "./host-execution-state.js";
 import { clearWorkerMessageHandler } from "../bridge/compat.js";
 import { detachKernelShare } from "./kernel-share.js";
 import { removeWorkerFromPool } from "./pool.js";
+import { processDebugCommand } from "./process-debug-state.js";
 import { setProcessExitInProgress } from "./process-lifecycle-state.js";
 import type { ProcessHandle, ThreadWorkerState } from "./types.js";
 
@@ -61,7 +62,7 @@ export function createWorkerDestroyHelpers(deps: WorkerDestroyDeps) {
     }
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
-      `destroy:${handle.pid}:${JSON.stringify(handle.debugCommand)}:${signal}:${notifyExit ? 1 : 0}`,
+      `destroy:${handle.pid}:${JSON.stringify(processDebugCommand(handle))}:${signal}:${notifyExit ? 1 : 0}`,
     );
     const dirtyHandles = deps.runtimeFsDirtyHandles.get(handle.runtimeId);
     dirtyHandles?.delete(handle);

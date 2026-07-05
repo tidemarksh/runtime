@@ -25,6 +25,10 @@ import {
 } from "../../../../src/worker/network-socket-state.js";
 import { workerDebugLog } from "../../../../src/worker/worker-debug-log.js";
 import { workerMessageDebugStats } from "../../../../src/worker/worker-debug-stats.js";
+import {
+  processLastDebugMessage,
+  setProcessLastDebugMessage,
+} from "../../../../src/worker/process-debug-state.js";
 import { writeSupervisorFaultExitDecisionRecord } from "../support/supervisor-abi.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 import { seedNetworkSocketState } from "./helpers.js";
@@ -870,7 +874,6 @@ test("status handler keeps faulting worker tracked until completeProcessExit run
 
   const handle = {
     pid: 7,
-    lastDebugMessage: "pc=0x67c5be sp=0x197d120 s11=0x1 process_thread_count=2",
     stdoutPipe: 0,
     stderrPipe: 0,
     stdinPipe: 0,
@@ -901,6 +904,7 @@ test("status handler keeps faulting worker tracked until completeProcessExit run
     onStdout: null,
     runningWorker: worker,
   } as never;
+  setProcessLastDebugMessage(handle, "pc=0x67c5be sp=0x197d120 s11=0x1 process_thread_count=2");
   installSupervisorFaultExitDecision((handle as { kernel: Record<string, unknown> }).kernel, {
     vmPtr: 0x1234,
     exitVmPtr: 0x1234,
@@ -966,7 +970,7 @@ test("status handler keeps faulting worker tracked until completeProcessExit run
   expect(completeProcessExit).toHaveBeenCalledWith(handle, 139, 11, 0x1234);
   expect(handle.workers.has(worker)).toBe(true);
   expect(threadWorkerStates.get(worker)?.vmPtr).toBe(0x1234);
-  expect(handle.lastDebugMessage).toBe("pc=0x67c5be sp=0x197d120 s11=0x1 process_thread_count=2");
+  expect(processLastDebugMessage(handle)).toBe("pc=0x67c5be sp=0x197d120 s11=0x1 process_thread_count=2");
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(handle, "status_debug:0x1234:pc=0x4 process_thread_count=0");
 });
 

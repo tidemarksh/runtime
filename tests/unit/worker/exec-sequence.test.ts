@@ -4,6 +4,7 @@ import { writePipe } from "../../../src/bridge/pipe.js";
 import { createRuntimeStateBridge } from "../../../src/bridge/runtime-state.js";
 import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
 import { createWorkerLifecycleHelpers } from "../../../src/worker/lifecycle.js";
+import { setProcessDebugCommand } from "../../../src/worker/process-debug-state.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
 
 function makeKernelState(): KernelRuntimeState {
@@ -118,13 +119,13 @@ function makeHandle(
     },
     stdinQueue: [],
     outputBacklog: [],
-    debugCommand: "test",
     runtimeBridge: createRuntimeStateBridge(),
     sabPageCache: null,
     workers: new Set([worker]),
     workerDebugLog: [],
     ...overrides,
   } as unknown as ProcessHandle;
+  setProcessDebugCommand(handle, "test");
   handle.kernelShare.members.add(handle);
   const executionState = hostExecutionState(handle);
   executionState.vforkSnapshot = {

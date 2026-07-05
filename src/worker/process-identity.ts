@@ -1,5 +1,6 @@
 import { collectLiveThreadVmPtrs } from "./live-threads.js";
 import { hasPendingChildSpawnRecords } from "./pending-child-spawn-state.js";
+import { processLastDebugMessage } from "./process-debug-state.js";
 import type { ProcessHandle, ThreadWorkerState } from "./types.js";
 
 interface ProcessIdentityAssertionOptions {
@@ -214,7 +215,7 @@ export function assertHandleWorkerProcessIdentity(
         + ` label=${label}`
         + ` vm=0x${vmPtr.toString(16)}`
         + ` process_ptr=0x${processPtr.toString(16)}`
-        + ` last_debug=${JSON.stringify(handle.lastDebugMessage ?? "n/a")}`
+        + ` last_debug=${JSON.stringify(processLastDebugMessage(handle) ?? "n/a")}`
         + (workerLogTail.length > 0 ? ` worker_log_tail=[${workerLogTail.join(", ")}]` : ""),
     );
   }

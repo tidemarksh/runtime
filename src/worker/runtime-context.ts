@@ -21,6 +21,10 @@ import {
 } from "./process-fs.js";
 import { processMemoryOwnership } from "./memory-ownership-state.js";
 import {
+  processDebugCommand,
+  processLastDebugMessage,
+} from "./process-debug-state.js";
+import {
   kernelShareOtherMembers,
   kernelShareRepresentative,
   syncMemfsState,
@@ -145,17 +149,18 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
     termSignal: number,
   ): void {
     const memorySyscalls = captureMemorySyscallTrace(handle);
+    const lastDebugMessage = processLastDebugMessage(handle);
     runtimeFailureSnapshots.set(handle.runtimeId, {
       pid: handle.pid,
-      cmd: handle.debugCommand,
+      cmd: processDebugCommand(handle),
       exitCode,
       termSignal,
-      debug: handle.lastDebugMessage ?? debugRuntimeProcessHandles(handle.runtimeId),
+      debug: lastDebugMessage ?? debugRuntimeProcessHandles(handle.runtimeId),
       memory: captureFailureMemorySnapshot(handle),
       memorySyscalls,
       workerFocus: [{
         pid: handle.pid,
-        cmd: handle.debugCommand,
+        cmd: processDebugCommand(handle),
         workers: summarizeProcessWorkerLogFocusImpl(handle, threadWorkerStates),
       }],
     });
@@ -185,7 +190,7 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
   }
 
   function captureMemorySyscallTrace(handle: ProcessHandle): string[] {
-    const debugValues = extractDebugFieldValues(handle.lastDebugMessage, "memory_syscalls");
+    const debugValues = extractDebugFieldValues(processLastDebugMessage(handle), "memory_syscalls");
     if (debugValues.length > 0) {
       return debugValues.at(-1)?.split(",").filter((entry) => entry.length > 0) ?? [];
     }

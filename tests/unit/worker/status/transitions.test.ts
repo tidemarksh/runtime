@@ -5,6 +5,7 @@ import {
   networkConnectionOfds,
   networkConnections,
 } from "../../../../src/worker/network-socket-state.js";
+import { setProcessLastDebugMessage } from "../../../../src/worker/process-debug-state.js";
 import {
   clearThreadOwnerAsyncStatus,
   getThreadOwnerAsyncStatus,
@@ -212,7 +213,7 @@ function writeSignalControlRecord(memory: WebAssembly.Memory, ptr: number, seq: 
 }
 
 function makeHandle(worker: Worker) {
-  return {
+  const handle = {
     pid: 0,
     vmPtr: 0x1234,
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
@@ -227,7 +228,6 @@ function makeHandle(worker: Worker) {
       stateSab: new SharedArrayBuffer(176),
     },
     workerDebugLog: [],
-    lastDebugMessage: undefined,
     vforkSnapshot: null,
     vforkWorker: null,
     runningWorker: null,
@@ -405,6 +405,8 @@ function makeHandle(worker: Worker) {
       thread_spawn_from_clone: vi.fn(() => 0x2000),
     },
   };
+  setProcessLastDebugMessage(handle as never, undefined);
+  return handle;
 }
 
 function makeDeps(worker: Worker) {

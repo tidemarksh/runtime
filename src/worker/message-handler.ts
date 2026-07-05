@@ -14,6 +14,7 @@ import { recordWorkerMessageDebugEvent, type ProcessHandle } from "./types.js";
 import { workerDebugLog } from "./worker-debug-log.js";
 import { workerMessageDebugStats } from "./worker-debug-stats.js";
 import { processExitInProgress } from "./process-lifecycle-state.js";
+import { processLastDebugMessage } from "./process-debug-state.js";
 import type { ThreadWorkerOutbound } from "../messages.js";
 import {
   getThreadGeneration,
@@ -57,7 +58,7 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
           + ` process_pid_field=${processPidField}`
           + ` process_ppid_field=${processPpidField}`
           + ` process_thread_count=${processThreadCount}`
-          + ` last_debug=${JSON.stringify(handle.lastDebugMessage ?? "n/a")}`
+          + ` last_debug=${JSON.stringify(processLastDebugMessage(handle) ?? "n/a")}`
           + ` worker_log_tail=[${workerLogTail}]`
           + ` plain_fork_log=[${plainForkLog}]`,
       ),

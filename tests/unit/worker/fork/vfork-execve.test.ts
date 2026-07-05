@@ -21,6 +21,7 @@ type HostExecutionStateReader = typeof import("../../../../src/worker/host-execu
 
 let workerModule: WorkerModule | null = null;
 let hostExecutionState: HostExecutionStateReader;
+let readProcessLastDebugMessage: (handle: unknown) => string | undefined;
 
 interface MockThreadStatus {
   status: number;
@@ -761,6 +762,8 @@ beforeEach(async () => {
   process.env.TIDEMARK_SCHEDULER_STEP_BUDGET = "20000";
   workerModule = await import("../../../../src/worker.js");
   ({ hostExecutionState } = await import("../../../../src/worker/host-execution-state.js"));
+  const debugState = await import("../../../../src/worker/process-debug-state.js");
+  readProcessLastDebugMessage = (handle) => debugState.processLastDebugMessage(handle as never);
   createdWorkers.length = 0;
   createdKernelStatuses.length = 0;
   createdKernelExports.length = 0;
@@ -2305,7 +2308,7 @@ test("vfork execve status-style handoff failure restores the parent and surfaces
     ).toBe(true);
     expect(handle.kernelState.heapPtr).toBe(resumedState.heapPtr);
     expect(handle.kernelState.processPendingPtr).toBe(makeKernelState().processPendingPtr);
-    expect(handle.lastDebugMessage).toContain("vfork-execve:handoff-failed child=156 ret=-8");
+    expect(readProcessLastDebugMessage(handle)).toContain("vfork-execve:handoff-failed child=156 ret=-8");
     expect(parentWorker.postedMessages).toEqual([
       expect.objectContaining({
         type: "init",

@@ -18,6 +18,7 @@ import { kernelWorkerOwnsEpollState } from "./ownership/epoll-control.js";
 import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
 import { kernelWorkerOwnsSocketState } from "./ownership/socket-control.js";
 import { beginProcessExit } from "./process-lifecycle-state.js";
+import { processDebugCommand } from "./process-debug-state.js";
 import { supervisorProcessStatusIsLifecycleHandoff } from "./supervisor-status.js";
 import type { ProcessHandle } from "./types.js";
 import type { SyncCause } from "./contracts/sync.js";
@@ -177,7 +178,7 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
     }
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
-      `fail:${handle.pid}:${JSON.stringify(handle.debugCommand)}:${JSON.stringify(error.message)}`,
+      `fail:${handle.pid}:${JSON.stringify(processDebugCommand(handle))}:${JSON.stringify(error.message)}`,
     );
     deps.workerExitFailProcess(handle, error);
   }

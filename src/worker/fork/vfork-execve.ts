@@ -62,6 +62,11 @@ import {
   supervisorProcessIdentityMatches,
   supervisorProcessOwnerMatches,
 } from "../process-identity.js";
+import {
+  processDebugCommand,
+  processLastDebugMessage,
+  setProcessLastDebugMessage,
+} from "../process-debug-state.js";
 import { acquireWorker, ensureEvictionTimer } from "../pool.js";
 import { createForkChildHandle } from "./common.js";
 import {
@@ -400,7 +405,7 @@ export async function handleVforkExecve(
       `vfork-parent-fds:${childPid}:${formatOpenFdSummary(handle)}`,
     );
     deps.appendWorkerDebugLog(handle, `vfork-parent-fds:${childPid}:${formatOpenFdSummary(handle)}`);
-    handle.lastDebugMessage = `vfork-execve:start child=${childPid}`;
+    setProcessLastDebugMessage(handle, `vfork-execve:start child=${childPid}`);
     const snapshot = hostExecutionState(handle).vforkSnapshot ?? captureVforkSnapshot(handle, parentThread);
     const parentActivity = getThreadActivityState(parentThread);
     const childLifecycle = readKernelChildLifecycle(handle.kernel, childPid);
@@ -556,9 +561,12 @@ export async function handleVforkExecve(
       + `:value0=${debugValue0 ?? "n/a"}:value1=${debugValue1 ?? "n/a"}`
       + `:${childPreCompleteDebug}`,
     );
-    handle.lastDebugMessage = `vfork-execve:handoff-trap child=${childPid} detail=${detail}`
-      + ` stage=${debugStage ?? "n/a"} value0=${debugValue0 ?? "n/a"} value1=${debugValue1 ?? "n/a"}`
-      + ` ${childPreCompleteDebug}`;
+    setProcessLastDebugMessage(
+      handle,
+      `vfork-execve:handoff-trap child=${childPid} detail=${detail}`
+        + ` stage=${debugStage ?? "n/a"} value0=${debugValue0 ?? "n/a"} value1=${debugValue1 ?? "n/a"}`
+        + ` ${childPreCompleteDebug}`,
+    );
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
       `vfork-execve:handoff-trap:${childPid}:${debugStage ?? "n/a"}:${debugValue0 ?? "n/a"}:${debugValue1 ?? "n/a"}`,
@@ -576,9 +584,12 @@ export async function handleVforkExecve(
       + `:value0=${debugValue0 ?? "n/a"}:value1=${debugValue1 ?? "n/a"}`
       + `:processCreateLastError=${childKernel.process_create_last_error?.() ?? "n/a"}`,
     );
-    handle.lastDebugMessage = `vfork-execve:handoff-failed child=${childPid} ret=${execRet}`
-      + ` stage=${debugStage ?? "n/a"} value0=${debugValue0 ?? "n/a"} value1=${debugValue1 ?? "n/a"}`
-      + ` processCreateLastError=${childKernel.process_create_last_error?.() ?? "n/a"}`;
+    setProcessLastDebugMessage(
+      handle,
+      `vfork-execve:handoff-failed child=${childPid} ret=${execRet}`
+        + ` stage=${debugStage ?? "n/a"} value0=${debugValue0 ?? "n/a"} value1=${debugValue1 ?? "n/a"}`
+        + ` processCreateLastError=${childKernel.process_create_last_error?.() ?? "n/a"}`,
+    );
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
       `vfork-execve:handoff-failed:${childPid}:${execRet}:${debugStage ?? "n/a"}:${debugValue0 ?? "n/a"}:${debugValue1 ?? "n/a"}`,
@@ -609,9 +620,9 @@ export async function handleVforkExecve(
     if (handle.pid <= 0 || deps.processHandles.get(handle.pid) !== handle) {
       return;
     }
-    const childLogTail = workerDebugLog(childHandle).slice(-12).join(", ");
-    deps.failProcess(handle, new Error(
-      `child-debug:${childPid}:${childHandle.lastDebugMessage ?? "last-debug-unavailable"}`
+      const childLogTail = workerDebugLog(childHandle).slice(-12).join(", ");
+      deps.failProcess(handle, new Error(
+      `child-debug:${childPid}:${processLastDebugMessage(childHandle) ?? "last-debug-unavailable"}`
       + ` worker_log=[${childLogTail}]`
       + ` cause=${error.message}`,
     ));
@@ -628,7 +639,7 @@ export async function handleVforkExecve(
     `vfork-execve:child-exec-fds:${childPid}:${formatOpenFdSummary(childHandle)}`,
   );
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-kernel-ready:${childPid}`);
-  handle.lastDebugMessage = `vfork-execve:child-kernel-ready child=${childPid}`;
+  setProcessLastDebugMessage(handle, `vfork-execve:child-kernel-ready child=${childPid}`);
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:resume-parent:start:${childPid}`);
   await deps.resumeVforkExecveParentViaKernelWorker(handle, parentThread.vmPtr, childPid);
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:resume-parent:done:${childPid}`);
@@ -664,7 +675,7 @@ export async function handleVforkExecve(
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-register:done:${childPid}`);
   assertVforkParentState(handle, parentThread.vmPtr, "parent-post-child-register");
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-registered:${childPid}`);
-  handle.lastDebugMessage = `vfork-execve:child-registered child=${childPid}`;
+  setProcessLastDebugMessage(handle, `vfork-execve:child-registered child=${childPid}`);
   deps.assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-register");
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-sync:start:${childPid}`);
   trackVforkExecveChildSharedOfds(childHandle, childExecFdEntries);
@@ -677,7 +688,7 @@ export async function handleVforkExecve(
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-sync:done:${childPid}`);
   assertVforkParentState(handle, parentThread.vmPtr, "parent-post-child-sync");
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-synced:${childPid}`);
-  handle.lastDebugMessage = `vfork-execve:child-synced child=${childPid}`;
+  setProcessLastDebugMessage(handle, `vfork-execve:child-synced child=${childPid}`);
   deps.assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-sync-fork-shared-state");
   const preservedOfdSlots = snapshotKernelShareOfdSlots(childHandle, childHeldOfdIds);
   const preservedPipeSlots = snapshotLocalPipeSlots(childHandle, childHeldOfdIds);
@@ -705,7 +716,7 @@ export async function handleVforkExecve(
     `vfork-execve:child-fds:${childPid}:${formatPipeCounterDebug(childHandle, 1)}:${formatPipeCounterDebug(childHandle, 2)}`,
   );
   deps.appendWorkerDebugLog(childHandle, `vfork-child-fds:${childPid}:${formatOpenFdSummary(childHandle)}`);
-  handle.lastDebugMessage = `vfork-execve:child-rehydrated child=${childPid}`;
+  setProcessLastDebugMessage(handle, `vfork-execve:child-rehydrated child=${childPid}`);
   restoreLocalOfdSlots(childHandle, preservedOfdSlots);
   restoreLocalPipeSlots(childHandle, preservedPipeSlots);
   restoreProcessFdEntries(childHandle, childVmPtr, childExecFdEntries);
@@ -757,10 +768,10 @@ export async function handleVforkExecve(
   );
   publishKernelRuntimeState(childHandle.runtimeBridge, childHandle.kernelState, true);
   deps.processHandles.set(childPid, childHandle);
-  handle.lastDebugMessage = `vfork-execve:child-visible child=${childPid}`;
+  setProcessLastDebugMessage(handle, `vfork-execve:child-visible child=${childPid}`);
   deps.appendRuntimeLifecycleEvent(
     handle.runtimeId,
-    `spawn:${childPid}:${JSON.stringify(childHandle.debugCommand)}`,
+    `spawn:${childPid}:${JSON.stringify(processDebugCommand(childHandle))}`,
   );
   handle.worker = childWorker;
   deps.attachThreadWorker(childHandle, {

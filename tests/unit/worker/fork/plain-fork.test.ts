@@ -13,6 +13,7 @@ import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 type WorkerModule = typeof import("../../../../src/worker.js");
 
 let workerModule: WorkerModule | null = null;
+let readProcessLastDebugMessage: (handle: unknown) => string | undefined;
 
 interface MockThreadStatus {
   status: number;
@@ -708,6 +709,8 @@ beforeEach(async () => {
   vi.resetModules();
   process.env.TIDEMARK_SCHEDULER_STEP_BUDGET = "20000";
   workerModule = await import("../../../../src/worker.js");
+  const debugState = await import("../../../../src/worker/process-debug-state.js");
+  readProcessLastDebugMessage = (handle) => debugState.processLastDebugMessage(handle as never);
   createdWorkers.length = 0;
   createdKernelStatuses.length = 0;
   createdKernelExports.length = 0;
@@ -1481,5 +1484,5 @@ test("plain fork child fault records child exit on the parent state through kern
   expect(parentKernel.recordedChildExits).toEqual([[2, 7 << 8]]);
   expect(requests.some((msg) => msg.type === "record-child-exit" && msg.pid === 1 && msg.childPid === 2))
     .toBe(true);
-  expect(handle.lastDebugMessage).toContain("child-exit:2");
+  expect(readProcessLastDebugMessage(handle)).toContain("child-exit:2");
 });

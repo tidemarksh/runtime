@@ -9,6 +9,10 @@ import {
 import { createWorkerProcessFactory } from "../../../../src/worker/create-process.js";
 import { guestWriteWatchRegions } from "../../../../src/worker/guest-write-watch-state.js";
 import { destroyWorkerPool } from "../../../../src/worker/pool.js";
+import {
+  processDebugCommand,
+  setProcessDebugCommand,
+} from "../../../../src/worker/process-debug-state.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 import { AutoPreparedFakeWorker } from "../../../support/fake-worker.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
@@ -305,7 +309,7 @@ function makeParentHandle(): ProcessHandle {
     process_current_pgid: () => 77,
     process_current_sid: () => 88,
   } as unknown as ProcessHandle["kernel"];
-  return {
+  const handle = {
     runtimeId: 7,
     pid: 1,
     parentPid: null,
@@ -324,7 +328,6 @@ function makeParentHandle(): ProcessHandle {
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     stdinQueue: [],
     outputBacklog: [],
-    debugCommand: "parent",
     runtimeBridge: {} as ProcessHandle["runtimeBridge"],
     sabPageCache: null,
     workers: new Set(),
@@ -335,6 +338,8 @@ function makeParentHandle(): ProcessHandle {
     vforkWorker: null,
     workerDebugLog: [],
   } as unknown as ProcessHandle;
+  setProcessDebugCommand(handle, "parent");
+  return handle;
 }
 
 beforeEach(() => {
@@ -399,7 +404,7 @@ test("createProcess stages argv/env strings and seeds full memfs for standalone 
     refCount: 1,
   });
   expect(handle.kernelShare.members.has(handle)).toBe(true);
-  expect(handle.debugCommand).toBe("/bin/test");
+  expect(processDebugCommand(handle)).toBe("/bin/test");
   expect(processHandles.size).toBe(0);
   expect(attachThreadWorker).toHaveBeenCalledWith(handle, {
     worker: handle.worker,

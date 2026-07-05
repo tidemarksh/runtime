@@ -27,6 +27,11 @@ import {
   guestWriteWatchRegions,
   setGuestWriteWatchRegions,
 } from "./guest-write-watch-state.js";
+import {
+  processLastDebugMessage,
+  setProcessDebugCommand,
+  setProcessLastDebugMessage,
+} from "./process-debug-state.js";
 import { workerDebugLog } from "./worker-debug-log.js";
 import { createKernelShareGroup } from "./kernel-share.js";
 import {
@@ -503,9 +508,11 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     if (workerDebugLog(handle).length > 256) {
       workerDebugLog(handle).splice(0, workerDebugLog(handle).length - 256);
     }
-    handle.lastDebugMessage = handle.lastDebugMessage
-      ? `${handle.lastDebugMessage} ${entry}`
-      : entry;
+    const lastDebugMessage = processLastDebugMessage(handle);
+    setProcessLastDebugMessage(
+      handle,
+      lastDebugMessage ? `${lastDebugMessage} ${entry}` : entry,
+    );
   }
 
   async function instantiateProcessKernel(
@@ -657,8 +664,6 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       stdinClosed: (options.stdin ?? "pipe") === "closed",
       stdioOwner: null,
       kernelShare: createKernelShareGroup(),
-      debugCommand: options.argv?.[0] ?? "<entry>",
-      lastDebugMessage: undefined,
       runtimeBridge,
       sabPageCache: options.sabPageCache ?? null,
       kernelWorkerRequest: options.kernelWorkerRequest,
@@ -668,6 +673,8 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       onError: options.onError,
       onStdout: options.onStdout,
     };
+    setProcessDebugCommand(handle, options.argv?.[0] ?? "<entry>");
+    setProcessLastDebugMessage(handle, undefined);
     setProcessMemoryOwnership(handle, memoryOwnership);
     return handle;
   }

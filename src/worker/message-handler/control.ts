@@ -18,6 +18,7 @@ import {
   supervisorProcessIdentityMatches,
   supervisorProcessOwnerLiveMatches,
 } from "../process-identity.js";
+import { setProcessLastDebugMessage } from "../process-debug-state.js";
 import { submitSupervisorShadowStatusEvent } from "../supervisor-shadow.js";
 import { supervisorProcessStatusIsCloneSpawn } from "../supervisor-status.js";
 import {
@@ -271,7 +272,7 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
     }
 
     if (msg.type === "error") {
-      handle.lastDebugMessage = msg.message;
+      setProcessLastDebugMessage(handle, msg.message);
       if (hostExecutionState(handle).runningWorker === worker) {
         hostExecutionState(handle).runningWorker = null;
       }

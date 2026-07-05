@@ -95,8 +95,6 @@ export interface ProcessHandle {
   stdinClosed?: boolean;
   stdioOwner: ProcessHandle | null;
   kernelShare: KernelShareGroup;
-  debugCommand: string;
-  lastDebugMessage?: string;
   runtimeBridge: RuntimeStateBridge;
   sabPageCache: SharedArrayBuffer | null;
   kernelWorkerRequest?: KernelWorkerRequestFn;

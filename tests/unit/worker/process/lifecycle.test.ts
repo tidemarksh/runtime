@@ -2,6 +2,7 @@ import { expect, test, vi } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { createWorkerLifecycleHelpers } from "../../../../src/worker/lifecycle.js";
 import { processExitInProgress } from "../../../../src/worker/process-lifecycle-state.js";
+import { setProcessDebugCommand } from "../../../../src/worker/process-debug-state.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
@@ -73,7 +74,6 @@ function makeHandle(
     },
     stdinQueue: [],
     outputBacklog: [],
-    debugCommand: "test",
     runtimeBridge: {} as ProcessHandle["runtimeBridge"],
     sabPageCache: null,
     workers: new Set(),
@@ -85,6 +85,7 @@ function makeHandle(
     workerDebugLog: [],
     ...overrides,
   } as unknown as ProcessHandle;
+  setProcessDebugCommand(handle, "test");
   handle.kernelShare.members.add(handle);
   return { handle, releaseHostStdio };
 }

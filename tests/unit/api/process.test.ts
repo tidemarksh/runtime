@@ -4,6 +4,7 @@ import {
   guestWriteWatchRegions,
   setGuestWriteWatchRegions,
 } from "../../../src/worker/guest-write-watch-state.js";
+import { setProcessDebugCommand } from "../../../src/worker/process-debug-state.js";
 import { outputBacklog } from "../../../src/worker/stdio-buffer-state.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
 
@@ -55,7 +56,6 @@ function makeHandle(): ProcessHandle {
     },
     stdinQueue: [],
     outputBacklog: [],
-    debugCommand: "process-api",
     runtimeBridge: {} as ProcessHandle["runtimeBridge"],
     sabPageCache: null,
     workers: new Set(),
@@ -68,6 +68,7 @@ function makeHandle(): ProcessHandle {
     vforkWorker: null,
     workerDebugLog: [],
   } as unknown as ProcessHandle;
+  setProcessDebugCommand(handle, "process-api");
   handle.kernelShare.members.add(handle);
   return handle;
 }

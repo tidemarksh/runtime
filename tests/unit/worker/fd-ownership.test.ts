@@ -18,6 +18,7 @@ import {
   restoreLocalOfdSlots,
   snapshotLocalPipeSlots,
 } from "../../../src/worker/kernel-share.js";
+import { setProcessDebugCommand } from "../../../src/worker/process-debug-state.js";
 import { refreshPipeControlFromKernelShare } from "../../../src/worker/ownership/pipe-control.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
 
@@ -515,7 +516,6 @@ function makeHandle(kernel: FakeKernel, memory: WebAssembly.Memory): ProcessHand
     },
     stdinQueue: [],
     outputBacklog: [],
-    debugCommand: "fd-ownership",
     runtimeBridge: {} as ProcessHandle["runtimeBridge"],
     sabPageCache: null,
     workers: new Set(),
@@ -526,6 +526,7 @@ function makeHandle(kernel: FakeKernel, memory: WebAssembly.Memory): ProcessHand
     vforkWorker: null,
     workerDebugLog: [],
   } as unknown as ProcessHandle;
+  setProcessDebugCommand(handle, "fd-ownership");
   kernel.setPrivatePipeMask(
     (1n << BigInt(handle.stdinPipe))
       | (1n << BigInt(handle.stdoutPipe))
