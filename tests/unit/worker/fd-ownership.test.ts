@@ -1,5 +1,10 @@
 import { expect, test, vi } from "vite-plus/test";
 import {
+  processStderrPipe,
+  processStdinPipe,
+  processStdoutPipe,
+} from "../../../src/worker/process-stdio-state.js";
+import {
   snapshotKernelShareOfdSlots,
 } from "../../../src/worker/fork-shared.js";
 import {
@@ -528,9 +533,9 @@ function makeHandle(kernel: FakeKernel, memory: WebAssembly.Memory): ProcessHand
   } as unknown as ProcessHandle;
   setProcessDebugCommand(handle, "fd-ownership");
   kernel.setPrivatePipeMask(
-    (1n << BigInt(handle.stdinPipe))
-      | (1n << BigInt(handle.stdoutPipe))
-      | (1n << BigInt(handle.stderrPipe)),
+    (1n << BigInt(processStdinPipe(handle)))
+      | (1n << BigInt(processStdoutPipe(handle)))
+      | (1n << BigInt(processStderrPipe(handle))),
   );
   return handle;
 }
@@ -586,7 +591,7 @@ test("trackForkSharedOfds skips hidden stdio pipes and retains non-stdio OFDs on
   const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
   const kernel = makeKernel(memory);
   const handle = makeHandle(kernel, memory);
-  seedOfd(memory, handle.kernelState.ofdTablePtr, 10, FD_TYPE_PIPE, handle.stdoutPipe, 0xaa);
+  seedOfd(memory, handle.kernelState.ofdTablePtr, 10, FD_TYPE_PIPE, processStdoutPipe(handle), 0xaa);
   seedOfd(memory, handle.kernelState.ofdTablePtr, 11, FD_TYPE_FILE, 0, 0xbb);
   seedOfd(memory, handle.kernelState.ofdTablePtr, 13, FD_TYPE_PIPE, 9, 0xcc);
   kernel.setFdMap(new Map([
@@ -718,22 +723,22 @@ test("kernel-share pipe reconcile applies supervisor host stdio pipe counts", ()
   const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
   const kernel = makeKernel(memory);
   const handle = makeHandle(kernel, memory);
-  seedOfd(memory, handle.kernelState.ofdTablePtr, 3, FD_TYPE_PIPE, handle.stderrPipe, 0xe3, -7);
-  seedPipeSlot(memory, handle.kernelState.pipeBase, handle.stderrPipe, 0xa6);
+  seedOfd(memory, handle.kernelState.ofdTablePtr, 3, FD_TYPE_PIPE, processStderrPipe(handle), 0xe3, -7);
+  seedPipeSlot(memory, handle.kernelState.pipeBase, processStderrPipe(handle), 0xa6);
   kernel.setFdMap(new Map([[2, 3]]));
-  kernel.supervisor_process_pipe_used_mask = () => 1n | (1n << BigInt(handle.stderrPipe));
-  kernel.supervisor_process_pipe_read_open_count = (_vmPtr, slot) => slot === handle.stderrPipe ? 1 : 0;
-  kernel.supervisor_process_pipe_write_open_count = (_vmPtr, slot) => slot === handle.stderrPipe ? 1 : 0;
+  kernel.supervisor_process_pipe_used_mask = () => 1n | (1n << BigInt(processStderrPipe(handle)));
+  kernel.supervisor_process_pipe_read_open_count = (_vmPtr, slot) => slot === processStderrPipe(handle) ? 1 : 0;
+  kernel.supervisor_process_pipe_write_open_count = (_vmPtr, slot) => slot === processStderrPipe(handle) ? 1 : 0;
   handle.kernelShare.members.add(handle);
 
   const view = new DataView(memory.buffer);
-  const slotBase = handle.kernelState.pipeBase + handle.stderrPipe * (32 + 65_536);
+  const slotBase = handle.kernelState.pipeBase + processStderrPipe(handle) * (32 + 65_536);
   view.setInt32(slotBase + 8, 0, true);
   view.setInt32(slotBase + 12, 0, true);
 
   reconcileKernelSharePipeControl(handle);
 
-  expect(pipeOpenCounts(memory, handle.kernelState.pipeBase, handle.stderrPipe)).toEqual({
+  expect(pipeOpenCounts(memory, handle.kernelState.pipeBase, processStderrPipe(handle))).toEqual({
     readOpen: 1,
     writeOpen: 1,
   });
@@ -743,22 +748,22 @@ test("kernel-share pipe reconcile does not infer host stdio counts over supervis
   const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
   const kernel = makeKernel(memory);
   const handle = makeHandle(kernel, memory);
-  seedOfd(memory, handle.kernelState.ofdTablePtr, 3, FD_TYPE_PIPE, handle.stderrPipe, 0xe3, -7);
-  seedPipeSlot(memory, handle.kernelState.pipeBase, handle.stderrPipe, 0xa6);
+  seedOfd(memory, handle.kernelState.ofdTablePtr, 3, FD_TYPE_PIPE, processStderrPipe(handle), 0xe3, -7);
+  seedPipeSlot(memory, handle.kernelState.pipeBase, processStderrPipe(handle), 0xa6);
   kernel.setFdMap(new Map([[2, 3]]));
-  kernel.supervisor_process_pipe_used_mask = () => 1n | (1n << BigInt(handle.stderrPipe));
+  kernel.supervisor_process_pipe_used_mask = () => 1n | (1n << BigInt(processStderrPipe(handle)));
   kernel.supervisor_process_pipe_read_open_count = () => 0;
   kernel.supervisor_process_pipe_write_open_count = () => 0;
   handle.kernelShare.members.add(handle);
 
   const view = new DataView(memory.buffer);
-  const slotBase = handle.kernelState.pipeBase + handle.stderrPipe * (32 + 65_536);
+  const slotBase = handle.kernelState.pipeBase + processStderrPipe(handle) * (32 + 65_536);
   view.setInt32(slotBase + 8, 1, true);
   view.setInt32(slotBase + 12, 1, true);
 
   reconcileKernelSharePipeControl(handle);
 
-  expect(pipeOpenCounts(memory, handle.kernelState.pipeBase, handle.stderrPipe)).toEqual({
+  expect(pipeOpenCounts(memory, handle.kernelState.pipeBase, processStderrPipe(handle))).toEqual({
     readOpen: 0,
     writeOpen: 0,
   });

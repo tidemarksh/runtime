@@ -9,6 +9,13 @@ import {
   setProcessLastDebugMessage,
 } from "../process-debug-state.js";
 import { setProcessOnError } from "../process-callback-state.js";
+import {
+  processHostStdio,
+  processStdinClosed,
+  processStdioOwner,
+  processTtyPtySlot,
+  setProcessStdioState,
+} from "../process-stdio-state.js";
 import { setProcessWorkers } from "../process-worker-state.js";
 import type { ProcessHandle } from "../types.js";
 import type { WorkerForkDeps } from "./types.js";
@@ -59,13 +66,6 @@ export function createForkChildHandle({
     wasmModule: parent.wasmModule,
     kernel,
     kernelState,
-    stdinPipe: kernel.process_stdin_pipe(vmPtr),
-    stdoutPipe: kernel.process_stdout_pipe(vmPtr),
-    stderrPipe: kernel.process_stderr_pipe(vmPtr),
-    ttyPtySlot: kernel.process_tty_pty_slot?.(vmPtr) ?? parent.ttyPtySlot,
-    hostStdio: retainSharedHostStdio(parent.hostStdio),
-    stdinClosed: parent.stdinClosed,
-    stdioOwner: parent,
     kernelShare: parent.kernelShare,
     runtimeBridge: createRuntimeStateBridge(),
     sabPageCache: parent.sabPageCache,
@@ -74,6 +74,15 @@ export function createForkChildHandle({
   };
   setProcessDebugCommand(childHandle, debugCommand);
   setProcessLastDebugMessage(childHandle, undefined);
+  setProcessStdioState(childHandle, {
+    stdinPipe: kernel.process_stdin_pipe(vmPtr),
+    stdoutPipe: kernel.process_stdout_pipe(vmPtr),
+    stderrPipe: kernel.process_stderr_pipe(vmPtr),
+    ttyPtySlot: kernel.process_tty_pty_slot?.(vmPtr) ?? processTtyPtySlot(parent),
+    hostStdio: retainSharedHostStdio(processHostStdio(parent)),
+    stdinClosed: processStdinClosed(parent),
+    stdioOwner: parent,
+  });
   setProcessWorkers(childHandle, []);
   setProcessOnError(
     childHandle,
@@ -91,7 +100,7 @@ export function createForkChildHandle({
 }
 
 export function detachInheritedHostStdioFromChild(child: ProcessHandle): void {
-  if (child.stdioOwner === null) {
+  if (processStdioOwner(child) === null) {
     return;
   }
   child.kernel.process_set_host_stdio(child.vmPtr, 0, 0, 0);

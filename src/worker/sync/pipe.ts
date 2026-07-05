@@ -1,4 +1,7 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import {
+  processStdioOwner,
+} from "../process-stdio-state.js";
 import { processWorkerCount } from "../process-worker-state.js";
 import {
   attachKernelRuntimeState,
@@ -135,7 +138,7 @@ export async function syncPipeStateViaKernelWorker(
       `ready=${hostExecutionState(handle).vforkReadyWorkers.length}`,
       `workers=${processWorkerCount(handle)}`,
       `blocked=${hostExecutionState(handle).hostBlockedWorkers.size}`,
-      `stdioOwner=${handle.stdioOwner?.pid ?? 0}`,
+      `stdioOwner=${processStdioOwner(handle)?.pid ?? 0}`,
       formatFdSnapshotDebug("fds", fdEntries),
       `pipeOfds=${formatOfdIdList(pipeOfdIds)}`,
       `localPipeOfds=${formatOfdIdList(localPipeOfdIds)}`,

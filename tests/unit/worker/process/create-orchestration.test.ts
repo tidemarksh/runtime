@@ -18,11 +18,14 @@ type ProcessHasWorkerFn =
   typeof import("../../../../src/worker/process-worker-state.js").processHasWorker;
 type ProcessWorkerCountFn =
   typeof import("../../../../src/worker/process-worker-state.js").processWorkerCount;
+type ProcessStdoutPipeFn =
+  typeof import("../../../../src/worker/process-stdio-state.js").processStdoutPipe;
 
 let workerModule: WorkerModule | null = null;
 let processMemoryOwnershipImpl: ProcessMemoryOwnershipFn | null = null;
 let processHasWorkerImpl: ProcessHasWorkerFn | null = null;
 let processWorkerCountImpl: ProcessWorkerCountFn | null = null;
+let processStdoutPipeImpl: ProcessStdoutPipeFn | null = null;
 
 function processMemoryOwnership(
   handle: Parameters<ProcessMemoryOwnershipFn>[0],
@@ -50,6 +53,15 @@ function processWorkerCount(
     throw new Error("processWorkerCount accessor not loaded");
   }
   return processWorkerCountImpl(handle);
+}
+
+function processStdoutPipe(
+  handle: Parameters<ProcessStdoutPipeFn>[0],
+): ReturnType<ProcessStdoutPipeFn> {
+  if (processStdoutPipeImpl === null) {
+    throw new Error("processStdoutPipe accessor not loaded");
+  }
+  return processStdoutPipeImpl(handle);
 }
 
 function clearRuntimeFsState(runtimeId: number): void {
@@ -671,6 +683,9 @@ beforeEach(async () => {
   const processWorkerState = await import("../../../../src/worker/process-worker-state.js");
   processHasWorkerImpl = processWorkerState.processHasWorker;
   processWorkerCountImpl = processWorkerState.processWorkerCount;
+  processStdoutPipeImpl = (
+    await import("../../../../src/worker/process-stdio-state.js")
+  ).processStdoutPipe;
   createdWorkers.length = 0;
   createdKernelExports.length = 0;
   threadCountQueue.length = 0;
@@ -702,6 +717,7 @@ afterEach(() => {
   processMemoryOwnershipImpl = null;
   processHasWorkerImpl = null;
   processWorkerCountImpl = null;
+  processStdoutPipeImpl = null;
   vi.restoreAllMocks();
   globalThis.Worker = originalWorker;
   if (originalSchedulerStepBudget === undefined) {
@@ -1109,7 +1125,7 @@ test("clone child ready ignores stale local pipe writes under kernel-worker-owne
   requests.length = 0;
 
   const warningBytes = new TextEncoder().encode("[java] cloned child warning\n");
-  expect(writePipe(handle.memory, handle.kernelState.pipeBase, handle.stdoutPipe, warningBytes).written).toBe(
+  expect(writePipe(handle.memory, handle.kernelState.pipeBase, processStdoutPipe(handle), warningBytes).written).toBe(
     warningBytes.length,
   );
 
@@ -1156,7 +1172,7 @@ test("STATUS_OK with kernel-worker-owned pipe state syncs without local stdout d
   requests.length = 0;
 
   const bannerBytes = new TextEncoder().encode("openjdk banner\n");
-  expect(writePipe(handle.memory, handle.kernelState.pipeBase, handle.stdoutPipe, bannerBytes).written).toBe(
+  expect(writePipe(handle.memory, handle.kernelState.pipeBase, processStdoutPipe(handle), bannerBytes).written).toBe(
     bannerBytes.length,
   );
 

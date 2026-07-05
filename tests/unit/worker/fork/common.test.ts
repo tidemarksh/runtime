@@ -1,5 +1,10 @@
 import { expect, test, vi } from "vite-plus/test";
 import {
+  processStderrPipe,
+  processStdinPipe,
+  processStdoutPipe,
+} from "../../../../src/worker/process-stdio-state.js";
+import {
   detachInheritedHostStdioFromChild,
   normalizeGuestMemoryPolicyLimitBytes,
 } from "../../../../src/worker/fork/common.js";
@@ -20,9 +25,9 @@ test("detachInheritedHostStdioFromChild detaches guest host stdio without cleari
   detachInheritedHostStdioFromChild(child);
 
   expect(processSetHostStdio).toHaveBeenCalledWith(0x1234, 0, 0, 0);
-  expect(child.stdinPipe).toBe(11);
-  expect(child.stdoutPipe).toBe(12);
-  expect(child.stderrPipe).toBe(13);
+  expect(processStdinPipe(child)).toBe(11);
+  expect(processStdoutPipe(child)).toBe(12);
+  expect(processStderrPipe(child)).toBe(13);
 });
 
 test("detachInheritedHostStdioFromChild leaves standalone process host stdio untouched", () => {

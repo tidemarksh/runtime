@@ -1,5 +1,10 @@
 import { hostExecutionState } from "../host-execution-state.js";
 import {
+  processStderrPipe,
+  processStdinPipe,
+  processStdoutPipe,
+} from "../process-stdio-state.js";
+import {
   processWorkerCount,
   processWorkerList,
   processWorkers,
@@ -1651,7 +1656,7 @@ export function debugRuntimeProcessHandles(
           `pipe_sync=${runtimeStateSyncInFlight(handle, "pipe") ? 1 : 0}`,
           `fork_sync=${getHandleForkSharedSync(handle) === null ? 0 : 1}/${getKernelShareForkSharedSync(handle.kernelShare) === null ? 0 : 1}`,
           `vfork=${hostExecutionState(handle).vforkSnapshot ? "1" : "0"}`,
-          `stdio_pipes=${handle.stdinPipe}/${handle.stdoutPipe}/${handle.stderrPipe}`,
+          `stdio_pipes=${processStdinPipe(handle)}/${processStdoutPipe(handle)}/${processStderrPipe(handle)}`,
           `process_stdio=${handle.kernel.process_stdin_pipe(handle.vmPtr)}/${handle.kernel.process_stdout_pipe(handle.vmPtr)}/${handle.kernel.process_stderr_pipe(handle.vmPtr)}`,
           `stdio_pipe_counters=[${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
             .map((fd) => formatPipeCounterDebug(handle, fd))

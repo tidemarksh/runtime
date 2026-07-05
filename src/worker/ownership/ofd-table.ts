@@ -3,6 +3,11 @@ import type {
   KernelWorkerOfdSlotSnapshot,
 } from "../../messages.js";
 import {
+  processStderrPipe,
+  processStdinPipe,
+  processStdoutPipe,
+} from "../process-stdio-state.js";
+import {
   OFD_HOST_FD_OFFSET,
   OFD_INO_OFFSET,
   OFD_OFFSET_OFFSET,
@@ -277,9 +282,9 @@ export function trackForkSharedOfds(
 ): number[] {
   const stdioOfdIds = new Set<number>();
   const stdioPipeSlotByFd = new Map<number, number>([
-    [0, handle.stdinPipe],
-    [1, handle.stdoutPipe],
-    [2, handle.stderrPipe],
+    [0, processStdinPipe(handle)],
+    [1, processStdoutPipe(handle)],
+    [2, processStderrPipe(handle)],
   ]);
   for (const [fd, stdioPipeSlot] of stdioPipeSlotByFd) {
     const ofdId = supervisorProcessPipeOfdForFd(handle, vmPtr, fd);

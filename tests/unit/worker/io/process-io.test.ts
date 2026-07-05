@@ -11,8 +11,20 @@ import type {
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 type WorkerModule = typeof import("../../../../src/worker.js");
+type ProcessStdinPipeFn =
+  typeof import("../../../../src/worker/process-stdio-state.js").processStdinPipe;
 
 let workerModule: WorkerModule | null = null;
+let processStdinPipeImpl: ProcessStdinPipeFn | null = null;
+
+function processStdinPipe(
+  handle: Parameters<ProcessStdinPipeFn>[0],
+): ReturnType<ProcessStdinPipeFn> {
+  if (processStdinPipeImpl === null) {
+    throw new Error("processStdinPipe accessor not loaded");
+  }
+  return processStdinPipeImpl(handle);
+}
 
 function clearRuntimeFsState(runtimeId: number): void {
   workerModule?.clearRuntimeFsState(runtimeId);
@@ -558,6 +570,9 @@ beforeEach(async () => {
   vi.resetModules();
   process.env.TIDEMARK_SCHEDULER_STEP_BUDGET = "20000";
   workerModule = await import("../../../../src/worker.js");
+  processStdinPipeImpl = (
+    await import("../../../../src/worker/process-stdio-state.js")
+  ).processStdinPipe;
   createdWorkers.length = 0;
   createdKernelExports.length = 0;
   threadCountQueue.length = 0;
@@ -586,6 +601,7 @@ afterEach(() => {
   workerModule?.destroyWorkerPool();
   clearModuleCache();
   workerModule = null;
+  processStdinPipeImpl = null;
   vi.restoreAllMocks();
   globalThis.Worker = originalWorker;
   if (originalSchedulerStepBudget === undefined) {
@@ -659,7 +675,7 @@ test("writeProcessStdin writes into the hidden stdin pipe buffer", async () => {
 
   writeProcessStdin(handle, new TextEncoder().encode("abc"));
 
-  const slotBase = handle.kernelState.pipeBase + handle.stdinPipe * MOCK_PIPE_SLOT_BYTES;
+  const slotBase = handle.kernelState.pipeBase + processStdinPipe(handle) * MOCK_PIPE_SLOT_BYTES;
   const dataBase = slotBase + 32;
   const mem = new Uint8Array(handle.memory.buffer);
   expect(new TextDecoder().decode(mem.subarray(dataBase, dataBase + 3))).toBe("abc");

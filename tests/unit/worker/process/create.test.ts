@@ -1,4 +1,10 @@
 import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
+import {
+  processHostStdio,
+  processStderrPipe,
+  processStdinPipe,
+  processStdoutPipe,
+} from "../../../../src/worker/process-stdio-state.js";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { readPublishedKernelRuntimeState } from "../../../../src/bridge/runtime-state.js";
 import {
@@ -394,10 +400,10 @@ test("createProcess stages argv/env strings and seeds full memfs for standalone 
   expect(fakeKernel.processSetCwdIno).toHaveBeenCalledWith(0x1234, 1);
   expect(registerProcessWithKernelWorker).not.toHaveBeenCalled();
   expect(assertProcessStandardFdIntegrity).toHaveBeenCalledWith(handle, "create-process");
-  expect(handle.stdinPipe).toBe(1);
-  expect(handle.stdoutPipe).toBe(2);
-  expect(handle.stderrPipe).toBe(3);
-  expect(handle.hostStdio).toMatchObject({
+  expect(processStdinPipe(handle)).toBe(1);
+  expect(processStdoutPipe(handle)).toBe(2);
+  expect(processStderrPipe(handle)).toBe(3);
+  expect(processHostStdio(handle)).toMatchObject({
     stdinPipe: 1,
     stdoutPipe: 2,
     stderrPipe: 3,
@@ -674,9 +680,9 @@ test("createProcess delegates cwd resolution and lifecycle seeding for runtime-o
   expect(registerProcessWithKernelWorker).toHaveBeenCalledWith(handle, { seedMemfsMode: "none" });
   expect(fakeKernel.processSetCwdIno).toHaveBeenCalledWith(0x1234, 33);
   expect(assertProcessStandardFdIntegrity).toHaveBeenCalledWith(handle, "create-process");
-  expect(handle.stdinPipe).toBe(1);
-  expect(handle.stdoutPipe).toBe(2);
-  expect(handle.stderrPipe).toBe(3);
+  expect(processStdinPipe(handle)).toBe(1);
+  expect(processStdoutPipe(handle)).toBe(2);
+  expect(processStderrPipe(handle)).toBe(3);
   expect(initializeProcessLifecycleViaKernelWorker).toHaveBeenCalledWith(
     handle,
     0x1234,

@@ -1,4 +1,8 @@
 import { hostExecutionState } from "./host-execution-state.js";
+import {
+  processHostStdio,
+  processStdioOwner,
+} from "./process-stdio-state.js";
 import { processExitInProgress } from "./process-lifecycle-state.js";
 import {
   processDebugCommand,
@@ -1592,13 +1596,13 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
   }
 
   function usesInheritedParentOutput(handle: ProcessHandle, parent: ProcessHandle): boolean {
-    if (handle.stdioOwner !== parent) {
+    if (processStdioOwner(handle) !== parent) {
       return false;
     }
     const inheritedSlots = new Set(
       [
-        parent.hostStdio.stdoutPipe,
-        parent.hostStdio.stderrPipe,
+        processHostStdio(parent).stdoutPipe,
+        processHostStdio(parent).stderrPipe,
       ].filter((slot) => slot > 0),
     );
     const fdSlots = [fdPipeSlot(handle, 1), fdPipeSlot(handle, 2)]
@@ -1606,8 +1610,8 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     if (fdSlots.length > 0) {
       return fdSlots.some((slot) => inheritedSlots.has(slot));
     }
-    return parent.stdioOwner === null
-      && [handle.hostStdio.stdoutPipe, handle.hostStdio.stderrPipe]
+    return processStdioOwner(parent) === null
+      && [processHostStdio(handle).stdoutPipe, processHostStdio(handle).stderrPipe]
         .some((slot) => slot > 0 && inheritedSlots.has(slot));
   }
 
@@ -1648,8 +1652,8 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     return [
       `on=${processOnStdout(handle) ? 1 : 0}`,
       `backlog=${outputBacklog(handle).length}`,
-      formatSlot("stdout", handle.hostStdio.stdoutPipe),
-      formatSlot("stderr", handle.hostStdio.stderrPipe),
+      formatSlot("stdout", processHostStdio(handle).stdoutPipe),
+      formatSlot("stderr", processHostStdio(handle).stderrPipe),
     ].join(":");
   }
 
@@ -1853,7 +1857,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         // Errors are recorded by childPipeSyncPromise so exit teardown can continue.
       }
     }
-    if (handle.stdioOwner === null) {
+    if (processStdioOwner(handle) === null) {
       deps.drainProcessOutput(handle);
     } else if (!hasInheritedParentOutput) {
       deps.drainHiddenProcessOutput(handle);
@@ -1902,7 +1906,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
   function visibleInheritedChildren(handle: ProcessHandle): ProcessHandle[] {
     return [...deps.processHandles.values()].filter((child) => (
       child !== handle
-      && child.stdioOwner === handle
+      && processStdioOwner(child) === handle
       && child.pid > 0
       && !!child.kernelWorkerRequest
     ));
@@ -1944,7 +1948,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
   }
 
   async function settleVisibleInheritedChildrenOutput(handle: ProcessHandle, maxPasses = 6): Promise<void> {
-    if (handle.stdioOwner !== null) {
+    if (processStdioOwner(handle) !== null) {
       return;
     }
     for (let pass = 0; pass < maxPasses; pass += 1) {
@@ -2047,7 +2051,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     const hasInheritedParentOutput = parent !== null && usesInheritedParentOutput(handle, parent);
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
-      `exit-output-branch:${handle.pid}:parent=${parent?.pid ?? 0}:owner=${handle.stdioOwner?.pid ?? 0}`,
+      `exit-output-branch:${handle.pid}:parent=${parent?.pid ?? 0}:owner=${processStdioOwner(handle)?.pid ?? 0}`,
     );
     if (parent) {
       const publishPending = isProcessMemfsPublishPending(handle);
@@ -2079,7 +2083,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       if (parent && parentWaitStatus !== null) {
         parentWaitStatus = null;
       }
-      if (parent === null && handle.stdioOwner === null) {
+      if (parent === null && processStdioOwner(handle) === null) {
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `exit-visible-output-start:${handle.pid}:${formatVisibleOutputDebug(handle)}`);
         try {
           await getHandleForkSharedSync(handle);

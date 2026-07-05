@@ -1,5 +1,14 @@
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import {
+  processHostStdio,
+  processStderrPipe,
+  processStdinPipe,
+  processStdoutPipe,
+  setProcessStderrPipe,
+  setProcessStdinPipe,
+  setProcessStdoutPipe,
+} from "../../../../src/worker/process-stdio-state.js";
+import {
   processWorkerList,
   processWorkers,
 } from "../../../../src/worker/process-worker-state.js";
@@ -111,12 +120,12 @@ test("destroyProcessHandle tears down workers, clears process maps, and releases
   });
   const unregisterProcessWithKernelWorker = vi.fn(async () => {});
   const releaseSharedHostStdio = vi.fn(async (targetHandle: ProcessHandle) => {
-    if (targetHandle.hostStdio.refCount > 0) {
-      targetHandle.hostStdio.refCount -= 1;
+    if (processHostStdio(targetHandle).refCount > 0) {
+      processHostStdio(targetHandle).refCount -= 1;
     }
-    targetHandle.stdinPipe = 0;
-    targetHandle.stdoutPipe = 0;
-    targetHandle.stderrPipe = 0;
+    setProcessStdinPipe(targetHandle, 0);
+    setProcessStdoutPipe(targetHandle, 0);
+    setProcessStderrPipe(targetHandle, 0);
   });
 
   const destroyHelpers = createWorkerDestroyHelpers({
@@ -144,10 +153,10 @@ test("destroyProcessHandle tears down workers, clears process maps, and releases
   }
   expect(processHandles.has(handle.pid)).toBe(false);
   expect(runtimeFsDirtyHandles.has(handle.runtimeId)).toBe(false);
-  expect(handle.stdinPipe).toBe(0);
-  expect(handle.stdoutPipe).toBe(0);
-  expect(handle.stderrPipe).toBe(0);
-  expect(handle.hostStdio.refCount).toBe(0);
+  expect(processStdinPipe(handle)).toBe(0);
+  expect(processStdoutPipe(handle)).toBe(0);
+  expect(processStderrPipe(handle)).toBe(0);
+  expect(processHostStdio(handle).refCount).toBe(0);
   expect(releaseSharedHostStdio).toHaveBeenCalledTimes(1);
   expect(handle.kernelShare.members.has(handle)).toBe(false);
 });
@@ -178,12 +187,12 @@ test("destroyRuntimeProcesses only notifies exits for handles in the selected ru
     [3, runtime2Handle],
   ]);
   const releaseSharedHostStdio = vi.fn(async (targetHandle: ProcessHandle) => {
-    if (targetHandle.hostStdio.refCount > 0) {
-      targetHandle.hostStdio.refCount -= 1;
+    if (processHostStdio(targetHandle).refCount > 0) {
+      processHostStdio(targetHandle).refCount -= 1;
     }
-    targetHandle.stdinPipe = 0;
-    targetHandle.stdoutPipe = 0;
-    targetHandle.stderrPipe = 0;
+    setProcessStdinPipe(targetHandle, 0);
+    setProcessStdoutPipe(targetHandle, 0);
+    setProcessStderrPipe(targetHandle, 0);
   });
 
   const destroyHelpers = createWorkerDestroyHelpers({

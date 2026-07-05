@@ -3,6 +3,9 @@ import {
   readKernelRuntimeState,
   supervisorPipeReconcileControl,
 } from "../../abi.js";
+import {
+  processHostStdio,
+} from "../process-stdio-state.js";
 import { workerDebugLog } from "../worker-debug-log.js";
 import { kernelNetBufferCount } from "../../kernel-socket-layout.js";
 import {
@@ -682,8 +685,8 @@ export function snapshotNonEmptyHostOutputPipeSlots(
   const atomicView = int32AtomicView(handle.memory.buffer);
   const snapshots: KernelWorkerPipeSlotSnapshot[] = [];
   const slots = [
-    handle.hostStdio.stdoutPipe,
-    handle.hostStdio.stderrPipe,
+    processHostStdio(handle).stdoutPipe,
+    processHostStdio(handle).stderrPipe,
   ].filter((pipeSlot, index, array) => (
     pipeSlot > 0
     && pipeSlot < maxPipes

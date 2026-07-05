@@ -87,13 +87,6 @@ export interface ProcessHandle {
   wasmModule: WebAssembly.Module;
   kernel: KernelExports;
   kernelState: KernelRuntimeState;
-  stdinPipe: number;
-  stdoutPipe: number;
-  stderrPipe: number;
-  ttyPtySlot: number;
-  hostStdio: SharedHostStdio;
-  stdinClosed?: boolean;
-  stdioOwner: ProcessHandle | null;
   kernelShare: KernelShareGroup;
   runtimeBridge: RuntimeStateBridge;
   sabPageCache: SharedArrayBuffer | null;

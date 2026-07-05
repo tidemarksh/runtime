@@ -8,6 +8,12 @@ import {
 import { adoptKernelStateForHandle } from "../kernel-state.js";
 import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 import { processExitInProgress } from "../process-lifecycle-state.js";
+import {
+  clearProcessLocalStdioPipes,
+  processHasLocalHostStdio,
+  processHostStdio,
+  processStdioOwner,
+} from "../process-stdio-state.js";
 import type {
   ProcessHandle,
   SyncCause,
@@ -53,21 +59,19 @@ export async function releaseSharedHostStdioViaKernelWorker(
   handle: ProcessHandle,
   ports: SharedHostStdioReleasePorts,
 ): Promise<void> {
-  const hadLocalHostStdio = handle.stdinPipe !== 0 || handle.stdoutPipe !== 0 || handle.stderrPipe !== 0;
-  if (!hadLocalHostStdio) {
+  if (!processHasLocalHostStdio(handle)) {
     return;
   }
-  const shared = handle.hostStdio;
+  const shared = processHostStdio(handle);
   if (shared.refCount > 0) {
     shared.refCount -= 1;
   }
-  handle.stdinPipe = 0;
-  handle.stdoutPipe = 0;
-  handle.stderrPipe = 0;
+  clearProcessLocalStdioPipes(handle);
   if (shared.refCount > 0) {
     return;
   }
-  if (handle.stdioOwner !== null && !processExitInProgress(handle.stdioOwner)) {
+  const owner = processStdioOwner(handle);
+  if (owner !== null && !processExitInProgress(owner)) {
     return;
   }
   const pipeUsed = await releaseHostStdioViaKernelWorker(handle, hostStdioReleaseCause());

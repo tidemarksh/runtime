@@ -1,4 +1,9 @@
 import { expect, test, vi } from "vite-plus/test";
+import {
+  processHostStdio,
+  processStderrPipe,
+  processStdoutPipe,
+} from "../../../../src/worker/process-stdio-state.js";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { createWorkerLifecycleHelpers } from "../../../../src/worker/lifecycle.js";
 import { processExitInProgress } from "../../../../src/worker/process-lifecycle-state.js";
@@ -297,9 +302,9 @@ test("completeProcessExit releases host stdio locally when no kernel-worker owns
     "drain",
     "complete",
   ]);
-  expect(handle.stdoutPipe).toBe(4);
-  expect(handle.stderrPipe).toBe(5);
-  expect(handle.hostStdio.refCount).toBe(1);
+  expect(processStdoutPipe(handle)).toBe(4);
+  expect(processStderrPipe(handle)).toBe(5);
+  expect(processHostStdio(handle).refCount).toBe(1);
   expect(releaseHostStdio).toHaveBeenCalledTimes(0);
 });
 
@@ -330,9 +335,9 @@ test("completeProcessExit releases host stdio locally exactly once for signaled 
   await lifecycle.completeProcessExit(handle, 0, 9);
   await lifecycle.completeProcessExit(handle, 0, 9);
 
-  expect(handle.stdoutPipe).toBe(4);
-  expect(handle.stderrPipe).toBe(5);
-  expect(handle.hostStdio.refCount).toBe(1);
+  expect(processStdoutPipe(handle)).toBe(4);
+  expect(processStderrPipe(handle)).toBe(5);
+  expect(processHostStdio(handle).refCount).toBe(1);
   expect(releaseHostStdio).toHaveBeenCalledTimes(0);
 });
 

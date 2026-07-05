@@ -1,4 +1,12 @@
 import { readPipe, writePipe } from "../../bridge/pipe.js";
+import {
+  processHostStdio,
+  processStderrPipe,
+  processStdinPipe,
+  processStdioOwner,
+  processStdoutPipe,
+  processTtyPtySlot,
+} from "../process-stdio-state.js";
 import { writeKernelScratch } from "../kernel-scratch.js";
 import {
   PIPE_HEAD_OFFSET,
@@ -41,7 +49,7 @@ function enqueueOutput(handle: ProcessHandle, data: Uint8Array): void {
 }
 
 function outputTarget(handle: ProcessHandle): ProcessHandle {
-  return handle.stdioOwner ?? handle;
+  return processStdioOwner(handle) ?? handle;
 }
 
 type SupervisorStdioOutputSettleKind =
@@ -140,7 +148,7 @@ function supervisorShouldSnapshotDrainedPipeReadProgress(
 function pipeStateSignature(handle: ProcessHandle): string {
   const pipeBase = handle.kernelState.pipeBase;
   const bytes = new DataView(handle.memory.buffer);
-  const slots = [handle.hostStdio.stdoutPipe, handle.hostStdio.stderrPipe]
+  const slots = [processHostStdio(handle).stdoutPipe, processHostStdio(handle).stderrPipe]
     .filter((slot, index, array) => slot > 0 && array.indexOf(slot) === index);
   return slots
     .map((pipeSlot) => {
@@ -219,8 +227,8 @@ function stdioFdIsDetached(handle: ProcessHandle, fd: number): boolean {
 function inheritedOutputPipeSlots(parent: ProcessHandle): Set<number> {
   return new Set(
     [
-      parent.hostStdio.stdoutPipe,
-      parent.hostStdio.stderrPipe,
+      processHostStdio(parent).stdoutPipe,
+      processHostStdio(parent).stderrPipe,
       stdioPipeSlotForFd(parent, 1),
       stdioPipeSlotForFd(parent, 2),
     ].filter((slot) => slot > 0),
@@ -235,7 +243,7 @@ export function writeProcessStdin(handle: ProcessHandle, data: Uint8Array): void
 }
 
 export function flushStdin(handle: ProcessHandle): boolean {
-  if (handle.stdinPipe === 0 && handle.ttyPtySlot === 0) {
+  if (processStdinPipe(handle) === 0 && processTtyPtySlot(handle) === 0) {
     return false;
   }
 
@@ -247,7 +255,7 @@ export function flushStdin(handle: ProcessHandle): boolean {
       queue.shift();
       continue;
     }
-    if (handle.ttyPtySlot !== 0 && handle.kernel.process_host_write_stdin) {
+    if (processTtyPtySlot(handle) !== 0 && handle.kernel.process_host_write_stdin) {
       const srcPtr = writeKernelScratch(handle.kernel, chunk);
       const written = handle.kernel.process_host_write_stdin(handle.vmPtr, srcPtr, chunk.length);
       if (written < 0) {
@@ -264,7 +272,7 @@ export function flushStdin(handle: ProcessHandle): boolean {
       queue[0] = chunk.slice(written);
       break;
     } else {
-      const result = writePipe(handle.memory, handle.kernelState.pipeBase, handle.stdinPipe, chunk);
+      const result = writePipe(handle.memory, handle.kernelState.pipeBase, processStdinPipe(handle), chunk);
       if (result.broken) {
         queue.length = 0;
         return wrote;
@@ -307,21 +315,21 @@ export function drainPipeOutput(
 }
 
 export function drainProcessOutput(handle: ProcessHandle): boolean {
-  if (handle.stdioOwner !== null) {
+  if (processStdioOwner(handle) !== null) {
     return false;
   }
   const target = outputTarget(handle);
   const source = handle;
   const allowHostPipeFallback = handle.parentPid === null;
-  const stdoutPipe = stdioFdUsesPipeSlot(handle, 1, handle.hostStdio.stdoutPipe)
-    ? handle.hostStdio.stdoutPipe
+  const stdoutPipe = stdioFdUsesPipeSlot(handle, 1, processHostStdio(handle).stdoutPipe)
+    ? processHostStdio(handle).stdoutPipe
     : allowHostPipeFallback && stdioFdIsDetached(handle, 1)
-      ? handle.hostStdio.stdoutPipe
+      ? processHostStdio(handle).stdoutPipe
       : 0;
-  const stderrPipe = stdioFdUsesPipeSlot(handle, 2, handle.hostStdio.stderrPipe)
-    ? handle.hostStdio.stderrPipe
+  const stderrPipe = stdioFdUsesPipeSlot(handle, 2, processHostStdio(handle).stderrPipe)
+    ? processHostStdio(handle).stderrPipe
     : allowHostPipeFallback && stdioFdIsDetached(handle, 2)
-      ? handle.hostStdio.stderrPipe
+      ? processHostStdio(handle).stderrPipe
       : 0;
   const stdoutDrained = stdoutPipe !== 0
     ? drainPipeOutput(source, target, stdoutPipe)
@@ -333,29 +341,30 @@ export function drainProcessOutput(handle: ProcessHandle): boolean {
 }
 
 export function drainHiddenProcessOutput(handle: ProcessHandle): boolean {
-  if (handle.stdioOwner === null) {
+  const owner = processStdioOwner(handle);
+  if (owner === null) {
     return false;
   }
-  const inheritedSlots = inheritedOutputPipeSlots(handle.stdioOwner);
+  const inheritedSlots = inheritedOutputPipeSlots(owner);
   const target = outputTarget(handle);
   const source = handle;
   const stdoutSlot = stdioPipeSlotForFd(handle, 1);
   const stderrSlot = stdioPipeSlotForFd(handle, 2);
-  const ownerStdoutOfd = handle.stdioOwner ? fdPipeOfdId(handle.stdioOwner, 1) : 0;
-  const ownerStderrOfd = handle.stdioOwner ? fdPipeOfdId(handle.stdioOwner, 2) : 0;
+  const ownerStdoutOfd = fdPipeOfdId(owner, 1);
+  const ownerStderrOfd = fdPipeOfdId(owner, 2);
   const stdoutPipe = inheritedSlots.has(stdoutSlot) && fdPipeOfdId(handle, 1) === ownerStdoutOfd
     ? stdoutSlot
-    : stdoutSlot > 0 && stdoutSlot === handle.stdoutPipe
+    : stdoutSlot > 0 && stdoutSlot === processStdoutPipe(handle)
       ? stdoutSlot
-      : stdioFdIsDetached(handle, 1) && inheritedSlots.has(handle.hostStdio.stdoutPipe)
-        ? handle.hostStdio.stdoutPipe
+      : stdioFdIsDetached(handle, 1) && inheritedSlots.has(processHostStdio(handle).stdoutPipe)
+        ? processHostStdio(handle).stdoutPipe
         : 0;
   const stderrPipe = inheritedSlots.has(stderrSlot) && fdPipeOfdId(handle, 2) === ownerStderrOfd
     ? stderrSlot
-    : stderrSlot > 0 && stderrSlot === handle.stderrPipe
+    : stderrSlot > 0 && stderrSlot === processStderrPipe(handle)
       ? stderrSlot
-      : stdioFdIsDetached(handle, 2) && inheritedSlots.has(handle.hostStdio.stderrPipe)
-        ? handle.hostStdio.stderrPipe
+      : stdioFdIsDetached(handle, 2) && inheritedSlots.has(processHostStdio(handle).stderrPipe)
+        ? processHostStdio(handle).stderrPipe
         : 0;
   const stdoutDrained = stdoutPipe !== 0
     ? drainPipeOutput(source, target, stdoutPipe)
@@ -411,7 +420,7 @@ export async function settleInheritedChildOutput(
   child: ProcessHandle,
   requestPipeStateSync: (handle: ProcessHandle, wakeWaiters?: boolean) => Promise<void>,
 ): Promise<boolean> {
-  const parent = child.stdioOwner;
+  const parent = processStdioOwner(child);
   if (!parent) {
     return false;
   }
@@ -424,7 +433,7 @@ export async function settleInheritedChildOutput(
     .filter((slot) => inheritedSlots.has(slot))
     .filter((slot, index, array) => slot > 0 && array.indexOf(slot) === index);
   if (slots.length === 0) {
-    for (const slot of [child.hostStdio.stdoutPipe, child.hostStdio.stderrPipe]) {
+    for (const slot of [processHostStdio(child).stdoutPipe, processHostStdio(child).stderrPipe]) {
       if (slot > 0 && inheritedSlots.has(slot) && !slots.includes(slot)) {
         slots.push(slot);
       }

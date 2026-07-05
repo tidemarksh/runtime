@@ -1,4 +1,9 @@
 import { hostExecutionState } from "./host-execution-state.js";
+import {
+  processStderrPipe,
+  processStdinPipe,
+  processStdoutPipe,
+} from "./process-stdio-state.js";
 import { clearWorkerMessageHandler } from "../bridge/compat.js";
 import { detachKernelShare } from "./kernel-share.js";
 import { removeWorkerFromPool } from "./pool.js";
@@ -46,7 +51,7 @@ export function createWorkerDestroyHelpers(deps: WorkerDestroyDeps) {
     }
     clearProcessWorkers(handle);
 
-    const hadLocalHostStdio = handle.stdinPipe !== 0 || handle.stdoutPipe !== 0 || handle.stderrPipe !== 0;
+    const hadLocalHostStdio = processStdinPipe(handle) !== 0 || processStdoutPipe(handle) !== 0 || processStderrPipe(handle) !== 0;
     void (async () => {
       try {
         if (hadLocalHostStdio) {

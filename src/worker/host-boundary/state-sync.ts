@@ -1,4 +1,8 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import {
+  processHostStdio,
+  processStdioOwner,
+} from "../process-stdio-state.js";
 import { processWorkerList } from "../process-worker-state.js";
 import {
   publishKernelRuntimeState,
@@ -73,7 +77,7 @@ export function createWorkerSchedulerStateSyncHelpers(
   }
 
   function visibleOutputHandle(handle: ProcessHandle): ProcessHandle {
-    return handle.stdioOwner ?? handle;
+    return processStdioOwner(handle) ?? handle;
   }
 
   function hasActiveVforkChildOwnerMismatch(handle: ProcessHandle): boolean {
@@ -97,8 +101,8 @@ export function createWorkerSchedulerStateSyncHelpers(
     }
     const visibleSlots = new Set(
       [
-        visibleHandle.hostStdio.stdoutPipe,
-        visibleHandle.hostStdio.stderrPipe,
+        processHostStdio(visibleHandle).stdoutPipe,
+        processHostStdio(visibleHandle).stderrPipe,
       ].filter((slot) => slot > 0),
     );
     const fdPipeSlot = (fd: number): number => supervisorProcessPipeSlotForFd(handle, handle.vmPtr, fd);

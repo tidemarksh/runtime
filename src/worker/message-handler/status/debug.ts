@@ -1,4 +1,7 @@
 import type { ProcessHandle } from "../../types.js";
+import {
+  processStdioOwner,
+} from "../../process-stdio-state.js";
 import type { ThreadWorkerStatusMessage } from "../types.js";
 import { workerDebugLog } from "../../worker-debug-log.js";
 import {
@@ -87,7 +90,7 @@ export function shouldRecordStatusFdLifecycle(
   if (
     status === handle.kernel.abi_status_pipe_wait()
     || status === handle.kernel.abi_status_wait4()
-    || handle.stdioOwner !== null
+    || processStdioOwner(handle) !== null
   ) {
     return true;
   }

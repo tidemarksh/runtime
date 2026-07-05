@@ -37,6 +37,7 @@ import {
   setProcessOnExit,
   setProcessOnStdout,
 } from "./process-callback-state.js";
+import { setProcessStdioState } from "./process-stdio-state.js";
 import { setProcessWorkers } from "./process-worker-state.js";
 import { workerDebugLog } from "./worker-debug-log.js";
 import { createKernelShareGroup } from "./kernel-share.js";
@@ -656,6 +657,18 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       wasmModule,
       kernel: exports,
       kernelState,
+      kernelShare: createKernelShareGroup(),
+      runtimeBridge,
+      sabPageCache: options.sabPageCache ?? null,
+      kernelWorkerRequest: options.kernelWorkerRequest,
+      networkBridge: options.networkBridge,
+    };
+    setProcessDebugCommand(handle, options.argv?.[0] ?? "<entry>");
+    setProcessLastDebugMessage(handle, undefined);
+    setProcessOnExit(handle, options.onExit);
+    setProcessOnError(handle, options.onError);
+    setProcessOnStdout(handle, options.onStdout);
+    setProcessStdioState(handle, {
       stdinPipe,
       stdoutPipe,
       stderrPipe,
@@ -669,17 +682,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       },
       stdinClosed: (options.stdin ?? "pipe") === "closed",
       stdioOwner: null,
-      kernelShare: createKernelShareGroup(),
-      runtimeBridge,
-      sabPageCache: options.sabPageCache ?? null,
-      kernelWorkerRequest: options.kernelWorkerRequest,
-      networkBridge: options.networkBridge,
-    };
-    setProcessDebugCommand(handle, options.argv?.[0] ?? "<entry>");
-    setProcessLastDebugMessage(handle, undefined);
-    setProcessOnExit(handle, options.onExit);
-    setProcessOnError(handle, options.onError);
-    setProcessOnStdout(handle, options.onStdout);
+    });
     setProcessWorkers(handle, []);
     setProcessMemoryOwnership(handle, memoryOwnership);
     return handle;

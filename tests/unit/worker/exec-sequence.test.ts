@@ -1,4 +1,10 @@
 import { hostExecutionState } from "../../../src/worker/host-execution-state.js";
+import {
+  processHostStdio,
+  processStderrPipe,
+  processStdinPipe,
+  processStdoutPipe,
+} from "../../../src/worker/process-stdio-state.js";
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../src/bridge/pipe.js";
 import { createRuntimeStateBridge } from "../../../src/bridge/runtime-state.js";
@@ -217,10 +223,10 @@ test("resumeVforkParentAfterChildExit delegates a normal exit wait status to ker
   expect(spies.resumeParent).not.toHaveBeenCalled();
   expect(spies.enqueueWorker).not.toHaveBeenCalled();
   expect(spies.notifyLifecycleProgress).not.toHaveBeenCalled();
-  expect(spies.handle.stdinPipe).toBe(1);
-  expect(spies.handle.stdoutPipe).toBe(2);
-  expect(spies.handle.stderrPipe).toBe(3);
-  expect(spies.handle.hostStdio).toMatchObject({
+  expect(processStdinPipe(spies.handle)).toBe(1);
+  expect(processStdoutPipe(spies.handle)).toBe(2);
+  expect(processStderrPipe(spies.handle)).toBe(3);
+  expect(processHostStdio(spies.handle)).toMatchObject({
     stdinPipe: 1,
     stdoutPipe: 2,
     stderrPipe: 3,
@@ -374,12 +380,12 @@ test("resumeVforkParentAfterChildExit preserves parent stdio and cwd across sequ
   const processSetCwdIno = vi.fn();
   spies.handle.kernel.process_cwd_ino = () => 41;
   spies.handle.kernel.process_set_cwd_ino = processSetCwdIno;
-  setPipeWritable(spies.handle.memory, spies.handle.kernelState, spies.handle.stderrPipe);
+  setPipeWritable(spies.handle.memory, spies.handle.kernelState, processStderrPipe(spies.handle));
 
   expect(writePipe(
     spies.handle.memory,
     spies.handle.kernelState.pipeBase,
-    spies.handle.stderrPipe,
+    processStderrPipe(spies.handle),
     new TextEncoder().encode("parent-before\n"),
   )).toMatchObject({ written: "parent-before\n".length, broken: false });
 
@@ -392,15 +398,15 @@ test("resumeVforkParentAfterChildExit preserves parent stdio and cwd across sequ
   );
 
   expect(resumed).toBe(true);
-  expect(spies.handle.stdinPipe).toBe(1);
-  expect(spies.handle.stdoutPipe).toBe(2);
-  expect(spies.handle.stderrPipe).toBe(3);
+  expect(processStdinPipe(spies.handle)).toBe(1);
+  expect(processStdoutPipe(spies.handle)).toBe(2);
+  expect(processStderrPipe(spies.handle)).toBe(3);
   expect(spies.handle.kernel.process_cwd_ino(spies.handle.vmPtr)).toBe(41);
   expect(processSetCwdIno).not.toHaveBeenCalled();
   expect(writePipe(
     spies.handle.memory,
     spies.handle.kernelState.pipeBase,
-    spies.handle.stderrPipe,
+    processStderrPipe(spies.handle),
     new TextEncoder().encode("parent-after-1\n"),
   )).toMatchObject({ written: "parent-after-1\n".length, broken: false });
 
@@ -428,15 +434,15 @@ test("resumeVforkParentAfterChildExit preserves parent stdio and cwd across sequ
   );
 
   expect(resumed).toBe(true);
-  expect(spies.handle.stdinPipe).toBe(1);
-  expect(spies.handle.stdoutPipe).toBe(2);
-  expect(spies.handle.stderrPipe).toBe(3);
+  expect(processStdinPipe(spies.handle)).toBe(1);
+  expect(processStdoutPipe(spies.handle)).toBe(2);
+  expect(processStderrPipe(spies.handle)).toBe(3);
   expect(spies.handle.kernel.process_cwd_ino(spies.handle.vmPtr)).toBe(41);
   expect(processSetCwdIno).not.toHaveBeenCalled();
   expect(writePipe(
     spies.handle.memory,
     spies.handle.kernelState.pipeBase,
-    spies.handle.stderrPipe,
+    processStderrPipe(spies.handle),
     new TextEncoder().encode("parent-after-2\n"),
   )).toMatchObject({ written: "parent-after-2\n".length, broken: false });
 });

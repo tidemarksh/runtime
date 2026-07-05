@@ -1,4 +1,7 @@
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
+import {
+  processHostStdio,
+} from "../../../../src/worker/process-stdio-state.js";
 import { afterEach, expect, test, vi } from "vite-plus/test";
 import { createWorkerExitHelpers } from "../../../../src/worker/exit.js";
 import {
@@ -968,7 +971,7 @@ test("completeProcessExit drains top-level visible output before releasing stdio
     } as never,
   });
   const payload = encoder.encode("final stdout\n");
-  const slotBase = handle.kernelState.pipeBase + handle.hostStdio.stdoutPipe * (32 + 65_536);
+  const slotBase = handle.kernelState.pipeBase + processHostStdio(handle).stdoutPipe * (32 + 65_536);
   const view = new DataView(handle.memory.buffer);
   view.setUint32(slotBase, 0, true);
   view.setUint32(slotBase + 4, payload.length, true);

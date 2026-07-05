@@ -1,4 +1,8 @@
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
+import {
+  processHostStdio,
+  processStderrPipe,
+} from "../../../../src/worker/process-stdio-state.js";
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../../src/bridge/pipe.js";
 import { createWorkerSchedulerStateSyncHelpers } from "../../../../src/worker/host-boundary/state-sync.js";
@@ -960,12 +964,12 @@ test("requestPipeStateSync still drains hidden child output when stdout was rema
     vmPtr: 0x1234,
     stdioOwner: parent,
     stdoutPipe: 9,
-    stderrPipe: parent.stderrPipe,
+    stderrPipe: processStderrPipe(parent),
     kernel: {
       ...makeHandle({ pid: 2 }).kernel,
       process_fd_ofd_id: (_vmPtr: number, fd: number) => (fd === 2 ? 6 : 0),
       kernel_ofd_fd_type: (ofdId: number) => (ofdId === 6 ? 6 : 0),
-      kernel_ofd_ino: (ofdId: number) => (ofdId === 6 ? parent.hostStdio.stderrPipe : 0),
+      kernel_ofd_ino: (ofdId: number) => (ofdId === 6 ? processHostStdio(parent).stderrPipe : 0),
     },
   });
 

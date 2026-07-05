@@ -1,5 +1,12 @@
 import { hostExecutionState } from "./host-execution-state.js";
 import {
+  processHostStdio,
+  processStderrPipe,
+  processStdinPipe,
+  processStdioOwner,
+  processStdoutPipe,
+} from "./process-stdio-state.js";
+import {
   kernelShareOtherMembers,
   reconcileKernelSharePipeControl,
 } from "./kernel-share.js";
@@ -92,9 +99,9 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
     }
     return [
       `vm=0x${handle.vmPtr.toString(16)}`,
-      `stdioOwner=${handle.stdioOwner?.pid ?? 0}`,
-      `host=${handle.hostStdio.stdinPipe}.${handle.hostStdio.stdoutPipe}.${handle.hostStdio.stderrPipe}`,
-      `local=${handle.stdinPipe}.${handle.stdoutPipe}.${handle.stderrPipe}`,
+      `stdioOwner=${processStdioOwner(handle)?.pid ?? 0}`,
+      `host=${processHostStdio(handle).stdinPipe}.${processHostStdio(handle).stdoutPipe}.${processHostStdio(handle).stderrPipe}`,
+      `local=${processStdinPipe(handle)}.${processStdoutPipe(handle)}.${processStderrPipe(handle)}`,
       `fds=${parts.join(",")}`,
     ].join(":");
   }
@@ -103,7 +110,7 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
     if (!beginProcessExit(handle)) {
       return false;
     }
-    if (handle.stdioOwner === null && !kernelWorkerOwnsPipeState(handle)) {
+    if (processStdioOwner(handle) === null && !kernelWorkerOwnsPipeState(handle)) {
       deps.drainProcessOutput(handle);
     }
     return true;

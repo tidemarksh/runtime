@@ -1,5 +1,10 @@
 import type { ProcessHandle } from "../types.js";
 import {
+  processStderrPipe,
+  processStdinPipe,
+  processStdoutPipe,
+} from "../process-stdio-state.js";
+import {
   collectProcessHeldOfds,
   forkSharedHeldOfdTrackAction,
   trackForkSharedOfds,
@@ -196,9 +201,9 @@ export function collectTrackableForkSharedOfds(handle: ProcessHandle): Set<numbe
   const stdioOfdIds = new Set<number>();
   const stdioFdOfdIds = new Set<number>();
   for (const [fd, stdioPipeSlot] of [
-    [0, handle.stdinPipe],
-    [1, handle.stdoutPipe],
-    [2, handle.stderrPipe],
+    [0, processStdinPipe(handle)],
+    [1, processStdoutPipe(handle)],
+    [2, processStderrPipe(handle)],
   ] as const) {
     const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
     if (ofdId !== 0) {

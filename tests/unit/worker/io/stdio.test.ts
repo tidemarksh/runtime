@@ -1,4 +1,10 @@
 import { expect, test, vi } from "vite-plus/test";
+import {
+  processHostStdio,
+  processStderrPipe,
+  processStdinPipe,
+  processStdoutPipe,
+} from "../../../../src/worker/process-stdio-state.js";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { readPipe, writePipe } from "../../../../src/bridge/pipe.js";
 import {
@@ -219,8 +225,8 @@ test("drainProcessOutput drains final stdout and stderr bytes from hidden host s
   handle.onStdout = (data) => {
     drainedChunks.push(new TextDecoder().decode(data));
   };
-  seedPipe(handle.memory, handle.kernelState, handle.stdoutPipe, "stdout-tail\n");
-  seedPipe(handle.memory, handle.kernelState, handle.stderrPipe, "stderr-tail\n");
+  seedPipe(handle.memory, handle.kernelState, processStdoutPipe(handle), "stdout-tail\n");
+  seedPipe(handle.memory, handle.kernelState, processStderrPipe(handle), "stderr-tail\n");
 
   expect(drainProcessOutput(handle)).toBe(true);
   expect(drainedChunks).toEqual(["stdout-tail\n", "stderr-tail\n"]);
@@ -233,14 +239,14 @@ test("drainProcessOutput queues stdout read progress for the next pipe sync", ()
   handle.onStdout = (data) => {
     drainedChunks.push(new TextDecoder().decode(data));
   };
-  seedPipe(handle.memory, handle.kernelState, handle.stdoutPipe, "stdout-tail\n");
+  seedPipe(handle.memory, handle.kernelState, processStdoutPipe(handle), "stdout-tail\n");
 
   expect(drainProcessOutput(handle)).toBe(true);
 
   expect(drainedChunks).toEqual(["stdout-tail\n"]);
   const pendingSnapshots = snapshotPendingPipeSlotSnapshots(handle);
   expect(pendingSnapshots).toHaveLength(1);
-  expect(pendingSnapshots[0].pipeSlot).toBe(handle.stdoutPipe);
+  expect(pendingSnapshots[0].pipeSlot).toBe(processStdoutPipe(handle));
   expect(pendingSnapshots[0].mode).toBe(1);
   const snapshotView = new DataView(
     pendingSnapshots[0].slot.buffer,
@@ -262,15 +268,15 @@ test("drainProcessOutput does not emit visible bytes from child handles owned by
   const { handle: child } = makeHandle({
     pid: 2,
     parentPid: owner.pid,
-    hostStdio: owner.hostStdio,
-    stdinPipe: owner.stdinPipe,
-    stdoutPipe: owner.stdoutPipe,
-    stderrPipe: owner.stderrPipe,
+    hostStdio: processHostStdio(owner),
+    stdinPipe: processStdinPipe(owner),
+    stdoutPipe: processStdoutPipe(owner),
+    stderrPipe: processStderrPipe(owner),
     stdioOwner: owner,
     onStdout: undefined,
   });
 
-  seedPipe(child.memory, child.kernelState, child.hostStdio.stdoutPipe, "child-out\n");
+  seedPipe(child.memory, child.kernelState, processHostStdio(child).stdoutPipe, "child-out\n");
 
   expect(drainProcessOutput(child)).toBe(false);
   expect(delivered).toEqual([]);
@@ -288,15 +294,15 @@ test("drainHiddenProcessOutput flushes child bytes into the visible parent outpu
   const { handle: child } = makeHandle({
     pid: 2,
     parentPid: owner.pid,
-    hostStdio: owner.hostStdio,
-    stdinPipe: owner.stdinPipe,
-    stdoutPipe: owner.stdoutPipe,
-    stderrPipe: owner.stderrPipe,
+    hostStdio: processHostStdio(owner),
+    stdinPipe: processStdinPipe(owner),
+    stdoutPipe: processStdoutPipe(owner),
+    stderrPipe: processStderrPipe(owner),
     stdioOwner: owner,
     onStdout: undefined,
   });
 
-  seedPipe(child.memory, child.kernelState, child.hostStdio.stdoutPipe, "child-out\n");
+  seedPipe(child.memory, child.kernelState, processHostStdio(child).stdoutPipe, "child-out\n");
 
   expect(drainHiddenProcessOutput(child)).toBe(true);
   expect(delivered).toEqual(["child-out\n"]);
@@ -356,7 +362,7 @@ test("drainHiddenProcessOutput flushes child PTY slave output inherited from the
   const { handle: child } = makeHandle({
     pid: 2,
     parentPid: owner.pid,
-    hostStdio: owner.hostStdio,
+    hostStdio: processHostStdio(owner),
     stdinPipe: 0,
     stdoutPipe: 0,
     stderrPipe: 0,
@@ -382,15 +388,15 @@ test("drainHiddenProcessOutput uses hidden child local stdout after host stdio d
   const { handle: child } = makeHandle({
     pid: 2,
     parentPid: owner.pid,
-    hostStdio: owner.hostStdio,
-    stdinPipe: owner.stdinPipe,
-    stdoutPipe: owner.stdoutPipe,
-    stderrPipe: owner.stderrPipe,
+    hostStdio: processHostStdio(owner),
+    stdinPipe: processStdinPipe(owner),
+    stdoutPipe: processStdoutPipe(owner),
+    stderrPipe: processStderrPipe(owner),
     stdioOwner: owner,
     onStdout: undefined,
   });
 
-  seedPipe(child.memory, child.kernelState, child.stdoutPipe, "child-exit-out\n");
+  seedPipe(child.memory, child.kernelState, processStdoutPipe(child), "child-exit-out\n");
 
   expect(drainHiddenProcessOutput(child)).toBe(true);
   expect(delivered).toEqual(["child-exit-out\n"]);
@@ -406,10 +412,10 @@ test("drainHiddenProcessOutput falls back to shared host stdout after child fds 
   const { handle: child } = makeHandle({
     pid: 2,
     parentPid: owner.pid,
-    hostStdio: owner.hostStdio,
-    stdinPipe: owner.stdinPipe,
-    stdoutPipe: owner.stdoutPipe,
-    stderrPipe: owner.stderrPipe,
+    hostStdio: processHostStdio(owner),
+    stdinPipe: processStdinPipe(owner),
+    stdoutPipe: processStdoutPipe(owner),
+    stderrPipe: processStderrPipe(owner),
     stdioOwner: owner,
     onStdout: undefined,
   });
@@ -418,7 +424,7 @@ test("drainHiddenProcessOutput falls back to shared host stdout after child fds 
     process_fd_ofd_id: () => 0,
   } as unknown as KernelExports;
 
-  seedPipe(child.memory, child.kernelState, child.hostStdio.stdoutPipe, "detached-child-out\n");
+  seedPipe(child.memory, child.kernelState, processHostStdio(child).stdoutPipe, "detached-child-out\n");
 
   expect(drainHiddenProcessOutput(child)).toBe(true);
   expect(delivered).toEqual(["detached-child-out\n"]);
@@ -434,10 +440,10 @@ test("drainHiddenProcessOutput does not fall back to host stdout while child fd1
   const { handle: child } = makeHandle({
     pid: 2,
     parentPid: owner.pid,
-    hostStdio: owner.hostStdio,
-    stdinPipe: owner.stdinPipe,
-    stdoutPipe: owner.stdoutPipe,
-    stderrPipe: owner.stderrPipe,
+    hostStdio: processHostStdio(owner),
+    stdinPipe: processStdinPipe(owner),
+    stdoutPipe: processStdoutPipe(owner),
+    stderrPipe: processStderrPipe(owner),
     stdioOwner: owner,
     onStdout: undefined,
   });
@@ -463,8 +469,8 @@ test("drainHiddenProcessOutput does not fall back to host stdout while child fd1
     },
   } as unknown as KernelExports;
 
-  seedPipe(child.memory, child.kernelState, child.hostStdio.stdoutPipe, "redirected-file-output\n");
-  seedPipe(child.memory, child.kernelState, child.hostStdio.stderrPipe, "stderr-tail\n");
+  seedPipe(child.memory, child.kernelState, processHostStdio(child).stdoutPipe, "redirected-file-output\n");
+  seedPipe(child.memory, child.kernelState, processHostStdio(child).stderrPipe, "stderr-tail\n");
 
   expect(drainHiddenProcessOutput(child)).toBe(true);
   expect(delivered).toEqual(["stderr-tail\n"]);
@@ -498,8 +504,8 @@ test("drainProcessOutput does not fall back to host stdout while fd1 is a file",
     },
   } as unknown as KernelExports;
 
-  seedPipe(handle.memory, handle.kernelState, handle.hostStdio.stdoutPipe, "redirected-file-output\n");
-  seedPipe(handle.memory, handle.kernelState, handle.hostStdio.stderrPipe, "stderr-tail\n");
+  seedPipe(handle.memory, handle.kernelState, processHostStdio(handle).stdoutPipe, "redirected-file-output\n");
+  seedPipe(handle.memory, handle.kernelState, processHostStdio(handle).stderrPipe, "stderr-tail\n");
 
   expect(drainProcessOutput(handle)).toBe(true);
   expect(delivered).toEqual(["stderr-tail\n"]);
@@ -553,8 +559,8 @@ test("drainProcessOutput drains visible PTY output shared by stdout and stderr o
 
 test("drainProcessOutput queues merged output when no stdout callback is installed", () => {
   const { handle } = makeHandle();
-  seedPipe(handle.memory, handle.kernelState, handle.stdoutPipe, "first\n");
-  seedPipe(handle.memory, handle.kernelState, handle.stderrPipe, "second\n");
+  seedPipe(handle.memory, handle.kernelState, processStdoutPipe(handle), "first\n");
+  seedPipe(handle.memory, handle.kernelState, processStderrPipe(handle), "second\n");
 
   expect(drainProcessOutput(handle)).toBe(true);
   expect(outputBacklog(handle).map((chunk) => new TextDecoder().decode(chunk))).toEqual([
@@ -570,12 +576,12 @@ test("drainProcessOutput preserves bytes across repeated capture phases on the s
     drainedChunks.push(new TextDecoder().decode(data));
   };
 
-  seedPipe(handle.memory, handle.kernelState, handle.stdoutPipe, "stdout-1\n");
-  seedPipe(handle.memory, handle.kernelState, handle.stderrPipe, "stderr-1\n");
+  seedPipe(handle.memory, handle.kernelState, processStdoutPipe(handle), "stdout-1\n");
+  seedPipe(handle.memory, handle.kernelState, processStderrPipe(handle), "stderr-1\n");
   expect(drainProcessOutput(handle)).toBe(true);
 
-  seedPipe(handle.memory, handle.kernelState, handle.stdoutPipe, "stdout-2\n");
-  seedPipe(handle.memory, handle.kernelState, handle.stderrPipe, "stderr-2\n");
+  seedPipe(handle.memory, handle.kernelState, processStdoutPipe(handle), "stdout-2\n");
+  seedPipe(handle.memory, handle.kernelState, processStderrPipe(handle), "stderr-2\n");
   expect(drainProcessOutput(handle)).toBe(true);
 
   expect(drainedChunks).toEqual([
@@ -593,16 +599,16 @@ test("drainProcessOutput preserves separate stdout/stderr phases across sequenti
     drainedChunks.push(new TextDecoder().decode(data));
   };
 
-  seedPipe(handle.memory, handle.kernelState, handle.stdoutPipe, "stdout-1\n");
+  seedPipe(handle.memory, handle.kernelState, processStdoutPipe(handle), "stdout-1\n");
   expect(drainProcessOutput(handle)).toBe(true);
   expect(drainProcessOutput(handle)).toBe(false);
 
-  seedPipe(handle.memory, handle.kernelState, handle.stderrPipe, "stderr-2\n");
+  seedPipe(handle.memory, handle.kernelState, processStderrPipe(handle), "stderr-2\n");
   expect(drainProcessOutput(handle)).toBe(true);
   expect(drainProcessOutput(handle)).toBe(false);
 
-  seedPipe(handle.memory, handle.kernelState, handle.stdoutPipe, "stdout-3\n");
-  seedPipe(handle.memory, handle.kernelState, handle.stderrPipe, "stderr-3\n");
+  seedPipe(handle.memory, handle.kernelState, processStdoutPipe(handle), "stdout-3\n");
+  seedPipe(handle.memory, handle.kernelState, processStderrPipe(handle), "stderr-3\n");
   expect(drainProcessOutput(handle)).toBe(true);
 
   expect(drainedChunks).toEqual([
@@ -625,7 +631,7 @@ test("settleVisibleProcessOutput keeps syncing until late stdout becomes visible
   await settleVisibleProcessOutput(handle, async () => {
     syncCount += 1;
     if (syncCount === 2) {
-      seedPipe(handle.memory, handle.kernelState, handle.stdoutPipe, "late-out\n");
+      seedPipe(handle.memory, handle.kernelState, processStdoutPipe(handle), "late-out\n");
     }
   });
 
@@ -643,10 +649,10 @@ test("settleInheritedChildOutput keeps syncing until child stdout tail is visibl
   const { handle: child } = makeHandle({
     pid: 2,
     parentPid: owner.pid,
-    hostStdio: owner.hostStdio,
-    stdinPipe: owner.stdinPipe,
-    stdoutPipe: owner.stdoutPipe,
-    stderrPipe: owner.stderrPipe,
+    hostStdio: processHostStdio(owner),
+    stdinPipe: processStdinPipe(owner),
+    stdoutPipe: processStdoutPipe(owner),
+    stderrPipe: processStderrPipe(owner),
     stdioOwner: owner,
     onStdout: undefined,
     kernelWorkerRequest: vi.fn(async () => ({ type: "pipe-state-synced" } as never)),
@@ -657,10 +663,10 @@ test("settleInheritedChildOutput keeps syncing until child stdout tail is visibl
   await settleInheritedChildOutput(child, async () => {
     syncCount += 1;
     if (syncCount === 2) {
-      seedPipe(child.memory, child.kernelState, child.stdoutPipe, "child-late\n");
+      seedPipe(child.memory, child.kernelState, processStdoutPipe(child), "child-late\n");
       const childView = new DataView(child.memory.buffer);
       const ownerView = new DataView(owner.memory.buffer);
-      const base = child.kernelState.pipeBase + child.stdoutPipe * (32 + 65_536);
+      const base = child.kernelState.pipeBase + processStdoutPipe(child) * (32 + 65_536);
       ownerView.setUint32(base + 4, childView.getUint32(base + 4, true), true);
       const childBytes = new Uint8Array(child.memory.buffer, base + 32, 4096);
       const ownerBytes = new Uint8Array(owner.memory.buffer, base + 32, 4096);
@@ -682,10 +688,10 @@ test("settleInheritedChildOutput drains child local stdout when parent has not m
   const { handle: child } = makeHandle({
     pid: 2,
     parentPid: owner.pid,
-    hostStdio: owner.hostStdio,
-    stdinPipe: owner.stdinPipe,
-    stdoutPipe: owner.stdoutPipe,
-    stderrPipe: owner.stderrPipe,
+    hostStdio: processHostStdio(owner),
+    stdinPipe: processStdinPipe(owner),
+    stdoutPipe: processStdoutPipe(owner),
+    stderrPipe: processStderrPipe(owner),
     stdioOwner: owner,
     onStdout: undefined,
     kernelWorkerRequest: vi.fn(async () => ({ type: "pipe-state-synced" } as never)),
@@ -696,7 +702,7 @@ test("settleInheritedChildOutput drains child local stdout when parent has not m
   await settleInheritedChildOutput(child, async () => {
     syncCount += 1;
     if (syncCount === 2) {
-      seedPipe(child.memory, child.kernelState, child.stdoutPipe, "child-local\n");
+      seedPipe(child.memory, child.kernelState, processStdoutPipe(child), "child-local\n");
     }
   });
 
@@ -712,8 +718,8 @@ test("drainProcessOutput drains hidden stdout bytes after stdout was remapped aw
   handle.onStdout = (data) => {
     drainedChunks.push(new TextDecoder().decode(data));
   };
-  seedPipe(handle.memory, handle.kernelState, handle.hostStdio.stdoutPipe, "stdout-tail\n");
-  seedPipe(handle.memory, handle.kernelState, handle.stderrPipe, "stderr-tail\n");
+  seedPipe(handle.memory, handle.kernelState, processHostStdio(handle).stdoutPipe, "stdout-tail\n");
+  seedPipe(handle.memory, handle.kernelState, processStderrPipe(handle), "stderr-tail\n");
 
   expect(drainProcessOutput(handle)).toBe(true);
   expect(drainedChunks).toEqual(["stdout-tail\n", "stderr-tail\n"]);
@@ -727,8 +733,8 @@ test("drainProcessOutput drains hidden stderr bytes after stderr was remapped aw
   handle.onStdout = (data) => {
     drainedChunks.push(new TextDecoder().decode(data));
   };
-  seedPipe(handle.memory, handle.kernelState, handle.stdoutPipe, "stdout-tail\n");
-  seedPipe(handle.memory, handle.kernelState, handle.hostStdio.stderrPipe, "stderr-tail\n");
+  seedPipe(handle.memory, handle.kernelState, processStdoutPipe(handle), "stdout-tail\n");
+  seedPipe(handle.memory, handle.kernelState, processHostStdio(handle).stderrPipe, "stderr-tail\n");
 
   expect(drainProcessOutput(handle)).toBe(true);
   expect(drainedChunks).toEqual(["stdout-tail\n", "stderr-tail\n"]);
@@ -751,13 +757,13 @@ test("flushStdin writes inherited stdin without breaking the next output drain",
     drainedChunks.push(decoder.decode(data));
   };
 
-  setPipeEnds(handle.memory, handle.kernelState, handle.stdinPipe, 1, 1);
+  setPipeEnds(handle.memory, handle.kernelState, processStdinPipe(handle), 1, 1);
   stdinQueue(handle).push(new TextEncoder().encode(stdinText));
   expect(flushStdin(handle)).toBe(true);
-  expect(decoder.decode(readPipe(handle.memory, handle.kernelState.pipeBase, handle.stdinPipe).data)).toBe(stdinText);
+  expect(decoder.decode(readPipe(handle.memory, handle.kernelState.pipeBase, processStdinPipe(handle)).data)).toBe(stdinText);
 
-  seedPipe(handle.memory, handle.kernelState, handle.stdoutPipe, "stdout-tail\n");
-  seedPipe(handle.memory, handle.kernelState, handle.stderrPipe, "stderr-tail\n");
+  seedPipe(handle.memory, handle.kernelState, processStdoutPipe(handle), "stdout-tail\n");
+  seedPipe(handle.memory, handle.kernelState, processStderrPipe(handle), "stderr-tail\n");
   expect(drainProcessOutput(handle)).toBe(true);
   expect(drainedChunks).toEqual(["stdout-tail\n", "stderr-tail\n"]);
 });
@@ -778,26 +784,26 @@ test("flushStdin supports a second child capture phase after the first inherited
     drainedChunks.push(decoder.decode(data));
   };
 
-  setPipeEnds(handle.memory, handle.kernelState, handle.stdinPipe, 1, 1);
+  setPipeEnds(handle.memory, handle.kernelState, processStdinPipe(handle), 1, 1);
   stdinQueue(handle).push(new TextEncoder().encode("stdin-phase-1\n"));
   expect(flushStdin(handle)).toBe(true);
-  expect(decoder.decode(readPipe(handle.memory, handle.kernelState.pipeBase, handle.stdinPipe).data)).toBe(
+  expect(decoder.decode(readPipe(handle.memory, handle.kernelState.pipeBase, processStdinPipe(handle)).data)).toBe(
     "stdin-phase-1\n",
   );
 
-  seedPipe(handle.memory, handle.kernelState, handle.stdoutPipe, "stdout-1\n");
-  seedPipe(handle.memory, handle.kernelState, handle.stderrPipe, "stderr-1\n");
+  seedPipe(handle.memory, handle.kernelState, processStdoutPipe(handle), "stdout-1\n");
+  seedPipe(handle.memory, handle.kernelState, processStderrPipe(handle), "stderr-1\n");
   expect(drainProcessOutput(handle)).toBe(true);
 
-  setPipeEnds(handle.memory, handle.kernelState, handle.stdinPipe, 1, 1);
+  setPipeEnds(handle.memory, handle.kernelState, processStdinPipe(handle), 1, 1);
   stdinQueue(handle).push(new TextEncoder().encode("stdin-phase-2\n"));
   expect(flushStdin(handle)).toBe(true);
-  expect(decoder.decode(readPipe(handle.memory, handle.kernelState.pipeBase, handle.stdinPipe).data)).toBe(
+  expect(decoder.decode(readPipe(handle.memory, handle.kernelState.pipeBase, processStdinPipe(handle)).data)).toBe(
     "stdin-phase-2\n",
   );
 
-  seedPipe(handle.memory, handle.kernelState, handle.stdoutPipe, "stdout-2\n");
-  seedPipe(handle.memory, handle.kernelState, handle.stderrPipe, "stderr-2\n");
+  seedPipe(handle.memory, handle.kernelState, processStdoutPipe(handle), "stdout-2\n");
+  seedPipe(handle.memory, handle.kernelState, processStderrPipe(handle), "stderr-2\n");
   expect(drainProcessOutput(handle)).toBe(true);
 
   expect(drainedChunks).toEqual([
@@ -844,10 +850,10 @@ test("releaseSharedHostStdioViaKernelWorker clears local pipe slots while other 
     wakePipeAndEpollWaitersInKernelShare: vi.fn(),
   });
 
-  expect(handle.stdinPipe).toBe(0);
-  expect(handle.stdoutPipe).toBe(0);
-  expect(handle.stderrPipe).toBe(0);
-  expect(handle.hostStdio.refCount).toBe(1);
+  expect(processStdinPipe(handle)).toBe(0);
+  expect(processStdoutPipe(handle)).toBe(0);
+  expect(processStderrPipe(handle)).toBe(0);
+  expect(processHostStdio(handle).refCount).toBe(1);
 });
 
 test("releaseSharedHostStdioViaKernelWorker detaches a child from a live stdio owner", async () => {
@@ -860,7 +866,7 @@ test("releaseSharedHostStdioViaKernelWorker detaches a child from a live stdio o
     },
   });
   const { handle: child } = makeHandle({
-    hostStdio: owner.hostStdio,
+    hostStdio: processHostStdio(owner),
     stdinPipe: 3,
     stdoutPipe: 4,
     stderrPipe: 5,
@@ -871,9 +877,9 @@ test("releaseSharedHostStdioViaKernelWorker detaches a child from a live stdio o
     wakePipeAndEpollWaitersInKernelShare: vi.fn(),
   });
 
-  expect(child.stdoutPipe).toBe(0);
-  expect(child.stderrPipe).toBe(0);
-  expect(child.hostStdio.refCount).toBe(0);
+  expect(processStdoutPipe(child)).toBe(0);
+  expect(processStderrPipe(child)).toBe(0);
+  expect(processHostStdio(child).refCount).toBe(0);
 });
 
 test("releaseSharedHostStdioViaKernelWorker releases the shared backend through kernel-worker once on the last reference", async () => {
@@ -900,9 +906,9 @@ test("releaseSharedHostStdioViaKernelWorker releases the shared backend through 
   await releaseSharedHostStdioViaKernelWorker(handle, ports);
   await releaseSharedHostStdioViaKernelWorker(handle, ports);
 
-  expect(handle.stdoutPipe).toBe(0);
-  expect(handle.stderrPipe).toBe(0);
-  expect(handle.hostStdio.refCount).toBe(0);
+  expect(processStdoutPipe(handle)).toBe(0);
+  expect(processStderrPipe(handle)).toBe(0);
+  expect(processHostStdio(handle).refCount).toBe(0);
   expect(requests.map((msg) => msg.type)).toEqual(["release-host-stdio"]);
   expect(ports.wakePipeAndEpollWaitersInKernelShare).toHaveBeenCalledTimes(1);
 });

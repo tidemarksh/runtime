@@ -1,4 +1,11 @@
 import { expect, test, vi } from "vite-plus/test";
+import {
+  processHostStdio,
+  processStdoutPipe,
+  setProcessHostStdio,
+  setProcessStderrPipe,
+  setProcessStdoutPipe,
+} from "../../../../src/worker/process-stdio-state.js";
 import { writePipe } from "../../../../src/bridge/pipe.js";
 import {
   PIPE_READ_OPEN_OFFSET,
@@ -82,13 +89,13 @@ function makePipeBridgeHandle() {
     ...handle.kernelState,
     pipeBase: 0x1000,
   };
-  handle.stdoutPipe = 4;
-  handle.stderrPipe = 5;
-  handle.hostStdio = {
-    ...handle.hostStdio,
+  setProcessStdoutPipe(handle, 4);
+  setProcessStderrPipe(handle, 5);
+  setProcessHostStdio(handle, {
+    ...processHostStdio(handle),
     stdoutPipe: 4,
     stderrPipe: 5,
-  };
+  });
   return { handle, kernel, memory };
 }
 
@@ -100,11 +107,11 @@ test("fd pipe bridge follows supervisor read-progress action while draining stdo
   handle.onStdout = (data) => {
     drainedChunks.push(new TextDecoder().decode(data));
   };
-  seedPipeOutput(memory, handle.kernelState.pipeBase, handle.stdoutPipe, "stdout-tail\n");
+  seedPipeOutput(memory, handle.kernelState.pipeBase, processStdoutPipe(handle), "stdout-tail\n");
 
   expect(drainProcessOutput(handle)).toBe(true);
 
-  expect(readProgressAction).toHaveBeenCalledWith(handle.vmPtr, handle.stdoutPipe, 1);
+  expect(readProgressAction).toHaveBeenCalledWith(handle.vmPtr, processStdoutPipe(handle), 1);
   expect(drainedChunks).toEqual(["stdout-tail\n"]);
   expect(pendingPipeSlotSnapshotCount(handle)).toBe(0);
 });
@@ -123,7 +130,7 @@ test("fd pipe bridge follows supervisor visible-output settle plan", async () =>
   await settleVisibleProcessOutput(handle, async () => {
     syncCount += 1;
     if (syncCount === 2) {
-      seedPipeOutput(memory, handle.kernelState.pipeBase, handle.stdoutPipe, "late-out\n");
+      seedPipeOutput(memory, handle.kernelState.pipeBase, processStdoutPipe(handle), "late-out\n");
     }
   });
 
