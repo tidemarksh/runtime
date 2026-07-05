@@ -10,7 +10,7 @@ import {
   restoreNetworkBridgeSocketState,
   snapshotRuntimeNetworkKernelState,
   restoreRuntimeNetworkKernelState
-} from "../host-boundary/shared-state.js";
+} from "./shared-state.js";
 import {
   addKernelShareSharedOfdId,
   deleteKernelShareOfdSlotSnapshot,
@@ -30,7 +30,7 @@ import {
   snapshotKernelShareOfdSlots,
   syncKernelShareOfdReservations,
 } from "../fork-shared.js";
-import { appendForkSharedMemfsDebug } from "../host-boundary/memfs-state-sync.js";
+import { appendForkSharedMemfsDebug } from "./memfs-state-sync.js";
 import { adoptKernelStateForHandle } from "../kernel-state.js";
 import {
   activeKernelShareOfdIds,
@@ -100,7 +100,7 @@ import type {
   KernelWorkerPidStateSnapshot,
   ProcessHandle,
   SyncCause
-} from "../host-boundary/shared-state.js";
+} from "./shared-state.js";
 
 function hasPendingBlockedRpc(handle: ProcessHandle): boolean {
   return [...hostExecutionState(handle).hostBlockedWorkers.values()].some((blocked) => isBlockedRpcPending(blocked));

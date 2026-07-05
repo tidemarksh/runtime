@@ -14,7 +14,7 @@ import type { ProcessHandle, ThreadWorkerState } from "../../types.js";
 import type { WorkerMessageHandlerDeps } from "../types.js";
 import { createWorkerOwnershipGuard } from "../../ownership/process-state.js";
 import { resolveWorkerMessageHandlerSyncEffects } from "../sync-effects.js";
-import { requestOwnedForkSharedStateSync } from "../../sync/fork-shared.js";
+import { requestOwnedForkSharedStateSync } from "../../host-boundary/fork-shared-state-sync.js";
 import {
   isProcessMemfsDirty,
   setProcessMemfsDirty,
