@@ -669,6 +669,17 @@ export interface KernelExports {
   supervisor_blocked_wait_wake_mask_for_sync?(source: number): number;
   supervisor_blocked_wait_status_matches_wake_source?(status: number, source: number): number;
   supervisor_blocked_wait_wake_action?(status: number, source: number, flags: number): number;
+  supervisor_wait_in_worker_status_action?(vmPtr: number, status: number, flags: number): number;
+  supervisor_wait_in_worker_status_action_none?(): number;
+  supervisor_wait_in_worker_status_action_block_epoll_timeout?(): number;
+  supervisor_wait_in_worker_status_action_park_futex?(): number;
+  supervisor_wait_in_worker_status_action_block_wait4_and_sync_pipe?(): number;
+  supervisor_wait_in_worker_status_action_sync_socket?(): number;
+  supervisor_wait_in_worker_status_action_sync_epoll?(): number;
+  supervisor_wait_in_worker_status_action_sync_pipe?(): number;
+  supervisor_wait_in_worker_status_action_flag_running_worker?(): number;
+  supervisor_wait_in_worker_status_action_flag_kernel_worker_available?(): number;
+  supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns?(): number;
   supervisor_stdio_output_settle_kind_visible?(): number;
   supervisor_stdio_output_settle_kind_inherited_child?(): number;
   supervisor_stdio_pipe_read_progress_action_none?(): number;
@@ -2128,6 +2139,17 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_wait_wake_action_log_epoll_and_retry",
   "supervisor_blocked_wait_status_matches_wake_source",
   "supervisor_blocked_wait_wake_action",
+  "supervisor_wait_in_worker_status_action",
+  "supervisor_wait_in_worker_status_action_none",
+  "supervisor_wait_in_worker_status_action_block_epoll_timeout",
+  "supervisor_wait_in_worker_status_action_park_futex",
+  "supervisor_wait_in_worker_status_action_block_wait4_and_sync_pipe",
+  "supervisor_wait_in_worker_status_action_sync_socket",
+  "supervisor_wait_in_worker_status_action_sync_epoll",
+  "supervisor_wait_in_worker_status_action_sync_pipe",
+  "supervisor_wait_in_worker_status_action_flag_running_worker",
+  "supervisor_wait_in_worker_status_action_flag_kernel_worker_available",
+  "supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns",
   "supervisor_stdio_output_settle_kind_visible",
   "supervisor_stdio_output_settle_kind_inherited_child",
   "supervisor_stdio_pipe_read_progress_action_none",

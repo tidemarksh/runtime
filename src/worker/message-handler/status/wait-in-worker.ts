@@ -18,12 +18,7 @@ import {
   drainSupervisorArmHostTimerHostOp,
 } from "../../supervisor-host-op.js";
 import {
-  supervisorBlockedEpollWaitTimeoutMs,
-  supervisorBlockedStatusIsEpollWait,
-  supervisorBlockedStatusIsWait4,
-  supervisorBlockedWaitStatusMatchesEpollWait,
-  supervisorBlockedWaitStatusMatchesPipeWait,
-  supervisorBlockedWaitStatusMatchesSocketWait,
+  supervisorWaitInWorkerStatusActions,
 } from "../../../supervisor-blocked-resume.js";
 import {
   clearThreadRunningGeneration,
@@ -45,10 +40,17 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       thread,
       deps.threadWorkerStates,
     );
-    const epollWaitStatus = supervisorBlockedStatusIsEpollWait(handle.kernel, msg.status);
-    const epollTimeoutMs = epollWaitStatus
-      ? supervisorBlockedEpollWaitTimeoutMs(handle.kernel, thread.vmPtr)
-      : null;
+    const kernelWorkerAvailable = processHasKernelWorkerOwnership(handle);
+    const waitActions = supervisorWaitInWorkerStatusActions(
+      handle.kernel,
+      thread.vmPtr,
+      msg.status,
+      {
+        runningWorker: isRunningWorker,
+        kernelWorkerAvailable,
+        epollStateKernelOwns: kernelWorkerOwnsEpollState(handle),
+      },
+    );
     deps.appendWorkerDebugLog(
       handle,
       `wait:0x${thread.vmPtr.toString(16)}@${msg.status}${formatCompactDebugSuffix(msg.debug)}`,
@@ -60,10 +62,10 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       );
     }
     deps.clearBlockedWorker(handle, worker);
-    const drainedPipe = processHasKernelWorkerOwnership(handle) ? false : drainProcessOutput(handle);
+    const drainedPipe = kernelWorkerAvailable ? false : drainProcessOutput(handle);
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
 
-    if (epollWaitStatus && epollTimeoutMs === 0) {
+    if (waitActions.blockEpollTimeout) {
       clearThreadWaitingInWorkerStatus(thread);
       if (isRunningWorker) {
         hostExecutionState(handle).runningWorker = null;
@@ -74,7 +76,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       return;
     }
 
-    if (msg.status === handle.kernel.abi_status_futex_wait()) {
+    if (waitActions.parkFutex) {
       clearThreadWaitingInWorkerStatus(thread);
       const hostTimer = drainSupervisorArmHostTimerHostOp(handle, thread.vmPtr);
       if (hostTimer === undefined) {
@@ -115,10 +117,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       return;
     }
 
-    if (
-      supervisorBlockedStatusIsWait4(handle.kernel, msg.status)
-      && processHasKernelWorkerOwnership(handle)
-    ) {
+    if (waitActions.blockWait4AndSyncPipe) {
       clearThreadWaitingInWorkerStatus(thread);
       deps.blockWorker(handle, worker, msg.status, thread.vmPtr);
       void deps.requestPipeStateSync(handle, true)
@@ -149,12 +148,8 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       deps.pumpProcess(handle);
     };
 
-    const socketWaitStatus = processHasKernelWorkerOwnership(handle)
-      && supervisorBlockedWaitStatusMatchesSocketWait(handle.kernel, msg.status);
-    const waitInWorkerNeedsEpollSync = supervisorBlockedWaitStatusMatchesEpollWait(handle.kernel, msg.status)
-      || socketWaitStatus;
-    if (isRunningWorker && kernelWorkerOwnsEpollState(handle) && waitInWorkerNeedsEpollSync) {
-      const syncSocketState = socketWaitStatus
+    if (waitActions.syncEpoll) {
+      const syncSocketState = waitActions.syncSocket
         ? deps.requestSocketStateSync(handle, false)
         : Promise.resolve();
       void syncSocketState
@@ -174,10 +169,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
         });
       return;
     }
-    if (
-      isRunningWorker
-      && socketWaitStatus
-    ) {
+    if (waitActions.syncSocket) {
       void deps.requestSocketStateSync(handle, false)
         .then(() => {
           if (!workerStillOwnedByHandle()) {
@@ -191,14 +183,10 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
             return;
           }
           deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
-      });
+        });
       return;
     }
-    if (
-      isRunningWorker
-      && processHasKernelWorkerOwnership(handle)
-      && supervisorBlockedWaitStatusMatchesPipeWait(handle.kernel, msg.status)
-    ) {
+    if (waitActions.syncPipe) {
       void deps.requestPipeStateSync(handle, true)
         .then(() => {
           if (!workerStillOwnedByHandle()) {

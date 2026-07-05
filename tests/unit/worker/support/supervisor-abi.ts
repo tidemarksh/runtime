@@ -252,6 +252,16 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_wait_wake_action_retry: 1,
   supervisor_blocked_wait_wake_action_clear_pipe_sync_and_retry: 2,
   supervisor_blocked_wait_wake_action_log_epoll_and_retry: 3,
+  supervisor_wait_in_worker_status_action_none: 0,
+  supervisor_wait_in_worker_status_action_block_epoll_timeout: 1,
+  supervisor_wait_in_worker_status_action_park_futex: 2,
+  supervisor_wait_in_worker_status_action_block_wait4_and_sync_pipe: 4,
+  supervisor_wait_in_worker_status_action_sync_socket: 8,
+  supervisor_wait_in_worker_status_action_sync_epoll: 16,
+  supervisor_wait_in_worker_status_action_sync_pipe: 32,
+  supervisor_wait_in_worker_status_action_flag_running_worker: 1,
+  supervisor_wait_in_worker_status_action_flag_kernel_worker_available: 2,
+  supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns: 4,
   supervisor_stdio_output_settle_kind_visible: 1,
   supervisor_stdio_output_settle_kind_inherited_child: 2,
   supervisor_stdio_pipe_read_progress_action_none: 0,
@@ -591,6 +601,66 @@ export function makeSupervisorAbiStubs(
         : DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_action_log_epoll_and_retry;
     }
     return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_action_retry;
+  };
+  const supervisorWaitInWorkerStatusAction = (
+    receiver: Partial<KernelExports>,
+    vmPtr: number,
+    status: number,
+    flags: number,
+  ): number => {
+    if (status === callOptionalNumber(receiver, "abi_status_epoll_wait")) {
+      const timeoutMs = supervisorEpollWaitTimeoutMs(receiver, vmPtr);
+      if (timeoutMs < -1) {
+        return timeoutMs;
+      }
+      if (timeoutMs === 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_block_epoll_timeout;
+      }
+    }
+    if (status === callOptionalNumber(receiver, "abi_status_futex_wait")) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_park_futex;
+    }
+
+    const runningWorker =
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_flag_running_worker) !== 0;
+    const kernelWorkerAvailable =
+      (flags
+        & DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_flag_kernel_worker_available) !== 0;
+    const epollStateKernelOwns =
+      (flags
+        & DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns) !== 0;
+
+    if (kernelWorkerAvailable && status === callOptionalNumber(receiver, "abi_status_wait4")) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_block_wait4_and_sync_pipe;
+    }
+    if (!runningWorker) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_none;
+    }
+
+    let actions = DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_none;
+    if (
+      kernelWorkerAvailable
+      && (
+        status === callOptionalNumber(receiver, "abi_status_socket_recv")
+        || status === callOptionalNumber(receiver, "abi_status_socket_send")
+      )
+    ) {
+      actions |= DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_sync_socket;
+    }
+    if (
+      epollStateKernelOwns
+      && (
+        status === callOptionalNumber(receiver, "abi_status_epoll_wait")
+        || status === callOptionalNumber(receiver, "abi_status_socket_recv")
+        || status === callOptionalNumber(receiver, "abi_status_socket_send")
+      )
+    ) {
+      actions |= DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_sync_epoll;
+    }
+    if (kernelWorkerAvailable && status === callOptionalNumber(receiver, "abi_status_pipe_wait")) {
+      actions |= DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_sync_pipe;
+    }
+    return actions;
   };
   const supervisorPollWaitHasSocket = (receiver: Partial<KernelExports>, vmPtr: number): boolean =>
     vmPtr !== 0
@@ -2464,6 +2534,14 @@ export function makeSupervisorAbiStubs(
       flags: number,
     ) {
       return supervisorWaitWakeAction(currentExports(this), status, source, flags);
+    },
+    supervisor_wait_in_worker_status_action(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      status: number,
+      flags: number,
+    ) {
+      return supervisorWaitInWorkerStatusAction(currentExports(this), vmPtr, status, flags);
     },
     supervisor_stdio_output_settle_max_passes(kind: number) {
       switch (kind) {

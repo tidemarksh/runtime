@@ -74,6 +74,15 @@ export interface SupervisorBlockedRetryStatusActions {
   wakeRuntimeBridgeWhileRunning: boolean;
 }
 
+export interface SupervisorWaitInWorkerStatusActions {
+  blockEpollTimeout: boolean;
+  parkFutex: boolean;
+  blockWait4AndSyncPipe: boolean;
+  syncSocket: boolean;
+  syncEpoll: boolean;
+  syncPipe: boolean;
+}
+
 export type SupervisorBlockedStaleRetryResultAction =
   | "none"
   | "handle-current-result"
@@ -214,7 +223,17 @@ type SupervisorNumberConstExportName =
   | "supervisor_blocked_wait_wake_action_skip"
   | "supervisor_blocked_wait_wake_action_retry"
   | "supervisor_blocked_wait_wake_action_clear_pipe_sync_and_retry"
-  | "supervisor_blocked_wait_wake_action_log_epoll_and_retry";
+  | "supervisor_blocked_wait_wake_action_log_epoll_and_retry"
+  | "supervisor_wait_in_worker_status_action_none"
+  | "supervisor_wait_in_worker_status_action_block_epoll_timeout"
+  | "supervisor_wait_in_worker_status_action_park_futex"
+  | "supervisor_wait_in_worker_status_action_block_wait4_and_sync_pipe"
+  | "supervisor_wait_in_worker_status_action_sync_socket"
+  | "supervisor_wait_in_worker_status_action_sync_epoll"
+  | "supervisor_wait_in_worker_status_action_sync_pipe"
+  | "supervisor_wait_in_worker_status_action_flag_running_worker"
+  | "supervisor_wait_in_worker_status_action_flag_kernel_worker_available"
+  | "supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns";
 
 function readSupervisorNumberConst(
   kernel: KernelExports,
@@ -1082,6 +1101,103 @@ export function supervisorBlockedRetryStatusActions(
     successLogEpollReady: (result & successLogEpollReady) !== 0,
     successLogWait4Resumed: (result & successLogWait4Resumed) !== 0,
     wakeRuntimeBridgeWhileRunning: (result & wakeRuntimeBridgeWhileRunning) !== 0,
+  };
+}
+
+function supervisorWaitInWorkerStatusActionFlags(
+  kernel: KernelExports,
+  options: {
+    runningWorker: boolean;
+    kernelWorkerAvailable: boolean;
+    epollStateKernelOwns: boolean;
+  },
+): number {
+  let flags = 0;
+  if (options.runningWorker) {
+    flags |= readSupervisorNumberConst(
+      kernel,
+      "supervisor_wait_in_worker_status_action_flag_running_worker",
+    );
+  }
+  if (options.kernelWorkerAvailable) {
+    flags |= readSupervisorNumberConst(
+      kernel,
+      "supervisor_wait_in_worker_status_action_flag_kernel_worker_available",
+    );
+  }
+  if (options.epollStateKernelOwns) {
+    flags |= readSupervisorNumberConst(
+      kernel,
+      "supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns",
+    );
+  }
+  return flags;
+}
+
+export function supervisorWaitInWorkerStatusActions(
+  kernel: KernelExports,
+  vmPtr: number,
+  status: number,
+  options: {
+    runningWorker: boolean;
+    kernelWorkerAvailable: boolean;
+    epollStateKernelOwns: boolean;
+  },
+): SupervisorWaitInWorkerStatusActions {
+  const readAction = kernel.supervisor_wait_in_worker_status_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_wait_in_worker_status_action");
+  }
+  const result = readAction.call(
+    kernel,
+    vmPtr,
+    status,
+    supervisorWaitInWorkerStatusActionFlags(kernel, options),
+  );
+  if (result < 0) {
+    throw new Error(`kernel supervisor wait-in-worker status action failed: ${result}`);
+  }
+  const blockEpollTimeout = readSupervisorNumberConst(
+    kernel,
+    "supervisor_wait_in_worker_status_action_block_epoll_timeout",
+  );
+  const parkFutex = readSupervisorNumberConst(
+    kernel,
+    "supervisor_wait_in_worker_status_action_park_futex",
+  );
+  const blockWait4AndSyncPipe = readSupervisorNumberConst(
+    kernel,
+    "supervisor_wait_in_worker_status_action_block_wait4_and_sync_pipe",
+  );
+  const syncSocket = readSupervisorNumberConst(
+    kernel,
+    "supervisor_wait_in_worker_status_action_sync_socket",
+  );
+  const syncEpoll = readSupervisorNumberConst(
+    kernel,
+    "supervisor_wait_in_worker_status_action_sync_epoll",
+  );
+  const syncPipe = readSupervisorNumberConst(
+    kernel,
+    "supervisor_wait_in_worker_status_action_sync_pipe",
+  );
+  const known = readSupervisorNumberConst(kernel, "supervisor_wait_in_worker_status_action_none")
+    | blockEpollTimeout
+    | parkFutex
+    | blockWait4AndSyncPipe
+    | syncSocket
+    | syncEpoll
+    | syncPipe;
+  if ((result & ~known) !== 0) {
+    throw new Error(`kernel supervisor wait-in-worker status action is unknown: ${result}`);
+  }
+  return {
+    blockEpollTimeout: (result & blockEpollTimeout) !== 0,
+    parkFutex: (result & parkFutex) !== 0,
+    blockWait4AndSyncPipe: (result & blockWait4AndSyncPipe) !== 0,
+    syncSocket: (result & syncSocket) !== 0,
+    syncEpoll: (result & syncEpoll) !== 0,
+    syncPipe: (result & syncPipe) !== 0,
   };
 }
 
