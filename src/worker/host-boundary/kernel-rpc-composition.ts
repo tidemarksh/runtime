@@ -6,7 +6,7 @@ import { expectKernelWorkerResponse } from "../kernel-rpc/transport.js";
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
 import { kernelShareOtherMembers } from "../kernel-share.js";
 import { drainProcessOutput, settleVisibleProcessOutput } from "../stdio.js";
-import { syncSocketStatePreservingNetworkBridge } from "../sync/socket.js";
+import { syncSocketStatePreservingNetworkBridge } from "./socket-state-sync.js";
 import {
   type KernelWorkerRequestFn,
   type ProcessHandle,

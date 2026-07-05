@@ -21,7 +21,7 @@ import {
   snapshotRuntimeNetworkFdEntries,
   snapshotRuntimeNetworkKernelState,
   restoreRuntimeNetworkKernelState
-} from "./shared.js";
+} from "../sync/shared.js";
 import {
   kernelShareMemberList,
   kernelShareOtherMembers,
@@ -61,14 +61,14 @@ import {
 import type {
   ProcessHandle,
   SyncCause
-} from "./shared.js";
+} from "../sync/shared.js";
 
 export {
   formatPipeSnapshotDebug,
   int32AtomicView,
   loadPipeI32,
   loadPipeU32,
-} from "./shared.js";
+} from "../sync/shared.js";
 
 export async function syncPipeStateViaKernelWorker(
   handle: ProcessHandle,

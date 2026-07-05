@@ -9,7 +9,7 @@ import {
   applySocketStateFromKernelWorker,
   restoreNetworkBridgeSocketState,
   networkBridgeSocketSnapshotProgressed
-} from "./shared.js";
+} from "../sync/shared.js";
 import {
   adoptKernelState,
   adoptKernelStateForHandle,
@@ -21,7 +21,7 @@ import type {
   KernelWorkerSocketStateSnapshot,
   ProcessHandle,
   SyncCause
-} from "./shared.js";
+} from "../sync/shared.js";
 
 type SyncSocketStateViaKernelWorker = (
   handle: ProcessHandle,
@@ -36,7 +36,7 @@ export {
   appendSocketSyncDebug,
   applySocketStateFromKernelWorker,
   socketSyncDebugLogEnabled,
-} from "./shared.js";
+} from "../sync/shared.js";
 
 export async function syncSocketStatePreservingNetworkBridge(
   handle: ProcessHandle,

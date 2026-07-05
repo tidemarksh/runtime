@@ -48,10 +48,14 @@ import { getThreadWaitingInWorkerStatus } from "../thread-host-state.js";
 import {
   syncEpollStateViaKernelWorker,
   syncOfdStateViaKernelWorker,
+} from "./fd-ofd-state-sync.js";
+import {
   syncPipeStateViaKernelWorker,
+} from "./pipe-state-sync.js";
+import {
   syncSocketStateViaKernelWorker,
   applySocketStateFromKernelWorker,
-} from "../sync.js";
+} from "./socket-state-sync.js";
 import { kernelShareMemberList } from "../kernel-share.js";
 import type { SyncCause } from "../contracts/sync.js";
 import type {

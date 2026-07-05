@@ -26,7 +26,7 @@ import {
 } from "../kernel-rpc/outcomes.js";
 import type { SyncCause } from "../contracts/sync.js";
 import { appendPendingGuestMemoryWrites } from "../guest-memory-writes.js";
-import { syncSocketStatePreservingNetworkBridge } from "../sync/socket.js";
+import { syncSocketStatePreservingNetworkBridge } from "./socket-state-sync.js";
 import { supervisorProcessOfdForFd } from "../ownership/fd-table.js";
 import {
   supervisorOfdFdType,
